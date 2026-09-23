@@ -16,7 +16,7 @@ def test_current_sampling_log_sets_stage_and_rows():
     assert update.stage == STAGE_SAMPLING
     assert update.rows == 25
 
-    job = Job(job_id = "job-1")
+    job = Job(job_id="job-1")
     apply_update(job, update)
     assert job.stage == STAGE_SAMPLING
     assert job.rows == 25

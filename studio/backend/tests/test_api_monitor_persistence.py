@@ -15,7 +15,7 @@ def test_api_monitor_on_finish():
 
     monitor.on_finish = callback
 
-    eid = monitor.start(endpoint = "/test", method = "POST", model = "llama", prompt = "hello")
+    eid = monitor.start(endpoint="/test", method="POST", model="llama", prompt="hello")
     assert len(calls) == 0
 
     monitor.finish(eid)
@@ -33,7 +33,7 @@ def test_api_monitor_on_fail():
     calls = []
     monitor.on_finish = lambda e: calls.append(e)
 
-    eid = monitor.start(endpoint = "/test", method = "POST", model = "llama", prompt = "hello")
+    eid = monitor.start(endpoint="/test", method="POST", model="llama", prompt="hello")
 
     monitor.fail(eid, "error msg")
     assert len(calls) == 1
@@ -49,7 +49,7 @@ def test_api_monitor_safe_execution():
 
     monitor.on_finish = broken_callback
 
-    eid = monitor.start(endpoint = "/test", method = "POST", model = "llama", prompt = "hello")
+    eid = monitor.start(endpoint="/test", method="POST", model="llama", prompt="hello")
 
     # Should not raise exception
     monitor.finish(eid)

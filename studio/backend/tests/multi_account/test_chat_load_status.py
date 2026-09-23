@@ -32,7 +32,7 @@ def client_for(account):
 
     app.dependency_overrides[get_current_subject] = subject
     app.dependency_overrides[authenticated_via_api_key] = lambda: False
-    app.include_router(inference.router, prefix = "/api/inference")
+    app.include_router(inference.router, prefix="/api/inference")
     return TestClient(app)
 
 
@@ -44,7 +44,7 @@ def test_foreign_preflight_model_is_not_in_status(monkeypatch, accounts):
     monkeypatch.setattr(access, "_resident_accounts", {})
     monkeypatch.setattr(inference, "_peek_inference_backend", lambda: None)
     monkeypatch.setattr(
-        inference, "get_llama_cpp_backend", lambda: SimpleNamespace(is_loaded = False)
+        inference, "get_llama_cpp_backend", lambda: SimpleNamespace(is_loaded=False)
     )
     monkeypatch.setattr(inference, "_probe_llama_cpp_status", lambda _: (False, {}))
     monkeypatch.setattr(inference, "_running_load_attempt", None)
@@ -56,7 +56,7 @@ def test_foreign_preflight_model_is_not_in_status(monkeypatch, accounts):
         entered.set()
         assert finish.wait(10)
         # End the simulated slow Hub authorization without downloading anything.
-        raise HTTPException(status_code = 404, detail = "Model not found")
+        raise HTTPException(status_code=404, detail="Model not found")
 
     monkeypatch.setattr(access, "require_model_access", slow_access)
     load_result = {}
@@ -64,10 +64,10 @@ def test_foreign_preflight_model_is_not_in_status(monkeypatch, accounts):
     def load():
         with client_for(accounts["alice"]) as client:
             load_result["response"] = client.post(
-                "/api/inference/load", json = {"model_path": secret_model}
+                "/api/inference/load", json={"model_path": secret_model}
             )
 
-    worker = threading.Thread(target = load)
+    worker = threading.Thread(target=load)
     worker.start()
     try:
         assert entered.wait(10), "real load handler never reached preflight"

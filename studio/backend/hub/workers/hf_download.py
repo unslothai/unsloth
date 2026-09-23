@@ -100,7 +100,7 @@ def _parent_is_alive(parent_pid: int) -> bool:
         SYNCHRONIZE = 0x00100000
         WAIT_OBJECT_0 = 0x0
         ERROR_INVALID_PARAMETER = 87
-        kernel32 = ctypes.WinDLL("kernel32", use_last_error = True)
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
         kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
         kernel32.OpenProcess.restype = wintypes.HANDLE
         kernel32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
@@ -129,7 +129,7 @@ def _terminate_orphaned_self() -> None:
     try:
         print(
             "Parent process exited; stopping orphaned download worker.",
-            file = sys.stderr,
+            file=sys.stderr,
         )
         sys.stderr.flush()
     except Exception:
@@ -154,9 +154,9 @@ def _install_parent_death_watchdog(parent_pid: int | None) -> None:
             time.sleep(interval)
 
     threading.Thread(
-        target = _watch,
-        name = "parent-death-watchdog",
-        daemon = True,
+        target=_watch,
+        name="parent-death-watchdog",
+        daemon=True,
     ).start()
 
 
@@ -173,7 +173,7 @@ def _retry_metadata_fetch(repo_id: str, fetch, *, label: str):
                 raise
             print(
                 f"{label} request failed for {repo_id} " f"({type(e).__name__}: {e}); retrying.",
-                file = sys.stderr,
+                file=sys.stderr,
             )
             time.sleep(_METADATA_RETRY_DELAY)
     raise RuntimeError(f"{label} unavailable for {repo_id}")
@@ -181,29 +181,31 @@ def _retry_metadata_fetch(repo_id: str, fetch, *, label: str):
 
 def _model_info_with_retry(repo_id: str, hf_token: str | None):
     from huggingface_hub import model_info as hf_model_info
+
     return _retry_metadata_fetch(
         repo_id,
         lambda timeout: hf_model_info(
             repo_id,
-            token = _hf_token_arg(hf_token),
-            timeout = timeout,
-            files_metadata = True,
+            token=_hf_token_arg(hf_token),
+            timeout=timeout,
+            files_metadata=True,
         ),
-        label = "Metadata",
+        label="Metadata",
     )
 
 
 def _dataset_info_with_retry(repo_id: str, hf_token: str | None):
     from huggingface_hub import HfApi
-    api = HfApi(token = _hf_token_arg(hf_token))
+
+    api = HfApi(token=_hf_token_arg(hf_token))
     return _retry_metadata_fetch(
         repo_id,
         lambda timeout: api.dataset_info(
             repo_id,
-            timeout = timeout,
-            files_metadata = True,
+            timeout=timeout,
+            files_metadata=True,
         ),
-        label = "Dataset metadata",
+        label="Dataset metadata",
     )
 
 
@@ -248,24 +250,24 @@ def _verify_completed_download(
             "changed), the connection dropped, or Hugging Face is temporarily "
             "unavailable. Set a valid HF token or reconnect, then resume the "
             "download.",
-            file = sys.stderr,
+            file=sys.stderr,
         )
     else:
         print(
             f"Verification failed for {label}: snapshot_download completed but "
             f"{len(result.missing)} expected file(s) are missing and "
             f"{len(result.size_mismatched)} have incorrect size on disk.",
-            file = sys.stderr,
+            file=sys.stderr,
         )
     if result.missing:
         print(
             f"Missing: {_format_path_list(result.missing)}",
-            file = sys.stderr,
+            file=sys.stderr,
         )
     if result.size_mismatched:
         print(
             f"Size mismatched: {_format_path_list(result.size_mismatched)}",
-            file = sys.stderr,
+            file=sys.stderr,
         )
     sys.exit(1)
 
@@ -301,7 +303,7 @@ def _preflight_disk_space(repo_type: str, repo_id: str, expected_files: list) ->
         remaining = max(0, total_expected - already_have)
         if remaining <= 0:
             return
-        root = hf_cache_root(create = True)
+        root = hf_cache_root(create=True)
         if root is None:
             return
         free = shutil.disk_usage(root).free
@@ -314,7 +316,7 @@ def _preflight_disk_space(repo_type: str, repo_id: str, expected_files: list) ->
             f"{remaining / 1e9:.1f} GB free in {root}, but only "
             f"{free / 1e9:.1f} GB is available. Free up space and "
             "try again.",
-            file = sys.stderr,
+            file=sys.stderr,
         )
         sys.exit(1)
 
@@ -330,9 +332,9 @@ def _snapshot_download_plan(info) -> tuple[list[str], list]:
     filtered = snapshot_download_siblings(info.siblings)
     expected_files = [
         ExpectedFile(
-            path = s.rfilename,
-            size = int(getattr(s, "size", 0) or 0),
-            sha256 = sibling_sha256(s),
+            path=s.rfilename,
+            size=int(getattr(s, "size", 0) or 0),
+            sha256=sibling_sha256(s),
         )
         for s in filtered
         if isinstance(s.rfilename, str)
@@ -342,11 +344,12 @@ def _snapshot_download_plan(info) -> tuple[list[str], list]:
 
 def _dataset_expected_files(info) -> list:
     from hub.utils.download_manifest import ExpectedFile
+
     return [
         ExpectedFile(
-            path = s.rfilename,
-            size = int(getattr(s, "size", 0) or 0),
-            sha256 = sibling_sha256(s),
+            path=s.rfilename,
+            size=int(getattr(s, "size", 0) or 0),
+            sha256=sibling_sha256(s),
         )
         for s in info.siblings
         if isinstance(s.rfilename, str)
@@ -361,9 +364,9 @@ def _exact_dataset_snapshot_target(repo_id: str, snapshot_path: str, commit_hash
     if normalized_commit is None:
         return None
     try:
-        snapshot = Path(snapshot_path).expanduser().resolve(strict = True)
+        snapshot = Path(snapshot_path).expanduser().resolve(strict=True)
         repo_dir = snapshot.parent.parent
-        hub_cache = repo_dir.parent.resolve(strict = True)
+        hub_cache = repo_dir.parent.resolve(strict=True)
     except (OSError, RuntimeError, ValueError):
         return None
     if (
@@ -386,16 +389,16 @@ def _write_dataset_completion_from_metadata(
         return False
     normalized_commit, snapshot, hub_cache = target
     verification_manifest = download_manifest.Manifest(
-        repo_type = "dataset",
-        repo_id = repo_id,
-        variant = None,
-        started_at = "",
-        expected_files = files,
-        transport = mode,
-        hub_cache = str(hub_cache),
-        version = 2,
-        commit_hash = normalized_commit,
-        metadata_derived = True,
+        repo_type="dataset",
+        repo_id=repo_id,
+        variant=None,
+        started_at="",
+        expected_files=files,
+        transport=mode,
+        hub_cache=str(hub_cache),
+        version=2,
+        commit_hash=normalized_commit,
+        metadata_derived=True,
     )
     if not download_manifest.verify_against_disk(
         verification_manifest,
@@ -407,7 +410,7 @@ def _write_dataset_completion_from_metadata(
         normalized_commit,
         files,
         mode,
-        hub_cache = hub_cache,
+        hub_cache=hub_cache,
     )
 
 
@@ -483,7 +486,7 @@ def _recover_manifest_after_download(
             "have been lost (HF token removed or changed), the connection dropped, "
             "or Hugging Face is temporarily unavailable. Set a valid HF token or "
             "reconnect, then resume the download.",
-            file = sys.stderr,
+            file=sys.stderr,
         )
         sys.exit(1)
 
@@ -499,13 +502,13 @@ def _recover_manifest_after_download(
             f"{label}could not record the metadata manifest for {repo_id}, "
             "recorded one from the downloaded files so completion "
             f"is tracked ({reason})",
-            file = sys.stderr,
+            file=sys.stderr,
         )
     else:
         print(
             f"{label}could not record the metadata manifest for {repo_id}, "
             f"{download_manifest.MANIFEST_DEGRADED_MARKER} ({reason})",
-            file = sys.stderr,
+            file=sys.stderr,
         )
 
 
@@ -521,7 +524,7 @@ def _download_snapshot(repo_id: str, hf_token: str | None, mode: str) -> None:
         print(
             f"metadata unavailable, downloading full snapshot for {repo_id} "
             f"({type(e).__name__}: {e})",
-            file = sys.stderr,
+            file=sys.stderr,
         )
         info = None
 
@@ -539,14 +542,14 @@ def _download_snapshot(repo_id: str, hf_token: str | None, mode: str) -> None:
         print(
             f"Purged {purged} untrusted partial blob(s) for {repo_id} "
             f"before starting {mode} download.",
-            file = sys.stderr,
+            file=sys.stderr,
         )
     _preflight_disk_space("model", repo_id, expected_files)
     snapshot_path = snapshot_download(
-        repo_id = repo_id,
-        token = _hf_token_arg(hf_token),
-        ignore_patterns = ignore_patterns,
-        max_workers = 1,
+        repo_id=repo_id,
+        token=_hf_token_arg(hf_token),
+        ignore_patterns=ignore_patterns,
+        max_workers=1,
     )
     if info is None:
         _recover_manifest_after_download(
@@ -554,15 +557,15 @@ def _download_snapshot(repo_id: str, hf_token: str | None, mode: str) -> None:
             repo_id,
             snapshot_path,
             mode,
-            fetch_info = lambda: _model_info_with_retry(repo_id, hf_token),
-            expected_files_from_info = lambda recovered: _snapshot_download_plan(recovered)[1],
+            fetch_info=lambda: _model_info_with_retry(repo_id, hf_token),
+            expected_files_from_info=lambda recovered: _snapshot_download_plan(recovered)[1],
         )
     _verify_completed_download(
         "model",
         repo_id,
         None,
         snapshot_path,
-        metadata_unavailable = info is None,
+        metadata_unavailable=info is None,
     )
 
 
@@ -575,7 +578,7 @@ def _gguf_variant_target_plan(
         print(
             f"metadata unavailable, cannot resolve GGUF variant '{variant}' "
             f"for {repo_id} ({type(e).__name__}: {e})",
-            file = sys.stderr,
+            file=sys.stderr,
         )
         raise RuntimeError(
             f"Metadata unavailable while resolving GGUF variant '{variant}' " f"for {repo_id}"
@@ -601,7 +604,7 @@ def _download_gguf_variant(repo_id: str, variant: str, hf_token: str | None, mod
         if plan is None:
             print(
                 f"No GGUF shards matching variant '{variant}' in {repo_id}",
-                file = sys.stderr,
+                file=sys.stderr,
             )
             sys.exit(1)
         targets = list(plan.target_filenames)
@@ -622,7 +625,7 @@ def _download_gguf_variant(repo_id: str, variant: str, hf_token: str | None, mod
             print(
                 f"Metadata unavailable and no manifest to resume GGUF "
                 f"variant '{variant}' for {repo_id}",
-                file = sys.stderr,
+                file=sys.stderr,
             )
             sys.exit(1)
         plan = plan_from_expected_files(variant, manifest.expected_files)
@@ -640,7 +643,7 @@ def _download_gguf_variant(repo_id: str, variant: str, hf_token: str | None, mod
         print(
             f"Metadata unavailable; resuming GGUF variant '{variant}' for "
             f"{repo_id} from the existing manifest.",
-            file = sys.stderr,
+            file=sys.stderr,
         )
 
     download_manifest.clear_cancel_marker("model", repo_id, variant)
@@ -651,14 +654,14 @@ def _download_gguf_variant(repo_id: str, variant: str, hf_token: str | None, mod
                 f"GGUF variant '{variant}' for {repo_id} has partial cache state "
                 "but no resolvable blob hashes; delete the partial download or "
                 "retry when metadata is available.",
-                file = sys.stderr,
+                file=sys.stderr,
             )
             sys.exit(1)
         purge_blob_hashes = frozenset()
         print(
             f"GGUF variant '{variant}' for {repo_id} has no resolvable blob "
             "hashes; starting without partial cache reuse.",
-            file = sys.stderr,
+            file=sys.stderr,
         )
     # Main quant blobs are owned by this variant; the shared mmproj companion has its own marker and is never purged while a concurrent peer is writing it.
     purged = prepare_cache_for_transport(
@@ -666,45 +669,46 @@ def _download_gguf_variant(repo_id: str, variant: str, hf_token: str | None, mod
         repo_id,
         mode,
         variant,
-        only_blob_hashes = purge_blob_hashes,
-        companion_blob_hashes = companion_blob_hashes,
-        protected_blob_hashes = _protected_blob_hashes(),
+        only_blob_hashes=purge_blob_hashes,
+        companion_blob_hashes=companion_blob_hashes,
+        protected_blob_hashes=_protected_blob_hashes(),
     )
     if purged:
         print(
             f"Purged {purged} untrusted partial blob(s) for {repo_id} "
             f"before starting {mode} download.",
-            file = sys.stderr,
+            file=sys.stderr,
         )
     _preflight_disk_space("model", repo_id, expected_files)
     snapshot_path = snapshot_download(
-        repo_id = repo_id,
-        token = _hf_token_arg(hf_token),
-        allow_patterns = targets,
-        max_workers = 1,
+        repo_id=repo_id,
+        token=_hf_token_arg(hf_token),
+        allow_patterns=targets,
+        max_workers=1,
     )
     _verify_completed_download(
         "model",
         repo_id,
         variant,
         snapshot_path,
-        metadata_unavailable = metadata_unavailable,
+        metadata_unavailable=metadata_unavailable,
     )
     if plan is not None:
         try:
             from hub.services.models.deletion import reclaim_replaced_gguf_variant
+
             reclaim_replaced_gguf_variant(
                 repo_id,
                 variant,
                 plan.main_hashes,
                 hf_token,
-                hub_cache = Path(snapshot_path).parents[2],
+                hub_cache=Path(snapshot_path).parents[2],
             )
         except Exception as e:
             print(
                 f"Verified GGUF update for {repo_id} [{variant}], but stale-cache "
                 f"reclaim failed ({type(e).__name__}: {e})",
-                file = sys.stderr,
+                file=sys.stderr,
             )
 
 
@@ -723,7 +727,7 @@ def _download_scoped_snapshot(
     except Exception as e:
         print(
             f"metadata unavailable for scoped download of {repo_id} " f"({type(e).__name__}: {e})",
-            file = sys.stderr,
+            file=sys.stderr,
         )
         info = None
 
@@ -737,14 +741,14 @@ def _download_scoped_snapshot(
             print(
                 f"Scoped download of {repo_id} cannot resolve "
                 f"{len(missing)} requested file(s): {_format_path_list(missing)}",
-                file = sys.stderr,
+                file=sys.stderr,
             )
             sys.exit(1)
         expected_files = [
             ExpectedFile(
-                path = s.rfilename,
-                size = int(getattr(s, "size", 0) or 0),
-                sha256 = sibling_sha256(s),
+                path=s.rfilename,
+                size=int(getattr(s, "size", 0) or 0),
+                sha256=sibling_sha256(s),
             )
             for s in siblings
         ]
@@ -759,21 +763,21 @@ def _download_scoped_snapshot(
         repo_id,
         mode,
         scope,
-        only_blob_hashes = blob_hashes or None,
-        protected_blob_hashes = _protected_blob_hashes(),
+        only_blob_hashes=blob_hashes or None,
+        protected_blob_hashes=_protected_blob_hashes(),
     )
     if purged:
         print(
             f"Purged {purged} untrusted partial blob(s) for {repo_id} [{scope}] "
             f"before starting {mode} download.",
-            file = sys.stderr,
+            file=sys.stderr,
         )
     _preflight_disk_space("model", repo_id, expected_files)
     snapshot_path = snapshot_download(
-        repo_id = repo_id,
-        token = _hf_token_arg(hf_token),
-        allow_patterns = files,
-        max_workers = 1,
+        repo_id=repo_id,
+        token=_hf_token_arg(hf_token),
+        allow_patterns=files,
+        max_workers=1,
     )
     if info is None:
         # With no metadata there is no manifest, and snapshot_download RETURNS AN EXISTING SNAPSHOT FOLDER when repo_info also fails, flipping the job to complete with no weights.
@@ -784,7 +788,7 @@ def _download_scoped_snapshot(
                 f"Could not reach Hugging Face for {repo_id} [{scope}] and the copy on disk "
                 f"is incomplete ({len(absent)} file(s) missing): {_format_path_list(absent)}. "
                 "Reconnect (or set a valid HF token) and resume the download.",
-                file = sys.stderr,
+                file=sys.stderr,
             )
             sys.exit(1)
     _verify_completed_download(
@@ -792,7 +796,7 @@ def _download_scoped_snapshot(
         repo_id,
         scope,
         snapshot_path,
-        metadata_unavailable = info is None,
+        metadata_unavailable=info is None,
     )
 
 
@@ -807,7 +811,7 @@ def _download_dataset(repo_id: str, hf_token: str | None, mode: str) -> None:
         print(
             f"dataset metadata unavailable, downloading full dataset for {repo_id} "
             f"({type(e).__name__}: {e})",
-            file = sys.stderr,
+            file=sys.stderr,
         )
         info = None
     # Cancel-marker clear and manifest write run on every transport (see _download_snapshot for XET).
@@ -821,8 +825,8 @@ def _download_dataset(repo_id: str, hf_token: str | None, mode: str) -> None:
             None,
             expected_files,
             mode,
-            commit_hash = commit_hash,
-            metadata_derived = True,
+            commit_hash=commit_hash,
+            metadata_derived=True,
         )
     else:
         expected_files = []
@@ -832,7 +836,7 @@ def _download_dataset(repo_id: str, hf_token: str | None, mode: str) -> None:
         print(
             f"Purged {purged} untrusted partial blob(s) for {repo_id} "
             f"before starting {mode} download.",
-            file = sys.stderr,
+            file=sys.stderr,
         )
     _preflight_disk_space("dataset", repo_id, expected_files)
     download_kwargs = {
@@ -852,16 +856,16 @@ def _download_dataset(repo_id: str, hf_token: str | None, mode: str) -> None:
             repo_id,
             snapshot_path,
             mode,
-            fetch_info = lambda: _dataset_info_with_retry(repo_id, hf_token),
-            expected_files_from_info = _dataset_expected_files,
-            label = "dataset ",
+            fetch_info=lambda: _dataset_info_with_retry(repo_id, hf_token),
+            expected_files_from_info=_dataset_expected_files,
+            label="dataset ",
         )
     _verify_completed_download(
         "dataset",
         repo_id,
         None,
         snapshot_path,
-        metadata_unavailable = info is None,
+        metadata_unavailable=info is None,
     )
     if info is not None:
         _write_dataset_completion_from_metadata(
@@ -880,37 +884,38 @@ def _force_stall_for_tests(repo_id: str, repo_type: str) -> None:
     blobs = os.path.join(HF_HUB_CACHE, f"{repo_type}s--" + repo_id.replace("/", "--"), "blobs")
     handle = None
     try:
-        os.makedirs(blobs, exist_ok = True)
+        os.makedirs(blobs, exist_ok=True)
         handle = open(os.path.join(blobs, "xet-force-stall.incomplete"), "wb")
         handle.write(b"\0" * 4096)
         handle.flush()
     except OSError:
         pass
-    print("UNSLOTH_HF_XET_FORCE_STALL: hanging the xet attempt", file = sys.stderr, flush = True)
+    print("UNSLOTH_HF_XET_FORCE_STALL: hanging the xet attempt", file=sys.stderr, flush=True)
     while True:
         # `handle` stays referenced by this frame, which never returns, so the partial stays open.
         time.sleep(3600)
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description = "HuggingFace Hub download worker")
-    parser.add_argument("--repo-id", required = True)
-    parser.add_argument("--variant", default = None)
-    parser.add_argument("--dataset", action = "store_true")
-    parser.add_argument("--transport", choices = ("http", "xet"), default = "http")
-    parser.add_argument("--parent-pid", type = int, default = None)
+    parser = argparse.ArgumentParser(description="HuggingFace Hub download worker")
+    parser.add_argument("--repo-id", required=True)
+    parser.add_argument("--variant", default=None)
+    parser.add_argument("--dataset", action="store_true")
+    parser.add_argument("--transport", choices=("http", "xet"), default="http")
+    parser.add_argument("--parent-pid", type=int, default=None)
     parser.add_argument(
         "--files-json",
-        default = None,
-        help = "Temp JSON file holding a scoped job's exact file list (deleted after reading).",
+        default=None,
+        help="Temp JSON file holding a scoped job's exact file list (deleted after reading).",
     )
     args = parser.parse_args()
 
     scoped_files: list[str] = []
     if args.files_json:
         import json
+
         try:
-            with open(args.files_json, encoding = "utf-8") as handle:
+            with open(args.files_json, encoding="utf-8") as handle:
                 scoped_files = [str(f) for f in json.load(handle)]
         finally:
             try:
@@ -942,7 +947,7 @@ def main() -> None:
         raise
     except Exception as e:
         # Surface a precise message rather than a generic "worker exited with code 1": huggingface_hub recommends force_download=True to recover, which our Restart maps to purging the partial via prepare_cache_for_transport.
-        print(f"{type(e).__name__}: {e}", file = sys.stderr)
+        print(f"{type(e).__name__}: {e}", file=sys.stderr)
         sys.exit(1)
 
 

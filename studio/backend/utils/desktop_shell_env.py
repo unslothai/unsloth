@@ -79,7 +79,7 @@ def host_has_amd_gpu() -> bool:
         for entry in sorted(os.listdir(nodes)):
             path = os.path.join(nodes, entry, "properties")
             try:
-                with open(path, "r", encoding = "utf-8", errors = "replace") as handle:
+                with open(path, "r", encoding="utf-8", errors="replace") as handle:
                     text = handle.read()
             except OSError:
                 continue
@@ -113,18 +113,18 @@ def read_login_shell_env(shell: "str | None" = None, timeout: float = 15.0) -> d
     backgrounds a job leaves that child holding a capture pipe.
     """
     shell = shell or os.environ.get("SHELL") or "/bin/sh"
-    with tempfile.TemporaryDirectory(prefix = "unsloth-shell-env-") as work:
+    with tempfile.TemporaryDirectory(prefix="unsloth-shell-env-") as work:
         target = os.path.join(work, "env")
         try:
             process = subprocess.Popen(
                 [shell, "-ilc", f"env -0 > {shlex.quote(target)}"],
-                stdin = subprocess.DEVNULL,
-                stdout = subprocess.DEVNULL,
-                stderr = subprocess.DEVNULL,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
                 # Oh My Zsh's auto-update prompt can block the shell forever.
-                env = {**os.environ, "DISABLE_AUTO_UPDATE": "true"},
+                env={**os.environ, "DISABLE_AUTO_UPDATE": "true"},
                 # Its own group, so the cleanup below takes the whole shell.
-                start_new_session = True,
+                start_new_session=True,
             )
         except Exception as error:
             logger.debug("login shell environment unavailable: %s", error)
@@ -132,7 +132,7 @@ def read_login_shell_env(shell: "str | None" = None, timeout: float = 15.0) -> d
         # pgid == pid, read before the wait reaps it: getpgid then raises.
         group = process.pid
         try:
-            returncode = process.wait(timeout = timeout)
+            returncode = process.wait(timeout=timeout)
         except Exception as error:
             logger.debug("login shell did not finish: %s", error)
             returncode = None
@@ -165,7 +165,7 @@ def _terminate_group(group: int, process) -> None:
     except Exception:
         pass
     try:
-        process.wait(timeout = 5)
+        process.wait(timeout=5)
     except Exception:
         pass
 
@@ -173,7 +173,7 @@ def _terminate_group(group: int, process) -> None:
 def select_missing_vars(
     environ,
     shell_env,
-    allowlist = ROCM_SHELL_ENV_ALLOWLIST,
+    allowlist=ROCM_SHELL_ENV_ALLOWLIST,
 ) -> dict:
     """The allowlisted names the shell has and this process does not.
 
@@ -190,8 +190,8 @@ def select_missing_vars(
 
 
 def import_rocm_env_from_login_shell(
-    environ = None,
-    shell = None,
+    environ=None,
+    shell=None,
     timeout: float = 15.0,
 ) -> dict:
     """Fill in the ROCm variables a desktop launch dropped. Returns what it set."""

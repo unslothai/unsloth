@@ -85,7 +85,7 @@ class FakeTransport:
         self,
         turns,
         *,
-        max_turns = 20,
+        max_turns=20,
     ):
         self.turns = [list(turn) for turn in turns]
         self.requests: list[dict] = []
@@ -117,33 +117,33 @@ def executed(monkeypatch):
     return calls
 
 
-def _run(transport, *, tool_choice = None):
+def _run(transport, *, tool_choice=None):
     async def _collect():
         out: list[str] = []
         agen = stream_with_studio_tools(
             transport,
-            run = ToolLoopRun(
-                messages = [{"role": "user", "content": "hi"}],
-                session_id = "s1",
-                thread_id = "t1",
-                tool_choice = tool_choice,
+            run=ToolLoopRun(
+                messages=[{"role": "user", "content": "hi"}],
+                session_id="s1",
+                thread_id="t1",
+                tool_choice=tool_choice,
             ),
-            policy = ToolLoopPolicy(
-                tools = [WEB],
-                max_calls = 25,
-                timeout = 300,
-                permission_mode = "off",
-                confirm_calls = False,
-                bypass_permissions = False,
-                rag_scope = None,
+            policy=ToolLoopPolicy(
+                tools=[WEB],
+                max_calls=25,
+                timeout=300,
+                permission_mode="off",
+                confirm_calls=False,
+                bypass_permissions=False,
+                rag_scope=None,
             ),
-            cancel_event = threading.Event(),
+            cancel_event=threading.Event(),
         )
         async for line in agen:
             out.append(line)
         return out
 
-    return asyncio.run(asyncio.wait_for(_collect(), timeout = 30))
+    return asyncio.run(asyncio.wait_for(_collect(), timeout=30))
 
 
 # ── tool_choice: "none" is enforced, not just advertised ─────────────
@@ -156,21 +156,21 @@ def test_tool_choice_none_refuses_a_call_the_provider_sent_anyway(executed):
     endpoint into emitting a python call must not get one executed.
     """
     transport = FakeTransport([[_call_line(), _finish("tool_calls")], [_DONE]])
-    _run(transport, tool_choice = "none")
+    _run(transport, tool_choice="none")
     assert executed == []
 
 
 def test_tool_choice_none_still_withdraws_the_catalog(executed):
     """The outbound half of the same contract must not have regressed."""
     transport = FakeTransport([[_call_line(), _finish("tool_calls")], [_DONE]])
-    _run(transport, tool_choice = "none")
+    _run(transport, tool_choice="none")
     assert transport.requests[0]["tool_choice"] == "none"
 
 
 def test_tool_choice_auto_still_executes(executed):
     """The refusal must be specific to "none"."""
     transport = FakeTransport([[_call_line(), _finish("tool_calls")], [_DONE]])
-    _run(transport, tool_choice = "auto")
+    _run(transport, tool_choice="auto")
     assert executed == ["web_search"]
 
 
@@ -181,7 +181,7 @@ def test_tool_choice_auto_still_executes(executed):
 def test_a_turn_cut_short_does_not_execute_its_call(executed, reason):
     """Both endings mean the model never finished saying what it wanted."""
     transport = FakeTransport([[_call_line(), _finish(reason)], [_DONE]])
-    _run(transport, tool_choice = "auto")
+    _run(transport, tool_choice="auto")
     assert executed == []
 
 
@@ -193,5 +193,5 @@ def test_a_completed_turn_still_executes(executed, reason):
     this path exists to serve.
     """
     transport = FakeTransport([[_call_line(), _finish(reason)], [_DONE]])
-    _run(transport, tool_choice = "auto")
+    _run(transport, tool_choice="auto")
     assert executed == ["web_search"]

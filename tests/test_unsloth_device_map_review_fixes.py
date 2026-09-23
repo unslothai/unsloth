@@ -19,7 +19,7 @@ import pytest
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 MODELS = os.path.join(HERE, "unsloth", "models")
 LOADER_UTILS = os.path.join(MODELS, "loader_utils.py")
-_SRC = open(LOADER_UTILS, encoding = "utf-8").read()
+_SRC = open(LOADER_UTILS, encoding="utf-8").read()
 
 
 class _FakeCuda:
@@ -27,7 +27,7 @@ class _FakeCuda:
         self,
         count,
         free,
-        refuses = (),
+        refuses=(),
     ):
         self._count = count
         self._free = free
@@ -45,7 +45,7 @@ class _FakeCuda:
 
 
 class _Recorder:
-    def __init__(self, plan = None):
+    def __init__(self, plan=None):
         self.calls = []
         self._plan = plan
 
@@ -63,15 +63,15 @@ class _Plan:
 
 def _build(
     *,
-    devices = 2,
-    free = None,
-    planner = None,
-    refuses = (),
+    devices=2,
+    free=None,
+    planner=None,
+    refuses=(),
 ):
-    cuda = _FakeCuda(devices, free or {}, refuses = refuses)
+    cuda = _FakeCuda(devices, free or {}, refuses=refuses)
     ns = {
         "os": os,
-        "torch": types.SimpleNamespace(cuda = cuda),
+        "torch": types.SimpleNamespace(cuda=cuda),
         "DEVICE_TYPE_TORCH": "cuda",
         "is_distributed": lambda: False,
     }
@@ -140,7 +140,7 @@ def test_the_default_is_indistinguishable_from_sequential_to_everyone_else():
 def test_every_entry_point_defaults_to_the_marked_value(name):
     """A signature left on the bare string cannot be told from an explicit request, so the
     fix above would silently not apply to whichever loader was missed."""
-    source = open(os.path.join(MODELS, name), encoding = "utf-8").read()
+    source = open(os.path.join(MODELS, name), encoding="utf-8").read()
     for node in ast.walk(ast.parse(source)):
         if not isinstance(node, ast.FunctionDef) or node.name != "from_pretrained":
             continue
@@ -169,7 +169,7 @@ def test_sentence_transformers_hands_the_nested_load_a_plain_value():
     Asserted as the absence of the old process-wide pin as well: os.environ is shared, so
     that fix reached unrelated loads on other threads.
     """
-    source = open(os.path.join(MODELS, "sentence_transformer.py"), encoding = "utf-8").read()
+    source = open(os.path.join(MODELS, "sentence_transformer.py"), encoding="utf-8").read()
     assert "device_map = unmarked_device_map(device_map)" in source
     assert (
         "device_map = str(device_map)" not in source
@@ -187,12 +187,12 @@ def test_a_caller_supplied_max_memory_does_not_collide_with_the_measured_one():
     the forwarded kwargs raised `TypeError: got multiple values for keyword argument
     'max_memory'` -- caught by the handler and turned into a silent "sequential", losing
     both the cap and the plan."""
-    planner = _Recorder(plan = _Plan())
-    ns = _build(free = {0: 10 * 2**30, 1: 10 * 2**30}, planner = planner)
+    planner = _Recorder(plan=_Plan())
+    ns = _build(free={0: 10 * 2**30, 1: 10 * 2**30}, planner=planner)
     resolved = ns["resolve_unsloth_device_map"](
         "unsloth",
         "unsloth/Qwen3-0.6B",
-        planner_kwargs = {"max_memory": {0: 4 * 2**30, 1: 10 * 2**30}, "retained_rows": 128},
+        planner_kwargs={"max_memory": {0: 4 * 2**30, 1: 10 * 2**30}, "retained_rows": 128},
     )
     assert resolved == _Plan.device_map, "the plan was lost to a TypeError"
     assert len(planner.calls) == 1
@@ -204,12 +204,12 @@ def test_a_caller_supplied_max_memory_does_not_collide_with_the_measured_one():
 def test_a_cap_above_free_memory_does_not_raise_the_budget():
     """A caller can reserve room we cannot measure, but cannot conjure memory the card has
     not got, and planning above free is how a plan OOMs on dispatch."""
-    planner = _Recorder(plan = _Plan())
-    ns = _build(free = {0: 2 * 2**30, 1: 2 * 2**30}, planner = planner)
+    planner = _Recorder(plan=_Plan())
+    ns = _build(free={0: 2 * 2**30, 1: 2 * 2**30}, planner=planner)
     ns["resolve_unsloth_device_map"](
         "unsloth",
         "unsloth/Qwen3-0.6B",
-        planner_kwargs = {"max_memory": {0: 99 * 2**30, 1: 99 * 2**30}},
+        planner_kwargs={"max_memory": {0: 99 * 2**30, 1: 99 * 2**30}},
     )
     assert planner.calls[0][1]["max_memory"][0] == 2 * 2**30
 
@@ -217,17 +217,17 @@ def test_a_cap_above_free_memory_does_not_raise_the_budget():
 @pytest.mark.parametrize(
     "written,expected",
     [(4 * 2**30, 4 * 2**30), ("4GiB", 4 * 2**30), ("2MiB", 2 * 2**20)],
-    ids = ["int", "GiB", "MiB"],
+    ids=["int", "GiB", "MiB"],
 )
 def test_the_cap_is_read_the_way_accelerate_reads_it(written, expected):
     """accelerate takes `"10GiB"` as readily as an int, so a caller writes what the loader
     would have taken. Comparing a string against measured bytes would be meaningless."""
-    planner = _Recorder(plan = _Plan())
-    ns = _build(free = {0: 8 * 2**30, 1: 8 * 2**30}, planner = planner)
+    planner = _Recorder(plan=_Plan())
+    ns = _build(free={0: 8 * 2**30, 1: 8 * 2**30}, planner=planner)
     ns["resolve_unsloth_device_map"](
         "unsloth",
         "unsloth/Qwen3-0.6B",
-        planner_kwargs = {"max_memory": {0: written, 1: written}},
+        planner_kwargs={"max_memory": {0: written, 1: written}},
     )
     assert planner.calls[0][1]["max_memory"][0] == min(expected, 8 * 2**30)
 
@@ -312,12 +312,12 @@ def test_the_local_size_parser_agrees_with_accelerate(written):
 def test_an_unreadable_cap_leaves_the_measured_value_rather_than_dropping_the_device():
     """A device missing from `max_memory` is a device the planner may not use at all, which
     is a worse answer than ignoring one unparseable entry."""
-    planner = _Recorder(plan = _Plan())
-    ns = _build(free = {0: 8 * 2**30, 1: 8 * 2**30}, planner = planner)
+    planner = _Recorder(plan=_Plan())
+    ns = _build(free={0: 8 * 2**30, 1: 8 * 2**30}, planner=planner)
     ns["resolve_unsloth_device_map"](
         "unsloth",
         "unsloth/Qwen3-0.6B",
-        planner_kwargs = {"max_memory": {0: "not a size", 1: "not a size"}},
+        planner_kwargs={"max_memory": {0: "not a size", 1: "not a size"}},
     )
     assert planner.calls[0][1]["max_memory"][0] == 8 * 2**30
 
@@ -325,13 +325,13 @@ def test_an_unreadable_cap_leaves_the_measured_value_rather_than_dropping_the_de
 def test_the_callers_kwargs_dict_is_not_mutated():
     """`device_map_planner_kwargs` is the caller's object, and a loader that empties it
     would change what a second load in the same script asks for."""
-    planner = _Recorder(plan = _Plan())
-    ns = _build(free = {0: 8 * 2**30, 1: 8 * 2**30}, planner = planner)
+    planner = _Recorder(plan=_Plan())
+    ns = _build(free={0: 8 * 2**30, 1: 8 * 2**30}, planner=planner)
     caller_kwargs = {"max_memory": {0: 4 * 2**30, 1: 4 * 2**30}, "retained_rows": 8}
     ns["resolve_unsloth_device_map"](
         "unsloth",
         "unsloth/Qwen3-0.6B",
-        planner_kwargs = caller_kwargs,
+        planner_kwargs=caller_kwargs,
     )
     assert caller_kwargs == {"max_memory": {0: 4 * 2**30, 1: 4 * 2**30}, "retained_rows": 8}
 
@@ -346,7 +346,7 @@ def test_the_legacy_diffusion_alias_declines_planning_with_its_own_reason():
     unknown-model error and rewrites the type in memory. The planner is given a name, not a
     config, so it rebuilds from the checkpoint and hits the same error -- reported as a
     generic planning failure. It has to say what actually happened."""
-    source = open(os.path.join(MODELS, "diffusion.py"), encoding = "utf-8").read()
+    source = open(os.path.join(MODELS, "diffusion.py"), encoding="utf-8").read()
     tree = ast.parse(source)
 
     assert (
@@ -378,16 +378,16 @@ def test_the_caller_max_memory_keys_are_the_devices_the_load_may_use():
     `_init_infer_auto_device_map` takes `devices = list(max_memory.keys())` and
     `get_max_memory` never widens the mapping back out -- so overlaying the caps onto every
     visible card left the planner free to place weights on the two they had withheld."""
-    planner = _Recorder(plan = _Plan())
+    planner = _Recorder(plan=_Plan())
     ns = _build(
-        devices = 4,
-        free = {i: 16 * 2**30 for i in range(4)},
-        planner = planner,
+        devices=4,
+        free={i: 16 * 2**30 for i in range(4)},
+        planner=planner,
     )
     ns["resolve_unsloth_device_map"](
         "unsloth",
         "unsloth/Qwen3-0.6B",
-        planner_kwargs = {"max_memory": {0: "12GiB", 1: "12GiB"}},
+        planner_kwargs={"max_memory": {0: "12GiB", 1: "12GiB"}},
     )
     assert sorted(planner.calls[0][1]["max_memory"]) == [0, 1]
 
@@ -396,12 +396,12 @@ def test_a_device_the_caller_names_but_we_cannot_measure_survives():
     """`cpu` and `disk` are legitimate `max_memory` keys and there is no `mem_get_info` for
     them, so an intersection that kept only measured devices would silently delete the
     offload targets the caller set up."""
-    planner = _Recorder(plan = _Plan())
-    ns = _build(free = {0: 8 * 2**30, 1: 8 * 2**30}, planner = planner)
+    planner = _Recorder(plan=_Plan())
+    ns = _build(free={0: 8 * 2**30, 1: 8 * 2**30}, planner=planner)
     ns["resolve_unsloth_device_map"](
         "unsloth",
         "unsloth/Qwen3-0.6B",
-        planner_kwargs = {
+        planner_kwargs={
             "max_memory": {0: "4GiB", 1: "4GiB", "cpu": "30GiB", "disk": "unreadable"},
         },
     )
@@ -415,12 +415,12 @@ def test_a_device_the_caller_names_but_we_cannot_measure_survives():
 def test_an_empty_max_memory_is_not_a_request_to_use_no_devices():
     """`{}` carries no device set to honour, and reading it as one would leave the planner
     with nothing to place on."""
-    planner = _Recorder(plan = _Plan())
-    ns = _build(free = {0: 8 * 2**30, 1: 8 * 2**30}, planner = planner)
+    planner = _Recorder(plan=_Plan())
+    ns = _build(free={0: 8 * 2**30, 1: 8 * 2**30}, planner=planner)
     ns["resolve_unsloth_device_map"](
         "unsloth",
         "unsloth/Qwen3-0.6B",
-        planner_kwargs = {"max_memory": {}},
+        planner_kwargs={"max_memory": {}},
     )
     assert sorted(planner.calls[0][1]["max_memory"]) == [0, 1]
 
@@ -456,7 +456,7 @@ def test_a_prequantized_hybrid_checkpoint_declines_rather_than_mis_sizing_mamba(
     for bitsandbytes, so a prequantized checkpoint is sized by the list in its own
     config.json no matter what the loader passes. The mamba exclusions the load adds
     afterwards would then be charged at 4bit while the load keeps them dense."""
-    source = open(os.path.join(MODELS, "llama.py"), encoding = "utf-8").read()
+    source = open(os.path.join(MODELS, "llama.py"), encoding="utf-8").read()
     tree = ast.parse(source)
 
     guard_line = None
@@ -492,12 +492,12 @@ def test_a_prequantized_hybrid_checkpoint_declines_rather_than_mis_sizing_mamba(
 def test_gpus_the_caller_withheld_are_never_probed():
     """`mem_get_info` initialises a CUDA context on each device it touches, and a card the
     caller withheld is very likely busy with the workload they withheld it for."""
-    planner = _Recorder(plan = _Plan())
-    ns = _build(devices = 4, free = {i: 16 * 2**30 for i in range(4)}, planner = planner)
+    planner = _Recorder(plan=_Plan())
+    ns = _build(devices=4, free={i: 16 * 2**30 for i in range(4)}, planner=planner)
     ns["resolve_unsloth_device_map"](
         "unsloth",
         "unsloth/Qwen3-0.6B",
-        planner_kwargs = {"max_memory": {0: "12GiB", 1: "12GiB"}},
+        planner_kwargs={"max_memory": {0: "12GiB", 1: "12GiB"}},
     )
     assert sorted(ns["_cuda"].probed) == [0, 1]
 
@@ -506,46 +506,46 @@ def test_a_refusing_card_outside_the_requested_set_does_not_cost_the_plan():
     """Dropping to "sequential" because GPU 3 is in Exclusive_Process mode is the wrong
     answer when the caller asked for GPUs 0 and 1 -- and "sequential" is the placement that
     then OOMs."""
-    planner = _Recorder(plan = _Plan())
+    planner = _Recorder(plan=_Plan())
     ns = _build(
-        devices = 4,
-        free = {i: 16 * 2**30 for i in range(4)},
-        planner = planner,
-        refuses = (2, 3),
+        devices=4,
+        free={i: 16 * 2**30 for i in range(4)},
+        planner=planner,
+        refuses=(2, 3),
     )
     resolved = ns["resolve_unsloth_device_map"](
         "unsloth",
         "unsloth/Qwen3-0.6B",
-        planner_kwargs = {"max_memory": {0: "12GiB", 1: "12GiB"}},
+        planner_kwargs={"max_memory": {0: "12GiB", 1: "12GiB"}},
     )
     assert resolved == _Plan.device_map
 
 
 def test_a_refusing_card_inside_the_requested_set_still_falls_back():
     """The guard is still needed for the cards the caller did ask for."""
-    planner = _Recorder(plan = _Plan())
+    planner = _Recorder(plan=_Plan())
     ns = _build(
-        devices = 4,
-        free = {i: 16 * 2**30 for i in range(4)},
-        planner = planner,
-        refuses = (1,),
+        devices=4,
+        free={i: 16 * 2**30 for i in range(4)},
+        planner=planner,
+        refuses=(1,),
     )
     resolved = ns["resolve_unsloth_device_map"](
         "unsloth",
         "unsloth/Qwen3-0.6B",
-        planner_kwargs = {"max_memory": {0: "12GiB", 1: "12GiB"}},
+        planner_kwargs={"max_memory": {0: "12GiB", 1: "12GiB"}},
     )
     assert resolved == "sequential"
 
 
 def test_restricting_to_one_gpu_is_not_a_multi_gpu_plan():
     """A single-card device set has nothing to split across, and the planner is not asked."""
-    planner = _Recorder(plan = _Plan())
-    ns = _build(devices = 4, free = {i: 16 * 2**30 for i in range(4)}, planner = planner)
+    planner = _Recorder(plan=_Plan())
+    ns = _build(devices=4, free={i: 16 * 2**30 for i in range(4)}, planner=planner)
     resolved = ns["resolve_unsloth_device_map"](
         "unsloth",
         "unsloth/Qwen3-0.6B",
-        planner_kwargs = {"max_memory": {0: "12GiB"}},
+        planner_kwargs={"max_memory": {0: "12GiB"}},
     )
     assert resolved == "sequential"
     assert planner.calls == []

@@ -59,7 +59,7 @@ class _BlockedSocket(socket.socket):
         return super().connect_ex(address)
 
 
-@pytest.fixture(autouse = True)
+@pytest.fixture(autouse=True)
 def network_blocker():
     """Swap socket.socket for the blocker, restored after each test.
 
@@ -82,12 +82,12 @@ def network_blocker():
         socket.socket = original  # type: ignore[assignment]
 
 
-@pytest.fixture(scope = "session")
+@pytest.fixture(scope="session")
 def repo_root() -> Path:
     return REPO_ROOT
 
 
-@pytest.fixture(scope = "session")
+@pytest.fixture(scope="session")
 def fixtures_dir() -> Path:
     return Path(__file__).resolve().parent / "fixtures"
 
@@ -106,7 +106,7 @@ def fixtures_dir() -> Path:
 _GENERATED_ARCHIVES = ("malicious_wheel.whl", "clean_wheel.whl", "malicious_sdist.tar.gz")
 
 
-@pytest.fixture(scope = "session", autouse = True)
+@pytest.fixture(scope="session", autouse=True)
 def _build_archive_fixtures() -> None:
     """Build the wheel/sdist fixtures into `fixtures/` before any test reads them.
 

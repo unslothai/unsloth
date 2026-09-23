@@ -48,6 +48,7 @@ try:
         estimate_gguf_export_bytes,
         kaggle_tmp_redirect,
     )
+
     HAS_ZOO_DISK_UTILS = True
 
 except ImportError:
@@ -94,7 +95,7 @@ except ImportError:
         except Exception:
             return None
 
-    def logical_numel(param, name = ""):
+    def logical_numel(param, name=""):
         # Packed storage cannot be unpacked without the zoo's knowledge of the packing schemes, so report
         # what numel() says, exactly as the code did before it asked. Barely reachable: model_16bit_bytes
         # is 0 here and every caller returns before sizing anything.

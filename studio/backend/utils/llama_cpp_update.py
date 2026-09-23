@@ -82,21 +82,22 @@ def _find_binary() -> Optional[str]:
     """Locate the active llama-server via the inference backend's own resolver, so update targets exactly what Unsloth runs. Lazy import keeps the heavy inference module off this import path."""
     try:
         from core.inference.llama_cpp import LlamaCppBackend
+
         return LlamaCppBackend._find_llama_server_binary()
     except Exception as exc:  # pragma: no cover - defensive
-        logger.debug("llama update: binary discovery failed", error = str(exc))
+        logger.debug("llama update: binary discovery failed", error=str(exc))
         return None
 
 
 def _install_dir_for(binary_path: Optional[str]) -> Optional[Path]:
     """The directory holding UNSLOTH_PREBUILT_INFO.json, i.e. the install root install_llama_prebuilt.py wrote and the one we re-install into."""
-    return _flow.install_dir_for(binary_path, marker_name = _INSTALL_MARKER_NAME)
+    return _flow.install_dir_for(binary_path, marker_name=_INSTALL_MARKER_NAME)
 
 
 def _installer_script() -> Optional[Path]:
     """Locate install_llama_prebuilt.py (UNSLOTH_LLAMA_INSTALLER wins)."""
     return _flow.find_installer_script(
-        env_var = "UNSLOTH_LLAMA_INSTALLER", script_name = "install_llama_prebuilt.py"
+        env_var="UNSLOTH_LLAMA_INSTALLER", script_name="install_llama_prebuilt.py"
     )
 
 
@@ -108,10 +109,10 @@ _resolve_memo: dict = {}
 def _resolve_prebuilt_for_host(*, force_refresh: bool = False) -> Optional[dict]:
     """Run install_llama_prebuilt.py --resolve-prebuilt (no download) -> {prebuilt_available, repo, release_tag, llama_tag, asset, install_kind} or None. Fail-open: any error -> None so a source build never blocks the app."""
     return _flow.resolve_prebuilt_for_host(
-        force_refresh = force_refresh,
-        memo = _resolve_memo,
-        installer_script = lambda: _installer_script(),
-        log_message = "llama update: resolve-prebuilt failed",
+        force_refresh=force_refresh,
+        memo=_resolve_memo,
+        installer_script=lambda: _installer_script(),
+        log_message="llama update: resolve-prebuilt failed",
     )
 
 
@@ -122,11 +123,11 @@ def _installed_build_number(binary: Optional[str]) -> Optional[int]:
     try:
         proc = subprocess.run(
             [binary, "--version"],
-            capture_output = True,
-            text = True,
-            encoding = "utf-8",
-            errors = "replace",
-            timeout = 20,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=20,
         )
     except Exception:  # pragma: no cover - defensive
         return None
@@ -161,16 +162,16 @@ def _llama_install_root(binary: Optional[str]) -> Optional[Path]:
     """The Unsloth-managed llama.cpp root the active binary lives under, or None when unmanaged (see update_flow.managed_install_root)."""
     return _flow.managed_install_root(
         binary,
-        marker_root = _install_dir_for(binary),
-        server_path_var = "LLAMA_SERVER_PATH",
-        cpp_path_var = "UNSLOTH_LLAMA_CPP_PATH",
-        dir_name = "llama.cpp",
+        marker_root=_install_dir_for(binary),
+        server_path_var="LLAMA_SERVER_PATH",
+        cpp_path_var="UNSLOTH_LLAMA_CPP_PATH",
+        dir_name="llama.cpp",
     )
 
 
 def _source_build_status(binary: str, *, force_refresh: bool) -> Optional[dict]:
     """Update status for a markerless (source-build) install: offer the official prebuilt when one exists for this host and is newer. None -> caller falls through to the no-marker default (unsupported)."""
-    res = _resolve_prebuilt_for_host(force_refresh = force_refresh)
+    res = _resolve_prebuilt_for_host(force_refresh=force_refresh)
     if not res or not res.get("prebuilt_available"):
         return None
     # llama_tag is the upstream bNNNN base whose numeric part matches --version's build field; release_tag is the full tag, either a same-base mix (bNNNN-mix-<sha>) or a fork wrapper (e.g. v1.0). Compare the numeric base against llama_tag.
@@ -209,11 +210,11 @@ def _source_build_status(binary: str, *, force_refresh: bool) -> Optional[dict]:
         asset_name = res.get("asset")
         if isinstance(asset_name, str) and asset_name:
             try:
-                assets = latest_release_assets(res.get("repo"), force_refresh = force_refresh)
+                assets = latest_release_assets(res.get("repo"), force_refresh=force_refresh)
                 if assets:
                     update_size_bytes = assets.get(asset_name)
             except Exception as exc:  # pragma: no cover - network defensive
-                logger.debug("llama update: source-build size lookup failed", error = str(exc))
+                logger.debug("llama update: source-build size lookup failed", error=str(exc))
     with _job_lock:
         job = dict(_job)
     return {
@@ -233,13 +234,14 @@ def _source_build_status(binary: str, *, force_refresh: bool) -> Optional[dict]:
 
 def _active_install_is_local_link(binary: Optional[str]) -> bool:
     """True when the active llama-server resolves through a --with-llama-cpp-dir local link at the canonical llama.cpp directory (update_flow.active_install_is_local_link)."""
-    return _flow.active_install_is_local_link(binary, dir_name = "llama.cpp")
+    return _flow.active_install_is_local_link(binary, dir_name="llama.cpp")
 
 
 def _studio_custom_path_active() -> bool:
     """True when Settings, rather than the managed installer, owns the runtime."""
     try:
         from utils.llama_cpp_path_settings import custom_llama_cpp_path_source
+
         return custom_llama_cpp_path_source() == "studio"
     except Exception:
         return False
@@ -256,12 +258,13 @@ def _whisper_chain_status(
     """Whisper's piggyback plan for the combined update item (whisper_cpp_update.chained_phase_plan). None disables the piggyback: fail-open so whisper can never break the llama status or apply."""
     try:
         from utils import whisper_cpp_update
+
         return whisper_cpp_update.chained_phase_plan(
-            force_refresh = force_refresh,
-            paired_llama_will_update = paired_llama_will_update,
+            force_refresh=force_refresh,
+            paired_llama_will_update=paired_llama_will_update,
         )
     except Exception as exc:  # pragma: no cover - defensive
-        logger.debug("llama update: whisper piggyback probe failed", error = str(exc))
+        logger.debug("llama update: whisper piggyback probe failed", error=str(exc))
         return None
 
 
@@ -269,8 +272,8 @@ def _merge_whisper_status(status: dict, *, force_refresh: bool = False) -> dict:
     """Fold the whisper sub-status into the llama payload: the llama update item is the single UI surface, so update_available becomes the union (llama behind OR whisper behind) while llama_update_available keeps the llama-only flag. All pre-existing top-level fields are preserved."""
     status["llama_update_available"] = bool(status.get("update_available"))
     plan = _whisper_chain_status(
-        force_refresh = force_refresh,
-        paired_llama_will_update = status["llama_update_available"],
+        force_refresh=force_refresh,
+        paired_llama_will_update=status["llama_update_available"],
     )
     if plan is None:
         status["whisper"] = None
@@ -299,8 +302,8 @@ def _merge_whisper_status(status: dict, *, force_refresh: bool = False) -> dict:
 
 def get_update_status(*, force_refresh: bool = False) -> dict:
     """Report whether an update is available plus the job state. This is the single main update item: llama.cpp drives it and the whisper piggyback is folded in (_merge_whisper_status). force_refresh bypasses the 24h release cache for an explicit "check now"."""
-    status = _llama_only_status(force_refresh = force_refresh)
-    return _merge_whisper_status(status, force_refresh = force_refresh)
+    status = _llama_only_status(force_refresh=force_refresh)
+    return _merge_whisper_status(status, force_refresh=force_refresh)
 
 
 def get_update_changelog(
@@ -346,16 +349,16 @@ def get_update_changelog(
             repo,
             installed_full,
             latest,
-            force_refresh = force_refresh,
+            force_refresh=force_refresh,
         )
     except Exception as exc:  # pragma: no cover - defensive
-        logger.debug("llama changelog comparison failed", error = str(exc))
+        logger.debug("llama changelog comparison failed", error=str(exc))
         result = None
     if result is None:
         try:
             empty["error"] = unavailable_reason(repo, installed_full, latest)
         except Exception as exc:  # pragma: no cover - defensive
-            logger.debug("llama changelog reason lookup failed", error = str(exc))
+            logger.debug("llama changelog reason lookup failed", error=str(exc))
             empty["error"] = "release_notes_unavailable"
         return empty
     return {**empty, **result, "matched": True}
@@ -385,7 +388,7 @@ def _llama_only_status(
         and not checks_disabled
         and (not job_running or allow_source_probe_while_running)
     ):
-        src = _source_build_status(binary, force_refresh = force_refresh)
+        src = _source_build_status(binary, force_refresh=force_refresh)
         if src is not None:
             return src
 
@@ -393,9 +396,9 @@ def _llama_only_status(
 
     if force_refresh and repo and not checks_disabled:
         try:
-            latest_published_release(repo, force_refresh = True)
+            latest_published_release(repo, force_refresh=True)
         except Exception as exc:  # pragma: no cover - network defensive
-            logger.debug("llama update: force refresh failed", error = str(exc))
+            logger.debug("llama update: force refresh failed", error=str(exc))
 
     freshness = check_prebuilt_freshness(binary)
     installed = freshness.get("installed_tag")
@@ -411,16 +414,16 @@ def _llama_only_status(
                 marker,
                 latest,
                 freshness.get("published_repo") or repo,
-                force_refresh = force_refresh,
+                force_refresh=force_refresh,
             )
         except Exception as exc:  # pragma: no cover - network defensive
-            logger.debug("llama update: size lookup failed", error = str(exc))
+            logger.debug("llama update: size lookup failed", error=str(exc))
 
     # An automatic install whose detection now resolves elsewhere; nothing else surfaces it. Skipped while a job runs, and when an update is offered: that update re-detects.
     to_backend = (
         None
         if job_running or update_available or checks_disabled
-        else _pending_backend_migration(binary, marker, force_refresh = force_refresh)
+        else _pending_backend_migration(binary, marker, force_refresh=force_refresh)
     )
 
     with _job_lock:
@@ -461,13 +464,13 @@ def _resolve_backends_for_host(
     if published_repo:
         args.extend(("--published-repo", published_repo))
     return _flow.resolve_prebuilt_for_host(
-        force_refresh = force_refresh,
-        memo = _backends_memo,
-        installer_script = lambda: _installer_script(),
-        log_message = "llama backend: resolve-backends failed",
-        mode = ("--resolve-backends", "latest"),
-        extra_args = tuple(args),
-        extra_env = {"UNSLOTH_ROCM_GFX_REMEMBERED": rocm_gfx} if rocm_gfx else None,
+        force_refresh=force_refresh,
+        memo=_backends_memo,
+        installer_script=lambda: _installer_script(),
+        log_message="llama backend: resolve-backends failed",
+        mode=("--resolve-backends", "latest"),
+        extra_args=tuple(args),
+        extra_env={"UNSLOTH_ROCM_GFX_REMEMBERED": rocm_gfx} if rocm_gfx else None,
     )
 
 
@@ -555,9 +558,9 @@ def _pending_backend_migration(
     repo = marker.get("published_repo") or DEFAULT_PUBLISHED_REPO
     resolved = _resolve_backends_for_host(
         _install_dir_for(binary),
-        force_refresh = force_refresh,
-        published_repo = repo,
-        rocm_gfx = _remembered_rocm_gfx(marker),
+        force_refresh=force_refresh,
+        published_repo=repo,
+        rocm_gfx=_remembered_rocm_gfx(marker),
     )
     if not resolved:
         return None
@@ -602,10 +605,10 @@ def get_backend_status(*, force_refresh: bool = False) -> dict:
     repo = (marker or {}).get("published_repo") or DEFAULT_PUBLISHED_REPO
     resolved = _resolve_backends_for_host(
         _install_dir_for(binary),
-        force_refresh = force_refresh,
-        published_repo = repo,
+        force_refresh=force_refresh,
+        published_repo=repo,
         # The same recovery the update-status path uses, or the picker describes a different host: no arch here reads an AMD box with no probes as CPU-only, so Settings offers an Automatic that installs something else.
-        rocm_gfx = _remembered_rocm_gfx(marker),
+        rocm_gfx=_remembered_rocm_gfx(marker),
     )
     if not resolved:
         status["reason"] = "unresolved"
@@ -613,9 +616,9 @@ def get_backend_status(*, force_refresh: bool = False) -> dict:
         return status
     assets = None
     try:
-        assets = latest_release_assets(repo, force_refresh = force_refresh)
+        assets = latest_release_assets(repo, force_refresh=force_refresh)
     except Exception as exc:  # pragma: no cover - network defensive
-        logger.debug("llama backend: asset size lookup failed", error = str(exc))
+        logger.debug("llama backend: asset size lookup failed", error=str(exc))
     options = _backend_options(resolved, assets)
     status["options"] = options
     status["selection_applied"] = _selection_applied(
@@ -646,10 +649,11 @@ def _run_llama_phase(
     try:
         try:
             from routes.inference import get_llama_cpp_backend
+
             backend = get_llama_cpp_backend()
         except Exception as exc:
             logger.debug(
-                "llama update: backend unavailable, skipping load coordination", error = str(exc)
+                "llama update: backend unavailable, skipping load coordination", error=str(exc)
             )
             backend = None
 
@@ -661,7 +665,7 @@ def _run_llama_phase(
                         model_was_active = True
                         backend.unload_model()
             except Exception as exc:
-                logger.debug("llama update: load coordination failed", error = str(exc))
+                logger.debug("llama update: load coordination failed", error=str(exc))
 
         # The mtmd dictation sidecar serves Qwen3-ASR from this same llama-server out of this same tree, so a live one locks the exe on Windows and a concurrent load would start against a half-swapped install.
         model_was_active = _block_mtmd_sidecar(mtmd_guard) or model_was_active
@@ -681,8 +685,8 @@ def _run_llama_phase(
         cmd.extend(_rocm_install_args(asset))
         if backend_request is not None:
             cmd.extend(["--llama-backend", backend_request])
-        logger.info("llama update: installing", cmd = " ".join(cmd))
-        env = dict(os.environ, UNSLOTH_PROGRESS_PERCENT_STEP = "5")
+        logger.info("llama update: installing", cmd=" ".join(cmd))
+        env = dict(os.environ, UNSLOTH_PROGRESS_PERCENT_STEP="5")
         if backend_request is not None:
             env.pop("UNSLOTH_FORCE_VULKAN", None)
             env["UNSLOTH_LLAMA_CPP_BACKEND"] = backend_request
@@ -692,17 +696,17 @@ def _run_llama_phase(
         _flow.stream_installer(
             cmd,
             env,
-            set_progress = set_progress,
-            timeout_seconds = _INSTALL_TIMEOUT_SECONDS,
+            set_progress=set_progress,
+            timeout_seconds=_INSTALL_TIMEOUT_SECONDS,
         )
 
         # Drop stale caches so the banner re-checks the swapped marker. If GitHub is offline, latest stays unknown and the banner fails open.
-        reset_caches(drop_disk = True)
+        reset_caches(drop_disk=True)
         _backends_memo.clear()
         try:
-            latest_published_release(repo, force_refresh = True)
+            latest_published_release(repo, force_refresh=True)
         except Exception as exc:  # pragma: no cover - network defensive
-            logger.debug("llama update: post-install freshness refresh failed", error = str(exc))
+            logger.debug("llama update: post-install freshness refresh failed", error=str(exc))
         new_marker = read_install_marker(_find_binary())
         new_tag = (new_marker or {}).get("release_tag") or (new_marker or {}).get("tag")
         new_backend = marker_backend(new_marker)
@@ -740,10 +744,10 @@ def _run_llama_phase(
         migration_kept = bool(migration_target) and new_backend != migration_target
         logger.info(
             "llama update: success",
-            to_tag = new_tag,
-            backend = new_backend,
-            kept_existing = kept_existing,
-            migration_applied = None if not migration_target else not migration_kept,
+            to_tag=new_tag,
+            backend=new_backend,
+            kept_existing=kept_existing,
+            migration_applied=None if not migration_target else not migration_kept,
         )
         reload_hint = " Reload your model to use it." if model_was_active else ""
         if migration_kept:
@@ -775,7 +779,7 @@ def _run_llama_phase(
             raise _LlamaPhaseError(
                 "Not enough disk space to install llama.cpp. Free up space or point "
                 "UNSLOTH_STUDIO_HOME/TMPDIR at a larger volume, then retry.",
-                reload_required = model_was_active,
+                reload_required=model_was_active,
             ) from exc
         if exc.returncode == _EXIT_BACKEND_UNAVAILABLE:
             failed_backend = backend_request or _env_backend_override()
@@ -788,20 +792,20 @@ def _run_llama_phase(
             # The reason, as every sibling branch does: otherwise the record is "null".
             logger.warning(
                 "llama update: backend unavailable",
-                backend = failed_backend,
-                error = str(exc),
+                backend=failed_backend,
+                error=str(exc),
             )
             raise _LlamaPhaseError(
                 f"Could not install a {backend_label}llama.cpp build on this machine. "
                 "The installed backend was kept.",
-                reload_required = model_was_active,
+                reload_required=model_was_active,
             ) from exc
         if exc.returncode == _EXIT_FALLBACK:
             message = str(exc)
             # Same predicate the formatter uses: exit 2 also carries failures like a rate-limited huggingface.co validation-model fetch, which GH_TOKEN cannot fix.
             if _flow.is_github_rate_limit_text(message):
                 token_present = _flow.github_token_present(env)
-                logger.warning("llama update: GitHub rate limit", authenticated = token_present)
+                logger.warning("llama update: GitHub rate limit", authenticated=token_present)
                 advice = (
                     "Wait for the limit to reset and try again."
                     if token_present
@@ -810,22 +814,22 @@ def _run_llama_phase(
                 raise _LlamaPhaseError(
                     "Could not update llama.cpp: GitHub is rate-limiting release downloads. "
                     f"{advice}",
-                    reload_required = model_was_active,
+                    reload_required=model_was_active,
                 ) from exc
-            logger.warning("llama update: prebuilt fallback", error = message)
+            logger.warning("llama update: prebuilt fallback", error=message)
             detail = message.split(": ", 1)[-1] if ": " in message else message
             raise _LlamaPhaseError(
                 f"Could not update llama.cpp from the prebuilt bundle. {detail}",
-                reload_required = model_was_active,
+                reload_required=model_was_active,
             ) from exc
-        logger.warning("llama update: failed", error = str(exc))
-        raise _LlamaPhaseError(str(exc), reload_required = model_was_active) from exc
+        logger.warning("llama update: failed", error=str(exc))
+        raise _LlamaPhaseError(str(exc), reload_required=model_was_active) from exc
     except Exception as exc:
-        logger.warning("llama update: failed", error = str(exc))
+        logger.warning("llama update: failed", error=str(exc))
         if isinstance(exc, _LlamaPhaseError):
             raise
         if model_was_active:
-            raise _LlamaPhaseError(str(exc), reload_required = True) from exc
+            raise _LlamaPhaseError(str(exc), reload_required=True) from exc
         raise
     finally:
         mtmd_guard.close()
@@ -840,9 +844,10 @@ def _block_mtmd_sidecar(stack: ExitStack) -> bool:
     """Hold the mtmd sidecar's maintenance guard for the install, if it exists. Unlike whisper.cpp this is not fail-closed: llama.cpp updates predate this sidecar and must keep working where dictation cannot even be imported. Returns whether a warm dictation server had to be unloaded."""
     try:
         from core.inference.stt_mtmd_sidecar import get_mtmd_stt_sidecar
+
         return stack.enter_context(get_mtmd_stt_sidecar().update_maintenance())
     except Exception as exc:  # noqa: BLE001 - the update proceeds without it
-        logger.debug("llama update: mtmd coordination failed", error = str(exc))
+        logger.debug("llama update: mtmd coordination failed", error=str(exc))
         return False
 
 
@@ -900,8 +905,8 @@ def _plan_llama_phase(backend_request: Optional[str] = None) -> dict:
             {}
             if backend_request is not None
             else _llama_only_status(
-                force_refresh = True,
-                allow_source_probe_while_running = True,
+                force_refresh=True,
+                allow_source_probe_while_running=True,
             )
         )
         if backend_request is None and not status.get("update_available"):
@@ -947,7 +952,7 @@ def _plan_llama_phase(backend_request: Optional[str] = None) -> dict:
         }
     else:
         # Source build / custom path: only proceed when the same detection logic would offer the update (prebuilt exists, install is behind, root is manageable), so a direct POST cannot downgrade a newer source build.
-        src = _source_build_status(binary, force_refresh = True) if binary else None
+        src = _source_build_status(binary, force_refresh=True) if binary else None
         if src is None:
             return {
                 "skip_reason": "no_prebuilt_available",
@@ -1054,7 +1059,7 @@ def start_backend_switch(backend: str) -> dict:
             "job": job,
         }
 
-    return _start_llama_job(backend_request = normalized)
+    return _start_llama_job(backend_request=normalized)
 
 
 def _update_can_move_the_backend(llama_will_run: bool) -> bool:
@@ -1068,6 +1073,7 @@ def _repair_pairing_plan_or_empty(llama_will_run: bool, llama_skip_reason: Optio
     """The slim re-pair plan, or {} when there is nothing to re-pair against."""
     try:
         from utils import whisper_cpp_update
+
         if not llama_will_run:
             if llama_skip_reason != "already_selected":
                 return {}
@@ -1075,7 +1081,7 @@ def _repair_pairing_plan_or_empty(llama_will_run: bool, llama_skip_reason: Optio
                 return {}
         return whisper_cpp_update.repair_pairing_plan()
     except Exception as exc:  # pragma: no cover - defensive
-        logger.debug("llama switch: whisper repair probe failed", error = str(exc))
+        logger.debug("llama switch: whisper repair probe failed", error=str(exc))
         return {}
 
 
@@ -1090,7 +1096,7 @@ def _whisper_phase_plan(
     # A migration is switch-shaped but update-behaved, so whisper needs the chained plan: the repair-only branch has no phase for a self-contained install and drops updates.
     if backend_request is None or migration:
         chained = (
-            _whisper_chain_status(force_refresh = True, paired_llama_will_update = llama_will_run) or {}
+            _whisper_chain_status(force_refresh=True, paired_llama_will_update=llama_will_run) or {}
         )
         if chained.get("phase") is not None:
             return chained
@@ -1106,23 +1112,23 @@ def _whisper_phase_plan(
 def _claim_operation(backend_request: Optional[str]) -> bool:
     """Reserve the operation and publish its planning state atomically."""
     with _job_lock:
-        if not _operation_lock.acquire(blocking = False):
+        if not _operation_lock.acquire(blocking=False):
             return False
         if _job["state"] == _JOB_RUNNING:
             _operation_lock.release()
             return False
         _job.update(_flow.new_job())
         _job.update(
-            state = _JOB_RUNNING,
-            operation = "switch" if backend_request is not None else "update",
-            requested_backend = backend_request,
-            message = (
+            state=_JOB_RUNNING,
+            operation="switch" if backend_request is not None else "update",
+            requested_backend=backend_request,
+            message=(
                 f"Checking the {backend_request} llama.cpp build..."
                 if backend_request is not None
                 else "Checking for llama.cpp updates..."
             ),
-            progress = 0.0,
-            started_at = _utcnow(),
+            progress=0.0,
+            started_at=_utcnow(),
         )
     return True
 
@@ -1132,11 +1138,11 @@ def _finish_planning_refusal(reason: str, message: str) -> dict:
     succeeded = reason in {"up_to_date", "already_selected"}
     with _job_lock:
         _job.update(
-            state = _JOB_SUCCESS if succeeded else _JOB_ERROR,
-            message = message,
-            error = None if succeeded else message,
-            progress = 1.0 if succeeded else None,
-            finished_at = _utcnow(),
+            state=_JOB_SUCCESS if succeeded else _JOB_ERROR,
+            message=message,
+            error=None if succeeded else message,
+            progress=1.0 if succeeded else None,
+            finished_at=_utcnow(),
         )
         job = dict(_job)
     return {"started": False, "reason": reason, "message": message, "job": job}
@@ -1145,15 +1151,15 @@ def _finish_planning_refusal(reason: str, message: str) -> dict:
 def _run_claimed_job(phases: list[dict]) -> None:
     """Run a planned job and always release its full-operation reservation."""
     try:
-        _flow.run_chained_update(phases, job = _job, job_lock = _job_lock)
+        _flow.run_chained_update(phases, job=_job, job_lock=_job_lock)
     except Exception as exc:  # pragma: no cover - phase failures are handled inside the runner
-        logger.exception("llama update: job runner failed", error = str(exc))
+        logger.exception("llama update: job runner failed", error=str(exc))
         with _job_lock:
             _job.update(
-                state = _JOB_ERROR,
-                message = "llama.cpp install failed.",
-                error = str(exc),
-                finished_at = _utcnow(),
+                state=_JOB_ERROR,
+                message="llama.cpp install failed.",
+                error=str(exc),
+                finished_at=_utcnow(),
             )
     finally:
         _operation_lock.release()
@@ -1181,14 +1187,14 @@ def _start_llama_job(backend_request: Optional[str] = None) -> dict:
             migration = True
             backend_request = llama_spec["backend_request"]
             with _job_lock:
-                _job.update(requested_backend = backend_request)
+                _job.update(requested_backend=backend_request)
         if backend_request is not None and llama_spec is not None:
             resolved = _resolve_backends_for_host(
                 llama_spec["install_dir"],
-                force_refresh = True,
-                published_repo = llama_spec["repo"],
+                force_refresh=True,
+                published_repo=llama_spec["repo"],
                 # Same replay the status path uses: without it this re-probe resolves "auto" to CPU and the offered migration refuses as already_selected.
-                rocm_gfx = llama_spec.get("rocm_gfx"),
+                rocm_gfx=llama_spec.get("rocm_gfx"),
             )
             if not resolved:
                 return _finish_planning_refusal(
@@ -1222,9 +1228,9 @@ def _start_llama_job(backend_request: Optional[str] = None) -> dict:
 
         whisper_plan = _whisper_phase_plan(
             backend_request,
-            llama_will_run = llama_spec is not None,
-            llama_skip_reason = llama_plan.get("skip_reason"),
-            migration = migration,
+            llama_will_run=llama_spec is not None,
+            llama_skip_reason=llama_plan.get("skip_reason"),
+            migration=migration,
         )
         whisper_spec = (whisper_plan or {}).get("phase")
         if llama_spec is None and whisper_spec is None:
@@ -1235,6 +1241,7 @@ def _start_llama_job(backend_request: Optional[str] = None) -> dict:
         whisper_run = None
         if whisper_spec is not None:
             from utils import whisper_cpp_update as _whisper
+
             whisper_run = (
                 (lambda set_progress: _whisper.run_repair_phase(whisper_spec, set_progress))
                 if whisper_spec.get("repair")
@@ -1266,10 +1273,10 @@ def _start_llama_job(backend_request: Optional[str] = None) -> dict:
                             llama_spec["script"],
                             llama_spec["pin_release_tag"],
                             set_progress,
-                            llama_backend = llama_spec.get("llama_backend"),
-                            rocm_gfx = llama_spec.get("rocm_gfx"),
-                            backend_request = llama_spec.get("backend_request"),
-                            migration_target = llama_spec.get("migration_target"),
+                            llama_backend=llama_spec.get("llama_backend"),
+                            rocm_gfx=llama_spec.get("rocm_gfx"),
+                            backend_request=llama_spec.get("backend_request"),
+                            migration_target=llama_spec.get("migration_target"),
                         )
                     )
                     if llama_spec
@@ -1304,26 +1311,26 @@ def _start_llama_job(backend_request: Optional[str] = None) -> dict:
 
         with _job_lock:
             _job.update(
-                message = starting_message,
-                from_tag = (llama_spec or {}).get("from_tag"),
+                message=starting_message,
+                from_tag=(llama_spec or {}).get("from_tag"),
             )
             job_snapshot = dict(_job)
 
         thread = threading.Thread(
-            target = _run_claimed_job,
-            args = (phases,),
-            name = "llama-cpp-backend-switch" if backend_request else "llama-cpp-update",
-            daemon = True,
+            target=_run_claimed_job,
+            args=(phases,),
+            name="llama-cpp-backend-switch" if backend_request else "llama-cpp-update",
+            daemon=True,
         )
         try:
             thread.start()
         except Exception as exc:  # pragma: no cover - interpreter resource failure
             with _job_lock:
                 _job.update(
-                    state = _JOB_ERROR,
-                    message = "Could not start the llama.cpp install worker.",
-                    error = str(exc),
-                    finished_at = _utcnow(),
+                    state=_JOB_ERROR,
+                    message="Could not start the llama.cpp install worker.",
+                    error=str(exc),
+                    finished_at=_utcnow(),
                 )
                 failed_job = dict(_job)
             return {
@@ -1337,10 +1344,10 @@ def _start_llama_job(backend_request: Optional[str] = None) -> dict:
     except Exception as exc:
         with _job_lock:
             _job.update(
-                state = _JOB_ERROR,
-                message = "Could not plan the llama.cpp install.",
-                error = str(exc),
-                finished_at = _utcnow(),
+                state=_JOB_ERROR,
+                message="Could not plan the llama.cpp install.",
+                error=str(exc),
+                finished_at=_utcnow(),
             )
         raise
     finally:

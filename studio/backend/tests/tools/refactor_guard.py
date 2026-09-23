@@ -119,7 +119,7 @@ def ast_inventory() -> dict:
     inventory = {}
     for mod_name, path in GUARDED_MODULES.items():
         detailed = mod_name in BEHAVIOUR_MODULES
-        tree = ast.parse(path.read_text(encoding = "utf-8"))
+        tree = ast.parse(path.read_text(encoding="utf-8"))
         symbols = {}
         for node in tree.body:
             if not detailed:
@@ -364,21 +364,25 @@ def _gemma_argument_body(text: str) -> str:
 
 def _parser_first_sentinel(text: str):
     from core.inference import tool_call_parser
+
     return tool_call_parser._first_sentinel(text, 0)
 
 
 def _parser_first_foreign_signal(text: str):
     from core.inference import tool_call_parser
+
     return tool_call_parser._first_foreign_tool_signal(text)
 
 
 def _tool_healing_build_markers(text: str):
     from core import tool_healing
+
     return tool_healing._build_markers(text)
 
 
 def _tool_healing_all_pats():
     from core import tool_healing
+
     return tool_healing._TOOL_ALL_PATS
 
 
@@ -444,7 +448,7 @@ def _drive(func, text: str):
 
     if len(combos) > 1:
         # Tagged: plenty of guarded functions return a dict of their own.
-        return {_VARIANTS_KEY: {json.dumps(c, sort_keys = True): _call(c) for c in combos}}
+        return {_VARIANTS_KEY: {json.dumps(c, sort_keys=True): _call(c) for c in combos}}
     return _call(combos[0])
 
 
@@ -502,7 +506,7 @@ def golden_outputs(corpus) -> dict:
 
 
 def _digest(value) -> str:
-    payload = json.dumps(value, sort_keys = True, ensure_ascii = False, default = repr)
+    payload = json.dumps(value, sort_keys=True, ensure_ascii=False, default=repr)
     return hashlib.sha256(payload.encode()).hexdigest()
 
 
@@ -583,12 +587,12 @@ _PATCH_TARGET_RE = re.compile(
 )
 
 
-def patch_targets(tests_dir = None) -> dict:
+def patch_targets(tests_dir=None) -> dict:
     """String patch targets found in the test suite, grouped by module."""
     tests_dir = tests_dir or (BACKEND_ROOT / "tests")
     targets = {}
     for path in sorted(tests_dir.rglob("test_*.py")):
-        for match in _PATCH_TARGET_RE.finditer(path.read_text(encoding = "utf-8", errors = "ignore")):
+        for match in _PATCH_TARGET_RE.finditer(path.read_text(encoding="utf-8", errors="ignore")):
             dotted = match.group(1)
             # ``as_posix``: the native form gives backslashes on Windows, so an identical
             # checkout would read as a changed inventory.
@@ -596,7 +600,7 @@ def patch_targets(tests_dir = None) -> dict:
     return targets
 
 
-def unresolvable_patch_targets(targets = None) -> list:
+def unresolvable_patch_targets(targets=None) -> list:
     """Targets that no longer resolve to an attribute of an importable module.
 
     Splits ``a.b.c`` at every dot: the longest importable prefix is the module, the
@@ -736,17 +740,17 @@ def twin_divergence(corpus) -> dict:
 
 
 def _write(name, payload):
-    BASELINE_DIR.mkdir(parents = True, exist_ok = True)
+    BASELINE_DIR.mkdir(parents=True, exist_ok=True)
     path = BASELINE_DIR / name
     path.write_text(
-        json.dumps(payload, indent = 2, sort_keys = True, ensure_ascii = False) + "\n",
-        encoding = "utf-8",
+        json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=False) + "\n",
+        encoding="utf-8",
     )
     return path
 
 
 def _read(name):
-    return json.loads((BASELINE_DIR / name).read_text(encoding = "utf-8"))
+    return json.loads((BASELINE_DIR / name).read_text(encoding="utf-8"))
 
 
 def _diff(
@@ -754,7 +758,7 @@ def _diff(
     old,
     new,
     *,
-    additions_matter = True,
+    additions_matter=True,
 ):
     """Report the first differing JSON path, which is enough to locate the change.
 
@@ -775,11 +779,11 @@ def _diff(
                 problems.append(f"{label}.{key}: REMOVED")
             else:
                 problems.extend(
-                    _diff(f"{label}.{key}", old[key], new[key], additions_matter = additions_matter)
+                    _diff(f"{label}.{key}", old[key], new[key], additions_matter=additions_matter)
                 )
     elif isinstance(old, list) and isinstance(new, list) and len(old) == len(new):
         for index, (a, b) in enumerate(zip(old, new)):
-            problems.extend(_diff(f"{label}[{index}]", a, b, additions_matter = additions_matter))
+            problems.extend(_diff(f"{label}[{index}]", a, b, additions_matter=additions_matter))
     elif (
         isinstance(old, list)
         and isinstance(new, list)
@@ -830,7 +834,7 @@ def _ast_problems() -> list:
             f"ast.{mod_name}",
             recorded.get(mod_name, {}),
             live.get(mod_name, {}),
-            additions_matter = mod_name in BEHAVIOUR_MODULES,
+            additions_matter=mod_name in BEHAVIOUR_MODULES,
         )
     return problems
 
@@ -861,7 +865,7 @@ def verify() -> int:
     # dropped, resolves fine and would otherwise pass.
     recorded = {target: sorted(tests) for target, tests in _read("patch_targets.json").items()}
     live = {target: sorted(tests) for target, tests in patch_targets().items()}
-    problems += _diff("patch-targets", recorded, live, additions_matter = False)
+    problems += _diff("patch-targets", recorded, live, additions_matter=False)
 
     for broken in unresolvable_patch_targets(live):
         # An uninstalled optional backend is not a broken target: ``verify`` has to stay
@@ -884,7 +888,7 @@ def verify() -> int:
 
 def twins():
     report = twin_divergence(build_corpus())
-    print(json.dumps(report, indent = 2, ensure_ascii = False))
+    print(json.dumps(report, indent=2, ensure_ascii=False))
 
 
 def main() -> int:

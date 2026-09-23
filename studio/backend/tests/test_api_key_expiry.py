@@ -18,7 +18,7 @@ from auth import storage
 from auth.authentication import create_access_token, get_current_subject
 
 
-@pytest.fixture(autouse = True)
+@pytest.fixture(autouse=True)
 def isolated_auth_db(tmp_path, monkeypatch):
     monkeypatch.setattr(storage, "DB_PATH", tmp_path / "auth.db")
     monkeypatch.setattr(storage, "_BOOTSTRAP_PW_PATH", tmp_path / ".bootstrap_password")
@@ -31,9 +31,9 @@ def isolated_auth_db(tmp_path, monkeypatch):
 
 def seed_user():
     storage.create_initial_user(
-        username = storage.DEFAULT_ADMIN_USERNAME,
-        password = "human-password-123",
-        jwt_secret = secrets.token_urlsafe(64),
+        username=storage.DEFAULT_ADMIN_USERNAME,
+        password="human-password-123",
+        jwt_secret=secrets.token_urlsafe(64),
     )
 
 
@@ -43,16 +43,16 @@ def iso_from_now(**delta):
 
 def make_key(expires_at):
     raw, _row = storage.create_api_key(
-        username = storage.DEFAULT_ADMIN_USERNAME,
-        name = "test",
-        expires_at = expires_at,
+        username=storage.DEFAULT_ADMIN_USERNAME,
+        name="test",
+        expires_at=expires_at,
     )
     return raw
 
 
 def subject_of(token):
     """Run the real FastAPI auth dependency against a bearer token."""
-    credentials = HTTPAuthorizationCredentials(scheme = "Bearer", credentials = token)
+    credentials = HTTPAuthorizationCredentials(scheme="Bearer", credentials=token)
     return asyncio.run(get_current_subject(credentials))
 
 
@@ -62,7 +62,7 @@ def subject_of(token):
 def test_unexpired_key_validates():
     seed_user()
     assert (
-        storage.validate_api_key(make_key(iso_from_now(days = 1))) == storage.DEFAULT_ADMIN_USERNAME
+        storage.validate_api_key(make_key(iso_from_now(days=1))) == storage.DEFAULT_ADMIN_USERNAME
     )
 
 
@@ -73,20 +73,20 @@ def test_never_expiring_key_validates():
 
 def test_expired_key_rejected():
     seed_user()
-    assert storage.validate_api_key(make_key(iso_from_now(seconds = -1))) is None
+    assert storage.validate_api_key(make_key(iso_from_now(seconds=-1))) is None
 
 
 def test_key_expiring_far_in_past_rejected():
     seed_user()
-    assert storage.validate_api_key(make_key(iso_from_now(days = -30))) is None
+    assert storage.validate_api_key(make_key(iso_from_now(days=-30))) is None
 
 
 def test_revoked_key_rejected():
     seed_user()
     raw, row = storage.create_api_key(
-        username = storage.DEFAULT_ADMIN_USERNAME,
-        name = "doomed",
-        expires_at = iso_from_now(days = 1),
+        username=storage.DEFAULT_ADMIN_USERNAME,
+        name="doomed",
+        expires_at=iso_from_now(days=1),
     )
     storage.revoke_api_key(storage.DEFAULT_ADMIN_USERNAME, int(row["id"]))
     assert storage.validate_api_key(raw) is None
@@ -102,13 +102,13 @@ def test_unknown_key_rejected():
 
 def test_dependency_accepts_unexpired_key():
     seed_user()
-    assert subject_of(make_key(iso_from_now(days = 1))) == storage.DEFAULT_ADMIN_USERNAME
+    assert subject_of(make_key(iso_from_now(days=1))) == storage.DEFAULT_ADMIN_USERNAME
 
 
 def test_dependency_rejects_expired_key_as_401():
     seed_user()
     with pytest.raises(HTTPException) as exc:
-        subject_of(make_key(iso_from_now(seconds = -1)))
+        subject_of(make_key(iso_from_now(seconds=-1)))
     assert exc.value.status_code == 401
     assert exc.value.detail == "Invalid or expired API key"
 
@@ -118,13 +118,13 @@ def test_dependency_rejects_expired_key_as_401():
 
 def test_dependency_accepts_unexpired_jwt():
     seed_user()
-    token = create_access_token(storage.DEFAULT_ADMIN_USERNAME, timedelta(minutes = 5))
+    token = create_access_token(storage.DEFAULT_ADMIN_USERNAME, timedelta(minutes=5))
     assert subject_of(token) == storage.DEFAULT_ADMIN_USERNAME
 
 
 def test_dependency_rejects_expired_jwt_as_401():
     seed_user()
-    token = create_access_token(storage.DEFAULT_ADMIN_USERNAME, timedelta(seconds = -1))
+    token = create_access_token(storage.DEFAULT_ADMIN_USERNAME, timedelta(seconds=-1))
     with pytest.raises(HTTPException) as exc:
         subject_of(token)
     assert exc.value.status_code == 401
@@ -136,7 +136,7 @@ def test_dependency_rejects_expired_jwt_as_401():
 
 def test_cache_skips_pbkdf2_on_repeat(monkeypatch):
     seed_user()
-    raw = make_key(iso_from_now(days = 1))
+    raw = make_key(iso_from_now(days=1))
     assert storage.validate_api_key(raw) == storage.DEFAULT_ADMIN_USERNAME  # warms cache
 
     calls = {"n": 0}
@@ -155,9 +155,9 @@ def test_cache_skips_pbkdf2_on_repeat(monkeypatch):
 def test_cache_does_not_bypass_revocation():
     seed_user()
     raw, row = storage.create_api_key(
-        username = storage.DEFAULT_ADMIN_USERNAME,
-        name = "revoke-after-cache",
-        expires_at = iso_from_now(days = 1),
+        username=storage.DEFAULT_ADMIN_USERNAME,
+        name="revoke-after-cache",
+        expires_at=iso_from_now(days=1),
     )
     assert storage.validate_api_key(raw) == storage.DEFAULT_ADMIN_USERNAME  # cached
     storage.revoke_api_key(storage.DEFAULT_ADMIN_USERNAME, int(row["id"]))
@@ -171,9 +171,9 @@ def test_cache_does_not_bypass_expiry():
     # outlast any margin short enough to keep the sleep cheap.
     seed_user()
     raw, row = storage.create_api_key(
-        username = storage.DEFAULT_ADMIN_USERNAME,
-        name = "expire-after-cache",
-        expires_at = iso_from_now(days = 1),
+        username=storage.DEFAULT_ADMIN_USERNAME,
+        name="expire-after-cache",
+        expires_at=iso_from_now(days=1),
     )
     assert storage.validate_api_key(raw) == storage.DEFAULT_ADMIN_USERNAME  # cached
     cache_id = storage._api_key_cache_id(raw)
@@ -183,7 +183,7 @@ def test_cache_does_not_bypass_expiry():
     try:
         conn.execute(
             "UPDATE api_keys SET expires_at = ? WHERE id = ?",
-            (iso_from_now(days = -1), int(row["id"])),
+            (iso_from_now(days=-1), int(row["id"])),
         )
         conn.commit()
     finally:
@@ -205,9 +205,9 @@ def test_create_api_key_route_stores_tz_aware_expiry():
 
     seed_user()
     raw, row = storage.create_api_key(
-        username = storage.DEFAULT_ADMIN_USERNAME,
-        name = "route",
-        expires_at = iso_from_now(days = 30),
+        username=storage.DEFAULT_ADMIN_USERNAME,
+        name="route",
+        expires_at=iso_from_now(days=30),
     )
     parsed = _dt.fromisoformat(row["expires_at"])
     assert parsed.tzinfo is not None  # tz-aware: comparison in validate_api_key won't raise

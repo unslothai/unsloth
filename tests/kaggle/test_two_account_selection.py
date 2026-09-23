@@ -39,7 +39,7 @@ import launch  # noqa: E402
 
 
 def _wf(path: Path) -> dict:
-    return yaml.safe_load(path.read_text(encoding = "utf-8"))
+    return yaml.safe_load(path.read_text(encoding="utf-8"))
 
 
 def _steps(workflow: dict) -> list[tuple[str, str, dict]]:
@@ -53,7 +53,7 @@ def _steps(workflow: dict) -> list[tuple[str, str, dict]]:
 # --------------------------------------------------------------- the secrets
 
 
-@pytest.mark.parametrize("path", (NOTEBOOK_WF, STUDIO_WF), ids = ("notebook", "studio"))
+@pytest.mark.parametrize("path", (NOTEBOOK_WF, STUDIO_WF), ids=("notebook", "studio"))
 def test_no_workflow_names_a_secret_that_does_not_exist(path):
     """THE GUARD THIS FILE EXISTS FOR, and it is written from a real outage.
 
@@ -65,7 +65,7 @@ def test_no_workflow_names_a_secret_that_does_not_exist(path):
     So the set of Kaggle secrets a workflow may reference is CLOSED, and any
     name outside it fails here rather than on the next quiet Sunday.
     """
-    referenced = set(re.findall(r"secrets\.([A-Z0-9_]+)", path.read_text(encoding = "utf-8")))
+    referenced = set(re.findall(r"secrets\.([A-Z0-9_]+)", path.read_text(encoding="utf-8")))
     kaggle = {s for s in referenced if "KAGGLE" in s}
     assert kaggle == set(gate.DEFAULT_ACCOUNT_ENVS), (
         f"{path.name} names Kaggle secrets {sorted(kaggle)}, but the accounts that "
@@ -74,7 +74,7 @@ def test_no_workflow_names_a_secret_that_does_not_exist(path):
     )
 
 
-@pytest.mark.parametrize("path", (NOTEBOOK_WF, STUDIO_WF), ids = ("notebook", "studio"))
+@pytest.mark.parametrize("path", (NOTEBOOK_WF, STUDIO_WF), ids=("notebook", "studio"))
 def test_every_step_that_runs_a_kaggle_script_is_given_a_token(path):
     """Derived from the workflow, not from a list, so a step added later cannot
     quietly run credential-less and report the skip as a normal outcome."""
@@ -89,7 +89,7 @@ def test_every_step_that_runs_a_kaggle_script_is_given_a_token(path):
     assert missing == [], f"these steps run a Kaggle script with no token: {missing}"
 
 
-@pytest.mark.parametrize("path", (NOTEBOOK_WF, STUDIO_WF), ids = ("notebook", "studio"))
+@pytest.mark.parametrize("path", (NOTEBOOK_WF, STUDIO_WF), ids=("notebook", "studio"))
 def test_only_the_gate_sees_both_accounts(path):
     """One account per step, everywhere except the one step that chooses.
 
@@ -111,7 +111,7 @@ def test_only_the_gate_sees_both_accounts(path):
             ], f"{job_name}/{step_name} sees {tokens}; only the gate may see more than one"
 
 
-@pytest.mark.parametrize("path", (NOTEBOOK_WF, STUDIO_WF), ids = ("notebook", "studio"))
+@pytest.mark.parametrize("path", (NOTEBOOK_WF, STUDIO_WF), ids=("notebook", "studio"))
 def test_the_chosen_token_is_INDEXED_and_never_a_ternary(path):
     """`${{ cond && secrets.A || secrets.B }}` is the shape this must not use.
 
@@ -140,7 +140,7 @@ def test_the_chosen_token_is_INDEXED_and_never_a_ternary(path):
         ), f"{job_name}/{step_name} does not index the secrets context: {expr}"
 
 
-@pytest.mark.parametrize("path", (NOTEBOOK_WF, STUDIO_WF), ids = ("notebook", "studio"))
+@pytest.mark.parametrize("path", (NOTEBOOK_WF, STUDIO_WF), ids=("notebook", "studio"))
 def test_no_token_is_ever_a_job_output(path):
     """The matrix carries a secret NAME. A token in an output is a credential in
     a place GitHub redacts by pattern rather than by promise."""
@@ -157,7 +157,7 @@ def test_no_token_is_ever_a_job_output(path):
 @pytest.mark.parametrize(
     "path,suffix",
     ((NOTEBOOK_WF, "notebook"), (STUDIO_WF, "studio")),
-    ids = ("notebook", "studio"),
+    ids=("notebook", "studio"),
 )
 def test_the_concurrency_group_is_keyed_on_the_account(path, suffix):
     """Kaggle's 2-session cap is per ACCOUNT, so the lock must be too.
@@ -179,7 +179,7 @@ def test_the_concurrency_group_is_keyed_on_the_account(path, suffix):
         ), f"{group!r} does not vary by account, so two accounts share one lock"
 
 
-@pytest.mark.parametrize("path", (NOTEBOOK_WF, STUDIO_WF), ids = ("notebook", "studio"))
+@pytest.mark.parametrize("path", (NOTEBOOK_WF, STUDIO_WF), ids=("notebook", "studio"))
 def test_the_gpu_job_takes_the_account_through_a_one_element_matrix(path):
     for job_name, job in _wf(path)["jobs"].items():
         if job_name == "gate":
@@ -190,7 +190,7 @@ def test_the_gpu_job_takes_the_account_through_a_one_element_matrix(path):
         ), f"{job_name} does not receive the gate's account matrix: {matrix!r}"
 
 
-@pytest.mark.parametrize("path", (NOTEBOOK_WF, STUDIO_WF), ids = ("notebook", "studio"))
+@pytest.mark.parametrize("path", (NOTEBOOK_WF, STUDIO_WF), ids=("notebook", "studio"))
 def test_no_kaggle_username_is_hardcoded_on_the_launch_path(path):
     """A kernel id is `<owner>/<slug>`. A literal owner belongs to whichever
     account happened to be first when it was typed, so the other account cannot
@@ -208,7 +208,7 @@ def test_no_kaggle_username_is_hardcoded_on_the_launch_path(path):
             ), f"{job_name}/{step_name} pushes under a hardcoded owner {match!r}"
 
 
-@pytest.mark.parametrize("path", (NOTEBOOK_WF, STUDIO_WF), ids = ("notebook", "studio"))
+@pytest.mark.parametrize("path", (NOTEBOOK_WF, STUDIO_WF), ids=("notebook", "studio"))
 def test_the_recheck_can_actually_stop_the_push(path):
     """Both workflows re-ask with the account slot in hand, and in BOTH the push
     is gated on that answer. A measurement that cannot stop anything is a log
@@ -280,7 +280,7 @@ def test_the_account_draw_is_salted_apart_from_the_sampling_draw():
     string. That is checkable, and it keeps the property from being removed by
     someone who has not measured what removing it does.
     """
-    source = (CI_DIR / "gate.py").read_text(encoding = "utf-8")
+    source = (CI_DIR / "gate.py").read_text(encoding="utf-8")
     picked = source.split("def weighted_pick", 1)[1].split("\ndef ", 1)[0]
     assert (
         'sha256(("account:" + key)' in picked
@@ -294,7 +294,7 @@ def test_every_run_of_one_commit_lands_on_the_same_account():
     weights = {"1": 60.0, "2": 30.0}
     sha = "0123456789abcdef0123456789abcdef01234567"
     assert len({gate.weighted_pick(sha, weights)[0] for _ in range(5)}) == 1
-    source = (CI_DIR / "gate.py").read_text(encoding = "utf-8")
+    source = (CI_DIR / "gate.py").read_text(encoding="utf-8")
     assert (
         "account_key = (args.head_sha or" in source
     ), "the gate does not key the draw on the commit"
@@ -353,7 +353,7 @@ def test_a_sweep_leaves_the_other_account_s_kernels_filed(tmp_path, monkeypatch)
                 {"slug": "bob/unsloth-t4-ci-bbbb", "pid": 999999, "at": 0, "owner": "bob"},
             ]
         ),
-        encoding = "utf-8",
+        encoding="utf-8",
     )
     monkeypatch.setattr(launch, "INFLIGHT", registry)
     monkeypatch.setattr(launch, "_pid_alive", lambda pid: False)
@@ -364,12 +364,12 @@ def test_a_sweep_leaves_the_other_account_s_kernels_filed(tmp_path, monkeypatch)
         attempted.append(slug)
         return True
 
-    monkeypatch.setattr(launch, "delete_kernel", _delete, raising = False)
+    monkeypatch.setattr(launch, "delete_kernel", _delete, raising=False)
     monkeypatch.setattr(
         launch.subprocess,
         "run",
         lambda *a, **k: _delete(a[0][3]) and types_simple(),
-        raising = False,
+        raising=False,
     )
 
     launch.sweep_orphans("alice")
@@ -377,7 +377,7 @@ def test_a_sweep_leaves_the_other_account_s_kernels_filed(tmp_path, monkeypatch)
     assert all(
         "bob/" not in slug for slug in attempted
     ), f"the sweep tried to delete another account's kernel: {attempted}"
-    left = {e["slug"] for e in json.loads(registry.read_text(encoding = "utf-8"))}
+    left = {e["slug"] for e in json.loads(registry.read_text(encoding="utf-8"))}
     assert (
         "bob/unsloth-t4-ci-bbbb" in left
     ), "the other account's kernel was dropped from the registry, so nothing knows it exists"
@@ -421,7 +421,7 @@ def _run_launcher(monkeypatch, tmp_path, username, *, user_arg):
         ],
     )
     code = launch.main()
-    result = json.loads((outdir / "launch_result.json").read_text(encoding = "utf-8"))
+    result = json.loads((outdir / "launch_result.json").read_text(encoding="utf-8"))
     return code, result, pushed
 
 
@@ -433,7 +433,7 @@ def test_the_launcher_refuses_a_username_the_token_does_not_own(tmp_path, monkey
     kernels this job's cleanup then cannot delete, and the session bills on with
     nobody watching. Nothing may be pushed in that state.
     """
-    code, result, pushed = _run_launcher(monkeypatch, tmp_path, "alice", user_arg = "bob")
+    code, result, pushed = _run_launcher(monkeypatch, tmp_path, "alice", user_arg="bob")
     assert pushed == [], "a kernel was pushed under a name the token does not own"
     assert result["verdict"] == "infra"
     assert "alice" in result["reason"] and "bob" in result["reason"], result["reason"]
@@ -441,7 +441,7 @@ def test_the_launcher_refuses_a_username_the_token_does_not_own(tmp_path, monkey
 
 def test_the_launcher_refuses_a_token_that_cannot_name_its_account(tmp_path, monkeypatch):
     """No owner, no push. The owner is not optional: it is half the kernel id."""
-    code, result, pushed = _run_launcher(monkeypatch, tmp_path, None, user_arg = "bob")
+    code, result, pushed = _run_launcher(monkeypatch, tmp_path, None, user_arg="bob")
     assert pushed == []
     assert "could not determine which Kaggle account" in result["reason"]
 
@@ -450,14 +450,14 @@ def test_the_stand_down_still_writes_the_result_the_report_step_reads(tmp_path, 
     """A bare `return 1` here would leave no launch_result.json, and the report
     step reads that file: a configuration error would arrive looking exactly
     like a runner that died mid-run."""
-    _, result, _ = _run_launcher(monkeypatch, tmp_path, "alice", user_arg = "bob")
+    _, result, _ = _run_launcher(monkeypatch, tmp_path, "alice", user_arg="bob")
     assert result["verdict"] == "infra" and result["reason"]
 
 
 def test_a_filed_slug_records_the_account_that_owns_it(tmp_path, monkeypatch):
     monkeypatch.setattr(launch, "INFLIGHT", tmp_path / "inflight.json")
     launch._inflight_add("carol/unsloth-t4-ci-cccc")
-    entry = json.loads((tmp_path / "inflight.json").read_text(encoding = "utf-8"))[0]
+    entry = json.loads((tmp_path / "inflight.json").read_text(encoding="utf-8"))[0]
     assert entry["owner"] == "carol", entry
 
 
@@ -468,7 +468,7 @@ def test_neither_token_name_can_reach_the_kernel():
     """The built notebook is what Kaggle receives. Both account env vars belong
     in the forbidden list, not just the first one."""
     source = (REPO_ROOT / "tests" / "kaggle" / "test_t4_smoke_harness.py").read_text(
-        encoding = "utf-8"
+        encoding="utf-8"
     )
     for name in gate.DEFAULT_ACCOUNT_ENVS:
         assert (
@@ -495,7 +495,7 @@ def test_a_kernel_already_running_this_commit_on_any_account_stands_the_run_down
     assert gate.in_flight_for_commit(own, "1234567890ab", "notebook") is None
     assert gate.in_flight_for_commit(own, sha, "") is None
     assert gate.in_flight_for_commit(["someone/unsloth-probe-x (RUNNING)"], sha, "notebook") is None
-    source = (CI_DIR / "gate.py").read_text(encoding = "utf-8")
+    source = (CI_DIR / "gate.py").read_text(encoding="utf-8")
     main = source[source.index("def main(") :]
     # Every candidate is asked BEFORE any is chosen: the first loop over `order`
     # is the in-flight sweep, the selection loop comes after it.
@@ -521,10 +521,10 @@ def _drive_gate(
     tmp_path,
     *,
     holder,
-    outcomes = None,
-    extra = (),
-    clock = None,
-    holder_slot = "1",
+    outcomes=None,
+    extra=(),
+    clock=None,
+    holder_slot="1",
 ):
     """Run gate.main() with two stub accounts. `holder` is the account whose
     survey shows a notebook kernel of the commit under test; `outcomes` maps an
@@ -621,7 +621,7 @@ def test_the_gate_stands_down_when_the_other_account_already_runs_this_commit(
     which is what a retry after a handover looks like. A gate that only asks the
     account it is about to pick finds it clear and dispatches a duplicate."""
     _sampled, other = _other("abcdef0123456789" + "0" * 24)
-    code, outputs, asked, _sha = _drive_gate(monkeypatch, tmp_path, holder = other)
+    code, outputs, asked, _sha = _drive_gate(monkeypatch, tmp_path, holder=other)
     assert code == 0
     assert outputs["should_run"] == "false", outputs["reason"]
     assert f"account {other}" in outputs["reason"] and "already running" in outputs["reason"]
@@ -639,7 +639,7 @@ def test_an_account_that_cannot_launch_is_still_asked_whether_it_runs_this_commi
     _sampled, other = _other("abcdef0123456789" + "0" * 24)
     for outcome in ("insufficient_quota", "quota_unreadable"):
         code, outputs, asked, _sha = _drive_gate(
-            monkeypatch, tmp_path, holder = other, outcomes = {other: outcome}
+            monkeypatch, tmp_path, holder=other, outcomes={other: outcome}
         )
         assert outputs["should_run"] == "false", (outcome, outputs["reason"])
         assert "already running" in outputs["reason"], (outcome, outputs["reason"])
@@ -653,22 +653,22 @@ def test_the_second_slot_is_not_a_duplicate_but_its_own_retry_is(monkeypatch, tm
     sampled, _unused = _other("abcdef0123456789" + "0" * 24)
     # Slot 1 kernel up, slot 2 asked for: runs.
     _c, outputs, _a, _s = _drive_gate(
-        monkeypatch, tmp_path, holder = sampled, extra = ("--slot", "2"), holder_slot = "1"
+        monkeypatch, tmp_path, holder=sampled, extra=("--slot", "2"), holder_slot="1"
     )
     assert outputs["should_run"] == "true", outputs["reason"]
     # Slot 2 kernel up, slot 2 asked for again: stands down.
     _c, outputs, _a, _s = _drive_gate(
-        monkeypatch, tmp_path, holder = sampled, extra = ("--slot", "2"), holder_slot = "2"
+        monkeypatch, tmp_path, holder=sampled, extra=("--slot", "2"), holder_slot="2"
     )
     assert outputs["should_run"] == "false", outputs["reason"]
     assert "slot 2" in outputs["reason"]
     # Slot 2 kernel up, slot 1 asked for: runs, it is the other seat.
     _c, outputs, _a, _s = _drive_gate(
-        monkeypatch, tmp_path, holder = sampled, extra = ("--slot", "1"), holder_slot = "2"
+        monkeypatch, tmp_path, holder=sampled, extra=("--slot", "1"), holder_slot="2"
     )
     assert outputs["should_run"] == "true", outputs["reason"]
     # And slot 1 against slot 1 still stands down.
-    _c, outputs, _a, _s = _drive_gate(monkeypatch, tmp_path, holder = sampled, holder_slot = "1")
+    _c, outputs, _a, _s = _drive_gate(monkeypatch, tmp_path, holder=sampled, holder_slot="1")
     assert outputs["should_run"] == "false", outputs["reason"]
     # The workflow threads its slot input through the gate, the collector's
     # in-flight check and the launcher (which writes it into the slug).
@@ -689,7 +689,7 @@ def test_the_surveys_share_one_budget(monkeypatch, tmp_path):
     to back. The second gets whatever the first left of ONE budget."""
     clock = [1000.0]
     _sampled, other = _other("abcdef0123456789" + "0" * 24)
-    _code, _outputs, asked, _sha = _drive_gate(monkeypatch, tmp_path, holder = other, clock = clock)
+    _code, _outputs, asked, _sha = _drive_gate(monkeypatch, tmp_path, holder=other, clock=clock)
     assert len(asked) == 2, asked
     first, second = asked[0][1], asked[1][1]
     assert first == pytest.approx(gate.SURVEY_BUDGET_SEC)

@@ -221,38 +221,38 @@ def test_no_evidence_at_all_is_a_failure_and_not_a_pass():
 
 
 def test_a_matching_process_holding_vram_is_enough_on_its_own():
-    verdict = _verdict(server_pid = 42, compute_apps = {42: 2048})
+    verdict = _verdict(server_pid=42, compute_apps={42: 2048})
     assert verdict["passed"]
     assert verdict["positives"]
 
 
 def test_a_process_holding_only_a_cuda_context_is_not_enough():
     """Tens of MiB is what a bare context costs; the weights are elsewhere."""
-    verdict = _verdict(server_pid = 42, compute_apps = {42: 30})
+    verdict = _verdict(server_pid=42, compute_apps={42: 30})
     assert not verdict["passed"]
 
 
 def test_the_llama_cpp_offload_line_alone_is_enough():
-    verdict = _verdict(log_text = "load_tensors: offloaded 25/25 layers to GPU")
+    verdict = _verdict(log_text="load_tensors: offloaded 25/25 layers to GPU")
     assert verdict["passed"]
 
 
 def test_device_vram_growth_alone_is_enough():
     """The fallback probe for a container where nvidia-smi cannot see the
     process and llama.cpp's log did not reach us."""
-    assert _verdict(device_vram_delta_mib = 1500.0)["passed"]
+    assert _verdict(device_vram_delta_mib=1500.0)["passed"]
 
 
 def test_a_small_vram_wobble_is_not_evidence():
-    assert not _verdict(device_vram_delta_mib = 20.0)["passed"]
+    assert not _verdict(device_vram_delta_mib=20.0)["passed"]
 
 
 def test_zero_offloaded_layers_fails_however_much_else_looks_right():
     verdict = _verdict(
-        server_pid = 42,
-        compute_apps = {42: 4096},
-        log_text = "load_tensors: offloaded 0/25 layers to GPU",
-        device_vram_delta_mib = 4096.0,
+        server_pid=42,
+        compute_apps={42: 4096},
+        log_text="load_tensors: offloaded 0/25 layers to GPU",
+        device_vram_delta_mib=4096.0,
     )
     assert not verdict["passed"]
     assert any("0/25" in f for f in verdict["failures"])
@@ -260,26 +260,26 @@ def test_zero_offloaded_layers_fails_however_much_else_looks_right():
 
 def test_a_declared_cpu_fallback_fails_however_much_else_looks_right():
     verdict = _verdict(
-        server_pid = 42,
-        compute_apps = {42: 4096},
-        status = {"cpu_fallback_reason": "vulkan_startup_crash"},
+        server_pid=42,
+        compute_apps={42: 4096},
+        status={"cpu_fallback_reason": "vulkan_startup_crash"},
     )
     assert not verdict["passed"]
 
 
 def test_studio_reporting_zero_gpu_layers_fails():
-    verdict = _verdict(server_pid = 42, compute_apps = {42: 4096}, status = {"gpu_layers": 0})
+    verdict = _verdict(server_pid=42, compute_apps={42: 4096}, status={"gpu_layers": 0})
     assert not verdict["passed"]
 
 
 def test_a_pid_that_is_not_among_the_gpu_processes_is_not_a_pass():
     """Something else on the box holding VRAM must not launder a CPU load."""
-    verdict = _verdict(server_pid = 42, compute_apps = {99: 8000})
+    verdict = _verdict(server_pid=42, compute_apps={99: 8000})
     assert not verdict["passed"]
 
 
 def test_auto_mode_gpu_layers_of_minus_one_is_not_treated_as_zero():
-    verdict = _verdict(server_pid = 42, compute_apps = {42: 4096}, status = {"gpu_layers": -1})
+    verdict = _verdict(server_pid=42, compute_apps={42: 4096}, status={"gpu_layers": -1})
     assert verdict["passed"]
 
 
@@ -314,18 +314,18 @@ def wait_helper(values, accept, **kw):
         clock["t"] += seconds
 
     return studio_client.wait_for(
-        probe = lambda: next(values),
-        accept = accept,
-        deadline_s = kw.pop("deadline_s", 100.0),
-        interval_s = 1.0,
-        now = _now,
-        sleep = _sleep,
+        probe=lambda: next(values),
+        accept=accept,
+        deadline_s=kw.pop("deadline_s", 100.0),
+        interval_s=1.0,
+        now=_now,
+        sleep=_sleep,
         **kw,
     )
 
 
 def test_wait_times_out_rather_than_looping_forever():
-    ok, _, reason = wait_helper(iter(range(1000)), lambda v: False, deadline_s = 5.0)
+    ok, _, reason = wait_helper(iter(range(1000)), lambda v: False, deadline_s=5.0)
     assert not ok
     assert "timed out" in reason
 
@@ -333,7 +333,7 @@ def test_wait_times_out_rather_than_looping_forever():
 def test_wait_gives_up_immediately_when_the_process_it_waits_on_is_dead():
     """Otherwise every crash at startup costs the full deadline and reports
     itself as slowness rather than as a crash."""
-    ok, _, reason = wait_helper(iter(range(10)), lambda v: False, alive = lambda: False)
+    ok, _, reason = wait_helper(iter(range(10)), lambda v: False, alive=lambda: False)
     assert not ok
     assert "exited" in reason
 
@@ -350,12 +350,12 @@ def test_a_probe_that_raises_is_retried_rather_than_fatal():
 
     clock = {"t": 0.0}
     ok, last, _ = studio_client.wait_for(
-        probe = _probe,
-        accept = lambda v: v == "ready",
-        deadline_s = 60.0,
-        interval_s = 1.0,
-        now = lambda: clock["t"],
-        sleep = lambda s: clock.__setitem__("t", clock["t"] + s),
+        probe=_probe,
+        accept=lambda v: v == "ready",
+        deadline_s=60.0,
+        interval_s=1.0,
+        now=lambda: clock["t"],
+        sleep=lambda s: clock.__setitem__("t", clock["t"] + s),
     )
     assert ok and last == "ready" and attempts["n"] == 3
 
@@ -403,17 +403,17 @@ def test_an_export_that_has_not_started_is_not_read_as_finished():
     ends, and there is no job id, so the sequence number is the only thing
     that distinguishes them."""
     status = {"last_op_seq": 7, "is_export_active": False, "last_op_status": "success"}
-    assert studio_client.export_verdict(status, baseline_seq = 7) == (False, "")
+    assert studio_client.export_verdict(status, baseline_seq=7) == (False, "")
 
 
 def test_an_export_still_running_is_not_finished():
     status = {"last_op_seq": 8, "is_export_active": True, "last_op_status": "success"}
-    assert studio_client.export_verdict(status, baseline_seq = 7) == (False, "")
+    assert studio_client.export_verdict(status, baseline_seq=7) == (False, "")
 
 
 def test_a_new_successful_export_is_finished_and_clean():
     status = {"last_op_seq": 8, "is_export_active": False, "last_op_status": "success"}
-    assert studio_client.export_verdict(status, baseline_seq = 7) == (True, "")
+    assert studio_client.export_verdict(status, baseline_seq=7) == (True, "")
 
 
 @pytest.mark.parametrize("outcome", ["error", "cancelled"])
@@ -424,7 +424,7 @@ def test_a_new_failed_export_is_finished_and_names_the_cause(outcome):
         "last_op_status": outcome,
         "last_op_error": "conversion wrote no .gguf",
     }
-    done, reason = studio_client.export_verdict(status, baseline_seq = 7)
+    done, reason = studio_client.export_verdict(status, baseline_seq=7)
     assert done and outcome in reason and "no .gguf" in reason
 
 
@@ -448,8 +448,8 @@ def test_the_newest_gguf_is_found_recursively(tmp_path):
 def _adapter(
     tmp_path,
     *,
-    config = True,
-    weights = 100_000,
+    config=True,
+    weights=100_000,
 ):
     root = tmp_path / "run"
     root.mkdir()
@@ -467,19 +467,19 @@ def test_a_real_adapter_directory_passes(tmp_path):
 
 
 def test_a_run_that_saved_nothing_fails_even_though_it_said_completed(tmp_path):
-    ok, failures, _ = studio_client.adapter_verdict(_adapter(tmp_path, weights = None))
+    ok, failures, _ = studio_client.adapter_verdict(_adapter(tmp_path, weights=None))
     assert not ok
     assert any("adapter weights" in f for f in failures)
 
 
 def test_a_stub_sized_adapter_fails(tmp_path):
-    ok, failures, _ = studio_client.adapter_verdict(_adapter(tmp_path, weights = 12))
+    ok, failures, _ = studio_client.adapter_verdict(_adapter(tmp_path, weights=12))
     assert not ok
     assert any("byte floor" in f for f in failures)
 
 
 def test_a_missing_config_fails(tmp_path):
-    ok, failures, _ = studio_client.adapter_verdict(_adapter(tmp_path, config = False))
+    ok, failures, _ = studio_client.adapter_verdict(_adapter(tmp_path, config=False))
     assert not ok
     assert any("adapter_config.json" in f for f in failures)
 
@@ -511,7 +511,7 @@ def _build(tmp_path, **kw):
     ]
     for key, value in kw.items():
         args += [f"--{key.replace('_', '-')}", str(value)]
-    proc = subprocess.run(args, capture_output = True, text = True)
+    proc = subprocess.run(args, capture_output=True, text=True)
     assert proc.returncode == 0, proc.stderr
     return json.loads(out.read_text())
 
@@ -546,11 +546,12 @@ def test_no_generated_cell_reads_a_name_nothing_defines(tmp_path):
     """Cells share one namespace in execution order, so a name used in cell 4
     has to have been bound by cell 0 through 4 or by a builtin."""
     import builtins
+
     for cells in (_build(tmp_path)["cells"], _payload_notebook(_build(tmp_path))["cells"]):
         defined = set(dir(builtins))
         for index, cell in enumerate(cells):
             source = "".join(cell["source"])
-            tree = compile(source, f"cell{index}", "exec", flags = 0x400, dont_inherit = True)
+            tree = compile(source, f"cell{index}", "exec", flags=0x400, dont_inherit=True)
             del tree
             import ast
 
@@ -576,7 +577,7 @@ def test_no_generated_cell_reads_a_name_nothing_defines(tmp_path):
 
 def test_the_ref_under_test_is_pinned_into_the_clone(tmp_path):
     source = "\n".join(
-        "".join(c["source"]) for c in _payload_notebook(_build(tmp_path, ref = "c0ffee1"))["cells"]
+        "".join(c["source"]) for c in _payload_notebook(_build(tmp_path, ref="c0ffee1"))["cells"]
     )
     assert "c0ffee1" in source
     assert "FETCH_HEAD" in source
@@ -604,7 +605,7 @@ def _payload_source(driver: dict) -> str:
 
 
 def test_payload_args_reach_the_payload(tmp_path):
-    source = _payload_source(_build(tmp_path, payload_args = "--max-steps 3"))
+    source = _payload_source(_build(tmp_path, payload_args="--max-steps 3"))
     assert '["--max-steps", "3"]' in source
 
 
@@ -623,8 +624,8 @@ def test_the_builder_refuses_a_payload_directory_that_lost_a_file(tmp_path):
             "--out",
             str(tmp_path / "k.ipynb"),
         ],
-        capture_output = True,
-        text = True,
+        capture_output=True,
+        text=True,
     )
     assert proc.returncode != 0
     assert "missing" in proc.stderr
@@ -638,10 +639,10 @@ def test_every_file_the_builder_requires_is_actually_in_the_payload_dir():
 def test_the_result_prefix_matches_the_shared_launcher():
     """The launcher is reused unchanged; it scrapes this exact prefix."""
     launcher = (REPO_ROOT / ".github" / "scripts" / "kaggle_t4_ci" / "launch.py").read_text(
-        encoding = "utf-8"
+        encoding="utf-8"
     )
     assert f'RESULT_PREFIX = "{build_kernel.RESULT_PREFIX}"' in launcher
-    payload = (PAYLOAD_DIR / "run_studio_gpu.py").read_text(encoding = "utf-8")
+    payload = (PAYLOAD_DIR / "run_studio_gpu.py").read_text(encoding="utf-8")
     assert f'RESULT_PREFIX = "{build_kernel.RESULT_PREFIX}"' in payload
 
 
@@ -650,7 +651,7 @@ def test_the_result_prefix_matches_the_shared_launcher():
 
 def _bundle(names: dict[str, bytes]) -> bytes:
     buf = io.BytesIO()
-    with tarfile.open(fileobj = buf, mode = "w:gz") as tar:
+    with tarfile.open(fileobj=buf, mode="w:gz") as tar:
         for name, data in names.items():
             info = tarfile.TarInfo(name)
             info.size = len(data)
@@ -682,8 +683,8 @@ def test_a_bundle_survives_the_round_trip_through_stdout(tmp_path):
             "--outdir",
             str(outdir),
         ],
-        capture_output = True,
-        text = True,
+        capture_output=True,
+        text=True,
     )
     assert proc.returncode == 0, proc.stderr
     assert (outdir / "studio_gpu_report.json").read_bytes() == b'{"passed": true}'
@@ -707,8 +708,8 @@ def test_a_truncated_log_is_refused_rather_than_half_unpacked(tmp_path):
             "--outdir",
             str(outdir),
         ],
-        capture_output = True,
-        text = True,
+        capture_output=True,
+        text=True,
     )
     assert proc.returncode == 0
     assert "incomplete" in proc.stdout
@@ -727,8 +728,8 @@ def test_a_run_that_emitted_no_bundle_is_not_an_error(tmp_path):
             "--outdir",
             str(tmp_path / "out"),
         ],
-        capture_output = True,
-        text = True,
+        capture_output=True,
+        text=True,
     )
     assert proc.returncode == 0
     assert "no evidence bundle" in proc.stdout
@@ -763,11 +764,11 @@ def test_a_truncated_duplicate_does_not_overwrite_the_complete_chunk(tmp_path):
     assert len(lines) > 2, "need a chunk that is neither first nor last"
 
     evidence = tmp_path / "kaggle_evidence" / "unsloth-t4-ci-deadbeef"
-    evidence.mkdir(parents = True)
+    evidence.mkdir(parents=True)
     (evidence / "studio_gpu_output.ipynb").write_text(
-        json.dumps({"cells": [{"outputs": [{"text": "\n".join(lines)}]}]}), encoding = "utf-8"
+        json.dumps({"cells": [{"outputs": [{"text": "\n".join(lines)}]}]}), encoding="utf-8"
     )
-    (evidence / "kernel.log").write_text("\n".join(lines[:-2] + [lines[-2][:-9]]), encoding = "utf-8")
+    (evidence / "kernel.log").write_text("\n".join(lines[:-2] + [lines[-2][:-9]]), encoding="utf-8")
 
     outdir = tmp_path / "studio_evidence"
     proc = subprocess.run(
@@ -779,8 +780,8 @@ def test_a_truncated_duplicate_does_not_overwrite_the_complete_chunk(tmp_path):
             "--outdir",
             str(outdir),
         ],
-        capture_output = True,
-        text = True,
+        capture_output=True,
+        text=True,
     )
     assert proc.returncode == 0, proc.stderr
     assert (outdir / "studio_gpu_report.json").read_bytes() == b'{"passed": true}'
@@ -803,7 +804,7 @@ def test_a_complete_later_copy_repairs_a_truncated_earlier_one():
 
 def _workflow() -> dict:
     yaml = pytest.importorskip("yaml")
-    return yaml.safe_load(WORKFLOW.read_text(encoding = "utf-8"))
+    return yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
 
 
 def _triggers(wf: dict) -> dict:
@@ -848,14 +849,14 @@ def test_the_two_kaggle_legs_fit_the_account_side_by_side():
     # `import report` resolves to for every test that runs afterwards in the same process. An earlier draft of this test
     # did exactly that and took nine unrelated summary tests down with it.
     gate_src = (REPO_ROOT / ".github" / "scripts" / "kaggle_t4_ci" / "gate.py").read_text(
-        encoding = "utf-8"
+        encoding="utf-8"
     )
     caps = re.findall(r"^MAX_CONCURRENT_GPU_KERNELS = (\d+)$", gate_src, re.MULTILINE)
     assert len(caps) == 1, caps
     MAX_CONCURRENT_GPU_KERNELS = int(caps[0])
 
     notebook_text = (REPO_ROOT / ".github" / "workflows" / "kaggle-t4-notebook-ci.yml").read_text(
-        encoding = "utf-8"
+        encoding="utf-8"
     )
     notebook = yaml.safe_load(notebook_text)
     studio_group = _workflow()["jobs"]["studio-gpu"]["concurrency"]["group"]
@@ -872,7 +873,7 @@ def test_the_two_kaggle_legs_fit_the_account_side_by_side():
 
     pushes = {}
     for label, text in (
-        ("studio", WORKFLOW.read_text(encoding = "utf-8")),
+        ("studio", WORKFLOW.read_text(encoding="utf-8")),
         ("notebook", notebook_text),
     ):
         found = {int(k) for k in re.findall(r"--kernels (\d+)", text)}
@@ -883,7 +884,7 @@ def test_the_two_kaggle_legs_fit_the_account_side_by_side():
 
 def test_the_workflow_is_never_preempted_by_the_capacity_sweeper():
     """Cancelling it orphans a Kaggle kernel that then bills to its ceiling."""
-    preempt = json.loads((REPO_ROOT / ".github" / "ci-preempt.json").read_text(encoding = "utf-8"))
+    preempt = json.loads((REPO_ROOT / ".github" / "ci-preempt.json").read_text(encoding="utf-8"))
     assert WORKFLOW.name in preempt["never"]
     for machines in preempt["heavy"].values():
         assert WORKFLOW.name not in machines
@@ -913,7 +914,7 @@ def test_the_paths_filter_is_not_the_whole_of_studio():
 def test_the_sampling_rate_matches_the_arithmetic_in_the_header():
     """The header states 5%, ~38 launches and ~28 GPU-h a week. If the flag
     and the prose disagree, one of them is a lie to whoever reads it next."""
-    source = WORKFLOW.read_text(encoding = "utf-8")
+    source = WORKFLOW.read_text(encoding="utf-8")
     assert "--percent 5" in source
     assert "x sampling rate            0.05" in source
     assert "= launches                 ~38 / week" in source
@@ -931,9 +932,9 @@ def test_studio_is_sampled_harder_than_the_notebook_leg():
     the notebook leg or blow the account. If that edit is ever the right one,
     this test is where the reasoning has to be argued with.
     """
-    studio = WORKFLOW.read_text(encoding = "utf-8")
+    studio = WORKFLOW.read_text(encoding="utf-8")
     notebook = (REPO_ROOT / ".github" / "workflows" / "kaggle-t4-notebook-ci.yml").read_text(
-        encoding = "utf-8"
+        encoding="utf-8"
     )
 
     assert "--percent 5" in studio and "--percent 15" in notebook
@@ -963,9 +964,9 @@ def test_the_two_legs_together_fit_inside_the_ci_allowance():
     """Re-derived from the two headers rather than trusting either total."""
     import re
 
-    studio = WORKFLOW.read_text(encoding = "utf-8")
+    studio = WORKFLOW.read_text(encoding="utf-8")
     notebook = (REPO_ROOT / ".github" / "workflows" / "kaggle-t4-notebook-ci.yml").read_text(
-        encoding = "utf-8"
+        encoding="utf-8"
     )
 
     def rate(text):
@@ -984,7 +985,7 @@ def test_the_two_legs_together_fit_inside_the_ci_allowance():
 
 
 def test_the_reserve_leaves_ci_the_fifty_hours_it_is_allowed():
-    source = WORKFLOW.read_text(encoding = "utf-8")
+    source = WORKFLOW.read_text(encoding="utf-8")
     assert "--reserve-hours 10" in source
     assert "--budget-hours 4" in source
     assert "--budget-hours 2" not in source
@@ -994,7 +995,7 @@ def test_the_budget_hours_flag_covers_the_reaper_window():
     """budget-hours is the worst case one invocation can cost. Nothing waits on
     the kernel now, so a kernel that ignores its own timeout is left to the
     collector's reaper window rather than to the kernel ceiling."""
-    source = WORKFLOW.read_text(encoding = "utf-8")
+    source = WORKFLOW.read_text(encoding="utf-8")
     assert "--kernel-timeout-sec 4200" in source
     ceiling_hours = 4200 / 3600
     budgets = {int(b) for b in re.findall(r"--budget-hours (\d+)", source)}
@@ -1003,13 +1004,13 @@ def test_the_budget_hours_flag_covers_the_reaper_window():
 
 
 def test_the_opt_in_label_the_summary_names_is_the_one_the_gate_reads():
-    source = WORKFLOW.read_text(encoding = "utf-8")
+    source = WORKFLOW.read_text(encoding="utf-8")
     assert "--label-name kaggle-studio-gpu-ci" in source
-    assert "kaggle-studio-gpu-ci" in (CI_DIR / "report.py").read_text(encoding = "utf-8")
+    assert "kaggle-studio-gpu-ci" in (CI_DIR / "report.py").read_text(encoding="utf-8")
 
 
 def test_skipping_the_ui_driver_is_explicit_and_warns():
-    source = WORKFLOW.read_text(encoding = "utf-8")
+    source = WORKFLOW.read_text(encoding="utf-8")
     assert "::warning title=UI driver disabled" in source
     assert source.count("--skip-ui") == 1
 
@@ -1017,7 +1018,7 @@ def test_skipping_the_ui_driver_is_explicit_and_warns():
 def test_the_gate_and_launcher_are_the_shared_ones():
     """Reused, not forked. A second copy of the quota and concurrency policy
     is a second copy that can drift out of agreement with the account."""
-    source = WORKFLOW.read_text(encoding = "utf-8")
+    source = WORKFLOW.read_text(encoding="utf-8")
     assert ".github/scripts/kaggle_t4_ci/gate.py" in source
     assert ".github/scripts/kaggle_t4_ci/launch.py" in source
     assert not (CI_DIR / "gate.py").exists()
@@ -1064,8 +1065,8 @@ def test_only_a_real_assertion_failure_turns_the_job_red(tmp_path, verdict, repo
     )
     proc = subprocess.run(
         [sys.executable, str(CI_DIR / "report.py"), "--evidence", str(evidence)],
-        capture_output = True,
-        text = True,
+        capture_output=True,
+        text=True,
     )
     assert proc.returncode == expected_exit, proc.stdout
 
@@ -1075,8 +1076,8 @@ def test_a_run_that_reported_nothing_still_names_its_cause(tmp_path):
     evidence.mkdir()
     proc = subprocess.run(
         [sys.executable, str(CI_DIR / "report.py"), "--evidence", str(evidence)],
-        capture_output = True,
-        text = True,
+        capture_output=True,
+        text=True,
     )
     assert proc.returncode == 0
     assert "nothing is known about the code" in proc.stdout
@@ -1131,7 +1132,7 @@ class _RecordingStudio(studio_client.Studio):
     """An Unsloth whose HTTP layer is a script, so login can be driven off-box."""
 
     def __init__(self, responses):
-        super().__init__(base_url = "http://127.0.0.1:0")
+        super().__init__(base_url="http://127.0.0.1:0")
         self._responses = list(responses)
         self.calls = []
 
@@ -1139,7 +1140,7 @@ class _RecordingStudio(studio_client.Studio):
         self,
         method,
         path,
-        body = None,
+        body=None,
         **kw,
     ):
         self.calls.append((method, path, body, kw.get("auth", True)))
@@ -1236,7 +1237,7 @@ def test_the_ui_driver_gets_a_freshly_seeded_account():
     Asserted on the source rather than by running it: the restart is the whole
     fix, and a refactor that drops it would put the payload straight back to a
     driver that cannot find the form."""
-    source = (PAYLOAD_DIR / "run_studio_gpu.py").read_text(encoding = "utf-8")
+    source = (PAYLOAD_DIR / "run_studio_gpu.py").read_text(encoding="utf-8")
     body = source[source.index("def assert_chat_ui") :]
     body = body[: body.index("\n    def ")] if "\n    def " in body else body
     assert (
@@ -1259,7 +1260,7 @@ def test_the_driver_subprocess_timeout_does_not_track_the_ui_wall_budget():
     whole run. It bounds silence now, so the backstop has to come from the total instead.
 
     Asserted on the source because reaching the call needs a live server."""
-    source = (PAYLOAD_DIR / "run_studio_gpu.py").read_text(encoding = "utf-8")
+    source = (PAYLOAD_DIR / "run_studio_gpu.py").read_text(encoding="utf-8")
     body = source[source.index("def assert_chat_ui") :]
     body = body[: body.index("\n    def ")] if "\n    def " in body else body
     call = body[body.index("subprocess.run(") :]
@@ -1341,10 +1342,10 @@ def test_the_llama_cpp_install_actually_invokes_the_installer(tmp_path, monkeypa
     module = _load_payload()
     session = _session(module, tmp_path)
     installer = session.repo_root / "studio" / "install_llama_prebuilt.py"
-    installer.parent.mkdir(parents = True)
+    installer.parent.mkdir(parents=True)
     installer.write_text("")
     install_dir = session.studio_home / "llama.cpp"
-    install_dir.mkdir(parents = True)
+    install_dir.mkdir(parents=True)
     (install_dir / "UNSLOTH_PREBUILT_INFO.json").write_text(
         json.dumps({"asset": "app-b1-linux-x64-cuda13-older.tar.gz", "runtime_line": "cuda13"})
     )
@@ -1384,10 +1385,10 @@ def test_a_successful_installer_that_picks_a_cpu_bundle_is_still_a_failure(tmp_p
     module = _load_payload()
     session = _session(module, tmp_path)
     installer = session.repo_root / "studio" / "install_llama_prebuilt.py"
-    installer.parent.mkdir(parents = True)
+    installer.parent.mkdir(parents=True)
     installer.write_text("")
     install_dir = session.studio_home / "llama.cpp"
-    install_dir.mkdir(parents = True)
+    install_dir.mkdir(parents=True)
     (install_dir / "UNSLOTH_PREBUILT_INFO.json").write_text(
         json.dumps({"asset": "app-b1-linux-x64-cpu.tar.gz", "runtime_line": "cpu"})
     )
@@ -1406,7 +1407,7 @@ def test_a_failed_llama_cpp_install_does_not_stop_the_run():
     A box where the bundle will not install should produce the same honest
     export red it did before, not a run that stops at the install.
     """
-    source = (PAYLOAD_DIR / "run_studio_gpu.py").read_text(encoding = "utf-8")
+    source = (PAYLOAD_DIR / "run_studio_gpu.py").read_text(encoding="utf-8")
     body = source[source.index("def execute(self)") :]
     body = body[: body.index("\n    def ")]
     assert "self.install_llama_cpp()" in body
@@ -1431,7 +1432,7 @@ def test_the_llama_cpp_marker_falls_back_to_the_canonical_location(tmp_path, mon
     module = _load_payload()
     fake_home = tmp_path / "home"
     canonical = fake_home / ".unsloth" / "llama.cpp"
-    canonical.mkdir(parents = True)
+    canonical.mkdir(parents=True)
     (canonical / "UNSLOTH_PREBUILT_INFO.json").write_text(
         json.dumps({"asset": "app-b1-linux-x64-cuda13-older.tar.gz", "runtime_line": "cuda13"})
     )
@@ -1450,14 +1451,14 @@ def test_an_explicit_studio_home_install_wins_over_the_canonical_one(tmp_path, m
     module = _load_payload()
     fake_home = tmp_path / "home"
     canonical = fake_home / ".unsloth" / "llama.cpp"
-    canonical.mkdir(parents = True)
+    canonical.mkdir(parents=True)
     (canonical / "UNSLOTH_PREBUILT_INFO.json").write_text(
         json.dumps({"asset": "app-b1-linux-x64-cpu.tar.gz", "runtime_line": "cpu"})
     )
     monkeypatch.setattr(module.Path, "home", staticmethod(lambda: fake_home))
 
     studio_home = tmp_path / "studio_home"
-    (studio_home / "llama.cpp").mkdir(parents = True)
+    (studio_home / "llama.cpp").mkdir(parents=True)
     (studio_home / "llama.cpp" / "UNSLOTH_PREBUILT_INFO.json").write_text(
         json.dumps({"asset": "app-b1-linux-x64-cuda13-older.tar.gz", "runtime_line": "cuda13"})
     )
@@ -1534,7 +1535,7 @@ class _FakeStudio:
         self,
         status_body,
         *,
-        unload_raises = False,
+        unload_raises=False,
     ):
         self.status_body = status_body
         self.unload_raises = unload_raises
@@ -1558,10 +1559,10 @@ def _baseline_session(
     status_body,
     readings,
     *,
-    unload_raises = False,
+    unload_raises=False,
 ):
-    session = _session(module, tmp_path, load_timeout = 30.0)
-    session.studio = _FakeStudio(status_body, unload_raises = unload_raises)
+    session = _session(module, tmp_path, load_timeout=30.0)
+    session.studio = _FakeStudio(status_body, unload_raises=unload_raises)
     seq = list(readings)
     session._readings = seq
     return session
@@ -1600,7 +1601,7 @@ def test_a_refused_unload_does_not_abort_the_probe(tmp_path, monkeypatch):
     load result that the probe is actually there to record."""
     module = _load_payload()
     session = _baseline_session(
-        module, tmp_path, {"model_identifier": "chat.gguf"}, [900.0, 900.0], unload_raises = True
+        module, tmp_path, {"model_identifier": "chat.gguf"}, [900.0, 900.0], unload_raises=True
     )
     monkeypatch.setattr(module, "VRAM_SETTLE_POLL_S", 0.0)
     monkeypatch.setattr(module, "nvidia_used_mib", lambda: session._readings.pop(0))
@@ -1620,7 +1621,7 @@ def test_driver_jitter_is_not_mistaken_for_a_release(tmp_path, monkeypatch):
 def test_a_card_that_never_settles_is_bounded(tmp_path, monkeypatch):
     """Something else holding the card must not hang the run forever."""
     module = _load_payload()
-    session = _session(module, tmp_path, load_timeout = 30.0)
+    session = _session(module, tmp_path, load_timeout=30.0)
     session.studio = _FakeStudio({})
     monkeypatch.setattr(module, "VRAM_SETTLE_POLL_S", 0.0)
     calls = [0]
@@ -1636,7 +1637,7 @@ def test_a_card_that_never_settles_is_bounded(tmp_path, monkeypatch):
 
 def test_no_nvidia_smi_at_all_is_not_a_crash(tmp_path, monkeypatch):
     module = _load_payload()
-    session = _session(module, tmp_path, load_timeout = 30.0)
+    session = _session(module, tmp_path, load_timeout=30.0)
     session.studio = _FakeStudio({})
     monkeypatch.setattr(module, "VRAM_SETTLE_POLL_S", 0.0)
     monkeypatch.setattr(module, "nvidia_used_mib", lambda: None)
@@ -1651,12 +1652,12 @@ def test_the_status_fields_read_are_fields_the_response_really_has(tmp_path):
     import re
 
     model_src = (REPO_ROOT / "studio" / "backend" / "models" / "inference.py").read_text(
-        encoding = "utf-8"
+        encoding="utf-8"
     )
     block = model_src.split("class InferenceStatusResponse", 1)[1]
     block = block.split("\nclass ", 1)[0]
     declared = set(re.findall(r"^    (\w+):", block, re.MULTILINE))
-    payload_src = (PAYLOAD_DIR / "run_studio_gpu.py").read_text(encoding = "utf-8")
+    payload_src = (PAYLOAD_DIR / "run_studio_gpu.py").read_text(encoding="utf-8")
     fn = payload_src.split("def settled_baseline", 1)[1].split("\n    def ", 1)[0]
     read = set(re.findall(r'body\.get\("(\w+)"\)', fn))
     assert read, "settled_baseline reads no status field at all"
@@ -1702,8 +1703,8 @@ def test_the_bundle_is_found_in_the_per_kernel_directory_the_launcher_writes(tmp
     as having emitted no evidence at all."""
     blob = _bundle({"studio_gpu_report.json": b'{"passed": false}'})
     evidence = tmp_path / "kaggle_evidence" / "unsloth-t4-ci-deadbeef"
-    evidence.mkdir(parents = True)
-    (evidence / "kernel.log").write_text("\n".join(_chunk_lines(blob)), encoding = "utf-8")
+    evidence.mkdir(parents=True)
+    (evidence / "kernel.log").write_text("\n".join(_chunk_lines(blob)), encoding="utf-8")
     outdir = tmp_path / "studio_evidence"
     proc = subprocess.run(
         [
@@ -1714,8 +1715,8 @@ def test_the_bundle_is_found_in_the_per_kernel_directory_the_launcher_writes(tmp
             "--outdir",
             str(outdir),
         ],
-        capture_output = True,
-        text = True,
+        capture_output=True,
+        text=True,
     )
     assert proc.returncode == 0, proc.stderr
     assert (outdir / "studio_gpu_report.json").read_bytes() == b'{"passed": false}'
@@ -1727,8 +1728,8 @@ def test_a_nested_executed_notebook_is_read_too(tmp_path):
         "cells": [{"outputs": [{"text": "\n".join(_chunk_lines(blob))}]}],
     }
     nested = tmp_path / "evidence" / "unsloth-t4-ci-1234"
-    nested.mkdir(parents = True)
-    (nested / "studio_gpu_output.ipynb").write_text(json.dumps(nb), encoding = "utf-8")
+    nested.mkdir(parents=True)
+    (nested / "studio_gpu_output.ipynb").write_text(json.dumps(nb), encoding="utf-8")
     chunks, total = collect_evidence.collect_chunks(
         collect_evidence.iter_text(tmp_path / "evidence")
     )
@@ -1740,16 +1741,16 @@ def test_evidence_that_is_json_but_not_a_notebook_does_not_raise(tmp_path):
     a kernel. The reader used to raise on the first `.get`, failing the job
     after its verdict was already posted."""
     evidence = tmp_path / "evidence" / "unsloth-t4-ci-1234"
-    evidence.mkdir(parents = True)
-    (evidence / "a_output.ipynb").write_text("[]", encoding = "utf-8")
+    evidence.mkdir(parents=True)
+    (evidence / "a_output.ipynb").write_text("[]", encoding="utf-8")
     (evidence / "b_output.ipynb").write_text(
         json.dumps({"cells": ["not a cell", {"outputs": [7, {"text": ["x", 1]}]}]}),
-        encoding = "utf-8",
+        encoding="utf-8",
     )
     blob = _bundle({"studio.log": b"a log"})
     (evidence / "c_output.ipynb").write_text(
         json.dumps({"cells": [{"outputs": [{"text": "\n".join(_chunk_lines(blob))}]}]}),
-        encoding = "utf-8",
+        encoding="utf-8",
     )
     streams = list(collect_evidence.iter_text(tmp_path / "evidence"))
     assert "x1" in streams
@@ -1761,7 +1762,7 @@ def test_the_evidence_unpack_is_best_effort_on_the_gpu_job():
     """The notebook and scheduled unpacks already are; this one decided the
     colour of a job whose verdict had already been posted."""
     yaml = pytest.importorskip("yaml")
-    workflow = yaml.safe_load(WORKFLOW.read_text(encoding = "utf-8"))
+    workflow = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
     steps = [
         s
         for job in workflow["jobs"].values()
@@ -1806,19 +1807,19 @@ def test_studio_is_launched_from_the_interpreter_running_the_payload(tmp_path, m
     the run would measure some other install instead of the checkout."""
     module = _load_payload()
     venv_bin = tmp_path / "venv" / "bin"
-    venv_bin.mkdir(parents = True)
+    venv_bin.mkdir(parents=True)
     own = venv_bin / "unsloth"
-    own.write_text("#!/bin/sh\n", encoding = "utf-8")
+    own.write_text("#!/bin/sh\n", encoding="utf-8")
     own.chmod(0o755)
 
     stray_bin = tmp_path / "stray"
     stray_bin.mkdir()
     stray = stray_bin / "unsloth"
-    stray.write_text("#!/bin/sh\n", encoding = "utf-8")
+    stray.write_text("#!/bin/sh\n", encoding="utf-8")
     stray.chmod(0o755)
     monkeypatch.setenv("PATH", str(stray_bin))
 
-    session = _session(module, tmp_path, port = 18902)
+    session = _session(module, tmp_path, port=18902)
     monkeypatch.setattr(module.sys, "executable", str(venv_bin / "python"))
     assert session.studio_command()[0] == str(own)
 
@@ -1826,15 +1827,15 @@ def test_studio_is_launched_from_the_interpreter_running_the_payload(tmp_path, m
 def test_without_a_console_script_the_same_interpreter_runs_the_module(tmp_path, monkeypatch):
     module = _load_payload()
     venv_bin = tmp_path / "venv" / "bin"
-    venv_bin.mkdir(parents = True)
+    venv_bin.mkdir(parents=True)
     stray_bin = tmp_path / "stray"
     stray_bin.mkdir()
     stray = stray_bin / "unsloth"
-    stray.write_text("#!/bin/sh\n", encoding = "utf-8")
+    stray.write_text("#!/bin/sh\n", encoding="utf-8")
     stray.chmod(0o755)
     monkeypatch.setenv("PATH", str(stray_bin))
 
-    session = _session(module, tmp_path, port = 18902)
+    session = _session(module, tmp_path, port=18902)
     monkeypatch.setattr(module.sys, "executable", str(venv_bin / "python"))
     command = session.studio_command()
     assert command[0] == str(venv_bin / "python")
@@ -1851,13 +1852,13 @@ def test_the_payload_never_reads_a_pid_the_status_response_does_not_declare():
     import re
 
     model_src = (REPO_ROOT / "studio" / "backend" / "models" / "inference.py").read_text(
-        encoding = "utf-8"
+        encoding="utf-8"
     )
     declared = set()
     for cls in ("class InferenceStatusResponse", "class _InferenceRuntimeFields"):
         block = model_src.split(cls, 1)[1].split("\nclass ", 1)[0]
         declared |= set(re.findall(r"^    (\w+):", block, re.MULTILINE))
-    payload_src = (PAYLOAD_DIR / "run_studio_gpu.py").read_text(encoding = "utf-8")
+    payload_src = (PAYLOAD_DIR / "run_studio_gpu.py").read_text(encoding="utf-8")
     fn = payload_src.split("def load_model", 1)[1].split("\n    def ", 1)[0]
     read = set(re.findall(r'status_body\.get\("(\w+)"\)', fn))
     assert read <= declared, (
@@ -1868,12 +1869,12 @@ def test_the_payload_never_reads_a_pid_the_status_response_does_not_declare():
 
 def test_a_discovered_llama_server_pid_is_enough_evidence():
     verdict = gpu_assert.offload_verdict(
-        server_pid = None,
-        server_pids = [4242],
-        compute_apps = {4242: 2048},
-        log_text = "",
-        device_vram_delta_mib = None,
-        status = {},
+        server_pid=None,
+        server_pids=[4242],
+        compute_apps={4242: 2048},
+        log_text="",
+        device_vram_delta_mib=None,
+        status={},
     )
     assert verdict["passed"]
     assert any("4242" in p for p in verdict["positives"])
@@ -1881,12 +1882,12 @@ def test_a_discovered_llama_server_pid_is_enough_evidence():
 
 def test_a_discovered_pid_holding_nothing_is_still_not_evidence():
     verdict = gpu_assert.offload_verdict(
-        server_pid = None,
-        server_pids = [4242],
-        compute_apps = {4242: 12},
-        log_text = "",
-        device_vram_delta_mib = None,
-        status = {},
+        server_pid=None,
+        server_pids=[4242],
+        compute_apps={4242: 12},
+        log_text="",
+        device_vram_delta_mib=None,
+        status={},
     )
     assert not verdict["passed"]
 
@@ -1895,7 +1896,7 @@ def test_the_payload_can_find_a_llama_server_in_the_process_table(tmp_path):
     module = _load_payload()
     proc = subprocess.Popen(
         [sys.executable, "-c", "import time; time.sleep(30)"],
-        executable = sys.executable,
+        executable=sys.executable,
     )
     try:
         # Only the discovery mechanism is exercised here; the name match is what the real llama-server supplies.
@@ -1916,14 +1917,14 @@ def test_an_earlier_loads_offload_line_is_not_evidence_for_the_next(tmp_path):
     server_log = tmp_path / "studio.log"
     home = tmp_path / "home"
     home.mkdir()
-    server_log.write_text("load_tensors: offloaded 29/29 layers to GPU\n", encoding = "utf-8")
+    server_log.write_text("load_tensors: offloaded 29/29 layers to GPU\n", encoding="utf-8")
 
     marks = module.log_marks(server_log, home)
     # The second load says nothing at all.
-    with open(server_log, "a", encoding = "utf-8") as fh:
+    with open(server_log, "a", encoding="utf-8") as fh:
         fh.write("llama_server: listening\n")
 
-    scoped = module.studio_log_text(server_log, home, since = marks)
+    scoped = module.studio_log_text(server_log, home, since=marks)
     assert "offloaded" not in scoped
     assert gpu_assert.offloaded_layers(scoped) is None
     assert "offloaded" in module.studio_log_text(server_log, home)
@@ -1934,10 +1935,10 @@ def test_a_log_that_was_rotated_under_us_is_read_whole(tmp_path):
     server_log = tmp_path / "studio.log"
     home = tmp_path / "home"
     home.mkdir()
-    server_log.write_text("x" * 500, encoding = "utf-8")
+    server_log.write_text("x" * 500, encoding="utf-8")
     marks = module.log_marks(server_log, home)
-    server_log.write_text("offloaded 7/7 layers to GPU\n", encoding = "utf-8")
-    assert "offloaded" in module.studio_log_text(server_log, home, since = marks)
+    server_log.write_text("offloaded 7/7 layers to GPU\n", encoding="utf-8")
+    assert "offloaded" in module.studio_log_text(server_log, home, since=marks)
 
 
 # ---------------------------------------------- the log across the UI restart
@@ -1950,13 +1951,13 @@ def test_the_restart_that_reseeds_the_account_keeps_the_earlier_log(tmp_path, mo
     session = _session(
         module,
         tmp_path,
-        port = 18902,
-        health_deadline = 0.0,
+        port=18902,
+        health_deadline=0.0,
     )
     session.outdir = tmp_path / "out"
     session.outdir.mkdir()
     session.server_log = session.outdir / "studio.log"
-    session.server_log.write_text("the first session's traceback\n", encoding = "utf-8")
+    session.server_log.write_text("the first session's traceback\n", encoding="utf-8")
     session.proc = None
     session.base_url = "http://127.0.0.1:18902"
     session.studio = _FakeStudio({})
@@ -1973,7 +1974,7 @@ class _DeadProc:
     def terminate(self):
         return None
 
-    def wait(self, timeout = None):
+    def wait(self, timeout=None):
         return 0
 
 
@@ -1984,10 +1985,10 @@ def _export_session(module, tmp_path, studio):
     session = _session(
         module,
         tmp_path,
-        export_timeout = 1.0,
-        export_deadline = 5.0,
-        quantization = "q8_0",
-        gpu_layers = 99,
+        export_timeout=1.0,
+        export_deadline=5.0,
+        quantization="q8_0",
+        gpu_layers=99,
     )
     session.outdir = tmp_path / "out"
     session.outdir.mkdir()
@@ -2009,7 +2010,7 @@ class _ExportStudio:
         self,
         method,
         path,
-        body = None,
+        body=None,
         **kw,
     ):
         if path == "/api/export/export/gguf":
@@ -2071,11 +2072,11 @@ def test_the_capped_bundle_still_carries_the_logs(tmp_path, monkeypatch):
     session = _session(module, tmp_path)
     session.outdir = tmp_path / "out"
     session.art_dir = session.outdir / "playwright"
-    session.art_dir.mkdir(parents = True)
+    session.art_dir.mkdir(parents=True)
     session.server_log = session.outdir / "studio.log"
-    (session.outdir / "studio_gpu_report.json").write_text('{"passed": false}', encoding = "utf-8")
-    session.server_log.write_text("backend traceback\n", encoding = "utf-8")
-    (session.outdir / "playwright_chat_ui.log").write_text("driver log\n", encoding = "utf-8")
+    (session.outdir / "studio_gpu_report.json").write_text('{"passed": false}', encoding="utf-8")
+    session.server_log.write_text("backend traceback\n", encoding="utf-8")
+    (session.outdir / "playwright_chat_ui.log").write_text("driver log\n", encoding="utf-8")
     # A screenshot that will not compress, so the first pack blows the cap.
     (session.art_dir / "01.png").write_bytes(os.urandom(3_000_000))
 
@@ -2087,7 +2088,7 @@ def test_the_capped_bundle_still_carries_the_logs(tmp_path, monkeypatch):
     )
     blob = base64.b64decode(encoded)
     assert len(blob) <= module.MAX_EVIDENCE_BYTES
-    with tarfile.open(fileobj = io.BytesIO(blob), mode = "r:gz") as tar:
+    with tarfile.open(fileobj=io.BytesIO(blob), mode="r:gz") as tar:
         names = tar.getnames()
         assert "studio.log" in names
         assert "playwright_chat_ui.log" in names
@@ -2105,13 +2106,13 @@ def test_a_crash_while_packaging_the_evidence_does_not_publish_a_pass(tmp_path, 
     session = _session(
         module,
         tmp_path,
-        label = "studio-gpu",
-        chat_model = "m",
-        chat_variant = None,
-        train_model = "t",
-        max_steps = 8,
-        quantization = "q8_0",
-        gpu_layers = 99,
+        label="studio-gpu",
+        chat_model="m",
+        chat_variant=None,
+        train_model="t",
+        max_steps=8,
+        quantization="q8_0",
+        gpu_layers=99,
     )
     session.outdir = tmp_path / "out"
     session.outdir.mkdir()
@@ -2241,8 +2242,8 @@ def test_a_venv_that_cannot_use_cuda_on_a_gpu_box_is_a_failure_not_infra(tmp_pat
     reports = _run_verify_cell(
         _build(tmp_path),
         tmp_path,
-        probe = {"versions": {"torch": "2.9.0+cpu"}, "missing": [], "cuda": {"available": False}},
-        host_gpus = ["Tesla T4"],
+        probe={"versions": {"torch": "2.9.0+cpu"}, "missing": [], "cuda": {"available": False}},
+        host_gpus=["Tesla T4"],
     )
     assert len(reports) == 1, reports
     report = json.loads(reports[0][len(build_kernel.RESULT_PREFIX) :])
@@ -2256,8 +2257,8 @@ def test_a_session_kaggle_gave_no_gpu_at_all_stays_infra(tmp_path):
     reports = _run_verify_cell(
         _build(tmp_path),
         tmp_path,
-        probe = {"versions": {"torch": "2.9.0"}, "missing": [], "cuda": {"available": False}},
-        host_gpus = [],
+        probe={"versions": {"torch": "2.9.0"}, "missing": [], "cuda": {"available": False}},
+        host_gpus=[],
     )
     assert reports == []
 
@@ -2341,7 +2342,7 @@ def test_the_gate_is_told_how_many_kernels_this_leg_actually_pushes():
     defaults to two, and refuses unless that many slots are free."""
     import re
 
-    text = WORKFLOW.read_text(encoding = "utf-8")
+    text = WORKFLOW.read_text(encoding="utf-8")
     # EVERY invocation, found by the command rather than by splitting on the
     # first literal "gate.py" in the file: prose above the jobs mentions the
     # script by path, and there are now two calls -- the gate and the recheck
@@ -2383,7 +2384,7 @@ class _LoadStudio:
         self,
         method,
         path,
-        body = None,
+        body=None,
         **kw,
     ):
         return {}
@@ -2394,7 +2395,7 @@ class _LoadStudio:
     def post(
         self,
         path,
-        body = None,
+        body=None,
         **kw,
     ):
         return 200, {}
@@ -2404,19 +2405,19 @@ def test_load_model_does_not_inherit_the_previous_loads_offload_line(tmp_path, m
     """The end-to-end shape of the scoping fix: a reload whose own load logged
     nothing must not pass on the chat model's `offloaded 29/29`."""
     module = _load_payload()
-    session = _session(module, tmp_path, load_timeout = 5.0, gpu_layers = 99)
+    session = _session(module, tmp_path, load_timeout=5.0, gpu_layers=99)
     session.outdir = tmp_path / "out"
     session.outdir.mkdir()
     session.server_log = session.outdir / "studio.log"
-    session.studio_home.mkdir(parents = True, exist_ok = True)
-    session.server_log.write_text("load_tensors: offloaded 29/29 layers to GPU\n", encoding = "utf-8")
+    session.studio_home.mkdir(parents=True, exist_ok=True)
+    session.server_log.write_text("load_tensors: offloaded 29/29 layers to GPU\n", encoding="utf-8")
     session.studio = _LoadStudio({})
     monkeypatch.setattr(module, "nvidia_used_mib", lambda: None)
     monkeypatch.setattr(module, "nvidia_compute_apps", lambda: {})
     monkeypatch.setattr(module, "llama_server_pids", lambda: [])
     monkeypatch.setattr(module.Payload, "settled_baseline", lambda self: None)
 
-    detail = session.load_model("exported.gguf", variant = None, label = "exported")
+    detail = session.load_model("exported.gguf", variant=None, label="exported")
     assert detail["positives"] == []
     assert detail["failures"], "silence must be a failure, not the previous load's evidence"
 
@@ -2456,7 +2457,7 @@ def test_the_kaggle_client_is_new_enough_to_read_the_only_credential_we_have():
     """
     packaging_version = pytest.importorskip("packaging.version")
     pins = re.findall(
-        r"pip install [^\n]*'kaggle==([0-9][^']*)'", WORKFLOW.read_text(encoding = "utf-8")
+        r"pip install [^\n]*'kaggle==([0-9][^']*)'", WORKFLOW.read_text(encoding="utf-8")
     )
     assert pins, "no pinned kaggle client in the workflow"
     assert len(set(pins)) == 1, f"jobs disagree on the kaggle client: {pins}"
@@ -2485,7 +2486,7 @@ def test_no_studio_assertion_is_wired_to_a_constant_branch():
         / "kaggle"
         / "studio_gpu"
         / "run_studio_gpu.py"
-    ).read_text(encoding = "utf-8")
+    ).read_text(encoding="utf-8")
     offenders = []
     for func in ast.walk(ast.parse(src)):
         if not (isinstance(func, ast.FunctionDef) and func.name.startswith("assert_")):
@@ -2516,10 +2517,10 @@ def test_every_assertion_carries_its_own_wall_clock():
     spec.loader.exec_module(module)
 
     runner = types.SimpleNamespace(
-        assertions = [],
-        failures = [],
-        started = module.time.time() - 5.0,
-        record = None,
+        assertions=[],
+        failures=[],
+        started=module.time.time() - 5.0,
+        record=None,
     )
     record = module.Payload.record.__get__(runner, module.Payload)
     module.log = lambda *a, **k: None
@@ -2557,12 +2558,12 @@ class TestAMixedListingIsNotProofOfCpu:
     def test_an_appeared_but_unattributed_pid_defers_to_the_device_delta(self):
         """On a card this run OWNS: nothing was there before, so the total is ours."""
         failure, detail = self._verdict(
-            apps_before = {},
-            apps_after = {},
-            baseline = 1000.0,
-            settled = 1600.0,
-            listed_before = set(),
-            listed_after = {222},
+            apps_before={},
+            apps_after={},
+            baseline=1000.0,
+            settled=1600.0,
+            listed_before=set(),
+            listed_after={222},
         )
         assert failure is None, (
             "the device grew by 600 MiB and pid 222 is listed but unattributed, which is "
@@ -2572,36 +2573,36 @@ class TestAMixedListingIsNotProofOfCpu:
 
     def test_an_unattributed_pid_with_no_device_growth_still_fails(self):
         failure, detail = self._verdict(
-            apps_before = {},
-            apps_after = {},
-            baseline = 1000.0,
-            settled = 1010.0,
-            listed_before = set(),
-            listed_after = {222},
+            apps_before={},
+            apps_after={},
+            baseline=1000.0,
+            settled=1010.0,
+            listed_before=set(),
+            listed_after={222},
         )
         assert failure is not None and "served from the CPU" in failure
         assert "222" in failure, "the message names the process it could not attribute"
 
     def test_an_unattributed_pid_with_no_device_reading_is_unmeasured(self):
         failure, detail = self._verdict(
-            apps_before = {},
-            apps_after = {111: 500},
-            baseline = None,
-            settled = None,
-            listed_before = set(),
-            listed_after = {111, 222},
+            apps_before={},
+            apps_after={111: 500},
+            baseline=None,
+            settled=None,
+            listed_before=set(),
+            listed_after={111, 222},
         )
         assert failure is not None and "unmeasured" in failure
 
     def test_an_attributed_new_process_is_unaffected(self):
         """The ordinary path must not start deferring to the shared device counter."""
         failure, detail = self._verdict(
-            apps_before = {111: 500},
-            apps_after = {111: 500, 222: 2600},
-            baseline = 1000.0,
-            settled = 900.0,
-            listed_before = {111},
-            listed_after = {111, 222},
+            apps_before={111: 500},
+            apps_after={111: 500, 222: 2600},
+            baseline=1000.0,
+            settled=900.0,
+            listed_before={111},
+            listed_after={111, 222},
         )
         assert failure is None, "a co-tenant freeing memory must not sink an attributed pid"
         assert detail["process_vram_mib"] == 2600
@@ -2609,12 +2610,12 @@ class TestAMixedListingIsNotProofOfCpu:
     def test_a_pid_already_present_but_unattributed_is_not_new(self):
         """Only a pid that APPEARED counts; a co-tenant showing [N/A] throughout is theirs."""
         failure, detail = self._verdict(
-            apps_before = {111: 500},
-            apps_after = {111: 500},
-            baseline = 1000.0,
-            settled = 1010.0,
-            listed_before = {111, 999},
-            listed_after = {111, 999},
+            apps_before={111: 500},
+            apps_after={111: 500},
+            baseline=1000.0,
+            settled=1010.0,
+            listed_before={111, 999},
+            listed_after={111, 999},
         )
         assert "compute_apps_unattributed" not in detail
         assert failure is not None and "no process appeared" in failure
@@ -2622,10 +2623,10 @@ class TestAMixedListingIsNotProofOfCpu:
     def test_the_old_callers_still_work(self):
         """The listed sets are optional, so a caller that has none keeps the old verdict."""
         failure, _ = self._verdict(
-            apps_before = {},
-            apps_after = {222: 2600},
-            baseline = None,
-            settled = None,
+            apps_before={},
+            apps_after={222: 2600},
+            baseline=None,
+            settled=None,
         )
         assert failure is None
 
@@ -2643,7 +2644,7 @@ class TestTheListingNamesItsPids:
         """Two nvidia-smi calls would describe two different moments, so the attributed
         mapping and the listed pids could disagree about which processes exist.
         """
-        body = (PAYLOAD_DIR / "run_studio_gpu.py").read_text(encoding = "utf-8")
+        body = (PAYLOAD_DIR / "run_studio_gpu.py").read_text(encoding="utf-8")
         assert body.count("nvidia_compute_apps_listing()") >= 3
         assert "apps_before = attributed_apps(_listing_before)" in body
         assert "apps_after = attributed_apps(_listing_after)" in body
@@ -2665,24 +2666,24 @@ class TestASharedCardIsNotMeasuredByItsTotal:
 
     def test_a_co_tenant_blocks_the_no_enumeration_fallback(self):
         failure, detail = self._verdict(
-            apps_before = {111: 500},
-            apps_after = None,
-            baseline = 1000.0,
-            settled = 9000.0,
-            listed_before = {111},
-            listed_after = None,
+            apps_before={111: 500},
+            apps_after=None,
+            baseline=1000.0,
+            settled=9000.0,
+            listed_before={111},
+            listed_after=None,
         )
         assert failure is not None and "unmeasured rather than proven" in failure
         assert detail["card_shared_before_launch"] is True
 
     def test_a_co_tenant_blocks_the_mixed_listing_fallback(self):
         failure, detail = self._verdict(
-            apps_before = {111: 500},
-            apps_after = {111: 500},
-            baseline = 1000.0,
-            settled = 9000.0,
-            listed_before = {111},
-            listed_after = {111, 222},
+            apps_before={111: 500},
+            apps_after={111: 500},
+            baseline=1000.0,
+            settled=9000.0,
+            listed_before={111},
+            listed_after={111, 222},
         )
         assert failure is not None and "unmeasured rather than proven" in failure
         assert detail["card_shared_before_launch"] is True
@@ -2690,36 +2691,36 @@ class TestASharedCardIsNotMeasuredByItsTotal:
     def test_a_listed_but_unattributed_co_tenant_counts(self):
         """A co-tenant reporting [N/A] is still a co-tenant."""
         failure, _ = self._verdict(
-            apps_before = {},
-            apps_after = None,
-            baseline = 1000.0,
-            settled = 9000.0,
-            listed_before = {999},
-            listed_after = None,
+            apps_before={},
+            apps_after=None,
+            baseline=1000.0,
+            settled=9000.0,
+            listed_before={999},
+            listed_after=None,
         )
         assert failure is not None and "unmeasured rather than proven" in failure
 
     def test_an_empty_card_keeps_the_fallback(self):
         """The fallback exists for parts that report [N/A] for everything; it stays."""
         failure, _ = self._verdict(
-            apps_before = {},
-            apps_after = None,
-            baseline = 1000.0,
-            settled = 1600.0,
-            listed_before = set(),
-            listed_after = None,
+            apps_before={},
+            apps_after=None,
+            baseline=1000.0,
+            settled=1600.0,
+            listed_before=set(),
+            listed_after=None,
         )
         assert failure is None
 
     def test_attribution_still_wins_over_the_rule(self):
         """A co-tenant does not sink a run whose own process WAS attributed."""
         failure, detail = self._verdict(
-            apps_before = {111: 500},
-            apps_after = {111: 500, 222: 2600},
-            baseline = 1000.0,
-            settled = 900.0,
-            listed_before = {111},
-            listed_after = {111, 222},
+            apps_before={111: 500},
+            apps_after={111: 500, 222: 2600},
+            baseline=1000.0,
+            settled=900.0,
+            listed_before={111},
+            listed_after={111, 222},
         )
         assert failure is None
         assert detail["process_vram_mib"] == 2600
@@ -2727,10 +2728,10 @@ class TestASharedCardIsNotMeasuredByItsTotal:
     def test_unknown_co_tenancy_is_not_invented(self):
         """No listing at all is no evidence either way, so behaviour is unchanged."""
         failure, _ = self._verdict(
-            apps_before = None,
-            apps_after = None,
-            baseline = 1000.0,
-            settled = 1600.0,
+            apps_before=None,
+            apps_after=None,
+            baseline=1000.0,
+            settled=1600.0,
         )
         assert failure is None
 
@@ -2751,7 +2752,7 @@ class TestTheSamplesAreScopedToTheVisibleCard:
             env.pop("CUDA_VISIBLE_DEVICES", None)
         else:
             env["CUDA_VISIBLE_DEVICES"] = value
-        with mock.patch.dict(os.environ, env, clear = True):
+        with mock.patch.dict(os.environ, env, clear=True):
             return run_studio_gpu.visible_device_selector()
 
     def test_unset_selects_every_card(self):
@@ -2777,7 +2778,7 @@ class TestTheSamplesAreScopedToTheVisibleCard:
             env.pop("CUDA_VISIBLE_DEVICES", None)
         else:
             env["CUDA_VISIBLE_DEVICES"] = value
-        with mock.patch.dict(os.environ, env, clear = True):
+        with mock.patch.dict(os.environ, env, clear=True):
             return run_studio_gpu._scoped(["nvidia-smi", "--query-gpu=memory.used"])
 
     def test_the_pin_reaches_the_command(self):
@@ -2823,7 +2824,7 @@ class TestTheServerIsStoppedBeforeTheCliBaselineRegardlessOfSkipUi:
     refused, and a GPU-backed run came back "unmeasured rather than proven"."""
 
     def test_stop_server_precedes_the_cli_assertion_unconditionally(self):
-        text = Path(run_studio_gpu.__file__).read_text(encoding = "utf-8")
+        text = Path(run_studio_gpu.__file__).read_text(encoding="utf-8")
         ui = text.index("if not self.args.skip_ui:\n            self.assert_chat_ui()")
         cli = text.index("        self.assert_cli_run()", ui)
         between = text[ui:cli]
@@ -2837,7 +2838,7 @@ class TestTheServerIsStoppedBeforeTheCliBaselineRegardlessOfSkipUi:
     def test_the_card_is_settled_between_the_stop_and_the_assertion(self):
         """Stopping is not the same as having stopped. Source order, because the two calls
         are orchestration in run() and there is no seam between them to observe."""
-        text = Path(run_studio_gpu.__file__).read_text(encoding = "utf-8")
+        text = Path(run_studio_gpu.__file__).read_text(encoding="utf-8")
         cli = text.index("        self.assert_cli_run()")
         between = text[
             text.index("if not self.args.skip_ui:\n            self.assert_chat_ui()") : cli
@@ -2949,12 +2950,12 @@ class TestTheTwoRulersAreReadInTheRightOrder:
         which of the two is the server is still unknown, so this hedges rather than passes.
         """
         failure, detail = self._verdict(
-            apps_before = {},
-            apps_after = {222: 2600},
-            baseline = 1000.0,
-            settled = 1050.0,
-            listed_before = set(),
-            listed_after = {222, 333},
+            apps_before={},
+            apps_after={222: 2600},
+            baseline=1000.0,
+            settled=1050.0,
+            listed_before=set(),
+            listed_after={222, 333},
         )
         assert failure is not None
         assert "served from the CPU" not in failure, failure
@@ -2967,24 +2968,24 @@ class TestTheTwoRulersAreReadInTheRightOrder:
         exclusion on the attributed map alone counted its 500 MiB as this launch's and
         passed a server that never left the CPU."""
         failure, detail = self._verdict(
-            apps_before = {},
-            apps_after = {77: 500},
-            baseline = 1000.0,
-            settled = 1000.0,
-            listed_before = {77},
-            listed_after = {77},
+            apps_before={},
+            apps_after={77: 500},
+            baseline=1000.0,
+            settled=1000.0,
+            listed_before={77},
+            listed_after={77},
         )
         assert failure is not None and "no process appeared" in failure
         assert detail["compute_apps_appeared"] == {}
 
     def test_the_same_co_tenant_does_not_carry_the_mixed_listing_either(self):
         failure, detail = self._verdict(
-            apps_before = {},
-            apps_after = {77: 500},
-            baseline = 1000.0,
-            settled = 1000.0,
-            listed_before = {77},
-            listed_after = {77, 888},
+            apps_before={},
+            apps_after={77: 500},
+            baseline=1000.0,
+            settled=1000.0,
+            listed_before={77},
+            listed_after={77, 888},
         )
         assert failure is not None and "unmeasured rather than proven" in failure
         assert detail["card_shared_before_launch"] is True
@@ -2992,12 +2993,12 @@ class TestTheTwoRulersAreReadInTheRightOrder:
     def test_an_attributed_launch_on_an_empty_card_still_passes(self):
         """The ordinary verdict is untouched: the exclusion only ever grows."""
         failure, detail = self._verdict(
-            apps_before = {},
-            apps_after = {222: 2600},
-            baseline = 1000.0,
-            settled = 3600.0,
-            listed_before = set(),
-            listed_after = {222},
+            apps_before={},
+            apps_after={222: 2600},
+            baseline=1000.0,
+            settled=3600.0,
+            listed_before=set(),
+            listed_after={222},
         )
         assert failure is None
         assert detail["process_vram_mib"] == 2600

@@ -591,7 +591,7 @@ def _harness_source() -> str:
 
 def _run(script: str) -> dict:
     require_node(SOURCES)
-    return run_harness(TEMP, _harness_source(), script, sources = SOURCES)
+    return run_harness(TEMP, _harness_source(), script, sources=SOURCES)
 
 
 # The status response that hydrates a resident GGUF; neither field survives a reload.
@@ -624,7 +624,7 @@ def test_the_harness_stubs_every_name_refresh_context_usage_imports() -> None:
     ]
     assert imported, "parsed an empty import list; this guard would check nothing"
 
-    with open(__file__, encoding = "utf-8") as handle:
+    with open(__file__, encoding="utf-8") as handle:
         harness = handle.read()
     missing = [
         name
@@ -653,10 +653,10 @@ def test_the_harness_stubs_every_name_refresh_context_usage_imports() -> None:
             });
             """,
             1,
-            id = "model_already_resident",
+            id="model_already_resident",
         ),
         # A page RELOAD of /chat?new=<uuid>: nothing is priceable until /api/inference/status answers.
-        pytest.param("", 0, id = "reload_before_status_hydrates"),
+        pytest.param("", 0, id="reload_before_status_hydrates"),
         # New Chat opened FROM a populated conversation left running: its runtime stays mounted and
         # the live branch reader keeps returning its messages until switchToNewThread() settles.
         # The empty chat must still be priced as a bare template.
@@ -673,7 +673,7 @@ def test_the_harness_stubs_every_name_refresh_context_usage_imports() -> None:
             ]);
             """,
             1,
-            id = "outgoing_conversation_still_mounted",
+            id="outgoing_conversation_still_mounted",
         ),
     ],
 )
@@ -881,7 +881,7 @@ def test_back_to_the_same_new_chat_nonce_switches_after_a_saved_thread():
 @pytest.mark.parametrize(
     "reply",
     ["undefined", "null", '"1670"', "NaN", "Infinity", "{}"],
-    ids = ["missing", "null", "string", "nan", "infinity", "object"],
+    ids=["missing", "null", "string", "nan", "infinity", "object"],
 )
 def test_a_count_that_is_not_a_finite_number_never_reaches_the_bar(reply):
     """The response type is a compile-time assertion, so a 200 from anything but a matched backend
@@ -922,9 +922,9 @@ NO_LOCAL_MODEL = """
     ("seed_script", "is_loading", "expected_switched"),
     [
         # No GGUF window means nothing to price; the seeded placeholder must not stick.
-        pytest.param(NO_LOCAL_MODEL, "false", 1, id = "no_local_model"),
+        pytest.param(NO_LOCAL_MODEL, "false", 1, id="no_local_model"),
         # assistant-ui is still hydrating: both effects bail before touching anything.
-        pytest.param(LOADED_MODEL, "true", 0, id = "assistant_ui_still_loading"),
+        pytest.param(LOADED_MODEL, "true", 0, id="assistant_ui_still_loading"),
     ],
 )
 def test_the_bar_stays_hidden_when_there_is_nothing_to_price(
@@ -1021,18 +1021,18 @@ LIVE_INCOGNITO_BRANCH = """
     ("world_setup", "expected_sent", "counted_model"),
     [
         # No runtime branch yet: the stored records are the only source, and both turns count.
-        pytest.param(TWO_STORED_TURNS, 2, None, id = "stored_branch"),
+        pytest.param(TWO_STORED_TURNS, 2, None, id="stored_branch"),
         # An incognito chat persists nothing, so the records would price a bare template.
-        pytest.param(LIVE_INCOGNITO_BRANCH, 3, None, id = "incognito_thread_stores_nothing"),
+        pytest.param(LIVE_INCOGNITO_BRANCH, 3, None, id="incognito_thread_stores_nothing"),
         # Regenerated, then switched back: the stored leaf is the retry, four turns not sent.
         pytest.param(
-            RETRY_BRANCH_STORED + LIVE_BRANCH, 2, None, id = "runtime_shows_an_older_branch"
+            RETRY_BRANCH_STORED + LIVE_BRANCH, 2, None, id="runtime_shows_an_older_branch"
         ),
         # The endpoint counts with whatever is resident, never the model asked for: another tab
         # loaded a different GGUF, and since this client's checkpoint never moved, the reported
         # id is the only witness that the total came from the wrong tokenizer.
         pytest.param(
-            TWO_STORED_TURNS, 2, "unsloth/other-gguf", id = "another_client_swapped_the_model"
+            TWO_STORED_TURNS, 2, "unsloth/other-gguf", id="another_client_swapped_the_model"
         ),
     ],
 )
@@ -1090,8 +1090,8 @@ def test_a_loaded_model_reprices_the_open_thread(world_setup, expected_sent, cou
     ("send_a_turn", "expected_total"),
     [
         # Sent mid-count then stopped before any usage, so the snapshot guard cannot see the turn.
-        pytest.param(True, None, id = "a_turn_arrives_mid_count"),
-        pytest.param(False, 62, id = "branch_unchanged"),
+        pytest.param(True, None, id="a_turn_arrives_mid_count"),
+        pytest.param(False, 62, id="branch_unchanged"),
     ],
 )
 def test_a_turn_sent_while_counting_drops_the_count(send_a_turn, expected_total):
@@ -1162,7 +1162,7 @@ def test_a_turn_sent_while_counting_drops_the_count(send_a_turn, expected_total)
         (False, True, None),
         (False, False, 62),
     ],
-    ids = ["run_starts_mid_count", "stopped_before_publish", "idle_and_unchanged"],
+    ids=["run_starts_mid_count", "stopped_before_publish", "idle_and_unchanged"],
 )
 def test_a_count_taken_while_the_thread_is_running_is_dropped(running, grew, expected_total):
     """A run streaming into an existing turn grows its content without moving the branch length or
@@ -1234,7 +1234,7 @@ def test_a_count_taken_while_the_thread_is_running_is_dropped(running, grew, exp
         ("live[0].attachments = [];", None),
         ("", 62),
     ],
-    ids = [
+    ids=[
         "tool_result_filled_in",
         "text_swapped_same_length",
         "attachment_deleted",
@@ -1310,7 +1310,7 @@ def test_a_count_for_a_branch_mutated_without_growing_is_dropped(mutation, expec
 @pytest.mark.parametrize(
     ("empties", "expected_total"),
     [(True, None), (False, 62)],
-    ids = ["sole_exchange_deleted", "branch_kept"],
+    ids=["sole_exchange_deleted", "branch_kept"],
 )
 def test_a_count_for_a_branch_that_was_emptied_is_dropped(empties, expected_total):
     """Deleting the only exchange while a count is in flight does not touch contextUsage, so
@@ -1376,7 +1376,7 @@ def test_a_count_for_a_branch_that_was_emptied_is_dropped(empties, expected_tota
         # Nothing stored, which is the case the recount was added for.
         ("null", 1, 12, 0),
     ],
-    ids = ["saved_matches_the_model", "saved_is_another_model", "nothing_saved"],
+    ids=["saved_matches_the_model", "saved_is_another_model", "nothing_saved"],
 )
 def test_history_hydration_keeps_saved_usage_it_restored(
     saved, expect_counts, expect_total, expect_completion
@@ -1518,7 +1518,7 @@ def test_a_second_trigger_does_not_duplicate_an_in_flight_count():
         ('{ modelType: "base", pairId: "pair-1" }', 0),
         ('{ modelType: "finetuned", pairId: "pair-1" }', 0),
     ],
-    ids = ["primary_pane", "compare_pane", "compare_finetuned_pane"],
+    ids=["primary_pane", "compare_pane", "compare_finetuned_pane"],
 )
 def test_only_the_primary_pane_recounts_on_history_load(pane, expect_counts):
     """refreshContextUsage drops a total whose thread is not activeThreadId, and a compare pane
@@ -1644,7 +1644,7 @@ def test_a_new_chat_recount_is_retried_after_a_background_run_ends():
 @pytest.mark.parametrize(
     ("first_run_starts", "expected_total"),
     [(True, None), (False, 12)],
-    ids = ["first_turn_sent_mid_count", "still_empty"],
+    ids=["first_turn_sent_mid_count", "still_empty"],
 )
 def test_a_new_chat_count_is_dropped_once_its_first_run_starts(first_run_starts, expected_total):
     """A New Chat count captures a null thread id, so it has no branch to compare. A first turn
@@ -1773,8 +1773,8 @@ DEEP_LINK_HYDRATING_AFTER_THE_LOADER = """
 @pytest.mark.parametrize(
     ("seed_script", "scenario"),
     [
-        pytest.param(LOADED_MODEL, REVISIT_AFTER_A_MODEL_SWITCH, id = "revisit_a_cached_thread"),
-        pytest.param("", DEEP_LINK_HYDRATING_AFTER_THE_LOADER, id = "deep_link_hydrates_late"),
+        pytest.param(LOADED_MODEL, REVISIT_AFTER_A_MODEL_SWITCH, id="revisit_a_cached_thread"),
+        pytest.param("", DEEP_LINK_HYDRATING_AFTER_THE_LOADER, id="deep_link_hydrates_late"),
     ],
 )
 def test_a_thread_becoming_active_with_a_blank_bar_is_repriced(seed_script, scenario):
@@ -1834,7 +1834,7 @@ def test_a_thread_becoming_active_with_a_blank_bar_is_repriced(seed_script, scen
         # Never mounted: there is nothing to compare against and nothing to invalidate.
         ("", 62),
     ],
-    ids = ["mounted_with_a_new_turn", "mounted_unchanged", "still_unmounted"],
+    ids=["mounted_with_a_new_turn", "mounted_unchanged", "still_unmounted"],
 )
 def test_a_stored_history_count_is_dropped_once_the_runtime_contradicts_it(mount, expected_total):
     """A recount that falls back to storage runs before the thread is mounted, so it has no live
@@ -1894,7 +1894,7 @@ def test_a_stored_history_count_is_dropped_once_the_runtime_contradicts_it(mount
         ("{ isAudio: true, hasAudioInput: true }", 1),
         ("{ isAudio: false, hasAudioInput: false }", 1),
     ],
-    ids = ["output_only_audio", "audio_input_model", "plain_gguf"],
+    ids=["output_only_audio", "audio_input_model", "plain_gguf"],
 )
 def test_an_output_only_audio_gguf_is_never_recounted(model_flags, expected_counts):
     """A TTS GGUF sends through /audio/generate, which answers with no usage. A chat-template total
@@ -1937,7 +1937,7 @@ def test_an_output_only_audio_gguf_is_never_recounted(model_flags, expected_coun
         # Control: an idle server is what the count is for.
         ("{}", 1),
     ],
-    ids = ["this_thread_running", "another_thread_running", "nothing_running"],
+    ids=["this_thread_running", "another_thread_running", "nothing_running"],
 )
 def test_no_count_is_issued_while_anything_is_generating(local_runs, expected_counts):
     """/apply-template and /tokenize take no inference slot, so the measured cost of counting

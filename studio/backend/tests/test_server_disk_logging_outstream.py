@@ -141,7 +141,7 @@ class TestHardenConsoleClose:
 
         stream = _Console()
         run_mod._harden_console_close(stream)
-        with pytest.raises(AttributeError, match = "not_a_real_attribute"):
+        with pytest.raises(AttributeError, match="not_a_real_attribute"):
             stream.close()
 
     def test_swallowed_across_attributeerror_message_shapes(self):
@@ -225,7 +225,7 @@ class TestColabStartupRegression:
         try:
             monkeypatch.setattr(sys, "stdout", io.StringIO())
             monkeypatch.setattr(sys, "stderr", io.StringIO())
-            with pytest.raises(AttributeError, match = "watch_fd_thread"):
+            with pytest.raises(AttributeError, match="watch_fd_thread"):
                 logging.shutdown([weakref.ref(h) for h in handlers])
         finally:
             # Neutralize so a lingering handler can't crash global teardown.

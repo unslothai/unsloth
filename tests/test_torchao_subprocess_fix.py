@@ -114,7 +114,7 @@ def test_it_only_imports_the_stdlib_and_torch():
 # ---- staging ---------------------------------------------------------------
 
 
-@pytest.fixture(autouse = True)
+@pytest.fixture(autouse=True)
 def _restore_pythonpath():
     before = os.environ.get("PYTHONPATH")
     yield
@@ -128,6 +128,7 @@ def _torchao_is_broken_here() -> bool:
     try:
         import importlib.metadata as md
         from packaging.version import Version
+
         if Version(md.version("torchao")) < Version("0.18.0"):
             return False
     except Exception:
@@ -182,6 +183,7 @@ def test_the_temporary_file_cannot_be_pre_empted():
 
 def test_it_is_idempotent_on_pythonpath():
     import inspect
+
     src = inspect.getsource(IF.propagate_torchao_fix_to_subprocesses)
     assert "if directory not in parts:" in src
 
@@ -217,7 +219,7 @@ def test_it_refuses_a_directory_owned_by_someone_else(monkeypatch, tmp_path):
     monkeypatch.setattr(
         os, "lstat", lambda p: _NotOurs() if str(p) == str(hostile) else real_lstat(p)
     )
-    with pytest.raises(RuntimeError, match = "owned by another user"):
+    with pytest.raises(RuntimeError, match="owned by another user"):
         IF._subprocess_fix_directory()
 
 
@@ -253,7 +255,7 @@ def test_a_directory_that_cannot_be_tightened_is_refused(monkeypatch, tmp_path):
     os.chmod(loose, 0o777)
     monkeypatch.setattr(os, "chmod", lambda *a, **k: None)  # silently ignored
 
-    with pytest.raises(RuntimeError, match = "group- or world-writable"):
+    with pytest.raises(RuntimeError, match="group- or world-writable"):
         IF._subprocess_fix_directory()
 
 
@@ -277,33 +279,33 @@ def staged(tmp_path):
     a fake torchao 0.18 that reproduces the real import error."""
     site = tmp_path / "hook"
     site.mkdir()
-    (site / "sitecustomize.py").write_text(IF._subprocess_sitecustomize_source(), encoding = "utf-8")
+    (site / "sitecustomize.py").write_text(IF._subprocess_sitecustomize_source(), encoding="utf-8")
 
     fake = tmp_path / "fake"
-    (fake / "torch" / "nn").mkdir(parents = True)
+    (fake / "torch" / "nn").mkdir(parents=True)
     (fake / "torch" / "__init__.py").write_text(
-        "from . import nn\n__version__='2.9.0'\n", encoding = "utf-8"
+        "from . import nn\n__version__='2.9.0'\n", encoding="utf-8"
     )
     (fake / "torch" / "nn" / "__init__.py").write_text(
-        "from . import functional\n", encoding = "utf-8"
+        "from . import functional\n", encoding="utf-8"
     )
     (fake / "torch" / "nn" / "functional.py").write_text(
-        "def linear(*a, **k):\n    return None\n", encoding = "utf-8"
+        "def linear(*a, **k):\n    return None\n", encoding="utf-8"
     )
     (fake / "torchao").mkdir()
     (fake / "torchao" / "__init__.py").write_text(
         "from torch.nn.functional import ScalingType, scaled_grouped_mm\n__version__='0.18.0'\n",
-        encoding = "utf-8",
+        encoding="utf-8",
     )
     d = fake / "torchao-0.18.0.dist-info"
     d.mkdir()
     (d / "METADATA").write_text(
-        "Metadata-Version: 2.1\nName: torchao\nVersion: 0.18.0\n", encoding = "utf-8"
+        "Metadata-Version: 2.1\nName: torchao\nVersion: 0.18.0\n", encoding="utf-8"
     )
     return site, fake
 
 
-@pytest.fixture(scope = "session")
+@pytest.fixture(scope="session")
 def bare_interpreter(tmp_path_factory):
     """An interpreter whose site-packages is empty.
 
@@ -315,9 +317,9 @@ def bare_interpreter(tmp_path_factory):
     try:
         subprocess.run(
             [sys.executable, "-m", "venv", "--without-pip", str(venv)],
-            check = True,
-            capture_output = True,
-            timeout = 300,
+            check=True,
+            capture_output=True,
+            timeout=300,
         )
     except Exception as exception:
         pytest.skip(f"cannot build a venv here ({exception})")
@@ -330,17 +332,17 @@ def bare_interpreter(tmp_path_factory):
 def _child(
     code: str,
     path_entries,
-    timeout = 300,
-    executable = None,
+    timeout=300,
+    executable=None,
 ):
     env = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
     env["PYTHONPATH"] = os.pathsep.join(str(p) for p in path_entries)
     return subprocess.run(
         [executable or sys.executable, "-c", textwrap.dedent(code)],
-        capture_output = True,
-        text = True,
-        timeout = timeout,
-        env = env,
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+        env=env,
     )
 
 
@@ -405,7 +407,7 @@ def test_an_existing_sitecustomize_still_runs(staged, tmp_path):
     site, fake = staged
     other = tmp_path / "other"
     other.mkdir()
-    (other / "sitecustomize.py").write_text("print('OTHER SITECUSTOMIZE RAN')\n", encoding = "utf-8")
+    (other / "sitecustomize.py").write_text("print('OTHER SITECUSTOMIZE RAN')\n", encoding="utf-8")
     p = _child("import torchao; print('OK')", [site, other, fake])
     assert "OTHER SITECUSTOMIZE RAN" in p.stdout, p.stdout + p.stderr
     assert "OK" in p.stdout
@@ -416,12 +418,12 @@ def test_a_package_form_existing_sitecustomize_still_runs(staged, tmp_path):
     for a `sitecustomize.py` would silently drop it in every subprocess."""
     site, fake = staged
     other = tmp_path / "other"
-    (other / "sitecustomize").mkdir(parents = True)
+    (other / "sitecustomize").mkdir(parents=True)
     (other / "sitecustomize" / "__init__.py").write_text(
         "from . import extra\nprint('PACKAGE SITECUSTOMIZE RAN', extra.NAME)\n",
-        encoding = "utf-8",
+        encoding="utf-8",
     )
-    (other / "sitecustomize" / "extra.py").write_text("NAME = 'submodule'\n", encoding = "utf-8")
+    (other / "sitecustomize" / "extra.py").write_text("NAME = 'submodule'\n", encoding="utf-8")
     p = _child("import torchao; print('OK')", [site, other, fake])
     assert "PACKAGE SITECUSTOMIZE RAN submodule" in p.stdout, p.stdout + p.stderr
     assert "OK" in p.stdout
@@ -435,10 +437,10 @@ def test_a_pyc_only_existing_sitecustomize_still_runs(staged, tmp_path):
     source = tmp_path / "src"
     source.mkdir()
     written = source / "sitecustomize.py"
-    written.write_text("print('PYC SITECUSTOMIZE RAN')\n", encoding = "utf-8")
+    written.write_text("print('PYC SITECUSTOMIZE RAN')\n", encoding="utf-8")
     other = tmp_path / "other_pyc"
     other.mkdir()
-    py_compile.compile(str(written), cfile = str(other / "sitecustomize.pyc"), doraise = True)
+    py_compile.compile(str(written), cfile=str(other / "sitecustomize.pyc"), doraise=True)
     p = _child("import torchao; print('OK')", [site, other, fake])
     assert "PYC SITECUSTOMIZE RAN" in p.stdout, p.stdout + p.stderr
     assert "OK" in p.stdout
@@ -447,9 +449,9 @@ def test_a_pyc_only_existing_sitecustomize_still_runs(staged, tmp_path):
 def test_a_broken_package_form_sitecustomize_does_not_kill_the_process(staged, tmp_path):
     site, fake = staged
     other = tmp_path / "other"
-    (other / "sitecustomize").mkdir(parents = True)
+    (other / "sitecustomize").mkdir(parents=True)
     (other / "sitecustomize" / "__init__.py").write_text(
-        "raise RuntimeError('boom')\n", encoding = "utf-8"
+        "raise RuntimeError('boom')\n", encoding="utf-8"
     )
     p = _child("import torchao; print('STILL OK')", [site, other, fake])
     assert "STILL OK" in p.stdout, p.stdout + p.stderr
@@ -460,7 +462,7 @@ def test_a_broken_existing_sitecustomize_does_not_kill_the_process(staged, tmp_p
     site, fake = staged
     other = tmp_path / "other"
     other.mkdir()
-    (other / "sitecustomize.py").write_text("raise RuntimeError('boom')\n", encoding = "utf-8")
+    (other / "sitecustomize.py").write_text("raise RuntimeError('boom')\n", encoding="utf-8")
     p = _child("import torchao; print('STILL OK')", [site, other, fake])
     assert "STILL OK" in p.stdout, p.stdout + p.stderr
 
@@ -469,15 +471,15 @@ def test_it_does_nothing_when_torchao_is_absent(staged, tmp_path, bare_interpret
     """No torchao, no patching: torch.nn.functional must be untouched."""
     site, _fake = staged
     bare = tmp_path / "bare"
-    (bare / "torch" / "nn").mkdir(parents = True)
+    (bare / "torch" / "nn").mkdir(parents=True)
     (bare / "torch" / "__init__.py").write_text(
-        "from . import nn\n__version__='2.9.0'\n", encoding = "utf-8"
+        "from . import nn\n__version__='2.9.0'\n", encoding="utf-8"
     )
     (bare / "torch" / "nn" / "__init__.py").write_text(
-        "from . import functional\n", encoding = "utf-8"
+        "from . import functional\n", encoding="utf-8"
     )
     (bare / "torch" / "nn" / "functional.py").write_text(
-        "def linear(*a, **k):\n    return None\n", encoding = "utf-8"
+        "def linear(*a, **k):\n    return None\n", encoding="utf-8"
     )
     p = _child(
         """
@@ -485,7 +487,7 @@ def test_it_does_nothing_when_torchao_is_absent(staged, tmp_path, bare_interpret
         print("PATCHED", hasattr(F, "ScalingType"))
     """,
         [site, bare],
-        executable = bare_interpreter,
+        executable=bare_interpreter,
     )
     assert "PATCHED False" in p.stdout, p.stdout + p.stderr
 
@@ -524,7 +526,7 @@ def test_the_in_process_fix_does_not_disable_the_subprocess_fix(monkeypatch, tmp
         IF, "importlib_version", lambda name: "0.18.0" if name == "torchao" else "0"
     )
     monkeypatch.setattr("tempfile.gettempdir", lambda: str(tmp_path))
-    monkeypatch.delenv("PYTHONPATH", raising = False)
+    monkeypatch.delenv("PYTHONPATH", raising=False)
     try:
         assert IF.fix_torchao_torch_symbol_skew() is True  # the _gpu_init order
         directory = IF.propagate_torchao_fix_to_subprocesses()
@@ -559,10 +561,10 @@ def _plant(directory, kind, source):
     target = directory / "sitecustomize.py"
     if kind == "symlink":
         elsewhere = directory.parent / "planted_elsewhere.py"
-        elsewhere.write_text(source, encoding = "utf-8")
+        elsewhere.write_text(source, encoding="utf-8")
         os.symlink(elsewhere, target)
         return elsewhere
-    target.write_text(source, encoding = "utf-8")
+    target.write_text(source, encoding="utf-8")
     if kind == "group_writable":
         os.chmod(target, 0o666)
     return target
@@ -586,7 +588,7 @@ def test_a_foreign_owned_hook_is_not_trusted(tmp_path, monkeypatch):
     if not hasattr(os, "getuid"):
         pytest.skip("POSIX ownership only")
     target = tmp_path / "sitecustomize.py"
-    target.write_text("x = 1\n", encoding = "utf-8")
+    target.write_text("x = 1\n", encoding="utf-8")
     real_lstat = os.lstat
     theirs = os.stat_result(
         tuple(real_lstat(str(target)))[:4] + (os.getuid() + 1,) + tuple(real_lstat(str(target)))[5:]
@@ -598,7 +600,7 @@ def test_a_foreign_owned_hook_is_not_trusted(tmp_path, monkeypatch):
 def test_our_own_hook_file_is_trusted(tmp_path):
     """The fast path must survive, or concurrent runs fight over the file."""
     target = tmp_path / "sitecustomize.py"
-    target.write_text(IF._subprocess_sitecustomize_source(), encoding = "utf-8")
+    target.write_text(IF._subprocess_sitecustomize_source(), encoding="utf-8")
     os.chmod(target, 0o600)
     assert IF._existing_hook_is_trustworthy(str(target)) is True
     assert IF._existing_hook_is_trustworthy(str(tmp_path / "absent.py")) is True
@@ -623,7 +625,7 @@ def test_a_planted_hook_is_replaced_even_when_it_matches(monkeypatch, tmp_path, 
         IF, "importlib_version", lambda name: "0.18.0" if name == "torchao" else "0"
     )
     monkeypatch.setattr("tempfile.gettempdir", lambda: str(tmp_path))
-    monkeypatch.delenv("PYTHONPATH", raising = False)
+    monkeypatch.delenv("PYTHONPATH", raising=False)
 
     loose = tmp_path / ("unsloth_subprocess_import_fix-%d" % os.getuid())
     loose.mkdir()
@@ -639,11 +641,11 @@ def test_a_planted_hook_is_replaced_even_when_it_matches(monkeypatch, tmp_path, 
 
         assert _stat.S_ISREG(info.st_mode), "still a symlink to a file we do not own"
         assert not _stat.S_IMODE(info.st_mode) & 0o022, oct(info.st_mode)
-        assert target.read_text(encoding = "utf-8") == IF._subprocess_sitecustomize_source()
+        assert target.read_text(encoding="utf-8") == IF._subprocess_sitecustomize_source()
         if kind == "symlink":
             # Rewriting the planted file must no longer reach any child.
-            planted.write_text("raise SystemExit('hijacked')\n", encoding = "utf-8")
-            assert target.read_text(encoding = "utf-8") != planted.read_text(encoding = "utf-8")
+            planted.write_text("raise SystemExit('hijacked')\n", encoding="utf-8")
+            assert target.read_text(encoding="utf-8") != planted.read_text(encoding="utf-8")
     finally:
         for name in IF._TORCHAO_TORCH_SYMBOLS:
             if getattr(getattr(F, name, None), "__unsloth_placeholder__", False):
@@ -670,13 +672,13 @@ def test_a_pre_created_temporary_symlink_is_not_followed(monkeypatch, tmp_path):
         IF, "importlib_version", lambda name: "0.18.0" if name == "torchao" else "0"
     )
     monkeypatch.setattr("tempfile.gettempdir", lambda: str(tmp_path))
-    monkeypatch.delenv("PYTHONPATH", raising = False)
+    monkeypatch.delenv("PYTHONPATH", raising=False)
 
     loose = tmp_path / ("unsloth_subprocess_import_fix-%d" % os.getuid())
     loose.mkdir()
     os.chmod(loose, 0o777)
     theirs = tmp_path / "planted_elsewhere.py"
-    theirs.write_text("# theirs\n", encoding = "utf-8")
+    theirs.write_text("# theirs\n", encoding="utf-8")
     os.symlink(theirs, loose / ("sitecustomize.py.%d.tmp" % os.getpid()))
 
     try:
@@ -685,9 +687,9 @@ def test_a_pre_created_temporary_symlink_is_not_followed(monkeypatch, tmp_path):
         info = os.lstat(target)
         assert _stat.S_ISREG(info.st_mode), "installed the planted symlink as the hook"
         assert not _stat.S_IMODE(info.st_mode) & 0o022, oct(info.st_mode)
-        assert target.read_text(encoding = "utf-8") == IF._subprocess_sitecustomize_source()
+        assert target.read_text(encoding="utf-8") == IF._subprocess_sitecustomize_source()
         # Their file was never opened, so rewriting it reaches nothing.
-        assert theirs.read_text(encoding = "utf-8") == "# theirs\n"
+        assert theirs.read_text(encoding="utf-8") == "# theirs\n"
     finally:
         for name in IF._TORCHAO_TORCH_SYMBOLS:
             if getattr(getattr(F, name, None), "__unsloth_placeholder__", False):
@@ -696,13 +698,14 @@ def test_a_pre_created_temporary_symlink_is_not_followed(monkeypatch, tmp_path):
 
 def test_the_staging_file_is_private_and_leaves_nothing_behind(tmp_path):
     directory = tmp_path / "dir"
-    directory.mkdir(mode = 0o700)
+    directory.mkdir(mode=0o700)
     target = directory / "sitecustomize.py"
     IF._write_hook_atomically(str(target), "MARK = 1\n")
-    assert target.read_text(encoding = "utf-8") == "MARK = 1\n"
+    assert target.read_text(encoding="utf-8") == "MARK = 1\n"
     assert [p.name for p in directory.iterdir()] == ["sitecustomize.py"]
     if hasattr(os, "getuid"):
         import stat as _stat
+
         assert oct(_stat.S_IMODE(os.lstat(target).st_mode)) == oct(0o600)
 
 
@@ -715,7 +718,7 @@ def test_a_chained_package_stays_importable(staged, tmp_path):
     perform after startup."""
     site, fake = staged
     other = tmp_path / "other"
-    (other / "sitecustomize").mkdir(parents = True)
+    (other / "sitecustomize").mkdir(parents=True)
     (other / "sitecustomize" / "__init__.py").write_text(
         textwrap.dedent(
             """
@@ -727,9 +730,9 @@ def test_a_chained_package_stays_importable(staged, tmp_path):
             atexit.register(_later)
             """
         ),
-        encoding = "utf-8",
+        encoding="utf-8",
     )
-    (other / "sitecustomize" / "extra.py").write_text("NAME = 'submodule'\n", encoding = "utf-8")
+    (other / "sitecustomize" / "extra.py").write_text("NAME = 'submodule'\n", encoding="utf-8")
     p = _child(
         """
         import sitecustomize, torchao
@@ -751,7 +754,7 @@ def test_a_broken_chained_module_does_not_keep_our_name(staged, tmp_path):
     other = tmp_path / "other"
     other.mkdir()
     (other / "sitecustomize.py").write_text(
-        "MARK = 'half-initialised'\nraise RuntimeError('boom')\n", encoding = "utf-8"
+        "MARK = 'half-initialised'\nraise RuntimeError('boom')\n", encoding="utf-8"
     )
     p = _child(
         """
@@ -784,7 +787,7 @@ def test_a_symlink_alias_of_our_own_directory_is_not_chained(staged, tmp_path):
     site, _fake = staged
     alias = tmp_path / "alias"
     try:
-        os.symlink(site, alias, target_is_directory = True)
+        os.symlink(site, alias, target_is_directory=True)
     except (OSError, NotImplementedError) as exception:
         pytest.skip(f"cannot create a directory symlink here ({exception})")
 
@@ -818,12 +821,12 @@ def test_an_aliased_directory_still_chains_to_a_real_sitecustomize(staged, tmp_p
     site, fake = staged
     alias = tmp_path / "alias"
     try:
-        os.symlink(site, alias, target_is_directory = True)
+        os.symlink(site, alias, target_is_directory=True)
     except (OSError, NotImplementedError) as exception:
         pytest.skip(f"cannot create a directory symlink here ({exception})")
     other = tmp_path / "other"
     other.mkdir()
-    (other / "sitecustomize.py").write_text("print('OTHER SITECUSTOMIZE RAN')\n", encoding = "utf-8")
+    (other / "sitecustomize.py").write_text("print('OTHER SITECUSTOMIZE RAN')\n", encoding="utf-8")
 
     p = _child("import torchao; print('OK')", [alias, site, other, fake])
     assert "OTHER SITECUSTOMIZE RAN" in p.stdout, p.stdout + p.stderr

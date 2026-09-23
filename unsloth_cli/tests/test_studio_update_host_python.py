@@ -22,12 +22,13 @@ if str(_REPO_ROOT) not in sys.path:
 
 def _studio():
     from unsloth_cli.commands import studio as _studio_mod
+
     return _studio_mod
 
 
 def _setup_tree(tmp_path: Path) -> Path:
     repo_root = tmp_path / "repo"
-    (repo_root / "studio").mkdir(parents = True, exist_ok = True)
+    (repo_root / "studio").mkdir(parents=True, exist_ok=True)
     (repo_root / "studio" / "setup.sh").write_text("")
     (repo_root / "studio" / "setup.ps1").write_text("")
     return repo_root
@@ -39,7 +40,7 @@ class _Result:
 
 def _quiet_cache(monkeypatch, studio) -> None:
     # The uv cache seeding has its own tests; here it must neither spawn uv nor read the machine.
-    monkeypatch.setattr(studio, "_with_studio_uv_cache", lambda env, cwd = None: env)
+    monkeypatch.setattr(studio, "_with_studio_uv_cache", lambda env, cwd=None: env)
     monkeypatch.setattr(studio, "_backfill_uv_cache_marker", lambda env: None)
 
 
@@ -51,14 +52,14 @@ def test_the_posix_update_names_its_own_interpreter(monkeypatch, tmp_path):
 
     def _fake_run(
         argv,
-        env = None,
+        env=None,
         **kwargs,
     ):
         seen["env"] = env
         return _Result()
 
     monkeypatch.setattr(studio.subprocess, "run", _fake_run)
-    studio._run_setup_script(repo_root = _setup_tree(tmp_path))
+    studio._run_setup_script(repo_root=_setup_tree(tmp_path))
 
     assert seen["env"] is not None, "env must be materialised to carry the interpreter"
     assert seen["env"]["UNSLOTH_SETUP_HOST_PYTHON"] == sys.executable
@@ -81,14 +82,14 @@ def test_the_windows_update_names_its_own_interpreter(monkeypatch, tmp_path):
 
     def _fake_popen(
         argv,
-        env = None,
+        env=None,
         **kwargs,
     ):
         seen["env"] = env
         return _Process()
 
     monkeypatch.setattr(studio.subprocess, "Popen", _fake_popen)
-    studio._run_setup_script(repo_root = _setup_tree(tmp_path))
+    studio._run_setup_script(repo_root=_setup_tree(tmp_path))
 
     assert seen["env"]["UNSLOTH_SETUP_HOST_PYTHON"] == sys.executable
 
@@ -102,14 +103,14 @@ def test_the_verbose_flag_survives_alongside_it(monkeypatch, tmp_path):
 
     def _fake_run(
         argv,
-        env = None,
+        env=None,
         **kwargs,
     ):
         seen["env"] = env
         return _Result()
 
     monkeypatch.setattr(studio.subprocess, "run", _fake_run)
-    studio._run_setup_script(verbose = True, repo_root = _setup_tree(tmp_path))
+    studio._run_setup_script(verbose=True, repo_root=_setup_tree(tmp_path))
 
     assert seen["env"]["UNSLOTH_VERBOSE"] == "1"
     assert seen["env"]["UNSLOTH_SETUP_HOST_PYTHON"] == sys.executable

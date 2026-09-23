@@ -49,13 +49,13 @@ def _legacy_lookup(table: str, column: str, digest: str):
 
 
 def _set_up_alice(password: str = "alice-password-1") -> dict:
-    account = storage.issue_account_setup_code(username = "alice")
+    account = storage.issue_account_setup_code(username="alice")
     record = storage.authenticate_account_login("alice", account["setup_code"])
     assert record is not None
     _salt, pwd_hash, secret, must_change = record
     assert must_change
     new_secret = storage.update_account_password(
-        "alice", password, expect_password_hash = pwd_hash, expect_secret = secret
+        "alice", password, expect_password_hash=pwd_hash, expect_secret=secret
     )
     assert new_secret
     return account["account"]
@@ -65,7 +65,7 @@ def test_owner_row_is_byte_for_byte_legacy(auth_db):
     legacy = _legacy("unsloth")
     assert verify_password("owner-password", legacy["password_salt"], legacy["password_hash"])
     assert storage.get_jwt_secret("unsloth") == legacy["jwt_secret"]
-    raw, _row = storage.create_api_key("unsloth", name = "cli")
+    raw, _row = storage.create_api_key("unsloth", name="cli")
     assert _legacy_lookup("api_keys", "key_hash", storage._pbkdf2_api_key(raw)) is not None
     storage.save_refresh_token("tok", "unsloth", "2999-01-01T00:00:00+00:00")
     assert _legacy_lookup("refresh_tokens", "token_hash", storage._hash_token("tok")) is not None
@@ -84,15 +84,15 @@ def test_managed_tokens_do_not_verify_with_the_legacy_secret(auth_db):
     real = storage.get_jwt_secret("alice")
     legacy = _legacy("alice")["jwt_secret"]
     assert real and legacy and real != legacy
-    token = jwt.encode({"sub": "alice"}, real, algorithm = "HS256")
-    assert jwt.decode(token, real, algorithms = ["HS256"])["sub"] == "alice"
+    token = jwt.encode({"sub": "alice"}, real, algorithm="HS256")
+    assert jwt.decode(token, real, algorithms=["HS256"])["sub"] == "alice"
     with pytest.raises(jwt.InvalidSignatureError):
-        jwt.decode(token, legacy, algorithms = ["HS256"])
+        jwt.decode(token, legacy, algorithms=["HS256"])
 
 
 def test_managed_api_keys_and_refresh_tokens_are_invisible_to_a_plain_lookup(auth_db):
     _set_up_alice()
-    raw, _row = storage.create_api_key("alice", name = "cli")
+    raw, _row = storage.create_api_key("alice", name="cli")
     assert _legacy_lookup("api_keys", "key_hash", storage._pbkdf2_api_key(raw)) is None
     verified = storage.validate_api_key_account(raw)
     assert verified is not None and verified[0]["username"] == "alice"
@@ -109,7 +109,7 @@ def test_managed_api_keys_and_refresh_tokens_are_invisible_to_a_plain_lookup(aut
 
 def test_every_managed_credential_path_stays_fenced(auth_db):
     alice = _set_up_alice()
-    storage.issue_account_setup_code(account_id = alice["account_id"])
+    storage.issue_account_setup_code(account_id=alice["account_id"])
     assert _legacy("alice")["password_hash"] == "managed-account"
     storage.set_account_active(alice["account_id"], False)
     storage.set_account_active(alice["account_id"], True)

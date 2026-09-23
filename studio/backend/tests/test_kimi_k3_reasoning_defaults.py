@@ -55,8 +55,9 @@ KIMI_K3_IDS = [
 ]
 
 
-def _detect(template, model_id = "unsloth/Kimi-K3-GGUF"):
+def _detect(template, model_id="unsloth/Kimi-K3-GGUF"):
     from core.inference.llama_cpp import detect_reasoning_flags
+
     return detect_reasoning_flags(template, model_id)
 
 
@@ -117,6 +118,7 @@ def test_training_defaults_still_come_from_default_yaml(model_id):
     # an inference-only YAML would leave the previous model's hyperparameters
     # in the training form.
     from utils.models.model_config import load_model_defaults
+
     assert "training" in load_model_defaults(model_id)
 
 

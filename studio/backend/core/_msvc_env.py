@@ -34,9 +34,10 @@ def _triton_include_dirs() -> list | None:
     would otherwise read as "no headers" and disable torch.compile on a machine with Visual Studio."""
     try:
         from triton.windows_utils import find_msvc_winsdk  # noqa: PLC0415
+
         _, inc_dirs, _ = find_msvc_winsdk()
     except Exception:  # noqa: BLE001
-        logger.debug("Triton's MSVC/WinSDK discovery is unavailable", exc_info = True)
+        logger.debug("Triton's MSVC/WinSDK discovery is unavailable", exc_info=True)
         return None
     return list(inc_dirs)
 
@@ -50,15 +51,17 @@ def _triton_is_triton_windows() -> bool:
     """XPU Triton and triton-windows own the same top-level name; only the distribution says which."""
     try:
         import importlib.metadata as md  # noqa: PLC0415
+
         dists = md.packages_distributions().get("triton") or ()
     except Exception:  # noqa: BLE001
-        logger.debug("Could not resolve which distribution owns `triton`", exc_info = True)
+        logger.debug("Could not resolve which distribution owns `triton`", exc_info=True)
         return False
     return any(d.lower().replace("_", "-") == "triton-windows" for d in dists)
 
 
 def _rocm_clang_cl_present() -> bool:
     import sysconfig  # noqa: PLC0415
+
     return os.path.isfile(
         os.path.join(
             sysconfig.get_path("platlib"), "_rocm_sdk_core", "lib", "llvm", "bin", "clang-cl.exe"
@@ -73,9 +76,10 @@ def _cc_needs_msvc_headers(cc: str) -> bool:
     The fallback is what both predicates do, a case-insensitive basename match."""
     try:
         from triton.runtime.build import is_clang_cl, is_msvc  # noqa: PLC0415
+
         return bool(is_msvc(cc) or is_clang_cl(cc))
     except Exception:  # noqa: BLE001
-        logger.debug("Triton's compiler predicates are unavailable", exc_info = True)
+        logger.debug("Triton's compiler predicates are unavailable", exc_info=True)
         return os.path.basename(str(cc)).lower() in ("cl", "cl.exe", "clang-cl", "clang-cl.exe")
 
 
@@ -88,6 +92,7 @@ def _triton_cc() -> str:
         from triton.runtime.build import get_cc  # noqa: PLC0415
     except ImportError:
         from triton.runtime.build import _find_compiler  # noqa: PLC0415
+
         return _find_compiler("c")
     return get_cc()
 
@@ -99,7 +104,7 @@ def _needs_msvc_headers() -> bool:
     try:
         cc = _triton_cc()
     except Exception:  # noqa: BLE001
-        logger.debug("Triton's compiler selection is unavailable", exc_info = True)
+        logger.debug("Triton's compiler selection is unavailable", exc_info=True)
         return _triton_is_triton_windows() and _rocm_clang_cl_present()
     return _cc_needs_msvc_headers(cc)
 
@@ -113,6 +118,7 @@ def _toolchain_summary() -> str:
         cc = "unknown"
     try:
         from triton.windows_utils import find_msvc_winsdk  # noqa: PLC0415
+
         _, inc_dirs, _ = find_msvc_winsdk()
     except Exception:  # noqa: BLE001
         inc_dirs = []
@@ -142,19 +148,19 @@ def _compiles_a_trivial_translation_unit(cc: str, inc_dirs) -> bool | None:
     try:
         with tempfile.TemporaryDirectory() as tmp:
             src = os.path.join(tmp, "probe.c")
-            with open(src, "w", encoding = "utf-8") as fh:
+            with open(src, "w", encoding="utf-8") as fh:
                 fh.write("#include <stdlib.h>\nint main(void){return 0;}\n")
             # Syntax-only: no link, so a missing lib path cannot masquerade as a missing
             # header, and nothing is written outside the temporary directory.
             argv = [cc, "/Zs", src] + [f"/I{d}" for d in inc_dirs if d]
             done = subprocess.run(
                 argv,
-                cwd = tmp,
-                capture_output = True,
-                timeout = 90,
+                cwd=tmp,
+                capture_output=True,
+                timeout=90,
             )
     except Exception:  # noqa: BLE001
-        logger.debug("The compiler probe could not be run", exc_info = True)
+        logger.debug("The compiler probe could not be run", exc_info=True)
         return None
     if done.returncode != 0:
         logger.debug("Compiler probe failed: %s", (done.stderr or b"")[-400:])
@@ -213,7 +219,7 @@ def gate_torch_compile_on_windows(log: logging.Logger) -> None:
     try:
         reachable = crt_headers_reachable()
     except Exception:  # noqa: BLE001 -- a probe must not take down the worker it exists to protect
-        logger.debug("The toolchain probe raised; leaving torch.compile alone", exc_info = True)
+        logger.debug("The toolchain probe raised; leaving torch.compile alone", exc_info=True)
         reachable = True
     if reachable:
         log.info("Triton available — torch.compile enabled")

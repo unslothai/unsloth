@@ -314,7 +314,7 @@ curl -fsSL https://unsloth.ai/install.sh | sh
 """
 
 
-@dataclass(frozen = True)
+@dataclass(frozen=True)
 class Section:
     """A heading and the lines under it, to the next heading of any level."""
 
@@ -336,13 +336,13 @@ def sections(module, text: str) -> list[Section]:
             if bodies and event.retract:
                 del bodies[-1][len(bodies[-1]) - event.retract :]
             title = event.title.strip()
-            found.append(Section(version = title.split()[0] if title else "", heading = title, body = ""))
+            found.append(Section(version=title.split()[0] if title else "", heading=title, body=""))
             bodies.append([])
             continue
         if bodies:
             bodies[-1].append(event.line)
     return [
-        Section(version = entry.version, heading = entry.heading, body = "\n".join(body).strip())
+        Section(version=entry.version, heading=entry.heading, body="\n".join(body).strip())
         for entry, body in zip(found, bodies)
     ]
 
@@ -375,7 +375,7 @@ def releases_payload(*entries: dict) -> str:
     return json.dumps([{**defaults, **entry} for entry in entries])
 
 
-@pytest.fixture(scope = "module")
+@pytest.fixture(scope="module")
 def notes_module():
     sys.path.insert(0, str(BACKEND))
     try:
@@ -390,7 +390,7 @@ def notes_module():
 @pytest.fixture
 def serve_releases(notes_module, monkeypatch):
     """Serve a releases payload locally, and point the module at it."""
-    monkeypatch.delenv(notes_module.DISABLE_ENV_VAR, raising = False)
+    monkeypatch.delenv(notes_module.DISABLE_ENV_VAR, raising=False)
     servers: list[http.server.HTTPServer] = []
 
     def serve(
@@ -417,7 +417,7 @@ def serve_releases(notes_module, monkeypatch):
 
         server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
         servers.append(server)
-        threading.Thread(target = server.serve_forever, daemon = True).start()
+        threading.Thread(target=server.serve_forever, daemon=True).start()
         monkeypatch.setenv(
             notes_module.RELEASES_URL_ENV_VAR,
             f"http://127.0.0.1:{server.server_port}/releases",
@@ -574,7 +574,7 @@ def test_a_release_with_no_announcement_shows_none(notes_module, serve_releases)
             {
                 "tag_name": "v0.1.527-beta",
                 "name": "Unsloth v0.1.527-beta",
-                "body": (BODIES / "v0.1.527-beta.md").read_text(encoding = "utf-8"),
+                "body": (BODIES / "v0.1.527-beta.md").read_text(encoding="utf-8"),
                 "html_url": "https://github.com/unslothai/unsloth/releases/tag/v0.1.527-beta",
                 "published_at": "2026-08-09T17:14:42Z",
             },
@@ -648,15 +648,15 @@ def test_no_changelog_file_is_packaged_or_read():
     assert not (REPO / "CHANGELOG.md").exists()
     assert not (REPO / "_changelog_build.py").exists()
     for name in ("pyproject.toml", "build.sh", ".gitignore"):
-        assert "CHANGELOG.md" not in (REPO / name).read_text(encoding = "utf-8")
-    source = MODULE.read_text(encoding = "utf-8")
+        assert "CHANGELOG.md" not in (REPO / name).read_text(encoding="utf-8")
+    source = MODULE.read_text(encoding="utf-8")
     # "Full Changelog" is the footer line it strips; a file is what must be gone.
     assert "CHANGELOG.md" not in source and "changelog.py" not in source
 
 
 def test_preview_keeps_identifier_underscores():
     """UNSLOTH_DISABLE_UPDATE_CHECK must not render as UNSLOTHDISABLEUPDATECHECK."""
-    src = PREVIEW.read_text(encoding = "utf-8")
+    src = PREVIEW.read_text(encoding="utf-8")
     assert "BOLD_UNDERSCORE" in src and "ITALIC_UNDERSCORE" in src
     assert "parkCodeSpans" in src, "code spans are parked so their underscores survive"
     assert "const EMPHASIS" not in src, "the blanket emphasis strip is gone"
@@ -664,13 +664,13 @@ def test_preview_keeps_identifier_underscores():
 
 def test_panel_prefers_the_page_the_notes_came_from():
     """The page the notes came from wins over the caller's URL and the changelog."""
-    src = PANEL.read_text(encoding = "utf-8")
+    src = PANEL.read_text(encoding="utf-8")
     assert "notes?.htmlUrl ?? releaseNotesUrl ?? notes?.releaseNotesUrl" in src
 
 
 def test_remote_failure_is_reported_so_the_ui_can_retry(notes_module, monkeypatch):
     """An unreachable GitHub is retryable; "no notes published" is not."""
-    monkeypatch.delenv(notes_module.DISABLE_ENV_VAR, raising = False)
+    monkeypatch.delenv(notes_module.DISABLE_ENV_VAR, raising=False)
     # Port 9 (discard) refuses fast, standing in for an unreachable host.
     monkeypatch.setenv(notes_module.RELEASES_URL_ENV_VAR, "http://127.0.0.1:9/releases")
     notes_module.reset_release_notes_cache()
@@ -684,18 +684,18 @@ def test_remote_failure_is_reported_so_the_ui_can_retry(notes_module, monkeypatc
 
 def test_preview_keeps_comparison_operators():
     """The tag strip must keep the operators in "Support Python <3.15 and >3.9"."""
-    src = PREVIEW.read_text(encoding = "utf-8")
+    src = PREVIEW.read_text(encoding="utf-8")
     assert "/<\\/?[a-zA-Z][^>]*>/g" in src, "tag strip must require a name character"
 
 
 def test_preview_hides_commented_out_notes():
     """Unpublished notes inside <!-- --> are not rendered, so not previewed."""
-    src = PREVIEW.read_text(encoding = "utf-8")
+    src = PREVIEW.read_text(encoding="utf-8")
     assert "stripCommentSpans" in src and "COMMENT_OPEN" in src
 
 
 def test_hook_treats_a_reported_failure_as_retryable():
-    src = NOTES_HOOK.read_text(encoding = "utf-8")
+    src = NOTES_HOOK.read_text(encoding="utf-8")
     assert "next.error !== null" in src
 
 
@@ -709,11 +709,11 @@ def test_comment_delimiter_in_inline_code_is_literal(notes_module):
 
 def test_refresh_retries_a_cached_remote_failure(notes_module, serve_releases):
     """Retry must reach the network again rather than replay the cached failure."""
-    hits = serve_releases("", status = 500)
+    hits = serve_releases("", status=500)
     notes_module.get_release_notes("2.0")
     notes_module.get_release_notes("2.0")
     assert hits["count"] == 1, "the failure should be cached"
-    notes_module.get_release_notes("2.0", refresh = True)
+    notes_module.get_release_notes("2.0", refresh=True)
     assert hits["count"] == 2, "refresh must bypass the cached failure"
 
 
@@ -723,12 +723,12 @@ def test_a_rate_limit_is_not_retried_until_it_resets(notes_module, serve_release
     reset = str(int(time.time()) + 900)
     hits = serve_releases(
         '{"message": "API rate limit exceeded"}',
-        status = 403,
-        headers = {"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": reset},
+        status=403,
+        headers={"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": reset},
     )
     payload = notes_module.get_release_notes("2.0")
     assert payload["matched"] is False and "rate limit" in payload["error"].lower()
-    notes_module.get_release_notes("2.0", refresh = True)
+    notes_module.get_release_notes("2.0", refresh=True)
     assert hits["count"] == 1, "refresh must not bypass a rate-limit lockout"
 
 
@@ -798,7 +798,7 @@ def test_the_page_asked_for_fits_under_the_read_cap(notes_module, serve_releases
     query = urllib.parse.urlparse(notes_module.RELEASES_API_URL).query
     per_page = int(urllib.parse.parse_qs(query)["per_page"][0])
     # The largest real body checked in here, as the size of every entry.
-    largest = max(len(path.read_text(encoding = "utf-8")) for path in BODIES.glob("*.md"))
+    largest = max(len(path.read_text(encoding="utf-8")) for path in BODIES.glob("*.md"))
     full_page = [
         {
             "tag_name": f"v0.1.{index}-beta",
@@ -845,10 +845,10 @@ def test_a_cached_release_answers_an_unchanged_response(notes_module, serve_rele
                 "published_at": "2026-08-10T11:59:46Z",
             }
         ),
-        headers = {"ETag": '"abc"'},
+        headers={"ETag": '"abc"'},
     )
     assert notes_module.get_release_notes("2.0")["matched"] is True
-    serve_releases("", status = 304, reset = False)
+    serve_releases("", status=304, reset=False)
     # Expired, not reset: the ETag and last good release must carry over.
     notes_module._remote_cache.expires_at = 0
     payload = notes_module.get_release_notes("2.0")
@@ -857,7 +857,7 @@ def test_a_cached_release_answers_an_unchanged_response(notes_module, serve_rele
 
 def test_hook_never_returns_another_versions_notes():
     """State still describes the previous version until the effect runs."""
-    src = NOTES_HOOK.read_text(encoding = "utf-8")
+    src = NOTES_HOOK.read_text(encoding="utf-8")
     assert "notes.version === version" in src
     assert "load(version, true)" in src, "retry must ask the backend to bypass its cache"
 
@@ -884,18 +884,18 @@ def test_four_space_indentation_is_code_not_structure(notes_module):
 
 def test_desktop_notes_link_to_the_release_page_on_every_platform():
     """manualReleaseUrl is Linux-package only; the rest need the release page."""
-    hook = (FRONTEND / "hooks/use-tauri-update.ts").read_text(encoding = "utf-8")
+    hook = (FRONTEND / "hooks/use-tauri-update.ts").read_text(encoding="utf-8")
     assert "const releasePageUrl = info ?" in hook
-    banner = TAURI_BANNER.read_text(encoding = "utf-8")
+    banner = TAURI_BANNER.read_text(encoding="utf-8")
     assert "releaseNotesUrl={releasePageUrl ?? manualReleaseUrl}" in banner
-    provider = (FRONTEND / "app/provider.tsx").read_text(encoding = "utf-8")
+    provider = (FRONTEND / "app/provider.tsx").read_text(encoding="utf-8")
     assert "releasePageUrl={update.releasePageUrl}" in provider
 
 
 def test_preview_matches_how_markdown_renders_prose_and_links():
     """Three rendering mismatches the preview must not reintroduce: wrapped
     paragraphs split into fragments, autolinks eaten as tags, a lead cut short."""
-    src = PREVIEW.read_text(encoding = "utf-8")
+    src = PREVIEW.read_text(encoding="utf-8")
     # Contiguous prose lines accumulate and flush at a paragraph boundary.
     assert "collector.paragraph = collector.paragraph" in src
     # <https://x> renders as link text, so it is not a tag.
@@ -907,7 +907,7 @@ def test_preview_matches_how_markdown_renders_prose_and_links():
 def test_preview_treats_code_as_literal():
     """Inside a code span, and inside an indented code block, Markdown renders
     the text literally, so the preview must not transform or promote it."""
-    src = PREVIEW.read_text(encoding = "utf-8")
+    src = PREVIEW.read_text(encoding="utf-8")
     # Code spans are parked before any other inline transformation.
     park = src.index("parkCodeSpans(markdown")
     assert park < src.index("stripHtmlTags(\n    parked")
@@ -918,22 +918,22 @@ def test_preview_treats_code_as_literal():
 def test_desktop_updater_metadata_maps_published_field_names():
     """latest.json publishes Tauri's `notes`/`pub_date`; the manual Linux path
     must read those, not `body`/`date`, or its release notes are always empty."""
-    rust = (REPO / "studio/src-tauri/src/desktop_update_policy.rs").read_text(encoding = "utf-8")
+    rust = (REPO / "studio/src-tauri/src/desktop_update_policy.rs").read_text(encoding="utf-8")
     assert 'alias = "body"' in rust and "notes: Option<String>" in rust
     assert 'alias = "date"' in rust and "pub_date: Option<String>" in rust
     assert "body: metadata.notes" in rust and "date: metadata.pub_date" in rust
-    workflow = (REPO / ".github/workflows/release-desktop.yml").read_text(encoding = "utf-8")
+    workflow = (REPO / ".github/workflows/release-desktop.yml").read_text(encoding="utf-8")
     assert "'notes': notes," in workflow, "workflow no longer publishes `notes`"
 
 
 def test_backend_exposes_release_notes_route():
-    src = (BACKEND / "main.py").read_text(encoding = "utf-8")
+    src = (BACKEND / "main.py").read_text(encoding="utf-8")
     assert '@app.get("/api/studio/release-notes")' in src
     assert "is_supported_version_query" in src
 
 
 def test_panel_is_scrollable_and_shows_only_the_stripped_notes():
-    src = PANEL.read_text(encoding = "utf-8")
+    src = PANEL.read_text(encoding="utf-8")
     assert "overflow-y-auto" in src, "release notes must scroll inside the popup"
     assert "max-h-" in src, "the scroller needs a bounded height"
     # latest.json's `notes` is install boilerplate, the same every release.
@@ -942,8 +942,8 @@ def test_panel_is_scrollable_and_shows_only_the_stripped_notes():
 
 
 def test_notes_surface_is_borderless_and_lifts_in_dark_mode():
-    src = PANEL.read_text(encoding = "utf-8")
-    layout = NOTES_LAYOUT.read_text(encoding = "utf-8")
+    src = PANEL.read_text(encoding="utf-8")
+    layout = NOTES_LAYOUT.read_text(encoding="utf-8")
     assert "border border-border" not in src, "the notes box is a fill, not a bordered box"
     # Lighter than the card behind it, rather than a darker inset. #11459 respelled the
     # shorthand as an rgb() whose alpha scales with --contrast-wash-gain, which is the same
@@ -969,13 +969,13 @@ def test_notes_surface_is_borderless_and_lifts_in_dark_mode():
 
 
 def test_hook_discards_notes_for_a_different_version():
-    src = NOTES_HOOK.read_text(encoding = "utf-8")
+    src = NOTES_HOOK.read_text(encoding="utf-8")
     assert "notesVersion !== version" in src
 
 
 def test_collapsed_panel_previews_the_top_bullets():
     """Collapsed popups show the headline changes without an extra click."""
-    preview = PREVIEW.read_text(encoding = "utf-8")
+    preview = PREVIEW.read_text(encoding="utf-8")
     assert "RELEASE_NOTES_PREVIEW_ITEMS = 4" in preview
     # Wrapped bullets join into one item, or a preview ends mid-sentence.
     assert "collectBullets" in preview and "flush" in preview
@@ -984,7 +984,7 @@ def test_collapsed_panel_previews_the_top_bullets():
     # Tag stripping repeats: one pass turns `<<b>b>` back into a live tag.
     assert "while (out !== previous)" in preview
 
-    panel = PANEL.read_text(encoding = "utf-8")
+    panel = PANEL.read_text(encoding="utf-8")
     assert "releaseNotesPreview" in panel
     assert 'data-testid="update-release-notes-summary"' in panel
     # Fetched when the popup appears: the collapsed preview needs them too.
@@ -993,13 +993,13 @@ def test_collapsed_panel_previews_the_top_bullets():
 
 def test_preview_highlights_the_leading_sentence():
     """Each bullet leads with its headline sentence, emphasised over the rest."""
-    preview = PREVIEW.read_text(encoding = "utf-8")
+    preview = PREVIEW.read_text(encoding="utf-8")
     assert "splitLeadSentence" in preview
     # A period inside "unsloth.ai" or "e.g." must not read as a break.
     assert "SENTENCE_BREAK" in preview and "(?=" in preview
 
-    panel = PANEL.read_text(encoding = "utf-8")
-    layout = NOTES_LAYOUT.read_text(encoding = "utf-8")
+    panel = PANEL.read_text(encoding="utf-8")
+    layout = NOTES_LAYOUT.read_text(encoding="utf-8")
     assert "UPDATE_NOTES_LEAD_CLASS" in panel
     assert '"font-medium text-foreground"' in layout
     assert "item.rest" in panel
@@ -1008,17 +1008,17 @@ def test_preview_highlights_the_leading_sentence():
 @pytest.mark.parametrize("banner", [WEB_BANNER, TAURI_BANNER])
 def test_update_popups_share_the_notes_width(banner):
     """Every update popup uses the same width for its notes and action rows."""
-    assert "max-w-[448px]" in banner.read_text(encoding = "utf-8")
-    provider = (FRONTEND / "app/provider.tsx").read_text(encoding = "utf-8")
+    assert "max-w-[448px]" in banner.read_text(encoding="utf-8")
+    provider = (FRONTEND / "app/provider.tsx").read_text(encoding="utf-8")
     assert "max-w-[400px]" not in provider, "stack must not cap overlay width"
-    llama = (FRONTEND / "components/llama-update-banner.tsx").read_text(encoding = "utf-8")
+    llama = (FRONTEND / "components/llama-update-banner.tsx").read_text(encoding="utf-8")
     assert "max-w-[448px]" in llama
     assert "max-w-[400px]" not in llama
 
 
 @pytest.mark.parametrize("banner", [WEB_BANNER, TAURI_BANNER])
 def test_banners_toggle_inline_release_notes(banner):
-    src = banner.read_text(encoding = "utf-8")
+    src = banner.read_text(encoding="utf-8")
     assert "ReleaseNotesPanel" in src
     assert "Show release notes" in src and "Hide release notes" in src
     # Keyed by version, so a new offer cannot leave old notes on screen.
@@ -1034,7 +1034,7 @@ def test_banners_toggle_inline_release_notes(banner):
 )
 def test_notes_toggle_shares_the_action_row(banner, toggle, action):
     """The toggle sits in the same row as the actions, not on its own line."""
-    src = banner.read_text(encoding = "utf-8")
+    src = banner.read_text(encoding="utf-8")
     row = src.index("mt-4 flex")
     assert row < src.index(toggle) < src.index(action)
     # Same type size as the actions beside it; nowrap keeps labels on one line.
@@ -1064,7 +1064,7 @@ def test_inline_raw_html_tag_does_not_open_a_block(notes_module):
 
 
 def test_preview_skips_raw_html_blocks():
-    src = PREVIEW.read_text(encoding = "utf-8")
+    src = PREVIEW.read_text(encoding="utf-8")
     assert "stripRawHtml" in src
     # Anchored: only a line-leading tag opens a block, matching the parser.
     assert "/^ {0,3}<(pre|script|style|textarea)" in src
@@ -1099,7 +1099,7 @@ def test_a_tag_only_line_cannot_interrupt_a_paragraph(notes_module):
 
 def test_preview_joins_an_indented_continuation_line():
     """Four spaces only start code outside a paragraph; inside one it is a wrap."""
-    src = PREVIEW.read_text(encoding = "utf-8")
+    src = PREVIEW.read_text(encoding="utf-8")
     # Measured from the line's container, so an item's own indent does not count.
     assert "!insideBlock && line.indent - line.column >= INDENTED_CODE_INDENT" in src
     # A fence indented into a list item is a block, not a wrapped line.
@@ -1108,28 +1108,28 @@ def test_preview_joins_an_indented_continuation_line():
 
 def test_preview_code_spans_need_a_matching_closer():
     """A closer is a run of the same length, so the inner backticks survive."""
-    src = CODE_SPANS.read_text(encoding = "utf-8")
+    src = CODE_SPANS.read_text(encoding="utf-8")
     assert "candidate === ticks" in src, "a closer is a run of the same length"
     assert "stripPadding" in src, "one space of padding is dropped, as in Markdown"
 
 
 def test_preview_skips_thematic_breaks():
     """`- - -` renders as a rule, so it must not take a preview slot."""
-    src = PREVIEW.read_text(encoding = "utf-8")
+    src = PREVIEW.read_text(encoding="utf-8")
     assert "THEMATIC_BREAK" in src
     assert "THEMATIC_BREAK.test(visible)" in src
 
 
 def test_preview_keeps_quoted_examples_out_of_the_headlines():
     """A quoted list is example output, not a change."""
-    src = PREVIEW.read_text(encoding = "utf-8")
+    src = PREVIEW.read_text(encoding="utf-8")
     assert "quoted: boolean" in src
     assert "if (!line.quoted)" in src, "quoted bullets never become headlines"
 
 
 def test_notes_panel_keeps_the_link_when_the_lookup_fails():
     """The release page can be reachable when the backend lookup is not."""
-    src = PANEL.read_text(encoding = "utf-8")
+    src = PANEL.read_text(encoding="utf-8")
     error_branch = src[src.index('if (state === "error")') :]
     retry = error_branch.index("update-release-notes-retry")
     assert error_branch.index("{link}") > retry, "link sits beside retry"
@@ -1137,7 +1137,7 @@ def test_notes_panel_keeps_the_link_when_the_lookup_fails():
 
 def test_hook_waits_for_the_desktop_auth_token():
     """A token not installed yet must not be recorded as a failed lookup."""
-    src = NOTES_HOOK.read_text(encoding = "utf-8")
+    src = NOTES_HOOK.read_text(encoding="utf-8")
     assert "hasAuthToken()" in src and "AUTH_POLL_LIMIT" in src
 
 
@@ -1198,7 +1198,7 @@ def test_headings_need_a_space_or_tab_after_the_hashes(notes_module):
 
 def test_preview_skips_every_raw_block_form():
     """The extractor tracks the same block forms as the parser."""
-    src = PREVIEW.read_text(encoding = "utf-8")
+    src = PREVIEW.read_text(encoding="utf-8")
     assert "RAW_BLOCKS" in src
     assert "CDATA" in src and "[A-Za-z]" in src
 
@@ -1206,21 +1206,21 @@ def test_preview_skips_every_raw_block_form():
 @pytest.mark.parametrize("banner", [WEB_BANNER, TAURI_BANNER])
 def test_expanded_popup_fits_a_short_viewport(banner):
     """A window under roughly 430px used to push the card's title off screen."""
-    panel = PANEL.read_text(encoding = "utf-8")
+    panel = PANEL.read_text(encoding="utf-8")
     # The notes region shrinks inside the capped card, so header and actions stay on screen.
     assert "min-h-0 flex-1" in panel, "notes height must follow the viewport"
-    src = banner.read_text(encoding = "utf-8")
+    src = banner.read_text(encoding="utf-8")
     assert "max-h-[calc(100dvh_-_2rem)]" in src, "card is the backstop on tiny viewports"
 
 
 def test_relative_release_body_links_point_at_the_repository():
     """Repository-relative links would resolve against Unsloth's own origin."""
-    src = LINKS.read_text(encoding = "utf-8")
+    src = LINKS.read_text(encoding="utf-8")
     assert "https://github.com/unslothai/unsloth/blob/main/" in src
     assert "https://raw.githubusercontent.com/unslothai/unsloth/main/" in src
     # Absolute targets, fragments, fenced code and code spans stay untouched.
     assert "ABSOLUTE" in src and "codeSpans" in src and "FENCE" in src
-    panel = PANEL.read_text(encoding = "utf-8")
+    panel = PANEL.read_text(encoding="utf-8")
     assert "resolveReleaseBodyLinks" in panel
 
 
@@ -1237,14 +1237,14 @@ def test_real_versions_are_still_accepted(notes_module, query):
 
 def test_reference_style_images_resolve_to_the_raw_host():
     """An image needs the raw file: the blob URL is an HTML page."""
-    src = LINKS.read_text(encoding = "utf-8")
+    src = LINKS.read_text(encoding="utf-8")
     assert "IMAGE_REFERENCE" in src
     assert "imageLabels" in src
 
 
 def test_collapsed_notes_surface_is_hidden_when_nothing_previews():
     """Notes that preview as nothing leave an empty strip, worse than none."""
-    src = PANEL.read_text(encoding = "utf-8")
+    src = PANEL.read_text(encoding="utf-8")
     assert "preview?.items.length === 0" in src
 
 
@@ -1256,21 +1256,21 @@ def test_a_fence_closer_accepts_only_spaces_and_tabs(notes_module):
     assert [e.version for e in parse_sections(notes_module, plain)] == ["1.0", "2.0"]
     # The same rule in both frontend scanners.
     for source in (PREVIEW, LINKS):
-        assert "/[^ \\t]/" in source.read_text(encoding = "utf-8")
+        assert "/[^ \\t]/" in source.read_text(encoding="utf-8")
 
 
 def test_code_spans_close_on_a_run_of_equal_length():
     """`a``b [x](y.md)` is one code span, so the link inside it is literal."""
-    src = CODE_SPANS.read_text(encoding = "utf-8")
+    src = CODE_SPANS.read_text(encoding="utf-8")
     assert "candidate === ticks" in src, "closer length must match the opener"
     # Shared, so the preview and the link resolver cannot drift apart.
-    assert "markdown-code-spans" in PREVIEW.read_text(encoding = "utf-8")
-    assert "markdown-code-spans" in LINKS.read_text(encoding = "utf-8")
+    assert "markdown-code-spans" in PREVIEW.read_text(encoding="utf-8")
+    assert "markdown-code-spans" in LINKS.read_text(encoding="utf-8")
 
 
 def test_preview_decodes_entities_like_the_renderer():
     """Streamdown renders `AT&amp;T` as AT&T, so the raw entity must not show."""
-    src = PREVIEW.read_text(encoding = "utf-8")
+    src = PREVIEW.read_text(encoding="utf-8")
     assert "NAMED_ENTITIES" in src and "decodeEntity" in src
     # Decoded before code spans are restored, so code keeps the literal text.
     assert src.index(".replace(ENTITY, decodeEntity)") < src.index(".replace(PARKED")
@@ -1278,21 +1278,21 @@ def test_preview_decodes_entities_like_the_renderer():
 
 def test_release_notes_request_refreshes_an_expired_token():
     """A direct fetch cannot recover from a 401; authFetch refreshes first."""
-    src = NOTES_HOOK.read_text(encoding = "utf-8")
+    src = NOTES_HOOK.read_text(encoding="utf-8")
     assert "authFetch(" in src
     assert "getAuthToken" not in src
 
 
 def test_preview_handles_the_desktop_updater_line_endings():
     """CRLF used to hide fences and promote a code sample to a headline."""
-    src = PREVIEW.read_text(encoding = "utf-8")
+    src = PREVIEW.read_text(encoding="utf-8")
     assert "LINE_ENDINGS" in src
-    assert "LINE_ENDINGS" in LINKS.read_text(encoding = "utf-8")
+    assert "LINE_ENDINGS" in LINKS.read_text(encoding="utf-8")
 
 
 def test_preview_renders_reference_links_as_text():
     """`[text][label]` renders as a link, so its raw markup must not show."""
-    src = PREVIEW.read_text(encoding = "utf-8")
+    src = PREVIEW.read_text(encoding="utf-8")
     assert "LINK_REFERENCE" in src and "IMAGE_REFERENCE" in src
     # A definition line renders as nothing, so it is not a preview item.
     assert "DEFINITION" in src
@@ -1300,13 +1300,13 @@ def test_preview_renders_reference_links_as_text():
 
 def test_preview_treats_escaped_punctuation_as_literal():
     """`\\*not italic\\*` keeps its stars, and an escaped backtick opens no span."""
-    assert "ESCAPE" in PREVIEW.read_text(encoding = "utf-8")
-    assert "escaped(" in CODE_SPANS.read_text(encoding = "utf-8")
+    assert "ESCAPE" in PREVIEW.read_text(encoding="utf-8")
+    assert "escaped(" in CODE_SPANS.read_text(encoding="utf-8")
 
 
 def test_link_resolver_skips_every_code_form():
     """Indented code and cross-line code spans render as code, so leave them."""
-    src = LINKS.read_text(encoding = "utf-8")
+    src = LINKS.read_text(encoding="utf-8")
     assert "INDENTED_CODE" in src
     # Spans are scanned over the whole document, not line by line.
     assert "codeSpans(masked)" in src
@@ -1316,17 +1316,17 @@ def test_link_resolver_skips_every_code_form():
 
 def test_badge_links_resolve_both_targets():
     """`[![alt](img)](link)`: the outer link needs a nested label to resolve."""
-    assert "NESTED_LABEL" in LINKS.read_text(encoding = "utf-8")
+    assert "NESTED_LABEL" in LINKS.read_text(encoding="utf-8")
 
 
 def test_in_flight_requests_are_identified_not_just_versioned():
     """Two requests for one version could resolve out of order."""
-    assert "requestIdRef" in NOTES_HOOK.read_text(encoding = "utf-8")
+    assert "requestIdRef" in NOTES_HOOK.read_text(encoding="utf-8")
 
 
 def test_notes_repair_the_shared_previews_width_reset():
     """MarkdownPreview clears max-width on descendants, so wide content escapes."""
-    src = PANEL.read_text(encoding = "utf-8")
+    src = PANEL.read_text(encoding="utf-8")
     assert "[&_img]:max-w-full" in src
     assert "[&_[data-streamdown=link-safety-modal]>*]:max-w-md" in src
 
@@ -1334,7 +1334,7 @@ def test_notes_repair_the_shared_previews_width_reset():
 @pytest.mark.parametrize("banner", [WEB_BANNER, TAURI_BANNER])
 def test_only_the_notes_region_scrolls(banner):
     """The dismiss control sits inside the card, so the card must not scroll."""
-    src = banner.read_text(encoding = "utf-8")
+    src = banner.read_text(encoding="utf-8")
     surface = _card_surface(src)
     # The painted surface: capped, and a column, so the region inside it is the
     # one that scrolls.
@@ -1358,7 +1358,7 @@ def test_only_the_notes_region_scrolls(banner):
             ), f"{zeroes_the_floor} puts the browser card's floor back to nothing"
     else:
         _assert_classes(surface, "min-h-0", "overflow-hidden")
-    layout = NOTES_LAYOUT.read_text(encoding = "utf-8")
+    layout = NOTES_LAYOUT.read_text(encoding="utf-8")
     _assert_classes(
         _class_const(layout, "UPDATE_NOTES_ROOT_CLASS"),
         "flex",
@@ -1367,7 +1367,7 @@ def test_only_the_notes_region_scrolls(banner):
         "flex-col",
         "overflow-hidden",
     )
-    panel = PANEL.read_text(encoding = "utf-8")
+    panel = PANEL.read_text(encoding="utf-8")
     assert "UPDATE_NOTES_EXPANDED_SCROLL_CLASS" in panel
     _assert_classes(
         _class_const(layout, "UPDATE_NOTES_EXPANDED_SCROLL_CLASS"),
@@ -1436,7 +1436,7 @@ def test_an_empty_comment_does_not_swallow_later_releases(notes_module, marker):
     assert find_section(notes_module, text, "1.0") is not None
     assert "old stuff" not in find_section(notes_module, text, "2.0").body
     # The frontend scanner has to agree, or the preview and the body disagree.
-    assert "!line.includes(COMMENT_CLOSE)" in PREVIEW.read_text(encoding = "utf-8")
+    assert "!line.includes(COMMENT_CLOSE)" in PREVIEW.read_text(encoding="utf-8")
 
 
 def test_an_unterminated_comment_still_hides_the_rest(notes_module):
@@ -1492,7 +1492,7 @@ def test_a_long_backtick_run_does_not_stall_the_parser(notes_module):
 
 def test_the_remote_fetch_has_a_total_deadline(notes_module):
     """The socket timeout resets per read, so a trickle could hold a worker."""
-    source = MODULE.read_text(encoding = "utf-8")
+    source = MODULE.read_text(encoding="utf-8")
     assert "deadline = time.monotonic() + RELEASES_TIMEOUT_SECONDS" in source
     # read1 returns after one socket read, so the deadline is actually checked.
     assert "response.read1(" in source
@@ -1503,14 +1503,14 @@ def test_the_remote_fetch_has_a_total_deadline(notes_module):
 def test_truncated_notes_close_their_fence(notes_module):
     """A blind slice could end inside a code block and break the rendering."""
     body = "```\n" + "x\n" * 20_000 + "```\n"
-    payload = notes_module._notes_response(version = "1.0", markdown = body, source = "local")
+    payload = notes_module._notes_response(version="1.0", markdown=body, source="local")
     assert payload["truncated"] is True
     assert payload["markdown"].rstrip().endswith("```")
 
 
 def test_the_opt_out_beats_the_developer_override():
     """The documented kill switch beats the dev switch, and the value must parse."""
-    source = (BACKEND / "utils/update_status.py").read_text(encoding = "utf-8")
+    source = (BACKEND / "utils/update_status.py").read_text(encoding="utf-8")
     assert "forced_version and not disabled and _is_version(forced_version)" in source
 
 
@@ -1535,13 +1535,13 @@ def test_a_backtick_in_a_fence_info_string_is_not_a_fence(notes_module):
         for e in parse_sections(notes_module, "## 2.0\n\n```md\n## 9.9.9\n```\n\n## 1.0\n\n- old\n")
     ] == ["2.0", "1.0"]
     for source in (PREVIEW, LINKS):
-        assert "info string" in source.read_text(encoding = "utf-8")
+        assert "info string" in source.read_text(encoding="utf-8")
 
 
 def test_preview_follows_commonmark_paragraph_rules():
     """Only an ordered list starting at 1 may interrupt a paragraph, an
     unresolved reference keeps its brackets, and a quote owns its own."""
-    src = " ".join(PREVIEW.read_text(encoding = "utf-8").split())
+    src = " ".join(PREVIEW.read_text(encoding="utf-8").split())
     assert "const interrupts = collector.current === null" in src
     assert "!collector.quotedParagraph;" in src
     assert "definedLabel" in src, "a reference only renders as text when defined"
@@ -1550,7 +1550,7 @@ def test_preview_follows_commonmark_paragraph_rules():
 
 
 def test_link_resolver_leaves_raw_blocks_and_escapes_alone():
-    src = LINKS.read_text(encoding = "utf-8")
+    src = LINKS.read_text(encoding="utf-8")
     assert "RAW_HTML_OPEN" in src and "inRawHtml" in src
     assert "isEscaped(line, opener)" in src
     # A heading ends a paragraph, so a definition under one is a definition.
@@ -1559,7 +1559,7 @@ def test_link_resolver_leaves_raw_blocks_and_escapes_alone():
 
 def test_code_span_closers_ignore_backslashes():
     """Escapes are not processed inside a code span, so a run after one closes."""
-    src = CODE_SPANS.read_text(encoding = "utf-8")
+    src = CODE_SPANS.read_text(encoding="utf-8")
     # Counted over the whole module rather than from an exported wrapper: the
     # scanner has already moved above `codeSpans` once, and a slice anchored on
     # a wrapper reads as "no opener is escaped either" when that happens.
@@ -1904,7 +1904,7 @@ def test_the_overlay_stack_fits_the_viewport():
     it, so the rail carries one of its own. A static cap, not a measured one:
     a rail whose height and offset are computed from whatever else is on screen
     is a rail that moves out of its corner (#8082 and the chain after it)."""
-    provider = (FRONTEND / "app/provider.tsx").read_text(encoding = "utf-8")
+    provider = (FRONTEND / "app/provider.tsx").read_text(encoding="utf-8")
     # Counted by the layer they sit on, not by a literal z-index: the
     # overlay rail reads its depth from Z_LAYER now.
     stacks = provider.count("zIndex: Z_LAYER.OVERLAY_STACK")
@@ -1913,14 +1913,14 @@ def test_the_overlay_stack_fits_the_viewport():
     # Counted, not merely present: capping only one of the stacks is the bug here.
     assert _capped_rails(provider) == stacks, "every stack is capped"
     panel = (FRONTEND / "features/hub/download-manager/download-manager-panel.tsx").read_text(
-        encoding = "utf-8"
+        encoding="utf-8"
     )
     # The download list scrolls internally, so it can give up height.
     assert "flex min-h-0" in panel
     # The update card cannot: its header and buttons are fixed and only its
     # notes yield, so it floors instead. The browser card floors itself off its
     # own content; the desktop card still states the floor as a constant.
-    _assert_floors_itself(WEB_BANNER.read_text(encoding = "utf-8"), "browser")
+    _assert_floors_itself(WEB_BANNER.read_text(encoding="utf-8"), "browser")
     # Those floors can add up to more than the cap at a large type size, so the
     # rail scrolls. Without this the overflow lands below the bottom of the
     # screen with no way to reach it.
@@ -1934,7 +1934,7 @@ def test_both_rails_are_still_pinned_to_the_bottom_right_corner():
     wandered to the top left. This is the claim the old regex used to make implicitly, kept
     explicit and kept failing for the right reason: it names the rail that moved.
     """
-    provider = (FRONTEND / "app/provider.tsx").read_text(encoding = "utf-8")
+    provider = (FRONTEND / "app/provider.tsx").read_text(encoding="utf-8")
     rails = _corner_rails(provider)
     assert len(rails) == 2, f"expected the browser and desktop rails, found {len(rails)}"
     for rail in rails:
@@ -1964,7 +1964,7 @@ def test_the_rail_gutters_come_out_of_the_cap_and_not_the_cards():
     spacing utility because those are rem and would scale the rail off its corner with the
     user's type size, which is the bug the comment above them is about.
     """
-    provider = (FRONTEND / "app/provider.tsx").read_text(encoding = "utf-8")
+    provider = (FRONTEND / "app/provider.tsx").read_text(encoding="utf-8")
     top = _rail_style_px(provider, "STACK_SHADOW_GUTTER_TOP")
     bottom = _rail_style_px(provider, "STACK_SHADOW_GUTTER_BOTTOM")
     left = _rail_style_px(provider, "STACK_SHADOW_GUTTER_LEFT")
@@ -2008,10 +2008,10 @@ def test_the_rail_gutters_come_out_of_the_cap_and_not_the_cards():
 
 def test_the_desktop_stack_is_capped_like_the_browser_one():
     """The download panel shares the desktop stack, left uncapped before now."""
-    provider = (FRONTEND / "app/provider.tsx").read_text(encoding = "utf-8")
+    provider = (FRONTEND / "app/provider.tsx").read_text(encoding="utf-8")
     assert len(_corner_rails(provider)) == 2, "both rails sit in the bottom-right corner"
     assert _capped_rails(provider) == 2, "both stacks are capped"
-    tauri = TAURI_BANNER.read_text(encoding = "utf-8")
+    tauri = TAURI_BANNER.read_text(encoding="utf-8")
     _assert_floored(tauri, _SCALED_FLOOR_TAURI, _NARROW_FLOOR_TAURI, "desktop")
 
 
@@ -2020,11 +2020,11 @@ def test_the_rail_offset_is_not_computed():
     composer growing by a line or a download row arriving moved it to the middle
     of the window, and a maximised monitor to the top. Its offset and cap must
     stay out of JS."""
-    provider = (FRONTEND / "app/provider.tsx").read_text(encoding = "utf-8")
+    provider = (FRONTEND / "app/provider.tsx").read_text(encoding="utf-8")
     for banned in ("useStackGeometry", "stackGeometry", "stack.bottom", "stack.maxHeight"):
         assert banned not in provider, f"the rail is placed from JS again ({banned})"
     store = (FRONTEND / "features/settings/stores/monitor-frame-store.ts").read_text(
-        encoding = "utf-8"
+        encoding="utf-8"
     )
     assert "stackBottomInset" not in store, "the dodge arithmetic is back in the frame store"
 
@@ -2032,20 +2032,20 @@ def test_the_rail_offset_is_not_computed():
 def test_desktop_notes_are_not_keyed_by_the_pinned_backend_version():
     """The banner asks with the Unsloth version it offers. `pypi_version` stays
     in latest.json as the backend pin preflight checks, not a notes key."""
-    banner = TAURI_BANNER.read_text(encoding = "utf-8")
+    banner = TAURI_BANNER.read_text(encoding="utf-8")
     assert "info?.version?.replace(LEADING_V" in banner
     assert "pypiVersion" not in banner, "notes are no longer keyed by the backend release"
-    workflow = (REPO / ".github/workflows/release-desktop.yml").read_text(encoding = "utf-8")
+    workflow = (REPO / ".github/workflows/release-desktop.yml").read_text(encoding="utf-8")
     assert "'pypi_version': os.environ['PYPI_VERSION']" in workflow
-    rust = (REPO / "studio/src-tauri/src/desktop_update_policy.rs").read_text(encoding = "utf-8")
+    rust = (REPO / "studio/src-tauri/src/desktop_update_policy.rs").read_text(encoding="utf-8")
     assert "pypi_version: Option<String>" in rust
-    hook = NOTES_HOOK.parent.joinpath("use-tauri-update.ts").read_text(encoding = "utf-8")
+    hook = NOTES_HOOK.parent.joinpath("use-tauri-update.ts").read_text(encoding="utf-8")
     assert "rawPypiVersion(update.rawJson)" in hook
 
 
 def test_one_slow_read_cannot_outlast_the_fetch_budget(notes_module):
     """The socket timeout is per operation, so two slow reads doubled the wait."""
-    source = MODULE.read_text(encoding = "utf-8")
+    source = MODULE.read_text(encoding="utf-8")
     assert "_limit_read(response, remaining)" in source
     assert "sock.settimeout(max(remaining, _RELEASES_MIN_READ_SECONDS))" in source
 
@@ -2107,7 +2107,7 @@ def test_a_lowercase_declaration_is_not_a_raw_block(notes_module):
         e.version for e in parse_sections(notes_module, "<!DOCTYPE\n## 9.9.9\n>\n\n## 1.0\n")
     ] == ["1.0"]
     # The collapsed preview needs the same rule or it drops visible bullets.
-    assert "<![A-Z]" in PREVIEW.read_text(encoding = "utf-8")
+    assert "<![A-Z]" in PREVIEW.read_text(encoding="utf-8")
 
 
 def test_link_resolver_reads_html_containers_the_way_the_others_do():
@@ -2115,9 +2115,9 @@ def test_link_resolver_reads_html_containers_the_way_the_others_do():
     its contents are literal and a fence in it is not a fence, which stopped
     every link below from resolving. The parser and the preview already apply
     the type 6 and 7 rules, so the resolver has to share them."""
-    links = LINKS.read_text(encoding = "utf-8")
+    links = LINKS.read_text(encoding="utf-8")
     for source in (PREVIEW, LINKS):
-        text = source.read_text(encoding = "utf-8")
+        text = source.read_text(encoding="utf-8")
         assert "HTML_BLOCK_TAGS" in text and "HTML_TAG_ONLY_LINE" in text
     # A blank line ends the block, not the closing tag, and a bare quote marker counts as blank.
     assert "inHtmlBlock = !!container.trim()" in links
@@ -2127,7 +2127,7 @@ def test_link_resolver_reads_html_containers_the_way_the_others_do():
 
 def test_an_escaped_mark_makes_an_image_a_link():
     """`\\![alt](path)` renders as a link, so it resolves to the blob host."""
-    links = LINKS.read_text(encoding = "utf-8")
+    links = LINKS.read_text(encoding="utf-8")
     assert 'const image = bang === "!" && !isEscaped(line, offset);' in links
     # The reference pre-scan has to skip it too, or the definition flips host.
     assert "isEscaped(line, match.index)" in links

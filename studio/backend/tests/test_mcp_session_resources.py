@@ -51,9 +51,9 @@ def _settled(
 
 def _result(text: str) -> SimpleNamespace:
     return SimpleNamespace(
-        content = [SimpleNamespace(type = "text", text = text)],
-        is_error = False,
-        structured_content = None,
+        content=[SimpleNamespace(type="text", text=text)],
+        is_error=False,
+        structured_content=None,
     )
 
 
@@ -68,7 +68,7 @@ class TinyClient:
         TinyClient.instances.append(self)
 
     async def list_tools_mcp(self):
-        return SimpleNamespace(tools = [])
+        return SimpleNamespace(tools=[])
 
     async def __aenter__(self):
         self.connected = True
@@ -85,7 +85,7 @@ class TinyClient:
         self,
         name,
         args,
-        raise_on_error = True,
+        raise_on_error=True,
     ):
         return _result("ok")
 
@@ -94,7 +94,7 @@ class TinyClient:
 def tiny(monkeypatch):
     TinyClient.instances = []
     monkeypatch.setattr(
-        mcp_client, "_client", lambda url, headers, use_oauth = False: TinyClient(url)
+        mcp_client, "_client", lambda url, headers, use_oauth=False: TinyClient(url)
     )
     yield TinyClient.instances
     close_mcp_sessions()
@@ -104,7 +104,7 @@ def _session_threads() -> int:
     return sum(1 for t in threading.enumerate() if t.name == "mcp-session")
 
 
-def _settle(predicate, timeout = 10.0) -> bool:
+def _settle(predicate, timeout=10.0) -> bool:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if predicate():
@@ -122,7 +122,7 @@ def _open_fds() -> int:
 
 def test_a_closed_session_gives_its_thread_back(tiny):
     before = _session_threads()
-    call_tool_sync(HTTP_URL, None, "t", {}, scope = "chat")
+    call_tool_sync(HTTP_URL, None, "t", {}, scope="chat")
     assert _session_threads() > before
     close_mcp_sessions()
     assert _settle(lambda: _session_threads() <= before), "the session thread outlived close()"
@@ -131,7 +131,7 @@ def test_a_closed_session_gives_its_thread_back(tiny):
 def test_repeated_open_close_does_not_accumulate_threads(tiny):
     before = _session_threads()
     for i in range(12):
-        call_tool_sync(HTTP_URL, None, "t", {}, scope = f"chat-{i}")
+        call_tool_sync(HTTP_URL, None, "t", {}, scope=f"chat-{i}")
         close_mcp_sessions()
     assert _settle(
         lambda: _session_threads() <= before
@@ -140,13 +140,13 @@ def test_repeated_open_close_does_not_accumulate_threads(tiny):
 
 def test_repeated_open_close_does_not_accumulate_descriptors(tiny):
     for i in range(5):  # warm up: the first loops allocate lazily
-        call_tool_sync(HTTP_URL, None, "t", {}, scope = f"warm-{i}")
+        call_tool_sync(HTTP_URL, None, "t", {}, scope=f"warm-{i}")
         close_mcp_sessions()
     baseline = _session_threads()
     _settle(lambda: _session_threads() <= baseline)
     before = _open_fds()
     for i in range(12):
-        call_tool_sync(HTTP_URL, None, "t", {}, scope = f"chat-{i}")
+        call_tool_sync(HTTP_URL, None, "t", {}, scope=f"chat-{i}")
         close_mcp_sessions()
     _settle(lambda: _session_threads() <= baseline)
     gc.collect()
@@ -157,7 +157,7 @@ def test_repeated_open_close_does_not_accumulate_descriptors(tiny):
 
 def test_every_cached_client_is_exited_on_close(tiny):
     for i in range(6):
-        call_tool_sync(HTTP_URL, None, "t", {}, scope = f"chat-{i}")
+        call_tool_sync(HTTP_URL, None, "t", {}, scope=f"chat-{i}")
     assert len(mcp_client._mcp_sessions) == 6
     close_mcp_sessions()
     assert all(_settled(c) == 1 for c in tiny), [c.exited for c in tiny]
@@ -169,7 +169,7 @@ def test_the_cache_stays_within_its_cap(monkeypatch, tiny):
     before = _session_threads()
     monkeypatch.setattr(mcp_client, "_MAX_SESSIONS", 3)
     for i in range(10):
-        call_tool_sync(HTTP_URL, None, "t", {}, scope = f"chat-{i}")
+        call_tool_sync(HTTP_URL, None, "t", {}, scope=f"chat-{i}")
     assert len(mcp_client._mcp_sessions) <= 3
     assert _settle(lambda: _session_threads() - before <= 3), _session_threads() - before
 
@@ -178,15 +178,15 @@ def test_http_and_stdio_sessions_share_one_cap(monkeypatch, tiny):
     """Worth pinning: the cap used to bound stdio subprocesses only, so a chat
     that talks to HTTP servers can now evict a stateful stdio session."""
     monkeypatch.setattr(mcp_client, "_MAX_SESSIONS", 2)
-    call_tool_sync(STDIO_URL, None, "t", {}, scope = "chat-1")
+    call_tool_sync(STDIO_URL, None, "t", {}, scope="chat-1")
     for i in range(5):
-        call_tool_sync(HTTP_URL, None, "t", {}, scope = f"http-{i}")
+        call_tool_sync(HTTP_URL, None, "t", {}, scope=f"http-{i}")
     assert len(mcp_client._mcp_sessions) <= 2
 
 
 def test_key_locks_do_not_pile_up(tiny):
     for i in range(20):
-        call_tool_sync(HTTP_URL, None, "t", {}, scope = f"chat-{i}")
+        call_tool_sync(HTTP_URL, None, "t", {}, scope=f"chat-{i}")
         close_mcp_sessions()
     assert mcp_client._mcp_key_locks == {}, mcp_client._mcp_key_locks
 
@@ -204,9 +204,9 @@ def test_a_close_with_nothing_cached_leaves_no_tombstone(tiny):
 
 def test_idle_sessions_are_reaped(monkeypatch, tiny):
     before = _session_threads()
-    call_tool_sync(HTTP_URL, None, "t", {}, scope = "chat")
+    call_tool_sync(HTTP_URL, None, "t", {}, scope="chat")
     assert len(mcp_client._mcp_sessions) == 1
-    mcp_client._reap_idle_sessions(now = time.monotonic() + mcp_client._SESSION_IDLE_TTL + 1)
+    mcp_client._reap_idle_sessions(now=time.monotonic() + mcp_client._SESSION_IDLE_TTL + 1)
     assert mcp_client._mcp_sessions == {}
     assert _settle(lambda: _session_threads() <= before)
     assert _settled(tiny[0]) == 1
@@ -217,7 +217,7 @@ def test_shutdown_of_a_full_cache_is_bounded(monkeypatch, tiny):
     cache full of sessions must not stall it for minutes."""
     monkeypatch.setattr(mcp_client, "_MAX_SESSIONS", 16)
     for i in range(16):
-        call_tool_sync(HTTP_URL, None, "t", {}, scope = f"chat-{i}")
+        call_tool_sync(HTTP_URL, None, "t", {}, scope=f"chat-{i}")
     started = time.monotonic()
     close_mcp_sessions()
     assert time.monotonic() - started < 20.0, "closing a full cache took too long"
@@ -226,7 +226,7 @@ def test_shutdown_of_a_full_cache_is_bounded(monkeypatch, tiny):
 def test_sessions_are_collectable_after_close(tiny):
     import weakref
 
-    call_tool_sync(HTTP_URL, None, "t", {}, scope = "chat")
+    call_tool_sync(HTTP_URL, None, "t", {}, scope="chat")
     ref = weakref.ref(next(iter(mcp_client._mcp_sessions.values())))
     threads = _session_threads()
     close_mcp_sessions()

@@ -22,8 +22,8 @@ if "structlog" not in sys.modules:
             return lambda *args, **kwargs: None
 
     sys.modules["structlog"] = types.SimpleNamespace(
-        BoundLogger = _DummyLogger,
-        get_logger = lambda *args, **kwargs: _DummyLogger(),
+        BoundLogger=_DummyLogger,
+        get_logger=lambda *args, **kwargs: _DummyLogger(),
     )
 
 import routes.models as models_route
@@ -40,19 +40,19 @@ MAX_STALL = 0.2
 
 def _repo(repo_id: str, repo_path: Path) -> SimpleNamespace:
     snapshot = repo_path / "snapshots" / "rev"
-    snapshot.mkdir(parents = True, exist_ok = True)
+    snapshot.mkdir(parents=True, exist_ok=True)
     weight = snapshot / "model.safetensors"
     weight.write_bytes(b"0" * 16)
     return SimpleNamespace(
-        repo_id = repo_id,
-        repo_type = "model",
-        repo_path = repo_path,
-        revisions = [
+        repo_id=repo_id,
+        repo_type="model",
+        repo_path=repo_path,
+        revisions=[
             SimpleNamespace(
-                commit_hash = "rev",
-                snapshot_path = snapshot,
-                files = [
-                    SimpleNamespace(file_name = weight.name, size_on_disk = 16, blob_path = str(weight))
+                commit_hash="rev",
+                snapshot_path=snapshot,
+                files=[
+                    SimpleNamespace(file_name=weight.name, size_on_disk=16, blob_path=str(weight))
                 ],
             )
         ],
@@ -81,7 +81,7 @@ def slow_hub(monkeypatch, tmp_path):
         _repo("Org/Ungranted-One", cache / "models--Org--Ungranted-One"),
         _repo("Org/Ungranted-Two", cache / "models--Org--Ungranted-Two"),
     ]
-    monkeypatch.setattr(models_route, "_all_hf_cache_scans", lambda: [SimpleNamespace(repos = repos)])
+    monkeypatch.setattr(models_route, "_all_hf_cache_scans", lambda: [SimpleNamespace(repos=repos)])
     monkeypatch.setattr(models_route, "_resolve_hf_cache_dir", lambda: cache)
     monkeypatch.setattr(models_route, "_is_hidden_model", lambda *a, **k: False)
     # GGUF listing helpers: keep the row builders trivial so only the filter costs anything.
@@ -133,8 +133,8 @@ async def _stall_during(coro):
 def test_cached_listings_probe_the_hub_off_the_event_loop(slow_hub, route):
     def call():
         if route == "cached-gguf":
-            return models_route.list_cached_gguf(current_subject = "alice")
-        return models_route.list_cached_models(current_subject = "alice", hf_token = None)
+            return models_route.list_cached_gguf(current_subject="alice")
+        return models_route.list_cached_models(current_subject="alice", hf_token=None)
 
     async def scenario():
         return await _stall_during(arun_as(ALICE, call()))
@@ -152,8 +152,8 @@ def test_single_owner_listings_skip_the_probe_entirely(slow_hub, monkeypatch, ro
 
     def call():
         if route == "cached-gguf":
-            return models_route.list_cached_gguf(current_subject = "owner")
-        return models_route.list_cached_models(current_subject = "owner", hf_token = None)
+            return models_route.list_cached_gguf(current_subject="owner")
+        return models_route.list_cached_models(current_subject="owner", hf_token=None)
 
     async def scenario():
         return await _stall_during(arun_as(OWNER, call()))

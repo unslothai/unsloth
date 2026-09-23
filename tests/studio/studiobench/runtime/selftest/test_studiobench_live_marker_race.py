@@ -68,7 +68,7 @@ def _contend(repo_root: str, outdir: str, index: int, start, hold, q) -> None:
         # Nobody releases the marker until everyone has attempted, so an admission is genuine overlap rather
         # than sequential reuse of a directory the first run already let go.
         try:
-            hold.wait(timeout = 60)
+            hold.wait(timeout=60)
         except Exception:  # noqa: BLE001
             pass
         if rec is not None:
@@ -76,7 +76,7 @@ def _contend(repo_root: str, outdir: str, index: int, start, hold, q) -> None:
 
 
 def _dead_pid() -> int:
-    with open("/proc/sys/kernel/pid_max", encoding = "utf-8") as fh:
+    with open("/proc/sys/kernel/pid_max", encoding="utf-8") as fh:
         return int(fh.read().strip()) - 1
 
 
@@ -90,18 +90,18 @@ def _trial(
     out.mkdir()
     if stale:
         # What a crashed run leaves behind: a marker naming a pid that is gone.
-        (out / ".running.lock").write_text(f"{_dead_pid()} crashedsession\n", encoding = "utf-8")
+        (out / ".running.lock").write_text(f"{_dead_pid()} crashedsession\n", encoding="utf-8")
     ctx = mp.get_context("spawn")
     start, hold, q = ctx.Barrier(n), ctx.Barrier(n), ctx.Queue()
     procs = [
-        ctx.Process(target = _contend, args = (str(REPO_ROOT), str(out), i, start, hold, q))
+        ctx.Process(target=_contend, args=(str(REPO_ROOT), str(out), i, start, hold, q))
         for i in range(n)
     ]
     for p in procs:
         p.start()
     for p in procs:
-        p.join(timeout = 120)
-    return [q.get(timeout = 10) for _ in range(n)]
+        p.join(timeout=120)
+    return [q.get(timeout=10) for _ in range(n)]
 
 
 def _admissions(
@@ -111,7 +111,7 @@ def _admissions(
 ) -> list[int]:
     counts = []
     for trial in range(TRIALS):
-        got = _trial(tmp_path, n, trial, stale = stale)
+        got = _trial(tmp_path, n, trial, stale=stale)
         for ok, why in got:
             if not ok and why.startswith("UNEXPECTED"):
                 pytest.fail(f"a contender failed for the wrong reason: {why}")
@@ -170,7 +170,7 @@ def test_a_crashed_run_does_not_let_two_launchers_in_at_once(tmp_path):
     but a lock the kernel releases when the holder dies -- which leaves nothing to reclaim and no
     reclaim path to race.
     """
-    counts = _admissions(tmp_path, 2, stale = True)
+    counts = _admissions(tmp_path, 2, stale=True)
     assert set(counts) == {1}, (
         f"admitted-per-trial counts were {counts} against a crashed run's marker. Two launchers "
         f"reclaimed the same stale lock and both took the directory."
@@ -178,7 +178,7 @@ def test_a_crashed_run_does_not_let_two_launchers_in_at_once(tmp_path):
 
 
 def test_four_launchers_against_a_crashed_run_still_admit_one(tmp_path):
-    counts = _admissions(tmp_path, 4, stale = True)
+    counts = _admissions(tmp_path, 4, stale=True)
     assert set(counts) == {1}, f"admitted-per-trial counts were {counts}"
 
 
@@ -186,7 +186,7 @@ def test_a_crashed_run_does_not_lock_the_directory_forever(tmp_path):
     """The other direction: the refusal must not outlive the process that earned it."""
     out = tmp_path / "solo"
     out.mkdir()
-    (out / ".running.lock").write_text(f"{_dead_pid()} crashedsession\n", encoding = "utf-8")
+    (out / ".running.lock").write_text(f"{_dead_pid()} crashedsession\n", encoding="utf-8")
     sys.path.insert(0, str(REPO_ROOT))
     from tests.studio.studiobench.runtime.types import Recorder, new_session_id
 
@@ -220,8 +220,8 @@ def _stalled_holder(
     )
     proc = subprocess.Popen(
         [sys.executable, "-c", code, str(marker), str(write_after_s), session],
-        stdout = subprocess.PIPE,
-        text = True,
+        stdout=subprocess.PIPE,
+        text=True,
     )
     assert proc.stdout is not None
     proc.stdout.readline()
@@ -271,7 +271,7 @@ def test_a_retained_record_is_not_named_as_the_current_holder(tmp_path):
     dead.wait()
     marker.write_text(f"{dead.pid} sessionGONE\n")
 
-    holder = _stalled_holder(marker, write_after_s = 0.35)
+    holder = _stalled_holder(marker, write_after_s=0.35)
     try:
         message = _refusal(out)
     finally:
@@ -290,7 +290,7 @@ def test_the_refusal_stays_generic_when_no_live_holder_can_be_named(tmp_path):
     out = tmp_path / "out0"
     out.mkdir()
     marker = out / ".running.lock"
-    holder = _stalled_holder(marker, write_after_s = 60.0)
+    holder = _stalled_holder(marker, write_after_s=60.0)
     try:
         message = _refusal(out)
     finally:

@@ -65,9 +65,9 @@ def _refuses(tmp_path: Path, detail: dict) -> tuple[bool, bool]:
     """(does the A/B table drop this cell, does the UI parity job refuse its pair)."""
 
     records = _records(detail)
-    tmp_path.mkdir(parents = True, exist_ok = True)
+    tmp_path.mkdir(parents=True, exist_ok=True)
     path = tmp_path / "rows.jsonl"
-    path.write_text("".join(json.dumps(r) + "\n" for r in records), encoding = "utf-8")
+    path.write_text("".join(json.dumps(r) + "\n" for r in records), encoding="utf-8")
     return bool(failed_invalidating_gates(records)), bool(incomplete_cells([path]))
 
 
@@ -269,8 +269,8 @@ def test_both_admission_lists_agree_on_every_shape(tmp_path) -> None:
 def _sampled(
     pinned,
     coverage,
-    fell_behind = False,
-    reattachments = 2,
+    fell_behind=False,
+    reattachments=2,
 ) -> dict:
     """What `scene/dom.js::read()` returns. `reattachments` defaults to the film's own two.
 
@@ -304,7 +304,7 @@ def test_writer_waives_only_a_lone_coverage_shortfall() -> None:
     assert rec["stream_coverage_unmeasured"] is False
 
     # nor may falling behind
-    _, rec = follow_verdict(_sampled(1.0, 0.20, fell_behind = True))
+    _, rec = follow_verdict(_sampled(1.0, 0.20, fell_behind=True))
     assert rec["stream_coverage_unmeasured"] is False
 
     # nor an absent pinned reading while the sampler was present
@@ -324,10 +324,10 @@ def test_an_arm_that_never_reattached_is_not_waived(tmp_path) -> None:
     reply costs nothing to paint) and is compared against a healthy partner.
     """
 
-    _, rec = follow_verdict(_sampled(1.0, 0.10, reattachments = 0))
+    _, rec = follow_verdict(_sampled(1.0, 0.10, reattachments=0))
     assert rec["stream_coverage_unmeasured"] is False
 
-    detail = _sampled(1.0, 0.10, reattachments = 0)
+    detail = _sampled(1.0, 0.10, reattachments=0)
     detail.update(rec)
     dropped, refused = _refuses(tmp_path, detail)
     assert dropped, "a build that never came back must still void its cell"
@@ -337,7 +337,7 @@ def test_an_arm_that_never_reattached_is_not_waived(tmp_path) -> None:
 def test_the_schedules_own_shortfall_is_still_waived(tmp_path) -> None:
     """The control: same coverage story, but the arm DID come back, so 0.481 is the film."""
 
-    _, rec = follow_verdict(_sampled(1.0, OBSERVED_COVERAGE, reattachments = 2))
+    _, rec = follow_verdict(_sampled(1.0, OBSERVED_COVERAGE, reattachments=2))
     assert rec["stream_coverage_unmeasured"] is True
 
 

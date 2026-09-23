@@ -193,7 +193,7 @@ def discover_clip_caption_pairs(
         if not meta_path.is_file():
             continue
         try:
-            meta_lines = meta_path.read_text(encoding = "utf-8").splitlines()
+            meta_lines = meta_path.read_text(encoding="utf-8").splitlines()
         except (OSError, UnicodeError):
             continue
         for line in meta_lines:
@@ -220,7 +220,7 @@ def discover_clip_caption_pairs(
             if sidecar.is_file():
                 sidecar_present = True
                 try:
-                    caption = sidecar.read_text(encoding = "utf-8").strip()
+                    caption = sidecar.read_text(encoding="utf-8").strip()
                 except (OSError, UnicodeError):
                     caption = ""
                 break
@@ -296,7 +296,7 @@ def decode_clip(
 
         frames: list[Any] = []
         next_target = 0
-        for source_index, frame in enumerate(container.decode(video = 0)):
+        for source_index, frame in enumerate(container.decode(video=0)):
             if len(frames) >= num_frames:
                 break
             if int(next_target * source_fps / H3_FPS) > source_index:
@@ -309,7 +309,7 @@ def decode_clip(
             while (
                 int(next_target * source_fps / H3_FPS) <= source_index and len(frames) < num_frames
             ):
-                frames.append(np.asarray(image, dtype = "uint8"))
+                frames.append(np.asarray(image, dtype="uint8"))
                 next_target += 1
 
     if len(frames) < num_frames:
@@ -348,6 +348,7 @@ def display_rotation_degrees(frame: Any, stream: Any) -> int:
     matrix = None
     try:
         from av.sidedata.sidedata import Type
+
         entry = frame.side_data.get(Type.DISPLAYMATRIX)
         if entry is not None:
             raw = bytes(entry)
@@ -397,7 +398,7 @@ def _cover_resize(image: Any, width: int, height: int, Image: Any) -> Any:
     left = (source_w - crop_w) // 2
     top = (source_h - crop_h) // 2
     return image.resize(
-        (width, height), Image.LANCZOS, box = (left, top, left + crop_w, top + crop_h)
+        (width, height), Image.LANCZOS, box=(left, top, left + crop_w, top + crop_h)
     )
 
 
@@ -415,13 +416,13 @@ def _decode_clip_audio(path: Any, target_samples: int, av: Any, np: Any) -> Any:
     second passed it, because the check only asks whether the container declares one.
     ``_MAX_AUDIO_PAD_FRACTION`` is the container-tail allowance, not an augmentation budget.
     """
-    resampler = av.AudioResampler(format = "flt", layout = "stereo", rate = H3_AUDIO_SAMPLING_RATE)
+    resampler = av.AudioResampler(format="flt", layout="stereo", rate=H3_AUDIO_SAMPLING_RATE)
     chunks = []
     have = 0
     with av.open(str(path)) as container:
         # Stops at the training window: only the first num_frames are trained, so decoding the rest of the
         # soundtrack would spend a whole recording's time and fail on damage in an unused region.
-        for frame in container.decode(audio = 0):
+        for frame in container.decode(audio=0):
             for resampled in resampler.resample(frame):
                 block = resampled.to_ndarray().reshape(-1, H3_AUDIO_CHANNELS)
                 chunks.append(block)
@@ -435,7 +436,7 @@ def _decode_clip_audio(path: Any, target_samples: int, av: Any, np: Any) -> Any:
                 chunks.append(resampled.to_ndarray().reshape(-1, H3_AUDIO_CHANNELS))
     if not chunks:
         raise ValueError(f"{Path(path).name} decoded to no audio samples.")
-    samples = np.concatenate(chunks, axis = 0).astype("float32")[:target_samples]
+    samples = np.concatenate(chunks, axis=0).astype("float32")[:target_samples]
     if samples.shape[0] < target_samples:
         missing = target_samples - samples.shape[0]
         if missing > _MAX_AUDIO_PAD_FRACTION * target_samples:

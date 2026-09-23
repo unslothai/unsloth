@@ -127,15 +127,16 @@ def _skip_reason() -> str | None:
     return None
 
 
-pytestmark = pytest.mark.skipif(_skip_reason() is not None, reason = _skip_reason() or "")
+pytestmark = pytest.mark.skipif(_skip_reason() is not None, reason=_skip_reason() or "")
 
 
-@pytest.fixture(scope = "module")
+@pytest.fixture(scope="module")
 def browser():
     from playwright.sync_api import sync_playwright
+
     with sync_playwright() as p:
         try:
-            b = p.chromium.launch(args = ["--no-sandbox"])
+            b = p.chromium.launch(args=["--no-sandbox"])
         except Exception as exc:  # noqa: BLE001
             pytest.skip(f"chromium could not be launched: {exc}")
         yield b
@@ -150,11 +151,11 @@ def _capture(browser, **kw) -> dict:
     observer bound to the previous document's viewport. The symptom is a capture that reports the
     PREVIOUS page's visible set -- a fixture bug that would read as a finding.
     """
-    page = browser.new_page(viewport = {"width": 900, "height": 700})
+    page = browser.new_page(viewport={"width": 900, "height": 700})
     try:
         page.set_content(_page(**kw))
-        page.add_script_tag(content = _DOM_JS.read_text(encoding = "utf-8"))
-        page.add_script_tag(content = _PARITY_JS.read_text(encoding = "utf-8"))
+        page.add_script_tag(content=_DOM_JS.read_text(encoding="utf-8"))
+        page.add_script_tag(content=_PARITY_JS.read_text(encoding="utf-8"))
         got = page.evaluate("() => window.__sb.parityVisible.watch()")
         assert got.get("visible_attempted") is True, got
         # IntersectionObserver's first delivery is asynchronous.
@@ -167,22 +168,22 @@ def _capture(browser, **kw) -> dict:
 
 
 #:The base arm: an ordinary settled thread on the shipped build.
-_SETTLED = dict(tail = "the whole reply, arrived", tail_running = False, generating = False)
+_SETTLED = dict(tail="the whole reply, arrived", tail_running=False, generating=False)
 #: THE TREATMENT THAT WENT BLIND, and the shape matters. A build that renames the ATTRIBUTE renames
 #: it on every message, so every settled row differs too, which is a rendering difference in its
 #: own right. The interesting blindness is a build that changed the status VOCABULARY: `complete`
 #: still reads `complete`, so every settled row is byte-identical and the only thing lost is the
 #: ability to see that a reply is being written.
 _BLIND = dict(
-    tail = "the whole reply, arr", running_value = "streaming", tail_running = True, generating = True
+    tail="the whole reply, arr", running_value="streaming", tail_running=True, generating=True
 )
 #: The cruder form: the attribute itself is gone. Kept because it is the one blindness a WINDOWED
 #: arm can still be caught at, where a missing row is otherwise an ordinary state.
 _BLIND_ATTR = dict(
-    tail = "the whole reply, arr", hook = "data-state", tail_running = True, generating = True
+    tail="the whole reply, arr", hook="data-state", tail_running=True, generating=True
 )
 #:The same mid-stream moment on a build whose hook IS known. Already handled, as residue.
-_MIDSTREAM = dict(tail = "the whole reply, arr", tail_running = True, generating = True)
+_MIDSTREAM = dict(tail="the whole reply, arr", tail_running=True, generating=True)
 
 
 def test_a_blinded_treatment_is_refused_not_scored_as_a_rendering_difference(browser):
@@ -231,7 +232,7 @@ def test_a_reply_streaming_below_the_fold_refuses_nothing(browser):
     rows it could see would refuse a pair for being unable to see something it was never claiming
     to have seen.
     """
-    cap = _capture(browser, **dict(_MIDSTREAM, tall = True))
+    cap = _capture(browser, **dict(_MIDSTREAM, tall=True))
     assert 4 not in cap["ever_visible"], cap["ever_visible"]
     assert cap["streaming"] is True
     assert cap["in_flight_unplaced"] is False, cap
@@ -244,7 +245,7 @@ def test_a_lost_conversation_is_still_a_finding_while_a_reply_runs(browser):
     could be placed, exactly as `compare` keeps `mount_count_mismatch` ahead of the same refusal.
     """
     base = _capture(browser, **_SETTLED)
-    treat = _capture(browser, **dict(_BLIND, tall = True))
+    treat = _capture(browser, **dict(_BLIND, tall=True))
     assert treat["in_flight_unplaced"] is True
     assert base["ever_visible"] != treat["ever_visible"]
     got = P.compare_visible(base, treat)
@@ -264,7 +265,7 @@ def test_a_lost_conversation_is_still_a_finding_while_a_reply_runs(browser):
 
 def test_a_changed_user_row_survives_the_blind_refusal(browser):
     base = _capture(browser, **_SETTLED)
-    treat = _capture(browser, **dict(_BLIND, user_body = "the user message, rewritten"))
+    treat = _capture(browser, **dict(_BLIND, user_body="the user message, rewritten"))
     assert treat["in_flight_unplaced"] is True, treat
     # Row 3 is the user's on both arms and differs; row 4 is the one that cannot be read.
     assert base["messages"]["3"]["role"] == treat["messages"]["3"]["role"] == "user"
@@ -296,7 +297,7 @@ def test_a_role_change_on_the_live_row_is_reported_not_elided(browser):
     user's came back NOT COMPARABLE.
     """
     base = _capture(browser, **_SETTLED)
-    treat = _capture(browser, **dict(_MIDSTREAM, live_role = "user"))
+    treat = _capture(browser, **dict(_MIDSTREAM, live_role="user"))
     assert treat["messages"]["4"]["in_flight"] is True, treat["messages"]["4"]
     assert base["messages"]["4"]["role"] == "assistant"
     assert treat["messages"]["4"]["role"] == "user"
@@ -328,7 +329,7 @@ def test_a_windowed_arm_that_unmounted_the_live_row_is_not_read_as_blind(browser
     The arm still declares four messages through `aria-setsize`, so the capture can tell the
     difference between a thread it can see part of and a thread that has nothing to say.
     """
-    cap = _capture(browser, **dict(_MIDSTREAM, drop_tail = True))
+    cap = _capture(browser, **dict(_MIDSTREAM, drop_tail=True))
     assert cap["streaming"] is True
     assert cap["status_hook_present"] is True
     assert 4 not in cap["ever_visible"], cap["ever_visible"]
@@ -338,7 +339,7 @@ def test_a_windowed_arm_that_unmounted_the_live_row_is_not_read_as_blind(browser
 def test_a_windowed_arm_is_still_caught_when_the_hook_itself_is_gone(browser):
     """The narrowing is not a hole. A missing ROW explains a quiet scan; a missing ATTRIBUTE does
     not, because the settled rows would still be publishing it."""
-    cap = _capture(browser, **dict(_BLIND_ATTR, drop_tail = True))
+    cap = _capture(browser, **dict(_BLIND_ATTR, drop_tail=True))
     assert cap["status_hook_present"] is False
     assert cap["in_flight_unplaced"] is True, cap
 
@@ -359,7 +360,7 @@ def test_what_the_windowed_narrowing_gives_up(browser):
     the settled rows, so nothing distinguishes it from an ordinary windowed capture. It under-claims
     rather than over-claims, and the same build compared on any full-mount pair still trips.
     """
-    cap = _capture(browser, **dict(_BLIND, drop_tail = True))
+    cap = _capture(browser, **dict(_BLIND, drop_tail=True))
     assert cap["status_hook_present"] is True
     assert cap["in_flight_unplaced"] is False, cap
 
@@ -373,7 +374,7 @@ def test_the_gap_before_the_first_part_arrives_is_not_a_blind_probe(browser):
     publishes no status because it has none to publish. The older assistant messages still publish
     theirs, which is what says the hook is intact and this is an ordinary interval.
     """
-    cap = _capture(browser, **dict(_MIDSTREAM, tail_has_parts = False))
+    cap = _capture(browser, **dict(_MIDSTREAM, tail_has_parts=False))
     assert cap["streaming"] is True
     assert cap["status_hook_present"] is True
     assert cap["in_flight_unplaced"] is False, cap
@@ -382,6 +383,6 @@ def test_the_gap_before_the_first_part_arrives_is_not_a_blind_probe(browser):
 def test_that_gap_is_still_caught_if_no_message_publishes_a_status_at_all(browser):
     """The other half: nothing to publish on the LAST message is ordinary, nothing to publish
     ANYWHERE is a hook that is gone, and a settled message would still be carrying it."""
-    cap = _capture(browser, **dict(_BLIND_ATTR, tail_has_parts = False))
+    cap = _capture(browser, **dict(_BLIND_ATTR, tail_has_parts=False))
     assert cap["status_hook_present"] is False
     assert cap["in_flight_unplaced"] is True, cap

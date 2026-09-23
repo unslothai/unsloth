@@ -48,7 +48,7 @@ def test_sdxl_detection_by_repo_and_override():
     assert detect_family("stabilityai/sdxl-turbo").name == "sdxl"
     assert detect_family("some-org/My-Cool-SDXL-Merge").name == "sdxl"
     assert detect_family("some-org/stable-diffusion-xl-anime").name == "sdxl"
-    assert detect_family("x", override = "sdxl").name == "sdxl"
+    assert detect_family("x", override="sdxl").name == "sdxl"
     # A GGUF DiT family must NOT be swallowed by the SDXL match.
     assert detect_family("unsloth/FLUX.1-schnell-GGUF").name == "flux.1"
 
@@ -89,9 +89,9 @@ class _FakeVae:
         self.moved_to = None
 
     def parameters(self):
-        yield types.SimpleNamespace(dtype = self._dtype)
+        yield types.SimpleNamespace(dtype=self._dtype)
 
-    def to(self, dtype = None):
+    def to(self, dtype=None):
         self.moved_to = dtype
         self._dtype = dtype
 
@@ -100,9 +100,9 @@ def test_align_vae_dtype_uses_unet_denoiser():
     # For SDXL the denoiser lives at pipe.unet, so _align_vae_dtype must read it and cast the VAE to the U-Net's dtype, which comes from a parameter (hence the _FakeVae).
     import torch
 
-    vae = _FakeVae(dtype = torch.float32)
-    unet = _FakeVae(dtype = torch.bfloat16)
-    pipe = types.SimpleNamespace(unet = unet, vae = vae)
+    vae = _FakeVae(dtype=torch.float32)
+    unet = _FakeVae(dtype=torch.bfloat16)
+    pipe = types.SimpleNamespace(unet=unet, vae=vae)
     DiffusionBackend._align_vae_dtype(pipe, "unet")
     assert vae.moved_to == torch.bfloat16
 
@@ -111,14 +111,14 @@ def test_align_vae_dtype_transformer_default_unchanged():
     # DiT default: reads pipe.transformer; a pipe with no transformer is a safe no-op.
     import torch
 
-    vae = _FakeVae(dtype = torch.float32)
-    transformer = _FakeVae(dtype = torch.bfloat16)
-    pipe = types.SimpleNamespace(transformer = transformer, vae = vae)
+    vae = _FakeVae(dtype=torch.float32)
+    transformer = _FakeVae(dtype=torch.bfloat16)
+    pipe = types.SimpleNamespace(transformer=transformer, vae=vae)
     DiffusionBackend._align_vae_dtype(pipe)
     assert vae.moved_to == torch.bfloat16
     # No denoiser attribute -> no-op (does not raise, does not move the VAE).
-    vae2 = _FakeVae(dtype = torch.float32)
-    DiffusionBackend._align_vae_dtype(types.SimpleNamespace(vae = vae2), "unet")
+    vae2 = _FakeVae(dtype=torch.float32)
+    DiffusionBackend._align_vae_dtype(types.SimpleNamespace(vae=vae2), "unet")
     assert vae2.moved_to is None
 
 
@@ -129,30 +129,30 @@ def test_align_vae_dtype_skips_gguf_packed_uint8_params():
 
     class _GgufDenoiser:
         def parameters(self):
-            yield types.SimpleNamespace(dtype = torch.uint8)  # packed GGUF block
-            yield types.SimpleNamespace(dtype = torch.bfloat16)  # compute dtype
+            yield types.SimpleNamespace(dtype=torch.uint8)  # packed GGUF block
+            yield types.SimpleNamespace(dtype=torch.bfloat16)  # compute dtype
 
-    vae = _FakeVae(dtype = torch.float32)
-    pipe = types.SimpleNamespace(transformer = _GgufDenoiser(), vae = vae)
+    vae = _FakeVae(dtype=torch.float32)
+    pipe = types.SimpleNamespace(transformer=_GgufDenoiser(), vae=vae)
     DiffusionBackend._align_vae_dtype(pipe)
     assert vae.moved_to == torch.bfloat16
 
     class _AllPacked:
         def parameters(self):
-            yield types.SimpleNamespace(dtype = torch.uint8)
+            yield types.SimpleNamespace(dtype=torch.uint8)
 
-    vae2 = _FakeVae(dtype = torch.float32)
-    DiffusionBackend._align_vae_dtype(types.SimpleNamespace(transformer = _AllPacked(), vae = vae2))
+    vae2 = _FakeVae(dtype=torch.float32)
+    DiffusionBackend._align_vae_dtype(types.SimpleNamespace(transformer=_AllPacked(), vae=vae2))
     assert vae2.moved_to is None
 
 
 def test_sdxl_lora_supported_on_diffusers():
     # SDXL is bf16/bnb-4bit on diffusers, so LoRA is allowed (unlike GGUF-via-diffusers).
     assert diffusion_lora.supports_lora(
-        engine = "diffusers", family = "sdxl", model_kind = "pipeline", transformer_quant = None
+        engine="diffusers", family="sdxl", model_kind="pipeline", transformer_quant=None
     )
     assert diffusion_lora.supports_lora(
-        engine = "diffusers", family = "sdxl", model_kind = "single_file", transformer_quant = None
+        engine="diffusers", family="sdxl", model_kind="single_file", transformer_quant=None
     )
 
 
@@ -185,9 +185,9 @@ def test_sdxl_refiner_not_trusted():
 def test_sdxl_gguf_load_rejected_up_front():
     # SDXL has no transformer-only GGUF variant (its single file is the whole pipeline), so a GGUF request fails cheap validation before the GPU handoff.
     backend = DiffusionBackend()
-    with pytest.raises(ValueError, match = "no GGUF"):
+    with pytest.raises(ValueError, match="no GGUF"):
         backend.validate_load_request(
-            "some-org/my-sdxl.gguf", gguf_filename = "my-sdxl.gguf", family_override = "sdxl"
+            "some-org/my-sdxl.gguf", gguf_filename="my-sdxl.gguf", family_override="sdxl"
         )
 
 

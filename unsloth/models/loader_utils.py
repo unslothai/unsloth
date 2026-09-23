@@ -62,6 +62,7 @@ BAD_MAPPINGS = {
 
 def _get_torchao_fp8_config(fp8_mode):
     from unsloth_zoo.vllm_utils import _get_torchao_fp8_config as _impl
+
     return _impl(fp8_mode)
 
 
@@ -231,10 +232,10 @@ def is_automatic_device_map(device_map):
 
 
 def planner_quantization_kwargs(
-    load_in_4bit = False,
-    load_in_8bit = False,
-    quantization_config = None,
-    extra_skip_modules = None,
+    load_in_4bit=False,
+    load_in_8bit=False,
+    quantization_config=None,
+    extra_skip_modules=None,
 ):
     """The quantization the planner must size for, as the load will really apply it. The config or the flags, never both, since transformers refuses both and loader.py clears the flags whenever it forwards a config; bare flags would describe a full-precision load and raise `DeviceMapInfeasible` on one that would have fit. The skip list travels with the flags: SKIP_QUANTIZATION_MODULES stays in compute dtype as `modules_to_not_convert`, and sizing it at 4bit understates the head device by GiBs on a large-vocab VLM. A pre-quantized checkpoint carries its own list in config.json."""
     if quantization_config is not None:
@@ -250,13 +251,13 @@ def planner_quantization_kwargs(
     return kwargs
 
 
-def planner_model_class(config, trust_remote_code = False):
+def planner_model_class(config, trust_remote_code=False):
     """The model class the planner's own rules pick for `config`, or None if unknown. The planner never sees the auto class the load chose: `config` is whatever the caller passed, while the planner rebuilds the repo's from `model_name`, and the two can disagree."""
     try:
         from unsloth_zoo.device_map_planner import _auto_class_for
         from ._utils import resolve_model_class
 
-        auto_class = _auto_class_for(config, trust_remote_code = trust_remote_code)
+        auto_class = _auto_class_for(config, trust_remote_code=trust_remote_code)
         return resolve_model_class(auto_class, config)
     except Exception:
         # Unknown, not mismatched: an unsloth_zoo without this has no planner to feed.
@@ -308,10 +309,10 @@ def resolve_unsloth_device_map(
     device_map,
     model_name,
     *,
-    fast_inference = False,
-    full_finetuning = False,
-    planner_kwargs = None,
-    skip_reason = None,
+    fast_inference=False,
+    full_finetuning=False,
+    planner_kwargs=None,
+    skip_reason=None,
     **config_kwargs,
 ):
     """Plan a head-aware multi-GPU map for `device_map = "unsloth"`, else return as-is. Opt-in only, so nothing an existing caller passes changes meaning, and the plan is built on the meta device: no GPU memory, no weight download. Falls back to "sequential" wherever a plan cannot apply, since a model that loads the old way beats one that refuses to load at all; `DeviceMapInfeasible` is the exception, raised rather than spilling a bitsandbytes model to CPU, and swallowing it would hand the user an OOM instead of a diagnosis. `skip_reason` is the caller's veto, for when only the caller can tell the planner would describe a different model than the load builds."""
@@ -385,7 +386,7 @@ def resolve_unsloth_device_map(
 
     try:
         plan = plan_device_map_for_pretrained(
-            model_name, max_memory = max_memory, **planner_kwargs, **config_kwargs
+            model_name, max_memory=max_memory, **planner_kwargs, **config_kwargs
         )
     except Exception as error:
         if type(error).__name__ == "DeviceMapInfeasible":
@@ -400,13 +401,13 @@ def resolve_unsloth_device_map(
 
 def __get_model_name(
     model_name,
-    load_in_4bit = True,
-    INT_TO_FLOAT_MAPPER = None,
-    FLOAT_TO_INT_MAPPER = None,
-    MAP_TO_UNSLOTH_16bit = None,
-    load_in_fp8 = False,
-    FLOAT_TO_FP8_BLOCK_MAPPER = None,
-    FLOAT_TO_FP8_ROW_MAPPER = None,
+    load_in_4bit=True,
+    INT_TO_FLOAT_MAPPER=None,
+    FLOAT_TO_INT_MAPPER=None,
+    MAP_TO_UNSLOTH_16bit=None,
+    load_in_fp8=False,
+    FLOAT_TO_FP8_BLOCK_MAPPER=None,
+    FLOAT_TO_FP8_ROW_MAPPER=None,
 ):
     model_name = str(model_name)
     lower_model_name = model_name.lower()
@@ -425,6 +426,7 @@ def __get_model_name(
         # No pre-quantized model found. vllm >= 0.12.0 quantizes to FP8 on the fly (returning the original name); older vllm falls through to offline quant.
         if importlib.util.find_spec("vllm") is not None:
             import vllm
+
             if Version(vllm.__version__) >= Version("0.12.0"):
                 return model_name
         return None
@@ -474,7 +476,7 @@ def _get_new_mapper():
         # Redirects by hand: requests drains each intermediate body inside get.
         url = new_mapper
         for _ in range(5):
-            response = requests.get(url, timeout = 3, stream = True, allow_redirects = False)
+            response = requests.get(url, timeout=3, stream=True, allow_redirects=False)
             with response:
                 location = (
                     response.headers.get("location")
@@ -512,7 +514,7 @@ def _get_new_mapper():
             url = requests.compat.urljoin(url, location)
         else:
             return {}, {}, {}, {}, {}
-        new_mapper = b"".join(chunks).decode(encoding, errors = "replace")
+        new_mapper = b"".join(chunks).decode(encoding, errors="replace")
         # Never exec the response: that is arbitrary code execution inside every from_pretrained that hits an unmapped name.
         import ast
 
@@ -580,8 +582,8 @@ def _get_new_mapper():
 
         def _executed_nodes(
             body,
-            shadowed = frozenset(),
-            class_body = False,
+            shadowed=frozenset(),
+            class_body=False,
         ):
             # What ENDED the suite: "return" leaves the function, True the suite, and only the statements ABOVE it still see the module global.
             for statement in body:
@@ -593,7 +595,7 @@ def _get_new_mapper():
                     return "return" if isinstance(statement, ast.Return) else True
                 if isinstance(statement, ast.ClassDef):
                     # A class body, unlike a function body, RUNS at import.
-                    yield from _executed_nodes(statement.body, shadowed, class_body = True)
+                    yield from _executed_nodes(statement.body, shadowed, class_body=True)
                     continue
                 if isinstance(statement, ast.If) and _constant_truth(statement.test) is not None:
                     branch = statement.body if _constant_truth(statement.test) else statement.orelse
@@ -973,37 +975,37 @@ def _resolve_with_mappers(
     int_to_float,
     float_to_int,
     map_to_unsloth_16bit,
-    fp8_block = None,
-    fp8_row = None,
+    fp8_block=None,
+    fp8_row=None,
 ):
     # The probe passes the FETCHED fp8 tables, without rebinding the installed ones.
     return __get_model_name(
-        model_name = model_name,
-        load_in_4bit = load_in_4bit,
-        INT_TO_FLOAT_MAPPER = int_to_float,
-        FLOAT_TO_INT_MAPPER = float_to_int,
-        MAP_TO_UNSLOTH_16bit = map_to_unsloth_16bit,
-        load_in_fp8 = load_in_fp8,
-        FLOAT_TO_FP8_BLOCK_MAPPER = FLOAT_TO_FP8_BLOCK_MAPPER if fp8_block is None else fp8_block,
-        FLOAT_TO_FP8_ROW_MAPPER = FLOAT_TO_FP8_ROW_MAPPER if fp8_row is None else fp8_row,
+        model_name=model_name,
+        load_in_4bit=load_in_4bit,
+        INT_TO_FLOAT_MAPPER=int_to_float,
+        FLOAT_TO_INT_MAPPER=float_to_int,
+        MAP_TO_UNSLOTH_16bit=map_to_unsloth_16bit,
+        load_in_fp8=load_in_fp8,
+        FLOAT_TO_FP8_BLOCK_MAPPER=FLOAT_TO_FP8_BLOCK_MAPPER if fp8_block is None else fp8_block,
+        FLOAT_TO_FP8_ROW_MAPPER=FLOAT_TO_FP8_ROW_MAPPER if fp8_row is None else fp8_row,
     )
 
 
 def get_model_name(
     model_name,
-    load_in_4bit = True,
-    load_in_fp8 = False,
-    token = None,
-    trust_remote_code = False,
+    load_in_4bit=True,
+    load_in_fp8=False,
+    token=None,
+    trust_remote_code=False,
 ):
     assert load_in_fp8 in (True, False, "block")
     new_model_name = _resolve_with_mappers(
-        model_name = model_name,
-        load_in_4bit = load_in_4bit,
-        load_in_fp8 = load_in_fp8,
-        int_to_float = INT_TO_FLOAT_MAPPER,
-        float_to_int = FLOAT_TO_INT_MAPPER,
-        map_to_unsloth_16bit = MAP_TO_UNSLOTH_16bit,
+        model_name=model_name,
+        load_in_4bit=load_in_4bit,
+        load_in_fp8=load_in_fp8,
+        int_to_float=INT_TO_FLOAT_MAPPER,
+        float_to_int=FLOAT_TO_INT_MAPPER,
+        map_to_unsloth_16bit=MAP_TO_UNSLOTH_16bit,
     )
     if (
         new_model_name is not None
@@ -1029,15 +1031,15 @@ def get_model_name(
             NEW_FP8_ROW_MAPPER,
         ) = _get_new_mapper()
         upgraded_model_name = _resolve_with_mappers(
-            model_name = model_name,
-            load_in_4bit = load_in_4bit,
-            load_in_fp8 = load_in_fp8,
-            int_to_float = NEW_INT_TO_FLOAT_MAPPER,
-            float_to_int = NEW_FLOAT_TO_INT_MAPPER,
-            map_to_unsloth_16bit = NEW_MAP_TO_UNSLOTH_16bit,
+            model_name=model_name,
+            load_in_4bit=load_in_4bit,
+            load_in_fp8=load_in_fp8,
+            int_to_float=NEW_INT_TO_FLOAT_MAPPER,
+            float_to_int=NEW_FLOAT_TO_INT_MAPPER,
+            map_to_unsloth_16bit=NEW_MAP_TO_UNSLOTH_16bit,
             # The fp8 probe has to look at the FETCHED tables too, or a new fp8 repo would miss both here and in the installed tables and skip the upgrade message.
-            fp8_block = NEW_FP8_BLOCK_MAPPER,
-            fp8_row = NEW_FP8_ROW_MAPPER,
+            fp8_block=NEW_FP8_BLOCK_MAPPER,
+            fp8_row=NEW_FP8_ROW_MAPPER,
         )
         if upgraded_model_name is not None:
             raise NotImplementedError(
@@ -1070,7 +1072,7 @@ def _offline_quantize_to_fp8(
         AutoConfig,
     )
 
-    config = AutoConfig.from_pretrained(model_name, revision = revision)
+    config = AutoConfig.from_pretrained(model_name, revision=revision)
     is_vlm = any(
         x.endswith(("ForConditionalGeneration", "ForVisionText2Text"))
         for x in (getattr(config, "architectures", None) or [])
@@ -1112,7 +1114,7 @@ def _offline_quantize_to_fp8(
 
         qconfig = _get_torchao_fp8_config(fp8_mode)
         qconfig = TorchAoConfig(qconfig)
-        load_kwargs = dict(torch_dtype = "auto", device_map = "auto", quantization_config = qconfig)
+        load_kwargs = dict(torch_dtype="auto", device_map="auto", quantization_config=qconfig)
         if text_config is not None:
             _apply_text_only_key_mapping(load_kwargs, config, text_config)
             config = text_config
@@ -1120,12 +1122,12 @@ def _offline_quantize_to_fp8(
         auto_processor = AutoProcessor if is_vlm else AutoTokenizer
         model = auto_model.from_pretrained(
             model_name,
-            config = config,
-            revision = revision,
+            config=config,
+            revision=revision,
             **load_kwargs,
         )
-        tokenizer = auto_processor.from_pretrained(model_name, revision = revision)
-        model.save_pretrained(new_model_name, safe_serialization = False)
+        tokenizer = auto_processor.from_pretrained(model_name, revision=revision)
+        model.save_pretrained(new_model_name, safe_serialization=False)
         del model
         for _ in range(2):
             torch.cuda.empty_cache()
@@ -1139,8 +1141,8 @@ def _tag_model_with_fp8_torchao_config(model: torch.nn.Module, fp8_mode: str):
     try:
         base_config = _get_torchao_fp8_config(fp8_mode)
         model.torchao_config = TorchAOConfig(
-            qat_scheme = None,
-            base_config_and_filter_fns = [(base_config, None)],
+            qat_scheme=None,
+            base_config_and_filter_fns=[(base_config, None)],
         )
     except:
         pass
@@ -1184,9 +1186,9 @@ def _load_fp8_weight_map(
     model_name,
     local_files_only,
     token,
-    revision = None,
-    subfolder = None,
-    cache_dir = None,
+    revision=None,
+    subfolder=None,
+    cache_dir=None,
 ):
     """The checkpoint's tensor->file map, using the same snapshot the load used. Prefers the sharded `model.safetensors.index.json`, falling back to a single `model.safetensors` so unsharded checkpoints are covered too."""
 
@@ -1199,14 +1201,15 @@ def _load_fp8_weight_map(
 
     def _remote_path(filename):
         from huggingface_hub import hf_hub_download
+
         return hf_hub_download(
             model_name,
             filename,
-            revision = revision,
-            subfolder = subfolder,
-            cache_dir = cache_dir,
-            local_files_only = local_files_only,
-            token = token,
+            revision=revision,
+            subfolder=subfolder,
+            cache_dir=cache_dir,
+            local_files_only=local_files_only,
+            token=token,
         )
 
     index_file = "model.safetensors.index.json"
@@ -1225,7 +1228,8 @@ def _load_fp8_weight_map(
         index_path = None
     if index_path is not None:
         import json
-        with open(index_path, "r", encoding = "utf-8") as f:
+
+        with open(index_path, "r", encoding="utf-8") as f:
             return json.load(f).get("weight_map", None)
 
     try:
@@ -1236,7 +1240,8 @@ def _load_fp8_weight_map(
         else:
             return None
         from safetensors import safe_open
-        with safe_open(single_path, framework = "pt") as f:
+
+        with safe_open(single_path, framework="pt") as f:
             return {key: single_file for key in f.keys()}
     except Exception:
         return None
@@ -1247,9 +1252,9 @@ def _resolve_fp8_shard(
     shard,
     local_files_only,
     token,
-    revision = None,
-    subfolder = None,
-    cache_dir = None,
+    revision=None,
+    subfolder=None,
+    cache_dir=None,
 ):
     """Resolve a checkpoint shard filename to a local path (repo id or local dir)."""
     if os.path.isdir(model_name):
@@ -1263,11 +1268,11 @@ def _resolve_fp8_shard(
     return hf_hub_download(
         model_name,
         shard,
-        revision = revision,
-        subfolder = subfolder,
-        cache_dir = cache_dir,
-        local_files_only = local_files_only,
-        token = token,
+        revision=revision,
+        subfolder=subfolder,
+        cache_dir=cache_dir,
+        local_files_only=local_files_only,
+        token=token,
     )
 
 
@@ -1292,12 +1297,12 @@ def _restore_dropped_fp8_scales(
     model,
     model_name,
     *,
-    local_files_only = False,
-    token = None,
-    revision = None,
-    subfolder = None,
-    cache_dir = None,
-    variant = None,
+    local_files_only=False,
+    token=None,
+    revision=None,
+    subfolder=None,
+    cache_dir=None,
+    variant=None,
 ):
     """Re-apply block-fp8 `weight_scale_inv` tensors that transformers dropped on load. On some block-scale fp8 checkpoints (e.g. Qwen3.6-27B-FP8, issue #6200) transformers fails to convert a Linear such as `mlp.gate_proj` to an fp8 module, loading the raw quantized values into a plain bf16 weight and discarding its `weight_scale_inv` as an unexpected key, so the weight is used un-scaled and the model is garbage. For every checkpoint scale whose live weight is not fp8, dequantize the orphaned weight in place; correctly converted modules keep an fp8 weight and are skipped, so a healthy checkpoint is a no-op. Returns (restored, skipped)."""
     try:
@@ -1348,6 +1353,7 @@ def _restore_dropped_fp8_scales(
             try:
                 if shard not in shard_cache:
                     from safetensors import safe_open
+
                     shard_path = _resolve_fp8_shard(
                         model_name,
                         shard,
@@ -1357,7 +1363,7 @@ def _restore_dropped_fp8_scales(
                         subfolder,
                         cache_dir,
                     )
-                    shard_cache[shard] = safe_open(shard_path, framework = "pt")
+                    shard_cache[shard] = safe_open(shard_path, framework="pt")
                 scale = shard_cache[shard].get_tensor(scale_key).to(torch.float32)
 
                 out_features, in_features = weight.shape
@@ -1379,8 +1385,8 @@ def _restore_dropped_fp8_scales(
                             scale[:, None, :, None]
                         )
                     else:
-                        scale_expanded = scale.repeat_interleave(bs0, dim = 0).repeat_interleave(
-                            bs1, dim = 1
+                        scale_expanded = scale.repeat_interleave(bs0, dim=0).repeat_interleave(
+                            bs1, dim=1
                         )[:out_features, :in_features]
                         module.weight.data = (weight.to(torch.float32) * scale_expanded).to(
                             weight.dtype
@@ -1406,9 +1412,9 @@ def _restore_dropped_fp8_scales(
 
 def check_and_disable_bitsandbytes_loading(
     model_config,
-    load_in_4bit = True,
-    load_in_8bit = False,
-    verbose = True,
+    load_in_4bit=True,
+    load_in_8bit=False,
+    verbose=True,
 ):
     """Disable bitsandbytes loading (load_in_4bit/load_in_8bit) when the model already carries a non-bitsandbytes quantization config. Returns ``(load_in_4bit, load_in_8bit, quant_method)``, with both flags False if they were disabled and quant_method the detected method or None."""
     quant_method = get_quant_type(model_config)
@@ -1504,9 +1510,11 @@ def _get_fp8_mode_and_check_settings(
         and importlib.util.find_spec("fbgemm_gpu.experimental") is not None
     ):
         import fbgemm_gpu.experimental.gen_ai
+
         if Version(fbgemm_gpu.__version__) < Version("1.4.1"):
             os.environ["UNSLOTH_HAS_FBGEMM"] = "0"
             from unsloth_zoo.log import logger
+
             logger.info(
                 f"Unsloth: fbgemm_gpu_genai=={fbgemm_gpu.__version__} is old for FP8 loading. "
                 f"Using Triton kernels instead."
@@ -1521,7 +1529,7 @@ _ROTARY_INV_FREQ_BUFFER_NAMES = ("inv_freq", "short_inv_freq", "long_inv_freq")
 def _exclude_rope_inv_freq_from_ddp(model):
     ignored = list(getattr(model, "_ddp_params_and_buffers_to_ignore", None) or [])
     for module_name, module in model.named_modules():
-        for buffer_name, _ in module.named_buffers(recurse = False):
+        for buffer_name, _ in module.named_buffers(recurse=False):
             if buffer_name in _ROTARY_INV_FREQ_BUFFER_NAMES:
                 fqn = f"{module_name}.{buffer_name}" if module_name else buffer_name
                 if fqn not in ignored:
@@ -1529,6 +1537,7 @@ def _exclude_rope_inv_freq_from_ddp(model):
     if ignored:
         try:
             from torch.nn.parallel import DistributedDataParallel
+
             DistributedDataParallel._set_params_and_buffers_to_ignore_for_model(model, ignored)
         except Exception:
             # Private PyTorch API: fall back to setting the attribute DDP reads directly if it ever moves or changes signature.
@@ -1589,7 +1598,7 @@ def _tokenizer_revision(tokenizer):
     return getattr(tokenizer, _LOADED_REVISION_ATTR, None)
 
 
-def _mark_loaded_local_files_only(result, cache_dir = None):
+def _mark_loaded_local_files_only(result, cache_dir=None):
     """Stamp a load's local-only mode and cache_dir onto the returned objects."""
     for obj in result if isinstance(result, (tuple, list)) else (result,):
         try:
@@ -1760,12 +1769,14 @@ def _force_hf_offline():
             saved_env = {}
             try:
                 import huggingface_hub.constants as _hfc
+
                 if hasattr(_hfc, "HF_HUB_OFFLINE"):
                     saved.append((_hfc, "HF_HUB_OFFLINE", _hfc.HF_HUB_OFFLINE))
             except Exception:
                 pass
             try:
                 import transformers.utils.hub as _tuh
+
                 for _attr in ("_is_offline_mode", "OFFLINE"):
                     if hasattr(_tuh, _attr):
                         saved.append((_tuh, _attr, getattr(_tuh, _attr)))
@@ -1809,6 +1820,7 @@ def _progress_bars_were_disabled():
     """Snapshot HF progress-bar state (None if unknown); pairs with _restore_progress_bars."""
     try:
         from huggingface_hub.utils import are_progress_bars_disabled
+
         return are_progress_bars_disabled()
     except Exception:
         return None
@@ -1819,6 +1831,7 @@ def _restore_progress_bars(were_disabled):
     if were_disabled is False:
         try:
             from huggingface_hub.utils import enable_progress_bars
+
             enable_progress_bars()
         except Exception:
             pass
@@ -1962,12 +1975,12 @@ def _has_local_processor_files(path):
 def _resolve_hub_repo_local_dir(
     repo_id,
     *,
-    token = None,
-    cache_dir = None,
-    revision = None,
+    token=None,
+    cache_dir=None,
+    revision=None,
     # Default closed: a "resolve local dir" helper must not download. False here means five filenames each retried with backoff before it gives up.
-    local_files_only = True,
-    filenames = (
+    local_files_only=True,
+    filenames=(
         "tokenizer_config.json",
         "config.json",
         "tokenizer.json",
@@ -1987,12 +2000,12 @@ def _resolve_hub_repo_local_dir(
     for filename in filenames:
         try:
             path = hf_hub_download(
-                repo_id = repo_id,
-                filename = filename,
-                token = token,
-                cache_dir = cache_dir,
-                local_files_only = local_files_only,
-                revision = revision,
+                repo_id=repo_id,
+                filename=filename,
+                token=token,
+                cache_dir=cache_dir,
+                local_files_only=local_files_only,
+                revision=revision,
             )
             if path and os.path.isfile(path):
                 return os.path.dirname(path)
@@ -2005,19 +2018,19 @@ def _resolve_hub_repo_cached_file(
     repo_id,
     filename,
     *,
-    token = None,
-    cache_dir = None,
-    local_files_only = True,
-    revision = None,
+    token=None,
+    cache_dir=None,
+    local_files_only=True,
+    revision=None,
 ):
     """Return a cached file path under a Hub snapshot, or None if absent."""
     local_dir = _resolve_hub_repo_local_dir(
         repo_id,
-        token = token,
-        cache_dir = cache_dir,
-        local_files_only = local_files_only,
-        revision = revision,
-        filenames = (filename,),
+        token=token,
+        cache_dir=cache_dir,
+        local_files_only=local_files_only,
+        revision=revision,
+        filenames=(filename,),
     )
     if local_dir is None:
         return None
@@ -2028,11 +2041,11 @@ def _resolve_hub_repo_cached_file(
 def _hub_repo_or_local_path(
     repo_id,
     *,
-    token = None,
-    cache_dir = None,
-    local_files_only = False,
-    filenames = None,
-    revision = None,
+    token=None,
+    cache_dir=None,
+    local_files_only=False,
+    filenames=None,
+    revision=None,
 ):
     """Prefer a cached snapshot path over a Hub repo id when offline or ``local_files_only``."""
     if isinstance(repo_id, str) and os.path.isdir(repo_id):
@@ -2042,11 +2055,11 @@ def _hub_repo_or_local_path(
         return repo_id
     local_dir = _resolve_hub_repo_local_dir(
         repo_id,
-        token = token,
-        cache_dir = cache_dir,
-        local_files_only = True,
-        revision = revision,
-        filenames = filenames
+        token=token,
+        cache_dir=cache_dir,
+        local_files_only=True,
+        revision=revision,
+        filenames=filenames
         or (
             "tokenizer_config.json",
             "config.json",
@@ -2061,12 +2074,12 @@ def _hub_repo_or_local_path(
 def _load_pretrained_tokenizer_fast(
     tokenizer_name,
     *,
-    padding_side = "left",
-    token = None,
-    trust_remote_code = False,
-    cache_dir = None,
-    local_files_only = False,
-    revision = None,
+    padding_side="left",
+    token=None,
+    trust_remote_code=False,
+    cache_dir=None,
+    local_files_only=False,
+    revision=None,
 ):
     """Load ``PreTrainedTokenizerFast`` without Hub metadata probes when cached/offline. Needed on transformers 4.57.2-5.5.4; redundant once the floor is past 5.6.0."""
     from transformers import PreTrainedTokenizerFast
@@ -2074,11 +2087,11 @@ def _load_pretrained_tokenizer_fast(
     lfo = bool(local_files_only) or _env_says_offline()
     load_path = _hub_repo_or_local_path(
         tokenizer_name,
-        token = token,
-        cache_dir = cache_dir,
-        local_files_only = lfo,
-        revision = revision,
-        filenames = (
+        token=token,
+        cache_dir=cache_dir,
+        local_files_only=lfo,
+        revision=revision,
+        filenames=(
             "tokenizer_config.json",
             "tokenizer.json",
             "tokenizer.model",
@@ -2086,19 +2099,19 @@ def _load_pretrained_tokenizer_fast(
     )
     return PreTrainedTokenizerFast.from_pretrained(
         load_path,
-        padding_side = padding_side,
-        token = token,
-        trust_remote_code = trust_remote_code,
-        cache_dir = cache_dir,
-        local_files_only = lfo,
-        revision = revision,
+        padding_side=padding_side,
+        token=token,
+        trust_remote_code=trust_remote_code,
+        cache_dir=cache_dir,
+        local_files_only=lfo,
+        revision=revision,
     )
 
 
 def _resolve_checkpoint_tokenizer_name(
     old_model_name,
     kwargs,
-    require_processor = False,
+    require_processor=False,
 ):
     """tokenizer_name for a PEFT/checkpoint load: caller override, else the local checkpoint dir if self-sufficient, else None (base repo). Always popped from kwargs (also passed explicitly downstream). For a VLM (require_processor), the dir must also ship processor files; otherwise fall back to the base repo whose cached processor still loads."""
     explicit = kwargs.pop("tokenizer_name", None)

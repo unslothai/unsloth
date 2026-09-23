@@ -19,7 +19,7 @@ PANEL_TSX = REPO / "studio/frontend/src/features/images/train/diffusion-train-pa
 
 
 def _source() -> str:
-    return PANEL_TSX.read_text(encoding = "utf-8")
+    return PANEL_TSX.read_text(encoding="utf-8")
 
 
 def test_settings_cell_cannot_outgrow_its_grid_column():

@@ -28,7 +28,7 @@ def _binds(node, name):
 
 def _amp_branch():
     """The top-level `if` that assigns the amp helpers."""
-    tree = ast.parse(UTILS_PATH.read_text(encoding = "utf-8"))
+    tree = ast.parse(UTILS_PATH.read_text(encoding="utf-8"))
     for node in tree.body:
         if isinstance(node, ast.If) and _binds(node, AMP_NAMES[0]):
             return node
@@ -37,16 +37,16 @@ def _amp_branch():
 
 def _fake_torch():
     amp = types.SimpleNamespace(
-        custom_fwd = lambda device_type: f"fwd:{device_type}",
-        custom_bwd = lambda device_type: f"bwd:{device_type}",
+        custom_fwd=lambda device_type: f"fwd:{device_type}",
+        custom_bwd=lambda device_type: f"bwd:{device_type}",
     )
-    cuda_amp = types.SimpleNamespace(custom_fwd = "fwd:legacy", custom_bwd = "bwd:legacy")
-    return types.SimpleNamespace(amp = amp, cuda = types.SimpleNamespace(amp = cuda_amp))
+    cuda_amp = types.SimpleNamespace(custom_fwd="fwd:legacy", custom_bwd="bwd:legacy")
+    return types.SimpleNamespace(amp=amp, cuda=types.SimpleNamespace(amp=cuda_amp))
 
 
 def test_the_amp_helpers_are_exported():
     """Without this the rest of the file would be testing nothing."""
-    tree = ast.parse(UTILS_PATH.read_text(encoding = "utf-8"))
+    tree = ast.parse(UTILS_PATH.read_text(encoding="utf-8"))
     exported = set()
     for node in tree.body:
         if isinstance(node, ast.Assign) and _binds(node, "__all__"):
@@ -70,7 +70,7 @@ def test_amp_helpers_are_bound_on_every_device(device_type, device_type_torch):
         "DEVICE_TYPE": device_type,
         "DEVICE_TYPE_TORCH": device_type_torch,
     }
-    exec(compile(ast.Module(body = [_amp_branch()], type_ignores = []), "<amp>", "exec"), namespace)
+    exec(compile(ast.Module(body=[_amp_branch()], type_ignores=[]), "<amp>", "exec"), namespace)
 
     for name in AMP_NAMES:
         assert name in namespace, (

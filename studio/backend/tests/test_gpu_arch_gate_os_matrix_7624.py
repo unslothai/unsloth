@@ -67,14 +67,14 @@ OS_KEYS = list(_OS_CELLS)
 
 
 def _device(
-    arch = "",
+    arch="",
     *,
-    free_mib = 12000,
-    total_bytes = _TOTAL_BYTES,
-    name = "AMD Radeon RX 6800",
-    is_integrated = 0,
-    arch_attr = "gcnArchName",
-    describe_error = None,
+    free_mib=12000,
+    total_bytes=_TOTAL_BYTES,
+    name="AMD Radeon RX 6800",
+    is_integrated=0,
+    arch_attr="gcnArchName",
+    describe_error=None,
 ):
     """One fake enumerated device. ``describe_error`` makes
     ``get_device_properties`` raise for it (a card torch cannot describe)."""
@@ -104,15 +104,15 @@ class _Props:
 
 def _gfx103x_pair():
     """The two-card gfx1030 + gfx1036 rig most of this matrix probes."""
-    return [_device("gfx1030", free_mib = 12049), _device("gfx1036", free_mib = 12176)]
+    return [_device("gfx1030", free_mib=12049), _device("gfx1036", free_mib=12176)]
 
 
 def _fake_torch(
     devices,
     *,
-    vendor = "amd",
-    cuda_available = None,
-    reserved_bytes = 0,
+    vendor="amd",
+    cuda_available=None,
+    reserved_bytes=0,
 ):
     """A fake ``torch``.
 
@@ -127,19 +127,19 @@ def _fake_torch(
     devices = list(devices)
     torch = types.ModuleType("torch")
     if vendor == "amd":
-        torch.version = types.SimpleNamespace(hip = "7.1.0", cuda = None)
+        torch.version = types.SimpleNamespace(hip="7.1.0", cuda=None)
         torch.__version__ = "2.9.0+rocm7.1"
     elif vendor == "amd_sdk":
         torch.version = types.SimpleNamespace()
         torch.__version__ = "2.6.0+rocm6.4"
     elif vendor == "nvidia":
-        torch.version = types.SimpleNamespace(hip = None, cuda = "12.4")
+        torch.version = types.SimpleNamespace(hip=None, cuda="12.4")
         torch.__version__ = "2.6.0+cu124"
     else:
-        torch.version = types.SimpleNamespace(hip = None, cuda = None)
+        torch.version = types.SimpleNamespace(hip=None, cuda=None)
         torch.__version__ = "2.6.0+cpu"
     if vendor == "mps":
-        torch.backends = types.SimpleNamespace(mps = types.SimpleNamespace(is_available = lambda: True))
+        torch.backends = types.SimpleNamespace(mps=types.SimpleNamespace(is_available=lambda: True))
 
     available = bool(devices) if cuda_available is None else cuda_available
 
@@ -150,11 +150,11 @@ def _fake_torch(
         return _Props(spec)
 
     torch.cuda = types.SimpleNamespace(
-        is_available = lambda: available,
-        device_count = lambda: len(devices),
-        mem_get_info = lambda o: (devices[o]["free_mib"] * MiB, devices[o]["total_bytes"]),
-        memory_reserved = lambda o = None: reserved_bytes,
-        get_device_properties = _get_device_properties,
+        is_available=lambda: available,
+        device_count=lambda: len(devices),
+        mem_get_info=lambda o: (devices[o]["free_mib"] * MiB, devices[o]["total_bytes"]),
+        memory_reserved=lambda o=None: reserved_bytes,
+        get_device_properties=_get_device_properties,
     )
     return torch
 
@@ -167,7 +167,7 @@ def _install_torch(monkeypatch, *args, **kwargs):
 def _binary_with_marker(tmp_path, payload):
     """Lay out ``<root>/UNSLOTH_PREBUILT_INFO.json`` with the binary path below
     it, matching the managed install layout the marker walk-up covers."""
-    (tmp_path / "UNSLOTH_PREBUILT_INFO.json").write_text(json.dumps(payload), encoding = "utf-8")
+    (tmp_path / "UNSLOTH_PREBUILT_INFO.json").write_text(json.dumps(payload), encoding="utf-8")
     return str(tmp_path / "build" / "bin" / "llama-server")
 
 
@@ -175,7 +175,7 @@ def _apply_os(
     monkeypatch,
     os_key,
     *,
-    is_rocm = False,
+    is_rocm=False,
 ):
     """Pin the simulated host OS. ``IS_ROCM`` is the backend's own detection
     flag and gates the Windows free-VRAM cap, so it travels with the vendor."""
@@ -191,7 +191,7 @@ def _apply_os(
         monkeypatch.setattr(llama_cpp, "_wsl_system_rocm_lib_dirs", lambda: ["/opt/rocm/lib"])
 
 
-@pytest.fixture(autouse = True)
+@pytest.fixture(autouse=True)
 def _clear_marker_cache():
     """read_install_marker memoizes per binary path with no invalidation, so a
     stale entry from another test would answer for this one."""
@@ -248,7 +248,7 @@ def probe_env(tmp_path, monkeypatch):
         LlamaCppBackend, "_find_llama_server_binary", staticmethod(lambda: fake_binary)
     )
     for var in ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES"):
-        monkeypatch.delenv(var, raising = False)
+        monkeypatch.delenv(var, raising=False)
     return fake_binary
 
 
@@ -257,19 +257,19 @@ def _install_cell(monkeypatch, tmp_path, os_key, vendor):
     result. Every cell plants a marker covering NOTHING its devices report, so a
     gate that runs where it should not shows up as a dropped device."""
     if vendor == "nvidia":
-        _apply_os(monkeypatch, os_key, is_rocm = False)
+        _apply_os(monkeypatch, os_key, is_rocm=False)
         _binary_with_marker(tmp_path, {"mapped_targets": GFX110X})
         if os_key == "macos":
             # No CUDA on any Mac torch build: the probe enumerates nothing.
-            torch = _fake_torch([], vendor = "nvidia", cuda_available = False)
+            torch = _fake_torch([], vendor="nvidia", cuda_available=False)
             expected = []
         else:
             torch = _fake_torch(
                 [
-                    _device(name = "NVIDIA GeForce RTX 4090", free_mib = 22000),
-                    _device(name = "NVIDIA GeForce RTX 3090", free_mib = 18000),
+                    _device(name="NVIDIA GeForce RTX 4090", free_mib=22000),
+                    _device(name="NVIDIA GeForce RTX 3090", free_mib=18000),
                 ],
-                vendor = "nvidia",
+                vendor="nvidia",
             )
             expected = [(0, 22000), (1, 18000)]
     elif vendor == "amd":
@@ -277,26 +277,26 @@ def _install_cell(monkeypatch, tmp_path, os_key, vendor):
             # Apple ships no ROCm. The Apple Silicon shape is Metal-only; the
             # Intel shape is a Radeon behind a CPU/MPS torch build. Neither
             # enumerates a torch.cuda device, so neither can reach the gate.
-            _apply_os(monkeypatch, os_key, is_rocm = False)
+            _apply_os(monkeypatch, os_key, is_rocm=False)
             _binary_with_marker(tmp_path, {"mapped_targets": GFX103X})
-            torch = _fake_torch([], vendor = "mps", cuda_available = False)
+            torch = _fake_torch([], vendor="mps", cuda_available=False)
             expected = []
         else:
             # The #7624 shape: a covered dGPU plus an iGPU the gfx103X bundle
             # has no kernels for, whose shared-RAM "free memory" outranks it.
-            _apply_os(monkeypatch, os_key, is_rocm = True)
+            _apply_os(monkeypatch, os_key, is_rocm=True)
             _binary_with_marker(tmp_path, {"mapped_targets": GFX103X})
             torch = _fake_torch(
                 [
-                    _device("gfx1030", free_mib = 12049, name = "AMD Radeon RX 6800"),
+                    _device("gfx1030", free_mib=12049, name="AMD Radeon RX 6800"),
                     _device(
                         "gfx1036",
-                        free_mib = 12176,
-                        name = "AMD Radeon Graphics",
-                        is_integrated = 1,
+                        free_mib=12176,
+                        name="AMD Radeon Graphics",
+                        is_integrated=1,
                     ),
                 ],
-                vendor = "amd",
+                vendor="amd",
             )
             # Plenty of system RAM, so the iGPU's shared-pool cap never binds
             # and the only thing that can change its figure is the host reserve.
@@ -305,9 +305,9 @@ def _install_cell(monkeypatch, tmp_path, os_key, vendor):
             )
             expected = [(0, 12049)]
     else:
-        _apply_os(monkeypatch, os_key, is_rocm = False)
+        _apply_os(monkeypatch, os_key, is_rocm=False)
         _binary_with_marker(tmp_path, {"mapped_targets": GFX103X})
-        torch = _fake_torch([], vendor = "cpu", cuda_available = False)
+        torch = _fake_torch([], vendor="cpu", cuda_available=False)
         expected = []
     monkeypatch.setitem(sys.modules, "torch", torch)
     return expected
@@ -324,7 +324,7 @@ class TestOsVendorMatrix:
         self, os_key, vendor, tmp_path, monkeypatch, probe_env, marker_spy, arch_map_spy
     ):
         expected = _install_cell(monkeypatch, tmp_path, os_key, vendor)
-        assert LlamaCppBackend._get_gpu_free_memory(for_llama_server = True) == expected
+        assert LlamaCppBackend._get_gpu_free_memory(for_llama_server=True) == expected
         if vendor == "amd" and os_key != "macos":
             # The only cells where the gate is allowed to do anything.
             assert marker_spy, "the ROCm cell must consult the install marker"
@@ -356,13 +356,13 @@ class TestOsVendorMatrix:
         """The common NVIDIA host answers from nvidia-smi and returns before the
         torch fallback the gate lives in. Separate from the cell above, which
         forces the fallback so "inert" is proven on both NVIDIA routes."""
-        _apply_os(monkeypatch, os_key, is_rocm = False)
+        _apply_os(monkeypatch, os_key, is_rocm=False)
         binary = _binary_with_marker(tmp_path, {"mapped_targets": GFX110X})
         monkeypatch.setattr(
             LlamaCppBackend, "_find_llama_server_binary", staticmethod(lambda: binary)
         )
         for var in ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES"):
-            monkeypatch.delenv(var, raising = False)
+            monkeypatch.delenv(var, raising=False)
 
         class _Result:
             returncode = 0
@@ -371,7 +371,7 @@ class TestOsVendorMatrix:
         monkeypatch.setattr(subprocess, "run", lambda *a, **k: _Result())
         # No torch at all: a bare nvidia-smi host must not need one.
         monkeypatch.setitem(sys.modules, "torch", None)
-        assert LlamaCppBackend._get_gpu_memory(for_llama_server = True) == [
+        assert LlamaCppBackend._get_gpu_memory(for_llama_server=True) == [
             (0, 22000, 24564),
             (1, 18000, 24564),
         ]
@@ -384,25 +384,25 @@ class TestOsVendorMatrix:
     ):
         """CPU-only with no torch installed at all: no GPU, no traceback,
         empty list (the import failure is swallowed by the probe)."""
-        _apply_os(monkeypatch, os_key, is_rocm = False)
+        _apply_os(monkeypatch, os_key, is_rocm=False)
         _binary_with_marker(tmp_path, {"mapped_targets": GFX103X})
         monkeypatch.setitem(sys.modules, "torch", None)  # `import torch` -> ImportError
-        assert LlamaCppBackend._get_gpu_memory(for_llama_server = True) == []
+        assert LlamaCppBackend._get_gpu_memory(for_llama_server=True) == []
         assert marker_spy == []
 
     def test_macos_intel_radeon_shape_is_inert(self, tmp_path, monkeypatch, probe_env, marker_spy):
         """The second Apple shape: an Intel Mac with a Radeon, i.e. a CPU torch
         build that still reports an AMD device name. No ROCm exists there, so
         ``_torch_is_rocm`` is false and the marker stays unread."""
-        _apply_os(monkeypatch, "macos", is_rocm = False)
+        _apply_os(monkeypatch, "macos", is_rocm=False)
         _binary_with_marker(tmp_path, {"mapped_targets": GFX103X})
         _install_torch(
             monkeypatch,
-            [_device("", name = "AMD Radeon Pro 5500M", free_mib = 8000)],
-            vendor = "cpu",
-            cuda_available = False,
+            [_device("", name="AMD Radeon Pro 5500M", free_mib=8000)],
+            vendor="cpu",
+            cuda_available=False,
         )
-        assert LlamaCppBackend._get_gpu_free_memory(for_llama_server = True) == []
+        assert LlamaCppBackend._get_gpu_free_memory(for_llama_server=True) == []
         assert marker_spy == []
 
 
@@ -411,14 +411,14 @@ class TestAmdCoverageCases:
 
     @pytest.mark.parametrize("os_key", ["windows", "linux", "wsl"])
     def test_every_device_covered_drops_nothing(self, os_key, tmp_path, monkeypatch, probe_env):
-        _apply_os(monkeypatch, os_key, is_rocm = True)
+        _apply_os(monkeypatch, os_key, is_rocm=True)
         _binary_with_marker(tmp_path, {"mapped_targets": GFX103X})
         _install_torch(
             monkeypatch,
-            [_device("gfx1030", free_mib = 12049), _device("gfx1032", free_mib = 7000)],
-            vendor = "amd",
+            [_device("gfx1030", free_mib=12049), _device("gfx1032", free_mib=7000)],
+            vendor="amd",
         )
-        assert LlamaCppBackend._get_gpu_free_memory(for_llama_server = True) == [
+        assert LlamaCppBackend._get_gpu_free_memory(for_llama_server=True) == [
             (0, 12049),
             (1, 7000),
         ]
@@ -429,27 +429,27 @@ class TestAmdCoverageCases:
     ):
         # #7624 verbatim: gfx1030 dGPU + gfx1036 iGPU against the real gfx103X
         # bundle, which maps gfx1030/1031/1032/1034 only.
-        _apply_os(monkeypatch, os_key, is_rocm = True)
+        _apply_os(monkeypatch, os_key, is_rocm=True)
         _binary_with_marker(tmp_path, {"mapped_targets": GFX103X})
         _install_torch(
             monkeypatch,
             [
-                _device("gfx1030", free_mib = 12049),
-                _device("gfx1036", free_mib = 12176, is_integrated = 1),
+                _device("gfx1030", free_mib=12049),
+                _device("gfx1036", free_mib=12176, is_integrated=1),
             ],
-            vendor = "amd",
+            vendor="amd",
         )
         monkeypatch.setattr(
             LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 60000)
         )
-        assert LlamaCppBackend._get_gpu_free_memory(for_llama_server = True) == [(0, 12049)]
+        assert LlamaCppBackend._get_gpu_free_memory(for_llama_server=True) == [(0, 12049)]
 
     @pytest.mark.parametrize("os_key", ["windows", "linux", "wsl"])
     def test_missing_marker_fails_open(self, os_key, tmp_path, monkeypatch, probe_env):
         # Source build / custom link: coverage unknown, so keep every device.
-        _apply_os(monkeypatch, os_key, is_rocm = True)
-        _install_torch(monkeypatch, _gfx103x_pair(), vendor = "amd")
-        assert LlamaCppBackend._get_gpu_free_memory(for_llama_server = True) == [
+        _apply_os(monkeypatch, os_key, is_rocm=True)
+        _install_torch(monkeypatch, _gfx103x_pair(), vendor="amd")
+        assert LlamaCppBackend._get_gpu_free_memory(for_llama_server=True) == [
             (0, 12049),
             (1, 12176),
         ]
@@ -457,10 +457,10 @@ class TestAmdCoverageCases:
     @pytest.mark.parametrize("os_key", ["windows", "linux", "wsl"])
     def test_empty_mapped_targets_fails_open(self, os_key, tmp_path, monkeypatch, probe_env):
         # Non-ROCm bundles record []: unknown coverage, not "covers nothing".
-        _apply_os(monkeypatch, os_key, is_rocm = True)
+        _apply_os(monkeypatch, os_key, is_rocm=True)
         _binary_with_marker(tmp_path, {"mapped_targets": []})
-        _install_torch(monkeypatch, _gfx103x_pair(), vendor = "amd")
-        assert LlamaCppBackend._get_gpu_free_memory(for_llama_server = True) == [
+        _install_torch(monkeypatch, _gfx103x_pair(), vendor="amd")
+        assert LlamaCppBackend._get_gpu_free_memory(for_llama_server=True) == [
             (0, 12049),
             (1, 12176),
         ]
@@ -472,10 +472,10 @@ class TestAmdCoverageCases:
         """A marker that covers none of the present cards leaves the llama-server
         probe with nothing. Pinned deliberately: this is the input to the
         downstream behaviour asserted in TestEveryDeviceUncoveredDownstream."""
-        _apply_os(monkeypatch, os_key, is_rocm = True)
+        _apply_os(monkeypatch, os_key, is_rocm=True)
         _binary_with_marker(tmp_path, {"mapped_targets": GFX120X})
-        _install_torch(monkeypatch, _gfx103x_pair(), vendor = "amd")
-        assert LlamaCppBackend._get_gpu_free_memory(for_llama_server = True) == []
+        _install_torch(monkeypatch, _gfx103x_pair(), vendor="amd")
+        assert LlamaCppBackend._get_gpu_free_memory(for_llama_server=True) == []
         # ... while the unfiltered probe, and therefore every torch caller,
         # still sees both cards.
         assert LlamaCppBackend._get_gpu_free_memory() == [(0, 12049), (1, 12176)]
@@ -484,10 +484,10 @@ class TestAmdCoverageCases:
         """AMD SDK / Radeon wheels leave ``version.hip`` unset and only encode
         "rocm" in ``__version__``; a bare ``version.hip`` test would skip the
         gate on exactly the hosts #7624 was reported from."""
-        _apply_os(monkeypatch, "windows", is_rocm = True)
+        _apply_os(monkeypatch, "windows", is_rocm=True)
         _binary_with_marker(tmp_path, {"mapped_targets": GFX103X})
-        _install_torch(monkeypatch, _gfx103x_pair(), vendor = "amd_sdk")
-        assert LlamaCppBackend._get_gpu_free_memory(for_llama_server = True) == [(0, 12049)]
+        _install_torch(monkeypatch, _gfx103x_pair(), vendor="amd_sdk")
+        assert LlamaCppBackend._get_gpu_free_memory(for_llama_server=True) == [(0, 12049)]
 
 
 class TestWslIsNotWindows:
@@ -496,24 +496,24 @@ class TestWslIsNotWindows:
     engage: same arch gate, different memory accounting."""
 
     def _probe(self, monkeypatch, tmp_path, os_key):
-        _apply_os(monkeypatch, os_key, is_rocm = True)
+        _apply_os(monkeypatch, os_key, is_rocm=True)
         _binary_with_marker(tmp_path, {"mapped_targets": GFX103X})
         monkeypatch.setitem(
             sys.modules,
             "torch",
             _fake_torch(
                 [
-                    _device("gfx1030", free_mib = 20000),
-                    _device("gfx1036", free_mib = 12176),
+                    _device("gfx1030", free_mib=20000),
+                    _device("gfx1036", free_mib=12176),
                 ],
-                vendor = "amd",
+                vendor="amd",
                 # 24 GiB reserved by this process's own allocator, against a
                 # 32 GiB card: on Windows the driver's "free" is an over-report
                 # and gets capped to total - reserved = 8192 MiB.
-                reserved_bytes = 24 * 1024**3,
+                reserved_bytes=24 * 1024**3,
             ),
         )
-        return LlamaCppBackend._get_gpu_free_memory(for_llama_server = True)
+        return LlamaCppBackend._get_gpu_free_memory(for_llama_server=True)
 
     def test_windows_caps_free_against_the_allocator(self, tmp_path, monkeypatch, probe_env):
         assert self._probe(monkeypatch, tmp_path, "windows") == [(0, 8192)]
@@ -536,7 +536,7 @@ class TestVisibilityMaskMapping:
         # HIP_VISIBLE_DEVICES=1,0, so ordinal 0 IS physical 1. Unsupported gfx1036
         # is physical 1, supported gfx1030 physical 0, with different free VRAM, so
         # an ordinal/physical mix-up returns (1, 12176) instead of (0, 5000).
-        _apply_os(monkeypatch, "linux", is_rocm = True)
+        _apply_os(monkeypatch, "linux", is_rocm=True)
         _binary_with_marker(tmp_path, {"mapped_targets": GFX103X})
         monkeypatch.setenv("HIP_VISIBLE_DEVICES", "1,0")
         monkeypatch.setitem(
@@ -544,65 +544,65 @@ class TestVisibilityMaskMapping:
             "torch",
             _fake_torch(
                 [
-                    _device("gfx1036", free_mib = 12176),  # ordinal 0 = physical 1
-                    _device("gfx1030", free_mib = 5000),  # ordinal 1 = physical 0
+                    _device("gfx1036", free_mib=12176),  # ordinal 0 = physical 1
+                    _device("gfx1030", free_mib=5000),  # ordinal 1 = physical 0
                 ],
-                vendor = "amd",
+                vendor="amd",
             ),
         )
         assert LlamaCppBackend._rocm_arch_by_physical_id() == {1: "gfx1036", 0: "gfx1030"}
-        assert LlamaCppBackend._get_gpu_free_memory(for_llama_server = True) == [(0, 5000)]
+        assert LlamaCppBackend._get_gpu_free_memory(for_llama_server=True) == [(0, 5000)]
 
     def test_rocr_mask_with_a_gap_maps_by_physical_id(self, tmp_path, monkeypatch, probe_env):
         # ROCR_VISIBLE_DEVICES=2,3 on Linux: an off-by-one on either side would
         # report GPU 3 (the unsupported card) or drop GPU 2.
-        _apply_os(monkeypatch, "linux", is_rocm = True)
+        _apply_os(monkeypatch, "linux", is_rocm=True)
         _binary_with_marker(tmp_path, {"mapped_targets": GFX110X})
         monkeypatch.setenv("ROCR_VISIBLE_DEVICES", "2,3")
         _install_torch(
             monkeypatch,
-            [_device("gfx1100", free_mib = 9000), _device("gfx1036", free_mib = 12176)],
-            vendor = "amd",
+            [_device("gfx1100", free_mib=9000), _device("gfx1036", free_mib=12176)],
+            vendor="amd",
         )
-        assert LlamaCppBackend._get_gpu_free_memory(for_llama_server = True) == [(2, 9000)]
+        assert LlamaCppBackend._get_gpu_free_memory(for_llama_server=True) == [(2, 9000)]
 
     def test_windows_ignores_a_stray_rocr_mask(self, tmp_path, monkeypatch, probe_env):
         # Windows HIP has no ROCr layer, so ROCR_VISIBLE_DEVICES masks nothing and
         # must not be read as the ordinal->physical map: doing so would label the
         # surviving card GPU 2 and pin a device that does not exist.
-        _apply_os(monkeypatch, "windows", is_rocm = True)
+        _apply_os(monkeypatch, "windows", is_rocm=True)
         _binary_with_marker(tmp_path, {"mapped_targets": GFX110X})
         monkeypatch.setenv("ROCR_VISIBLE_DEVICES", "2,3")
         _install_torch(
             monkeypatch,
-            [_device("gfx1100", free_mib = 9000), _device("gfx1036", free_mib = 12176)],
-            vendor = "amd",
+            [_device("gfx1100", free_mib=9000), _device("gfx1036", free_mib=12176)],
+            vendor="amd",
         )
-        assert LlamaCppBackend._get_gpu_free_memory(for_llama_server = True) == [(0, 9000)]
+        assert LlamaCppBackend._get_gpu_free_memory(for_llama_server=True) == [(0, 9000)]
 
     def test_hip_mask_wins_over_cuda_mask(self, tmp_path, monkeypatch, probe_env):
         # Both masks set with different contents: HIP is the one the ROCm
         # runtime honors, so it decides the physical ids the gate drops by.
-        _apply_os(monkeypatch, "linux", is_rocm = True)
+        _apply_os(monkeypatch, "linux", is_rocm=True)
         _binary_with_marker(tmp_path, {"mapped_targets": GFX103X})
         monkeypatch.setenv("HIP_VISIBLE_DEVICES", "3,1")
         monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0,1")
         _install_torch(
             monkeypatch,
-            [_device("gfx1036", free_mib = 12176), _device("gfx1030", free_mib = 5000)],
-            vendor = "amd",
+            [_device("gfx1036", free_mib=12176), _device("gfx1030", free_mib=5000)],
+            vendor="amd",
         )
-        assert LlamaCppBackend._get_gpu_free_memory(for_llama_server = True) == [(1, 5000)]
+        assert LlamaCppBackend._get_gpu_free_memory(for_llama_server=True) == [(1, 5000)]
 
     def test_empty_mask_reports_no_gpu(self, tmp_path, monkeypatch, probe_env):
         # HIP_VISIBLE_DEVICES="" hides every agent, so the runtime enumerates
         # nothing. The gate still resolves its inputs first, and must return an
         # empty list rather than raise on the empty ordinal->physical map.
-        _apply_os(monkeypatch, "linux", is_rocm = True)
+        _apply_os(monkeypatch, "linux", is_rocm=True)
         _binary_with_marker(tmp_path, {"mapped_targets": GFX103X})
         monkeypatch.setenv("HIP_VISIBLE_DEVICES", "")
-        monkeypatch.setitem(sys.modules, "torch", _fake_torch([], vendor = "amd"))
-        assert LlamaCppBackend._get_gpu_free_memory(for_llama_server = True) == []
+        monkeypatch.setitem(sys.modules, "torch", _fake_torch([], vendor="amd"))
+        assert LlamaCppBackend._get_gpu_free_memory(for_llama_server=True) == []
 
 
 class TestArchStringRobustness:
@@ -619,7 +619,7 @@ class TestArchStringRobustness:
             "gfx1030:sramecc+:xnack-",
             "GFX1030:SRAMECC+:XNACK-",
         ],
-        ids = [
+        ids=[
             "plain",
             "uppercase",
             "whitespace",
@@ -631,14 +631,14 @@ class TestArchStringRobustness:
     def test_covered_device_survives_every_spelling(
         self, reported, tmp_path, monkeypatch, probe_env
     ):
-        _apply_os(monkeypatch, "linux", is_rocm = True)
+        _apply_os(monkeypatch, "linux", is_rocm=True)
         _binary_with_marker(tmp_path, {"mapped_targets": GFX103X})
         _install_torch(
             monkeypatch,
-            [_device(reported, free_mib = 12049), _device("gfx1036", free_mib = 12176)],
-            vendor = "amd",
+            [_device(reported, free_mib=12049), _device("gfx1036", free_mib=12176)],
+            vendor="amd",
         )
-        assert LlamaCppBackend._get_gpu_free_memory(for_llama_server = True) == [(0, 12049)]
+        assert LlamaCppBackend._get_gpu_free_memory(for_llama_server=True) == [(0, 12049)]
 
     @pytest.mark.parametrize(
         "token", ["GFX1030", " gfx1030 ", "gfx1030:xnack-", "gfx1030:sramecc+:xnack-"]
@@ -646,38 +646,38 @@ class TestArchStringRobustness:
     def test_marker_token_spellings_are_normalised_too(
         self, token, tmp_path, monkeypatch, probe_env
     ):
-        _apply_os(monkeypatch, "linux", is_rocm = True)
+        _apply_os(monkeypatch, "linux", is_rocm=True)
         _binary_with_marker(tmp_path, {"mapped_targets": [token]})
-        _install_torch(monkeypatch, _gfx103x_pair(), vendor = "amd")
-        assert LlamaCppBackend._get_gpu_free_memory(for_llama_server = True) == [(0, 12049)]
+        _install_torch(monkeypatch, _gfx103x_pair(), vendor="amd")
+        assert LlamaCppBackend._get_gpu_free_memory(for_llama_server=True) == [(0, 12049)]
 
     @pytest.mark.parametrize("attr", ["gcnArchName", "gcn_arch_name", "arch_name", "gfx_arch_name"])
     def test_every_arch_attribute_spelling_is_read(self, attr, tmp_path, monkeypatch, probe_env):
         # AMD SDK / Radeon wheels populate only one of these. Reading a single
         # spelling would leave the map empty and fail the gate open -- the crash
         # this exists to prevent.
-        _apply_os(monkeypatch, "linux", is_rocm = True)
+        _apply_os(monkeypatch, "linux", is_rocm=True)
         _binary_with_marker(tmp_path, {"mapped_targets": GFX103X})
         _install_torch(
             monkeypatch,
             [
-                _device("gfx1030", free_mib = 12049, arch_attr = attr),
-                _device("gfx1036", free_mib = 12176, arch_attr = attr),
+                _device("gfx1030", free_mib=12049, arch_attr=attr),
+                _device("gfx1036", free_mib=12176, arch_attr=attr),
             ],
-            vendor = "amd",
+            vendor="amd",
         )
-        assert LlamaCppBackend._get_gpu_free_memory(for_llama_server = True) == [(0, 12049)]
+        assert LlamaCppBackend._get_gpu_free_memory(for_llama_server=True) == [(0, 12049)]
 
     def test_blank_arch_fails_open(self, tmp_path, monkeypatch, probe_env):
         # A device reporting no arch at all is unknown, not unsupported.
-        _apply_os(monkeypatch, "linux", is_rocm = True)
+        _apply_os(monkeypatch, "linux", is_rocm=True)
         _binary_with_marker(tmp_path, {"mapped_targets": GFX103X})
         _install_torch(
             monkeypatch,
-            [_device("gfx1030", free_mib = 12049), _device("", free_mib = 12176)],
-            vendor = "amd",
+            [_device("gfx1030", free_mib=12049), _device("", free_mib=12176)],
+            vendor="amd",
         )
-        assert LlamaCppBackend._get_gpu_free_memory(for_llama_server = True) == [
+        assert LlamaCppBackend._get_gpu_free_memory(for_llama_server=True) == [
             (0, 12049),
             (1, 12176),
         ]
@@ -685,22 +685,22 @@ class TestArchStringRobustness:
     def test_undescribable_device_fails_open(self, tmp_path, monkeypatch, probe_env):
         # get_device_properties raising (a card the runtime cannot query) must
         # neither drop the device nor abort the probe for the other cards.
-        _apply_os(monkeypatch, "linux", is_rocm = True)
+        _apply_os(monkeypatch, "linux", is_rocm=True)
         _binary_with_marker(tmp_path, {"mapped_targets": GFX103X})
         _install_torch(
             monkeypatch,
             [
-                _device("gfx1030", free_mib = 12049),
+                _device("gfx1030", free_mib=12049),
                 _device(
                     "gfx1036",
-                    free_mib = 12176,
-                    describe_error = RuntimeError("hipGetDeviceProperties failed"),
+                    free_mib=12176,
+                    describe_error=RuntimeError("hipGetDeviceProperties failed"),
                 ),
-                _device("gfx1036", free_mib = 3000),
+                _device("gfx1036", free_mib=3000),
             ],
-            vendor = "amd",
+            vendor="amd",
         )
-        assert LlamaCppBackend._get_gpu_free_memory(for_llama_server = True) == [
+        assert LlamaCppBackend._get_gpu_free_memory(for_llama_server=True) == [
             (0, 12049),
             (1, 12176),
         ]
@@ -708,7 +708,7 @@ class TestArchStringRobustness:
     def test_marker_junk_tokens_are_ignored_not_matched(self, tmp_path, monkeypatch, probe_env):
         # Blank / whitespace-only entries must not become a "" arch that some
         # device's blank arch could match against.
-        _apply_os(monkeypatch, "linux", is_rocm = True)
+        _apply_os(monkeypatch, "linux", is_rocm=True)
         _binary_with_marker(tmp_path, {"mapped_targets": ["", "   ", "gfx1030"]})
         assert LlamaCppBackend._installed_llama_gfx_archs(
             str(tmp_path / "build" / "bin" / "llama-server")
@@ -730,17 +730,17 @@ def _run_auto_load(
     torch,
     marker_targets,
     *,
-    returncode = 1,
-    output = "",
-    env_extra = None,
-    model_bytes = 1024,
-    capture = None,
-    intent_kwargs = None,
-    apu_ram_stub = None,
-    host_offload_stub = None,
-    backend = None,
-    mmproj_bytes = 0,
-    server_caps = None,
+    returncode=1,
+    output="",
+    env_extra=None,
+    model_bytes=1024,
+    capture=None,
+    intent_kwargs=None,
+    apu_ram_stub=None,
+    host_offload_stub=None,
+    backend=None,
+    mmproj_bytes=0,
+    server_caps=None,
 ):
     """Drive a real automatic (no explicit GPU pick) llama-server load with the real
     ``_get_gpu_memory`` behind it, and return the spawned (cmd, env) list.
@@ -789,7 +789,7 @@ def _run_auto_load(
     backend._apu_ram_shortfall_message = apu_ram_stub or (lambda *_args, **_kwargs: None)
     # same, off: model_bytes here is sized to force --fit on, not to describe a host
     backend._host_offload_shortfall_message = host_offload_stub or (lambda *_args, **_kwargs: None)
-    backend._find_llama_server_binary = lambda include_denied = False: binary
+    backend._find_llama_server_binary = lambda include_denied=False: binary
     backend._fit_off_retry_eligible = lambda *_args, **_kwargs: False
     backend.probe_server_capabilities = lambda _binary: {"found": True, **(server_caps or {})}
     backend._record_server_pid = lambda _pid: None
@@ -799,7 +799,7 @@ def _run_auto_load(
     _base_env = {"PATH": os.environ.get("PATH", ""), **(env_extra or {})}
     backend._llama_server_env_for_binary = lambda _binary: dict(_base_env)
     monkeypatch.setattr(
-        LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda _binary = None: False)
+        LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda _binary=None: False)
     )
 
     launches = []
@@ -817,7 +817,7 @@ def _run_auto_load(
         def terminate(self):
             return None
 
-        def wait(self, timeout = None):
+        def wait(self, timeout=None):
             return returncode
 
         def kill(self):
@@ -837,8 +837,8 @@ def _run_auto_load(
     try:
         backend.load_model(
             GgufLoadIntent(
-                gguf_path = str(gguf),
-                model_identifier = "owner/model",
+                gguf_path=str(gguf),
+                model_identifier="owner/model",
                 **(intent_kwargs or {}),
             )
         )
@@ -870,18 +870,18 @@ class TestEveryDeviceUncoveredDownstream:
         placement pinned the iGPU and llama-server died with "device kernel image is
         invalid". Measured on origin/main with these inputs: ROCR_VISIBLE_DEVICES=1
         (the gfx1036 iGPU); with the gate, 0."""
-        _apply_os(monkeypatch, "linux", is_rocm = True)
+        _apply_os(monkeypatch, "linux", is_rocm=True)
         torch = _fake_torch(
             [
-                _device("gfx1030", free_mib = 12049),
-                _device("gfx1036", free_mib = 30000, is_integrated = 1),
+                _device("gfx1030", free_mib=12049),
+                _device("gfx1036", free_mib=30000, is_integrated=1),
             ],
-            vendor = "amd",
+            vendor="amd",
         )
         monkeypatch.setattr(
             LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 60000)
         )
-        launches = _run_auto_load(monkeypatch, tmp_path, torch, GFX103X, returncode = None)
+        launches = _run_auto_load(monkeypatch, tmp_path, torch, GFX103X, returncode=None)
         assert len(launches) == 1
         _cmd, env = launches[0]
         # The covered dGPU, and only it, is exposed to the child. Masked at the
@@ -896,15 +896,15 @@ class TestEveryDeviceUncoveredDownstream:
         ``--fit on`` arm, the pin block never ran and no mask was written, so the
         child enumerated both unsupported cards and died, with the reactive retry
         unable to help (its guard needs a truthy ``gpu_indices``)."""
-        _apply_os(monkeypatch, "linux", is_rocm = True)
-        torch = _fake_torch(_gfx103x_pair(), vendor = "amd")
+        _apply_os(monkeypatch, "linux", is_rocm=True)
+        torch = _fake_torch(_gfx103x_pair(), vendor="amd")
         launches = _run_auto_load(
             monkeypatch,
             tmp_path,
             torch,
             GFX120X,
-            returncode = 1,
-            output = "ROCm error: device kernel image is invalid",
+            returncode=1,
+            output="ROCm error: device kernel image is invalid",
         )
         assert len(launches) == 1, "the arch-crash retry cannot fire without a pinned set"
         _cmd, env = launches[0]
@@ -917,15 +917,15 @@ class TestEveryDeviceUncoveredDownstream:
         hiding it: HIP "-1" already means zero devices, and clearing ROCR would hand
         the HSA enumeration the dropped agents. The embedding CPU launch states the
         rule; the chat one went through the default HIP arm, which clears ROCR."""
-        _apply_os(monkeypatch, "linux", is_rocm = True)
-        torch = _fake_torch(_gfx103x_pair(), vendor = "amd")
+        _apply_os(monkeypatch, "linux", is_rocm=True)
+        torch = _fake_torch(_gfx103x_pair(), vendor="amd")
         launches = _run_auto_load(
             monkeypatch,
             tmp_path,
             torch,
             GFX120X,  # covers neither card
-            returncode = None,
-            env_extra = {"ROCR_VISIBLE_DEVICES": "1"},
+            returncode=None,
+            env_extra={"ROCR_VISIBLE_DEVICES": "1"},
         )
         assert len(launches) == 1
         _cmd, env = launches[0]
@@ -940,11 +940,11 @@ class TestEveryDeviceUncoveredDownstream:
         exactly False: routes/training_vram.py spares a server only on
         ``is not False``, so the counted classifier's None (the gated probe left the
         detected list empty) would unload one whose death frees nothing."""
-        _apply_os(monkeypatch, "linux", is_rocm = True)
-        torch = _fake_torch(_gfx103x_pair(), vendor = "amd")
+        _apply_os(monkeypatch, "linux", is_rocm=True)
+        torch = _fake_torch(_gfx103x_pair(), vendor="amd")
         capture: dict = {}
         launches = _run_auto_load(
-            monkeypatch, tmp_path, torch, GFX120X, returncode = None, capture = capture
+            monkeypatch, tmp_path, torch, GFX120X, returncode=None, capture=capture
         )
         _cmd, env = launches[0]
         assert _visibility(env) == {"HIP_VISIBLE_DEVICES": "-1", "CUDA_VISIBLE_DEVICES": "-1"}
@@ -953,21 +953,21 @@ class TestEveryDeviceUncoveredDownstream:
     def test_a_covered_host_still_classifies_normally(self, tmp_path, monkeypatch, probe_env):
         """The zero-VRAM verdict is the gate's doing, not a blanket False: a host
         the build covers keeps the counted classifier's answer."""
-        _apply_os(monkeypatch, "linux", is_rocm = True)
+        _apply_os(monkeypatch, "linux", is_rocm=True)
         torch = _fake_torch(
-            [_device("gfx1030", free_mib = 12049), _device("gfx1031", free_mib = 12176)],
-            vendor = "amd",
+            [_device("gfx1030", free_mib=12049), _device("gfx1031", free_mib=12176)],
+            vendor="amd",
         )
         capture: dict = {}
-        _run_auto_load(monkeypatch, tmp_path, torch, GFX103X, returncode = None, capture = capture)
+        _run_auto_load(monkeypatch, tmp_path, torch, GFX103X, returncode=None, capture=capture)
         assert capture["backend"]._gpu_offload_active is not False
 
     def test_all_uncovered_names_the_devices_in_the_warning(self, tmp_path, monkeypatch, probe_env):
         """The CPU fallback is a large, silent-looking performance cliff, so the
         log has to say why: which devices are present, and that the installed
         build covers none of them (#7624)."""
-        _apply_os(monkeypatch, "linux", is_rocm = True)
-        torch = _fake_torch(_gfx103x_pair(), vendor = "amd")
+        _apply_os(monkeypatch, "linux", is_rocm=True)
+        torch = _fake_torch(_gfx103x_pair(), vendor="amd")
         # structlog, so the stdlib caplog fixture cannot see these records.
         warnings = []
         monkeypatch.setattr(
@@ -975,7 +975,7 @@ class TestEveryDeviceUncoveredDownstream:
             "warning",
             lambda msg, *a, **kw: warnings.append(msg % a if a else msg),
         )
-        _run_auto_load(monkeypatch, tmp_path, torch, GFX120X, returncode = 1)
+        _run_auto_load(monkeypatch, tmp_path, torch, GFX120X, returncode=1)
         _hits = [w for w in warnings if "falls back to CPU" in w]
         assert len(_hits) == 1, warnings
         assert "0 (gfx1030)" in _hits[0] and "1 (gfx1036)" in _hits[0]
@@ -986,18 +986,18 @@ class TestEveryDeviceUncoveredDownstream:
         """The normal #7624 host (one covered card) must be untouched by the CPU
         fallback: it still pins the survivor, and never pays for the second,
         ungated probe the fallback needs to tell "all gated out" from "no GPU"."""
-        _apply_os(monkeypatch, "linux", is_rocm = True)
-        torch = _fake_torch(_gfx103x_pair(), vendor = "amd")
+        _apply_os(monkeypatch, "linux", is_rocm=True)
+        torch = _fake_torch(_gfx103x_pair(), vendor="amd")
         _ungated = []
         _real = LlamaCppBackend._get_gpu_memory
 
-        def _spy(binary = None, *, for_llama_server = False):
+        def _spy(binary=None, *, for_llama_server=False):
             if not for_llama_server:
                 _ungated.append(binary)
-            return _real(binary, for_llama_server = for_llama_server)
+            return _real(binary, for_llama_server=for_llama_server)
 
         monkeypatch.setattr(LlamaCppBackend, "_get_gpu_memory", staticmethod(_spy))
-        launches = _run_auto_load(monkeypatch, tmp_path, torch, GFX103X, returncode = None)
+        launches = _run_auto_load(monkeypatch, tmp_path, torch, GFX103X, returncode=None)
         assert len(launches) == 1
         _cmd, env = launches[0]
         assert _visibility(env) == {"ROCR_VISIBLE_DEVICES": "0", "CUDA_VISIBLE_DEVICES": "0"}
@@ -1011,15 +1011,15 @@ class TestEveryDeviceUncoveredDownstream:
         makes `_select_gpus` answer (None, True) with `gpu_indices` still None.
         Nothing else writes a mask on that arm, so the child would enumerate the
         dropped card and die, the reactive retry needing `gpu_indices` to help."""
-        _apply_os(monkeypatch, "linux", is_rocm = True)
-        torch = _fake_torch(_gfx103x_pair(), vendor = "amd")
+        _apply_os(monkeypatch, "linux", is_rocm=True)
+        torch = _fake_torch(_gfx103x_pair(), vendor="amd")
         launches = _run_auto_load(
             monkeypatch,
             tmp_path,
             torch,
             GFX103X,
-            returncode = None,
-            model_bytes = 400 * 1024**3,
+            returncode=None,
+            model_bytes=400 * 1024**3,
         )
         assert len(launches) == 1
         cmd, env = launches[0]
@@ -1035,18 +1035,18 @@ class TestEveryDeviceUncoveredDownstream:
         """The same unpinned arm on a host the build fully covers writes no mask
         at all, so the pin is the gate's doing and not a blanket change to every
         `--fit on` launch."""
-        _apply_os(monkeypatch, "linux", is_rocm = True)
+        _apply_os(monkeypatch, "linux", is_rocm=True)
         torch = _fake_torch(
-            [_device("gfx1030", free_mib = 12049), _device("gfx1031", free_mib = 12176)],
-            vendor = "amd",
+            [_device("gfx1030", free_mib=12049), _device("gfx1031", free_mib=12176)],
+            vendor="amd",
         )
         launches = _run_auto_load(
             monkeypatch,
             tmp_path,
             torch,
             GFX103X,
-            returncode = None,
-            model_bytes = 400 * 1024**3,
+            returncode=None,
+            model_bytes=400 * 1024**3,
         )
         assert len(launches) == 1
         cmd, env = launches[0]
@@ -1057,17 +1057,17 @@ class TestEveryDeviceUncoveredDownstream:
         """The GPU-less path is the common case, so the ROCm guard has to come
         BEFORE the ungated re-probe: on a CUDA or CPU-only host an empty probe
         just means "no GPU", and probing again would cost every such load."""
-        _apply_os(monkeypatch, "linux", is_rocm = False)
-        torch = _fake_torch([], vendor = "nvidia")
+        _apply_os(monkeypatch, "linux", is_rocm=False)
+        torch = _fake_torch([], vendor="nvidia")
         _probes = []
         _real = LlamaCppBackend._get_gpu_memory
 
-        def _spy(binary = None, *, for_llama_server = False):
+        def _spy(binary=None, *, for_llama_server=False):
             _probes.append(for_llama_server)
-            return _real(binary, for_llama_server = for_llama_server)
+            return _real(binary, for_llama_server=for_llama_server)
 
         monkeypatch.setattr(LlamaCppBackend, "_get_gpu_memory", staticmethod(_spy))
-        launches = _run_auto_load(monkeypatch, tmp_path, torch, GFX110X, returncode = None)
+        launches = _run_auto_load(monkeypatch, tmp_path, torch, GFX110X, returncode=None)
         assert len(launches) == 1
         _cmd, env = launches[0]
         # No mask at all: this is an ordinary CPU load, not the gated fallback.
@@ -1082,7 +1082,7 @@ class TestArchCrashRetryEnv:
     discrete card. Mock-based, no ROCm here."""
 
     def _apu_then_dgpu(self, monkeypatch):
-        _apply_os(monkeypatch, "linux", is_rocm = True)
+        _apply_os(monkeypatch, "linux", is_rocm=True)
         monkeypatch.setattr(
             LlamaCppBackend, "_rocm_unified_memory_gpu_ids", staticmethod(lambda: {0})
         )
@@ -1091,10 +1091,10 @@ class TestArchCrashRetryEnv:
         )
         return _fake_torch(
             [
-                _device("gfx1151", free_mib = 40000, total_bytes = 8 * GIB, is_integrated = 1),
-                _device("gfx1030", free_mib = 12049),
+                _device("gfx1151", free_mib=40000, total_bytes=8 * GIB, is_integrated=1),
+                _device("gfx1030", free_mib=12049),
             ],
-            vendor = "amd",
+            vendor="amd",
         )
 
     def test_retry_on_a_discrete_card_drops_unified_memory_env(
@@ -1109,9 +1109,9 @@ class TestArchCrashRetryEnv:
             tmp_path,
             torch,
             None,  # no marker: the proactive gate fails open, so the crash path runs
-            returncode = 1,
-            output = "ROCm error: device kernel image is invalid",
-            model_bytes = 10 * GIB,  # outgrows the APU's 8 GiB carve-out
+            returncode=1,
+            output="ROCm error: device kernel image is invalid",
+            model_bytes=10 * GIB,  # outgrows the APU's 8 GiB carve-out
         )
         # The APU is pinned first, so the crashed spawn carries the env and the
         # respawns are masked onto the discrete card. The unrelated --fit off retry
@@ -1134,8 +1134,8 @@ class TestArchCrashRetryEnv:
             tmp_path,
             torch,
             None,
-            returncode = 1,
-            output = "ROCm error: no kernel image is available for execution on the device",
+            returncode=1,
+            output="ROCm error: no kernel image is available for execution on the device",
         )
         _retry = [env for _c, env in launches if env.get("ROCR_VISIBLE_DEVICES") == "1"]
         assert _retry, "the retry did not fire on the NoBinaryForGpu wording"
@@ -1153,9 +1153,9 @@ class TestArchCrashRetryEnv:
             tmp_path,
             torch,
             None,
-            returncode = 1,
-            output = "ROCm error: device kernel image is invalid",
-            env_extra = {"GGML_CUDA_ENABLE_UNIFIED_MEMORY": "1"},
+            returncode=1,
+            output="ROCm error: device kernel image is invalid",
+            env_extra={"GGML_CUDA_ENABLE_UNIFIED_MEMORY": "1"},
         )
         _retry = [env for _c, env in launches if env.get("ROCR_VISIBLE_DEVICES") == "1"]
         assert _retry, "the arch-crash retry did not fire"
@@ -1164,14 +1164,14 @@ class TestArchCrashRetryEnv:
     def _big_then_small_discrete(self, monkeypatch):
         """Both cards discrete, so neither pool reading is capped against system RAM and
         the survivor is genuinely too small to hold what the crashed card held."""
-        _apply_os(monkeypatch, "linux", is_rocm = True)
+        _apply_os(monkeypatch, "linux", is_rocm=True)
         monkeypatch.setattr(LlamaCppBackend, "_rocm_unified_memory_gpu_ids", staticmethod(set))
         monkeypatch.setattr(
             LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 20_000)
         )
         return _fake_torch(
-            [_device("gfx1030", free_mib = 40_000), _device("gfx900", free_mib = 4_000)],
-            vendor = "amd",
+            [_device("gfx1030", free_mib=40_000), _device("gfx900", free_mib=4_000)],
+            vendor="amd",
         )
 
     def test_the_retry_reprices_the_spill_against_the_narrowed_pool(
@@ -1189,11 +1189,11 @@ class TestArchCrashRetryEnv:
             tmp_path,
             torch,
             None,
-            returncode = 1,
-            output = "ROCm error: device kernel image is invalid",
-            model_bytes = 30 * 1024**3,
-            host_offload_stub = LlamaCppBackend._host_offload_shortfall_message,
-            capture = capture,
+            returncode=1,
+            output="ROCm error: device kernel image is invalid",
+            model_bytes=30 * 1024**3,
+            host_offload_stub=LlamaCppBackend._host_offload_shortfall_message,
+            capture=capture,
         )
 
         assert launches, "the first launch never ran, so the retry is not what was tested"
@@ -1214,10 +1214,10 @@ class TestArchCrashRetryEnv:
             tmp_path,
             torch,
             None,
-            returncode = 1,
-            output = "ROCm error: device kernel image is invalid",
-            host_offload_stub = LlamaCppBackend._host_offload_shortfall_message,
-            capture = capture,
+            returncode=1,
+            output="ROCm error: device kernel image is invalid",
+            host_offload_stub=LlamaCppBackend._host_offload_shortfall_message,
+            capture=capture,
             **kwargs,
         )
         assert launches, "the first launch never ran, so the retry is not what was tested"
@@ -1228,7 +1228,7 @@ class TestArchCrashRetryEnv:
     @pytest.mark.parametrize(
         "extra_args",
         [["--no-mmap"], ["--load-mode", "none"], ["--load-mode=none"], ["--no-direct-io"]],
-        ids = ["no-mmap", "load-mode-none", "load-mode-none-equals", "no-direct-io"],
+        ids=["no-mmap", "load-mode-none", "load-mode-none-equals", "no-direct-io"],
     )
     def test_the_narrowed_retry_pages_an_unmapped_respawn(
         self, tmp_path, monkeypatch, probe_env, extra_args
@@ -1244,8 +1244,8 @@ class TestArchCrashRetryEnv:
             tmp_path,
             monkeypatch,
             capture,
-            model_bytes = 30 * 1024**3,
-            intent_kwargs = {"extra_args": list(extra_args)},
+            model_bytes=30 * 1024**3,
+            intent_kwargs={"extra_args": list(extra_args)},
         )
 
         # The first launch fit the card it pinned, so it is left exactly as asked --
@@ -1257,7 +1257,7 @@ class TestArchCrashRetryEnv:
     @pytest.mark.parametrize(
         "extra_args",
         [["--no-mmap"], ["--load-mode", "none"], ["--load-mode=none"], ["--no-direct-io"]],
-        ids = ["no-mmap", "load-mode-none", "load-mode-none-equals", "no-direct-io"],
+        ids=["no-mmap", "load-mode-none", "load-mode-none-equals", "no-direct-io"],
     )
     def test_a_narrowed_retry_that_fits_keeps_the_mode_it_was_given(
         self, tmp_path, monkeypatch, probe_env, extra_args
@@ -1270,8 +1270,8 @@ class TestArchCrashRetryEnv:
             tmp_path,
             monkeypatch,
             capture,
-            model_bytes = 2 * 1024**3,
-            intent_kwargs = {"extra_args": list(extra_args)},
+            model_bytes=2 * 1024**3,
+            intent_kwargs={"extra_args": list(extra_args)},
         )
 
         assert _unmapped_tokens(first) == list(extra_args), f"the first launch changed: {first}"
@@ -1289,8 +1289,8 @@ class TestArchCrashRetryEnv:
             tmp_path,
             monkeypatch,
             capture,
-            model_bytes = 30 * 1024**3,
-            intent_kwargs = {"extra_args": ["--no-mmap"]},
+            model_bytes=30 * 1024**3,
+            intent_kwargs={"extra_args": ["--no-mmap"]},
         )
 
         assert not _unmapped_tokens(retry), f"the silenced respawn still loads unmapped: {retry}"
@@ -1328,23 +1328,23 @@ class TestManualSplitLaunchesRespectTheGate:
         targets,
         *,
         devices,
-        capture = None,
-        backend = None,
-        tensor_split = (1.0, 1.0),
-        gpu_layers = 20,
-        tensor_parallel = False,
+        capture=None,
+        backend=None,
+        tensor_split=(1.0, 1.0),
+        gpu_layers=20,
+        tensor_parallel=False,
     ):
-        _apply_os(monkeypatch, "linux", is_rocm = True)
-        torch = _fake_torch(devices, vendor = "amd")
+        _apply_os(monkeypatch, "linux", is_rocm=True)
+        torch = _fake_torch(devices, vendor="amd")
         return _run_auto_load(
             monkeypatch,
             tmp_path,
             torch,
             targets,
-            returncode = None,
-            capture = capture,
-            backend = backend,
-            intent_kwargs = {
+            returncode=None,
+            capture=capture,
+            backend=backend,
+            intent_kwargs={
                 "gpu_memory_mode": "manual",
                 "gpu_layers": gpu_layers,
                 "tensor_split": tensor_split,
@@ -1364,11 +1364,11 @@ class TestManualSplitLaunchesRespectTheGate:
             monkeypatch,
             tmp_path,
             GFX103X,
-            devices = [
-                _device("gfx1030", free_mib = 12049),
-                _device("gfx1036", free_mib = 12176),
+            devices=[
+                _device("gfx1030", free_mib=12049),
+                _device("gfx1036", free_mib=12176),
             ],
-            capture = capture,
+            capture=capture,
         )
         backend = capture["backend"]
         assert backend._tensor_split is None  # gone from the argv
@@ -1383,11 +1383,11 @@ class TestManualSplitLaunchesRespectTheGate:
             monkeypatch,
             tmp_path,
             GFX103X,
-            devices = [
-                _device("gfx1030", free_mib = 12049),
-                _device("gfx1031", free_mib = 12176),
+            devices=[
+                _device("gfx1030", free_mib=12049),
+                _device("gfx1031", free_mib=12176),
             ],
-            capture = capture,
+            capture=capture,
         )
         backend = capture["backend"]
         assert list(backend._tensor_split) == [1.0, 1.0]
@@ -1405,11 +1405,11 @@ class TestManualSplitLaunchesRespectTheGate:
             monkeypatch,
             tmp_path,
             GFX103X,
-            devices = [
-                _device("gfx1030", free_mib = 12049),
-                _device("gfx1036", free_mib = 12176),
+            devices=[
+                _device("gfx1030", free_mib=12049),
+                _device("gfx1036", free_mib=12176),
             ],
-            capture = capture,
+            capture=capture,
         )
         backend = capture["backend"]
         assert backend._arch_gate_dropped_tensor_split == (1.0, 1.0)
@@ -1418,13 +1418,13 @@ class TestManualSplitLaunchesRespectTheGate:
             monkeypatch,
             tmp_path,
             GFX103X,
-            devices = [
-                _device("gfx1030", free_mib = 12049),
-                _device("gfx1031", free_mib = 12176),
+            devices=[
+                _device("gfx1030", free_mib=12049),
+                _device("gfx1031", free_mib=12176),
             ],
-            backend = backend,
-            tensor_split = None,
-            gpu_layers = 21,  # differs, so this really relaunches rather than dedupes
+            backend=backend,
+            tensor_split=None,
+            gpu_layers=21,  # differs, so this really relaunches rather than dedupes
         )
         assert backend._tensor_split is None
         assert backend._arch_gate_dropped_tensor_split is None
@@ -1439,12 +1439,12 @@ class TestManualSplitLaunchesRespectTheGate:
             monkeypatch,
             tmp_path,
             GFX103X,
-            devices = [
-                _device("gfx1030", free_mib = 12049),
-                _device("gfx1036", free_mib = 12176),
+            devices=[
+                _device("gfx1030", free_mib=12049),
+                _device("gfx1036", free_mib=12176),
             ],
-            capture = capture,
-            tensor_parallel = True,
+            capture=capture,
+            tensor_parallel=True,
         )
         backend = capture["backend"]
         assert backend._tensor_parallel is False  # gone from the argv
@@ -1458,12 +1458,12 @@ class TestManualSplitLaunchesRespectTheGate:
             monkeypatch,
             tmp_path,
             GFX103X,
-            devices = [
-                _device("gfx1030", free_mib = 12049),
-                _device("gfx1031", free_mib = 12176),
+            devices=[
+                _device("gfx1030", free_mib=12049),
+                _device("gfx1031", free_mib=12176),
             ],
-            capture = capture,
-            tensor_parallel = True,
+            capture=capture,
+            tensor_parallel=True,
         )
         # Live, not normalized: the record would be unearned.
         assert capture["backend"]._tensor_parallel is True
@@ -1478,12 +1478,12 @@ class TestManualSplitLaunchesRespectTheGate:
             monkeypatch,
             tmp_path,
             ["gfx908"],  # covers neither card
-            devices = [
-                _device("gfx1030", free_mib = 12049),
-                _device("gfx1036", free_mib = 12176),
+            devices=[
+                _device("gfx1030", free_mib=12049),
+                _device("gfx1036", free_mib=12176),
             ],
-            capture = capture,
-            tensor_parallel = True,
+            capture=capture,
+            tensor_parallel=True,
         )
         backend = capture["backend"]
         assert backend._arch_gate_forced_cpu is True
@@ -1496,9 +1496,9 @@ class TestManualSplitLaunchesRespectTheGate:
             monkeypatch,
             tmp_path,
             GFX103X,
-            devices = [
-                _device("gfx1030", free_mib = 12049),
-                _device("gfx1036", free_mib = 12176),
+            devices=[
+                _device("gfx1030", free_mib=12049),
+                _device("gfx1036", free_mib=12176),
             ],
         )
         assert len(launches) == 1
@@ -1517,9 +1517,9 @@ class TestManualSplitLaunchesRespectTheGate:
             monkeypatch,
             tmp_path,
             GFX103X,
-            devices = [
-                _device("gfx1030", free_mib = 12049),
-                _device("gfx1031", free_mib = 12176),
+            devices=[
+                _device("gfx1030", free_mib=12049),
+                _device("gfx1031", free_mib=12176),
             ],
         )
         assert len(launches) == 1
@@ -1536,10 +1536,10 @@ class TestForcedCpuDropsTensorMode:
     so the forced-CPU mask could be reached with the flag still in the argv."""
 
     def test_the_forced_cpu_launch_carries_no_split_flags(self, tmp_path, monkeypatch, probe_env):
-        _apply_os(monkeypatch, "linux", is_rocm = True)
+        _apply_os(monkeypatch, "linux", is_rocm=True)
         torch = _fake_torch(
-            [_device("gfx1030", free_mib = 12049), _device("gfx1031", free_mib = 12176)],
-            vendor = "amd",
+            [_device("gfx1030", free_mib=12049), _device("gfx1031", free_mib=12176)],
+            vendor="amd",
         )
         capture: dict = {}
         launches = _run_auto_load(
@@ -1547,9 +1547,9 @@ class TestForcedCpuDropsTensorMode:
             tmp_path,
             torch,
             GFX120X,  # covers neither card
-            returncode = None,
-            capture = capture,
-            intent_kwargs = {
+            returncode=None,
+            capture=capture,
+            intent_kwargs={
                 "gpu_memory_mode": "manual",
                 "gpu_layers": 20,
                 "tensor_parallel": True,
@@ -1565,18 +1565,18 @@ class TestForcedCpuDropsTensorMode:
     def test_a_covered_host_keeps_tensor_mode(self, tmp_path, monkeypatch, probe_env):
         """The normalisation is the gate's doing, not a blanket drop of tensor
         mode from every manual launch."""
-        _apply_os(monkeypatch, "linux", is_rocm = True)
+        _apply_os(monkeypatch, "linux", is_rocm=True)
         torch = _fake_torch(
-            [_device("gfx1030", free_mib = 12049), _device("gfx1031", free_mib = 12176)],
-            vendor = "amd",
+            [_device("gfx1030", free_mib=12049), _device("gfx1031", free_mib=12176)],
+            vendor="amd",
         )
         launches = _run_auto_load(
             monkeypatch,
             tmp_path,
             torch,
             GFX103X,
-            returncode = None,
-            intent_kwargs = {
+            returncode=None,
+            intent_kwargs={
                 "gpu_memory_mode": "manual",
                 "gpu_layers": 20,
                 "tensor_parallel": True,
@@ -1593,7 +1593,7 @@ class TestGatedNarrowingDropsUnifiedMemory:
     the same code calls it harmful."""
 
     def _apu_and_dgpu(self, monkeypatch):
-        _apply_os(monkeypatch, "linux", is_rocm = True)
+        _apply_os(monkeypatch, "linux", is_rocm=True)
         monkeypatch.setattr(
             LlamaCppBackend, "_rocm_unified_memory_gpu_ids", staticmethod(lambda: {1})
         )
@@ -1602,10 +1602,10 @@ class TestGatedNarrowingDropsUnifiedMemory:
         )
         return _fake_torch(
             [
-                _device("gfx1030", free_mib = 12049),
-                _device("gfx1151", free_mib = 40000, is_integrated = 1),
+                _device("gfx1030", free_mib=12049),
+                _device("gfx1151", free_mib=40000, is_integrated=1),
             ],
-            vendor = "amd",
+            vendor="amd",
         )
 
     def test_a_fit_owned_narrowing_withdraws_it(self, tmp_path, monkeypatch, probe_env):
@@ -1615,8 +1615,8 @@ class TestGatedNarrowingDropsUnifiedMemory:
             tmp_path,
             torch,
             GFX103X,  # covers the dGPU, not the gfx1151 APU
-            returncode = None,
-            model_bytes = 400 * 1024**3,
+            returncode=None,
+            model_bytes=400 * 1024**3,
         )
         assert len(launches) == 1
         _cmd, env = launches[0]
@@ -1632,9 +1632,9 @@ class TestGatedNarrowingDropsUnifiedMemory:
             tmp_path,
             torch,
             GFX103X,
-            returncode = None,
-            model_bytes = 400 * 1024**3,
-            env_extra = {"GGML_CUDA_ENABLE_UNIFIED_MEMORY": "1"},
+            returncode=None,
+            model_bytes=400 * 1024**3,
+            env_extra={"GGML_CUDA_ENABLE_UNIFIED_MEMORY": "1"},
         )
         _cmd, env = launches[0]
         assert env.get("GGML_CUDA_ENABLE_UNIFIED_MEMORY") == "1"
@@ -1642,7 +1642,7 @@ class TestGatedNarrowingDropsUnifiedMemory:
     def test_a_surviving_apu_keeps_it(self, tmp_path, monkeypatch, probe_env):
         """The withdrawal is scoped to a narrowing that leaves only discrete
         cards; an APU that survives the gate still wants the shared pool."""
-        _apply_os(monkeypatch, "linux", is_rocm = True)
+        _apply_os(monkeypatch, "linux", is_rocm=True)
         monkeypatch.setattr(
             LlamaCppBackend, "_rocm_unified_memory_gpu_ids", staticmethod(lambda: {0})
         )
@@ -1651,19 +1651,19 @@ class TestGatedNarrowingDropsUnifiedMemory:
         )
         torch = _fake_torch(
             [
-                _device("gfx1151", free_mib = 40000, is_integrated = 1),
-                _device("gfx1200", free_mib = 12049),
+                _device("gfx1151", free_mib=40000, is_integrated=1),
+                _device("gfx1200", free_mib=12049),
             ],
-            vendor = "amd",
+            vendor="amd",
         )
         launches = _run_auto_load(
             monkeypatch,
             tmp_path,
             torch,
             ["gfx1151"],  # covers the APU, not the gfx1200 dGPU
-            returncode = None,
-            model_bytes = 400 * 1024**3,
-            env_extra = {"UNSLOTH_ENABLE_UNIFIED_MEMORY": "1"},  # the fitter owns the layers
+            returncode=None,
+            model_bytes=400 * 1024**3,
+            env_extra={"UNSLOTH_ENABLE_UNIFIED_MEMORY": "1"},  # the fitter owns the layers
         )
         _cmd, env = launches[0]
         assert _visibility(env) == {"ROCR_VISIBLE_DEVICES": "0", "CUDA_VISIBLE_DEVICES": "0"}
@@ -1683,18 +1683,18 @@ class TestGatedNarrowingDropsDeadTensorMode:
         targets,
         *,
         devices,
-        capture = None,
+        capture=None,
     ):
-        _apply_os(monkeypatch, "linux", is_rocm = True)
-        torch = _fake_torch(devices, vendor = "amd")
+        _apply_os(monkeypatch, "linux", is_rocm=True)
+        torch = _fake_torch(devices, vendor="amd")
         return _run_auto_load(
             monkeypatch,
             tmp_path,
             torch,
             targets,
-            returncode = None,
-            capture = capture,
-            intent_kwargs = {
+            returncode=None,
+            capture=capture,
+            intent_kwargs={
                 "gpu_memory_mode": "manual",
                 "gpu_layers": 20,
                 "tensor_parallel": True,
@@ -1707,11 +1707,11 @@ class TestGatedNarrowingDropsDeadTensorMode:
             monkeypatch,
             tmp_path,
             GFX103X,  # covers the dGPU, not the gfx1036 iGPU
-            devices = [
-                _device("gfx1030", free_mib = 12049),
-                _device("gfx1036", free_mib = 12176),
+            devices=[
+                _device("gfx1030", free_mib=12049),
+                _device("gfx1036", free_mib=12176),
             ],
-            capture = capture,
+            capture=capture,
         )
         assert len(launches) == 1
         cmd, env = launches[0]
@@ -1728,12 +1728,12 @@ class TestGatedNarrowingDropsDeadTensorMode:
             monkeypatch,
             tmp_path,
             GFX103X,  # covers 0 and 1, not the gfx1036 iGPU
-            devices = [
-                _device("gfx1030", free_mib = 12049),
-                _device("gfx1031", free_mib = 12176),
-                _device("gfx1036", free_mib = 30000),
+            devices=[
+                _device("gfx1030", free_mib=12049),
+                _device("gfx1031", free_mib=12176),
+                _device("gfx1036", free_mib=30000),
             ],
-            capture = capture,
+            capture=capture,
         )
         cmd, env = launches[0]
         assert _visibility(env) == {"ROCR_VISIBLE_DEVICES": "0,1", "CUDA_VISIBLE_DEVICES": "0,1"}
@@ -1752,9 +1752,9 @@ class TestGatedNarrowingRechecksTheApuRamGuard:
         self,
         monkeypatch,
         *,
-        avail_mib = 8000,
+        avail_mib=8000,
     ):
-        _apply_os(monkeypatch, "linux", is_rocm = True)
+        _apply_os(monkeypatch, "linux", is_rocm=True)
         monkeypatch.setattr(
             LlamaCppBackend, "_rocm_unified_memory_gpu_ids", staticmethod(lambda: {1})
         )
@@ -1763,10 +1763,10 @@ class TestGatedNarrowingRechecksTheApuRamGuard:
         )
         return _fake_torch(
             [
-                _device("gfx1030", free_mib = 12049),
-                _device("gfx1151", free_mib = 40000, is_integrated = 1),
+                _device("gfx1030", free_mib=12049),
+                _device("gfx1151", free_mib=40000, is_integrated=1),
             ],
-            vendor = "amd",
+            vendor="amd",
         )
 
     @staticmethod
@@ -1788,10 +1788,10 @@ class TestGatedNarrowingRechecksTheApuRamGuard:
             tmp_path,
             torch,
             GFX103X,  # covers the dGPU, not the gfx1151 APU
-            returncode = None,
-            model_bytes = 20 * 1024**3,
-            capture = capture,
-            apu_ram_stub = self._shortfall_stub(calls),
+            returncode=None,
+            model_bytes=20 * 1024**3,
+            capture=capture,
+            apu_ram_stub=self._shortfall_stub(calls),
         )
         assert len(calls) == 1, f"the RAM guard ran {len(calls)} times, expected once"
         assert capture.get("error") is None, capture.get("error")
@@ -1810,10 +1810,10 @@ class TestGatedNarrowingRechecksTheApuRamGuard:
             tmp_path,
             torch,
             [*GFX103X, "gfx1151"],
-            returncode = None,
-            model_bytes = 20 * 1024**3,
-            capture = capture,
-            apu_ram_stub = self._shortfall_stub(calls),
+            returncode=None,
+            model_bytes=20 * 1024**3,
+            capture=capture,
+            apu_ram_stub=self._shortfall_stub(calls),
         )
         assert len(calls) == 1, f"the RAM guard ran {len(calls)} times, expected once"
         assert launches, "the oversized APU load never reached the child"
@@ -1830,10 +1830,10 @@ class TestGatedNarrowingRechecksTheApuRamGuard:
             tmp_path,
             torch,
             GFX120X,  # covers neither card
-            returncode = None,
-            model_bytes = 20 * 1024**3,
-            capture = capture,
-            apu_ram_stub = self._shortfall_stub(calls),
+            returncode=None,
+            model_bytes=20 * 1024**3,
+            capture=capture,
+            apu_ram_stub=self._shortfall_stub(calls),
         )
         assert len(calls) == 1, f"the RAM guard ran {len(calls)} times, expected once"
         assert launches, "the oversized CPU-bound load never reached the child"
@@ -1850,7 +1850,7 @@ class TestArchCrashRetryOntoAnApu:
     def _dgpu_then_apu(self, monkeypatch):
         # Device 1 is the APU, so the free-VRAM rank pins the dGPU first and the
         # retry's prefer-never-selected branch hands back exactly the APU.
-        _apply_os(monkeypatch, "linux", is_rocm = True)
+        _apply_os(monkeypatch, "linux", is_rocm=True)
         monkeypatch.setattr(
             LlamaCppBackend, "_rocm_unified_memory_gpu_ids", staticmethod(lambda: {1})
         )
@@ -1859,10 +1859,10 @@ class TestArchCrashRetryOntoAnApu:
         )
         return _fake_torch(
             [
-                _device("gfx1030", free_mib = 40000),
-                _device("gfx1151", free_mib = 12000, total_bytes = 8 * GIB, is_integrated = 1),
+                _device("gfx1030", free_mib=40000),
+                _device("gfx1151", free_mib=12000, total_bytes=8 * GIB, is_integrated=1),
             ],
-            vendor = "amd",
+            vendor="amd",
         )
 
     def test_retry_onto_an_apu_sets_unified_memory_env(self, tmp_path, monkeypatch, probe_env):
@@ -1872,9 +1872,9 @@ class TestArchCrashRetryOntoAnApu:
             tmp_path,
             torch,
             None,  # no marker: the proactive gate fails open, so the crash path runs
-            returncode = 1,
-            output = "ROCm error: device kernel image is invalid",
-            model_bytes = 10 * GIB,  # outgrows the APU's 8 GiB carve-out
+            returncode=1,
+            output="ROCm error: device kernel image is invalid",
+            model_bytes=10 * GIB,  # outgrows the APU's 8 GiB carve-out
         )
         assert "GGML_CUDA_ENABLE_UNIFIED_MEMORY" not in launches[0][1]
         _retry = [env for _c, env in launches if env.get("ROCR_VISIBLE_DEVICES") == "1"]
@@ -1890,7 +1890,7 @@ class TestUnifiedMemoryOptOut:
     gfx1151 Strix Halo APU whose pool ROCm reports in full. Mock-based, no ROCm."""
 
     def _strix_halo(self, monkeypatch):
-        _apply_os(monkeypatch, "linux", is_rocm = True)
+        _apply_os(monkeypatch, "linux", is_rocm=True)
         monkeypatch.setattr(
             LlamaCppBackend, "_rocm_unified_memory_gpu_ids", staticmethod(lambda: {0})
         )
@@ -1898,23 +1898,23 @@ class TestUnifiedMemoryOptOut:
             LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 60000)
         )
         return _fake_torch(
-            [_device("gfx1151", free_mib = 47000, is_integrated = 1)],
-            vendor = "amd",
+            [_device("gfx1151", free_mib=47000, is_integrated=1)],
+            vendor="amd",
         )
 
     def _load(
         self,
         tmp_path,
         monkeypatch,
-        env_extra = None,
-        model_bytes = 40 * GIB,  # outgrows the fake 32 GiB carve-out
-        backend = None,
-        extra_args = None,
-        returncode = None,
-        output = "",
-        intent_extra = None,
-        mmproj_bytes = 0,
-        server_caps = None,
+        env_extra=None,
+        model_bytes=40 * GIB,  # outgrows the fake 32 GiB carve-out
+        backend=None,
+        extra_args=None,
+        returncode=None,
+        output="",
+        intent_extra=None,
+        mmproj_bytes=0,
+        server_caps=None,
     ):
         # Manual mode above the block count: the only launch that needs managed pages.
         backend = backend or LlamaCppBackend()
@@ -1928,14 +1928,14 @@ class TestUnifiedMemoryOptOut:
             tmp_path,
             self._strix_halo(monkeypatch),
             None,
-            returncode = returncode,
-            output = output,
-            env_extra = env_extra,
-            model_bytes = model_bytes,
-            backend = backend,
-            intent_kwargs = intent_kwargs,
-            mmproj_bytes = mmproj_bytes,
-            server_caps = server_caps,
+            returncode=returncode,
+            output=output,
+            env_extra=env_extra,
+            model_bytes=model_bytes,
+            backend=backend,
+            intent_kwargs=intent_kwargs,
+            mmproj_bytes=mmproj_bytes,
+            server_caps=server_caps,
         )
 
     def test_a_forced_full_offload_that_outgrows_the_carve_out_gets_it(
@@ -1948,12 +1948,12 @@ class TestUnifiedMemoryOptOut:
 
     def test_weights_that_fit_the_carve_out_keep_it_unset(self, tmp_path, monkeypatch, probe_env):
         """Managed pages fault Qwen3.8-Flash-Next on Linux gfx1151 (#10330)."""
-        _cmd, env = self._load(tmp_path, monkeypatch, model_bytes = 20 * GIB)[0]
+        _cmd, env = self._load(tmp_path, monkeypatch, model_bytes=20 * GIB)[0]
         assert "GGML_CUDA_ENABLE_UNIFIED_MEMORY" not in env
 
     def test_the_enable_switch_takes_it_for_a_fitting_model(self, tmp_path, monkeypatch, probe_env):
         _cmd, env = self._load(
-            tmp_path, monkeypatch, {"UNSLOTH_ENABLE_UNIFIED_MEMORY": "1"}, model_bytes = 20 * GIB
+            tmp_path, monkeypatch, {"UNSLOTH_ENABLE_UNIFIED_MEMORY": "1"}, model_bytes=20 * GIB
         )[0]
         assert env.get("GGML_CUDA_ENABLE_UNIFIED_MEMORY") == "1"
 
@@ -1963,9 +1963,9 @@ class TestUnifiedMemoryOptOut:
             tmp_path,
             self._strix_halo(monkeypatch),
             None,
-            returncode = None,
-            model_bytes = 400 * GIB,
-            intent_kwargs = {"gpu_memory_mode": "manual", "gpu_layers": 1},
+            returncode=None,
+            model_bytes=400 * GIB,
+            intent_kwargs={"gpu_memory_mode": "manual", "gpu_layers": 1},
         )
         _cmd, env = launches[0]
         assert "--gpu-layers" in _cmd and _cmd[_cmd.index("--gpu-layers") + 1] == "1"
@@ -1979,8 +1979,8 @@ class TestUnifiedMemoryOptOut:
             tmp_path,
             self._strix_halo(monkeypatch),
             None,
-            returncode = None,
-            model_bytes = 400 * GIB,
+            returncode=None,
+            model_bytes=400 * GIB,
         )
         _cmd, env = launches[0]
         assert "--fit" in _cmd and _cmd[_cmd.index("--fit") + 1] == "on"
@@ -1991,8 +1991,8 @@ class TestUnifiedMemoryOptOut:
         tmp_path,
         monkeypatch,
         *,
-        extra_args = None,
-        env_extra = None,
+        extra_args=None,
+        env_extra=None,
     ):
         backend = LlamaCppBackend()
         backend._n_layers = 8
@@ -2001,17 +2001,17 @@ class TestUnifiedMemoryOptOut:
             tmp_path,
             self._strix_halo(monkeypatch),
             None,
-            returncode = None,
-            model_bytes = 40 * GIB,
-            backend = backend,
-            intent_kwargs = {"extra_args": list(extra_args or [])},
-            env_extra = env_extra,
+            returncode=None,
+            model_bytes=40 * GIB,
+            backend=backend,
+            intent_kwargs={"extra_args": list(extra_args or [])},
+            env_extra=env_extra,
         )[0]
 
     def test_a_user_count_above_the_block_count_stands_under_the_fitter(
         self, tmp_path, monkeypatch, probe_env
     ):
-        _cmd, env = self._auto_mode_with(tmp_path, monkeypatch, extra_args = ["--gpu-layers", "9"])
+        _cmd, env = self._auto_mode_with(tmp_path, monkeypatch, extra_args=["--gpu-layers", "9"])
         assert "--fit" in _cmd and _cmd[_cmd.index("--fit") + 1] == "on"
         assert env.get("GGML_CUDA_ENABLE_UNIFIED_MEMORY") == "1"
 
@@ -2019,32 +2019,32 @@ class TestUnifiedMemoryOptOut:
         self, tmp_path, monkeypatch, probe_env
     ):
         _cmd, env = self._auto_mode_with(
-            tmp_path, monkeypatch, env_extra = {"LLAMA_ARG_N_GPU_LAYERS": "9"}
+            tmp_path, monkeypatch, env_extra={"LLAMA_ARG_N_GPU_LAYERS": "9"}
         )
         assert env.get("GGML_CUDA_ENABLE_UNIFIED_MEMORY") == "1"
 
     def test_a_user_minus_one_still_leaves_the_fitter_in_charge(
         self, tmp_path, monkeypatch, probe_env
     ):
-        _cmd, env = self._auto_mode_with(tmp_path, monkeypatch, extra_args = ["-ngl", "-1"])
+        _cmd, env = self._auto_mode_with(tmp_path, monkeypatch, extra_args=["-ngl", "-1"])
         assert "GGML_CUDA_ENABLE_UNIFIED_MEMORY" not in env
 
     def test_a_user_fit_off_with_no_count_is_a_full_offload(self, tmp_path, monkeypatch, probe_env):
-        _cmd, env = self._auto_mode_with(tmp_path, monkeypatch, extra_args = ["--fit", "off"])
+        _cmd, env = self._auto_mode_with(tmp_path, monkeypatch, extra_args=["--fit", "off"])
         assert "--gpu-layers" not in _cmd and "-ngl" not in _cmd
         assert _cmd[len(_cmd) - 1 - _cmd[::-1].index("--fit") + 1] == "off"
         assert env.get("GGML_CUDA_ENABLE_UNIFIED_MEMORY") == "1"
 
     def test_a_user_fit_off_with_a_partial_count_is_not(self, tmp_path, monkeypatch, probe_env):
         _cmd, env = self._auto_mode_with(
-            tmp_path, monkeypatch, extra_args = ["--fit", "off", "--gpu-layers", "4"]
+            tmp_path, monkeypatch, extra_args=["--fit", "off", "--gpu-layers", "4"]
         )
         assert "GGML_CUDA_ENABLE_UNIFIED_MEMORY" not in env
 
     def test_a_user_count_below_the_block_count_never_takes_it(
         self, tmp_path, monkeypatch, probe_env
     ):
-        _cmd, env = self._auto_mode_with(tmp_path, monkeypatch, extra_args = ["--gpu-layers", "4"])
+        _cmd, env = self._auto_mode_with(tmp_path, monkeypatch, extra_args=["--gpu-layers", "4"])
         assert "GGML_CUDA_ENABLE_UNIFIED_MEMORY" not in env
 
     def _with_unloaded_mtp_blocks(self, excluded_bytes):
@@ -2053,13 +2053,13 @@ class TestUnifiedMemoryOptOut:
         backend._tensor_spill_layout = lambda _path, **_kw: (
             None
             if excluded_bytes is None
-            else types.SimpleNamespace(excluded_block_bytes = excluded_bytes)
+            else types.SimpleNamespace(excluded_block_bytes=excluded_bytes)
         )
         return backend
 
     def test_unloaded_mtp_blocks_are_not_priced(self, tmp_path, monkeypatch, probe_env):
         _cmd, env = self._load(
-            tmp_path, monkeypatch, backend = self._with_unloaded_mtp_blocks(10 * GIB)
+            tmp_path, monkeypatch, backend=self._with_unloaded_mtp_blocks(10 * GIB)
         )[0]
         assert "GGML_CUDA_ENABLE_UNIFIED_MEMORY" not in env
 
@@ -2067,7 +2067,7 @@ class TestUnifiedMemoryOptOut:
         self, tmp_path, monkeypatch, probe_env
     ):
         _cmd, env = self._load(
-            tmp_path, monkeypatch, backend = self._with_unloaded_mtp_blocks(4 * GIB)
+            tmp_path, monkeypatch, backend=self._with_unloaded_mtp_blocks(4 * GIB)
         )[0]
         assert env.get("GGML_CUDA_ENABLE_UNIFIED_MEMORY") == "1"
 
@@ -2077,10 +2077,10 @@ class TestUnifiedMemoryOptOut:
         launches = self._load(
             tmp_path,
             monkeypatch,
-            backend = self._with_unloaded_mtp_blocks(10 * GIB),
-            extra_args = ["--spec-type", "draft-mtp"],
-            returncode = 1,
-            output = "failed to create llama_context",
+            backend=self._with_unloaded_mtp_blocks(10 * GIB),
+            extra_args=["--spec-type", "draft-mtp"],
+            returncode=1,
+            output="failed to create llama_context",
         )
         first_cmd, first_env = launches[0]
         assert "draft-mtp" in first_cmd, first_cmd
@@ -2096,7 +2096,7 @@ class TestUnifiedMemoryOptOut:
 
     def test_cpu_pinned_embeddings_are_not_priced(self, tmp_path, monkeypatch, probe_env):
         _cmd, env = self._load(
-            tmp_path, monkeypatch, backend = self._with_layout(token_embd_bytes = 10 * GIB)
+            tmp_path, monkeypatch, backend=self._with_layout(token_embd_bytes=10 * GIB)
         )[0]
         assert "GGML_CUDA_ENABLE_UNIFIED_MEMORY" not in env
 
@@ -2104,18 +2104,18 @@ class TestUnifiedMemoryOptOut:
         _cmd, env = self._load(
             tmp_path,
             monkeypatch,
-            backend = self._with_layout(token_embd_bytes = 10 * GIB, lm_head_bytes = 0),
+            backend=self._with_layout(token_embd_bytes=10 * GIB, lm_head_bytes=0),
         )[0]
         assert env.get("GGML_CUDA_ENABLE_UNIFIED_MEMORY") == "1"
 
     def test_small_embeddings_leave_an_oversized_base(self, tmp_path, monkeypatch, probe_env):
         _cmd, env = self._load(
-            tmp_path, monkeypatch, backend = self._with_layout(token_embd_bytes = 4 * GIB)
+            tmp_path, monkeypatch, backend=self._with_layout(token_embd_bytes=4 * GIB)
         )[0]
         assert env.get("GGML_CUDA_ENABLE_UNIFIED_MEMORY") == "1"
 
     def test_an_incomplete_layout_cannot_price_the_file(self, tmp_path, monkeypatch, probe_env):
-        _cmd, env = self._load(tmp_path, monkeypatch, backend = self._with_layout(complete = False))[0]
+        _cmd, env = self._load(tmp_path, monkeypatch, backend=self._with_layout(complete=False))[0]
         assert "GGML_CUDA_ENABLE_UNIFIED_MEMORY" not in env
 
     _PROJECTOR_OOM = (
@@ -2127,18 +2127,18 @@ class TestUnifiedMemoryOptOut:
         self,
         tmp_path,
         monkeypatch,
-        server_caps = None,
+        server_caps=None,
     ):
         """30 GiB base + 4 GiB projector outgrow the 32 GiB carve-out; the base does not."""
         launches = self._load(
             tmp_path,
             monkeypatch,
-            model_bytes = 30 * GIB,
-            mmproj_bytes = 4 * GIB,
-            intent_extra = {"is_vision": True, "mmproj_path": str(tmp_path / "mmproj.gguf")},
-            server_caps = server_caps,
-            returncode = 1,
-            output = self._PROJECTOR_OOM,
+            model_bytes=30 * GIB,
+            mmproj_bytes=4 * GIB,
+            intent_extra={"is_vision": True, "mmproj_path": str(tmp_path / "mmproj.gguf")},
+            server_caps=server_caps,
+            returncode=1,
+            output=self._PROJECTOR_OOM,
         )
         first_cmd, first_env = launches[0]
         assert "--mmproj" in first_cmd and "--no-mmproj-offload" not in first_cmd, first_cmd
@@ -2149,7 +2149,7 @@ class TestUnifiedMemoryOptOut:
         self, tmp_path, monkeypatch, probe_env
     ):
         launches = self._vision_launches(
-            tmp_path, monkeypatch, server_caps = {"supports_no_mmproj_offload": True}
+            tmp_path, monkeypatch, server_caps={"supports_no_mmproj_offload": True}
         )
         cpu_pinned = [e for c, e in launches if "--no-mmproj-offload" in c]
         assert cpu_pinned, [c for c, _e in launches]
@@ -2171,12 +2171,12 @@ class TestUnifiedMemoryOptOut:
         launches = self._load(
             tmp_path,
             monkeypatch,
-            env_extra = {"LLAMA_ARG_MMPROJ": str(inherited)},
-            model_bytes = 30 * GIB,
-            mmproj_bytes = 4 * GIB,
-            intent_extra = {"is_vision": True, "mmproj_path": str(tmp_path / "mmproj.gguf")},
-            returncode = 1,
-            output = self._PROJECTOR_OOM,
+            env_extra={"LLAMA_ARG_MMPROJ": str(inherited)},
+            model_bytes=30 * GIB,
+            mmproj_bytes=4 * GIB,
+            intent_extra={"is_vision": True, "mmproj_path": str(tmp_path / "mmproj.gguf")},
+            returncode=1,
+            output=self._PROJECTOR_OOM,
         )
         first_cmd, first_env = launches[0]
         assert "--mmproj" in first_cmd, first_cmd
@@ -2192,15 +2192,15 @@ class TestUnifiedMemoryOptOut:
         _cmd, env = self._load(
             tmp_path,
             monkeypatch,
-            backend = self._with_unloaded_mtp_blocks(10 * GIB),
-            extra_args = ["--spec-type", "draft-mtp", "-md", str(sidecar)],
+            backend=self._with_unloaded_mtp_blocks(10 * GIB),
+            extra_args=["--spec-type", "draft-mtp", "-md", str(sidecar)],
         )[0]
         assert "GGML_CUDA_ENABLE_UNIFIED_MEMORY" not in env
 
     def test_an_unreadable_tensor_table_cannot_price_the_blocks(
         self, tmp_path, monkeypatch, probe_env
     ):
-        _cmd, env = self._load(tmp_path, monkeypatch, backend = self._with_unloaded_mtp_blocks(None))[
+        _cmd, env = self._load(tmp_path, monkeypatch, backend=self._with_unloaded_mtp_blocks(None))[
             0
         ]
         assert "GGML_CUDA_ENABLE_UNIFIED_MEMORY" not in env
@@ -2250,7 +2250,7 @@ class TestUnifiedMemoryOptOut:
 
     def test_the_opt_out_survives_a_retry_onto_an_apu(self, tmp_path, monkeypatch, probe_env):
         """The retry re-adds the variable on an APU; it must not undo the opt-out."""
-        _apply_os(monkeypatch, "linux", is_rocm = True)
+        _apply_os(monkeypatch, "linux", is_rocm=True)
         monkeypatch.setattr(
             LlamaCppBackend, "_rocm_unified_memory_gpu_ids", staticmethod(lambda: {1})
         )
@@ -2259,19 +2259,19 @@ class TestUnifiedMemoryOptOut:
         )
         torch = _fake_torch(
             [
-                _device("gfx1030", free_mib = 40000),
-                _device("gfx1151", free_mib = 12000, is_integrated = 1),
+                _device("gfx1030", free_mib=40000),
+                _device("gfx1151", free_mib=12000, is_integrated=1),
             ],
-            vendor = "amd",
+            vendor="amd",
         )
         launches = _run_auto_load(
             monkeypatch,
             tmp_path,
             torch,
             None,  # no marker: the proactive gate fails open, so the crash path runs
-            returncode = 1,
-            output = "ROCm error: device kernel image is invalid",
-            env_extra = {"UNSLOTH_DISABLE_UNIFIED_MEMORY": "1"},
+            returncode=1,
+            output="ROCm error: device kernel image is invalid",
+            env_extra={"UNSLOTH_DISABLE_UNIFIED_MEMORY": "1"},
         )
         _retry = [env for _c, env in launches if env.get("ROCR_VISIBLE_DEVICES") == "1"]
         assert _retry, "the arch-crash retry did not fire"
@@ -2284,7 +2284,7 @@ class TestArchCrashRetryDropsDeadTensorMode:
     --tensor-split alone left both behind (#7624)."""
 
     def test_a_single_gpu_retry_drops_split_mode_tensor(self, tmp_path, monkeypatch, probe_env):
-        _apply_os(monkeypatch, "linux", is_rocm = True)
+        _apply_os(monkeypatch, "linux", is_rocm=True)
         # Both cards are selected for the tensor split, so the retry cannot prefer
         # an unselected device and falls back to dropping the unified-memory one.
         monkeypatch.setattr(
@@ -2295,19 +2295,19 @@ class TestArchCrashRetryDropsDeadTensorMode:
         )
         torch = _fake_torch(
             [
-                _device("gfx1151", free_mib = 40000, is_integrated = 1),
-                _device("gfx1030", free_mib = 30000),
+                _device("gfx1151", free_mib=40000, is_integrated=1),
+                _device("gfx1030", free_mib=30000),
             ],
-            vendor = "amd",
+            vendor="amd",
         )
         launches = _run_auto_load(
             monkeypatch,
             tmp_path,
             torch,
             None,
-            returncode = 1,
-            output = "ROCm error: device kernel image is invalid",
-            intent_kwargs = {"tensor_parallel": True},
+            returncode=1,
+            output="ROCm error: device kernel image is invalid",
+            intent_kwargs={"tensor_parallel": True},
         )
         _retry = [cmd for cmd, env in launches if env.get("ROCR_VISIBLE_DEVICES") == "1"]
         assert _retry, "the arch-crash retry did not fire"
@@ -2323,7 +2323,7 @@ class TestArchCrashRetryDropsDeadTensorMode:
         """The reactive path keeps the same record the proactive gate does: a markerless
         build only ever reaches the gate reactively, so without it every identical Apply
         reads the normalized server as new."""
-        _apply_os(monkeypatch, "linux", is_rocm = True)
+        _apply_os(monkeypatch, "linux", is_rocm=True)
         monkeypatch.setattr(
             LlamaCppBackend, "_rocm_unified_memory_gpu_ids", staticmethod(lambda: {0})
         )
@@ -2336,16 +2336,16 @@ class TestArchCrashRetryDropsDeadTensorMode:
             tmp_path,
             _fake_torch(
                 [
-                    _device("gfx1151", free_mib = 40000, is_integrated = 1),
-                    _device("gfx1030", free_mib = 30000),
+                    _device("gfx1151", free_mib=40000, is_integrated=1),
+                    _device("gfx1030", free_mib=30000),
                 ],
-                vendor = "amd",
+                vendor="amd",
             ),
             None,  # markerless: only the reactive retry can help
-            returncode = 1,
-            output = "ROCm error: device kernel image is invalid",
-            capture = capture,
-            intent_kwargs = {"tensor_parallel": True},
+            returncode=1,
+            output="ROCm error: device kernel image is invalid",
+            capture=capture,
+            intent_kwargs={"tensor_parallel": True},
         )
         backend = capture["backend"]
         assert backend._tensor_parallel is False  # normalized by the retry
@@ -2362,7 +2362,7 @@ class TestArchCrashRetryRechecksTheApuRamGuard:
     def _dgpu_then_apu(self, monkeypatch):
         # Device 1 is the APU, so the free-VRAM rank pins the dGPU first and the
         # retry's prefer-never-selected branch hands back exactly the APU.
-        _apply_os(monkeypatch, "linux", is_rocm = True)
+        _apply_os(monkeypatch, "linux", is_rocm=True)
         monkeypatch.setattr(
             LlamaCppBackend, "_rocm_unified_memory_gpu_ids", staticmethod(lambda: {1})
         )
@@ -2371,10 +2371,10 @@ class TestArchCrashRetryRechecksTheApuRamGuard:
         )
         return _fake_torch(
             [
-                _device("gfx1030", free_mib = 40000),
-                _device("gfx1151", free_mib = 12000, is_integrated = 1),
+                _device("gfx1030", free_mib=40000),
+                _device("gfx1151", free_mib=12000, is_integrated=1),
             ],
-            vendor = "amd",
+            vendor="amd",
         )
 
     def test_an_oversized_model_is_respawned_with_a_warning(self, tmp_path, monkeypatch, probe_env):
@@ -2394,11 +2394,11 @@ class TestArchCrashRetryRechecksTheApuRamGuard:
             tmp_path,
             torch,
             None,  # no marker: the proactive gate fails open, so the crash path runs
-            returncode = 1,
-            output = "ROCm error: device kernel image is invalid",
-            model_bytes = 20 * 1024**3,
-            capture = capture,
-            apu_ram_stub = _shortfall,
+            returncode=1,
+            output="ROCm error: device kernel image is invalid",
+            model_bytes=20 * 1024**3,
+            capture=capture,
+            apu_ram_stub=_shortfall,
         )
         # The dGPU is pinned first, so the pre-launch guard never asks (it is
         # gated on the selection wanting unified memory) and the crash happens.
@@ -2426,10 +2426,10 @@ class TestArchCrashRetryRechecksTheApuRamGuard:
             tmp_path,
             torch,
             None,
-            returncode = 1,
-            output = "ROCm error: device kernel image is invalid",
-            model_bytes = 1024,
-            apu_ram_stub = _no_shortfall,
+            returncode=1,
+            output="ROCm error: device kernel image is invalid",
+            model_bytes=1024,
+            apu_ram_stub=_no_shortfall,
         )
         assert len(calls) == 1, f"the RAM guard ran {len(calls)} times, expected once"
         _retry = [env for _c, env in launches if env.get("ROCR_VISIBLE_DEVICES") == "1"]
@@ -2457,14 +2457,14 @@ class TestArchCrashRetryRechecksTheApuRamGuard:
             tmp_path,
             torch,
             None,  # no marker: the proactive gate fails open, so the crash path runs
-            returncode = 1,
-            output = "ROCm error: device kernel image is invalid",
-            model_bytes = 20 * 1024**3,
-            capture = capture,
-            apu_ram_stub = lambda *_a, **_kw: (
+            returncode=1,
+            output="ROCm error: device kernel image is invalid",
+            model_bytes=20 * 1024**3,
+            capture=capture,
+            apu_ram_stub=lambda *_a, **_kw: (
                 "This model needs about 20 GB but only about 8 GB of memory is available."
             ),
-            intent_kwargs = {"extra_args": ["--no-mmap"]},
+            intent_kwargs={"extra_args": ["--no-mmap"]},
         )
 
     def test_the_opt_out_silences_the_retrys_apu_advisory_and_keeps_the_override(
@@ -2495,7 +2495,7 @@ class TestArchCrashRetryRechecksTheApuRamGuard:
     ):
         """The control. Nothing silenced, so the same respawn warns as before and the
         override is named in the text the route hands back."""
-        monkeypatch.delenv("UNSLOTH_ALLOW_HOST_OFFLOAD", raising = False)
+        monkeypatch.delenv("UNSLOTH_ALLOW_HOST_OFFLOAD", raising=False)
         capture: dict = {}
 
         launches = self._respawn_unmapped_and_oversized(tmp_path, monkeypatch, capture)
@@ -2529,7 +2529,7 @@ class TestArchCrashRetryReplacesTheCrashedSelectionsWarning:
         # enough to leave the APU on top; the shortfall itself is the stubbed verdict,
         # which is how every APU-guard cell in this file drives it -- the arithmetic
         # belongs to test_host_offload_ram_guard.py, the plumbing is what is at stake.
-        _apply_os(monkeypatch, "linux", is_rocm = True)
+        _apply_os(monkeypatch, "linux", is_rocm=True)
         monkeypatch.setattr(
             LlamaCppBackend, "_rocm_unified_memory_gpu_ids", staticmethod(lambda: {0})
         )
@@ -2538,10 +2538,10 @@ class TestArchCrashRetryReplacesTheCrashedSelectionsWarning:
         )
         return _fake_torch(
             [
-                _device("gfx1151", free_mib = 47000, is_integrated = 1),
-                _device("gfx1030", free_mib = dgpu_free_mib),
+                _device("gfx1151", free_mib=47000, is_integrated=1),
+                _device("gfx1030", free_mib=dgpu_free_mib),
             ],
-            vendor = "amd",
+            vendor="amd",
         )
 
     @staticmethod
@@ -2558,7 +2558,7 @@ class TestArchCrashRetryReplacesTheCrashedSelectionsWarning:
         self, tmp_path, monkeypatch, probe_env
     ):
         # 30000MiB free holds the 20GB model outright, so the respawn spills nothing.
-        torch = self._apu_then_dgpu(monkeypatch, dgpu_free_mib = 30000)
+        torch = self._apu_then_dgpu(monkeypatch, dgpu_free_mib=30000)
         calls: list = []
         capture: dict = {}
         launches = _run_auto_load(
@@ -2566,11 +2566,11 @@ class TestArchCrashRetryReplacesTheCrashedSelectionsWarning:
             tmp_path,
             torch,
             None,  # no marker: the proactive gate fails open, so the crash path runs
-            returncode = 1,
-            output = "ROCm error: device kernel image is invalid",
-            model_bytes = 20 * 1024**3,
-            capture = capture,
-            apu_ram_stub = self._apu_stub(calls),
+            returncode=1,
+            output="ROCm error: device kernel image is invalid",
+            model_bytes=20 * 1024**3,
+            capture=capture,
+            apu_ram_stub=self._apu_stub(calls),
         )
         assert calls, "the pre-launch APU RAM guard never ran, so nothing was warned"
         _retry = [env for _c, env in launches if env.get("ROCR_VISIBLE_DEVICES") == "1"]
@@ -2587,19 +2587,19 @@ class TestArchCrashRetryReplacesTheCrashedSelectionsWarning:
         prices the same weights against a NARROWER pool, so a real spill is re-warned.
         """
         # 4000MiB free leaves most of the 20GB model in host RAM on the respawn.
-        torch = self._apu_then_dgpu(monkeypatch, dgpu_free_mib = 4000)
+        torch = self._apu_then_dgpu(monkeypatch, dgpu_free_mib=4000)
         capture: dict = {}
         launches = _run_auto_load(
             monkeypatch,
             tmp_path,
             torch,
             None,
-            returncode = 1,
-            output = "ROCm error: device kernel image is invalid",
-            model_bytes = 20 * 1024**3,
-            capture = capture,
-            apu_ram_stub = self._apu_stub([]),
-            host_offload_stub = (
+            returncode=1,
+            output="ROCm error: device kernel image is invalid",
+            model_bytes=20 * 1024**3,
+            capture=capture,
+            apu_ram_stub=self._apu_stub([]),
+            host_offload_stub=(
                 lambda *_a, **_kw: "About 16 GB of this model does not fit in GPU memory."
             ),
         )
@@ -2620,18 +2620,18 @@ class TestHsaOverrideGfxVersion:
     def test_a_spoofed_arch_is_gated_on_what_the_runtime_reports(
         self, tmp_path, monkeypatch, probe_env
     ):
-        _apply_os(monkeypatch, "linux", is_rocm = True)
+        _apply_os(monkeypatch, "linux", is_rocm=True)
         monkeypatch.setenv("HSA_OVERRIDE_GFX_VERSION", "10.3.0")
         _binary_with_marker(tmp_path, {"mapped_targets": GFX103X})
         # A gfx1035 laptop iGPU presenting itself as gfx1030 under the override,
         # beside a card the bundle does not cover at all.
         _install_torch(
             monkeypatch,
-            [_device("gfx1030", free_mib = 8000), _device("gfx1036", free_mib = 30000)],
-            vendor = "amd",
+            [_device("gfx1030", free_mib=8000), _device("gfx1036", free_mib=30000)],
+            vendor="amd",
         )
         assert LlamaCppBackend._get_gpu_free_memory(
-            binary = str(tmp_path / "build" / "bin" / "llama-server"), for_llama_server = True
+            binary=str(tmp_path / "build" / "bin" / "llama-server"), for_llama_server=True
         ) == [(0, 8000)]
 
 
@@ -2654,7 +2654,7 @@ class TestAnInstallFromBeforeThisPr:
     }
 
     def test_the_probe_keeps_every_device(self, tmp_path, monkeypatch, probe_env):
-        _apply_os(monkeypatch, "linux", is_rocm = True)
+        _apply_os(monkeypatch, "linux", is_rocm=True)
         # The APU's usable figure is its shared pool minus a host reserve, and the
         # pool is capped by the REAL free system RAM unless this is stubbed. Without
         # it the expected 11152 silently assumes the machine has >12176MiB free, so
@@ -2664,42 +2664,42 @@ class TestAnInstallFromBeforeThisPr:
             LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 60000)
         )
         (tmp_path / "UNSLOTH_PREBUILT_INFO.json").write_text(
-            json.dumps(self.OLD_MARKER), encoding = "utf-8"
+            json.dumps(self.OLD_MARKER), encoding="utf-8"
         )
         _install_torch(
             monkeypatch,
             [
-                _device("gfx1101", free_mib = 12049),
-                _device("gfx1036", free_mib = 12176, is_integrated = 1),
+                _device("gfx1101", free_mib=12049),
+                _device("gfx1036", free_mib=12176, is_integrated=1),
             ],
-            vendor = "amd",
+            vendor="amd",
         )
         assert LlamaCppBackend._get_gpu_free_memory(
-            binary = str(tmp_path / "build" / "bin" / "llama-server"), for_llama_server = True
+            binary=str(tmp_path / "build" / "bin" / "llama-server"), for_llama_server=True
         ) == [(0, 12049), (1, 11152)]
 
     def test_the_launch_is_not_masked_onto_the_cpu(self, tmp_path, monkeypatch, probe_env):
         """The failure that would matter most: an old install that used to run
         on the GPU being gated to CPU by a marker the gate cannot read."""
-        _apply_os(monkeypatch, "linux", is_rocm = True)
+        _apply_os(monkeypatch, "linux", is_rocm=True)
         monkeypatch.setattr(
             LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 60000)
         )
         (tmp_path / "UNSLOTH_PREBUILT_INFO.json").write_text(
-            json.dumps(self.OLD_MARKER), encoding = "utf-8"
+            json.dumps(self.OLD_MARKER), encoding="utf-8"
         )
         launches = _run_auto_load(
             monkeypatch,
             tmp_path,
             _fake_torch(
                 [
-                    _device("gfx1101", free_mib = 12049),
-                    _device("gfx1036", free_mib = 30000, is_integrated = 1),
+                    _device("gfx1101", free_mib=12049),
+                    _device("gfx1036", free_mib=30000, is_integrated=1),
                 ],
-                vendor = "amd",
+                vendor="amd",
             ),
             None,  # the marker above stands; do not overwrite it
-            returncode = None,
+            returncode=None,
         )
         assert len(launches) == 1
         _cmd, env = launches[0]
@@ -2717,12 +2717,12 @@ class TestArchForcedCpuFlagLifecycle:
 
     def _host(self):
         return [
-            _device("gfx1101", free_mib = 12049),
-            _device("gfx1036", free_mib = 30000, is_integrated = 1),
+            _device("gfx1101", free_mib=12049),
+            _device("gfx1036", free_mib=30000, is_integrated=1),
         ]
 
     def test_every_device_uncovered_sets_it(self, tmp_path, monkeypatch, probe_env):
-        _apply_os(monkeypatch, "linux", is_rocm = True)
+        _apply_os(monkeypatch, "linux", is_rocm=True)
         monkeypatch.setattr(
             LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 60000)
         )
@@ -2730,10 +2730,10 @@ class TestArchForcedCpuFlagLifecycle:
         _run_auto_load(
             monkeypatch,
             tmp_path,
-            _fake_torch(self._host(), vendor = "amd"),
+            _fake_torch(self._host(), vendor="amd"),
             GFX103X,  # covers neither card
-            returncode = None,
-            capture = capture,
+            returncode=None,
+            capture=capture,
         )
         backend = capture["backend"]
         assert backend._arch_gate_forced_cpu is True
@@ -2742,7 +2742,7 @@ class TestArchForcedCpuFlagLifecycle:
         assert backend.holds_no_vram is True
 
     def test_a_covered_card_leaves_it_alone(self, tmp_path, monkeypatch, probe_env):
-        _apply_os(monkeypatch, "linux", is_rocm = True)
+        _apply_os(monkeypatch, "linux", is_rocm=True)
         monkeypatch.setattr(
             LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 60000)
         )
@@ -2750,10 +2750,10 @@ class TestArchForcedCpuFlagLifecycle:
         _run_auto_load(
             monkeypatch,
             tmp_path,
-            _fake_torch(self._host(), vendor = "amd"),
+            _fake_torch(self._host(), vendor="amd"),
             GFX110X,  # the dGPU survives
-            returncode = None,
-            capture = capture,
+            returncode=None,
+            capture=capture,
         )
         backend = capture["backend"]
         assert backend._arch_gate_forced_cpu is False
@@ -2774,7 +2774,7 @@ class TestTheForcedCpuFlagIsNotSticky:
     beside a competing workload."""
 
     def _load(self, monkeypatch, tmp_path, targets, capture):
-        _apply_os(monkeypatch, "linux", is_rocm = True)
+        _apply_os(monkeypatch, "linux", is_rocm=True)
         monkeypatch.setattr(
             LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 60000)
         )
@@ -2783,14 +2783,14 @@ class TestTheForcedCpuFlagIsNotSticky:
             tmp_path,
             _fake_torch(
                 [
-                    _device("gfx1101", free_mib = 12049),
-                    _device("gfx1036", free_mib = 30000, is_integrated = 1),
+                    _device("gfx1101", free_mib=12049),
+                    _device("gfx1036", free_mib=30000, is_integrated=1),
                 ],
-                vendor = "amd",
+                vendor="amd",
             ),
             targets,
-            returncode = None,
-            capture = capture,
+            returncode=None,
+            capture=capture,
         )
 
     def test_a_covered_load_after_a_gated_one_clears_it(self, tmp_path, monkeypatch, probe_env):
@@ -2815,7 +2815,7 @@ class TestTheForcedCpuFlagIsNotSticky:
     def test_the_publish_overwrites_a_stale_true(self, tmp_path, monkeypatch, probe_env):
         """The mutation the class exists for, on one instance: pre-set the flag,
         run a covered load, and the launch must publish False over it."""
-        _apply_os(monkeypatch, "linux", is_rocm = True)
+        _apply_os(monkeypatch, "linux", is_rocm=True)
         monkeypatch.setattr(
             LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 60000)
         )
@@ -2836,7 +2836,7 @@ class TestTheForcedCpuFlagIsNotSticky:
         the sibling chat fields for exactly this reason."""
         source = (
             Path(__file__).resolve().parent.parent / "core" / "inference" / "llama_cpp.py"
-        ).read_text(encoding = "utf-8")
+        ).read_text(encoding="utf-8")
         block = source.split("Diffusion is never tensor-parallel")[1].split("def ")[0]
         assert "self._arch_gate_forced_cpu = False" in block
 
@@ -2845,7 +2845,7 @@ class TestTheForcedCpuFlagIsNotSticky:
         assigns True can never clear a previous launch's value."""
         source = (
             Path(__file__).resolve().parent.parent / "core" / "inference" / "llama_cpp.py"
-        ).read_text(encoding = "utf-8")
+        ).read_text(encoding="utf-8")
         assert "self._arch_gate_forced_cpu = bool(_arch_gate_forced_cpu)" in source
         assert "self._arch_gate_forced_cpu = True" not in source
 
@@ -2858,25 +2858,25 @@ class TestInheritedSplitEnvGoesWithTheArgvStrip:
 
     def _host(self):
         return [
-            _device("gfx1101", free_mib = 12049),
-            _device("gfx1036", free_mib = 30000, is_integrated = 1),
+            _device("gfx1101", free_mib=12049),
+            _device("gfx1036", free_mib=30000, is_integrated=1),
         ]
 
     def test_the_forced_cpu_launch_clears_both(self, tmp_path, monkeypatch, probe_env):
-        _apply_os(monkeypatch, "linux", is_rocm = True)
+        _apply_os(monkeypatch, "linux", is_rocm=True)
         monkeypatch.setattr(
             LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 60000)
         )
         launches = _run_auto_load(
             monkeypatch,
             tmp_path,
-            _fake_torch(self._host(), vendor = "amd"),
+            _fake_torch(self._host(), vendor="amd"),
             GFX103X,  # covers neither card
-            returncode = None,
+            returncode=None,
             # Split mode unset on purpose. The existing tensor->layer
             # reconciliation only clears the pair when an inherited mode is
             # present and non-layer, so this is the shape that survives it.
-            env_extra = {"LLAMA_ARG_TENSOR_SPLIT": "3,1"},
+            env_extra={"LLAMA_ARG_TENSOR_SPLIT": "3,1"},
         )
         assert len(launches) == 1
         cmd, env = launches[0]
@@ -2890,18 +2890,18 @@ class TestInheritedSplitEnvGoesWithTheArgvStrip:
         """The abort this strip prevents: llama.cpp fails the load with
         "LLAMA_SPLIT_MODE_TENSOR needs >= 1 devices" once the mask hides every device,
         and an inherited tensor mode reinstates it after the argv flag is gone."""
-        _apply_os(monkeypatch, "linux", is_rocm = True)
+        _apply_os(monkeypatch, "linux", is_rocm=True)
         monkeypatch.setattr(
             LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 60000)
         )
         launches = _run_auto_load(
             monkeypatch,
             tmp_path,
-            _fake_torch(self._host(), vendor = "amd"),
+            _fake_torch(self._host(), vendor="amd"),
             GFX103X,  # covers neither card
-            returncode = None,
-            intent_kwargs = {"tensor_parallel": True},
-            env_extra = {"LLAMA_ARG_SPLIT_MODE": "tensor"},
+            returncode=None,
+            intent_kwargs={"tensor_parallel": True},
+            env_extra={"LLAMA_ARG_SPLIT_MODE": "tensor"},
         )
         assert launches
         cmd, env = launches[0]
@@ -2911,21 +2911,21 @@ class TestInheritedSplitEnvGoesWithTheArgvStrip:
     def test_the_narrowed_pin_clears_both(self, tmp_path, monkeypatch, probe_env):
         """A survivor pin re-indexes the visible devices, so an inherited
         positional ratio would land on the wrong card."""
-        _apply_os(monkeypatch, "linux", is_rocm = True)
+        _apply_os(monkeypatch, "linux", is_rocm=True)
         monkeypatch.setattr(
             LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 60000)
         )
         monkeypatch.setattr(
-            LlamaCppBackend, "_arch_gate_survivors", staticmethod(lambda _b = None: [0])
+            LlamaCppBackend, "_arch_gate_survivors", staticmethod(lambda _b=None: [0])
         )
         launches = _run_auto_load(
             monkeypatch,
             tmp_path,
-            _fake_torch(self._host(), vendor = "amd"),
+            _fake_torch(self._host(), vendor="amd"),
             GFX110X,
-            returncode = None,
-            model_bytes = 400 * 1024**3,  # too large to place: --fit on owns it
-            env_extra = {"LLAMA_ARG_TENSOR_SPLIT": "3,1"},
+            returncode=None,
+            model_bytes=400 * 1024**3,  # too large to place: --fit on owns it
+            env_extra={"LLAMA_ARG_TENSOR_SPLIT": "3,1"},
         )
         assert launches
         _cmd, env = launches[0]
@@ -2934,17 +2934,17 @@ class TestInheritedSplitEnvGoesWithTheArgvStrip:
     def test_an_ordinary_load_keeps_them(self, tmp_path, monkeypatch, probe_env):
         """Only the gate's own branches clear these. An unrelated launch must
         not lose an inherited setting the existing reconciliation allows."""
-        _apply_os(monkeypatch, "linux", is_rocm = True)
+        _apply_os(monkeypatch, "linux", is_rocm=True)
         monkeypatch.setattr(
             LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 60000)
         )
         launches = _run_auto_load(
             monkeypatch,
             tmp_path,
-            _fake_torch([_device("gfx1101", free_mib = 20000)], vendor = "amd"),
+            _fake_torch([_device("gfx1101", free_mib=20000)], vendor="amd"),
             GFX110X,  # covers the only card: nothing to narrow
-            returncode = None,
-            env_extra = {"LLAMA_ARG_TENSOR_SPLIT": "3,1"},
+            returncode=None,
+            env_extra={"LLAMA_ARG_TENSOR_SPLIT": "3,1"},
         )
         assert launches
         _cmd, env = launches[0]
@@ -2958,7 +2958,7 @@ class TestTheForcedCpuLaunchAppliesThePageLock:
     skipped AND recorded as deliberate, which no relaunch undoes."""
 
     def _run(self, tmp_path, monkeypatch, *, targets):
-        _apply_os(monkeypatch, "linux", is_rocm = True)
+        _apply_os(monkeypatch, "linux", is_rocm=True)
         monkeypatch.setattr(
             LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 200000)
         )
@@ -2978,22 +2978,22 @@ class TestTheForcedCpuLaunchAppliesThePageLock:
                 # Two DISCRETE cards: _amd_apu_wants_unified_memory answers False, so
                 # a full offload really does read as not host-resident.
                 [
-                    _device("gfx1030", free_mib = 40000),
-                    _device("gfx1031", free_mib = 30000),
+                    _device("gfx1030", free_mib=40000),
+                    _device("gfx1031", free_mib=30000),
                 ],
-                vendor = "amd",
+                vendor="amd",
             ),
             targets,
-            returncode = None,
-            capture = capture,
-            backend = backend,
+            returncode=None,
+            capture=capture,
+            backend=backend,
             # Manual full offload: every layer on the GPU.
-            intent_kwargs = {"gpu_memory_mode": "manual", "gpu_layers": 33},  # n_layers + 1
+            intent_kwargs={"gpu_memory_mode": "manual", "gpu_layers": 33},  # n_layers + 1
         )
         return launches, capture
 
     def test_the_masked_child_gets_the_lock(self, tmp_path, monkeypatch, probe_env):
-        launches, capture = self._run(tmp_path, monkeypatch, targets = ["gfx908"])
+        launches, capture = self._run(tmp_path, monkeypatch, targets=["gfx908"])
         assert launches
         cmd, env = launches[0]
         assert env.get("HIP_VISIBLE_DEVICES") == "-1", _visibility(env)
@@ -3003,7 +3003,7 @@ class TestTheForcedCpuLaunchAppliesThePageLock:
     def test_a_covered_host_still_skips_it(self, tmp_path, monkeypatch, probe_env):
         """The recompute is the gate's doing. With the cards covered the launch really
         is fully offloaded, so the pre-existing skip has to stand."""
-        launches, capture = self._run(tmp_path, monkeypatch, targets = GFX103X)
+        launches, capture = self._run(tmp_path, monkeypatch, targets=GFX103X)
         assert launches
         cmd, env = launches[0]
         assert env.get("HIP_VISIBLE_DEVICES") != "-1"
@@ -3018,42 +3018,42 @@ class TestForcedCpuNeedsRealArchEvidence:
     re-derives the gate's verdict instead of inferring it."""
 
     def _run(self, tmp_path, monkeypatch, *, targets, flaky):
-        _apply_os(monkeypatch, "linux", is_rocm = True)
+        _apply_os(monkeypatch, "linux", is_rocm=True)
         real = LlamaCppBackend._get_gpu_memory
         calls = {"n": 0}
 
-        def _probe(binary = None, *, for_llama_server = False):
+        def _probe(binary=None, *, for_llama_server=False):
             calls["n"] += 1
             if flaky and calls["n"] == 1:
                 return []  # the transient failure, on the gated call
-            return real(binary, for_llama_server = for_llama_server)
+            return real(binary, for_llama_server=for_llama_server)
 
         monkeypatch.setattr(LlamaCppBackend, "_get_gpu_memory", staticmethod(_probe))
         capture: dict = {}
         _run_auto_load(
             monkeypatch,
             tmp_path,
-            _fake_torch([_device("gfx1030", free_mib = 12049)], vendor = "amd"),
+            _fake_torch([_device("gfx1030", free_mib=12049)], vendor="amd"),
             targets,
-            returncode = None,
-            capture = capture,
+            returncode=None,
+            capture=capture,
         )
         return capture["backend"]
 
     def test_a_transient_probe_failure_does_not_force_cpu(self, tmp_path, monkeypatch, probe_env):
         """The marker covers the only card, so nothing was filtered: an empty gated
         result here is the probe, not the gate."""
-        backend = self._run(tmp_path, monkeypatch, targets = GFX103X, flaky = True)
+        backend = self._run(tmp_path, monkeypatch, targets=GFX103X, flaky=True)
         assert backend._arch_gate_forced_cpu is False
 
     def test_an_unmarked_install_does_not_force_cpu(self, tmp_path, monkeypatch, probe_env):
         """No marker at all means unknown coverage, which the filter fails open on, so
         the gate cannot have emptied anything."""
-        backend = self._run(tmp_path, monkeypatch, targets = None, flaky = True)
+        backend = self._run(tmp_path, monkeypatch, targets=None, flaky=True)
         assert backend._arch_gate_forced_cpu is False
 
     def test_a_genuinely_uncovered_host_still_forces_cpu(self, tmp_path, monkeypatch, probe_env):
-        backend = self._run(tmp_path, monkeypatch, targets = ["gfx908"], flaky = False)
+        backend = self._run(tmp_path, monkeypatch, targets=["gfx908"], flaky=False)
         assert backend._arch_gate_forced_cpu is True
 
 
@@ -3075,14 +3075,14 @@ class TestTheApuRetryRecomputesThePageLock:
                 # The dGPU wins the free-memory rank (the APU's shared pool is
                 # reported minus the host reserve), so it is picked, crashes, and
                 # the APU is what remains.
-                _device("gfx1201", free_mib = 40000),
-                _device("gfx1151", free_mib = 30000, is_integrated = 1),
+                _device("gfx1201", free_mib=40000),
+                _device("gfx1151", free_mib=30000, is_integrated=1),
             ],
-            vendor = "amd",
+            vendor="amd",
         )
 
     def _run(self, tmp_path, monkeypatch, *, mlock):
-        _apply_os(monkeypatch, "linux", is_rocm = True)
+        _apply_os(monkeypatch, "linux", is_rocm=True)
         monkeypatch.setattr(
             LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 200000)
         )
@@ -3098,14 +3098,14 @@ class TestTheApuRetryRecomputesThePageLock:
             tmp_path,
             self._dgpu_then_apu(monkeypatch),
             None,  # markerless: only the reactive retry can help
-            returncode = 1,
-            output = "ROCm error: device kernel image is invalid",
-            capture = capture,
+            returncode=1,
+            output="ROCm error: device kernel image is invalid",
+            capture=capture,
         )
         return launches, capture
 
     def test_the_respawn_onto_the_apu_gets_the_lock(self, tmp_path, monkeypatch, probe_env):
-        launches, capture = self._run(tmp_path, monkeypatch, mlock = True)
+        launches, capture = self._run(tmp_path, monkeypatch, mlock=True)
         retry = [(cmd, env) for cmd, env in launches if env.get("ROCR_VISIBLE_DEVICES") == "1"]
         assert (
             retry
@@ -3117,7 +3117,7 @@ class TestTheApuRetryRecomputesThePageLock:
         assert capture["backend"]._memory_mlock_applicable is True
 
     def test_page_locking_off_changes_nothing(self, tmp_path, monkeypatch, probe_env):
-        launches, _capture = self._run(tmp_path, monkeypatch, mlock = False)
+        launches, _capture = self._run(tmp_path, monkeypatch, mlock=False)
         assert launches
         for cmd, _env in launches:
             assert "--mlock" not in cmd
@@ -3127,7 +3127,7 @@ class TestTheApuRetryRecomputesThePageLock:
         flags back off would mean scanning for --mlock / --no-mmap, valueless in
         llama.cpp's parser, so the scan drops the argv entry after them -- here the
         user's own -c 8192."""
-        _apply_os(monkeypatch, "linux", is_rocm = True)
+        _apply_os(monkeypatch, "linux", is_rocm=True)
         monkeypatch.setattr(
             LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 200000)
         )
@@ -3140,13 +3140,13 @@ class TestTheApuRetryRecomputesThePageLock:
             tmp_path,
             self._dgpu_then_apu(monkeypatch),
             None,
-            returncode = 1,
-            output = "ROCm error: device kernel image is invalid",
-            capture = capture,
+            returncode=1,
+            output="ROCm error: device kernel image is invalid",
+            capture=capture,
             # --no-mmap is a memory flag apply_model_memory_policy keeps when it
             # emits the legacy --mlock (this build reports no --load-mode), and
             # -c 8192 is the entry a valueless-flag scan would eat with it.
-            intent_kwargs = {"extra_args": ["--no-mmap", "-c", "8192"]},
+            intent_kwargs={"extra_args": ["--no-mmap", "-c", "8192"]},
         )
         retry = [(cmd, env) for cmd, env in launches if env.get("ROCR_VISIBLE_DEVICES") == "1"]
         assert retry, [_visibility(e) for _c, e in launches]
@@ -3164,7 +3164,7 @@ class TestTheCarveOutDecidesTheUnifiedMemoryEnv:
     """Launch behavior for the ROCm APU carve-out gate."""
 
     def _apu(self, monkeypatch, carve_out_bytes, ram_mib):
-        _apply_os(monkeypatch, "linux", is_rocm = True)
+        _apply_os(monkeypatch, "linux", is_rocm=True)
         monkeypatch.setattr(
             LlamaCppBackend, "_rocm_unified_memory_gpu_ids", staticmethod(lambda: {0})
         )
@@ -3175,12 +3175,12 @@ class TestTheCarveOutDecidesTheUnifiedMemoryEnv:
             [
                 _device(
                     "gfx1151",
-                    free_mib = 47000,
-                    total_bytes = carve_out_bytes,
-                    is_integrated = 1,
+                    free_mib=47000,
+                    total_bytes=carve_out_bytes,
+                    is_integrated=1,
                 )
             ],
-            vendor = "amd",
+            vendor="amd",
         )
 
     def _load(
@@ -3188,8 +3188,8 @@ class TestTheCarveOutDecidesTheUnifiedMemoryEnv:
         tmp_path,
         monkeypatch,
         torch,
-        env_extra = None,
-        model_bytes = 40 * GIB,  # outgrows every carve-out below
+        env_extra=None,
+        model_bytes=40 * GIB,  # outgrows every carve-out below
     ):
         backend = LlamaCppBackend()
         backend._n_layers = 8
@@ -3198,11 +3198,11 @@ class TestTheCarveOutDecidesTheUnifiedMemoryEnv:
             tmp_path,
             torch,
             None,
-            returncode = None,
-            env_extra = env_extra,
-            model_bytes = model_bytes,
-            backend = backend,
-            intent_kwargs = {"gpu_memory_mode": "manual", "gpu_layers": 9},
+            returncode=None,
+            env_extra=env_extra,
+            model_bytes=model_bytes,
+            backend=backend,
+            intent_kwargs={"gpu_memory_mode": "manual", "gpu_layers": 9},
         )
 
     def test_a_small_carve_out_gets_it(self, tmp_path, monkeypatch, probe_env):
@@ -3232,7 +3232,7 @@ class TestTheCarveOutDecidesTheUnifiedMemoryEnv:
         assert "GGML_CUDA_ENABLE_UNIFIED_MEMORY" not in env
 
     def _apu_and_dgpu(self, monkeypatch, ram_mib):
-        _apply_os(monkeypatch, "linux", is_rocm = True)
+        _apply_os(monkeypatch, "linux", is_rocm=True)
         monkeypatch.setattr(
             LlamaCppBackend, "_rocm_unified_memory_gpu_ids", staticmethod(lambda: {0})
         )
@@ -3241,10 +3241,10 @@ class TestTheCarveOutDecidesTheUnifiedMemoryEnv:
         )
         return _fake_torch(
             [
-                _device("gfx1151", free_mib = 7000, total_bytes = 8 * GIB, is_integrated = 1),
-                _device("gfx1100", free_mib = 60000, total_bytes = 64 * GIB),
+                _device("gfx1151", free_mib=7000, total_bytes=8 * GIB, is_integrated=1),
+                _device("gfx1100", free_mib=60000, total_bytes=64 * GIB),
             ],
-            vendor = "amd",
+            vendor="amd",
         )
 
     def test_the_enable_switch_cannot_reach_a_mixed_selection(
@@ -3256,13 +3256,13 @@ class TestTheCarveOutDecidesTheUnifiedMemoryEnv:
             tmp_path,
             torch,
             None,
-            returncode = None,
-            intent_kwargs = {
+            returncode=None,
+            intent_kwargs={
                 "gpu_ids": (0, 1),
                 "gpu_memory_mode": "manual",
                 "gpu_layers": 1,
             },
-            env_extra = {"UNSLOTH_ENABLE_UNIFIED_MEMORY": "1"},
+            env_extra={"UNSLOTH_ENABLE_UNIFIED_MEMORY": "1"},
         )[0]
         assert _visibility(env) == {"ROCR_VISIBLE_DEVICES": "0,1", "CUDA_VISIBLE_DEVICES": "0,1"}
         assert "GGML_CUDA_ENABLE_UNIFIED_MEMORY" not in env
@@ -3274,8 +3274,8 @@ class TestTheCarveOutDecidesTheUnifiedMemoryEnv:
             tmp_path,
             torch,
             None,
-            returncode = None,
-            intent_kwargs = {
+            returncode=None,
+            intent_kwargs={
                 "gpu_ids": (0, 1),
                 "gpu_memory_mode": "manual",
                 "gpu_layers": 1,
@@ -3293,9 +3293,9 @@ class TestTheCarveOutDecidesTheUnifiedMemoryEnv:
             tmp_path,
             torch,
             ["gfx1151"],  # covers the APU, not the discrete gfx1100
-            returncode = None,
-            model_bytes = 400 * GIB,
-            env_extra = {"UNSLOTH_ENABLE_UNIFIED_MEMORY": "1"},
+            returncode=None,
+            model_bytes=400 * GIB,
+            env_extra={"UNSLOTH_ENABLE_UNIFIED_MEMORY": "1"},
         )
         _cmd, env = launches[0]
         assert _visibility(env) == {"ROCR_VISIBLE_DEVICES": "0", "CUDA_VISIBLE_DEVICES": "0"}
@@ -3313,12 +3313,12 @@ class TestTheCarveOutDecidesTheUnifiedMemoryEnv:
             tmp_path,
             torch,
             ["gfx1151"],
-            returncode = 1,
-            output = "failed to create llama_context",
-            model_bytes = 400 * GIB,
-            env_extra = {"UNSLOTH_ENABLE_UNIFIED_MEMORY": "1"},
-            intent_kwargs = {"extra_args": ["--spec-type", "draft-mtp"]},
-            backend = backend,
+            returncode=1,
+            output="failed to create llama_context",
+            model_bytes=400 * GIB,
+            env_extra={"UNSLOTH_ENABLE_UNIFIED_MEMORY": "1"},
+            intent_kwargs={"extra_args": ["--spec-type", "draft-mtp"]},
+            backend=backend,
         )
         first_cmd, first_env = launches[0]
         assert "draft-mtp" in first_cmd and first_env.get("GGML_CUDA_ENABLE_UNIFIED_MEMORY") == "1"
@@ -3333,8 +3333,8 @@ class TestTheCarveOutDecidesTheUnifiedMemoryEnv:
             tmp_path,
             torch,
             ["gfx1151"],
-            returncode = None,
-            model_bytes = 400 * GIB,
-            env_extra = {"UNSLOTH_DISABLE_UNIFIED_MEMORY": "1"},
+            returncode=None,
+            model_bytes=400 * GIB,
+            env_extra={"UNSLOTH_DISABLE_UNIFIED_MEMORY": "1"},
         )
         assert all("GGML_CUDA_ENABLE_UNIFIED_MEMORY" not in env for _c, env in launches)

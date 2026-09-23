@@ -12,9 +12,10 @@ from utils.paths import storage_roots as roots
 ALICE = AccountContext("11111111111111111111111111111111", "alice")
 
 
-@pytest.fixture(autouse = True)
+@pytest.fixture(autouse=True)
 def fresh_retirement_tombstones(monkeypatch):
     from core.training import account_jobs
+
     monkeypatch.setattr(account_jobs, "_retired", set())
 
 
@@ -45,7 +46,7 @@ def test_a_raw_mkdir_after_deletion_does_not_unfence_the_account(account_home, m
 
     # routes/training.py restore_folded(), verbatim, on a folder under the retired workspace.
     folder = run_as(ALICE, lambda: roots.datasets_root() / "tuxemon")
-    folder.mkdir(parents = True, exist_ok = True)
+    folder.mkdir(parents=True, exist_ok=True)
     assert root.exists()
 
     studio_db.reset_schema_state_for_tests()

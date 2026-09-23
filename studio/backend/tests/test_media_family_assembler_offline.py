@@ -46,7 +46,7 @@ def _call_keyword_sets(module_path: str, function: str, callee: str) -> list[set
     backend merely on PYTHONPATH, where a relative open raises FileNotFoundError.
     """
     backend_root = pathlib.Path(diffusion_mod.__file__).resolve().parents[2]
-    tree = ast.parse((backend_root / module_path).read_text(encoding = "utf-8"))
+    tree = ast.parse((backend_root / module_path).read_text(encoding="utf-8"))
     found: list[set[str]] = []
     for node in ast.walk(tree):
         if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) or node.name != function:
@@ -67,6 +67,7 @@ def _call_keyword_sets(module_path: str, function: str, callee: str) -> list[set
 
 def _h3_te_module():
     from core.inference import video_minimax_h3_te as te_mod
+
     return te_mod
 
 
@@ -88,13 +89,13 @@ def _drive_h3_conditioner(monkeypatch, *, local_files_only):
     # a hard dependency of this backend; without the stub the whole function degrades to its
     # best-effort None return before it asks for anything and the test would pass vacuously.
     monkeypatch.setitem(
-        sys.modules, "accelerate", SimpleNamespace(init_empty_weights = lambda **_k: None)
+        sys.modules, "accelerate", SimpleNamespace(init_empty_weights=lambda **_k: None)
     )
 
     def _download(
         repo_id,
         filename,
-        token = None,
+        token=None,
         **kwargs,
     ):
         seen["download"] = (repo_id, filename, kwargs)
@@ -105,14 +106,14 @@ def _drive_h3_conditioner(monkeypatch, *, local_files_only):
         raise RuntimeError("stop after the two Hub reads")
 
     monkeypatch.setattr(xet, "hf_hub_download_with_xet_fallback", _download)
-    monkeypatch.setattr(transformers.AutoConfig, "from_pretrained", _config, raising = False)
+    monkeypatch.setattr(transformers.AutoConfig, "from_pretrained", _config, raising=False)
     assert (
         _h3_te_module().load_h3_quantized_text_encoder(
             "MiniMaxAI/MiniMax-H3",
             "int8",
-            dtype = None,
-            cache_dir = "/live/root",
-            local_files_only = local_files_only,
+            dtype=None,
+            cache_dir="/live/root",
+            local_files_only=local_files_only,
         )
         is None
     )
@@ -123,7 +124,7 @@ def test_the_h3_conditioner_is_opened_from_the_cache_on_a_load_nobody_asked_for(
     """The artifact is ~27 GB and the staging fetch already accepted it, so the loader may only
     look it up -- through the SAME both-roots rule the stager used, or a moved cache folder makes
     it re-pull what the load was cleared on."""
-    seen = _drive_h3_conditioner(monkeypatch, local_files_only = True)
+    seen = _drive_h3_conditioner(monkeypatch, local_files_only=True)
     repo, filename, kwargs = seen["download"]
     te_mod = _h3_te_module()
     assert (repo, filename) == (te_mod.H3_TE_QUANT_REPO, te_mod.H3_TE_QUANT_FILES["int8"])
@@ -136,7 +137,7 @@ def test_the_h3_conditioner_is_opened_from_the_cache_on_a_load_nobody_asked_for(
 
 def test_a_user_initiated_h3_load_still_fetches_the_conditioner(monkeypatch):
     """The pre-PR behaviour, unchanged: a load the user asked for pulls the artifact."""
-    seen = _drive_h3_conditioner(monkeypatch, local_files_only = False)
+    seen = _drive_h3_conditioner(monkeypatch, local_files_only=False)
     assert seen["download"][2]["local_files_only"] is False
     assert seen["config"]["local_files_only"] is False
 
@@ -164,22 +165,22 @@ def _drive_resolve_gguf(monkeypatch, *, cached_here, local_files_only):
     monkeypatch.setattr(
         huggingface_hub,
         "try_to_load_from_cache",
-        lambda repo, name, cache_dir = None: (
+        lambda repo, name, cache_dir=None: (
             "/live/checkpoint.gguf" if cache_dir is not None and cached_here else "/other/ck.gguf"
         ),
-        raising = False,
+        raising=False,
     )
 
     def _download(repo_id, filename, **kwargs):
         seen.append(kwargs)
         return "/resolved/checkpoint.gguf"
 
-    monkeypatch.setattr(huggingface_hub, "hf_hub_download", _download, raising = False)
+    monkeypatch.setattr(huggingface_hub, "hf_hub_download", _download, raising=False)
     diffusion_mod.DiffusionBackend()._resolve_gguf_path(
         "unsloth/FLUX.1-dev-GGUF",
         "flux1-dev-Q4_K_M.gguf",
         None,
-        local_files_only = local_files_only,
+        local_files_only=local_files_only,
     )
     return seen
 
@@ -190,7 +191,7 @@ def test_reopening_the_image_checkpoint_is_a_cache_lookup_offline(monkeypatch, c
     ``hf_hub_download`` re-resolves the revision against the Hub, so a checkpoint republished since
     the cache was filled is a multi-GB pull taken AFTER the resident pipeline was evicted, inside
     the generation lock, with progress already reading 100%."""
-    for kwargs in _drive_resolve_gguf(monkeypatch, cached_here = cached_here, local_files_only = True):
+    for kwargs in _drive_resolve_gguf(monkeypatch, cached_here=cached_here, local_files_only=True):
         assert kwargs["local_files_only"] is True
 
 
@@ -198,7 +199,7 @@ def test_reopening_the_image_checkpoint_is_a_cache_lookup_offline(monkeypatch, c
 def test_a_user_initiated_image_load_still_revalidates_the_checkpoint(monkeypatch, cached_here):
     """Unchanged for the UI load: it still goes to the Hub, which is how a republished GGUF is
     picked up."""
-    for kwargs in _drive_resolve_gguf(monkeypatch, cached_here = cached_here, local_files_only = False):
+    for kwargs in _drive_resolve_gguf(monkeypatch, cached_here=cached_here, local_files_only=False):
         assert kwargs["local_files_only"] is False
 
 
@@ -217,7 +218,7 @@ def _drive_krea(
     tmp_path,
     *,
     local_files_only,
-    with_transformer = True,
+    with_transformer=True,
 ):
     """Assemble a Krea pipeline against fakes, recording what each component was asked for."""
     import huggingface_hub
@@ -225,13 +226,13 @@ def _drive_krea(
     from core.inference.diffusion_krea2 import load_krea2_pipeline
 
     index = tmp_path / "model_index.json"
-    index.write_text(json.dumps({"patch_size": 2}), encoding = "utf-8")
+    index.write_text(json.dumps({"patch_size": 2}), encoding="utf-8")
     seen: dict = {}
     monkeypatch.setattr(
         huggingface_hub,
         "hf_hub_download",
-        lambda repo_id, filename, **kwargs: seen.update(model_index = kwargs) or str(index),
-        raising = False,
+        lambda repo_id, filename, **kwargs: seen.update(model_index=kwargs) or str(index),
+        raising=False,
     )
 
     class _Component:
@@ -240,25 +241,25 @@ def _drive_krea(
 
         def from_pretrained(self, repo_id, **kwargs):
             seen[self.tag] = kwargs
-            return SimpleNamespace(tag = self.tag)
+            return SimpleNamespace(tag=self.tag)
 
     monkeypatch.setitem(
         sys.modules,
         "diffusers",
         SimpleNamespace(
-            FlowMatchEulerDiscreteScheduler = _Component("scheduler"),
-            AutoencoderKLQwenImage = _Component("vae"),
-            Krea2Transformer2DModel = _Component("transformer"),
-            Krea2Pipeline = lambda **kwargs: SimpleNamespace(**kwargs),
+            FlowMatchEulerDiscreteScheduler=_Component("scheduler"),
+            AutoencoderKLQwenImage=_Component("vae"),
+            Krea2Transformer2DModel=_Component("transformer"),
+            Krea2Pipeline=lambda **kwargs: SimpleNamespace(**kwargs),
         ),
     )
     for name in ("tokenizer", "text_encoder"):
         monkeypatch.setattr(
             f"core.inference.diffusion_krea2.load_krea2_{name}",
             (
-                lambda *_a, tag = name, **kwargs: (
+                lambda *_a, tag=name, **kwargs: (
                     seen.__setitem__(tag, kwargs),
-                    SimpleNamespace(tag = tag),
+                    SimpleNamespace(tag=tag),
                 )[1]
             ),
         )
@@ -268,8 +269,8 @@ def _drive_krea(
         # and a local dir would resolve every component off disk and prove nothing.
         "krea/Krea-2-Turbo",
         "bf16",
-        with_transformer = with_transformer,
-        local_files_only = local_files_only,
+        with_transformer=with_transformer,
+        local_files_only=local_files_only,
     )
     return seen
 
@@ -278,7 +279,7 @@ def test_the_krea_assembler_opens_every_component_from_the_cache_offline(monkeyp
     """The 26 GB transformer, the 8.88 GB Qwen3-VL encoder, the VAE, the tokenizer and the
     scheduler: this branch never sees the guarded pipe_kwargs, so each one has to carry the flag
     itself or a load that promised nothing pulls it."""
-    seen = _drive_krea(monkeypatch, tmp_path, local_files_only = True)
+    seen = _drive_krea(monkeypatch, tmp_path, local_files_only=True)
     assert set(seen) == {
         "scheduler",
         "vae",
@@ -292,7 +293,7 @@ def test_the_krea_assembler_opens_every_component_from_the_cache_offline(monkeyp
 
 
 def test_a_user_initiated_krea_load_still_fetches_every_component(monkeypatch, tmp_path):
-    seen = _drive_krea(monkeypatch, tmp_path, local_files_only = False)
+    seen = _drive_krea(monkeypatch, tmp_path, local_files_only=False)
     for tag, kwargs in seen.items():
         assert kwargs.get("local_files_only") is False, tag
 
@@ -310,9 +311,9 @@ def test_the_krea_model_index_read_is_a_cache_lookup_offline(monkeypatch):
         seen.update(kwargs)
         raise RuntimeError("stop before the read")
 
-    monkeypatch.setattr(huggingface_hub, "hf_hub_download", _download, raising = False)
+    monkeypatch.setattr(huggingface_hub, "hf_hub_download", _download, raising=False)
     with pytest.raises(RuntimeError):
-        _load_model_index("krea/Krea-2-Turbo", None, local_files_only = True)
+        _load_model_index("krea/Krea-2-Turbo", None, local_files_only=True)
     assert seen["local_files_only"] is True
 
 
@@ -341,9 +342,9 @@ def test_the_ltx23_extras_fetch_is_a_cache_lookup_offline(monkeypatch):
     monkeypatch.setattr(
         xet,
         "hf_hub_download_with_xet_fallback",
-        lambda repo_id, filename, token = None, **kwargs: seen.update(kwargs) or "/nowhere.st",
+        lambda repo_id, filename, token=None, **kwargs: seen.update(kwargs) or "/nowhere.st",
     )
-    monkeypatch.setattr("safetensors.torch.load_file", lambda _path: {}, raising = False)
+    monkeypatch.setattr("safetensors.torch.load_file", lambda _path: {}, raising=False)
     video_ltx2._load_extras_file("vae/x.safetensors", None, True)
     assert seen["local_files_only"] is True
     assert seen["reuse_other_cache_root"] is True
@@ -365,7 +366,7 @@ def _drive_ltx23(monkeypatch, *, local_files_only):
         @classmethod
         def from_pretrained(cls, repo_id, **kwargs):
             seen[kwargs["subfolder"]] = kwargs
-            return SimpleNamespace(tag = kwargs["subfolder"])
+            return SimpleNamespace(tag=kwargs["subfolder"])
 
     class _FakePipeline:
         def __init__(self, **kwargs):
@@ -379,12 +380,12 @@ def _drive_ltx23(monkeypatch, *, local_files_only):
                 for name in ("scheduler", "tokenizer", "text_encoder")
             }
 
-    monkeypatch.setattr(diffusers, "LTX2Pipeline", _FakePipeline, raising = False)
-    monkeypatch.setattr(diffusers, "_LtxOfflineSub", _Sub, raising = False)
+    monkeypatch.setattr(diffusers, "LTX2Pipeline", _FakePipeline, raising=False)
+    monkeypatch.setattr(diffusers, "_LtxOfflineSub", _Sub, raising=False)
     monkeypatch.setattr(
         "diffusers.loaders.single_file_utils.load_single_file_checkpoint",
         lambda _path: {},
-        raising = False,
+        raising=False,
     )
     monkeypatch.setattr(video_ltx2, "checkpoint_variant", lambda _p: "dev")
     for name in ("transformer", "connectors", "vae", "audio_vae_and_vocoder"):
@@ -392,7 +393,7 @@ def _drive_ltx23(monkeypatch, *, local_files_only):
             video_ltx2,
             f"load_ltx23_{name}",
             (
-                lambda *_a, tag = name, **kwargs: (
+                lambda *_a, tag=name, **kwargs: (
                     seen.__setitem__(tag, kwargs),
                     (None, None) if tag == "audio_vae_and_vocoder" else None,
                 )[1]
@@ -402,10 +403,10 @@ def _drive_ltx23(monkeypatch, *, local_files_only):
         "/models/ltx-2.3-dev-Q4_K_M.gguf",
         # A repo id, which is what this branch always gets: the 2.3 snapshot lacks the base VAEs,
         # so _run_load sets _base_local_dir to None for it deliberately.
-        base_repo = "Lightricks/LTX-Video-2",
-        torch_dtype = "bf16",
-        is_gguf = True,
-        local_files_only = local_files_only,
+        base_repo="Lightricks/LTX-Video-2",
+        torch_dtype="bf16",
+        is_gguf=True,
+        local_files_only=local_files_only,
     )
     return seen
 
@@ -414,7 +415,7 @@ def test_the_ltx23_assembler_opens_every_component_from_the_cache_offline(monkey
     """The base model_index, the scheduler, the tokenizer, the dense Gemma3 encoder (~50 GB) and
     every companion loader: none of them sees the guarded pipe_kwargs, and there is no staged
     snapshot to fall back on, so each resolves the hub id itself."""
-    seen = _drive_ltx23(monkeypatch, local_files_only = True)
+    seen = _drive_ltx23(monkeypatch, local_files_only=True)
     assert seen["load_config"]["local_files_only"] is True
     for name in ("scheduler", "tokenizer", "text_encoder"):
         assert seen[name]["local_files_only"] is True, name
@@ -423,7 +424,7 @@ def test_the_ltx23_assembler_opens_every_component_from_the_cache_offline(monkey
 
 
 def test_a_user_initiated_ltx23_load_still_fetches_every_component(monkeypatch):
-    seen = _drive_ltx23(monkeypatch, local_files_only = False)
+    seen = _drive_ltx23(monkeypatch, local_files_only=False)
     assert seen["load_config"]["local_files_only"] is False
     for name in ("scheduler", "tokenizer", "text_encoder", "transformer", "connectors"):
         assert seen[name]["local_files_only"] is False, name
@@ -462,7 +463,7 @@ def live_cache_root(monkeypatch):
 def test_the_krea_assembler_pins_every_component_to_the_live_cache(
     monkeypatch, tmp_path, live_cache_root
 ):
-    seen = _drive_krea(monkeypatch, tmp_path, local_files_only = True)
+    seen = _drive_krea(monkeypatch, tmp_path, local_files_only=True)
     # The direct loader calls. "tokenizer" and "text_encoder" are absent by design: those two tags
     # record the kwargs handed to load_krea2_tokenizer / load_krea2_text_encoder, which are Unsloth
     # helpers rather than hub calls, so they take no cache_dir and pin internally instead. The test
@@ -483,20 +484,20 @@ def test_the_krea_tokenizer_and_encoder_helpers_pin_internally(monkeypatch, live
 
         def from_pretrained(self, repo_id, **kwargs):
             seen[self.tag] = kwargs
-            return SimpleNamespace(tag = self.tag, text_config = SimpleNamespace())
+            return SimpleNamespace(tag=self.tag, text_config=SimpleNamespace())
 
     monkeypatch.setitem(
         sys.modules,
         "transformers",
         SimpleNamespace(
-            AutoTokenizer = _Component("tokenizer"),
-            AutoConfig = _Component("config"),
-            Qwen3VLModel = _Component("text_encoder"),
+            AutoTokenizer=_Component("tokenizer"),
+            AutoConfig=_Component("config"),
+            Qwen3VLModel=_Component("text_encoder"),
         ),
     )
 
-    diffusion_krea2.load_krea2_tokenizer("krea/Krea-2-Turbo", local_files_only = True)
-    diffusion_krea2.load_krea2_text_encoder("krea/Krea-2-Turbo", "bf16", local_files_only = True)
+    diffusion_krea2.load_krea2_tokenizer("krea/Krea-2-Turbo", local_files_only=True)
+    diffusion_krea2.load_krea2_text_encoder("krea/Krea-2-Turbo", "bf16", local_files_only=True)
 
     assert set(seen) == {"tokenizer", "config", "text_encoder"}
     for tag, kwargs in seen.items():
@@ -505,7 +506,7 @@ def test_the_krea_tokenizer_and_encoder_helpers_pin_internally(monkeypatch, live
 
 
 def test_the_ltx23_assembler_pins_the_base_reads_to_the_live_cache(monkeypatch, live_cache_root):
-    seen = _drive_ltx23(monkeypatch, local_files_only = True)
+    seen = _drive_ltx23(monkeypatch, local_files_only=True)
     # The base-repo reads only: the companion loaders take a checkpoint path, not a hub id.
     assert seen["load_config"]["cache_dir"] == live_cache_root
     for name in ("scheduler", "tokenizer", "text_encoder"):
@@ -527,16 +528,16 @@ def test_the_hidream_external_encoder_is_pinned_to_the_live_cache(monkeypatch, l
 
         def from_pretrained(self, repo_id, **kwargs):
             seen[self.tag] = kwargs
-            return SimpleNamespace(tag = self.tag)
+            return SimpleNamespace(tag=self.tag)
 
-    monkeypatch.setattr(transformers, "AutoTokenizer", _Component("tokenizer_4"), raising = False)
+    monkeypatch.setattr(transformers, "AutoTokenizer", _Component("tokenizer_4"), raising=False)
     monkeypatch.setattr(
-        transformers, "LlamaForCausalLM", _Component("text_encoder_4"), raising = False
+        transformers, "LlamaForCausalLM", _Component("text_encoder_4"), raising=False
     )
     diffusion_hidream.hidream_te4_kwargs(
-        dtype = "bf16",
-        hf_token = None,
-        local_files_only = True,
+        dtype="bf16",
+        hf_token=None,
+        local_files_only=True,
     )
     assert set(seen) == {"tokenizer_4", "text_encoder_4"}
     for tag, kwargs in seen.items():
@@ -560,10 +561,11 @@ def test_the_hidream_external_encoder_is_pinned_to_the_live_cache(monkeypatch, l
 
 def test_the_image_base_file_set_stages_the_transformer_config_but_not_its_shards():
     from core.inference.diffusion import _base_file_downloaded as keep
-    assert keep("transformer/config.json", include_transformer = False)
+
+    assert keep("transformer/config.json", include_transformer=False)
     assert not keep(
         "transformer/diffusion_pytorch_model-00001-of-00002.safetensors",
-        include_transformer = False,
+        include_transformer=False,
     )
 
 
@@ -575,7 +577,7 @@ def _sf_kwargs_keys(module_path: str) -> list[set[str]]:
     ``from_single_file(path, **sf_kwargs)``, so the keyword lives in the dict, not the call.
     """
     backend_root = pathlib.Path(diffusion_mod.__file__).resolve().parents[2]
-    tree = ast.parse((backend_root / module_path).read_text(encoding = "utf-8"))
+    tree = ast.parse((backend_root / module_path).read_text(encoding="utf-8"))
     found: list[set[str]] = []
     for node in ast.walk(tree):
         if not isinstance(node, (ast.Assign, ast.AnnAssign)):

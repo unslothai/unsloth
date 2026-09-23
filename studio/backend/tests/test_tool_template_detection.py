@@ -32,14 +32,14 @@ TOOLS = [
 
 def _published(name):
     return (Path(__file__).parent / "data" / "chat_templates" / f"{name}.jinja").read_text(
-        encoding = "utf-8"
+        encoding="utf-8"
     )
 
 
 def _renders_catalog(template, **context):
     """Ground truth: does rendering this actually put a tool name in the output?"""
-    environment = Environment(extensions = ["jinja2.ext.loopcontrols", "jinja2.ext.do"])
-    output = environment.from_string(template).render(tools = list(TOOLS), **context)
+    environment = Environment(extensions=["jinja2.ext.loopcontrols", "jinja2.ext.do"])
+    output = environment.from_string(template).render(tools=list(TOOLS), **context)
     return "get_weather" in output
 
 
@@ -63,12 +63,12 @@ def test_published_templates(name, detected):
 def test_lfm2_really_does_render_its_catalog():
     """Pins the ground truth rather than the detector. LiquidAI/LFM2-1.2B-Tool is a
     tool-calling model, and reporting it tool-less is the bug this file is about."""
-    environment = Environment(extensions = ["jinja2.ext.loopcontrols", "jinja2.ext.do"])
+    environment = Environment(extensions=["jinja2.ext.loopcontrols", "jinja2.ext.do"])
     rendered = environment.from_string(_published("lfm2-tool")).render(
-        tools = list(TOOLS),
-        messages = [{"role": "user", "content": "what is the weather"}],
-        bos_token = "<s>",
-        add_generation_prompt = True,
+        tools=list(TOOLS),
+        messages=[{"role": "user", "content": "what is the weather"}],
+        bos_token="<s>",
+        add_generation_prompt=True,
     )
     assert "get_weather" in rendered
 
@@ -76,15 +76,15 @@ def test_lfm2_really_does_render_its_catalog():
 def test_granite_really_does_render_its_catalog():
     """Pins the ground truth rather than the detector, so this test still means
     something if the detector changes."""
-    environment = Environment(extensions = ["jinja2.ext.loopcontrols", "jinja2.ext.do"])
+    environment = Environment(extensions=["jinja2.ext.loopcontrols", "jinja2.ext.do"])
     rendered = environment.from_string(_published("granite-3.3")).render(
-        tools = list(TOOLS),
-        messages = [{"role": "user", "content": "what is the weather"}],
-        documents = [],
-        controls = {},
-        thinking = False,
-        add_generation_prompt = True,
-        strftime_now = lambda fmt: "January 01, 2026",
+        tools=list(TOOLS),
+        messages=[{"role": "user", "content": "what is the weather"}],
+        documents=[],
+        controls={},
+        thinking=False,
+        add_generation_prompt=True,
+        strftime_now=lambda fmt: "January 01, 2026",
     )
     assert "get_weather" in rendered
 
@@ -261,7 +261,7 @@ def test_names_carrying_the_catalog(template, detected):
 )
 def test_positives_match_a_real_render(template):
     """Every case claimed positive here really does emit a tool name."""
-    assert _renders_catalog(template, item = {}, message = {}, messages = [], legacy = False)
+    assert _renders_catalog(template, item={}, message={}, messages=[], legacy=False)
     assert template_supports_tools(template) is True
 
 
@@ -287,7 +287,7 @@ def test_known_over_approximations_answer_yes(template):
     a tool control that the backend then re-checks, rather than hiding one that works,
     so it is left here on purpose rather than papered over.
     """
-    assert not _renders_catalog(template, item = {}, message = {}, messages = [])
+    assert not _renders_catalog(template, item={}, message={}, messages=[])
     assert template_supports_tools(template) is True
 
 
@@ -306,15 +306,15 @@ def test_a_guarded_branch_counts_even_without_naming_the_catalog():
 @pytest.mark.parametrize(
     "template",
     [
-        pytest.param("{% if tools %}", id = "unterminated_tag"),
-        pytest.param("{{ tools", id = "unterminated_expression"),
-        pytest.param("{%", id = "bare_tag_opener"),
-        pytest.param("{% if tools %}" * 400 + "x" + "{% endif %}" * 400, id = "deeply_nested_tags"),
+        pytest.param("{% if tools %}", id="unterminated_tag"),
+        pytest.param("{{ tools", id="unterminated_expression"),
+        pytest.param("{%", id="bare_tag_opener"),
+        pytest.param("{% if tools %}" * 400 + "x" + "{% endif %}" * 400, id="deeply_nested_tags"),
         pytest.param(
-            "{{ " + "(" * 300 + "tools" + ")" * 300 + " }}", id = "deeply_nested_expression"
+            "{{ " + "(" * 300 + "tools" + ")" * 300 + " }}", id="deeply_nested_expression"
         ),
-        pytest.param("{{ tools|tojson }}" * 5000, id = "very_long"),
-        pytest.param("{% unknown_tag %}{{ tools|tojson }}", id = "unknown_tag"),
+        pytest.param("{{ tools|tojson }}" * 5000, id="very_long"),
+        pytest.param("{% unknown_tag %}{{ tools|tojson }}", id="unknown_tag"),
     ],
 )
 def test_hostile_templates_never_raise(template):

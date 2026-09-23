@@ -49,16 +49,16 @@ MARKERS = [
 ]
 
 
-@pytest.fixture(autouse = True)
+@pytest.fixture(autouse=True)
 def _no_ambient_backend_env(monkeypatch):
     for name in ("UNSLOTH_LLAMA_CPP_BACKEND", "UNSLOTH_FORCE_VULKAN"):
-        monkeypatch.delenv(name, raising = False)
+        monkeypatch.delenv(name, raising=False)
 
 
-@pytest.mark.parametrize("marker", MARKERS, ids = range(len(MARKERS)))
+@pytest.mark.parametrize("marker", MARKERS, ids=range(len(MARKERS)))
 def test_both_read_the_same_choice_from_a_marker(tmp_path, marker):
     (tmp_path / "UNSLOTH_PREBUILT_INFO.json").write_text(
-        json.dumps({"release_tag": "b1", **marker}), encoding = "utf-8"
+        json.dumps({"release_tag": "b1", **marker}), encoding="utf-8"
     )
     assert backend_marker.marker_backend_request(marker) == ilp.persisted_backend_request(tmp_path)
 
@@ -106,7 +106,7 @@ def test_the_api_reports_an_unreadable_newer_backend_request_verbatim():
     """
     from routes.llama import LlamaBackendStatusResponse
 
-    response = LlamaBackendStatusResponse(backend_request = "sycl")
+    response = LlamaBackendStatusResponse(backend_request="sycl")
 
     assert response.backend_request == "sycl"
 

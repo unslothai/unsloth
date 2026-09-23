@@ -43,7 +43,7 @@ TRUTHY = ("1", 1, "true", "True", "yes")
 
 
 def _doc(name: str) -> dict:
-    return yaml.safe_load((WORKFLOWS / name).read_text(encoding = "utf-8"))
+    return yaml.safe_load((WORKFLOWS / name).read_text(encoding="utf-8"))
 
 
 def test_the_mac_gguf_job_opts_out_at_job_level():
@@ -64,7 +64,7 @@ def test_the_mac_gguf_job_opts_out_at_job_level():
 
 def test_the_opt_out_explains_itself_in_place():
     """A bare env var here reads like a workaround someone can tidy away."""
-    src = (WORKFLOWS / MAC_GGUF).read_text(encoding = "utf-8")
+    src = (WORKFLOWS / MAC_GGUF).read_text(encoding="utf-8")
     head = src[: src.index(ENV_VAR)]
     comment = head[head.rindex("\n      HF_HOME") :] if "\n      HF_HOME" in head else head
     for phrase in ("paravirtual", "8883"):
@@ -107,5 +107,5 @@ def test_the_guard_still_has_its_own_tests():
     for path in owned:
         assert path.exists(), f"{path.name} is gone; the guard's coverage went with it"
         assert ENV_VAR in path.read_text(
-            encoding = "utf-8"
+            encoding="utf-8"
         ), f"{path.name} no longer exercises {ENV_VAR}"

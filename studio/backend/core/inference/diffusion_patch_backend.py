@@ -84,6 +84,7 @@ def _helpers() -> Optional[dict]:
 
     def _load() -> dict:
         from unsloth_zoo.temporary_patches.utils import patch_function, restore_original
+
         return {"patch": patch_function, "restore": restore_original}
 
     for attempt in (0, 1):
@@ -124,7 +125,7 @@ def apply_patch(
     if patch_function is None:
         return False
     try:
-        return bool(patch_function(target, attr, new_fn, match_level = match_level, force = force))
+        return bool(patch_function(target, attr, new_fn, match_level=match_level, force=force))
     except Exception:  # noqa: BLE001 - best-effort; leave the original in place
         return False
 

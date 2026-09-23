@@ -50,7 +50,7 @@ _SEARCH_XML = '<tool_call>{"name": "search", "arguments": {"query": "dogs"}}</to
 
 class _Request:
     state = SimpleNamespace()
-    url = SimpleNamespace(path = "/v1/chat/completions")
+    url = SimpleNamespace(path="/v1/chat/completions")
     method = "POST"
     scope: dict = {}
     # These cases drive the tool loop, whose confirm gate asks over these frames.
@@ -71,7 +71,7 @@ class _ScriptedBackend:
         self,
         responder,
         *,
-        stats = None,
+        stats=None,
     ):
         self.models = {
             "sf-model": {
@@ -88,8 +88,8 @@ class _ScriptedBackend:
         self,
         *,
         messages,
-        tools = None,
-        stats_holder = None,
+        tools=None,
+        stats_holder=None,
         **kwargs,
     ):
         self.calls.append({"messages": messages, "tools": tools, **kwargs})
@@ -104,7 +104,7 @@ class _ScriptedBackend:
         for snap in snapshots:
             yield snap
 
-    def reset_generation_state(self, caller_cancel_event = None):
+    def reset_generation_state(self, caller_cancel_event=None):
         self.reset_count += 1
 
     def resize_image(self, image):
@@ -118,10 +118,10 @@ def _fixed(*snapshots):
 
 def _llama_stub():
     return SimpleNamespace(
-        is_loaded = False,
-        supports_tools = False,
-        is_vision = False,
-        context_length = None,
+        is_loaded=False,
+        supports_tools=False,
+        is_vision=False,
+        context_length=None,
     )
 
 
@@ -129,13 +129,13 @@ def _install(
     monkeypatch,
     backend,
     *,
-    supports_tools = True,
+    supports_tools=True,
 ):
     import routes.inference as inf
     from state.tool_policy import reset_tool_policy
 
     reset_tool_policy()
-    monitor = ApiMonitor(max_entries = 8)
+    monitor = ApiMonitor(max_entries=8)
     monkeypatch.setattr(inf, "api_monitor", monitor)
     monkeypatch.setattr(inf, "get_llama_cpp_backend", lambda: _llama_stub())
     monkeypatch.setattr(inf, "get_inference_backend", lambda: backend)
@@ -148,7 +148,7 @@ def _install(
 
 
 def _request(**kwargs):
-    base = dict(model = "default", messages = [ChatMessage(role = "user", content = "hi")])
+    base = dict(model="default", messages=[ChatMessage(role="user", content="hi")])
     base.update(kwargs)
     return ChatCompletionRequest(**base)
 
@@ -157,7 +157,7 @@ def _call(payload, monkeypatch, backend, **install_kwargs):
     _install(monkeypatch, backend, **install_kwargs)
 
     async def _run():
-        return await openai_chat_completions(payload, request = _Request(), current_subject = "u")
+        return await openai_chat_completions(payload, request=_Request(), current_subject="u")
 
     return asyncio.run(_run())
 
@@ -175,13 +175,13 @@ def test_mcp_replay_preserves_multiple_caller_attachments(monkeypatch, supports_
 
     def encoded(color):
         buffer = io.BytesIO()
-        Image.new("RGB", (8, 8), color).save(buffer, format = "PNG")
+        Image.new("RGB", (8, 8), color).save(buffer, format="PNG")
         return base64.b64encode(buffer.getvalue()).decode("ascii")
 
     def user(color, text):
         return ChatMessage(
-            role = "user",
-            content = [
+            role="user",
+            content=[
                 {
                     "type": "image_url",
                     "image_url": {"url": "data:image/png;base64," + encoded(color)},
@@ -192,8 +192,8 @@ def test_mcp_replay_preserves_multiple_caller_attachments(monkeypatch, supports_
 
     backend = _ScriptedBackend(_fixed("done"))
     backend.models["sf-model"].update(
-        is_vision = True,
-        chat_template_info = {
+        is_vision=True,
+        chat_template_info={
             "template": _TOKENIZER_TEMPLATE_WITH_TOOLS,
             "processor_template": _TOKENIZER_TEMPLATE_WITH_TOOLS,
             "renders_image": True,
@@ -201,12 +201,12 @@ def test_mcp_replay_preserves_multiple_caller_attachments(monkeypatch, supports_
         },
     )
     payload = _request(
-        messages = [
+        messages=[
             user("red", "Remember this image."),
             ChatMessage(
-                role = "assistant",
-                content = "",
-                tool_calls = [
+                role="assistant",
+                content="",
+                tool_calls=[
                     {
                         "id": "call_1",
                         "type": "function",
@@ -215,20 +215,20 @@ def test_mcp_replay_preserves_multiple_caller_attachments(monkeypatch, supports_
                 ],
             ),
             ChatMessage(
-                role = "tool",
-                tool_call_id = "call_1",
-                name = "mcp__test__image",
-                content = "[1 image returned]\n__MCP_IMAGES__:"
+                role="tool",
+                tool_call_id="call_1",
+                name="mcp__test__image",
+                content="[1 image returned]\n__MCP_IMAGES__:"
                 + json.dumps([{"mimeType": "image/png", "data": encoded("green")}]),
             ),
-            ChatMessage(role = "assistant", content = "I have the tool image."),
+            ChatMessage(role="assistant", content="I have the tool image."),
             user("blue", "Compare all three images."),
         ],
-        enable_tools = False,
-        stream = False,
+        enable_tools=False,
+        stream=False,
     )
 
-    _call(payload, monkeypatch, backend, supports_tools = supports_tools)
+    _call(payload, monkeypatch, backend, supports_tools=supports_tools)
 
     [call] = backend.calls
     colors = []
@@ -271,7 +271,7 @@ def _sse_objects(chunks):
 
 def test_non_reasoning_backend_keeps_literal_think_tags(monkeypatch):
     backend = _ScriptedBackend(_fixed("show <think>example</think> tags"))
-    response = _call(_request(stream = False), monkeypatch, backend, supports_tools = False)
+    response = _call(_request(stream=False), monkeypatch, backend, supports_tools=False)
 
     message = _json_body(response)["choices"][0]["message"]
     assert message["content"] == "show <think>example</think> tags"
@@ -280,7 +280,7 @@ def test_non_reasoning_backend_keeps_literal_think_tags(monkeypatch):
 
 def test_xml_healed_to_tool_calls_non_streaming(monkeypatch):
     backend = _ScriptedBackend(_fixed(_CALL_XML))
-    payload = _request(tools = [LOOKUP_TOOL], stream = False)
+    payload = _request(tools=[LOOKUP_TOOL], stream=False)
     body = _json_body(_call(payload, monkeypatch, backend))
     choice = body["choices"][0]
     assert choice["finish_reason"] == "tool_calls"
@@ -296,7 +296,7 @@ def test_xml_healed_to_tool_calls_non_streaming(monkeypatch):
 def test_undeclared_call_stays_text(monkeypatch):
     xml = '<tool_call>{"name": "other", "arguments": {}}</tool_call>'
     backend = _ScriptedBackend(_fixed(xml))
-    payload = _request(tools = [LOOKUP_TOOL], stream = False)
+    payload = _request(tools=[LOOKUP_TOOL], stream=False)
     body = _json_body(_call(payload, monkeypatch, backend))
     choice = body["choices"][0]
     assert choice["finish_reason"] == "stop"
@@ -306,7 +306,7 @@ def test_undeclared_call_stays_text(monkeypatch):
 
 def test_opt_out_relays_verbatim(monkeypatch):
     backend = _ScriptedBackend(_fixed(_CALL_XML))
-    payload = _request(tools = [LOOKUP_TOOL], stream = False, auto_heal_tool_calls = False)
+    payload = _request(tools=[LOOKUP_TOOL], stream=False, auto_heal_tool_calls=False)
     body = _json_body(_call(payload, monkeypatch, backend))
     choice = body["choices"][0]
     assert choice["finish_reason"] == "stop"
@@ -319,7 +319,7 @@ def test_env_kill_switch_relays_verbatim(monkeypatch):
 
     monkeypatch.setattr(ph, "_HEALING_DISABLED", True)
     backend = _ScriptedBackend(_fixed(_CALL_XML))
-    payload = _request(tools = [LOOKUP_TOOL], stream = False)
+    payload = _request(tools=[LOOKUP_TOOL], stream=False)
     body = _json_body(_call(payload, monkeypatch, backend))
     choice = body["choices"][0]
     assert choice["finish_reason"] == "stop"
@@ -329,7 +329,7 @@ def test_env_kill_switch_relays_verbatim(monkeypatch):
 
 def test_no_tools_request_untouched(monkeypatch):
     backend = _ScriptedBackend(_fixed("just a plain answer"))
-    payload = _request(stream = False)
+    payload = _request(stream=False)
     body = _json_body(_call(payload, monkeypatch, backend))
     # No tools and no tool messages -> plain path, normal ChatCompletion.
     choice = body["choices"][0]
@@ -341,11 +341,11 @@ def test_no_tools_request_untouched(monkeypatch):
 def test_participant_names_reach_the_local_backend(monkeypatch):
     backend = _ScriptedBackend(_fixed("ok"))
     payload = _request(
-        stream = False,
-        messages = [
-            ChatMessage(role = "user", name = "alice", content = "hi"),
-            ChatMessage(role = "assistant", name = "researcher", content = "hello"),
-            ChatMessage(role = "user", name = "bob", content = "again"),
+        stream=False,
+        messages=[
+            ChatMessage(role="user", name="alice", content="hi"),
+            ChatMessage(role="assistant", name="researcher", content="hello"),
+            ChatMessage(role="user", name="bob", content="again"),
         ],
     )
     _call(payload, monkeypatch, backend)
@@ -363,10 +363,10 @@ def test_a_named_system_message_does_not_restructure_the_request(monkeypatch):
         backend = _ScriptedBackend(_fixed("ok"))
         _call(
             _request(
-                stream = False,
-                messages = [
-                    ChatMessage(role = "system", name = name, content = "be brief"),
-                    ChatMessage(role = "user", content = "hi"),
+                stream=False,
+                messages=[
+                    ChatMessage(role="system", name=name, content="be brief"),
+                    ChatMessage(role="user", content="hi"),
                 ],
             ),
             monkeypatch,
@@ -381,7 +381,7 @@ def test_a_named_system_message_does_not_restructure_the_request(monkeypatch):
 def test_prose_around_call_retained(monkeypatch):
     text = "Let me look:\n" + _CALL_XML + "\ndone"
     backend = _ScriptedBackend(_fixed(text))
-    payload = _request(tools = [LOOKUP_TOOL], stream = False)
+    payload = _request(tools=[LOOKUP_TOOL], stream=False)
     body = _json_body(_call(payload, monkeypatch, backend))
     choice = body["choices"][0]
     assert choice["finish_reason"] == "tool_calls"
@@ -391,7 +391,7 @@ def test_prose_around_call_retained(monkeypatch):
 
 def test_empty_output_is_valid_stop(monkeypatch):
     backend = _ScriptedBackend(_fixed(""))
-    payload = _request(tools = [LOOKUP_TOOL], stream = False)
+    payload = _request(tools=[LOOKUP_TOOL], stream=False)
     body = _json_body(_call(payload, monkeypatch, backend))
     choice = body["choices"][0]
     assert choice["finish_reason"] == "stop"
@@ -402,14 +402,14 @@ def test_empty_output_is_valid_stop(monkeypatch):
 def test_tool_role_follow_up_turn_preserves_history(monkeypatch):
     backend = _ScriptedBackend(_fixed("The weather is sunny."))
     payload = _request(
-        tools = [LOOKUP_TOOL],
-        stream = False,
-        messages = [
-            ChatMessage(role = "user", content = "weather?"),
+        tools=[LOOKUP_TOOL],
+        stream=False,
+        messages=[
+            ChatMessage(role="user", content="weather?"),
             ChatMessage(
-                role = "assistant",
-                content = None,
-                tool_calls = [
+                role="assistant",
+                content=None,
+                tool_calls=[
                     {
                         "id": "call_0",
                         "type": "function",
@@ -417,7 +417,7 @@ def test_tool_role_follow_up_turn_preserves_history(monkeypatch):
                     }
                 ],
             ),
-            ChatMessage(role = "tool", tool_call_id = "call_0", content = "sunny"),
+            ChatMessage(role="tool", tool_call_id="call_0", content="sunny"),
         ],
     )
     body = _json_body(_call(payload, monkeypatch, backend))
@@ -434,14 +434,14 @@ def test_dict_arguments_history_does_not_crash(monkeypatch):
     # Non-spec client: assistant tool_calls[].function.arguments as a dict.
     backend = _ScriptedBackend(_fixed("ok"))
     payload = _request(
-        tools = [LOOKUP_TOOL],
-        stream = False,
-        messages = [
-            ChatMessage(role = "user", content = "hi"),
+        tools=[LOOKUP_TOOL],
+        stream=False,
+        messages=[
+            ChatMessage(role="user", content="hi"),
             ChatMessage(
-                role = "assistant",
-                content = None,
-                tool_calls = [
+                role="assistant",
+                content=None,
+                tool_calls=[
                     {
                         "id": "call_0",
                         "type": "function",
@@ -449,7 +449,7 @@ def test_dict_arguments_history_does_not_crash(monkeypatch):
                     }
                 ],
             ),
-            ChatMessage(role = "tool", tool_call_id = "call_0", content = "y"),
+            ChatMessage(role="tool", tool_call_id="call_0", content="y"),
         ],
     )
     body = _json_body(_call(payload, monkeypatch, backend))
@@ -460,9 +460,9 @@ def test_forced_tool_choice_narrows_promotion(monkeypatch):
     # tool_choice forces `search`; a `lookup` text call must NOT promote.
     backend = _ScriptedBackend(_fixed(_CALL_XML))
     payload = _request(
-        tools = [LOOKUP_TOOL, SEARCH_TOOL],
-        stream = False,
-        tool_choice = {"type": "function", "function": {"name": "search"}},
+        tools=[LOOKUP_TOOL, SEARCH_TOOL],
+        stream=False,
+        tool_choice={"type": "function", "function": {"name": "search"}},
     )
     body = _json_body(_call(payload, monkeypatch, backend))
     choice = body["choices"][0]
@@ -472,7 +472,7 @@ def test_forced_tool_choice_narrows_promotion(monkeypatch):
 
 def test_parallel_cap_non_streaming(monkeypatch):
     backend = _ScriptedBackend(_fixed(_CALL_XML + _SEARCH_XML))
-    payload = _request(tools = [LOOKUP_TOOL, SEARCH_TOOL], stream = False, parallel_tool_calls = False)
+    payload = _request(tools=[LOOKUP_TOOL, SEARCH_TOOL], stream=False, parallel_tool_calls=False)
     body = _json_body(_call(payload, monkeypatch, backend))
     calls = body["choices"][0]["message"]["tool_calls"]
     assert len(calls) == 1
@@ -481,12 +481,12 @@ def test_parallel_cap_non_streaming(monkeypatch):
 
 def test_usage_recorded_when_stats_present(monkeypatch):
     stats = {"usage": {"prompt_tokens": 7, "completion_tokens": 3, "total_tokens": 10}}
-    backend = _ScriptedBackend(_fixed(_CALL_XML), stats = stats)
-    payload = _request(tools = [LOOKUP_TOOL], stream = False)
+    backend = _ScriptedBackend(_fixed(_CALL_XML), stats=stats)
+    payload = _request(tools=[LOOKUP_TOOL], stream=False)
     monitor = _install(monkeypatch, backend)
 
     async def _run():
-        return await openai_chat_completions(payload, request = _Request(), current_subject = "u")
+        return await openai_chat_completions(payload, request=_Request(), current_subject="u")
 
     asyncio.run(_run())
     [entry] = monitor.snapshot()
@@ -501,8 +501,8 @@ class _ToolLoopBackend(_ScriptedBackend):
         self,
         *,
         messages,
-        tools = None,
-        stats_holder = None,
+        tools=None,
+        stats_holder=None,
         **kwargs,
     ):
         self.calls.append({"messages": messages, "tools": tools, **kwargs})
@@ -527,17 +527,17 @@ def test_stop_reason_recorded_without_backend_stats(monkeypatch, kind, stream, e
     # stats_holder empty; the stop reason must not ride along with it.
     if kind == "tool_loop":
         backend = _ToolLoopBackend(_fixed("done"))
-        payload = _request(stream = stream, enable_tools = True)
+        payload = _request(stream=stream, enable_tools=True)
     elif kind == "healed":
         backend = _ScriptedBackend(_fixed(_CALL_XML))
-        payload = _request(stream = stream, tools = [LOOKUP_TOOL])
+        payload = _request(stream=stream, tools=[LOOKUP_TOOL])
     else:
         backend = _ScriptedBackend(_fixed("plain answer"))
-        payload = _request(stream = stream)
+        payload = _request(stream=stream)
     monitor = _install(monkeypatch, backend)
 
     async def _run():
-        return await openai_chat_completions(payload, request = _Request(), current_subject = "u")
+        return await openai_chat_completions(payload, request=_Request(), current_subject="u")
 
     response = asyncio.run(_run())
     if stream:
@@ -553,7 +553,7 @@ def test_nudge_default_off_single_generation(monkeypatch):
     # Signal present but unparseable; without opt-in, no retry.
     truncated = '<tool_call>{"name": "lookup"'
     backend = _ScriptedBackend(_fixed(truncated))
-    payload = _request(tools = [LOOKUP_TOOL], stream = False)
+    payload = _request(tools=[LOOKUP_TOOL], stream=False)
     _call(payload, monkeypatch, backend)
     assert len(backend.calls) == 1
 
@@ -570,7 +570,7 @@ def test_nudge_opt_in_retry_recovers(monkeypatch):
         return [_CALL_XML] if nudged else [truncated]
 
     backend = _ScriptedBackend(responder)
-    payload = _request(tools = [LOOKUP_TOOL], stream = False, nudge_tool_calls = True)
+    payload = _request(tools=[LOOKUP_TOOL], stream=False, nudge_tool_calls=True)
     body = _json_body(_call(payload, monkeypatch, backend))
     assert len(backend.calls) == 2
     choice = body["choices"][0]
@@ -581,7 +581,7 @@ def test_nudge_opt_in_retry_recovers(monkeypatch):
 def test_nudge_double_failure_relays_original(monkeypatch):
     truncated = '<tool_call>{"name": "lookup"'
     backend = _ScriptedBackend(_fixed(truncated))
-    payload = _request(tools = [LOOKUP_TOOL], stream = False, nudge_tool_calls = True)
+    payload = _request(tools=[LOOKUP_TOOL], stream=False, nudge_tool_calls=True)
     body = _json_body(_call(payload, monkeypatch, backend))
     assert len(backend.calls) == 2  # exactly one retry
     choice = body["choices"][0]
@@ -597,7 +597,7 @@ def test_streaming_heals_split_call_into_one_delta(monkeypatch):
     pieces = ["<tool", '<tool_call>{"name": "loo', '<tool_call>{"name": "lookup", "argum']
     cumulative = pieces + [_CALL_XML]
     backend = _ScriptedBackend(_fixed(*cumulative))
-    payload = _request(tools = [LOOKUP_TOOL], stream = True)
+    payload = _request(tools=[LOOKUP_TOOL], stream=True)
     response = _call(payload, monkeypatch, backend)
     objs = _sse_objects(_collect_sse(response))
     tool_deltas = [
@@ -620,9 +620,9 @@ def test_what_this_backend_can_serve_reaches_it_rather_than_being_refused(monkey
     position 0 and end every turn before its first token. ``{"type": "text"}``
     constrains nothing, so refusing it for want of a grammar engine would turn a
     request this backend serves into a 400."""
-    backend = _ScriptedBackend(_fixed("hi"), stats = {"usage": {"prompt_tokens": 7}})
-    payload = _request(stop = ["END", ""], response_format = {"type": "text"})
-    body = _json_body(_call(payload, monkeypatch, backend, supports_tools = False))
+    backend = _ScriptedBackend(_fixed("hi"), stats={"usage": {"prompt_tokens": 7}})
+    payload = _request(stop=["END", ""], response_format={"type": "text"})
+    body = _json_body(_call(payload, monkeypatch, backend, supports_tools=False))
     assert backend.calls[0]["stop"] == ["END"]
     assert body["choices"][0]["message"]["content"] == "hi"
 
@@ -635,9 +635,9 @@ def test_n_serves_one_full_generation_per_choice(monkeypatch):
     turns = iter(["first", "second"])
     backend = _ScriptedBackend(
         lambda messages, tools: [next(turns)],
-        stats = {"usage": {"prompt_tokens": 7, "completion_tokens": 3}},
+        stats={"usage": {"prompt_tokens": 7, "completion_tokens": 3}},
     )
-    body = _json_body(_call(_request(n = 2), monkeypatch, backend, supports_tools = False))
+    body = _json_body(_call(_request(n=2), monkeypatch, backend, supports_tools=False))
     assert [c["index"] for c in body["choices"]] == [0, 1]
     assert [c["message"]["content"] for c in body["choices"]] == ["first", "second"]
     assert len(backend.calls) == 2  # a generation per choice, not one reused
@@ -656,9 +656,9 @@ def test_a_non_streaming_reply_reports_the_tokens_it_spent(monkeypatch, tool_loo
     shapes answer from the same stats the monitor reads."""
     spent = {"prompt_tokens": 11, "completion_tokens": 4, "total_tokens": 15}
     build = _ToolLoopBackend if tool_loop else _ScriptedBackend
-    backend = build(_fixed("hello"), stats = {"usage": spent})
-    payload = _request(stream = False, enable_tools = True) if tool_loop else _request(stream = False)
-    body = _json_body(_call(payload, monkeypatch, backend, supports_tools = tool_loop))
+    backend = build(_fixed("hello"), stats={"usage": spent})
+    payload = _request(stream=False, enable_tools=True) if tool_loop else _request(stream=False)
+    body = _json_body(_call(payload, monkeypatch, backend, supports_tools=tool_loop))
     assert _totals(body) == spent
     assert body["usage"]["prompt_tokens_details"]["cached_tokens"] == 0
 
@@ -670,7 +670,7 @@ def _monitor_entry(payload, monkeypatch, backend, **install_kwargs):
     monitor = _install(monkeypatch, backend, **install_kwargs)
 
     async def _run():
-        return await openai_chat_completions(payload, request = _Request(), current_subject = "u")
+        return await openai_chat_completions(payload, request=_Request(), current_subject="u")
 
     error = None
     try:
@@ -687,9 +687,9 @@ def test_one_monitor_row_describes_the_whole_turn(monkeypatch):
     turns = iter(["first", "second"])
     backend = _ScriptedBackend(
         lambda messages, tools: [next(turns)],
-        stats = [{"usage": {"prompt_tokens": 7, "completion_tokens": 3}}, None],
+        stats=[{"usage": {"prompt_tokens": 7, "completion_tokens": 3}}, None],
     )
-    entry, _ = _monitor_entry(_request(n = 2), monkeypatch, backend, supports_tools = False)
+    entry, _ = _monitor_entry(_request(n=2), monkeypatch, backend, supports_tools=False)
     assert "first" in entry["reply"] and "second" in entry["reply"]
     assert entry["prompt_tokens"] == 7  # the shared prompt, not 7 per choice
     assert entry["completion_tokens"] == 3  # only the choice that published
@@ -715,8 +715,8 @@ def test_streaming_cancel_does_not_finalize_tool_call(monkeypatch):
             self,
             *,
             messages,
-            tools = None,
-            stats_holder = None,
+            tools=None,
+            stats_holder=None,
             **kwargs,
         ):
             self.calls.append({"messages": messages, "tools": tools, **kwargs})
@@ -724,7 +724,7 @@ def test_streaming_cancel_does_not_finalize_tool_call(monkeypatch):
             inf._cancel_by_cancel_id_or_stash(cancel_id)  # user hits Stop before EOF
 
     backend = _CancelMidStream()
-    payload = _request(tools = [LOOKUP_TOOL], stream = True, cancel_id = cancel_id)
+    payload = _request(tools=[LOOKUP_TOOL], stream=True, cancel_id=cancel_id)
     response = _call(payload, monkeypatch, backend)
     objs = _sse_objects(_collect_sse(response))
     tool_deltas = [
@@ -743,7 +743,7 @@ def test_streaming_cancel_does_not_finalize_tool_call(monkeypatch):
 
 def test_streaming_no_tools_verbatim(monkeypatch):
     backend = _ScriptedBackend(_fixed("hello ", "hello world"))
-    payload = _request(stream = True)
+    payload = _request(stream=True)
     response = _call(payload, monkeypatch, backend)
     objs = _sse_objects(_collect_sse(response))
     text = "".join(
@@ -772,8 +772,8 @@ def test_streaming_gen_stream_error_is_not_model_text(monkeypatch):
             yield GenStreamError("Error: /tmp/secret traceback")
 
     backend = _ErrorAfterPartial()
-    payload = _request(stream = True)
-    response = _call(payload, monkeypatch, backend, supports_tools = False)
+    payload = _request(stream=True)
+    response = _call(payload, monkeypatch, backend, supports_tools=False)
     chunks = _collect_sse(response)
     objs = _sse_objects(chunks)
 
@@ -798,7 +798,7 @@ def test_server_tool_streaming_invalid_event_is_error(monkeypatch):
             yield "not-an-event"
 
     backend = _InvalidEventBackend()
-    payload = _request(tools = [LOOKUP_TOOL], enable_tools = True, stream = True)
+    payload = _request(tools=[LOOKUP_TOOL], enable_tools=True, stream=True)
     response = _call(payload, monkeypatch, backend)
     objs = _sse_objects(_collect_sse(response))
 
@@ -809,7 +809,7 @@ def test_server_tool_streaming_invalid_event_is_error(monkeypatch):
 def test_streaming_repeated_snapshot_no_duplicate_call(monkeypatch):
     # Repeated then shrunk cumulative snapshots must not double-heal.
     backend = _ScriptedBackend(_fixed(_CALL_XML, _CALL_XML, _CALL_XML[:5], _CALL_XML))
-    payload = _request(tools = [LOOKUP_TOOL], stream = True)
+    payload = _request(tools=[LOOKUP_TOOL], stream=True)
     response = _call(payload, monkeypatch, backend)
     objs = _sse_objects(_collect_sse(response))
     tool_deltas = [
@@ -822,7 +822,7 @@ def test_streaming_repeated_snapshot_no_duplicate_call(monkeypatch):
 
 def test_streaming_parallel_cap(monkeypatch):
     backend = _ScriptedBackend(_fixed(_CALL_XML + _SEARCH_XML))
-    payload = _request(tools = [LOOKUP_TOOL, SEARCH_TOOL], stream = True, parallel_tool_calls = False)
+    payload = _request(tools=[LOOKUP_TOOL, SEARCH_TOOL], stream=True, parallel_tool_calls=False)
     response = _call(payload, monkeypatch, backend)
     objs = _sse_objects(_collect_sse(response))
     tool_deltas = [
@@ -839,7 +839,7 @@ def test_streaming_generator_error_closes_cleanly(monkeypatch):
         raise RuntimeError("boom /secret/path")
 
     backend = _ScriptedBackend(responder)
-    payload = _request(tools = [LOOKUP_TOOL], stream = True)
+    payload = _request(tools=[LOOKUP_TOOL], stream=True)
     response = _call(payload, monkeypatch, backend)
     chunks = _collect_sse(response)
     joined = "".join(c.decode() if isinstance(c, bytes) else c for c in chunks)
@@ -854,12 +854,12 @@ def test_streaming_disconnect_resets_once(monkeypatch):
             return True
 
     backend = _ScriptedBackend(_fixed("a", "ab", "abc"))
-    payload = _request(tools = [LOOKUP_TOOL], stream = True)
+    payload = _request(tools=[LOOKUP_TOOL], stream=True)
     _install(monkeypatch, backend)
 
     async def _run():
         resp = await openai_chat_completions(
-            payload, request = _DisconnectRequest(), current_subject = "u"
+            payload, request=_DisconnectRequest(), current_subject="u"
         )
         return [c async for c in resp.body_iterator]
 
@@ -870,7 +870,7 @@ def test_streaming_disconnect_resets_once(monkeypatch):
 def test_mlx_uses_same_path(monkeypatch):
     # MLX and safetensors share get_inference_backend(); one scripted backend covers both.
     backend = _ScriptedBackend(_fixed(_CALL_XML))
-    payload = _request(tools = [LOOKUP_TOOL], stream = False)
+    payload = _request(tools=[LOOKUP_TOOL], stream=False)
     body = _json_body(_call(payload, monkeypatch, backend))
     assert body["choices"][0]["finish_reason"] == "tool_calls"
 
@@ -878,7 +878,7 @@ def test_mlx_uses_same_path(monkeypatch):
 def test_tool_choice_none_does_not_advertise_tools(monkeypatch):
     # tool_choice="none": no tools rendered into the template; history templating still applies.
     backend = _ScriptedBackend(_fixed("plain answer"))
-    payload = _request(tools = [LOOKUP_TOOL], tool_choice = "none", stream = False)
+    payload = _request(tools=[LOOKUP_TOOL], tool_choice="none", stream=False)
     body = _json_body(_call(payload, monkeypatch, backend))
     assert body["choices"][0]["message"]["content"] == "plain answer"
     assert backend.calls[0]["tools"] is None
@@ -888,12 +888,12 @@ def test_developer_message_folded_into_system_prompt(monkeypatch):
     # The "developer" role folds into one leading system message (local templates reject it).
     backend = _ScriptedBackend(_fixed("ok"))
     payload = _request(
-        messages = [
-            ChatMessage(role = "developer", content = "always be terse"),
-            ChatMessage(role = "user", content = "hi"),
+        messages=[
+            ChatMessage(role="developer", content="always be terse"),
+            ChatMessage(role="user", content="hi"),
         ],
-        tools = [LOOKUP_TOOL],
-        stream = False,
+        tools=[LOOKUP_TOOL],
+        stream=False,
     )
     _call(payload, monkeypatch, backend)
     sent = backend.calls[0]["messages"]
@@ -913,7 +913,7 @@ def test_failed_nudge_retry_keeps_original_response(monkeypatch):
         raise RuntimeError("retry blew up")
 
     backend = _ScriptedBackend(responder)
-    payload = _request(tools = [LOOKUP_TOOL], nudge_tool_calls = True, stream = False)
+    payload = _request(tools=[LOOKUP_TOOL], nudge_tool_calls=True, stream=False)
     body = _json_body(_call(payload, monkeypatch, backend))
     assert state["n"] == 2
     assert body["choices"][0]["finish_reason"] == "stop"
@@ -938,8 +938,8 @@ def test_a_discarded_nudge_retry_still_bills_the_tokens_it_spent(monkeypatch):
             self,
             *,
             messages,
-            tools = None,
-            stats_holder = None,
+            tools=None,
+            stats_holder=None,
             **kwargs,
         ):
             self.calls.append({"messages": messages, "tools": tools, **kwargs})
@@ -950,11 +950,11 @@ def test_a_discarded_nudge_retry_still_bills_the_tokens_it_spent(monkeypatch):
                 yield snap
 
     backend = _PerCallStatsBackend()
-    payload = _request(tools = [LOOKUP_TOOL], nudge_tool_calls = True, stream = False)
+    payload = _request(tools=[LOOKUP_TOOL], nudge_tool_calls=True, stream=False)
     monitor = _install(monkeypatch, backend)
 
     async def _run():
-        return await openai_chat_completions(payload, request = _Request(), current_subject = "u")
+        return await openai_chat_completions(payload, request=_Request(), current_subject="u")
 
     asyncio.run(_run())
     assert len(backend.calls) == 2  # first attempt + one discarded retry
@@ -978,8 +978,8 @@ def test_a_nudge_retry_that_never_reported_is_not_billed_twice(monkeypatch):
             self,
             *,
             messages,
-            tools = None,
-            stats_holder = None,
+            tools=None,
+            stats_holder=None,
             **kwargs,
         ):
             self.calls.append({"messages": messages, "tools": tools, **kwargs})
@@ -991,11 +991,11 @@ def test_a_nudge_retry_that_never_reported_is_not_billed_twice(monkeypatch):
                 yield snap
 
     backend = _RetryRaisesBackend()
-    payload = _request(tools = [LOOKUP_TOOL], nudge_tool_calls = True, stream = False)
+    payload = _request(tools=[LOOKUP_TOOL], nudge_tool_calls=True, stream=False)
     monitor = _install(monkeypatch, backend)
 
     async def _run():
-        return await openai_chat_completions(payload, request = _Request(), current_subject = "u")
+        return await openai_chat_completions(payload, request=_Request(), current_subject="u")
 
     body = _json_body(asyncio.run(_run()))
     assert len(backend.calls) == 2
@@ -1016,8 +1016,8 @@ def test_cached_prompt_tokens_reach_the_usage_details(monkeypatch):
             "prompt_tokens_details": {"cached_tokens": 1100},
         }
     }
-    backend = _ScriptedBackend(_fixed("hi"), stats = stats)
-    body = _json_body(_call(_request(stream = False), monkeypatch, backend))
+    backend = _ScriptedBackend(_fixed("hi"), stats=stats)
+    body = _json_body(_call(_request(stream=False), monkeypatch, backend))
     details = body["usage"]["prompt_tokens_details"]
     assert details["cached_tokens"] == 1100
     assert details["cached_tokens"] <= body["usage"]["prompt_tokens"]
@@ -1034,8 +1034,8 @@ def test_cached_tokens_never_exceed_the_prompt_they_describe(monkeypatch):
         }
     }
     lean = {"usage": {"prompt_tokens": 1000, "completion_tokens": 4}}
-    backend = _ScriptedBackend(_fixed("hi"), stats = [rich, lean])
-    body = _json_body(_call(_request(stream = False, n = 2), monkeypatch, backend))
+    backend = _ScriptedBackend(_fixed("hi"), stats=[rich, lean])
+    body = _json_body(_call(_request(stream=False, n=2), monkeypatch, backend))
     usage = body["usage"]
     assert usage["prompt_tokens"] == 1000
     assert usage["prompt_tokens_details"]["cached_tokens"] == 0
@@ -1060,8 +1060,8 @@ def test_a_successful_nudge_retry_bills_both_attempts(monkeypatch):
             self,
             *,
             messages,
-            tools = None,
-            stats_holder = None,
+            tools=None,
+            stats_holder=None,
             **kwargs,
         ):
             self.calls.append({"messages": messages, "tools": tools, **kwargs})
@@ -1073,11 +1073,11 @@ def test_a_successful_nudge_retry_bills_both_attempts(monkeypatch):
                 yield snap
 
     backend = _HealsOnRetryBackend()
-    payload = _request(tools = [LOOKUP_TOOL], nudge_tool_calls = True, stream = False)
+    payload = _request(tools=[LOOKUP_TOOL], nudge_tool_calls=True, stream=False)
     monitor = _install(monkeypatch, backend)
 
     async def _run():
-        return await openai_chat_completions(payload, request = _Request(), current_subject = "u")
+        return await openai_chat_completions(payload, request=_Request(), current_subject="u")
 
     body = _json_body(asyncio.run(_run()))
     assert len(backend.calls) == 2  # first attempt + the retry that healed
@@ -1089,14 +1089,14 @@ def test_a_successful_nudge_retry_bills_both_attempts(monkeypatch):
 
 def test_monitor_records_healed_call_not_raw_xml(monkeypatch):
     backend = _ScriptedBackend(_fixed(_CALL_XML))
-    payload = _request(tools = [LOOKUP_TOOL], stream = False)
+    payload = _request(tools=[LOOKUP_TOOL], stream=False)
     monitor = _install(monkeypatch, backend)
 
     async def _run():
-        return await openai_chat_completions(payload, request = _Request(), current_subject = "u")
+        return await openai_chat_completions(payload, request=_Request(), current_subject="u")
 
     asyncio.run(_run())
-    snap = monitor.snapshot(include_details = True)
+    snap = monitor.snapshot(include_details=True)
     replies = json.dumps(snap)
     assert "<tool_call>" not in replies
     assert "lookup" in replies
@@ -1107,15 +1107,15 @@ def test_streaming_monitor_records_healed_call_not_raw_xml(monkeypatch):
     backend = _ScriptedBackend(
         _fixed("Sure. ", 'Sure. <tool_call>{"name": "loo', "Sure. " + _CALL_XML)
     )
-    payload = _request(tools = [LOOKUP_TOOL], stream = True)
+    payload = _request(tools=[LOOKUP_TOOL], stream=True)
     monitor = _install(monkeypatch, backend)
 
     async def _run():
-        return await openai_chat_completions(payload, request = _Request(), current_subject = "u")
+        return await openai_chat_completions(payload, request=_Request(), current_subject="u")
 
     response = asyncio.run(_run())
     _collect_sse(response)
-    replies = json.dumps(monitor.snapshot(include_details = True))
+    replies = json.dumps(monitor.snapshot(include_details=True))
     assert "<tool_call>" not in replies
     assert "Sure. " in replies
     assert "[tool_calls] lookup(" in replies
@@ -1125,9 +1125,9 @@ def test_forced_tool_choice_narrows_templated_tools(monkeypatch):
     # A forced function is the only schema rendered into the template.
     backend = _ScriptedBackend(_fixed(_SEARCH_XML))
     payload = _request(
-        tools = [LOOKUP_TOOL, SEARCH_TOOL],
-        stream = False,
-        tool_choice = {"type": "function", "function": {"name": "search"}},
+        tools=[LOOKUP_TOOL, SEARCH_TOOL],
+        stream=False,
+        tool_choice={"type": "function", "function": {"name": "search"}},
     )
     body = _json_body(_call(payload, monkeypatch, backend))
     templated = backend.calls[0]["tools"]
@@ -1142,10 +1142,10 @@ def test_multimodal_content_parts_flattened_for_local_template(monkeypatch):
     # text parts are kept, the image part dropped.
     backend = _ScriptedBackend(_fixed(_CALL_XML))
     payload = _request(
-        messages = [
+        messages=[
             ChatMessage(
-                role = "user",
-                content = [
+                role="user",
+                content=[
                     {"type": "text", "text": "what is this?"},
                     {
                         "type": "image_url",
@@ -1154,8 +1154,8 @@ def test_multimodal_content_parts_flattened_for_local_template(monkeypatch):
                 ],
             )
         ],
-        tools = [LOOKUP_TOOL],
-        stream = False,
+        tools=[LOOKUP_TOOL],
+        stream=False,
     )
     body = _json_body(_call(payload, monkeypatch, backend))
     templated = backend.calls[0]["messages"]
@@ -1169,14 +1169,14 @@ def test_string_arguments_history_deserialized_for_template(monkeypatch):
     # the HTTP response stays OpenAI-shaped.
     backend = _ScriptedBackend(_fixed("done"))
     payload = _request(
-        tools = [LOOKUP_TOOL],
-        stream = False,
-        messages = [
-            ChatMessage(role = "user", content = "weather?"),
+        tools=[LOOKUP_TOOL],
+        stream=False,
+        messages=[
+            ChatMessage(role="user", content="weather?"),
             ChatMessage(
-                role = "assistant",
-                content = None,
-                tool_calls = [
+                role="assistant",
+                content=None,
+                tool_calls=[
                     {
                         "id": "call_0",
                         "type": "function",
@@ -1184,7 +1184,7 @@ def test_string_arguments_history_deserialized_for_template(monkeypatch):
                     }
                 ],
             ),
-            ChatMessage(role = "tool", tool_call_id = "call_0", content = "sunny"),
+            ChatMessage(role="tool", tool_call_id="call_0", content="sunny"),
         ],
     )
     _json_body(_call(payload, monkeypatch, backend))
@@ -1195,14 +1195,14 @@ def test_string_arguments_history_deserialized_for_template(monkeypatch):
 def test_unparseable_arguments_string_left_untouched(monkeypatch):
     backend = _ScriptedBackend(_fixed("ok"))
     payload = _request(
-        tools = [LOOKUP_TOOL],
-        stream = False,
-        messages = [
-            ChatMessage(role = "user", content = "hi"),
+        tools=[LOOKUP_TOOL],
+        stream=False,
+        messages=[
+            ChatMessage(role="user", content="hi"),
             ChatMessage(
-                role = "assistant",
-                content = None,
-                tool_calls = [
+                role="assistant",
+                content=None,
+                tool_calls=[
                     {
                         "id": "call_0",
                         "type": "function",
@@ -1210,7 +1210,7 @@ def test_unparseable_arguments_string_left_untouched(monkeypatch):
                     }
                 ],
             ),
-            ChatMessage(role = "tool", tool_call_id = "call_0", content = "y"),
+            ChatMessage(role="tool", tool_call_id="call_0", content="y"),
         ],
     )
     body = _json_body(_call(payload, monkeypatch, backend))
@@ -1223,7 +1223,7 @@ def test_mcp_enabled_without_server_tools_uses_passthrough(monkeypatch):
     # mcp_enabled=true with an empty registry must not silently drop the
     # declared tools; the gate keys on the server-side path claiming the request.
     backend = _ScriptedBackend(_fixed(_CALL_XML))
-    payload = _request(tools = [LOOKUP_TOOL], stream = False, mcp_enabled = True)
+    payload = _request(tools=[LOOKUP_TOOL], stream=False, mcp_enabled=True)
     body = _json_body(_call(payload, monkeypatch, backend))
     choice = body["choices"][0]
     assert choice["finish_reason"] == "tool_calls"
@@ -1245,7 +1245,7 @@ def _turn(
     prompt,
     completion,
     *,
-    timings = True,
+    timings=True,
     **extra,
 ):
     usage = {
@@ -1281,7 +1281,7 @@ def test_a_turn_that_ends_before_reporting_does_not_erase_the_loop():
     assert _fold(_turn(100, 20), _turn(160, 30), None)["usage"]["completion_tokens"] == 50
 
     # Reported usage but no timings: the loop's totals must survive it.
-    partial = _fold(_turn(100, 20), _turn(160, 30, timings = False))
+    partial = _fold(_turn(100, 20), _turn(160, 30, timings=False))
     assert partial["timings"]["predicted_n"] == 20
     # Reported timings but no usage: the prompt is still the loop's.
     errored = _fold(_turn(100, 20), {"timings": {"predicted_ms": 1.0, "predicted_n": 1}})
@@ -1292,8 +1292,8 @@ def test_completion_details_are_summed_with_the_completion_they_describe():
     """Carrying the last turn's details would report them against every turn's
     tokens."""
     folded = _fold(
-        _turn(100, 20, completion_tokens_details = {"reasoning_tokens": 7}),
-        _turn(160, 30, completion_tokens_details = {"reasoning_tokens": 3}),
+        _turn(100, 20, completion_tokens_details={"reasoning_tokens": 7}),
+        _turn(160, 30, completion_tokens_details={"reasoning_tokens": 3}),
     )
     assert folded["usage"]["completion_tokens"] == 50
     assert folded["usage"]["completion_tokens_details"] == {"reasoning_tokens": 10}
@@ -1316,10 +1316,10 @@ def _vision_backend(*snapshots):
     return backend
 
 
-def _image_message(text = "run the tests"):
+def _image_message(text="run the tests"):
     return ChatMessage(
-        role = "user",
-        content = [
+        role="user",
+        content=[
             {"type": "text", "text": text},
             {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{_PNG_1x1}"}},
         ],
@@ -1328,7 +1328,7 @@ def _image_message(text = "run the tests"):
 
 def test_image_turn_keeps_the_client_tool_catalog(monkeypatch):
     backend = _vision_backend(_CALL_XML)
-    payload = _request(messages = [_image_message()], tools = [LOOKUP_TOOL], stream = False)
+    payload = _request(messages=[_image_message()], tools=[LOOKUP_TOOL], stream=False)
     body = _json_body(_call(payload, monkeypatch, backend))
 
     assert backend.calls[0]["tools"] == [LOOKUP_TOOL]
@@ -1341,10 +1341,10 @@ def test_image_turn_keeps_the_client_tool_catalog(monkeypatch):
 def test_legacy_image_field_keeps_the_client_tool_catalog(monkeypatch):
     backend = _vision_backend(_CALL_XML)
     payload = _request(
-        messages = [ChatMessage(role = "user", content = "run the tests")],
-        image_base64 = _PNG_1x1,
-        tools = [LOOKUP_TOOL],
-        stream = False,
+        messages=[ChatMessage(role="user", content="run the tests")],
+        image_base64=_PNG_1x1,
+        tools=[LOOKUP_TOOL],
+        stream=False,
     )
     _call(payload, monkeypatch, backend)
 
@@ -1365,10 +1365,10 @@ class _VisionToolLoopBackend(_ToolLoopBackend):
 def test_an_attached_image_still_reaches_the_tool_loop(monkeypatch):
     backend = _VisionToolLoopBackend(_fixed("done"))
     payload = _request(
-        messages = [
+        messages=[
             ChatMessage(
-                role = "user",
-                content = [
+                role="user",
+                content=[
                     {"type": "text", "text": "what is in this picture"},
                     {
                         "type": "image_url",
@@ -1377,8 +1377,8 @@ def test_an_attached_image_still_reaches_the_tool_loop(monkeypatch):
                 ],
             )
         ],
-        enable_tools = True,
-        stream = False,
+        enable_tools=True,
+        stream=False,
     )
 
     _call(payload, monkeypatch, backend)
@@ -1419,10 +1419,10 @@ def test_the_image_tool_loop_is_gated_on_the_body_that_renders(monkeypatch):
         "renders_image": True,
     }
     payload = _request(
-        messages = [
+        messages=[
             ChatMessage(
-                role = "user",
-                content = [
+                role="user",
+                content=[
                     {"type": "text", "text": "what is in this picture"},
                     {
                         "type": "image_url",
@@ -1431,8 +1431,8 @@ def test_the_image_tool_loop_is_gated_on_the_body_that_renders(monkeypatch):
                 ],
             )
         ],
-        enable_tools = True,
-        stream = False,
+        enable_tools=True,
+        stream=False,
     )
 
     _install(monkeypatch, backend)
@@ -1445,7 +1445,7 @@ def test_the_image_tool_loop_is_gated_on_the_body_that_renders(monkeypatch):
     )
 
     async def _run():
-        return await openai_chat_completions(payload, request = _Request(), current_subject = "u")
+        return await openai_chat_completions(payload, request=_Request(), current_subject="u")
 
     asyncio.run(_run())
 
@@ -1461,10 +1461,10 @@ def test_a_client_catalog_keeps_an_image_out_of_the_server_loop(monkeypatch):
     Claiming it here answered the client with Unsloth's built-ins instead."""
     backend = _VisionToolLoopBackend(_fixed("a plain answer"))
     payload = _request(
-        messages = [
+        messages=[
             ChatMessage(
-                role = "user",
-                content = [
+                role="user",
+                content=[
                     {"type": "text", "text": "what is in this picture"},
                     {
                         "type": "image_url",
@@ -1473,9 +1473,9 @@ def test_a_client_catalog_keeps_an_image_out_of_the_server_loop(monkeypatch):
                 ],
             )
         ],
-        tools = [LOOKUP_TOOL],
-        enable_tools = True,
-        stream = False,
+        tools=[LOOKUP_TOOL],
+        enable_tools=True,
+        stream=False,
     )
 
     _call(payload, monkeypatch, backend)
@@ -1500,7 +1500,7 @@ def test_a_replayed_picture_sits_beside_the_result_that_produced_it(monkeypatch)
     from core.inference import mcp_images
 
     buffer = io.BytesIO()
-    Image.new("RGB", (6, 6), (10, 120, 200)).save(buffer, format = "PNG")
+    Image.new("RGB", (6, 6), (10, 120, 200)).save(buffer, format="PNG")
     envelope = json.dumps(
         [{"data": base64.b64encode(buffer.getvalue()).decode(), "mimeType": "image/png"}]
     )
@@ -1512,12 +1512,12 @@ def test_a_replayed_picture_sits_beside_the_result_that_produced_it(monkeypatch)
         "renders_image": True,
     }
     payload = _request(
-        messages = [
-            ChatMessage(role = "user", content = "take a shot"),
+        messages=[
+            ChatMessage(role="user", content="take a shot"),
             ChatMessage(
-                role = "assistant",
-                content = "",
-                tool_calls = [
+                role="assistant",
+                content="",
+                tool_calls=[
                     {
                         "id": "call_0",
                         "type": "function",
@@ -1526,15 +1526,15 @@ def test_a_replayed_picture_sits_beside_the_result_that_produced_it(monkeypatch)
                 ],
             ),
             ChatMessage(
-                role = "tool",
-                tool_call_id = "call_0",
-                content = "[1 image returned]\n" + mcp_images.SENTINEL + envelope,
+                role="tool",
+                tool_call_id="call_0",
+                content="[1 image returned]\n" + mcp_images.SENTINEL + envelope,
             ),
-            ChatMessage(role = "assistant", content = "a blue square"),
-            ChatMessage(role = "user", content = "and what about now"),
+            ChatMessage(role="assistant", content="a blue square"),
+            ChatMessage(role="user", content="and what about now"),
         ],
-        tools = [LOOKUP_TOOL],
-        stream = False,
+        tools=[LOOKUP_TOOL],
+        stream=False,
     )
 
     _call(payload, monkeypatch, backend)
@@ -1568,19 +1568,19 @@ def test_a_replay_only_image_turn_also_keeps_the_client_catalog(monkeypatch):
     from core.inference import mcp_images
 
     buffer = io.BytesIO()
-    Image.new("RGB", (6, 6), (10, 120, 200)).save(buffer, format = "PNG")
+    Image.new("RGB", (6, 6), (10, 120, 200)).save(buffer, format="PNG")
     envelope = json.dumps(
         [{"data": base64.b64encode(buffer.getvalue()).decode(), "mimeType": "image/png"}]
     )
 
     backend = _VisionToolLoopBackend(_fixed("a plain answer"))
     payload = _request(
-        messages = [
-            ChatMessage(role = "user", content = "take a shot"),
+        messages=[
+            ChatMessage(role="user", content="take a shot"),
             ChatMessage(
-                role = "assistant",
-                content = "",
-                tool_calls = [
+                role="assistant",
+                content="",
+                tool_calls=[
                     {
                         "id": "call_0",
                         "type": "function",
@@ -1589,15 +1589,15 @@ def test_a_replay_only_image_turn_also_keeps_the_client_catalog(monkeypatch):
                 ],
             ),
             ChatMessage(
-                role = "tool",
-                tool_call_id = "call_0",
-                content = "[1 image returned]\n" + mcp_images.SENTINEL + envelope,
+                role="tool",
+                tool_call_id="call_0",
+                content="[1 image returned]\n" + mcp_images.SENTINEL + envelope,
             ),
-            ChatMessage(role = "user", content = "what colour was it"),
+            ChatMessage(role="user", content="what colour was it"),
         ],
-        tools = [LOOKUP_TOOL],
-        enable_tools = True,
-        stream = False,
+        tools=[LOOKUP_TOOL],
+        enable_tools=True,
+        stream=False,
     )
 
     _call(payload, monkeypatch, backend)
@@ -1620,7 +1620,7 @@ def test_the_plain_route_leaves_the_attachment_marker_to_the_backend(monkeypatch
     from core.inference import mcp_images
 
     buffer = io.BytesIO()
-    Image.new("RGB", (8, 8), (10, 120, 200)).save(buffer, format = "PNG")
+    Image.new("RGB", (8, 8), (10, 120, 200)).save(buffer, format="PNG")
     envelope = json.dumps(
         [{"data": base64.b64encode(buffer.getvalue()).decode(), "mimeType": "image/png"}]
     )
@@ -1632,11 +1632,11 @@ def test_the_plain_route_leaves_the_attachment_marker_to_the_backend(monkeypatch
         "renders_image": True,
     }
     payload = _request(
-        messages = [
+        messages=[
             # The attachment rides on an EARLIER turn than the tool's picture.
             ChatMessage(
-                role = "user",
-                content = [
+                role="user",
+                content=[
                     {"type": "text", "text": "here is my diagram"},
                     {
                         "type": "image_url",
@@ -1644,11 +1644,11 @@ def test_the_plain_route_leaves_the_attachment_marker_to_the_backend(monkeypatch
                     },
                 ],
             ),
-            ChatMessage(role = "assistant", content = "noted"),
+            ChatMessage(role="assistant", content="noted"),
             ChatMessage(
-                role = "assistant",
-                content = "",
-                tool_calls = [
+                role="assistant",
+                content="",
+                tool_calls=[
                     {
                         "id": "c1",
                         "type": "function",
@@ -1657,19 +1657,19 @@ def test_the_plain_route_leaves_the_attachment_marker_to_the_backend(monkeypatch
                 ],
             ),
             ChatMessage(
-                role = "tool",
-                tool_call_id = "c1",
-                content = "[1 image returned]\n" + mcp_images.SENTINEL + envelope,
+                role="tool",
+                tool_call_id="c1",
+                content="[1 image returned]\n" + mcp_images.SENTINEL + envelope,
             ),
-            ChatMessage(role = "user", content = "which one is bluer?"),
+            ChatMessage(role="user", content="which one is bluer?"),
         ],
-        stream = False,
+        stream=False,
     )
 
     # supports_tools=False is what makes this the PLAIN path: the replayed picture
     # arrives with tool history, and a template that renders tools would send the
     # request to the client-tool passthrough, which orders the pixels itself.
-    _call(payload, monkeypatch, backend, supports_tools = False)
+    _call(payload, monkeypatch, backend, supports_tools=False)
 
     [call] = backend.calls
     sent, replayed = call["messages"], call["images"] or []
@@ -1680,7 +1680,7 @@ def test_the_plain_route_leaves_the_attachment_marker_to_the_backend(monkeypatch
     # pre-mark, the top-up places the attachment's marker at its own ordinal and
     # the history/attachment split survives.
     prior = mcp_images.image_marker_parts(sent)
-    topped = mcp_images.top_up_image_markers(sent, len(replayed) + 1, ordinal = call["image_ordinal"])
+    topped = mcp_images.top_up_image_markers(sent, len(replayed) + 1, ordinal=call["image_ordinal"])
     ordered = mcp_images.pixels_in_marker_order(topped, prior, ["MCP"], "ATTACHMENT")
 
     assert len(mcp_images.image_marker_parts(topped)) == 2, topped
@@ -1696,11 +1696,11 @@ def test_video_turn_with_tools_enabled_keeps_the_client_tool_catalog(monkeypatch
     backend.models["sf-model"]["has_video_input"] = True
     clip = "AAAAGGZ0eXBtcDQy"
     payload = _request(
-        messages = [ChatMessage(role = "user", content = "run the tests")],
-        video_base64 = clip,
-        tools = [LOOKUP_TOOL],
-        enable_tools = True,
-        stream = False,
+        messages=[ChatMessage(role="user", content="run the tests")],
+        video_base64=clip,
+        tools=[LOOKUP_TOOL],
+        enable_tools=True,
+        stream=False,
     )
     body = _json_body(_call(payload, monkeypatch, backend))
 
@@ -1726,11 +1726,11 @@ def test_a_nudge_retry_keeps_the_video_on_the_question_turn(monkeypatch):
     backend.models["sf-model"]["has_video_input"] = True
     clip = "AAAAGGZ0eXBtcDQy"
     payload = _request(
-        messages = [ChatMessage(role = "user", content = "run the tests")],
-        video_base64 = clip,
-        tools = [LOOKUP_TOOL],
-        stream = False,
-        nudge_tool_calls = True,
+        messages=[ChatMessage(role="user", content="run the tests")],
+        video_base64=clip,
+        tools=[LOOKUP_TOOL],
+        stream=False,
+        nudge_tool_calls=True,
     )
     _call(payload, monkeypatch, backend)
 
@@ -1751,8 +1751,8 @@ def test_an_input_audio_part_beside_a_clip_is_refused_too(monkeypatch):
     backend = _vision_backend("a plain answer")
     backend.models["sf-model"]["has_video_input"] = True
     payload = _request(
-        video_base64 = "AAAAGGZ0eXBtcDQy",
-        messages = [
+        video_base64="AAAAGGZ0eXBtcDQy",
+        messages=[
             {
                 "role": "user",
                 "content": [
@@ -1764,7 +1764,7 @@ def test_an_input_audio_part_beside_a_clip_is_refused_too(monkeypatch):
                 ],
             }
         ],
-        stream = False,
+        stream=False,
     )
 
     with pytest.raises(HTTPException) as exc:
@@ -1783,7 +1783,7 @@ def test_audio_beside_a_clip_is_refused_before_any_dispatch(monkeypatch):
 
     backend = _vision_backend("a plain answer")
     backend.models["sf-model"]["has_video_input"] = True
-    payload = _request(video_base64 = "AAAAGGZ0eXBtcDQy", audio_base64 = "AAAA", stream = False)
+    payload = _request(video_base64="AAAAGGZ0eXBtcDQy", audio_base64="AAAA", stream=False)
 
     with pytest.raises(HTTPException) as exc:
         _call(payload, monkeypatch, backend)

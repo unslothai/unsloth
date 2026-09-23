@@ -50,26 +50,27 @@ def _skip_reason() -> str | None:
     return None
 
 
-pytestmark = pytest.mark.skipif(_skip_reason() is not None, reason = _skip_reason() or "")
+pytestmark = pytest.mark.skipif(_skip_reason() is not None, reason=_skip_reason() or "")
 
 
-@pytest.fixture(scope = "module")
+@pytest.fixture(scope="module")
 def context():
     from playwright.sync_api import sync_playwright
+
     with sync_playwright() as p:
         try:
-            b = p.chromium.launch(args = ["--no-sandbox"])
+            b = p.chromium.launch(args=["--no-sandbox"])
         except Exception as exc:  # noqa: BLE001
             pytest.skip(f"chromium could not be launched: {exc}")
         # The real harness's browser factory requests the same two. Without them the clipboard read-back
         # throws and the reading is "could not be measured", which is the NOT COMPARABLE outcome the
         # scoring layer produces rather than a pass.
-        ctx = b.new_context(permissions = ["clipboard-read", "clipboard-write"])
+        ctx = b.new_context(permissions=["clipboard-read", "clipboard-write"])
         # `navigator.clipboard` DOES NOT EXIST outside a secure context, and `set_content` leaves the page
         # on about:blank, which is not one. The reading came back as "Cannot read properties of undefined"
         # rather than as an empty clipboard, which would have been easy to misread. Fulfilled from a route
         # so no server is needed.
-        ctx.grant_permissions(["clipboard-read", "clipboard-write"], origin = ORIGIN)
+        ctx.grant_permissions(["clipboard-read", "clipboard-write"], origin=ORIGIN)
         yield ctx
         ctx.close()
         b.close()
@@ -83,14 +84,14 @@ def _page(context, mode: str, copy_from_store: bool):
     page.route(
         "**/*",
         lambda route: route.fulfill(
-            status = 200,
-            content_type = "text/html; charset=utf-8",
-            body = "<!doctype html><meta charset=utf-8><title>t</title><body></body>",
+            status=200,
+            content_type="text/html; charset=utf-8",
+            body="<!doctype html><meta charset=utf-8><title>t</title><body></body>",
         ),
     )
     page.goto(ORIGIN + "/chat")
-    page.add_script_tag(content = _DOM_JS.read_text(encoding = "utf-8"))
-    page.add_script_tag(content = _FIXTURE_JS.read_text(encoding = "utf-8"))
+    page.add_script_tag(content=_DOM_JS.read_text(encoding="utf-8"))
+    page.add_script_tag(content=_FIXTURE_JS.read_text(encoding="utf-8"))
     page.evaluate(
         "(o) => window.__fixture.build(o)",
         {
@@ -139,7 +140,7 @@ def _markers_present(clip: str) -> int:
 
 
 def test_a_full_mount_copies_the_whole_thread(context):
-    page = _page(context, "full", copy_from_store = False)
+    page = _page(context, "full", copy_from_store=False)
     try:
         got = _select_all_copy(page)
     finally:
@@ -151,7 +152,7 @@ def test_a_full_mount_copies_the_whole_thread(context):
 def test_a_windowed_thread_without_the_handler_loses_most_of_the_conversation(context):
     """THE REGRESSION, REPRODUCED. Not described, not inferred from the mounted count: the
     clipboard is read back and most of the conversation is not in it."""
-    page = _page(context, "windowed", copy_from_store = False)
+    page = _page(context, "windowed", copy_from_store=False)
     try:
         got = _select_all_copy(page)
     finally:
@@ -171,7 +172,7 @@ def test_the_handler_puts_the_whole_conversation_on_the_clipboard(context):
     against a build that quietly stopped virtualising, and the entire question is whether the
     conversation survives WHILE the DOM is windowed.
     """
-    page = _page(context, "windowed", copy_from_store = True)
+    page = _page(context, "windowed", copy_from_store=True)
     try:
         got = _select_all_copy(page)
     finally:
@@ -195,7 +196,7 @@ def test_a_partial_selection_is_not_replaced_by_the_whole_conversation(context):
     still conclusive: either the copy happened and the clipboard holds one row, or it did not and
     the clipboard still holds the sentinel. Neither is the whole conversation, which is the claim.
     """
-    page = _page(context, "windowed", copy_from_store = True)
+    page = _page(context, "windowed", copy_from_store=True)
     try:
         page.evaluate("async () => await navigator.clipboard.writeText('SENTINEL')")
         selected = page.evaluate("""

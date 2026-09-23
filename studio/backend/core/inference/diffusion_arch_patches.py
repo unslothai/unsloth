@@ -55,11 +55,11 @@ def _qwen_modulate(
     self,
     x,
     mod_params,
-    index = None,
+    index=None,
 ):
     """``QwenImageTransformerBlock._modulate`` with the final ``x*(1+scale)+shift`` fused to
     ``torch.addcmul`` (both the global and per-token ``index`` branches end in it)."""
-    shift, scale, gate = mod_params.chunk(3, dim = -1)
+    shift, scale, gate = mod_params.chunk(3, dim=-1)
 
     if index is not None:
         actual_batch = shift.size(0) // 2
@@ -122,10 +122,10 @@ def _zimage_forward(
             mod_clean = self.adaLN_modulation(adaln_clean)
 
             scale_msa_noisy, gate_msa_noisy, scale_mlp_noisy, gate_mlp_noisy = mod_noisy.chunk(
-                4, dim = 1
+                4, dim=1
             )
             scale_msa_clean, gate_msa_clean, scale_mlp_clean, gate_mlp_clean = mod_clean.chunk(
-                4, dim = 1
+                4, dim=1
             )
 
             gate_msa_noisy, gate_mlp_noisy = gate_msa_noisy.tanh(), gate_mlp_noisy.tanh()
@@ -140,13 +140,13 @@ def _zimage_forward(
             gate_mlp = select_per_token(gate_mlp_noisy, gate_mlp_clean, noise_mask, seq_len)
         else:
             mod = self.adaLN_modulation(adaln_input)
-            scale_msa, gate_msa, scale_mlp, gate_mlp = mod.unsqueeze(1).chunk(4, dim = 2)
+            scale_msa, gate_msa, scale_mlp, gate_mlp = mod.unsqueeze(1).chunk(4, dim=2)
             gate_msa, gate_mlp = gate_msa.tanh(), gate_mlp.tanh()
             scale_msa, scale_mlp = 1.0 + scale_msa, 1.0 + scale_mlp
 
         # Attention block -- fused gated residual: x + gate_msa * attention_norm2(attn_out)
         attn_out = self.attention(
-            self.attention_norm1(x) * scale_msa, attention_mask = attn_mask, freqs_cis = freqs_cis
+            self.attention_norm1(x) * scale_msa, attention_mask=attn_mask, freqs_cis=freqs_cis
         )
         x = torch.addcmul(x, gate_msa, self.attention_norm2(attn_out))
 
@@ -156,7 +156,7 @@ def _zimage_forward(
         )
     else:
         attn_out = self.attention(
-            self.attention_norm1(x), attention_mask = attn_mask, freqs_cis = freqs_cis
+            self.attention_norm1(x), attention_mask=attn_mask, freqs_cis=freqs_cis
         )
         x = x + self.attention_norm2(attn_out)
         x = x + self.ffn_norm2(self.feed_forward(self.ffn_norm1(x)))
@@ -186,20 +186,20 @@ def _flux_double_forward(
     hidden_states,
     encoder_hidden_states,
     temb,
-    image_rotary_emb = None,
-    joint_attention_kwargs = None,
+    image_rotary_emb=None,
+    joint_attention_kwargs=None,
 ):
     norm_hidden_states, gate_msa, shift_mlp, scale_mlp, gate_mlp = self.norm1(
-        hidden_states, emb = temb
+        hidden_states, emb=temb
     )
     norm_encoder_hidden_states, c_gate_msa, c_shift_mlp, c_scale_mlp, c_gate_mlp = (
-        self.norm1_context(encoder_hidden_states, emb = temb)
+        self.norm1_context(encoder_hidden_states, emb=temb)
     )
     joint_attention_kwargs = joint_attention_kwargs or {}
     attention_outputs = self.attn(
-        hidden_states = norm_hidden_states,
-        encoder_hidden_states = norm_encoder_hidden_states,
-        image_rotary_emb = image_rotary_emb,
+        hidden_states=norm_hidden_states,
+        encoder_hidden_states=norm_encoder_hidden_states,
+        image_rotary_emb=image_rotary_emb,
         **joint_attention_kwargs,
     )
     if len(attention_outputs) == 2:
@@ -261,23 +261,23 @@ def _flux_single_forward(
     hidden_states,
     encoder_hidden_states,
     temb,
-    image_rotary_emb = None,
-    joint_attention_kwargs = None,
+    image_rotary_emb=None,
+    joint_attention_kwargs=None,
 ):
     text_seq_len = encoder_hidden_states.shape[1]
-    hidden_states = torch.cat([encoder_hidden_states, hidden_states], dim = 1)
+    hidden_states = torch.cat([encoder_hidden_states, hidden_states], dim=1)
 
     residual = hidden_states
-    norm_hidden_states, gate = self.norm(hidden_states, emb = temb)
+    norm_hidden_states, gate = self.norm(hidden_states, emb=temb)
     mlp_hidden_states = self.act_mlp(self.proj_mlp(norm_hidden_states))
     joint_attention_kwargs = joint_attention_kwargs or {}
     attn_output = self.attn(
-        hidden_states = norm_hidden_states,
-        image_rotary_emb = image_rotary_emb,
+        hidden_states=norm_hidden_states,
+        image_rotary_emb=image_rotary_emb,
         **joint_attention_kwargs,
     )
 
-    hidden_states = torch.cat([attn_output, mlp_hidden_states], dim = 2)
+    hidden_states = torch.cat([attn_output, mlp_hidden_states], dim=2)
     gate = gate.unsqueeze(1)
     # fused: residual + gate * proj_out(hidden_states)
     hidden_states = torch.addcmul(residual, gate, self.proj_out(hidden_states))
@@ -314,8 +314,8 @@ def _flux2_double_forward(
     encoder_hidden_states,
     temb_mod_img,
     temb_mod_txt,
-    image_rotary_emb = None,
-    joint_attention_kwargs = None,
+    image_rotary_emb=None,
+    joint_attention_kwargs=None,
 ):
     from diffusers.models.transformers.transformer_flux2 import Flux2Modulation
 
@@ -336,9 +336,9 @@ def _flux2_double_forward(
     )
 
     attention_outputs = self.attn(
-        hidden_states = norm_hidden_states,
-        encoder_hidden_states = norm_encoder_hidden_states,
-        image_rotary_emb = image_rotary_emb,
+        hidden_states=norm_hidden_states,
+        encoder_hidden_states=norm_encoder_hidden_states,
+        image_rotary_emb=image_rotary_emb,
         **joint_attention_kwargs,
     )
     attn_output, context_attn_output = attention_outputs
@@ -387,16 +387,16 @@ def _flux2_single_forward(
     hidden_states,
     encoder_hidden_states,
     temb_mod,
-    image_rotary_emb = None,
-    joint_attention_kwargs = None,
-    split_hidden_states = False,
-    text_seq_len = None,
+    image_rotary_emb=None,
+    joint_attention_kwargs=None,
+    split_hidden_states=False,
+    text_seq_len=None,
 ):
     from diffusers.models.transformers.transformer_flux2 import Flux2Modulation
 
     if encoder_hidden_states is not None:
         text_seq_len = encoder_hidden_states.shape[1]
-        hidden_states = torch.cat([encoder_hidden_states, hidden_states], dim = 1)
+        hidden_states = torch.cat([encoder_hidden_states, hidden_states], dim=1)
 
     mod_shift, mod_scale, mod_gate = Flux2Modulation.split(temb_mod, 1)[0]
 
@@ -405,8 +405,8 @@ def _flux2_single_forward(
 
     joint_attention_kwargs = joint_attention_kwargs or {}
     attn_output = self.attn(
-        hidden_states = norm_hidden_states,
-        image_rotary_emb = image_rotary_emb,
+        hidden_states=norm_hidden_states,
+        image_rotary_emb=image_rotary_emb,
         **joint_attention_kwargs,
     )
 
@@ -447,7 +447,7 @@ def _krea2_block_forward(
     hidden_states,
     temb,
     image_rotary_emb,
-    attention_mask = None,
+    attention_mask=None,
 ):
     """``Krea2TransformerBlock.forward`` with the two inline modulations
     ``(1 + scale) * norm(x) + shift`` and the two gated residuals each fused to ``torch.addcmul``."""
@@ -458,8 +458,8 @@ def _krea2_block_forward(
     norm1 = self.norm1(hidden_states)
     attn_out = self.attn(
         torch.addcmul(preshift, norm1, 1 + prescale),
-        attention_mask = attention_mask,
-        image_rotary_emb = image_rotary_emb,
+        attention_mask=attention_mask,
+        image_rotary_emb=image_rotary_emb,
     )
     hidden_states = torch.addcmul(hidden_states, pregate, attn_out)
     norm2 = self.norm2(hidden_states)
@@ -518,7 +518,7 @@ def install_arch_patches() -> int:
         if spec is None:
             continue
         cls, attr, new_fn = spec
-        if apply_patch(cls, attr, new_fn, match_level = "relaxed"):
+        if apply_patch(cls, attr, new_fn, match_level="relaxed"):
             _patched.append((cls, attr))
         else:
             logger.warning(

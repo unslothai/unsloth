@@ -105,6 +105,7 @@ def _record_job_status(
     _win_job_status = (ok, detail)
     try:
         import logging
+
         logger = logging.getLogger(__name__)
         if ok:
             logger.info("Child-process cleanup on abnormal exit: %s", detail)
@@ -169,7 +170,7 @@ def _pdeathsig_available() -> bool:
     try:
         import ctypes
 
-        libc = ctypes.CDLL("libc.so.6", use_errno = True)
+        libc = ctypes.CDLL("libc.so.6", use_errno=True)
         current = ctypes.c_int(0)
         if libc.prctl(_PR_GET_PDEATHSIG, ctypes.byref(current), 0, 0, 0) != 0:
             return False
@@ -204,7 +205,7 @@ def _install_windows_job() -> None:
         import ctypes
         from ctypes import wintypes
 
-        kernel32 = ctypes.WinDLL("kernel32", use_last_error = True)
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
         _win_signatures(kernel32)
 
         class _BASIC(ctypes.Structure):
@@ -279,7 +280,7 @@ def _pdeathsig_preexec(owner_pid: Optional[int] = None) -> None:
     try:
         import ctypes
 
-        ctypes.CDLL("libc.so.6", use_errno = True).prctl(_PR_SET_PDEATHSIG, signal.SIGTERM)
+        ctypes.CDLL("libc.so.6", use_errno=True).prctl(_PR_SET_PDEATHSIG, signal.SIGTERM)
         parent_pid = os.getppid()
         orphaned = parent_pid != owner_pid if owner_pid is not None else parent_pid == 1
         if orphaned:
@@ -297,6 +298,7 @@ def bind_current_process_to_parent_lifetime() -> None:
     parent = None
     try:
         import multiprocessing
+
         parent = multiprocessing.parent_process()
     except Exception:
         pass
@@ -387,7 +389,7 @@ def _adopt_fork_reset() -> None:
         return
     _fork_reset_installed = True
     try:
-        os.register_at_fork(after_in_child = _reset_after_fork)
+        os.register_at_fork(after_in_child=_reset_after_fork)
     except (AttributeError, RuntimeError):
         pass
 
@@ -426,7 +428,7 @@ class _Spawner:
         self._thread = None
         try:
             self._thread = threading.Thread(
-                target = self._run, name = "unsloth-child-spawner", daemon = True
+                target=self._run, name="unsloth-child-spawner", daemon=True
             )
             self._thread.start()
         except Exception:  # noqa: BLE001 - fall back to an inline spawn
@@ -501,7 +503,7 @@ def _pid_identity(pid: int) -> Optional[str]:
     # Start time pins identity so a reused pid is never signalled later.
     if _is_linux():
         try:
-            with open(f"/proc/{pid}/stat", encoding = "utf-8") as fh:
+            with open(f"/proc/{pid}/stat", encoding="utf-8") as fh:
                 stat = fh.read()
             # Start time only. comm is mutable (prctl PR_SET_NAME, setproctitle),
             # so a child that renames itself would read as a recycled pid and be
@@ -517,7 +519,7 @@ def _pid_identity(pid: int) -> Optional[str]:
             from ctypes import wintypes
 
             PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
-            kernel32 = ctypes.WinDLL("kernel32", use_last_error = True)
+            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
             kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
             kernel32.OpenProcess.restype = wintypes.HANDLE
             kernel32.GetProcessTimes.argtypes = [wintypes.HANDLE] + [
@@ -548,12 +550,12 @@ def _pid_identity(pid: int) -> Optional[str]:
             # TZ pinned: lstart is formatted in local time.
             out = subprocess.run(
                 ["ps", "-o", "lstart=,comm=", "-p", str(pid)],
-                capture_output = True,
-                text = True,
-                encoding = "utf-8",
-                errors = "replace",
-                timeout = 5,
-                env = {**os.environ, "TZ": "UTC"},
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=5,
+                env={**os.environ, "TZ": "UTC"},
             )
             line = (out.stdout or "").strip()
             return line or None
@@ -681,7 +683,7 @@ def _windows_terminate_through_a_handle(pid: int, identity: "Optional[str]") -> 
 
         PROCESS_TERMINATE = 0x0001
         PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
-        kernel32 = ctypes.WinDLL("kernel32", use_last_error = True)
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
         kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
         kernel32.OpenProcess.restype = wintypes.HANDLE
         kernel32.TerminateProcess.argtypes = [wintypes.HANDLE, wintypes.UINT]
@@ -724,7 +726,7 @@ def _windows_filetime_now() -> "Optional[int]":
         import ctypes
         from ctypes import wintypes
 
-        kernel32 = ctypes.WinDLL("kernel32", use_last_error = True)
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
         kernel32.GetSystemTimeAsFileTime.argtypes = [ctypes.POINTER(wintypes.FILETIME)]
         kernel32.GetSystemTimeAsFileTime.restype = None
         stamp = wintypes.FILETIME()
@@ -763,7 +765,7 @@ def _windows_child_pid_map() -> "Optional[dict[int, list[int]]]":
                 ("szExeFile", wintypes.WCHAR * MAX_PATH),
             ]
 
-        kernel32 = ctypes.WinDLL("kernel32", use_last_error = True)
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
         kernel32.CreateToolhelp32Snapshot.argtypes = [wintypes.DWORD, wintypes.DWORD]
         kernel32.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
         kernel32.Process32FirstW.argtypes = [wintypes.HANDLE, ctypes.POINTER(PROCESSENTRY32W)]
@@ -819,7 +821,7 @@ def _child_pid_map() -> "Optional[dict[int, list[int]]]":
                 if not entry.isdigit():
                     continue
                 try:
-                    with open(f"/proc/{entry}/stat", encoding = "utf-8") as fh:
+                    with open(f"/proc/{entry}/stat", encoding="utf-8") as fh:
                         stat = fh.read()
                 except OSError:
                     continue
@@ -836,11 +838,11 @@ def _child_pid_map() -> "Optional[dict[int, list[int]]]":
 
             out = subprocess.run(
                 ["ps", "-A", "-o", "pid=,ppid="],
-                capture_output = True,
-                text = True,
-                encoding = "utf-8",
-                errors = "replace",
-                timeout = 5,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=5,
             )
             if out.returncode != 0:
                 return None
@@ -1599,7 +1601,7 @@ def _group_member_pids(pgid: int) -> "Optional[list[int]]":
                 if not entry.isdigit():
                     continue
                 try:
-                    with open(f"/proc/{entry}/stat", encoding = "utf-8") as fh:
+                    with open(f"/proc/{entry}/stat", encoding="utf-8") as fh:
                         stat = fh.read()
                 except OSError:
                     continue
@@ -1616,11 +1618,11 @@ def _group_member_pids(pgid: int) -> "Optional[list[int]]":
 
             out = subprocess.run(
                 ["ps", "-o", "pid=", "-g", str(pgid)],
-                capture_output = True,
-                text = True,
-                encoding = "utf-8",
-                errors = "replace",
-                timeout = 5,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=5,
             )
             # ps exits nonzero when the group is gone AND when the call itself failed, and reporting "empty" for a
             # failure lets forget_pid drop the only record of a live descendant.
@@ -1647,6 +1649,7 @@ def _breadcrumb_dir():
         return Path(override)
     try:
         from utils.paths.storage_roots import studio_root
+
         return Path(studio_root()) / "run" / "children"
     except Exception:
         return None
@@ -1697,7 +1700,7 @@ def _write_breadcrumb() -> None:
     try:
         import json
 
-        path.parent.mkdir(parents = True, exist_ok = True)
+        path.parent.mkdir(parents=True, exist_ok=True)
         payload = {
             "owner_pid": os.getpid(),
             "owner_identity": _own_identity(),
@@ -1711,7 +1714,7 @@ def _write_breadcrumb() -> None:
             ],
         }
         tmp = path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(payload), encoding = "utf-8")
+        tmp.write_text(json.dumps(payload), encoding="utf-8")
         tmp.replace(path)
     except Exception:
         pass
@@ -1750,7 +1753,7 @@ def _pid_alive(pid: int) -> bool:
             WAIT_TIMEOUT = 0x102
             ERROR_ACCESS_DENIED = 5
 
-            kernel32 = ctypes.WinDLL("kernel32", use_last_error = True)
+            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
             kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
             kernel32.OpenProcess.restype = wintypes.HANDLE
             kernel32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
@@ -1800,19 +1803,20 @@ def _pid_is_zombie(pid: int) -> bool:
         return False
     if _is_linux():
         try:
-            with open(f"/proc/{pid}/stat", encoding = "utf-8") as fh:
+            with open(f"/proc/{pid}/stat", encoding="utf-8") as fh:
                 return fh.read().rsplit(")", 1)[1].split()[0] == "Z"
         except Exception:
             return False
     try:
         import subprocess
+
         out = subprocess.run(
             ["ps", "-o", "state=", "-p", str(pid)],
-            capture_output = True,
-            text = True,
-            encoding = "utf-8",
-            errors = "replace",
-            timeout = 5,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=5,
         )
         return (out.stdout or "").strip().startswith("Z")
     except Exception:
@@ -1893,7 +1897,7 @@ def adopt_pid(
             import ctypes
             from ctypes import wintypes
 
-            kernel32 = ctypes.WinDLL("kernel32", use_last_error = True)
+            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
             _win_signatures(kernel32)
             kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
             kernel32.OpenProcess.restype = wintypes.HANDLE
@@ -2130,7 +2134,7 @@ def _reap_one_record(path, timeout: float) -> "tuple[list[int], bool]":
 
     killed: "list[int]" = []
     try:
-        record = json.loads(path.read_text(encoding = "utf-8"))
+        record = json.loads(path.read_text(encoding="utf-8"))
     except Exception:
         _unlink(path)
         return killed, False
@@ -2202,7 +2206,7 @@ def _reap_one_record(path, timeout: float) -> "tuple[list[int], bool]":
             # application start must not be the way back in.
             tree_stands = not _windows_terminate_validated_tree(pid, identity)
         else:
-            _posix_terminate(pid, timeout = timeout)
+            _posix_terminate(pid, timeout=timeout)
         killed.append(pid)
         if tree_stands:
             unresolved = True
@@ -2216,6 +2220,7 @@ def _reap_one_record(path, timeout: float) -> "tuple[list[int], bool]":
     if killed:
         try:
             import logging
+
             logging.getLogger(__name__).warning(
                 "Reaped %d orphaned child process(es) left by a previous Unsloth: %s",
                 len(killed),
@@ -2336,9 +2341,9 @@ def _windows_terminate_pid(pid: int, identity: "Optional[str]" = None) -> bool:
     try:
         completed = subprocess.run(
             ["taskkill", "/PID", str(pid), "/F"],
-            capture_output = True,
-            timeout = 15,
-            creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            capture_output=True,
+            timeout=15,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
         # 128 is "already gone", as in the tree call below.
         if completed.returncode in (0, 128):
@@ -2370,9 +2375,9 @@ def _windows_terminate_tree(pid: int) -> bool:
     try:
         completed = subprocess.run(
             ["taskkill", "/PID", str(pid), "/T", "/F"],
-            capture_output = True,
-            timeout = 15,
-            creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            capture_output=True,
+            timeout=15,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
         # check = False does not raise, so the status is the only signal that
         # the tree is still standing. 128 is "already gone".
@@ -2389,7 +2394,7 @@ def _windows_terminate_tree(pid: int) -> bool:
 
 def _unlink(path) -> None:
     try:
-        path.unlink(missing_ok = True)
+        path.unlink(missing_ok=True)
     except Exception:
         pass
 

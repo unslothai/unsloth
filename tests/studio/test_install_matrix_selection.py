@@ -76,11 +76,11 @@ def _key(jid: str) -> str:
 
 
 def _doc(name: str) -> dict:
-    return yaml.safe_load((WORKFLOWS / name).read_text(encoding = "utf-8"))
+    return yaml.safe_load((WORKFLOWS / name).read_text(encoding="utf-8"))
 
 
 def _legs(matrix_file: str) -> dict:
-    legs = yaml.safe_load((REPO / matrix_file).read_text(encoding = "utf-8"))
+    legs = yaml.safe_load((REPO / matrix_file).read_text(encoding="utf-8"))
     assert isinstance(legs, dict), f"{matrix_file}: expected a mapping of job -> legs"
     return legs
 
@@ -89,10 +89,10 @@ def _select(matrix_file: str, event: str) -> dict[str, str]:
     """Run the selector the way the `select` job does and return its output lines."""
     out = subprocess.run(
         [sys.executable, str(SELECTOR), "--file", matrix_file, "--event", event],
-        cwd = REPO,
-        capture_output = True,
-        text = True,
-        check = True,
+        cwd=REPO,
+        capture_output=True,
+        text=True,
+        check=True,
     ).stdout
     return dict(line.split("=", 1) for line in out.splitlines() if line)
 
@@ -274,7 +274,7 @@ _TAURI_TAG = re.compile(r"^\\\[TAURI:STEP\\\]\s*")
 
 def _installer_text(job: str) -> str:
     return "\n".join(
-        (REPO / name).read_text(encoding = "utf-8", errors = "replace")
+        (REPO / name).read_text(encoding="utf-8", errors="replace")
         for name in INSTALLER_SOURCES[job]
     )
 
@@ -291,7 +291,7 @@ def _markers(matrix_file: str) -> list[tuple[str, str, str]]:
 @pytest.mark.parametrize(
     "job,label,marker",
     _markers(".github/ci/interrupted-install-matrix.yml"),
-    ids = lambda v: str(v).replace(" ", "-"),
+    ids=lambda v: str(v).replace(" ", "-"),
 )
 def test_every_interrupt_marker_is_text_the_installer_still_prints(job, label, marker):
     """The marker is an ERE handed to `grep -qE` against the install log

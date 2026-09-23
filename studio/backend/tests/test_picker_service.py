@@ -119,30 +119,30 @@ def test_chat_template_from_tokenizer_config_falls_back_to_first_entry():
 
 
 def test_chat_template_from_tokenizer_dir_prefers_jinja_file(tmp_path):
-    (tmp_path / "chat_template.jinja").write_text("FROM_JINJA", encoding = "utf-8")
+    (tmp_path / "chat_template.jinja").write_text("FROM_JINJA", encoding="utf-8")
     (tmp_path / "tokenizer_config.json").write_text(
-        json.dumps({"chat_template": "FROM_CONFIG"}), encoding = "utf-8"
+        json.dumps({"chat_template": "FROM_CONFIG"}), encoding="utf-8"
     )
     assert _chat_template_from_tokenizer_dir(tmp_path) == "FROM_JINJA"
 
 
 def test_chat_template_from_tokenizer_dir_reads_tokenizer_config(tmp_path):
     (tmp_path / "tokenizer_config.json").write_text(
-        json.dumps({"chat_template": "FROM_CONFIG"}), encoding = "utf-8"
+        json.dumps({"chat_template": "FROM_CONFIG"}), encoding="utf-8"
     )
     assert _chat_template_from_tokenizer_dir(tmp_path) == "FROM_CONFIG"
 
 
 def test_chat_template_from_dir_without_variant_prefers_tokenizer(tmp_path):
     (tmp_path / "tokenizer_config.json").write_text(
-        json.dumps({"chat_template": "FROM_CONFIG"}), encoding = "utf-8"
+        json.dumps({"chat_template": "FROM_CONFIG"}), encoding="utf-8"
     )
     assert _chat_template_from_dir(tmp_path) == "FROM_CONFIG"
 
 
 def test_chat_template_from_dir_with_variant_still_prefers_tokenizer(tmp_path, monkeypatch):
     (tmp_path / "tokenizer_config.json").write_text(
-        json.dumps({"chat_template": "FROM_CONFIG"}), encoding = "utf-8"
+        json.dumps({"chat_template": "FROM_CONFIG"}), encoding="utf-8"
     )
     (tmp_path / "model-Q4_K_M.gguf").write_bytes(b"")
     monkeypatch.setattr("picker.service.read_gguf_chat_template", lambda _path: "FROM_GGUF")
@@ -165,7 +165,7 @@ def test_read_default_chat_template_direct_gguf_prefers_sidecar(tmp_path, monkey
     gguf = tmp_path / "model-Q4_K_M.gguf"
     gguf.write_bytes(b"")
     (tmp_path / "tokenizer_config.json").write_text(
-        json.dumps({"chat_template": "FROM_CONFIG"}), encoding = "utf-8"
+        json.dumps({"chat_template": "FROM_CONFIG"}), encoding="utf-8"
     )
     monkeypatch.setattr("picker.service._build_browse_allowlist", lambda: [tmp_path])
     monkeypatch.setattr("picker.service.read_gguf_chat_template", lambda _path: "FROM_GGUF")
@@ -187,7 +187,7 @@ def test_tokenizer_config_over_size_limit_is_skipped_not_parsed(tmp_path):
     # hostile sidecar cannot exhaust memory.
     padding = "x" * (MAX_TEMPLATE_METADATA_BYTES + 1024)
     (tmp_path / "tokenizer_config.json").write_text(
-        json.dumps({"chat_template": "HELLO", "_pad": padding}), encoding = "utf-8"
+        json.dumps({"chat_template": "HELLO", "_pad": padding}), encoding="utf-8"
     )
     assert _chat_template_from_tokenizer_dir(tmp_path) is None
 
@@ -195,7 +195,7 @@ def test_tokenizer_config_over_size_limit_is_skipped_not_parsed(tmp_path):
 def test_processor_json_over_size_limit_is_skipped_not_parsed(tmp_path):
     padding = "x" * (MAX_TEMPLATE_METADATA_BYTES + 1024)
     (tmp_path / "chat_template.json").write_text(
-        json.dumps({"default": "HELLO", "_pad": padding}), encoding = "utf-8"
+        json.dumps({"default": "HELLO", "_pad": padding}), encoding="utf-8"
     )
     assert _chat_template_from_processor_json(tmp_path) is None
 
@@ -203,7 +203,7 @@ def test_processor_json_over_size_limit_is_skipped_not_parsed(tmp_path):
 def test_tokenizer_config_at_size_limit_is_still_read(tmp_path):
     # A normal-sized config is unaffected by the bound (regression guard).
     (tmp_path / "tokenizer_config.json").write_text(
-        json.dumps({"chat_template": "FROM_CONFIG"}), encoding = "utf-8"
+        json.dumps({"chat_template": "FROM_CONFIG"}), encoding="utf-8"
     )
     assert _chat_template_from_tokenizer_dir(tmp_path) == "FROM_CONFIG"
 
@@ -222,7 +222,7 @@ def test_remote_template_over_size_limit_is_skipped_before_download(monkeypatch)
         raise AssertionError("oversized remote template must not be downloaded")
 
     def _fake_get_paths_info(self, repo_id, paths, **kwargs):
-        return [SimpleNamespace(path = p, size = MAX_TEMPLATE_METADATA_BYTES + 1) for p in paths]
+        return [SimpleNamespace(path=p, size=MAX_TEMPLATE_METADATA_BYTES + 1) for p in paths]
 
     monkeypatch.setattr(huggingface_hub, "hf_hub_download", _fail_download)
     monkeypatch.setattr(huggingface_hub.HfApi, "get_paths_info", _fake_get_paths_info)
@@ -239,10 +239,10 @@ def test_remote_oversized_jinja_falls_through_to_tokenizer_template(tmp_path, mo
     from picker.schemas import MAX_CHAT_TEMPLATE_BYTES
 
     big_jinja = tmp_path / "chat_template.jinja"
-    big_jinja.write_text("{{ x }}" * (MAX_CHAT_TEMPLATE_BYTES // 4), encoding = "utf-8")
+    big_jinja.write_text("{{ x }}" * (MAX_CHAT_TEMPLATE_BYTES // 4), encoding="utf-8")
     assert MAX_CHAT_TEMPLATE_BYTES < big_jinja.stat().st_size < MAX_TEMPLATE_METADATA_BYTES
     tokenizer_config = tmp_path / "tokenizer_config.json"
-    tokenizer_config.write_text(json.dumps({"chat_template": "SMALL_TEMPLATE"}), encoding = "utf-8")
+    tokenizer_config.write_text(json.dumps({"chat_template": "SMALL_TEMPLATE"}), encoding="utf-8")
     files = {
         "chat_template.jinja": big_jinja,
         "tokenizer_config.json": tokenizer_config,
@@ -266,8 +266,8 @@ def test_remote_oversized_jinja_falls_through_to_tokenizer_template(tmp_path, mo
     def _fake_get_paths_info(self, repo_id, paths, **kwargs):
         return [
             SimpleNamespace(
-                path = p,
-                size = files[p].stat().st_size if p in files else 0,
+                path=p,
+                size=files[p].stat().st_size if p in files else 0,
             )
             for p in paths
         ]

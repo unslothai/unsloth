@@ -129,7 +129,7 @@ def _minimax_component_has_weights(directory: Path, weight_stem: str) -> bool:
                 or index_path.stat().st_size > _MAX_AUDIO_METADATA_BYTES
             ):
                 continue
-            index = json.loads(index_path.read_text(encoding = "utf-8-sig"))
+            index = json.loads(index_path.read_text(encoding="utf-8-sig"))
             weight_map = index.get("weight_map") if isinstance(index, dict) else None
             if not isinstance(weight_map, dict) or not weight_map:
                 continue
@@ -171,7 +171,7 @@ def higgs_tts2_codec_local_complete(codec_path: str) -> bool:
         root = Path(codec_path).expanduser()
         if root.is_file():
             root = root.parent
-        config = _read_local_audio_metadata(root, "config.json", reject_oversized = True)
+        config = _read_local_audio_metadata(root, "config.json", reject_oversized=True)
         return str(
             config.get("model_type") or ""
         ).lower() == "higgs_audio_v2_tokenizer" and _minimax_component_has_weights(root, "model")
@@ -206,22 +206,22 @@ def minimax_music3_local_components_complete(model_path) -> bool:
                 return False
             directory = root / component
             if weight_stem is not None:
-                if not _read_local_audio_metadata(directory, "config.json", reject_oversized = True):
+                if not _read_local_audio_metadata(directory, "config.json", reject_oversized=True):
                     return False
                 if not _minimax_component_has_weights(directory, weight_stem):
                     return False
             elif component == "scheduler":
                 if not _read_local_audio_metadata(
-                    directory, "scheduler_config.json", reject_oversized = True
+                    directory, "scheduler_config.json", reject_oversized=True
                 ):
                     return False
             elif not _read_local_audio_metadata(
-                directory, "tokenizer_config.json", reject_oversized = True
+                directory, "tokenizer_config.json", reject_oversized=True
             ) or not _read_local_audio_metadata(
                 directory,
                 "tokenizer.json",
-                reject_oversized = True,
-                max_bytes = _MAX_MINIMAX_TOKENIZER_BYTES,
+                reject_oversized=True,
+                max_bytes=_MAX_MINIMAX_TOKENIZER_BYTES,
             ):
                 return False
         return True
@@ -274,7 +274,7 @@ def _read_audio_metadata(
             return _read_local_audio_metadata(
                 path,
                 filename,
-                reject_oversized = reject_oversized,
+                reject_oversized=reject_oversized,
             )
 
         from huggingface_hub import hf_hub_download
@@ -282,16 +282,16 @@ def _read_audio_metadata(
 
         metadata_path = Path(
             hf_hub_download(
-                repo_id = normalized,
-                filename = filename,
-                token = hf_token,
-                cache_dir = active_hf_hub_cache(),
+                repo_id=normalized,
+                filename=filename,
+                token=hf_token,
+                cache_dir=active_hf_hub_cache(),
             )
         )
         return _read_local_audio_metadata(
             metadata_path.parent,
             metadata_path.name,
-            reject_oversized = reject_oversized,
+            reject_oversized=reject_oversized,
         )
     except _AudioMetadataTooLarge:
         raise
@@ -305,9 +305,9 @@ def _read_audio_metadata(
 def _moss_local_codec_target(model_name: str, hf_token: Optional[str] = None) -> str:
     """Resolve and freeze the codec source the publisher processor will load."""
     processor_config = _read_audio_metadata(
-        model_name, "processor_config.json", hf_token, reject_oversized = True
+        model_name, "processor_config.json", hf_token, reject_oversized=True
     )
-    model_config = _read_audio_metadata(model_name, "config.json", hf_token, reject_oversized = True)
+    model_config = _read_audio_metadata(model_name, "config.json", hf_token, reject_oversized=True)
     nested = processor_config.get("audio_tokenizer")
     candidates = (
         processor_config.get("audio_tokenizer_name_or_path"),
@@ -323,10 +323,10 @@ def _moss_local_codec_target(model_name: str, hf_token: Optional[str] = None) ->
 def _higgs_tts2_codec_target(model_name: str, hf_token: Optional[str] = None) -> str:
     """Resolve the codec source that the Higgs TTS 2 processor will load."""
     audio_tokenizer_config = _read_audio_metadata(
-        model_name, "audio_tokenizer_config.json", hf_token, reject_oversized = True
+        model_name, "audio_tokenizer_config.json", hf_token, reject_oversized=True
     )
     processor_config = _read_audio_metadata(
-        model_name, "processor_config.json", hf_token, reject_oversized = True
+        model_name, "processor_config.json", hf_token, reject_oversized=True
     )
     nested = processor_config.get("audio_tokenizer")
     candidates = (
@@ -342,7 +342,7 @@ def _higgs_tts2_codec_target(model_name: str, hf_token: Optional[str] = None) ->
 
 def _higgs_tts3_codec_target(model_name: str, hf_token: Optional[str] = None) -> str:
     """Resolve the codec source that the Higgs TTS 3 remote model will load."""
-    model_config = _read_audio_metadata(model_name, "config.json", hf_token, reject_oversized = True)
+    model_config = _read_audio_metadata(model_name, "config.json", hf_token, reject_oversized=True)
     candidate = model_config.get("audio_tokenizer_id")
     if isinstance(candidate, str) and candidate.strip():
         return candidate.strip()
@@ -499,7 +499,7 @@ def _moss_transformers5_config_compat(codec_source: str, token_kwargs: dict[str,
         try:
             auto_config.from_pretrained(
                 codec_source,
-                trust_remote_code = True,
+                trust_remote_code=True,
                 **token_kwargs,
             )
         finally:
@@ -509,6 +509,7 @@ def _moss_transformers5_config_compat(codec_source: str, token_kwargs: dict[str,
 def _repair_moss_nano_rotary_buffers(model) -> None:
     """Rebuild buffers that Transformers 5 leaves uninitialized after meta loading."""
     import torch
+
     for decoder_name in ("transformer", "local_transformer"):
         decoder = getattr(model, decoder_name, None)
         config = getattr(decoder, "config", None)
@@ -528,8 +529,8 @@ def _repair_moss_nano_rotary_buffers(model) -> None:
                         0,
                         dimension,
                         2,
-                        dtype = torch.float32,
-                        device = inv_freq.device,
+                        dtype=torch.float32,
+                        device=inv_freq.device,
                     )
                     / dimension
                 )
@@ -549,7 +550,7 @@ def _seeded_torch_rng(seed: Optional[int], device: str):
     accelerator = getattr(torch, device_type, None) if device_type != "cpu" else None
     devices = list(range(accelerator.device_count())) if accelerator is not None else []
     fork_device_type = device_type if accelerator is not None else "cuda"
-    with torch.random.fork_rng(devices = devices, device_type = fork_device_type):
+    with torch.random.fork_rng(devices=devices, device_type=fork_device_type):
         torch.random.default_generator.manual_seed(int(seed))
         if accelerator is not None:
             manual_seed_all = getattr(accelerator, "manual_seed_all", None)
@@ -616,10 +617,10 @@ def _native_audio_file_is_cached(
             current = try_to_load_from_cache(
                 repo_id,
                 filename,
-                cache_dir = root,
-                revision = revision,
+                cache_dir=root,
+                revision=revision,
             )
-            default = try_to_load_from_cache(repo_id, filename, cache_dir = root)
+            default = try_to_load_from_cache(repo_id, filename, cache_dir=root)
             if not isinstance(current, str) or not isinstance(default, str):
                 continue
             current_path = Path(current)
@@ -685,7 +686,7 @@ def native_audio_download_plan(model_name: str, hf_token: Optional[str] = None) 
 
     from huggingface_hub import HfApi
 
-    api = HfApi(token = hf_token or None)
+    api = HfApi(token=hf_token or None)
     entries = []
     total_bytes = 0
     required_bytes = 0
@@ -699,7 +700,7 @@ def native_audio_download_plan(model_name: str, hf_token: Optional[str] = None) 
         checkpoint = index == 0
         if checkpoint and local_checkpoint:
             continue
-        info = api.model_info(repo_id, files_metadata = True)
+        info = api.model_info(repo_id, files_metadata=True)
         siblings = _native_audio_repo_files(
             audio_type,
             checkpoint,
@@ -777,7 +778,7 @@ def _as_wav_bytes(audio, sample_rate: int) -> bytes:
 
     if hasattr(audio, "detach"):
         audio = audio.detach().float().cpu().numpy()
-    array = np.asarray(audio, dtype = np.float32)
+    array = np.asarray(audio, dtype=np.float32)
     while array.ndim > 2 and array.shape[0] == 1:
         array = array[0]
     if array.ndim == 2 and array.shape[0] <= 8 and array.shape[1] > array.shape[0]:
@@ -786,7 +787,7 @@ def _as_wav_bytes(audio, sample_rate: int) -> bytes:
         raise RuntimeError(f"Audio decoder returned unsupported shape {array.shape}")
 
     buffer = io.BytesIO()
-    sf.write(buffer, array, int(sample_rate), format = "WAV", subtype = "PCM_16")
+    sf.write(buffer, array, int(sample_rate), format="WAV", subtype="PCM_16")
     return buffer.getvalue()
 
 
@@ -905,7 +906,7 @@ class NativeAudioBackend:
         self,
         config,
         max_seq_length: int = 2048,
-        dtype = None,
+        dtype=None,
         load_in_4bit: bool = False,
         hf_token: Optional[str] = None,
         trust_remote_code: bool = False,
@@ -929,6 +930,7 @@ class NativeAudioBackend:
         if audio_type == "minimax_music3" and self.device != "cuda":
             # Chosen, not missing: the generic message sends users hunting for a card.
             from core.inference.audio_device import audio_device_forces_cpu
+
             if audio_device_forces_cpu(self.device_preference):
                 raise RuntimeError(
                     "MiniMax Music 3 cannot be loaded into CPU RAM: its official local "
@@ -941,6 +943,7 @@ class NativeAudioBackend:
             )
         if audio_type == "minimax_music3":
             import torch
+
             if getattr(torch.version, "hip", None):
                 raise RuntimeError(
                     "MiniMax Music 3 currently requires an NVIDIA CUDA GPU; "
@@ -992,10 +995,10 @@ class NativeAudioBackend:
             processor.audio_tokenizer = self._move(audio_tokenizer)
         model = HiggsAudioV2ForConditionalGeneration.from_pretrained(
             source,
-            torch_dtype = self._dtype(),
+            torch_dtype=self._dtype(),
             **token_kwargs,
         )
-        entry.update(model = self._move(model), processor = processor, sample_rate = 24000)
+        entry.update(model=self._move(model), processor=processor, sample_rate=24000)
 
     def _load_moss_local(
         self, entry: dict[str, Any], source: str, hf_token: Optional[str], trust_remote_code: bool
@@ -1007,8 +1010,8 @@ class NativeAudioBackend:
         _moss_transformers5_config_compat(codec_source, token_kwargs)
         processor = AutoProcessor.from_pretrained(
             source,
-            trust_remote_code = trust_remote_code,
-            codec_path = codec_source,
+            trust_remote_code=trust_remote_code,
+            codec_path=codec_source,
             **token_kwargs,
         )
         audio_tokenizer = getattr(processor, "audio_tokenizer", None)
@@ -1019,13 +1022,13 @@ class NativeAudioBackend:
             self._configure_moss_cuda_sdpa()
         model = AutoModel.from_pretrained(
             source,
-            trust_remote_code = trust_remote_code,
-            attn_implementation = attention,
-            torch_dtype = self._dtype(),
+            trust_remote_code=trust_remote_code,
+            attn_implementation=attention,
+            torch_dtype=self._dtype(),
             **token_kwargs,
         )
         sample_rate = int(getattr(processor.model_config, "sampling_rate", 48000))
-        entry.update(model = self._move(model), processor = processor, sample_rate = sample_rate)
+        entry.update(model=self._move(model), processor=processor, sample_rate=sample_rate)
 
     def _load_moss_nano(
         self, entry: dict[str, Any], source: str, hf_token: Optional[str], trust_remote_code: bool
@@ -1039,26 +1042,26 @@ class NativeAudioBackend:
             self._configure_moss_cuda_sdpa()
         model = AutoModelForCausalLM.from_pretrained(
             source,
-            trust_remote_code = trust_remote_code,
-            attn_implementation = attention,
-            local_transformer_attn_implementation = attention,
-            torch_dtype = self._dtype(),
+            trust_remote_code=trust_remote_code,
+            attn_implementation=attention,
+            local_transformer_attn_implementation=attention,
+            torch_dtype=self._dtype(),
             **token_kwargs,
         )
         _repair_moss_nano_rotary_buffers(model)
         codec = AutoModel.from_pretrained(
             MOSS_NANO_CODEC_REPO,
-            trust_remote_code = trust_remote_code,
+            trust_remote_code=trust_remote_code,
             **token_kwargs,
         )
         tokenizer = AutoTokenizer.from_pretrained(
-            source, trust_remote_code = trust_remote_code, **token_kwargs
+            source, trust_remote_code=trust_remote_code, **token_kwargs
         )
         entry.update(
-            model = self._move(model),
-            processor = tokenizer,
-            audio_codec = self._move(codec),
-            sample_rate = 48000,
+            model=self._move(model),
+            processor=tokenizer,
+            audio_codec=self._move(codec),
+            sample_rate=48000,
         )
 
     def _load_higgs_tts3(
@@ -1072,15 +1075,15 @@ class NativeAudioBackend:
         tokenizer = AutoTokenizer.from_pretrained(source, **token_kwargs)
         model = AutoModelForCausalLM.from_pretrained(
             source,
-            trust_remote_code = trust_remote_code,
-            torch_dtype = self._dtype(),
+            trust_remote_code=trust_remote_code,
+            torch_dtype=self._dtype(),
             **token_kwargs,
         )
         model = self._move(model)
         codec = AutoModel.from_pretrained(
             codec_source,
-            trust_remote_code = trust_remote_code,
-            dtype = torch.float32,
+            trust_remote_code=trust_remote_code,
+            dtype=torch.float32,
             **token_kwargs,
         )
         codec = self._move(codec)
@@ -1088,7 +1091,7 @@ class NativeAudioBackend:
             parameter.requires_grad_(False)
         model._audio_codec = codec
         sample_rate = int(getattr(model.config, "sample_rate", 24000))
-        entry.update(model = model, processor = tokenizer, sample_rate = sample_rate)
+        entry.update(model=model, processor=tokenizer, sample_rate=sample_rate)
 
     def _load_minimax_music3(
         self, entry: dict[str, Any], source: str, hf_token: Optional[str]
@@ -1096,14 +1099,14 @@ class NativeAudioBackend:
         from diffusers import ModularPipeline
 
         token_kwargs = self._token_kwargs(hf_token)
-        pipeline = ModularPipeline.from_pretrained(source, trust_remote_code = False, **token_kwargs)
+        pipeline = ModularPipeline.from_pretrained(source, trust_remote_code=False, **token_kwargs)
         pipeline.load_components(
-            pretrained_model_name_or_path = source,
-            dtype = self._dtype(),
+            pretrained_model_name_or_path=source,
+            dtype=self._dtype(),
             **token_kwargs,
         )
         pipeline.to(self.device)
-        entry.update(pipeline = pipeline, sample_rate = int(pipeline.sampling_rate))
+        entry.update(pipeline=pipeline, sample_rate=int(pipeline.sampling_rate))
 
     def generate_audio_response(
         self,
@@ -1114,8 +1117,8 @@ class NativeAudioBackend:
         min_p: float = 0.0,
         max_new_tokens: int = 2048,
         repetition_penalty: float = 1.0,
-        use_adapter = None,
-        cancel_event = None,
+        use_adapter=None,
+        cancel_event=None,
         instructions: Optional[str] = None,
         language: Optional[str] = None,
         seed: Optional[int] = None,
@@ -1219,18 +1222,18 @@ class NativeAudioBackend:
         ]
         inputs = processor.apply_chat_template(
             conversation,
-            add_generation_prompt = True,
-            tokenize = True,
-            return_dict = True,
-            sampling_rate = entry["sample_rate"],
-            return_tensors = "pt",
+            add_generation_prompt=True,
+            tokenize=True,
+            return_dict=True,
+            sampling_rate=entry["sample_rate"],
+            return_tensors="pt",
         ).to(model.device)
         kwargs = {
             "max_new_tokens": int(max_new_tokens),
             "do_sample": float(temperature) > 0,
         }
         if kwargs["do_sample"]:
-            kwargs.update(temperature = float(temperature), top_p = float(top_p), top_k = int(top_k))
+            kwargs.update(temperature=float(temperature), top_p=float(top_p), top_k=int(top_k))
         stopping = _stopping_criteria(cancel_event)
         if stopping is not None:
             kwargs["stopping_criteria"] = stopping
@@ -1263,13 +1266,13 @@ class NativeAudioBackend:
             [
                 [
                     processor.build_user_message(
-                        text = text,
-                        instruction = instructions,
-                        language = language,
+                        text=text,
+                        instruction=instructions,
+                        language=language,
                     )
                 ]
             ],
-            mode = "generation",
+            mode="generation",
         )
         kwargs = {
             "input_ids": batch["input_ids"].to(self.device),
@@ -1316,8 +1319,9 @@ class NativeAudioBackend:
         cancel_event,
     ) -> Tuple[bytes, int]:
         from core.inference.chat_template_helpers import neutralize_tts_prompt_text
+
         text = neutralize_tts_prompt_text(text, "moss_tts_nano")
-        with tempfile.TemporaryDirectory(prefix = "unsloth-moss-nano-") as temp_dir:
+        with tempfile.TemporaryDirectory(prefix="unsloth-moss-nano-") as temp_dir:
             output_path = Path(temp_dir) / "speech.wav"
             model = entry["model"]
             cancel_hooks = []
@@ -1342,22 +1346,22 @@ class NativeAudioBackend:
             try:
                 with _moss_nano_soundfile_save(model):
                     result = model.inference(
-                        text = text,
-                        output_audio_path = output_path,
-                        mode = "continuation",
-                        text_tokenizer = entry["processor"],
-                        audio_tokenizer = entry["audio_codec"],
-                        device = self.device,
-                        max_new_frames = int(max_new_tokens),
-                        do_sample = float(temperature) > 0,
-                        text_temperature = MOSS_NANO_TEXT_TEMPERATURE,
-                        text_top_p = MOSS_NANO_TEXT_TOP_P,
-                        text_top_k = MOSS_NANO_TEXT_TOP_K,
-                        audio_temperature = max(0.0, float(temperature)),
-                        audio_top_p = float(top_p),
-                        audio_top_k = int(top_k),
-                        audio_repetition_penalty = float(repetition_penalty),
-                        use_kv_cache = True,
+                        text=text,
+                        output_audio_path=output_path,
+                        mode="continuation",
+                        text_tokenizer=entry["processor"],
+                        audio_tokenizer=entry["audio_codec"],
+                        device=self.device,
+                        max_new_frames=int(max_new_tokens),
+                        do_sample=float(temperature) > 0,
+                        text_temperature=MOSS_NANO_TEXT_TEMPERATURE,
+                        text_top_p=MOSS_NANO_TEXT_TOP_P,
+                        text_top_k=MOSS_NANO_TEXT_TOP_K,
+                        audio_temperature=max(0.0, float(temperature)),
+                        audio_top_p=float(top_p),
+                        audio_top_k=int(top_k),
+                        audio_repetition_penalty=float(repetition_penalty),
+                        use_kv_cache=True,
                     )
             finally:
                 for cancel_hook in cancel_hooks:
@@ -1382,10 +1386,10 @@ class NativeAudioBackend:
             audio = model.generate_speech(
                 text,
                 entry["processor"],
-                max_new_tokens = int(max_new_tokens),
-                temperature = max(0.0, float(temperature)),
-                top_p = float(top_p),
-                top_k = int(top_k),
+                max_new_tokens=int(max_new_tokens),
+                temperature=max(0.0, float(temperature)),
+                top_p=float(top_p),
+                top_k=int(top_k),
             )
         finally:
             if cancel_hook is not None:
@@ -1409,10 +1413,10 @@ class NativeAudioBackend:
         frame_rate = float(getattr(pipeline, "frame_rate", 25.0) or 25.0)
         audio_duration = float(max(1, int(max_new_tokens))) / frame_rate
         pipeline_kwargs = dict(
-            prompt = prompt,
-            lyrics = _minimax_lyrics_for_pipeline(lyrics),
-            audio_duration = audio_duration,
-            output = "audios",
+            prompt=prompt,
+            lyrics=_minimax_lyrics_for_pipeline(lyrics),
+            audio_duration=audio_duration,
+            output="audios",
         )
         if generator is not None:
             pipeline_kwargs["generator"] = generator
@@ -1452,11 +1456,12 @@ class NativeAudioBackend:
         self.reset_generation_state()
         return True
 
-    def reset_generation_state(self, caller_cancel_event = None) -> None:
+    def reset_generation_state(self, caller_cancel_event=None) -> None:
         del caller_cancel_event
         gc.collect()
         try:
             import torch
+
             if self.device == "cuda":
                 torch.cuda.empty_cache()
             elif self.device == "xpu" and hasattr(torch, "xpu"):
@@ -1464,4 +1469,4 @@ class NativeAudioBackend:
             elif self.device == "mps" and hasattr(torch, "mps"):
                 torch.mps.empty_cache()
         except Exception:
-            logger.debug("Could not clear native audio device cache", exc_info = True)
+            logger.debug("Could not clear native audio device cache", exc_info=True)

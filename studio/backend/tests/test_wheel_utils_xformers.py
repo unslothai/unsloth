@@ -71,7 +71,7 @@ class TestWheelPlatformTag:
         now resolves. Guarded here because the probe shells out otherwise."""
         monkeypatch.setattr(wheel_utils, "wheel_platform_tag", lambda: "win_amd64")
         assert wheel_utils.probe_torch_wheel_env() is None
-        assert wheel_utils.probe_torch_wheel_env(timeout = 5) is None
+        assert wheel_utils.probe_torch_wheel_env(timeout=5) is None
 
 
 class TestXformersCudaFamily:
@@ -109,7 +109,7 @@ class TestXformersWheelUrl:
         self, torch_version, cuda_version, expected_family, expected_version
     ):
         url = wheel_utils.xformers_wheel_url(
-            _env(torch_version = torch_version, cuda_version = cuda_version)
+            _env(torch_version=torch_version, cuda_version=cuda_version)
         )
         assert url == (
             f"https://download.pytorch.org/whl/{expected_family}"
@@ -117,7 +117,7 @@ class TestXformersWheelUrl:
         )
 
     def test_linux_keeps_its_own_platform_leaf(self):
-        url = wheel_utils.xformers_wheel_url(_env(platform_tag = "linux_x86_64"))
+        url = wheel_utils.xformers_wheel_url(_env(platform_tag="linux_x86_64"))
         assert url == (
             "https://download.pytorch.org/whl/cu130"
             "/xformers-0.0.34-cp39-abi3-manylinux_2_28_x86_64.whl"
@@ -128,7 +128,7 @@ class TestXformersWheelUrl:
         into the URL. (0.0.30 and earlier did ship one wheel per cpXY, which is exactly why
         torch 2.7.0 is not in the matrix.)"""
         urls = {
-            wheel_utils.xformers_wheel_url(_env(python_tag = tag))
+            wheel_utils.xformers_wheel_url(_env(python_tag=tag))
             for tag in ("cp39", "cp310", "cp311", "cp312", "cp313", "cp314")
         }
         assert len(urls) == 1 and None not in urls
@@ -159,7 +159,7 @@ class TestXformersWheelUrl:
         closest thing" -- a neighbouring CUDA family is exactly the reported bug."""
         assert (
             wheel_utils.xformers_wheel_url(
-                _env(torch_version = torch_version, cuda_version = cuda_version)
+                _env(torch_version=torch_version, cuda_version=cuda_version)
             )
             is None
         ), why
@@ -183,7 +183,7 @@ class TestXformersWheelUrl:
 def test_flash_attn_resolution_is_untouched():
     """direct_wheel_url / flash_attn_wheel_url share the env dict; the two new keys must
     not change a single flash-attn URL."""
-    env = _env(platform_tag = "linux_x86_64", python_tag = "cp312", cuda_major = "12")
+    env = _env(platform_tag="linux_x86_64", python_tag="cp312", cuda_major="12")
     assert wheel_utils.flash_attn_wheel_url(env) == (
         "https://github.com/Dao-AILab/flash-attention/releases/download/v2.8.1"
         "/flash_attn-2.8.1+cu12torch2.10cxx11abiTRUE-cp312-cp312-linux_x86_64.whl"
@@ -224,10 +224,10 @@ def test_every_url_the_matrix_can_produce_is_live(platform_tag):
             for python_tag in ("cp39", "cp310", "cp311", "cp312", "cp313", "cp314"):
                 url = wheel_utils.xformers_wheel_url(
                     _env(
-                        torch_version = f"{release}+{family}",
-                        cuda_version = cuda_for_family[family],
-                        python_tag = python_tag,
-                        platform_tag = platform_tag,
+                        torch_version=f"{release}+{family}",
+                        cuda_version=cuda_for_family[family],
+                        python_tag=python_tag,
+                        platform_tag=platform_tag,
                     )
                 )
                 if url is not None:
@@ -237,7 +237,7 @@ def test_every_url_the_matrix_can_produce_is_live(platform_tag):
     dead = []
     for url in sorted(urls):
         try:
-            with urllib.request.urlopen(urllib.request.Request(url, method = "HEAD"), timeout = 30):
+            with urllib.request.urlopen(urllib.request.Request(url, method="HEAD"), timeout=30):
                 pass
         except urllib.error.HTTPError as exc:
             # Only a 404 says the matrix row names a wheel that does not exist. A 403 / 429
@@ -268,14 +268,14 @@ class TestStableAbiPatchReleases:
     def test_a_patch_release_above_the_floor_resolves_to_the_stable_abi_wheel(self, torch_version):
         family = torch_version.split("+", 1)[1]
         cuda = {"cu126": "12.6", "cu128": "12.8", "cu130": "13.0"}[family]
-        url = wheel_utils.xformers_wheel_url(_env(torch_version = torch_version, cuda_version = cuda))
+        url = wheel_utils.xformers_wheel_url(_env(torch_version=torch_version, cuda_version=cuda))
         assert url is not None and "xformers-0.0.35-py39-none-win_amd64.whl" in url
         assert f"/{family}/" in url
 
     def test_an_exact_row_still_wins_over_the_fallback(self):
         # 2.10.0 is the last exact-pinned era release: it must keep resolving to 0.0.34.
         url = wheel_utils.xformers_wheel_url(
-            _env(torch_version = "2.10.0+cu130", cuda_version = "13.0")
+            _env(torch_version="2.10.0+cu130", cuda_version="13.0")
         )
         assert url is not None and "xformers-0.0.34-" in url
 
@@ -290,7 +290,7 @@ class TestStableAbiPatchReleases:
     def test_the_fallback_stays_bounded(self, torch_version, cuda_version, why):
         assert (
             wheel_utils.xformers_wheel_url(
-                _env(torch_version = torch_version, cuda_version = cuda_version)
+                _env(torch_version=torch_version, cuda_version=cuda_version)
             )
             is None
         ), why
@@ -328,6 +328,6 @@ class TestPytorchMirror:
         )
 
     def test_the_default_is_unchanged_without_the_mirror(self, monkeypatch):
-        monkeypatch.delenv("UNSLOTH_PYTORCH_MIRROR", raising = False)
+        monkeypatch.delenv("UNSLOTH_PYTORCH_MIRROR", raising=False)
         url = wheel_utils.xformers_wheel_url(_env())
         assert url is not None and url.startswith("https://download.pytorch.org/whl/cu130/")

@@ -32,18 +32,18 @@ from storage import studio_db  # noqa: E402
 
 
 def _state(
-    intent = "unset",
-    is_colab = False,
-    launch_managed = False,
-    request_host = "127.0.0.1",
+    intent="unset",
+    is_colab=False,
+    launch_managed=False,
+    request_host="127.0.0.1",
 ):
     return SimpleNamespace(
-        remote_access_intent = intent,
-        remote_access_is_colab = is_colab,
-        remote_access_launch_managed = launch_managed,
-        remote_access_port = 8888,
-        server_request_host = request_host,
-        remote_access_ready = True,
+        remote_access_intent=intent,
+        remote_access_is_colab=is_colab,
+        remote_access_launch_managed=launch_managed,
+        remote_access_port=8888,
+        server_request_host=request_host,
+        remote_access_ready=True,
     )
 
 
@@ -59,7 +59,7 @@ def test_auto_start_persistence_is_strict_and_fail_closed(monkeypatch):
     assert remote_access.set_remote_access_auto_start(True) is True
     assert remote_access.get_remote_access_auto_start() is True
     with pytest.raises(ValueError):
-        routes.RemoteAccessAutoStartPayload(enabled = "true")
+        routes.RemoteAccessAutoStartPayload(enabled="true")
     monkeypatch.setattr(
         studio_db, "get_app_setting", lambda *args: (_ for _ in ()).throw(OSError())
     )
@@ -81,7 +81,7 @@ def test_enabled_intent_blocks_only_selected_launch_path(
     )
     monkeypatch.setattr(cloudflare_tunnel, "get_studio_tunnel_control_token", lambda: (1, 0))
 
-    state = _state(intent = "enabled", launch_managed = launch_managed)
+    state = _state(intent="enabled", launch_managed=launch_managed)
     status = remote_access.remote_access_status(state)
     assert status["block_reason"] == expected_block
     assert status["can_start"] is can_start
@@ -110,13 +110,13 @@ def test_failed_stop_remains_retryable(monkeypatch):
     monkeypatch.setattr(cloudflare_tunnel, "get_studio_tunnel_control_token", lambda: (1, 0))
     status = remote_access.remote_access_status(_state())
     assert status["can_start"] is False and status["can_stop"] is True
-    source = Path(remote_access.__file__).read_text(encoding = "utf-8")
+    source = Path(remote_access.__file__).read_text(encoding="utf-8")
     assert 'if get_studio_tunnel_status().get("stop_pending"):' in source
 
 
 def test_only_a_finished_stop_worker_stops_reporting_stopping(monkeypatch):
     hold = threading.Event()
-    stale_stop = threading.Thread(target = hold.wait, daemon = True)
+    stale_stop = threading.Thread(target=hold.wait, daemon=True)
     stale_stop.start()
     monkeypatch.setattr(remote_access, "_stop_worker", stale_stop)
     monkeypatch.setattr(remote_access, "_stop_worker_admission", (1, 5))
@@ -138,7 +138,7 @@ def test_only_a_finished_stop_worker_stops_reporting_stopping(monkeypatch):
     assert status["state"] == "off"
     assert status["can_start"] is True
 
-    new_start = threading.Thread(target = hold.wait, daemon = True)
+    new_start = threading.Thread(target=hold.wait, daemon=True)
     new_start.start()
     monkeypatch.setattr(remote_access, "_start_worker", new_start)
     monkeypatch.setattr(remote_access, "_start_worker_admission", (1, 6))
@@ -155,7 +155,7 @@ def test_only_a_finished_stop_worker_stops_reporting_stopping(monkeypatch):
     assert remote_access.remote_access_status(_state())["state"] == "stopping"
 
     # and the report stays scoped to a tunnel that is actually off
-    tunnel_status.update(stop_pending = False, state = "online", managed_by = "settings")
+    tunnel_status.update(stop_pending=False, state="online", managed_by="settings")
     assert remote_access.remote_access_status(_state())["state"] == "stopping"
     hold.set()
 
@@ -197,7 +197,7 @@ def test_workers_and_stops_are_scoped_to_backend_lifecycle(monkeypatch):
     release.set()
     old_worker.join(1)
     current = cloudflare_tunnel.get_studio_tunnel_control_token()
-    cloudflare_tunnel.stop_studio_tunnel(admission = old_token)
+    cloudflare_tunnel.stop_studio_tunnel(admission=old_token)
     assert len(attempts) == 2 and cloudflare_tunnel.get_studio_tunnel_control_token() == current
     assert cloudflare_tunnel.get_studio_tunnel_status()["state"] == "off"
 
@@ -232,9 +232,9 @@ def test_settings_start_logs_public_url_when_tunnel_is_ready(monkeypatch, trigge
     )
 
     if trigger == "auto":
-        assert remote_access.maybe_auto_start_remote_access(_state(request_host = "::1"))
+        assert remote_access.maybe_auto_start_remote_access(_state(request_host="::1"))
     else:
-        remote_access.start_remote_access(_state(request_host = "::1"))
+        remote_access.start_remote_access(_state(request_host="::1"))
     assert ready.wait(1)
     remote_access._start_worker.join(1)
     assert messages == ["Secure link access via Cloudflare: https://example.trycloudflare.com"]
@@ -248,8 +248,8 @@ def test_settings_start_fails_closed_without_a_bound_address(monkeypatch):
     monkeypatch.setattr(cloudflare_tunnel, "capture_studio_tunnel_start_admission", lambda: (1, 1))
     monkeypatch.setattr(cloudflare_tunnel, "get_studio_tunnel_control_token", lambda: (1, 1))
 
-    with pytest.raises(RuntimeError, match = "server_address_unavailable"):
-        remote_access.start_remote_access(_state(request_host = None))
+    with pytest.raises(RuntimeError, match="server_address_unavailable"):
+        remote_access.start_remote_access(_state(request_host=None))
 
 
 @pytest.mark.parametrize("operation", ["start", "stop"])
@@ -271,7 +271,7 @@ def test_request_cannot_adopt_reopened_lifecycle(monkeypatch, operation):
         return {"block_reason": None, **status}
 
     monkeypatch.setattr(remote_access, "remote_access_status", _status)
-    with pytest.raises(RuntimeError, match = "server_lifecycle_changed"):
+    with pytest.raises(RuntimeError, match="server_lifecycle_changed"):
         getattr(remote_access, f"{operation}_remote_access")(_state())
     monkeypatch.setattr(
         remote_access,
@@ -289,7 +289,7 @@ def test_management_rejects_api_keys():
     # Every /remote-access handler must carry the gate. Scoped to those routes
     # because a file-wide count breaks whenever an unrelated endpoint adopts
     # _require_ui_session, as the Settings > Logs log endpoints did.
-    tree = ast.parse(Path(routes.__file__).read_text(encoding = "utf-8"))
+    tree = ast.parse(Path(routes.__file__).read_text(encoding="utf-8"))
     gated = {}
     for node in ast.walk(tree):
         if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -321,7 +321,7 @@ def test_remote_stop_returns_terminal_state(monkeypatch):
         }
 
     monkeypatch.setattr(routes, "stop_remote_access", _stop)
-    request = SimpleNamespace(app = SimpleNamespace(state = _state()))
+    request = SimpleNamespace(app=SimpleNamespace(state=_state()))
     response = routes.stop_remote_access_route(request, "admin", None)
     assert response.state == "off" and response.managed_by is None
 
@@ -360,7 +360,7 @@ def test_stop_response_middleware_holds_lease_through_body(monkeypatch):
     assert released.is_set()
     assert "app.add_middleware(RemoteAccessStopResponseMiddleware)" in (
         _BACKEND / "main.py"
-    ).read_text(encoding = "utf-8")
+    ).read_text(encoding="utf-8")
 
 
 def test_stop_worker_waits_for_every_concurrent_response(monkeypatch):
@@ -417,7 +417,7 @@ def test_stop_response_wait_accepts_admission_after_initial_zero(monkeypatch):
         finished.set()
 
     monkeypatch.setattr(remote_access.time, "monotonic", _monotonic)
-    waiter = threading.Thread(target = _wait)
+    waiter = threading.Thread(target=_wait)
     waiter.start()
     assert entered_quiet_window.wait(0.5)
     release = remote_access.acquire_remote_access_stop_response()
@@ -434,8 +434,8 @@ def test_stop_response_wait_accepts_admission_after_initial_zero(monkeypatch):
 
 def test_colab_auto_start_setting_is_read_only(monkeypatch):
     monkeypatch.setattr(routes, "set_remote_access_auto_start", lambda *_: pytest.fail("persisted"))
-    request = SimpleNamespace(app = SimpleNamespace(state = _state(is_colab = True)))
-    payload = routes.RemoteAccessAutoStartPayload(enabled = True)
+    request = SimpleNamespace(app=SimpleNamespace(state=_state(is_colab=True)))
+    payload = routes.RemoteAccessAutoStartPayload(enabled=True)
     with pytest.raises(HTTPException) as exc:
         routes.update_remote_access_auto_start(request, payload, "admin", None)
     assert exc.value.status_code == 409
@@ -466,7 +466,7 @@ def test_stop_does_not_wait_forever_on_a_start_that_never_claims_ownership(monke
     # A start worker that stays alive without taking settings ownership (foreign
     # owner, or bailed on admission) must not defer Stop for the probe deadline.
     hold = threading.Event()
-    foreign_start = threading.Thread(target = hold.wait, daemon = True)
+    foreign_start = threading.Thread(target=hold.wait, daemon=True)
     foreign_start.start()
     monkeypatch.setattr(remote_access, "_start_worker", foreign_start)
     monkeypatch.setattr(remote_access, "_stop_worker", None)
@@ -493,7 +493,7 @@ def test_stop_does_not_wait_forever_on_a_start_that_never_claims_ownership(monke
         assert stopped.wait(5), "stop worker never reached stop_studio_tunnel"
     finally:
         hold.set()
-        foreign_start.join(timeout = 5)
+        foreign_start.join(timeout=5)
         remote_access._open_remote_access_stop_response_admission()
 
 

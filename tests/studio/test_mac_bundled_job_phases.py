@@ -50,9 +50,9 @@ def _boot_defaults() -> tuple[str, str]:
     guard exists to catch was two phases both taking this default, and neither
     workflow line mentioned a file at all.
     """
-    src = BOOT_SCRIPT.read_text(encoding = "utf-8")
-    log = re.search(r'^LOG="([^"]+)"', src, flags = re.M)
-    pid = re.search(r'^PID_VAR="([^"]+)"', src, flags = re.M)
+    src = BOOT_SCRIPT.read_text(encoding="utf-8")
+    log = re.search(r'^LOG="([^"]+)"', src, flags=re.M)
+    pid = re.search(r'^PID_VAR="([^"]+)"', src, flags=re.M)
     assert log, f"{BOOT_SCRIPT.name} no longer sets a default LOG; this scan is blind"
     return log.group(1), pid.group(1) if pid else "STUDIO_PID"
 
@@ -68,15 +68,15 @@ PHASE_MARKERS = (
 )
 
 
-@pytest.fixture(scope = "module")
+@pytest.fixture(scope="module")
 def job() -> dict:
-    doc = yaml.safe_load(WORKFLOW.read_text(encoding = "utf-8"))
+    doc = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
     jobs = doc["jobs"]
     assert len(jobs) == 1, f"expected one bundled job, got {list(jobs)}"
     return next(iter(jobs.values()))
 
 
-@pytest.fixture(scope = "module")
+@pytest.fixture(scope="module")
 def steps(job: dict) -> list[dict]:
     return job["steps"]
 
@@ -112,7 +112,7 @@ def _phase_starts(steps: list[dict]) -> list[int]:
 
 
 def _phase_of(starts: list[int], index: int) -> int:
-    return max([b for b in starts if b <= index], default = -1)
+    return max([b for b in starts if b <= index], default=-1)
 
 
 def test_the_bundle_still_carries_every_phase(steps: list[dict]) -> None:

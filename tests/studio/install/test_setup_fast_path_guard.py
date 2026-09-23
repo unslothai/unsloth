@@ -25,9 +25,9 @@ SETUP_SH = REPO_ROOT / "studio" / "setup.sh"
 SETUP_PS1 = REPO_ROOT / "studio" / "setup.ps1"
 
 
-@pytest.mark.parametrize("script", [SETUP_SH, SETUP_PS1], ids = ["setup.sh", "setup.ps1"])
+@pytest.mark.parametrize("script", [SETUP_SH, SETUP_PS1], ids=["setup.sh", "setup.ps1"])
 def test_fast_path_consults_the_install_manifest(script: pathlib.Path):
-    text = script.read_text(encoding = "utf-8")
+    text = script.read_text(encoding="utf-8")
     assert "install_manifest" in text, (
         f"{script.name} no longer consults studio/install_manifest.py. Without it "
         "the 'up to date' fast path skips the dependency pass on an interrupted "
@@ -39,10 +39,10 @@ def test_fast_path_consults_the_install_manifest(script: pathlib.Path):
     )
 
 
-@pytest.mark.parametrize("script", [SETUP_SH, SETUP_PS1], ids = ["setup.sh", "setup.ps1"])
+@pytest.mark.parametrize("script", [SETUP_SH, SETUP_PS1], ids=["setup.sh", "setup.ps1"])
 def test_guard_can_still_force_the_dependency_pass(script: pathlib.Path):
     """The guard has to clear the skip flag, not merely log a warning."""
-    text = script.read_text(encoding = "utf-8")
+    text = script.read_text(encoding="utf-8")
     if script.name.endswith(".ps1"):
         pattern = r"studio install incomplete[\s\S]{0,200}?\$SkipPythonDeps\s*=\s*\$false"
     else:
@@ -53,9 +53,9 @@ def test_guard_can_still_force_the_dependency_pass(script: pathlib.Path):
     )
 
 
-@pytest.mark.parametrize("script", [SETUP_SH, SETUP_PS1], ids = ["setup.sh", "setup.ps1"])
+@pytest.mark.parametrize("script", [SETUP_SH, SETUP_PS1], ids=["setup.sh", "setup.ps1"])
 def test_duplicate_core_metadata_cannot_take_the_version_fast_path(script: pathlib.Path):
-    text = script.read_text(encoding = "utf-8")
+    text = script.read_text(encoding="utf-8")
     probe = text.find("install_manifest.installed_version_probe")
     zoo_probe = text.find("'unsloth-zoo'", probe)
     repair = text.find("duplicate metadata found", probe)
@@ -79,7 +79,7 @@ def test_ps1_drops_the_manifest_before_its_first_install():
     replaces pip, torch and triton first, so a run killed there would leave a
     manifest that still verifies and a venv with half a PyTorch.
     """
-    text = SETUP_PS1.read_text(encoding = "utf-8")
+    text = SETUP_PS1.read_text(encoding="utf-8")
     pass_start = text.index("if (-not $SkipPythonDeps) {")
     removal = text.find("remove_manifest", pass_start)
     first_install = text.index("Fast-Install", pass_start)
@@ -98,7 +98,7 @@ def test_ps1_drops_the_manifest_before_its_first_install():
 def test_sh_dependency_pass_mutates_nothing_before_the_stack():
     """setup.sh relies on install_python_stack.py dropping the marker, which only
     holds while the stack is the first thing its dependency pass runs."""
-    text = SETUP_SH.read_text(encoding = "utf-8")
+    text = SETUP_SH.read_text(encoding="utf-8")
     pass_start = text.index('if [ "$_SKIP_PYTHON_DEPS" = false ]')
     body = text[pass_start : text.index("install_python_stack", pass_start)]
     assert "fast_install" not in body and "pip install" not in body, (
@@ -108,7 +108,7 @@ def test_sh_dependency_pass_mutates_nothing_before_the_stack():
 
 
 def test_sh_guard_runs_before_the_skip_decision():
-    text = SETUP_SH.read_text(encoding = "utf-8")
+    text = SETUP_SH.read_text(encoding="utf-8")
     guard = text.find("studio install incomplete")
     decision = text.find('if [ "$_SKIP_PYTHON_DEPS" = false ]')
     assert guard != -1 and decision != -1
@@ -122,7 +122,7 @@ INSTALL_SH = REPO_ROOT / "install.sh"
 INSTALL_PS1 = REPO_ROOT / "install.ps1"
 
 
-@pytest.mark.parametrize("script", [INSTALL_SH, INSTALL_PS1], ids = ["install.sh", "install.ps1"])
+@pytest.mark.parametrize("script", [INSTALL_SH, INSTALL_PS1], ids=["install.sh", "install.ps1"])
 def test_the_installer_reports_duplicate_metadata_on_every_platform(script: pathlib.Path):
     """Both installers print the version they just installed.
 
@@ -131,7 +131,7 @@ def test_the_installer_reports_duplicate_metadata_on_every_platform(script: path
     run looks clean. Windows and POSIX have to agree here, or the same broken
     venv is reported differently depending on the host.
     """
-    text = script.read_text(encoding = "utf-8")
+    text = script.read_text(encoding="utf-8")
     assert "installed_version_probe" in text, (
         f"{script.name} still reports the installed version through "
         "importlib.metadata.version(), which cannot see a duplicate record"
@@ -145,7 +145,7 @@ def test_the_sidecar_predicate_asks_the_shim_on_colab_too():
     """No venv interpreter on Colab; the shim is stdlib-only and the installer's own
     `python` asks it. The version grep alone read a sidecar interrupted after
     transformers landed as current on every later run."""
-    text = SETUP_SH.read_text(encoding = "utf-8")
+    text = SETUP_SH.read_text(encoding="utf-8")
     start = text.index("_sidecar_current() {")
     body = text[start : text.index("\n}\n", start)]
     assert "command -v python" in body
@@ -163,7 +163,7 @@ def test_the_ps1_sidecar_predicate_runs_the_shim_as_a_bounded_process():
     command turns into a terminating error under $PSNativeCommandUseErrorActionPreference,
     and the shim's scan budget cannot interrupt a stalled read on a wedged mount. A bounded
     process has neither problem; a timeout reads as stale."""
-    text = SETUP_PS1.read_text(encoding = "utf-8")
+    text = SETUP_PS1.read_text(encoding="utf-8")
     start = text.index("function Test-SidecarCurrent {")
     body = text[start : text.index("\nfunction ", start + 1)]
     assert "& python $shim" not in body
@@ -173,7 +173,7 @@ def test_the_ps1_sidecar_predicate_runs_the_shim_as_a_bounded_process():
     assert "runpy.run_path(sys.argv[0], run_name='__main__')" in body
     assert body.index("$probe.TimedOut") < body.index('$out = "sidecar: audit did not answer')
     # The shell mirror: the shim call is bounded where a timeout exists and a timeout is stale.
-    sh = SETUP_SH.read_text(encoding = "utf-8")
+    sh = SETUP_SH.read_text(encoding="utf-8")
     call = sh.index('install_manifest.py" sidecar "$_sc_dir"')
     window = sh[call - 400 : call + 900]
     assert "timeout -k 5 60" in window
@@ -186,7 +186,7 @@ def test_the_ps1_sidecar_installs_are_isolated_from_uv_override():
     UV_OVERRIDE; an override naming huggingface_hub or hf_xet would otherwise install
     another version than the exact pin and the audit would rebuild the sidecar to the
     same wrong answer on every run. The PowerShell helper mirrors it."""
-    text = SETUP_PS1.read_text(encoding = "utf-8")
+    text = SETUP_PS1.read_text(encoding="utf-8")
     start = text.index("function Fast-Install-Sidecar {")
     body = text[start : text.index("\nfunction ", start + 1)]
     assert "Remove-Item Env:UV_OVERRIDE" in body and "Fast-Install @Args_" in body
@@ -202,10 +202,10 @@ def test_the_tiktoken_top_up_checks_the_payload_not_the_dist_info_alone():
     """An interrupted install leaves tiktoken-*.dist-info with no package beside it; the
     sidecar predicate accepts that sidecar (tiktoken is optional), so the top-up is the
     only repair left, and a dist-info-only check would skip it forever."""
-    sh = SETUP_SH.read_text(encoding = "utf-8")
+    sh = SETUP_SH.read_text(encoding="utf-8")
     start = sh.index("_sidecar_top_up_tiktoken() {")
     assert '"$_stt_dir/tiktoken/__init__.py"' in sh[start : sh.index("\n}\n", start)]
-    ps1 = SETUP_PS1.read_text(encoding = "utf-8")
+    ps1 = SETUP_PS1.read_text(encoding="utf-8")
     start = ps1.index("function Repair-SidecarTiktoken {")
     body = ps1[start : ps1.index("\nfunction ", start + 1)]
     assert 'Join-Path $payload "__init__.py"' in body
@@ -219,7 +219,7 @@ def test_the_ps1_sidecar_predicate_reads_no_version_gated_variable():
     """$PSNativeCommandUseErrorActionPreference exists from PowerShell 7.3 and reading an
     absent variable under Set-StrictMode is a terminating error; the predicate no longer
     touches it at all, and must not grow a version check in its place."""
-    ps1 = SETUP_PS1.read_text(encoding = "utf-8")
+    ps1 = SETUP_PS1.read_text(encoding="utf-8")
     start = ps1.index("function Test-SidecarCurrent {")
     body = ps1[start : ps1.index("\nfunction ", start + 1)]
     assert "$PSNativeCommandUseErrorActionPreference =" not in body
@@ -230,18 +230,18 @@ def test_the_ps1_sidecar_predicate_reads_no_version_gated_variable():
 # fail; a complete install is kept, on the incomplete-install guard's own evidence.
 
 
-@pytest.mark.parametrize("script", [SETUP_SH, SETUP_PS1], ids = ["setup.sh", "setup.ps1"])
+@pytest.mark.parametrize("script", [SETUP_SH, SETUP_PS1], ids=["setup.sh", "setup.ps1"])
 def test_an_unreachable_pypi_still_updates_by_default(script: pathlib.Path):
     """Nothing above changes for a plain offline blip."""
-    text = script.read_text(encoding = "utf-8")
+    text = script.read_text(encoding="utf-8")
     assert text.count('substep "could not reach PyPI, updating to be safe..."') == 1
 
 
-@pytest.mark.parametrize("script", [SETUP_SH, SETUP_PS1], ids = ["setup.sh", "setup.ps1"])
+@pytest.mark.parametrize("script", [SETUP_SH, SETUP_PS1], ids=["setup.sh", "setup.ps1"])
 def test_the_offline_rule_needs_all_three_conditions(script: pathlib.Path):
     """An installed version, a declared offline mode, and a verified tree. Any two of
     them is a skip that ships a half-built venv or a venv that was never built."""
-    text = script.read_text(encoding = "utf-8")
+    text = script.read_text(encoding="utf-8")
     if script.name.endswith(".ps1"):
         condition = (
             "if ($InstalledVer -and (Test-UvOfflineRequested) -and "
@@ -264,11 +264,11 @@ def test_the_offline_rule_needs_all_three_conditions(script: pathlib.Path):
     )
 
 
-@pytest.mark.parametrize("script", [SETUP_SH, SETUP_PS1], ids = ["setup.sh", "setup.ps1"])
+@pytest.mark.parametrize("script", [SETUP_SH, SETUP_PS1], ids=["setup.sh", "setup.ps1"])
 def test_the_two_callers_share_one_definition_of_complete(script: pathlib.Path):
     """The guard forces the pass when the tree is not verified and the offline rule keeps
     it when it is. Two copies of that check is how they come to disagree."""
-    text = script.read_text(encoding = "utf-8")
+    text = script.read_text(encoding="utf-8")
     helper = (
         "function Test-StudioInstallVerified"
         if script.name.endswith(".ps1")
@@ -286,7 +286,7 @@ def test_the_posix_offline_switch_reads_the_boolish_spellings(tmp_path):
     to be read the same way."""
     import subprocess
 
-    text = SETUP_SH.read_text(encoding = "utf-8")
+    text = SETUP_SH.read_text(encoding="utf-8")
     start = text.index("_uv_offline_requested() {")
     body = text[start : text.index("\n}\n", start) + 3]
     probe = tmp_path / "probe.sh"
@@ -309,9 +309,9 @@ def test_the_posix_offline_switch_reads_the_boolish_spellings(tmp_path):
     ):
         result = subprocess.run(
             ["sh", str(probe)],
-            capture_output = True,
-            text = True,
-            env = {"PATH": "/usr/bin:/bin", "UV_OFFLINE": value},
+            capture_output=True,
+            text=True,
+            env={"PATH": "/usr/bin:/bin", "UV_OFFLINE": value},
         )
         assert result.stdout.strip() == expected, (value, result.stdout)
 
@@ -321,8 +321,8 @@ def test_the_offline_fast_path_never_wipes_a_sidecar():
     rebuild is a wipe followed by four fetches, so under that rule it would either reach
     for the network or destroy a usable sidecar and then fail. Both shells flag the
     offline keep and clear every rebuild flag behind it."""
-    sh = SETUP_SH.read_text(encoding = "utf-8")
-    ps1 = SETUP_PS1.read_text(encoding = "utf-8")
+    sh = SETUP_SH.read_text(encoding="utf-8")
+    ps1 = SETUP_PS1.read_text(encoding="utf-8")
     keep_sh = sh.index("keeping the verified install")
     assert "_OFFLINE_FAST_PATH=true" in sh[keep_sh : keep_sh + 400]
     guard_sh = sh.index('if [ "${_OFFLINE_FAST_PATH:-false}" = true ]; then')
@@ -362,8 +362,8 @@ def test_uv_offline_without_the_fast_path_still_keeps_an_existing_sidecar():
     be cold, and an absent tier would go through the pip fallback that does not read
     UV_OFFLINE. Both shells defer every stale or missing tier under the offline request
     itself, ahead of the fast-path guard; the runtime self-heal covers a missing tier."""
-    sh = SETUP_SH.read_text(encoding = "utf-8")
-    ps1 = SETUP_PS1.read_text(encoding = "utf-8")
+    sh = SETUP_SH.read_text(encoding="utf-8")
+    ps1 = SETUP_PS1.read_text(encoding="utf-8")
     offline_sh = sh.index(
         'if [ "${_OFFLINE_FAST_PATH:-false}" != true ] && _uv_offline_requested; then'
     )
@@ -402,7 +402,7 @@ def test_the_ps1_offline_flag_is_initialised_before_its_unconditional_reads():
     update. Under a caller's Set-StrictMode an unassigned script variable is a
     terminating error, and a dot-sourced rerun would otherwise inherit an earlier
     offline run's $true."""
-    text = SETUP_PS1.read_text(encoding = "utf-8")
+    text = SETUP_PS1.read_text(encoding="utf-8")
     init = text.index("$script:OfflineFastPath = $false")
     assert init < text.index("$script:OfflineFastPath = $true")
     assert init < text.index("if ($script:OfflineFastPath)")
@@ -414,7 +414,7 @@ def test_the_windows_uv_probe_looks_where_the_pinned_installer_put_uv():
     process, so Windows re-downloaded uv on every run: the idempotency harness measured two
     files.pythonhosted.org connections on an update with nothing to do, where Linux and macOS
     had none. The probe and the installer must resolve the same directory."""
-    text = SETUP_PS1.read_text(encoding = "utf-8")
+    text = SETUP_PS1.read_text(encoding="utf-8")
     assert "function Get-UvInstallDir" in text, (
         "the install directory is no longer a shared helper; the probe and the installer can "
         "now disagree about where uv lives"
@@ -468,13 +468,13 @@ def test_the_deep_verify_only_degrades_on_a_tree_that_lacks_the_keyword(
 
     probe = re.search(
         r'"\$VENV_DIR/bin/python" -c "\n(import os, sys\n.*?)" "\$SCRIPT_DIR"',
-        SETUP_SH.read_text(encoding = "utf-8"),
+        SETUP_SH.read_text(encoding="utf-8"),
         re.S,
     )
     assert probe, "the verify probe moved; this test is reading the wrong block"
-    (tmp_path / "install_manifest.py").write_text(module_src + "\n", encoding = "utf-8")
+    (tmp_path / "install_manifest.py").write_text(module_src + "\n", encoding="utf-8")
     result = subprocess.run(
-        [sys.executable, "-c", probe.group(1), str(tmp_path)], capture_output = True
+        [sys.executable, "-c", probe.group(1), str(tmp_path)], capture_output=True
     )
     assert result.returncode == expected, result.stderr.decode()
 
@@ -492,7 +492,7 @@ def test_the_installer_reads_uv_offline_the_same_way_the_shell_does(tmp_path, mo
     import os
     import subprocess
 
-    sh = SETUP_SH.read_text(encoding = "utf-8")
+    sh = SETUP_SH.read_text(encoding="utf-8")
     start = sh.index("_uv_offline_requested() {")
     probe = tmp_path / "probe.sh"
     probe.write_text(
@@ -500,7 +500,7 @@ def test_the_installer_reads_uv_offline_the_same_way_the_shell_does(tmp_path, mo
         + "\nif _uv_offline_requested; then echo yes; else echo no; fi\n"
     )
 
-    stack = (REPO_ROOT / "studio" / "install_python_stack.py").read_text(encoding = "utf-8")
+    stack = (REPO_ROOT / "studio" / "install_python_stack.py").read_text(encoding="utf-8")
     # `_uv_is_offline` is one caller of `_uv_env_flag`, which is where the boolish set
     # actually lives, so both are lifted. Naming the callee here rather than lifting the
     # whole module keeps the test reading the real source instead of an import with side
@@ -511,7 +511,7 @@ def test_the_installer_reads_uv_offline_the_same_way_the_shell_does(tmp_path, mo
     ]
     assert {n.name for n in nodes} == set(wanted), sorted(n.name for n in nodes)
     namespace: dict = {"os": os}
-    exec(compile(_ast.Module(body = nodes, type_ignores = []), "<stack>", "exec"), namespace)
+    exec(compile(_ast.Module(body=nodes, type_ignores=[]), "<stack>", "exec"), namespace)
 
     for value in (
         "1",
@@ -540,9 +540,9 @@ def test_the_installer_reads_uv_offline_the_same_way_the_shell_does(tmp_path, mo
         shell = (
             subprocess.run(
                 ["sh", str(probe)],
-                capture_output = True,
-                text = True,
-                env = {"PATH": "/usr/bin:/bin", "UV_OFFLINE": value},
+                capture_output=True,
+                text=True,
+                env={"PATH": "/usr/bin:/bin", "UV_OFFLINE": value},
             ).stdout.strip()
             == "yes"
         )
@@ -557,7 +557,7 @@ def test_the_installer_pins_come_from_the_audited_pin_list():
     pin `sidecar_is_current` requires but `_install_sidecar` never installs reads stale every
     run, silently wiping and refetching all three tiers on every update.
     """
-    sh = SETUP_SH.read_text(encoding = "utf-8")
+    sh = SETUP_SH.read_text(encoding="utf-8")
     start = sh.index("_install_sidecar() {")
     body = sh[start : sh.index("\n}\n", start)]
     assert "$_SIDECAR_COMMON_PINS" in body, (
@@ -566,7 +566,7 @@ def test_the_installer_pins_come_from_the_audited_pin_list():
     )
     assert "huggingface_hub==" not in body, "a second copy of the pins crept back in"
 
-    ps1 = SETUP_PS1.read_text(encoding = "utf-8")
+    ps1 = SETUP_PS1.read_text(encoding="utf-8")
     start = ps1.index("function Install-T5Sidecar {")
     body = (
         ps1[start : ps1.index("\nfunction ", start + 1)]
@@ -583,7 +583,7 @@ def test_a_tree_without_the_shim_falls_back_to_the_version_grep():
     """Both shells must answer from `_target_has_pkg_version` when install_manifest.py is
     absent. Treating the missing file as a failed audit reports every tier stale and rebuilds
     all three, and the two shells would disagree about the same tree."""
-    sh = SETUP_SH.read_text(encoding = "utf-8")
+    sh = SETUP_SH.read_text(encoding="utf-8")
     start = sh.index("_sidecar_current() {")
     body = sh[start : sh.index("\n}\n", start)]
     assert '[ ! -f "$SCRIPT_DIR/install_manifest.py" ]' in body, (
@@ -591,7 +591,7 @@ def test_a_tree_without_the_shim_falls_back_to_the_version_grep():
         "without install_manifest.py now rebuilds all three sidecars."
     )
 
-    ps1 = SETUP_PS1.read_text(encoding = "utf-8")
+    ps1 = SETUP_PS1.read_text(encoding="utf-8")
     start = ps1.index("function Test-SidecarCurrent {")
     body = ps1[start : ps1.index("\nfunction ", start + 1)]
     assert "Test-Path -LiteralPath $shim -PathType Leaf" in body
@@ -602,7 +602,7 @@ def test_the_sidecar_cleanups_cannot_abort_the_installer():
     here is best effort by construction, since the paths that reach them are already
     undeletable, and an unguarded one turns a skipped rebuild into a silent exit 1.
     """
-    sh = SETUP_SH.read_text(encoding = "utf-8")
+    sh = SETUP_SH.read_text(encoding="utf-8")
     for fn in ("_sidecar_retire_after_failed_tiktoken() {", "_sidecar_top_up_tiktoken() {"):
         start = sh.index(fn)
         body = sh[start : sh.index("\n}\n", start)]
@@ -621,7 +621,7 @@ def test_the_ps1_marker_reason_is_parsed_without_substring():
 
     The sh side uses `${_sc_out#sidecar: }`, which degrades to the empty string; the two must
     not differ on a malformed answer."""
-    ps1 = SETUP_PS1.read_text(encoding = "utf-8")
+    ps1 = SETUP_PS1.read_text(encoding="utf-8")
     start = ps1.index("function Test-SidecarCurrent {")
     body = ps1[start : ps1.index("\nfunction ", start + 1)]
     assert ".Substring(" not in body, (
@@ -634,7 +634,7 @@ def test_the_ps1_marker_reason_is_parsed_without_substring():
 def test_the_ps1_predicate_prefers_the_venv_interpreter():
     """As setup.sh does. A PATH `python` on Windows can be the Store App Execution Alias
     stub, whose failure reads as "audit died" and rebuilds all three tiers every run."""
-    ps1 = SETUP_PS1.read_text(encoding = "utf-8")
+    ps1 = SETUP_PS1.read_text(encoding="utf-8")
     start = ps1.index("function Test-SidecarCurrent {")
     body = ps1[start : ps1.index("\nfunction ", start + 1)]
     assert "$VenvPyExe" in body, (

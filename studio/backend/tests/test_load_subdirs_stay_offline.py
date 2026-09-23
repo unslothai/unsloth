@@ -33,9 +33,9 @@ def detector_spy(monkeypatch):
 
     def fake_detect(
         model_name,
-        hf_token = None,
-        local_files_only = False,
-        revision = None,
+        hf_token=None,
+        local_files_only=False,
+        revision=None,
     ):
         calls.append(
             {
@@ -110,7 +110,7 @@ def test_going_offline_makes_the_yaml_fallback_more_reachable(monkeypatch):
     monkeypatch.setattr(
         model_config,
         "detect_audio_type",
-        lambda model_name, hf_token = None, local_files_only = False, revision = None: None,
+        lambda model_name, hf_token=None, local_files_only=False, revision=None: None,
     )
 
     assert with_load_subdirs(_BICODEC, ("config.json",)) == (

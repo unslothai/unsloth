@@ -20,14 +20,14 @@ ALICE = AccountContext("a" * 32, "alice")
 BOB = AccountContext("b" * 32, "bob")
 
 
-def _attempt(subject, request_id = None):
+def _attempt(subject, request_id=None):
     return inference._ScopedLoadAttempt(
-        token = uuid.uuid4().hex,
-        request_id = request_id,
-        model_path = "org/model",
-        subject = subject,
-        cancel_event = threading.Event(),
-        cancel_complete = threading.Event(),
+        token=uuid.uuid4().hex,
+        request_id=request_id,
+        model_path="org/model",
+        subject=subject,
+        cancel_event=threading.Event(),
+        cancel_complete=threading.Event(),
     )
 
 

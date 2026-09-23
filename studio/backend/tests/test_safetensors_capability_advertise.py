@@ -122,7 +122,7 @@ def test_qwen38_default_keeps_prior_reasoning_in_the_template():
     from jinja2 import BaseLoader, Environment
     from core.inference.llama_cpp import detect_reasoning_flags
 
-    render = Environment(loader = BaseLoader()).from_string(QWEN3_TEMPLATE)
+    render = Environment(loader=BaseLoader()).from_string(QWEN3_TEMPLATE)
     common = {
         "tools": [],
         "messages": [],
@@ -134,11 +134,11 @@ def test_qwen38_default_keeps_prior_reasoning_in_the_template():
 
     assert "SECRET_THOUGHT" not in render.render(
         **common,
-        preserve_thinking = before["preserve_thinking_default"],
+        preserve_thinking=before["preserve_thinking_default"],
     )
     assert "SECRET_THOUGHT" in render.render(
         **common,
-        preserve_thinking = after["preserve_thinking_default"],
+        preserve_thinking=after["preserve_thinking_default"],
     )
 
 
@@ -188,6 +188,7 @@ def test_detect_reasoning_flags_none_template_returns_all_false():
 )
 def test_detect_reasoning_flags_reads_tool_guards_however_they_are_written(label, guard):
     from core.inference.llama_cpp import detect_reasoning_flags
+
     flags = detect_reasoning_flags(guard, f"vendor/{label}")
     assert flags["supports_tools"] is True
 
@@ -225,6 +226,7 @@ def test_detect_reasoning_flags_reads_tool_guards_however_they_are_written(label
 )
 def test_detect_reasoning_flags_does_not_invent_tool_support(label, template):
     from core.inference.llama_cpp import detect_reasoning_flags
+
     flags = detect_reasoning_flags(template, f"vendor/{label}")
     assert flags["supports_tools"] is False
 
@@ -256,7 +258,7 @@ def test_detect_safetensors_features_passes_template_through_to_classifier():
     """Route wrapper forwards a real template to the inner classifier."""
     from routes.inference import _detect_safetensors_features
 
-    backend = SimpleNamespace(active_model_name = "unsloth/Qwen3-0.6B")
+    backend = SimpleNamespace(active_model_name="unsloth/Qwen3-0.6B")
     flags = _detect_safetensors_features(backend, QWEN3_TEMPLATE)
     assert flags["supports_tools"] is True
     assert flags["supports_reasoning"] is True
@@ -265,7 +267,7 @@ def test_detect_safetensors_features_passes_template_through_to_classifier():
 def test_detect_safetensors_features_none_template_returns_all_false():
     from routes.inference import _detect_safetensors_features
 
-    backend = SimpleNamespace(active_model_name = "unsloth/Qwen3-0.6B")
+    backend = SimpleNamespace(active_model_name="unsloth/Qwen3-0.6B")
     flags = _detect_safetensors_features(backend, None)
     assert flags == {
         "supports_reasoning": False,
@@ -340,7 +342,7 @@ def test_detect_safetensors_features_llama3_template_keeps_tools_on():
     """Llama-3 emits <|python_tag|>; parser now supports it."""
     from routes.inference import _detect_safetensors_features
 
-    backend = SimpleNamespace(active_model_name = "unsloth/Llama-3.2-3B-Instruct")
+    backend = SimpleNamespace(active_model_name="unsloth/Llama-3.2-3B-Instruct")
     flags = _detect_safetensors_features(backend, LLAMA3_TEMPLATE)
     assert flags["supports_tools"] is True
 
@@ -351,7 +353,7 @@ def test_detect_safetensors_features_mistral_template_keeps_tools_on():
     PR's Mistral tool support is unreachable through normal capability detection."""
     from routes.inference import _detect_safetensors_features
 
-    backend = SimpleNamespace(active_model_name = "unsloth/mistral-7b-instruct-v0.3")
+    backend = SimpleNamespace(active_model_name="unsloth/mistral-7b-instruct-v0.3")
     flags = _detect_safetensors_features(backend, MISTRAL_TEMPLATE)
     assert flags["supports_tools"] is True
 
@@ -360,7 +362,7 @@ def test_detect_safetensors_features_gemma4_template_keeps_tools_on():
     """Gemma 4 emits <|tool_call>; parser now supports it."""
     from routes.inference import _detect_safetensors_features
 
-    backend = SimpleNamespace(active_model_name = "unsloth/gemma-4-E2B-it-UD-MLX-4bit")
+    backend = SimpleNamespace(active_model_name="unsloth/gemma-4-E2B-it-UD-MLX-4bit")
     flags = _detect_safetensors_features(backend, GEMMA4_TEMPLATE)
     assert flags["supports_tools"] is True
 
@@ -388,7 +390,7 @@ def test_detect_safetensors_features_deepseek_template_keeps_tools_on():
     """DeepSeek emits ``<｜tool▁calls▁begin｜>...``; parser now supports it."""
     from routes.inference import _detect_safetensors_features
 
-    backend = SimpleNamespace(active_model_name = "unsloth/DeepSeek-V3.1")
+    backend = SimpleNamespace(active_model_name="unsloth/DeepSeek-V3.1")
     flags = _detect_safetensors_features(backend, DEEPSEEK_TEMPLATE)
     assert flags["supports_tools"] is True
 
@@ -413,7 +415,7 @@ def test_detect_safetensors_features_glm_template_keeps_tools_on():
     """GLM 4.x emits ``<tool_call>NAME\\n<arg_key>...``; parser handles it."""
     from routes.inference import _detect_safetensors_features
 
-    backend = SimpleNamespace(active_model_name = "unsloth/GLM-4.6")
+    backend = SimpleNamespace(active_model_name="unsloth/GLM-4.6")
     flags = _detect_safetensors_features(backend, GLM_TEMPLATE)
     assert flags["supports_tools"] is True
 
@@ -440,7 +442,7 @@ def test_detect_safetensors_features_kimi_template_keeps_tools_on():
     """Kimi K2 emits ``<|tool_calls_section_begin|>...``; parser handles it."""
     from routes.inference import _detect_safetensors_features
 
-    backend = SimpleNamespace(active_model_name = "unsloth/Kimi-K2-Instruct")
+    backend = SimpleNamespace(active_model_name="unsloth/Kimi-K2-Instruct")
     flags = _detect_safetensors_features(backend, KIMI_TEMPLATE)
     assert flags["supports_tools"] is True
 
@@ -466,7 +468,7 @@ def test_detect_safetensors_features_llama3_2_bare_json_keeps_tools_on():
     """Llama-3.2 bare JSON is supported, so the pill stays enabled."""
     from routes.inference import _detect_safetensors_features
 
-    backend = SimpleNamespace(active_model_name = "unsloth/Llama-3.2-3B-Instruct")
+    backend = SimpleNamespace(active_model_name="unsloth/Llama-3.2-3B-Instruct")
     flags = _detect_safetensors_features(backend, LLAMA3_2_BARE_JSON_TEMPLATE)
     assert flags["supports_tools"] is True
 
@@ -486,7 +488,7 @@ def test_detect_safetensors_features_attribute_function_form_keeps_tools_on():
     """The attribute form ``<function name="...">`` must be whitelisted or the pill is wrongly suppressed."""
     from routes.inference import _detect_safetensors_features
 
-    backend = SimpleNamespace(active_model_name = "openbmb/MiniCPM-5")
+    backend = SimpleNamespace(active_model_name="openbmb/MiniCPM-5")
     flags = _detect_safetensors_features(backend, MINICPM5_ATTRIBUTE_TEMPLATE)
     assert flags["supports_tools"] is True
 
@@ -500,7 +502,7 @@ def test_detect_safetensors_features_unknown_format_suppresses_tools():
         "Emit tool calls as JSON-RPC notifications inside the response."
         "<|im_end|>{%- endif %}"
     )
-    backend = SimpleNamespace(active_model_name = "custom/unknown-tool-format")
+    backend = SimpleNamespace(active_model_name="custom/unknown-tool-format")
     flags = _detect_safetensors_features(backend, tpl)
     assert flags["supports_tools"] is False
 
@@ -509,7 +511,7 @@ def test_detect_safetensors_features_qwen_tool_call_keeps_tools_on():
     """Sanity check: Qwen <tool_call> marker still flips supports_tools."""
     from routes.inference import _detect_safetensors_features
 
-    backend = SimpleNamespace(active_model_name = "unsloth/Qwen3-0.6B")
+    backend = SimpleNamespace(active_model_name="unsloth/Qwen3-0.6B")
     flags = _detect_safetensors_features(backend, QWEN3_TEMPLATE)
     assert flags["supports_tools"] is True
 
@@ -523,7 +525,7 @@ def test_detect_safetensors_features_function_xml_format_keeps_tools_on():
         "Tool call format: <function=name><parameter=k>v</parameter></function>"
         "<|im_end|>{%- endif %}"
     )
-    backend = SimpleNamespace(active_model_name = "custom/with-function-xml")
+    backend = SimpleNamespace(active_model_name="custom/with-function-xml")
     flags = _detect_safetensors_features(backend, tpl_with_function_xml)
     assert flags["supports_tools"] is True
 
@@ -537,7 +539,7 @@ def test_detect_safetensors_features_gemma_native_tool_call_keeps_tools_on():
         "{%- if tools -%}Tool call format: "
         "<|tool_call>call:name{key:value}<tool_call|>{%- endif -%}"
     )
-    backend = SimpleNamespace(active_model_name = "unsloth/gemma-4-12b-it")
+    backend = SimpleNamespace(active_model_name="unsloth/gemma-4-12b-it")
     flags = _detect_safetensors_features(backend, tpl_with_gemma_native)
     assert flags["supports_tools"] is True
 
@@ -548,8 +550,8 @@ def test_detect_safetensors_features_gemma_native_reasoning_is_parseable_not_pre
 
     tpl_with_gemma_native = "{% if add_generation_prompt %}<|channel>thought\n<channel|>{% endif %}"
     backend = SimpleNamespace(
-        active_model_name = "unsloth/gemma-4-E2B-it",
-        models = {
+        active_model_name="unsloth/gemma-4-E2B-it",
+        models={
             "unsloth/gemma-4-E2B-it": {
                 "native_chat_template": tpl_with_gemma_native,
                 "chat_template_info": {"template": "override has no native markers"},
@@ -574,8 +576,8 @@ def test_detect_safetensors_features_selects_native_reasoning_from_tool_template
         "tool_use": "{% if tools %}<|channel>thought\n<channel|>{% endif %}",
     }
     backend = SimpleNamespace(
-        active_model_name = "custom/named-native-reasoning",
-        models = {
+        active_model_name="custom/named-native-reasoning",
+        models={
             "custom/named-native-reasoning": {
                 "native_chat_template": named_template,
                 "chat_template_info": {"template": "{% if tools %}<tool_call>{% endif %}"},
@@ -587,7 +589,7 @@ def test_detect_safetensors_features_selects_native_reasoning_from_tool_template
     tool_flags = _detect_safetensors_features(
         backend,
         "plain override",
-        tools = [{"type": "function"}],
+        tools=[{"type": "function"}],
     )
 
     assert default_flags["supports_reasoning"] is False
@@ -624,7 +626,7 @@ def test_detect_safetensors_features_qwen35_keeps_tools_on():
     """unsloth/Qwen3.5-0.8B family must surface tools+reasoning on."""
     from routes.inference import _detect_safetensors_features
 
-    backend = SimpleNamespace(active_model_name = "unsloth/Qwen3.5-0.8B")
+    backend = SimpleNamespace(active_model_name="unsloth/Qwen3.5-0.8B")
     flags = _detect_safetensors_features(backend, QWEN35_TOOL_INSTRUCTION)
     assert flags["supports_tools"] is True
     assert flags["supports_reasoning"] is True
@@ -682,7 +684,7 @@ def test_orchestrator_mirrors_chat_template_info_into_models_dict():
     from routes.inference import _detect_safetensors_features
 
     flags = _detect_safetensors_features(
-        SimpleNamespace(active_model_name = orch.active_model_name), tpl
+        SimpleNamespace(active_model_name=orch.active_model_name), tpl
     )
     assert flags["supports_tools"] is True
     assert flags["supports_reasoning"] is True
@@ -716,7 +718,7 @@ def test_orchestrator_missing_chat_template_info_falls_back_to_all_false():
     assert tpl is None
 
     flags = _detect_safetensors_features(
-        SimpleNamespace(active_model_name = orch.active_model_name), tpl
+        SimpleNamespace(active_model_name=orch.active_model_name), tpl
     )
     assert flags["supports_tools"] is False
 
@@ -741,10 +743,10 @@ def test_worker_load_reply_payload_includes_chat_template_info():
 
     backend = _StubBackend("unsloth/Qwen3-0.6B", QWEN3_TEMPLATE)
     mc = SimpleNamespace(
-        identifier = "unsloth/Qwen3-0.6B",
-        display_name = "Qwen3-0.6B",
-        is_vision = False,
-        is_lora = False,
+        identifier="unsloth/Qwen3-0.6B",
+        display_name="Qwen3-0.6B",
+        is_vision=False,
+        is_lora=False,
     )
 
     # Replay the worker's payload-build block.
@@ -782,10 +784,10 @@ def test_worker_load_reply_payload_survives_missing_template():
 
     backend = _StubBackend()
     mc = SimpleNamespace(
-        identifier = "legacy/no-template",
-        display_name = "legacy",
-        is_vision = False,
-        is_lora = False,
+        identifier="legacy/no-template",
+        display_name="legacy",
+        is_vision=False,
+        is_lora=False,
     )
 
     model_info = {
@@ -812,8 +814,8 @@ def test_route_layer_emits_supports_tools_true_for_qwen3_safetensors():
     from routes.inference import _detect_safetensors_features
 
     backend = SimpleNamespace(
-        active_model_name = "unsloth/Qwen3-0.6B",
-        models = {
+        active_model_name="unsloth/Qwen3-0.6B",
+        models={
             "unsloth/Qwen3-0.6B": {
                 "is_vision": False,
                 "chat_template_info": {
@@ -838,8 +840,8 @@ def test_route_layer_emits_preserve_default_true_for_qwen38_safetensors():
     from routes.inference import _detect_safetensors_features
 
     backend = SimpleNamespace(
-        active_model_name = "unsloth/Qwen3.8-27B",
-        models = {},
+        active_model_name="unsloth/Qwen3.8-27B",
+        models={},
     )
 
     flags = _detect_safetensors_features(backend, QWEN3_TEMPLATE)
@@ -869,7 +871,7 @@ def test_detect_safetensors_features_deepseek_opener_variants_keep_tools_on(open
         + "<｜tool▁call▁begin｜>function<｜tool▁sep｜>get_time{}"
         "<｜tool▁call▁end｜><｜tool▁calls▁end｜>"
     )
-    backend = SimpleNamespace(active_model_name = "unsloth/DeepSeek-V3.1")
+    backend = SimpleNamespace(active_model_name="unsloth/DeepSeek-V3.1")
     flags = _detect_safetensors_features(backend, tpl)
     assert flags["supports_tools"] is True
 
@@ -899,7 +901,7 @@ def test_detect_safetensors_features_keeps_tools_for_pretty_printed_bare_json():
     # accepts that whitespace via raw_decode.
     from routes.inference import _detect_safetensors_features
 
-    backend = SimpleNamespace(active_model_name = "unsloth/Llama-3.2-3B-Instruct")
+    backend = SimpleNamespace(active_model_name="unsloth/Llama-3.2-3B-Instruct")
     flags = _detect_safetensors_features(backend, _WHITESPACE_BARE_JSON_TEMPLATE)
     assert flags["supports_tools"] is True
 
@@ -907,7 +909,7 @@ def test_detect_safetensors_features_keeps_tools_for_pretty_printed_bare_json():
 def test_detect_safetensors_features_keeps_tools_for_escaped_bare_json():
     from routes.inference import _detect_safetensors_features
 
-    backend = SimpleNamespace(active_model_name = "unsloth/Llama-3.2-3B-Instruct")
+    backend = SimpleNamespace(active_model_name="unsloth/Llama-3.2-3B-Instruct")
     flags = _detect_safetensors_features(backend, _ESCAPED_BARE_JSON_TEMPLATE)
     assert flags["supports_tools"] is True
 
@@ -917,7 +919,7 @@ def test_detect_safetensors_features_drops_tools_when_no_parseable_form():
     # all -> the pill is still dropped (the gate is not now matching everything).
     from routes.inference import _detect_safetensors_features
 
-    backend = SimpleNamespace(active_model_name = "unsloth/Llama-3.2-3B-Instruct")
+    backend = SimpleNamespace(active_model_name="unsloth/Llama-3.2-3B-Instruct")
     flags = _detect_safetensors_features(backend, _TOOLS_ADVERTISED_NO_PARSEABLE_FORM)
     assert flags["supports_tools"] is False
 
@@ -933,7 +935,7 @@ def test_detect_safetensors_features_keeps_tools_for_function_alias_bare_json():
         "{%- endif %}\n"
         "{{ messages }}"
     )
-    backend = SimpleNamespace(active_model_name = "unsloth/Llama-3.2-3B-Instruct")
+    backend = SimpleNamespace(active_model_name="unsloth/Llama-3.2-3B-Instruct")
     flags = _detect_safetensors_features(backend, tpl)
     assert flags["supports_tools"] is True
 
@@ -982,47 +984,55 @@ class TestSafetensorsReasoningPrefillGate:
     def test_g1_enable_thinking_true(self):
         # G1: Qwen3.5 template + explicit enable_thinking=True -> prefilled.
         from routes.inference import _sf_reasoning_prefill_mode
+
         assert _sf_reasoning_prefill_mode(self._features(), True, self._QWEN35_TPL) is True
 
     def test_g2_enable_thinking_none_follows_template_default(self):
         # G2: the kwarg is omitted, so the template's own default decides. Reading it as
         # prefilled captured the whole answer as reasoning and blanked the visible content.
         from routes.inference import _sf_reasoning_prefill_mode
+
         assert _sf_reasoning_prefill_mode(self._features(), None, self._QWEN35_TPL) is False
 
     def test_g2b_self_emitting_template_not_prefilled(self):
         # G2b: thinking is on but the prompt opens no <think>, so the extractor starts normal.
         from routes.inference import _sf_reasoning_prefill_mode
+
         assert _sf_reasoning_prefill_mode(self._features(), None, self._QWEN3_TPL) is False
         assert _sf_reasoning_prefill_mode(self._features(), True, self._QWEN3_TPL) is False
 
     def test_g3_enable_thinking_false(self):
         # G3: thinking explicitly off -> not prefilled.
         from routes.inference import _sf_reasoning_prefill_mode
+
         assert _sf_reasoning_prefill_mode(self._features(), False, self._QWEN35_TPL) is False
 
     def test_g4_gpt_oss_reasoning_effort_excluded(self):
         # G4: gpt-oss uses explicit tags via HarmonyTextStreamer -> normal mode.
         from routes.inference import _sf_reasoning_prefill_mode
-        feats = self._features(reasoning_style = "reasoning_effort")
+
+        feats = self._features(reasoning_style="reasoning_effort")
         assert _sf_reasoning_prefill_mode(feats, True, self._PROMPT_OPENS_THINK_TPL) is False
 
     def test_g5_enable_thinking_effort_included(self):
         # G5: enable_thinking_effort is not excluded by the style gate.
         from routes.inference import _sf_reasoning_prefill_mode
-        feats = self._features(reasoning_style = "enable_thinking_effort")
+
+        feats = self._features(reasoning_style="enable_thinking_effort")
         assert _sf_reasoning_prefill_mode(feats, None, self._PROMPT_OPENS_THINK_TPL) is True
 
     def test_g6_non_reasoning_model(self):
         # G6: no reasoning capability -> never prefilled.
         from routes.inference import _sf_reasoning_prefill_mode
-        feats = self._features(supports_reasoning = False, reasoning_style = None)
+
+        feats = self._features(supports_reasoning=False, reasoning_style=None)
         assert _sf_reasoning_prefill_mode(feats, True, self._PROMPT_OPENS_THINK_TPL) is False
 
     def test_g7_reasoning_always_on_prompt_opens_think(self):
         # G7: always-on template whose generation prompt opens <think> -> prefilled regardless of the flag.
         from routes.inference import _sf_reasoning_prefill_mode
-        feats = self._features(reasoning_always_on = True)
+
+        feats = self._features(reasoning_always_on=True)
         assert _sf_reasoning_prefill_mode(feats, False, self._PROMPT_OPENS_THINK_TPL) is True
 
     def test_g7b_reasoning_always_on_history_only_not_prefilled(self):
@@ -1030,16 +1040,19 @@ class TestSafetensorsReasoningPrefillGate:
         # (Kimi-K2-Thinking) whose generation prompt opens no <think>. Prefill mode would capture a
         # normal answer entirely as reasoning_content and blank the visible answer, so it must be off.
         from routes.inference import _sf_reasoning_prefill_mode
-        feats = self._features(reasoning_always_on = True)
+
+        feats = self._features(reasoning_always_on=True)
         assert _sf_reasoning_prefill_mode(feats, None, self._HISTORY_ONLY_THINK_TPL) is False
 
     def test_g8_gemma_bespoke_channel_excluded(self):
         # G8: gemma's <|think|>/<|channel> format has no </think> -> NOT prefilled
         # (would otherwise swallow the whole answer as reasoning). Regression guard.
         from routes.inference import _sf_reasoning_prefill_mode
+
         assert _sf_reasoning_prefill_mode(self._features(), True, self._GEMMA_TPL) is False
 
     def test_g9_missing_template_not_prefilled(self):
         # G9: no template available -> conservative (not prefilled).
         from routes.inference import _sf_reasoning_prefill_mode
+
         assert _sf_reasoning_prefill_mode(self._features(), True, None) is False

@@ -70,6 +70,7 @@ class _RestoreTtyOnSignals:
 
     def __exit__(self, *exc) -> None:
         import signal
+
         for sig, previous in self._previous:
             try:
                 signal.signal(sig, previous)
@@ -116,6 +117,7 @@ class _prompt_raw_mode:
         if self._old_attrs is None:
             return
         import termios
+
         try:
             termios.tcsetattr(self._fd, termios.TCSADRAIN, self._old_attrs)
         finally:
@@ -310,7 +312,7 @@ def prompt_for_password_change(
     try:
         while True:
             new_password = _read_password(
-                "New password: ", out = out, first_key_timeout = pending_timeout
+                "New password: ", out=out, first_key_timeout=pending_timeout
             )
             pending_timeout = None
             if len(new_password) < min_length:
@@ -327,7 +329,7 @@ def prompt_for_password_change(
                 )
                 out.flush()
                 continue
-            confirmation = _read_password("Confirm new password: ", out = out)
+            confirmation = _read_password("Confirm new password: ", out=out)
             if confirmation != new_password:
                 out.write("Passwords do not match; try again.\n")
                 out.flush()

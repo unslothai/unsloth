@@ -91,24 +91,24 @@ class _FakeQueue:
 
 
 def _state():
-    return SimpleNamespace(global_step = 0, epoch = 0.0, num_input_tokens_seen = 0)
+    return SimpleNamespace(global_step=0, epoch=0.0, num_input_tokens_seen=0)
 
 
 def _drive(
     callback,
-    steps = 3,
-    control = None,
-    on_step = None,
+    steps=3,
+    control=None,
+    on_step=None,
 ):
     """Run the HuggingFace callback lifecycle the way Trainer.train() does."""
     state = _state()
-    control = control if control is not None else SimpleNamespace(should_training_stop = False)
+    control = control if control is not None else SimpleNamespace(should_training_stop=False)
     callback.on_train_begin(None, state, control)
     for step in range(1, steps + 1):
         state.global_step = step
         state.epoch = round(0.5 * step, 2)
         state.num_input_tokens_seen = 128 * step
-        callback.on_log(None, state, control, logs = {"loss": 1.0 / step, "learning_rate": 1e-4})
+        callback.on_log(None, state, control, logs={"loss": 1.0 / step, "learning_rate": 1e-4})
         callback.on_step_end(None, state, control)
         if on_step is not None:
             on_step(step)
@@ -126,7 +126,7 @@ def _make_owner():
     # _create_progress_callback; go straight to the class under test.
     owner = object.__new__(UnslothTrainer)
     UnslothTrainer.__init__(owner)
-    owner._update_progress(is_training = True, total_steps = 4, status_message = "Starting training...")
+    owner._update_progress(is_training=True, total_steps=4, status_message="Starting training...")
     return owner
 
 
@@ -145,7 +145,7 @@ def test_logging_reports_an_empty_status_so_the_active_one_is_sent_once():
     reported: list[str] = []
     owner.add_progress_callback(lambda progress: reported.append(progress.status_message))
 
-    _drive(owner._create_progress_callback(), steps = 3)
+    _drive(owner._create_progress_callback(), steps=3)
 
     assert owner.training_progress.status_message == ""
     assert [status for status in reported if status] == [ACTIVE]
@@ -157,7 +157,7 @@ def test_logging_reports_an_empty_status_so_the_active_one_is_sent_once():
 def test_unbounded_run_reports_the_trainer_epoch():
     owner = _make_owner()
 
-    _drive(owner._create_progress_callback(), steps = 3)
+    _drive(owner._create_progress_callback(), steps=3)
 
     assert owner.training_progress.epoch == 1.5
 
@@ -168,7 +168,7 @@ def test_bounded_run_reports_epochs_over_the_whole_dataset():
     reported: list[float] = []
     owner.add_progress_callback(lambda progress: reported.append(progress.epoch))
 
-    _drive(owner._create_progress_callback(), steps = 3)
+    _drive(owner._create_progress_callback(), steps=3)
 
     assert [epoch for epoch in reported if epoch][:3] == [0.05, 0.1, 0.15]
     assert owner.training_progress.epoch == pytest.approx(0.15)
@@ -182,7 +182,7 @@ def test_parent_status_advances_over_the_whole_chain():
     # The worker sends this right before trainer.train().
     event_queue.put({"type": "status", "message": "Starting training...", "ts": 0.0})
 
-    _drive(owner._create_progress_callback(), steps = 3)
+    _drive(owner._create_progress_callback(), steps=3)
     for event in event_queue.events:
         backend._handle_event(event)
 
@@ -199,7 +199,7 @@ def test_training_warning_is_emitted_once_and_survives_later_status_updates():
 
     owner._record_warning("Evaluation fell back to a held-out training split.")
     owner._record_warning("Evaluation fell back to a held-out training split.")
-    owner._update_progress(status_message = ACTIVE)
+    owner._update_progress(status_message=ACTIVE)
     for event in event_queue.events:
         backend._handle_event(event)
 
@@ -238,9 +238,9 @@ def test_stop_status_is_never_replaced_by_the_active_one(stop_status):
     def _stop_after_first_step(step):
         if step == 1:
             owner.should_stop = True
-            owner._update_progress(status_message = stop_status)
+            owner._update_progress(status_message=stop_status)
 
-    _, control = _drive(callback, steps = 2, on_step = _stop_after_first_step)
+    _, control = _drive(callback, steps=2, on_step=_stop_after_first_step)
     # A resumed run re-enters on_train_begin; an already requested stop must survive.
     callback.on_train_begin(None, _state(), SimpleNamespace())
     for event in event_queue.events:
@@ -255,51 +255,51 @@ def test_stop_status_is_never_replaced_by_the_active_one(stop_status):
 
 
 def _drive_resumed(callback, start_step, step):
-    state = SimpleNamespace(global_step = start_step, epoch = 0.9, num_input_tokens_seen = 0)
-    control = SimpleNamespace(should_training_stop = False)
-    with patch("time.time", return_value = 700):
+    state = SimpleNamespace(global_step=start_step, epoch=0.9, num_input_tokens_seen=0)
+    control = SimpleNamespace(should_training_stop=False)
+    with patch("time.time", return_value=700):
         callback.on_train_begin(None, state, control)
     state.global_step = step
-    with patch("time.time", return_value = 760):
-        callback.on_log(None, state, control, logs = {"loss": 0.5, "learning_rate": 1e-4})
+    with patch("time.time", return_value=760):
+        callback.on_log(None, state, control, logs={"loss": 0.5, "learning_rate": 1e-4})
 
 
 def test_resumed_run_eta_uses_the_steps_done_in_this_session():
     owner = _make_owner()
-    owner._update_progress(total_steps = 1000)
+    owner._update_progress(total_steps=1000)
     backend = TrainingBackend()
     event_queue = _FakeQueue()
     owner.add_progress_callback(_create_trainer_progress_callback(event_queue))
     owner.training_start_time = 100
 
-    _drive_resumed(owner._create_progress_callback(), start_step = 900, step = 910)
+    _drive_resumed(owner._create_progress_callback(), start_step=900, step=910)
     for event in event_queue.events:
         backend._handle_event(event)
 
-    assert owner.training_progress.eta_seconds == pytest.approx(540, rel = 0.02)
-    assert backend._progress.eta_seconds == pytest.approx(540, rel = 0.02)
+    assert owner.training_progress.eta_seconds == pytest.approx(540, rel=0.02)
+    assert backend._progress.eta_seconds == pytest.approx(540, rel=0.02)
     assert backend._progress.session_start_step == 900
     assert backend._progress.elapsed_seconds == 60
 
 
 def test_resumed_run_reports_no_eta_before_its_first_step():
     owner = _make_owner()
-    owner._update_progress(total_steps = 1000)
+    owner._update_progress(total_steps=1000)
     owner.training_start_time = 100
 
-    _drive_resumed(owner._create_progress_callback(), start_step = 900, step = 900)
+    _drive_resumed(owner._create_progress_callback(), start_step=900, step=900)
 
     assert owner.training_progress.eta_seconds is None
 
 
 def test_fresh_run_eta_is_unchanged():
     owner = _make_owner()
-    owner._update_progress(total_steps = 1000)
+    owner._update_progress(total_steps=1000)
     owner.training_start_time = 700
 
-    _drive_resumed(owner._create_progress_callback(), start_step = 0, step = 100)
+    _drive_resumed(owner._create_progress_callback(), start_step=0, step=100)
 
-    assert owner.training_progress.eta_seconds == pytest.approx(540, rel = 0.02)
+    assert owner.training_progress.eta_seconds == pytest.approx(540, rel=0.02)
 
 
 def test_mlx_adapter_keeps_the_session_start_step():
@@ -316,12 +316,12 @@ def test_mlx_adapter_keeps_the_session_start_step():
 # ---------------------------------------------------------------------------
 
 
-def _make_embedding_callback(event_queue, should_stop = lambda: False):
+def _make_embedding_callback(event_queue, should_stop=lambda: False):
     return _create_embedding_progress_callback(
         event_queue,
-        total_steps = 4,
-        training_start_time = 0.0,
-        should_stop = should_stop,
+        total_steps=4,
+        training_start_time=0.0,
+        should_stop=should_stop,
     )
 
 
@@ -331,7 +331,7 @@ def test_embedding_parent_status_advances_over_the_whole_chain():
     # The worker sends this right before trainer.train().
     event_queue.put({"type": "status", "message": "Starting embedding training...", "ts": 0.0})
 
-    _drive(_make_embedding_callback(event_queue), steps = 3)
+    _drive(_make_embedding_callback(event_queue), steps=3)
     for event in event_queue.events:
         backend._handle_event(event)
 
@@ -347,10 +347,10 @@ def test_embedding_parent_status_advances_over_the_whole_chain():
 
 def test_embedding_train_begin_reports_nothing_once_a_stop_was_requested():
     event_queue = _FakeQueue()
-    control = SimpleNamespace(should_training_stop = False)
+    control = SimpleNamespace(should_training_stop=False)
 
     _drive(
-        _make_embedding_callback(event_queue, should_stop = lambda: True), steps = 1, control = control
+        _make_embedding_callback(event_queue, should_stop=lambda: True), steps=1, control=control
     )
 
     assert [e for e in event_queue.events if e["type"] == "status"] == []
@@ -362,7 +362,7 @@ def test_embedding_callback_survives_a_real_queue():
     import pickle
 
     event_queue = _queue.Queue()
-    _drive(_make_embedding_callback(event_queue), steps = 1)
+    _drive(_make_embedding_callback(event_queue), steps=1)
 
     events = [event_queue.get_nowait() for _ in range(event_queue.qsize())]
     assert [e["type"] for e in events] == ["status", "progress"]
@@ -374,15 +374,15 @@ def test_embedding_resumed_run_eta_uses_the_steps_done_in_this_session():
     backend = TrainingBackend()
     callback = _create_embedding_progress_callback(
         event_queue,
-        total_steps = 1000,
-        training_start_time = 100,
-        should_stop = lambda: False,
+        total_steps=1000,
+        training_start_time=100,
+        should_stop=lambda: False,
     )
 
-    _drive_resumed(callback, start_step = 900, step = 910)
+    _drive_resumed(callback, start_step=900, step=910)
     for event in event_queue.events:
         backend._handle_event(event)
 
-    assert backend._progress.eta_seconds == pytest.approx(540, rel = 0.02)
+    assert backend._progress.eta_seconds == pytest.approx(540, rel=0.02)
     assert backend._progress.session_start_step == 900
     assert backend._progress.elapsed_seconds == 60

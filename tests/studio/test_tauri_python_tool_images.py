@@ -17,8 +17,8 @@ PLAYWRIGHT_TEST = REPO / "tests/studio/playwright_tauri_python_tool_images.py"
 def test_python_tool_images_use_authenticated_blob_urls() -> None:
     # The card now delegates the authed fetch to the shared hook markdown images also use, so the
     # machinery pins read the hook and the card itself is pinned to exactly one thing: the delegation.
-    source = PYTHON_TOOL_UI.read_text(encoding = "utf-8")
-    hook = SANDBOX_IMAGE_HOOK.read_text(encoding = "utf-8")
+    source = PYTHON_TOOL_UI.read_text(encoding="utf-8")
+    hook = SANDBOX_IMAGE_HOOK.read_text(encoding="utf-8")
 
     assert "useSandboxImage(pythonToolImagePath(sessionId, filename))" in source
     assert 'import { authFetch } from "@/features/auth";' in hook
@@ -34,7 +34,7 @@ def test_python_tool_images_use_authenticated_blob_urls() -> None:
 
 
 def test_desktop_csp_has_no_explicit_http_loopback_image_source() -> None:
-    config = json.loads(TAURI_CONFIG.read_text(encoding = "utf-8"))
+    config = json.loads(TAURI_CONFIG.read_text(encoding="utf-8"))
     csp = config["app"]["security"]["csp"]
     directives = {
         parts[0]: parts[1:] for directive in csp.split(";") if (parts := directive.strip().split())
@@ -55,7 +55,7 @@ def test_desktop_csp_has_no_explicit_http_loopback_image_source() -> None:
 
 
 def test_redirect_regression_has_a_real_browser_probe() -> None:
-    source = PLAYWRIGHT_TEST.read_text(encoding = "utf-8")
+    source = PLAYWRIGHT_TEST.read_text(encoding="utf-8")
 
     assert "sync_playwright" in source
     assert "https://redirect.invalid/attacker.png" in source

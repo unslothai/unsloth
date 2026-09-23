@@ -26,6 +26,7 @@ if str(_REPO_ROOT) not in sys.path:
 
 def _studio():
     from unsloth_cli.commands import studio as _studio_mod
+
     return _studio_mod
 
 
@@ -47,10 +48,11 @@ def _neutered(monkeypatch):
     monkeypatch.setattr(studio, "_ensure_studio_env_exported", lambda *a, **k: None)
     monkeypatch.setattr(studio, "_WindowsLauncherUpdateTransaction", _NoopLauncherUpdate)
     monkeypatch.setattr(studio, "_refresh_desktop_shortcuts", lambda *a, **k: None)
-    monkeypatch.setattr(studio, "_fail_if_install_damaged", lambda *a, **k: None, raising = False)
+    monkeypatch.setattr(studio, "_fail_if_install_damaged", lambda *a, **k: None, raising=False)
 
     def _setup(*a, **k):
         import os
+
         seen["STUDIO_LOCAL_REPO"] = os.environ.get("STUDIO_LOCAL_REPO")
         seen["STUDIO_LOCAL_INSTALL"] = os.environ.get("STUDIO_LOCAL_INSTALL")
 
@@ -73,7 +75,7 @@ def test_a_real_checkout_is_passed_through(monkeypatch, tmp_path):
 def test_site_packages_is_refused_with_an_actionable_message(monkeypatch, tmp_path):
     # What the second `update --local` on Windows actually derived.
     site = tmp_path / "Lib" / "site-packages"
-    site.mkdir(parents = True)
+    site.mkdir(parents=True)
     studio, _ = _neutered(monkeypatch)
     monkeypatch.setenv("STUDIO_LOCAL_REPO", str(site))
     result = CliRunner().invoke(studio.studio_app, ["update", "--local"])
@@ -89,7 +91,7 @@ def test_site_packages_is_refused_with_an_actionable_message(monkeypatch, tmp_pa
 def test_the_derived_root_is_used_when_nothing_is_set(monkeypatch):
     # The normal developer case: running from a checkout with no override.
     studio, seen = _neutered(monkeypatch)
-    monkeypatch.delenv("STUDIO_LOCAL_REPO", raising = False)
+    monkeypatch.delenv("STUDIO_LOCAL_REPO", raising=False)
     result = CliRunner().invoke(studio.studio_app, ["update", "--local"])
     assert result.exit_code == 0, result.output
     assert Path(seen["STUDIO_LOCAL_REPO"]) == _REPO_ROOT
@@ -127,7 +129,7 @@ def test_a_relative_override_is_absolutised(monkeypatch, tmp_path):
 def test_a_tilde_override_is_expanded(monkeypatch, tmp_path):
     home = tmp_path / "home"
     checkout = home / "unsloth"
-    checkout.mkdir(parents = True)
+    checkout.mkdir(parents=True)
     (checkout / "pyproject.toml").write_text("[project]\nname = 'unsloth'\n")
     studio, seen = _neutered(monkeypatch)
     monkeypatch.setenv("HOME", str(home))
@@ -160,7 +162,7 @@ def test_the_override_runs_that_checkouts_setup_script(monkeypatch, tmp_path):
     import platform as _platform
 
     checkout = tmp_path / "unsloth"
-    (checkout / "studio").mkdir(parents = True)
+    (checkout / "studio").mkdir(parents=True)
     (checkout / "pyproject.toml").write_text("[project]\nname = 'unsloth'\n")
     name = "setup.ps1" if _platform.system() == "Windows" else "setup.sh"
     script = checkout / "studio" / name
@@ -206,7 +208,7 @@ def test_windows_is_shown_a_powershell_assignment(monkeypatch, tmp_path):
     import platform as _platform
 
     site = tmp_path / "Lib" / "site-packages"
-    site.mkdir(parents = True)
+    site.mkdir(parents=True)
     studio, _ = _neutered(monkeypatch)
     monkeypatch.setattr(_platform, "system", lambda: "Windows")
     monkeypatch.setenv("STUDIO_LOCAL_REPO", str(site))

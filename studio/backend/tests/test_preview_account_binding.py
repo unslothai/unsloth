@@ -24,7 +24,7 @@ _SECRET = b"unit-test-preview-secret-0123456789"
 def studio(tmp_path, monkeypatch):
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "studio"))
     monkeypatch.setattr(storage, "DB_PATH", tmp_path / "studio" / "auth" / "auth.db")
-    (tmp_path / "studio" / "auth").mkdir(parents = True)
+    (tmp_path / "studio" / "auth").mkdir(parents=True)
     monkeypatch.setattr(storage, "_BOOTSTRAP_PW_PATH", tmp_path / ".bootstrap_password")
     monkeypatch.setattr(storage, "_bootstrap_password", None)
     monkeypatch.setattr(preview_token, "get_or_create_preview_link_secret", lambda: _SECRET)
@@ -36,20 +36,20 @@ def studio(tmp_path, monkeypatch):
 
 
 def _managed(username: str) -> AccountContext:
-    account = storage.issue_account_setup_code(username = username)["account"]
+    account = storage.issue_account_setup_code(username=username)["account"]
     return AccountContext(account["account_id"], account["username"], "user")
 
 
 def _make_run(account: AccountContext, name: str, marker: str) -> Path:
     run = Path(run_as(account, outputs_root)) / name
-    run.mkdir(parents = True)
+    run.mkdir(parents=True)
     (run / "adapter_config.json").write_text(json.dumps({"base_model_name_or_path": marker}))
     return run
 
 
 def _client() -> TestClient:
     app = FastAPI()
-    app.include_router(preview.router, prefix = "/p")
+    app.include_router(preview.router, prefix="/p")
     return TestClient(app)
 
 
@@ -97,24 +97,24 @@ def test_public_request_is_served_in_the_minting_accounts_outputs(studio):
     owner_token = run_as(OWNER, preview_token.sign_preview_ref, "victim-run")
     client = _client()
 
-    owner_models = client.get("/p/victim-run/v1/models", params = {"k": owner_token})
-    alice_models = client.get("/p/victim-run/v1/models", params = {"k": alice_token})
+    owner_models = client.get("/p/victim-run/v1/models", params={"k": owner_token})
+    alice_models = client.get("/p/victim-run/v1/models", params={"k": alice_token})
     assert owner_models.status_code == 200 and alice_models.status_code == 200
-    assert client.get("/p/victim-run", params = {"k": alice_token}).status_code == 200
+    assert client.get("/p/victim-run", params={"k": alice_token}).status_code == 200
 
     (alice_run / "adapter_config.json").unlink()
     alice_run.rmdir()
     assert owner_run.is_dir()
-    assert client.get("/p/victim-run/v1/models", params = {"k": alice_token}).status_code == 404
-    assert client.get("/p/victim-run", params = {"k": alice_token}).status_code == 404
-    assert client.get("/p/victim-run/v1/models", params = {"k": owner_token}).status_code == 200
+    assert client.get("/p/victim-run/v1/models", params={"k": alice_token}).status_code == 404
+    assert client.get("/p/victim-run", params={"k": alice_token}).status_code == 404
+    assert client.get("/p/victim-run/v1/models", params={"k": owner_token}).status_code == 200
 
     alice_run.mkdir()
     (alice_run / "adapter_config.json").write_text("{}")
     owner_run.joinpath("adapter_config.json").unlink()
     owner_run.rmdir()
-    assert client.get("/p/victim-run/v1/models", params = {"k": owner_token}).status_code == 404
-    assert client.get("/p/victim-run/v1/models", params = {"k": alice_token}).status_code == 200
+    assert client.get("/p/victim-run/v1/models", params={"k": owner_token}).status_code == 404
+    assert client.get("/p/victim-run/v1/models", params={"k": alice_token}).status_code == 200
 
 
 def test_chat_route_binds_the_minting_account_for_the_whole_request(studio, monkeypatch):
@@ -125,11 +125,13 @@ def test_chat_route_binds_the_minting_account_for_the_whole_request(studio, monk
 
     async def fake_load(load_request, request, subject):
         from utils.account_context import current_account
+
         seen["load_account"] = current_account().account_id
         seen["path"] = load_request.model_path
 
     async def fake_chat(payload, request, subject):
         from utils.account_context import current_account
+
         seen["chat_account"] = current_account().account_id
         return {"choices": [{"message": {"role": "assistant", "content": "hi"}}]}
 
@@ -139,8 +141,8 @@ def test_chat_route_binds_the_minting_account_for_the_whole_request(studio, monk
     client = _client()
     response = client.post(
         "/p/demorun/v1/chat/completions",
-        params = {"k": token},
-        json = {"model": "demorun", "messages": [{"role": "user", "content": "hi"}]},
+        params={"k": token},
+        json={"model": "demorun", "messages": [{"role": "user", "content": "hi"}]},
     )
     assert response.status_code == 200, response.text
     assert seen["load_account"] == alice.account_id

@@ -63,6 +63,6 @@ def test_io_counter_observes_real_connections_queries_and_mkdirs(tmp_path):
 
 def test_io_counter_distinguishes_existing_directory_attempts(tmp_path):
     module = load_script("probe")
-    result = module.measure_cost(lambda: tmp_path.mkdir(exist_ok = True))
+    result = module.measure_cost(lambda: tmp_path.mkdir(exist_ok=True))
     assert result["mkdir_calls"] == 1
     assert result["directories_created"] == 0

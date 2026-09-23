@@ -36,22 +36,22 @@ _REPO = Path(__file__).resolve().parents[1]
 _STUDIO_SHIM = _REPO / "studio" / "backend" / "utils" / "datasets" / "audio_decode.py"
 
 
-def _wav_bytes(samples = 1600, rate = 16000):
+def _wav_bytes(samples=1600, rate=16000):
     buf = io.BytesIO()
-    sf.write(buf, np.linspace(-0.5, 0.5, samples, dtype = "float32"), rate, format = "WAV")
+    sf.write(buf, np.linspace(-0.5, 0.5, samples, dtype="float32"), rate, format="WAV")
     return buf.getvalue()
 
 
-def _m4a_bytes(seconds = 1.0, rate = 22050):
+def _m4a_bytes(seconds=1.0, rate=22050):
     av = pytest.importorskip("av")
     t = np.arange(int(seconds * rate)) / rate
     tone = (0.5 * np.sin(2 * np.pi * 440 * t)).astype("float32")
     buf = io.BytesIO()
     try:
-        with av.open(buf, "w", format = "mp4") as container:
-            stream = container.add_stream("aac", rate = rate)
+        with av.open(buf, "w", format="mp4") as container:
+            stream = container.add_stream("aac", rate=rate)
             stream.layout = "mono"
-            frame = av.AudioFrame.from_ndarray(tone[np.newaxis, :], format = "flt", layout = "mono")
+            frame = av.AudioFrame.from_ndarray(tone[np.newaxis, :], format="flt", layout="mono")
             frame.sample_rate = rate
             for packet in stream.encode(frame):
                 container.mux(packet)
@@ -73,7 +73,7 @@ def broken_torchcodec(monkeypatch):
     monkeypatch.setattr(config, "TORCHCODEC_AVAILABLE", False)
     monkeypatch.setattr(Audio, "decode_example", Audio.decode_example)
     monkeypatch.setattr(Audio, "encode_example", Audio.encode_example)
-    monkeypatch.setattr(Audio, "_unsloth_audio_fallback", False, raising = False)
+    monkeypatch.setattr(Audio, "_unsloth_audio_fallback", False, raising=False)
 
 
 def test_a_wav_row_decodes_and_resamples(broken_torchcodec):
@@ -81,10 +81,10 @@ def test_a_wav_row_decodes_and_resamples(broken_torchcodec):
 
     assert import_fixes.patch_datasets_audio_decoding_without_torchcodec() is True
     ds = Dataset.from_dict({"audio": [{"path": "a.wav", "bytes": _wav_bytes()}]})
-    ds = ds.cast_column("audio", Audio(sampling_rate = 24000))
+    ds = ds.cast_column("audio", Audio(sampling_rate=24000))
     decoded = ds[0]["audio"]
     assert decoded["sampling_rate"] == 24000
-    assert len(decoded["array"]) == pytest.approx(2400, abs = 4)
+    assert len(decoded["array"]) == pytest.approx(2400, abs=4)
     assert decoded["path"] == "a.wav"
 
 
@@ -96,7 +96,7 @@ def test_an_m4a_row_decodes_through_pyav(broken_torchcodec):
         sf.read(io.BytesIO(raw))  # libsndfile cannot, so this row needs the PyAV leg
     import_fixes.patch_datasets_audio_decoding_without_torchcodec()
     ds = Dataset.from_dict({"audio": [{"path": "tone.m4a", "bytes": raw}]})
-    ds = ds.cast_column("audio", Audio(sampling_rate = 16000))
+    ds = ds.cast_column("audio", Audio(sampling_rate=16000))
     decoded = ds[0]["audio"]
     array = np.asarray(decoded["array"])
     assert decoded["sampling_rate"] == 16000 and array.ndim == 1
@@ -114,12 +114,12 @@ def test_resampling_works_without_a_usable_librosa(broken_torchcodec, monkeypatc
     else:
         # An old librosa beside numpy 2 raises AttributeError at import; that must reach PyAV too.
         (tmp_path / "librosa.py").write_text(
-            "raise AttributeError('np.complex was removed')\n", encoding = "utf-8"
+            "raise AttributeError('np.complex was removed')\n", encoding="utf-8"
         )
-        monkeypatch.delitem(sys.modules, "librosa", raising = False)
+        monkeypatch.delitem(sys.modules, "librosa", raising=False)
         monkeypatch.syspath_prepend(str(tmp_path))
-    out = import_fixes._audio_resample(np.zeros(1600, dtype = np.float32), 16000, 24000)
-    assert len(out) == pytest.approx(2400, abs = 8)
+    out = import_fixes._audio_resample(np.zeros(1600, dtype=np.float32), 16000, 24000)
+    assert len(out) == pytest.approx(2400, abs=8)
 
 
 def test_a_working_torchcodec_is_left_alone(monkeypatch):
@@ -136,7 +136,7 @@ def test_a_working_torchcodec_is_left_alone(monkeypatch):
 
 def test_the_disabler_installs_the_decoder():
     # Read the source: importing a real torchcodec would decide this by the host, not the code.
-    src = ast.parse((_REPO / "unsloth" / "import_fixes.py").read_text(encoding = "utf-8"))
+    src = ast.parse((_REPO / "unsloth" / "import_fixes.py").read_text(encoding="utf-8"))
     fn = next(
         n
         for n in ast.walk(src)
@@ -148,21 +148,21 @@ def test_the_disabler_installs_the_decoder():
     assert "patch_datasets_audio_decoding_without_torchcodec" in calls
 
 
-def _two_stream_m4a_bytes(rate = 22050, freqs = (440, 880)):
+def _two_stream_m4a_bytes(rate=22050, freqs=(440, 880)):
     """One MP4 holding two AAC tracks, a tone per stream; the second is the one a stream_index must reach."""
     av = pytest.importorskip("av")
     t = np.arange(rate) / rate
     buf = io.BytesIO()
     try:
-        with av.open(buf, "w", format = "mp4") as container:
+        with av.open(buf, "w", format="mp4") as container:
             streams = []
             for hz in freqs:
-                stream = container.add_stream("aac", rate = rate)
+                stream = container.add_stream("aac", rate=rate)
                 stream.layout = "mono"
                 streams.append(stream)
             for stream, hz in zip(streams, freqs):
                 tone = (0.5 * np.sin(2 * np.pi * hz * t)).astype("float32")
-                frame = av.AudioFrame.from_ndarray(tone[np.newaxis, :], format = "flt", layout = "mono")
+                frame = av.AudioFrame.from_ndarray(tone[np.newaxis, :], format="flt", layout="mono")
                 frame.sample_rate = rate
                 for packet in stream.encode(frame):
                     container.mux(packet)
@@ -174,7 +174,7 @@ def _two_stream_m4a_bytes(rate = 22050, freqs = (440, 880)):
 
 
 def _dominant_hz(array, rate):
-    spectrum = np.abs(np.fft.rfft(np.asarray(array, dtype = "float64")))
+    spectrum = np.abs(np.fft.rfft(np.asarray(array, dtype="float64")))
     return float(np.fft.rfftfreq(len(array), 1.0 / rate)[int(np.argmax(spectrum))])
 
 
@@ -186,11 +186,11 @@ def test_the_stream_index_selects_the_track(broken_torchcodec):
     assert import_fixes.patch_datasets_audio_decoding_without_torchcodec() is True
     rows = {"audio": [{"path": "two.m4a", "bytes": raw}]}
     first = Dataset.from_dict(rows).cast_column("audio", Audio())[0]["audio"]
-    second = Dataset.from_dict(rows).cast_column("audio", Audio(stream_index = 1))[0]["audio"]
+    second = Dataset.from_dict(rows).cast_column("audio", Audio(stream_index=1))[0]["audio"]
     assert abs(_dominant_hz(first["array"], first["sampling_rate"]) - 440) < 20
     assert abs(_dominant_hz(second["array"], second["sampling_rate"]) - 880) < 20
-    with pytest.raises(Exception, match = "stream"):
-        import_fixes._audio_read_mono(io.BytesIO(raw), stream_index = 5)
+    with pytest.raises(Exception, match="stream"):
+        import_fixes._audio_read_mono(io.BytesIO(raw), stream_index=5)
 
 
 def test_a_wheel_that_raises_anything_at_import_is_disabled(
@@ -202,8 +202,8 @@ def test_a_wheel_that_raises_anything_at_import_is_disabled(
 
     pkg = tmp_path / "torchcodec"
     pkg.mkdir()
-    (pkg / "__init__.py").write_text("", encoding = "utf-8")
-    (pkg / "decoders.py").write_text("raise AttributeError('damaged wheel')\n", encoding = "utf-8")
+    (pkg / "__init__.py").write_text("", encoding="utf-8")
+    (pkg / "decoders.py").write_text("raise AttributeError('damaged wheel')\n", encoding="utf-8")
     for name in [n for n in sys.modules if n == "torchcodec" or n.startswith("torchcodec.")]:
         monkeypatch.delitem(sys.modules, name)
     monkeypatch.syspath_prepend(str(tmp_path))
@@ -211,7 +211,7 @@ def test_a_wheel_that_raises_anything_at_import_is_disabled(
     monkeypatch.setattr(import_fixes, "_torchcodec_provenance_hint", lambda: None)
     import warnings
 
-    with warnings.catch_warnings(record = True) as caught:
+    with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
         import_fixes.disable_torchcodec_if_broken()
     from datasets.features.audio import Audio
@@ -239,7 +239,7 @@ def test_the_audio_extras_carry_the_fallback_decoders():
 def test_the_load_failure_is_classified_for_the_warning(monkeypatch):
     # The import-time warning names the cause it can establish: FFmpeg off the loader path,
     # FFmpeg present so the cause is elsewhere, or a failure that never reached libtorchcodec.
-    def raised(msg, cls = RuntimeError):
+    def raised(msg, cls=RuntimeError):
         try:
             raise cls(msg)
         except cls as exc:
@@ -297,12 +297,12 @@ def test_a_missing_index_picks_the_default_track_not_the_first(broken_torchcodec
             "default",
             str(path),
         ],
-        check = True,
+        check=True,
     )
     assert import_fixes.patch_datasets_audio_decoding_without_torchcodec() is True
     array, rate = import_fixes._audio_read_mono(str(path))
     assert abs(_dominant_hz(array, rate) - 880) < 20
-    array, rate = import_fixes._audio_read_mono(str(path), stream_index = 0)
+    array, rate = import_fixes._audio_read_mono(str(path), stream_index=0)
     assert abs(_dominant_hz(array, rate) - 440) < 20
 
 
@@ -312,15 +312,15 @@ def test_a_channel_first_array_round_trips_through_the_encoder(broken_torchcodec
     from datasets import Audio, Dataset
 
     assert import_fixes.patch_datasets_audio_decoding_without_torchcodec() is True
-    stereo = np.stack([np.linspace(-0.5, 0.5, 1600, dtype = "float32")] * 2)
+    stereo = np.stack([np.linspace(-0.5, 0.5, 1600, dtype="float32")] * 2)
     assert stereo.shape == (2, 1600)
     ds = Dataset.from_dict({"audio": [{"array": stereo, "sampling_rate": 16000, "path": "s.wav"}]})
-    decoded = ds.cast_column("audio", Audio(sampling_rate = 16000))[0]["audio"]
+    decoded = ds.cast_column("audio", Audio(sampling_rate=16000))[0]["audio"]
     assert len(decoded["array"]) == 1600 and decoded["sampling_rate"] == 16000
 
 
 def _normalized(path: Path, name: str, rename: dict) -> str:
-    tree = ast.parse(path.read_text(encoding = "utf-8"))
+    tree = ast.parse(path.read_text(encoding="utf-8"))
     fn = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == name)
     fn.name = "f"
     fn.returns = None  # Studio annotates, the library does not; the bodies are what must match

@@ -27,7 +27,7 @@ README = (
 )
 
 
-@pytest.fixture(scope = "module")
+@pytest.fixture(scope="module")
 def view_mod():
     assert VIEW_PATH.is_file(), f"missing {VIEW_PATH}"
     spec = importlib.util.spec_from_file_location("unsloth_nb_view_under_test", VIEW_PATH)
@@ -40,19 +40,19 @@ def view_mod():
 def tree(tmp_path: Path):
     dest = tmp_path / "unsloth-notebooks"
     view = tmp_path / "Unsloth Notebooks"
-    (dest / "nb").mkdir(parents = True)
+    (dest / "nb").mkdir(parents=True)
     view.mkdir()
     for name in ("Llama3_2_(1B_and_3B)_Conversational.ipynb", "Gemma3_(4B).ipynb"):
-        (dest / "nb" / name).write_text("{}", encoding = "utf-8")
-    (dest / "README.md").write_text(README, encoding = "utf-8")
+        (dest / "nb" / name).write_text("{}", encoding="utf-8")
+    (dest / "README.md").write_text(README, encoding="utf-8")
     # the user's own notebook inside the checkout, plus their own shortcut folder
     (dest / "my_work").mkdir()
-    (dest / "my_work" / "experiment.ipynb").write_text("{}", encoding = "utf-8")
+    (dest / "my_work" / "experiment.ipynb").write_text("{}", encoding="utf-8")
     return dest, view
 
 
 def link(target: Path, at: Path) -> None:
-    at.parent.mkdir(parents = True, exist_ok = True)
+    at.parent.mkdir(parents=True, exist_ok=True)
     os.symlink(os.path.relpath(target, at.parent), at)
 
 
@@ -92,7 +92,7 @@ def test_the_tools_own_stale_links_are_still_cleaned_up(view_mod, tree):
     (dest / "nb" / "Gemma3_(4B).ipynb").unlink()
     (dest / "README.md").write_text(
         "### Main Notebooks\n[Llama](nb/Llama3_2_%281B_and_3B%29_Conversational.ipynb)\n",
-        encoding = "utf-8",
+        encoding="utf-8",
     )
     view_mod.build_view(str(dest), str(view))
 

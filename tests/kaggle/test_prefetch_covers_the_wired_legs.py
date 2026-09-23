@@ -41,7 +41,7 @@ from kaggle_t4_ci import legs  # noqa: E402
 
 def _payload_default(entry: str) -> str | None:
     """The `--model` default the payload itself carries."""
-    source = (PAYLOAD_DIR / entry).read_text(encoding = "utf-8")
+    source = (PAYLOAD_DIR / entry).read_text(encoding="utf-8")
     if 'ap.add_argument("--model", default = DEFAULT_MODEL)' not in source:
         return None
     match = re.search(r'^DEFAULT_MODEL = "([^"]+)"', source, re.MULTILINE)
@@ -174,8 +174,8 @@ def test_a_blob_is_counted_once_not_once_per_symlink(tmp_path, monkeypatch):
     folder = tmp_path / "hub" / "models--org--model"
     blobs = folder / "blobs"
     snapshot = folder / "snapshots" / "rev"
-    blobs.mkdir(parents = True)
-    snapshot.mkdir(parents = True)
+    blobs.mkdir(parents=True)
+    snapshot.mkdir(parents=True)
     for index in range(3):
         blob = blobs / f"sha{index}"
         blob.write_bytes(b"x" * 1000)
@@ -185,7 +185,7 @@ def test_a_blob_is_counted_once_not_once_per_symlink(tmp_path, monkeypatch):
     (blobs / "cfg").write_bytes(b"y" * 10)
     os.link(blobs / "cfg", snapshot / "config.json")
 
-    source = module.prefetch_cell(repos = [("org/model", None)], hf_home = str(tmp_path))
+    source = module.prefetch_cell(repos=[("org/model", None)], hf_home=str(tmp_path))
     match = re.search(r"def _repo_bytes\(repo\):.*?\n\ndef ", source, re.S)
     assert match, "the generated cell no longer defines _repo_bytes"
     namespace = {"os": os}

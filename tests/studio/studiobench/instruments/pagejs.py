@@ -34,6 +34,7 @@ CLOCK_DISAGREEMENT_LIMIT = 0.20
 
 def _js(name: str) -> str:
     from ..runtime import resources
+
     return resources.read_text(f"instruments/{name}")
 
 
@@ -76,7 +77,7 @@ class _PageInstrument(Instrument):
             return None
 
 
-@register_instrument(name = "frames", level = 0)
+@register_instrument(name="frames", level=0)
 def _frames():
     return FramesInstrument()
 
@@ -245,7 +246,7 @@ class FramesInstrument(_PageInstrument):
                 pass
 
 
-@register_instrument(name = "input", level = 0)
+@register_instrument(name="input", level=0)
 def _input():
     return InputInstrument()
 
@@ -280,7 +281,7 @@ class InputInstrument(_PageInstrument):
         return None
 
 
-@register_instrument(name = "glass", level = 1)
+@register_instrument(name="glass", level=1)
 def _glass():
     return GlassInstrument()
 

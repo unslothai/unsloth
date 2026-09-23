@@ -19,7 +19,7 @@ class _StrictTokenizer:
         return "\n".join(f"{turn['role']}: {turn['content']}" for turn in conversation)
 
 
-def _convo(index, with_system = False):
+def _convo(index, with_system=False):
     turns = [
         {"role": "user", "content": f"question {index}"},
         {"role": "assistant", "content": f"answer {index}"},
@@ -42,7 +42,7 @@ def _dataset_info(dataset):
 
 def _mixed_dataset():
     return Dataset.from_dict(
-        {"messages": [_convo(i, with_system = i in (1, 4, 5)) for i in range(8)]}
+        {"messages": [_convo(i, with_system=i in (1, 4, 5)) for i in range(8)]}
     )
 
 
@@ -77,7 +77,7 @@ def test_clean_dataset_reports_no_dropped_rows():
 
 
 def test_every_row_failing_is_an_error():
-    dataset = Dataset.from_dict({"messages": [_convo(i, with_system = True) for i in range(3)]})
+    dataset = Dataset.from_dict({"messages": [_convo(i, with_system=True) for i in range(3)]})
 
     result = apply_chat_template_to_dataset(_dataset_info(dataset), _StrictTokenizer())
 
@@ -99,7 +99,7 @@ def test_streaming_rows_whose_template_raised_are_filtered():
 
 def test_format_and_template_dataset_passes_the_dropped_rows_warning_through():
     result = format_and_template_dataset(
-        _mixed_dataset(), model_name = "stub-model", tokenizer = _StrictTokenizer()
+        _mixed_dataset(), model_name="stub-model", tokenizer=_StrictTokenizer()
     )
 
     assert result["success"] is True
@@ -132,7 +132,7 @@ def test_a_marker_named_column_survives_a_schema_less_stream():
     def rows():
         for i in range(8):
             yield {
-                "messages": _convo(i, with_system = i in (1, 4, 5)),
+                "messages": _convo(i, with_system=i in (1, 4, 5)),
                 "__chat_template_error": f"user-data-{i}",
             }
 
@@ -156,7 +156,7 @@ def test_failures_spread_across_scan_batches_are_all_counted(monkeypatch):
     monkeypatch.setattr(chat_templates, "_ERROR_SCAN_BATCH", 3)
     n = 20
     bad = {0, 4, 5, 11, 19}
-    dataset = Dataset.from_dict({"messages": [_convo(i, with_system = i in bad) for i in range(n)]})
+    dataset = Dataset.from_dict({"messages": [_convo(i, with_system=i in bad) for i in range(n)]})
 
     result = apply_chat_template_to_dataset(_dataset_info(dataset), _StrictTokenizer())
 
@@ -169,7 +169,7 @@ def test_failures_spread_across_scan_batches_are_all_counted(monkeypatch):
 
 
 def test_all_rows_failing_still_returns_the_dropped_rows_key():
-    dataset = Dataset.from_dict({"messages": [_convo(i, with_system = True) for i in range(3)]})
+    dataset = Dataset.from_dict({"messages": [_convo(i, with_system=True) for i in range(3)]})
 
     result = apply_chat_template_to_dataset(_dataset_info(dataset), _StrictTokenizer())
 

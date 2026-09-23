@@ -21,7 +21,7 @@ from utils.account_context import OWNER, AccountContext, arun_as
 ALICE = AccountContext("a" * 32, "alice")
 
 
-@pytest.fixture(autouse = True)
+@pytest.fixture(autouse=True)
 def isolated(monkeypatch, tmp_path):
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
     monkeypatch.setattr(policy, "installation_is_multi_user", lambda: True)
@@ -36,10 +36,10 @@ def isolated(monkeypatch, tmp_path):
 
 def _request():
     return SimpleNamespace(
-        headers = {"X-Unsloth-HF-Token": "alice-token"},
-        scope = {},
-        state = SimpleNamespace(),
-        url = SimpleNamespace(path = "/v1/chat/completions"),
+        headers={"X-Unsloth-HF-Token": "alice-token"},
+        scope={},
+        state=SimpleNamespace(),
+        url=SimpleNamespace(path="/v1/chat/completions"),
     )
 
 
@@ -57,13 +57,13 @@ def downloads(monkeypatch):
         def repo_info(
             self,
             repo_id,
-            repo_type = "model",
-            token = None,
-            timeout = None,
+            repo_type="model",
+            token=None,
+            timeout=None,
         ):
             if token != "alice-token":
                 raise RuntimeError("401")
-            return SimpleNamespace(private = True, gated = False)
+            return SimpleNamespace(private=True, gated=False)
 
     monkeypatch.setattr(access, "HfApi", _Hub)
     monkeypatch.setattr(inference, "_loaded_identity_satisfies", lambda *a, **k: False)
@@ -112,7 +112,7 @@ def test_a_managed_caller_still_cannot_reach_another_accounts_cached_private_mod
     monkeypatch.setattr(access, "model_visible", lambda *a, **k: False)
     monkeypatch.setattr(inference, "_own_local_model_for_alias", lambda alias: None)
     cached = tmp_path / "hub" / "models--org--private" / "snapshots" / "abc"
-    cached.mkdir(parents = True)
+    cached.mkdir(parents=True)
     with pytest.raises(HTTPException) as exc:
         asyncio.run(
             arun_as(ALICE, inference._maybe_auto_switch_model(str(cached), _request(), "alice"))

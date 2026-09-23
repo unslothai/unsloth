@@ -44,7 +44,7 @@ INSTALL_SH = REPO_ROOT / "install.sh"
 def _requirements(path: pathlib.Path) -> list[str]:
     """Requirement lines only: comments and flag lines dropped."""
     out = []
-    for line in path.read_text(encoding = "utf-8").splitlines():
+    for line in path.read_text(encoding="utf-8").splitlines():
         text = line.split("#", 1)[0].strip()
         if text and not text.startswith("-"):
             out.append(text)
@@ -56,7 +56,7 @@ def _code_only(source: str) -> str:
 
     The ordering check scans for requirements filenames and has to read them as installs,
     not prose. Blanking keeps every index truthful; tokenize spares a `#` inside a string."""
-    lines = source.splitlines(keepends = True)
+    lines = source.splitlines(keepends=True)
     starts, offset = [], 0
     for line in lines:
         starts.append(offset)
@@ -132,7 +132,7 @@ def test_the_main_build_pins_a_commit_and_runs_after_the_release():
         "main apart"
     )
 
-    source = _code_only(STACK.read_text(encoding = "utf-8"))
+    source = _code_only(STACK.read_text(encoding="utf-8"))
     # Installed only through its own step, which reads the opt-out.
     assert "diffusers-main.txt" in source
     assert "_diffusers_main_requested" in source
@@ -162,7 +162,7 @@ def test_the_main_build_is_on_by_default_and_opts_out_on_zero(monkeypatch):
     """
     module = _probe_module("install_python_stack_probe")
 
-    monkeypatch.delenv("UNSLOTH_DIFFUSERS_MAIN", raising = False)
+    monkeypatch.delenv("UNSLOTH_DIFFUSERS_MAIN", raising=False)
     assert module._diffusers_main_requested() is True
     for value in ("", "1", "true", "YES", "on", "anything"):
         monkeypatch.setenv("UNSLOTH_DIFFUSERS_MAIN", value)
@@ -197,7 +197,7 @@ def test_the_main_build_falls_back_to_the_zip_when_there_is_no_git(monkeypatch):
     """
     module = _probe_module("install_python_stack_probe2")
 
-    monkeypatch.delenv("UNSLOTH_DIFFUSERS_MAIN", raising = False)
+    monkeypatch.delenv("UNSLOTH_DIFFUSERS_MAIN", raising=False)
     monkeypatch.setattr(module, "_has_working_git", lambda: False)
     monkeypatch.setattr(module, "_direct_reference_is_installed", lambda *a, **k: False)
     monkeypatch.setattr(module, "_progress", lambda *a, **k: None)
@@ -232,7 +232,7 @@ def test_the_main_build_keeps_the_release_when_there_is_no_git_and_no_zip(monkey
     """
     module = _probe_module("install_python_stack_probe2b")
 
-    monkeypatch.delenv("UNSLOTH_DIFFUSERS_MAIN", raising = False)
+    monkeypatch.delenv("UNSLOTH_DIFFUSERS_MAIN", raising=False)
     monkeypatch.setattr(module, "_has_working_git", lambda: False)
     monkeypatch.setattr(
         module,
@@ -315,7 +315,7 @@ def test_a_failed_main_build_degrades_instead_of_failing_the_install(monkeypatch
     """
     module = _probe_module("install_python_stack_probe3")
 
-    monkeypatch.delenv("UNSLOTH_DIFFUSERS_MAIN", raising = False)
+    monkeypatch.delenv("UNSLOTH_DIFFUSERS_MAIN", raising=False)
     monkeypatch.setattr(module, "_has_working_git", lambda: True)
     monkeypatch.setattr(module, "_direct_reference_is_installed", lambda *a, **k: False)
     monkeypatch.setattr(module, "_progress", lambda *a, **k: None)
@@ -344,7 +344,7 @@ def test_the_main_build_is_satisfied_without_touching_the_network(monkeypatch):
     """A full SHA is answerable from direct_url.json, and on by default this runs on every pass."""
     module = _probe_module("install_python_stack_probe4")
 
-    monkeypatch.delenv("UNSLOTH_DIFFUSERS_MAIN", raising = False)
+    monkeypatch.delenv("UNSLOTH_DIFFUSERS_MAIN", raising=False)
     monkeypatch.setattr(module, "_has_working_git", lambda: True)
     monkeypatch.setattr(module, "_direct_reference_is_installed", lambda *a, **k: True)
     # Provenance AND payload: residency needs both, and a test environment with no installed
@@ -363,7 +363,7 @@ def test_the_main_build_is_satisfied_without_touching_the_network(monkeypatch):
 
 def test_the_pin_step_is_not_gated_by_skip_base_or_no_torch():
     """The pin must sit at function top level so it reaches every install path."""
-    tree = ast.parse(STACK.read_text(encoding = "utf-8"))
+    tree = ast.parse(STACK.read_text(encoding="utf-8"))
 
     def _installs_pin(node: ast.AST) -> bool:
         for call in ast.walk(node):
@@ -393,7 +393,7 @@ def test_the_pin_step_is_not_gated_by_skip_base_or_no_torch():
 def test_the_pin_step_runs_after_every_other_requirements_install():
     """Ordering matters: a later `uv pip install -r ...` can re-resolve diffusers back to a
     release. Keeping the pin last means nothing is left that could walk it forward."""
-    source = _code_only(STACK.read_text(encoding = "utf-8"))
+    source = _code_only(STACK.read_text(encoding="utf-8"))
     pin_at = source.index("diffusers-pin.txt")
     later = [
         name
@@ -430,7 +430,7 @@ def test_the_ordering_check_reads_installs_not_prose():
     kept = _code_only('marker = "extras-no-deps.txt#egg"\n')
     assert "extras-no-deps.txt#egg" in kept
 
-    source = STACK.read_text(encoding = "utf-8")
+    source = STACK.read_text(encoding="utf-8")
     blanked = _code_only(source)
     assert len(blanked) == len(source)
     assert blanked.index("diffusers-pin.txt") == source.index("diffusers-pin.txt")
@@ -438,8 +438,8 @@ def test_the_ordering_check_reads_installs_not_prose():
 
 def test_install_sh_still_delegates_the_core_package_skip():
     """The handoff flag skips core packages while allowing other base entries through."""
-    assert 'SKIP_STUDIO_BASE="$_SKIP_BASE"' in INSTALL_SH.read_text(encoding = "utf-8")
-    assert "_SKIP_BASE=1" in INSTALL_SH.read_text(encoding = "utf-8")
+    assert 'SKIP_STUDIO_BASE="$_SKIP_BASE"' in INSTALL_SH.read_text(encoding="utf-8")
+    assert "_SKIP_BASE=1" in INSTALL_SH.read_text(encoding="utf-8")
 
 
 def test_no_generated_filter_snapshot_is_tracked():
@@ -452,9 +452,9 @@ def test_no_generated_filter_snapshot_is_tracked():
     """
     done = subprocess.run(
         ["git", "ls-files", "-z", "--", "studio/backend/requirements/"],
-        cwd = REPO_ROOT,
-        capture_output = True,
-        text = True,
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
     )
     if done.returncode != 0:
         pytest.skip("not a git checkout")
@@ -469,9 +469,9 @@ def test_gitignore_covers_the_generated_snapshots():
     assert _GENERATED_FILTER.fullmatch(probe.name), "the probe must match the generated shape"
     done = subprocess.run(
         ["git", "check-ignore", "-q", "--no-index", str(probe)],
-        cwd = REPO_ROOT,
-        capture_output = True,
-        text = True,
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
     )
     if done.returncode == 128:
         pytest.skip("not a git checkout")
@@ -495,10 +495,10 @@ WIN_ARM64_FLOORS = [
 @pytest.mark.parametrize(
     "relpath, dist, floor",
     WIN_ARM64_FLOORS,
-    ids = [f"{r.split('/')[-1]}:{d}" for r, d, _ in WIN_ARM64_FLOORS],
+    ids=[f"{r.split('/')[-1]}:{d}" for r, d, _ in WIN_ARM64_FLOORS],
 )
 def test_the_win_arm64_floor_is_the_first_release_that_has_a_wheel(relpath, dist, floor):
-    text = (REQ_ROOT / relpath).read_text(encoding = "utf-8")
+    text = (REQ_ROOT / relpath).read_text(encoding="utf-8")
     marker = 'sys_platform == "win32" and platform_machine == "ARM64"'
     # Either operator satisfies what this test is for. The floor exists so the resolver is not
     # pushed above the first release carrying a win_arm64 wheel; an exact pin at that same
@@ -544,8 +544,8 @@ def test_the_release_pin_stands_down_once_the_main_build_is_resident(monkeypatch
         module._skip_step(
             module.REQ_ROOT / "diffusers-pin.txt",
             "diffusers pin",
-            no_deps = False,
-            superseded = True,
+            no_deps=False,
+            superseded=True,
         )
         is True
     )
@@ -557,8 +557,8 @@ def test_the_release_pin_stands_down_once_the_main_build_is_resident(monkeypatch
         module._skip_step(
             module.REQ_ROOT / "diffusers-pin.txt",
             "diffusers pin",
-            no_deps = False,
-            superseded = False,
+            no_deps=False,
+            superseded=False,
         )
         is False
     )
@@ -572,7 +572,7 @@ def test_opting_out_or_a_missing_main_build_still_reinstates_the_release(monkeyp
     main_req = module.REQ_ROOT / "diffusers-main.txt"
 
     monkeypatch.setattr(module, "_direct_reference_is_installed", lambda *a, **k: True)
-    monkeypatch.delenv("UNSLOTH_DIFFUSERS_MAIN", raising = False)
+    monkeypatch.delenv("UNSLOTH_DIFFUSERS_MAIN", raising=False)
     assert module._diffusers_main_requested() and module._direct_reference_is_installed(
         main_req, "diffusers"
     )
@@ -583,7 +583,7 @@ def test_opting_out_or_a_missing_main_build_still_reinstates_the_release(monkeyp
         and module._direct_reference_is_installed(main_req, "diffusers")
     ), "opting out must let the release pin run again"
 
-    monkeypatch.delenv("UNSLOTH_DIFFUSERS_MAIN", raising = False)
+    monkeypatch.delenv("UNSLOTH_DIFFUSERS_MAIN", raising=False)
     monkeypatch.setattr(module, "_direct_reference_is_installed", lambda *a, **k: False)
     assert not (
         module._diffusers_main_requested()
@@ -600,7 +600,7 @@ def test_a_damaged_main_build_is_repaired_rather_than_believed(monkeypatch):
     every later pass rather than one. Either half failing has to mean "install it".
     """
     module = _probe_module("install_python_stack_probe7")
-    monkeypatch.delenv("UNSLOTH_DIFFUSERS_MAIN", raising = False)
+    monkeypatch.delenv("UNSLOTH_DIFFUSERS_MAIN", raising=False)
 
     monkeypatch.setattr(module, "_direct_reference_is_installed", lambda *a, **k: True)
     monkeypatch.setattr(module, "_payload_recorded_intact", lambda *a, **k: True)
@@ -621,7 +621,7 @@ def test_a_damaged_main_build_is_repaired_rather_than_believed(monkeypatch):
     monkeypatch.setattr(module, "_note", lambda *a, **k: None)
     monkeypatch.setattr(module, "_record_step", lambda *a, **k: None)
     monkeypatch.setattr(
-        module, "pip_install_try", lambda *a, req = None, **k: (attempted.append(req), True)[1]
+        module, "pip_install_try", lambda *a, req=None, **k: (attempted.append(req), True)[1]
     )
     module._diffusers_main_step()
     assert attempted and attempted[0].name == "diffusers-main.txt"
@@ -632,7 +632,7 @@ def test_python_39_does_not_clone_a_build_it_can_never_install(monkeypatch):
     declares requires-python >= 3.10. Unmarked, pip clones the repository and only then rejects
     it, and since the build can never become resident that clone repeats on every update."""
     module = _probe_module("install_python_stack_probe8")
-    monkeypatch.delenv("UNSLOTH_DIFFUSERS_MAIN", raising = False)
+    monkeypatch.delenv("UNSLOTH_DIFFUSERS_MAIN", raising=False)
     monkeypatch.setattr(
         module, "pip_install_try", lambda *a, **k: pytest.fail("cloned main on python 3.9")
     )
@@ -658,7 +658,7 @@ def test_python_39_does_not_clone_a_build_it_can_never_install(monkeypatch):
     monkeypatch.setattr(module.sys, "version_info", _V((3, 10, 0)))
     monkeypatch.setattr(module, "_payload_recorded_intact", lambda *a, **k: False)
     monkeypatch.setattr(
-        module, "pip_install_try", lambda *a, req = None, **k: (attempted.append(req), True)[1]
+        module, "pip_install_try", lambda *a, req=None, **k: (attempted.append(req), True)[1]
     )
     monkeypatch.setattr(module, "_record_step", lambda *a, **k: None)
     module._diffusers_main_step()
@@ -681,14 +681,14 @@ def test_the_full_deps_escape_hatch_reaches_both_diffusers_steps(monkeypatch):
     monkeypatch.setattr(module, "_record_step", lambda *a, **k: None)
     monkeypatch.setattr(module, "_note", lambda *a, **k: None)
     monkeypatch.setattr(module, "_has_working_git", lambda: True)
-    monkeypatch.setattr(module, "_diffusers_main_resident", lambda req = None: True)
+    monkeypatch.setattr(module, "_diffusers_main_resident", lambda req=None: True)
     monkeypatch.setattr(
         module, "pip_install_try", lambda *a, **k: (installed.append(k.get("req")), True)[1]
     )
-    monkeypatch.delenv(module.DIFFUSERS_MAIN_ENV, raising = False)
+    monkeypatch.delenv(module.DIFFUSERS_MAIN_ENV, raising=False)
 
     # Without the hatch: resident means skip, and the release pin stands down.
-    monkeypatch.delenv(module._FULL_DEPS_ENV, raising = False)
+    monkeypatch.delenv(module._FULL_DEPS_ENV, raising=False)
     module._diffusers_main_step()
     assert installed == [], installed
     assert len(calls) == 1 and "satisfied, skipped" in calls[0], calls
@@ -717,13 +717,13 @@ def _fast_path_probe_module(
     monkeypatch,
     *,
     resident,
-    git = True,
-    last = None,
-    requested = True,
+    git=True,
+    last=None,
+    requested=True,
 ):
     module = _probe_module("install_python_stack_fastpath_probe")
     if requested:
-        monkeypatch.delenv("UNSLOTH_DIFFUSERS_MAIN", raising = False)
+        monkeypatch.delenv("UNSLOTH_DIFFUSERS_MAIN", raising=False)
     else:
         monkeypatch.setenv("UNSLOTH_DIFFUSERS_MAIN", "0")
     monkeypatch.setattr(module, "_has_working_git", lambda: git)
@@ -735,19 +735,19 @@ def _fast_path_probe_module(
 
 def test_the_fast_path_is_forced_when_the_main_build_never_went_in(monkeypatch):
     """An install updated by an installer that predates 11c is current and still on the release."""
-    module = _fast_path_probe_module(monkeypatch, resident = False)
+    module = _fast_path_probe_module(monkeypatch, resident=False)
     assert module._diffusers_main_needs_dependency_pass() is True
 
 
 def test_a_resident_main_build_keeps_the_fast_path(monkeypatch):
-    module = _fast_path_probe_module(monkeypatch, resident = True)
+    module = _fast_path_probe_module(monkeypatch, resident=True)
     assert module._diffusers_main_needs_dependency_pass() is False
 
 
 def test_a_host_without_git_is_forced_only_when_the_zip_route_exists(monkeypatch):
     """11c installs the pinned commit from a zip without git; with no such route it skips, and
     forcing the pass there would repeat it on every update."""
-    module = _fast_path_probe_module(monkeypatch, resident = False, git = False)
+    module = _fast_path_probe_module(monkeypatch, resident=False, git=False)
     assert module._diffusers_main_archive(module.REQ_ROOT / "diffusers-main.txt") is not None
     assert module._diffusers_main_needs_dependency_pass() is True
     monkeypatch.setattr(module, "_diffusers_main_archive", lambda req: None)
@@ -756,23 +756,23 @@ def test_a_host_without_git_is_forced_only_when_the_zip_route_exists(monkeypatch
 
 def test_a_recorded_failed_build_keeps_the_fast_path(monkeypatch):
     """A host that cannot reach github.com would otherwise run the whole pass on every update."""
-    module = _fast_path_probe_module(monkeypatch, resident = False, last = "failed")
+    module = _fast_path_probe_module(monkeypatch, resident=False, last="failed")
     assert module._diffusers_main_needs_dependency_pass() is False
-    module = _fast_path_probe_module(monkeypatch, resident = False, last = "skipped")
+    module = _fast_path_probe_module(monkeypatch, resident=False, last="skipped")
     assert module._diffusers_main_needs_dependency_pass() is True
 
 
 def test_opting_out_forces_the_pass_only_while_the_main_build_is_resident(monkeypatch):
     """11b reinstates the release, but only if the pass runs."""
-    module = _fast_path_probe_module(monkeypatch, resident = True, requested = False)
+    module = _fast_path_probe_module(monkeypatch, resident=True, requested=False)
     assert module._diffusers_main_needs_dependency_pass() is True
-    module = _fast_path_probe_module(monkeypatch, resident = False, requested = False)
+    module = _fast_path_probe_module(monkeypatch, resident=False, requested=False)
     assert module._diffusers_main_needs_dependency_pass() is False
 
 
 @pytest.mark.parametrize("script", ["setup.sh", "setup.ps1"])
 def test_both_fast_paths_consult_the_probe(script):
-    source = (REPO_ROOT / "studio" / script).read_text(encoding = "utf-8")
+    source = (REPO_ROOT / "studio" / script).read_text(encoding="utf-8")
     assert "--diffusers-main-needs-dependency-pass" in source
 
 
@@ -782,9 +782,9 @@ def test_the_probe_flag_answers_without_a_traceback():
 
     result = subprocess.run(
         [sys.executable, str(STACK), "--diffusers-main-needs-dependency-pass"],
-        capture_output = True,
-        text = True,
-        timeout = 120,
+        capture_output=True,
+        text=True,
+        timeout=120,
     )
     assert result.returncode in (0, 1), result.stderr
     assert "Traceback" not in result.stderr, result.stderr
@@ -795,13 +795,13 @@ def _repair_module(
     *,
     needed,
     resident_after,
-    uncontended = (True,),
+    uncontended=(True,),
 ):
     """``uncontended`` is read once per poll of the pass lock, ``needed`` once the lock is free."""
     import contextlib
 
     module = _probe_module("install_python_stack_repair_probe")
-    monkeypatch.delenv("UNSLOTH_DIFFUSERS_MAIN", raising = False)
+    monkeypatch.delenv("UNSLOTH_DIFFUSERS_MAIN", raising=False)
     needed, uncontended = iter(needed), iter(uncontended)
     monkeypatch.setattr(module, "_diffusers_main_needs_dependency_pass", lambda: next(needed))
     monkeypatch.setattr(module, "_bootstrap_uv", lambda: True)
@@ -830,10 +830,10 @@ def _repair_module(
 
 def test_the_startup_repair_runs_only_the_main_step(monkeypatch):
     """The backend's self-heal: 0 once the build is in, 2 when the step could not install it."""
-    module, ran = _repair_module(monkeypatch, needed = [True], resident_after = True)
+    module, ran = _repair_module(monkeypatch, needed=[True], resident_after=True)
     assert module._repair_diffusers_main() == 0 and ran == [True]
     assert module.recorded == []
-    module, ran = _repair_module(monkeypatch, needed = [True], resident_after = False)
+    module, ran = _repair_module(monkeypatch, needed=[True], resident_after=False)
     assert module._repair_diffusers_main() == 2 and ran == [True]
     assert module.recorded == [{module._DIFFUSERS_MAIN_REPAIR_KEY: "failed"}]
 
@@ -849,16 +849,16 @@ def test_a_failed_startup_repair_stops_startup_retries_but_not_an_update(monkeyp
             lambda *a, **k: {module._DIFFUSERS_MAIN_REPAIR_KEY: "failed"},
         )
 
-    module, ran = _repair_module(monkeypatch, needed = [True], resident_after = False)
+    module, ran = _repair_module(monkeypatch, needed=[True], resident_after=False)
     failed_repair(module)
     assert module._repair_diffusers_main() == 1 and ran == []
-    probe = _fast_path_probe_module(monkeypatch, resident = False)
+    probe = _fast_path_probe_module(monkeypatch, resident=False)
     failed_repair(probe)
     assert probe._diffusers_main_needs_dependency_pass() is True
 
 
 def test_the_startup_repair_leaves_a_healthy_install_alone(monkeypatch):
-    module, ran = _repair_module(monkeypatch, needed = [False], resident_after = True)
+    module, ran = _repair_module(monkeypatch, needed=[False], resident_after=True)
     assert module._repair_diffusers_main() == 1 and ran == []
 
 
@@ -867,13 +867,13 @@ def test_the_startup_repair_waits_out_a_peer_holding_the_pass(monkeypatch):
     backend's repair, or an update, is still replacing it."""
     # The peer installed the build: nothing left to do once it lets go.
     module, ran = _repair_module(
-        monkeypatch, needed = [False], resident_after = True, uncontended = [False, False, True]
+        monkeypatch, needed=[False], resident_after=True, uncontended=[False, False, True]
     )
     assert module._repair_diffusers_main() == 1 and ran == []
     assert module.lock_polls() == 3
     # The peer's pass ended without the build: install it now.
     module, ran = _repair_module(
-        monkeypatch, needed = [True], resident_after = True, uncontended = [False, True]
+        monkeypatch, needed=[True], resident_after=True, uncontended=[False, True]
     )
     assert module._repair_diffusers_main() == 0 and ran == [True]
 
@@ -881,7 +881,7 @@ def test_the_startup_repair_waits_out_a_peer_holding_the_pass(monkeypatch):
 def test_a_recorded_repair_failure_still_waits_for_a_peer(monkeypatch):
     """An update retrying the failed build holds the pass while it rewrites diffusers."""
     module, ran = _repair_module(
-        monkeypatch, needed = [True], resident_after = False, uncontended = [False, True]
+        monkeypatch, needed=[True], resident_after=False, uncontended=[False, True]
     )
     monkeypatch.setattr(
         module.install_manifest,

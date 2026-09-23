@@ -23,7 +23,7 @@ ALICE = AccountContext("11111111111111111111111111111111", "alice")
 BOB = AccountContext("22222222222222222222222222222222", "bob")
 
 
-@pytest.fixture(autouse = True)
+@pytest.fixture(autouse=True)
 def _isolated_home(tmp_path, monkeypatch):
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
     studio_db.close_wal_keeper()
@@ -89,7 +89,7 @@ def test_two_accounts_never_share_a_cached_connection():
     handles = {}
     for account in (ALICE, BOB):
 
-        def grab(account = account):
+        def grab(account=account):
             conn = runs_db._connect()
             paths[account.account_id] = roots.studio_db_path().resolve()
             handles[account.account_id] = conn._conn
@@ -137,7 +137,7 @@ def test_each_thread_gets_its_own_connection():
         conn.execute("SELECT 1").fetchone()
         conn.close()
 
-    threads = [threading.Thread(target = grab, args = (name,)) for name in ("a", "b")]
+    threads = [threading.Thread(target=grab, args=(name,)) for name in ("a", "b")]
     for thread in threads:
         thread.start()
     for thread in threads:
@@ -183,12 +183,12 @@ def test_append_events_still_persists_through_a_reused_connection():
         }
     )
     runs_db.create_run(
-        run_id = "r",
-        owner_subject = "alice",
-        thread_id = "t",
-        user_message_id = "u",
-        assistant_message_id = "a",
-        request_payload = {"model": "local", "messages": [], "stream": True},
+        run_id="r",
+        owner_subject="alice",
+        thread_id="t",
+        user_message_id="u",
+        assistant_message_id="a",
+        request_payload={"model": "local", "messages": [], "stream": True},
     )
     token = runs_db.get_worker_token("r")
     runs_db.mark_running("r", token)
@@ -212,12 +212,12 @@ def test_an_idle_connection_on_another_LIVE_thread_is_closed_by_a_global_discard
         parked["conn"] = conn._conn
         conn.close()
         parked_ready.set()
-        may_exit.wait(timeout = 30)
+        may_exit.wait(timeout=30)
 
-    worker = threading.Thread(target = park)
+    worker = threading.Thread(target=park)
     worker.start()
     try:
-        assert parked_ready.wait(timeout = 30)
+        assert parked_ready.wait(timeout=30)
         assert parked["conn"].execute("SELECT 1").fetchone()[0] == 1
 
         runs_db._discard_all_pooled()
@@ -225,7 +225,7 @@ def test_an_idle_connection_on_another_LIVE_thread_is_closed_by_a_global_discard
             parked["conn"].execute("SELECT 1")
     finally:
         may_exit.set()
-        worker.join(timeout = 30)
+        worker.join(timeout=30)
 
 
 def test_a_short_lived_threads_connection_is_released_when_it_exits():
@@ -241,9 +241,9 @@ def test_a_short_lived_threads_connection_is_released_when_it_exits():
         parked["conn"] = conn._conn
         conn.close()
 
-    worker = threading.Thread(target = park)
+    worker = threading.Thread(target=park)
     worker.start()
-    worker.join(timeout = 30)
+    worker.join(timeout=30)
 
     gc.collect()
     with pytest.raises(sqlite3.ProgrammingError):
@@ -305,11 +305,11 @@ def test_borrowing_races_a_global_discard_without_handing_out_a_closed_handle():
 
     class _KeyProbe(str):
         def __eq__(self, other):
-            worker = threading.Thread(target = invalidate)
+            worker = threading.Thread(target=invalidate)
             worker.start()
             # Long enough that an unlocked borrow really does lose the handle, short enough that the
             # locked one is not slowed: with the lock held the worker cannot get past its acquire.
-            worker.join(timeout = 2.0)
+            worker.join(timeout=2.0)
             return str(self) == str(other)
 
         def __hash__(self):
@@ -322,7 +322,7 @@ def test_borrowing_races_a_global_discard_without_handing_out_a_closed_handle():
         assert borrowed.execute("SELECT 1").fetchone()[0] == 1
     finally:
         borrowed.close()
-        invalidated.wait(timeout = 10)
+        invalidated.wait(timeout=10)
     assert underlying is not None
 
 
@@ -405,9 +405,9 @@ def test_the_registry_does_not_grow_with_every_short_lived_thread():
         conn.close()
 
     for _ in range(25):
-        worker = threading.Thread(target = park)
+        worker = threading.Thread(target=park)
         worker.start()
-        worker.join(timeout = 30)
+        worker.join(timeout=30)
 
     gc.collect()
     with runs_db._pool_lock:

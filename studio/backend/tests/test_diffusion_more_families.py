@@ -41,9 +41,9 @@ def test_detect_family_ideogram4_repos(repo_id):
 
 
 def test_detect_family_ideogram4_override():
-    fam = detect_family("some/local-path", override = "ideogram-4")
+    fam = detect_family("some/local-path", override="ideogram-4")
     assert fam is not None and fam.name == IDEOGRAM4_FAMILY_NAME
-    assert detect_family("x", override = "ideogram4").name == IDEOGRAM4_FAMILY_NAME
+    assert detect_family("x", override="ideogram4").name == IDEOGRAM4_FAMILY_NAME
 
 
 def test_ideogram4_repos_are_trusted_non_gguf():
@@ -115,12 +115,12 @@ def test_zimage_base_has_no_hosted_prequant_to_inherit():
     for scheme in ("int8", "fp8"):
         assert family_prequant_repo(fam, scheme) == "unsloth/Z-Image-Turbo-FP8"
         assert (
-            family_prequant_repo(fam, scheme, base_repo = "Tongyi-MAI/Z-Image-Turbo")
+            family_prequant_repo(fam, scheme, base_repo="Tongyi-MAI/Z-Image-Turbo")
             == "unsloth/Z-Image-Turbo-FP8"
         )
-        assert family_prequant_repo(fam, scheme, base_repo = "Tongyi-MAI/Z-Image") is None
+        assert family_prequant_repo(fam, scheme, base_repo="Tongyi-MAI/Z-Image") is None
         # However the id was typed, and through the mirror the loader actually fetches.
-        assert family_prequant_repo(fam, scheme, base_repo = "  tongyi-mai/Z-IMAGE ") is None
+        assert family_prequant_repo(fam, scheme, base_repo="  tongyi-mai/Z-IMAGE ") is None
 
 
 def test_prequant_exclusion_does_not_break_a_family_type_that_lacks_the_field():
@@ -138,10 +138,10 @@ def test_prequant_exclusion_does_not_break_a_family_type_that_lacks_the_field():
     for scheme in ("int8", "fp8"):
         # The base_repo argument is the trigger: an empty base short-circuits before the read.
         assert (
-            family_prequant_repo(h3, scheme, base_repo = "MiniMaxAI/MiniMax-H3")
+            family_prequant_repo(h3, scheme, base_repo="MiniMaxAI/MiniMax-H3")
             == "unsloth/MiniMax-H3-FP8"
         )
-        source = resolve_prequant_source(h3, scheme, base_repo = "MiniMaxAI/MiniMax-H3")
+        source = resolve_prequant_source(h3, scheme, base_repo="MiniMaxAI/MiniMax-H3")
         assert source is not None and source.location == "unsloth/MiniMax-H3-FP8"
 
 
@@ -174,8 +174,8 @@ def test_detect_family_lumina2_repos(repo_id):
 
 
 def test_detect_family_lumina2_override_and_next_rejected():
-    assert detect_family("x", override = "lumina-2").name == "lumina-2"
-    assert detect_family("x", override = "lumina2").name == "lumina-2"
+    assert detect_family("x", override="lumina-2").name == "lumina-2"
+    assert detect_family("x", override="lumina2").name == "lumina-2"
     # Lumina-Next is a DIFFERENT arch (LuminaText2ImgPipeline): it must stay unknown, not resolve here and crash mid-load.
     assert detect_family("Alpha-VLLM/Lumina-Next-SFT-diffusers") is None
 
@@ -194,6 +194,7 @@ def test_lumina2_generation_defaults():
 def test_lumina2_prequant_wiring():
     # Hosted int8/fp8 checkpoints (gate-validated) serve the family default base.
     from core.inference.diffusion_families import family_prequant_repo
+
     fam = detect_family("Alpha-VLLM/Lumina-Image-2.0")
     for scheme in ("int8", "fp8"):
         assert family_prequant_repo(fam, scheme) == "unsloth/Lumina-Image-2.0-FP8"
@@ -233,8 +234,8 @@ def test_detect_family_hunyuanimage21_repos(repo_id):
 
 
 def test_detect_family_hunyuanimage21_override_and_30_still_excluded():
-    assert detect_family("x", override = "hunyuanimage-2.1").name == "hunyuanimage-2.1"
-    assert detect_family("x", override = "hunyuanimage2.1").name == "hunyuanimage-2.1"
+    assert detect_family("x", override="hunyuanimage-2.1").name == "hunyuanimage-2.1"
+    assert detect_family("x", override="hunyuanimage2.1").name == "hunyuanimage-2.1"
     # HunyuanImage-3.0 has no diffusers pipeline, so its structured exclusion must survive the 2.1 family.
     assert detect_family("tencent/HunyuanImage-3.0") is None
     assert excluded_model_reason("tencent/HunyuanImage-3.0") is not None
@@ -258,6 +259,7 @@ def test_hunyuanimage21_generation_defaults():
 def test_hunyuanimage21_prequant_wiring():
     # Hosted int8/fp8 checkpoints, verified bit-identical to on-the-fly quantize.
     from core.inference.diffusion_families import family_prequant_repo
+
     fam = detect_family("hunyuanvideo-community/HunyuanImage-2.1-Diffusers")
     for scheme in ("int8", "fp8"):
         assert family_prequant_repo(fam, scheme) == "unsloth/HunyuanImage-2.1-FP8"
@@ -295,8 +297,8 @@ def test_detect_family_hidream_repos(repo_id):
 
 
 def test_hidream_override_and_trust():
-    assert detect_family("x", override = "hidream-i1").name == "hidream-i1"
-    assert detect_family("x", override = "hidream").name == "hidream-i1"
+    assert detect_family("x", override="hidream-i1").name == "hidream-i1"
+    assert detect_family("x", override="hidream").name == "hidream-i1"
     # The three official repos load via from_pretrained so they are allowlisted; the Llama TE4 rides the trusted unsloth mirror.
     for rid in (
         "HiDream-ai/HiDream-I1-Full",
@@ -353,6 +355,7 @@ def test_ideogram4_memory_table_counts_both_dits():
 def test_hidream_prequant_wiring():
     # Hosted int8/fp8 checkpoints (28/28 per-case gate pairs each; int8 bit-identical to on-the-fly) serve the family default base.
     from core.inference.diffusion_families import family_prequant_repo
+
     fam = detect_family("HiDream-ai/HiDream-I1-Full")
     for scheme in ("int8", "fp8"):
         assert family_prequant_repo(fam, scheme) == "unsloth/HiDream-I1-Full-FP8"
@@ -363,15 +366,16 @@ def test_hidream_distilled_variants_have_no_hosted_prequant_to_inherit():
     # weights. Inheriting it made a Dev / Fast pick plan the Full artifact, drop its own shards,
     # download several GB and only then hit the base_model_id refusal.
     from core.inference.diffusion_families import family_prequant_repo
+
     for repo_id in ("HiDream-ai/HiDream-I1-Dev", "HiDream-ai/HiDream-I1-Fast"):
         fam = detect_family(repo_id)
         for scheme in ("int8", "fp8"):
-            assert family_prequant_repo(fam, scheme, base_repo = repo_id) is None
+            assert family_prequant_repo(fam, scheme, base_repo=repo_id) is None
             # However the id was typed, and through the mirror the loader actually fetches.
-            assert family_prequant_repo(fam, scheme, base_repo = f"  {repo_id.upper()} ") is None
+            assert family_prequant_repo(fam, scheme, base_repo=f"  {repo_id.upper()} ") is None
             assert (
                 family_prequant_repo(
-                    fam, scheme, base_repo = repo_id.replace("HiDream-ai", "unsloth")
+                    fam, scheme, base_repo=repo_id.replace("HiDream-ai", "unsloth")
                 )
                 is None
             )
@@ -387,7 +391,7 @@ def test_qwen_image_2512_routes_to_its_own_hosted_prequant():
     for scheme in ("int8", "fp8"):
         assert family_prequant_repo(fam, scheme) == "unsloth/Qwen-Image-FP8"
         assert (
-            family_prequant_repo(fam, scheme, base_repo = "Qwen/Qwen-Image")
+            family_prequant_repo(fam, scheme, base_repo="Qwen/Qwen-Image")
             == "unsloth/Qwen-Image-FP8"
         )
         for base_repo in (
@@ -396,7 +400,7 @@ def test_qwen_image_2512_routes_to_its_own_hosted_prequant():
             " QWEN/QWEN-IMAGE-2512 ",
         ):
             assert (
-                family_prequant_repo(fam, scheme, base_repo = base_repo)
+                family_prequant_repo(fam, scheme, base_repo=base_repo)
                 == "unsloth/Qwen-Image-2512-FP8"
             )
 
@@ -407,12 +411,13 @@ def test_qwen_image_2512_prequant_filenames_match_its_repo():
     # in the chain: preferring safetensors is only allowed to ADD a name in front of it, never to
     # replace it, or every checkpoint already published would stop resolving.
     from core.inference.diffusion_prequant import candidate_filenames_of, resolve_prequant_source
+
     fam = detect_family("Qwen/Qwen-Image-2512")
     for scheme, safetensors_name, pickle_name in (
         ("int8", "Qwen-Image-2512-INT8.safetensors", "Qwen-Image-2512-INT8.pt"),
         ("fp8", "Qwen-Image-2512-FP8.safetensors", "Qwen-Image-2512-FP8.pt"),
     ):
-        source = resolve_prequant_source(fam, scheme, base_repo = "Qwen/Qwen-Image-2512")
+        source = resolve_prequant_source(fam, scheme, base_repo="Qwen/Qwen-Image-2512")
         assert source is not None
         assert source.location == "unsloth/Qwen-Image-2512-FP8"
         names = list(candidate_filenames_of(source))
@@ -451,8 +456,9 @@ def test_excluded_model_reason_none_for_supported_and_unknown():
 
 def test_validate_load_request_surfaces_exclusion_reason():
     from core.inference.diffusion import DiffusionBackend
+
     backend = DiffusionBackend()
-    with pytest.raises(ValueError, match = "trust_remote_code"):
+    with pytest.raises(ValueError, match="trust_remote_code"):
         backend.validate_load_request("tencent/HunyuanImage-3.0")
 
 
@@ -471,9 +477,9 @@ def test_curated_krea2_loras_present_and_well_formed():
 def test_list_loras_family_filter_gates_krea_entries():
     krea_ids = {e.id for e in _CURATED if e.families == ("krea-2",)}
     assert krea_ids  # curated entries exist
-    listed_for_krea = {e.id for e in list_loras(family = "krea-2")}
+    listed_for_krea = {e.id for e in list_loras(family="krea-2")}
     assert krea_ids <= listed_for_krea
-    listed_for_flux = {e.id for e in list_loras(family = "flux.1")}
+    listed_for_flux = {e.id for e in list_loras(family="flux.1")}
     assert not (krea_ids & listed_for_flux)
 
 
@@ -492,7 +498,7 @@ def test_convert_fp8_state_dict_dequantizes_and_splits_qkv():
     v = torch.randn(hidden, hidden)
     o = torch.randn(hidden, hidden)
     ff = torch.randn(hidden, hidden)
-    fused = torch.cat([q, k, v], dim = 0)  # [3 * hidden, hidden]
+    fused = torch.cat([q, k, v], dim=0)  # [3 * hidden, hidden]
     qkv_scale = torch.rand(3 * hidden) + 0.5
     o_scale = torch.rand(hidden) + 0.5
     ff_scale = torch.rand(hidden) + 0.5
@@ -538,7 +544,7 @@ def test_ideogram4_repo_is_fp8_detects_local_layout(tmp_path):
     from core.inference.diffusion_ideogram4 import ideogram4_repo_is_fp8
 
     fp8 = tmp_path / "fp8"
-    (fp8 / "transformer").mkdir(parents = True)
+    (fp8 / "transformer").mkdir(parents=True)
     st.save_file(
         {
             "layers.0.attention.o.weight": torch.zeros(2, 2),
@@ -549,7 +555,7 @@ def test_ideogram4_repo_is_fp8_detects_local_layout(tmp_path):
     assert ideogram4_repo_is_fp8(str(fp8)) is True
 
     nf4 = tmp_path / "nf4"
-    (nf4 / "transformer").mkdir(parents = True)
+    (nf4 / "transformer").mkdir(parents=True)
     st.save_file(
         {"layers.0.attention.to_q.weight": torch.zeros(2, 2)},
         str(nf4 / "transformer" / "diffusion_pytorch_model.safetensors"),
@@ -642,7 +648,7 @@ def test_qwen_image_21_is_reachable_end_to_end_not_just_detectable():
     assert detect_family("Qwen/Qwen-Image").name == "qwen-image"
     assert detect_family("Qwen/Qwen-Image-2512").name == "qwen-image"
     for alias in ("qwen_image_21", "qwenimage21", "qwen-image-21"):
-        assert detect_family("", override = alias) is fam, alias
+        assert detect_family("", override=alias) is fam, alias
     # The class really is what the published model_index.json names.
     assert detect_family_by_pipeline_class("QwenImage21Pipeline") is fam
     assert fam.pipeline_class in _PIPELINE_MIN_DIFFUSERS
@@ -764,7 +770,7 @@ def test_a_minimum_that_has_not_shipped_does_not_prescribe_an_impossible_upgrade
     assert "git --version" in message, "the likely cause has to be checkable by the reader"
 
     pin = pathlib.Path(__file__).resolve().parents[1] / "requirements" / "diffusers-main.txt"
-    commit = _re.search(r"@([0-9a-fA-F]{40})\b", pin.read_text(encoding = "utf-8"))
+    commit = _re.search(r"@([0-9a-fA-F]{40})\b", pin.read_text(encoding="utf-8"))
     assert commit is not None, "the main pin must carry a full commit for the zip route to exist"
     assert (
         f"https://github.com/huggingface/diffusers/archive/{commit.group(1).lower()}.zip" in message

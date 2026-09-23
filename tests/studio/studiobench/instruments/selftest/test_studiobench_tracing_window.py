@@ -102,20 +102,20 @@ class _Cdp:
 
 def _instrument(cdp) -> TracingInstrument:
     inst = TracingInstrument()
-    inst.attach(types.SimpleNamespace(cdp = cdp, page = None, paths = None))
-    inst.start_cell(types.SimpleNamespace(cell_id = "r10K.A0.rep0", instrument_level = 1))
+    inst.attach(types.SimpleNamespace(cdp=cdp, page=None, paths=None))
+    inst.start_cell(types.SimpleNamespace(cell_id="r10K.A0.rep0", instrument_level=1))
     return inst
 
 
 def _window(name: str):
-    return types.SimpleNamespace(name = name)
+    return types.SimpleNamespace(name=name)
 
 
 # ── the trace survives the probe ─────────────────────────────────────────────────────────────
 
 
 def test_a_second_window_is_still_traced_after_the_metrics_probe_fails():
-    cdp = _Cdp(metrics_fail = True)
+    cdp = _Cdp(metrics_fail=True)
     inst = _instrument(cdp)
 
     inst.open(_window("w1"))
@@ -128,7 +128,7 @@ def test_a_second_window_is_still_traced_after_the_metrics_probe_fails():
 
 
 def test_the_first_window_is_still_traced_and_only_loses_the_cross_check():
-    cdp = _Cdp(metrics_fail = True)
+    cdp = _Cdp(metrics_fail=True)
     inst = _instrument(cdp)
 
     inst.open(_window("w1"))
@@ -143,7 +143,7 @@ def test_no_tracing_session_is_left_running_in_the_browser():
     """The leak itself. A capture nothing holds is a capture nothing can stop, and it keeps
     recording underneath every measurement taken after it."""
 
-    cdp = _Cdp(metrics_fail = True)
+    cdp = _Cdp(metrics_fail=True)
     inst = _instrument(cdp)
 
     inst.open(_window("w1"))

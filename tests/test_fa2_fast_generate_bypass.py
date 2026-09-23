@@ -22,18 +22,18 @@ TRANSFORMERS_VERSION = installed_version("transformers")
 
 
 def _load_function(name, namespace):
-    tree = ast.parse(VISION_PATH.read_text(encoding = "utf-8"))
+    tree = ast.parse(VISION_PATH.read_text(encoding="utf-8"))
     function = next(
         node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == name
     )
-    exec(compile(ast.Module(body = [function], type_ignores = []), str(VISION_PATH), "exec"), namespace)
+    exec(compile(ast.Module(body=[function], type_ignores=[]), str(VISION_PATH), "exec"), namespace)
     return namespace[name]
 
 
 uses_flash_attention = _load_function(
     "_uses_flash_attention_for_generation",
     {
-        "_config_get": lambda config, field, default = None: (
+        "_config_get": lambda config, field, default=None: (
             config.get(field, default)
             if isinstance(config, dict)
             else getattr(config, field, default)
@@ -47,19 +47,19 @@ clear_generation_caches = _load_function("_clear_generation_caches", {})
 
 
 def test_top_level_flash_attention_is_detected():
-    config = SimpleNamespace(_attn_implementation = "flash_attention_2")
+    config = SimpleNamespace(_attn_implementation="flash_attention_2")
     assert uses_flash_attention(config)
 
 
 def test_per_backbone_text_flash_attention_is_detected():
     private_config = SimpleNamespace(
-        _attn_implementation = {
+        _attn_implementation={
             "vision_config": "sdpa",
             "text_config": "flash_attention_2",
         }
     )
     public_config = SimpleNamespace(
-        attn_implementation = {
+        attn_implementation={
             "vision_config": "sdpa",
             "text_config": "flash_attention_2",
         }
@@ -70,7 +70,7 @@ def test_per_backbone_text_flash_attention_is_detected():
 
 def test_per_backbone_llm_flash_attention_is_detected():
     config = SimpleNamespace(
-        _attn_implementation = {
+        _attn_implementation={
             "vision_config": "sdpa",
             "llm_config": "flash_attention_2",
         }
@@ -80,7 +80,7 @@ def test_per_backbone_llm_flash_attention_is_detected():
 
 def test_default_backbone_flash_attention_is_detected():
     config = SimpleNamespace(
-        _attn_implementation = {
+        _attn_implementation={
             "": "flash_attention_2",
             "vision_config": "sdpa",
         }
@@ -90,7 +90,7 @@ def test_default_backbone_flash_attention_is_detected():
 
 def test_explicit_language_backend_overrides_default_backend():
     config = SimpleNamespace(
-        _attn_implementation = {
+        _attn_implementation={
             "": "flash_attention_2",
             "text_config": "sdpa",
         }
@@ -100,56 +100,56 @@ def test_explicit_language_backend_overrides_default_backend():
 
 def test_nested_language_backend_overrides_normalized_default_backend():
     config = SimpleNamespace(
-        _attn_implementation = "flash_attention_2",
-        text_config = SimpleNamespace(_attn_implementation = "sdpa"),
+        _attn_implementation="flash_attention_2",
+        text_config=SimpleNamespace(_attn_implementation="sdpa"),
     )
     assert not uses_flash_attention(config)
 
-    nested_text = SimpleNamespace(_attn_implementation = "sdpa")
+    nested_text = SimpleNamespace(_attn_implementation="sdpa")
     thinker_config = SimpleNamespace(
-        _attn_implementation = "flash_attention_2",
-        sub_configs = {"text_config": object},
-        text_config = nested_text,
-        get_text_config = lambda: nested_text,
+        _attn_implementation="flash_attention_2",
+        sub_configs={"text_config": object},
+        text_config=nested_text,
+        get_text_config=lambda: nested_text,
     )
-    assert not uses_flash_attention(SimpleNamespace(thinker_config = thinker_config))
+    assert not uses_flash_attention(SimpleNamespace(thinker_config=thinker_config))
 
 
 def test_nested_text_and_decoder_configs_are_detected():
-    nested_text = SimpleNamespace(attn_implementation = "flash_attention_2")
+    nested_text = SimpleNamespace(attn_implementation="flash_attention_2")
     assert uses_flash_attention(
-        SimpleNamespace(_attn_implementation = "sdpa", text_config = nested_text)
+        SimpleNamespace(_attn_implementation="sdpa", text_config=nested_text)
     )
     assert uses_flash_attention(
-        SimpleNamespace(decoder_config = {"_attn_implementation": "flash_attention_2"})
+        SimpleNamespace(decoder_config={"_attn_implementation": "flash_attention_2"})
     )
 
 
 def test_nested_llm_config_is_detected():
-    config = SimpleNamespace(llm_config = SimpleNamespace(_attn_implementation = "flash_attention_2"))
+    config = SimpleNamespace(llm_config=SimpleNamespace(_attn_implementation="flash_attention_2"))
     assert uses_flash_attention(config)
 
 
 def test_get_text_config_is_detected():
-    nested_text = SimpleNamespace(_attn_implementation = "flash_attention_2")
-    config = SimpleNamespace(get_text_config = lambda: nested_text)
+    nested_text = SimpleNamespace(_attn_implementation="flash_attention_2")
+    config = SimpleNamespace(get_text_config=lambda: nested_text)
     assert uses_flash_attention(config)
 
 
 def test_declared_custom_generation_subconfig_is_detected():
-    nested_text = SimpleNamespace(_attn_implementation = "flash_attention_2")
+    nested_text = SimpleNamespace(_attn_implementation="flash_attention_2")
     custom_generation = SimpleNamespace(
-        sub_configs = {"text_config": object},
-        text_config = nested_text,
+        sub_configs={"text_config": object},
+        text_config=nested_text,
     )
     config = SimpleNamespace(
-        sub_configs = {"custom_generation_config": object},
-        custom_generation_config = custom_generation,
+        sub_configs={"custom_generation_config": object},
+        custom_generation_config=custom_generation,
     )
     assert uses_flash_attention(config)
     assert uses_flash_attention(
         SimpleNamespace(
-            _attn_implementation = {
+            _attn_implementation={
                 "thinker_config": "flash_attention_2",
                 "vision_config": "sdpa",
             }
@@ -159,7 +159,7 @@ def test_declared_custom_generation_subconfig_is_detected():
 
 def test_vision_only_flash_attention_does_not_bypass_text_generation():
     config = SimpleNamespace(
-        _attn_implementation = {
+        _attn_implementation={
             "vision_config": "flash_attention_2",
             "text_config": "sdpa",
         }
@@ -168,7 +168,7 @@ def test_vision_only_flash_attention_does_not_bypass_text_generation():
 
 
 def test_non_flash_attention_does_not_bypass_fast_generation():
-    assert not uses_flash_attention(SimpleNamespace(_attn_implementation = "sdpa"))
+    assert not uses_flash_attention(SimpleNamespace(_attn_implementation="sdpa"))
     assert not uses_flash_attention(SimpleNamespace())
 
 
@@ -190,12 +190,12 @@ def test_wrapper_dispatch_preserves_normalization_and_selects_expected_path():
             raise AssertionError(f"fast-generation path unexpectedly used torch._dynamo.{name}")
 
     fake_torch = SimpleNamespace(
-        Tensor = FakeTensor,
-        bfloat16 = "bfloat16",
-        float16 = "float16",
-        _dynamo = FailIfUsed(),
-        inference_mode = nullcontext,
-        autocast = lambda **kwargs: nullcontext(),
+        Tensor=FakeTensor,
+        bfloat16="bfloat16",
+        float16="float16",
+        _dynamo=FailIfUsed(),
+        inference_mode=nullcontext,
+        autocast=lambda **kwargs: nullcontext(),
     )
 
     class FakeFastBaseModel:
@@ -222,16 +222,16 @@ def test_wrapper_dispatch_preserves_normalization_and_selects_expected_path():
     fast_generate = _load_function("unsloth_base_fast_generate", namespace)
 
     captured = {}
-    cache_module = SimpleNamespace(_flex_attention_cache = object())
+    cache_module = SimpleNamespace(_flex_attention_cache=object())
 
     class Model:
         config = SimpleNamespace(
-            architectures = [architecture],
-            eos_token_id = 2,
-            text_config = SimpleNamespace(_attn_implementation = "flash_attention_2"),
+            architectures=[architecture],
+            eos_token_id=2,
+            text_config=SimpleNamespace(_attn_implementation="flash_attention_2"),
         )
 
-        def forward(self, input_ids = None):
+        def forward(self, input_ids=None):
             return input_ids
 
         def named_modules(self):
@@ -247,9 +247,9 @@ def test_wrapper_dispatch_preserves_normalization_and_selects_expected_path():
     pixel_values = FakeTensor()
     result = fast_generate(
         Model(),
-        input_ids = input_ids,
-        pixel_values = pixel_values,
-        mm_token_type_ids = FakeTensor(),
+        input_ids=input_ids,
+        pixel_values=pixel_values,
+        mm_token_type_ids=FakeTensor(),
     )
 
     assert result == "fallback-result"
@@ -272,7 +272,7 @@ def test_wrapper_dispatch_preserves_normalization_and_selects_expected_path():
     Model.config.text_config._attn_implementation = "sdpa"
     captured.clear()
     try:
-        fast_generate(Model(), input_ids = FakeTensor())
+        fast_generate(Model(), input_ids=FakeTensor())
     except FastPathReached:
         pass
     else:
@@ -285,15 +285,15 @@ def test_flash_attention_fallback_pins_a_dynamic_cache():
     # explicit kwarg, the caller's generation_config, or the model default.
     namespace = {
         "torch": SimpleNamespace(
-            Tensor = type("FakeTensor", (), {"shape": (1, 3)}),
-            bfloat16 = "bfloat16",
-            float16 = "float16",
-            inference_mode = nullcontext,
-            autocast = lambda **kwargs: nullcontext(),
+            Tensor=type("FakeTensor", (), {"shape": (1, 3)}),
+            bfloat16="bfloat16",
+            float16="float16",
+            inference_mode=nullcontext,
+            autocast=lambda **kwargs: nullcontext(),
         ),
         "os": os,
         "inspect": inspect,
-        "FastBaseModel": SimpleNamespace(for_inference = lambda model: None),
+        "FastBaseModel": SimpleNamespace(for_inference=lambda model: None),
         "dtype_from_config": lambda config: "bfloat16",
         "_get_dtype": lambda dtype: dtype,
         "_unsloth_generate_accepts_kwarg": lambda model, name: False,
@@ -310,12 +310,12 @@ def test_flash_attention_fallback_pins_a_dynamic_cache():
 
     class Model:
         config = SimpleNamespace(
-            architectures = ["Qwen3VLForConditionalGeneration"],
-            eos_token_id = 2,
-            _attn_implementation = "flash_attention_2",
+            architectures=["Qwen3VLForConditionalGeneration"],
+            eos_token_id=2,
+            _attn_implementation="flash_attention_2",
         )
 
-        def forward(self, input_ids = None):
+        def forward(self, input_ids=None):
             return input_ids
 
         def named_modules(self):
@@ -328,20 +328,20 @@ def test_flash_attention_fallback_pins_a_dynamic_cache():
 
     input_ids = namespace["torch"].Tensor()
 
-    fast_generate(Model(), input_ids = input_ids)
+    fast_generate(Model(), input_ids=input_ids)
     assert captured["cache_implementation"] == "dynamic"
 
     # The kwarg wins over a supplied generation_config, since update() applies it last.
-    generation_config = SimpleNamespace(cache_implementation = "static")
-    fast_generate(Model(), input_ids = input_ids, generation_config = generation_config)
+    generation_config = SimpleNamespace(cache_implementation="static")
+    fast_generate(Model(), input_ids=input_ids, generation_config=generation_config)
     assert captured["cache_implementation"] == "dynamic"
 
-    fast_generate(Model(), input_ids = input_ids, cache_implementation = "static")
+    fast_generate(Model(), input_ids=input_ids, cache_implementation="static")
     assert captured["cache_implementation"] == "dynamic"
 
     # generate() rejects a caller cache combined with any cache_implementation.
     cache = object()
-    fast_generate(Model(), input_ids = input_ids, past_key_values = cache)
+    fast_generate(Model(), input_ids=input_ids, past_key_values=cache)
     assert "cache_implementation" not in captured
     assert captured["past_key_values"] is cache
 

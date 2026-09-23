@@ -31,7 +31,8 @@ _TRACEBACK = (
 
 def _json_renderer():
     import structlog
-    return log_config.with_readable_traceback(structlog.processors.JSONRenderer(sort_keys = False))
+
+    return log_config.with_readable_traceback(structlog.processors.JSONRenderer(sort_keys=False))
 
 
 def _render(event_dict):
@@ -161,8 +162,8 @@ def test_a_lone_surrogate_cannot_break_the_log_write():
     assert surrogate not in out
     assert "\\ud800" in out
     # The real test: a strict UTF-8 stream, which is what PrintLogger writes to.
-    stream = io.TextIOWrapper(io.BytesIO(), encoding = "utf-8")
-    print(out, file = stream)  # must not raise
+    stream = io.TextIOWrapper(io.BytesIO(), encoding="utf-8")
+    print(out, file=stream)  # must not raise
     out.encode("utf-8")
 
 

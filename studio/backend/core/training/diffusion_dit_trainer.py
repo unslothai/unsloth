@@ -171,7 +171,7 @@ def _gather_sigmas(sigma_table, indices, device, dtype, n_dim):
     ``scheduler.timesteps``, and ``sigma_table`` (the scheduler's own sigmas, or the shifted copy
     from ``_training_sigma_table``) is aligned with it, so the identity table returns exactly
     what the diffusers ``get_sigmas`` helper would."""
-    sigma = sigma_table[indices].to(device = device, dtype = dtype).flatten()
+    sigma = sigma_table[indices].to(device=device, dtype=dtype).flatten()
     while sigma.ndim < n_dim:
         sigma = sigma.unsqueeze(-1)
     return sigma
@@ -214,7 +214,7 @@ def _bell_loss_weights(num_train_timesteps):
     import torch
 
     steps = num_train_timesteps
-    t = torch.arange(steps, dtype = torch.float32)
+    t = torch.arange(steps, dtype=torch.float32)
     w = torch.exp(-2.0 * ((t - steps / 2) / steps) ** 2)
     w = w - w.min()
     return w * (steps / w.sum())
@@ -226,11 +226,11 @@ def _sample_timesteps(scheduler, batch_size, device):
     from diffusers.training_utils import compute_density_for_timestep_sampling
 
     u = compute_density_for_timestep_sampling(
-        weighting_scheme = "logit_normal",
-        batch_size = batch_size,
-        logit_mean = 0.0,
-        logit_std = 1.0,
-        mode_scale = 1.29,
+        weighting_scheme="logit_normal",
+        batch_size=batch_size,
+        logit_mean=0.0,
+        logit_std=1.0,
+        mode_scale=1.29,
     )
     num_train = scheduler.config.num_train_timesteps
     indices = (u * num_train).long().clamp(0, num_train - 1)
@@ -256,13 +256,14 @@ def _encoders_to_device(pipe, device) -> None:
 def _bnb_4bit_config():
     from diffusers import BitsAndBytesConfig as DiffusersBnb
     import torch
+
     return DiffusersBnb(
-        load_in_4bit = True,
-        bnb_4bit_quant_type = "nf4",
-        bnb_4bit_compute_dtype = torch.bfloat16,
+        load_in_4bit=True,
+        bnb_4bit_quant_type="nf4",
+        bnb_4bit_compute_dtype=torch.bfloat16,
         # Double quantization compresses the per-block absmax scales with a second 8-bit pass: ~0.4 bits/param off the
         # frozen base at no fidelity cost, which matters most on the 20B+ DiTs.
-        bnb_4bit_use_double_quant = True,
+        bnb_4bit_use_double_quant=True,
     )
 
 
@@ -274,13 +275,14 @@ _repo_is_prequantized = repo_is_prequantized
 def _load_quantized_transformer(transformer_cls, cfg, device):
     """Load ``cfg.base_model``'s transformer subfolder as a trainable nf4 QLoRA module."""
     import torch
+
     return transformer_cls.from_pretrained(
         cfg.base_model,
-        subfolder = "transformer",
-        quantization_config = _bnb_4bit_config(),
-        device_map = {"": device},
-        torch_dtype = torch.bfloat16,
-        token = cfg.hf_token,
+        subfolder="transformer",
+        quantization_config=_bnb_4bit_config(),
+        device_map={"": device},
+        torch_dtype=torch.bfloat16,
+        token=cfg.hf_token,
     )
 
 
@@ -292,11 +294,11 @@ def _load_pipe_without_transformer(pipe_cls, cfg, device):
 
     pipe = pipe_cls.from_pretrained(
         cfg.base_model,
-        transformer = None,
-        torch_dtype = torch.bfloat16,
-        token = cfg.hf_token,
+        transformer=None,
+        torch_dtype=torch.bfloat16,
+        token=cfg.hf_token,
     )
-    pipe.vae.to(device, dtype = torch.float32)
+    pipe.vae.to(device, dtype=torch.float32)
     return pipe, pipe.vae
 
 
@@ -314,9 +316,9 @@ def _load_dit_transformer(transformer_cls, cfg, device, base_precision):
             return _load_quantized_transformer(transformer_cls, cfg, device)
         transformer = transformer_cls.from_pretrained(
             cfg.base_model,
-            subfolder = "transformer",
-            torch_dtype = torch.bfloat16,
-            token = cfg.hf_token,
+            subfolder="transformer",
+            torch_dtype=torch.bfloat16,
+            token=cfg.hf_token,
         )
         # A prequant load is already device-placed by bitsandbytes.
         if not getattr(transformer, "is_loaded_in_4bit", False):
@@ -327,9 +329,9 @@ def _load_dit_transformer(transformer_cls, cfg, device, base_precision):
     # constructor rejects the torchao-0.16 config API.
     return transformer_cls.from_pretrained(
         cfg.base_model,
-        subfolder = "transformer",
-        torch_dtype = torch.bfloat16,
-        token = cfg.hf_token,
+        subfolder="transformer",
+        torch_dtype=torch.bfloat16,
+        token=cfg.hf_token,
     ).to(device)
 
 
@@ -363,8 +365,8 @@ def _int8_quantize_base(transformer, family: Optional[str] = None) -> None:
     quantize_(
         transformer,
         _quiet_config(Int8WeightOnlyConfig),
-        filter_fn = make_filter_fn(
-            512, exclude_name_tokens = exclude_tokens_for_scheme("int8", family)
+        filter_fn=make_filter_fn(
+            512, exclude_name_tokens=exclude_tokens_for_scheme("int8", family)
         ),
     )
     # After quantize_, as the helper requires (it reparents the Linears it wraps). Not best-effort: a raise means the
@@ -398,10 +400,11 @@ def _fp8_training_config():
     fallback keeps pad_inner_dim so a non-16-aligned inner dim never aborts the scaled_mm (the
     rowwise recipe manages its own padding rules and rejects the knob, hence the split)."""
     from torchao.float8 import Float8LinearConfig
+
     try:
         return Float8LinearConfig.from_recipe_name("rowwise")
     except Exception:  # noqa: BLE001 -- older torchao without the rowwise recipe
-        return Float8LinearConfig(pad_inner_dim = True)
+        return Float8LinearConfig(pad_inner_dim=True)
 
 
 def _apply_fp8_training(transformer, on_event) -> bool:
@@ -410,14 +413,15 @@ def _apply_fp8_training(transformer, on_event) -> bool:
     Never fatal: on any failure the run continues in bf16 with a warning."""
     try:
         from torchao.float8 import convert_to_float8_training
+
         convert_to_float8_training(
             transformer,
-            module_filter_fn = _fp8_module_filter,
-            config = _fp8_training_config(),
+            module_filter_fn=_fp8_module_filter,
+            config=_fp8_training_config(),
         )
         return True
     except Exception as exc:  # noqa: BLE001 -- fp8 is an optimisation, never fatal
-        _emit(on_event, "warning", message = f"fp8 training unavailable, using bf16 compute: {exc}")
+        _emit(on_event, "warning", message=f"fp8 training unavailable, using bf16 compute: {exc}")
         return False
 
 
@@ -447,12 +451,14 @@ def _mxfp8_training_config():
     Raises ImportError when neither API exists (mxfp8 then falls back to bf16)."""
     try:
         from torchao.prototype.mx_formats import MXLinearConfig
+
         return MXLinearConfig.from_recipe_name("mxfp8_cublas")
     except ImportError:
         from torchao.prototype.moe_training.config import (
             MXFP8TrainingOpConfig,
             MXFP8TrainingRecipe,
         )
+
         return MXFP8TrainingOpConfig.from_recipe(MXFP8TrainingRecipe.MXFP8_RCEIL)
 
 
@@ -466,14 +472,15 @@ def _apply_mxfp8_training(transformer, on_event) -> bool:
     bf16 with a warning."""
     try:
         from torchao.quantization import quantize_
+
         quantize_(
             transformer,
             _mxfp8_training_config(),
-            filter_fn = _mx_module_filter,
+            filter_fn=_mx_module_filter,
         )
         return True
     except Exception as exc:  # noqa: BLE001 -- mxfp8 is an optimisation, never fatal
-        _emit(on_event, "warning", message = f"mxfp8 training unavailable, using bf16 compute: {exc}")
+        _emit(on_event, "warning", message=f"mxfp8 training unavailable, using bf16 compute: {exc}")
         return False
 
 
@@ -484,7 +491,7 @@ def _pick_auto_precision(
     dense_gb,
     capability,
     has_fp8,
-    has_torchao = True,
+    has_torchao=True,
 ) -> str:
     """Pure policy for base_precision="auto": nf4 for a prequant base or no CUDA; else the fastest
     dense mode whose weights + headroom (activations, optimizer, cache) fit the free VRAM at
@@ -527,6 +534,7 @@ def _dense_bf16_gb(spec, base_model: str) -> float:
     """
     try:
         from core.inference.diffusion_auto_policy import base_repo_bf16_components_gb
+
         components = base_repo_bf16_components_gb(base_model)
         if components:
             return float(components[0])
@@ -576,6 +584,7 @@ def _resolve_base_precision(cfg, spec, device) -> str:
         if mode == "mxfp8" and device == "cuda":
             try:
                 import torch
+
                 blackwell = torch.cuda.get_device_capability() >= (10, 0)
             except Exception:  # noqa: BLE001 -- probe failure -> treat as unsupported, fail fast
                 blackwell = False
@@ -621,11 +630,13 @@ def _resolve_base_precision(cfg, spec, device) -> str:
 
 def _flux_load_conditioners(cfg, device, weight_dtype):
     from diffusers import FluxPipeline
+
     return _load_pipe_without_transformer(FluxPipeline, cfg, device)
 
 
 def _flux_load_transformer(cfg, device, weight_dtype, base_precision):
     from diffusers import FluxTransformer2DModel
+
     return _load_dit_transformer(FluxTransformer2DModel, cfg, device, base_precision)
 
 
@@ -637,11 +648,11 @@ def _flux_encode_prompts(pipe, captions, device):
     with torch.no_grad():
         for cap in captions:
             pe, pooled, text_ids = pipe.encode_prompt(
-                prompt = cap,
-                prompt_2 = cap,
-                device = device,
-                num_images_per_prompt = 1,
-                max_sequence_length = 512,
+                prompt=cap,
+                prompt_2=cap,
+                device=device,
+                num_images_per_prompt=1,
+                max_sequence_length=512,
             )
             out.append((pe.cpu(), pooled.cpu(), text_ids.cpu()))
     return out
@@ -669,15 +680,15 @@ def _flux_collate(
     entries,
     device,
     weight_dtype,
-    pad_to = None,
+    pad_to=None,
 ):
     import torch
 
     # FLUX embeds are fixed-length, so a plain cat batches them; text_ids are shared position ids, identical across
     # prompts.
-    pe = torch.cat([e[0] for e in entries]).to(device = device, dtype = weight_dtype)
-    pooled = torch.cat([e[1] for e in entries]).to(device = device, dtype = weight_dtype)
-    text_ids = entries[0][2].to(device = device, dtype = torch.float32)
+    pe = torch.cat([e[0] for e in entries]).to(device=device, dtype=weight_dtype)
+    pooled = torch.cat([e[1] for e in entries]).to(device=device, dtype=weight_dtype)
+    text_ids = entries[0][2].to(device=device, dtype=torch.float32)
     return (pe, pooled, text_ids)
 
 
@@ -696,7 +707,7 @@ def _flux_static_inputs(bsz, h, w, device):
         # Position ids drive RoPE and are indices, not activations, so keep them float32 regardless of the training
         # dtype.
         img_ids = FluxPipeline._prepare_latent_image_ids(bsz, h // 2, w // 2, device, torch.float32)
-        guidance = torch.full((bsz,), 1.0, device = device, dtype = torch.float32)
+        guidance = torch.full((bsz,), 1.0, device=device, dtype=torch.float32)
         hit = _FLUX_STATIC[key] = (img_ids, guidance)
     return hit
 
@@ -709,29 +720,31 @@ def _flux_forward(transformer, noisy, timesteps, sigmas, embeds_batch, cfg, devi
     packed = FluxPipeline._pack_latents(noisy, bsz, c, h, w)
     img_ids, guidance = _flux_static_inputs(bsz, h, w, device)
     model_pred = transformer(
-        hidden_states = packed,
-        timestep = timesteps / 1000,
-        guidance = guidance,
-        pooled_projections = pooled,
-        encoder_hidden_states = pe,
-        txt_ids = text_ids,
-        img_ids = img_ids,
-        return_dict = False,
+        hidden_states=packed,
+        timestep=timesteps / 1000,
+        guidance=guidance,
+        pooled_projections=pooled,
+        encoder_hidden_states=pe,
+        txt_ids=text_ids,
+        img_ids=img_ids,
+        return_dict=False,
     )[0]
     return FluxPipeline._unpack_latents(model_pred, h * 8, w * 8, 8)
 
 
 def _flux_save(pipe_cls, out_dir, transformer_lora_layers):
     from diffusers import FluxPipeline
+
     FluxPipeline.save_lora_weights(
-        save_directory = out_dir,
-        transformer_lora_layers = transformer_lora_layers,
-        weight_name = DEFAULT_LORA_FILENAME,
+        save_directory=out_dir,
+        transformer_lora_layers=transformer_lora_layers,
+        weight_name=DEFAULT_LORA_FILENAME,
     )
 
 
 def _qwen_load_conditioners(cfg, device, weight_dtype):
     from diffusers import QwenImagePipeline
+
     return _load_pipe_without_transformer(QwenImagePipeline, cfg, device)
 
 
@@ -739,6 +752,7 @@ def _qwen_load_transformer(cfg, device, weight_dtype, base_precision):
     # The prequant default ships the transformer 4-bit and loads trainable as-is under nf4; the dense modes need the
     # 20B Qwen/Qwen-Image base.
     from diffusers import QwenImageTransformer2DModel
+
     return _load_dit_transformer(QwenImageTransformer2DModel, cfg, device, base_precision)
 
 
@@ -750,10 +764,10 @@ def _qwen_encode_prompts(pipe, captions, device):
     with torch.no_grad():
         for cap in captions:
             pe, mask = pipe.encode_prompt(
-                prompt = cap,
-                device = device,
-                num_images_per_prompt = 1,
-                max_sequence_length = 1024,
+                prompt=cap,
+                device=device,
+                num_images_per_prompt=1,
+                max_sequence_length=1024,
             )
             out.append((pe.cpu(), mask.cpu() if mask is not None else None))
     return out
@@ -763,8 +777,8 @@ def _qwen_latent_affine(vae, ref):
     import torch
 
     z = vae.config.z_dim
-    mean = torch.tensor(vae.config.latents_mean, device = ref.device, dtype = ref.dtype)
-    std = torch.tensor(vae.config.latents_std, device = ref.device, dtype = ref.dtype)
+    mean = torch.tensor(vae.config.latents_mean, device=ref.device, dtype=ref.dtype)
+    std = torch.tensor(vae.config.latents_std, device=ref.device, dtype=ref.dtype)
     return mean.view(1, z, 1, 1, 1), std.view(1, z, 1, 1, 1)
 
 
@@ -794,7 +808,7 @@ def _qwen_collate(
     entries,
     device,
     weight_dtype,
-    pad_to = None,
+    pad_to=None,
 ):
     import torch
     import torch.nn.functional as F
@@ -807,13 +821,13 @@ def _qwen_collate(
     for pe, mask in entries:
         s = pe.shape[1]
         if mask is None:
-            mask = torch.ones((1, s), dtype = torch.int64)
+            mask = torch.ones((1, s), dtype=torch.int64)
         if s < target:
             pe = F.pad(pe, (0, 0, 0, target - s))
             mask = F.pad(mask, (0, target - s))
         pes.append(pe)
         masks.append(mask)
-    pe_b = torch.cat(pes).to(device = device, dtype = weight_dtype)
+    pe_b = torch.cat(pes).to(device=device, dtype=weight_dtype)
     mask_b = torch.cat(masks).to(device)
     # A single unpadded sample keeps the legacy None mask (identical math; avoids a behaviour delta for existing
     # single-image runs).
@@ -832,27 +846,29 @@ def _qwen_forward(transformer, noisy, timesteps, sigmas, embeds_batch, cfg, devi
     # entry, so a flat list breaks it.
     img_shapes = [[(1, h // 2, w // 2)]] * bsz
     pred = transformer(
-        hidden_states = packed,
-        encoder_hidden_states = pe,
-        encoder_hidden_states_mask = mask,
-        timestep = timesteps / 1000,
-        img_shapes = img_shapes,
-        return_dict = False,
+        hidden_states=packed,
+        encoder_hidden_states=pe,
+        encoder_hidden_states_mask=mask,
+        timestep=timesteps / 1000,
+        img_shapes=img_shapes,
+        return_dict=False,
     )[0]
     return QwenImagePipeline._unpack_latents(pred, h * 8, w * 8, 8)
 
 
 def _qwen_save(pipe_cls, out_dir, transformer_lora_layers):
     from diffusers import QwenImagePipeline
+
     QwenImagePipeline.save_lora_weights(
-        save_directory = out_dir,
-        transformer_lora_layers = transformer_lora_layers,
-        weight_name = DEFAULT_LORA_FILENAME,
+        save_directory=out_dir,
+        transformer_lora_layers=transformer_lora_layers,
+        weight_name=DEFAULT_LORA_FILENAME,
     )
 
 
 def _zimage_load_conditioners(cfg, device, weight_dtype):
     from diffusers import ZImagePipeline
+
     return _load_pipe_without_transformer(ZImagePipeline, cfg, device)
 
 
@@ -860,6 +876,7 @@ def _zimage_load_transformer(cfg, device, weight_dtype, base_precision):
     # Prequant default loads 4-bit as-is under nf4; the dense modes use the bf16 Tongyi-MAI base. Z-Image is bf16 only
     # (its RoPE/embedder run fp32; fp16 overflows).
     from diffusers import ZImageTransformer2DModel
+
     return _load_dit_transformer(ZImageTransformer2DModel, cfg, device, base_precision)
 
 
@@ -871,10 +888,10 @@ def _zimage_encode_prompts(pipe, captions, device):
     with torch.no_grad():
         for cap in captions:
             pe, _neg = pipe.encode_prompt(
-                prompt = cap,
-                device = device,
-                do_classifier_free_guidance = False,
-                max_sequence_length = 512,
+                prompt=cap,
+                device=device,
+                do_classifier_free_guidance=False,
+                max_sequence_length=512,
             )
             # pe is a list of one variable-length [seq, 2560] tensor per prompt.
             emb = pe[0] if isinstance(pe, (list, tuple)) else pe
@@ -884,6 +901,7 @@ def _zimage_encode_prompts(pipe, captions, device):
 
 def _zimage_encode_latents(vae, pixel_values):
     import torch
+
     with torch.no_grad():
         lat = vae.encode(pixel_values.to(torch.float32)).latent_dist.mode()
     return (lat - vae.config.shift_factor) * vae.config.scaling_factor
@@ -899,9 +917,9 @@ def _zimage_collate(
     entries,
     device,
     weight_dtype,
-    pad_to = None,
+    pad_to=None,
 ):
-    caps = [e[0].to(device = device, dtype = weight_dtype) for e in entries]
+    caps = [e[0].to(device=device, dtype=weight_dtype) for e in entries]
     return (caps,)
 
 
@@ -911,18 +929,19 @@ def _zimage_forward(transformer, noisy, timesteps, sigmas, embeds_batch, cfg, de
     (caps,) = embeds_batch
     # List I/O: one [C,1,H,W] latent + one [seq,2560] caption per sample. The timestep convention is REVERSED ((1000 -
     # t) / 1000) and the prediction is NEGATED.
-    x_list = list(noisy.unsqueeze(2).unbind(dim = 0))
+    x_list = list(noisy.unsqueeze(2).unbind(dim=0))
     t_norm = (1000 - timesteps) / 1000
-    out = transformer(x_list, t_norm, list(caps), return_dict = False)[0]
-    return -torch.stack(out, dim = 0).squeeze(2)
+    out = transformer(x_list, t_norm, list(caps), return_dict=False)[0]
+    return -torch.stack(out, dim=0).squeeze(2)
 
 
 def _zimage_save(pipe_cls, out_dir, transformer_lora_layers):
     from diffusers import ZImagePipeline
+
     ZImagePipeline.save_lora_weights(
-        save_directory = out_dir,
-        transformer_lora_layers = transformer_lora_layers,
-        weight_name = DEFAULT_LORA_FILENAME,
+        save_directory=out_dir,
+        transformer_lora_layers=transformer_lora_layers,
+        weight_name=DEFAULT_LORA_FILENAME,
     )
 
 
@@ -933,9 +952,9 @@ def _krea2_load_conditioners(cfg, device, weight_dtype):
     from core.inference.diffusion_krea2 import load_krea2_pipeline
 
     pipe = load_krea2_pipeline(
-        cfg.base_model, torch.bfloat16, hf_token = cfg.hf_token, with_transformer = False
+        cfg.base_model, torch.bfloat16, hf_token=cfg.hf_token, with_transformer=False
     )
-    pipe.vae.to(device, dtype = torch.float32)
+    pipe.vae.to(device, dtype=torch.float32)
     return pipe, pipe.vae
 
 
@@ -943,6 +962,7 @@ def _krea2_load_transformer(cfg, device, weight_dtype, base_precision):
     # The transformer subfolder is diffusers-format. No prequant repo yet, so nf4 quantizes the 12B transformer on the
     # fly.
     from diffusers import Krea2Transformer2DModel
+
     return _load_dit_transformer(Krea2Transformer2DModel, cfg, device, base_precision)
 
 
@@ -956,10 +976,10 @@ def _krea2_encode_prompts(pipe, captions, device):
             # encode_prompt pads/truncates to max_sequence_length, so every embed is [1, 512, num_text_layers, 2560]
             # with a [1, 512] mask (static shapes, padding before the suffix).
             pe, mask = pipe.encode_prompt(
-                prompt = cap,
-                device = device,
-                num_images_per_prompt = 1,
-                max_sequence_length = 512,
+                prompt=cap,
+                device=device,
+                num_images_per_prompt=1,
+                max_sequence_length=512,
             )
             out.append((pe.cpu(), mask.cpu()))
     return out
@@ -975,12 +995,12 @@ def _krea2_collate(
     entries,
     device,
     weight_dtype,
-    pad_to = None,
+    pad_to=None,
 ):
     import torch
 
     # Fixed-length embeds, so collation is a plain concat with the mask riding along; ``pad_to`` is moot.
-    pe_b = torch.cat([e[0] for e in entries]).to(device = device, dtype = weight_dtype)
+    pe_b = torch.cat([e[0] for e in entries]).to(device=device, dtype=weight_dtype)
     mask_b = torch.cat([e[1] for e in entries]).to(device)
     return (pe_b, mask_b)
 
@@ -997,12 +1017,12 @@ def _krea2_forward(transformer, noisy, timesteps, sigmas, embeds_batch, cfg, dev
     # Text tokens sit at the rotary origin, so one shared position grid serves the batch.
     position_ids = Krea2Pipeline.prepare_position_ids(pe.shape[1], h // 2, w // 2, device)
     pred = transformer(
-        hidden_states = packed,
-        encoder_hidden_states = pe,
-        timestep = timesteps / 1000,
-        position_ids = position_ids,
-        encoder_attention_mask = mask,
-        return_dict = False,
+        hidden_states=packed,
+        encoder_hidden_states=pe,
+        timestep=timesteps / 1000,
+        position_ids=position_ids,
+        encoder_attention_mask=mask,
+        return_dict=False,
     )[0]
     pred = pred.view(bsz, h // 2, w // 2, c, 2, 2)
     pred = pred.permute(0, 3, 1, 4, 2, 5)
@@ -1011,10 +1031,11 @@ def _krea2_forward(transformer, noisy, timesteps, sigmas, embeds_batch, cfg, dev
 
 def _krea2_save(pipe_cls, out_dir, transformer_lora_layers):
     from diffusers import Krea2Pipeline
+
     Krea2Pipeline.save_lora_weights(
-        save_directory = out_dir,
-        transformer_lora_layers = transformer_lora_layers,
-        weight_name = DEFAULT_LORA_FILENAME,
+        save_directory=out_dir,
+        transformer_lora_layers=transformer_lora_layers,
+        weight_name=DEFAULT_LORA_FILENAME,
     )
 
 
@@ -1045,16 +1066,19 @@ _FLUX2_TRAIN_GUIDANCE = 3.5
 
 def _flux2_load_conditioners(cfg, device, weight_dtype):
     from diffusers import Flux2Pipeline
+
     return _load_pipe_without_transformer(Flux2Pipeline, cfg, device)
 
 
 def _flux2_klein_load_conditioners(cfg, device, weight_dtype):
     from diffusers import Flux2KleinPipeline
+
     return _load_pipe_without_transformer(Flux2KleinPipeline, cfg, device)
 
 
 def _flux2_load_transformer(cfg, device, weight_dtype, base_precision):
     from diffusers import Flux2Transformer2DModel
+
     return _load_dit_transformer(Flux2Transformer2DModel, cfg, device, base_precision)
 
 
@@ -1068,10 +1092,10 @@ def _flux2_encode_prompts(pipe, captions, device):
             # encode_prompt pads to max_sequence_length, so embeds are fixed-length and text_ids are per-caption [1,
             # txt_len, 4]. The per-class text_encoder_out_layers defaults are left to the pipeline.
             pe, text_ids = pipe.encode_prompt(
-                prompt = cap,
-                device = device,
-                num_images_per_prompt = 1,
-                max_sequence_length = 512,
+                prompt=cap,
+                device=device,
+                num_images_per_prompt=1,
+                max_sequence_length=512,
             )
             out.append((pe.cpu(), text_ids.cpu()))
     return out
@@ -1100,14 +1124,14 @@ def _flux2_collate(
     entries,
     device,
     weight_dtype,
-    pad_to = None,
+    pad_to=None,
 ):
     import torch
 
     # Fixed-length embeds give a plain concat; text_ids are PER-SAMPLE (unlike FLUX.1's shared grid), so they concat
     # too.
-    pe = torch.cat([e[0] for e in entries]).to(device = device, dtype = weight_dtype)
-    text_ids = torch.cat([e[1] for e in entries]).to(device = device, dtype = torch.float32)
+    pe = torch.cat([e[0] for e in entries]).to(device=device, dtype=weight_dtype)
+    text_ids = torch.cat([e[1] for e in entries]).to(device=device, dtype=torch.float32)
     return (pe, text_ids)
 
 
@@ -1121,7 +1145,7 @@ def _flux2_static_img_ids(latents, device):
     key = (latents.shape[0], latents.shape[-2], latents.shape[-1], str(device))
     hit = _FLUX2_STATIC.get(key)
     if hit is None:
-        hit = _FLUX2_STATIC[key] = Flux2Pipeline._prepare_latent_ids(latents).to(device = device)
+        hit = _FLUX2_STATIC[key] = Flux2Pipeline._prepare_latent_ids(latents).to(device=device)
     return hit
 
 
@@ -1137,16 +1161,16 @@ def _flux2_forward(transformer, noisy, timesteps, sigmas, embeds_batch, cfg, dev
     guidance = None
     if getattr(transformer.config, "guidance_embeds", False):
         guidance = torch.full(
-            (noisy.shape[0],), _FLUX2_TRAIN_GUIDANCE, device = device, dtype = torch.float32
+            (noisy.shape[0],), _FLUX2_TRAIN_GUIDANCE, device=device, dtype=torch.float32
         )
     pred = transformer(
-        hidden_states = packed,
-        timestep = timesteps / 1000,
-        guidance = guidance,
-        encoder_hidden_states = pe,
-        txt_ids = text_ids,
-        img_ids = img_ids,
-        return_dict = False,
+        hidden_states=packed,
+        timestep=timesteps / 1000,
+        guidance=guidance,
+        encoder_hidden_states=pe,
+        txt_ids=text_ids,
+        img_ids=img_ids,
+        return_dict=False,
     )[0]
     pred = pred[:, : packed.size(1)]
     # _unpack_latents_with_ids scatters per sample; diffusers 0.39 stacks them itself (its list annotation is stale),
@@ -1159,19 +1183,21 @@ def _flux2_forward(transformer, noisy, timesteps, sigmas, embeds_batch, cfg, dev
 
 def _flux2_save(pipe_cls, out_dir, transformer_lora_layers):
     from diffusers import Flux2Pipeline
+
     Flux2Pipeline.save_lora_weights(
-        save_directory = out_dir,
-        transformer_lora_layers = transformer_lora_layers,
-        weight_name = DEFAULT_LORA_FILENAME,
+        save_directory=out_dir,
+        transformer_lora_layers=transformer_lora_layers,
+        weight_name=DEFAULT_LORA_FILENAME,
     )
 
 
 def _flux2_klein_save(pipe_cls, out_dir, transformer_lora_layers):
     from diffusers import Flux2KleinPipeline
+
     Flux2KleinPipeline.save_lora_weights(
-        save_directory = out_dir,
-        transformer_lora_layers = transformer_lora_layers,
-        weight_name = DEFAULT_LORA_FILENAME,
+        save_directory=out_dir,
+        transformer_lora_layers=transformer_lora_layers,
+        weight_name=DEFAULT_LORA_FILENAME,
     )
 
 
@@ -1210,6 +1236,7 @@ def _ltx2_load_conditioners(cfg, device, weight_dtype):
 
 def _ltx2_load_transformer(cfg, device, weight_dtype, base_precision):
     from diffusers import LTX2VideoTransformer3DModel
+
     return _load_dit_transformer(LTX2VideoTransformer3DModel, cfg, device, base_precision)
 
 
@@ -1223,16 +1250,16 @@ def _ltx2_encode_prompts(pipe, captions, device):
     with torch.no_grad():
         for cap in captions:
             pe, mask, _neg, _neg_mask = pipe.encode_prompt(
-                prompt = cap,
-                do_classifier_free_guidance = False,
-                num_videos_per_prompt = 1,
-                max_sequence_length = 1024,
-                device = device,
+                prompt=cap,
+                do_classifier_free_guidance=False,
+                num_videos_per_prompt=1,
+                max_sequence_length=1024,
+                device=device,
             )
             # Read AFTER encode_prompt, which sets padding_side="left" itself: the connectors build the valid-token
             # mask from this, so a stale "right" would mask every short caption on the wrong end.
             padding_side = getattr(getattr(pipe, "tokenizer", None), "padding_side", "left")
-            video_emb, audio_emb, conn_mask = pipe.connectors(pe, mask, padding_side = padding_side)
+            video_emb, audio_emb, conn_mask = pipe.connectors(pe, mask, padding_side=padding_side)
             out.append((video_emb.cpu(), audio_emb.cpu(), conn_mask.cpu()))
     return out
 
@@ -1240,8 +1267,8 @@ def _ltx2_encode_prompts(pipe, captions, device):
 def _ltx2_latent_affine(vae, ref):
     import torch
 
-    mean = vae.latents_mean.to(device = ref.device, dtype = ref.dtype).view(1, -1, 1, 1, 1)
-    std = vae.latents_std.to(device = ref.device, dtype = ref.dtype).view(1, -1, 1, 1, 1)
+    mean = vae.latents_mean.to(device=ref.device, dtype=ref.dtype).view(1, -1, 1, 1, 1)
+    std = vae.latents_std.to(device=ref.device, dtype=ref.dtype).view(1, -1, 1, 1, 1)
     # scaling_factor is 1.0 on the shipped checkpoint but is applied for fidelity to _normalize_latents.
     return mean, std / float(vae.config.scaling_factor or 1.0)
 
@@ -1272,14 +1299,14 @@ def _ltx2_collate(
     entries,
     device,
     weight_dtype,
-    pad_to = None,
+    pad_to=None,
 ):
     import torch
 
     # encode_prompt pads to max_sequence_length, so every connector embed is [1, 1024, 3840] and a plain concat
     # batches them; ``pad_to`` is moot.
-    video = torch.cat([e[0] for e in entries]).to(device = device, dtype = weight_dtype)
-    audio = torch.cat([e[1] for e in entries]).to(device = device, dtype = weight_dtype)
+    video = torch.cat([e[0] for e in entries]).to(device=device, dtype=weight_dtype)
+    audio = torch.cat([e[1] for e in entries]).to(device=device, dtype=weight_dtype)
     mask = torch.cat([e[2] for e in entries]).to(device)
     return (video, audio, mask)
 
@@ -1301,12 +1328,14 @@ def _ltx2_audio_token_count(config, num_pixel_frames: int, fps: float) -> int:
 def _ltx2_pack(latents, conf):
     """[B,C,F,H,W] -> [B, F*H*W, C] via the pipeline's own patchifier."""
     from diffusers import LTX2Pipeline
+
     return LTX2Pipeline._pack_latents(latents, conf.patch_size, conf.patch_size_t)
 
 
 def _ltx2_unpack(pred, f, h, w, conf):
     """The inverse of ``_ltx2_pack``, back to the 5-D shape ``target = noise - latents`` has."""
     from diffusers import LTX2Pipeline
+
     return LTX2Pipeline._unpack_latents(pred, f, h, w, conf.patch_size, conf.patch_size_t)
 
 
@@ -1320,7 +1349,7 @@ def _ltx2_audio_state(sigmas, bsz, audio_len, channels, device, dtype):
     because ``forward`` requires the argument."""
     import torch
 
-    noise = torch.randn((bsz, audio_len, channels), device = device, dtype = dtype)
+    noise = torch.randn((bsz, audio_len, channels), device=device, dtype=dtype)
     # sigmas arrives broadcast to the 5-D video latent; the audio stream is 3-D.
     return sigmas.reshape(bsz, 1, 1) * noise
 
@@ -1339,141 +1368,142 @@ def _ltx2_forward(transformer, noisy, timesteps, sigmas, embeds_batch, cfg, devi
     )
 
     pred, _audio_pred = transformer(
-        hidden_states = packed,
-        audio_hidden_states = audio_noisy,
-        encoder_hidden_states = video_emb,
-        audio_encoder_hidden_states = audio_emb,
+        hidden_states=packed,
+        audio_hidden_states=audio_noisy,
+        encoder_hidden_states=video_emb,
+        audio_encoder_hidden_states=audio_emb,
         # LTX-2 conditions on the UNSCALED timestep (its config carries timestep_scale_multiplier = 1000 and the
         # pipeline passes scheduler timesteps through as-is), unlike FLUX / Qwen's timestep / 1000.
-        timestep = timesteps,
-        sigma = timesteps,
-        encoder_attention_mask = mask,
-        audio_encoder_attention_mask = mask,
-        num_frames = f,
-        height = h,
-        width = w,
-        fps = _LTX2_TRAIN_FPS,
-        audio_num_frames = audio_len,
+        timestep=timesteps,
+        sigma=timesteps,
+        encoder_attention_mask=mask,
+        audio_encoder_attention_mask=mask,
+        num_frames=f,
+        height=h,
+        width=w,
+        fps=_LTX2_TRAIN_FPS,
+        audio_num_frames=audio_len,
         # Disable the a2v / v2a cross attention so the placeholder audio stream cannot perturb the video prediction
         # the LoRA is regressing.
-        isolate_modalities = True,
-        return_dict = False,
+        isolate_modalities=True,
+        return_dict=False,
     )
     return _ltx2_unpack(pred, f, h, w, conf)
 
 
 def _ltx2_save(pipe_cls, out_dir, transformer_lora_layers):
     from diffusers import LTX2Pipeline
+
     LTX2Pipeline.save_lora_weights(
-        save_directory = out_dir,
-        transformer_lora_layers = transformer_lora_layers,
-        weight_name = DEFAULT_LORA_FILENAME,
+        save_directory=out_dir,
+        transformer_lora_layers=transformer_lora_layers,
+        weight_name=DEFAULT_LORA_FILENAME,
     )
 
 
 _SPECS: dict[str, _FamilySpec] = {
     "flux.1": _FamilySpec(
-        family = "flux.1",
-        lora_targets = _FLUX_TARGETS,
-        force_bf16 = False,
-        dense_bf16_gb = 23.8,
-        load_conditioners = _flux_load_conditioners,
-        load_transformer = _flux_load_transformer,
-        encode_prompts = _flux_encode_prompts,
-        encode_latents = _flux_encode_latents,
-        encode_latent_stats = _flux_encode_latent_stats,
-        collate = _flux_collate,
-        forward = _flux_forward,
-        save = _flux_save,
+        family="flux.1",
+        lora_targets=_FLUX_TARGETS,
+        force_bf16=False,
+        dense_bf16_gb=23.8,
+        load_conditioners=_flux_load_conditioners,
+        load_transformer=_flux_load_transformer,
+        encode_prompts=_flux_encode_prompts,
+        encode_latents=_flux_encode_latents,
+        encode_latent_stats=_flux_encode_latent_stats,
+        collate=_flux_collate,
+        forward=_flux_forward,
+        save=_flux_save,
     ),
     "qwen-image": _FamilySpec(
-        family = "qwen-image",
-        lora_targets = _QWEN_TARGETS,
-        force_bf16 = True,
-        dense_bf16_gb = 41.0,
-        load_conditioners = _qwen_load_conditioners,
-        load_transformer = _qwen_load_transformer,
-        encode_prompts = _qwen_encode_prompts,
-        encode_latents = _qwen_encode_latents,
-        encode_latent_stats = _qwen_encode_latent_stats,
-        collate = _qwen_collate,
-        forward = _qwen_forward,
-        save = _qwen_save,
+        family="qwen-image",
+        lora_targets=_QWEN_TARGETS,
+        force_bf16=True,
+        dense_bf16_gb=41.0,
+        load_conditioners=_qwen_load_conditioners,
+        load_transformer=_qwen_load_transformer,
+        encode_prompts=_qwen_encode_prompts,
+        encode_latents=_qwen_encode_latents,
+        encode_latent_stats=_qwen_encode_latent_stats,
+        collate=_qwen_collate,
+        forward=_qwen_forward,
+        save=_qwen_save,
     ),
     "z-image": _FamilySpec(
-        family = "z-image",
-        lora_targets = _ZIMAGE_TARGETS,
-        force_bf16 = True,
-        dense_bf16_gb = 12.3,
-        load_conditioners = _zimage_load_conditioners,
-        load_transformer = _zimage_load_transformer,
-        encode_prompts = _zimage_encode_prompts,
-        encode_latents = _zimage_encode_latents,
-        encode_latent_stats = _zimage_encode_latent_stats,
-        collate = _zimage_collate,
-        forward = _zimage_forward,
-        save = _zimage_save,
+        family="z-image",
+        lora_targets=_ZIMAGE_TARGETS,
+        force_bf16=True,
+        dense_bf16_gb=12.3,
+        load_conditioners=_zimage_load_conditioners,
+        load_transformer=_zimage_load_transformer,
+        encode_prompts=_zimage_encode_prompts,
+        encode_latents=_zimage_encode_latents,
+        encode_latent_stats=_zimage_encode_latent_stats,
+        collate=_zimage_collate,
+        forward=_zimage_forward,
+        save=_zimage_save,
     ),
     "krea-2": _FamilySpec(
-        family = "krea-2",
-        lora_targets = _KREA2_TARGETS,
-        force_bf16 = True,
-        dense_bf16_gb = 26.3,
-        load_conditioners = _krea2_load_conditioners,
-        load_transformer = _krea2_load_transformer,
-        encode_prompts = _krea2_encode_prompts,
-        encode_latents = _krea2_encode_latents,
-        encode_latent_stats = _krea2_encode_latent_stats,
-        collate = _krea2_collate,
-        forward = _krea2_forward,
-        save = _krea2_save,
+        family="krea-2",
+        lora_targets=_KREA2_TARGETS,
+        force_bf16=True,
+        dense_bf16_gb=26.3,
+        load_conditioners=_krea2_load_conditioners,
+        load_transformer=_krea2_load_transformer,
+        encode_prompts=_krea2_encode_prompts,
+        encode_latents=_krea2_encode_latents,
+        encode_latent_stats=_krea2_encode_latent_stats,
+        collate=_krea2_collate,
+        forward=_krea2_forward,
+        save=_krea2_save,
     ),
     "flux.2-klein": _FamilySpec(
-        family = "flux.2-klein",
-        lora_targets = _FLUX2_KLEIN_TARGETS,
+        family="flux.2-klein",
+        lora_targets=_FLUX2_KLEIN_TARGETS,
         # The upstream references train in bf16; fp16 is unvalidated on the FLUX.2 stack.
-        force_bf16 = True,
-        dense_bf16_gb = 8.1,
-        load_conditioners = _flux2_klein_load_conditioners,
-        load_transformer = _flux2_load_transformer,
-        encode_prompts = _flux2_encode_prompts,
-        encode_latents = _flux2_encode_latents,
-        encode_latent_stats = _flux2_encode_latent_stats,
-        collate = _flux2_collate,
-        forward = _flux2_forward,
-        save = _flux2_klein_save,
+        force_bf16=True,
+        dense_bf16_gb=8.1,
+        load_conditioners=_flux2_klein_load_conditioners,
+        load_transformer=_flux2_load_transformer,
+        encode_prompts=_flux2_encode_prompts,
+        encode_latents=_flux2_encode_latents,
+        encode_latent_stats=_flux2_encode_latent_stats,
+        collate=_flux2_collate,
+        forward=_flux2_forward,
+        save=_flux2_klein_save,
     ),
     "flux.2-dev": _FamilySpec(
-        family = "flux.2-dev",
-        lora_targets = _FLUX2_DEV_TARGETS,
-        force_bf16 = True,
+        family="flux.2-dev",
+        lora_targets=_FLUX2_DEV_TARGETS,
+        force_bf16=True,
         # 32B DiT; the Mistral conditioning stack (~46 GB bf16) is loaded, encoded and freed BEFORE this lands on the
         # device (the shared phased load).
-        dense_bf16_gb = 64.5,
-        load_conditioners = _flux2_load_conditioners,
-        load_transformer = _flux2_load_transformer,
-        encode_prompts = _flux2_encode_prompts,
-        encode_latents = _flux2_encode_latents,
-        encode_latent_stats = _flux2_encode_latent_stats,
-        collate = _flux2_collate,
-        forward = _flux2_forward,
-        save = _flux2_save,
+        dense_bf16_gb=64.5,
+        load_conditioners=_flux2_load_conditioners,
+        load_transformer=_flux2_load_transformer,
+        encode_prompts=_flux2_encode_prompts,
+        encode_latents=_flux2_encode_latents,
+        encode_latent_stats=_flux2_encode_latent_stats,
+        collate=_flux2_collate,
+        forward=_flux2_forward,
+        save=_flux2_save,
     ),
     "ltx-2": _FamilySpec(
-        family = "ltx-2",
-        lora_targets = _LTX2_TARGETS,
-        force_bf16 = True,
+        family="ltx-2",
+        lora_targets=_LTX2_TARGETS,
+        force_bf16=True,
         # 19B audiovisual DiT (37.76 GB bf16); the Gemma3-12B conditioning stack is loaded, encoded and freed BEFORE
         # this lands on the device, via the shared phased load.
-        dense_bf16_gb = 37.8,
-        load_conditioners = _ltx2_load_conditioners,
-        load_transformer = _ltx2_load_transformer,
-        encode_prompts = _ltx2_encode_prompts,
-        encode_latents = _ltx2_encode_latents,
-        encode_latent_stats = _ltx2_encode_latent_stats,
-        collate = _ltx2_collate,
-        forward = _ltx2_forward,
-        save = _ltx2_save,
+        dense_bf16_gb=37.8,
+        load_conditioners=_ltx2_load_conditioners,
+        load_transformer=_ltx2_load_transformer,
+        encode_prompts=_ltx2_encode_prompts,
+        encode_latents=_ltx2_encode_latents,
+        encode_latent_stats=_ltx2_encode_latent_stats,
+        collate=_ltx2_collate,
+        forward=_ltx2_forward,
+        save=_ltx2_save,
     ),
 }
 
@@ -1515,7 +1545,7 @@ def _to_unit_tensor(img):
     import numpy as np
     import torch
 
-    arr = np.asarray(img, dtype = np.float32) / 255.0
+    arr = np.asarray(img, dtype=np.float32) / 255.0
     return torch.from_numpy(arr).permute(2, 0, 1) * 2.0 - 1.0
 
 
@@ -1564,8 +1594,8 @@ def _build_latent_cache(
     weight_dtype,
     on_event,
     check_stop,
-    pcache = None,
-    plan = None,
+    pcache=None,
+    plan=None,
 ):
     """Precompute the per-image latent posterior cache: for each planned crop/flip variant, encode
     once and store the affine (A, B) pair on CPU (pinned when possible) in fp32. The stats stay
@@ -1631,7 +1661,7 @@ def _build_latent_cache(
                     _emit(
                         on_event,
                         "warning",
-                        message = (
+                        message=(
                             "Latent cache disabled: estimated "
                             f"{per_variant * total_variants / 1024 ** 3:.1f} GiB over the "
                             "budget; encoding latents per step instead. Set "
@@ -1643,7 +1673,7 @@ def _build_latent_cache(
             variants.append((a, b))
         cache.append(variants)
         if (i + 1) % 4 == 0 or i + 1 == total:
-            _emit(on_event, "preparing", stage = "cache_latents", done = i + 1, total = total)
+            _emit(on_event, "preparing", stage="cache_latents", done=i + 1, total=total)
         if check_stop():
             return None
     return cache
@@ -1737,18 +1767,18 @@ def _sample_cached_latents(cache, idxs, variant_rng, device, weight_dtype):
         a, b = variants[variant_rng.randrange(len(variants))] if len(variants) > 1 else variants[0]
         parts_a.append(a)
         parts_b.append(b)
-    lat_a = torch.cat(parts_a).to(device, non_blocking = True)
+    lat_a = torch.cat(parts_a).to(device, non_blocking=True)
     if parts_b[0] is None:
-        return lat_a.to(dtype = weight_dtype)
-    lat_b = torch.cat(parts_b).to(device, non_blocking = True)
-    return (lat_a + lat_b * torch.randn_like(lat_a)).to(dtype = weight_dtype)
+        return lat_a.to(dtype=weight_dtype)
+    lat_b = torch.cat(parts_b).to(device, non_blocking=True)
+    return (lat_a + lat_b * torch.randn_like(lat_a)).to(dtype=weight_dtype)
 
 
 def _should_compile(
     cfg,
     base_is_bnb,
     device,
-    base_precision = "nf4",
+    base_precision="nf4",
 ) -> bool:
     mode = (cfg.compile_transformer or "auto").strip().lower()
     if device != "cuda" or mode == "off":
@@ -1770,7 +1800,7 @@ def _maybe_compile_transformer(
     base_is_bnb,
     device,
     on_event,
-    base_precision = "nf4",
+    base_precision="nf4",
 ) -> bool:
     """Regionally compile the transformer blocks (diffusers compile_repeated_blocks) after the LoRA
     is attached. Never fatal: a wrap failure falls back to eager with a warning event, and
@@ -1781,7 +1811,7 @@ def _maybe_compile_transformer(
             _emit(
                 on_event,
                 "warning",
-                message = (
+                message=(
                     f"{base_precision} training without torch.compile is slow; "
                     f"enable compile for the speedup."
                 ),
@@ -1792,7 +1822,7 @@ def _maybe_compile_transformer(
     fn = getattr(transformer, "compile_repeated_blocks", None)
     if not callable(fn):
         _emit(
-            on_event, "warning", message = "torch.compile unavailable for this model; running eager."
+            on_event, "warning", message="torch.compile unavailable for this model; running eager."
         )
         return False
     try:
@@ -1807,10 +1837,10 @@ def _maybe_compile_transformer(
                 dynamo_cfg.suppress_errors = True
         # dynamic=True matches the inference speed layer: on torch 2.10 / B200 the dynamic=False specialisation failed
         # with CUBLAS_STATUS_EXECUTION_FAILED.
-        fn(fullgraph = not base_is_bnb, dynamic = True)
+        fn(fullgraph=not base_is_bnb, dynamic=True)
         return True
     except Exception as exc:  # noqa: BLE001 -- optimisation only, never fatal
-        _emit(on_event, "warning", message = f"torch.compile disabled (eager fallback): {exc}")
+        _emit(on_event, "warning", message=f"torch.compile disabled (eager fallback): {exc}")
         return False
 
 
@@ -1877,35 +1907,35 @@ def run_dit_lora_training(
     # ungated mirror, after the route answered 200 and freed the residents.
     _assert_gated_access(cfg.fetch_base_model or cfg.base_model, cfg.hf_token)
     pairs = discover_image_caption_pairs(
-        cfg.data_dir, instance_prompt = cfg.instance_prompt, caption_column = cfg.caption_column
+        cfg.data_dir, instance_prompt=cfg.instance_prompt, caption_column=cfg.caption_column
     )
     # Resolve num_epochs into a concrete train_steps now the dataset size is known, and rebind cfg so every downstream
     # read agrees.
-    cfg = replace(cfg, train_steps = resolve_train_steps(cfg, len(pairs)), num_epochs = 0)
+    cfg = replace(cfg, train_steps=resolve_train_steps(cfg, len(pairs)), num_epochs=0)
     # Validate a resume against this run's identity BEFORE the multi-GB phased load, using the RESOLVED LoRA targets
     # rather than the generic default the config carries.
     identity = identity_for_config(
         cfg,
-        dataset_pairs = pairs,
-        resolved_targets = _select_lora_targets(cfg.lora_target_modules, spec.lora_targets),
+        dataset_pairs=pairs,
+        resolved_targets=_select_lora_targets(cfg.lora_target_modules, spec.lora_targets),
     )
     if cfg.resume_from_checkpoint:
         preflight_resume(
-            cfg.resume_from_checkpoint, identity = identity, target_steps = cfg.train_steps
+            cfg.resume_from_checkpoint, identity=identity, target_steps=cfg.train_steps
         )
-    _emit(on_event, "model_load_started", num_images = len(pairs))
+    _emit(on_event, "model_load_started", num_images=len(pairs))
     if _check_stop():
         out_dir = Path(cfg.output_dir).expanduser()
         _emit(
             on_event,
             "complete",
-            output_dir = str(out_dir),
-            lora_path = None,
-            stopped = True,
-            steps_run = 0,
+            output_dir=str(out_dir),
+            lora_path=None,
+            stopped=True,
+            steps_run=0,
             # A stop with save=false is a DISCARD however early it lands; without it the resume fallback offers the
             # source bundle back as though the attempt were still live.
-            discarded = not save_on_stop,
+            discarded=not save_on_stop,
         )
         return str(out_dir)
 
@@ -1946,6 +1976,7 @@ def _train_dit(
     # turned off now.
     try:
         from loggers.config import quiet_third_party_progress_bars
+
         quiet_third_party_progress_bars()
     except Exception:  # noqa: BLE001 - never let log tidying stop a training run
         pass
@@ -1954,7 +1985,7 @@ def _train_dit(
     out_dir = Path(cfg.output_dir).expanduser()
     # Load from the byte-identical public mirror selected during normalization, while keeping cfg.base_model canonical
     # for the adapter sidecar, completion event and resume identity.
-    fetch_cfg = replace(cfg, base_model = cfg.fetch_base_model or cfg.base_model)
+    fetch_cfg = replace(cfg, base_model=cfg.fetch_base_model or cfg.base_model)
 
     # Phase 0: the persistent conditioning cache (opt-in via cond_cache_dir). When every planned latent variant AND
     # caption embedding is on disk, the run is "warm": the VAE and text encoders never load.
@@ -1974,10 +2005,11 @@ def _train_dit(
             # Namespace on the CHECKPOINT, not just the family: the keys carry only caption/image content, so one
             # cache dir reused for two checkpoints would train on the other model's embeddings.
             from .diffusion_train_extras import source_revision  # noqa: PLC0415
+
             namespace = f"{spec.family}_{cfg.base_model}_{source_revision(fetch_cfg.base_model)}"
             pcache = PersistentConditioningCache(cfg.cond_cache_dir, namespace, cfg.resolution)
         except Exception as exc:  # noqa: BLE001 -- the cache is an optimisation, never fatal
-            _emit(on_event, "warning", message = f"conditioning cache disabled: {exc}")
+            _emit(on_event, "warning", message=f"conditioning cache disabled: {exc}")
     # The crop/flip variant plan is seed-deterministic, so persistent keys are stable across runs and the warm check
     # can run before anything loads.
     plan = _plan_cache_variants(
@@ -1998,9 +2030,9 @@ def _train_dit(
             _emit(
                 on_event,
                 "preparing",
-                stage = "cache_latents",
-                done = len(image_paths),
-                total = len(image_paths),
+                stage="cache_latents",
+                done=len(image_paths),
+                total=len(image_paths),
             )
     if caption_embeds is None:
         latent_cache = None
@@ -2025,8 +2057,8 @@ def _train_dit(
                 weight_dtype,
                 on_event,
                 _check_stop,
-                pcache = pcache,
-                plan = plan,
+                pcache=pcache,
+                plan=plan,
             )
             if latent_cache is LATENT_CACHE_OVER_BUDGET:
                 # The estimated cache exceeded the host-memory budget; keep the VAE resident and fall through to the
@@ -2036,12 +2068,12 @@ def _train_dit(
                 _emit(
                     on_event,
                     "complete",
-                    output_dir = str(out_dir),
-                    lora_path = None,
-                    stopped = True,
-                    steps_run = 0,
+                    output_dir=str(out_dir),
+                    lora_path=None,
+                    stopped=True,
+                    steps_run=0,
                     # A discard is a discard however early the stop lands.
-                    discarded = not _save_on_stop(),
+                    discarded=not _save_on_stop(),
                 )
                 return str(out_dir)
     if latent_cache is not None and vae is not None:
@@ -2068,11 +2100,11 @@ def _train_dit(
     transformer.requires_grad_(False)
     transformer.add_adapter(
         LoraConfig(
-            r = cfg.lora_rank,
-            lora_alpha = cfg.lora_alpha,
-            lora_dropout = cfg.lora_dropout,
-            init_lora_weights = "gaussian",
-            target_modules = list(use_lora_targets),
+            r=cfg.lora_rank,
+            lora_alpha=cfg.lora_alpha,
+            lora_dropout=cfg.lora_dropout,
+            init_lora_weights="gaussian",
+            target_modules=list(use_lora_targets),
         )
     )
     if cfg.gradient_checkpointing:
@@ -2080,10 +2112,11 @@ def _train_dit(
         # access on the larger FLUX transformer, and it is the recommended mode anyway.
         import functools
         import torch.utils.checkpoint as _ckpt
+
         transformer.enable_gradient_checkpointing(
-            gradient_checkpointing_func = functools.partial(_ckpt.checkpoint, use_reentrant = False)
+            gradient_checkpointing_func=functools.partial(_ckpt.checkpoint, use_reentrant=False)
         )
-    cast_training_params(transformer, dtype = torch.float32)
+    cast_training_params(transformer, dtype=torch.float32)
     lora_params = [p for p in transformer.parameters() if p.requires_grad]
 
     # int8 / fp8 / mxfp8 convert the frozen base linears AFTER the LoRA attaches, so the adapter modules are excluded
@@ -2097,7 +2130,7 @@ def _train_dit(
 
     # LoRA EMA (opt-in via cfg.ema_decay): shadows ONLY the trainable adapter params, initialised after the precision
     # conversions so they track the final fp32 objects.
-    ema = LoRAEMA(transformer, decay = cfg.ema_decay) if getattr(cfg, "ema_decay", 0.0) else None
+    ema = LoRAEMA(transformer, decay=cfg.ema_decay) if getattr(cfg, "ema_decay", 0.0) else None
 
     compiled = _maybe_compile_transformer(
         transformer, cfg, base_is_bnb, device, on_event, base_precision
@@ -2110,7 +2143,7 @@ def _train_dit(
 
     optimizer = _make_optimizer(lora_params, cfg.learning_rate)
     scheduler = FlowMatchEulerDiscreteScheduler.from_pretrained(
-        fetch_cfg.base_model, subfolder = "scheduler", token = cfg.hf_token
+        fetch_cfg.base_model, subfolder="scheduler", token=cfg.hf_token
     )
     # getattr defaults keep an un-normalized config on the historical behaviour.
     flow_shift = getattr(cfg, "flow_shift", None)
@@ -2128,12 +2161,12 @@ def _train_dit(
     # accumulation factor would stretch warmup past the run.
     lr_sched = get_scheduler(
         cfg.lr_scheduler,
-        optimizer = optimizer,
-        num_warmup_steps = cfg.lr_warmup_steps,
-        num_training_steps = cfg.train_steps,
+        optimizer=optimizer,
+        num_warmup_steps=cfg.lr_warmup_steps,
+        num_training_steps=cfg.train_steps,
     )
 
-    _emit(on_event, "model_load_completed", compiled = compiled, base_precision = base_precision)
+    _emit(on_event, "model_load_completed", compiled=compiled, base_precision=base_precision)
     # Read the commit now the base is on disk: an identity built before the load says "unresolved", which is not
     # comparable, so a later resume could not tell the repo had moved underneath it. Record the repo actually fetched:
     # the canonical base is not on disk at all when the mirror was selected, and mismatch_reason only compares two
@@ -2157,14 +2190,14 @@ def _train_dit(
     rng_streams = {"loop": rng, "variant": variant_rng}
     restored = restore_resume_state(
         cfg,
-        model = transformer,
-        optimizer = optimizer,
-        lr_scheduler = lr_sched,
-        identity = identity,
-        on_event = on_event,
-        ema = ema,
-        sampler = index_sampler,
-        rng_streams = rng_streams,
+        model=transformer,
+        optimizer=optimizer,
+        lr_scheduler=lr_sched,
+        identity=identity,
+        on_event=on_event,
+        ema=ema,
+        sampler=index_sampler,
+        rng_streams=rng_streams,
     )
     resumed = restored.step if restored is not None else 0
     # Resuming from directory A into a reused output_dir B leaves B's existing bundles as foreign as for a fresh run,
@@ -2180,7 +2213,7 @@ def _train_dit(
             _emit(
                 on_event,
                 "warning",
-                message = (
+                message=(
                     f"Resuming a checkpoint trained with a {was} base in {base_precision}; "
                     f"set base_precision explicitly to keep them identical."
                 ),
@@ -2200,34 +2233,34 @@ def _train_dit(
         # after a save is still known to be resumable and one whose save failed is still known to be blocked.
         _written, _error = write_resume_checkpoint(
             cfg,
-            step = step,
-            model = transformer,
-            optimizer = optimizer,
-            lr_scheduler = lr_sched,
-            identity = identity,
-            on_event = on_event,
-            ema = ema,
-            sampler = index_sampler,
-            rng_streams = rng_streams,
+            step=step,
+            model=transformer,
+            optimizer=optimizer,
+            lr_scheduler=lr_sched,
+            identity=identity,
+            on_event=on_event,
+            ema=ema,
+            sampler=index_sampler,
+            rng_streams=rng_streams,
             # "auto" resolves from free VRAM at load time, so the identity, which records the REQUESTED mode, cannot
             # tell nf4 from bf16 across two "auto" runs.
-            progress = {"running_loss": running_loss, "resolved_base_precision": base_precision},
+            progress={"running_loss": running_loss, "resolved_base_precision": base_precision},
             # NOT discard_existing: deleting the previous run's bundles at the FIRST periodic save spends them before
             # this run produced anything, so cancelling a retrain destroyed the thing being retrained.
-            discard_existing = False,
+            discard_existing=False,
             # A branched resume must not prune the higher-numbered checkpoints it did not write.
-            preexisting = preexisting_checkpoints,
+            preexisting=preexisting_checkpoints,
         )
 
     # bf16 autocast around the forward + loss, matching the diffusers dreambooth scripts: it reconciles the fp32 LoRA
     # params with the bnb 4-bit base matmuls.
     autocast = (
-        torch.autocast(device_type = device, dtype = torch.bfloat16)
+        torch.autocast(device_type=device, dtype=torch.bfloat16)
         if device in ("cuda", "xpu")
         else nullcontext()
     )
     for opt_step in range(resumed, cfg.train_steps):
-        optimizer.zero_grad(set_to_none = True)
+        optimizer.zero_grad(set_to_none=True)
         step_loss = 0.0
         for _ in range(cfg.gradient_accumulation_steps):
             idxs = index_sampler.next_batch(batch_size)
@@ -2253,7 +2286,7 @@ def _train_dit(
                 # The model's timestep conditioning must follow the shifted sigma (timestep = sigma *
                 # num_train_timesteps). Gather in fp32 so bf16 rounding never skews it.
                 timesteps = (
-                    sigma_table[t_indices].to(device = device, dtype = torch.float32).flatten()
+                    sigma_table[t_indices].to(device=device, dtype=torch.float32).flatten()
                     * num_train_ts
                 )
             noisy = (1.0 - sigmas) * latents + sigmas * noise
@@ -2267,7 +2300,7 @@ def _train_dit(
                 ],
                 device,
                 weight_dtype,
-                pad_to = qwen_pad_to,
+                pad_to=qwen_pad_to,
             )
             with autocast:
                 model_pred = spec.forward(
@@ -2275,9 +2308,9 @@ def _train_dit(
                 )
                 target = noise - latents
                 if bell_weights is None:
-                    loss = F.mse_loss(model_pred.float(), target.float(), reduction = "mean")
+                    loss = F.mse_loss(model_pred.float(), target.float(), reduction="mean")
                 else:
-                    per = F.mse_loss(model_pred.float(), target.float(), reduction = "none")
+                    per = F.mse_loss(model_pred.float(), target.float(), reduction="none")
                     w_idx = (
                         (sigmas.flatten().float() * num_train_ts).long().clamp(0, num_train_ts - 1)
                     )
@@ -2315,14 +2348,14 @@ def _train_dit(
             _emit(
                 on_event,
                 "progress",
-                step = done,
-                total_steps = cfg.train_steps,
-                loss = round(step_loss, 5),
-                avg_loss = round(running_loss / done, 5),
-                learning_rate = lr_sched.get_last_lr()[0],
-                grad_norm = round(grad_norm, 5) if grad_norm is not None else None,
-                samples_per_second = sps,
-                peak_memory_gb = peak_gb or None,
+                step=done,
+                total_steps=cfg.train_steps,
+                loss=round(step_loss, 5),
+                avg_loss=round(running_loss / done, 5),
+                learning_rate=lr_sched.get_last_lr()[0],
+                grad_norm=round(grad_norm, 5) if grad_norm is not None else None,
+                samples_per_second=sps,
+                peak_memory_gb=peak_gb or None,
             )
         stop_now = _check_stop()
         # Skipped on the final step and when stopping, since the stop path writes one at the exact step.
@@ -2341,7 +2374,7 @@ def _train_dit(
     catalog_path: Optional[str] = None
     ema_path: Optional[str] = None
     if not (stopped and not _save_on_stop()):
-        out_dir.mkdir(parents = True, exist_ok = True)
+        out_dir.mkdir(parents=True, exist_ok=True)
         # Write the bundle BEFORE the adapter export: if that export fails, the run still comes back.
         if stopped and done > 0:
             _save_checkpoint(done)
@@ -2356,11 +2389,11 @@ def _train_dit(
                 ema_dir = save_ema_adapter(ema, transformer, spec.save, str(out_dir))
                 ema_path = str(Path(ema_dir) / DEFAULT_LORA_FILENAME)
             except Exception as exc:  # noqa: BLE001 -- the primary adapter is already saved
-                _emit(on_event, "warning", message = f"EMA adapter save failed: {exc}")
+                _emit(on_event, "warning", message=f"EMA adapter save failed: {exc}")
         if not stopped:
             # A completed run has nothing to resume and the final iteration writes no bundle, so save_steps would
             # leave this run's own checkpoint behind for a later resume to roll back to.
-            retire_own_checkpoints(out_dir, preexisting_checkpoints, resumed_here = resumed_here)
+            retire_own_checkpoints(out_dir, preexisting_checkpoints, resumed_here=resumed_here)
         elif not resumed_here:
             # A stop-with-save on a fresh retrain is a LOWER step than the earlier run's leftovers, and
             # resume-by-directory picks the newest by step, so those would outrank the partial just saved and continue
@@ -2379,19 +2412,19 @@ def _train_dit(
     _emit(
         on_event,
         "complete",
-        output_dir = str(out_dir),
-        lora_path = lora_path,
-        ema_path = ema_path,
-        catalog_path = catalog_path,
-        family = cfg.resolved_family,
-        base_model = cfg.base_model,
-        stopped = stopped,
-        steps_run = done if cfg.train_steps else 0,
-        wall_seconds = round(time.time() - t_start, 1),
-        resumed_from_step = resumed or None,
+        output_dir=str(out_dir),
+        lora_path=lora_path,
+        ema_path=ema_path,
+        catalog_path=catalog_path,
+        family=cfg.resolved_family,
+        base_model=cfg.base_model,
+        stopped=stopped,
+        steps_run=done if cfg.train_steps else 0,
+        wall_seconds=round(time.time() - t_start, 1),
+        resumed_from_step=resumed or None,
         # "Stop without saving" discards the run, so its own periodic checkpoints must not keep offering to continue
         # it.
-        discarded = bool(stopped and not _save_on_stop()),
+        discarded=bool(stopped and not _save_on_stop()),
     )
     return str(out_dir)
 
@@ -2406,21 +2439,22 @@ def _make_optimizer(params, lr):
     import torch
 
     if os.environ.get("UNSLOTH_DIFFUSION_FP32_OPTIM", "") in ("1", "true"):
-        return torch.optim.AdamW(params, lr = lr)
+        return torch.optim.AdamW(params, lr=lr)
     # Checked before construction, not around it: on XPU the 8-bit optimizer builds fine and
     # only dies at the first step(), which the except below would never see.
     if bitsandbytes_optimizer_supported():
         try:
             import bitsandbytes as bnb
-            return bnb.optim.AdamW8bit(params, lr = lr)
+
+            return bnb.optim.AdamW8bit(params, lr=lr)
         except Exception:  # noqa: BLE001 -- bnb missing / no CUDA: fall back to torch AdamW
             pass
     if torch.cuda.is_available():
         try:
-            return torch.optim.AdamW(params, lr = lr, fused = True)
+            return torch.optim.AdamW(params, lr=lr, fused=True)
         except Exception:  # noqa: BLE001 -- fused unsupported on this build/device
             pass
-    return torch.optim.AdamW(params, lr = lr)
+    return torch.optim.AdamW(params, lr=lr)
 
 
 def _free_text_encoders(pipe) -> None:

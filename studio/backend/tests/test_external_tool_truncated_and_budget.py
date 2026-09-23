@@ -38,8 +38,8 @@ _DONE = "data: [DONE]"
 
 
 def _sse(
-    delta = None,
-    finish = None,
+    delta=None,
+    finish=None,
     **extra,
 ) -> str:
     choice: dict = {"index": 0, "delta": delta if delta is not None else {}}
@@ -47,7 +47,7 @@ def _sse(
         choice["finish_reason"] = finish
     payload: dict = {"choices": [choice]}
     payload.update(extra)
-    return "data: " + json.dumps(payload, ensure_ascii = False)
+    return "data: " + json.dumps(payload, ensure_ascii=False)
 
 
 def _tool(name: str) -> dict:
@@ -75,8 +75,8 @@ class FakeTransport:
         self,
         turns,
         *,
-        heals = True,
-        max_turns = 20,
+        heals=True,
+        max_turns=20,
     ):
         self.turns = [list(turn) for turn in turns]
         self.heals_text_tool_calls = heals
@@ -131,19 +131,19 @@ def _run(transport, **policy_kwargs):
         out: list[str] = []
         agen = stream_with_studio_tools(
             transport,
-            run = ToolLoopRun(
-                messages = [{"role": "user", "content": "hi"}],
-                session_id = "s1",
-                thread_id = "t1",
+            run=ToolLoopRun(
+                messages=[{"role": "user", "content": "hi"}],
+                session_id="s1",
+                thread_id="t1",
             ),
-            policy = ToolLoopPolicy(**fields),
-            cancel_event = threading.Event(),
+            policy=ToolLoopPolicy(**fields),
+            cancel_event=threading.Event(),
         )
         async for line in agen:
             out.append(line)
         return out
 
-    return asyncio.run(asyncio.wait_for(_collect(), timeout = 30.0))
+    return asyncio.run(asyncio.wait_for(_collect(), timeout=30.0))
 
 
 def _payloads(lines):
@@ -181,9 +181,9 @@ def _visible_text(lines) -> str:
 
 
 def _call_turn(
-    call_id = "c1",
-    name = "web_search",
-    arguments = '{"query":"q"}',
+    call_id="c1",
+    name="web_search",
+    arguments='{"query":"q"}',
 ):
     return [
         _sse(
@@ -193,7 +193,7 @@ def _call_turn(
                 ]
             }
         ),
-        _sse(finish = "tool_calls"),
+        _sse(finish="tool_calls"),
         _DONE,
     ]
 
@@ -206,7 +206,7 @@ _HEALED_TURN = [
     _sse({"content": '<tool_call>{"name": "web_search", '}),
     _sse({"content": '"arguments": {"query": "42"}}</tool_call>'}),
     _sse({"content": " follow-up"}),
-    _sse(finish = "length"),
+    _sse(finish="length"),
     _DONE,
 ]
 
@@ -232,8 +232,8 @@ def test_truncated_healed_call_releases_its_own_markup(executed):
 
 def test_untruncated_healed_call_still_hides_its_markup(executed):
     """The release above is for truncation only: a normal turn still executes."""
-    turn = list(_HEALED_TURN[:-2]) + [_sse(finish = "stop"), _DONE]
-    lines = _run(FakeTransport([turn, [_sse({"content": "done"}), _sse(finish = "stop"), _DONE]]))
+    turn = list(_HEALED_TURN[:-2]) + [_sse(finish="stop"), _DONE]
+    lines = _run(FakeTransport([turn, [_sse({"content": "done"}), _sse(finish="stop"), _DONE]]))
 
     assert [call["name"] for call in executed] == ["web_search"]
     assert "<tool_call>" not in _visible_text(lines)
@@ -254,7 +254,7 @@ def test_truncated_structured_call_relays_nothing_extra(executed):
                 ]
             }
         ),
-        _sse(finish = "length"),
+        _sse(finish="length"),
         _DONE,
     ]
     lines = _run(FakeTransport([turn]))
@@ -274,7 +274,7 @@ def test_a_truncated_call_never_streamed_gets_no_card(executed):
     for it as well would report the same attempt twice."""
     turn = [
         _sse({"content": '<tool_call>{"name": "web_search", "arg'}),
-        _sse(finish = "length"),
+        _sse(finish="length"),
         _DONE,
     ]
     lines = _run(FakeTransport([turn]))
@@ -318,17 +318,17 @@ def _overflow_turns():
                     ]
                 }
             ),
-            _sse(finish = "tool_calls"),
+            _sse(finish="tool_calls"),
             _DONE,
         ],
-        [_sse({"content": "final"}), _sse(finish = "stop"), _DONE],
+        [_sse({"content": "final"}), _sse(finish="stop"), _DONE],
     ]
 
 
 def test_budget_exhausted_call_does_not_close_a_card_it_never_opened(executed):
     """A tool_end with no tool_start closes a card the client never drew."""
     transport = FakeTransport(_overflow_turns())
-    lines = _run(transport, max_calls = 1)
+    lines = _run(transport, max_calls=1)
 
     assert len(executed) == 1, "the budget must still be enforced"
     assert _card_ids(lines, "tool_end") == _card_ids(
@@ -339,7 +339,7 @@ def test_budget_exhausted_call_does_not_close_a_card_it_never_opened(executed):
 def test_budget_exhausted_result_is_declared_by_an_assistant_tool_call(executed):
     """An orphan role="tool" message is a 400 from OpenAI, DeepSeek and vLLM."""
     transport = FakeTransport(_overflow_turns())
-    _run(transport, max_calls = 1)
+    _run(transport, max_calls=1)
 
     assert len(transport.requests) > 1, "the overflow must reach a follow-up turn"
     for request in transport.requests:
@@ -360,9 +360,9 @@ def test_budget_exhausted_result_is_declared_by_an_assistant_tool_call(executed)
 def test_disabled_call_card_is_opened_before_it_is_closed(executed):
     """Same invariant on the controller's no-op branch."""
     transport = FakeTransport(
-        [_call_turn(name = "terminal"), [_sse({"content": "final"}), _sse(finish = "stop"), _DONE]]
+        [_call_turn(name="terminal"), [_sse({"content": "final"}), _sse(finish="stop"), _DONE]]
     )
-    lines = _run(transport, tools = [WEB])
+    lines = _run(transport, tools=[WEB])
 
     assert executed == []
     assert _card_ids(lines, "tool_end") == _card_ids(lines, "tool_start")
@@ -374,7 +374,7 @@ def test_truncated_mcp_call_card_carries_server_display_name(tmp_path, monkeypat
 
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
     monkeypatch.setattr(mcp_servers_db, "_schema_ready", set())
-    mcp_servers_db.create_server(id = "srv1", display_name = "GitHub", url = "https://a/m")
+    mcp_servers_db.create_server(id="srv1", display_name="GitHub", url="https://a/m")
 
     turn = [
         _sse(
@@ -388,10 +388,10 @@ def test_truncated_mcp_call_card_carries_server_display_name(tmp_path, monkeypat
                 ]
             }
         ),
-        _sse(finish = "length"),
+        _sse(finish="length"),
         _DONE,
     ]
-    lines = _run(FakeTransport([turn]), tools = [WEB, _tool("mcp__srv1__create_issue")])
+    lines = _run(FakeTransport([turn]), tools=[WEB, _tool("mcp__srv1__create_issue")])
 
     assert executed == []
     assert _card_ids(lines, "tool_end") == _card_ids(lines, "tool_start") == ["m1"]
@@ -405,7 +405,7 @@ def test_budget_exhausted_mcp_card_carries_server_display_name(tmp_path, monkeyp
 
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
     monkeypatch.setattr(mcp_servers_db, "_schema_ready", set())
-    mcp_servers_db.create_server(id = "srv1", display_name = "GitHub", url = "https://a/m")
+    mcp_servers_db.create_server(id="srv1", display_name="GitHub", url="https://a/m")
 
     turns = [
         [
@@ -428,12 +428,12 @@ def test_budget_exhausted_mcp_card_carries_server_display_name(tmp_path, monkeyp
                     ]
                 }
             ),
-            _sse(finish = "tool_calls"),
+            _sse(finish="tool_calls"),
             _DONE,
         ],
-        [_sse({"content": "done"}), _sse(finish = "stop"), _DONE],
+        [_sse({"content": "done"}), _sse(finish="stop"), _DONE],
     ]
-    lines = _run(FakeTransport(turns), tools = [WEB, _tool("mcp__srv1__create_issue")], max_calls = 1)
+    lines = _run(FakeTransport(turns), tools=[WEB, _tool("mcp__srv1__create_issue")], max_calls=1)
 
     assert len(executed) == 1, "the budget must still be enforced"
     mcp_starts = [
@@ -451,11 +451,11 @@ def test_an_unrun_card_shows_the_id_the_call_named():
     from core.inference.studio_tool_loop import _unrun_call_card
 
     lines = _unrun_call_card(
-        tool_name = "del_rec",
-        tool_call_id = "c1",
-        arguments = {"id": 9007199254740993},
-        result = "not run",
-        provenance = {"source": "local"},
+        tool_name="del_rec",
+        tool_call_id="c1",
+        arguments={"id": 9007199254740993},
+        result="not run",
+        provenance={"source": "local"},
     )
     start = _json.loads(lines[0].removeprefix("data: ").strip())
 

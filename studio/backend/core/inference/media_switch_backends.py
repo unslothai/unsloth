@@ -32,6 +32,7 @@ def backend_for(owner: str) -> Any:
     """The live backend object for *owner*, resolved on each call rather than cached."""
     if owner == DIFFUSION:
         from core.inference.diffusion_engine_router import get_active_diffusion_engine
+
         return get_active_diffusion_engine()
     from core.inference.video import get_video_backend
 
@@ -51,6 +52,7 @@ def load_takes_the_gpu() -> bool:
     """
     try:
         from core.inference.diffusion_device import resolve_diffusion_device_target
+
         return resolve_diffusion_device_target().device != "cpu"
     except Exception:  # noqa: BLE001 -- assume the handoff, which is the careful direction
         return True
@@ -74,7 +76,7 @@ def chat_busy(count_pending: bool = True) -> bool:
         # chat's counter covers media requests too, and none of those is using chat
         parked = switcher_count()
         counted = other_inference_request_count(
-            current_request_counted = True, include_pending = count_pending
+            current_request_counted=True, include_pending=count_pending
         )
         # counted once, since a request parked on a switch lock is a waiter inside its own switch
         return max(0, counted - max(0, parked - 1)) > 0
@@ -157,20 +159,20 @@ async def drain(
             try:
                 raise_if_other_accounts_active()
             except GpuBusyForAnotherAccountError as exc:
-                raise busy(kind, openai_errors, retry_after = exc.retry_after) from exc
+                raise busy(kind, openai_errors, retry_after=exc.retry_after) from exc
         # this request is itself tracked and itself a waiter, so it counts as neither
         others = other_request_count(
-            owner, current_request_counted = True, count_pending = count_pending
+            owner, current_request_counted=True, count_pending=count_pending
         )
         others -= waiter_count(owner)
         if cross_owner:
             other = other_owner(owner)
             others += max(
                 0,
-                other_request_count(other, count_pending = count_pending) - switcher_count(other),
+                other_request_count(other, count_pending=count_pending) - switcher_count(other),
             )
         probe_by = deadline if probe_deadline is None else probe_deadline
-        bounded_probe = functools.partial(probe, kind = kind, openai_errors = openai_errors)
+        bounded_probe = functools.partial(probe, kind=kind, openai_errors=openai_errors)
         if (
             others <= 0
             and not await bounded_probe(backend_busy, backend, probe_by)

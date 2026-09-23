@@ -37,7 +37,7 @@ WRAPPERS = ("run-studio-permission-browser.sh", "run-studio-indicator-browser.sh
 
 def _body(name: str) -> str:
     """Source with comments stripped: a comment must not satisfy these assertions."""
-    text = (SCRIPTS / name).read_text(encoding = "utf-8")
+    text = (SCRIPTS / name).read_text(encoding="utf-8")
     return "\n".join(re.sub(r"(^|\s)#.*$", "", line) for line in text.split("\n"))
 
 
@@ -104,7 +104,7 @@ def test_a_wall_budget_in_a_wrapper_comes_with_a_total():
     one step here, so the cap is what keeps a wedged first browser from taking the other
     two with it. STUDIO_UI_TOTAL_TIMEOUT_S is the ceiling no progress report moves."""
     for name in WRAPPERS:
-        text = (SCRIPTS / name).read_text(encoding = "utf-8")
+        text = (SCRIPTS / name).read_text(encoding="utf-8")
         wall = re.search(r"STUDIO_UI_WALL_TIMEOUT_S=(\d+)", text)
         if wall is None:
             continue

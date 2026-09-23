@@ -152,8 +152,8 @@ def _fetch_text(url: str) -> str | None:
     for attempt in range(1 + _FETCH_RETRIES):
         deadline = time.monotonic() + _FETCH_DEADLINE_SECONDS
         try:
-            req = urllib.request.Request(url, headers = {"User-Agent": "unsloth-studio"})
-            with urllib.request.urlopen(req, timeout = _FETCH_TIMEOUT_SECONDS) as resp:
+            req = urllib.request.Request(url, headers={"User-Agent": "unsloth-studio"})
+            with urllib.request.urlopen(req, timeout=_FETCH_TIMEOUT_SECONDS) as resp:
                 body = _read_within(resp, deadline)
             if body is not None:
                 return body
@@ -199,7 +199,7 @@ def _fetch_remote_model_types(ref: str) -> frozenset[str] | None:
     keys: set[str] = set()
     fetched_any = False
     for name in _AUTO_FILES:
-        source = _fetch_text(_RAW_URL.format(ref = ref, name = name))
+        source = _fetch_text(_RAW_URL.format(ref=ref, name=name))
         if source is None:
             return None
         if source == _FETCH_MISSING:
@@ -218,7 +218,7 @@ def _fetch_remote_model_types(ref: str) -> frozenset[str] | None:
 def _load_snapshot_file() -> dict | None:
     """Persisted snapshot from disk, or None (missing/corrupt/old schema)."""
     try:
-        with open(_cache_file(), encoding = "utf-8") as f:
+        with open(_cache_file(), encoding="utf-8") as f:
             data = json.load(f)
     except Exception:
         return None
@@ -240,13 +240,13 @@ def _save_snapshot_file(snapshot: dict) -> None:
     path = _cache_file()
     tmp = path.with_name(path.name + ".tmp")
     try:
-        path.parent.mkdir(parents = True, exist_ok = True)
-        tmp.write_text(json.dumps(snapshot), encoding = "utf-8")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp.write_text(json.dumps(snapshot), encoding="utf-8")
         os.replace(tmp, path)
     except Exception as exc:
         logger.debug("Could not persist %s: %s", path, exc)
         try:
-            tmp.unlink(missing_ok = True)
+            tmp.unlink(missing_ok=True)
         except Exception:
             pass
 
@@ -396,6 +396,7 @@ def _architecture_cannot_come_from_transformers(
     """
     try:
         from utils.hardware import DeviceType, get_device
+
         if get_device() != DeviceType.MLX:
             return False
     except Exception:
@@ -590,14 +591,14 @@ def compat_plan(version: str) -> tuple[tuple[str, ...], list[str]]:
         if name in _IGNORED_DEPS:
             continue
         if name in _SIDECAR_PROVIDED:
-            if not req.specifier.contains(_SIDECAR_PROVIDED[name], prereleases = True):
+            if not req.specifier.contains(_SIDECAR_PROVIDED[name], prereleases=True):
                 blockers.append(raw)
             continue
         try:
             installed = _installed_version(req.name)
         except PackageNotFoundError:
             installed = None
-        if installed is not None and req.specifier.contains(installed, prereleases = True):
+        if installed is not None and req.specifier.contains(installed, prereleases=True):
             continue
         if name in _SHADOWABLE_DEPS:
             exact = _resolve_exact_version(name, req.specifier)
@@ -615,12 +616,13 @@ def is_install_in_progress() -> bool:
     reservation. Training and export starts check this so a fresh worker never
     activates the sidecar mid-swap."""
     from utils.transformers_version import sidecar_swap_in_progress
+
     return sidecar_swap_in_progress()
 
 
 def install_latest_transformers(
     version: str,
-    before_swap = None,
+    before_swap=None,
     reserved: bool = False,
 ) -> dict:
     """Consented install of the latest transformers sidecar; returns a structured result.
@@ -643,13 +645,13 @@ def install_latest_transformers(
             "message": "A transformers installation is already in progress.",
         }
     try:
-        return _install_latest_transformers_locked(version, before_swap = before_swap)
+        return _install_latest_transformers_locked(version, before_swap=before_swap)
     finally:
         if not reserved:
             end_sidecar_swap()
 
 
-def _install_latest_transformers_locked(version: str, before_swap = None) -> dict:
+def _install_latest_transformers_locked(version: str, before_swap=None) -> dict:
     """Body of install_latest_transformers; runs with the in-progress flag held."""
     if _disabled():
         return {
@@ -699,7 +701,7 @@ def _install_latest_transformers_locked(version: str, before_swap = None) -> dic
             f"{version}: this environment does not satisfy {', '.join(blockers)}. "
             "An Unsloth update is required first.",
         }
-    if not ensure_latest_transformers_venv(version, extra_packages, before_swap = before_swap):
+    if not ensure_latest_transformers_venv(version, extra_packages, before_swap=before_swap):
         return {
             "success": False,
             "version": version,
@@ -720,12 +722,14 @@ def _invalidate_capability_caches():
     (a raw-heuristic False may now defer to the sidecar AutoConfig probe)."""
     try:
         from utils import transformers_version as tv
+
         tv._probe_tier_cache.clear()
         tv._config_mapping_cache.pop("latest", None)
     except Exception:
         pass
     try:
         from utils.models import model_config as mc
+
         mc._vision_detection_cache.clear()
     except Exception:
         pass

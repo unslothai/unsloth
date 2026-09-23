@@ -24,7 +24,7 @@ _STUDIO = _REPO_ROOT / "unsloth_cli" / "commands" / "studio.py"
 
 
 def _run_function() -> ast.FunctionDef:
-    tree = ast.parse(_STUDIO.read_text(encoding = "utf-8"))
+    tree = ast.parse(_STUDIO.read_text(encoding="utf-8"))
     for node in tree.body:
         if isinstance(node, ast.FunctionDef) and node.name == "run":
             return node
@@ -131,7 +131,7 @@ def test_the_trampoline_is_the_one_the_rust_and_powershell_sides_use():
 
     # Python: via AST, because the constant is written as adjacent literals.
     python_value = None
-    for node in ast.walk(ast.parse(_STUDIO.read_text(encoding = "utf-8"))):
+    for node in ast.walk(ast.parse(_STUDIO.read_text(encoding="utf-8"))):
         if isinstance(node, ast.Assign) and any(
             isinstance(t, ast.Name) and t.id == "_WINDOWS_CLI_ENTRYPOINT" for t in node.targets
         ):
@@ -140,12 +140,12 @@ def test_the_trampoline_is_the_one_the_rust_and_powershell_sides_use():
         python_value == canonical
     ), f"_WINDOWS_CLI_ENTRYPOINT in {_STUDIO.name} has drifted: {python_value!r}"
 
-    rust = (_REPO_ROOT / "studio" / "src-tauri" / "src" / "process.rs").read_text(encoding = "utf-8")
+    rust = (_REPO_ROOT / "studio" / "src-tauri" / "src" / "process.rs").read_text(encoding="utf-8")
     assert (
         f'"{canonical}"' in rust
     ), "WINDOWS_CLI_ENTRYPOINT in studio/src-tauri/src/process.rs has drifted"
 
-    powershell = (_REPO_ROOT / "install.ps1").read_text(encoding = "utf-8")
+    powershell = (_REPO_ROOT / "install.ps1").read_text(encoding="utf-8")
     assert (
         f'$script:UnslothCliTrampoline = "{canonical}"' in powershell
     ), "$script:UnslothCliTrampoline in install.ps1 has drifted"
@@ -165,7 +165,7 @@ def test_the_interpreter_argv_carries_no_isolation_flag_by_default():
     point of this test is that isolation is opt-in and the default is not it.
     """
     argv_builder = None
-    for node in ast.walk(ast.parse(_STUDIO.read_text(encoding = "utf-8"))):
+    for node in ast.walk(ast.parse(_STUDIO.read_text(encoding="utf-8"))):
         if isinstance(node, ast.FunctionDef) and node.name == "_managed_cli_argv":
             argv_builder = node
             break
@@ -194,7 +194,7 @@ def test_only_the_updater_health_probe_asks_for_isolation():
     wrong for everything else here, and the difference is invisible until a user
     on an unpoliced machine loses their PYTHONPATH.
     """
-    tree = ast.parse(_STUDIO.read_text(encoding = "utf-8"))
+    tree = ast.parse(_STUDIO.read_text(encoding="utf-8"))
     isolated_callers = set()
     for parent in ast.walk(tree):
         if not isinstance(parent, (ast.FunctionDef, ast.AsyncFunctionDef)):

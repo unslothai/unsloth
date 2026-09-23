@@ -658,7 +658,7 @@ def test_no_reprompt_on_crlf_complete_python_game():
 _REDOS_BUDGET_MS = 50
 
 
-def _guard_ms(payload, repeats = 5):
+def _guard_ms(payload, repeats=5):
     best = None
     for _ in range(repeats):
         t0 = time.process_time()
@@ -1070,15 +1070,15 @@ def _gate_would_reprompt(
     reasoning_accum,
     has_content_tokens,
     *,
-    promote_reasoning_only = True,
-    finish_reason = "stop",
+    promote_reasoning_only=True,
+    finish_reason="stop",
 ):
     """The re-prompt gate's own derivation of what counts as the visible answer."""
     from core.inference.llama_cpp import _REPROMPT_MAX_CHARS, _text_outside_think
     from core.inference.tool_call_parser import strip_tool_markup
 
     visible_raw = content_accum.strip()
-    visible = strip_tool_markup(content_accum, final = True).strip() if visible_raw else ""
+    visible = strip_tool_markup(content_accum, final=True).strip() if visible_raw else ""
     reasoning = reasoning_accum.strip()
     stripped = visible or reasoning or visible_raw
     visible_answer = _text_outside_think(visible).strip()
@@ -1145,10 +1145,10 @@ def test_reasoning_artifact_counts_only_when_the_loop_promotes_it():
     content. On the Anthropic path it stays a thinking block and the user saw
     nothing, so a fence inside it must not suppress the nudge."""
     reasoning = "First, let me draft it.\n```python\nprint('hi')\n```"
-    assert not _gate_would_reprompt("", reasoning, False, promote_reasoning_only = True)
-    assert _gate_would_reprompt("", reasoning, False, promote_reasoning_only = False)
+    assert not _gate_would_reprompt("", reasoning, False, promote_reasoning_only=True)
+    assert _gate_would_reprompt("", reasoning, False, promote_reasoning_only=False)
     # Promoted but cut off by the window: nothing is yielded, so it is a stall too.
-    assert _gate_would_reprompt("", reasoning, False, finish_reason = "length")
+    assert _gate_would_reprompt("", reasoning, False, finish_reason="length")
 
 
 def test_only_a_leading_block_is_reasoning():

@@ -42,16 +42,16 @@ import refactor_guard  # noqa: E402
 ENABLED = {"get_weather", "search", "trunc", "broken"}
 
 
-def _reference_strip(text, enabled_tool_names = ENABLED):
+def _reference_strip(text, enabled_tool_names=ENABLED):
     """The pre-refactor streaming strip: full rescan, no caching."""
 
     def _seg(segment, is_last):
-        return strip_segment(segment, seg_final = is_last, enabled_tool_names = enabled_tool_names)
+        return strip_segment(segment, seg_final=is_last, enabled_tool_names=enabled_tool_names)
 
     return tool_healing.strip_outside_think(text, _seg)
 
 
-@pytest.fixture(scope = "module")
+@pytest.fixture(scope="module")
 def corpus():
     return refactor_guard.build_corpus()
 
@@ -535,10 +535,11 @@ def test_open_block_resume_does_not_change_the_result(text):
         ), f"diverged at {size} for {text!r}"
 
 
-def _reference_strip_non_final(text, enabled_tool_names = ENABLED):
+def _reference_strip_non_final(text, enabled_tool_names=ENABLED):
     """What the final-answer loop asks for: no end-of-turn arms."""
     from core.inference.tool_call_parser import strip_tool_markup
-    return strip_tool_markup(text, final = False, enabled_tool_names = enabled_tool_names)
+
+    return strip_tool_markup(text, final=False, enabled_tool_names=enabled_tool_names)
 
 
 @pytest.mark.parametrize(
@@ -557,7 +558,7 @@ def test_non_final_stripper_matches_the_non_final_strip(text):
     """The final-answer loop after the tool budget is spent calls the strip with
     ``final = False``, which leaves the end-of-turn arms off. Sharing the tool loop's
     instance would silently turn them on, so it gets its own with the flag."""
-    stripper = StreamingMarkupStripper(ENABLED, seg_final = False)
+    stripper = StreamingMarkupStripper(ENABLED, seg_final=False)
     for size in range(1, len(text) + 1):
         assert stripper.strip(text[:size]) == _reference_strip_non_final(
             text[:size]
@@ -582,7 +583,7 @@ def test_the_final_answer_loop_is_not_quadratic():
 
     count = 4000
     before = elapsed(_reference_strip_non_final, count)
-    after = elapsed(StreamingMarkupStripper(ENABLED, seg_final = False).strip, count)
+    after = elapsed(StreamingMarkupStripper(ENABLED, seg_final=False).strip, count)
 
     assert (
         after < before / 10
@@ -650,8 +651,8 @@ def test_a_bounded_scan_still_takes_the_eos_after_a_malformed_mistral_array():
     malformed array is what gets past the string-aware pre-pass to this arm."""
     text = 'See [1]. [TOOL_CALLS] [{"name": "get_weather", "ar}]</s> Done.'
 
-    assert tool_call_parser.strip_tool_markup(text, final = True) == "See [1].  Done."
-    assert tool_call_parser.strip_tool_markup(text, final = False) == "See [1].  Done."
+    assert tool_call_parser.strip_tool_markup(text, final=True) == "See [1].  Done."
+    assert tool_call_parser.strip_tool_markup(text, final=False) == "See [1].  Done."
 
 
 def test_openers_far_past_the_closer_do_not_reopen_the_quadratic_scan():

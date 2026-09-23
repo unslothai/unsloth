@@ -44,7 +44,7 @@ _EXPECTED_CI_SKIPS = {
 
 
 def _backend_ci() -> dict:
-    return yaml.safe_load(_BACKEND_CI.read_text(encoding = "utf-8"))
+    return yaml.safe_load(_BACKEND_CI.read_text(encoding="utf-8"))
 
 
 def _shell_step_script() -> str:
@@ -104,7 +104,7 @@ class TestBackendCiRunsEveryShellTest:
             assert name in existing, f"{name} is skipped but no longer exists in tests/sh"
 
     def test_each_skip_is_documented_in_the_workflow(self):
-        source = _BACKEND_CI.read_text(encoding = "utf-8")
+        source = _BACKEND_CI.read_text(encoding="utf-8")
         for name in _EXPECTED_CI_SKIPS:
             assert (
                 source.count(name) >= 2
@@ -113,7 +113,7 @@ class TestBackendCiRunsEveryShellTest:
     def test_rollback_lifecycle_really_does_run_elsewhere(self):
         """The one skip justified by 'another workflow covers it' must be true."""
         assert "tests/sh/test_install_rollback_lifecycle.sh" in _PARITY_CI.read_text(
-            encoding = "utf-8"
+            encoding="utf-8"
         )
 
     def test_rocm_shell_suite_is_in_scope(self):
@@ -128,7 +128,7 @@ class TestRunAllMatchesCi:
     disagree, one of them is lying about the state of the tree."""
 
     def test_run_all_discovers_the_directory(self):
-        source = _RUN_ALL.read_text(encoding = "utf-8")
+        source = _RUN_ALL.read_text(encoding="utf-8")
         assert 'for _t in "$TESTS_DIR"/sh/test_*.sh; do' in source
 
     def test_run_all_invokes_the_tests_with_bash(self):
@@ -136,7 +136,7 @@ class TestRunAllMatchesCi:
         under tests/sh/ has a bash shebang, and on Debian/Ubuntu /bin/sh is
         dash, under which three of them fail on bashisms. Running them with sh
         would fail the suite locally for reasons CI never reproduces."""
-        source = _RUN_ALL.read_text(encoding = "utf-8")
+        source = _RUN_ALL.read_text(encoding="utf-8")
         assert 'bash "$_t"' in source, "tests/run_all.sh must run tests/sh/ with bash"
         assert 'sh "$_t"' not in source.replace(
             'bash "$_t"', ""
@@ -144,7 +144,7 @@ class TestRunAllMatchesCi:
         assert 'bash "$s"' in _shell_step_script(), "Backend CI must run tests/sh/ with bash"
 
     def test_run_all_skips_are_a_subset_of_ci_skips(self):
-        local = _skip_list(_RUN_ALL.read_text(encoding = "utf-8"))
+        local = _skip_list(_RUN_ALL.read_text(encoding="utf-8"))
         unexpected = local - set(_EXPECTED_CI_SKIPS)
         assert not unexpected, (
             f"tests/run_all.sh skips {sorted(unexpected)} that CI still runs: a "
@@ -218,7 +218,7 @@ def _workflows_running_powershell_tests():
     """Every workflow that invokes a tests/**.ps1 file, with its PR path filter."""
     found = {}
     for workflow in sorted(_WORKFLOWS.glob("*.yml")):
-        text = workflow.read_text(encoding = "utf-8")
+        text = workflow.read_text(encoding="utf-8")
         invoked = sorted(set(re.findall(r"pwsh -NoProfile -File (tests/[^\s`\"']+\.ps1)", text)))
         if not invoked:
             continue
@@ -290,7 +290,7 @@ class TestPowerShellTestsRunOnAPr:
         for workflow in sorted(_WORKFLOWS.glob("*.yml")):
             for block in re.findall(
                 r"run: \|\n(.*?)(?=\n      [-a-zA-Z]|\Z)",
-                workflow.read_text(encoding = "utf-8"),
+                workflow.read_text(encoding="utf-8"),
                 re.S,
             ):
                 invocations = re.findall(

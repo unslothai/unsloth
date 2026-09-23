@@ -44,8 +44,8 @@ _PS_FILES = {
 
 
 def _function(path: Path, indent: str, name: str) -> str:
-    source = path.read_text(encoding = "utf-8")
-    match = re.search(rf"{indent}function {name} \{{.*?\n{indent}\}}\n", source, flags = re.DOTALL)
+    source = path.read_text(encoding="utf-8")
+    match = re.search(rf"{indent}function {name} \{{.*?\n{indent}\}}\n", source, flags=re.DOTALL)
     assert match is not None, f"{path.name} no longer defines {name}"
     return match.group(0)
 
@@ -58,13 +58,13 @@ def _run(
     base = {k: v for k, v in os.environ.items() if not k.startswith("CONDA_")}
     result = run_pwsh(
         [shell, "-NoProfile", "-NonInteractive", "-Command", script],
-        check = True,
-        capture_output = True,
-        text = True,
-        encoding = "utf-8",
-        errors = "strict",
-        env = {**base, **(env or {})},
-        timeout = 60,
+        check=True,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="strict",
+        env={**base, **(env or {})},
+        timeout=60,
     )
     return result.stdout.strip()
 
@@ -79,7 +79,7 @@ _NAME_ONLY = {"CONDA_DEFAULT_ENV": "base"}
 _EMPTY = {"CONDA_PREFIX": "", "CONDA_DEFAULT_ENV": ""}
 
 
-@pytest.mark.skipif(not POWERSHELLS, reason = "PowerShell is unavailable")
+@pytest.mark.skipif(not POWERSHELLS, reason="PowerShell is unavailable")
 @pytest.mark.parametrize("shell", POWERSHELLS)
 @pytest.mark.parametrize("path_label", sorted(_PS_FILES))
 @pytest.mark.parametrize(
@@ -94,7 +94,7 @@ _EMPTY = {"CONDA_PREFIX": "", "CONDA_DEFAULT_ENV": ""}
         ("Append", _ACTIVE_CONDA, "Append"),
         ("Append", _NO_CONDA, "Append"),
     ],
-    ids = [
+    ids=[
         "prepend-no-conda",
         "prepend-active-conda",
         "prepend-prefix-only",
@@ -113,7 +113,7 @@ def test_a_prepend_becomes_an_append_inside_an_active_conda_environment(
         + _function(path, indent, "Resolve-UserPathPosition")
         + f"\nWrite-Host ('POSITION=' + (Resolve-UserPathPosition -Position '{requested}'))\n"
     )
-    out = _run(shell, script, env = env)
+    out = _run(shell, script, env=env)
     assert f"POSITION={expected}" in out
 
 
@@ -175,12 +175,12 @@ def test_the_two_installers_agree_on_the_guard(path_label: str):
     assert "CONDA_DEFAULT_ENV" in conda
 
 
-@pytest.mark.skipif(not POWERSHELLS, reason = "PowerShell is unavailable")
+@pytest.mark.skipif(not POWERSHELLS, reason="PowerShell is unavailable")
 @pytest.mark.parametrize("shell", POWERSHELLS)
 @pytest.mark.parametrize(
     "env,expected",
     [(_NO_CONDA, "PrependPath=1"), (_ACTIVE_CONDA, "AppendPath=1"), (_EMPTY, "PrependPath=1")],
-    ids = ["no-conda", "active-conda", "empty-vars"],
+    ids=["no-conda", "active-conda", "empty-vars"],
 )
 def test_the_system_python_install_follows_the_same_rule(
     shell: str, env: dict[str, str], expected: str
@@ -191,14 +191,14 @@ def test_the_system_python_install_follows_the_same_rule(
         + _function(INSTALL_PS1, "    ", "Get-PythonInstallerPathSwitch")
         + "\nWrite-Host ('SWITCH=' + (Get-PythonInstallerPathSwitch))\n"
     )
-    out = _run(shell, script, env = env)
+    out = _run(shell, script, env=env)
     assert f"SWITCH={expected}" in out
 
 
 def test_the_python_org_installer_arguments_use_the_switch_function():
     """A literal PrependPath=1 in the argument list would bypass the decision entirely."""
-    source = INSTALL_PS1.read_text(encoding = "utf-8")
-    args = re.search(r"\$installArgs = @\(.*?\n        \)", source, flags = re.DOTALL)
+    source = INSTALL_PS1.read_text(encoding="utf-8")
+    args = re.search(r"\$installArgs = @\(.*?\n        \)", source, flags=re.DOTALL)
     assert args is not None, "install.ps1 no longer builds $installArgs for python.org"
     block = args.group(0)
     assert "Get-PythonInstallerPathSwitch" in block
@@ -209,7 +209,7 @@ def test_the_python_org_installer_arguments_use_the_switch_function():
 
 def test_winget_is_not_the_first_route_inside_an_active_conda_environment():
     """winget's Python package hard-codes PrependPath=1, so it cannot be asked politely."""
-    source = INSTALL_PS1.read_text(encoding = "utf-8")
+    source = INSTALL_PS1.read_text(encoding="utf-8")
     start = source.index('substep "installing Python ${PythonVersion}..."')
     conda_first = source.index("if (Test-ActiveCondaEnvironment)", start)
     winget = source.index("if ($script:WingetAvailable", start)
@@ -228,7 +228,7 @@ def test_winget_is_not_the_first_route_inside_an_active_conda_environment():
         (INSTALL_SH, ("_persist_login_path_dir", "_persist_fish_path_dir")),
         (SETUP_SH_POSIX, ("_setup_persist_uv_path",)),
     ],
-    ids = ["install.sh", "studio/setup.sh"],
+    ids=["install.sh", "studio/setup.sh"],
 )
 def test_the_posix_installers_carry_the_same_guard(path: Path, funcs: tuple[str, ...]):
     """Cross-platform parity, asserted here so the PowerShell and POSIX halves cannot drift.
@@ -238,26 +238,26 @@ def test_the_posix_installers_carry_the_same_guard(path: Path, funcs: tuple[str,
     a PATH persistence block on the POSIX side cannot quietly drop it. Four writers in all:
     the registry in install.ps1 and setup.ps1, the rc files in install.sh and setup.sh.
     """
-    source = path.read_text(encoding = "utf-8")
+    source = path.read_text(encoding="utf-8")
     for func in funcs:
-        body = re.search(rf"\n{func}\(\) \{{.*?\n\}}\n", source, flags = re.DOTALL)
+        body = re.search(rf"\n{func}\(\) \{{.*?\n\}}\n", source, flags=re.DOTALL)
         assert body is not None, f"{path.name} no longer defines {func}"
         assert "_unsloth_conda_env_active" in body.group(0), f"{func} must not prepend inside conda"
 
 
 @pytest.mark.parametrize(
-    "path", [INSTALL_SH, SETUP_SH_POSIX], ids = ["install.sh", "studio/setup.sh"]
+    "path", [INSTALL_SH, SETUP_SH_POSIX], ids=["install.sh", "studio/setup.sh"]
 )
 def test_both_halves_call_the_same_environment_an_active_conda(path: Path):
     """The PowerShell and POSIX halves must agree on WHICH variables mean "inside conda"."""
-    posix = path.read_text(encoding = "utf-8")
-    body = re.search(r"\n_unsloth_conda_env_active\(\) \{.*?\n\}\n", posix, flags = re.DOTALL)
+    posix = path.read_text(encoding="utf-8")
+    body = re.search(r"\n_unsloth_conda_env_active\(\) \{.*?\n\}\n", posix, flags=re.DOTALL)
     assert body is not None, f"{path.name} no longer defines _unsloth_conda_env_active"
     posix_vars = set(re.findall(r"\bCONDA_[A-Z_]+", body.group(0)))
 
-    windows = INSTALL_PS1.read_text(encoding = "utf-8")
+    windows = INSTALL_PS1.read_text(encoding="utf-8")
     probe = re.search(
-        r"function Test-ActiveCondaEnvironment \{.*?\n    \}", windows, flags = re.DOTALL
+        r"function Test-ActiveCondaEnvironment \{.*?\n    \}", windows, flags=re.DOTALL
     )
     assert probe is not None, "install.ps1 no longer defines Test-ActiveCondaEnvironment"
     windows_vars = set(re.findall(r"\bCONDA_[A-Z_]+", probe.group(0)))
@@ -319,7 +319,7 @@ def _stub_registry(script: str) -> str:
     )
 
 
-@pytest.mark.skipif(not POWERSHELLS, reason = "PowerShell is unavailable")
+@pytest.mark.skipif(not POWERSHELLS, reason="PowerShell is unavailable")
 @pytest.mark.parametrize("shell", POWERSHELLS)
 def test_the_session_refresh_keeps_an_active_conda_ahead_of_the_user_path(shell: str):
     """The case #5871 is about, in the prompt the user is standing in.
@@ -331,7 +331,7 @@ def test_the_session_refresh_keeps_an_active_conda_ahead_of_the_user_path(shell:
     out = _run(
         shell,
         script,
-        env = {
+        env={
             "CONDA_PREFIX": f"{CONDA_ROOT}\\envs\\ml",
             "CONDA_DEFAULT_ENV": "ml",
             "CONDA_EXE": f"{CONDA_ROOT}\\Scripts\\conda.exe",
@@ -362,19 +362,19 @@ def test_the_session_refresh_keeps_an_active_conda_ahead_of_the_user_path(shell:
     assert len(lowered) == len(set(lowered)), entries
 
 
-@pytest.mark.skipif(not POWERSHELLS, reason = "PowerShell is unavailable")
+@pytest.mark.skipif(not POWERSHELLS, reason="PowerShell is unavailable")
 @pytest.mark.parametrize("shell", POWERSHELLS)
 def test_the_session_refresh_is_unchanged_outside_conda(shell: str):
     """No conda, no reordering. The refresh is on the hot path of the whole installer and
     must keep doing exactly what it did."""
     previous = "C:\\tools\\bin"
     script = _stub_registry(_refresh_preamble(previous))
-    out = _run(shell, script, env = _NO_CONDA)
+    out = _run(shell, script, env=_NO_CONDA)
     entries = out[len("PATH=") :].split(";")
     assert entries == MACHINE.split(";") + USER_PATH.split(";") + [previous], entries
 
 
-@pytest.mark.skipif(not POWERSHELLS, reason = "PowerShell is unavailable")
+@pytest.mark.skipif(not POWERSHELLS, reason="PowerShell is unavailable")
 @pytest.mark.parametrize("shell", POWERSHELLS)
 def test_a_sibling_directory_is_not_dragged_forward_with_the_prefix(shell: str):
     """`C:\\conda-backup` is not inside `C:\\conda`. Matching on the raw string would move an
@@ -385,7 +385,7 @@ def test_a_sibling_directory_is_not_dragged_forward_with_the_prefix(shell: str):
     out = _run(
         shell,
         script,
-        env = {
+        env={
             "CONDA_PREFIX": CONDA_ROOT,
             "CONDA_DEFAULT_ENV": "base",
         },
@@ -398,7 +398,7 @@ def test_a_sibling_directory_is_not_dragged_forward_with_the_prefix(shell: str):
     ), f"a sibling of the conda prefix was promoted with it: {entries}"
 
 
-@pytest.mark.skipif(not POWERSHELLS, reason = "PowerShell is unavailable")
+@pytest.mark.skipif(not POWERSHELLS, reason="PowerShell is unavailable")
 @pytest.mark.parametrize("shell", POWERSHELLS)
 def test_a_stacked_conda_activation_keeps_both_prefixes_in_front(shell: str):
     """`conda activate` inside another environment stacks them and records the outer one in
@@ -409,7 +409,7 @@ def test_a_stacked_conda_activation_keeps_both_prefixes_in_front(shell: str):
     out = _run(
         shell,
         script,
-        env = {
+        env={
             "CONDA_PREFIX": f"{CONDA_ROOT}\\envs\\inner",
             "CONDA_PREFIX_1": f"{CONDA_ROOT}\\envs\\outer",
             "CONDA_DEFAULT_ENV": "inner",
@@ -434,7 +434,7 @@ def test_the_refresh_consults_the_conda_helper_at_all():
     ), "the conda entries are appended after the User PATH, which changes nothing"
 
 
-@pytest.mark.skipif(not POWERSHELLS, reason = "PowerShell is unavailable")
+@pytest.mark.skipif(not POWERSHELLS, reason="PowerShell is unavailable")
 @pytest.mark.parametrize("shell", POWERSHELLS)
 def test_a_name_only_activation_keeps_the_session_it_already_had(shell: str):
     """A hook that exports CONDA_DEFAULT_ENV and nothing that names a directory.
@@ -447,7 +447,7 @@ def test_a_name_only_activation_keeps_the_session_it_already_had(shell: str):
     """
     previous = f"{CONDA_ROOT}\\envs\\ml\\Scripts;C:\\tools\\bin"
     script = _stub_registry(_refresh_preamble(previous))
-    out = _run(shell, script, env = {"CONDA_DEFAULT_ENV": "ml"})
+    out = _run(shell, script, env={"CONDA_DEFAULT_ENV": "ml"})
     entries = out[len("PATH=") :].split(";")
     assert entries[: len(previous.split(";"))] == previous.split(";"), entries
     # The registry values are still there, just behind, so a directory registered by this
@@ -457,7 +457,7 @@ def test_a_name_only_activation_keeps_the_session_it_already_had(shell: str):
     assert entries.index(USER_PATH.split(";")[0]) > entries.index("C:\\tools\\bin"), entries
 
 
-@pytest.mark.skipif(not POWERSHELLS, reason = "PowerShell is unavailable")
+@pytest.mark.skipif(not POWERSHELLS, reason="PowerShell is unavailable")
 @pytest.mark.parametrize("shell", POWERSHELLS)
 def test_a_prefix_activation_still_takes_the_precise_route(shell: str):
     """The whole-PATH fallback is for the case where nothing better can be known, so an
@@ -468,7 +468,7 @@ def test_a_prefix_activation_still_takes_the_precise_route(shell: str):
     out = _run(
         shell,
         script,
-        env = {
+        env={
             "CONDA_PREFIX": f"{CONDA_ROOT}\\envs\\ml",
             "CONDA_DEFAULT_ENV": "ml",
         },
@@ -513,7 +513,7 @@ def _stub_setup_registry(script: str) -> str:
     )
 
 
-@pytest.mark.skipif(not POWERSHELLS, reason = "PowerShell is unavailable")
+@pytest.mark.skipif(not POWERSHELLS, reason="PowerShell is unavailable")
 @pytest.mark.parametrize("shell", POWERSHELLS)
 def test_the_setup_refresh_keeps_an_active_conda_ahead_of_the_user_path(shell: str):
     script = _stub_setup_registry(_setup_refresh_preamble(f"{_CONDA_ENTRIES};{MACHINE}"))
@@ -521,7 +521,7 @@ def test_the_setup_refresh_keeps_an_active_conda_ahead_of_the_user_path(shell: s
     out = _run(
         shell,
         script,
-        env = {
+        env={
             "CONDA_PREFIX": f"{CONDA_ROOT}\\envs\\ml",
             "CONDA_DEFAULT_ENV": "ml",
             "CONDA_EXE": f"{CONDA_ROOT}\\Scripts\\conda.exe",
@@ -543,14 +543,14 @@ def test_the_setup_refresh_keeps_an_active_conda_ahead_of_the_user_path(shell: s
     assert len(lowered) == len(set(lowered)), entries
 
 
-@pytest.mark.skipif(not POWERSHELLS, reason = "PowerShell is unavailable")
+@pytest.mark.skipif(not POWERSHELLS, reason="PowerShell is unavailable")
 @pytest.mark.parametrize("shell", POWERSHELLS)
 def test_the_setup_refresh_is_unchanged_outside_conda(shell: str):
     """Refresh-Environment runs on the hot path of the whole setup and must keep doing
     exactly what it did when no conda environment is active."""
     previous = "C:\\tools\\bin"
     script = _stub_setup_registry(_setup_refresh_preamble(previous))
-    out = _run(shell, script, env = _NO_CONDA)
+    out = _run(shell, script, env=_NO_CONDA)
     entries = out[len("PATH=") :].split(";")
     assert entries == MACHINE.split(";") + USER_PATH.split(";") + [previous], entries
 
@@ -572,13 +572,13 @@ def test_the_setup_refresh_consults_the_conda_helper_at_all():
 
 
 def _shell_function(path: Path, name: str) -> str:
-    source = path.read_text(encoding = "utf-8")
-    match = re.search(rf"^{re.escape(name)}\(\) \{{.*?^\}}\n", source, flags = re.DOTALL | re.M)
+    source = path.read_text(encoding="utf-8")
+    match = re.search(rf"^{re.escape(name)}\(\) \{{.*?^\}}\n", source, flags=re.DOTALL | re.M)
     assert match is not None, f"{path.name} no longer defines {name}"
     return match.group(0)
 
 
-@pytest.mark.parametrize("path", [INSTALL_SH, SETUP_SH_POSIX], ids = ["install.sh", "setup.sh"])
+@pytest.mark.parametrize("path", [INSTALL_SH, SETUP_SH_POSIX], ids=["install.sh", "setup.sh"])
 def test_the_rc_repointer_rewrites_only_the_line_it_wrote(path: Path, tmp_path: Path):
     rc = tmp_path / "rc"
     rc.write_text(
@@ -587,7 +587,7 @@ def test_the_rc_repointer_rewrites_only_the_line_it_wrote(path: Path, tmp_path: 
         "# a comment\n"
         'export PATH="/opt/mine:$PATH"\n'
         "alias ll='ls -l'\n",
-        encoding = "utf-8",
+        encoding="utf-8",
     )
     script = (
         _shell_function(path, "_unsloth_repoint_rc_line")
@@ -598,12 +598,12 @@ def test_the_rc_repointer_rewrites_only_the_line_it_wrote(path: Path, tmp_path: 
     )
     out = subprocess.run(
         ["sh", "-c", script],
-        capture_output = True,
-        text = True,
-        timeout = 60,
+        capture_output=True,
+        text=True,
+        timeout=60,
     )
     assert "status=0" in out.stdout, (out.stdout, out.stderr)
-    assert rc.read_text(encoding = "utf-8") == (
+    assert rc.read_text(encoding="utf-8") == (
         "# Added by Unsloth installer\n"
         'export PATH="$PATH:$HOME/.local/bin"\n'
         "# a comment\n"
@@ -622,7 +622,7 @@ def test_the_rc_repointer_keeps_a_symlinked_rc_a_symlink(tmp_path: Path):
     real.parent.mkdir()
     real.write_text(
         '# Added by Unsloth installer\nexport PATH="$HOME/.local/bin:$PATH"\n',
-        encoding = "utf-8",
+        encoding="utf-8",
     )
     link = tmp_path / ".bashrc"
     link.symlink_to(real)
@@ -633,9 +633,9 @@ def test_the_rc_repointer_keeps_a_symlinked_rc_a_symlink(tmp_path: Path):
         + " 'export PATH=\"$HOME/.local/bin:$PATH\"'"
         + " 'export PATH=\"$PATH:$HOME/.local/bin\"'\n"
     )
-    subprocess.run(["sh", "-c", script], capture_output = True, text = True, timeout = 60)
+    subprocess.run(["sh", "-c", script], capture_output=True, text=True, timeout=60)
     assert link.is_symlink(), "the rc file was replaced instead of rewritten"
-    assert real.read_text(encoding = "utf-8") == (
+    assert real.read_text(encoding="utf-8") == (
         '# Added by Unsloth installer\nexport PATH="$PATH:$HOME/.local/bin"\n'
     )
 
@@ -646,7 +646,7 @@ def test_the_rc_repointer_keeps_a_symlinked_rc_a_symlink(tmp_path: Path):
         (INSTALL_SH, ("_persist_login_path_dir", "_persist_fish_path_dir")),
         (SETUP_SH_POSIX, ("_setup_persist_uv_path",)),
     ],
-    ids = ["install.sh", "studio/setup.sh"],
+    ids=["install.sh", "studio/setup.sh"],
 )
 def test_every_posix_writer_repositions_a_stale_prepend(path: Path, arms: tuple[str, ...]):
     """A guard that only applies to a FIRST run is not a guard: every one of these writers is
@@ -666,7 +666,7 @@ def test_the_repoint_pass_runs_before_the_presence_guards():
     repointing therefore has to happen ahead of that guard, and it has to add nothing when
     it gets there.
     """
-    source = INSTALL_SH.read_text(encoding = "utf-8")
+    source = INSTALL_SH.read_text(encoding="utf-8")
     shim_guard = source.index('if ! _path_has_dir "$_UNSLOTH_LOGIN_PATH" "$_LOCAL_BIN"')
     shim_repoint = source.index('"~/.local/bin" \'\\.local/bin\' "" repoint')
     assert shim_repoint < shim_guard, "the shim repoint is behind the guard that skips it"
@@ -675,7 +675,7 @@ def test_the_repoint_pass_runs_before_the_presence_guards():
     uv_repoint = source.index('"$_UNSLOTH_UV_BIN_DIR" "" "$_uv_prof" repoint')
     assert uv_repoint < uv_guard, "the uv repoint is behind the guard that skips it"
 
-    setup = SETUP_SH_POSIX.read_text(encoding = "utf-8")
+    setup = SETUP_SH_POSIX.read_text(encoding="utf-8")
     early_return = setup.index('_setup_path_has_dir "${_SETUP_LOGIN_PATH:-$PATH}" "$_supp_dir"')
     assert (
         "_unsloth_conda_env_active || return 0" in setup[early_return : early_return + 300]
@@ -688,7 +688,7 @@ def test_the_repoint_pass_runs_before_the_presence_guards():
         ("repoint", '# Added by Unsloth installer\nexport PATH="$PATH:/opt/unsloth/bin"\n'),
         ("", '# Added by Unsloth installer\nexport PATH="$PATH:/opt/unsloth/bin"\n'),
     ],
-    ids = ["repoint-only", "ordinary"],
+    ids=["repoint-only", "ordinary"],
 )
 def test_the_repoint_only_mode_adds_nothing(tmp_path: Path, mode: str, expected: str):
     """Repointing must not put a line in the rc file of someone whose PATH comes from
@@ -696,16 +696,16 @@ def test_the_repoint_only_mode_adds_nothing(tmp_path: Path, mode: str, expected:
     rc = tmp_path / "rc"
     rc.write_text(
         '# Added by Unsloth installer\nexport PATH="/opt/unsloth/bin:$PATH"\n',
-        encoding = "utf-8",
+        encoding="utf-8",
     )
     empty = tmp_path / "empty"
-    empty.write_text("# nothing here\n", encoding = "utf-8")
-    source = INSTALL_SH.read_text(encoding = "utf-8")
+    empty.write_text("# nothing here\n", encoding="utf-8")
+    source = INSTALL_SH.read_text(encoding="utf-8")
     body = (
         _shell_function(INSTALL_SH, "_unsloth_repoint_rc_line")
         + _shell_function(INSTALL_SH, "_unsloth_conda_env_active")
         + _shell_function(INSTALL_SH, "_persist_fish_path_dir")
-        + re.search(r"^_PATH_LINE_RE=.*$", source, flags = re.M).group(0)
+        + re.search(r"^_PATH_LINE_RE=.*$", source, flags=re.M).group(0)
         + "\n"
         + _shell_function(INSTALL_SH, "_persist_login_path_dir")
     )
@@ -720,18 +720,18 @@ _persist_login_path_dir "/opt/unsloth/bin" "/opt/unsloth/bin" "/opt/unsloth/bin"
 _persist_login_path_dir "/opt/unsloth/bin" "/opt/unsloth/bin" "/opt/unsloth/bin" \\
     "/opt/unsloth/bin" "{empty}" "{mode}"
 """
-    subprocess.run(["sh", "-c", script], capture_output = True, text = True, timeout = 60)
+    subprocess.run(["sh", "-c", script], capture_output=True, text=True, timeout=60)
     # The stale prepend is repositioned in both modes.
-    assert rc.read_text(encoding = "utf-8") == expected
+    assert rc.read_text(encoding="utf-8") == expected
     # And only the ordinary mode adds a line where there was none.
-    added = "/opt/unsloth/bin" in empty.read_text(encoding = "utf-8")
-    assert added is (mode != "repoint"), empty.read_text(encoding = "utf-8")
+    added = "/opt/unsloth/bin" in empty.read_text(encoding="utf-8")
+    assert added is (mode != "repoint"), empty.read_text(encoding="utf-8")
 
 
 @pytest.mark.parametrize(
     "path",
     [INSTALL_SH, SETUP_SH_POSIX],
-    ids = ["install.sh", "studio/setup.sh"],
+    ids=["install.sh", "studio/setup.sh"],
 )
 def test_the_rc_repointer_never_exposes_a_truncated_rc_file(path: Path, tmp_path: Path):
     """`cat staged > rc` truncates the user's profile before it writes a byte back.
@@ -743,7 +743,7 @@ def test_the_rc_repointer_never_exposes_a_truncated_rc_file(path: Path, tmp_path
     """
     rc = tmp_path / "rc"
     original = 'export PATH="$HOME/.local/bin:$PATH"\n# keep me\n'
-    rc.write_text(original, encoding = "utf-8")
+    rc.write_text(original, encoding="utf-8")
     script = (
         # `mv` is what commits the rewrite, so a shell function that shadows it and fails is
         # exactly "the commit did not complete".
@@ -754,10 +754,10 @@ def test_the_rc_repointer_never_exposes_a_truncated_rc_file(path: Path, tmp_path
         + " 'export PATH=\"$PATH:$HOME/.local/bin\"'\n"
         + 'echo "status=$?"\n'
     )
-    out = subprocess.run(["sh", "-c", script], capture_output = True, text = True, timeout = 60)
+    out = subprocess.run(["sh", "-c", script], capture_output=True, text=True, timeout=60)
     assert "status=1" in out.stdout, (out.stdout, out.stderr)
     # The whole point: the user's profile is intact, not empty and not half of itself.
-    assert rc.read_text(encoding = "utf-8") == original
+    assert rc.read_text(encoding="utf-8") == original
     assert [p.name for p in tmp_path.iterdir()] == ["rc"], "a staging file was left behind"
 
 
@@ -770,7 +770,7 @@ def test_the_rc_repointer_keeps_the_permission_bits_it_found(tmp_path: Path):
     rc = tmp_path / "rc"
     rc.write_text(
         '# Added by Unsloth installer\nexport PATH="$HOME/.local/bin:$PATH"\n',
-        encoding = "utf-8",
+        encoding="utf-8",
     )
     rc.chmod(0o600)
     script = (
@@ -779,8 +779,8 @@ def test_the_rc_repointer_keeps_the_permission_bits_it_found(tmp_path: Path):
         + " 'export PATH=\"$HOME/.local/bin:$PATH\"'"
         + " 'export PATH=\"$PATH:$HOME/.local/bin\"'\n"
     )
-    subprocess.run(["sh", "-c", script], capture_output = True, text = True, timeout = 60)
-    assert rc.read_text(encoding = "utf-8") == (
+    subprocess.run(["sh", "-c", script], capture_output=True, text=True, timeout=60)
+    assert rc.read_text(encoding="utf-8") == (
         '# Added by Unsloth installer\nexport PATH="$PATH:$HOME/.local/bin"\n'
     )
     assert stat.S_IMODE(rc.stat().st_mode) == 0o600, oct(rc.stat().st_mode)
@@ -789,7 +789,7 @@ def test_the_rc_repointer_keeps_the_permission_bits_it_found(tmp_path: Path):
 @pytest.mark.parametrize(
     "path,indent",
     [(INSTALL_PS1, "    "), (SETUP_PS1, "")],
-    ids = ["install.ps1", "studio/setup.ps1"],
+    ids=["install.ps1", "studio/setup.ps1"],
 )
 def test_every_stacked_conda_prefix_is_enumerated(path: Path, indent: str):
     """`conda activate --stack` records the outer environments as CONDA_PREFIX_1, _2, _3,
@@ -813,7 +813,7 @@ def test_every_stacked_conda_prefix_is_enumerated(path: Path, indent: str):
 @pytest.mark.parametrize(
     "path",
     [INSTALL_SH, SETUP_SH_POSIX],
-    ids = ["install.sh", "studio/setup.sh"],
+    ids=["install.sh", "studio/setup.sh"],
 )
 def test_the_rc_repointer_rewrites_a_line_holding_a_backslash(path: Path, tmp_path: Path):
     """POSIX awk decodes backslash escapes in a `-v` assignment.
@@ -826,24 +826,24 @@ def test_the_rc_repointer_rewrites_a_line_holding_a_backslash(path: Path, tmp_pa
     rc = tmp_path / "rc"
     old_line = 'export PATH="/opt/od\\\\d/bin:$PATH"'
     new_line = 'export PATH="$PATH:/opt/od\\\\d/bin"'
-    rc.write_text("# Added by Unsloth installer\n" + old_line + "\n# keep me\n", encoding = "utf-8")
+    rc.write_text("# Added by Unsloth installer\n" + old_line + "\n# keep me\n", encoding="utf-8")
     script = (
         _shell_function(path, "_unsloth_repoint_rc_line")
         + "_unsloth_repoint_rc_line "
         + f"'{rc}' '{old_line}' '{new_line}'\n"
         + 'echo "status=$?"\n'
     )
-    out = subprocess.run(["sh", "-c", script], capture_output = True, text = True, timeout = 60)
+    out = subprocess.run(["sh", "-c", script], capture_output=True, text=True, timeout=60)
     assert "status=0" in out.stdout, (out.stdout, out.stderr)
-    assert rc.read_text(encoding = "utf-8") == (
+    assert rc.read_text(encoding="utf-8") == (
         "# Added by Unsloth installer\n" + new_line + "\n# keep me\n"
-    ), rc.read_text(encoding = "utf-8")
+    ), rc.read_text(encoding="utf-8")
 
 
 def test_the_uv_repoint_pass_moves_the_home_relative_spelling_too():
     """The default uv destination IS ~/.local/bin, and the shim block writes that line
     unexpanded as `$HOME/.local/bin`."""
-    source = INSTALL_SH.read_text(encoding = "utf-8")
+    source = INSTALL_SH.read_text(encoding="utf-8")
     start = source.index("_uv_repoint_literal=")
     block = source[start : source.index("_persist_fish_path_dir", start)]
     assert "_uv_repoint_home_literal" in block, block
@@ -869,7 +869,7 @@ def test_the_standalone_setup_repoints_the_home_relative_prepend_too():
 @pytest.mark.parametrize(
     "path",
     [INSTALL_SH, SETUP_SH_POSIX],
-    ids = ["install.sh", "studio/setup.sh"],
+    ids=["install.sh", "studio/setup.sh"],
 )
 def test_the_rc_repointer_leaves_a_line_the_user_wrote(path: Path, tmp_path: Path):
     """`export PATH="$HOME/.local/bin:$PATH"` is a line people write by hand all the time.
@@ -881,7 +881,7 @@ def test_the_rc_repointer_leaves_a_line_the_user_wrote(path: Path, tmp_path: Pat
     """
     rc = tmp_path / "rc"
     original = "# my own path\n" 'export PATH="$HOME/.local/bin:$PATH"\n' 'alias ll="ls -l"\n'
-    rc.write_text(original, encoding = "utf-8")
+    rc.write_text(original, encoding="utf-8")
     script = (
         _shell_function(path, "_unsloth_repoint_rc_line")
         + f'_unsloth_repoint_rc_line "{rc}"'
@@ -889,7 +889,7 @@ def test_the_rc_repointer_leaves_a_line_the_user_wrote(path: Path, tmp_path: Pat
         + " 'export PATH=\"$PATH:$HOME/.local/bin\"'\n"
         + 'echo "status=$?"\n'
     )
-    out = subprocess.run(["sh", "-c", script], capture_output = True, text = True, timeout = 60)
+    out = subprocess.run(["sh", "-c", script], capture_output=True, text=True, timeout=60)
     # Not ours -> a refusal, and the caller's own branch prints the manual advice.
     assert "status=1" in out.stdout, (out.stdout, out.stderr)
-    assert rc.read_text(encoding = "utf-8") == original, rc.read_text(encoding = "utf-8")
+    assert rc.read_text(encoding="utf-8") == original, rc.read_text(encoding="utf-8")

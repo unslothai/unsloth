@@ -51,12 +51,12 @@ def _claimed_run(
     supervisor, plan_steps: list[dict], max_steps: int, website_policy: dict | None
 ) -> dict:
     research_db.create_run(
-        run_id = "run-1",
-        owner_subject = "alice",
-        thread_id = "thread-1",
-        user_message_id = "user-1",
-        assistant_message_id = None,
-        config = {
+        run_id="run-1",
+        owner_subject="alice",
+        thread_id="thread-1",
+        user_message_id="user-1",
+        assistant_message_id=None,
+        config={
             "model": "local-model",
             "inferenceRequest": {"model": "local-model"},
             "ragScope": None,
@@ -83,7 +83,7 @@ def _run(
 ) -> dict:
     from core import research_runs as worker
 
-    supervisor = worker.ResearchSupervisor(SimpleNamespace(state = SimpleNamespace(server_port = 1)))
+    supervisor = worker.ResearchSupervisor(SimpleNamespace(state=SimpleNamespace(server_port=1)))
     plan_steps = [
         {"title": f"Step {index}", "query": f"what happened {index}"}
         for index in range(len(tool_results))
@@ -167,7 +167,7 @@ def test_a_resumed_step_counts_only_if_its_evidence_survived(
 ):
     from core import research_runs as worker
 
-    supervisor = worker.ResearchSupervisor(SimpleNamespace(state = SimpleNamespace(server_port = 1)))
+    supervisor = worker.ResearchSupervisor(SimpleNamespace(state=SimpleNamespace(server_port=1)))
     plan_steps = [
         {"title": "One", "query": "what happened 0"},
         {"title": "Two", "query": "what happened 1"},

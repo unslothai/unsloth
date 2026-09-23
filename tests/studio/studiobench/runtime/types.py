@@ -72,7 +72,7 @@ ROW_REQUIRED: dict[str, tuple[str, ...]] = {
 }
 
 
-@dataclass(frozen = True)
+@dataclass(frozen=True)
 class Cell:
     """One measured configuration: one rung, one arm, one repetition."""
 
@@ -87,12 +87,12 @@ class Cell:
     seed: int = 0
     corpus_hash: str = ""
     session_id: str = ""
-    meta: dict = field(default_factory = dict)
+    meta: dict = field(default_factory=dict)
 
     def derive(self, **changes: Any) -> "Cell":
         """A sibling cell with a regenerated `cell_id`. What Layer 3 builds its arms with."""
         out = replace(self, **changes)
-        return replace(out, cell_id = make_cell_id(out.rung, out.arm, out.rep))
+        return replace(out, cell_id=make_cell_id(out.rung, out.arm, out.rep))
 
     def as_dict(self) -> dict:
         return {
@@ -135,8 +135,8 @@ class Window:
     cell: Cell
     t_open_ms: float
     t_close_ms: Optional[float] = None
-    notes: dict = field(default_factory = dict)
-    instruments: dict = field(default_factory = dict)
+    notes: dict = field(default_factory=dict)
+    instruments: dict = field(default_factory=dict)
 
     @property
     def duration_ms(self) -> Optional[float]:
@@ -171,8 +171,8 @@ class ActionResult:
 
     ran: bool
     expect_ok: Optional[bool] = None
-    expect: dict = field(default_factory = dict)
-    timings: dict = field(default_factory = dict)
+    expect: dict = field(default_factory=dict)
+    timings: dict = field(default_factory=dict)
     # CORRECTNESS INVARIANTS, not timings, and kept apart on purpose. A count answers 'did the
     # action still do the whole job'; they move oppositely, a timing falling is the result and a
     # count falling is a regression.
@@ -184,7 +184,7 @@ class ActionResult:
     # byte-identical thread, so a truncating treatment reads as a large negative delta against the
     # null control's own spread with nothing calibrated per rung or platform. A count is therefore
     # only meaningful in a paired comparison.
-    counts: dict = field(default_factory = dict)
+    counts: dict = field(default_factory=dict)
     reason: Optional[str] = None
     slot_missed: bool = False
 
@@ -222,17 +222,17 @@ def not_run(
     slot_missed: bool = False,
     expect: Optional[dict] = None,
 ) -> ActionResult:
-    return ActionResult(ran = False, reason = reason, slot_missed = slot_missed, expect = expect or {})
+    return ActionResult(ran=False, reason=reason, slot_missed=slot_missed, expect=expect or {})
 
 
-@dataclass(frozen = True)
+@dataclass(frozen=True)
 class Slot:
     """A fixed (start, budget) on the session wall clock. The scene is a film, not a task list."""
 
     action: str
     t_start_ms: int
     budget_ms: int
-    args: dict = field(default_factory = dict)
+    args: dict = field(default_factory=dict)
     required: bool = True
 
 
@@ -282,15 +282,15 @@ class Paths:
     def under(cls, out: Path) -> "Paths":
         out = Path(out).resolve()
         p = cls(
-            out = out,
-            payload_jsonl = out / "payload.jsonl",
-            traces = out / "traces",
-            symbols = out / "symbols",
-            corpus = out / "corpus",
-            logs = out / "logs",
+            out=out,
+            payload_jsonl=out / "payload.jsonl",
+            traces=out / "traces",
+            symbols=out / "symbols",
+            corpus=out / "corpus",
+            logs=out / "logs",
         )
         for d in (p.out, p.traces, p.symbols, p.corpus, p.logs):
-            d.mkdir(parents = True, exist_ok = True)
+            d.mkdir(parents=True, exist_ok=True)
         return p
 
 
@@ -307,7 +307,7 @@ class BenchContext:
     paths: Optional[Paths] = None
     recorder: Optional["Recorder"] = None
     log: Callable[[str], None] = print
-    browser_procs: list = field(default_factory = list)
+    browser_procs: list = field(default_factory=list)
 
 
 # ── the output directory lock ───────────────────────────────────────
@@ -355,7 +355,7 @@ class OutDirLock:
         directory BEFORE it has a session, so the default stands in until `claim` replaces it.
         """
         lock = cls(out)
-        lock.out.mkdir(parents = True, exist_ok = True)
+        lock.out.mkdir(parents=True, exist_ok=True)
         # The legacy per-session names, swept once: a directory left by an older build still has to be
         # read, or the guard switches itself off on exactly the runs it was added for. Only the fixed
         # name is ever a mutex.
@@ -474,16 +474,19 @@ class OutDirLock:
         """Take a non-blocking exclusive lock, raising OSError if somebody else holds it."""
         if os.name == "nt":  # pragma: no cover - exercised on the Windows CI leg
             import msvcrt
+
             os.lseek(fd, 0, os.SEEK_SET)
             msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
         else:
             import fcntl
+
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
 
     @staticmethod
     def _unlock_fd(fd: int) -> None:
         if os.name == "nt":  # pragma: no cover - exercised on the Windows CI leg
             import msvcrt
+
             try:
                 os.lseek(fd, 0, os.SEEK_SET)
                 msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
@@ -491,6 +494,7 @@ class OutDirLock:
                 pass
         else:
             import fcntl
+
             try:
                 fcntl.flock(fd, fcntl.LOCK_UN)
             except OSError:
@@ -500,7 +504,7 @@ class OutDirLock:
     def _read_marker(path: Path) -> "Optional[tuple[str, int]]":
         """(session, pid) written in a marker, or None if it does not yet say."""
         try:
-            parts = path.read_text(encoding = "utf-8").split()
+            parts = path.read_text(encoding="utf-8").split()
             return (
                 parts[1] if len(parts) > 1 else path.name.removeprefix(".running."),
                 int(parts[0]),
@@ -579,7 +583,7 @@ class OutDirLock:
                     f"each other and write the same cell ids into one file. Give this run its "
                     f"own --out."
                 )
-            other.unlink(missing_ok = True)
+            other.unlink(missing_ok=True)
 
 
 # ── the recorder ────────────────────────────────────────────────────
@@ -597,7 +601,7 @@ class Recorder:
         lock: Optional[OutDirLock] = None,
     ) -> None:
         self.path = Path(path)
-        self.path.parent.mkdir(parents = True, exist_ok = True)
+        self.path.parent.mkdir(parents=True, exist_ok=True)
         self.session_id = session_id
         self.t0 = t0 if t0 is not None else time.monotonic()
         # REFUSE A SECOND LIVE SESSION IN ONE OUTPUT DIRECTORY.
@@ -635,7 +639,7 @@ class Recorder:
         else:
             lock.claim(session_id)
         self._lock = lock
-        self._fh = self.path.open("a", encoding = "utf-8")
+        self._fh = self.path.open("a", encoding="utf-8")
         self._count = 0
 
     def now_ms(self) -> float:
@@ -652,7 +656,7 @@ class Recorder:
         row.setdefault("ts_ms", self.now_ms())
         row.setdefault("session_id", self.session_id)
         # default = str so a stray Path or dataclass degrades to a string instead of losing the whole row.
-        self._fh.write(json.dumps(row, default = str) + "\n")
+        self._fh.write(json.dumps(row, default=str) + "\n")
         self._fh.flush()
         try:
             os.fsync(self._fh.fileno())
@@ -691,7 +695,7 @@ class Recorder:
     def rows(self, row_type: Optional[str] = None) -> Iterator[dict]:
         if not self.path.exists():
             return
-        with self.path.open(encoding = "utf-8") as fh:
+        with self.path.open(encoding="utf-8") as fh:
             for line in fh:
                 line = line.strip()
                 if not line:

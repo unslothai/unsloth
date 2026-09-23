@@ -38,7 +38,7 @@ def _shadowed() -> list[str]:
             if any(part in SKIP_PARTS for part in path.parts):
                 continue
             try:
-                tree = ast.parse(path.read_text(encoding = "utf-8", errors = "replace"))
+                tree = ast.parse(path.read_text(encoding="utf-8", errors="replace"))
             except SyntaxError:
                 continue  # a file that does not parse is a different problem, loudly
             scopes = [("module", tree.body)]

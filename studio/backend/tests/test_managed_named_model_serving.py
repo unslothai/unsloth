@@ -31,7 +31,7 @@ def no_switch(monkeypatch):
 
 def _run(requested, *, managed, hidden, satisfies, monkeypatch):
     monkeypatch.setattr(account_access, "managed_account", lambda: managed)
-    monkeypatch.setattr(account_access, "resident_hidden", lambda modality, reference = None: hidden)
+    monkeypatch.setattr(account_access, "resident_hidden", lambda modality, reference=None: hidden)
     monkeypatch.setattr(inference, "_loaded_identity_satisfies", lambda requested: satisfies)
     return asyncio.run(inference._maybe_auto_switch_model(requested, _Request(), "bob"))
 
@@ -42,10 +42,10 @@ def test_managed_caller_naming_another_model_is_refused_when_the_resident_is_for
     with pytest.raises(HTTPException) as info:
         _run(
             "review/public-model",
-            managed = True,
-            hidden = True,
-            satisfies = False,
-            monkeypatch = monkeypatch,
+            managed=True,
+            hidden=True,
+            satisfies=False,
+            monkeypatch=monkeypatch,
         )
     assert info.value.status_code == 404
     assert info.value.detail == "Model not found"
@@ -55,10 +55,10 @@ def test_managed_caller_is_served_when_the_resident_answers_to_the_name(no_switc
     assert (
         _run(
             "review/public-model",
-            managed = True,
-            hidden = True,
-            satisfies = True,
-            monkeypatch = monkeypatch,
+            managed=True,
+            hidden=True,
+            satisfies=True,
+            monkeypatch=monkeypatch,
         )
         is None
     )
@@ -66,7 +66,7 @@ def test_managed_caller_is_served_when_the_resident_answers_to_the_name(no_switc
 
 def test_managed_caller_is_served_by_its_own_resident(no_switch, monkeypatch):
     assert (
-        _run("anything", managed = True, hidden = False, satisfies = False, monkeypatch = monkeypatch)
+        _run("anything", managed=True, hidden=False, satisfies=False, monkeypatch=monkeypatch)
         is None
     )
 
@@ -75,10 +75,10 @@ def test_owner_keeps_the_fall_through(no_switch, monkeypatch):
     assert (
         _run(
             "review/public-model",
-            managed = False,
-            hidden = True,
-            satisfies = False,
-            monkeypatch = monkeypatch,
+            managed=False,
+            hidden=True,
+            satisfies=False,
+            monkeypatch=monkeypatch,
         )
         is None
     )
@@ -86,7 +86,7 @@ def test_owner_keeps_the_fall_through(no_switch, monkeypatch):
 
 def test_omitted_model_against_a_foreign_resident_is_refused_as_before(no_switch, monkeypatch):
     with pytest.raises(HTTPException) as info:
-        _run(None, managed = True, hidden = True, satisfies = False, monkeypatch = monkeypatch)
+        _run(None, managed=True, hidden=True, satisfies=False, monkeypatch=monkeypatch)
     assert info.value.status_code == 404
 
 
@@ -96,19 +96,19 @@ def test_a_raw_body_request_without_a_model_is_served_by_the_accounts_own_reside
     assert (
         _run(
             inference._RELOAD_ONLY_MODEL,
-            managed = True,
-            hidden = False,
-            satisfies = False,
-            monkeypatch = monkeypatch,
+            managed=True,
+            hidden=False,
+            satisfies=False,
+            monkeypatch=monkeypatch,
         )
         is None
     )
     with pytest.raises(HTTPException) as info:
         _run(
             inference._RELOAD_ONLY_MODEL,
-            managed = True,
-            hidden = True,
-            satisfies = False,
-            monkeypatch = monkeypatch,
+            managed=True,
+            hidden=True,
+            satisfies=False,
+            monkeypatch=monkeypatch,
         )
     assert info.value.status_code == 404

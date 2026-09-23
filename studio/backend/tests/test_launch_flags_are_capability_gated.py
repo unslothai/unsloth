@@ -96,8 +96,8 @@ def probe(
     tmp_path,
     monkeypatch,
     help_text,
-    returncode = 0,
-    stream = "stdout",
+    returncode=0,
+    stream="stdout",
 ):
     """Run the real probe against a stubbed ``llama-server --help``.
 
@@ -107,10 +107,10 @@ def probe(
     binary = tmp_path / "llama-server"
     binary.write_text("")
     completed = subprocess.CompletedProcess(
-        args = [str(binary), "--help"],
-        returncode = returncode,
-        stdout = help_text if stream == "stdout" else "",
-        stderr = help_text if stream == "stderr" else "",
+        args=[str(binary), "--help"],
+        returncode=returncode,
+        stdout=help_text if stream == "stdout" else "",
+        stderr=help_text if stream == "stderr" else "",
     )
     monkeypatch.setattr(llama_cpp_module.subprocess, "run", lambda *a, **k: completed)
     return LlamaCppBackend.probe_server_capabilities(str(binary))
@@ -195,11 +195,11 @@ class TestASuccessfulProbeIsAuthoritative:
         assert caps["supports_no_context_shift"] is True
 
     def test_the_missing_flag_still_fails_open_on_a_failed_probe(self, tmp_path, monkeypatch):
-        caps = probe(tmp_path, monkeypatch, NO_FLASH_ATTN_HELP, returncode = 1)
+        caps = probe(tmp_path, monkeypatch, NO_FLASH_ATTN_HELP, returncode=1)
         assert caps["supports_flash_attn"] is True
 
     def test_help_on_stderr_reads_the_same(self, tmp_path, monkeypatch):
-        caps = probe(tmp_path, monkeypatch, NEW_HELP, stream = "stderr")
+        caps = probe(tmp_path, monkeypatch, NEW_HELP, stream="stderr")
         assert caps["supports_jinja"] is True
         assert caps["flash_attn_takes_value"] is True
 
@@ -319,7 +319,7 @@ def _flash_attn_env_scrub(*, known_off: bool) -> dict:
         "_flash_attn_known_off": known_off,
         "env": {"LLAMA_ARG_FLASH_ATTN": "1", "LLAMA_ARG_CTX_SIZE": "4096"},
     }
-    exec(ast.unparse(ast.Module(body = blocks, type_ignores = [])), scope)
+    exec(ast.unparse(ast.Module(body=blocks, type_ignores=[])), scope)
     return scope["env"]
 
 
@@ -337,25 +337,25 @@ class TestAFlaglessBuildIgnoresTheFlashAttentionEnv:
     CMD = ["llama-server", "-m", "m.gguf", "--no-context-shift", "-c", "8192"]
 
     def test_the_inherited_value_is_dropped(self):
-        env = _flash_attn_env_scrub(known_off = True)
+        env = _flash_attn_env_scrub(known_off=True)
         assert "LLAMA_ARG_FLASH_ATTN" not in env
         # ...and nothing else in the inherited env is touched.
         assert env == {"LLAMA_ARG_CTX_SIZE": "4096"}
 
     def test_the_recorded_state_then_matches_the_launch(self):
-        env = _flash_attn_env_scrub(known_off = True)
-        assert _flash_attn_enabled_from_args(self.CMD, default = False, env = env) is False
+        env = _flash_attn_env_scrub(known_off=True)
+        assert _flash_attn_enabled_from_args(self.CMD, default=False, env=env) is False
 
     @pytest.mark.parametrize("value", ["1", "on", "auto", "true"])
     def test_every_enabling_spelling_would_otherwise_win(self, value):
         """The unscrubbed env overrides the default on all of llama.cpp's truthy forms."""
         env = {"LLAMA_ARG_FLASH_ATTN": value}
-        assert _flash_attn_enabled_from_args(self.CMD, default = False, env = env) is True
+        assert _flash_attn_enabled_from_args(self.CMD, default=False, env=env) is True
 
     def test_a_build_that_has_the_flag_keeps_the_inherited_value(self):
         """The scrub is scoped to the flagless build: everywhere else a deliberate
         LLAMA_ARG_FLASH_ATTN must reach llama-server untouched."""
-        env = _flash_attn_env_scrub(known_off = False)
+        env = _flash_attn_env_scrub(known_off=False)
         assert env["LLAMA_ARG_FLASH_ATTN"] == "1"
 
 
@@ -372,9 +372,9 @@ class _SelfShim:
 
     def __init__(
         self,
-        kv_lora_rank = None,
-        architecture = None,
-        mtp_draft_path = None,
+        kv_lora_rank=None,
+        architecture=None,
+        mtp_draft_path=None,
     ):
         self._kv_lora_rank = kv_lora_rank
         self._architecture = architecture
@@ -410,13 +410,13 @@ def _flagless_v_cache_fixup(
     ]
     assert len(blocks) == 2, f"expected two V-cache fixup blocks, found {len(blocks)}"
     scope = {
-        "self": _SelfShim(kv_lora_rank = 512 if mla else None),
+        "self": _SelfShim(kv_lora_rank=512 if mla else None),
         "logger": logging.getLogger(__name__),
         "_flash_attn_known_off": known_off,
         "cmd": list(cmd),
         "env": dict(env),
     }
-    exec(ast.unparse(ast.Module(body = blocks, type_ignores = [])), scope)
+    exec(ast.unparse(ast.Module(body=blocks, type_ignores=[])), scope)
     return scope["cmd"], scope["env"]
 
 
@@ -441,7 +441,7 @@ class TestAFlaglessBuildCannotRunAQuantizedVCache:
     ]
 
     def test_the_v_cache_is_reset_and_the_k_cache_is_not(self):
-        cmd, _ = _flagless_v_cache_fixup(known_off = True, cmd = self.CMD, env = {})
+        cmd, _ = _flagless_v_cache_fixup(known_off=True, cmd=self.CMD, env={})
         assert cmd[cmd.index("--cache-type-v") + 1] == "f16"
         assert cmd[cmd.index("--cache-type-k") + 1] == "q8_0"
 
@@ -450,18 +450,18 @@ class TestAFlaglessBuildCannotRunAQuantizedVCache:
 
     def test_the_inherited_quantized_v_env_goes_too(self):
         _, env = _flagless_v_cache_fixup(
-            known_off = True,
-            cmd = self.CMD,
-            env = {"LLAMA_ARG_CACHE_TYPE_V": "q8_0", "LLAMA_ARG_CACHE_TYPE_K": "q8_0"},
+            known_off=True,
+            cmd=self.CMD,
+            env={"LLAMA_ARG_CACHE_TYPE_V": "q8_0", "LLAMA_ARG_CACHE_TYPE_K": "q8_0"},
         )
         assert "LLAMA_ARG_CACHE_TYPE_V" not in env
         assert env["LLAMA_ARG_CACHE_TYPE_K"] == "q8_0"
 
     def test_a_build_that_has_the_flag_keeps_its_quantized_v_cache(self):
         cmd, env = _flagless_v_cache_fixup(
-            known_off = False,
-            cmd = self.CMD,
-            env = {"LLAMA_ARG_CACHE_TYPE_V": "q8_0"},
+            known_off=False,
+            cmd=self.CMD,
+            env={"LLAMA_ARG_CACHE_TYPE_V": "q8_0"},
         )
         assert cmd == self.CMD
         assert env == {"LLAMA_ARG_CACHE_TYPE_V": "q8_0"}
@@ -469,7 +469,7 @@ class TestAFlaglessBuildCannotRunAQuantizedVCache:
     @pytest.mark.parametrize("value", ["f16", "bf16", "f32"])
     def test_an_unquantized_v_cache_is_left_alone(self, value):
         cmd = [c if c != "q8_0" else value for c in self.CMD]
-        assert _flagless_v_cache_fixup(known_off = True, cmd = cmd, env = {})[0] == cmd
+        assert _flagless_v_cache_fixup(known_off=True, cmd=cmd, env={})[0] == cmd
 
     def test_the_reset_lands_before_the_launch_is_logged(self):
         """Otherwise "Starting llama-server: ..." names a V cache type the child
@@ -496,11 +496,11 @@ class TestTheFlaglessFixupKeepsMlaKAndVEqual:
     ]
 
     def test_mla_brings_k_down_with_v(self):
-        cmd, _ = _flagless_v_cache_fixup(known_off = True, cmd = self.CMD, env = {}, mla = True)
+        cmd, _ = _flagless_v_cache_fixup(known_off=True, cmd=self.CMD, env={}, mla=True)
         assert cmd[cmd.index("--cache-type-k") + 1] == "f16"
         assert cmd[cmd.index("--cache-type-v") + 1] == "f16"
 
     def test_a_non_mla_model_still_keeps_its_quantized_k(self):
-        cmd, _ = _flagless_v_cache_fixup(known_off = True, cmd = self.CMD, env = {}, mla = False)
+        cmd, _ = _flagless_v_cache_fixup(known_off=True, cmd=self.CMD, env={}, mla=False)
         assert cmd[cmd.index("--cache-type-k") + 1] == "q8_0"
         assert cmd[cmd.index("--cache-type-v") + 1] == "f16"

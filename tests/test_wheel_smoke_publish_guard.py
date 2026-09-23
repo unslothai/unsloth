@@ -21,7 +21,7 @@ STEP_NAME = "Publishing path uploads the wheel only"
 
 
 def _workflow():
-    return yaml.safe_load(WORKFLOW.read_text(encoding = "utf-8"))
+    return yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
 
 
 def _on_block(wf):
@@ -49,7 +49,7 @@ def _run_guard(tmp_path, build_sh_body):
     script = tmp_path / "_guard.py"
     script.write_text(_guard_source())
     return subprocess.run(
-        [sys.executable, str(script)], cwd = tmp_path, capture_output = True, text = True
+        [sys.executable, str(script)], cwd=tmp_path, capture_output=True, text=True
     )
 
 
@@ -183,7 +183,7 @@ def test_commented_out_upload_is_not_an_artifact(tmp_path):
 
 
 def test_real_build_sh_passes_the_guard(tmp_path):
-    r = _run_guard(tmp_path, (REPO / "build.sh").read_text(encoding = "utf-8"))
+    r = _run_guard(tmp_path, (REPO / "build.sh").read_text(encoding="utf-8"))
     assert r.returncode == 0, r.stdout + r.stderr
 
 
@@ -200,7 +200,7 @@ def test_build_sh_is_in_the_path_filters(event):
 
 
 def _lint_doc():
-    return yaml.safe_load(LINT.read_text(encoding = "utf-8"))
+    return yaml.safe_load(LINT.read_text(encoding="utf-8"))
 
 
 def test_this_module_runs_in_the_unfiltered_guard_job():
@@ -245,7 +245,7 @@ def test_the_job_that_runs_this_module_has_no_paths_filter():
         # <<- strips leading tabs, so a tab-indented delimiter does close it.
         ("cat <<-USAGE\n\tUSAGE\nUSAGE\npython -m twine upload dist/*.whl\n", 0),
     ],
-    ids = ["exact-delimiter-only", "dash-strips-tabs"],
+    ids=["exact-delimiter-only", "dash-strips-tabs"],
 )
 def test_heredoc_terminators_follow_bash_rules(tmp_path, body, rc):
     assert _run_guard(tmp_path, PROLOGUE + body).returncode == rc

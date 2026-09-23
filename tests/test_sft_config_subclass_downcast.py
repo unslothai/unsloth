@@ -44,8 +44,8 @@ CONSTANTS = (
 
 
 def _load():
-    text = SOURCE_PATH.read_text(encoding = "utf-8")
-    tree = ast.parse(text, filename = str(SOURCE_PATH))
+    text = SOURCE_PATH.read_text(encoding="utf-8")
+    tree = ast.parse(text, filename=str(SOURCE_PATH))
     wanted = []
     for node in tree.body:
         if isinstance(node, ast.FunctionDef) and node.name in NAMES:
@@ -64,7 +64,7 @@ def _load():
         "sys": sys,
         "copyreg": copyreg,
     }
-    exec(compile(ast.Module(body = wanted, type_ignores = []), str(SOURCE_PATH), "exec"), namespace)
+    exec(compile(ast.Module(body=wanted, type_ignores=[]), str(SOURCE_PATH), "exec"), namespace)
     return namespace
 
 
@@ -86,8 +86,8 @@ def trl_like(monkeypatch):
     class GKDConfig(SFTConfig):  # a TRL config that builds on SFT
         def __init__(
             self,
-            lmbda = 0.5,
-            beta = 0.5,
+            lmbda=0.5,
+            beta=0.5,
         ):
             self.lmbda = lmbda
             self.beta = beta
@@ -135,7 +135,7 @@ def _guard_fires(args, module):
 
 def test_subclass_config_is_downcast_without_the_fix(trl_like):
     TrainingArguments, pristine, GKDConfig, patched, module, trl_pkg = trl_like
-    gkd = GKDConfig(lmbda = 0.25, beta = 0.75)
+    gkd = GKDConfig(lmbda=0.25, beta=0.75)
     assert isinstance(gkd, TrainingArguments)
     # This is the bug: a GKDConfig is not an instance of the installed SFTConfig.
     assert not isinstance(gkd, module.SFTConfig)
@@ -145,7 +145,7 @@ def test_widening_stops_the_downcast(trl_like):
     TrainingArguments, pristine, GKDConfig, patched, module, trl_pkg = trl_like
     assert NS["_widen_sft_config_instance_check"](patched) is True
 
-    gkd = GKDConfig(lmbda = 0.25, beta = 0.75)
+    gkd = GKDConfig(lmbda=0.25, beta=0.75)
     assert isinstance(gkd, module.SFTConfig), "the guard still downcasts a GKDConfig"
     # The subclass keeps its own fields, which is the whole point.
     assert gkd.lmbda == 0.25 and gkd.beta == 0.75

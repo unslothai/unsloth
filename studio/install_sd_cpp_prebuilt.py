@@ -64,7 +64,7 @@ def accelerator_class(accelerator: Optional[str]) -> str:
 def read_install_record(root: Path) -> dict:
     """The install record in ``root``, or ``{}`` when there is none (an install predating the record, or a directory that is not ours). Never raises."""
     try:
-        with open(root / INSTALL_RECORD, "r", encoding = "utf-8") as f:
+        with open(root / INSTALL_RECORD, "r", encoding="utf-8") as f:
             rec = json.load(f)
         return rec if isinstance(rec, dict) else {}
     except (OSError, ValueError):
@@ -92,7 +92,7 @@ _INSTALLED_ACCELERATOR_MEMO: dict[str, tuple[str, Optional[str]]] = {}
 def _raw_install_record(root: Path) -> Optional[str]:
     """The record file's bytes as text, or None when it cannot be read. Never raises. None is "cannot tell", NOT empty content: an absent file, a directory in its place and a transient permission/sharing failure all land here, and none of them proves the record was rewritten, so callers must not treat it as a value that differs from a snapshot."""
     try:
-        with open(root / INSTALL_RECORD, "r", encoding = "utf-8") as f:
+        with open(root / INSTALL_RECORD, "r", encoding="utf-8") as f:
             return f.read()
     except Exception:  # noqa: BLE001 -- absent / unreadable / a directory: all "cannot tell"
         return None
@@ -127,14 +127,14 @@ def _write_install_record(
         # An install that did not report the capability must not leave an older memo standing in for this one: the tree is now whatever this bundle put there.
         _INSTALLED_SHIPS_SERVER_MEMO.pop(str(root), None)
     try:
-        with open(root / INSTALL_RECORD, "w", encoding = "utf-8") as f:
+        with open(root / INSTALL_RECORD, "w", encoding="utf-8") as f:
             json.dump(rec, f)
     except OSError as exc:
         _INSTALLED_ACCELERATOR_MEMO[str(root)] = (klass, _raw_install_record(root))
         print(
             f"sd-cli: WARNING could not write the install record in {root}: {exc}; "
             f"remembering {klass} for this process only",
-            flush = True,
+            flush=True,
         )
     else:
         _INSTALLED_ACCELERATOR_MEMO.pop(str(root), None)
@@ -247,10 +247,10 @@ def _fetch_release(
     token = token or os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
 
     def _get(url: str) -> dict:
-        req = urllib.request.Request(url, headers = {"Accept": "application/vnd.github+json"})
+        req = urllib.request.Request(url, headers={"Accept": "application/vnd.github+json"})
         if token:
             req.add_header("Authorization", f"Bearer {token}")
-        with auth_safe_open(req, timeout = timeout) as resp:
+        with auth_safe_open(req, timeout=timeout) as resp:
             return json.loads(resp.read().decode("utf-8"))
 
     base = f"https://api.github.com/repos/{repo}/releases"
@@ -263,24 +263,24 @@ def _fetch_release(
             if not allow_latest:
                 return None
             print(
-                f"sd-cli: pinned tag {tag} not found on {repo}; falling back to latest", flush = True
+                f"sd-cli: pinned tag {tag} not found on {repo}; falling back to latest", flush=True
             )
     return _get(f"{base}/latest")
 
 
 def _fetch_latest_release(*, token: Optional[str] = None, timeout: float = 30.0) -> dict:
-    return _fetch_release(None, token = token, timeout = timeout)
+    return _fetch_release(None, token=token, timeout=timeout)
 
 
 def _verify_sha256(path: Path, expected_digest: Optional[str]) -> None:
     """Verify ``path`` against a GitHub asset ``digest`` ('sha256:<hex>'), an integrity check against a corrupted or tampered download before we extract and execute the binary. When the release publishes no digest (older releases), warn and proceed rather than hard-fail."""
     if not expected_digest:
-        print(f"sd-cli: WARNING no digest for {path.name}; cannot verify integrity", flush = True)
+        print(f"sd-cli: WARNING no digest for {path.name}; cannot verify integrity", flush=True)
         return
     algo, _, want = expected_digest.partition(":")
     if algo.lower() != "sha256" or not want:
         print(
-            f"sd-cli: WARNING unrecognised digest {expected_digest!r}; skipping check", flush = True
+            f"sd-cli: WARNING unrecognised digest {expected_digest!r}; skipping check", flush=True
         )
         return
     h = hashlib.sha256()
@@ -373,7 +373,7 @@ def _discard_superseded_binaries(root: Path, supplied: set[Path]) -> None:
                     f"could not remove the superseded binary {found}: {exc}. It was not written by "
                     f"this bundle, and leaving it would keep serving the previous accelerator."
                 ) from exc
-            print(f"removed a superseded binary -> {found}", flush = True)
+            print(f"removed a superseded binary -> {found}", flush=True)
 
 
 def _locate_sd_server(root: Path) -> Optional[Path]:
@@ -394,8 +394,8 @@ def _download(
     """Stream ``url`` to ``dest`` with an explicit timeout: ``urlretrieve`` takes no timeout and can hang forever on a stalled socket. A User-Agent is set because the GitHub asset CDN can reject header-less requests; the API fetch carries any token."""
     import shutil
 
-    req = urllib.request.Request(url, headers = {"User-Agent": "unsloth-sd-cpp-installer"})
-    with urllib.request.urlopen(req, timeout = timeout) as resp, open(dest, "wb") as f:  # noqa: S310
+    req = urllib.request.Request(url, headers={"User-Agent": "unsloth-sd-cpp-installer"})
+    with urllib.request.urlopen(req, timeout=timeout) as resp, open(dest, "wb") as f:  # noqa: S310
         shutil.copyfileobj(resp, f)
 
 
@@ -548,7 +548,7 @@ def _safe_extractall(zf: zipfile.ZipFile, target: Path) -> None:
     # Last thing decided before the first write: can this filesystem hold links at all? Some mounts (exFAT, SMB without unix extensions) refuse, and learning that at creation time means extractall has already put the new binary over the working one.
     if links:
         # extractall would create the tree itself, so the probe must not be what needs it first.
-        base.mkdir(parents = True, exist_ok = True)
+        base.mkdir(parents=True, exist_ok=True)
         # A probe a killed install left behind must not answer for this one: symlink_to raises EEXIST on an existing path, which reads below as "no symlink support", and a restarted container reuses the pid. Sweep stragglers and take a unique name so a concurrent install cannot collide either.
         for stale in base.glob(".unsloth-symlink-probe-*"):
             try:
@@ -563,11 +563,11 @@ def _safe_extractall(zf: zipfile.ZipFile, target: Path) -> None:
                 raise RuntimeError(f"this filesystem cannot store symlinks: {exc}") from exc
         else:
             # missing_ok: a concurrent install's sweep may have taken this one already.
-            probe.unlink(missing_ok = True)
+            probe.unlink(missing_ok=True)
     for dest, _ in written:
         if dest.is_symlink():
             dest.unlink()
-    zf.extractall(target, members = plain)
+    zf.extractall(target, members=plain)
     for dest, link_target, member in links:
         # Re-resolved HERE: an earlier member can turn a later member's parent into a link and send this outside base. Both ends are checked for containment, not for being link-free.
         parent = Path(os.path.realpath(dest.parent))
@@ -578,7 +578,7 @@ def _safe_extractall(zf: zipfile.ZipFile, target: Path) -> None:
             raise RuntimeError(f"unsafe symlink in archive: {member.filename!r} -> {link_target!r}")
         if dest.is_dir() and not dest.is_symlink():
             raise RuntimeError(f"symlink member collides with a directory: {member.filename!r}")
-        dest.parent.mkdir(parents = True, exist_ok = True)
+        dest.parent.mkdir(parents=True, exist_ok=True)
         if dest.is_symlink() or dest.exists():
             dest.unlink()
         try:
@@ -608,7 +608,7 @@ def _maybe_fetch_windows_cudart(release: dict, chosen: str, target: Path) -> Non
     if cudart is None:
         return
     dest = target / cudart["name"]
-    print(f"downloading CUDA runtime {cudart['name']} ...", flush = True)
+    print(f"downloading CUDA runtime {cudart['name']} ...", flush=True)
     try:
         _download(cudart["browser_download_url"], dest)
         # Verify integrity BEFORE extracting: these DLLs load into sd-cli.exe, so a tampered archive must be rejected.
@@ -616,7 +616,7 @@ def _maybe_fetch_windows_cudart(release: dict, chosen: str, target: Path) -> Non
         with zipfile.ZipFile(dest) as zf:
             _safe_extractall(zf, target)
     finally:
-        dest.unlink(missing_ok = True)
+        dest.unlink(missing_ok=True)
 
 
 def _resolve_repo_asset(
@@ -629,18 +629,18 @@ def _resolve_repo_asset(
 ) -> tuple[Optional[dict], Optional[str]]:
     """Fetch ``repo``'s release and pick the asset for this host. Returns ``(release, asset_name)`` or ``(None, None)`` when the repo has no usable release (fetch failed, or the pinned tag is missing and ``allow_latest`` is False) or no asset for this host, so the caller can fall back."""
     try:
-        release = _fetch_release(tag, repo = repo, token = token, allow_latest = allow_latest)
+        release = _fetch_release(tag, repo=repo, token=token, allow_latest=allow_latest)
     except Exception as exc:  # noqa: BLE001 - network / rate limit -> fall back
-        print(f"sd-cli: {repo} release fetch failed ({exc})", flush = True)
+        print(f"sd-cli: {repo} release fetch failed ({exc})", flush=True)
         return None, None
     if release is None:
         return None, None
     names = [a["name"] for a in (release.get("assets") or [])]
     chosen = resolve_release_asset(
         names,
-        system = platform.system(),
-        machine = platform.machine(),
-        accelerator = accelerator,
+        system=platform.system(),
+        machine=platform.machine(),
+        accelerator=accelerator,
     )
     return release, chosen
 
@@ -675,15 +675,15 @@ def _resolve_with_fallback(
 
     for repo, want_tag, allow_latest in attempts:
         release, chosen = _resolve_repo_asset(
-            repo, want_tag, accelerator, token, allow_latest = allow_latest
+            repo, want_tag, accelerator, token, allow_latest=allow_latest
         )
         if release is not None and chosen:
             if repo != primary:
                 # stderr, not stdout: --print-asset documents its stdout as the asset name only.
                 print(
                     f"falling back to {repo} for {platform.system()}/{platform.machine()}",
-                    file = sys.stderr,
-                    flush = True,
+                    file=sys.stderr,
+                    flush=True,
                 )
                 # A mirror-only pin means the shipped default carries fixes upstream has not released. Falling back beats no native engine, but the H3 failures are SILENT (it renders, just wrongly), so this has to be said out loud rather than left to the generic line above.
                 if mirror_only:
@@ -692,8 +692,8 @@ def _resolve_with_fallback(
                         "so H3 will abort on the default cfg-scale and on --vae-on-cpu, and a "
                         "blanket --type will quantize its 1-D norms into a broken render. Other "
                         "models are unaffected.",
-                        file = sys.stderr,
-                        flush = True,
+                        file=sys.stderr,
+                        flush=True,
                     )
             return repo, release, chosen
     return primary, None, None
@@ -734,10 +734,10 @@ def install(
             f"(accelerator={accelerator}) from {used_repo}. Build from source: "
             f"https://github.com/{used_repo}"
         )
-    print(f"sd-cli: source {used_repo} release {release.get('tag_name', '?')}", flush = True)
+    print(f"sd-cli: source {used_repo} release {release.get('tag_name', '?')}", flush=True)
     asset = next(a for a in release["assets"] if a["name"] == chosen)
     url = asset["browser_download_url"]
-    target.mkdir(parents = True, exist_ok = True)
+    target.mkdir(parents=True, exist_ok=True)
     # Claim ownership BEFORE any partial write: an interrupted extract leaves the target non-empty.
     if _may_own:
         try:
@@ -747,11 +747,11 @@ def install(
     archive = target / chosen
     # Set the moment the tree stops being purely the OLD bundle. From then on every later failure has to be reported as an incomplete replacement, not as "this accelerator is unavailable".
     replacing = False
-    print(f"downloading {chosen} -> {archive}", flush = True)
+    print(f"downloading {chosen} -> {archive}", flush=True)
     try:
         _download(url, archive)
         _verify_sha256(archive, asset.get("digest"))
-        print("extracting ...", flush = True)
+        print("extracting ...", flush=True)
         with zipfile.ZipFile(archive) as zf:
             supplied = _archive_binary_paths(zf, target)
             # The boundary opens HERE, not at the sweep, whenever an existing bundle is about to gain a SECOND copy of a binary: zipfile rewrites members in place, so an interrupted extract leaves the old sd-cli truncated, and a different layout is the same problem because the new copy WINS the next lookup without having had the sweep, _make_executable, or the cudart DLLs. Treating that as an ordinary failure makes ensure_* memoise the half-finished copy for the rest of the process. A first install has nothing to compete with, so it stays ordinary.
@@ -778,7 +778,7 @@ def install(
     finally:
         # Always drop the archive: a corrupt or partial one must not linger and defeat a later retry. Inside the boundary too: an unlink failure after the sweep is still a mixed tree.
         try:
-            archive.unlink(missing_ok = True)
+            archive.unlink(missing_ok=True)
         except OSError as exc:
             if replacing:
                 raise SupersededBinaryError(
@@ -791,13 +791,13 @@ def install(
             raise RuntimeError(f"archive {chosen} contained no sd-cli binary")
         if sys.platform != "win32":
             _make_executable(sd_cli)
-        print(f"installed sd-cli -> {sd_cli}", flush = True)
+        print(f"installed sd-cli -> {sd_cli}", flush=True)
         # The same archive ships the persistent sd-server; make it runnable so the native backend can prefer it.
         sd_server = _locate_sd_server(target)
         if sd_server is not None and sys.platform != "win32":
             _make_executable(sd_server)
         if sd_server is not None:
-            print(f"installed sd-server -> {sd_server}", flush = True)
+            print(f"installed sd-server -> {sd_server}", flush=True)
     except SupersededBinaryError:
         raise
     except Exception as exc:  # noqa: BLE001 -- past the sweep, every failure is a mixed tree
@@ -810,24 +810,24 @@ def install(
     if _may_own:
         _write_install_record(
             target,
-            accelerator = accelerator,
-            repo = used_repo,
-            tag = release.get("tag_name"),
+            accelerator=accelerator,
+            repo=used_repo,
+            tag=release.get("tag_name"),
             # Read off the archive's MEMBER LIST, so "this bundle is serverless" is recorded fact: a leftover server from an earlier bundle is indistinguishable on disk.
-            ships_server = any(p.name == _binary_names()[1] for p in supplied),
+            ships_server=any(p.name == _binary_names()[1] for p in supplied),
         )
     # The ownership marker was written before extraction, so a crashed partial install is still recognised as ours.
     return sd_cli
 
 
 def main(argv: Optional[list[str]] = None) -> int:
-    p = argparse.ArgumentParser(description = "Install a prebuilt sd-cli (stable-diffusion.cpp).")
+    p = argparse.ArgumentParser(description="Install a prebuilt sd-cli (stable-diffusion.cpp).")
     p.add_argument(
-        "--accelerator", default = "auto", choices = ["auto", "cpu", "vulkan", "rocm", "cuda"]
+        "--accelerator", default="auto", choices=["auto", "cpu", "vulkan", "rocm", "cuda"]
     )
-    p.add_argument("--install-dir", default = None)
+    p.add_argument("--install-dir", default=None)
     p.add_argument(
-        "--print-asset", action = "store_true", help = "resolve + print the asset, don't download"
+        "--print-asset", action="store_true", help="resolve + print the asset, don't download"
     )
     args = p.parse_args(argv)
 
@@ -839,11 +839,11 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     try:
         install(
-            install_dir = Path(args.install_dir).expanduser() if args.install_dir else None,
-            accelerator = args.accelerator,
+            install_dir=Path(args.install_dir).expanduser() if args.install_dir else None,
+            accelerator=args.accelerator,
         )
     except RuntimeError as exc:
-        print(f"error: {exc}", file = sys.stderr)
+        print(f"error: {exc}", file=sys.stderr)
         return 1
     return 0
 

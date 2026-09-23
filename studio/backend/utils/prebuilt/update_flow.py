@@ -142,18 +142,18 @@ PHASE_ERROR = "error"
 PHASE_SKIPPED = "skipped"
 
 _IDLE_JOB_FIELDS = dict(
-    state = JOB_IDLE,
-    operation = None,
-    requested_backend = None,
-    message = "",
-    from_tag = None,
-    to_tag = None,
-    reload_required = None,
-    error = None,
-    progress = None,
-    started_at = None,
-    finished_at = None,
-    phases = None,
+    state=JOB_IDLE,
+    operation=None,
+    requested_backend=None,
+    message="",
+    from_tag=None,
+    to_tag=None,
+    reload_required=None,
+    error=None,
+    progress=None,
+    started_at=None,
+    finished_at=None,
+    phases=None,
 )
 
 
@@ -235,12 +235,12 @@ def resolve_prebuilt_for_host(
         ]
         proc = subprocess.run(
             cmd,
-            capture_output = True,
-            text = True,
-            encoding = "utf-8",
-            errors = "replace",
-            timeout = 60,
-            env = {**os.environ, **extra_env} if extra_env else None,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=60,
+            env={**os.environ, **extra_env} if extra_env else None,
         )
         out = (proc.stdout or "").strip()
         if proc.returncode == 0 and out:
@@ -248,10 +248,10 @@ def resolve_prebuilt_for_host(
             if isinstance(parsed, dict):
                 value = parsed
     except Exception as exc:  # pragma: no cover - subprocess/json defensive
-        logger.debug(log_message, error = str(exc))
+        logger.debug(log_message, error=str(exc))
         value = None
     if value is not None:
-        memo.update(at = now, key = cache_key, value = value)
+        memo.update(at=now, key=cache_key, value=value)
     return value
 
 
@@ -267,6 +267,7 @@ def is_external_link(path: Optional[Path]) -> bool:
     if os.name == "nt":
         try:
             import stat
+
             attrs = os.lstat(path).st_file_attributes  # type: ignore[attr-defined]
             return bool(attrs & stat.FILE_ATTRIBUTE_REPARSE_POINT)
         except (OSError, AttributeError):
@@ -398,13 +399,13 @@ def stream_installer(
 
     proc = subprocess.Popen(
         cmd,
-        stdout = subprocess.PIPE,
-        stderr = subprocess.STDOUT,
-        text = True,
-        encoding = "utf-8",
-        errors = "replace",
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
         # Make the Python child emit the UTF-8 we decode above.
-        env = utf8_child_env(env),
+        env=utf8_child_env(env),
         # Deliberately NOT start_new_session: the desktop stop path force-kills this process group, and a session of its own would leave the installer rewriting files after the app reports stopped.
         **child_popen_kwargs(),
     )
@@ -485,7 +486,7 @@ def stream_installer(
         raise InstallerExit(
             returncode,
             format_installer_failure_message(
-                returncode, tail_lines, verdict_lines, hint_lines, env = env
+                returncode, tail_lines, verdict_lines, hint_lines, env=env
             ),
         )
 
@@ -521,7 +522,7 @@ def run_chained_update(phases: list[dict], *, job: dict, job_lock: threading.Loc
         name = phase["name"]
         weight = float(phase.get("weight") or 1.0) / total_weight
         with job_lock:
-            job["phases"][name].update(state = PHASE_RUNNING, progress = 0.0)
+            job["phases"][name].update(state=PHASE_RUNNING, progress=0.0)
 
         def set_progress(
             fraction: float,
@@ -543,17 +544,17 @@ def run_chained_update(phases: list[dict], *, job: dict, job_lock: threading.Loc
             if phase.get("affects_job_reload", True):
                 reload_required = reload_required or bool(getattr(exc, "reload_required", False))
             with job_lock:
-                job["phases"][name].update(state = PHASE_ERROR, error = str(exc))
+                job["phases"][name].update(state=PHASE_ERROR, error=str(exc))
                 for later in phases[index + 1 :]:
                     if later.get("run") is not None:
-                        job["phases"][later["name"]].update(state = PHASE_SKIPPED, reason = "aborted")
+                        job["phases"][later["name"]].update(state=PHASE_SKIPPED, reason="aborted")
                 # A partial success keeps its messages and reload_required so the caller sees the earlier phase did land.
                 job.update(
-                    state = JOB_ERROR,
-                    message = " ".join(done_messages + [failure]),
-                    to_tag = primary_to_tag,
-                    error = str(exc),
-                    finished_at = utcnow(),
+                    state=JOB_ERROR,
+                    message=" ".join(done_messages + [failure]),
+                    to_tag=primary_to_tag,
+                    error=str(exc),
+                    finished_at=utcnow(),
                 )
                 if done_messages or reload_required:
                     job["reload_required"] = reload_required
@@ -563,15 +564,15 @@ def run_chained_update(phases: list[dict], *, job: dict, job_lock: threading.Loc
         with job_lock:
             if result.get("skipped"):
                 job["phases"][name].update(
-                    state = PHASE_SKIPPED,
-                    reason = result.get("skip_reason") or "up_to_date",
+                    state=PHASE_SKIPPED,
+                    reason=result.get("skip_reason") or "up_to_date",
                 )
             else:
                 job["phases"][name].update(
-                    state = PHASE_SUCCESS,
-                    to_tag = result.get("to_tag"),
-                    reload_required = result.get("reload_required"),
-                    message = result.get("message") or "",
+                    state=PHASE_SUCCESS,
+                    to_tag=result.get("to_tag"),
+                    reload_required=result.get("reload_required"),
+                    message=result.get("message") or "",
                 )
         if result.get("message"):
             done_messages.append(result["message"])
@@ -584,11 +585,11 @@ def run_chained_update(phases: list[dict], *, job: dict, job_lock: threading.Loc
 
     with job_lock:
         job.update(
-            state = JOB_SUCCESS,
-            message = " ".join(done_messages) or "Already up to date.",
-            to_tag = primary_to_tag,
-            reload_required = reload_required,
-            error = None,
-            progress = 1.0,
-            finished_at = utcnow(),
+            state=JOB_SUCCESS,
+            message=" ".join(done_messages) or "Already up to date.",
+            to_tag=primary_to_tag,
+            reload_required=reload_required,
+            error=None,
+            progress=1.0,
+            finished_at=utcnow(),
         )

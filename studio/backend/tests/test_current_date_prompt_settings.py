@@ -41,7 +41,7 @@ def client(monkeypatch):
     app = FastAPI()
     app.include_router(settings.router)
     app.dependency_overrides[settings.get_current_subject] = lambda: "admin"
-    return TestClient(app, raise_server_exceptions = False), calls
+    return TestClient(app, raise_server_exceptions=False), calls
 
 
 def test_get_current_date_prompt(client):
@@ -55,7 +55,7 @@ def test_get_current_date_prompt(client):
 
 def test_put_current_date_prompt_disables(client):
     c, calls = client
-    r = c.put("/current-date-prompt", json = {"enabled": False})
+    r = c.put("/current-date-prompt", json={"enabled": False})
     assert r.status_code == 200
     assert r.json()["enabled"] is False
     assert calls["set"] is False
@@ -63,7 +63,7 @@ def test_put_current_date_prompt_disables(client):
 
 def test_put_current_date_prompt_rejects_non_bool(client):
     c, _ = client
-    r = c.put("/current-date-prompt", json = {"enabled": "maybe"})
+    r = c.put("/current-date-prompt", json={"enabled": "maybe"})
     assert r.status_code == 422
 
 
@@ -120,36 +120,36 @@ class TestCurrentDatePromptLine:
 
     def test_request_timezone_decides_the_calendar_date(self):
         request = _types.SimpleNamespace(
-            headers = {
+            headers={
                 current_date_settings.CURRENT_DATE_TIMEZONE_HEADER: "Pacific/Auckland",
             }
         )
-        instant = datetime(2026, 8, 28, 12, 30, tzinfo = timezone.utc)
+        instant = datetime(2026, 8, 28, 12, 30, tzinfo=timezone.utc)
         assert current_date_settings._request_local_date(request, instant) == date(2026, 8, 29)
 
     def test_request_offset_is_used_when_timezone_is_unknown(self):
         request = _types.SimpleNamespace(
-            headers = {
+            headers={
                 current_date_settings.CURRENT_DATE_TIMEZONE_HEADER: "Invalid/Zone",
                 current_date_settings.CURRENT_DATE_TIMEZONE_OFFSET_HEADER: "-720",
             }
         )
-        instant = datetime(2026, 8, 28, 12, 30, tzinfo = timezone.utc)
+        instant = datetime(2026, 8, 28, 12, 30, tzinfo=timezone.utc)
         assert current_date_settings._request_local_date(request, instant) == date(2026, 8, 29)
 
     def test_research_run_stamp_receives_the_http_request(self, monkeypatch):
         import routes.research_runs as research_routes
 
-        request = _types.SimpleNamespace(headers = {"x-unsloth-timezone": "Pacific/Auckland"})
+        request = _types.SimpleNamespace(headers={"x-unsloth-timezone": "Pacific/Auckland"})
         monkeypatch.setattr(
             research_routes,
             "current_date_prompt_line",
             lambda **kwargs: kwargs["request"].headers["x-unsloth-timezone"],
         )
         payload = research_routes.CreateResearchRun(
-            threadId = "thread-1",
-            userMessageId = "message-1",
-            inferenceRequest = {"model": "local-model"},
+            threadId="thread-1",
+            userMessageId="message-1",
+            inferenceRequest={"model": "local-model"},
         )
 
         config = research_routes._sanitize_config(payload, {"modelId": "local-model"}, request)
@@ -163,7 +163,7 @@ class TestCurrentDatePromptLine:
         monkeypatch.setitem(
             sys.modules,
             "storage.studio_db",
-            _types.SimpleNamespace(get_app_setting = _explode),
+            _types.SimpleNamespace(get_app_setting=_explode),
         )
         assert current_date_settings.get_current_date_prompt_enabled() is True
 
@@ -174,11 +174,13 @@ class TestExternalProviderMessages:
     @staticmethod
     def _prepend(messages):
         import routes.inference as inference
+
         return inference._prepend_current_date_to_messages(messages)
 
-    @pytest.fixture(autouse = True)
+    @pytest.fixture(autouse=True)
     def _enabled(self, monkeypatch):
         import routes.inference as inference
+
         monkeypatch.setattr(
             inference,
             "current_date_prompt_line",
@@ -202,7 +204,7 @@ class TestExternalProviderMessages:
         import routes.inference as inference
 
         messages = [{"role": "user", "content": "hi"}]
-        out = inference._prepend_current_date_to_messages(messages, provider_type = "ollama")
+        out = inference._prepend_current_date_to_messages(messages, provider_type="ollama")
         assert out is messages
 
     def test_ollama_still_dates_a_system_turn_studio_composed(self):
@@ -210,15 +212,16 @@ class TestExternalProviderMessages:
 
         out = inference._prepend_current_date_to_messages(
             [{"role": "system", "content": "Be terse."}, {"role": "user", "content": "hi"}],
-            provider_type = "ollama",
+            provider_type="ollama",
         )
         assert out[0]["content"] == "The current date is 2026-08-15.\n\nBe terse."
         assert out[1] == {"role": "user", "content": "hi"}
 
     def test_other_local_servers_still_get_a_synthesized_system_turn(self):
         import routes.inference as inference
+
         out = inference._prepend_current_date_to_messages(
-            [{"role": "user", "content": "hi"}], provider_type = "llama_cpp"
+            [{"role": "user", "content": "hi"}], provider_type="llama_cpp"
         )
         assert out[0] == {"role": "system", "content": "The current date is 2026-08-15."}
 
@@ -308,7 +311,7 @@ class TestExternalProviderMessages:
         out = inference._prepend_current_date_to_messages(
             messages,
             object(),
-            include_api_key = True,
+            include_api_key=True,
         )
         assert out[0] == {"role": "system", "content": "The current date is 2026-08-15."}
 
@@ -321,7 +324,7 @@ class TestExternalProviderMessages:
         out = inference._prepend_current_date_to_messages(
             messages,
             object(),
-            include_api_key = True,
+            include_api_key=True,
         )
         assert out is messages
 

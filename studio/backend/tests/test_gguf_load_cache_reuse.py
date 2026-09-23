@@ -103,12 +103,12 @@ def _build_cache(
 ) -> Path:
     """Create ``$root/models--<repo>/snapshots/<sha>/<rel>`` for each entry."""
     repo_dir = root / f"models--{repo_id.replace('/', '--')}"
-    (repo_dir / "blobs").mkdir(parents = True, exist_ok = True)
+    (repo_dir / "blobs").mkdir(parents=True, exist_ok=True)
     snap = repo_dir / "snapshots" / snapshot_sha
-    snap.mkdir(parents = True, exist_ok = True)
+    snap.mkdir(parents=True, exist_ok=True)
     for rel, size in files.items():
         full = snap / rel
-        full.parent.mkdir(parents = True, exist_ok = True)
+        full.parent.mkdir(parents=True, exist_ok=True)
         full.write_bytes(b"\0" * size)
     return snap
 
@@ -118,10 +118,10 @@ def hf_cache(tmp_path, monkeypatch):
     monkeypatch.setattr(hf_constants, "HF_HUB_CACHE", str(tmp_path))
     monkeypatch.setattr(
         "utils.hf_cache_settings.get_hf_cache_paths",
-        lambda: _types.SimpleNamespace(hub_cache = tmp_path),
+        lambda: _types.SimpleNamespace(hub_cache=tmp_path),
     )
-    monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
-    monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising = False)
+    monkeypatch.delenv("HF_HUB_OFFLINE", raising=False)
+    monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising=False)
     return tmp_path
 
 
@@ -157,19 +157,19 @@ def _low_disk_hub(
         _repo,
         paths,
         *,
-        revision = None,
-        token = None,
+        revision=None,
+        token=None,
     ):
         on_disk = snap is not None and revision == snap.name
         return [
-            _types.SimpleNamespace(path = path, size = 4 if on_disk else sizes[path]) for path in paths
+            _types.SimpleNamespace(path=path, size=4 if on_disk else sizes[path]) for path in paths
         ]
 
     def fake_download(_repo, filename, *_args, **_kwargs):
         downloaded.append(filename)
         return served or f"/fake/{REPO}/{filename}"
 
-    usage = _types.SimpleNamespace(total = 100 * GIB, used = 100 * GIB - free, free = free)
+    usage = _types.SimpleNamespace(total=100 * GIB, used=100 * GIB - free, free=free)
     with (
         patch("huggingface_hub.list_repo_files", lambda *_a, **_k: list(sizes)),
         patch("huggingface_hub.get_paths_info", fake_get_paths_info),
@@ -190,10 +190,10 @@ def _load_route_module(name: str, relative_path: str):
 
 def _run_route_load(route, request):
     fastapi_request = SimpleNamespace(
-        app = SimpleNamespace(state = SimpleNamespace(llama_parallel_slots = 1))
+        app=SimpleNamespace(state=SimpleNamespace(llama_parallel_slots=1))
     )
     return asyncio.run(
-        route._load_model_impl(request, fastapi_request, current_subject = "test-user")
+        route._load_model_impl(request, fastapi_request, current_subject="test-user")
     )
 
 
@@ -203,15 +203,15 @@ def _reuse_route(route, backend, response):
         patch.object(
             route,
             "_resolve_model_identifier_for_request",
-            return_value = (REPO, REPO, False),
+            return_value=(REPO, REPO, False),
         ),
-        patch.object(route, "resolve_effective_chat_template_override", return_value = None),
-        patch.object(route, "_gguf_load_response", return_value = response) as response_mock,
-        patch.object(route, "get_llama_cpp_backend", return_value = backend),
+        patch.object(route, "resolve_effective_chat_template_override", return_value=None),
+        patch.object(route, "_gguf_load_response", return_value=response) as response_mock,
+        patch.object(route, "get_llama_cpp_backend", return_value=backend),
         patch.object(
             route,
             "get_inference_backend",
-            return_value = SimpleNamespace(active_model_name = None),
+            return_value=SimpleNamespace(active_model_name=None),
         ),
     ):
         yield response_mock
@@ -236,7 +236,7 @@ class TestLoadReusesCachedCopy:
         monkeypatch.setattr(hf_constants, "HF_HUB_CACHE", str(startup))
         monkeypatch.setattr(
             "utils.hf_cache_settings.get_hf_cache_paths",
-            lambda: _types.SimpleNamespace(hub_cache = selected),
+            lambda: _types.SimpleNamespace(hub_cache=selected),
         )
         seen = {"lookups": [], "disk": [], "downloads": []}
 
@@ -244,7 +244,7 @@ class TestLoadReusesCachedCopy:
             repo_id,
             filename,
             *,
-            cache_dir = None,
+            cache_dir=None,
             **_kwargs,
         ):
             seen["lookups"].append((repo_id, filename, cache_dir))
@@ -252,7 +252,7 @@ class TestLoadReusesCachedCopy:
 
         def disk_usage(path):
             seen["disk"].append(str(path))
-            return _types.SimpleNamespace(free = 1024)
+            return _types.SimpleNamespace(free=1024)
 
         def download(repo_id, filename, _token, **kwargs):
             seen["downloads"].append((repo_id, filename, kwargs.get("cache_dir")))
@@ -263,7 +263,7 @@ class TestLoadReusesCachedCopy:
             patch(
                 "huggingface_hub.get_paths_info",
                 lambda _repo, paths, **_kwargs: [
-                    _types.SimpleNamespace(path = path, size = 4) for path in paths
+                    _types.SimpleNamespace(path=path, size=4) for path in paths
                 ],
             ),
             patch("huggingface_hub.try_to_load_from_cache", cached_lookup),
@@ -273,7 +273,7 @@ class TestLoadReusesCachedCopy:
                 download,
             ),
         ):
-            out = backend._download_gguf(hf_repo = REPO, hf_variant = VARIANT)
+            out = backend._download_gguf(hf_repo=REPO, hf_variant=VARIANT)
 
         assert out == str(selected / MAIN)
         assert seen == {
@@ -292,7 +292,7 @@ class TestLoadReusesCachedCopy:
             patch("huggingface_hub.get_paths_info", _fail_get_paths_info),
             patch("core.inference.llama_cpp.hf_hub_download_with_xet_fallback", _fail_download),
         ):
-            out = backend._download_gguf(hf_repo = REPO, hf_variant = VARIANT)
+            out = backend._download_gguf(hf_repo=REPO, hf_variant=VARIANT)
 
         assert out == str(snap / MAIN)
 
@@ -306,19 +306,19 @@ class TestLoadReusesCachedCopy:
             _repo,
             paths,
             *,
-            revision = None,
-            token = None,
+            revision=None,
+            token=None,
         ):
             revisions.append(revision)
             size = 4 if revision == snap.name else 8
-            return [_types.SimpleNamespace(path = path, size = size) for path in paths]
+            return [_types.SimpleNamespace(path=path, size=size) for path in paths]
 
         with (
             patch("huggingface_hub.list_repo_files", lambda *_a, **_k: [MAIN]),
             patch("huggingface_hub.get_paths_info", fake_get_paths_info),
             patch("core.inference.llama_cpp.hf_hub_download_with_xet_fallback", _fail_download),
         ):
-            out = backend._download_gguf(hf_repo = REPO, hf_variant = VARIANT)
+            out = backend._download_gguf(hf_repo=REPO, hf_variant=VARIANT)
 
         assert out == str(snap / MAIN)
         assert revisions == [snap.name]
@@ -333,7 +333,7 @@ class TestLoadReusesCachedCopy:
             patch("huggingface_hub.get_paths_info", lambda *_a, **_k: []),
             patch("core.inference.llama_cpp.hf_hub_download_with_xet_fallback", _fail_download),
         ):
-            out = backend._download_gguf(hf_repo = REPO, hf_variant = VARIANT)
+            out = backend._download_gguf(hf_repo=REPO, hf_variant=VARIANT)
 
         assert out == str(snap / MAIN)
 
@@ -346,15 +346,15 @@ class TestLoadReusesCachedCopy:
             _repo,
             paths,
             *,
-            revision = None,
-            token = None,
+            revision=None,
+            token=None,
         ):
-            return [_types.SimpleNamespace(path = path, size = 8) for path in paths]
+            return [_types.SimpleNamespace(path=path, size=8) for path in paths]
 
         def fake_download(
             repo_id,
             filename,
-            token = None,
+            token=None,
             **_kwargs,
         ):
             downloaded.append(filename)
@@ -366,7 +366,7 @@ class TestLoadReusesCachedCopy:
             patch("huggingface_hub.try_to_load_from_cache", lambda *_a, **_k: None),
             patch("core.inference.llama_cpp.hf_hub_download_with_xet_fallback", fake_download),
         ):
-            out = backend._download_gguf(hf_repo = REPO, hf_variant = VARIANT)
+            out = backend._download_gguf(hf_repo=REPO, hf_variant=VARIANT)
 
         assert downloaded == [MAIN]
         assert out == f"/fake/{REPO}/{MAIN}"
@@ -382,15 +382,15 @@ class TestLoadReusesCachedCopy:
             _repo,
             paths,
             *,
-            revision = None,
-            token = None,
+            revision=None,
+            token=None,
         ):
-            return [_types.SimpleNamespace(path = path, size = 8) for path in paths]
+            return [_types.SimpleNamespace(path=path, size=8) for path in paths]
 
         def fake_download(
             repo_id,
             filename,
-            token = None,
+            token=None,
             **_kwargs,
         ):
             downloaded.append(filename)
@@ -402,7 +402,7 @@ class TestLoadReusesCachedCopy:
             patch("huggingface_hub.try_to_load_from_cache", lambda *_a, **_k: None),
             patch("core.inference.llama_cpp.hf_hub_download_with_xet_fallback", fake_download),
         ):
-            out = backend._download_gguf(hf_repo = REPO, hf_variant = VARIANT)
+            out = backend._download_gguf(hf_repo=REPO, hf_variant=VARIANT)
 
         assert downloaded == [shard1, shard2]
         assert out == f"/fake/{REPO}/{shard1}"
@@ -418,7 +418,7 @@ class TestLoadReusesCachedCopy:
             patch("huggingface_hub.get_paths_info", _fail_get_paths_info),
             patch("core.inference.llama_cpp.hf_hub_download_with_xet_fallback", _fail_download),
         ):
-            out = backend._download_gguf(hf_repo = REPO, hf_variant = VARIANT)
+            out = backend._download_gguf(hf_repo=REPO, hf_variant=VARIANT)
 
         assert out == str(snap / old_name)
 
@@ -429,7 +429,7 @@ class TestLoadReusesCachedCopy:
         def fake_download(
             repo_id,
             filename,
-            token = None,
+            token=None,
             **_kwargs,
         ):
             downloaded.append(filename)
@@ -438,9 +438,9 @@ class TestLoadReusesCachedCopy:
         def fake_get_paths_info(
             _repo_id,
             paths,
-            token = None,
+            token=None,
         ):
-            return [_types.SimpleNamespace(path = p, size = 1) for p in paths if p is not None]
+            return [_types.SimpleNamespace(path=p, size=1) for p in paths if p is not None]
 
         with (
             patch("huggingface_hub.list_repo_files", lambda *_a, **_k: [MAIN]),
@@ -448,7 +448,7 @@ class TestLoadReusesCachedCopy:
             patch("huggingface_hub.try_to_load_from_cache", lambda *_a, **_k: None),
             patch("core.inference.llama_cpp.hf_hub_download_with_xet_fallback", fake_download),
         ):
-            out = backend._download_gguf(hf_repo = REPO, hf_variant = VARIANT)
+            out = backend._download_gguf(hf_repo=REPO, hf_variant=VARIANT)
 
         assert downloaded == [MAIN]
         assert out == f"/fake/{REPO}/{MAIN}"
@@ -462,7 +462,7 @@ class TestLoadReusesCachedCopy:
         def fake_download(
             repo_id,
             filename,
-            token = None,
+            token=None,
             **kwargs,
         ):
             assert kwargs.get("force_download") is True
@@ -472,9 +472,9 @@ class TestLoadReusesCachedCopy:
         def fake_get_paths_info(
             _repo_id,
             paths,
-            token = None,
+            token=None,
         ):
-            return [_types.SimpleNamespace(path = p, size = 1) for p in paths if p is not None]
+            return [_types.SimpleNamespace(path=p, size=1) for p in paths if p is not None]
 
         with (
             patch("huggingface_hub.list_repo_files", lambda *_a, **_k: [MAIN]),
@@ -482,7 +482,7 @@ class TestLoadReusesCachedCopy:
             patch("huggingface_hub.try_to_load_from_cache", lambda *_a, **_k: None),
             patch("core.inference.llama_cpp.hf_hub_download_with_xet_fallback", fake_download),
         ):
-            out = backend._download_gguf(hf_repo = REPO, hf_variant = VARIANT, force = True)
+            out = backend._download_gguf(hf_repo=REPO, hf_variant=VARIANT, force=True)
 
         assert downloaded == [MAIN]
         assert out == f"/fake/{REPO}/{MAIN}"
@@ -498,7 +498,7 @@ class TestLoadReusesCachedCopy:
             patch("huggingface_hub.get_paths_info", _fail_get_paths_info),
             patch("core.inference.llama_cpp.hf_hub_download_with_xet_fallback", _fail_download),
         ):
-            out = backend._download_gguf(hf_repo = REPO, hf_variant = VARIANT)
+            out = backend._download_gguf(hf_repo=REPO, hf_variant=VARIANT)
 
         assert out == str(snap / shard1)
 
@@ -513,7 +513,7 @@ class TestLoadReusesCachedCopy:
         def fake_download(
             repo_id,
             filename,
-            token = None,
+            token=None,
             **_kwargs,
         ):
             downloaded.append(filename)
@@ -522,9 +522,9 @@ class TestLoadReusesCachedCopy:
         def fake_get_paths_info(
             _repo_id,
             paths,
-            token = None,
+            token=None,
         ):
-            return [_types.SimpleNamespace(path = p, size = 4) for p in paths if p is not None]
+            return [_types.SimpleNamespace(path=p, size=4) for p in paths if p is not None]
 
         with (
             patch("huggingface_hub.list_repo_files", lambda *_a, **_k: [shard1, shard2]),
@@ -532,7 +532,7 @@ class TestLoadReusesCachedCopy:
             patch("huggingface_hub.try_to_load_from_cache", lambda *_a, **_k: None),
             patch("core.inference.llama_cpp.hf_hub_download_with_xet_fallback", fake_download),
         ):
-            out = backend._download_gguf(hf_repo = REPO, hf_variant = VARIANT)
+            out = backend._download_gguf(hf_repo=REPO, hf_variant=VARIANT)
 
         assert downloaded == [shard1, shard2]
         assert out == f"/fake/{REPO}/{shard1}"
@@ -542,8 +542,8 @@ class TestLoadReusesCachedCopy:
         import os
 
         backend = LlamaCppBackend()
-        old_snap = _build_cache(hf_cache, REPO, {MAIN: 4}, snapshot_sha = "a" * 40)
-        new_snap = _build_cache(hf_cache, REPO, {MAIN: 6}, snapshot_sha = "b" * 40)
+        old_snap = _build_cache(hf_cache, REPO, {MAIN: 4}, snapshot_sha="a" * 40)
+        new_snap = _build_cache(hf_cache, REPO, {MAIN: 6}, snapshot_sha="b" * 40)
         os.utime(old_snap, (1_000_000, 1_000_000))
         os.utime(new_snap, (2_000_000, 2_000_000))
 
@@ -552,7 +552,7 @@ class TestLoadReusesCachedCopy:
             patch("huggingface_hub.get_paths_info", _fail_get_paths_info),
             patch("core.inference.llama_cpp.hf_hub_download_with_xet_fallback", _fail_download),
         ):
-            out = backend._download_gguf(hf_repo = REPO, hf_variant = VARIANT)
+            out = backend._download_gguf(hf_repo=REPO, hf_variant=VARIANT)
 
         assert out == str(new_snap / MAIN)
 
@@ -565,17 +565,17 @@ class TestLoadReusesCachedCopy:
             _repo,
             paths,
             *,
-            revision = None,
-            token = None,
+            revision=None,
+            token=None,
         ):
             size = 4 if revision == snap.name else 100
-            return [_types.SimpleNamespace(path = path, size = size) for path in paths]
+            return [_types.SimpleNamespace(path=path, size=size) for path in paths]
 
         with (
             patch("huggingface_hub.list_repo_files", lambda *_a, **_k: [MAIN]),
             patch("huggingface_hub.get_paths_info", fake_get_paths_info),
             patch("huggingface_hub.try_to_load_from_cache", lambda *_a, **_k: None),
-            patch("shutil.disk_usage", lambda *_a, **_k: _types.SimpleNamespace(free = 10)),
+            patch("shutil.disk_usage", lambda *_a, **_k: _types.SimpleNamespace(free=10)),
             patch.object(
                 backend,
                 "_find_fitting_variant",
@@ -583,14 +583,14 @@ class TestLoadReusesCachedCopy:
             ),
             patch("core.inference.llama_cpp.hf_hub_download_with_xet_fallback", _fail_download),
         ):
-            out = backend._download_gguf(hf_repo = REPO, hf_variant = VARIANT)
+            out = backend._download_gguf(hf_repo=REPO, hf_variant=VARIANT)
 
         assert out == str(snap / fallback)
 
     def test_low_disk_fallback_picks_largest_variant_leaving_reserve(self, hf_cache):
         backend = LlamaCppBackend()
         with _low_disk_hub(_DISK_RESERVE_BYTES + 5 * GIB // 2) as downloaded:
-            out = backend._download_gguf(hf_repo = REPO, hf_variant = "Q8_0")
+            out = backend._download_gguf(hf_repo=REPO, hf_variant="Q8_0")
 
         assert downloaded == ["gemma-test-Q4_K_M.gguf"]
         assert out == f"/fake/{REPO}/gemma-test-Q4_K_M.gguf"
@@ -604,7 +604,7 @@ class TestLoadReusesCachedCopy:
     def test_low_disk_fallback_keeps_smallest_when_none_leaves_reserve(self, hf_cache):
         backend = LlamaCppBackend()
         with _low_disk_hub(_DISK_RESERVE_BYTES + GIB // 2) as downloaded:
-            backend._download_gguf(hf_repo = REPO, hf_variant = "Q8_0")
+            backend._download_gguf(hf_repo=REPO, hf_variant="Q8_0")
 
         assert downloaded == ["gemma-test-UD-IQ1_S.gguf"]
         assert backend._pending_variant_fallback[0] == "UD-IQ1_S"
@@ -612,8 +612,8 @@ class TestLoadReusesCachedCopy:
     def test_low_disk_fallback_reuses_cached_variant_before_downloading(self, hf_cache):
         backend = LlamaCppBackend()
         snap = _build_cache(hf_cache, REPO, {"gemma-test-Q4_K_M.gguf": 4})
-        with _low_disk_hub(_DISK_RESERVE_BYTES + GIB // 2, snap = snap) as downloaded:
-            out = backend._download_gguf(hf_repo = REPO, hf_variant = "Q8_0")
+        with _low_disk_hub(_DISK_RESERVE_BYTES + GIB // 2, snap=snap) as downloaded:
+            out = backend._download_gguf(hf_repo=REPO, hf_variant="Q8_0")
 
         assert downloaded == []
         assert out == str(snap / "gemma-test-Q4_K_M.gguf")
@@ -623,8 +623,8 @@ class TestLoadReusesCachedCopy:
         snap = _build_cache(
             hf_cache, REPO, {"gemma-test-Q4_K_M.gguf": 4, "gemma-test-Q6_K.gguf": 4}
         )
-        with _low_disk_hub(GIB // 2, snap = snap) as downloaded:
-            out = backend._download_gguf(hf_repo = REPO, hf_variant = "Q8_0")
+        with _low_disk_hub(GIB // 2, snap=snap) as downloaded:
+            out = backend._download_gguf(hf_repo=REPO, hf_variant="Q8_0")
 
         assert downloaded == []
         assert out == str(snap / "gemma-test-Q6_K.gguf")
@@ -632,8 +632,8 @@ class TestLoadReusesCachedCopy:
     def test_low_disk_fallback_never_picks_a_larger_cached_variant(self, hf_cache):
         backend = LlamaCppBackend()
         snap = _build_cache(hf_cache, REPO, {"gemma-test-Q8_0.gguf": 4})
-        with _low_disk_hub(_DISK_RESERVE_BYTES + GIB // 2, snap = snap) as downloaded:
-            backend._download_gguf(hf_repo = REPO, hf_variant = "Q6_K")
+        with _low_disk_hub(_DISK_RESERVE_BYTES + GIB // 2, snap=snap) as downloaded:
+            backend._download_gguf(hf_repo=REPO, hf_variant="Q6_K")
 
         assert downloaded == ["gemma-test-UD-IQ1_S.gguf"]
 
@@ -644,8 +644,8 @@ class TestLoadReusesCachedCopy:
             "gemma-test-Q8_0.gguf": 16 * GIB,
             "distilled/gemma-test-distilled-Q6_K.gguf": 6 * GIB,
         }
-        with _low_disk_hub(_DISK_RESERVE_BYTES + 13 * GIB // 2, sizes = sizes) as downloaded:
-            backend._download_gguf(hf_repo = REPO, hf_variant = "Q8_0")
+        with _low_disk_hub(_DISK_RESERVE_BYTES + 13 * GIB // 2, sizes=sizes) as downloaded:
+            backend._download_gguf(hf_repo=REPO, hf_variant="Q8_0")
 
         assert downloaded == ["gemma-test-Q4_K_M.gguf"]
         assert backend._pending_variant_fallback[0] == "Q4_K_M"
@@ -654,14 +654,14 @@ class TestLoadReusesCachedCopy:
         backend = LlamaCppBackend()
         _build_cache(hf_cache, REPO, {"gemma-test-Q6_K.gguf": 4})
         with _low_disk_hub(_DISK_RESERVE_BYTES + GIB // 2) as downloaded:
-            backend._download_gguf(hf_repo = REPO, hf_variant = "Q8_0")
+            backend._download_gguf(hf_repo=REPO, hf_variant="Q8_0")
 
         assert downloaded == ["gemma-test-UD-IQ1_S.gguf"]
 
     def test_low_disk_without_any_fitting_variant_refuses(self, hf_cache):
         backend = LlamaCppBackend()
-        with _low_disk_hub(GIB // 2), pytest.raises(RuntimeError, match = "any variant"):
-            backend._download_gguf(hf_repo = REPO, hf_variant = "Q8_0")
+        with _low_disk_hub(GIB // 2), pytest.raises(RuntimeError, match="any variant"):
+            backend._download_gguf(hf_repo=REPO, hf_variant="Q8_0")
 
     def test_a_fallback_and_a_memory_notice_are_both_reported(self):
         backend = LlamaCppBackend()
@@ -685,33 +685,33 @@ class TestLoadReusesCachedCopy:
         backend._non_chat_gguf_refusal_for_path = lambda *_a, **_k: None
         backend._non_chat_gguf_refusal = lambda *_a, **_k: None
         backend._kill_process = lambda *_a, **_k: None
-        backend._wait_for_health = lambda timeout = 600.0, interval = 0.5, cancelled = None: True
+        backend._wait_for_health = lambda timeout=600.0, interval=0.5, cancelled=None: True
 
         def _start(cmd, env, **_kwargs):
-            backend._process = Mock(pid = 424242, returncode = None)
+            backend._process = Mock(pid=424242, returncode=None)
             backend._process.poll.return_value = None
             backend._stdout_lines = ["build: 6543", "main: loading model"]
             return backend._process
 
         backend._start_llama_process = _start
         requested = GgufLoadIntent(
-            model_identifier = REPO,
-            hf_repo = REPO,
-            hf_variant = "Q8_0",
-            speculative_type = "none",
-            n_ctx = 4096,
+            model_identifier=REPO,
+            hf_repo=REPO,
+            hf_variant="Q8_0",
+            speculative_type="none",
+            n_ctx=4096,
         )
-        with _low_disk_hub(_DISK_RESERVE_BYTES + 5 * GIB // 2, served = str(served)):
+        with _low_disk_hub(_DISK_RESERVE_BYTES + 5 * GIB // 2, served=str(served)):
             assert backend.load_model(requested) is True
 
         assert backend.hf_variant == "Q4_K_M"
         assert "Q4_K_M" in (backend.last_load_warning or "")
         assert not backend.matches_load_source(requested)
-        assert backend.matches_load_source(replace(requested, hf_variant = "Q4_K_M"))
+        assert backend.matches_load_source(replace(requested, hf_variant="Q4_K_M"))
         # Replayed by the crash respawn, so it must name the quant that is running.
         assert backend.last_load_intent.hf_variant == "Q4_K_M"
 
-        with _low_disk_hub(100 * GIB, served = str(served)):
+        with _low_disk_hub(100 * GIB, served=str(served)):
             assert backend.load_model(requested) is True
 
         assert backend.hf_variant == "Q8_0"
@@ -726,7 +726,7 @@ class TestLoadReusesCachedCopy:
             raise AssertionError("snapshot sibling must resolve without a repo listing")
 
         with patch("huggingface_hub.list_repo_files", _fail_list):
-            out = backend._download_mmproj(hf_repo = REPO, near_path = str(snap / MAIN))
+            out = backend._download_mmproj(hf_repo=REPO, near_path=str(snap / MAIN))
 
         assert out == str(snap / "mmproj-F16.gguf")
 
@@ -745,21 +745,21 @@ class TestLoadReusesCachedCopy:
             pytest.skip(f"symlinks unavailable: {exc}")
 
         with patch("huggingface_hub.list_repo_files", _fail_download):
-            out = backend._download_mmproj(hf_repo = REPO, near_path = str(snap / MAIN))
+            out = backend._download_mmproj(hf_repo=REPO, near_path=str(snap / MAIN))
 
         assert out == str(snap / "mmproj-F16.gguf")
 
     def test_companion_does_not_download_during_hub_job(self, hf_cache):
         backend = LlamaCppBackend()
         snap = _build_cache(hf_cache, REPO, {MAIN: 4})
-        registry = _types.SimpleNamespace(active_job_refs = lambda _repo: [object()])
+        registry = _types.SimpleNamespace(active_job_refs=lambda _repo: [object()])
 
         with (
             patch("huggingface_hub.list_repo_files", _fail_download),
             patch("hub.utils.download_registry.get_models_registry", lambda: registry),
             patch("core.inference.llama_cpp.hf_hub_download_with_xet_fallback", _fail_download),
         ):
-            out = backend._download_mmproj(hf_repo = REPO, near_path = str(snap / MAIN))
+            out = backend._download_mmproj(hf_repo=REPO, near_path=str(snap / MAIN))
 
         assert out is None
 
@@ -786,9 +786,9 @@ class TestCachedGgufForLoadProbe:
             hf_cache,
             REPO,
             {shard1: 4, shard2: 4},
-            snapshot_sha = "a" * 40,
+            snapshot_sha="a" * 40,
         )
-        new = _build_cache(hf_cache, REPO, {shard1: 4}, snapshot_sha = "b" * 40)
+        new = _build_cache(hf_cache, REPO, {shard1: 4}, snapshot_sha="b" * 40)
         os.utime(old, (1_000_000, 1_000_000))
         os.utime(new, (2_000_000, 2_000_000))
 
@@ -804,10 +804,10 @@ class TestCachedGgufForLoadProbe:
     def test_required_mmproj_must_share_main_snapshot(self, hf_cache):
         snap = _build_cache(hf_cache, REPO, {MAIN: 4})
         assert cached_gguf_for_load(REPO, VARIANT) == str(snap / MAIN)
-        assert cached_gguf_for_load(REPO, VARIANT, require_mmproj = True) is None
+        assert cached_gguf_for_load(REPO, VARIANT, require_mmproj=True) is None
 
         (snap / "mmproj-F16.gguf").write_bytes(b"mmproj")
-        assert cached_gguf_for_load(REPO, VARIANT, require_mmproj = True) == str(snap / MAIN)
+        assert cached_gguf_for_load(REPO, VARIANT, require_mmproj=True) == str(snap / MAIN)
 
     def test_required_mmproj_scans_past_newer_main_only_snapshot(self, hf_cache):
         import os
@@ -816,13 +816,13 @@ class TestCachedGgufForLoadProbe:
             hf_cache,
             REPO,
             {MAIN: 4, "mmproj-F16.gguf": 2},
-            snapshot_sha = "a" * 40,
+            snapshot_sha="a" * 40,
         )
-        new = _build_cache(hf_cache, REPO, {MAIN: 4}, snapshot_sha = "b" * 40)
+        new = _build_cache(hf_cache, REPO, {MAIN: 4}, snapshot_sha="b" * 40)
         os.utime(old, (1_000_000, 1_000_000))
         os.utime(new, (2_000_000, 2_000_000))
 
-        assert cached_gguf_for_load(REPO, VARIANT, require_mmproj = True) == str(old / MAIN)
+        assert cached_gguf_for_load(REPO, VARIANT, require_mmproj=True) == str(old / MAIN)
 
 
 class TestLoadHubDownloadExclusion:
@@ -835,24 +835,24 @@ class TestLoadHubDownloadExclusion:
         )
         verified = (REPO, VARIANT, "/cached/model.gguf", ((MAIN, 123),))
         config = SimpleNamespace(
-            identifier = REPO,
-            gguf_hf_repo = REPO,
-            gguf_variant = VARIANT,
-            gguf_verified = verified,
-            is_vision = False,
+            identifier=REPO,
+            gguf_hf_repo=REPO,
+            gguf_variant=VARIANT,
+            gguf_verified=verified,
+            is_vision=False,
         )
 
         intent = route._resolve_gguf_load_intent(
             config,
-            LoadRequest(model_path = REPO, gguf_variant = VARIANT),
-            native_grant_backed = False,
-            chat_template_override = None,
-            extra_args = None,
-            placement = SimpleNamespace(
-                resolved_gpu_ids = None,
-                gpu_ids_are_vulkan_ordinals = None,
+            LoadRequest(model_path=REPO, gguf_variant=VARIANT),
+            native_grant_backed=False,
+            chat_template_override=None,
+            extra_args=None,
+            placement=SimpleNamespace(
+                resolved_gpu_ids=None,
+                gpu_ids_are_vulkan_ordinals=None,
             ),
-            n_parallel = 1,
+            n_parallel=1,
         )
 
         assert intent.verified_gguf == verified
@@ -867,24 +867,24 @@ class TestLoadHubDownloadExclusion:
         model_identifier = "/models/local-quants"
         loaded_path = "/models/model.gguf"
         backend = SimpleNamespace(
-            extra_args = None,
-            gguf_path = loaded_path,
-            layer_preserves_tensor_intent = False,
-            last_load_intent = GgufLoadIntent(
-                model_identifier = model_identifier,
-                gguf_path = loaded_path,
-                hf_variant = VARIANT,
+            extra_args=None,
+            gguf_path=loaded_path,
+            layer_preserves_tensor_intent=False,
+            last_load_intent=GgufLoadIntent(
+                model_identifier=model_identifier,
+                gguf_path=loaded_path,
+                hf_variant=VARIANT,
             ),
         )
 
-        with patch.object(route, "_mtp_draft_for_path", return_value = None):
+        with patch.object(route, "_mtp_draft_for_path", return_value=None):
             intent = route._active_gguf_intent(
-                LoadRequest(model_path = model_identifier, gguf_variant = "Q8_0"),
+                LoadRequest(model_path=model_identifier, gguf_variant="Q8_0"),
                 backend,
-                model_identifier = model_identifier,
-                chat_template_override = None,
-                n_parallel = 1,
-                native_grant_backed = False,
+                model_identifier=model_identifier,
+                chat_template_override=None,
+                n_parallel=1,
+                native_grant_backed=False,
             )
 
         assert intent.gguf_path is None
@@ -900,15 +900,15 @@ class TestLoadHubDownloadExclusion:
         )
         response = object()
         backend = SimpleNamespace(
-            is_loaded = True,
-            model_identifier = REPO,
-            adopt_load_intent_if_matched = lambda _intent: True,
-            _audio_probed = True,
+            is_loaded=True,
+            model_identifier=REPO,
+            adopt_load_intent_if_matched=lambda _intent: True,
+            _audio_probed=True,
             # The reuse fast path consults this before asserting CHAT ownership; a real
             # LlamaCppBackend exposes it as a property, so the double has to carry it too.
-            holds_no_vram = False,
+            holds_no_vram=False,
         )
-        request = LoadRequest(model_path = REPO, gguf_variant = VARIANT)
+        request = LoadRequest(model_path=REPO, gguf_variant=VARIANT)
         if reuse_case == "new_roots":
             request._gguf_companion_roots = ("weights-revision", "companion-revision")
         elif reuse_case == "completed_file":
@@ -926,10 +926,10 @@ class TestLoadHubDownloadExclusion:
                 route,
                 "ModelConfig",
                 SimpleNamespace(
-                    from_identifier = lambda **_kwargs: (_ for _ in ()).throw(MetadataReached())
+                    from_identifier=lambda **_kwargs: (_ for _ in ()).throw(MetadataReached())
                 ),
             ),
-            patch.object(route, "_active_gguf_intent", return_value = object()),
+            patch.object(route, "_active_gguf_intent", return_value=object()),
         ):
             if reuse_case != "unchanged":
                 with pytest.raises(MetadataReached):
@@ -947,25 +947,25 @@ class TestLoadHubDownloadExclusion:
             "routes/inference.py",
         )
         response = object()
-        intent = GgufLoadIntent(model_identifier = REPO, gguf_path = "/cached/model.gguf")
+        intent = GgufLoadIntent(model_identifier=REPO, gguf_path="/cached/model.gguf")
         backend = SimpleNamespace(
-            is_loaded = True,
-            model_identifier = REPO,
-            gguf_path = None,
-            matches_load_source = lambda _intent: True,
-            adopt_load_intent_if_matched = lambda _intent: True,
-            _audio_probed = True,
+            is_loaded=True,
+            model_identifier=REPO,
+            gguf_path=None,
+            matches_load_source=lambda _intent: True,
+            adopt_load_intent_if_matched=lambda _intent: True,
+            _audio_probed=True,
             # The reuse fast path consults this before asserting CHAT ownership; a real
             # LlamaCppBackend exposes it as a property, so the double has to carry it too.
-            holds_no_vram = False,
+            holds_no_vram=False,
         )
         config = SimpleNamespace(
-            identifier = REPO,
-            display_name = "Gemma Test (UD-Q4_K_XL)",
-            is_gguf = True,
-            is_lora = False,
-            is_vision = False,
-            gguf_hf_repo = None,
+            identifier=REPO,
+            display_name="Gemma Test (UD-Q4_K_XL)",
+            is_gguf=True,
+            is_lora=False,
+            is_vision=False,
+            gguf_hf_repo=None,
         )
 
         with (
@@ -973,18 +973,18 @@ class TestLoadHubDownloadExclusion:
             patch.object(
                 route,
                 "ModelConfig",
-                SimpleNamespace(from_identifier = lambda **_kwargs: config),
+                SimpleNamespace(from_identifier=lambda **_kwargs: config),
             ),
-            patch.object(route, "_resolve_inherited_extra_args", return_value = None),
+            patch.object(route, "_resolve_inherited_extra_args", return_value=None),
             patch.object(
                 route,
                 "_prepare_load_placement",
-                return_value = route._LoadPlacement(None, None, False, False),
+                return_value=route._LoadPlacement(None, None, False, False),
             ),
-            patch.object(route, "_resolve_gguf_load_intent", return_value = intent),
-            patch.object(route, "_loaded_is_local_model", return_value = False),
+            patch.object(route, "_resolve_gguf_load_intent", return_value=intent),
+            patch.object(route, "_loaded_is_local_model", return_value=False),
         ):
-            result = _run_route_load(route, LoadRequest(model_path = REPO))
+            result = _run_route_load(route, LoadRequest(model_path=REPO))
 
         assert result is response
         assert response_mock.call_args.args[1] == "already_loaded"
@@ -997,21 +997,21 @@ class TestLoadHubDownloadExclusion:
             "inference_route_module_for_local_intent_token_test",
             "routes/inference.py",
         )
-        request = LoadRequest(model_path = "/models/local.gguf", hf_token = "secret")
+        request = LoadRequest(model_path="/models/local.gguf", hf_token="secret")
         common = dict(
-            chat_template_override = None,
-            extra_args = None,
-            gpu_ids = None,
-            n_parallel = 1,
+            chat_template_override=None,
+            extra_args=None,
+            gpu_ids=None,
+            n_parallel=1,
         )
 
         local = route._gguf_request_intent(
-            GgufLoadIntent(model_identifier = request.model_path, gguf_path = request.model_path),
+            GgufLoadIntent(model_identifier=request.model_path, gguf_path=request.model_path),
             request,
             **common,
         )
         remote = route._gguf_request_intent(
-            GgufLoadIntent(model_identifier = REPO, hf_repo = REPO),
+            GgufLoadIntent(model_identifier=REPO, hf_repo=REPO),
             request,
             **common,
         )
@@ -1025,13 +1025,13 @@ class TestLoadHubDownloadExclusion:
             "routes/inference.py",
         )
         incomplete_backend = SimpleNamespace(
-            requested_spec_mode = "auto",
-            is_diffusion = False,
-            requested_parallel_slots = 1,
-            effective_parallel_slots = 1,
+            requested_spec_mode="auto",
+            is_diffusion=False,
+            requested_parallel_slots=1,
+            effective_parallel_slots=1,
         )
 
-        with pytest.raises(AttributeError, match = "runtime response fields"):
+        with pytest.raises(AttributeError, match="runtime response fields"):
             route._llama_runtime_fields(incomplete_backend)
 
     def test_real_backend_resolves_every_runtime_response_field(self):
@@ -1117,7 +1117,7 @@ class TestLoadHubDownloadExclusion:
         from hub.schemas.downloads import DownloadModelRequest
         from hub.services.models import downloads as dl
 
-        body = DownloadModelRequest(repo_id = REPO, gguf_variant = VARIANT)
+        body = DownloadModelRequest(repo_id=REPO, gguf_variant=VARIANT)
         with (
             patch.object(dl, "resolve_cached_repo_id_case", lambda repo_id, repo_type: repo_id),
             gguf_load_in_flight(REPO),
@@ -1152,7 +1152,7 @@ class TestLoadHubDownloadExclusion:
                 return 0
 
         registry = _Registry()
-        body = DownloadModelRequest(repo_id = REPO, gguf_variant = VARIANT)
+        body = DownloadModelRequest(repo_id=REPO, gguf_variant=VARIANT)
         try:
             with (
                 patch.object(dl, "resolve_cached_repo_id_case", lambda repo_id, repo_type: repo_id),
@@ -1174,10 +1174,10 @@ class TestLoadHubDownloadExclusion:
         claimed, state = registry.claim(
             f"{REPO}::{VARIANT}",
             TRANSPORT_HTTP,
-            repo_type = "model",
-            repo_id = REPO,
-            variant = VARIANT,
-            admission_check = lambda: False,
+            repo_type="model",
+            repo_id=REPO,
+            variant=VARIANT,
+            admission_check=lambda: False,
         )
 
         assert claimed is False
@@ -1193,9 +1193,9 @@ class TestLoadHubDownloadExclusion:
         claimed, _ = registry.claim(
             key,
             TRANSPORT_XET,
-            repo_type = "model",
-            repo_id = REPO,
-            variant = VARIANT,
+            repo_type="model",
+            repo_id=REPO,
+            variant=VARIANT,
         )
         assert claimed is True
         assert registry.has_active_variant(REPO, VARIANT.lower()) is True
@@ -1209,7 +1209,7 @@ class TestLoadHubDownloadExclusion:
             patch("hub.utils.download_registry.get_models_registry", lambda: registry),
             patch(
                 "core.inference.llama_cpp.cached_gguf_for_load",
-                side_effect = AssertionError("same-variant jobs must block before cache reuse"),
+                side_effect=AssertionError("same-variant jobs must block before cache reuse"),
             ),
         ):
             assert _hub_download_blocks_gguf_load(REPO, VARIANT) is True
@@ -1225,15 +1225,15 @@ class TestLoadHubDownloadExclusion:
         registry.claim(
             f"{REPO}::Q8_0",
             TRANSPORT_HTTP,
-            repo_type = "model",
-            repo_id = REPO,
-            variant = "Q8_0",
+            repo_type="model",
+            repo_id=REPO,
+            variant="Q8_0",
         )
         with (
             patch("hub.utils.download_registry.get_models_registry", lambda: registry),
             patch(
                 "core.inference.llama_cpp.cached_gguf_for_load",
-                return_value = "/cached/model.gguf",
+                return_value="/cached/model.gguf",
             ) as cached_probe,
         ):
             assert _hub_download_blocks_gguf_load(REPO, VARIANT) is False
@@ -1241,9 +1241,9 @@ class TestLoadHubDownloadExclusion:
         cached_probe.assert_called_once_with(
             REPO,
             VARIANT,
-            require_mmproj = False,
-            verify_sizes = True,
-            hf_token = None,
+            require_mmproj=False,
+            verify_sizes=True,
+            hf_token=None,
         )
 
     def test_cancelled_request_keeps_marker_until_load_thread_finishes(self):
@@ -1259,22 +1259,22 @@ class TestLoadHubDownloadExclusion:
             def load_model(
                 self,
                 intent,
-                load_cancel_event = None,
+                load_cancel_event=None,
             ):
                 started.set()
-                release.wait(timeout = 2)
+                release.wait(timeout=2)
                 finished.set()
                 return True
 
         async def scenario():
             with patch(
                 "core.inference.llama_cpp._hub_download_blocks_gguf_load",
-                return_value = False,
+                return_value=False,
             ):
                 task = asyncio.create_task(
                     asyncio.to_thread(
                         FakeBackend().load_model,
-                        GgufLoadIntent(model_identifier = REPO, hf_repo = REPO),
+                        GgufLoadIntent(model_identifier=REPO, hf_repo=REPO),
                     )
                 )
                 assert await asyncio.to_thread(started.wait, 1)
@@ -1295,7 +1295,7 @@ class TestLoadHubDownloadExclusion:
 
     def test_load_marker_precedes_hub_guard_which_precedes_the_gpu_handoff(self):
         source = (Path(__file__).resolve().parent.parent / "routes" / "inference.py").read_text(
-            encoding = "utf-8"
+            encoding="utf-8"
         )
         # Anchor on the enclosing function, not a nearby `if config.is_gguf:`: the old anchor took the last such line before the load marker, which held
         # only while _resolve_inherited_extra_args sat above every one of them. The ordering is a property of _load_model_impl.
@@ -1317,13 +1317,13 @@ class TestLoadHubDownloadExclusion:
         )
         llama_source = (
             Path(__file__).resolve().parent.parent / "core" / "inference" / "llama_cpp.py"
-        ).read_text(encoding = "utf-8")
+        ).read_text(encoding="utf-8")
         assert "@_with_gguf_load_marker\n    def load_model(" in llama_source
 
     def _capture_hub_guard_require_mmproj(
         self,
         stored_extra_args,
-        request_extra_args = None,
+        request_extra_args=None,
     ):
         """Drive /load's GGUF path and return the hub guard's require_mmproj.
 
@@ -1346,7 +1346,7 @@ class TestLoadHubDownloadExclusion:
             variant,
             *,
             require_mmproj,
-            hf_token = None,
+            hf_token=None,
         ):
             captured["repo"] = repo
             captured["variant"] = variant
@@ -1355,52 +1355,52 @@ class TestLoadHubDownloadExclusion:
 
         # A vision GGUF: require_mmproj is True unless the extras say --no-mmproj.
         config = SimpleNamespace(
-            is_gguf = True,
-            is_lora = False,
-            is_vision = True,
-            is_audio = False,
-            audio_type = None,
-            has_audio_input = False,
-            gguf_hf_repo = REPO,
-            gguf_variant = VARIANT,
-            gguf_file = None,
-            gguf_mmproj_file = None,
-            identifier = REPO,
-            display_name = REPO,
+            is_gguf=True,
+            is_lora=False,
+            is_vision=True,
+            is_audio=False,
+            audio_type=None,
+            has_audio_input=False,
+            gguf_hf_repo=REPO,
+            gguf_variant=VARIANT,
+            gguf_file=None,
+            gguf_mmproj_file=None,
+            identifier=REPO,
+            display_name=REPO,
         )
         # Pass-through extras the running backend recorded for the last load.
         llama_backend = SimpleNamespace(
-            is_loaded = False,
-            extra_args = list(stored_extra_args),
-            extra_args_source = (REPO, VARIANT),
-            hf_variant = VARIANT,
-            model_identifier = REPO,
-            matches_load_source = lambda _intent: False,
-            adopt_load_intent_if_matched = lambda _intent: False,
+            is_loaded=False,
+            extra_args=list(stored_extra_args),
+            extra_args_source=(REPO, VARIANT),
+            hf_variant=VARIANT,
+            model_identifier=REPO,
+            matches_load_source=lambda _intent: False,
+            adopt_load_intent_if_matched=lambda _intent: False,
         )
         request = LoadRequest(
-            model_path = REPO,
-            gguf_variant = VARIANT,
-            llama_extra_args = request_extra_args,
+            model_path=REPO,
+            gguf_variant=VARIANT,
+            llama_extra_args=request_extra_args,
         )
 
         with (
             patch.object(
                 route,
                 "ModelConfig",
-                SimpleNamespace(from_identifier = lambda **_kwargs: config),
+                SimpleNamespace(from_identifier=lambda **_kwargs: config),
             ),
             patch.object(route, "get_llama_cpp_backend", lambda: llama_backend),
             patch.object(
                 route,
                 "get_inference_backend",
-                lambda: SimpleNamespace(active_model_name = None),
+                lambda: SimpleNamespace(active_model_name=None),
             ),
             patch.object(route, "_resolve_gguf_gpu_ids_for_request", _no_gguf_gpu_ids),
-            patch.object(route, "_guard_chat_load_against_training", return_value = None),
-            patch.object(route, "_effective_load_in_4bit", return_value = False),
+            patch.object(route, "_guard_chat_load_against_training", return_value=None),
+            patch.object(route, "_effective_load_in_4bit", return_value=False),
             patch.object(route, "_hf_offline_if_unreachable", nullcontext),
-            patch.object(route.asyncio, "to_thread", new = _inline_to_thread),
+            patch.object(route.asyncio, "to_thread", new=_inline_to_thread),
             patch.object(llama_cpp_module, "_hub_download_blocks_gguf_load", _fake_blocks),
         ):
             with pytest.raises(HTTPException) as exc_info:
@@ -1408,11 +1408,11 @@ class TestLoadHubDownloadExclusion:
                     route._load_model_impl(
                         request,
                         SimpleNamespace(
-                            app = SimpleNamespace(
-                                state = SimpleNamespace(llama_parallel_slots = 1),
+                            app=SimpleNamespace(
+                                state=SimpleNamespace(llama_parallel_slots=1),
                             ),
                         ),
-                        current_subject = "test-user",
+                        current_subject="test-user",
                     )
                 )
 
@@ -1429,10 +1429,10 @@ class TestLoadHubDownloadExclusion:
         assert self._capture_hub_guard_require_mmproj([]) is True
         # An explicit request list wins over the stored one, both ways.
         assert (
-            self._capture_hub_guard_require_mmproj([], request_extra_args = ["--no-mmproj"]) is False
+            self._capture_hub_guard_require_mmproj([], request_extra_args=["--no-mmproj"]) is False
         )
         assert (
-            self._capture_hub_guard_require_mmproj(["--no-mmproj"], request_extra_args = []) is True
+            self._capture_hub_guard_require_mmproj(["--no-mmproj"], request_extra_args=[]) is True
         )
 
 
@@ -1450,10 +1450,10 @@ def _companion_cache_repo(tmp_path, *, weights: str = "weights-revision"):
     repo = tmp_path / "models--org--Vision-GGUF"
     selected = repo / "snapshots" / weights
     companions = repo / "snapshots" / "companion-revision"
-    selected.mkdir(parents = True)
-    companions.mkdir(parents = True)
-    (repo / "blobs").mkdir(exist_ok = True)
-    (repo / "refs").mkdir(exist_ok = True)
+    selected.mkdir(parents=True)
+    companions.mkdir(parents=True)
+    (repo / "blobs").mkdir(exist_ok=True)
+    (repo / "refs").mkdir(exist_ok=True)
     (repo / "refs" / "main").write_text("companion-revision")
     (selected / "vision-model-Q4_K_M.gguf").write_bytes(b"GGUF weights")
     (companions / "mtp-vision-model-Q4_0.gguf").write_bytes(b"GGUF drafter")
@@ -1468,16 +1468,16 @@ def _capture_load_config(
     route,
     seen,
     *,
-    native_grant_backed = False,
-    model_identifier = None,
+    native_grant_backed=False,
+    model_identifier=None,
 ):
     backend = SimpleNamespace(
-        is_loaded = False,
-        model_identifier = None,
-        holds_no_vram = False,
-        active_model_name = None,
-        _audio_probed = True,
-        adopt_load_intent_if_matched = lambda _intent: False,
+        is_loaded=False,
+        model_identifier=None,
+        holds_no_vram=False,
+        active_model_name=None,
+        _audio_probed=True,
+        adopt_load_intent_if_matched=lambda _intent: False,
     )
 
     def _from_identifier(**kwargs):
@@ -1488,12 +1488,12 @@ def _capture_load_config(
         patch.object(
             route,
             "_resolve_model_identifier_for_request",
-            return_value = (model_identifier, model_identifier, native_grant_backed),
+            return_value=(model_identifier, model_identifier, native_grant_backed),
         ),
-        patch.object(route, "resolve_effective_chat_template_override", return_value = None),
-        patch.object(route, "get_llama_cpp_backend", return_value = backend),
-        patch.object(route, "get_inference_backend", return_value = backend),
-        patch.object(route, "ModelConfig", SimpleNamespace(from_identifier = _from_identifier)),
+        patch.object(route, "resolve_effective_chat_template_override", return_value=None),
+        patch.object(route, "get_llama_cpp_backend", return_value=backend),
+        patch.object(route, "get_inference_backend", return_value=backend),
+        patch.object(route, "ModelConfig", SimpleNamespace(from_identifier=_from_identifier)),
     ):
         yield
 
@@ -1511,13 +1511,13 @@ class TestPathLoadCompanionRoots:
         load_path = kwargs.pop("load_path")
         preset = kwargs.pop("preset_roots", None)
         preset_set = kwargs.pop("preset_set", False)
-        request = LoadRequest(model_path = load_path, gguf_variant = "Q4_K_M")
+        request = LoadRequest(model_path=load_path, gguf_variant="Q4_K_M")
         if preset is not None:
             request._gguf_companion_roots = preset
         if preset_set:
             request._gguf_companion_roots_set = True
         seen = {}
-        with _capture_load_config(route, seen, model_identifier = load_path, **kwargs):
+        with _capture_load_config(route, seen, model_identifier=load_path, **kwargs):
             with pytest.raises(_CompanionMetadataReached):
                 _run_route_load(route, request)
         return seen.get("gguf_companion_roots")
@@ -1527,7 +1527,7 @@ class TestPathLoadCompanionRoots:
         roots = self._roots_for(
             tmp_path,
             "inference_route_module_for_path_load_widening",
-            load_path = str(selected),
+            load_path=str(selected),
         )
         assert tuple(map(Path, roots or ())) == (selected, companions)
 
@@ -1538,12 +1538,12 @@ class TestPathLoadCompanionRoots:
 
         _repo, selected, companions = _companion_cache_repo(tmp_path)
         assert (
-            ModelConfig.from_identifier(str(selected), gguf_variant = "Q4_K_M").gguf_mtp_file is None
+            ModelConfig.from_identifier(str(selected), gguf_variant="Q4_K_M").gguf_mtp_file is None
         )
         config = ModelConfig.from_identifier(
             str(selected),
-            gguf_variant = "Q4_K_M",
-            gguf_companion_roots = local_path_gguf_companion_roots(str(selected)),
+            gguf_variant="Q4_K_M",
+            gguf_companion_roots=local_path_gguf_companion_roots(str(selected)),
         )
         assert config.gguf_mtp_file == str((companions / "mtp-vision-model-Q4_0.gguf").resolve())
         assert config.gguf_mmproj_file == str(
@@ -1554,13 +1554,13 @@ class TestPathLoadCompanionRoots:
         """Naming a revision the repo-level selection would not hand out pins it."""
         repo, pinned, _companions = _companion_cache_repo(tmp_path)
         newer_weights = repo / "snapshots" / "newer-weights-revision"
-        newer_weights.mkdir(parents = True)
+        newer_weights.mkdir(parents=True)
         (newer_weights / "vision-model-Q4_K_M.gguf").write_bytes(b"GGUF weights")
         os.utime(newer_weights, (3_000, 3_000))
         assert not self._roots_for(
             tmp_path,
             "inference_route_module_for_pinned_revision",
-            load_path = str(pinned),
+            load_path=str(pinned),
         )
 
     def test_a_native_grant_backed_load_is_not_widened(self, tmp_path):
@@ -1569,8 +1569,8 @@ class TestPathLoadCompanionRoots:
         assert not self._roots_for(
             tmp_path,
             "inference_route_module_for_native_grant_widening",
-            load_path = str(selected),
-            native_grant_backed = True,
+            load_path=str(selected),
+            native_grant_backed=True,
         )
 
     def test_roots_the_caller_already_set_are_left_alone(self, tmp_path):
@@ -1580,8 +1580,8 @@ class TestPathLoadCompanionRoots:
         roots = self._roots_for(
             tmp_path,
             "inference_route_module_for_preset_roots",
-            load_path = str(selected),
-            preset_roots = (str(selected),),
+            load_path=str(selected),
+            preset_roots=(str(selected),),
         )
         assert tuple(map(Path, roots or ())) == (selected,)
 
@@ -1596,16 +1596,16 @@ class TestPathLoadCompanionRoots:
         assert not self._roots_for(
             tmp_path,
             "inference_route_module_for_empty_preset_roots",
-            load_path = str(selected),
-            preset_roots = (),
-            preset_set = True,
+            load_path=str(selected),
+            preset_roots=(),
+            preset_set=True,
         )
 
     def test_a_bare_repo_id_is_not_widened(self, tmp_path):
         assert not self._roots_for(
             tmp_path,
             "inference_route_module_for_repo_id_load",
-            load_path = REPO,
+            load_path=REPO,
         )
 
 
@@ -1614,8 +1614,8 @@ def _mtp_cache_repo(tmp_path):
     repo = tmp_path / "models--org--Draft-GGUF"
     weights = repo / "snapshots" / "weights-revision"
     companions = repo / "snapshots" / "companion-revision"
-    weights.mkdir(parents = True)
-    companions.mkdir(parents = True)
+    weights.mkdir(parents=True)
+    companions.mkdir(parents=True)
     (weights / "draft-model-Q4_K_M.gguf").write_bytes(b"GGUF weights")
     (companions / "mtp-draft-model.gguf").write_bytes(b"GGUF drafter")
     os.utime(weights, (1_000, 1_000))
@@ -1644,26 +1644,26 @@ def test_the_apply_dedup_sees_the_drafter_the_launch_opened(tmp_path):
     assert tuple(map(Path, roots)) == (weights, companions)
     # The drafter the launch actually opens, through the real ModelConfig.
     launched = ModelConfig.from_identifier(
-        str(weights), gguf_variant = "Q4_K_M", gguf_companion_roots = roots
+        str(weights), gguf_variant="Q4_K_M", gguf_companion_roots=roots
     ).gguf_mtp_file
     assert launched == str(head.resolve())
 
     backend = SimpleNamespace(
-        extra_args = (),
-        last_load_intent = None,
-        hf_repo = None,
-        hf_variant = None,
-        gguf_path = str(main),
-        layer_preserves_tensor_intent = False,
-        _openai_gguf_companion_roots = tuple(roots),
+        extra_args=(),
+        last_load_intent=None,
+        hf_repo=None,
+        hf_variant=None,
+        gguf_path=str(main),
+        layer_preserves_tensor_intent=False,
+        _openai_gguf_companion_roots=tuple(roots),
     )
     intent = route._active_gguf_intent(
-        LoadRequest(model_path = str(weights), gguf_variant = "Q4_K_M"),
+        LoadRequest(model_path=str(weights), gguf_variant="Q4_K_M"),
         backend,
-        model_identifier = str(weights),
-        chat_template_override = None,
-        n_parallel = 1,
-        native_grant_backed = False,
+        model_identifier=str(weights),
+        chat_template_override=None,
+        n_parallel=1,
+        native_grant_backed=False,
     )
     assert intent.mtp_draft_path == launched
 
@@ -1671,12 +1671,12 @@ def test_the_apply_dedup_sees_the_drafter_the_launch_opened(tmp_path):
     # deliberately pinned revision is still compared against its own root only.
     backend._openai_gguf_companion_roots = ()
     pinned = route._active_gguf_intent(
-        LoadRequest(model_path = str(weights), gguf_variant = "Q4_K_M"),
+        LoadRequest(model_path=str(weights), gguf_variant="Q4_K_M"),
         backend,
-        model_identifier = str(weights),
-        chat_template_override = None,
-        n_parallel = 1,
-        native_grant_backed = False,
+        model_identifier=str(weights),
+        chat_template_override=None,
+        n_parallel=1,
+        native_grant_backed=False,
     )
     assert pinned.mtp_draft_path is None
 
@@ -1693,7 +1693,7 @@ def test_a_symlinked_sibling_snapshot_is_not_a_trusted_root(tmp_path):
     repo = tmp_path / "cache" / "models--a--b"
     snapshots = repo / "snapshots"
     selected = snapshots / "rev1"
-    selected.mkdir(parents = True)
+    selected.mkdir(parents=True)
     (selected / "model.gguf").touch()
     real_sibling = snapshots / "rev2"
     real_sibling.mkdir()
@@ -1701,9 +1701,9 @@ def test_a_symlinked_sibling_snapshot_is_not_a_trusted_root(tmp_path):
     outside = tmp_path / "other_tenant"
     outside.mkdir()
     (outside / "leaked.gguf").touch()
-    (snapshots / "rev3").symlink_to(outside, target_is_directory = True)
+    (snapshots / "rev3").symlink_to(outside, target_is_directory=True)
 
-    roots = local_gguf_companion_roots(str(selected), repo_level = True)
+    roots = local_gguf_companion_roots(str(selected), repo_level=True)
     names = [os.path.basename(root) for root in roots]
     assert "rev1" in names and "rev2" in names
     assert "rev3" not in names, f"escaped symlink returned as a trusted root: {roots}"
@@ -1722,7 +1722,7 @@ def test_a_repo_with_no_sibling_snapshot_widens_nothing(tmp_path):
     repo = tmp_path / "cache" / "models--a--b"
     snapshots = repo / "snapshots"
     selected = snapshots / "only"
-    selected.mkdir(parents = True)
+    selected.mkdir(parents=True)
     (selected / "model.gguf").touch()
 
     assert local_path_gguf_companion_roots(str(selected)) == ()
@@ -1742,9 +1742,9 @@ def test_a_sibling_symlinked_to_the_selected_snapshot_is_not_a_second_root(tmp_p
     repo = tmp_path / "cache" / "models--a--b"
     snapshots = repo / "snapshots"
     selected = snapshots / "only"
-    selected.mkdir(parents = True)
+    selected.mkdir(parents=True)
     (selected / "model.gguf").touch()
-    (snapshots / "alias").symlink_to(selected, target_is_directory = True)
+    (snapshots / "alias").symlink_to(selected, target_is_directory=True)
 
     assert local_path_gguf_companion_roots(str(selected)) == ()
 
@@ -1756,14 +1756,14 @@ def test_an_aliased_sibling_does_not_displace_a_real_one(tmp_path):
     repo = tmp_path / "cache" / "models--a--b"
     snapshots = repo / "snapshots"
     selected = snapshots / "weights"
-    selected.mkdir(parents = True)
+    selected.mkdir(parents=True)
     (selected / "model.gguf").touch()
     real = snapshots / "companion"
     real.mkdir()
     (real / "mmproj.gguf").touch()
-    (snapshots / "alias").symlink_to(selected, target_is_directory = True)
+    (snapshots / "alias").symlink_to(selected, target_is_directory=True)
 
-    roots = local_gguf_companion_roots(str(selected), repo_level = True)
+    roots = local_gguf_companion_roots(str(selected), repo_level=True)
     assert tuple(map(Path, roots)) == (selected, real)
 
 
@@ -1777,15 +1777,15 @@ def test_an_explicitly_empty_companion_scope_is_not_recomputed():
     """
     from models.inference import LoadRequest
 
-    unset = LoadRequest(model_path = "/models/x")
+    unset = LoadRequest(model_path="/models/x")
     assert unset._gguf_companion_roots == ()
     assert unset._gguf_companion_roots_set is False
 
-    pinned = LoadRequest(model_path = "/models/x")
+    pinned = LoadRequest(model_path="/models/x")
     pinned._gguf_companion_roots = ()
     pinned._gguf_companion_roots_set = True
     assert pinned._gguf_companion_roots == ()
     # Private, so the marker cannot be set through the wire model either.
     assert "_gguf_companion_roots_set" not in pinned.model_dump()
-    injected = LoadRequest(model_path = "/models/x", _gguf_companion_roots_set = True)
+    injected = LoadRequest(model_path="/models/x", _gguf_companion_roots_set=True)
     assert injected._gguf_companion_roots_set is False

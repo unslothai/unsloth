@@ -94,12 +94,14 @@ _is_diffusers_pipeline_dir = model_common._is_diffusers_pipeline_dir
 def _account_access():
     """Imported on use: the CLI reads this inventory without FastAPI, which account_access needs."""
     from hub.services.models import account_access
+
     return account_access
 
 
 def _http_error(status_code: int, detail: str):
     from fastapi import HTTPException
-    return HTTPException(status_code = status_code, detail = detail)
+
+    return HTTPException(status_code=status_code, detail=detail)
 
 
 def _is_immediate_model_weight_file(path: Path) -> bool:
@@ -119,7 +121,7 @@ def _has_immediate_model_weight(
     path: Path, *, probe_limit: int = _MODEL_SIGNAL_PROBE_LIMIT
 ) -> bool:
     try:
-        for index, entry in enumerate(path.iterdir(), start = 1):
+        for index, entry in enumerate(path.iterdir(), start=1):
             if index > probe_limit:
                 break
             try:
@@ -143,7 +145,7 @@ def _has_immediate_model_signal(
         return False
     if _is_diffusers_pipeline_dir(path):
         return True
-    return _has_immediate_model_weight(path, probe_limit = probe_limit)
+    return _has_immediate_model_weight(path, probe_limit=probe_limit)
 
 
 def _is_model_directory_for_scan(path: Path, *, entry_limit: int | None) -> bool:
@@ -160,11 +162,13 @@ def _is_model_directory_for_scan(path: Path, *, entry_limit: int | None) -> bool
 
 def _resolve_hf_cache_dir() -> Path:
     from utils.hf_cache_settings import get_hf_cache_paths
+
     return get_hf_cache_paths().hub_cache
 
 
 def _local_inventory_sources() -> _LocalInventorySources:
     from utils.hf_cache_settings import known_hf_hub_caches
+
     return _LocalInventorySources(
         _resolve_hf_cache_dir(),
         legacy_hf_cache_dir(),
@@ -187,7 +191,7 @@ def _scan_models_dir(
 
     _is_self_model = _is_model_directory_for_scan(
         models_dir,
-        entry_limit = entry_limit,
+        entry_limit=entry_limit,
     )
 
     if _is_self_model:
@@ -198,7 +202,7 @@ def _scan_models_dir(
         return _classify_local_path(
             models_dir,
             "models_dir",
-            updated_at = updated_at,
+            updated_at=updated_at,
         )
 
     found: List[LocalModelInfo] = []
@@ -235,7 +239,7 @@ def _scan_models_dir(
         rows = _classify_local_path(
             child,
             "models_dir",
-            updated_at = updated_at,
+            updated_at=updated_at,
         )
         if limit is not None:
             rows = rows[: max(0, limit - len(found))]
@@ -309,7 +313,7 @@ def _scan_hf_cache(
     active_hub_cache: Optional[Path] = None,
 ) -> List[LocalModelInfo]:
     if discovered is None:
-        discovered = _discover_hf_cache(cache_dir, entry_limit = entry_limit)
+        discovered = _discover_hf_cache(cache_dir, entry_limit=entry_limit)
     if not discovered:
         return []
     if variant_states is None:
@@ -317,7 +321,7 @@ def _scan_hf_cache(
         try:
             variant_states = download_manifest.build_variant_state_index(
                 [("model", model_id, cache_dir) for _repo, model_id, _updated in discovered],
-                active_hub_cache = active_hub_cache
+                active_hub_cache=active_hub_cache
                 or (cache_dir if active_cache else _resolve_hf_cache_dir()),
             )
         except Exception as e:
@@ -331,7 +335,7 @@ def _scan_hf_cache(
     found: list[LocalModelInfo] = []
     for repo_dir, model_id, updated_at in discovered:
         variant_state = (
-            variant_states.for_repo("model", model_id, hub_cache = cache_dir)
+            variant_states.for_repo("model", model_id, hub_cache=cache_dir)
             if variant_states is not None
             else None
         )
@@ -339,23 +343,23 @@ def _scan_hf_cache(
             "model",
             model_id,
             repo_dir,
-            variant_state = variant_state,
+            variant_state=variant_state,
         )
         gguf_partial = hf_cache_scan.is_gguf_repo_partial(
             model_id,
             repo_dir,
-            variant_state = variant_state,
+            variant_state=variant_state,
         )
         has_gguf_variant_state, gguf_variant_state_size = _gguf_variant_state_summary(
             model_id,
-            hub_cache = cache_dir,
-            variant_state = variant_state,
+            hub_cache=cache_dir,
+            variant_state=variant_state,
         )
         snapshot_partial_transport = (
             hf_cache_scan.partial_transport_for(
                 "model",
                 model_id,
-                repo_cache_dir = repo_dir,
+                repo_cache_dir=repo_dir,
             )
             if snapshot_partial
             else None
@@ -363,7 +367,7 @@ def _scan_hf_cache(
         snapshot_partial_resumable = snapshot_partial and hf_cache_scan.partial_resume_available(
             "model",
             model_id,
-            repo_cache_dir = repo_dir,
+            repo_cache_dir=repo_dir,
         )
         resolved = hf_cache_scan.resolve_hf_cache_realpath(repo_dir)
         scan_path = Path(resolved) if resolved else repo_dir
@@ -372,43 +376,43 @@ def _scan_hf_cache(
         rows = _classify_local_path(
             scan_path,
             "hf_cache",
-            load_path = load_path,
-            display_name = model_id.split("/")[-1],
-            model_id = model_id,
-            updated_at = updated_at,
-            partial = False,
-            active_cache = active_cache,
+            load_path=load_path,
+            display_name=model_id.split("/")[-1],
+            model_id=model_id,
+            updated_at=updated_at,
+            partial=False,
+            active_cache=active_cache,
         )
         if not rows:
             if has_gguf_variant_state and gguf_partial:
                 rows = [
                     _local_model_info(
-                        scan_path = repo_dir,
-                        load_path = load_path,
-                        source = "hf_cache",
-                        model_format = "gguf",
-                        display_name = model_id.split("/")[-1],
-                        model_id = model_id,
-                        updated_at = updated_at,
-                        partial = True,
-                        requires_variant = True,
-                        size_bytes = gguf_variant_state_size,
-                        active_cache = active_cache,
+                        scan_path=repo_dir,
+                        load_path=load_path,
+                        source="hf_cache",
+                        model_format="gguf",
+                        display_name=model_id.split("/")[-1],
+                        model_id=model_id,
+                        updated_at=updated_at,
+                        partial=True,
+                        requires_variant=True,
+                        size_bytes=gguf_variant_state_size,
+                        active_cache=active_cache,
                     )
                 ]
             else:
                 # The fallback row's model_format is "unknown", so either signal applies.
                 rows = [
                     _local_model_info(
-                        scan_path = repo_dir,
-                        load_path = load_path,
-                        source = "hf_cache",
-                        model_format = "unknown",
-                        display_name = model_id.split("/")[-1],
-                        model_id = model_id,
-                        updated_at = updated_at,
-                        partial = snapshot_partial or gguf_partial,
-                        active_cache = active_cache,
+                        scan_path=repo_dir,
+                        load_path=load_path,
+                        source="hf_cache",
+                        model_format="unknown",
+                        display_name=model_id.split("/")[-1],
+                        model_id=model_id,
+                        updated_at=updated_at,
+                        partial=snapshot_partial or gguf_partial,
+                        active_cache=active_cache,
                     )
                 ]
         elif (
@@ -418,25 +422,25 @@ def _scan_hf_cache(
         ):
             rows.append(
                 _local_model_info(
-                    scan_path = repo_dir,
-                    load_path = load_path,
-                    source = "hf_cache",
-                    model_format = "gguf",
-                    display_name = model_id.split("/")[-1],
-                    model_id = model_id,
-                    updated_at = updated_at,
-                    partial = True,
-                    requires_variant = True,
-                    size_bytes = gguf_variant_state_size,
-                    active_cache = active_cache,
+                    scan_path=repo_dir,
+                    load_path=load_path,
+                    source="hf_cache",
+                    model_format="gguf",
+                    display_name=model_id.split("/")[-1],
+                    model_id=model_id,
+                    updated_at=updated_at,
+                    partial=True,
+                    requires_variant=True,
+                    size_bytes=gguf_variant_state_size,
+                    active_cache=active_cache,
                 )
             )
         rows = _apply_format_aware_partial(
             rows,
-            snapshot_partial = snapshot_partial,
-            gguf_partial = gguf_partial,
-            snapshot_partial_transport = snapshot_partial_transport,
-            snapshot_partial_resumable = snapshot_partial_resumable,
+            snapshot_partial=snapshot_partial,
+            gguf_partial=gguf_partial,
+            snapshot_partial_transport=snapshot_partial_transport,
+            snapshot_partial_resumable=snapshot_partial_resumable,
         )
         found.extend(rows)
     return found
@@ -456,7 +460,7 @@ def _scan_lmstudio_dir(lm_dir: Path, *, entry_limit: int | None = None) -> List[
         return _classify_local_path(
             lm_dir,
             "lmstudio",
-            updated_at = updated_at,
+            updated_at=updated_at,
         )
 
     found: List[LocalModelInfo] = []
@@ -490,7 +494,7 @@ def _scan_lmstudio_dir(lm_dir: Path, *, entry_limit: int | None = None) -> List[
                         _classify_local_path(
                             child,
                             "lmstudio",
-                            updated_at = updated_at,
+                            updated_at=updated_at,
                         )
                     )
                 continue
@@ -505,7 +509,7 @@ def _scan_lmstudio_dir(lm_dir: Path, *, entry_limit: int | None = None) -> List[
                     _classify_local_path(
                         child,
                         "lmstudio",
-                        updated_at = updated_at,
+                        updated_at=updated_at,
                     )
                 )
                 continue
@@ -529,9 +533,9 @@ def _scan_lmstudio_dir(lm_dir: Path, *, entry_limit: int | None = None) -> List[
                             _classify_local_path(
                                 model_dir,
                                 "lmstudio",
-                                display_name = model_dir.name,
-                                model_id = model_id,
-                                updated_at = updated_at,
+                                display_name=model_dir.name,
+                                model_id=model_id,
+                                updated_at=updated_at,
                             )
                         )
                     elif (
@@ -547,8 +551,8 @@ def _scan_lmstudio_dir(lm_dir: Path, *, entry_limit: int | None = None) -> List[
                             _classify_local_path(
                                 model_dir,
                                 "lmstudio",
-                                model_id = f"{child.name}/{model_dir.stem}",
-                                updated_at = updated_at,
+                                model_id=f"{child.name}/{model_dir.stem}",
+                                updated_at=updated_at,
                             )
                         )
                 except OSError:
@@ -672,11 +676,11 @@ async def _collect_models_from_default_sources(
         hf_sources.append(("default HF cache", hf_default, False))
 
     seen_hf = {
-        os.path.normcase(str(path.resolve(strict = False)))
+        os.path.normcase(str(path.resolve(strict=False)))
         for path in (hf_cache_dir, legacy_hf, hf_default)
     }
     for previous_cache in known_hf_caches:
-        key = os.path.normcase(str(previous_cache.resolve(strict = False)))
+        key = os.path.normcase(str(previous_cache.resolve(strict=False)))
         if key in seen_hf:
             continue
         seen_hf.add(key)
@@ -695,7 +699,7 @@ async def _collect_models_from_default_sources(
         folder_path = Path(normalize_path(folder["path"])).expanduser()
         discovered = await _scan_source(
             "custom HF cache",
-            lambda path: _discover_hf_cache(path, entry_limit = _MAX_CUSTOM_FOLDER_ENTRIES),
+            lambda path: _discover_hf_cache(path, entry_limit=_MAX_CUSTOM_FOLDER_ENTRIES),
             folder_path,
         )
         # Carry the registered path: the status registry is keyed on the row, not on the normalized Path this scan walks.
@@ -707,7 +711,7 @@ async def _collect_models_from_default_sources(
         variant_states = await asyncio.to_thread(
             download_manifest.build_variant_state_index,
             state_repositories,
-            active_hub_cache = hf_cache_dir,
+            active_hub_cache=hf_cache_dir,
         )
     except Exception as e:
         logger.warning("Could not build shared Hub-state index: %s", scrub_paths(e))
@@ -715,12 +719,12 @@ async def _collect_models_from_default_sources(
     for label, cache_dir, active_cache, discovered in discovered_sources:
         local_models += await _scan_source(
             label,
-            lambda path, rows = discovered, active = active_cache: _scan_hf_cache(
+            lambda path, rows=discovered, active=active_cache: _scan_hf_cache(
                 path,
-                active_cache = active,
-                discovered = rows,
-                variant_states = variant_states,
-                active_hub_cache = hf_cache_dir,
+                active_cache=active,
+                discovered=rows,
+                variant_states=variant_states,
+                active_hub_cache=hf_cache_dir,
             ),
             cache_dir,
         )
@@ -740,9 +744,9 @@ async def _collect_models_from_default_sources(
             custom_models = await asyncio.to_thread(
                 _scan_custom_folder,
                 folder_path,
-                discovered = discovered,
-                variant_states = variant_states,
-                active_hub_cache = hf_cache_dir,
+                discovered=discovered,
+                variant_states=variant_states,
+                active_hub_cache=hf_cache_dir,
             )
             if _inventory_physical_identity(str(folder_path)) in hermes_identities:
                 # Registering ~/.hermes/models was how Hermes downloads were listed before this scan;
@@ -768,7 +772,7 @@ async def _collect_models_from_default_sources(
                 record_scan_failure(row_path, e)
             continue
         # Off the loop, like the scan above it: the probe opens directories, and on a stalled network mount scandir sits in the kernel with nothing to yield to.
-        await asyncio.to_thread(note_scan_folder_scanned, row_path, found = bool(custom_models))
+        await asyncio.to_thread(note_scan_folder_scanned, row_path, found=bool(custom_models))
         local_models.extend(_promote_to_custom_source(model) for model in custom_models)
 
     return local_models
@@ -796,18 +800,18 @@ def _scan_custom_folder(
         for m in (
             _scan_models_dir(
                 folder_path,
-                limit = _MAX_MODELS_PER_CUSTOM_FOLDER,
-                entry_limit = _MAX_CUSTOM_FOLDER_ENTRIES,
+                limit=_MAX_MODELS_PER_CUSTOM_FOLDER,
+                entry_limit=_MAX_CUSTOM_FOLDER_ENTRIES,
             )
             + _scan_hf_cache(
                 folder_path,
-                entry_limit = _MAX_CUSTOM_FOLDER_ENTRIES,
-                active_cache = False,
-                discovered = discovered,
-                variant_states = variant_states,
-                active_hub_cache = active_hub_cache,
+                entry_limit=_MAX_CUSTOM_FOLDER_ENTRIES,
+                active_cache=False,
+                discovered=discovered,
+                variant_states=variant_states,
+                active_hub_cache=active_hub_cache,
             )
-            + _scan_lmstudio_dir(folder_path, entry_limit = _MAX_CUSTOM_FOLDER_ENTRIES)
+            + _scan_lmstudio_dir(folder_path, entry_limit=_MAX_CUSTOM_FOLDER_ENTRIES)
         )
         if _is_supported(m)
         if not any(p in (".studio_links", "ollama_links") for p in Path(m.path).parts)
@@ -820,18 +824,18 @@ def _scan_custom_folder(
         path = Path(model.path)
         if path.is_dir():
             if any(
-                detect_gguf_model(str(file), model_root = str(folder_path)) is not None
+                detect_gguf_model(str(file), model_root=str(folder_path)) is not None
                 for file in path.glob("*")
                 if not _safe_is_dir(file) and file.suffix.lower() == ".gguf"
             ):
                 selectable.append(model)
-        elif detect_gguf_model(model.path, model_root = str(folder_path)) is not None:
+        elif detect_gguf_model(model.path, model_root=str(folder_path)) is not None:
             selectable.append(model)
 
     selectable = gguf.dedupe_custom_gguf_rows(selectable)
     remaining = _MAX_MODELS_PER_CUSTOM_FOLDER - len(selectable)
     if remaining > 0:
-        selectable.extend(scan_ollama_dir(folder_path, limit = remaining))
+        selectable.extend(scan_ollama_dir(folder_path, limit=remaining))
     return selectable[:_MAX_MODELS_PER_CUSTOM_FOLDER]
 
 
@@ -839,7 +843,7 @@ def _promote_to_custom_source(model: LocalModelInfo) -> LocalModelInfo:
     if model.source in {"hf_cache", "ollama", "hermes"}:
         return model
     return model.model_copy(
-        update = {
+        update={
             "source": "custom",
             "model_id": None,
             "inventory_id": _local_inventory_id(
@@ -851,10 +855,10 @@ def _promote_to_custom_source(model: LocalModelInfo) -> LocalModelInfo:
             "capabilities": _capabilities_for_format(
                 model.model_format,
                 "custom",
-                partial = model.partial,
-                requires_variant = model.capabilities.requires_variant,
+                partial=model.partial,
+                requires_variant=model.capabilities.requires_variant,
                 # Rebuilding from the format alone restored can_chat on rows the classifier had ruled out; the format is unchanged here, so carrying the old verdict through is idempotent.
-                can_chat_override = model.capabilities.can_chat,
+                can_chat_override=model.capabilities.can_chat,
             ),
         }
     )
@@ -912,8 +916,8 @@ def _dedupe_local_models(local_models: List[LocalModelInfo]) -> list[LocalModelI
     return sorted(
         [model for model in deduped_values if model.source != "custom"]
         + gguf.suppress_grouped_gguf_file_rows(custom_values),
-        key = lambda item: item.updated_at or 0,
-        reverse = True,
+        key=lambda item: item.updated_at or 0,
+        reverse=True,
     )
 
 
@@ -953,7 +957,7 @@ async def _scan_local_models_response(
     try:
         models_root = _resolve_allowed_models_dir(models_dir, allowed_roots)
     except ValueError:
-        raise _http_error(status_code = 403, detail = "Directory not allowed")
+        raise _http_error(status_code=403, detail="Directory not allowed")
 
     try:
         local_models = await _collect_models_from_default_sources(
@@ -969,18 +973,18 @@ async def _scan_local_models_response(
         )
         models = await asyncio.to_thread(_filter_and_dedupe_local_models, local_models)
         return LocalModelListResponse(
-            models_dir = str(models_root),
-            hf_cache_dir = str(hf_cache_dir),
-            lmstudio_dirs = [str(d) for d in lm_dirs],
-            ollama_dirs = [str(d) for d in ollama_dirs],
-            hermes_dirs = [str(d) for d in hermes_dirs],
-            models = models,
+            models_dir=str(models_root),
+            hf_cache_dir=str(hf_cache_dir),
+            lmstudio_dirs=[str(d) for d in lm_dirs],
+            ollama_dirs=[str(d) for d in ollama_dirs],
+            hermes_dirs=[str(d) for d in hermes_dirs],
+            models=models,
         )
     except Exception as e:
-        logger.error("Error listing local models: %s", scrub_paths(e), exc_info = True)
+        logger.error("Error listing local models: %s", scrub_paths(e), exc_info=True)
         raise _http_error(
-            status_code = 500,
-            detail = f"Failed to list local models: {str(e)}",
+            status_code=500,
+            detail=f"Failed to list local models: {str(e)}",
         )
 
 
@@ -988,7 +992,7 @@ async def _account_local_response(response):
     if not _account_access().managed_account():
         return response
     models = await asyncio.to_thread(_account_access().filter_model_rows, response.models)
-    return response.model_copy(update = {"models": models})
+    return response.model_copy(update={"models": models})
 
 
 async def list_local_models_response(models_dir: str = "./models") -> LocalModelListResponse:
@@ -1004,13 +1008,13 @@ async def list_local_models_response(models_dir: str = "./models") -> LocalModel
                 task, audio_type = catalog_classification._local_model_classification(model)
                 models.append(
                     model.model_copy(
-                        update = {
+                        update={
                             "task": task,
                             "audio_type": audio_type,
                         }
                     )
                 )
-            return response.model_copy(update = {"models": models})
+            return response.model_copy(update={"models": models})
         except Exception as e:  # noqa: BLE001 -- classification never breaks the listing
             logger.warning("Could not classify local model tasks: %s", scrub_paths(e))
             return response
@@ -1046,7 +1050,7 @@ async def list_local_models_response(models_dir: str = "./models") -> LocalModel
             response = await hf_cache_scan.shared_scan(
                 _local_inventory_flights,
                 key,
-                lambda expected_epoch = epoch, folders = custom_folders, roots = sources: (
+                lambda expected_epoch=epoch, folders=custom_folders, roots=sources: (
                     scan_and_classify(expected_epoch, folders, roots)
                 ),
             )
@@ -1064,16 +1068,16 @@ def get_models_folder_response() -> dict:
     path = _resolve_hf_cache_dir()
     # Create it if missing so "Open folder" works before the first download: HF builds the cache lazily, and studio pre-creates only the default dir, not a user's explicit HF_HOME/HF_HUB_CACHE.
     try:
-        path.mkdir(parents = True, exist_ok = True)
+        path.mkdir(parents=True, exist_ok=True)
     except OSError as e:
         raise _http_error(
-            status_code = 500,
-            detail = f"Failed to create models folder: {path}: {e}",
+            status_code=500,
+            detail=f"Failed to create models folder: {path}: {e}",
         ) from e
     if not path.is_dir():
         raise _http_error(
-            status_code = 500,
-            detail = f"Models folder path is not a directory: {path}",
+            status_code=500,
+            detail=f"Models folder path is not a directory: {path}",
         )
     return {"path": str(path)}
 
@@ -1093,10 +1097,11 @@ def add_scan_folder_response(path: str) -> dict:
         logger.warning(
             "Scan folder rejected: %s (path=%s)", scrub_paths(e), short_path_for_log(path)
         )
-        raise _http_error(status_code = 400, detail = str(e))
+        raise _http_error(status_code=400, detail=str(e))
     logger.info("Scan folder added: %s", short_path_for_log(folder.get("path")))
     if inserted:
         from core.inference.local_model_resolver import invalidate_index, warm_index_soon
+
         invalidate_index()
         warm_index_soon()
     return folder

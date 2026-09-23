@@ -32,7 +32,7 @@ JOB = "ui-smoke"
 
 
 def _job() -> dict:
-    return yaml.safe_load(WORKFLOW.read_text(encoding = "utf-8"))["jobs"][JOB]
+    return yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))["jobs"][JOB]
 
 
 def _shards() -> list[str]:
@@ -69,7 +69,7 @@ def test_the_job_still_drives_every_script_it_used_to():
     )
 
 
-@pytest.mark.parametrize("step", _driving_steps(), ids = lambda s: str(s.get("name", "?"))[:40])
+@pytest.mark.parametrize("step", _driving_steps(), ids=lambda s: str(s.get("name", "?"))[:40])
 def test_every_playwright_step_runs_on_some_shard(step):
     condition = str(step.get("if", ""))
     named = _named_shards(condition)
@@ -137,7 +137,7 @@ def test_each_shard_uploads_under_its_own_artifact_name():
     Asserted for any matrix job in this workflow rather than for this one by name, since
     the next job to be sharded inherits the same trap.
     """
-    document = yaml.safe_load(WORKFLOW.read_text(encoding = "utf-8"))
+    document = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
     for job_name, job in document["jobs"].items():
         dimensions = (job.get("strategy") or {}).get("matrix") or {}
         if not dimensions:

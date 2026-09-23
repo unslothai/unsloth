@@ -303,7 +303,7 @@ def _without_block_comments(source: str) -> str:
     `(?<!:)` keeps `https://` out of it, which is the one `//` in this file that is not a
     comment.
     """
-    source = re.sub(r"\{?\s*/\*.*?\*/\s*\}?", " ", source, flags = re.S)
+    source = re.sub(r"\{?\s*/\*.*?\*/\s*\}?", " ", source, flags=re.S)
     return "\n".join(re.sub(r"(?<!:)//.*$", "", line) for line in source.splitlines())
 
 
@@ -346,18 +346,18 @@ def _without_comments(tag: str) -> str:
     exactly where it sits when it is being used to switch a prop off.
     """
     kept = [line for line in tag.splitlines() if not line.lstrip().startswith("//")]
-    return re.sub(r"/\*.*?\*/", " ", "\n".join(kept), flags = re.S)
+    return re.sub(r"/\*.*?\*/", " ", "\n".join(kept), flags=re.S)
 
 
 def test_assistant_more_menu_exposes_response_details_action():
-    src = THREAD_TSX.read_text(encoding = "utf-8")
+    src = THREAD_TSX.read_text(encoding="utf-8")
     assert "MessageResponseDetailsSheet" in src
     assert "See response details" in src
     assert "setDetailsOpen(true)" in src
 
 
 def test_response_details_sheet_uses_unsloth_sheet_and_key_sections():
-    src = DETAILS_TSX.read_text(encoding = "utf-8")
+    src = DETAILS_TSX.read_text(encoding="utf-8")
     assert "SheetContent" in src
     assert "Response details" in src
     assert "MessageResponseModelBadge" in src
@@ -395,13 +395,13 @@ def assert_sheet_close_button_tracks_title_center(src: str) -> None:
 
 def test_sheet_headers_center_the_shared_close_button_on_the_title():
     assert_sheet_close_button_tracks_title_center(
-        DETAILS_TSX.read_text(encoding = "utf-8"),
+        DETAILS_TSX.read_text(encoding="utf-8"),
     )
     assert_sheet_close_button_tracks_title_center(
-        DOCUMENT_PREVIEW_TSX.read_text(encoding = "utf-8"),
+        DOCUMENT_PREVIEW_TSX.read_text(encoding="utf-8"),
     )
 
-    sheet_src = SHEET_TSX.read_text(encoding = "utf-8")
+    sheet_src = SHEET_TSX.read_text(encoding="utf-8")
     close_button = sheet_src[
         sheet_src.index("function SheetCloseButton") : sheet_src.index("function SheetPortal")
     ]
@@ -413,19 +413,19 @@ def test_sheet_headers_center_the_shared_close_button_on_the_title():
 
 
 def test_response_model_badge_is_user_configurable_and_rendered_once_per_message():
-    prefs_src = CHAT_PREFS_TS.read_text(encoding = "utf-8")
-    chat_tab_src = CHAT_TAB_TSX.read_text(encoding = "utf-8")
-    thread_src = THREAD_TSX.read_text(encoding = "utf-8")
-    reasoning_src = REASONING_TSX.read_text(encoding = "utf-8")
+    prefs_src = CHAT_PREFS_TS.read_text(encoding="utf-8")
+    chat_tab_src = CHAT_TAB_TSX.read_text(encoding="utf-8")
+    thread_src = THREAD_TSX.read_text(encoding="utf-8")
+    reasoning_src = REASONING_TSX.read_text(encoding="utf-8")
 
     assert "showResponseModel: boolean" in prefs_src
     assert "showResponseModel: false" in prefs_src
     assert "showResponseModel: saved?.showResponseModel ?? false" in prefs_src
     # The visible label lives in the locale file; the tab holds only the key that resolves to it.
-    assert 'showResponseModel: "Show response model"' in EN_LOCALE_TS.read_text(encoding = "utf-8")
+    assert 'showResponseModel: "Show response model"' in EN_LOCALE_TS.read_text(encoding="utf-8")
     assert 't("settings.chat.showResponseModel")' in chat_tab_src
     assert "setShowResponseModel" in chat_tab_src
-    details_src = DETAILS_TSX.read_text(encoding = "utf-8")
+    details_src = DETAILS_TSX.read_text(encoding="utf-8")
     assert (
         "aui-response-model-badge pointer-events-none relative inline-flex min-h-5" in details_src
     )
@@ -565,7 +565,7 @@ def test_response_model_badge_is_user_configurable_and_rendered_once_per_message
 
 
 def test_reasoning_uses_continuous_transcript_without_legacy_height_cap():
-    src = _without_block_comments(REASONING_TSX.read_text(encoding = "utf-8"))
+    src = _without_block_comments(REASONING_TSX.read_text(encoding="utf-8"))
     assert "retainStreamingHeight" not in src
     assert "resolveReasoningHeightCap" not in src
     assert "<ReasoningTranscript" in src
@@ -580,7 +580,7 @@ def test_reasoning_clears_manual_open_on_a_new_stream():
     A nullable manual override outranks the visibility preference for one round;
     the next stream must return control to that preference.
     """
-    src = _without_block_comments(REASONING_TSX.read_text(encoding = "utf-8"))
+    src = _without_block_comments(REASONING_TSX.read_text(encoding="utf-8"))
 
     # Which state holds the manual answer is read, not assumed. The previous form of this test
     # pinned `setManualOpen(false)`, and when #11433 replaced the `manualOpen` /
@@ -707,7 +707,7 @@ def test_reasoning_clears_manual_open_on_a_new_stream():
 
 
 def test_response_details_metadata_is_persisted_without_backend_schema_change():
-    src = ADAPTER_TS.read_text(encoding = "utf-8")
+    src = ADAPTER_TS.read_text(encoding="utf-8")
     assert "interface ResponseDetailsMetadata" in src
     assert "buildResponseDetails" in src
     assert "responseDetails: buildResponseDetails(finishedAt)" in src

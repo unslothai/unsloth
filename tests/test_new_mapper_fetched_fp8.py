@@ -33,11 +33,12 @@ _ROW_ONLY = "zeta-org/Zeta-9B-Row-Only-FP8"
 def _loader_utils_globals():
     """The real loader_utils module globals, for anything the stand-in needs verbatim."""
     import unsloth.models.loader_utils as loader_utils
+
     return vars(loader_utils)
 
 
 def _mapper_source():
-    with open(os.path.join(_MODELS, "mapper.py"), encoding = "utf-8") as f:
+    with open(os.path.join(_MODELS, "mapper.py"), encoding="utf-8") as f:
         return f.read()
 
 
@@ -70,7 +71,7 @@ class _FakeRaw:
     def __init__(self, chunks):
         self._chunks = iter(chunks)
 
-    def read1(self, amount = -1):
+    def read1(self, amount=-1):
         return next(self._chunks, b"")
 
 
@@ -81,9 +82,9 @@ class _FakeResponse:
     def __init__(
         self,
         text,
-        chunks = None,
-        status_code = 200,
-        headers = None,
+        chunks=None,
+        status_code=200,
+        headers=None,
     ):
         self.encoding = "utf-8"
         self.status_code = status_code
@@ -91,7 +92,7 @@ class _FakeResponse:
         self._chunks = chunks if chunks is not None else [text.encode("utf-8")]
         self._raw = None
 
-    def iter_content(self, chunk_size = 1):
+    def iter_content(self, chunk_size=1):
         yield from self._chunks
 
     @property
@@ -112,11 +113,11 @@ class _FakeResponse:
 def _install_fake_requests(
     monkeypatch,
     text,
-    chunks = None,
+    chunks=None,
 ):
     module = types.ModuleType("requests")
-    module.compat = types.SimpleNamespace(urljoin = lambda base, url: url)
-    module.get = lambda url, timeout = None, stream = False, allow_redirects = True: (
+    module.compat = types.SimpleNamespace(urljoin=lambda base, url: url)
+    module.get = lambda url, timeout=None, stream=False, allow_redirects=True: (
         _FakeResponse(text, chunks)
     )
     monkeypatch.setitem(sys.modules, "requests", module)
@@ -124,9 +125,9 @@ def _install_fake_requests(
 
 def _install_fake_vllm_absent(monkeypatch, namespace):
     """vllm >= 0.12.0 returns early from __get_model_name, leaving the probe unreachable."""
-    monkeypatch.delitem(sys.modules, "vllm", raising = False)
+    monkeypatch.delitem(sys.modules, "vllm", raising=False)
     fake = types.ModuleType("importlib")
-    fake.util = types.SimpleNamespace(find_spec = lambda name: None)
+    fake.util = types.SimpleNamespace(find_spec=lambda name: None)
     namespace["importlib"] = fake
 
 
@@ -156,7 +157,7 @@ def _load_resolver(installed_source):
         "Version": Version,
         "os": os,
     }
-    with open(os.path.join(_MODELS, "loader_utils.py"), encoding = "utf-8") as f:
+    with open(os.path.join(_MODELS, "loader_utils.py"), encoding="utf-8") as f:
         tree = ast.parse(f.read())
     for node in tree.body:
         if isinstance(node, ast.Assign) and any(
@@ -183,7 +184,7 @@ def test_probe_answers_for_an_fp8_repo_only_the_fetched_mapper_knows(monkeypatch
 
     try:
         resolved = namespace["get_model_name"](
-            _NEW_OFFICIAL, load_in_4bit = False, load_in_fp8 = "block"
+            _NEW_OFFICIAL, load_in_4bit=False, load_in_fp8="block"
         )
     except NotImplementedError as error:
         assert "not supported in your current Unsloth version" in str(error)
@@ -218,7 +219,7 @@ def test_fbgemm_prefers_the_row_table_over_the_block_one(monkeypatch):
     block = namespace["FLOAT_TO_FP8_BLOCK_MAPPER"]
 
     key = next(k for k in row if k in block and row[k] != block[k])
-    resolved = namespace["get_model_name"](key, load_in_4bit = False, load_in_fp8 = True)
+    resolved = namespace["get_model_name"](key, load_in_4bit=False, load_in_fp8=True)
 
     assert resolved == row[key], (
         f"FBGEMM must take the row branch for {key!r}, got {resolved!r} "
@@ -240,7 +241,7 @@ def test_probe_answers_for_a_row_only_repo_the_fetched_mapper_knows(monkeypatch)
     _install_fake_vllm_absent(monkeypatch, namespace)
 
     try:
-        resolved = namespace["get_model_name"](_ROW_ONLY, load_in_4bit = False, load_in_fp8 = True)
+        resolved = namespace["get_model_name"](_ROW_ONLY, load_in_4bit=False, load_in_fp8=True)
     except NotImplementedError as error:
         assert "not supported in your current Unsloth version" in str(error)
     else:

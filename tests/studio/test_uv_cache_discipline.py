@@ -49,7 +49,7 @@ COLD_INSTALL_WORKFLOWS = (
 
 
 def _own_steps(action: Path = ACTION) -> list[dict]:
-    return yaml.safe_load(action.read_text(encoding = "utf-8"))["runs"]["steps"]
+    return yaml.safe_load(action.read_text(encoding="utf-8"))["runs"]["steps"]
 
 
 def _steps() -> list[dict]:
@@ -183,7 +183,7 @@ def test_cold_install_lanes_never_adopt_this_action(name: str) -> None:
     path = WORKFLOWS / name
     if not path.exists():
         pytest.skip(f"{name} no longer exists")
-    text = path.read_text(encoding = "utf-8")
+    text = path.read_text(encoding="utf-8")
     assert "install-unsloth-local" not in text, (
         f"{name} uses install-unsloth-local, which warms uv's cache. A cached "
         f"cold-install test proves nothing and still goes green."
@@ -202,7 +202,7 @@ def test_the_action_is_actually_used() -> None:
     users = [
         p.name
         for p in WORKFLOWS.glob("*.yml")
-        if "install-unsloth-local" in p.read_text(encoding = "utf-8")
+        if "install-unsloth-local" in p.read_text(encoding="utf-8")
     ]
     assert len(users) >= 5, f"only {len(users)} workflows use the action: {users}"
 
@@ -239,14 +239,14 @@ def _runs_installer(step: dict) -> bool:
         return True
     for helper in _HELPER.findall(run):
         path = REPO_ROOT / ".github" / "scripts" / helper
-        if path.is_file() and _INSTALLER.search(path.read_text(encoding = "utf-8", errors = "replace")):
+        if path.is_file() and _INSTALLER.search(path.read_text(encoding="utf-8", errors="replace")):
             return True
     return False
 
 
 def _jobs():
     for f in sorted(WORKFLOWS.glob("*.yml")):
-        doc = yaml.safe_load(f.read_text(encoding = "utf-8"))
+        doc = yaml.safe_load(f.read_text(encoding="utf-8"))
         if isinstance(doc, dict) and isinstance(doc.get("jobs"), dict):
             for jid, job in doc["jobs"].items():
                 if isinstance(job, dict):
@@ -255,7 +255,7 @@ def _jobs():
 
 def _produces_on_main(name: str) -> bool:
     """Same rule as the dist guard: `push` to main or `schedule`, never `workflow_dispatch`."""
-    doc = yaml.safe_load((WORKFLOWS / name).read_text(encoding = "utf-8"))
+    doc = yaml.safe_load((WORKFLOWS / name).read_text(encoding="utf-8"))
     on = doc.get("on", doc.get(True)) or {}
     if isinstance(on, str):
         on = {on: None}
@@ -274,7 +274,7 @@ def test_the_uv_cache_key_has_exactly_one_definition() -> None:
     """A second copy agrees today and drifts silently, with the cache still hitting."""
     definers = []
     for path in sorted(list(ACTIONS.rglob("action.yml")) + list(WORKFLOWS.glob("*.yml"))):
-        if re.search(r"key:\s*uv-\$\{\{", path.read_text(encoding = "utf-8")):
+        if re.search(r"key:\s*uv-\$\{\{", path.read_text(encoding="utf-8")):
             definers.append(str(path.relative_to(REPO_ROOT)))
     assert definers == [
         ".github/actions/uv-cache-restore/action.yml"
@@ -383,13 +383,13 @@ def test_cold_install_lanes_never_adopt_the_uv_actions(name: str) -> None:
     if not path.exists():
         pytest.skip(f"{name} no longer exists")
     assert "uv-cache-" not in path.read_text(
-        encoding = "utf-8"
+        encoding="utf-8"
     ), f"{name} restores a warm uv cache; a cached cold-install test proves nothing"
 
 
 @pytest.mark.parametrize("name,jid", COLD_INSTALL_JOBS)
 def test_cold_install_jobs_never_adopt_the_uv_actions(name: str, jid: str) -> None:
-    doc = yaml.safe_load((WORKFLOWS / name).read_text(encoding = "utf-8"))
+    doc = yaml.safe_load((WORKFLOWS / name).read_text(encoding="utf-8"))
     job = (doc.get("jobs") or {}).get(jid)
     assert job is not None, f"{name} no longer has job {jid}; update COLD_INSTALL_JOBS"
     offenders = [
@@ -405,7 +405,7 @@ def test_the_uv_actions_are_actually_used_directly() -> None:
     direct = [
         p.name
         for p in WORKFLOWS.glob("*.yml")
-        if "uv-cache-restore" in p.read_text(encoding = "utf-8")
+        if "uv-cache-restore" in p.read_text(encoding="utf-8")
     ]
     assert (
         len(direct) >= 4

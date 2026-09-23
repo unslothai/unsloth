@@ -70,7 +70,7 @@ from utils.hardware import amd
 # both modules, and the cases that fake a Linux host still exercise the real logic there.
 pytestmark = pytest.mark.skipif(
     platform.system() == "Windows",
-    reason = (
+    reason=(
         "POSIX-only subject: no /dev device nodes, no grp/pwd, and the probe under test "
         "returns [] on Windows by construction"
     ),
@@ -86,7 +86,7 @@ _GPU_MASK_VARS = (
 )
 
 
-@pytest.fixture(autouse = True)
+@pytest.fixture(autouse=True)
 def _no_inherited_gpu_mask(monkeypatch):
     """No per-GPU selector unless a test sets one.
 
@@ -98,10 +98,10 @@ def _no_inherited_gpu_mask(monkeypatch):
     reads it, and a test naming no mask would then be answered by the runner's own.
     """
     for _var in _GPU_MASK_VARS:
-        monkeypatch.delenv(_var, raising = False)
+        monkeypatch.delenv(_var, raising=False)
 
 
-@pytest.fixture(autouse = True)
+@pytest.fixture(autouse=True)
 def _the_account_this_process_runs_as(monkeypatch):
     """The repair commands name the account os.access answered for, so fix what that is.
 
@@ -193,7 +193,7 @@ def _capability_message(verdict: str, detail: "str | None" = None) -> str:
     """The line Studio shows for a GPU it can see and cannot use, for a given verdict."""
     return hardware._gpu_present_but_unusable_message(
         "video generation",
-        verdict = (verdict, detail),
+        verdict=(verdict, detail),
     )
 
 
@@ -1916,7 +1916,7 @@ def test_the_installer_does_not_dangle_the_group_sentence(tmp_path):
 def _says(
     out: str,
     contains,
-    absent = (),
+    absent=(),
 ):
     """Assert what a lifted message says; ``contains = None`` means it says nothing at all."""
     if contains is None:
@@ -1930,7 +1930,7 @@ def _says(
 
 def _cases(*rows):
     """Parametrize rows written id first, so one case of a family reads as one line."""
-    return [pytest.param(*row[1:], id = row[0]) for row in rows]
+    return [pytest.param(*row[1:], id=row[0]) for row in rows]
 
 
 def test_the_installer_stops_at_the_owner_class_too(tmp_path):
@@ -1939,15 +1939,15 @@ def test_the_installer_stops_at_the_owner_class_too(tmp_path):
     node = tmp_path / "renderD128"
     node.write_bytes(b"")
     node.chmod(0o060)
-    out = _install_sh_hint(str(node), self_uid = str(os.getuid()))
+    out = _install_sh_hint(str(node), self_uid=str(os.getuid()))
     assert "usermod" not in out
     assert "owned by this account" in out
 
 
-_SEEN = dict(topology = True, amd_smi_sees_it = True)
+_SEEN = dict(topology=True, amd_smi_sees_it=True)
 _NO_TORCH = {**_SEEN, "skip_torch": True, "backend": None}
-_BLIND = dict(topology = False, amd_smi_sees_it = False)
-_SEEING = dict(topology = False, amd_smi_sees_it = True)
+_BLIND = dict(topology=False, amd_smi_sees_it=False)
+_SEEING = dict(topology=False, amd_smi_sees_it=True)
 _STACK = "Install the ROCm kernel stack"
 
 
@@ -1969,11 +1969,11 @@ def _kernel_stack_hint_text(
     """
     return _install_sh_missing_kfd(
         tmp_path,
-        topology = topology,
-        kfd_present = kfd_present,
-        topology_readable = topology_readable,
-        amd_smi_sees_it = False,
-        nvidia = nvidia,
+        topology=topology,
+        kfd_present=kfd_present,
+        topology_readable=topology_readable,
+        amd_smi_sees_it=False,
+        nvidia=nvidia,
     )
 
 

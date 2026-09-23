@@ -87,10 +87,10 @@ def test_unified_free_is_unchanged_when_system_memory_is_unreadable(monkeypatch)
 def test_spark_snapshot_is_unified_and_credits_the_cache(monkeypatch):
     """End to end through the snapshot the diffusion refusal is measured against."""
     torch_stub = types.SimpleNamespace(
-        version = types.SimpleNamespace(hip = None),
-        cuda = types.SimpleNamespace(
-            current_device = lambda: 0,
-            get_device_properties = lambda ordinal: _SparkProps(),
+        version=types.SimpleNamespace(hip=None),
+        cuda=types.SimpleNamespace(
+            current_device=lambda: 0,
+            get_device_properties=lambda ordinal: _SparkProps(),
         ),
     )
     monkeypatch.setitem(__import__("sys").modules, "torch", torch_stub)
@@ -105,7 +105,7 @@ def test_spark_snapshot_is_unified_and_credits_the_cache(monkeypatch):
     monkeypatch.setitem(__import__("sys").modules, "utils.hardware", hardware_stub)
 
     memory = diffusion_memory.snapshot_device_memory(
-        types.SimpleNamespace(device = "cuda", backend = "cuda")
+        types.SimpleNamespace(device="cuda", backend="cuda")
     )
 
     assert memory.memory_kind == "unified_memory"
@@ -129,10 +129,10 @@ def test_a_rocm_apu_snapshot_is_not_credited(monkeypatch):
         is_integrated = 1
 
     torch_stub = types.SimpleNamespace(
-        version = types.SimpleNamespace(hip = "6.2.0"),
-        cuda = types.SimpleNamespace(
-            current_device = lambda: 0,
-            get_device_properties = lambda ordinal: _ApuProps(),
+        version=types.SimpleNamespace(hip="6.2.0"),
+        cuda=types.SimpleNamespace(
+            current_device=lambda: 0,
+            get_device_properties=lambda ordinal: _ApuProps(),
         ),
     )
     monkeypatch.setitem(_sys.modules, "torch", torch_stub)
@@ -144,7 +144,7 @@ def test_a_rocm_apu_snapshot_is_not_credited(monkeypatch):
     monkeypatch.setitem(_sys.modules, "utils.hardware", hardware_stub)
 
     memory = diffusion_memory.snapshot_device_memory(
-        types.SimpleNamespace(device = "cuda", backend = "cuda")
+        types.SimpleNamespace(device="cuda", backend="cuda")
     )
 
     assert memory.memory_kind == "unified_memory"
@@ -195,11 +195,11 @@ def test_a_bound_cgroup_prices_the_reserve_against_the_container(monkeypatch):
     assert (free_mib, total_mib) == (32 * 1024, 32 * 1024)
     budget = diffusion_memory._safe_device_budget_mib(
         diffusion_memory.DeviceMemory(
-            backend = "cuda",
-            device = "cuda",
-            memory_kind = "unified_memory",
-            free_mib = free_mib,
-            total_mib = total_mib,
+            backend="cuda",
+            device="cuda",
+            memory_kind="unified_memory",
+            free_mib=free_mib,
+            total_mib=total_mib,
         )
     )
     # 32 GiB less its own 20%, not less 20% of a host total the container cannot reach.
@@ -311,11 +311,11 @@ def test_a_finite_limit_caps_capacity_even_when_the_remainder_is_slack():
     assert (free_mib, total_mib) == (16 * 1024, 64 * 1024)
     budget = diffusion_memory._safe_device_budget_mib(
         diffusion_memory.DeviceMemory(
-            backend = "cuda",
-            device = "cuda",
-            memory_kind = "unified_memory",
-            free_mib = free_mib,
-            total_mib = total_mib,
+            backend="cuda",
+            device="cuda",
+            memory_kind="unified_memory",
+            free_mib=free_mib,
+            total_mib=total_mib,
         )
     )
     # 20% of 64 GiB, not of 121 GiB, so there is a budget at all.
@@ -362,11 +362,11 @@ def test_a_rocm_wheel_without_version_hip_is_still_rocm(monkeypatch):
         is_integrated = 1
 
     torch_stub = types.SimpleNamespace(
-        __version__ = "2.9.0+rocm6.4",
-        version = types.SimpleNamespace(),
-        cuda = types.SimpleNamespace(
-            current_device = lambda: 0,
-            get_device_properties = lambda ordinal: _ApuProps(),
+        __version__="2.9.0+rocm6.4",
+        version=types.SimpleNamespace(),
+        cuda=types.SimpleNamespace(
+            current_device=lambda: 0,
+            get_device_properties=lambda ordinal: _ApuProps(),
         ),
     )
     monkeypatch.setitem(_sys.modules, "torch", torch_stub)
@@ -378,7 +378,7 @@ def test_a_rocm_wheel_without_version_hip_is_still_rocm(monkeypatch):
     monkeypatch.setitem(_sys.modules, "utils.hardware", hardware_stub)
 
     memory = diffusion_memory.snapshot_device_memory(
-        types.SimpleNamespace(device = "cuda", backend = "cuda")
+        types.SimpleNamespace(device="cuda", backend="cuda")
     )
 
     assert memory.memory_kind == "unified_memory"

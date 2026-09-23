@@ -60,7 +60,7 @@ def _model_is_missing(api: HfApi, model_id: str) -> bool:
     129 missing models.
     """
     try:
-        api.model_info(model_id, expand = ["lastModified"])
+        api.model_info(model_id, expand=["lastModified"])
     except RepositoryNotFoundError:
         return True
     except Exception as exc:
@@ -86,7 +86,7 @@ TestParams = [
 ]
 
 
-@pytest.mark.parametrize("model_test_param", TestParams, ids = lambda param: param.name)
+@pytest.mark.parametrize("model_test_param", TestParams, ids=lambda param: param.name)
 def test_model_registration(model_test_param: ModelTestParam):
     MODEL_REGISTRY.clear()
     registration_method = model_test_param.register_models
@@ -105,7 +105,7 @@ def test_all_model_registration():
 
 def test_quant_type():
     # NOTE: for org="unsloth" models, QuantType.NONE aliases QuantType.UNSLOTH
-    dynamic_quant_models = search_models(quant_types = [QuantType.UNSLOTH])
+    dynamic_quant_models = search_models(quant_types=[QuantType.UNSLOTH])
     assert all(m.quant_type == QuantType.UNSLOTH for m in dynamic_quant_models)
     quant_tag = QUANT_TAG_MAP[QuantType.UNSLOTH]
     assert all(quant_tag in m.model_path for m in dynamic_quant_models)
@@ -131,9 +131,9 @@ def _run_registry_child(body: str) -> subprocess.CompletedProcess:
     )
     return subprocess.run(
         [sys.executable, "-c", prelude + body],
-        capture_output = True,
-        text = True,
-        check = False,
+        capture_output=True,
+        text=True,
+        check=False,
     )
 
 
@@ -150,7 +150,7 @@ _REGISTRY_LIFECYCLE = (
 )
 
 
-@pytest.fixture(scope = "module")
+@pytest.fixture(scope="module")
 def registry_lifecycle():
     """One child interpreter for both questions below, shared at module scope.
 
@@ -220,7 +220,7 @@ class _FakeApi:
     def model_info(
         self,
         model_id,
-        expand = None,
+        expand=None,
     ):
         if self.error is not None:
             raise self.error
@@ -257,7 +257,7 @@ def test_present_repo_is_not_reported_missing():
         lambda: ConnectionError("Failed to establish a new connection"),
         lambda: TimeoutError("read timed out"),
     ],
-    ids = ["rate_limited", "connection_refused", "timeout"],
+    ids=["rate_limited", "connection_refused", "timeout"],
 )
 def test_unreachable_hub_skips_instead_of_reporting_missing(monkeypatch, make_error):
     """A hub outage must not be reported as every registered model missing."""

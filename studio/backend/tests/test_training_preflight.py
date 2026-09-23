@@ -104,9 +104,9 @@ class _FakeInnerTrainer:
     def __init__(
         self,
         *,
-        batch = None,
-        dataloader_error = None,
-        train_dataset = None,
+        batch=None,
+        dataloader_error=None,
+        train_dataset=None,
     ):
         self._batch = batch
         self._dataloader_error = dataloader_error
@@ -121,10 +121,10 @@ class _FakeInnerTrainer:
 def _fake_self(
     *,
     inner,
-    model_name = "org/Some-Model",
-    tokenizer = None,
+    model_name="org/Some-Model",
+    tokenizer=None,
 ):
-    s = SimpleNamespace(trainer = inner, model_name = model_name, tokenizer = tokenizer)
+    s = SimpleNamespace(trainer=inner, model_name=model_name, tokenizer=tokenizer)
     # Bind real methods so self._chat_template_renders_empty() resolves.
     s._preflight_first_batch = _preflight.__get__(s)
     s._chat_template_renders_empty = _renders_empty.__get__(s)
@@ -135,8 +135,8 @@ class _EmptyTemplateTokenizer:
     def apply_chat_template(
         self,
         messages,
-        tokenize = False,
-        add_generation_prompt = False,
+        tokenize=False,
+        add_generation_prompt=False,
     ):
         return ""
 
@@ -145,8 +145,8 @@ class _RealTemplateTokenizer:
     def apply_chat_template(
         self,
         messages,
-        tokenize = False,
-        add_generation_prompt = False,
+        tokenize=False,
+        add_generation_prompt=False,
     ):
         return "<|im_start|>user\nhi<|im_end|>"
 
@@ -155,10 +155,10 @@ class _SizedDataset:
     def __init__(
         self,
         size,
-        splits = (),
+        splits=(),
     ):
         self.size = size
-        self.info = SimpleNamespace(splits = {name: object() for name in splits})
+        self.info = SimpleNamespace(splits={name: object() for name in splits})
         self.shuffle_seeds = []
 
     def __len__(self):
@@ -169,7 +169,7 @@ class _SizedDataset:
         selected.shuffle_seeds = list(self.shuffle_seeds)
         return selected
 
-    def shuffle(self, seed = None):
+    def shuffle(self, seed=None):
         shuffled = _SizedDataset(self.size, tuple(self.info.splits))
         shuffled.shuffle_seeds = [*self.shuffle_seeds, seed]
         return shuffled
@@ -179,7 +179,7 @@ class _SplittableDataset(_SizedDataset):
     def __init__(
         self,
         size,
-        calls = None,
+        calls=None,
     ):
         super().__init__(size)
         self.calls = [] if calls is None else calls
@@ -194,14 +194,14 @@ class _SplittableDataset(_SizedDataset):
 
 def _dataset_loader_self():
     trainer = SimpleNamespace(
-        should_stop = False,
-        _audio_type = None,
-        is_audio_vlm = False,
-        is_vlm = False,
-        model_name = "org/model",
-        tokenizer = None,
-        _update_progress = lambda **kwargs: None,
-        _resolve_eval_split_from_dataset = lambda dataset: None,
+        should_stop=False,
+        _audio_type=None,
+        is_audio_vlm=False,
+        is_vlm=False,
+        model_name="org/model",
+        tokenizer=None,
+        _update_progress=lambda **kwargs: None,
+        _resolve_eval_split_from_dataset=lambda dataset: None,
     )
     trainer._auto_detect_eval_split_from_hf = _auto_detect_eval.__get__(trainer)
     trainer.load_and_format_dataset = _load_and_format_dataset.__get__(trainer)
@@ -235,9 +235,9 @@ def test_cached_auto_eval_uses_supplied_splits_and_loader(monkeypatch):
         SimpleNamespace(),
         "org/dataset",
         None,
-        available_splits = ["train", "validation"],
-        split_loader = lambda split: local_calls.append(split) or expected,
-        excluded_split = "train",
+        available_splits=["train", "validation"],
+        split_loader=lambda split: local_calls.append(split) or expected,
+        excluded_split="train",
     )
 
     assert result is expected
@@ -259,9 +259,9 @@ def test_cached_auto_eval_with_no_splits_stays_local(monkeypatch):
         SimpleNamespace(),
         "org/dataset",
         None,
-        available_splits = [],
-        split_loader = fail_remote,
-        excluded_split = "train",
+        available_splits=[],
+        split_loader=fail_remote,
+        excluded_split="train",
     )
 
     assert result is None
@@ -275,9 +275,9 @@ def test_cached_auto_eval_excludes_training_split():
         SimpleNamespace(),
         "org/dataset",
         None,
-        available_splits = ["train", "validation"],
-        split_loader = lambda split: local_calls.append(split) or _SizedDataset(20),
-        excluded_split = "validation",
+        available_splits=["train", "validation"],
+        split_loader=lambda split: local_calls.append(split) or _SizedDataset(20),
+        excluded_split="validation",
     )
 
     assert result is None
@@ -291,9 +291,9 @@ def test_cached_auto_eval_excludes_every_split_in_training_instruction():
         SimpleNamespace(),
         "org/dataset",
         None,
-        available_splits = ["train", "validation", "test"],
-        split_loader = lambda split: local_calls.append(split) or _SizedDataset(20),
-        excluded_split = ("train", "validation"),
+        available_splits=["train", "validation", "test"],
+        split_loader=lambda split: local_calls.append(split) or _SizedDataset(20),
+        excluded_split=("train", "validation"),
     )
 
     assert isinstance(result, _SizedDataset)
@@ -304,15 +304,15 @@ def test_cached_auto_eval_propagates_loader_failure_for_exact_resume():
     def fail_load(_split):
         raise FileNotFoundError("validation")
 
-    with pytest.raises(FileNotFoundError, match = "validation"):
+    with pytest.raises(FileNotFoundError, match="validation"):
         _auto_detect_eval(
             SimpleNamespace(),
             "org/dataset",
             None,
-            available_splits = ["train", "validation"],
-            split_loader = fail_load,
-            excluded_split = "train",
-            strict_split_loading = True,
+            available_splits=["train", "validation"],
+            split_loader=fail_load,
+            excluded_split="train",
+            strict_split_loading=True,
         )
 
 
@@ -325,7 +325,7 @@ def test_auto_eval_probe_failure_records_a_durable_warning(monkeypatch):
     monkeypatch.setattr(sys.modules["datasets"], "get_dataset_split_names", fail_probe)
 
     result = _auto_detect_eval(
-        SimpleNamespace(_record_warning = warnings.append),
+        SimpleNamespace(_record_warning=warnings.append),
         "org/dataset",
         None,
     )
@@ -354,6 +354,7 @@ def test_auto_eval_probe_failure_records_a_durable_warning(monkeypatch):
 )
 def test_evaluation_enabled_accepts_only_finite_positive_intervals(value, expected):
     from core.training.eval_dataset import evaluation_enabled
+
     assert evaluation_enabled(value) is expected
 
 
@@ -386,7 +387,7 @@ def test_shared_eval_split_is_bounded_and_deterministic(rows, expected_eval_rows
 
 def test_torch_eval_split_warns_when_dataset_is_too_small():
     warnings: list[str] = []
-    owner = SimpleNamespace(_record_warning = warnings.append)
+    owner = SimpleNamespace(_record_warning=warnings.append)
 
     result = _resolve_eval_split(owner, _SplittableDataset(31))
 
@@ -408,7 +409,7 @@ def test_cached_train_auto_eval_stays_on_pinned_dataset(monkeypatch):
         *,
         subset,
         split,
-        token = None,
+        token=None,
     ):
         cache_calls.append(split)
         return validation if split == "validation" else train
@@ -422,9 +423,9 @@ def test_cached_train_auto_eval_stays_on_pinned_dataset(monkeypatch):
 
     result = trainer.load_and_format_dataset(
         "org/dataset",
-        eval_steps = 1,
-        dataset_local_files_only = True,
-        dataset_local_path = "/cache/snapshot",
+        eval_steps=1,
+        dataset_local_files_only=True,
+        dataset_local_path="/cache/snapshot",
     )
 
     assert result is not None
@@ -444,8 +445,8 @@ def test_bounded_cached_train_forwards_only_required_row_count(monkeypatch):
         *,
         subset,
         split,
-        token = None,
-        row_limit = None,
+        token=None,
+        row_limit=None,
     ):
         cache_calls.append((split, row_limit))
         if split == "validation":
@@ -460,11 +461,11 @@ def test_bounded_cached_train_forwards_only_required_row_count(monkeypatch):
 
     result = trainer.load_and_format_dataset(
         "org/dataset",
-        eval_steps = 1,
-        dataset_slice_start = 8,
-        dataset_slice_end = 32,
-        dataset_local_files_only = True,
-        dataset_local_path = "/cache/snapshot",
+        eval_steps=1,
+        dataset_slice_start=8,
+        dataset_slice_end=32,
+        dataset_local_files_only=True,
+        dataset_local_path="/cache/snapshot",
     )
 
     assert result is not None
@@ -476,7 +477,7 @@ def test_bounded_cached_train_forwards_only_required_row_count(monkeypatch):
 def _cached_only_loader(
     monkeypatch,
     train,
-    validation = None,
+    validation=None,
 ):
     """A trainer whose dataset comes from cache, with remote access fatal."""
     from hub.utils import dataset_cache
@@ -490,8 +491,8 @@ def _cached_only_loader(
         *,
         subset,
         split,
-        token = None,
-        row_limit = None,
+        token=None,
+        row_limit=None,
     ):
         if split == "validation":
             return validation
@@ -529,10 +530,10 @@ def test_max_steps_bound_subsets_before_formatting(monkeypatch):
 
     result = trainer.load_and_format_dataset(
         "org/dataset",
-        dataset_local_files_only = True,
-        dataset_local_path = "/cache/snapshot",
-        max_train_rows = 1024,
-        max_train_rows_seed = 99,
+        dataset_local_files_only=True,
+        dataset_local_path="/cache/snapshot",
+        max_train_rows=1024,
+        max_train_rows_seed=99,
     )
 
     assert result is not None
@@ -550,9 +551,9 @@ def test_max_steps_bound_leaves_a_small_dataset_alone(monkeypatch):
 
     result = trainer.load_and_format_dataset(
         "org/dataset",
-        dataset_local_files_only = True,
-        dataset_local_path = "/cache/snapshot",
-        max_train_rows = 1024,
+        dataset_local_files_only=True,
+        dataset_local_path="/cache/snapshot",
+        max_train_rows=1024,
     )
 
     assert result is not None
@@ -566,11 +567,11 @@ def test_max_steps_bound_defers_to_an_explicit_slice(monkeypatch):
 
     result = trainer.load_and_format_dataset(
         "org/dataset",
-        dataset_local_files_only = True,
-        dataset_local_path = "/cache/snapshot",
-        dataset_slice_start = 8,
-        dataset_slice_end = 32,
-        max_train_rows = 1024,
+        dataset_local_files_only=True,
+        dataset_local_path="/cache/snapshot",
+        dataset_slice_start=8,
+        dataset_slice_end=32,
+        max_train_rows=1024,
     )
 
     assert result is not None
@@ -586,10 +587,10 @@ def test_max_steps_bound_defers_to_a_split_instruction(monkeypatch):
 
     result = trainer.load_and_format_dataset(
         "org/dataset",
-        dataset_local_files_only = True,
-        dataset_local_path = "/cache/snapshot",
-        train_split = "train[1000:200000]",
-        max_train_rows = 1024,
+        dataset_local_files_only=True,
+        dataset_local_path="/cache/snapshot",
+        train_split="train[1000:200000]",
+        max_train_rows=1024,
     )
 
     assert result is not None
@@ -603,8 +604,8 @@ def test_max_steps_bound_is_off_without_it(monkeypatch):
 
     result = trainer.load_and_format_dataset(
         "org/dataset",
-        dataset_local_files_only = True,
-        dataset_local_path = "/cache/snapshot",
+        dataset_local_files_only=True,
+        dataset_local_path="/cache/snapshot",
     )
 
     assert result is not None
@@ -627,8 +628,9 @@ def test_max_steps_dataset_rows_survives_unusable_numbers():
 def _single_process_launch(monkeypatch):
     """Clear every launcher variable, so a bound reads as Unsloth's own launch."""
     from core.training.dataset_bounds import WORLD_SIZE_ENV_FILES, WORLD_SIZE_ENV_VARS
+
     for name in WORLD_SIZE_ENV_VARS + WORLD_SIZE_ENV_FILES:
-        monkeypatch.delenv(name, raising = False)
+        monkeypatch.delenv(name, raising=False)
 
 
 def test_max_steps_dataset_rows_scales_with_world_size(monkeypatch):
@@ -641,22 +643,22 @@ def test_max_steps_dataset_rows_scales_with_world_size(monkeypatch):
     _single_process_launch(monkeypatch)
 
     # One process is what the bound has always assumed: identical to omitting it.
-    assert max_steps_dataset_rows(2000, 8, 16, world_size = 1) == max_steps_dataset_rows(2000, 8, 16)
+    assert max_steps_dataset_rows(2000, 8, 16, world_size=1) == max_steps_dataset_rows(2000, 8, 16)
     assert max_steps_dataset_rows(2000, 8, 16) == 2000 * 8 * 16 * MAX_STEPS_ROW_SLACK
-    assert max_steps_dataset_rows(30, 2, 4, world_size = 1) == MIN_MAX_STEPS_ROWS
+    assert max_steps_dataset_rows(30, 2, 4, world_size=1) == MIN_MAX_STEPS_ROWS
 
     # Every replica draws its own batch per step, so the subset grows with them.
     for world_size in (2, 4, 8):
         assert (
-            max_steps_dataset_rows(2000, 8, 16, world_size = world_size)
+            max_steps_dataset_rows(2000, 8, 16, world_size=world_size)
             == 2000 * 8 * 16 * world_size * MAX_STEPS_ROW_SLACK
         )
         # The slack is what stops a run recycling rows, so it must survive the scaling.
-        rows = max_steps_dataset_rows(60, 2, 4, world_size = world_size)
+        rows = max_steps_dataset_rows(60, 2, 4, world_size=world_size)
         assert rows >= 60 * 2 * 4 * world_size * MAX_STEPS_ROW_SLACK
 
     # An unbounded run stays unbounded however many replicas read it.
-    assert max_steps_dataset_rows(0, 2, 4, world_size = 8) is None
+    assert max_steps_dataset_rows(0, 2, 4, world_size=8) is None
 
 
 def test_max_steps_dataset_rows_survives_an_unusable_world_size(monkeypatch):
@@ -668,11 +670,11 @@ def test_max_steps_dataset_rows_survives_an_unusable_world_size(monkeypatch):
     # than raise or collapse the subset to nothing.
     baseline = max_steps_dataset_rows(2000, 8, 16)
     for world_size in (None, 0, -4, "", "auto", "not a number", float("inf"), object()):
-        assert max_steps_dataset_rows(2000, 8, 16, world_size = world_size) == baseline
-    assert max_steps_dataset_rows(30, 2, 4, world_size = None) == MIN_MAX_STEPS_ROWS
+        assert max_steps_dataset_rows(2000, 8, 16, world_size=world_size) == baseline
+    assert max_steps_dataset_rows(30, 2, 4, world_size=None) == MIN_MAX_STEPS_ROWS
 
     # A string count is what an env carries, and it still has to scale.
-    assert max_steps_dataset_rows(2000, 8, 16, world_size = "4") == baseline * 4
+    assert max_steps_dataset_rows(2000, 8, 16, world_size="4") == baseline * 4
 
 
 def test_world_size_comes_from_the_launcher_env(monkeypatch):
@@ -708,7 +710,7 @@ def test_world_size_comes_from_the_launcher_env(monkeypatch):
     # cannot see the visible CUDA devices DataParallel would also split a batch over.
     _single_process_launch(monkeypatch)
     monkeypatch.setenv("WORLD_SIZE", "2")
-    assert max_steps_dataset_rows(2000, 8, 16, world_size = 8) == 2000 * 8 * 16 * 8 * (
+    assert max_steps_dataset_rows(2000, 8, 16, world_size=8) == 2000 * 8 * 16 * 8 * (
         MAX_STEPS_ROW_SLACK
     )
     # A mapping can be passed instead of the process env.
@@ -736,7 +738,7 @@ def test_world_size_comes_from_an_mlx_launch_hostfile(tmp_path, monkeypatch):
 
     # The ring backend writes one "ip:port" list per rank; mlx.launch --hostfile ring-4.
     ring = tmp_path / "ring.json"
-    ring.write_text(json.dumps([[f"10.0.0.{rank}:5000"] for rank in range(4)]), encoding = "utf-8")
+    ring.write_text(json.dumps([[f"10.0.0.{rank}:5000"] for rank in range(4)]), encoding="utf-8")
     _single_process_launch(monkeypatch)
     monkeypatch.setenv("MLX_RANK", "0")
     monkeypatch.setenv("MLX_HOSTFILE", str(ring))
@@ -747,7 +749,7 @@ def test_world_size_comes_from_an_mlx_launch_hostfile(tmp_path, monkeypatch):
     rdma = tmp_path / "rdma.json"
     rdma.write_text(
         json.dumps([[None if a == b else "mlx5_0" for b in range(3)] for a in range(3)]),
-        encoding = "utf-8",
+        encoding="utf-8",
     )
     _single_process_launch(monkeypatch)
     monkeypatch.setenv("MLX_IBV_DEVICES", str(rdma))
@@ -755,7 +757,7 @@ def test_world_size_comes_from_an_mlx_launch_hostfile(tmp_path, monkeypatch):
 
     # A single host is not a distributed launch: mlx.launch writes an empty hostfile.
     empty = tmp_path / "empty.json"
-    empty.write_text("", encoding = "utf-8")
+    empty.write_text("", encoding="utf-8")
     _single_process_launch(monkeypatch)
     monkeypatch.setenv("MLX_HOSTFILE", str(empty))
     assert world_size_from_env() == 1
@@ -774,9 +776,9 @@ def test_world_size_comes_from_an_mlx_launch_hostfile(tmp_path, monkeypatch):
 
     # Nothing about a hostfile may fail a run: unreadable, not JSON, not a list.
     bad_json = tmp_path / "bad.json"
-    bad_json.write_text('[["10.0.0.1:5000"],', encoding = "utf-8")
+    bad_json.write_text('[["10.0.0.1:5000"],', encoding="utf-8")
     not_a_list = tmp_path / "object.json"
-    not_a_list.write_text(json.dumps({"hosts": 4}), encoding = "utf-8")
+    not_a_list.write_text(json.dumps({"hosts": 4}), encoding="utf-8")
     a_directory = tmp_path / "adir"
     a_directory.mkdir()
     for value in (
@@ -835,8 +837,8 @@ def test_a_rank_file_read_is_capped_in_bytes_not_characters(tmp_path):
     hosts = [filler] + [f"10.0.0.{rank}:5000" for rank in range(7)]
     # ensure_ascii would escape the codepoints back to ASCII and make the two
     # readings agree, which is what this test needs them not to do.
-    wide.write_text(json.dumps(hosts, ensure_ascii = False), encoding = "utf-8")
-    assert len(wide.read_text(encoding = "utf-8")) < MAX_WORLD_SIZE_FILE_BYTES
+    wide.write_text(json.dumps(hosts, ensure_ascii=False), encoding="utf-8")
+    assert len(wide.read_text(encoding="utf-8")) < MAX_WORLD_SIZE_FILE_BYTES
     assert wide.stat().st_size > MAX_WORLD_SIZE_FILE_BYTES
     assert world_size_from_rank_files({"MLX_HOSTFILE": str(wide)}) == 1
 
@@ -882,8 +884,8 @@ def test_effective_packing_decides_the_opt_out():
     assert max_train_rows_for_config({**text, "packing": True}) is None
 
     # A caller that probed a never-packing branch keeps the bound despite the flag.
-    assert effective_packing({**text, "packing": True}, branch_never_packs = True) is False
-    assert max_train_rows_for_config({**text, "packing": True}, branch_never_packs = True) == 1024
+    assert effective_packing({**text, "packing": True}, branch_never_packs=True) is False
+    assert max_train_rows_for_config({**text, "packing": True}, branch_never_packs=True) == 1024
 
     # The dataset flags establish nothing: client-supplied and true on a column-NAME
     # match, so a text model with an "audio" column still trains on the packing path.
@@ -897,11 +899,11 @@ def test_effective_packing_decides_the_opt_out():
     # Raw-text and CPT do not enter into it here: the caller decides the branch,
     # since vision is gated on `not raw_text_mode` while audio holds either way.
     for raw in ({"training_type": "Continued Pretraining"}, {"format_type": "raw"}):
-        assert effective_packing({**text, **raw, "packing": True}, branch_never_packs = True) is False
+        assert effective_packing({**text, **raw, "packing": True}, branch_never_packs=True) is False
         assert effective_packing({**text, **raw, "packing": True}) is True
         # Without packing they bound like anything else.
-        assert effective_packing({**text, **raw}, branch_never_packs = True) is False
-        assert max_train_rows_for_config({**text, **raw}, branch_never_packs = True) == 1024
+        assert effective_packing({**text, **raw}, branch_never_packs=True) is False
+        assert max_train_rows_for_config({**text, **raw}, branch_never_packs=True) == 1024
 
 
 def test_bound_dataset_rows_edges():
@@ -910,7 +912,7 @@ def test_bound_dataset_rows_edges():
     class _Streaming:
         """No __len__, like an IterableDataset."""
 
-        def shuffle(self, seed = None):
+        def shuffle(self, seed=None):
             raise AssertionError("a streaming dataset must not be shuffled eagerly")
 
     exact = _SizedDataset(1024)
@@ -1012,7 +1014,7 @@ def test_row_bound_marker_survives_a_run_directory_named_like_a_checkpoint(tmp_p
     # A run directory whose name merely starts with the checkpoint prefix is not a
     # checkpoint; taking its parent would file the marker one level too high.
     run_dir = tmp_path / "checkpoint-model__project-x"
-    (run_dir / "checkpoint-30").mkdir(parents = True)
+    (run_dir / "checkpoint-30").mkdir(parents=True)
     record_row_bound(str(run_dir), 4096, 3407)
 
     assert (run_dir / "unsloth_row_bound.json").exists()
@@ -1062,7 +1064,7 @@ def test_run_dir_for_a_bare_relative_checkpoint(tmp_path, monkeypatch):
     assert run_dir_for_checkpoint("checkpoint-model") == "checkpoint-model"
 
     run_dir = tmp_path / "run"
-    (run_dir / "checkpoint-30").mkdir(parents = True)
+    (run_dir / "checkpoint-30").mkdir(parents=True)
     record_row_bound(str(run_dir), 4096, 3407)
     monkeypatch.chdir(run_dir)
     assert row_bound_for_resume("checkpoint-30", 40960, 99) == (4096, 3407)
@@ -1084,7 +1086,7 @@ def test_row_bound_is_dropped_for_a_checkpoint_that_predates_it(tmp_path):
     # order. Both trainers resume by batch index, so a subset would continue on
     # unrelated rows: no bound, whatever its size.
     legacy = tmp_path / "legacy"
-    (legacy / "checkpoint-30").mkdir(parents = True)
+    (legacy / "checkpoint-30").mkdir(parents=True)
     assert row_bound_for_resume(str(legacy / "checkpoint-30"), 1024, 3407) == (None, 3407)
 
     # Including the range an arithmetic estimate could not tell apart.
@@ -1156,7 +1158,7 @@ def test_bound_leaves_enough_rows_for_every_rank_after_the_eval_carve(monkeypatc
     source = Dataset.from_dict({"text": [f"t{i}" for i in range(500_000)]})
 
     for world_size in (1, 2, 4, 8):
-        rows = max_train_rows_for_config(config, world_size = world_size)
+        rows = max_train_rows_for_config(config, world_size=world_size)
         bounded = bound_dataset_rows(source, rows, 3407)
         train, _eval = split_dataset_for_evaluation(bounded)
 
@@ -1172,7 +1174,7 @@ def test_bound_leaves_enough_rows_for_every_rank_after_the_eval_carve(monkeypatc
         assert len(train) >= needed
 
     # Packing still opts out, whatever the launch looks like.
-    assert max_train_rows_for_config({**config, "packing": True}, world_size = 8) is None
+    assert max_train_rows_for_config({**config, "packing": True}, world_size=8) is None
 
 
 def test_row_bound_marker_round_trips_a_world_size_scaled_bound(tmp_path, monkeypatch):
@@ -1190,7 +1192,7 @@ def test_row_bound_marker_round_trips_a_world_size_scaled_bound(tmp_path, monkey
     checkpoint.mkdir()
 
     config = {"max_steps": 60, "batch_size": 2, "gradient_accumulation_steps": 4}
-    rows = max_train_rows_for_config(config, world_size = 4)
+    rows = max_train_rows_for_config(config, world_size=4)
     assert rows == 60 * 2 * 4 * 4 * 4
     assert record_row_bound(str(run_dir), rows, 3407) is True
 
@@ -1215,7 +1217,7 @@ def test_row_bound_marker_round_trips_a_world_size_scaled_bound(tmp_path, monkey
 
     # And a checkpoint with no marker at all stays unbounded.
     unmarked = tmp_path / "unmarked"
-    (unmarked / "checkpoint-60").mkdir(parents = True)
+    (unmarked / "checkpoint-60").mkdir(parents=True)
     assert row_bound_for_resume(str(unmarked / "checkpoint-60"), rows, 3407) == (None, 3407)
 
 
@@ -1229,7 +1231,7 @@ def test_both_loaders_size_the_bound_for_the_world():
     from pathlib import Path
 
     worker_src = (Path(__file__).resolve().parents[1] / "core/training/worker.py").read_text(
-        encoding = "utf-8"
+        encoding="utf-8"
     )
     tree = ast.parse(worker_src)
     calls = {}
@@ -1263,15 +1265,15 @@ def test_data_parallel_world_size_counts_ranks_and_devices(monkeypatch):
     monkeypatch.setenv("MLX_WORLD_SIZE", "4")
     assert training_worker._data_parallel_world_size() == 4
 
-    def _torch(devices, world_size = None):
+    def _torch(devices, world_size=None):
         distributed = types.SimpleNamespace(
-            is_available = lambda: world_size is not None,
-            is_initialized = lambda: world_size is not None,
-            get_world_size = lambda: world_size,
+            is_available=lambda: world_size is not None,
+            is_initialized=lambda: world_size is not None,
+            get_world_size=lambda: world_size,
         )
         return types.SimpleNamespace(
-            cuda = types.SimpleNamespace(device_count = lambda: devices),
-            distributed = distributed,
+            cuda=types.SimpleNamespace(device_count=lambda: devices),
+            distributed=distributed,
         )
 
     _single_process_launch(monkeypatch)
@@ -1287,7 +1289,7 @@ def test_data_parallel_world_size_counts_ranks_and_devices(monkeypatch):
     # A torchrun rank sees the whole node but trains on its own shard: the larger of
     # the two, never the product, since a distributed run pins n_gpu to 1.
     monkeypatch.setenv("WORLD_SIZE", "8")
-    monkeypatch.setitem(sys.modules, "torch", _torch(8, world_size = 8))
+    monkeypatch.setitem(sys.modules, "torch", _torch(8, world_size=8))
     assert training_worker._data_parallel_world_size() == 8
 
     # CPU-only and a torch whose CUDA probe raises both read as one process.
@@ -1299,8 +1301,8 @@ def test_data_parallel_world_size_counts_ranks_and_devices(monkeypatch):
         raise RuntimeError("no CUDA driver")
 
     broken = types.SimpleNamespace(
-        cuda = types.SimpleNamespace(device_count = _raises),
-        distributed = types.SimpleNamespace(is_available = _raises, is_initialized = _raises),
+        cuda=types.SimpleNamespace(device_count=_raises),
+        distributed=types.SimpleNamespace(is_available=_raises, is_initialized=_raises),
     )
     monkeypatch.setitem(sys.modules, "torch", broken)
     assert training_worker._data_parallel_world_size() == 1
@@ -1316,7 +1318,7 @@ def test_both_loaders_apply_the_row_bound():
     from pathlib import Path
 
     worker_src = (Path(__file__).resolve().parents[1] / "core/training/worker.py").read_text(
-        encoding = "utf-8"
+        encoding="utf-8"
     )
     tree = ast.parse(worker_src)
     calls = {}
@@ -1381,7 +1383,7 @@ def test_remote_train_fallback_keeps_auto_eval_remote(monkeypatch):
         *,
         subset,
         split,
-        token = None,
+        token=None,
     ):
         cache_calls.append(split)
         raise FileNotFoundError(split)
@@ -1400,10 +1402,10 @@ def test_remote_train_fallback_keeps_auto_eval_remote(monkeypatch):
 
     result = trainer.load_and_format_dataset(
         "org/dataset",
-        eval_steps = 1,
-        dataset_local_files_only = True,
-        dataset_local_path = "/cache/snapshot",
-        dataset_revision = "dataset-commit",
+        eval_steps=1,
+        dataset_local_files_only=True,
+        dataset_local_path="/cache/snapshot",
+        dataset_revision="dataset-commit",
     )
 
     assert result is not None
@@ -1419,7 +1421,7 @@ def test_first_remote_train_load_records_exact_dataset_snapshot(monkeypatch, tmp
     _patch_dataset_formatting(monkeypatch)
     trainer = _dataset_loader_self()
     snapshot = tmp_path / "datasets--org--dataset" / "snapshots" / "dataset-commit"
-    snapshot.mkdir(parents = True)
+    snapshot.mkdir(parents=True)
     (snapshot / "train.parquet").write_bytes(b"dataset")
     train = _SizedDataset(40)
     train.info.download_checksums = {
@@ -1448,18 +1450,18 @@ def test_manual_eager_slice_attests_original_hub_stream(monkeypatch, tmp_path):
     _patch_dataset_formatting(monkeypatch)
     trainer = _dataset_loader_self()
     snapshot = tmp_path / "datasets--org--dataset" / "snapshots" / "dataset-commit"
-    snapshot.mkdir(parents = True)
+    snapshot.mkdir(parents=True)
     (snapshot / "train.parquet").write_bytes(b"dataset")
     stream = SimpleNamespace(
-        info = SimpleNamespace(
-            download_checksums = {
+        info=SimpleNamespace(
+            download_checksums={
                 "hf://datasets/org/dataset@dataset-commit/train.parquet": {
                     "num_bytes": 7,
                     "checksum": None,
                 }
             }
         ),
-        take = lambda _count: [{"text": "example"}],
+        take=lambda _count: [{"text": "example"}],
     )
 
     monkeypatch.setattr(hf_cache_state, "hf_cache_roots", lambda **kw: [tmp_path])
@@ -1472,7 +1474,7 @@ def test_manual_eager_slice_attests_original_hub_stream(monkeypatch, tmp_path):
 
     result = trainer.load_and_format_dataset(
         "org/dataset",
-        dataset_slice_end = 0,
+        dataset_slice_end=0,
     )
 
     assert result is not None
@@ -1501,7 +1503,7 @@ def test_cached_explicit_eval_failure_reloads_remote_pair(monkeypatch, cached_ev
         *,
         subset,
         split,
-        token = None,
+        token=None,
     ):
         cache_calls.append(split)
         if split == "validation":
@@ -1517,10 +1519,10 @@ def test_cached_explicit_eval_failure_reloads_remote_pair(monkeypatch, cached_ev
 
     result = trainer.load_and_format_dataset(
         "org/dataset",
-        eval_split = "validation",
-        eval_steps = 1,
-        dataset_local_files_only = True,
-        dataset_local_path = "/cache/snapshot",
+        eval_split="validation",
+        eval_steps=1,
+        dataset_local_files_only=True,
+        dataset_local_path="/cache/snapshot",
     )
 
     assert result is not None
@@ -1534,11 +1536,11 @@ class TestPreflightFirstBatch(unittest.TestCase):
     def test_float_input_ids_with_empty_template_suggests_instruct(self):
         ds = [{"messages": [{"role": "user", "content": [{"type": "text", "text": "x"}]}]}]
         inner = _FakeInnerTrainer(
-            batch = {"input_ids": torch.zeros((1, 0), dtype = torch.float32)},
-            train_dataset = ds,
+            batch={"input_ids": torch.zeros((1, 0), dtype=torch.float32)},
+            train_dataset=ds,
         )
         s = _fake_self(
-            inner = inner, model_name = "Qwen/Qwen2-VL-7B", tokenizer = _EmptyTemplateTokenizer()
+            inner=inner, model_name="Qwen/Qwen2-VL-7B", tokenizer=_EmptyTemplateTokenizer()
         )
         msg = s._preflight_first_batch()
         self.assertIsNotNone(msg)
@@ -1549,11 +1551,11 @@ class TestPreflightFirstBatch(unittest.TestCase):
     def test_no_instruct_hint_when_model_already_instruct(self):
         ds = [{"messages": [{"role": "user", "content": [{"type": "text", "text": "x"}]}]}]
         inner = _FakeInnerTrainer(
-            batch = {"input_ids": torch.zeros((1, 0), dtype = torch.float32)},
-            train_dataset = ds,
+            batch={"input_ids": torch.zeros((1, 0), dtype=torch.float32)},
+            train_dataset=ds,
         )
         s = _fake_self(
-            inner = inner, model_name = "org/Foo-Instruct", tokenizer = _EmptyTemplateTokenizer()
+            inner=inner, model_name="org/Foo-Instruct", tokenizer=_EmptyTemplateTokenizer()
         )
         msg = s._preflight_first_batch()
         self.assertIsNotNone(msg)
@@ -1562,10 +1564,10 @@ class TestPreflightFirstBatch(unittest.TestCase):
 
     def test_empty_int_input_ids_generic_message(self):
         inner = _FakeInnerTrainer(
-            batch = {"input_ids": torch.zeros((1, 0), dtype = torch.long)},
-            train_dataset = [{"text": "already tokenized path"}],
+            batch={"input_ids": torch.zeros((1, 0), dtype=torch.long)},
+            train_dataset=[{"text": "already tokenized path"}],
         )
-        s = _fake_self(inner = inner, tokenizer = _RealTemplateTokenizer())
+        s = _fake_self(inner=inner, tokenizer=_RealTemplateTokenizer())
         msg = s._preflight_first_batch()
         self.assertIsNotNone(msg)
         self.assertIn("invalid token IDs", msg)
@@ -1573,42 +1575,42 @@ class TestPreflightFirstBatch(unittest.TestCase):
 
     def test_valid_batch_returns_none(self):
         inner = _FakeInnerTrainer(
-            batch = {"input_ids": torch.randint(0, 1000, (2, 34), dtype = torch.long)},
+            batch={"input_ids": torch.randint(0, 1000, (2, 34), dtype=torch.long)},
         )
-        s = _fake_self(inner = inner)
+        s = _fake_self(inner=inner)
         self.assertIsNone(s._preflight_first_batch())
 
     def test_dataloader_error_is_surfaced(self):
-        inner = _FakeInnerTrainer(dataloader_error = RuntimeError("boom"))
-        s = _fake_self(inner = inner, model_name = "org/M")
+        inner = _FakeInnerTrainer(dataloader_error=RuntimeError("boom"))
+        s = _fake_self(inner=inner, model_name="org/M")
         msg = s._preflight_first_batch()
         self.assertIsNotNone(msg)
         self.assertIn("failed to build the first training batch", msg)
         self.assertIn("org/M", msg)
 
     def test_missing_input_ids_does_not_false_positive(self):
-        inner = _FakeInnerTrainer(batch = {"pixel_values": torch.zeros((1, 3))})
-        s = _fake_self(inner = inner)
+        inner = _FakeInnerTrainer(batch={"pixel_values": torch.zeros((1, 3))})
+        s = _fake_self(inner=inner)
         self.assertIsNone(s._preflight_first_batch())
 
 
 class TestChatTemplateRendersEmpty(unittest.TestCase):
     def _self(self, *, train_dataset, tokenizer):
-        inner = _FakeInnerTrainer(train_dataset = train_dataset)
-        return _fake_self(inner = inner, tokenizer = tokenizer)
+        inner = _FakeInnerTrainer(train_dataset=train_dataset)
+        return _fake_self(inner=inner, tokenizer=tokenizer)
 
     def test_empty_render_detected(self):
         ds = [{"messages": [{"role": "user", "content": [{"type": "text", "text": "x"}]}]}]
-        s = self._self(train_dataset = ds, tokenizer = _EmptyTemplateTokenizer())
+        s = self._self(train_dataset=ds, tokenizer=_EmptyTemplateTokenizer())
         self.assertTrue(s._chat_template_renders_empty())
 
     def test_nonempty_render_not_flagged(self):
         ds = [{"messages": [{"role": "user", "content": [{"type": "text", "text": "x"}]}]}]
-        s = self._self(train_dataset = ds, tokenizer = _RealTemplateTokenizer())
+        s = self._self(train_dataset=ds, tokenizer=_RealTemplateTokenizer())
         self.assertFalse(s._chat_template_renders_empty())
 
     def test_no_messages_key_not_flagged(self):
-        s = self._self(train_dataset = [{"text": "raw"}], tokenizer = _EmptyTemplateTokenizer())
+        s = self._self(train_dataset=[{"text": "raw"}], tokenizer=_EmptyTemplateTokenizer())
         self.assertFalse(s._chat_template_renders_empty())
 
 
@@ -1657,7 +1659,7 @@ def _load_trainer_module(
 
 
 class _ExitedProc:
-    def join(self, timeout = None):
+    def join(self, timeout=None):
         return None
 
     def is_alive(self):
@@ -1669,8 +1671,8 @@ class _TerminableProc:
         self.terminated = False
         self._done = threading.Event()
 
-    def join(self, timeout = None):
-        self._done.wait(timeout = timeout or 5)
+    def join(self, timeout=None):
+        self._done.wait(timeout=timeout or 5)
 
     def is_alive(self):
         return not self.terminated
@@ -1726,12 +1728,12 @@ print(json.dumps({
     )
     result = subprocess.run(
         [sys.executable, "-c", script],
-        cwd = repo_root,
-        env = env,
-        text = True,
-        stdout = subprocess.PIPE,
-        stderr = subprocess.PIPE,
-        check = True,
+        cwd=repo_root,
+        env=env,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=True,
     )
     payload = json.loads(result.stdout)
 
@@ -1755,20 +1757,20 @@ def test_mlx_adapter_builds_config_and_reports_completion(tmp_path, monkeypatch)
     trainer = trainer_mod.UnslothTrainer()
     monkeypatch.setattr(trainer, "_run_mlx_worker", fake_run_worker)
 
-    assert trainer.load_model("mlx-community/Qwen3-0.6B-4bit", max_seq_length = 1024)
-    assert trainer.prepare_model_for_training(use_lora = False)
+    assert trainer.load_model("mlx-community/Qwen3-0.6B-4bit", max_seq_length=1024)
+    assert trainer.prepare_model_for_training(use_lora=False)
     dataset, eval_dataset = trainer.load_and_format_dataset("org/dataset")
     output_dir = tmp_path / "mlx-out"
 
     assert trainer.start_training(
-        dataset = dataset,
-        eval_dataset = eval_dataset,
-        output_dir = output_dir,
-        project_name = "Sales Assistant",
-        max_steps = 1,
-        learning_rate = 3e-4,
+        dataset=dataset,
+        eval_dataset=eval_dataset,
+        output_dir=output_dir,
+        project_name="Sales Assistant",
+        max_steps=1,
+        learning_rate=3e-4,
     )
-    trainer.training_thread.join(timeout = 5)
+    trainer.training_thread.join(timeout=5)
 
     progress = trainer.get_training_progress()
     config = captured["config"]
@@ -1795,7 +1797,7 @@ def test_mlx_worker_helpers_cover_cli_paths(tmp_path, monkeypatch):
     )
 
     dataset = tmp_path / "train.jsonl"
-    dataset.write_text('{"text":"hello"}\n', encoding = "utf-8")
+    dataset.write_text('{"text":"hello"}\n', encoding="utf-8")
     monkeypatch.chdir(tmp_path)
 
     assert _resolve_mlx_local_dataset_files(["train.jsonl"]) == [str(dataset)]
@@ -1826,17 +1828,17 @@ def test_run_mlx_training_process_applies_side_effects_before_hardware_detection
         hw.DEVICE = hw.DeviceType.CPU
         return hw.DEVICE
 
-    monkeypatch.delenv("HF_HUB_DISABLE_XET", raising = False)
-    monkeypatch.delenv("HF_HUB_ENABLE_HF_TRANSFER", raising = False)
+    monkeypatch.delenv("HF_HUB_DISABLE_XET", raising=False)
+    monkeypatch.delenv("HF_HUB_ENABLE_HF_TRANSFER", raising=False)
     monkeypatch.setattr(worker, "_validate_training_worker_config", fake_validate)
     monkeypatch.setattr(worker, "_activate_transformers_version_or_warn", fake_activate)
     monkeypatch.setattr(hw, "detect_hardware", fake_detect_hardware)
 
     event_queue = queue.Queue()
     worker.run_mlx_training_process(
-        event_queue = event_queue,
-        stop_queue = queue.Queue(),
-        config = {"model_name": "mlx-community/Gemma-4-12B", "disable_xet": True},
+        event_queue=event_queue,
+        stop_queue=queue.Queue(),
+        config={"model_name": "mlx-community/Gemma-4-12B", "disable_xet": True},
     )
 
     event = event_queue.get_nowait()
@@ -1864,9 +1866,9 @@ def test_run_mlx_training_process_rejects_untrainable_format_before_side_effects
     event_queue = queue.Queue()
 
     worker.run_mlx_training_process(
-        event_queue = event_queue,
-        stop_queue = queue.Queue(),
-        config = {"model_name": "org/model", "model_format": "gguf"},
+        event_queue=event_queue,
+        stop_queue=queue.Queue(),
+        config={"model_name": "org/model", "model_format": "gguf"},
     )
 
     assert "GGUF" in event_queue.get_nowait()["error"]
@@ -1892,9 +1894,9 @@ def test_run_mlx_training_process_rejects_invalid_exact_pin_before_side_effects(
     event_queue = queue.Queue()
 
     worker.run_mlx_training_process(
-        event_queue = event_queue,
-        stop_queue = queue.Queue(),
-        config = {
+        event_queue=event_queue,
+        stop_queue=queue.Queue(),
+        config={
             "model_name": "org/model",
             "model_snapshot_path": str(tmp_path / "missing"),
             "load_in_4bit": False,
@@ -1924,11 +1926,11 @@ def test_run_mlx_training_process_skips_duplicate_config_validation(monkeypatch)
     event_queue = queue.Queue()
 
     worker.run_mlx_training_process(
-        event_queue = event_queue,
-        stop_queue = queue.Queue(),
-        config = {"model_name": "org/model"},
-        transformers_activated = True,
-        config_prevalidated = True,
+        event_queue=event_queue,
+        stop_queue=queue.Queue(),
+        config={"model_name": "org/model"},
+        transformers_activated=True,
+        config_prevalidated=True,
     )
 
     assert "MLX training requires Apple Silicon" in event_queue.get_nowait()["error"]
@@ -1958,7 +1960,7 @@ def test_a_cached_spark_snapshot_root_still_gets_the_llm_subfolder(tmp_path):
     from core.training.trainer import _spark_tts_tokenizer_kwargs
 
     snapshot = tmp_path / "snapshots" / "abc123"
-    (snapshot / "LLM").mkdir(parents = True)
+    (snapshot / "LLM").mkdir(parents=True)
 
     assert _spark_tts_tokenizer_kwargs("bicodec", str(snapshot)) == {"subfolder": "LLM"}
     assert _spark_tts_tokenizer_kwargs("bicodec", "unsloth/Spark-TTS-0.5B") == {"subfolder": "LLM"}
@@ -1967,7 +1969,7 @@ def test_a_cached_spark_snapshot_root_still_gets_the_llm_subfolder(tmp_path):
     # A local checkpoint holding its own tokenizer.
     local = tmp_path / "my-ft"
     local.mkdir()
-    (local / "tokenizer_config.json").write_text("{}", encoding = "utf-8")
+    (local / "tokenizer_config.json").write_text("{}", encoding="utf-8")
     assert _spark_tts_tokenizer_kwargs("bicodec", str(local)) == {}
     # Not Spark at all.
     assert _spark_tts_tokenizer_kwargs("snac", str(snapshot)) == {}

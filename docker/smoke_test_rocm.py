@@ -25,7 +25,7 @@ import sys
 
 
 def banner(title: str) -> None:
-    print(f"\n=== {title} ===", flush = True)
+    print(f"\n=== {title} ===", flush=True)
 
 
 def check_torch() -> None:
@@ -65,7 +65,7 @@ def check_torch() -> None:
     # the entrypoint already printed the arch note for this card.
     # A device the runtime lists but cannot run a kernel on shows up here, not
     # in device_count().
-    x = torch.ones(64, 64, device = "cuda", dtype = torch.float16)
+    x = torch.ones(64, 64, device="cuda", dtype=torch.float16)
     y = (x @ x).float().sum().item()
     assert y == 64 * 64 * 64, f"FAIL: fp16 matmul on the GPU returned {y}, expected {64 * 64 * 64}"
     print("fp16 matmul OK")
@@ -93,6 +93,7 @@ def check_imports() -> None:
 
     if _bnb_expected():
         import bitsandbytes as bnb
+
         print(f"bnb         {bnb.__version__}")
     else:
         print("bnb         not part of a gfx906 build (no prebuilt kernels)")
@@ -112,6 +113,7 @@ def check_imports() -> None:
     # xformers has no ROCm wheel; its absence is expected.
     try:
         import xformers
+
         print(f"xformers    {xformers.__version__}")
     except ImportError:
         print("xformers    (not installed -- expected; ROCm uses SDPA fallback)")
@@ -129,7 +131,7 @@ def check_unsloth_import() -> None:
 def _bnb_expected() -> bool:
     """A gfx906 build (ROCM_GFX=gfx906 in the build record) ships no bitsandbytes."""
     try:
-        record = open("/etc/unsloth-rocm-build", encoding = "utf-8").read()
+        record = open("/etc/unsloth-rocm-build", encoding="utf-8").read()
     except OSError:
         return True
     return "ROCM_GFX=gfx906\n" not in record
@@ -145,20 +147,20 @@ def check_tiny_train() -> None:
     model_name = "unsloth/Llama-3.2-1B-Instruct" + ("-bnb-4bit" if four_bit else "")
     print(f"loading     {model_name} (load_in_4bit={four_bit})")
     model, tokenizer = FastLanguageModel.from_pretrained(
-        model_name = model_name,
-        max_seq_length = 512,
-        dtype = None,
-        load_in_4bit = four_bit,
+        model_name=model_name,
+        max_seq_length=512,
+        dtype=None,
+        load_in_4bit=four_bit,
     )
     model = FastLanguageModel.get_peft_model(
         model,
-        r = 8,
-        lora_alpha = 16,
-        target_modules = ["q_proj", "k_proj", "v_proj", "o_proj"],
-        lora_dropout = 0.0,
-        bias = "none",
-        use_gradient_checkpointing = "unsloth",
-        random_state = 0,
+        r=8,
+        lora_alpha=16,
+        target_modules=["q_proj", "k_proj", "v_proj", "o_proj"],
+        lora_dropout=0.0,
+        bias="none",
+        use_gradient_checkpointing="unsloth",
+        random_state=0,
     )
 
     prompts = [
@@ -167,7 +169,7 @@ def check_tiny_train() -> None:
         "Q: Name a primary color.\nA:",
         "Q: Hello, who are you?\nA:",
     ] * 2
-    enc = tokenizer(prompts, return_tensors = "pt", padding = True, truncation = True, max_length = 64)
+    enc = tokenizer(prompts, return_tensors="pt", padding=True, truncation=True, max_length=64)
     enc = {k: v.cuda() for k, v in enc.items()}
     labels = enc["input_ids"].clone()
     # the padding tokens are not a training target
@@ -178,10 +180,10 @@ def check_tiny_train() -> None:
     before = [p.detach().clone() for p in trainable]
 
     model.train()
-    optim = torch.optim.AdamW(trainable, lr = 1e-3)
+    optim = torch.optim.AdamW(trainable, lr=1e-3)
     losses = []
     for step in range(5):
-        out = model(**enc, labels = labels)
+        out = model(**enc, labels=labels)
         loss = out.loss
         # a NaN here is what the bitsandbytes 4-bit ROCm bug looked like (bnb <= 0.49)
         assert torch.isfinite(loss), f"FAIL: non-finite loss at step {step}: {loss.item()}"
@@ -192,9 +194,9 @@ def check_tiny_train() -> None:
             torch.isfinite(g).all() for g in grads
         ), f"FAIL: non-finite gradient at step {step}"
         optim.step()
-        optim.zero_grad(set_to_none = True)
+        optim.zero_grad(set_to_none=True)
         losses.append(loss.item())
-        print(f"step {step}  loss={losses[-1]:.4f}", flush = True)
+        print(f"step {step}  loss={losses[-1]:.4f}", flush=True)
 
     changed = sum(int(not torch.equal(a, b.detach())) for a, b in zip(before, trainable))
     assert changed, "FAIL: the optimizer steps left every LoRA weight unchanged"
@@ -212,8 +214,8 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument(
         "--skip-train",
-        action = "store_true",
-        help = "Skip the tiny LoRA training step (no HF download).",
+        action="store_true",
+        help="Skip the tiny LoRA training step (no HF download).",
     )
     args = ap.parse_args()
 

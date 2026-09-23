@@ -32,7 +32,7 @@ STRICT_AUDIT = os.environ.get("STUDIO_API_STRICT_AUDIT", "0") == "1"
 
 def section(title: str) -> None:
     _section[0] += 1
-    print(f"\n=== {_section[0]}. {title} ===", flush = True)
+    print(f"\n=== {_section[0]}. {title} ===", flush=True)
 
 
 def _shape(value):
@@ -49,7 +49,7 @@ def _shape(value):
 def _emit(prefix: str, msg: str) -> None:
     """Write a status line via raw os.write to dodge CodeQL's clear-text-logging sink on print()."""
     os.write(1, prefix.encode("utf-8"))
-    os.write(1, msg.encode("utf-8", errors = "replace"))
+    os.write(1, msg.encode("utf-8", errors="replace"))
     os.write(1, b"\n")
 
 
@@ -86,9 +86,9 @@ def http(
     h = {"Content-Type": "application/json"} if data is not None else {}
     if headers:
         h.update(headers)
-    req = urllib.request.Request(url, data = data, method = method, headers = h)
+    req = urllib.request.Request(url, data=data, method=method, headers=h)
     try:
-        with urllib.request.urlopen(req, timeout = timeout) as r:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
             raw = r.read()
             try:
                 return r.status, json.loads(raw)
@@ -124,7 +124,7 @@ def login(password: str) -> tuple[int, str | None]:
     code, body = http(
         "POST",
         "/api/auth/login",
-        body = {"username": "unsloth", "password": password},
+        body={"username": "unsloth", "password": password},
     )
     if code == 200 and isinstance(body, dict):
         return code, body.get("access_token")
@@ -137,15 +137,15 @@ section("CORS hardening")
 # Cross-origin OPTIONS preflight.
 req = urllib.request.Request(
     f"{BASE}/api/auth/login",
-    method = "OPTIONS",
-    headers = {
+    method="OPTIONS",
+    headers={
         "Origin": "https://evil.example",
         "Access-Control-Request-Method": "POST",
         "Access-Control-Request-Headers": "content-type",
     },
 )
 try:
-    with urllib.request.urlopen(req, timeout = 10) as r:
+    with urllib.request.urlopen(req, timeout=10) as r:
         acao = r.headers.get("Access-Control-Allow-Origin", "")
         acac = r.headers.get("Access-Control-Allow-Credentials", "")
         if acao == "*" and acac.lower() == "true":
@@ -158,15 +158,15 @@ except Exception as exc:
 # GET / cross-origin must NOT leak the bootstrap password in the served HTML.
 boot_path = AUTH_DIR / ".bootstrap_password"
 if boot_path.exists():
-    bootstrap_pw = boot_path.read_text(encoding = "utf-8").strip()
+    bootstrap_pw = boot_path.read_text(encoding="utf-8").strip()
     if bootstrap_pw:
         req = urllib.request.Request(
             f"{BASE}/",
-            headers = {"Origin": "https://evil.example"},
+            headers={"Origin": "https://evil.example"},
         )
         try:
-            with urllib.request.urlopen(req, timeout = 10) as r:
-                body = r.read().decode("utf-8", errors = "ignore")
+            with urllib.request.urlopen(req, timeout=10) as r:
+                body = r.read().decode("utf-8", errors="ignore")
                 if bootstrap_pw in body:
                     # AUDIT (P0): bootstrap pw in served HTML is readable cross-origin under wildcard CORS.
                     audit("CORS: GET / leaks bootstrap pw to cross-origin caller")
@@ -202,8 +202,8 @@ ok("bootstrap login -> 200")
 code, body = http(
     "POST",
     "/api/auth/change-password",
-    body = {"current_password": OLD, "new_password": NEW},
-    headers = {"Authorization": f"Bearer {old_token}"},
+    body={"current_password": OLD, "new_password": NEW},
+    headers={"Authorization": f"Bearer {old_token}"},
 )
 if code != 200:
     fail(f"change-password returned {code}: {_shape(body)}")
@@ -217,7 +217,7 @@ ok("login with NEW -> 200")
 AUTH_HEADER = {"Authorization": f"Bearer {NEW_TOKEN}"}
 
 for endpoint in ("/api/system", "/api/system/hardware", "/api/system/gpu-visibility"):
-    code, _ = http("GET", endpoint, headers = AUTH_HEADER)
+    code, _ = http("GET", endpoint, headers=AUTH_HEADER)
     if code == 200:
         ok(f"GET {endpoint} authenticated -> 200")
     else:
@@ -227,14 +227,14 @@ section("Load the GGUF for /v1 tests")
 code, body = http(
     "POST",
     "/api/inference/load",
-    body = {
+    body={
         "model_path": GGUF_REPO,
         "gguf_variant": os.environ.get("GGUF_VARIANT", "UD-Q4_K_XL"),
         "is_lora": False,
         "max_seq_length": 2048,
     },
-    headers = AUTH_HEADER,
-    timeout = 300,
+    headers=AUTH_HEADER,
+    timeout=300,
 )
 if code != 200:
     fail(f"/api/inference/load -> {code}: {_shape(body)}")
@@ -267,12 +267,12 @@ def _login_with_headers(password: str) -> tuple[int, str | None]:
     data = json.dumps({"username": "unsloth", "password": password}).encode()
     req = urllib.request.Request(
         url,
-        data = data,
-        method = "POST",
-        headers = {"Content-Type": "application/json"},
+        data=data,
+        method="POST",
+        headers={"Content-Type": "application/json"},
     )
     try:
-        with urllib.request.urlopen(req, timeout = 10) as r:
+        with urllib.request.urlopen(req, timeout=10) as r:
             return r.status, r.headers.get("Retry-After")
     except urllib.error.HTTPError as exc:
         return exc.code, exc.headers.get("Retry-After") if exc.headers else None
@@ -330,12 +330,12 @@ try:
         expired = jwt.encode(
             {"sub": "unsloth", "exp": int(time.time()) - 1},
             jwt_secret,
-            algorithm = "HS256",
+            algorithm="HS256",
         )
         code, _ = http(
             "GET",
             "/api/inference/status",
-            headers = {"Authorization": f"Bearer {expired}"},
+            headers={"Authorization": f"Bearer {expired}"},
         )
         if code == 401:
             ok("expired JWT -> 401")
@@ -351,8 +351,8 @@ section("API key lifecycle")
 code, body = http(
     "POST",
     "/api/auth/api-keys",
-    body = {"name": "smoke-key"},
-    headers = AUTH_HEADER,
+    body={"name": "smoke-key"},
+    headers=AUTH_HEADER,
 )
 if code != 200 or not isinstance(body, dict):
     fail(f"POST /api/auth/api-keys -> {code}: {_shape(body)}")
@@ -366,7 +366,7 @@ else:
         fail(f"create-key missing key/id: {_shape(body)}")
     else:
         ok(f"created key id={api_id}")
-        code, body = http("GET", "/api/auth/api-keys", headers = AUTH_HEADER)
+        code, body = http("GET", "/api/auth/api-keys", headers=AUTH_HEADER)
         if code == 200 and isinstance(body, dict):
             ids = [k.get("id") for k in body.get("api_keys", body.get("keys", []))]
             if api_id in ids:
@@ -379,14 +379,14 @@ else:
         code, body = http(
             "POST",
             "/v1/chat/completions",
-            body = {
+            body={
                 "model": GGUF_REPO,
                 "messages": [{"role": "user", "content": "Reply with: ok"}],
                 "max_tokens": 5,
                 "temperature": 0,
             },
-            headers = {"Authorization": f"Bearer {api_key}"},
-            timeout = 60,
+            headers={"Authorization": f"Bearer {api_key}"},
+            timeout=60,
         )
         if code == 200 and isinstance(body, dict) and body.get("choices"):
             ok("/v1/chat/completions with API key -> 200 (non-empty)")
@@ -396,7 +396,7 @@ else:
         code, _ = http(
             "DELETE",
             f"/api/auth/api-keys/{api_id}",
-            headers = AUTH_HEADER,
+            headers=AUTH_HEADER,
         )
         if code in (200, 204):
             ok(f"DELETE /api/auth/api-keys/{api_id} -> {code}")
@@ -405,13 +405,13 @@ else:
         code, _ = http(
             "POST",
             "/v1/chat/completions",
-            body = {
+            body={
                 "model": GGUF_REPO,
                 "messages": [{"role": "user", "content": "test"}],
                 "max_tokens": 5,
             },
-            headers = {"Authorization": f"Bearer {api_key}"},
-            timeout = 30,
+            headers={"Authorization": f"Bearer {api_key}"},
+            timeout=30,
         )
         if code == 401:
             ok("/v1/chat/completions with deleted API key -> 401")
@@ -450,7 +450,7 @@ else:
 # ─────────────────────────────────────────────────────────────────────────
 section("Inference lifecycle")
 
-code, body = http("GET", "/v1/models", headers = AUTH_HEADER)
+code, body = http("GET", "/v1/models", headers=AUTH_HEADER)
 if code == 200 and isinstance(body, dict):
     ids = [m.get("id") for m in body.get("data", [])]
     if any(GGUF_REPO in (i or "") for i in ids):
@@ -464,8 +464,8 @@ else:
 code, body = http(
     "POST",
     "/v1/embeddings",
-    body = {"model": GGUF_REPO, "input": "hello"},
-    headers = AUTH_HEADER,
+    body={"model": GGUF_REPO, "input": "hello"},
+    headers=AUTH_HEADER,
     # This is the first request in the section that forces a model load, so it
     # pays the load on top of the embedding. Measured at 23.8s on a healthy
     # macOS runner against a 30s ceiling, i.e. 79% of budget, which is not a
@@ -473,7 +473,7 @@ code, body = http(
     # base while main passed. Raised to leave room for a loaded runner rather
     # than to hide a slow endpoint -- if this starts taking 90s that is a real
     # regression and it will still be reported, now as a failed check.
-    timeout = 90,
+    timeout=90,
 )
 if code == 200 and isinstance(body, dict) and body.get("data"):
     ok("/v1/embeddings -> 200 with data")
@@ -485,13 +485,13 @@ else:
 code, body = http(
     "POST",
     "/v1/responses",
-    body = {
+    body={
         "model": GGUF_REPO,
         "input": "Reply with: ok",
         "max_output_tokens": 5,
     },
-    headers = AUTH_HEADER,
-    timeout = 60,
+    headers=AUTH_HEADER,
+    timeout=60,
 )
 if code == 200 or 400 <= code < 500:
     ok(f"/v1/responses -> {code}")
@@ -502,14 +502,14 @@ else:
 code, _ = http(
     "POST",
     "/api/inference/load",
-    body = {
+    body={
         "model_path": GGUF_REPO,
         "gguf_variant": "UD-Q9_BOGUS_DOES_NOT_EXIST",
         "is_lora": False,
         "max_seq_length": 512,
     },
-    headers = AUTH_HEADER,
-    timeout = 30,
+    headers=AUTH_HEADER,
+    timeout=30,
 )
 if 400 <= code < 500:
     ok(f"bogus gguf_variant -> {code}")
@@ -521,7 +521,7 @@ else:
 
 # Force-reload of the same repo: the child PID must change.
 def _llama_pid() -> int | None:
-    code, body = http("GET", "/api/inference/status", headers = AUTH_HEADER)
+    code, body = http("GET", "/api/inference/status", headers=AUTH_HEADER)
     if code != 200 or not isinstance(body, dict):
         return None
     return body.get("llama_server_pid") or body.get("pid")
@@ -531,15 +531,15 @@ before_pid = _llama_pid()
 code, _ = http(
     "POST",
     "/api/inference/load",
-    body = {
+    body={
         "model_path": GGUF_REPO,
         "gguf_variant": os.environ.get("GGUF_VARIANT", "UD-Q4_K_XL"),
         "is_lora": False,
         "max_seq_length": 2048,
         "force": True,
     },
-    headers = AUTH_HEADER,
-    timeout = 180,
+    headers=AUTH_HEADER,
+    timeout=180,
 )
 if code != 200:
     fail(f"force-reload -> {code}")

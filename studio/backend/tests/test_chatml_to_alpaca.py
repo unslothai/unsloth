@@ -56,7 +56,7 @@ def test_every_reply_becomes_a_row_with_the_system_prompt_and_earlier_exchanges(
 ):
     dataset = Dataset.from_dict({column: [conversation(1), conversation(2)]})
 
-    converted = convert_chatml_to_alpaca(dataset, batch_size = 1, num_proc = 1, chat_column = column)
+    converted = convert_chatml_to_alpaca(dataset, batch_size=1, num_proc=1, chat_column=column)
 
     assert converted.column_names == ["instruction", "input", "output"]
     assert converted.to_list() == _expected(1) + _expected(2)
@@ -74,7 +74,7 @@ def test_a_single_exchange_converts_as_before():
         }
     )
 
-    converted = convert_chatml_to_alpaca(dataset, num_proc = 1)
+    converted = convert_chatml_to_alpaca(dataset, num_proc=1)
 
     assert converted.select_columns(["instruction", "input", "output"]).to_list() == [
         {"instruction": "Hello", "input": "", "output": "Hi there"}
@@ -101,7 +101,7 @@ def test_unpaired_empty_and_unknown_turns_are_skipped():
         }
     )
 
-    converted = convert_chatml_to_alpaca(dataset, num_proc = 1)
+    converted = convert_chatml_to_alpaca(dataset, num_proc=1)
 
     assert converted.to_list() == [
         {"instruction": "Q\n\nmore", "input": "", "output": "A\n\nA again"}
@@ -109,10 +109,10 @@ def test_unpaired_empty_and_unknown_turns_are_skipped():
 
 
 def test_parallel_conversion_keeps_every_reply_in_order(monkeypatch):
-    monkeypatch.setattr("utils.hardware.dataset_map_num_proc", lambda num_proc = None: num_proc)
+    monkeypatch.setattr("utils.hardware.dataset_map_num_proc", lambda num_proc=None: num_proc)
     dataset = Dataset.from_dict({"messages": [_messages(row) for row in range(1, 9)]})
 
-    converted = convert_chatml_to_alpaca(dataset, batch_size = 1, num_proc = 2)
+    converted = convert_chatml_to_alpaca(dataset, batch_size=1, num_proc=2)
 
     assert converted.to_list() == [line for row in range(1, 9) for line in _expected(row)]
 
@@ -123,12 +123,12 @@ def test_parallel_conversion_keeps_every_reply_in_order(monkeypatch):
         lambda rows: IterableDataset.from_generator(lambda: iter(rows)),
         lambda rows: Dataset.from_list(rows).to_iterable_dataset(),
     ],
-    ids = ["generator", "typed"],
+    ids=["generator", "typed"],
 )
 def test_streaming_conversion_splits_replies_the_same_way(stream):
     rows = [{"id": row, "messages": _messages(row)} for row in (1, 2)]
 
-    converted = convert_chatml_to_alpaca(stream(rows), batch_size = 1)
+    converted = convert_chatml_to_alpaca(stream(rows), batch_size=1)
 
     assert list(converted) == _expected(1) + _expected(2)
 
@@ -140,7 +140,7 @@ def test_structured_content_converts_to_text():
     ]
     dataset = Dataset.from_dict({"messages": [structured]})
 
-    converted = convert_chatml_to_alpaca(dataset, num_proc = 1)
+    converted = convert_chatml_to_alpaca(dataset, num_proc=1)
 
     assert converted.to_list() == _expected(1)
 
@@ -153,11 +153,11 @@ def test_alpaca_format_with_a_processor_keeps_the_system_prompt():
 
     result = format_and_template_dataset(
         dataset,
-        model_name = "Gemma3ForConditionalGeneration",
-        tokenizer = _Processor(),
-        format_type = "alpaca",
-        batch_size = 1,
-        num_proc = 1,
+        model_name="Gemma3ForConditionalGeneration",
+        tokenizer=_Processor(),
+        format_type="alpaca",
+        batch_size=1,
+        num_proc=1,
     )
 
     assert result["success"] is True
@@ -172,11 +172,11 @@ def test_alpaca_format_trains_on_every_sharegpt_exchange():
 
     result = format_and_template_dataset(
         dataset,
-        model_name = "Qwen2ForCausalLM",
-        tokenizer = _Tokenizer(),
-        format_type = "alpaca",
-        batch_size = 1,
-        num_proc = 1,
+        model_name="Qwen2ForCausalLM",
+        tokenizer=_Tokenizer(),
+        format_type="alpaca",
+        batch_size=1,
+        num_proc=1,
     )
 
     assert result["success"] is True

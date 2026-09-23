@@ -74,18 +74,19 @@ class ReservingVideoBackend:
 
     def cancel_generate(self, *args, **kwargs):
         from utils.account_context import current_account
+
         self.cancelled.append(current_account().username)
         return True
 
 
-@pytest.fixture(autouse = True)
+@pytest.fixture(autouse=True)
 def isolated(monkeypatch, tmp_path):
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
     monkeypatch.setattr(policy, "installation_is_multi_user", lambda: True)
     monkeypatch.setattr(auth_storage, "DB_PATH", tmp_path / "auth.db")
     monkeypatch.setattr(auth_storage, "_BOOTSTRAP_PW_PATH", tmp_path / ".bootstrap_password")
     monkeypatch.setattr(auth_storage, "_bootstrap_password", None)
-    monkeypatch.setattr(video, "_generation_account", None, raising = False)
+    monkeypatch.setattr(video, "_generation_account", None, raising=False)
     monkeypatch.setattr(gpu_arbiter, "current_owner", lambda: gpu_arbiter.VIDEO)
     monkeypatch.setattr(gpu_arbiter, "owner_account", lambda: ALICE.account_id)
     monkeypatch.setattr(account_access, "repo_is_public", lambda *args, **kwargs: True)
@@ -112,7 +113,7 @@ def _client(account):
             reset_account(token)
 
     app.dependency_overrides[get_current_subject] = subject
-    app.include_router(video.router, prefix = "/api/inference")
+    app.include_router(video.router, prefix="/api/inference")
     return TestClient(app)
 
 
@@ -122,7 +123,7 @@ def test_ownership_holds_from_the_reservation_not_from_the_end_of_begin_generate
     cancel = "/api/inference/video/generate/cancel"
 
     with _client(ALICE) as client:
-        assert client.post(generate, json = {"prompt": "p", "steps": 5}).status_code == 200
+        assert client.post(generate, json={"prompt": "p", "steps": 5}).status_code == 200
 
     backend.reserved.clear()
     backend.release.clear()
@@ -130,9 +131,9 @@ def test_ownership_holds_from_the_reservation_not_from_the_end_of_begin_generate
 
     def run():
         with _client(BOB) as client:
-            started["response"] = client.post(generate, json = {"prompt": "p", "steps": 5})
+            started["response"] = client.post(generate, json={"prompt": "p", "steps": 5})
 
-    thread = threading.Thread(target = run, daemon = True)
+    thread = threading.Thread(target=run, daemon=True)
     thread.start()
     try:
         assert backend.reserved.wait(20)
@@ -157,13 +158,13 @@ def test_the_real_backend_records_the_account_inside_the_locked_reservation():
 
     backend = VideoBackend()
     family = SimpleNamespace(
-        name = "fam",
-        default_fps = 24,
-        default_num_frames = 49,
-        frame_step = 4,
-        frame_offset = 1,
+        name="fam",
+        default_fps=24,
+        default_num_frames=49,
+        frame_step=4,
+        frame_offset=1,
     )
-    state = SimpleNamespace(family = family, h3_task = None, engine = "diffusers", repo_id = "r")
+    state = SimpleNamespace(family=family, h3_task=None, engine="diffusers", repo_id="r")
     backend._state = state
     backend._resolve_keyframes = lambda *a, **k: (None, None, 512, 512, "t2v")
     backend._resolve_references = lambda *a, **k: None
@@ -180,7 +181,8 @@ def test_the_real_backend_records_the_account_inside_the_locked_reservation():
     video_module.validate_video_request_shape = lambda *a, **k: None
     try:
         from utils.account_context import run_as
-        run_as(BOB, functools.partial(backend.begin_generate, prompt = "p", steps = 5))
+
+        run_as(BOB, functools.partial(backend.begin_generate, prompt="p", steps=5))
     finally:
         video_module.validate_video_request_shape = original
     assert seen["at_start"] == BOB.account_id
@@ -197,7 +199,7 @@ def test_cancel_rechecks_the_authorized_reservation_under_the_lock():
     event = threading.Event()
     backend._active_generate_cancel = event
     backend._generate_job_account = BOB.account_id
-    assert backend.cancel_generate(expected_account = ALICE.account_id) is False
+    assert backend.cancel_generate(expected_account=ALICE.account_id) is False
     assert not event.is_set()
-    assert backend.cancel_generate(expected_account = BOB.account_id) is True
+    assert backend.cancel_generate(expected_account=BOB.account_id) is True
     assert event.is_set()

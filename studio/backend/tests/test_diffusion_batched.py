@@ -28,7 +28,7 @@ def _draw():
 # --------------------------------------------------------------------------- job resolution
 def test_legacy_batch_derives_sequential_seeds():
     jobs, base = resolve_batch_jobs(
-        prompt = "p", prompts = None, seed = 7, seeds = None, batch_size = 3, draw_seed = _draw
+        prompt="p", prompts=None, seed=7, seeds=None, batch_size=3, draw_seed=_draw
     )
     assert jobs == [("p", 7), ("p", 8), ("p", 9)]
     assert base == 7
@@ -36,12 +36,12 @@ def test_legacy_batch_derives_sequential_seeds():
 
 def test_single_image_draws_a_masked_random_seed():
     jobs, base = resolve_batch_jobs(
-        prompt = "p",
-        prompts = None,
-        seed = None,
-        seeds = None,
-        batch_size = 1,
-        draw_seed = lambda: (1 << 60) + 5,  # over JS's safe range: must be masked
+        prompt="p",
+        prompts=None,
+        seed=None,
+        seeds=None,
+        batch_size=1,
+        draw_seed=lambda: (1 << 60) + 5,  # over JS's safe range: must be masked
     )
     assert base == ((1 << 60) + 5) & SEED_MASK
     assert jobs == [("p", base)]
@@ -49,12 +49,12 @@ def test_single_image_draws_a_masked_random_seed():
 
 def test_prompt_list_one_job_per_prompt():
     jobs, base = resolve_batch_jobs(
-        prompt = "unused",
-        prompts = ["a", "b"],
-        seed = 100,
-        seeds = None,
-        batch_size = 1,
-        draw_seed = _draw,
+        prompt="unused",
+        prompts=["a", "b"],
+        seed=100,
+        seeds=None,
+        batch_size=1,
+        draw_seed=_draw,
     )
     assert jobs == [("a", 100), ("b", 101)]
     assert base == 100
@@ -62,7 +62,7 @@ def test_prompt_list_one_job_per_prompt():
 
 def test_seed_list_one_job_per_seed():
     jobs, base = resolve_batch_jobs(
-        prompt = "p", prompts = None, seed = None, seeds = [5, 6, 7], batch_size = 1, draw_seed = _draw
+        prompt="p", prompts=None, seed=None, seeds=[5, 6, 7], batch_size=1, draw_seed=_draw
     )
     assert jobs == [("p", 5), ("p", 6), ("p", 7)]
     assert base == 5
@@ -70,12 +70,12 @@ def test_seed_list_one_job_per_seed():
 
 def test_prompt_and_seed_lists_pair_elementwise():
     jobs, base = resolve_batch_jobs(
-        prompt = "unused",
-        prompts = ["a", "b"],
-        seed = None,
-        seeds = [9, 3],
-        batch_size = 1,
-        draw_seed = _draw,
+        prompt="unused",
+        prompts=["a", "b"],
+        seed=None,
+        seeds=[9, 3],
+        batch_size=1,
+        draw_seed=_draw,
     )
     assert jobs == [("a", 9), ("b", 3)]
     assert base == 9  # base seed = first per-image seed
@@ -83,12 +83,12 @@ def test_prompt_and_seed_lists_pair_elementwise():
 
 def test_derived_seeds_stay_json_safe_at_the_cap():
     jobs, _ = resolve_batch_jobs(
-        prompt = "p",
-        prompts = None,
-        seed = SEED_MASK,
-        seeds = None,
-        batch_size = 2,
-        draw_seed = _draw,
+        prompt="p",
+        prompts=None,
+        seed=SEED_MASK,
+        seeds=None,
+        batch_size=2,
+        draw_seed=_draw,
     )
     assert all(0 <= s <= SEED_MASK for _, s in jobs)
 
@@ -96,21 +96,21 @@ def test_derived_seeds_stay_json_safe_at_the_cap():
 @pytest.mark.parametrize(
     "kwargs,match",
     [
-        (dict(prompts = []), "non-empty"),
-        (dict(prompts = ["ok", "  "]), "non-empty"),
-        (dict(prompts = ["p"] * (MAX_BATCH_IMAGES + 1)), "at most"),
-        (dict(seeds = []), "non-empty"),
-        (dict(seeds = [1] * (MAX_BATCH_IMAGES + 1)), "at most"),
-        (dict(seeds = [-1]), "between 0"),
-        (dict(seeds = [SEED_MASK + 1]), "between 0"),
-        (dict(prompts = ["a", "b"], seeds = [1]), "same length"),
+        (dict(prompts=[]), "non-empty"),
+        (dict(prompts=["ok", "  "]), "non-empty"),
+        (dict(prompts=["p"] * (MAX_BATCH_IMAGES + 1)), "at most"),
+        (dict(seeds=[]), "non-empty"),
+        (dict(seeds=[1] * (MAX_BATCH_IMAGES + 1)), "at most"),
+        (dict(seeds=[-1]), "between 0"),
+        (dict(seeds=[SEED_MASK + 1]), "between 0"),
+        (dict(prompts=["a", "b"], seeds=[1]), "same length"),
     ],
 )
 def test_invalid_lists_rejected(kwargs, match):
-    base = dict(prompt = "p", prompts = None, seed = None, seeds = None, batch_size = 1)
+    base = dict(prompt="p", prompts=None, seed=None, seeds=None, batch_size=1)
     base.update(kwargs)
-    with pytest.raises(ValueError, match = match):
-        resolve_batch_jobs(draw_seed = lambda: 0, **base)
+    with pytest.raises(ValueError, match=match):
+        resolve_batch_jobs(draw_seed=lambda: 0, **base)
 
 
 # --------------------------------------------------------------------------------- chunking

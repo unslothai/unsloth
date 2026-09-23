@@ -25,7 +25,7 @@ from core.inference.studio_tool_loop import (
 )
 
 
-@dataclass(frozen = True)
+@dataclass(frozen=True)
 class CodexRunContext:
     provider_id: str
     thread_id: str | None
@@ -40,7 +40,7 @@ class CodexRunContext:
     promoted_image_parts: tuple = ()
 
 
-@dataclass(frozen = True)
+@dataclass(frozen=True)
 class CodexToolPolicy:
     tools: list[dict[str, Any]]
     max_calls: int
@@ -75,16 +75,16 @@ class CodexTransport:
         cancel_event: threading.Event,
     ) -> AsyncIterator[str]:
         return self._client.stream(
-            provider_id = self._run.provider_id,
-            thread_id = self._run.thread_id,
-            messages = messages,
-            model = self._run.model,
-            max_tokens = None,
-            reasoning_effort = self._run.reasoning_effort,
-            response_format = self._run.response_format,
-            tools = tools,
-            tool_choice = tool_choice,
-            cancel_event = cancel_event,
+            provider_id=self._run.provider_id,
+            thread_id=self._run.thread_id,
+            messages=messages,
+            model=self._run.model,
+            max_tokens=None,
+            reasoning_effort=self._run.reasoning_effort,
+            response_format=self._run.response_format,
+            tools=tools,
+            tool_choice=tool_choice,
+            cancel_event=cancel_event,
         )
 
 
@@ -98,29 +98,29 @@ def stream_codex_with_studio_tools(
     """Stream Codex, execute requested Unsloth tools, and continue until a final answer."""
     return stream_with_studio_tools(
         CodexTransport(client, run),
-        run = ToolLoopRun(
-            messages = run.messages,
-            session_id = run.session_id,
-            thread_id = run.thread_id,
+        run=ToolLoopRun(
+            messages=run.messages,
+            session_id=run.session_id,
+            thread_id=run.thread_id,
             # Before this loop was shared, Codex relayed the provider's own usage chunks and they carried the Codex
             # model id. The shared loop sums them into one synthetic chunk instead, so dropping the model here would
             # relabel that accounting "external" and move behaviour the Codex path is meant to keep.
-            model = run.model,
-            tool_choice = run.tool_choice,
-            continue_final_message = run.continue_final_message,
-            supports_vision = run.supports_vision,
-            promoted_image_parts = run.promoted_image_parts,
+            model=run.model,
+            tool_choice=run.tool_choice,
+            continue_final_message=run.continue_final_message,
+            supports_vision=run.supports_vision,
+            promoted_image_parts=run.promoted_image_parts,
         ),
-        policy = ToolLoopPolicy(
-            tools = policy.tools,
-            max_calls = policy.max_calls,
-            timeout = policy.timeout,
-            permission_mode = policy.permission_mode,
-            confirm_calls = policy.confirm_calls,
-            bypass_permissions = policy.bypass_permissions,
-            rag_scope = policy.rag_scope,
-            auto_heal = False,
-            nudge_tool_calls = policy.nudge_tool_calls,
+        policy=ToolLoopPolicy(
+            tools=policy.tools,
+            max_calls=policy.max_calls,
+            timeout=policy.timeout,
+            permission_mode=policy.permission_mode,
+            confirm_calls=policy.confirm_calls,
+            bypass_permissions=policy.bypass_permissions,
+            rag_scope=policy.rag_scope,
+            auto_heal=False,
+            nudge_tool_calls=policy.nudge_tool_calls,
         ),
-        cancel_event = cancel_event,
+        cancel_event=cancel_event,
     )

@@ -26,10 +26,10 @@ def _plugin(tmp_path):
 def _run_gate(script, payload):
     return subprocess.run(
         [sys.executable, str(script)],
-        input = payload,
-        capture_output = True,
-        text = True,
-        timeout = 30,
+        input=payload,
+        capture_output=True,
+        text=True,
+        timeout=30,
     )
 
 
@@ -132,11 +132,11 @@ def test_hook_command_survives_a_missing_gate_and_a_path_with_spaces(tmp_path):
     # Works normally through the real shell path Claude uses.
     denied = subprocess.run(
         command,
-        input = json.dumps({"permission_mode": "plan"}),
-        shell = True,
-        capture_output = True,
-        text = True,
-        timeout = 30,
+        input=json.dumps({"permission_mode": "plan"}),
+        shell=True,
+        capture_output=True,
+        text=True,
+        timeout=30,
     )
     assert denied.returncode == 0
     assert json.loads(denied.stdout)["hookSpecificOutput"]["permissionDecision"] == "deny"
@@ -144,11 +144,11 @@ def test_hook_command_survives_a_missing_gate_and_a_path_with_spaces(tmp_path):
     (plugin / "hooks" / "plan_gate.py").unlink()
     gone = subprocess.run(
         command,
-        input = json.dumps({"permission_mode": "default"}),
-        shell = True,
-        capture_output = True,
-        text = True,
-        timeout = 30,
+        input=json.dumps({"permission_mode": "default"}),
+        shell=True,
+        capture_output=True,
+        text=True,
+        timeout=30,
     )
     assert gone.returncode != 2, "exit 2 blocks the tool in every mode"
     assert gone.stdout.strip() == ""
@@ -166,11 +166,11 @@ def test_gate_survives_shell_metacharacters_in_its_path(tmp_path, hostile):
 
     denied = subprocess.run(
         command,
-        input = json.dumps({"permission_mode": "plan"}),
-        shell = True,
-        capture_output = True,
-        text = True,
-        timeout = 60,
+        input=json.dumps({"permission_mode": "plan"}),
+        shell=True,
+        capture_output=True,
+        text=True,
+        timeout=60,
     )
 
     assert denied.returncode == 0, denied.stderr

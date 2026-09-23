@@ -21,17 +21,17 @@ import pytest
 from core.inference import diffusion_compile_cache as cc
 
 
-def _transformer(blocks = ("FluxTransformerBlock", "FluxSingleTransformerBlock")):
-    return types.SimpleNamespace(_repeated_blocks = list(blocks))
+def _transformer(blocks=("FluxTransformerBlock", "FluxSingleTransformerBlock")):
+    return types.SimpleNamespace(_repeated_blocks=list(blocks))
 
 
 _BEGIN_KW = dict(
-    family = "flux.1",
-    dtype = "torch.bfloat16",
-    quant = None,
-    attention_backend = "_native_cudnn",
-    compile_kwargs = {"fullgraph": True, "dynamic": True},
-    shape_bucket = "1024x1024",
+    family="flux.1",
+    dtype="torch.bfloat16",
+    quant=None,
+    attention_backend="_native_cudnn",
+    compile_kwargs={"fullgraph": True, "dynamic": True},
+    shape_bucket="1024x1024",
 )
 
 
@@ -46,20 +46,20 @@ def test_cache_key_stable_across_kwarg_order():
     efp = cc.environment_fingerprint()
     t = _transformer()
     a = cc.model_fingerprint(
-        family = "flux.1",
-        transformer = t,
-        dtype = "bf16",
-        quant = None,
-        attention_backend = "x",
-        compile_kwargs = {"fullgraph": True, "dynamic": True},
+        family="flux.1",
+        transformer=t,
+        dtype="bf16",
+        quant=None,
+        attention_backend="x",
+        compile_kwargs={"fullgraph": True, "dynamic": True},
     )
     b = cc.model_fingerprint(
-        family = "flux.1",
-        transformer = t,
-        dtype = "bf16",
-        quant = None,
-        attention_backend = "x",
-        compile_kwargs = {"dynamic": True, "fullgraph": True},
+        family="flux.1",
+        transformer=t,
+        dtype="bf16",
+        quant=None,
+        attention_backend="x",
+        compile_kwargs={"dynamic": True, "fullgraph": True},
     )
     assert cc.cache_key(efp, a) == cc.cache_key(efp, b)
 
@@ -78,13 +78,13 @@ def test_cache_key_sensitive_to_model_dims(field, value):
     efp = cc.environment_fingerprint()
     t = _transformer()
     base = dict(
-        family = "flux.1",
-        transformer = t,
-        dtype = "bf16",
-        quant = None,
-        attention_backend = "x",
-        compile_kwargs = {"fullgraph": True},
-        shape_bucket = "1024x1024",
+        family="flux.1",
+        transformer=t,
+        dtype="bf16",
+        quant=None,
+        attention_backend="x",
+        compile_kwargs={"fullgraph": True},
+        shape_bucket="1024x1024",
     )
     k0 = cc.cache_key(efp, cc.model_fingerprint(**base))
     base[field] = value
@@ -96,23 +96,23 @@ def test_repeated_blocks_change_key():
     k1 = cc.cache_key(
         efp,
         cc.model_fingerprint(
-            family = "f",
-            transformer = _transformer(("A",)),
-            dtype = "bf16",
-            quant = None,
-            attention_backend = "x",
-            compile_kwargs = {},
+            family="f",
+            transformer=_transformer(("A",)),
+            dtype="bf16",
+            quant=None,
+            attention_backend="x",
+            compile_kwargs={},
         ),
     )
     k2 = cc.cache_key(
         efp,
         cc.model_fingerprint(
-            family = "f",
-            transformer = _transformer(("B",)),
-            dtype = "bf16",
-            quant = None,
-            attention_backend = "x",
-            compile_kwargs = {},
+            family="f",
+            transformer=_transformer(("B",)),
+            dtype="bf16",
+            quant=None,
+            attention_backend="x",
+            compile_kwargs={},
         ),
     )
     assert k1 != k2
@@ -137,14 +137,14 @@ def test_cache_mode(monkeypatch, raw, expected):
 
 
 def test_cache_mode_default_auto(monkeypatch):
-    monkeypatch.delenv(cc._ENV_MODE, raising = False)
+    monkeypatch.delenv(cc._ENV_MODE, raising=False)
     assert cc.cache_mode() == "auto"
 
 
 # ------------------------------------------------------------------------------ disabled
 def test_begin_returns_none_when_disabled(monkeypatch):
     monkeypatch.setenv(cc._ENV_MODE, "0")
-    assert cc.begin(transformer = _transformer(), **_BEGIN_KW) is None
+    assert cc.begin(transformer=_transformer(), **_BEGIN_KW) is None
 
 
 def test_begin_returns_none_without_megacache_api(monkeypatch):
@@ -152,7 +152,7 @@ def test_begin_returns_none_without_megacache_api(monkeypatch):
     fake_torch = types.ModuleType("torch")
     fake_torch.compiler = types.SimpleNamespace()  # no save/load attrs
     monkeypatch.setitem(__import__("sys").modules, "torch", fake_torch)
-    assert cc.begin(transformer = _transformer(), **_BEGIN_KW) is None
+    assert cc.begin(transformer=_transformer(), **_BEGIN_KW) is None
 
 
 # ----------------------------------------------------------------- megacache fake + flow
@@ -170,8 +170,8 @@ def fake_megacache(monkeypatch):
         state["loaded_with"] = data
         return object() if data == b"ARTIFACT-BYTES" else None
 
-    monkeypatch.setattr(torch.compiler, "save_cache_artifacts", fake_save, raising = False)
-    monkeypatch.setattr(torch.compiler, "load_cache_artifacts", fake_load, raising = False)
+    monkeypatch.setattr(torch.compiler, "save_cache_artifacts", fake_save, raising=False)
+    monkeypatch.setattr(torch.compiler, "load_cache_artifacts", fake_load, raising=False)
     return state
 
 
@@ -180,13 +180,13 @@ def test_save_then_load_roundtrip(monkeypatch, tmp_path, fake_megacache):
     monkeypatch.setenv(cc._ENV_DIR, str(tmp_path))
 
     # First load: cold (no bundle yet).
-    ctx = cc.begin(transformer = _transformer(), **_BEGIN_KW)
+    ctx = cc.begin(transformer=_transformer(), **_BEGIN_KW)
     assert ctx is not None and ctx.hit is False
     assert cc.save(ctx) is True
     assert ctx.bundle.exists() and ctx.manifest_path.exists()
 
     # Second load with the SAME fingerprint: warm hit.
-    ctx2 = cc.begin(transformer = _transformer(), **_BEGIN_KW)
+    ctx2 = cc.begin(transformer=_transformer(), **_BEGIN_KW)
     assert ctx2 is not None and ctx2.hit is True
     assert fake_megacache["loaded_with"] == b"ARTIFACT-BYTES"
     assert ctx2.key == ctx.key
@@ -194,14 +194,14 @@ def test_save_then_load_roundtrip(monkeypatch, tmp_path, fake_megacache):
 
 def test_auto_mode_saves_by_default(monkeypatch, tmp_path, fake_megacache):
     monkeypatch.setenv(cc._ENV_MODE, "auto")
-    monkeypatch.delenv(cc._ENV_SAVE, raising = False)
+    monkeypatch.delenv(cc._ENV_SAVE, raising=False)
     monkeypatch.setenv(cc._ENV_DIR, str(tmp_path))
-    ctx = cc.begin(transformer = _transformer(), **_BEGIN_KW)
+    ctx = cc.begin(transformer=_transformer(), **_BEGIN_KW)
     assert cc.save(ctx) is True  # first-run warm: auto saves the bundle
     assert ctx.bundle.exists() and ctx.manifest_path.exists()
 
     # The next load with the same fingerprint hits the just-saved bundle...
-    ctx2 = cc.begin(transformer = _transformer(), **_BEGIN_KW)
+    ctx2 = cc.begin(transformer=_transformer(), **_BEGIN_KW)
     assert ctx2.hit is True
     # ...and does NOT rewrite it under auto (the artifacts on disk are the ones loaded).
     before = ctx2.bundle.stat().st_mtime_ns
@@ -213,7 +213,7 @@ def test_save_env_zero_disables_auto_save(monkeypatch, tmp_path, fake_megacache)
     monkeypatch.setenv(cc._ENV_MODE, "auto")
     monkeypatch.setenv(cc._ENV_SAVE, "0")
     monkeypatch.setenv(cc._ENV_DIR, str(tmp_path))
-    ctx = cc.begin(transformer = _transformer(), **_BEGIN_KW)
+    ctx = cc.begin(transformer=_transformer(), **_BEGIN_KW)
     assert cc.save(ctx) is False  # explicit load-only override
     assert not ctx.bundle.exists()
 
@@ -221,9 +221,9 @@ def test_save_env_zero_disables_auto_save(monkeypatch, tmp_path, fake_megacache)
 def test_on_mode_resaves_after_hit(monkeypatch, tmp_path, fake_megacache):
     monkeypatch.setenv(cc._ENV_MODE, "on")
     monkeypatch.setenv(cc._ENV_DIR, str(tmp_path))
-    ctx = cc.begin(transformer = _transformer(), **_BEGIN_KW)
+    ctx = cc.begin(transformer=_transformer(), **_BEGIN_KW)
     assert cc.save(ctx) is True
-    ctx2 = cc.begin(transformer = _transformer(), **_BEGIN_KW)
+    ctx2 = cc.begin(transformer=_transformer(), **_BEGIN_KW)
     assert ctx2.hit is True
     # Distributor mode refreshes the bundle even on a hit (new variants get captured).
     assert cc.save(ctx2) is True
@@ -231,24 +231,24 @@ def test_on_mode_resaves_after_hit(monkeypatch, tmp_path, fake_megacache):
 
 def test_new_static_shape_redirties_a_hit(monkeypatch, tmp_path, fake_megacache):
     monkeypatch.setenv(cc._ENV_MODE, "auto")
-    monkeypatch.delenv(cc._ENV_SAVE, raising = False)
+    monkeypatch.delenv(cc._ENV_SAVE, raising=False)
     monkeypatch.setenv(cc._ENV_DIR, str(tmp_path))
 
     # Cold session at 1024: the save records the shape coverage in the manifest.
-    ctx = cc.begin(transformer = _transformer(), **_BEGIN_KW)
-    cc.register_shape(ctx, (1024, 1024, 1), static = True)
+    ctx = cc.begin(transformer=_transformer(), **_BEGIN_KW)
+    cc.register_shape(ctx, (1024, 1024, 1), static=True)
     assert cc.save(ctx) is True
     manifest = json.loads(ctx.manifest_path.read_text())
     assert manifest["shapes"] == [[1024, 1024, 1]]
 
     # Warm session: the covered shape does not dirty the context...
-    ctx2 = cc.begin(transformer = _transformer(), **_BEGIN_KW)
+    ctx2 = cc.begin(transformer=_transformer(), **_BEGIN_KW)
     assert ctx2.hit is True and ctx2.saved is True
     assert ctx2.shapes == {(1024, 1024, 1)}
-    cc.register_shape(ctx2, (1024, 1024, 1), static = True)
+    cc.register_shape(ctx2, (1024, 1024, 1), static=True)
     assert cc.save(ctx2) is False
     # ...but a NEW static shape (its compile just produced new artifacts) does, and the rewritten manifest covers both.
-    cc.register_shape(ctx2, (768, 768, 1), static = True)
+    cc.register_shape(ctx2, (768, 768, 1), static=True)
     assert ctx2.saved is False
     assert cc.save(ctx2) is True
     manifest = json.loads(ctx2.manifest_path.read_text())
@@ -258,17 +258,17 @@ def test_new_static_shape_redirties_a_hit(monkeypatch, tmp_path, fake_megacache)
 def test_new_batch_size_is_its_own_static_shape(monkeypatch, tmp_path, fake_megacache):
     # A static compile produces one artifact PER (w, h, batch): an unseen batch size (incl. an OOM-backoff half) must re-dirty it, a covered one must not.
     monkeypatch.setenv(cc._ENV_MODE, "auto")
-    monkeypatch.delenv(cc._ENV_SAVE, raising = False)
+    monkeypatch.delenv(cc._ENV_SAVE, raising=False)
     monkeypatch.setenv(cc._ENV_DIR, str(tmp_path))
-    ctx = cc.begin(transformer = _transformer(), **_BEGIN_KW)
-    cc.register_shape(ctx, (1024, 1024, 8), static = True)
+    ctx = cc.begin(transformer=_transformer(), **_BEGIN_KW)
+    cc.register_shape(ctx, (1024, 1024, 8), static=True)
     assert cc.save(ctx) is True
 
-    ctx2 = cc.begin(transformer = _transformer(), **_BEGIN_KW)
+    ctx2 = cc.begin(transformer=_transformer(), **_BEGIN_KW)
     assert ctx2.hit is True
-    cc.register_shape(ctx2, (1024, 1024, 8), static = True)
+    cc.register_shape(ctx2, (1024, 1024, 8), static=True)
     assert cc.save(ctx2) is False  # covered batch: nothing new
-    cc.register_shape(ctx2, (1024, 1024, 32), static = True)
+    cc.register_shape(ctx2, (1024, 1024, 32), static=True)
     assert ctx2.saved is False  # new batch size: new artifacts to persist
     assert cc.save(ctx2) is True
     manifest = json.loads(ctx2.manifest_path.read_text())
@@ -279,12 +279,12 @@ def test_gguf_quant_keys_apart_from_dense():
     # A GGUF transformer compiles a different graph (the dequant chain), so the load path fingerprints it quant="gguf" and bundles never cross-hit.
     efp = cc.environment_fingerprint()
     base = dict(
-        family = "flux.1",
-        transformer = _transformer(),
-        dtype = "torch.bfloat16",
-        quant = None,
-        attention_backend = "x",
-        compile_kwargs = {"fullgraph": True, "dynamic": True},
+        family="flux.1",
+        transformer=_transformer(),
+        dtype="torch.bfloat16",
+        quant=None,
+        attention_backend="x",
+        compile_kwargs={"fullgraph": True, "dynamic": True},
     )
     dense = cc.model_fingerprint(**base)
     gguf = cc.model_fingerprint(**{**base, "quant": "gguf"})
@@ -294,20 +294,20 @@ def test_gguf_quant_keys_apart_from_dense():
 def test_dynamic_compile_never_dirties(monkeypatch, tmp_path, fake_megacache):
     monkeypatch.setenv(cc._ENV_MODE, "auto")
     monkeypatch.setenv(cc._ENV_DIR, str(tmp_path))
-    ctx = cc.begin(transformer = _transformer(), **_BEGIN_KW)
+    ctx = cc.begin(transformer=_transformer(), **_BEGIN_KW)
     cc.save(ctx)
-    ctx2 = cc.begin(transformer = _transformer(), **_BEGIN_KW)
+    ctx2 = cc.begin(transformer=_transformer(), **_BEGIN_KW)
     assert ctx2.hit is True
     # A dynamic-shape compile reuses one artifact across shapes: no re-save.
-    cc.register_shape(ctx2, (768, 768, 1), static = False)
+    cc.register_shape(ctx2, (768, 768, 1), static=False)
     assert cc.save(ctx2) is False
-    cc.register_shape(None, (768, 768, 1), static = True)  # no context: no-op
+    cc.register_shape(None, (768, 768, 1), static=True)  # no context: no-op
 
 
 def test_fingerprint_mismatch_falls_back(monkeypatch, tmp_path, fake_megacache):
     monkeypatch.setenv(cc._ENV_MODE, "on")
     monkeypatch.setenv(cc._ENV_DIR, str(tmp_path))
-    ctx = cc.begin(transformer = _transformer(), **_BEGIN_KW)
+    ctx = cc.begin(transformer=_transformer(), **_BEGIN_KW)
     cc.save(ctx)
 
     # Tamper the manifest's env fingerprint: the exact-match guard must reject the bundle.
@@ -315,18 +315,18 @@ def test_fingerprint_mismatch_falls_back(monkeypatch, tmp_path, fake_megacache):
     manifest["env"]["torch"] = "0.0.0-other"
     ctx.manifest_path.write_text(json.dumps(manifest))
 
-    ctx2 = cc.begin(transformer = _transformer(), **_BEGIN_KW)
+    ctx2 = cc.begin(transformer=_transformer(), **_BEGIN_KW)
     assert ctx2.hit is False  # mismatch -> local compile, non-fatal
 
 
 def test_corrupt_bundle_rejected(monkeypatch, tmp_path, fake_megacache):
     monkeypatch.setenv(cc._ENV_MODE, "on")
     monkeypatch.setenv(cc._ENV_DIR, str(tmp_path))
-    ctx = cc.begin(transformer = _transformer(), **_BEGIN_KW)
+    ctx = cc.begin(transformer=_transformer(), **_BEGIN_KW)
     cc.save(ctx)
     ctx.bundle.write_bytes(b"CORRUPTED")  # manifest sha256 no longer matches
 
-    ctx2 = cc.begin(transformer = _transformer(), **_BEGIN_KW)
+    ctx2 = cc.begin(transformer=_transformer(), **_BEGIN_KW)
     assert ctx2.hit is False
 
 
@@ -337,7 +337,7 @@ def test_restore_inductor_dir(monkeypatch, tmp_path, fake_megacache):
     monkeypatch.setenv(cc._ENV_MODE, "auto")
     monkeypatch.setenv(cc._ENV_DIR, str(tmp_path))
     monkeypatch.setenv("TORCHINDUCTOR_CACHE_DIR", "/tmp/prior-inductor")
-    ctx = cc.begin(transformer = _transformer(), **_BEGIN_KW)
+    ctx = cc.begin(transformer=_transformer(), **_BEGIN_KW)
     assert os.environ["TORCHINDUCTOR_CACHE_DIR"] != "/tmp/prior-inductor"  # redirected
     cc.restore(ctx)
     assert os.environ["TORCHINDUCTOR_CACHE_DIR"] == "/tmp/prior-inductor"  # restored
@@ -375,8 +375,8 @@ def test_the_import_fallback_matches_the_resolver(monkeypatch):
 @pytest.mark.parametrize(
     "name",
     [
-        pytest.param("my studio", id = "a space"),
-        pytest.param("o'brien", id = "an apostrophe"),
+        pytest.param("my studio", id="a space"),
+        pytest.param("o'brien", id="an apostrophe"),
     ],
 )
 def test_an_unparseable_cache_root_never_pins_the_unparseable_path(
@@ -394,9 +394,9 @@ def test_an_unparseable_cache_root_never_pins_the_unparseable_path(
     root = tmp_path / name
     monkeypatch.setenv(cc._ENV_MODE, "auto")
     monkeypatch.setenv(cc._ENV_DIR, str(root))
-    monkeypatch.delenv("TORCHINDUCTOR_CACHE_DIR", raising = False)
+    monkeypatch.delenv("TORCHINDUCTOR_CACHE_DIR", raising=False)
 
-    ctx = cc.begin(transformer = _transformer(), **_BEGIN_KW)
+    ctx = cc.begin(transformer=_transformer(), **_BEGIN_KW)
 
     published = os.environ.get("TORCHINDUCTOR_CACHE_DIR")
     assert published != str(ctx.dir / "inductor")
@@ -416,12 +416,12 @@ def test_two_models_under_an_unparseable_root_do_not_share_one_inductor_cache(
     root = tmp_path / "o'brien"
     monkeypatch.setenv(cc._ENV_MODE, "auto")
     monkeypatch.setenv(cc._ENV_DIR, str(root))
-    monkeypatch.delenv("TORCHINDUCTOR_CACHE_DIR", raising = False)
+    monkeypatch.delenv("TORCHINDUCTOR_CACHE_DIR", raising=False)
 
-    first = cc.begin(transformer = _transformer(), **_BEGIN_KW)
+    first = cc.begin(transformer=_transformer(), **_BEGIN_KW)
     one = os.environ.get("TORCHINDUCTOR_CACHE_DIR")
-    other = dict(_BEGIN_KW, shape_bucket = "512x512")
-    second = cc.begin(transformer = _transformer(), **other)
+    other = dict(_BEGIN_KW, shape_bucket="512x512")
+    second = cc.begin(transformer=_transformer(), **other)
     two = os.environ.get("TORCHINDUCTOR_CACHE_DIR")
 
     assert first.key != second.key
@@ -437,14 +437,14 @@ def _seed_legacy_bundle(monkeypatch, tmp_path, fake_megacache) -> tuple:
     legacy = tmp_path / "legacy" / "diffusion_compile_cache"
     studio_home = tmp_path / "studio"
     monkeypatch.setenv(cc._ENV_MODE, "auto")
-    monkeypatch.delenv(cc._ENV_SAVE, raising = False)
+    monkeypatch.delenv(cc._ENV_SAVE, raising=False)
     monkeypatch.setenv(cc._ENV_DIR, str(legacy))
-    seeded = cc.begin(transformer = _transformer(), **_BEGIN_KW)
+    seeded = cc.begin(transformer=_transformer(), **_BEGIN_KW)
     assert cc.save(seeded) is True
 
-    monkeypatch.delenv(cc._ENV_DIR, raising = False)
-    monkeypatch.delenv("UNSLOTH_HOME", raising = False)
-    monkeypatch.delenv("UNSLOTH_PORTABLE", raising = False)
+    monkeypatch.delenv(cc._ENV_DIR, raising=False)
+    monkeypatch.delenv("UNSLOTH_HOME", raising=False)
+    monkeypatch.delenv("UNSLOTH_PORTABLE", raising=False)
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(studio_home))
     monkeypatch.setattr(cc, "_LEGACY_ROOT", legacy)
     return legacy, studio_home, seeded.bundle
@@ -458,7 +458,7 @@ def test_legacy_bundle_is_read_but_the_new_root_takes_the_writes(
     legacy, studio_home, legacy_bundle = _seed_legacy_bundle(monkeypatch, tmp_path, fake_megacache)
     import os
 
-    ctx = cc.begin(transformer = _transformer(), **_BEGIN_KW)
+    ctx = cc.begin(transformer=_transformer(), **_BEGIN_KW)
 
     assert ctx.hit is True  # warm: the legacy bundle still counts
     assert str(ctx.dir).startswith(str(studio_home))
@@ -495,7 +495,7 @@ def test_an_interrupted_migration_leaves_no_partial_pair(monkeypatch, tmp_path, 
 
     monkeypatch.setattr(cc.shutil, "copyfile", exploding_copyfile)
 
-    ctx = cc.begin(transformer = _transformer(), **_BEGIN_KW)
+    ctx = cc.begin(transformer=_transformer(), **_BEGIN_KW)
 
     # The read still served this run from the legacy pair.
     assert ctx.hit is True
@@ -511,12 +511,12 @@ def test_migrated_bundle_serves_the_next_run_without_the_legacy_root(
     monkeypatch, tmp_path, fake_megacache
 ):
     legacy, _, legacy_bundle = _seed_legacy_bundle(monkeypatch, tmp_path, fake_megacache)
-    assert cc.begin(transformer = _transformer(), **_BEGIN_KW).hit is True
+    assert cc.begin(transformer=_transformer(), **_BEGIN_KW).hit is True
 
     import shutil
 
     shutil.rmtree(legacy)  # the old cache gets cleaned up: the warm start must survive
-    ctx = cc.begin(transformer = _transformer(), **_BEGIN_KW)
+    ctx = cc.begin(transformer=_transformer(), **_BEGIN_KW)
     assert ctx.hit is True
 
 
@@ -524,7 +524,7 @@ def test_load_only_mode_reads_legacy_without_writing_to_it(monkeypatch, tmp_path
     legacy, _, legacy_bundle = _seed_legacy_bundle(monkeypatch, tmp_path, fake_megacache)
     monkeypatch.setenv(cc._ENV_SAVE, "0")
 
-    ctx = cc.begin(transformer = _transformer(), **_BEGIN_KW)
+    ctx = cc.begin(transformer=_transformer(), **_BEGIN_KW)
 
     assert ctx.hit is True
     assert not (
@@ -538,8 +538,8 @@ def test_key_absent_from_legacy_never_writes_into_it(monkeypatch, tmp_path, fake
     legacy, studio_home, legacy_bundle = _seed_legacy_bundle(monkeypatch, tmp_path, fake_megacache)
     before = {p.name for p in legacy.iterdir()}
 
-    other = dict(_BEGIN_KW, family = "qwen-image")
-    ctx = cc.begin(transformer = _transformer(("QwenImageTransformerBlock",)), **other)
+    other = dict(_BEGIN_KW, family="qwen-image")
+    ctx = cc.begin(transformer=_transformer(("QwenImageTransformerBlock",)), **other)
 
     assert ctx.hit is False
     assert cc.save(ctx) is True
@@ -550,11 +550,11 @@ def test_key_absent_from_legacy_never_writes_into_it(monkeypatch, tmp_path, fake
 def test_portable_mode_never_falls_back_to_the_home_directory(monkeypatch, tmp_path):
     # begin() points TORCHINDUCTOR_CACHE_DIR inside this root, so a fallback here would write
     # GBs into the host machine's home directory.
-    monkeypatch.delenv(cc._ENV_DIR, raising = False)
-    monkeypatch.delenv("UNSLOTH_STUDIO_HOME", raising = False)
+    monkeypatch.delenv(cc._ENV_DIR, raising=False)
+    monkeypatch.delenv("UNSLOTH_STUDIO_HOME", raising=False)
     monkeypatch.setenv("UNSLOTH_HOME", str(tmp_path / "portable"))
     legacy = tmp_path / "legacy" / "diffusion_compile_cache"
-    legacy.mkdir(parents = True)
+    legacy.mkdir(parents=True)
     monkeypatch.setattr(cc, "_LEGACY_ROOT", legacy)
 
     root = cc.cache_root()
@@ -567,7 +567,7 @@ def test_portable_mode_never_falls_back_to_the_home_directory(monkeypatch, tmp_p
 def test_explicit_dir_override_ignores_the_legacy_root(monkeypatch, tmp_path):
     monkeypatch.setenv(cc._ENV_DIR, str(tmp_path / "chosen"))
     legacy = tmp_path / "legacy" / "diffusion_compile_cache"
-    legacy.mkdir(parents = True)
+    legacy.mkdir(parents=True)
     monkeypatch.setattr(cc, "_LEGACY_ROOT", legacy)
 
     assert cc.cache_root() == tmp_path / "chosen"
@@ -577,10 +577,10 @@ def test_explicit_dir_override_ignores_the_legacy_root(monkeypatch, tmp_path):
 def test_an_unreadable_legacy_root_is_a_miss_not_a_failure(monkeypatch, tmp_path):
     # The legacy root is the HOST's home, so it can be on a mount the new cache does not need.
     # Path.exists raises for EACCES and EIO before 3.14, and begin() does not catch around here.
-    monkeypatch.delenv(cc._ENV_DIR, raising = False)
+    monkeypatch.delenv(cc._ENV_DIR, raising=False)
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "studio"))
-    monkeypatch.delenv("UNSLOTH_HOME", raising = False)
-    monkeypatch.delenv("UNSLOTH_PORTABLE", raising = False)
+    monkeypatch.delenv("UNSLOTH_HOME", raising=False)
+    monkeypatch.delenv("UNSLOTH_PORTABLE", raising=False)
     legacy = tmp_path / "legacy" / "diffusion_compile_cache"
     monkeypatch.setattr(cc, "_LEGACY_ROOT", legacy)
 
@@ -594,16 +594,16 @@ def test_an_unreadable_legacy_root_is_a_miss_not_a_failure(monkeypatch, tmp_path
 
 def test_an_unreadable_legacy_bundle_pair_is_a_miss_not_a_failure(monkeypatch, tmp_path):
     legacy = tmp_path / "legacy" / "diffusion_compile_cache"
-    legacy.mkdir(parents = True)
+    legacy.mkdir(parents=True)
     monkeypatch.setattr(cc, "legacy_cache_root", lambda: legacy)
     ctx = cc.CacheContext(
-        key = "abc",
-        dir = tmp_path / "new" / "abc",
-        bundle = tmp_path / "new" / "abc" / "cache.bin",
-        manifest_path = tmp_path / "new" / "abc" / "manifest.json",
-        env_fp = "e",
-        model_fp = "m",
-        mode = "auto",
+        key="abc",
+        dir=tmp_path / "new" / "abc",
+        bundle=tmp_path / "new" / "abc" / "cache.bin",
+        manifest_path=tmp_path / "new" / "abc" / "manifest.json",
+        env_fp="e",
+        model_fp="m",
+        mode="auto",
     )
 
     def _raise(self, *a, **k):
@@ -624,8 +624,8 @@ def test_a_manifest_that_is_not_an_object_is_a_miss(monkeypatch, tmp_path, fake_
     legacy, _, legacy_bundle = _seed_legacy_bundle(monkeypatch, tmp_path, fake_megacache)
     for payload in ("[]", "null", '"a string"', "42"):
         for key_dir in legacy.iterdir():
-            (key_dir / cc._MANIFEST_NAME).write_text(payload, encoding = "utf-8")
-        ctx = cc.begin(transformer = _transformer(), **_BEGIN_KW)
+            (key_dir / cc._MANIFEST_NAME).write_text(payload, encoding="utf-8")
+        ctx = cc.begin(transformer=_transformer(), **_BEGIN_KW)
         assert ctx.hit is False, payload
 
 
@@ -645,7 +645,7 @@ def test_an_unreadable_write_root_falls_back_to_legacy(monkeypatch, tmp_path, fa
         return real_exists(self, *a, **k)
 
     monkeypatch.setattr(Path, "exists", _raise_under_studio)
-    ctx = cc.begin(transformer = _transformer(), **_BEGIN_KW)
+    ctx = cc.begin(transformer=_transformer(), **_BEGIN_KW)
     assert ctx.hit is True
 
 
@@ -656,7 +656,7 @@ def test_an_unreadable_write_root_falls_back_to_legacy(monkeypatch, tmp_path, fa
 def drained():
     """Leave the shared worker idle for the next test whatever this one did."""
     yield
-    cc.wait_for_saves(timeout = 10.0)
+    cc.wait_for_saves(timeout=10.0)
 
 
 def _fake_logger():
@@ -676,18 +676,18 @@ def _fake_logger():
 
 def test_async_save_writes_the_same_bytes_as_sync(monkeypatch, tmp_path, fake_megacache, drained):
     monkeypatch.setenv(cc._ENV_MODE, "auto")
-    monkeypatch.delenv(cc._ENV_SYNC, raising = False)
+    monkeypatch.delenv(cc._ENV_SYNC, raising=False)
 
     monkeypatch.setenv(cc._ENV_DIR, str(tmp_path / "sync"))
-    sync_ctx = cc.begin(transformer = _transformer(), **_BEGIN_KW)
-    cc.register_shape(sync_ctx, (1024, 1024, 1), static = True)
+    sync_ctx = cc.begin(transformer=_transformer(), **_BEGIN_KW)
+    cc.register_shape(sync_ctx, (1024, 1024, 1), static=True)
     assert cc.save(sync_ctx) is True
 
     monkeypatch.setenv(cc._ENV_DIR, str(tmp_path / "async"))
-    async_ctx = cc.begin(transformer = _transformer(), **_BEGIN_KW)
-    cc.register_shape(async_ctx, (1024, 1024, 1), static = True)
+    async_ctx = cc.begin(transformer=_transformer(), **_BEGIN_KW)
+    cc.register_shape(async_ctx, (1024, 1024, 1), static=True)
     assert cc.save_async(async_ctx) is True
-    assert cc.wait_for_saves(timeout = 10.0) is True
+    assert cc.wait_for_saves(timeout=10.0) is True
 
     assert async_ctx.bundle.read_bytes() == sync_ctx.bundle.read_bytes()
     a = json.loads(async_ctx.manifest_path.read_text())
@@ -700,12 +700,12 @@ def test_async_save_writes_the_same_bytes_as_sync(monkeypatch, tmp_path, fake_me
 
 def test_async_save_is_a_noop_on_a_clean_context(monkeypatch, tmp_path, fake_megacache, drained):
     monkeypatch.setenv(cc._ENV_MODE, "auto")
-    monkeypatch.delenv(cc._ENV_SYNC, raising = False)
+    monkeypatch.delenv(cc._ENV_SYNC, raising=False)
     monkeypatch.setenv(cc._ENV_DIR, str(tmp_path))
-    ctx = cc.begin(transformer = _transformer(), **_BEGIN_KW)
+    ctx = cc.begin(transformer=_transformer(), **_BEGIN_KW)
     assert cc.save_async(ctx) is True
-    assert cc.wait_for_saves(timeout = 10.0) is True
-    ctx2 = cc.begin(transformer = _transformer(), **_BEGIN_KW)
+    assert cc.wait_for_saves(timeout=10.0) is True
+    ctx2 = cc.begin(transformer=_transformer(), **_BEGIN_KW)
     assert ctx2.hit is True and ctx2.saved is True
     assert cc.save_async(ctx2) is False  # a hit has nothing to write
 
@@ -717,7 +717,7 @@ def test_worker_serialises_two_queued_saves(monkeypatch, tmp_path, fake_megacach
     import torch
 
     monkeypatch.setenv(cc._ENV_MODE, "auto")
-    monkeypatch.delenv(cc._ENV_SYNC, raising = False)
+    monkeypatch.delenv(cc._ENV_SYNC, raising=False)
     started = threading.Event()
     release = threading.Event()
     calls: list[int] = []
@@ -728,12 +728,12 @@ def test_worker_serialises_two_queued_saves(monkeypatch, tmp_path, fake_megacach
         release.wait(10)
         return (b"ARTIFACT-BYTES", None)
 
-    monkeypatch.setattr(torch.compiler, "save_cache_artifacts", gated_save, raising = False)
+    monkeypatch.setattr(torch.compiler, "save_cache_artifacts", gated_save, raising=False)
 
     monkeypatch.setenv(cc._ENV_DIR, str(tmp_path / "one"))
-    ctx1 = cc.begin(transformer = _transformer(), **_BEGIN_KW)
+    ctx1 = cc.begin(transformer=_transformer(), **_BEGIN_KW)
     monkeypatch.setenv(cc._ENV_DIR, str(tmp_path / "two"))
-    ctx2 = cc.begin(transformer = _transformer(), **_BEGIN_KW)
+    ctx2 = cc.begin(transformer=_transformer(), **_BEGIN_KW)
 
     assert cc.save_async(ctx1) is True
     assert started.wait(10) is True
@@ -745,7 +745,7 @@ def test_worker_serialises_two_queued_saves(monkeypatch, tmp_path, fake_megacach
     assert not ctx2.bundle.exists()
 
     release.set()
-    assert cc.wait_for_saves(timeout = 10.0) is True
+    assert cc.wait_for_saves(timeout=10.0) is True
     assert len(calls) == 2
     assert ctx1.bundle.exists() and ctx2.bundle.exists()
 
@@ -757,7 +757,7 @@ def test_redirtied_context_queues_a_second_save(monkeypatch, tmp_path, fake_mega
     import torch
 
     monkeypatch.setenv(cc._ENV_MODE, "auto")
-    monkeypatch.delenv(cc._ENV_SYNC, raising = False)
+    monkeypatch.delenv(cc._ENV_SYNC, raising=False)
     monkeypatch.setenv(cc._ENV_DIR, str(tmp_path))
 
     started = threading.Event()
@@ -771,20 +771,20 @@ def test_redirtied_context_queues_a_second_save(monkeypatch, tmp_path, fake_mega
             release.wait(10)
         return (b"ARTIFACT-BYTES", None)
 
-    monkeypatch.setattr(torch.compiler, "save_cache_artifacts", gated_save, raising = False)
+    monkeypatch.setattr(torch.compiler, "save_cache_artifacts", gated_save, raising=False)
 
-    ctx = cc.begin(transformer = _transformer(), **_BEGIN_KW)
-    cc.register_shape(ctx, (1024, 1024, 1), static = True)
+    ctx = cc.begin(transformer=_transformer(), **_BEGIN_KW)
+    cc.register_shape(ctx, (1024, 1024, 1), static=True)
     assert cc.save_async(ctx) is True
     assert started.wait(10) is True
 
     # Second generation, new static shape, while the first save is mid-flight.
-    cc.register_shape(ctx, (768, 768, 1), static = True)
+    cc.register_shape(ctx, (768, 768, 1), static=True)
     assert ctx.saved is False
     assert cc.save_async(ctx) is True  # queued behind the running one, not dropped
 
     release.set()
-    assert cc.wait_for_saves(timeout = 10.0) is True
+    assert cc.wait_for_saves(timeout=10.0) is True
     assert len(saves) == 2
     # The in-flight save must NOT have claimed the context clean, and the rewritten manifest covers both shapes.
     assert ctx.saved is True
@@ -796,8 +796,8 @@ def test_sync_env_switch_writes_inline(monkeypatch, tmp_path, fake_megacache, dr
     monkeypatch.setenv(cc._ENV_SYNC, "1")
     monkeypatch.setenv(cc._ENV_DIR, str(tmp_path))
     assert cc.sync_saves() is True
-    ctx = cc.begin(transformer = _transformer(), **_BEGIN_KW)
-    cc.register_shape(ctx, (1024, 1024, 1), static = True)
+    ctx = cc.begin(transformer=_transformer(), **_BEGIN_KW)
+    cc.register_shape(ctx, (1024, 1024, 1), static=True)
     assert cc.save_async(ctx) is True
     # No worker involved: the bundle is on disk the moment save_async returns, as it was before the worker existed.
     assert ctx.bundle.exists() and ctx.manifest_path.exists()
@@ -809,28 +809,28 @@ def test_worker_failure_is_swallowed_and_logged(monkeypatch, tmp_path, fake_mega
     import torch
 
     monkeypatch.setenv(cc._ENV_MODE, "auto")
-    monkeypatch.delenv(cc._ENV_SYNC, raising = False)
+    monkeypatch.delenv(cc._ENV_SYNC, raising=False)
     monkeypatch.setenv(cc._ENV_DIR, str(tmp_path))
 
     def boom():
         raise RuntimeError("inductor exploded")
 
-    monkeypatch.setattr(torch.compiler, "save_cache_artifacts", boom, raising = False)
+    monkeypatch.setattr(torch.compiler, "save_cache_artifacts", boom, raising=False)
     log = _fake_logger()
-    ctx = cc.begin(transformer = _transformer(), **_BEGIN_KW)
-    cc.register_shape(ctx, (1024, 1024, 1), static = True)
-    assert cc.save_async(ctx, logger = log) is True  # queuing succeeds; the failure is the worker's
-    assert cc.wait_for_saves(timeout = 10.0) is True
+    ctx = cc.begin(transformer=_transformer(), **_BEGIN_KW)
+    cc.register_shape(ctx, (1024, 1024, 1), static=True)
+    assert cc.save_async(ctx, logger=log) is True  # queuing succeeds; the failure is the worker's
+    assert cc.wait_for_saves(timeout=10.0) is True
     assert not ctx.bundle.exists()
     assert ctx.saved is False
     assert any("inductor exploded" in w for w in log.warnings)
 
     # The worker survives its own failure and takes the next save.
     monkeypatch.setattr(
-        torch.compiler, "save_cache_artifacts", lambda: (b"ARTIFACT-BYTES", None), raising = False
+        torch.compiler, "save_cache_artifacts", lambda: (b"ARTIFACT-BYTES", None), raising=False
     )
-    assert cc.save_async(ctx, logger = log) is True
-    assert cc.wait_for_saves(timeout = 10.0) is True
+    assert cc.save_async(ctx, logger=log) is True
+    assert cc.wait_for_saves(timeout=10.0) is True
     assert ctx.bundle.exists()
 
 
@@ -839,7 +839,7 @@ def test_atomic_write_never_publishes_a_partial_file(monkeypatch, tmp_path, fake
     monkeypatch.setenv(cc._ENV_MODE, "on")
     monkeypatch.setenv(cc._ENV_SYNC, "1")
     monkeypatch.setenv(cc._ENV_DIR, str(tmp_path))
-    ctx = cc.begin(transformer = _transformer(), **_BEGIN_KW)
+    ctx = cc.begin(transformer=_transformer(), **_BEGIN_KW)
     assert cc.save(ctx) is True
     good = ctx.bundle.read_bytes()
 
@@ -874,13 +874,13 @@ def mutable_megacache(monkeypatch):
 
     state = {"bytes": b"ARTIFACT-ONE"}
     monkeypatch.setattr(
-        torch.compiler, "save_cache_artifacts", lambda: (state["bytes"], None), raising = False
+        torch.compiler, "save_cache_artifacts", lambda: (state["bytes"], None), raising=False
     )
     monkeypatch.setattr(
         torch.compiler,
         "load_cache_artifacts",
         lambda data: object() if data else None,
-        raising = False,
+        raising=False,
     )
     return state
 
@@ -890,7 +890,7 @@ def _cold_pair(monkeypatch, tmp_path):
     monkeypatch.setenv(cc._ENV_MODE, "on")
     monkeypatch.setenv(cc._ENV_SYNC, "1")
     monkeypatch.setenv(cc._ENV_DIR, str(tmp_path))
-    ctx = cc.begin(transformer = _transformer(), **_BEGIN_KW)
+    ctx = cc.begin(transformer=_transformer(), **_BEGIN_KW)
     assert cc.save(ctx) is True
     return ctx
 
@@ -932,7 +932,7 @@ def test_an_interrupted_bundle_write_leaves_the_previous_pair_loadable(
     assert [p.name for p in ctx.dir.iterdir() if p.name.endswith(".tmp")] == []
     # The previous pair is untouched and still a real warm start.
     assert live.read_bytes() == live_bytes
-    reopened = cc.begin(transformer = _transformer(), **_BEGIN_KW)
+    reopened = cc.begin(transformer=_transformer(), **_BEGIN_KW)
     assert reopened.hit is True
     assert reopened.bundle == live
 
@@ -966,7 +966,7 @@ def test_a_bundle_published_without_its_manifest_leaves_the_previous_pair_loadab
     assert orphan.exists() and orphan.read_bytes() == b"ARTIFACT-TWO-IS-A-DIFFERENT-LENGTH"
     assert live.read_bytes() == live_bytes
     assert json.loads(ctx.manifest_path.read_text())["bundle"] == live.name
-    reopened = cc.begin(transformer = _transformer(), **_BEGIN_KW)
+    reopened = cc.begin(transformer=_transformer(), **_BEGIN_KW)
     assert reopened.hit is True
     assert reopened.bundle == live
 
@@ -1006,7 +1006,7 @@ def test_a_superseded_bundle_is_collected_and_the_live_pair_still_loads(
     assert [p.name for p in ctx.dir.iterdir() if p.name.startswith(cc._BUNDLE_PREFIX)] == [
         second.name
     ]
-    reopened = cc.begin(transformer = _transformer(), **_BEGIN_KW)
+    reopened = cc.begin(transformer=_transformer(), **_BEGIN_KW)
     assert reopened.hit is True
     assert reopened.bundle == second
 
@@ -1034,7 +1034,7 @@ def test_collection_never_removes_the_live_bundle_or_one_a_racing_process_just_w
     _os.utime(ctx.bundle, (0, 0))
     assert cc._collect_superseded(ctx.dir, None) == []
     assert ctx.bundle.exists()
-    assert cc.begin(transformer = _transformer(), **_BEGIN_KW).hit is True
+    assert cc.begin(transformer=_transformer(), **_BEGIN_KW).hit is True
 
 
 def test_a_manifest_from_before_content_addressing_still_hits(
@@ -1048,7 +1048,7 @@ def test_a_manifest_from_before_content_addressing_still_hits(
     manifest.pop("bundle")
     ctx.manifest_path.write_text(json.dumps(manifest))
 
-    reopened = cc.begin(transformer = _transformer(), **_BEGIN_KW)
+    reopened = cc.begin(transformer=_transformer(), **_BEGIN_KW)
     assert reopened.hit is True
     assert reopened.bundle == legacy
 
@@ -1058,7 +1058,7 @@ def test_a_manifest_from_before_content_addressing_still_hits(
     reopened.saved = False
     assert cc.save(reopened) is True
     assert not legacy.exists()
-    assert cc.begin(transformer = _transformer(), **_BEGIN_KW).hit is True
+    assert cc.begin(transformer=_transformer(), **_BEGIN_KW).hit is True
 
 
 def test_a_bundle_spared_by_the_grace_window_is_collected_when_the_key_is_opened_again(
@@ -1085,7 +1085,7 @@ def test_a_bundle_spared_by_the_grace_window_is_collected_when_the_key_is_opened
     import os as _os
 
     _os.utime(first, (0, 0))
-    reopened = cc.begin(transformer = _transformer(), **_BEGIN_KW)
+    reopened = cc.begin(transformer=_transformer(), **_BEGIN_KW)
     assert not first.exists()
     assert second.exists()
     assert reopened.hit is True
@@ -1103,7 +1103,7 @@ def test_a_bundle_rejected_on_its_checksum_is_rewritten_rather_than_kept(
     good = ctx.bundle.read_bytes()
     ctx.bundle.write_bytes(b"CORRUPT" + good[7:])
 
-    reopened = cc.begin(transformer = _transformer(), **_BEGIN_KW)
+    reopened = cc.begin(transformer=_transformer(), **_BEGIN_KW)
     assert reopened.hit is False
     assert reopened.rejected_bundle == ctx.bundle.name
 
@@ -1112,7 +1112,7 @@ def test_a_bundle_rejected_on_its_checksum_is_rewritten_rather_than_kept(
     assert reopened.bundle.read_bytes() == good
 
     # And the next start hits again, which is the whole point: the cache healed itself.
-    assert cc.begin(transformer = _transformer(), **_BEGIN_KW).hit is True
+    assert cc.begin(transformer=_transformer(), **_BEGIN_KW).hit is True
 
 
 def test_a_temp_file_left_by_a_killed_save_is_collected(monkeypatch, tmp_path, mutable_megacache):

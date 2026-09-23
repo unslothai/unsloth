@@ -29,25 +29,25 @@ def _drive(coro):
 def _transport(
     monkeypatch,
     captured: dict,
-    provider_type = "vllm",
+    provider_type="vllm",
 ):
     def handler(request: httpx.Request) -> httpx.Response:
         captured["body"] = json.loads(request.content.decode("utf-8"))
         return httpx.Response(
             200,
-            content = b'data: {"choices":[{"delta":{"content":"ok"}}]}\n\ndata: [DONE]\n\n',
-            headers = {"content-type": "text/event-stream"},
+            content=b'data: {"choices":[{"delta":{"content":"ok"}}]}\n\ndata: [DONE]\n\n',
+            headers={"content-type": "text/event-stream"},
         )
 
     monkeypatch.setattr(
-        ep_mod, "_http_client", httpx.AsyncClient(transport = httpx.MockTransport(handler))
+        ep_mod, "_http_client", httpx.AsyncClient(transport=httpx.MockTransport(handler))
     )
     client = ExternalProviderClient(
-        provider_type = provider_type,
-        base_url = "http://self-hosted.example/v1",
-        api_key = "",
+        provider_type=provider_type,
+        base_url="http://self-hosted.example/v1",
+        api_key="",
     )
-    return client, OAICompatTransport(client, model = "local-model", continue_final_message = True)
+    return client, OAICompatTransport(client, model="local-model", continue_final_message=True)
 
 
 _ASSISTANT_TAIL = [
@@ -77,10 +77,10 @@ def test_continuation_flags_track_the_trailing_role(monkeypatch, messages, expec
 
     async def run():
         async for _ in transport.stream(
-            messages = messages,
-            tools = None,
-            tool_choice = "auto",
-            cancel_event = threading.Event(),
+            messages=messages,
+            tools=None,
+            tool_choice="auto",
+            cancel_event=threading.Event(),
         ):
             pass
         await client.close()

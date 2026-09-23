@@ -23,7 +23,7 @@ import pytest
 
 
 SOURCE_PATH = Path(__file__).resolve().parents[2] / "studio" / "backend" / "routes" / "inference.py"
-SRC = SOURCE_PATH.read_text(encoding = "utf-8")
+SRC = SOURCE_PATH.read_text(encoding="utf-8")
 _TREE = ast.parse(SRC)
 
 _TICK_S = 0.05
@@ -61,7 +61,7 @@ def _load_pump():
         "_DEFAULT_FIRST_TOKEN_TIMEOUT_S": 1200.0,
         "_first_token_timeout_s": lambda: 1200.0,
         "_TEARDOWN_TASK_STOP_TIMEOUT_S": 5.0,
-        "_set_stream_response_read_timeout": lambda response, read_timeout_s = None: None,
+        "_set_stream_response_read_timeout": lambda response, read_timeout_s=None: None,
         "_discard_task_outcome": lambda task: None,
     }
     exec("\n\n".join(chunks), namespace)
@@ -74,9 +74,9 @@ class _ScriptedIter:
 
     def __init__(
         self,
-        immediate = (),
-        gate = None,
-        after_gate = (),
+        immediate=(),
+        gate=None,
+        after_gate=(),
     ):
         self._immediate = list(immediate)
         self._gate = gate
@@ -109,13 +109,13 @@ def test_keepalives_flow_during_prefill_without_restarting_the_read():
 
     async def _run():
         gate = asyncio.Event()
-        upstream = _ScriptedIter(gate = gate, after_gate = ["data: first-token"])
+        upstream = _ScriptedIter(gate=gate, after_gate=["data: first-token"])
         seen_keepalives = 0
         items = []
         stream = pump_ns["_aiter_llama_stream_items"](
             upstream,
-            first_token_deadline = time.monotonic() + 30.0,
-            keepalive_interval_s = _TICK_S,
+            first_token_deadline=time.monotonic() + 30.0,
+            keepalive_interval_s=_TICK_S,
         )
         try:
             async for got in stream:
@@ -149,14 +149,14 @@ def test_keepalives_flow_during_a_post_first_token_stall_then_the_guard_fires():
     keepalive = pump_ns["_LLAMA_STREAM_KEEPALIVE"]
 
     async def _run():
-        upstream = _ScriptedIter(immediate = ["data: a"], gate = asyncio.Event())
+        upstream = _ScriptedIter(immediate=["data: a"], gate=asyncio.Event())
         seen_keepalives = 0
         items = []
         stream = pump_ns["_aiter_llama_stream_items"](
             upstream,
-            first_token_deadline = time.monotonic() + 30.0,
-            post_first_item_read_timeout_s = 0.4,
-            keepalive_interval_s = _TICK_S,
+            first_token_deadline=time.monotonic() + 30.0,
+            post_first_item_read_timeout_s=0.4,
+            keepalive_interval_s=_TICK_S,
         )
         try:
             with pytest.raises(httpx.ReadTimeout) as excinfo:
@@ -185,12 +185,12 @@ def test_first_token_deadline_still_fires_and_no_sentinel_when_disabled():
     keepalive = pump_ns["_LLAMA_STREAM_KEEPALIVE"]
 
     async def _run():
-        upstream = _ScriptedIter(gate = asyncio.Event())
+        upstream = _ScriptedIter(gate=asyncio.Event())
         seen = []
         stream = pump_ns["_aiter_llama_stream_items"](
             upstream,
-            first_token_deadline = time.monotonic() + 0.2,
-            keepalive_interval_s = None,
+            first_token_deadline=time.monotonic() + 0.2,
+            keepalive_interval_s=None,
         )
         try:
             with pytest.raises(httpx.ReadTimeout) as excinfo:
@@ -216,11 +216,11 @@ def test_teardown_cancels_the_in_flight_read():
     keepalive = pump_ns["_LLAMA_STREAM_KEEPALIVE"]
 
     async def _run():
-        upstream = _ScriptedIter(gate = asyncio.Event())
+        upstream = _ScriptedIter(gate=asyncio.Event())
         stream = pump_ns["_aiter_llama_stream_items"](
             upstream,
-            first_token_deadline = time.monotonic() + 30.0,
-            keepalive_interval_s = _TICK_S,
+            first_token_deadline=time.monotonic() + 30.0,
+            keepalive_interval_s=_TICK_S,
         )
         async for got in stream:
             assert got is keepalive
@@ -256,8 +256,8 @@ def test_closing_the_pump_first_leaves_the_iterator_closable():
         iterator = _upstream()
         stream = pump_ns["_aiter_llama_stream_items"](
             iterator,
-            first_token_deadline = time.monotonic() + 30.0,
-            keepalive_interval_s = _TICK_S,
+            first_token_deadline=time.monotonic() + 30.0,
+            keepalive_interval_s=_TICK_S,
         )
         async for got in stream:
             assert got is keepalive
@@ -278,14 +278,14 @@ def test_closing_the_pump_first_leaves_the_iterator_closable():
         return errors
 
     # Without the ordering, the iterator close lands on a running generator.
-    unordered = asyncio.run(_run(close_pump_first = False))
+    unordered = asyncio.run(_run(close_pump_first=False))
     assert any("already running" in e for e in unordered), (
         "expected the unordered close to hit 'asynchronous generator is already "
         f"running'; got {unordered}. If this stops reproducing the ordering "
         "contract may no longer be load-bearing."
     )
 
-    ordered = asyncio.run(_run(close_pump_first = True))
+    ordered = asyncio.run(_run(close_pump_first=True))
     assert ordered == [], f"closing the pump first must leave a clean close; got {ordered}"
 
 
@@ -332,7 +332,7 @@ def _load_env_accessors():
 def test_keepalive_interval_env(monkeypatch, raw, expected):
     ns = _load_env_accessors()
     name = ns["_OPENAI_COMPAT_STREAM_KEEPALIVE_ENV"]
-    monkeypatch.delenv(name, raising = False)
+    monkeypatch.delenv(name, raising=False)
     if raw is not None:
         monkeypatch.setenv(name, raw)
     assert ns["_openai_passthrough_stream_keepalive_interval"]() == expected
@@ -359,7 +359,7 @@ def test_keepalive_interval_env(monkeypatch, raw, expected):
 def test_first_token_timeout_env_never_unbounded(monkeypatch, raw, expected):
     ns = _load_env_accessors()
     name = ns["_OPENAI_COMPAT_FIRST_TOKEN_TIMEOUT_ENV"]
-    monkeypatch.delenv(name, raising = False)
+    monkeypatch.delenv(name, raising=False)
     if raw is not None:
         monkeypatch.setenv(name, raw)
     got = ns["_first_token_timeout_s"]()

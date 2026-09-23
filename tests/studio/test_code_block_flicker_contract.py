@@ -111,9 +111,9 @@ def test_a_collapse_below_the_placeholder_band_still_counts() -> None:
 
 def test_a_collapsing_block_takes_the_scroll_height_with_it() -> None:
     frames = (
-        [frame([1700.0, 1700.0], scroll_height = 3400.0)] * 2
-        + [frame([1700.0, 226.0], scroll_height = 1926.0)]
-        + [frame([1700.0, 1700.0], scroll_height = 3400.0)] * 2
+        [frame([1700.0, 1700.0], scroll_height=3400.0)] * 2
+        + [frame([1700.0, 226.0], scroll_height=1926.0)]
+        + [frame([1700.0, 1700.0], scroll_height=3400.0)] * 2
     )
     assert analyse_stream(frames)["scrollHeightDips"] == 1
 
@@ -169,8 +169,8 @@ def test_a_short_block_is_never_read_as_a_collapsed_tall_one() -> None:
 
 def test_a_thread_that_simply_gets_shorter_is_not_a_dip() -> None:
     """Deleting a message shortens the column and it stays short. That is not a flicker."""
-    frames = [frame([1700.0, 1700.0], scroll_height = 3400.0)] * 3 + [
-        frame([1700.0], scroll_height = 1700.0)
+    frames = [frame([1700.0, 1700.0], scroll_height=3400.0)] * 3 + [
+        frame([1700.0], scroll_height=1700.0)
     ] * 20
     assert analyse_stream(frames)["scrollHeightDips"] == 0
 
@@ -189,14 +189,14 @@ def test_blocks_appearing_and_disappearing_are_not_collapses() -> None:
 
 def test_scrolling_does_not_move_the_anchor() -> None:
     """The anchor is read in document space, so a scroll of 400px a frame is not a shift."""
-    frames = [frame([1700.0], anchorTop = -400.0 * i, scrollTop = 400.0 * i) for i in range(10)]
+    frames = [frame([1700.0], anchorTop=-400.0 * i, scrollTop=400.0 * i) for i in range(10)]
     assert analyse_stream(frames)["anchorShiftPx"] == 0.0
 
 
 def test_content_relaid_out_above_the_anchor_is_a_shift() -> None:
     frames = [
-        frame([1700.0], anchorTop = 0.0, scrollTop = 0.0),
-        frame([1700.0], anchorTop = -900.0, scrollTop = 0.0),
+        frame([1700.0], anchorTop=0.0, scrollTop=0.0),
+        frame([1700.0], anchorTop=-900.0, scrollTop=0.0),
     ]
     assert analyse_stream(frames)["anchorShiftPx"] == 900.0
 
@@ -235,7 +235,7 @@ def test_sub_pixel_wobble_is_not_a_shift() -> None:
 
 
 def harness_source() -> str:
-    return HARNESS.read_text(encoding = "utf-8")
+    return HARNESS.read_text(encoding="utf-8")
 
 
 def module_assignment(source: str, name: str) -> ast.expr | None:
@@ -280,7 +280,7 @@ def test_a_filtered_variant_set_cannot_drop_every_positive_control() -> None:
 
 def test_the_fixture_offers_the_state_the_override_was_added_for() -> None:
     """The pre-override stylesheet has to be reachable, or the flicker cannot be reproduced."""
-    fixture = FIXTURE.read_text(encoding = "utf-8")
+    fixture = FIXTURE.read_text(encoding="utf-8")
     assert "streamdown:" in fixture
     assert "content-visibility: auto" in fixture
     assert "contain-intrinsic-size: auto 200px" in fixture
@@ -303,7 +303,7 @@ def test_the_variant_stylesheets_are_checked_to_have_won_the_cascade() -> None:
 
 
 def test_the_page_and_its_entry_agree() -> None:
-    assert FIXTURE.name in PAGE.read_text(encoding = "utf-8")
+    assert FIXTURE.name in PAGE.read_text(encoding="utf-8")
 
 
 def test_the_placeholder_band_matches_the_fallback_the_library_sets() -> None:

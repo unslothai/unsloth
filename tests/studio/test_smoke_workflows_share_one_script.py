@@ -29,10 +29,10 @@ LEGS = (
 
 
 def _workflow(name: str) -> str:
-    return (REPO / ".github" / "workflows" / name).read_text(encoding = "utf-8")
+    return (REPO / ".github" / "workflows" / name).read_text(encoding="utf-8")
 
 
-@pytest.fixture(scope = "module")
+@pytest.fixture(scope="module")
 def script():
     """The shared script, imported. It reads no environment and imports no SDK at module
     level precisely so this is possible."""
@@ -70,7 +70,7 @@ def test_a_divergent_second_run_is_a_failure_not_a_warning(script):
     clean = ["1 is 2", "you asked about 2", "paris", "paris"]
     script.check("ok", clean, list(clean))  # the baseline passes, or nothing below means anything
 
-    with pytest.raises(AssertionError, match = "non-deterministic"):
+    with pytest.raises(AssertionError, match="non-deterministic"):
         script.check("drift", clean, ["1 is 2", "you asked about 2", "paris", "london"])
 
 
@@ -94,12 +94,12 @@ def test_an_empty_reply_is_a_failure_in_either_run(script):
     asserted only the first.
     """
     clean = ["1 is 2", "you asked about 2", "paris", "paris"]
-    with pytest.raises(AssertionError, match = "empty turn"):
+    with pytest.raises(AssertionError, match="empty turn"):
         script.check("first", ["", "b", "paris", "paris"], ["", "b", "paris", "paris"])
-    with pytest.raises(AssertionError, match = "empty turn"):
+    with pytest.raises(AssertionError, match="empty turn"):
         script.check("second", clean, ["", "b", "paris", "paris"])
     # The exact pair the stripped comparison is blind to.
-    with pytest.raises(AssertionError, match = "empty turn"):
+    with pytest.raises(AssertionError, match="empty turn"):
         script.check(
             "whitespace vs nothing", ["\n", "b", "paris", "paris"], ["", "b", "paris", "paris"]
         )
@@ -109,13 +109,13 @@ def test_history_grounding_is_still_checked(script):
     """Two of the four turns are answerable only from the earlier ones. Those checks fail
     when history is dropped, rather than when the model is wrong about France."""
     good2 = "you asked about 2"
-    with pytest.raises(AssertionError, match = "history reached the model"):
+    with pytest.raises(AssertionError, match="history reached the model"):
         script.check("nohistory", ["1 is 2", good2, "c", "d"], ["1 is 2", good2, "c", "d"])
 
     # The gap #10009 found:
     # The gap #10009 found: 'paris' in the JOINED transcript proves nothing, because turn 3 supplies it on its own.
     lost_after_3 = ["1 is 2", "b", "paris", "Okay, I'm ready."]
-    with pytest.raises(AssertionError, match = "history reached the model"):
+    with pytest.raises(AssertionError, match="history reached the model"):
         script.check("joined-is-not-enough", lost_after_3, list(lost_after_3))
 
 
@@ -134,7 +134,7 @@ def test_grounding_is_asserted_on_a_turn_a_270m_model_can_carry(script):
 
     # And the measured reply of a server sent the last prompt with no history at all.
     no_history = ["58 + 27 = 95", "the answer was 95", "paris", "Okay, I'm ready."]
-    with pytest.raises(AssertionError, match = "history reached the model"):
+    with pytest.raises(AssertionError, match="history reached the model"):
         script.check("dropped", no_history, list(no_history))
 
 
@@ -142,7 +142,7 @@ def test_turn_1_must_still_answer_with_a_number(script):
     """Turn 1 is what makes the conversation multi-turn; a server that cannot do
     arithmetic at all is not exercising history."""
     broken = ["I cannot do arithmetic.", "b", "paris", "paris"]
-    with pytest.raises(AssertionError, match = "should contain a number"):
+    with pytest.raises(AssertionError, match="should contain a number"):
         script.check("nonumber", broken, list(broken))
 
 
@@ -153,7 +153,7 @@ def test_the_script_needs_no_environment_to_import(script):
     checking half unreachable from a test and put it back where it was: only ever
     exercised by a full smoke run on three operating systems.
     """
-    source = SCRIPT.read_text(encoding = "utf-8")
+    source = SCRIPT.read_text(encoding="utf-8")
     head = source.split("def _server", 1)[0]
     for forbidden in ("os.environ[", "from openai", "from anthropic"):
         assert forbidden not in head, (
@@ -181,7 +181,7 @@ def test_the_replay_retry_cannot_pass_a_truly_nondeterministic_server(script, mo
     monkeypatch.setattr(script, "assert_reproducible_backend", lambda: None)
     monkeypatch.setattr(script, "run_openai", always_divergent)
     monkeypatch.setattr(script, "run_anthropic", always_divergent)
-    with pytest.raises(AssertionError, match = "non-deterministic"):
+    with pytest.raises(AssertionError, match="non-deterministic"):
         script.main()
     # Bounded: two runners per attempt, and it must not have looped past ATTEMPTS.
     assert calls["n"] == 2 * script.ATTEMPTS, calls["n"]
@@ -211,7 +211,7 @@ def test_a_non_divergence_failure_is_not_retried(script, monkeypatch):
     monkeypatch.setattr(script, "assert_reproducible_backend", lambda: None)
     monkeypatch.setattr(script, "run_openai", no_history)
     monkeypatch.setattr(script, "run_anthropic", no_history)
-    with pytest.raises(AssertionError, match = "history reached the model"):
+    with pytest.raises(AssertionError, match="history reached the model"):
         script.main()
     assert calls["n"] == 2, f"retried a non-divergence failure {calls['n']} times"
 
@@ -265,11 +265,11 @@ def test_the_probe_refuses_a_backend_that_cannot_be_reproducible(script, monkeyp
         monkeypatch.setattr(script, "_read_backend_status", lambda: status)
 
     _with({"speculative_type": "default", "parallel_slots": 1})
-    with pytest.raises(AssertionError, match = "speculative decoding off"):
+    with pytest.raises(AssertionError, match="speculative decoding off"):
         script.main()
 
     _with({"speculative_type": "off", "parallel_slots": 4})
-    with pytest.raises(AssertionError, match = "one decode slot"):
+    with pytest.raises(AssertionError, match="one decode slot"):
         script.main()
 
     _with({"speculative_type": "off", "parallel_slots": 1})

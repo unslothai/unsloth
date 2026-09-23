@@ -32,17 +32,17 @@ from core.inference.diffusion_transformer_quant import (
 )
 
 
-def _target(*, device = "cuda", dtype = "bfloat16"):
-    return types.SimpleNamespace(device = device, dtype = dtype)
+def _target(*, device="cuda", dtype="bfloat16"):
+    return types.SimpleNamespace(device=device, dtype=dtype)
 
 
 def _stub_torch(
     monkeypatch,
     *,
-    cc = (10, 0),
-    with_fp8 = True,
-    cuda_available = True,
-    device_name = "NVIDIA B200",
+    cc=(10, 0),
+    with_fp8=True,
+    cuda_available=True,
+    device_name="NVIDIA B200",
 ):
     torch = types.ModuleType("torch")
     torch.bfloat16 = "bfloat16"
@@ -50,10 +50,10 @@ def _stub_torch(
     if with_fp8:
         torch.float8_e4m3fn = "float8_e4m3fn"
     torch.cuda = types.SimpleNamespace(
-        is_available = lambda: cuda_available,
-        get_device_capability = lambda *a: cc,
+        is_available=lambda: cuda_available,
+        get_device_capability=lambda *a: cc,
         # A data-center name by default; consumer tests pass a GeForce name (or monkeypatch _is_consumer_gpu).
-        get_device_name = lambda *a: device_name,
+        get_device_name=lambda *a: device_name,
     )
     monkeypatch.setitem(sys.modules, "torch", torch)
     return torch
@@ -80,8 +80,8 @@ def test_normalize_transformer_quant():
 def test_dense_transformer_supported_requires_cuda_bf16(monkeypatch):
     _stub_torch(monkeypatch)
     assert dense_transformer_supported(_target()) is True
-    assert dense_transformer_supported(_target(device = "cpu")) is False
-    assert dense_transformer_supported(_target(dtype = "float16")) is False
+    assert dense_transformer_supported(_target(device="cpu")) is False
+    assert dense_transformer_supported(_target(dtype="float16")) is False
 
 
 # ── scheme selection ladder ─────────────────────────────────────────────────────
@@ -93,7 +93,7 @@ def _allow(monkeypatch, allowed):
 
 
 def test_auto_blackwell_prefers_int8_then_walks_the_ladder(monkeypatch):
-    _stub_torch(monkeypatch, cc = (10, 0))
+    _stub_torch(monkeypatch, cc=(10, 0))
     _allow(monkeypatch, {TQ_NVFP4, TQ_MXFP8, TQ_FP8, TQ_INT8})
     assert select_transformer_quant_scheme(_target(), "auto") == TQ_INT8
     _allow(monkeypatch, {TQ_NVFP4, TQ_MXFP8, TQ_FP8})
@@ -107,7 +107,7 @@ def test_auto_blackwell_prefers_int8_then_walks_the_ladder(monkeypatch):
 
 def test_auto_consumer_blackwell_prefers_int8(monkeypatch):
     # Consumer Blackwell (RTX 50xx): fp8 FP32 accumulate is halved, int8 is full-rate.
-    _stub_torch(monkeypatch, cc = (10, 0), device_name = "NVIDIA GeForce RTX 5090")
+    _stub_torch(monkeypatch, cc=(10, 0), device_name="NVIDIA GeForce RTX 5090")
     _allow(monkeypatch, {TQ_NVFP4, TQ_MXFP8, TQ_FP8, TQ_INT8})
     assert select_transformer_quant_scheme(_target(), "auto") == TQ_INT8
     # int8 unavailable, so it falls back to the rest of the tier (fp8 next).
@@ -117,13 +117,13 @@ def test_auto_consumer_blackwell_prefers_int8(monkeypatch):
 
 def test_auto_consumer_ada_prefers_int8(monkeypatch):
     # Consumer Ada (RTX 4090): int8 runs ~2x fp8's nerfed FP32-accumulate rate.
-    _stub_torch(monkeypatch, cc = (8, 9), device_name = "NVIDIA GeForce RTX 4090")
+    _stub_torch(monkeypatch, cc=(8, 9), device_name="NVIDIA GeForce RTX 4090")
     _allow(monkeypatch, {TQ_FP8, TQ_INT8})
     assert select_transformer_quant_scheme(_target(), "auto") == TQ_INT8
 
 
 def test_auto_workstation_unknown_prefers_int8(monkeypatch):
-    _stub_torch(monkeypatch, cc = (8, 9), device_name = "NVIDIA RTX A5000")
+    _stub_torch(monkeypatch, cc=(8, 9), device_name="NVIDIA RTX A5000")
     _allow(monkeypatch, {TQ_FP8, TQ_INT8})
     assert select_transformer_quant_scheme(_target(), "auto") == TQ_INT8
 
@@ -134,37 +134,37 @@ def test_auto_professional_rtx_prefers_int8(monkeypatch):
         ("NVIDIA RTX PRO 6000 Blackwell Server Edition", (10, 0)),
         ("NVIDIA RTX 6000 Ada Generation", (8, 9)),
     ):
-        _stub_torch(monkeypatch, cc = cc, device_name = device_name)
+        _stub_torch(monkeypatch, cc=cc, device_name=device_name)
         _allow(monkeypatch, {TQ_FP8, TQ_INT8})
         assert select_transformer_quant_scheme(_target(), "auto") == TQ_INT8
 
 
 def test_auto_ada_hopper_prefers_int8_then_fp8(monkeypatch):
-    _stub_torch(monkeypatch, cc = (8, 9), device_name = "NVIDIA L40S")
+    _stub_torch(monkeypatch, cc=(8, 9), device_name="NVIDIA L40S")
     _allow(monkeypatch, {TQ_NVFP4, TQ_MXFP8, TQ_FP8, TQ_INT8})
     assert select_transformer_quant_scheme(_target(), "auto") == TQ_INT8
-    _stub_torch(monkeypatch, cc = (9, 0), device_name = "NVIDIA H100 80GB HBM3")  # Hopper
+    _stub_torch(monkeypatch, cc=(9, 0), device_name="NVIDIA H100 80GB HBM3")  # Hopper
     assert select_transformer_quant_scheme(_target(), "auto") == TQ_INT8
     _allow(monkeypatch, {TQ_FP8})
     assert select_transformer_quant_scheme(_target(), "auto") == TQ_FP8
 
 
 def test_auto_ampere_prefers_int8(monkeypatch):
-    _stub_torch(monkeypatch, cc = (8, 0))
+    _stub_torch(monkeypatch, cc=(8, 0))
     _allow(monkeypatch, {TQ_FP8, TQ_INT8})  # fp8 cores absent on Ampere -> int8 only in ladder
     assert select_transformer_quant_scheme(_target(), "auto") == TQ_INT8
-    _stub_torch(monkeypatch, cc = (8, 6))
+    _stub_torch(monkeypatch, cc=(8, 6))
     assert select_transformer_quant_scheme(_target(), "auto") == TQ_INT8
 
 
 def test_auto_pre_ampere_unsupported(monkeypatch):
-    _stub_torch(monkeypatch, cc = (7, 5))  # Turing: below the int8-dynamic floor
+    _stub_torch(monkeypatch, cc=(7, 5))  # Turing: below the int8-dynamic floor
     _allow(monkeypatch, {TQ_INT8, TQ_FP8})
     assert select_transformer_quant_scheme(_target(), "auto") is None
 
 
 def test_explicit_scheme_honored_or_none(monkeypatch):
-    _stub_torch(monkeypatch, cc = (8, 0))
+    _stub_torch(monkeypatch, cc=(8, 0))
     _allow(monkeypatch, {TQ_INT8})
     assert select_transformer_quant_scheme(_target(), "int8") == TQ_INT8
     # An explicit unsupported scheme is NOT silently downgraded: None, so the GGUF fallback.
@@ -176,7 +176,7 @@ def test_select_none_when_disabled_or_non_cuda(monkeypatch):
     _stub_torch(monkeypatch)
     _allow(monkeypatch, {TQ_INT8, TQ_FP8, TQ_NVFP4})
     assert select_transformer_quant_scheme(_target(), None) is None
-    assert select_transformer_quant_scheme(_target(device = "cpu"), "auto") is None
+    assert select_transformer_quant_scheme(_target(device="cpu"), "auto") is None
 
 
 # ── _scheme_supported / _smoke_probe ────────────────────────────────────────────
@@ -184,11 +184,11 @@ def test_select_none_when_disabled_or_non_cuda(monkeypatch):
 
 def test_scheme_supported_shortcircuits(monkeypatch):
     # No CUDA gives False without running the smoke probe.
-    _stub_torch(monkeypatch, cuda_available = False)
+    _stub_torch(monkeypatch, cuda_available=False)
     monkeypatch.setattr(tq, "_smoke_probe", lambda *a: pytest.fail("probe should not run"))
     assert tq._scheme_supported(TQ_INT8, "cuda") is False
     # fp8 requested but the fp8 dtype is missing gives False before the probe.
-    _stub_torch(monkeypatch, with_fp8 = False)
+    _stub_torch(monkeypatch, with_fp8=False)
     monkeypatch.setattr(tq, "_smoke_probe", lambda *a: pytest.fail("probe should not run"))
     assert tq._scheme_supported(TQ_FP8, "cuda") is False
 
@@ -228,11 +228,11 @@ def test_smoke_probe_caches_and_tolerates_failure(monkeypatch):
 
     torch = types.ModuleType("torch")
     torch.bfloat16 = "bfloat16"
-    torch.nn = types.SimpleNamespace(Linear = _Lin)
+    torch.nn = types.SimpleNamespace(Linear=_Lin)
     torch.randn = lambda *a, **k: _FakeTensor()
     torch.isfinite = lambda t: _FakeBool(finite["ok"])
     torch.no_grad = lambda: __import__("contextlib").nullcontext()
-    torch.cuda = types.SimpleNamespace(is_available = lambda: True, synchronize = lambda: None)
+    torch.cuda = types.SimpleNamespace(is_available=lambda: True, synchronize=lambda: None)
     monkeypatch.setitem(sys.modules, "torch", torch)
 
     tqz = types.ModuleType("torchao.quantization")
@@ -240,7 +240,7 @@ def test_smoke_probe_caches_and_tolerates_failure(monkeypatch):
     def _quantize_ok(
         module,
         config,
-        filter_fn = None,
+        filter_fn=None,
     ):
         calls["n"] += 1
 
@@ -261,7 +261,7 @@ def test_smoke_probe_caches_and_tolerates_failure(monkeypatch):
     def _quantize_boom(
         module,
         config,
-        filter_fn = None,
+        filter_fn=None,
     ):
         raise RuntimeError("kernel unavailable")
 
@@ -300,12 +300,12 @@ def test_the_smoke_probe_does_not_cache_an_out_of_memory(monkeypatch):
 
     torch = types.ModuleType("torch")
     torch.bfloat16 = "bfloat16"
-    torch.nn = types.SimpleNamespace(Linear = _Lin)
+    torch.nn = types.SimpleNamespace(Linear=_Lin)
     torch.randn = lambda *a, **k: _FakeTensor()
     torch.isfinite = lambda t: _FakeBool(True)
     torch.no_grad = lambda: __import__("contextlib").nullcontext()
     torch.cuda = types.SimpleNamespace(
-        is_available = lambda: True, synchronize = lambda: None, OutOfMemoryError = _OOM
+        is_available=lambda: True, synchronize=lambda: None, OutOfMemoryError=_OOM
     )
     torch.OutOfMemoryError = _OOM
     monkeypatch.setitem(sys.modules, "torch", torch)
@@ -316,7 +316,7 @@ def test_the_smoke_probe_does_not_cache_an_out_of_memory(monkeypatch):
     def _quantize(
         module,
         config,
-        filter_fn = None,
+        filter_fn=None,
     ):
         calls["n"] += 1
 
@@ -326,7 +326,7 @@ def test_the_smoke_probe_does_not_cache_an_out_of_memory(monkeypatch):
     # off the real torchao, which _make_quant_config would otherwise import for its config classes.
     fault: list = [_OOM("CUDA out of memory. Tried to allocate 2.00 GiB")]
 
-    def _config(scheme, fast_accum = None):
+    def _config(scheme, fast_accum=None):
         if fault[0] is not None:
             raise fault[0]
         return "cfg"
@@ -353,10 +353,10 @@ def test_the_smoke_probe_does_not_cache_an_out_of_memory(monkeypatch):
     # failure stays False for that caller too -- that one is a real verdict.
     tq._SMOKE_CACHE.clear()
     fault[0] = _OOM("CUDA out of memory. Tried to allocate 2.00 GiB")
-    assert tq._smoke_probe(TQ_INT8, "cuda", unproven_ok = True) is True
+    assert tq._smoke_probe(TQ_INT8, "cuda", unproven_ok=True) is True
     assert tq._SMOKE_CACHE == {}
     fault[0] = RuntimeError("kernel unavailable")
-    assert tq._smoke_probe(TQ_INT8, "cuda", unproven_ok = True) is False
+    assert tq._smoke_probe(TQ_INT8, "cuda", unproven_ok=True) is False
 
 
 # ── out-of-process probe ────────────────────────────────────────────────────────
@@ -368,7 +368,7 @@ def test_the_smoke_probe_does_not_cache_an_out_of_memory(monkeypatch):
 # contract; everything below pins one half of it.
 
 
-@pytest.fixture(autouse = True)
+@pytest.fixture(autouse=True)
 def _reset_child_probe_state():
     tq._SMOKE_CACHE.clear()
     tq._CHILD_PROBE_UNAVAILABLE = False
@@ -413,7 +413,7 @@ def test_a_child_out_of_memory_is_not_cached_and_is_not_a_verdict(monkeypatch):
         tq, "_run_smoke_probe", lambda *a: pytest.fail("re-probed in-process after a child OOM")
     )
     assert tq._scheme_supported(TQ_INT8, "cuda") is False
-    assert tq._scheme_supported(TQ_INT8, "cuda", unproven_ok = True) is True
+    assert tq._scheme_supported(TQ_INT8, "cuda", unproven_ok=True) is True
     assert (TQ_INT8, "cuda") not in tq._SMOKE_CACHE
     # The schemes that DID answer are still cached; one scheme's OOM does not lose the table.
     assert tq._SMOKE_CACHE == {(TQ_FP8, "cuda"): True}
@@ -430,13 +430,13 @@ def test_no_child_falls_back_to_the_in_process_probe(monkeypatch):
 
 def test_a_host_without_cuda_never_spawns_a_child(monkeypatch):
     # CPU-only, MPS and XPU hosts answer False above the child, so they pay nothing at all.
-    _stub_torch(monkeypatch, cuda_available = False)
+    _stub_torch(monkeypatch, cuda_available=False)
     monkeypatch.setattr(
         tq, "_child_probe_table", lambda device: pytest.fail("spawned on a CUDA-less host")
     )
     assert tq._scheme_supported(TQ_INT8, "cuda") is False
     # Same for an fp8 ask on a torch without the dtype.
-    _stub_torch(monkeypatch, with_fp8 = False)
+    _stub_torch(monkeypatch, with_fp8=False)
     assert tq._scheme_supported(TQ_FP8, "cuda") is False
 
 
@@ -456,7 +456,7 @@ def test_the_child_entry_posts_one_table_covering_every_scheme(monkeypatch):
         "_run_smoke_probe",
         lambda scheme, device: {TQ_INT8: True, TQ_FP8: None}.get(scheme, False),
     )
-    tq._child_probe_entry("cuda", tq.TQ_SCHEMES, types.SimpleNamespace(put = posted.append))
+    tq._child_probe_entry("cuda", tq.TQ_SCHEMES, types.SimpleNamespace(put=posted.append))
     assert posted == [{TQ_INT8: True, TQ_FP8: None, TQ_NVFP4: False, TQ_MXFP8: False}]
 
 
@@ -485,7 +485,7 @@ class _FakeProbeChild:
     ``dies_on = None`` is the wedged child -- uninterruptible in the driver, surviving SIGKILL --
     which is exactly the case that must not lose its lifetime record."""
 
-    def __init__(self, dies_on = "terminate"):
+    def __init__(self, dies_on="terminate"):
         self.pid = 4321
         self.alive = False
         self.signals = []
@@ -497,7 +497,7 @@ class _FakeProbeChild:
     def is_alive(self):
         return self.alive
 
-    def join(self, timeout = None):
+    def join(self, timeout=None):
         pass
 
     def terminate(self):
@@ -512,11 +512,11 @@ class _FakeProbeChild:
 
 
 class _FakeProbeQueue:
-    def __init__(self, table = None):
+    def __init__(self, table=None):
         self._table = table
         self.closed = False
 
-    def get(self, timeout = None):
+    def get(self, timeout=None):
         if self._table is None:
             raise ValueError("empty")
         table, self._table = self._table, None
@@ -539,9 +539,9 @@ class _FakeSpawnContext:
 
     def Process(
         self,
-        target = None,
-        args = (),
-        daemon = None,
+        target=None,
+        args=(),
+        daemon=None,
     ):
         return self._child
 
@@ -567,7 +567,7 @@ def test_the_probe_child_is_adopted_so_a_shutdown_sweep_can_reach_it(
     import multiprocessing
 
     monkeypatch.setattr(tq, "_CHILD_PROBE_TIMEOUT", 0.0)
-    child = _FakeProbeChild(dies_on = "start")
+    child = _FakeProbeChild(dies_on="start")
     monkeypatch.setattr(
         multiprocessing,
         "get_context",
@@ -604,7 +604,7 @@ def test_the_queue_is_built_with_the_lease_secret_already_scrubbed(
         multiprocessing,
         "get_context",
         lambda name: _WatchingContext(
-            _FakeProbeChild(dies_on = "start"), _FakeProbeQueue({TQ_INT8: True})
+            _FakeProbeChild(dies_on="start"), _FakeProbeQueue({TQ_INT8: True})
         ),
     )
     assert tq._child_probe_table("cuda") == {TQ_INT8: True}
@@ -630,7 +630,7 @@ def test_a_transient_spawn_oserror_is_retried_rather_than_latched(
         calls["n"] += 1
         if calls["n"] == 1:
             raise OSError(24, "Too many open files")
-        return _FakeSpawnContext(_FakeProbeChild(dies_on = "start"), _FakeProbeQueue({TQ_INT8: True}))
+        return _FakeSpawnContext(_FakeProbeChild(dies_on="start"), _FakeProbeQueue({TQ_INT8: True}))
 
     monkeypatch.setattr(multiprocessing, "get_context", _get_context)
     monkeypatch.setattr(tq, "_CHILD_PROBE_TIMEOUT", 0.0)
@@ -665,7 +665,7 @@ def test_a_host_that_refuses_every_spawn_stops_being_asked(monkeypatch):
 def test_a_child_that_survives_terminate_is_killed(_probe_lifetime_records):
     # Five seconds of terminate and then giving up leaves the VRAM this probe exists to hand
     # back held for the whole 180 s timeout, or forever if the child is wedged.
-    child = _FakeProbeChild(dies_on = "kill")
+    child = _FakeProbeChild(dies_on="kill")
     child.start()
     assert tq._close_probe_child(child, _FakeProbeQueue()) is True
     assert child.signals == ["terminate", "kill"]
@@ -675,7 +675,7 @@ def test_a_child_that_survives_terminate_is_killed(_probe_lifetime_records):
 def test_a_child_that_survives_kill_keeps_its_breadcrumb_and_is_reported(_probe_lifetime_records):
     # Same call the chat worker makes: a survivor keeps its handle rather than being dropped
     # silently, so the sweep still has something to retry.
-    child = _FakeProbeChild(dies_on = None)
+    child = _FakeProbeChild(dies_on=None)
     child.start()
     assert tq._close_probe_child(child, _FakeProbeQueue()) is False
     assert child.signals == ["terminate", "kill"]
@@ -684,7 +684,7 @@ def test_a_child_that_survives_kill_keeps_its_breadcrumb_and_is_reported(_probe_
 
 def test_a_clean_exit_forgets_the_pid(_probe_lifetime_records):
     # The child that posted its table and exited is not signalled at all, and its record goes.
-    child = _FakeProbeChild(dies_on = "start")
+    child = _FakeProbeChild(dies_on="start")
     child.start()
     queue = _FakeProbeQueue()
     assert tq._close_probe_child(child, queue) is True
@@ -715,14 +715,14 @@ def test_the_probe_body_separates_an_oom_from_a_verdict(monkeypatch):
 
     torch = types.ModuleType("torch")
     torch.bfloat16 = "bfloat16"
-    torch.nn = types.SimpleNamespace(Linear = _Lin)
+    torch.nn = types.SimpleNamespace(Linear=_Lin)
     torch.randn = lambda *a, **k: _FakeTensor()
     torch.isfinite = lambda t: _FakeBool(True)
     torch.no_grad = lambda: __import__("contextlib").nullcontext()
-    torch.cuda = types.SimpleNamespace(is_available = lambda: True, synchronize = lambda: None)
+    torch.cuda = types.SimpleNamespace(is_available=lambda: True, synchronize=lambda: None)
     monkeypatch.setitem(sys.modules, "torch", torch)
     tqz = types.ModuleType("torchao.quantization")
-    tqz.quantize_ = lambda module, config, filter_fn = None: None
+    tqz.quantize_ = lambda module, config, filter_fn=None: None
     tqz.Int8DynamicActivationInt8WeightConfig = lambda: "int8cfg"
     tqz.Float8DynamicActivationFloat8WeightConfig = lambda: "fp8cfg"
     monkeypatch.setitem(sys.modules, "torchao.quantization", tqz)
@@ -805,15 +805,15 @@ def test_the_smoke_probe_feeds_zero_rows_not_only_noise(monkeypatch):
 
     torch = types.ModuleType("torch")
     torch.bfloat16 = "bfloat16"
-    torch.nn = types.SimpleNamespace(Linear = _Lin)
+    torch.nn = types.SimpleNamespace(Linear=_Lin)
     torch.randn = lambda *a, **k: _FakeTensor()
     torch.isfinite = lambda t: _FakeBool(True)
     torch.no_grad = lambda: __import__("contextlib").nullcontext()
-    torch.cuda = types.SimpleNamespace(is_available = lambda: True, synchronize = lambda: None)
+    torch.cuda = types.SimpleNamespace(is_available=lambda: True, synchronize=lambda: None)
     monkeypatch.setitem(sys.modules, "torch", torch)
 
     tqz = types.ModuleType("torchao.quantization")
-    tqz.quantize_ = lambda module, config, filter_fn = None: None
+    tqz.quantize_ = lambda module, config, filter_fn=None: None
     tqz.Int8DynamicActivationInt8WeightConfig = lambda: "int8cfg"
     tqz.Float8DynamicActivationFloat8WeightConfig = lambda: "fp8cfg"
     monkeypatch.setitem(sys.modules, "torchao.quantization", tqz)
@@ -828,7 +828,7 @@ def test_the_smoke_probe_feeds_zero_rows_not_only_noise(monkeypatch):
 
 def _stub_device_name(monkeypatch, name):
     torch = types.ModuleType("torch")
-    torch.cuda = types.SimpleNamespace(get_device_name = lambda device = None: name)
+    torch.cuda = types.SimpleNamespace(get_device_name=lambda device=None: name)
     monkeypatch.setitem(sys.modules, "torch", torch)
 
 
@@ -885,7 +885,7 @@ def test_make_filter_fn(monkeypatch):
             self.in_features, self.out_features = i, o
 
     torch = types.ModuleType("torch")
-    torch.nn = types.SimpleNamespace(Linear = _Lin)
+    torch.nn = types.SimpleNamespace(Linear=_Lin)
     monkeypatch.setitem(sys.modules, "torch", torch)
 
     keep = make_filter_fn(512)
@@ -920,15 +920,15 @@ def test_make_filter_fn_require_bf16_skips_non_bf16(monkeypatch):
     class _Lin:
         def __init__(self, i, o, dtype):
             self.in_features, self.out_features = i, o
-            self.weight = types.SimpleNamespace(dtype = dtype)
+            self.weight = types.SimpleNamespace(dtype=dtype)
 
-    torch.nn = types.SimpleNamespace(Linear = _Lin)
+    torch.nn = types.SimpleNamespace(Linear=_Lin)
     monkeypatch.setitem(sys.modules, "torch", torch)
 
-    gated = make_filter_fn(512, require_bf16 = True)
+    gated = make_filter_fn(512, require_bf16=True)
     assert gated(_Lin(1024, 4096, torch.bfloat16), "blocks.0.attn.to_q") is True
     assert gated(_Lin(1024, 4096, torch.float32), "blocks.0.attn.to_q") is False  # fp32 -> skip
-    assert gated(types.SimpleNamespace(in_features = 1024, out_features = 4096), "no_weight") is False
+    assert gated(types.SimpleNamespace(in_features=1024, out_features=4096), "no_weight") is False
     # int8 (require_bf16 off, the default) still quantises the fp32 linear.
     assert make_filter_fn(512)(_Lin(1024, 4096, torch.float32), "blocks.0.attn.to_q") is True
 
@@ -942,10 +942,10 @@ def test_make_filter_fn_int8_excludes_modulation_and_embedders(monkeypatch):
             self.in_features, self.out_features = i, o
 
     torch = types.ModuleType("torch")
-    torch.nn = types.SimpleNamespace(Linear = _Lin)
+    torch.nn = types.SimpleNamespace(Linear=_Lin)
     monkeypatch.setitem(sys.modules, "torch", torch)
 
-    keep = make_filter_fn(512, exclude_name_tokens = _INT8_EXCLUDE_NAME_TOKENS)
+    keep = make_filter_fn(512, exclude_name_tokens=_INT8_EXCLUDE_NAME_TOKENS)
     big = lambda: _Lin(3072, 18432)  # noqa: E731 — large enough to pass min_features
     # Excluded (M=1 modulation / conditioning embedders), despite large features:
     for fqn in (
@@ -984,6 +984,7 @@ def test_exclude_tokens_for_scheme_shared_by_runtime_and_builder():
         _INT8_EXCLUDE_NAME_TOKENS,
         exclude_tokens_for_scheme,
     )
+
     assert exclude_tokens_for_scheme(TQ_INT8) == _INT8_EXCLUDE_NAME_TOKENS
     for scheme in (TQ_FP8, TQ_NVFP4, TQ_MXFP8):
         assert exclude_tokens_for_scheme(scheme) == ()
@@ -1027,7 +1028,7 @@ def test_exclude_tokens_for_scheme_family():
 def test_resolve_fast_accum(monkeypatch):
     # None means fast accumulate on every GPU class; an explicit bool forces it. Deriving it from the GPU class made fp8 2.05x slower than int8 on RTX 6000 Ada, and on B200 the flag is a measured no-op.
     for consumer in (True, False):
-        monkeypatch.setattr(tq, "_is_consumer_gpu", lambda *a, _c = consumer: _c)
+        monkeypatch.setattr(tq, "_is_consumer_gpu", lambda *a, _c=consumer: _c)
         assert tq._resolve_fast_accum(None) is True
     assert tq._resolve_fast_accum(True) is True
     assert tq._resolve_fast_accum(False) is False  # precise accumulate stays available explicitly
@@ -1068,25 +1069,25 @@ def test_fp8_config_pins_torch_kernel_preference():
 
 def test_quantize_transformer_applies_and_marks(monkeypatch):
     monkeypatch.setattr(
-        tq, "select_transformer_quant_scheme", lambda target, mode, family = None: TQ_FP8
+        tq, "select_transformer_quant_scheme", lambda target, mode, family=None: TQ_FP8
     )
     seen: dict = {}
 
-    def _mk(scheme, fast_accum = None):
+    def _mk(scheme, fast_accum=None):
         seen["scheme"], seen["fast_accum"] = scheme, fast_accum
         return f"{scheme}cfg"
 
     monkeypatch.setattr(tq, "_make_quant_config", _mk)
     recorder: list = []
     tqz = types.ModuleType("torchao.quantization")
-    tqz.quantize_ = lambda module, config, filter_fn = None: recorder.append(
+    tqz.quantize_ = lambda module, config, filter_fn=None: recorder.append(
         (module, config, filter_fn)
     )
     monkeypatch.setitem(sys.modules, "torchao.quantization", tqz)
 
     transformer = types.SimpleNamespace()
-    pipe = types.SimpleNamespace(transformer = transformer)
-    assert quantize_transformer(pipe, _target(), mode = "fp8", fast_accum = False) == TQ_FP8
+    pipe = types.SimpleNamespace(transformer=transformer)
+    assert quantize_transformer(pipe, _target(), mode="fp8", fast_accum=False) == TQ_FP8
     assert len(recorder) == 1 and recorder[0][0] is transformer and recorder[0][1] == "fp8cfg"
     assert callable(recorder[0][2])  # a filter_fn was passed
     assert transformer._unsloth_runtime_quant == TQ_FP8  # diagnostic marker set
@@ -1095,15 +1096,15 @@ def test_quantize_transformer_applies_and_marks(monkeypatch):
 
 def test_quantize_transformer_none_when_unsupported(monkeypatch):
     monkeypatch.setattr(
-        tq, "select_transformer_quant_scheme", lambda target, mode, family = None: None
+        tq, "select_transformer_quant_scheme", lambda target, mode, family=None: None
     )
-    pipe = types.SimpleNamespace(transformer = types.SimpleNamespace())
-    assert quantize_transformer(pipe, _target(), mode = "auto") is None
+    pipe = types.SimpleNamespace(transformer=types.SimpleNamespace())
+    assert quantize_transformer(pipe, _target(), mode="auto") is None
 
 
 def test_quantize_transformer_tolerates_failure(monkeypatch):
     monkeypatch.setattr(
-        tq, "select_transformer_quant_scheme", lambda target, mode, family = None: TQ_INT8
+        tq, "select_transformer_quant_scheme", lambda target, mode, family=None: TQ_INT8
     )
     monkeypatch.setattr(tq, "_make_quant_config", lambda scheme: "cfg")
     tqz = types.ModuleType("torchao.quantization")
@@ -1111,64 +1112,64 @@ def test_quantize_transformer_tolerates_failure(monkeypatch):
     def _boom(
         module,
         config,
-        filter_fn = None,
+        filter_fn=None,
     ):
         raise RuntimeError("partial quant failure")
 
     tqz.quantize_ = _boom
     monkeypatch.setitem(sys.modules, "torchao.quantization", tqz)
-    pipe = types.SimpleNamespace(transformer = types.SimpleNamespace())
+    pipe = types.SimpleNamespace(transformer=types.SimpleNamespace())
     # A quantise failure returns None (the caller falls back to GGUF), never raises.
-    assert quantize_transformer(pipe, _target(), mode = "int8") is None
+    assert quantize_transformer(pipe, _target(), mode="int8") is None
 
 
 # ── family scheme deny (measured model-level breakage) ────────────────────────
 
 
 def test_family_deny_auto_skips_mx_and_nvfp4_for_qwen(monkeypatch):
-    _stub_torch(monkeypatch, cc = (10, 0))
+    _stub_torch(monkeypatch, cc=(10, 0))
     _allow(monkeypatch, {TQ_FP8, TQ_NVFP4, TQ_MXFP8, TQ_INT8})
-    assert select_transformer_quant_scheme(_target(), "auto", family = "qwen-image") == TQ_INT8
-    assert select_transformer_quant_scheme(_target(), "auto", family = "qwen-image-edit") == TQ_INT8
+    assert select_transformer_quant_scheme(_target(), "auto", family="qwen-image") == TQ_INT8
+    assert select_transformer_quant_scheme(_target(), "auto", family="qwen-image-edit") == TQ_INT8
     # fp8 is no longer denied: activation_value_lb fixed the black frames.
     _allow(monkeypatch, {TQ_FP8, TQ_NVFP4, TQ_MXFP8})
-    assert select_transformer_quant_scheme(_target(), "auto", family = "qwen-image") == TQ_FP8
+    assert select_transformer_quant_scheme(_target(), "auto", family="qwen-image") == TQ_FP8
     _allow(monkeypatch, {TQ_NVFP4, TQ_MXFP8})
-    assert select_transformer_quant_scheme(_target(), "auto", family = "qwen-image") is None
+    assert select_transformer_quant_scheme(_target(), "auto", family="qwen-image") is None
 
 
 def test_family_deny_refuses_explicit_mxfp8_and_nvfp4_for_qwen(monkeypatch):
     # An explicit denied scheme returns None (same contract as an unsupported scheme). fp8 and int8
     # are both honored on qwen now, and fp8 outside the deny table is unaffected.
-    _stub_torch(monkeypatch, cc = (10, 0))
+    _stub_torch(monkeypatch, cc=(10, 0))
     _allow(monkeypatch, {TQ_FP8, TQ_MXFP8, TQ_NVFP4, TQ_INT8})
-    assert select_transformer_quant_scheme(_target(), "mxfp8", family = "qwen-image") is None
-    assert select_transformer_quant_scheme(_target(), "nvfp4", family = "qwen-image") is None
-    assert select_transformer_quant_scheme(_target(), "fp8", family = "qwen-image") == TQ_FP8
-    assert select_transformer_quant_scheme(_target(), "int8", family = "qwen-image") == TQ_INT8
-    assert select_transformer_quant_scheme(_target(), "fp8", family = "z-image") == TQ_FP8
+    assert select_transformer_quant_scheme(_target(), "mxfp8", family="qwen-image") is None
+    assert select_transformer_quant_scheme(_target(), "nvfp4", family="qwen-image") is None
+    assert select_transformer_quant_scheme(_target(), "fp8", family="qwen-image") == TQ_FP8
+    assert select_transformer_quant_scheme(_target(), "int8", family="qwen-image") == TQ_INT8
+    assert select_transformer_quant_scheme(_target(), "fp8", family="z-image") == TQ_FP8
 
 
 def test_family_deny_no_family_keeps_ladder(monkeypatch):
-    _stub_torch(monkeypatch, cc = (10, 0))
+    _stub_torch(monkeypatch, cc=(10, 0))
     _allow(monkeypatch, {TQ_FP8, TQ_INT8})
     assert select_transformer_quant_scheme(_target(), "auto") == TQ_INT8
-    assert select_transformer_quant_scheme(_target(), "auto", family = "sdxl") == TQ_INT8
+    assert select_transformer_quant_scheme(_target(), "auto", family="sdxl") == TQ_INT8
 
 
 def test_quantize_transformer_threads_family(monkeypatch):
     # quantize_transformer passes the family down to the selector, so a denied (family, scheme) pair never reaches torchao.
     # mxfp8, not fp8: fp8 on qwen-image is no longer denied, so it would reach torchao and prove nothing.
-    _stub_torch(monkeypatch, cc = (10, 0))
+    _stub_torch(monkeypatch, cc=(10, 0))
     _allow(monkeypatch, {TQ_FP8, TQ_INT8})
-    pipe = types.SimpleNamespace(transformer = types.SimpleNamespace())
+    pipe = types.SimpleNamespace(transformer=types.SimpleNamespace())
     called = {}
     tqz = types.ModuleType("torchao.quantization")
 
     def _quantize(
         module,
         config,
-        filter_fn = None,
+        filter_fn=None,
     ):
         called["scheme"] = True
 
@@ -1177,7 +1178,7 @@ def test_quantize_transformer_threads_family(monkeypatch):
     tqz.Float8DynamicActivationFloat8WeightConfig = lambda **kw: "fp8-cfg"
     tqz.PerRow = lambda: "per-row"
     monkeypatch.setitem(sys.modules, "torchao.quantization", tqz)
-    assert quantize_transformer(pipe, _target(), mode = "mxfp8", family = "qwen-image") is None
+    assert quantize_transformer(pipe, _target(), mode="mxfp8", family="qwen-image") is None
     assert called == {}
 
 
@@ -1273,6 +1274,7 @@ def test_pad_and_exclude_sets_never_overlap():
         exclude_tokens_for_scheme,
         pad_tokens_for_scheme,
     )
+
     for family in _INT8_FAMILY_PAD_NAME_TOKENS:
         exclude = exclude_tokens_for_scheme(TQ_INT8, family)
         for pad_token in pad_tokens_for_scheme(TQ_INT8, family):
@@ -1299,6 +1301,7 @@ def test_only_int8_pads():
     """``_int_mm``'s row floor is int8's alone: scaled_mm and the MX/FP4 kernels have no
     equivalent, so no other scheme should be paying for a pad-and-slice."""
     from core.inference.diffusion_transformer_quant import pad_tokens_for_scheme
+
     for scheme in ("fp8", "nvfp4", "mxfp8", "auto"):
         assert pad_tokens_for_scheme(scheme, "minimax-h3") == ()
 
@@ -1307,11 +1310,11 @@ def test_quantize_transformer_pads_after_quantising(monkeypatch):
     """The padding runs on the RUNTIME dense-quantise path too, not only on the prequant one,
     and it runs AFTER quantize_ (it reparents Linears that must already hold quantized weights).
     """
-    _stub_torch(monkeypatch, cc = (10, 0))
+    _stub_torch(monkeypatch, cc=(10, 0))
     _allow(monkeypatch, {TQ_INT8})
     order = []
     tqz = types.ModuleType("torchao.quantization")
-    tqz.quantize_ = lambda module, config, filter_fn = None: order.append("quantize_")
+    tqz.quantize_ = lambda module, config, filter_fn=None: order.append("quantize_")
     tqz.Int8DynamicActivationInt8WeightConfig = lambda: "int8-cfg"
     tqz.Float8DynamicActivationFloat8WeightConfig = lambda **kw: "fp8-cfg"
     tqz.PerRow = lambda: "per-row"
@@ -1319,12 +1322,12 @@ def test_quantize_transformer_pads_after_quantising(monkeypatch):
     monkeypatch.setattr(
         tq,
         "apply_small_m_padding",
-        lambda transformer, scheme, family = None, logger = None: (
+        lambda transformer, scheme, family=None, logger=None: (
             order.append(("pad", scheme, family)) or ()
         ),
     )
-    pipe = types.SimpleNamespace(transformer = types.SimpleNamespace())
-    assert quantize_transformer(pipe, _target(), mode = "int8", family = "minimax-h3") == TQ_INT8
+    pipe = types.SimpleNamespace(transformer=types.SimpleNamespace())
+    assert quantize_transformer(pipe, _target(), mode="int8", family="minimax-h3") == TQ_INT8
     assert order == ["quantize_", ("pad", TQ_INT8, "minimax-h3")]
 
 
@@ -1332,10 +1335,10 @@ def test_quantize_transformer_refuses_when_padding_cannot_be_proven(monkeypatch)
     """A half-padded transformer compiles on the modules that were wrapped and crashes inside
     ``_int_mm`` on the ones that were not, so a raise from the padding must fail the whole
     quantise and send the caller to GGUF -- not be swallowed into a partially padded model."""
-    _stub_torch(monkeypatch, cc = (10, 0))
+    _stub_torch(monkeypatch, cc=(10, 0))
     _allow(monkeypatch, {TQ_INT8})
     tqz = types.ModuleType("torchao.quantization")
-    tqz.quantize_ = lambda module, config, filter_fn = None: None
+    tqz.quantize_ = lambda module, config, filter_fn=None: None
     tqz.Int8DynamicActivationInt8WeightConfig = lambda: "int8-cfg"
     tqz.Float8DynamicActivationFloat8WeightConfig = lambda **kw: "fp8-cfg"
     tqz.PerRow = lambda: "per-row"
@@ -1344,14 +1347,14 @@ def test_quantize_transformer_refuses_when_padding_cannot_be_proven(monkeypatch)
     def _boom(
         transformer,
         scheme,
-        family = None,
-        logger = None,
+        family=None,
+        logger=None,
     ):
         raise RuntimeError("cannot prove per-row granularity")
 
     monkeypatch.setattr(tq, "apply_small_m_padding", _boom)
-    pipe = types.SimpleNamespace(transformer = types.SimpleNamespace())
-    assert quantize_transformer(pipe, _target(), mode = "int8", family = "minimax-h3") is None
+    pipe = types.SimpleNamespace(transformer=types.SimpleNamespace())
+    assert quantize_transformer(pipe, _target(), mode="int8", family="minimax-h3") is None
     assert not hasattr(pipe.transformer, "_unsloth_runtime_quant")
 
 
@@ -1408,7 +1411,7 @@ def test_auto_scheme_candidates_lists_the_whole_ladder_not_just_the_winner(monke
     # drops to GGUF even though a lower rung would have loaded. Same ladder, deny list and probe.
     from core.inference.diffusion_transformer_quant import auto_scheme_candidates
 
-    _stub_torch(monkeypatch, cc = (10, 0))
+    _stub_torch(monkeypatch, cc=(10, 0))
     _allow(monkeypatch, {TQ_FP8, TQ_MXFP8, TQ_INT8})
     assert auto_scheme_candidates(_target()) == (TQ_INT8, TQ_FP8, TQ_MXFP8)
     assert auto_scheme_candidates(_target(), "qwen-image") == (TQ_INT8, TQ_FP8)
@@ -1416,7 +1419,7 @@ def test_auto_scheme_candidates_lists_the_whole_ladder_not_just_the_winner(monke
     _allow(monkeypatch, {TQ_INT8})
     assert auto_scheme_candidates(_target(), "qwen-image") == (TQ_INT8,)
     # A target the dense path cannot use has no candidates at all.
-    assert auto_scheme_candidates(_target(device = "cpu")) == ()
+    assert auto_scheme_candidates(_target(device="cpu")) == ()
 
 
 def test_the_candidate_list_agrees_with_the_selector_on_the_winner(monkeypatch):
@@ -1424,15 +1427,16 @@ def test_the_candidate_list_agrees_with_the_selector_on_the_winner(monkeypatch):
     # always the head of the candidate list. A drift here would let the retry path propose a scheme
     # auto itself would refuse.
     from core.inference.diffusion_transformer_quant import auto_scheme_candidates
+
     for cc, allowed, family in (
         ((10, 0), {TQ_FP8, TQ_MXFP8, TQ_INT8}, None),
         ((10, 0), {TQ_FP8, TQ_MXFP8, TQ_INT8}, "qwen-image"),
         ((8, 9), {TQ_FP8, TQ_INT8}, "qwen-image-edit"),
         ((8, 0), {TQ_INT8}, None),
     ):
-        _stub_torch(monkeypatch, cc = cc)
+        _stub_torch(monkeypatch, cc=cc)
         _allow(monkeypatch, allowed)
-        chosen = select_transformer_quant_scheme(_target(), "auto", family = family)
+        chosen = select_transformer_quant_scheme(_target(), "auto", family=family)
         candidates = auto_scheme_candidates(_target(), family)
         assert (candidates[0] if candidates else None) == chosen, (cc, family)
 
@@ -1447,15 +1451,15 @@ def test_the_pre_eviction_gate_does_not_refuse_on_an_indeterminate_probe(monkeyp
         scheme,
         device,
         *,
-        unproven_ok = False,
+        unproven_ok=False,
     ):
         seen.append(unproven_ok)
         return unproven_ok
 
     monkeypatch.setattr(tq, "_scheme_supported", _supported)
-    target = types.SimpleNamespace(device = "cuda")
+    target = types.SimpleNamespace(device="cuda")
     assert tq.select_transformer_quant_scheme(target, "fp8") is None
-    assert tq.select_transformer_quant_scheme(target, "fp8", unproven_ok = True) == "fp8"
+    assert tq.select_transformer_quant_scheme(target, "fp8", unproven_ok=True) == "fp8"
     assert seen == [False, True]
 
 
@@ -1499,7 +1503,7 @@ class _RecordingConfig:
     def __init__(
         self,
         *,
-        set_inductor_config = True,
+        set_inductor_config=True,
         **kw,
     ):
         self.set_inductor_config = set_inductor_config
@@ -1510,8 +1514,8 @@ class _RecordingConfig:
 def _stub_torchao_configs(
     monkeypatch,
     *,
-    int8 = None,
-    fp8 = None,
+    int8=None,
+    fp8=None,
 ):
     tqz = types.ModuleType("torchao.quantization")
     tqz.quantize_ = lambda *a, **k: None
@@ -1547,10 +1551,10 @@ def test_quiet_config_omits_the_kwarg_when_the_class_does_not_accept_it():
     """The mx_formats configs have no set_inductor_config, so the helper must not raise TypeError on them."""
 
     class _NoKnob:
-        def __init__(self, use_triton_kernel = True):
+        def __init__(self, use_triton_kernel=True):
             self.use_triton_kernel = use_triton_kernel
 
-    cfg = tq._quiet_config(_NoKnob, use_triton_kernel = False)
+    cfg = tq._quiet_config(_NoKnob, use_triton_kernel=False)
     assert cfg.use_triton_kernel is False and not hasattr(cfg, "set_inductor_config")
     assert tq._quiet_config(lambda: "cfg") == "cfg"
 
@@ -1623,25 +1627,25 @@ class _Denoiser:
 
     def __init__(
         self,
-        dtype = "torch.bfloat16",
+        dtype="torch.bfloat16",
         **attrs,
     ) -> None:
-        self._params = [types.SimpleNamespace(dtype = dtype)]
+        self._params = [types.SimpleNamespace(dtype=dtype)]
         for key, value in attrs.items():
             setattr(self, key, value)
 
-    def parameters(self, recurse = True):
+    def parameters(self, recurse=True):
         return iter(self._params)
 
 
 def test_a_dense_bf16_pipeline_is_the_one_shape_that_passes():
-    pipe = types.SimpleNamespace(transformer = _Denoiser())
+    pipe = types.SimpleNamespace(transformer=_Denoiser())
     assert tq.dense_quant_blocker(pipe) is None
     assert [attr for attr, _m in tq.denoiser_modules(pipe)] == ["transformer"]
 
 
 def test_a_unet_pipeline_is_blocked_by_having_no_transformer():
-    blocker = tq.dense_quant_blocker(types.SimpleNamespace(unet = _Denoiser()))
+    blocker = tq.dense_quant_blocker(types.SimpleNamespace(unet=_Denoiser()))
     assert blocker is not None and "UNet" in blocker
 
 
@@ -1649,7 +1653,7 @@ def test_a_unet_pipeline_is_blocked_by_having_no_transformer():
     "dtype", ["torch.uint8", "torch.float8_e4m3fn", "torch.float16", "torch.int8"]
 )
 def test_a_pre_quantised_pipeline_is_blocked_by_its_parameter_dtypes(dtype):
-    blocker = tq.dense_quant_blocker(types.SimpleNamespace(transformer = _Denoiser(dtype)))
+    blocker = tq.dense_quant_blocker(types.SimpleNamespace(transformer=_Denoiser(dtype)))
     assert blocker is not None and dtype.split(".")[-1] in blocker
 
 
@@ -1659,17 +1663,17 @@ def test_a_pre_quantised_pipeline_is_blocked_by_its_parameter_dtypes(dtype):
         ({"_unsloth_runtime_quant": "int8"}, "already quantised"),
         ({"is_loaded_in_4bit": True}, "4-bit"),
         ({"is_loaded_in_8bit": True}, "8-bit"),
-        ({"config": types.SimpleNamespace(quantization_config = object())}, "quantization_config"),
+        ({"config": types.SimpleNamespace(quantization_config=object())}, "quantization_config"),
     ],
 )
 def test_a_declared_quantisation_blocks_it_too(attrs, expected):
-    blocker = tq.dense_quant_blocker(types.SimpleNamespace(transformer = _Denoiser(**attrs)))
+    blocker = tq.dense_quant_blocker(types.SimpleNamespace(transformer=_Denoiser(**attrs)))
     assert blocker is not None and expected in blocker
 
 
 def test_the_second_denoiser_is_enumerated_and_judged():
     pipe = types.SimpleNamespace(
-        transformer = _Denoiser(), unconditional_transformer = _Denoiser("torch.float8_e4m3fn")
+        transformer=_Denoiser(), unconditional_transformer=_Denoiser("torch.float8_e4m3fn")
     )
     assert [attr for attr, _m in tq.denoiser_modules(pipe)] == [
         "transformer",
@@ -1681,7 +1685,7 @@ def test_the_second_denoiser_is_enumerated_and_judged():
 
 def test_the_denoiser_view_presents_an_arbitrary_attribute_as_the_transformer():
     second = _Denoiser()
-    pipe = types.SimpleNamespace(transformer = _Denoiser(), unconditional_transformer = second, vae = "v")
+    pipe = types.SimpleNamespace(transformer=_Denoiser(), unconditional_transformer=second, vae="v")
     view = tq.DenoiserView(pipe, "unconditional_transformer")
     assert view.transformer is second
     assert view.vae == "v"  # everything else reads through
@@ -1689,17 +1693,17 @@ def test_the_denoiser_view_presents_an_arbitrary_attribute_as_the_transformer():
 
 def test_a_pipeline_that_cannot_be_walked_is_not_called_quantised():
     class _Unwalkable:
-        def parameters(self, recurse = True):
+        def parameters(self, recurse=True):
             raise RuntimeError("no")
 
-    assert tq.dense_quant_blocker(types.SimpleNamespace(transformer = _Unwalkable())) is None
+    assert tq.dense_quant_blocker(types.SimpleNamespace(transformer=_Unwalkable())) is None
 
 
 def test_a_dequantised_source_blocks_the_quant_even_though_its_tensors_are_bf16():
     widened = _Denoiser()  # bf16 tensors, exactly as the loader leaves them
-    assert tq.dense_quant_blocker(types.SimpleNamespace(transformer = widened)) is None
+    assert tq.dense_quant_blocker(types.SimpleNamespace(transformer=widened)) is None
     tq.mark_source_precision(widened, "fp8")
-    blocker = tq.dense_quant_blocker(types.SimpleNamespace(transformer = widened))
+    blocker = tq.dense_quant_blocker(types.SimpleNamespace(transformer=widened))
     assert blocker is not None
     assert "fp8" in blocker and "widened to bf16" in blocker
 
@@ -1721,7 +1725,7 @@ def test_the_ideogram_fp8_loader_stamps_what_it_widened():
 
     import core.inference.diffusion_ideogram4 as ideo
 
-    source = pathlib.Path(ideo.__file__).read_text(encoding = "utf-8")
+    source = pathlib.Path(ideo.__file__).read_text(encoding="utf-8")
     assert 'mark_source_precision(model, "fp8")' in source
 
 
@@ -1731,8 +1735,8 @@ def test_the_ideogram_fp8_loader_stamps_what_it_widened():
 def _capable_host(
     monkeypatch,
     *,
-    torchao_reason = None,
-    cap = (8, 9),
+    torchao_reason=None,
+    cap=(8, 9),
 ):
     """A CUDA host past the arch floor, with torchao, the probe cache and the compiler pinned.
 
@@ -1759,19 +1763,19 @@ def test_a_host_whose_torchao_cannot_import_advertises_nothing(monkeypatch):
     `dense_transformer_supported` only catches the Windows-ROCm stub and `_capability` reads the
     card, so without this the picker calls rows fast while every load falls back to bf16.
     """
-    _capable_host(monkeypatch, torchao_reason = "ImportError: cannot import name 'ScalingType'")
+    _capable_host(monkeypatch, torchao_reason="ImportError: cannot import name 'ScalingType'")
     assert tq.dense_quant_host_capable(_target()) is False
 
 
 def test_a_host_below_the_arch_floor_advertises_nothing(monkeypatch):
-    _capable_host(monkeypatch, cap = (7, 0))
+    _capable_host(monkeypatch, cap=(7, 0))
     assert tq.dense_quant_host_capable(_target()) is False
 
 
 def test_an_unsupported_device_advertises_nothing(monkeypatch):
     _capable_host(monkeypatch)
     monkeypatch.setattr(tq, "dense_transformer_supported", lambda target: False)
-    assert tq.dense_quant_host_capable(_target(device = "cpu")) is False
+    assert tq.dense_quant_host_capable(_target(device="cpu")) is False
 
 
 def test_a_probed_failure_withdraws_the_capability(monkeypatch):
@@ -1788,7 +1792,7 @@ def test_a_probed_failure_withdraws_the_capability(monkeypatch):
 
 def test_an_explicit_only_scheme_does_not_make_auto_capable(monkeypatch):
     """`auto` cannot pick nvfp4, so a host that runs only nvfp4 has nothing automatic to offer."""
-    _capable_host(monkeypatch, cap = (10, 0))
+    _capable_host(monkeypatch, cap=(10, 0))
     tq._SMOKE_CACHE.update(
         {
             (TQ_FP8, "cuda:0"): False,
@@ -1821,9 +1825,9 @@ def _write_shard(tmp_path, attr, dtype):
     from safetensors.torch import save_file
 
     sub = tmp_path / attr
-    sub.mkdir(parents = True, exist_ok = True)
+    sub.mkdir(parents=True, exist_ok=True)
     save_file(
-        {"proj.weight": torch.zeros(4, 4, dtype = dtype)},
+        {"proj.weight": torch.zeros(4, 4, dtype=dtype)},
         str(sub / "diffusion_pytorch_model.safetensors"),
     )
 
@@ -1838,6 +1842,7 @@ def test_a_raw_fp8_checkpoint_is_recognised_from_its_header(tmp_path):
 
 def test_a_bf16_checkpoint_reports_nothing(tmp_path):
     import torch
+
     _write_shard(tmp_path, "transformer", torch.bfloat16)
     assert tq.stored_denoiser_precision(str(tmp_path)) is None
 
@@ -1852,6 +1857,7 @@ def test_the_second_denoiser_is_read_too(tmp_path):
 
 def test_an_int8_checkpoint_is_recognised(tmp_path):
     import torch
+
     _write_shard(tmp_path, "transformer", torch.int8)
     assert tq.stored_denoiser_precision(str(tmp_path)) == "int8"
 
@@ -1868,7 +1874,7 @@ def test_a_recovered_source_precision_blocks_the_quant(tmp_path):
 
     _write_shard(tmp_path, "transformer", torch.float8_e4m3fn)
     widened = _Denoiser()  # bf16 tensors, exactly as the loader leaves them
-    pipe = types.SimpleNamespace(transformer = widened)
+    pipe = types.SimpleNamespace(transformer=widened)
     assert tq.dense_quant_blocker(pipe) is None
     tq.mark_source_precision(widened, tq.stored_denoiser_precision(str(tmp_path)))
     blocker = tq.dense_quant_blocker(pipe)
@@ -1893,13 +1899,13 @@ def test_a_later_shard_still_reveals_a_narrow_source(tmp_path):
     from safetensors.torch import save_file
 
     sub = tmp_path / "transformer"
-    sub.mkdir(parents = True)
+    sub.mkdir(parents=True)
     save_file(
-        {"norm.weight": torch.zeros(4, dtype = torch.bfloat16)},
+        {"norm.weight": torch.zeros(4, dtype=torch.bfloat16)},
         str(sub / "diffusion_pytorch_model-00001-of-00002.safetensors"),
     )
     save_file(
-        {"proj.weight": torch.zeros(4, 4, dtype = torch.float8_e4m3fn)},
+        {"proj.weight": torch.zeros(4, 4, dtype=torch.float8_e4m3fn)},
         str(sub / "diffusion_pytorch_model-00002-of-00002.safetensors"),
     )
     assert tq.stored_denoiser_precision(str(tmp_path)) == "fp8"

@@ -20,9 +20,10 @@ except ImportError:
     # carrying only the MLX trainer names, so these helpers are unreachable and padding-free
     # does not apply. Skip rather than fail collection, which aborts more than itself.
     import unsloth
+
     if getattr(unsloth, "DEVICE_TYPE", None) != "mlx":
         raise
-    pytest.skip("unsloth.trainer is the MLX shim here", allow_module_level = True)
+    pytest.skip("unsloth.trainer is the MLX shim here", allow_module_level=True)
 
 
 class _NoKwargs(nn.Module):
@@ -30,9 +31,9 @@ class _NoKwargs(nn.Module):
 
     def forward(
         self,
-        input_ids = None,
-        attention_mask = None,
-        labels = None,
+        input_ids=None,
+        attention_mask=None,
+        labels=None,
     ):
         return None
 
@@ -40,7 +41,7 @@ class _NoKwargs(nn.Module):
 class _TakesKwargs(nn.Module):
     def forward(
         self,
-        input_ids = None,
+        input_ids=None,
         **kwargs,
     ):
         return None
@@ -49,8 +50,8 @@ class _TakesKwargs(nn.Module):
 class _NamesPacking(nn.Module):
     def forward(
         self,
-        input_ids = None,
-        packed_seq_lengths = None,
+        input_ids=None,
+        packed_seq_lengths=None,
     ):
         return None
 
@@ -83,8 +84,8 @@ class _InnerDecoderTakesKwargs(nn.Module):
 
     def forward(
         self,
-        input_ids = None,
-        attention_mask = None,
+        input_ids=None,
+        attention_mask=None,
     ):
         return None
 
@@ -93,7 +94,7 @@ class _SelfReturningUnwrap(nn.Module):
     def get_base_model(self):
         return self
 
-    def forward(self, input_ids = None):
+    def forward(self, input_ids=None):
         return None
 
 
@@ -101,7 +102,7 @@ class _RaisingUnwrap(nn.Module):
     def get_base_model(self):
         raise RuntimeError("adapter not ready")
 
-    def forward(self, input_ids = None):
+    def forward(self, input_ids=None):
         return None
 
 
@@ -127,13 +128,13 @@ def test_gate(model, expected, why):
 
 def test_the_defect_is_real():
     """Negative control: the rejected shape really does raise."""
-    with pytest.raises(TypeError, match = "packed_seq_lengths"):
-        _NoKwargs()(input_ids = torch.zeros(1, 4).long(), packed_seq_lengths = [4])
+    with pytest.raises(TypeError, match="packed_seq_lengths"):
+        _NoKwargs()(input_ids=torch.zeros(1, 4).long(), packed_seq_lengths=[4])
 
 
 def test_the_accepted_shape_really_accepts_it():
     """And the shape the gate allows really does tolerate the argument."""
-    _TakesKwargs()(input_ids = torch.zeros(1, 4).long(), packed_seq_lengths = [4])
+    _TakesKwargs()(input_ids=torch.zeros(1, 4).long(), packed_seq_lengths=[4])
 
 
 def test_the_blocker_names_itself_in_the_warning(monkeypatch, caplog):
@@ -154,8 +155,8 @@ def test_the_blocker_names_itself_in_the_warning(monkeypatch, caplog):
     class _StubSFTTrainer:
         def __init__(
             self,
-            model = None,
-            args = None,
+            model=None,
+            args=None,
             **kwargs,
         ):
             self.model = model
@@ -165,12 +166,12 @@ def test_the_blocker_names_itself_in_the_warning(monkeypatch, caplog):
         monkeypatch.setattr(trainer_module, _name, lambda model, trainer: None)
     monkeypatch.setenv("UNSLOTH_RETURN_LOGITS", "1")
 
-    module = SimpleNamespace(SFTTrainer = _StubSFTTrainer)
+    module = SimpleNamespace(SFTTrainer=_StubSFTTrainer)
     trainer_module._patch_sft_trainer_auto_packing(module)
 
-    config = SimpleNamespace(packing = True, padding_free = None, max_length = 512)
-    with caplog.at_level(logging.WARNING, logger = trainer_module.logger.name):
-        module.SFTTrainer(model = _NoKwargs(), args = config)
+    config = SimpleNamespace(packing=True, padding_free=None, max_length=512)
+    with caplog.at_level(logging.WARNING, logger=trainer_module.logger.name):
+        module.SFTTrainer(model=_NoKwargs(), args=config)
 
     assert "packing=True ignored" in caplog.text, "the reason chain never emitted"
     assert (
@@ -214,8 +215,8 @@ def test_a_string_model_is_rechecked_once_trl_has_built_it(monkeypatch, packing)
     class _StubSFTTrainer:
         def __init__(
             self,
-            model = None,
-            args = None,
+            model=None,
+            args=None,
             **kwargs,
         ):
             # What TRL does with a string: materialize it, then expose it as self.model.
@@ -229,12 +230,12 @@ def test_a_string_model_is_rechecked_once_trl_has_built_it(monkeypatch, packing)
     # No hub access: the config is irrelevant to the signature question.
     monkeypatch.setattr(trainer_module, "_resolve_string_model_config", lambda *a, **k: None)
 
-    module = SimpleNamespace(SFTTrainer = _StubSFTTrainer)
+    module = SimpleNamespace(SFTTrainer=_StubSFTTrainer)
     trainer_module._patch_sft_trainer_auto_packing(module)
 
-    config = SimpleNamespace(packing = packing, padding_free = True, max_length = 512)
-    with pytest.raises(ValueError, match = "packed_seq_lengths"):
-        module.SFTTrainer(model = "microsoft/Phi-4-reasoning-vision-15B", args = config)
+    config = SimpleNamespace(packing=packing, padding_free=True, max_length=512)
+    with pytest.raises(ValueError, match="packed_seq_lengths"):
+        module.SFTTrainer(model="microsoft/Phi-4-reasoning-vision-15B", args=config)
 
     assert injected == [], "nothing may wrap the collator for this forward"
     assert len(inits) == 1, "the checkpoint must not be materialized a second time"
@@ -249,8 +250,8 @@ def test_a_string_model_that_can_take_the_metadata_is_left_alone(monkeypatch):
     class _StubSFTTrainer:
         def __init__(
             self,
-            model = None,
-            args = None,
+            model=None,
+            args=None,
             **kwargs,
         ):
             self.model = _TakesKwargs() if isinstance(model, str) else model
@@ -264,11 +265,11 @@ def test_a_string_model_that_can_take_the_metadata_is_left_alone(monkeypatch):
     )
     monkeypatch.setattr(trainer_module, "_resolve_string_model_config", lambda *a, **k: None)
 
-    module = SimpleNamespace(SFTTrainer = _StubSFTTrainer)
+    module = SimpleNamespace(SFTTrainer=_StubSFTTrainer)
     trainer_module._patch_sft_trainer_auto_packing(module)
 
-    config = SimpleNamespace(packing = False, padding_free = True, max_length = 512)
-    instance = module.SFTTrainer(model = "meta-llama/Llama-3.1-8B", args = config)
+    config = SimpleNamespace(packing=False, padding_free=True, max_length=512)
+    instance = module.SFTTrainer(model="meta-llama/Llama-3.1-8B", args=config)
 
     assert len(injected) == 1
     assert instance.args.padding_free is True
@@ -277,12 +278,13 @@ def test_a_string_model_that_can_take_the_metadata_is_left_alone(monkeypatch):
 def _fake_config():
     """A config just real enough for the model-type lookup the wrapper does first."""
     from types import SimpleNamespace
+
     return SimpleNamespace(
-        model_type = "llama",
-        architectures = ["LlamaForCausalLM"],
-        auto_map = None,
-        is_encoder_decoder = False,
-        to_dict = lambda: {"model_type": "llama"},
+        model_type="llama",
+        architectures=["LlamaForCausalLM"],
+        auto_map=None,
+        is_encoder_decoder=False,
+        to_dict=lambda: {"model_type": "llama"},
     )
 
 
@@ -292,7 +294,7 @@ def test_the_class_behind_a_string_is_resolved_without_downloading_weights():
 
     from unsloth.trainer import _resolve_string_model_class
 
-    config = LlamaConfig(architectures = ["LlamaForCausalLM"])
+    config = LlamaConfig(architectures=["LlamaForCausalLM"])
     assert _resolve_string_model_class("any/name", config, None) is LlamaForCausalLM
 
     # and with no `architectures` recorded, the auto mappings answer from the config class
@@ -327,7 +329,7 @@ def test_a_native_architecture_is_answered_without_touching_remote_code():
     dmu.get_class_from_dynamic_module = lambda *a, **k: called.append(a) or _NoKwargs
     try:
         resolved = _resolve_string_model_class(
-            "evil/repo", _Config(), SimpleNamespace(trust_remote_code = True)
+            "evil/repo", _Config(), SimpleNamespace(trust_remote_code=True)
         )
     finally:
         dmu.get_class_from_dynamic_module = original
@@ -371,7 +373,7 @@ def test_the_remote_code_grant_is_read_by_membership(init_kwargs, top_level, may
         _resolve_string_model_class(
             "some/repo",
             _RemoteOnlyConfig(),
-            SimpleNamespace(model_init_kwargs = init_kwargs, trust_remote_code = top_level),
+            SimpleNamespace(model_init_kwargs=init_kwargs, trust_remote_code=top_level),
         )
     finally:
         dmu.get_class_from_dynamic_module = original
@@ -421,7 +423,7 @@ def test_the_same_auth_keys_reach_both_fetches():
             "private/repo",
             _RemoteOnlyConfig(),
             SimpleNamespace(
-                model_init_kwargs = {
+                model_init_kwargs={
                     "trust_remote_code": True,
                     "use_auth_token": "hf_legacy",
                     "revision": "abc123",
@@ -466,8 +468,8 @@ def test_a_resolvable_string_is_blocked_silently_instead_of_raising(monkeypatch)
     class _StubSFTTrainer:
         def __init__(
             self,
-            model = None,
-            args = None,
+            model=None,
+            args=None,
             **kwargs,
         ):
             self.model = _NoKwargs() if isinstance(model, str) else model
@@ -481,11 +483,11 @@ def test_a_resolvable_string_is_blocked_silently_instead_of_raising(monkeypatch)
     )
     monkeypatch.setattr(trainer_module, "_resolve_string_model_class", lambda *a, **k: _NoKwargs)
 
-    module = SimpleNamespace(SFTTrainer = _StubSFTTrainer)
+    module = SimpleNamespace(SFTTrainer=_StubSFTTrainer)
     trainer_module._patch_sft_trainer_auto_packing(module)
 
-    config = SimpleNamespace(packing = False, padding_free = None, max_length = 512)
-    instance = module.SFTTrainer(model = "microsoft/Phi-4-reasoning-vision-15B", args = config)
+    config = SimpleNamespace(packing=False, padding_free=None, max_length=512)
+    instance = module.SFTTrainer(model="microsoft/Phi-4-reasoning-vision-15B", args=config)
 
     assert instance.args.padding_free is False, "padding-free must be off, not fatal"
     assert injected == [], "nothing may wrap the collator for this forward"
@@ -500,8 +502,8 @@ def test_a_resolvable_string_that_accepts_the_metadata_keeps_padding_free(monkey
     class _StubSFTTrainer:
         def __init__(
             self,
-            model = None,
-            args = None,
+            model=None,
+            args=None,
             **kwargs,
         ):
             self.model = _TakesKwargs() if isinstance(model, str) else model
@@ -518,11 +520,11 @@ def test_a_resolvable_string_that_accepts_the_metadata_keeps_padding_free(monkey
     )
     monkeypatch.setattr(trainer_module, "_resolve_string_model_class", lambda *a, **k: _TakesKwargs)
 
-    module = SimpleNamespace(SFTTrainer = _StubSFTTrainer)
+    module = SimpleNamespace(SFTTrainer=_StubSFTTrainer)
     trainer_module._patch_sft_trainer_auto_packing(module)
 
-    config = SimpleNamespace(packing = False, padding_free = True, max_length = 512)
-    instance = module.SFTTrainer(model = "meta-llama/Llama-3.1-8B", args = config)
+    config = SimpleNamespace(packing=False, padding_free=True, max_length=512)
+    instance = module.SFTTrainer(model="meta-llama/Llama-3.1-8B", args=config)
 
     assert instance.args.padding_free is True
     assert len(injected) == 1
@@ -538,8 +540,8 @@ def test_the_warning_names_the_resolved_class_not_str(monkeypatch, caplog):
     class _StubSFTTrainer:
         def __init__(
             self,
-            model = None,
-            args = None,
+            model=None,
+            args=None,
             **kwargs,
         ):
             self.model = _NoKwargs() if isinstance(model, str) else model
@@ -552,13 +554,13 @@ def test_the_warning_names_the_resolved_class_not_str(monkeypatch, caplog):
     )
     monkeypatch.setattr(trainer_module, "_resolve_string_model_class", lambda *a, **k: _NoKwargs)
 
-    module = SimpleNamespace(SFTTrainer = _StubSFTTrainer)
+    module = SimpleNamespace(SFTTrainer=_StubSFTTrainer)
     trainer_module._patch_sft_trainer_auto_packing(module)
 
     # packing=True so the reason chain actually emits its warning
-    config = SimpleNamespace(packing = True, padding_free = None, max_length = 512)
-    with caplog.at_level(logging.WARNING, logger = trainer_module.logger.name):
-        module.SFTTrainer(model = "microsoft/Phi-4-reasoning-vision-15B", args = config)
+    config = SimpleNamespace(packing=True, padding_free=None, max_length=512)
+    with caplog.at_level(logging.WARNING, logger=trainer_module.logger.name):
+        module.SFTTrainer(model="microsoft/Phi-4-reasoning-vision-15B", args=config)
 
     assert "_NoKwargs.forward()" in caplog.text
     assert "str.forward()" not in caplog.text
@@ -576,8 +578,8 @@ def test_a_class_that_disagrees_with_the_built_model_is_still_caught(monkeypatch
     class _StubSFTTrainer:
         def __init__(
             self,
-            model = None,
-            args = None,
+            model=None,
+            args=None,
             **kwargs,
         ):
             # what actually gets built disagrees with what the config advertised
@@ -592,12 +594,12 @@ def test_a_class_that_disagrees_with_the_built_model_is_still_caught(monkeypatch
     # the optimistic, and wrong, answer
     monkeypatch.setattr(trainer_module, "_resolve_string_model_class", lambda *a, **k: _TakesKwargs)
 
-    module = SimpleNamespace(SFTTrainer = _StubSFTTrainer)
+    module = SimpleNamespace(SFTTrainer=_StubSFTTrainer)
     trainer_module._patch_sft_trainer_auto_packing(module)
 
-    config = SimpleNamespace(packing = False, padding_free = True, max_length = 512)
-    with pytest.raises(ValueError, match = "packed_seq_lengths"):
-        module.SFTTrainer(model = "some/multi-headed-checkpoint", args = config)
+    config = SimpleNamespace(packing=False, padding_free=True, max_length=512)
+    with pytest.raises(ValueError, match="packed_seq_lengths"):
+        module.SFTTrainer(model="some/multi-headed-checkpoint", args=config)
 
 
 def test_a_resolver_that_explodes_falls_back_to_the_backstop(monkeypatch):
@@ -609,8 +611,8 @@ def test_a_resolver_that_explodes_falls_back_to_the_backstop(monkeypatch):
     class _StubSFTTrainer:
         def __init__(
             self,
-            model = None,
-            args = None,
+            model=None,
+            args=None,
             **kwargs,
         ):
             self.model = _NoKwargs() if isinstance(model, str) else model
@@ -626,13 +628,13 @@ def test_a_resolver_that_explodes_falls_back_to_the_backstop(monkeypatch):
     )
     monkeypatch.setattr(trainer_module, "_resolve_string_model_class", _explode)
 
-    module = SimpleNamespace(SFTTrainer = _StubSFTTrainer)
+    module = SimpleNamespace(SFTTrainer=_StubSFTTrainer)
     trainer_module._patch_sft_trainer_auto_packing(module)
 
-    config = SimpleNamespace(packing = False, padding_free = True, max_length = 512)
+    config = SimpleNamespace(packing=False, padding_free=True, max_length=512)
     # still caught, just later and loudly, exactly as before this resolution existed
-    with pytest.raises(ValueError, match = "packed_seq_lengths"):
-        module.SFTTrainer(model = "microsoft/Phi-4-reasoning-vision-15B", args = config)
+    with pytest.raises(ValueError, match="packed_seq_lengths"):
+        module.SFTTrainer(model="microsoft/Phi-4-reasoning-vision-15B", args=config)
 
 
 def test_a_mixed_adapter_wrapper_is_unwrapped_to_the_checkpoint():
@@ -648,28 +650,28 @@ def test_a_mixed_adapter_wrapper_is_unwrapped_to_the_checkpoint():
 
     def _config():
         return transformers.LlamaConfig(
-            hidden_size = 32,
-            intermediate_size = 64,
-            num_hidden_layers = 1,
-            num_attention_heads = 4,
-            num_key_value_heads = 4,
-            vocab_size = 64,
+            hidden_size=32,
+            intermediate_size=64,
+            num_hidden_layers=1,
+            num_attention_heads=4,
+            num_key_value_heads=4,
+            vocab_size=64,
         )
 
     class _NarrowLlama(transformers.LlamaForCausalLM):
         def forward(
             self,
-            input_ids = None,
-            attention_mask = None,
-            labels = None,
+            input_ids=None,
+            attention_mask=None,
+            labels=None,
         ):
             return super().forward(
-                input_ids = input_ids, attention_mask = attention_mask, labels = labels
+                input_ids=input_ids, attention_mask=attention_mask, labels=labels
             )
 
-    lora = peft.LoraConfig(target_modules = ["q_proj"])
-    mixed_narrow = peft.get_peft_model(_NarrowLlama(_config()), lora, mixed = True)
-    mixed_stock = peft.get_peft_model(transformers.LlamaForCausalLM(_config()), lora, mixed = True)
+    lora = peft.LoraConfig(target_modules=["q_proj"])
+    mixed_narrow = peft.get_peft_model(_NarrowLlama(_config()), lora, mixed=True)
+    mixed_stock = peft.get_peft_model(transformers.LlamaForCausalLM(_config()), lora, mixed=True)
 
     # the wrapper really is the shape described above, so this test cannot quietly
     # stop testing anything if PEFT changes

@@ -25,13 +25,13 @@ SAVE = REPO / "unsloth" / "save.py"
 
 
 def _tree(path):
-    return ast.parse(path.read_text(encoding = "utf-8"))
+    return ast.parse(path.read_text(encoding="utf-8"))
 
 
 def _function(
     tree,
     name,
-    class_name = None,
+    class_name=None,
 ):
     body = tree.body
     if class_name is not None:
@@ -159,10 +159,10 @@ def test_tokenizer_helpers_forward_revision():
 
 def _load_gate():
     """Exec just _revision_for_resolved_repo, so no GPU-bound import is needed."""
-    source = LOADER.read_text(encoding = "utf-8")
+    source = LOADER.read_text(encoding="utf-8")
     function = _function(ast.parse(source), "_revision_for_resolved_repo")
-    namespace = {"logger": types.SimpleNamespace(warning_once = lambda *a, **k: None)}
-    module = ast.Module(body = [function], type_ignores = [])
+    namespace = {"logger": types.SimpleNamespace(warning_once=lambda *a, **k: None)}
+    module = ast.Module(body=[function], type_ignores=[])
     ast.fix_missing_locations(module)
     exec(compile(module, str(LOADER), "exec"), namespace)
     return namespace["_revision_for_resolved_repo"]
@@ -194,11 +194,11 @@ def test_no_revision_stays_none_even_when_remapped():
 
 
 def _gate_with_warnings():
-    source = LOADER.read_text(encoding = "utf-8")
+    source = LOADER.read_text(encoding="utf-8")
     function = _function(ast.parse(source), "_revision_for_resolved_repo")
     warnings = []
-    namespace = {"logger": types.SimpleNamespace(warning_once = lambda m: warnings.append(m))}
-    module = ast.Module(body = [function], type_ignores = [])
+    namespace = {"logger": types.SimpleNamespace(warning_once=lambda m: warnings.append(m))}
+    module = ast.Module(body=[function], type_ignores=[])
     ast.fix_missing_locations(module)
     exec(compile(module, str(LOADER), "exec"), namespace)
     return namespace["_revision_for_resolved_repo"], warnings
@@ -249,7 +249,7 @@ def test_both_loader_paths_gate_before_and_after_resolution():
         function = _function(tree, "from_pretrained", class_name)
         gates = _calls(function, "_revision_for_resolved_repo")
         assert len(gates) == 2, f"{class_name} needs an early and a late gate, found {len(gates)}"
-        early, late = sorted(gates, key = lambda c: c.lineno)
+        early, late = sorted(gates, key=lambda c: c.lineno)
 
         probes = [
             c
@@ -280,7 +280,7 @@ def test_the_late_gate_is_skipped_for_peft():
     tree = _tree(LOADER)
     for class_name in ("FastLanguageModel", "FastModel"):
         function = _function(tree, "from_pretrained", class_name)
-        late = sorted(_calls(function, "_revision_for_resolved_repo"), key = lambda c: c.lineno)[-1]
+        late = sorted(_calls(function, "_revision_for_resolved_repo"), key=lambda c: c.lineno)[-1]
         guards = [
             n
             for n in ast.walk(function)
@@ -311,7 +311,7 @@ def test_the_adapter_load_keeps_the_callers_revision():
 def test_a_pinned_load_does_not_mix_refs_with_vllm(path, flag):
     """load_vllm takes no revision, so vLLM fetches the default branch. Pinning only the
     config and tokenizer would put two refs in one model, so the pin is dropped instead."""
-    source = path.read_text(encoding = "utf-8")
+    source = path.read_text(encoding="utf-8")
     tree = ast.parse(source)
     name = "FastLlamaModel" if path is LLAMA else "FastBaseModel"
     function = _function(tree, "from_pretrained", name)
@@ -432,10 +432,10 @@ def test_vision_pops_the_tokenizer_revision_before_the_weight_load():
 
 
 def _load_tokenizer_gate():
-    source = LOADER.read_text(encoding = "utf-8")
+    source = LOADER.read_text(encoding="utf-8")
     function = _function(ast.parse(source), "_revision_for_tokenizer_repo")
     namespace = {}
-    module = ast.Module(body = [function], type_ignores = [])
+    module = ast.Module(body=[function], type_ignores=[])
     ast.fix_missing_locations(module)
     exec(compile(module, str(LOADER), "exec"), namespace)
     return namespace["_revision_for_tokenizer_repo"]
@@ -530,7 +530,7 @@ def test_a_direct_llama_call_still_pins_its_tokenizer():
 def test_the_vllm_drop_clears_the_tokenizer_pin_too(path, cls, name):
     """Clearing only the model pin left vLLM on the default branch while the tokenizer
     stayed on the requested ref."""
-    function = _function(ast.parse(path.read_text(encoding = "utf-8")), "from_pretrained", cls)
+    function = _function(ast.parse(path.read_text(encoding="utf-8")), "from_pretrained", cls)
     clears = [
         n
         for n in ast.walk(function)
@@ -544,15 +544,15 @@ def test_the_vllm_drop_clears_the_tokenizer_pin_too(path, cls, name):
 
 def _simulate_loader():
     """Run the loader's two revision decisions the way from_pretrained sequences them."""
-    tree = ast.parse(LOADER.read_text(encoding = "utf-8"))
-    namespace = {"logger": types.SimpleNamespace(warning_once = lambda *a, **k: None)}
+    tree = ast.parse(LOADER.read_text(encoding="utf-8"))
+    namespace = {"logger": types.SimpleNamespace(warning_once=lambda *a, **k: None)}
     functions = [
         n
         for n in tree.body
         if isinstance(n, ast.FunctionDef)
         and n.name in ("_revision_for_resolved_repo", "_revision_for_tokenizer_repo")
     ]
-    module = ast.Module(body = functions, type_ignores = [])
+    module = ast.Module(body=functions, type_ignores=[])
     ast.fix_missing_locations(module)
     exec(compile(module, str(LOADER), "exec"), namespace)
     gate = namespace["_revision_for_resolved_repo"]
@@ -625,7 +625,7 @@ def _simulate_loader():
         ),
         ("no revision at all", "org/m", "unsloth/m-bnb-4bit", False, None, None, True, None, None),
     ],
-    ids = lambda v: v if isinstance(v, str) and " " in v else None,
+    ids=lambda v: v if isinstance(v, str) and " " in v else None,
 )
 def test_the_revision_decision_matrix(
     label,

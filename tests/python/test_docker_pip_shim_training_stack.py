@@ -73,8 +73,8 @@ def shim(tmp_path, monkeypatch):
 def _run(
     shim,
     args,
-    tool = "pip",
-    sub = "install",
+    tool="pip",
+    sub="install",
 ):
     """Args after the subcommand, or None when the shim no-op'd; constraints pair dropped."""
     argv = ["uv", "pip", sub, *args] if tool == "uv" else ["pip", sub, *args]
@@ -179,7 +179,7 @@ def test_transformers_companions_cannot_desynchronise_the_sidecars(shim):
 
 def test_an_unbaked_package_still_installs(shim):
     assert _run(shim, [UNBAKED]) == [UNBAKED]
-    assert _run(shim, [UNBAKED], tool = "uv") == [UNBAKED]
+    assert _run(shim, [UNBAKED], tool="uv") == [UNBAKED]
 
 
 def test_protection_survives_a_requirements_file(shim, tmp_path):
@@ -239,7 +239,7 @@ def test_a_protected_package_the_image_never_baked_still_installs(shim_without_v
     # recovery; skipping it printed "kept baked versions" over an image with no vLLM
     assert _run(shim_without_vllm, [MISSING]) == [MISSING]
     assert _run(shim_without_vllm, [f"{MISSING}==0.20.0"]) == [f"{MISSING}==0.20.0"]
-    assert _run(shim_without_vllm, [MISSING], tool = "uv") == [MISSING]
+    assert _run(shim_without_vllm, [MISSING], tool="uv") == [MISSING]
 
 
 def test_the_absence_check_reaches_the_requirements_file_path(shim_without_vllm, tmp_path):
@@ -279,7 +279,7 @@ def test_installed_names_reads_a_real_venv(shim):
 
 def test_every_drop_decision_goes_through_the_one_predicate(shim):
     """The three call sites drifted apart before; keep them on _is_protected."""
-    source = SHIM_PATH.read_text(encoding = "utf-8")
+    source = SHIM_PATH.read_text(encoding="utf-8")
     raw = [
         line
         for line in source.splitlines()
@@ -293,7 +293,7 @@ def test_every_drop_decision_goes_through_the_one_predicate(shim):
 def test_the_dockerfile_still_lets_a_protected_bake_fail(shim):
     """Premise pin: if every bake becomes mandatory, the absence path is dead code and
     this file should be revisited rather than left asserting a case that cannot arise."""
-    dockerfile = (REPO_ROOT / "docker" / "Dockerfile").read_text(encoding = "utf-8")
+    dockerfile = (REPO_ROOT / "docker" / "Dockerfile").read_text(encoding="utf-8")
     assert "torchcodec bake skipped" in dockerfile
     assert "fail-soft on non-amd64" in dockerfile
     assert MISSING in shim._KEEP
@@ -320,12 +320,12 @@ def test_forwarded_installs_pin_the_protected_set_for_the_resolver(shim):
 
 
 def test_the_shipped_falcon_cell_cannot_remove_unsloth(shim, capsys):
-    assert _run(shim, ["unsloth", "-y"], sub = "uninstall") is None
+    assert _run(shim, ["unsloth", "-y"], sub="uninstall") is None
     assert "skipped: unsloth" in capsys.readouterr().out
 
 
 def test_the_shipped_qwen_moe_cell_keeps_torchcodec(shim):
-    assert _run(shim, ["-y", "sentence-transformers", "torchcodec"], sub = "uninstall") == [
+    assert _run(shim, ["-y", "sentence-transformers", "torchcodec"], sub="uninstall") == [
         "-y",
         "sentence-transformers",
     ]
@@ -333,24 +333,24 @@ def test_the_shipped_qwen_moe_cell_keeps_torchcodec(shim):
 
 @pytest.mark.parametrize("pkg", ["torch", "vllm", "trl", "transformers", "nvidia-cublas-cu12"])
 def test_uninstall_of_the_baked_stack_is_dropped(shim, pkg):
-    assert _run(shim, ["-y", pkg], sub = "uninstall") is None
-    assert _run(shim, [pkg], tool = "uv", sub = "uninstall") is None
+    assert _run(shim, ["-y", pkg], sub="uninstall") is None
+    assert _run(shim, [pkg], tool="uv", sub="uninstall") is None
 
 
 def test_uninstall_of_an_unbaked_package_still_runs(shim):
-    assert _run(shim, ["-y", UNBAKED], sub = "uninstall") == ["-y", UNBAKED]
-    assert _run(shim, ["-qy", UNBAKED], sub = "uninstall") == ["-q", "-y", UNBAKED]
+    assert _run(shim, ["-y", UNBAKED], sub="uninstall") == ["-y", UNBAKED]
+    assert _run(shim, ["-qy", UNBAKED], sub="uninstall") == ["-q", "-y", UNBAKED]
 
 
 def test_uninstall_of_a_protected_package_the_image_never_baked_still_runs(shim_without_vllm):
-    assert _run(shim_without_vllm, ["-y", MISSING], sub = "uninstall") == ["-y", MISSING]
+    assert _run(shim_without_vllm, ["-y", MISSING], sub="uninstall") == ["-y", MISSING]
 
 
 def test_uninstall_protection_survives_a_requirements_file(shim, tmp_path):
     req = tmp_path / "remove.txt"
     req.write_text(f"torchcodec\n{UNBAKED}\n")
     for args in (["-y", "-r", str(req)], ["-y", f"-r{req}"], ["-y", f"--requirement={req}"]):
-        execd = _run(shim, args, sub = "uninstall")
+        execd = _run(shim, args, sub="uninstall")
         assert execd is not None, args
         path = execd[-1].partition("=")[2] if execd[-1].startswith("--requirement=") else execd[-1]
         assert Path(path).read_text().split() == [UNBAKED], args
@@ -366,7 +366,7 @@ def test_uninstall_protection_survives_the_pip_requirement_env(shim, tmp_path, m
         raise _Exec(path, argv)
 
     monkeypatch.setattr(shim.os, "execve", _fake_execve)
-    execd = _run(shim, ["-y"], sub = "uninstall")
+    execd = _run(shim, ["-y"], sub="uninstall")
     assert execd is not None and execd[0] == "-r" and execd[2] == "-y", execd
     assert Path(execd[1]).read_text().split() == [UNBAKED]
 
@@ -374,7 +374,7 @@ def test_uninstall_protection_survives_the_pip_requirement_env(shim, tmp_path, m
 def test_uninstall_requirements_file_extras_do_not_reach_the_baked_package(shim, tmp_path):
     req = tmp_path / "remove.txt"
     req.write_text(f"torch[opt]\ntransformers[torch]\n{UNBAKED}\n")
-    execd = _run(shim, ["-y", "-r", str(req)], sub = "uninstall")
+    execd = _run(shim, ["-y", "-r", str(req)], sub="uninstall")
     assert Path(execd[-1]).read_text().split() == [UNBAKED]
 
 
@@ -382,19 +382,19 @@ def test_uninstall_requirements_file_of_only_baked_packages_is_a_no_op(shim, tmp
     req = tmp_path / "remove.txt"
     req.write_text("# baked\ntorchcodec\nunsloth[colab-new]\n")
     for args in (["-y", "-r", str(req)], ["-y", f"-r{req}"], ["-y", f"--requirement={req}"]):
-        assert _run(shim, args, sub = "uninstall") is None, args
+        assert _run(shim, args, sub="uninstall") is None, args
         assert "nothing to uninstall" in capsys.readouterr().out
-    assert _run(shim, ["-y", "-r", str(req), UNBAKED], sub = "uninstall") == ["-y", UNBAKED]
+    assert _run(shim, ["-y", "-r", str(req), UNBAKED], sub="uninstall") == ["-y", UNBAKED]
 
 
 @pytest.mark.parametrize("var", ["PIP_TARGET", "PIP_PREFIX", "PIP_ROOT"])
 def test_pip_uninstall_ignores_install_destination_variables(shim, monkeypatch, tmp_path, var):
     monkeypatch.setenv(var, str(tmp_path / "outside"))
-    assert _run(shim, ["-y", "torch"], sub = "uninstall") is None
-    assert _run(shim, ["-y", UNBAKED], sub = "uninstall") == ["-y", UNBAKED]
+    assert _run(shim, ["-y", "torch"], sub="uninstall") is None
+    assert _run(shim, ["-y", UNBAKED], sub="uninstall") == ["-y", UNBAKED]
 
 
 @pytest.mark.parametrize("tool", ["pip", "uv"])
 def test_targetless_uninstall_reaches_the_real_cli(shim, tool):
-    assert _run(shim, ["--help"], tool = tool, sub = "uninstall") == ["--help"]
-    assert _run(shim, ["-y"], tool = tool, sub = "uninstall") == ["-y"]
+    assert _run(shim, ["--help"], tool=tool, sub="uninstall") == ["--help"]
+    assert _run(shim, ["-y"], tool=tool, sub="uninstall") == ["-y"]

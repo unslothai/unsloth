@@ -33,7 +33,7 @@ _SUPPRESS_CORE = (
 _CRASHING_SCRIPT = _SUPPRESS_CORE + "ctypes.string_at(0)\n"
 
 
-@pytest.fixture(autouse = True)
+@pytest.fixture(autouse=True)
 def _fresh_probe(monkeypatch):
     monkeypatch.setenv(torch_device_probe.DISABLE_ENV_VAR, "0")
     monkeypatch.setattr(process_lifetime, "adopt_pid", lambda _pid: None)
@@ -47,9 +47,9 @@ class _FakeProcess:
     def __init__(
         self,
         *,
-        returncode = 0,
-        stderr = "",
-        timeouts = 0,
+        returncode=0,
+        stderr="",
+        timeouts=0,
     ):
         self.returncode = returncode
         self.pid = 4242
@@ -57,7 +57,7 @@ class _FakeProcess:
         self.timeouts = timeouts
         self.calls: list[str] = []
 
-    def communicate(self, timeout = None):
+    def communicate(self, timeout=None):
         self.calls.append("communicate")
         if self.timeouts:
             self.timeouts -= 1
@@ -77,7 +77,7 @@ class _FakeProcess:
 def _patch_popen(
     monkeypatch,
     process,
-    calls = None,
+    calls=None,
 ):
     def _popen(argv, **kwargs):
         if calls is not None:
@@ -147,7 +147,7 @@ def test_an_unrunnable_probe_still_leaves_cpu_available(monkeypatch):
 def test_unreadable_probe_result_cleans_up_and_does_not_claim_the_device_works(monkeypatch):
     process = _FakeProcess()
 
-    def _broken_communicate(timeout = None):
+    def _broken_communicate(timeout=None):
         raise OSError("pipe failed")
 
     process.communicate = _broken_communicate
@@ -162,18 +162,18 @@ def test_a_read_failure_during_teardown_does_not_escape(monkeypatch):
     # except OSError was a sibling and could not catch it. A pipe failure there escaped
     # device_can_allocate, so a device that really did time out raised instead of
     # returning False, and the child never reached the reaper.
-    process = _FakeProcess(returncode = None, timeouts = 1)
+    process = _FakeProcess(returncode=None, timeouts=1)
     reaped = threading.Event()
     process.wait = lambda: reaped.set()
     original = process.communicate
 
-    def _fail_after_first(timeout = None):
+    def _fail_after_first(timeout=None):
         try:
-            return original(timeout = timeout)
+            return original(timeout=timeout)
         finally:
             process.communicate = _boom
 
-    def _boom(timeout = None):
+    def _boom(timeout=None):
         process.calls.append("communicate")
         raise OSError("pipe failed")
 
@@ -181,7 +181,7 @@ def test_a_read_failure_during_teardown_does_not_escape(monkeypatch):
     _patch_popen(monkeypatch, process)
 
     assert torch_device_probe.device_can_allocate("cuda") is False
-    assert reaped.wait(timeout = 5), "unconfirmed child was never handed to the reaper"
+    assert reaped.wait(timeout=5), "unconfirmed child was never handed to the reaper"
 
 
 def test_result_is_cached_per_device(monkeypatch):
@@ -211,7 +211,7 @@ def test_result_is_cached_per_device(monkeypatch):
 def test_device_identity_change_invalidates_cache(monkeypatch, variable):
     calls: list = []
     _patch_popen(monkeypatch, _FakeProcess(), calls)
-    monkeypatch.delenv(variable, raising = False)
+    monkeypatch.delenv(variable, raising=False)
 
     assert torch_device_probe.device_can_allocate("cuda") is True
     monkeypatch.setenv(variable, "changed")
@@ -228,7 +228,7 @@ def test_every_visibility_mask_hardware_honours_is_part_of_the_cache_key():
     rather than imported, since that module reaches for torch.
     """
     source = Path(torch_device_probe.__file__).with_name("hardware") / "hardware.py"
-    tree = ast.parse(source.read_text(encoding = "utf-8"))
+    tree = ast.parse(source.read_text(encoding="utf-8"))
     masks = {
         node.value
         for function in ast.walk(tree)
@@ -267,13 +267,13 @@ def test_a_child_that_hit_its_own_deadline_is_a_failed_probe(monkeypatch):
     # and the Windows status is an ordinary non-zero exit. Both read as a healthy device,
     # which let the parent make the allocation the probe stands in front of.
     monkeypatch.setattr(torch_device_probe.os, "name", "posix")
-    _patch_popen(monkeypatch, _FakeProcess(returncode = -torch_device_probe._SIGALRM_NUMBER))
+    _patch_popen(monkeypatch, _FakeProcess(returncode=-torch_device_probe._SIGALRM_NUMBER))
     assert torch_device_probe.device_can_allocate("cuda") is False
 
 
 def test_the_windows_watchdog_status_is_a_failed_probe(monkeypatch):
     monkeypatch.setattr(torch_device_probe.os, "name", "nt")
-    _patch_popen(monkeypatch, _FakeProcess(returncode = torch_device_probe._WATCHDOG_EXIT_STATUS))
+    _patch_popen(monkeypatch, _FakeProcess(returncode=torch_device_probe._WATCHDOG_EXIT_STATUS))
     assert torch_device_probe.device_can_allocate("cuda") is False
 
 
@@ -283,7 +283,7 @@ def test_a_windows_crt_abort_is_a_failed_probe(monkeypatch):
     monkeypatch.setattr(torch_device_probe.os, "name", "nt")
     _patch_popen(
         monkeypatch,
-        _FakeProcess(returncode = torch_device_probe._WINDOWS_ABORT_EXIT_STATUS),
+        _FakeProcess(returncode=torch_device_probe._WINDOWS_ABORT_EXIT_STATUS),
     )
     assert torch_device_probe.device_can_allocate("cuda") is False
 
@@ -299,7 +299,7 @@ def test_the_abort_status_is_read_as_a_crash_only_on_windows(monkeypatch):
 def test_the_abort_status_matches_the_one_llama_cpp_already_uses():
     # Same CRT convention, two readers; a divergence here would be silent.
     source = Path(torch_device_probe.__file__).parents[1] / "core" / "inference" / "llama_cpp.py"
-    tree = ast.parse(source.read_text(encoding = "utf-8"))
+    tree = ast.parse(source.read_text(encoding="utf-8"))
     (function,) = [
         node
         for node in ast.walk(tree)
@@ -339,8 +339,8 @@ def test_the_kernel_enforces_the_child_deadline():
         pytest.skip("POSIX only")
     done = subprocess.run(
         [sys.executable, "-c", "import signal, time; signal.alarm(1); time.sleep(30)"],
-        capture_output = True,
-        timeout = 60,
+        capture_output=True,
+        timeout=60,
     )
     assert done.returncode == -int(signal.SIGALRM)
 
@@ -361,8 +361,8 @@ def test_an_inherited_sigalrm_disposition_cannot_disarm_the_deadline():
     )
     done = subprocess.run(
         [sys.executable, "-c", hostile, child],
-        capture_output = True,
-        timeout = 60,
+        capture_output=True,
+        timeout=60,
     )
     assert done.returncode == -int(signal.SIGALRM)
 
@@ -396,7 +396,7 @@ def test_child_is_tracked_until_it_exits(monkeypatch):
 def test_timeout_escalates_and_reaps_a_survivor(monkeypatch):
     forgotten: list[int] = []
     monkeypatch.setattr(process_lifetime, "forget_pid", forgotten.append)
-    process = _FakeProcess(returncode = None, timeouts = 3)
+    process = _FakeProcess(returncode=None, timeouts=3)
     reaped = threading.Event()
 
     def _wait():
@@ -408,7 +408,7 @@ def test_timeout_escalates_and_reaps_a_survivor(monkeypatch):
 
     assert torch_device_probe.device_can_allocate("cuda") is False
     assert process.calls[:5] == ["communicate", "terminate", "communicate", "kill", "communicate"]
-    assert reaped.wait(timeout = 5)
+    assert reaped.wait(timeout=5)
     for _ in range(50):
         if forgotten:
             break
@@ -417,7 +417,7 @@ def test_timeout_escalates_and_reaps_a_survivor(monkeypatch):
 
 
 def test_timeout_that_terminates_does_not_kill(monkeypatch):
-    process = _FakeProcess(returncode = -int(signal.SIGTERM), timeouts = 1)
+    process = _FakeProcess(returncode=-int(signal.SIGTERM), timeouts=1)
     _patch_popen(monkeypatch, process)
 
     assert torch_device_probe.device_can_allocate("cuda") is False
@@ -427,7 +427,7 @@ def test_timeout_that_terminates_does_not_kill(monkeypatch):
 
 def test_windows_child_registers_rocm_dll_directories_before_torch(monkeypatch, tmp_path):
     rocm_bin = tmp_path / "rocm" / "bin"
-    rocm_bin.mkdir(parents = True)
+    rocm_bin.mkdir(parents=True)
     monkeypatch.setattr(sys, "platform", "win32")
     monkeypatch.setenv("HIP_PATH", str(tmp_path / "rocm"))
     calls: list = []
@@ -441,11 +441,11 @@ def test_windows_child_registers_rocm_dll_directories_before_torch(monkeypatch, 
 
 def test_windows_rocm_directories_use_numeric_version_order(monkeypatch, tmp_path):
     for version in ("6.3", "10.0", "7.0"):
-        (tmp_path / "AMD" / "ROCm" / version / "bin").mkdir(parents = True)
+        (tmp_path / "AMD" / "ROCm" / version / "bin").mkdir(parents=True)
     monkeypatch.setattr(sys, "platform", "win32")
     monkeypatch.setenv("ProgramFiles", str(tmp_path))
-    monkeypatch.delenv("HIP_PATH", raising = False)
-    monkeypatch.delenv("ROCM_PATH", raising = False)
+    monkeypatch.delenv("HIP_PATH", raising=False)
+    monkeypatch.delenv("ROCM_PATH", raising=False)
 
     found = torch_device_probe._rocm_dll_directories()
     assert [Path(path).parent.name for path in found] == ["10.0", "7.0", "6.3"]
@@ -481,7 +481,7 @@ def test_a_killed_probe_is_not_a_pass_for_an_accelerator(monkeypatch, killer):
     # enough to trip a cgroup OOM on its own, and reading that as a pass sends the caller
     # on to a much larger load in this process.
     monkeypatch.setattr(torch_device_probe.os, "name", "posix")
-    _patch_popen(monkeypatch, _FakeProcess(returncode = -killer))
+    _patch_popen(monkeypatch, _FakeProcess(returncode=-killer))
     assert torch_device_probe.device_can_allocate("cuda") is False
 
 
@@ -489,13 +489,13 @@ def test_a_killed_probe_still_leaves_cpu_available(monkeypatch):
     # Same no-verdict trade as a probe that never ran: CPU cannot fault a GPU driver, and
     # condemning it would push the caller past its CPU fallback to a different backend.
     monkeypatch.setattr(torch_device_probe.os, "name", "posix")
-    _patch_popen(monkeypatch, _FakeProcess(returncode = -9))
+    _patch_popen(monkeypatch, _FakeProcess(returncode=-9))
     assert torch_device_probe.device_can_allocate("cpu") is True
 
 
 def test_a_clean_child_is_still_a_pass(monkeypatch):
     monkeypatch.setattr(torch_device_probe.os, "name", "posix")
-    _patch_popen(monkeypatch, _FakeProcess(returncode = 0))
+    _patch_popen(monkeypatch, _FakeProcess(returncode=0))
     assert torch_device_probe.device_can_allocate("cuda") is True
 
 
@@ -509,7 +509,7 @@ def test_real_torch_allocates_on_cpu():
             "cpu",
             str(torch_device_probe._CHILD_SELF_LIMIT_SECONDS),
         ],
-        capture_output = True,
-        timeout = torch_device_probe.PROBE_TIMEOUT_SECONDS,
+        capture_output=True,
+        timeout=torch_device_probe.PROBE_TIMEOUT_SECONDS,
     )
     assert probe.returncode == 0, probe.stderr

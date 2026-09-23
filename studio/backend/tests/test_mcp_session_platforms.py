@@ -38,7 +38,7 @@ class _FakeProactorLoop(asyncio.SelectorEventLoop):
 @pytest.fixture
 def win32(monkeypatch):
     monkeypatch.setattr(sys, "platform", "win32")
-    monkeypatch.setattr(asyncio, "ProactorEventLoop", _FakeProactorLoop, raising = False)
+    monkeypatch.setattr(asyncio, "ProactorEventLoop", _FakeProactorLoop, raising=False)
     monkeypatch.setattr(mcp_client, "_IS_WINDOWS", True)
 
 
@@ -81,7 +81,7 @@ def test_the_loop_choice_does_not_depend_on_the_transport(win32):
 @pytest.mark.parametrize("platform", ["win32", "darwin", "linux"])
 def test_sessions_start_and_stop_cleanly_on_every_platform_branch(monkeypatch, platform):
     monkeypatch.setattr(sys, "platform", platform)
-    monkeypatch.setattr(asyncio, "ProactorEventLoop", _FakeProactorLoop, raising = False)
+    monkeypatch.setattr(asyncio, "ProactorEventLoop", _FakeProactorLoop, raising=False)
     session = mcp_client._McpSession(HTTP_URL, None)
     session.close()
     assert session.closed.is_set()
@@ -93,7 +93,7 @@ def test_call_serialization_policy_is_platform_independent(monkeypatch, platform
     """stdio serializes, HTTP does not, on every platform. A platform-dependent
     answer here would mean parallel tool calls behaved differently per OS."""
     monkeypatch.setattr(sys, "platform", platform)
-    monkeypatch.setattr(asyncio, "ProactorEventLoop", _FakeProactorLoop, raising = False)
+    monkeypatch.setattr(asyncio, "ProactorEventLoop", _FakeProactorLoop, raising=False)
     stdio = mcp_client._McpSession(STDIO_URL, None)
     http = mcp_client._McpSession(HTTP_URL, None)
     try:
@@ -113,7 +113,7 @@ def test_connect_window_policy_is_platform_independent(monkeypatch, platform):
     assert mcp_client._connect_window(STDIO_URL, None) is None
 
 
-@pytest.mark.skipif(os.name == "nt", reason = "POSIX fork semantics")
+@pytest.mark.skipif(os.name == "nt", reason="POSIX fork semantics")
 def test_a_forked_child_does_not_inherit_a_usable_session():
     """Only the forking thread survives a fork, so an inherited session's loop
     thread is gone. The child must not believe the cache is usable.
@@ -125,7 +125,7 @@ def test_a_forked_child_does_not_inherit_a_usable_session():
     ctx = multiprocessing.get_context("fork")
     session = mcp_client._McpSession(HTTP_URL, None)
     try:
-        proc = ctx.Process(target = _child_checks_inherited_thread_is_dead)
+        proc = ctx.Process(target=_child_checks_inherited_thread_is_dead)
         proc.start()
         proc.join(30)
         assert proc.exitcode == 0, f"child exited {proc.exitcode}"

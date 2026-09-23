@@ -49,7 +49,7 @@ def join_when_started(thread: threading.Thread, timeout: float = 5.0) -> bool:
     while True:
         remaining = deadline - time.monotonic()
         try:
-            thread.join(timeout = max(remaining, 0.0))
+            thread.join(timeout=max(remaining, 0.0))
         except RuntimeError:
             if remaining <= 0:
                 # Still not started at the deadline, so it is UNDRAINED, and is_alive() must

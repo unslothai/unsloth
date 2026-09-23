@@ -39,13 +39,13 @@ def structured_recipe():
 
 
 def inject_with_loaded_model(monkeypatch, *, gguf):
-    llama = SimpleNamespace(is_loaded = gguf, model_identifier = MODEL, hf_variant = "")
-    backend = SimpleNamespace(active_model_name = "" if gguf else MODEL)
+    llama = SimpleNamespace(is_loaded=gguf, model_identifier=MODEL, hf_variant="")
+    backend = SimpleNamespace(active_model_name="" if gguf else MODEL)
     monkeypatch.setitem(
-        sys.modules, "routes.inference", SimpleNamespace(get_llama_cpp_backend = lambda: llama)
+        sys.modules, "routes.inference", SimpleNamespace(get_llama_cpp_backend=lambda: llama)
     )
     monkeypatch.setitem(
-        sys.modules, "core.inference", SimpleNamespace(get_inference_backend = lambda: backend)
+        sys.modules, "core.inference", SimpleNamespace(get_inference_backend=lambda: backend)
     )
     monkeypatch.setattr(
         route, "_resolve_local_v1_endpoint", lambda request: "http://127.0.0.1:8888/v1"
@@ -69,7 +69,7 @@ def column_aliases(recipe):
 
 
 def test_gguf_model_gets_grammar_response_format(monkeypatch):
-    recipe = inject_with_loaded_model(monkeypatch, gguf = True)
+    recipe = inject_with_loaded_model(monkeypatch, gguf=True)
 
     assert column_aliases(recipe) == {
         "blurb": "local_model",
@@ -81,7 +81,7 @@ def test_gguf_model_gets_grammar_response_format(monkeypatch):
 
 
 def test_non_gguf_model_keeps_prompt_level_json(monkeypatch):
-    recipe = inject_with_loaded_model(monkeypatch, gguf = False)
+    recipe = inject_with_loaded_model(monkeypatch, gguf=False)
 
     # Whole columns, not just aliases: output_format feeds the fallback's prompt-level schema.
     assert recipe["columns"] == structured_recipe()["columns"]
@@ -96,11 +96,11 @@ def test_the_injected_response_format_is_what_a_non_gguf_backend_refuses(monkeyp
     Teaching the safetensors/MLX backend guided decoding must break this, not go unnoticed."""
     # Its own context so the fake backend modules unwind before the route is called for real.
     with pytest.MonkeyPatch.context() as injection:
-        recipe = inject_with_loaded_model(injection, gguf = True)
+        recipe = inject_with_loaded_model(injection, gguf=True)
     extra_body = recipe["model_configs"][-1]["inference_parameters"]["extra_body"]
     payload = ChatCompletionRequest(
-        model = "default",
-        messages = [ChatMessage(role = "user", content = "rate it")],
+        model="default",
+        messages=[ChatMessage(role="user", content="rate it")],
         **extra_body,
     )
 

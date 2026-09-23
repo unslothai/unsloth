@@ -51,11 +51,11 @@ def iter_text(path: Path):
     bundle". Same discovery ``launch.py::extract_reports`` uses.
     """
     if path.is_file():
-        yield path.read_text(encoding = "utf-8", errors = "replace")
+        yield path.read_text(encoding="utf-8", errors="replace")
         return
     for nb_path in sorted(path.rglob("*_output.ipynb")):
         try:
-            nb = json.loads(nb_path.read_text(encoding = "utf-8", errors = "replace"))
+            nb = json.loads(nb_path.read_text(encoding="utf-8", errors="replace"))
         except Exception:  # noqa: BLE001
             continue
         # Kernels have returned valid JSON that is not a notebook (`[]`, or a
@@ -73,7 +73,7 @@ def iter_text(path: Path):
                     text = "".join(str(t) for t in text)
                 yield text
     for log_path in sorted(path.rglob("kernel.log")):
-        raw = log_path.read_text(encoding = "utf-8", errors = "replace")
+        raw = log_path.read_text(encoding="utf-8", errors="replace")
         try:
             records = json.loads(raw)
         except json.JSONDecodeError:
@@ -122,20 +122,20 @@ def is_safe_member(name: str) -> bool:
 
 
 def extract(blob: bytes, outdir: Path) -> list[str]:
-    outdir.mkdir(parents = True, exist_ok = True)
+    outdir.mkdir(parents=True, exist_ok=True)
     written: list[str] = []
-    with tarfile.open(fileobj = io.BytesIO(blob), mode = "r:gz") as tar:
+    with tarfile.open(fileobj=io.BytesIO(blob), mode="r:gz") as tar:
         for member in tar.getmembers():
             if not member.isfile():
                 continue
             if not is_safe_member(member.name):
-                print(f"[evidence] refusing member {member.name!r}", flush = True)
+                print(f"[evidence] refusing member {member.name!r}", flush=True)
                 continue
             if member.size > MAX_MEMBER_BYTES:
-                print(f"[evidence] refusing oversized member {member.name!r}", flush = True)
+                print(f"[evidence] refusing oversized member {member.name!r}", flush=True)
                 continue
             dest = outdir / member.name
-            dest.parent.mkdir(parents = True, exist_ok = True)
+            dest.parent.mkdir(parents=True, exist_ok=True)
             handle = tar.extractfile(member)
             if handle is None:
                 continue
@@ -146,18 +146,18 @@ def extract(blob: bytes, outdir: Path) -> list[str]:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--evidence", required = True, help = "directory the launcher collected into")
-    ap.add_argument("--outdir", required = True, help = "where to unpack the bundle")
+    ap.add_argument("--evidence", required=True, help="directory the launcher collected into")
+    ap.add_argument("--outdir", required=True, help="where to unpack the bundle")
     args = ap.parse_args()
 
     source = Path(args.evidence)
     if not source.exists():
-        print("[evidence] nothing was collected, so there is nothing to unpack", flush = True)
+        print("[evidence] nothing was collected, so there is nothing to unpack", flush=True)
         return 0
 
     chunks, total = collect_chunks(iter_text(source))
     if not chunks:
-        print("[evidence] the payload emitted no evidence bundle", flush = True)
+        print("[evidence] the payload emitted no evidence bundle", flush=True)
         return 0
 
     missing = [i for i in range(1, total + 1) if i not in chunks]
@@ -168,26 +168,26 @@ def main() -> int:
             f"[evidence] {len(missing)} of {total} chunks are missing "
             f"(first: {missing[0]}), so the bundle is incomplete and is not "
             f"being unpacked",
-            flush = True,
+            flush=True,
         )
         return 0
 
     encoded = "".join(chunks[i] for i in range(1, total + 1))
     try:
-        blob = base64.b64decode(encoded, validate = True)
+        blob = base64.b64decode(encoded, validate=True)
     except (binascii.Error, ValueError) as exc:
-        print(f"[evidence] the bundle did not decode: {exc}", flush = True)
+        print(f"[evidence] the bundle did not decode: {exc}", flush=True)
         return 0
 
     try:
         written = extract(blob, Path(args.outdir))
     except tarfile.TarError as exc:
-        print(f"[evidence] the bundle is not a readable archive: {exc}", flush = True)
+        print(f"[evidence] the bundle is not a readable archive: {exc}", flush=True)
         return 0
 
-    print(f"[evidence] unpacked {len(written)} file(s) into {args.outdir}", flush = True)
+    print(f"[evidence] unpacked {len(written)} file(s) into {args.outdir}", flush=True)
     for name in written:
-        print(f"  {name}", flush = True)
+        print(f"  {name}", flush=True)
     return 0
 
 

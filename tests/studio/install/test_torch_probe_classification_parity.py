@@ -47,7 +47,7 @@ stack_mod = importlib.util.module_from_spec(_STACK_SPEC)
 sys.modules[_STACK_SPEC.name] = stack_mod
 _STACK_SPEC.loader.exec_module(stack_mod)
 
-_SOURCE = _STACK_PATH.read_text(encoding = "utf-8")
+_SOURCE = _STACK_PATH.read_text(encoding="utf-8")
 _TREE = ast.parse(_SOURCE, str(_STACK_PATH))
 
 
@@ -172,7 +172,7 @@ def _old_windows_rocm_yes(ver, hip, cuda):
 
 
 @pytest.mark.parametrize(
-    "ver,hip,cuda", _TORCH_STATES, ids = [s[0] or "empty" for s in _TORCH_STATES]
+    "ver,hip,cuda", _TORCH_STATES, ids=[s[0] or "empty" for s in _TORCH_STATES]
 )
 class TestClassificationIsAFaithfulTranslation:
     def test_cuda_marker_tag_release_and_runtime_family(self, ver, hip, cuda):

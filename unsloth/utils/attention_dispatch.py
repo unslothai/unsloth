@@ -42,9 +42,9 @@ def _xformers_runs_on_device() -> bool:
         # Pre-Ampere GPUs (sm < 80: Turing/Volta) have no bfloat16 attention kernel but run xformers fine in
         # float16, so pick the dtype the device supports.
         dtype = torch.bfloat16 if SUPPORTS_BFLOAT16 else torch.float16
-        q = torch.zeros((1, 8, 1, 64), device = "cuda", dtype = dtype)
+        q = torch.zeros((1, 8, 1, 64), device="cuda", dtype=dtype)
         attn_bias = xformers.attn_bias.BlockDiagonalCausalMask.from_seqlens([8])
-        xformers_attention(q, q, q, attn_bias = attn_bias)
+        xformers_attention(q, q, q, attn_bias=attn_bias)
         # Launches are async, so synchronize or a deferred kernel failure escapes this probe.
         torch.cuda.synchronize()
         return True
@@ -52,7 +52,7 @@ def _xformers_runs_on_device() -> bool:
         return False
 
 
-def _xformers_disabled_for_capability(capability, probe = _xformers_runs_on_device) -> bool:
+def _xformers_disabled_for_capability(capability, probe=_xformers_runs_on_device) -> bool:
     # At sm_120 (RTX 50-series) xformers' cutlass op is capability-rejected (it caps at sm_90) and its
     # flash-2 op runs only if the build ships an sm_120 kernel, so run one real forward to decide;
     # below sm_120 xformers always works.
@@ -258,8 +258,8 @@ def _windowed_causal_mask(q_len: int, k_len: int, sliding_window: int, device) -
     # temporaries are allocated would make a shape change peak a whole mask higher.
     _WINDOW_MASK_CACHE.pop(device, None)
     entry = None
-    q_pos = torch.arange(k_len - q_len, k_len, device = device)
-    k_pos = torch.arange(k_len, device = device)
+    q_pos = torch.arange(k_len - q_len, k_len, device=device)
+    k_pos = torch.arange(k_len, device=device)
     mask = (
         (k_pos[None, :] <= q_pos[:, None])
         & (k_pos[None, :] >= (q_pos[:, None] - (sliding_window - 1)))
@@ -296,7 +296,7 @@ def run_attention(
             K.transpose(1, 2),
             V.transpose(1, 2),
             context.prefix_seg_info,
-            scale = scale,
+            scale=scale,
         )
         return A  # [1, T, n_heads, head_dim]
 
@@ -421,8 +421,8 @@ def run_attention(
     elif backend == XFORMERS:
         attn_bias = build_xformers_block_causal_mask(
             context.seq_info,
-            sliding_window = sliding_window,
-            base_mask = context.causal_mask,
+            sliding_window=sliding_window,
+            base_mask=context.causal_mask,
         )
         attn_bias = move_xformers_attention_bias(attn_bias, Q.device)
 
@@ -468,7 +468,7 @@ def run_attention(
             Q_mod,
             K_mod,
             V_mod,
-            attn_bias = attn_bias,
+            attn_bias=attn_bias,
             **xformers_kwargs,
         )
 
@@ -484,15 +484,15 @@ def run_attention(
         if context.seq_info is not None and local_mask is None:
             local_mask = build_sdpa_packed_attention_mask(
                 context.seq_info,
-                dtype = Q.dtype,
-                device = Q.device,
-                sliding_window = sliding_window,
+                dtype=Q.dtype,
+                device=Q.device,
+                sliding_window=sliding_window,
             )
         else:
             q_len_local = Q.shape[-2]
             k_len_local = K.shape[-2]
             if local_mask is not None and isinstance(local_mask, torch.Tensor):
-                local_mask = local_mask.to(device = Q.device)
+                local_mask = local_mask.to(device=Q.device)
 
                 if local_mask.dim() == 2:
                     # Key padding keep mask (bsz, k_len), where 1/True is a real token; the tokenizer attention_mask is
@@ -504,8 +504,8 @@ def run_attention(
                         key_keep = local_mask != 0
 
                     past_len = k_len_local - q_len_local  # works for prefill (0) and decode
-                    q_pos = torch.arange(past_len, past_len + q_len_local, device = Q.device)
-                    k_pos = torch.arange(k_len_local, device = Q.device)
+                    q_pos = torch.arange(past_len, past_len + q_len_local, device=Q.device)
+                    k_pos = torch.arange(k_len_local, device=Q.device)
 
                     causal_keep = k_pos[None, :] <= q_pos[:, None]  # True = allowed (SDPA)
                     if sliding_window is not None:
@@ -527,7 +527,7 @@ def run_attention(
 
                 # Avoid NaNs from fully-masked rows, common with left padding.
                 if local_mask.dtype == torch.bool:
-                    no_allowed = ~local_mask.any(dim = -1, keepdim = True)  # (bsz,1,q_len,1)
+                    no_allowed = ~local_mask.any(dim=-1, keepdim=True)  # (bsz,1,q_len,1)
                     local_mask = local_mask | no_allowed
 
             if local_mask is None and sliding_window is not None and k_len_local > sliding_window:

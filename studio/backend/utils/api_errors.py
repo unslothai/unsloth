@@ -52,10 +52,10 @@ ANTHROPIC_TYPE_BY_STATUS = {
 def openai_error_body(
     message,
     *,
-    status = 400,
-    err_type = None,
-    code = None,
-    param = None,
+    status=400,
+    err_type=None,
+    code=None,
+    param=None,
 ) -> dict:
     """Build an OpenAI-style error envelope, ``{"error": {"message", "type", "param", "code"}}``. ``param`` and ``code`` are always present (value may be ``None``); ``err_type`` defaults to :data:`OPENAI_TYPE_BY_STATUS` for ``status`` (``"api_error"`` fallback)."""
     return {
@@ -71,8 +71,8 @@ def openai_error_body(
 def anthropic_error_body(
     message,
     *,
-    status = 400,
-    err_type = None,
+    status=400,
+    err_type=None,
 ) -> dict:
     """Build an Anthropic-style error envelope, ``{"type": "error", "request_id": None, "error": {"type", "message"}}``. ``request_id`` is a required nullable field of the spec's ErrorResponse and Unsloth has no request-id system, so it is null; ``err_type`` defaults to :data:`ANTHROPIC_TYPE_BY_STATUS` for ``status`` (``"api_error"`` fallback)."""
     return {
@@ -101,14 +101,14 @@ def error_body_for_path(
     message,
     *,
     status,
-    err_type = None,
-    code = None,
-    param = None,
+    err_type=None,
+    code=None,
+    param=None,
 ) -> dict:
     """Dispatch to the correct envelope builder based on ``path``: Anthropic surface paths use :func:`anthropic_error_body` (``code`` and ``param`` are not part of that envelope and are ignored), all other ``/v1/*`` paths use :func:`openai_error_body`."""
     if is_anthropic_path(path):
-        return anthropic_error_body(message, status = status, err_type = err_type)
-    return openai_error_body(message, status = status, err_type = err_type, code = code, param = param)
+        return anthropic_error_body(message, status=status, err_type=err_type)
+    return openai_error_body(message, status=status, err_type=err_type, code=code, param=param)
 
 
 def _summarize_validation_errors(errors) -> tuple:
@@ -250,13 +250,13 @@ def install_api_error_handlers(app) -> None:
             # Same sanitizing as the 422 branch: /v1 builds its message from msg, and a validator that quotes the submitted value (models/inference.py embeds an unsupported block's type with btype!r) makes msg unbounded.
             summary, param = _summarize_validation_errors(safe_validation_errors(exc.errors()))
             return JSONResponse(
-                status_code = 400,
-                content = error_body_for_path(path, summary, status = 400, param = param),
+                status_code=400,
+                content=error_body_for_path(path, summary, status=400, param=param),
             )
         # Default FastAPI behavior for every other path, minus the raw input echo (see safe_validation_errors: encoding it raised and turned 422 into 500).
         return JSONResponse(
-            status_code = 422,
-            content = {"detail": jsonable_encoder(safe_validation_errors(exc.errors()))},
+            status_code=422,
+            content={"detail": jsonable_encoder(safe_validation_errors(exc.errors()))},
         )
 
     @app.exception_handler(StarletteHTTPException)
@@ -265,15 +265,15 @@ def install_api_error_handlers(app) -> None:
         headers = getattr(exc, "headers", None)
         # Statuses like 204/304/1xx must not carry a body, mirroring FastAPI's default http_exception_handler, which returns a bodiless Response.
         if not is_body_allowed_for_status_code(exc.status_code):
-            return Response(status_code = exc.status_code, headers = headers)
+            return Response(status_code=exc.status_code, headers=headers)
         if wants_api_error_envelope(path):
             detail = exc.detail
             # Already a fully-formed envelope: pass through untouched.
             if isinstance(detail, dict) and ("error" in detail or detail.get("type") == "error"):
                 return JSONResponse(
-                    status_code = exc.status_code,
-                    content = detail,
-                    headers = headers,
+                    status_code=exc.status_code,
+                    content=detail,
+                    headers=headers,
                 )
             if isinstance(detail, dict):
                 message = detail.get("message", detail)
@@ -286,20 +286,20 @@ def install_api_error_handlers(app) -> None:
                 code = None
                 param = None
             return JSONResponse(
-                status_code = exc.status_code,
-                content = error_body_for_path(
+                status_code=exc.status_code,
+                content=error_body_for_path(
                     path,
                     message,
-                    status = exc.status_code,
-                    err_type = err_type,
-                    code = code,
-                    param = param,
+                    status=exc.status_code,
+                    err_type=err_type,
+                    code=code,
+                    param=param,
                 ),
-                headers = headers,
+                headers=headers,
             )
         # Default FastAPI behavior for every other path.
         return JSONResponse(
-            status_code = exc.status_code,
-            content = {"detail": exc.detail},
-            headers = headers,
+            status_code=exc.status_code,
+            content={"detail": exc.detail},
+            headers=headers,
         )

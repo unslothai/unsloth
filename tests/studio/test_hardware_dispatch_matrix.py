@@ -39,107 +39,107 @@ class HardwareProfile:
 
 PROFILES = [
     HardwareProfile(
-        name = "nvidia_cuda",
-        system = "Linux",
-        machine = "x86_64",
-        cuda_available = True,
-        hip_version = None,
-        xpu_available = False,
-        has_mlx = False,
-        mps_available = False,
-        expect_is_mlx = False,
-        expect_device_type = "CUDA",
-        expect_is_rocm = False,
-        expect_apple_silicon = False,
+        name="nvidia_cuda",
+        system="Linux",
+        machine="x86_64",
+        cuda_available=True,
+        hip_version=None,
+        xpu_available=False,
+        has_mlx=False,
+        mps_available=False,
+        expect_is_mlx=False,
+        expect_device_type="CUDA",
+        expect_is_rocm=False,
+        expect_apple_silicon=False,
     ),
     HardwareProfile(
-        name = "amd_rocm",
-        system = "Linux",
-        machine = "x86_64",
-        cuda_available = True,
-        hip_version = "6.1",
-        xpu_available = False,
-        has_mlx = False,
-        mps_available = False,
-        expect_is_mlx = False,
-        expect_device_type = "CUDA",
-        expect_is_rocm = True,
-        expect_apple_silicon = False,
-        extra_notes = "PyTorch ROCm reuses torch.cuda.* over HIP; "
+        name="amd_rocm",
+        system="Linux",
+        machine="x86_64",
+        cuda_available=True,
+        hip_version="6.1",
+        xpu_available=False,
+        has_mlx=False,
+        mps_available=False,
+        expect_is_mlx=False,
+        expect_device_type="CUDA",
+        expect_is_rocm=True,
+        expect_apple_silicon=False,
+        extra_notes="PyTorch ROCm reuses torch.cuda.* over HIP; "
         "Unsloth still uses DeviceType.CUDA but flips IS_ROCM=True.",
     ),
     HardwareProfile(
-        name = "intel_xpu",
-        system = "Linux",
-        machine = "x86_64",
-        cuda_available = False,
-        hip_version = None,
-        xpu_available = True,
-        has_mlx = False,
-        mps_available = False,
-        expect_is_mlx = False,
-        expect_device_type = "XPU",
-        expect_is_rocm = False,
-        expect_apple_silicon = False,
+        name="intel_xpu",
+        system="Linux",
+        machine="x86_64",
+        cuda_available=False,
+        hip_version=None,
+        xpu_available=True,
+        has_mlx=False,
+        mps_available=False,
+        expect_is_mlx=False,
+        expect_device_type="XPU",
+        expect_is_rocm=False,
+        expect_apple_silicon=False,
     ),
     HardwareProfile(
-        name = "apple_silicon_mlx",
-        system = "Darwin",
-        machine = "arm64",
-        cuda_available = False,
-        hip_version = None,
-        xpu_available = False,
-        has_mlx = True,
-        mps_available = True,
-        expect_is_mlx = True,
-        expect_device_type = "MLX",
-        expect_is_rocm = False,
-        expect_apple_silicon = True,
+        name="apple_silicon_mlx",
+        system="Darwin",
+        machine="arm64",
+        cuda_available=False,
+        hip_version=None,
+        xpu_available=False,
+        has_mlx=True,
+        mps_available=True,
+        expect_is_mlx=True,
+        expect_device_type="MLX",
+        expect_is_rocm=False,
+        expect_apple_silicon=True,
     ),
     HardwareProfile(
-        name = "apple_silicon_no_mlx",
-        system = "Darwin",
-        machine = "arm64",
-        cuda_available = False,
-        hip_version = None,
-        xpu_available = False,
-        has_mlx = False,
-        mps_available = True,
-        expect_is_mlx = False,
-        expect_device_type = "CPU",
-        expect_is_rocm = False,
-        expect_apple_silicon = True,
-        extra_notes = "Mac without mlx falls through to CPU (chat-only).",
+        name="apple_silicon_no_mlx",
+        system="Darwin",
+        machine="arm64",
+        cuda_available=False,
+        hip_version=None,
+        xpu_available=False,
+        has_mlx=False,
+        mps_available=True,
+        expect_is_mlx=False,
+        expect_device_type="CPU",
+        expect_is_rocm=False,
+        expect_apple_silicon=True,
+        extra_notes="Mac without mlx falls through to CPU (chat-only).",
     ),
     HardwareProfile(
-        name = "linux_arm64_with_mlx",
-        system = "Linux",
-        machine = "arm64",
-        cuda_available = False,
-        hip_version = None,
-        xpu_available = False,
-        has_mlx = True,
-        mps_available = False,
-        expect_is_mlx = False,
-        expect_device_type = "CPU",
-        expect_is_rocm = False,
-        expect_apple_silicon = False,
-        extra_notes = "Canary: Linux ARM64 with mlx package installed must NOT "
+        name="linux_arm64_with_mlx",
+        system="Linux",
+        machine="arm64",
+        cuda_available=False,
+        hip_version=None,
+        xpu_available=False,
+        has_mlx=True,
+        mps_available=False,
+        expect_is_mlx=False,
+        expect_device_type="CPU",
+        expect_is_rocm=False,
+        expect_apple_silicon=False,
+        extra_notes="Canary: Linux ARM64 with mlx package installed must NOT "
         "trigger MLX dispatch; the system check is what guards it.",
     ),
     HardwareProfile(
-        name = "cpu_only",
-        system = "Linux",
-        machine = "x86_64",
-        cuda_available = False,
-        hip_version = None,
-        xpu_available = False,
-        has_mlx = False,
-        mps_available = False,
-        expect_is_mlx = False,
-        expect_device_type = "CPU",
-        expect_is_rocm = False,
-        expect_apple_silicon = False,
+        name="cpu_only",
+        system="Linux",
+        machine="x86_64",
+        cuda_available=False,
+        hip_version=None,
+        xpu_available=False,
+        has_mlx=False,
+        mps_available=False,
+        expect_is_mlx=False,
+        expect_device_type="CPU",
+        expect_is_rocm=False,
+        expect_apple_silicon=False,
     ),
 ]
 
@@ -161,18 +161,18 @@ def spoof_hardware(monkeypatch):
         # Stub get_device_properties: detect_hardware reads .name, which crashes on a CPU CI runner.
         if profile.cuda_available:
             stub_props = types.SimpleNamespace(
-                name = "Stub GPU" if not profile.hip_version else "Stub AMD GPU",
+                name="Stub GPU" if not profile.hip_version else "Stub AMD GPU",
             )
             monkeypatch.setattr(
                 torch.cuda,
                 "get_device_properties",
-                lambda i = 0: stub_props,
-                raising = False,
+                lambda i=0: stub_props,
+                raising=False,
             )
 
         # torch.version.hip: None on NVIDIA, "6.1" etc. on ROCm
         torch_version = torch.version
-        monkeypatch.setattr(torch_version, "hip", profile.hip_version, raising = False)
+        monkeypatch.setattr(torch_version, "hip", profile.hip_version, raising=False)
 
         # Stub torch.xpu.* always; real get_device_name needs the XPU torch build.
         if hasattr(torch, "xpu"):
@@ -180,22 +180,22 @@ def spoof_hardware(monkeypatch):
             monkeypatch.setattr(
                 torch.xpu,
                 "get_device_name",
-                lambda i = 0: "Intel XPU (stub)",
-                raising = False,
+                lambda i=0: "Intel XPU (stub)",
+                raising=False,
             )
         elif profile.xpu_available:
             xpu_stub = types.SimpleNamespace(
-                is_available = lambda: True,
-                get_device_name = lambda i = 0: "Intel XPU (stub)",
+                is_available=lambda: True,
+                get_device_name=lambda i=0: "Intel XPU (stub)",
             )
-            monkeypatch.setattr(torch, "xpu", xpu_stub, raising = False)
+            monkeypatch.setattr(torch, "xpu", xpu_stub, raising=False)
 
         if hasattr(torch.backends, "mps"):
             monkeypatch.setattr(torch.backends.mps, "is_available", lambda: profile.mps_available)
 
         if profile.has_mlx:
             fake_mlx = types.ModuleType("mlx")
-            fake_mlx.__spec__ = importlib.machinery.ModuleSpec("mlx", loader = None)
+            fake_mlx.__spec__ = importlib.machinery.ModuleSpec("mlx", loader=None)
             fake_mlx.__path__ = []
             fake_mlx_core = types.ModuleType("mlx.core")
             fake_mlx.core = fake_mlx_core
@@ -216,8 +216,8 @@ def spoof_hardware(monkeypatch):
             monkeypatch.setattr(_mlx_repair, "mlx_stack_blockers", lambda: [])
         else:
             # Drop cached mlx and patch find_spec so the unsloth gate sees mlx as absent.
-            monkeypatch.delitem(sys.modules, "mlx", raising = False)
-            monkeypatch.delitem(sys.modules, "mlx.core", raising = False)
+            monkeypatch.delitem(sys.modules, "mlx", raising=False)
+            monkeypatch.delitem(sys.modules, "mlx.core", raising=False)
             real_find_spec = importlib.util.find_spec
 
             def _no_mlx(name, *args, **kwargs):
@@ -233,8 +233,8 @@ def spoof_hardware(monkeypatch):
                 def find_spec(
                     self_inner,
                     name,
-                    path = None,
-                    target = None,
+                    path=None,
+                    target=None,
                 ):
                     if name == "mlx" or name.startswith("mlx."):
                         raise ImportError(
@@ -277,7 +277,7 @@ def _import_studio_hardware_module():
     return hw
 
 
-@pytest.mark.parametrize("profile", PROFILES, ids = PROFILE_IDS)
+@pytest.mark.parametrize("profile", PROFILES, ids=PROFILE_IDS)
 def test_unsloth_is_mlx_gate_matches_profile(profile, spoof_hardware):
     """The _IS_MLX expression in unsloth/__init__.py flips correctly per profile."""
     spoof_hardware(profile)
@@ -288,7 +288,7 @@ def test_unsloth_is_mlx_gate_matches_profile(profile, spoof_hardware):
     )
 
 
-@pytest.mark.parametrize("profile", PROFILES, ids = PROFILE_IDS)
+@pytest.mark.parametrize("profile", PROFILES, ids=PROFILE_IDS)
 def test_studio_detect_hardware_matches_profile(profile, spoof_hardware):
     """Unsloth's detect_hardware() routes to the right DeviceType per profile."""
     spoof_hardware(profile)
@@ -304,7 +304,7 @@ def test_studio_detect_hardware_matches_profile(profile, spoof_hardware):
     ), f"profile {profile.name}: expected IS_ROCM={profile.expect_is_rocm}, got {hw.IS_ROCM}"
 
 
-@pytest.mark.parametrize("profile", PROFILES, ids = PROFILE_IDS)
+@pytest.mark.parametrize("profile", PROFILES, ids=PROFILE_IDS)
 def test_studio_is_apple_silicon_matches_profile(profile, spoof_hardware):
     """Unsloth's is_apple_silicon() helper agrees with platform spoof."""
     spoof_hardware(profile)
@@ -319,18 +319,18 @@ def test_studio_is_apple_silicon_matches_profile(profile, spoof_hardware):
 def test_cuda_takes_priority_over_mlx_when_both_available(spoof_hardware):
     """CUDA wins over MLX when both available: canary against GPU users being routed to MLX after refactors."""
     profile = HardwareProfile(
-        name = "cuda_plus_mlx",
-        system = "Darwin",
-        machine = "arm64",
-        cuda_available = True,
-        hip_version = None,
-        xpu_available = False,
-        has_mlx = True,
-        mps_available = True,
-        expect_is_mlx = True,
-        expect_device_type = "CUDA",
-        expect_is_rocm = False,
-        expect_apple_silicon = True,
+        name="cuda_plus_mlx",
+        system="Darwin",
+        machine="arm64",
+        cuda_available=True,
+        hip_version=None,
+        xpu_available=False,
+        has_mlx=True,
+        mps_available=True,
+        expect_is_mlx=True,
+        expect_device_type="CUDA",
+        expect_is_rocm=False,
+        expect_apple_silicon=True,
     )
     spoof_hardware(profile)
     hw = _import_studio_hardware_module()
@@ -340,18 +340,18 @@ def test_cuda_takes_priority_over_mlx_when_both_available(spoof_hardware):
 def test_xpu_takes_priority_over_mlx_when_both_available(spoof_hardware):
     """XPU is selected over MLX in the dispatch order."""
     profile = HardwareProfile(
-        name = "xpu_plus_mlx",
-        system = "Darwin",
-        machine = "arm64",
-        cuda_available = False,
-        hip_version = None,
-        xpu_available = True,
-        has_mlx = True,
-        mps_available = True,
-        expect_is_mlx = True,
-        expect_device_type = "XPU",
-        expect_is_rocm = False,
-        expect_apple_silicon = True,
+        name="xpu_plus_mlx",
+        system="Darwin",
+        machine="arm64",
+        cuda_available=False,
+        hip_version=None,
+        xpu_available=True,
+        has_mlx=True,
+        mps_available=True,
+        expect_is_mlx=True,
+        expect_device_type="XPU",
+        expect_is_rocm=False,
+        expect_apple_silicon=True,
     )
     spoof_hardware(profile)
     hw = _import_studio_hardware_module()
@@ -376,7 +376,7 @@ def _loader_device_map_helpers():
     """
     import ast as _ast
 
-    source = (REPO_ROOT / "unsloth" / "models" / "loader_utils.py").read_text(encoding = "utf-8")
+    source = (REPO_ROOT / "unsloth" / "models" / "loader_utils.py").read_text(encoding="utf-8")
 
     class _Cuda:
         def __init__(self, count):
@@ -393,7 +393,7 @@ def _loader_device_map_helpers():
 
         namespace = {
             "os": _os,
-            "torch": types.SimpleNamespace(cuda = _Cuda(visible_devices)),
+            "torch": types.SimpleNamespace(cuda=_Cuda(visible_devices)),
             "DEVICE_TYPE_TORCH": "cuda",
             "is_distributed": lambda: False,
         }
@@ -424,8 +424,8 @@ def _loader_device_map_helpers():
     return build
 
 
-@pytest.mark.parametrize("profile", PROFILES, ids = PROFILE_IDS)
-@pytest.mark.parametrize("gpu_ids", [None, [], [0], [0, 1], [2, 3, 5]], ids = repr)
+@pytest.mark.parametrize("profile", PROFILES, ids=PROFILE_IDS)
+@pytest.mark.parametrize("gpu_ids", [None, [], [0], [0, 1], [2, 3, 5]], ids=repr)
 @pytest.mark.parametrize("opt_in", ["unset", "0", "1"])
 def test_studio_placement_survives_the_loader_opt_in(
     profile, gpu_ids, opt_in, spoof_hardware, monkeypatch
@@ -447,7 +447,7 @@ def test_studio_placement_survives_the_loader_opt_in(
     assert device_map in ("balanced", "sequential", "unsloth_balanced")
 
     if opt_in == "unset":
-        monkeypatch.delenv("UNSLOTH_AUTO_DEVICE_MAP", raising = False)
+        monkeypatch.delenv("UNSLOTH_AUTO_DEVICE_MAP", raising=False)
     else:
         monkeypatch.setenv("UNSLOTH_AUTO_DEVICE_MAP", opt_in)
 
@@ -467,7 +467,7 @@ def test_studio_placement_survives_the_loader_opt_in(
     )
 
 
-@pytest.mark.parametrize("profile", PROFILES, ids = PROFILE_IDS)
+@pytest.mark.parametrize("profile", PROFILES, ids=PROFILE_IDS)
 def test_studio_never_speaks_the_planning_sentinel(profile, spoof_hardware):
     """get_device_map is the only thing that names a placement for Unsloth's loads, and
     the plain "unsloth" sentinel is not one of its answers on any backend.

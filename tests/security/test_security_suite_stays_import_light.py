@@ -59,7 +59,7 @@ def _module_level_statements(body):
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
             # The BODY is deferred; decorators, defaults, annotations and bases are evaluated at import.
             for part in _definition_time_expressions(node):
-                yield ast.Expr(value = part)
+                yield ast.Expr(value=part)
             if isinstance(node, ast.ClassDef):
                 yield from _module_level_statements(node.body)
             continue
@@ -145,7 +145,7 @@ def _settled_aliases(bindings, inherited):
         aliases = dict(inherited)
         for node in sorted(
             bindings,
-            key = lambda child: (getattr(child, "lineno", 0), getattr(child, "col_offset", 0)),
+            key=lambda child: (getattr(child, "lineno", 0), getattr(child, "col_offset", 0)),
         ):
             if isinstance(node, ast.ImportFrom):
                 if node.level:
@@ -250,7 +250,7 @@ def _is_pytest_skip(attribute, loaders) -> bool:
 
 def _module_level_heavy_imports(path):
     """Top-level import names only. An import inside a function is paid lazily."""
-    tree = ast.parse(path.read_text(encoding = "utf-8"))
+    tree = ast.parse(path.read_text(encoding="utf-8"))
     loaders = _loader_aliases(tree)
     found = set()
     for node in _module_level_statements(tree.body):
@@ -273,7 +273,7 @@ def _module_level_heavy_imports(path):
 def _body_level_heavy_imports(path):
     """Heavy dependencies a test BODY imports unconditionally. A body-level
     `importorskip` skips only that test, so unlike at module scope it does not count."""
-    tree = ast.parse(path.read_text(encoding = "utf-8"))
+    tree = ast.parse(path.read_text(encoding="utf-8"))
     scopes = _alias_scopes(tree)
     module_loaders = scopes[id(tree)]
     found = set()
@@ -360,7 +360,7 @@ def _needs_the_heavy_runner(path):
 
 
 def _ignored_by_the_workflow():
-    text = _WORKFLOW.read_text(encoding = "utf-8")
+    text = _WORKFLOW.read_text(encoding="utf-8")
     return {
         pathlib.PurePosixPath(m).name
         for m in re.findall(r"--ignore=(tests/security/[\w./-]+\.py)", text)
@@ -370,7 +370,7 @@ def _ignored_by_the_workflow():
 def test_the_workflow_still_runs_the_security_suite():
     """Guards the guard: if the step stops naming the suite, the rest is vacuous."""
     assert _WORKFLOW.exists(), _WORKFLOW
-    assert "tests/security" in _WORKFLOW.read_text(encoding = "utf-8")
+    assert "tests/security" in _WORKFLOW.read_text(encoding="utf-8")
 
 
 def test_heavy_imports_are_declared_to_the_light_runner():
@@ -522,7 +522,7 @@ def test_every_ignored_suite_runs_somewhere_else():
     # By STEP: the redirect job sits in this same workflow.
     elsewhere = {}
     for path in sorted(_WORKFLOW.parent.glob("*.yml")):
-        document = yaml.safe_load(path.read_text(encoding = "utf-8")) or {}
+        document = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
         for job in (document.get("jobs") or {}).values():
             for step in (job or {}).get("steps") or []:
                 command = str((step or {}).get("run", ""))
@@ -542,7 +542,7 @@ def _redirect_workflow() -> pathlib.Path:
     """The workflow file whose steps run the ignored suites."""
     ignored = _ignored_by_the_workflow()
     for path in sorted(_WORKFLOW.parent.glob("*.yml")):
-        document = yaml.safe_load(path.read_text(encoding = "utf-8")) or {}
+        document = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
         for job in (document.get("jobs") or {}).values():
             for step in (job or {}).get("steps") or []:
                 command = str((step or {}).get("run", ""))
@@ -558,7 +558,7 @@ def test_the_redirect_job_is_triggered_by_what_it_protects():
     """A job that only runs after the merge is not a gate: if the redirect workflow's
     path filter omits the code the suites cover, a PR touching it skips the job."""
     host = _redirect_workflow()
-    document = yaml.safe_load(host.read_text(encoding = "utf-8")) or {}
+    document = yaml.safe_load(host.read_text(encoding="utf-8")) or {}
     triggers = document.get(True, document.get("on")) or {}
     on_pull_request = triggers.get("pull_request") if isinstance(triggers, dict) else None
     if not (
@@ -566,7 +566,7 @@ def test_the_redirect_job_is_triggered_by_what_it_protects():
         and (on_pull_request.get("paths") or on_pull_request.get("paths-ignore"))
     ):
         return
-    text = host.read_text(encoding = "utf-8")
+    text = host.read_text(encoding="utf-8")
 
     # Taken from the suites, so adding a module to one cannot leave this stale.
     protected = set()
@@ -574,7 +574,7 @@ def test_the_redirect_job_is_triggered_by_what_it_protects():
         path = _HERE / name
         if not path.exists():
             continue
-        for node in ast.walk(ast.parse(path.read_text(encoding = "utf-8"))):
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
             if isinstance(node, ast.ImportFrom) and node.module:
                 if node.module == "unsloth.models":
                     protected.update(f"{alias.name}.py" for alias in node.names)

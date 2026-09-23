@@ -27,8 +27,8 @@ class _FakeEngine:
 
     def __init__(
         self,
-        repo_id = "unsloth/FLUX.1-dev",
-        loaded = True,
+        repo_id="unsloth/FLUX.1-dev",
+        loaded=True,
         **build,
     ):
         self.repo_id = repo_id
@@ -70,7 +70,7 @@ def media(monkeypatch):
     monkeypatch.setattr(arb, "_owner", None)
     engines = {arb.DIFFUSION: _FakeEngine(), arb.VIDEO: _FakeEngine("unsloth/Wan2.2")}
     for owner, engine in engines.items():
-        monkeypatch.setitem(mk._ENGINES, owner, lambda e = engine: e)
+        monkeypatch.setitem(mk._ENGINES, owner, lambda e=engine: e)
         # The real evictors tear down live backends; ownership sequencing is all these need.
         monkeypatch.setitem(arb._EVICTORS, owner, lambda: None)
         tracker = mk._TRACKERS[owner]
@@ -78,8 +78,8 @@ def media(monkeypatch):
         monkeypatch.setattr(tracker, "_pending", 0)
         monkeypatch.setattr(tracker, "_last_active", time.monotonic())
         monkeypatch.setattr(tracker, "seen", None)
-        monkeypatch.setattr(tracker, "was_busy", False, raising = False)
-        monkeypatch.setattr(tracker, "completed", None, raising = False)
+        monkeypatch.setattr(tracker, "was_busy", False, raising=False)
+        monkeypatch.setattr(tracker, "completed", None, raising=False)
     monkeypatch.setattr(mk, "_LOAD_ORIGINS", {})
     return engines
 
@@ -107,10 +107,10 @@ def store(monkeypatch):
     """The app settings map in memory, read back through the real stored readers."""
     values: dict = {}
     monkeypatch.setattr(
-        settings, "_cached_setting", lambda key, default = None: values.get(key, default)
+        settings, "_cached_setting", lambda key, default=None: values.get(key, default)
     )
     for var in (settings.MODEL_IDLE_TTL_ENV_VAR, settings.MEDIA_IDLE_TTL_ENV_VAR):
-        monkeypatch.delenv(var, raising = False)
+        monkeypatch.delenv(var, raising=False)
     return values
 
 
@@ -393,7 +393,7 @@ def test_api_only_spares_a_model_the_user_loaded(media, store):
     # spared exactly as it was before media auto-switch existed.
     store[settings.MEDIA_AUTO_UNLOAD_IDLE_SETTING_KEY] = 60
     store[settings.AUTO_UNLOAD_API_ONLY_SETTING_KEY] = True
-    mk.note_load_origin(arb.DIFFUSION, "unsloth/FLUX.1-dev", None, user_action = True)
+    mk.note_load_origin(arb.DIFFUSION, "unsloth/FLUX.1-dev", None, user_action=True)
     _step()
     _step(*_BOTH)
     assert media[arb.DIFFUSION].unloads == 0
@@ -411,8 +411,8 @@ def test_api_only_still_frees_a_model_the_api_loaded(media, store):
     # is what the setting exists to collect.
     store[settings.MEDIA_AUTO_UNLOAD_IDLE_SETTING_KEY] = 60
     store[settings.AUTO_UNLOAD_API_ONLY_SETTING_KEY] = True
-    mk.note_load_origin(arb.DIFFUSION, "unsloth/FLUX.1-dev", None, user_action = False)
-    mk.note_load_origin(arb.VIDEO, "unsloth/Wan2.2", None, user_action = True)
+    mk.note_load_origin(arb.DIFFUSION, "unsloth/FLUX.1-dev", None, user_action=False)
+    mk.note_load_origin(arb.VIDEO, "unsloth/Wan2.2", None, user_action=True)
     _step()
     _step(*_BOTH)
     assert media[arb.DIFFUSION].unloads == 1
@@ -425,8 +425,8 @@ def test_a_failed_api_load_does_not_unpin_the_resident_user_model(media, store):
     # pipeline the setting promises to keep.
     store[settings.MEDIA_AUTO_UNLOAD_IDLE_SETTING_KEY] = 60
     store[settings.AUTO_UNLOAD_API_ONLY_SETTING_KEY] = True
-    mk.note_load_origin(arb.DIFFUSION, "unsloth/FLUX.1-dev", None, user_action = True)
-    mk.note_load_origin(arb.DIFFUSION, "unsloth/Z-Image-Turbo", None, user_action = False)
+    mk.note_load_origin(arb.DIFFUSION, "unsloth/FLUX.1-dev", None, user_action=True)
+    mk.note_load_origin(arb.DIFFUSION, "unsloth/Z-Image-Turbo", None, user_action=False)
     _step()
     _step(*_BOTH)
     assert media[arb.DIFFUSION].unloads == 0
@@ -438,8 +438,8 @@ def test_a_failed_api_load_of_another_quant_does_not_unpin_the_user_build(media,
     store[settings.MEDIA_AUTO_UNLOAD_IDLE_SETTING_KEY] = 60
     store[settings.AUTO_UNLOAD_API_ONLY_SETTING_KEY] = True
     media[arb.DIFFUSION].build["gguf_variant"] = "Q4_K_M"
-    mk.note_load_origin(arb.DIFFUSION, "unsloth/FLUX.1-dev", "Q4_K_M", user_action = True)
-    mk.note_load_origin(arb.DIFFUSION, "unsloth/FLUX.1-dev", "Q8_0", user_action = False)
+    mk.note_load_origin(arb.DIFFUSION, "unsloth/FLUX.1-dev", "Q4_K_M", user_action=True)
+    mk.note_load_origin(arb.DIFFUSION, "unsloth/FLUX.1-dev", "Q8_0", user_action=False)
     _step()
     _step(*_BOTH)
     assert media[arb.DIFFUSION].unloads == 0
@@ -472,7 +472,7 @@ def test_disabled_ttl_never_touches_the_backends(media, monkeypatch):
     monkeypatch.setattr(settings, "get_media_auto_unload_idle_seconds", lambda: 0)
     resolved = []
     for owner in _BOTH:
-        monkeypatch.setitem(mk._ENGINES, owner, lambda o = owner: resolved.append(o))
+        monkeypatch.setitem(mk._ENGINES, owner, lambda o=owner: resolved.append(o))
     arb.acquire_for(arb.VIDEO)
     _step(*_BOTH)
     _step(*_BOTH)
@@ -488,7 +488,7 @@ def test_a_chat_ttl_alone_leaves_the_media_backends_alone(media, store, monkeypa
     store[settings.AUTO_UNLOAD_IDLE_SETTING_KEY] = 600
     resolved = []
     for owner in _BOTH:
-        monkeypatch.setitem(mk._ENGINES, owner, lambda o = owner: resolved.append(o))
+        monkeypatch.setitem(mk._ENGINES, owner, lambda o=owner: resolved.append(o))
     _step(*_BOTH)
     _step(*_BOTH)
     assert resolved == []
@@ -513,7 +513,7 @@ def test_the_off_tick_does_not_import_the_media_modules(store, monkeypatch):
         "core.inference.video",
     }
     for module in media_modules:
-        monkeypatch.delitem(sys.modules, module, raising = False)
+        monkeypatch.delitem(sys.modules, module, raising=False)
     assert settings.get_media_auto_unload_idle_seconds() == 0
     asyncio.run(mk.idle_unload_step())
     asyncio.run(mk.idle_unload_step())
@@ -536,8 +536,8 @@ def test_an_unimported_backend_is_not_imported_to_check_it(monkeypatch):
     # The tick runs every 15s from startup; resolving the engines would drag torch in
     # on an Unsloth that has never opened the Image or Video page.
     for module in ("core.inference.diffusion", "core.inference.sd_cpp_backend"):
-        monkeypatch.delitem(sys.modules, module, raising = False)
-    monkeypatch.delitem(sys.modules, "core.inference.video", raising = False)
+        monkeypatch.delitem(sys.modules, module, raising=False)
+    monkeypatch.delitem(sys.modules, "core.inference.video", raising=False)
     assert mk._diffusion_engine() is None
     assert mk._video_engine() is None
 

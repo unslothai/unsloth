@@ -66,11 +66,11 @@ GIB = 1024 * MIB
 
 
 def _backend(
-    vocab = 248320,
-    embd = 5120,
-    mla = None,
-    arch = None,
-    pooling_type = None,
+    vocab=248320,
+    embd=5120,
+    mla=None,
+    arch=None,
+    pooling_type=None,
 ):
     """Backend with just the dims the compute-buffer estimate reads."""
     b = LlamaCppBackend.__new__(LlamaCppBackend)
@@ -86,16 +86,16 @@ def _pad(cells):
     return ((cells + 255) // 256) * 256
 
 
-def _hidden_copies(embd, ub = 512):
+def _hidden_copies(embd, ub=512):
     """The hidden-state copies a layer-split device holds, one per scheduler copy."""
     return LlamaCppBackend._CTX_COMPUTE_SPLIT_MULT * embd * ub * 4
 
 
 def _backend_from_gguf_local(
-    n_layers = 80,
-    embd = 8192,
-    n_kv_heads = 8,
-    head_dim = 128,
+    n_layers=80,
+    embd=8192,
+    n_kv_heads=8,
+    head_dim=128,
 ):
     """Backend that can also estimate KV bytes, for the planner cells below.
 
@@ -122,99 +122,99 @@ _GEMMA4_12B_PATTERN = ([True] * 5 + [False]) * 8
 # (RTX 6000 Ada, --flash-attn on, --kv-unified above one slot).
 _DIMS = {
     "Llama-3.2-1B": dict(
-        _vocab_size = 128256,
-        _embedding_length = 2048,
-        _feed_forward_length = 8192,
-        _n_layers = 16,
-        _n_heads = 32,
-        _n_kv_heads = 8,
-        _kv_key_length = 64,
-        _kv_value_length = 64,
+        _vocab_size=128256,
+        _embedding_length=2048,
+        _feed_forward_length=8192,
+        _n_layers=16,
+        _n_heads=32,
+        _n_kv_heads=8,
+        _kv_key_length=64,
+        _kv_value_length=64,
     ),
     "Qwen3-8B": dict(
-        _vocab_size = 151936,
-        _embedding_length = 4096,
-        _feed_forward_length = 12288,
-        _n_layers = 36,
-        _n_heads = 32,
-        _n_kv_heads = 8,
-        _kv_key_length = 128,
-        _kv_value_length = 128,
+        _vocab_size=151936,
+        _embedding_length=4096,
+        _feed_forward_length=12288,
+        _n_layers=36,
+        _n_heads=32,
+        _n_kv_heads=8,
+        _kv_key_length=128,
+        _kv_value_length=128,
     ),
     "Qwen3.5-4B": dict(
-        _vocab_size = 248320,
-        _embedding_length = 2560,
-        _feed_forward_length = 9216,
-        _n_layers = 32,
-        _n_heads = 16,
-        _n_kv_heads = 4,
-        _kv_key_length = 256,
-        _kv_value_length = 256,
-        _ssm_inner_size = 4096,
-        _ssm_state_size = 128,
-        _ssm_group_count = 16,
-        _full_attention_interval = 4,
+        _vocab_size=248320,
+        _embedding_length=2560,
+        _feed_forward_length=9216,
+        _n_layers=32,
+        _n_heads=16,
+        _n_kv_heads=4,
+        _kv_key_length=256,
+        _kv_value_length=256,
+        _ssm_inner_size=4096,
+        _ssm_state_size=128,
+        _ssm_group_count=16,
+        _full_attention_interval=4,
     ),
     "Qwen3.6-35B-A3B": dict(
-        _vocab_size = 248320,
-        _embedding_length = 2048,
-        _expert_used_count = 8,
-        _expert_feed_forward_length = 512,
-        _expert_shared_feed_forward_length = 512,
-        _n_layers = 40,
-        _n_heads = 16,
-        _n_kv_heads = 2,
-        _kv_key_length = 256,
-        _kv_value_length = 256,
-        _ssm_inner_size = 4096,
-        _ssm_state_size = 128,
-        _ssm_group_count = 16,
-        _full_attention_interval = 4,
+        _vocab_size=248320,
+        _embedding_length=2048,
+        _expert_used_count=8,
+        _expert_feed_forward_length=512,
+        _expert_shared_feed_forward_length=512,
+        _n_layers=40,
+        _n_heads=16,
+        _n_kv_heads=2,
+        _kv_key_length=256,
+        _kv_value_length=256,
+        _ssm_inner_size=4096,
+        _ssm_state_size=128,
+        _ssm_group_count=16,
+        _full_attention_interval=4,
     ),
     "Gemma-4-12B": dict(
-        _vocab_size = 262144,
-        _embedding_length = 3840,
-        _feed_forward_length = 15360,
-        _n_layers = 48,
-        _n_heads = 16,
-        _n_kv_heads = 8,
-        _n_kv_heads_by_layer = [1 if not swa else 8 for swa in _GEMMA4_12B_PATTERN],
-        _kv_key_length = 512,
-        _kv_value_length = 512,
-        _kv_key_length_swa = 256,
-        _kv_value_length_swa = 256,
-        _sliding_window = 1024,
-        _sliding_window_pattern = _GEMMA4_12B_PATTERN,
+        _vocab_size=262144,
+        _embedding_length=3840,
+        _feed_forward_length=15360,
+        _n_layers=48,
+        _n_heads=16,
+        _n_kv_heads=8,
+        _n_kv_heads_by_layer=[1 if not swa else 8 for swa in _GEMMA4_12B_PATTERN],
+        _kv_key_length=512,
+        _kv_value_length=512,
+        _kv_key_length_swa=256,
+        _kv_value_length_swa=256,
+        _sliding_window=1024,
+        _sliding_window_pattern=_GEMMA4_12B_PATTERN,
     ),
     "Gemma-4-E4B": dict(
-        _vocab_size = 262144,
-        _embedding_length = 2560,
-        _feed_forward_length = 10240,
-        _embedding_length_per_layer_input = 256,
-        _n_layers = 42,
-        _n_heads = 8,
-        _n_kv_heads = 2,
-        _kv_key_length = 512,
-        _kv_value_length = 512,
-        _kv_key_length_swa = 256,
-        _kv_value_length_swa = 256,
-        _sliding_window = 512,
-        _sliding_window_pattern = ([True] * 5 + [False]) * 7,
+        _vocab_size=262144,
+        _embedding_length=2560,
+        _feed_forward_length=10240,
+        _embedding_length_per_layer_input=256,
+        _n_layers=42,
+        _n_heads=8,
+        _n_kv_heads=2,
+        _kv_key_length=512,
+        _kv_value_length=512,
+        _kv_key_length_swa=256,
+        _kv_value_length_swa=256,
+        _sliding_window=512,
+        _sliding_window_pattern=([True] * 5 + [False]) * 7,
     ),
     "GLM-4.7-Flash": dict(
-        _vocab_size = 154880,
-        _embedding_length = 2048,
-        _feed_forward_length = 10240,
-        _expert_used_count = 4,
-        _expert_feed_forward_length = 1536,
-        _expert_shared_count = 1,
-        _n_layers = 47,
-        _n_heads = 20,
-        _n_kv_heads = 1,
-        _kv_key_length = 576,
-        _kv_value_length = 512,
-        _kv_lora_rank = 512,
-        _key_length_mla = 256,
+        _vocab_size=154880,
+        _embedding_length=2048,
+        _feed_forward_length=10240,
+        _expert_used_count=4,
+        _expert_feed_forward_length=1536,
+        _expert_shared_count=1,
+        _n_layers=47,
+        _n_heads=20,
+        _n_kv_heads=1,
+        _kv_key_length=576,
+        _kv_value_length=512,
+        _kv_lora_rank=512,
+        _key_length_mla=256,
     ),
 }
 
@@ -259,7 +259,7 @@ _MEASURED_COMPUTE = [
 
 
 def _priced_mib(b, ub, slots, ctx, kv):
-    flat = b._estimate_compute_buffer_bytes(n_ubatch = ub, n_parallel = slots)
+    flat = b._estimate_compute_buffer_bytes(n_ubatch=ub, n_parallel=slots)
     return (flat + b._compute_buffer_ctx_bytes(ctx, ub, kv)) / MIB
 
 
@@ -291,20 +291,20 @@ class TestMeasuredComputeBuffer:
 class TestFlatBufferShape:
     def test_slots_add_output_rows_not_activations(self):
         b = _measured("Gemma-4-12B")
-        one = b._estimate_compute_buffer_bytes(n_ubatch = 2048, n_parallel = 1)
-        eight = b._estimate_compute_buffer_bytes(n_ubatch = 2048, n_parallel = 8)
+        one = b._estimate_compute_buffer_bytes(n_ubatch=2048, n_parallel=1)
+        eight = b._estimate_compute_buffer_bytes(n_ubatch=2048, n_parallel=8)
         rows = 7 * 262144 * 4
         swa = (_pad(1024 * 8 + 2048) - _pad(1024 + 2048)) * 2048 * 2
         assert eight - one == pytest.approx(
-            rows * LlamaCppBackend._COMPUTE_BUFFER_SAFETY + swa, rel = 1e-6
+            rows * LlamaCppBackend._COMPUTE_BUFFER_SAFETY + swa, rel=1e-6
         )
 
     def test_scales_linearly_with_ubatch(self):
         b = _measured("Qwen3-8B")
-        lo = b._estimate_compute_buffer_bytes(n_ubatch = 512, n_parallel = 1)
-        hi = b._estimate_compute_buffer_bytes(n_ubatch = 1024, n_parallel = 1)
+        lo = b._estimate_compute_buffer_bytes(n_ubatch=512, n_parallel=1)
+        hi = b._estimate_compute_buffer_bytes(n_ubatch=1024, n_parallel=1)
         rows = 151936 * 4 * LlamaCppBackend._COMPUTE_BUFFER_SAFETY
-        assert hi - rows == pytest.approx(2 * (lo - rows), rel = 1e-6)
+        assert hi - rows == pytest.approx(2 * (lo - rows), rel=1e-6)
 
     def test_a_tensor_device_holds_the_single_device_buffer(self):
         # Qwen3 8B and Gemma 4 12B split over two GPUs reserve their single-GPU
@@ -312,17 +312,17 @@ class TestFlatBufferShape:
         for name in ("Qwen3-8B", "Gemma-4-12B"):
             b = _measured(name)
             assert b._estimate_compute_buffer_bytes(
-                n_ubatch = 2048, n_parallel = 4, per_device_tensor = True
-            ) == b._estimate_compute_buffer_bytes(n_ubatch = 2048, n_parallel = 4)
+                n_ubatch=2048, n_parallel=4, per_device_tensor=True
+            ) == b._estimate_compute_buffer_bytes(n_ubatch=2048, n_parallel=4)
 
     def test_embedding_rows_are_pooled_not_vocab_wide(self):
-        b = _backend(vocab = 30522, embd = 384, pooling_type = 1)
-        chat = _backend(vocab = 30522, embd = 384)
-        assert b._estimate_compute_buffer_bytes(n_ubatch = 512, n_parallel = 4) > (
-            chat._estimate_compute_buffer_bytes(n_ubatch = 512, n_parallel = 4)
+        b = _backend(vocab=30522, embd=384, pooling_type=1)
+        chat = _backend(vocab=30522, embd=384)
+        assert b._estimate_compute_buffer_bytes(n_ubatch=512, n_parallel=4) > (
+            chat._estimate_compute_buffer_bytes(n_ubatch=512, n_parallel=4)
         )
         # 512 pooled rows of 384 floats, far below 512 vocabulary rows.
-        assert b._estimate_compute_buffer_bytes(n_ubatch = 512, n_parallel = 4) < 30522 * 512 * 4
+        assert b._estimate_compute_buffer_bytes(n_ubatch=512, n_parallel=4) < 30522 * 512 * 4
 
     def test_widest_block_sets_the_width(self):
         # Dense FFN, routed experts, and the delta-net convolution each can be widest.
@@ -330,18 +330,18 @@ class TestFlatBufferShape:
         assert _measured("Qwen3.6-35B-A3B")._compute_activation_width() == (
             8 * (2 * 2048 + 3 * 512) + 3 * 512
         )
-        ssm = _backend(embd = 2560)
+        ssm = _backend(embd=2560)
         ssm._ssm_inner_size, ssm._ssm_state_size, ssm._ssm_group_count = 4096, 128, 16
         assert ssm._compute_activation_width() == 4 * (4096 + 2 * 16 * 128)
         # Per-layer input embeddings ride on top of the widest block.
         assert _measured("Gemma-4-E4B")._compute_activation_width() == 4 * 10240 + 256 * 42
 
     def test_header_without_ffn_dims_uses_the_embedding_floor(self):
-        assert _backend(embd = 4096)._compute_activation_width() == 12 * 4096
+        assert _backend(embd=4096)._compute_activation_width() == 12 * 4096
 
     def test_expert_width_falls_back_to_the_ffn_length(self):
         # Granite 4.0 H writes its 512-wide experts as feed_forward_length.
-        b = _backend(vocab = 100352, embd = 1536)
+        b = _backend(vocab=100352, embd=1536)
         b._n_experts, b._expert_used_count = 64, 6
         b._feed_forward_length, b._expert_shared_feed_forward_length = 512, 1024
         assert b._compute_activation_width() == 6 * (2 * 1536 + 3 * 512) + 3 * 1024
@@ -349,7 +349,7 @@ class TestFlatBufferShape:
     def test_granite_hybrid_is_covered(self):
         # Held out from the fit: llama-server reserved 80.0 MiB at one slot and 95.3
         # MiB at eight (ubatch 512, 32768 cells), the recurrent state per slot.
-        b = _backend(vocab = 100352, embd = 1536)
+        b = _backend(vocab=100352, embd=1536)
         b._n_experts, b._expert_used_count = 64, 6
         b._feed_forward_length, b._expert_shared_feed_forward_length = 512, 1024
         b._ssm_inner_size, b._ssm_state_size, b._ssm_group_count = 3072, 128, 1
@@ -360,7 +360,7 @@ class TestFlatBufferShape:
     def test_a_window_wider_than_the_context_does_not_slide(self):
         # Phi-4-mini declares a 262144 window over a 131072 context and no pattern;
         # pricing it as a sliding mask charged 12x its 92 MiB buffer.
-        b = _backend(vocab = 200064, embd = 3072)
+        b = _backend(vocab=200064, embd=3072)
         b._feed_forward_length, b._context_length = 8192, 131072
         b._sliding_window, b._sliding_window_pattern = 262144, None
         assert b._effective_sliding_window() == 0
@@ -373,21 +373,21 @@ class TestFlatBufferShape:
 
 class TestFallback:
     def test_zero_when_vocab_missing(self):
-        assert _backend(vocab = None)._estimate_compute_buffer_bytes(n_parallel = 4) == 0
+        assert _backend(vocab=None)._estimate_compute_buffer_bytes(n_parallel=4) == 0
 
     def test_vocab_ceiling_prices_a_header_without_a_token_array(self):
-        b = _backend(vocab = None)
-        assert b._estimate_compute_buffer_bytes(n_parallel = 4, vocab_ceiling = 262144) == (
-            _backend(vocab = 262144)._estimate_compute_buffer_bytes(n_parallel = 4)
+        b = _backend(vocab=None)
+        assert b._estimate_compute_buffer_bytes(n_parallel=4, vocab_ceiling=262144) == (
+            _backend(vocab=262144)._estimate_compute_buffer_bytes(n_parallel=4)
         )
 
     def test_zero_when_embd_missing(self):
-        assert _backend(embd = None)._estimate_compute_buffer_bytes(n_parallel = 4) == 0
+        assert _backend(embd=None)._estimate_compute_buffer_bytes(n_parallel=4) == 0
 
     def test_zero_lets_tensor_plan_use_flat_fallback(self):
         # When dims are missing, _plan_tensor_parallel must fall back to the flat
         # reserve (defense-in-depth) rather than reserving 0 and OOMing.
-        b = _backend(vocab = None, embd = None)
+        b = _backend(vocab=None, embd=None)
         b._n_layers = None  # can't estimate KV -> floors ctx, still returns a plan
         ec, mac, gi, ts = b._plan_tensor_parallel([(0, 48000), (1, 48000)], 8 * 1024**3, 8192)
         assert gi == [0, 1]  # both GPUs usable under the flat fallback
@@ -411,34 +411,34 @@ class TestContextLinearBuffer:
         assert _backend()._compute_buffer_ctx_bytes(0) == 0
 
     def test_zero_when_embd_missing(self):
-        assert _backend(embd = None)._compute_buffer_ctx_bytes(262144) == 0
+        assert _backend(embd=None)._compute_buffer_ctx_bytes(262144) == 0
 
     def test_grows_linearly_with_context(self):
         b = _measured("Qwen3-8B")
         for kv in ("f16", "q8_0"):
-            a = b._compute_buffer_ctx_bytes(65536, cache_type_kv = kv)
-            d = b._compute_buffer_ctx_bytes(131072, cache_type_kv = kv)
-            assert d == pytest.approx(2 * a, rel = 1e-6)
+            a = b._compute_buffer_ctx_bytes(65536, cache_type_kv=kv)
+            d = b._compute_buffer_ctx_bytes(131072, cache_type_kv=kv)
+            assert d == pytest.approx(2 * a, rel=1e-6)
 
     @pytest.mark.parametrize("name,embd,ctx,measured", _MEASURED)
     def test_upper_bounds_measured_compute_growth(self, name, embd, ctx, measured):
-        b = _backend(embd = embd)
-        flat = b._estimate_compute_buffer_bytes(n_parallel = 1)
-        total = (flat + b._compute_buffer_ctx_bytes(ctx, cache_type_kv = "q8_0")) / MIB
+        b = _backend(embd=embd)
+        flat = b._estimate_compute_buffer_bytes(n_parallel=1)
+        total = (flat + b._compute_buffer_ctx_bytes(ctx, cache_type_kv="q8_0")) / MIB
         assert total >= measured, f"{name}: under-reserved {total:.0f} < {measured}"
 
 
 class TestContextBufferKVQuant:
     def test_quantized_heavier_than_f16(self):
         b = _measured("Qwen3-8B")
-        assert b._compute_buffer_ctx_bytes(131072, cache_type_kv = "q8_0") > (
-            b._compute_buffer_ctx_bytes(131072, cache_type_kv = "f16")
+        assert b._compute_buffer_ctx_bytes(131072, cache_type_kv="q8_0") > (
+            b._compute_buffer_ctx_bytes(131072, cache_type_kv="f16")
         )
 
     def test_none_cache_type_is_f16(self):
         b = _measured("Qwen3-8B")
-        assert b._compute_buffer_ctx_bytes(131072, cache_type_kv = None) == (
-            b._compute_buffer_ctx_bytes(131072, cache_type_kv = "f16")
+        assert b._compute_buffer_ctx_bytes(131072, cache_type_kv=None) == (
+            b._compute_buffer_ctx_bytes(131072, cache_type_kv="f16")
         )
 
     @pytest.mark.parametrize("ct", ["f16", "bf16", "f32"])
@@ -464,7 +464,7 @@ class TestContextBufferKVQuant:
         assert _measured("GLM-4.7-Flash")._attention_dequant_width() == 576
 
     def test_header_without_head_dims_falls_back_to_embd(self):
-        assert _backend(embd = 4096)._attention_dequant_width() == 4096
+        assert _backend(embd=4096)._attention_dequant_width() == 4096
 
 
 class TestContextBufferDSV4:
@@ -478,51 +478,51 @@ class TestContextBufferDSV4:
     GIB = 1024**3
 
     def test_covers_measured_1m_buffer(self):
-        b = _backend(embd = 4096, arch = "deepseek4")
-        gib = b._compute_buffer_ctx_bytes(1048576, cache_type_kv = "f16") / self.GIB
+        b = _backend(embd=4096, arch="deepseek4")
+        gib = b._compute_buffer_ctx_bytes(1048576, cache_type_kv="f16") / self.GIB
         assert gib >= self._MEASURED_1M_GIB, f"under-reserved {gib:.1f} < {self._MEASURED_1M_GIB}"
 
     def test_not_wildly_over_at_1m(self):
         # Within ~1.3x of measured so the fit still grants a large (~256k) context.
-        b = _backend(embd = 4096, arch = "deepseek4")
-        gib = b._compute_buffer_ctx_bytes(1048576, cache_type_kv = "f16") / self.GIB
+        b = _backend(embd=4096, arch="deepseek4")
+        gib = b._compute_buffer_ctx_bytes(1048576, cache_type_kv="f16") / self.GIB
         assert gib <= self._MEASURED_1M_GIB * 1.3
 
     def test_fires_for_f16_cache(self):
         # The bug: an f16 (default) cache took the tiny mask-only path. DSV4 must
         # reserve GiB, not the ~MiB a non-DSV4 model reserves at the same ctx.
-        dsv4 = _backend(embd = 4096, arch = "deepseek4")._compute_buffer_ctx_bytes(
-            262144, cache_type_kv = "f16"
+        dsv4 = _backend(embd=4096, arch="deepseek4")._compute_buffer_ctx_bytes(
+            262144, cache_type_kv="f16"
         )
-        other = _backend(embd = 4096, arch = "qwen3")._compute_buffer_ctx_bytes(
-            262144, cache_type_kv = "f16"
+        other = _backend(embd=4096, arch="qwen3")._compute_buffer_ctx_bytes(
+            262144, cache_type_kv="f16"
         )
         assert dsv4 > 40 * other
 
     def test_cache_type_independent(self):
         # Indexer scratch is present for an f16 and a quantized cache alike.
-        b = _backend(embd = 4096, arch = "deepseek4")
+        b = _backend(embd=4096, arch="deepseek4")
         assert b._compute_buffer_ctx_bytes(
-            262144, cache_type_kv = "f16"
-        ) == b._compute_buffer_ctx_bytes(262144, cache_type_kv = "q8_0")
+            262144, cache_type_kv="f16"
+        ) == b._compute_buffer_ctx_bytes(262144, cache_type_kv="q8_0")
 
     def test_flat_floor_at_small_ctx(self):
         # ~2 GiB indexer scratch present even at tiny ctx (covers the measured 16k ~2 GiB).
-        b = _backend(embd = 4096, arch = "deepseek4")
-        assert b._compute_buffer_ctx_bytes(16384, cache_type_kv = "f16") / self.GIB >= 2.0
+        b = _backend(embd=4096, arch="deepseek4")
+        assert b._compute_buffer_ctx_bytes(16384, cache_type_kv="f16") / self.GIB >= 2.0
 
     def test_scales_with_context_and_ubatch(self):
-        b = _backend(embd = 4096, arch = "deepseek4")
+        b = _backend(embd=4096, arch="deepseek4")
         assert b._compute_buffer_ctx_bytes(131072) > b._compute_buffer_ctx_bytes(65536)
-        assert b._compute_buffer_ctx_bytes(131072, n_ubatch = 1024) > b._compute_buffer_ctx_bytes(
-            131072, n_ubatch = 256
+        assert b._compute_buffer_ctx_bytes(131072, n_ubatch=1024) > b._compute_buffer_ctx_bytes(
+            131072, n_ubatch=256
         )
 
     def test_non_dsv4_unchanged(self):
         # Regression guard: a non-deepseek4 model keeps the mask-only f16 rate.
-        b = _backend(embd = 4096, arch = "llama")
-        per_tok = b._compute_buffer_ctx_bytes(100000, cache_type_kv = "f16") / 100000
-        assert per_tok == pytest.approx(512 * 2, rel = 1e-6)
+        b = _backend(embd=4096, arch="llama")
+        per_tok = b._compute_buffer_ctx_bytes(100000, cache_type_kv="f16") / 100000
+        assert per_tok == pytest.approx(512 * 2, rel=1e-6)
 
 
 class TestContextBufferLayerSplit:
@@ -552,15 +552,15 @@ class TestContextBufferLayerSplit:
 
     def test_default_is_single_device(self):
         # Existing callers are unaffected: the flag defaults off.
-        b = _backend(embd = 4096)
+        b = _backend(embd=4096)
         assert b._compute_buffer_ctx_bytes(
-            131072, cache_type_kv = "f16"
-        ) == b._compute_buffer_ctx_bytes(131072, cache_type_kv = "f16", layer_split = False)
+            131072, cache_type_kv="f16"
+        ) == b._compute_buffer_ctx_bytes(131072, cache_type_kv="f16", layer_split=False)
 
     def test_split_is_the_multiplier_plus_the_hidden_state_copies(self):
-        b = _backend(embd = 4096)
-        one = b._compute_buffer_ctx_bytes(131072, cache_type_kv = "f16")
-        many = b._compute_buffer_ctx_bytes(131072, cache_type_kv = "f16", layer_split = True)
+        b = _backend(embd=4096)
+        one = b._compute_buffer_ctx_bytes(131072, cache_type_kv="f16")
+        many = b._compute_buffer_ctx_bytes(131072, cache_type_kv="f16", layer_split=True)
         assert many == one * LlamaCppBackend._CTX_COMPUTE_SPLIT_MULT + _hidden_copies(4096)
 
     def test_matches_the_measured_two_gpu_split(self):
@@ -569,18 +569,18 @@ class TestContextBufferLayerSplit:
         b = _measured("Qwen3-8B")
         for ctx, ub, measured in ((32768, 512, 256.04), (131072, 2048, 2560.16)):
             per_device = (
-                b._estimate_compute_buffer_bytes(n_ubatch = ub, n_parallel = 1)
-                + b._compute_buffer_ctx_bytes(ctx, ub, "f16", layer_split = True)
+                b._estimate_compute_buffer_bytes(n_ubatch=ub, n_parallel=1)
+                + b._compute_buffer_ctx_bytes(ctx, ub, "f16", layer_split=True)
             ) / MIB
             assert measured <= per_device <= measured * 1.1
 
     @pytest.mark.parametrize("name,n_gpus,ub,measured", _MEASURED)
     def test_upper_bounds_measured_per_device_rate(self, name, n_gpus, ub, measured):
         # Never under-reserve.
-        b = _backend(embd = 4096)
+        b = _backend(embd=4096)
         per_tok = (
             b._compute_buffer_ctx_bytes(
-                100000, n_ubatch = ub, cache_type_kv = "f16", layer_split = n_gpus > 1
+                100000, n_ubatch=ub, cache_type_kv="f16", layer_split=n_gpus > 1
             )
             / 100000
         )
@@ -589,28 +589,28 @@ class TestContextBufferLayerSplit:
     @pytest.mark.parametrize("name,n_gpus,ub,measured", _MEASURED)
     def test_charges_exactly_the_measured_per_device_rate(self, name, n_gpus, ub, measured):
         # The mask is priced exactly; only the split's hidden-state copies sit on top.
-        b = _backend(embd = 4096)
+        b = _backend(embd=4096)
         hidden = _hidden_copies(4096, ub) if n_gpus > 1 else 0
         charged = b._compute_buffer_ctx_bytes(
-            100000, n_ubatch = ub, cache_type_kv = "f16", layer_split = n_gpus > 1
+            100000, n_ubatch=ub, cache_type_kv="f16", layer_split=n_gpus > 1
         )
-        assert charged - hidden == pytest.approx(measured * ub * 100000, rel = 1e-6)
+        assert charged - hidden == pytest.approx(measured * ub * 100000, rel=1e-6)
 
     def test_pre_fix_split_reserve_was_short(self):
         # The bug: without the step a split reserved a quarter of its masks.
-        b = _backend(embd = 4096)
-        one = b._compute_buffer_ctx_bytes(1048576, cache_type_kv = "f16")
+        b = _backend(embd=4096)
+        one = b._compute_buffer_ctx_bytes(1048576, cache_type_kv="f16")
         measured = self._RATE_SPLIT * 512 * 1048576
         assert one < measured
         assert (
-            b._compute_buffer_ctx_bytes(1048576, cache_type_kv = "f16", layer_split = True) >= measured
+            b._compute_buffer_ctx_bytes(1048576, cache_type_kv="f16", layer_split=True) >= measured
         )
 
     def test_kimi_k3_1m_four_gpu_reserve(self):
         # The reported case: Kimi-K3 UD-IQ1_M, 1M ctx, 4 GPUs, ub 512. llama.cpp
         # allocated 4.0 GiB per device; Unsloth reserved 1.5 GiB.
-        b = _backend(embd = 7168, mla = 576)
-        gib = b._compute_buffer_ctx_bytes(1048576, cache_type_kv = "f16", layer_split = True) / (
+        b = _backend(embd=7168, mla=576)
+        gib = b._compute_buffer_ctx_bytes(1048576, cache_type_kv="f16", layer_split=True) / (
             1024**3
         )
         assert 4.0 <= gib <= 6.5
@@ -620,23 +620,23 @@ class TestContextBufferLayerSplit:
     def test_quantized_adds_the_mask_delta(self, ct, embd, mla):
         # The quantized rate is a single-GPU TOTAL holding mask*1 + dequant scratch.
         # Only the mask replicates, so a split adds exactly 3 more masks.
-        b = _backend(embd = embd, mla = mla)
-        mask = b._compute_buffer_ctx_bytes(131072, cache_type_kv = "f16")
-        single = b._compute_buffer_ctx_bytes(131072, cache_type_kv = ct)
-        split = b._compute_buffer_ctx_bytes(131072, cache_type_kv = ct, layer_split = True)
+        b = _backend(embd=embd, mla=mla)
+        mask = b._compute_buffer_ctx_bytes(131072, cache_type_kv="f16")
+        single = b._compute_buffer_ctx_bytes(131072, cache_type_kv=ct)
+        split = b._compute_buffer_ctx_bytes(131072, cache_type_kv=ct, layer_split=True)
         delta = (LlamaCppBackend._CTX_COMPUTE_SPLIT_MULT - 1) * mask + _hidden_copies(embd)
-        assert split == pytest.approx(single + delta, rel = 1e-9)
+        assert split == pytest.approx(single + delta, rel=1e-9)
 
     @pytest.mark.parametrize("embd,mla", [(2048, None), (2560, None), (8192, None), (7168, 576)])
     def test_quantized_split_beats_the_old_max_floor(self, embd, mla):
         # The pre-fix floor max(quantized, 4x mask) treated the dequant scratch and
         # the enlarged mask as alternatives, leaving the smaller one unbudgeted.
-        b = _backend(embd = embd, mla = mla)
+        b = _backend(embd=embd, mla=mla)
         old_floor = max(
-            b._compute_buffer_ctx_bytes(262144, cache_type_kv = "q8_0"),
-            b._compute_buffer_ctx_bytes(262144, cache_type_kv = "f16", layer_split = True),
+            b._compute_buffer_ctx_bytes(262144, cache_type_kv="q8_0"),
+            b._compute_buffer_ctx_bytes(262144, cache_type_kv="f16", layer_split=True),
         )
-        assert b._compute_buffer_ctx_bytes(262144, cache_type_kv = "q8_0", layer_split = True) > (
+        assert b._compute_buffer_ctx_bytes(262144, cache_type_kv="q8_0", layer_split=True) > (
             old_floor
         )
 
@@ -644,20 +644,20 @@ class TestContextBufferLayerSplit:
         # Qwen3.5-4B (n_embd 2560) at 256k q8_0: 1330 MiB measured single-device,
         # + 3 replicated [n_kv, ub] f16 masks (768 MiB) = 2098 MiB per device. The
         # old floor reserved 1536 MiB and left ~560 MiB/device unbudgeted.
-        b = _backend(embd = 2560)
+        b = _backend(embd=2560)
         ctx, ub = 262144, 512
         mask_mib = 3 * ub * 2 * ctx / MIB
-        assert mask_mib == pytest.approx(768.0, rel = 1e-6)
-        split_mib = b._compute_buffer_ctx_bytes(ctx, ub, "q8_0", layer_split = True) / MIB
+        assert mask_mib == pytest.approx(768.0, rel=1e-6)
+        split_mib = b._compute_buffer_ctx_bytes(ctx, ub, "q8_0", layer_split=True) / MIB
         assert split_mib >= 1330 + mask_mib
 
     def test_deepseek4_rate_unchanged(self):
         # Its own rate already carries the mask copies: 72000 - 65.5 KiB/tok measured
         # = 4928 B/tok of margin against the 4608 a split adds.
-        b = _backend(embd = 4096, arch = "deepseek4")
+        b = _backend(embd=4096, arch="deepseek4")
         assert b._compute_buffer_ctx_bytes(
-            131072, cache_type_kv = "f16", layer_split = True
-        ) == b._compute_buffer_ctx_bytes(131072, cache_type_kv = "f16")
+            131072, cache_type_kv="f16", layer_split=True
+        ) == b._compute_buffer_ctx_bytes(131072, cache_type_kv="f16")
         measured = TestContextBufferDSV4._MEASURED_1M_GIB * 1024**3 / 1048576
         split_masks = (LlamaCppBackend._CTX_COMPUTE_SPLIT_MULT - 1) * 512 * 2
         assert LlamaCppBackend._DSV4_CTX_COMPUTE_BYTES_PER_TOK - measured >= split_masks
@@ -675,11 +675,11 @@ class TestContextBufferInklingSplit:
         self,
         ct,
         layer_split,
-        ub = 512,
+        ub=512,
     ):
-        b = _backend(embd = 4096, arch = "inkling")
+        b = _backend(embd=4096, arch="inkling")
         return (
-            b._compute_buffer_ctx_bytes(self._CTX, ub, cache_type_kv = ct, layer_split = layer_split)
+            b._compute_buffer_ctx_bytes(self._CTX, ub, cache_type_kv=ct, layer_split=layer_split)
             / self._CTX
         )
 
@@ -692,7 +692,7 @@ class TestContextBufferInklingSplit:
     @pytest.mark.parametrize("ct", ["f16", None, "q8_0"])
     def test_split_adds_exactly_the_extra_mask_copies(self, ct):
         delta = (LlamaCppBackend._CTX_COMPUTE_SPLIT_MULT - 1) * self._UB * 2
-        assert self._rate(ct, True) == pytest.approx(self._rate(ct, False) + delta, rel = 1e-9)
+        assert self._rate(ct, True) == pytest.approx(self._rate(ct, False) + delta, rel=1e-9)
 
     def test_dense_fallback_delta_is_present_but_tiny(self):
         # ~402 KiB/tok dwarfs the 4608 B/tok of masks, yet the masks are allocated on
@@ -701,8 +701,8 @@ class TestContextBufferInklingSplit:
         assert single < split <= single * 1.02
 
     def test_split_delta_scales_with_ubatch(self):
-        assert self._rate("f16", True, ub = 1024) - self._rate("f16", False, ub = 1024) == (
-            pytest.approx(2 * (self._rate("f16", True) - self._rate("f16", False)), rel = 1e-9)
+        assert self._rate("f16", True, ub=1024) - self._rate("f16", False, ub=1024) == (
+            pytest.approx(2 * (self._rate("f16", True) - self._rate("f16", False)), rel=1e-9)
         )
 
     def test_single_device_rates_unchanged(self):
@@ -714,7 +714,7 @@ class TestContextBufferInklingSplit:
                     if ct == "q8_0"
                     else LlamaCppBackend._INKLING_CTX_COMPUTE_BYTES_PER_TOK
                 ),
-                rel = 1e-6,
+                rel=1e-6,
             )
 
 
@@ -753,12 +753,13 @@ class TestPipelineParallelPredicate:
 
     def _off(
         self,
-        args = None,
-        env = None,
-        n_layers = None,
+        args=None,
+        env=None,
+        n_layers=None,
     ):
         from core.inference.llama_cpp import _pipeline_parallel_disabled_by_args
-        return _pipeline_parallel_disabled_by_args(args, env = env or {}, n_layers = n_layers)
+
+        return _pipeline_parallel_disabled_by_args(args, env=env or {}, n_layers=n_layers)
 
     def test_plain_launch_keeps_the_step(self):
         assert self._off([]) is False
@@ -775,15 +776,15 @@ class TestPipelineParallelPredicate:
         assert self._off([flag]) is True
 
     def test_env_tensor_override_disables(self):
-        assert self._off([], env = {"LLAMA_ARG_OVERRIDE_TENSOR": "exps=CPU"}) is True
-        assert self._off([], env = {"LLAMA_ARG_OVERRIDE_TENSOR": ""}) is False
+        assert self._off([], env={"LLAMA_ARG_OVERRIDE_TENSOR": "exps=CPU"}) is True
+        assert self._off([], env={"LLAMA_ARG_OVERRIDE_TENSOR": ""}) is False
 
     @pytest.mark.parametrize("val", ["off", "0", "false", "disabled"])
     def test_env_kv_offload_off_disables(self, val):
-        assert self._off([], env = {"LLAMA_ARG_KV_OFFLOAD": val}) is True
+        assert self._off([], env={"LLAMA_ARG_KV_OFFLOAD": val}) is True
 
     def test_env_kv_offload_on_keeps_the_step(self):
-        assert self._off([], env = {"LLAMA_ARG_KV_OFFLOAD": "1"}) is False
+        assert self._off([], env={"LLAMA_ARG_KV_OFFLOAD": "1"}) is False
 
     def test_unrelated_flags_do_not_disable(self):
         assert self._off(["--kv-unified", "-fa", "on", "-ngl", "-1"]) is False
@@ -800,14 +801,14 @@ class TestPipelineParallelPredicate:
     @pytest.mark.parametrize("flag", ["-kvo", "--kv-offload"])
     def test_cli_kv_offload_reenable_beats_a_false_env(self, flag):
         # The positive form exists, so this launch pipelines: 1x here would OOM it.
-        assert self._off([flag], env = {"LLAMA_ARG_KV_OFFLOAD": "0"}) is False
+        assert self._off([flag], env={"LLAMA_ARG_KV_OFFLOAD": "0"}) is False
 
     def test_last_kv_offload_flag_wins(self):
         assert self._off(["-kvo", "-nkvo"]) is True
         assert self._off(["-nkvo", "-kvo"]) is False
 
     def test_kv_offload_env_junk_value_keeps_the_default(self):
-        assert self._off([], env = {"LLAMA_ARG_KV_OFFLOAD": "maybe"}) is False
+        assert self._off([], env={"LLAMA_ARG_KV_OFFLOAD": "maybe"}) is False
 
     # -- pipeline parallelism requires LLAMA_SPLIT_MODE_LAYER --
 
@@ -837,7 +838,7 @@ class TestPipelineParallelPredicate:
     def test_env_split_mode_is_ignored(self):
         # load_model pops a non-layer inherited LLAMA_ARG_SPLIT_MODE on the layer path,
         # so the child always runs -sm layer; honoring it would reserve 1x for a split.
-        assert self._off([], env = {"LLAMA_ARG_SPLIT_MODE": "row"}) is False
+        assert self._off([], env={"LLAMA_ARG_SPLIT_MODE": "row"}) is False
 
     def test_layer_path_scrubs_a_non_layer_split_mode_env(self):
         # Guards the assumption the test above rests on.
@@ -864,54 +865,54 @@ class TestPipelineParallelPredicate:
         assert self._off([flag, "0"]) is False
 
     def test_env_cpu_moe_disables(self):
-        assert self._off([], env = {"LLAMA_ARG_CPU_MOE": "1"}) is True
+        assert self._off([], env={"LLAMA_ARG_CPU_MOE": "1"}) is True
         # handler_void only fires on a truthy env value.
-        assert self._off([], env = {"LLAMA_ARG_CPU_MOE": "0"}) is False
-        assert self._off([], env = {"LLAMA_ARG_CPU_MOE": ""}) is False
+        assert self._off([], env={"LLAMA_ARG_CPU_MOE": "0"}) is False
+        assert self._off([], env={"LLAMA_ARG_CPU_MOE": ""}) is False
 
     def test_env_n_cpu_moe_disables(self):
-        assert self._off([], env = {"LLAMA_ARG_N_CPU_MOE": "4"}) is True
-        assert self._off([], env = {"LLAMA_ARG_N_CPU_MOE": "0"}) is False
-        assert self._off([], env = {"LLAMA_ARG_N_CPU_MOE": "not-a-number"}) is False
+        assert self._off([], env={"LLAMA_ARG_N_CPU_MOE": "4"}) is True
+        assert self._off([], env={"LLAMA_ARG_N_CPU_MOE": "0"}) is False
+        assert self._off([], env={"LLAMA_ARG_N_CPU_MOE": "not-a-number"}) is False
 
     # -- a finite -ngl override loads a layer prefix, so pipelining is off --
 
     @pytest.mark.parametrize("flag", ["-ngl", "--gpu-layers", "--n-gpu-layers"])
     def test_finite_gpu_layers_below_the_count_disables(self, flag):
         # User extras land after Unsloth's -ngl -1, so this last-wins.
-        assert self._off([flag, "1"], n_layers = 93) is True
-        assert self._off([f"{flag}=1"], n_layers = 93) is True
+        assert self._off([flag, "1"], n_layers=93) is True
+        assert self._off([f"{flag}=1"], n_layers=93) is True
 
     def test_all_layers_keeps_the_step(self):
         # n_gpu_layers() is n_layer_all + 1 for any negative value.
-        assert self._off(["-ngl", "-1"], n_layers = 93) is False
+        assert self._off(["-ngl", "-1"], n_layers=93) is False
 
     def test_gpu_layers_above_the_count_keeps_the_step(self):
         # 999 > n_layer_all, so llama.cpp still pipelines.
-        assert self._off(["-ngl", "999"], n_layers = 93) is False
+        assert self._off(["-ngl", "999"], n_layers=93) is False
 
     def test_gpu_layers_at_the_boundary(self):
         # Pipelining needs n_gpu_layers > n_layer_all, so equal is off; one above
         # keeps the step because block_count can undercount n_layer_all.
-        assert self._off(["-ngl", "93"], n_layers = 93) is True
-        assert self._off(["-ngl", "94"], n_layers = 93) is False
+        assert self._off(["-ngl", "93"], n_layers=93) is True
+        assert self._off(["-ngl", "94"], n_layers=93) is False
 
     def test_zero_gpu_layers_disables(self):
-        assert self._off(["-ngl", "0"], n_layers = 93) is True
+        assert self._off(["-ngl", "0"], n_layers=93) is True
 
     def test_unknown_layer_count_keeps_the_step(self):
         assert self._off(["-ngl", "1"]) is False
-        assert self._off(["-ngl", "1"], n_layers = 0) is False
+        assert self._off(["-ngl", "1"], n_layers=0) is False
 
     def test_last_gpu_layers_flag_wins(self):
-        assert self._off(["-ngl", "1", "--gpu-layers", "-1"], n_layers = 93) is False
-        assert self._off(["-ngl", "-1", "--gpu-layers", "1"], n_layers = 93) is True
+        assert self._off(["-ngl", "1", "--gpu-layers", "-1"], n_layers=93) is False
+        assert self._off(["-ngl", "-1", "--gpu-layers", "1"], n_layers=93) is True
 
     def test_malformed_gpu_layers_keeps_the_step(self):
         # validate_extra_args rejects these upstream; ambiguous here means keep.
-        assert self._off(["-ngl", "abc"], n_layers = 93) is False
-        assert self._off(["-ngl", "-2"], n_layers = 93) is False
-        assert self._off(["-ngl"], n_layers = 93) is False
+        assert self._off(["-ngl", "abc"], n_layers=93) is False
+        assert self._off(["-ngl", "-2"], n_layers=93) is False
+        assert self._off(["-ngl"], n_layers=93) is False
 
     def test_wired_into_the_fit(self):
         # The flag has to reach _cc_bytes, else the predicate is dead code.
@@ -944,10 +945,10 @@ class TestPerDeviceSplitReserve:
     _HETEROGENEOUS = ([(0, 40_000), (1, 2_500)], {0: 49_152, 1: 24_576})
     _HOMOGENEOUS = ([(0, 40_000), (1, 40_000)], {0: 49_152, 1: 49_152})
 
-    def _fit_backend(self, kv_per_tok = 20_000):
-        b = _backend(embd = 8192)
+    def _fit_backend(self, kv_per_tok=20_000):
+        b = _backend(embd=8192)
         b._can_estimate_kv = lambda: True
-        b._estimate_kv_cache_bytes = lambda ctx, ct = None, **kw: max(0, ctx) * kv_per_tok
+        b._estimate_kv_cache_bytes = lambda ctx, ct=None, **kw: max(0, ctx) * kv_per_tok
         return b
 
     def _drive(
@@ -957,9 +958,9 @@ class TestPerDeviceSplitReserve:
         totals,
         model_mib,
         native_ctx,
-        min_gpus = 2,
-        enforce = True,
-        cap = True,
+        min_gpus=2,
+        enforce=True,
+        cap=True,
     ):
         """Mirror of load_model's auto-context subset loop over the production fit
         and reserve helpers. Returns (gpu_indices, chosen_ctx)."""
@@ -969,28 +970,28 @@ class TestPerDeviceSplitReserve:
         def usable(g):
             return g[1] - (1.0 - frac) * totals[g[0]]
 
-        ranked = sorted(gpus, key = usable, reverse = True)
+        ranked = sorted(gpus, key=usable, reverse=True)
         for n in range(min_gpus, len(ranked) + 1):
             subset = ranked[:n]
             pool = sum(max(0.0, usable(g)) for g in subset)
             ms = model_bytes + (n - 1) * self._OH
-            cc = lambda c, n = n: (
-                n * b._compute_buffer_ctx_bytes(c, self._UB, "f16", layer_split = n > 1)
+            cc = lambda c, n=n: (
+                n * b._compute_buffer_ctx_bytes(c, self._UB, "f16", layer_split=n > 1)
             )
             capped = b._fit_context_to_vram(
                 native_ctx,
                 pool,
                 ms,
                 "f16",
-                n_ubatch = self._UB,
-                compute_ctx_bytes_fn = cc,
-                budget_frac = 1.0,
-                total_mib = None,
+                n_ubatch=self._UB,
+                compute_ctx_bytes_fn=cc,
+                budget_frac=1.0,
+                total_mib=None,
             )
             if (ms + b._estimate_kv_cache_bytes(capped) + cc(capped)) / MIB > pool:
                 continue
             usable_mib = [usable(g) for g in subset]
-            reserve_at = lambda c, n = n: (self._OH if n > 1 else 0) + cc(c, n) // n
+            reserve_at = lambda c, n=n: (self._OH if n > 1 else 0) + cc(c, n) // n
             if enforce and not LlamaCppBackend._every_gpu_holds_reserve(
                 usable_mib, reserve_at(capped)
             ):
@@ -1012,8 +1013,8 @@ class TestPerDeviceSplitReserve:
         gpus,
         totals,
         model_mib,
-        min_gpus = 2,
-        enforce = True,
+        min_gpus=2,
+        enforce=True,
     ):
         """Mirror of the Auto offload loop the native loop falls through to. Same
         pooled admission, so it needs the same per-device gate.
@@ -1029,11 +1030,11 @@ class TestPerDeviceSplitReserve:
         def usable(g):
             return g[1] - (1.0 - frac) * totals[g[0]]
 
-        ranked = sorted(gpus, key = usable, reverse = True)
+        ranked = sorted(gpus, key=usable, reverse=True)
         for n in range(min_gpus, len(ranked) + 1):
             subset = ranked[:n]
             pool = sum(max(0.0, usable(g)) for g in subset)
-            cc = n * b._compute_buffer_ctx_bytes(ctx, self._UB, "f16", layer_split = n > 1)
+            cc = n * b._compute_buffer_ctx_bytes(ctx, self._UB, "f16", layer_split=n > 1)
             ms = model_mib * MIB + (n - 1) * self._OH
             if (ms + b._estimate_kv_cache_bytes(ctx) + cc) / MIB > pool:
                 continue
@@ -1056,7 +1057,7 @@ class TestPerDeviceSplitReserve:
         while the driver charged reserve(8192) == 1216.
         """
         reserve_mib = (
-            self._OH + b._compute_buffer_ctx_bytes(_FIT_MIN_CTX, self._UB, "f16", layer_split = True)
+            self._OH + b._compute_buffer_ctx_bytes(_FIT_MIN_CTX, self._UB, "f16", layer_split=True)
         ) / MIB
         return round(reserve_mib + margin_mib + 0.03 * total_mib)
 
@@ -1067,7 +1068,7 @@ class TestPerDeviceSplitReserve:
         b = self._fit_backend()
         totals = {0: 49_152, 1: 24_576}
         gpus = [(0, 40_000), (1, self._card_at_floor_reserve(b, totals[1], -1))]
-        assert self._drive_reduced(b, gpus, totals, 20_480, enforce = False) == (
+        assert self._drive_reduced(b, gpus, totals, 20_480, enforce=False) == (
             [0, 1],
             _FIT_MIN_CTX,
         )
@@ -1084,10 +1085,10 @@ class TestPerDeviceSplitReserve:
         # ~1.7 GiB usable and owes 1 GiB overhead + 6 GiB of replicated KQ mask.
         b = self._fit_backend()
         gpus, totals = self._HETEROGENEOUS
-        gpu_indices, ctx = self._drive(b, gpus, totals, 20_480, 262144, enforce = False)
+        gpu_indices, ctx = self._drive(b, gpus, totals, 20_480, 262144, enforce=False)
         assert gpu_indices == [0, 1] and ctx == 262144
         reserve_mib = (
-            self._OH + b._compute_buffer_ctx_bytes(ctx, self._UB, "f16", layer_split = True)
+            self._OH + b._compute_buffer_ctx_bytes(ctx, self._UB, "f16", layer_split=True)
         ) / MIB
         card1_usable = 2_500 - 0.03 * 24_576
         assert card1_usable < reserve_mib  # would OOM card 1 at load
@@ -1097,14 +1098,14 @@ class TestPerDeviceSplitReserve:
         # the subset instead drops auto to the 4096 fallback for no reason.
         b = self._fit_backend()
         gpus, totals = self._HETEROGENEOUS
-        assert self._drive(b, gpus, totals, 20_480, 262144, cap = False) == (None, 0)
+        assert self._drive(b, gpus, totals, 20_480, 262144, cap=False) == (None, 0)
         assert self._drive(b, gpus, totals, 20_480, 262144) == ([0, 1], 30_720)
 
     def test_homogeneous_gpus_are_unaffected(self):
         b = self._fit_backend()
         gpus, totals = self._HOMOGENEOUS
         with_gate = self._drive(b, gpus, totals, 20_480, 262144)
-        without = self._drive(b, gpus, totals, 20_480, 262144, enforce = False)
+        without = self._drive(b, gpus, totals, 20_480, 262144, enforce=False)
         assert with_gate == without == ([0, 1], 262144)
 
     @pytest.mark.parametrize("model_mib", [8_192, 20_480, 30_720])
@@ -1113,8 +1114,8 @@ class TestPerDeviceSplitReserve:
         # smallest card below by the reserve, so the gate changes nothing.
         b = self._fit_backend()
         for gpus, totals in (self._HETEROGENEOUS, self._HOMOGENEOUS):
-            with_gate = self._drive(b, gpus, totals, model_mib, 262144, min_gpus = 1)
-            without = self._drive(b, gpus, totals, model_mib, 262144, min_gpus = 1, enforce = False)
+            with_gate = self._drive(b, gpus, totals, model_mib, 262144, min_gpus=1)
+            without = self._drive(b, gpus, totals, model_mib, 262144, min_gpus=1, enforce=False)
             assert with_gate == without
             assert with_gate[0] is not None
 
@@ -1164,7 +1165,7 @@ class TestPerDeviceReserveCap:
         b = self._fit_backend()
         usable = 2_500 - 0.03 * 24_576  # 1762.72 MiB
         reserve = lambda c: (
-            (self._OH + b._compute_buffer_ctx_bytes(c, self._UB, "f16", layer_split = True)) / MIB
+            (self._OH + b._compute_buffer_ctx_bytes(c, self._UB, "f16", layer_split=True)) / MIB
         )
         # 1024 MiB overhead + 256 MiB of hidden-state copies + 4 masks at 1/64 MiB a cell.
         assert reserve(30_720) == 1760.0 <= usable
@@ -1176,7 +1177,7 @@ class TestPerDeviceReserveCap:
         idx, ctx = self._drive(b, gpus, totals, 20_480, 262144)
         assert idx == [0, 1] and ctx == 30_720
         pool = sum(g[1] - 0.03 * totals[g[0]] for g in gpus)
-        cc = 2 * b._compute_buffer_ctx_bytes(ctx, self._UB, "f16", layer_split = True)
+        cc = 2 * b._compute_buffer_ctx_bytes(ctx, self._UB, "f16", layer_split=True)
         footprint = (20_480 * MIB + self._OH + b._estimate_kv_cache_bytes(ctx) + cc) / MIB
         assert footprint <= pool
 
@@ -1204,16 +1205,16 @@ class TestPerDeviceReserveCap:
     def test_flat_arch_term_is_not_rate_inverted(self):
         # deepseek4 carries a flat indexer term, so inverting the per-token rate
         # answers 43341, whose reserve is 6048 MiB on a 4000 MiB card.
-        b = _backend(embd = 7168, arch = "deepseek4")
-        reserve = lambda c: self._OH + b._compute_buffer_ctx_bytes(c, 512, "q8_0", layer_split = True)
+        b = _backend(embd=7168, arch="deepseek4")
+        reserve = lambda c: self._OH + b._compute_buffer_ctx_bytes(c, 512, "q8_0", layer_split=True)
         cap = LlamaCppBackend._cap_ctx_to_per_device_reserve(200_000, [4000.0], reserve)
         assert cap == 13_312
         assert reserve(cap) / MIB <= 4000.0 < reserve(cap + 256) / MIB
         assert reserve(43_341) / MIB > 4000.0
 
     def test_flat_arch_below_the_floor_is_infeasible(self):
-        b = _backend(embd = 7168, arch = "deepseek4")
-        reserve = lambda c: self._OH + b._compute_buffer_ctx_bytes(c, 512, "q8_0", layer_split = True)
+        b = _backend(embd=7168, arch="deepseek4")
+        reserve = lambda c: self._OH + b._compute_buffer_ctx_bytes(c, 512, "q8_0", layer_split=True)
         assert LlamaCppBackend._cap_ctx_to_per_device_reserve(200_000, [2500.0], reserve) == 0
 
     @pytest.mark.parametrize("model_mib", [8_192, 16_384, 20_480, 30_720])
@@ -1223,7 +1224,7 @@ class TestPerDeviceReserveCap:
         b = self._fit_backend()
         gpus = [(0, 40_000), (1, 2_500), (2, 2_400)]
         totals = {0: 49_152, 1: 24_576, 2: 24_576}
-        assert self._drive(b, gpus, totals, model_mib, 262144, cap = False) == (None, 0)
+        assert self._drive(b, gpus, totals, model_mib, 262144, cap=False) == (None, 0)
         idx, ctx = self._drive(b, gpus, totals, model_mib, 262144)
         assert idx == [0, 1] and ctx == 30_720
 
@@ -1260,41 +1261,41 @@ class TestSplitRateRecheckAfterSelection:
         self,
         total_mib,
         n_cards,
-        recheck = True,
-        min_gpus = 1,
-        ctx = None,
+        recheck=True,
+        min_gpus=1,
+        ctx=None,
     ):
         """Mirror of the explicit-context branch: total_mib is its weights + KV + MTP
         footprint, to which each path adds one single-device compute copy."""
-        b = _backend(embd = 4096)
+        b = _backend(embd=4096)
         ctx = ctx or self._CTX
         cc1 = b._compute_buffer_ctx_bytes(ctx, self._UB, "f16")
-        cc_split = b._compute_buffer_ctx_bytes(ctx, self._UB, "f16", layer_split = True)
+        cc_split = b._compute_buffer_ctx_bytes(ctx, self._UB, "f16", layer_split=True)
         gpus, totals = self._cards(n_cards)
         return LlamaCppBackend._select_gpus_split_aware(
             total_mib * MIB + cc1,
             gpus,
-            usable_fraction = self._FRAC,
-            total_by_idx = totals,
-            per_device_overhead_bytes = self._OH + cc1,
-            min_gpus = min_gpus,
-            split_extra_bytes = (cc_split - cc1) if recheck else 0,
+            usable_fraction=self._FRAC,
+            total_by_idx=totals,
+            per_device_overhead_bytes=self._OH + cc1,
+            min_gpus=min_gpus,
+            split_extra_bytes=(cc_split - cc1) if recheck else 0,
         )
 
     def test_pre_fix_pinned_a_pair_that_cannot_hold_the_split_rate(self):
         # The bug, over the plain selector this branch used to call: the pair needs
         # 44096 MiB of its 47677 MiB pool at the single-device rate, but 53312 at the
         # split rate -- pinned ~5.5 GiB short, with no --fit fallback after -ngl -1.
-        b = _backend(embd = 4096)
+        b = _backend(embd=4096)
         cc1 = b._compute_buffer_ctx_bytes(self._CTX, self._UB, "f16")
-        ccs = b._compute_buffer_ctx_bytes(self._CTX, self._UB, "f16", layer_split = True)
+        ccs = b._compute_buffer_ctx_bytes(self._CTX, self._UB, "f16", layer_split=True)
         gpus, totals = self._cards(2)
         assert LlamaCppBackend._select_gpus(
             40_000 * MIB + cc1,
             gpus,
-            usable_fraction = self._FRAC,
-            total_by_idx = totals,
-            per_device_overhead_bytes = self._OH + cc1,
+            usable_fraction=self._FRAC,
+            total_by_idx=totals,
+            per_device_overhead_bytes=self._OH + cc1,
         ) == ([0, 1], False)
         pool = 2 * (self._CARD - (1.0 - self._FRAC) * self._CARD)
         assert (40_000 * MIB + ccs + self._OH + ccs) / MIB > pool
@@ -1306,12 +1307,12 @@ class TestSplitRateRecheckAfterSelection:
 
     def test_recheck_widens_the_subset_when_a_card_is_spare(self):
         # Three cards: the first pass still answers 2, the re-check takes all 3.
-        assert self._pin(40_000, 3, recheck = False) == ([0, 1], False)
+        assert self._pin(40_000, 3, recheck=False) == ([0, 1], False)
         assert self._pin(40_000, 3) == ([0, 1, 2], False)
 
     def test_single_gpu_pin_is_untouched(self):
         assert self._pin(20_000, 2) == ([0], False)
-        assert self._pin(20_000, 2, recheck = False) == ([0], False)
+        assert self._pin(20_000, 2, recheck=False) == ([0], False)
 
     def test_equal_cards_never_collapse_to_one_gpu(self):
         # Every card clears the enlarged overhead, so the retry keeps min_gpus.
@@ -1324,16 +1325,16 @@ class TestSplitRateRecheckAfterSelection:
         # its usable-card count to one. A lone card is not a split and pays no delta,
         # so charging it there sent a load that fits alone to --fit on (CPU offload).
         gpus = [(0, 16 * 1024), (1, 3 * 1024)]
-        kw = dict(usable_fraction = 1.0, per_device_overhead_bytes = int(2.5 * GIB))
-        assert LlamaCppBackend._select_gpus(int(14 * GIB), gpus, min_gpus = 2, **kw) == (
+        kw = dict(usable_fraction=1.0, per_device_overhead_bytes=int(2.5 * GIB))
+        assert LlamaCppBackend._select_gpus(int(14 * GIB), gpus, min_gpus=2, **kw) == (
             [0, 1],
             False,
         )
         assert LlamaCppBackend._select_gpus_split_aware(
-            int(14 * GIB), gpus, min_gpus = 2, split_extra_bytes = int(4.5 * GIB), **kw
+            int(14 * GIB), gpus, min_gpus=2, split_extra_bytes=int(4.5 * GIB), **kw
         ) == ([0], False)
         # Exactly the plain single-device answer, not a relaxed split.
-        assert LlamaCppBackend._select_gpus(int(14 * GIB), gpus, min_gpus = 1, **kw) == (
+        assert LlamaCppBackend._select_gpus(int(14 * GIB), gpus, min_gpus=1, **kw) == (
             [0],
             False,
         )
@@ -1344,30 +1345,30 @@ class TestSplitRateRecheckAfterSelection:
         assert LlamaCppBackend._select_gpus_split_aware(
             int(30 * GIB),
             [(0, 20 * 1024), (1, 20 * 1024)],
-            usable_fraction = 1.0,
-            per_device_overhead_bytes = int(1 * GIB),
-            min_gpus = 2,
-            split_extra_bytes = int(15 * GIB),
+            usable_fraction=1.0,
+            per_device_overhead_bytes=int(1 * GIB),
+            min_gpus=2,
+            split_extra_bytes=int(15 * GIB),
         ) == (None, True)
 
     def test_zero_step_reduces_to_plain_selection(self):
         # llama.cpp declining pipeline parallelism makes the step 0 (_cc_split_extra
         # reads the same layer_split gate), and the helper is then a pass-through.
-        b = _backend(embd = 4096)
+        b = _backend(embd=4096)
         cc1 = b._compute_buffer_ctx_bytes(self._CTX, self._UB, "f16")
         gpus, totals = self._cards(3)
         for total_mib in (20_000, 40_000, 90_000):
-            assert self._pin(total_mib, 3, recheck = False) == LlamaCppBackend._select_gpus(
+            assert self._pin(total_mib, 3, recheck=False) == LlamaCppBackend._select_gpus(
                 total_mib * MIB + cc1,
                 gpus,
-                usable_fraction = self._FRAC,
-                total_by_idx = totals,
-                per_device_overhead_bytes = self._OH + cc1,
+                usable_fraction=self._FRAC,
+                total_by_idx=totals,
+                per_device_overhead_bytes=self._OH + cc1,
             )
 
     def test_small_context_is_unaffected(self):
         # 4096 ctx: the 18 MiB of extra masks changes no decision.
-        assert self._pin(40_000, 2, ctx = 4096) == self._pin(40_000, 2, recheck = False, ctx = 4096)
+        assert self._pin(40_000, 2, ctx=4096) == self._pin(40_000, 2, recheck=False, ctx=4096)
 
     def test_wired_into_every_call_site(self):
         import ast
@@ -1444,7 +1445,7 @@ class TestScratchTakesTheLighterAxis:
         assert _planned_scratch_cache_type(None, extras) == expected
         # And the budget still takes the heavier one, so the two disagree exactly
         # when they should.
-        heavier = max(_planned_main_cache_types(None, extras), key = _kv_bytes_per_elem)
+        heavier = max(_planned_main_cache_types(None, extras), key=_kv_bytes_per_elem)
         assert (heavier != expected) == (_kv_bytes_per_elem(k) != _kv_bytes_per_elem(v))
 
     def test_a_managed_symmetric_request_leaves_both_terms_equal(self):
@@ -1468,7 +1469,7 @@ class TestScratchTakesTheLighterAxis:
         cost what the quantized axis really allocates, not the KQ-mask floor."""
         b = _backend()
         extras = ["--cache-type-k", k, "--cache-type-v", v]
-        heavier = max(_planned_main_cache_types(None, extras), key = _kv_bytes_per_elem)
+        heavier = max(_planned_main_cache_types(None, extras), key=_kv_bytes_per_elem)
         lighter = _planned_scratch_cache_type(None, extras)
 
         heavy_rate = b._compute_buffer_ctx_bytes(131_072, 2048, heavier)
@@ -1491,22 +1492,22 @@ class TestTensorFitPricesTheQuantizedAxis:
         cache_type,
         scratch_type,
         ub,
-        ngpu = 4,
-        per_gpu = 48_000,
+        ngpu=4,
+        per_gpu=48_000,
     ):
         return b._plan_tensor_parallel(
-            gpus = [(i, per_gpu) for i in range(ngpu)],
-            model_size = 60 * 1024**3,
-            target_ctx = 262_144,
-            max_target_ctx = 262_144,
-            total_by_idx = {i: per_gpu for i in range(ngpu)},
-            cache_type_kv = cache_type,
-            scratch_cache_type_kv = scratch_type,
-            n_parallel = 1,
-            swa_full = False,
-            kv_unified = True,
-            n_ubatch = ub,
-            flash_attn = False,
+            gpus=[(i, per_gpu) for i in range(ngpu)],
+            model_size=60 * 1024**3,
+            target_ctx=262_144,
+            max_target_ctx=262_144,
+            total_by_idx={i: per_gpu for i in range(ngpu)},
+            cache_type_kv=cache_type,
+            scratch_cache_type_kv=scratch_type,
+            n_parallel=1,
+            swa_full=False,
+            kv_unified=True,
+            n_ubatch=ub,
+            flash_attn=False,
         )
 
     def test_an_asymmetric_pair_is_capped_like_its_quantized_axis(self):
@@ -1515,8 +1516,8 @@ class TestTensorFitPricesTheQuantizedAxis:
         cannot hold it."""
         b = _backend_from_gguf_local()
         # 36 GB cards, so the KV cache rather than the native length bounds the context.
-        optimistic = self._plan(b, "f16", None, 2048, per_gpu = 36_000)[0]
-        honest = self._plan(b, "f16", "q4_0", 2048, per_gpu = 36_000)[0]
+        optimistic = self._plan(b, "f16", None, 2048, per_gpu=36_000)[0]
+        honest = self._plan(b, "f16", "q4_0", 2048, per_gpu=36_000)[0]
 
         assert honest < optimistic, (honest, optimistic)
         # Still a real context, not the 2048 floor: the fix must not collapse the
@@ -1526,7 +1527,7 @@ class TestTensorFitPricesTheQuantizedAxis:
         # pinning: the asymmetric pair pays f16 KV bytes on both axes (the heavier
         # axis budgets storage) AND the full quantized dequant scratch. Both terms
         # conservative is the point; neither one alone describes this launch.
-        assert honest < self._plan(b, "q4_0", "q4_0", 2048, per_gpu = 36_000)[0]
+        assert honest < self._plan(b, "q4_0", "q4_0", 2048, per_gpu=36_000)[0]
 
     def test_a_symmetric_request_is_unchanged(self):
         """Default and explicit scratch type agree when both axes match, so no
@@ -1542,7 +1543,7 @@ class TestSpeculativeComputeBuffers:
     Measurements below are from Qwen3.8 27B's embedded head."""
 
     def _qwen38(self):
-        b = _backend(vocab = 248320, embd = 5120)
+        b = _backend(vocab=248320, embd=5120)
         b._feed_forward_length = 17408
         return b
 
@@ -1552,36 +1553,36 @@ class TestSpeculativeComputeBuffers:
     def test_floor_plus_growth_covers_the_draft_context(self, ub, ctx, measured):
         b = self._qwen38()
         charged = (
-            LlamaCppBackend._MTP_DRAFT_COMPUTE_BYTES + b._mtp_draft_compute_bytes(ctx, n_ubatch = ub)
+            LlamaCppBackend._MTP_DRAFT_COMPUTE_BYTES + b._mtp_draft_compute_bytes(ctx, n_ubatch=ub)
         ) / MIB
         assert charged >= measured
 
     def test_short_context_and_micro_batch_stay_on_the_floor(self):
-        assert self._qwen38()._mtp_draft_compute_bytes(4096, n_ubatch = 256) == 0
+        assert self._qwen38()._mtp_draft_compute_bytes(4096, n_ubatch=256) == 0
 
     def test_growth_follows_the_mask_once_past_the_floor(self):
         b = self._qwen38()
-        lo = b._mtp_draft_compute_bytes(131072, n_ubatch = 1120)
-        hi = b._mtp_draft_compute_bytes(262144, n_ubatch = 1120)
+        lo = b._mtp_draft_compute_bytes(131072, n_ubatch=1120)
+        hi = b._mtp_draft_compute_bytes(262144, n_ubatch=1120)
         assert hi - lo == 1120 * 2 * 131072
 
     def test_verify_rows_scale_with_slots_and_depth(self):
         b = self._qwen38()
-        base = b._mtp_draft_compute_bytes(4096, n_ubatch = 256)
-        rows = b._mtp_draft_compute_bytes(4096, n_ubatch = 256, n_parallel = 4, spec_draft_n_max = 2)
+        base = b._mtp_draft_compute_bytes(4096, n_ubatch=256)
+        rows = b._mtp_draft_compute_bytes(4096, n_ubatch=256, n_parallel=4, spec_draft_n_max=2)
         assert rows - base == 4 * 2 * LlamaCppBackend._SPEC_VERIFY_ROW_COPIES * 248320 * 4
 
     def test_the_reserve_carries_it(self):
         b = self._qwen38()
         b._n_layers, b._n_kv_heads, b._kv_key_length, b._kv_value_length = 65, 4, 256, 256
         b._nextn_predict_layers = 1
-        kwargs = dict(n_parallel = 1, target_rollback = False, mtp_keeps_target_ctx = False)
-        short = b._estimate_mtp_overhead_bytes(4096, n_ubatch = 256, **kwargs)
-        long = b._estimate_mtp_overhead_bytes(262144, n_ubatch = 1120, **kwargs)
-        draft_kv = b._mtp_draft_kv_bytes(262144, n_ubatch = 1120) - b._mtp_draft_kv_bytes(
-            4096, n_ubatch = 256
+        kwargs = dict(n_parallel=1, target_rollback=False, mtp_keeps_target_ctx=False)
+        short = b._estimate_mtp_overhead_bytes(4096, n_ubatch=256, **kwargs)
+        long = b._estimate_mtp_overhead_bytes(262144, n_ubatch=1120, **kwargs)
+        draft_kv = b._mtp_draft_kv_bytes(262144, n_ubatch=1120) - b._mtp_draft_kv_bytes(
+            4096, n_ubatch=256
         )
-        assert long - short == draft_kv + b._mtp_draft_compute_bytes(262144, n_ubatch = 1120)
+        assert long - short == draft_kv + b._mtp_draft_compute_bytes(262144, n_ubatch=1120)
 
 
 class TestFlashAttentionOff:
@@ -1607,15 +1608,15 @@ class TestFlashAttentionOff:
     def test_covers_the_measured_buffer(self, name, ub, slots, ctx, measured):
         b = _measured(name)
         est = (
-            b._estimate_compute_buffer_bytes(n_ubatch = ub, n_parallel = slots)
-            + b._compute_buffer_ctx_bytes(ctx, ub, "f16", flash_attn = False)
+            b._estimate_compute_buffer_bytes(n_ubatch=ub, n_parallel=slots)
+            + b._compute_buffer_ctx_bytes(ctx, ub, "f16", flash_attn=False)
         ) / MIB
         assert measured <= est <= measured * 1.1, f"{name}: {est:.0f} vs {measured}"
 
     def test_the_rate_is_the_score_matrix_plus_a_float32_mask(self):
         b = _measured("Gemma-4-12B")
         on = b._compute_buffer_ctx_bytes(100000, 1120, "f16")
-        off = b._compute_buffer_ctx_bytes(100000, 1120, "f16", flash_attn = False)
+        off = b._compute_buffer_ctx_bytes(100000, 1120, "f16", flash_attn=False)
         assert on == 1120 * 2 * 100000
         assert off == 1120 * (4 + 16 * 4) * 100000
 
@@ -1629,12 +1630,12 @@ class TestLayerSplitSlidingWindowSlots:
     def test_covers_the_measured_split(self, slots, ctx, measured):
         b = _measured("Gemma-4-12B")
         per_device = (
-            b._estimate_compute_buffer_bytes(n_ubatch = 1120, n_parallel = slots)
-            + b._compute_buffer_ctx_bytes(ctx, 1120, "f16", layer_split = True, n_parallel = slots)
+            b._estimate_compute_buffer_bytes(n_ubatch=1120, n_parallel=slots)
+            + b._compute_buffer_ctx_bytes(ctx, 1120, "f16", layer_split=True, n_parallel=slots)
         ) / MIB
         one_slot_window = (
-            b._estimate_compute_buffer_bytes(n_ubatch = 1120, n_parallel = slots)
-            + b._compute_buffer_ctx_bytes(ctx, 1120, "f16", layer_split = True)
+            b._estimate_compute_buffer_bytes(n_ubatch=1120, n_parallel=slots)
+            + b._compute_buffer_ctx_bytes(ctx, 1120, "f16", layer_split=True)
         ) / MIB
         assert one_slot_window < measured <= per_device <= measured * 1.1
 
@@ -1665,7 +1666,7 @@ class TestOutputRowsByBuild:
         monkeypatch.setattr(
             subprocess,
             "run",
-            lambda *a, **k: types.SimpleNamespace(stdout = output, stderr = "", returncode = 0),
+            lambda *a, **k: types.SimpleNamespace(stdout=output, stderr="", returncode=0),
         )
         assert LlamaCppBackend.probe_build_number(str(binary)) == build
 
@@ -1674,19 +1675,19 @@ class TestOutputRowsByBuild:
     )
     def test_only_a_known_older_build_reserves_micro_batch_rows(self, monkeypatch, build, legacy):
         monkeypatch.setattr(
-            LlamaCppBackend, "probe_build_number", classmethod(lambda cls, binary = None: build)
+            LlamaCppBackend, "probe_build_number", classmethod(lambda cls, binary=None: build)
         )
         assert LlamaCppBackend.reserves_micro_batch_outputs() is legacy
 
     def test_an_older_build_is_charged_a_row_per_micro_batch_token(self):
         # Measured b9415 Vulkan compute buffers (MiB) at 32768 cells, one and four slots.
         cases = [
-            (dict(vocab = 128256, embd = 2048, ff = 8192), 512, 254.50),
-            (dict(vocab = 151936, embd = 4096, ff = 12288), 2048, 1667.05),
-            (dict(vocab = 262144, embd = 1536, ff = 12288, ple = 256 * 35), 2048, 2704.08),
+            (dict(vocab=128256, embd=2048, ff=8192), 512, 254.50),
+            (dict(vocab=151936, embd=4096, ff=12288), 2048, 1667.05),
+            (dict(vocab=262144, embd=1536, ff=12288, ple=256 * 35), 2048, 2704.08),
         ]
         for dims, ub, measured in cases:
-            b = _backend(vocab = dims["vocab"], embd = dims["embd"])
+            b = _backend(vocab=dims["vocab"], embd=dims["embd"])
             b._feed_forward_length = dims["ff"]
             b._embedding_length_per_layer_input = 0
             b._n_layers = 1
@@ -1695,11 +1696,11 @@ class TestOutputRowsByBuild:
             b._reserves_micro_batch_outputs = True
             for slots in (1, 4):
                 est = (
-                    b._estimate_compute_buffer_bytes(n_ubatch = ub, n_parallel = slots)
+                    b._estimate_compute_buffer_bytes(n_ubatch=ub, n_parallel=slots)
                     + b._compute_buffer_ctx_bytes(32768, ub, "f16")
                 ) / MIB
                 assert measured <= est <= measured * 1.5, (dims, slots, est)
             b._reserves_micro_batch_outputs = False
-            assert b._estimate_compute_buffer_bytes(n_ubatch = ub, n_parallel = 1) < (
+            assert b._estimate_compute_buffer_bytes(n_ubatch=ub, n_parallel=1) < (
                 dims["vocab"] * ub * 4
             )

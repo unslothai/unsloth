@@ -42,8 +42,8 @@ def _cell(
     *,
     completed,
     session,
-    tokens = 10_000,
-    rep = 0,
+    tokens=10_000,
+    rep=0,
 ):
     row = {
         "row_type": "cell",
@@ -75,7 +75,7 @@ def _window(
     session,
     max_frame,
     gaps,
-    duration_ms = 1000.0,
+    duration_ms=1000.0,
 ):
     return {
         "row_type": "window",
@@ -101,17 +101,17 @@ def _window(
 def test_the_dead_attempts_frames_are_not_the_retrys_frames():
     cell_id = "r10K.base.rep0"
     records = [
-        _cell(cell_id, "base", completed = False, session = OLD),
+        _cell(cell_id, "base", completed=False, session=OLD),
         _window(cell_id, OLD, 100.0, [100.0, 16.0]),
-        _cell(cell_id, "base", completed = True, session = NOW),
+        _cell(cell_id, "base", completed=True, session=NOW),
         _window(cell_id, NOW, 17.0, [16.0, 17.0]),
     ]
-    reading = readings_by_arm(records, session_id = NOW)["base"][(10_000, 0)]
+    reading = readings_by_arm(records, session_id=NOW)["base"][(10_000, 0)]
     assert reading["max_frame_ms"].value == 17.0
     # The 100 ms gap is out of the pooled distribution too, not just out of the maximum.
     assert (
         reading["jank_index"].value
-        == readings_by_arm([records[2], records[3]], session_id = NOW)["base"][(10_000, 0)][
+        == readings_by_arm([records[2], records[3]], session_id=NOW)["base"][(10_000, 0)][
             "jank_index"
         ].value
     )
@@ -122,11 +122,11 @@ def test_two_windows_of_the_same_attempt_are_still_pooled():
 
     cell_id = "r10K.base.rep0"
     records = [
-        _cell(cell_id, "base", completed = True, session = NOW),
+        _cell(cell_id, "base", completed=True, session=NOW),
         _window(cell_id, NOW, 17.0, [16.0, 17.0]),
         _window(cell_id, NOW, 100.0, [100.0, 16.0]),
     ]
-    reading = readings_by_arm(records, session_id = NOW)["base"][(10_000, 0)]
+    reading = readings_by_arm(records, session_id=NOW)["base"][(10_000, 0)]
     assert reading["max_frame_ms"].value == 100.0
 
 
@@ -134,21 +134,21 @@ def test_two_windows_of_the_same_attempt_are_still_pooled():
 
 
 def _payload(directory, rows):
-    Path(directory).mkdir(parents = True, exist_ok = True)
+    Path(directory).mkdir(parents=True, exist_ok=True)
     path = Path(directory) / "payload.jsonl"
-    path.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding = "utf-8")
+    path.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
     return path
 
 
 def _finished(
     session,
     *,
-    tokens = 10_000,
-    rep = 0,
+    tokens=10_000,
+    rep=0,
 ):
     cell_id = f"r{tokens}.A0.rep{rep}"
     return [
-        _cell(cell_id, "A0", completed = True, session = session, tokens = tokens, rep = rep),
+        _cell(cell_id, "A0", completed=True, session=session, tokens=tokens, rep=rep),
         _keystroke(cell_id, session, 40.0),
         _window(cell_id, session, 30.0, [16.0, 17.0, 16.0]),
     ]
@@ -157,12 +157,12 @@ def _finished(
 def _died(
     session,
     *,
-    tokens = 10_000,
-    rep = 0,
+    tokens=10_000,
+    rep=0,
 ):
     cell_id = f"r{tokens}.A0.rep{rep}"
     return [
-        _cell(cell_id, "A0", completed = False, session = session, tokens = tokens, rep = rep),
+        _cell(cell_id, "A0", completed=False, session=session, tokens=tokens, rep=rep),
         _keystroke(cell_id, session, 400.0),
         _window(cell_id, session, 900.0, [900.0, 16.0]),
     ]
@@ -184,7 +184,7 @@ def test_a_resumed_cell_scores_as_if_the_crash_had_not_happened(tmp_path):
 def test_a_failed_repetition_still_makes_the_rung_incomplete(tmp_path):
     """The control: reps are independent observations and one of them failing is the answer."""
 
-    rows = _finished(NOW, rep = 0) + _died(NOW, rep = 1)
+    rows = _finished(NOW, rep=0) + _died(NOW, rep=1)
     ladder = score_payload(_payload(tmp_path / "c", rows), [10_000])
     assert ladder.rungs[0].complete is False
     assert "TimeoutError" in (ladder.rungs[0].incomplete_reason or "")
@@ -201,4 +201,5 @@ def test_a_cell_that_was_never_re_run_keeps_its_failure(tmp_path):
 
 if __name__ == "__main__":
     import pytest
+
     raise SystemExit(pytest.main([__file__, "-q"]))

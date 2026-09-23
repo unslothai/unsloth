@@ -142,27 +142,27 @@ def _page(
 
 
 STREAMING = dict(
-    control = _QUEUE_BUTTON_RUNNING,
-    queue_stack = False,
-    statuses = ["complete", "complete", "complete", "running"],
+    control=_QUEUE_BUTTON_RUNNING,
+    queue_stack=False,
+    statuses=["complete", "complete", "complete", "running"],
 )
 QUEUED_IDLE = dict(
-    control = _QUEUE_BUTTON_IDLE,
-    queue_stack = True,
-    statuses = ["complete", "complete", "complete", "complete"],
+    control=_QUEUE_BUTTON_IDLE,
+    queue_stack=True,
+    statuses=["complete", "complete", "complete", "complete"],
 )
 BLIND = dict(
-    control = _STOP_BUTTON,
-    queue_stack = False,
-    statuses = [None, None, None, None],
+    control=_STOP_BUTTON,
+    queue_stack=False,
+    statuses=[None, None, None, None],
 )
 #: The cost of reading the queue surface, pinned rather than left for a later reader: a queue run
 #: with a prompt still waiting, a reply genuinely streaming, and text in the composer. The surface
 #: is up and the Queue button is the only control, so the control is not armed.
 QUEUED_AND_STREAMING_BLIND = dict(
-    control = _QUEUE_BUTTON_RUNNING,
-    queue_stack = True,
-    statuses = [None, None, None, None],
+    control=_QUEUE_BUTTON_RUNNING,
+    queue_stack=True,
+    statuses=[None, None, None, None],
 )
 
 
@@ -174,15 +174,16 @@ def _skip_reason() -> str | None:
     return None
 
 
-pytestmark = pytest.mark.skipif(_skip_reason() is not None, reason = _skip_reason() or "")
+pytestmark = pytest.mark.skipif(_skip_reason() is not None, reason=_skip_reason() or "")
 
 
-@pytest.fixture(scope = "module")
+@pytest.fixture(scope="module")
 def browser():
     from playwright.sync_api import sync_playwright
+
     with sync_playwright() as p:
         try:
-            b = p.chromium.launch(args = ["--no-sandbox"])
+            b = p.chromium.launch(args=["--no-sandbox"])
         except Exception as exc:  # noqa: BLE001
             pytest.skip(f"chromium could not be launched: {exc}")
         yield b
@@ -191,7 +192,7 @@ def browser():
 
 @pytest.fixture()
 def page(browser):
-    pg = browser.new_page(viewport = {"width": 900, "height": 700})
+    pg = browser.new_page(viewport={"width": 900, "height": 700})
     yield pg
     pg.close()
 
@@ -201,11 +202,11 @@ def _capture(
     state: dict,
     tail: str = "settled",
 ) -> dict:
-    page.set_content(_page(tail = tail, **state))
+    page.set_content(_page(tail=tail, **state))
     # After the content, not before it: `set_content` does not reliably run init scripts, and the
     # symptom is `window.__sb` simply not existing.
-    page.add_script_tag(content = _DOM_JS.read_text(encoding = "utf-8"))
-    page.add_script_tag(content = _PARITY_JS.read_text(encoding = "utf-8"))
+    page.add_script_tag(content=_DOM_JS.read_text(encoding="utf-8"))
+    page.add_script_tag(content=_PARITY_JS.read_text(encoding="utf-8"))
     got = page.evaluate("() => window.__sb.parity.capture()")
     assert got.get("parity_attempted") is True, got
     return got
@@ -240,8 +241,8 @@ def test_a_settled_queued_idle_pair_is_scored_rather_than_refused(page):
     running reply sets the control on both, and `streaming_probe` refuses the pair inside
     `compare()` BEFORE the per-message digests are reached, so the difference is never localised.
     """
-    base = _capture(page, QUEUED_IDLE, tail = "alpha")
-    treat = _capture(page, QUEUED_IDLE, tail = "omega")
+    base = _capture(page, QUEUED_IDLE, tail="alpha")
+    treat = _capture(page, QUEUED_IDLE, tail="omega")
     assert base["digest"] != treat["digest"]
     got = P.compare(base, treat)
     assert got["verdict"] == P.DIFFER, got
@@ -291,7 +292,7 @@ def _en_string(key: str) -> str:
     and a key that stops existing raises here instead of returning "" and passing a substring
     check against everything.
     """
-    src = _EN_LOCALE.read_text(encoding = "utf-8")
+    src = _EN_LOCALE.read_text(encoding="utf-8")
     match = re.search(rf"(?m)^\s*{re.escape(key)}:\s*\"((?:[^\"\\]|\\.)*)\",?\s*$", src)
     assert match, f"the en catalog no longer defines promptQueue.{key} ({_EN_LOCALE})"
     return match.group(1)
@@ -317,7 +318,7 @@ def test_the_shipped_composer_still_renders_the_two_queue_buttons():
     """
     if not _THREAD_TSX.exists():
         pytest.skip(f"the shipped composer is not in this checkout: {_THREAD_TSX}")
-    src = _THREAD_TSX.read_text(encoding = "utf-8")
+    src = _THREAD_TSX.read_text(encoding="utf-8")
     assert src.count("aria-label={followUpLabel}") == 2, (
         "ComposerRightControls no longer renders the Queue button in exactly two places; "
         "re-read which of them can appear on an idle thread"
@@ -340,7 +341,7 @@ def test_the_shipped_composer_still_renders_the_two_queue_buttons():
     assert queue_label == "Queue message", queue_label
     assert steer_label == "Steer response", steer_label
 
-    queue_src = (_THREAD_TSX.parent / "prompt-queue-list.tsx").read_text(encoding = "utf-8")
+    queue_src = (_THREAD_TSX.parent / "prompt-queue-list.tsx").read_text(encoding="utf-8")
     assert 'aria-label={t("promptQueue.regionLabel"' in queue_src, (
         "PromptQueueStack no longer names itself, so dom.promptQueue() matches nothing and the "
         "queued-idle interval is indistinguishable again"
@@ -349,7 +350,7 @@ def test_the_shipped_composer_still_renders_the_two_queue_buttons():
     # have to agree or the probe goes quiet without anything failing. This is the coupling the
     # localization pass could have broken silently; it did not, and now it cannot.
     region_label = _en_string("regionLabel")
-    prefix = re.search(r'\[aria-label\^="([^"]*)"\]', _DOM_JS.read_text(encoding = "utf-8"))
+    prefix = re.search(r'\[aria-label\^="([^"]*)"\]', _DOM_JS.read_text(encoding="utf-8"))
     assert prefix, "dom.js no longer selects the queue surface by an aria-label prefix"
     assert region_label.startswith(prefix.group(1)), (
         f"dom.js matches the queue surface on {prefix.group(1)!r} but the en catalog names it "
@@ -376,8 +377,8 @@ _SEND_BUTTON = (
 def _capture_html(page, html: str) -> dict:
     """`_capture`, for a page built outside the `STATE` dictionaries."""
     page.set_content(html)
-    page.add_script_tag(content = _DOM_JS.read_text(encoding = "utf-8"))
-    page.add_script_tag(content = _PARITY_JS.read_text(encoding = "utf-8"))
+    page.add_script_tag(content=_DOM_JS.read_text(encoding="utf-8"))
+    page.add_script_tag(content=_PARITY_JS.read_text(encoding="utf-8"))
     got = page.evaluate("() => window.__sb.parity.capture()")
     assert got.get("parity_attempted") is True, got
     return got
@@ -389,8 +390,8 @@ def test_an_overlay_difference_survives_the_blind_probe_refusal(page):
     Without this the refusal took it out, and `structural_report` buckets a refusal as blind and
     never consults it for the exit code, so a real menu or dialog regression went green.
     """
-    base = _capture_html(page, _page(tail = "same", overlay = _MENU, **BLIND))
-    treat = _capture_html(page, _page(tail = "same", overlay = _MENU_CHANGED, **BLIND))
+    base = _capture_html(page, _page(tail="same", overlay=_MENU, **BLIND))
+    treat = _capture_html(page, _page(tail="same", overlay=_MENU_CHANGED, **BLIND))
     assert base["in_flight_unplaced"] is True and treat["in_flight_unplaced"] is True
     assert len(base["overlays"]) == len(treat["overlays"]) == 1
     got = P.compare(base, treat)
@@ -409,10 +410,10 @@ def test_a_settled_user_row_survives_the_blind_probe_refusal(page):
     Without this it left as NOT COMPARABLE with an empty `moved`, and `report` buckets a refusal as
     blind and never consults it for the exit code, so the run went green on it.
     """
-    base = _capture_html(page, _page(tail = "same", **BLIND))
+    base = _capture_html(page, _page(tail="same", **BLIND))
     treat = _capture_html(
         page,
-        _page(tail = "same", **BLIND).replace(
+        _page(tail="same", **BLIND).replace(
             "<div>the prompt</div>",
             "<div>the prompt, rendered differently</div>",
             1,
@@ -426,8 +427,8 @@ def test_a_settled_user_row_survives_the_blind_probe_refusal(page):
 
 def test_matching_overlays_still_leave_the_blind_pair_refused(page):
     """The narrowing is not a hole: with nothing independent to say, the refusal stands."""
-    base = _capture_html(page, _page(tail = "alpha", overlay = _MENU, **BLIND))
-    treat = _capture_html(page, _page(tail = "omega", overlay = _MENU, **BLIND))
+    base = _capture_html(page, _page(tail="alpha", overlay=_MENU, **BLIND))
+    treat = _capture_html(page, _page(tail="omega", overlay=_MENU, **BLIND))
     assert base["digest"] != treat["digest"]
     got = P.compare(base, treat)
     assert got["verdict"] == P.NOT_COMPARABLE, got
@@ -446,10 +447,10 @@ def test_the_scaffold_is_not_an_independent_surface_and_here_is_why(page):
 
     Two threads with identical messages, differing only in the composer control.
     """
-    settled = dict(QUEUED_IDLE, control = _SEND_BUTTON, queue_stack = False)
-    generating = dict(settled, control = _STOP_BUTTON)
-    a = _capture_html(page, _page(tail = "same", **settled))
-    b = _capture_html(page, _page(tail = "same", **generating))
+    settled = dict(QUEUED_IDLE, control=_SEND_BUTTON, queue_stack=False)
+    generating = dict(settled, control=_STOP_BUTTON)
+    a = _capture_html(page, _page(tail="same", **settled))
+    b = _capture_html(page, _page(tail="same", **generating))
     assert [m["digest"] for m in a["messages"]] == [m["digest"] for m in b["messages"]]
     assert a["digest_scaffold"] != b["digest_scaffold"], (
         "if this ever holds, the composer has left the thread root and the scaffold may be "
@@ -468,11 +469,11 @@ _STREAMING_STATUSES = ["complete", "complete", "complete", "running"]
 
 
 def _finished(**kw):
-    return dict(control = _SEND_BUTTON, queue_stack = False, statuses = _SETTLED_STATUSES, **kw)
+    return dict(control=_SEND_BUTTON, queue_stack=False, statuses=_SETTLED_STATUSES, **kw)
 
 
 def _writing(**kw):
-    return dict(control = _STOP_BUTTON, queue_stack = False, statuses = _STREAMING_STATUSES, **kw)
+    return dict(control=_STOP_BUTTON, queue_stack=False, statuses=_STREAMING_STATUSES, **kw)
 
 
 def test_a_scaffold_only_difference_across_a_finished_and_a_running_arm_is_refused(page):
@@ -482,8 +483,8 @@ def test_a_scaffold_only_difference_across_a_finished_and_a_running_arm_is_refus
     moved because one arm was generating. Reported as DIFFER this read as a rendering change, with
     the single claim `thread scaffolding outside any message (373->381c)`.
     """
-    base = _capture_html(page, _page(tail = "arrived at last", **_finished()))
-    treat = _capture_html(page, _page(tail = "arr", **_writing()))
+    base = _capture_html(page, _page(tail="arrived at last", **_finished()))
+    treat = _capture_html(page, _page(tail="arr", **_writing()))
     assert base["streaming"] is False and treat["streaming"] is True
     assert treat["in_flight"] == [3] and treat["in_flight_unplaced"] is False
     assert [m["digest"] for m in base["messages"][:3]] == [
@@ -499,8 +500,8 @@ def test_a_scaffold_only_difference_across_a_finished_and_a_running_arm_is_refus
 def test_the_same_two_stream_positions_with_both_arms_running_are_unchanged(page):
     """WHY THE NULL COULD NOT SEE IT. One build against itself at two points in one stream: both
     arms render Stop, the scaffolds match, and the bias cancels inside the control."""
-    a = _capture_html(page, _page(tail = "arrived at last", **_writing()))
-    b = _capture_html(page, _page(tail = "arr", **_writing()))
+    a = _capture_html(page, _page(tail="arrived at last", **_writing()))
+    b = _capture_html(page, _page(tail="arr", **_writing()))
     assert a["digest_scaffold"] == b["digest_scaffold"]
     assert P.compare(a, b)["verdict"] == P.NOT_COMPARABLE
 
@@ -508,26 +509,26 @@ def test_the_same_two_stream_positions_with_both_arms_running_are_unchanged(page
 def test_a_real_message_difference_is_still_reported_across_a_generation_disagreement(page):
     """The withholding is not a blanket. It applies only when the scaffold is the ONLY thing that
     moved; a settled message that differs is reported exactly as before."""
-    base = _capture_html(page, _page(tail = "arrived at last", **_finished()))
+    base = _capture_html(page, _page(tail="arrived at last", **_finished()))
     treat_statuses = list(_STREAMING_STATUSES)
     treat = _capture_html(
         page,
         _page(
-            tail = "arr",
-            control = _STOP_BUTTON,
-            queue_stack = False,
-            statuses = treat_statuses,
-            overlay = "",
+            tail="arr",
+            control=_STOP_BUTTON,
+            queue_stack=False,
+            statuses=treat_statuses,
+            overlay="",
         ),
     )
     # Change a SETTLED message on the treatment arm as well.
     treat2 = _capture_html(
         page,
         _page(
-            tail = "arr",
-            control = _STOP_BUTTON,
-            queue_stack = False,
-            statuses = treat_statuses,
+            tail="arr",
+            control=_STOP_BUTTON,
+            queue_stack=False,
+            statuses=treat_statuses,
         ).replace("reply 1 ", "reply 1 rewritten "),
     )
     assert treat["messages"][1]["digest"] != treat2["messages"][1]["digest"]
@@ -539,10 +540,10 @@ def test_a_real_message_difference_is_still_reported_across_a_generation_disagre
 def test_a_scaffold_difference_with_both_arms_agreeing_is_still_a_difference(page):
     """And the coverage this must not cost: when the arms agree about generation, the composer is
     comparable again and a scaffolding change is reported."""
-    base = _capture_html(page, _page(tail = "same", **_finished()))
+    base = _capture_html(page, _page(tail="same", **_finished()))
     treat = _capture_html(
         page,
-        _page(tail = "same", **_finished()).replace(
+        _page(tail="same", **_finished()).replace(
             ">typed while it ran<",
             ">a different draft left in the box<",
         ),
@@ -563,10 +564,10 @@ def test_the_blind_branch_reads_the_scaffold_when_the_arms_agree_about_generatio
     that objection does not apply and a scaffolding change is a finding even though the stream
     could not be placed.
     """
-    base = _capture_html(page, _page(tail = "same", **BLIND))
+    base = _capture_html(page, _page(tail="same", **BLIND))
     treat = _capture_html(
         page,
-        _page(tail = "same", **BLIND).replace(
+        _page(tail="same", **BLIND).replace(
             '<textarea aria-label="Message input">typed while it ran</textarea>',
             '<textarea aria-label="Message input">typed while it ran, differently</textarea>',
         ),
@@ -595,10 +596,10 @@ def test_a_composer_regression_between_two_settled_arms_is_reported(page):
     this tool can be shown, and NOT COMPARABLE would take it out of the exit code entirely, since
     `report` files a refusal under `blind` and scores only `stable_bad or one_sided`.
     """
-    base = _capture_html(page, _page(tail = "same", **_finished()))
+    base = _capture_html(page, _page(tail="same", **_finished()))
     treat = _capture_html(
         page,
-        _page(tail = "same", **dict(_finished(), control = _NO_CONTROL)),
+        _page(tail="same", **dict(_finished(), control=_NO_CONTROL)),
     )
     # The run state agrees on both independent readings; only the composer moved.
     assert base["streaming"] is False and treat["streaming"] is False
@@ -617,8 +618,8 @@ def test_a_finished_against_a_running_arm_is_still_refused_after_that(page):
     """And the suppression this must not cost: `streaming` disagrees, so the run state itself says
     the two arms were at different points in one turn and the composer is not evidence of a
     change."""
-    base = _capture_html(page, _page(tail = "arrived at last", **_finished()))
-    treat = _capture_html(page, _page(tail = "arr", **_writing()))
+    base = _capture_html(page, _page(tail="arrived at last", **_finished()))
+    treat = _capture_html(page, _page(tail="arr", **_writing()))
     assert base["streaming"] is False and treat["streaming"] is True
     got = P.compare(base, treat)
     assert got["verdict"] == P.NOT_COMPARABLE, got
@@ -640,11 +641,11 @@ def test_a_dispatched_queue_wait_is_a_run_state_not_a_rendering_difference(page)
     """
     dispatched = _capture_html(
         page,
-        _page(tail = "same", **dict(QUEUED_IDLE, control = _STOP_QUEUED_BUTTON, queue_stack = False)),
+        _page(tail="same", **dict(QUEUED_IDLE, control=_STOP_QUEUED_BUTTON, queue_stack=False)),
     )
     settled = _capture_html(
         page,
-        _page(tail = "same", **dict(QUEUED_IDLE, control = _SEND_BUTTON, queue_stack = False)),
+        _page(tail="same", **dict(QUEUED_IDLE, control=_SEND_BUTTON, queue_stack=False)),
     )
     # The composer really does differ, which is what makes this the interesting pair.
     assert dispatched["composer_control"] != settled["composer_control"]
@@ -661,10 +662,10 @@ def test_the_queued_idle_arm_against_a_settled_one_is_still_refused(page):
     """The other legitimate suppression: `isRunning()` cannot separate queued-idle from settled, so
     `queued_idle` is what carries this pair. Without it the Queue button would read as a
     regression."""
-    base = _capture_html(page, _page(tail = "same", **QUEUED_IDLE))
+    base = _capture_html(page, _page(tail="same", **QUEUED_IDLE))
     treat = _capture_html(
         page,
-        _page(tail = "same", **dict(QUEUED_IDLE, control = _SEND_BUTTON, queue_stack = False)),
+        _page(tail="same", **dict(QUEUED_IDLE, control=_SEND_BUTTON, queue_stack=False)),
     )
     assert base["composer_control"] != treat["composer_control"]
     assert bool(base["queued_idle"]) != bool(treat["queued_idle"]), (
@@ -685,8 +686,8 @@ def test_the_queued_idle_arm_against_a_settled_one_is_still_refused(page):
 def _capture_html_raw(page, html: str) -> dict:
     """`_capture_html`, keeping `styles.sig` so a test can say WHY the digest moved."""
     page.set_content(html)
-    page.add_script_tag(content = _DOM_JS.read_text(encoding = "utf-8"))
-    page.add_script_tag(content = _PARITY_JS.read_text(encoding = "utf-8"))
+    page.add_script_tag(content=_DOM_JS.read_text(encoding="utf-8"))
+    page.add_script_tag(content=_PARITY_JS.read_text(encoding="utf-8"))
     got = page.evaluate("() => window.__sb.parity.capture({ raw: true })")
     assert got.get("parity_attempted") is True, got
     return got
@@ -706,8 +707,8 @@ def test_the_style_probe_does_not_report_a_control_swap_as_a_css_regression(page
     `visibility` and `pointer-events` are IDENTICAL on every element -- asserted here rather than
     asserted about, off the raw signature.
     """
-    settled = _capture_html_raw(page, _page(tail = "same", **_finished()))
-    writing = _capture_html_raw(page, _page(tail = "same", **_writing()))
+    settled = _capture_html_raw(page, _page(tail="same", **_finished()))
+    writing = _capture_html_raw(page, _page(tail="same", **_writing()))
     # Same number of elements, same three properties on all of them, different digest.
     assert settled["styles"]["elements"] == writing["styles"]["elements"]
     assert _style_values(settled) == _style_values(writing), (
@@ -731,10 +732,10 @@ def test_a_queue_control_missing_from_the_selector_list_is_not_a_css_regression(
     a settled one and the probe reports "a different number of elements" -- over a page whose CSS
     is byte-identical. Both the undispatched wait and the dispatched one.
     """
-    settled = _capture_html_raw(page, _page(tail = "same", **_finished()))
+    settled = _capture_html_raw(page, _page(tail="same", **_finished()))
     queued = _capture_html_raw(
         page,
-        _page(tail = "same", **dict(QUEUED_IDLE, control = control, queue_stack = False)),
+        _page(tail="same", **dict(QUEUED_IDLE, control=control, queue_stack=False)),
     )
     assert settled["styles"]["elements"] != queued["styles"]["elements"]
     assert bool(settled["queued_idle"]) != bool(queued["queued_idle"]) or (
@@ -748,11 +749,11 @@ def test_a_real_style_regression_between_two_arms_in_one_run_state_is_still_repo
     """THE COVERAGE THIS MUST NOT COST. Same control on both arms, and the treatment hides the
     viewport from CSS alone -- no structural trace whatever, which is the only thing this probe
     exists to see."""
-    base = _capture_html_raw(page, _page(tail = "same", **_finished()))
+    base = _capture_html_raw(page, _page(tail="same", **_finished()))
     treat = _capture_html_raw(
         page,
         "<style>.aui-thread-viewport { visibility: hidden }</style>"
-        + _page(tail = "same", **_finished()),
+        + _page(tail="same", **_finished()),
     )
     assert base["digest"] == treat["digest"], "the difference must be CSS only"
     assert _style_values(base) != _style_values(treat)
@@ -764,10 +765,10 @@ def test_a_composer_that_lost_its_control_is_still_a_style_finding(page):
     """AND THE SUPPRESSION IS NOT KEYED ON THE COMPOSER TOKEN ALONE. The treatment simply has no
     Send button: the token differs, the probe matches one element fewer, and the run state agrees
     on both independent readings -- so this is a rendering regression and it is reported."""
-    base = _capture_html_raw(page, _page(tail = "same", **_finished()))
+    base = _capture_html_raw(page, _page(tail="same", **_finished()))
     treat = _capture_html_raw(
         page,
-        _page(tail = "same", **dict(_finished(), control = _NO_CONTROL)),
+        _page(tail="same", **dict(_finished(), control=_NO_CONTROL)),
     )
     assert base["composer_control"] == "Send message" and treat["composer_control"] == ""
     assert P._run_state_disagrees(base, treat) is False
@@ -781,10 +782,10 @@ def test_what_the_style_elision_gives_up(page):
     a genuine CSS regression elsewhere goes with it. The probe reads ONE aggregate digest over
     every matched element, so the swap cannot be separated from anything else inside it. The
     verdict is a refusal and not a MATCH, so nothing here reads as a pass."""
-    settled = _capture_html_raw(page, _page(tail = "same", **_finished()))
+    settled = _capture_html_raw(page, _page(tail="same", **_finished()))
     writing_and_broken = _capture_html_raw(
         page,
         "<style>.aui-thread-viewport { visibility: hidden }</style>"
-        + _page(tail = "same", **_writing()),
+        + _page(tail="same", **_writing()),
     )
     assert P.compare_styles(settled, writing_and_broken)[0] == P.NOT_COMPARABLE

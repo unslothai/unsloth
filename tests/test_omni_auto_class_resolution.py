@@ -173,13 +173,14 @@ def test_omni_reaches_the_vllm_guard_rather_than_the_language_model_path():
 
 def _tiny(cls):
     from transformers import LlamaConfig
+
     return cls(
         LlamaConfig(
-            hidden_size = 4,
-            num_hidden_layers = 1,
-            num_attention_heads = 1,
-            vocab_size = 8,
-            intermediate_size = 8,
+            hidden_size=4,
+            num_hidden_layers=1,
+            num_attention_heads=1,
+            vocab_size=8,
+            intermediate_size=8,
         )
     )
 
@@ -207,7 +208,7 @@ def test_a_getter_that_fails_internally_is_not_read_as_a_bad_signature():
         def get_input_embeddings(self):
             raise TypeError("genuine bug inside a valid zero-arg getter")
 
-    with pytest.raises(TypeError, match = "genuine bug inside"):
+    with pytest.raises(TypeError, match="genuine bug inside"):
         _tiny(RaisesInside).enable_input_require_grads()
 
 

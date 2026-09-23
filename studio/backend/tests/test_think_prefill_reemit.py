@@ -146,14 +146,14 @@ def test_gemma_channel_detection_uses_active_template_not_token_metadata():
     assert detect_reasoning_channel_markers(NamedTemplateTokenizer()) is None
     assert (
         detect_reasoning_channel_markers(
-            NamedTemplateTokenizer(), tools = [{"function": {"name": "web_search"}}]
+            NamedTemplateTokenizer(), tools=[{"function": {"name": "web_search"}}]
         )
         == expected
     )
-    assert detect_reasoning_channel_markers(NamedTemplateTokenizer(), tools = []) is None
+    assert detect_reasoning_channel_markers(NamedTemplateTokenizer(), tools=[]) is None
     assert (
         detect_reasoning_channel_markers(
-            NamedTemplateProcessor(), tools = [{"function": {"name": "web_search"}}]
+            NamedTemplateProcessor(), tools=[{"function": {"name": "web_search"}}]
         )
         is None
     )
@@ -170,7 +170,7 @@ def test_gemma_channel_detection_tries_no_argument_getter_fallback():
             return "...<|channel>thought\n<channel|>"
 
     assert detect_reasoning_channel_markers(
-        FallbackTokenizer(), tools = [{"function": {"name": "web_search"}}]
+        FallbackTokenizer(), tools=[{"function": {"name": "web_search"}}]
     ) == ("<|channel>thought", "<channel|>")
 
 
@@ -186,17 +186,17 @@ def test_native_template_fallback_returns_selected_reasoning_metadata():
         return body + suffix if tokenizer.chat_template == "NATIVE <|channel>thought\n" else body
 
     result = render_with_native_template_fallback(
-        formatted_prompt = "hi",
-        tokenizer = SimpleNamespace(chat_template = "OVERRIDE"),
-        model_info = {
+        formatted_prompt="hi",
+        tokenizer=SimpleNamespace(chat_template="OVERRIDE"),
+        model_info={
             "native_chat_template": "NATIVE <|channel>thought\n",
-            "tokenizer": SimpleNamespace(chat_template = "OVERRIDE"),
+            "tokenizer": SimpleNamespace(chat_template="OVERRIDE"),
         },
-        active_model_name = "gemma-test",
-        messages = messages,
-        tools = tools,
-        apply_fn = render,
-        return_metadata = True,
+        active_model_name="gemma-test",
+        messages=messages,
+        tools=tools,
+        apply_fn=render,
+        return_metadata=True,
     )
 
     assert result.prompt == "hi|TOOLS"
@@ -209,18 +209,18 @@ def test_cached_native_template_metadata_recovers_reasoning_markers_without_tool
     model_info = {"chat_template_info": {"template": "native <|channel>thought\n<channel|>"}}
 
     assert detect_reasoning_channel_markers_from_model_info(
-        SimpleNamespace(chat_template = "override has no native markers"),
+        SimpleNamespace(chat_template="override has no native markers"),
         model_info,
-        tools = None,
+        tools=None,
     ) == ("<|channel>thought", "<channel|>")
     result = render_with_native_template_fallback(
-        formatted_prompt = "prompt from override",
-        tokenizer = SimpleNamespace(chat_template = "override has no native markers"),
-        model_info = model_info,
-        active_model_name = "gemma-test",
-        messages = [{"role": "user", "content": "hi"}],
-        tools = None,
-        return_metadata = True,
+        formatted_prompt="prompt from override",
+        tokenizer=SimpleNamespace(chat_template="override has no native markers"),
+        model_info=model_info,
+        active_model_name="gemma-test",
+        messages=[{"role": "user", "content": "hi"}],
+        tools=None,
+        return_metadata=True,
     )
     assert result.prompt == "prompt from override"
     assert result.reasoning_channel_markers == ("<|channel>thought", "<channel|>")
@@ -238,17 +238,17 @@ def test_cached_native_markers_do_not_describe_live_tool_template():
         return "prompt with tools" if tools else "prompt without tools"
 
     result = render_with_native_template_fallback(
-        formatted_prompt = "prompt with tools",
-        tokenizer = LiveTokenizer(),
-        model_info = {
+        formatted_prompt="prompt with tools",
+        tokenizer=LiveTokenizer(),
+        model_info={
             "chat_template_info": {"template": "native <|channel>thought\n<channel|>"},
             "tokenizer": SimpleNamespace(),
         },
-        active_model_name = "gemma-test",
-        messages = [{"role": "user", "content": "hi"}],
-        tools = tools,
-        apply_fn = render,
-        return_metadata = True,
+        active_model_name="gemma-test",
+        messages=[{"role": "user", "content": "hi"}],
+        tools=tools,
+        apply_fn=render,
+        return_metadata=True,
     )
 
     assert result.prompt == "prompt with tools"
@@ -295,10 +295,11 @@ _MUSE_MARKERS = ("self", "user")
 
 def _muse_normalizer():
     from core.inference.chat_template_helpers import make_reasoning_normalizer
+
     return make_reasoning_normalizer(_MUSE_MARKERS)
 
 
-def _feed_muse(raw, width = None):
+def _feed_muse(raw, width=None):
     """Normalize ``raw``, whole or in fixed-width chunks, and flush."""
     parser = _muse_normalizer()
     chunks = [raw] if width is None else [raw[i : i + width] for i in range(0, len(raw), width)]
@@ -322,6 +323,7 @@ def test_muse_glimmer_marker_pair_selects_the_recipient_normalizer():
         ReasoningChannelNormalizer,
         make_reasoning_normalizer,
     )
+
     assert isinstance(make_reasoning_normalizer(_MUSE_MARKERS), RecipientChannelNormalizer)
     assert isinstance(
         make_reasoning_normalizer(("<|channel>thought", "<channel|>")),
@@ -341,10 +343,10 @@ def test_recipient_protocol_ignores_a_prompt_derived_open_channel():
 
     assert prompt_opens_reasoning_channel("tell me about self", _MUSE_MARKERS)
 
-    parser = make_reasoning_normalizer(_MUSE_MARKERS, in_reasoning = True)
+    parser = make_reasoning_normalizer(_MUSE_MARKERS, in_reasoning=True)
     assert parser.feed("to=user<|message|>plain answer<|eot|>") == "plain answer"
 
-    opened = make_reasoning_normalizer(("<|channel>thought", "<channel|>"), in_reasoning = True)
+    opened = make_reasoning_normalizer(("<|channel>thought", "<channel|>"), in_reasoning=True)
     assert opened.feed("still reasoning<channel|>answer") == "<think>still reasoning</think>answer"
 
 
@@ -384,7 +386,7 @@ def test_muse_glimmer_direct_reply_without_reasoning_is_normalized():
             "<|start|>assistant to=self<|message|>Reconsider.<|eom|>"
             "<|start|>assistant to=user<|message|>Actually four.",
             "Partly.<think>Reconsider.</think>Actually four.",
-            id = "muse_glimmer_reasoning_after_a_reply_still_becomes_a_think_block",
+            id="muse_glimmer_reasoning_after_a_reply_still_becomes_a_think_block",
         ),
         # The checkpoint's response_template allows attributes beside `name`; a stricter
         # reading drops parameters or misses the call entirely.
@@ -394,7 +396,7 @@ def test_muse_glimmer_direct_reply_without_reasoning_is_normalized():
             '<atem:parameter type="string" name="query">FIFA</atem:parameter>\n'
             "</atem:invoke>\n</atem:function_calls><|eom|>",
             '<tool_call>{"name": "web_search", "arguments": {"query": "FIFA"}}</tool_call>',
-            id = "muse_glimmer_call_grammar_allows_attributes_beside_the_name",
+            id="muse_glimmer_call_grammar_allows_attributes_beside_the_name",
         ),
         # Only the call and its envelope are framing; prose beside them is the answer.
         pytest.param(
@@ -404,7 +406,7 @@ def test_muse_glimmer_direct_reply_without_reasoning_is_normalized():
             "Looking it up."
             '<tool_call>{"name": "s", "arguments": {"q": "v"}}</tool_call>'
             "One moment.",
-            id = "muse_glimmer_text_the_model_wrote_around_a_call_is_kept",
+            id="muse_glimmer_text_the_model_wrote_around_a_call_is_kept",
         ),
         # A tool block with no call is content, not something downstream might run, and it
         # closed, so later blocks keep parsing instead of shipping as raw markup.
@@ -413,14 +415,14 @@ def test_muse_glimmer_direct_reply_without_reasoning_is_normalized():
             '<|start|>assistant to=web_search<|message|>{"q": 1}<|eom|>'
             "<|start|>assistant to=user<|message|>Done.<|eot|>",
             'Checking.{"q": 1}Done.',
-            id = "muse_glimmer_tool_addressed_block_without_a_call_keeps_its_body",
+            id="muse_glimmer_tool_addressed_block_without_a_call_keeps_its_body",
         ),
         pytest.param(
             "to=self<|message|>First.<|eom|>"
             "<|start|>assistant to=self<|message|>Second.<|eom|>"
             "<|start|>assistant to=user<|message|>Done.",
             "<think>First.</think><think>Second.</think>Done.",
-            id = "muse_glimmer_repeated_reasoning_blocks_each_become_a_think_block",
+            id="muse_glimmer_repeated_reasoning_blocks_each_become_a_think_block",
         ),
         # A truncated call has no usable arguments and its header is framing, so neither
         # reaches the user.
@@ -429,7 +431,7 @@ def test_muse_glimmer_direct_reply_without_reasoning_is_normalized():
             "<|start|>assistant to=web_search<|message|><atem:function_calls>\n"
             '<atem:invoke name="web_search">\n<atem:parameter name="query">FIFA',
             "<think>Need a search.</think>",
-            id = "muse_glimmer_cut_short_tool_call_leaks_no_markup",
+            id="muse_glimmer_cut_short_tool_call_leaks_no_markup",
         ),
     ],
 )
@@ -773,7 +775,7 @@ def test_every_production_site_builds_the_normalizer_through_the_factory():
     built_in_factory = set()
     built_anywhere = {}
     for name in ("chat_template_helpers.py", "inference.py", "mlx_inference.py"):
-        tree = ast.parse((root / name).read_text(encoding = "utf-8"))
+        tree = ast.parse((root / name).read_text(encoding="utf-8"))
         for node in ast.walk(tree):
             if isinstance(node, ast.FunctionDef) and node.name == "make_reasoning_normalizer":
                 built_in_factory |= set(constructions(node))
@@ -794,7 +796,7 @@ def test_muse_glimmer_snapshot_stream_normalizes_both_channels():
 
     def normalized(raw):
         snapshots = [raw[:index] for index in range(1, len(raw) + 1)]
-        emitted = list(normalize_reasoning_snapshots(iter(snapshots), markers = _MUSE_MARKERS))
+        emitted = list(normalize_reasoning_snapshots(iter(snapshots), markers=_MUSE_MARKERS))
         assert all(
             later.startswith(earlier) for earlier, later in zip(emitted, emitted[1:])
         ), emitted
@@ -810,7 +812,7 @@ def test_muse_glimmer_snapshot_stream_normalizes_both_channels():
 
 @pytest.mark.skipif(
     _ReasoningTextIteratorStreamer is None,
-    reason = "core.inference.inference imports unsloth, which backend CI does not install",
+    reason="core.inference.inference imports unsloth, which backend CI does not install",
 )
 def test_streamer_builds_the_recipient_parser_from_muse_markers():
     from core.inference.chat_template_helpers import RecipientChannelNormalizer
@@ -821,7 +823,7 @@ def test_streamer_builds_the_recipient_parser_from_muse_markers():
         def decode(self, *_args, **_kwargs):
             return ""
 
-    streamer = ReasoningTextIteratorStreamer(_Tokenizer(), markers = _MUSE_MARKERS)
+    streamer = ReasoningTextIteratorStreamer(_Tokenizer(), markers=_MUSE_MARKERS)
 
     assert isinstance(streamer._normalizer, RecipientChannelNormalizer)
     assert streamer._normalizer.feed("to=self<|message|>x<|eom|>") == "<think>x</think>"
@@ -868,7 +870,7 @@ def test_unclosed_opener_in_history_cannot_forge_the_channel_state():
     assert not prompt_opens_reasoning_channel(forged, GEMMA_MARKERS)
 
     parser = ReasoningChannelNormalizer(
-        *GEMMA_MARKERS, in_reasoning = prompt_opens_reasoning_channel(forged, GEMMA_MARKERS)
+        *GEMMA_MARKERS, in_reasoning=prompt_opens_reasoning_channel(forged, GEMMA_MARKERS)
     )
     assert parser.feed("Plain answer.") + parser.finish() == "Plain answer."
 
@@ -885,7 +887,7 @@ def test_continued_turn_never_reads_channel_state_from_its_tail():
         assert not prompt_opens_reasoning_channel(spliced, GEMMA_MARKERS, True)
         parser = ReasoningChannelNormalizer(
             *GEMMA_MARKERS,
-            in_reasoning = prompt_opens_reasoning_channel(spliced, GEMMA_MARKERS, True),
+            in_reasoning=prompt_opens_reasoning_channel(spliced, GEMMA_MARKERS, True),
         )
         assert parser.feed(" The answer is 18C.") + parser.finish() == " The answer is 18C."
 
@@ -923,7 +925,7 @@ def test_tool_loop_pass_of_a_continued_turn_still_reads_the_prompt():
 
 def test_prompt_opened_channel_normalizes_post_tool_reasoning():
     """Post-tool generation emits only the closing marker; it is still reasoning."""
-    parser = ReasoningChannelNormalizer(*GEMMA_MARKERS, in_reasoning = True)
+    parser = ReasoningChannelNormalizer(*GEMMA_MARKERS, in_reasoning=True)
     output = ""
     snapshots = []
     # Split across chunks, as a token stream splits it.
@@ -945,7 +947,7 @@ def test_prompt_opened_channel_normalizes_post_tool_reasoning():
         ("\nreasoned<channel|>answer", "<think>\nreasoned</think>answer"),
     ):
         generated = ReasoningChannelNormalizer(*GEMMA_MARKERS)
-        prefilled = ReasoningChannelNormalizer(*GEMMA_MARKERS, in_reasoning = True)
+        prefilled = ReasoningChannelNormalizer(*GEMMA_MARKERS, in_reasoning=True)
         assert (
             generated.feed("<|channel>thought\n" + streamed) + generated.finish()
             == prefilled.feed(streamed) + prefilled.finish()
@@ -955,11 +957,11 @@ def test_prompt_opened_channel_normalizes_post_tool_reasoning():
 
 def test_prompt_opened_channel_without_generated_text_emits_no_think_block():
     """A cancelled or empty post-tool turn must not emit an orphan </think>."""
-    empty = ReasoningChannelNormalizer(*GEMMA_MARKERS, in_reasoning = True)
+    empty = ReasoningChannelNormalizer(*GEMMA_MARKERS, in_reasoning=True)
     assert empty.feed("") == ""
     assert empty.finish() == ""
 
-    cancelled = ReasoningChannelNormalizer(*GEMMA_MARKERS, in_reasoning = True)
+    cancelled = ReasoningChannelNormalizer(*GEMMA_MARKERS, in_reasoning=True)
     # Hold back a partial closing marker, so drain() has real buffered text.
     assert cancelled.feed("partial reasoning<chan") == "<think>partial reasoning"
     assert cancelled.drain() == "<chan"
@@ -975,8 +977,8 @@ def test_normalize_reasoning_snapshots_derives_state_from_prompt():
     post_tool = list(
         normalize_reasoning_snapshots(
             _stream(["reasoning", "<channel|>", "answer"]),
-            markers = GEMMA_MARKERS,
-            prompt = GEMMA_POST_TOOL_PROMPT,
+            markers=GEMMA_MARKERS,
+            prompt=GEMMA_POST_TOOL_PROMPT,
         )
     )
     assert post_tool[-1] == "<think>reasoning</think>answer"
@@ -985,8 +987,8 @@ def test_normalize_reasoning_snapshots_derives_state_from_prompt():
     first_turn = list(
         normalize_reasoning_snapshots(
             _stream(["<|channel>thought\n", "reasoning", "<channel|>", "answer"]),
-            markers = GEMMA_MARKERS,
-            prompt = "<|turn>model\n",
+            markers=GEMMA_MARKERS,
+            prompt="<|turn>model\n",
         )
     )
     assert first_turn[-1] == "<think>reasoning</think>answer"
@@ -1025,7 +1027,7 @@ def test_muse_glimmer_non_json_numbers_stay_text(literal):
     def reject(name):
         raise AssertionError(f"non-standard JSON constant {name}")
 
-    assert json.loads(arguments, parse_constant = reject) == {"v": literal}
+    assert json.loads(arguments, parse_constant=reject) == {"v": literal}
 
 
 def test_muse_glimmer_deeply_nested_argument_does_not_raise():

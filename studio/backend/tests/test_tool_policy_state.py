@@ -25,7 +25,7 @@ from state.tool_policy import (
 )
 
 
-@pytest.fixture(autouse = True)
+@pytest.fixture(autouse=True)
 def _reset():
     reset_tool_policy()
     yield

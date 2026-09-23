@@ -41,18 +41,18 @@ def _shared_setup_1():
                         ]
                     }
                 ),
-                _sse(finish = "tool_calls"),
+                _sse(finish="tool_calls"),
                 _DONE,
             ],
-            [_sse({"content": "ok"}), _sse(finish = "stop"), _DONE],
+            [_sse({"content": "ok"}), _sse(finish="stop"), _DONE],
         ]
     )
     return transport
 
 
 def _sse(
-    delta = None,
-    finish = None,
+    delta=None,
+    finish=None,
     **extra,
 ) -> str:
     choice: dict = {"index": 0, "delta": delta or {}}
@@ -92,7 +92,7 @@ class FakeTransport:
         self,
         turns,
         *,
-        heals = True,
+        heals=True,
     ):
         self.turns = [list(turn) for turn in turns]
         self.heals_text_tool_calls = heals
@@ -133,10 +133,10 @@ def executed(monkeypatch):
 def _run(
     transport,
     *,
-    tools = None,
-    tool_choice = None,
-    messages = None,
-    supports_vision = False,
+    tools=None,
+    tool_choice=None,
+    messages=None,
+    supports_vision=False,
     **policy_kwargs,
 ):
     policy_fields = {
@@ -155,15 +155,15 @@ def _run(
         out = []
         agen = stream_with_studio_tools(
             transport,
-            run = ToolLoopRun(
-                messages = messages or [{"role": "user", "content": "hi"}],
-                session_id = "s1",
-                thread_id = "t1",
-                tool_choice = tool_choice,
-                supports_vision = supports_vision,
+            run=ToolLoopRun(
+                messages=messages or [{"role": "user", "content": "hi"}],
+                session_id="s1",
+                thread_id="t1",
+                tool_choice=tool_choice,
+                supports_vision=supports_vision,
             ),
-            policy = ToolLoopPolicy(**policy_fields),
-            cancel_event = cancel_event,
+            policy=ToolLoopPolicy(**policy_fields),
+            cancel_event=cancel_event,
         )
         async for line in agen:
             out.append(line)
@@ -225,10 +225,10 @@ def test_structured_call_executes_and_continues(executed):
                         ]
                     }
                 ),
-                _sse(finish = "tool_calls"),
+                _sse(finish="tool_calls"),
                 _DONE,
             ],
-            [_sse({"content": "Here is what I found."}), _sse(finish = "stop"), _DONE],
+            [_sse({"content": "Here is what I found."}), _sse(finish="stop"), _DONE],
         ]
     )
     lines = _run(transport)
@@ -273,14 +273,14 @@ def test_a_conversation_search_here_gets_the_active_branch(executed):
                         ]
                     }
                 ),
-                _sse(finish = "tool_calls"),
+                _sse(finish="tool_calls"),
                 _DONE,
             ],
-            [_sse({"content": "It was 5150."}), _sse(finish = "stop"), _DONE],
+            [_sse({"content": "It was 5150."}), _sse(finish="stop"), _DONE],
         ]
     )
 
-    _run(transport, tools = [_tool("search_conversation")], messages = branch)
+    _run(transport, tools=[_tool("search_conversation")], messages=branch)
 
     assert [call["name"] for call in executed] == ["search_conversation"]
     assert executed[0]["conversation_branch"] == branch
@@ -304,10 +304,10 @@ def test_streamed_tool_name_fragments_are_not_concatenated(executed):
                 _sse({"tool_calls": [{"index": 0, "function": {"name": "web_search"}}]}),
                 _sse({"tool_calls": [{"index": 0, "function": {"arguments": '{"query":'}}]}),
                 _sse({"tool_calls": [{"index": 0, "function": {"arguments": '"x"}'}}]}),
-                _sse(finish = "tool_calls"),
+                _sse(finish="tool_calls"),
                 _DONE,
             ],
-            [_sse({"content": "done"}), _sse(finish = "stop"), _DONE],
+            [_sse({"content": "done"}), _sse(finish="stop"), _DONE],
         ]
     )
     _run(transport)
@@ -329,10 +329,10 @@ def test_text_form_tool_call_is_healed_and_executed(executed):
                         "content": '<tool_call>{"name": "web_search", "arguments": {"query": "unsloth"}}</tool_call>'
                     }
                 ),
-                _sse(finish = "stop"),
+                _sse(finish="stop"),
                 _DONE,
             ],
-            [_sse({"content": "Found it."}), _sse(finish = "stop"), _DONE],
+            [_sse({"content": "Found it."}), _sse(finish="stop"), _DONE],
         ]
     )
     lines = _run(transport)
@@ -353,10 +353,10 @@ def test_partial_marker_split_across_deltas_is_not_broken(executed):
                 _sse({"content": "<tool"}),
                 _sse({"content": '_call>{"name": "web_search", "arg'}),
                 _sse({"content": 'uments": {"query": "split"}}</tool_call>'}),
-                _sse(finish = "stop"),
+                _sse(finish="stop"),
                 _DONE,
             ],
-            [_sse({"content": "ok"}), _sse(finish = "stop"), _DONE],
+            [_sse({"content": "ok"}), _sse(finish="stop"), _DONE],
         ]
     )
     lines = _run(transport)
@@ -377,7 +377,7 @@ def test_unterminated_envelope_is_released_as_prose_and_terminates(executed):
             [
                 _sse({"content": "thinking... "}),
                 _sse({"content": '<tool_call>{"name": "web_sea'}),
-                _sse(finish = "stop"),
+                _sse(finish="stop"),
                 _DONE,
             ]
         ]
@@ -401,12 +401,12 @@ def test_undeclared_text_call_is_not_promoted(executed):
                         "content": '<tool_call>{"name": "terminal", "arguments": {"command": "id"}}</tool_call>'
                     }
                 ),
-                _sse(finish = "stop"),
+                _sse(finish="stop"),
                 _DONE,
             ]
         ]
     )
-    lines = _run(transport, tools = [WEB])
+    lines = _run(transport, tools=[WEB])
 
     assert executed == []
     assert "terminal" in _visible_text(lines)
@@ -418,12 +418,12 @@ def test_fenced_rehearsal_is_documentation_not_a_call(executed):
         [
             [
                 _sse({"content": 'Docs:\n```\npython[ARGS]{"code": "1"}\n```\n'}),
-                _sse(finish = "stop"),
+                _sse(finish="stop"),
                 _DONE,
             ]
         ]
     )
-    lines = _run(transport, tools = [WEB, PY])
+    lines = _run(transport, tools=[WEB, PY])
 
     assert executed == []
     assert "python[ARGS]" in _visible_text(lines)
@@ -439,11 +439,11 @@ def test_healing_is_off_for_a_transport_that_does_not_need_it(executed):
                         "content": '<tool_call>{"name": "web_search", "arguments": {"query": "x"}}</tool_call>'
                     }
                 ),
-                _sse(finish = "stop"),
+                _sse(finish="stop"),
                 _DONE,
             ]
         ],
-        heals = False,
+        heals=False,
     )
     lines = _run(transport)
 
@@ -468,10 +468,10 @@ def test_structured_call_makes_the_healer_dormant(executed):
                         ]
                     }
                 ),
-                _sse(finish = "tool_calls"),
+                _sse(finish="tool_calls"),
                 _DONE,
             ],
-            [_sse({"content": "ok"}), _sse(finish = "stop"), _DONE],
+            [_sse({"content": "ok"}), _sse(finish="stop"), _DONE],
         ]
     )
     lines = _run(transport)
@@ -485,8 +485,8 @@ def test_structured_call_makes_the_healer_dormant(executed):
 
 
 def test_zero_budget_withdraws_the_catalog(executed):
-    transport = FakeTransport([[_sse({"content": "no tools for me"}), _sse(finish = "stop"), _DONE]])
-    _run(transport, max_calls = 0)
+    transport = FakeTransport([[_sse({"content": "no tools for me"}), _sse(finish="stop"), _DONE]])
+    _run(transport, max_calls=0)
 
     assert executed == []
     assert transport.requests[0]["tools"] is None
@@ -499,7 +499,7 @@ def test_denied_call_does_not_spend_an_iteration(executed, monkeypatch):
     monkeypatch.setattr(
         loop_mod,
         "wait_tool_decision",
-        lambda slot, approval, cancel_event = None: decisions.pop(0),
+        lambda slot, approval, cancel_event=None: decisions.pop(0),
     )
     monkeypatch.setattr(loop_mod, "abort_tool_decision", lambda slot, approval: None)
     monkeypatch.setattr(loop_mod, "new_approval_id", lambda: "ap1")
@@ -518,7 +518,7 @@ def test_denied_call_does_not_spend_an_iteration(executed, monkeypatch):
                         ]
                     }
                 ),
-                _sse(finish = "tool_calls"),
+                _sse(finish="tool_calls"),
                 _DONE,
             ],
             [
@@ -533,18 +533,18 @@ def test_denied_call_does_not_spend_an_iteration(executed, monkeypatch):
                         ]
                     }
                 ),
-                _sse(finish = "tool_calls"),
+                _sse(finish="tool_calls"),
                 _DONE,
             ],
-            [_sse({"content": "ok"}), _sse(finish = "stop"), _DONE],
+            [_sse({"content": "ok"}), _sse(finish="stop"), _DONE],
         ]
     )
     _run(
         transport,
-        tools = [PY],
-        max_calls = 1,
-        permission_mode = "auto",
-        confirm_calls = True,
+        tools=[PY],
+        max_calls=1,
+        permission_mode="auto",
+        confirm_calls=True,
     )
 
     # The denial consumed no budget, so the second call still had one left.
@@ -563,7 +563,7 @@ def test_auto_mode_prompts_only_for_high_risk_calls(executed, monkeypatch):
         lambda session, approval: slots.append(approval) or object(),
     )
     monkeypatch.setattr(
-        loop_mod, "wait_tool_decision", lambda slot, approval, cancel_event = None: "allow"
+        loop_mod, "wait_tool_decision", lambda slot, approval, cancel_event=None: "allow"
     )
     monkeypatch.setattr(loop_mod, "abort_tool_decision", lambda slot, approval: None)
     monkeypatch.setattr(loop_mod, "new_approval_id", lambda: "ap1")
@@ -582,17 +582,17 @@ def test_auto_mode_prompts_only_for_high_risk_calls(executed, monkeypatch):
                         ]
                     }
                 ),
-                _sse(finish = "tool_calls"),
+                _sse(finish="tool_calls"),
                 _DONE,
             ],
-            [_sse({"content": "ok"}), _sse(finish = "stop"), _DONE],
+            [_sse({"content": "ok"}), _sse(finish="stop"), _DONE],
         ]
     )
     lines = _run(
         transport,
-        tools = [WEB, PY],
-        permission_mode = "auto",
-        confirm_calls = True,
+        tools=[WEB, PY],
+        permission_mode="auto",
+        confirm_calls=True,
     )
 
     # web_search is not high-risk, so it runs without an approval card.
@@ -603,14 +603,14 @@ def test_auto_mode_prompts_only_for_high_risk_calls(executed, monkeypatch):
 
 def test_full_access_disables_the_sandbox_at_execution(executed):
     transport = _shared_setup_1()
-    _run(transport, tools = [PY], bypass_permissions = True)
+    _run(transport, tools=[PY], bypass_permissions=True)
 
     assert executed[0]["disable_sandbox"] is True
 
 
 def test_sandbox_stays_on_by_default(executed):
     transport = _shared_setup_1()
-    _run(transport, tools = [PY])
+    _run(transport, tools=[PY])
 
     assert executed[0]["disable_sandbox"] is False
 
@@ -633,13 +633,13 @@ def test_forced_choice_is_cleared_after_the_first_execution(executed):
                         ]
                     }
                 ),
-                _sse(finish = "tool_calls"),
+                _sse(finish="tool_calls"),
                 _DONE,
             ],
-            [_sse({"content": "answer"}), _sse(finish = "stop"), _DONE],
+            [_sse({"content": "answer"}), _sse(finish="stop"), _DONE],
         ]
     )
-    _run(transport, tool_choice = "required")
+    _run(transport, tool_choice="required")
 
     assert transport.requests[0]["tool_choice"] == "required"
     # The result follow-up must be free to answer in prose.
@@ -665,7 +665,7 @@ def test_usage_is_summed_into_one_chunk(executed):
                         ]
                     }
                 ),
-                _sse(finish = "tool_calls"),
+                _sse(finish="tool_calls"),
                 "data: "
                 + json.dumps(
                     {
@@ -682,7 +682,7 @@ def test_usage_is_summed_into_one_chunk(executed):
             ],
             [
                 _sse({"content": "done"}),
-                _sse(finish = "stop"),
+                _sse(finish="stop"),
                 "data: "
                 + json.dumps(
                     {
@@ -727,9 +727,9 @@ def test_a_repeated_identical_call_does_not_re_execute(executed):
     }
     transport = FakeTransport(
         [
-            [_sse({"tool_calls": [call]}), _sse(finish = "tool_calls"), _DONE],
-            [_sse({"tool_calls": [dict(call, id = "c2")]}), _sse(finish = "tool_calls"), _DONE],
-            [_sse({"content": "answer"}), _sse(finish = "stop"), _DONE],
+            [_sse({"tool_calls": [call]}), _sse(finish="tool_calls"), _DONE],
+            [_sse({"tool_calls": [dict(call, id="c2")]}), _sse(finish="tool_calls"), _DONE],
+            [_sse({"content": "answer"}), _sse(finish="stop"), _DONE],
         ]
     )
     _run(transport)
@@ -741,7 +741,7 @@ def test_a_stalled_model_is_nudged_to_act(executed):
     """Small models often say what they will do instead of doing it."""
     transport = FakeTransport(
         [
-            [_sse({"content": "I'll search for that now."}), _sse(finish = "stop"), _DONE],
+            [_sse({"content": "I'll search for that now."}), _sse(finish="stop"), _DONE],
             [
                 _sse(
                     {
@@ -754,13 +754,13 @@ def test_a_stalled_model_is_nudged_to_act(executed):
                         ]
                     }
                 ),
-                _sse(finish = "tool_calls"),
+                _sse(finish="tool_calls"),
                 _DONE,
             ],
-            [_sse({"content": "answer"}), _sse(finish = "stop"), _DONE],
+            [_sse({"content": "answer"}), _sse(finish="stop"), _DONE],
         ]
     )
-    _run(transport, nudge_tool_calls = True)
+    _run(transport, nudge_tool_calls=True)
 
     assert [c["name"] for c in executed] == ["web_search"]
     # The nudge is a user turn appended after the stall.
@@ -775,8 +775,8 @@ def test_a_stalled_model_is_not_nudged_by_default(executed, monkeypatch):
     monkeypatch.setattr(passthrough_healing, "_NUDGE_DEFAULT", False)
     transport = FakeTransport(
         [
-            [_sse({"content": "I'll search for that now."}), _sse(finish = "stop"), _DONE],
-            [_sse({"content": "SHOULD NOT APPEAR"}), _sse(finish = "stop"), _DONE],
+            [_sse({"content": "I'll search for that now."}), _sse(finish="stop"), _DONE],
+            [_sse({"content": "SHOULD NOT APPEAR"}), _sse(finish="stop"), _DONE],
         ]
     )
     lines = _run(transport)
@@ -791,11 +791,11 @@ def test_an_explicit_false_beats_a_process_default_of_on(executed, monkeypatch):
     monkeypatch.setattr(passthrough_healing, "_NUDGE_DEFAULT", True)
     transport = FakeTransport(
         [
-            [_sse({"content": "I'll search for that now."}), _sse(finish = "stop"), _DONE],
-            [_sse({"content": "SHOULD NOT APPEAR"}), _sse(finish = "stop"), _DONE],
+            [_sse({"content": "I'll search for that now."}), _sse(finish="stop"), _DONE],
+            [_sse({"content": "SHOULD NOT APPEAR"}), _sse(finish="stop"), _DONE],
         ]
     )
-    lines = _run(transport, nudge_tool_calls = False)
+    lines = _run(transport, nudge_tool_calls=False)
 
     assert executed == []
     assert len(transport.requests) == 1
@@ -808,7 +808,7 @@ def test_an_omitted_flag_still_follows_a_process_default_of_on(executed, monkeyp
     monkeypatch.setattr(passthrough_healing, "_NUDGE_DEFAULT", True)
     transport = FakeTransport(
         [
-            [_sse({"content": "I'll search for that now."}), _sse(finish = "stop"), _DONE],
+            [_sse({"content": "I'll search for that now."}), _sse(finish="stop"), _DONE],
             [
                 _sse(
                     {
@@ -821,10 +821,10 @@ def test_an_omitted_flag_still_follows_a_process_default_of_on(executed, monkeyp
                         ]
                     }
                 ),
-                _sse(finish = "tool_calls"),
+                _sse(finish="tool_calls"),
                 _DONE,
             ],
-            [_sse({"content": "answer"}), _sse(finish = "stop"), _DONE],
+            [_sse({"content": "answer"}), _sse(finish="stop"), _DONE],
         ]
     )
     _run(transport)
@@ -839,7 +839,7 @@ def test_a_finished_answer_is_not_nudged(executed):
         "The capital of France is Paris, which has been the seat of government "
         "since the tenth century and remains the largest city in the country."
     )
-    transport = FakeTransport([[_sse({"content": answer}), _sse(finish = "stop"), _DONE]])
+    transport = FakeTransport([[_sse({"content": answer}), _sse(finish="stop"), _DONE]])
     _run(transport)
 
     assert executed == []
@@ -874,13 +874,13 @@ def test_the_loop_terminates_against_an_endlessly_calling_model(executed):
                         ]
                     }
                 )
-                yield _sse(finish = "tool_calls")
+                yield _sse(finish="tool_calls")
                 yield _DONE
 
             return _gen()
 
     transport = Endless()
-    _run(transport, max_calls = 3)
+    _run(transport, max_calls=3)
 
     # Budget spent, catalog withdrawn, then one final no-tools pass.
     assert len(executed) == 3
@@ -893,7 +893,7 @@ def test_tool_stdout_streams_while_the_call_runs(executed, monkeypatch):
     def _execute(
         name,
         arguments,
-        output_callback = None,
+        output_callback=None,
         **kwargs,
     ):
         if output_callback:
@@ -903,7 +903,7 @@ def test_tool_stdout_streams_while_the_call_runs(executed, monkeypatch):
 
     monkeypatch.setattr(loop_mod, "execute_tool", _execute)
     transport = _shared_setup_1()
-    lines = _run(transport, tools = [PY])
+    lines = _run(transport, tools=[PY])
 
     progress = [line for line in lines if line.startswith("data: ") and "partial line" in line]
     assert progress, "no live tool output reached the client"
@@ -919,10 +919,10 @@ def test_replayed_assistant_content_carries_no_markup(executed):
                         "content": 'Sure. <tool_call>{"name": "web_search", "arguments": {"query": "x"}}</tool_call>'
                     }
                 ),
-                _sse(finish = "stop"),
+                _sse(finish="stop"),
                 _DONE,
             ],
-            [_sse({"content": "ok"}), _sse(finish = "stop"), _DONE],
+            [_sse({"content": "ok"}), _sse(finish="stop"), _DONE],
         ]
     )
     _run(transport)
@@ -949,10 +949,10 @@ def test_conversation_roles_stay_alternating_for_a_strict_server(executed):
                         ]
                     }
                 ),
-                _sse(finish = "tool_calls"),
+                _sse(finish="tool_calls"),
                 _DONE,
             ],
-            [_sse({"content": "ok"}), _sse(finish = "stop"), _DONE],
+            [_sse({"content": "ok"}), _sse(finish="stop"), _DONE],
         ]
     )
     _run(transport)
@@ -984,12 +984,12 @@ def test_gemini_thought_signature_is_replayed_on_the_assistant_turn(executed):
                     }
                 ),
                 _sse({"tool_calls": [{"index": 0, "function": {"arguments": '{"query":"u"}'}}]}),
-                _sse(finish = "tool_calls"),
+                _sse(finish="tool_calls"),
                 _DONE,
             ],
-            [_sse({"content": "ok"}), _sse(finish = "stop"), _DONE],
+            [_sse({"content": "ok"}), _sse(finish="stop"), _DONE],
         ],
-        heals = False,
+        heals=False,
     )
     _run(transport)
 
@@ -1018,12 +1018,12 @@ def test_a_decoded_object_arguments_delta_reaches_the_tool(executed):
                 _sse(
                     {"tool_calls": [_call_delta(0, "call_obj", "web_search", {"query": "value"})]}
                 ),
-                _sse(finish = "tool_calls"),
+                _sse(finish="tool_calls"),
                 _DONE,
             ],
-            [_sse({"content": "done"}), _sse(finish = "stop"), _DONE],
+            [_sse({"content": "done"}), _sse(finish="stop"), _DONE],
         ],
-        heals = False,
+        heals=False,
     )
     lines = _run(transport)
 
@@ -1070,7 +1070,7 @@ def test_a_decoded_object_lands_where_its_string_spelling_would():
     ]
 
     def _shape(batches):
-        turn = loop_mod._Turn(round = 1)
+        turn = loop_mod._Turn(round=1)
         for batch in batches:
             turn.merge_structured(batch)
         return [(c["function"]["name"], c["function"]["arguments"]) for c in turn.calls()]
@@ -1098,14 +1098,14 @@ def test_budget_exhausted_parallel_call_is_replayed_with_its_call(executed):
                         ]
                     }
                 ),
-                _sse(finish = "tool_calls"),
+                _sse(finish="tool_calls"),
                 _DONE,
             ],
-            [_sse({"content": "done"}), _sse(finish = "stop"), _DONE],
+            [_sse({"content": "done"}), _sse(finish="stop"), _DONE],
         ],
-        heals = False,
+        heals=False,
     )
-    lines = _run(transport, max_calls = 1)
+    lines = _run(transport, max_calls=1)
 
     assert [call["name"] for call in executed] == ["web_search"]
     replayed = transport.requests[1]["messages"]
@@ -1144,14 +1144,14 @@ def test_unlimited_budget_runs_past_the_old_fixed_turn_cap(executed):
             _sse(
                 {"tool_calls": [_call_delta(0, f"call_{n}", "web_search", f'{{"query":"q{n}"}}')]}
             ),
-            _sse(finish = "tool_calls"),
+            _sse(finish="tool_calls"),
             _DONE,
         ]
         for n in range(40)
     ]
-    turns.append([_sse({"content": "done"}), _sse(finish = "stop"), _DONE])
-    transport = FakeTransport(turns, heals = False)
-    lines = _run(transport, max_calls = 9999)
+    turns.append([_sse({"content": "done"}), _sse(finish="stop"), _DONE])
+    transport = FakeTransport(turns, heals=False)
+    lines = _run(transport, max_calls=9999)
 
     assert len(executed) == 40
     assert _visible_text(lines) == "done"
@@ -1167,16 +1167,16 @@ def test_a_skipped_duplicate_closes_the_card_the_provider_already_painted(execut
     """
     repeat = [
         _sse({"tool_calls": [_call_delta(0, "call_a", "web_search", '{"query":"a"}')]}),
-        _sse(finish = "tool_calls"),
+        _sse(finish="tool_calls"),
         _DONE,
     ]
     transport = FakeTransport(
         [
             list(repeat),
             list(repeat),
-            [_sse({"content": "done"}), _sse(finish = "stop"), _DONE],
+            [_sse({"content": "done"}), _sse(finish="stop"), _DONE],
         ],
-        heals = False,
+        heals=False,
     )
     lines = _run(transport)
 
@@ -1210,12 +1210,12 @@ def test_a_second_call_at_one_index_keeps_its_own_argument_fragments(executed):
                 _sse({"tool_calls": [{"index": 0, "function": {"arguments": '"first"}'}}]}),
                 _sse({"tool_calls": [_call_delta(0, "call_b", "web_search", '{"query":')]}),
                 _sse({"tool_calls": [{"index": 0, "function": {"arguments": '"second"}'}}]}),
-                _sse(finish = "tool_calls"),
+                _sse(finish="tool_calls"),
                 _DONE,
             ],
-            [_sse({"content": "done"}), _sse(finish = "stop"), _DONE],
+            [_sse({"content": "done"}), _sse(finish="stop"), _DONE],
         ],
-        heals = False,
+        heals=False,
     )
     _run(transport)
 
@@ -1250,12 +1250,12 @@ def test_a_fragment_naming_its_call_goes_back_to_that_call(executed):
                         ]
                     }
                 ),
-                _sse(finish = "tool_calls"),
+                _sse(finish="tool_calls"),
                 _DONE,
             ],
-            [_sse({"content": "done"}), _sse(finish = "stop"), _DONE],
+            [_sse({"content": "done"}), _sse(finish="stop"), _DONE],
         ],
-        heals = False,
+        heals=False,
     )
     _run(transport)
 
@@ -1283,10 +1283,10 @@ def _mcp_image_transport() -> FakeTransport:
                         ]
                     }
                 ),
-                _sse(finish = "tool_calls"),
+                _sse(finish="tool_calls"),
                 _DONE,
             ],
-            [_sse({"content": "A tabby cat."}), _sse(finish = "stop"), _DONE],
+            [_sse({"content": "A tabby cat."}), _sse(finish="stop"), _DONE],
         ]
     )
 
@@ -1301,7 +1301,7 @@ def mcp_image_result(monkeypatch):
     from core.inference import mcp_images
 
     buffer = io.BytesIO()
-    Image.new("RGB", (6, 6), (10, 120, 200)).save(buffer, format = "PNG")
+    Image.new("RGB", (6, 6), (10, 120, 200)).save(buffer, format="PNG")
     envelope = json.dumps(
         [{"data": base64.b64encode(buffer.getvalue()).decode(), "mimeType": "image/png"}]
     )
@@ -1319,8 +1319,8 @@ def test_mcp_images_reach_a_vision_provider_as_their_own_user_turn(mcp_image_res
 
     _run(
         transport,
-        tools = [_tool("mcp__fs__read_media_file")],
-        supports_vision = True,
+        tools=[_tool("mcp__fs__read_media_file")],
+        supports_vision=True,
     )
 
     follow_up = transport.requests[1]["messages"]
@@ -1332,7 +1332,7 @@ def test_mcp_images_reach_a_vision_provider_as_their_own_user_turn(mcp_image_res
 def test_mcp_images_are_not_sent_to_a_text_only_provider(mcp_image_result):
     transport = _mcp_image_transport()
 
-    _run(transport, tools = [_tool("mcp__fs__read_media_file")])
+    _run(transport, tools=[_tool("mcp__fs__read_media_file")])
 
     follow_up = transport.requests[1]["messages"]
     assert follow_up[-1]["role"] == "tool"

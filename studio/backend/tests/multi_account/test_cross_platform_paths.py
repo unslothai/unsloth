@@ -78,7 +78,7 @@ def test_distinct_generated_account_ids_do_not_collide_under_case_folding(isolat
     for username in ("alice", "ALICE", "café", "cafe\u0301", "CON"):
         isolated_auth.create_initial_user(username, "account-password", uuid.uuid4().hex)
         account_id = isolated_auth.get_account(username).account_id
-        assert uuid.UUID(hex = account_id).version == 4
+        assert uuid.UUID(hex=account_id).version == 4
         ids.append(account_id)
     assert len({ntpath.normcase(ntpath.join("accounts", value)) for value in ids}) == len(ids)
 

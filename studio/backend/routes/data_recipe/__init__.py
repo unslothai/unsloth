@@ -22,7 +22,7 @@ from .mcp import router as mcp_router
 from .seed import router as seed_router
 from .validate import router as validate_router
 
-_header_authenticated = APIRouter(dependencies = [Depends(get_current_subject)])
+_header_authenticated = APIRouter(dependencies=[Depends(get_current_subject)])
 _header_authenticated.include_router(seed_router)
 _header_authenticated.include_router(validate_router)
 _header_authenticated.include_router(jobs_router)

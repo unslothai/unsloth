@@ -35,7 +35,7 @@ ALICE = AccountContext("a" * 32, "alice")
 BOB = AccountContext("b" * 32, "bob")
 
 
-@pytest.fixture(autouse = True)
+@pytest.fixture(autouse=True)
 def isolated(monkeypatch, tmp_path):
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
     monkeypatch.setattr(policy, "installation_is_multi_user", lambda: True)
@@ -68,10 +68,10 @@ def client_for(account):
     # A browser session: the isolation these tests check is between ACCOUNTS, not between
     # caller classes.
     app.dependency_overrides[authenticated_via_api_key] = lambda: False
-    app.include_router(inference.router, prefix = "/api/inference")
-    app.include_router(inference.studio_router, prefix = "/api/inference")
-    app.include_router(video.router, prefix = "/api/inference")
-    app.include_router(models.router, prefix = "/api/models")
+    app.include_router(inference.router, prefix="/api/inference")
+    app.include_router(inference.studio_router, prefix="/api/inference")
+    app.include_router(video.router, prefix="/api/inference")
+    app.include_router(models.router, prefix="/api/models")
     return TestClient(app)
 
 
@@ -112,9 +112,9 @@ def test_resident_identity_and_progress_are_hidden_from_other_accounts(
 )
 def test_foreign_generation_returns_retryable_409_without_cancelling_it(path, body):
     event = threading.Event()
-    with run_as(BOB, active_generations.ActiveGeneration, event, model = "org/bob-private"):
+    with run_as(BOB, active_generations.ActiveGeneration, event, model="org/bob-private"):
         with client_for(ALICE) as client:
-            response = client.post(f"/api/inference/{path}", json = body)
+            response = client.post(f"/api/inference/{path}", json=body)
         assert response.status_code == 409
         body = response.json()
         assert body["error"] == "gpu_busy"
@@ -128,7 +128,7 @@ def test_chat_load_and_raw_arbiter_error_use_the_same_retry_response(monkeypatch
 
     monkeypatch.setattr(inference, "load_model_gated", fail)
     with client_for(ALICE) as client:
-        response = client.post("/api/inference/load", json = {"model_path": "org/public"})
+        response = client.post("/api/inference/load", json={"model_path": "org/public"})
     assert response.status_code == 409
     body = response.json()
     assert body["error"] == "gpu_busy"
@@ -142,12 +142,12 @@ def test_forced_swap_cancels_only_callers_registrations():
         run_as(BOB, active_generations.ActiveGeneration, theirs),
     ):
         with pytest.raises(HTTPException) as exc:
-            run_as(ALICE, inference._raise_or_cancel_active_generations, force = True, action = "Load")
+            run_as(ALICE, inference._raise_or_cancel_active_generations, force=True, action="Load")
         assert exc.value.detail["error"] == "gpu_busy"
         assert not theirs.is_set()
     with run_as(ALICE, active_generations.ActiveGeneration, mine):
         assert (
-            run_as(ALICE, inference._raise_or_cancel_active_generations, force = True, action = "Load")
+            run_as(ALICE, inference._raise_or_cancel_active_generations, force=True, action="Load")
             == 1
         )
         assert mine.is_set()
@@ -164,8 +164,8 @@ def test_forced_swap_checks_foreign_work_before_cancelling_the_caller():
             run_as(
                 ALICE,
                 inference._raise_or_cancel_active_generations,
-                force = True,
-                action = "Installing a new transformers version",
+                force=True,
+                action="Installing a new transformers version",
             )
         assert exc.value.detail["error"] == "gpu_busy"
         assert not mine.is_set() and not theirs.is_set()
@@ -180,16 +180,16 @@ def test_active_generation_and_cancel_id_routes_are_scoped(monkeypatch):
             inference._TrackedCancel,
             mine,
             "same-id",
-            thread_id = "alice-thread",
-            model = "alice/private",
+            thread_id="alice-thread",
+            model="alice/private",
         ),
         run_as(
             BOB,
             inference._TrackedCancel,
             theirs,
             "same-id",
-            thread_id = "bob-thread",
-            model = "bob/private",
+            thread_id="bob-thread",
+            model="bob/private",
         ),
     ):
         with client_for(ALICE) as client:
@@ -197,7 +197,7 @@ def test_active_generation_and_cancel_id_routes_are_scoped(monkeypatch):
             assert response["thread_ids"] == ["alice-thread"]
             assert response["count"] == 1
             assert "bob/private" not in str(response)
-            assert client.post("/api/inference/cancel", json = {"cancel_id": "same-id"}).json() == {
+            assert client.post("/api/inference/cancel", json={"cancel_id": "same-id"}).json() == {
                 "cancelled": 1
             }
         assert mine.is_set() and not theirs.is_set()
@@ -215,12 +215,12 @@ def test_pending_cancel_and_recreated_username_do_not_cross_accounts():
 
 
 def test_scoped_load_request_ids_use_immutable_accounts():
-    request = LoadRequest(model_path = "org/private", load_request_id = "same-request")
+    request = LoadRequest(model_path="org/private", load_request_id="same-request")
     alice = run_as(ALICE, inference._begin_load_attempt, request, "alice")
     replacement = AccountContext("c" * 32, "alice")
     second = run_as(replacement, inference._begin_load_attempt, request, "alice")
     try:
-        cancel = UnloadRequest(model_path = "org/private", cancel_load_request_id = "same-request")
+        cancel = UnloadRequest(model_path="org/private", cancel_load_request_id="same-request")
         run_as(replacement, inference._cancel_scoped_load_attempt, cancel, "alice")
         assert second.cancel_event.is_set()
         assert not alice.cancel_event.is_set()
@@ -265,16 +265,16 @@ def test_private_model_object_routes_refuse_unguarded_cache_reads(path):
 def test_transformers_preflight_refuses_foreign_targets(field):
     body = {"model_name": "org/public", field: "org/private"}
     with client_for(BOB) as client:
-        response = client.post("/api/inference/transformers-upgrade-check", json = body)
+        response = client.post("/api/inference/transformers-upgrade-check", json=body)
     assert response.status_code == 404, response.text
 
 
 @pytest.mark.parametrize("base,expected", [("org/private", 404), ("org/public", None)])
 def test_a_resolved_adapter_base_needs_its_own_grant(monkeypatch, base, expected):
     monkeypatch.setattr(
-        access, "repo_is_public", lambda repo, repo_type = "model": repo == "org/public"
+        access, "repo_is_public", lambda repo, repo_type="model": repo == "org/public"
     )
-    config = SimpleNamespace(base_model = base, identifier = "alice/adapter")
+    config = SimpleNamespace(base_model=base, identifier="alice/adapter")
     if expected is None:
         run_as(BOB, inference._require_resolved_base_access, config)
     else:
@@ -290,7 +290,7 @@ def test_preview_load_refuses_private_foreign_target_before_gpu_work():
             arun_as(
                 BOB,
                 inference.load_model_for_preview(
-                    LoadRequest(model_path = "org/private"), SimpleNamespace(scope = {}), "bob"
+                    LoadRequest(model_path="org/private"), SimpleNamespace(scope={}), "bob"
                 ),
             )
         )
@@ -313,7 +313,7 @@ def test_same_public_resident_is_available_without_loading_or_cancelling(monkeyp
             arun_as(
                 ALICE,
                 inference._maybe_auto_switch_model(
-                    "org/public", SimpleNamespace(scope = {}, state = SimpleNamespace()), "alice"
+                    "org/public", SimpleNamespace(scope={}, state=SimpleNamespace()), "alice"
                 ),
             )
         )
@@ -323,7 +323,7 @@ def test_same_public_resident_is_available_without_loading_or_cancelling(monkeyp
 @pytest.mark.parametrize("path", ["validate", "estimate-memory", "audio/download-plan"])
 def test_model_probe_posts_cannot_read_private_cache(path):
     with client_for(BOB) as client:
-        response = client.post(f"/api/inference/{path}", json = {"model_path": "org/private"})
+        response = client.post(f"/api/inference/{path}", json={"model_path": "org/private"})
     assert response.status_code == 404, response.text
 
 
@@ -361,10 +361,10 @@ def test_stt_downloads_grant_only_the_initiator_and_cancel_is_scoped(monkeypatch
     monkeypatch.setattr(access, "authorize_download", lambda *a: None)
     calls = []
     module = SimpleNamespace(
-        start_model_download = lambda *a: calls.append(a),
-        download_status = lambda: {"downloading": False},
-        is_model_downloaded = lambda model: True,
-        cancel_model_download = lambda: calls.append("cancel") or True,
+        start_model_download=lambda *a: calls.append(a),
+        download_status=lambda: {"downloading": False},
+        is_model_downloaded=lambda model: True,
+        cancel_model_download=lambda: calls.append("cancel") or True,
     )
     run_as(
         ALICE,
@@ -389,7 +389,7 @@ def test_stt_downloads_grant_only_the_initiator_and_cancel_is_scoped(monkeypatch
 
 def test_stt_download_cannot_adopt_another_accounts_job(monkeypatch):
     monkeypatch.setattr(inference, "_stt_download_accounts", {"transformers": ALICE.account_id})
-    module = SimpleNamespace(download_status = lambda: {"downloading": True})
+    module = SimpleNamespace(download_status=lambda: {"downloading": True})
     with pytest.raises(HTTPException) as exc:
         run_as(
             BOB, inference._start_account_stt_download, module, "transformers", "org/private", False
@@ -404,7 +404,7 @@ def test_openai_catalog_and_advertised_paths_are_account_scoped(monkeypatch):
     monkeypatch.setattr(
         models,
         "collect_local_models",
-        lambda *_a, **_kw: [SimpleNamespace(model_id = "same/name", path = current_account_id())],
+        lambda *_a, **_kw: [SimpleNamespace(model_id="same/name", path=current_account_id())],
     )
 
     async def read(account):
@@ -421,16 +421,16 @@ def test_the_local_id_v1_models_publishes_is_usable_by_its_own_account(monkeypat
 
     def _row(account):
         path = str(run_as(account, workspace_root) / "models" / "my-model")
-        return SimpleNamespace(model_id = None, id = path, path = path)
+        return SimpleNamespace(model_id=None, id=path, path=path)
 
     rows = [_row(OWNER), _row(ALICE), _row(BOB)]
     monkeypatch.setattr(inference, "_classified_catalog", lambda listed: listed)
     monkeypatch.setattr(models, "collect_local_models", lambda *_a, **_kw: rows)
 
     request = SimpleNamespace(
-        scope = {},
-        state = SimpleNamespace(),
-        url = SimpleNamespace(path = "/v1/chat/completions"),
+        scope={},
+        state=SimpleNamespace(),
+        url=SimpleNamespace(path="/v1/chat/completions"),
     )
 
     async def resolve(account):
@@ -457,7 +457,7 @@ def test_the_local_id_v1_models_publishes_is_usable_by_its_own_account(monkeypat
 def test_private_media_index_rows_cannot_bypass_filtered_openai_catalog(monkeypatch):
     picks = {
         "text-to-image": [
-            ("org/private", SimpleNamespace(model_path = "org/private", gguf_filename = None), True)
+            ("org/private", SimpleNamespace(model_path="org/private", gguf_filename=None), True)
         ]
     }
     monkeypatch.setattr(inference, "_validated_media_picks", lambda at: picks)
@@ -473,7 +473,7 @@ def test_custom_stt_models_are_filtered_before_openai_listing(monkeypatch):
     monkeypatch.setattr(stt_sidecar, "is_available", lambda: True)
     monkeypatch.setattr(stt_sidecar, "is_model_downloaded", lambda model: False)
     monkeypatch.setattr(
-        stt_sidecar, "get_stt_sidecar", lambda: SimpleNamespace(loaded_model = "org/private")
+        stt_sidecar, "get_stt_sidecar", lambda: SimpleNamespace(loaded_model="org/private")
     )
     monkeypatch.setattr(stt_mtmd_sidecar, "is_available", lambda: False)
     monkeypatch.setattr(inference, "_downloaded_custom_stt_ids", lambda at: ("org/private",))
@@ -491,7 +491,7 @@ def test_private_cpu_media_residents_hide_progress_and_refuse_generation_and_unl
     from core.inference import video as video_engine
 
     _status = lambda: {"loaded": True, "repo_id": "org/private"}
-    backend = SimpleNamespace(status = _status, generation_snapshot = lambda: (_status(), object()))
+    backend = SimpleNamespace(status=_status, generation_snapshot=lambda: (_status(), object()))
     monkeypatch.setattr(diffusion_engine_router, "get_active_diffusion_engine", lambda: backend)
     monkeypatch.setattr(video_engine, "get_video_backend", lambda: backend)
 
@@ -513,7 +513,7 @@ def test_private_cpu_media_residents_hide_progress_and_refuse_generation_and_unl
         # Hidden, but still the declared shape: `active` reads false, not KeyError.
         hidden = client.get(f"/api/inference/{kind}/generate-progress").json()
         assert hidden["yours"] is False and hidden["active"] is False, hidden
-        response = client.post(f"/api/inference/{kind}/generate", json = {"prompt": "hello"})
+        response = client.post(f"/api/inference/{kind}/generate", json={"prompt": "hello"})
         assert response.status_code == 404, response.text
         assert client.post(f"/api/inference/{kind}/unload").status_code == 404
 
@@ -531,7 +531,7 @@ def test_authorized_private_download_progress_is_visible_before_grant_completion
     from hub.services import download_lifecycle, snapshot_progress
     from hub.services.models import downloads
 
-    registry = SimpleNamespace(active_job_refs = lambda repo: [SimpleNamespace(key = "org/private::")])
+    registry = SimpleNamespace(active_job_refs=lambda repo: [SimpleNamespace(key="org/private::")])
     monkeypatch.setattr(downloads, "_registry", registry)
     monkeypatch.setattr(
         download_lifecycle, "_job_accounts", {(id(registry), "org/private::"): ALICE.account_id}
@@ -557,7 +557,7 @@ def test_media_adapter_catalogs_and_selection_do_not_reveal_owner_files(
 
     module = diffusion_lora if kind == "loras" else diffusion_controlnet
     entry = SimpleNamespace(
-        id = "private-adapter", local_path = str(tmp_path / "private-weights"), repo_id = None
+        id="private-adapter", local_path=str(tmp_path / "private-weights"), repo_id=None
     )
     monkeypatch.setattr(module, "list_" + kind, lambda **kwargs: [entry])
     with client_for(BOB) as client:
@@ -566,8 +566,8 @@ def test_media_adapter_catalogs_and_selection_do_not_reveal_owner_files(
         assert response.json()[kind] == []
         assert BOB.account_id in response.json()[kind + "_dir"]
     request = SimpleNamespace(
-        loras = [SimpleNamespace(id = entry.id)] if kind == "loras" else None,
-        controlnet = SimpleNamespace(id = entry.id) if kind == "controlnets" else None,
+        loras=[SimpleNamespace(id=entry.id)] if kind == "loras" else None,
+        controlnet=SimpleNamespace(id=entry.id) if kind == "controlnets" else None,
     )
     with pytest.raises(HTTPException) as exc:
         run_as(BOB, access.require_media_adapters, request)
@@ -638,7 +638,7 @@ def test_stt_load_does_not_claim_a_model_another_account_switched_to(monkeypatch
     """A load landing between the sidecar lock release and the ownership record is not adopted."""
     import json
 
-    sidecar = SimpleNamespace(loaded_model = None, device = None)
+    sidecar = SimpleNamespace(loaded_model=None, device=None)
     monkeypatch.setattr(access, "_resident_accounts", {})
     monkeypatch.setattr(access, "require_model_access", lambda *a, **k: None)
     monkeypatch.setattr(inference, "_resolve_serving_stt_engine", lambda engine: "transformers")
@@ -658,14 +658,14 @@ def test_stt_load_does_not_claim_a_model_another_account_switched_to(monkeypatch
     monkeypatch.setattr(inference, "_await_stt_disconnect_then_cancel", _watcher)
     monkeypatch.setattr(inference, "_stop_local_disconnect_cancel_watcher", _stop)
 
-    payload = SimpleNamespace(model = "alice/model", engine = "transformers", device = None)
+    payload = SimpleNamespace(model="alice/model", engine="transformers", device=None)
     response = asyncio.run(arun_as(ALICE, inference.stt_load(payload, SimpleNamespace(), "alice")))
     assert json.loads(response.body)["loaded_model"] != "bob/private-stt"
     assert access._resident_accounts["stt:transformers"][0] == BOB.account_id
 
 
 def test_implicit_transcribe_load_records_the_caller_as_resident(monkeypatch):
-    sidecar = SimpleNamespace(loaded_model = None, device = None)
+    sidecar = SimpleNamespace(loaded_model=None, device=None)
     monkeypatch.setattr(access, "_resident_accounts", {})
     monkeypatch.setattr(access, "require_model_access", lambda *a, **k: None)
     monkeypatch.setattr(inference, "_resolve_serving_stt_engine", lambda engine: "transformers")
@@ -677,7 +677,7 @@ def test_implicit_transcribe_load_records_the_caller_as_resident(monkeypatch):
         model,
         engine,
         cancel_event,
-        device = None,
+        device=None,
     ):
         sidecar.loaded_model = model
 
@@ -702,7 +702,7 @@ def test_count_tokens_refuses_another_accounts_resident_model(monkeypatch):
     with client_for(BOB) as client:
         response = client.post(
             "/api/inference/chat/count_tokens",
-            json = {"model": "org/A-GGUF", "messages": [{"role": "user", "content": "hi"}]},
+            json={"model": "org/A-GGUF", "messages": [{"role": "user", "content": "hi"}]},
         )
     assert response.status_code == 404, response.text
 
@@ -713,7 +713,7 @@ def test_legacy_generate_stream_refuses_another_accounts_resident_model(monkeypa
     with client_for(BOB) as client:
         response = client.post(
             "/api/inference/generate/stream",
-            json = {"messages": [{"role": "user", "content": "hi"}]},
+            json={"messages": [{"role": "user", "content": "hi"}]},
         )
     assert response.status_code == 404, response.text
     assert "model_path" not in response.text
@@ -725,7 +725,7 @@ def test_managed_load_cannot_enable_remote_code_unless_the_owner_opted_in(
 ):
     from utils.security import consent
 
-    monkeypatch.delenv(consent.MANAGED_REMOTE_CODE_OVERRIDE, raising = False)
+    monkeypatch.delenv(consent.MANAGED_REMOTE_CODE_OVERRIDE, raising=False)
     if override is not None:
         monkeypatch.setenv(consent.MANAGED_REMOTE_CODE_OVERRIDE, override)
     assert run_as(BOB, consent.managed_remote_code_refused) is (expected is not None)
@@ -739,7 +739,7 @@ def test_managed_load_cannot_enable_remote_code_unless_the_owner_opted_in(
         BOB,
         consent.evaluate_remote_code_consent_for_targets,
         ["org/public"],
-        trust_remote_code = True,
+        trust_remote_code=True,
     )
     assert decision.blocked is (expected is not None)
     assert decision.approvable is (expected is None)

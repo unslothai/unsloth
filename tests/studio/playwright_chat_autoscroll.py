@@ -58,7 +58,7 @@ BASE = _EXTERNAL or f"http://127.0.0.1:{PORT}"
 OWNS_SERVER = not _EXTERNAL
 LABEL = os.environ.get("SMOKE_LABEL", "tree")
 OUT = Path(os.environ.get("PW_ART_DIR", "logs/playwright-chat-autoscroll"))
-OUT.mkdir(parents = True, exist_ok = True)
+OUT.mkdir(parents=True, exist_ok=True)
 
 # A token every 250ms for 8s: the deep research synthesis cadence, and the one the loop is wasteful at.
 # A faster cadence (SMOKE_TOKEN_GAP_MS=40) is the one case where a frame per token is justified, so measuring only there
@@ -111,7 +111,7 @@ PUMP_INIT = """
 
 
 def info(message: str) -> None:
-    print(f"[chat-autoscroll] {message}", flush = True)
+    print(f"[chat-autoscroll] {message}", flush=True)
 
 
 def metrics(cdp) -> dict[str, float]:
@@ -127,22 +127,22 @@ def run() -> dict:
     results: dict = {"label": LABEL, "base": BASE}
     with sync_playwright() as p:
         browser = p.chromium.launch(
-            headless = os.environ.get("SMOKE_HEADLESS", "1") == "1",
-            args = chromium_launch_args(),
+            headless=os.environ.get("SMOKE_HEADLESS", "1") == "1",
+            args=chromium_launch_args(),
         )
-        context = browser.new_context(viewport = {"width": 1440, "height": 900})
+        context = browser.new_context(viewport={"width": 1440, "height": 900})
         context.add_init_script(PUMP_INIT)
         context.add_init_script(
             "localStorage.setItem('unsloth_auth_token', 'chat-autoscroll-smoke');"
         )
         context.route(
             re.compile(rf"^{re.escape(BASE)}/api/"),
-            lambda route: route.fulfill(status = 200, content_type = "application/json", body = "{}"),
+            lambda route: route.fulfill(status=200, content_type="application/json", body="{}"),
         )
         page = context.new_page()
         echo_browser_errors(page, info)
-        page.goto(f"{BASE}/smoke-autoscroll.html", wait_until = "domcontentloaded")
-        page.wait_for_function("() => Boolean(window.__autoscroll)", timeout = 30_000)
+        page.goto(f"{BASE}/smoke-autoscroll.html", wait_until="domcontentloaded")
+        page.wait_for_function("() => Boolean(window.__autoscroll)", timeout=30_000)
         cdp = context.new_cdp_session(page)
         cdp.send("Performance.enable")
 
@@ -179,7 +179,7 @@ def run() -> dict:
             "wall_ms": round(streamed["wallMs"], 1),
             "raf_callbacks": streamed["rafCallbacks"],
             "long_tasks": len(long_tasks),
-            "worst_long_task_ms": round(max((t["duration"] for t in long_tasks), default = 0.0), 1),
+            "worst_long_task_ms": round(max((t["duration"] for t in long_tasks), default=0.0), 1),
             "layout_count": delta(before, after, "LayoutCount"),
             "recalc_style_count": delta(before, after, "RecalcStyleCount"),
             "layout_ms": round(delta(before, after, "LayoutDuration") * 1000, 1),
@@ -267,7 +267,7 @@ def main() -> int:
         vite = start_vite(PORT)
     try:
         wait_for_smoke_page(
-            f"{BASE}/smoke-autoscroll.html", "smoke-autoscroll-main.tsx", proc = vite, info = info
+            f"{BASE}/smoke-autoscroll.html", "smoke-autoscroll-main.tsx", proc=vite, info=info
         )
         results = run()
     finally:
@@ -278,8 +278,8 @@ def main() -> int:
     raf_rate = results["stream"]["raf_callbacks"] / stream_seconds
     results["stream"]["raf_per_second"] = round(raf_rate, 1)
     out = OUT / f"{LABEL}.json"
-    out.write_text(json.dumps(results, indent = 2), encoding = "utf-8")
-    info(json.dumps(results, indent = 2))
+    out.write_text(json.dumps(results, indent=2), encoding="utf-8")
+    info(json.dumps(results, indent=2))
     info(f"wrote {out}")
 
     failures: list[str] = []

@@ -44,7 +44,7 @@ FLOOR_KEY = "PYTHON_FLOOR"
 
 def declared_floor() -> tuple[int, int]:
     """The floor the workflow declares, as (major, minor)."""
-    text = WORKFLOW.read_text(encoding = "utf-8")
+    text = WORKFLOW.read_text(encoding="utf-8")
     found = re.search(rf"^\s*{FLOOR_KEY}:\s*['\"]?(\d+)\.(\d+)['\"]?\s*$", text, re.M)
     if not found:
         raise SystemExit(
@@ -90,7 +90,7 @@ def main() -> int:
         f"-t={target}",
         *files,
     ]
-    result = subprocess.run(command, capture_output = True, text = True)
+    result = subprocess.run(command, capture_output=True, text=True)
     sys.stdout.write(result.stdout)
     sys.stderr.write(result.stderr)
     if result.returncode == 0:

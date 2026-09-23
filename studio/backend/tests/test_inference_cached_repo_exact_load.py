@@ -24,8 +24,8 @@ _STUBBED: list[str] = []
 
 def _stub_if_missing(
     name,
-    attrs = (),
-    named_spec = False,
+    attrs=(),
+    named_spec=False,
 ):
     """Stub dependencies unavailable in backend CI so inference can be imported."""
     if name in sys.modules:
@@ -59,7 +59,7 @@ for _torchao in (
     "torchao.float8",
     "torchao.utils",
 ):
-    _stub_if_missing(_torchao, named_spec = True)
+    _stub_if_missing(_torchao, named_spec=True)
 
 _stub_if_missing("unsloth", ("FastLanguageModel", "FastVisionModel", "is_bfloat16_supported"))
 _stub_if_missing("unsloth.chat_templates", ("get_chat_template",))
@@ -86,7 +86,7 @@ def mapper(monkeypatch):
     loader_utils.BAD_MAPPINGS = {}
     loader_utils.calls = []
 
-    def get_model_name(model_name, load_in_4bit = True):
+    def get_model_name(model_name, load_in_4bit=True):
         loader_utils.calls.append(model_name)
         table = (
             loader_utils.FLOAT_TO_INT_MAPPER if load_in_4bit else loader_utils.MAP_TO_UNSLOTH_16bit
@@ -115,6 +115,7 @@ def mapper(monkeypatch):
 @pytest.fixture
 def hub_cache(tmp_path, monkeypatch):
     import utils.hf_cache_settings as hf_cache_settings
+
     monkeypatch.setattr(hf_cache_settings, "active_hf_hub_cache", lambda: str(tmp_path))
     return tmp_path
 
@@ -128,7 +129,7 @@ def _cache_repo(
 ) -> None:
     repo_dir = hub_cache / ("models--" + repo_id.replace("/", "--"))
     snapshot = repo_dir / "snapshots" / "0123abcd"
-    snapshot.mkdir(parents = True)
+    snapshot.mkdir(parents=True)
     (repo_dir / "refs").mkdir()
     (repo_dir / "refs" / "main").write_text("0123abcd")
     (snapshot / "config.json").write_text(json.dumps(config or {}))
@@ -142,7 +143,7 @@ def _cache_repo(
     (snapshot / shards[0]).write_bytes(b"\0" * 64)
 
 
-def _config(path = UPSTREAM, **overrides):
+def _config(path=UPSTREAM, **overrides):
     return types.SimpleNamespace(**{"is_local": False, "is_lora": False, "path": path, **overrides})
 
 
@@ -184,7 +185,7 @@ def test_a_differently_cased_swap_target_is_loaded_under_its_cached_spelling(
 def test_a_differently_cased_target_short_a_shard_still_loads_as_named(mapper, hub_cache):
     # Matching the case is not enough on its own: the copy still has to be loadable.
     _cache_repo(hub_cache, UPSTREAM)
-    _cache_repo(hub_cache, PREQUANT.upper(), missing_shard = True)
+    _cache_repo(hub_cache, PREQUANT.upper(), missing_shard=True)
 
     assert _exact_model_name_for_load(_config(), True) == UPSTREAM
 
@@ -218,7 +219,7 @@ def test_modelscope_keeps_the_swap(mapper, hub_cache):
 
 
 def test_named_repo_short_a_shard_keeps_the_swap(mapper, hub_cache):
-    _cache_repo(hub_cache, UPSTREAM, missing_shard = True)
+    _cache_repo(hub_cache, UPSTREAM, missing_shard=True)
 
     assert _exact_model_name_for_load(_config(), True) is None
 
@@ -251,7 +252,7 @@ def test_known_bad_repo_keeps_the_swap(mapper, hub_cache):
 @pytest.mark.parametrize("load_in_4bit", [True, False])
 def test_quantized_checkpoint_keeps_the_swap(mapper, hub_cache, load_in_4bit):
     # MXFP4 weights cannot satisfy the requested 4-bit or 16-bit load as-is.
-    _cache_repo(hub_cache, UPSTREAM, config = {"quantization_config": {"quant_method": "mxfp4"}})
+    _cache_repo(hub_cache, UPSTREAM, config={"quantization_config": {"quant_method": "mxfp4"}})
 
     assert _exact_model_name_for_load(_config(), load_in_4bit) is None
 
@@ -281,7 +282,7 @@ def test_load_model_hands_the_verdict_to_both_loaders():
     """
     import ast
 
-    source = (_BACKEND / "core/inference/inference.py").read_text(encoding = "utf-8")
+    source = (_BACKEND / "core/inference/inference.py").read_text(encoding="utf-8")
     load_model = next(
         node
         for node in ast.walk(ast.parse(source))

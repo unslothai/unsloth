@@ -24,14 +24,14 @@ def _base_load_request(**overrides):
 
 
 def test_blank_chat_template_override_normalizes_to_none():
-    req = _base_load_request(chat_template_override = "   \n\t")
+    req = _base_load_request(chat_template_override="   \n\t")
 
     assert req.chat_template_override is None
 
 
 def test_nonblank_chat_template_override_is_preserved_verbatim():
     template = "  {{ messages }}  "
-    req = _base_load_request(chat_template_override = template)
+    req = _base_load_request(chat_template_override=template)
 
     assert req.chat_template_override == template
 
@@ -230,23 +230,23 @@ from models.inference import DiffusionLoadRequest
 
 
 def _diff_load(**kw):
-    return DiffusionLoadRequest(model_path = "repo", gguf_filename = "m.gguf", **kw)
+    return DiffusionLoadRequest(model_path="repo", gguf_filename="m.gguf", **kw)
 
 
 def test_attention_backend_casing_and_whitespace_normalized():
     # The dispatcher accepts case/whitespace variants, so the before-validator must fold them or the lowercase Literal 422s a valid request.
-    assert _diff_load(attention_backend = "CuDNN").attention_backend == "cudnn"
-    assert _diff_load(attention_backend = "  sage ").attention_backend == "sage"
+    assert _diff_load(attention_backend="CuDNN").attention_backend == "cudnn"
+    assert _diff_load(attention_backend="  sage ").attention_backend == "sage"
 
 
 def test_attention_backend_none_preserved():
-    assert _diff_load(attention_backend = None).attention_backend is None
+    assert _diff_load(attention_backend=None).attention_backend is None
     assert _diff_load().attention_backend is None
 
 
 def test_attention_backend_unknown_still_rejected():
     with pytest.raises(ValidationError):
-        _diff_load(attention_backend = "bogus")
+        _diff_load(attention_backend="bogus")
 
 
 def test_load_rejects_a_duplicate_lora_id_like_generate_does():
@@ -257,12 +257,12 @@ def test_load_rejects_a_duplicate_lora_id_like_generate_does():
     path that is one bad image; baked into a quantized build it rides every image until a reload.
     """
     dup = [{"id": "me/adapter", "weight": 0.8}, {"id": "me/adapter", "weight": 0.8}]
-    with pytest.raises(ValidationError, match = "duplicate LoRA id"):
-        _diff_load(loras = dup)
-    with pytest.raises(ValidationError, match = "duplicate LoRA id"):
-        DiffusionGenerateRequest(prompt = "a cat", loras = dup)
+    with pytest.raises(ValidationError, match="duplicate LoRA id"):
+        _diff_load(loras=dup)
+    with pytest.raises(ValidationError, match="duplicate LoRA id"):
+        DiffusionGenerateRequest(prompt="a cat", loras=dup)
     # Distinct ids are untouched.
     assert (
-        len(_diff_load(loras = [{"id": "me/a", "weight": 0.8}, {"id": "me/b", "weight": 0.5}]).loras)
+        len(_diff_load(loras=[{"id": "me/a", "weight": 0.8}, {"id": "me/b", "weight": 0.5}]).loras)
         == 2
     )

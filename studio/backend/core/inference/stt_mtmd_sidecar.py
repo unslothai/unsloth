@@ -69,7 +69,7 @@ logger = get_logger(__name__)
 _ACTIVE_REQUEST_DRAIN_TIMEOUT = 30.0
 
 
-@dataclass(frozen = True)
+@dataclass(frozen=True)
 class MtmdSttModel:
     repo: str
     model_file: str
@@ -81,18 +81,18 @@ class MtmdSttModel:
 
 MTMD_STT_MODELS: dict[str, MtmdSttModel] = {
     "qwen3-asr-0.6b": MtmdSttModel(
-        repo = "unslothai/Qwen3-ASR-0.6B-GGUF",
-        model_file = "Qwen3-ASR-0.6B-Q8_0.gguf",
-        mmproj_file = "mmproj-Qwen3-ASR-0.6B-Q8_0.gguf",
-        label = "Qwen3-ASR 0.6B",
-        transcript_marker = "<asr_text>",
+        repo="unslothai/Qwen3-ASR-0.6B-GGUF",
+        model_file="Qwen3-ASR-0.6B-Q8_0.gguf",
+        mmproj_file="mmproj-Qwen3-ASR-0.6B-Q8_0.gguf",
+        label="Qwen3-ASR 0.6B",
+        transcript_marker="<asr_text>",
     ),
     "qwen3-asr-1.7b": MtmdSttModel(
-        repo = "unslothai/Qwen3-ASR-1.7B-GGUF",
-        model_file = "Qwen3-ASR-1.7B-Q8_0.gguf",
-        mmproj_file = "mmproj-Qwen3-ASR-1.7B-Q8_0.gguf",
-        label = "Qwen3-ASR 1.7B",
-        transcript_marker = "<asr_text>",
+        repo="unslothai/Qwen3-ASR-1.7B-GGUF",
+        model_file="Qwen3-ASR-1.7B-Q8_0.gguf",
+        mmproj_file="mmproj-Qwen3-ASR-1.7B-Q8_0.gguf",
+        label="Qwen3-ASR 1.7B",
+        transcript_marker="<asr_text>",
     ),
 }
 # Voxtral Mini is left out: in chat mode it answers the audio instead of transcribing it, and drops sentences when it
@@ -138,6 +138,7 @@ def is_mtmd_model(model: Optional[str]) -> bool:
 
 def find_llama_server_binary() -> Optional[str]:
     from core.inference.llama_cpp import LlamaCppBackend
+
     return LlamaCppBackend._find_llama_server_binary()
 
 
@@ -156,6 +157,7 @@ def is_available() -> bool:
 def _llama_server_child_env(binary: str) -> dict:
     """The chat backend's llama-server environment, for the same binary."""
     from core.inference.llama_cpp import LlamaCppBackend
+
     return LlamaCppBackend._llama_server_env_for_binary(binary)
 
 
@@ -181,10 +183,10 @@ def _reap(process: Optional[subprocess.Popen]) -> None:
         if process.poll() is None:
             process.terminate()
             try:
-                process.wait(timeout = 10)
+                process.wait(timeout=10)
             except subprocess.TimeoutExpired:
                 process.kill()
-                process.wait(timeout = 10)
+                process.wait(timeout=10)
     except Exception as exc:  # noqa: BLE001 - shutdown must not raise
         logger.warning("Could not reap llama-server (pid %s): %s", process.pid, exc)
     finally:
@@ -216,11 +218,11 @@ def _cached_file(
     root = hub_cache if hub_cache is not None else _active_hf_hub_cache()
     try:
         return hf_hub_download(
-            repo_id = MTMD_STT_MODELS[model_id].repo,
-            filename = filename,
-            revision = revision,
-            local_files_only = True,
-            cache_dir = str(root),
+            repo_id=MTMD_STT_MODELS[model_id].repo,
+            filename=filename,
+            revision=revision,
+            local_files_only=True,
+            cache_dir=str(root),
         )
     except Exception:
         return None
@@ -242,14 +244,14 @@ def _cached_model_paths(
         model = _cached_file(
             model_id,
             spec.model_file,
-            hub_cache = root,
-            revision = candidate_revision,
+            hub_cache=root,
+            revision=candidate_revision,
         )
         mmproj = _cached_file(
             model_id,
             spec.mmproj_file,
-            hub_cache = root,
-            revision = candidate_revision,
+            hub_cache=root,
+            revision=candidate_revision,
         )
         if model is None or mmproj is None:
             return None
@@ -265,7 +267,7 @@ def _cached_model_paths(
         if cached is not None:
             return cached
 
-    for candidate in _fallback_revisions(spec.repo, hub_cache = root):
+    for candidate in _fallback_revisions(spec.repo, hub_cache=root):
         cached = cached_at(candidate)
         if cached is not None:
             _write_revision_record(spec.repo, candidate)
@@ -359,6 +361,7 @@ class _MtmdDownloadState:
             process = self._process
         if process is not None and process.poll() is None:
             from core.inference.stt_download_worker import terminate_download
+
             terminate_download(process)
         return True
 
@@ -387,12 +390,12 @@ class _MtmdDownloadState:
             repo = MTMD_STT_MODELS[model_id].repo
             done = sum(
                 _downloaded_file_bytes(
-                    hub_cache = hub_cache,
-                    repo = repo,
-                    filename = selected.path,
-                    size = selected.size,
-                    blob_key = selected.blob_key,
-                    revision = revision,
+                    hub_cache=hub_cache,
+                    repo=repo,
+                    filename=selected.path,
+                    size=selected.size,
+                    blob_key=selected.blob_key,
+                    revision=revision,
                 )
                 for selected in selected_files
             )
@@ -428,9 +431,9 @@ class _MtmdDownloadState:
             self._cancelled = False
             self._process = None
             thread = threading.Thread(
-                target = self._run,
-                args = (model_id, hf_token),
-                daemon = True,
+                target=self._run,
+                args=(model_id, hf_token),
+                daemon=True,
             )
             self._thread = thread
             thread.start()
@@ -443,6 +446,7 @@ class _MtmdDownloadState:
     ) -> None:
         if hub_cache is None:
             from core.inference.stt_sidecar import _active_hf_hub_cache
+
             hub_cache = self._hub_cache or _active_hf_hub_cache()
         spec = MTMD_STT_MODELS[model_id]
         registry = None
@@ -454,8 +458,8 @@ class _MtmdDownloadState:
             revision: Optional[str] = None
             for filename in (spec.model_file, spec.mmproj_file):
                 meta = get_hf_file_metadata(
-                    hf_hub_url(spec.repo, filename, revision = revision),
-                    token = normalize_token(hf_token),
+                    hf_hub_url(spec.repo, filename, revision=revision),
+                    token=normalize_token(hf_token),
                 )
                 if revision is None:
                     revision = meta.commit_hash
@@ -465,9 +469,9 @@ class _MtmdDownloadState:
                     raise RuntimeError("could not pin both mtmd files to one revision")
                 selected.append(
                     _SelectedHubFile(
-                        path = filename,
-                        size = max(0, int(meta.size or 0)),
-                        blob_key = meta.etag,
+                        path=filename,
+                        size=max(0, int(meta.size or 0)),
+                        blob_key=meta.etag,
                     )
                 )
             # A cancel during metadata has no child to stop. Without these the run still reserves the repo and rewrites
@@ -494,7 +498,7 @@ class _MtmdDownloadState:
             args = ["--repo-id", spec.repo, "--revision", revision]
             for item in selected:
                 args.extend(("--filename", item.path))
-            process = spawn_download(args, hf_token = normalize_token(hf_token), hub_cache = hub_cache)
+            process = spawn_download(args, hf_token=normalize_token(hf_token), hub_cache=hub_cache)
             with self._lock:
                 if self._cancelled:
                     terminate_download(process)
@@ -508,8 +512,8 @@ class _MtmdDownloadState:
                 if (
                     _cached_model_paths(
                         model_id,
-                        hub_cache = hub_cache,
-                        revision = revision,
+                        hub_cache=hub_cache,
+                        revision=revision,
                     )
                     is None
                 ):
@@ -615,7 +619,7 @@ class MtmdSttSidecar:
         if self._keep_alive_seconds <= 0 or self._active_requests:
             return
         generation = self._generation
-        timer = threading.Timer(self._keep_alive_seconds, self._idle_unload, args = (generation,))
+        timer = threading.Timer(self._keep_alive_seconds, self._idle_unload, args=(generation,))
         timer.daemon = True
         self._idle_timer = timer
         timer.start()
@@ -692,7 +696,7 @@ class MtmdSttSidecar:
         self.cancel_pending_load()
         self.wait_for_load_to_settle()
         while True:
-            if not self._lock.acquire(blocking = wait):
+            if not self._lock.acquire(blocking=wait):
                 return
             try:
                 # Recheck under the lock. `transcribe` claims _active_requests while holding it, so a request starting
@@ -832,8 +836,8 @@ class MtmdSttSidecar:
                 model_id,
                 binary,
                 request_cancel_event,
-                path_revision = path_revision,
-                device = device,
+                path_revision=path_revision,
+                device=device,
             )
 
     def _load_locked(
@@ -849,6 +853,7 @@ class MtmdSttSidecar:
 
         if path_revision is None:
             from utils.llama_cpp_path_settings import custom_llama_cpp_path_revision
+
             path_revision = custom_llama_cpp_path_revision()
         with self._lock:
             # None is no opinion: a caller sending none cannot move the server.
@@ -944,12 +949,12 @@ class MtmdSttSidecar:
                 cmd,
                 # nothing reads these, and an undrained pipe blocks llama-server mid-startup once its logs fill the
                 # buffer
-                stdout = subprocess.DEVNULL,
-                stderr = subprocess.DEVNULL,
-                stdin = subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                stdin=subprocess.DEVNULL,
                 # bundled libs and pip CUDA runtimes on the loader path, secrets scrubbed, as the chat backend spawns
                 # the same binary
-                env = _llama_server_child_env(binary),
+                env=_llama_server_child_env(binary),
                 # Die with Unsloth, so a crash never orphans a server on the GPU.
                 **child_popen_kwargs(),
             )
@@ -1006,7 +1011,7 @@ class MtmdSttSidecar:
             if process.poll() is not None:
                 return False
             try:
-                with urllib.request.urlopen(url, timeout = 2) as response:
+                with urllib.request.urlopen(url, timeout=2) as response:
                     if response.status == 200:
                         return True
             except Exception:
@@ -1022,7 +1027,7 @@ class MtmdSttSidecar:
         language: Optional[str] = None,
         fast: bool = False,
         cancel_event: Optional[threading.Event] = None,
-        on_progress = None,
+        on_progress=None,
     ) -> dict:
         """Transcribe encoded audio bytes, as the other sidecars do.
 
@@ -1043,7 +1048,7 @@ class MtmdSttSidecar:
             raise SttTranscriptionCancelledError("Transcription cancelled.")
         wav_bytes = _pcm_to_wav_bytes(decoded_audio)
         audio_seconds = (len(decoded_audio) / _TARGET_SAMPLE_RATE) if len(decoded_audio) else None
-        self.load(model_id, request_cancel_event = cancel_event)
+        self.load(model_id, request_cancel_event=cancel_event)
         with self._lock:
             port = self._port
             if port is None or not self._process_alive():
@@ -1067,7 +1072,7 @@ class MtmdSttSidecar:
                 model_id,
                 wav_bytes,
                 audio_seconds,
-                cancel_event = cancel_event,
+                cancel_event=cancel_event,
                 **({"on_progress": on_progress} if on_progress is not None else {}),
             )
             if cancel_event is not None and cancel_event.is_set():
@@ -1100,7 +1105,7 @@ class MtmdSttSidecar:
         audio_seconds: Optional[float] = None,
         *,
         cancel_event: Optional[threading.Event] = None,
-        on_progress = None,
+        on_progress=None,
     ) -> str:
         spec = MTMD_STT_MODELS[model_id]
         payload = {
@@ -1126,14 +1131,14 @@ class MtmdSttSidecar:
         if on_progress is not None:
             payload["stream"] = True
         connection = http.client.HTTPConnection(
-            "127.0.0.1", port, timeout = _TRANSCRIBE_TIMEOUT_SECONDS
+            "127.0.0.1", port, timeout=_TRANSCRIBE_TIMEOUT_SECONDS
         )
         cancel_done = threading.Event()
         if cancel_event is not None:
             threading.Thread(
-                target = _close_connection_on_cancel,
-                args = (connection, cancel_event, cancel_done),
-                daemon = True,
+                target=_close_connection_on_cancel,
+                args=(connection, cancel_event, cancel_done),
+                daemon=True,
             ).start()
         try:
             if cancel_event is not None and cancel_event.is_set():
@@ -1141,8 +1146,8 @@ class MtmdSttSidecar:
             connection.request(
                 "POST",
                 "/v1/chat/completions",
-                body = json.dumps(payload).encode("utf-8"),
-                headers = {"Content-Type": "application/json"},
+                body=json.dumps(payload).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
             )
             with connection.getresponse() as response:
                 if on_progress is not None and 200 <= response.status < 300:

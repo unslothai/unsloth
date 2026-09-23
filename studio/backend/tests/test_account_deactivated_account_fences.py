@@ -69,8 +69,8 @@ def client_for(account):
 
     app.dependency_overrides[get_current_subject] = subject
     app.dependency_overrides[allow_ambient_hf_token] = lambda: False
-    app.include_router(inference.router, prefix = "/api/inference")
-    app.include_router(inference.studio_router, prefix = "/api/inference")
+    app.include_router(inference.router, prefix="/api/inference")
+    app.include_router(inference.studio_router, prefix="/api/inference")
     return TestClient(app)
 
 
@@ -78,14 +78,14 @@ def test_owner_unload_refuses_a_deactivated_accounts_live_generation(deactivatab
     """Item 3971721488: /unload's resident-control fence and the active-generation
     refusal both go blind once the sole managed account is deactivated."""
     event = threading.Event()
-    with run_as(ALICE, active_generations.ActiveGeneration, event, model = "org/alice-private"):
+    with run_as(ALICE, active_generations.ActiveGeneration, event, model="org/alice-private"):
         deactivatable["value"] = False
         assert policy.installation_is_multi_user() is False
         assert policy.installation_has_managed_accounts() is True
         with client_for(OWNER) as client:
             response = client.post(
                 "/api/inference/unload",
-                json = {"model_path": "org/public", "force_cancel_active": True},
+                json={"model_path": "org/public", "force_cancel_active": True},
             )
         assert response.status_code == 409, response.text
         assert response.json()["error"] == "gpu_busy"
@@ -96,13 +96,13 @@ def test_swap_gate_still_sees_a_deactivated_accounts_generation(deactivatable):
     """The refusal-only half of the same gate, called directly: account_scope() counts
     zero owner generations and returns before require_no_foreign_generations()."""
     event = threading.Event()
-    with run_as(ALICE, active_generations.ActiveGeneration, event, model = "org/alice-private"):
+    with run_as(ALICE, active_generations.ActiveGeneration, event, model="org/alice-private"):
         deactivatable["value"] = False
         with pytest.raises(HTTPException) as excinfo:
             run_as(
                 OWNER,
                 lambda: inference._raise_or_cancel_active_generations(
-                    force = True, action = "Unloading", cancel = True
+                    force=True, action="Unloading", cancel=True
                 ),
             )
         assert excinfo.value.status_code == 409
@@ -113,7 +113,7 @@ def test_swap_gate_still_sees_a_deactivated_accounts_generation(deactivatable):
 def test_owner_idle_fence_stays_on_for_a_deactivated_accounts_work(deactivatable):
     """require_idle_other_accounts / foreign_work_active are ownership fences, not login mode."""
     event = threading.Event()
-    with run_as(ALICE, active_generations.ActiveGeneration, event, model = "org/alice-private"):
+    with run_as(ALICE, active_generations.ActiveGeneration, event, model="org/alice-private"):
         deactivatable["value"] = False
         assert run_as(OWNER, access.foreign_work_active) is True
         with pytest.raises(HTTPException) as excinfo:
@@ -132,19 +132,19 @@ async def test_owner_run_cannot_take_a_deactivated_accounts_supervisor_slot(
         ALICE,
         active_generations.ActiveGeneration,
         event,
-        model = "local",
-        run_id = "run-1",
-        thread_id = "thread-1",
+        model="local",
+        run_id="run-1",
+        thread_id="thread-1",
     ):
         deactivatable["value"] = False
         started: list = []
         # A live task under the bare id: start() returns without scheduling anything.
         supervisor = SimpleNamespace(
-            _tasks = {"run-1": object()},
-            start = lambda run_id, **identity: started.append(run_id),
+            _tasks={"run-1": object()},
+            start=lambda run_id, **identity: started.append(run_id),
         )
         request = SimpleNamespace(
-            app = SimpleNamespace(state = SimpleNamespace(chat_generation_supervisor = supervisor))
+            app=SimpleNamespace(state=SimpleNamespace(chat_generation_supervisor=supervisor))
         )
         committed: list = []
 
@@ -162,11 +162,11 @@ async def test_owner_run_cannot_take_a_deactivated_accounts_supervisor_slot(
 
         monkeypatch.setattr(run_routes.db, "create_run", create_run)
         payload = run_routes.CreateChatGenerationRun(
-            runId = "run-1",
-            threadId = "thread-1",
-            userMessageId = "user-1",
-            assistantMessageId = "assistant-1",
-            requestPayload = {
+            runId="run-1",
+            threadId="thread-1",
+            userMessageId="user-1",
+            assistantMessageId="assistant-1",
+            requestPayload={
                 "model": "local",
                 "messages": [{"role": "user", "content": "Hello"}],
             },
@@ -187,9 +187,9 @@ def test_supervisor_run_id_fence_stays_on_after_deactivation(deactivatable):
         ALICE,
         active_generations.ActiveGeneration,
         event,
-        model = "local",
-        run_id = "run-1",
-        thread_id = "thread-1",
+        model="local",
+        run_id="run-1",
+        thread_id="thread-1",
     ):
         deactivatable["value"] = False
         with pytest.raises(HTTPException) as excinfo:

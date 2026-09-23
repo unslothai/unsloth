@@ -34,8 +34,8 @@ DEGRADED = "_unsloth_grpo_hidden_states_warning_issued"
 
 
 def _load_helpers():
-    text = SOURCE_PATH.read_text(encoding = "utf-8")
-    tree = ast.parse(text, filename = str(SOURCE_PATH))
+    text = SOURCE_PATH.read_text(encoding="utf-8")
+    tree = ast.parse(text, filename=str(SOURCE_PATH))
     body = []
     for node in tree.body:
         if isinstance(node, ast.Assign) and any(
@@ -68,7 +68,7 @@ def _load_helpers():
     }
     assert names == expected, (names, expected)
     namespace = {"inspect": inspect, "re": re}
-    exec(compile(ast.Module(body = body, type_ignores = []), str(SOURCE_PATH), "exec"), namespace)
+    exec(compile(ast.Module(body=body, type_ignores=[]), str(SOURCE_PATH), "exec"), namespace)
     return namespace
 
 
@@ -126,7 +126,7 @@ def _compile_gradient_function(source):
 
 def _degraded_model():
     return SimpleNamespace(
-        forward = lambda *args, **kwargs: None,
+        forward=lambda *args, **kwargs: None,
         **{WRAPPED: True, DEGRADED: True},
     )
 
@@ -162,29 +162,29 @@ def test_compiled_square_hidden_states_stay_on_the_hidden_path():
 def test_degraded_square_logits_are_not_projected_twice_in_the_gradient_path():
     function = _compile_gradient_function(_NUMERIC_SOURCE)
     generator = torch.Generator().manual_seed(20260810)
-    head = torch.randn(8, 8, generator = generator)
-    logits = torch.randn(2, 4, 8, generator = generator)
-    index = torch.randint(0, 8, (2, 4), generator = generator)
+    head = torch.randn(8, 8, generator=generator)
+    logits = torch.randn(2, 4, 8, generator=generator)
+    index = torch.randint(0, 8, (2, 4), generator=generator)
 
     actual = function(_degraded_model(), head, logits, index)
     expected = torch.gather(
-        torch.log_softmax(logits.float(), dim = -1),
-        dim = -1,
-        index = index.unsqueeze(-1),
+        torch.log_softmax(logits.float(), dim=-1),
+        dim=-1,
+        index=index.unsqueeze(-1),
     ).squeeze(-1)
     doubled = torch.gather(
-        torch.log_softmax((logits @ head.t()).float(), dim = -1),
-        dim = -1,
-        index = index.unsqueeze(-1),
+        torch.log_softmax((logits @ head.t()).float(), dim=-1),
+        dim=-1,
+        index=index.unsqueeze(-1),
     ).squeeze(-1)
 
     torch.testing.assert_close(actual, expected)
-    assert not torch.allclose(actual, doubled, rtol = 1e-3, atol = 1e-3)
+    assert not torch.allclose(actual, doubled, rtol=1e-3, atol=1e-3)
 
 
 def test_source_patch_fails_loudly_if_zoo_removes_the_width_dispatch_contract():
     source = "def grpo_accumulated_loss():\n    return None\n"
-    with pytest.raises(RuntimeError, match = "could not find the GRPO gradient"):
+    with pytest.raises(RuntimeError, match="could not find the GRPO gradient"):
         patch_gradient_source(source)
 
 
@@ -204,7 +204,7 @@ def test_source_patch_rejects_a_partially_patched_zoo():
         "    if lm_head.shape[-1] != _pack_rh.shape[-1]:",
     )
     assert source != _FOUR_SITE_SOURCE
-    with pytest.raises(RuntimeError, match = r"patched only \d+ of \d+"):
+    with pytest.raises(RuntimeError, match=r"patched only \d+ of \d+"):
         patch_gradient_source(source)
 
 
@@ -214,7 +214,7 @@ def test_source_patch_still_accepts_the_installed_zoo():
     spec = zoo.find_spec("unsloth_zoo")
     if spec is None or spec.origin is None:
         pytest.skip("unsloth_zoo is not installed")
-    zoo_source = (Path(spec.origin).parent / "rl_replacements.py").read_text(encoding = "utf-8")
+    zoo_source = (Path(spec.origin).parent / "rl_replacements.py").read_text(encoding="utf-8")
     lines = zoo_source.splitlines()
     functions = [
         node
@@ -229,8 +229,8 @@ def test_source_patch_still_accepts_the_installed_zoo():
 
 
 def test_generated_trainer_embeds_the_patched_gradient_function():
-    text = SOURCE_PATH.read_text(encoding = "utf-8")
-    tree = ast.parse(text, filename = str(SOURCE_PATH))
+    text = SOURCE_PATH.read_text(encoding="utf-8")
+    tree = ast.parse(text, filename=str(SOURCE_PATH))
     calls = [
         node
         for node in ast.walk(tree)

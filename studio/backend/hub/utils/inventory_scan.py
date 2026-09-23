@@ -119,7 +119,7 @@ def all_hf_cache_scans() -> list:
         flight = _hf_cache_scans_flight
         # Only coalesce onto an in-flight scan from the current epoch, so post-mutation callers never receive pre-mutation data.
         if flight is None or flight.epoch != start_epoch:
-            flight = _HfCacheScanFlight(event = threading.Event(), epoch = start_epoch)
+            flight = _HfCacheScanFlight(event=threading.Event(), epoch=start_epoch)
             _hf_cache_scans_flight = flight
             owner = True
         else:
@@ -157,6 +157,7 @@ def _cache_entries_to_ignore() -> frozenset:
     """huggingface_hub's ignore list: a stray OS file is not corruption. Read from upstream, not frozen, since newer hub versions skip more names (``Thumbs.db``, ``desktop.ini``) and hardcoding the old set made an Explorer file read as corruption. The literal is the fallback."""
     try:
         from huggingface_hub.utils import _cache_manager
+
         names = getattr(_cache_manager, "FILES_TO_IGNORE", None)
         if names:
             return frozenset(names)
@@ -170,7 +171,7 @@ _HF_REPO_TYPES = frozenset({"model", "dataset", "space"})
 
 
 # Mirrors huggingface_hub's Cached{File,Revision,Repo}Info field-for-field; frozen because HFCacheInfo.delete_revisions() set-diffs revisions.
-@dataclass(frozen = True)
+@dataclass(frozen=True)
 class _RecoveredFileInfo:
     file_name: str
     file_path: Path
@@ -180,7 +181,7 @@ class _RecoveredFileInfo:
     blob_last_modified: float
 
 
-@dataclass(frozen = True)
+@dataclass(frozen=True)
 class _RecoveredRevisionInfo:
     commit_hash: str
     snapshot_path: Path
@@ -190,7 +191,7 @@ class _RecoveredRevisionInfo:
     last_modified: float
 
 
-@dataclass(frozen = True)
+@dataclass(frozen=True)
 class _RecoveredRepoInfo:
     repo_id: str
     repo_type: str
@@ -232,7 +233,7 @@ def _read_refs_by_commit(refs_dir: Path) -> Optional[dict[str, set[str]]]:
         try:
             if ref_path.is_dir() or ref_path.name in _CACHE_ENTRIES_TO_IGNORE:
                 continue
-            commit = ref_path.read_text(encoding = "utf-8")
+            commit = ref_path.read_text(encoding="utf-8")
         except (OSError, UnicodeDecodeError):
             return None
         # Ref names keep the platform-native separator huggingface_hub stores.
@@ -289,12 +290,12 @@ def _recover_repo_dropped_by_scan(
             blob_stats[blob_path] = stat
             files.add(
                 _RecoveredFileInfo(
-                    file_name = entry.name,
-                    file_path = entry,
-                    size_on_disk = stat.st_size,
-                    blob_path = blob_path,
-                    blob_last_accessed = stat.st_atime,
-                    blob_last_modified = stat.st_mtime,
+                    file_name=entry.name,
+                    file_path=entry,
+                    size_on_disk=stat.st_size,
+                    blob_path=blob_path,
+                    blob_last_accessed=stat.st_atime,
+                    blob_last_modified=stat.st_mtime,
                 )
             )
         try:
@@ -306,12 +307,12 @@ def _recover_repo_dropped_by_scan(
             continue
         revisions.add(
             _RecoveredRevisionInfo(
-                commit_hash = snapshot.name,
-                snapshot_path = snapshot,
-                size_on_disk = sum(blob_stats[blob].st_size for blob in {f.blob_path for f in files}),
-                files = frozenset(files),
-                refs = frozenset(dangling.pop(snapshot.name, set())),
-                last_modified = last_modified,
+                commit_hash=snapshot.name,
+                snapshot_path=snapshot,
+                size_on_disk=sum(blob_stats[blob].st_size for blob in {f.blob_path for f in files}),
+                files=frozenset(files),
+                refs=frozenset(dangling.pop(snapshot.name, set())),
+                last_modified=last_modified,
             )
         )
     if not revisions:
@@ -324,17 +325,17 @@ def _recover_repo_dropped_by_scan(
     except OSError:
         return None
     return _RecoveredRepoInfo(
-        repo_id = repo_id,
-        repo_type = repo_type,
-        repo_path = repo_dir,
-        size_on_disk = sum(stat.st_size for stat in blob_stats.values()),
-        nb_files = len(blob_stats),
-        revisions = frozenset(revisions),
-        last_accessed = (
-            max((stat.st_atime for stat in blob_stats.values()), default = repo_stats.st_atime)
+        repo_id=repo_id,
+        repo_type=repo_type,
+        repo_path=repo_dir,
+        size_on_disk=sum(stat.st_size for stat in blob_stats.values()),
+        nb_files=len(blob_stats),
+        revisions=frozenset(revisions),
+        last_accessed=(
+            max((stat.st_atime for stat in blob_stats.values()), default=repo_stats.st_atime)
         ),
-        last_modified = (
-            max((stat.st_mtime for stat in blob_stats.values()), default = repo_stats.st_mtime)
+        last_modified=(
+            max((stat.st_mtime for stat in blob_stats.values()), default=repo_stats.st_mtime)
         ),
     )
 
@@ -354,15 +355,15 @@ def _with_repos_dropped_by_scan(
     scanned: set[str] = set()
     for repo in known:
         try:
-            scanned.add(str(Path(repo.repo_path).resolve(strict = False)))
+            scanned.add(str(Path(repo.repo_path).resolve(strict=False)))
         except (AttributeError, OSError, RuntimeError, TypeError, ValueError):
             continue
     recovered: list[_RecoveredRepoInfo] = []
     for repo_dir in repo_dirs:
         try:
-            if str(repo_dir.resolve(strict = False)) in scanned:
+            if str(repo_dir.resolve(strict=False)) in scanned:
                 continue
-            entry = _recover_repo_dropped_by_scan(repo_dir, scan_failed = scan_failed)
+            entry = _recover_repo_dropped_by_scan(repo_dir, scan_failed=scan_failed)
         except (OSError, RuntimeError, ValueError):
             continue
         if entry is None:
@@ -383,8 +384,8 @@ def _with_repos_dropped_by_scan(
     try:
         return replace(
             scan,
-            repos = frozenset(known) | frozenset(recovered),
-            size_on_disk = getattr(scan, "size_on_disk", 0)
+            repos=frozenset(known) | frozenset(recovered),
+            size_on_disk=getattr(scan, "size_on_disk", 0)
             + sum(entry.size_on_disk for entry in recovered),
         )
     except (AttributeError, TypeError, ValueError) as exc:
@@ -399,7 +400,7 @@ def _compute_all_hf_cache_scans() -> list:
     scans: list = []
     for cache_root in hf_cache_roots():
         try:
-            scan = scan_cache_dir(cache_dir = str(cache_root))
+            scan = scan_cache_dir(cache_dir=str(cache_root))
             # Only a warned-about scan can hide a repo, so never walk a healthy cache twice.
             if getattr(scan, "warnings", None):
                 scan = _with_repos_dropped_by_scan(scan, cache_root)
@@ -409,14 +410,14 @@ def _compute_all_hf_cache_scans() -> list:
             # the entire root (e.g. Windows cannot stat a Linux-created reparse point).
             # Reuse our read-only recovery walk, including intact repos that HF never reached.
             logger.warning("Could not scan HF cache %s: %s", cache_root, exc)
-            empty_fields = dict(size_on_disk = 0, repos = frozenset(), warnings = [])
+            empty_fields = dict(size_on_disk=0, repos=frozenset(), warnings=[])
             # huggingface_hub 1.x added this required field; older versions lack it.
             if any(field.name == "incomplete_files" for field in fields(HFCacheInfo)):
                 empty_fields["incomplete_files"] = frozenset()
             recovered = _with_repos_dropped_by_scan(
                 HFCacheInfo(**empty_fields),
                 cache_root,
-                scan_failed = True,
+                scan_failed=True,
             )
             if recovered.repos:
                 scans.append(recovered)
@@ -432,7 +433,7 @@ def default_ref_snapshot(repo_dir: Path) -> Optional[Path]:
     ref_path = repo_dir / "refs" / "main"
     try:
         # No strip: huggingface_hub matches raw ref contents to the dir name.
-        commit = ref_path.read_text(encoding = "utf-8")
+        commit = ref_path.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError):
         return None
     if not commit:
@@ -569,7 +570,7 @@ def _default_ref_names_an_absent_snapshot(repo_cache_dir: Path) -> bool:
     """Whether ``refs/main`` is present and names a commit with no snapshot dir: the window between ``snapshot_download`` rewriting the ref and the first file landing. A *missing* ref is different, since a commit-pinned fetch never writes one."""
     ref_path = repo_cache_dir / "refs" / "main"
     try:
-        commit = ref_path.read_text(encoding = "utf-8")
+        commit = ref_path.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError):
         return False
     if not commit:
@@ -628,17 +629,17 @@ def _repo_signal_applies_to_snapshot(
     if repo_cache_dir is None or snapshot_dir is None:
         return True
     if _default_ref_names_an_absent_snapshot(repo_cache_dir):
-        return _snapshot_cannot_serve_its_payload(snapshot_dir, quants = quants)
+        return _snapshot_cannot_serve_its_payload(snapshot_dir, quants=quants)
     # Only excuse a non-newest snapshot while it can still serve the row.
     return _is_latest_snapshot(repo_cache_dir, snapshot_dir) or (
-        _snapshot_cannot_serve_its_payload(snapshot_dir, quants = quants)
+        _snapshot_cannot_serve_its_payload(snapshot_dir, quants=quants)
     )
 
 
 def _gguf_variant_manifest_blob_hashes(
     repo_id: str,
     repo_cache_dir: Optional[Path] = None,
-    variant_state = None,
+    variant_state=None,
 ) -> frozenset[str]:
     from hub.utils import download_manifest
 
@@ -654,13 +655,13 @@ def _gguf_variant_manifest_blob_hashes(
                     "model",
                     repo_id,
                     variant,
-                    hub_cache = hub_cache,
+                    hub_cache=hub_cache,
                 ),
             )
             for variant, _path in download_manifest.iter_variant_manifests(
                 "model",
                 repo_id,
-                hub_cache = hub_cache,
+                hub_cache=hub_cache,
             )
         )
     for _variant, manifest in manifests:
@@ -682,7 +683,7 @@ def _repo_cache_dir_has_snapshot_legacy_partial(
         return True
     # ".incomplete" blobs carry no revision, so they need attributing; judged on this row's weights alone, since a torn quant beside them is another row's payload.
     if snapshot_dir is not None and not _repo_signal_applies_to_snapshot(
-        repo_cache_dir, snapshot_dir, quants = False
+        repo_cache_dir, snapshot_dir, quants=False
     ):
         return False
     incomplete_hashes = _repo_cache_dir_incomplete_hashes(repo_cache_dir)
@@ -694,7 +695,7 @@ def _snapshot_legacy_partial(
     repo_id: str,
     repo_cache_dir: Optional[Path] = None,
     snapshot_dir: Optional[Path] = None,
-    variant_state = None,
+    variant_state=None,
 ) -> bool:
     if repo_type != "model":
         return _legacy_partial(repo_type, repo_id, repo_cache_dir)
@@ -706,14 +707,14 @@ def _snapshot_legacy_partial(
     if repo_cache_dir is not None:
         return _repo_cache_dir_has_snapshot_legacy_partial(
             repo_cache_dir,
-            ignored_blob_hashes = ignored_hashes,
-            snapshot_dir = snapshot_dir,
+            ignored_blob_hashes=ignored_hashes,
+            snapshot_dir=snapshot_dir,
         )
     # No repo dir to attribute against, so the signal is kept.
     return any(
         _repo_cache_dir_has_snapshot_legacy_partial(
             entry,
-            ignored_blob_hashes = ignored_hashes,
+            ignored_blob_hashes=ignored_hashes,
         )
         for entry in iter_repo_cache_dirs(repo_type, repo_id)
     )
@@ -794,6 +795,7 @@ def _completed_gguf_variants(snapshot_dir: Optional[Path]) -> set[str]:
 
 def _offered_gguf_quants(snapshot_dir: Path) -> set[str]:
     from hub.utils.gguf import list_local_gguf_variants
+
     try:
         variants, _ = list_local_gguf_variants(str(snapshot_dir))
         return {v.quant for v in variants if getattr(v, "quant", None)}
@@ -1009,7 +1011,7 @@ def _snapshot_payload(snapshot_dir: Path) -> Optional[_SnapshotPayload]:
         flags["has_config" if config_name == "config.json" else "has_adapter_config"] = True
         if _required_config_is_unreadable(snapshot_dir / config_name, config_empty):
             unreadable.update(formats)
-    model_format = _classify_non_gguf_model_format(**flags, trusted_hf_cache_repo = False)
+    model_format = _classify_non_gguf_model_format(**flags, trusted_hf_cache_repo=False)
     # from_pretrained never globs, so shards with no index are invisible and neither serve nor veto; an unusable index is picked and failed on instead.
     unloadable: set = set()
     invisible: set = set()
@@ -1063,7 +1065,7 @@ def _index_cannot_serve_its_shards(index_path: Path, family_files: set[str]) -> 
     try:
         if not index_path.is_file() or index_path.stat().st_size <= 0:
             return True
-        with index_path.open(encoding = "utf-8") as handle:
+        with index_path.open(encoding="utf-8") as handle:
             index = json.load(handle)
     except (OSError, UnicodeDecodeError, ValueError, RecursionError):
         # RecursionError escapes every caller's fail-open guard, and the loader parses this index with the same json module, so one too deep to parse there cannot serve its shards here either.
@@ -1194,7 +1196,7 @@ def _recovered_snapshot_cannot_serve(
         return False
     if not _repo_has_a_dangling_ref(repo_cache_dir):
         return False
-    return _snapshot_cannot_serve_its_payload(snapshot_dir, quants = quants)
+    return _snapshot_cannot_serve_its_payload(snapshot_dir, quants=quants)
 
 
 def snapshot_holds_a_complete_payload(
@@ -1203,7 +1205,7 @@ def snapshot_holds_a_complete_payload(
     """Whether *snapshot_dir* can serve a load from its own contents alone. The selection-side counterpart to the partial check: a row picks the newest snapshot that classifies, and filename-only classification cannot tell a whole payload from one short a shard, so without this a broken newer revision hides a complete older one."""
     if snapshot_dir is None:
         return False
-    return not _snapshot_cannot_serve_its_payload(snapshot_dir, quants = quants)
+    return not _snapshot_cannot_serve_its_payload(snapshot_dir, quants=quants)
 
 
 def recovered_repo_is_unusable_by_repo_id(repo_info) -> bool:
@@ -1229,6 +1231,7 @@ def recovered_repo_is_unusable_by_repo_id(repo_info) -> bool:
 def snapshot_variants_all_complete(snapshot: str) -> bool:
     """True when every quant the lister would advertise from *snapshot* is on disk. One complete quant is not enough: the picker enumerates the whole directory, so a half-downloaded split quant beside a good one still gets offered."""
     from hub.utils.gguf import list_local_gguf_variants
+
     try:
         variants, _ = list_local_gguf_variants(snapshot)
         offered = {v.quant for v in variants if getattr(v, "quant", None)}
@@ -1242,6 +1245,7 @@ def snapshot_variants_all_complete(snapshot: str) -> bool:
 def snapshot_has_complete_variants(snapshot: str) -> bool:
     """True when at least one quant the lister advertises from *snapshot* is on disk. Weaker than ``snapshot_variants_all_complete`` on purpose: a snapshot mixing a whole quant with an interrupted split one still loads the whole one, and the lister trims the offer to that subset. Every load-id pin uses this, so selection and offered variants name one directory."""
     from hub.utils.gguf import list_local_gguf_variants
+
     try:
         variants, _ = list_local_gguf_variants(snapshot)
         offered = {v.quant for v in variants if getattr(v, "quant", None)}
@@ -1278,7 +1282,7 @@ def _manifest_partial(
     variant: Optional[str] = None,
     snapshot_dir: Optional[Path] = None,
     repo_cache_dir: Optional[Path] = None,
-    variant_state = None,
+    variant_state=None,
 ) -> bool:
     from hub.utils import download_manifest
 
@@ -1289,7 +1293,7 @@ def _manifest_partial(
             repo_type,
             repo_id,
             variant,
-            hub_cache = _hub_cache_for_repo_dir(repo_cache_dir),
+            hub_cache=_hub_cache_for_repo_dir(repo_cache_dir),
         )
     )
     if manifest is None:
@@ -1355,7 +1359,7 @@ def is_snapshot_partial(
     repo_id: str,
     repo_cache_dir: Optional[Path] = None,
     snapshot_dir: Optional[Path] = None,
-    variant_state = None,
+    variant_state=None,
 ) -> bool:
     """Repo-row partial flag for snapshot-style downloads (full-snapshot models, i.e. safetensors/adapter/checkpoint, and all datasets).
 
@@ -1367,7 +1371,7 @@ def is_snapshot_partial(
 
     # A snapshot-style row loads weights, so a quant beside them is another row's payload.
     repo_signal_applies = _repo_signal_applies_to_snapshot(
-        repo_cache_dir, snapshot_dir, quants = False
+        repo_cache_dir, snapshot_dir, quants=False
     )
     return _compose_partial(
         lambda: (
@@ -1376,7 +1380,7 @@ def is_snapshot_partial(
                 repo_type,
                 repo_id,
                 None,
-                hub_cache = _hub_cache_for_repo_dir(repo_cache_dir),
+                hub_cache=_hub_cache_for_repo_dir(repo_cache_dir),
             )
         ),
         lambda: _snapshot_legacy_partial(
@@ -1396,7 +1400,7 @@ def is_snapshot_partial(
                 repo_cache_dir,
             )
         ),
-        lambda: _recovered_snapshot_cannot_serve(repo_cache_dir, snapshot_dir, quants = False),
+        lambda: _recovered_snapshot_cannot_serve(repo_cache_dir, snapshot_dir, quants=False),
     )
 
 
@@ -1419,7 +1423,7 @@ def _current_revisions(repo_info):
                 return scoped
     dated = [rev for rev in revisions if getattr(rev, "last_modified", None) is not None]
     if dated:
-        return [max(dated, key = lambda rev: rev.last_modified)]
+        return [max(dated, key=lambda rev: rev.last_modified)]
     return revisions
 
 
@@ -1453,7 +1457,7 @@ def _manifest_denoiser_components(snapshot: Path) -> Optional[tuple[str, ...]]:
         manifest_path = snapshot / "model_index.json"
         if not manifest_path.is_file():
             manifest_path = snapshot / "modular_model_index.json"
-        with manifest_path.open("r", encoding = "utf-8") as fh:
+        with manifest_path.open("r", encoding="utf-8") as fh:
             manifest = json.load(fh)
     except (OSError, ValueError, RecursionError):
         # RecursionError (deeply nested json) would escape the caller's fail-open guard.
@@ -1477,7 +1481,7 @@ def _manifest_denoiser_components(snapshot: Path) -> Optional[tuple[str, ...]]:
 def _denoiser_index_shards(index: Path) -> Optional[set[str]]:
     """The shard names *index* maps, or None when it is absent, unparseable or maps nothing. None is "no evidence" rather than "incomplete": an index we cannot read proves nothing either way, so the caller keeps looking."""
     try:
-        with index.open("r", encoding = "utf-8") as fh:
+        with index.open("r", encoding="utf-8") as fh:
             weight_map = json.load(fh).get("weight_map")
     except (OSError, ValueError, AttributeError, RecursionError):
         return None
@@ -1598,10 +1602,11 @@ def is_variant_partial(
     variant_blob_hashes: Optional[frozenset[str]] = None,
     repo_cache_dir: Optional[Path] = None,
     repo_signal_applies: bool = True,
-    variant_state = None,
+    variant_state=None,
 ) -> bool:
     """Per-variant partial detection. Owns its manifest, owns its marker. Used by the GGUF variants endpoint to flag one quant as broken without contaminating the others in the same repo. *snapshot_dir* is an optional hint to avoid re-walking the cache when checking many variants of one repo. ``repo_signal_applies`` is ``_repo_signal_applies_to_snapshot``'s verdict: a caller pinning an older revision passes False rather than judge that quant by another revision's marker, manifest or blobs. Defaults True so the per-variant endpoint still reports a cancelled quant as broken."""
     from hub.utils import download_manifest
+
     return _compose_partial(
         lambda: (
             repo_signal_applies
@@ -1612,7 +1617,7 @@ def is_variant_partial(
                     "model",
                     repo_id,
                     variant,
-                    hub_cache = _hub_cache_for_repo_dir(repo_cache_dir),
+                    hub_cache=_hub_cache_for_repo_dir(repo_cache_dir),
                 )
             )
         ),
@@ -1644,7 +1649,7 @@ def is_gguf_repo_partial(
     repo_cache_dir: Optional[Path] = None,
     *,
     snapshot_dir: Optional[Path] = None,
-    variant_state = None,
+    variant_state=None,
 ) -> bool:
     """Repo-row partial flag for a GGUF repo. The inventory shows ONE row per GGUF repo (requires_variant=True); per-variant detail lives in GET /api/models/gguf-variants and uses is_variant_partial.
 
@@ -1664,7 +1669,7 @@ def is_gguf_repo_partial(
         )
     # Same attribution as is_snapshot_partial, judged on this row's quants rather than its weights.
     repo_signal_applies = _repo_signal_applies_to_snapshot(
-        repo_cache_dir, snapshot_dir, quants = True
+        repo_cache_dir, snapshot_dir, quants=True
     )
     has_legacy_partial = repo_signal_applies and _legacy_partial("model", repo_id, repo_cache_dir)
     complete_here = _completed_gguf_variants(snapshot_dir)
@@ -1680,13 +1685,13 @@ def is_gguf_repo_partial(
                     "model",
                     repo_id,
                     variant,
-                    hub_cache = hub_cache,
+                    hub_cache=hub_cache,
                 ),
             )
             for variant, _path in download_manifest.iter_variant_manifests(
                 "model",
                 repo_id,
-                hub_cache = hub_cache,
+                hub_cache=hub_cache,
             )
         )
     for variant, manifest in manifests:
@@ -1698,19 +1703,19 @@ def is_gguf_repo_partial(
         for variant, _path in download_manifest.iter_variant_markers(
             "model",
             repo_id,
-            hub_cache = hub_cache,
+            hub_cache=hub_cache,
         ):
             if download_manifest.has_cancel_marker(
                 "model",
                 repo_id,
                 variant,
-                hub_cache = hub_cache,
+                hub_cache=hub_cache,
             ):
                 variants.add(variant)
     if not variants:
         # Nothing named a quant: an interrupted attempt leaves only torn shards.
         return has_legacy_partial or _recovered_snapshot_cannot_serve(
-            repo_cache_dir, snapshot_dir, quants = True
+            repo_cache_dir, snapshot_dir, quants=True
         )
     has_clean = False
     has_broken = has_legacy_partial
@@ -1719,10 +1724,10 @@ def is_gguf_repo_partial(
             repo_id,
             variant,
             snapshot_dir,
-            repo_cache_dir = repo_cache_dir,
+            repo_cache_dir=repo_cache_dir,
             # A quant whole in the pinned snapshot loads whatever a newer attempt says.
-            repo_signal_applies = repo_signal_applies or variant not in complete_here,
-            variant_state = variant_state,
+            repo_signal_applies=repo_signal_applies or variant not in complete_here,
+            variant_state=variant_state,
         ):
             has_broken = True
         else:
@@ -1744,7 +1749,7 @@ def partial_transport_for(
         repo_type,
         repo_id,
         variant,
-        hub_cache = hub_cache,
+        hub_cache=hub_cache,
     )
     if marker_transport is not None:
         return marker_transport
@@ -1752,7 +1757,7 @@ def partial_transport_for(
         repo_type,
         repo_id,
         variant,
-        hub_cache = hub_cache,
+        hub_cache=hub_cache,
     )
     return manifest.transport if manifest is not None else None
 
@@ -1773,5 +1778,5 @@ def partial_resume_available(
         repo_type,
         repo_id,
         variant,
-        root = _hub_cache_for_repo_dir(repo_cache_dir),
+        root=_hub_cache_for_repo_dir(repo_cache_dir),
     )

@@ -101,7 +101,7 @@ def probably_decodable(image: Any) -> bool:
     if not _mime_is_bounded(image):
         return False
     try:
-        head = base64.b64decode(data[:32], validate = False)
+        head = base64.b64decode(data[:32], validate=False)
     except (binascii.Error, ValueError, TypeError):
         return False
     if not head:
@@ -198,7 +198,7 @@ def _decoded_urls_per_result(results: Sequence[Sequence[dict]]) -> list[str]:
     for images in reversed(results):
         if room <= 0 or attempts[0] <= 0:
             break
-        urls = _decoded_urls(images, min(MAX_MODEL_IMAGES, room), attempts = attempts)
+        urls = _decoded_urls(images, min(MAX_MODEL_IMAGES, room), attempts=attempts)
         room -= len(urls)
         chosen.append(urls)
     # Back into document order: the parts are positional and a batch's own results
@@ -313,7 +313,7 @@ def png_payloads_per_result(
     for images in reversed(list(results)):
         if attempts[0] <= 0:
             break
-        urls = _decoded_urls(images, LOCAL_MAX_IMAGES_PER_TURN, attempts = attempts, cache = cache)
+        urls = _decoded_urls(images, LOCAL_MAX_IMAGES_PER_TURN, attempts=attempts, cache=cache)
         if urls:
             return [url.split(",", 1)[1] for url in urls]
     return []
@@ -335,7 +335,7 @@ def flattened_rgb(image):
     if image.mode.startswith("I;16"):
         if image.mode != "I;16":
             image = image.convert("I")
-        image = image.point(lambda v: v * (1.0 / 257), mode = "L")
+        image = image.point(lambda v: v * (1.0 / 257), mode="L")
     has_alpha = image.mode in ("RGBA", "LA", "PA") or (
         image.mode == "P" and "transparency" in image.info
     )
@@ -343,7 +343,7 @@ def flattened_rgb(image):
         return image.convert("RGB")
     rgba = image.convert("RGBA")
     canvas = Image.new("RGB", rgba.size, (255, 255, 255))
-    canvas.paste(rgba, mask = rgba.getchannel("A"))
+    canvas.paste(rgba, mask=rgba.getchannel("A"))
     return canvas
 
 
@@ -351,7 +351,7 @@ def _png_data_url(data: str) -> str | None:
     # PNG regardless of what the server sent: llama-server's stb_image reads only
     # a few formats, and MCP servers commonly answer with WebP.
     try:
-        raw = base64.b64decode(data, validate = True)
+        raw = base64.b64decode(data, validate=True)
     except (binascii.Error, ValueError, TypeError):
         logger.debug("MCP image payload is not base64")
         return None
@@ -376,9 +376,9 @@ def _png_data_url(data: str) -> str | None:
         if max(image.size) > MAX_IMAGE_EDGE:
             image.thumbnail((MAX_IMAGE_EDGE, MAX_IMAGE_EDGE), Image.Resampling.LANCZOS)
         buffer = io.BytesIO()
-        flattened_rgb(image).save(buffer, format = "PNG")
+        flattened_rgb(image).save(buffer, format="PNG")
     except Exception:
-        logger.debug("MCP image could not be decoded", exc_info = True)
+        logger.debug("MCP image could not be decoded", exc_info=True)
         return None
     return "data:image/png;base64," + base64.b64encode(buffer.getvalue()).decode("ascii")
 
@@ -518,7 +518,7 @@ def _drop_oldest_image_parts(
             break
         if owned is None or id(part) in owned:
             ordinals.add(ordinal)
-    _drop_image_parts_at(conversation, ordinals, part_type, owned = owned)
+    _drop_image_parts_at(conversation, ordinals, part_type, owned=owned)
 
 
 def _drop_image_parts_at(
@@ -569,7 +569,7 @@ def _drop_image_parts_at(
         else:
             conversation[index] = {
                 **message,
-                "content": _relabelled(kept, part_type, original, owned = owned),
+                "content": _relabelled(kept, part_type, original, owned=owned),
             }
     for index in reversed(drained):
         del conversation[index]
@@ -638,7 +638,7 @@ def trim_image_url_turns(
     excess = counted - limit
     if excess <= 0:
         return
-    _drop_oldest_image_parts(conversation, excess, "image_url", only = only)
+    _drop_oldest_image_parts(conversation, excess, "image_url", only=only)
     if only is not None:
         # Drop what the trim removed, or the next call counts parts that are no
         # longer in the conversation and cuts far more than the cap asks for.
@@ -715,7 +715,7 @@ def append_image_turn(
             # slots or their cap may drop the newest tool result. Replay does the same.
             # This is opt-in: local loops use a context window instead of a provider cap.
             limit = max(0, limit - (len(_all_image_url_parts(conversation)) - len(owned or ())))
-        trim_image_url_turns(conversation, limit, only = owned)
+        trim_image_url_turns(conversation, limit, only=owned)
 
 
 def insert_placeholder_turn(
@@ -810,7 +810,7 @@ def top_up_image_markers(
             if is_synthetic_image_turn(message):
                 continue
             if seen == ordinal:
-                out[index] = _with_attachment_markers(message, markers, after_text = True)
+                out[index] = _with_attachment_markers(message, markers, after_text=True)
                 return out
             seen += 1
     # The legacy top-level image has no ordinal; use the newest real user turn.
@@ -822,7 +822,7 @@ def top_up_image_markers(
     ]
     real = [index for index in candidates if not is_synthetic_image_turn(out[index])]
     for index in real or candidates:
-        out[index] = _with_attachment_markers(out[index], markers, after_text = True)
+        out[index] = _with_attachment_markers(out[index], markers, after_text=True)
         break
     return out
 
@@ -984,7 +984,7 @@ def promote_history(
     from zero and letting the history's images through uncounted.
     """
     out, _payloads, promoted = _promote(
-        messages, vision, local = False, reserve_for_caller = reserve_for_caller
+        messages, vision, local=False, reserve_for_caller=reserve_for_caller
     )
     if promoted_out is not None:
         promoted_out.extend(promoted)
@@ -1002,7 +1002,7 @@ def promote_history_local(
     carry markers and the payloads come back with them. ``caller_images`` supplies
     the pixels for existing markers, which retain their positions and survive trimming."""
     out, payloads, _promoted = _promote(
-        messages, vision, local = True, decode_cache = decode_cache, caller_images = caller_images
+        messages, vision, local=True, decode_cache=decode_cache, caller_images=caller_images
     )
     return out, payloads
 
@@ -1088,7 +1088,7 @@ def _promote(
     )
     eligible = (
         eligible_replay_images(
-            messages, local = local, budget = max(0, MAX_TOTAL_MODEL_IMAGES - _reserved)
+            messages, local=local, budget=max(0, MAX_TOTAL_MODEL_IMAGES - _reserved)
         )
         if vision
         else {}
@@ -1124,7 +1124,7 @@ def _promote(
                 pending.clear()
                 returned_totals.clear()
                 return into
-            encoded = png_payloads_per_result(pending, cache = decode_cache)
+            encoded = png_payloads_per_result(pending, cache=decode_cache)
             pending.clear()
             returned_totals.clear()
             if not encoded:
@@ -1145,7 +1145,7 @@ def _promote(
         if into is None:
             before = {id(part) for part in _all_image_url_parts(out)}
             append_image_turn(
-                out, results, per_result = True, limit = None, returned = returned, lead = lead
+                out, results, per_result=True, limit=None, returned=returned, lead=lead
             )
             promoted.extend(part for part in _all_image_url_parts(out) if id(part) not in before)
             return None
@@ -1216,7 +1216,7 @@ def _promote(
             protected = tuple(
                 index for index, part in enumerate(markers) if id(part) in caller_payloads
             )
-        trim_image_turns(out, payloads, keep = protected)
+        trim_image_turns(out, payloads, keep=protected)
     else:
         # The cap says attachments are never counted against it, which is right for
         # what THIS cap protects, and llama-server is bounded by its context window
@@ -1232,8 +1232,8 @@ def _promote(
         _caller_parts = len(_all_image_url_parts(out)) - len(promoted) if reserve_for_caller else 0
         trim_image_url_turns(
             out,
-            limit = max(0, MAX_TOTAL_MODEL_IMAGES - _caller_parts),
-            only = promoted,
+            limit=max(0, MAX_TOTAL_MODEL_IMAGES - _caller_parts),
+            only=promoted,
         )
     return out, payloads, promoted
 

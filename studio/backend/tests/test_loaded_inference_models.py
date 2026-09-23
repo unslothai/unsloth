@@ -16,13 +16,13 @@ from auth.authentication import get_current_subject
 @pytest.fixture
 def resident_backends(monkeypatch):
     llama = SimpleNamespace(
-        is_loaded = True,
-        model_identifier = "/models/Local-Q4.gguf",
-        context_length = 4096,
-        max_context_length = 8192,
-        native_context_length = 32768,
+        is_loaded=True,
+        model_identifier="/models/Local-Q4.gguf",
+        context_length=4096,
+        max_context_length=8192,
+        native_context_length=32768,
     )
-    backend = SimpleNamespace(active_model_name = None, models = {})
+    backend = SimpleNamespace(active_model_name=None, models={})
     monkeypatch.setattr(inf, "get_llama_cpp_backend", lambda: llama)
     monkeypatch.setattr(inf, "get_inference_backend", lambda: backend)
 
@@ -38,7 +38,7 @@ def resident_backends(monkeypatch):
 
 def _app():
     app = FastAPI()
-    app.include_router(inf.studio_router, prefix = "/api/inference")
+    app.include_router(inf.studio_router, prefix="/api/inference")
     app.dependency_overrides[get_current_subject] = lambda: "test-subject"
     return app
 
@@ -84,7 +84,7 @@ def test_loaded_models_reread_residency_without_scanning(resident_backends):
 
 def test_loaded_models_require_auth_before_reading_backends(monkeypatch):
     def reject():
-        raise HTTPException(status_code = 401, detail = "Unauthorized")
+        raise HTTPException(status_code=401, detail="Unauthorized")
 
     def no_backend():
         pytest.fail("Authentication must run before backend discovery")
@@ -130,7 +130,7 @@ def test_a_resident_quant_is_advertised_without_letting_the_probe_scan(
     llama.hf_variant = "Q4_K_M"
     seen = []
 
-    def resolve(spec, allow_scan = True):
+    def resolve(spec, allow_scan=True):
         seen.append((spec, allow_scan))
         return "/models/Local-Q4.gguf"
 

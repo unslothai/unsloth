@@ -29,19 +29,19 @@ PROBE = STUDIOBENCH / "arms" / "content_visibility_probe.js"
 MAIN = STUDIOBENCH / "__main__.py"
 
 
-@pytest.fixture(scope = "module")
+@pytest.fixture(scope="module")
 def main_src() -> str:
-    return MAIN.read_text(encoding = "utf-8")
+    return MAIN.read_text(encoding="utf-8")
 
 
-@pytest.fixture(scope = "module")
+@pytest.fixture(scope="module")
 def build_src() -> str:
-    return (STUDIOBENCH / "report" / "build.py").read_text(encoding = "utf-8")
+    return (STUDIOBENCH / "report" / "build.py").read_text(encoding="utf-8")
 
 
-@pytest.fixture(scope = "module")
+@pytest.fixture(scope="module")
 def probe_src() -> str:
-    return PROBE.read_text(encoding = "utf-8")
+    return PROBE.read_text(encoding="utf-8")
 
 
 def test_both_hooks_are_read_from_the_environment(main_src: str):
@@ -55,8 +55,8 @@ def test_both_hooks_are_read_from_the_environment(main_src: str):
 def test_the_hooks_are_off_unless_asked_for(main_src: str, monkeypatch):
     """Unset means NOTHING is appended and no listener is attached."""
 
-    monkeypatch.delenv("SBENCH_EXTRA_INIT_SCRIPT", raising = False)
-    monkeypatch.delenv("SBENCH_PAGE_CONSOLE", raising = False)
+    monkeypatch.delenv("SBENCH_EXTRA_INIT_SCRIPT", raising=False)
+    monkeypatch.delenv("SBENCH_PAGE_CONSOLE", raising=False)
     import os
 
     assert os.environ.get("SBENCH_EXTRA_INIT_SCRIPT") is None
@@ -121,7 +121,7 @@ def test_the_probe_prefix_is_the_one_the_console_filter_expects(probe_src: str):
     """The filter is an exact prefix match, so a probe with a different prefix is silent."""
 
     assert 'var PREFIX = "CVPOT ";' in probe_src
-    assert "CVPOT " in (STUDIOBENCH / "CONTRIBUTING-perf.md").read_text(encoding = "utf-8"), (
+    assert "CVPOT " in (STUDIOBENCH / "CONTRIBUTING-perf.md").read_text(encoding="utf-8"), (
         "the documented invocation and the probe's own prefix have to agree, or the recipe in "
         "CONTRIBUTING-perf.md produces an empty log and a false NOT RUN"
     )
@@ -266,7 +266,7 @@ def test_the_probe_source_is_the_first_thing_in_its_script():
 
 def _seed(tmp_path: Path, text: str = "old report") -> Path:
     for name in ("summary.md", "ab.md"):
-        (tmp_path / name).write_text(text, encoding = "utf-8")
+        (tmp_path / name).write_text(text, encoding="utf-8")
     return tmp_path
 
 
@@ -276,12 +276,12 @@ def test_a_probe_run_invalidates_the_reports_it_inherited(tmp_path: Path):
 
     out = _seed(tmp_path)
     rewritten = invalidate_stale_reports(
-        out, archived = None, extra_init = "/probes/x.js", log = lambda *_: None
+        out, archived=None, extra_init="/probes/x.js", log=lambda *_: None
     )
 
     assert {p.name for p in rewritten} == {"summary.md", "ab.md"}
     for name in ("summary.md", "ab.md"):
-        body = (out / name).read_text(encoding = "utf-8")
+        body = (out / name).read_text(encoding="utf-8")
         assert "not scorable" in body
         assert "/probes/x.js" in body
 
@@ -299,12 +299,12 @@ def test_a_clean_run_invalidates_the_probe_refusal_it_inherited(tmp_path: Path):
     out = _seed(tmp_path, "NO SUMMARY: ... is not scorable ...")
     archived = out / "payload-20260101-000000.jsonl"
     rewritten = invalidate_stale_reports(
-        out, archived = archived, extra_init = None, log = lambda *_: None
+        out, archived=archived, extra_init=None, log=lambda *_: None
     )
 
     assert {p.name for p in rewritten} == {"summary.md", "ab.md"}
     for name in ("summary.md", "ab.md"):
-        body = (out / name).read_text(encoding = "utf-8")
+        body = (out / name).read_text(encoding="utf-8")
         assert "payload-20260101-000000.jsonl" in body
         # The stale claim is GONE, not merely accompanied by a correction.
         assert "is not scorable" not in body
@@ -315,18 +315,18 @@ def test_a_resume_that_changed_nothing_leaves_the_reports_alone(tmp_path: Path):
     from studiobench.__main__ import invalidate_stale_reports
 
     out = _seed(tmp_path)
-    assert invalidate_stale_reports(out, archived = None, extra_init = None) == []
-    assert (out / "summary.md").read_text(encoding = "utf-8") == "old report"
-    assert (out / "ab.md").read_text(encoding = "utf-8") == "old report"
+    assert invalidate_stale_reports(out, archived=None, extra_init=None) == []
+    assert (out / "summary.md").read_text(encoding="utf-8") == "old report"
+    assert (out / "ab.md").read_text(encoding="utf-8") == "old report"
 
 
 def test_only_the_reports_that_exist_are_written(tmp_path: Path):
     """A missing report stays missing: this replaces stale files, it does not manufacture them."""
     from studiobench.__main__ import invalidate_stale_reports
 
-    (tmp_path / "summary.md").write_text("old report", encoding = "utf-8")
+    (tmp_path / "summary.md").write_text("old report", encoding="utf-8")
     rewritten = invalidate_stale_reports(
-        tmp_path, archived = tmp_path / "p.jsonl", extra_init = None, log = lambda *_: None
+        tmp_path, archived=tmp_path / "p.jsonl", extra_init=None, log=lambda *_: None
     )
 
     assert [p.name for p in rewritten] == ["summary.md"]
@@ -401,8 +401,8 @@ def _node_parses(source: str):
         # would have to survive the shell, and the point of this helper is that nothing between the
         # producer and the parser is allowed to edit the bytes.
         script = Path(tmp) / "init_script.js"
-        script.write_text("(() => {\n" + source + "\n})();", encoding = "utf-8")
-        done = subprocess.run([node, "--check", str(script)], capture_output = True, text = True)
+        script.write_text("(() => {\n" + source + "\n})();", encoding="utf-8")
+        done = subprocess.run([node, "--check", str(script)], capture_output=True, text=True)
     return None if done.returncode == 0 else done.stderr.strip().splitlines()[-1]
 
 

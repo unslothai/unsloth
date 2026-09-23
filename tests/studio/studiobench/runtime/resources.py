@@ -59,5 +59,5 @@ def writable_dir(preferred: Optional[Path] = None) -> Path:
     output directory, not next to its own source.
     """
     target = Path(preferred) if preferred else Path.cwd() / "studiobench-out"
-    target.mkdir(parents = True, exist_ok = True)
+    target.mkdir(parents=True, exist_ok=True)
     return target

@@ -62,9 +62,9 @@ def hidream_te4_kwargs(
 
     tokenizer_4 = AutoTokenizer.from_pretrained(
         HIDREAM_LLAMA_REPO,
-        token = hf_token,
-        local_files_only = local_files_only,
-        cache_dir = cache_dir,
+        token=hf_token,
+        local_files_only=local_files_only,
+        cache_dir=cache_dir,
     )
 
     fp8_engages = False
@@ -92,31 +92,32 @@ def hidream_te4_kwargs(
             load_prequant_text_encoder,
             te_prequant_sources_for_base,
         )
+
         source = te_prequant_sources_for_base(
             fam,
             HIDREAM_LLAMA_REPO,
-            te_quant_mode = te_quant_mode,
-            target = target,
-            components = ("text_encoder_4",),
-            standalone_component_bases = {"text_encoder_4": HIDREAM_LLAMA_REPO},
+            te_quant_mode=te_quant_mode,
+            target=target,
+            components=("text_encoder_4",),
+            standalone_component_bases={"text_encoder_4": HIDREAM_LLAMA_REPO},
         ).get("text_encoder_4")
         if source is not None:
             encoder = load_prequant_text_encoder(
                 HIDREAM_LLAMA_REPO,
                 "text_encoder_4",
                 source,
-                dtype = dtype,
-                hf_token = hf_token,
-                scheme = "fp8",
-                logger = logger,
+                dtype=dtype,
+                hf_token=hf_token,
+                scheme="fp8",
+                logger=logger,
                 # The Llama TE4 lives in its own standalone repo (config at the root), and the pipeline needs hidden
                 # states/attentions from its forward.
-                config_subfolder = "",
-                config_overrides = {
+                config_subfolder="",
+                config_overrides={
                     "output_hidden_states": True,
                     "output_attentions": True,
                 },
-                local_files_only = local_files_only,
+                local_files_only=local_files_only,
             )
             if encoder is not None:
                 return {"text_encoder_4": encoder, "tokenizer_4": tokenizer_4}
@@ -124,12 +125,12 @@ def hidream_te4_kwargs(
     logger.info("diffusion.hidream: loading Llama TE4 from %s", HIDREAM_LLAMA_REPO)
     text_encoder_4 = LlamaForCausalLM.from_pretrained(
         HIDREAM_LLAMA_REPO,
-        output_hidden_states = True,
-        output_attentions = True,
-        torch_dtype = dtype,
-        token = hf_token,
-        local_files_only = local_files_only,
-        cache_dir = cache_dir,
+        output_hidden_states=True,
+        output_attentions=True,
+        torch_dtype=dtype,
+        token=hf_token,
+        local_files_only=local_files_only,
+        cache_dir=cache_dir,
     )
     if fp8_engages:
         try:
@@ -148,11 +149,11 @@ def hidream_te4_kwargs(
             logger.warning("diffusion.hidream: TE4 fp8 cast failed, reloading dense: %s", exc)
             text_encoder_4 = LlamaForCausalLM.from_pretrained(
                 HIDREAM_LLAMA_REPO,
-                output_hidden_states = True,
-                output_attentions = True,
-                torch_dtype = dtype,
-                local_files_only = local_files_only,
-                token = hf_token,
-                cache_dir = cache_dir,
+                output_hidden_states=True,
+                output_attentions=True,
+                torch_dtype=dtype,
+                local_files_only=local_files_only,
+                token=hf_token,
+                cache_dir=cache_dir,
             )
     return {"text_encoder_4": text_encoder_4, "tokenizer_4": tokenizer_4}

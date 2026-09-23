@@ -20,7 +20,7 @@ from utils.paths.sensitive import (
 )
 
 
-def is_local_filesystem_root(path: str, *, _pathmod = os.path) -> bool:
+def is_local_filesystem_root(path: str, *, _pathmod=os.path) -> bool:
     """True for a bare local filesystem root -- POSIX ``/``, a drive root ``C:\\``,
     or a device-namespace volume root like ``\\\\?\\C:\\`` or
     ``\\\\?\\Volume{GUID}\\`` -- which sit above denied system dirs, but NOT a UNC
@@ -155,6 +155,7 @@ def _active_windows_drive_bitmask() -> int:
     """Active-logical-drive bitmask from ``GetLogicalDrives`` (bit 0 = A:), or ``0`` when unavailable. A fast non-blocking call that lets :func:`windows_drive_roots` skip the ``os.path.isdir`` probe on unmapped letters. A disconnected network mapping stays set here, so it does not guard the reconnect stall on its own; :func:`windows_drive_roots` bounds each surviving probe too. Returns ``0`` (probe every letter) when ctypes/``windll`` is missing."""
     try:
         import ctypes
+
         return int(ctypes.windll.kernel32.GetLogicalDrives())
     except Exception:  # noqa: BLE001 -- best-effort; fall back to probing all letters
         return 0
@@ -177,7 +178,7 @@ def _readable_dirs_within(paths: Iterable[str], timeout: float) -> set[str]:
 
     threads: list[threading.Thread] = []
     for path in paths:
-        thread = threading.Thread(target = _probe, args = (path,), daemon = True)
+        thread = threading.Thread(target=_probe, args=(path,), daemon=True)
         thread.start()
         threads.append(thread)
 

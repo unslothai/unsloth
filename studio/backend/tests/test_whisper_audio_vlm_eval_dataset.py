@@ -63,7 +63,7 @@ def audio_trainer(monkeypatch):
 
 
 def _rows(path: Path, texts) -> str:
-    with path.open("w", encoding = "utf-8") as fh:
+    with path.open("w", encoding="utf-8") as fh:
         for text in texts:
             fh.write(json.dumps({"audio": text, "text": text}) + "\n")
     return str(path)
@@ -82,21 +82,21 @@ def test_whisper_uses_the_uploaded_eval_split(audio_trainer, tmp_path, monkeypat
 
     def fake_preprocess(
         dataset,
-        eval_split = None,
-        custom_format_mapping = None,
-        eval_dataset = None,
+        eval_split=None,
+        custom_format_mapping=None,
+        eval_dataset=None,
     ):
         seen["eval_split"] = eval_split
         seen["eval_rows"] = None if eval_dataset is None else list(eval_dataset["text"])
         return (list(dataset["text"]), None if eval_dataset is None else list(eval_dataset["text"]))
 
-    monkeypatch.setattr(audio_trainer, "_preprocess_whisper_dataset", fake_preprocess, raising = True)
+    monkeypatch.setattr(audio_trainer, "_preprocess_whisper_dataset", fake_preprocess, raising=True)
 
     train, evaluation = audio_trainer.load_and_format_dataset(
         None,
-        local_datasets = [_rows(tmp_path / "train.jsonl", ["tr-1", "tr-2", "tr-3"])],
-        local_eval_datasets = [_rows(tmp_path / "eval.jsonl", ["ev-1", "ev-2"])],
-        eval_steps = 0.1,
+        local_datasets=[_rows(tmp_path / "train.jsonl", ["tr-1", "tr-2", "tr-3"])],
+        local_eval_datasets=[_rows(tmp_path / "eval.jsonl", ["ev-1", "ev-2"])],
+        eval_steps=0.1,
     )
 
     assert seen["eval_rows"] == ["ev-1", "ev-2"], "the uploaded eval split never reached Whisper"
@@ -110,19 +110,19 @@ def test_whisper_without_an_eval_upload_is_unchanged(audio_trainer, tmp_path, mo
 
     def fake_preprocess(
         dataset,
-        eval_split = None,
-        custom_format_mapping = None,
-        eval_dataset = None,
+        eval_split=None,
+        custom_format_mapping=None,
+        eval_dataset=None,
     ):
         seen["eval_dataset"] = eval_dataset
         return (list(dataset["text"]), None)
 
-    monkeypatch.setattr(audio_trainer, "_preprocess_whisper_dataset", fake_preprocess, raising = True)
+    monkeypatch.setattr(audio_trainer, "_preprocess_whisper_dataset", fake_preprocess, raising=True)
 
     _train, evaluation = audio_trainer.load_and_format_dataset(
         None,
-        local_datasets = [_rows(tmp_path / "train.jsonl", ["tr-1"])],
-        eval_steps = 0.1,
+        local_datasets=[_rows(tmp_path / "train.jsonl", ["tr-1"])],
+        eval_steps=0.1,
     )
     assert seen["eval_dataset"] is None
     assert evaluation is None
@@ -136,12 +136,12 @@ class _FakeWhisperTokenizer:
     def feature_extractor(
         self,
         array,
-        sampling_rate = None,
+        sampling_rate=None,
     ):
         return self._Features([list(array)])
 
     def tokenizer(self, text):
-        return types.SimpleNamespace(input_ids = [len(text)])
+        return types.SimpleNamespace(input_ids=[len(text)])
 
 
 class _FakeAudioDataset:
@@ -151,7 +151,7 @@ class _FakeAudioDataset:
         self,
         texts,
         *,
-        with_audio = True,
+        with_audio=True,
     ):
         self._texts = list(texts)
         self._with_audio = with_audio
@@ -165,20 +165,20 @@ class _FakeAudioDataset:
         """Like cast_column: for a decode_example feature (Audio) the name is not
         validated, so a missing column is silently ADDED as all-null."""
         if column not in self.column_names:
-            phantom = _FakeAudioDataset(self._texts, with_audio = False)
+            phantom = _FakeAudioDataset(self._texts, with_audio=False)
             phantom._phantom_columns = list(getattr(self, "_phantom_columns", [])) + [column]
             return phantom
         return self
 
     def train_test_split(
         self,
-        test_size = None,
-        seed = None,
+        test_size=None,
+        seed=None,
     ):
         n_eval = max(1, round(len(self._texts) * test_size))
         return {
-            "train": _FakeAudioDataset(self._texts[:-n_eval], with_audio = self._with_audio),
-            "test": _FakeAudioDataset(self._texts[-n_eval:], with_audio = self._with_audio),
+            "train": _FakeAudioDataset(self._texts[:-n_eval], with_audio=self._with_audio),
+            "test": _FakeAudioDataset(self._texts[-n_eval:], with_audio=self._with_audio),
         }
 
     def __len__(self):
@@ -202,8 +202,8 @@ def test_whisper_preprocess_prefers_the_separate_split_over_the_carve_out(audio_
 
     train_data, eval_data = audio_trainer._preprocess_whisper_dataset(
         _audio_rows([f"tr-{i}" for i in range(20)]),
-        eval_split = "validation",
-        eval_dataset = _audio_rows(["ev-1", "ev-2"]),
+        eval_split="validation",
+        eval_dataset=_audio_rows(["ev-1", "ev-2"]),
     )
 
     assert len(train_data) == 20, "the train set was carved despite a separate eval split"
@@ -215,8 +215,8 @@ def test_whisper_preprocess_still_carves_when_there_is_no_separate_split(audio_t
 
     train_data, eval_data = audio_trainer._preprocess_whisper_dataset(
         _audio_rows([f"tr-{i}" for i in range(100)]),
-        eval_split = "validation",
-        eval_dataset = None,
+        eval_split="validation",
+        eval_dataset=None,
     )
 
     assert len(train_data) == 94
@@ -227,7 +227,7 @@ def test_whisper_preprocess_without_eval_returns_none(audio_trainer):
     audio_trainer.tokenizer = _FakeWhisperTokenizer()
 
     train_data, eval_data = audio_trainer._preprocess_whisper_dataset(
-        _audio_rows(["tr-1", "tr-2"]), eval_split = None, eval_dataset = None
+        _audio_rows(["tr-1", "tr-2"]), eval_split=None, eval_dataset=None
     )
 
     assert len(train_data) == 2
@@ -239,8 +239,8 @@ def test_whisper_eval_split_without_an_audio_column_warns(audio_trainer):
 
     train_data, eval_data = audio_trainer._preprocess_whisper_dataset(
         _audio_rows(["tr-1", "tr-2"]),
-        eval_split = None,
-        eval_dataset = _FakeAudioDataset(["ev-1"], with_audio = False),
+        eval_split=None,
+        eval_dataset=_FakeAudioDataset(["ev-1"], with_audio=False),
     )
 
     assert len(train_data) == 2, "a bad eval split must not take the training data with it"
@@ -253,17 +253,17 @@ def test_audio_vlm_uses_the_uploaded_eval_split(audio_trainer, tmp_path, monkeyp
     audio_trainer.is_audio_vlm = True
     seen = []
 
-    def fake_format(dataset, custom_format_mapping = None):
+    def fake_format(dataset, custom_format_mapping=None):
         seen.append(list(dataset["text"]))
         return dataset
 
-    monkeypatch.setattr(audio_trainer, "_format_audio_vlm_dataset", fake_format, raising = True)
+    monkeypatch.setattr(audio_trainer, "_format_audio_vlm_dataset", fake_format, raising=True)
 
     train, evaluation = audio_trainer.load_and_format_dataset(
         None,
-        local_datasets = [_rows(tmp_path / "train.jsonl", ["tr-1", "tr-2"])],
-        local_eval_datasets = [_rows(tmp_path / "eval.jsonl", ["ev-1"])],
-        eval_steps = 0.1,
+        local_datasets=[_rows(tmp_path / "train.jsonl", ["tr-1", "tr-2"])],
+        local_eval_datasets=[_rows(tmp_path / "eval.jsonl", ["ev-1"])],
+        eval_steps=0.1,
     )
 
     assert evaluation is not None, "the uploaded eval split was dropped"
@@ -276,13 +276,13 @@ def test_audio_vlm_without_an_eval_upload_returns_none(audio_trainer, tmp_path, 
     audio_trainer._audio_type = None
     audio_trainer.is_audio_vlm = True
     monkeypatch.setattr(
-        audio_trainer, "_format_audio_vlm_dataset", lambda ds, m = None: ds, raising = True
+        audio_trainer, "_format_audio_vlm_dataset", lambda ds, m=None: ds, raising=True
     )
 
     _train, evaluation = audio_trainer.load_and_format_dataset(
         None,
-        local_datasets = [_rows(tmp_path / "train.jsonl", ["tr-1"])],
-        eval_steps = 0.1,
+        local_datasets=[_rows(tmp_path / "train.jsonl", ["tr-1"])],
+        eval_steps=0.1,
     )
     assert evaluation is None
 
@@ -294,19 +294,19 @@ def test_audio_vlm_unpreparable_eval_split_warns_instead_of_failing_the_run(
     audio_trainer.is_audio_vlm = True
     calls = {"n": 0}
 
-    def flaky(dataset, custom_format_mapping = None):
+    def flaky(dataset, custom_format_mapping=None):
         calls["n"] += 1
         if calls["n"] == 2:
             raise ValueError("no audio column found in dataset")
         return dataset
 
-    monkeypatch.setattr(audio_trainer, "_format_audio_vlm_dataset", flaky, raising = True)
+    monkeypatch.setattr(audio_trainer, "_format_audio_vlm_dataset", flaky, raising=True)
 
     train, evaluation = audio_trainer.load_and_format_dataset(
         None,
-        local_datasets = [_rows(tmp_path / "train.jsonl", ["tr-1", "tr-2"])],
-        local_eval_datasets = [_rows(tmp_path / "eval.jsonl", ["ev-1"])],
-        eval_steps = 0.1,
+        local_datasets=[_rows(tmp_path / "train.jsonl", ["tr-1", "tr-2"])],
+        local_eval_datasets=[_rows(tmp_path / "eval.jsonl", ["ev-1"])],
+        eval_steps=0.1,
     )
 
     assert _texts(train) == ["tr-1", "tr-2"]
@@ -323,8 +323,8 @@ def test_whisper_length_less_eval_split_warns_instead_of_crashing(audio_trainer)
 
     train_data, eval_data = audio_trainer._preprocess_whisper_dataset(
         _audio_rows(["tr-1", "tr-2"]),
-        eval_split = None,
-        eval_dataset = _NoLen(["ev-1"]),
+        eval_split=None,
+        eval_dataset=_NoLen(["ev-1"]),
     )
 
     assert len(train_data) == 2
@@ -337,8 +337,8 @@ def test_whisper_zero_row_eval_split_is_falsy(audio_trainer):
 
     train_data, eval_data = audio_trainer._preprocess_whisper_dataset(
         _audio_rows(["tr-1", "tr-2"]),
-        eval_split = None,
-        eval_dataset = _audio_rows([]),
+        eval_split=None,
+        eval_dataset=_audio_rows([]),
     )
 
     assert len(train_data) == 2
@@ -350,19 +350,19 @@ def test_whisper_cancel_during_eval_preprocessing_leaves_no_eval(audio_trainer):
     real_extractor = tokenizer.feature_extractor
     calls = {"n": 0}
 
-    def counting_extractor(array, sampling_rate = None):
+    def counting_extractor(array, sampling_rate=None):
         calls["n"] += 1
         if calls["n"] == 2:  # both train rows are done
             audio_trainer.should_stop = True
-        return real_extractor(array, sampling_rate = sampling_rate)
+        return real_extractor(array, sampling_rate=sampling_rate)
 
     tokenizer.feature_extractor = counting_extractor
     audio_trainer.tokenizer = tokenizer
 
     train_data, eval_data = audio_trainer._preprocess_whisper_dataset(
         _audio_rows(["tr-1", "tr-2"]),
-        eval_split = None,
-        eval_dataset = _audio_rows(["ev-1"]),
+        eval_split=None,
+        eval_dataset=_audio_rows(["ev-1"]),
     )
 
     assert len(train_data) == 2
@@ -378,17 +378,17 @@ def test_audio_vlm_eval_split_with_a_different_audio_column_is_refused(
     audio_trainer.is_audio_vlm = True
     columns = iter(["audio", "speech"])
 
-    def fake_format(dataset, custom_format_mapping = None):
+    def fake_format(dataset, custom_format_mapping=None):
         audio_trainer._audio_vlm_audio_col = next(columns)
         return dataset
 
-    monkeypatch.setattr(audio_trainer, "_format_audio_vlm_dataset", fake_format, raising = True)
+    monkeypatch.setattr(audio_trainer, "_format_audio_vlm_dataset", fake_format, raising=True)
 
     _train, evaluation = audio_trainer.load_and_format_dataset(
         None,
-        local_datasets = [_rows(tmp_path / "train.jsonl", ["tr-1"])],
-        local_eval_datasets = [_rows(tmp_path / "eval.jsonl", ["ev-1"])],
-        eval_steps = 0.1,
+        local_datasets=[_rows(tmp_path / "train.jsonl", ["tr-1"])],
+        local_eval_datasets=[_rows(tmp_path / "eval.jsonl", ["ev-1"])],
+        eval_steps=0.1,
     )
 
     assert evaluation is None
@@ -404,17 +404,17 @@ def test_audio_vlm_matching_eval_split_leaves_the_column_alone(
     audio_trainer._audio_type = None
     audio_trainer.is_audio_vlm = True
 
-    def fake_format(dataset, custom_format_mapping = None):
+    def fake_format(dataset, custom_format_mapping=None):
         audio_trainer._audio_vlm_audio_col = "audio"
         return dataset
 
-    monkeypatch.setattr(audio_trainer, "_format_audio_vlm_dataset", fake_format, raising = True)
+    monkeypatch.setattr(audio_trainer, "_format_audio_vlm_dataset", fake_format, raising=True)
 
     _train, evaluation = audio_trainer.load_and_format_dataset(
         None,
-        local_datasets = [_rows(tmp_path / "train.jsonl", ["tr-1"])],
-        local_eval_datasets = [_rows(tmp_path / "eval.jsonl", ["ev-1"])],
-        eval_steps = 0.1,
+        local_datasets=[_rows(tmp_path / "train.jsonl", ["tr-1"])],
+        local_eval_datasets=[_rows(tmp_path / "eval.jsonl", ["ev-1"])],
+        eval_steps=0.1,
     )
 
     assert evaluation is not None
@@ -427,7 +427,7 @@ def _drive_whisper_branch(
     monkeypatch,
     *,
     eval_rows,
-    eval_steps = 0.25,
+    eval_steps=0.25,
 ):
     """Drive the real Whisper _train_worker branch; only train() is stubbed, so the asserted
     args and eval dataset are genuine transformers objects."""
@@ -437,11 +437,11 @@ def _drive_whisper_branch(
     monkeypatch.setattr(transformers.Seq2SeqTrainer, "train", lambda self, **kw: None)
     monkeypatch.setattr(tmod, "_drop_hf_stdout_callbacks", lambda trainer: None)
     monkeypatch.setattr(
-        tmod.UnslothTrainer, "_finalize_training", lambda self, *a, **k: None, raising = True
+        tmod.UnslothTrainer, "_finalize_training", lambda self, *a, **k: None, raising=True
     )
-    monkeypatch.setattr(tmod, "resolve_output_dir", lambda p: tmp_path, raising = True)
-    monkeypatch.setattr(tmod, "ensure_dir", lambda p: p, raising = True)
-    monkeypatch.setattr(tmod, "is_bfloat16_supported", lambda: False, raising = False)
+    monkeypatch.setattr(tmod, "resolve_output_dir", lambda p: tmp_path, raising=True)
+    monkeypatch.setattr(tmod, "ensure_dir", lambda p: p, raising=True)
+    monkeypatch.setattr(tmod, "is_bfloat16_supported", lambda: False, raising=False)
 
     class _TinyModel(torch.nn.Module):
         def __init__(self):
@@ -464,21 +464,21 @@ def _drive_whisper_branch(
         tmod,
         "DataCollatorSpeechSeq2SeqWithPadding",
         lambda processor: lambda f: f,
-        raising = False,
+        raising=False,
     )
 
     audio_trainer._train_worker(
         [{"input_features": [0.0], "labels": [1]}] * 4,
-        eval_dataset = eval_rows,
-        eval_steps = eval_steps,
-        batch_size = 2,
-        gradient_accumulation_steps = 1,
-        max_steps = 8,
-        warmup_steps = 0,
-        num_epochs = 1,
-        output_dir = str(tmp_path),
-        fp16 = False,
-        bf16 = False,
+        eval_dataset=eval_rows,
+        eval_steps=eval_steps,
+        batch_size=2,
+        gradient_accumulation_steps=1,
+        max_steps=8,
+        warmup_steps=0,
+        num_epochs=1,
+        output_dir=str(tmp_path),
+        fp16=False,
+        bf16=False,
     )
     return audio_trainer.trainer
 
@@ -486,7 +486,7 @@ def _drive_whisper_branch(
 def test_whisper_trainer_branch_wires_eval(audio_trainer, tmp_path, monkeypatch):
     """HF defaults per_device_eval_batch_size to 8, which can OOM an audio eval pass."""
     eval_rows = [{"input_features": [0.0], "labels": [2]}] * 2
-    trainer = _drive_whisper_branch(audio_trainer, tmp_path, monkeypatch, eval_rows = eval_rows)
+    trainer = _drive_whisper_branch(audio_trainer, tmp_path, monkeypatch, eval_rows=eval_rows)
 
     assert trainer is not None, "the Whisper branch did not build a trainer"
     assert trainer.eval_dataset is eval_rows
@@ -499,7 +499,7 @@ def test_whisper_trainer_branch_wires_eval(audio_trainer, tmp_path, monkeypatch)
 
 
 def test_whisper_trainer_branch_omits_eval_when_there_is_none(audio_trainer, tmp_path, monkeypatch):
-    trainer = _drive_whisper_branch(audio_trainer, tmp_path, monkeypatch, eval_rows = None)
+    trainer = _drive_whisper_branch(audio_trainer, tmp_path, monkeypatch, eval_rows=None)
 
     assert trainer is not None
     assert trainer.eval_dataset is None
@@ -507,7 +507,7 @@ def test_whisper_trainer_branch_omits_eval_when_there_is_none(audio_trainer, tmp
 
 
 def test_whisper_trainer_branch_omits_eval_for_an_empty_split(audio_trainer, tmp_path, monkeypatch):
-    trainer = _drive_whisper_branch(audio_trainer, tmp_path, monkeypatch, eval_rows = [])
+    trainer = _drive_whisper_branch(audio_trainer, tmp_path, monkeypatch, eval_rows=[])
 
     assert trainer is not None
     assert not trainer.eval_dataset
@@ -523,8 +523,8 @@ def test_whisper_trainer_branch_refuses_an_unusable_cadence(
         audio_trainer,
         tmp_path,
         monkeypatch,
-        eval_rows = [{"input_features": [0.0], "labels": [2]}] * 2,
-        eval_steps = bad,
+        eval_rows=[{"input_features": [0.0], "labels": [2]}] * 2,
+        eval_steps=bad,
     )
 
     assert trainer is not None, f"eval_steps={bad!r} took the Whisper branch down"
@@ -539,8 +539,8 @@ def test_whisper_trainer_branch_normalises_a_numeric_string_cadence(
         audio_trainer,
         tmp_path,
         monkeypatch,
-        eval_rows = [{"input_features": [0.0], "labels": [2]}] * 2,
-        eval_steps = "0.1",
+        eval_rows=[{"input_features": [0.0], "labels": [2]}] * 2,
+        eval_steps="0.1",
     )
 
     assert trainer is not None
@@ -555,30 +555,30 @@ def test_whisper_carve_out_is_skipped_when_the_cadence_is_unusable(audio_trainer
 
     def fake(
         dataset,
-        eval_split = None,
-        custom_format_mapping = None,
-        eval_dataset = None,
+        eval_split=None,
+        custom_format_mapping=None,
+        eval_dataset=None,
     ):
         seen["eval_split"] = eval_split
         return ([{"input_features": [0.0], "labels": [1]}], None)
 
     datasets = pytest.importorskip("datasets")
     audio_trainer._audio_type = "whisper"
-    monkeypatch.setattr(audio_trainer, "_preprocess_whisper_dataset", fake, raising = True)
-    monkeypatch.setattr(tmod, "ensure_audio_decoding", lambda: True, raising = False)
+    monkeypatch.setattr(audio_trainer, "_preprocess_whisper_dataset", fake, raising=True)
+    monkeypatch.setattr(tmod, "ensure_audio_decoding", lambda: True, raising=False)
     monkeypatch.setattr(
         tmod,
         "load_dataset",
         lambda *a, **k: datasets.Dataset.from_dict({"audio": ["a"] * 4, "text": ["x"] * 4}),
-        raising = False,
+        raising=False,
     )
 
     audio_trainer.load_and_format_dataset(
-        "some/dataset", eval_split = "validation", eval_steps = float("inf")
+        "some/dataset", eval_split="validation", eval_steps=float("inf")
     )
     assert seen["eval_split"] is None
 
-    audio_trainer.load_and_format_dataset("some/dataset", eval_split = "validation", eval_steps = 0.25)
+    audio_trainer.load_and_format_dataset("some/dataset", eval_split="validation", eval_steps=0.25)
     assert seen["eval_split"] == "validation"
 
 
@@ -591,8 +591,8 @@ def test_whisper_eval_split_whose_rows_are_all_skipped_warns(audio_trainer):
 
     train_data, eval_data = audio_trainer._preprocess_whisper_dataset(
         _audio_rows(["tr-1", "tr-2"]),
-        eval_split = None,
-        eval_dataset = _EmptyRows(["ev-1", "ev-2"]),
+        eval_split=None,
+        eval_dataset=_EmptyRows(["ev-1", "ev-2"]),
     )
 
     assert len(train_data) == 2
@@ -606,19 +606,19 @@ def test_whisper_cancel_does_not_warn_about_the_eval_file(audio_trainer):
     real_extractor = tokenizer.feature_extractor
     calls = {"n": 0}
 
-    def counting_extractor(array, sampling_rate = None):
+    def counting_extractor(array, sampling_rate=None):
         calls["n"] += 1
         if calls["n"] == 2:
             audio_trainer.should_stop = True
-        return real_extractor(array, sampling_rate = sampling_rate)
+        return real_extractor(array, sampling_rate=sampling_rate)
 
     tokenizer.feature_extractor = counting_extractor
     audio_trainer.tokenizer = tokenizer
 
     _train_data, eval_data = audio_trainer._preprocess_whisper_dataset(
         _audio_rows(["tr-1", "tr-2"]),
-        eval_split = None,
-        eval_dataset = _audio_rows(["ev-1"]),
+        eval_split=None,
+        eval_dataset=_audio_rows(["ev-1"]),
     )
 
     assert not eval_data
@@ -631,7 +631,7 @@ def test_cast_column_really_does_not_validate_the_column_name():
     datasets = pytest.importorskip("datasets")
 
     ds = datasets.Dataset.from_dict({"path": ["/a.wav"], "text": ["x"]})
-    cast = ds.cast_column("audio", datasets.Audio(sampling_rate = 16000))
+    cast = ds.cast_column("audio", datasets.Audio(sampling_rate=16000))
 
     assert "audio" in cast.column_names, "cast_column started validating; simplify the guard"
     assert cast[0]["audio"] is None

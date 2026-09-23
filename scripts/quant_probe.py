@@ -48,7 +48,7 @@ def _lpips(ref_arr, arr):
         import lpips
 
         if _LPIPS["fn"] is None:
-            _LPIPS["fn"] = lpips.LPIPS(net = "alex", verbose = False).eval()
+            _LPIPS["fn"] = lpips.LPIPS(net="alex", verbose=False).eval()
 
         def t(x):
             return torch.from_numpy(x).float().permute(2, 0, 1).unsqueeze(0) / 127.5 - 1.0
@@ -56,7 +56,7 @@ def _lpips(ref_arr, arr):
         with torch.no_grad():
             return float(_LPIPS["fn"](t(ref_arr), t(arr)).item())
     except Exception as exc:  # noqa: BLE001
-        print(f"    (lpips unavailable: {type(exc).__name__}: {str(exc)[:80]})", flush = True)
+        print(f"    (lpips unavailable: {type(exc).__name__}: {str(exc)[:80]})", flush=True)
         return None
 
 
@@ -65,9 +65,9 @@ def _load_dense():
     import diffusers
 
     t = diffusers.ZImageTransformer2DModel.from_pretrained(
-        BASE, subfolder = "transformer", torch_dtype = torch.bfloat16
+        BASE, subfolder="transformer", torch_dtype=torch.bfloat16
     )
-    pipe = diffusers.ZImagePipeline.from_pretrained(BASE, torch_dtype = torch.bfloat16, transformer = t)
+    pipe = diffusers.ZImagePipeline.from_pretrained(BASE, torch_dtype=torch.bfloat16, transformer=t)
     pipe.to("cuda")
     return pipe
 
@@ -79,12 +79,12 @@ def _load_gguf():
 
     t = diffusers.ZImageTransformer2DModel.from_single_file(
         hf_hub_download(REPO, GGUF),
-        quantization_config = diffusers.GGUFQuantizationConfig(compute_dtype = torch.bfloat16),
-        torch_dtype = torch.bfloat16,
-        config = BASE,
-        subfolder = "transformer",
+        quantization_config=diffusers.GGUFQuantizationConfig(compute_dtype=torch.bfloat16),
+        torch_dtype=torch.bfloat16,
+        config=BASE,
+        subfolder="transformer",
     )
-    pipe = diffusers.ZImagePipeline.from_pretrained(BASE, torch_dtype = torch.bfloat16, transformer = t)
+    pipe = diffusers.ZImagePipeline.from_pretrained(BASE, torch_dtype=torch.bfloat16, transformer=t)
     pipe.to("cuda")
     return pipe
 
@@ -105,13 +105,16 @@ def _quant_config(name):
         return Float8DynamicActivationFloat8WeightConfig()
     if name == "nvfp4":
         from torchao.prototype.mx_formats import NVFP4DynamicActivationNVFP4WeightConfig
+
         return NVFP4DynamicActivationNVFP4WeightConfig()
     if name == "mxfp8":
         from torchao.prototype.mx_formats import MXDynamicActivationMXWeightConfig
+
         try:
             import torch
+
             return MXDynamicActivationMXWeightConfig(
-                activation_dtype = torch.float8_e4m3fn, weight_dtype = torch.float8_e4m3fn
+                activation_dtype=torch.float8_e4m3fn, weight_dtype=torch.float8_e4m3fn
             )
         except (TypeError, AttributeError):
             return MXDynamicActivationMXWeightConfig()
@@ -124,7 +127,7 @@ def _make_filter_fn(min_features):
     timestep/pooled projections (in_features=256) run at M=1 and crash it -- skip them."""
     import torch.nn as nn
 
-    def filter_fn(module, fqn = ""):
+    def filter_fn(module, fqn=""):
         return (
             isinstance(module, nn.Linear)
             and getattr(module, "in_features", 0) >= min_features
@@ -142,7 +145,7 @@ def _apply_quant(pipe, name, log, min_features):
     total = sum(1 for m in pipe.transformer.modules() if isinstance(m, nn.Linear))
     filt = _make_filter_fn(min_features)
     q = sum(1 for n, m in pipe.transformer.named_modules() if filt(m, n))
-    quantize_(pipe.transformer, cfg, filter_fn = filt)
+    quantize_(pipe.transformer, cfg, filter_fn=filt)
     log(f"    quantized transformer with {name} ({q}/{total} linears >= {min_features} feat)")
 
 
@@ -163,16 +166,16 @@ def _compile(pipe, log):
 def _gen(pipe, steps, seed, res):
     import torch
 
-    g = torch.Generator(device = "cuda").manual_seed(seed)
+    g = torch.Generator(device="cuda").manual_seed(seed)
     torch.cuda.synchronize()
     t0 = time.time()
     img = pipe(
-        prompt = PROMPT,
-        width = res,
-        height = res,
-        num_inference_steps = steps,
-        guidance_scale = 0.0,
-        generator = g,
+        prompt=PROMPT,
+        width=res,
+        height=res,
+        num_inference_steps=steps,
+        guidance_scale=0.0,
+        generator=g,
     ).images[0]
     torch.cuda.synchronize()
     return img, time.time() - t0
@@ -182,36 +185,36 @@ def _median(xs):
     return sorted(xs)[len(xs) // 2]
 
 
-def main(argv = None) -> int:
+def main(argv=None) -> int:
     p = argparse.ArgumentParser()
-    p.add_argument("--steps", type = int, default = 8)
-    p.add_argument("--res", type = int, default = 1024)
-    p.add_argument("--seed", type = int, default = 42)
-    p.add_argument("--iters", type = int, default = 3)
+    p.add_argument("--steps", type=int, default=8)
+    p.add_argument("--res", type=int, default=1024)
+    p.add_argument("--seed", type=int, default=42)
+    p.add_argument("--iters", type=int, default=3)
     p.add_argument(
         "--min-feat",
-        type = int,
-        default = 512,
-        help = "only quantize Linear with in&out features >= this (int8 _int_mm needs M>16)",
+        type=int,
+        default=512,
+        help="only quantize Linear with in&out features >= this (int8 _int_mm needs M>16)",
     )
     p.add_argument(
         "--configs",
-        default = "bf16,bf16_c,gguf_c,int8dq_c,fp8dq_c,nvfp4_c,mxfp8_c,int8wo_c",
-        help = "comma list; suffix _c = +compile",
+        default="bf16,bf16_c,gguf_c,int8dq_c,fp8dq_c,nvfp4_c,mxfp8_c,int8wo_c",
+        help="comma list; suffix _c = +compile",
     )
     args = p.parse_args(argv)
     steps, res, seed, iters = args.steps, args.res, args.seed, args.iters
 
     import torch
 
-    OUT.mkdir(parents = True, exist_ok = True)
+    OUT.mkdir(parents=True, exist_ok=True)
 
     def run(
         tag,
         *,
         source,
-        quant = None,
-        compile = False,
+        quant=None,
+        compile=False,
     ):
         torch.compiler.reset()
         torch.cuda.empty_cache()
@@ -237,7 +240,7 @@ def main(argv = None) -> int:
         torch.cuda.empty_cache()
         return tag, _median(dts), arr, load_peak, gen_peak
 
-    print_ = lambda s: print(s, flush = True)  # noqa: E731
+    print_ = lambda s: print(s, flush=True)  # noqa: E731
 
     # config table: tag -> (source, quant, compile)
     table = {
@@ -252,21 +255,21 @@ def main(argv = None) -> int:
     }
     want = [c.strip() for c in args.configs.split(",") if c.strip()]
 
-    print(f"== quant probe (Z-Image-Turbo, {res}px, {steps} steps, seed {seed}) ==", flush = True)
+    print(f"== quant probe (Z-Image-Turbo, {res}px, {steps} steps, seed {seed}) ==", flush=True)
     ref_arr = None
     rows = []
     for tag in want:
         if tag not in table:
-            print(f"  {tag}: unknown config, skipping", flush = True)
+            print(f"  {tag}: unknown config, skipping", flush=True)
             continue
         source, quant, compile = table[tag]
-        print(f"-- {tag} (source={source} quant={quant} compile={compile}) --", flush = True)
+        print(f"-- {tag} (source={source} quant={quant} compile={compile}) --", flush=True)
         try:
-            _, med, arr, lp, gp = run(tag, source = source, quant = quant, compile = compile)
+            _, med, arr, lp, gp = run(tag, source=source, quant=quant, compile=compile)
         except Exception as exc:  # noqa: BLE001
             import traceback
 
-            print(f"  {tag:10s} FAILED: {type(exc).__name__}: {str(exc)[:160]}", flush = True)
+            print(f"  {tag:10s} FAILED: {type(exc).__name__}: {str(exc)[:160]}", flush=True)
             traceback.print_exc()
             rows.append((tag, None, None, None, None, None))
             continue
@@ -283,19 +286,19 @@ def main(argv = None) -> int:
         lps = f"{lpips_v:.3f}" if lpips_v is not None else "n/a"
         print(
             f"  {tag:10s} {med:.3f}s  PSNR={ps:>7s}  LPIPS={lps:>6s}  loadVRAM={lp:.1f}G genVRAM={gp:.1f}G",
-            flush = True,
+            flush=True,
         )
 
     base = next((r[1] for r in rows if r[0] == "bf16" and r[1]), None)
     gguf = next((r[1] for r in rows if r[0] == "gguf_c" and r[1]), None)
-    print("\n==== SUMMARY (ref = bf16 dense eager) ====", flush = True)
+    print("\n==== SUMMARY (ref = bf16 dense eager) ====", flush=True)
     print(
         f"{'config':10s} {'sec':>7s} {'vs_bf16':>8s} {'vs_gguf':>8s} {'PSNR':>8s} {'LPIPS':>7s} {'loadG':>6s} {'genG':>6s}",
-        flush = True,
+        flush=True,
     )
     for tag, med, psnr, lpips_v, lp, gp in rows:
         if med is None:
-            print(f"{tag:10s} {'FAILED':>7s}", flush = True)
+            print(f"{tag:10s} {'FAILED':>7s}", flush=True)
             continue
         vb = f"{base/med:.2f}x" if base else "-"
         vg = f"{gguf/med:.2f}x" if gguf else "-"
@@ -307,9 +310,9 @@ def main(argv = None) -> int:
         lps = f"{lpips_v:.3f}" if lpips_v is not None else "n/a"
         print(
             f"{tag:10s} {med:>7.3f} {vb:>8s} {vg:>8s} {ps:>8s} {lps:>7s} {lp:>6.1f} {gp:>6.1f}",
-            flush = True,
+            flush=True,
         )
-    print("QUANT-PROBE-DONE", flush = True)
+    print("QUANT-PROBE-DONE", flush=True)
     return 0
 
 

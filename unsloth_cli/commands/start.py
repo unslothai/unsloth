@@ -48,9 +48,9 @@ from unsloth_cli._inference import (
 )
 
 start_app = typer.Typer(
-    help = "Start a coding agent against a running Unsloth server.",
-    no_args_is_help = True,
-    context_settings = {"help_option_names": ["-h", "--help"]},
+    help="Start a coding agent against a running Unsloth server.",
+    no_args_is_help=True,
+    context_settings={"help_option_names": ["-h", "--help"]},
 )
 
 _CODEX_PROFILE = "unsloth_api"
@@ -181,41 +181,41 @@ _MODEL_OPTION = typer.Option(
     None,
     "--model",
     "-m",
-    rich_help_panel = _PANEL_MODEL,
-    help = "Model for the agent, or a bare `org/name(:variant)` positional. "
+    rich_help_panel=_PANEL_MODEL,
+    help="Model for the agent, or a bare `org/name(:variant)` positional. "
     "Defaults to the one loaded in Unsloth.",
 )
 _GGUF_VARIANT_OPTION = typer.Option(
     None,
     "--gguf-variant",
-    rich_help_panel = _PANEL_MODEL,
-    help = "GGUF quant variant to load (e.g. UD-Q4_K_XL). Defaults to UD-Q4_K_XL for "
+    rich_help_panel=_PANEL_MODEL,
+    help="GGUF quant variant to load (e.g. UD-Q4_K_XL). Defaults to UD-Q4_K_XL for "
     "unsloth/* GGUF repos, else Q4_K_M.",
 )
 _CONTEXT_OPTION = typer.Option(
     0,
     "--max-seq-length",
     "--context-length",
-    rich_help_panel = _PANEL_MODEL,
-    help = "Context length in tokens for the load (0 = model default).",
+    rich_help_panel=_PANEL_MODEL,
+    help="Context length in tokens for the load (0 = model default).",
 )
 _LOAD_4BIT_OPTION = typer.Option(
     True,
     "--load-in-4bit/--no-load-in-4bit",
-    rich_help_panel = _PANEL_MODEL,
-    help = "Load hub models in 4-bit (ignored for GGUF).",
+    rich_help_panel=_PANEL_MODEL,
+    help="Load hub models in 4-bit (ignored for GGUF).",
 )
 _TENSOR_PARALLEL_OPTION = typer.Option(
     False,
     "--tensor-parallel/--no-tensor-parallel",
-    rich_help_panel = _PANEL_MODEL,
-    help = "Split a GGUF across GPUs by tensor instead of by layer (multi-GPU only).",
+    rich_help_panel=_PANEL_MODEL,
+    help="Split a GGUF across GPUs by tensor instead of by layer (multi-GPU only).",
 )
 _GPU_MEMORY_MODE_OPTION = typer.Option(
     None,
     "--gpu-memory-mode",
-    rich_help_panel = _PANEL_MODEL,
-    help = (
+    rich_help_panel=_PANEL_MODEL,
+    help=(
         "GPU memory strategy for GGUF models loaded by this command. Auto lets "
         "Unsloth manage placement. Manual with default layers and context delegates "
         "placement and sizing to llama.cpp --fit. Omit when attaching to preserve "
@@ -227,36 +227,36 @@ _GPU_MEMORY_MODE_OPTION = typer.Option(
 _SERVE_OPTION = typer.Option(
     True,
     "--serve/--no-serve",
-    rich_help_panel = _PANEL_SERVER,
-    help = "If no Unsloth server is running, auto-start one for --model and keep it "
+    rich_help_panel=_PANEL_SERVER,
+    help="If no Unsloth server is running, auto-start one for --model and keep it "
     "available after the agent exits. --no-serve errors out instead.",
 )
 _ENABLE_TOOLS_OPTION = typer.Option(
     False,
     "--enable-tools/--disable-tools",
-    rich_help_panel = _PANEL_SERVER,
-    help = "Server-side tools (web search, code execution) for the auto-started server. "
+    rich_help_panel=_PANEL_SERVER,
+    help="Server-side tools (web search, code execution) for the auto-started server. "
     "Default off so the agent's own tools are relayed unchanged.",
 )
 _TOOL_CALL_HEALING_OPTION = typer.Option(
     None,
     "--enable-tool-call-healing/--disable-tool-call-healing",
-    rich_help_panel = _PANEL_SERVER,
-    help = "Promote text-form tool calls from small GGUFs back into structured calls. On by "
+    rich_help_panel=_PANEL_SERVER,
+    help="Promote text-form tool calls from small GGUFs back into structured calls. On by "
     "default; when the flag is omitted an inherited UNSLOTH_DISABLE_TOOL_CALL_HEALING is kept.",
 )
 _TOOL_CALL_NUDGING_OPTION = typer.Option(
     None,
     "--enable-tool-call-nudging/--disable-tool-call-nudging",
-    rich_help_panel = _PANEL_SERVER,
-    help = "Retry once with a nudge when a non-streaming passthrough tool call can't be healed. "
+    rich_help_panel=_PANEL_SERVER,
+    help="Retry once with a nudge when a non-streaming passthrough tool call can't be healed. "
     "On by default; when the flag is omitted an inherited UNSLOTH_TOOL_CALL_NUDGE is kept.",
 )
 _REASONING_OPTION = typer.Option(
     None,
     "--reasoning",
-    rich_help_panel = _PANEL_SERVER,
-    help = (
+    rich_help_panel=_PANEL_SERVER,
+    help=(
         "llama-server reasoning mode for an auto-started coding-agent server. "
         "Defaults to auto so the model's chat template decides; use 'on' or 'off' "
         "to override it."
@@ -265,8 +265,8 @@ _REASONING_OPTION = typer.Option(
 _REASONING_EFFORT_OPTION = typer.Option(
     None,
     "--reasoning-effort",
-    rich_help_panel = _PANEL_SERVER,
-    help = (
+    rich_help_panel=_PANEL_SERVER,
+    help=(
         "Reasoning effort for an auto-started coding-agent server, e.g. 'medium'. The "
         "levels are the model's own, so pass one its chat template accepts. Default: "
         "unset, which keeps the template's level."
@@ -276,67 +276,67 @@ _REASONING_EFFORT_OPTION = typer.Option(
 _TEMPERATURE_OPTION = typer.Option(
     None,
     "--temperature",
-    min = 0.0,
-    max = 2.0,
-    rich_help_panel = _PANEL_SAMPLING,
-    help = "Pin the sampling temperature. Default: unset (per-model recommendation).",
+    min=0.0,
+    max=2.0,
+    rich_help_panel=_PANEL_SAMPLING,
+    help="Pin the sampling temperature. Default: unset (per-model recommendation).",
 )
 _TOP_P_OPTION = typer.Option(
     None,
     "--top-p",
-    min = 0.0,
-    max = 1.0,
-    rich_help_panel = _PANEL_SAMPLING,
-    help = "Pin top-p (nucleus) sampling. Default: unset (per-model recommendation).",
+    min=0.0,
+    max=1.0,
+    rich_help_panel=_PANEL_SAMPLING,
+    help="Pin top-p (nucleus) sampling. Default: unset (per-model recommendation).",
 )
 _TOP_K_OPTION = typer.Option(
     None,
     "--top-k",
-    min = -1,
-    max = 100,
-    rich_help_panel = _PANEL_SAMPLING,
-    help = "Pin top-k sampling. Default: unset (per-model recommendation).",
+    min=-1,
+    max=100,
+    rich_help_panel=_PANEL_SAMPLING,
+    help="Pin top-k sampling. Default: unset (per-model recommendation).",
 )
 _MIN_P_OPTION = typer.Option(
     None,
     "--min-p",
-    min = 0.0,
-    max = 1.0,
-    rich_help_panel = _PANEL_SAMPLING,
-    help = "Pin min-p sampling threshold. Default: unset (per-model recommendation).",
+    min=0.0,
+    max=1.0,
+    rich_help_panel=_PANEL_SAMPLING,
+    help="Pin min-p sampling threshold. Default: unset (per-model recommendation).",
 )
 _REPETITION_PENALTY_OPTION = typer.Option(
     None,
     "--repetition-penalty",
-    min = 1.0,
-    max = 2.0,
-    rich_help_panel = _PANEL_SAMPLING,
-    help = "Pin the repetition penalty. Default: unset (per-model recommendation).",
+    min=1.0,
+    max=2.0,
+    rich_help_panel=_PANEL_SAMPLING,
+    help="Pin the repetition penalty. Default: unset (per-model recommendation).",
 )
 _PRESENCE_PENALTY_OPTION = typer.Option(
     None,
     "--presence-penalty",
-    min = 0.0,
-    max = 2.0,
-    rich_help_panel = _PANEL_SAMPLING,
-    help = "Pin the presence penalty. Default: unset (per-model recommendation).",
+    min=0.0,
+    max=2.0,
+    rich_help_panel=_PANEL_SAMPLING,
+    help="Pin the presence penalty. Default: unset (per-model recommendation).",
 )
 
 # Agent-session knobs.
 _KEY_OPTION = typer.Option(
     None,
     "--api-key",
-    envvar = "UNSLOTH_API_KEY",
-    rich_help_panel = _PANEL_SESSION,
-    help = "Unsloth API key. For a local Unsloth it is minted automatically and "
+    envvar="UNSLOTH_API_KEY",
+    rich_help_panel=_PANEL_SESSION,
+    help="Unsloth API key. For a local Unsloth it is minted automatically and "
     "remembered per server. For a remote server, pass one with --api-key "
     "(or UNSLOTH_API_KEY); it is remembered for next time.",
 )
 _LAUNCH_OPTION = typer.Option(
     True,
     "--launch/--no-launch",
-    rich_help_panel = _PANEL_SESSION,
-    help = "--no-launch prints the env and command instead (remote shells, WSL).",
+    rich_help_panel=_PANEL_SESSION,
+    help="--no-launch prints the env and command instead (remote shells, WSL).",
 )
 # One normalized "run tools without prompting" switch. Each agent spells this differently and it is easy to forget which is which, so accept every spelling and route to the agent's own mechanism in _yolo_command_flags / the config writers.
 _YOLO_OPTION = typer.Option(
@@ -344,15 +344,15 @@ _YOLO_OPTION = typer.Option(
     "--yolo",
     "--dangerously-skip-permissions",
     "--dangerously-bypass-approvals-and-sandbox",
-    rich_help_panel = _PANEL_SESSION,
-    help = "Auto-approve all tool actions for this session; routed to the agent's own "
+    rich_help_panel=_PANEL_SESSION,
+    help="Auto-approve all tool actions for this session; routed to the agent's own "
     "flag/config. Any of the three spellings works for any agent.",
 )
 _PERSIST_OPTION = typer.Option(
     False,
     "--persist/--no-persist",
-    rich_help_panel = _PANEL_SESSION,
-    help = (
+    rich_help_panel=_PANEL_SESSION,
+    help=(
         "Keep this agent's Unsloth-managed session dir so you can resume it later. "
         "codex/openclaw/hermes/pi/dsh have their whole home relocated into an Unsloth dir "
         "that is a throwaway temp dir (wiped on exit) by default; with --persist it "
@@ -367,8 +367,8 @@ _PERSIST_OPTION = typer.Option(
 _AS_SUBAGENT_OPTION = typer.Option(
     False,
     "--as-subagent",
-    rich_help_panel = _PANEL_SESSION,
-    help = "Keep the coding agent's current model and add Unsloth as a local subagent.",
+    rich_help_panel=_PANEL_SESSION,
+    help="Keep the coding agent's current model and add Unsloth as a local subagent.",
 )
 
 # Per-agent CLI flag for "run tools without prompting". OpenCode (native --auto is command-scoped, handled below) and OpenClaw (config-only) are absent from this prefix map.
@@ -421,12 +421,12 @@ def _opencode_supports_native_auto(command: str = "opencode") -> bool:
     try:
         output = subprocess.check_output(
             [executable, "--version"],
-            text = True,
-            encoding = "utf-8",
-            errors = "replace",
-            timeout = 10,
-            stderr = subprocess.DEVNULL,
-            env = _probe_env(),
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=10,
+            stderr=subprocess.DEVNULL,
+            env=_probe_env(),
         )
     except Exception:
         return False
@@ -717,7 +717,7 @@ def _subagent_model_id(
             typer.echo(
                 "Warning: could not verify the loaded GGUF variant; a later reload "
                 "may pick a different cached quant. Pass :variant to pin it.",
-                err = True,
+                err=True,
             )
         if status.get("is_gguf"):
             variant = status.get("gguf_variant")
@@ -729,14 +729,14 @@ def _subagent_model_id(
             f"Warning: {model_id} loaded from a path, so the subagent config cannot "
             f"pin the {variant} quant; a reload may choose a different one. Load the "
             "model by repository id to pin it.",
-            err = True,
+            err=True,
         )
     return model_id
 
 
 def _fail(message: str) -> NoReturn:
-    typer.echo(message, err = True)
-    raise typer.Exit(code = 1)
+    typer.echo(message, err=True)
+    raise typer.Exit(code=1)
 
 
 def _reject_as_subagent(agent: str, args: list) -> None:
@@ -764,24 +764,24 @@ def _http_json(
     method: str,
     url: str,
     token: str,
-    payload = None,
-    timeout = 30,
-    error = None,
+    payload=None,
+    timeout=30,
+    error=None,
 ):
     """On a failed request: raise if `error` is None, else fail with `error` plus the reason."""
     request = urllib.request.Request(
         url,
-        data = None if payload is None else json.dumps(payload).encode(),
-        headers = {
+        data=None if payload is None else json.dumps(payload).encode(),
+        headers={
             "Authorization": f"Bearer {token}",
             "Content-Type": "application/json",
             "User-Agent": _USER_AGENT,
         },
-        method = method,
+        method=method,
     )
     try:
         # No redirects: a 3xx would leak this bearer token to an unvetted base.
-        with urlopen_no_redirect(request, timeout = timeout) as response:
+        with urlopen_no_redirect(request, timeout=timeout) as response:
             body = json.loads(response.read().decode() or "{}")
         # A padded /load or /unload commits its 200 early, so a late failure arrives in-band; raise it as the HTTPError handled below.
         return raise_for_deferred_error(url, body)
@@ -886,7 +886,7 @@ class _DownloadProgressDisplay:
 
         if self._interactive:
             padding = " " * max(0, self._last_line_length - len(line))
-            typer.echo(f"\r{line}{padding}", nl = False)
+            typer.echo(f"\r{line}{padding}", nl=False)
             sys.stdout.flush()
             self._last_line_length = len(line)
         elif not self._shown or bucket > self._last_bucket:
@@ -948,7 +948,7 @@ class _ModelDownloadProgress:
                         "GET",
                         f"{self._base}/api/hub/gguf-variants?{params}",
                         self._key,
-                        timeout = 10,
+                        timeout=10,
                     )
                 except urllib.error.HTTPError as exc:
                     if exc.code != 404:
@@ -958,7 +958,7 @@ class _ModelDownloadProgress:
                         "GET",
                         f"{self._base}/api/models/gguf-variants?{params}",
                         self._key,
-                        timeout = 10,
+                        timeout=10,
                     )
                 self._variant = self._variant or str(info.get("default_variant") or "")
                 wanted = _normalized_variant(self._variant)
@@ -997,7 +997,7 @@ class _ModelDownloadProgress:
                     f"{urlencode({'repo_id': self._model})}"
                 )
             try:
-                reading = _http_json("GET", url, self._key, timeout = 10)
+                reading = _http_json("GET", url, self._key, timeout=10)
             except urllib.error.HTTPError as exc:
                 if exc.code != 404 or self._progress_prefix == "/api/models":
                     raise
@@ -1055,8 +1055,8 @@ def _load_model_with_progress(
                 load_url,
                 key,
                 payload,
-                timeout = 3600,
-                error = "Model load failed",
+                timeout=3600,
+                error="Model load failed",
             )
             result.append((True, value))
         except BaseException as exc:
@@ -1064,7 +1064,7 @@ def _load_model_with_progress(
         finally:
             done.set()
 
-    threading.Thread(target = _load, name = "unsloth-model-load", daemon = True).start()
+    threading.Thread(target=_load, name="unsloth-model-load", daemon=True).start()
     progress = _ModelDownloadProgress(base, key, model, load.gguf_variant)
     loading_announced = False
     try:
@@ -1088,9 +1088,9 @@ def _load_model_with_progress(
 
 
 def _studio_healthy(base: str, timeout: float = 3.0) -> bool:
-    request = urllib.request.Request(f"{base}/api/health", headers = {"User-Agent": _USER_AGENT})
+    request = urllib.request.Request(f"{base}/api/health", headers={"User-Agent": _USER_AGENT})
     try:
-        with urllib.request.urlopen(request, timeout = timeout) as response:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
             return json.loads(response.read(65536).decode() or "{}").get("status") == "healthy"
     except Exception:
         return False
@@ -1098,7 +1098,7 @@ def _studio_healthy(base: str, timeout: float = 3.0) -> bool:
 
 def _read_log(path: Path) -> str:
     try:
-        return path.read_text(encoding = "utf-8", errors = "replace")
+        return path.read_text(encoding="utf-8", errors="replace")
     except OSError:
         return "(no server log)"
 
@@ -1121,11 +1121,11 @@ def _shutdown_server(server: Optional[subprocess.Popen]) -> None:
         try:
             subprocess.run(
                 ["taskkill", "/PID", str(server.pid), "/T", "/F"],
-                capture_output = True,
-                timeout = 15,
-                check = False,
+                capture_output=True,
+                timeout=15,
+                check=False,
             )
-            server.wait(timeout = 5)
+            server.wait(timeout=5)
         except Exception:
             with contextlib.suppress(Exception):
                 server.kill()
@@ -1135,7 +1135,7 @@ def _shutdown_server(server: Optional[subprocess.Popen]) -> None:
     except OSError:
         server.terminate()
     try:
-        server.wait(timeout = 15)
+        server.wait(timeout=15)
     except Exception:
         try:
             os.killpg(os.getpgid(server.pid), signal.SIGKILL)
@@ -1171,6 +1171,7 @@ def _start_studio_server(
     if sys.platform == "win32":
         # Local import: unsloth_cli.commands.studio imports at package init after this module, so a top-level import would be circular.
         from unsloth_cli.commands.studio import _managed_cli_argv
+
         launch_head = _managed_cli_argv(Path(sys.executable))
     else:
         launch_head = [shutil.which("unsloth") or "unsloth"]
@@ -1204,7 +1205,7 @@ def _start_studio_server(
     typer.echo(f"Model: {_display_model_spec(model, load.gguf_variant)}")
     typer.echo(f"Server log: {log_path}")
     # 0600: the `unsloth run` banner in this log carries the minted sk-unsloth- key, and the tempdir is world-traversable. Unlink first so a stale looser-mode file (pid reuse) cannot survive with its old permissions.
-    log_path.unlink(missing_ok = True)
+    log_path.unlink(missing_ok=True)
     log = os.fdopen(os.open(log_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "wb")
     # Own session/process group so a mid-session Ctrl+C (cancel a turn) does not reach the server. It survives a successful agent session; torn down on startup/launch failure.
     child_env = os.environ.copy()
@@ -1263,14 +1264,14 @@ def _start_studio_server(
                 tail = _redacted_log_tail(log_path)
                 _shutdown_auto_served()
                 _fail(f"The Unsloth server stopped before it was ready. Last log lines:\n{tail}")
-            tail = _log_tail(log_path, lines = 400)
+            tail = _log_tail(log_path, lines=400)
             # `unsloth run` falls forward off a taken port, so poll the port it reports. Printed
             # once, so read the whole log, not the tail below.
             if not port_followed:
                 bound_port = re.search(
                     rf"^{re.escape(_START_PORT_PREFIX)}(\d+)$",
                     _read_log(log_path),
-                    flags = re.MULTILINE,
+                    flags=re.MULTILINE,
                 )
                 if bound_port:
                     port_followed = True
@@ -1279,7 +1280,7 @@ def _start_studio_server(
                 marker = re.search(
                     rf"^{re.escape(_START_API_KEY_PREFIX)}(sk-unsloth-[^\s]+)$",
                     tail,
-                    flags = re.MULTILINE,
+                    flags=re.MULTILINE,
                 )
                 if marker:
                     early_key_seen = True
@@ -1359,7 +1360,7 @@ def _require_studio(
                 f"({', '.join(_pinned)}) apply only when this command starts the server, so the "
                 "running server keeps its current sampling. Stop it with `unsloth studio stop` "
                 "and re-run to apply them.",
-                err = True,
+                err=True,
             )
         _reasoning_pins = [
             f"{_flag} {_value}"
@@ -1375,7 +1376,7 @@ def _require_studio(
                 f"{', '.join(_reasoning_pins)} takes effect only when this command starts "
                 "the server, so the running server keeps its current reasoning mode. Stop it "
                 "with `unsloth studio stop` and re-run to apply the override.",
-                err = True,
+                err=True,
             )
         return base, None
     expected = os.environ.get("UNSLOTH_STUDIO_URL", "http://127.0.0.1:8888").rstrip("/")
@@ -1401,6 +1402,7 @@ def _require_studio(
 
 def _studio_auth_root() -> Path:
     from unsloth_cli.commands.studio import STUDIO_HOME
+
     return STUDIO_HOME / "auth"
 
 
@@ -1410,7 +1412,7 @@ def _key_cache_path() -> Path:
 
 def _read_cache(cache: Path) -> dict:
     try:
-        data = json.loads(cache.read_text(encoding = "utf-8"))
+        data = json.loads(cache.read_text(encoding="utf-8"))
     except Exception:
         return {}
     return data if isinstance(data, dict) else {}
@@ -1438,16 +1440,16 @@ def _cached_keys(cache: Path, base: str, source: str) -> list:
 
 def _write_private_json(path: Path, data: dict) -> None:
     # O_CREAT with 0o600 so a file holding an API key is never world-readable, even briefly (existing files keep whatever perms the user set).
-    path.parent.mkdir(parents = True, exist_ok = True, mode = 0o700)
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w") as handle:
-        handle.write(json.dumps(data, indent = 2) + "\n")
+        handle.write(json.dumps(data, indent=2) + "\n")
 
 
 def _write_private_text(path: Path, text: str) -> None:
-    path.parent.mkdir(parents = True, exist_ok = True, mode = 0o700)
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w", encoding = "utf-8") as handle:
+    with os.fdopen(fd, "w", encoding="utf-8") as handle:
         handle.write(text)
 
 
@@ -1457,7 +1459,7 @@ def _read_yaml_object(path: Path) -> Optional[dict]:
     if not path.exists():
         return {}
     try:
-        data = yaml.safe_load(path.read_text(encoding = "utf-8"))
+        data = yaml.safe_load(path.read_text(encoding="utf-8"))
     except (yaml.YAMLError, OSError):
         return None
     if data is None:
@@ -1470,7 +1472,7 @@ def _read_json_object(path: Path) -> Optional[dict]:
     if not path.exists():
         return {}
     try:
-        data = json.loads(path.read_text(encoding = "utf-8"))
+        data = json.loads(path.read_text(encoding="utf-8"))
     except (ValueError, OSError):
         return None
     return data if isinstance(data, dict) else None
@@ -1508,7 +1510,7 @@ def _remember_key(cache: Path, base: str, key: str, source: str) -> None:
 def _loaded_models_response(
     base: str,
     key: str,
-    timeout = 30,
+    timeout=30,
 ) -> dict:
     """Raw listing of what this server has resident. Startup and key checks need no more.
 
@@ -1516,7 +1518,7 @@ def _loaded_models_response(
     which on a slow scan folder outlasts the deadline below.
     """
     try:
-        answer = _http_json("GET", f"{base}/api/inference/loaded-models", key, timeout = timeout)
+        answer = _http_json("GET", f"{base}/api/inference/loaded-models", key, timeout=timeout)
         if isinstance(answer.get("data"), list):
             return answer
         # A Studio older than the 404-ing catch-all answers an unknown /api path with a
@@ -1527,7 +1529,7 @@ def _loaded_models_response(
             raise
     # Fall back, never on an auth or server error. An older Studio still answers on
     # /v1/models, with the unloaded catalog entries every caller below already filters out.
-    return _http_json("GET", f"{base}/v1/models", key, timeout = timeout)
+    return _http_json("GET", f"{base}/v1/models", key, timeout=timeout)
 
 
 def _key_accepted(base: str, key: str) -> bool:
@@ -1603,7 +1605,7 @@ def _agent_api_key(
         f"{base}/api/auth/api-keys",
         token,
         {"name": "Coding agents (unsloth start)"},
-        error = "Couldn't create an API key",
+        error="Couldn't create an API key",
     )["key"]
     _remember_key(cache, base, key, "minted")
     return key
@@ -1618,7 +1620,7 @@ def _loaded_models(base: str, key: str) -> list:
 
 def _model_still_loaded(base: str, key: str, model_id: object) -> bool:
     try:
-        models = _loaded_models_response(base, key, timeout = 5).get("data", [])
+        models = _loaded_models_response(base, key, timeout=5).get("data", [])
     except Exception:
         return False
     return any(m.get("id") == model_id and m.get("loaded") is not False for m in models)
@@ -1711,7 +1713,7 @@ def _resident_load_target(models: list, status: dict, allow_casefold: bool):
             (
                 m
                 for m in models
-                if _model_id_matches(m.get("id"), active_id, allow_casefold = allow_casefold)
+                if _model_id_matches(m.get("id"), active_id, allow_casefold=allow_casefold)
                 and m.get("loaded") is not False
             ),
             None,
@@ -1855,7 +1857,7 @@ def _resolve_model(
     key: str,
     requested: Optional[str],
     load: LoadOptions = LoadOptions(),
-    preload_check = None,
+    preload_check=None,
     infer_resident: bool = True,
 ) -> dict:
     models = _loaded_models(base, key)
@@ -1882,7 +1884,7 @@ def _resolve_model(
             (
                 m
                 for m in models
-                if _model_id_matches(m.get("id"), requested, allow_casefold = allow_casefold)
+                if _model_id_matches(m.get("id"), requested, allow_casefold=allow_casefold)
                 and m.get("loaded") is not False
             ),
             None,
@@ -1899,7 +1901,7 @@ def _resolve_model(
                     m
                     for m in models
                     if _model_id_matches(
-                        m.get("id"), attach_public_id, allow_casefold = allow_casefold
+                        m.get("id"), attach_public_id, allow_casefold=allow_casefold
                     )
                     and m.get("loaded") is not False
                 ),
@@ -1913,7 +1915,7 @@ def _resolve_model(
             resident_serves_request = not other_overrides and any(
                 m.get("loaded") is not False
                 and any(
-                    _model_id_matches(m.get("id"), want, allow_casefold = allow_casefold)
+                    _model_id_matches(m.get("id"), want, allow_casefold=allow_casefold)
                     for want in wanted_ids
                 )
                 for m in models
@@ -1962,7 +1964,7 @@ def _resolve_model(
         elif active_id and not _model_id_matches(
             active_id,
             requested,
-            allow_casefold = allow_casefold,
+            allow_casefold=allow_casefold,
         ):
             typer.echo(f"Switching the Unsloth server from {active_id} to {requested}.")
             typer.echo("This unloads the current model for every attached session.")
@@ -2041,7 +2043,7 @@ def _resolve_model(
         except Exception:
             # The warning above promised an unload; if the server refused the load before evicting anything, say so. Not BaseException: Ctrl+C must stay immediate, without a probe or a survivor claim.
             if announced_switch and _model_still_loaded(base, key, active_id):
-                typer.echo(f"Nothing was unloaded; {active_id} is still serving.", err = True)
+                typer.echo(f"Nothing was unloaded; {active_id} is still serving.", err=True)
             raise
         if loaded.get("status") == "already_loaded":
             # Show the public id on the inferred path; `requested` may be a server path.
@@ -2058,7 +2060,7 @@ def _resolve_model(
                 for m in models
                 if m.get("loaded") is not False
                 and any(
-                    _model_id_matches(m.get("id"), w, allow_casefold = allow_casefold) for w in wanted
+                    _model_id_matches(m.get("id"), w, allow_casefold=allow_casefold) for w in wanted
                 )
             ),
             None,
@@ -2101,9 +2103,9 @@ def _hub_gguf_files(repo: str) -> Optional[list]:
     try:
         request = urllib.request.Request(
             f"{endpoint}/api/models/{repo}",
-            headers = {"User-Agent": _USER_AGENT},
+            headers={"User-Agent": _USER_AGENT},
         )
-        with urllib.request.urlopen(request, timeout = 10) as response:
+        with urllib.request.urlopen(request, timeout=10) as response:
             info = json.loads(response.read().decode() or "{}")
     except Exception:
         return None
@@ -2193,7 +2195,7 @@ def _direct_gguf_variant_labels(path: str) -> tuple:
         label = f"{match.group(1) or ''}{match.group(2)}{match.group(3) or ''}"
         labels.append(label)
         # The resolver also accepts the hub-style bpw-stripped spelling.
-        stripped = re.sub(r"-[0-9]+(?:\.[0-9]+)?bpw$", "", label, flags = re.IGNORECASE)
+        stripped = re.sub(r"-[0-9]+(?:\.[0-9]+)?bpw$", "", label, flags=re.IGNORECASE)
         if stripped != label:
             labels.append(stripped)
     else:
@@ -2615,7 +2617,7 @@ def _attach_gguf_check(
                     "variantless load cannot pick. Pass --gguf-variant"
                     + (f" (available: {offered})." if offered else ".")
                 )
-            if variant and not _answer_offers_variant(variants, variant, strict = local_answer):
+            if variant and not _answer_offers_variant(variants, variant, strict=local_answer):
                 _fail_gguf_variant_missing(candidate, variant, variants)
             return
         if isinstance(variants, list):
@@ -2690,12 +2692,12 @@ def _claude_version() -> Optional[tuple]:
     try:
         result = subprocess.run(
             [executable, "--version"],
-            capture_output = True,
-            text = True,
-            encoding = "utf-8",
-            errors = "replace",
-            timeout = 10,
-            env = _probe_env(),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=10,
+            env=_probe_env(),
         )
         # Pull the X.Y.Z out of the output rather than assuming it is the first token: claude prints it first today ("2.1.98 (Claude Code)"), but a format change should not silently drop the optimization flags. No match falls through to "too old", same as an unparseable version.
         match = re.search(r"(\d+)\.(\d+)\.(\d+)", result.stdout)
@@ -2803,12 +2805,12 @@ def _codex_executable_version(executable: str) -> Optional[tuple[int, int, int]]
     try:
         output = subprocess.check_output(
             [executable, "--version"],
-            text = True,
-            encoding = "utf-8",
-            errors = "replace",
-            timeout = 10,
-            stderr = subprocess.DEVNULL,
-            env = _probe_env(),
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=10,
+            stderr=subprocess.DEVNULL,
+            env=_probe_env(),
         )
     except Exception:
         return None
@@ -2849,7 +2851,7 @@ def _codex_model_catalog(model: dict) -> dict:
         "priority": 99,
         "availability_nux": None,
         "upgrade": None,
-        "base_instructions": _CODEX_FALLBACK_PROMPT.read_text(encoding = "utf-8"),
+        "base_instructions": _CODEX_FALLBACK_PROMPT.read_text(encoding="utf-8"),
         "supports_reasoning_summaries": False,
         "supports_reasoning_summary_parameter": False,
         "support_verbosity": False,
@@ -2866,13 +2868,13 @@ def _codex_model_catalog(model: dict) -> dict:
 
 
 def write_codex_config(base: str, model: dict, home: Path) -> None:
-    home.mkdir(parents = True, exist_ok = True)
+    home.mkdir(parents=True, exist_ok=True)
 
     config = home / "config.toml"
-    existing = config.read_text(encoding = "utf-8") if config.exists() else ""
+    existing = config.read_text(encoding="utf-8") if config.exists() else ""
     merged = _merge_codex_config(existing, base)
     if merged != existing:
-        config.write_text(merged, encoding = "utf-8")
+        config.write_text(merged, encoding="utf-8")
         typer.echo(f"Updated {config}")
 
     # oss_provider here too: codex --oss picks the provider from it, and the profile layer must beat a user-set value ("ollama") in config.toml.
@@ -2888,9 +2890,9 @@ def write_codex_config(base: str, model: dict, home: Path) -> None:
         )
     if _codex_supports_model_catalog() and _CODEX_FALLBACK_PROMPT.is_file():
         catalog = home / "model-catalog.json"
-        catalog_text = json.dumps(_codex_model_catalog(model), indent = 2) + "\n"
-        if not catalog.exists() or catalog.read_text(encoding = "utf-8") != catalog_text:
-            catalog.write_text(catalog_text, encoding = "utf-8")
+        catalog_text = json.dumps(_codex_model_catalog(model), indent=2) + "\n"
+        if not catalog.exists() or catalog.read_text(encoding="utf-8") != catalog_text:
+            catalog.write_text(catalog_text, encoding="utf-8")
             typer.echo(f"Updated {catalog}")
         # Resolve relative to the profile file. This also survives WSL launching a Windows Codex binary, where a Linux absolute path inside TOML would not be usable.
         profile_text += f"model_catalog_json = {json.dumps(catalog.name)}\n"
@@ -2899,8 +2901,8 @@ def write_codex_config(base: str, model: dict, home: Path) -> None:
     if window:
         profile_text += f"model_context_window = {int(window)}\n"
     profile = home / f"{_CODEX_PROFILE}.config.toml"
-    if not profile.exists() or profile.read_text(encoding = "utf-8") != profile_text:
-        profile.write_text(profile_text, encoding = "utf-8")
+    if not profile.exists() or profile.read_text(encoding="utf-8") != profile_text:
+        profile.write_text(profile_text, encoding="utf-8")
         typer.echo(f"Updated {profile}")
 
 
@@ -2929,12 +2931,12 @@ def _wsl_windows_user_profile(executable: str) -> Path:
         try:
             profile = subprocess.check_output(
                 ["cmd.exe", "/d", "/c", "echo %USERPROFILE%"],
-                text = True,
-                encoding = "utf-8",
+                text=True,
+                encoding="utf-8",
                 # The path is the value: a corrupted home is worse than a loud failure.
-                errors = "strict",
-                stderr = subprocess.DEVNULL,
-                cwd = str(Path(executable).parent),
+                errors="strict",
+                stderr=subprocess.DEVNULL,
+                cwd=str(Path(executable).parent),
             ).strip()
         except UnicodeDecodeError as exc:
             _fail(
@@ -2950,10 +2952,10 @@ def _wsl_windows_user_profile(executable: str) -> Path:
     try:
         translated = subprocess.check_output(
             ["wslpath", "-u", profile],
-            text = True,
-            encoding = "utf-8",
-            errors = "replace",
-            stderr = subprocess.DEVNULL,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            stderr=subprocess.DEVNULL,
         ).strip()
     except (OSError, subprocess.CalledProcessError) as exc:
         _fail(f"Could not translate Windows user profile {profile}: {exc}")
@@ -2970,10 +2972,10 @@ def _codex_source_home(*, ignore_configured: bool = False) -> Path:
                 try:
                     configured = subprocess.check_output(
                         ["wslpath", "-u", configured],
-                        text = True,
-                        encoding = "utf-8",
-                        errors = "replace",
-                        stderr = subprocess.DEVNULL,
+                        text=True,
+                        encoding="utf-8",
+                        errors="replace",
+                        stderr=subprocess.DEVNULL,
                     ).strip()
                 except (OSError, subprocess.CalledProcessError) as exc:
                     _fail(f"Could not translate Windows CODEX_HOME {configured}: {exc}")
@@ -3026,12 +3028,12 @@ def _create_directory_junction(source: Path, target: Path) -> bool:
     try:
         result = subprocess.run(
             ["cmd.exe", "/d", "/c", "mklink", "/J", str(target), str(source)],
-            capture_output = True,
-            text = True,
-            encoding = "utf-8",
-            errors = "replace",
-            timeout = 30,
-            check = False,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=30,
+            check=False,
         )
     except (OSError, subprocess.SubprocessError):
         return False
@@ -3040,27 +3042,27 @@ def _create_directory_junction(source: Path, target: Path) -> bool:
 
 def write_codex_parent_overlay(overlay: Path) -> Path:
     """Add local-agent routing without replacing the cloud parent's configuration."""
-    overlay.mkdir(parents = True, exist_ok = True, mode = 0o700)
+    overlay.mkdir(parents=True, exist_ok=True, mode=0o700)
 
     manifest_path = overlay / _CODEX_PARENT_OVERLAY_MANIFEST
     try:
-        manifest = json.loads(manifest_path.read_text(encoding = "utf-8"))
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     except (FileNotFoundError, OSError, json.JSONDecodeError):
         manifest = None
     source_home = _codex_source_home()
-    overlay_key = str(overlay.resolve(strict = False))
-    source_key = str(source_home.resolve(strict = False))
+    overlay_key = str(overlay.resolve(strict=False))
+    source_key = str(source_home.resolve(strict=False))
     if source_key == overlay_key:
         previous_source = manifest.get("source_home") if isinstance(manifest, dict) else None
         if isinstance(previous_source, str) and previous_source:
             candidate = Path(previous_source).expanduser()
-            if str(candidate.resolve(strict = False)) != overlay_key:
+            if str(candidate.resolve(strict=False)) != overlay_key:
                 source_home = candidate
             else:
-                source_home = _codex_source_home(ignore_configured = True)
+                source_home = _codex_source_home(ignore_configured=True)
         else:
-            source_home = _codex_source_home(ignore_configured = True)
-        source_key = str(source_home.resolve(strict = False))
+            source_home = _codex_source_home(ignore_configured=True)
+        source_key = str(source_home.resolve(strict=False))
     same_source = isinstance(manifest, dict) and manifest.get("source_home") == source_key
     if same_source:
         managed_entries = manifest.get("entries", [])
@@ -3088,7 +3090,7 @@ def write_codex_parent_overlay(overlay: Path) -> Path:
             target = overlay / source.name
             _remove_overlay_entry(target)
             try:
-                target.symlink_to(source, target_is_directory = source.is_dir())
+                target.symlink_to(source, target_is_directory=source.is_dir())
                 entries.append(source.name)
             except OSError:
                 if source.is_file():
@@ -3110,7 +3112,7 @@ def write_codex_parent_overlay(overlay: Path) -> Path:
     instruction_name = "AGENTS.md"
     for candidate in (source_home / "AGENTS.override.md", source_home / "AGENTS.md"):
         try:
-            text = candidate.read_text(encoding = "utf-8")
+            text = candidate.read_text(encoding="utf-8")
         except FileNotFoundError:
             continue
         except OSError as exc:
@@ -3192,19 +3194,19 @@ def _opencode_subagent_inline_config(
         typer.echo(
             f"Warning: OpenCode is not installed, so provider filters could not be checked. "
             f"The target configuration must allow '{_OPENCODE_PROVIDER}'.",
-            err = True,
+            err=True,
         )
     else:
-        env = _probe_env(OPENCODE_CONFIG = _agent_config_path(path, [command]))
+        env = _probe_env(OPENCODE_CONFIG=_agent_config_path(path, [command]))
         try:
             resolved = subprocess.run(
                 [executable, "debug", "config"],
-                capture_output = True,
-                text = True,
-                encoding = "utf-8",
-                errors = "replace",
-                timeout = 15,
-                env = env,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=15,
+                env=env,
             )
         except Exception as exc:
             _fail(f"Could not inspect OpenCode provider filters: {exc}")
@@ -3318,7 +3320,7 @@ def write_claude_subagent_plugin(path: Path, server_env: dict) -> Path:
     if command == "wsl.exe":
         # A persisted plugin dir may still hold a gate from an earlier non-WSL run.
         for stale in (gate, plugin / "hooks" / "hooks.json"):
-            stale.unlink(missing_ok = True)
+            stale.unlink(missing_ok=True)
     else:
         _write_private_text(gate, _CLAUDE_PLAN_GATE_SCRIPT)
         _write_private_json(
@@ -3347,7 +3349,7 @@ def write_claude_subagent_plugin(path: Path, server_env: dict) -> Path:
             },
         )
     skill = plugin / "skills" / "local-agent" / "SKILL.md"
-    skill.parent.mkdir(parents = True, exist_ok = True, mode = 0o700)
+    skill.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     skill.write_text(
         "---\n"
         "description: Delegate a task to the local agent powered by Unsloth. Use when the "
@@ -3356,7 +3358,7 @@ def write_claude_subagent_plugin(path: Path, server_env: dict) -> Path:
         "Call the Unsloth local agent tool once with the complete task. In plan mode, call "
         "the read-only Unsloth plan agent instead. Return its result to the user without "
         "claiming that the cloud parent completed the local work.\n",
-        encoding = "utf-8",
+        encoding="utf-8",
     )
     return plugin
 
@@ -3403,7 +3405,7 @@ def _wsl_windows_executable(command: list) -> Optional[str]:
 def _wsl_windows_path(path: Path) -> str:
     try:
         translated = subprocess.check_output(
-            ["wslpath", "-w", str(path)], text = True, encoding = "utf-8", errors = "replace"
+            ["wslpath", "-w", str(path)], text=True, encoding="utf-8", errors="replace"
         ).strip()
     except (OSError, subprocess.CalledProcessError) as exc:
         _fail(f"Could not translate WSL path {path}: {exc}")
@@ -3536,8 +3538,9 @@ def _managed_node_tools() -> Optional[tuple[Path, Path, bool]]:
     try:
         # Discovery only: this answers "is there a managed Node", including for a launch aimed
         # at a remote server, so it must not create the cache tree on the way past.
-        ensure_studio_backend_path(seed_cache_env = False)
+        ensure_studio_backend_path(seed_cache_env=False)
         from utils.node_runtime import managed_node_binary, resolve_node_executable
+
         node = Path(managed_node_binary())
     except (ImportError, OSError, RuntimeError, TypeError, ValueError):
         return None
@@ -3670,7 +3673,7 @@ def _pinned_raw_github_commit(source: str) -> Optional[str]:
     match = re.match(
         r"^https://raw\.githubusercontent\.com/[^/]+/[^/]+/([0-9a-f]{40})/",
         source,
-        flags = re.IGNORECASE,
+        flags=re.IGNORECASE,
     )
     return match.group(1).lower() if match else None
 
@@ -3684,7 +3687,7 @@ def _npm_executable() -> Optional[str]:
         if executable:
             # WSL inherits the Windows PATH, so the rejected shim may shadow a native npm.
             for directory in os.get_exec_path():
-                candidate = _prefer_windows_cmd_sibling(shutil.which("npm", path = directory))
+                candidate = _prefer_windows_cmd_sibling(shutil.which("npm", path=directory))
                 if candidate and not _wsl_windows_executable([candidate]):
                     return candidate
 
@@ -3764,12 +3767,12 @@ def _install_agent(name: str, install_hint: str) -> Optional[str]:
             f"This will RUN `{install_hint}` with your privileges; "
             "there is no signature or hash check."
         )
-    typer.secho(warning, fg = "yellow", err = True)
-    if not typer.confirm(f"Install `{name}` now with `{install_hint}`?", default = False):
+    typer.secho(warning, fg="yellow", err=True)
+    if not typer.confirm(f"Install `{name}` now with `{install_hint}`?", default=False):
         return None
     install_command, install_env = _install_command(install_hint)
     try:
-        result = subprocess.run(install_command, env = install_env)
+        result = subprocess.run(install_command, env=install_env)
     except OSError as exc:
         _fail(
             f"Could not run the install command: {exc}. "
@@ -3931,7 +3934,7 @@ def _npm_node_shim_metadata(target: Path, match, environment: dict) -> Optional[
     if not environment_block and not node_args_text and known_node_suffix:
         return [], {}
 
-    first_line = target.read_text(encoding = "utf-8").splitlines()[0]
+    first_line = target.read_text(encoding="utf-8").splitlines()[0]
     shebang = _NPM_NODE_SHEBANG.fullmatch(first_line)
     if shebang is None or Path(shebang.group(2)).name.casefold() not in {"node", "node.exe"}:
         return None
@@ -3975,7 +3978,7 @@ def _resolved_launch_command(
         # cmd.exe treats CR/LF inside `%*` as command separators, and Windows PowerShell's native-command bridge also rewrites embedded quotes. Match complete cmd-shim templates so custom wrappers keep their setup behavior.
         with contextlib.suppress(OSError, UnicodeError, IndexError):
             shim = Path(executable)
-            contents = shim.read_text(encoding = "utf-8").replace("\r\n", "\n").strip()
+            contents = shim.read_text(encoding="utf-8").replace("\r\n", "\n").strip()
             for pattern in _NPM_NODE_CMD_SHIMS:
                 match = pattern.fullmatch(contents)
                 if match is None:
@@ -4040,7 +4043,7 @@ def _launch(
     previous = signal.signal(signal.SIGINT, lambda *_: None)
     try:
         launch_command = _resolved_launch_command(executable, command[1:], child_env)
-        code = subprocess.run(launch_command, env = child_env).returncode
+        code = subprocess.run(launch_command, env=child_env).returncode
     finally:
         signal.signal(signal.SIGINT, previous)
     # Negative returncode means killed by signal N; shells expect 128+N.
@@ -4055,7 +4058,7 @@ def _connect(
     serve: bool = False,
     launch: bool = True,
     server_options: ServerOptions = ServerOptions(),
-    preload_check = None,
+    preload_check=None,
 ) -> tuple:
     # `--model org/name:QUANT` is shorthand for `--model org/name --gguf-variant QUANT`. Split it before we match or serve so the attach path resolves against the already-loaded `org/name` (listed without the suffix) instead of reloading a `:`-suffixed repo id, which Unsloth rejects and which would evict a model another session is using.
     if model:
@@ -4063,32 +4066,32 @@ def _connect(
         if variant:
             model = repo
             if not load.gguf_variant:
-                load = load._replace(gguf_variant = variant)
+                load = load._replace(gguf_variant=variant)
     base, server = _require_studio(
-        model, load, serve = serve, launch = launch, server_options = server_options
+        model, load, serve=serve, launch=launch, server_options=server_options
     )
     try:
-        key = _agent_api_key(base, api_key, auto_started = server is not None)
+        key = _agent_api_key(base, api_key, auto_started=server is not None)
         # A server we just started has exactly the requested model loaded, so resolve to whatever it is serving instead of re-matching the raw --model string. Only an attach can still trigger an evicting load, so _resolve_model gets the pre-load check and runs it only when that load is imminent.
         entry = _resolve_model(
             base,
             key,
             None if server is not None else model,
             load,
-            preload_check = None if server is not None else preload_check,
+            preload_check=None if server is not None else preload_check,
             # That server was started FROM these knobs, so inferring a target here would reload what was just loaded.
-            infer_resident = server is None,
+            infer_resident=server is None,
         )
         status = _inference_status(base, key) if model else {}
         # A GGUF can be active while the resolved entry is another resident model.
         if status.get("memory_warning") and any(
             _model_id_matches(
-                (entry or {}).get("id"), status_id, allow_casefold = is_loopback_url(base)
+                (entry or {}).get("id"), status_id, allow_casefold=is_loopback_url(base)
             )
             for status_id in (status.get("active_model"), status.get("model_identifier"))
             if status_id
         ):
-            typer.echo(f"Warning: {status['memory_warning']}", err = True)
+            typer.echo(f"Warning: {status['memory_warning']}", err=True)
     except BaseException:
         _shutdown_auto_served()
         raise
@@ -4116,9 +4119,9 @@ def _run(
         _print_env(
             env,
             command,
-            unset_env = unset_env,
-            wsl_env_bridge = wsl_env_bridge,
-            cwd_env = cwd_env,
+            unset_env=unset_env,
+            wsl_env_bridge=wsl_env_bridge,
+            cwd_env=cwd_env,
         )
         if _keep_auto_served():
             typer.echo(f"Unsloth Studio is still running at {base}.")
@@ -4128,9 +4131,9 @@ def _run(
         code = _launch(
             command,
             env,
-            install_hint = install_hint,
-            unset_env = unset_env,
-            cwd_env = cwd_env,
+            install_hint=install_hint,
+            unset_env=unset_env,
+            cwd_env=cwd_env,
         )
     except BaseException:
         # Startup succeeded but the agent failed to launch; tear the server down rather than orphan it.
@@ -4140,7 +4143,7 @@ def _run(
     kept = _keep_auto_served()
     if auto_started and not kept:
         typer.echo(f"The auto-started Unsloth server at {base} stopped during the session.")
-        raise typer.Exit(code = code)
+        raise typer.Exit(code=code)
     if code:
         # The server status below must not read as a successful agent session.
         typer.echo(f"The agent exited with code {code}.")
@@ -4149,7 +4152,7 @@ def _run(
         typer.echo("Stop it with: unsloth studio stop")
     else:
         typer.echo(f"The remote Unsloth server is still running at {base}.")
-    raise typer.Exit(code = code)
+    raise typer.Exit(code=code)
 
 
 def _agents_config_root() -> Path:
@@ -4162,12 +4165,12 @@ def _temporary_agent_config(prefix: str):
     temp_root = _agents_config_root() / ".tmp"
     with contextlib.ExitStack() as stack:
         try:
-            temp_root.mkdir(parents = True, exist_ok = True, mode = 0o700)
+            temp_root.mkdir(parents=True, exist_ok=True, mode=0o700)
             path = stack.enter_context(_short_ephemeral_session(temp_root, prefix))
         except OSError:
             # Attaching to a remote or running Unsloth needs no local auth tree, so it may be absent or unwritable. Fall back to the system temp dir, as before: no reclamation there, but the OS prunes it.
-            path = Path(tempfile.mkdtemp(prefix = prefix))
-            stack.callback(shutil.rmtree, path, ignore_errors = True)
+            path = Path(tempfile.mkdtemp(prefix=prefix))
+            stack.callback(shutil.rmtree, path, ignore_errors=True)
         yield path
 
 
@@ -4181,7 +4184,7 @@ def _ephemeral_session_parent(agent: str) -> Optional[Path]:
         return None
     # Codex creates a deeply nested curated-plugin checkout below CODEX_HOME. A normal %TEMP%\\unsloth-codex-* home can exceed legacy Windows path limits during startup, and Codex also refuses to create its PATH helpers below the system temp directory. Keep the throwaway home short but still private to the current user; _session_config removes it on exit.
     root = Path.home() / ".unsloth" / ".tmp"
-    root.mkdir(parents = True, exist_ok = True, mode = 0o700)
+    root.mkdir(parents=True, exist_ok=True, mode=0o700)
     return root
 
 
@@ -4220,6 +4223,7 @@ def _locked_file(path: Path, blocking: bool = True):
                     time.sleep(0.05)
         else:
             import fcntl
+
             mode = fcntl.LOCK_EX | (0 if blocking else fcntl.LOCK_NB)
             try:
                 fcntl.flock(handle.fileno(), mode)
@@ -4251,13 +4255,13 @@ def _reclaim_stale_ephemeral_sessions(parent: Path, prefix: str) -> None:
         if time.time() - modified < _CODEX_EPHEMERAL_STALE_SECONDS:
             continue
         try:
-            with _locked_file(active_lock, blocking = False) as stale:
+            with _locked_file(active_lock, blocking=False) as stale:
                 pass
         except FileNotFoundError:
             # A normally exiting session may have removed itself after the glob.
             continue
         if stale:
-            shutil.rmtree(path, ignore_errors = True)
+            shutil.rmtree(path, ignore_errors=True)
 
 
 def _refresh_ephemeral_session_marker(path: Path, stop: threading.Event) -> None:
@@ -4279,16 +4283,16 @@ def _short_ephemeral_session(parent: Path, prefix: str = "u-codex-"):
             if not cleanup_lock:  # The blocking acquisition should always succeed.
                 raise RuntimeError(f"Could not lock ephemeral session root: {parent}")
             _reclaim_stale_ephemeral_sessions(parent, prefix)
-            path = Path(tempfile.mkdtemp(prefix = prefix, dir = parent))
+            path = Path(tempfile.mkdtemp(prefix=prefix, dir=parent))
             locked = active_lock.enter_context(_locked_file(path / ".active.lock"))
             if not locked:
                 raise RuntimeError(f"Could not lock ephemeral session home: {path}")
             heartbeat_stop = threading.Event()
             heartbeat = threading.Thread(
-                target = _refresh_ephemeral_session_marker,
-                args = (path / ".active.lock", heartbeat_stop),
-                name = "unsloth-agent-home-heartbeat",
-                daemon = True,
+                target=_refresh_ephemeral_session_marker,
+                args=(path / ".active.lock", heartbeat_stop),
+                name="unsloth-agent-home-heartbeat",
+                daemon=True,
             )
             heartbeat.start()
         yield path
@@ -4296,7 +4300,7 @@ def _short_ephemeral_session(parent: Path, prefix: str = "u-codex-"):
         if heartbeat_stop is not None:
             heartbeat_stop.set()
         if heartbeat is not None:
-            heartbeat.join(timeout = 1)
+            heartbeat.join(timeout=1)
         try:
             with _locked_file(parent / ".cleanup.lock") as cleanup_lock:
                 if not cleanup_lock:  # The blocking acquisition should always succeed.
@@ -4304,7 +4308,7 @@ def _short_ephemeral_session(parent: Path, prefix: str = "u-codex-"):
                 # Release the live marker only after deletion is serialized with startup scavenging, so no scanner can race this rmtree.
                 active_lock.close()
                 if path is not None:
-                    shutil.rmtree(path, ignore_errors = True)
+                    shutil.rmtree(path, ignore_errors=True)
         finally:
             active_lock.close()
 
@@ -4329,14 +4333,14 @@ def _session_config(
     else:
         # Never wipe this dir: a previously printed recipe may still be running an agent whose sessions and state live here, and every config writer merges idempotently into an existing home anyway. Writers must also reset any state a previous run's flags left behind (--yolo especially), since files here outlive the invocation that wrote them.
         path = _agents_config_root() / agent
-        path.mkdir(parents = True, exist_ok = True, mode = 0o700)
+        path.mkdir(parents=True, exist_ok=True, mode=0o700)
         yield path
 
 
 def _studio_embedding_model(base: str, key: str) -> Optional[str]:
     """Studio's configured embedding model, or None when this server cannot say. Not a model name: a name this server will not serve, beside fallback "none", is the one combination OpenClaw cannot degrade out of, so the caller writes provider "none" instead."""
     try:
-        info = _http_json("GET", f"{base}/api/settings/embedding-model", key, timeout = 10)
+        info = _http_json("GET", f"{base}/api/settings/embedding-model", key, timeout=10)
     # typer.Exit is a RuntimeError subclass: the broad catch would swallow a deliberate abort.
     except (typer.Exit, typer.Abort, click.exceptions.Exit, click.exceptions.Abort):
         raise
@@ -4363,10 +4367,10 @@ def write_openclaw_config(
         typer.echo(
             f"Warning: couldn't parse {path} — add an 'unsloth' provider there "
             "yourself, or move the file aside and re-run.",
-            err = True,
+            err=True,
         )
         return
-    before = json.dumps(config, sort_keys = True)
+    before = json.dumps(config, sort_keys=True)
     # Unsloth is a generic OpenAI-compatible /v1 endpoint (the vLLM/LM Studio path).
     provider_model = {"id": model["id"], "name": model["id"]}
     window = model.get("context_length") or model.get("max_context_length")
@@ -4407,7 +4411,7 @@ def write_openclaw_config(
     # OPENCLAW_STATE_DIR does not relocate the workspace. Callers normally pin it to the directory where `unsloth start openclaw` was invoked so OpenClaw edits the same project as every other coding agent. Keep the managed fallback for direct config-writer callers that do not provide an explicit workspace.
     if workspace_path is None:
         workspace = path.parent / "workspace"
-        workspace.mkdir(parents = True, exist_ok = True, mode = 0o700)
+        workspace.mkdir(parents=True, exist_ok=True, mode=0o700)
         workspace_path = str(workspace)
     defaults["workspace"] = workspace_path
     # Per-agent paths override agents.defaults.workspace and OPENCLAW_STATE_DIR. This config is itself an isolated Unsloth copy, so remove stale explicit paths and let OpenClaw resolve every listed agent beneath the managed defaults/state directory.
@@ -4475,7 +4479,7 @@ def write_openclaw_config(
                         # Keep approvals OpenClaw itself recorded; only the yolo defaults go.
                         _write_private_json(approvals, state)
                         typer.echo(f"Updated {approvals}")
-    if json.dumps(config, sort_keys = True) != before:
+    if json.dumps(config, sort_keys=True) != before:
         _write_private_json(path, config)
         typer.echo(f"Updated {path}")
 
@@ -4493,10 +4497,10 @@ def write_opencode_config(
         typer.echo(
             f"Warning: couldn't parse {path} — add an '{_OPENCODE_PROVIDER}' provider "
             "there yourself, or move the file aside and re-run.",
-            err = True,
+            err=True,
         )
         return {}
-    before = json.dumps(config, sort_keys = True)
+    before = json.dumps(config, sort_keys=True)
     config.setdefault("$schema", "https://opencode.ai/config.json")
     # Keep the provider definition in this private session file. The launch path adjusts effective provider filters in the higher-priority inline overlay.
     model_entry = {"name": model["id"]}
@@ -4554,7 +4558,7 @@ def write_opencode_config(
                     permission[tool] = "ask"
             if permission.get("external_directory") == {"*": "allow"}:
                 permission["external_directory"] = {"*": "ask"}
-    if json.dumps(config, sort_keys = True) != before:
+    if json.dumps(config, sort_keys=True) != before:
         _write_private_json(path, config)
         typer.echo(f"Updated {path}")
     return session_permission
@@ -4566,12 +4570,12 @@ def write_hermes_config(base: str, model: dict, path: Path) -> None:
     config: dict = {}
     if path.exists():
         try:
-            loaded = yaml.safe_load(path.read_text(encoding = "utf-8"))
+            loaded = yaml.safe_load(path.read_text(encoding="utf-8"))
         except (yaml.YAMLError, OSError):
             typer.echo(
                 f"Warning: couldn't parse {path} — configure the custom endpoint "
                 "there yourself, or move the file aside and re-run.",
-                err = True,
+                err=True,
             )
             return
         if isinstance(loaded, dict):
@@ -4581,14 +4585,14 @@ def write_hermes_config(base: str, model: dict, path: Path) -> None:
             typer.echo(
                 f"Warning: couldn't parse {path} — configure the custom endpoint "
                 "there yourself, or move the file aside and re-run.",
-                err = True,
+                err=True,
             )
             return
     # Hermes only reads the key for a NAMED custom provider (a bare `provider: custom` ignores it), so register it under providers.*.
     _subdict(config, "model").update(
-        provider = f"custom:{_HERMES_PROVIDER}",
-        default = model["id"],
-        api_mode = "openai",
+        provider=f"custom:{_HERMES_PROVIDER}",
+        default=model["id"],
+        api_mode="openai",
     )
     window = model.get("context_length") or model.get("max_context_length")
     if window:
@@ -4596,12 +4600,12 @@ def write_hermes_config(base: str, model: dict, path: Path) -> None:
         # Hermes auto-detects context from GET /v1/models, but OpenAI's schema has no context field, so it can fall back to a 256k default that overflows a small local model. Pin the real window (top-level model.context_length is the highest-priority override) and compact at 90% of it (Hermes defaults to 50%).
         if window >= _HERMES_MIN_CONTEXT:
             _subdict(config, "model")["context_length"] = window
-            _subdict(config, "compression").update(enabled = True, threshold = 0.9)
+            _subdict(config, "compression").update(enabled=True, threshold=0.9)
         else:
             # Below Hermes' 64,000-token floor it refuses to initialize, so claim the floor and shrink the threshold so compaction still fires at 90% of the REAL window (the threshold is a fraction of the claimed context_length). The auxiliary override keeps the same floor check from rejecting the compression model mid-session.
             _subdict(config, "model")["context_length"] = _HERMES_MIN_CONTEXT
             threshold = round(0.9 * window / _HERMES_MIN_CONTEXT, 4)
-            _subdict(config, "compression").update(enabled = True, threshold = threshold)
+            _subdict(config, "compression").update(enabled=True, threshold=threshold)
             auxiliary = _subdict(_subdict(config, "auxiliary"), "compression")
             auxiliary["context_length"] = _HERMES_MIN_CONTEXT
     _subdict(config, "providers")[_HERMES_PROVIDER] = {
@@ -4609,10 +4613,10 @@ def write_hermes_config(base: str, model: dict, path: Path) -> None:
         "api_mode": "openai",
         "key_env": _HERMES_ENV_KEY,
     }
-    text = yaml.safe_dump(config, sort_keys = False)
-    if not path.exists() or path.read_text(encoding = "utf-8") != text:
-        path.parent.mkdir(parents = True, exist_ok = True)
-        path.write_text(text, encoding = "utf-8")
+    text = yaml.safe_dump(config, sort_keys=False)
+    if not path.exists() or path.read_text(encoding="utf-8") != text:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
         typer.echo(f"Updated {path}")
 
 
@@ -4622,10 +4626,10 @@ def write_pi_config(base: str, key: str, model: dict, path: Path) -> None:
         typer.echo(
             f"Warning: couldn't parse {path} — add an 'unsloth' provider there "
             "yourself, or move the file aside and re-run.",
-            err = True,
+            err=True,
         )
         return
-    before = json.dumps(config, sort_keys = True)
+    before = json.dumps(config, sort_keys=True)
     # Pi reads custom providers from ~/.pi/agent/models.json (HOME-relocated for the session). Unsloth is a generic OpenAI-compatible /v1 endpoint, and the key lives in the config rather than the env, matching openclaw/opencode.
     provider_model = {"id": model["id"]}
     window = model.get("context_length") or model.get("max_context_length")
@@ -4640,7 +4644,7 @@ def write_pi_config(base: str, key: str, model: dict, path: Path) -> None:
         "apiKey": key,
         "models": [provider_model],
     }
-    if json.dumps(config, sort_keys = True) != before:
+    if json.dumps(config, sort_keys=True) != before:
         _write_private_json(path, config)
         typer.echo(f"Updated {path}")
 
@@ -4652,12 +4656,12 @@ def _link_user_dir(source: Path, target: Path) -> bool:
         _remove_overlay_entry(target)
     if target.exists() or not source.is_dir():
         return False
-    target.parent.mkdir(parents = True, exist_ok = True, mode = 0o700)
+    target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     try:
-        target.symlink_to(source, target_is_directory = True)
+        target.symlink_to(source, target_is_directory=True)
     except OSError:
         if not _create_directory_junction(source, target):
-            typer.echo(f"Warning: couldn't link {source} into the Pi session.", err = True)
+            typer.echo(f"Warning: couldn't link {source} into the Pi session.", err=True)
             return False
     return True
 
@@ -4667,7 +4671,7 @@ def _pi_local_entry(
     source: Path,
     home: Path,
     linked: frozenset,
-    agents_skills = None,
+    agents_skills=None,
 ) -> str:
     """Re-anchor a user path from the original Pi agent directory."""
     value = entry.strip()
@@ -4709,7 +4713,7 @@ def _pi_settings_entries(
     source: Path,
     home: Path,
     linked: frozenset,
-    agents_skills = None,
+    agents_skills=None,
 ) -> list:
     if not isinstance(entries, list):
         return []
@@ -4760,7 +4764,7 @@ def _clear_pi_user_resources(agent_dir: Path, home: Path) -> None:
     settings = _read_json_object(settings_path)
     if settings is None:
         return
-    before = json.dumps(settings, sort_keys = True)
+    before = json.dumps(settings, sort_keys=True)
     for key, copied in previous.items():
         own = settings.get(key)
         if key in _PI_USER_VERBATIM_SETTINGS:
@@ -4775,9 +4779,9 @@ def _clear_pi_user_resources(agent_dir: Path, home: Path) -> None:
                 settings.pop(key, None)
         elif own == copied:
             settings.pop(key, None)
-    if json.dumps(settings, sort_keys = True) != before:
+    if json.dumps(settings, sort_keys=True) != before:
         _write_private_json(settings_path, settings)
-    manifest_path.unlink(missing_ok = True)
+    manifest_path.unlink(missing_ok=True)
 
 
 def write_pi_user_resources(agent_dir: Path, home: Path) -> None:
@@ -4796,7 +4800,7 @@ def write_pi_user_resources(agent_dir: Path, home: Path) -> None:
         if configured
         else user_home / ".pi" / "agent"
     )
-    if source.resolve(strict = False) == agent_dir.resolve(strict = False):
+    if source.resolve(strict=False) == agent_dir.resolve(strict=False):
         # Do not treat this session as its own resource source.
         source = user_home / ".pi" / "agent"
     if configured and not source.is_dir():
@@ -4804,7 +4808,7 @@ def write_pi_user_resources(agent_dir: Path, home: Path) -> None:
         typer.echo(
             f"Warning: PI_CODING_AGENT_DIR points at {source}, which is not a directory; "
             "no Pi extensions or packages will load in this session.",
-            err = True,
+            err=True,
         )
     linked = frozenset(
         name for name in _PI_USER_RESOURCE_DIRS if _link_user_dir(source / name, agent_dir / name)
@@ -4824,7 +4828,7 @@ def write_pi_user_resources(agent_dir: Path, home: Path) -> None:
         typer.echo(
             f"Warning: couldn't parse {user_settings_path}; "
             "Pi packages listed there won't load in this session.",
-            err = True,
+            err=True,
         )
         user_settings = {}
     settings_path = agent_dir / "settings.json"
@@ -4832,7 +4836,7 @@ def write_pi_user_resources(agent_dir: Path, home: Path) -> None:
     if settings is None:
         typer.echo(
             f"Warning: couldn't parse {settings_path}; your Pi packages won't load in this session.",
-            err = True,
+            err=True,
         )
         return
     manifest_path = agent_dir / _PI_USER_RESOURCES_MANIFEST
@@ -4842,10 +4846,10 @@ def write_pi_user_resources(agent_dir: Path, home: Path) -> None:
         typer.echo(
             f"Warning: couldn't parse {manifest_path}; Pi resources copied by an earlier "
             "launch stay in this session even if you removed them since.",
-            err = True,
+            err=True,
         )
         previous = {}
-    before = json.dumps(settings, sort_keys = True)
+    before = json.dumps(settings, sort_keys=True)
     copied = {}
     for key in _PI_USER_RESOURCE_SETTINGS:
         entries = _pi_settings_entries(
@@ -4864,7 +4868,7 @@ def write_pi_user_resources(agent_dir: Path, home: Path) -> None:
             typer.echo(
                 f"Warning: {settings_path} has a non-list {key!r}; "
                 "leaving it as is, so your Pi entries for it won't load in this session.",
-                err = True,
+                err=True,
             )
             continue
         own = [item for item in own or [] if item not in stale and item not in entries]
@@ -4888,13 +4892,13 @@ def write_pi_user_resources(agent_dir: Path, home: Path) -> None:
             copied[key] = value
         else:
             settings.pop(key, None)
-    if json.dumps(settings, sort_keys = True) != before:
+    if json.dumps(settings, sort_keys=True) != before:
         _write_private_json(settings_path, settings)
     if copied != previous:
         if copied:
             _write_private_json(manifest_path, copied)
         else:
-            manifest_path.unlink(missing_ok = True)
+            manifest_path.unlink(missing_ok=True)
 
 
 def write_pi_subagent_config(
@@ -4928,7 +4932,7 @@ def write_dsh_config(base: str, model: dict, path: Path) -> None:
         typer.echo(
             f"Warning: couldn't parse {path} — add an '{_DSH_PROVIDER}' provider "
             "there yourself, or move the file aside and re-run.",
-            err = True,
+            err=True,
         )
         return
     model_entry = {"id": model["id"]}
@@ -4947,17 +4951,17 @@ def write_dsh_config(base: str, model: dict, path: Path) -> None:
         "models": [model_entry],
     }
     _subdict(config, "agent-default-model").update(
-        provider = _DSH_PROVIDER,
-        model = model["id"],
+        provider=_DSH_PROVIDER,
+        model=model["id"],
     )
-    text = yaml.safe_dump(config, sort_keys = False)
-    if not path.exists() or path.read_text(encoding = "utf-8") != text:
-        path.parent.mkdir(parents = True, exist_ok = True)
-        path.write_text(text, encoding = "utf-8")
+    text = yaml.safe_dump(config, sort_keys=False)
+    if not path.exists() or path.read_text(encoding="utf-8") != text:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
         typer.echo(f"Updated {path}")
 
 
-@start_app.command("claude", cls = _PassthroughCommand, context_settings = _PASSTHROUGH)
+@start_app.command("claude", cls=_PassthroughCommand, context_settings=_PASSTHROUGH)
 def claude(
     ctx: typer.Context,
     model: Optional[str] = _MODEL_OPTION,
@@ -4993,7 +4997,7 @@ def claude(
         else "curl -fsSL https://claude.ai/install.sh | bash"
     )
     # Before the install prompt: _install_agent runs a remote installer, and this can refuse outright, so asking first fetches a tool the run cannot use.
-    _preflight_agent_gguf(_CLAUDE_GGUF_AGENT, model, serve = serve, launch = launch)
+    _preflight_agent_gguf(_CLAUDE_GGUF_AGENT, model, serve=serve, launch=launch)
     _require_agent_for_launch("claude", install_hint, launch)
     base, key, entry = _connect(
         api_key,
@@ -5001,21 +5005,21 @@ def claude(
         _load_options(
             ctx, gguf_variant, max_seq_length, load_in_4bit, tensor_parallel, gpu_memory_mode
         ),
-        serve = serve,
-        launch = launch,
-        preload_check = functools.partial(_attach_gguf_check, _CLAUDE_GGUF_AGENT),
-        server_options = ServerOptions(
-            enable_tools = enable_tools,
-            tool_call_healing = tool_call_healing,
-            tool_call_nudging = tool_call_nudging,
-            reasoning = reasoning,
-            reasoning_effort = reasoning_effort,
-            temperature = temperature,
-            top_p = top_p,
-            top_k = top_k,
-            min_p = min_p,
-            repetition_penalty = repetition_penalty,
-            presence_penalty = presence_penalty,
+        serve=serve,
+        launch=launch,
+        preload_check=functools.partial(_attach_gguf_check, _CLAUDE_GGUF_AGENT),
+        server_options=ServerOptions(
+            enable_tools=enable_tools,
+            tool_call_healing=tool_call_healing,
+            tool_call_nudging=tool_call_nudging,
+            reasoning=reasoning,
+            reasoning_effort=reasoning_effort,
+            temperature=temperature,
+            top_p=top_p,
+            top_k=top_k,
+            min_p=min_p,
+            repetition_penalty=repetition_penalty,
+            presence_penalty=presence_penalty,
         ),
     )
     # Before the launch owns the server, so a rejection tears it down, not atexit.
@@ -5037,7 +5041,7 @@ def claude(
         }
         if window:
             server_env["UNSLOTH_CLAUDE_SUBAGENT_CONTEXT_WINDOW"] = str(int(window))
-        with _session_config("claude-subagent", launch, persist = persist) as config:
+        with _session_config("claude-subagent", launch, persist=persist) as config:
             plugin = write_claude_subagent_plugin(config, server_env)
             command = [
                 "claude",
@@ -5057,14 +5061,14 @@ def claude(
                 subagent_model,
                 {},
                 command,
-                launch = launch,
-                install_hint = install_hint,
+                launch=launch,
+                install_hint=install_hint,
             )
         return
 
     env = _claude_local_env(base, key, entry)
     # Claude Code auto-compacts against its native context window; the local env above supplies the loaded model's real window and a 90% threshold instead. --yolo (or its aliases) maps to Claude's own --dangerously-skip-permissions. IS_SANDBOX is left unset on purpose: Claude refuses bypass mode as root unless a sandbox is detected, and we do not want to falsely claim one on the user's host. claude keeps its history in ~/.claude/projects, which --settings/env never relocate, so a session already survives exit; resume it with `claude --continue` or `--resume <id>` passed through.
-    with _session_config("claude", launch, persist = persist) as config:
+    with _session_config("claude", launch, persist=persist) as config:
         settings = _write_claude_settings(config, model_id, env)
         command = _claude_local_command(
             model_id,
@@ -5077,13 +5081,13 @@ def claude(
             entry,
             env,
             command,
-            launch = launch,
-            install_hint = install_hint,
-            unset_env = _CLAUDE_ENV_UNSET,
+            launch=launch,
+            install_hint=install_hint,
+            unset_env=_CLAUDE_ENV_UNSET,
         )
 
 
-@start_app.command("codex", cls = _PassthroughCommand, context_settings = _PASSTHROUGH)
+@start_app.command("codex", cls=_PassthroughCommand, context_settings=_PASSTHROUGH)
 def codex(
     ctx: typer.Context,
     model: Optional[str] = _MODEL_OPTION,
@@ -5115,7 +5119,7 @@ def codex(
     model, ctx.args[:] = _consume_positional_model(model, ctx.args)
     install_hint = _npm_install_hint("@openai/codex")
     # Before the install prompt: _install_agent runs a remote installer, and this can refuse outright, so asking first fetches a tool the run cannot use.
-    _preflight_agent_gguf(_CODEX_GGUF_AGENT, model, serve = serve, launch = launch)
+    _preflight_agent_gguf(_CODEX_GGUF_AGENT, model, serve=serve, launch=launch)
     _require_agent_for_launch("codex", install_hint, launch)
     base, key, entry = _connect(
         api_key,
@@ -5123,21 +5127,21 @@ def codex(
         _load_options(
             ctx, gguf_variant, max_seq_length, load_in_4bit, tensor_parallel, gpu_memory_mode
         ),
-        serve = serve,
-        launch = launch,
-        preload_check = functools.partial(_attach_gguf_check, _CODEX_GGUF_AGENT),
-        server_options = ServerOptions(
-            enable_tools = enable_tools,
-            tool_call_healing = tool_call_healing,
-            tool_call_nudging = tool_call_nudging,
-            reasoning = reasoning,
-            reasoning_effort = reasoning_effort,
-            temperature = temperature,
-            top_p = top_p,
-            top_k = top_k,
-            min_p = min_p,
-            repetition_penalty = repetition_penalty,
-            presence_penalty = presence_penalty,
+        serve=serve,
+        launch=launch,
+        preload_check=functools.partial(_attach_gguf_check, _CODEX_GGUF_AGENT),
+        server_options=ServerOptions(
+            enable_tools=enable_tools,
+            tool_call_healing=tool_call_healing,
+            tool_call_nudging=tool_call_nudging,
+            reasoning=reasoning,
+            reasoning_effort=reasoning_effort,
+            temperature=temperature,
+            top_p=top_p,
+            top_k=top_k,
+            min_p=min_p,
+            repetition_penalty=repetition_penalty,
+            presence_penalty=presence_penalty,
         ),
     )
     # This preflight runs after _connect may have auto-started a server but before _run takes over its lifecycle, so tear the server down here if it rejects the model (a transformers-backend model) rather than leaving it on the atexit backstop.
@@ -5149,13 +5153,13 @@ def codex(
     if as_subagent:
         subagent_id = _subagent_model_id(base, key, entry, model, gguf_variant)
         subagent_model = {**entry, "id": subagent_id}
-        with _session_config("codex-subagent", launch, persist = persist) as home:
+        with _session_config("codex-subagent", launch, persist=persist) as home:
             bridge_config = write_codex_subagent_bridge(
                 base,
                 key,
                 subagent_model,
                 home,
-                yolo = yolo,
+                yolo=yolo,
             )
             parent_home = write_codex_parent_overlay(home / "parent")
             command = [
@@ -5173,8 +5177,8 @@ def codex(
                 subagent_model,
                 {"CODEX_HOME": str(parent_home)},
                 command,
-                launch = launch,
-                install_hint = install_hint,
+                launch=launch,
+                install_hint=install_hint,
             )
         return
     command = [
@@ -5185,7 +5189,7 @@ def codex(
         *_yolo_command_flags("codex", yolo),
         *ctx.args,
     ]
-    with _session_config("codex", launch, persist = persist) as home:
+    with _session_config("codex", launch, persist=persist) as home:
         write_codex_config(base, entry, home)
         env = {_CODEX_ENV_KEY: key, "CODEX_HOME": str(home)}
         _run(
@@ -5193,13 +5197,13 @@ def codex(
             entry,
             env,
             command,
-            launch = launch,
-            install_hint = install_hint,
-            unset_env = _CODEX_ENV_UNSET,
+            launch=launch,
+            install_hint=install_hint,
+            unset_env=_CODEX_ENV_UNSET,
         )
 
 
-@start_app.command("openclaw", cls = _PassthroughCommand, context_settings = _PASSTHROUGH)
+@start_app.command("openclaw", cls=_PassthroughCommand, context_settings=_PASSTHROUGH)
 def openclaw(
     ctx: typer.Context,
     model: Optional[str] = _MODEL_OPTION,
@@ -5241,20 +5245,20 @@ def openclaw(
         _load_options(
             ctx, gguf_variant, max_seq_length, load_in_4bit, tensor_parallel, gpu_memory_mode
         ),
-        serve = serve,
-        launch = launch,
-        server_options = ServerOptions(
-            enable_tools = enable_tools,
-            tool_call_healing = tool_call_healing,
-            tool_call_nudging = tool_call_nudging,
-            reasoning = reasoning,
-            reasoning_effort = reasoning_effort,
-            temperature = temperature,
-            top_p = top_p,
-            top_k = top_k,
-            min_p = min_p,
-            repetition_penalty = repetition_penalty,
-            presence_penalty = presence_penalty,
+        serve=serve,
+        launch=launch,
+        server_options=ServerOptions(
+            enable_tools=enable_tools,
+            tool_call_healing=tool_call_healing,
+            tool_call_nudging=tool_call_nudging,
+            reasoning=reasoning,
+            reasoning_effort=reasoning_effort,
+            temperature=temperature,
+            top_p=top_p,
+            top_k=top_k,
+            min_p=min_p,
+            repetition_penalty=repetition_penalty,
+            presence_penalty=presence_penalty,
         ),
     )
     openclaw_args = list(ctx.args)
@@ -5262,7 +5266,7 @@ def openclaw(
     if not openclaw_args:
         openclaw_args = ["tui", "--local"]
     command = ["openclaw", *openclaw_args]
-    with _session_config("openclaw", launch, persist = persist) as cfg:
+    with _session_config("openclaw", launch, persist=persist) as cfg:
         config_path = cfg / "openclaw.json"
         # The key lives in the config, not the env; --yolo writes the exec policy here too. Resolve the project only when the recipe executes: a --no-launch command may be generated in one directory, saved, and intentionally run later from another.
         write_openclaw_config(
@@ -5270,9 +5274,9 @@ def openclaw(
             key,
             entry,
             config_path,
-            yolo = yolo,
-            workspace_path = "${OPENCLAW_WORKSPACE_DIR}",
-            embedding_model = _studio_embedding_model(base, key),
+            yolo=yolo,
+            workspace_path="${OPENCLAW_WORKSPACE_DIR}",
+            embedding_model=_studio_embedding_model(base, key),
         )
         # Scope both config and state so OpenClaw never touches the user's ~/.openclaw.
         # Off, else OpenClaw re-imports any provider key it cannot see from a login shell.
@@ -5286,14 +5290,14 @@ def openclaw(
             entry,
             env,
             command,
-            launch = launch,
-            install_hint = install_hint,
-            unset_env = _OPENCLAW_ENV_UNSET,
-            cwd_env = ("OPENCLAW_WORKSPACE_DIR",),
+            launch=launch,
+            install_hint=install_hint,
+            unset_env=_OPENCLAW_ENV_UNSET,
+            cwd_env=("OPENCLAW_WORKSPACE_DIR",),
         )
 
 
-@start_app.command("opencode", cls = _PassthroughCommand, context_settings = _PASSTHROUGH)
+@start_app.command("opencode", cls=_PassthroughCommand, context_settings=_PASSTHROUGH)
 def opencode(
     ctx: typer.Context,
     model: Optional[str] = _MODEL_OPTION,
@@ -5332,26 +5336,26 @@ def opencode(
         _load_options(
             ctx, gguf_variant, max_seq_length, load_in_4bit, tensor_parallel, gpu_memory_mode
         ),
-        serve = serve,
-        launch = launch,
-        server_options = ServerOptions(
-            enable_tools = enable_tools,
-            tool_call_healing = tool_call_healing,
-            tool_call_nudging = tool_call_nudging,
-            reasoning = reasoning,
-            reasoning_effort = reasoning_effort,
-            temperature = temperature,
-            top_p = top_p,
-            top_k = top_k,
-            min_p = min_p,
-            repetition_penalty = repetition_penalty,
-            presence_penalty = presence_penalty,
+        serve=serve,
+        launch=launch,
+        server_options=ServerOptions(
+            enable_tools=enable_tools,
+            tool_call_healing=tool_call_healing,
+            tool_call_nudging=tool_call_nudging,
+            reasoning=reasoning,
+            reasoning_effort=reasoning_effort,
+            temperature=temperature,
+            top_p=top_p,
+            top_k=top_k,
+            min_p=min_p,
+            repetition_penalty=repetition_penalty,
+            presence_penalty=presence_penalty,
         ),
     )
     if opencode_v2:
         typer.echo(
             f"OpenCode V2 provider policies must allow '{_OPENCODE_PROVIDER}'.",
-            err = True,
+            err=True,
         )
     if as_subagent:
         subagent_id = _subagent_model_id(base, key, entry, model, gguf_variant)
@@ -5364,25 +5368,25 @@ def opencode(
         if opencode_v2:
             opencode_args = _opencode_v2_standalone_args(opencode_args)
         opencode_args, native_auto = _opencode_native_auto_args(
-            opencode_args, route_native_auto, v2 = opencode_v2
+            opencode_args, route_native_auto, v2=opencode_v2
         )
         command = [command_name, *opencode_args]
-        with _session_config("opencode-subagent", launch, persist = persist) as cfg:
+        with _session_config("opencode-subagent", launch, persist=persist) as cfg:
             config_path = cfg / "opencode.json"
             session_permission = write_opencode_config(
                 base,
                 key,
                 subagent_model,
                 config_path,
-                yolo = yolo and not native_auto,
-                as_subagent = True,
+                yolo=yolo and not native_auto,
+                as_subagent=True,
             )
             env = {"OPENCODE_CONFIG": str(config_path)}
             inline_config = _opencode_subagent_inline_config(
                 config_path,
                 session_permission,
-                command = command_name,
-                v2 = opencode_v2,
+                command=command_name,
+                v2=opencode_v2,
             )
             # A project opencode.json outranks the session file and could field-merge its own agent.unsloth over ours. Pin ours in the inline overlay so it wins.
             inline_config.setdefault("agent", {})[_SUBAGENT_NAME] = {
@@ -5398,8 +5402,8 @@ def opencode(
                 subagent_model,
                 env,
                 command,
-                launch = launch,
-                install_hint = install_hint,
+                launch=launch,
+                install_hint=install_hint,
             )
         return
     opencode_model = f"{_OPENCODE_PROVIDER}/{entry['id']}"
@@ -5411,7 +5415,7 @@ def opencode(
         if opencode_v2:
             opencode_args = _opencode_v2_standalone_args(opencode_args)
         opencode_args, native_auto = _opencode_native_auto_args(
-            opencode_args, route_native_auto, v2 = opencode_v2
+            opencode_args, route_native_auto, v2=opencode_v2
         )
         command = [command_name, *opencode_args]
     elif launch:
@@ -5421,7 +5425,7 @@ def opencode(
         opencode_args, native_auto = _opencode_native_auto_args(
             opencode_args,
             route_native_auto,
-            v2 = opencode_v2,
+            v2=opencode_v2,
         )
         command = [command_name, *opencode_args]
     else:
@@ -5429,7 +5433,7 @@ def opencode(
         opencode_args = _opencode_v2_standalone_args([]) if opencode_v2 else []
         command = [command_name, *opencode_args]
     # opencode keeps sessions in ~/.local/share/opencode (never relocated), so resume already survives exit; reopen the last one by passing `opencode --continue` through.
-    with _session_config("opencode", launch, persist = persist) as cfg:
+    with _session_config("opencode", launch, persist=persist) as cfg:
         config_path = cfg / "opencode.json"
         # OPENCODE_CONFIG is an overlay, loaded between the user's global and project configs, so this adds the Unsloth provider/model for the session without changing the user's default model. The key lives in the config, not the env.
         session_permission = write_opencode_config(
@@ -5437,7 +5441,7 @@ def opencode(
             key,
             entry,
             config_path,
-            yolo = yolo and not native_auto,
+            yolo=yolo and not native_auto,
         )
         # A project's own opencode.json outranks OPENCODE_CONFIG, so the session model pin would silently lose to a repo config; carry it in OPENCODE_CONFIG_CONTENT, which outranks project config, while the API key stays in the private file. Only the config fallback carries a permission: native --auto omits it (auto-approve asks, keep explicit denies) and a non-yolo session omits it too, honoring project rules. V1 filters are ordinary overlays, so scope that session to our provider; V2 turns filters into security policies where global/project rules intentionally win, so keep those policies intact and tell the user above that they must allow our provider. small_model is opencode's separate model for lightweight tasks; pin it to the session model too, or a user/project small_model on another (now filtered) provider would resolve a not-found error mid-session.
         inline_config: dict = {
@@ -5453,10 +5457,10 @@ def opencode(
             "OPENCODE_CONFIG": str(config_path),
             "OPENCODE_CONFIG_CONTENT": json.dumps(inline_config),
         }
-        _run(base, entry, env, command, launch = launch, install_hint = install_hint)
+        _run(base, entry, env, command, launch=launch, install_hint=install_hint)
 
 
-@start_app.command("hermes", cls = _PassthroughCommand, context_settings = _PASSTHROUGH)
+@start_app.command("hermes", cls=_PassthroughCommand, context_settings=_PASSTHROUGH)
 def hermes(
     ctx: typer.Context,
     model: Optional[str] = _MODEL_OPTION,
@@ -5496,30 +5500,30 @@ def hermes(
         _load_options(
             ctx, gguf_variant, max_seq_length, load_in_4bit, tensor_parallel, gpu_memory_mode
         ),
-        serve = serve,
-        launch = launch,
-        server_options = ServerOptions(
-            enable_tools = enable_tools,
-            tool_call_healing = tool_call_healing,
-            tool_call_nudging = tool_call_nudging,
-            reasoning = reasoning,
-            reasoning_effort = reasoning_effort,
-            temperature = temperature,
-            top_p = top_p,
-            top_k = top_k,
-            min_p = min_p,
-            repetition_penalty = repetition_penalty,
-            presence_penalty = presence_penalty,
+        serve=serve,
+        launch=launch,
+        server_options=ServerOptions(
+            enable_tools=enable_tools,
+            tool_call_healing=tool_call_healing,
+            tool_call_nudging=tool_call_nudging,
+            reasoning=reasoning,
+            reasoning_effort=reasoning_effort,
+            temperature=temperature,
+            top_p=top_p,
+            top_k=top_k,
+            min_p=min_p,
+            repetition_penalty=repetition_penalty,
+            presence_penalty=presence_penalty,
         ),
     )
-    with _session_config("hermes", launch, persist = persist) as home:
+    with _session_config("hermes", launch, persist=persist) as home:
         # HERMES_HOME relocates hermes' whole home dir (config.yaml, sessions, state) like CODEX_HOME, so the user's ~/.hermes is left untouched for the session.
         write_hermes_config(base, entry, home / "config.yaml")
         env = {_HERMES_ENV_KEY: key, "HERMES_HOME": str(home)}
-        _run(base, entry, env, command, launch = launch, install_hint = install_hint)
+        _run(base, entry, env, command, launch=launch, install_hint=install_hint)
 
 
-@start_app.command("pi", cls = _PassthroughCommand, context_settings = _PASSTHROUGH)
+@start_app.command("pi", cls=_PassthroughCommand, context_settings=_PASSTHROUGH)
 def pi(
     ctx: typer.Context,
     model: Optional[str] = _MODEL_OPTION,
@@ -5551,7 +5555,7 @@ def pi(
     model, ctx.args[:] = _consume_positional_model(model, ctx.args)
     install_hint = _npm_install_hint(
         "@earendil-works/pi-coding-agent",
-        ignore_scripts = True,
+        ignore_scripts=True,
     )
     if as_subagent and not _PI_SUBAGENT_EXTENSION.is_file():
         _fail(f"Missing Pi subagent extension: {_PI_SUBAGENT_EXTENSION}")
@@ -5562,34 +5566,34 @@ def pi(
         _load_options(
             ctx, gguf_variant, max_seq_length, load_in_4bit, tensor_parallel, gpu_memory_mode
         ),
-        serve = serve,
-        launch = launch,
-        server_options = ServerOptions(
-            enable_tools = enable_tools,
-            tool_call_healing = tool_call_healing,
-            tool_call_nudging = tool_call_nudging,
-            reasoning = reasoning,
-            reasoning_effort = reasoning_effort,
-            temperature = temperature,
-            top_p = top_p,
-            top_k = top_k,
-            min_p = min_p,
-            repetition_penalty = repetition_penalty,
-            presence_penalty = presence_penalty,
+        serve=serve,
+        launch=launch,
+        server_options=ServerOptions(
+            enable_tools=enable_tools,
+            tool_call_healing=tool_call_healing,
+            tool_call_nudging=tool_call_nudging,
+            reasoning=reasoning,
+            reasoning_effort=reasoning_effort,
+            temperature=temperature,
+            top_p=top_p,
+            top_k=top_k,
+            min_p=min_p,
+            repetition_penalty=repetition_penalty,
+            presence_penalty=presence_penalty,
         ),
     )
     if as_subagent:
         subagent_id = _subagent_model_id(base, key, entry, model, gguf_variant)
         subagent_model = {**entry, "id": subagent_id}
         extension = _agent_config_path(_PI_SUBAGENT_EXTENSION, ["pi"])
-        with _session_config("pi-subagent", launch, persist = persist) as config:
+        with _session_config("pi-subagent", launch, persist=persist) as config:
             config_path = config / "subagent.json"
             write_pi_subagent_config(
                 base,
                 key,
                 subagent_model,
                 config_path,
-                approve = yolo,
+                approve=yolo,
             )
             command = [
                 "pi",
@@ -5607,9 +5611,9 @@ def pi(
                 subagent_model,
                 {"UNSLOTH_PI_SUBAGENT_CONFIG": str(config_path)},
                 command,
-                launch = launch,
-                install_hint = install_hint,
-                clear_screen = True,
+                launch=launch,
+                install_hint=install_hint,
+                clear_screen=True,
             )
         return
     # Pi defaults to the google provider, so pin our provider/model on the command line; the custom OpenAI-compatible endpoint itself is only configurable via ~/.pi/agent/models.json.
@@ -5623,7 +5627,7 @@ def pi(
         *ctx.args,
     ]
     # --ignore-scripts matches Pi's documented install recipe (its README notes Pi needs no install scripts), so accepting the prompt skips dependency lifecycle scripts.
-    with _session_config("pi", launch, persist = persist) as home:
+    with _session_config("pi", launch, persist=persist) as home:
         # Pi resolves its config dir from PI_CODING_AGENT_DIR first (getAgentDir() prefers it over $HOME/.pi/agent), so pin it at the session dir: an inherited PI_CODING_AGENT_DIR in the user's shell would otherwise send Pi to their real config and skip our provider/key. HOME is relocated too so any other ~/.pi paths stay in the session. The key rides in the config rather than the env.
         pi_agent_dir = home / ".pi" / "agent"
         write_pi_config(base, key, entry, pi_agent_dir / "models.json")
@@ -5641,13 +5645,13 @@ def pi(
             entry,
             env,
             command,
-            launch = launch,
-            install_hint = install_hint,
-            clear_screen = True,
+            launch=launch,
+            install_hint=install_hint,
+            clear_screen=True,
         )
 
 
-@start_app.command("dsh", cls = _PassthroughCommand, context_settings = _PASSTHROUGH)
+@start_app.command("dsh", cls=_PassthroughCommand, context_settings=_PASSTHROUGH)
 def dsh(
     ctx: typer.Context,
     model: Optional[str] = _MODEL_OPTION,
@@ -5685,23 +5689,23 @@ def dsh(
         _load_options(
             ctx, gguf_variant, max_seq_length, load_in_4bit, tensor_parallel, gpu_memory_mode
         ),
-        serve = serve,
-        launch = launch,
-        server_options = ServerOptions(
-            enable_tools = enable_tools,
-            tool_call_healing = tool_call_healing,
-            tool_call_nudging = tool_call_nudging,
-            reasoning = reasoning,
-            reasoning_effort = reasoning_effort,
-            temperature = temperature,
-            top_p = top_p,
-            top_k = top_k,
-            min_p = min_p,
-            repetition_penalty = repetition_penalty,
-            presence_penalty = presence_penalty,
+        serve=serve,
+        launch=launch,
+        server_options=ServerOptions(
+            enable_tools=enable_tools,
+            tool_call_healing=tool_call_healing,
+            tool_call_nudging=tool_call_nudging,
+            reasoning=reasoning,
+            reasoning_effort=reasoning_effort,
+            temperature=temperature,
+            top_p=top_p,
+            top_k=top_k,
+            min_p=min_p,
+            repetition_penalty=repetition_penalty,
+            presence_penalty=presence_penalty,
         ),
     )
-    with _session_config("dsh", launch, persist = persist) as home:
+    with _session_config("dsh", launch, persist=persist) as home:
         write_dsh_config(base, entry, home / "settings.yaml")
         env = {
             _DSH_ENV_KEY: key,
@@ -5712,4 +5716,4 @@ def dsh(
                 _DSH_YOLO_PERMISSION_MODE if yolo else _DSH_SAFE_PERMISSION_MODE
             ),
         }
-        _run(base, entry, env, command, launch = launch, install_hint = install_hint)
+        _run(base, entry, env, command, launch=launch, install_hint=install_hint)

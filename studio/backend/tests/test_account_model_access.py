@@ -29,7 +29,7 @@ ALICE = AccountContext("a" * 32, "alice")
 BOB = AccountContext("b" * 32, "bob")
 
 
-@pytest.fixture(autouse = True)
+@pytest.fixture(autouse=True)
 def isolated(monkeypatch, tmp_path):
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
     monkeypatch.setattr(policy, "installation_is_multi_user", lambda: True)
@@ -39,7 +39,7 @@ def isolated(monkeypatch, tmp_path):
         access,
         "HfApi",
         lambda: SimpleNamespace(
-            repo_info = lambda *a, **k: (_ for _ in ()).throw(OSError("offline"))
+            repo_info=lambda *a, **k: (_ for _ in ()).throw(OSError("offline"))
         ),
     )
 
@@ -63,11 +63,11 @@ def test_public_proof_is_anonymous_cached_and_fail_closed(monkeypatch, answer, v
         if answer == "unreachable":
             raise OSError("Hub unavailable")
         return SimpleNamespace(
-            private = {"public": False, "private": True, "unknown": None, "gated": False}[answer],
-            gated = answer == "gated",
+            private={"public": False, "private": True, "unknown": None, "gated": False}[answer],
+            gated=answer == "gated",
         )
 
-    monkeypatch.setattr(access, "HfApi", lambda: SimpleNamespace(repo_info = info))
+    monkeypatch.setattr(access, "HfApi", lambda: SimpleNamespace(repo_info=info))
     assert run_as(ALICE, access.repo_visible, "Org/Secret", repo_type) is visible
     assert run_as(BOB, access.repo_visible, "Org/Secret", repo_type) is visible
     assert calls == [("Org/Secret", {"repo_type": repo_type, "token": False, "timeout": 5.0})]
@@ -83,9 +83,10 @@ def test_a_proven_public_repo_stays_visible_when_the_hub_cannot_be_asked(
 
     def info(repo, **kwargs):
         if answers["mode"] == "public":
-            return SimpleNamespace(private = False, gated = False)
+            return SimpleNamespace(private=False, gated=False)
         if answers["mode"] == "forced_offline":
             from huggingface_hub.errors import OfflineModeIsEnabled
+
             raise OfflineModeIsEnabled("HF_HUB_OFFLINE=1")
         if answers["mode"] == "private":
             raise type("RepositoryNotFoundError", (Exception,), {})(
@@ -93,7 +94,7 @@ def test_a_proven_public_repo_stays_visible_when_the_hub_cannot_be_asked(
             )
         raise OSError("Hub unavailable")
 
-    monkeypatch.setattr(access, "HfApi", lambda: SimpleNamespace(repo_info = info))
+    monkeypatch.setattr(access, "HfApi", lambda: SimpleNamespace(repo_info=info))
     assert run_as(ALICE, access.repo_visible, "Org/Public")
     assert json.loads(access._public_verdicts_path().read_text()).keys() == {"model:org/public"}
     assert access._public_verdicts_path().is_relative_to(tmp_path / "cache")
@@ -106,12 +107,12 @@ def test_a_proven_public_repo_stays_visible_when_the_hub_cannot_be_asked(
     access._public_repos.clear()
     answers["mode"] = "private"
     error = Exception("gone")
-    error.response = SimpleNamespace(status_code = 404)
+    error.response = SimpleNamespace(status_code=404)
 
     def definitive(repo, **kwargs):
         raise error
 
-    monkeypatch.setattr(access, "HfApi", lambda: SimpleNamespace(repo_info = definitive))
+    monkeypatch.setattr(access, "HfApi", lambda: SimpleNamespace(repo_info=definitive))
     assert not run_as(ALICE, access.repo_visible, "org/public")
     assert json.loads(access._public_verdicts_path().read_text()) == {}
 
@@ -134,7 +135,7 @@ def test_grants_survive_restart_and_username_reuse_inherits_nothing():
 
 
 def test_simultaneous_download_completions_preserve_all_grants():
-    with ThreadPoolExecutor(max_workers = 4) as pool:
+    with ThreadPoolExecutor(max_workers=4) as pool:
         futures = [
             pool.submit(run_as, ALICE, access.record_model_grant, f"org/model-{i}")
             for i in range(12)
@@ -150,7 +151,7 @@ def test_snapshot_paths_and_symlinks_cannot_bypass_repo_grants(monkeypatch, tmp_
     cache = tmp_path / "cache"
     monkeypatch.setattr(hf_cache_settings, "known_hf_hub_caches", lambda: [cache])
     snapshot = cache / "models--org--secret" / "snapshots" / "commit"
-    snapshot.mkdir(parents = True)
+    snapshot.mkdir(parents=True)
     weights = snapshot / "model.gguf"
     weights.write_bytes(b"weights")
     assert not run_as(BOB, access.model_visible, str(weights))
@@ -158,12 +159,12 @@ def test_snapshot_paths_and_symlinks_cannot_bypass_repo_grants(monkeypatch, tmp_
     assert run_as(ALICE, access.model_visible, str(weights))
     assert not run_as(BOB, access.model_visible, str(weights))
     bob_root = tmp_path / "accounts" / BOB.account_id
-    bob_root.mkdir(parents = True)
+    bob_root.mkdir(parents=True)
     link = bob_root / "stolen.gguf"
     link.symlink_to(weights)
     assert not run_as(BOB, access.model_visible, str(link))
     fake = tmp_path / "accounts" / ALICE.account_id / "models--org--public"
-    fake.mkdir(parents = True)
+    fake.mkdir(parents=True)
     monkeypatch.setattr(access, "repo_is_public", lambda *a: True)
     assert not run_as(BOB, access.model_visible, str(fake))
 
@@ -195,17 +196,17 @@ def test_concurrent_misses_ask_the_hub_once_per_repo(monkeypatch):
 
     def answer(repo_id, repo_type):
         calls.append(repo_id)
-        barrier.wait(timeout = 30)
+        barrier.wait(timeout=30)
         time.sleep(0.02)
         return True
 
     monkeypatch.setattr(access, "_hub_public_answer", answer)
     rows = [{"repo_id": f"org/repo-{index}"} for index in range(8)]
-    with ThreadPoolExecutor(max_workers = 8) as pool:
+    with ThreadPoolExecutor(max_workers=8) as pool:
         listings = [
             pool.submit(run_as, ALICE, access.filter_model_rows, list(rows)) for _ in range(8)
         ]
-        results = [listing.result(timeout = 60) for listing in listings]
+        results = [listing.result(timeout=60) for listing in listings]
     assert all(len(result) == 8 for result in results)
     assert sorted(calls) == sorted(row["repo_id"] for row in rows)
 
@@ -228,7 +229,7 @@ def test_a_listing_probes_its_unknown_repos_together(monkeypatch):
     barrier = threading.Barrier(together)
 
     def answer(*_args):
-        barrier.wait(timeout = 30)
+        barrier.wait(timeout=30)
         return True
 
     monkeypatch.setattr(access, "_hub_public_answer", answer)
@@ -282,10 +283,10 @@ def test_the_shared_chat_template_read_needs_model_access(monkeypatch):
         return await arun_as(
             account,
             templates.get_default_chat_template_route(
-                model_name = "org/secret",
-                gguf_variant = None,
-                hf_token = None,
-                current_subject = account.username,
+                model_name="org/secret",
+                gguf_variant=None,
+                hf_token=None,
+                current_subject=account.username,
             ),
         )
 
@@ -298,7 +299,7 @@ def test_the_shared_chat_template_read_needs_model_access(monkeypatch):
 
 def test_local_inventory_does_not_mutate_shared_scan_objects():
     class Response:
-        models = [SimpleNamespace(path = "org/secret", id = "same-id")]
+        models = [SimpleNamespace(path="org/secret", id="same-id")]
 
         def model_copy(self, *, update):
             return SimpleNamespace(**update)
@@ -319,26 +320,26 @@ def test_only_successful_downloads_record_a_grant(monkeypatch, repo_type):
         download_lifecycle.download_manifest, "clear_cancel_marker", lambda *a, **k: None
     )
     registry = SimpleNamespace(
-        cancel_requested = lambda key: False,
-        drop_process = lambda *a: True,
-        get_job_metadata = lambda key: None,
-        set_job = lambda *a: None,
-        update_job_transport = lambda *a: None,
+        cancel_requested=lambda key: False,
+        drop_process=lambda *a: True,
+        get_job_metadata=lambda key: None,
+        set_job=lambda *a: None,
+        update_job_transport=lambda *a: None,
     )
     for rc in [1, 0]:
-        proc = SimpleNamespace(stderr = io.BytesIO(), wait = lambda: rc)
+        proc = SimpleNamespace(stderr=io.BytesIO(), wait=lambda: rc)
         state = run_as(
             ALICE,
             download_lifecycle.finalize_worker_exit,
             registry,
             "org/secret::",
             proc,
-            hf_token = "alice-token",
-            label = "org/secret",
-            log_prefix = "Download",
-            logger = logging.getLogger(__name__),
-            repo_type = repo_type,
-            repo_id = "org/secret",
+            hf_token="alice-token",
+            label="org/secret",
+            log_prefix="Download",
+            logger=logging.getLogger(__name__),
+            repo_type=repo_type,
+            repo_id="org/secret",
         )
         assert state == ("complete" if rc == 0 else "error")
         assert run_as(ALICE, access.repo_visible, "org/secret", repo_type) is (rc == 0)
@@ -359,10 +360,10 @@ def test_download_cancel_and_status_are_owned_by_the_initiating_account():
     download_lifecycle._job_accounts[(id(registry), key)] = ALICE.account_id
     for fn in [
         lambda: download_lifecycle.cancel_worker(
-            registry, key, generation = None, label = "secret", logger = logging.getLogger(__name__)
+            registry, key, generation=None, label="secret", logger=logging.getLogger(__name__)
         ),
         lambda: download_lifecycle.idle_status(
-            registry, key, repo_type = "model", repo_id = "org/secret", variant = None
+            registry, key, repo_type="model", repo_id="org/secret", variant=None
         ),
     ]:
         with pytest.raises(HTTPException) as exc:
@@ -384,15 +385,15 @@ def test_download_ownership_lands_before_the_hub_authorization(monkeypatch):
     registry = download_registry.DownloadRegistry()
     key = "org/secret::"
     download_lifecycle._job_accounts[(id(registry), key)] = BOB.account_id
-    registry.claim(key, "http", repo_type = "model", repo_id = "org/secret")
+    registry.claim(key, "http", repo_type="model", repo_id="org/secret")
     seen = {}
 
     def repo_info(*args, **kwargs):
         seen["bob"] = run_as(BOB, download_lifecycle.download_belongs_to_account, registry, key)
         seen["alice"] = run_as(ALICE, download_lifecycle.download_belongs_to_account, registry, key)
-        return SimpleNamespace(gated = False)
+        return SimpleNamespace(gated=False)
 
-    monkeypatch.setattr(access, "HfApi", lambda: SimpleNamespace(repo_info = repo_info))
+    monkeypatch.setattr(access, "HfApi", lambda: SimpleNamespace(repo_info=repo_info))
 
     def spawn():
         raise OSError("no worker in this test")
@@ -403,15 +404,15 @@ def test_download_ownership_lands_before_the_hub_authorization(monkeypatch):
             lambda: download_lifecycle.launch_worker(
                 registry,
                 key,
-                spawn = spawn,
-                hf_token = "alice-token",
-                label = "org/secret",
-                log_prefix = "Download",
-                logger = logging.getLogger(__name__),
-                repo_type = "model",
-                repo_id = "org/secret",
-                transport = "http",
-                watch_name = "watch",
+                spawn=spawn,
+                hf_token="alice-token",
+                label="org/secret",
+                log_prefix="Download",
+                logger=logging.getLogger(__name__),
+                repo_type="model",
+                repo_id="org/secret",
+                transport="http",
+                watch_name="watch",
             ),
         )
     assert seen == {"bob": False, "alice": True}
@@ -446,7 +447,7 @@ def test_managed_directory_scans_and_media_companions_are_private(tmp_path):
         run_as(BOB, access.private_directory, alice_output, "outputs")
     for reference in [alice_output + "/model.gguf", "../../private/model.gguf"]:
         with pytest.raises(HTTPException):
-            run_as(BOB, access.require_media_references, SimpleNamespace(gguf_filename = reference))
+            run_as(BOB, access.require_media_references, SimpleNamespace(gguf_filename=reference))
     with pytest.raises(HTTPException) as exc:
         run_as(BOB, access.require_installation_owner)
     assert exc.value.status_code == 403
@@ -460,7 +461,7 @@ def test_managed_download_process_never_inherits_ambient_hf_tokens(monkeypatch):
         hf_cache_settings,
         "get_hf_cache_paths",
         lambda: SimpleNamespace(
-            child_env = lambda: {
+            child_env=lambda: {
                 "HF_TOKEN": "owner-secret",
                 "HUGGING_FACE_HUB_TOKEN": "legacy-owner-secret",
             }
@@ -469,10 +470,10 @@ def test_managed_download_process_never_inherits_ambient_hf_tokens(monkeypatch):
     monkeypatch.setattr(
         download_lifecycle.subprocess,
         "Popen",
-        lambda *args, **kwargs: captured.append(kwargs["env"]) or SimpleNamespace(pid = 123),
+        lambda *args, **kwargs: captured.append(kwargs["env"]) or SimpleNamespace(pid=123),
     )
     run_as(
-        ALICE, download_lifecycle.spawn_worker, ["--repo-id", "org/private"], None, use_xet = False
+        ALICE, download_lifecycle.spawn_worker, ["--repo-id", "org/private"], None, use_xet=False
     )
     assert "HF_TOKEN" not in captured[0]
     assert "HUGGING_FACE_HUB_TOKEN" not in captured[0]
@@ -482,7 +483,7 @@ def test_managed_download_process_never_inherits_ambient_hf_tokens(monkeypatch):
         download_lifecycle.spawn_worker,
         ["--repo-id", "org/private"],
         "bob-token",
-        use_xet = False,
+        use_xet=False,
     )
     assert captured[1]["HF_TOKEN"] == "bob-token"
     assert "HUGGING_FACE_HUB_TOKEN" not in captured[1]
@@ -501,7 +502,7 @@ def test_gated_metadata_alone_is_not_download_authorization(monkeypatch, authori
         access,
         "HfApi",
         lambda: SimpleNamespace(
-            repo_info = lambda *a, **k: SimpleNamespace(gated = True), auth_check = check
+            repo_info=lambda *a, **k: SimpleNamespace(gated=True), auth_check=check
         ),
     )
     if authorized:
@@ -518,7 +519,7 @@ def test_a_persisted_public_proof_expires_rather_than_outliving_a_privacy_change
         access,
         "HfApi",
         lambda: SimpleNamespace(
-            repo_info = lambda *a, **k: SimpleNamespace(private = False, gated = False)
+            repo_info=lambda *a, **k: SimpleNamespace(private=False, gated=False)
         ),
     )
     assert run_as(ALICE, access.repo_visible, "Org/Public")
@@ -529,7 +530,7 @@ def test_a_persisted_public_proof_expires_rather_than_outliving_a_privacy_change
         access,
         "HfApi",
         lambda: SimpleNamespace(
-            repo_info = lambda *a, **k: (_ for _ in ()).throw(OSError("Hub unavailable"))
+            repo_info=lambda *a, **k: (_ for _ in ()).throw(OSError("Hub unavailable"))
         ),
     )
     access._public_repos.clear()
@@ -550,7 +551,7 @@ def test_a_checkpoint_in_the_accounts_projects_tree_is_loadable_by_that_account(
     from utils.paths.storage_roots import project_workspaces_root
 
     checkpoint = run_as(ALICE, project_workspaces_root) / "demo" / "outputs" / "checkpoint-10"
-    checkpoint.mkdir(parents = True)
+    checkpoint.mkdir(parents=True)
     run_as(ALICE, validate_job_paths, {"output_dir": str(checkpoint)})
     assert run_as(ALICE, access.model_visible, str(checkpoint))
     assert run_as(ALICE, access.require_model_access, str(checkpoint)) is None
@@ -570,7 +571,7 @@ def test_one_segment_hub_ids_follow_their_grant(monkeypatch, tmp_path, repo_id, 
     monkeypatch.setattr(hf_cache_settings, "known_hf_hub_caches", lambda: [cache])
     monkeypatch.setattr(access, "repo_is_public", lambda *a: False)
     weights = cache / folder / "snapshots" / "commit" / "model.safetensors"
-    weights.parent.mkdir(parents = True)
+    weights.parent.mkdir(parents=True)
     weights.write_bytes(b"weights")
     assert not run_as(BOB, access.model_visible, repo_id)
     assert not run_as(BOB, access.model_visible, str(weights))
@@ -596,7 +597,7 @@ def test_a_grant_racing_retirement_does_not_recreate_the_workspace(monkeypatch, 
     from utils.paths import storage_roots
 
     root = run_as(ALICE, storage_roots.workspace_root)
-    root.mkdir(parents = True)
+    root.mkdir(parents=True)
     real = account_jobs.account_is_retired
     fired = []
 

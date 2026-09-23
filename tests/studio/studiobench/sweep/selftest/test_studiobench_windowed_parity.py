@@ -123,8 +123,8 @@ def test_a_refused_pair_is_not_evidence_of_stability_either():
 
 
 def test_the_scroll_extent_invariant_passes_a_virtualizer_that_sizes_its_spacers():
-    base = _row("select_text", _capture(18, 18), selected_chars = 100, visible_chars = 100)
-    treat = _row("select_text", _capture(6, 18), selected_chars = 100, visible_chars = 100)
+    base = _row("select_text", _capture(18, 18), selected_chars=100, visible_chars=100)
+    treat = _row("select_text", _capture(6, 18), selected_chars=100, visible_chars=100)
     treat["census"]["viewport_scroll_height"] = 9_600  # 4% out, within the estimate tolerance
     got = B.compare_behaviour(base, treat)
     assert got["verdict"] == P.MATCH, got["reason"]
@@ -133,8 +133,8 @@ def test_the_scroll_extent_invariant_passes_a_virtualizer_that_sizes_its_spacers
 def test_the_scroll_extent_invariant_fails_a_virtualizer_that_simply_drops_rows():
     """A scrollbar that says the thread is a third of its real length is a user-visible defect,
     and it is the failure mode a windowed mount invites first."""
-    base = _row("select_text", _capture(18, 18), selected_chars = 100, visible_chars = 100)
-    treat = _row("select_text", _capture(6, 18), selected_chars = 100, visible_chars = 100)
+    base = _row("select_text", _capture(18, 18), selected_chars=100, visible_chars=100)
+    treat = _row("select_text", _capture(6, 18), selected_chars=100, visible_chars=100)
     treat["census"]["viewport_scroll_height"] = 3_300
     got = B.compare_behaviour(base, treat)
     assert got["verdict"] == B.BROKEN
@@ -147,26 +147,26 @@ def _copy_row(
     clipboard,
     selected,
     mounted,
-    readable = True,
+    readable=True,
 ):
     return _row(
         "select_all_copy",
         capture,
-        selected_chars = selected,
-        clipboard_chars = clipboard,
-        clipboard_readable = readable,
-        clipboard_note = None,
-        messages_total = 18,
-        messages_mounted = mounted,
-        mounted_fraction = round(mounted / 18, 3),
+        selected_chars=selected,
+        clipboard_chars=clipboard,
+        clipboard_readable=readable,
+        clipboard_note=None,
+        messages_total=18,
+        messages_mounted=mounted,
+        mounted_fraction=round(mounted / 18, 3),
     )
 
 
 def test_clipboard_truncation_is_reported_as_a_broken_invariant_not_as_noise():
     """A windowed thread whose copy path still reads the DOM loses conversation. That is data
     loss, and the report has to say so rather than file it under 'expected difference'."""
-    base = _copy_row(_capture(18, 18), clipboard = 200_000, selected = 200_000, mounted = 18)
-    treat = _copy_row(_capture(6, 18), clipboard = 66_000, selected = 66_000, mounted = 6)
+    base = _copy_row(_capture(18, 18), clipboard=200_000, selected=200_000, mounted=18)
+    treat = _copy_row(_capture(6, 18), clipboard=66_000, selected=66_000, mounted=6)
     got = B.compare_behaviour(base, treat)
     assert got["verdict"] == B.BROKEN
     assert "clipboard_carries_the_whole_thread" in got["reason"]
@@ -182,8 +182,8 @@ def test_the_alarm_goes_quiet_when_the_copy_reads_the_store_and_not_before():
     fixed the defect, and an alarm that ignored the selection entirely could not tell this apart
     from a build that never virtualised at all.
     """
-    base = _copy_row(_capture(18, 18), clipboard = 200_000, selected = 200_000, mounted = 18)
-    treat = _copy_row(_capture(6, 18), clipboard = 200_000, selected = 66_000, mounted = 6)
+    base = _copy_row(_capture(18, 18), clipboard=200_000, selected=200_000, mounted=18)
+    treat = _copy_row(_capture(6, 18), clipboard=200_000, selected=66_000, mounted=6)
     got = B.compare_behaviour(base, treat)
     assert got["verdict"] == P.MATCH, got["reason"]
     checks = {c["invariant"]: c for c in got["checks"]}
@@ -196,13 +196,13 @@ def test_the_alarm_goes_quiet_when_the_copy_reads_the_store_and_not_before():
 
 def test_an_unreadable_clipboard_is_never_a_pass():
     """The one invariant where "we could not tell" must not look like "it was fine"."""
-    base = _copy_row(_capture(18, 18), clipboard = 200_000, selected = 200_000, mounted = 18)
+    base = _copy_row(_capture(18, 18), clipboard=200_000, selected=200_000, mounted=18)
     treat = _copy_row(
         _capture(6, 18),
-        clipboard = None,
-        selected = 66_000,
-        mounted = 6,
-        readable = False,
+        clipboard=None,
+        selected=66_000,
+        mounted=6,
+        readable=False,
     )
     got = B.compare_behaviour(base, treat)
     checks = {c["invariant"]: c for c in got["checks"]}
@@ -214,16 +214,16 @@ def test_a_reopen_that_loses_messages_is_broken():
     base = _row(
         "thread_reopen",
         _capture(18, 18),
-        messages_before = 18,
-        messages_after = 18,
-        reopened_via = "click",
+        messages_before=18,
+        messages_after=18,
+        reopened_via="click",
     )
     treat = _row(
         "thread_reopen",
         _capture(6, 18),
-        messages_before = 18,
-        messages_after = 6,
-        reopened_via = "click",
+        messages_before=18,
+        messages_after=6,
+        reopened_via="click",
     )
     got = B.compare_behaviour(base, treat)
     assert got["verdict"] == B.BROKEN
@@ -235,16 +235,16 @@ def test_a_reopen_measured_through_a_page_navigation_is_broken():
     base = _row(
         "thread_reopen",
         _capture(18, 18),
-        messages_before = 18,
-        messages_after = 18,
-        reopened_via = "click",
+        messages_before=18,
+        messages_after=18,
+        reopened_via="click",
     )
     treat = _row(
         "thread_reopen",
         _capture(6, 18),
-        messages_before = 18,
-        messages_after = 18,
-        reopened_via = "navigate",
+        messages_before=18,
+        messages_after=18,
+        reopened_via="navigate",
     )
     got = B.compare_behaviour(base, treat)
     assert got["verdict"] == B.BROKEN
@@ -257,9 +257,9 @@ def test_a_reopen_measured_through_a_page_navigation_is_broken():
 def _reopen_row(
     mounted,
     *,
-    before = 18,
-    after = 18,
-    ready = True,
+    before=18,
+    after=18,
+    ready=True,
 ):
     """A `thread_reopen` row in the shape scene/actions.py writes one.
 
@@ -271,11 +271,11 @@ def _reopen_row(
     row = _row(
         "thread_reopen",
         _capture(mounted, 18),
-        messages_before = before,
-        messages_after = after,
-        reopened_via = "click",
-        reopen_ready_mode = "windowed" if mounted < 18 else "full",
-        reopen_readiness = {
+        messages_before=before,
+        messages_after=after,
+        reopened_via="click",
+        reopen_ready_mode="windowed" if mounted < 18 else "full",
+        reopen_readiness={
             "ready": ready,
             "mode": "windowed" if mounted < 18 else "full",
             "expected_messages": before,
@@ -299,7 +299,7 @@ def test_a_reopen_that_never_became_ready_is_not_a_passed_invariant():
     invariant, the route check passed because the sidebar click had worked, and the pair came out
     MATCH over a rebuild that never happened."""
     base = _reopen_row(18)
-    treat = _reopen_row(3, ready = False)
+    treat = _reopen_row(3, ready=False)
     got = B.compare_behaviour(base, treat)
     assert got["verdict"] != P.MATCH, got
     assert got["verdict"] == P.NOT_COMPARABLE, got
@@ -318,7 +318,7 @@ def test_a_reopen_that_lost_messages_is_still_broken_when_the_gate_also_refused_
     `aria-setsize` no longer matches the seeded count -- so a rule that voided every unready reopen
     would have turned the one finding this action exists for into "not comparable"."""
     base = _reopen_row(18)
-    treat = _reopen_row(6, after = 6, ready = False)
+    treat = _reopen_row(6, after=6, ready=False)
     got = B.compare_behaviour(base, treat)
     assert got["verdict"] == B.BROKEN, got
     assert "reopen_keeps_every_message:treatment" in got["reason"]
@@ -368,11 +368,11 @@ def test_a_timed_out_rebuild_leaves_the_behavioural_run_with_no_verdict(tmp_path
     from studiobench.sweep import ui_parity as U
 
     rows = []
-    for side, row in (("base", _reopen_row(18)), ("treatment", _reopen_row(3, ready = False))):
+    for side, row in (("base", _reopen_row(18)), ("treatment", _reopen_row(3, ready=False))):
         row["cell_id"] = f"r100K.{side}.rep0"
         rows.append(row)
     shard = tmp_path / "payload.jsonl"
-    shard.write_text("\n".join(json.dumps(r) for r in rows), encoding = "utf-8")
+    shard.write_text("\n".join(json.dumps(r) for r in rows), encoding="utf-8")
 
     code = U.behaviour_report([shard], "UI PARITY: stalled reopen")
     out = capsys.readouterr().out
@@ -409,7 +409,7 @@ def test_a_broken_scroll_extent_still_fails_an_action_with_no_invariant_of_its_o
 
 
 def test_an_action_that_did_not_run_is_not_scored_at_all():
-    base = _row("select_text", _capture(18, 18), selected_chars = 10, visible_chars = 10)
+    base = _row("select_text", _capture(18, 18), selected_chars=10, visible_chars=10)
     treat = _row("select_text", _capture(6, 18))
     treat["ran"] = False
     treat["reason"] = "no assistant message"
@@ -443,8 +443,8 @@ def test_two_full_mounts_of_different_lengths_is_a_difference_not_an_excuse():
     conversation. It used to be waved through as NOT_APPLICABLE on the argument that the
     per-message rows are keyed by position, which is true of the ROWS and says nothing about the
     finding."""
-    base = _capture(mounted = 18, total = 18)
-    treat = _capture(mounted = 17, total = 17)
+    base = _capture(mounted=18, total=18)
+    treat = _capture(mounted=17, total=17)
     assert P.windowed_mount(base) is False and P.windowed_mount(treat) is False
     got = P.compare(base, treat)
     assert got["verdict"] == P.DIFFER, got
@@ -455,13 +455,13 @@ def test_two_full_mounts_of_different_lengths_is_a_difference_not_an_excuse():
 
 def test_a_windowed_pair_is_still_refused_rather_than_failed():
     """The fix must not turn the intended case red. A genuine window is still NOT_APPLICABLE."""
-    got = P.compare(_capture(mounted = 18, total = 18), _capture(mounted = 9, total = 18))
+    got = P.compare(_capture(mounted=18, total=18), _capture(mounted=9, total=18))
     assert got["verdict"] == P.NOT_APPLICABLE, got
     assert "mounts a WINDOW" in got["reason"]
 
 
 def test_equal_full_mounts_are_compared_as_before():
-    got = P.compare(_capture(mounted = 18, total = 18), _capture(mounted = 18, total = 18))
+    got = P.compare(_capture(mounted=18, total=18), _capture(mounted=18, total=18))
     assert got["verdict"] == P.MATCH, got
 
 
@@ -478,11 +478,11 @@ def test_behavioural_scoring_that_validated_nothing_is_not_a_pass(tmp_path, caps
 
     rows = []
     for side in ("base", "treatment"):
-        row = _row("thread_reopen", _capture(mounted = 9, total = 18))
+        row = _row("thread_reopen", _capture(mounted=9, total=18))
         row["ran"] = False
         row["cell_id"] = f"r100K.{side}.rep0"
         rows.append(row)
-    shard.write_text("\n".join(json.dumps(r) for r in rows), encoding = "utf-8")
+    shard.write_text("\n".join(json.dumps(r) for r in rows), encoding="utf-8")
 
     code = U.behaviour_report([shard], "UI PARITY: nothing")
     out = capsys.readouterr().out
@@ -490,7 +490,7 @@ def test_behavioural_scoring_that_validated_nothing_is_not_a_pass(tmp_path, caps
     assert "NOTHING WAS COMPARED" in out
 
 
-def _scroll_extent_broken_pair(cell_suffix = "rep0"):
+def _scroll_extent_broken_pair(cell_suffix="rep0"):
     """A `select_text` pair whose declared invariant is BROKEN: the windowed arm's scrollbar says
     the thread is a third of its real length. `compare_behaviour` returns BROKEN, so this pair
     lands in `broken` and NOT in `matched`."""
@@ -499,8 +499,8 @@ def _scroll_extent_broken_pair(cell_suffix = "rep0"):
         row = _row(
             "select_text",
             _capture(mounted, 18),
-            selected_chars = 100,
-            visible_chars = 100,
+            selected_chars=100,
+            visible_chars=100,
         )
         row["census"]["viewport_scroll_height"] = scroll
         row["cell_id"] = f"r100K.{side}.{cell_suffix}"
@@ -551,7 +551,7 @@ def test_the_no_verdict_banner_still_fires_when_a_build_DIFFERENCE_is_the_only_f
     from studiobench.sweep import ui_parity as U
 
     rows = []
-    for side, row in (("base", _reopen_row(18)), ("treatment", _reopen_row(3, ready = False))):
+    for side, row in (("base", _reopen_row(18)), ("treatment", _reopen_row(3, ready=False))):
         row["cell_id"] = f"r100K.{side}.rep0"
         rows.append(row)
     shard = _write(tmp_path, "build_diff_only", rows)
@@ -588,7 +588,7 @@ def test_the_observation_cost_is_not_charged_to_the_action_budget():
 
 
 def _styled(elements: int, digest: str = "s") -> dict:
-    cap = _capture(mounted = 18, total = 18)
+    cap = _capture(mounted=18, total=18)
     cap["styles"] = {"elements": elements, "digest": digest, "capped": False}
     return cap
 
@@ -638,8 +638,8 @@ def test_the_passing_digest_verdict_states_what_it_did_not_look_at():
 def test_a_truncated_clipboard_still_fails():
     """The defect the invariant was written for. The windowed arm copies only what it mounted, so
     the clipboard is the visible fraction of the conversation and the rest is gone."""
-    base = _copy_row(_capture(18, 18), clipboard = 200_000, selected = 200_000, mounted = 18)
-    treat = _copy_row(_capture(6, 18), clipboard = 122_000, selected = 66_000, mounted = 6)
+    base = _copy_row(_capture(18, 18), clipboard=200_000, selected=200_000, mounted=18)
+    treat = _copy_row(_capture(6, 18), clipboard=122_000, selected=66_000, mounted=6)
     got = B.compare_behaviour(base, treat)
     assert got["verdict"] == B.BROKEN, got
     checks = {c["invariant"]: c for c in got["checks"]}
@@ -656,8 +656,8 @@ def test_a_clipboard_that_carries_far_MORE_than_the_thread_also_fails():
     The truncation was fixed and the content was then wrong in the other direction. A check that
     only had a lower bound called that a pass.
     """
-    base = _copy_row(_capture(18, 18), clipboard = 193_937, selected = 194_992, mounted = 18)
-    treat = _copy_row(_capture(9, 18), clipboard = 420_911, selected = 118_089, mounted = 9)
+    base = _copy_row(_capture(18, 18), clipboard=193_937, selected=194_992, mounted=18)
+    treat = _copy_row(_capture(9, 18), clipboard=420_911, selected=118_089, mounted=9)
     got = B.compare_behaviour(base, treat)
     assert got["verdict"] == B.BROKEN, got
     checks = {c["invariant"]: c for c in got["checks"]}
@@ -671,8 +671,8 @@ def test_markdown_source_against_rendered_text_is_not_treated_as_a_difference():
     delimiters exist in one and not the other. A narrowed store serialiser measured about 1% over
     on a scale fixture. Comparing the two clipboards at a 2% tolerance fails a correct fix, and the
     only way to make it pass is to widen the tolerance until it tests nothing."""
-    base = _copy_row(_capture(18, 18), clipboard = 193_937, selected = 194_992, mounted = 18)
-    treat = _copy_row(_capture(9, 18), clipboard = 197_800, selected = 118_089, mounted = 9)
+    base = _copy_row(_capture(18, 18), clipboard=193_937, selected=194_992, mounted=18)
+    treat = _copy_row(_capture(9, 18), clipboard=197_800, selected=118_089, mounted=9)
     got = B.compare_behaviour(base, treat)
     checks = {c["invariant"]: c for c in got["checks"]}
     assert checks["clipboard_carries_the_whole_thread:treatment"]["ok"] is True, checks
@@ -682,8 +682,8 @@ def test_without_a_fully_mounted_arm_there_is_no_reference_and_no_verdict():
     """The reference is the thread's visible text as measured by an arm that has all of it. If
     neither arm mounts everything, nobody in this payload knows how long the conversation is, and
     that is reported rather than guessed."""
-    base = _copy_row(_capture(9, 18), clipboard = 190_000, selected = 118_000, mounted = 9)
-    treat = _copy_row(_capture(9, 18), clipboard = 190_000, selected = 118_000, mounted = 9)
+    base = _copy_row(_capture(9, 18), clipboard=190_000, selected=118_000, mounted=9)
+    treat = _copy_row(_capture(9, 18), clipboard=190_000, selected=118_000, mounted=9)
     got = B.compare_behaviour(base, treat)
     checks = {c["invariant"]: c for c in got["checks"]}
     assert checks["clipboard_carries_the_whole_thread"]["ok"] is None
@@ -697,9 +697,9 @@ def _visible_shard(
     tmp_path,
     name,
     differ_actions,
-    actions = ("a", "b", "c"),
-    rung = "r100K",
-    reps = 2,
+    actions=("a", "b", "c"),
+    rung="r100K",
+    reps=2,
 ):
     """A payload shard whose visible-region captures differ on `differ_actions` and match elsewhere.
 
@@ -721,7 +721,7 @@ def _visible_shard(
                         "action": action,
                         "ran": True,
                         "cell_id": f"{rung}.{side}.rep{rep}",
-                        "parity": _capture(mounted = 18, total = 18),
+                        "parity": _capture(mounted=18, total=18),
                         "visible": {
                             "visible_attempted": True,
                             "ever_visible": [1],
@@ -734,7 +734,7 @@ def _visible_shard(
                 )
     shard = tmp_path / name
     shard.mkdir()
-    (shard / "payload.jsonl").write_text("\n".join(json.dumps(r) for r in rows), encoding = "utf-8")
+    (shard / "payload.jsonl").write_text("\n".join(json.dumps(r) for r in rows), encoding="utf-8")
     return shard / "payload.jsonl"
 
 
@@ -751,8 +751,8 @@ def test_an_action_that_differs_against_an_identical_build_is_not_counted_agains
     """
     from studiobench.sweep import ui_parity as U
 
-    null = _visible_shard(tmp_path, "null", differ_actions = {"a", "b"})
-    arm = _visible_shard(tmp_path, "arm", differ_actions = {"a"})
+    null = _visible_shard(tmp_path, "null", differ_actions={"a", "b"})
+    arm = _visible_shard(tmp_path, "arm", differ_actions={"a"})
 
     unstable = U.visible_unstable_set([null])
     assert unstable == frozenset({("r100K", "a"), ("r100K", "b")}), unstable
@@ -771,8 +771,8 @@ def test_a_real_visible_difference_outside_the_floor_still_fails(tmp_path):
     still a failure."""
     from studiobench.sweep import ui_parity as U
 
-    null = _visible_shard(tmp_path, "null2", differ_actions = {"b"})
-    arm = _visible_shard(tmp_path, "arm2", differ_actions = {"a"})
+    null = _visible_shard(tmp_path, "null2", differ_actions={"b"})
+    arm = _visible_shard(tmp_path, "arm2", differ_actions={"a"})
     assert U.visible_report([arm], "floored", U.visible_unstable_set([null])) == 1
 
 
@@ -794,14 +794,14 @@ def test_noise_at_one_rung_does_not_silence_a_regression_at_another(tmp_path, ca
     both = ("model_change", "keystroke")
     null = [
         _visible_shard(
-            tmp_path, "null_rungs", differ_actions = {"model_change"}, actions = both, rung = "r100K"
+            tmp_path, "null_rungs", differ_actions={"model_change"}, actions=both, rung="r100K"
         )
     ]
     big = _visible_shard(
-        tmp_path, "arm_100k", differ_actions = {"model_change"}, actions = both, rung = "r100K"
+        tmp_path, "arm_100k", differ_actions={"model_change"}, actions=both, rung="r100K"
     )
     small = _visible_shard(
-        tmp_path, "arm_1k", differ_actions = {"model_change"}, actions = both, rung = "r1K"
+        tmp_path, "arm_1k", differ_actions={"model_change"}, actions=both, rung="r1K"
     )
     unstable = U.visible_unstable_set(null)
     assert unstable == frozenset({("r100K", "model_change")}), unstable
@@ -820,16 +820,16 @@ def test_a_floor_derived_from_a_single_pair_is_not_a_floor(tmp_path):
     visible floor carries no declared mechanism behind it to justify the entry."""
     from studiobench.sweep import ui_parity as U
 
-    thin = _visible_shard(tmp_path, "null_thin", differ_actions = {"a"}, reps = 1)
+    thin = _visible_shard(tmp_path, "null_thin", differ_actions={"a"}, reps=1)
     assert U.visible_unstable_set([thin]) == frozenset()
-    thick = _visible_shard(tmp_path, "null_thick", differ_actions = {"a"}, reps = 2)
+    thick = _visible_shard(tmp_path, "null_thick", differ_actions={"a"}, reps=2)
     assert U.visible_unstable_set([thick]) == frozenset({("r100K", "a")})
 
 
 def test_an_unfloored_visible_run_says_so(tmp_path, capsys):
     from studiobench.sweep import ui_parity as U
 
-    arm = _visible_shard(tmp_path, "arm3", differ_actions = set())
+    arm = _visible_shard(tmp_path, "arm3", differ_actions=set())
     U.visible_report([arm], "no floor")
     assert "NO FLOOR WAS MEASURED" in capsys.readouterr().out
 
@@ -854,7 +854,7 @@ def test_the_noise_floor_cannot_silence_an_arm_that_lost_the_thread(tmp_path, ca
                     "action": "model_change",
                     "ran": True,
                     "cell_id": f"r100K.{side}.rep0",
-                    "parity": _capture(mounted = 18, total = 18),
+                    "parity": _capture(mounted=18, total=18),
                     "visible": {
                         "visible_attempted": True,
                         "ever_visible": [14, 15],
@@ -873,13 +873,13 @@ def test_the_noise_floor_cannot_silence_an_arm_that_lost_the_thread(tmp_path, ca
         shard = tmp_path / name
         shard.mkdir()
         (shard / "payload.jsonl").write_text(
-            "\n".join(json.dumps(r) for r in rows), encoding = "utf-8"
+            "\n".join(json.dumps(r) for r in rows), encoding="utf-8"
         )
         return shard / "payload.jsonl"
 
     # The null differs on this action for its own reasons, so it lands in the unstable set...
     null = _visible_shard(
-        tmp_path, "null_mc", differ_actions = {"model_change"}, actions = ("model_change",)
+        tmp_path, "null_mc", differ_actions={"model_change"}, actions=("model_change",)
     )
     unstable = U.visible_unstable_set([null])
     assert ("r100K", "model_change") in unstable
@@ -896,14 +896,14 @@ def _write(tmp_path, name, rows):
 
     shard = tmp_path / name
     shard.mkdir()
-    (shard / "payload.jsonl").write_text("\n".join(json.dumps(r) for r in rows), encoding = "utf-8")
+    (shard / "payload.jsonl").write_text("\n".join(json.dumps(r) for r in rows), encoding="utf-8")
     return shard / "payload.jsonl"
 
 
 def _visible(
     ever,
     digested,
-    digest = "same",
+    digest="same",
 ):
     """A visible-region capture that SAW `ever` and could still digest `digested` at capture time."""
     return {
@@ -922,18 +922,18 @@ def _action(
     action,
     cell_id,
     *,
-    parity = None,
-    visible = None,
-    ran = True,
-    reason = None,
-    expect = None,
+    parity=None,
+    visible=None,
+    ran=True,
+    reason=None,
+    expect=None,
 ):
     row = {
         "row_type": "action",
         "action": action,
         "ran": ran,
         "cell_id": cell_id,
-        "parity": parity if parity is not None else _capture(mounted = 18, total = 18),
+        "parity": parity if parity is not None else _capture(mounted=18, total=18),
         "census": {"viewport_scroll_height": 10_000},
         "expect": dict(expect or {}),
         "expect_ok": True,
@@ -959,8 +959,8 @@ def test_a_style_regression_survives_a_structural_refusal(tmp_path, capsys):
     """
     from studiobench.sweep import ui_parity as U
 
-    base = _capture(mounted = 4, total = 4)
-    treat = _capture(mounted = 4, total = 4)
+    base = _capture(mounted=4, total=4)
+    treat = _capture(mounted=4, total=4)
     # Structurally unreadable: the stream could not be placed on one arm.
     treat["in_flight_unplaced"] = True
     treat["in_flight"] = []
@@ -990,8 +990,8 @@ def test_a_visible_message_that_could_not_be_digested_is_printed_and_not_counted
 
     rows = []
     for side in ("base", "treatment"):
-        rows.append(_action("settings", f"r100K.{side}.rep0", visible = _visible([1], [1])))
-        rows.append(_action("scroll_after", f"r100K.{side}.rep0", visible = _visible([1, 2], [1])))
+        rows.append(_action("settings", f"r100K.{side}.rep0", visible=_visible([1], [1])))
+        rows.append(_action("scroll_after", f"r100K.{side}.rep0", visible=_visible([1, 2], [1])))
     shard = _write(tmp_path, "residue", rows)
 
     code = U.visible_report([shard], "residue")
@@ -1010,7 +1010,7 @@ def test_a_run_where_nothing_could_be_digested_carries_no_visible_verdict(tmp_pa
     from studiobench.sweep import ui_parity as U
 
     rows = [
-        _action("scroll_after", f"r100K.{side}.rep0", visible = _visible([1, 2], [1]))
+        _action("scroll_after", f"r100K.{side}.rep0", visible=_visible([1, 2], [1]))
         for side in ("base", "treatment")
     ]
     code = U.visible_report([_write(tmp_path, "all_residue", rows)], "all residue")
@@ -1022,7 +1022,7 @@ def test_a_run_where_nothing_could_be_digested_carries_no_visible_verdict(tmp_pa
 # ── an unmeasured windowed run cannot come out green ────────────────
 
 
-def _failed_parity(why = "the parity probe timed out"):
+def _failed_parity(why="the parity probe timed out"):
     return {"parity_attempted": False, "reason": why}
 
 
@@ -1030,8 +1030,8 @@ def _declared_windowed_shard(
     tmp_path,
     name,
     *,
-    arm = "treatment",
-    parity = None,
+    arm="treatment",
+    parity=None,
 ):
     """A payload that DECLARES a windowed arm the way `__main__.py` records it, and measures nothing.
 
@@ -1062,9 +1062,9 @@ def _declared_windowed_shard(
             _action(
                 "select_all_copy",
                 f"r100K.{side}.rep0",
-                parity = parity if parity is not None else _failed_parity(),
-                ran = False,
-                reason = "the slot was missed",
+                parity=parity if parity is not None else _failed_parity(),
+                ran=False,
+                reason="the slot was missed",
             )
         )
     return _write(tmp_path, name, rows)
@@ -1110,7 +1110,7 @@ def test_a_payload_whose_captures_all_failed_is_not_a_structural_pass(tmp_path, 
     from studiobench.sweep import ui_parity as U
 
     rows = [
-        _action("settings", f"r100K.{side}.rep0", parity = _failed_parity())
+        _action("settings", f"r100K.{side}.rep0", parity=_failed_parity())
         for side in ("base", "treatment")
     ]
     code = U.report([_write(tmp_path, "all_failed", rows)], "all failed", frozenset())
@@ -1158,9 +1158,9 @@ def _mixed_rung_shard(tmp_path, name):
             _action(
                 "select_all_copy",
                 f"r1K.{side}.rep0",
-                parity = _capture(mounted = 18, total = 18, digest = digest),
-                visible = _visible([1], [1], digest = digest),
-                expect = _copy_expect(clipboard = 200_000, selected = 200_000, mounted = 18),
+                parity=_capture(mounted=18, total=18, digest=digest),
+                visible=_visible([1], [1], digest=digest),
+                expect=_copy_expect(clipboard=200_000, selected=200_000, mounted=18),
             )
         )
         windowed = side == "treatment"
@@ -1168,12 +1168,12 @@ def _mixed_rung_shard(tmp_path, name):
             _action(
                 "select_all_copy",
                 f"r100K.{side}.rep0",
-                parity = _capture(mounted = 9 if windowed else 18, total = 18, digest = "shipped"),
-                visible = _visible([1], [1]),
-                expect = _copy_expect(
-                    clipboard = 200_000,
-                    selected = 66_000 if windowed else 200_000,
-                    mounted = 9 if windowed else 18,
+                parity=_capture(mounted=9 if windowed else 18, total=18, digest="shipped"),
+                visible=_visible([1], [1]),
+                expect=_copy_expect(
+                    clipboard=200_000,
+                    selected=66_000 if windowed else 200_000,
+                    mounted=9 if windowed else 18,
                 ),
             )
         )
@@ -1252,7 +1252,7 @@ def test_an_arm_declared_windowed_is_still_digested_where_it_mounted_everything(
         }
     ]
     for side in ("base", "treatment"):
-        rows.append(_action("settings", f"r1K.{side}.rep0", parity = _capture(mounted = 18, total = 18)))
+        rows.append(_action("settings", f"r1K.{side}.rep0", parity=_capture(mounted=18, total=18)))
     shard = _write(tmp_path, "declared_but_mounted", rows)
     assert all(mode == U.STRUCTURAL for mode, _why in U.decide_modes([shard]).values())
     assert U.any_windowed([shard]) is None
@@ -1265,8 +1265,8 @@ def _one_sided_shard(
     tmp_path,
     name,
     *,
-    gate = True,
-    cell_row = False,
+    gate=True,
+    cell_row=False,
 ):
     """A mixed-rung payload whose declared-windowed TREATMENT arm died at the large rung.
 
@@ -1299,18 +1299,18 @@ def _one_sided_shard(
             _action(
                 "select_all_copy",
                 f"r1K.{side}.rep0",
-                parity = _capture(mounted = 18, total = 18),
-                visible = _visible([1], [1]),
-                expect = _copy_expect(clipboard = 200_000, selected = 200_000, mounted = 18),
+                parity=_capture(mounted=18, total=18),
+                visible=_visible([1], [1]),
+                expect=_copy_expect(clipboard=200_000, selected=200_000, mounted=18),
             )
         )
     rows.append(
         _action(
             "select_all_copy",
             "r100K.base.rep0",
-            parity = _capture(mounted = 18, total = 18),
-            visible = _visible([1], [1]),
-            expect = _copy_expect(clipboard = 200_000, selected = 200_000, mounted = 18),
+            parity=_capture(mounted=18, total=18),
+            visible=_visible([1], [1]),
+            expect=_copy_expect(clipboard=200_000, selected=200_000, mounted=18),
         )
     )
     return _write(tmp_path, name, rows)
@@ -1339,7 +1339,7 @@ def test_a_windowed_cell_row_declares_the_arm_even_when_that_arm_has_no_action_r
     gate records that on the cell row, under a cell id no surviving row carries."""
     from studiobench.sweep import ui_parity as U
 
-    shard = _one_sided_shard(tmp_path, "one_sided_cell", gate = False, cell_row = True)
+    shard = _one_sided_shard(tmp_path, "one_sided_cell", gate=False, cell_row=True)
     modes = {
         f"{rung} {rep}": mode
         for (_s, rung, rep, _sid, _a), (mode, _why) in U.decide_modes([shard]).items()
@@ -1371,7 +1371,7 @@ def test_a_pair_missing_an_arm_with_no_declaration_anywhere_is_still_structural(
     say anything about it either."""
     from studiobench.sweep import ui_parity as U
 
-    shard = _one_sided_shard(tmp_path, "one_sided_undeclared", gate = False)
+    shard = _one_sided_shard(tmp_path, "one_sided_undeclared", gate=False)
     modes = {
         f"{rung} {rep}": mode
         for (_s, rung, rep, _sid, _a), (mode, _why) in U.decide_modes([shard]).items()
@@ -1397,7 +1397,7 @@ def test_a_capture_that_saw_no_thread_at_all_falls_back_on_the_declaration(tmp_p
         "mounted_messages": 0,
         "thread_total": 0,
     }
-    shard = _declared_windowed_shard(tmp_path, "lost_thread", parity = lost)
+    shard = _declared_windowed_shard(tmp_path, "lost_thread", parity=lost)
     assert all(mode == U.WINDOWED for mode, _why in U.decide_modes([shard]).values())
 
 
@@ -1415,7 +1415,7 @@ def test_a_capture_that_saw_no_thread_at_all_falls_back_on_the_declaration(tmp_p
 def _completeness_gate(
     cell_id,
     passed,
-    reason = "the head of the thread mounted, but 12 of 18 ordinals never mounted",
+    reason="the head of the thread mounted, but 12 of 18 ordinals never mounted",
 ):
     return {
         "row_type": "gate",
@@ -1426,7 +1426,7 @@ def _completeness_gate(
     }
 
 
-def _matching_pair(cell_suffix = "rep0", ordinals = (17, 18)):
+def _matching_pair(cell_suffix="rep0", ordinals=(17, 18)):
     """One action, both arms, identical inside the viewport: the pair that used to carry the run."""
     out = []
     for side in ("base", "treatment"):
@@ -1434,8 +1434,8 @@ def _matching_pair(cell_suffix = "rep0", ordinals = (17, 18)):
             _action(
                 "select_text",
                 f"r100K.{side}.{cell_suffix}",
-                parity = _capture(mounted = 6, total = 18),
-                visible = _visible(ordinals, ordinals),
+                parity=_capture(mounted=6, total=18),
+                visible=_visible(ordinals, ordinals),
             )
         )
     return out
@@ -1455,7 +1455,7 @@ def test_a_cell_that_lost_messages_gets_no_visible_pass(tmp_path, capsys):
     assert "FAILED its completeness gate" in out, out
 
 
-def _held_invariant_pair(cell_suffix = "rep0"):
+def _held_invariant_pair(cell_suffix="rep0"):
     """A `select_text` pair whose declared invariant HOLDS: the windowed arm selected the same
     characters and sized its spacers, so `compare_behaviour` returns MATCH. This is the shape a
     store that kept its first page and its last one still produces."""
@@ -1464,8 +1464,8 @@ def _held_invariant_pair(cell_suffix = "rep0"):
         row = _row(
             "select_text",
             _capture(mounted, 18),
-            selected_chars = 100,
-            visible_chars = 100,
+            selected_chars=100,
+            visible_chars=100,
         )
         row["cell_id"] = f"r100K.{side}.{cell_suffix}"
         out.append(row)
@@ -1489,7 +1489,7 @@ def test_a_cell_that_lost_messages_gets_no_behavioural_pass_either(tmp_path, cap
 def _follow_gate(
     cell_id,
     passed,
-    reason = "the thread fell behind the streamed reply for 38% of the streaming phase",
+    reason="the thread fell behind the streamed reply for 38% of the streaming phase",
 ):
     return {
         "row_type": "gate",
@@ -1613,12 +1613,12 @@ def _two_run_glob(tmp_path):
             _action(
                 "select_all_copy",
                 f"r100K.{side}.rep0",
-                parity = _capture(mounted = 9 if side == "treatment" else 18, total = 18),
-                visible = _visible([1], [1]),
-                expect = _copy_expect(
-                    clipboard = 200_000,
-                    selected = 66_000 if side == "treatment" else 200_000,
-                    mounted = 9 if side == "treatment" else 18,
+                parity=_capture(mounted=9 if side == "treatment" else 18, total=18),
+                visible=_visible([1], [1]),
+                expect=_copy_expect(
+                    clipboard=200_000,
+                    selected=66_000 if side == "treatment" else 200_000,
+                    mounted=9 if side == "treatment" else 18,
                 ),
             )
         )
@@ -1627,9 +1627,9 @@ def _two_run_glob(tmp_path):
         _action(
             "select_all_copy",
             f"r1K.{side}.rep0",
-            parity = _legacy_capture("regressed" if side == "treatment" else "shipped"),
-            visible = _visible([1], [1]),
-            expect = _copy_expect(clipboard = 200_000, selected = 200_000, mounted = 18),
+            parity=_legacy_capture("regressed" if side == "treatment" else "shipped"),
+            visible=_visible([1], [1]),
+            expect=_copy_expect(clipboard=200_000, selected=200_000, mounted=18),
         )
         for side in ("base", "treatment")
     ]
@@ -1674,7 +1674,7 @@ def test_the_declaration_still_decides_the_run_that_made_it(tmp_path):
         tmp_path,
         "unrelated",
         [
-            _action("settings", f"r1K.{side}.rep0", parity = _capture(mounted = 18, total = 18))
+            _action("settings", f"r1K.{side}.rep0", parity=_capture(mounted=18, total=18))
             for side in ("base", "treatment")
         ],
     )
@@ -1692,7 +1692,7 @@ def _tiered_visible_shard(
     tier,
     differ_actions,
     windowed,
-    corpus = "",
+    corpus="",
 ):
     """A visible-region payload that records the FILM TIER it was shot on, as `run_meta` does.
 
@@ -1714,9 +1714,9 @@ def _tiered_visible_shard(
                     _action(
                         action,
                         f"r100K.{side}.rep{rep}",
-                        parity = _capture(mounted = mounted, total = 18),
-                        visible = _visible([1], [1], digest = digest),
-                        expect = {
+                        parity=_capture(mounted=mounted, total=18),
+                        visible=_visible([1], [1], digest=digest),
+                        expect={
                             "clipboard_chars": 5000,
                             "selected_chars": 100,
                             "visible_chars": 100,
@@ -1725,7 +1725,7 @@ def _tiered_visible_shard(
                 )
     shard = tmp_path / name
     shard.mkdir()
-    (shard / "payload.jsonl").write_text("\n".join(json.dumps(r) for r in rows), encoding = "utf-8")
+    (shard / "payload.jsonl").write_text("\n".join(json.dumps(r) for r in rows), encoding="utf-8")
     return shard
 
 
@@ -1743,9 +1743,9 @@ def test_a_visible_floor_from_another_film_tier_is_not_applied(tmp_path, capsys)
     """
     from studiobench.sweep import ui_parity as U
 
-    null = _tiered_visible_shard(tmp_path, "null_fast", "fast", {"copy_markdown"}, windowed = False)
+    null = _tiered_visible_shard(tmp_path, "null_fast", "fast", {"copy_markdown"}, windowed=False)
     arm = _tiered_visible_shard(
-        tmp_path, "arm_standard", "standard", {"copy_markdown"}, windowed = True
+        tmp_path, "arm_standard", "standard", {"copy_markdown"}, windowed=True
     )
     assert U.visible_unstable_set(U.shards_of(str(null))) == frozenset({("r100K", "copy_markdown")})
 
@@ -1762,9 +1762,9 @@ def test_a_visible_floor_from_the_SAME_tier_still_applies(tmp_path, capsys):
     from studiobench.sweep import ui_parity as U
 
     null = _tiered_visible_shard(
-        tmp_path, "null_std", "standard", {"copy_markdown"}, windowed = False
+        tmp_path, "null_std", "standard", {"copy_markdown"}, windowed=False
     )
-    arm = _tiered_visible_shard(tmp_path, "arm_std", "standard", {"copy_markdown"}, windowed = True)
+    arm = _tiered_visible_shard(tmp_path, "arm_std", "standard", {"copy_markdown"}, windowed=True)
     code = U.main([str(arm), "--null", str(null)])
     out = capsys.readouterr().out
     assert "FLOOR REFUSED" not in out, out
@@ -1787,10 +1787,10 @@ def test_a_visible_floor_from_another_corpus_is_not_applied(tmp_path, capsys):
     from studiobench.sweep import ui_parity as U
 
     null = _tiered_visible_shard(
-        tmp_path, "null_c1", "standard", {"copy_markdown"}, windowed = False, corpus = "c1"
+        tmp_path, "null_c1", "standard", {"copy_markdown"}, windowed=False, corpus="c1"
     )
     arm = _tiered_visible_shard(
-        tmp_path, "arm_c2", "standard", {"copy_markdown"}, windowed = True, corpus = "c2"
+        tmp_path, "arm_c2", "standard", {"copy_markdown"}, windowed=True, corpus="c2"
     )
     assert U.visible_unstable_set(U.shards_of(str(null))) == frozenset({("r100K", "copy_markdown")})
 
@@ -1808,10 +1808,10 @@ def test_a_visible_floor_from_the_SAME_corpus_still_applies(tmp_path, capsys):
     from studiobench.sweep import ui_parity as U
 
     null = _tiered_visible_shard(
-        tmp_path, "null_same", "standard", {"copy_markdown"}, windowed = False, corpus = "c1"
+        tmp_path, "null_same", "standard", {"copy_markdown"}, windowed=False, corpus="c1"
     )
     arm = _tiered_visible_shard(
-        tmp_path, "arm_same", "standard", {"copy_markdown"}, windowed = True, corpus = "c1"
+        tmp_path, "arm_same", "standard", {"copy_markdown"}, windowed=True, corpus="c1"
     )
     code = U.main([str(arm), "--null", str(null)])
     out = capsys.readouterr().out
@@ -1861,14 +1861,14 @@ def _resumed_completeness_shard(tmp_path, name, *, retry_passes):
         act = _action(
             "select_text",
             cid,
-            parity = _capture(mounted = 18, total = 18),
-            visible = _visible([1], [1]),
+            parity=_capture(mounted=18, total=18),
+            visible=_visible([1], [1]),
         )
         act["session_id"] = "s2"
         rows.append(act)
     shard = tmp_path / name
     shard.mkdir()
-    (shard / "payload.jsonl").write_text("\n".join(json.dumps(r) for r in rows), encoding = "utf-8")
+    (shard / "payload.jsonl").write_text("\n".join(json.dumps(r) for r in rows), encoding="utf-8")
     return shard
 
 
@@ -1881,7 +1881,7 @@ def test_a_successful_resume_clears_the_dead_attempts_completeness_failure(tmp_p
     """
     from studiobench.sweep import ui_parity as U
 
-    shard = _resumed_completeness_shard(tmp_path, "resumed_ok", retry_passes = True)
+    shard = _resumed_completeness_shard(tmp_path, "resumed_ok", retry_passes=True)
     assert U.incomplete_cells([shard / "payload.jsonl"]) == {}
 
 
@@ -1890,7 +1890,7 @@ def test_a_resume_that_failed_again_is_still_refused(tmp_path):
     refusal when the retry failed too."""
     from studiobench.sweep import ui_parity as U
 
-    shard = _resumed_completeness_shard(tmp_path, "resumed_bad", retry_passes = False)
+    shard = _resumed_completeness_shard(tmp_path, "resumed_bad", retry_passes=False)
     bad = U.incomplete_cells([shard / "payload.jsonl"])
     assert set(bad) == {"r100K.base.rep0", "r100K.treatment.rep0"}, bad
     assert "still short" in bad["r100K.base.rep0"], bad
@@ -1903,8 +1903,8 @@ def _windowed_only_shard(
     tmp_path,
     name,
     *,
-    pairs = 1,
-    differ = False,
+    pairs=1,
+    differ=False,
 ):
     """A payload whose every pair is a WINDOWED mount, so `main` takes the structural early return.
 
@@ -1921,9 +1921,9 @@ def _windowed_only_shard(
                 _action(
                     action,
                     f"r100K.{side}.rep0",
-                    parity = _capture(mounted = 9 if windowed else 18, total = 18),
-                    visible = _visible([1], [1], digest = digest),
-                    expect = {"selected_chars": 100, "visible_chars": 100},
+                    parity=_capture(mounted=9 if windowed else 18, total=18),
+                    visible=_visible([1], [1], digest=digest),
+                    expect={"selected_chars": 100, "visible_chars": 100},
                 )
             )
     return _write(tmp_path, name, rows)
@@ -1933,7 +1933,7 @@ def _windowed_shard_visible_only_on_one(
     tmp_path,
     name,
     *,
-    pairs = 4,
+    pairs=4,
 ):
     """Every pair carries a behavioural invariant; only the FIRST carries a visible capture.
 
@@ -1948,9 +1948,9 @@ def _windowed_shard_visible_only_on_one(
                 _action(
                     "select_text",
                     f"r100K.{side}.rep{i}",
-                    parity = _capture(mounted = 9 if windowed else 18, total = 18),
-                    visible = _visible([1], [1], digest = "shipped") if i == 0 else None,
-                    expect = {"selected_chars": 100, "visible_chars": 100},
+                    parity=_capture(mounted=9 if windowed else 18, total=18),
+                    visible=_visible([1], [1], digest="shipped") if i == 0 else None,
+                    expect={"selected_chars": 100, "visible_chars": 100},
                 )
             )
     return _write(tmp_path, name, rows)
@@ -1970,7 +1970,7 @@ def test_behavioural_coverage_does_not_stand_in_for_visible_coverage(tmp_path, c
     """
     from studiobench.sweep import ui_parity as U
 
-    _windowed_shard_visible_only_on_one(tmp_path, "winsub", pairs = 4)
+    _windowed_shard_visible_only_on_one(tmp_path, "winsub", pairs=4)
     code = U.main([str(tmp_path / "winsub"), "--min-compared", "4"])
     out = capsys.readouterr().out
     assert "TOO LITTLE COMPARED" in out, out
@@ -1988,7 +1988,7 @@ def test_a_pair_behavioural_mode_declares_no_invariant_for_is_not_a_shortfall(tm
     """
     from studiobench.sweep import ui_parity as U
 
-    _windowed_only_shard(tmp_path, "winunchecked", pairs = 4)
+    _windowed_only_shard(tmp_path, "winunchecked", pairs=4)
     code = U.main([str(tmp_path / "winunchecked"), "--min-compared", "4"])
     out = capsys.readouterr().out
     assert "UNCHECKED:                  3" in out, out
@@ -2008,7 +2008,7 @@ def test_the_coverage_floor_applies_to_a_run_with_no_fully_mounted_pair(tmp_path
     """
     from studiobench.sweep import ui_parity as U
 
-    _windowed_only_shard(tmp_path, "winonly", pairs = 1)
+    _windowed_only_shard(tmp_path, "winonly", pairs=1)
     code = U.main([str(tmp_path / "winonly"), "--min-compared", "20"])
     out = capsys.readouterr().out
     assert "TOO LITTLE COMPARED" in out, out
@@ -2022,7 +2022,7 @@ def test_the_coverage_floor_passes_a_windowed_run_that_compared_enough(tmp_path,
     actually compared has to come out 0, or the test above would pass against a `return 3`."""
     from studiobench.sweep import ui_parity as U
 
-    _windowed_only_shard(tmp_path, "winenough", pairs = 4)
+    _windowed_only_shard(tmp_path, "winenough", pairs=4)
     code = U.main([str(tmp_path / "winenough"), "--min-compared", "4"])
     out = capsys.readouterr().out
     assert "TOO LITTLE COMPARED" not in out, out
@@ -2106,8 +2106,8 @@ def test_the_coverage_floor_is_checked_per_payload_pattern(tmp_path, capsys):
     Two films of 2 pairs each against a floor of 4: pooled they clear it, and neither one did."""
     from studiobench.sweep import ui_parity as U
 
-    _windowed_only_shard(tmp_path, "filmA", pairs = 2)
-    _windowed_only_shard(tmp_path, "filmB", pairs = 2)
+    _windowed_only_shard(tmp_path, "filmA", pairs=2)
+    _windowed_only_shard(tmp_path, "filmB", pairs=2)
     code = U.main([str(tmp_path / "filmA"), str(tmp_path / "filmB"), "--min-compared", "4"])
     out = capsys.readouterr().out
     assert "TOO LITTLE COMPARED" in out, out
@@ -2122,8 +2122,8 @@ def test_a_floor_each_film_clears_on_its_own_still_passes(tmp_path, capsys):
     against an unconditional `return 3`."""
     from studiobench.sweep import ui_parity as U
 
-    _windowed_only_shard(tmp_path, "filmA", pairs = 2)
-    _windowed_only_shard(tmp_path, "filmB", pairs = 2)
+    _windowed_only_shard(tmp_path, "filmA", pairs=2)
+    _windowed_only_shard(tmp_path, "filmB", pairs=2)
     code = U.main([str(tmp_path / "filmA"), str(tmp_path / "filmB"), "--min-compared", "2"])
     out = capsys.readouterr().out
     assert "TOO LITTLE COMPARED" not in out, out
@@ -2152,16 +2152,16 @@ def test_an_assertion_that_failed_on_one_arm_fails_the_windowed_verdict(tmp_path
             _action(
                 "select_text",
                 f"r100K.{side}.rep0",
-                parity = _capture(mounted = mounted, total = 18),
-                visible = _visible([1], [1]),
-                expect = {"selected_chars": 100, "visible_chars": 100},
+                parity=_capture(mounted=mounted, total=18),
+                visible=_visible([1], [1]),
+                expect={"selected_chars": 100, "visible_chars": 100},
             )
         )
         stop = _action(
             "stop_generation",
             f"r100K.{side}.rep0",
-            parity = _capture(mounted = mounted, total = 18),
-            visible = _visible([1], [1]),
+            parity=_capture(mounted=mounted, total=18),
+            visible=_visible([1], [1]),
         )
         if windowed:
             stop["expect_ok"] = False
@@ -2190,16 +2190,16 @@ def test_an_assertion_that_failed_on_BOTH_arms_is_not_a_build_difference(tmp_pat
             _action(
                 "select_text",
                 f"r100K.{side}.rep0",
-                parity = _capture(mounted = 9 if windowed else 18, total = 18),
-                visible = _visible([1], [1]),
-                expect = {"selected_chars": 100, "visible_chars": 100},
+                parity=_capture(mounted=9 if windowed else 18, total=18),
+                visible=_visible([1], [1]),
+                expect={"selected_chars": 100, "visible_chars": 100},
             )
         )
         stop = _action(
             "stop_generation",
             f"r100K.{side}.rep0",
-            parity = _capture(mounted = 9 if windowed else 18, total = 18),
-            visible = _visible([1], [1]),
+            parity=_capture(mounted=9 if windowed else 18, total=18),
+            visible=_visible([1], [1]),
         )
         stop["expect_ok"] = False
         stop["reason"] = "the stop button is not present"
@@ -2229,19 +2229,19 @@ def test_an_action_that_could_not_be_performed_on_one_arm_fails_the_windowed_ver
             _action(
                 "select_text",
                 f"r100K.{side}.rep0",
-                parity = _capture(mounted = mounted, total = 18),
-                visible = _visible([1], [1]),
-                expect = {"selected_chars": 100, "visible_chars": 100},
+                parity=_capture(mounted=mounted, total=18),
+                visible=_visible([1], [1]),
+                expect={"selected_chars": 100, "visible_chars": 100},
             )
         )
         rows.append(
             _action(
                 "message_menu",
                 f"r100K.{side}.rep0",
-                parity = _capture(mounted = mounted, total = 18),
-                visible = _visible([1], [1]),
-                ran = not windowed,
-                reason = "no message menu control on the page" if windowed else None,
+                parity=_capture(mounted=mounted, total=18),
+                visible=_visible([1], [1]),
+                ran=not windowed,
+                reason="no message menu control on the page" if windowed else None,
             )
         )
     _write(tmp_path, "onesided", rows)
@@ -2267,18 +2267,18 @@ def test_a_slot_the_runner_arrived_too_late_for_is_still_not_a_build_difference(
             _action(
                 "select_text",
                 f"r100K.{side}.rep0",
-                parity = _capture(mounted = mounted, total = 18),
-                visible = _visible([1], [1]),
-                expect = {"selected_chars": 100, "visible_chars": 100},
+                parity=_capture(mounted=mounted, total=18),
+                visible=_visible([1], [1]),
+                expect={"selected_chars": 100, "visible_chars": 100},
             )
         )
         row = _action(
             "message_menu",
             f"r100K.{side}.rep0",
-            parity = _capture(mounted = mounted, total = 18),
-            visible = _visible([1], [1]),
-            ran = not windowed,
-            reason = "the slot closed before the runner reached it" if windowed else None,
+            parity=_capture(mounted=mounted, total=18),
+            visible=_visible([1], [1]),
+            ran=not windowed,
+            reason="the slot closed before the runner reached it" if windowed else None,
         )
         if windowed:
             row["slot_missed"] = True

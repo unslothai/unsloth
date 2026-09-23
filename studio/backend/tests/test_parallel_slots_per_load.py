@@ -54,7 +54,7 @@ class _FakeProcess:
     def terminate(self):
         pass
 
-    def wait(self, timeout = None):
+    def wait(self, timeout=None):
         return 0
 
     def kill(self):
@@ -68,18 +68,18 @@ class _FakeProcess:
 
 
 def test_load_request_defaults_n_parallel_none():
-    assert LoadRequest(model_path = "owner/repo").n_parallel is None
+    assert LoadRequest(model_path="owner/repo").n_parallel is None
 
 
 @pytest.mark.parametrize("value", [PARALLEL_MIN, 4, PARALLEL_MAX])
 def test_load_request_accepts_in_range_n_parallel(value):
-    assert LoadRequest(model_path = "owner/repo", n_parallel = value).n_parallel == value
+    assert LoadRequest(model_path="owner/repo", n_parallel=value).n_parallel == value
 
 
 @pytest.mark.parametrize("value", [0, -1, PARALLEL_MAX + 1])
 def test_load_request_rejects_out_of_range_n_parallel(value):
     with pytest.raises(ValueError):
-        LoadRequest(model_path = "owner/repo", n_parallel = value)
+        LoadRequest(model_path="owner/repo", n_parallel=value)
 
 
 def test_load_request_round_trips_json_key():
@@ -90,19 +90,19 @@ def test_load_request_round_trips_json_key():
 
 def test_validate_request_n_parallel_contract():
     # /validate sizes like /load, so it carries the same field and bounds.
-    assert ValidateModelRequest(model_path = "owner/repo").n_parallel is None
+    assert ValidateModelRequest(model_path="owner/repo").n_parallel is None
     assert (
-        ValidateModelRequest(model_path = "owner/repo", n_parallel = PARALLEL_MAX).n_parallel
+        ValidateModelRequest(model_path="owner/repo", n_parallel=PARALLEL_MAX).n_parallel
         == PARALLEL_MAX
     )
     with pytest.raises(ValueError):
-        ValidateModelRequest(model_path = "owner/repo", n_parallel = PARALLEL_MAX + 1)
+        ValidateModelRequest(model_path="owner/repo", n_parallel=PARALLEL_MAX + 1)
 
 
 @pytest.mark.parametrize("model_cls", [LoadResponse, InferenceStatusResponse])
 def test_response_models_emit_runtime_fields(model_cls):
     kwargs = (
-        dict(status = "loaded", model = "owner/repo", display_name = "repo", inference = {})
+        dict(status="loaded", model="owner/repo", display_name="repo", inference={})
         if model_cls is LoadResponse
         else {}
     )
@@ -113,10 +113,10 @@ def test_response_models_emit_runtime_fields(model_cls):
     assert empty["requested_gpu_ids"] is None
     dumped = model_cls(
         **kwargs,
-        requested_parallel_slots = 8,
-        parallel_slots = 4,
-        gpu_ids = [1],
-        requested_gpu_ids = [1, 2],
+        requested_parallel_slots=8,
+        parallel_slots=4,
+        gpu_ids=[1],
+        requested_gpu_ids=[1, 2],
     ).model_dump()
     assert dumped["requested_parallel_slots"] == 8
     assert dumped["parallel_slots"] == 4
@@ -128,7 +128,7 @@ def test_response_models_emit_runtime_fields(model_cls):
 
 
 def _mirrored_bounds(source_path: Path) -> tuple[int, int]:
-    src = source_path.read_text(encoding = "utf-8")
+    src = source_path.read_text(encoding="utf-8")
     low = re.search(r"^_PARALLEL_MIN\s*=\s*(\d+)$", src, re.MULTILINE)
     high = re.search(r"^_PARALLEL_MAX\s*=\s*(\d+)$", src, re.MULTILINE)
     assert low and high, f"{source_path} must define _PARALLEL_MIN/_PARALLEL_MAX"
@@ -155,7 +155,7 @@ def test_frontend_mirror_matches_shared_bounds():
         / "model-picker"
         / "model-config"
         / "per-model-config.ts"
-    ).read_text(encoding = "utf-8")
+    ).read_text(encoding="utf-8")
     low = re.search(r"^export const N_PARALLEL_MIN = (\d+);$", src, re.MULTILINE)
     high = re.search(r"^export const N_PARALLEL_MAX = (\d+);$", src, re.MULTILINE)
     assert low and high, "per-model-config.ts must export N_PARALLEL_MIN/MAX"
@@ -165,6 +165,7 @@ def test_frontend_mirror_matches_shared_bounds():
 def test_override_mirror_matches_shared_bounds():
     # Mirrored, not imported: llama_server_args owns the allow-list that module stays out of.
     from utils.openai_auto_switch_settings import PARALLEL_SLOTS_MAX, PARALLEL_SLOTS_MIN
+
     assert (PARALLEL_SLOTS_MIN, PARALLEL_SLOTS_MAX) == (PARALLEL_MIN, PARALLEL_MAX)
 
 
@@ -260,16 +261,16 @@ def _loaded_backend() -> LlamaCppBackend:
 def _target_state(backend: LlamaCppBackend, n_parallel: int) -> bool:
     return backend.adopt_load_intent_if_matched(
         GgufLoadIntent(
-            gguf_path = None,
-            model_identifier = "owner/repo",
-            hf_variant = "Q4_K_M",
-            n_ctx = 8192,
-            cache_type_kv = None,
-            speculative_type = "auto",
-            chat_template_override = None,
-            extra_args = None,
-            is_vision = False,
-            n_parallel = n_parallel,
+            gguf_path=None,
+            model_identifier="owner/repo",
+            hf_variant="Q4_K_M",
+            n_ctx=8192,
+            cache_type_kv=None,
+            speculative_type="auto",
+            chat_template_override=None,
+            extra_args=None,
+            is_vision=False,
+            n_parallel=n_parallel,
         )
     )
 
@@ -306,7 +307,7 @@ def test_already_in_target_state_ignores_slots_for_diffusion():
 
 
 def _route_source() -> str:
-    return (Path(_BACKEND_DIR) / "routes" / "inference.py").read_text(encoding = "utf-8")
+    return (Path(_BACKEND_DIR) / "routes" / "inference.py").read_text(encoding="utf-8")
 
 
 def _load_impl_source() -> str:
@@ -446,8 +447,8 @@ def _guard_required_gb(
     *,
     n_parallel: int,
     diffusion,
-    caps = None,
-    llama_extra_args = None,
+    caps=None,
+    llama_extra_args=None,
 ) -> float:
     """Run the training guard over a local GGUF and return the size it budgeted."""
     import routes.inference as inf
@@ -456,7 +457,7 @@ def _guard_required_gb(
 
     core_training = _types.ModuleType("core.training")
     core_training.get_training_backend = lambda: _types.SimpleNamespace(
-        is_training_active = lambda: True
+        is_training_active=lambda: True
     )
 
     def _can_load(**kwargs):
@@ -477,26 +478,26 @@ def _guard_required_gb(
     monkeypatch.setattr(
         LlamaCppBackend,
         "probe_server_capabilities",
-        classmethod(lambda cls, binary = None: dict(caps or {})),
+        classmethod(lambda cls, binary=None: dict(caps or {})),
     )
 
-    config = _types.SimpleNamespace(is_gguf = True, gguf_file = gguf_path, identifier = "local/model")
+    config = _types.SimpleNamespace(is_gguf=True, gguf_file=gguf_path, identifier="local/model")
     request = _types.SimpleNamespace(
-        model_path = "local/model",
-        hf_token = None,
-        max_seq_length = 8192,
-        cache_type_kv = None,
-        tensor_parallel = False,
-        gpu_memory_mode = "auto",
-        gpu_layers = -1,
+        model_path="local/model",
+        hf_token=None,
+        max_seq_length=8192,
+        cache_type_kv=None,
+        tensor_parallel=False,
+        gpu_memory_mode="auto",
+        gpu_layers=-1,
     )
     inf._guard_chat_load_against_training(
         config,
         request,
-        load_in_4bit = False,
-        placement = inf._LoadPlacement(None, None, False, inf._classify_diffusion_gguf(config)),
-        llama_extra_args = llama_extra_args,
-        n_parallel = n_parallel,
+        load_in_4bit=False,
+        placement=inf._LoadPlacement(None, None, False, inf._classify_diffusion_gguf(config)),
+        llama_extra_args=llama_extra_args,
+        n_parallel=n_parallel,
     )
     return seen["required_override_gb"]
 
@@ -505,8 +506,8 @@ def test_training_guard_sizes_a_diffusion_gguf_at_one_slot(monkeypatch, tmp_path
     # Diffusion ignores --parallel, so slots must not inflate the estimate and 409
     # a load that would have fitted beside training.
     gguf = _write_swa_gguf(tmp_path / "diffusion.gguf")
-    one = _guard_required_gb(monkeypatch, gguf, n_parallel = 1, diffusion = True)
-    many = _guard_required_gb(monkeypatch, gguf, n_parallel = 8, diffusion = True)
+    one = _guard_required_gb(monkeypatch, gguf, n_parallel=1, diffusion=True)
+    many = _guard_required_gb(monkeypatch, gguf, n_parallel=8, diffusion=True)
     assert one == many
 
 
@@ -514,8 +515,8 @@ def test_training_guard_still_sizes_slots_for_an_ordinary_gguf(monkeypatch, tmp_
     # llama-server does allocate per-slot SWA cells, so the reduction above must
     # be scoped to diffusion and not flatten every GGUF to one slot.
     gguf = _write_swa_gguf(tmp_path / "chat.gguf")
-    one = _guard_required_gb(monkeypatch, gguf, n_parallel = 1, diffusion = False)
-    many = _guard_required_gb(monkeypatch, gguf, n_parallel = 8, diffusion = False)
+    one = _guard_required_gb(monkeypatch, gguf, n_parallel=1, diffusion=False)
+    many = _guard_required_gb(monkeypatch, gguf, n_parallel=8, diffusion=False)
     assert many > one
 
 
@@ -524,8 +525,8 @@ def test_training_guard_sizes_one_slot_when_the_binary_has_no_kv_unified(monkeyp
     # carries its own SWA stream, so sizing the asked count would 409 a load that fits.
     gguf = _write_swa_gguf(tmp_path / "chat.gguf")
     old = {"found": True, "supports_kv_unified": False}
-    one = _guard_required_gb(monkeypatch, gguf, n_parallel = 1, diffusion = False, caps = old)
-    many = _guard_required_gb(monkeypatch, gguf, n_parallel = 8, diffusion = False, caps = old)
+    one = _guard_required_gb(monkeypatch, gguf, n_parallel=1, diffusion=False, caps=old)
+    many = _guard_required_gb(monkeypatch, gguf, n_parallel=8, diffusion=False, caps=old)
     assert one == many
 
 
@@ -534,8 +535,8 @@ def test_training_guard_sizes_every_slot_when_kv_unified_exists(monkeypatch, tmp
     # really does allocate the SWA window per slot.
     gguf = _write_swa_gguf(tmp_path / "chat.gguf")
     new = {"found": True, "supports_kv_unified": True}
-    one = _guard_required_gb(monkeypatch, gguf, n_parallel = 1, diffusion = False, caps = new)
-    many = _guard_required_gb(monkeypatch, gguf, n_parallel = 8, diffusion = False, caps = new)
+    one = _guard_required_gb(monkeypatch, gguf, n_parallel=1, diffusion=False, caps=new)
+    many = _guard_required_gb(monkeypatch, gguf, n_parallel=8, diffusion=False, caps=new)
     assert many > one
 
 
@@ -546,10 +547,10 @@ def test_training_guard_keeps_the_asked_slots_for_an_explicit_mtp_load(monkeypat
     mtp = ["--spec-type", "draft-mtp"]
     new = {"found": True, "supports_kv_unified": True}
     one = _guard_required_gb(
-        monkeypatch, gguf, n_parallel = 1, diffusion = False, caps = new, llama_extra_args = mtp
+        monkeypatch, gguf, n_parallel=1, diffusion=False, caps=new, llama_extra_args=mtp
     )
     many = _guard_required_gb(
-        monkeypatch, gguf, n_parallel = 8, diffusion = False, caps = new, llama_extra_args = mtp
+        monkeypatch, gguf, n_parallel=8, diffusion=False, caps=new, llama_extra_args=mtp
     )
     assert many > one
 
@@ -562,8 +563,8 @@ def test_training_guard_keeps_slots_when_the_launch_scrubs_the_mtp_env(monkeypat
     monkeypatch.setenv("LLAMA_ARG_SPEC_TYPE", "draft-mtp")
     gguf = _write_swa_gguf(tmp_path / "chat.gguf")
     new = {"found": True, "supports_kv_unified": True}
-    one = _guard_required_gb(monkeypatch, gguf, n_parallel = 1, diffusion = False, caps = new)
-    many = _guard_required_gb(monkeypatch, gguf, n_parallel = 8, diffusion = False, caps = new)
+    one = _guard_required_gb(monkeypatch, gguf, n_parallel=1, diffusion=False, caps=new)
+    many = _guard_required_gb(monkeypatch, gguf, n_parallel=8, diffusion=False, caps=new)
     assert many > one
 
 
@@ -571,6 +572,6 @@ def test_training_guard_keeps_slots_for_an_unclassified_gguf(monkeypatch, tmp_pa
     # None = inconclusive header, so keep the larger estimate rather than
     # under-size against training.
     gguf = _write_swa_gguf(tmp_path / "unknown.gguf")
-    one = _guard_required_gb(monkeypatch, gguf, n_parallel = 1, diffusion = None)
-    many = _guard_required_gb(monkeypatch, gguf, n_parallel = 8, diffusion = None)
+    one = _guard_required_gb(monkeypatch, gguf, n_parallel=1, diffusion=None)
+    many = _guard_required_gb(monkeypatch, gguf, n_parallel=8, diffusion=None)
     assert many > one

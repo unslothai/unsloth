@@ -36,7 +36,7 @@ _UNKNOWN_SPLIT_ERROR_RE = re.compile(
 
 def _canonical_path(path: Any) -> Optional[Path]:
     try:
-        return Path(path).expanduser().resolve(strict = False)
+        return Path(path).expanduser().resolve(strict=False)
     except (OSError, RuntimeError, TypeError, ValueError):
         return None
 
@@ -49,7 +49,7 @@ def hf_datasets_cache_roots() -> list[Path]:
         if path is None:
             return
         try:
-            resolved = path.expanduser().resolve(strict = True)
+            resolved = path.expanduser().resolve(strict=True)
         except (OSError, RuntimeError, ValueError):
             return
         if not resolved.is_dir() or resolved in seen:
@@ -117,7 +117,7 @@ def dataset_snapshot_from_cache_path(local_path: Optional[str], repo_id: str) ->
         return None
     repo_dir, selected = validated
     try:
-        snapshots = (repo_dir / "snapshots").resolve(strict = True)
+        snapshots = (repo_dir / "snapshots").resolve(strict=True)
         if not same_existing_path(snapshots.parent, repo_dir) or not snapshots.is_dir():
             return None
         if not same_existing_path(selected, repo_dir):
@@ -132,7 +132,7 @@ def dataset_snapshot_from_cache_path(local_path: Optional[str], repo_id: str) ->
         candidates: list[Path] = []
         for path in snapshots.iterdir():
             try:
-                candidate = path.resolve(strict = True)
+                candidate = path.resolve(strict=True)
             except (OSError, RuntimeError):
                 continue
             if same_existing_path(candidate.parent, snapshots) and candidate.is_dir():
@@ -140,8 +140,8 @@ def dataset_snapshot_from_cache_path(local_path: Optional[str], repo_id: str) ->
         if not candidates:
             return None
         candidates.sort(
-            key = lambda path: path.stat().st_mtime if path.exists() else 0,
-            reverse = True,
+            key=lambda path: path.stat().st_mtime if path.exists() else 0,
+            reverse=True,
         )
         return candidates[0].resolve()
     except Exception:
@@ -152,7 +152,7 @@ def processed_dataset_cache_path(local_path: Optional[str], repo_id: str) -> Opt
     if not local_path or not repo_id:
         return None
     try:
-        resolved = Path(local_path).expanduser().resolve(strict = True)
+        resolved = Path(local_path).expanduser().resolve(strict=True)
         expected = repo_id.replace("/", "___").lower()
         if (
             resolved.name.lower() != expected
@@ -171,7 +171,7 @@ def processed_dataset_cache_has_artifacts(path: Path) -> bool:
     if not path.is_dir() or path.is_symlink():
         return False
 
-    for directory, dirnames, filenames in os.walk(path, followlinks = False):
+    for directory, dirnames, filenames in os.walk(path, followlinks=False):
         base = Path(directory)
         dirnames[:] = [
             name
@@ -184,7 +184,7 @@ def processed_dataset_cache_has_artifacts(path: Path) -> bool:
         try:
             if info_path.is_symlink() or not info_path.is_file():
                 continue
-            with info_path.open("r", encoding = "utf-8") as stream:
+            with info_path.open("r", encoding="utf-8") as stream:
                 if not isinstance(json.load(stream), dict):
                     continue
         except (OSError, UnicodeError, json.JSONDecodeError):
@@ -270,11 +270,11 @@ def resolved_dataset_snapshot_file(snapshot: str | Path, source_path: str) -> Op
     if not expected_path_is_safe(source_path):
         return None
     try:
-        snapshot_path = Path(snapshot).resolve(strict = True)
-        repo_dir = snapshot_path.parent.parent.resolve(strict = True)
+        snapshot_path = Path(snapshot).resolve(strict=True)
+        repo_dir = snapshot_path.parent.parent.resolve(strict=True)
         if not same_existing_path(snapshot_path.parent, repo_dir / "snapshots"):
             return None
-        resolved = snapshot_path.joinpath(*PurePosixPath(source_path).parts).resolve(strict = True)
+        resolved = snapshot_path.joinpath(*PurePosixPath(source_path).parts).resolve(strict=True)
     except (OSError, RuntimeError, ValueError):
         return None
     if not resolved.is_file() or not (
@@ -304,10 +304,10 @@ def complete_dataset_snapshot_path(local_path: Optional[str], repo_id: str) -> O
         return None
     repo_dir, selected = validated
     try:
-        snapshot = snapshot.resolve(strict = True)
-        selected = selected.resolve(strict = True)
-        repo_dir = repo_dir.resolve(strict = True)
-        hub_cache = repo_dir.parent.resolve(strict = True)
+        snapshot = snapshot.resolve(strict=True)
+        selected = selected.resolve(strict=True)
+        repo_dir = repo_dir.resolve(strict=True)
+        hub_cache = repo_dir.parent.resolve(strict=True)
     except (OSError, RuntimeError, ValueError):
         return None
     if not same_existing_path(snapshot, selected) or not same_existing_path(
@@ -320,7 +320,7 @@ def complete_dataset_snapshot_path(local_path: Optional[str], repo_id: str) -> O
     manifest = download_manifest.read_dataset_completion(
         repo_id,
         snapshot.name,
-        hub_cache = hub_cache,
+        hub_cache=hub_cache,
     )
     manifest_hub_cache = _canonical_path(manifest.hub_cache) if manifest is not None else None
     if (
@@ -507,7 +507,7 @@ def load_cached_hf_dataset(
     kwargs: dict[str, Any] = {
         "path": repo_id if processed is not None else str(snapshot),
         "split": split,
-        "download_config": DownloadConfig(local_files_only = True),
+        "download_config": DownloadConfig(local_files_only=True),
     }
     if processed is not None:
         kwargs["cache_dir"] = str(processed.parent)
@@ -519,7 +519,7 @@ def load_cached_hf_dataset(
         kwargs["token"] = token
     if stream_limited_snapshot:
         kwargs["streaming"] = True
-        with tempfile.TemporaryDirectory(prefix = "unsloth-dataset-slice-") as cache_dir:
+        with tempfile.TemporaryDirectory(prefix="unsloth-dataset-slice-") as cache_dir:
             kwargs["cache_dir"] = cache_dir
             requested_split = kwargs.pop("split")
             streams = load_dataset(**kwargs)
@@ -535,8 +535,9 @@ def load_cached_hf_dataset(
                 info = info.copy()
                 if not info.splits:
                     from datasets import SplitDict, SplitInfo
+
                     info.splits = SplitDict(
-                        {name: SplitInfo(name = name) for name in available_splits}
+                        {name: SplitInfo(name=name) for name in available_splits}
                     )
             split_identity = getattr(stream, "split", None)
             rows = list(stream.take(row_limit))
@@ -547,15 +548,15 @@ def load_cached_hf_dataset(
         if not rows and schema is not None:
             return Dataset.from_dict(
                 {name: [] for name in schema},
-                features = features,
-                info = info,
-                split = split_identity,
+                features=features,
+                info=info,
+                split=split_identity,
             )
         return Dataset.from_list(
             rows,
-            features = features,
-            info = info,
-            split = split_identity,
+            features=features,
+            info=info,
+            split=split_identity,
         )
     dataset = load_dataset(**kwargs)
     if app_cache is not None:
@@ -600,7 +601,7 @@ def cached_dataset_candidates(
             rel,
         )
 
-    return sorted(files, key = score)
+    return sorted(files, key=score)
 
 
 def dataset_cache_can_answer(repo_id: str) -> bool:
@@ -647,12 +648,12 @@ def refuse_unauthorized_dataset_preview(
 
     if cached_read_refused(
         hf_token,
-        repo_id = dataset_name,
-        repo_type = "dataset",
-        is_cached = lambda: dataset_cache_can_answer(dataset_name),
-        offline = offline,
+        repo_id=dataset_name,
+        repo_type="dataset",
+        is_cached=lambda: dataset_cache_can_answer(dataset_name),
+        offline=offline,
     ):
         raise HTTPException(
-            status_code = 404,
-            detail = "Dataset preview is not available without Hub authorization.",
+            status_code=404,
+            detail="Dataset preview is not available without Hub authorization.",
         )

@@ -28,8 +28,8 @@ import re
 from pathlib import Path
 
 _ROOT = Path(__file__).resolve().parent.parent / "unsloth" / "models"
-_RL = (_ROOT / "rl.py").read_text(encoding = "utf-8")
-_RL_REPLACEMENTS = (_ROOT / "rl_replacements.py").read_text(encoding = "utf-8")
+_RL = (_ROOT / "rl.py").read_text(encoding="utf-8")
+_RL_REPLACEMENTS = (_ROOT / "rl_replacements.py").read_text(encoding="utf-8")
 
 # The single-line ternary form used at the trainer call sites:
 #   <obj>._unsloth_gradient_checkpointing if hasattr(<obj>, '...') else getattr(<args>, 'gradient_checkpointing', True)
@@ -47,8 +47,8 @@ class _Obj:
 
     def __init__(
         self,
-        recorded = _MISSING,
-        gradient_checkpointing = _MISSING,
+        recorded=_MISSING,
+        gradient_checkpointing=_MISSING,
     ):
         if recorded is not _MISSING:
             self._unsloth_gradient_checkpointing = recorded
@@ -59,8 +59,8 @@ class _Obj:
 class _Self:
     def __init__(
         self,
-        model = None,
-        args = None,
+        model=None,
+        args=None,
     ):
         if model is not None:
             self.model = model
@@ -82,9 +82,9 @@ _MATRIX = [
 
 def _eval_ternary(expr, recorded, args_gc):
     """Eval a restore expression that references either ``model``/``args`` or ``self.model``/``self.args``."""
-    model = _Obj(recorded = recorded)
-    args = _Obj(gradient_checkpointing = args_gc)
-    self = _Self(model = model, args = args)
+    model = _Obj(recorded=recorded)
+    args = _Obj(gradient_checkpointing=args_gc)
+    self = _Self(model=model, args=args)
     return eval(
         expr, {"hasattr": hasattr, "getattr": getattr}, {"model": model, "args": args, "self": self}
     )
@@ -133,9 +133,9 @@ def test_prepare_for_training_mode_block_semantics():
     ast.parse(block)
 
     for recorded, args_gc, expected in _MATRIX:
-        model = _Obj(recorded = recorded)
-        args = _Obj(gradient_checkpointing = args_gc)
-        ns = {"self": _Self(model = model, args = args), "hasattr": hasattr, "getattr": getattr}
+        model = _Obj(recorded=recorded)
+        args = _Obj(gradient_checkpointing=args_gc)
+        ns = {"self": _Self(model=model, args=args), "hasattr": hasattr, "getattr": getattr}
         exec(block, {}, ns)
         got = ns["use_gc"]
         assert (
@@ -147,8 +147,8 @@ def test_prepare_block_tolerates_missing_model():
     # gemini flagged the unguarded self.model access: the block reads self.model via getattr(self, 'model', None), so a
     # trainer without a .model attribute must fall back to args rather than raising AttributeError.
     block = _extract_prepare_restore_block()
-    args = _Obj(gradient_checkpointing = True)
-    self_no_model = _Self(model = None, args = args)  # _Self leaves .model unset when model is None
+    args = _Obj(gradient_checkpointing=True)
+    self_no_model = _Self(model=None, args=args)  # _Self leaves .model unset when model is None
     assert not hasattr(self_no_model, "model")
     ns = {"self": self_no_model, "hasattr": hasattr, "getattr": getattr}
     exec(block, {}, ns)
@@ -159,7 +159,7 @@ def test_recording_sites_are_real_module_code():
     # The recording side (unlike the restore side) is real module code, not a template string.
     # Assert it's present at the choke point (patch_peft_model, so loaded adapters are covered) and at the pre-wrapped
     # pass-through, both of which bypass the old get_peft_model-only recording.
-    llama = (_ROOT / "llama.py").read_text(encoding = "utf-8")
+    llama = (_ROOT / "llama.py").read_text(encoding="utf-8")
     tree = ast.parse(llama)
 
     def assigns_marker(node):

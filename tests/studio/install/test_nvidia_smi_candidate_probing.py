@@ -37,7 +37,7 @@ def _load_module():
 
 
 def _write_stub(path: pathlib.Path, body: str) -> None:
-    path.parent.mkdir(parents = True, exist_ok = True)
+    path.parent.mkdir(parents=True, exist_ok=True)
     # Not /usr/bin/env: PATH is narrowed to the stub directory below.
     path.write_text("#!/bin/bash\n" + body + "\n")
     path.chmod(0o755)
@@ -53,7 +53,7 @@ def probe(tmp_path, monkeypatch):
         cuda_visible_devices: str | None = None,
     ) -> bool:
         path_dir = tmp_path / "pathbin"
-        path_dir.mkdir(exist_ok = True)
+        path_dir.mkdir(exist_ok=True)
         if path_smi is not None:
             _write_stub(path_dir / "nvidia-smi", path_smi)
         program_files = tmp_path / "ProgramFiles"
@@ -66,13 +66,13 @@ def probe(tmp_path, monkeypatch):
         monkeypatch.setenv("ProgramFiles", str(program_files))
         monkeypatch.setenv("SystemRoot", str(tmp_path / "Windows"))
         if cuda_visible_devices is None:
-            monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising = False)
+            monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
         else:
             monkeypatch.setenv("CUDA_VISIBLE_DEVICES", cuda_visible_devices)
         module = _load_module()
         monkeypatch.setattr(module, "IS_WINDOWS", True)
         # Pose as win32 so the Linux /proc fallback cannot answer True for us.
-        monkeypatch.setattr(module, "sys", types.SimpleNamespace(platform = "win32"))
+        monkeypatch.setattr(module, "sys", types.SimpleNamespace(platform="win32"))
         return module._has_usable_nvidia_gpu()
 
     return _run
@@ -101,8 +101,8 @@ def test_stale_everywhere_reports_no_gpu(probe):
 
 @pytest.mark.parametrize("hidden", ["", "-1", "  "])
 def test_cuda_visible_devices_hidden_wins_over_a_working_probe(probe, hidden):
-    assert probe(_WORKING, _WORKING, cuda_visible_devices = hidden) is False
+    assert probe(_WORKING, _WORKING, cuda_visible_devices=hidden) is False
 
 
 def test_cuda_visible_devices_listing_a_device_does_not_block_detection(probe):
-    assert probe(_WORKING, None, cuda_visible_devices = "0") is True
+    assert probe(_WORKING, None, cuda_visible_devices="0") is True

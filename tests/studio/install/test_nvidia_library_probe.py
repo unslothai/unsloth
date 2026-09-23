@@ -39,10 +39,10 @@ IPS = _load("studio_install_python_stack", "install_python_stack.py")
 
 
 def _inventory(
-    source = "nvml",
-    cuda = (12, 8),
-    caps = ("8.9",),
-    uuids = None,
+    source="nvml",
+    cuda=(12, 8),
+    caps=("8.9",),
+    uuids=None,
 ):
     devices = [
         {
@@ -54,7 +54,7 @@ def _inventory(
         for i, cap in enumerate(caps)
     ]
     return PROBE.NvidiaLibraryInventory(
-        source = source, cuda_driver_version = cuda, driver_version = "570.1", devices = devices
+        source=source, cuda_driver_version=cuda, driver_version="570.1", devices=devices
     )
 
 
@@ -139,7 +139,7 @@ class TestProbeModule:
         path.write_text(
             "NVRM version: NVIDIA UNIX Open Kernel Module for x86_64  590.48.01  Release Build\n"
             "GCC version:  gcc version 13.3.0\n",
-            encoding = "utf-8",
+            encoding="utf-8",
         )
         assert PROBE.proc_driver_version(str(path)) == "590.48.01"
         assert PROBE.proc_driver_version(str(tmp_path / "missing")) == ""
@@ -153,7 +153,7 @@ class TestProbeModule:
             return subprocess.CompletedProcess(
                 cmd,
                 0,
-                stdout = json.dumps(
+                stdout=json.dumps(
                     {
                         "source": "cuda",
                         "cuda_driver_version": [12, 4],
@@ -161,13 +161,13 @@ class TestProbeModule:
                         "devices": [],
                     }
                 ),
-                stderr = "",
+                stderr="",
             )
 
         monkeypatch.setattr(PROBE.subprocess, "run", fake_run)
         monkeypatch.setattr(PROBE.sys, "platform", "linux")
-        monkeypatch.delenv("UNSLOTH_NVIDIA_LIBRARY_PROBE", raising = False)
-        inv = PROBE.probe(timeout = 7)
+        monkeypatch.delenv("UNSLOTH_NVIDIA_LIBRARY_PROBE", raising=False)
+        inv = PROBE.probe(timeout=7)
         assert seen["cmd"][0] == sys.executable and seen["cmd"][-1] == "--json"
         assert "-I" in seen["cmd"]
         assert seen["timeout"] == 7
@@ -179,12 +179,12 @@ class TestProbeModule:
 
         monkeypatch.setattr(PROBE.subprocess, "run", hang)
         monkeypatch.setattr(PROBE.sys, "platform", "linux")
-        monkeypatch.delenv("UNSLOTH_NVIDIA_LIBRARY_PROBE", raising = False)
+        monkeypatch.delenv("UNSLOTH_NVIDIA_LIBRARY_PROBE", raising=False)
         assert PROBE.probe() is None
         monkeypatch.setattr(
             PROBE.subprocess,
             "run",
-            lambda cmd, **k: subprocess.CompletedProcess(cmd, 0, stdout = "not json", stderr = ""),
+            lambda cmd, **k: subprocess.CompletedProcess(cmd, 0, stdout="not json", stderr=""),
         )
         assert PROBE.probe() is None
 
@@ -219,11 +219,11 @@ class TestProbeModule:
 
     @pytest.mark.skipif(
         sys.platform == "darwin" or not shutil.which("nvidia-smi"),
-        reason = "needs a real NVIDIA host",
+        reason="needs a real NVIDIA host",
     )
     def test_on_a_real_host_the_library_agrees_with_nvidia_smi(self, monkeypatch):
-        monkeypatch.delenv("UNSLOTH_NVIDIA_LIBRARY_PROBE", raising = False)
-        listing = subprocess.run(["nvidia-smi", "-L"], capture_output = True, text = True, timeout = 60)
+        monkeypatch.delenv("UNSLOTH_NVIDIA_LIBRARY_PROBE", raising=False)
+        listing = subprocess.run(["nvidia-smi", "-L"], capture_output=True, text=True, timeout=60)
         if listing.returncode != 0 or "GPU " not in listing.stdout:
             pytest.skip("nvidia-smi lists no GPU here")
         inv = PROBE.probe()
@@ -269,23 +269,23 @@ def _hide_the_real_host(monkeypatch, *, nvidia_smi):
     monkeypatch.setattr(ILP.glob, "glob", lambda *a, **k: [])
 
 
-def _failing_smi(monkeypatch, *, exit_code = 1):
+def _failing_smi(monkeypatch, *, exit_code=1):
     def run_capture(command, **kwargs):
         if command and "nvidia-smi" in str(command[0]):
-            return subprocess.CompletedProcess(command, exit_code, stdout = "", stderr = "failed")
-        return subprocess.CompletedProcess(command, 1, stdout = "", stderr = "")
+            return subprocess.CompletedProcess(command, exit_code, stdout="", stderr="failed")
+        return subprocess.CompletedProcess(command, 1, stdout="", stderr="")
 
     monkeypatch.setattr(ILP, "run_capture", run_capture)
 
 
 class TestDetectHostFallsBackToTheLibraries:
     def test_a_failing_nvidia_smi_no_longer_reads_as_no_gpu(self, monkeypatch):
-        _hide_the_real_host(monkeypatch, nvidia_smi = "/usr/bin/nvidia-smi")
+        _hide_the_real_host(monkeypatch, nvidia_smi="/usr/bin/nvidia-smi")
         _failing_smi(monkeypatch)
         monkeypatch.setattr(
-            ILP, "nvidia_library_inventory", lambda: _inventory(caps = ("8.9", "8.6"))
+            ILP, "nvidia_library_inventory", lambda: _inventory(caps=("8.9", "8.6"))
         )
-        monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising = False)
+        monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
         host = ILP.detect_host()
         assert host.has_physical_nvidia and host.has_usable_nvidia
         assert host.driver_cuda_version == (12, 8)
@@ -293,17 +293,17 @@ class TestDetectHostFallsBackToTheLibraries:
         assert host.physical_compute_caps == ["89", "86"]
 
     def test_an_absent_nvidia_smi_is_the_same(self, monkeypatch):
-        _hide_the_real_host(monkeypatch, nvidia_smi = None)
+        _hide_the_real_host(monkeypatch, nvidia_smi=None)
         monkeypatch.setattr(ILP, "nvidia_library_inventory", lambda: _inventory())
-        monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising = False)
+        monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
         host = ILP.detect_host()
         assert host.has_usable_nvidia and host.driver_cuda_version == (12, 8)
 
     def test_nvml_rows_are_masked_like_nvidia_smi_rows(self, monkeypatch):
         # NVML is the physical inventory; an emptied mask leaves the GPU physical, not usable.
-        _hide_the_real_host(monkeypatch, nvidia_smi = None)
+        _hide_the_real_host(monkeypatch, nvidia_smi=None)
         monkeypatch.setattr(
-            ILP, "nvidia_library_inventory", lambda: _inventory(caps = ("8.9", "6.1"))
+            ILP, "nvidia_library_inventory", lambda: _inventory(caps=("8.9", "6.1"))
         )
         monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "")
         host = ILP.detect_host()
@@ -315,8 +315,8 @@ class TestDetectHostFallsBackToTheLibraries:
 
     def test_a_mask_nvml_rows_cannot_name_keeps_the_gpu_usable(self, monkeypatch):
         # A MIG UUID names a slice, not the parent GPU NVML lists: usable, as with nvidia-smi.
-        _hide_the_real_host(monkeypatch, nvidia_smi = None)
-        monkeypatch.setattr(ILP, "nvidia_library_inventory", lambda: _inventory(caps = ("9.0",)))
+        _hide_the_real_host(monkeypatch, nvidia_smi=None)
+        monkeypatch.setattr(ILP, "nvidia_library_inventory", lambda: _inventory(caps=("9.0",)))
         monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "MIG-4b3c2a1d-0000-1111-2222-333344445555")
         host = ILP.detect_host()
         assert host.has_physical_nvidia and host.has_usable_nvidia
@@ -326,16 +326,16 @@ class TestDetectHostFallsBackToTheLibraries:
         assert not ILP.detect_host().has_usable_nvidia
 
     def test_the_cuda_driver_api_rows_are_already_masked(self, monkeypatch):
-        _hide_the_real_host(monkeypatch, nvidia_smi = None)
+        _hide_the_real_host(monkeypatch, nvidia_smi=None)
         monkeypatch.setattr(
-            ILP, "nvidia_library_inventory", lambda: _inventory(source = "cuda", caps = ("7.5",))
+            ILP, "nvidia_library_inventory", lambda: _inventory(source="cuda", caps=("7.5",))
         )
         monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0")
         host = ILP.detect_host()
         assert host.has_usable_nvidia and host.compute_caps == ["75"]
 
     def test_a_working_nvidia_smi_is_not_second_guessed(self, monkeypatch):
-        _hide_the_real_host(monkeypatch, nvidia_smi = "/usr/bin/nvidia-smi")
+        _hide_the_real_host(monkeypatch, nvidia_smi="/usr/bin/nvidia-smi")
 
         def run_capture(command, **kwargs):
             args = command[1:]
@@ -345,17 +345,17 @@ class TestDetectHostFallsBackToTheLibraries:
                 out = "NVIDIA-SMI 570  Driver Version: 570.1  CUDA Version: 12.8\n"
             else:
                 out = "0, GPU-abc, 8.9\n"
-            return subprocess.CompletedProcess(command, 0, stdout = out, stderr = "")
+            return subprocess.CompletedProcess(command, 0, stdout=out, stderr="")
 
         monkeypatch.setattr(ILP, "run_capture", run_capture)
         monkeypatch.setattr(ILP, "nvidia_library_inventory", lambda: pytest.fail("probed"))
-        monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising = False)
+        monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
         host = ILP.detect_host()
         assert host.driver_cuda_version == (12, 8) and host.compute_caps == ["89"]
 
     def test_the_kernel_module_release_bounds_the_driver_version(self, monkeypatch):
         # nvidia-smi and the libraries both failed; /proc/driver/nvidia/gpus says NVIDIA.
-        _hide_the_real_host(monkeypatch, nvidia_smi = None)
+        _hide_the_real_host(monkeypatch, nvidia_smi=None)
         isdir = ILP.os.path.isdir
         monkeypatch.setattr(
             ILP.os.path,
@@ -370,12 +370,12 @@ class TestDetectHostFallsBackToTheLibraries:
         monkeypatch.setattr(ILP, "nvidia_library_inventory", lambda: None)
         monkeypatch.setenv("UNSLOTH_NVIDIA_LIBRARY_PROBE", "1")
         monkeypatch.setattr(ILP._nvidia_probe, "proc_driver_version", lambda: "580.65.06")
-        monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising = False)
+        monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
         host = ILP.detect_host()
         assert host.has_physical_nvidia and host.driver_cuda_version == (13, 0)
 
     def test_a_cpu_host_stays_cpu(self, monkeypatch):
-        _hide_the_real_host(monkeypatch, nvidia_smi = None)
+        _hide_the_real_host(monkeypatch, nvidia_smi=None)
         monkeypatch.setattr(ILP, "nvidia_library_inventory", lambda: None)
         monkeypatch.setattr(ILP, "proc_driver_version", lambda: "")
         host = ILP.detect_host()
@@ -387,26 +387,26 @@ class TestDetectHostFallsBackToTheLibraries:
 
 class TestTorchIndexFallsBackToTheLibraries:
     def _no_smi(self, monkeypatch):
-        monkeypatch.delenv("UNSLOTH_TORCH_INDEX_URL", raising = False)
-        monkeypatch.delenv("UNSLOTH_TORCH_INDEX_FAMILY", raising = False)
+        monkeypatch.delenv("UNSLOTH_TORCH_INDEX_URL", raising=False)
+        monkeypatch.delenv("UNSLOTH_TORCH_INDEX_FAMILY", raising=False)
         monkeypatch.setattr(IPS, "_nvidia_smi_usable_candidates", lambda: [])
         monkeypatch.setattr(IPS.platform, "machine", lambda: "x86_64")
 
     def test_the_library_version_picks_the_family(self, monkeypatch):
         self._no_smi(monkeypatch)
         monkeypatch.setattr(
-            IPS, "_nvidia_library_inventory", lambda: _inventory(cuda = (13, 1), caps = ("10.0",))
+            IPS, "_nvidia_library_inventory", lambda: _inventory(cuda=(13, 1), caps=("10.0",))
         )
         assert IPS._detect_cuda_torch_index_url().endswith("/cu130")
         monkeypatch.setattr(
-            IPS, "_nvidia_library_inventory", lambda: _inventory(cuda = (12, 6), caps = ("8.6",))
+            IPS, "_nvidia_library_inventory", lambda: _inventory(cuda=(12, 6), caps=("8.6",))
         )
         assert IPS._detect_cuda_torch_index_url().endswith("/cu126")
 
     def test_the_pre_turing_cap_reads_the_library_sms(self, monkeypatch):
         self._no_smi(monkeypatch)
         monkeypatch.setattr(
-            IPS, "_nvidia_library_inventory", lambda: _inventory(cuda = (13, 0), caps = ("6.1",))
+            IPS, "_nvidia_library_inventory", lambda: _inventory(cuda=(13, 0), caps=("6.1",))
         )
         assert IPS._detect_cuda_torch_index_url().endswith("/cu126")
 
@@ -418,7 +418,7 @@ class TestTorchIndexFallsBackToTheLibraries:
         monkeypatch.setattr(IPS._nvidia_probe, "proc_driver_version", lambda: "580.65.06")
         capless = PROBE.NvidiaLibraryInventory("cuda", (13, 0), "", [{"compute_cap": ""}])
         for inventory in (None, capless):
-            monkeypatch.setattr(IPS, "_nvidia_library_inventory", lambda inv = inventory: inv)
+            monkeypatch.setattr(IPS, "_nvidia_library_inventory", lambda inv=inventory: inv)
             assert IPS._detect_cuda_torch_index_url().endswith("/cu126")
 
     def test_nothing_at_all_still_defaults_to_cu126(self, monkeypatch):
@@ -428,7 +428,7 @@ class TestTorchIndexFallsBackToTheLibraries:
         assert IPS._detect_cuda_torch_index_url().endswith("/cu126")
 
     def test_presence_falls_back_to_the_libraries(self, monkeypatch):
-        monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising = False)
+        monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
         monkeypatch.setattr(IPS, "_nvidia_smi_candidates", lambda: [])
         monkeypatch.setattr(IPS.os.path, "isdir", lambda p: False)
         monkeypatch.setattr(IPS, "_nvidia_library_inventory", lambda: _inventory())
@@ -440,7 +440,7 @@ class TestTorchIndexFallsBackToTheLibraries:
         monkeypatch.setattr(IPS, "_nvidia_smi_candidates", lambda: [])
         monkeypatch.setattr(IPS.os.path, "isdir", lambda p: False)
         monkeypatch.setattr(
-            IPS, "_nvidia_library_inventory", lambda: _inventory(caps = ("8.9", "6.1"))
+            IPS, "_nvidia_library_inventory", lambda: _inventory(caps=("8.9", "6.1"))
         )
         for mask, usable in (
             ("1", True),
@@ -453,14 +453,14 @@ class TestTorchIndexFallsBackToTheLibraries:
             assert IPS._has_usable_nvidia_gpu() is usable, mask
         # The CUDA driver rows are already masked, so a miss there is not second-guessed.
         monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "5")
-        monkeypatch.setattr(IPS, "_nvidia_library_inventory", lambda: _inventory(source = "cuda"))
+        monkeypatch.setattr(IPS, "_nvidia_library_inventory", lambda: _inventory(source="cuda"))
         assert IPS._has_usable_nvidia_gpu() is True
 
 
 # ── setup.sh ──
 
 
-SETUP_TEXT = (STUDIO / "setup.sh").read_text(encoding = "utf-8")
+SETUP_TEXT = (STUDIO / "setup.sh").read_text(encoding="utf-8")
 
 
 def test_setup_sh_asks_the_library_last():
@@ -472,7 +472,7 @@ def test_setup_sh_asks_the_library_last():
 
 @pytest.mark.skipif(
     shutil.which("bash") is None or sys.platform == "win32",
-    reason = "a POSIX bash is required (Windows resolves bash to WSL)",
+    reason="a POSIX bash is required (Windows resolves bash to WSL)",
 )
 def test_setup_sh_probe_hook_runs(tmp_path):
     start = SETUP_TEXT.index("_setup_run_smi() {")
@@ -499,14 +499,14 @@ def test_setup_sh_probe_hook_runs(tmp_path):
     for rc, expect in (("0", "GPU"), ("1", "NONE")):
         result = subprocess.run(
             ["bash", "-c", harness, "h", str(script_dir)],
-            env = {
+            env={
                 **os.environ,
                 "PATH": f"{stub_bin}:{os.environ['PATH']}",
                 "PROBE_RC": rc,
                 "UNSLOTH_NVIDIA_LIBRARY_PROBE": "1",
             },
-            capture_output = True,
-            text = True,
-            timeout = 60,
+            capture_output=True,
+            text=True,
+            timeout=60,
         )
         assert result.stdout.strip() == expect, result.stderr

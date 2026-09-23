@@ -247,7 +247,7 @@ def _installed_metadata_records(dist_name: str) -> List[Tuple[str, Optional[Path
         path_name, separator, _version = stem.removesuffix(".dist-info").rpartition("-")
         if stem.endswith(".dist-info") and separator and _canonical(path_name) == wanted:
             found.append(("", record_path))
-    return sorted(found, key = lambda record: (record[0], os.fspath(record[1] or "")))
+    return sorted(found, key=lambda record: (record[0], os.fspath(record[1] or "")))
 
 
 def installed_versions(dist_name: str) -> List[str]:
@@ -335,11 +335,11 @@ def _publish_json(
     """
     import tempfile  # noqa: PLC0415 - stdlib, and not needed to read a manifest
 
-    text = json.dumps(payload, indent = 2, sort_keys = True)
-    descriptor, name = tempfile.mkstemp(dir = str(path.parent), prefix = path.name + ".", suffix = ".tmp")
+    text = json.dumps(payload, indent=2, sort_keys=True)
+    descriptor, name = tempfile.mkstemp(dir=str(path.parent), prefix=path.name + ".", suffix=".tmp")
     tmp = Path(name)
     try:
-        with os.fdopen(descriptor, "w", encoding = "utf-8") as handle:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
             handle.write(text)
         # mkstemp creates at 0600, where write_text gave the umask default (0644 on a stock
         # box). Narrowing it is a change nobody asked for, so keep the mode the manifest
@@ -447,9 +447,11 @@ def _release_lock(handle, locked: bool) -> None:
         try:
             try:
                 import fcntl  # noqa: PLC0415
+
                 fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
             except ImportError:
                 import msvcrt  # noqa: PLC0415
+
                 handle.seek(0)
                 msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
         except (OSError, ValueError):
@@ -487,6 +489,7 @@ def pass_lock(root: Optional[Path] = None):
     if handle is not None:
         try:
             import fcntl  # noqa: PLC0415 - POSIX only, and absent on Windows
+
             try:
                 fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
                 locked = True
@@ -609,7 +612,7 @@ def read_previous_manifest(root: Optional[Path] = None) -> Optional[dict]:
     can make an update faster but never make a half-built venv look finished.
     """
     try:
-        raw = previous_manifest_path(root).read_text(encoding = "utf-8")
+        raw = previous_manifest_path(root).read_text(encoding="utf-8")
     except (OSError, ValueError):
         return None
     try:
@@ -765,7 +768,7 @@ def update_manifest(root: Optional[Path] = None, **extra: object) -> bool:
             data.update(values)
             # only_if_present: a peer on an older build of this module removes without taking
             # the lock, so the file is checked as late as it can be.
-            if not _publish_json(path, data, only_if_present = True):
+            if not _publish_json(path, data, only_if_present=True):
                 return False
     except (OSError, TypeError, ValueError):
         return False
@@ -774,7 +777,7 @@ def update_manifest(root: Optional[Path] = None, **extra: object) -> bool:
 
 def read_manifest(root: Optional[Path] = None) -> Optional[dict]:
     try:
-        raw = manifest_path(root).read_text(encoding = "utf-8")
+        raw = manifest_path(root).read_text(encoding="utf-8")
     # UnicodeDecodeError is a ValueError.
     except (OSError, ValueError):
         return None
@@ -799,9 +802,9 @@ def set_no_torch_marker(no_torch: bool, root: Optional[Path] = None) -> None:
     path = no_torch_marker_path(root)
     try:
         if no_torch:
-            path.write_text("", encoding = "utf-8")
+            path.write_text("", encoding="utf-8")
         else:
-            path.unlink(missing_ok = True)
+            path.unlink(missing_ok=True)
     except OSError:
         pass
 
@@ -885,6 +888,7 @@ def _parse_requirement_line(line: str) -> Optional[Tuple[str, str, str]]:
         return None
     try:
         from packaging.requirements import Requirement
+
         requirement = Requirement(text)
         return (
             requirement.name,
@@ -926,6 +930,7 @@ def _version_satisfies(version: str, specifier: str) -> bool:
         return True
     try:
         from packaging.specifiers import SpecifierSet
+
         return SpecifierSet(specifier).contains(version)
     except Exception:
         return False
@@ -946,7 +951,7 @@ def missing_requirements(
 
     path = req_file or (requirements_root() / BOOT_REQUIREMENT_FILE)
     try:
-        lines = path.read_text(encoding = "utf-8").splitlines()
+        lines = path.read_text(encoding="utf-8").splitlines()
     except OSError:
         return []
 
@@ -996,9 +1001,10 @@ def installed_dependency_index() -> Optional[Dict[str, Tuple[str, List[str]]]]:
     "cannot audit" rather than "satisfied".
     """
     from importlib.metadata import distributions
+
     try:
         index: Dict[str, Tuple[str, List[str]]] = {}
-        for dist in distributions(path = _metadata_scan_paths()):
+        for dist in distributions(path=_metadata_scan_paths()):
             # An interrupted pip upgrade leaves the old metadata renamed to ~ame-1.0.dist-info
             # with its payload gone. pip ignores those; so must this, or a closure reads an
             # unimportable package as installed and its step skips the reinstall that repairs it.
@@ -1072,7 +1078,7 @@ def closure_unmet_requirements(
     if index is None:
         return ["<metadata unreadable>"]
     try:
-        lines = Path(req_file).read_text(encoding = "utf-8-sig").splitlines()
+        lines = Path(req_file).read_text(encoding="utf-8-sig").splitlines()
     except (OSError, ValueError):
         return ["<requirements unreadable>"]
 
@@ -1121,7 +1127,7 @@ def closure_unmet_requirements(
                 unmet.append(requirement.name)
             continue
         version, requires = record
-        if requirement.specifier and not requirement.specifier.contains(version, prereleases = True):
+        if requirement.specifier and not requirement.specifier.contains(version, prereleases=True):
             # Recorded, and the walk goes on: what an installed distribution requires is still
             # closure.
             entry = f"{requirement.name} {version}"
@@ -1155,7 +1161,7 @@ def violated_constraints(
     """
     path = req_file or (requirements_root() / "single-env" / "constraints.txt")
     try:
-        lines = path.read_text(encoding = "utf-8-sig").splitlines()
+        lines = path.read_text(encoding="utf-8-sig").splitlines()
     except (OSError, ValueError):
         return []
 
@@ -1308,7 +1314,7 @@ def damaged_payload_files(
             _scan_payload_files(package_name, limit, budget_seconds, companion_names, scan_paths)
         )
 
-    worker = threading.Thread(target = scan, daemon = True)
+    worker = threading.Thread(target=scan, daemon=True)
     worker.start()
     # The walk's deadline is the ordinary way out and reports what it found;
     # this margin only bounds the wait for a call that is not coming back.
@@ -1337,7 +1343,7 @@ def _scan_payload_files(
         if not paths:
             return found
         seen: set = set()
-        for dist in distributions(path = paths):
+        for dist in distributions(path=paths):
             try:
                 name = _canonical(dist.metadata["Name"] or "")
                 if name not in wanted or name in seen:
@@ -1360,7 +1366,7 @@ def _scan_payload_files(
             except Exception:
                 anchor = None
             # csv, not splitlines: a quoted field may hold a newline
-            for row in csv.reader(io.StringIO(record, newline = "")):
+            for row in csv.reader(io.StringIO(record, newline="")):
                 # Every row: batching this let one slow mount overrun 5s by a minute.
                 if deadline is not None and time.monotonic() > deadline:
                     return found
@@ -1439,7 +1445,7 @@ def verify_install(
     without which RECORD rows resolve against the wrong tree.
     """
     reqs = req_root or requirements_root()
-    missing = missing_requirements(reqs / BOOT_REQUIREMENT_FILE, installed = installed)
+    missing = missing_requirements(reqs / BOOT_REQUIREMENT_FILE, installed=installed)
     deps_ok = not missing
 
     if manifest is None:
@@ -1505,7 +1511,7 @@ def verify_install(
                     vanished = True
                     break
         if vanished or damaged_payload_files(
-            scan_package, companion_names = companions, scan_paths = scan_paths
+            scan_package, companion_names=companions, scan_paths=scan_paths
         ):
             manifest_ok = False
             reason = "studio_install_damaged"
@@ -1535,6 +1541,7 @@ SIDECAR_SCAN_BUDGET_SECONDS = 5.0
 
 def _current_ext_tag() -> str:
     import sysconfig
+
     return "{}{}{}".format(
         sys.version_info.major,
         sys.version_info.minor,
@@ -1592,7 +1599,7 @@ def _sidecar_pin_ok(root: Path, spec: str) -> Optional[str]:
     found: List[str] = []
     payload_present = False
     try:
-        for dist in distributions(path = [str(root)]):
+        for dist in distributions(path=[str(root)]):
             try:
                 dist_name = dist.metadata.get("Name") or ""
             except Exception:
@@ -1652,7 +1659,7 @@ def _sidecar_damaged_files(
         name = dist_info.name.split("-")[0]
         # Stricter than _sidecar_scan_impl on purpose: setup can rebuild to converge, the runtime cannot.
         try:
-            record = (dist_info / "RECORD").read_text(encoding = "utf-8", errors = "replace")
+            record = (dist_info / "RECORD").read_text(encoding="utf-8", errors="replace")
         except FileNotFoundError:
             # No RECORD under a pinned dist-info is an interrupted install the size check cannot see.
             if _canonical(name) in required_names:
@@ -1777,8 +1784,8 @@ def sidecar_is_current(
         return True, ""
     damaged = _sidecar_damaged_files(
         root,
-        budget_seconds = budget_seconds,
-        required = [spec.split("==")[0] for spec in pins if "==" in spec],
+        budget_seconds=budget_seconds,
+        required=[spec.split("==")[0] for spec in pins if "==" in spec],
     )
     if damaged:
         return False, "; ".join(damaged)
@@ -1793,7 +1800,7 @@ _SIDECAR_CLI_MARKER = "sidecar:"
 
 def _sidecar_cli(argv: Sequence[str]) -> int:
     if len(argv) < 2:
-        print("usage: install_manifest.py sidecar <dir> <pin>...", file = sys.stderr)
+        print("usage: install_manifest.py sidecar <dir> <pin>...", file=sys.stderr)
         return 2
     current, reason = sidecar_is_current(argv[0], tuple(argv[1:]))
     print(f"{_SIDECAR_CLI_MARKER} {'current' if current else reason}")
@@ -1803,5 +1810,5 @@ def _sidecar_cli(argv: Sequence[str]) -> int:
 if __name__ == "__main__":
     if sys.argv[1:2] == ["sidecar"]:
         sys.exit(_sidecar_cli(sys.argv[2:]))
-    print(f"usage: {os.path.basename(__file__)} sidecar <dir> <pin>...", file = sys.stderr)
+    print(f"usage: {os.path.basename(__file__)} sidecar <dir> <pin>...", file=sys.stderr)
     sys.exit(2)

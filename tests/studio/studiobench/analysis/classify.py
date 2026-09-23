@@ -279,9 +279,9 @@ class ClassifiedTask:
 
 @dataclass
 class Classification:
-    tasks: list[ClassifiedTask] = field(default_factory = list)
-    by_origin_us: dict[str, int] = field(default_factory = dict)
-    by_origin_count: dict[str, int] = field(default_factory = dict)
+    tasks: list[ClassifiedTask] = field(default_factory=list)
+    by_origin_us: dict[str, int] = field(default_factory=dict)
+    by_origin_count: dict[str, int] = field(default_factory=dict)
     total_us: int = 0
 
     @property
@@ -295,7 +295,7 @@ class Classification:
         if pct > threshold_pct:
             worst = sorted(
                 (c for c in self.tasks if c.origin == UNCLASSIFIED),
-                key = lambda c: -c.dur_us,
+                key=lambda c: -c.dur_us,
             )[:5]
             detail = "; ".join(
                 f"{c.dur_us / 1000:.1f}ms from {c.src_file or '?'}::{c.src_func or '?'}"
@@ -353,14 +353,14 @@ def classify_task(task: Task) -> ClassifiedTask:
 
     def done(origin: str, evidence: str) -> ClassifiedTask:
         return ClassifiedTask(
-            task = task,
-            origin = origin,
-            evidence = evidence,
-            src_file = src_file,
-            src_func = src_func,
-            ran_js = ran_js,
-            task_type = task_type,
-            queue_name = queue_name,
+            task=task,
+            origin=origin,
+            evidence=evidence,
+            src_file=src_file,
+            src_func=src_func,
+            ran_js=ran_js,
+            task_type=task_type,
+            queue_name=queue_name,
         )
 
     # 0. Blink's own label, when the `scheduler` category recorded one. It outranks everything below

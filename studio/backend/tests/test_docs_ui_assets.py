@@ -16,7 +16,7 @@ from pathlib import Path
 
 _BACKEND = Path(__file__).resolve().parent.parent
 _DOCS_UI = _BACKEND / "assets" / "docs_ui"
-_MANIFEST = json.loads((_DOCS_UI / "docs_ui_manifest.json").read_text(encoding = "utf-8"))
+_MANIFEST = json.loads((_DOCS_UI / "docs_ui_manifest.json").read_text(encoding="utf-8"))
 
 # Ours, not upstream's: prose we may reword, and the manifest cannot hash itself.
 _UNPINNED = {"README.md", "docs_ui_manifest.json"}
@@ -73,5 +73,5 @@ def test_every_package_ships_its_licence():
 def test_bundles_reference_no_remote_script_host():
     """The whole point is that nothing on the docs pages phones out for code."""
     for name in ("swagger-ui-bundle.js", "redoc.standalone.js"):
-        text = (_DOCS_UI / name).read_text(encoding = "utf-8", errors = "ignore")
+        text = (_DOCS_UI / name).read_text(encoding="utf-8", errors="ignore")
         assert "cdn.jsdelivr.net" not in text, f"{name} pulls from jsDelivr at runtime"

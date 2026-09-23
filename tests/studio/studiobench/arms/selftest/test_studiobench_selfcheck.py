@@ -137,11 +137,11 @@ def test_a_moving_control_ratio_means_the_measurement_moved():
 
 def test_three_agreeing_clocks_keep_the_window():
     verdict = evaluate_tri_clock(
-        wall_ms = 10_000.0,
-        raf_span_ms = 9_900.0,
-        screencast_span_ms = 9_850.0,
-        timer_span_ms = 10_010.0,
-        raf_frames = 600,
+        wall_ms=10_000.0,
+        raf_span_ms=9_900.0,
+        screencast_span_ms=9_850.0,
+        timer_span_ms=10_010.0,
+        raf_frames=600,
     )
     assert verdict.agreed is True
     assert verdict.excluded_cell("r3.w1") is None
@@ -151,11 +151,11 @@ def test_an_unscheduled_raf_loop_reads_as_no_measurement_not_as_no_dropped_frame
     """The trap this gate exists for: no frames looks exactly like a perfectly smooth window."""
 
     verdict = evaluate_tri_clock(
-        wall_ms = 10_000.0,
-        raf_span_ms = 0.0,
-        screencast_span_ms = 9_900.0,
-        timer_span_ms = 10_000.0,
-        raf_frames = 0,
+        wall_ms=10_000.0,
+        raf_span_ms=0.0,
+        screencast_span_ms=9_900.0,
+        timer_span_ms=10_000.0,
+        raf_frames=0,
     )
     assert verdict.agreed is False
     assert "unmeasured one" in verdict.reason
@@ -167,11 +167,11 @@ def test_an_unscheduled_raf_loop_reads_as_no_measurement_not_as_no_dropped_frame
 
 def test_a_clock_more_than_twenty_percent_off_excludes_the_window():
     verdict = evaluate_tri_clock(
-        wall_ms = 10_000.0,
-        raf_span_ms = 6_000.0,
-        screencast_span_ms = 9_900.0,
-        timer_span_ms = 10_000.0,
-        raf_frames = 120,
+        wall_ms=10_000.0,
+        raf_span_ms=6_000.0,
+        screencast_span_ms=9_900.0,
+        timer_span_ms=10_000.0,
+        raf_frames=120,
     )
     assert verdict.agreed is False
     assert verdict.worst_clock == "raf"
@@ -180,11 +180,11 @@ def test_a_clock_more_than_twenty_percent_off_excludes_the_window():
 
 def test_agreement_between_fewer_than_two_clocks_is_not_agreement():
     verdict = evaluate_tri_clock(
-        wall_ms = 10_000.0,
-        raf_span_ms = 9_900.0,
-        screencast_span_ms = None,
-        timer_span_ms = None,
-        raf_frames = 600,
+        wall_ms=10_000.0,
+        raf_span_ms=9_900.0,
+        screencast_span_ms=None,
+        timer_span_ms=None,
+        raf_frames=600,
     )
     assert verdict.agreed is False
     assert "fewer than two clocks" in verdict.reason
@@ -223,17 +223,17 @@ def test_a_healthy_instrument_passes_every_gate():
 
 
 def test_one_failed_gate_aborts_the_run_before_any_numbers():
-    report = run_gates(**_healthy(stall_observed_ms = 5.0))
+    report = run_gates(**_healthy(stall_observed_ms=5.0))
     assert report.ok is False
     messages = []
     with pytest.raises(SelfCheckFailure) as caught:
-        guard(report, on_abort = messages.append)
+        guard(report, on_abort=messages.append)
     assert messages and "ABORT" in messages[0]
     assert "no cells will be measured" in str(caught.value)
 
 
 def test_the_abort_message_says_why_reporting_nothing_is_better():
-    report = run_gates(**_healthy(heavy_scene_ms = 101.0))
+    report = run_gates(**_healthy(heavy_scene_ms=101.0))
     with pytest.raises(SelfCheckFailure) as caught:
         report.raise_if_failed()
     assert "the numbers get quoted and the blindness does not" in str(caught.value)
@@ -245,10 +245,11 @@ def test_the_abort_message_says_why_reporting_nothing_is_better():
 def _recovery(
     base,
     injected,
-    total_ms = 600.0,
-    chars = 6_000,
+    total_ms=600.0,
+    chars=6_000,
 ):
     from studiobench.instruments.selfcheck import evaluate_stream_cost_recovery_gate
+
     return evaluate_stream_cost_recovery_gate(base, injected, total_ms, chars)
 
 
@@ -288,7 +289,7 @@ def test_a_missing_reading_is_a_failure_not_a_zero_recovery():
 
 
 def test_a_zero_denominator_refuses_rather_than_dividing():
-    gate = _recovery(110.0, 210.0, total_ms = 600.0, chars = 0)
+    gate = _recovery(110.0, 210.0, total_ms=600.0, chars=0)
     assert not gate.passed
     assert gate.measured.value is None
 

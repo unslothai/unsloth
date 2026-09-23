@@ -24,6 +24,7 @@ if str(_REPO_ROOT) not in sys.path:
 
 def _studio():
     from unsloth_cli.commands import studio as _studio_mod
+
     return _studio_mod
 
 
@@ -62,7 +63,7 @@ class _ExecCaptured(SystemExit):
         self.argv = list(argv)
 
 
-def _install_run_reexec_capture(monkeypatch, *, platform = "linux"):
+def _install_run_reexec_capture(monkeypatch, *, platform="linux"):
     studio_mod = _studio()
     captured = []
 
@@ -105,9 +106,9 @@ def _invoke_run(monkeypatch, args):
     captured = _install_run_reexec_capture(monkeypatch)
     app = _typer.Typer()
     app.command(
-        context_settings = {"allow_extra_args": True, "ignore_unknown_options": True},
+        context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
     )(studio_mod.run)
-    CliRunner().invoke(app, args, catch_exceptions = True)
+    CliRunner().invoke(app, args, catch_exceptions=True)
     return captured
 
 
@@ -129,8 +130,8 @@ def test_run_reexec_forwards_cloudflare_polarity(
     studio_mod = _studio()
     assert f'_CLOUDFLARE_INTENT_ENV = "{studio_mod._CLOUDFLARE_INTENT_ENV}"' in (
         _REPO_ROOT / "studio/backend/run.py"
-    ).read_text(encoding = "utf-8")
-    monkeypatch.delenv(studio_mod._CLOUDFLARE_INTENT_ENV, raising = False)
+    ).read_text(encoding="utf-8")
+    monkeypatch.delenv(studio_mod._CLOUDFLARE_INTENT_ENV, raising=False)
     captured = _invoke_run(monkeypatch, _BASE + extra_flags)
     assert len(captured) == 1, captured
     argv = captured[0]
@@ -147,7 +148,7 @@ def _invoke_studio_default(
     monkeypatch,
     args,
     *,
-    platform = "linux",
+    platform="linux",
 ):
     import typer as _typer
 
@@ -174,7 +175,7 @@ def _invoke_studio_default(
 
     app = _typer.Typer()
     app.command()(studio_mod.studio_default)
-    CliRunner().invoke(app, args, catch_exceptions = True)
+    CliRunner().invoke(app, args, catch_exceptions=True)
     return captured
 
 
@@ -195,7 +196,7 @@ def test_studio_default_reexec_forwards_cloudflare(
     monkeypatch, extra_flags, expected, unexpected, expected_intent
 ):
     studio_mod = _studio()
-    monkeypatch.delenv(studio_mod._CLOUDFLARE_INTENT_ENV, raising = False)
+    monkeypatch.delenv(studio_mod._CLOUDFLARE_INTENT_ENV, raising=False)
     captured = _invoke_studio_default(monkeypatch, ["-H", "0.0.0.0"] + extra_flags)
     assert len(captured) == 1, captured
     argv = captured[0]
@@ -264,10 +265,10 @@ def test_run_in_venv_passes_cloudflare_to_run_server(monkeypatch, tmp_path, user
 
     app = _typer.Typer()
     app.command(
-        context_settings = {"allow_extra_args": True, "ignore_unknown_options": True},
+        context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
     )(studio_mod.run)
     extras = [user_flag] if user_flag else []
-    CliRunner().invoke(app, _BASE + extras, catch_exceptions = True)
+    CliRunner().invoke(app, _BASE + extras, catch_exceptions=True)
 
     assert captured.get("cloudflare") is expected, captured
 
@@ -278,7 +279,7 @@ def test_run_display_host_delegates_wildcard_aliases_to_the_backend():
     studio_mod = _studio()
     aliases = {"0.0.0.0", "::", "::0", "0:0:0:0:0:0:0:0", "0"}
     run_mod = types.SimpleNamespace(
-        _display_host_for_bind = lambda host: "198.51.100.7" if host in aliases else host
+        _display_host_for_bind=lambda host: "198.51.100.7" if host in aliases else host
     )
 
     for host in aliases:
@@ -293,8 +294,8 @@ def test_run_cloudflare_notice_uses_external_host_policy():
     studio_mod = _studio()
     calls = []
     run_mod = types.SimpleNamespace(
-        _verify_global_reachability = lambda host, port: calls.append(("verify", host, port)),
-        _print_cloudflare_line = lambda **kw: calls.append(("print", kw)),
+        _verify_global_reachability=lambda host, port: calls.append(("verify", host, port)),
+        _print_cloudflare_line=lambda **kw: calls.append(("print", kw)),
     )
 
     studio_mod._emit_run_cloudflare_notice(run_mod, "0.0.0.0", "198.51.100.7", 8888, False)
@@ -348,7 +349,7 @@ def test_run_silent_pins_internal_requests_to_the_bound_address(monkeypatch, tmp
         def is_set(self):
             raise _Done(0)
 
-        def wait(self, timeout = None):
+        def wait(self, timeout=None):
             return None
 
     class _App:
@@ -399,12 +400,12 @@ def test_run_silent_pins_internal_requests_to_the_bound_address(monkeypatch, tmp
 
     app = _typer.Typer()
     app.command(
-        context_settings = {"allow_extra_args": True, "ignore_unknown_options": True},
+        context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
     )(studio_mod.run)
     result = CliRunner().invoke(
         app,
         _BASE + ["--silent", "-H", "localhost"],
-        catch_exceptions = True,
+        catch_exceptions=True,
     )
 
     assert result.exit_code == 0, result.output
@@ -424,7 +425,7 @@ def test_studio_default_rejects_cloudflare_flag_with_subcommand(monkeypatch, fla
 
     studio_mod = _studio()
     app = _typer.Typer()
-    app.add_typer(studio_mod.studio_app, name = "studio")
+    app.add_typer(studio_mod.studio_app, name="studio")
     result = CliRunner().invoke(app, ["studio", flag, "run", "--model", "X"])
     assert result.exit_code == 2, result.output
     combined = (result.output or "") + (getattr(result, "stderr", "") or "")
@@ -482,9 +483,9 @@ def test_run_in_venv_shuts_down_on_startup_abort(monkeypatch, tmp_path):
 
     app = _typer.Typer()
     app.command(
-        context_settings = {"allow_extra_args": True, "ignore_unknown_options": True},
+        context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
     )(studio_mod.run)
-    result = CliRunner().invoke(app, _BASE + ["-H", "0.0.0.0"], catch_exceptions = True)
+    result = CliRunner().invoke(app, _BASE + ["-H", "0.0.0.0"], catch_exceptions=True)
 
     assert result.exit_code == 1, result.output
     assert len(shutdown_calls) == 1, "startup abort must call _graceful_shutdown"
@@ -542,9 +543,9 @@ def test_run_in_venv_sets_tool_policy_before_server_start(monkeypatch, tmp_path)
 
     app = _typer.Typer()
     app.command(
-        context_settings = {"allow_extra_args": True, "ignore_unknown_options": True},
+        context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
     )(studio_mod.run)
-    result = CliRunner().invoke(app, _BASE + ["--disable-tools"], catch_exceptions = True)
+    result = CliRunner().invoke(app, _BASE + ["--disable-tools"], catch_exceptions=True)
 
     assert result.exit_code == 1, result.output
     # Default first, then the explicit override, both before the server starts.

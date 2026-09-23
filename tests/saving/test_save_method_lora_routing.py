@@ -35,7 +35,7 @@ import pytest
 
 
 _SAVE_PY = Path(__file__).resolve().parent.parent.parent / "unsloth" / "save.py"
-_SOURCE = _SAVE_PY.read_text(encoding = "utf-8")
+_SOURCE = _SAVE_PY.read_text(encoding="utf-8")
 _TREE = ast.parse(_SOURCE)
 
 
@@ -105,34 +105,34 @@ def test_push_keywords_this_transformers_cannot_take_are_dropped():
     warnings_seen = []
     namespace = _load(
         "_filter_push_to_hub_kwargs",
-        logger = types.SimpleNamespace(warning_once = lambda message: warnings_seen.append(message)),
+        logger=types.SimpleNamespace(warning_once=lambda message: warnings_seen.append(message)),
     )
 
     def transformers_5_push(
         repo_id,
         *,
-        commit_message = None,
-        commit_description = None,
-        private = None,
-        token = None,
-        revision = None,
-        create_pr = False,
-        max_shard_size = "50GB",
-        tags = None,
+        commit_message=None,
+        commit_description=None,
+        private=None,
+        token=None,
+        revision=None,
+        create_pr=False,
+        max_shard_size="50GB",
+        tags=None,
     ):
         raise AssertionError("not called")
 
     kept = namespace["_filter_push_to_hub_kwargs"](
         transformers_5_push,
         dict(
-            repo_id = "owner/model",
-            use_temp_dir = None,
-            safe_serialization = True,
-            max_shard_size = "5GB",
-            tags = ["unsloth"],
+            repo_id="owner/model",
+            use_temp_dir=None,
+            safe_serialization=True,
+            max_shard_size="5GB",
+            tags=["unsloth"],
         ),
     )
-    assert kept == dict(repo_id = "owner/model", max_shard_size = "5GB", tags = ["unsloth"])
+    assert kept == dict(repo_id="owner/model", max_shard_size="5GB", tags=["unsloth"])
     # Neither loss changes the upload on this transformers, so neither is reported.
     assert warnings_seen == []
 
@@ -142,39 +142,39 @@ def test_a_dropped_pickle_request_is_reported():
     warnings_seen = []
     namespace = _load(
         "_filter_push_to_hub_kwargs",
-        logger = types.SimpleNamespace(warning_once = lambda message: warnings_seen.append(message)),
+        logger=types.SimpleNamespace(warning_once=lambda message: warnings_seen.append(message)),
     )
 
-    def transformers_5_push(repo_id, *, token = None):
+    def transformers_5_push(repo_id, *, token=None):
         raise AssertionError("not called")
 
     kept = namespace["_filter_push_to_hub_kwargs"](
         transformers_5_push,
-        dict(repo_id = "owner/model", safe_serialization = False),
+        dict(repo_id="owner/model", safe_serialization=False),
     )
-    assert kept == dict(repo_id = "owner/model")
+    assert kept == dict(repo_id="owner/model")
     assert len(warnings_seen) == 1 and "safe_serialization" in warnings_seen[0]
 
 
 def test_a_var_keyword_signature_keeps_everything():
     """peft's own wrappers take **kwargs, so nothing may be filtered out of them."""
     namespace = _load(
-        "_filter_push_to_hub_kwargs", logger = types.SimpleNamespace(warning_once = lambda m: None)
+        "_filter_push_to_hub_kwargs", logger=types.SimpleNamespace(warning_once=lambda m: None)
     )
 
     def anything(repo_id, **kwargs):
         raise AssertionError("not called")
 
-    arguments = dict(repo_id = "owner/model", use_temp_dir = True, safe_serialization = False)
+    arguments = dict(repo_id="owner/model", use_temp_dir=True, safe_serialization=False)
     assert namespace["_filter_push_to_hub_kwargs"](anything, arguments) == arguments
 
 
 def test_an_unreadable_callable_is_left_alone():
     """An object with no readable signature forwards unchanged, which is what main did."""
     namespace = _load(
-        "_filter_push_to_hub_kwargs", logger = types.SimpleNamespace(warning_once = lambda m: None)
+        "_filter_push_to_hub_kwargs", logger=types.SimpleNamespace(warning_once=lambda m: None)
     )
-    arguments = dict(repo_id = "owner/model", use_temp_dir = True)
+    arguments = dict(repo_id="owner/model", use_temp_dir=True)
     assert namespace["_filter_push_to_hub_kwargs"](object(), arguments) == arguments
 
 
@@ -185,7 +185,7 @@ class _PeftModel:
     """Stands in for `peft.PeftModel`; the branch under test is an isinstance check."""
 
     def __init__(self):
-        self.config = types.SimpleNamespace(_name_or_path = "base/model", model_type = "llama")
+        self.config = types.SimpleNamespace(_name_or_path="base/model", model_type="llama")
         self.saved = []
 
     def state_dict(self):
@@ -200,7 +200,7 @@ class _FullModel:
     the isinstance check the branch turns on answers False here."""
 
     def __init__(self):
-        self.config = types.SimpleNamespace(_name_or_path = "base/model", model_type = "llama")
+        self.config = types.SimpleNamespace(_name_or_path="base/model", model_type="llama")
         self.saved = []
 
     def state_dict(self):
@@ -221,24 +221,24 @@ def _routing_environment(monkeypatch, model):
         "_normalize_safe_serialization",
         "_is_adapter_save_method",
         "unsloth_generic_save",
-        PeftModel = _PeftModel,
-        PreTrainedTokenizerBase = type("Tokenizer", (), {}),
-        ProcessorMixin = type("Processor", (), {}),
-        patch_saving_functions = lambda tokenizer: tokenizer,
-        get_token = lambda: "fixture-token",
-        get_model_name = lambda name: name,
-        _push_merged_to_hub_revision = lambda kwargs: calls.setdefault("revision", []).append(kwargs),
-        _prewarm_base_model_hub_cache = lambda *args, **kwargs: calls["prewarm"].append(kwargs),
-        _is_qwen3_5_vlm = lambda model: False,
-        _determine_username = lambda repo, old, token: (repo, "owner"),
-        unsloth_save_model = lambda *args, **kwargs: calls["adapter"].append(kwargs),
-        logger = types.SimpleNamespace(warning_once = lambda *a, **k: None),
-        gc = types.SimpleNamespace(collect = lambda: None),
-        torch = types.SimpleNamespace(
-            bfloat16 = "bfloat16",
-            float16 = "float16",
-            save = lambda *args, **kwargs: None,
-            cuda = types.SimpleNamespace(is_bf16_supported = lambda: False),
+        PeftModel=_PeftModel,
+        PreTrainedTokenizerBase=type("Tokenizer", (), {}),
+        ProcessorMixin=type("Processor", (), {}),
+        patch_saving_functions=lambda tokenizer: tokenizer,
+        get_token=lambda: "fixture-token",
+        get_model_name=lambda name: name,
+        _push_merged_to_hub_revision=lambda kwargs: calls.setdefault("revision", []).append(kwargs),
+        _prewarm_base_model_hub_cache=lambda *args, **kwargs: calls["prewarm"].append(kwargs),
+        _is_qwen3_5_vlm=lambda model: False,
+        _determine_username=lambda repo, old, token: (repo, "owner"),
+        unsloth_save_model=lambda *args, **kwargs: calls["adapter"].append(kwargs),
+        logger=types.SimpleNamespace(warning_once=lambda *a, **k: None),
+        gc=types.SimpleNamespace(collect=lambda: None),
+        torch=types.SimpleNamespace(
+            bfloat16="bfloat16",
+            float16="float16",
+            save=lambda *args, **kwargs: None,
+            cuda=types.SimpleNamespace(is_bf16_supported=lambda: False),
         ),
     )
     return namespace["unsloth_generic_save"], calls
@@ -249,7 +249,7 @@ def test_an_adapter_save_never_reaches_the_merge(monkeypatch, tmp_path, spelling
     """The defect: "lora" matched no branch inside the merge and was merged anyway."""
     model = _PeftModel()
     generic_save, calls = _routing_environment(monkeypatch, model)
-    generic_save(model, None, save_directory = str(tmp_path), save_method = spelling)
+    generic_save(model, None, save_directory=str(tmp_path), save_method=spelling)
     assert calls["merge"] == [], "save_method='lora' must not call merge_and_overwrite_lora"
     assert len(calls["adapter"]) == 1
     # The canonical spelling, not the caller's: `unsloth_save_model` normalises with
@@ -273,7 +273,7 @@ def test_the_adapter_save_method_the_router_forwards_is_one_unsloth_save_model_a
     crash on the same input, so the router forwards the canonical value. Read out of the
     source rather than asserted about a stub, so that renaming either end fails here.
     """
-    source = Path(_SAVE_PY).read_text(encoding = "utf-8")
+    source = Path(_SAVE_PY).read_text(encoding="utf-8")
     tree = ast.parse(source)
 
     def _find(name):
@@ -316,7 +316,7 @@ def test_every_other_method_still_merges(monkeypatch, tmp_path, save_method):
     """The merge is what changed for exactly one value of save_method and no other."""
     model = _PeftModel()
     generic_save, calls = _routing_environment(monkeypatch, model)
-    generic_save(model, None, save_directory = str(tmp_path), save_method = save_method)
+    generic_save(model, None, save_directory=str(tmp_path), save_method=save_method)
     assert calls["adapter"] == []
     assert len(calls["merge"]) == 1
     assert len(calls["prewarm"]) == 1
@@ -326,7 +326,7 @@ def test_a_model_with_no_adapter_is_unchanged(monkeypatch, tmp_path):
     """A full fine-tune asked for "lora" has no adapter, so it writes itself, as before."""
     model = _FullModel()
     generic_save, calls = _routing_environment(monkeypatch, model)
-    generic_save(model, None, save_directory = str(tmp_path), save_method = "lora")
+    generic_save(model, None, save_directory=str(tmp_path), save_method="lora")
     assert calls["merge"] == [] and calls["adapter"] == []
     assert len(model.saved) == 1
 
@@ -336,7 +336,7 @@ def test_none_is_normalised_before_the_merge_is_reached(monkeypatch, tmp_path):
     model = _PeftModel()
     generic_save, calls = _routing_environment(monkeypatch, model)
     generic_save(
-        model, None, save_directory = str(tmp_path), save_method = "lora", safe_serialization = None
+        model, None, save_directory=str(tmp_path), save_method="lora", safe_serialization=None
     )
     assert calls["adapter"][0]["safe_serialization"] is True
 
@@ -345,9 +345,9 @@ def test_none_is_normalised_before_the_merge_is_reached(monkeypatch, tmp_path):
     generic_save(
         model,
         None,
-        save_directory = str(tmp_path),
-        save_method = "merged_16bit",
-        safe_serialization = None,
+        save_directory=str(tmp_path),
+        save_method="merged_16bit",
+        safe_serialization=None,
     )
     assert model.saved[0][1]["safe_serialization"] is True
 
@@ -360,7 +360,7 @@ def _adapter_save_environment(monkeypatch):
     # and these tests never reach the network.
     import huggingface_hub
 
-    monkeypatch.setattr(huggingface_hub, "whoami", lambda token = None: {"name": "owner"})
+    monkeypatch.setattr(huggingface_hub, "whoami", lambda token=None: {"name": "owner"})
 
     # `unsloth_save_model` does `from peft import PeftModelForCausalLM` inside its body, and
     # uses it for one isinstance check that every model here answers False to. Stubbed like
@@ -382,25 +382,25 @@ def _adapter_save_environment(monkeypatch):
         "_normalize_safe_serialization",
         "_filter_push_to_hub_kwargs",
         "unsloth_save_model",
-        PreTrainedTokenizerBase = type("Tokenizer", (), {}),
-        ProcessorMixin = type("Processor", (), {}),
-        patch_saving_functions = lambda tokenizer: tokenizer,
-        get_token = lambda: "fixture-token",
-        upload_to_huggingface = upload_to_huggingface,
-        logger = types.SimpleNamespace(warning_once = lambda *a, **k: None),
-        gc = types.SimpleNamespace(collect = lambda: None),
-        psutil = types.SimpleNamespace(cpu_count = lambda logical = True: 8),
-        torch = types.SimpleNamespace(
-            save = lambda *args, **kwargs: None,
-            cuda = types.SimpleNamespace(empty_cache = lambda: None),
+        PreTrainedTokenizerBase=type("Tokenizer", (), {}),
+        ProcessorMixin=type("Processor", (), {}),
+        patch_saving_functions=lambda tokenizer: tokenizer,
+        get_token=lambda: "fixture-token",
+        upload_to_huggingface=upload_to_huggingface,
+        logger=types.SimpleNamespace(warning_once=lambda *a, **k: None),
+        gc=types.SimpleNamespace(collect=lambda: None),
+        psutil=types.SimpleNamespace(cpu_count=lambda logical=True: 8),
+        torch=types.SimpleNamespace(
+            save=lambda *args, **kwargs: None,
+            cuda=types.SimpleNamespace(empty_cache=lambda: None),
         ),
-        fast_save_pickle = lambda *args, **kwargs: None,
+        fast_save_pickle=lambda *args, **kwargs: None,
     ), uploads
 
 
 class _AdapterModel:
     def __init__(self, push_signature):
-        self.config = types.SimpleNamespace(_name_or_path = "base/model", model_type = "llama")
+        self.config = types.SimpleNamespace(_name_or_path="base/model", model_type="llama")
         self.saved = []
         self.pushed = []
         self.original_push_to_hub = push_signature(self.pushed)
@@ -424,9 +424,9 @@ def test_the_adapter_save_forwards_a_real_safe_serialization(monkeypatch, tmp_pa
     namespace["unsloth_save_model"](
         model,
         None,
-        save_directory = str(tmp_path),
-        save_method = "lora",
-        safe_serialization = None,
+        save_directory=str(tmp_path),
+        save_method="lora",
+        safe_serialization=None,
     )
     assert len(model.saved) == 1
     settings = model.saved[0]
@@ -449,25 +449,25 @@ def test_an_adapter_push_survives_a_transformers_that_dropped_the_keywords(monke
         def push_to_hub(
             repo_id,
             *,
-            commit_message = None,
-            commit_description = None,
-            private = None,
-            token = None,
-            revision = None,
-            create_pr = False,
-            max_shard_size = "50GB",
-            tags = None,
+            commit_message=None,
+            commit_description=None,
+            private=None,
+            token=None,
+            revision=None,
+            create_pr=False,
+            max_shard_size="50GB",
+            tags=None,
         ):
             sink.append(
                 dict(
-                    repo_id = repo_id,
-                    commit_message = commit_message,
-                    private = private,
-                    token = token,
-                    revision = revision,
-                    create_pr = create_pr,
-                    max_shard_size = max_shard_size,
-                    tags = tags,
+                    repo_id=repo_id,
+                    commit_message=commit_message,
+                    private=private,
+                    token=token,
+                    revision=revision,
+                    create_pr=create_pr,
+                    max_shard_size=max_shard_size,
+                    tags=tags,
                 )
             )
 
@@ -477,10 +477,10 @@ def test_an_adapter_push_survives_a_transformers_that_dropped_the_keywords(monke
     namespace["unsloth_save_model"](
         model,
         None,
-        save_directory = "owner/model",
-        save_method = "lora",
-        push_to_hub = True,
-        token = "fixture-token",
+        save_directory="owner/model",
+        save_method="lora",
+        push_to_hub=True,
+        token="fixture-token",
     )
     assert len(model.pushed) == 1
     assert model.pushed[0]["repo_id"] == "owner/model"
@@ -497,22 +497,22 @@ def test_an_adapter_push_still_passes_every_keyword_a_transformers_4_accepts(mon
     def transformers_4_signature(sink):
         def push_to_hub(
             repo_id,
-            use_temp_dir = None,
-            commit_message = None,
-            private = None,
-            token = None,
-            max_shard_size = "5GB",
-            create_pr = False,
-            safe_serialization = True,
-            revision = None,
-            commit_description = None,
-            tags = None,
+            use_temp_dir=None,
+            commit_message=None,
+            private=None,
+            token=None,
+            max_shard_size="5GB",
+            create_pr=False,
+            safe_serialization=True,
+            revision=None,
+            commit_description=None,
+            tags=None,
         ):
             sink.append(
                 dict(
-                    use_temp_dir = use_temp_dir,
-                    safe_serialization = safe_serialization,
-                    revision = revision,
+                    use_temp_dir=use_temp_dir,
+                    safe_serialization=safe_serialization,
+                    revision=revision,
                 )
             )
 
@@ -522,15 +522,15 @@ def test_an_adapter_push_still_passes_every_keyword_a_transformers_4_accepts(mon
     namespace["unsloth_save_model"](
         model,
         None,
-        save_directory = "owner/model",
-        save_method = "lora",
-        push_to_hub = True,
-        token = "fixture-token",
-        safe_serialization = None,
-        use_temp_dir = True,
-        revision = "candidate",
+        save_directory="owner/model",
+        save_method="lora",
+        push_to_hub=True,
+        token="fixture-token",
+        safe_serialization=None,
+        use_temp_dir=True,
+        revision="candidate",
     )
-    assert model.pushed == [dict(use_temp_dir = True, safe_serialization = True, revision = "candidate")]
+    assert model.pushed == [dict(use_temp_dir=True, safe_serialization=True, revision="candidate")]
 
 
 # ------------------------------------------------------- the model's own save_pretrained
@@ -553,13 +553,13 @@ def test_the_model_save_pretrained_wrapper_rewrites_only_none():
             return "result"
 
     model = Model()
-    assert wrapper(model, "out", safe_serialization = None) == "result"
+    assert wrapper(model, "out", safe_serialization=None) == "result"
     assert model.calls[-1] == (("out",), {"safe_serialization": True})
 
-    wrapper(model, "out", safe_serialization = False)
+    wrapper(model, "out", safe_serialization=False)
     assert model.calls[-1] == (("out",), {"safe_serialization": False})
 
-    wrapper(model, "out", max_shard_size = "5GB")
+    wrapper(model, "out", max_shard_size="5GB")
     assert model.calls[-1] == (("out",), {"max_shard_size": "5GB"})
 
 
@@ -597,7 +597,7 @@ def _sentence_transformer_source():
         / "models"
         / "sentence_transformer.py"
     )
-    return path.read_text(encoding = "utf-8"), ast.parse(path.read_text(encoding = "utf-8"))
+    return path.read_text(encoding="utf-8"), ast.parse(path.read_text(encoding="utf-8"))
 
 
 def _modules_branch_save_pretrained_merged(tree):
@@ -684,7 +684,7 @@ def test_the_lora_docstring_does_not_promise_an_adapter_only_directory():
     from pathlib import Path
 
     source = (Path(__file__).resolve().parents[2] / "unsloth" / "save.py").read_text(
-        encoding = "utf-8",
+        encoding="utf-8",
     )
     assert "and nothing else. Useful for HF inference." not in source, (
         "a save_method='lora' docstring still promises an adapter-only directory, which a "
@@ -731,6 +731,7 @@ def test_the_sentence_transformer_normaliser_keeps_whitespace_aliases_recognisab
 )
 def test_the_sentence_transformer_normaliser_is_otherwise_unchanged(spelling, expected):
     from unsloth.models.sentence_transformer import _normalize_save_method
+
     assert _normalize_save_method(spelling) == expected
 
 
@@ -747,7 +748,7 @@ def test_the_docstrings_describe_none_as_the_stronger_safetensors_request():
     from pathlib import Path
 
     save_py = Path(__file__).resolve().parents[2] / "unsloth" / "save.py"
-    source = save_py.read_text(encoding = "utf-8")
+    source = save_py.read_text(encoding="utf-8")
 
     assert (
         "`None` is accepted and means the same thing" not in source
@@ -777,12 +778,12 @@ def _wrapped_model_save_pretrained(original):
         for n in ast.walk(tree)
         if isinstance(n, ast.FunctionDef) and n.name == "unsloth_model_save_pretrained"
     )
-    module = ast.Module(body = [node], type_ignores = [])
+    module = ast.Module(body=[node], type_ignores=[])
     ast.fix_missing_locations(module)
     namespace = dict(vars(save_module))
     exec(compile(module, "<unsloth_model_save_pretrained>", "exec"), namespace)
 
-    stub = _types.SimpleNamespace(original_model_save_pretrained = original)
+    stub = _types.SimpleNamespace(original_model_save_pretrained=original)
     return _types.MethodType(namespace["unsloth_model_save_pretrained"], stub)
 
 
@@ -794,8 +795,8 @@ def test_a_positional_none_is_normalised_on_a_peft_style_signature():
 
     def peft_like(
         save_directory,
-        safe_serialization = True,
-        selected_adapters = None,
+        safe_serialization=True,
+        selected_adapters=None,
         **kwargs,
     ):
         seen["safe_serialization"] = safe_serialization
@@ -815,8 +816,8 @@ def test_a_positional_second_argument_that_is_not_safe_serialization_is_untouche
 
     def transformers_like(
         save_directory,
-        is_main_process = True,
-        state_dict = None,
+        is_main_process=True,
+        state_dict=None,
         **kwargs,
     ):
         seen["is_main_process"] = is_main_process
@@ -834,7 +835,7 @@ def test_an_explicit_positional_false_still_writes_a_pickle():
 
     def peft_like(
         save_directory,
-        safe_serialization = True,
+        safe_serialization=True,
         **kwargs,
     ):
         seen["safe_serialization"] = safe_serialization

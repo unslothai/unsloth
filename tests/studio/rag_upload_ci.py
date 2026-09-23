@@ -16,9 +16,9 @@ import urllib.request
 
 repo = Path(__file__).resolve().parents[2]
 root = Path(os.environ.get("RAG_SIM_ART_DIR", str(repo / "temp/rag-upload"))).resolve()
-root.mkdir(parents = True, exist_ok = True)
+root.mkdir(parents=True, exist_ok=True)
 for folder in ("tmp", "cache", "browsers"):
-    (root / folder).mkdir(exist_ok = True)
+    (root / folder).mkdir(exist_ok=True)
 env = os.environ.copy()
 env.update(
     {
@@ -41,19 +41,19 @@ failures = []
 def run(
     name,
     args,
-    cwd = repo,
-    required = True,
+    cwd=repo,
+    required=True,
 ):
-    with (root / f"{name}.log").open("w", encoding = "utf-8") as log:
+    with (root / f"{name}.log").open("w", encoding="utf-8") as log:
         result = subprocess.run(
-            list(map(str, args)), cwd = cwd, env = env, stdout = log, stderr = subprocess.STDOUT
+            list(map(str, args)), cwd=cwd, env=env, stdout=log, stderr=subprocess.STDOUT
         )
-    print(f"{name}: exit {result.returncode}", flush = True)
+    print(f"{name}: exit {result.returncode}", flush=True)
     if result.returncode:
         if required:
             failures.append(name)
         print(
-            (root / f"{name}.log").read_text(encoding = "utf-8", errors = "replace")[-6000:], flush = True
+            (root / f"{name}.log").read_text(encoding="utf-8", errors="replace")[-6000:], flush=True
         )
     return result.returncode == 0
 
@@ -86,11 +86,11 @@ else:
             "--output-format",
             "json",
         ],
-        cwd = repo,
-        env = env,
-        capture_output = True,
-        text = True,
-        check = True,
+        cwd=repo,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=True,
     ).stdout
     interpreter = next(
         (entry["path"] for entry in json.loads(listed) if entry["version"].startswith("3.12.")),
@@ -139,7 +139,7 @@ run(
 )
 frontend = repo / "studio/frontend"
 npm = shutil.which("npm.cmd" if os.name == "nt" else "npm")
-if run("frontend-install", [npm, "ci"], cwd = frontend):
+if run("frontend-install", [npm, "ci"], cwd=frontend):
     node_tests = sorted(
         set(
             p
@@ -152,15 +152,15 @@ if run("frontend-install", [npm, "ci"], cwd = frontend):
         )
     )
     run(
-        "frontend-unit", ["node", "--experimental-strip-types", "--test", *node_tests], cwd = frontend
+        "frontend-unit", ["node", "--experimental-strip-types", "--test", *node_tests], cwd=frontend
     )
-    run("typecheck", [npm, "run", "typecheck"], cwd = frontend)
+    run("typecheck", [npm, "run", "typecheck"], cwd=frontend)
     if run(
         "browser-install", [python, "-m", "playwright", "install", "chromium", "firefox", "webkit"]
     ):
         engines = ["chromium", "firefox", "webkit"]
         driver = repo / "tests/studio/rag_upload_browser_tests.py"
-        if not run("browser-probe", [python, driver, "--probe", *engines], required = False):
+        if not run("browser-probe", [python, driver, "--probe", *engines], required=False):
             if sys.platform == "linux":
                 env.update(
                     {
@@ -186,7 +186,7 @@ if run("frontend-install", [npm, "ci"], cwd = frontend):
         if sys.platform == "darwin" and env.get("GITHUB_ACTIONS") == "true":
             if run("safari-enable", ["sudo", "/usr/bin/safaridriver", "--enable"]):
                 engines.append("safari")
-        with (root / "browser-server.log").open("w", encoding = "utf-8") as log:
+        with (root / "browser-server.log").open("w", encoding="utf-8") as log:
             server = subprocess.Popen(
                 [
                     "node",
@@ -194,10 +194,10 @@ if run("frontend-install", [npm, "ci"], cwd = frontend):
                     str(frontend),
                     str(root),
                 ],
-                cwd = repo,
-                env = env,
-                stdout = log,
-                stderr = subprocess.STDOUT,
+                cwd=repo,
+                env=env,
+                stdout=log,
+                stderr=subprocess.STDOUT,
             )
             try:
                 deadline = time.monotonic() + 30
@@ -205,7 +205,7 @@ if run("frontend-install", [npm, "ci"], cwd = frontend):
                     if server.poll() is not None:
                         raise RuntimeError("Browser fixture exited before becoming ready")
                     try:
-                        urllib.request.urlopen("http://127.0.0.1:18948/__state", timeout = 1).close()
+                        urllib.request.urlopen("http://127.0.0.1:18948/__state", timeout=1).close()
                         break
                     except OSError:
                         if time.monotonic() > deadline:
@@ -218,14 +218,14 @@ if run("frontend-install", [npm, "ci"], cwd = frontend):
             finally:
                 server.terminate()
                 try:
-                    server.wait(timeout = 10)
+                    server.wait(timeout=10)
                 except subprocess.TimeoutExpired:
                     server.kill()
                     server.wait()
 (root / "summary.json").write_text(
     json.dumps(
-        {"os": platform.platform(), "python": sys.version, "failed_steps": failures}, indent = 2
+        {"os": platform.platform(), "python": sys.version, "failed_steps": failures}, indent=2
     ),
-    encoding = "utf-8",
+    encoding="utf-8",
 )
 raise SystemExit(bool(failures))

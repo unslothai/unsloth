@@ -24,7 +24,7 @@ import pytest
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 MODELS = os.path.join(HERE, "unsloth", "models")
 LOADER_UTILS = os.path.join(MODELS, "loader_utils.py")
-_SRC = open(LOADER_UTILS, encoding = "utf-8").read()
+_SRC = open(LOADER_UTILS, encoding="utf-8").read()
 _SKIP_MODULES = ["lm_head", "vision_tower", "audio_tower"]
 
 
@@ -32,7 +32,7 @@ class _FakeCuda:
     def __init__(
         self,
         count,
-        free = None,
+        free=None,
     ):
         self._count = count
         self._free = free or {}
@@ -47,16 +47,16 @@ class _FakeCuda:
 
 def _load(
     *,
-    devices = 2,
-    device_type = "cuda",
-    free = None,
-    planner = None,
-    distributed = False,
+    devices=2,
+    device_type="cuda",
+    free=None,
+    planner=None,
+    distributed=False,
 ):
     """Rebuild the two functions over a fabricated CUDA and unsloth_zoo."""
     ns = {
         "os": os,
-        "torch": types.SimpleNamespace(cuda = _FakeCuda(devices, free)),
+        "torch": types.SimpleNamespace(cuda=_FakeCuda(devices, free)),
         "DEVICE_TYPE_TORCH": device_type,
         "is_distributed": lambda: distributed,
     }
@@ -114,13 +114,13 @@ class _Plan:
 def test_every_existing_device_map_is_returned_untouched(device_map):
     """The whole opt-in claim in one test. If any of these changed, every multi-GPU user
     who never asked for planning would silently get a different placement."""
-    ns = _load(planner = lambda *a, **k: pytest.fail("the planner must not run"))
+    ns = _load(planner=lambda *a, **k: pytest.fail("the planner must not run"))
     assert ns["resolve_unsloth_device_map"](device_map, "some/model") is device_map
 
 
 def test_an_explicit_dict_is_returned_untouched():
     explicit = {"": 0, "model.vision_tower": 1}
-    ns = _load(planner = lambda *a, **k: pytest.fail("the planner must not run"))
+    ns = _load(planner=lambda *a, **k: pytest.fail("the planner must not run"))
     assert ns["resolve_unsloth_device_map"](explicit, "some/model") is explicit
 
 
@@ -132,7 +132,7 @@ def test_only_the_default_is_ever_upgraded(monkeypatch, switch):
     """
     ns = _load()
     if switch is None:
-        monkeypatch.delenv("UNSLOTH_AUTO_DEVICE_MAP", raising = False)
+        monkeypatch.delenv("UNSLOTH_AUTO_DEVICE_MAP", raising=False)
     else:
         monkeypatch.setenv("UNSLOTH_AUTO_DEVICE_MAP", switch)
     assert ns["requested_device_map"](ns["DEFAULT_DEVICE_MAP"]) == "unsloth"
@@ -155,13 +155,13 @@ def test_the_env_var_can_turn_planning_back_off(monkeypatch):
 def test_an_unset_switch_plans_so_a_bare_from_pretrained_needs_no_device_map(monkeypatch):
     """The reason the default flipped: a notebook should not have to pass
     `device_map = "unsloth"` to get the placement that fits."""
-    monkeypatch.delenv("UNSLOTH_AUTO_DEVICE_MAP", raising = False)
+    monkeypatch.delenv("UNSLOTH_AUTO_DEVICE_MAP", raising=False)
     planned = {"model.embed_tokens": 0, "lm_head": 1}
     calls = []
     ns = _load(
-        devices = 2,
-        free = {0: 16 * 2**30, 1: 16 * 2**30},
-        planner = lambda name, **kw: calls.append(name) or _Plan(planned),
+        devices=2,
+        free={0: 16 * 2**30, 1: 16 * 2**30},
+        planner=lambda name, **kw: calls.append(name) or _Plan(planned),
     )
     resolved = ns["resolve_unsloth_device_map"](
         ns["requested_device_map"](ns["DEFAULT_DEVICE_MAP"]),
@@ -182,17 +182,17 @@ def test_an_unset_switch_plans_so_a_bare_from_pretrained_needs_no_device_map(mon
     ],
 )
 def test_planning_is_declined_where_something_else_owns_placement(kwargs, why):
-    ns = _load(planner = lambda *a, **k: pytest.fail(f"must not plan: {why}"))
+    ns = _load(planner=lambda *a, **k: pytest.fail(f"must not plan: {why}"))
     assert ns["resolve_unsloth_device_map"]("unsloth", "m", **kwargs) == "sequential"
 
 
 def test_a_caller_that_vetoes_planning_is_obeyed():
     """Only the leaf knows when the config it is about to load is not the one the planner
     would rebuild from the repo, so it needs a way to say so."""
-    ns = _load(planner = lambda *a, **k: pytest.fail("planned despite the veto"))
-    assert ns["resolve_unsloth_device_map"]("unsloth", "m", skip_reason = "text_only") == "sequential"
+    ns = _load(planner=lambda *a, **k: pytest.fail("planned despite the veto"))
+    assert ns["resolve_unsloth_device_map"]("unsloth", "m", skip_reason="text_only") == "sequential"
     # A veto is not a licence to reinterpret a placement the caller chose.
-    assert ns["resolve_unsloth_device_map"]("auto", "m", skip_reason = "text_only") == "auto"
+    assert ns["resolve_unsloth_device_map"]("auto", "m", skip_reason="text_only") == "auto"
 
 
 def test_a_text_only_decoder_is_never_planned_against_the_full_vlm():
@@ -205,7 +205,7 @@ def test_a_text_only_decoder_is_never_planned_against_the_full_vlm():
     """
     models = os.path.join(HERE, "unsloth", "models")
 
-    vision = open(os.path.join(models, "vision.py"), encoding = "utf-8").read()
+    vision = open(os.path.join(models, "vision.py"), encoding="utf-8").read()
     tree = ast.parse(vision)
     signature = [
         node
@@ -238,7 +238,7 @@ def test_a_text_only_decoder_is_never_planned_against_the_full_vlm():
         assert "planner_class_mismatch_reason" in source, f"vision.py:{call.lineno}"
 
     # loader.py does the swap for FastModel/FastLanguageModel, so it has to say so too.
-    loader = open(os.path.join(models, "loader.py"), encoding = "utf-8").read()
+    loader = open(os.path.join(models, "loader.py"), encoding="utf-8").read()
     assert "text_only_decoder = True" in loader
     forwarded = [
         node
@@ -273,8 +273,8 @@ def test_a_task_head_the_planner_cannot_see_declines_planning():
     assert mismatch(LlamaForCausalLM, None) is None
     assert mismatch(None, LlamaForCausalLM) is None
 
-    ns = _load(planner = lambda *a, **k: pytest.fail("planned a head the plan does not name"))
-    assert ns["resolve_unsloth_device_map"]("unsloth", "m", skip_reason = reason) == "sequential"
+    ns = _load(planner=lambda *a, **k: pytest.fail("planned a head the plan does not name"))
+    assert ns["resolve_unsloth_device_map"]("unsloth", "m", skip_reason=reason) == "sequential"
 
 
 def test_the_optimized_llama_path_also_declines_a_classification_load():
@@ -286,7 +286,7 @@ def test_the_optimized_llama_path_also_declines_a_classification_load():
     then loads AutoModelForSequenceClassification a few lines later. That model has `score`
     and no `lm_head`, so `dispatch_model` -> `check_device_map` raises.
     """
-    llama = open(os.path.join(HERE, "unsloth", "models", "llama.py"), encoding = "utf-8").read()
+    llama = open(os.path.join(HERE, "unsloth", "models", "llama.py"), encoding="utf-8").read()
     tree = ast.parse(llama)
 
     assignments = {}
@@ -325,7 +325,7 @@ def test_a_distributed_launch_never_gets_an_intra_model_split():
     caller, and a rank-local dict is not a string, so the two never disagree.
     """
     ns = _load(
-        distributed = True, planner = lambda *a, **k: pytest.fail("planned inside a distributed launch")
+        distributed=True, planner=lambda *a, **k: pytest.fail("planned inside a distributed launch")
     )
     assert ns["resolve_unsloth_device_map"]("unsloth", "m") == "sequential"
 
@@ -335,8 +335,8 @@ def test_a_non_cuda_backend_never_reaches_the_cuda_planner(device_type):
     """The planner sizes cards through torch.cuda. On XPU or MPS that is either absent or
     lying, so falling back beats planning against numbers from the wrong device."""
     ns = _load(
-        device_type = device_type,
-        planner = lambda *a, **k: pytest.fail("CUDA planner on a non-CUDA backend"),
+        device_type=device_type,
+        planner=lambda *a, **k: pytest.fail("CUDA planner on a non-CUDA backend"),
     )
     assert ns["resolve_unsloth_device_map"]("unsloth", "m") == "sequential"
 
@@ -344,12 +344,12 @@ def test_a_non_cuda_backend_never_reaches_the_cuda_planner(device_type):
 @pytest.mark.parametrize("devices", [0, 1])
 def test_one_gpu_or_none_falls_back_silently(devices):
     """Not a failure, just nothing to split across, so it prints nothing."""
-    ns = _load(devices = devices, planner = lambda *a, **k: pytest.fail("nothing to plan across"))
+    ns = _load(devices=devices, planner=lambda *a, **k: pytest.fail("nothing to plan across"))
     assert ns["resolve_unsloth_device_map"]("unsloth", "m") == "sequential"
 
 
 def test_a_planner_that_declines_falls_back():
-    ns = _load(planner = lambda *a, **k: None)
+    ns = _load(planner=lambda *a, **k: None)
     assert ns["resolve_unsloth_device_map"]("unsloth", "m") == "sequential"
 
 
@@ -359,7 +359,7 @@ def test_a_planner_that_raises_falls_back_rather_than_failing_the_load():
     def _boom(*a, **k):
         raise RuntimeError("hub unreachable")
 
-    ns = _load(planner = _boom)
+    ns = _load(planner=_boom)
     assert ns["resolve_unsloth_device_map"]("unsloth", "m") == "sequential"
 
 
@@ -373,7 +373,7 @@ def test_an_infeasible_plan_is_raised_not_swallowed():
     def _infeasible(*a, **k):
         raise DeviceMapInfeasible("needs 7.57 GiB free on cuda:0, has 4.10 GiB")
 
-    ns = _load(planner = _infeasible)
+    ns = _load(planner=_infeasible)
     with pytest.raises(DeviceMapInfeasible):
         ns["resolve_unsloth_device_map"]("unsloth", "m")
 
@@ -399,7 +399,7 @@ def test_the_balanced_sentinel_declines_to_balanced_not_sequential(kwargs, devic
     declines on more shapes than a caller can enumerate -- a full finetune, an
     `auto_model` with no `_model_mapping`, a prequantized Falcon-H1 checkpoint.
     """
-    ns = _load(devices = devices, planner = planner)
+    ns = _load(devices=devices, planner=planner)
     assert ns["resolve_unsloth_device_map"]("unsloth_balanced", "m", **kwargs) == "balanced"
     # The plain sentinel is unchanged: an existing caller keeps the answer it had.
     assert ns["resolve_unsloth_device_map"]("unsloth", "m", **kwargs) == "sequential"
@@ -408,7 +408,7 @@ def test_the_balanced_sentinel_declines_to_balanced_not_sequential(kwargs, devic
 @pytest.mark.parametrize("devices", [0, 1])
 def test_the_balanced_sentinel_declines_to_balanced_on_one_device_too(devices):
     """The silent fallbacks are the easy ones to leave hardcoded, and both were."""
-    ns = _load(devices = devices, planner = lambda *a, **k: pytest.fail("nothing to plan"))
+    ns = _load(devices=devices, planner=lambda *a, **k: pytest.fail("nothing to plan"))
     assert ns["resolve_unsloth_device_map"]("unsloth_balanced", "m") == "balanced"
 
 
@@ -417,7 +417,7 @@ def test_both_names_plan_identically_when_the_planner_answers():
     path that could drift."""
     planned = {"": 0, "model.vision_tower": 1}
     for name in ("unsloth", "unsloth_balanced"):
-        ns = _load(planner = lambda *a, **k: _Plan(dict(planned)))
+        ns = _load(planner=lambda *a, **k: _Plan(dict(planned)))
         assert ns["resolve_unsloth_device_map"](name, "m") == planned
 
 
@@ -430,7 +430,7 @@ def test_an_infeasible_plan_is_still_raised_for_the_balanced_name():
     def _infeasible(*a, **k):
         raise DeviceMapInfeasible("needs 7.57 GiB free on cuda:0, has 4.10 GiB")
 
-    ns = _load(planner = _infeasible)
+    ns = _load(planner=_infeasible)
     with pytest.raises(DeviceMapInfeasible):
         ns["resolve_unsloth_device_map"]("unsloth_balanced", "m")
 
@@ -450,14 +450,14 @@ def test_the_plan_is_returned_and_the_model_name_reaches_the_planner():
     seen = {}
 
     def _planner(model_name, **kwargs):
-        seen.update(kwargs, model_name = model_name)
+        seen.update(kwargs, model_name=model_name)
         return _Plan({"": 0, "model.vision_tower": 1})
 
-    ns = _load(planner = _planner)
+    ns = _load(planner=_planner)
     result = ns["resolve_unsloth_device_map"](
         "unsloth",
         "unsloth/Muse-Glimmer-30B-unsloth-bnb-4bit",
-        load_in_4bit = True,
+        load_in_4bit=True,
     )
     assert result == {"": 0, "model.vision_tower": 1}
     assert seen["model_name"] == "unsloth/Muse-Glimmer-30B-unsloth-bnb-4bit"
@@ -470,8 +470,8 @@ def test_free_memory_is_planned_against_not_total():
     (unsloth-zoo#1048)."""
     seen = {}
     ns = _load(
-        free = {0: 4 * 2**30, 1: 15 * 2**30},
-        planner = lambda name, **kw: seen.update(kw) or _Plan({"": 0}),
+        free={0: 4 * 2**30, 1: 15 * 2**30},
+        planner=lambda name, **kw: seen.update(kw) or _Plan({"": 0}),
     )
     ns["resolve_unsloth_device_map"]("unsloth", "m")
     assert seen["max_memory"] == {0: 4 * 2**30, 1: 15 * 2**30}
@@ -485,12 +485,12 @@ def test_planning_happens_only_where_the_model_name_is_final():
     belongs in llama.py and vision.py, where the name has stopped moving.
     """
     models = os.path.join(HERE, "unsloth", "models")
-    loader = open(os.path.join(models, "loader.py"), encoding = "utf-8").read()
+    loader = open(os.path.join(models, "loader.py"), encoding="utf-8").read()
     assert (
         "resolve_unsloth_device_map(" not in loader
     ), "loader.py plans before get_model_name has had its say"
     for name in ("llama.py", "vision.py"):
-        source = open(os.path.join(models, name), encoding = "utf-8").read()
+        source = open(os.path.join(models, name), encoding="utf-8").read()
         assert "resolve_unsloth_device_map(" in source, name
 
 
@@ -501,7 +501,7 @@ def test_every_entry_point_accepts_the_planner_kwargs():
 
     models = os.path.join(HERE, "unsloth", "models")
     for name in ("loader.py", "llama.py", "vision.py"):
-        source = open(os.path.join(models, name), encoding = "utf-8").read()
+        source = open(os.path.join(models, name), encoding="utf-8").read()
         found = [
             node
             for node in _ast.walk(_ast.parse(source))
@@ -519,11 +519,11 @@ def test_planner_kwargs_reach_the_planner():
     """A GRPO backward retains rows the planner's inference-shaped default (0) does not
     reserve for, so the notebook has to be able to say so."""
     seen = {}
-    ns = _load(planner = lambda name, **kw: seen.update(kw) or _Plan({"": 0}))
+    ns = _load(planner=lambda name, **kw: seen.update(kw) or _Plan({"": 0}))
     ns["resolve_unsloth_device_map"](
         "unsloth",
         "m",
-        planner_kwargs = {"rows_per_chunk": 128, "retained_rows": 6144, "softcapped": True},
+        planner_kwargs={"rows_per_chunk": 128, "retained_rows": 6144, "softcapped": True},
     )
     assert seen["rows_per_chunk"] == 128
     assert seen["retained_rows"] == 6144
@@ -537,11 +537,11 @@ def test_a_user_quantization_config_replaces_the_flags_for_the_planner():
     `DeviceMapInfeasible` kills a load that would have fit.
     """
     ns = _load()
-    config = types.SimpleNamespace(load_in_4bit = True, load_in_8bit = False)
+    config = types.SimpleNamespace(load_in_4bit=True, load_in_8bit=False)
     kwargs = ns["planner_quantization_kwargs"](
-        load_in_4bit = False,
-        load_in_8bit = False,
-        quantization_config = config,
+        load_in_4bit=False,
+        load_in_8bit=False,
+        quantization_config=config,
     )
     assert kwargs == {"quantization_config": config}
     # Both at once is exactly what transformers and the planner reject.
@@ -553,8 +553,8 @@ def test_a_user_quantization_config_replaces_the_flags_for_the_planner():
 def test_the_flags_are_used_when_no_config_was_given(four_bit, eight_bit):
     ns = _load()
     assert ns["planner_quantization_kwargs"](
-        load_in_4bit = four_bit,
-        load_in_8bit = eight_bit,
+        load_in_4bit=four_bit,
+        load_in_8bit=eight_bit,
     ) == {
         "load_in_4bit": four_bit,
         "load_in_8bit": eight_bit,
@@ -576,13 +576,13 @@ def test_the_modules_unsloth_keeps_in_compute_dtype_are_sized_that_way():
     `vision_tower`), the number this plan exists to get right.
     """
     seen = {}
-    ns = _load(planner = lambda name, **kw: seen.update(kw) or _Plan({"": 0}))
+    ns = _load(planner=lambda name, **kw: seen.update(kw) or _Plan({"": 0}))
     ns["resolve_unsloth_device_map"](
         "unsloth",
         "m",
         **ns["planner_quantization_kwargs"](
-            load_in_4bit = True,
-            extra_skip_modules = ["out_proj"],
+            load_in_4bit=True,
+            extra_skip_modules=["out_proj"],
         ),
     )
     assert seen["load_in_4bit"] is True
@@ -593,20 +593,20 @@ def test_the_skip_list_is_not_sent_alongside_a_user_config():
     """The config already carries its own; sending both is what transformers refuses."""
     ns = _load()
     kwargs = ns["planner_quantization_kwargs"](
-        quantization_config = types.SimpleNamespace(load_in_4bit = True),
-        extra_skip_modules = ["out_proj"],
+        quantization_config=types.SimpleNamespace(load_in_4bit=True),
+        extra_skip_modules=["out_proj"],
     )
     assert kwargs == {"quantization_config": kwargs["quantization_config"]}
 
 
 def test_the_config_is_what_reaches_the_planner():
     seen = {}
-    ns = _load(planner = lambda name, **kw: seen.update(kw) or _Plan({"": 0}))
-    config = types.SimpleNamespace(load_in_4bit = True, load_in_8bit = False)
+    ns = _load(planner=lambda name, **kw: seen.update(kw) or _Plan({"": 0}))
+    config = types.SimpleNamespace(load_in_4bit=True, load_in_8bit=False)
     ns["resolve_unsloth_device_map"](
         "unsloth",
         "m",
-        **ns["planner_quantization_kwargs"](quantization_config = config),
+        **ns["planner_quantization_kwargs"](quantization_config=config),
     )
     assert seen["quantization_config"] is config
     assert "load_in_4bit" not in seen
@@ -617,7 +617,7 @@ def test_the_leaf_loaders_derive_the_planner_quantization_from_the_config():
     receives the flag already cleared by loader.py."""
     models = os.path.join(HERE, "unsloth", "models")
     for name in ("llama.py", "vision.py", "diffusion.py"):
-        source = open(os.path.join(models, name), encoding = "utf-8").read()
+        source = open(os.path.join(models, name), encoding="utf-8").read()
         for node in ast.walk(ast.parse(source)):
             if not (
                 isinstance(node, ast.Call)
@@ -657,7 +657,7 @@ def test_the_planner_sizes_the_dtype_the_load_will_really_use(name):
     `dtype`, and the planner hands these straight to AutoConfig, which only honours the
     name its own version knows.
     """
-    source = open(os.path.join(HERE, "unsloth", "models", name), encoding = "utf-8").read()
+    source = open(os.path.join(HERE, "unsloth", "models", name), encoding="utf-8").read()
     calls = _resolve_calls(source)
     assert calls, f"{name} never resolves a device map"
     for call in calls:
@@ -676,7 +676,7 @@ def test_the_diffusion_plan_is_sized_against_the_config_the_load_applies():
     one config object is built before the plan and reused by the load.
     """
     path = os.path.join(HERE, "unsloth", "models", "diffusion.py")
-    source = open(path, encoding = "utf-8").read()
+    source = open(path, encoding="utf-8").read()
     tree = ast.parse(source)
 
     built = [
@@ -719,7 +719,7 @@ def test_the_diffusion_plan_is_sized_against_the_config_the_load_applies():
 
 def _helpers():
     """`planner_kwargs_with_max_memory` / `planner_hub_kwargs`, without importing torch."""
-    src = open(LOADER_UTILS, encoding = "utf-8").read()
+    src = open(LOADER_UTILS, encoding="utf-8").read()
     ns = {"os": os}
     for node in ast.parse(src).body:
         keep = (
@@ -771,8 +771,8 @@ def test_the_planner_is_told_where_the_hub_is(monkeypatch):
     """It resolves the config a second time from `model_name`. Without these it can reach
     the network behind `local_files_only`, or miss a model that only exists in the caller's
     cache and lose a plan the load needed."""
-    monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
-    monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising = False)
+    monkeypatch.delenv("HF_HUB_OFFLINE", raising=False)
+    monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising=False)
     ns = _helpers()
     assert ns["planner_hub_kwargs"]({"cache_dir": "/models", "local_files_only": True}) == {
         "cache_dir": "/models",
@@ -785,7 +785,7 @@ def test_the_planner_is_told_where_the_hub_is(monkeypatch):
 @pytest.mark.parametrize("name", ["vision.py", "llama.py", "diffusion.py"])
 def test_every_leaf_planner_call_forwards_the_budget_and_the_hub(name):
     """A leaf that misses either one silently plans against the wrong facts."""
-    source = open(os.path.join(MODELS, name), encoding = "utf-8").read()
+    source = open(os.path.join(MODELS, name), encoding="utf-8").read()
     for node in ast.walk(ast.parse(source)):
         if not isinstance(node, ast.Call):
             continue
@@ -811,10 +811,10 @@ def test_the_wrapper_tells_the_leaf_the_config_was_the_callers():
     None and a veto keyed on that alone never fires on the path almost everyone uses.
     The flag travels explicitly, the way `text_only_decoder` already does for the same
     reason: `auto_config` no longer describing the repo cannot be inferred downstream."""
-    loader = open(os.path.join(MODELS, "loader.py"), encoding = "utf-8").read()
+    loader = open(os.path.join(MODELS, "loader.py"), encoding="utf-8").read()
     assert "auto_config_from_caller = user_config is not None" in loader
 
-    vision = open(os.path.join(MODELS, "vision.py"), encoding = "utf-8").read()
+    vision = open(os.path.join(MODELS, "vision.py"), encoding="utf-8").read()
     args = [
         a.arg
         for node in ast.walk(ast.parse(vision))
@@ -829,7 +829,7 @@ def test_a_resize_declines_the_automatic_offload():
     """`resize_token_embeddings` replaces the embedding module, and forward hooks do not
     travel to the replacement, so an offload installed during the load would leave a CPU
     embedding feeding a GPU decoder. An explicit request is left alone."""
-    loader = open(os.path.join(MODELS, "loader.py"), encoding = "utf-8").read()
+    loader = open(os.path.join(MODELS, "loader.py"), encoding="utf-8").read()
     assert "resize_model_vocab is not None" in loader
     assert "and offload_embedding == OFFLOAD_EMBEDDING_AUTO" in loader
 
@@ -838,7 +838,7 @@ def test_a_caller_supplied_config_declines_planning():
     """The weights load against their config; the planner rebuilds the repo's. Same class,
     different `num_hidden_layers` or `vocab_size`, and the map omits blocks or under-budgets
     weights -- which the class comparison cannot see."""
-    source = open(os.path.join(MODELS, "vision.py"), encoding = "utf-8").read()
+    source = open(os.path.join(MODELS, "vision.py"), encoding="utf-8").read()
     assert "user_config is not None" in source
     tree = ast.parse(source)
     for node in ast.walk(tree):
@@ -854,7 +854,7 @@ def test_the_optimized_path_says_so_when_it_drops_an_offload_request():
     """`FastLanguageModel` accepts `offload_embedding`, but the optimized architectures
     take a path that has never had the parameter, so the request went nowhere in silence.
     The `"auto"` default stays quiet, since off is a decision it is entitled to make."""
-    source = open(os.path.join(MODELS, "loader.py"), encoding = "utf-8").read()
+    source = open(os.path.join(MODELS, "loader.py"), encoding="utf-8").read()
     assert "does not support it" in source
     assert "offload_embedding != OFFLOAD_EMBEDDING_AUTO" in source
 
@@ -865,7 +865,7 @@ def test_the_auto_mode_is_recognised_by_value_everywhere():
     in automatic mode as far as the resolver is concerned. Any guard elsewhere that asks
     `is` disagrees with it: the resize guard would leave the offload on and the optimized
     path would print a notice for a request nobody made. Same question, same operator."""
-    loader = open(os.path.join(MODELS, "loader.py"), encoding = "utf-8").read()
+    loader = open(os.path.join(MODELS, "loader.py"), encoding="utf-8").read()
     for node in ast.walk(ast.parse(loader)):
         if not isinstance(node, ast.Compare):
             continue
@@ -882,7 +882,7 @@ def test_the_optimized_path_declines_a_caller_supplied_config():
     own `user_config` and loads the weights against it while the planner rebuilds the
     repo's from `model_name`. A caller who changed `num_hidden_layers` or `vocab_size`
     would get a map for a different model, so the plan is declined rather than guessed."""
-    llama = open(os.path.join(MODELS, "llama.py"), encoding = "utf-8").read()
+    llama = open(os.path.join(MODELS, "llama.py"), encoding="utf-8").read()
     tree = ast.parse(llama)
     body = None
     for node in ast.walk(tree):
@@ -907,7 +907,7 @@ def test_the_diffusion_leaf_plans_with_the_locality_the_load_uses():
     into it before the load, so handing the planner the raw kwargs would tell it nothing.
     It gets the resolved value, or an offline load reaches the Hub behind the caller's
     back and, when that lookup fails, silently loses the split the model needs to fit."""
-    source = open(os.path.join(MODELS, "diffusion.py"), encoding = "utf-8").read()
+    source = open(os.path.join(MODELS, "diffusion.py"), encoding="utf-8").read()
     for node in ast.walk(ast.parse(source)):
         if not isinstance(node, ast.Call):
             continue
@@ -948,7 +948,7 @@ def test_a_max_position_embeddings_override_reaches_the_planner():
 def test_the_diffusion_leaf_plans_with_the_code_revision_too():
     """Same reason as its locality: this leaf builds the helper's input itself, so a key
     added to the helper does not reach it unless it is named here."""
-    source = open(os.path.join(MODELS, "diffusion.py"), encoding = "utf-8").read()
+    source = open(os.path.join(MODELS, "diffusion.py"), encoding="utf-8").read()
     for node in ast.walk(ast.parse(source)):
         if isinstance(node, ast.Call) and getattr(node.func, "id", None) == "planner_hub_kwargs":
             assert "code_revision" in ast.unparse(
@@ -963,7 +963,7 @@ def test_an_unresolvable_explicit_model_class_declines_planning():
     `PreTrainedModel` subclass does not have, so it returns None and
     `planner_class_mismatch_reason` reads unknown as compatible. The planner would then
     build whatever the repo config selects while the load builds the caller's class."""
-    vision = open(os.path.join(MODELS, "vision.py"), encoding = "utf-8").read()
+    vision = open(os.path.join(MODELS, "vision.py"), encoding="utf-8").read()
     assert 'getattr(auto_model, "_model_mapping", None) is None' in vision
     assert "an explicit model class has no auto mapping" in vision
 
@@ -980,7 +980,7 @@ def test_an_auto_class_still_plans():
     Declining on `model_class is None` alone would have turned planning off for those."""
     import ast as _ast
 
-    vision = open(os.path.join(MODELS, "vision.py"), encoding = "utf-8").read()
+    vision = open(os.path.join(MODELS, "vision.py"), encoding="utf-8").read()
     idx = vision.index("an explicit model class has no auto mapping")
     guard = vision[vision.rindex("if (", 0, idx) : idx]
     assert "_model_mapping" in guard, "the veto is not keyed on the class being concrete"
@@ -992,7 +992,7 @@ _QUANT_NAMES = ("is_quantized", "load_in_4bit", "load_in_8bit", "load_in_fp8")
 
 def _prepare_device_map_guards():
     """Every `prepare_device_map()` call in loader.py, with the `if` tests enclosing it."""
-    source = open(LOADER, encoding = "utf-8").read()
+    source = open(LOADER, encoding="utf-8").read()
     tree = ast.parse(source)
     found = []
 
@@ -1052,8 +1052,8 @@ class _FakeDistributed:
 
     def __init__(
         self,
-        rank = None,
-        world_size = None,
+        rank=None,
+        world_size=None,
     ):
         self._rank = rank
         self._world_size = world_size
@@ -1107,24 +1107,24 @@ _DISTRIBUTED_CONSTANTS = (
 def _load_distributed(
     monkeypatch,
     *,
-    device_type = "cuda",
-    devices = 8,
-    rank = None,
-    world_size = None,
-    env = None,
+    device_type="cuda",
+    devices=8,
+    rank=None,
+    world_size=None,
+    env=None,
 ):
     """The placement helpers over a fabricated launcher environment and accelerator."""
     for key in ("LOCAL_RANK", "RANK", "WORLD_SIZE"):
-        monkeypatch.delenv(key, raising = False)
+        monkeypatch.delenv(key, raising=False)
     for key, value in (env or {}).items():
         monkeypatch.setenv(key, value)
 
     accelerator = _FakeAccelerator(devices)
     torch_stub = types.SimpleNamespace(
-        distributed = _FakeDistributed(rank, world_size),
-        cuda = accelerator,
-        xpu = accelerator,
-        npu = accelerator,
+        distributed=_FakeDistributed(rank, world_size),
+        cuda=accelerator,
+        xpu=accelerator,
+        npu=accelerator,
     )
     ns = {"os": os, "torch": torch_stub, "DEVICE_TYPE_TORCH": device_type}
     for node in ast.parse(_SRC).body:
@@ -1158,10 +1158,10 @@ def test_the_second_node_of_a_multi_node_job_pins_to_its_own_card():
     try:
         ns, accelerator = _load_distributed(
             monkeypatch,
-            devices = 8,
-            rank = 8,
-            world_size = 16,
-            env = {"LOCAL_RANK": "0", "RANK": "8", "WORLD_SIZE": "16"},
+            devices=8,
+            rank=8,
+            world_size=16,
+            env={"LOCAL_RANK": "0", "RANK": "8", "WORLD_SIZE": "16"},
         )
         device_map, is_dist = _pinned_device_map(ns)
         assert is_dist
@@ -1177,9 +1177,9 @@ def test_a_launcher_that_sets_no_local_rank_still_names_a_card_that_exists():
     try:
         ns, accelerator = _load_distributed(
             monkeypatch,
-            devices = 8,
-            rank = 9,
-            world_size = 16,
+            devices=8,
+            rank=9,
+            world_size=16,
         )
         device_map, is_dist = _pinned_device_map(ns)
         assert is_dist
@@ -1195,10 +1195,10 @@ def test_a_per_rank_cuda_visible_devices_pins_to_the_one_card_it_can_see():
     try:
         ns, accelerator = _load_distributed(
             monkeypatch,
-            devices = 1,
-            rank = 3,
-            world_size = 4,
-            env = {"LOCAL_RANK": "3", "RANK": "3", "WORLD_SIZE": "4"},
+            devices=1,
+            rank=3,
+            world_size=4,
+            env={"LOCAL_RANK": "3", "RANK": "3", "WORLD_SIZE": "4"},
         )
         device_map, _ = _pinned_device_map(ns)
         assert device_map == {"": "cuda:0"}, device_map
@@ -1214,10 +1214,10 @@ def test_a_single_node_launch_keeps_the_rank_it_already_had(local_rank):
     try:
         ns, accelerator = _load_distributed(
             monkeypatch,
-            devices = 2,
-            rank = local_rank,
-            world_size = 2,
-            env = {"LOCAL_RANK": str(local_rank), "RANK": str(local_rank), "WORLD_SIZE": "2"},
+            devices=2,
+            rank=local_rank,
+            world_size=2,
+            env={"LOCAL_RANK": str(local_rank), "RANK": str(local_rank), "WORLD_SIZE": "2"},
         )
         device_map, is_dist = _pinned_device_map(ns)
         assert is_dist
@@ -1231,7 +1231,7 @@ def test_a_single_process_run_is_never_pinned():
     """No launcher, no distribution: one GPU and CPU-only runs keep their own placement."""
     monkeypatch = pytest.MonkeyPatch()
     try:
-        ns, accelerator = _load_distributed(monkeypatch, devices = 1)
+        ns, accelerator = _load_distributed(monkeypatch, devices=1)
         assert _pinned_device_map(ns) == (None, False)
         assert accelerator.pinned == []
     finally:

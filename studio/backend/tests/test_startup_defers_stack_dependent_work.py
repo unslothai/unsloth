@@ -22,7 +22,7 @@ _MAIN = _BACKEND / "main.py"
 
 
 def _lifespan_body() -> ast.AsyncFunctionDef:
-    tree = ast.parse(_MAIN.read_text(encoding = "utf-8"))
+    tree = ast.parse(_MAIN.read_text(encoding="utf-8"))
     for node in ast.walk(tree):
         if isinstance(node, ast.AsyncFunctionDef) and node.name == "lifespan":
             return node
@@ -30,7 +30,7 @@ def _lifespan_body() -> ast.AsyncFunctionDef:
 
 
 def _post_warm_body() -> ast.FunctionDef:
-    tree = ast.parse(_MAIN.read_text(encoding = "utf-8"))
+    tree = ast.parse(_MAIN.read_text(encoding="utf-8"))
     for node in ast.walk(tree):
         if isinstance(node, ast.FunctionDef) and node.name == "_post_warm_background_work":
             return node
@@ -108,7 +108,7 @@ def test_post_warm_thread_is_started_by_the_lifespan():
     )
 
     # ...and the helper must target the real work, or a do-nothing thread passes.
-    tree = ast.parse(_MAIN.read_text(encoding = "utf-8"))
+    tree = ast.parse(_MAIN.read_text(encoding="utf-8"))
     starter = next(
         node
         for node in ast.walk(tree)

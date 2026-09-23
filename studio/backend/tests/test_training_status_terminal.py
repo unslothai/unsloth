@@ -21,8 +21,8 @@ import pytest
 def _shared_setup_1():
     resp = asyncio.run(
         rt.stop_training(
-            rt.TrainingStopRequest(save = True, expected_job_id = "job_1"),
-            current_subject = "t",
+            rt.TrainingStopRequest(save=True, expected_job_id="job_1"),
+            current_subject="t",
         )
     )
     return resp
@@ -40,7 +40,7 @@ async def _inline_to_thread(function, /, *args, **kwargs):
     return function(*args, **kwargs)
 
 
-@pytest.fixture(autouse = True)
+@pytest.fixture(autouse=True)
 def _run_route_helpers_inline(monkeypatch):
     monkeypatch.setattr(rt.asyncio, "to_thread", _inline_to_thread)
 
@@ -62,15 +62,15 @@ class _WedgedProc:
     def kill(self):
         self._alive = False
 
-    def join(self, timeout = None):
+    def join(self, timeout=None):
         pass
 
 
-def _running(monkeypatch, job_id = "job_1"):
+def _running(monkeypatch, job_id="job_1"):
     b = TrainingBackend()
     b.current_job_id = job_id
     b._proc = _WedgedProc()
-    b._progress = TrainingProgress(is_training = True, status_message = "Training in progress...")
+    b._progress = TrainingProgress(is_training=True, status_message="Training in progress...")
     b._finalize_run_in_db = lambda **kw: None
     b._ensure_db_run_created = lambda: None
     b._start_stop_watchdog = lambda **kw: None  # keep the worker wedged on purpose
@@ -92,9 +92,9 @@ class _Req:
         return False
 
 
-async def _sse_events(timeout = 10.0):
+async def _sse_events(timeout=10.0):
     """Event names the real SSE generator yields until it closes."""
-    resp = await rt.stream_training_progress(_Req(), current_subject = "t")
+    resp = await rt.stream_training_progress(_Req(), current_subject="t")
     names: list[str] = []
 
     async def pump():
@@ -106,7 +106,7 @@ async def _sse_events(timeout = 10.0):
                 return
 
     try:
-        await asyncio.wait_for(pump(), timeout = timeout)
+        await asyncio.wait_for(pump(), timeout=timeout)
     except asyncio.TimeoutError:
         pass
     return names
@@ -115,7 +115,7 @@ async def _sse_events(timeout = 10.0):
 def test_status_reports_completed_while_worker_still_wedged(monkeypatch):
     b = _running(monkeypatch)
     b._handle_event(dict(_DONE))
-    st = asyncio.run(rt.get_training_status(current_subject = "t"))
+    st = asyncio.run(rt.get_training_status(current_subject="t"))
     assert st.is_training_running is False
     assert st.phase == "completed"
     assert st.message.startswith("Training completed!")
@@ -125,14 +125,14 @@ def test_status_reports_completed_while_worker_still_wedged(monkeypatch):
 def test_status_reports_error_while_worker_still_wedged(monkeypatch):
     b = _running(monkeypatch)
     b._handle_event({"type": "error", "error": "CUDA OOM", "stack": ""})
-    st = asyncio.run(rt.get_training_status(current_subject = "t"))
+    st = asyncio.run(rt.get_training_status(current_subject="t"))
     assert st.is_training_running is False
     assert st.phase == "error"
 
 
 def test_status_unchanged_mid_run(monkeypatch):
     _running(monkeypatch)
-    st = asyncio.run(rt.get_training_status(current_subject = "t"))
+    st = asyncio.run(rt.get_training_status(current_subject="t"))
     assert st.is_training_running is True
     assert st.phase == "training"
 
@@ -155,7 +155,7 @@ def test_progress_stream_stays_open_while_training(monkeypatch):
     b.lr_history.append(1e-4)
 
     async def _run():
-        resp = await rt.stream_training_progress(_Req(), current_subject = "t")
+        resp = await rt.stream_training_progress(_Req(), current_subject="t")
         names: list[str] = []
 
         async def pump():
@@ -193,13 +193,13 @@ def test_late_stop_does_not_unfinish_a_completed_run(monkeypatch):
     assert resp.status == "idle"
     assert b._should_stop is False
 
-    st = asyncio.run(rt.get_training_status(current_subject = "t"))
+    st = asyncio.run(rt.get_training_status(current_subject="t"))
     assert st.phase == "completed"
     assert st.message.startswith("Training completed!")
 
     # ... and it survives the watchdog reaping the wedged worker.
-    b._finalize_stopped_after_escalation(target_proc = b._proc, watched_job_id = "job_1")
-    st = asyncio.run(rt.get_training_status(current_subject = "t"))
+    b._finalize_stopped_after_escalation(target_proc=b._proc, watched_job_id="job_1")
+    st = asyncio.run(rt.get_training_status(current_subject="t"))
     assert st.phase == "completed"
     assert st.message.startswith("Training completed!")
 
@@ -215,11 +215,11 @@ def test_stop_and_save_losing_the_race_to_the_pump_keeps_the_run_completed(monke
     b._db_run_created = True
     real_stop, fired = b.stop_training, []
 
-    def stop_after_complete(save = True, expected_job_id = None):
+    def stop_after_complete(save=True, expected_job_id=None):
         if not fired:
             fired.append(True)
             b._handle_event(dict(_DONE))  # the pump wins the gap
-        return real_stop(save = save, expected_job_id = expected_job_id)
+        return real_stop(save=save, expected_job_id=expected_job_id)
 
     b.stop_training = stop_after_complete
 
@@ -228,7 +228,7 @@ def test_stop_and_save_losing_the_race_to_the_pump_keeps_the_run_completed(monke
     assert b._should_stop is False, "a run that finished in the gap must not latch a stop"
     assert (b._terminal_finalize_payload or {}).get("status") == "completed"
 
-    st = asyncio.run(rt.get_training_status(current_subject = "t"))
+    st = asyncio.run(rt.get_training_status(current_subject="t"))
     assert st.phase == "completed"
     assert st.message.startswith("Training completed!")
 
@@ -245,12 +245,12 @@ def test_cancel_mid_run_still_works(monkeypatch):
     b = _running(monkeypatch)
     b._db_run_created = True
     monkeypatch.setattr(
-        "storage.studio_db.mark_run_cancel_requested", lambda *a, **k: True, raising = False
+        "storage.studio_db.mark_run_cancel_requested", lambda *a, **k: True, raising=False
     )
     resp = asyncio.run(
         rt.stop_training(
-            rt.TrainingStopRequest(save = False, expected_job_id = "job_1"),
-            current_subject = "t",
+            rt.TrainingStopRequest(save=False, expected_job_id="job_1"),
+            current_subject="t",
         )
     )
     assert resp.status == "stopped"
@@ -274,7 +274,7 @@ def test_surfaces_tolerate_a_backend_without_is_run_finished(monkeypatch):
             return False
 
     monkeypatch.setattr(rt, "get_training_backend", lambda: _Minimal())
-    st = asyncio.run(rt.get_training_status(current_subject = "t"))
+    st = asyncio.run(rt.get_training_status(current_subject="t"))
     assert st.is_training_running is False
     assert rt._run_finished(_Minimal()) is False
 
@@ -283,10 +283,10 @@ def test_status_retains_resolved_repo_through_preparation_and_clears_on_next_loa
     b = _running(monkeypatch)
     b._handle_event({"type": "model_load_started"})
     b._handle_event({"type": "model_load_resolved", "repo_id": "org/resolved"})
-    st = asyncio.run(rt.get_training_status(current_subject = "t"))
+    st = asyncio.run(rt.get_training_status(current_subject="t"))
     assert st.details["model_download_repo_id"] == "org/resolved"
     b._handle_event({"type": "model_load_completed"})
-    st = asyncio.run(rt.get_training_status(current_subject = "t"))
+    st = asyncio.run(rt.get_training_status(current_subject="t"))
     assert st.details["model_download_repo_id"] == "org/resolved"
     b._handle_event({"type": "model_load_started"})
     assert b._model_download_repo_id is None
@@ -297,7 +297,7 @@ def test_status_does_not_report_download_after_worker_finishes(monkeypatch):
     b._handle_event({"type": "model_load_started"})
     b._handle_event({"type": "model_load_resolved", "repo_id": "org/resolved"})
     b._handle_event(dict(_DONE))
-    st = asyncio.run(rt.get_training_status(current_subject = "t"))
+    st = asyncio.run(rt.get_training_status(current_subject="t"))
     assert st.details["model_download_repo_id"] is None
 
 
@@ -308,7 +308,7 @@ def test_worker_reports_remote_repo_but_not_local_paths(monkeypatch, tmp_path):
     import time
 
     source = Path(__file__).parents[1] / "core/training/worker.py"
-    tree = ast.parse(source.read_text(encoding = "utf-8"))
+    tree = ast.parse(source.read_text(encoding="utf-8"))
     report = next(
         n
         for n in ast.walk(tree)
@@ -316,12 +316,12 @@ def test_worker_reports_remote_repo_but_not_local_paths(monkeypatch, tmp_path):
     )
     events = queue.SimpleQueue()
     namespace = {"event_queue": events, "os": os, "time": time}
-    exec(compile(ast.Module(body = [report], type_ignores = []), str(source), "exec"), namespace)
+    exec(compile(ast.Module(body=[report], type_ignores=[]), str(source), "exec"), namespace)
     b = _running(monkeypatch)
     b._handle_event({"type": "model_load_started"})
     namespace["_report_model_repo"]("org/actual-download")
     b._handle_event(events.get_nowait())
-    status = asyncio.run(rt.get_training_status(current_subject = "t"))
+    status = asyncio.run(rt.get_training_status(current_subject="t"))
     assert status.details["model_download_repo_id"] == "org/actual-download"
     namespace["_report_model_repo"](str(tmp_path))
     assert events.empty()

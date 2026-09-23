@@ -55,7 +55,7 @@ def test_auto_keeps_mtp_when_the_gpu_selector_raises():
     """
     with tempfile.TemporaryDirectory() as td:
         tmp_path = Path(td)
-        backend, gguf = _hybrid_mtp_backend(tmp_path, partial_offload = False)
+        backend, gguf = _hybrid_mtp_backend(tmp_path, partial_offload=False)
 
         def _boom(*args, **kwargs):
             raise RuntimeError("probe wedged")
@@ -66,9 +66,9 @@ def test_auto_keeps_mtp_when_the_gpu_selector_raises():
         result = _launch(
             backend,
             gguf,
-            speculative_type = "auto",
-            n_ctx = 4096,
-            n_parallel = 4,
+            speculative_type="auto",
+            n_ctx=4096,
+            n_parallel=4,
         )
 
     cmd = result["cmd"]
@@ -89,15 +89,15 @@ def test_auto_keeps_mtp_when_the_planner_proved_full_offload():
     """
     with tempfile.TemporaryDirectory() as td:
         tmp_path = Path(td)
-        backend, gguf = _hybrid_mtp_backend(tmp_path, partial_offload = False)
+        backend, gguf = _hybrid_mtp_backend(tmp_path, partial_offload=False)
 
         result = _launch(
             backend,
             gguf,
-            speculative_type = "auto",
-            n_ctx = 4096,
-            n_parallel = 4,
-            extra_args = ["--fit", "on"],
+            speculative_type="auto",
+            n_ctx=4096,
+            n_parallel=4,
+            extra_args=["--fit", "on"],
         )
 
     cmd = result["cmd"]
@@ -116,15 +116,15 @@ def test_a_concrete_partial_layer_count_still_stands_mtp_down():
     """
     with tempfile.TemporaryDirectory() as td:
         tmp_path = Path(td)
-        backend, gguf = _hybrid_mtp_backend(tmp_path, partial_offload = False)
+        backend, gguf = _hybrid_mtp_backend(tmp_path, partial_offload=False)
 
         result = _launch(
             backend,
             gguf,
-            speculative_type = "auto",
-            n_ctx = 4096,
-            n_parallel = 4,
-            extra_args = ["--gpu-layers", "42"],
+            speculative_type="auto",
+            n_ctx=4096,
+            n_parallel=4,
+            extra_args=["--gpu-layers", "42"],
         )
 
     cmd = result["cmd"]
@@ -159,11 +159,11 @@ def _mtp_is_engaged(cmd):
     return _spec_of(cmd) in ("draft-mtp", "mtp")
 
 
-@pytest.mark.parametrize("plat_id,plat", PLATFORMS, ids = [p[0] for p in PLATFORMS])
+@pytest.mark.parametrize("plat_id,plat", PLATFORMS, ids=[p[0] for p in PLATFORMS])
 @pytest.mark.parametrize(
     "acc_id,memory,vulkan,device",
     ACCELERATORS,
-    ids = [a[0] for a in ACCELERATORS],
+    ids=[a[0] for a in ACCELERATORS],
 )
 def test_partial_layer_count_stands_mtp_down_everywhere(
     tmp_path, plat_id, plat, acc_id, memory, vulkan, device
@@ -174,8 +174,8 @@ def test_partial_layer_count_stands_mtp_down_everywhere(
     this cell must stand MTP down uniformly -- except CPU-only, where there is no
     GPU to partially offload TO and the CPU MTP policy still applies.
     """
-    backend, gguf = _hybrid_mtp_backend(tmp_path, partial_offload = False, memory = memory)
-    backend._is_vulkan_backend = lambda _binary = None: vulkan
+    backend, gguf = _hybrid_mtp_backend(tmp_path, partial_offload=False, memory=memory)
+    backend._is_vulkan_backend = lambda _binary=None: vulkan
     extra = ["--gpu-layers", "42"]
     if device:
         extra = ["--device", device, *extra]
@@ -184,10 +184,10 @@ def test_partial_layer_count_stands_mtp_down_everywhere(
         result = _launch(
             backend,
             gguf,
-            speculative_type = "auto",
-            n_ctx = 4096,
-            n_parallel = 4,
-            extra_args = extra,
+            speculative_type="auto",
+            n_ctx=4096,
+            n_parallel=4,
+            extra_args=extra,
         )
 
     cmd = result["cmd"]
@@ -199,11 +199,11 @@ def test_partial_layer_count_stands_mtp_down_everywhere(
         assert backend.spec_fallback_reason == "mtp_partial_offload"
 
 
-@pytest.mark.parametrize("plat_id,plat", PLATFORMS, ids = [p[0] for p in PLATFORMS])
+@pytest.mark.parametrize("plat_id,plat", PLATFORMS, ids=[p[0] for p in PLATFORMS])
 @pytest.mark.parametrize(
     "acc_id,memory,vulkan,device",
     ACCELERATORS,
-    ids = [a[0] for a in ACCELERATORS],
+    ids=[a[0] for a in ACCELERATORS],
 )
 def test_full_offload_keeps_mtp_everywhere(tmp_path, plat_id, plat, acc_id, memory, vulkan, device):
     """The planner proved every layer fits: MTP is the whole point, keep it.
@@ -211,18 +211,18 @@ def test_full_offload_keeps_mtp_everywhere(tmp_path, plat_id, plat, acc_id, memo
     This is the regression direction that matters most -- the PR must not cost
     MTP to the users it already works for.
     """
-    backend, gguf = _hybrid_mtp_backend(tmp_path, partial_offload = False, memory = memory)
-    backend._is_vulkan_backend = lambda _binary = None: vulkan
+    backend, gguf = _hybrid_mtp_backend(tmp_path, partial_offload=False, memory=memory)
+    backend._is_vulkan_backend = lambda _binary=None: vulkan
     extra = ["--device", device] if device else None
 
     with patch.object(sys, "platform", plat):
         result = _launch(
             backend,
             gguf,
-            speculative_type = "auto",
-            n_ctx = 4096,
-            n_parallel = 4,
-            extra_args = extra,
+            speculative_type="auto",
+            n_ctx=4096,
+            n_parallel=4,
+            extra_args=extra,
         )
 
     cmd = result["cmd"]
@@ -232,18 +232,18 @@ def test_full_offload_keeps_mtp_everywhere(tmp_path, plat_id, plat, acc_id, memo
     )
 
 
-@pytest.mark.parametrize("plat_id,plat", PLATFORMS, ids = [p[0] for p in PLATFORMS])
+@pytest.mark.parametrize("plat_id,plat", PLATFORMS, ids=[p[0] for p in PLATFORMS])
 @pytest.mark.parametrize(
     "acc_id,memory,vulkan,device",
     ACCELERATORS,
-    ids = [a[0] for a in ACCELERATORS],
+    ids=[a[0] for a in ACCELERATORS],
 )
 def test_cpu_only_layer_count_keeps_mtp_everywhere(
     tmp_path, plat_id, plat, acc_id, memory, vulkan, device
 ):
     """`--gpu-layers 0` is CPU-only, not partial: the rollback copies cost no VRAM."""
-    backend, gguf = _hybrid_mtp_backend(tmp_path, partial_offload = False, memory = memory)
-    backend._is_vulkan_backend = lambda _binary = None: vulkan
+    backend, gguf = _hybrid_mtp_backend(tmp_path, partial_offload=False, memory=memory)
+    backend._is_vulkan_backend = lambda _binary=None: vulkan
     extra = ["--gpu-layers", "0"]
     if device:
         extra = ["--device", device, *extra]
@@ -252,27 +252,27 @@ def test_cpu_only_layer_count_keeps_mtp_everywhere(
         result = _launch(
             backend,
             gguf,
-            speculative_type = "auto",
-            n_ctx = 4096,
-            n_parallel = 4,
-            extra_args = extra,
+            speculative_type="auto",
+            n_ctx=4096,
+            n_parallel=4,
+            extra_args=extra,
         )
 
     assert _spec_of(result["cmd"]) != "none", f"{plat_id}/{acc_id} stood down on -ngl 0"
 
 
-@pytest.mark.parametrize("plat_id,plat", PLATFORMS, ids = [p[0] for p in PLATFORMS])
+@pytest.mark.parametrize("plat_id,plat", PLATFORMS, ids=[p[0] for p in PLATFORMS])
 @pytest.mark.parametrize(
     "acc_id,memory,vulkan,device",
     ACCELERATORS,
-    ids = [a[0] for a in ACCELERATORS],
+    ids=[a[0] for a in ACCELERATORS],
 )
 def test_over_full_layer_count_keeps_mtp_everywhere(
     tmp_path, plat_id, plat, acc_id, memory, vulkan, device
 ):
     """`--gpu-layers 999` is full offload plus the output layer, never partial."""
-    backend, gguf = _hybrid_mtp_backend(tmp_path, partial_offload = False, memory = memory)
-    backend._is_vulkan_backend = lambda _binary = None: vulkan
+    backend, gguf = _hybrid_mtp_backend(tmp_path, partial_offload=False, memory=memory)
+    backend._is_vulkan_backend = lambda _binary=None: vulkan
     extra = ["--gpu-layers", "999"]
     if device:
         extra = ["--device", device, *extra]
@@ -281,34 +281,34 @@ def test_over_full_layer_count_keeps_mtp_everywhere(
         result = _launch(
             backend,
             gguf,
-            speculative_type = "auto",
-            n_ctx = 4096,
-            n_parallel = 4,
-            extra_args = extra,
+            speculative_type="auto",
+            n_ctx=4096,
+            n_parallel=4,
+            extra_args=extra,
         )
 
     assert _spec_of(result["cmd"]) != "none", f"{plat_id}/{acc_id} stood down on -ngl 999"
 
 
-@pytest.mark.parametrize("plat_id,plat", PLATFORMS, ids = [p[0] for p in PLATFORMS])
+@pytest.mark.parametrize("plat_id,plat", PLATFORMS, ids=[p[0] for p in PLATFORMS])
 def test_explicit_mtp_survives_partial_offload_everywhere(tmp_path, plat_id, plat):
     """A user who picks MTP by hand overrides the policy on every platform."""
-    backend, gguf = _hybrid_mtp_backend(tmp_path, partial_offload = True)
+    backend, gguf = _hybrid_mtp_backend(tmp_path, partial_offload=True)
 
     with patch.object(sys, "platform", plat):
         result = _launch(
             backend,
             gguf,
-            speculative_type = "mtp",
-            n_ctx = 4096,
-            n_parallel = 4,
-            extra_args = ["--gpu-layers", "42"],
+            speculative_type="mtp",
+            n_ctx=4096,
+            n_parallel=4,
+            extra_args=["--gpu-layers", "42"],
         )
 
     assert _spec_of(result["cmd"]) != "none", f"{plat_id} overrode an explicit MTP choice"
 
 
-@pytest.mark.parametrize("plat_id,plat", PLATFORMS, ids = [p[0] for p in PLATFORMS])
+@pytest.mark.parametrize("plat_id,plat", PLATFORMS, ids=[p[0] for p in PLATFORMS])
 def test_a_metal_mac_style_empty_probe_keeps_mtp(tmp_path, plat_id, plat):
     """No probe result and no concrete layer count is not evidence of anything.
 
@@ -317,15 +317,15 @@ def test_a_metal_mac_style_empty_probe_keeps_mtp(tmp_path, plat_id, plat):
     llama_cpp.py:14127 rather than a planner verdict. Same shape as a failed
     Vulkan probe on Linux or Windows.
     """
-    backend, gguf = _hybrid_mtp_backend(tmp_path, partial_offload = True, memory = [])
+    backend, gguf = _hybrid_mtp_backend(tmp_path, partial_offload=True, memory=[])
 
     with patch.object(sys, "platform", plat):
         result = _launch(
             backend,
             gguf,
-            speculative_type = "auto",
-            n_ctx = 4096,
-            n_parallel = 4,
+            speculative_type="auto",
+            n_ctx=4096,
+            n_parallel=4,
         )
 
     assert (
@@ -333,7 +333,7 @@ def test_a_metal_mac_style_empty_probe_keeps_mtp(tmp_path, plat_id, plat):
     ), f"{plat_id} stood MTP down with no GPU evidence and no planner verdict"
 
 
-@pytest.mark.parametrize("plat_id,plat", PLATFORMS, ids = [p[0] for p in PLATFORMS])
+@pytest.mark.parametrize("plat_id,plat", PLATFORMS, ids=[p[0] for p in PLATFORMS])
 def test_an_empty_probe_with_a_hand_pinned_device_keeps_mtp(tmp_path, plat_id, plat):
     """The b126194 hole: a device pin proves a GPU EXISTS, not that fit is partial.
 
@@ -342,17 +342,17 @@ def test_an_empty_probe_with_a_hand_pinned_device_keeps_mtp(tmp_path, plat_id, p
     non-empty `gpus` -- so `--fit on` is still the default. Standing MTP down here
     costs a real speedup on a card that may have room for every layer.
     """
-    backend, gguf = _hybrid_mtp_backend(tmp_path, partial_offload = True, memory = [])
+    backend, gguf = _hybrid_mtp_backend(tmp_path, partial_offload=True, memory=[])
     device = "Metal0" if plat == "darwin" else "Vulkan0"
 
     with patch.object(sys, "platform", plat):
         result = _launch(
             backend,
             gguf,
-            speculative_type = "auto",
-            n_ctx = 4096,
-            n_parallel = 4,
-            extra_args = ["--device", device],
+            speculative_type="auto",
+            n_ctx=4096,
+            n_parallel=4,
+            extra_args=["--device", device],
         )
 
     assert _spec_of(result["cmd"]) != "none", (
@@ -370,8 +370,8 @@ def test_a_build_without_mtp_reports_the_binary_not_the_placement(tmp_path):
     Its `--spec-type` enum may not even carry "none", so the emit path below has
     to name binary_no_mtp and keep the update affordance.
     """
-    backend, gguf = _hybrid_mtp_backend(tmp_path, partial_offload = True)
-    backend.probe_server_capabilities = lambda _binary = None: {
+    backend, gguf = _hybrid_mtp_backend(tmp_path, partial_offload=True)
+    backend.probe_server_capabilities = lambda _binary=None: {
         "supports_ngram_mod": False,
         "spec_draft_n_max_flag": None,
     }
@@ -379,10 +379,10 @@ def test_a_build_without_mtp_reports_the_binary_not_the_placement(tmp_path):
     result = _launch(
         backend,
         gguf,
-        speculative_type = "auto",
-        n_ctx = 4096,
-        n_parallel = 4,
-        extra_args = ["--gpu-layers", "42"],
+        speculative_type="auto",
+        n_ctx=4096,
+        n_parallel=4,
+        extra_args=["--gpu-layers", "42"],
     )
 
     assert backend.spec_fallback_reason != "mtp_partial_offload"
@@ -412,7 +412,7 @@ def test_an_old_gguf_without_ssm_group_count_is_priced_as_before(tmp_path):
         setattr(b, k, v)
 
     assert b._mamba_recurrent_state_bytes() == 0
-    assert b._mamba_recurrent_state_bytes(n_parallel = 4, n_rs_seq = 2) == 0
+    assert b._mamba_recurrent_state_bytes(n_parallel=4, n_rs_seq=2) == 0
     # And the KV estimate is still the plain attention number.
     assert b._estimate_kv_cache_bytes(4096, "f16") == 16 * 4096 * 4 * (256 + 256) * 2
 
@@ -449,7 +449,7 @@ def test_recurrent_state_scales_linearly_in_slots_and_depth(n_parallel, n_rs_seq
     }.items():
         setattr(b, k, v)
 
-    base = b._mamba_recurrent_state_bytes(n_parallel = 1, n_rs_seq = 0)
+    base = b._mamba_recurrent_state_bytes(n_parallel=1, n_rs_seq=0)
     assert b._mamba_recurrent_state_bytes(n_parallel, n_rs_seq) == base * n_parallel * (
         1 + n_rs_seq
     )
@@ -481,7 +481,7 @@ def test_any_missing_recurrent_dimension_fails_closed(field):
         setattr(b, k, v)
     setattr(b, field, None)
 
-    assert b._mamba_recurrent_state_bytes(n_parallel = 4, n_rs_seq = 2) == 0
+    assert b._mamba_recurrent_state_bytes(n_parallel=4, n_rs_seq=2) == 0
 
 
 def test_zero_full_attention_interval_does_not_divide_by_zero():
@@ -498,7 +498,7 @@ def test_zero_full_attention_interval_does_not_divide_by_zero():
         setattr(b, k, v)
 
     # fai == 0 means every layer is attention, so nothing is recurrent.
-    assert b._mamba_recurrent_state_bytes(n_parallel = 4) == 0
+    assert b._mamba_recurrent_state_bytes(n_parallel=4) == 0
 
 
 def test_the_reported_regression_is_still_fixed(tmp_path):
@@ -511,14 +511,14 @@ def test_the_reported_regression_is_still_fixed(tmp_path):
 
     See https://huggingface.co/unsloth/Qwen3.8-27B-GGUF/discussions/18.
     """
-    backend, gguf = _hybrid_mtp_backend(tmp_path, partial_offload = True)
+    backend, gguf = _hybrid_mtp_backend(tmp_path, partial_offload=True)
 
     result = _launch(
         backend,
         gguf,
-        speculative_type = "auto",
-        n_ctx = 4096,
-        n_parallel = 4,
+        speculative_type="auto",
+        n_ctx=4096,
+        n_parallel=4,
     )
 
     cmd = result["cmd"]
@@ -530,14 +530,14 @@ def test_the_reported_regression_is_still_fixed(tmp_path):
 
 def test_the_stand_down_survives_a_64k_context(tmp_path):
     """Same verdict at the other context the PR measured."""
-    backend, gguf = _hybrid_mtp_backend(tmp_path, partial_offload = True)
+    backend, gguf = _hybrid_mtp_backend(tmp_path, partial_offload=True)
 
     result = _launch(
         backend,
         gguf,
-        speculative_type = "auto",
-        n_ctx = 65536,
-        n_parallel = 4,
+        speculative_type="auto",
+        n_ctx=65536,
+        n_parallel=4,
     )
 
     assert _spec_of(result["cmd"]) == "none"
@@ -547,14 +547,14 @@ def test_the_stand_down_survives_a_64k_context(tmp_path):
 @pytest.mark.parametrize("n_parallel", [1, 2, 4, 8])
 def test_the_verdict_does_not_depend_on_slot_count(tmp_path, n_parallel):
     """The rollback reserve is per-slot, but the policy is not."""
-    backend, gguf = _hybrid_mtp_backend(tmp_path, partial_offload = True)
+    backend, gguf = _hybrid_mtp_backend(tmp_path, partial_offload=True)
 
     result = _launch(
         backend,
         gguf,
-        speculative_type = "auto",
-        n_ctx = 4096,
-        n_parallel = n_parallel,
+        speculative_type="auto",
+        n_ctx=4096,
+        n_parallel=n_parallel,
     )
 
     assert _spec_of(result["cmd"]) == "none"
@@ -573,5 +573,5 @@ def test_nextn_larger_than_block_count_does_not_go_negative():
     }.items():
         setattr(b, k, v)
 
-    assert b._mamba_recurrent_state_bytes(n_parallel = 4) >= 0
+    assert b._mamba_recurrent_state_bytes(n_parallel=4) >= 0
     assert b._estimate_kv_cache_bytes(4096, "f16") >= 0

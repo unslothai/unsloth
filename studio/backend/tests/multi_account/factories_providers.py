@@ -38,9 +38,9 @@ def _encrypt_api_key(plaintext: str) -> str:
     ciphertext = public_key.encrypt(
         plaintext.encode("utf-8"),
         padding.OAEP(
-            mgf = padding.MGF1(algorithm = hashes.SHA256()),
-            algorithm = hashes.SHA256(),
-            label = None,
+            mgf=padding.MGF1(algorithm=hashes.SHA256()),
+            algorithm=hashes.SHA256(),
+            label=None,
         ),
     )
     return base64.b64encode(ciphertext).decode("ascii")
@@ -52,17 +52,18 @@ def _create_provider(provider_id: str, provider_type: str, display_name: str) ->
 
     providers_db.delete_provider(provider_id)
     providers_db.create_provider(
-        id = provider_id,
-        provider_type = provider_type,
-        display_name = display_name,
-        base_url = get_base_url(provider_type),
-        models = [],
-        available_models = [],
+        id=provider_id,
+        provider_type=provider_type,
+        display_name=display_name,
+        base_url=get_base_url(provider_type),
+        models=[],
+        available_models=[],
     )
 
 
 def _drop_in_process_flows(provider_id: str) -> None:
     from core.inference import openai_codex_auth as codex_auth
+
     for flow_id, flow in list(codex_auth._flows.items()):
         if flow.provider_id != provider_id:
             continue
@@ -141,17 +142,17 @@ def seed_codex_flow(account) -> dict[str, str]:
     _drop_in_process_flows(CODEX_PROVIDER_ID)
     now = time.time()
     flow = codex_auth.OAuthFlow(
-        id = CODEX_FLOW_ID,
-        provider_id = CODEX_PROVIDER_ID,
-        method = "browser",
-        created_at = now,
-        expires_at = now + 900,
-        state = "prov-oauth-state",
-        verifier = "prov-oauth-verifier",
-        redirect_uri = "http://localhost:1455/auth/callback",
-        authorization_url = "https://auth.openai.com/oauth/authorize?state=prov-oauth-state",
-        status = "pending",
-        marker = "prov-oauth-marker",
+        id=CODEX_FLOW_ID,
+        provider_id=CODEX_PROVIDER_ID,
+        method="browser",
+        created_at=now,
+        expires_at=now + 900,
+        state="prov-oauth-state",
+        verifier="prov-oauth-verifier",
+        redirect_uri="http://localhost:1455/auth/callback",
+        authorization_url="https://auth.openai.com/oauth/authorize?state=prov-oauth-state",
+        status="pending",
+        marker="prov-oauth-marker",
     )
     run_as(
         account,
@@ -174,9 +175,9 @@ def seed_mcp_refresh(account) -> dict[str, str]:
         MCP_SERVER_ID,
         SENTINEL,
         MCP_URL,
-        headers_json = None,
-        is_enabled = False,
-        use_oauth = False,
+        headers_json=None,
+        is_enabled=False,
+        use_oauth=False,
     )
     return {"server_id": MCP_SERVER_ID}
 
@@ -234,7 +235,7 @@ def seed_retirable_account(account) -> dict[str, str]:
     for row in storage.list_accounts():
         if row["username"] == RETIRABLE_USERNAME:
             storage.delete_account(row["account_id"], lambda _context: None)
-    issued = storage.issue_account_setup_code(username = RETIRABLE_USERNAME)
+    issued = storage.issue_account_setup_code(username=RETIRABLE_USERNAME)
     account_id = issued["account"]["account_id"]
     # First database use creates the private root, so the retire has a directory to move.
     run_as(AccountContext(account_id, RETIRABLE_USERNAME, "user"), studio_db.list_prompt_entries)
@@ -279,93 +280,93 @@ _ACCOUNTS_SELF_REASON = (
 
 FACTORIES = {
     "routes.providers:PUT:/{provider_id}": Factory(
-        "prov-provider", {"display_name": EDITED}, fragment = EDITED
+        "prov-provider", {"display_name": EDITED}, fragment=EDITED
     ),
     "routes.providers:DELETE:/{provider_id}": Factory(
         "prov-provider",
-        success = 204,
-        owner = (204,),
-        reason = _PROVIDER_DELETE_OWNER_REASON,
+        success=204,
+        owner=(204,),
+        reason=_PROVIDER_DELETE_OWNER_REASON,
     ),
     "routes.providers:PUT:/{provider_id}/api-key/migrate": Factory(
         "prov-provider-without-key",
         MIGRATION_BODY,
-        fragment = '"has_api_key":true',
+        fragment='"has_api_key":true',
     ),
     "routes.openai_codex_auth:GET:/{provider_id}/codex/models": Factory(
-        "prov-codex-provider", fragment = '"source":"curated"'
+        "prov-codex-provider", fragment='"source":"curated"'
     ),
     "routes.openai_codex_auth:POST:/{provider_id}/oauth/start": Factory(
         "prov-codex-provider",
         {"method": "browser"},
-        fragment = '"status":"pending"',
+        fragment='"status":"pending"',
     ),
     "routes.openai_codex_auth:DELETE:/{provider_id}/oauth": Factory(
-        "prov-codex-connected", success = 204
+        "prov-codex-connected", success=204
     ),
     "routes.openai_codex_auth:GET:/{provider_id}/oauth/flows/{flow_id}": Factory(
-        "prov-codex-flow", fragment = CODEX_FLOW_ID
+        "prov-codex-flow", fragment=CODEX_FLOW_ID
     ),
     "routes.openai_codex_auth:DELETE:/{provider_id}/oauth/flows/{flow_id}": Factory(
-        "prov-codex-flow", success = 204
+        "prov-codex-flow", success=204
     ),
     "routes.mcp_servers:POST:/{server_id}/refresh": Factory(
-        "prov-mcp-refresh", fragment = '"ok":false'
+        "prov-mcp-refresh", fragment='"ok":false'
     ),
     "routes.prompts:PUT:/entries/{entry_id}": Factory(
         "prov-prompt-entry",
         PROMPT_ENTRY_BODY,
-        fragment = EDITED,
-        owner = (200,),
-        wrong = (200,),
-        reason = _PROMPT_UPSERT_REASON,
+        fragment=EDITED,
+        owner=(200,),
+        wrong=(200,),
+        reason=_PROMPT_UPSERT_REASON,
     ),
     "routes.prompts:DELETE:/entries/{entry_id}": Factory(
         "prov-prompt-entry",
-        success = 204,
-        owner = (204,),
-        wrong = (204,),
-        reason = _PROMPT_DELETE_REASON,
+        success=204,
+        owner=(204,),
+        wrong=(204,),
+        reason=_PROMPT_DELETE_REASON,
     ),
     "routes.prompts:PUT:/lists/{list_id}": Factory(
         "prov-prompt-list",
         PROMPT_LIST_BODY,
-        fragment = EDITED,
-        owner = (200,),
-        wrong = (200,),
-        reason = _PROMPT_UPSERT_REASON,
+        fragment=EDITED,
+        owner=(200,),
+        wrong=(200,),
+        reason=_PROMPT_UPSERT_REASON,
     ),
     "routes.prompts:DELETE:/lists/{list_id}": Factory(
         "prov-prompt-list",
-        success = 204,
-        owner = (204,),
-        wrong = (204,),
-        reason = _PROMPT_DELETE_REASON,
+        success=204,
+        owner=(204,),
+        wrong=(204,),
+        reason=_PROMPT_DELETE_REASON,
     ),
     "routes.accounts:PATCH:/{account_id}": Factory(
         "prov-account",
         {"is_active": False},
-        owner = (200,),
-        right = (403,),
-        wrong = (403,),
-        self_expected = (400,),
-        reason = _ACCOUNTS_SELF_REASON,
+        owner=(200,),
+        right=(403,),
+        wrong=(403,),
+        self_expected=(400,),
+        reason=_ACCOUNTS_SELF_REASON,
     ),
     "routes.accounts:DELETE:/{account_id}": Factory(
         "prov-retirable-account",
-        success = 204,
-        owner = (204,),
-        right = (403,),
-        wrong = (403,),
-        reason = _ACCOUNTS_DELETE_REASON,
+        success=204,
+        owner=(204,),
+        right=(403,),
+        wrong=(403,),
+        reason=_ACCOUNTS_DELETE_REASON,
     ),
     "routes.accounts:POST:/{account_id}/setup-code": Factory(
         "prov-account",
-        owner = (200,),
-        right = (403,),
-        wrong = (403,),
-        self_expected = (400,),
-        reason = _ACCOUNTS_SELF_REASON,
+        owner=(200,),
+        right=(403,),
+        wrong=(403,),
+        self_expected=(400,),
+        reason=_ACCOUNTS_SELF_REASON,
     ),
 }
 

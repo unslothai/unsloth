@@ -61,7 +61,7 @@ _RAW_MAIN_PLACEMENT_ARGS = (
 
 def _managed_runtime(monkeypatch, tmp_path):
     install = tmp_path / "install" / "build" / "bin"
-    install.mkdir(parents = True)
+    install.mkdir(parents=True)
     binary = install / "llama-server"
     binary.write_bytes(b"binary")
     binary.chmod(0o755)
@@ -95,18 +95,18 @@ def _run_cpu_fallback_load(
     tmp_path,
     *,
     returncodes,
-    first_output = "",
-    mmproj_from_argv = False,
-    mmproj_env = None,
-    cpu_fallback_available = True,
-    extra_args = None,
-    vulkan = True,
-    cpu_fallback = False,
-    resident_fallback = False,
-    cancel_after = None,
-    cancel_in_prepare = False,
-    platform = None,
-    sink = None,
+    first_output="",
+    mmproj_from_argv=False,
+    mmproj_env=None,
+    cpu_fallback_available=True,
+    extra_args=None,
+    vulkan=True,
+    cpu_fallback=False,
+    resident_fallback=False,
+    cancel_after=None,
+    cancel_in_prepare=False,
+    platform=None,
+    sink=None,
 ):
     if platform is not None:
         monkeypatch.setattr(llama_cpp.sys, "platform", platform)
@@ -122,8 +122,8 @@ def _run_cpu_fallback_load(
     mmproj.write_bytes(b"projector")
 
     backend = LlamaCppBackend()
-    backend._get_gpu_memory = lambda _binary = None, **_kw: []
-    backend._get_gpu_free_memory = lambda _binary = None, **_kw: []
+    backend._get_gpu_memory = lambda _binary=None, **_kw: []
+    backend._get_gpu_free_memory = lambda _binary=None, **_kw: []
     backend._read_gguf_metadata = lambda _path: None
     backend._can_estimate_kv = lambda: False
     backend._get_gguf_size_bytes = lambda _path: 1024
@@ -133,11 +133,11 @@ def _run_cpu_fallback_load(
     )
     backend._apu_ram_shortfall_message = lambda *_args, **_kwargs: None
     backend._amd_apu_wants_unified_memory = lambda *_args, **_kwargs: False
-    backend._find_llama_server_binary = lambda include_denied = False: "/fake/llama-server"
+    backend._find_llama_server_binary = lambda include_denied=False: "/fake/llama-server"
     monkeypatch.setattr(
         LlamaCppBackend,
         "_is_vulkan_backend",
-        staticmethod(lambda _binary = None: vulkan),
+        staticmethod(lambda _binary=None: vulkan),
     )
     monkeypatch.setattr(
         LlamaCppBackend,
@@ -173,7 +173,7 @@ def _run_cpu_fallback_load(
         def terminate(self):
             return None
 
-        def wait(self, timeout = None):
+        def wait(self, timeout=None):
             return self.returncode
 
         def kill(self):
@@ -222,12 +222,12 @@ def _run_cpu_fallback_load(
 
     loaded = backend.load_model(
         GgufLoadIntent(
-            gguf_path = str(gguf),
-            mmproj_path = str(mmproj) if mmproj_from_argv else None,
-            model_identifier = "owner/model",
-            is_vision = mmproj_from_argv,
-            extra_args = list(extra_args) if extra_args else None,
-            cpu_fallback = cpu_fallback,
+            gguf_path=str(gguf),
+            mmproj_path=str(mmproj) if mmproj_from_argv else None,
+            model_identifier="owner/model",
+            is_vision=mmproj_from_argv,
+            extra_args=list(extra_args) if extra_args else None,
+            cpu_fallback=cpu_fallback,
         )
     )
     return backend, loaded, launches, fallback_sources
@@ -293,7 +293,7 @@ class TestPlatformMatrix:
     def _install(self, monkeypatch, tmp_path, os_key, runtime):
         platform, prefix, suffix, exe = self.OSES[os_key]
         bindir = tmp_path / "install" / "build" / "bin"
-        bindir.mkdir(parents = True)
+        bindir.mkdir(parents=True)
         binary = bindir / exe
         binary.write_bytes(b"llama-server")
         binary.chmod(0o755)
@@ -362,11 +362,11 @@ class TestPlatformMatrix:
 
         monkeypatch.setattr(update, "_llama_install_root", lambda _binary: tmp_path)
         for name in ("UNSLOTH_FORCE_VULKAN", "UNSLOTH_LLAMA_CPP_BACKEND"):
-            monkeypatch.delenv(name, raising = False)
+            monkeypatch.delenv(name, raising=False)
 
         assert (
             LlamaCppBackend._auto_vulkan_cpu_fallback_eligible(
-                str(binary), GgufLoadIntent(model_identifier = "owner/model"), None, {}
+                str(binary), GgufLoadIntent(model_identifier="owner/model"), None, {}
             )
             is eligible
         )
@@ -383,7 +383,7 @@ class TestPlatformMatrix:
 
         assert (
             LlamaCppBackend._auto_vulkan_cpu_fallback_eligible(
-                str(binary), GgufLoadIntent(model_identifier = "owner/model"), None, {}
+                str(binary), GgufLoadIntent(model_identifier="owner/model"), None, {}
             )
             is False
         )
@@ -404,21 +404,21 @@ class TestAutoVulkanCpuFallbackGate:
     def test_managed_auto_selected_marker_is_eligible(self, monkeypatch, tmp_path):
         self._managed_marker(monkeypatch, tmp_path)
         monkeypatch.setattr(
-            LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda _binary = None: True)
+            LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda _binary=None: True)
         )
-        intent = GgufLoadIntent(model_identifier = "owner/model")
+        intent = GgufLoadIntent(model_identifier="owner/model")
         assert LlamaCppBackend._auto_vulkan_cpu_fallback_eligible(
             "/managed/llama-server", intent, None, {}
         )
 
     def test_automatic_windows_amd_marker_is_eligible(self, monkeypatch, tmp_path):
-        self._managed_marker(monkeypatch, tmp_path, llama_backend = "auto")
+        self._managed_marker(monkeypatch, tmp_path, llama_backend="auto")
         monkeypatch.setattr(
-            LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda _binary = None: True)
+            LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda _binary=None: True)
         )
         assert LlamaCppBackend._auto_vulkan_cpu_fallback_eligible(
             "/managed/llama-server",
-            GgufLoadIntent(model_identifier = "m"),
+            GgufLoadIntent(model_identifier="m"),
             None,
             {},
         )
@@ -428,15 +428,15 @@ class TestAutoVulkanCpuFallbackGate:
         # else, so setup detected this bundle rather than being told to install it.
         # Reading the legacy flag as a choice here would leave a crashing Vulkan
         # install with no automatic CPU replay.
-        self._managed_marker(monkeypatch, tmp_path, llama_backend = "auto")
+        self._managed_marker(monkeypatch, tmp_path, llama_backend="auto")
         monkeypatch.setattr(
-            LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda _binary = None: True)
+            LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda _binary=None: True)
         )
         monkeypatch.setenv("UNSLOTH_LLAMA_CPP_BACKEND", "auto")
         monkeypatch.setenv("UNSLOTH_FORCE_VULKAN", "1")
 
         assert LlamaCppBackend._auto_vulkan_cpu_fallback_eligible(
-            "/managed/llama-server", GgufLoadIntent(model_identifier = "m"), None, {}
+            "/managed/llama-server", GgufLoadIntent(model_identifier="m"), None, {}
         )
 
     @pytest.mark.parametrize(
@@ -458,11 +458,11 @@ class TestAutoVulkanCpuFallbackGate:
     def test_inherited_main_placement_never_downgrades(self, monkeypatch, tmp_path, name, value):
         self._managed_marker(monkeypatch, tmp_path)
         monkeypatch.setattr(
-            LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda _binary = None: True)
+            LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda _binary=None: True)
         )
         assert not LlamaCppBackend._auto_vulkan_cpu_fallback_eligible(
             "/managed/llama-server",
-            GgufLoadIntent(model_identifier = "m"),
+            GgufLoadIntent(model_identifier="m"),
             None,
             {name: value},
         )
@@ -470,18 +470,18 @@ class TestAutoVulkanCpuFallbackGate:
     @pytest.mark.parametrize(
         "intent, extras",
         [
-            (GgufLoadIntent(model_identifier = "m", gpu_ids = (0,)), None),
-            (GgufLoadIntent(model_identifier = "m", gpu_memory_mode = "manual"), None),
-            (GgufLoadIntent(model_identifier = "m", tensor_parallel = True), None),
-            (GgufLoadIntent(model_identifier = "m"), ["--device", "Vulkan0"]),
-            (GgufLoadIntent(model_identifier = "m"), ["-ngl", "20"]),
-            (GgufLoadIntent(model_identifier = "m"), ["-sm", "tensor"]),
+            (GgufLoadIntent(model_identifier="m", gpu_ids=(0,)), None),
+            (GgufLoadIntent(model_identifier="m", gpu_memory_mode="manual"), None),
+            (GgufLoadIntent(model_identifier="m", tensor_parallel=True), None),
+            (GgufLoadIntent(model_identifier="m"), ["--device", "Vulkan0"]),
+            (GgufLoadIntent(model_identifier="m"), ["-ngl", "20"]),
+            (GgufLoadIntent(model_identifier="m"), ["-sm", "tensor"]),
         ],
     )
     def test_explicit_gpu_placement_never_downgrades(self, monkeypatch, tmp_path, intent, extras):
         self._managed_marker(monkeypatch, tmp_path)
         monkeypatch.setattr(
-            LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda _binary = None: True)
+            LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda _binary=None: True)
         )
         assert not LlamaCppBackend._auto_vulkan_cpu_fallback_eligible(
             "/managed/llama-server", intent, extras
@@ -491,11 +491,11 @@ class TestAutoVulkanCpuFallbackGate:
     def test_raw_main_placement_never_downgrades(self, monkeypatch, tmp_path, extras):
         self._managed_marker(monkeypatch, tmp_path)
         monkeypatch.setattr(
-            LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda _binary = None: True)
+            LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda _binary=None: True)
         )
         assert not LlamaCppBackend._auto_vulkan_cpu_fallback_eligible(
             "/managed/llama-server",
-            GgufLoadIntent(model_identifier = "m"),
+            GgufLoadIntent(model_identifier="m"),
             extras,
         )
 
@@ -513,11 +513,11 @@ class TestAutoVulkanCpuFallbackGate:
     def test_explicit_companion_placement_never_downgrades(self, monkeypatch, tmp_path, extras):
         self._managed_marker(monkeypatch, tmp_path)
         monkeypatch.setattr(
-            LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda _binary = None: True)
+            LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda _binary=None: True)
         )
         assert not LlamaCppBackend._auto_vulkan_cpu_fallback_eligible(
             "/managed/llama-server",
-            GgufLoadIntent(model_identifier = "m"),
+            GgufLoadIntent(model_identifier="m"),
             extras,
             {},
         )
@@ -536,22 +536,22 @@ class TestAutoVulkanCpuFallbackGate:
     ):
         self._managed_marker(monkeypatch, tmp_path)
         monkeypatch.setattr(
-            LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda _binary = None: True)
+            LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda _binary=None: True)
         )
         assert not LlamaCppBackend._auto_vulkan_cpu_fallback_eligible(
             "/managed/llama-server",
-            GgufLoadIntent(model_identifier = "m"),
+            GgufLoadIntent(model_identifier="m"),
             None,
             {name: value},
         )
 
     def test_persisted_explicit_vulkan_choice_never_downgrades(self, monkeypatch, tmp_path):
-        self._managed_marker(monkeypatch, tmp_path, llama_backend = "vulkan")
+        self._managed_marker(monkeypatch, tmp_path, llama_backend="vulkan")
         monkeypatch.setattr(
-            LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda _binary = None: True)
+            LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda _binary=None: True)
         )
         assert not LlamaCppBackend._auto_vulkan_cpu_fallback_eligible(
-            "/managed/llama-server", GgufLoadIntent(model_identifier = "m"), None
+            "/managed/llama-server", GgufLoadIntent(model_identifier="m"), None
         )
 
     def test_custom_markerless_binary_never_downgrades(self, monkeypatch):
@@ -559,10 +559,10 @@ class TestAutoVulkanCpuFallbackGate:
 
         monkeypatch.setattr(update, "_llama_install_root", lambda _binary: None)
         monkeypatch.setattr(
-            LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda _binary = None: True)
+            LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda _binary=None: True)
         )
         assert not LlamaCppBackend._auto_vulkan_cpu_fallback_eligible(
-            "/custom/llama-server", GgufLoadIntent(model_identifier = "m"), None
+            "/custom/llama-server", GgufLoadIntent(model_identifier="m"), None
         )
 
     def test_auto_environment_override_does_not_make_a_custom_binary_managed(self, monkeypatch):
@@ -571,11 +571,11 @@ class TestAutoVulkanCpuFallbackGate:
         monkeypatch.setenv("UNSLOTH_LLAMA_CPP_BACKEND", "auto")
         monkeypatch.setattr(update, "_llama_install_root", lambda _binary: None)
         monkeypatch.setattr(
-            LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda _binary = None: True)
+            LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda _binary=None: True)
         )
 
         assert not LlamaCppBackend._auto_vulkan_cpu_fallback_eligible(
-            "/custom/llama-server", GgufLoadIntent(model_identifier = "m"), None
+            "/custom/llama-server", GgufLoadIntent(model_identifier="m"), None
         )
 
 
@@ -597,7 +597,7 @@ class TestCpuIsolatedReplay:
         backend = LlamaCppBackend()
         monkeypatch.setattr(llama_cpp.sys, "platform", platform)
         monkeypatch.setattr(
-            LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda _binary = None: True)
+            LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda _binary=None: True)
         )
         monkeypatch.setattr(
             backend,
@@ -719,9 +719,9 @@ class TestCpuIsolatedReplay:
         backend, loaded, launches, fallback_sources = _run_cpu_fallback_load(
             monkeypatch,
             tmp_path,
-            returncodes = [None],
-            vulkan = False,
-            cpu_fallback = True,
+            returncodes=[None],
+            vulkan=False,
+            cpu_fallback=True,
         )
 
         assert loaded is True
@@ -735,7 +735,7 @@ class TestCpuIsolatedReplay:
         cmd = ["llama-server", "-m", "m.gguf", "--threads", "2", "--jinja"]
 
         replay = LlamaCppBackend._cpu_isolated_replay(
-            cmd, env, {"found": True}, drop_full_offload_threads = True
+            cmd, env, {"found": True}, drop_full_offload_threads=True
         )
 
         assert "--threads" not in replay
@@ -757,7 +757,7 @@ class TestCpuIsolatedReplay:
     def test_non_vulkan_managed_runtime_is_never_staged(self, monkeypatch, tmp_path):
         binary = _managed_runtime(monkeypatch, tmp_path)
         monkeypatch.setattr(
-            LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda _binary = None: False)
+            LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda _binary=None: False)
         )
         backend = LlamaCppBackend()
 
@@ -788,7 +788,7 @@ class TestCpuIsolatedReplay:
     def test_a_runtime_abandoned_by_a_dead_studio_is_swept(self, monkeypatch, tmp_path):
         binary = _managed_runtime(monkeypatch, tmp_path)
         runtime_root = tmp_path / "studio" / "runtime"
-        runtime_root.mkdir(parents = True)
+        runtime_root.mkdir(parents=True)
         dead = runtime_root / "llama-cpu-dead"
         dead.mkdir()
         # A pid no live process can hold, so the sweep must collect it.
@@ -853,11 +853,11 @@ class TestCpuIsolatedReplay:
         assert backend._cpu_fallback_runtime is None
         assert not staged_dir.exists()
 
-    @pytest.mark.skipif(sys.platform == "win32", reason = "shell wrapper fallback is POSIX")
+    @pytest.mark.skipif(sys.platform == "win32", reason="shell wrapper fallback is POSIX")
     def test_wrapper_based_runtime_stages_the_real_executable(self, monkeypatch, tmp_path):
         install = tmp_path / "install"
         bindir = install / "build" / "bin"
-        bindir.mkdir(parents = True)
+        bindir.mkdir(parents=True)
         binary = bindir / "llama-server"
         binary.write_text("#!/bin/sh\nprintf 'healthy\\n'\n")
         binary.chmod(0o755)
@@ -891,9 +891,9 @@ class TestCpuIsolatedReplay:
         assert not (staged_dir / "libggml-vulkan.so").exists()
         completed = subprocess.run(
             [staged],
-            check = True,
-            capture_output = True,
-            text = True,
+            check=True,
+            capture_output=True,
+            text=True,
         )
         assert completed.stdout == "healthy\n"
         backend._cleanup_cpu_fallback_runtime()
@@ -904,9 +904,9 @@ def test_confirmed_projector_failure_replays_the_text_command_on_cpu(monkeypatch
     backend, loaded, launches, fallback_sources = _run_cpu_fallback_load(
         monkeypatch,
         tmp_path,
-        returncodes = [1, -11, None],
-        first_output = "projector-incompatible",
-        mmproj_from_argv = True,
+        returncodes=[1, -11, None],
+        first_output="projector-incompatible",
+        mmproj_from_argv=True,
     )
 
     assert loaded is True
@@ -919,14 +919,14 @@ def test_confirmed_projector_failure_replays_the_text_command_on_cpu(monkeypatch
 
 
 def test_confirmed_projector_signal_retry_keeps_gpu_init_diagnosis(monkeypatch, tmp_path):
-    with pytest.raises(RuntimeError, match = "GPU driver/runtime initialization crash"):
+    with pytest.raises(RuntimeError, match="GPU driver/runtime initialization crash"):
         _run_cpu_fallback_load(
             monkeypatch,
             tmp_path,
-            returncodes = [1, -11],
-            first_output = "projector-incompatible",
-            mmproj_from_argv = True,
-            cpu_fallback_available = False,
+            returncodes=[1, -11],
+            first_output="projector-incompatible",
+            mmproj_from_argv=True,
+            cpu_fallback_available=False,
         )
 
 
@@ -935,8 +935,8 @@ def test_env_projector_cpu_recovery_preserves_vision_state(monkeypatch, tmp_path
     backend, loaded, launches, fallback_sources = _run_cpu_fallback_load(
         monkeypatch,
         tmp_path,
-        returncodes = [-11, -11, None],
-        mmproj_env = {name: "projector.gguf"},
+        returncodes=[-11, -11, None],
+        mmproj_env={name: "projector.gguf"},
     )
 
     assert loaded is True
@@ -961,8 +961,8 @@ def test_env_projector_cpu_recovery_keeps_audio_input(monkeypatch, tmp_path):
     backend, loaded, launches, fallback_sources = _run_cpu_fallback_load(
         monkeypatch,
         tmp_path,
-        returncodes = [-11, -11, None],
-        mmproj_env = {"LLAMA_ARG_MMPROJ": str(projector)},
+        returncodes=[-11, -11, None],
+        mmproj_env={"LLAMA_ARG_MMPROJ": str(projector)},
     )
 
     assert loaded is True
@@ -977,8 +977,8 @@ def test_inherited_split_mode_dropped_before_spawn_still_recovers(monkeypatch, t
     backend, loaded, launches, fallback_sources = _run_cpu_fallback_load(
         monkeypatch,
         tmp_path,
-        returncodes = [-11, -11, None],
-        mmproj_env = {"LLAMA_ARG_SPLIT_MODE": "tensor"},
+        returncodes=[-11, -11, None],
+        mmproj_env={"LLAMA_ARG_SPLIT_MODE": "tensor"},
     )
 
     assert loaded is True
@@ -992,8 +992,8 @@ def test_drafter_survives_the_cpu_replay(monkeypatch, tmp_path):
     backend, loaded, launches, fallback_sources = _run_cpu_fallback_load(
         monkeypatch,
         tmp_path,
-        returncodes = [-11, -11, -11, None],
-        extra_args = ["--spec-type", "mtp"],
+        returncodes=[-11, -11, -11, None],
+        extra_args=["--spec-type", "mtp"],
     )
 
     assert loaded is True
@@ -1007,9 +1007,9 @@ def test_drafter_replay_falls_back_to_the_stripped_command(monkeypatch, tmp_path
     backend, loaded, launches, fallback_sources = _run_cpu_fallback_load(
         monkeypatch,
         tmp_path,
-        returncodes = [-11, -11, -11, None],
-        extra_args = ["--spec-type", "mtp"],
-        cpu_fallback_available = lambda cmd: "--spec-default" in cmd,
+        returncodes=[-11, -11, -11, None],
+        extra_args=["--spec-type", "mtp"],
+        cpu_fallback_available=lambda cmd: "--spec-default" in cmd,
     )
 
     assert loaded is True
@@ -1026,8 +1026,8 @@ def test_a_drafter_that_cannot_start_anywhere_still_recovers(monkeypatch, tmp_pa
         monkeypatch,
         tmp_path,
         # The speculative CPU replay (4th launch) dies too; the drafterless one wins.
-        returncodes = [-11, -11, -11, 1, None],
-        extra_args = ["--spec-type", "mtp"],
+        returncodes=[-11, -11, -11, 1, None],
+        extra_args=["--spec-type", "mtp"],
     )
 
     assert loaded is True
@@ -1043,9 +1043,9 @@ def test_a_replay_request_needs_the_same_bar_as_the_crash_path(monkeypatch, tmp_
     backend, loaded, launches, fallback_sources = _run_cpu_fallback_load(
         monkeypatch,
         tmp_path,
-        returncodes = [None],
-        cpu_fallback = True,
-        extra_args = ["--device", "Vulkan0"],
+        returncodes=[None],
+        cpu_fallback=True,
+        extra_args=["--device", "Vulkan0"],
     )
 
     assert loaded is True
@@ -1060,9 +1060,9 @@ def test_a_cancelled_load_never_spawns_the_cpu_replay(monkeypatch, tmp_path):
         _run_cpu_fallback_load(
             monkeypatch,
             tmp_path,
-            returncodes = [-11, -11, None],
-            cancel_after = 1,
-            sink = sink,
+            returncodes=[-11, -11, None],
+            cancel_after=1,
+            sink=sink,
         )
 
     assert sink["fallback_sources"] == []
@@ -1089,9 +1089,9 @@ def test_an_unload_during_staging_takes_the_runtime_back(monkeypatch, tmp_path):
         _run_cpu_fallback_load(
             monkeypatch,
             tmp_path,
-            returncodes = [-11, -11, None],
-            cancel_in_prepare = True,
-            sink = sink,
+            returncodes=[-11, -11, None],
+            cancel_in_prepare=True,
+            sink=sink,
         )
 
     assert len(sink["fallback_sources"]) == 1  # staged
@@ -1104,8 +1104,8 @@ def test_a_windows_ggml_assert_reaches_the_cpu_replay(monkeypatch, tmp_path):
     _backend, loaded, launches, fallback_sources = _run_cpu_fallback_load(
         monkeypatch,
         tmp_path,
-        returncodes = [3, None],
-        platform = "win32",
+        returncodes=[3, None],
+        platform="win32",
     )
 
     assert loaded is True
@@ -1119,8 +1119,8 @@ def test_a_posix_exit_three_is_not_a_crash(monkeypatch, tmp_path):
         _run_cpu_fallback_load(
             monkeypatch,
             tmp_path,
-            returncodes = [3, None],
-            platform = "linux",
+            returncodes=[3, None],
+            platform="linux",
         )
 
 
@@ -1130,8 +1130,8 @@ def test_an_accepted_replay_request_normalizes_the_placement(monkeypatch, tmp_pa
     backend, loaded, launches, fallback_sources = _run_cpu_fallback_load(
         monkeypatch,
         tmp_path,
-        returncodes = [None],
-        cpu_fallback = True,
+        returncodes=[None],
+        cpu_fallback=True,
     )
 
     assert loaded is True
@@ -1148,10 +1148,10 @@ def test_an_ineligible_replay_request_drops_the_recovery_state(monkeypatch, tmp_
     backend, loaded, launches, fallback_sources = _run_cpu_fallback_load(
         monkeypatch,
         tmp_path,
-        returncodes = [None],
-        cpu_fallback = True,
-        resident_fallback = True,
-        extra_args = ["--device", "Vulkan0"],
+        returncodes=[None],
+        cpu_fallback=True,
+        resident_fallback=True,
+        extra_args=["--device", "Vulkan0"],
     )
 
     assert loaded is True
@@ -1168,11 +1168,11 @@ def test_preserving_a_recovery_ignores_env_the_replay_strips(monkeypatch, tmp_pa
     backend = LlamaCppBackend()
     backend._cpu_fallback_reason = "vulkan_startup_crash"
     intent = GgufLoadIntent(
-        model_identifier = "owner/model",
-        gguf_path = str(tmp_path / "model.gguf"),
+        model_identifier="owner/model",
+        gguf_path=str(tmp_path / "model.gguf"),
     )
 
-    preserved = backend._preserve_cpu_fallback_intent(intent, source_matches = True)
+    preserved = backend._preserve_cpu_fallback_intent(intent, source_matches=True)
 
     assert preserved.cpu_fallback is True
     assert preserved.gpu_memory_mode == "manual"
@@ -1216,8 +1216,8 @@ def test_terminal_signal_with_explicit_child_placement_does_not_replay(
     gguf.write_bytes(struct.pack("<IIQQ", 0x46554747, 3, 0, 1) + metadata)
 
     backend = LlamaCppBackend()
-    backend._get_gpu_memory = lambda _binary = None, **_kw: [(0, 8_000, 16_000)]
-    backend._get_gpu_free_memory = lambda _binary = None, **_kw: [(0, 8_000)]
+    backend._get_gpu_memory = lambda _binary=None, **_kw: [(0, 8_000, 16_000)]
+    backend._get_gpu_free_memory = lambda _binary=None, **_kw: [(0, 8_000)]
     backend._read_gguf_metadata = lambda _path: None
     backend._can_estimate_kv = lambda: False
     backend._get_gguf_size_bytes = lambda _path: 1024
@@ -1225,8 +1225,8 @@ def test_terminal_signal_with_explicit_child_placement_does_not_replay(
     backend._resolve_launch_mmproj_path = lambda **_kwargs: None
     backend._apu_ram_shortfall_message = lambda *_args, **_kwargs: None
     backend._amd_apu_wants_unified_memory = lambda *_args, **_kwargs: False
-    backend._find_llama_server_binary = lambda include_denied = False: "/fake/llama-server"
-    backend._is_vulkan_backend = lambda _binary = None: True
+    backend._find_llama_server_binary = lambda include_denied=False: "/fake/llama-server"
+    backend._is_vulkan_backend = lambda _binary=None: True
     backend._vulkan_prebuilt_was_auto_selected = lambda _binary: True
     backend.probe_server_capabilities = lambda _binary: {"found": True}
     backend._wait_for_health = lambda timeout, **_kw: False
@@ -1252,7 +1252,7 @@ def test_terminal_signal_with_explicit_child_placement_does_not_replay(
         def terminate(self):
             return None
 
-        def wait(self, timeout = None):
+        def wait(self, timeout=None):
             return self.returncode
 
         def kill(self):
@@ -1267,9 +1267,9 @@ def test_terminal_signal_with_explicit_child_placement_does_not_replay(
     with pytest.raises(RuntimeError):
         backend.load_model(
             GgufLoadIntent(
-                gguf_path = str(gguf),
-                model_identifier = "owner/model",
-                extra_args = extra_args,
+                gguf_path=str(gguf),
+                model_identifier="owner/model",
+                extra_args=extra_args,
             )
         )
 
@@ -1280,7 +1280,7 @@ def test_terminal_signal_with_explicit_child_placement_does_not_replay(
 
 def test_vulkan_device_none_is_recorded_as_zero_vram(monkeypatch):
     monkeypatch.setattr(
-        LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda _binary = None: True)
+        LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda _binary=None: True)
     )
     assert (
         LlamaCppBackend._zero_offload_gpu_flag(
@@ -1295,7 +1295,7 @@ def test_vulkan_device_none_is_recorded_as_zero_vram(monkeypatch):
 @pytest.mark.parametrize("device", ["none", "cpu"])
 def test_vulkan_cpu_device_is_zero_vram_when_probe_is_empty(monkeypatch, device):
     monkeypatch.setattr(
-        LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda _binary = None: True)
+        LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda _binary=None: True)
     )
     assert (
         LlamaCppBackend._zero_offload_gpu_flag(
@@ -1320,7 +1320,7 @@ def test_empty_probe_cpu_recovery_releases_chat_ownership(monkeypatch):
     backend.matches_load_source = lambda _intent: False
 
     # /load now hands the loader its scoped cancel event alongside the intent.
-    def _recover_on_cpu(*, intent, load_cancel_event = None):
+    def _recover_on_cpu(*, intent, load_cancel_event=None):
         backend._gpu_memory_mode = "manual"
         backend._gpu_layers = 0
         backend._gpu_offload_active = backend._zero_offload_gpu_flag(
@@ -1332,24 +1332,24 @@ def test_empty_probe_cpu_recovery_releases_chat_ownership(monkeypatch):
         return True
 
     backend.load_model = _recover_on_cpu
-    unsloth_backend = SimpleNamespace(active_model_name = None)
+    unsloth_backend = SimpleNamespace(active_model_name=None)
     config = SimpleNamespace(
-        identifier = "owner/model.gguf",
-        display_name = "model.gguf",
-        is_gguf = True,
-        is_lora = False,
-        is_vision = False,
-        is_audio = False,
-        is_local = True,
-        gguf_hf_repo = None,
-        gguf_file = "/models/model.gguf",
-        gguf_mmproj_file = None,
-        gguf_mtp_file = None,
-        gguf_variant = None,
+        identifier="owner/model.gguf",
+        display_name="model.gguf",
+        is_gguf=True,
+        is_lora=False,
+        is_vision=False,
+        is_audio=False,
+        is_local=True,
+        gguf_hf_repo=None,
+        gguf_file="/models/model.gguf",
+        gguf_mmproj_file=None,
+        gguf_mtp_file=None,
+        gguf_variant=None,
     )
     intent = GgufLoadIntent(
-        model_identifier = config.identifier,
-        gguf_path = config.gguf_file,
+        model_identifier=config.identifier,
+        gguf_path=config.gguf_file,
     )
     response = object()
     owner = [None]
@@ -1365,7 +1365,7 @@ def test_empty_probe_cpu_recovery_releases_chat_ownership(monkeypatch):
     async def _wait_for_model_switch_idle(**_kwargs):
         return None
 
-    def _acquire(requested, register = None):
+    def _acquire(requested, register=None):
         if register is not None:
             register()
         owner[0] = requested
@@ -1380,7 +1380,7 @@ def test_empty_probe_cpu_recovery_releases_chat_ownership(monkeypatch):
     import core.inference.llama_keepwarm as keepwarm
 
     monkeypatch.setattr(
-        LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda _binary = None: True)
+        LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda _binary=None: True)
     )
     monkeypatch.setattr(route.asyncio, "to_thread", _inline_to_thread)
     monkeypatch.setattr(
@@ -1394,7 +1394,7 @@ def test_empty_probe_cpu_recovery_releases_chat_ownership(monkeypatch):
     monkeypatch.setattr(
         route,
         "ModelConfig",
-        SimpleNamespace(from_identifier = lambda **_kwargs: config),
+        SimpleNamespace(from_identifier=lambda **_kwargs: config),
     )
     monkeypatch.setattr(route, "_hf_offline_if_unreachable_for", lambda *_args: nullcontext())
     monkeypatch.setattr(route, "_resolve_inherited_extra_args", lambda *_args: None)
@@ -1412,12 +1412,12 @@ def test_empty_probe_cpu_recovery_releases_chat_ownership(monkeypatch):
     monkeypatch.setattr(arbiter, "current_owner", lambda: owner[0])
     monkeypatch.setattr(arbiter, "release", _release)
 
-    request = route.LoadRequest(model_path = config.identifier)
+    request = route.LoadRequest(model_path=config.identifier)
     fastapi_request = SimpleNamespace(
-        app = SimpleNamespace(state = SimpleNamespace(llama_parallel_slots = 1))
+        app=SimpleNamespace(state=SimpleNamespace(llama_parallel_slots=1))
     )
     result = asyncio.run(
-        route._load_model_impl(request, fastapi_request, current_subject = "test-user")
+        route._load_model_impl(request, fastapi_request, current_subject="test-user")
     )
 
     assert result is response
@@ -1447,20 +1447,20 @@ def test_duplicate_auto_request_matches_recovered_cpu_server(tmp_path):
     backend._cpu_fallback_reason = "vulkan_startup_crash"
     assert backend.adopt_load_intent_if_matched(
         GgufLoadIntent(
-            model_identifier = "owner/model",
-            gguf_path = str(gguf),
-            n_ctx = 4096,
-            gpu_memory_mode = "auto",
+            model_identifier="owner/model",
+            gguf_path=str(gguf),
+            n_ctx=4096,
+            gpu_memory_mode="auto",
         )
     )
 
     preserved = backend._preserve_cpu_fallback_intent(
         GgufLoadIntent(
-            model_identifier = "owner/model",
-            gguf_path = str(gguf),
-            n_ctx = 8192,
-            gpu_memory_mode = "manual",
-            gpu_layers = 0,
+            model_identifier="owner/model",
+            gguf_path=str(gguf),
+            n_ctx=8192,
+            gpu_memory_mode="manual",
+            gpu_layers=0,
         )
     )
     assert preserved.n_ctx == 8192
@@ -1468,11 +1468,11 @@ def test_duplicate_auto_request_matches_recovered_cpu_server(tmp_path):
 
     explicit_gpu = backend._preserve_cpu_fallback_intent(
         GgufLoadIntent(
-            model_identifier = "owner/model",
-            gguf_path = str(gguf),
-            n_ctx = 8192,
-            gpu_memory_mode = "manual",
-            gpu_layers = 1,
+            model_identifier="owner/model",
+            gguf_path=str(gguf),
+            n_ctx=8192,
+            gpu_memory_mode="manual",
+            gpu_layers=1,
         )
     )
     assert explicit_gpu.cpu_fallback is False
@@ -1486,18 +1486,18 @@ def test_cpu_fallback_request_keeps_the_replay_intent():
     route = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(route)
     request = LoadRequest(
-        model_path = "owner/model",
-        gpu_memory_mode = "manual",
-        gpu_layers = 0,
-        cpu_fallback = True,
+        model_path="owner/model",
+        gpu_memory_mode="manual",
+        gpu_layers=0,
+        cpu_fallback=True,
     )
     intent = route._gguf_request_intent(
-        GgufLoadIntent(model_identifier = "owner/model"),
+        GgufLoadIntent(model_identifier="owner/model"),
         request,
-        chat_template_override = None,
-        extra_args = None,
-        gpu_ids = None,
-        n_parallel = 1,
+        chat_template_override=None,
+        extra_args=None,
+        gpu_ids=None,
+        n_parallel=1,
     )
     assert intent.cpu_fallback is True
 
@@ -1506,7 +1506,7 @@ def test_cpu_fallback_request_keeps_the_replay_intent():
 def test_success_response_reports_cpu_downgrade(model_cls):
     kwargs = {"cpu_fallback_reason": "vulkan_startup_crash"}
     if model_cls is LoadResponse:
-        kwargs.update(status = "loaded", model = "owner/model", display_name = "model", inference = {})
+        kwargs.update(status="loaded", model="owner/model", display_name="model", inference={})
     response = model_cls(**kwargs)
     assert response.model_dump()["cpu_fallback_reason"] == "vulkan_startup_crash"
 
@@ -1542,8 +1542,8 @@ def _run_full_offload_spawns(monkeypatch, tmp_path, *, outputs, returncodes):
     gguf.write_bytes(struct.pack("<IIQQ", 0x46554747, 3, 0, 1) + metadata)
 
     backend = LlamaCppBackend()
-    backend._get_gpu_memory = lambda _binary = None, **_kw: [(0, 24 * 1024**3, 24 * 1024**3)]
-    backend._get_gpu_free_memory = lambda _binary = None, **_kw: [(0, 24 * 1024**3)]
+    backend._get_gpu_memory = lambda _binary=None, **_kw: [(0, 24 * 1024**3, 24 * 1024**3)]
+    backend._get_gpu_free_memory = lambda _binary=None, **_kw: [(0, 24 * 1024**3)]
     backend._read_gguf_metadata = lambda _path: None
     backend._can_estimate_kv = lambda: False
     backend._get_gguf_size_bytes = lambda _path: 1024
@@ -1551,11 +1551,11 @@ def _run_full_offload_spawns(monkeypatch, tmp_path, *, outputs, returncodes):
     backend._resolve_launch_mmproj_path = lambda **_kwargs: None
     backend._apu_ram_shortfall_message = lambda *_args, **_kwargs: None
     backend._amd_apu_wants_unified_memory = lambda *_args, **_kwargs: False
-    backend._find_llama_server_binary = lambda include_denied = False: "/fake/llama-server"
+    backend._find_llama_server_binary = lambda include_denied=False: "/fake/llama-server"
     backend._select_gpus = lambda *_a, **_k: ([0], False)
     backend._host_torch_is_rocm = lambda: False
     monkeypatch.setattr(
-        LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda _binary = None: False)
+        LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda _binary=None: False)
     )
     backend.probe_server_capabilities = lambda _binary: {"found": True}
     backend._record_server_pid = lambda _pid: None
@@ -1567,7 +1567,7 @@ def _run_full_offload_spawns(monkeypatch, tmp_path, *, outputs, returncodes):
     def _env_for_binary(
         _binary,
         *,
-        use_system_rocm = True,
+        use_system_rocm=True,
         **_k,
     ):
         ld = "/opt/rocm/lib:/bundle/bin" if use_system_rocm else "/bundle/bin"
@@ -1594,7 +1594,7 @@ def _run_full_offload_spawns(monkeypatch, tmp_path, *, outputs, returncodes):
         def terminate(self):
             return None
 
-        def wait(self, timeout = None):
+        def wait(self, timeout=None):
             return self.returncode
 
         def kill(self):
@@ -1613,7 +1613,7 @@ def _run_full_offload_spawns(monkeypatch, tmp_path, *, outputs, returncodes):
         code = returncodes[idx] if idx < len(returncodes) else 1
         return _Process(code)
 
-    def _wait_for_health(timeout = 600.0, **_kw):
+    def _wait_for_health(timeout=600.0, **_kw):
         idx = len(launches) - 1
         if 0 <= idx < len(outputs):
             backend._stdout_lines = [outputs[idx]]
@@ -1626,7 +1626,7 @@ def _run_full_offload_spawns(monkeypatch, tmp_path, *, outputs, returncodes):
     error = None
     try:
         loaded = backend.load_model(
-            GgufLoadIntent(gguf_path = str(gguf), model_identifier = "owner/model")
+            GgufLoadIntent(gguf_path=str(gguf), model_identifier="owner/model")
         )
     except Exception as exc:
         error = exc
@@ -1642,8 +1642,8 @@ class TestHipRocrRetryKeepsFitBudget:
         launches, loaded, error = _run_full_offload_spawns(
             monkeypatch,
             tmp_path,
-            outputs = [_HIP_ROCR_MISMATCH, _VRAM_CRASH, ""],
-            returncodes = [127, 1, None],
+            outputs=[_HIP_ROCR_MISMATCH, _VRAM_CRASH, ""],
+            returncodes=[127, 1, None],
         )
         assert error is None
         assert loaded
@@ -1662,8 +1662,8 @@ class TestHipRocrRetryKeepsFitBudget:
         launches, loaded, error = _run_full_offload_spawns(
             monkeypatch,
             tmp_path,
-            outputs = [_HIP_ROCR_MISMATCH, ""],
-            returncodes = [127, None],
+            outputs=[_HIP_ROCR_MISMATCH, ""],
+            returncodes=[127, None],
         )
         assert error is None
         assert loaded
@@ -1684,8 +1684,8 @@ class TestHipRocrRetryKeepsFitBudget:
         launches, loaded, error = _run_full_offload_spawns(
             monkeypatch,
             tmp_path,
-            outputs = [_HIP_ROCR_MISMATCH, "", "", ""],
-            returncodes = [127, -11, -11, None],
+            outputs=[_HIP_ROCR_MISMATCH, "", "", ""],
+            returncodes=[127, -11, -11, None],
         )
         assert error is None
         assert loaded
@@ -1699,8 +1699,8 @@ class TestHipRocrRetryKeepsFitBudget:
         launches, loaded, error = _run_full_offload_spawns(
             monkeypatch,
             tmp_path,
-            outputs = [_HIP_ROCR_MISMATCH, _HIP_ROCR_MISMATCH],
-            returncodes = [127, 127],
+            outputs=[_HIP_ROCR_MISMATCH, _HIP_ROCR_MISMATCH],
+            returncodes=[127, 127],
         )
         assert not loaded
         assert len(launches) == 2

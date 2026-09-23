@@ -47,11 +47,13 @@ def _is_fake_tensor(x):
     """Covers exactly the set the substring repr probe did: ``is_fake`` unwraps FunctionalTensor too."""
     try:
         from torch._subclasses.fake_tensor import is_fake
+
         return bool(is_fake(x))
     except Exception:
         pass
     try:
         from torch._subclasses.fake_tensor import FakeTensor
+
         return isinstance(x, FakeTensor)
     except Exception:
         return False
@@ -182,8 +184,8 @@ class _TorchaoIntmmPatchFinder(importlib.abc.MetaPathFinder):
     def find_spec(
         self,
         fullname,
-        path = None,
-        target = None,
+        path=None,
+        target=None,
     ):
         if fullname not in _TORCHAO_INTMM_MODULES or self._finding:
             return None

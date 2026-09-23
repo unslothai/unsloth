@@ -63,26 +63,26 @@ QUANT_KV = [
 
 def _types_of(
     cmd,
-    k_flag = "--cache-type-k",
-    v_flag = "--cache-type-v",
+    k_flag="--cache-type-k",
+    v_flag="--cache-type-v",
 ):
     return cmd[cmd.index(k_flag) + 1], cmd[cmd.index(v_flag) + 1]
 
 
 class TestTheRetryKeepsKAndVEqualOnMla:
     def test_both_axes_come_down_together(self):
-        out = LlamaCppBackend._with_flash_attn_off(list(QUANT_KV), mla = True)
+        out = LlamaCppBackend._with_flash_attn_off(list(QUANT_KV), mla=True)
         k, v = _types_of(out)
         assert k == v == "f16", (k, v)
 
     def test_the_inline_equals_spelling_is_handled(self):
         cmd = ["llama-server", "--flash-attn", "on", "--cache-type-k=q8_0", "--cache-type-v=q8_0"]
-        out = LlamaCppBackend._with_flash_attn_off(cmd, mla = True)
+        out = LlamaCppBackend._with_flash_attn_off(cmd, mla=True)
         assert "--cache-type-k=f16" in out and "--cache-type-v=f16" in out
 
     def test_the_draft_pair_is_handled_too(self):
         cmd = [*QUANT_KV, "--spec-draft-type-k", "q4_0", "--spec-draft-type-v", "q4_0"]
-        out = LlamaCppBackend._with_flash_attn_off(cmd, mla = True)
+        out = LlamaCppBackend._with_flash_attn_off(cmd, mla=True)
         assert _types_of(out) == ("f16", "f16")
         assert _types_of(out, "--spec-draft-type-k", "--spec-draft-type-v") == ("f16", "f16")
 
@@ -97,7 +97,7 @@ class TestTheRetryKeepsKAndVEqualOnMla:
             "--cache-type-v",
             "f16",
         ]
-        out = LlamaCppBackend._with_flash_attn_off(cmd, mla = True)
+        out = LlamaCppBackend._with_flash_attn_off(cmd, mla=True)
         assert _types_of(out) == ("f16", "f16")
 
     def test_a_quantized_k_alone_still_comes_down(self):
@@ -105,7 +105,7 @@ class TestTheRetryKeepsKAndVEqualOnMla:
         back to the f16 default, so llama.cpp sees K=q8_0 against V=f16 and
         rejects it on MLA. Lowering K is what makes the retry start."""
         cmd = ["llama-server", "--flash-attn", "on", "--cache-type-k", "q8_0"]
-        out = LlamaCppBackend._with_flash_attn_off(cmd, mla = True)
+        out = LlamaCppBackend._with_flash_attn_off(cmd, mla=True)
         assert out[out.index("--cache-type-k") + 1] == "f16"
 
     def test_argv_k_comes_down_when_v_is_quantized_only_in_the_env(self):
@@ -115,8 +115,8 @@ class TestTheRetryKeepsKAndVEqualOnMla:
         a K left at q8_0 would then abort against the resulting f16 V."""
         cmd = ["llama-server", "--flash-attn", "on", "--cache-type-k", "q8_0"]
         env = {"LLAMA_ARG_CACHE_TYPE_V": "q8_0"}
-        out = LlamaCppBackend._with_flash_attn_off(cmd, mla = True)
-        LlamaCppBackend._drop_env_quantized_v_cache(env, mla = True)
+        out = LlamaCppBackend._with_flash_attn_off(cmd, mla=True)
+        LlamaCppBackend._drop_env_quantized_v_cache(env, mla=True)
         assert out[out.index("--cache-type-k") + 1] == "f16"
         assert env == {}
 
@@ -130,7 +130,7 @@ class TestTheEnvDropKeepsMlaKAndVEqual:
             "LLAMA_ARG_CACHE_TYPE_K": "q8_0",
             "LLAMA_ARG_CACHE_TYPE_V": "q8_0",
         }
-        assert LlamaCppBackend._drop_env_quantized_v_cache(env, mla = True) is True
+        assert LlamaCppBackend._drop_env_quantized_v_cache(env, mla=True) is True
         assert env == {}
 
     def test_the_draft_pair_goes_too(self):
@@ -138,13 +138,13 @@ class TestTheEnvDropKeepsMlaKAndVEqual:
             "LLAMA_ARG_SPEC_DRAFT_CACHE_TYPE_K": "q4_0",
             "LLAMA_ARG_SPEC_DRAFT_CACHE_TYPE_V": "q4_0",
         }
-        assert LlamaCppBackend._drop_env_quantized_v_cache(env, mla = True) is True
+        assert LlamaCppBackend._drop_env_quantized_v_cache(env, mla=True) is True
         assert env == {}
 
     def test_a_quantized_k_env_alone_is_dropped_on_mla(self):
         """V is f16 by then, so a lone quantized K env is a guaranteed abort."""
         env = {"LLAMA_ARG_CACHE_TYPE_K": "q8_0"}
-        assert LlamaCppBackend._drop_env_quantized_v_cache(env, mla = True) is True
+        assert LlamaCppBackend._drop_env_quantized_v_cache(env, mla=True) is True
         assert env == {}
 
     def test_non_mla_keeps_the_quantized_k_env(self):
@@ -154,7 +154,7 @@ class TestTheEnvDropKeepsMlaKAndVEqual:
             "LLAMA_ARG_CACHE_TYPE_K": "q8_0",
             "LLAMA_ARG_CACHE_TYPE_V": "q8_0",
         }
-        assert LlamaCppBackend._drop_env_quantized_v_cache(env, mla = False) is True
+        assert LlamaCppBackend._drop_env_quantized_v_cache(env, mla=False) is True
         assert env == {"LLAMA_ARG_CACHE_TYPE_K": "q8_0"}
 
     def test_the_default_is_the_non_mla_behaviour(self):
@@ -167,7 +167,7 @@ class TestTheEnvDropKeepsMlaKAndVEqual:
         """f16/bf16/f32 satisfy the V rule already; dropping them would silently
         change a launch the user configured deliberately."""
         env = {"LLAMA_ARG_CACHE_TYPE_K": "bf16", "LLAMA_ARG_CACHE_TYPE_V": "bf16"}
-        assert LlamaCppBackend._drop_env_quantized_v_cache(env, mla = True) is False
+        assert LlamaCppBackend._drop_env_quantized_v_cache(env, mla=True) is False
         assert env == {"LLAMA_ARG_CACHE_TYPE_K": "bf16", "LLAMA_ARG_CACHE_TYPE_V": "bf16"}
 
 
@@ -176,7 +176,7 @@ class TestNonMlaBehaviourIsUnchanged:
     enlarges it and can OOM a memory-constrained config."""
 
     def test_k_stays_quantized(self):
-        out = LlamaCppBackend._with_flash_attn_off(list(QUANT_KV), mla = False)
+        out = LlamaCppBackend._with_flash_attn_off(list(QUANT_KV), mla=False)
         assert _types_of(out) == ("q8_0", "f16")
 
     def test_the_default_is_the_non_mla_behaviour(self):
@@ -243,21 +243,21 @@ class TestTheDrafterIsGatedOnItsOwnModel:
     def test_an_mla_target_leaves_a_non_mla_drafters_k_quantized(self):
         """Resetting it would needlessly double the drafter's K cache, which is
         the OOM the size argument warns about."""
-        out = LlamaCppBackend._with_flash_attn_off(list(self.DRAFT_CMD), mla = True, draft_mla = False)
+        out = LlamaCppBackend._with_flash_attn_off(list(self.DRAFT_CMD), mla=True, draft_mla=False)
         assert self._main_k(out) == "f16"
         assert self._draft_k(out) == "q8_0"
 
     def test_a_non_mla_target_still_brings_an_mla_drafters_k_down(self):
         """The mirror case, and the more serious one: leaving the draft K
         quantized against an f16 draft V aborts the draft context."""
-        out = LlamaCppBackend._with_flash_attn_off(list(self.DRAFT_CMD), mla = False, draft_mla = True)
+        out = LlamaCppBackend._with_flash_attn_off(list(self.DRAFT_CMD), mla=False, draft_mla=True)
         assert self._main_k(out) == "q8_0"
         assert self._draft_k(out) == "f16"
 
     def test_an_unknown_drafter_falls_back_to_the_target(self):
         """None means the drafter's GGUF could not be read. An unnecessary reset
         only costs memory; a missing one aborts, so it follows the target."""
-        out = LlamaCppBackend._with_flash_attn_off(list(self.DRAFT_CMD), mla = True, draft_mla = None)
+        out = LlamaCppBackend._with_flash_attn_off(list(self.DRAFT_CMD), mla=True, draft_mla=None)
         assert self._main_k(out) == "f16"
         assert self._draft_k(out) == "f16"
 
@@ -268,7 +268,7 @@ class TestTheDrafterIsGatedOnItsOwnModel:
             "LLAMA_ARG_SPEC_DRAFT_CACHE_TYPE_K": "q8_0",
             "LLAMA_ARG_SPEC_DRAFT_CACHE_TYPE_V": "q8_0",
         }
-        LlamaCppBackend._drop_env_quantized_v_cache(env, mla = True, draft_mla = False)
+        LlamaCppBackend._drop_env_quantized_v_cache(env, mla=True, draft_mla=False)
         assert env == {"LLAMA_ARG_SPEC_DRAFT_CACHE_TYPE_K": "q8_0"}
 
 

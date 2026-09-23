@@ -47,8 +47,8 @@ def warm(monkeypatch):
     """``utils.torch_warmup`` with the prewarm latch reset, so each test starts cold."""
     from utils import torch_warmup
 
-    monkeypatch.setattr(torch_warmup, "_diffusers_prewarmed", False, raising = False)
-    monkeypatch.delenv(torch_warmup.DIFFUSERS_PREWARM_DISABLE_ENV_VAR, raising = False)
+    monkeypatch.setattr(torch_warmup, "_diffusers_prewarmed", False, raising=False)
+    monkeypatch.delenv(torch_warmup.DIFFUSERS_PREWARM_DISABLE_ENV_VAR, raising=False)
     return torch_warmup
 
 
@@ -56,8 +56,8 @@ def _stub_gate(
     monkeypatch,
     ids_by_task,
     *,
-    raises = False,
-    engine = "diffusers",
+    raises=False,
+    engine="diffusers",
 ):
     """Stand in for the media index and the engine router.
 
@@ -72,17 +72,17 @@ def _stub_gate(
 
     idx.available_media_model_ids = _available
     idx.resolve_local_media_model = lambda model_id, task: types.SimpleNamespace(
-        model_id = model_id,
-        model_path = "/nonexistent",
-        gguf_filename = "m.gguf",
-        model_kind = "gguf",
-        ambiguous = False,
+        model_id=model_id,
+        model_path="/nonexistent",
+        gguf_filename="m.gguf",
+        model_kind="gguf",
+        ambiguous=False,
     )
     monkeypatch.setitem(sys.modules, "core.inference.media_model_index", idx)
 
     router = types.ModuleType("core.inference.diffusion_engine_router")
     router.ENGINE_DIFFUSERS = "diffusers"
-    router.predict_engine = lambda fam, model_kind = None: engine
+    router.predict_engine = lambda fam, model_kind=None: engine
     monkeypatch.setitem(sys.modules, "core.inference.diffusion_engine_router", router)
 
     loc = types.ModuleType("core.inference.media_locality")
@@ -90,7 +90,7 @@ def _stub_gate(
     monkeypatch.setitem(sys.modules, "core.inference.media_locality", loc)
 
 
-def _stub_diffusers(monkeypatch, *, raises = False):
+def _stub_diffusers(monkeypatch, *, raises=False):
     """A diffusers that records whether it was imported, without importing the real one."""
     seen = {"imported": False, "quieted": False}
     if raises:
@@ -114,7 +114,7 @@ def _stub_diffusers(monkeypatch, *, raises = False):
             cfg,
             "quiet_third_party_progress_bars",
             lambda: seen.__setitem__("quieted", True),
-            raising = False,
+            raising=False,
         )
     return seen
 
@@ -123,7 +123,7 @@ def test_an_install_with_no_image_models_pays_nothing(warm, monkeypatch):
     """The gate is the entire justification for doing this at boot. A chat-only or
     training-only user must not pay diffusers' 316 MB for a page they never open."""
     _stub_gate(monkeypatch, {"text-to-image": [], "text-to-video": []})
-    monkeypatch.delitem(sys.modules, "diffusers", raising = False)
+    monkeypatch.delitem(sys.modules, "diffusers", raising=False)
 
     assert warm.prewarm_diffusers_if_image_models_exist() is False
     assert "diffusers" not in sys.modules, "the prewarm imported diffusers with nothing to load"
@@ -165,11 +165,11 @@ def test_an_h3_gguf_named_only_by_its_filename_pays_nothing(warm, monkeypatch):
     _stub_gate(monkeypatch, {"text-to-image": [], "text-to-video": ["custom-video"]})
     sys.modules["core.inference.media_model_index"].resolve_local_media_model = (
         lambda model_id, task: types.SimpleNamespace(
-            model_id = "custom-video",  # names no family
-            model_path = "/models/custom",  # nor does the directory
-            gguf_filename = "minimax_h3_fl2va-Q4.gguf",  # only the checkpoint does
-            model_kind = "gguf",
-            ambiguous = False,
+            model_id="custom-video",  # names no family
+            model_path="/models/custom",  # nor does the directory
+            gguf_filename="minimax_h3_fl2va-Q4.gguf",  # only the checkpoint does
+            model_kind="gguf",
+            ambiguous=False,
         )
     )
     _stub_diffusers(monkeypatch)
@@ -189,7 +189,7 @@ def test_the_torch_warm_opt_out_also_disables_the_prewarm(warm, monkeypatch):
     """join_background_warm() reports True when no worker ran, so this needs its own check."""
     monkeypatch.setenv(warm.DISABLE_ENV_VAR, "1")
     _stub_gate(monkeypatch, {"text-to-image": ["unsloth/Z-Image-GGUF"]})
-    monkeypatch.delitem(sys.modules, "diffusers", raising = False)
+    monkeypatch.delitem(sys.modules, "diffusers", raising=False)
 
     assert warm.prewarm_diffusers_if_image_models_exist() is False
     assert "diffusers" not in sys.modules, "the torch-warm opt-out did not stop the prewarm"
@@ -198,7 +198,7 @@ def test_the_torch_warm_opt_out_also_disables_the_prewarm(warm, monkeypatch):
 def test_the_kill_switch_is_honoured(warm, monkeypatch):
     monkeypatch.setenv(warm.DIFFUSERS_PREWARM_DISABLE_ENV_VAR, "1")
     _stub_gate(monkeypatch, {"text-to-image": ["unsloth/Z-Image-GGUF"]})
-    monkeypatch.delitem(sys.modules, "diffusers", raising = False)
+    monkeypatch.delitem(sys.modules, "diffusers", raising=False)
 
     assert warm.prewarm_diffusers_if_image_models_exist() is False
     assert "diffusers" not in sys.modules
@@ -220,7 +220,7 @@ def test_concurrent_callers_prewarm_once(warm, monkeypatch):
 
     did = []
     threads = [
-        threading.Thread(target = lambda: did.append(warm.prewarm_diffusers_if_image_models_exist()))
+        threading.Thread(target=lambda: did.append(warm.prewarm_diffusers_if_image_models_exist()))
         for _ in range(10)
     ]
     for t in threads:
@@ -232,7 +232,7 @@ def test_concurrent_callers_prewarm_once(warm, monkeypatch):
 
 def test_a_gate_that_raises_means_skip_not_crash(warm, monkeypatch):
     """A broken or absent model index must not take the post-warm worker down with it."""
-    _stub_gate(monkeypatch, {}, raises = True)
+    _stub_gate(monkeypatch, {}, raises=True)
     assert warm.prewarm_diffusers_if_image_models_exist() is False
 
 
@@ -240,7 +240,7 @@ def test_a_diffusers_that_cannot_import_means_skip_not_crash(warm, monkeypatch):
     """A --no-torch host, or a broken diffusers, reports False. The load path imports it again
     and is the one that reports the failure to the user."""
     _stub_gate(monkeypatch, {"text-to-image": ["m"]})
-    _stub_diffusers(monkeypatch, raises = True)
+    _stub_diffusers(monkeypatch, raises=True)
     assert warm.prewarm_diffusers_if_image_models_exist() is False
 
 
@@ -258,7 +258,7 @@ def test_the_windows_rocm_stubs_are_installed_before_the_import(warm, monkeypatc
         monkeypatch.setattr(mod, name, (lambda n: lambda: order.append(n))(name))
 
     _stub_gate(monkeypatch, {"text-to-image": ["m"]})
-    monkeypatch.delitem(sys.modules, "diffusers", raising = False)
+    monkeypatch.delitem(sys.modules, "diffusers", raising=False)
 
     real_import = builtins.__import__
 
@@ -290,7 +290,7 @@ def test_a_failed_prewarm_leaves_no_half_imported_diffusers(
     submodule it executed, so the next importer rebuilds an incomplete package from them.
     """
     _stub_gate(monkeypatch, {"text-to-image": ["m"]})
-    monkeypatch.delitem(sys.modules, "diffusers", raising = False)
+    monkeypatch.delitem(sys.modules, "diffusers", raising=False)
     leftover = types.ModuleType("diffusers.pipelines")
     monkeypatch.setitem(sys.modules, "diffusers.pipelines", leftover)
 
@@ -301,8 +301,8 @@ def test_a_failed_prewarm_leaves_no_half_imported_diffusers(
         def find_spec(
             self,
             name,
-            path = None,
-            target = None,
+            path=None,
+            target=None,
         ):
             if name == "diffusers":
                 raise ImportError("simulated half-built diffusers")
@@ -327,7 +327,7 @@ def test_the_diffusers_import_lock_is_held_across_the_failure_cleanup(
     from importlib._bootstrap import _get_module_lock
 
     _stub_gate(monkeypatch, {"text-to-image": ["m"]})
-    monkeypatch.delitem(sys.modules, "diffusers", raising = False)
+    monkeypatch.delitem(sys.modules, "diffusers", raising=False)
     monkeypatch.setitem(sys.modules, "diffusers.pipelines", types.ModuleType("diffusers.pipelines"))
 
     held_during_purge = []
@@ -347,8 +347,8 @@ def test_the_diffusers_import_lock_is_held_across_the_failure_cleanup(
         def find_spec(
             self,
             name,
-            path = None,
-            target = None,
+            path=None,
+            target=None,
         ):
             if name == "diffusers":
                 raise ImportError("simulated half-built diffusers")
@@ -376,7 +376,7 @@ def test_a_hooks_failure_after_a_good_parent_still_purges_the_hook_subtree(
         "diffusers.hooks.group_offloading",
         types.ModuleType("diffusers.hooks.group_offloading"),
     )
-    monkeypatch.delitem(sys.modules, "diffusers.hooks", raising = False)
+    monkeypatch.delitem(sys.modules, "diffusers.hooks", raising=False)
 
     from importlib._bootstrap import _get_module_lock
 
@@ -394,8 +394,8 @@ def test_a_hooks_failure_after_a_good_parent_still_purges_the_hook_subtree(
         def find_spec(
             self,
             name,
-            path = None,
-            target = None,
+            path=None,
+            target=None,
         ):
             if name == "diffusers.hooks":
                 raise ImportError("simulated half-built diffusers.hooks")
@@ -429,8 +429,8 @@ def test_the_parent_and_child_import_locks_are_never_held_together(
     from importlib._bootstrap import _get_module_lock
 
     _stub_gate(monkeypatch, {"text-to-image": ["m"]})
-    monkeypatch.delitem(sys.modules, "diffusers", raising = False)
-    monkeypatch.delitem(sys.modules, "diffusers.hooks", raising = False)
+    monkeypatch.delitem(sys.modules, "diffusers", raising=False)
+    monkeypatch.delitem(sys.modules, "diffusers.hooks", raising=False)
 
     me = threading.get_ident()
     both_held = []
@@ -463,8 +463,8 @@ def test_a_concurrent_submodule_import_does_not_deadlock_the_prewarm(
     from importlib._bootstrap import _ModuleLockManager as LM
 
     _stub_gate(monkeypatch, {"text-to-image": ["m"]})
-    monkeypatch.delitem(sys.modules, "diffusers", raising = False)
-    monkeypatch.delitem(sys.modules, "diffusers.hooks", raising = False)
+    monkeypatch.delitem(sys.modules, "diffusers", raising=False)
+    monkeypatch.delitem(sys.modules, "diffusers.hooks", raising=False)
     _stub_diffusers(monkeypatch)
 
     started = threading.Event()
@@ -480,7 +480,7 @@ def test_a_concurrent_submodule_import_does_not_deadlock_the_prewarm(
                 pass
         finished.set()
 
-    t = threading.Thread(target = _importer, daemon = True)
+    t = threading.Thread(target=_importer, daemon=True)
     t.start()
     assert started.wait(10), "the helper thread never took the hooks lock"
 
@@ -492,7 +492,7 @@ def test_a_concurrent_submodule_import_does_not_deadlock_the_prewarm(
         finally:
             done.set()
 
-    p = threading.Thread(target = _prewarm, daemon = True)
+    p = threading.Thread(target=_prewarm, daemon=True)
     p.start()
     # The prewarm must not be blocked behind a lock the other thread is holding while that
     # thread waits on one the prewarm holds.
@@ -512,7 +512,7 @@ def test_the_lock_is_never_released_between_a_failed_import_and_its_purge(
     handler, which asserting that the purge ran under the lock would not catch.
     """
     _stub_gate(monkeypatch, {"text-to-image": ["m"]})
-    monkeypatch.delitem(sys.modules, "diffusers", raising = False)
+    monkeypatch.delitem(sys.modules, "diffusers", raising=False)
     monkeypatch.setitem(sys.modules, "diffusers.pipelines", types.ModuleType("diffusers.pipelines"))
 
     real_lm = warm._ModuleLockManager
@@ -543,8 +543,8 @@ def test_the_lock_is_never_released_between_a_failed_import_and_its_purge(
         def find_spec(
             self,
             name,
-            path = None,
-            target = None,
+            path=None,
+            target=None,
         ):
             if name == "diffusers":
                 raise ImportError("simulated half-built diffusers")
@@ -577,8 +577,8 @@ def test_the_lock_is_never_released_between_a_failed_import_and_its_purge(
 def test_a_host_that_routes_to_sd_cpp_pays_nothing(warm, monkeypatch):
     """What presence alone gets wrong: a native binary or UNSLOTH_DIFFUSION_ENGINE=sd_cpp
     serves a supported GGUF through sd.cpp, importing no diffusers."""
-    _stub_gate(monkeypatch, {"text-to-image": ["unsloth/Z-Image-GGUF"]}, engine = "sd_cpp")
-    monkeypatch.delitem(sys.modules, "diffusers", raising = False)
+    _stub_gate(monkeypatch, {"text-to-image": ["unsloth/Z-Image-GGUF"]}, engine="sd_cpp")
+    monkeypatch.delitem(sys.modules, "diffusers", raising=False)
 
     assert warm.prewarm_diffusers_if_image_models_exist() is False
     assert "diffusers" not in sys.modules, "prewarmed on a host whose image path is native"
@@ -587,17 +587,17 @@ def test_a_host_that_routes_to_sd_cpp_pays_nothing(warm, monkeypatch):
 def test_a_non_gguf_model_still_prewarms_on_a_native_host(warm, monkeypatch):
     """Only a GGUF can go native, so a dense checkpoint lands on diffusers even where sd.cpp is
     the preferred engine. Gating the whole host off would lose the speedup for it."""
-    _stub_gate(monkeypatch, {"text-to-image": ["some/dense-sdxl"]}, engine = "sd_cpp")
+    _stub_gate(monkeypatch, {"text-to-image": ["some/dense-sdxl"]}, engine="sd_cpp")
     idx = sys.modules["core.inference.media_model_index"]
     monkeypatch.setattr(
         idx,
         "resolve_local_media_model",
         lambda model_id, task: types.SimpleNamespace(
-            model_id = model_id,
-            model_path = "/nonexistent",
-            gguf_filename = None,
-            model_kind = None,
-            ambiguous = False,
+            model_id=model_id,
+            model_path="/nonexistent",
+            gguf_filename=None,
+            model_kind=None,
+            ambiguous=False,
         ),
     )
     _stub_diffusers(monkeypatch)
@@ -610,11 +610,11 @@ def test_a_gguf_whose_family_is_only_in_its_filename_is_still_recognised():
     from core.inference.media_locality import detected_image_family
 
     opaque = types.SimpleNamespace(
-        model_id = "local/custom",
-        model_path = "/models/custom",
-        gguf_filename = "z-image-turbo-Q4_K_M.gguf",
-        model_kind = "gguf",
-        ambiguous = False,
+        model_id="local/custom",
+        model_path="/models/custom",
+        gguf_filename="z-image-turbo-Q4_K_M.gguf",
+        model_kind="gguf",
+        ambiguous=False,
     )
     assert (
         detected_image_family(opaque) is not None
@@ -657,26 +657,26 @@ def test_the_real_index_answers_our_task_strings_and_not_the_friendly_ones(monke
     from utils import torch_warmup
 
     fake = types.SimpleNamespace(
-        id = "unsloth/Z-Image-GGUF",
-        model_id = "unsloth/Z-Image-GGUF",
-        display_name = "Z-Image-GGUF",
-        path = "/nonexistent/z-image",
-        model_format = None,
-        partial = False,
+        id="unsloth/Z-Image-GGUF",
+        model_id="unsloth/Z-Image-GGUF",
+        display_name="Z-Image-GGUF",
+        path="/nonexistent/z-image",
+        model_format=None,
+        partial=False,
     )
     routes_models = sys.modules.setdefault("routes.models", types.ModuleType("routes.models"))
-    monkeypatch.setattr(routes_models, "collect_local_models", lambda _root: [fake], raising = False)
+    monkeypatch.setattr(routes_models, "collect_local_models", lambda _root: [fake], raising=False)
     monkeypatch.setattr(
-        routes_models, "_local_model_task", lambda _info: "text-to-image", raising = False
+        routes_models, "_local_model_task", lambda _info: "text-to-image", raising=False
     )
     # _name_keys and the on-disk checks would reject a path that does not exist, so stand in
     # for the registration step; the task comparison above it is what is under test.
-    monkeypatch.setattr(idx, "_name_keys", lambda _info: ("z-image-gguf",), raising = False)
-    monkeypatch.setattr(idx, "_resolve_load_dir", lambda p: p, raising = False)
+    monkeypatch.setattr(idx, "_name_keys", lambda _info: ("z-image-gguf",), raising=False)
+    monkeypatch.setattr(idx, "_resolve_load_dir", lambda p: p, raising=False)
     monkeypatch.setattr(
-        idx, "_add_gguf_picks", lambda index, info, keys, on_disk, load_dir: False, raising = False
+        idx, "_add_gguf_picks", lambda index, info, keys, on_disk, load_dir: False, raising=False
     )
-    monkeypatch.setattr(idx, "_loadable_directory", lambda _d: True, raising = False)
+    monkeypatch.setattr(idx, "_loadable_directory", lambda _d: True, raising=False)
     idx.invalidate_index()
 
     found = {
@@ -691,7 +691,7 @@ def test_the_real_index_answers_our_task_strings_and_not_the_friendly_ones(monke
 
 
 def _post_warm_source() -> str:
-    tree = ast.parse((_BACKEND / "main.py").read_text(encoding = "utf-8"))
+    tree = ast.parse((_BACKEND / "main.py").read_text(encoding="utf-8"))
     fn = next(
         n
         for n in ast.walk(tree)

@@ -23,9 +23,9 @@ U = pytest.importorskip("unsloth.models._utils")
 
 PATCHER = getattr(U, "patch_fla_autotuner_fast_path", None)
 needs_patch = pytest.mark.skipif(
-    PATCHER is None, reason = "base tree: no patch_fla_autotuner_fast_path"
+    PATCHER is None, reason="base tree: no patch_fla_autotuner_fast_path"
 )
-CUDA = pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs a GPU")
+CUDA = pytest.mark.skipif(not torch.cuda.is_available(), reason="needs a GPU")
 
 
 class _ReuseBestCache(dict):
@@ -46,28 +46,29 @@ def _add_kernel(x_ptr, y_ptr, o_ptr, n, BLOCK: tl.constexpr):
     offs = pid * BLOCK + tl.arange(0, BLOCK)
     mask = offs < n
     tl.store(
-        o_ptr + offs, tl.load(x_ptr + offs, mask = mask) + tl.load(y_ptr + offs, mask = mask), mask = mask
+        o_ptr + offs, tl.load(x_ptr + offs, mask=mask) + tl.load(y_ptr + offs, mask=mask), mask=mask
     )
 
 
 def _make(
     configs,
-    key = ("n",),
-    pre_hook = None,
+    key=("n",),
+    pre_hook=None,
 ):
     from fla.ops.utils.cache import fla_cache_autotune
+
     if pre_hook is not None:
         configs = [
             triton.Config(
-                c.kwargs, num_warps = c.num_warps, num_stages = c.num_stages, pre_hook = pre_hook
+                c.kwargs, num_warps=c.num_warps, num_stages=c.num_stages, pre_hook=pre_hook
             )
             for c in configs
         ]
-    return fla_cache_autotune(configs = configs, key = list(key))(_add_kernel)
+    return fla_cache_autotune(configs=configs, key=list(key))(_add_kernel)
 
 
-CFGS2 = [triton.Config({"BLOCK": 64}, num_warps = 2), triton.Config({"BLOCK": 128}, num_warps = 4)]
-CFGS1 = [triton.Config({"BLOCK": 128}, num_warps = 4)]
+CFGS2 = [triton.Config({"BLOCK": 64}, num_warps=2), triton.Config({"BLOCK": 128}, num_warps=4)]
+CFGS1 = [triton.Config({"BLOCK": 128}, num_warps=4)]
 
 
 def _grid(n):
@@ -77,9 +78,9 @@ def _grid(n):
     return lambda meta: (triton.cdiv(n, meta["BLOCK"]),)
 
 
-def _run(kern, n = 4096):
-    x = torch.randn(n, device = "cuda")
-    y = torch.randn(n, device = "cuda")
+def _run(kern, n=4096):
+    x = torch.randn(n, device="cuda")
+    y = torch.randn(n, device="cuda")
     o = torch.empty_like(x)
     kern[_grid(n)](x, y, o, n)
     return x, y, o
@@ -114,7 +115,7 @@ def test_patch_declines_under_FLA_CACHE_MODE_always(fresh, monkeypatch):
     class _Mode:
         value = "always"
 
-    monkeypatch.setattr(fla_cache, "FLA_CACHE_MODE", _Mode(), raising = False)
+    monkeypatch.setattr(fla_cache, "FLA_CACHE_MODE", _Mode(), raising=False)
     PATCHER()
     assert not getattr(
         fresh.run, "_unsloth_fast_path", False
@@ -154,8 +155,8 @@ def test_reuse_best_cache_fast_path_matches_the_original_bit_for_bit(fresh):
     at_b.cache = _ReuseBestCache(at_b.cache)
 
     n = 4096
-    x = torch.randn(n, device = "cuda")
-    y = torch.randn(n, device = "cuda")
+    x = torch.randn(n, device="cuda")
+    y = torch.randn(n, device="cuda")
     o_ref = torch.empty_like(x)
     o_fast = torch.empty_like(x)
     kern_a[_grid(n)](x, y, o_ref, n)  # unpatched
@@ -189,7 +190,7 @@ def test_single_config_fast_path_first_and_subsequent_launches(fresh):
 @needs_patch
 def test_per_config_pre_hook_falls_back_and_the_hook_still_fires(fresh):
     fired = []
-    kern = _make(CFGS1, pre_hook = lambda nargs: fired.append(1))
+    kern = _make(CFGS1, pre_hook=lambda nargs: fired.append(1))
     PATCHER()
     _run(kern)
     _run(kern)
@@ -220,7 +221,7 @@ def test_patch_is_a_no_op_when_fla_is_missing(monkeypatch):
 
 # --------------------------------------------------------------------------- cache probe
 CACHE_PROBE = getattr(U, "_unsloth_cache_reuses_one_config", None)
-needs_probe = pytest.mark.skipif(CACHE_PROBE is None, reason = "tree without the behaviour probe")
+needs_probe = pytest.mark.skipif(CACHE_PROBE is None, reason="tree without the behaviour probe")
 
 
 @needs_probe

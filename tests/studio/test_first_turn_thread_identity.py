@@ -23,7 +23,7 @@ from pathlib import Path
 
 WORKSPACE = Path(__file__).resolve().parents[2]
 PROVIDER = (WORKSPACE / "studio/frontend/src/features/chat/runtime-provider.tsx").read_text(
-    encoding = "utf-8"
+    encoding="utf-8"
 )
 
 

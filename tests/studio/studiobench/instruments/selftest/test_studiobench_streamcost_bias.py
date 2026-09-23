@@ -59,7 +59,7 @@ def _skip_reason() -> str | None:
     return None
 
 
-pytestmark = pytest.mark.skipif(_skip_reason() is not None, reason = _skip_reason() or "")
+pytestmark = pytest.mark.skipif(_skip_reason() is not None, reason=_skip_reason() or "")
 
 
 BUILD_JS = """
@@ -110,12 +110,13 @@ TIME_JS = """
 """
 
 
-@pytest.fixture(scope = "module")
+@pytest.fixture(scope="module")
 def browser():
     from playwright.sync_api import sync_playwright
+
     with sync_playwright() as p:
         try:
-            b = p.chromium.launch(args = ["--no-sandbox"])
+            b = p.chromium.launch(args=["--no-sandbox"])
         except Exception as exc:  # noqa: BLE001
             pytest.skip(f"chromium could not be launched: {exc}")
         yield b
@@ -123,11 +124,11 @@ def browser():
 
 
 def _page(browser, elements: int):
-    page = browser.new_page(viewport = {"width": 900, "height": 600})
+    page = browser.new_page(viewport={"width": 900, "height": 600})
     page.set_content("<!doctype html><meta charset=utf-8><body></body>")
     # BEFORE the document exists, exactly as the real harness installs it via add_init_script: the hook
     # has to be on TextDecoder.prototype before any decode happens.
-    page.add_script_tag(content = _STREAMCOST_JS.read_text(encoding = "utf-8"))
+    page.add_script_tag(content=_STREAMCOST_JS.read_text(encoding="utf-8"))
     got = page.evaluate(BUILD_JS, elements)
     page.evaluate(FEED_JS, 200)
     return page, got

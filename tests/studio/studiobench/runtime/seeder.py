@@ -101,7 +101,7 @@ class Seeder:
     # Messages per PUT. The route replaces the whole message list in one SQLite transaction, so a
     # 1M-token thread is one enormous request; it is sent whole because a partial PUT with
     # pruneMissing would delete everything not in the batch.
-    batch_note: str = field(default = "one transaction, pruneMissing", init = False)
+    batch_note: str = field(default="one transaction, pruneMissing", init=False)
 
     def _url(self, path: str) -> str:
         return f"{self.base_url.rstrip('/')}{path}"
@@ -113,9 +113,9 @@ class Seeder:
         auth_request_json(
             self.auth,
             self._url("/api/chat/threads"),
-            method = "POST",
-            timeout = 60,
-            body = {
+            method="POST",
+            timeout=60,
+            body={
                 "id": thread_id,
                 "title": title,
                 "modelType": "base",
@@ -175,9 +175,9 @@ class Seeder:
             auth_request_json(
                 self.auth,
                 self._url(f"/api/chat/threads/{thread_id}/messages"),
-                method = "PUT",
-                timeout = 900,
-                body = {"messages": messages, "pruneMissing": True},
+                method="PUT",
+                timeout=900,
+                body={"messages": messages, "pruneMissing": True},
             )
         seconds = time.monotonic() - started
         self.log(
@@ -185,20 +185,20 @@ class Seeder:
         )
         units = list(plan.seeded_units)
         return SeededThread(
-            thread_id = thread_id,
-            messages = len(messages),
-            seeded_chars = plan.seeded_chars,
-            seconds = seconds,
-            turns = len(units),
-            first_marker = turn_marker(0, units[0].index) if units else None,
-            last_marker = turn_marker(len(units) - 1, units[-1].index) if units else None,
+            thread_id=thread_id,
+            messages=len(messages),
+            seeded_chars=plan.seeded_chars,
+            seconds=seconds,
+            turns=len(units),
+            first_marker=turn_marker(0, units[0].index) if units else None,
+            last_marker=turn_marker(len(units) - 1, units[-1].index) if units else None,
         )
 
     def read_back(self, thread_id: str) -> list[dict]:
         got = auth_request_json(
             self.auth,
             self._url(f"/api/chat/threads/{thread_id}/messages"),
-            timeout = 300,
+            timeout=300,
         )
         if isinstance(got, dict):
             return got.get("messages", [])
@@ -331,9 +331,9 @@ def measure_chars_per_token(
             got = auth_request_json(
                 auth,
                 f"{base_url.rstrip('/')}/api/inference/chat/count_tokens",
-                method = "POST",
-                timeout = 120,
-                body = {"model": model_id, "messages": [{"role": "user", "content": sample}]},
+                method="POST",
+                timeout=120,
+                body={"model": model_id, "messages": [{"role": "user", "content": sample}]},
             )
             n = (got or {}).get("total_tokens") or (got or {}).get("tokens")
             if n:

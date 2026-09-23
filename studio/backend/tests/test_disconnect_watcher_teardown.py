@@ -43,7 +43,7 @@ def _bounded_stop(monkeypatch, collected):
     """Keep the real bounded stop, record what it was handed, shorten its 5s default."""
     real_stop = inference_route._stop_local_disconnect_cancel_watcher
 
-    def _stop(task, timeout_s = 0.05):
+    def _stop(task, timeout_s=0.05):
         collected.append(task)
         return real_stop(task, timeout_s)
 
@@ -68,10 +68,10 @@ def _swallowing_watcher(release, created):
     return _poll
 
 
-async def _finished(coro, timeout_s = 5.0):
+async def _finished(coro, timeout_s=5.0):
     """Run coro to completion without cancelling it on timeout; report whether it ended."""
     task = asyncio.create_task(coro)
-    done, _pending = await asyncio.wait({task}, timeout = timeout_s)
+    done, _pending = await asyncio.wait({task}, timeout=timeout_s)
     return task, bool(done)
 
 
@@ -81,10 +81,10 @@ async def _release(release, tasks):
     for task in tasks:
         if task is None:
             continue
-        await asyncio.wait({task}, timeout = 2.0)
+        await asyncio.wait({task}, timeout=2.0)
         if not task.done():
             task.cancel()
-            await asyncio.wait({task}, timeout = 2.0)
+            await asyncio.wait({task}, timeout=2.0)
 
 
 def test_aclose_stream_resources_is_not_blocked_by_a_wedged_watcher(monkeypatch):
@@ -102,10 +102,10 @@ def test_aclose_stream_resources_is_not_blocked_by_a_wedged_watcher(monkeypatch)
 
             teardown, finished = await _finished(
                 inference_route._aclose_stream_resources(
-                    watchers = (watcher,),
-                    iterator = iterator,
-                    resp = resp,
-                    client = client,
+                    watchers=(watcher,),
+                    iterator=iterator,
+                    resp=resp,
+                    client=client,
                 )
             )
 
@@ -135,7 +135,7 @@ def test_send_stream_preheader_finally_is_not_blocked_by_a_wedged_watcher(monkey
             async def send(
                 self,
                 req,
-                stream = False,
+                stream=False,
             ):
                 return sent
 
@@ -156,7 +156,7 @@ def test_send_stream_preheader_finally_is_not_blocked_by_a_wedged_watcher(monkey
                     _Client(),
                     httpx.Request("POST", "http://llama.test/v1/chat/completions"),
                     threading.Event(),
-                    request = _Request(),
+                    request=_Request(),
                 )
             )
 
@@ -209,7 +209,7 @@ def test_real_disconnect_watcher_can_survive_cancel_inside_is_disconnected():
             for _ in range(offset):
                 await asyncio.sleep(0)
             watcher.cancel()
-            done, _pending = await asyncio.wait({watcher}, timeout = 0.5)
+            done, _pending = await asyncio.wait({watcher}, timeout=0.5)
             return not done
         finally:
             await _release(release, [watcher])

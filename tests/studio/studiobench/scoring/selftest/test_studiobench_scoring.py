@@ -51,23 +51,23 @@ from studiobench.scoring.anchors import ONSET_SCORE_THRESHOLD  # noqa: E402
 # ---------------------------------------------------------------------------------------
 def test_not_attempted_cannot_carry_a_value():
     with pytest.raises(PayloadSchemaError):
-        Measure(value = 1.0, attempted = False, unit = "ms", note = "nope")
+        Measure(value=1.0, attempted=False, unit="ms", note="nope")
 
 
 def test_not_attempted_must_say_why():
     with pytest.raises(PayloadSchemaError):
-        Measure(value = None, attempted = False, unit = "ms")
+        Measure(value=None, attempted=False, unit="ms")
 
 
 def test_sub_floor_delta_prints_as_a_bound_not_a_zero():
-    measure = Measure.read(0.04, "ms/update", floor = 0.12)
+    measure = Measure.read(0.04, "ms/update", floor=0.12)
     assert measure.sub_floor is True
     assert measure.display() == "< 0.12 ms/update (instrument floor)"
     assert "0.04" not in measure.display()
 
 
 def test_negative_sub_floor_is_bounded_from_below():
-    measure = Measure.read(-0.03, "ms/update", floor = 0.12)
+    measure = Measure.read(-0.03, "ms/update", floor=0.12)
     assert measure.display() == "> -0.12 ms/update (instrument floor)"
 
 
@@ -221,7 +221,7 @@ def test_uniform_mediocrity_is_caught_by_time_in_jank_and_missed_by_max():
     """Every frame 120 ms. `max` says 120, which sounds survivable. It is not."""
 
     deltas = [120.0] * 50
-    stats = compute_frame_stats(deltas, window_ms = 6000.0, declared_refresh_ms = 16.7)
+    stats = compute_frame_stats(deltas, window_ms=6000.0, declared_refresh_ms=16.7)
     assert stats.time_in_jank_pct.value == pytest.approx(100.0)
     assert stats.max_frame_ms.value == pytest.approx(120.0)
 
@@ -230,8 +230,8 @@ def test_a_single_stall_is_caught_by_jank_index_and_missed_by_percentiles():
     """5,000 good frames and one 3.4 s freeze. p95 is perfect; the app was frozen."""
 
     deltas = [8.0] * 5000 + [3400.0]
-    stats = compute_frame_stats(deltas, window_ms = 43_400.0, declared_refresh_ms = 16.7)
-    assert stats.p95_frame_ms.value == pytest.approx(8.0, abs = 0.5)
+    stats = compute_frame_stats(deltas, window_ms=43_400.0, declared_refresh_ms=16.7)
+    assert stats.p95_frame_ms.value == pytest.approx(8.0, abs=0.5)
     assert stats.time_in_jank_pct.value < 10.0
     assert stats.jank_index.value > 200.0
     assert stats.max_frame_ms.value == pytest.approx(3400.0)
@@ -241,11 +241,11 @@ def test_refresh_interval_is_measured_not_assumed():
     deltas = [8.3] * 40 + [40.0, 60.0]
     interval, source = measure_refresh_interval_ms(deltas)
     assert source == "measured"
-    assert interval == pytest.approx(8.3, abs = 0.5)
+    assert interval == pytest.approx(8.3, abs=0.5)
 
 
 def test_no_frames_recorded_is_a_failed_reading_not_zero_jank():
-    stats = compute_frame_stats([], window_ms = 5000.0)
+    stats = compute_frame_stats([], window_ms=5000.0)
     assert stats.no_frames_recorded is True
     assert stats.time_in_jank_pct.has_reading is False
     assert stats.time_in_jank_pct.attempted is True
@@ -254,7 +254,7 @@ def test_no_frames_recorded_is_a_failed_reading_not_zero_jank():
 
 def test_histogram_is_always_present_and_totals_the_frames():
     deltas = [4.0, 9.0, 20.0, 120.0, 5000.0]
-    stats = compute_frame_stats(deltas, window_ms = 5153.0)
+    stats = compute_frame_stats(deltas, window_ms=5153.0)
     assert sum(b["bucket_count"] for b in stats.histogram) == len(deltas)
 
 
@@ -266,7 +266,7 @@ def test_log_anchors_put_the_geometric_midpoint_at_fifty():
     anchor = METRIC_BY_KEY["keystroke_p95_ms"]
     midpoint = math.sqrt(anchor.good * anchor.bad)
     scored = score_metric(anchor, Measure.read(midpoint, "ms"))
-    assert scored.score == pytest.approx(50.0, abs = 0.001)
+    assert scored.score == pytest.approx(50.0, abs=0.001)
 
 
 def test_a_reading_at_or_past_the_bad_anchor_scores_zero():
@@ -298,7 +298,7 @@ def _good_metrics(**overrides) -> dict[str, Measure]:
 def test_one_catastrophic_metric_zeroes_the_rung():
     """Four good metrics must not rescue one broken one. That is why the mean is geometric."""
 
-    rung = score_rung(100_000, _good_metrics(scroll_settle_ms = Measure.read(9000.0, "ms")))
+    rung = score_rung(100_000, _good_metrics(scroll_settle_ms=Measure.read(9000.0, "ms")))
     assert rung.score == 0.0
     assert rung.zeroed_by == ["scroll_settle_ms"]
     assert rung.usable is False
@@ -307,7 +307,7 @@ def test_one_catastrophic_metric_zeroes_the_rung():
 def test_an_arithmetic_mean_would_have_rescued_it():
     """Documents the choice: the same inputs average to a passing score."""
 
-    rung = score_rung(100_000, _good_metrics(scroll_settle_ms = Measure.read(9000.0, "ms")))
+    rung = score_rung(100_000, _good_metrics(scroll_settle_ms=Measure.read(9000.0, "ms")))
     scored = [m for m in rung.metric_scores if m.scored]
     arithmetic = sum(m.weight * float(m.score) for m in scored) / sum(m.weight for m in scored)
     assert arithmetic > 60.0
@@ -347,25 +347,25 @@ def test_a_crashed_rung_must_not_outscore_a_slow_one():
 
     rungs = [1_000, 10_000, 100_000, 500_000, 1_000_000]
     slow_metrics = _good_metrics(
-        keystroke_p95_ms = Measure.read(180.0, "ms"),
-        time_in_jank_pct = Measure.read(25.0, "%"),
-        jank_index = Measure.read(8.0, "ms"),
-        max_frame_ms = Measure.read(900.0, "ms"),
-        scroll_settle_ms = Measure.read(1800.0, "ms"),
-        menu_open_ms = Measure.read(700.0, "ms"),
+        keystroke_p95_ms=Measure.read(180.0, "ms"),
+        time_in_jank_pct=Measure.read(25.0, "%"),
+        jank_index=Measure.read(8.0, "ms"),
+        max_frame_ms=Measure.read(900.0, "ms"),
+        scroll_settle_ms=Measure.read(1800.0, "ms"),
+        menu_open_ms=Measure.read(700.0, "ms"),
     )
 
     crasher = score_ladder(
         [
-            score_rung(t, _good_metrics(), completed = True)
+            score_rung(t, _good_metrics(), completed=True)
             if t <= 100_000
-            else score_rung(t, {}, completed = False, failure_mode = "renderer crashed")
+            else score_rung(t, {}, completed=False, failure_mode="renderer crashed")
             for t in rungs
         ]
     )
     limper = score_ladder(
         [
-            score_rung(t, _good_metrics() if t <= 100_000 else slow_metrics, completed = True)
+            score_rung(t, _good_metrics() if t <= 100_000 else slow_metrics, completed=True)
             for t in rungs
         ]
     )
@@ -380,11 +380,11 @@ def test_a_crashed_rung_must_not_outscore_a_slow_one():
 def test_onset_rung_is_the_largest_usable_rung():
     rungs = [1_000, 10_000, 100_000, 500_000]
     bad = _good_metrics(
-        keystroke_p95_ms = Measure.read(400.0, "ms"),
-        scroll_settle_ms = Measure.read(2800.0, "ms"),
+        keystroke_p95_ms=Measure.read(400.0, "ms"),
+        scroll_settle_ms=Measure.read(2800.0, "ms"),
     )
     ladder = score_ladder(
-        [score_rung(t, _good_metrics() if t <= 10_000 else bad, completed = True) for t in rungs]
+        [score_rung(t, _good_metrics() if t <= 10_000 else bad, completed=True) for t in rungs]
     )
     assert ladder.onset_rung_tokens == 10_000
     assert ladder.rungs[0].score >= ONSET_SCORE_THRESHOLD
@@ -392,7 +392,7 @@ def test_onset_rung_is_the_largest_usable_rung():
 
 def test_non_monotone_usability_is_flagged_rather_than_maximised():
     rungs = [1_000, 10_000, 100_000]
-    bad = _good_metrics(keystroke_p95_ms = Measure.read(450.0, "ms"))
+    bad = _good_metrics(keystroke_p95_ms=Measure.read(450.0, "ms"))
     ladder = score_ladder(
         [
             score_rung(1_000, _good_metrics()),
@@ -421,17 +421,17 @@ def _identity(session: str = "s1", **overrides) -> RunIdentity:
     return RunIdentity(**fields)
 
 
-def _pairs(ratios: dict[str, float], rungs = (1_000, 10_000, 100_000)) -> list[Pair]:
+def _pairs(ratios: dict[str, float], rungs=(1_000, 10_000, 100_000)) -> list[Pair]:
     out = []
     for metric, ratio in ratios.items():
         for index, rung in enumerate(rungs):
             base = 100.0 + index
             out.append(
                 Pair(
-                    rung_tokens = rung,
-                    metric_key = metric,
-                    base = Measure.read(base, "ms"),
-                    treatment = Measure.read(base * ratio, "ms"),
+                    rung_tokens=rung,
+                    metric_key=metric,
+                    base=Measure.read(base, "ms"),
+                    treatment=Measure.read(base * ratio, "ms"),
                 )
             )
     return out
@@ -443,7 +443,7 @@ def test_ab_refuses_across_weights_ids():
             "x",
             _pairs({"keystroke_p95_ms": 0.9}),
             _identity(),
-            _identity(weights_id = "w-999"),
+            _identity(weights_id="w-999"),
         )
     assert "weights_id" in str(caught.value)
 
@@ -453,8 +453,8 @@ def test_ab_refuses_across_sessions():
         compare(
             "x",
             _pairs({"keystroke_p95_ms": 0.9}),
-            _identity(session = "s1"),
-            _identity(session = "s2"),
+            _identity(session="s1"),
+            _identity(session="s2"),
         )
     assert "session" in str(caught.value)
 
@@ -477,7 +477,7 @@ def test_a_regression_surfaces_despite_a_positive_headline():
             "max_frame_ms": 1.60,
         }
     )
-    result = compare("treatment", pairs, _identity(), _identity(), noise_floor_pct = 5.0)
+    result = compare("treatment", pairs, _identity(), _identity(), noise_floor_pct=5.0)
     assert result.headline_ratio < 0.9  # the headline says "16% faster"
     assert result.verdict == "FAIL"
     assert any("max_frame_ms" in r for r in result.regressions)
@@ -489,7 +489,7 @@ def test_within_noise_is_not_a_win():
         _pairs({"keystroke_p95_ms": 0.98}),
         _identity(),
         _identity(),
-        noise_floor_pct = 5.0,
+        noise_floor_pct=5.0,
     )
     assert result.verdict == "NO DIFFERENCE"
     assert result.metrics[0].verdict == "within noise"
@@ -501,8 +501,8 @@ def test_null_control_that_drifts_voids_the_whole_comparison():
         _pairs({"keystroke_p95_ms": 1.30}),
         _identity(),
         _identity(),
-        noise_floor_pct = 5.0,
-        is_null_control = True,
+        noise_floor_pct=5.0,
+        is_null_control=True,
     )
     assert control.void is True
     assert control.verdict == "VOID"
@@ -515,8 +515,8 @@ def test_null_control_that_behaves_sets_the_noise_floor():
         _pairs({"keystroke_p95_ms": 1.02, "jank_index": 0.985}),
         _identity(),
         _identity(),
-        noise_floor_pct = 5.0,
-        is_null_control = True,
+        noise_floor_pct=5.0,
+        is_null_control=True,
     )
     assert control.void is False
     floor, source = noise_floor_from_null_control(control)
@@ -525,8 +525,8 @@ def test_null_control_that_behaves_sets_the_noise_floor():
 
 
 def test_bootstrap_ci_brackets_the_geometric_mean():
-    pairs = _pairs({"keystroke_p95_ms": 0.70}, rungs = (1_000, 10_000, 100_000, 500_000))
-    result = compare("treatment", pairs, _identity(), _identity(), bootstrap_seed = 7)
+    pairs = _pairs({"keystroke_p95_ms": 0.70}, rungs=(1_000, 10_000, 100_000, 500_000))
+    result = compare("treatment", pairs, _identity(), _identity(), bootstrap_seed=7)
     metric = result.metrics[0]
     assert metric.ci_low is not None
     assert metric.ci_low <= metric.ratio_geomean <= metric.ci_high
@@ -548,10 +548,10 @@ def _split_pairs(metric: str, ratios: list[float]) -> list[Pair]:
         base = 100.0 + index
         out.append(
             Pair(
-                rung_tokens = 1_000 * (index + 1),
-                metric_key = metric,
-                base = Measure.read(base, "ms"),
-                treatment = Measure.read(base * ratio, "ms"),
+                rung_tokens=1_000 * (index + 1),
+                metric_key=metric,
+                base=Measure.read(base, "ms"),
+                treatment=Measure.read(base * ratio, "ms"),
             )
         )
     return out
@@ -563,7 +563,7 @@ def test_a_ci_that_spans_no_effect_is_not_an_improvement():
         _split_pairs("keystroke_p95_ms", [0.7, 0.7, 1.2, 1.2]),
         _identity(),
         _identity(),
-        noise_floor_pct = 5.0,
+        noise_floor_pct=5.0,
     )
     metric = result.metrics[0]
     assert metric.beyond_noise is True  # 8.3% clear of a 5% floor
@@ -587,7 +587,7 @@ def test_a_ci_that_spans_no_effect_does_not_clear_a_regression():
         _split_pairs("keystroke_p95_ms", [1.4, 1.4, 0.9, 0.9]),
         _identity(),
         _identity(),
-        noise_floor_pct = 5.0,
+        noise_floor_pct=5.0,
     )
     metric = result.metrics[0]
     assert metric.ci_spans_no_effect is True
@@ -603,7 +603,7 @@ def test_agreeing_pairs_still_carry_their_direction():
         _split_pairs("keystroke_p95_ms", [0.70, 0.72, 0.68, 0.74]),
         _identity(),
         _identity(),
-        noise_floor_pct = 5.0,
+        noise_floor_pct=5.0,
     )
     metric = result.metrics[0]
     assert metric.ci_spans_no_effect is False
@@ -619,7 +619,7 @@ def test_the_table_does_not_print_a_direction_it_could_not_resolve():
         _split_pairs("keystroke_p95_ms", [0.7, 0.7, 1.2, 1.2]),
         _identity(),
         _identity(),
-        noise_floor_pct = 5.0,
+        noise_floor_pct=5.0,
     )
     text = render_ab_table(result)
     assert "VERDICT: INCONCLUSIVE" in text
@@ -639,12 +639,12 @@ def test_the_table_does_not_print_a_direction_it_could_not_resolve():
 
 # ---------------------------------------------------------------------------------------
 JANK_FLOOR = 0.1
-SMOOTH = Measure.read(0.0, "%", floor = JANK_FLOOR)
-JANKY = Measure.read(5.0, "%", floor = JANK_FLOOR)
+SMOOTH = Measure.read(0.0, "%", floor=JANK_FLOOR)
+JANKY = Measure.read(5.0, "%", floor=JANK_FLOOR)
 
 
 def _jank_pair(base: Measure, treatment: Measure) -> Pair:
-    return Pair(rung_tokens = 100_000, metric_key = "time_in_jank_pct", base = base, treatment = treatment)
+    return Pair(rung_tokens=100_000, metric_key="time_in_jank_pct", base=base, treatment=treatment)
 
 
 def test_a_zero_jank_base_still_pairs_against_a_treatment_that_introduced_jank():
@@ -681,7 +681,7 @@ def test_two_arms_below_the_floor_are_not_a_difference():
     """score.py's reason, at the ratio layer: instrument noise on a fast machine must not invent
     a difference between two perfect builds."""
 
-    pair = _jank_pair(SMOOTH, Measure.read(0.02, "%", floor = JANK_FLOOR))
+    pair = _jank_pair(SMOOTH, Measure.read(0.02, "%", floor=JANK_FLOOR))
 
     assert pair.usable is True
     assert pair.ratio == 1.0
@@ -710,10 +710,10 @@ def test_a_zero_with_no_declared_floor_stays_unusable():
     """Nothing bounds it, so there is no honest ratio to form."""
 
     pair = Pair(
-        rung_tokens = 100_000,
-        metric_key = "keystroke_p95_ms",
-        base = Measure.read(0.0, "ms"),
-        treatment = Measure.read(40.0, "ms"),
+        rung_tokens=100_000,
+        metric_key="keystroke_p95_ms",
+        base=Measure.read(0.0, "ms"),
+        treatment=Measure.read(40.0, "ms"),
     )
 
     assert pair.base.has_reading is True
@@ -730,8 +730,8 @@ def test_a_null_control_voids_on_jank_it_introduced_over_a_zero_base():
         [_jank_pair(SMOOTH, JANKY)],
         _identity(),
         _identity(),
-        noise_floor_pct = 5.0,
-        is_null_control = True,
+        noise_floor_pct=5.0,
+        is_null_control=True,
     )
 
     assert result.void is True
@@ -747,16 +747,16 @@ def test_a_bounded_ratio_is_not_published_as_this_machines_noise_floor():
         [
             _jank_pair(SMOOTH, JANKY),
             Pair(
-                rung_tokens = 100_000,
-                metric_key = "max_frame_ms",
-                base = Measure.read(30.0, "ms"),
-                treatment = Measure.read(31.0, "ms"),
+                rung_tokens=100_000,
+                metric_key="max_frame_ms",
+                base=Measure.read(30.0, "ms"),
+                treatment=Measure.read(31.0, "ms"),
             ),
         ],
         _identity(),
         _identity(),
-        noise_floor_pct = 5.0,
-        is_null_control = True,
+        noise_floor_pct=5.0,
+        is_null_control=True,
     )
     floor, source = noise_floor_from_null_control(result)
 
@@ -770,7 +770,7 @@ def test_a_null_control_of_only_bounded_ratios_falls_back_to_the_declared_defaul
         [_jank_pair(SMOOTH, JANKY)],
         _identity(),
         _identity(),
-        is_null_control = True,
+        is_null_control=True,
     )
     floor, source = noise_floor_from_null_control(result)
 
@@ -790,13 +790,13 @@ def test_an_unresolved_metric_does_not_lend_its_magnitude_to_the_headline():
 
     pairs = _split_pairs("keystroke_p95_ms", [0.2, 0.2, 1.5, 1.5])
     pairs += _split_pairs("menu_open_ms", [0.9, 0.9, 0.9, 0.9])
-    result = compare("treatment", pairs, _identity(), _identity(), noise_floor_pct = 5.0)
+    result = compare("treatment", pairs, _identity(), _identity(), noise_floor_pct=5.0)
 
     by_key = {m.metric_key: m for m in result.metrics}
     assert by_key["keystroke_p95_ms"].verdict == "inconclusive"
     assert by_key["menu_open_ms"].verdict == "improved"
     # Only the resolved metric survives into the headline, so the quoted size is the real one.
-    assert result.headline_ratio == pytest.approx(0.9, abs = 1e-9)
+    assert result.headline_ratio == pytest.approx(0.9, abs=1e-9)
     assert result.verdict == "IMPROVED"
 
 
@@ -809,7 +809,7 @@ def test_a_run_whose_every_moving_metric_is_unresolved_is_inconclusive_not_no_re
 
     pairs = _split_pairs("keystroke_p95_ms", [0.7, 0.7, 1.2, 1.2])
     pairs += _split_pairs("menu_open_ms", [0.6, 0.6, 1.3, 1.3])
-    result = compare("treatment", pairs, _identity(), _identity(), noise_floor_pct = 5.0)
+    result = compare("treatment", pairs, _identity(), _identity(), noise_floor_pct=5.0)
 
     assert all(m.ci_spans_no_effect for m in result.metrics)
     assert result.headline_ratio is None
@@ -827,12 +827,12 @@ def test_an_unresolved_mover_beside_a_flat_metric_is_not_no_difference():
 
     pairs = _split_pairs("keystroke_p95_ms", [0.7, 0.7, 1.2, 1.2])
     pairs += _split_pairs("menu_open_ms", [1.0, 1.0, 1.0, 1.0])
-    result = compare("treatment", pairs, _identity(), _identity(), noise_floor_pct = 5.0)
+    result = compare("treatment", pairs, _identity(), _identity(), noise_floor_pct=5.0)
 
     by_key = {m.metric_key: m for m in result.metrics}
     assert by_key["keystroke_p95_ms"].unresolved is True
     assert by_key["menu_open_ms"].verdict == "within noise"
-    assert result.headline_ratio == pytest.approx(1.0, abs = 1e-9)
+    assert result.headline_ratio == pytest.approx(1.0, abs=1e-9)
     assert result.verdict == "INCONCLUSIVE"
 
 
@@ -841,7 +841,7 @@ def test_an_unresolved_metric_never_clears_a_resolved_regression():
 
     pairs = _split_pairs("keystroke_p95_ms", [0.7, 0.7, 1.2, 1.2])
     pairs += _split_pairs("menu_open_ms", [1.3, 1.3, 1.3, 1.3])
-    result = compare("treatment", pairs, _identity(), _identity(), noise_floor_pct = 5.0)
+    result = compare("treatment", pairs, _identity(), _identity(), noise_floor_pct=5.0)
 
     assert result.regressions
     assert result.verdict == "FAIL"
@@ -861,7 +861,7 @@ def test_a_metric_with_no_ci_at_all_does_not_claim_a_direction():
         _split_pairs("keystroke_p95_ms", [0.5, 0.5]),
         _identity(),
         _identity(),
-        noise_floor_pct = 5.0,
+        noise_floor_pct=5.0,
     )
     metric = result.metrics[0]
     assert metric.n_pairs == 2
@@ -887,13 +887,13 @@ def test_a_regression_with_no_ci_is_still_a_regression_and_still_in_the_headline
         _split_pairs("keystroke_p95_ms", [1.5, 1.5]),
         _identity(),
         _identity(),
-        noise_floor_pct = 5.0,
+        noise_floor_pct=5.0,
     )
     metric = result.metrics[0]
     assert (metric.ci_low, metric.ci_high) == (None, None)
     assert metric.verdict == "regressed"
     assert metric.withheld is False
-    assert result.headline_ratio == pytest.approx(1.5, abs = 1e-9)
+    assert result.headline_ratio == pytest.approx(1.5, abs=1e-9)
     assert result.regressions
     assert result.verdict == "FAIL"
 
@@ -906,7 +906,7 @@ def test_three_pairs_still_resolve_a_direction():
         _split_pairs("keystroke_p95_ms", [0.5, 0.5, 0.5]),
         _identity(),
         _identity(),
-        noise_floor_pct = 5.0,
+        noise_floor_pct=5.0,
     )
     metric = result.metrics[0]
     assert metric.ci_low is not None

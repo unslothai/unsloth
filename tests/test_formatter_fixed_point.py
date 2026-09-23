@@ -112,12 +112,12 @@ def eligible_files(root: Path) -> list[str]:
     """Every tracked Python file the hook would be handed, repo-relative."""
     out = subprocess.run(
         ["git", "-C", str(root), "ls-files", "-z", *_TRACKED_GLOBS],
-        capture_output = True,
-        text = True,
-        check = True,
+        capture_output=True,
+        text=True,
+        check=True,
     )
     tracked = [name for name in out.stdout.split("\0") if name]
-    pattern = hook_exclude_pattern(CONFIG.read_text(encoding = "utf-8"), _HOOK_ID)
+    pattern = hook_exclude_pattern(CONFIG.read_text(encoding="utf-8"), _HOOK_ID)
     assert (
         pattern
     ), f"{CONFIG.name} no longer gives {_HOOK_ID} an exclude; the filter below is blind"
@@ -135,7 +135,7 @@ def _pinned_ruff_reason() -> str | None:
     ruff's formatting is not stable across releases, so another ruff answers a
     different question, and the formatter refuses to run under one anyway.
     """
-    pinned = pinned_ruff_version(CONFIG.read_text(encoding = "utf-8")) if CONFIG.exists() else None
+    pinned = pinned_ruff_version(CONFIG.read_text(encoding="utf-8")) if CONFIG.exists() else None
     installed = installed_ruff_version()
     if installed is None:
         return "ruff is not installed here, and the formatter cannot run without it"
@@ -174,7 +174,7 @@ class TestTheExcludeComesFromTheConfig:
     """The filter has to track the hook, not a copy of it made once."""
 
     def test_the_real_hook_still_names_an_exclude(self):
-        pattern = hook_exclude_pattern(CONFIG.read_text(encoding = "utf-8"), _HOOK_ID)
+        pattern = hook_exclude_pattern(CONFIG.read_text(encoding="utf-8"), _HOOK_ID)
         assert pattern, f"no exclude found for {_HOOK_ID}"
         re.compile(pattern)
 
@@ -225,17 +225,17 @@ class TestTheGuardCannotGoGreenHavingCheckedNothing:
     """A skip is a pass to everything that reads CI, so CI may not be allowed one."""
 
     def test_a_usable_ruff_runs_the_check(self):
-        assert guard_verdict(None, in_ci = False) == "run"
-        assert guard_verdict(None, in_ci = True) == "run"
+        assert guard_verdict(None, in_ci=False) == "run"
+        assert guard_verdict(None, in_ci=True) == "run"
 
     def test_a_contributor_without_the_pin_is_only_skipped(self):
-        assert guard_verdict("ruff is not installed here", in_ci = False) == "skip"
+        assert guard_verdict("ruff is not installed here", in_ci=False) == "skip"
 
     def test_the_same_gap_in_ci_is_a_failure(self):
         # Whichever reason it is: no ruff means the guard checked nothing, and a
         # mismatched ruff means the workflow drifted off the pin it installs.
-        assert guard_verdict("ruff is not installed here", in_ci = True) == "fail"
-        assert guard_verdict("the repo is formatted with ruff 0.6.9", in_ci = True) == "fail"
+        assert guard_verdict("ruff is not installed here", in_ci=True) == "fail"
+        assert guard_verdict("the repo is formatted with ruff 0.6.9", in_ci=True) == "fail"
 
     def test_ci_is_detected_from_either_variable(self):
         assert running_in_ci({"GITHUB_ACTIONS": "true"}) is True
@@ -288,7 +288,7 @@ def _command_line_length(argv: list[str]) -> int:
     return sum(len(arg) + 3 for arg in argv)
 
 
-@pytest.mark.skipif(_VERDICT == "skip", reason = _RUFF_REASON or "")
+@pytest.mark.skipif(_VERDICT == "skip", reason=_RUFF_REASON or "")
 def test_the_formatter_invocation_fits_in_a_windows_command_line():
     """The guard below must be able to START on Windows, not only pass on Linux.
 
@@ -334,7 +334,7 @@ def test_the_formatter_invocation_fits_in_a_windows_command_line():
     )
 
 
-@pytest.mark.skipif(_VERDICT == "skip", reason = _RUFF_REASON or "")
+@pytest.mark.skipif(_VERDICT == "skip", reason=_RUFF_REASON or "")
 def test_every_tracked_python_file_is_already_formatted(tmp_path):
     """Run the hook over copies of the whole tracked set and expect no rewrite."""
     if _VERDICT == "fail":
@@ -358,7 +358,7 @@ def test_every_tracked_python_file_is_already_formatted(tmp_path):
     for name in names:
         source = _ROOT / name
         target = tmp_path / name
-        target.parent.mkdir(parents = True, exist_ok = True)
+        target.parent.mkdir(parents=True, exist_ok=True)
         originals[name] = source.read_bytes()
         target.write_bytes(originals[name])
         copies.append(str(target))
@@ -366,7 +366,7 @@ def test_every_tracked_python_file_is_already_formatted(tmp_path):
     # Batched, and through the same builder the Windows-limit test above measures. One call with
     # all ~2650 paths on it is 9.9x over Windows' CreateProcess cap and dies with WinError 206.
     for argv in formatter_argvs(copies):
-        run = subprocess.run(argv, capture_output = True, text = True)
+        run = subprocess.run(argv, capture_output=True, text=True)
         assert run.returncode == 0, f"the formatter itself failed:\n{run.stdout}\n{run.stderr}"
 
     drifted = [name for name in names if (tmp_path / name).read_bytes() != originals[name]]

@@ -73,13 +73,13 @@ def probe_torch_wheel_env(
                     "}))"
                 ),
             ],
-            stdout = subprocess.PIPE,
-            stderr = subprocess.PIPE,
-            text = True,
-            encoding = "utf-8",
-            errors = "replace",
-            timeout = timeout,
-            env = utf8_child_env(child_env_without_native_path_secret()),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=timeout,
+            env=utf8_child_env(child_env_without_native_path_secret()),
             **windows_hidden_subprocess_kwargs(),
         )
     except subprocess.TimeoutExpired:
@@ -166,7 +166,7 @@ def direct_wheel_url(
         return None
 
     # Checked before the upstream filename is built, not after: for torch 2.13+ the upstream URL this would otherwise return names an asset that has never existed, so there is nothing to fall back to and no reason to prefer it. Every caller -- causal-conv1d and mamba-ssm on both the training and the inference path -- picks this up without changing its own arguments, which is why the override lives here rather than at each call site.
-    ours = unsloth_prebuilt_wheel_url(filename_prefix = filename_prefix, env = env)
+    ours = unsloth_prebuilt_wheel_url(filename_prefix=filename_prefix, env=env)
     if ours is not None:
         return ours
 
@@ -293,7 +293,7 @@ def xformers_wheel_url(env: dict[str, str] | None) -> str | None:
 
 def join_wheel_url(base: str, path: str) -> str:
     """``base`` + ``path``, with any ?query / #fragment kept at the end. UNSLOTH_PYTORCH_MIRROR is allowed to authenticate by query string (``https://mirror/whl?token=abc``), and appending after the query put the wheel path INSIDE the token value, leaving the request path at /whl and the token unusable. The tokenized private mirror this setting exists for was the one shape that could not resolve a wheel."""
-    cut = min([i for i in (base.find("?"), base.find("#")) if i >= 0], default = -1)
+    cut = min([i for i in (base.find("?"), base.find("#")) if i >= 0], default=-1)
     if cut < 0:
         return f"{base.rstrip('/')}/{path}"
     return f"{base[:cut].rstrip('/')}/{path}{base[cut:]}"
@@ -305,7 +305,7 @@ def redact_url_credentials(url: str) -> str:
     if separator < 0:
         return url
     scheme, rest = url[:separator], url[separator + 3 :]
-    cut = min([i for i in (rest.find("?"), rest.find("#")) if i >= 0], default = -1)
+    cut = min([i for i in (rest.find("?"), rest.find("#")) if i >= 0], default=-1)
     if cut >= 0:
         rest = rest[:cut]
     slash = rest.find("/")
@@ -333,18 +333,18 @@ def flash_attn_wheel_url(env: dict[str, str] | None) -> str | None:
     if env is None:
         return None
     # flash-attn does not reach direct_wheel_url on torch 2.13+: flash_attn_package_version returns None there and this function bails before the URL is ever built, so the override has to be asked here too. It is the same predicate and the same table; only the entry point differs.
-    ours = unsloth_prebuilt_wheel_url(filename_prefix = "flash_attn", env = env)
+    ours = unsloth_prebuilt_wheel_url(filename_prefix="flash_attn", env=env)
     if ours is not None:
         return ours
     package_version = flash_attn_package_version(prebuilt_wheel_torch_mm(env["torch_mm"]))
     if package_version is None:
         return None
     return direct_wheel_url(
-        filename_prefix = "flash_attn",
-        package_version = package_version,
-        release_tag = f"v{package_version}",
-        release_base_url = FLASH_ATTN_RELEASE_BASE_URL,
-        env = env,
+        filename_prefix="flash_attn",
+        package_version=package_version,
+        release_tag=f"v{package_version}",
+        release_base_url=FLASH_ATTN_RELEASE_BASE_URL,
+        env=env,
     )
 
 
@@ -365,12 +365,12 @@ def install_wheel(
         uv_cmd.extend(["--python", python_executable, "--no-deps", wheel_url])
         result = run(
             uv_cmd,
-            stdout = subprocess.PIPE,
-            stderr = subprocess.STDOUT,
-            text = True,
-            encoding = "utf-8",
-            errors = "replace",
-            env = child_env_without_native_path_secret(),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            env=child_env_without_native_path_secret(),
         )
         attempts.append(("uv", result))
         if result.returncode == 0:
@@ -379,13 +379,13 @@ def install_wheel(
     pip_cmd = [python_executable, "-m", "pip", "install", "--no-deps", wheel_url]
     result = run(
         pip_cmd,
-        stdout = subprocess.PIPE,
-        stderr = subprocess.STDOUT,
-        text = True,
-        encoding = "utf-8",
-        errors = "replace",
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
         # Make the Python child emit the UTF-8 we decode above.
-        env = utf8_child_env(child_env_without_native_path_secret()),
+        env=utf8_child_env(child_env_without_native_path_secret()),
     )
     attempts.append(("pip", result))
     return attempts
@@ -393,8 +393,8 @@ def install_wheel(
 
 def url_exists(url: str) -> bool:
     try:
-        request = urllib.request.Request(url, method = "HEAD")
-        with urllib.request.urlopen(request, timeout = 10):
+        request = urllib.request.Request(url, method="HEAD")
+        with urllib.request.urlopen(request, timeout=10):
             return True
     except urllib.error.HTTPError as exc:
         _logger.debug("url_exists(%s): HTTP %s", url, exc.code)

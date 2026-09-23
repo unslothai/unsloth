@@ -63,7 +63,7 @@ def _typed(page, *, delay_armed: bool) -> dict:
     page.fill(SELECTOR, "")
     page.click(SELECTOR)
     page.evaluate("(s) => window.__sb.input.arm(s)", SELECTOR)
-    page.keyboard.type("a" * CHARS, delay = 60)
+    page.keyboard.type("a" * CHARS, delay=60)
     page.wait_for_timeout(1000)
     got = page.evaluate("(n) => window.__sb.input.collect(n)", CHARS)
     got["injected_events"] = page.evaluate("() => window.__sbInputDelay.events")
@@ -71,7 +71,7 @@ def _typed(page, *, delay_armed: bool) -> dict:
 
 
 def test_an_injected_keydown_stall_moves_keystroke_p95():
-    playwright = pytest.importorskip("playwright.sync_api", reason = "playwright is not installed")
+    playwright = pytest.importorskip("playwright.sync_api", reason="playwright is not installed")
     # IMPORTORSKIP IS NOT ENOUGH IN THIS SUITE. tests/studio/test_heavy_thread_measurement_integrity.py
     # puts a stub `playwright.sync_api` into `sys.modules` at collection time and it stays there for
     # the rest of the session, so on the CPU job the import above SUCCEEDS against the stub and every
@@ -95,8 +95,8 @@ def test_an_injected_keydown_stall_moves_keystroke_p95():
             # broken instrument.
             page.goto(URL)
 
-            quiet = _typed(page, delay_armed = False)
-            delayed = _typed(page, delay_armed = True)
+            quiet = _typed(page, delay_armed=False)
+            delayed = _typed(page, delay_armed=True)
         finally:
             browser.close()
 

@@ -26,14 +26,14 @@ LLAMA_UPDATE = REPO_ROOT / "docker" / "unsloth_llama_update.sh"
 
 pytestmark = pytest.mark.skipif(
     shutil.which("bash") is None,
-    reason = "needs bash",
+    reason="needs bash",
 )
 
 
 def _stub(directory: Path, name: str, body: str) -> None:
-    directory.mkdir(parents = True, exist_ok = True)
+    directory.mkdir(parents=True, exist_ok=True)
     path = directory / name
-    path.write_text("#!/usr/bin/env bash\n" + body, encoding = "utf-8")
+    path.write_text("#!/usr/bin/env bash\n" + body, encoding="utf-8")
     path.chmod(0o755)
 
 
@@ -41,15 +41,15 @@ def _run(
     script: Path,
     args,
     env,
-    cwd = None,
+    cwd=None,
 ):
     return subprocess.run(
         ["bash", str(script), *args],
-        capture_output = True,
-        text = True,
-        env = env,
-        cwd = cwd,
-        timeout = 120,
+        capture_output=True,
+        text=True,
+        env=env,
+        cwd=cwd,
+        timeout=120,
     )
 
 
@@ -69,7 +69,7 @@ def _studio_env(
     supervisorctl, git and the bundled npm are recording stubs."""
     home = tmp_path / "studio"
     site = tmp_path / "site"
-    (site / "studio" / "backend").mkdir(parents = True)
+    (site / "studio" / "backend").mkdir(parents=True)
     (site / "studio" / "__init__.py").write_text("")
     (site / "studio" / "backend" / "__init__.py").write_text("")
     (site / "studio" / "backend" / "main.py").write_text(
@@ -79,18 +79,18 @@ def _studio_env(
     # and never from whatever the runner's own interpreter has installed
     for name, ver in (("unsloth", "2026.9.4"), ("unsloth_zoo", "2026.9.3")):
         info = site / f"{name}-{ver}.dist-info"
-        info.mkdir(parents = True)
+        info.mkdir(parents=True)
         (info / "METADATA").write_text(f"Metadata-Version: 2.1\nName: {name}\nVersion: {ver}\n")
     if dist_ok:
-        (site / "studio" / "frontend" / "dist").mkdir(parents = True)
+        (site / "studio" / "frontend" / "dist").mkdir(parents=True)
         (site / "studio" / "frontend" / "dist" / "index.html").write_text("<html></html>")
     # the Studio image presents src as a link into its own copy of Studio, so the home
     # can be a volume; a standalone image has it as a real directory
     src = (tmp_path / "app" / "src") if src_link else (home / "src")
-    (src / "studio").mkdir(parents = True)
+    (src / "studio").mkdir(parents=True)
     (src / "OLD_TREE").write_text("previous source tree\n")
     if src_link:
-        home.mkdir(parents = True, exist_ok = True)
+        home.mkdir(parents=True, exist_ok=True)
         (home / "src").symlink_to(src)
 
     venv_bin = home / "unsloth_studio" / "bin"
@@ -190,7 +190,7 @@ def test_studio_update_restarts_when_the_backend_imports(tmp_path: Path):
 
 
 def test_studio_update_does_not_restart_into_a_backend_that_cannot_import(tmp_path: Path):
-    env = _studio_env(tmp_path, import_ok = False)
+    env = _studio_env(tmp_path, import_ok=False)
     res = _run(STUDIO_UPDATE, [], env)
     calls = _calls(env)
     assert "STUB-SUPERVISORCTL restart studio" not in calls, (
@@ -209,7 +209,7 @@ def test_studio_update_does_not_restart_into_a_backend_that_cannot_import(tmp_pa
 def test_studio_update_does_not_restart_into_a_tree_without_a_built_frontend(tmp_path: Path):
     """The --ref failure: a git build has no studio/frontend/dist, `unsloth studio`
     exits 1 on start, and three quick exits leave supervisord's program FATAL."""
-    env = _studio_env(tmp_path, dist_ok = False)
+    env = _studio_env(tmp_path, dist_ok=False)
     res = _run(STUDIO_UPDATE, [], env)
     calls = _calls(env)
     assert res.returncode != 0
@@ -223,7 +223,7 @@ def test_studio_update_restarts_a_studio_that_is_not_running(tmp_path: Path, sta
     """`supervisorctl status` exits 3 for STOPPED/EXITED/FATAL. That is still a program
     supervisord manages, and FATAL is what a failed earlier update left behind. It gets
     `start`: `restart` stops it first, which supervisorctl reports as an error."""
-    env = _studio_env(tmp_path, status_exit = status_exit)
+    env = _studio_env(tmp_path, status_exit=status_exit)
     res = _run(STUDIO_UPDATE, [], env)
     assert res.returncode == 0, res.stderr + res.stdout
     assert f"STUB-SUPERVISORCTL {verb} studio" in _calls(env), _calls(env)
@@ -234,7 +234,7 @@ def test_studio_update_fails_when_supervisor_cannot_restart_studio(tmp_path: Pat
     """A restart that fails used to leave the new install in place with Studio down and
     the previous tree already deleted. The previous tree is kept until the service is
     up, so a failed restart puts it back and starts that."""
-    env = _studio_env(tmp_path, restart_exit = 1)
+    env = _studio_env(tmp_path, restart_exit=1)
     res = _run(STUDIO_UPDATE, ["--ref", "main"], env)
     home = Path(env["UNSLOTH_STUDIO_HOME"])
     calls = _calls(env)
@@ -251,7 +251,7 @@ def test_studio_update_fails_when_supervisor_cannot_restart_studio(tmp_path: Pat
         "the previous install must be started again:\n" + calls
     )
     # the release path has no tree to swap, but its pins go back the same way
-    env = _studio_env(tmp_path / "release", restart_exit = 1)
+    env = _studio_env(tmp_path / "release", restart_exit=1)
     res = _run(STUDIO_UPDATE, [], env)
     assert res.returncode != 0, res.stdout
     assert "install --no-deps --force-reinstall -r" in _calls(env), _calls(env)
@@ -285,7 +285,7 @@ def test_studio_update_refuses_to_run_beside_another_updater(tmp_path: Path):
 
 
 def test_studio_update_reports_an_unmanaged_studio(tmp_path: Path):
-    env = _studio_env(tmp_path, status_exit = 4)
+    env = _studio_env(tmp_path, status_exit=4)
     res = _run(STUDIO_UPDATE, [], env)
     assert res.returncode == 0, res.stderr + res.stdout
     assert "STUB-SUPERVISORCTL restart studio" not in _calls(env)
@@ -310,7 +310,7 @@ def test_studio_update_ref_builds_the_frontend_and_swaps_the_source_tree(tmp_pat
 def test_studio_update_ref_writes_through_a_linked_source_tree(tmp_path: Path):
     """Replacing that link with a directory would put the tree outside the image's copy,
     where the next container start relinks over it and the update is silently gone."""
-    env = _studio_env(tmp_path, src_link = True)
+    env = _studio_env(tmp_path, src_link=True)
     res = _run(STUDIO_UPDATE, ["--ref", "main", "--no-restart"], env)
     home = Path(env["UNSLOTH_STUDIO_HOME"])
     real_src = tmp_path / "app" / "src"
@@ -325,7 +325,7 @@ def test_studio_update_ref_writes_through_a_linked_source_tree(tmp_path: Path):
 
 
 def test_studio_update_ref_with_a_failed_frontend_build_changes_nothing(tmp_path: Path):
-    env = _studio_env(tmp_path, npm_build_ok = False)
+    env = _studio_env(tmp_path, npm_build_ok=False)
     res = _run(STUDIO_UPDATE, ["--ref", "main", "--no-restart"], env)
     home = Path(env["UNSLOTH_STUDIO_HOME"])
     calls = _calls(env)
@@ -376,7 +376,7 @@ def test_studio_update_ref_installs_the_oxc_runtime_after_a_good_build(tmp_path:
 def test_studio_update_rollback_keeps_the_editable_uri_pip_recorded(tmp_path: Path):
     """direct_url.json holds a file:// URI; a path with a space comes back percent
     encoded, and pip rejects that as a bare path but takes it as the URI."""
-    env = _studio_env(tmp_path, import_ok = False)
+    env = _studio_env(tmp_path, import_ok=False)
     site = tmp_path / "site"
     info = site / "unsloth-2026.9.4.dist-info"  # seeded by _studio_env
     (info / "direct_url.json").write_text(
@@ -423,7 +423,7 @@ def test_studio_update_restores_once_and_leaves_no_temp_files_when_signalled_mid
     """After a failed tree check the script restores explicitly, then exits; the exit
     trap must not restore a second time, and a signal during the restore must not skip
     the temp-file cleanup."""
-    env = _studio_env(tmp_path, dist_ok = False)
+    env = _studio_env(tmp_path, dist_ok=False)
     env["STUB_PIP_INTERRUPT_RESTORE"] = "1"
     tmpd = tmp_path / "tmpd"
     tmpd.mkdir()
@@ -451,7 +451,7 @@ def test_studio_update_ref_refuses_a_venv_without_a_source_tree(tmp_path: Path):
 def test_studio_update_with_deps_puts_the_dependency_set_back(tmp_path: Path):
     """--with-deps lets pip move every dependency; restoring unsloth alone would leave
     the new dependency set under the old code."""
-    env = _studio_env(tmp_path, import_ok = False)
+    env = _studio_env(tmp_path, import_ok=False)
     res = _run(STUDIO_UPDATE, ["--with-deps"], env)
     calls = _calls(env)
     assert res.returncode != 0
@@ -466,7 +466,7 @@ def test_studio_update_with_deps_puts_the_dependency_set_back(tmp_path: Path):
     assert "transformers==4.0.0" not in [
         l for l in calls.splitlines() if l.startswith("STUB-PIP-CONSTRAINTS")
     ], "only the torch/CUDA stack is a constraint"
-    env = _studio_env(tmp_path / "nodeps", import_ok = False)
+    env = _studio_env(tmp_path / "nodeps", import_ok=False)
     res = _run(STUDIO_UPDATE, [], env)
     assert "freeze" not in _calls(env), "a --no-deps update has nothing to snapshot"
     assert " -c " not in _calls(env)
@@ -482,7 +482,7 @@ def test_studio_update_ref_with_deps_installs_the_studio_extra(tmp_path: Path):
 
 
 def test_studio_update_ref_puts_the_old_tree_back_when_the_new_one_cannot_start(tmp_path: Path):
-    env = _studio_env(tmp_path, import_ok = False)
+    env = _studio_env(tmp_path, import_ok=False)
     res = _run(STUDIO_UPDATE, ["--ref", "main", "--no-restart"], env)
     home = Path(env["UNSLOTH_STUDIO_HOME"])
     assert res.returncode != 0
@@ -499,14 +499,14 @@ def _zoo_spec(calls: str) -> str:
 
 
 def test_studio_update_mirrors_the_ref_when_the_zoo_has_it(tmp_path: Path):
-    env = _studio_env(tmp_path, git_ls_exit = 0)
+    env = _studio_env(tmp_path, git_ls_exit=0)
     res = _run(STUDIO_UPDATE, ["--ref", "v2026.7.5", "--no-restart"], env)
     assert res.returncode == 0, res.stderr + res.stdout
     assert _zoo_spec(_calls(env)).endswith("@v2026.7.5#egg=unsloth_zoo"), _calls(env)
 
 
 def test_studio_update_falls_back_to_zoo_main_when_the_ref_is_absent(tmp_path: Path):
-    env = _studio_env(tmp_path, git_ls_exit = 2)
+    env = _studio_env(tmp_path, git_ls_exit=2)
     res = _run(STUDIO_UPDATE, ["--ref", "v2026.7.5", "--no-restart"], env)
     assert res.returncode == 0, res.stderr + res.stdout
     assert _zoo_spec(_calls(env)).endswith("@main#egg=unsloth_zoo"), _calls(env)
@@ -516,7 +516,7 @@ def test_studio_update_falls_back_to_zoo_main_when_the_ref_is_absent(tmp_path: P
 def test_studio_update_aborts_when_the_zoo_lookup_never_reached_the_remote(tmp_path: Path):
     # treating 2 and 128 alike pairs the requested unsloth revision with an unrelated
     # zoo one once the network recovers, across a private API
-    env = _studio_env(tmp_path, git_ls_exit = 128)
+    env = _studio_env(tmp_path, git_ls_exit=128)
     res = _run(STUDIO_UPDATE, ["--ref", "v2026.7.5", "--no-restart"], env)
     calls = _calls(env)
     assert "STUB-PIP" not in calls, "a transport failure must not install anything:\n" + calls
@@ -572,7 +572,7 @@ def test_a_health_wait_that_expires_before_its_first_check_still_asks_once(tmp_p
     env = _studio_env(tmp_path)
     env["UNSLOTH_STUDIO_UPDATE_HEALTH_WAIT"] = "1"
     clock = tmp_path / "clock"
-    clock.write_text("1000000000", encoding = "utf-8")
+    clock.write_text("1000000000", encoding="utf-8")
     _stub(
         tmp_path / "bin",
         "date",
@@ -642,7 +642,7 @@ def test_studio_update_health_wait_zero_commits_once_the_restart_command_succeed
     assert (home / "src" / "NEW_TREE").exists()
     assert not _scratch(home)
     # with a restart that fails there is still nothing to commit
-    env = _studio_env(tmp_path / "down", restart_exit = 1)
+    env = _studio_env(tmp_path / "down", restart_exit=1)
     res = _run(STUDIO_UPDATE, ["--ref", "main"], env)
     home = Path(env["UNSLOTH_STUDIO_HOME"])
     assert res.returncode != 0
@@ -655,8 +655,8 @@ def test_studio_update_clears_leftovers_of_a_killed_run_before_it_starts(tmp_pat
     staging tree can sit there with its node_modules."""
     env = _studio_env(tmp_path)
     home = Path(env["UNSLOTH_STUDIO_HOME"])
-    (home / ".src-prev.4242" / "junk").mkdir(parents = True)
-    (home / ".src-update.abc123" / "node_modules").mkdir(parents = True)
+    (home / ".src-prev.4242" / "junk").mkdir(parents=True)
+    (home / ".src-update.abc123" / "node_modules").mkdir(parents=True)
     res = _run(STUDIO_UPDATE, ["--ref", "main", "--no-restart"], env)
     assert res.returncode == 0, res.stderr + res.stdout
     assert "left behind by an earlier update" in res.stdout, res.stdout
@@ -686,7 +686,7 @@ def test_studio_update_puts_back_a_previous_tree_a_killed_run_never_committed(tm
     env = _studio_env(tmp_path)
     home = Path(env["UNSLOTH_STUDIO_HOME"])
     (home / "src").rename(home / ".src-prev.abc123")
-    (home / "src" / "studio").mkdir(parents = True)
+    (home / "src" / "studio").mkdir(parents=True)
     (home / "src" / "UNVERIFIED").write_text("never passed the health check\n")
     (home / ".src-update.rollback").write_text("-e file:///opt/prev-src\n")
     res = _run(STUDIO_UPDATE, [], env)
@@ -701,7 +701,7 @@ def test_studio_update_reads_the_install_record_from_the_venv_not_the_cwd(tmp_pa
     """`python -` searches the caller's cwd first, so a checkout there with its own
     dist-info would answer for the venv's installed unsloth and a rollback would
     reinstall the wrong thing."""
-    env = _studio_env(tmp_path, import_ok = False)
+    env = _studio_env(tmp_path, import_ok=False)
     site = tmp_path / "site"
     info = site / "unsloth-2026.9.4.dist-info"  # seeded by _studio_env
     (info / "direct_url.json").write_text(
@@ -709,12 +709,12 @@ def test_studio_update_reads_the_install_record_from_the_venv_not_the_cwd(tmp_pa
     )
     checkout = tmp_path / "checkout"
     decoy = checkout / "unsloth-0.0.1.dist-info"
-    decoy.mkdir(parents = True)
+    decoy.mkdir(parents=True)
     (decoy / "METADATA").write_text("Metadata-Version: 2.1\nName: unsloth\nVersion: 0.0.1\n")
     (decoy / "direct_url.json").write_text(
         '{"url": "file:///checkout", "dir_info": {"editable": true}}'
     )
-    res = _run(STUDIO_UPDATE, ["--no-restart"], env, cwd = checkout)
+    res = _run(STUDIO_UPDATE, ["--no-restart"], env, cwd=checkout)
     assert res.returncode != 0
     assert "STUB-PIP-REQ -e file:///opt/venv-src" in _calls(env), _calls(env)
     assert "checkout" not in _calls(env), _calls(env)
@@ -725,7 +725,7 @@ def test_studio_update_records_every_packages_target_for_the_rollback(tmp_path: 
     """--packages can name more than unsloth and unsloth_zoo; a restore that put only
     those two back would leave the extra target upgraded, or newly installed, while
     reporting the previous install is back."""
-    env = _studio_env(tmp_path, import_ok = False)
+    env = _studio_env(tmp_path, import_ok=False)
     site = tmp_path / "site"
     info = site / "bar-1.0.dist-info"
     info.mkdir()
@@ -744,7 +744,7 @@ def test_studio_update_records_every_packages_target_for_the_rollback(tmp_path: 
 
 def test_studio_update_with_deps_stops_when_the_dependency_snapshot_fails(tmp_path: Path):
     """An empty snapshot would let the install run with nothing to pin back."""
-    env = _studio_env(tmp_path, import_ok = False)
+    env = _studio_env(tmp_path, import_ok=False)
     env["STUB_FREEZE_EXIT"] = "1"
     res = _run(STUDIO_UPDATE, ["--with-deps"], env)
     assert res.returncode != 0
@@ -779,7 +779,7 @@ def test_studio_update_recovery_puts_the_service_on_the_restored_install(
     FATAL. After the packages are back the service is restarted on the restored
     install before this run does anything else, so a run that stops early (the ref
     cannot be fetched) still leaves Studio in a known state."""
-    env = _studio_env(tmp_path, status_exit = status_exit, git_ls_exit = 1)
+    env = _studio_env(tmp_path, status_exit=status_exit, git_ls_exit=1)
     home = Path(env["UNSLOTH_STUDIO_HOME"])
     (home / ".src-update.rollback").write_text("-e file:///opt/prev-src\n")
     res = _run(STUDIO_UPDATE, ["--ref", "main"], env)
@@ -790,7 +790,7 @@ def test_studio_update_recovery_puts_the_service_on_the_restored_install(
     sup = [l for l in calls.splitlines() if l.startswith("STUB-SUPERVISORCTL")]
     assert sup[1] == f"STUB-SUPERVISORCTL {verb} studio", sup
     assert not (home / ".src-update.rollback").exists()
-    env = _studio_env(tmp_path / "noreset", git_ls_exit = 1)
+    env = _studio_env(tmp_path / "noreset", git_ls_exit=1)
     home = Path(env["UNSLOTH_STUDIO_HOME"])
     (home / ".src-update.rollback").write_text("-e file:///opt/prev-src\n")
     res = _run(STUDIO_UPDATE, ["--ref", "main", "--no-restart"], env)
@@ -802,7 +802,7 @@ def test_studio_update_with_deps_rollback_fails_when_pip_cannot_list_packages(tm
     """The list of what the update pulled in comes from a second `pip freeze`; when
     that fails, nothing would be removed, so the restore is reported as unfinished
     and the record stays."""
-    env = _studio_env(tmp_path, import_ok = False)
+    env = _studio_env(tmp_path, import_ok=False)
     env["STUB_FREEZE_EXIT_AFTER"] = "1"
     res = _run(STUDIO_UPDATE, ["--with-deps", "--no-restart"], env)
     home = Path(env["UNSLOTH_STUDIO_HOME"])
@@ -822,7 +822,7 @@ def test_recover_finishes_a_killed_update_and_does_nothing_else(tmp_path: Path):
     home = Path(env["UNSLOTH_STUDIO_HOME"])
     (home / "src" / "OLD_TREE").unlink()
     (home / "src" / "NEW_TREE").write_text("unverified\n")
-    (home / ".src-prev.k9x2Qa" / "studio").mkdir(parents = True)
+    (home / ".src-prev.k9x2Qa" / "studio").mkdir(parents=True)
     (home / ".src-prev.k9x2Qa" / "OLD_TREE").write_text("previous\n")
     (home / ".src-update.rollback").write_text("-e file:///opt/prev-src\n")
     res = _run(STUDIO_UPDATE, ["--recover"], env)
@@ -844,7 +844,7 @@ def test_recover_finishes_a_killed_update_and_does_nothing_else(tmp_path: Path):
 def test_studio_update_says_when_the_restore_did_not_finish(tmp_path: Path):
     """pip failing during the restore itself must not be reported as the previous
     install being back; the record stays so the next run finishes it."""
-    env = _studio_env(tmp_path, import_ok = False)
+    env = _studio_env(tmp_path, import_ok=False)
     env["STUB_PIP_EXIT"] = "1"
     res = _run(STUDIO_UPDATE, ["--no-restart"], env)
     home = Path(env["UNSLOTH_STUDIO_HOME"])
@@ -875,7 +875,7 @@ def test_studio_update_treats_a_previous_tree_without_a_record_as_scratch(tmp_pa
     tree that passed the health check."""
     env = _studio_env(tmp_path)
     home = Path(env["UNSLOTH_STUDIO_HOME"])
-    (home / ".src-prev.abc123" / "studio").mkdir(parents = True)
+    (home / ".src-prev.abc123" / "studio").mkdir(parents=True)
     (home / ".src-prev.abc123" / "COMMITTED_AWAY").write_text("")
     res = _run(STUDIO_UPDATE, [], env)
     assert res.returncode == 0, res.stderr + res.stdout
@@ -907,7 +907,7 @@ def test_studio_update_with_deps_adds_the_studio_extra_to_a_qualified_unsloth_sp
 def test_studio_update_with_deps_rollback_removes_what_the_update_pulled_in(tmp_path: Path):
     """Reinstalling the snapshot puts back what was there; a dependency the update
     introduced would otherwise stay and become part of the next snapshot."""
-    env = _studio_env(tmp_path, import_ok = False)
+    env = _studio_env(tmp_path, import_ok=False)
     res = _run(STUDIO_UPDATE, ["--with-deps", "--no-restart"], env)
     assert res.returncode != 0
     calls = _calls(env)
@@ -966,10 +966,10 @@ def _llama_env(
     marker: str = '{"tag": "b1111-old"}',
 ) -> dict:
     install = tmp_path / "llama.cpp"
-    install.mkdir(parents = True)
+    install.mkdir(parents=True)
     (install / "UNSLOTH_PREBUILT_INFO.json").write_text(
         marker + "\n",
-        encoding = "utf-8",
+        encoding="utf-8",
     )
     fetcher = tmp_path / "fetch_llama_prebuilt.py"
     resolve = (
@@ -977,7 +977,7 @@ def _llama_env(
     )
     fetcher.write_text(
         "def resolve_latest_tag(repo):\n" + resolve,
-        encoding = "utf-8",
+        encoding="utf-8",
     )
     env = dict(os.environ)
     env["UNSLOTH_LLAMA_CPP_PATH"] = str(install)
@@ -986,7 +986,7 @@ def _llama_env(
 
 
 def _llama_check(tmp_path: Path, latest, **kwargs):
-    env = _llama_env(tmp_path, latest = latest, **kwargs)
+    env = _llama_env(tmp_path, latest=latest, **kwargs)
     return _run(LLAMA_UPDATE, ["--check"], env)
 
 
@@ -1008,7 +1008,7 @@ def test_llama_check_reads_the_full_release_tag_not_the_base_build(tmp_path: Pat
     res = _llama_check(
         tmp_path,
         "b10715-mix-86bd2d3",
-        marker = '{"tag": "b10715", "release_tag": "b10715-mix-86bd2d3"}',
+        marker='{"tag": "b10715", "release_tag": "b10715-mix-86bd2d3"}',
     )
     assert res.returncode == 0, res.stderr
     assert "up to date" in res.stdout, (
@@ -1025,7 +1025,7 @@ def test_llama_check_still_offers_a_genuinely_newer_release(tmp_path: Path):
     res = _llama_check(
         tmp_path,
         "b10800-mix-aaaaaaa",
-        marker = '{"tag": "b10715", "release_tag": "b10715-mix-86bd2d3"}',
+        marker='{"tag": "b10715", "release_tag": "b10715-mix-86bd2d3"}',
     )
     assert res.returncode == 0, res.stderr
     assert "an update is available" in res.stdout
@@ -1044,12 +1044,12 @@ def test_llama_check_does_not_claim_up_to_date_when_it_could_not_look(tmp_path: 
 def _llama_inplace_env(tmp_path: Path, old: list[str], new: list[str]) -> dict:
     """An in-place (volume-mounted) install whose activation fails part-way."""
     install = tmp_path / "llama.cpp"
-    install.mkdir(parents = True)
+    install.mkdir(parents=True)
     for name in old:
-        (install / name).write_text("OLD\n", encoding = "utf-8")
+        (install / name).write_text("OLD\n", encoding="utf-8")
     (install / "UNSLOTH_PREBUILT_INFO.json").write_text(
         '{"tag": "b1111-old"}\n',
-        encoding = "utf-8",
+        encoding="utf-8",
     )
     fetcher = tmp_path / "fetch_llama_prebuilt.py"
     fetcher.write_text(
@@ -1063,7 +1063,7 @@ def _llama_inplace_env(tmp_path: Path, old: list[str], new: list[str]) -> dict:
         "        open(os.path.join(dest, name), 'w').write('NEW\\n')\n"
         "    open(os.path.join(dest, 'UNSLOTH_PREBUILT_INFO.json'), 'w')"
         '.write(\'{"tag": "b2222-new"}\\n\')\n',
-        encoding = "utf-8",
+        encoding="utf-8",
     )
     # fail the ACTIVATION move AFTER it moved the files: the mid-swap abort the
     # rollback exists for
@@ -1164,7 +1164,7 @@ def test_a_failed_studio_update_puts_the_previous_install_back(tmp_path: Path):
     """Not restarting protected only the code the running process had already
     imported; the venv on disk stayed replaced, so any lazy import or later restart
     failed the same way. The update now reinstalls exactly what it started from."""
-    env = _studio_env(tmp_path, import_ok = False)
+    env = _studio_env(tmp_path, import_ok=False)
     res = _run(STUDIO_UPDATE, [], env)
     assert res.returncode != 0, "a broken update must not report success"
     assert "previous install was restored" in res.stdout, res.stdout

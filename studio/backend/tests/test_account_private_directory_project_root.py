@@ -19,7 +19,7 @@ ALICE = AccountContext("a" * 32, "alice")
 BOB = AccountContext("b" * 32, "bob")
 
 
-@pytest.fixture(autouse = True)
+@pytest.fixture(autouse=True)
 def isolated(monkeypatch, tmp_path):
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "studio"))
     monkeypatch.setenv("UNSLOTH_STUDIO_PROJECTS_HOME", str(tmp_path / "projects"))
@@ -29,14 +29,14 @@ def isolated(monkeypatch, tmp_path):
         access,
         "HfApi",
         lambda: SimpleNamespace(
-            repo_info = lambda *a, **k: (_ for _ in ()).throw(OSError("offline"))
+            repo_info=lambda *a, **k: (_ for _ in ()).throw(OSError("offline"))
         ),
     )
 
 
 def _alice_project(tmp_path):
     project = run_as(ALICE, project_workspaces_root) / "demo-1234"
-    project.mkdir(parents = True, exist_ok = True)
+    project.mkdir(parents=True, exist_ok=True)
     return project
 
 

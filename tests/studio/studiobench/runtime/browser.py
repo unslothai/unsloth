@@ -112,15 +112,15 @@ def launch(
     pw = sync_playwright().start()
     factory = getattr(pw, chosen)
     if chosen == "chromium":
-        browser = factory.launch(headless = headless, args = args, **launch_kwargs)
+        browser = factory.launch(headless=headless, args=args, **launch_kwargs)
     else:
-        browser = factory.launch(headless = headless)
+        browser = factory.launch(headless=headless)
     context = browser.new_context(
-        viewport = {"width": viewport[0], "height": viewport[1]},
+        viewport={"width": viewport[0], "height": viewport[1]},
         # Clipboard read is what proves the Copy action actually copied. Without it the action still runs
         # and the assertion reports that it could not be proved, which is the honest outcome rather than a
         # pass.
-        permissions = ["clipboard-read", "clipboard-write"] if chosen == "chromium" else None,
+        permissions=["clipboard-read", "clipboard-write"] if chosen == "chromium" else None,
     )
     if robust is not None:
         try:
@@ -145,14 +145,14 @@ def launch(
             cdp = None
     log(f"  browser: {chosen} ({note}){'' if cdp else ', no CDP session'}")
     return BrowserBundle(
-        playwright = pw,
-        browser = browser,
-        context = context,
-        page = page,
-        cdp = cdp,
-        engine = chosen,
-        engine_note = note,
-        robust = robust,
+        playwright=pw,
+        browser=browser,
+        context=context,
+        page=page,
+        cdp=cdp,
+        engine=chosen,
+        engine_note=note,
+        robust=robust,
     )
 
 
@@ -217,9 +217,9 @@ def dump_diagnostics(
         except Exception:  # noqa: BLE001
             pass
     try:
-        out_dir.mkdir(parents = True, exist_ok = True)
-        page.screenshot(path = str(out_dir / f"{label}.png"), full_page = False)
-        (out_dir / f"{label}.html").write_text(page.content(), encoding = "utf-8")
+        out_dir.mkdir(parents=True, exist_ok=True)
+        page.screenshot(path=str(out_dir / f"{label}.png"), full_page=False)
+        (out_dir / f"{label}.html").write_text(page.content(), encoding="utf-8")
     except Exception as exc:  # noqa: BLE001
         log(f"  diagnostics for {label} could not be written: {exc}")
 
@@ -231,7 +231,7 @@ def install_wall_clock_watchdog(
 ):
     robust = _robust()
     if robust is not None and hasattr(robust, "install_wall_clock_watchdog"):
-        return robust.install_wall_clock_watchdog(deadline_s, label = label, info = log)
+        return robust.install_wall_clock_watchdog(deadline_s, label=label, info=log)
     import os
     import threading
 

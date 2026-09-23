@@ -31,9 +31,11 @@ def sidecar_for(engine: str) -> Any:
     """The sidecar serving ``engine``. Transformers is the catch-all."""
     if engine == "mtmd":
         from core.inference.stt_mtmd_sidecar import get_mtmd_stt_sidecar
+
         return get_mtmd_stt_sidecar()
     if engine == "gguf":
         from core.inference.stt_ggml_sidecar import get_ggml_stt_sidecar
+
         return get_ggml_stt_sidecar()
     from core.inference.stt_sidecar import get_stt_sidecar
 
@@ -65,15 +67,15 @@ def load(
         # would let a 409 for a model that was never downloaded cost the user the engine they were already using. When
         # the answer is not certain, keep the old order and accept the peak.
         if _model_is_downloaded(engine, model):
-            unload(others, wait = False)
+            unload(others, wait=False)
             sidecar_for(engine).load(
-                model, request_cancel_event = request_cancel_event, device = device
+                model, request_cancel_event=request_cancel_event, device=device
             )
         else:
             sidecar_for(engine).load(
-                model, request_cancel_event = request_cancel_event, device = device
+                model, request_cancel_event=request_cancel_event, device=device
             )
-            unload(others, wait = False)
+            unload(others, wait=False)
 
 
 def _model_is_downloaded(engine: str, model: str) -> bool:
@@ -85,9 +87,11 @@ def _model_is_downloaded(engine: str, model: str) -> bool:
     try:
         if engine == "mtmd":
             from core.inference import stt_mtmd_sidecar
+
             return bool(stt_mtmd_sidecar.is_model_downloaded(model))
         if engine == "gguf":
             from core.inference import stt_ggml_sidecar
+
             return stt_ggml_sidecar._cached_model_path(model) is not None
         from core.inference import stt_sidecar
 
@@ -118,7 +122,7 @@ def unload(
     failed: list[str] = []
     for name in STT_ENGINES if engines is None else engines:
         try:
-            sidecar_for(name).unload(wait = wait, expected_model = expected_model)
+            sidecar_for(name).unload(wait=wait, expected_model=expected_model)
         except Exception as exc:  # noqa: BLE001 - report after attempting all
             logger.warning("Failed to unload STT engine '%s': %s", name, exc)
             failed.append(name)

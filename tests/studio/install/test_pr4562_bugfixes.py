@@ -34,19 +34,19 @@ SETUP_PS1 = PACKAGE_ROOT / "studio" / "setup.ps1"
 def make_host(*, system: str) -> HostInfo:
     """HostInfo for the given OS."""
     return HostInfo(
-        system = system,
-        machine = "x86_64" if system != "Darwin" else "arm64",
-        is_windows = (system == "Windows"),
-        is_linux = (system == "Linux"),
-        is_macos = (system == "Darwin"),
-        is_x86_64 = (system != "Darwin"),
-        is_arm64 = (system == "Darwin"),
-        nvidia_smi = None,
-        driver_cuda_version = None,
-        compute_caps = [],
-        visible_cuda_devices = None,
-        has_physical_nvidia = False,
-        has_usable_nvidia = False,
+        system=system,
+        machine="x86_64" if system != "Darwin" else "arm64",
+        is_windows=(system == "Windows"),
+        is_linux=(system == "Linux"),
+        is_macos=(system == "Darwin"),
+        is_x86_64=(system != "Darwin"),
+        is_arm64=(system == "Darwin"),
+        nvidia_smi=None,
+        driver_cuda_version=None,
+        compute_caps=[],
+        visible_cuda_devices=None,
+        has_physical_nvidia=False,
+        has_usable_nvidia=False,
     )
 
 
@@ -65,10 +65,10 @@ def run_bash(
         run_env.update(env)
     result = subprocess.run(
         [BASH, "-c", script],
-        capture_output = True,
-        text = True,
-        timeout = timeout,
-        env = run_env,
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+        env=run_env,
     )
     assert (
         result.returncode == 0
@@ -84,11 +84,11 @@ class TestBinaryEnvCrossPlatform:
     ):
         install_dir = tmp_path / "llama.cpp"
         bin_dir = install_dir / "build" / "bin"
-        bin_dir.mkdir(parents = True)
+        bin_dir.mkdir(parents=True)
         binary_path = bin_dir / "llama-server"
         binary_path.write_bytes(b"fake")
 
-        host = make_host(system = "Linux")
+        host = make_host(system="Linux")
         monkeypatch.setattr(MOD, "linux_runtime_dirs", lambda _bp: [])
 
         env = binary_env(binary_path, install_dir, host)
@@ -102,11 +102,11 @@ class TestBinaryEnvCrossPlatform:
         """build/bin should be searched before install_dir for .so files."""
         install_dir = tmp_path / "llama.cpp"
         bin_dir = install_dir / "build" / "bin"
-        bin_dir.mkdir(parents = True)
+        bin_dir.mkdir(parents=True)
         binary_path = bin_dir / "llama-server"
         binary_path.write_bytes(b"fake")
 
-        host = make_host(system = "Linux")
+        host = make_host(system="Linux")
         monkeypatch.setattr(MOD, "linux_runtime_dirs", lambda _bp: [])
 
         env = binary_env(binary_path, install_dir, host)
@@ -120,11 +120,11 @@ class TestBinaryEnvCrossPlatform:
     ):
         """When binary is directly in install_dir, no duplicate entries."""
         install_dir = tmp_path / "llama.cpp"
-        install_dir.mkdir(parents = True)
+        install_dir.mkdir(parents=True)
         binary_path = install_dir / "llama-server"
         binary_path.write_bytes(b"fake")
 
-        host = make_host(system = "Linux")
+        host = make_host(system="Linux")
         monkeypatch.setattr(MOD, "linux_runtime_dirs", lambda _bp: [])
 
         env = binary_env(binary_path, install_dir, host)
@@ -137,7 +137,7 @@ class TestBinaryEnvCrossPlatform:
     ):
         install_dir = tmp_path / "llama.cpp"
         bin_dir = install_dir / "build" / "bin"
-        bin_dir.mkdir(parents = True)
+        bin_dir.mkdir(parents=True)
         binary_path = bin_dir / "llama-server"
         binary_path.write_bytes(b"fake")
 
@@ -146,7 +146,7 @@ class TestBinaryEnvCrossPlatform:
         custom_lib.mkdir()
         other_lib.mkdir()
 
-        host = make_host(system = "Linux")
+        host = make_host(system="Linux")
         monkeypatch.setattr(MOD, "linux_runtime_dirs", lambda _bp: [])
         original = os.environ.get("LD_LIBRARY_PATH", "")
         os.environ["LD_LIBRARY_PATH"] = f"{custom_lib}:{other_lib}"
@@ -166,11 +166,11 @@ class TestBinaryEnvCrossPlatform:
     ):
         install_dir = tmp_path / "llama.cpp"
         bin_dir = install_dir / "build" / "bin" / "Release"
-        bin_dir.mkdir(parents = True)
+        bin_dir.mkdir(parents=True)
         binary_path = bin_dir / "llama-server.exe"
         binary_path.write_bytes(b"MZ")
 
-        host = make_host(system = "Windows")
+        host = make_host(system="Windows")
         monkeypatch.setattr(MOD, "windows_runtime_dirs_for_runtime_line", lambda _rt: [])
 
         env = binary_env(binary_path, install_dir, host)
@@ -179,14 +179,14 @@ class TestBinaryEnvCrossPlatform:
 
     def test_macos_sets_dyld_library_path(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         install_dir = tmp_path / "llama.cpp"
-        install_dir.mkdir(parents = True)
+        install_dir.mkdir(parents=True)
         bin_dir = install_dir / "build" / "bin"
         binary_path = bin_dir / "llama-server"
-        binary_path.parent.mkdir(parents = True)
+        binary_path.parent.mkdir(parents=True)
         binary_path.write_bytes(b"fake")
 
-        host = make_host(system = "Darwin")
-        monkeypatch.delenv("DYLD_LIBRARY_PATH", raising = False)
+        host = make_host(system="Darwin")
+        monkeypatch.delenv("DYLD_LIBRARY_PATH", raising=False)
 
         env = binary_env(binary_path, install_dir, host)
         dyld_parts = [p for p in env["DYLD_LIBRARY_PATH"].split(os.pathsep) if p]
@@ -216,44 +216,44 @@ class TestResolveRequestedLlamaTag:
         self, monkeypatch: pytest.MonkeyPatch
     ):
         invalid = PublishedReleaseBundle(
-            repo = "unslothai/llama.cpp",
-            release_tag = "v2.0",
-            upstream_tag = "b9000",
-            assets = {},
-            manifest_asset_name = "llama-prebuilt-manifest.json",
-            artifacts = [],
-            selection_log = [],
+            repo="unslothai/llama.cpp",
+            release_tag="v2.0",
+            upstream_tag="b9000",
+            assets={},
+            manifest_asset_name="llama-prebuilt-manifest.json",
+            artifacts=[],
+            selection_log=[],
         )
         valid = PublishedReleaseBundle(
-            repo = "unslothai/llama.cpp",
-            release_tag = "v1.0",
-            upstream_tag = "b8999",
-            assets = {},
-            manifest_asset_name = "llama-prebuilt-manifest.json",
-            artifacts = [],
-            selection_log = [],
+            repo="unslothai/llama.cpp",
+            release_tag="v1.0",
+            upstream_tag="b8999",
+            assets={},
+            manifest_asset_name="llama-prebuilt-manifest.json",
+            artifacts=[],
+            selection_log=[],
         )
 
         monkeypatch.setattr(
             MOD,
             "iter_published_release_bundles",
-            lambda repo, published_release_tag = "": iter([invalid, valid]),
+            lambda repo, published_release_tag="": iter([invalid, valid]),
         )
 
         def fake_load(repo, release_tag, assets):
             if release_tag == "v2.0":
                 raise MOD.PrebuiltFallback("checksum asset missing")
             return ApprovedReleaseChecksums(
-                repo = repo,
-                release_tag = release_tag,
-                upstream_tag = "b8999",
-                source_commit = None,
-                artifacts = {
+                repo=repo,
+                release_tag=release_tag,
+                upstream_tag="b8999",
+                source_commit=None,
+                artifacts={
                     source_archive_logical_name("b8999"): ApprovedArtifactHash(
-                        asset_name = source_archive_logical_name("b8999"),
-                        sha256 = "a" * 64,
-                        repo = "ggml-org/llama.cpp",
-                        kind = "upstream-source",
+                        asset_name=source_archive_logical_name("b8999"),
+                        sha256="a" * 64,
+                        repo="ggml-org/llama.cpp",
+                        kind="upstream-source",
                     )
                 },
             )
@@ -271,31 +271,31 @@ class TestResolveRequestedLlamaTag:
         def fake_resolve(
             requested_tag,
             published_repo,
-            published_release_tag = "",
+            published_release_tag="",
         ):
             captured["requested_tag"] = requested_tag
             captured["published_repo"] = published_repo
             captured["published_release_tag"] = published_release_tag
             return MOD.ResolvedPublishedRelease(
-                bundle = PublishedReleaseBundle(
-                    repo = published_repo,
-                    release_tag = published_release_tag,
-                    upstream_tag = "b9001",
-                    assets = {},
-                    manifest_asset_name = "llama-prebuilt-manifest.json",
-                    artifacts = [],
-                    selection_log = [],
+                bundle=PublishedReleaseBundle(
+                    repo=published_repo,
+                    release_tag=published_release_tag,
+                    upstream_tag="b9001",
+                    assets={},
+                    manifest_asset_name="llama-prebuilt-manifest.json",
+                    artifacts=[],
+                    selection_log=[],
                 ),
-                checksums = ApprovedReleaseChecksums(
-                    repo = published_repo,
-                    release_tag = published_release_tag,
-                    upstream_tag = "b9001",
-                    artifacts = {
+                checksums=ApprovedReleaseChecksums(
+                    repo=published_repo,
+                    release_tag=published_release_tag,
+                    upstream_tag="b9001",
+                    artifacts={
                         source_archive_logical_name("b9001"): ApprovedArtifactHash(
-                            asset_name = source_archive_logical_name("b9001"),
-                            sha256 = "a" * 64,
-                            repo = "ggml-org/llama.cpp",
-                            kind = "upstream-source",
+                            asset_name=source_archive_logical_name("b9001"),
+                            sha256="a" * 64,
+                            repo="ggml-org/llama.cpp",
+                            kind="upstream-source",
                         )
                     },
                 ),
@@ -351,7 +351,7 @@ class TestFetchJsonRetries:
 
         monkeypatch.setattr(MOD, "fetch_json", fake_fetch_json)
 
-        releases = MOD.github_releases("ggml-org/llama.cpp", max_pages = 2)
+        releases = MOD.github_releases("ggml-org/llama.cpp", max_pages=2)
 
         assert seen_pages == [1, 2]
         assert len(releases) == 200
@@ -389,7 +389,7 @@ class TestSetupShLogic:
                 echo "would_clone"
             fi
         """)
-        output = run_bash(script, env = {"PATH": ":".join(safe_dirs)})
+        output = run_bash(script, env={"PATH": ":".join(safe_dirs)})
         assert "cmake_missing" in output
         assert marker.exists(), "Install dir was deleted despite cmake missing!"
 
@@ -422,7 +422,7 @@ class TestSetupShLogic:
                 echo "would_clone"
             fi
         """)
-        output = run_bash(script, env = {"PATH": ":".join(safe_dirs)})
+        output = run_bash(script, env={"PATH": ":".join(safe_dirs)})
         assert "git_missing" in output
         assert marker.exists(), "Install dir was deleted despite git missing!"
 
@@ -555,9 +555,9 @@ class TestLatestTagResolution:
         self, tmp_path: Path, requested_tag: str, resolved_tag: str, resolve_status: int
     ) -> str:
         script = self.RESOLVE_TEMPLATE.format(
-            requested_tag = requested_tag,
-            resolved_tag = resolved_tag,
-            resolve_status = resolve_status,
+            requested_tag=requested_tag,
+            resolved_tag=resolved_tag,
+            resolve_status=resolve_status,
         )
         return run_bash(script)
 
@@ -565,8 +565,8 @@ class TestLatestTagResolution:
         output = self._run_resolve(
             tmp_path,
             "latest",
-            resolved_tag = "b8508",
-            resolve_status = 0,
+            resolved_tag="b8508",
+            resolve_status=0,
         )
         assert output == "b8508"
 
@@ -574,8 +574,8 @@ class TestLatestTagResolution:
         output = self._run_resolve(
             tmp_path,
             "latest",
-            resolved_tag = "",
-            resolve_status = 1,
+            resolved_tag="",
+            resolve_status=1,
         )
         assert output == "latest"
 
@@ -583,28 +583,28 @@ class TestLatestTagResolution:
         output = self._run_resolve(
             tmp_path,
             "b7777",
-            resolved_tag = "",
-            resolve_status = 1,
+            resolved_tag="",
+            resolve_status=1,
         )
         assert output == "b7777"
 
     def test_env_override_unsloth_llama_tag(self):
         output = run_bash(
             'echo "${UNSLOTH_LLAMA_TAG:-latest}"',
-            env = {"UNSLOTH_LLAMA_TAG": "b1234"},
+            env={"UNSLOTH_LLAMA_TAG": "b1234"},
         )
         assert output == "b1234"
 
     def test_env_unset_defaults_to_latest(self):
         env = os.environ.copy()
         env.pop("UNSLOTH_LLAMA_TAG", None)
-        output = run_bash('echo "${UNSLOTH_LLAMA_TAG:-latest}"', env = env)
+        output = run_bash('echo "${UNSLOTH_LLAMA_TAG:-latest}"', env=env)
         assert output == "latest"
 
     def test_env_empty_defaults_to_latest(self):
         output = run_bash(
             'echo "${UNSLOTH_LLAMA_TAG:-latest}"',
-            env = {"UNSLOTH_LLAMA_TAG": ""},
+            env={"UNSLOTH_LLAMA_TAG": ""},
         )
         assert output == "latest"
 
@@ -614,7 +614,7 @@ class TestSourceCodePatterns:
 
     def test_setup_sh_no_rm_before_prereq_check(self):
         """rm -rf must appear AFTER cmake/git checks, not before."""
-        content = SETUP_SH.read_text(encoding = "utf-8")
+        content = SETUP_SH.read_text(encoding="utf-8")
         # Anchor on the source-build cmake check block.
         idx_block = content.find("command -v cmake")
         assert idx_block != -1
@@ -627,7 +627,7 @@ class TestSourceCodePatterns:
 
     def test_setup_sh_clone_uses_branch_tag(self):
         """git clone in source-build should use --branch via the clone args array."""
-        content = SETUP_SH.read_text(encoding = "utf-8")
+        content = SETUP_SH.read_text(encoding="utf-8")
         assert "_CLONE_ARGS=(git clone --depth 1)" in content
         assert (
             '_CLONE_ARGS+=(--branch "$_RESOLVED_SOURCE_REF")' in content
@@ -639,7 +639,7 @@ class TestSourceCodePatterns:
 
     def test_setup_sh_source_build_uses_helper_latest_tag_only(self):
         """Shell source fallback should only use helper latest-tag resolution."""
-        content = SETUP_SH.read_text(encoding = "utf-8")
+        content = SETUP_SH.read_text(encoding="utf-8")
         assert "--resolve-source-build" not in content
         assert "--resolve-install-tag" not in content
         assert '--resolve-llama-tag latest --published-repo "ggml-org/llama.cpp"' in content
@@ -650,7 +650,7 @@ class TestSourceCodePatterns:
 
     def test_setup_sh_prebuilt_install_entrypoint(self):
         """Shell prebuilt path uses the helper install entrypoint, not the old releases-latest flow."""
-        content = SETUP_SH.read_text(encoding = "utf-8")
+        content = SETUP_SH.read_text(encoding="utf-8")
         assert "--resolve-install-tag" not in content
         assert "_HELPER_RELEASE_REPO}/releases/latest" not in content
         assert "ggml-org/llama.cpp/releases/latest" not in content
@@ -660,7 +660,7 @@ class TestSourceCodePatterns:
         fork like every other host, so the release-repo decision is unconditional.
         Guards against a silent reintroduction of a ggml-org CPU routing branch.
         GPU usability detection (used for PyTorch / source decisions) must stay."""
-        content = SETUP_SH.read_text(encoding = "utf-8")
+        content = SETUP_SH.read_text(encoding="utf-8")
         assert '_HELPER_RELEASE_REPO="unslothai/llama.cpp"' in content
         assert '_HELPER_RELEASE_REPO="ggml-org/llama.cpp"' not in content
         # Usability gating (not routing) still distinguishes a hidden GPU.
@@ -673,14 +673,14 @@ class TestSourceCodePatterns:
 
     def test_setup_sh_reports_installed_prebuilt_release(self):
         """Shell wrapper should report the installed prebuilt release from metadata."""
-        content = SETUP_SH.read_text(encoding = "utf-8")
+        content = SETUP_SH.read_text(encoding="utf-8")
         assert "UNSLOTH_PREBUILT_INFO.json" in content
         assert "installed release:" in content
         assert 'print_installed_llama_prebuilt_release "$LLAMA_CPP_DIR"' in content
 
     def test_setup_sh_macos_arm64_uses_metal_flags(self):
         """Apple Silicon source builds should explicitly enable Metal like upstream."""
-        content = SETUP_SH.read_text(encoding = "utf-8")
+        content = SETUP_SH.read_text(encoding="utf-8")
         assert "_IS_MACOS_ARM64=true" in content
         assert 'if [ "$_IS_MACOS_ARM64" = true ]; then' in content
         assert "-DGGML_METAL=ON" in content
@@ -692,7 +692,7 @@ class TestSourceCodePatterns:
     def test_setup_sh_macos_metal_configure_has_cpu_fallback(self):
         """GPU configure/build failure retries a CPU build. Stays label-agnostic
         (PR #5826 generalised the Metal-only wording via $_FB_LABEL)."""
-        content = SETUP_SH.read_text(encoding = "utf-8")
+        content = SETUP_SH.read_text(encoding="utf-8")
         assert "_TRY_METAL_CPU_FALLBACK=true" in content
         assert 'configure failed; retrying CPU build..." "$C_WARN"' in content
         assert 'build failed; retrying CPU build..." "$C_WARN"' in content
@@ -711,7 +711,7 @@ class TestSourceCodePatterns:
         """PR #5826: a fresh CUDA toolkit's host-compiler whitelist lags distro gcc/clang
         (nvcc "#error -- unsupported GNU version"). setup.sh exports
         NVCC_PREPEND_FLAGS=-allow-unsupported-compiler via env, not CMAKE_ARGS (word-splitting safety)."""
-        content = SETUP_SH.read_text(encoding = "utf-8")
+        content = SETUP_SH.read_text(encoding="utf-8")
         assert "-allow-unsupported-compiler" in content
         # Via NVCC_PREPEND_FLAGS (covers the configure-time probe too), not CMAKE_ARGS.
         assert "export NVCC_PREPEND_FLAGS=" in content
@@ -723,7 +723,7 @@ class TestSourceCodePatterns:
     def test_setup_ps1_exports_allow_unsupported_compiler(self):
         """Windows parity for PR #5826: CUDA toolkit whitelist lags MSVC. setup.ps1 sets
         NVCC_PREPEND_FLAGS=-allow-unsupported-compiler in the CUDA branch via env, out of $CmakeArgs."""
-        content = SETUP_PS1.read_text(encoding = "utf-8")
+        content = SETUP_PS1.read_text(encoding="utf-8")
         assert "-allow-unsupported-compiler" in content
         # Via process env, not $CmakeArgs, so it reaches both the configure probe and `cmake --build`.
         assert "$env:NVCC_PREPEND_FLAGS" in content
@@ -760,7 +760,7 @@ class TestSourceCodePatterns:
 
     def test_setup_sh_does_not_enable_metal_for_intel_macos(self):
         """Intel macOS should stay on the existing non-Metal path in this patch."""
-        content = SETUP_SH.read_text(encoding = "utf-8")
+        content = SETUP_SH.read_text(encoding="utf-8")
         assert 'if [ "$_IS_MACOS_ARM64" = true ]; then' in content
         assert (
             'Darwin" ] && { [ "$_HOST_MACHINE" = "arm64" ] || [ "$_HOST_MACHINE" = "aarch64" ]; }'
@@ -775,20 +775,20 @@ class TestSourceCodePatterns:
 
     def test_setup_ps1_uses_checkout_b(self):
         """PS1 should use checkout -B, not checkout --force FETCH_HEAD."""
-        content = SETUP_PS1.read_text(encoding = "utf-8")
+        content = SETUP_PS1.read_text(encoding="utf-8")
         assert "checkout -B unsloth-llama-build" in content
         assert "checkout --force FETCH_HEAD" not in content
 
     def test_setup_ps1_clone_uses_branch_tag(self):
         """PS1 clone should use --branch with the resolved tag."""
-        content = SETUP_PS1.read_text(encoding = "utf-8")
+        content = SETUP_PS1.read_text(encoding="utf-8")
         assert "--branch" in content and "$ResolvedSourceRef" in content
         # The old commented-out clone line should be gone.
         assert "# git clone --depth 1 --branch" not in content
 
     def test_setup_ps1_no_git_pull(self):
         """PS1 should use fetch, not pull (which fails in detached HEAD)."""
-        content = SETUP_PS1.read_text(encoding = "utf-8")
+        content = SETUP_PS1.read_text(encoding="utf-8")
         # No "git pull" in the source-build section (only valid on a branch).
         lines = content.splitlines()
         for i, line in enumerate(lines):
@@ -801,14 +801,14 @@ class TestSourceCodePatterns:
 
     def test_setup_ps1_prebuilt_install_entrypoint(self):
         """PS1 prebuilt path uses the helper install entrypoint, not the old releases-latest flow."""
-        content = SETUP_PS1.read_text(encoding = "utf-8")
+        content = SETUP_PS1.read_text(encoding="utf-8")
         assert "--resolve-install-tag" not in content
         assert "$HelperReleaseRepo/releases/latest" not in content
         assert "ggml-org/llama.cpp/releases/latest" not in content
 
     def test_setup_ps1_reports_installed_prebuilt_release(self):
         """PS1 wrapper should report the installed prebuilt release from metadata."""
-        content = SETUP_PS1.read_text(encoding = "utf-8")
+        content = SETUP_PS1.read_text(encoding="utf-8")
         assert "Get-InstalledLlamaPrebuiltRelease" in content
         assert "UNSLOTH_PREBUILT_INFO.json" in content
         assert "installed release:" in content
@@ -819,7 +819,7 @@ class TestSourceCodePatterns:
 
     def test_setup_ps1_source_build_uses_helper_latest_tag_only(self):
         """PS1 source fallback should only use helper latest-tag resolution."""
-        content = SETUP_PS1.read_text(encoding = "utf-8")
+        content = SETUP_PS1.read_text(encoding="utf-8")
         assert "--resolve-source-build" not in content
         assert "--resolve-install-tag" not in content
         assert (
@@ -832,7 +832,7 @@ class TestSourceCodePatterns:
 
     def test_setup_ps1_prebuilt_install_disables_native_error_abort(self):
         """PS1 prebuilt install should not abort setup on helper stderr."""
-        content = SETUP_PS1.read_text(encoding = "utf-8")
+        content = SETUP_PS1.read_text(encoding="utf-8")
         install_idx = content.index("& python @prebuiltArgs 2>&1")
         block = content[max(0, install_idx - 800) : install_idx + 800]
         assert "$PSNativeCommandUseErrorActionPreference = $false" in block
@@ -841,7 +841,7 @@ class TestSourceCodePatterns:
 
     def test_setup_ps1_helper_disables_error_action_abort(self):
         """Helper resolution should suppress terminating NativeCommandError on PS 5.1."""
-        content = SETUP_PS1.read_text(encoding = "utf-8")
+        content = SETUP_PS1.read_text(encoding="utf-8")
         helper_idx = content.index("function Invoke-LlamaHelper")
         block = content[helper_idx : helper_idx + 2200]
         assert "$previousErrorActionPreference = $ErrorActionPreference" in block
@@ -850,19 +850,19 @@ class TestSourceCodePatterns:
 
     def test_setup_ps1_uses_local_tempfile_helper(self):
         """PS1 should not depend on New-TemporaryFile being available anywhere."""
-        content = SETUP_PS1.read_text(encoding = "utf-8")
+        content = SETUP_PS1.read_text(encoding="utf-8")
         assert "function New-UnslothTemporaryFile" in content
         assert "$resolveErrorLog = New-TemporaryFile" not in content
 
     def test_setup_ps1_find_nvcc_uses_version_sort_for_latest_toolkit(self):
         """The unconstrained nvcc fallback should not sort toolkit dirs lexicographically."""
-        content = SETUP_PS1.read_text(encoding = "utf-8")
+        content = SETUP_PS1.read_text(encoding="utf-8")
         assert "Sort-Object Name | Select-Object -Last 1" not in content
         assert "Sort-Object { [version]($_.Name -replace '^v','') } -Descending" in content
 
     def test_binary_env_linux_has_binary_parent(self):
         """The Linux branch of binary_env should include binary_path.parent."""
-        content = MODULE_PATH.read_text(encoding = "utf-8")
+        content = MODULE_PATH.read_text(encoding="utf-8")
         in_func = False
         in_linux = False
         found = False

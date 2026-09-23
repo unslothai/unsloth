@@ -28,7 +28,7 @@ MODELS = os.path.join(HERE, "unsloth", "models")
 
 
 def _source(name):
-    return open(os.path.join(MODELS, name), encoding = "utf-8").read()
+    return open(os.path.join(MODELS, name), encoding="utf-8").read()
 
 
 def _resolve_calls(source):
@@ -43,6 +43,7 @@ def _resolve_calls(source):
 def test_unsloth_is_not_a_device_map_transformers_accepts():
     """The premise. If transformers ever learns the string, the rest of this file is moot."""
     import torch
+
     with pytest.raises(RuntimeError):
         torch.device("unsloth")
 

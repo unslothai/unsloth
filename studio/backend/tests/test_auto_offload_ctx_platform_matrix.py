@@ -172,7 +172,7 @@ IGPU_RAW_FREE_MIB = 12_000
 IGPU_FREE_MIB = _apply_igpu_host_reserve_mib(IGPU_RAW_FREE_MIB, True)
 
 
-@dataclasses.dataclass(frozen = True)
+@dataclasses.dataclass(frozen=True)
 class Accelerator:
     """One column of the matrix.
 
@@ -196,16 +196,16 @@ ACCELERATORS = [
 ] + [
     # ROCm without Vulkan: the torch fallback probe, not amd-smi, and the only
     # vendor for which sys.platform changes the free VRAM figure (see G6 below).
-    Accelerator("amd-rocm", False, ((0, 12_000, 16_000),), is_rocm = True),
+    Accelerator("amd-rocm", False, ((0, 12_000, 16_000),), is_rocm=True),
     # Unified-memory APU: no dedicated VRAM at all.
-    Accelerator("amd-apu", False, ((0, APU_FREE_MIB, 0),), is_rocm = True),
+    Accelerator("amd-apu", False, ((0, APU_FREE_MIB, 0),), is_rocm=True),
     Accelerator("vulkan-igpu", True, ((0, IGPU_FREE_MIB, 0),)),
     # Apple Silicon: nothing enumerates, and the Metal budget is the only signal.
-    Accelerator("apple-metal", False, (), apple_budget_bytes = 16 * GIB),
+    Accelerator("apple-metal", False, (), apple_budget_bytes=16 * GIB),
 ]
 
 MATRIX = [
-    pytest.param(platform, accelerator, id = f"{platform[0]}-{accelerator.label}")
+    pytest.param(platform, accelerator, id=f"{platform[0]}-{accelerator.label}")
     for platform in PLATFORMS
     for accelerator in ACCELERATORS
 ]
@@ -221,7 +221,7 @@ NATIVE_CTX = 131_072
 KV_MIB_PER_CTX = 0.5
 
 
-@dataclasses.dataclass(frozen = True)
+@dataclasses.dataclass(frozen=True)
 class Outcome:
     arm: str
     site: Optional[str]
@@ -268,7 +268,7 @@ def _selected_devices(cmd, env) -> Optional[tuple]:
 
 def _subdir(tmp_path, name):
     path = tmp_path / name
-    path.mkdir(parents = True, exist_ok = True)
+    path.mkdir(parents=True, exist_ok=True)
     return path
 
 
@@ -288,14 +288,14 @@ def cell_backend(
     # launch wrote, or "placement pinned nothing" reads as a pin on any developer
     # box that exports CUDA_VISIBLE_DEVICES.
     for name in ("CUDA_VISIBLE_DEVICES", "HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES"):
-        monkeypatch.delenv(name, raising = False)
-    monkeypatch.setattr(_hw, "IS_ROCM", accelerator.is_rocm, raising = False)
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr(_hw, "IS_ROCM", accelerator.is_rocm, raising=False)
     monkeypatch.setattr(
         LlamaCppBackend,
         "_apple_metal_memory_budget_bytes",
         staticmethod(lambda: accelerator.apple_budget_bytes),
     )
-    backend, gguf = _backend(tmp_path, vulkan = accelerator.vulkan, memory = list(accelerator.memory))
+    backend, gguf = _backend(tmp_path, vulkan=accelerator.vulkan, memory=list(accelerator.memory))
 
     # Sized against the cell's own reported free memory so "fits" and "overflows"
     # mean the same thing on a 12 GB card and on a 24 GB shared pool. With no GPU
@@ -317,18 +317,18 @@ def run_cell(tmp_path, monkeypatch, platform, accelerator: Accelerator, **kwargs
     """Drive one cell through the real ``load_model`` and report what it did."""
     load_kwargs = kwargs.pop("load_kwargs", {})
     backend, gguf = cell_backend(tmp_path, monkeypatch, platform, accelerator, **kwargs)
-    result, hits = _traced(lambda: _launch(backend, gguf, n_ctx = 0, **load_kwargs))
+    result, hits = _traced(lambda: _launch(backend, gguf, n_ctx=0, **load_kwargs))
     arms = [name for name, line in ARM_ANCHORS.items() if line in hits]
     assert len(arms) <= 1, f"more than one placement arm ran: {arms}"
     site = "A" if SITE_A in hits else ("B" if SITE_B in hits else None)
     ctx = _flag(result["cmd"], "-c", "--ctx-size")
     return Outcome(
-        arm = arms[0] if arms else "none",
-        site = site,
-        ctx = int(ctx) if ctx is not None else None,
-        fit = _flag(result["cmd"], "--fit"),
-        gpu_indices = _selected_devices(result["cmd"], result["env"]),
-        awarded = SITE_A_AWARD in hits,
+        arm=arms[0] if arms else "none",
+        site=site,
+        ctx=int(ctx) if ctx is not None else None,
+        fit=_flag(result["cmd"], "--fit"),
+        gpu_indices=_selected_devices(result["cmd"], result["env"]),
+        awarded=SITE_A_AWARD in hits,
     )
 
 
@@ -370,7 +370,7 @@ def test_an_overflowing_model_reaches_the_expected_arm_and_pins_nothing(
 def test_a_model_that_fits_never_reaches_either_site(tmp_path, monkeypatch, platform, accelerator):
     """G1. The far more common shape: the subset loop awards, so the constant is
     never read. Pinned devices and ``--fit off`` are the evidence the loop won."""
-    outcome = run_cell(tmp_path, monkeypatch, platform, accelerator, model_fraction = FITS)
+    outcome = run_cell(tmp_path, monkeypatch, platform, accelerator, model_fraction=FITS)
 
     assert outcome.site is None
     if accelerator.memory:
@@ -381,7 +381,7 @@ def test_a_model_that_fits_never_reaches_either_site(tmp_path, monkeypatch, plat
         assert outcome.ctx is not None and outcome.ctx > _AUTO_OFFLOAD_CTX
 
 
-@pytest.mark.parametrize("accelerator", ACCELERATORS, ids = [a.label for a in ACCELERATORS])
+@pytest.mark.parametrize("accelerator", ACCELERATORS, ids=[a.label for a in ACCELERATORS])
 def test_wsl_is_indistinguishable_from_native_linux(tmp_path, monkeypatch, accelerator):
     """G5. The only WSL detector on this path is a loader-path decision, so the
     context math must not be able to tell the two apart on any accelerator."""
@@ -394,19 +394,19 @@ def test_wsl_is_indistinguishable_from_native_linux(tmp_path, monkeypatch, accel
             monkeypatch,
             linux,
             accelerator,
-            model_fraction = fraction,
+            model_fraction=fraction,
         )
         on_wsl = run_cell(
             _subdir(tmp_path, f"wsl-{fraction}"),
             monkeypatch,
             wsl2,
             accelerator,
-            model_fraction = fraction,
+            model_fraction=fraction,
         )
         assert on_wsl == on_linux
 
 
-@pytest.mark.parametrize("platform", PLATFORMS, ids = [p[0] for p in PLATFORMS])
+@pytest.mark.parametrize("platform", PLATFORMS, ids=[p[0] for p in PLATFORMS])
 def test_the_file_size_only_arm_relabels_the_context_without_moving_a_device(
     tmp_path, monkeypatch, platform
 ):
@@ -414,7 +414,7 @@ def test_the_file_size_only_arm_relabels_the_context_without_moving_a_device(
     placement by construction: ``_select_gpus`` has already returned above it and
     nothing below re-runs it. Only the number the UI is told changes."""
     accelerator = next(a for a in ACCELERATORS if a.label == "nvidia-single")
-    outcome = run_cell(tmp_path, monkeypatch, platform, accelerator, estimate_kv = False)
+    outcome = run_cell(tmp_path, monkeypatch, platform, accelerator, estimate_kv=False)
 
     assert outcome.arm == "file-size-only"
     assert outcome.site == "B"
@@ -426,7 +426,7 @@ def test_the_file_size_only_arm_relabels_the_context_without_moving_a_device(
 # ── G3: the Metal arm, measured against the discrete one ─────────────────────
 
 
-@pytest.mark.parametrize("platform", PLATFORMS, ids = [p[0] for p in PLATFORMS])
+@pytest.mark.parametrize("platform", PLATFORMS, ids=[p[0] for p in PLATFORMS])
 def test_metal_auto_still_floors_at_the_fit_minimum(tmp_path, monkeypatch, platform):
     """G3. Pins the CURRENT Metal behaviour so it cannot drift silently.
 
@@ -462,8 +462,8 @@ def test_metal_auto_still_floors_at_the_fit_minimum(tmp_path, monkeypatch, platf
 # ── G7: manual memory mode ───────────────────────────────────────────────────
 
 
-@pytest.mark.parametrize("platform", PLATFORMS, ids = [p[0] for p in PLATFORMS])
-@pytest.mark.parametrize("gpu_layers", [-1, 8], ids = ["auto-layers", "explicit-layers"])
+@pytest.mark.parametrize("platform", PLATFORMS, ids=[p[0] for p in PLATFORMS])
+@pytest.mark.parametrize("gpu_layers", [-1, 8], ids=["auto-layers", "explicit-layers"])
 def test_manual_memory_mode_bypasses_both_sites_on_a_gpu_box(
     tmp_path, monkeypatch, platform, gpu_layers
 ):
@@ -475,7 +475,7 @@ def test_manual_memory_mode_bypasses_both_sites_on_a_gpu_box(
         monkeypatch,
         platform,
         accelerator,
-        load_kwargs = {"gpu_memory_mode": "manual", "gpu_layers": gpu_layers},
+        load_kwargs={"gpu_memory_mode": "manual", "gpu_layers": gpu_layers},
     )
 
     assert outcome.arm == "none"
@@ -486,25 +486,25 @@ def test_manual_memory_mode_bypasses_both_sites_on_a_gpu_box(
 # ── G8: the ROCm arch gate ───────────────────────────────────────────────────
 
 
-@pytest.mark.parametrize("platform", PLATFORMS, ids = [p[0] for p in PLATFORMS])
+@pytest.mark.parametrize("platform", PLATFORMS, ids=[p[0] for p in PLATFORMS])
 def test_the_rocm_arch_gate_drops_an_amd_host_onto_the_cpu_path(tmp_path, monkeypatch, platform):
     """G8. Every present device gated out (#7624) empties ``_gpu_mem``, so an AMD
     box with real cards takes the same no-arm path a CPU-only box takes and never
     reaches either site."""
     accelerator = next(a for a in ACCELERATORS if a.label == "amd-rocm")
     _apply_platform(monkeypatch, platform)
-    monkeypatch.setattr(_hw, "IS_ROCM", True, raising = False)
+    monkeypatch.setattr(_hw, "IS_ROCM", True, raising=False)
     monkeypatch.setattr(
         LlamaCppBackend, "_apple_metal_memory_budget_bytes", staticmethod(lambda: 0)
     )
     for name in ("CUDA_VISIBLE_DEVICES", "HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES"):
-        monkeypatch.delenv(name, raising = False)
-    backend, gguf = _backend(tmp_path, vulkan = False, memory = list(accelerator.memory))
+        monkeypatch.delenv(name, raising=False)
+    backend, gguf = _backend(tmp_path, vulkan=False, memory=list(accelerator.memory))
     present = list(accelerator.memory)
 
     # The gate's own shape: the llama-server probe returns nothing, the ungated one
     # still sees the cards, and no installed arch covers them.
-    backend._get_gpu_memory = lambda _binary = None, for_llama_server = False, **_kw: (
+    backend._get_gpu_memory = lambda _binary=None, for_llama_server=False, **_kw: (
         [] if for_llama_server else list(present)
     )
     backend._host_torch_is_rocm = lambda: True
@@ -517,7 +517,7 @@ def test_the_rocm_arch_gate_drops_an_amd_host_onto_the_cpu_path(tmp_path, monkey
     backend._compute_buffer_ctx_bytes = lambda *_a, **_kw: 0
     backend._estimate_compute_buffer_bytes = lambda **_kw: 1
 
-    result, hits = _traced(lambda: _launch(backend, gguf, n_ctx = 0))
+    result, hits = _traced(lambda: _launch(backend, gguf, n_ctx=0))
 
     assert not [name for name, line in ARM_ANCHORS.items() if line in hits]
     assert SITE_A not in hits and SITE_B not in hits
@@ -554,8 +554,8 @@ def _rocm_torch(free_mib: int, total_mib: int, reserved_mib: int):
 
     torch = types.ModuleType("torch")
     torch.cuda = types.SimpleNamespace(
-        mem_get_info = lambda _device = None: (free_mib * MIB, total_mib * MIB),
-        memory_reserved = lambda _device = None: reserved_mib * MIB,
+        mem_get_info=lambda _device=None: (free_mib * MIB, total_mib * MIB),
+        memory_reserved=lambda _device=None: reserved_mib * MIB,
     )
     return torch
 
@@ -563,7 +563,7 @@ def _rocm_torch(free_mib: int, total_mib: int, reserved_mib: int):
 @pytest.mark.parametrize(
     "os_key,expected_free_mib",
     [("linux", 16_000), ("win32", 10_384)],
-    ids = ["linux-rocm", "windows-rocm"],
+    ids=["linux-rocm", "windows-rocm"],
 )
 def test_windows_rocm_feeds_a_smaller_free_reading_into_the_planner(
     monkeypatch, os_key, expected_free_mib
@@ -577,7 +577,7 @@ def test_windows_rocm_feeds_a_smaller_free_reading_into_the_planner(
     """
     monkeypatch.setitem(sys.modules, "torch", _rocm_torch(16_000, 16_384, 6_000))
     monkeypatch.setattr(_hw.sys, "platform", os_key)
-    monkeypatch.setattr(_hw, "IS_ROCM", True, raising = False)
+    monkeypatch.setattr(_hw, "IS_ROCM", True, raising=False)
 
     assert _hw.rocm_windows_free_is_untrusted() is (os_key == "win32")
     free_bytes, total_bytes = _hw.trusted_mem_get_info(0)
@@ -610,12 +610,12 @@ def test_the_windows_rocm_cap_is_what_pushes_a_load_into_the_fallback(tmp_path, 
     model_mib = 10 * 1024
 
     def _run(platform, free_mib, subdir):
-        accelerator = Accelerator("amd-rocm", False, ((0, free_mib, 16_384),), is_rocm = True)
+        accelerator = Accelerator("amd-rocm", False, ((0, free_mib, 16_384),), is_rocm=True)
         backend, gguf = cell_backend(
-            _subdir(tmp_path, subdir), monkeypatch, platform, accelerator, model_fraction = 1.0
+            _subdir(tmp_path, subdir), monkeypatch, platform, accelerator, model_fraction=1.0
         )
         backend._get_gguf_size_bytes = lambda _path: model_mib * MIB
-        result, hits = _traced(lambda: _launch(backend, gguf, n_ctx = 0))
+        result, hits = _traced(lambda: _launch(backend, gguf, n_ctx=0))
         return _selected_devices(result["cmd"], result["env"]), SITE_A in hits
 
     on_linux = _run(linux, 16_000, "linux")

@@ -21,7 +21,7 @@ def test_old_named_column_reads_and_owner_password_write_remain_valid(isolated_a
     isolated_auth.create_initial_user("alice", "alice-password", "alice-jwt-secret" * 3)
     alice = isolated_auth.get_account("alice")
     managed = run_as(alice, workspace_root) / "outputs" / "adapter.bin"
-    managed.parent.mkdir(parents = True)
+    managed.parent.mkdir(parents=True)
     managed.write_bytes(b"private-alice-model")
     with closing(sqlite3.connect(isolated_auth.DB_PATH)) as conn:
         columns = {row[1] for row in conn.execute("PRAGMA table_info(auth_user)")}

@@ -93,7 +93,7 @@ def test_a_bare_double_can_still_serve_a_chat_completion(monkeypatch):
     with TestClient(app) as client:
         response = client.post(
             "/chat/completions",
-            json = {
+            json={
                 "model": "test/model.gguf",
                 "messages": [{"role": "user", "content": "hi"}],
                 "stream": False,

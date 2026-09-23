@@ -34,8 +34,8 @@ class _FakeQueue:
     def put(self, x):
         self._q.put(x)
 
-    def get(self, timeout = None):
-        return self._q.get(timeout = timeout)  # raises queue.Empty on timeout
+    def get(self, timeout=None):
+        return self._q.get(timeout=timeout)  # raises queue.Empty on timeout
 
     def get_nowait(self):
         return self._q.get_nowait()
@@ -52,7 +52,7 @@ class _FakeProc:
         self.pid = 4321
 
     def start(self):
-        self._thread = threading.Thread(target = self._target, kwargs = self._kwargs, daemon = True)
+        self._thread = threading.Thread(target=self._target, kwargs=self._kwargs, daemon=True)
         self._thread.start()
 
     def is_alive(self):
@@ -67,19 +67,19 @@ class _FakeCtx:
         return _FakeProc(target, kwargs, daemon)
 
 
-@pytest.fixture(autouse = True)
+@pytest.fixture(autouse=True)
 def _healthy_diffusers(healthy_diffusers):
     """Every test here is about the route or the config, not about the runner's diffusers."""
 
 
-@pytest.fixture(autouse = True)
+@pytest.fixture(autouse=True)
 def _isolated_runs_dir(monkeypatch, tmp_path):
     """Terminal service events persist a run record; point the runs dir at tmp so tests
     never write into a real studio home. Yields the dir for the history tests."""
     import core.training.diffusion_training_service as dts
 
     d = tmp_path / "runs" / "diffusion"
-    d.mkdir(parents = True, exist_ok = True)
+    d.mkdir(parents=True, exist_ok=True)
     monkeypatch.setattr(dts, "_runs_dir", lambda: d)
 
     yield d
@@ -120,7 +120,7 @@ def _happy_target(*, event_queue, stop_queue, config):
 
 def _stoppable_target(*, event_queue, stop_queue, config):
     event_queue.put({"type": "model_load_completed"})
-    stop_queue.get(timeout = 5.0)  # block until stop() signals
+    stop_queue.get(timeout=5.0)  # block until stop() signals
     event_queue.put(
         {"type": "complete", "output_dir": config["output_dir"], "lora_path": "x", "stopped": True}
     )
@@ -169,7 +169,7 @@ def test_default_target_activates_native_tls_before_diffusion_trainer(monkeypatc
     )
 
     service._default_target(
-        event_queue = "events", stop_queue = "stop", config = {"base_model": "example/model"}
+        event_queue="events", stop_queue="stop", config={"base_model": "example/model"}
     )
 
     assert calls == ["native_path_secret", "native_tls", "trainer"]
@@ -181,7 +181,7 @@ _CFG = {"base_model": "b", "data_dir": "d", "output_dir": "/tmp/out", "train_ste
 def _wait_status(
     svc,
     *terminal,
-    timeout = 3.0,
+    timeout=3.0,
 ):
     end = time.time() + timeout
     while time.time() < end:
@@ -195,7 +195,7 @@ def _wait_status(
 def _wait_record(
     runs_dir,
     job_id,
-    timeout = 5.0,
+    timeout=5.0,
 ):
     """Block until the pump thread has written this run's record, and return it.
 
@@ -212,14 +212,14 @@ def _wait_record(
     end = time.time() + timeout
     while time.time() < end:
         try:
-            return json.loads(path.read_text(encoding = "utf-8"))
+            return json.loads(path.read_text(encoding="utf-8"))
         except (FileNotFoundError, json.JSONDecodeError):
             time.sleep(0.01)
     raise AssertionError(f"the pump never persisted {path} within {timeout}s")
 
 
 def test_service_happy_path():
-    svc = DiffusionTrainingService(ctx = _FakeCtx(), target = _happy_target)
+    svc = DiffusionTrainingService(ctx=_FakeCtx(), target=_happy_target)
     job_id = svc.start(dict(_CFG))
     assert job_id
     st = _wait_status(svc, "completed")
@@ -232,7 +232,7 @@ def test_service_happy_path():
 
 
 def test_service_rejects_bad_config_before_spawn():
-    svc = DiffusionTrainingService(ctx = _FakeCtx(), target = _happy_target)
+    svc = DiffusionTrainingService(ctx=_FakeCtx(), target=_happy_target)
     with pytest.raises(ValueError):
         svc.start({**_CFG, "train_steps": 0})
     # Nothing was spawned; still idle.
@@ -240,7 +240,7 @@ def test_service_rejects_bad_config_before_spawn():
 
 
 def test_service_rejects_second_concurrent_job():
-    svc = DiffusionTrainingService(ctx = _FakeCtx(), target = _stoppable_target)
+    svc = DiffusionTrainingService(ctx=_FakeCtx(), target=_stoppable_target)
     svc.start(dict(_CFG))
     _wait_status(svc, "running")
     with pytest.raises(RuntimeError):
@@ -250,7 +250,7 @@ def test_service_rejects_second_concurrent_job():
 
 
 def test_service_stop_marks_stopped():
-    svc = DiffusionTrainingService(ctx = _FakeCtx(), target = _stoppable_target)
+    svc = DiffusionTrainingService(ctx=_FakeCtx(), target=_stoppable_target)
     svc.start(dict(_CFG))
     _wait_status(svc, "running")
     assert svc.stop() is True
@@ -262,19 +262,19 @@ def test_service_stop_marks_stopped():
 
 
 def test_service_stop_for_shutdown_saves_and_waits():
-    svc = DiffusionTrainingService(ctx = _FakeCtx(), target = _stoppable_target)
+    svc = DiffusionTrainingService(ctx=_FakeCtx(), target=_stoppable_target)
     svc.start(dict(_CFG))
     _wait_status(svc, "running")
-    assert svc.stop_for_shutdown(timeout = 5) is True
+    assert svc.stop_for_shutdown(timeout=5) is True
     st = svc.status()
     assert st["status"] == "stopped"
     assert st["active"] is False
 
 
 def test_service_stop_for_shutdown_is_immediate_when_idle():
-    svc = DiffusionTrainingService(ctx = _FakeCtx(), target = _happy_target)
+    svc = DiffusionTrainingService(ctx=_FakeCtx(), target=_happy_target)
     t0 = time.monotonic()
-    assert svc.stop_for_shutdown(timeout = 5) is True
+    assert svc.stop_for_shutdown(timeout=5) is True
     assert time.monotonic() - t0 < 1
 
 
@@ -284,12 +284,12 @@ class _ExitedProc:
 
 
 def test_service_stop_for_shutdown_waits_for_the_pump_after_the_worker_exits():
-    svc = DiffusionTrainingService(ctx = _FakeCtx(), target = _happy_target)
+    svc = DiffusionTrainingService(ctx=_FakeCtx(), target=_happy_target)
     written = threading.Event()
     svc._proc = _ExitedProc()
-    svc._pump = threading.Thread(target = lambda: (time.sleep(0.5), written.set()), daemon = True)
+    svc._pump = threading.Thread(target=lambda: (time.sleep(0.5), written.set()), daemon=True)
     svc._pump.start()
-    assert svc.stop_for_shutdown(timeout = 5) is True
+    assert svc.stop_for_shutdown(timeout=5) is True
     assert written.is_set()
 
 
@@ -299,16 +299,16 @@ def _ignores_stop_target(*, event_queue, stop_queue, config):
 
 
 def test_service_stop_for_shutdown_wait_is_bounded():
-    svc = DiffusionTrainingService(ctx = _FakeCtx(), target = _ignores_stop_target)
+    svc = DiffusionTrainingService(ctx=_FakeCtx(), target=_ignores_stop_target)
     svc.start(dict(_CFG))
     _wait_status(svc, "running")
     t0 = time.monotonic()
-    assert svc.stop_for_shutdown(timeout = 0.5) is False
+    assert svc.stop_for_shutdown(timeout=0.5) is False
     assert 0.4 < time.monotonic() - t0 < 2
 
 
 def test_service_crash_without_terminal_event_is_error():
-    svc = DiffusionTrainingService(ctx = _FakeCtx(), target = _crashing_target)
+    svc = DiffusionTrainingService(ctx=_FakeCtx(), target=_crashing_target)
     svc.start(dict(_CFG))
     st = _wait_status(svc, "error")
     assert st["status"] == "error"
@@ -316,7 +316,7 @@ def test_service_crash_without_terminal_event_is_error():
 
 
 def test_apply_event_transitions():
-    svc = DiffusionTrainingService(ctx = _FakeCtx(), target = _happy_target)
+    svc = DiffusionTrainingService(ctx=_FakeCtx(), target=_happy_target)
     svc._apply_event({"type": "model_load_started", "num_images": 5})
     assert svc.status()["in_model_load"] is True and svc.status()["num_images"] == 5
     svc._apply_event({"type": "model_load_completed"})
@@ -334,7 +334,7 @@ def test_the_joint_losses_reach_status_and_history():
     Also pinned here: they stay index-aligned with ``steps``. A family that reports only the
     combined loss contributes nulls rather than short arrays, so the two curves can be drawn
     against the same x axis as the loss."""
-    svc = DiffusionTrainingService(ctx = _FakeCtx(), target = _happy_target)
+    svc = DiffusionTrainingService(ctx=_FakeCtx(), target=_happy_target)
     svc._apply_event(
         {
             "type": "progress",
@@ -358,7 +358,7 @@ def test_the_joint_losses_reach_status_and_history():
 
     # And a single-modality family reports neither, so the whole series is null and the chart
     # can tell "not a joint run" from "a joint run whose audio loss was zero".
-    solo = DiffusionTrainingService(ctx = _FakeCtx(), target = _happy_target)
+    solo = DiffusionTrainingService(ctx=_FakeCtx(), target=_happy_target)
     solo._apply_event({"type": "progress", "step": 1, "total_steps": 1, "loss": 0.5})
     st = solo.status()
     assert st["video_loss"] is None and st["audio_loss"] is None
@@ -370,7 +370,7 @@ def test_progress_nulls_non_finite_floats_for_strict_json():
     import json
     import math
 
-    svc = DiffusionTrainingService(ctx = _FakeCtx(), target = _happy_target)
+    svc = DiffusionTrainingService(ctx=_FakeCtx(), target=_happy_target)
     svc._apply_event(
         {
             "type": "progress",
@@ -392,7 +392,7 @@ def test_progress_nulls_non_finite_floats_for_strict_json():
     assert snap["metric_loss"] == []
     assert snap["metric_steps"] == []
     # strict JSON (allow_nan=False) round-trips without a ValueError from NaN/Infinity.
-    json.dumps(snap, allow_nan = False)
+    json.dumps(snap, allow_nan=False)
 
     # A finite point after the bad one is recorded and preserved verbatim.
     svc._apply_event(
@@ -402,18 +402,18 @@ def test_progress_nulls_non_finite_floats_for_strict_json():
     assert snap2["loss"] == 0.5
     assert snap2["metric_loss"] == [0.5] and snap2["metric_steps"] == [4]
     assert math.isfinite(snap2["learning_rate"])
-    json.dumps(snap2, allow_nan = False)
+    json.dumps(snap2, allow_nan=False)
 
 
 def test_terminal_events_clear_model_load_flag():
     # A stop or error during model load emits complete/error without a preceding model_load_completed, so the terminal update must reset in_model_load.
-    svc = DiffusionTrainingService(ctx = _FakeCtx(), target = _happy_target)
+    svc = DiffusionTrainingService(ctx=_FakeCtx(), target=_happy_target)
     svc._apply_event({"type": "model_load_started"})
     assert svc.status()["in_model_load"] is True
     svc._apply_event({"type": "complete", "stopped": True})
     assert svc.status()["in_model_load"] is False and svc.status()["status"] == "stopped"
 
-    svc2 = DiffusionTrainingService(ctx = _FakeCtx(), target = _happy_target)
+    svc2 = DiffusionTrainingService(ctx=_FakeCtx(), target=_happy_target)
     svc2._apply_event({"type": "model_load_started"})
     svc2._apply_event({"type": "error", "message": "load failed"})
     assert svc2.status()["in_model_load"] is False and svc2.status()["status"] == "error"
@@ -421,7 +421,7 @@ def test_terminal_events_clear_model_load_flag():
 
 def test_complete_event_keeps_the_ema_adapter_path():
     # A DiT run with ema_decay writes a SECOND adapter as ema_path; dropping the field leaves that adapter undiscoverable.
-    svc = DiffusionTrainingService(ctx = _FakeCtx(), target = _happy_target)
+    svc = DiffusionTrainingService(ctx=_FakeCtx(), target=_happy_target)
     svc._apply_event(
         {
             "type": "complete",
@@ -479,7 +479,7 @@ class _FakeService:
         self.calls.append("start")
         return "job-123"
 
-    def stop(self, save = True):
+    def stop(self, save=True):
         self.stopped_with_save = save
         was = self._running
         self._running = False
@@ -507,7 +507,7 @@ class _FakeService:
 
 
 class _FakeLLMBackend:
-    def __init__(self, active = False):
+    def __init__(self, active=False):
         self._active = active
 
     def is_training_active(self):
@@ -523,7 +523,7 @@ def client(monkeypatch):
     # Neutralize the LLM interlock + GPU-free for the wiring tests. The route imports get_training_backend at module scope.
     import routes.training as tr
 
-    monkeypatch.setattr(tr, "get_training_backend", lambda: _FakeLLMBackend(active = False))
+    monkeypatch.setattr(tr, "get_training_backend", lambda: _FakeLLMBackend(active=False))
     monkeypatch.setattr(tr, "_free_gpu_for_diffusion_training", lambda: None)
     # The dataset preflight runs the trainer discovery against _BODY's fake data_dir; stub it for the wiring tests.
     monkeypatch.setattr(
@@ -531,7 +531,7 @@ def client(monkeypatch):
         lambda data_dir, **kw: [("img.png", "caption")],
     )
     app = FastAPI()
-    app.include_router(training_router, prefix = "/api/train")
+    app.include_router(training_router, prefix="/api/train")
     app.dependency_overrides[get_current_subject] = lambda: "test-user"
     # Default to session (UI) auth: the API-key inference-in-flight guard is a no-op there. The guard test flips this.
     app.dependency_overrides[authenticated_via_api_key] = lambda: False
@@ -551,7 +551,7 @@ _BODY = {
 
 
 def test_route_start_ok(client):
-    r = client.post("/api/train/diffusion/start", json = _BODY)
+    r = client.post("/api/train/diffusion/start", json=_BODY)
     assert r.status_code == 200, r.text
     assert r.json() == {"job_id": "job-123", "status": "running"}
     assert client._fake.started_with["base_model"] == "stabilityai/sdxl-turbo"
@@ -584,7 +584,7 @@ def test_route_start_frees_gpu_off_the_coroutine_thread(client, monkeypatch):
 
     monkeypatch.setattr(client._fake, "start", _record_start)
 
-    r = client.post("/api/train/diffusion/start", json = _BODY)
+    r = client.post("/api/train/diffusion/start", json=_BODY)
     assert r.status_code == 200, r.text
     assert threads["cleanup"] is not threads["inline"]  # offloaded to a worker, not run inline
 
@@ -602,7 +602,7 @@ def test_route_start_reserves_before_freeing_gpu(client, monkeypatch):
 
     monkeypatch.setattr(tr, "_free_gpu_for_diffusion_training", _record_free)
 
-    r = client.post("/api/train/diffusion/start", json = _BODY)
+    r = client.post("/api/train/diffusion/start", json=_BODY)
     assert r.status_code == 200, r.text
     # reserve fires before the free, the free sees an active service, then start, then unreserve.
     assert client._fake.calls[0] == "reserve"
@@ -624,7 +624,7 @@ def test_route_start_reserves_before_scanning_dataset(client, monkeypatch):
         "core.training.diffusion_train_common.discover_image_caption_pairs", _record_scan
     )
 
-    r = client.post("/api/train/diffusion/start", json = _BODY)
+    r = client.post("/api/train/diffusion/start", json=_BODY)
     assert r.status_code == 200, r.text
     assert client._fake.calls.index("reserve") < client._fake.calls.index("scan")
     assert order == ["scan_active=True"]
@@ -640,7 +640,7 @@ def test_route_start_unreserves_when_dataset_preflight_fails(client, monkeypatch
         "core.training.diffusion_train_common.discover_image_caption_pairs", _bad_scan
     )
 
-    r = client.post("/api/train/diffusion/start", json = _BODY)
+    r = client.post("/api/train/diffusion/start", json=_BODY)
     assert r.status_code == 400
     assert "no captioned images" in r.json()["detail"]
     # Reserved, then rolled back; never started, and no longer active.
@@ -668,7 +668,7 @@ def test_service_reserve_is_compare_and_set():
 
     svc = DiffusionTrainingService()
     svc.reserve()
-    with pytest.raises(RuntimeError, match = "already running"):
+    with pytest.raises(RuntimeError, match="already running"):
         svc.reserve()
     assert svc.is_active() is True  # the losing reserve did not clear the winner's claim
     svc.unreserve()
@@ -697,7 +697,7 @@ def test_route_start_preflights_gated_base_off_the_coroutine_thread(client, monk
 
     monkeypatch.setattr(client._fake, "start", _record_start)
 
-    r = client.post("/api/train/diffusion/start", json = _BODY)
+    r = client.post("/api/train/diffusion/start", json=_BODY)
     assert r.status_code == 200, r.text
     assert threads["preflight"] is not threads["inline"]  # offloaded to a worker, not run inline
 
@@ -728,13 +728,13 @@ def test_a_clip_trained_family_is_not_turned_away_by_the_clip_refusal(
 
     r = client.post(
         "/api/train/diffusion/start",
-        json = {**_BODY, "base_model": "MiniMaxAI/MiniMax-H3", "instance_prompt": "p"},
+        json={**_BODY, "base_model": "MiniMaxAI/MiniMax-H3", "instance_prompt": "p"},
     )
     assert r.status_code == 200, r.text
     assert consulted == [], "the clip refusal was consulted for a clip-trained family"
 
     # Control: an image family with the same dataset is still turned away, and by this refusal.
-    r = client.post("/api/train/diffusion/start", json = _BODY)
+    r = client.post("/api/train/diffusion/start", json=_BODY)
     assert r.status_code == 400
     assert "not supported yet" in r.json()["detail"]
     assert len(consulted) == 1
@@ -763,13 +763,13 @@ def test_a_clip_family_still_refuses_a_folder_holding_stills(client, monkeypatch
 
     r = client.post(
         "/api/train/diffusion/start",
-        json = {**_BODY, "base_model": "MiniMaxAI/MiniMax-H3", "instance_prompt": "p"},
+        json={**_BODY, "base_model": "MiniMaxAI/MiniMax-H3", "instance_prompt": "p"},
     )
     assert r.status_code == 400
     assert "alongside its clips" in r.json()["detail"]
 
     # And an image family never sees that one: its stills are exactly what it trains on.
-    r = client.post("/api/train/diffusion/start", json = _BODY)
+    r = client.post("/api/train/diffusion/start", json=_BODY)
     assert r.status_code == 200, r.text
 
 
@@ -790,11 +790,11 @@ def test_route_start_preflights_the_normalized_fetch_mirror(
     monkeypatch.setattr(
         diffusion_families,
         "prefer_ungated_mirror",
-        lambda base, token = None: mirror if base.lower() == source.lower() else base,
+        lambda base, token=None: mirror if base.lower() == source.lower() else base,
     )
     requests = []
 
-    def _fake_urlopen(req, timeout = None):
+    def _fake_urlopen(req, timeout=None):
         requests.append(req)
         if source in req.full_url:
             raise urllib.error.HTTPError(req.full_url, 401, "Unauthorized", {}, None)
@@ -804,7 +804,7 @@ def test_route_start_preflights_the_normalized_fetch_mirror(
     monkeypatch.setattr("utils.utils.auth_safe_open", _fake_urlopen)
     r = client.post(
         "/api/train/diffusion/start",
-        json = {**_BODY, "base_model": source, "hf_token": hf_token},
+        json={**_BODY, "base_model": source, "hf_token": hf_token},
     )
 
     assert r.status_code == 200, r.text
@@ -832,15 +832,15 @@ def test_a_tokenless_run_takes_the_mirror_even_with_the_vendor_repo_cached(
     source = "black-forest-labs/FLUX.1-dev"
     mirror = "unsloth/FLUX.1-dev"
     # The vendor repo looks cached, which is what made the old code keep it.
-    monkeypatch.setattr(diffusion_families, "prefer_ungated_mirror", lambda base, token = None: base)
+    monkeypatch.setattr(diffusion_families, "prefer_ungated_mirror", lambda base, token=None: base)
     if no_mirror_env:
         monkeypatch.setenv("UNSLOTH_DIFFUSION_NO_MIRROR", "1")
     else:
-        monkeypatch.delenv("UNSLOTH_DIFFUSION_NO_MIRROR", raising = False)
+        monkeypatch.delenv("UNSLOTH_DIFFUSION_NO_MIRROR", raising=False)
 
     def _cfg(token):
         return DiffusionLoraConfig(
-            base_model = source, data_dir = "d", output_dir = "o", hf_token = token
+            base_model=source, data_dir="d", output_dir="o", hf_token=token
         ).normalized()
 
     # The documented pin still wins, on this path as everywhere else.
@@ -869,15 +869,15 @@ def test_a_tokenless_run_keeps_a_cached_ungated_base(monkeypatch, no_mirror_env)
     assert diffusion_families.mirror_repo(source), "precondition: this base is mirrored"
     assert not diffusion_families.upstream_is_gated(source), "precondition: and it is ungated"
     # Cached, so the cache-aware answer is the vendor repo. It must survive.
-    monkeypatch.setattr(diffusion_families, "prefer_ungated_mirror", lambda base, token = None: base)
+    monkeypatch.setattr(diffusion_families, "prefer_ungated_mirror", lambda base, token=None: base)
     if no_mirror_env:
         monkeypatch.setenv("UNSLOTH_DIFFUSION_NO_MIRROR", "1")
     else:
-        monkeypatch.delenv("UNSLOTH_DIFFUSION_NO_MIRROR", raising = False)
+        monkeypatch.delenv("UNSLOTH_DIFFUSION_NO_MIRROR", raising=False)
 
     def _cfg(token):
         return DiffusionLoraConfig(
-            base_model = source, data_dir = "d", output_dir = "o", hf_token = token
+            base_model=source, data_dir="d", output_dir="o", hf_token=token
         ).normalized()
 
     assert _cfg(None).fetch_base_model == source
@@ -898,7 +898,7 @@ def test_the_start_preflight_never_heads_the_hub_for_a_local_clone(monkeypatch, 
 
     local = "black-forest-labs/FLUX.1-dev"
     monkeypatch.chdir(tmp_path)
-    (tmp_path / local).mkdir(parents = True)
+    (tmp_path / local).mkdir(parents=True)
 
     def _explode(*a, **k):
         pytest.fail("a local clone must never be probed over the network")
@@ -923,11 +923,11 @@ def test_a_tokenless_run_keeps_a_local_clone_named_like_a_gated_base(monkeypatch
     source = "black-forest-labs/FLUX.1-dev"
     assert diffusion_families.upstream_is_gated(source), "precondition: this base is gated"
     monkeypatch.chdir(tmp_path)
-    (tmp_path / source).mkdir(parents = True)
-    monkeypatch.delenv("UNSLOTH_DIFFUSION_NO_MIRROR", raising = False)
+    (tmp_path / source).mkdir(parents=True)
+    monkeypatch.delenv("UNSLOTH_DIFFUSION_NO_MIRROR", raising=False)
 
     cfg = DiffusionLoraConfig(
-        base_model = source, data_dir = "d", output_dir = "o", hf_token = None
+        base_model=source, data_dir="d", output_dir="o", hf_token=None
     ).normalized()
 
     assert cfg.fetch_base_model == source
@@ -937,7 +937,7 @@ def test_a_tokenless_run_keeps_a_local_clone_named_like_a_gated_base(monkeypatch
 def test_route_start_forwards_extra_training_knobs(client):
     # max_grad_norm and lora_target_modules must reach the service, not be silently dropped.
     body = {**_BODY, "max_grad_norm": 0.5, "lora_target_modules": ["to_q", "to_v"]}
-    r = client.post("/api/train/diffusion/start", json = body)
+    r = client.post("/api/train/diffusion/start", json=body)
     assert r.status_code == 200, r.text
     assert client._fake.started_with["max_grad_norm"] == 0.5
     assert client._fake.started_with["lora_target_modules"] == ["to_q", "to_v"]
@@ -946,7 +946,7 @@ def test_route_start_forwards_extra_training_knobs(client):
 def test_route_start_forwards_num_epochs(client):
     # Epochs mode: the frontend omits train_steps and sends num_epochs; it must reach the service.
     body = {k: v for k, v in _BODY.items() if k != "train_steps"}
-    r = client.post("/api/train/diffusion/start", json = {**body, "num_epochs": 8})
+    r = client.post("/api/train/diffusion/start", json={**body, "num_epochs": 8})
     assert r.status_code == 200, r.text
     assert client._fake.started_with["num_epochs"] == 8
 
@@ -960,7 +960,7 @@ def test_route_start_forwards_dit_loss_knobs(client):
         "weighting_scheme": "bell",
         "flow_shift": 3.0,
     }
-    r = client.post("/api/train/diffusion/start", json = body)
+    r = client.post("/api/train/diffusion/start", json=body)
     assert r.status_code == 200, r.text
     started = client._fake.started_with
     assert started["ema_decay"] == 0.99 and started["cfg_dropout"] == 0.1
@@ -977,7 +977,7 @@ def test_request_model_dit_loss_knob_bounds():
     defaults = DiffusionTrainingStartRequest(**base)
     assert (defaults.ema_decay, defaults.cfg_dropout) == (0.0, 0.0)
     assert defaults.weighting_scheme == "none" and defaults.flow_shift is None
-    assert DiffusionTrainingStartRequest(**base, flow_shift = "auto").flow_shift == "auto"
+    assert DiffusionTrainingStartRequest(**base, flow_shift="auto").flow_shift == "auto"
     for bad in ({"ema_decay": 1.0}, {"cfg_dropout": 1.5}, {"weighting_scheme": "bogus"}):
         with pytest.raises(ValidationError):
             DiffusionTrainingStartRequest(**base, **bad)
@@ -992,10 +992,10 @@ def test_request_model_rejects_lora_dropout_of_one():
 
     base = {"base_model": "b", "data_dir": "d", "output_dir": "o"}
     assert DiffusionTrainingStartRequest(**base).lora_dropout == 0.0
-    assert DiffusionTrainingStartRequest(**base, lora_dropout = 0.99).lora_dropout == 0.99
+    assert DiffusionTrainingStartRequest(**base, lora_dropout=0.99).lora_dropout == 0.99
     for bad in (1.0, 1.5, -0.1):
         with pytest.raises(ValidationError):
-            DiffusionTrainingStartRequest(**base, lora_dropout = bad)
+            DiffusionTrainingStartRequest(**base, lora_dropout=bad)
 
 
 def test_request_model_num_epochs_bounds():
@@ -1006,10 +1006,10 @@ def test_request_model_num_epochs_bounds():
 
     base = {"base_model": "b", "data_dir": "d", "output_dir": "o"}
     assert DiffusionTrainingStartRequest(**base).num_epochs == 0  # default = use train_steps
-    assert DiffusionTrainingStartRequest(**base, num_epochs = 1000).num_epochs == 1000
+    assert DiffusionTrainingStartRequest(**base, num_epochs=1000).num_epochs == 1000
     for bad in (-1, 1001):
         with pytest.raises(ValidationError):
-            DiffusionTrainingStartRequest(**base, num_epochs = bad)
+            DiffusionTrainingStartRequest(**base, num_epochs=bad)
 
 
 def test_request_model_base_precision_accepts_mxfp8():
@@ -1020,9 +1020,9 @@ def test_request_model_base_precision_accepts_mxfp8():
 
     base = {"base_model": "b", "data_dir": "d", "output_dir": "o"}
     assert DiffusionTrainingStartRequest(**base).base_precision == "nf4"  # default
-    assert DiffusionTrainingStartRequest(**base, base_precision = "mxfp8").base_precision == "mxfp8"
+    assert DiffusionTrainingStartRequest(**base, base_precision="mxfp8").base_precision == "mxfp8"
     with pytest.raises(ValidationError):
-        DiffusionTrainingStartRequest(**base, base_precision = "bogus")
+        DiffusionTrainingStartRequest(**base, base_precision="bogus")
 
 
 def test_config_from_dict_epoch_mode_drops_max_steps_sentinel():
@@ -1109,20 +1109,20 @@ def test_permutation_sampler_honors_batch_on_tiny_dataset():
 
 def test_route_start_accepts_zero_max_grad_norm(client):
     # 0 is the documented "disable clipping" value (the trainer skips clip_grad_norm_), so the request model must not reject it.
-    r = client.post("/api/train/diffusion/start", json = {**_BODY, "max_grad_norm": 0.0})
+    r = client.post("/api/train/diffusion/start", json={**_BODY, "max_grad_norm": 0.0})
     assert r.status_code == 200, r.text
     assert client._fake.started_with["max_grad_norm"] == 0.0
 
 
 def test_route_start_rejects_nonpositive_snr_gamma(client):
     # A gamma at or below 0 zeroes/inverts the min-SNR loss weight; null is the disable value.
-    r = client.post("/api/train/diffusion/start", json = {**_BODY, "snr_gamma": 0})
+    r = client.post("/api/train/diffusion/start", json={**_BODY, "snr_gamma": 0})
     assert r.status_code == 422
 
 
 def test_route_start_rejects_uncontained_paths(client):
     # An absolute path outside the Unsloth dataset roots is a 400, not silently accepted.
-    r = client.post("/api/train/diffusion/start", json = {**_BODY, "data_dir": "/etc"})
+    r = client.post("/api/train/diffusion/start", json={**_BODY, "data_dir": "/etc"})
     assert r.status_code == 400
 
 
@@ -1133,15 +1133,15 @@ def test_route_start_resolves_bare_name_under_image_dataset_root(client, monkeyp
 
     ds_root = tmp_path / "assets" / "datasets"
     img_ds = ds_root / "my-photos"
-    img_ds.mkdir(parents = True)
+    img_ds.mkdir(parents=True)
     (img_ds / "a.png").write_bytes(b"x")
     # Shadowing entries the generic resolver would pick first.
     (ds_root / "uploads").mkdir()
     (ds_root / "uploads" / "my-photos").write_text("an LLM dataset upload, not a folder")
-    (ds_root / "recipes" / "my-photos").mkdir(parents = True)
+    (ds_root / "recipes" / "my-photos").mkdir(parents=True)
     monkeypatch.setattr(up, "datasets_root", lambda: ds_root)
 
-    r = client.post("/api/train/diffusion/start", json = {**_BODY, "data_dir": "my-photos"})
+    r = client.post("/api/train/diffusion/start", json={**_BODY, "data_dir": "my-photos"})
     assert r.status_code == 200, r.text
     assert client._fake.started_with["data_dir"] == str(img_ds)
 
@@ -1154,12 +1154,12 @@ def test_route_start_refuses_a_dataset_holding_clips(client, monkeypatch, tmp_pa
 
     ds_root = tmp_path / "assets" / "datasets"
     folder = ds_root / "mixed-set"
-    folder.mkdir(parents = True)
+    folder.mkdir(parents=True)
     (folder / "a.png").write_bytes(b"x")
     (folder / "b.mp4").write_bytes(b"x")
     monkeypatch.setattr(up, "datasets_root", lambda: ds_root)
 
-    r = client.post("/api/train/diffusion/start", json = {**_BODY, "data_dir": "mixed-set"})
+    r = client.post("/api/train/diffusion/start", json={**_BODY, "data_dir": "mixed-set"})
     assert r.status_code == 400, r.text
     assert "1 video clip" in r.json()["detail"]
     assert client._fake.started_with is None
@@ -1171,26 +1171,26 @@ def test_route_start_still_accepts_an_image_only_dataset(client, monkeypatch, tm
 
     ds_root = tmp_path / "assets" / "datasets"
     folder = ds_root / "photo-set"
-    folder.mkdir(parents = True)
+    folder.mkdir(parents=True)
     (folder / "a.png").write_bytes(b"x")
     monkeypatch.setattr(up, "datasets_root", lambda: ds_root)
 
-    r = client.post("/api/train/diffusion/start", json = {**_BODY, "data_dir": "photo-set"})
+    r = client.post("/api/train/diffusion/start", json={**_BODY, "data_dir": "photo-set"})
     assert r.status_code == 200, r.text
 
 
 def test_route_start_blocked_by_active_llm_training(client, monkeypatch):
     import routes.training as tr
 
-    monkeypatch.setattr(tr, "get_training_backend", lambda: _FakeLLMBackend(active = True))
-    r = client.post("/api/train/diffusion/start", json = _BODY)
+    monkeypatch.setattr(tr, "get_training_backend", lambda: _FakeLLMBackend(active=True))
+    r = client.post("/api/train/diffusion/start", json=_BODY)
     assert r.status_code == 409
     assert "LLM training" in r.json()["detail"]
 
 
 def test_route_start_missing_required_is_422(client):
     r = client.post(
-        "/api/train/diffusion/start", json = {"base_model": "x"}
+        "/api/train/diffusion/start", json={"base_model": "x"}
     )  # no data_dir/output_dir
     assert r.status_code == 422
 
@@ -1200,7 +1200,7 @@ def test_route_start_bad_config_maps_to_400(client, monkeypatch):
         raise ValueError("resolution must be a multiple of 8")
 
     client._fake.start = _raise  # type: ignore[assignment]
-    r = client.post("/api/train/diffusion/start", json = _BODY)
+    r = client.post("/api/train/diffusion/start", json=_BODY)
     assert r.status_code == 400
     assert "multiple of 8" in r.json()["detail"]
 
@@ -1210,7 +1210,7 @@ def test_route_start_conflict_maps_to_409(client):
         raise RuntimeError("A diffusion training job is already running.")
 
     client._fake.start = _raise  # type: ignore[assignment]
-    r = client.post("/api/train/diffusion/start", json = _BODY)
+    r = client.post("/api/train/diffusion/start", json=_BODY)
     assert r.status_code == 409
 
 
@@ -1219,7 +1219,7 @@ def test_route_start_over_api_with_inference_in_flight_is_409(client, monkeypatc
     client._app.dependency_overrides[authenticated_via_api_key] = lambda: True
     monkeypatch.setattr(
         "core.inference.llama_keepwarm.other_inference_request_count",
-        lambda current_request_counted = False: 1,
+        lambda current_request_counted=False: 1,
     )
     freed = {"called": False}
     import routes.training as tr
@@ -1227,7 +1227,7 @@ def test_route_start_over_api_with_inference_in_flight_is_409(client, monkeypatc
     monkeypatch.setattr(
         tr, "_free_gpu_for_diffusion_training", lambda: freed.__setitem__("called", True)
     )
-    r = client.post("/api/train/diffusion/start", json = _BODY)
+    r = client.post("/api/train/diffusion/start", json=_BODY)
     assert r.status_code == 409
     # The guard must run BEFORE any GPU is freed, so the live inference stream survives.
     assert freed["called"] is False
@@ -1238,14 +1238,14 @@ def test_route_start_over_api_without_inference_proceeds(client, monkeypatch):
     client._app.dependency_overrides[authenticated_via_api_key] = lambda: True
     monkeypatch.setattr(
         "core.inference.llama_keepwarm.other_inference_request_count",
-        lambda current_request_counted = False: 0,
+        lambda current_request_counted=False: 0,
     )
-    r = client.post("/api/train/diffusion/start", json = _BODY)
+    r = client.post("/api/train/diffusion/start", json=_BODY)
     assert r.status_code == 200
 
 
 def test_route_status_and_stop(client):
-    client.post("/api/train/diffusion/start", json = _BODY)
+    client.post("/api/train/diffusion/start", json=_BODY)
     s = client.get("/api/train/diffusion/status")
     assert s.status_code == 200 and s.json()["status"] == "running"
     st = client.post("/api/train/diffusion/stop")
@@ -1257,7 +1257,7 @@ def test_route_status_and_stop(client):
 
 def test_service_restart_after_completion():
     # A finished job's pump is joined OUTSIDE the lock (it needs the lock for its final writes), so a second start neither stalls nor deadlocks.
-    svc = DiffusionTrainingService(ctx = _FakeCtx(), target = _happy_target)
+    svc = DiffusionTrainingService(ctx=_FakeCtx(), target=_happy_target)
     svc.start(dict(_CFG))
     _wait_status(svc, "completed")
     t0 = time.time()
@@ -1270,14 +1270,14 @@ def test_service_restart_after_completion():
 
 def test_stale_pump_events_cannot_corrupt_new_job():
     # An event carrying a superseded job proc identity must be dropped, so a straggler pump cannot overwrite a new job's state.
-    svc = DiffusionTrainingService(ctx = _FakeCtx(), target = _happy_target)
+    svc = DiffusionTrainingService(ctx=_FakeCtx(), target=_happy_target)
     svc.start(dict(_CFG))
     _wait_status(svc, "completed")
     current = svc._proc
-    svc._apply_event({"type": "error", "message": "stale boom"}, proc = object())
+    svc._apply_event({"type": "error", "message": "stale boom"}, proc=object())
     assert svc.status()["message"] != "stale boom"
     # The current job's events still apply.
-    svc._apply_event({"type": "progress", "step": 9}, proc = current)
+    svc._apply_event({"type": "progress", "step": 9}, proc=current)
     assert svc.status()["step"] == 9
 
 
@@ -1289,8 +1289,8 @@ def dataset_roots(client, monkeypatch, tmp_path):
 
     ds_root = tmp_path / "assets" / "datasets"
     out_root = tmp_path / "outputs"
-    ds_root.mkdir(parents = True)
-    out_root.mkdir(parents = True)
+    ds_root.mkdir(parents=True)
+    out_root.mkdir(parents=True)
     monkeypatch.setattr(up, "datasets_root", lambda: ds_root)
     monkeypatch.setattr(up, "outputs_root", lambda: out_root)
     return ds_root, out_root
@@ -1330,9 +1330,9 @@ def test_diffusion_info_counts_metadata_captions(client, dataset_roots):
         + "\n"
         + json.dumps({"file_name": "b.png", "text": "cap b"})
         + "\n",
-        encoding = "utf-8",
+        encoding="utf-8",
     )
-    (folder / "a.txt").write_text("edited a", encoding = "utf-8")
+    (folder / "a.txt").write_text("edited a", encoding="utf-8")
 
     r = client.get("/api/train/diffusion/info")
     assert r.status_code == 200, r.text
@@ -1348,7 +1348,7 @@ def test_diffusion_dataset_upload_accumulates(client, dataset_roots):
         ("files", ("b.JPG", b"jpg-bytes", "image/jpeg")),
         ("files", ("a.txt", b"a caption", "text/plain")),
     ]
-    r = client.post("/api/train/diffusion/dataset", data = {"name": "my style"}, files = files)
+    r = client.post("/api/train/diffusion/dataset", data={"name": "my style"}, files=files)
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["name"] == "my style"
@@ -1360,8 +1360,8 @@ def test_diffusion_dataset_upload_accumulates(client, dataset_roots):
     # A second batch into the same name accumulates (large sets arrive in chunks).
     r = client.post(
         "/api/train/diffusion/dataset",
-        data = {"name": "my style"},
-        files = [("files", ("c.webp", b"w", "image/webp"))],
+        data={"name": "my style"},
+        files=[("files", ("c.webp", b"w", "image/webp"))],
     )
     assert r.status_code == 200, r.text
     assert r.json()["uploaded"] == 1
@@ -1374,8 +1374,8 @@ def test_diffusion_dataset_upload_normalizes_windows_and_rejects_dotdot(client, 
     # it must be folded to the true basename, else the stored name is an orphan the grid can list but never preview.
     r = client.post(
         "/api/train/diffusion/dataset",
-        data = {"name": "winset"},
-        files = [("files", ("C:\\Users\\me\\pics\\cat.png", b"png-bytes", "image/png"))],
+        data={"name": "winset"},
+        files=[("files", ("C:\\Users\\me\\pics\\cat.png", b"png-bytes", "image/png"))],
     )
     assert r.status_code == 200, r.text
     assert (ds_root / "winset" / "cat.png").read_bytes() == b"png-bytes"
@@ -1387,8 +1387,8 @@ def test_diffusion_dataset_upload_normalizes_windows_and_rejects_dotdot(client, 
     # A basename that still contains ".." is refused at upload rather than persisted as an unmanageable entry.
     r = client.post(
         "/api/train/diffusion/dataset",
-        data = {"name": "winset"},
-        files = [("files", ("a..b.png", b"x", "image/png"))],
+        data={"name": "winset"},
+        files=[("files", ("a..b.png", b"x", "image/png"))],
     )
     assert r.status_code == 400 and "Unsupported file" in r.json()["detail"]
 
@@ -1397,8 +1397,8 @@ def test_diffusion_dataset_upload_rejects_case_insensitive_stem_clash(client, da
     # Two images whose stems differ only by case map to the SAME sidecar on case-insensitive filesystems, so the clash check compares casefolded stems on any host.
     r = client.post(
         "/api/train/diffusion/dataset",
-        data = {"name": "caseset"},
-        files = [
+        data={"name": "caseset"},
+        files=[
             ("files", ("sample.png", b"p", "image/png")),
             ("files", ("Sample.jpg", b"j", "image/jpeg")),
         ],
@@ -1408,22 +1408,22 @@ def test_diffusion_dataset_upload_rejects_case_insensitive_stem_clash(client, da
     # The same clash across batches (the new image collides with one already on disk).
     r = client.post(
         "/api/train/diffusion/dataset",
-        data = {"name": "caseset2"},
-        files = [("files", ("photo.png", b"p", "image/png"))],
+        data={"name": "caseset2"},
+        files=[("files", ("photo.png", b"p", "image/png"))],
     )
     assert r.status_code == 200, r.text
     r = client.post(
         "/api/train/diffusion/dataset",
-        data = {"name": "caseset2"},
-        files = [("files", ("PHOTO.webp", b"w", "image/webp"))],
+        data={"name": "caseset2"},
+        files=[("files", ("PHOTO.webp", b"w", "image/webp"))],
     )
     assert r.status_code == 400 and "Duplicate image name" in r.json()["detail"]
 
     # A same-name case variant with the SAME extension is an overwrite, not a caption clash, so it is still allowed.
     r = client.post(
         "/api/train/diffusion/dataset",
-        data = {"name": "caseset3"},
-        files = [
+        data={"name": "caseset3"},
+        files=[
             ("files", ("pic.png", b"a", "image/png")),
             ("files", ("Pic.png", b"b", "image/png")),
         ],
@@ -1447,8 +1447,8 @@ def test_diffusion_dataset_upload_over_cap_keeps_existing_example(
 
     r = client.post(
         "/api/train/diffusion/dataset",
-        data = {"name": "my style"},
-        files = [("files", ("cat.png", b"x" * 64, "image/png"))],
+        data={"name": "my style"},
+        files=[("files", ("cat.png", b"x" * 64, "image/png"))],
     )
     assert r.status_code == 413, r.text
     # The pre-existing example survives untouched, and no temp file is left behind.
@@ -1469,12 +1469,12 @@ def test_diffusion_info_empty_sidecar_shadows_metadata_caption(client, dataset_r
         + "\n"
         + json.dumps({"file_name": "c.png", "text": "cap c"})
         + "\n",
-        encoding = "utf-8",
+        encoding="utf-8",
     )
     # a.png: metadata caption but an empty sidecar tombstone -> uncaptioned.
-    (folder / "a.txt").write_text("   ", encoding = "utf-8")
+    (folder / "a.txt").write_text("   ", encoding="utf-8")
     # b.png: real sidecar caption. c.png: metadata only. Both captioned.
-    (folder / "b.txt").write_text("cap b", encoding = "utf-8")
+    (folder / "b.txt").write_text("cap b", encoding="utf-8")
 
     r = client.get("/api/train/diffusion/info")
     assert r.status_code == 200, r.text
@@ -1490,7 +1490,7 @@ def _png_bytes(width: int, height: int) -> bytes:
     from PIL import Image
 
     buf = io.BytesIO()
-    Image.new("RGB", (width, height), (1, 2, 3)).save(buf, format = "PNG")
+    Image.new("RGB", (width, height), (1, 2, 3)).save(buf, format="PNG")
     return buf.getvalue()
 
 
@@ -1500,8 +1500,8 @@ def test_diffusion_dataset_upload_rejects_oversized_image(client, dataset_roots)
     big = _png_bytes(5000, 64)  # > 4096 per side
     r = client.post(
         "/api/train/diffusion/dataset",
-        data = {"name": "bomb"},
-        files = [("files", ("huge.png", big, "image/png"))],
+        data={"name": "bomb"},
+        files=[("files", ("huge.png", big, "image/png"))],
     )
     assert r.status_code == 400, r.text
     assert "too large" in r.json()["detail"]
@@ -1509,8 +1509,8 @@ def test_diffusion_dataset_upload_rejects_oversized_image(client, dataset_roots)
     ok = _png_bytes(64, 64)
     r2 = client.post(
         "/api/train/diffusion/dataset",
-        data = {"name": "bomb"},
-        files = [("files", ("ok.png", ok, "image/png"))],
+        data={"name": "bomb"},
+        files=[("files", ("ok.png", ok, "image/png"))],
     )
     assert r2.status_code == 200, r2.text
 
@@ -1524,8 +1524,8 @@ def test_diffusion_dataset_upload_maps_pillow_bomb_to_400(client, dataset_roots,
     monkeypatch.setattr(Image, "MAX_IMAGE_PIXELS", 8)  # 8x8 = 64 pixels > 2 x 8
     r = client.post(
         "/api/train/diffusion/dataset",
-        data = {"name": "bomb-hard"},
-        files = [("files", ("huge.png", _png_bytes(8, 8), "image/png"))],
+        data={"name": "bomb-hard"},
+        files=[("files", ("huge.png", _png_bytes(8, 8), "image/png"))],
     )
     assert r.status_code == 400, r.text
     assert "too large" in r.json()["detail"]
@@ -1564,7 +1564,7 @@ def test_diffusion_info_skips_null_metadata_captions(client, dataset_roots):
         + "\n"
         + json.dumps({"file_name": "b.png", "text": "cap b"})
         + "\n",
-        encoding = "utf-8",
+        encoding="utf-8",
     )
     r = client.get("/api/train/diffusion/info")
     assert r.status_code == 200, r.text
@@ -1614,15 +1614,15 @@ def test_diffusion_dataset_mutations_blocked_while_training_active(client, datas
     # Upload, caption, delete, and example-import must all 409 while a run is active.
     up = client.post(
         "/api/train/diffusion/dataset",
-        data = {"name": "locked"},
-        files = [("files", ("b.png", b"x", "image/png"))],
+        data={"name": "locked"},
+        files=[("files", ("b.png", b"x", "image/png"))],
     )
     assert up.status_code == 409, up.text
-    cap = client.put("/api/train/diffusion/dataset/locked/caption/a.png", json = {"caption": "hi"})
+    cap = client.put("/api/train/diffusion/dataset/locked/caption/a.png", json={"caption": "hi"})
     assert cap.status_code == 409, cap.text
     dele = client.delete("/api/train/diffusion/dataset/locked/image/a.png")
     assert dele.status_code == 409, dele.text
-    imp = client.post("/api/train/diffusion/dataset/import-example", json = {"id": "anything"})
+    imp = client.post("/api/train/diffusion/dataset/import-example", json={"id": "anything"})
     assert imp.status_code == 409, imp.text
 
 
@@ -1647,8 +1647,8 @@ def test_diffusion_dataset_upload_rejects_traversal_names(client, dataset_roots)
     for bad in ("../evil", "a/b", ".hidden", " "):
         r = client.post(
             "/api/train/diffusion/dataset",
-            data = {"name": bad},
-            files = [("files", ("a.png", b"x", "image/png"))],
+            data={"name": bad},
+            files=[("files", ("a.png", b"x", "image/png"))],
         )
         assert r.status_code == 400, f"{bad!r}: {r.status_code}"
 
@@ -1656,8 +1656,8 @@ def test_diffusion_dataset_upload_rejects_traversal_names(client, dataset_roots)
 def test_diffusion_dataset_upload_rejects_unsupported_files(client, dataset_roots):
     r = client.post(
         "/api/train/diffusion/dataset",
-        data = {"name": "ok-name"},
-        files = [("files", ("weights.exe", b"mz", "application/octet-stream"))],
+        data={"name": "ok-name"},
+        files=[("files", ("weights.exe", b"mz", "application/octet-stream"))],
     )
     assert r.status_code == 400
     assert "Unsupported file" in r.json()["detail"]
@@ -1731,7 +1731,7 @@ def test_import_example_partial_failure_leaves_no_partial_dataset(
         raise RuntimeError("transient copy error")
 
     monkeypatch.setattr(tr, "_materialize_hf_dataset", _boom)
-    r = client.post("/api/train/diffusion/dataset/import-example", json = {"id": "dreambooth-dog"})
+    r = client.post("/api/train/diffusion/dataset/import-example", json={"id": "dreambooth-dog"})
     assert r.status_code == 502
     folder = ds_root / "dreambooth-dog"
     assert not folder.exists() or not any(folder.iterdir())
@@ -1751,7 +1751,7 @@ def test_diffusion_dataset_upload_over_cap_rolls_back_whole_batch(
         ("files", ("small.png", b"x" * 50, "image/png")),
         ("files", ("big.png", b"y" * 200, "image/png")),
     ]
-    r = client.post("/api/train/diffusion/dataset", data = {"name": "rollback"}, files = files)
+    r = client.post("/api/train/diffusion/dataset", data={"name": "rollback"}, files=files)
     assert r.status_code == 413, r.text
     folder = ds_root / "rollback"
     assert not (folder / "small.png").exists()  # the earlier valid file was rolled back
@@ -1767,13 +1767,13 @@ def test_diffusion_dataset_upload_over_cap_preserves_existing_file(
     monkeypatch.setattr(ul, "get_upload_limit_bytes", lambda: 100)
     ds_root, _ = dataset_roots
     folder = ds_root / "keep"
-    folder.mkdir(parents = True)
+    folder.mkdir(parents=True)
     (folder / "existing.png").write_bytes(b"ORIGINAL")  # from an earlier upload
     files = [
         ("files", ("existing.png", b"NEW", "image/png")),  # re-upload, small
         ("files", ("big.png", b"y" * 200, "image/png")),  # trips the cap
     ]
-    r = client.post("/api/train/diffusion/dataset", data = {"name": "keep"}, files = files)
+    r = client.post("/api/train/diffusion/dataset", data={"name": "keep"}, files=files)
     assert r.status_code == 413, r.text
     assert (folder / "existing.png").read_bytes() == b"ORIGINAL"  # untouched
     assert not (folder / "big.png").exists()
@@ -1787,7 +1787,7 @@ def test_route_start_refuses_non_sdxl_base_without_freeing_gpu(client, monkeypat
     freed = []
     monkeypatch.setattr(tr, "_free_gpu_for_diffusion_training", lambda: freed.append(1))
     r = client.post(
-        "/api/train/diffusion/start", json = {**_BODY, "base_model": "unsloth/FLUX.1-dev-GGUF"}
+        "/api/train/diffusion/start", json={**_BODY, "base_model": "unsloth/FLUX.1-dev-GGUF"}
     )
     assert r.status_code == 400
     assert "SDXL" in r.json()["detail"]
@@ -1842,7 +1842,7 @@ def test_route_start_refuses_a_family_the_install_has_no_pipeline_for(
     # 0.35.2: the last release before any of these four classes existed.
     monkeypatch.setitem(sys.modules, "diffusers", _fake_diffusers("0.35.2"))
 
-    r = client.post("/api/train/diffusion/start", json = {**_BODY, "base_model": base_model})
+    r = client.post("/api/train/diffusion/start", json={**_BODY, "base_model": base_model})
     assert r.status_code == 400, r.text
     detail = r.json()["detail"]
     assert pipeline_class in detail  # names the class that is missing
@@ -1872,7 +1872,7 @@ def test_route_start_refuses_a_too_new_pipeline_on_the_newest_py39_diffusers(
         _fake_diffusers("0.36.0", "ZImagePipeline", "Flux2Pipeline", "StableDiffusionXLPipeline"),
     )
 
-    r = client.post("/api/train/diffusion/start", json = {**_BODY, "base_model": base_model})
+    r = client.post("/api/train/diffusion/start", json={**_BODY, "base_model": base_model})
     assert r.status_code == 400, r.text
     assert pipeline_class in r.json()["detail"]
     assert freed == []
@@ -1893,7 +1893,7 @@ def test_route_start_refuses_a_missing_pipeline_named_by_model_family_too(client
 
     r = client.post(
         "/api/train/diffusion/start",
-        json = {**_BODY, "base_model": "my-org/some-private-mirror", "model_family": "krea-2"},
+        json={**_BODY, "base_model": "my-org/some-private-mirror", "model_family": "krea-2"},
     )
     assert r.status_code == 400, r.text
     assert "Krea2Pipeline" in r.json()["detail"]
@@ -1910,10 +1910,10 @@ def test_route_start_still_runs_when_the_install_does_have_the_pipeline(
     import sys
     import urllib.request
 
-    monkeypatch.setattr("utils.utils.auth_safe_open", lambda req, timeout = None: object())
+    monkeypatch.setattr("utils.utils.auth_safe_open", lambda req, timeout=None: object())
     monkeypatch.setitem(sys.modules, "diffusers", _fake_diffusers("0.39.0", "Krea2Pipeline"))
 
-    r = client.post("/api/train/diffusion/start", json = {**_BODY, "base_model": "krea/Krea-2-Raw"})
+    r = client.post("/api/train/diffusion/start", json={**_BODY, "base_model": "krea/Krea-2-Raw"})
     assert r.status_code == 200, r.text
     assert client._fake.started_with["base_model"] == "krea/Krea-2-Raw"
 
@@ -1944,7 +1944,7 @@ def test_route_start_refuses_a_diffusers_whose_lazy_submodule_cannot_import(
     monkeypatch.setattr(tr, "_free_gpu_for_diffusion_training", lambda: freed.append(1))
     monkeypatch.setitem(sys.modules, "diffusers", _LazyModule("diffusers"))
 
-    r = client.post("/api/train/diffusion/start", json = {**_BODY, "base_model": "krea/Krea-2-Raw"})
+    r = client.post("/api/train/diffusion/start", json={**_BODY, "base_model": "krea/Krea-2-Raw"})
     assert r.status_code == 400, r.text
     detail = r.json()["detail"]
     assert "Krea2Pipeline" in detail
@@ -1973,10 +1973,10 @@ def test_route_start_refuses_training_when_diffusers_is_absent(client, monkeypat
 
     freed = []
     monkeypatch.setattr(tr, "_free_gpu_for_diffusion_training", lambda: freed.append(1))
-    monkeypatch.delitem(sys.modules, "diffusers", raising = False)
+    monkeypatch.delitem(sys.modules, "diffusers", raising=False)
     monkeypatch.setattr(builtins, "__import__", _no_diffusers)
 
-    r = client.post("/api/train/diffusion/start", json = {**_BODY, "base_model": "krea/Krea-2-Raw"})
+    r = client.post("/api/train/diffusion/start", json={**_BODY, "base_model": "krea/Krea-2-Raw"})
     assert r.status_code == 400, r.text
     assert "No module named 'diffusers'" in r.json()["detail"]
     assert freed == []
@@ -2077,7 +2077,7 @@ def test_a_dummy_pipeline_export_is_not_treated_as_importable():
         # The default is unchanged: inference has always left an unusable install to the loader.
         assert assert_pipeline_class_available("Krea2Pipeline", "krea-2") is None
         with pytest.raises(ValueError) as excinfo:
-            assert_pipeline_class_available("Krea2Pipeline", "krea-2", strict = True)
+            assert_pipeline_class_available("Krea2Pipeline", "krea-2", strict=True)
     finally:
         if real is not None:
             sys.modules["diffusers"] = real
@@ -2106,7 +2106,7 @@ def test_route_start_refuses_ltx2_without_the_pipeline_before_freeing_gpu(client
     monkeypatch.setattr(tr, "_free_gpu_for_diffusion_training", lambda: freed.append(1))
     monkeypatch.setitem(sys.modules, "diffusers", _fake_diffusers("0.36.0"))
 
-    r = client.post("/api/train/diffusion/start", json = {**_BODY, "base_model": "Lightricks/LTX-2"})
+    r = client.post("/api/train/diffusion/start", json={**_BODY, "base_model": "Lightricks/LTX-2"})
     assert r.status_code == 400, r.text
     assert "LTX2Pipeline" in r.json()["detail"]
     assert freed == []
@@ -2125,7 +2125,7 @@ def test_route_start_refuses_a_component_repo_before_freeing_gpu(client, monkeyp
     freed = []
     monkeypatch.setattr(tr, "_free_gpu_for_diffusion_training", lambda: freed.append(1))
 
-    r = client.post("/api/train/diffusion/start", json = {**_BODY, "base_model": "unsloth/LTX-2-FP8"})
+    r = client.post("/api/train/diffusion/start", json={**_BODY, "base_model": "unsloth/LTX-2-FP8"})
     assert r.status_code == 400, r.text
     detail = r.json()["detail"]
     assert "model_index.json" in detail  # says why it cannot be a base
@@ -2151,7 +2151,7 @@ def test_route_start_refuses_non_bf16_gpu_without_freeing_gpu(client, monkeypatc
     )
     r = client.post(
         "/api/train/diffusion/start",
-        json = {**_BODY, "base_model": "black-forest-labs/FLUX.1-dev"},
+        json={**_BODY, "base_model": "black-forest-labs/FLUX.1-dev"},
     )
     assert r.status_code == 400
     assert "bfloat16" in r.json()["detail"]
@@ -2159,13 +2159,13 @@ def test_route_start_refuses_non_bf16_gpu_without_freeing_gpu(client, monkeypatc
     assert client._fake.started_with is None
 
     # SDXL (its own mixed_precision path) is exempt: the same probe returns None, so an SDXL start proceeds.
-    r2 = client.post("/api/train/diffusion/start", json = _BODY)
+    r2 = client.post("/api/train/diffusion/start", json=_BODY)
     assert r2.status_code == 200, r2.text
 
 
 # ── metric history + perf/family fields (PR A platform) ──────────────────────
 def test_apply_event_records_metric_history_and_perf():
-    svc = DiffusionTrainingService(ctx = _FakeCtx(), target = _happy_target)
+    svc = DiffusionTrainingService(ctx=_FakeCtx(), target=_happy_target)
     svc._apply_event(
         {
             "type": "progress",
@@ -2189,7 +2189,7 @@ def test_apply_event_records_metric_history_and_perf():
 
 
 def test_apply_event_metric_history_skips_bad_points():
-    svc = DiffusionTrainingService(ctx = _FakeCtx(), target = _happy_target)
+    svc = DiffusionTrainingService(ctx=_FakeCtx(), target=_happy_target)
     # step 0 (warmup / no real step), a None loss, and a NaN loss must all be skipped.
     svc._apply_event({"type": "progress", "step": 0, "loss": 0.9, "learning_rate": 1e-4})
     svc._apply_event({"type": "progress", "step": 1, "loss": None, "learning_rate": 1e-4})
@@ -2204,7 +2204,7 @@ def test_apply_event_metric_history_skips_bad_points():
 def test_metric_history_decimates_at_cap():
     from core.training import diffusion_training_service as svc_mod
 
-    svc = DiffusionTrainingService(ctx = _FakeCtx(), target = _happy_target)
+    svc = DiffusionTrainingService(ctx=_FakeCtx(), target=_happy_target)
     svc._apply_event({"type": "model_load_started"})  # initialise running state
     n = svc_mod._METRIC_CAP + 50
     for i in range(1, n + 1):
@@ -2219,7 +2219,7 @@ def test_metric_history_decimates_at_cap():
 
 
 def test_complete_event_records_family_and_catalog():
-    svc = DiffusionTrainingService(ctx = _FakeCtx(), target = _happy_target)
+    svc = DiffusionTrainingService(ctx=_FakeCtx(), target=_happy_target)
     svc._apply_event(
         {
             "type": "complete",
@@ -2277,13 +2277,13 @@ def test_start_gated_base_without_access_is_400_and_keeps_gpu(client, monkeypatc
     freed: list[int] = []
     monkeypatch.setattr(tr, "_free_gpu_for_diffusion_training", lambda: freed.append(1))
 
-    def _fake_urlopen(req, timeout = None):
+    def _fake_urlopen(req, timeout=None):
         raise urllib.error.HTTPError(req.full_url, 403, "Forbidden", {}, None)
 
     monkeypatch.setattr("utils.utils.auth_safe_open", _fake_urlopen)
     r = client.post(
         "/api/train/diffusion/start",
-        json = {**_BODY, "base_model": "black-forest-labs/FLUX.1-dev"},
+        json={**_BODY, "base_model": "black-forest-labs/FLUX.1-dev"},
     )
     assert r.status_code == 400
     assert "gated" in r.json()["detail"].lower()
@@ -2305,7 +2305,7 @@ def test_route_start_refuses_a_dit_family_without_a_gpu_before_freeing(client, m
 
     r = client.post(
         "/api/train/diffusion/start",
-        json = {**_BODY, "base_model": "black-forest-labs/FLUX.1-dev"},
+        json={**_BODY, "base_model": "black-forest-labs/FLUX.1-dev"},
     )
     assert r.status_code == 400
     assert "GPU" in r.json()["detail"]
@@ -2313,7 +2313,7 @@ def test_route_start_refuses_a_dit_family_without_a_gpu_before_freeing(client, m
     assert client._fake.started_with is None
 
     # SDXL trains fp32 on CPU (its documented fallback), so it is not gated.
-    r2 = client.post("/api/train/diffusion/start", json = _BODY)
+    r2 = client.post("/api/train/diffusion/start", json=_BODY)
     assert r2.status_code == 200, r2.text
 
 
@@ -2329,10 +2329,10 @@ def test_start_ungated_base_preflight_is_noop(client, monkeypatch):
         "core.training.diffusion_train_common.training_precision_preflight_error",
         lambda fam, prec: None,
     )
-    monkeypatch.setattr("utils.utils.auth_safe_open", lambda req, timeout = None: object())
+    monkeypatch.setattr("utils.utils.auth_safe_open", lambda req, timeout=None: object())
     r = client.post(
         "/api/train/diffusion/start",
-        json = {**_BODY, "base_model": "black-forest-labs/FLUX.1-dev"},
+        json={**_BODY, "base_model": "black-forest-labs/FLUX.1-dev"},
     )
     assert r.status_code == 200, r.text
     assert client._fake.started_with["base_model"] == "black-forest-labs/FLUX.1-dev"
@@ -2341,7 +2341,7 @@ def test_start_ungated_base_preflight_is_noop(client, monkeypatch):
 # ── persisted run history ──────────────────────────────────────────────────────
 def test_run_record_persisted_on_complete(_isolated_runs_dir):
     # A completed run writes one JSON record: summary + scrubbed config + metric logs.
-    svc = DiffusionTrainingService(ctx = _FakeCtx(), target = _happy_target)
+    svc = DiffusionTrainingService(ctx=_FakeCtx(), target=_happy_target)
     job_id = svc.start({**_CFG, "model_family": "z-image", "hf_token": "SECRET"})
     _wait_status(svc, "completed")
     rec = _wait_record(_isolated_runs_dir, job_id)
@@ -2363,15 +2363,15 @@ def test_run_record_no_save_stop_marks_unsaved(_isolated_runs_dir):
     # A cancel (stop without save) persists too, flagged as not saved.
     def _cancel_target(*, event_queue, stop_queue, config):
         event_queue.put({"type": "model_load_completed"})
-        stop_queue.get(timeout = 5.0)
+        stop_queue.get(timeout=5.0)
         event_queue.put(
             {"type": "complete", "output_dir": None, "lora_path": None, "stopped": True}
         )
 
-    svc = DiffusionTrainingService(ctx = _FakeCtx(), target = _cancel_target)
+    svc = DiffusionTrainingService(ctx=_FakeCtx(), target=_cancel_target)
     job_id = svc.start(dict(_CFG))
     _wait_status(svc, "running")
-    svc.stop(save = False)
+    svc.stop(save=False)
     _wait_status(svc, "stopped")
     rec = _wait_record(_isolated_runs_dir, job_id)
     assert rec["status"] == "stopped"
@@ -2490,11 +2490,11 @@ def test_request_model_rejects_non_finite_learning_rate():
 
     from models.training import DiffusionTrainingStartRequest as R
 
-    base = dict(base_model = "b", data_dir = "d", output_dir = "o")
-    assert R(**base, learning_rate = 1e-4).learning_rate == 1e-4
+    base = dict(base_model="b", data_dir="d", output_dir="o")
+    assert R(**base, learning_rate=1e-4).learning_rate == 1e-4
     for bad in (float("inf"), 1e309, float("nan"), 1.0, 5.0, 0.0):
         with pytest.raises(ValidationError):
-            R(**base, learning_rate = bad)
+            R(**base, learning_rate=bad)
 
 
 def test_request_model_rejects_non_finite_clipping_and_snr():
@@ -2504,17 +2504,17 @@ def test_request_model_rejects_non_finite_clipping_and_snr():
 
     from models.training import DiffusionTrainingStartRequest as R
 
-    base = dict(base_model = "b", data_dir = "d", output_dir = "o")
+    base = dict(base_model="b", data_dir="d", output_dir="o")
     # The legitimate range is untouched, including the documented disables.
-    assert R(**base, max_grad_norm = 0.0).max_grad_norm == 0.0
-    assert R(**base, max_grad_norm = 1.0).max_grad_norm == 1.0
-    assert R(**base, snr_gamma = 5.0).snr_gamma == 5.0
-    assert R(**base, snr_gamma = None).snr_gamma is None
+    assert R(**base, max_grad_norm=0.0).max_grad_norm == 0.0
+    assert R(**base, max_grad_norm=1.0).max_grad_norm == 1.0
+    assert R(**base, snr_gamma=5.0).snr_gamma == 5.0
+    assert R(**base, snr_gamma=None).snr_gamma is None
     for bad in (float("inf"), float("-inf"), 1e309, float("nan")):
         with pytest.raises(ValidationError):
-            R(**base, max_grad_norm = bad)
+            R(**base, max_grad_norm=bad)
         with pytest.raises(ValidationError):
-            R(**base, snr_gamma = bad)
+            R(**base, snr_gamma=bad)
 
 
 def test_start_route_never_starts_a_run_with_a_non_finite_knob(client):
@@ -2522,18 +2522,18 @@ def test_start_route_never_starts_a_run_with_a_non_finite_knob(client):
     # under any parser, so the schema is the only guard. Asserted on the outcome, since the 422 handler cannot serialise inf back.
     from fastapi.testclient import TestClient
 
-    strict = TestClient(client._app, raise_server_exceptions = False)
+    strict = TestClient(client._app, raise_server_exceptions=False)
     for raw in ('"max_grad_norm": 1e309', '"max_grad_norm": Infinity', '"snr_gamma": 1e309'):
         body = json.dumps(_BODY)[:-1] + ", " + raw + "}"
         r = strict.post(
             "/api/train/diffusion/start",
-            content = body,
-            headers = {"content-type": "application/json"},
+            content=body,
+            headers={"content-type": "application/json"},
         )
         assert r.status_code >= 400, (raw, r.text)
         assert client._fake.started_with is None, raw
     # Positive control, so the assertions above cannot pass vacuously.
-    assert strict.post("/api/train/diffusion/start", json = _BODY).status_code == 200
+    assert strict.post("/api/train/diffusion/start", json=_BODY).status_code == 200
     assert client._fake.started_with is not None
 
 
@@ -2588,15 +2588,15 @@ def test_diffusion_seed_is_bounded_to_torch_range():
         "output_dir": "/tmp/out",
         "seed": 2**64,
     }
-    with pytest.raises(ValueError, match = "seed"):
+    with pytest.raises(ValueError, match="seed"):
         _config_from_dict(base).normalized()
     request = {k: v for k, v in base.items() if k != "seed"}
     for bad in (2**64, -(2**63) - 1):
         with pytest.raises(ValidationError):
-            DiffusionTrainingStartRequest(**request, seed = bad)
+            DiffusionTrainingStartRequest(**request, seed=bad)
     # The extremes torch does accept stay valid.
     for good in (2**64 - 1, -(2**63)):
-        assert DiffusionTrainingStartRequest(**request, seed = good).seed == good
+        assert DiffusionTrainingStartRequest(**request, seed=good).seed == good
 
 
 def test_gpu_load_admission_and_reserve_exclude_each_other():
@@ -2604,17 +2604,17 @@ def test_gpu_load_admission_and_reserve_exclude_each_other():
     # residents the load had not registered yet. The admission closes it from both sides, like the dataset interlock.
     from core.training.diffusion_training_service import TrainingActiveError
 
-    svc = DiffusionTrainingService(ctx = _FakeCtx(), target = _happy_target)
+    svc = DiffusionTrainingService(ctx=_FakeCtx(), target=_happy_target)
 
     # A start cannot reserve while a load is registering.
     with svc.gpu_load_admission():
-        with pytest.raises(RuntimeError, match = "loaded onto the GPU"):
+        with pytest.raises(RuntimeError, match="loaded onto the GPU"):
             svc.reserve()
     # ...and the admission is released afterwards, so the start goes through.
     svc.reserve()
     try:
         # A load cannot register while a start is reserved, and it says why.
-        with pytest.raises(TrainingActiveError, match = "Diffusion training is running"):
+        with pytest.raises(TrainingActiveError, match="Diffusion training is running"):
             with svc.gpu_load_admission():
                 pass
     finally:
@@ -2624,7 +2624,7 @@ def test_gpu_load_admission_and_reserve_exclude_each_other():
     with svc.gpu_load_admission():
         with svc.gpu_load_admission():
             pass
-        with pytest.raises(RuntimeError, match = "loaded onto the GPU"):
+        with pytest.raises(RuntimeError, match="loaded onto the GPU"):
             svc.reserve()
     svc.reserve()
     svc.unreserve()
@@ -2637,7 +2637,7 @@ def test_route_start_carries_and_contains_the_conditioning_cache_dir(client, dit
 
     r = client.post(
         "/api/train/diffusion/start",
-        json = {**_BODY, "model_family": "z-image", "cond_cache_dir": "cond-cache"},
+        json={**_BODY, "model_family": "z-image", "cond_cache_dir": "cond-cache"},
     )
     assert r.status_code == 200, r.text
     resolved = client._fake.started_with["cond_cache_dir"]
@@ -2645,10 +2645,10 @@ def test_route_start_carries_and_contains_the_conditioning_cache_dir(client, dit
     assert Path(resolved).name == "cond-cache"
 
     # Omitted or blank keeps the in-memory cache rather than resolving to the outputs root.
-    r = client.post("/api/train/diffusion/start", json = _BODY)
+    r = client.post("/api/train/diffusion/start", json=_BODY)
     assert r.status_code == 200, r.text
     assert client._fake.started_with["cond_cache_dir"] is None
-    r = client.post("/api/train/diffusion/start", json = {**_BODY, "cond_cache_dir": "   "})
+    r = client.post("/api/train/diffusion/start", json={**_BODY, "cond_cache_dir": "   "})
     assert r.status_code == 200, r.text
     assert client._fake.started_with["cond_cache_dir"] is None
 
@@ -2658,11 +2658,11 @@ def test_route_refuses_an_output_dir_that_is_the_outputs_root(client):
     from pathlib import Path
 
     for name in (".", "./", "./.", "outputs", "outputs/outputs", " . "):
-        r = client.post("/api/train/diffusion/start", json = {**_BODY, "output_dir": name})
+        r = client.post("/api/train/diffusion/start", json={**_BODY, "output_dir": name})
         assert r.status_code == 400, f"{name!r} -> {r.status_code} {r.text}"
         assert "not a run inside it" in r.json()["detail"]
     # A real name still works.
-    r = client.post("/api/train/diffusion/start", json = {**_BODY, "output_dir": "outputs/run-1"})
+    r = client.post("/api/train/diffusion/start", json={**_BODY, "output_dir": "outputs/run-1"})
     assert r.status_code == 200, r.text
     assert Path(client._fake.started_with["output_dir"]).name == "run-1"
 
@@ -2672,7 +2672,7 @@ def test_route_treats_a_root_cond_cache_dir_as_the_in_memory_cache(client, dit_t
     for name in (".", "./.", "outputs", " . "):
         r = client.post(
             "/api/train/diffusion/start",
-            json = {**_BODY, "model_family": "z-image", "cond_cache_dir": name},
+            json={**_BODY, "model_family": "z-image", "cond_cache_dir": name},
         )
         assert r.status_code == 200, r.text
         assert client._fake.started_with["cond_cache_dir"] is None, name
@@ -2682,7 +2682,7 @@ def test_route_rejects_cond_cache_dir_for_sdxl(client, dit_train_host):
     # Only the DiT trainer reads cond_cache_dir; the SDXL trainer never touches the persistent store, so refuse the option rather than ignore it.
     r = client.post(
         "/api/train/diffusion/start",
-        json = {**_BODY, "model_family": "sdxl", "cond_cache_dir": "cond-cache"},
+        json={**_BODY, "model_family": "sdxl", "cond_cache_dir": "cond-cache"},
     )
     assert r.status_code == 400, r.text
     detail = r.json()["detail"]
@@ -2693,7 +2693,7 @@ def test_route_rejects_cond_cache_dir_for_sdxl(client, dit_train_host):
     # The check is on the RESOLVED family, so omitting model_family and letting an SDXL base be detected is refused too.
     r = client.post(
         "/api/train/diffusion/start",
-        json = {**_BODY, "cond_cache_dir": "cond-cache"},
+        json={**_BODY, "cond_cache_dir": "cond-cache"},
     )
     assert r.status_code == 400, r.text
     assert "cond_cache_dir" in r.json()["detail"]
@@ -2701,14 +2701,14 @@ def test_route_rejects_cond_cache_dir_for_sdxl(client, dit_train_host):
     # A DiT family still accepts it, resolved and contained like output_dir.
     r = client.post(
         "/api/train/diffusion/start",
-        json = {**_BODY, "model_family": "z-image", "cond_cache_dir": "cond-cache"},
+        json={**_BODY, "model_family": "z-image", "cond_cache_dir": "cond-cache"},
     )
     assert r.status_code == 200, r.text
     from pathlib import Path
 
     assert Path(client._fake.started_with["cond_cache_dir"]).is_absolute()
     # And omitting it stays off (the trainer's in-memory default), not resolved to the outputs root.
-    r = client.post("/api/train/diffusion/start", json = {**_BODY, "model_family": "sdxl"})
+    r = client.post("/api/train/diffusion/start", json={**_BODY, "model_family": "sdxl"})
     assert r.status_code == 200, r.text
     assert client._fake.started_with["cond_cache_dir"] is None
 
@@ -2722,7 +2722,7 @@ def test_service_reserve_refuses_while_the_llm_trainer_holds_the_gpu(monkeypatch
 
     svc = DiffusionTrainingService()
     monkeypatch.setattr(dts, "_llm_training_active", lambda: True)
-    with pytest.raises(RuntimeError, match = "LLM training job is already running"):
+    with pytest.raises(RuntimeError, match="LLM training job is already running"):
         svc.reserve()
     assert svc.is_active() is False  # the refused start left no claim behind
 
@@ -2751,7 +2751,7 @@ def test_llm_start_holds_the_diffusion_admission_across_its_spawn(monkeypatch):
         "core.training.diffusion_training_service.get_diffusion_training_service", lambda: svc
     )
     with tr._diffusion_gpu_admission():
-        with pytest.raises(RuntimeError, match = "being loaded onto the GPU"):
+        with pytest.raises(RuntimeError, match="being loaded onto the GPU"):
             svc.reserve()
     svc.reserve()  # released once the spawn is done
 

@@ -86,7 +86,7 @@ def _metric(metrics, *names):
     return None
 
 
-@pytest.mark.skipif(not has_real_accelerator(), reason = "fast_inference needs a CUDA GPU + vLLM")
+@pytest.mark.skipif(not has_real_accelerator(), reason="fast_inference needs a CUDA GPU + vLLM")
 def test_fast_inference():
     # Import here, not at module load: importing unsloth probes for an accelerator and errors on CPU-only machines, so
     # deferring keeps pytest collection and the skip path import-free. Unsloth must precede TRL.
@@ -96,47 +96,47 @@ def test_fast_inference():
 
     with header_footer_context("Load model (fast_inference=True)"):
         model, tokenizer = FastLanguageModel.from_pretrained(
-            model_name = MODEL_NAME,
-            max_seq_length = MAX_SEQ_LENGTH,
-            load_in_4bit = False,
-            fast_inference = True,
-            max_lora_rank = LORA_RANK,
-            gpu_memory_utilization = GPU_MEMORY_UTILIZATION,
-            enforce_eager = True,  # skip CUDA graph capture for fast startup
-            compilation_config = COMPILATION_CONFIG,
+            model_name=MODEL_NAME,
+            max_seq_length=MAX_SEQ_LENGTH,
+            load_in_4bit=False,
+            fast_inference=True,
+            max_lora_rank=LORA_RANK,
+            gpu_memory_utilization=GPU_MEMORY_UTILIZATION,
+            enforce_eager=True,  # skip CUDA graph capture for fast startup
+            compilation_config=COMPILATION_CONFIG,
         )
     assert hasattr(model, "vllm_engine"), "fast_inference=True did not attach a vLLM engine"
 
     model = FastLanguageModel.get_peft_model(
         model,
-        r = LORA_RANK,
-        target_modules = TARGET_MODULES,
-        lora_alpha = LORA_RANK,
-        use_gradient_checkpointing = False,
-        random_state = SEED,
+        r=LORA_RANK,
+        target_modules=TARGET_MODULES,
+        lora_alpha=LORA_RANK,
+        use_gradient_checkpointing=False,
+        random_state=SEED,
     )
 
     dataset = Dataset.from_dict({"prompt": PROMPTS})
 
     with header_footer_context("GRPO config and trainer"):
         training_args = GRPOConfig(
-            learning_rate = 5e-6,
-            per_device_train_batch_size = NUM_GENERATIONS,
-            gradient_accumulation_steps = 1,
-            num_generations = NUM_GENERATIONS,
-            max_prompt_length = MAX_PROMPT_LENGTH,
-            max_completion_length = MAX_COMPLETION_LENGTH,
-            max_steps = MAX_STEPS,
-            logging_steps = 1,
-            report_to = "none",
-            seed = SEED,
+            learning_rate=5e-6,
+            per_device_train_batch_size=NUM_GENERATIONS,
+            gradient_accumulation_steps=1,
+            num_generations=NUM_GENERATIONS,
+            max_prompt_length=MAX_PROMPT_LENGTH,
+            max_completion_length=MAX_COMPLETION_LENGTH,
+            max_steps=MAX_STEPS,
+            logging_steps=1,
+            report_to="none",
+            seed=SEED,
         )
         trainer = GRPOTrainer(
-            model = model,
-            processing_class = tokenizer,
-            reward_funcs = [length_reward_func],
-            args = training_args,
-            train_dataset = dataset,
+            model=model,
+            processing_class=tokenizer,
+            reward_funcs=[length_reward_func],
+            args=training_args,
+            train_dataset=dataset,
         )
     # The trainer must actually route rollouts through vLLM, otherwise it would
     # fall back to HF generation and never exercise WorkerLoRAManager.
@@ -159,7 +159,7 @@ def test_fast_inference():
     # model-specific values.
     max_reward = MAX_COMPLETION_LENGTH * MAX_CHARS_PER_TOKEN
 
-    for i, step in enumerate(steps, start = 1):
+    for i, step in enumerate(steps, start=1):
         loss = step["loss"]
         grad_norm = step.get("grad_norm")
         reward = step.get("reward")

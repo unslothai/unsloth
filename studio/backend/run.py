@@ -18,7 +18,7 @@ def _normalize_standard_streams():
         if getattr(sys, name, None) is not None:
             continue
         try:
-            stream = open(os.devnull, mode, encoding = "utf-8", errors = "replace")
+            stream = open(os.devnull, mode, encoding="utf-8", errors="replace")
         except Exception:
             # Normalizing must never itself be what kills startup.
             continue
@@ -178,9 +178,9 @@ def _resolve_external_ip() -> str:
     try:
         req = urllib.request.Request(
             "http://metadata.google.internal/computeMetadata/v1/instance/network-interfaces/0/access-configs/0/external-ip",
-            headers = {"Metadata-Flavor": "Google"},
+            headers={"Metadata-Flavor": "Google"},
         )
-        with urllib.request.urlopen(req, timeout = 1) as resp:
+        with urllib.request.urlopen(req, timeout=1) as resp:
             ip = resp.read().decode().strip()
             if ip:
                 return ip
@@ -190,7 +190,7 @@ def _resolve_external_ip() -> str:
     # 2. Public IP service. Third-party, so skippable; the LAN address below still works.
     if not public_check_disabled():
         try:
-            with urllib.request.urlopen("https://ifconfig.me", timeout = 3) as resp:
+            with urllib.request.urlopen("https://ifconfig.me", timeout=3) as resp:
                 ip = resp.read().decode().strip()
                 if ip:
                     return ip
@@ -264,8 +264,9 @@ def _local_port_open(
     timeout: float = 1.0,
 ) -> bool:
     import socket
+
     try:
-        with socket.create_connection((host, port), timeout = timeout):
+        with socket.create_connection((host, port), timeout=timeout):
             return True
     except OSError:
         return False
@@ -342,7 +343,7 @@ def _print_localhost_ipv6_mismatch_warning(local_url: str, port: int) -> None:
         f"{warn_c}  Warning: localhost resolves to IPv6 (::1), but Unsloth "
         f"Unsloth is listening on 127.0.0.1 only. Open {local_url} instead of "
         f"http://localhost:{port}.{reset}",
-        flush = True,
+        flush=True,
     )
 
 
@@ -383,7 +384,7 @@ def _verify_global_reachability(display_host: str, port: int) -> None:
                 f"{dim}  Note: {display_host} is a private/LAN address -- "
                 f"reachable on this network only, not from the public internet."
                 f"{reset}",
-                flush = True,
+                flush=True,
             )
             return
     except ValueError:
@@ -398,13 +399,13 @@ def _verify_global_reachability(display_host: str, port: int) -> None:
         qs = urllib.parse.urlencode({"host": f"{_url_host(display_host)}:{port}", "max_nodes": 3})
         req = urllib.request.Request(
             f"https://check-host.net/check-tcp?{qs}",
-            headers = {
+            headers={
                 "Accept": "application/json",
                 "User-Agent": "unsloth-studio-reachability/1",
             },
         )
-        with urllib.request.urlopen(req, timeout = 5) as resp:
-            init = json.loads(resp.read().decode("utf-8", errors = "replace"))
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            init = json.loads(resp.read().decode("utf-8", errors="replace"))
         req_id = init.get("request_id")
         if not req_id:
             return
@@ -413,7 +414,7 @@ def _verify_global_reachability(display_host: str, port: int) -> None:
         deadline = time.monotonic() + 15.0
         poll_req = urllib.request.Request(
             f"https://check-host.net/check-result/{req_id}",
-            headers = {
+            headers={
                 "Accept": "application/json",
                 "User-Agent": "unsloth-studio-reachability/1",
             },
@@ -421,8 +422,8 @@ def _verify_global_reachability(display_host: str, port: int) -> None:
         while time.monotonic() < deadline:
             time.sleep(1.5)
             try:
-                with urllib.request.urlopen(poll_req, timeout = 5) as resp:
-                    results = json.loads(resp.read().decode("utf-8", errors = "replace"))
+                with urllib.request.urlopen(poll_req, timeout=5) as resp:
+                    results = json.loads(resp.read().decode("utf-8", errors="replace"))
             except Exception:
                 continue
             if results and all(v is not None for v in results.values()):
@@ -448,52 +449,52 @@ def _verify_global_reachability(display_host: str, port: int) -> None:
                 err_nodes += 1
         total = ok_nodes + err_nodes
 
-        print("", flush = True)
+        print("", flush=True)
         if ok_nodes:
             _public_reachable = True
             print(
                 f"{ok_c}  Reachability check: {url}/ is reachable from the "
                 f"public internet ({ok_nodes}/{total} probe nodes connected).{reset}",
-                flush = True,
+                flush=True,
             )
         elif err_nodes:
             _public_reachable = False
             print(
                 f"{err_c}  Reachability check: {url}/ is NOT reachable from "
                 f"the public internet ({err_nodes}/{total} probe nodes failed).{reset}",
-                flush = True,
+                flush=True,
             )
             print(
                 f"{dim}    Usually a cloud firewall (AWS security group, "
                 f"GCP firewall / Azure NSG rule) or home router isn't "
                 f"allowing inbound TCP {port}.{reset}",
-                flush = True,
+                flush=True,
             )
             print(
                 f"{dim}    No firewall change needed -- SSH local-forward "
                 f"from your own computer:{reset}",
-                flush = True,
+                flush=True,
             )
             print(
                 f"{dim}        ssh -L {port}:localhost:{port} <user>@{display_host}{reset}",
-                flush = True,
+                flush=True,
             )
             print(
                 f"{dim}    then open http://localhost:{port}/ in your browser.{reset}",
-                flush = True,
+                flush=True,
             )
             local_url = _working_local_url(port)
             if local_url:
                 print(
                     f"{local_url_c}  You can access Unsloth Studio locally "
                     f"in the meantime: {local_url}{reset}",
-                    flush = True,
+                    flush=True,
                 )
         else:
             print(
                 f"{warn_c}  Reachability check: probe nodes did not respond "
                 f"in time -- could not verify {url}/.{reset}",
-                flush = True,
+                flush=True,
             )
     except urllib.error.URLError:
         pass
@@ -512,6 +513,7 @@ def _display_host_for_bind(host: str) -> str:
             return ipv4_display_host
     if 6 in wildcard_versions:
         from lan_access import detect_lan_addresses
+
         addresses = detect_lan_addresses(6)
         if addresses:
             return addresses[0]
@@ -581,7 +583,7 @@ def _tool_policy_notice(host: str, secure: bool, enable_tools: "Optional[bool]")
 
 
 def _emit_tool_policy_notice(host: str, secure: bool, enable_tools: "Optional[bool]") -> None:
-    print(_tool_policy_notice(host, secure, enable_tools), flush = True)
+    print(_tool_policy_notice(host, secure, enable_tools), flush=True)
 
 
 def _emit_secure_startup_output(port: int, enable_tools: "Optional[bool]" = None) -> None:
@@ -589,7 +591,7 @@ def _emit_secure_startup_output(port: int, enable_tools: "Optional[bool]" = None
     print("")
     print("🦥 Unsloth Studio is running (secure)")
     print("─" * 52)
-    _print_cloudflare_line(secure = True)
+    _print_cloudflare_line(secure=True)
     print(f"  On this machine only: http://127.0.0.1:{port}/")
     print("─" * 52)
     _emit_tool_policy_notice("127.0.0.1", True, enable_tools)
@@ -614,20 +616,20 @@ def _emit_startup_output(
     wildcard_bind = is_wildcard_host(host)
     localhost_mismatch_url = _localhost_ipv6_mismatch_url(host, port)
     print_studio_access_banner(
-        port = port,
-        bind_host = host,
-        display_host = display_host,
+        port=port,
+        bind_host=host,
+        display_host=display_host,
         # The "from another device on your network" line needs the LAN address,
         # not display_host's possibly-public one (#8868).
-        network_host = _network_share_host_for_bind(host),
-        include_stop_hint = False,
-        lan_addresses = lan_addresses,
+        network_host=_network_share_host_for_bind(host),
+        include_stop_hint=False,
+        lan_addresses=lan_addresses,
     )
     if localhost_mismatch_url:
         _print_localhost_ipv6_mismatch_warning(localhost_mismatch_url, port)
     elif wildcard_bind:
         _verify_global_reachability(display_host, port)
-        _print_cloudflare_line(loopback_host = _loopback_bind_host_for(host))
+        _print_cloudflare_line(loopback_host=_loopback_bind_host_for(host))
     _emit_tool_policy_notice(lan_addresses[0] if lan_addresses else host, False, enable_tools)
     print_studio_stop_hint()
 
@@ -742,7 +744,7 @@ def _get_pid_on_port(port: int) -> "tuple[int, str] | None":
     except ImportError:
         return None
     try:
-        for conn in psutil.net_connections(kind = "tcp"):
+        for conn in psutil.net_connections(kind="tcp"):
             if conn.status == "LISTEN" and conn.laddr.port == port:
                 if conn.pid is None:
                     return None
@@ -875,6 +877,7 @@ def _pid_file_for_port(port: int) -> Path:
 def _pid_alive(pid: int) -> bool:
     try:
         import psutil
+
         return psutil.pid_exists(pid)
     except ImportError:
         pass
@@ -882,14 +885,15 @@ def _pid_alive(pid: int) -> bool:
         # os.kill(pid, 0) raises OSError for every pid on Windows, so tasklist is
         # the only usable probe here.
         import subprocess
+
         try:
             out = subprocess.run(
                 ["tasklist", "/FI", f"PID eq {int(pid)}", "/NH", "/FO", "CSV"],
-                capture_output = True,
-                text = True,
-                encoding = "utf-8",
-                errors = "replace",
-                timeout = 10,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=10,
             ).stdout
         except Exception:
             # Unconfirmed means keep, matching the CLI's _pid_alive. Pruning a live server's record is what lets the
@@ -909,6 +913,7 @@ def _pid_alive(pid: int) -> bool:
 def _process_create_time(pid: int) -> "float | None":
     try:
         import psutil
+
         return psutil.Process(pid).create_time()
     except Exception:
         return None
@@ -916,7 +921,7 @@ def _process_create_time(pid: int) -> "float | None":
 
 def _read_pid_record(path: Path) -> "tuple[int, float | None, str | None] | None":
     try:
-        lines = path.read_text(encoding = "utf-8").splitlines()
+        lines = path.read_text(encoding="utf-8").splitlines()
     except (OSError, UnicodeDecodeError):
         return None
     if not lines or not lines[0].strip().isdigit():
@@ -969,7 +974,7 @@ def _own_studio_on_port(port: int, host: str) -> "int | None":
         if not _pid_alive(pid):
             # Pruning is a courtesy; an undeletable record must not abort startup.
             try:
-                path.unlink(missing_ok = True)
+                path.unlink(missing_ok=True)
             except OSError:
                 pass
             continue
@@ -1024,7 +1029,7 @@ def write_startup_marker() -> None:
     # A longer budget than a clear takes: publishing behind a holder that is mid-rmtree is the case worth
     # waiting out. Publishing anyway if the wait runs out is still right, because a marker that never appears
     # makes this backend invisible.
-    with compiled_cache_lock(timeout = 30.0) as lock_state:
+    with compiled_cache_lock(timeout=30.0) as lock_state:
         published_unlocked = lock_state == LOCK_BUSY
         if published_unlocked:
             logger.warning(
@@ -1034,10 +1039,10 @@ def write_startup_marker() -> None:
         directory = _studio_root()
         path = directory / f"studio-starting-{me}.marker"
         try:
-            directory.mkdir(parents = True, exist_ok = True)
+            directory.mkdir(parents=True, exist_ok=True)
             # Same layout as a per-port record, so _read_pid_record parses both.
             # An unknown start time is a blank line, read back as None.
-            path.write_text(body, encoding = "utf-8")
+            path.write_text(body, encoding="utf-8")
             # Not appended twice: the path is the same file every time (this PID names it), and a duplicate entry
             # would be popped and retried twice on the way out for no reason.
             if path not in _OWN_STARTUP_MARKERS:
@@ -1069,7 +1074,7 @@ def _wait_out_a_running_cache_clear(compiled_cache_lock, lock_busy) -> None:
     caller that immediately imports and compiles into a cache another backend is still deleting; taking the
     lock and dropping it again is the wait. The lock is an OS file lock, released when its holder exits, so
     a crashed backend cannot hold this here."""
-    with compiled_cache_lock(timeout = _CACHE_CLEAR_WAIT_SECONDS) as state:
+    with compiled_cache_lock(timeout=_CACHE_CLEAR_WAIT_SECONDS) as state:
         if state == lock_busy:
             logger.warning(
                 "Starting while another backend is still clearing the compiled cache: "
@@ -1098,7 +1103,7 @@ def _remove_startup_marker() -> None:
         path = _OWN_STARTUP_MARKERS.pop()
         for attempt in range(_MARKER_REMOVAL_ATTEMPTS):
             try:
-                path.unlink(missing_ok = True)
+                path.unlink(missing_ok=True)
                 break
             except OSError:
                 if attempt + 1 == _MARKER_REMOVAL_ATTEMPTS:
@@ -1217,15 +1222,15 @@ def _resolve_port(
         own = _own_studio_on_port(port, host)
         if own is not None:
             _abort_already_running(own, port)
-    return _find_free_port(host, port + 1, avoid_own_studio = avoid_own_studio)
+    return _find_free_port(host, port + 1, avoid_own_studio=avoid_own_studio)
 
 
 def _abort_already_running(pid: int, port: int) -> "NoReturn":
     print(
         f"Error: Unsloth Studio is already running on port {port} (PID {pid}). Run "
         "`unsloth studio stop` first, or start this one on a different --port.",
-        file = sys.stderr,
-        flush = True,
+        file=sys.stderr,
+        flush=True,
     )
     sys.exit(1)
 
@@ -1274,7 +1279,7 @@ def _write_pid_file(port: int, host: str = ""):
     global _OWN_PID_FILE
     path = _pid_file_for_port(port)
     try:
-        path.parent.mkdir(parents = True, exist_ok = True)
+        path.parent.mkdir(parents=True, exist_ok=True)
     except OSError:
         pass
     try:
@@ -1287,12 +1292,12 @@ def _write_pid_file(port: int, host: str = ""):
         # catches the truncate window sees a corrupt record and deletes it.
         tmp = path.with_name(path.name + ".tmp")
         try:
-            tmp.write_text(body, encoding = "utf-8")
+            tmp.write_text(body, encoding="utf-8")
             os.replace(tmp, path)
         finally:
             # A failed replace would otherwise leave the scratch file behind. It
             # does not end in .pid, so no glob picks it up either way.
-            tmp.unlink(missing_ok = True)
+            tmp.unlink(missing_ok=True)
     except OSError:
         pass
     else:
@@ -1304,7 +1309,7 @@ def _write_pid_file(port: int, host: str = ""):
         # else, so overwriting its entry is exactly what strands it.
         prior = _read_pid_record(_PID_FILE) if _PID_FILE.is_file() else None
         if prior is None or prior[0] == os.getpid() or not _pid_alive(prior[0]):
-            _PID_FILE.write_text(str(os.getpid()), encoding = "utf-8")
+            _PID_FILE.write_text(str(os.getpid()), encoding="utf-8")
     except OSError:
         pass
 
@@ -1340,7 +1345,7 @@ def _remove_pid_file():
         try:
             record = _read_pid_record(_OWN_PID_FILE) if _OWN_PID_FILE.is_file() else None
             if record is not None and record[0] == os.getpid():
-                _OWN_PID_FILE.unlink(missing_ok = True)
+                _OWN_PID_FILE.unlink(missing_ok=True)
         except OSError:
             pass
     try:
@@ -1350,9 +1355,9 @@ def _remove_pid_file():
             # dropping it while another server is still up leaves that server unstoppable.
             heir = _legacy_heir()
             if heir is None:
-                _PID_FILE.unlink(missing_ok = True)
+                _PID_FILE.unlink(missing_ok=True)
             else:
-                _PID_FILE.write_text(str(heir), encoding = "utf-8")
+                _PID_FILE.write_text(str(heir), encoding="utf-8")
     except OSError:
         pass
 
@@ -1395,17 +1400,17 @@ def _install_windows_console_handler(shutdown) -> bool:
         def _on_console_event(event: int) -> bool:
             if _console_event_is_shutdown(event):
                 worker = threading.Thread(
-                    target = _run_console_shutdown, args = (shutdown,), daemon = True
+                    target=_run_console_shutdown, args=(shutdown,), daemon=True
                 )
                 worker.start()
-                worker.join(timeout = _CONSOLE_SHUTDOWN_BUDGET)
+                worker.join(timeout=_CONSOLE_SHUTDOWN_BUDGET)
                 return True
             # Ctrl+C / Ctrl+Break already arrive as Python signals; pass them
             # on rather than shutting down twice.
             return False
 
         callback = HANDLER(_on_console_event)
-        kernel32 = ctypes.WinDLL("kernel32", use_last_error = True)
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
         kernel32.SetConsoleCtrlHandler.argtypes = [HANDLER, wintypes.BOOL]
         kernel32.SetConsoleCtrlHandler.restype = wintypes.BOOL
         if not kernel32.SetConsoleCtrlHandler(callback, True):
@@ -1424,7 +1429,7 @@ def _install_windows_console_handler(shutdown) -> bool:
         return False
 
 
-def _graceful_shutdown(server = None):
+def _graceful_shutdown(server=None):
     """Shut down all subprocess backends and the uvicorn server. Called from signal handlers to clean up
     children before exit; critical on Windows where atexit handlers are unreliable after Ctrl+C."""
     logger.info("Graceful shutdown initiated -- cleaning up subprocesses...")
@@ -1436,6 +1441,7 @@ def _graceful_shutdown(server = None):
     # every spawn, covers the gaps between the steps.
     try:
         from utils.process_lifetime import mark_process_shutting_down
+
         mark_process_shutting_down()
     except Exception as e:
         logger.warning("Could not latch the process shutdown flag: %s", e)
@@ -1443,12 +1449,14 @@ def _graceful_shutdown(server = None):
     # 0. Drop the LAN listener first: it shares the loop uvicorn is about to stop.
     try:
         from lan_access import close_lan_listener_lifecycle
+
         close_lan_listener_lifecycle()
     except Exception as e:
         logger.warning("Error stopping the LAN listener: %s", e)
 
     try:
         from core.training.training import _training_backend
+
         if _training_backend is not None:
             _training_backend.stop_for_shutdown()
     except Exception as e:
@@ -1459,6 +1467,7 @@ def _graceful_shutdown(server = None):
         _diffusion = sys.modules.get("core.training.diffusion_training_service")
         if _diffusion is not None and _diffusion._service is not None:
             from core.training.training import _SHUTDOWN_STOP_TIMEOUT_S
+
             if not _diffusion._service.stop_for_shutdown(_SHUTDOWN_STOP_TIMEOUT_S):
                 logger.warning("Shutdown: diffusion training did not finish saving in time")
     except Exception as e:
@@ -1469,20 +1478,23 @@ def _graceful_shutdown(server = None):
 
     try:
         from core.inference.orchestrator import _inference_backend
+
         if _inference_backend is not None:
-            _inference_backend._shutdown_subprocess(timeout = 5.0)
+            _inference_backend._shutdown_subprocess(timeout=5.0)
     except Exception as e:
         logger.warning("Error shutting down inference subprocess: %s", e)
 
     try:
         from core.export.orchestrator import _export_backend
+
         if _export_backend is not None:
-            _export_backend._shutdown_subprocess(timeout = 5.0)
+            _export_backend._shutdown_subprocess(timeout=5.0)
     except Exception as e:
         logger.warning("Error shutting down export subprocess: %s", e)
 
     try:
         from core.training.training import _training_backend
+
         if _training_backend is not None:
             _training_backend.force_terminate()
     except Exception as e:
@@ -1503,18 +1515,20 @@ def _graceful_shutdown(server = None):
         if _llama_cpp_backend is not None:
             # teardown = True: an app-level stop, not the retry ladder reaping a child it
             # is about to replace. Only the former may end an in-flight health wait.
-            _llama_cpp_backend._kill_process(teardown = True)
+            _llama_cpp_backend._kill_process(teardown=True)
     except Exception as e:
         logger.warning("Error shutting down llama-server: %s", e)
 
     try:
         from cloudflare_tunnel import close_studio_tunnel_lifecycle
+
         close_studio_tunnel_lifecycle()
     except Exception as e:
         logger.warning("Error stopping Cloudflare tunnel: %s", e)
 
     try:
         from utils.process_lifetime import clear_breadcrumb, terminate_all
+
         terminate_all()
         clear_breadcrumb()  # nothing left for the next startup to sweep
     except Exception as e:
@@ -1547,7 +1561,7 @@ def _wait_for_server_shutdown(timeout: Optional[float] = _SERVER_SHUTDOWN_JOIN_T
     if thread is None or thread is threading.current_thread():
         _flush_standard_streams()
         return
-    thread.join(timeout = timeout)
+    thread.join(timeout=timeout)
     if thread.is_alive():
         logger.warning("Timed out waiting for uvicorn server thread to stop")
     _flush_standard_streams()
@@ -1607,7 +1621,7 @@ def _iter_frontend_fallback_candidates() -> "list[Path]":
         for sp in venv_dir.glob(sp_pattern):
             for finder in sp.glob("__editable___*_finder.py"):
                 try:
-                    src = finder.read_text(encoding = "utf-8")
+                    src = finder.read_text(encoding="utf-8")
                 except (OSError, UnicodeDecodeError):
                     continue
                 # Tolerate single/multi-line dict literals; [^}]* rejects nested dicts, which the setuptools editable
@@ -1835,6 +1849,7 @@ def _setup_server_disk_logging():
         return None
     try:
         from utils.paths import studio_root
+
         log_dir = Path(studio_root()) / "logs" / "server"
     except Exception:
         home = (
@@ -1844,19 +1859,19 @@ def _setup_server_disk_logging():
         )
         log_dir = Path(home) / "logs" / "server"
     try:
-        log_dir.mkdir(parents = True, exist_ok = True)
+        log_dir.mkdir(parents=True, exist_ok=True)
         stamp = time.strftime("%Y%m%d-%H%M%S")
         log_path = log_dir / f"server-{stamp}-pid{os.getpid()}.log"
         # Line-buffered so the tail survives a hard kill; errors="replace" so a console encoding quirk can
         # never take the server down.
-        log_fh = open(log_path, "w", encoding = "utf-8", errors = "replace", buffering = 1)
+        log_fh = open(log_path, "w", encoding="utf-8", errors="replace", buffering=1)
     except Exception:
         return None
 
     import faulthandler
 
     try:
-        faulthandler.enable(file = log_fh, all_threads = True)
+        faulthandler.enable(file=log_fh, all_threads=True)
     except Exception:
         pass
     # Children (training workers) inherit: their native-crash stacks land on the stderr the server already
@@ -1877,7 +1892,8 @@ def _setup_server_disk_logging():
     # trusting the new file to sort newest, which two starts in the same second do not guarantee.
     try:
         from utils.log_retention import prune_log_dir
-        prune_log_dir(log_dir, "server-*.log", protect = log_path)
+
+        prune_log_dir(log_dir, "server-*.log", protect=log_path)
     except Exception:
         pass
     return log_path
@@ -2077,11 +2093,11 @@ def _terminal_password_gate(
         return True, False
 
     if not should_prompt_password_change(
-        tunnel_will_start = tunnel_will_start,
-        bind_is_exposed = bind_is_exposed,
-        requires_change = requires_change,
-        stdin_isatty = _stream_isatty(sys.stdin),
-        stderr_isatty = _stream_isatty(sys.stderr),
+        tunnel_will_start=tunnel_will_start,
+        bind_is_exposed=bind_is_exposed,
+        requires_change=requires_change,
+        stdin_isatty=_stream_isatty(sys.stdin),
+        stderr_isatty=_stream_isatty(sys.stderr),
     ):
         # Headless raw bind: leave it EXACTLY as it behaved before. The
         # refuse-and-strip handling below is calibrated to publishing a public
@@ -2093,13 +2109,13 @@ def _terminal_password_gate(
         # No terminal: only proceed if the bootstrap deadline will arm; api-only
         # and TIMEOUT=0 never arm it, leaving the default credential public.
         deadline_arms = should_arm_bootstrap_timeout(
-            host = host,
-            secure = secure,
-            api_only = api_only,
-            frontend_served = frontend_served,
-            is_colab = is_colab,
-            requires_change = True,
-            timeout_seconds = bootstrap_timeout_seconds(),
+            host=host,
+            secure=secure,
+            api_only=api_only,
+            frontend_served=frontend_served,
+            is_colab=is_colab,
+            requires_change=True,
+            timeout_seconds=bootstrap_timeout_seconds(),
         )
         if not deadline_arms:
             print(
@@ -2110,8 +2126,8 @@ def _terminal_password_gate(
                 "UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT=0). Change the password "
                 "first (run `unsloth studio` locally and log in, or re-run "
                 "with a terminal attached), then retry.",
-                file = sys.stderr,
-                flush = True,
+                file=sys.stderr,
+                flush=True,
             )
             return False, False
         # The public page will not auto-fill the bootstrap credential and the seeded file may already be gone,
@@ -2129,8 +2145,8 @@ def _terminal_password_gate(
             f"`{_reset_password_command()}`. Unsloth shuts down after the "
             "bootstrap deadline (UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT, default 1h) "
             "unless the password is changed.",
-            file = sys.stderr,
-            flush = True,
+            file=sys.stderr,
+            flush=True,
         )
         # Never serve the default credential in HTML over a public URL.
         return True, True
@@ -2145,21 +2161,21 @@ def _terminal_password_gate(
     def _apply_change(new_password: str) -> None:
         # Same effects as routes/auth.py change_password: rehash, rotate the JWT secret, revoke refresh tokens
         # in the SAME transaction.
-        _auth_storage.update_password(_admin, new_password, revoke_refresh_tokens = True)
+        _auth_storage.update_password(_admin, new_password, revoke_refresh_tokens=True)
 
     changed = prompt_for_password_change(
-        min_length = _auth_storage.MIN_PASSWORD_LENGTH,
-        is_current_password = _is_current_password,
-        apply_change = _apply_change,
-        out = sys.stderr,
-        exposure = _exposure_phrase(tunnel_will_start = tunnel_will_start, host = host),
+        min_length=_auth_storage.MIN_PASSWORD_LENGTH,
+        is_current_password=_is_current_password,
+        apply_change=_apply_change,
+        out=sys.stderr,
+        exposure=_exposure_phrase(tunnel_will_start=tunnel_will_start, host=host),
         # A raw bind must never block a launch that used to start. A detached pty
         # (`tmux new -d`, `docker run -dt`) passes every isatty and process-group
         # test yet nobody will ever type, so an undeadlined read waits forever and
         # the socket never binds; only that unattended first-key timeout proceeds
         # on the bootstrap deadline. Ctrl+C / EOF is an explicit refusal and
         # always fails closed. The tunnel waits forever instead.
-        first_key_timeout = None if tunnel_will_start else _UNATTENDED_PROMPT_SECONDS,
+        first_key_timeout=None if tunnel_will_start else _UNATTENDED_PROMPT_SECONDS,
     )
     if changed is True:
         return True, True
@@ -2170,13 +2186,13 @@ def _terminal_password_gate(
     # arms the deadline, so say what will actually happen rather than promise a
     # shutdown -- that is the one sentence an operator acts on.
     deadline_arms = should_arm_bootstrap_timeout(
-        host = host,
-        secure = secure,
-        api_only = api_only,
-        frontend_served = frontend_served,
-        is_colab = is_colab,
-        requires_change = True,
-        timeout_seconds = bootstrap_timeout_seconds(),
+        host=host,
+        secure=secure,
+        api_only=api_only,
+        frontend_served=frontend_served,
+        is_colab=is_colab,
+        requires_change=True,
+        timeout_seconds=bootstrap_timeout_seconds(),
     )
     if deadline_arms:
         tail = (
@@ -2196,8 +2212,8 @@ def _terminal_password_gate(
         "  WARNING: continuing with the auto-generated admin password on a bind "
         f"that is reachable from the network. {tail} Change it by logging in, or "
         f"with `{_reset_password_command()}`.",
-        file = sys.stderr,
-        flush = True,
+        file=sys.stderr,
+        flush=True,
     )
     return True, False
 
@@ -2226,8 +2242,8 @@ def _apply_supplied_password(password_value: "Optional[str]") -> None:
             "Error: an Unsloth admin password is already set; --password only sets "
             "the initial password. Change it in the UI, or run `unsloth studio "
             "reset-password` for a new one.",
-            file = sys.stderr,
-            flush = True,
+            file=sys.stderr,
+            flush=True,
         )
         sys.exit(1)
 
@@ -2242,27 +2258,27 @@ def _apply_supplied_password(password_value: "Optional[str]") -> None:
         print(
             f"Error: password must be at least {_auth_storage.MIN_PASSWORD_LENGTH} "
             "characters; not starting.",
-            file = sys.stderr,
-            flush = True,
+            file=sys.stderr,
+            flush=True,
         )
         sys.exit(1)
     if any(ch.isspace() for ch in supplied):
         print(
             "Error: password cannot contain spaces; not starting.",
-            file = sys.stderr,
-            flush = True,
+            file=sys.stderr,
+            flush=True,
         )
         sys.exit(1)
     if _is_current_password(supplied):
         print(
             "Error: the new password must differ from the current bootstrap "
             "password; not starting.",
-            file = sys.stderr,
-            flush = True,
+            file=sys.stderr,
+            flush=True,
         )
         sys.exit(1)
-    _auth_storage.update_password(_admin, supplied, revoke_refresh_tokens = True)
-    print(f"Password updated for '{_admin}'.", file = sys.stderr, flush = True)
+    _auth_storage.update_password(_admin, supplied, revoke_refresh_tokens=True)
+    print(f"Password updated for '{_admin}'.", file=sys.stderr, flush=True)
 
 
 def _apply_cli_tool_policy(enable_tools: "Optional[bool]") -> None:
@@ -2367,7 +2383,7 @@ def run_server(
     # console stream rather than the wrapper.
     if sys.platform == "win32" and hasattr(sys.stdout, "reconfigure"):
         try:
-            sys.stdout.reconfigure(encoding = "utf-8", errors = "replace")
+            sys.stdout.reconfigure(encoding="utf-8", errors="replace")
         except Exception:
             pass
 
@@ -2388,8 +2404,8 @@ def run_server(
     from loggers.config import LogConfig
 
     LogConfig.setup_logging(
-        service_name = "unsloth-studio-backend",
-        env = os.getenv("ENVIRONMENT_TYPE", "production"),
+        service_name="unsloth-studio-backend",
+        env=os.getenv("ENVIRONMENT_TYPE", "production"),
     )
 
     logger.info("run_server startup begin api_only=%s host=%s port=%s", api_only, host, port)
@@ -2439,6 +2455,7 @@ def run_server(
             pass
         else:
             import nest_asyncio
+
             nest_asyncio.apply()
 
     from threading import Thread, Event
@@ -2449,9 +2466,9 @@ def run_server(
     if not silent:
         print(
             "Loading Unsloth Studio, please wait... (this can take a few minutes)",
-            flush = True,
+            flush=True,
         )
-        print("  - loading PyTorch, Unsloth and Transformers...", flush = True)
+        print("  - loading PyTorch, Unsloth and Transformers...", flush=True)
 
     import_started = time.perf_counter()
 
@@ -2461,6 +2478,7 @@ def run_server(
     # this point, and that variable is part of the coordination key.
     try:
         from utils.paths.storage_roots import setup_cache_env
+
         setup_cache_env()
     except Exception:  # noqa: BLE001
         # main.py seeds it too, and does not depend on this having worked.
@@ -2478,7 +2496,7 @@ def run_server(
         (time.perf_counter() - import_started) * 1000,
     )
     if not silent:
-        print("  - Starting server...", flush = True)
+        print("  - Starting server...", flush=True)
     from utils.paths import ensure_studio_directories
 
     # Allow local stdio MCP servers on a loopback bind (the user's own machine), but never on Colab, which is a
@@ -2486,7 +2504,7 @@ def run_server(
     # precede the import.
     from utils.host_policy import apply_stdio_mcp_loopback_default
 
-    apply_stdio_mcp_loopback_default(host, is_colab = _IS_COLAB)
+    apply_stdio_mcp_loopback_default(host, is_colab=_IS_COLAB)
 
     ensure_studio_directories()
 
@@ -2501,7 +2519,7 @@ def run_server(
     # the bare launch benefits from the refusal.
     if abort_if_own_studio is None:
         abort_if_own_studio = not api_only
-    port = _resolve_port(host, port, avoid_own_studio = abort_if_own_studio)
+    port = _resolve_port(host, port, avoid_own_studio=abort_if_own_studio)
     if port != original_port:
         blocker = _get_pid_on_port(original_port)
         if not silent:
@@ -2518,15 +2536,15 @@ def run_server(
             print("")
 
     _serve_frontend, _tunnel_only_frontend = _frontend_serving_mode(
-        api_only = api_only,
-        desktop_owned = _desktop_owner() is not None,
+        api_only=api_only,
+        desktop_owned=_desktop_owner() is not None,
     )
 
     # desktop api-only serves its packaged SPA to remote callers only: tunnel or LAN, not loopback
     _frontend_mounted = False
     if frontend_path and _serve_frontend:
         chosen, attempted = _resolve_frontend_path(Path(frontend_path))
-        if chosen is not None and setup_frontend(app, chosen, tunnel_only = _tunnel_only_frontend):
+        if chosen is not None and setup_frontend(app, chosen, tunnel_only=_tunnel_only_frontend):
             _frontend_mounted = True
             if not silent:
                 # Resolve so logs show an absolute path for support.
@@ -2535,7 +2553,7 @@ def run_server(
                 except OSError:
                     display = chosen
                 print(f"[OK] Frontend loaded from {display}")
-        elif not _missing_frontend_is_fatal(tunnel_only = _tunnel_only_frontend):
+        elif not _missing_frontend_is_fatal(tunnel_only=_tunnel_only_frontend):
             # Remote access serves nothing; the local API the desktop asked for still comes up. The tunnel gate
             # already 404s every other request.
             logger.warning(
@@ -2614,12 +2632,12 @@ def run_server(
     from utils.uvicorn_h11_shutdown import uvicorn_http_protocol
 
     config_kwargs = dict(
-        host = host,
-        port = port,
-        log_level = "info",
-        access_log = False,
-        server_header = False,
-        http = uvicorn_http_protocol(),
+        host=host,
+        port=port,
+        log_level="info",
+        access_log=False,
+        server_header=False,
+        http=uvicorn_http_protocol(),
     )
     # Colab only: trust X-Forwarded-* from Colab's reverse proxy so the app sees the real https origin.
     # forwarded_allow_ips="*" is safe in Colab's single-user sandbox but too lax for local/standalone.
@@ -2648,29 +2666,29 @@ def run_server(
     from utils.remote_access_settings import configure_remote_access
 
     _launch_tunnel_managed = _cloudflare_tunnel_should_start(
-        cloudflare = cloudflare,
-        host = host,
-        secure = secure,
-        api_only = api_only,
-        is_colab = _IS_COLAB,
+        cloudflare=cloudflare,
+        host=host,
+        secure=secure,
+        api_only=api_only,
+        is_colab=_IS_COLAB,
     )
     configure_remote_access(
         app.state,
-        port = port,
-        intent = cloudflare_intent,
-        is_colab = _IS_COLAB,
-        launch_managed = _launch_tunnel_managed,
+        port=port,
+        intent=cloudflare_intent,
+        is_colab=_IS_COLAB,
+        launch_managed=_launch_tunnel_managed,
     )
 
     from utils.lan_access_settings import configure_lan_access
 
     configure_lan_access(
         app.state,
-        port = port,
-        bind_host = host,
-        secure = secure,
-        is_colab = _IS_COLAB,
-        frontend_served = _serve_frontend and _frontend_mounted,
+        port=port,
+        bind_host=host,
+        secure=secure,
+        is_colab=_IS_COLAB,
+        frontend_served=_serve_frontend and _frontend_mounted,
     )
 
     # Expose a shutdown callable before the server accepts requests so /api/shutdown is ready as soon as
@@ -2695,12 +2713,12 @@ def run_server(
     # _terminal_password_gate). Runs BEFORE the socket binds so a pre-gate listener cannot hand out the
     # injected credential.
     _pw_proceed, _pw_drop_bootstrap = _terminal_password_gate(
-        tunnel_will_start = _launch_tunnel_managed,
-        host = host,
-        secure = secure,
-        api_only = api_only,
-        frontend_served = bool(frontend_path) and not api_only,
-        is_colab = _IS_COLAB,
+        tunnel_will_start=_launch_tunnel_managed,
+        host=host,
+        secure=secure,
+        api_only=api_only,
+        frontend_served=bool(frontend_path) and not api_only,
+        is_colab=_IS_COLAB,
     )
     if not _pw_proceed:
         # A raw bind passed neither flag, so naming them is a no-op for it.
@@ -2712,8 +2730,8 @@ def run_server(
                 if _launch_tunnel_managed
                 else "Launch with -H 127.0.0.1 to keep Unsloth off the network."
             ),
-            file = sys.stderr,
-            flush = True,
+            file=sys.stderr,
+            flush=True,
         )
         sys.exit(1)
     if _pw_drop_bootstrap:
@@ -2772,7 +2790,7 @@ def run_server(
     except Exception as e:
         logger.warning("Could not reset llama-server shutdown state: %s", e)
 
-    thread = Thread(target = _run, daemon = True)
+    thread = Thread(target=_run, daemon=True)
     _server_thread = thread
     thread.start()
 
@@ -2786,7 +2804,7 @@ def run_server(
                         "Uvicorn server failed before startup completed"
                     ) from startup_errors[0]
                 raise RuntimeError("Uvicorn server exited before startup completed")
-            ready_event.wait(timeout = 0.1)
+            ready_event.wait(timeout=0.1)
     except KeyboardInterrupt:
         _graceful_shutdown(_server)
         _shutdown_event.set()
@@ -2823,17 +2841,19 @@ def run_server(
     # Output port for Tauri (api-only), only after sockets bind and startup is done. The headless
     # `run --api-only` path opts out so it does not leak this line.
     if api_only and emit_tauri_port:
-        print(f"TAURI_PORT={port}", flush = True)
+        print(f"TAURI_PORT={port}", flush=True)
         # Desktop-owned backends only (the owner env handshake): a headless `unsloth studio --api-only` has no app
         # to bind its lifetime to and must survive its terminal (e.g. nohup). If the app dies without running its
         # cleanup, exit instead of orphaning on the port.
         from main import _desktop_owner
+
         if _desktop_owner() is not None:
             from utils.parent_watchdog import start_parent_watchdog
+
             owner_pid = os.environ.pop("UNSLOTH_STUDIO_DESKTOP_OWNER_PID", "")
             start_parent_watchdog(
                 _trigger_shutdown,
-                parent_pid = int(owner_pid) if owner_pid.isdigit() else None,
+                parent_pid=int(owner_pid) if owner_pid.isdigit() else None,
             )
 
     from cloudflare_tunnel import (
@@ -2856,10 +2876,11 @@ def run_server(
     if _cloudflare_enabled:
         try:  # best-effort: any failure must not block startup
             from cloudflare_tunnel import start_studio_tunnel
+
             start_studio_tunnel(
                 port,
-                managed_by = "launch",
-                origin_host = app.state.server_request_host,
+                managed_by="launch",
+                origin_host=app.state.server_request_host,
             )
         except Exception as e:
             logger.debug("Cloudflare tunnel skipped: %s", e)
@@ -2874,8 +2895,8 @@ def run_server(
     if secure and not _cloudflare_url:
         print(
             "A secure Cloudflare link is not allowed, use --no-secure which provides a 0.0.0.0 link",
-            file = sys.stderr,
-            flush = True,
+            file=sys.stderr,
+            flush=True,
         )
         _graceful_shutdown(_server)
         sys.exit(1)
@@ -2893,21 +2914,21 @@ def run_server(
 
         _bootstrap_timeout = bootstrap_timeout_seconds()
         if should_arm_bootstrap_timeout(
-            host = host,
-            secure = secure,
-            api_only = api_only,
-            frontend_served = bool(frontend_path) and not api_only,
-            is_colab = _IS_COLAB,
-            requires_change = _auth_storage.requires_password_change(
+            host=host,
+            secure=secure,
+            api_only=api_only,
+            frontend_served=bool(frontend_path) and not api_only,
+            is_colab=_IS_COLAB,
+            requires_change=_auth_storage.requires_password_change(
                 _auth_storage.DEFAULT_ADMIN_USERNAME
             ),
-            timeout_seconds = _bootstrap_timeout,
+            timeout_seconds=_bootstrap_timeout,
         ):
             arm_bootstrap_timeout(
                 _auth_storage,
                 _trigger_shutdown,
-                timeout_seconds = _bootstrap_timeout,
-                logger = logger,
+                timeout_seconds=_bootstrap_timeout,
+                logger=logger,
             )
             logger.info(
                 "Unsloth will shut down in %ds unless the default admin password is changed.",
@@ -2933,9 +2954,9 @@ def run_server(
             host,
             port,
             display_host,
-            secure = secure,
-            enable_tools = enable_tools,
-            lan_addresses = tuple(lan_listener_status()["addresses"]),
+            secure=secure,
+            enable_tools=enable_tools,
+            lan_addresses=tuple(lan_listener_status()["addresses"]),
         )
 
     return app
@@ -2946,40 +2967,40 @@ def _build_arg_parser():
     (notably the --secure/--no-secure polarity and its --not-secure alias) stays unit-testable."""
     import argparse
 
-    parser = argparse.ArgumentParser(description = "Run Unsloth UI Backend server")
+    parser = argparse.ArgumentParser(description="Run Unsloth UI Backend server")
     parser.add_argument(
         "--host",
-        default = "127.0.0.1",
-        help = "Host to bind to (default: 127.0.0.1; use 0.0.0.0 for network/cloud access). "
+        default="127.0.0.1",
+        help="Host to bind to (default: 127.0.0.1; use 0.0.0.0 for network/cloud access). "
         "On a shared host, set UNSLOTH_STUDIO_BLOCK_PRIVATE_PROVIDER_URLS=1 to stop external "
         "provider connections from targeting private addresses.",
     )
     parser.add_argument(
         "--password",
-        default = None,
-        help = "Set the INITIAL admin password non-interactively (headless), only when "
+        default=None,
+        help="Set the INITIAL admin password non-interactively (headless), only when "
         "none is set yet. Also reads UNSLOTH_STUDIO_PASSWORD, or --password - for stdin. "
         "A literal value is visible in the process list. Rotate later via "
         "`unsloth studio reset-password`.",
     )
-    parser.add_argument("--port", type = int, default = 8888, help = "Port to bind to")
+    parser.add_argument("--port", type=int, default=8888, help="Port to bind to")
     parser.add_argument(
         "--frontend",
-        type = str,
-        default = _DEFAULT_FRONTEND_PATH,
-        help = "Path to frontend build",
+        type=str,
+        default=_DEFAULT_FRONTEND_PATH,
+        help="Path to frontend build",
     )
-    parser.add_argument("--silent", action = "store_true", help = "Suppress output")
+    parser.add_argument("--silent", action="store_true", help="Suppress output")
     parser.add_argument(
         "--api-only",
-        action = "store_true",
-        help = "API server only, no frontend (for Tauri)",
+        action="store_true",
+        help="API server only, no frontend (for Tauri)",
     )
     parser.add_argument(
         "--cloudflare",
-        action = argparse.BooleanOptionalAction,
-        default = None,
-        help = "Expose Unsloth on a PUBLIC internet URL via a free Cloudflare HTTPS "
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Expose Unsloth on a PUBLIC internet URL via a free Cloudflare HTTPS "
         "tunnel, for non-api-only wildcard binds (0.0.0.0 or ::). Off by default; "
         "pass --cloudflare to enable it (--secure implies it), --no-cloudflare to "
         "force it off. It does not change a raw wildcard bind. If the admin "
@@ -2988,9 +3009,9 @@ def _build_arg_parser():
     )
     parser.add_argument(
         "--secure",
-        action = argparse.BooleanOptionalAction,
-        default = False,
-        help = "Expose ONLY a Cloudflare HTTPS link: bind localhost and fail closed "
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Expose ONLY a Cloudflare HTTPS link: bind localhost and fail closed "
         "if the tunnel can't start. Without it, --no-secure also serves the raw "
         "0.0.0.0 port, which is reachable from anywhere on the network. If the "
         "admin password was never changed, Unsloth asks for a new one in the "
@@ -2999,19 +3020,19 @@ def _build_arg_parser():
     # Back-compat: accept --not-secure as a hidden alias for --no-secure.
     parser.add_argument(
         "--not-secure",
-        dest = "secure",
-        action = "store_false",
-        default = argparse.SUPPRESS,
-        help = argparse.SUPPRESS,
+        dest="secure",
+        action="store_false",
+        default=argparse.SUPPRESS,
+        help=argparse.SUPPRESS,
     )
     # Tri-state tool policy: no flag means None (tools default on, a request's own enable_tools: false
     # honored); --enable-tools/--disable-tools force on/off.
     parser.add_argument(
         "--enable-tools",
-        dest = "enable_tools",
-        action = "store_true",
-        default = None,
-        help = "Force server-side tools (web search, code execution) on for "
+        dest="enable_tools",
+        action="store_true",
+        default=None,
+        help="Force server-side tools (web search, code execution) on for "
         "every request. Default: no server-wide policy, so each request's own "
         "enable_tools decides (`unsloth studio run` is the launcher that defaults "
         "them on). "
@@ -3020,24 +3041,24 @@ def _build_arg_parser():
     )
     parser.add_argument(
         "--disable-tools",
-        dest = "enable_tools",
-        action = "store_false",
-        default = None,
-        help = "Force server-side tools off for every request.",
+        dest="enable_tools",
+        action="store_false",
+        default=None,
+        help="Force server-side tools off for every request.",
     )
     parser.add_argument(
         "--disable-dns-pinning",
-        action = "store_true",
-        help = "Send the hostname (not the validated IP) in web fetches that go through an "
+        action="store_true",
+        help="Send the hostname (not the validated IP) in web fetches that go through an "
         "explicitly configured HTTP(S)_PROXY, so the proxy can apply hostname policy and "
         "TLS interception. Direct fetches stay pinned to the validated IP.",
     )
     parser.add_argument(
         "--parallel",
         "--n-parallel",
-        type = int,
-        default = _PARALLEL_DEFAULT_PLAIN,
-        help = (
+        type=int,
+        default=_PARALLEL_DEFAULT_PLAIN,
+        help=(
             f"llama-server parallel decode slots ({_PARALLEL_MIN}..{_PARALLEL_MAX}). "
             f"Default {_PARALLEL_DEFAULT_PLAIN}. The Unsloth run settings "
             "(Parallel Slots) override it per load."
@@ -3058,7 +3079,7 @@ if __name__ == "__main__":
     # Ensure stderr handles Unicode on Windows (non-ASCII path tracebacks).
     if sys.platform == "win32" and hasattr(sys.stderr, "reconfigure"):
         try:
-            sys.stderr.reconfigure(encoding = "utf-8", errors = "replace")
+            sys.stderr.reconfigure(encoding="utf-8", errors="replace")
         except Exception:
             pass
 
@@ -3076,15 +3097,15 @@ if __name__ == "__main__":
         os.environ.setdefault("UNSLOTH_STUDIO_DISABLE_DNS_PINNING", "0")
 
     kwargs = dict(
-        host = args.host,
-        port = args.port,
-        silent = args.silent,
-        api_only = args.api_only,
-        llama_parallel_slots = args.parallel,
-        cloudflare = args.cloudflare,
-        secure = args.secure,
-        enable_tools = args.enable_tools,
-        password = args.password,
+        host=args.host,
+        port=args.port,
+        silent=args.silent,
+        api_only=args.api_only,
+        llama_parallel_slots=args.parallel,
+        cloudflare=args.cloudflare,
+        secure=args.secure,
+        enable_tools=args.enable_tools,
+        password=args.password,
     )
     if args.frontend is not None:
         kwargs["frontend_path"] = Path(args.frontend)
@@ -3096,7 +3117,7 @@ if __name__ == "__main__":
         sys.stderr.write("=" * 60 + "\n")
         sys.stderr.write("ERROR: Unsloth Studio failed to start.\n")
         sys.stderr.write("=" * 60 + "\n")
-        traceback.print_exc(file = sys.stderr)
+        traceback.print_exc(file=sys.stderr)
         sys.stderr.write("\n")
         sys.stderr.write("If a package is missing, try re-running: unsloth studio setup\n")
         sys.stderr.flush()
@@ -3129,5 +3150,5 @@ if __name__ == "__main__":
     # Keep running until shutdown signal. Event.wait() without a timeout blocks at the C level on Linux,
     # preventing SIGINT delivery; a short timeout in a loop lets the interpreter process pending signals.
     while not _shutdown_event.is_set():
-        _shutdown_event.wait(timeout = 1)
+        _shutdown_event.wait(timeout=1)
     _wait_for_server_shutdown()

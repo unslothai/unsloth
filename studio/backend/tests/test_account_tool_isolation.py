@@ -24,11 +24,11 @@ BOB = AccountContext("bob-id", "bob")
 ACCOUNTS = (OWNER, ALICE, BOB)
 
 
-@pytest.fixture(autouse = True)
+@pytest.fixture(autouse=True)
 def isolated(tmp_path, monkeypatch):
     sweep = tools._start_detached_sweep
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "studio"))
-    monkeypatch.delenv("UNSLOTH_STUDIO_SANDBOX_HOME", raising = False)
+    monkeypatch.delenv("UNSLOTH_STUDIO_SANDBOX_HOME", raising=False)
     monkeypatch.setattr(policy, "installation_is_multi_user", lambda: True)
     monkeypatch.setattr(tools, "_workdirs", {})
     monkeypatch.setattr(tools, "_active_sessions", {})
@@ -88,18 +88,19 @@ def test_records_are_account_scoped(resolver, name, tmp_path):
 
 def test_managed_account_never_reads_or_migrates_owner_legacy_sandbox(tmp_path, monkeypatch):
     legacy = tmp_path / "legacy" / "same-chat"
-    legacy.mkdir(parents = True)
-    (legacy / "secret").write_text("owner", encoding = "utf-8")
+    legacy.mkdir(parents=True)
+    (legacy / "secret").write_text("owner", encoding="utf-8")
     monkeypatch.setattr(tools, "_legacy_sandbox_migrated", False)
     assert run_as(ALICE, tools._legacy_session_dir, "same-chat") is None
     path = Path(run_as(ALICE, tools._get_workdir, "same-chat"))
     assert not (path / "secret").exists()
-    assert (legacy / "secret").read_text(encoding = "utf-8") == "owner"
+    assert (legacy / "secret").read_text(encoding="utf-8") == "owner"
     assert not tools._legacy_sandbox_migrated
 
 
 def test_managed_project_does_not_resolve_host_workspace(monkeypatch):
     from storage import studio_db
+
     monkeypatch.setattr(
         studio_db,
         "ensure_chat_project_workspace",
@@ -111,9 +112,9 @@ def test_managed_project_does_not_resolve_host_workspace(monkeypatch):
 def test_session_lifecycle_does_not_block_another_account():
     def alice_call():
         with tools._session_in_flight("same-chat"):
-            assert tools.wait_for_sessions_idle(["same-chat"], timeout = 0) is False
-            assert run_as(BOB, tools.wait_for_sessions_idle, ["same-chat"], timeout = 0) is True
-            assert run_as(OWNER, tools.wait_for_sessions_idle, ["same-chat"], timeout = 0) is True
+            assert tools.wait_for_sessions_idle(["same-chat"], timeout=0) is False
+            assert run_as(BOB, tools.wait_for_sessions_idle, ["same-chat"], timeout=0) is True
+            assert run_as(OWNER, tools.wait_for_sessions_idle, ["same-chat"], timeout=0) is True
 
     run_as(ALICE, alice_call)
 
@@ -133,7 +134,7 @@ def test_removing_alices_sandbox_keeps_bobs(tmp_path):
 def test_edit_file_cannot_read_or_write_foreign_sandbox(other, kind):
     alice = Path(run_as(ALICE, tools._get_workdir, "same-chat"))
     foreign = Path(run_as(other, tools._get_workdir, "same-chat")) / "secret.txt"
-    foreign.write_text("private", encoding = "utf-8")
+    foreign.write_text("private", encoding="utf-8")
     if kind == "absolute":
         raw = str(foreign)
     elif kind == "parent":
@@ -149,10 +150,10 @@ def test_edit_file_cannot_read_or_write_foreign_sandbox(other, kind):
             "path": raw,
             "edits": [{"old_string": "private", "new_string": "changed"}],
         },
-        session_id = "same-chat",
+        session_id="same-chat",
     )
     assert "outside" in result
-    assert foreign.read_text(encoding = "utf-8") == "private"
+    assert foreign.read_text(encoding="utf-8") == "private"
 
 
 @pytest.mark.parametrize("account", ACCOUNTS)
@@ -194,7 +195,7 @@ def test_sandboxed_admission_never_queries_installation_policy(monkeypatch):
 def test_direct_tool_bypass_is_rejected_before_dispatch(monkeypatch):
     monkeypatch.setattr(tools, "_bash_exec", lambda *a, **kw: pytest.fail("tool ran"))
     with pytest.raises(HTTPException) as exc:
-        tools.execute_tool("terminal", {"command": "pwd"}, disable_sandbox = True)
+        tools.execute_tool("terminal", {"command": "pwd"}, disable_sandbox=True)
     assert exc.value.status_code == 400
 
 
@@ -236,7 +237,7 @@ def test_tool_stream_carries_account_into_worker_thread():
 
     seen = []
     stream = run_as(ALICE, tool_policy.account_tool_stream, stream_tool_execution)
-    list(stream(lambda output: seen.append(current_account_id()) or "done", tool_name = "test"))
+    list(stream(lambda output: seen.append(current_account_id()) or "done", tool_name="test"))
     assert seen == [ALICE.account_id]
     assert tool_policy.account_tool_stream(stream_tool_execution) is stream_tool_execution
 
@@ -271,9 +272,9 @@ def test_mcp_configs_are_private_and_schema_is_initialized_per_database(monkeypa
         run_as(
             account,
             mcp_servers_db.create_server,
-            id = "same",
-            display_name = account.username,
-            url = "https://public.example/mcp",
+            id="same",
+            display_name=account.username,
+            url="https://public.example/mcp",
         )
     for account in ACCOUNTS:
         assert (
@@ -298,7 +299,7 @@ def test_mcp_configs_are_private_and_schema_is_initialized_per_database(monkeypa
 )
 def test_managed_mcp_registration_refuses_local_servers(url):
     with pytest.raises(HTTPException) as exc:
-        run_as(ALICE, mcp_servers_db.create_server, id = "unsafe", display_name = "Unsafe", url = url)
+        run_as(ALICE, mcp_servers_db.create_server, id="unsafe", display_name="Unsafe", url=url)
     assert exc.value.status_code == 400
     assert run_as(ALICE, mcp_servers_db.get_server, "unsafe") is None
 
@@ -312,9 +313,9 @@ def test_mcp_update_cannot_introduce_local_endpoint(monkeypatch):
     run_as(
         ALICE,
         mcp_servers_db.create_server,
-        id = "server",
-        display_name = "Public",
-        url = "https://public.example/mcp",
+        id="server",
+        display_name="Public",
+        url="https://public.example/mcp",
     )
     with pytest.raises(HTTPException):
         run_as(ALICE, mcp_servers_db.update_server, "server", {"url": "python local.py"})
@@ -324,7 +325,7 @@ def test_mcp_update_cannot_introduce_local_endpoint(monkeypatch):
 def test_mcp_owner_keeps_local_registration_without_dns_cost(monkeypatch):
     monkeypatch.setattr(socket, "getaddrinfo", lambda *a, **kw: pytest.fail("owner DNS validation"))
     for index, url in enumerate(("python server.py", "http://127.0.0.1/mcp")):
-        mcp_servers_db.create_server(id = str(index), display_name = "Owner", url = url)
+        mcp_servers_db.create_server(id=str(index), display_name="Owner", url=url)
         assert mcp_servers_db.get_server(str(index))["url"] == url
 
 
@@ -407,21 +408,23 @@ def test_every_tool_loop_refuses_full_access_before_model_or_tool_dispatch(accou
     def check():
         if loop_name == "gguf":
             from core.inference.llama_cpp import LlamaCppBackend
+
             backend = LlamaCppBackend.__new__(LlamaCppBackend)
             list(
                 backend.generate_chat_completion_with_tools(
-                    messages = [], tools = [], permission_mode = "full"
+                    messages=[], tools=[], permission_mode="full"
                 )
             )
         elif loop_name == "safetensors":
             from core.inference.safetensors_agentic import run_safetensors_tool_loop
+
             list(
                 run_safetensors_tool_loop(
-                    single_turn = lambda *_: pytest.fail("model ran"),
-                    messages = [],
-                    tools = [],
-                    execute_tool = lambda *a, **kw: pytest.fail("tool ran"),
-                    permission_mode = "full",
+                    single_turn=lambda *_: pytest.fail("model ran"),
+                    messages=[],
+                    tools=[],
+                    execute_tool=lambda *a, **kw: pytest.fail("tool ran"),
+                    permission_mode="full",
                 )
             )
         else:
@@ -431,20 +434,20 @@ def test_every_tool_loop_refuses_full_access_before_model_or_tool_dispatch(accou
                 stream_with_studio_tools,
             )
 
-            transport = SimpleNamespace(heals_text_tool_calls = False)
-            run = ToolLoopRun(model = "test", messages = [])
+            transport = SimpleNamespace(heals_text_tool_calls=False)
+            run = ToolLoopRun(model="test", messages=[])
             loop_policy = ToolLoopPolicy(
-                tools = [],
-                max_calls = 1,
-                timeout = 1,
-                rag_scope = None,
-                permission_mode = "full",
-                confirm_calls = False,
-                bypass_permissions = False,
+                tools=[],
+                max_calls=1,
+                timeout=1,
+                rag_scope=None,
+                permission_mode="full",
+                confirm_calls=False,
+                bypass_permissions=False,
             )
             if loop_name == "studio":
                 stream = stream_with_studio_tools(
-                    transport, run = run, policy = loop_policy, cancel_event = threading.Event()
+                    transport, run=run, policy=loop_policy, cancel_event=threading.Event()
                 )
             else:
                 from core.inference.openai_codex_tool_loop import (
@@ -452,25 +455,26 @@ def test_every_tool_loop_refuses_full_access_before_model_or_tool_dispatch(accou
                     CodexToolPolicy,
                     stream_codex_with_studio_tools,
                 )
+
                 stream = stream_codex_with_studio_tools(
-                    client = None,
-                    cancel_event = threading.Event(),
-                    run = CodexRunContext(
-                        model = "test",
-                        messages = [],
-                        provider_id = "test",
-                        thread_id = None,
-                        session_id = None,
-                        reasoning_effort = None,
+                    client=None,
+                    cancel_event=threading.Event(),
+                    run=CodexRunContext(
+                        model="test",
+                        messages=[],
+                        provider_id="test",
+                        thread_id=None,
+                        session_id=None,
+                        reasoning_effort=None,
                     ),
-                    policy = CodexToolPolicy(
-                        tools = [],
-                        max_calls = 1,
-                        timeout = 1,
-                        rag_scope = None,
-                        permission_mode = "full",
-                        confirm_calls = False,
-                        bypass_permissions = False,
+                    policy=CodexToolPolicy(
+                        tools=[],
+                        max_calls=1,
+                        timeout=1,
+                        rag_scope=None,
+                        permission_mode="full",
+                        confirm_calls=False,
+                        bypass_permissions=False,
                     ),
                 )
 
@@ -486,7 +490,7 @@ def test_every_tool_loop_refuses_full_access_before_model_or_tool_dispatch(accou
 
 def test_mcp_lru_never_evicts_another_accounts_session(monkeypatch):
     key = run_as(BOB, mcp_client._session_key, "https://public.example/mcp", None, "chat")
-    session = SimpleNamespace(last_used = 0, in_flight = 0)
+    session = SimpleNamespace(last_used=0, in_flight=0)
     monkeypatch.setattr(mcp_client, "_mcp_sessions", {key: session})
     monkeypatch.setattr(mcp_client, "_MAX_SESSIONS", 1)
     assert run_as(ALICE, mcp_client._evict_lru_locked) == []
@@ -495,12 +499,12 @@ def test_mcp_lru_never_evicts_another_accounts_session(monkeypatch):
 
 def test_mcp_release_overshoot_never_evicts_another_accounts_session(monkeypatch):
     bob_key = run_as(BOB, mcp_client._session_key, "https://public.example/mcp", None, "chat")
-    bob = SimpleNamespace(last_used = 0, in_flight = 0)
+    bob = SimpleNamespace(last_used=0, in_flight=0)
     alice_old_key = run_as(ALICE, mcp_client._session_key, "https://a.example/mcp", None, "chat")
-    alice_old = SimpleNamespace(last_used = 1, in_flight = 0, defunct = False)
+    alice_old = SimpleNamespace(last_used=1, in_flight=0, defunct=False)
     alice_new_key = run_as(ALICE, mcp_client._session_key, "https://b.example/mcp", None, "chat")
     alice_new = SimpleNamespace(
-        last_used = 2, in_flight = 1, defunct = False, account_id = ALICE.account_id
+        last_used=2, in_flight=1, defunct=False, account_id=ALICE.account_id
     )
     sessions = {bob_key: bob, alice_old_key: alice_old, alice_new_key: alice_new}
     monkeypatch.setattr(mcp_client, "_mcp_sessions", sessions)
@@ -522,7 +526,7 @@ def test_mcp_public_transport_pins_dns_and_checks_redirects(monkeypatch):
             seen.append(
                 (str(request.url), request.headers["host"], request.extensions["sni_hostname"])
             )
-            return http.Response(302, headers = {"location": "http://127.0.0.1/private"})
+            return http.Response(302, headers={"location": "http://127.0.0.1/private"})
 
         monkeypatch.setattr(http.AsyncHTTPTransport, "handle_async_request", send)
 
@@ -550,7 +554,7 @@ def test_managed_transport_and_oauth_use_public_http_factory(monkeypatch):
     )
     monkeypatch.setattr(fastmcp, "Client", lambda transport: transport)
     monkeypatch.setattr(transports, "StreamableHttpTransport", lambda **kwargs: kwargs)
-    oauth = SimpleNamespace(httpx_client_factory = None)
+    oauth = SimpleNamespace(httpx_client_factory=None)
     monkeypatch.setattr(mcp_client, "_oauth", lambda url: oauth)
     result = run_as(ALICE, mcp_client._client, "https://public.example/mcp", None, True)
     assert result["httpx_client_factory"] is mcp_client._public_http_client_factory
@@ -591,6 +595,7 @@ def test_tool_loops_keep_account_in_real_worker_thread(loop_name, monkeypatch):
     ]
     if loop_name == "gguf":
         from test_llama_cpp_tool_loop import _make_backend, _sse, _done, _structured_tool_call
+
         backend = _make_backend(
             monkeypatch,
             [
@@ -603,14 +608,15 @@ def test_tool_loops_keep_account_in_real_worker_thread(loop_name, monkeypatch):
         def run():
             return list(
                 backend.generate_chat_completion_with_tools(
-                    messages = [{"role": "user", "content": "run"}],
-                    tools = schema,
-                    permission_mode = "off",
-                    max_tool_iterations = 1,
+                    messages=[{"role": "user", "content": "run"}],
+                    tools=schema,
+                    permission_mode="off",
+                    max_tool_iterations=1,
                 )
             )
     elif loop_name == "safetensors":
         from core.inference.safetensors_agentic import run_safetensors_tool_loop
+
         turns = iter(
             ['<tool_call>{"name":"python","arguments":{"code":"print(1)"}}</tool_call>', "done"]
         )
@@ -618,16 +624,17 @@ def test_tool_loops_keep_account_in_real_worker_thread(loop_name, monkeypatch):
         def run():
             return list(
                 run_safetensors_tool_loop(
-                    single_turn = lambda *_: iter([next(turns)]),
-                    messages = [{"role": "user", "content": "run"}],
-                    tools = schema,
-                    execute_tool = execute,
-                    permission_mode = "off",
-                    max_tool_iterations = 1,
+                    single_turn=lambda *_: iter([next(turns)]),
+                    messages=[{"role": "user", "content": "run"}],
+                    tools=schema,
+                    execute_tool=execute,
+                    permission_mode="off",
+                    max_tool_iterations=1,
                 )
             )
     else:
         from test_studio_tool_loop import FakeTransport, _run, _sse, _DONE
+
         transport = FakeTransport(
             [
                 [
@@ -645,15 +652,15 @@ def test_tool_loops_keep_account_in_real_worker_thread(loop_name, monkeypatch):
                             ]
                         }
                     ),
-                    _sse(finish = "tool_calls"),
+                    _sse(finish="tool_calls"),
                     _DONE,
                 ],
-                [_sse({"content": "done"}), _sse(finish = "stop"), _DONE],
+                [_sse({"content": "done"}), _sse(finish="stop"), _DONE],
             ]
         )
 
         def run():
-            return _run(transport, tools = schema)
+            return _run(transport, tools=schema)
 
     run_as(ALICE, run)
     assert seen == [ALICE.account_id]
@@ -667,7 +674,7 @@ def test_retrieval_worker_retains_account():
         None,
         5,
         None,
-        search_fn = lambda *args: current_account_id(),
+        search_fn=lambda *args: current_account_id(),
     )
     assert result == ALICE.account_id
 
@@ -679,7 +686,7 @@ def test_managed_sandbox_does_not_fall_back_to_owner_on_root_error(monkeypatch):
         raise RuntimeError("root unavailable")
 
     monkeypatch.setattr(storage_roots, "workspace_root", unavailable)
-    with pytest.raises(RuntimeError, match = "root unavailable"):
+    with pytest.raises(RuntimeError, match="root unavailable"):
         run_as(ALICE, tools.sandbox_root)
     assert tools.sandbox_root() == tools._legacy_sandbox_root()
 
@@ -697,7 +704,7 @@ def test_transport_refuses_managed_stdio_before_constructing_client(monkeypatch)
 def test_sandbox_recovery_runs_once_for_each_account(isolated, monkeypatch):
     seen = []
     monkeypatch.setattr(tools, "_swept_detached", True)
-    monkeypatch.setattr(tools, "_swept_detached_accounts", set(), raising = False)
+    monkeypatch.setattr(tools, "_swept_detached_accounts", set(), raising=False)
     monkeypatch.setattr(
         tools, "sweep_detached_sandboxes", lambda: seen.append(current_account_id())
     )

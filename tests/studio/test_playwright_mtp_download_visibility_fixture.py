@@ -30,7 +30,7 @@ def test_large_cache_fixture_reports_size_without_allocating_it(tmp_path):
 
 
 def test_vite_launch_resolves_the_platform_npm_executable():
-    source = SCRIPT.read_text(encoding = "utf-8")
+    source = SCRIPT.read_text(encoding="utf-8")
 
     assert 'npm = shutil.which("npm") or "npm"' in source
     assert '[\n            "npm",' not in source

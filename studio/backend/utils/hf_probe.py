@@ -38,12 +38,12 @@ def hf_file_definitely_absent(
 
     try:
         url = hf_hub_url(
-            repo_id = repo_id,
-            filename = filename,
-            repo_type = repo_type,
-            revision = revision,
+            repo_id=repo_id,
+            filename=filename,
+            repo_type=repo_type,
+            revision=revision,
         )
-        get_hf_file_metadata(url, token = token)
+        get_hf_file_metadata(url, token=token)
     except LocalEntryNotFoundError:
         return False
     except EntryNotFoundError:

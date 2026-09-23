@@ -48,22 +48,22 @@ SERVER_TUNING_FIELDS = ("load_mode", "spec_draft_cache_type", "ctx_checkpoints",
 # spec_draft_cache_type needs a mode that loads a separate drafter, so dspark is
 # part of the shared payload rather than part of the tuning group.
 PRE_TUNING_PAYLOAD = dict(
-    custom_context_length = 8192,
-    kv_cache_dtype = "q8_0",
-    speculative_type = "dspark",
-    spec_draft_n_max = 4,
-    n_batch = 4096,
-    tensor_parallel = True,
+    custom_context_length=8192,
+    kv_cache_dtype="q8_0",
+    speculative_type="dspark",
+    spec_draft_n_max=4,
+    n_batch=4096,
+    tensor_parallel=True,
 )
 
 # The four at values that are falsy but meaningful: no checkpoints kept, no cache
 # limit. A test that used only truthy values would pass against a route that stored
 # them on truth rather than on "is not None".
 TUNING_PAYLOAD = dict(
-    load_mode = "mmap",
-    spec_draft_cache_type = "q8_0",
-    ctx_checkpoints = 0,
-    cache_ram = -1,
+    load_mode="mmap",
+    spec_draft_cache_type="q8_0",
+    ctx_checkpoints=0,
+    cache_ram=-1,
 )
 
 
@@ -78,7 +78,7 @@ def test_a_row_written_before_the_tuning_group_still_loads(override_store):
     }
 
     assert settings.normalize_model_override(legacy_row) == legacy_row
-    kwargs = settings.model_override_load_kwargs(legacy_row, is_gguf = True)
+    kwargs = settings.model_override_load_kwargs(legacy_row, is_gguf=True)
     assert kwargs == {
         "max_seq_length": 4096,
         "llama_extra_args": ["--numa", "distribute"],
@@ -106,7 +106,7 @@ def test_a_field_from_a_newer_build_is_ignored_rather_than_fatal(override_store)
     }
     # The load path reads the raw stored row, not the normalized one, so it is the
     # one that would raise on an unexpected key if either reader enumerated the dict.
-    assert settings.model_override_load_kwargs(from_the_future, is_gguf = True) == {
+    assert settings.model_override_load_kwargs(from_the_future, is_gguf=True) == {
         "max_seq_length": 8192,
         "load_mode": "mmap",
     }
@@ -124,7 +124,7 @@ def test_a_client_that_does_not_know_the_tuning_group_cannot_erase_it(override_s
     the LAN still running the old build, and a browser holding a cached bundle against
     a server that has been upgraded under it.
     """
-    _put(MODEL, **PRE_TUNING_PAYLOAD, **TUNING_PAYLOAD, mirrors_server_tuning = True)
+    _put(MODEL, **PRE_TUNING_PAYLOAD, **TUNING_PAYLOAD, mirrors_server_tuning=True)
     before = settings.get_model_override(MODEL)
     for field, value in TUNING_PAYLOAD.items():
         assert before[field] == value
@@ -138,7 +138,7 @@ def test_a_client_that_does_not_know_the_tuning_group_cannot_erase_it(override_s
         assert after[field] == value, f"{field} was deleted by a save that never mentioned it"
     assert after == before
     # And they still reach the command line.
-    kwargs = settings.model_override_load_kwargs(after, is_gguf = True)
+    kwargs = settings.model_override_load_kwargs(after, is_gguf=True)
     for field, value in TUNING_PAYLOAD.items():
         assert kwargs[field] == value
 
@@ -147,10 +147,10 @@ def test_a_client_that_does_know_them_still_clears_by_omission(override_store):
     # The other side of the trade. Preserving on every omission would be simpler and
     # wrong: the panel clears one of these by sending nothing for it, so a blanket
     # carry-over would swap a mixed-version window for a field no one can ever unset.
-    _put(MODEL, **PRE_TUNING_PAYLOAD, **TUNING_PAYLOAD, mirrors_server_tuning = True)
+    _put(MODEL, **PRE_TUNING_PAYLOAD, **TUNING_PAYLOAD, mirrors_server_tuning=True)
     assert settings.get_model_override(MODEL)["load_mode"] == TUNING_PAYLOAD["load_mode"]
 
-    _put(MODEL, **PRE_TUNING_PAYLOAD, mirrors_server_tuning = True)
+    _put(MODEL, **PRE_TUNING_PAYLOAD, mirrors_server_tuning=True)
     after = settings.get_model_override(MODEL)
     for field in SERVER_TUNING_FIELDS:
         assert field not in after, f"{field} survived an explicit clear"
@@ -160,10 +160,10 @@ def test_the_preservation_flag_is_not_itself_a_saved_field(override_store):
     # It is a write mode, like fill_absent_fields. Both are bools, so exclude_none does
     # not drop them, and either one left in saved_fields would make every payload look
     # non-empty and break the legacy "no fields means remove".
-    _put(MODEL, **PRE_TUNING_PAYLOAD, **TUNING_PAYLOAD, mirrors_server_tuning = True)
+    _put(MODEL, **PRE_TUNING_PAYLOAD, **TUNING_PAYLOAD, mirrors_server_tuning=True)
     assert settings.get_model_override(MODEL)
 
-    _put(MODEL, mirrors_server_tuning = True)
+    _put(MODEL, mirrors_server_tuning=True)
     assert settings.get_model_override(MODEL) == {}
 
 
@@ -172,7 +172,7 @@ def test_a_legacy_model_id_only_clear_is_not_undone_by_preservation(override_sto
     # override. That leaves payload.remove None while is_removal is true, so a gate on
     # the field rather than the verdict would carry the tuning forward and rebuild a
     # non-empty row -- the request succeeds and the settings keep applying.
-    _put(MODEL, **PRE_TUNING_PAYLOAD, **TUNING_PAYLOAD, mirrors_server_tuning = True)
+    _put(MODEL, **PRE_TUNING_PAYLOAD, **TUNING_PAYLOAD, mirrors_server_tuning=True)
     assert settings.get_model_override(MODEL)
 
     _put(MODEL)
@@ -186,7 +186,7 @@ def test_tuning_carries_over_from_the_bare_repo_entry(override_store):
     # row. Same shape for the snapshot-path and cached-alias spellings that walk beside
     # it, which need HF cache state to reach and are covered by the alias sweep tests.
     bare_id = "unsloth/Repo-GGUF"
-    _put(bare_id, **PRE_TUNING_PAYLOAD, **TUNING_PAYLOAD, mirrors_server_tuning = True)
+    _put(bare_id, **PRE_TUNING_PAYLOAD, **TUNING_PAYLOAD, mirrors_server_tuning=True)
     assert settings.get_model_override(bare_id)["load_mode"] == TUNING_PAYLOAD["load_mode"]
 
     # The older client saving the qualified key: it never sends the group, and its row
@@ -204,9 +204,9 @@ def test_carry_over_does_not_activate_tuning_from_a_row_no_load_reads(override_s
     # it up into the winning row would switch it on -- from a save that was about
     # something else entirely, on a client with no control for these fields to show it.
     bare_id = "unsloth/Repo-GGUF"
-    _put(bare_id, **PRE_TUNING_PAYLOAD, **TUNING_PAYLOAD, mirrors_server_tuning = True)
+    _put(bare_id, **PRE_TUNING_PAYLOAD, **TUNING_PAYLOAD, mirrors_server_tuning=True)
     # The qualified row exists and wins, and has none of the group.
-    _put(MODEL, **PRE_TUNING_PAYLOAD, mirrors_server_tuning = True)
+    _put(MODEL, **PRE_TUNING_PAYLOAD, mirrors_server_tuning=True)
     _, active = settings.resolve_override_for_load(MODEL)
     assert active, "precondition: the qualified row is what a load resolves to"
     assert not any(field in active for field in SERVER_TUNING_FIELDS)
@@ -234,8 +234,8 @@ def test_carry_over_reads_the_cached_spelling_a_load_would_resolve_to(override_s
     # what makes it worth pinning.
     snapshot_id = "/cache/models--org--Repo-GGUF/snapshots/abc:Q4_K_M"
     repo_id = "org/Repo-GGUF:Q4_K_M"
-    live_tuning = dict(TUNING_PAYLOAD, load_mode = "mmap", cache_ram = -1)
-    dormant_tuning = dict(TUNING_PAYLOAD, load_mode = "direct", cache_ram = 4096)
+    live_tuning = dict(TUNING_PAYLOAD, load_mode="mmap", cache_ram=-1)
+    dormant_tuning = dict(TUNING_PAYLOAD, load_mode="direct", cache_ram=4096)
 
     # Written straight to the store rather than through the route: a save under either
     # spelling retires the other, which is the very cleanup this test is about, so the
@@ -259,8 +259,8 @@ def test_a_fill_pass_adds_the_tuning_group_without_disturbing_the_row(override_s
     # The one merge path there is, and the one the backfill uses. A fill must not be
     # able to cause the erasure above, or the upgrade pass itself would strip the row
     # it was run to complete.
-    _put(MODEL, **TUNING_PAYLOAD, speculative_type = "dspark")
-    _put(MODEL, custom_context_length = 8192, fill_absent_fields = True)
+    _put(MODEL, **TUNING_PAYLOAD, speculative_type="dspark")
+    _put(MODEL, custom_context_length=8192, fill_absent_fields=True)
 
     stored = settings.get_model_override(MODEL)
     assert stored["custom_context_length"] == 8192
@@ -284,7 +284,7 @@ def test_the_draft_cache_dtype_is_dropped_under_a_mode_with_no_drafter(
     that never exists, so the drop is right; the point of pinning it is that it is
     SILENT, and a user who sets the dtype and then changes the mode is not told.
     """
-    _put(MODEL, spec_draft_cache_type = "q8_0", speculative_type = speculative_type)
+    _put(MODEL, spec_draft_cache_type="q8_0", speculative_type=speculative_type)
 
     assert "spec_draft_cache_type" not in settings.get_model_override(MODEL)
 
@@ -293,7 +293,7 @@ def test_the_draft_cache_dtype_survives_a_mode_that_does_load_a_drafter(override
     # The other side of P10, so the parametrize above cannot pass by dropping the
     # field unconditionally.
     for mode in sorted(settings.SEPARATE_DRAFT_MODEL_SPEC_TYPES):
-        _put(MODEL, spec_draft_cache_type = "q8_0", speculative_type = mode)
+        _put(MODEL, spec_draft_cache_type="q8_0", speculative_type=mode)
         assert settings.get_model_override(MODEL)["spec_draft_cache_type"] == "q8_0"
 
 
@@ -328,7 +328,7 @@ OVERRIDE_KEY_FOLDS = [
 def test_an_override_key_resolves_the_way_the_browser_folds_it(
     override_store, stored_key, lookup_key, same_model
 ):
-    settings.set_model_override(stored_key, max_seq_length = 4096)
+    settings.set_model_override(stored_key, max_seq_length=4096)
 
     resolved = settings.resolve_model_override_key(lookup_key)
     if same_model:
@@ -342,8 +342,8 @@ def test_an_override_key_resolves_the_way_the_browser_folds_it(
 def test_two_keys_that_fold_together_resolve_to_nothing(override_store):
     # An upgrade can leave both casings behind. Picking one at enumeration order is
     # another model's settings half the time, so an ambiguous fold matches nothing.
-    settings.set_model_override("C:\\models\\Foo.gguf", max_seq_length = 4096)
-    settings.set_model_override("C:\\models\\FOO.gguf", max_seq_length = 8192)
+    settings.set_model_override("C:\\models\\Foo.gguf", max_seq_length=4096)
+    settings.set_model_override("C:\\models\\FOO.gguf", max_seq_length=8192)
 
     assert settings.resolve_model_override_key("c:/models/foo.gguf") is None
 
@@ -367,7 +367,7 @@ def test_the_disable_aliases_survive_override_normalization():
 
 # The pair the route learned to forward one release after the four: the same replace-on-write
 # exposure, and a build that mirrors the tuning group can still predate it.
-REASONING_PAYLOAD = dict(reasoning_budget = 512, reasoning_budget_message = "Wrap up.")
+REASONING_PAYLOAD = dict(reasoning_budget=512, reasoning_budget_message="Wrap up.")
 
 
 def test_a_client_that_does_not_know_the_reasoning_pair_cannot_erase_it(override_store):
@@ -375,21 +375,21 @@ def test_a_client_that_does_not_know_the_reasoning_pair_cannot_erase_it(override
         MODEL,
         **PRE_TUNING_PAYLOAD,
         **REASONING_PAYLOAD,
-        mirrors_server_tuning = True,
-        mirrors_reasoning_budget = True,
+        mirrors_server_tuning=True,
+        mirrors_reasoning_budget=True,
     )
     before = settings.get_model_override(MODEL)
     for field, value in REASONING_PAYLOAD.items():
         assert before[field] == value
 
     # A build that mirrors the four but predates the pair: it cannot set the new flag.
-    _put(MODEL, **PRE_TUNING_PAYLOAD, mirrors_server_tuning = True)
+    _put(MODEL, **PRE_TUNING_PAYLOAD, mirrors_server_tuning=True)
     after = settings.get_model_override(MODEL)
 
     for field, value in REASONING_PAYLOAD.items():
         assert after[field] == value, f"{field} was deleted by a save that never mentioned it"
     assert after == before
-    kwargs = settings.model_override_load_kwargs(after, is_gguf = True)
+    kwargs = settings.model_override_load_kwargs(after, is_gguf=True)
     for field, value in REASONING_PAYLOAD.items():
         assert kwargs[field] == value
 
@@ -399,22 +399,22 @@ def test_a_client_that_does_know_the_reasoning_pair_still_clears_by_omission(ove
         MODEL,
         **PRE_TUNING_PAYLOAD,
         **REASONING_PAYLOAD,
-        mirrors_server_tuning = True,
-        mirrors_reasoning_budget = True,
+        mirrors_server_tuning=True,
+        mirrors_reasoning_budget=True,
     )
     assert settings.get_model_override(MODEL)["reasoning_budget"] == 512
 
-    _put(MODEL, **PRE_TUNING_PAYLOAD, mirrors_server_tuning = True, mirrors_reasoning_budget = True)
+    _put(MODEL, **PRE_TUNING_PAYLOAD, mirrors_server_tuning=True, mirrors_reasoning_budget=True)
     after = settings.get_model_override(MODEL)
     for field in REASONING_PAYLOAD:
         assert field not in after, f"{field} survived an explicit clear"
 
 
 def test_the_reasoning_flag_is_not_itself_a_saved_field(override_store):
-    _put(MODEL, **PRE_TUNING_PAYLOAD, mirrors_reasoning_budget = True)
+    _put(MODEL, **PRE_TUNING_PAYLOAD, mirrors_reasoning_budget=True)
     assert settings.get_model_override(MODEL)
 
-    _put(MODEL, mirrors_reasoning_budget = True)
+    _put(MODEL, mirrors_reasoning_budget=True)
     assert settings.get_model_override(MODEL) == {}
 
 
@@ -436,25 +436,25 @@ def test_a_reset_tombstone_outlives_a_later_default_save(override_store, fallbac
     settings.set_model_override(bare, **fallback)
 
     # The user resets the control on the quant: a tombstone, not an empty row.
-    _put(MODEL, reasoning_budget = -1, mirrors_server_tuning = True, mirrors_reasoning_budget = True)
+    _put(MODEL, reasoning_budget=-1, mirrors_server_tuning=True, mirrors_reasoning_budget=True)
     assert settings.get_model_override(MODEL).get("reasoning_budget") == -1
 
     # An unrelated save from the same build, controls still at their defaults.
-    _put(MODEL, mirrors_server_tuning = True, mirrors_reasoning_budget = True)
+    _put(MODEL, mirrors_server_tuning=True, mirrors_reasoning_budget=True)
     after = settings.get_model_override(MODEL)
     assert (
         after.get("reasoning_budget") == -1
     ), "the tombstone was dropped, so the bare row's --reasoning-budget 512 applies again"
 
     # And it still strips the shadowed flag off the load.
-    kwargs = settings.model_override_load_kwargs(after, is_gguf = True)
+    kwargs = settings.model_override_load_kwargs(after, is_gguf=True)
     assert kwargs["reasoning_budget"] == -1
-    key, resolved = settings.resolve_override_for_load(bare, variant = "Q4_K_M")
+    key, resolved = settings.resolve_override_for_load(bare, variant="Q4_K_M")
     assert key == MODEL
     assert resolved.get("reasoning_budget") == -1
     assert resolved.get("reasoning_budget_message", "") == ""
     # Another quant still inherits the original fallback.
-    _, sibling = settings.resolve_override_for_load(bare, variant = "Q8_0")
+    _, sibling = settings.resolve_override_for_load(bare, variant="Q8_0")
     assert sibling == fallback
 
 
@@ -464,8 +464,8 @@ def test_a_reset_tombstone_outlives_a_later_default_save(override_store, fallbac
 def test_standalone_reasoning_reset_survives_a_later_default_save(override_store, fallback):
     path = "/srv/models/model-Q4_K_M.gguf"
     settings.set_model_override(f"{path}:Q4_K_M", **fallback)
-    _put(path, reasoning_budget = -1, reasoning_budget_message = "", mirrors_reasoning_budget = True)
-    _put(path, mirrors_reasoning_budget = True)
+    _put(path, reasoning_budget=-1, reasoning_budget_message="", mirrors_reasoning_budget=True)
+    _put(path, mirrors_reasoning_budget=True)
     key, resolved = settings.resolve_override_for_load(path)
     assert key == path
     assert resolved.get("reasoning_budget") == -1
@@ -474,6 +474,6 @@ def test_standalone_reasoning_reset_survives_a_later_default_save(override_store
 
 def test_no_tombstone_is_invented_without_a_fallback_to_shadow(override_store):
     # The other side: with nothing to shadow, a default save leaves no row at all.
-    _put(MODEL, reasoning_budget = -1, mirrors_server_tuning = True, mirrors_reasoning_budget = True)
-    _put(MODEL, mirrors_server_tuning = True, mirrors_reasoning_budget = True)
+    _put(MODEL, reasoning_budget=-1, mirrors_server_tuning=True, mirrors_reasoning_budget=True)
+    _put(MODEL, mirrors_server_tuning=True, mirrors_reasoning_budget=True)
     assert settings.get_model_override(MODEL) == {}

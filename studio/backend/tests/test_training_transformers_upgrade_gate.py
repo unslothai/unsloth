@@ -30,17 +30,17 @@ UPGRADE = {
 
 
 def _route():
-    pytest.importorskip("fastapi", reason = "inference stack not installed")
-    return pytest.importorskip("routes.inference", reason = "inference stack not installed")
+    pytest.importorskip("fastapi", reason="inference stack not installed")
+    return pytest.importorskip("routes.inference", reason="inference stack not installed")
 
 
 def _stub(
     monkeypatch,
     *,
-    upgrade = None,
-    latest_tier = False,
-    trust_remote_code = False,
-    inspected = None,
+    upgrade=None,
+    latest_tier=False,
+    trust_remote_code=False,
+    inspected=None,
 ):
     """Answer the three preflights the route composes, and nothing else.
 
@@ -81,21 +81,22 @@ def _stub(
 
 def _call(
     inf_mod,
-    model = MODEL,
-    hf_token = None,
+    model=MODEL,
+    hf_token=None,
     **fields,
 ):
     from models.inference import TransformersUpgradeCheckRequest
+
     return asyncio.run(
         inf_mod.check_transformers_upgrade_route(
-            TransformersUpgradeCheckRequest(model_name = model, hf_token = hf_token, **fields),
+            TransformersUpgradeCheckRequest(model_name=model, hf_token=hf_token, **fields),
             "tester",
         )
     )
 
 
 def test_installable_upgrade_is_reported_with_its_version(monkeypatch):
-    inf_mod = _stub(monkeypatch, upgrade = UPGRADE)
+    inf_mod = _stub(monkeypatch, upgrade=UPGRADE)
     response = _call(inf_mod)
     assert response.requires_transformers_upgrade is True
     assert response.transformers_upgrade.model_type == "muse_glimmer"
@@ -109,7 +110,7 @@ def test_dev_only_upgrade_does_not_claim_16bit(monkeypatch):
     # Unsloth never installs a transformers dev build, so nothing about the run changes.
     inf_mod = _stub(
         monkeypatch,
-        upgrade = {**UPGRADE, "supported_in_pypi": False},
+        upgrade={**UPGRADE, "supported_in_pypi": False},
     )
     response = _call(inf_mod)
     assert response.requires_transformers_upgrade is True
@@ -119,7 +120,7 @@ def test_dev_only_upgrade_does_not_claim_16bit(monkeypatch):
 def test_already_routed_model_reports_16bit_without_an_upgrade(monkeypatch):
     # The second run on a provisioned sidecar: nothing to install, still no 4-bit. The
     # Configure preview reads "QLoRA - 4-bit" without this, understating the run's VRAM.
-    inf_mod = _stub(monkeypatch, upgrade = None, latest_tier = True)
+    inf_mod = _stub(monkeypatch, upgrade=None, latest_tier=True)
     response = _call(inf_mod)
     assert response.requires_transformers_upgrade is False
     assert response.transformers_upgrade is None
@@ -128,7 +129,7 @@ def test_already_routed_model_reports_16bit_without_an_upgrade(monkeypatch):
 
 
 def test_supported_model_needs_nothing(monkeypatch):
-    inf_mod = _stub(monkeypatch, upgrade = None, latest_tier = False)
+    inf_mod = _stub(monkeypatch, upgrade=None, latest_tier=False)
     response = _call(inf_mod)
     assert response.requires_transformers_upgrade is False
     assert response.forces_16bit is False
@@ -137,7 +138,7 @@ def test_supported_model_needs_nothing(monkeypatch):
 
 def test_custom_code_fallback_is_reported(monkeypatch):
     # Feeds the dialog's "continue with custom code" way out, exactly as /validate does.
-    inf_mod = _stub(monkeypatch, upgrade = UPGRADE, trust_remote_code = True)
+    inf_mod = _stub(monkeypatch, upgrade=UPGRADE, trust_remote_code=True)
     assert _call(inf_mod).requires_trust_remote_code is True
 
 
@@ -147,7 +148,7 @@ def test_a_merely_offered_upgrade_keeps_4bit_when_custom_code_can_load_it(monkey
     # 16-bit would tell the preview 4-bit is unavailable when it is not, oversizing the
     # run's VRAM. /validate exempts these the same way (_install_only_upgrade is gated
     # on `not requires_trust_remote_code`).
-    inf_mod = _stub(monkeypatch, upgrade = UPGRADE, trust_remote_code = True)
+    inf_mod = _stub(monkeypatch, upgrade=UPGRADE, trust_remote_code=True)
     response = _call(inf_mod)
     assert response.requires_transformers_upgrade is True
     assert response.forces_16bit is False
@@ -156,7 +157,7 @@ def test_a_merely_offered_upgrade_keeps_4bit_when_custom_code_can_load_it(monkey
 def test_an_active_sidecar_forces_16bit_even_with_custom_code(monkeypatch):
     # No install to decline: the sidecar already routes this model, and it trains 16-bit
     # whatever the repo ships.
-    inf_mod = _stub(monkeypatch, upgrade = UPGRADE, trust_remote_code = True, latest_tier = True)
+    inf_mod = _stub(monkeypatch, upgrade=UPGRADE, trust_remote_code=True, latest_tier=True)
     assert _call(inf_mod).forces_16bit is True
 
 
@@ -181,16 +182,16 @@ def test_a_failing_preflight_never_fails_the_start(monkeypatch):
 def _cached_snapshot(
     monkeypatch,
     root,
-    repo_id = "org/model",
-    commit = "commit-a",
+    repo_id="org/model",
+    commit="commit-a",
 ):
     """A real HF-layout cache entry: the pin resolvers validate the layout AND the root."""
     from hub.utils import hf_cache_state
 
     monkeypatch.setattr(hf_cache_state, "hf_cache_roots", lambda **kwargs: [root])
     snapshot = root / f"models--{repo_id.replace('/', '--')}" / "snapshots" / commit
-    snapshot.mkdir(parents = True)
-    (snapshot / "config.json").write_text("{}", encoding = "utf-8")
+    snapshot.mkdir(parents=True)
+    (snapshot / "config.json").write_text("{}", encoding="utf-8")
     (snapshot / "model.safetensors").write_bytes(b"weights")
     return snapshot
 
@@ -201,15 +202,15 @@ def test_a_pinned_snapshot_is_what_gets_inspected(monkeypatch, tmp_path):
     # (resolve_training_model_load_target returns model_snapshot_path or model_name). A
     # repo's current config.json says nothing about the snapshot this run opens.
     inspected: list = []
-    inf_mod = _stub(monkeypatch, upgrade = None, inspected = inspected)
+    inf_mod = _stub(monkeypatch, upgrade=None, inspected=inspected)
     snapshot = _cached_snapshot(monkeypatch, tmp_path)
 
     response = _call(
         inf_mod,
-        model = "org/model",
-        model_snapshot_path = str(snapshot),
-        model_snapshot_repo_id = "org/model",
-        prefer_local_cache = True,
+        model="org/model",
+        model_snapshot_path=str(snapshot),
+        model_snapshot_repo_id="org/model",
+        prefer_local_cache=True,
     )
 
     assert inspected, "the route must inspect something"
@@ -222,14 +223,14 @@ def test_a_selected_cache_directory_resolves_to_its_snapshot(monkeypatch, tmp_pa
     # prefer_local_cache without an exact pin, the second branch of the scan route's
     # precedence: the selected cache directory resolves to the snapshot inside it.
     inspected: list = []
-    inf_mod = _stub(monkeypatch, upgrade = None, inspected = inspected)
+    inf_mod = _stub(monkeypatch, upgrade=None, inspected=inspected)
     snapshot = _cached_snapshot(monkeypatch, tmp_path)
 
     _call(
         inf_mod,
-        model = "org/model",
-        prefer_local_cache = True,
-        model_local_path = str(snapshot.parent.parent),
+        model="org/model",
+        prefer_local_cache=True,
+        model_local_path=str(snapshot.parent.parent),
     )
 
     assert all(target == str(snapshot) for target in inspected), inspected
@@ -243,7 +244,7 @@ def test_the_lora_base_is_resolved_from_the_pinned_snapshot(monkeypatch, tmp_pat
     # so a repo that repointed base_model_name_or_path since the pin was taken gets every
     # answer for a base the run never opens.
     resolved_from: list = []
-    inf_mod = _stub(monkeypatch, upgrade = None)
+    inf_mod = _stub(monkeypatch, upgrade=None)
     snapshot = _cached_snapshot(monkeypatch, tmp_path)
 
     def _base(identifier, *args, **kwargs):
@@ -254,10 +255,10 @@ def test_the_lora_base_is_resolved_from_the_pinned_snapshot(monkeypatch, tmp_pat
 
     _call(
         inf_mod,
-        model = "org/model",
-        model_snapshot_path = str(snapshot),
-        model_snapshot_repo_id = "org/model",
-        prefer_local_cache = True,
+        model="org/model",
+        model_snapshot_path=str(snapshot),
+        model_snapshot_repo_id="org/model",
+        prefer_local_cache=True,
     )
 
     assert resolved_from == [str(snapshot)], resolved_from
@@ -270,7 +271,7 @@ def test_a_known_cached_model_with_no_path_still_resolves_its_snapshot(monkeypat
     # path here judged those selections on the repo's current architecture while the
     # worker loads the snapshot.
     inspected: list = []
-    inf_mod = _stub(monkeypatch, upgrade = None, inspected = inspected)
+    inf_mod = _stub(monkeypatch, upgrade=None, inspected=inspected)
     snapshot = _cached_snapshot(monkeypatch, tmp_path)
     from hub.utils import hf_cache_state
 
@@ -278,14 +279,14 @@ def test_a_known_cached_model_with_no_path_still_resolves_its_snapshot(monkeypat
         hf_cache_state, "iter_repo_cache_dirs", lambda *a, **k: [snapshot.parent.parent]
     )
 
-    _call(inf_mod, model = "org/model", prefer_local_cache = True)
+    _call(inf_mod, model="org/model", prefer_local_cache=True)
 
     assert all(target == str(snapshot) for target in inspected), inspected
 
 
 def test_an_unpinned_model_is_still_checked_by_identifier(monkeypatch):
     inspected: list = []
-    inf_mod = _stub(monkeypatch, upgrade = None, inspected = inspected)
+    inf_mod = _stub(monkeypatch, upgrade=None, inspected=inspected)
     _call(inf_mod)
     assert all(target == MODEL for target in inspected), inspected
 
@@ -294,14 +295,14 @@ def test_an_unresolvable_pin_falls_back_to_the_identifier(monkeypatch, tmp_path)
     # _model_config_inspection_target 404s for a snapshot that is gone. This preflight is
     # additive, so it answers about the identifier rather than failing the start.
     inspected: list = []
-    inf_mod = _stub(monkeypatch, upgrade = None, inspected = inspected)
+    inf_mod = _stub(monkeypatch, upgrade=None, inspected=inspected)
 
     _call(
         inf_mod,
-        model = "org/model",
-        prefer_local_cache = True,
-        model_snapshot_path = str(tmp_path / "models--org--model" / "snapshots" / "gone"),
-        model_snapshot_repo_id = "org/model",
+        model="org/model",
+        prefer_local_cache=True,
+        model_snapshot_path=str(tmp_path / "models--org--model" / "snapshots" / "gone"),
+        model_snapshot_repo_id="org/model",
     )
 
     assert all(target == "org/model" for target in inspected), inspected
@@ -312,7 +313,7 @@ def test_an_exact_4bit_resume_is_flagged_before_the_install_is_offered(monkeypat
     # routes the model, and that sidecar is a persistent overlay: consenting to the
     # install on the way into a resume strands the checkpoint for good. The caller needs
     # to know before it shows the dialog.
-    inf_mod = _stub(monkeypatch, upgrade = UPGRADE, trust_remote_code = True)
+    inf_mod = _stub(monkeypatch, upgrade=UPGRADE, trust_remote_code=True)
     monkeypatch.setattr(
         "storage.studio_db.get_run",
         lambda run_id: {"config_json": {"load_in_4bit": True}} if run_id == "run-42" else None,
@@ -322,17 +323,17 @@ def test_an_exact_4bit_resume_is_flagged_before_the_install_is_offered(monkeypat
         lambda config: (True, True),
     )
 
-    assert _call(inf_mod, resume_run_id = "run-42").install_breaks_exact_resume is True
+    assert _call(inf_mod, resume_run_id="run-42").install_breaks_exact_resume is True
     # No run named, no claim: a fresh start has no checkpoint to strand.
     assert _call(inf_mod).install_breaks_exact_resume is False
     # An unknown run is not one to suppress an install for.
-    assert _call(inf_mod, resume_run_id = "missing").install_breaks_exact_resume is False
+    assert _call(inf_mod, resume_run_id="missing").install_breaks_exact_resume is False
 
 
 def test_an_already_active_sidecar_is_not_blamed_on_the_install(monkeypatch):
     # The overlay is already installed, so the resume is refused (or 16-bit) whatever
     # this route answers; suppressing the dialog would change nothing for the better.
-    inf_mod = _stub(monkeypatch, upgrade = UPGRADE, latest_tier = True)
+    inf_mod = _stub(monkeypatch, upgrade=UPGRADE, latest_tier=True)
     monkeypatch.setattr(
         "storage.studio_db.get_run", lambda run_id: {"config_json": {"load_in_4bit": True}}
     )
@@ -341,7 +342,7 @@ def test_an_already_active_sidecar_is_not_blamed_on_the_install(monkeypatch):
         lambda config: (True, True),
     )
 
-    assert _call(inf_mod, resume_run_id = "run-42").install_breaks_exact_resume is False
+    assert _call(inf_mod, resume_run_id="run-42").install_breaks_exact_resume is False
 
 
 def test_route_is_off_the_openai_compatible_mount():
@@ -361,7 +362,7 @@ def test_an_old_client_sends_the_identifier_alone():
     # in-place upgrade mid-restart) fails validation on a payload the route once took.
     from models.inference import TransformersUpgradeCheckRequest
 
-    request = TransformersUpgradeCheckRequest(model_name = MODEL)
+    request = TransformersUpgradeCheckRequest(model_name=MODEL)
     assert request.prefer_local_cache is False
     assert (request.model_local_path, request.model_snapshot_path) == (None, None)
     assert (request.model_snapshot_repo_id, request.resume_run_id) == (None, None)
@@ -372,7 +373,7 @@ def test_a_minimal_response_reads_as_the_pre_gate_behaviour():
     # precision claim, no refusal.
     from models.inference import TransformersUpgradeCheckResponse
 
-    response = TransformersUpgradeCheckResponse(model_name = MODEL)
+    response = TransformersUpgradeCheckResponse(model_name=MODEL)
     assert response.requires_transformers_upgrade is False
     assert response.requires_trust_remote_code is False
     assert response.latest_tier_active is False
@@ -406,7 +407,7 @@ def test_forces_16bit_over_every_combination(
             "pypi_version": "5.15.0" if installable else None,
         }
     inf_mod = _stub(
-        monkeypatch, upgrade = upgrade, latest_tier = latest_tier, trust_remote_code = custom_code
+        monkeypatch, upgrade=upgrade, latest_tier=latest_tier, trust_remote_code=custom_code
     )
     assert _call(inf_mod).forces_16bit is expected
 

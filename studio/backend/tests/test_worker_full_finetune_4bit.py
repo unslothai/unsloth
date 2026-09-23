@@ -19,11 +19,11 @@ def outputs(monkeypatch, tmp_path):
 def _model_dir(
     root,
     name,
-    config = None,
-    adapter = None,
+    config=None,
+    adapter=None,
 ):
     d = root / name
-    d.mkdir(parents = True)
+    d.mkdir(parents=True)
     (d / "config.json").write_text(json.dumps(config or {"model_type": "llama"}))
     (d / "model.safetensors").write_bytes(b"")
     if adapter is not None:
@@ -33,10 +33,10 @@ def _model_dir(
 
 def _mc(
     path,
-    is_lora = False,
-    base_model = None,
+    is_lora=False,
+    base_model=None,
 ):
-    return SimpleNamespace(is_lora = is_lora, path = path, base_model = base_model)
+    return SimpleNamespace(is_lora=is_lora, path=path, base_model=base_model)
 
 
 def test_full_finetune_output_loads_16bit(outputs):
@@ -47,12 +47,12 @@ def test_full_finetune_output_loads_16bit(outputs):
 
 def test_quantized_or_foreign_models_keep_4bit(outputs, tmp_path):
     quantized = _model_dir(outputs, "q", {"quantization_config": {"quant_method": "bitsandbytes"}})
-    adapter = _model_dir(outputs, "a", adapter = {})
+    adapter = _model_dir(outputs, "a", adapter={})
     outside = _model_dir(tmp_path / "exports", "merged")
     for path in (quantized, adapter, outside, "unsloth/Qwen3-0.6B"):
         assert worker._resolve_lora_4bit(_mc(path), True) is True, path
-    qlora = _model_dir(outputs, "qlora", adapter = {"unsloth_training_method": "qlora"})
-    assert worker._resolve_lora_4bit(_mc(qlora, is_lora = True, base_model = "x"), True) is True
+    qlora = _model_dir(outputs, "qlora", adapter={"unsloth_training_method": "qlora"})
+    assert worker._resolve_lora_4bit(_mc(qlora, is_lora=True, base_model="x"), True) is True
 
 
 def test_symlink_loop_under_outputs_keeps_4bit(outputs, monkeypatch):
@@ -62,7 +62,7 @@ def test_symlink_loop_under_outputs_keeps_4bit(outputs, monkeypatch):
     and RuntimeError is neither OSError nor ValueError. The call sites in this module and
     in routes/inference.py sit outside any handler, so an escape would surface as a 500.
     """
-    outputs.mkdir(parents = True, exist_ok = True)
+    outputs.mkdir(parents=True, exist_ok=True)
     looped, partner = outputs / "loop_a", outputs / "loop_b"
     looped.symlink_to(partner)
     partner.symlink_to(looped)

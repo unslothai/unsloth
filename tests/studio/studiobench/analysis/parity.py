@@ -1098,7 +1098,7 @@ def behaviour_policy(min_coverage: float, max_coverage: float) -> str:
     band written out by hand here drifts away from the one enforced, and the sentence a reader
     trusts is then describing a gate that no longer exists.
     """
-    return POLICY_BY_MODE["behaviour"].format(min = min_coverage, max = max_coverage)
+    return POLICY_BY_MODE["behaviour"].format(min=min_coverage, max=max_coverage)
 
 
 def compare_visible(base: Optional[dict], treat: Optional[dict]) -> dict:

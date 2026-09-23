@@ -132,14 +132,14 @@ def test_an_empty_string_is_treated_as_unset():
 
 
 def _section_1h_source() -> str:
-    source = _WORKER_PY.read_text(encoding = "utf-8")
+    source = _WORKER_PY.read_text(encoding="utf-8")
     start = source.index("    # ── 1h. Explicit GPU memory cap ──")
     end = source.index("    # ── 2. Now import ML libraries")
     return textwrap.dedent(source[start:end])
 
 
 def _make_logger():
-    recorded = SimpleNamespace(info = [], warning = [], debug = [])
+    recorded = SimpleNamespace(info=[], warning=[], debug=[])
 
     def make(level):
         def log(message, *args):
@@ -147,7 +147,7 @@ def _make_logger():
 
         return log
 
-    logger = SimpleNamespace(info = make("info"), warning = make("warning"), debug = make("debug"))
+    logger = SimpleNamespace(info=make("info"), warning=make("warning"), debug=make("debug"))
     return logger, recorded
 
 
@@ -157,11 +157,11 @@ class _FakeCuda:
 
     def __init__(
         self,
-        available = True,
-        total = 24 * GIB,
-        name = "NVIDIA GeForce RTX 4090",
-        count = 1,
-        current = 0,
+        available=True,
+        total=24 * GIB,
+        name="NVIDIA GeForce RTX 4090",
+        count=1,
+        current=0,
     ):
         self._available = available
         self._total = total
@@ -183,42 +183,42 @@ class _FakeCuda:
     def set_per_process_memory_fraction(
         self,
         fraction,
-        device = None,
+        device=None,
     ):
         index = self._current if device is None else device
         self.fractions[index] = fraction
         self.fraction = fraction
 
     def get_device_properties(self, index):
-        return SimpleNamespace(total_memory = self._total, name = f"{self._name} #{index}")
+        return SimpleNamespace(total_memory=self._total, name=f"{self._name} #{index}")
 
 
 def _run_section_1h(
     *,
     is_rocm,
     environ,
-    cuda = None,
-    platform = "linux",
+    cuda=None,
+    platform="linux",
 ):
     import sys as _real_sys
 
     cuda = cuda if cuda is not None else _FakeCuda()
     logger, recorded = _make_logger()
-    fake_torch = SimpleNamespace(cuda = cuda)
+    fake_torch = SimpleNamespace(cuda=cuda)
 
     from core.training import worker as worker_module
 
-    def resolve_env(backend, environ_ = None):
+    def resolve_env(backend, environ_=None):
         # The shipped line passes one argument, so the fake environ cannot arrive via os.
         return worker_module._mem_fraction_env_value(
             backend, environ if environ_ is None else environ_
         )
 
     namespace = {
-        "_hw": SimpleNamespace(IS_ROCM = is_rocm),
-        "os": SimpleNamespace(environ = environ),
+        "_hw": SimpleNamespace(IS_ROCM=is_rocm),
+        "os": SimpleNamespace(environ=environ),
         "sys": SimpleNamespace(
-            platform = platform, modules = dict(_real_sys.modules, torch = fake_torch)
+            platform=platform, modules=dict(_real_sys.modules, torch=fake_torch)
         ),
         "logger": logger,
         "_mem_fraction_env_value": resolve_env,
@@ -235,29 +235,29 @@ def _run_section_1h(
         return real_import(name, *args, **kwargs)
 
     builtins_map = __builtins__ if isinstance(__builtins__, dict) else vars(__builtins__)
-    namespace["__builtins__"] = dict(builtins_map, __import__ = fake_import)
+    namespace["__builtins__"] = dict(builtins_map, __import__=fake_import)
 
     exec(compile(_section_1h_source(), str(_WORKER_PY), "exec"), namespace)
     return cuda, recorded
 
 
 def test_the_block_does_nothing_when_no_variable_is_set():
-    cuda, log = _run_section_1h(is_rocm = False, environ = {})
+    cuda, log = _run_section_1h(is_rocm=False, environ={})
     assert cuda.fraction is None
     assert log.info == [] and log.warning == []
 
 
 def test_the_block_does_nothing_on_a_rocm_host():
     cuda, log = _run_section_1h(
-        is_rocm = True,
-        environ = {_GPU_MEM_FRACTION_ENV: "0.5"},
+        is_rocm=True,
+        environ={_GPU_MEM_FRACTION_ENV: "0.5"},
     )
     assert cuda.fraction is None
     assert log.info == []
 
 
 def test_the_block_caps_an_nvidia_device():
-    cuda, log = _run_section_1h(is_rocm = False, environ = {_GPU_MEM_FRACTION_ENV: "0.75"})
+    cuda, log = _run_section_1h(is_rocm=False, environ={_GPU_MEM_FRACTION_ENV: "0.75"})
     assert cuda.fraction == pytest.approx(0.75)
     assert len(log.info) == 1
     assert _GPU_MEM_FRACTION_ENV in log.info[0]
@@ -265,14 +265,14 @@ def test_the_block_caps_an_nvidia_device():
 
 
 def test_the_block_ignores_the_rocm_only_variable_on_nvidia():
-    cuda, log = _run_section_1h(is_rocm = False, environ = {_MEM_FRACTION_ENV: "0.5"})
+    cuda, log = _run_section_1h(is_rocm=False, environ={_MEM_FRACTION_ENV: "0.5"})
     assert cuda.fraction is None
     assert log.info == [] and log.warning == []
 
 
 @pytest.mark.parametrize("bad", ["abc", "0", "1.5", "-1", "nan"])
 def test_an_unusable_value_warns_and_leaves_the_device_uncapped(bad: str):
-    cuda, log = _run_section_1h(is_rocm = False, environ = {_GPU_MEM_FRACTION_ENV: bad})
+    cuda, log = _run_section_1h(is_rocm=False, environ={_GPU_MEM_FRACTION_ENV: bad})
     assert cuda.fraction is None
     assert len(log.warning) == 1
     assert _GPU_MEM_FRACTION_ENV in log.warning[0]
@@ -281,9 +281,9 @@ def test_an_unusable_value_warns_and_leaves_the_device_uncapped(bad: str):
 
 def test_a_host_with_no_cuda_device_is_a_debug_line_not_a_crash():
     cuda, log = _run_section_1h(
-        is_rocm = False,
-        environ = {_GPU_MEM_FRACTION_ENV: "0.5"},
-        cuda = _FakeCuda(available = False),
+        is_rocm=False,
+        environ={_GPU_MEM_FRACTION_ENV: "0.5"},
+        cuda=_FakeCuda(available=False),
     )
     assert cuda.fraction is None
     assert log.info == [] and log.warning == []
@@ -292,9 +292,9 @@ def test_a_host_with_no_cuda_device_is_a_debug_line_not_a_crash():
 
 def test_a_wheel_that_reports_no_total_still_caps():
     cuda, log = _run_section_1h(
-        is_rocm = False,
-        environ = {_GPU_MEM_FRACTION_ENV: "0.5"},
-        cuda = _FakeCuda(total = 0),
+        is_rocm=False,
+        environ={_GPU_MEM_FRACTION_ENV: "0.5"},
+        cuda=_FakeCuda(total=0),
     )
     assert cuda.fraction == pytest.approx(0.5)
     assert "device total unreported" in log.info[0]
@@ -307,9 +307,9 @@ class _ExplodingCuda(_FakeCuda):
 
 def test_a_failure_inside_the_block_never_takes_the_run_down():
     cuda, log = _run_section_1h(
-        is_rocm = False,
-        environ = {_GPU_MEM_FRACTION_ENV: "0.5"},
-        cuda = _ExplodingCuda(),
+        is_rocm=False,
+        environ={_GPU_MEM_FRACTION_ENV: "0.5"},
+        cuda=_ExplodingCuda(),
     )
     assert log.debug and "Could not set GPU memory fraction" in log.debug[0]
 
@@ -317,9 +317,9 @@ def test_a_failure_inside_the_block_never_takes_the_run_down():
 @pytest.mark.parametrize("platform", _PLATFORMS)
 def test_the_cap_is_the_same_on_every_platform(platform: str):
     cuda, _ = _run_section_1h(
-        is_rocm = False,
-        environ = {_GPU_MEM_FRACTION_ENV: "0.6"},
-        platform = platform,
+        is_rocm=False,
+        environ={_GPU_MEM_FRACTION_ENV: "0.6"},
+        platform=platform,
     )
     assert cuda.fraction == pytest.approx(0.6)
 
@@ -333,7 +333,7 @@ def test_no_settings_route_reads_the_new_variable():
     backend_root = Path(__file__).resolve().parents[1]
     offenders = []
     for path in (backend_root / "routes").rglob("*.py"):
-        if _GPU_MEM_FRACTION_ENV in path.read_text(encoding = "utf-8"):
+        if _GPU_MEM_FRACTION_ENV in path.read_text(encoding="utf-8"):
             offenders.append(str(path.relative_to(backend_root)))
     assert offenders == [], offenders
 
@@ -342,9 +342,9 @@ def test_every_visible_gpu_is_capped_not_just_the_current_one():
     """torch keeps the fraction per device and defaults to `current_device()`, so a
     sharded run left cuda:1 and up allocating freely (unsloth#8178)."""
     cuda, log = _run_section_1h(
-        is_rocm = False,
-        environ = {_GPU_MEM_FRACTION_ENV: "0.75"},
-        cuda = _FakeCuda(count = 4),
+        is_rocm=False,
+        environ={_GPU_MEM_FRACTION_ENV: "0.75"},
+        cuda=_FakeCuda(count=4),
     )
     assert cuda.fractions == {
         0: pytest.approx(0.75),
@@ -361,25 +361,25 @@ def test_every_visible_gpu_is_capped_not_just_the_current_one():
 def test_the_cap_names_a_device_explicitly_rather_than_relying_on_the_current_one():
     """Control: with no `device` argument this records only cuda:3."""
     cuda, _log = _run_section_1h(
-        is_rocm = False,
-        environ = {_GPU_MEM_FRACTION_ENV: "0.5"},
-        cuda = _FakeCuda(count = 4, current = 3),
+        is_rocm=False,
+        environ={_GPU_MEM_FRACTION_ENV: "0.5"},
+        cuda=_FakeCuda(count=4, current=3),
     )
     assert sorted(cuda.fractions) == [0, 1, 2, 3]
 
 
 def test_a_single_gpu_host_is_unchanged():
     cuda, log = _run_section_1h(
-        is_rocm = False,
-        environ = {_GPU_MEM_FRACTION_ENV: "0.9"},
-        cuda = _FakeCuda(count = 1),
+        is_rocm=False,
+        environ={_GPU_MEM_FRACTION_ENV: "0.9"},
+        cuda=_FakeCuda(count=1),
     )
     assert cuda.fractions == {0: pytest.approx(0.9)}
     assert len(log.info) == 1
 
 
 def _section_1g_source() -> str:
-    source = _WORKER_PY.read_text(encoding = "utf-8")
+    source = _WORKER_PY.read_text(encoding="utf-8")
     start = source.index("    # ── 1g. ROCm OOM guard ──")
     end = source.index("    # ── 1h. Explicit GPU memory cap ──")
     return textwrap.dedent(source[start:end])
@@ -389,8 +389,8 @@ class _FakeRocmCuda(_FakeCuda):
     def __init__(
         self,
         *,
-        driver_total = None,
-        gcn_arch = "gfx1100",
+        driver_total=None,
+        gcn_arch="gfx1100",
         **kwargs,
     ):
         kwargs.setdefault("name", "AMD Radeon PRO W7900")
@@ -398,22 +398,22 @@ class _FakeRocmCuda(_FakeCuda):
         self._driver_total = self._total if driver_total is None else driver_total
         self._gcn_arch = gcn_arch
 
-    def mem_get_info(self, index = None):
+    def mem_get_info(self, index=None):
         return (self._driver_total // 2, self._driver_total)
 
     def get_device_properties(self, index):
         return SimpleNamespace(
-            total_memory = self._total,
-            name = f"{self._name} #{index}",
-            gcnArchName = self._gcn_arch,
+            total_memory=self._total,
+            name=f"{self._name} #{index}",
+            gcnArchName=self._gcn_arch,
         )
 
 
 def _run_section_1g(
     *,
     environ,
-    cuda = None,
-    platform = "linux",
+    cuda=None,
+    platform="linux",
 ):
     import sys as _real_sys
 
@@ -421,17 +421,17 @@ def _run_section_1g(
 
     cuda = cuda if cuda is not None else _FakeRocmCuda()
     logger, recorded = _make_logger()
-    fake_torch = SimpleNamespace(cuda = cuda, __version__ = "2.9.0+rocm6.4")
+    fake_torch = SimpleNamespace(cuda=cuda, __version__="2.9.0+rocm6.4")
 
-    def resolve_env(backend, environ_ = None):
+    def resolve_env(backend, environ_=None):
         return worker_module._mem_fraction_env_value(
             backend, environ if environ_ is None else environ_
         )
 
     namespace = {
-        "_hw": SimpleNamespace(IS_ROCM = True),
+        "_hw": SimpleNamespace(IS_ROCM=True),
         "sys": SimpleNamespace(
-            platform = platform, modules = dict(_real_sys.modules, torch = fake_torch)
+            platform=platform, modules=dict(_real_sys.modules, torch=fake_torch)
         ),
         "logger": logger,
         "_mem_fraction_env_value": resolve_env,
@@ -452,7 +452,7 @@ def _run_section_1g(
         return real_import(name, *args, **kwargs)
 
     builtins_map = __builtins__ if isinstance(__builtins__, dict) else vars(__builtins__)
-    namespace["__builtins__"] = dict(builtins_map, __import__ = fake_import)
+    namespace["__builtins__"] = dict(builtins_map, __import__=fake_import)
 
     exec(compile(_section_1g_source(), str(_WORKER_PY), "exec"), namespace)
     return cuda, recorded
@@ -461,8 +461,8 @@ def _run_section_1g(
 def test_the_rocm_guard_caps_every_visible_device():
     """A sharded ROCm run capped cuda:0 and logged success while cuda:1 and up ran free."""
     cuda, log = _run_section_1g(
-        environ = {_GPU_MEM_FRACTION_ENV: "0.75"},
-        cuda = _FakeRocmCuda(count = 4),
+        environ={_GPU_MEM_FRACTION_ENV: "0.75"},
+        cuda=_FakeRocmCuda(count=4),
     )
     assert cuda.fractions == {index: pytest.approx(0.75) for index in range(4)}
     assert len(log.info) == 4, log.info
@@ -472,16 +472,16 @@ def test_the_rocm_guard_caps_every_visible_device():
 
 def test_the_rocm_guard_names_the_device_rather_than_the_current_one():
     cuda, _log = _run_section_1g(
-        environ = {_MEM_FRACTION_ENV: "0.5"},
-        cuda = _FakeRocmCuda(count = 4, current = 2),
+        environ={_MEM_FRACTION_ENV: "0.5"},
+        cuda=_FakeRocmCuda(count=4, current=2),
     )
     assert sorted(cuda.fractions) == [0, 1, 2, 3]
 
 
 def test_a_single_rocm_gpu_is_unchanged():
     cuda, log = _run_section_1g(
-        environ = {_MEM_FRACTION_ENV: "0.9"},
-        cuda = _FakeRocmCuda(count = 1),
+        environ={_MEM_FRACTION_ENV: "0.9"},
+        cuda=_FakeRocmCuda(count=1),
     )
     assert cuda.fractions == {0: pytest.approx(0.9)}
     assert len(log.info) == 1
@@ -494,17 +494,17 @@ def test_each_rocm_device_is_solved_from_its_own_properties():
         def get_device_properties(self, index):
             unified = index == 0
             return SimpleNamespace(
-                total_memory = 128 * GIB if unified else 48 * GIB,
-                name = "AMD Radeon 8060S" if unified else "AMD Radeon PRO W7900",
-                gcnArchName = "gfx1151" if unified else "gfx1100",
+                total_memory=128 * GIB if unified else 48 * GIB,
+                name="AMD Radeon 8060S" if unified else "AMD Radeon PRO W7900",
+                gcnArchName="gfx1151" if unified else "gfx1100",
             )
 
-        def mem_get_info(self, index = None):
+        def mem_get_info(self, index=None):
             # Same pool both ways, so the cap is the one the properties alone imply.
             total = self.get_device_properties(index).total_memory
             return (total // 2, total)
 
-    cuda, log = _run_section_1g(environ = {}, cuda = _MixedCuda(count = 2))
+    cuda, log = _run_section_1g(environ={}, cuda=_MixedCuda(count=2))
     assert cuda.fractions[1] == pytest.approx(_DISCRETE_MEM_FRACTION)
     assert cuda.fractions[0] == pytest.approx(_rocm_memory_fraction(128 * GIB, True, "linux"))
     assert cuda.fractions[0] != cuda.fractions[1]

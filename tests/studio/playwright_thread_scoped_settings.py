@@ -26,7 +26,7 @@ from playwright.sync_api import expect, sync_playwright
 BASE = os.environ["BASE_URL"]
 NEW = os.environ["STUDIO_NEW_PW"]
 ART = Path(os.environ.get("PW_ART_DIR", "logs/playwright"))
-ART.mkdir(parents = True, exist_ok = True)
+ART.mkdir(parents=True, exist_ok=True)
 
 TIMEOUT_MS = int(os.environ.get("STUDIO_UI_TIMEOUT_MS", "30000"))
 
@@ -44,17 +44,17 @@ _step = [0]
 
 def step(message):
     _step[0] += 1
-    print(f"[thread-settings] STEP {_step[0]}: {message}", flush = True)
+    print(f"[thread-settings] STEP {_step[0]}: {message}", flush=True)
 
 
 def fail(message):
-    print(f"[thread-settings] FAIL: {message}", flush = True)
+    print(f"[thread-settings] FAIL: {message}", flush=True)
     sys.exit(1)
 
 
 def shoot(page, name):
     try:
-        page.screenshot(path = str(ART / f"thread-settings-{name}.png"), full_page = False)
+        page.screenshot(path=str(ART / f"thread-settings-{name}.png"), full_page=False)
     except Exception:  # noqa: BLE001 - screenshots are diagnostics only
         pass
 
@@ -62,9 +62,9 @@ def shoot(page, name):
 def api(
     page,
     path,
-    method = "GET",
-    body = None,
-    token = None,
+    method="GET",
+    body=None,
+    token=None,
 ):
     """Call the backend from the page so the request carries the session cookie."""
     result = page.evaluate(
@@ -90,31 +90,31 @@ def api(
 
 def sign_in(page):
     step("sign in, then land on /chat")
-    page.goto(f"{BASE}/change-password", wait_until = "domcontentloaded", timeout = 60_000)
+    page.goto(f"{BASE}/change-password", wait_until="domcontentloaded", timeout=60_000)
     try:
-        page.locator("#new-password").wait_for(state = "visible", timeout = 15_000)
+        page.locator("#new-password").wait_for(state="visible", timeout=15_000)
         rotate = True
     except Exception:  # noqa: BLE001 - a rerun against the same server is already rotated
         rotate = False
     if rotate:
-        page.fill("#new-password", NEW, timeout = TIMEOUT_MS)
-        page.fill("#confirm-password", NEW, timeout = TIMEOUT_MS)
+        page.fill("#new-password", NEW, timeout=TIMEOUT_MS)
+        page.fill("#confirm-password", NEW, timeout=TIMEOUT_MS)
         endpoint = "/api/auth/change-password"
     else:
-        page.goto(f"{BASE}/login", wait_until = "domcontentloaded", timeout = 60_000)
-        page.locator("#password").wait_for(state = "visible", timeout = 60_000)
-        page.fill("#password", NEW, timeout = TIMEOUT_MS)
+        page.goto(f"{BASE}/login", wait_until="domcontentloaded", timeout=60_000)
+        page.locator("#password").wait_for(state="visible", timeout=60_000)
+        page.fill("#password", NEW, timeout=TIMEOUT_MS)
         endpoint = "/api/auth/login"
     with page.expect_response(
         lambda r: endpoint in r.url and r.request.method == "POST",
-        timeout = TIMEOUT_MS,
+        timeout=TIMEOUT_MS,
     ) as response_info:
         page.locator('button[type="submit"]').click()
     if response_info.value.status >= 400:
         fail(f"POST {endpoint} returned {response_info.value.status}")
-    page.goto(f"{BASE}/chat", wait_until = "domcontentloaded", timeout = 60_000)
+    page.goto(f"{BASE}/chat", wait_until="domcontentloaded", timeout=60_000)
     page.locator('button[data-pill-label="Search"]:visible').first.wait_for(
-        state = "visible", timeout = 60_000
+        state="visible", timeout=60_000
     )
     return page.evaluate("() => localStorage.getItem('unsloth_auth_token')")
 
@@ -133,7 +133,7 @@ def seed_thread(
     page,
     token,
     title,
-    thread_id = None,
+    thread_id=None,
 ):
     """Create a saved chat with one message, the state the sidebar and the loader expect."""
     thread_id = thread_id or str(uuid.uuid4())
@@ -141,9 +141,9 @@ def seed_thread(
     api(
         page,
         "/api/chat/threads",
-        method = "POST",
-        token = token,
-        body = {
+        method="POST",
+        token=token,
+        body={
             "id": thread_id,
             "title": title,
             "modelType": "base",
@@ -156,9 +156,9 @@ def seed_thread(
     api(
         page,
         f"/api/chat/threads/{thread_id}/messages",
-        method = "PUT",
-        token = token,
-        body = {
+        method="PUT",
+        token=token,
+        body={
             "messages": [
                 {
                     "id": str(uuid.uuid4()),
@@ -175,7 +175,7 @@ def seed_thread(
 
 
 def stored_settings(page, token, thread_id):
-    return api(page, f"/api/chat/threads/{thread_id}", token = token).get("settings")
+    return api(page, f"/api/chat/threads/{thread_id}", token=token).get("settings")
 
 
 def wait_for_stored_settings(page, token, thread_id, key, value):
@@ -191,16 +191,16 @@ def wait_for_stored_settings(page, token, thread_id, key, value):
 
 def new_chat_in_page(page):
     """Start a new chat from the sidebar, which routes without reloading the document."""
-    button = page.locator('[data-sidebar="menu-button"]').filter(has_text = "New Chat").first
-    button.wait_for(state = "visible", timeout = TIMEOUT_MS)
+    button = page.locator('[data-sidebar="menu-button"]').filter(has_text="New Chat").first
+    button.wait_for(state="visible", timeout=TIMEOUT_MS)
     button.click()
     settle(page)
 
 
 def open_thread_in_page(page, title):
     """Switch chats the way a user does, without reloading the document."""
-    entry = page.locator('[data-testid="recent-thread"]').filter(has_text = title).first
-    entry.wait_for(state = "visible", timeout = TIMEOUT_MS)
+    entry = page.locator('[data-testid="recent-thread"]').filter(has_text=title).first
+    entry.wait_for(state="visible", timeout=TIMEOUT_MS)
     entry.click()
     settle(page)
 
@@ -208,8 +208,8 @@ def open_thread_in_page(page, title):
 def open_thread(page, thread_id):
     page.goto(
         f"{BASE}/chat?thread={thread_id}",
-        wait_until = "domcontentloaded",
-        timeout = 60_000,
+        wait_until="domcontentloaded",
+        timeout=60_000,
     )
     settle(page)
 
@@ -238,7 +238,7 @@ def unload_any_model(page, token):
     if not loaded:
         return
     print(
-        f"[thread-settings] unloading {loaded!r} so the pills are not capability-gated", flush = True
+        f"[thread-settings] unloading {loaded!r} so the pills are not capability-gated", flush=True
     )
     page.evaluate(
         """async ({ base, token, modelPath }) => {
@@ -259,7 +259,7 @@ def unload_any_model(page, token):
 def settle(page):
     """Wait for the composer, then for the thread's snapshot to have been applied."""
     page.locator('button[data-pill-label="Search"]:visible').first.wait_for(
-        state = "visible", timeout = TIMEOUT_MS
+        state="visible", timeout=TIMEOUT_MS
     )
     # the snapshot arrives on a GET, and the pin write is debounced behind it.
     page.wait_for_timeout(1200)
@@ -277,21 +277,21 @@ def choose_permission(page, label):
     permission_pill(page).click()
     menu = page.get_by_role("menu").last
     expect(menu).to_be_visible()
-    menu.get_by_role("menuitem").filter(has_text = label).first.click()
+    menu.get_by_role("menuitem").filter(has_text=label).first.click()
     expect(permission_pill(page)).to_have_attribute("data-pill-label", label)
 
 
 def expect_pills(page, where, search, code, permission):
     for label, wanted in (("Search", search), ("Code", code)):
         expect(pill(page, label)).to_have_attribute(
-            "data-active", "true" if wanted else "false", timeout = TIMEOUT_MS
+            "data-active", "true" if wanted else "false", timeout=TIMEOUT_MS
         )
     expect(permission_pill(page)).to_have_attribute(
-        "data-pill-label", permission, timeout = TIMEOUT_MS
+        "data-pill-label", permission, timeout=TIMEOUT_MS
     )
     print(
         f"[thread-settings]   {where}: Search={search} Code={code} " f"permission={permission!r}",
-        flush = True,
+        flush=True,
     )
 
 
@@ -310,7 +310,7 @@ def check_reasoning_transcript(page, token):
         for index in range(400)
     )
     thread_id = seed_thread(page, token, "Continuous reasoning transcript")
-    messages = api(page, f"/api/chat/threads/{thread_id}/messages", token = token)["messages"]
+    messages = api(page, f"/api/chat/threads/{thread_id}/messages", token=token)["messages"]
     messages.append(
         {
             "id": str(uuid.uuid4()),
@@ -327,9 +327,9 @@ def check_reasoning_transcript(page, token):
     api(
         page,
         f"/api/chat/threads/{thread_id}/messages",
-        method = "PUT",
-        token = token,
-        body = {"messages": messages},
+        method="PUT",
+        token=token,
+        body={"messages": messages},
     )
     open_thread(page, thread_id)
     # By slot, not by label. This clicked `name = "Thought for 0 seconds"` until #11373
@@ -349,8 +349,8 @@ def check_reasoning_transcript(page, token):
     assert len(body.inner_text()) < 20000, "saved reasoning mounted the entire trace"
 
     page.context.grant_permissions(["clipboard-read", "clipboard-write"])
-    page.get_by_role("button", name = "Copy reasoning", exact = True).click()
-    expect(page.get_by_role("button", name = "Copied", exact = True)).to_be_visible()
+    page.get_by_role("button", name="Copy reasoning", exact=True).click()
+    expect(page.get_by_role("button", name="Copied", exact=True)).to_be_visible()
     assert page.evaluate("navigator.clipboard.readText()") == source
 
     viewport = page.locator(".aui-thread-viewport")
@@ -368,7 +368,7 @@ def check_reasoning_transcript(page, token):
             break
     expect(body).to_contain_text("Step 0399.")
     assert len(body.inner_text()) < 20000, "scrolling mounted the entire trace"
-    expect(page.get_by_text("The final answer stays separate.", exact = True)).to_be_visible()
+    expect(page.get_by_text("The final answer stays separate.", exact=True)).to_be_visible()
     expect(body).not_to_contain_text("The final answer stays separate.")
 
     trigger.click()
@@ -383,8 +383,8 @@ def check_reasoning_transcript(page, token):
 
 def main():
     with sync_playwright() as playwright:
-        browser = playwright.chromium.launch(args = ["--no-sandbox", "--disable-dev-shm-usage"])
-        context = browser.new_context(viewport = {"width": 1280, "height": 900})
+        browser = playwright.chromium.launch(args=["--no-sandbox", "--disable-dev-shm-usage"])
+        context = browser.new_context(viewport={"width": 1280, "height": 900})
         page = context.new_page()
         page.set_default_timeout(TIMEOUT_MS)
         page_errors = []
@@ -394,7 +394,7 @@ def main():
         if not token:
             fail("no auth token in localStorage after change-password")
         unload_any_model(page, token)
-        page.goto(f"{BASE}/chat", wait_until = "domcontentloaded", timeout = 60_000)
+        page.goto(f"{BASE}/chat", wait_until="domcontentloaded", timeout=60_000)
 
         step("an unsaved chat still edits the installation defaults")
         # plain /chat runs on a runtime-made thread id with no row: treating that as an open
@@ -417,7 +417,7 @@ def main():
         choose_permission(page, "Approve for me")
         print(
             f"[thread-settings]   defaults now {read_globals(page)!r}",
-            flush = True,
+            flush=True,
         )
 
         step("seed two saved chats")
@@ -426,7 +426,7 @@ def main():
         # "no row yet".
         thread_a = seed_thread(page, token, "Chat A", app_created_thread_id())
         thread_b = seed_thread(page, token, "Chat B")
-        print(f"[thread-settings]   A={thread_a} B={thread_b}", flush = True)
+        print(f"[thread-settings]   A={thread_a} B={thread_b}", flush=True)
 
         step("a chat with no snapshot of its own opens on those defaults")
         open_thread(page, thread_a)
@@ -464,7 +464,7 @@ def main():
         expect_pills(page, "A after switching back", True, False, "Ask for approval")
 
         step("and they survive a full reload")
-        page.reload(wait_until = "domcontentloaded")
+        page.reload(wait_until="domcontentloaded")
         settle(page)
         expect_pills(page, "A after reload", True, False, "Ask for approval")
         shoot(page, "03-chat-a-after-reload")
@@ -491,8 +491,8 @@ def main():
         step("a new chat still starts from the installation defaults")
         page.goto(
             f"{BASE}/chat?new={uuid.uuid4()}",
-            wait_until = "domcontentloaded",
-            timeout = 60_000,
+            wait_until="domcontentloaded",
+            timeout=60_000,
         )
         settle(page)
         expect_pills(page, "new chat", False, False, "Approve for me")
@@ -513,11 +513,11 @@ def main():
 
         step("the pinned snapshots reached the backend")
         stored = {
-            "A": api(page, f"/api/chat/threads/{thread_a}", token = token).get("settings"),
-            "B": api(page, f"/api/chat/threads/{thread_b}", token = token).get("settings"),
-            "C": api(page, f"/api/chat/threads/{thread_c}", token = token).get("settings"),
+            "A": api(page, f"/api/chat/threads/{thread_a}", token=token).get("settings"),
+            "B": api(page, f"/api/chat/threads/{thread_b}", token=token).get("settings"),
+            "C": api(page, f"/api/chat/threads/{thread_c}", token=token).get("settings"),
         }
-        print(f"[thread-settings]   stored={json.dumps(stored, sort_keys = True)}", flush = True)
+        print(f"[thread-settings]   stored={json.dumps(stored, sort_keys = True)}", flush=True)
         if not stored["A"] or stored["A"].get("toolsEnabled") is not True:
             fail(f"Chat A's snapshot did not persist: {stored['A']!r}")
         if stored["A"].get("permissionMode") != "ask":
@@ -532,7 +532,7 @@ def main():
             fail("opening a chat did not pin the modes it was showing")
 
         step("the thread listing stays free of the snapshot")
-        listing = api(page, "/api/chat/threads", token = token)
+        listing = api(page, "/api/chat/threads", token=token)
         for thread in listing.get("threads", []):
             if thread.get("settings") is not None:
                 fail(f"thread listing carries a settings snapshot: {thread['id']}")
@@ -545,7 +545,7 @@ def main():
         context.close()
         browser.close()
 
-    print("[thread-settings] PASS", flush = True)
+    print("[thread-settings] PASS", flush=True)
 
 
 if __name__ == "__main__":

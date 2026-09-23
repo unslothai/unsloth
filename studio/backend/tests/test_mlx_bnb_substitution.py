@@ -33,7 +33,7 @@ def test_repos_mlx_loads_as_given_have_no_base():
 
 
 def test_a_local_directory_is_never_remapped(monkeypatch, tmp_path):
-    (tmp_path / "unsloth" / "model-bnb-4bit").mkdir(parents = True)
+    (tmp_path / "unsloth" / "model-bnb-4bit").mkdir(parents=True)
     monkeypatch.chdir(tmp_path)
 
     assert mlx_bnb_base_repo("unsloth/model-bnb-4bit") is None
@@ -111,9 +111,9 @@ def test_worker_only_watches_the_repositories_mlx_downloads(
     import utils.hf_xet_fallback as fallback_mod
 
     model_config = SimpleNamespace(
-        identifier = identifier,
-        base_model = base_model,
-        is_lora = is_lora,
+        identifier=identifier,
+        base_model=base_model,
+        is_lora=is_lora,
     )
     captured = {}
 
@@ -172,16 +172,16 @@ def test_validate_reports_the_repo_mlx_will_load(monkeypatch):
     from routes.inference import _mlx_base_for_config
 
     monkeypatch.setattr(hw, "get_device", lambda: hw.DeviceType.MLX)
-    pick = SimpleNamespace(identifier = "unsloth/Qwen2-VL-2B-Instruct-bnb-4bit", base_model = None)
+    pick = SimpleNamespace(identifier="unsloth/Qwen2-VL-2B-Instruct-bnb-4bit", base_model=None)
     assert _mlx_base_for_config(pick) == "unsloth/Qwen2-VL-2B-Instruct"
 
     adapter = SimpleNamespace(
-        identifier = "me/my-lora",
-        base_model = "unsloth/gemma-3-4b-it-bnb-4bit",
+        identifier="me/my-lora",
+        base_model="unsloth/gemma-3-4b-it-bnb-4bit",
     )
     assert _mlx_base_for_config(adapter) == "unsloth/gemma-3-4b-it"
 
-    plain = SimpleNamespace(identifier = "unsloth/Qwen3-4B-Instruct-2507", base_model = None)
+    plain = SimpleNamespace(identifier="unsloth/Qwen3-4B-Instruct-2507", base_model=None)
     assert _mlx_base_for_config(plain) is None
 
 
@@ -286,15 +286,15 @@ def test_mlx_progress_verifies_loader_files_without_a_manifest(
     repo = "unsloth/progress-model"
     entry = tmp_path / "models--unsloth--progress-model"
     snap = entry / "snapshots" / ("a" * 40)
-    snap.mkdir(parents = True)
+    snap.mkdir(parents=True)
     blobs = entry / "blobs"
     blobs.mkdir()
     names = ("config.json", *weight_names, "README.md")
     siblings = [
-        SimpleNamespace(rfilename = name, size = 4, blob_id = f"blob{i}", lfs = None)
+        SimpleNamespace(rfilename=name, size=4, blob_id=f"blob{i}", lfs=None)
         for i, name in enumerate(names)
     ]
-    monkeypatch.setattr(HfApi, "model_info", lambda *_a, **_k: SimpleNamespace(siblings = siblings))
+    monkeypatch.setattr(HfApi, "model_info", lambda *_a, **_k: SimpleNamespace(siblings=siblings))
     monkeypatch.setattr(cache_inventory, "_mlx_plan_cache", OrderedDict())
     if offline:
         from huggingface_hub._tree_cache import TreeCacheEntry, write_tree_cache
@@ -307,7 +307,7 @@ def test_mlx_progress_verifies_loader_files_without_a_manifest(
             snap.name,
             {
                 item.rfilename: TreeCacheEntry(
-                    size = item.size, blob_id = "pointer", lfs_sha256 = item.blob_id
+                    size=item.size, blob_id="pointer", lfs_sha256=item.blob_id
                 )
                 for item in siblings
             },
@@ -320,11 +320,11 @@ def test_mlx_progress_verifies_loader_files_without_a_manifest(
         monkeypatch.setattr(cache_state, "preferred_repo_cache_dirs", lambda *_a, **_k: [entry])
     monkeypatch.setattr(snapshot_progress, "preferred_repo_cache_dirs", lambda *_a, **_k: [entry])
     monkeypatch.setattr(
-        downloads, "_registry", SimpleNamespace(get_job = lambda _key: SimpleNamespace(state = "idle"))
+        downloads, "_registry", SimpleNamespace(get_job=lambda _key: SimpleNamespace(state="idle"))
     )
 
     def progress():
-        return asyncio.run(downloads.get_download_progress_response(repo, mlx_load = True))
+        return asyncio.run(downloads.get_download_progress_response(repo, mlx_load=True))
 
     for i, name in enumerate(names[:-1]):
         (blobs / f"blob{i}").write_bytes(b"data")

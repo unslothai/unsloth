@@ -8,12 +8,12 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 THREAD = (ROOT / "studio/frontend/src/components/assistant-ui/thread.tsx").read_text(
-    encoding = "utf-8"
+    encoding="utf-8"
 )
-SIDEBAR = (ROOT / "studio/frontend/src/components/app-sidebar.tsx").read_text(encoding = "utf-8")
+SIDEBAR = (ROOT / "studio/frontend/src/components/app-sidebar.tsx").read_text(encoding="utf-8")
 CONFIRM = (
     ROOT / "studio/frontend/src/features/chat/utils/confirm-stop-running-chats.ts"
-).read_text(encoding = "utf-8")
+).read_text(encoding="utf-8")
 
 
 def test_the_sidebar_work_spinner_ignores_a_paused_queue():

@@ -38,7 +38,7 @@ _CURSOR_PREFIX = "c1."
 
 @dataclass
 class ReadResult:
-    lines: list[str] = field(default_factory = list)
+    lines: list[str] = field(default_factory=list)
     cursor: Optional[str] = None
     reset: bool = False
     reset_reason: Optional[str] = None
@@ -55,7 +55,7 @@ def _file_key(stat: os.stat_result, name: str) -> str:
 
 
 def encode_cursor(key: str, offset: int) -> str:
-    raw = json.dumps({"k": key, "o": int(offset)}, separators = (",", ":")).encode("utf-8")
+    raw = json.dumps({"k": key, "o": int(offset)}, separators=(",", ":")).encode("utf-8")
     return _CURSOR_PREFIX + base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
 
 
@@ -91,7 +91,7 @@ def _split_lines(data: bytes, *, drop_partial_head: bool) -> tuple[list[str], bo
             remainder = body[-MAX_LINE_BYTES:]
         data = remainder
         truncated_head = True
-    text = data.decode("utf-8", errors = "replace")
+    text = data.decode("utf-8", errors="replace")
     raw = text.split("\n")
     if raw and raw[-1] == "":
         raw.pop()
@@ -114,7 +114,7 @@ def read_tail(path: Path, max_lines: int = DEFAULT_TAIL_LINES) -> ReadResult:
     max_lines = max(1, min(int(max_lines), MAX_TAIL_LINES))
     stat = path.stat()
     size = stat.st_size
-    result = ReadResult(size_bytes = size)
+    result = ReadResult(size_bytes=size)
     result.cursor = encode_cursor(_file_key(stat, path.name), size)
     result.reset = True
     if size == 0:
@@ -137,7 +137,7 @@ def read_tail(path: Path, max_lines: int = DEFAULT_TAIL_LINES) -> ReadResult:
             scanned += len(block)
 
     data = b"".join(chunks)
-    lines, truncated = _split_lines(data, drop_partial_head = pos > 0)
+    lines, truncated = _split_lines(data, drop_partial_head=pos > 0)
     result.truncated_head = truncated
     if len(lines) > max_lines:
         lines = lines[-max_lines:]
@@ -173,7 +173,7 @@ def read_since(
         result.reset_reason = "truncated"
         return result
 
-    result = ReadResult(size_bytes = size)
+    result = ReadResult(size_bytes=size)
     if offset == size:
         result.cursor = encode_cursor(current_key, offset)
         return result
@@ -212,7 +212,7 @@ def read_since(
         body = body[:consumed]
         result.more_pending = True
 
-    lines, truncated = _split_lines(body, drop_partial_head = result.dropped_bytes > 0)
+    lines, truncated = _split_lines(body, drop_partial_head=result.dropped_bytes > 0)
     result.truncated_head = truncated
     result.lines = _redact(lines)
     result.cursor = encode_cursor(current_key, start + consumed)

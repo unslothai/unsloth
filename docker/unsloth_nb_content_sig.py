@@ -198,7 +198,7 @@ def _normalize_install(text):
 def middle_digest(path):
     """sha256 over the (type, source) of every non-boilerplate cell, or None."""
     try:
-        with open(path, "r", encoding = "utf-8") as f:
+        with open(path, "r", encoding="utf-8") as f:
             nb = json.load(f)
     except Exception:
         return None

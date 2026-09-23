@@ -35,16 +35,16 @@ def _installed(tmp_path: Path, *, binaries: bool = False) -> Path:
     root = tmp_path / "llama.cpp"
     host = ILP.platform_only_host()
     runtime_dir = ILP.install_runtime_dir(root, host)
-    runtime_dir.mkdir(parents = True)
+    runtime_dir.mkdir(parents=True)
     (root / "UNSLOTH_PREBUILT_INFO.json").write_text(
         json.dumps({"release_tag": "b10830-mix-d5c17a0", "tag": "b10830"}) + "\n",
-        encoding = "utf-8",
+        encoding="utf-8",
     )
     if binaries:
         ext = ".exe" if host.is_windows else ""
         for name in ("server", "quantize"):
             binary = runtime_dir / f"llama-{name}{ext}"
-            binary.write_text("x", encoding = "utf-8")
+            binary.write_text("x", encoding="utf-8")
             os.chmod(binary, 0o755)
     return root
 
@@ -60,7 +60,7 @@ def test_a_marker_without_its_runtime_directory_is_broken(tmp_path):
     """The whole tree can go, not only files inside it, leaving the marker orphaned."""
     root = tmp_path / "llama.cpp"
     root.mkdir()
-    (root / "UNSLOTH_PREBUILT_INFO.json").write_text("{}\n", encoding = "utf-8")
+    (root / "UNSLOTH_PREBUILT_INFO.json").write_text("{}\n", encoding="utf-8")
     assert ILP.installed_runtime_health(root) == (False, "llama_runtime_dir_missing")
 
 
@@ -73,7 +73,7 @@ def test_an_empty_runtime_directory_is_broken_not_healthy(tmp_path):
 def test_the_verdict_is_delegated_to_the_payload_tables(tmp_path, monkeypatch):
     """One payload decider: duplicating the required-file list would let the launch probe
     and the keep-install path drift apart."""
-    root = _installed(tmp_path, binaries = True)
+    root = _installed(tmp_path, binaries=True)
     monkeypatch.setattr(ILP, "_kept_install_payload_is_healthy", lambda *_: True)
     assert ILP.installed_runtime_health(root) == (True, "")
 
@@ -128,7 +128,7 @@ def test_a_probe_that_raises_is_not_swallowed_here(tmp_path, monkeypatch, broken
 def test_a_quarantined_llama_server_is_caught_even_with_a_complete_payload(tmp_path, monkeypatch):
     """The payload groups name libraries only, so a missing server binary needs its own
     check on Linux and macOS."""
-    root = _installed(tmp_path, binaries = True)
+    root = _installed(tmp_path, binaries=True)
     monkeypatch.setattr(ILP, "_kept_install_payload_is_healthy", lambda *_: True)
     host = ILP.platform_only_host()
     ext = ".exe" if host.is_windows else ""
@@ -139,7 +139,7 @@ def test_a_quarantined_llama_server_is_caught_even_with_a_complete_payload(tmp_p
 def test_llama_quantize_is_required_because_the_setup_scripts_require_it(tmp_path, monkeypatch):
     """_existing_install_runs demands both, so demanding both here keeps this call no
     stricter than the repair that answers it."""
-    root = _installed(tmp_path, binaries = True)
+    root = _installed(tmp_path, binaries=True)
     monkeypatch.setattr(ILP, "_kept_install_payload_is_healthy", lambda *_: True)
     host = ILP.platform_only_host()
     ext = ".exe" if host.is_windows else ""
@@ -150,8 +150,8 @@ def test_llama_quantize_is_required_because_the_setup_scripts_require_it(tmp_pat
 def test_an_explicit_host_overrides_the_detected_platform(tmp_path):
     """The simulation matrices grade a tree for a platform this machine is not."""
     root = tmp_path / "llama.cpp"
-    (root / "build" / "bin" / "Release").mkdir(parents = True)
-    (root / "UNSLOTH_PREBUILT_INFO.json").write_text("{}\n", encoding = "utf-8")
+    (root / "build" / "bin" / "Release").mkdir(parents=True)
+    (root / "UNSLOTH_PREBUILT_INFO.json").write_text("{}\n", encoding="utf-8")
     windows = ILP.detect_host()
     windows = type(windows)(
         **{
@@ -163,7 +163,7 @@ def test_an_explicit_host_overrides_the_detected_platform(tmp_path):
         }
     )
     # Windows looks in build/bin/Release, which exists; a Linux host looks in build/bin.
-    assert ILP.installed_runtime_health(root, host = windows)[1] != "llama_runtime_dir_missing"
+    assert ILP.installed_runtime_health(root, host=windows)[1] != "llama_runtime_dir_missing"
 
 
 def test_a_marker_that_exists_but_does_not_parse_is_still_graded(tmp_path):
@@ -171,8 +171,8 @@ def test_a_marker_that_exists_but_does_not_parse_is_still_graded(tmp_path):
     tree whose write was interrupted. Short-circuiting the second to None left preflight Ready
     with a library missing, the exact failure this probe catches. The keep path grades such a
     marker as an unknown backend anyway, so grading it here stays no stricter."""
-    root = _installed(tmp_path, binaries = True)
-    (root / "UNSLOTH_PREBUILT_INFO.json").write_text('{"release_tag": "b108', encoding = "utf-8")
+    root = _installed(tmp_path, binaries=True)
+    (root / "UNSLOTH_PREBUILT_INFO.json").write_text('{"release_tag": "b108', encoding="utf-8")
     assert ILP.load_prebuilt_metadata(root) is None
     # The payload is empty, so the tree is broken and must be offered for repair.
     assert ILP.installed_runtime_health(root) == (False, "llama_runtime_payload_incomplete")
@@ -181,15 +181,15 @@ def test_a_marker_that_exists_but_does_not_parse_is_still_graded(tmp_path):
 def test_an_unparsable_marker_over_a_complete_tree_is_still_healthy(tmp_path, monkeypatch):
     """The other half, which keeps the loop shut: _existing_install_runs keeps a tree with an
     unreadable marker, so calling it broken would repair, keep, and repair again every launch."""
-    root = _installed(tmp_path, binaries = True)
-    (root / "UNSLOTH_PREBUILT_INFO.json").write_text("not json", encoding = "utf-8")
+    root = _installed(tmp_path, binaries=True)
+    (root / "UNSLOTH_PREBUILT_INFO.json").write_text("not json", encoding="utf-8")
     monkeypatch.setattr(ILP, "_kept_install_payload_is_healthy", lambda *_: True)
     assert ILP.installed_runtime_health(root) == (True, "")
 
 
 def test_an_absent_marker_is_still_not_installed(tmp_path):
     """The distinction the fix turns on, asserted directly."""
-    root = _installed(tmp_path, binaries = True)
+    root = _installed(tmp_path, binaries=True)
     (root / "UNSLOTH_PREBUILT_INFO.json").unlink()
     assert ILP.installed_runtime_health(root) is None
 
@@ -231,12 +231,12 @@ def _windows_tree(tmp_path: Path, names, *, marker: str) -> Path:
     root = tmp_path / "llama.cpp"
     host = _windows_host()
     runtime_dir = ILP.install_runtime_dir(root, host)
-    runtime_dir.mkdir(parents = True)
+    runtime_dir.mkdir(parents=True)
     for name in names:
         binary = runtime_dir / name
-        binary.write_text("x", encoding = "utf-8")
+        binary.write_text("x", encoding="utf-8")
         os.chmod(binary, 0o755)
-    (root / "UNSLOTH_PREBUILT_INFO.json").write_text(marker, encoding = "utf-8")
+    (root / "UNSLOTH_PREBUILT_INFO.json").write_text(marker, encoding="utf-8")
     return root
 
 
@@ -247,13 +247,13 @@ def test_an_unparseable_marker_over_a_prebuilt_tree_still_owes_the_shared_payloa
     launched into the loader error this probe exists to pre-empt. The source is read off the
     tree instead, from a name only a published bundle ships."""
     host = _windows_host()
-    root = _windows_tree(tmp_path, _PUBLISHED_WINDOWS_PAYLOAD, marker = '{"release_tag": "b108')
+    root = _windows_tree(tmp_path, _PUBLISHED_WINDOWS_PAYLOAD, marker='{"release_tag": "b108')
     assert ILP.load_prebuilt_metadata(root) is None
-    assert ILP.installed_runtime_health(root, host = host) == (True, "")
+    assert ILP.installed_runtime_health(root, host=host) == (True, "")
 
     quarantined = ILP.install_runtime_dir(root, host) / "ggml-base.dll"
     quarantined.rename(quarantined.with_suffix(".dll.quarantine"))
-    assert ILP.installed_runtime_health(root, host = host) == (
+    assert ILP.installed_runtime_health(root, host=host) == (
         False,
         "llama_runtime_payload_incomplete",
     )
@@ -268,9 +268,9 @@ def test_an_unparseable_marker_over_a_source_build_stays_lenient(tmp_path):
     root = _windows_tree(
         tmp_path,
         ("llama.dll", "llama-server.exe", "llama-quantize.exe"),
-        marker = "not json",
+        marker="not json",
     )
-    assert ILP.installed_runtime_health(root, host = host) == (True, "")
+    assert ILP.installed_runtime_health(root, host=host) == (True, "")
     assert ILP._tree_looks_prebuilt(root, host) is False
 
 
@@ -283,11 +283,11 @@ def test_the_windows_quantize_implementation_is_required_alongside_the_server_on
     root = _windows_tree(
         tmp_path,
         _PUBLISHED_WINDOWS_PAYLOAD,
-        marker = json.dumps({"source": "published", "tag": "b10798"}),
+        marker=json.dumps({"source": "published", "tag": "b10798"}),
     )
-    assert ILP.installed_runtime_health(root, host = host) == (True, "")
+    assert ILP.installed_runtime_health(root, host=host) == (True, "")
     (ILP.install_runtime_dir(root, host) / "llama-quantize-impl.dll").unlink()
-    assert ILP.installed_runtime_health(root, host = host) == (
+    assert ILP.installed_runtime_health(root, host=host) == (
         False,
         "llama_runtime_payload_incomplete",
     )
@@ -300,7 +300,7 @@ def test_the_hip_backend_module_is_required_by_name_not_by_anything_hip_shaped(t
     cannot stand in for it. Names read off
     app-b10798-mix-659e406-windows-x64-rocm-gfx1150.zip."""
     groups = ILP.runtime_payload_health_groups(
-        "windows-rocm", source_label = "published", tag = "b10798"
+        "windows-rocm", source_label="published", tag="b10798"
     )
     hip_groups = [group for group in groups if any("hip" in name for name in group)]
     assert hip_groups == [["ggml-hip*.dll"]]
@@ -310,7 +310,7 @@ def test_the_hip_backend_module_is_required_by_name_not_by_anything_hip_shaped(t
         tmp_path,
         _PUBLISHED_WINDOWS_PAYLOAD
         + ("amdhip64_7.dll", "hipblas.dll", "libhipblaslt.dll", "ggml-hip.dll"),
-        marker = json.dumps({"source": "published", "tag": "b10798", "install_kind": "windows-rocm"}),
+        marker=json.dumps({"source": "published", "tag": "b10798", "install_kind": "windows-rocm"}),
     )
     runtime_dir = ILP.install_runtime_dir(root, host)
     assert ILP._runtime_payload_has(root, host, groups) is True
@@ -333,7 +333,7 @@ def test_a_dangling_library_symlink_does_not_count_as_present(tmp_path):
     """
     if os.name == "nt":
         pytest.skip("the shipped Windows payload has no symlink chains")
-    root = _installed(tmp_path, binaries = True)
+    root = _installed(tmp_path, binaries=True)
     host = ILP.platform_only_host()
     runtime_dir = ILP.install_runtime_dir(root, host)
     groups = ILP.runtime_payload_health_groups("linux-cpu")
@@ -341,7 +341,7 @@ def test_a_dangling_library_symlink_does_not_count_as_present(tmp_path):
     for group in groups:
         stem = group[0].replace("*", "")
         target = runtime_dir / f"{stem}.0.9.8"
-        target.write_text("x", encoding = "utf-8")
+        target.write_text("x", encoding="utf-8")
         soname = runtime_dir / f"{stem}.0"
         os.symlink(target.name, soname)
         os.symlink(soname.name, runtime_dir / stem)
@@ -357,7 +357,7 @@ def test_a_dangling_library_symlink_does_not_count_as_present(tmp_path):
 def test_a_directory_matching_a_payload_pattern_is_not_a_library(tmp_path):
     """The same is_file() guard rejects a directory that happens to match, which a bare glob
     would have accepted."""
-    root = _installed(tmp_path, binaries = True)
+    root = _installed(tmp_path, binaries=True)
     host = ILP.platform_only_host()
     groups = [["libllama.so*"]]
     (ILP.install_runtime_dir(root, host) / "libllama.so.0").mkdir()
@@ -374,12 +374,12 @@ def test_a_library_renamed_in_place_no_longer_satisfies_its_group(tmp_path, suff
     failed at model load with no repair offered, which is the whole point of the probe."""
     if os.name == "nt":
         pytest.skip("the Windows groups name the extension, so a suffix misses them already")
-    root = _installed(tmp_path, binaries = True)
+    root = _installed(tmp_path, binaries=True)
     host = ILP.platform_only_host()
     runtime_dir = ILP.install_runtime_dir(root, host)
     groups = ILP.runtime_payload_health_groups("linux-cpu")
     for group in groups:
-        (runtime_dir / f"{group[0].replace('*', '')}.0").write_text("x", encoding = "utf-8")
+        (runtime_dir / f"{group[0].replace('*', '')}.0").write_text("x", encoding="utf-8")
     assert ILP._runtime_payload_has(root, host, groups) is True
 
     soname = runtime_dir / f"{groups[0][0].replace('*', '')}.0"
@@ -392,19 +392,19 @@ def test_a_renamed_library_does_not_stand_in_for_its_own_soname(tmp_path):
     the reason has to come from the payload rather than from the binaries check."""
     if os.name == "nt":
         pytest.skip("the Windows groups name the extension, so a suffix misses them already")
-    root = _installed(tmp_path, binaries = True)
+    root = _installed(tmp_path, binaries=True)
     host = ILP.platform_only_host()
     runtime_dir = ILP.install_runtime_dir(root, host)
     published = ILP.runtime_payload_health_groups(
-        "linux-cpu", source_label = "published", tag = "b10830"
+        "linux-cpu", source_label="published", tag="b10830"
     )
     for group in published:
-        (runtime_dir / f"{group[0].replace('*', '')}.0").write_text("x", encoding = "utf-8")
-    assert ILP.installed_runtime_health(root, host = host) == (True, "")
+        (runtime_dir / f"{group[0].replace('*', '')}.0").write_text("x", encoding="utf-8")
+    assert ILP.installed_runtime_health(root, host=host) == (True, "")
 
     victim = runtime_dir / "libggml-base.so.0"
     victim.rename(runtime_dir / "libggml-base.so.0.vir")
-    assert ILP.installed_runtime_health(root, host = host) == (
+    assert ILP.installed_runtime_health(root, host=host) == (
         False,
         "llama_runtime_payload_incomplete",
     )
@@ -416,7 +416,7 @@ def test_an_entrypoint_is_still_a_file_the_loader_would_start(tmp_path):
     a complete tree, which is the repair loop installed_runtime_health forbids."""
     for name in ("llama-server", "llama-server.exe", "ggml-base.dll", "libggml.0.dylib"):
         entry = tmp_path / name
-        entry.write_text("x", encoding = "utf-8")
+        entry.write_text("x", encoding="utf-8")
         assert ILP._payload_match_is_loadable(entry) is True, name
 
 
@@ -428,11 +428,11 @@ def test_a_zero_length_file_is_not_a_payload_or_an_entrypoint(tmp_path, name):
     probe then answered healthy, so the repair the re-probe existed to trigger was never
     offered. _existing_install_runs rejects the same tree on ENOEXEC or a loader failure."""
     empty = tmp_path / name
-    empty.write_text("", encoding = "utf-8")
+    empty.write_text("", encoding="utf-8")
     assert ILP._payload_match_is_loadable(empty) is False
     assert ILP._entrypoint_is_runnable(empty, ILP.platform_only_host()) is False
 
-    empty.write_text("x", encoding = "utf-8")
+    empty.write_text("x", encoding="utf-8")
     assert ILP._payload_match_is_loadable(empty) is True
 
 
@@ -444,16 +444,16 @@ def test_a_truncated_llama_server_is_broken_not_healthy(tmp_path):
         root = _windows_tree(
             tmp_path,
             _PUBLISHED_WINDOWS_PAYLOAD,
-            marker = json.dumps({"source": "published", "tag": "b10830"}),
+            marker=json.dumps({"source": "published", "tag": "b10830"}),
         )
     else:
         host = _macos_host()
         root = _macos_tree(tmp_path)
-    assert ILP.installed_runtime_health(root, host = host) == (True, "")
+    assert ILP.installed_runtime_health(root, host=host) == (True, "")
 
     ext = ".exe" if host.is_windows else ""
-    (ILP.install_runtime_dir(root, host) / f"llama-server{ext}").write_text("", encoding = "utf-8")
-    assert ILP.installed_runtime_health(root, host = host) == (
+    (ILP.install_runtime_dir(root, host) / f"llama-server{ext}").write_text("", encoding="utf-8")
+    assert ILP.installed_runtime_health(root, host=host) == (
         False,
         "llama_runtime_binaries_missing",
     )
@@ -470,7 +470,7 @@ def test_a_legacy_windows_cuda_marker_still_owes_the_paired_runtime(tmp_path):
     trio = ("cudart64_12.dll", "cublas64_12.dll", "cublasLt64_12.dll")
     marker = json.dumps({"source": "published", "tag": "b10830", "backend": "cuda"})
     root = _windows_tree(
-        tmp_path, _PUBLISHED_WINDOWS_PAYLOAD + ("ggml-cuda.dll",) + trio, marker = marker
+        tmp_path, _PUBLISHED_WINDOWS_PAYLOAD + ("ggml-cuda.dll",) + trio, marker=marker
     )
     assert ILP._kept_install_payload_is_healthy(root, host) is True
 
@@ -481,7 +481,7 @@ def test_a_legacy_windows_cuda_marker_still_owes_the_paired_runtime(tmp_path):
 
     # None of them present is the system-CUDA install, which owes nothing.
     bare = _windows_tree(
-        tmp_path / "bare", _PUBLISHED_WINDOWS_PAYLOAD + ("ggml-cuda.dll",), marker = marker
+        tmp_path / "bare", _PUBLISHED_WINDOWS_PAYLOAD + ("ggml-cuda.dll",), marker=marker
     )
     assert ILP._kept_install_payload_is_healthy(bare, host) is True
 
@@ -521,26 +521,26 @@ def _macos_payload(runtime_dir: Path) -> None:
         ("libggml-blas", "0.23.0"),
         ("libggml-rpc", "0.23.0"),
     ):
-        (runtime_dir / f"{stem}.{version}.dylib").write_text("x", encoding = "utf-8")
+        (runtime_dir / f"{stem}.{version}.dylib").write_text("x", encoding="utf-8")
         os.symlink(f"{stem}.{version}.dylib", runtime_dir / f"{stem}.0.dylib")
         os.symlink(f"{stem}.0.dylib", runtime_dir / f"{stem}.dylib")
     # The entrypoint impl split, which the same bundle ships UNVERSIONED: plain files, no
     # libX.0 chain. Listing it was incomplete before, not the bundle.
     for stem in ("libllama-server-impl", "libllama-quantize-impl"):
-        (runtime_dir / f"{stem}.dylib").write_text("x", encoding = "utf-8")
+        (runtime_dir / f"{stem}.dylib").write_text("x", encoding="utf-8")
 
 
 def _macos_tree(tmp_path: Path) -> Path:
     root = tmp_path / "llama.cpp"
     runtime_dir = root / "build" / "bin"
-    runtime_dir.mkdir(parents = True)
+    runtime_dir.mkdir(parents=True)
     (root / "UNSLOTH_PREBUILT_INFO.json").write_text(
         json.dumps({"tag": "b10840", "release_tag": "b10840-mix-d5c17a0", "source": "published"}),
-        encoding = "utf-8",
+        encoding="utf-8",
     )
     for name in ("server", "quantize"):
         binary = runtime_dir / f"llama-{name}"
-        binary.write_text("x", encoding = "utf-8")
+        binary.write_text("x", encoding="utf-8")
         # An installed entrypoint is executable, and the probe now asks for that
         # rather than for mere presence, the way _existing_install_runs does.
         os.chmod(binary, 0o755)
@@ -548,12 +548,12 @@ def _macos_tree(tmp_path: Path) -> Path:
     return root
 
 
-@pytest.mark.skipif(os.name == "nt", reason = "the fixture needs POSIX symlinks")
+@pytest.mark.skipif(os.name == "nt", reason="the fixture needs POSIX symlinks")
 def test_a_complete_macos_payload_is_healthy(tmp_path):
-    assert ILP.installed_runtime_health(_macos_tree(tmp_path), host = _macos_host()) == (True, "")
+    assert ILP.installed_runtime_health(_macos_tree(tmp_path), host=_macos_host()) == (True, "")
 
 
-@pytest.mark.skipif(os.name == "nt", reason = "the fixture needs POSIX symlinks")
+@pytest.mark.skipif(os.name == "nt", reason="the fixture needs POSIX symlinks")
 @pytest.mark.parametrize(
     "stem",
     ["libllama-common", "libllama", "libggml", "libggml-base", "libggml-cpu", "libmtmd"],
@@ -568,25 +568,25 @@ def test_each_essential_macos_dylib_is_required_on_its_own(tmp_path, stem):
     runtime_dir = root / "build" / "bin"
     for path in [p for p in runtime_dir.iterdir() if p.name.split(".")[0] == stem]:
         path.unlink()
-    assert ILP.installed_runtime_health(root, host = _macos_host()) == (
+    assert ILP.installed_runtime_health(root, host=_macos_host()) == (
         False,
         "llama_runtime_payload_incomplete",
     )
 
 
-@pytest.mark.skipif(os.name == "nt", reason = "the fixture needs POSIX symlinks")
+@pytest.mark.skipif(os.name == "nt", reason="the fixture needs POSIX symlinks")
 def test_losing_only_the_macos_chain_target_is_caught(tmp_path):
     """The links survive quarantine of the versioned file they point at, and a name-only
     match would still satisfy the pattern."""
     root = _macos_tree(tmp_path)
     (root / "build" / "bin" / "libggml.0.23.0.dylib").unlink()
-    assert ILP.installed_runtime_health(root, host = _macos_host()) == (
+    assert ILP.installed_runtime_health(root, host=_macos_host()) == (
         False,
         "llama_runtime_payload_incomplete",
     )
 
 
-@pytest.mark.skipif(os.name == "nt", reason = "the fixture needs POSIX symlinks")
+@pytest.mark.skipif(os.name == "nt", reason="the fixture needs POSIX symlinks")
 def test_the_macos_accelerator_backends_are_not_required(tmp_path):
     """Over-strictness is the repair-loop direction. metal, blas and rpc are the accelerator
     and transport backends, the way libggml-cuda is on Linux, so demanding one a bundle does
@@ -599,10 +599,10 @@ def test_the_macos_accelerator_backends_are_not_required(tmp_path):
         if p.name.startswith(("libggml-metal", "libggml-blas", "libggml-rpc"))
     ]:
         path.unlink()
-    assert ILP.installed_runtime_health(root, host = _macos_host()) == (True, "")
+    assert ILP.installed_runtime_health(root, host=_macos_host()) == (True, "")
 
 
-@pytest.mark.skipif(os.name == "nt", reason = "the fixture needs POSIX symlinks")
+@pytest.mark.skipif(os.name == "nt", reason="the fixture needs POSIX symlinks")
 def test_losing_the_macos_install_name_link_is_caught(tmp_path):
     """Codex 3959620556, P1. The middle link of the chain is the one dyld asks for, and it
     is the one a name-only match hides: llama-server's LC_LOAD_DYLIB entry is
@@ -617,13 +617,13 @@ def test_losing_the_macos_install_name_link_is_caught(tmp_path):
     # The terminal file is still there and still a real file, which is what made this
     # read as healthy.
     assert (runtime_dir / "libggml.0.23.0.dylib").is_file()
-    assert ILP.installed_runtime_health(root, host = _macos_host()) == (
+    assert ILP.installed_runtime_health(root, host=_macos_host()) == (
         False,
         "llama_runtime_payload_incomplete",
     )
 
 
-@pytest.mark.skipif(os.name == "nt", reason = "the fixture needs POSIX symlinks")
+@pytest.mark.skipif(os.name == "nt", reason="the fixture needs POSIX symlinks")
 def test_a_bare_versionless_macos_dylib_still_satisfies_its_group(tmp_path):
     """The other direction, so the rule above cannot become a reinstall loop: a bundle that
     ships libfoo.dylib with no chain at all is a name the loader can resolve and must stay
@@ -632,11 +632,11 @@ def test_a_bare_versionless_macos_dylib_still_satisfies_its_group(tmp_path):
     runtime_dir = root / "build" / "bin"
     for path in [p for p in runtime_dir.iterdir() if p.name.split(".")[0] == "libggml"]:
         path.unlink()
-    (runtime_dir / "libggml.dylib").write_text("x", encoding = "utf-8")
-    assert ILP.installed_runtime_health(root, host = _macos_host()) == (True, "")
+    (runtime_dir / "libggml.dylib").write_text("x", encoding="utf-8")
+    assert ILP.installed_runtime_health(root, host=_macos_host()) == (True, "")
 
 
-@pytest.mark.skipif(os.name == "nt", reason = "POSIX permission bits")
+@pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")
 @pytest.mark.parametrize("name", ["server", "quantize"])
 def test_a_runtime_binary_stripped_of_its_execute_bit_is_broken(tmp_path, name):
     """Codex 3959620570, P2. Extraction damage or security software can clear the bit without
@@ -647,15 +647,15 @@ def test_a_runtime_binary_stripped_of_its_execute_bit_is_broken(tmp_path, name):
     root = _macos_tree(tmp_path)
     binary = root / "build" / "bin" / f"llama-{name}"
     os.chmod(binary, 0o755)
-    assert ILP.installed_runtime_health(root, host = _macos_host()) == (True, "")
+    assert ILP.installed_runtime_health(root, host=_macos_host()) == (True, "")
     os.chmod(binary, 0o644)
-    assert ILP.installed_runtime_health(root, host = _macos_host()) == (
+    assert ILP.installed_runtime_health(root, host=_macos_host()) == (
         False,
         "llama_runtime_binaries_missing",
     )
 
 
-@pytest.mark.skipif(os.name == "nt", reason = "the fixture needs POSIX symlinks")
+@pytest.mark.skipif(os.name == "nt", reason="the fixture needs POSIX symlinks")
 @pytest.mark.parametrize("name", ["server", "quantize"])
 def test_a_directory_where_a_runtime_entrypoint_belongs_is_broken(tmp_path, name):
     """Codex 3960401513, P2. A directory is searchable, so os.access(X_OK) answers true for
@@ -671,14 +671,14 @@ def test_a_directory_where_a_runtime_entrypoint_belongs_is_broken(tmp_path, name
     binary.unlink()
     binary.mkdir()
     assert os.access(binary, os.X_OK) and binary.exists()
-    assert ILP.installed_runtime_health(root, host = _macos_host()) == (
+    assert ILP.installed_runtime_health(root, host=_macos_host()) == (
         False,
         "llama_runtime_binaries_missing",
     )
     assert not ILP._entrypoint_is_runnable(binary, _macos_host())
 
 
-@pytest.mark.skipif(os.name == "nt", reason = "the root wrapper is written on POSIX only")
+@pytest.mark.skipif(os.name == "nt", reason="the root wrapper is written on POSIX only")
 @pytest.mark.parametrize("name", ["server", "quantize"])
 def test_an_empty_root_entrypoint_is_not_saved_by_a_healthy_build_bin(tmp_path, name):
     """``create_exec_entrypoint`` writes a real wrapper at the install root when it cannot
@@ -688,19 +688,19 @@ def test_an_empty_root_entrypoint_is_not_saved_by_a_healthy_build_bin(tmp_path, 
     ENOEXEC."""
     root = _macos_tree(tmp_path)
     wrapper = root / f"llama-{name}"
-    wrapper.write_text("#!/bin/sh\n", encoding = "utf-8")
+    wrapper.write_text("#!/bin/sh\n", encoding="utf-8")
     os.chmod(wrapper, 0o755)
-    assert ILP.installed_runtime_health(root, host = _macos_host()) == (True, "")
+    assert ILP.installed_runtime_health(root, host=_macos_host()) == (True, "")
 
-    wrapper.write_text("", encoding = "utf-8")
+    wrapper.write_text("", encoding="utf-8")
     os.chmod(wrapper, 0o755)
-    assert ILP.installed_runtime_health(root, host = _macos_host()) == (
+    assert ILP.installed_runtime_health(root, host=_macos_host()) == (
         False,
         "llama_runtime_binaries_missing",
     )
 
 
-@pytest.mark.skipif(os.name == "nt", reason = "the execute bit is a POSIX test")
+@pytest.mark.skipif(os.name == "nt", reason="the execute bit is a POSIX test")
 @pytest.mark.parametrize("name", ["server", "quantize"])
 def test_a_root_entrypoint_the_resolver_walks_past_is_not_damage(tmp_path, name):
     """A root wrapper without its execute bit is skipped, not selected, so the tree works.
@@ -714,20 +714,20 @@ def test_a_root_entrypoint_the_resolver_walks_past_is_not_damage(tmp_path, name)
     """
     root = _macos_tree(tmp_path)
     wrapper = root / f"llama-{name}"
-    wrapper.write_text("#!/bin/sh\n", encoding = "utf-8")
+    wrapper.write_text("#!/bin/sh\n", encoding="utf-8")
     os.chmod(wrapper, 0o644)
-    assert ILP.installed_runtime_health(root, host = _macos_host()) == (True, "")
+    assert ILP.installed_runtime_health(root, host=_macos_host()) == (True, "")
     # A directory of that name is the same shape to the resolver: is_file() is false.
     wrapper.unlink()
     wrapper.mkdir()
-    assert ILP.installed_runtime_health(root, host = _macos_host()) == (True, "")
+    assert ILP.installed_runtime_health(root, host=_macos_host()) == (True, "")
     wrapper.rmdir()
     # The keep decision is deliberately not relaxed with it: replacing a rotten wrapper
     # is the installer's business, and only the launch verdict must stay no stricter.
-    wrapper.write_text("#!/bin/sh\n", encoding = "utf-8")
+    wrapper.write_text("#!/bin/sh\n", encoding="utf-8")
     os.chmod(wrapper, 0o644)
     assert ILP._damaged_entrypoint(root, _macos_host()) == wrapper
-    assert ILP._damaged_entrypoint(root, _macos_host(), selected_root_only = True) is None
+    assert ILP._damaged_entrypoint(root, _macos_host(), selected_root_only=True) is None
 
 
 def test_an_empty_windows_root_entrypoint_is_still_damage(tmp_path):
@@ -737,10 +737,10 @@ def test_an_empty_windows_root_entrypoint_is_still_damage(tmp_path):
     root = _windows_tree(
         tmp_path,
         _PUBLISHED_WINDOWS_PAYLOAD,
-        marker = '{"release_tag": "b10840", "source": "published"}',
+        marker='{"release_tag": "b10840", "source": "published"}',
     )
     (root / "llama-server.exe").write_bytes(b"")
-    assert ILP.installed_runtime_health(root, host = _windows_host()) == (
+    assert ILP.installed_runtime_health(root, host=_windows_host()) == (
         False,
         "llama_runtime_binaries_missing",
     )
@@ -758,29 +758,29 @@ def test_the_selection_rule_matches_the_resolver_the_backend_uses(tmp_path):
     from utils.llama_cpp_path_settings import _usable_binary
 
     candidate = tmp_path / "llama-server"
-    candidate.write_text("#!/bin/sh\n", encoding = "utf-8")
+    candidate.write_text("#!/bin/sh\n", encoding="utf-8")
     for mode, platform, host in (
         (0o755, "linux", _macos_host()),
         (0o644, "linux", _macos_host()),
     ):
         os.chmod(candidate, mode)
         assert ILP._discovery_would_select(candidate, host) == _usable_binary(
-            candidate, platform = platform
+            candidate, platform=platform
         ), mode
     # Absent on both sides, whatever the platform.
     candidate.unlink()
     assert ILP._discovery_would_select(candidate, _macos_host()) is False
-    assert _usable_binary(candidate, platform = "linux") is False
+    assert _usable_binary(candidate, platform="linux") is False
 
 
-@pytest.mark.skipif(os.name == "nt", reason = "the root wrapper is written on POSIX only")
+@pytest.mark.skipif(os.name == "nt", reason="the root wrapper is written on POSIX only")
 def test_a_root_entrypoint_that_is_not_there_is_not_a_pin(tmp_path):
     """An absent root copy, and a link whose target went with it, both read as absent to the
     finder, which then falls through to build/bin. Calling either one broken would fail
     health on every install that never got a root entrypoint at all."""
     root = _macos_tree(tmp_path)
-    assert ILP.installed_runtime_health(root, host = _macos_host()) == (True, "")
+    assert ILP.installed_runtime_health(root, host=_macos_host()) == (True, "")
 
     os.symlink("build/bin/llama-server-that-went-away", root / "llama-server")
     assert not (root / "llama-server").exists()
-    assert ILP.installed_runtime_health(root, host = _macos_host()) == (True, "")
+    assert ILP.installed_runtime_health(root, host=_macos_host()) == (True, "")

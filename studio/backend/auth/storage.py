@@ -45,7 +45,7 @@ def _persist_bootstrap_password(password: str) -> None:
     """Atomically write the bootstrap password 0600, LF terminated on every OS: a partial write would
     destroy the only plaintext recovery credential."""
     fd, tmp_name = tempfile.mkstemp(
-        prefix = f".{_BOOTSTRAP_PW_PATH.name}.", dir = _BOOTSTRAP_PW_PATH.parent
+        prefix=f".{_BOOTSTRAP_PW_PATH.name}.", dir=_BOOTSTRAP_PW_PATH.parent
     )
     try:
         with os.fdopen(fd, "wb") as f:
@@ -128,7 +128,7 @@ def generate_bootstrap_password() -> str:
     import diceware
 
     _bootstrap_password = diceware.get_passphrase(
-        options = diceware.handle_options(args = ["-n", "4", "-d", "", "-c"])
+        options=diceware.handle_options(args=["-n", "4", "-d", "", "-c"])
     )
 
     # Persist so the same passphrase survives restarts until password change.
@@ -158,11 +158,11 @@ def clear_bootstrap_password() -> None:
     _bootstrap_password = None
     if _BOOTSTRAP_PW_PATH.is_file():
         try:
-            _BOOTSTRAP_PW_PATH.unlink(missing_ok = True)
+            _BOOTSTRAP_PW_PATH.unlink(missing_ok=True)
         except OSError as e:
             # Truncate when removal fails: stale plaintext would otherwise be re-seeded if auth.db is recreated.
             try:
-                _BOOTSTRAP_PW_PATH.write_text("", encoding = "utf-8")
+                _BOOTSTRAP_PW_PATH.write_text("", encoding="utf-8")
                 cleared = True
             except OSError:
                 cleared = False
@@ -180,7 +180,7 @@ def clear_bootstrap_password() -> None:
                     "its old bootstrap password is still on disk. Remove it manually to "
                     "prevent reuse after a reset."
                 )
-            print(message, file = sys.stderr, flush = True)
+            print(message, file=sys.stderr, flush=True)
 
 
 def _hash_token(token: str) -> str:
@@ -671,7 +671,7 @@ def issue_account_setup_code(
     # Before the transaction: a first-run salt creation opens its own connection.
     code_hash = _hash_setup_code(code)
     now = datetime.now(timezone.utc)
-    expires_at = (now + timedelta(minutes = 60)).isoformat()
+    expires_at = (now + timedelta(minutes=60)).isoformat()
     with account_mutation():
         conn = get_connection()
         try:
@@ -799,6 +799,7 @@ def update_account_password(
 
 def set_account_active(account_id: str, is_active: bool) -> dict:
     from auth.policy import account_mutation
+
     with account_mutation():
         conn = get_connection()
         try:
@@ -1269,10 +1270,10 @@ def ensure_default_admin() -> bool:
     bootstrap_pw = generate_bootstrap_password()
     try:
         create_initial_user(
-            username = DEFAULT_ADMIN_USERNAME,
-            password = bootstrap_pw,
-            jwt_secret = secrets.token_urlsafe(64),
-            must_change_password = True,
+            username=DEFAULT_ADMIN_USERNAME,
+            password=bootstrap_pw,
+            jwt_secret=secrets.token_urlsafe(64),
+            must_change_password=True,
         )
         _admin_created_this_process = True
         return True
@@ -1758,7 +1759,7 @@ def validate_api_key(raw_key: str) -> Optional[str]:
 def validate_api_key_with_credential(
     raw_key: str, *, touch: bool = True
 ) -> Optional[Tuple[str, str]]:
-    verified = validate_api_key_account(raw_key, touch = touch)
+    verified = validate_api_key_account(raw_key, touch=touch)
     return (verified[0]["username"], verified[1]) if verified else None
 
 

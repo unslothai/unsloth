@@ -25,11 +25,11 @@ OFFICIAL_HF = "https://huggingface.co"
 OFFICIAL_DS = "https://datasets-server.huggingface.co"
 
 
-@pytest.fixture(autouse = True)
+@pytest.fixture(autouse=True)
 def _isolate_env(monkeypatch):
     """Start every test from both vars unset, and reset the once-only warn flag."""
-    monkeypatch.delenv("HF_ENDPOINT", raising = False)
-    monkeypatch.delenv("HF_DATASETS_SERVER", raising = False)
+    monkeypatch.delenv("HF_ENDPOINT", raising=False)
+    monkeypatch.delenv("HF_DATASETS_SERVER", raising=False)
     import utils.hf_endpoint as _mod
 
     monkeypatch.setattr(_mod, "_ds_mirror_warned", False)
@@ -95,27 +95,27 @@ class TestGetHfDatasetsServer:
     def test_mirror_hub_does_not_redirect_datasets_server(self, monkeypatch, caplog):
         """A mirrored HF_ENDPOINT alone must not point datasets-server at the mirror."""
         monkeypatch.setenv("HF_ENDPOINT", "https://hf-mirror.com")
-        with caplog.at_level(logging.WARNING, logger = "utils.hf_endpoint"):
+        with caplog.at_level(logging.WARNING, logger="utils.hf_endpoint"):
             assert get_hf_datasets_server() == OFFICIAL_DS
         assert any("HF_DATASETS_SERVER" in r.message for r in caplog.records)
 
     def test_mirror_warning_emitted_once(self, monkeypatch, caplog):
         monkeypatch.setenv("HF_ENDPOINT", "https://hf-mirror.com")
-        with caplog.at_level(logging.WARNING, logger = "utils.hf_endpoint"):
+        with caplog.at_level(logging.WARNING, logger="utils.hf_endpoint"):
             get_hf_datasets_server()
             get_hf_datasets_server()
         warnings = [r for r in caplog.records if "HF_DATASETS_SERVER" in r.message]
         assert len(warnings) == 1
 
     def test_no_warning_on_default_endpoint(self, caplog):
-        with caplog.at_level(logging.WARNING, logger = "utils.hf_endpoint"):
+        with caplog.at_level(logging.WARNING, logger="utils.hf_endpoint"):
             get_hf_datasets_server()
         assert not [r for r in caplog.records if "HF_DATASETS_SERVER" in r.message]
 
     def test_no_warning_when_datasets_server_explicit(self, monkeypatch, caplog):
         monkeypatch.setenv("HF_ENDPOINT", "https://hf-mirror.com")
         monkeypatch.setenv("HF_DATASETS_SERVER", "https://ds.example.com")
-        with caplog.at_level(logging.WARNING, logger = "utils.hf_endpoint"):
+        with caplog.at_level(logging.WARNING, logger="utils.hf_endpoint"):
             get_hf_datasets_server()
         assert not [r for r in caplog.records if "HF_DATASETS_SERVER" in r.message]
 
@@ -172,14 +172,14 @@ class TestRejectsUnusableEndpoints:
 
     def test_rejection_is_logged(self, monkeypatch, caplog):
         monkeypatch.setenv("HF_ENDPOINT", "https://hf-mirror.com; script-src *")
-        with caplog.at_level(logging.WARNING, logger = "utils.hf_endpoint"):
+        with caplog.at_level(logging.WARNING, logger="utils.hf_endpoint"):
             get_hf_endpoint()
         assert any("HF_ENDPOINT" in r.getMessage() for r in caplog.records)
 
     def test_rejection_logged_once_not_per_call(self, monkeypatch, caplog):
         """_build_csp runs per response, so a per-call warning would flood the log."""
         monkeypatch.setenv("HF_ENDPOINT", "https://hf-mirror.com; script-src *")
-        with caplog.at_level(logging.WARNING, logger = "utils.hf_endpoint"):
+        with caplog.at_level(logging.WARNING, logger="utils.hf_endpoint"):
             for _ in range(5):
                 get_hf_endpoint()
         assert len([r for r in caplog.records if "HF_ENDPOINT" in r.getMessage()]) == 1
@@ -242,6 +242,7 @@ class TestPlainHttpIsLoopbackOnly:
 class TestAssetSources:
     def test_no_asset_sources_without_a_mirror(self):
         from utils.hf_endpoint import csp_asset_sources
+
         assert csp_asset_sources() == ()
 
     def test_an_https_mirror_needs_none(self, monkeypatch):
@@ -253,6 +254,7 @@ class TestAssetSources:
 
     def test_a_loopback_http_mirror_needs_one(self, monkeypatch):
         from utils.hf_endpoint import csp_asset_sources
+
         monkeypatch.setenv("HF_ENDPOINT", "http://127.0.0.1:9700")
         assert csp_asset_sources() == ("http://127.0.0.1:9700",)
 
@@ -290,7 +292,7 @@ def test_the_reachable_endpoint_follows_the_tunnel_aware_client_ip(monkeypatch):
     monkeypatch.setenv("HF_ENDPOINT", "http://127.0.0.1:9700")
 
     def request(peer: str, headers: dict | None = None):
-        return SimpleNamespace(client = SimpleNamespace(host = peer), headers = headers or {})
+        return SimpleNamespace(client=SimpleNamespace(host=peer), headers=headers or {})
 
     local = request("127.0.0.1")
     assert client_reachable_endpoint(client_ip(local)) == "http://127.0.0.1:9700"
@@ -346,7 +348,7 @@ def test_the_environment_is_normalised_for_huggingface_hub(monkeypatch):
         hf_endpoint.normalize_hf_endpoint_env()
         assert "HF_ENDPOINT" not in os.environ, rejected
 
-    monkeypatch.delenv("HF_ENDPOINT", raising = False)
+    monkeypatch.delenv("HF_ENDPOINT", raising=False)
     hf_endpoint.normalize_hf_endpoint_env()
     assert "HF_ENDPOINT" not in os.environ
 
@@ -388,7 +390,7 @@ def test_a_private_endpoint_reaches_only_a_client_on_a_local_network(monkeypatch
 def test_the_per_client_fallback_is_logged_once_per_endpoint(monkeypatch, caplog):
     """Both /api/health and the publish link call this on every request."""
     monkeypatch.setenv("HF_ENDPOINT", "http://127.0.0.1:9700")
-    with caplog.at_level(logging.WARNING, logger = "utils.hf_endpoint"):
+    with caplog.at_level(logging.WARNING, logger="utils.hf_endpoint"):
         for _ in range(3):
             assert client_reachable_endpoint("8.8.8.8") == OFFICIAL_HF
     assert len([r for r in caplog.records if "not reachable" in r.getMessage()]) == 1
@@ -396,12 +398,12 @@ def test_the_per_client_fallback_is_logged_once_per_endpoint(monkeypatch, caplog
     # A different endpoint is a different configuration, so it warns on its own.
     caplog.clear()
     monkeypatch.setenv("HF_ENDPOINT", "https://10.0.0.5:8443")
-    with caplog.at_level(logging.WARNING, logger = "utils.hf_endpoint"):
+    with caplog.at_level(logging.WARNING, logger="utils.hf_endpoint"):
         assert client_reachable_endpoint("8.8.8.8") == OFFICIAL_HF
     assert len([r for r in caplog.records if "not reachable" in r.getMessage()]) == 1
 
     # A client that CAN reach it is not a fallback and must not warn.
     caplog.clear()
-    with caplog.at_level(logging.WARNING, logger = "utils.hf_endpoint"):
+    with caplog.at_level(logging.WARNING, logger="utils.hf_endpoint"):
         assert client_reachable_endpoint("192.168.1.50") == "https://10.0.0.5:8443"
     assert not [r for r in caplog.records if "not reachable" in r.getMessage()]

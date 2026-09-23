@@ -29,10 +29,10 @@ class _Backend:
     def __init__(
         self,
         *,
-        loaded = None,
-        base = None,
-        loading = (),
-        extra = (),
+        loaded=None,
+        base=None,
+        loading=(),
+        extra=(),
     ):
         self._loaded = loaded
         self._base = base
@@ -60,7 +60,7 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setattr(models_module, "get_inference_backend", lambda: _NoChat())
 
     app = FastAPI()
-    app.include_router(models_router, prefix = "/api/models")
+    app.include_router(models_router, prefix="/api/models")
     app.dependency_overrides[get_current_subject] = lambda: "test-user"
     return TestClient(app), outputs
 
@@ -73,7 +73,7 @@ class _NoChat:
 def _model_dir(outputs):
     d = outputs / "my-diffusion-model"
     d.mkdir()
-    (d / "model_index.json").write_text("{}", encoding = "utf-8")
+    (d / "model_index.json").write_text("{}", encoding="utf-8")
     return d
 
 
@@ -81,7 +81,7 @@ def _delete(client, path):
     return client.request(
         "DELETE",
         "/api/models/delete-finetuned",
-        json = {"model_path": str(path), "source": "training"},
+        json={"model_path": str(path), "source": "training"},
     )
 
 
@@ -89,7 +89,7 @@ def test_refuses_to_delete_a_model_the_images_engine_has_loaded(client, monkeypa
     c, outputs = client
     target = _model_dir(outputs)
     monkeypatch.setattr(
-        models_module, "_active_diffusion_backend", lambda: _Backend(loaded = str(target))
+        models_module, "_active_diffusion_backend", lambda: _Backend(loaded=str(target))
     )
     monkeypatch.setattr(models_module, "_active_video_backend", lambda: None)
 
@@ -108,7 +108,7 @@ def test_refuses_the_companion_base_and_the_extra_repos_the_engine_reads(client,
     monkeypatch.setattr(
         models_module,
         "_active_diffusion_backend",
-        lambda: _Backend(loaded = str(other), base = str(target)),
+        lambda: _Backend(loaded=str(other), base=str(target)),
     )
     monkeypatch.setattr(models_module, "_active_video_backend", lambda: None)
     assert _delete(c, target).status_code == 400
@@ -117,7 +117,7 @@ def test_refuses_the_companion_base_and_the_extra_repos_the_engine_reads(client,
     monkeypatch.setattr(
         models_module,
         "_active_diffusion_backend",
-        lambda: _Backend(loaded = str(other), extra = (str(target),)),
+        lambda: _Backend(loaded=str(other), extra=(str(target),)),
     )
     assert _delete(c, target).status_code == 400
     assert target.exists()
@@ -128,7 +128,7 @@ def test_refuses_while_the_video_backend_is_still_fetching_it(client, monkeypatc
     target = _model_dir(outputs)
     monkeypatch.setattr(models_module, "_active_diffusion_backend", lambda: None)
     monkeypatch.setattr(
-        models_module, "_active_video_backend", lambda: _Backend(loading = (str(target),))
+        models_module, "_active_video_backend", lambda: _Backend(loading=(str(target),))
     )
 
     resp = _delete(c, target)
@@ -143,7 +143,7 @@ def test_allows_the_delete_when_no_diffusion_or_video_model_holds_it(client, mon
     monkeypatch.setattr(
         models_module,
         "_active_diffusion_backend",
-        lambda: _Backend(loaded = str(outputs / "another-model")),
+        lambda: _Backend(loaded=str(outputs / "another-model")),
     )
     monkeypatch.setattr(models_module, "_active_video_backend", lambda: _Backend())
 
@@ -190,7 +190,7 @@ def test_refuses_the_delete_while_a_diffusion_training_run_is_active(client, mon
     monkeypatch.setattr(models_module, "_active_video_backend", lambda: None)
 
     stub = types.ModuleType("core.training.diffusion_training_service")
-    stub.get_diffusion_training_service = lambda: types.SimpleNamespace(is_active = lambda: True)
+    stub.get_diffusion_training_service = lambda: types.SimpleNamespace(is_active=lambda: True)
     monkeypatch.setitem(sys.modules, "core.training.diffusion_training_service", stub)
 
     resp = _delete(c, target)
@@ -199,6 +199,6 @@ def test_refuses_the_delete_while_a_diffusion_training_run_is_active(client, mon
     assert target.exists()
 
     # Idle again: the same delete goes through.
-    stub.get_diffusion_training_service = lambda: types.SimpleNamespace(is_active = lambda: False)
+    stub.get_diffusion_training_service = lambda: types.SimpleNamespace(is_active=lambda: False)
     assert _delete(c, target).status_code == 200
     assert not target.exists()

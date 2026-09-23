@@ -41,7 +41,7 @@ _CMD = [
 _HINT = _CMD.index("--spec-type")
 
 
-def _fallback(cmd, hint = _HINT):
+def _fallback(cmd, hint=_HINT):
     """The shipped reconstruction, verbatim, so a drift here fails loudly."""
     at = _subsequence_index(cmd, _SPEC_FLAGS, hint)
     return cmd[:at] + ["--spec-default"] + cmd[at + len(_SPEC_FLAGS) :]

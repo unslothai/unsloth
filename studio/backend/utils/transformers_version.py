@@ -83,6 +83,7 @@ def _env_offline() -> bool:
     """
     try:
         from utils.utils import force_hf_offline_active
+
         if force_hf_offline_active():
             return True
     except Exception:
@@ -102,6 +103,7 @@ def _hf_raw_url(model_name: str, filename: str) -> str:
     never LFS, so no pointer-vs-content difference.
     """
     from utils.utils import hf_endpoint_url
+
     return f"{hf_endpoint_url().rstrip('/')}/{model_name}/resolve/main/{filename}"
 
 
@@ -149,8 +151,8 @@ def _hf_urlopen(req, timeout: int):
 
     opener = _hf_proxy_opener(req.full_url)
     if opener is not None:
-        return opener.open(req, timeout = timeout)
-    return auth_safe_open(req, timeout = timeout)
+        return opener.open(req, timeout=timeout)
+    return auth_safe_open(req, timeout=timeout)
 
 
 def hf_endpoint_unreachable(
@@ -175,6 +177,7 @@ def hf_endpoint_unreachable(
     # Shared normaliser so an empty/whitespace HF_ENDPOINT falls back to the default hub.
     try:
         from utils.utils import hf_endpoint_url
+
         endpoint = hf_endpoint_url()
     except Exception:
         endpoint = (os.environ.get("HF_ENDPOINT") or "").strip() or "https://huggingface.co"
@@ -184,6 +187,7 @@ def hf_endpoint_unreachable(
     # Pin the Hub client's proxy choice: the default urllib opener ignores all_proxy.
     try:
         from utils.utils import hf_proxy_for_endpoint, hf_proxy_usable_by_urllib
+
         proxy = hf_proxy_for_endpoint(endpoint)
         # urllib cannot speak socks5, so its instant failure is not proof of no egress.
         if proxy and not hf_proxy_usable_by_urllib(proxy):
@@ -197,8 +201,8 @@ def hf_endpoint_unreachable(
 
     def _probe():
         try:
-            req = urllib.request.Request(endpoint, method = "HEAD")
-            with _open(req, timeout = timeout):
+            req = urllib.request.Request(endpoint, method="HEAD")
+            with _open(req, timeout=timeout):
                 result["online"] = True
         except urllib.error.HTTPError as exc:
             # The server/proxy answered, so we have egress. A gateway error usually means the hub
@@ -236,7 +240,7 @@ def hf_endpoint_unreachable(
             # Bad endpoint/proxy, or a bug here. Not a network answer, so fail open.
             result["online"] = True
 
-    t = threading.Thread(target = _probe, daemon = True)
+    t = threading.Thread(target=_probe, daemon=True)
     t.start()
     t.join(timeout + 1)
     if t.is_alive():
@@ -245,6 +249,7 @@ def hf_endpoint_unreachable(
         # the join, so lifetime callers fail open. Direct, a hang means real hub calls would too.
         try:
             from utils.utils import hf_proxy_configured
+
             if hf_proxy_configured():
                 return proxy_timeouts_offline
         except Exception:
@@ -255,6 +260,7 @@ def hf_endpoint_unreachable(
         # Bounded separately so the whole probe stays within a predictable deadline.
         try:
             from utils.utils import hf_proxy_configured, hf_tcp_reachable
+
             if hf_proxy_configured():
                 # Through a proxy the handshake only proves the proxy is up, not that it
                 # can reach the hub. Lifetime callers fail open on this ambiguous result.
@@ -426,7 +432,7 @@ def get_transformers_activation_tier(model_name: str, hf_token: str | None = Non
     if _is_lora_adapter_dir(Path(model_name)):
         resolved = _resolve_base_model(model_name)
     else:
-        resolved = _remote_lora_base(model_name, hf_token = hf_token) or model_name
+        resolved = _remote_lora_base(model_name, hf_token=hf_token) or model_name
     tier = get_transformers_tier(resolved, hf_token)
     if model_name != resolved and _safe_is_file(Path(model_name) / "config.json"):
         tier = _higher_tier(tier, get_transformers_tier(model_name, hf_token))
@@ -585,12 +591,12 @@ def recorded_local_base(model_name) -> "tuple[str | None, bool]":
     try:
         adapter_cfg = _safe_is_file(root / "adapter_config.json")
         if adapter_cfg:
-            with open(root / "adapter_config.json", encoding = "utf-8-sig") as f:
+            with open(root / "adapter_config.json", encoding="utf-8-sig") as f:
                 base = json.load(f).get("base_model_name_or_path")
             if base:
                 return base, False
         if _safe_is_file(root / "config.json"):
-            with open(root / "config.json", encoding = "utf-8-sig") as f:
+            with open(root / "config.json", encoding="utf-8-sig") as f:
                 cfg = json.load(f)
             for _key in ("model_name", "_name_or_path"):
                 base = cfg.get(_key)
@@ -619,7 +625,7 @@ def _resolve_base_model(model_name: str) -> str:
     adapter_cfg_path = local_path / "adapter_config.json"
     if _safe_is_file(adapter_cfg_path):
         try:
-            with open(adapter_cfg_path, encoding = "utf-8-sig") as f:
+            with open(adapter_cfg_path, encoding="utf-8-sig") as f:
                 cfg = json.load(f)
             base = cfg.get("base_model_name_or_path")
             if base:
@@ -636,7 +642,7 @@ def _resolve_base_model(model_name: str) -> str:
     config_json_path = local_path / "config.json"
     if _safe_is_file(config_json_path):
         try:
-            with open(config_json_path, encoding = "utf-8-sig") as f:
+            with open(config_json_path, encoding="utf-8-sig") as f:
                 cfg = json.load(f)
             # Unsloth writes model_name, HF writes _name_or_path; skip a self-reference.
             for _key in ("model_name", "_name_or_path"):
@@ -656,6 +662,7 @@ def _resolve_base_model(model_name: str) -> str:
     if _safe_is_file(adapter_cfg_path):
         try:
             from utils.models import get_base_model_from_lora
+
             base = get_base_model_from_lora(model_name)
             if base:
                 logger.info(
@@ -740,15 +747,15 @@ def _adapter_base_from_hf_cache(model_name: str) -> str | None:
             candidates.append(
                 repo_dir
                 / "snapshots"
-                / ref_main.read_text(encoding = "utf-8").strip()
+                / ref_main.read_text(encoding="utf-8").strip()
                 / "adapter_config.json"
             )
         candidates += sorted(
-            repo_dir.glob("snapshots/*/adapter_config.json"), key = _mtime, reverse = True
+            repo_dir.glob("snapshots/*/adapter_config.json"), key=_mtime, reverse=True
         )
         for cfg_path in candidates:
             if cfg_path.is_file():
-                base = json.loads(cfg_path.read_text(encoding = "utf-8-sig")).get(
+                base = json.loads(cfg_path.read_text(encoding="utf-8-sig")).get(
                     "base_model_name_or_path"
                 )
                 return base or None
@@ -769,6 +776,7 @@ def _remote_lora_base(model_name: str, hf_token: str | None = None) -> str | Non
         return None
     try:
         from utils.paths import is_local_path
+
         if is_local_path(model_name):
             return None  # an existing relative path is a local checkpoint, not a Hub repo
     except Exception:
@@ -784,8 +792,8 @@ def _remote_lora_base(model_name: str, hf_token: str | None = None) -> str | Non
     if hf_token:
         headers["Authorization"] = f"Bearer {hf_token}"
     try:
-        req = urllib.request.Request(url, headers = headers)
-        with _hf_urlopen(req, timeout = 10) as resp:
+        req = urllib.request.Request(url, headers=headers)
+        with _hf_urlopen(req, timeout=10) as resp:
             cfg = json.loads(resp.read().decode())
         base = cfg.get("base_model_name_or_path")
         if base:
@@ -819,7 +827,7 @@ def _check_tokenizer_config_needs_v5(model_name: str, hf_token: str | None = Non
     local_tc = local_path / "tokenizer_config.json"
     if _safe_is_file(local_tc):
         try:
-            with open(local_tc, encoding = "utf-8-sig") as f:
+            with open(local_tc, encoding="utf-8-sig") as f:
                 data = json.load(f)
             tokenizer_class = data.get("tokenizer_class", "")
             result = tokenizer_class in _TRANSFORMERS_5_TOKENIZER_CLASSES
@@ -851,8 +859,8 @@ def _check_tokenizer_config_needs_v5(model_name: str, hf_token: str | None = Non
     if hf_token:
         headers["Authorization"] = f"Bearer {hf_token}"
     try:
-        req = urllib.request.Request(url, headers = headers)
-        with _hf_urlopen(req, timeout = 10) as resp:
+        req = urllib.request.Request(url, headers=headers)
+        with _hf_urlopen(req, timeout=10) as resp:
             data = json.loads(resp.read().decode())
         tokenizer_class = data.get("tokenizer_class", "")
         result = tokenizer_class in _TRANSFORMERS_5_TOKENIZER_CLASSES
@@ -925,16 +933,16 @@ def _config_json_from_hf_cache(model_name: str) -> dict | None:
             candidates.append(
                 repo_dir
                 / "snapshots"
-                / ref_main.read_text(encoding = "utf-8").strip()
+                / ref_main.read_text(encoding="utf-8").strip()
                 / "config.json"
             )
         # No refs/main (commit-pinned downloads): newest snapshot by mtime, not a stale first SHA.
         candidates += sorted(
-            repo_dir.glob("snapshots/*/config.json"), key = _safe_mtime, reverse = True
+            repo_dir.glob("snapshots/*/config.json"), key=_safe_mtime, reverse=True
         )
         for cfg_path in candidates:
             if cfg_path.is_file():
-                with open(cfg_path, encoding = "utf-8-sig") as f:
+                with open(cfg_path, encoding="utf-8-sig") as f:
                     return json.load(f)
     except Exception as exc:
         logger.debug("HF cache config.json lookup failed for '%s': %s", model_name, exc)
@@ -960,13 +968,13 @@ def _load_config_json(model_name: str, hf_token: str | None = None) -> dict | No
             not isinstance(hf_token, str)
             or _safe_is_file(local_cfg)
             or _safe_is_dir(Path(model_name))
-            or cache_reads_authorized(hf_token, repo_id = model_name)
+            or cache_reads_authorized(hf_token, repo_id=model_name)
         ):
             return _config_json_cache[cache_key]
 
     if _safe_is_file(local_cfg):
         try:
-            with open(local_cfg, encoding = "utf-8-sig") as f:
+            with open(local_cfg, encoding="utf-8-sig") as f:
                 cfg = json.load(f)
             _config_json_cache[cache_key] = cfg
             return cfg
@@ -982,7 +990,7 @@ def _load_config_json(model_name: str, hf_token: str | None = None) -> dict | No
     # Every route to the hub cache below reads it without authorizing, so a caller denied
     # the ambient credential is refused them all: keying the memo apart is not enough when
     # the value it memoizes came off disk in the first place.
-    cache_denied = not cache_reads_authorized(hf_token, repo_id = model_name)
+    cache_denied = not cache_reads_authorized(hf_token, repo_id=model_name)
 
     if _env_offline():
         # No network: a downloaded repo can still tier from the hub cache. Cache a real hit,
@@ -1006,8 +1014,8 @@ def _load_config_json(model_name: str, hf_token: str | None = None) -> dict | No
     if hf_token:
         headers["Authorization"] = f"Bearer {hf_token}"
     try:
-        req = urllib.request.Request(url, headers = headers)
-        with _hf_urlopen(req, timeout = 10) as resp:
+        req = urllib.request.Request(url, headers=headers)
+        with _hf_urlopen(req, timeout=10) as resp:
             cfg = json.loads(resp.read().decode())
         _config_json_cache[cache_key] = cfg
         return cfg
@@ -1241,7 +1249,7 @@ def _request_latest_repair() -> None:
     """Record that the sidecar needs a repair the caller could not perform."""
     try:
         _latest_repair_marker_path().write_text(
-            json.dumps({"pid": os.getpid(), "at": time.time()}), encoding = "utf-8"
+            json.dumps({"pid": os.getpid(), "at": time.time()}), encoding="utf-8"
         )
     except OSError:
         pass
@@ -1433,7 +1441,7 @@ def _config_model_types(tier: str) -> frozenset[str]:
         if not _safe_is_file(path):
             continue
         try:
-            keys |= _model_types_from_source(path.read_text(encoding = "utf-8"))
+            keys |= _model_types_from_source(path.read_text(encoding="utf-8"))
         except Exception:
             continue
     result = frozenset(keys)
@@ -1463,7 +1471,7 @@ def _model_types_from_config(cfg: dict) -> list[str]:
 
 
 def _lowest_tier_for(model_type: str) -> str | None:
-    for tier in sorted(_TIER_RANK, key = _TIER_RANK.get):
+    for tier in sorted(_TIER_RANK, key=_TIER_RANK.get):
         if model_type in _config_model_types(tier):
             return tier
     return None
@@ -1598,12 +1606,12 @@ def _probe_autoconfig(target_dir: str, model_name: str, hf_token: str | None) ->
     try:
         result = subprocess.run(
             [sys.executable, "-c", _PROBE_CONFIG_SCRIPT, target_dir, model_name],
-            capture_output = True,
-            text = True,
-            encoding = "utf-8",
-            errors = "replace",
-            timeout = _PROBE_TIMEOUT_SECS,
-            env = utf8_child_env(env),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=_PROBE_TIMEOUT_SECS,
+            env=utf8_child_env(env),
             **_windows_hidden_subprocess_kwargs(),
         )
     except subprocess.TimeoutExpired:
@@ -1707,7 +1715,7 @@ def _probe_tier(
                 model_name,
                 reason,
             )
-            return _cache(tier, skipped = skipped_any)
+            return _cache(tier, skipped=skipped_any)
         if ok is None:
             logger.info("Tier probe inconclusive for %s (%s); using %s", model_name, reason, floor)
             return floor  # transient: retry next load
@@ -1725,7 +1733,7 @@ def _probe_tier(
         model_name,
         reason,
     )
-    return _cache(floor, skipped = False)
+    return _cache(floor, skipped=False)
 
 
 def _norm_separators(s: str) -> str:
@@ -1858,7 +1866,7 @@ def get_transformers_tier(
             resolved = _resolve_base_model(model_name)
             if resolved != model_name:
                 if _safe_is_dir(Path(resolved)):
-                    tier = get_transformers_tier(resolved, hf_token, probe = probe)
+                    tier = get_transformers_tier(resolved, hf_token, probe=probe)
                     if tier != "default":
                         logger.info(
                             "Transformers tier %s selected for %s (resolved local path: %s)",
@@ -1899,8 +1907,8 @@ def get_transformers_tier(
                     model_name,
                     hf_token,
                     "local config saved by transformers 5.x",
-                    include_default = True,
-                    floor = "default",
+                    include_default=True,
+                    floor="default",
                 )
                 if tier != "default":
                     return tier
@@ -1980,8 +1988,8 @@ def get_transformers_tier(
             model_name,
             hf_token,
             "config saved by transformers 5.x",
-            include_default = True,
-            floor = "default",
+            include_default=True,
+            floor="default",
         )
         if tier != "default":
             return tier
@@ -2001,7 +2009,7 @@ def needs_transformers_5(model_name: str) -> bool:
     log-only parent caller never spawns sidecar probes (the worker re-resolves the exact
     tier with ``probe=True`` on the real activation path).
     """
-    return get_transformers_tier(model_name, probe = False) != "default"
+    return get_transformers_tier(model_name, probe=False) != "default"
 
 
 # --- Version switching (in-process, used only by export) ---
@@ -2212,7 +2220,7 @@ def _sidecar_scan_impl(venv_dir: str, limit: int = 3) -> tuple[list[str], bool]:
         name = di.name.split("-")[0]
         # Absent is fine; present, its RECORD is held to the same standard.
         try:
-            record = (di / "RECORD").read_text(encoding = "utf-8", errors = "replace")
+            record = (di / "RECORD").read_text(encoding="utf-8", errors="replace")
         except FileNotFoundError:
             # No RECORD says nothing about damage; some installs legitimately have none.
             continue
@@ -2340,7 +2348,7 @@ def _venv_dir_is_valid(venv_dir: str, packages: tuple[str, ...]) -> bool:
             metadata = di / "METADATA"
             if not metadata.is_file():
                 continue
-            for line in metadata.read_text(errors = "replace", encoding = "utf-8").splitlines():
+            for line in metadata.read_text(errors="replace", encoding="utf-8").splitlines():
                 if line.startswith("Version:"):
                     installed_ver = line.split(":", 1)[1].strip()
                     if installed_ver != pkg_version:
@@ -2419,12 +2427,12 @@ def _install_to_dir(pkg: str, target_dir: str) -> bool:
                 "--upgrade",
                 pkg,
             ],
-            stdout = subprocess.PIPE,
-            stderr = subprocess.STDOUT,
-            text = True,
-            encoding = "utf-8",
-            errors = "replace",
-            env = utf8_child_env(
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            env=utf8_child_env(
                 get_hf_cache_paths().child_env(child_env_without_native_path_secret())
             ),
             **_windows_hidden_subprocess_kwargs(),
@@ -2452,12 +2460,12 @@ def _install_to_dir(pkg: str, target_dir: str) -> bool:
             "--upgrade",
             pkg,
         ],
-        stdout = subprocess.PIPE,
-        stderr = subprocess.STDOUT,
-        text = True,
-        encoding = "utf-8",
-        errors = "replace",
-        env = utf8_child_env(get_hf_cache_paths().child_env(child_env_without_native_path_secret())),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        env=utf8_child_env(get_hf_cache_paths().child_env(child_env_without_native_path_secret())),
         **_windows_hidden_subprocess_kwargs(),
     )
     if result.returncode != 0:
@@ -2546,7 +2554,7 @@ def _remove_optional_remnants(venv_dir: str, pkg_spec: str) -> bool:
     for entry in _owned():
         path = root / entry
         if path.is_dir() and not path.is_symlink():
-            shutil.rmtree(path, ignore_errors = True)
+            shutil.rmtree(path, ignore_errors=True)
         elif path.exists() or path.is_symlink():
             try:
                 path.unlink()
@@ -2569,7 +2577,7 @@ def _remove_recordless_dist_infos(venv_dir: str, pkg_spec: str) -> None:
     root = Path(venv_dir)
     for entry in _dist_info_entries(venv_dir, name):
         if not (root / entry / "RECORD").is_file():
-            shutil.rmtree(root / entry, ignore_errors = True)
+            shutil.rmtree(root / entry, ignore_errors=True)
 
 
 def _dist_info_entries(venv_dir: str, name: str) -> list[str]:
@@ -2597,7 +2605,7 @@ def _top_up_failure_path(venv_dir: str) -> str:
 
 def _read_top_up_failures(venv_dir: str) -> dict:
     try:
-        with open(_top_up_failure_path(venv_dir), encoding = "utf-8") as fh:
+        with open(_top_up_failure_path(venv_dir), encoding="utf-8") as fh:
             data = json.load(fh)
     except (OSError, ValueError):
         return {}
@@ -2612,7 +2620,7 @@ def _write_top_up_failures(venv_dir: str, failures: dict) -> None:
                 os.unlink(path)
             return
         tmp = path + ".tmp"
-        with open(tmp, "w", encoding = "utf-8") as fh:
+        with open(tmp, "w", encoding="utf-8") as fh:
             json.dump(failures, fh)
         os.replace(tmp, path)
     except OSError:
@@ -2718,14 +2726,14 @@ def _top_up_optional_packages(venv_dir: str, packages: tuple[str, ...]) -> bool:
 def _stage_optional_package(pkg: str, venv_dir: str) -> bool:
     """Install *pkg* beside the sidecar, then move its entries in, dist-info last."""
     staging = os.path.join(venv_dir, ".top-up-staging")
-    shutil.rmtree(staging, ignore_errors = True)
+    shutil.rmtree(staging, ignore_errors=True)
     try:
-        os.makedirs(staging, exist_ok = True)
+        os.makedirs(staging, exist_ok=True)
         if not _install_to_dir(pkg, staging):
             # A partial payload would shadow the ambient copy for the whole backoff.
             _remove_optional_remnants(venv_dir, pkg)
             return False
-        entries = sorted(os.listdir(staging), key = lambda name: name.endswith(".dist-info"))
+        entries = sorted(os.listdir(staging), key=lambda name: name.endswith(".dist-info"))
         # uv cannot uninstall a recordless dist-info and metadata answers whichever it meets first.
         for name in entries:
             if not name.endswith(".dist-info"):
@@ -2733,12 +2741,12 @@ def _stage_optional_package(pkg: str, venv_dir: str) -> bool:
             project = name[: -len(".dist-info")].rsplit("-", 1)[0]
             for stale in _dist_info_entries(venv_dir, project):
                 if stale != name:
-                    shutil.rmtree(os.path.join(venv_dir, stale), ignore_errors = True)
+                    shutil.rmtree(os.path.join(venv_dir, stale), ignore_errors=True)
         for name in entries:
             source = os.path.join(staging, name)
             target = os.path.join(venv_dir, name)
             if os.path.isdir(target) and not os.path.islink(target):
-                shutil.rmtree(target, ignore_errors = True)
+                shutil.rmtree(target, ignore_errors=True)
             elif os.path.lexists(target):
                 os.unlink(target)
             os.replace(source, target)
@@ -2748,7 +2756,7 @@ def _stage_optional_package(pkg: str, venv_dir: str) -> bool:
         _remove_optional_remnants(venv_dir, pkg)
         return False
     finally:
-        shutil.rmtree(staging, ignore_errors = True)
+        shutil.rmtree(staging, ignore_errors=True)
 
 
 _OPTIONAL_TOP_UP_LOCK = ".optional-top-up.lock"
@@ -2787,10 +2795,12 @@ def _file_lock(path: str, wait_seconds: float):
             try:
                 if sys.platform == "win32":
                     import msvcrt
+
                     handle.seek(0)
                     msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
                 else:
                     import fcntl
+
                     fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
                 break
             except OSError as exc:
@@ -2814,10 +2824,12 @@ def _file_lock(path: str, wait_seconds: float):
         try:
             if sys.platform == "win32":
                 import msvcrt
+
                 handle.seek(0)
                 msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
             else:
                 import fcntl
+
                 fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
         except (OSError, ImportError):
             pass
@@ -2835,7 +2847,7 @@ def _rebuild_lock_path(venv_dir: str) -> str:
     parent, stem = os.path.split(base)
     lock_dir = os.path.join(parent or ".", _REBUILD_LOCK_DIR)
     try:
-        os.makedirs(lock_dir, exist_ok = True)
+        os.makedirs(lock_dir, exist_ok=True)
     except OSError:
         pass
     return os.path.join(lock_dir, stem + ".lock")
@@ -2879,13 +2891,13 @@ def _pip_effective_settings() -> dict[str, str] | None:
     try:
         result = subprocess.run(
             [sys.executable, "-m", "pip", "config", "list"],
-            stdout = subprocess.PIPE,
-            stderr = subprocess.DEVNULL,
-            text = True,
-            encoding = "utf-8",
-            errors = "replace",
-            timeout = 60,
-            env = utf8_child_env(
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=60,
+            env=utf8_child_env(
                 get_hf_cache_paths().child_env(child_env_without_native_path_secret())
             ),
             **_windows_hidden_subprocess_kwargs(),
@@ -3021,7 +3033,7 @@ def _sidecar_siblings(venv_dir: str, suffix: str) -> list[str]:
         except OSError:
             return 0.0
 
-    return sorted(found, key = modified)
+    return sorted(found, key=modified)
 
 
 def _recover_retired_sidecar(venv_dir: str) -> None:
@@ -3037,10 +3049,10 @@ def _recover_retired_sidecar(venv_dir: str) -> None:
         return
     if os.path.isdir(venv_dir) and _sidecar_has_content(venv_dir):
         for old in retired:
-            shutil.rmtree(old, ignore_errors = True)
+            shutil.rmtree(old, ignore_errors=True)
         return
     newest = retired[-1]
-    shutil.rmtree(venv_dir, ignore_errors = True)
+    shutil.rmtree(venv_dir, ignore_errors=True)
     try:
         os.rename(newest, venv_dir)
         logger.warning("restored %s from %s (an earlier swap was interrupted)", venv_dir, newest)
@@ -3048,7 +3060,7 @@ def _recover_retired_sidecar(venv_dir: str) -> None:
         logger.warning("could not restore %s from %s: %s", venv_dir, newest, exc)
         return
     for old in retired[:-1]:
-        shutil.rmtree(old, ignore_errors = True)
+        shutil.rmtree(old, ignore_errors=True)
 
 
 def _ensure_venv_dir(venv_dir: str, packages: tuple[str, ...], label: str) -> bool:
@@ -3091,11 +3103,11 @@ def _rebuild_venv_dir(venv_dir: str, packages: tuple[str, ...], label: str) -> b
     # to delete, so that keeps the old behaviour.
     if os.path.islink(venv_dir) and resolves_into_studio_app_tree(Path(venv_dir)):
         venv_dir = os.path.realpath(venv_dir)
-    shutil.rmtree(venv_dir, ignore_errors = True)
-    os.makedirs(venv_dir, exist_ok = True)
+    shutil.rmtree(venv_dir, ignore_errors=True)
+    os.makedirs(venv_dir, exist_ok=True)
     _mark_studio_owned(venv_dir)
     total = len(packages)
-    for idx, pkg in enumerate(packages, start = 1):
+    for idx, pkg in enumerate(packages, start=1):
         logger.info("Installing %s (%d/%d) into %s ...", pkg, idx, total, venv_dir)
         if not _install_to_dir(pkg, venv_dir):
             if _sidecar_package_is_optional(pkg):
@@ -3119,7 +3131,7 @@ def _rebuild_venv_dir(venv_dir: str, packages: tuple[str, ...], label: str) -> b
             if _venv_dir_is_valid_and_undamaged(venv_dir, packages):
                 logger.info("%s at %s was completed by another process", label, venv_dir)
                 return True
-            shutil.rmtree(venv_dir, ignore_errors = True)
+            shutil.rmtree(venv_dir, ignore_errors=True)
             return False
     logger.info("Installed %s to %s", label, venv_dir)
     return True
@@ -3127,7 +3139,7 @@ def _rebuild_venv_dir(venv_dir: str, packages: tuple[str, ...], label: str) -> b
 
 def _drop_offline_staging(staging: str) -> None:
     """The staging tree and the per-process rebuild lock _ensure_venv_dir took for it."""
-    shutil.rmtree(staging, ignore_errors = True)
+    shutil.rmtree(staging, ignore_errors=True)
     try:
         os.unlink(_rebuild_lock_path(staging))
     except OSError:
@@ -3146,7 +3158,7 @@ def _repair_offline_beside(venv_dir: str, packages: tuple[str, ...], label: str)
     for stale in _sidecar_siblings(venv_dir, _OFFLINE_STAGING_SUFFIX):
         try:
             if stale != staging and time.time() - os.path.getmtime(stale) > 3600:
-                shutil.rmtree(stale, ignore_errors = True)
+                shutil.rmtree(stale, ignore_errors=True)
         except OSError:
             pass
     # An empty directory takes the ordinary path; a failure removes the staging tree.
@@ -3166,7 +3178,7 @@ def _repair_offline_beside(venv_dir: str, packages: tuple[str, ...], label: str)
         logger.warning("the offline rebuild of %s did not validate; %s left as is", label, venv_dir)
         return False
     try:
-        shutil.rmtree(retired, ignore_errors = True)
+        shutil.rmtree(retired, ignore_errors=True)
         os.rename(venv_dir, retired)
         try:
             os.rename(staging, venv_dir)
@@ -3178,7 +3190,7 @@ def _repair_offline_beside(venv_dir: str, packages: tuple[str, ...], label: str)
         logger.warning("could not swap the offline rebuild of %s into %s: %s", label, venv_dir, exc)
         _drop_offline_staging(staging)
         return False
-    shutil.rmtree(retired, ignore_errors = True)
+    shutil.rmtree(retired, ignore_errors=True)
     # The staging tree is live now; the lock taken for its build goes with the staging name.
     try:
         os.unlink(_rebuild_lock_path(staging))
@@ -3226,6 +3238,7 @@ _LATEST_VERSION_RE = r"[0-9]+(\.[0-9]+)*((a|b|rc)[0-9]+)?(\.post[0-9]+)?(\.dev[0
 
 def _is_valid_version_string(version: str) -> bool:
     import re
+
     return isinstance(version, str) and re.fullmatch(_LATEST_VERSION_RE, version) is not None
 
 
@@ -3283,7 +3296,7 @@ def _latest_pin_data() -> dict | None:
     try:
         if not marker.is_file():
             return None
-        raw = marker.read_text(encoding = "utf-8").strip()
+        raw = marker.read_text(encoding="utf-8").strip()
     except Exception:
         return None
     try:
@@ -3349,6 +3362,7 @@ def _pid_alive(pid) -> bool:
         return False
     try:
         import psutil
+
         return psutil.pid_exists(pid)
     except Exception:
         pass
@@ -3359,7 +3373,7 @@ def _pid_alive(pid) -> bool:
             import ctypes
             from ctypes import wintypes
 
-            kernel32 = ctypes.WinDLL("kernel32", use_last_error = True)
+            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
             kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
             kernel32.OpenProcess.restype = wintypes.HANDLE
             # PROCESS_QUERY_LIMITED_INFORMATION: minimal right, granted across integrity levels.
@@ -3404,7 +3418,7 @@ class SidecarSwapInProgress(RuntimeError):
 
 def _read_swap_lock(path: Path) -> dict | None:
     try:
-        data = json.loads(path.read_text(encoding = "utf-8-sig"))
+        data = json.loads(path.read_text(encoding="utf-8-sig"))
         return data if isinstance(data, dict) else {}
     except FileNotFoundError:
         return None
@@ -3425,7 +3439,7 @@ def try_begin_sidecar_swap(kind: str = "install") -> bool:
         token = f"{os.getpid()}-{time.time_ns()}"
         path = _swap_lock_path()
         try:
-            path.parent.mkdir(parents = True, exist_ok = True)
+            path.parent.mkdir(parents=True, exist_ok=True)
         except OSError:
             pass
         for attempt in range(2):
@@ -3445,7 +3459,7 @@ def try_begin_sidecar_swap(kind: str = "install") -> bool:
                 break
         if fd is not None:
             try:
-                with os.fdopen(fd, "w", encoding = "utf-8") as f:
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
                     f.write(
                         json.dumps(
                             {"pid": os.getpid(), "at": time.time(), "token": token, "kind": kind}
@@ -3505,7 +3519,7 @@ def sidecar_swap_kind() -> str | None:
 def _stage_and_swap_latest_venv(
     version: str,
     packages: tuple[str, ...],
-    before_swap = None,
+    before_swap=None,
 ) -> bool:
     """Stage-and-swap: build the new sidecar next to the live one and swap only
     once complete, so a failed install or marker write never destroys a
@@ -3516,18 +3530,18 @@ def _stage_and_swap_latest_venv(
     if it raises, the previous sidecar is left untouched."""
     staging = _VENV_T5_LATEST_DIR + ".staging"
     retired = _VENV_T5_LATEST_DIR + ".old"
-    shutil.rmtree(staging, ignore_errors = True)
+    shutil.rmtree(staging, ignore_errors=True)
     try:
         if not _ensure_venv_dir(staging, packages, f"transformers {version} (latest)"):
             # No exception, so the except cleanup below never runs; drop the partial dir.
-            shutil.rmtree(staging, ignore_errors = True)
+            shutil.rmtree(staging, ignore_errors=True)
             return False
         (Path(staging) / _LATEST_PIN_MARKER).write_text(
-            json.dumps({"version": version, "packages": list(packages)}), encoding = "utf-8"
+            json.dumps({"version": version, "packages": list(packages)}), encoding="utf-8"
         )
         if before_swap is not None:
             before_swap()
-        shutil.rmtree(retired, ignore_errors = True)
+        shutil.rmtree(retired, ignore_errors=True)
         if os.path.isdir(_VENV_T5_LATEST_DIR):
             os.rename(_VENV_T5_LATEST_DIR, retired)
         try:
@@ -3539,9 +3553,9 @@ def _stage_and_swap_latest_venv(
             raise
     except Exception as exc:
         logger.error("Could not provision transformers %s into .venv_t5_latest: %s", version, exc)
-        shutil.rmtree(staging, ignore_errors = True)
+        shutil.rmtree(staging, ignore_errors=True)
         return False
-    shutil.rmtree(retired, ignore_errors = True)
+    shutil.rmtree(retired, ignore_errors=True)
     # CONFIG_MAPPING_NAMES may have changed: drop the cached key set.
     _config_mapping_cache.pop("latest", None)
     logger.info("Provisioned .venv_t5_latest with transformers %s", version)
@@ -3553,6 +3567,7 @@ def _workers_active_for_repair() -> bool:
     raises; unavailable backends (worker subprocess, early startup) count idle."""
     try:
         from core.training import get_training_backend
+
         if get_training_backend().is_training_active():
             return True
     except Exception:
@@ -3623,6 +3638,7 @@ def _ensure_venv_t5_latest_exists() -> bool:
     # in the child; the parent's routing self-heal performs the actual repair.
     try:
         import multiprocessing as _mp
+
         if _mp.parent_process() is not None:
             logger.warning(
                 ".venv_t5_latest is incomplete; repairs run in the parent process. "
@@ -3633,7 +3649,7 @@ def _ensure_venv_t5_latest_exists() -> bool:
         pass
     # Same stage-and-swap as the install, under the same reservation so training/export starts
     # (which check sidecar_swap_in_progress) wait out a lazy repair; a failed repair keeps the pin.
-    if not try_begin_sidecar_swap(kind = "repair"):
+    if not try_begin_sidecar_swap(kind="repair"):
         logger.warning(
             "Cannot repair .venv_t5_latest: another sidecar install or repair is in progress."
         )
@@ -3656,7 +3672,7 @@ def _ensure_venv_t5_latest_exists() -> bool:
 def ensure_latest_transformers_venv(
     version: str,
     extra_packages: tuple[str, ...] = (),
-    before_swap = None,
+    before_swap=None,
 ) -> bool:
     """Provision .venv_t5_latest/ pinned to *version* (user-consented install path).
 
@@ -3683,7 +3699,7 @@ def ensure_latest_transformers_venv(
         and _venv_dir_is_valid_and_undamaged(_VENV_T5_LATEST_DIR, packages)
     ):
         return _top_up_optional_packages(_VENV_T5_LATEST_DIR, packages)
-    return _stage_and_swap_latest_venv(version, packages, before_swap = before_swap)
+    return _stage_and_swap_latest_venv(version, packages, before_swap=before_swap)
 
 
 # --- llm-compressor-main shadow (FP8/FP4 export of newer-transformers models) ---------------------
@@ -3735,7 +3751,7 @@ def _llmcompressor_shadow_is_valid() -> bool:
     try:
         return (
             marker.is_file()
-            and marker.read_text(encoding = "utf-8").strip() == _LLMC_SHADOW_FINGERPRINT
+            and marker.read_text(encoding="utf-8").strip() == _LLMC_SHADOW_FINGERPRINT
         )
     except Exception:
         return False
@@ -3765,8 +3781,8 @@ def _ensure_venv_llmcompressor_exists() -> bool:
         "Provisioning llm-compressor-main shadow at %s (one-time, ~a few hundred MB, no torch) ...",
         _VENV_LLMCOMPRESSOR_DIR,
     )
-    shutil.rmtree(_VENV_LLMCOMPRESSOR_DIR, ignore_errors = True)
-    os.makedirs(_VENV_LLMCOMPRESSOR_DIR, exist_ok = True)
+    shutil.rmtree(_VENV_LLMCOMPRESSOR_DIR, ignore_errors=True)
+    os.makedirs(_VENV_LLMCOMPRESSOR_DIR, exist_ok=True)
 
     # Prefer uv then pip; every spec at once, --no-deps, prereleases allowed (compressed-tensors).
     base = [
@@ -3794,12 +3810,12 @@ def _ensure_venv_llmcompressor_exists() -> bool:
     for cmd in cmds:
         result = subprocess.run(
             cmd,
-            stdout = subprocess.PIPE,
-            stderr = subprocess.STDOUT,
-            text = True,
-            encoding = "utf-8",
-            errors = "replace",
-            env = utf8_child_env(
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            env=utf8_child_env(
                 get_hf_cache_paths().child_env(child_env_without_native_path_secret())
             ),
             **_windows_hidden_subprocess_kwargs(),
@@ -3808,7 +3824,7 @@ def _ensure_venv_llmcompressor_exists() -> bool:
         if result.returncode == 0:
             try:
                 (Path(_VENV_LLMCOMPRESSOR_DIR) / _LLMC_SHADOW_MARKER).write_text(
-                    _LLMC_SHADOW_FINGERPRINT, encoding = "utf-8"
+                    _LLMC_SHADOW_FINGERPRINT, encoding="utf-8"
                 )
             except Exception:
                 pass

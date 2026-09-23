@@ -73,7 +73,7 @@ def _on(doc):
 
 
 def _load(name: str):
-    return yaml.safe_load((WORKFLOWS / name).read_text(encoding = "utf-8"))
+    return yaml.safe_load((WORKFLOWS / name).read_text(encoding="utf-8"))
 
 
 def _paths(doc, event: str) -> list[str]:
@@ -131,7 +131,7 @@ def _executed_github_paths(doc) -> set[str]:
     # A local composite action that `uses:` another local action pulls that one in.
     pending = [p for p in found if p.startswith(".github/actions/")]
     while pending:
-        text = (REPO / pending.pop()).read_text(encoding = "utf-8", errors = "replace")
+        text = (REPO / pending.pop()).read_text(encoding="utf-8", errors="replace")
         for match in EXECUTED.findall(text):
             nested = _normalise(match)
             if (
@@ -144,7 +144,7 @@ def _executed_github_paths(doc) -> set[str]:
     for path in sorted(found):
         if not path.startswith(".github/scripts/"):
             continue
-        text = (REPO / path).read_text(encoding = "utf-8", errors = "replace")
+        text = (REPO / path).read_text(encoding="utf-8", errors="replace")
         for name in SIBLING.findall(text):
             sibling = f".github/scripts/{name}"
             if (REPO / sibling).is_file():
@@ -227,7 +227,7 @@ def _endpoints_curled(doc) -> set[str]:
 
 def _route_decorators(module: Path) -> set[str]:
     """The route suffixes a module declares, e.g. chat/completions for /v1/chat/completions."""
-    text = module.read_text(encoding = "utf-8")
+    text = module.read_text(encoding="utf-8")
     found = set()
     for path in re.findall(r"@router\.(?:get|post|api_route)\(\s*\"/?([A-Za-z0-9_/{}:]+)\"", text):
         found.add(path.strip("/").removeprefix("v1/"))

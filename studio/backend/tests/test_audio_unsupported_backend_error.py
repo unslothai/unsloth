@@ -23,7 +23,7 @@ def test_the_capability_message_survives_the_leak_guard():
     """safe_error_detail is why the reason was lost; the route must bypass it."""
     error = AudioBackendUnsupportedError(
         "Text-to-speech is not supported on the MLX backend yet.",
-        hint = "Load this model's GGUF build instead.",
+        hint="Load this model's GGUF build instead.",
     )
     assert safe_error_detail(error) == "An internal error occurred"
     # What the route sends instead: reason plus the way out, no path, no input.
@@ -47,7 +47,7 @@ def test_the_worker_tags_the_payload_with_the_shared_code():
     from pathlib import Path
 
     worker = Path(__file__).resolve().parents[1] / "core/inference/worker.py"
-    source = worker.read_text(encoding = "utf-8")
+    source = worker.read_text(encoding="utf-8")
     assert "AUDIO_UNSUPPORTED_CODE" in source
     # The literal lives in one place only.
     assert AUDIO_UNSUPPORTED_CODE == "audio_unsupported_backend"

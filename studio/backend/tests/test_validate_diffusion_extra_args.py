@@ -43,47 +43,47 @@ class TestValidateDropsDiffusionExtraArgs(unittest.TestCase):
             seen.append(kwargs.get("llama_extra_args"))
 
         request = ValidateModelRequest(
-            model_path = "someone/diffusion-gguf",
-            llama_extra_args = ["--ctx-size", "8192"],
+            model_path="someone/diffusion-gguf",
+            llama_extra_args=["--ctx-size", "8192"],
         )
         config = SimpleNamespace(
-            identifier = "someone/diffusion-gguf",
-            display_name = "diffusion-gguf",
-            is_gguf = True,
-            is_lora = False,
-            is_vision = False,
-            gguf_file = None,
+            identifier="someone/diffusion-gguf",
+            display_name="diffusion-gguf",
+            is_gguf=True,
+            is_lora=False,
+            is_vision=False,
+            gguf_file=None,
         )
         with (
             patch.object(
                 route,
                 "_resolve_model_identifier_for_request",
-                return_value = ("someone/diffusion-gguf", "someone/diffusion-gguf", False),
+                return_value=("someone/diffusion-gguf", "someone/diffusion-gguf", False),
             ),
-            patch.object(route.ModelConfig, "from_identifier", return_value = config),
+            patch.object(route.ModelConfig, "from_identifier", return_value=config),
             patch.object(
                 route,
                 "_resolve_inherited_extra_args",
-                return_value = ["--ctx-size", "8192"],
+                return_value=["--ctx-size", "8192"],
             ),
-            patch.object(route, "_classify_diffusion_gguf", return_value = diffusion_kind),
-            patch.object(route, "_resolve_gguf_gpu_ids_for_request", new = _noop_gpu_ids),
-            patch.object(route, "_effective_load_in_4bit", return_value = True),
-            patch.object(route, "_guard_chat_load_against_training", new = _capture),
+            patch.object(route, "_classify_diffusion_gguf", return_value=diffusion_kind),
+            patch.object(route, "_resolve_gguf_gpu_ids_for_request", new=_noop_gpu_ids),
+            patch.object(route, "_effective_load_in_4bit", return_value=True),
+            patch.object(route, "_guard_chat_load_against_training", new=_capture),
         ):
-            asyncio.run(route.validate_model(request, current_subject = "test-user"))
+            asyncio.run(route.validate_model(request, current_subject="test-user"))
         return seen
 
     def test_a_diffusion_gguf_is_estimated_without_them(self):
         route = _load_route_module("inf_route_diffusion_extra_args_1")
-        self.assertEqual(self._validate(route, diffusion_kind = True), [[]])
+        self.assertEqual(self._validate(route, diffusion_kind=True), [[]])
 
     def test_an_ordinary_gguf_still_estimates_with_them(self):
         # The drop is narrow on purpose: this is the path the editor exists for, and
         # a --ctx-size here has to reach the estimate that approves the load.
         route = _load_route_module("inf_route_diffusion_extra_args_2")
         self.assertEqual(
-            self._validate(route, diffusion_kind = False),
+            self._validate(route, diffusion_kind=False),
             [["--ctx-size", "8192"]],
         )
 
@@ -92,7 +92,7 @@ class TestValidateDropsDiffusionExtraArgs(unittest.TestCase):
         # working override from an ordinary model whose header has not arrived.
         route = _load_route_module("inf_route_diffusion_extra_args_3")
         self.assertEqual(
-            self._validate(route, diffusion_kind = None),
+            self._validate(route, diffusion_kind=None),
             [["--ctx-size", "8192"]],
         )
 
@@ -108,35 +108,35 @@ class TestValidateJudgesTheListBeforeRewritingIt(unittest.TestCase):
         route,
         *,
         extra_args,
-        manual = True,
+        manual=True,
     ):
         request = ValidateModelRequest(
-            model_path = "someone/gguf",
-            llama_extra_args = extra_args,
+            model_path="someone/gguf",
+            llama_extra_args=extra_args,
             **({"gpu_memory_mode": "manual", "gpu_layers": 0} if manual else {}),
         )
         config = SimpleNamespace(
-            identifier = "someone/gguf",
-            display_name = "gguf",
-            is_gguf = True,
-            is_lora = False,
-            is_vision = False,
-            gguf_file = None,
+            identifier="someone/gguf",
+            display_name="gguf",
+            is_gguf=True,
+            is_lora=False,
+            is_vision=False,
+            gguf_file=None,
         )
         with (
             patch.object(
                 route,
                 "_resolve_model_identifier_for_request",
-                return_value = ("someone/gguf", "someone/gguf", False),
+                return_value=("someone/gguf", "someone/gguf", False),
             ),
-            patch.object(route.ModelConfig, "from_identifier", return_value = config),
-            patch.object(route, "_resolve_inherited_extra_args", return_value = list(extra_args)),
-            patch.object(route, "_classify_diffusion_gguf", return_value = False),
-            patch.object(route, "_resolve_gguf_gpu_ids_for_request", new = _noop_gpu_ids),
-            patch.object(route, "_effective_load_in_4bit", return_value = True),
-            patch.object(route, "_guard_chat_load_against_training", new = lambda *a, **k: None),
+            patch.object(route.ModelConfig, "from_identifier", return_value=config),
+            patch.object(route, "_resolve_inherited_extra_args", return_value=list(extra_args)),
+            patch.object(route, "_classify_diffusion_gguf", return_value=False),
+            patch.object(route, "_resolve_gguf_gpu_ids_for_request", new=_noop_gpu_ids),
+            patch.object(route, "_effective_load_in_4bit", return_value=True),
+            patch.object(route, "_guard_chat_load_against_training", new=lambda *a, **k: None),
         ):
-            return asyncio.run(route.validate_model(request, current_subject = "test-user"))
+            return asyncio.run(route.validate_model(request, current_subject="test-user"))
 
     def test_an_attached_offload_spelling_is_refused_not_translated(self):
         # llama.cpp looks the whole token up in its option map, so "--gpu-layers=20"
@@ -146,7 +146,7 @@ class TestValidateJudgesTheListBeforeRewritingIt(unittest.TestCase):
 
         route = _load_route_module("inf_route_validate_order_1")
         with self.assertRaises(HTTPException) as caught:
-            self._validate(route, extra_args = ["--gpu-layers=20"])
+            self._validate(route, extra_args=["--gpu-layers=20"])
         self.assertEqual(caught.exception.status_code, 400)
         self.assertIn("two separate arguments", str(caught.exception.detail))
 
@@ -157,12 +157,12 @@ class TestValidateJudgesTheListBeforeRewritingIt(unittest.TestCase):
 
         route = _load_route_module("inf_route_validate_order_2")
         with self.assertRaises(HTTPException) as caught:
-            self._validate(route, extra_args = ["-ngl", "bad"])
+            self._validate(route, extra_args=["-ngl", "bad"])
         self.assertEqual(caught.exception.status_code, 400)
 
     def test_a_well_formed_list_still_passes(self):
         route = _load_route_module("inf_route_validate_order_3")
-        response = self._validate(route, extra_args = ["-ngl", "20"])
+        response = self._validate(route, extra_args=["-ngl", "20"])
         self.assertTrue(getattr(response, "valid", True))
 
 
@@ -179,7 +179,7 @@ class TestValidateTranslatesManualNgl(unittest.TestCase):
         *,
         gpu_layers,
         extra_args,
-        diffusion_kind = True,
+        diffusion_kind=True,
     ):
         seen: list = []
 
@@ -187,38 +187,38 @@ class TestValidateTranslatesManualNgl(unittest.TestCase):
             seen.append((request.gpu_layers, kwargs.get("llama_extra_args")))
 
         request = ValidateModelRequest(
-            model_path = "someone/diffusion-gguf",
-            llama_extra_args = extra_args,
-            gpu_memory_mode = "manual",
-            gpu_layers = gpu_layers,
+            model_path="someone/diffusion-gguf",
+            llama_extra_args=extra_args,
+            gpu_memory_mode="manual",
+            gpu_layers=gpu_layers,
         )
         config = SimpleNamespace(
-            identifier = "someone/diffusion-gguf",
-            display_name = "diffusion-gguf",
-            is_gguf = True,
-            is_lora = False,
-            is_vision = False,
-            gguf_file = None,
+            identifier="someone/diffusion-gguf",
+            display_name="diffusion-gguf",
+            is_gguf=True,
+            is_lora=False,
+            is_vision=False,
+            gguf_file=None,
         )
         with (
             patch.object(
                 route,
                 "_resolve_model_identifier_for_request",
-                return_value = ("someone/diffusion-gguf", "someone/diffusion-gguf", False),
+                return_value=("someone/diffusion-gguf", "someone/diffusion-gguf", False),
             ),
-            patch.object(route.ModelConfig, "from_identifier", return_value = config),
-            patch.object(route, "_resolve_inherited_extra_args", return_value = list(extra_args)),
-            patch.object(route, "_classify_diffusion_gguf", return_value = diffusion_kind),
-            patch.object(route, "_resolve_gguf_gpu_ids_for_request", new = _noop_gpu_ids),
-            patch.object(route, "_effective_load_in_4bit", return_value = True),
-            patch.object(route, "_guard_chat_load_against_training", new = _capture),
+            patch.object(route.ModelConfig, "from_identifier", return_value=config),
+            patch.object(route, "_resolve_inherited_extra_args", return_value=list(extra_args)),
+            patch.object(route, "_classify_diffusion_gguf", return_value=diffusion_kind),
+            patch.object(route, "_resolve_gguf_gpu_ids_for_request", new=_noop_gpu_ids),
+            patch.object(route, "_effective_load_in_4bit", return_value=True),
+            patch.object(route, "_guard_chat_load_against_training", new=_capture),
         ):
-            asyncio.run(route.validate_model(request, current_subject = "test-user"))
+            asyncio.run(route.validate_model(request, current_subject="test-user"))
         return seen
 
     def test_an_explicit_layer_count_reaches_the_guard(self):
         route = _load_route_module("inf_route_manual_ngl_1")
-        seen = self._validate(route, gpu_layers = 0, extra_args = ["-ngl", "20"])
+        seen = self._validate(route, gpu_layers=0, extra_args=["-ngl", "20"])
         # The layer count the load will really run, and the raw flag stripped out of
         # the list exactly as /load strips it once it owns the field.
         self.assertEqual(seen, [(20, [])])
@@ -227,7 +227,7 @@ class TestValidateTranslatesManualNgl(unittest.TestCase):
         # The inverse pairing: asked for 20, overridden to 0. Judged as the CPU-only
         # load it is, rather than refused for VRAM it never takes.
         route = _load_route_module("inf_route_manual_ngl_2")
-        seen = self._validate(route, gpu_layers = 20, extra_args = ["-ngl", "0"])
+        seen = self._validate(route, gpu_layers=20, extra_args=["-ngl", "0"])
         self.assertEqual(seen, [(0, [])])
 
     def test_auto_mode_leaves_the_flag_alone(self):
@@ -240,31 +240,31 @@ class TestValidateTranslatesManualNgl(unittest.TestCase):
             seen.append((request.gpu_layers, kwargs.get("llama_extra_args")))
 
         request = ValidateModelRequest(
-            model_path = "someone/gguf",
-            llama_extra_args = ["-ngl", "20"],
+            model_path="someone/gguf",
+            llama_extra_args=["-ngl", "20"],
         )
         config = SimpleNamespace(
-            identifier = "someone/gguf",
-            display_name = "gguf",
-            is_gguf = True,
-            is_lora = False,
-            is_vision = False,
-            gguf_file = None,
+            identifier="someone/gguf",
+            display_name="gguf",
+            is_gguf=True,
+            is_lora=False,
+            is_vision=False,
+            gguf_file=None,
         )
         with (
             patch.object(
                 route,
                 "_resolve_model_identifier_for_request",
-                return_value = ("someone/gguf", "someone/gguf", False),
+                return_value=("someone/gguf", "someone/gguf", False),
             ),
-            patch.object(route.ModelConfig, "from_identifier", return_value = config),
-            patch.object(route, "_resolve_inherited_extra_args", return_value = ["-ngl", "20"]),
-            patch.object(route, "_classify_diffusion_gguf", return_value = False),
-            patch.object(route, "_resolve_gguf_gpu_ids_for_request", new = _noop_gpu_ids),
-            patch.object(route, "_effective_load_in_4bit", return_value = True),
-            patch.object(route, "_guard_chat_load_against_training", new = _capture),
+            patch.object(route.ModelConfig, "from_identifier", return_value=config),
+            patch.object(route, "_resolve_inherited_extra_args", return_value=["-ngl", "20"]),
+            patch.object(route, "_classify_diffusion_gguf", return_value=False),
+            patch.object(route, "_resolve_gguf_gpu_ids_for_request", new=_noop_gpu_ids),
+            patch.object(route, "_effective_load_in_4bit", return_value=True),
+            patch.object(route, "_guard_chat_load_against_training", new=_capture),
         ):
-            asyncio.run(route.validate_model(request, current_subject = "test-user"))
+            asyncio.run(route.validate_model(request, current_subject="test-user"))
         self.assertEqual(seen, [(request.gpu_layers, ["-ngl", "20"])])
 
 
@@ -280,7 +280,7 @@ class TestValidateTranslatesManualTensorSplit(unittest.TestCase):
         *,
         gpu_layers,
         extra_args,
-        tensor_split = None,
+        tensor_split=None,
     ):
         seen: list = []
 
@@ -294,42 +294,42 @@ class TestValidateTranslatesManualTensorSplit(unittest.TestCase):
             )
 
         request = ValidateModelRequest(
-            model_path = "someone/moe-gguf",
-            llama_extra_args = extra_args,
-            gpu_memory_mode = "manual",
-            gpu_layers = gpu_layers,
-            tensor_split = tensor_split,
+            model_path="someone/moe-gguf",
+            llama_extra_args=extra_args,
+            gpu_memory_mode="manual",
+            gpu_layers=gpu_layers,
+            tensor_split=tensor_split,
         )
         config = SimpleNamespace(
-            identifier = "someone/moe-gguf",
-            display_name = "moe-gguf",
-            is_gguf = True,
-            is_lora = False,
-            is_vision = False,
-            gguf_file = None,
+            identifier="someone/moe-gguf",
+            display_name="moe-gguf",
+            is_gguf=True,
+            is_lora=False,
+            is_vision=False,
+            gguf_file=None,
         )
         with (
             patch.object(
                 route,
                 "_resolve_model_identifier_for_request",
-                return_value = ("someone/moe-gguf", "someone/moe-gguf", False),
+                return_value=("someone/moe-gguf", "someone/moe-gguf", False),
             ),
-            patch.object(route.ModelConfig, "from_identifier", return_value = config),
-            patch.object(route, "_resolve_inherited_extra_args", return_value = list(extra_args)),
-            patch.object(route, "_classify_diffusion_gguf", return_value = False),
-            patch.object(route, "_resolve_gguf_gpu_ids_for_request", new = _noop_gpu_ids),
-            patch.object(route, "_effective_load_in_4bit", return_value = True),
-            patch.object(route, "_guard_chat_load_against_training", new = _capture),
+            patch.object(route.ModelConfig, "from_identifier", return_value=config),
+            patch.object(route, "_resolve_inherited_extra_args", return_value=list(extra_args)),
+            patch.object(route, "_classify_diffusion_gguf", return_value=False),
+            patch.object(route, "_resolve_gguf_gpu_ids_for_request", new=_noop_gpu_ids),
+            patch.object(route, "_effective_load_in_4bit", return_value=True),
+            patch.object(route, "_guard_chat_load_against_training", new=_capture),
         ):
-            asyncio.run(route.validate_model(request, current_subject = "test-user"))
+            asyncio.run(route.validate_model(request, current_subject="test-user"))
         return seen
 
     def test_an_explicit_tensor_split_reaches_the_guard(self):
         route = _load_route_module("inf_route_manual_ts_1")
         seen = self._validate(
             route,
-            gpu_layers = 49,
-            extra_args = ["-ts", "2.2,1", "-sm", "layer"],
+            gpu_layers=49,
+            extra_args=["-ts", "2.2,1", "-sm", "layer"],
         )
         self.assertEqual(seen, [(49, [2.2, 1.0], ["-sm", "layer"])])
 
@@ -337,9 +337,9 @@ class TestValidateTranslatesManualTensorSplit(unittest.TestCase):
         route = _load_route_module("inf_route_manual_ts_2")
         seen = self._validate(
             route,
-            gpu_layers = 49,
-            tensor_split = [1, 1],
-            extra_args = ["--tensor-split", "3,1"],
+            gpu_layers=49,
+            tensor_split=[1, 1],
+            extra_args=["--tensor-split", "3,1"],
         )
         self.assertEqual(seen, [(49, [3.0, 1.0], [])])
 
@@ -358,55 +358,55 @@ class TestValidateRefusesWhatLoadWouldRefuse(unittest.TestCase):
         route,
         *,
         extra_args,
-        n_parallel = None,
-        diffusion_kind = False,
+        n_parallel=None,
+        diffusion_kind=False,
     ):
         request = ValidateModelRequest(
-            model_path = "someone/gguf",
-            llama_extra_args = extra_args,
-            n_parallel = n_parallel,
+            model_path="someone/gguf",
+            llama_extra_args=extra_args,
+            n_parallel=n_parallel,
         )
         config = SimpleNamespace(
-            identifier = "someone/gguf",
-            display_name = "gguf",
-            is_gguf = True,
-            is_lora = False,
-            is_vision = False,
-            gguf_file = None,
+            identifier="someone/gguf",
+            display_name="gguf",
+            is_gguf=True,
+            is_lora=False,
+            is_vision=False,
+            gguf_file=None,
         )
         with (
             patch.object(
                 route,
                 "_resolve_model_identifier_for_request",
-                return_value = ("someone/gguf", "someone/gguf", False),
+                return_value=("someone/gguf", "someone/gguf", False),
             ),
-            patch.object(route.ModelConfig, "from_identifier", return_value = config),
-            patch.object(route, "_resolve_inherited_extra_args", return_value = extra_args),
-            patch.object(route, "_classify_diffusion_gguf", return_value = diffusion_kind),
-            patch.object(route, "_resolve_gguf_gpu_ids_for_request", new = _noop_gpu_ids),
-            patch.object(route, "_effective_load_in_4bit", return_value = True),
-            patch.object(route, "_effective_parallel_slots", side_effect = lambda n, **_: n),
-            patch.object(route, "_guard_chat_load_against_training", new = lambda *a, **k: None),
+            patch.object(route.ModelConfig, "from_identifier", return_value=config),
+            patch.object(route, "_resolve_inherited_extra_args", return_value=extra_args),
+            patch.object(route, "_classify_diffusion_gguf", return_value=diffusion_kind),
+            patch.object(route, "_resolve_gguf_gpu_ids_for_request", new=_noop_gpu_ids),
+            patch.object(route, "_effective_load_in_4bit", return_value=True),
+            patch.object(route, "_effective_parallel_slots", side_effect=lambda n, **_: n),
+            patch.object(route, "_guard_chat_load_against_training", new=lambda *a, **k: None),
         ):
-            return asyncio.run(route.validate_model(request, current_subject = "test-user"))
+            return asyncio.run(route.validate_model(request, current_subject="test-user"))
 
     def test_a_denied_flag_is_refused_before_the_switch(self):
         route = _load_route_module("inf_route_validate_denies_1")
         with self.assertRaises(Exception) as caught:
-            self._validate(route, extra_args = ["--agent"])
+            self._validate(route, extra_args=["--agent"])
         self.assertEqual(getattr(caught.exception, "status_code", None), 400)
         self.assertIn("managed by Unsloth Studio", str(caught.exception.detail))
 
     def test_a_batch_below_the_slot_floor_is_refused_before_the_switch(self):
         route = _load_route_module("inf_route_validate_denies_2")
         with self.assertRaises(Exception) as caught:
-            self._validate(route, extra_args = ["-b", "2"], n_parallel = 4)
+            self._validate(route, extra_args=["-b", "2"], n_parallel=4)
         self.assertEqual(getattr(caught.exception, "status_code", None), 400)
         self.assertIn("aborts on --batch-size", str(caught.exception.detail))
 
     def test_a_list_the_load_would_accept_still_passes(self):
         route = _load_route_module("inf_route_validate_denies_3")
-        resp = self._validate(route, extra_args = ["--numa", "distribute"], n_parallel = 4)
+        resp = self._validate(route, extra_args=["--numa", "distribute"], n_parallel=4)
         self.assertTrue(resp.is_gguf)
 
 
@@ -421,31 +421,31 @@ class TestEmbeddingSlotClampInTheBatchFloor(unittest.TestCase):
         *,
         is_embedding,
         extra_args,
-        slots = 4,
+        slots=4,
         **kwargs,
     ):
-        config = SimpleNamespace(identifier = "someone/embed-gguf", gguf_file = None)
-        with patch.object(route, "_is_embedding_gguf", return_value = is_embedding):
+        config = SimpleNamespace(identifier="someone/embed-gguf", gguf_file=None)
+        with patch.object(route, "_is_embedding_gguf", return_value=is_embedding):
             return route._embedding_clamped_slots(
                 config,
                 slots,
-                extra_args = extra_args,
-                n_batch = kwargs.get("n_batch"),
-                n_ubatch = kwargs.get("n_ubatch"),
-                n_ctx = kwargs.get("n_ctx"),
+                extra_args=extra_args,
+                n_batch=kwargs.get("n_batch"),
+                n_ubatch=kwargs.get("n_ubatch"),
+                n_ctx=kwargs.get("n_ctx"),
             )
 
     def test_the_slots_follow_the_micro_batch_down(self):
         route = _load_route_module("inf_route_embed_clamp_1")
         self.assertEqual(
-            self._clamped(route, is_embedding = True, extra_args = ["-b", "2", "-ub", "2"]),
+            self._clamped(route, is_embedding=True, extra_args=["-b", "2", "-ub", "2"]),
             2,
         )
 
     def test_a_chat_gguf_keeps_the_slots_it_asked_for(self):
         route = _load_route_module("inf_route_embed_clamp_2")
         self.assertEqual(
-            self._clamped(route, is_embedding = False, extra_args = ["-b", "2", "-ub", "2"]),
+            self._clamped(route, is_embedding=False, extra_args=["-b", "2", "-ub", "2"]),
             4,
         )
 
@@ -454,7 +454,7 @@ class TestEmbeddingSlotClampInTheBatchFloor(unittest.TestCase):
         # micro-batch is nowhere near the slot count.
         route = _load_route_module("inf_route_embed_clamp_3")
         self.assertEqual(
-            self._clamped(route, is_embedding = True, extra_args = ["--numa", "distribute"]),
+            self._clamped(route, is_embedding=True, extra_args=["--numa", "distribute"]),
             4,
         )
 
@@ -463,7 +463,7 @@ class TestEmbeddingSlotClampInTheBatchFloor(unittest.TestCase):
         # parse, which is the floor load_model applies too.
         route = _load_route_module("inf_route_embed_clamp_4")
         self.assertEqual(
-            self._clamped(route, is_embedding = True, extra_args = ["-b", "0", "-ub", "0"]),
+            self._clamped(route, is_embedding=True, extra_args=["-b", "0", "-ub", "0"]),
             1,
         )
 
@@ -471,18 +471,18 @@ class TestEmbeddingSlotClampInTheBatchFloor(unittest.TestCase):
         # _is_embedding_gguf answers False for a GGUF that is not on this disk yet, so
         # nothing is relaxed on a guess.
         route = _load_route_module("inf_route_embed_clamp_5")
-        config = SimpleNamespace(identifier = "someone/gguf", gguf_file = None, gguf_hf_repo = None)
+        config = SimpleNamespace(identifier="someone/gguf", gguf_file=None, gguf_hf_repo=None)
         self.assertFalse(route._is_embedding_gguf(config))
 
     def test_an_uncached_embedding_identifier_stays_fail_closed(self):
         route = _load_route_module("inf_route_embed_clamp_6")
         config = SimpleNamespace(
-            identifier = "Qwen/Qwen3-Embedding-4B-GGUF",
-            gguf_file = None,
-            gguf_hf_repo = "Qwen/Qwen3-Embedding-4B-GGUF",
-            gguf_variant = "Q4_K_M",
+            identifier="Qwen/Qwen3-Embedding-4B-GGUF",
+            gguf_file=None,
+            gguf_hf_repo="Qwen/Qwen3-Embedding-4B-GGUF",
+            gguf_variant="Q4_K_M",
         )
-        with patch.object(route, "_local_gguf_main_path", return_value = None):
+        with patch.object(route, "_local_gguf_main_path", return_value=None):
             self.assertFalse(route._is_embedding_gguf(config))
 
 
@@ -492,21 +492,21 @@ class TestValidateAllowsTheEmbeddingClampedBatch(TestValidateRefusesWhatLoadWoul
 
     def test_an_embedding_gguf_may_batch_at_its_micro_batch(self):
         route = _load_route_module("inf_route_validate_embed_1")
-        with patch.object(route, "_is_embedding_gguf", return_value = True):
+        with patch.object(route, "_is_embedding_gguf", return_value=True):
             resp = self._validate(
                 route,
-                extra_args = ["-b", "2", "-ub", "2"],
-                n_parallel = 4,
+                extra_args=["-b", "2", "-ub", "2"],
+                n_parallel=4,
             )
         self.assertTrue(resp.is_gguf)
 
     def test_a_chat_gguf_is_still_refused(self):
         route = _load_route_module("inf_route_validate_embed_2")
         with (
-            patch.object(route, "_is_embedding_gguf", return_value = False),
+            patch.object(route, "_is_embedding_gguf", return_value=False),
             self.assertRaises(Exception) as caught,
         ):
-            self._validate(route, extra_args = ["-b", "2", "-ub", "2"], n_parallel = 4)
+            self._validate(route, extra_args=["-b", "2", "-ub", "2"], n_parallel=4)
         self.assertEqual(getattr(caught.exception, "status_code", None), 400)
         self.assertIn("aborts on --batch-size", str(caught.exception.detail))
 
@@ -515,8 +515,8 @@ class TestValidateAllowsTheEmbeddingClampedBatch(TestValidateRefusesWhatLoadWoul
         # slot count, so this is not a refusal the clamp may lift.
         route = _load_route_module("inf_route_validate_embed_3")
         with (
-            patch.object(route, "_is_embedding_gguf", return_value = True),
+            patch.object(route, "_is_embedding_gguf", return_value=True),
             self.assertRaises(Exception) as caught,
         ):
-            self._validate(route, extra_args = ["-b", "1", "-ub", "1"], n_parallel = 4)
+            self._validate(route, extra_args=["-b", "1", "-ub", "1"], n_parallel=4)
         self.assertEqual(getattr(caught.exception, "status_code", None), 400)

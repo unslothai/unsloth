@@ -18,12 +18,12 @@ from utils.account_context import run_as
 
 def _attempt(subject):
     return inference._ScopedLoadAttempt(
-        token = uuid.uuid4().hex,
-        request_id = None,
-        model_path = "org/model",
-        subject = subject,
-        cancel_event = threading.Event(),
-        cancel_complete = threading.Event(),
+        token=uuid.uuid4().hex,
+        request_id=None,
+        model_path="org/model",
+        subject=subject,
+        cancel_event=threading.Event(),
+        cancel_complete=threading.Event(),
     )
 
 
@@ -36,11 +36,11 @@ def test_deactivation_sweeps_loads_and_fences_late_ones(matrix, monkeypatch):
     monkeypatch.setattr(inference, "_running_load_attempt", None)
     run_as(alice, access.require_live_account)
     url = f"/api/accounts/{alice.account_id}"
-    assert client.patch(url, headers = headers(), json = {"is_active": False}).status_code == 200
+    assert client.patch(url, headers=headers(), json={"is_active": False}).status_code == 200
     assert pending.cancel_event.is_set() and not other.cancel_event.is_set()
     with pytest.raises(HTTPException) as exc:
         run_as(alice, access.require_live_account)
     assert (exc.value.status_code, exc.value.detail) == (403, "Account is disabled")
     run_as(bob, access.require_live_account)
-    assert client.patch(url, headers = headers(), json = {"is_active": True}).status_code == 200
+    assert client.patch(url, headers=headers(), json={"is_active": True}).status_code == 200
     run_as(alice, access.require_live_account)

@@ -30,14 +30,14 @@ def _run(
             "--head",
             str(head),
         ],
-        capture_output = True,
-        text = True,
-        timeout = timeout,
+        capture_output=True,
+        text=True,
+        timeout=timeout,
     )
 
 
 def _write(path: Path, content: dict) -> Path:
-    path.write_text(json.dumps(content), encoding = "utf-8")
+    path.write_text(json.dumps(content), encoding="utf-8")
     return path
 
 

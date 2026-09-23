@@ -59,7 +59,7 @@ _NOT_IN_ANY_SHARD = {
 
 
 def _backend_ci() -> dict:
-    return yaml.safe_load(_BACKEND_CI.read_text(encoding = "utf-8"))
+    return yaml.safe_load(_BACKEND_CI.read_text(encoding="utf-8"))
 
 
 def _job() -> dict:
@@ -219,7 +219,7 @@ class TestEveryTestFileLandsInExactlyOneShard:
             "tests/test_9_regression.py",
             "tests/an_odd_name_test.py",
         ],
-        ids = ["new-subdir", "existing-subdir", "uppercase", "digit", "underscore-test-suffix"],
+        ids=["new-subdir", "existing-subdir", "uppercase", "digit", "underscore-test-suffix"],
     )
     def test_the_names_the_ranges_do_not_describe_land_in_the_catch_all(self, path):
         """Why shards 1 and 2 exclude their complement rather than name their range.

@@ -84,9 +84,9 @@ def test_a_chained_cause_is_followed():
 
 def _probe_with_import_raising(
     error,
-    required = (0, 26),
-    torch_version_raw = "2.11.0",
-    torchvision_version_raw = "0.26.0",
+    required=(0, 26),
+    torch_version_raw="2.11.0",
+    torchvision_version_raw="0.26.0",
 ):
     """Run the probe with `import torchvision` raising `error`."""
     real_import = builtins.__import__
@@ -151,7 +151,7 @@ def test_a_healthy_torchvision_is_silent():
     import_fixes._probe_torchvision_binary("2.11.0", "0.26.0")
 
 
-_SOURCE = (pathlib.Path(import_fixes.__file__)).read_text(encoding = "utf-8")
+_SOURCE = (pathlib.Path(import_fixes.__file__)).read_text(encoding="utf-8")
 
 
 def _check_function():
@@ -213,7 +213,7 @@ def test_the_pairing_this_relies_on_is_what_pypi_publishes():
     for torchvision_version, torch_requirement in expected.items():
         try:
             with urllib.request.urlopen(
-                f"https://pypi.org/pypi/torchvision/{torchvision_version}/json", timeout = 20
+                f"https://pypi.org/pypi/torchvision/{torchvision_version}/json", timeout=20
             ) as response:
                 metadata = json.load(response)
         except (urllib.error.URLError, TimeoutError, OSError) as error:
@@ -239,9 +239,9 @@ def test_the_repair_command_keeps_the_backend_torch_was_built_for():
         with pytest.raises(ImportError) as excinfo:
             _probe_with_import_raising(
                 _NMS,
-                required = (0, 22, 0),
-                torch_version_raw = torch_raw,
-                torchvision_version_raw = "0.22.0",
+                required=(0, 22, 0),
+                torch_version_raw=torch_raw,
+                torchvision_version_raw="0.22.0",
             )
         return str(excinfo.value)
 
@@ -269,9 +269,9 @@ def test_a_build_no_public_index_carries_is_not_sent_to_pip():
         with pytest.raises(ImportError) as excinfo:
             _probe_with_import_raising(
                 _NMS,
-                required = required,
-                torch_version_raw = torch_raw,
-                torchvision_version_raw = "0.24.0",
+                required=required,
+                torch_version_raw=torch_raw,
+                torchvision_version_raw="0.24.0",
             )
         return str(excinfo.value)
 
@@ -305,9 +305,9 @@ def test_a_conda_torch_is_not_sent_to_pypis_torchvision(tmp_path):
         with pytest.raises(ImportError) as excinfo:
             _probe_with_import_raising(
                 _NMS,
-                required = (0, 20, 1),
-                torch_version_raw = torch_raw,
-                torchvision_version_raw = "0.20.1",
+                required=(0, 20, 1),
+                torch_version_raw=torch_raw,
+                torchvision_version_raw="0.20.1",
             )
         return str(excinfo.value)
 

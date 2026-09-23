@@ -41,7 +41,7 @@ from utils.subprocess_compat import (
 )
 
 
-@dataclass(frozen = True)
+@dataclass(frozen=True)
 class OxcLocalCallableValidatorSpec:
     name: str
     drop: bool
@@ -72,7 +72,7 @@ def split_oxc_local_callable_validators(
             kept_columns.append(column)
             continue
 
-        maybe_spec = _parse_oxc_spec(column = column)
+        maybe_spec = _parse_oxc_spec(column=column)
         if maybe_spec is None:
             kept_columns.append(column)
             continue
@@ -102,14 +102,14 @@ def register_oxc_local_callable_validators(
         )
         builder.add_column(
             ValidationColumnConfig(
-                name = spec.name,
-                drop = spec.drop,
-                target_columns = spec.target_columns,
-                validator_type = ValidatorType.LOCAL_CALLABLE,
-                validator_params = LocalCallableValidatorParams(
-                    validation_function = validation_function,
+                name=spec.name,
+                drop=spec.drop,
+                target_columns=spec.target_columns,
+                validator_type=ValidatorType.LOCAL_CALLABLE,
+                validator_params=LocalCallableValidatorParams(
+                    validation_function=validation_function,
                 ),
-                batch_size = spec.batch_size,
+                batch_size=spec.batch_size,
             )
         )
 
@@ -147,13 +147,13 @@ def _parse_oxc_spec(*, column: dict[str, Any]) -> OxcLocalCallableValidatorSpec 
     drop = bool(column.get("drop") is True)
 
     return OxcLocalCallableValidatorSpec(
-        name = name,
-        drop = drop,
-        target_columns = target_columns,
-        batch_size = batch_size,
-        code_lang = code_lang,
-        validation_mode = validation_mode,
-        code_shape = code_shape,
+        name=name,
+        drop=drop,
+        target_columns=target_columns,
+        batch_size=batch_size,
+        code_lang=code_lang,
+        validation_mode=validation_mode,
+        code_shape=code_shape,
     )
 
 
@@ -179,7 +179,7 @@ def _parse_oxc_validation_marker(fn_name: str) -> tuple[str, str, str]:
     return code_lang, mode, code_shape
 
 
-@lru_cache(maxsize = 8)
+@lru_cache(maxsize=8)
 def _build_oxc_validation_function(lang: str, validation_mode: str, code_shape: str):
     node_lang = _OXC_LANG_TO_NODE_LANG.get(lang, "js")
     mode = validation_mode if validation_mode in _OXC_VALIDATION_MODES else "syntax"
@@ -200,10 +200,10 @@ def _build_oxc_validation_function(lang: str, validation_mode: str, code_shape: 
         )
 
         results = _run_oxc_batch(
-            node_lang = node_lang,
-            validation_mode = mode,
-            code_shape = normalized_code_shape,
-            code_values = code_values,
+            node_lang=node_lang,
+            validation_mode=mode,
+            code_shape=normalized_code_shape,
+            code_values=code_values,
         )
         if len(results) != row_count:
             results = _fallback_results(
@@ -256,15 +256,15 @@ def _run_oxc_batch(
         env.pop("NODE_PATH", None)
         proc = subprocess.run(
             [node_executable, str(_OXC_RUNNER_PATH)],
-            cwd = str(_OXC_TOOL_DIR),
-            input = json.dumps(payload),
-            text = True,
-            encoding = "utf-8",
-            errors = "replace",
-            capture_output = True,
-            check = False,
-            env = env,
-            timeout = _OXC_TIMEOUT_S,
+            cwd=str(_OXC_TOOL_DIR),
+            input=json.dumps(payload),
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            capture_output=True,
+            check=False,
+            env=env,
+            timeout=_OXC_TIMEOUT_S,
             **_windows_hidden_subprocess_kwargs(),
         )
     except subprocess.TimeoutExpired:

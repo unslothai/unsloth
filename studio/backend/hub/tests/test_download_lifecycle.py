@@ -16,17 +16,17 @@ def _shared_setup_1():
     assert registry.claim(
         key,
         download_registry.TRANSPORT_XET,
-        repo_type = "model",
-        repo_id = "Org/Model",
-        variant = None,
-        blob_hashes = frozenset({"blob"}),
+        repo_type="model",
+        repo_id="Org/Model",
+        variant=None,
+        blob_hashes=frozenset({"blob"}),
     )[0]
     return key, registry
 
 
 def _shared_setup_2(monkeypatch):
     monkeypatch.setattr(
-        download_lifecycle, "_REAL_REGISTER", download_lifecycle.register_worker, raising = False
+        download_lifecycle, "_REAL_REGISTER", download_lifecycle.register_worker, raising=False
     )
     retries = []
     return retries
@@ -38,7 +38,7 @@ class _Proc:
     def __init__(
         self,
         rc,
-        stderr = b"",
+        stderr=b"",
     ):
         self.rc = rc
         self.stderr = io.BytesIO(stderr)
@@ -47,7 +47,7 @@ class _Proc:
     def poll(self):
         return self.rc if self.waited else None
 
-    def wait(self, timeout = None):
+    def wait(self, timeout=None):
         self.waited = True
         return self.rc
 
@@ -60,8 +60,8 @@ class _ImmediateThread:
         self,
         *,
         target,
-        args = (),
-        kwargs = None,
+        args=(),
+        kwargs=None,
         **_kwargs,
     ):
         self.target, self.args, self.kwargs = target, args, kwargs or {}
@@ -79,7 +79,7 @@ def test_resolve_effective_use_xet(monkeypatch):
         monkeypatch.setattr(
             download_lifecycle.download_registry,
             "download_transport_unavailable_reason",
-            lambda _transport, reason = unavailable_reason: reason,
+            lambda _transport, reason=unavailable_reason: reason,
         )
         assert download_lifecycle.resolve_effective_use_xet(requested) is expected
 
@@ -111,12 +111,12 @@ def test_completion_invalidates_inventory_before_publishing_state(monkeypatch):
             _Registry(),
             "org/data",
             _Proc(0),
-            hf_token = None,
-            label = "org/data",
-            log_prefix = "Download",
-            logger = logging.getLogger("test"),
-            repo_type = "dataset",
-            repo_id = "org/data",
+            hf_token=None,
+            label="org/data",
+            log_prefix="Download",
+            logger=logging.getLogger("test"),
+            repo_type="dataset",
+            repo_id="org/data",
         )
         == "complete"
     )
@@ -141,10 +141,10 @@ def test_xet_failure_retries_over_http_for_model_and_dataset(monkeypatch, tmp_pa
         assert registry.claim(
             key,
             download_registry.TRANSPORT_XET,
-            repo_type = repo_type,
-            repo_id = repo_id,
-            variant = variant,
-            blob_hashes = frozenset({"blob"}),
+            repo_type=repo_type,
+            repo_id=repo_id,
+            variant=variant,
+            blob_hashes=frozenset({"blob"}),
         )[0]
         generation = registry.current_generation(key)
         spawned = []
@@ -154,8 +154,8 @@ def test_xet_failure_retries_over_http_for_model_and_dataset(monkeypatch, tmp_pa
             _token,
             *,
             use_xet,
-            protected_blob_hashes = None,
-            allow_ambient_token = True,
+            protected_blob_hashes=None,
+            allow_ambient_token=True,
         ):
             spawned.append((args, use_xet, protected_blob_hashes))
             return _Proc(0)
@@ -170,14 +170,14 @@ def test_xet_failure_retries_over_http_for_model_and_dataset(monkeypatch, tmp_pa
             registry,
             key,
             _Proc(1, b"xet failed"),
-            hf_token = None,
-            label = repo_id,
-            log_prefix = "Download",
-            logger = logging.getLogger("test"),
-            repo_type = repo_type,
-            repo_id = repo_id,
-            transport = download_registry.TRANSPORT_XET,
-            watch_name = f"{repo_type}-watch",
+            hf_token=None,
+            label=repo_id,
+            log_prefix="Download",
+            logger=logging.getLogger("test"),
+            repo_type=repo_type,
+            repo_id=repo_id,
+            transport=download_registry.TRANSPORT_XET,
+            watch_name=f"{repo_type}-watch",
         )
 
         metadata = registry.get_job_metadata(key)
@@ -213,8 +213,8 @@ def test_a_stalled_xet_worker_respawns_over_xet_keeping_its_claim(monkeypatch, t
         _token,
         *,
         use_xet,
-        protected_blob_hashes = None,
-        allow_ambient_token = True,
+        protected_blob_hashes=None,
+        allow_ambient_token=True,
     ):
         spawned.append((args, use_xet))
         return _Proc(0)
@@ -230,14 +230,14 @@ def test_a_stalled_xet_worker_respawns_over_xet_keeping_its_claim(monkeypatch, t
         registry,
         key,
         _Proc(1, b"killed"),
-        hf_token = None,
-        label = "Org/Model",
-        log_prefix = "Download",
-        logger = logging.getLogger("test"),
-        repo_type = "model",
-        repo_id = "Org/Model",
-        transport = download_registry.TRANSPORT_XET,
-        watch_name = "model-watch",
+        hf_token=None,
+        label="Org/Model",
+        log_prefix="Download",
+        logger=logging.getLogger("test"),
+        repo_type="model",
+        repo_id="Org/Model",
+        transport=download_registry.TRANSPORT_XET,
+        watch_name="model-watch",
     )
 
     assert spawned == [(["--repo-id", "Org/Model"], True)]
@@ -260,7 +260,7 @@ def test_an_unspawnable_xet_retry_falls_through_to_http(monkeypatch, tmp_path):
         _token,
         *,
         use_xet,
-        protected_blob_hashes = None,
+        protected_blob_hashes=None,
         **_kw,
     ):
         spawned.append(use_xet)
@@ -276,15 +276,15 @@ def test_an_unspawnable_xet_retry_falls_through_to_http(monkeypatch, tmp_path):
     assert download_lifecycle._try_transport_retry(
         registry,
         key,
-        hf_token = None,
-        label = "Org/Model",
-        log_prefix = "Download",
-        logger = logging.getLogger("test"),
-        repo_type = "model",
-        repo_id = "Org/Model",
-        watch_name = "model-watch",
-        retry_transport = download_registry.TRANSPORT_XET,
-        xet_attempt = 2,
+        hf_token=None,
+        label="Org/Model",
+        log_prefix="Download",
+        logger=logging.getLogger("test"),
+        repo_type="model",
+        repo_id="Org/Model",
+        watch_name="model-watch",
+        retry_transport=download_registry.TRANSPORT_XET,
+        xet_attempt=2,
     )
     assert spawned == [True, False], "the failed XET respawn must be followed by an HTTP one"
 
@@ -308,7 +308,7 @@ def test_a_verdict_carried_onto_the_http_rung_is_still_charged(monkeypatch, tmp_
         _token,
         *,
         use_xet,
-        protected_blob_hashes = None,
+        protected_blob_hashes=None,
         **_kwargs,
     ):
         spawned.append(use_xet)
@@ -327,14 +327,14 @@ def test_a_verdict_carried_onto_the_http_rung_is_still_charged(monkeypatch, tmp_
         registry,
         key,
         _Proc(1, b"killed"),
-        hf_token = None,
-        label = "Org/Model",
-        log_prefix = "Download",
-        logger = logging.getLogger("test"),
-        repo_type = "model",
-        repo_id = "Org/Model",
-        transport = download_registry.TRANSPORT_XET,
-        watch_name = "model-watch",
+        hf_token=None,
+        label="Org/Model",
+        log_prefix="Download",
+        logger=logging.getLogger("test"),
+        repo_type="model",
+        repo_id="Org/Model",
+        transport=download_registry.TRANSPORT_XET,
+        watch_name="model-watch",
     )
     # Before the verdict: a double whose signature has fallen behind spawn_worker raises TypeError,
     # which reads as a spawn failure and still records the verdict, staying green.
@@ -354,8 +354,8 @@ def test_http_failure_remains_terminal(monkeypatch, tmp_path):
     assert registry.claim(
         key,
         download_registry.TRANSPORT_HTTP,
-        repo_type = "dataset",
-        repo_id = "Org/Data",
+        repo_type="dataset",
+        repo_id="Org/Data",
     )[0]
     monkeypatch.setattr(
         download_lifecycle,
@@ -368,14 +368,14 @@ def test_http_failure_remains_terminal(monkeypatch, tmp_path):
         registry,
         key,
         _Proc(1, b"http failed"),
-        hf_token = None,
-        label = "Org/Data",
-        log_prefix = "Download",
-        logger = logging.getLogger("test"),
-        repo_type = "dataset",
-        repo_id = "Org/Data",
-        transport = download_registry.TRANSPORT_HTTP,
-        watch_name = "dataset-watch",
+        hf_token=None,
+        label="Org/Data",
+        log_prefix="Download",
+        logger=logging.getLogger("test"),
+        repo_type="dataset",
+        repo_id="Org/Data",
+        transport=download_registry.TRANSPORT_HTTP,
+        watch_name="dataset-watch",
     )
     assert registry.get_job(key).state == "error"
 
@@ -400,24 +400,24 @@ def _run_completed_xet_worker(monkeypatch, tmp_path, *, bytes_before, bytes_afte
     assert registry.claim(
         key,
         download_registry.TRANSPORT_XET,
-        repo_type = "model",
-        repo_id = "Org/Model",
-        variant = None,
-        blob_hashes = frozenset({"blob"}),
+        repo_type="model",
+        repo_id="Org/Model",
+        variant=None,
+        blob_hashes=frozenset({"blob"}),
     )[0]
 
     download_lifecycle.register_worker(
         registry,
         key,
         _Proc(0),
-        hf_token = None,
-        label = "Org/Model",
-        log_prefix = "Download",
-        logger = logging.getLogger("test"),
-        repo_type = "model",
-        repo_id = "Org/Model",
-        transport = download_registry.TRANSPORT_XET,
-        watch_name = "model-watch",
+        hf_token=None,
+        label="Org/Model",
+        log_prefix="Download",
+        logger=logging.getLogger("test"),
+        repo_type="model",
+        repo_id="Org/Model",
+        transport=download_registry.TRANSPORT_XET,
+        watch_name="model-watch",
     )
     return recorded
 
@@ -426,14 +426,14 @@ def test_a_cached_xet_job_does_not_clear_the_failure_streak(monkeypatch, tmp_pat
     """A fully cached repo exits 0 without touching the network (the UI's re-download on an
     up-to-date model), and recording that as a Xet success wipes a correctly earned demotion."""
     recorded = _run_completed_xet_worker(
-        monkeypatch, tmp_path, bytes_before = 5_000, bytes_after = 5_000
+        monkeypatch, tmp_path, bytes_before=5_000, bytes_after=5_000
     )
     assert recorded == []
 
 
 def test_a_real_xet_transfer_does_clear_the_failure_streak(monkeypatch, tmp_path):
     """The streak must still reset on a job that actually moved bytes, or "two in a row" is wrong."""
-    recorded = _run_completed_xet_worker(monkeypatch, tmp_path, bytes_before = 0, bytes_after = 5_000)
+    recorded = _run_completed_xet_worker(monkeypatch, tmp_path, bytes_before=0, bytes_after=5_000)
     assert recorded == [True]
 
 
@@ -448,7 +448,7 @@ def test_a_sibling_variants_bytes_do_not_count_as_this_jobs_progress(monkeypatch
         repo_id,
         blob_hashes,
         *,
-        root = None,
+        root=None,
     ):
         seen.append(frozenset(blob_hashes))
         return 1_000  # this variant's own blobs never grow: it was already cached
@@ -473,24 +473,24 @@ def test_a_sibling_variants_bytes_do_not_count_as_this_jobs_progress(monkeypatch
     assert registry.claim(
         key,
         download_registry.TRANSPORT_XET,
-        repo_type = "model",
-        repo_id = "Org/Model",
-        variant = "Q4_K_M",
-        blob_hashes = frozenset({"mine"}),
+        repo_type="model",
+        repo_id="Org/Model",
+        variant="Q4_K_M",
+        blob_hashes=frozenset({"mine"}),
     )[0]
 
     download_lifecycle.register_worker(
         registry,
         key,
         _Proc(0),
-        hf_token = None,
-        label = "Org/Model",
-        log_prefix = "Download",
-        logger = logging.getLogger("test"),
-        repo_type = "model",
-        repo_id = "Org/Model",
-        transport = download_registry.TRANSPORT_XET,
-        watch_name = "model-watch",
+        hf_token=None,
+        label="Org/Model",
+        log_prefix="Download",
+        logger=logging.getLogger("test"),
+        repo_type="model",
+        repo_id="Org/Model",
+        transport=download_registry.TRANSPORT_XET,
+        watch_name="model-watch",
     )
 
     assert recorded == [], "a cached variant was credited with a sibling's bytes"
@@ -501,9 +501,9 @@ def _trip_xet_worker(
     monkeypatch,
     tmp_path,
     message,
-    rc = 1,
-    xet_attempt = 2,
-    retries = None,
+    rc=1,
+    xet_attempt=2,
+    retries=None,
 ):
     """Run a Xet worker whose watchdog trips with *message*; return the health failures recorded.
 
@@ -542,10 +542,10 @@ def _trip_xet_worker(
     assert registry.claim(
         key,
         download_registry.TRANSPORT_XET,
-        repo_type = "model",
-        repo_id = "Org/Model",
-        variant = None,
-        blob_hashes = frozenset({"blob"}),
+        repo_type="model",
+        repo_id="Org/Model",
+        variant=None,
+        blob_hashes=frozenset({"blob"}),
     )[0]
 
     _register = download_lifecycle.__dict__["register_worker"]
@@ -554,15 +554,15 @@ def _trip_xet_worker(
         registry,
         key,
         _Proc(rc, b"killed" if rc else b""),
-        hf_token = None,
-        label = "Org/Model",
-        log_prefix = "Download",
-        logger = logging.getLogger("test"),
-        repo_type = "model",
-        repo_id = "Org/Model",
-        transport = download_registry.TRANSPORT_XET,
-        watch_name = "model-watch",
-        xet_attempt = xet_attempt,
+        hf_token=None,
+        label="Org/Model",
+        log_prefix="Download",
+        logger=logging.getLogger("test"),
+        repo_type="model",
+        repo_id="Org/Model",
+        transport=download_registry.TRANSPORT_XET,
+        watch_name="model-watch",
+        xet_attempt=xet_attempt,
     )
     return recorded
 
@@ -571,7 +571,7 @@ def test_a_data_phase_stall_is_recorded_against_the_machine(monkeypatch, tmp_pat
     """A frozen partial with bytes already flowing is genuinely Xet misbehaving -- charged once the
     Xet phase is out of attempts."""
     monkeypatch.setattr(
-        download_lifecycle, "_REAL_REGISTER", download_lifecycle.register_worker, raising = False
+        download_lifecycle, "_REAL_REGISTER", download_lifecycle.register_worker, raising=False
     )
 
     assert _trip_xet_worker(
@@ -588,7 +588,7 @@ def test_a_first_stall_buys_another_xet_worker_and_records_nothing(monkeypatch, 
     retries = _shared_setup_2(monkeypatch)
     verdict = "Download appears stalled (xet transport) -- no progress for 30s"
     assert (
-        _trip_xet_worker(monkeypatch, tmp_path, verdict, xet_attempt = 1, retries = retries) == []
+        _trip_xet_worker(monkeypatch, tmp_path, verdict, xet_attempt=1, retries=retries) == []
     ), "the first stall must not be charged to the machine"
     assert retries == [(download_registry.TRANSPORT_XET, 2, verdict)]
 
@@ -600,8 +600,8 @@ def test_the_last_xet_stall_falls_back_to_http_and_charges_once(monkeypatch, tmp
         monkeypatch,
         tmp_path,
         "Download appears stalled (xet transport) -- no progress for 30s",
-        xet_attempt = 2,
-        retries = retries,
+        xet_attempt=2,
+        retries=retries,
     )
     assert len(recorded) == 1
     # The HTTP rung carries no pending verdict: it was just recorded.
@@ -616,8 +616,8 @@ def test_a_pre_byte_trip_never_buys_another_xet_worker(monkeypatch, tmp_path):
         monkeypatch,
         tmp_path,
         "Download did not start (xet transport) -- no data after 600s",
-        xet_attempt = 1,
-        retries = retries,
+        xet_attempt=1,
+        retries=retries,
     )
     assert retries == [(download_registry.TRANSPORT_HTTP, 1, None)]
 
@@ -629,8 +629,8 @@ def test_the_attempts_knob_of_one_restores_the_straight_to_http_ladder(monkeypat
         monkeypatch,
         tmp_path,
         "Download appears stalled (xet transport) -- no progress for 30s",
-        xet_attempt = 1,
-        retries = retries,
+        xet_attempt=1,
+        retries=retries,
     )
     assert len(recorded) == 1
     assert retries == [(download_registry.TRANSPORT_HTTP, 1, None)]
@@ -641,7 +641,7 @@ def test_a_pre_byte_trip_does_not_poison_the_machines_health_record(monkeypatch,
     byte arrived, as likely slow metadata, a queue of HEADs or a cache lock as a broken Xet. The
     HTTP retry still happens either way."""
     monkeypatch.setattr(
-        download_lifecycle, "_REAL_REGISTER", download_lifecycle.register_worker, raising = False
+        download_lifecycle, "_REAL_REGISTER", download_lifecycle.register_worker, raising=False
     )
     assert (
         _trip_xet_worker(
@@ -658,7 +658,7 @@ def test_a_post_byte_hang_between_files_is_recorded(monkeypatch, tmp_path):
     the shape this worker hangs in most often since snapshot_download owns no partial between
     files. An earlier allow-list keyed on "no progress" silently dropped it."""
     monkeypatch.setattr(
-        download_lifecycle, "_REAL_REGISTER", download_lifecycle.register_worker, raising = False
+        download_lifecycle, "_REAL_REGISTER", download_lifecycle.register_worker, raising=False
     )
     assert _trip_xet_worker(
         monkeypatch,
@@ -695,15 +695,15 @@ def test_the_xet_baseline_is_sampled_before_the_worker_spawns(monkeypatch, tmp_p
     download_lifecycle.launch_worker(
         registry,
         key,
-        spawn = _spawn,
-        hf_token = None,
-        label = "Org/Model",
-        log_prefix = "Download",
-        logger = logging.getLogger("test"),
-        repo_type = "model",
-        repo_id = "Org/Model",
-        transport = download_registry.TRANSPORT_XET,
-        watch_name = "model-watch",
+        spawn=_spawn,
+        hf_token=None,
+        label="Org/Model",
+        log_prefix="Download",
+        logger=logging.getLogger("test"),
+        repo_type="model",
+        repo_id="Org/Model",
+        transport=download_registry.TRANSPORT_XET,
+        watch_name="model-watch",
     )
 
     assert order[0] == "sample" and order[1] == "spawn", order
@@ -715,14 +715,14 @@ def test_a_stall_verdict_racing_a_completed_worker_is_not_recorded(monkeypatch, 
     instant would be charged a failure it did not earn, and on the completed path that also skips
     the success-clearing: two streak steps the wrong way from one race."""
     monkeypatch.setattr(
-        download_lifecycle, "_REAL_REGISTER", download_lifecycle.register_worker, raising = False
+        download_lifecycle, "_REAL_REGISTER", download_lifecycle.register_worker, raising=False
     )
     assert (
         _trip_xet_worker(
             monkeypatch,
             tmp_path,
             "Download appears stalled (xet transport) -- no progress for 30s",
-            rc = 0,
+            rc=0,
         )
         == []
     ), "a completed worker was charged a stall it raced"

@@ -126,30 +126,30 @@ async def _collect(agen):
 
 def _mock_http_client(monkeypatch, handler):
     transport = httpx.MockTransport(handler)
-    monkeypatch.setattr(ep_mod, "_http_client", httpx.AsyncClient(transport = transport))
+    monkeypatch.setattr(ep_mod, "_http_client", httpx.AsyncClient(transport=transport))
 
 
 def _make_anthropic_client() -> ExternalProviderClient:
     return ExternalProviderClient(
-        provider_type = "anthropic",
-        base_url = "https://api.anthropic.com/v1",
-        api_key = "sk-ant-test",
+        provider_type="anthropic",
+        base_url="https://api.anthropic.com/v1",
+        api_key="sk-ant-test",
     )
 
 
 def _make_openai_client() -> ExternalProviderClient:
     return ExternalProviderClient(
-        provider_type = "openai",
-        base_url = "https://api.openai.com/v1",
-        api_key = "sk-openai-test",
+        provider_type="openai",
+        base_url="https://api.openai.com/v1",
+        api_key="sk-openai-test",
     )
 
 
 def _make_custom_client() -> ExternalProviderClient:
     return ExternalProviderClient(
-        provider_type = "custom",
-        base_url = "http://custom.example/v1",
-        api_key = "",
+        provider_type="custom",
+        base_url="http://custom.example/v1",
+        api_key="",
     )
 
 
@@ -206,7 +206,7 @@ def test_custom_provider_registry_is_hidden():
     assert info["hidden"] is True
     assert all(p["provider_type"] != "custom" for p in list_available_providers())
     entry = next(
-        p for p in list_available_providers(include_hidden = True) if p["provider_type"] == "custom"
+        p for p in list_available_providers(include_hidden=True) if p["provider_type"] == "custom"
     )
     assert entry["hidden"] is True
     assert entry["supports_studio_tools"] is True
@@ -221,8 +221,8 @@ def test_custom_provider_uses_chat_completions_without_auth_key(monkeypatch):
         captured["body"] = json.loads(request.content.decode("utf-8"))
         return httpx.Response(
             200,
-            content = b'data: {"choices":[{"delta":{"content":"ok"}}]}\n\ndata: [DONE]\n\n',
-            headers = {"content-type": "text/event-stream"},
+            content=b'data: {"choices":[{"delta":{"content":"ok"}}]}\n\ndata: [DONE]\n\n',
+            headers={"content-type": "text/event-stream"},
         )
 
     _mock_http_client(monkeypatch, handler)
@@ -231,11 +231,11 @@ def test_custom_provider_uses_chat_completions_without_auth_key(monkeypatch):
         client = _make_custom_client()
         lines = await _collect(
             client.stream_chat_completion(
-                messages = [{"role": "user", "content": "ping"}],
-                model = "Qwen/Qwen3-0.6B",
-                temperature = 0.7,
-                top_p = 0.95,
-                max_tokens = 64,
+                messages=[{"role": "user", "content": "ping"}],
+                model="Qwen/Qwen3-0.6B",
+                temperature=0.7,
+                top_p=0.95,
+                max_tokens=64,
             )
         )
         await client.close()
@@ -289,12 +289,12 @@ def test_custom_provider_test_endpoint_probes_models_before_chat(monkeypatch):
     async def run():
         return await providers_route.test_provider(
             providers_route.ProviderTestRequest(
-                provider_type = "custom",
-                base_url = "http://custom.example/v1",
-                model_id = "Qwen/Qwen3-0.6B",
+                provider_type="custom",
+                base_url="http://custom.example/v1",
+                model_id="Qwen/Qwen3-0.6B",
             ),
-            _current_subject = "unsloth",
-            via_api_key = False,
+            _current_subject="unsloth",
+            via_api_key=False,
         )
 
     result = _drive(run())
@@ -327,9 +327,9 @@ def test_custom_provider_test_falls_back_to_speech_for_tts_only_gateways(monkeyp
         async def list_models(self):
             raise httpx.HTTPStatusError(
                 "not found",
-                request = httpx.Request("GET", "http://custom.example/v1/models"),
-                response = httpx.Response(
-                    404, request = httpx.Request("GET", "http://custom.example/v1/models")
+                request=httpx.Request("GET", "http://custom.example/v1/models"),
+                response=httpx.Response(
+                    404, request=httpx.Request("GET", "http://custom.example/v1/models")
                 ),
             )
 
@@ -350,12 +350,12 @@ def test_custom_provider_test_falls_back_to_speech_for_tts_only_gateways(monkeyp
     async def run():
         return await providers_route.test_provider(
             providers_route.ProviderTestRequest(
-                provider_type = "custom",
-                base_url = "http://custom.example/v1",
-                model_id = "kokoro",
+                provider_type="custom",
+                base_url="http://custom.example/v1",
+                model_id="kokoro",
             ),
-            _current_subject = "unsloth",
-            via_api_key = False,
+            _current_subject="unsloth",
+            via_api_key=False,
         )
 
     result = _drive(run())
@@ -387,18 +387,18 @@ def test_custom_provider_test_falls_back_to_chat_when_only_completions_exist(mon
         async def list_models(self):
             raise httpx.HTTPStatusError(
                 "not found",
-                request = httpx.Request("GET", "http://custom.example/v1/models"),
-                response = httpx.Response(
-                    404, request = httpx.Request("GET", "http://custom.example/v1/models")
+                request=httpx.Request("GET", "http://custom.example/v1/models"),
+                response=httpx.Response(
+                    404, request=httpx.Request("GET", "http://custom.example/v1/models")
                 ),
             )
 
         async def create_speech(self, **_kwargs):
             raise httpx.HTTPStatusError(
                 "not found",
-                request = httpx.Request("POST", "http://custom.example/v1/audio/speech"),
-                response = httpx.Response(
-                    404, request = httpx.Request("POST", "http://custom.example/v1/audio/speech")
+                request=httpx.Request("POST", "http://custom.example/v1/audio/speech"),
+                response=httpx.Response(
+                    404, request=httpx.Request("POST", "http://custom.example/v1/audio/speech")
                 ),
             )
 
@@ -414,12 +414,12 @@ def test_custom_provider_test_falls_back_to_chat_when_only_completions_exist(mon
     async def run():
         return await providers_route.test_provider(
             providers_route.ProviderTestRequest(
-                provider_type = "custom",
-                base_url = "http://custom.example/v1",
-                model_id = "Qwen/Qwen3-0.6B",
+                provider_type="custom",
+                base_url="http://custom.example/v1",
+                model_id="Qwen/Qwen3-0.6B",
             ),
-            _current_subject = "unsloth",
-            via_api_key = False,
+            _current_subject="unsloth",
+            via_api_key=False,
         )
 
     result = _drive(run())
@@ -450,9 +450,9 @@ def test_custom_provider_test_endpoint_requires_model_id(monkeypatch):
         async def list_models(self):
             raise httpx.HTTPStatusError(
                 "not found",
-                request = httpx.Request("GET", "http://custom.example/v1/models"),
-                response = httpx.Response(
-                    404, request = httpx.Request("GET", "http://custom.example/v1/models")
+                request=httpx.Request("GET", "http://custom.example/v1/models"),
+                response=httpx.Response(
+                    404, request=httpx.Request("GET", "http://custom.example/v1/models")
                 ),
             )
 
@@ -464,11 +464,11 @@ def test_custom_provider_test_endpoint_requires_model_id(monkeypatch):
     async def run():
         return await providers_route.test_provider(
             providers_route.ProviderTestRequest(
-                provider_type = "custom",
-                base_url = "http://custom.example/v1",
+                provider_type="custom",
+                base_url="http://custom.example/v1",
             ),
-            _current_subject = "unsloth",
-            via_api_key = False,
+            _current_subject="unsloth",
+            via_api_key=False,
         )
 
     result = _drive(run())
@@ -500,8 +500,8 @@ def test_anthropic_stream_emits_usage_chunk_before_done(monkeypatch):
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(
             200,
-            content = _anthropic_sse(sse_events),
-            headers = {"content-type": "text/event-stream"},
+            content=_anthropic_sse(sse_events),
+            headers={"content-type": "text/event-stream"},
         )
 
     _mock_http_client(monkeypatch, handler)
@@ -510,11 +510,11 @@ def test_anthropic_stream_emits_usage_chunk_before_done(monkeypatch):
         client = _make_anthropic_client()
         return await _collect(
             client._stream_anthropic(
-                messages = [{"role": "user", "content": "ping"}],
-                model = "claude-opus-4-7",
-                temperature = 0.7,
-                top_p = 0.95,
-                max_tokens = 64,
+                messages=[{"role": "user", "content": "ping"}],
+                model="claude-opus-4-7",
+                temperature=0.7,
+                top_p=0.95,
+                max_tokens=64,
             )
         )
 
@@ -558,8 +558,8 @@ def test_openai_responses_stream_emits_usage_chunk_on_completed(monkeypatch):
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(
             200,
-            content = _openai_sse(sse_events),
-            headers = {"content-type": "text/event-stream"},
+            content=_openai_sse(sse_events),
+            headers={"content-type": "text/event-stream"},
         )
 
     _mock_http_client(monkeypatch, handler)
@@ -568,13 +568,13 @@ def test_openai_responses_stream_emits_usage_chunk_on_completed(monkeypatch):
         client = _make_openai_client()
         return await _collect(
             client._stream_openai_responses(
-                messages = [{"role": "user", "content": "ping"}],
-                model = "gpt-5.5",
-                temperature = 0.7,
-                top_p = 0.95,
-                max_tokens = 64,
-                enable_thinking = None,
-                reasoning_effort = None,
+                messages=[{"role": "user", "content": "ping"}],
+                model="gpt-5.5",
+                temperature=0.7,
+                top_p=0.95,
+                max_tokens=64,
+                enable_thinking=None,
+                reasoning_effort=None,
             )
         )
 
@@ -609,8 +609,8 @@ def test_openai_responses_stream_emits_usage_chunk_on_incomplete(monkeypatch):
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(
             200,
-            content = _openai_sse(sse_events),
-            headers = {"content-type": "text/event-stream"},
+            content=_openai_sse(sse_events),
+            headers={"content-type": "text/event-stream"},
         )
 
     _mock_http_client(monkeypatch, handler)
@@ -619,13 +619,13 @@ def test_openai_responses_stream_emits_usage_chunk_on_incomplete(monkeypatch):
         client = _make_openai_client()
         return await _collect(
             client._stream_openai_responses(
-                messages = [{"role": "user", "content": "ping"}],
-                model = "gpt-5.5",
-                temperature = 0.7,
-                top_p = 0.95,
-                max_tokens = 1024,
-                enable_thinking = None,
-                reasoning_effort = None,
+                messages=[{"role": "user", "content": "ping"}],
+                model="gpt-5.5",
+                temperature=0.7,
+                top_p=0.95,
+                max_tokens=1024,
+                enable_thinking=None,
+                reasoning_effort=None,
             )
         )
 
@@ -643,26 +643,26 @@ def _continuation_body(monkeypatch, provider_type: str, base_url: str) -> dict:
         captured.update(json.loads(request.content.decode("utf-8")))
         return httpx.Response(
             200,
-            content = b'data: {"choices":[{"delta":{"content":"ok"}}]}\n\ndata: [DONE]\n\n',
-            headers = {"content-type": "text/event-stream"},
+            content=b'data: {"choices":[{"delta":{"content":"ok"}}]}\n\ndata: [DONE]\n\n',
+            headers={"content-type": "text/event-stream"},
         )
 
     _mock_http_client(monkeypatch, handler)
 
     async def run():
         client = ExternalProviderClient(
-            provider_type = provider_type,
-            base_url = base_url,
-            api_key = "k",
+            provider_type=provider_type,
+            base_url=base_url,
+            api_key="k",
         )
         await _collect(
             client.stream_chat_completion(
-                messages = [
+                messages=[
                     {"role": "user", "content": "hi"},
                     {"role": "assistant", "content": "It is a bar"},
                 ],
-                model = "Qwen/Qwen3-0.6B",
-                continue_final_message = True,
+                model="Qwen/Qwen3-0.6B",
+                continue_final_message=True,
             )
         )
         await client.close()
@@ -719,25 +719,25 @@ def test_streamed_usage_is_requested_only_where_documented(monkeypatch, provider
         captured["body"] = json.loads(request.content.decode("utf-8"))
         return httpx.Response(
             200,
-            content = b'data: {"choices":[{"delta":{"content":"ok"}}]}\n\ndata: [DONE]\n\n',
-            headers = {"content-type": "text/event-stream"},
+            content=b'data: {"choices":[{"delta":{"content":"ok"}}]}\n\ndata: [DONE]\n\n',
+            headers={"content-type": "text/event-stream"},
         )
 
     _mock_http_client(monkeypatch, handler)
 
     async def run():
         client = ExternalProviderClient(
-            provider_type = provider_type,
-            base_url = "http://provider.example/v1",
-            api_key = "sk-test",
+            provider_type=provider_type,
+            base_url="http://provider.example/v1",
+            api_key="sk-test",
         )
         await _collect(
             client.stream_chat_completion(
-                messages = [{"role": "user", "content": "ping"}],
-                model = "m",
-                temperature = 0.7,
-                top_p = 0.95,
-                max_tokens = 64,
+                messages=[{"role": "user", "content": "ping"}],
+                model="m",
+                temperature=0.7,
+                top_p=0.95,
+                max_tokens=64,
             )
         )
         await client.close()
@@ -761,24 +761,24 @@ def test_kimi_no_search_fallback_requests_usage(monkeypatch):
         # First call: the model declines to invoke $web_search.
         return httpx.Response(
             200,
-            content = b'data: {"choices":[{"delta":{"content":"hi"}}]}\n\ndata: [DONE]\n\n',
-            headers = {"content-type": "text/event-stream"},
+            content=b'data: {"choices":[{"delta":{"content":"hi"}}]}\n\ndata: [DONE]\n\n',
+            headers={"content-type": "text/event-stream"},
         )
 
     _mock_http_client(monkeypatch, handler)
 
     async def run():
         client = ExternalProviderClient(
-            provider_type = "kimi",
-            base_url = "http://kimi.example/v1",
-            api_key = "sk-test",
+            provider_type="kimi",
+            base_url="http://kimi.example/v1",
+            api_key="sk-test",
         )
         await _collect(
             client.stream_chat_completion(
-                messages = [{"role": "user", "content": "ping"}],
-                model = "kimi-k2",
-                max_tokens = 64,
-                enabled_tools = ["web_search"],
+                messages=[{"role": "user", "content": "ping"}],
+                model="kimi-k2",
+                max_tokens=64,
+                enabled_tools=["web_search"],
             )
         )
         await client.close()
@@ -802,7 +802,7 @@ def test_a_type_carried_only_by_the_sse_event_field_is_honoured(monkeypatch):
     )
 
     def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, content = body, headers = {"content-type": "text/event-stream"})
+        return httpx.Response(200, content=body, headers={"content-type": "text/event-stream"})
 
     _mock_http_client(monkeypatch, handler)
 
@@ -810,13 +810,13 @@ def test_a_type_carried_only_by_the_sse_event_field_is_honoured(monkeypatch):
         client = _make_openai_client()
         return await _collect(
             client._stream_openai_responses(
-                messages = [{"role": "user", "content": "ping"}],
-                model = "gpt-5.5",
-                temperature = 0.7,
-                top_p = 0.95,
-                max_tokens = 1024,
-                enable_thinking = None,
-                reasoning_effort = None,
+                messages=[{"role": "user", "content": "ping"}],
+                model="gpt-5.5",
+                temperature=0.7,
+                top_p=0.95,
+                max_tokens=1024,
+                enable_thinking=None,
+                reasoning_effort=None,
             )
         )
 
@@ -841,7 +841,7 @@ def test_an_sse_event_name_does_not_carry_past_its_blank_line(monkeypatch):
     )
 
     def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, content = body, headers = {"content-type": "text/event-stream"})
+        return httpx.Response(200, content=body, headers={"content-type": "text/event-stream"})
 
     _mock_http_client(monkeypatch, handler)
 
@@ -849,13 +849,13 @@ def test_an_sse_event_name_does_not_carry_past_its_blank_line(monkeypatch):
         client = _make_openai_client()
         return await _collect(
             client._stream_openai_responses(
-                messages = [{"role": "user", "content": "ping"}],
-                model = "gpt-5.5",
-                temperature = 0.7,
-                top_p = 0.95,
-                max_tokens = 1024,
-                enable_thinking = None,
-                reasoning_effort = None,
+                messages=[{"role": "user", "content": "ping"}],
+                model="gpt-5.5",
+                temperature=0.7,
+                top_p=0.95,
+                max_tokens=1024,
+                enable_thinking=None,
+                reasoning_effort=None,
             )
         )
 
@@ -870,19 +870,19 @@ def test_an_untyped_error_frame_is_surfaced_rather_than_skipped(monkeypatch):
     body = b'data: {"error":{"message":"you are rate limited","type":"rate_limit_error"}}\n\n'
 
     def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, content = body, headers = {"content-type": "text/event-stream"})
+        return httpx.Response(200, content=body, headers={"content-type": "text/event-stream"})
 
     _mock_http_client(monkeypatch, handler)
 
     async def run():
         client = ExternalProviderClient(
-            provider_type = "openai",
-            base_url = "https://api.openai.com/v1",
-            api_key = "sk-openai-test",
+            provider_type="openai",
+            base_url="https://api.openai.com/v1",
+            api_key="sk-openai-test",
         )
         out = await _collect(
             client.stream_chat_completion(
-                messages = [{"role": "user", "content": "hi"}], model = "gpt-5"
+                messages=[{"role": "user", "content": "hi"}], model="gpt-5"
             )
         )
         await client.close()
@@ -902,19 +902,19 @@ def test_a_chat_completions_frame_on_the_responses_path_is_still_skipped(monkeyp
     )
 
     def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, content = body, headers = {"content-type": "text/event-stream"})
+        return httpx.Response(200, content=body, headers={"content-type": "text/event-stream"})
 
     _mock_http_client(monkeypatch, handler)
 
     async def run():
         client = ExternalProviderClient(
-            provider_type = "openai",
-            base_url = "https://api.openai.com/v1",
-            api_key = "sk-openai-test",
+            provider_type="openai",
+            base_url="https://api.openai.com/v1",
+            api_key="sk-openai-test",
         )
         out = await _collect(
             client.stream_chat_completion(
-                messages = [{"role": "user", "content": "hi"}], model = "gpt-5"
+                messages=[{"role": "user", "content": "hi"}], model="gpt-5"
             )
         )
         await client.close()
@@ -935,19 +935,19 @@ def test_a_valid_but_non_object_frame_is_skipped_not_fatal(monkeypatch, payload)
     )
 
     def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, content = body, headers = {"content-type": "text/event-stream"})
+        return httpx.Response(200, content=body, headers={"content-type": "text/event-stream"})
 
     _mock_http_client(monkeypatch, handler)
 
     async def run():
         client = ExternalProviderClient(
-            provider_type = "openai",
-            base_url = "https://api.openai.com/v1",
-            api_key = "sk-openai-test",
+            provider_type="openai",
+            base_url="https://api.openai.com/v1",
+            api_key="sk-openai-test",
         )
         out = await _collect(
             client.stream_chat_completion(
-                messages = [{"role": "user", "content": "hi"}], model = "gpt-5"
+                messages=[{"role": "user", "content": "hi"}], model="gpt-5"
             )
         )
         await client.close()

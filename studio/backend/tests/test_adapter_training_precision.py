@@ -21,8 +21,8 @@ from core.inference.worker import _resolve_lora_4bit
 _TRAINER = Path(__file__).resolve().parents[1] / "core/training/trainer.py"
 
 
-def _patch_adapter_config(bnb_usable = True):
-    tree = ast.parse(_TRAINER.read_text(encoding = "utf-8"))
+def _patch_adapter_config(bnb_usable=True):
+    tree = ast.parse(_TRAINER.read_text(encoding="utf-8"))
     cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "UnslothTrainer")
     fn = next(
         n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name == "_patch_adapter_config"
@@ -33,13 +33,13 @@ def _patch_adapter_config(bnb_usable = True):
         "logger": logging.getLogger(__name__),
         "_bitsandbytes_allows_4bit": lambda: bnb_usable,
     }
-    exec(compile(ast.Module(body = [fn], type_ignores = []), str(_TRAINER), "exec"), namespace)
+    exec(compile(ast.Module(body=[fn], type_ignores=[]), str(_TRAINER), "exec"), namespace)
     return namespace["_patch_adapter_config"]
 
 
 def _adapter(tmp_path, payload, base_model):
     (tmp_path / "adapter_config.json").write_text(json.dumps(payload))
-    return SimpleNamespace(is_lora = True, path = str(tmp_path), base_model = base_model)
+    return SimpleNamespace(is_lora=True, path=str(tmp_path), base_model=base_model)
 
 
 @pytest.mark.parametrize(
@@ -48,7 +48,7 @@ def _adapter(tmp_path, payload, base_model):
 )
 def test_trainer_records_training_precision(tmp_path, is_cpt, load_in_4bit, method):
     (tmp_path / "adapter_config.json").write_text(json.dumps({"peft_type": "LORA"}))
-    trainer = SimpleNamespace(is_cpt = is_cpt, load_in_4bit = load_in_4bit)
+    trainer = SimpleNamespace(is_cpt=is_cpt, load_in_4bit=load_in_4bit)
     _patch_adapter_config()(trainer, str(tmp_path))
     cfg = json.loads((tmp_path / "adapter_config.json").read_text())
     assert cfg["unsloth_training_method"] == method
@@ -57,8 +57,8 @@ def test_trainer_records_training_precision(tmp_path, is_cpt, load_in_4bit, meth
 
 def test_trainer_records_16bit_when_bitsandbytes_unusable(tmp_path):
     (tmp_path / "adapter_config.json").write_text(json.dumps({"peft_type": "LORA"}))
-    trainer = SimpleNamespace(is_cpt = True, load_in_4bit = True)
-    _patch_adapter_config(bnb_usable = False)(trainer, str(tmp_path))
+    trainer = SimpleNamespace(is_cpt=True, load_in_4bit=True)
+    _patch_adapter_config(bnb_usable=False)(trainer, str(tmp_path))
     cfg = json.loads((tmp_path / "adapter_config.json").read_text())
     assert cfg["unsloth_load_in_4bit"] is False
 
@@ -97,8 +97,8 @@ def test_method_and_precision_never_disagree(tmp_path):
     # it is a "lora". Tagging it "qlora" next to unsloth_load_in_4bit=false left the two keys
     # contradicting each other, and the method is what the Hub card shows.
     (tmp_path / "adapter_config.json").write_text(json.dumps({"peft_type": "LORA"}))
-    _patch_adapter_config(bnb_usable = False)(
-        SimpleNamespace(is_cpt = False, load_in_4bit = True), str(tmp_path)
+    _patch_adapter_config(bnb_usable=False)(
+        SimpleNamespace(is_cpt=False, load_in_4bit=True), str(tmp_path)
     )
     cfg = json.loads((tmp_path / "adapter_config.json").read_text())
     assert cfg["unsloth_training_method"] == "lora"
@@ -107,7 +107,7 @@ def test_method_and_precision_never_disagree(tmp_path):
 
 def _forced_16bit_branches_in_load_model():
     """Audio branches of load_model that pass a literal load_in_4bit=False to from_pretrained."""
-    tree = ast.parse(_TRAINER.read_text(encoding = "utf-8"))
+    tree = ast.parse(_TRAINER.read_text(encoding="utf-8"))
     cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "UnslothTrainer")
     load_model = next(
         n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name == "load_model"
@@ -129,7 +129,7 @@ def _forced_16bit_branches_in_load_model():
             continue
         for call in (
             c
-            for c in ast.walk(ast.Module(body = node.body, type_ignores = []))
+            for c in ast.walk(ast.Module(body=node.body, type_ignores=[]))
             if isinstance(c, ast.Call)
         ):
             if not (isinstance(call.func, ast.Attribute) and call.func.attr == "from_pretrained"):
@@ -150,7 +150,7 @@ def _declared_forced_16bit_audio_types():
     Read rather than imported: importing core.training.trainer pulls in torch and unsloth,
     and a runner without them turns this assertion into a skip instead of a failure.
     """
-    for node in ast.parse(_TRAINER.read_text(encoding = "utf-8")).body:
+    for node in ast.parse(_TRAINER.read_text(encoding="utf-8")).body:
         if isinstance(node, ast.Assign) and any(
             getattr(t, "id", None) == "_FORCED_16BIT_AUDIO_TYPES" for t in node.targets
         ):
@@ -175,7 +175,7 @@ def test_forced_16bit_audio_types_match_the_loader():
 def test_load_model_records_the_forced_16bit_precision():
     # _patch_adapter_config only ever sees self.load_in_4bit, so load_model has to correct it
     # before the forced-16-bit branches run. Without this, the request is what gets recorded.
-    tree = ast.parse(_TRAINER.read_text(encoding = "utf-8"))
+    tree = ast.parse(_TRAINER.read_text(encoding="utf-8"))
     cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "UnslothTrainer")
     load_model = next(
         n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name == "load_model"
@@ -215,9 +215,9 @@ def test_forced_16bit_audio_run_reloads_in_16bit(tmp_path):
     # A csm/whisper/bicodec/dac run requested 4-bit, but the loader forced 16-bit. Recording the
     # request would make Chat download a bnb-4bit base the run never trained on.
     (tmp_path / "adapter_config.json").write_text(json.dumps({"peft_type": "LORA"}))
-    trainer = SimpleNamespace(is_cpt = False, load_in_4bit = False)  # after the load_model fixup
+    trainer = SimpleNamespace(is_cpt=False, load_in_4bit=False)  # after the load_model fixup
     _patch_adapter_config()(trainer, str(tmp_path))
     cfg = json.loads((tmp_path / "adapter_config.json").read_text())
     assert cfg["unsloth_load_in_4bit"] is False
-    mc = SimpleNamespace(is_lora = True, path = str(tmp_path), base_model = "unsloth/csm-1b")
+    mc = SimpleNamespace(is_lora=True, path=str(tmp_path), base_model="unsloth/csm-1b")
     assert _resolve_lora_4bit(mc, True) is False

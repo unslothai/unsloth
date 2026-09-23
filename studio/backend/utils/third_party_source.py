@@ -35,7 +35,7 @@ from utils.subprocess_compat import (
 )
 
 
-@dataclass(frozen = True)
+@dataclass(frozen=True)
 class PinnedSource:
     name: str
     package: str
@@ -50,42 +50,42 @@ class PinnedSource:
 
 
 SPARK_TTS_SOURCE = PinnedSource(
-    name = "Spark-TTS",
-    package = "sparktts",
-    repository = "https://github.com/SparkAudio/Spark-TTS",
-    revision = "2f1ea9082400547242641f5271b6f941c9f439d1",
-    required_files = (
+    name="Spark-TTS",
+    package="sparktts",
+    repository="https://github.com/SparkAudio/Spark-TTS",
+    revision="2f1ea9082400547242641f5271b6f941c9f439d1",
+    required_files=(
         "sparktts/models/audio_tokenizer.py",
         "sparktts/utils/audio.py",
     ),
-    generated_files = (("sparktts/__init__.py", ""),),
-    source_tree_digest = "20ff9f4c9e380b89248b828e9f39ec14572c43ff4a8d87b76190dbb3214b1b27",
-    runtime_tree_digest = "f14510e491a87ab287910e1d3f80e6b3d1bcea91b7f91f3baa45a3181a6993ba",
-    archive_url = (
+    generated_files=(("sparktts/__init__.py", ""),),
+    source_tree_digest="20ff9f4c9e380b89248b828e9f39ec14572c43ff4a8d87b76190dbb3214b1b27",
+    runtime_tree_digest="f14510e491a87ab287910e1d3f80e6b3d1bcea91b7f91f3baa45a3181a6993ba",
+    archive_url=(
         "https://github.com/SparkAudio/Spark-TTS/archive/"
         "2f1ea9082400547242641f5271b6f941c9f439d1.tar.gz"
     ),
 )
 
 OUTETTS_SOURCE = PinnedSource(
-    name = "OuteTTS",
-    package = "outetts",
-    repository = "https://github.com/edwko/OuteTTS",
-    revision = "f5eac6e70d792844c6a6959d900a47af2c061a5b",
-    required_files = (
+    name="OuteTTS",
+    package="outetts",
+    repository="https://github.com/edwko/OuteTTS",
+    revision="f5eac6e70d792844c6a6959d900a47af2c061a5b",
+    required_files=(
         "outetts/models/config.py",
         "outetts/utils/preprocessing.py",
         "outetts/version/v3/audio_processor.py",
         "outetts/version/v3/prompt_processor.py",
     ),
-    omitted_files = (
+    omitted_files=(
         "outetts/interface.py",
         "outetts/models/gguf_model.py",
     ),
-    generated_files = (("outetts/__init__.py", ""),),
-    source_tree_digest = "817299085cb018839d37bf43505c9a742188bdb0f6ead8e1ea19a8643f0bb49f",
-    runtime_tree_digest = "b9f878aeb2de4d3ab0a5b1f75a5d04f2a137e4369143099bb24f6d6a41301fab",
-    archive_url = (
+    generated_files=(("outetts/__init__.py", ""),),
+    source_tree_digest="817299085cb018839d37bf43505c9a742188bdb0f6ead8e1ea19a8643f0bb49f",
+    runtime_tree_digest="b9f878aeb2de4d3ab0a5b1f75a5d04f2a137e4369143099bb24f6d6a41301fab",
+    archive_url=(
         "https://github.com/edwko/OuteTTS/archive/"
         "f5eac6e70d792844c6a6959d900a47af2c061a5b.tar.gz"
     ),
@@ -120,13 +120,13 @@ def _git(arguments: list[str], *, source_name: str) -> subprocess.CompletedProce
     try:
         return subprocess.run(
             ["git", *_GIT_LONG_PATHS, *arguments],
-            check = True,
-            capture_output = True,
-            text = True,
-            encoding = "utf-8",
-            errors = "replace",
-            timeout = 300,
-            env = env,
+            check=True,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=300,
+            env=env,
             **_windows_hidden_subprocess_kwargs(),
         )
     except FileNotFoundError as error:
@@ -149,11 +149,11 @@ def _git_bytes(
     try:
         return subprocess.run(
             ["git", *_GIT_LONG_PATHS, *arguments],
-            check = True,
-            capture_output = True,
-            input = input_data,
-            timeout = 300,
-            env = env,
+            check=True,
+            capture_output=True,
+            input=input_data,
+            timeout=300,
+            env=env,
             **_windows_hidden_subprocess_kwargs(),
         )
     except FileNotFoundError as error:
@@ -161,7 +161,7 @@ def _git_bytes(
     except subprocess.TimeoutExpired as error:
         raise RuntimeError(f"Timed out while installing the pinned {source_name} source") from error
     except subprocess.CalledProcessError as error:
-        detail = (error.stderr or b"").decode("utf-8", errors = "replace").strip()
+        detail = (error.stderr or b"").decode("utf-8", errors="replace").strip()
         message = f"Could not install the pinned {source_name} source"
         raise RuntimeError(f"{message}: {detail}" if detail else message) from error
 
@@ -192,7 +192,7 @@ def _configured_package_paths(
     validated = []
     seen = set()
     for relative in relatives:
-        _package_path_parts(relative, spec, kind = kind)
+        _package_path_parts(relative, spec, kind=kind)
         if relative in seen:
             raise ValueError(f"Invalid {kind} path for {spec.name}: {relative}")
         seen.add(relative)
@@ -203,7 +203,7 @@ def _configured_package_paths(
 def _generated_file_contents(spec: PinnedSource) -> dict[str, bytes]:
     generated = {}
     for relative, content in spec.generated_files:
-        _package_path_parts(relative, spec, kind = "generated")
+        _package_path_parts(relative, spec, kind="generated")
         if relative in generated:
             raise ValueError(f"Invalid generated path for {spec.name}: {relative}")
         generated[relative] = content.encode("utf-8")
@@ -222,7 +222,7 @@ def _tracked_package_blobs(checkout: Path, spec: PinnedSource) -> dict[str, str]
             "--",
             spec.package,
         ],
-        source_name = spec.name,
+        source_name=spec.name,
     ).stdout
     blobs = {}
     for record in (record for record in output.split("\0") if record):
@@ -231,7 +231,7 @@ def _tracked_package_blobs(checkout: Path, spec: PinnedSource) -> dict[str, str]
         if separator != "\t" or len(fields) != 3:
             raise ValueError(f"Invalid tracked tree entry for {spec.name}")
         mode, object_type, object_id = fields
-        _package_path_parts(relative, spec, kind = "tracked")
+        _package_path_parts(relative, spec, kind="tracked")
         if (
             mode not in ("100644", "100755")
             or object_type != "blob"
@@ -251,8 +251,8 @@ def _pinned_blob_digests(
         return {}
     result = _git_bytes(
         ["-C", str(checkout), "cat-file", "--batch"],
-        source_name = spec.name,
-        input_data = "".join(f"{object_id}\n" for object_id in unique_object_ids).encode("ascii"),
+        source_name=spec.name,
+        input_data="".join(f"{object_id}\n" for object_id in unique_object_ids).encode("ascii"),
     ).stdout
     digests = {}
     offset = 0
@@ -271,7 +271,7 @@ def _pinned_blob_digests(
         content_start = header_end + 1
         content_end = content_start + size
         if (
-            object_id.decode("ascii", errors = "replace") != expected_object_id
+            object_id.decode("ascii", errors="replace") != expected_object_id
             or object_type != b"blob"
             or size < 0
             or content_end >= len(result)
@@ -286,7 +286,7 @@ def _pinned_blob_digests(
 
 
 def _package_file(root: Path, relative: str, spec: PinnedSource) -> Path:
-    parts = _package_path_parts(relative, spec, kind = "tracked")
+    parts = _package_path_parts(relative, spec, kind="tracked")
     path = root.joinpath(*parts)
     current = root
     for part in parts:
@@ -302,7 +302,7 @@ def _checkout_manifest(checkout: Path, spec: PinnedSource) -> dict[str, str]:
     package_root = checkout / spec.package
     if package_root.is_symlink() or not package_root.is_dir():
         raise ValueError(f"Missing {spec.package} package")
-    omitted = _configured_package_paths(spec.omitted_files, spec, kind = "omitted")
+    omitted = _configured_package_paths(spec.omitted_files, spec, kind="omitted")
     excluded = set(omitted) | set(_generated_file_contents(spec))
     tracked_blobs = _tracked_package_blobs(checkout, spec)
     pinned_digests = _pinned_blob_digests(
@@ -324,8 +324,8 @@ def _checkout_manifest(checkout: Path, spec: PinnedSource) -> dict[str, str]:
 def _manifest_digest(manifest: dict[str, str]) -> str:
     payload = json.dumps(
         manifest,
-        sort_keys = True,
-        separators = (",", ":"),
+        sort_keys=True,
+        separators=(",", ":"),
     ).encode("utf-8")
     return hashlib.sha256(payload).hexdigest()
 
@@ -336,7 +336,7 @@ def _filesystem_source_manifest(source: Path, spec: PinnedSource) -> dict[str, s
     package_root = source / spec.package
     if package_root.is_symlink() or not package_root.is_dir():
         raise ValueError(f"Missing {spec.package} package")
-    excluded = set(_configured_package_paths(spec.omitted_files, spec, kind = "omitted")) | set(
+    excluded = set(_configured_package_paths(spec.omitted_files, spec, kind="omitted")) | set(
         _generated_file_contents(spec)
     )
     manifest = {}
@@ -396,35 +396,35 @@ def _valid_checkout(path: Path, spec: PinnedSource) -> bool:
         required_files = _configured_package_paths(
             spec.required_files,
             spec,
-            kind = "required",
+            kind="required",
         )
         for relative in required_files:
-            required = path.joinpath(*_package_path_parts(relative, spec, kind = "required"))
+            required = path.joinpath(*_package_path_parts(relative, spec, kind="required"))
             if required.is_symlink() or not required.is_file():
                 return False
         head = (
             _git(
                 ["-C", str(path), "rev-parse", "HEAD"],
-                source_name = spec.name,
+                source_name=spec.name,
             )
             .stdout.strip()
             .lower()
         )
         branch = _git(
             ["-C", str(path), "rev-parse", "--abbrev-ref", "HEAD"],
-            source_name = spec.name,
+            source_name=spec.name,
         ).stdout.strip()
         origin = _git(
             ["-C", str(path), "remote", "get-url", "origin"],
-            source_name = spec.name,
+            source_name=spec.name,
         ).stdout.strip()
         status = _git(
             ["-C", str(path), "status", "--porcelain=v1", "--untracked-files=all"],
-            source_name = spec.name,
+            source_name=spec.name,
         ).stdout
         ignored = _git(
             ["-C", str(path), "ls-files", "--others", "--ignored", "--exclude-standard", "-z"],
-            source_name = spec.name,
+            source_name=spec.name,
         ).stdout
         _checkout_manifest(path, spec)
     except (OSError, RuntimeError, ValueError):
@@ -449,7 +449,7 @@ def _clear_read_only(function, path, _error) -> None:
 
 def _remove_owned_path(path: Path) -> None:
     if path.is_symlink() or path.is_file():
-        path.unlink(missing_ok = True)
+        path.unlink(missing_ok=True)
     elif path.is_dir():
         # onexc replaced onerror in 3.12; the handler signature is the same either way.
         handler = (
@@ -478,20 +478,20 @@ def _replace_owned_directory(staging: Path, destination: Path) -> None:
 
 
 def _install_checkout(destination: Path, spec: PinnedSource) -> None:
-    workspace = Path(tempfile.mkdtemp(prefix = ".source-", dir = destination.parent))
+    workspace = Path(tempfile.mkdtemp(prefix=".source-", dir=destination.parent))
     checkout = workspace / "checkout"
     hooks = workspace / "hooks"
     hooks.mkdir()
     hook_config = f"core.hooksPath={hooks}"
     try:
-        _git(["init", "--quiet", str(checkout)], source_name = spec.name)
+        _git(["init", "--quiet", str(checkout)], source_name=spec.name)
         _git(
             ["-C", str(checkout), "config", "core.autocrlf", "false"],
-            source_name = spec.name,
+            source_name=spec.name,
         )
         _git(
             ["-C", str(checkout), "remote", "add", "origin", spec.repository],
-            source_name = spec.name,
+            source_name=spec.name,
         )
         _git(
             [
@@ -506,12 +506,12 @@ def _install_checkout(destination: Path, spec: PinnedSource) -> None:
                 "origin",
                 spec.revision,
             ],
-            source_name = spec.name,
+            source_name=spec.name,
         )
         fetched = (
             _git(
                 ["-C", str(checkout), "rev-parse", "FETCH_HEAD^{commit}"],
-                source_name = spec.name,
+                source_name=spec.name,
             )
             .stdout.strip()
             .lower()
@@ -529,7 +529,7 @@ def _install_checkout(destination: Path, spec: PinnedSource) -> None:
                 "--detach",
                 spec.revision,
             ],
-            source_name = spec.name,
+            source_name=spec.name,
         )
         if not _valid_checkout(checkout, spec):
             raise RuntimeError(f"The downloaded {spec.name} source failed integrity validation")
@@ -546,14 +546,14 @@ def _archive_root_name(spec: PinnedSource) -> str:
 
 
 def _download_archive(url: str, destination: Path, spec: PinnedSource) -> None:
-    request = urllib.request.Request(url, headers = {"User-Agent": "Unsloth-Studio"})
+    request = urllib.request.Request(url, headers={"User-Agent": "Unsloth-Studio"})
     deadline = time.monotonic() + _ARCHIVE_DOWNLOAD_DEADLINE_SECONDS
     try:
         if time.monotonic() >= deadline:
             raise RuntimeError(f"Timed out downloading the pinned {spec.name} source archive")
         with urllib.request.urlopen(
             request,
-            timeout = _ARCHIVE_SOCKET_TIMEOUT_SECONDS,
+            timeout=_ARCHIVE_SOCKET_TIMEOUT_SECONDS,
         ) as response:
             if time.monotonic() >= deadline:
                 raise RuntimeError(f"Timed out downloading the pinned {spec.name} source archive")
@@ -626,7 +626,7 @@ class _BoundedArchiveReader:
 def _install_archive_source(destination: Path, spec: PinnedSource) -> None:
     if spec.archive_url is None or spec.source_tree_digest is None:
         raise RuntimeError(f"The pinned {spec.name} source archive is not configured")
-    workspace = Path(tempfile.mkdtemp(prefix = ".archive-", dir = destination.parent))
+    workspace = Path(tempfile.mkdtemp(prefix=".archive-", dir=destination.parent))
     archive = workspace / "source.tar.gz"
     staging = workspace / "source"
     staging.mkdir()
@@ -637,9 +637,9 @@ def _install_archive_source(destination: Path, spec: PinnedSource) -> None:
         extracted = set()
         try:
             with archive.open("rb") as compressed:
-                with gzip.GzipFile(fileobj = compressed, mode = "rb") as decompressed:
+                with gzip.GzipFile(fileobj=compressed, mode="rb") as decompressed:
                     reader = _BoundedArchiveReader(decompressed, _ARCHIVE_MAX_TAR_BYTES)
-                    with tarfile.open(fileobj = reader, mode = "r|") as bundle:
+                    with tarfile.open(fileobj=reader, mode="r|") as bundle:
                         for member in bundle:
                             member_count += 1
                             if member_count > _ARCHIVE_MAX_MEMBERS:
@@ -661,7 +661,7 @@ def _install_archive_source(destination: Path, spec: PinnedSource) -> None:
                             if len(parts) < 3 or parts[1] != spec.package:
                                 continue
                             relative = "/".join(parts[1:])
-                            _package_path_parts(relative, spec, kind = "archive")
+                            _package_path_parts(relative, spec, kind="archive")
                             if relative in extracted:
                                 raise RuntimeError(
                                     f"The pinned {spec.name} archive contains duplicate files"
@@ -673,7 +673,7 @@ def _install_archive_source(destination: Path, spec: PinnedSource) -> None:
                                     f"The pinned {spec.name} archive contains an unreadable file"
                                 )
                             destination_file = staging.joinpath(*parts[1:])
-                            destination_file.parent.mkdir(parents = True, exist_ok = True)
+                            destination_file.parent.mkdir(parents=True, exist_ok=True)
                             remaining = member.size
                             with source_file, destination_file.open("wb") as handle:
                                 while remaining:
@@ -704,22 +704,22 @@ def _valid_runtime(
         required_files = _configured_package_paths(
             spec.required_files,
             spec,
-            kind = "required",
+            kind="required",
         )
         omitted_files = _configured_package_paths(
             spec.omitted_files,
             spec,
-            kind = "omitted",
+            kind="omitted",
         )
         top_level = {path.name for path in runtime.iterdir() if path.name != "__pycache__"}
         if top_level != {spec.package}:
             return False
         for relative in required_files:
-            required = runtime.joinpath(*_package_path_parts(relative, spec, kind = "required"))
+            required = runtime.joinpath(*_package_path_parts(relative, spec, kind="required"))
             if required.is_symlink() or not required.is_file():
                 return False
         for relative in omitted_files:
-            omitted = runtime.joinpath(*_package_path_parts(relative, spec, kind = "omitted"))
+            omitted = runtime.joinpath(*_package_path_parts(relative, spec, kind="omitted"))
             if omitted.exists() or omitted.is_symlink():
                 return False
         for relative, content in _generated_file_contents(spec).items():
@@ -737,7 +737,7 @@ def _valid_runtime(
 
 
 def _install_runtime(runtime: Path, checkout: Path, spec: PinnedSource) -> None:
-    workspace = Path(tempfile.mkdtemp(prefix = ".runtime-", dir = runtime.parent))
+    workspace = Path(tempfile.mkdtemp(prefix=".runtime-", dir=runtime.parent))
     staging = workspace / "runtime"
     staging.mkdir()
     try:
@@ -750,13 +750,13 @@ def _install_runtime(runtime: Path, checkout: Path, spec: PinnedSource) -> None:
         for relative, expected_digest in source_manifest.items():
             source_file = checkout / relative
             destination_file = staging / relative
-            destination_file.parent.mkdir(parents = True, exist_ok = True)
+            destination_file.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(source_file, destination_file)
             if hashlib.sha256(destination_file.read_bytes()).hexdigest() != expected_digest:
                 raise RuntimeError(f"{spec.name} source changed while preparing its runtime")
         for relative, content in _generated_file_contents(spec).items():
             destination_file = staging / relative
-            destination_file.parent.mkdir(parents = True, exist_ok = True)
+            destination_file.parent.mkdir(parents=True, exist_ok=True)
             destination_file.write_bytes(content)
         if not _valid_runtime(staging, spec, checkout):
             raise RuntimeError(f"The prepared {spec.name} runtime failed integrity validation")
@@ -784,9 +784,9 @@ def ensure_pinned_source(
     if _valid_runtime(runtime, spec):
         return runtime.resolve()
 
-    version_root.mkdir(parents = True, exist_ok = True)
+    version_root.mkdir(parents=True, exist_ok=True)
     try:
-        with FileLock(str(parent / ".install.lock"), timeout = 300):
+        with FileLock(str(parent / ".install.lock"), timeout=300):
             if _valid_runtime(runtime, spec):
                 return runtime.resolve()
 
@@ -826,14 +826,14 @@ def ensure_pinned_source(
 def ensure_spark_tts_source(model_repo_path: Path | str | None = None) -> Path:
     legacy_parent = Path(model_repo_path).parent if model_repo_path is not None else Path.cwd()
     legacy_sources = (legacy_parent / "Spark-TTS",)
-    return ensure_pinned_source(SPARK_TTS_SOURCE, legacy_sources = legacy_sources)
+    return ensure_pinned_source(SPARK_TTS_SOURCE, legacy_sources=legacy_sources)
 
 
 def ensure_outetts_source() -> Path:
     backend_root = Path(__file__).resolve().parents[1]
     return ensure_pinned_source(
         OUTETTS_SOURCE,
-        legacy_sources = (
+        legacy_sources=(
             backend_root / "core" / "inference" / "OuteTTS",
             backend_root / "core" / "training" / "inference" / "OuteTTS",
         ),
@@ -854,14 +854,14 @@ def _artifact_matches(path: Path, *, expected_size: int, expected_sha256: str) -
 
 
 def _install_verified_artifact(source: Path, destination: Path) -> None:
-    workspace = Path(tempfile.mkdtemp(prefix = ".artifact-", dir = destination.parent))
+    workspace = Path(tempfile.mkdtemp(prefix=".artifact-", dir=destination.parent))
     staging = workspace / destination.name
     try:
         shutil.copyfile(source, staging)
         if not _artifact_matches(
             staging,
-            expected_size = _DAC_SIZE,
-            expected_sha256 = _DAC_SHA256,
+            expected_size=_DAC_SIZE,
+            expected_sha256=_DAC_SHA256,
         ):
             raise RuntimeError("The cached DAC speech weights changed during migration")
         os.replace(staging, destination)
@@ -898,8 +898,8 @@ def ensure_dac_speech_weights(
     )
     if _artifact_matches(
         destination,
-        expected_size = _DAC_SIZE,
-        expected_sha256 = _DAC_SHA256,
+        expected_size=_DAC_SIZE,
+        expected_sha256=_DAC_SHA256,
     ):
         return destination.resolve()
 
@@ -909,14 +909,14 @@ def ensure_dac_speech_weights(
         )
         if candidate is not None and _artifact_matches(
             candidate,
-            expected_size = _DAC_SIZE,
-            expected_sha256 = _DAC_SHA256,
+            expected_size=_DAC_SIZE,
+            expected_sha256=_DAC_SHA256,
         ):
             return candidate.resolve()
         return None
 
     try:
-        destination.parent.mkdir(parents = True, exist_ok = True)
+        destination.parent.mkdir(parents=True, exist_ok=True)
     except OSError:
         # A read-only or full hub cache must not hide weights we can already verify.
         fallback = _verified_legacy()
@@ -924,11 +924,11 @@ def ensure_dac_speech_weights(
             raise
         return fallback
     try:
-        with FileLock(str(destination.parent / ".install.lock"), timeout = 300):
+        with FileLock(str(destination.parent / ".install.lock"), timeout=300):
             if _artifact_matches(
                 destination,
-                expected_size = _DAC_SIZE,
-                expected_sha256 = _DAC_SHA256,
+                expected_size=_DAC_SIZE,
+                expected_sha256=_DAC_SHA256,
             ):
                 return destination.resolve()
 
@@ -937,8 +937,8 @@ def ensure_dac_speech_weights(
             )
             if legacy is not None and _artifact_matches(
                 legacy,
-                expected_size = _DAC_SIZE,
-                expected_sha256 = _DAC_SHA256,
+                expected_size=_DAC_SIZE,
+                expected_sha256=_DAC_SHA256,
             ):
                 # Same as the download branch below: the copy is an optimisation.
                 # A full disk must not reject weights that already passed the size and sha256 check.
@@ -954,12 +954,12 @@ def ensure_dac_speech_weights(
             try:
                 downloaded = Path(
                     hf_hub_download(
-                        repo_id = _DAC_REPOSITORY,
-                        filename = _DAC_FILENAME,
-                        revision = _DAC_REVISION,
-                        token = hf_token,
-                        cache_dir = str(hub_cache),
-                        local_files_only = offline,
+                        repo_id=_DAC_REPOSITORY,
+                        filename=_DAC_FILENAME,
+                        revision=_DAC_REVISION,
+                        token=hf_token,
+                        cache_dir=str(hub_cache),
+                        local_files_only=offline,
                     )
                 )
             except Exception as error:
@@ -967,8 +967,8 @@ def ensure_dac_speech_weights(
 
             if downloaded is not None and _artifact_matches(
                 downloaded,
-                expected_size = _DAC_SIZE,
-                expected_sha256 = _DAC_SHA256,
+                expected_size=_DAC_SIZE,
+                expected_sha256=_DAC_SHA256,
             ):
                 # Populate the pinned destination so later loads hit the fast path instead of re-downloading and
                 # re-hashing 295 MB under the install lock. The copy is an optimisation, so a full disk falls
@@ -1012,7 +1012,7 @@ def _module_is_inside(module: ModuleType, package_root: Path) -> bool:
 
 def _purge_package_bytecode(package_root: Path) -> None:
     # This is the only thing stopping a stale or planted .pyc from shadowing a verified .py
-    for directory, child_directories, files in os.walk(package_root, topdown = True):
+    for directory, child_directories, files in os.walk(package_root, topdown=True):
         directory_path = Path(directory)
         for name in tuple(child_directories):
             path = directory_path / name
@@ -1027,7 +1027,7 @@ def _purge_package_bytecode(package_root: Path) -> None:
                     shutil.rmtree(path)
         for name in files:
             if name.endswith((".pyc", ".pyo")):
-                (directory_path / name).unlink(missing_ok = True)
+                (directory_path / name).unlink(missing_ok=True)
 
 
 def _remove_package_modules(package: str) -> None:
@@ -1096,8 +1096,8 @@ def deactivate_pinned_package(package: str, source: Path | str | None) -> None:
 
 
 def import_sparktts_module(module_name: str, source: Path | str) -> ModuleType:
-    return import_pinned_module(module_name, package = "sparktts", source = source)
+    return import_pinned_module(module_name, package="sparktts", source=source)
 
 
 def import_outetts_module(module_name: str, source: Path | str) -> ModuleType:
-    return import_pinned_module(module_name, package = "outetts", source = source)
+    return import_pinned_module(module_name, package="outetts", source=source)

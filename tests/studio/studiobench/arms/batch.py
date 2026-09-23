@@ -60,7 +60,7 @@ class BatchPlanError(AssertionError):
     """Raised when a batch plan cannot answer the question it is being run to answer."""
 
 
-@dataclass(frozen = True)
+@dataclass(frozen=True)
 class PlannedCell:
     """One cell of a batch: which arms are applied, and what it is for."""
 
@@ -83,9 +83,9 @@ def plan_batch(
 ) -> list[PlannedCell]:
     """Every cell this batch must run, ladder rungs first, calibration always."""
 
-    cells = [PlannedCell(arms = rung, role = "ladder") for rung in required_rungs(routes)]
+    cells = [PlannedCell(arms=rung, role="ladder") for rung in required_rungs(routes)]
     cells.extend(
-        PlannedCell(arms = frozenset({arm_id}), role = "calibration", label = arm_id)
+        PlannedCell(arms=frozenset({arm_id}), role="calibration", label=arm_id)
         for arm_id in calibration_arm_ids
     )
     planned_ids = {arm_id for cell in cells for arm_id in cell.arms}
@@ -125,13 +125,13 @@ class BatchResult:
 
     rung_tokens: int
     calibration: CalibrationVerdict
-    outcomes: dict[str, ArmOutcome] = field(default_factory = dict)
-    routes: list[RouteResult] = field(default_factory = list)
-    interactions: list[InteractionTerm] = field(default_factory = list)
+    outcomes: dict[str, ArmOutcome] = field(default_factory=dict)
+    routes: list[RouteResult] = field(default_factory=list)
+    interactions: list[InteractionTerm] = field(default_factory=list)
     armpack: ArmpackResolution | None = None
     dose: DoseFit | None = None
     recovery: RecoveryResult | None = None
-    plan_notes: list[str] = field(default_factory = list)
+    plan_notes: list[str] = field(default_factory=list)
 
     @property
     def quotable(self) -> bool:
@@ -183,22 +183,22 @@ def judge_batch(
     """
 
     result = BatchResult(
-        rung_tokens = int(rung_tokens),
-        calibration = calibration,
-        outcomes = dict(outcomes),
-        armpack = armpack,
-        dose = dose,
-        recovery = recovery,
+        rung_tokens=int(rung_tokens),
+        calibration=calibration,
+        outcomes=dict(outcomes),
+        armpack=armpack,
+        dose=dose,
+        recovery=recovery,
     )
     floor = result.detection_floor_ms
 
     for route in routes:
-        result.routes.append(differences(route, outcomes, detection_floor_ms = floor))
+        result.routes.append(differences(route, outcomes, detection_floor_ms=floor))
 
     for index, left in enumerate(result.routes):
         for right in result.routes[index + 1 :]:
             try:
-                result.interactions.extend(interaction_terms(left, right, detection_floor_ms = floor))
+                result.interactions.extend(interaction_terms(left, right, detection_floor_ms=floor))
             except LadderError as error:
                 result.plan_notes.append(str(error))
 

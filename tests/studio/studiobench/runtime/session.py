@@ -233,7 +233,7 @@ def record_completeness_gate(recorder: Recorder, cell: Cell, completeness: dict)
 @dataclass
 class Session:
     ctx: BenchContext
-    instruments: list = field(default_factory = list)
+    instruments: list = field(default_factory=list)
     _open: Optional[Window] = None
     cell: Optional[Cell] = None
 
@@ -251,16 +251,16 @@ class Session:
                 f"cannot open window {name!r}: {self._open.name!r} is still open. Overlapping "
                 "windows would charge the same work to both."
             )
-        w = Window(name = name, kind = kind, cell = self.cell, t_open_ms = self._now_ms())
+        w = Window(name=name, kind=kind, cell=self.cell, t_open_ms=self._now_ms())
         self._open = w
-        for inst in sorted(self.instruments, key = lambda i: i.name):
+        for inst in sorted(self.instruments, key=lambda i: i.name):
             self._safe(inst, "open", w)
         try:
             yield w
         finally:
             w.t_close_ms = self._now_ms()
             # REVERSE order on close, so an instrument that wrapped another's state unwinds after the one it wrapped.
-            for inst in sorted(self.instruments, key = lambda i: i.name, reverse = True):
+            for inst in sorted(self.instruments, key=lambda i: i.name, reverse=True):
                 got = self._safe(inst, "close", w)
                 if got is not None:
                     w.instruments[inst.name] = got
@@ -388,7 +388,7 @@ class CellRunner:
                     f"thread_ready:{self.readiness_mode}",
                     False,
                     exc.detail,
-                    cell_id = cell.cell_id,
+                    cell_id=cell.cell_id,
                 )
             self.log(f"  cell FAILED: {type(exc).__name__}: {exc}")
             rec.failure(cell.cell_id, type(exc).__name__, {"message": str(exc)})
@@ -442,8 +442,8 @@ class CellRunner:
 
         page.goto(
             f"{self.base_url}/chat?thread={seeded.thread_id}",
-            wait_until = "domcontentloaded",
-            timeout = 120_000,
+            wait_until="domcontentloaded",
+            timeout=120_000,
         )
         if self.readiness_mode not in MODES:
             raise ValueError(f"unknown readiness mode {self.readiness_mode!r}")
@@ -455,7 +455,7 @@ class CellRunner:
             f"thread_ready:{self.readiness_mode}",
             True,
             readiness.as_dict(),
-            cell_id = cell.cell_id,
+            cell_id=cell.cell_id,
         )
 
         # THE COMPLETENESS PROBE, before the idle window and therefore before anything is measured. It
@@ -468,9 +468,9 @@ class CellRunner:
         if do_probe and seeded.first_marker and seeded.messages > 0:
             completeness = probe_thread_completeness(
                 page,
-                first_marker = seeded.first_marker,
-                expected_messages = seeded.messages,
-                log = self.log,
+                first_marker=seeded.first_marker,
+                expected_messages=seeded.messages,
+                log=self.log,
             )
             row["completeness"] = completeness
             record_completeness_gate(rec, cell, completeness)
@@ -480,7 +480,7 @@ class CellRunner:
 
         # ── the enforced idle window ────────────────────────────────
         frames = next((i for i in s.instruments if i.name == "frames"), None)
-        with s.window("idle:calibrate", kind = "idle") as w:
+        with s.window("idle:calibrate", kind="idle") as w:
             clamp = (
                 frames.calibrate(IDLE_CALIBRATION_MS)
                 if frames
@@ -492,12 +492,12 @@ class CellRunner:
             # NOT fatal, and NOT silently zero: blocked time is a subtraction against this floor, so without
             # it busy_pct is null with the reason attached and every other column stands.
             self.log(f"  timer clamp NOT established: {clamp.get('reason')}")
-            rec.gate("timer_clamp", False, clamp, cell_id = cell.cell_id)
+            rec.gate("timer_clamp", False, clamp, cell_id=cell.cell_id)
         else:
             self.log(
                 f"  timer clamp {clamp['clampMs']:.2f}ms " f"over {clamp.get('samples')} idle ticks"
             )
-            rec.gate("timer_clamp", True, clamp, cell_id = cell.cell_id)
+            rec.gate("timer_clamp", True, clamp, cell_id=cell.cell_id)
 
         row["paint_floor_ms"] = paint_floor_ms(page)
         row["census_before"] = dom_signature(page)
@@ -532,9 +532,9 @@ class CellRunner:
         self.pacer.load(
             unit.reasoning,
             unit.content,
-            cadence = self.cadence,
-            tag = cell.cell_id,
-            model = self.model_id,
+            cadence=self.cadence,
+            tag=cell.cell_id,
+            model=self.model_id,
         )
         expected_ms = self.pacer.expected_duration_ms(unit.reasoning, unit.content, self.cadence)
         row["stream_expected_ms"] = expected_ms
@@ -560,14 +560,14 @@ class CellRunner:
 
         scene = scene_schedule.SCENES.get(self.tier, scene_schedule.QUICK)
         runner = SceneRunner(
-            cell = cell,
-            page = page,
-            cdp = s.ctx.cdp,
-            dom = None,
-            recorder = rec,
-            open_window = s.window,
-            log = self.log,
-            base_args = {
+            cell=cell,
+            page=page,
+            cdp=s.ctx.cdp,
+            dom=None,
+            recorder=rec,
+            open_window=s.window,
+            log=self.log,
+            base_args={
                 "base_url": self.base_url,
                 "thread_id": seeded.thread_id,
                 "cell_id": cell.cell_id,
@@ -594,7 +594,7 @@ class CellRunner:
         row["actions_not_run"] = sum(1 for a in row["actions"] if not a.get("ran"))
         row["expect_failures"] = sum(1 for a in row["actions"] if a.get("expect_ok") is False)
 
-        with s.window("stream:drain", kind = "stream") as w:
+        with s.window("stream:drain", kind="stream") as w:
             drained = self._drain_stream(page, expected_ms)
             w.note("drained", drained)
         row["stream"] = drained
@@ -609,7 +609,7 @@ class CellRunner:
         coverage = follow.get("attached_fraction_of_stream")
         passed, recorded = follow_verdict(follow)
         follow.update(recorded)
-        rec.gate("follows_the_stream", passed, follow, cell_id = cell.cell_id)
+        rec.gate("follows_the_stream", passed, follow, cell_id=cell.cell_id)
         # THE OTHER HALF OF THE CONTRACT, RECORDED AND DELIBERATELY NOT GATED. It was a gate for one run
         # and failed on BOTH arms at nearly the same rate, the signature of a reading about the film:
         # `send_turn` and `stop_generation` each START A RUN, where pinning is intended, and
@@ -711,7 +711,7 @@ class CellRunner:
         # 0 messages and 0 characters.
         censuses = [w.get("census") for w in row["actions"] if isinstance(w.get("census"), dict)]
         censuses = [c for c in censuses if c.get("elements")]
-        peak = max(censuses, key = lambda c: c.get("elements", 0)) if censuses else {}
+        peak = max(censuses, key=lambda c: c.get("elements", 0)) if censuses else {}
         row["census_peak"] = peak
         row["census_peak_attempted"] = bool(censuses)
 
@@ -768,7 +768,7 @@ class CellRunner:
                 "seeded_equals_streamed",
                 bool(eq.get("equivalent")),
                 eq,
-                cell_id = cell.cell_id,
+                cell_id=cell.cell_id,
             )
             if not eq.get("equivalent"):
                 # A FINDING, printed, not a bug to hide: it says which of this tool's numbers are about the
@@ -894,17 +894,17 @@ class CellRunner:
         try:
             all_units = list(plan.seeded_units) + [plan.streamed_unit] + follow_ups
             mirror = RungPlan(
-                rung = plan.rung,
-                target_tokens = plan.target_tokens,
-                target_chars = plan.target_chars,
-                seeded_units = all_units,
-                streamed_unit = None,
+                rung=plan.rung,
+                target_tokens=plan.target_tokens,
+                target_chars=plan.target_chars,
+                seeded_units=all_units,
+                streamed_unit=None,
             )
             seeded_thread = self.seeder.seed(mirror)
             page.goto(
                 f"{self.base_url}/chat?thread={seeded_thread.thread_id}",
-                wait_until = "domcontentloaded",
-                timeout = 120_000,
+                wait_until="domcontentloaded",
+                timeout=120_000,
             )
             self._wait_for_thread(page, seeded_thread)
             # Let the highlighter finish, or the span count is a race rather than a comparison.
@@ -961,10 +961,10 @@ class CellRunner:
         return wait_for_thread_ready(
             page,
             seeded.messages,
-            marker = seeded.last_marker,
-            mode = self.readiness_mode,
-            timeout_s = MOUNT_TIMEOUT_S,
-            log = self.log,
+            marker=seeded.last_marker,
+            mode=self.readiness_mode,
+            timeout_s=MOUNT_TIMEOUT_S,
+            log=self.log,
         )
 
     def _click_attribution(self, page, selector: str) -> dict:
@@ -1061,7 +1061,7 @@ class CellRunner:
         x, y = box["x"] + box["width"] / 2, box["y"] + box["height"] / 2
         blur()
         out["click_ms"] = settled(
-            lambda: page.click(selector, timeout = COMPOSER_CLICK_TIMEOUT_S * 1000)
+            lambda: page.click(selector, timeout=COMPOSER_CLICK_TIMEOUT_S * 1000)
         )
         blur()
         out["mouse_ms"] = settled(lambda: page.mouse.click(x, y))
@@ -1126,7 +1126,7 @@ class CellRunner:
         the user pays, run `--click-probe` and read `mouse_ms` and `focus_ms`.
         """
         selector = 'textarea[aria-label="Message input"]'
-        page.wait_for_selector(selector, timeout = 60_000)
+        page.wait_for_selector(selector, timeout=60_000)
         if self.click_probe:
             self._click_attribution_result = self._click_attribution(page, selector)
         # In a window, so every instrument covers it: at 500K this single click is the largest cost in the
@@ -1135,12 +1135,12 @@ class CellRunner:
         # this window is mostly Playwright's own actionability script running ON THE PAGE'S MAIN THREAD,
         # so filed as an `action` it would put an 11 s driver stall into three weighted headline metrics.
         # It would peg `max_frame_ms`, `jank_index` and `time_in_jank_pct`.
-        with self.session.window("setup:composer_click", kind = "setup"):
+        with self.session.window("setup:composer_click", kind="setup"):
             # Timed INSIDE the window, like `Window.duration_ms`: the session opens every instrument before
             # this block and closes them after, and at instrument level 1-3 those hooks stop a CPU profile,
             # collect coverage and analyse a trace, so timing around the `with` would grow with the level.
             clicked_at = time.monotonic()
-            page.click(selector, timeout = COMPOSER_CLICK_TIMEOUT_S * 1000)
+            page.click(selector, timeout=COMPOSER_CLICK_TIMEOUT_S * 1000)
             self._composer_click_ms = (time.monotonic() - clicked_at) * 1000.0
         if self._composer_click_ms > SLOW_COMPOSER_CLICK_MS:
             self.log(
@@ -1189,26 +1189,26 @@ def make_context(
     paths: Paths,
     log: Callable[[str], None],
     browser_procs: Optional[list] = None,
-    out_lock = None,
+    out_lock=None,
 ) -> tuple[BenchContext, Session]:
     session_id = new_session_id()
     # THE LOCK THE CALLER IS ALREADY HOLDING: `run()` takes the output directory before it archives a
     # payload, so the `Recorder` adopts that lock rather than opening a second against the same path.
     # Without a caller's lock it takes its own.
-    recorder = Recorder(paths.payload_jsonl, session_id, lock = out_lock)
+    recorder = Recorder(paths.payload_jsonl, session_id, lock=out_lock)
     ctx = BenchContext(
-        browser = browser_bundle.browser,
-        context = browser_bundle.context,
-        page = browser_bundle.page,
-        cdp = browser_bundle.cdp,
-        base_url = base_url,
-        session_id = session_id,
-        tier = tier,
-        instrument_level = instrument_level,
-        paths = paths,
-        recorder = recorder,
-        log = log,
-        browser_procs = browser_procs or [],
+        browser=browser_bundle.browser,
+        context=browser_bundle.context,
+        page=browser_bundle.page,
+        cdp=browser_bundle.cdp,
+        base_url=base_url,
+        session_id=session_id,
+        tier=tier,
+        instrument_level=instrument_level,
+        paths=paths,
+        recorder=recorder,
+        log=log,
+        browser_procs=browser_procs or [],
     )
     instruments = build_instruments(instrument_level)
     errors = import_errors()
@@ -1224,7 +1224,7 @@ def make_context(
         f"  instruments at level {instrument_level}: "
         f"{', '.join(i.name for i in instruments) or 'none'}"
     )
-    return ctx, Session(ctx = ctx, instruments = instruments)
+    return ctx, Session(ctx=ctx, instruments=instruments)
 
 
 #: The sources that may SIZE a rung. `measure_chars_per_token`'s last-resort whitespace estimate
@@ -1335,23 +1335,23 @@ def build_cells(
             corpus,
             rung,
             ratio["chars_per_token"],
-            stream_tail_chars = stream_tail_chars,
-            dollars = corpus_dollars,
+            stream_tail_chars=stream_tail_chars,
+            dollars=corpus_dollars,
         )
         for rep in range(reps):
             cell = Cell(
-                cell_id = make_cell_id(rung, "A0", rep),
-                rung = rung,
-                rung_tokens = plan.target_tokens,
-                arm = "A0",
-                rep = rep,
-                tier = tier,
-                transport = "provider",
-                instrument_level = instrument_level,
-                seed = corpus.seed,
-                corpus_hash = corpus.corpus_hash,
-                session_id = session_id,
-                meta = {"ladder_chars_per_token": ratio},
+                cell_id=make_cell_id(rung, "A0", rep),
+                rung=rung,
+                rung_tokens=plan.target_tokens,
+                arm="A0",
+                rep=rep,
+                tier=tier,
+                transport="provider",
+                instrument_level=instrument_level,
+                seed=corpus.seed,
+                corpus_hash=corpus.corpus_hash,
+                session_id=session_id,
+                meta={"ladder_chars_per_token": ratio},
             )
             out.append((cell, plan))
     return out

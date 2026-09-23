@@ -60,13 +60,13 @@ def _make_venv(
         if layout == "posix"
         else venv / "Lib" / "site-packages"
     )
-    sp.mkdir(parents = True)
+    sp.mkdir(parents=True)
     _torch = sp / "torch-2.11.0.dist-info"
     _torch.mkdir()
     (_torch / "METADATA").write_text(
         "Metadata-Version: 2.1\nName: torch\nVersion: 2.11.0\nRequires-Dist: filelock\n"
         + ("Requires-Dist: rocm[libraries]==7.13.0\n" if torch_needs_rocm else ""),
-        encoding = "utf-8",
+        encoding="utf-8",
     )
     for _orphan in orphans:
         (sp / f"rocm_sdk_libraries_{_orphan}-7.12.0.dist-info").mkdir()
@@ -80,15 +80,15 @@ def _make_venv(
             "Provides-Extra: libraries\n"
             f'Requires-Dist: rocm-sdk-libraries-{_family}==7.13.0; extra == "libraries"\n'
             "Requires-Dist: rocm-sdk-core==7.13.0\n",
-            encoding = "utf-8",
+            encoding="utf-8",
         )
     return venv
 
 
-@pytest.fixture(autouse = True)
+@pytest.fixture(autouse=True)
 def _no_inherited_override(monkeypatch):
     """The developer box may export the variable; every assertion is about it."""
-    monkeypatch.delenv("HSA_OVERRIDE_GFX_VERSION", raising = False)
+    monkeypatch.delenv("HSA_OVERRIDE_GFX_VERSION", raising=False)
 
 
 class TestOverrideParsing:
@@ -208,7 +208,7 @@ class TestTheLaunchPathActuallyCallsIt:
     the in-process run_server), or the child inherits the spoof anyway."""
 
     def test_called_before_every_launch_path(self):
-        source = Path(studio_cli.__file__).resolve().read_text(encoding = "utf-8")
+        source = Path(studio_cli.__file__).resolve().read_text(encoding="utf-8")
         call = source.find("_clear_hsa_override_contradicting_install(")
         # The definition comes first;
         # find the CALL, which follows it.
@@ -238,7 +238,7 @@ def test_the_installer_and_the_cli_agree_on_the_spoofable_arches():
     arches; a per-gfx index for any of them ships the matching rocm_sdk_libraries_*
     distribution the CLI keys on instead."""
     install_sh = (Path(studio_cli.__file__).resolve().parents[2] / "install.sh").read_text(
-        encoding = "utf-8"
+        encoding="utf-8"
     )
     assert re.search(r"gfx1151\|gfx1150\|gfx1152", install_sh)
 
@@ -251,13 +251,13 @@ class TestOrphanedRuntimesFromAFamilySwitch:
     install_python_stack.py's _installed_rocm_wheel_family."""
 
     def test_the_active_family_wins_over_an_orphan(self, tmp_path):
-        venv = _make_venv(tmp_path, "rocm_sdk_libraries_gfx1151", orphans = ("gfx1100",))
+        venv = _make_venv(tmp_path, "rocm_sdk_libraries_gfx1151", orphans=("gfx1100",))
         assert studio_cli._installed_rocm_single_arch(venv) == "gfx1151"
 
     def test_an_orphan_alone_arbitrates_nothing(self, tmp_path):
         """Switched to generic wheels: `rocm` is gone, the old runtime is not, so there
         is no active single-arch install and nothing may be cleared."""
-        venv = _make_venv(tmp_path, None, orphans = ("gfx1151",))
+        venv = _make_venv(tmp_path, None, orphans=("gfx1151",))
         assert studio_cli._installed_rocm_single_arch(venv) is None
 
     def test_switching_to_generic_wheels_keeps_the_override(self, tmp_path, monkeypatch):
@@ -265,7 +265,7 @@ class TestOrphanedRuntimesFromAFamilySwitch:
         and now runs generic ones would lose its override to a directory nothing uses."""
         monkeypatch.setenv("HSA_OVERRIDE_GFX_VERSION", "11.0.0")
         monkeypatch.setattr(studio_cli.platform, "system", lambda: "Linux")
-        venv = _make_venv(tmp_path, None, orphans = ("gfx1151",))
+        venv = _make_venv(tmp_path, None, orphans=("gfx1151",))
         assert studio_cli._clear_hsa_override_contradicting_install(venv) is None
         assert os.environ["HSA_OVERRIDE_GFX_VERSION"] == "11.0.0"
 
@@ -280,9 +280,9 @@ class TestOrphanedRuntimesFromAFamilySwitch:
         venv = _make_venv(tmp_path, "rocm_sdk_libraries_gfx1151")
         _meta = next(venv.rglob("rocm-7.13.0.dist-info")) / "METADATA"
         _meta.write_text(
-            _meta.read_text(encoding = "utf-8")
+            _meta.read_text(encoding="utf-8")
             + 'Requires-Dist: rocm-sdk-libraries-gfx1100==7.13.0; extra == "other"\n',
-            encoding = "utf-8",
+            encoding="utf-8",
         )
         assert studio_cli._installed_rocm_single_arch(venv) is None
 
@@ -293,7 +293,7 @@ class TestEveryLaunchEntryPointClearsIt:
     commands people actually use would keep the spoof."""
 
     def test_run_clears_it_itself(self):
-        source = Path(studio_cli.__file__).resolve().read_text(encoding = "utf-8")
+        source = Path(studio_cli.__file__).resolve().read_text(encoding="utf-8")
         _run_at = source.find("\ndef run(\n")
         assert _run_at != -1, "the run command moved"
         assert "_clear_hsa_override_before_launch(" in source[_run_at:], (
@@ -302,7 +302,7 @@ class TestEveryLaunchEntryPointClearsIt:
         )
 
     def test_the_group_callback_uses_the_same_helper(self):
-        source = Path(studio_cli.__file__).resolve().read_text(encoding = "utf-8")
+        source = Path(studio_cli.__file__).resolve().read_text(encoding="utf-8")
         assert (
             source.count("_clear_hsa_override_before_launch(") >= 3
         ), "one definition plus a call from each entry point"
@@ -314,14 +314,15 @@ class TestEveryLaunchEntryPointClearsIt:
         monkeypatch.setattr(studio_cli.platform, "system", lambda: "Linux")
         venv = _make_venv(tmp_path, "rocm_sdk_libraries_gfx1151")
         monkeypatch.setattr(studio_cli, "STUDIO_HOME", venv.parent)
-        assert studio_cli._clear_hsa_override_before_launch(silent = True) == "gfx1151"
-        assert studio_cli._clear_hsa_override_before_launch(silent = True) is None
+        assert studio_cli._clear_hsa_override_before_launch(silent=True) == "gfx1151"
+        assert studio_cli._clear_hsa_override_before_launch(silent=True) is None
         assert "HSA_OVERRIDE_GFX_VERSION" not in os.environ
 
     def test_the_top_level_run_alias_is_the_same_function(self):
         """unsloth_cli/__init__.py binds `unsloth run` to studio_run directly, so the
         group callback is skipped there."""
         import unsloth_cli
+
         assert unsloth_cli.studio_run is studio_cli.run
 
 
@@ -340,7 +341,7 @@ def test_a_rocm_metapackage_orphaned_by_a_switch_to_generic_wheels_arbitrates_no
     assert _installed_rocm_single_arch(live) == "gfx1151"
 
     orphaned = _make_venv(
-        tmp_path / "orphaned", "rocm_sdk_libraries_gfx1151", torch_needs_rocm = False
+        tmp_path / "orphaned", "rocm_sdk_libraries_gfx1151", torch_needs_rocm=False
     )
     assert _installed_rocm_single_arch(orphaned) is None
 
@@ -352,21 +353,21 @@ class TestPublishingTheArbiterForTheDesktopShellImport:
     published whether or not anything was cleared here."""
 
     def test_the_installed_arch_is_published_even_with_no_override_set(self, tmp_path, monkeypatch):
-        monkeypatch.delenv("HSA_OVERRIDE_GFX_VERSION", raising = False)
-        monkeypatch.delenv(studio_cli.ROCM_INSTALLED_ARCH_ENV, raising = False)
+        monkeypatch.delenv("HSA_OVERRIDE_GFX_VERSION", raising=False)
+        monkeypatch.delenv(studio_cli.ROCM_INSTALLED_ARCH_ENV, raising=False)
         monkeypatch.setattr(studio_cli.platform, "system", lambda: "Linux")
         venv = _make_venv(tmp_path, "rocm_sdk_libraries_gfx1151")
         monkeypatch.setattr(studio_cli, "STUDIO_HOME", venv.parent)
         monkeypatch.setattr(studio_cli.sys, "prefix", str(venv))
-        assert studio_cli._clear_hsa_override_before_launch(silent = True) is None
+        assert studio_cli._clear_hsa_override_before_launch(silent=True) is None
         assert os.environ[studio_cli.ROCM_INSTALLED_ARCH_ENV] == "gfx1151"
 
     def test_generic_wheels_publish_nothing_to_arbitrate_with(self, tmp_path, monkeypatch):
-        monkeypatch.delenv("HSA_OVERRIDE_GFX_VERSION", raising = False)
-        monkeypatch.delenv(studio_cli.ROCM_INSTALLED_ARCH_ENV, raising = False)
+        monkeypatch.delenv("HSA_OVERRIDE_GFX_VERSION", raising=False)
+        monkeypatch.delenv(studio_cli.ROCM_INSTALLED_ARCH_ENV, raising=False)
         monkeypatch.setattr(studio_cli.platform, "system", lambda: "Linux")
         venv = _make_venv(tmp_path, None)
         monkeypatch.setattr(studio_cli, "STUDIO_HOME", venv.parent)
         monkeypatch.setattr(studio_cli.sys, "prefix", str(venv))
-        studio_cli._clear_hsa_override_before_launch(silent = True)
+        studio_cli._clear_hsa_override_before_launch(silent=True)
         assert studio_cli.ROCM_INSTALLED_ARCH_ENV not in os.environ

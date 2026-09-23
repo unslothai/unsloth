@@ -106,7 +106,7 @@ def open_bar(page, mod: str) -> None:
     # one dev-server transform. Assert that it resolves, not that Vite is warm.
     page.wait_for_function(
         "() => window.__findSmoke.state().open",
-        timeout = 10000,
+        timeout=10000,
     )
 
 
@@ -125,7 +125,7 @@ def settle(
     with the same message, so nothing is swallowed here.
     """
     try:
-        page.wait_for_function(condition, timeout = timeout)
+        page.wait_for_function(condition, timeout=timeout)
     except PlaywrightTimeout:
         pass
 
@@ -524,7 +524,7 @@ def check_typing_burst(page, engine: str, mode: str, mod: str) -> None:
       }
     }"""
     )
-    page.keyboard.type("doing", delay = 10)
+    page.keyboard.type("doing", delay=10)
     immediate = field.input_value()
     page.wait_for_timeout(400)
     paints = page.evaluate("() => window.__findSmokePaints")
@@ -555,7 +555,7 @@ def check_reverted_query_repaints(page, engine: str, mode: str, mod: str) -> Non
     field.fill("unsloth")
     page.wait_for_function(
         "() => !!window.__findSmoke.counter()",
-        timeout = 10000,
+        timeout=10000,
     )
     page.wait_for_timeout(150)
     before = page.evaluate(
@@ -591,7 +591,7 @@ def check_pending_query_stays_unpainted(page, engine: str, mode: str, mod: str) 
     open_bar(page, mod)
     field = page.locator('[role="search"] input')
     field.fill("unsloth")
-    page.wait_for_function("() => !!window.__findSmoke.counter()", timeout = 10000)
+    page.wait_for_function("() => !!window.__findSmoke.counter()", timeout=10000)
     page.wait_for_timeout(150)
     field.press("End")
     field.type("x")
@@ -604,7 +604,7 @@ def check_pending_query_stays_unpainted(page, engine: str, mode: str, mod: str) 
       document.querySelector('[data-find-scope]').appendChild(row);
     }"""
     )
-    field.type("abcdefghi", delay = 55)
+    field.type("abcdefghi", delay=55)
     pending = {
         "value": field.input_value(),
         "counter": counter(page),
@@ -646,7 +646,7 @@ def check_katex_mutation_reindexes(page, engine: str, mode: str, mod: str) -> No
     page.locator('[role="search"] input').fill("mutablekatex")
     page.wait_for_function(
         "() => window.__findSmoke.counter() === '1/1'",
-        timeout = 10000,
+        timeout=10000,
     )
     page.evaluate(
         "() => { document.querySelector('#probe-katex-mutation .katex-html').textContent = 'changedkatex'; }"
@@ -733,19 +733,19 @@ def new_page(context):
     page = context.new_page()
     for attempt in range(30):
         try:
-            page.goto(URL, wait_until = "domcontentloaded", timeout = 30000)
+            page.goto(URL, wait_until="domcontentloaded", timeout=30000)
             break
         except Exception:
             if attempt == 29:
                 raise
             time.sleep(2)
-    page.wait_for_function("() => !!window.__findSmoke", timeout = 120000)
+    page.wait_for_function("() => !!window.__findSmoke", timeout=120000)
     return page
 
 
 def run_entry_chunk_failure(browser, engine: str) -> None:
     """A first-use find chunk failure degrades locally instead of unmounting the shell."""
-    context = browser.new_context(user_agent = PLATFORMS["Linux"][1])
+    context = browser.new_context(user_agent=PLATFORMS["Linux"][1])
 
     def block_find_entry(route):
         if "find-bar-loader" in route.request.url:
@@ -756,7 +756,7 @@ def run_entry_chunk_failure(browser, engine: str) -> None:
     page = new_page(context)
     page.keyboard.press("Control+f")
     failure = page.locator('[data-testid="find-in-page-load-failure"]')
-    failure.wait_for(state = "visible", timeout = 15000)
+    failure.wait_for(state="visible", timeout=15000)
     root_text = page.locator("#root").inner_text()
     mode = "entry-chunk-failure"
     check(engine, mode, "the local failure notice is visible", failure.count() == 1)
@@ -771,7 +771,7 @@ def run_entry_chunk_failure(browser, engine: str) -> None:
         engine,
         mode,
         "the failure recovery receives keyboard focus",
-        failure.get_by_role("button", name = "Reload").evaluate(
+        failure.get_by_role("button", name="Reload").evaluate(
             "button => button === document.activeElement",
         ),
     )
@@ -790,10 +790,10 @@ def run_entry_chunk_failure(browser, engine: str) -> None:
     )
 
     if ENTRY_SCREENSHOT:
-        Path(ENTRY_SCREENSHOT.format(engine = engine)).parent.mkdir(parents = True, exist_ok = True)
-        page.screenshot(path = ENTRY_SCREENSHOT.format(engine = engine), full_page = False)
+        Path(ENTRY_SCREENSHOT.format(engine=engine)).parent.mkdir(parents=True, exist_ok=True)
+        page.screenshot(path=ENTRY_SCREENSHOT.format(engine=engine), full_page=False)
 
-    failure.get_by_role("button", name = "Close").click()
+    failure.get_by_role("button", name="Close").click()
     check(
         engine,
         mode,
@@ -805,16 +805,16 @@ def run_entry_chunk_failure(browser, engine: str) -> None:
 
 def run_entry_chunk_delay(browser, engine: str) -> None:
     """Keeps query, focus, selection, and commands through a delayed entry handoff."""
-    context = browser.new_context(user_agent = PLATFORMS["Linux"][1])
+    context = browser.new_context(user_agent=PLATFORMS["Linux"][1])
     page = new_page(context)
     composer = page.locator('textarea[placeholder="Message"]')
     composer.focus()
     started = time.monotonic()
     page.keyboard.press("Control+f")
     loading = page.get_by_test_id("find-in-page-loading")
-    loading.wait_for(state = "visible", timeout = 5000)
+    loading.wait_for(state="visible", timeout=5000)
     field = loading.locator("input")
-    page.keyboard.type("unsloth", delay = 15)
+    page.keyboard.type("unsloth", delay=15)
     field.press("End")
     for _ in range(3):
         field.press("Shift+ArrowLeft")
@@ -832,8 +832,8 @@ def run_entry_chunk_delay(browser, engine: str) -> None:
 
     field.press("Enter")
     loading.wait_for(
-        state = "detached",
-        timeout = max(15000, ENTRY_DELAY_MS + 10000),
+        state="detached",
+        timeout=max(15000, ENTRY_DELAY_MS + 10000),
     )
     elapsed_ms = (time.monotonic() - started) * 1000
     loaded = page.locator('[role="search"] input')
@@ -904,18 +904,18 @@ def run_entry_chunk_delay(browser, engine: str) -> None:
 
     context.close()
 
-    context = browser.new_context(user_agent = PLATFORMS["Linux"][1])
+    context = browser.new_context(user_agent=PLATFORMS["Linux"][1])
     page = new_page(context)
     page.locator('textarea[placeholder="Message"]').focus()
     page.keyboard.press("Control+f")
     loading = page.get_by_test_id("find-in-page-loading")
-    loading.wait_for(state = "visible", timeout = 5000)
+    loading.wait_for(state="visible", timeout=5000)
     field = loading.locator("input")
     field.fill("definitely-no-such-match")
     field.press("Enter")
     loading.wait_for(
-        state = "detached",
-        timeout = max(15000, ENTRY_DELAY_MS + 10000),
+        state="detached",
+        timeout=max(15000, ENTRY_DELAY_MS + 10000),
     )
     page.evaluate(
         "() => window.__findSmoke.stream("
@@ -941,19 +941,19 @@ def run_entry_chunk_delay(browser, engine: str) -> None:
     )
     context.close()
 
-    context = browser.new_context(user_agent = PLATFORMS["Linux"][1])
+    context = browser.new_context(user_agent=PLATFORMS["Linux"][1])
     page = new_page(context)
     page.locator('textarea[placeholder="Message"]').focus()
     page.keyboard.press("Control+f")
     loading = page.get_by_test_id("find-in-page-loading")
-    loading.wait_for(state = "visible", timeout = 5000)
+    loading.wait_for(state="visible", timeout=5000)
     field = loading.locator("input")
     field.fill("definitely-no-such-match")
     field.press("Enter")
     field.fill("unsloth")
     loading.wait_for(
-        state = "detached",
-        timeout = max(15000, ENTRY_DELAY_MS + 10000),
+        state="detached",
+        timeout=max(15000, ENTRY_DELAY_MS + 10000),
     )
     page.wait_for_timeout(500)
     check(
@@ -965,12 +965,12 @@ def run_entry_chunk_delay(browser, engine: str) -> None:
     )
     context.close()
 
-    context = browser.new_context(user_agent = PLATFORMS["Linux"][1])
+    context = browser.new_context(user_agent=PLATFORMS["Linux"][1])
     page = new_page(context)
     page.locator('textarea[placeholder="Message"]').focus()
     page.keyboard.press("Control+f")
     loading = page.get_by_test_id("find-in-page-loading")
-    loading.wait_for(state = "visible", timeout = 5000)
+    loading.wait_for(state="visible", timeout=5000)
     field = loading.locator("input")
     field.dispatch_event("compositionstart", {"data": "u"})
     page.wait_for_timeout(ENTRY_DELAY_MS + 500)
@@ -996,8 +996,8 @@ def run_entry_chunk_delay(browser, engine: str) -> None:
         }""",
     )
     loading.wait_for(
-        state = "detached",
-        timeout = max(15000, ENTRY_DELAY_MS + 10000),
+        state="detached",
+        timeout=max(15000, ENTRY_DELAY_MS + 10000),
     )
     check(
         engine,
@@ -1008,12 +1008,12 @@ def run_entry_chunk_delay(browser, engine: str) -> None:
     )
     context.close()
 
-    context = browser.new_context(user_agent = PLATFORMS["Linux"][1])
+    context = browser.new_context(user_agent=PLATFORMS["Linux"][1])
     page = new_page(context)
     page.locator('textarea[placeholder="Message"]').focus()
     page.keyboard.press("Control+f")
     loading = page.get_by_test_id("find-in-page-loading")
-    loading.wait_for(state = "visible", timeout = 5000)
+    loading.wait_for(state="visible", timeout=5000)
     loading.locator("input").dispatch_event(
         "keydown",
         {
@@ -1034,13 +1034,13 @@ def run_entry_chunk_delay(browser, engine: str) -> None:
     )
     context.close()
 
-    context = browser.new_context(user_agent = PLATFORMS["Linux"][1])
+    context = browser.new_context(user_agent=PLATFORMS["Linux"][1])
     page = new_page(context)
     page.locator('textarea[placeholder="Message"]').focus()
     page.keyboard.press("Control+f")
     loading = page.get_by_test_id("find-in-page-loading")
-    loading.wait_for(state = "visible", timeout = 5000)
-    page.locator("[data-find-scope]").click(position = {"x": 20, "y": 200})
+    loading.wait_for(state="visible", timeout=5000)
+    page.locator("[data-find-scope]").click(position={"x": 20, "y": 200})
     page.keyboard.press("Escape")
     page.wait_for_timeout(100)
     check(
@@ -1072,7 +1072,7 @@ def run_engine(pw, engine: str) -> None:
     try:
         # The platform sweep, on the engine's own capabilities.
         for platform, (nav_platform, agent) in PLATFORMS.items():
-            context = browser.new_context(user_agent = agent)
+            context = browser.new_context(user_agent=agent)
             context.add_init_script(
                 "Object.defineProperty(navigator, 'platform', "
                 f"{{ get: () => {json.dumps(nav_platform)} }});"
@@ -1088,7 +1088,7 @@ def run_engine(pw, engine: str) -> None:
             ("legacy-checkVisibility", LEGACY_CHECK_VISIBILITY),
             ("no-checkVisibility", NO_CHECK_VISIBILITY),
         ):
-            context = browser.new_context(user_agent = PLATFORMS["Linux"][1])
+            context = browser.new_context(user_agent=PLATFORMS["Linux"][1])
             context.add_init_script(
                 "Object.defineProperty(navigator, 'platform', { get: () => 'Linux x86_64' });"
             )

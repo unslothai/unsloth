@@ -62,14 +62,14 @@ class _Gateway:
     def __enter__(self) -> "_Gateway":
         self._httpd = ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
         self._httpd.recorded = []  # type: ignore[attr-defined]
-        self._thread = threading.Thread(target = self._httpd.serve_forever, daemon = True)
+        self._thread = threading.Thread(target=self._httpd.serve_forever, daemon=True)
         self._thread.start()
         return self
 
     def __exit__(self, *exc) -> None:
         self._httpd.shutdown()
         self._httpd.server_close()
-        self._thread.join(timeout = 10)
+        self._thread.join(timeout=10)
 
     @property
     def base_url(self) -> str:
@@ -109,12 +109,12 @@ def _through_route(**fields) -> tuple[dict, str]:
 
     with _Gateway() as gateway:
         payload = ChatCompletionRequest(
-            provider_type = "custom",
-            provider_base_url = gateway.base_url,
-            provider_api_key = "k",
-            messages = [{"role": "user", "content": "hi"}],
-            model = "claude-sonnet-4-6",
-            stream = True,
+            provider_type="custom",
+            provider_base_url=gateway.base_url,
+            provider_api_key="k",
+            messages=[{"role": "user", "content": "hi"}],
+            model="claude-sonnet-4-6",
+            stream=True,
             **fields,
         )
         request = Request(
@@ -145,7 +145,7 @@ def _through_route(**fields) -> tuple[dict, str]:
 
 
 def test_an_omitted_top_p_is_not_forwarded_and_the_gateway_accepts():
-    body, stream = _through_route(temperature = 0.7)
+    body, stream = _through_route(temperature=0.7)
     assert "top_p" not in body
     assert body["temperature"] == 0.7
     assert "cannot both be specified" not in stream
@@ -154,7 +154,7 @@ def test_an_omitted_top_p_is_not_forwarded_and_the_gateway_accepts():
 
 @pytest.mark.parametrize("top_p", [0.0, 0.9, 1.0])
 def test_an_explicit_top_p_still_reaches_the_gateway(top_p):
-    body, stream = _through_route(temperature = 0.7, top_p = top_p)
+    body, stream = _through_route(temperature=0.7, top_p=top_p)
     assert body["top_p"] == top_p
     assert "cannot both be specified" in stream
 
@@ -162,15 +162,15 @@ def test_an_explicit_top_p_still_reaches_the_gateway(top_p):
 def test_the_client_omits_top_p_when_given_none():
     with _Gateway() as gateway:
         client = ExternalProviderClient(
-            provider_type = "custom", base_url = gateway.base_url, api_key = "k"
+            provider_type="custom", base_url=gateway.base_url, api_key="k"
         )
 
         async def go() -> None:
             async for _ in client.stream_chat_completion(
-                messages = [{"role": "user", "content": "hi"}],
-                model = "claude-sonnet-4-6",
-                temperature = 0.7,
-                top_p = None,
+                messages=[{"role": "user", "content": "hi"}],
+                model="claude-sonnet-4-6",
+                temperature=0.7,
+                top_p=None,
             ):
                 pass
 
@@ -181,16 +181,16 @@ def test_the_client_omits_top_p_when_given_none():
 def test_the_non_streaming_helper_omits_top_p_when_given_none():
     with _Gateway() as gateway:
         client = ExternalProviderClient(
-            provider_type = "custom", base_url = gateway.base_url, api_key = "k"
+            provider_type="custom", base_url=gateway.base_url, api_key="k"
         )
 
         async def go() -> None:
             response = await client.chat_completion(
-                messages = [{"role": "user", "content": "ping"}],
-                model = "claude-sonnet-4-6",
-                temperature = 0.0,
-                top_p = None,
-                max_tokens = 1,
+                messages=[{"role": "user", "content": "ping"}],
+                model="claude-sonnet-4-6",
+                temperature=0.0,
+                top_p=None,
+                max_tokens=1,
             )
             assert response["choices"][0]["message"]["content"] == "ok"
 
@@ -200,9 +200,10 @@ def test_the_non_streaming_helper_omits_top_p_when_given_none():
 
 def test_the_connection_test_ping_omits_top_p():
     from routes.providers import _test_custom_provider_connectivity
+
     with _Gateway() as gateway:
         real = ExternalProviderClient(
-            provider_type = "custom", base_url = gateway.base_url, api_key = "k"
+            provider_type="custom", base_url=gateway.base_url, api_key="k"
         )
 
         class _NoModelsOrSpeech:

@@ -7,13 +7,13 @@ def _load_formatter_builders():
     # Extract _parse_combined_prompt and _create_formatter without importing unsloth (importing unsloth needs
     # unsloth_zoo / a GPU).
     source = Path(__file__).parents[2] / "unsloth" / "chat_templates.py"
-    tree = ast.parse(source.read_text(encoding = "utf-8"))
+    tree = ast.parse(source.read_text(encoding="utf-8"))
     wanted = {"_parse_combined_prompt", "_create_formatter"}
     funcs = [
         node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name in wanted
     ]
     namespace = {"re": re}
-    module = ast.Module(body = funcs, type_ignores = [])
+    module = ast.Module(body=funcs, type_ignores=[])
     ast.fix_missing_locations(module)
     exec(compile(module, str(source), "exec"), namespace)
     return namespace["_parse_combined_prompt"], namespace["_create_formatter"]
@@ -96,13 +96,13 @@ def test_optional_block_falsy_but_present_gating_value_still_renders():
 def _load_to_sharegpt():
     # Same trick as above: pull to_sharegpt and the two helpers it calls out of the source without importing unsloth.
     source = Path(__file__).parents[2] / "unsloth" / "chat_templates.py"
-    tree = ast.parse(source.read_text(encoding = "utf-8"))
+    tree = ast.parse(source.read_text(encoding="utf-8"))
     wanted = {"_parse_combined_prompt", "_create_formatter", "to_sharegpt"}
     funcs = [
         node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name in wanted
     ]
     namespace = {"re": re}
-    module = ast.Module(body = funcs, type_ignores = [])
+    module = ast.Module(body=funcs, type_ignores=[])
     ast.fix_missing_locations(module)
     exec(compile(module, str(source), "exec"), namespace)
     return namespace["to_sharegpt"]
@@ -110,6 +110,7 @@ def _load_to_sharegpt():
 
 def _alpaca():
     from datasets import Dataset
+
     return Dataset.from_dict(
         {
             "instruction": ["What is 2+2?", "Capital of France?"],
@@ -133,8 +134,8 @@ def test_default_merged_prompt_with_renamed_columns():
     dataset = Dataset.from_dict({"Query": ["123?"], "Answer": ["456"]})
     converted = to_sharegpt(
         dataset,
-        merged_column_name = "Query",
-        output_column_name = "Answer",
+        merged_column_name="Query",
+        output_column_name="Answer",
     )
     assert converted[0]["conversations"] == [
         {"from": "human", "value": "123?"},
@@ -147,7 +148,7 @@ def test_explicit_merged_prompt_still_merges():
 
     to_sharegpt = _load_to_sharegpt()
     dataset = Dataset.from_dict({"instruction": ["Sum"], "input": ["2+2"], "output": ["4"]})
-    converted = to_sharegpt(dataset, merged_prompt = "{instruction}\n{input}")
+    converted = to_sharegpt(dataset, merged_prompt="{instruction}\n{input}")
     assert converted[0]["conversations"][0]["value"] == "Sum\n2+2"
 
 
@@ -167,7 +168,7 @@ def test_missing_input_column_says_which_column_is_missing():
 
 def test_conversation_extension_keeps_the_real_prompts():
     to_sharegpt = _load_to_sharegpt()
-    converted = to_sharegpt(_alpaca(), conversation_extension = 2)
+    converted = to_sharegpt(_alpaca(), conversation_extension=2)
     values = [turn["value"] for turn in converted[0]["conversations"]]
     assert "" not in values
     assert len(converted[0]["conversations"]) == 4
@@ -191,7 +192,7 @@ def test_null_cells_match_the_merged_prompt_path():
     to_sharegpt = _load_to_sharegpt()
     rows = {"instruction": ["ok", None], "output": ["a", "b"]}
 
-    merged = to_sharegpt(Dataset.from_dict(rows), merged_prompt = "{instruction}")
+    merged = to_sharegpt(Dataset.from_dict(rows), merged_prompt="{instruction}")
     plain = to_sharegpt(Dataset.from_dict(rows))
 
     assert [r["conversations"] for r in merged] == [r["conversations"] for r in plain]

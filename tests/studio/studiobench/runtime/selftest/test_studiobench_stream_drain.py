@@ -63,7 +63,7 @@ class _Page:
     def __init__(self, clock: _Clock, *, stops_running_after_ms: float | None) -> None:
         self.clock = clock
         self.stops_running_after_ms = stops_running_after_ms
-        self._send = types.SimpleNamespace(click = lambda: None)
+        self._send = types.SimpleNamespace(click=lambda: None)
 
     # -- playwright surface -------------------------------------------------
     def goto(self, *a, **k) -> None:
@@ -114,8 +114,8 @@ class _Pacer:
         reasoning,
         content,
         *,
-        cadence = "field",
-        tag = "",
+        cadence="field",
+        tag="",
         **k,
     ) -> None:
         self.streams.append(
@@ -207,11 +207,11 @@ def _seed(plan):
     """
 
     return types.SimpleNamespace(
-        thread_id = "t1",
-        seconds = 0.5,
-        messages = 0,
-        first_marker = None,
-        last_marker = None,
+        thread_id="t1",
+        seconds=0.5,
+        messages=0,
+        first_marker=None,
+        last_marker=None,
     )
 
 
@@ -226,10 +226,10 @@ def cell_runner(monkeypatch, tmp_path):
         session_mod,
         "time",
         types.SimpleNamespace(
-            monotonic = clock.monotonic,
-            sleep = lambda s: None,
-            time = time.time,
-            perf_counter = time.perf_counter,
+            monotonic=clock.monotonic,
+            sleep=lambda s: None,
+            time=time.time,
+            perf_counter=time.perf_counter,
         ),
     )
     monkeypatch.setattr(session_mod, "paint_floor_ms", lambda page: 8.0)
@@ -247,29 +247,29 @@ def cell_runner(monkeypatch, tmp_path):
     paths = Paths.under(tmp_path / "out")
     recorder = Recorder(paths.payload_jsonl, "sess-1")
     ctx = BenchContext(
-        page = None,
-        cdp = None,
-        base_url = "http://127.0.0.1:5399",
-        session_id = "sess-1",
-        tier = "quick",
-        paths = paths,
-        recorder = recorder,
-        log = lambda msg: None,
+        page=None,
+        cdp=None,
+        base_url="http://127.0.0.1:5399",
+        session_id="sess-1",
+        tier="quick",
+        paths=paths,
+        recorder=recorder,
+        log=lambda msg: None,
     )
-    session = Session(ctx = ctx)
+    session = Session(ctx=ctx)
 
     def build():
-        ctx.page = _Page(clock, stops_running_after_ms = state["stops_running_after_ms"])
+        ctx.page = _Page(clock, stops_running_after_ms=state["stops_running_after_ms"])
         return CellRunner(
-            session = session,
-            pacer = _Pacer(state["expected_ms"]),
-            seeder = types.SimpleNamespace(seed = _seed, auth = None),
-            corpus = None,
-            base_url = "http://127.0.0.1:5399",
-            model_id = "studiobench-pacer",
-            tier = "quick",
-            paths = paths,
-            log = lambda msg: None,
+            session=session,
+            pacer=_Pacer(state["expected_ms"]),
+            seeder=types.SimpleNamespace(seed=_seed, auth=None),
+            corpus=None,
+            base_url="http://127.0.0.1:5399",
+            model_id="studiobench-pacer",
+            tier="quick",
+            paths=paths,
+            log=lambda msg: None,
         )
 
     state["build"] = build
@@ -281,26 +281,26 @@ def cell_runner(monkeypatch, tmp_path):
 def _cell():
     # NOT the 10K rung: that one additionally runs the seeded-vs-streamed equivalence check, which is a
     # different subject.
-    return Cell(cell_id = "r1K.A0.rep0", rung = "1K", rung_tokens = 1_000, tier = "quick")
+    return Cell(cell_id="r1K.A0.rep0", rung="1K", rung_tokens=1_000, tier="quick")
 
 
 def _plan():
-    unit = types.SimpleNamespace(reasoning = "r" * 100, content = "c" * 900, kind = "tail")
+    unit = types.SimpleNamespace(reasoning="r" * 100, content="c" * 900, kind="tail")
     return types.SimpleNamespace(
-        rung = "1K",
-        streamed_unit = unit,
-        seeded_units = [],
-        follow_up_units = [],
-        seeded_chars = 0,
-        streamed_chars = 1000,
-        target_chars = 1000,
-        target_tokens = 1_000,
+        rung="1K",
+        streamed_unit=unit,
+        seeded_units=[],
+        follow_up_units=[],
+        seeded_chars=0,
+        streamed_chars=1000,
+        target_chars=1000,
+        target_tokens=1_000,
     )
 
 
 def _rows(state):
     state["recorder"].close()
-    text = state["paths"].payload_jsonl.read_text(encoding = "utf-8")
+    text = state["paths"].payload_jsonl.read_text(encoding="utf-8")
     return [json.loads(line) for line in text.splitlines() if line]
 
 

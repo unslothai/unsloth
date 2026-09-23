@@ -36,44 +36,44 @@ from models.inference import LoadRequest
 def _request_matches_loaded_settings(
     request,
     backend,
-    _template = None,
-    native_grant_backed = False,
+    _template=None,
+    native_grant_backed=False,
 ):
     model_path = backend.gguf_path
     root = _local_gguf_companion_search_root(model_path, model_path)
-    draft = detect_mtp_file(model_path, search_root = root)
+    draft = detect_mtp_file(model_path, search_root=root)
     config = SimpleNamespace(
-        identifier = request.model_path,
-        gguf_hf_repo = None,
-        gguf_variant = request.gguf_variant,
-        gguf_file = model_path,
-        gguf_mmproj_file = None,
-        gguf_mtp_file = draft,
-        gguf_dspark_file = detect_dspark_file(model_path, search_root = root),
-        gguf_dflash_file = detect_dflash_file(model_path, search_root = root),
-        is_vision = False,
+        identifier=request.model_path,
+        gguf_hf_repo=None,
+        gguf_variant=request.gguf_variant,
+        gguf_file=model_path,
+        gguf_mmproj_file=None,
+        gguf_mtp_file=draft,
+        gguf_dspark_file=detect_dspark_file(model_path, search_root=root),
+        gguf_dflash_file=detect_dflash_file(model_path, search_root=root),
+        is_vision=False,
     )
     intent = _resolve_gguf_load_intent(
         config,
         request,
-        native_grant_backed = native_grant_backed,
-        chat_template_override = None,
-        extra_args = None,
-        placement = SimpleNamespace(
-            resolved_gpu_ids = None,
-            gpu_ids_are_vulkan_ordinals = False,
+        native_grant_backed=native_grant_backed,
+        chat_template_override=None,
+        extra_args=None,
+        placement=SimpleNamespace(
+            resolved_gpu_ids=None,
+            gpu_ids_are_vulkan_ordinals=False,
         ),
-        n_parallel = 1,
+        n_parallel=1,
     )
     return backend._runtime_matches_intent(intent, None)
 
 
 def _write_pair(tmp_path: Path, folder: str | None = None) -> tuple[Path, Path]:
-    tmp_path.mkdir(parents = True, exist_ok = True)
+    tmp_path.mkdir(parents=True, exist_ok=True)
     weight = tmp_path / "model.gguf"
     weight.write_bytes(b"model")
     parent = tmp_path if folder is None else tmp_path / folder
-    parent.mkdir(parents = True, exist_ok = True)
+    parent.mkdir(parents=True, exist_ok=True)
     companion = parent / "mtp-model.gguf"
     companion.write_bytes(b"draft")
     return weight, companion
@@ -111,7 +111,7 @@ def test_projector_discovery_admits_before_reading(tmp_path, monkeypatch, native
     monkeypatch.setattr(mc, "read_gguf_general_metadata", read)
     config = mc.ModelConfig.from_identifier(
         str(weight),
-        mmproj_accept = _native_mmproj_accept if native else None,
+        mmproj_accept=_native_mmproj_accept if native else None,
     )
     expected = sibling if native and root_projector else None if native else outside
     assert config.gguf_mmproj_file == (str(expected.resolve()) if expected else None)
@@ -120,12 +120,12 @@ def test_projector_discovery_admits_before_reading(tmp_path, monkeypatch, native
         assert outside.resolve() not in reads
         intent = _resolve_gguf_load_intent(
             config,
-            LoadRequest(model_path = str(weight)),
-            native_grant_backed = True,
-            chat_template_override = None,
-            extra_args = None,
-            placement = SimpleNamespace(resolved_gpu_ids = None, gpu_ids_are_vulkan_ordinals = False),
-            n_parallel = 1,
+            LoadRequest(model_path=str(weight)),
+            native_grant_backed=True,
+            chat_template_override=None,
+            extra_args=None,
+            placement=SimpleNamespace(resolved_gpu_ids=None, gpu_ids_are_vulkan_ordinals=False),
+            n_parallel=1,
         )
         assert intent.mmproj_path == config.gguf_mmproj_file
     else:
@@ -148,7 +148,7 @@ def test_native_projector_symlink_rejected_before_header_read(
     projector.write_bytes(b"\0" * 32)
     try:
         if directory_link:
-            (model_dir / "assets").symlink_to(outside, target_is_directory = True)
+            (model_dir / "assets").symlink_to(outside, target_is_directory=True)
         else:
             (model_dir / projector.name).symlink_to(projector)
     except OSError as exc:
@@ -163,7 +163,7 @@ def test_native_projector_symlink_rejected_before_header_read(
     monkeypatch.setattr(mc, "read_gguf_general_metadata", read)
     assert (
         mc.detect_mmproj_file(
-            str(weight), accept = lambda candidate: _native_mmproj_accept(candidate, str(weight))
+            str(weight), accept=lambda candidate: _native_mmproj_accept(candidate, str(weight))
         )
         is None
     )
@@ -173,7 +173,7 @@ def test_native_projector_symlink_rejected_before_header_read(
 def test_native_mtp_companion_allows_mtp_directory(tmp_path, folder):
     weight, companion = _write_pair(tmp_path, folder)
     _validate_native_gguf_companion(
-        str(companion), str(weight), "MTP drafter", allowed_subdirs = ("mtp",)
+        str(companion), str(weight), "MTP drafter", allowed_subdirs=("mtp",)
     )
 
 
@@ -189,8 +189,8 @@ def test_native_mtp_companion_allows_repo_root_mtp_directory(tmp_path):
         str(companion),
         str(weight),
         "MTP drafter",
-        allowed_subdirs = ("mtp",),
-        mtp_search_root = str(tmp_path),
+        allowed_subdirs=("mtp",),
+        mtp_search_root=str(tmp_path),
     )
 
 
@@ -206,8 +206,8 @@ def test_native_dspark_companion_allows_repo_dspark_directory(tmp_path):
         str(companion),
         str(weight),
         "DSpark drafter",
-        allowed_subdirs = ("dspark",),
-        mtp_search_root = str(tmp_path),
+        allowed_subdirs=("dspark",),
+        mtp_search_root=str(tmp_path),
     )
 
 
@@ -219,13 +219,13 @@ def test_native_mtp_companion_rejects_unrelated_search_root(tmp_path):
     companion = companion_dir / "mtp-model.gguf"
     companion.write_bytes(b"draft")
 
-    with pytest.raises(HTTPException, match = "must live beside"):
+    with pytest.raises(HTTPException, match="must live beside"):
         _validate_native_gguf_companion(
             str(companion),
             str(weight),
             "MTP drafter",
-            allowed_subdirs = ("mtp",),
-            mtp_search_root = str(tmp_path),
+            allowed_subdirs=("mtp",),
+            mtp_search_root=str(tmp_path),
         )
 
 
@@ -244,7 +244,7 @@ def test_reload_dedup_finds_repo_root_mtp_companion(tmp_path, monkeypatch):
     backend._gguf_path = str(weight)
     backend._mtp_draft_path = str(companion)
 
-    request = LoadRequest(model_path = str(weight))
+    request = LoadRequest(model_path=str(weight))
     assert _request_matches_loaded_settings(request, backend)
 
 
@@ -263,22 +263,22 @@ def test_reload_dedup_matches_quant_directory_selection(tmp_path, monkeypatch):
     backend._gguf_path = str(weight)
     backend._mtp_draft_path = str(companion)
 
-    request = LoadRequest(model_path = str(quant_dir), gguf_variant = "Q4_0")
+    request = LoadRequest(model_path=str(quant_dir), gguf_variant="Q4_0")
     assert _request_matches_loaded_settings(request, backend)
 
 
 def test_native_vision_companion_rejects_mtp_directory(tmp_path):
     weight, companion = _write_pair(tmp_path, "MTP")
-    with pytest.raises(HTTPException, match = "must live next to"):
+    with pytest.raises(HTTPException, match="must live next to"):
         _validate_native_gguf_companion(str(companion), str(weight), "vision companion")
 
 
 @pytest.mark.parametrize("folder", ["other", "MTP/deeper", "mtp/deeper"])
 def test_native_companion_rejects_arbitrary_nesting(tmp_path, folder):
     weight, companion = _write_pair(tmp_path, folder)
-    with pytest.raises(HTTPException, match = "must live beside") as error:
+    with pytest.raises(HTTPException, match="must live beside") as error:
         _validate_native_gguf_companion(
-            str(companion), str(weight), "MTP drafter", allowed_subdirs = ("mtp",)
+            str(companion), str(weight), "MTP drafter", allowed_subdirs=("mtp",)
         )
     assert error.value.status_code == 400
 
@@ -290,7 +290,7 @@ def test_native_companion_rejects_file_symlink(tmp_path):
         link.symlink_to(companion)
     except OSError as exc:
         pytest.skip(f"symlinks unavailable: {exc}")
-    with pytest.raises(HTTPException, match = "regular file"):
+    with pytest.raises(HTTPException, match="regular file"):
         _validate_native_gguf_companion(str(link), str(weight), "MTP drafter")
 
 
@@ -304,22 +304,22 @@ def test_native_companion_rejects_directory_symlink_escape(tmp_path):
     companion = outside / "mtp-model.gguf"
     companion.write_bytes(b"draft")
     try:
-        (model_dir / "MTP").symlink_to(outside, target_is_directory = True)
+        (model_dir / "MTP").symlink_to(outside, target_is_directory=True)
     except OSError as exc:
         pytest.skip(f"symlinks unavailable: {exc}")
-    with pytest.raises(HTTPException, match = "must live beside"):
+    with pytest.raises(HTTPException, match="must live beside"):
         _validate_native_gguf_companion(
             str(model_dir / "MTP" / companion.name),
             str(weight),
             "MTP drafter",
-            allowed_subdirs = ("mtp",),
+            allowed_subdirs=("mtp",),
         )
 
 
 def test_native_companion_rejects_missing_file(tmp_path):
     weight = tmp_path / "model.gguf"
     weight.write_bytes(b"model")
-    with pytest.raises(HTTPException, match = "no longer accessible"):
+    with pytest.raises(HTTPException, match="no longer accessible"):
         _validate_native_gguf_companion(str(tmp_path / "missing.gguf"), str(weight), "MTP drafter")
 
 
@@ -328,14 +328,14 @@ def test_native_companion_rejects_directory(tmp_path):
     weight.write_bytes(b"model")
     companion = tmp_path / "mtp-model.gguf"
     companion.mkdir()
-    with pytest.raises(HTTPException, match = "regular file"):
+    with pytest.raises(HTTPException, match="regular file"):
         _validate_native_gguf_companion(str(companion), str(weight), "MTP drafter")
 
 
 def test_native_companion_rejects_missing_weight(tmp_path):
     companion = tmp_path / "mtp-model.gguf"
     companion.write_bytes(b"draft")
-    with pytest.raises(HTTPException, match = "no longer accessible"):
+    with pytest.raises(HTTPException, match="no longer accessible"):
         _validate_native_gguf_companion(
             str(companion), str(tmp_path / "missing.gguf"), "MTP drafter"
         )
@@ -363,8 +363,8 @@ def test_reload_dedup_accepts_native_subdir_fallback(tmp_path, monkeypatch):
     backend._gguf_path = str(weight)
     backend._mtp_draft_path = str(companion)
 
-    request = LoadRequest(model_path = str(weight))
-    assert _request_matches_loaded_settings(request, backend, None, native_grant_backed = True)
+    request = LoadRequest(model_path=str(weight))
+    assert _request_matches_loaded_settings(request, backend, None, native_grant_backed=True)
 
 
 def test_reload_dedup_still_reloads_when_drafter_disappears(tmp_path, monkeypatch):
@@ -384,7 +384,7 @@ def test_reload_dedup_still_reloads_when_drafter_disappears(tmp_path, monkeypatc
     backend._mtp_draft_path = str(companion)
 
     companion.unlink()
-    request = LoadRequest(model_path = str(weight))
+    request = LoadRequest(model_path=str(weight))
     assert not _request_matches_loaded_settings(request, backend)
 
 
@@ -405,16 +405,16 @@ def test_reload_dedup_reloads_for_ordinary_load_when_root_drafter_appears(tmp_pa
     backend._gguf_path = str(weight)
     backend._mtp_draft_path = str(companion)
 
-    request = LoadRequest(model_path = str(weight))
+    request = LoadRequest(model_path=str(weight))
     # No root drafter yet: both routes dedupe.
-    assert _request_matches_loaded_settings(request, backend, None, native_grant_backed = True)
-    assert _request_matches_loaded_settings(request, backend, None, native_grant_backed = False)
+    assert _request_matches_loaded_settings(request, backend, None, native_grant_backed=True)
+    assert _request_matches_loaded_settings(request, backend, None, native_grant_backed=False)
 
     (tmp_path / "mtp-model.gguf").write_bytes(b"root drafter")
     # Native cannot reach the root drafter, so the subdir copy stays current.
-    assert _request_matches_loaded_settings(request, backend, None, native_grant_backed = True)
+    assert _request_matches_loaded_settings(request, backend, None, native_grant_backed=True)
     # An ordinary load would pick the root drafter, so it must reload.
-    assert not _request_matches_loaded_settings(request, backend, None, native_grant_backed = False)
+    assert not _request_matches_loaded_settings(request, backend, None, native_grant_backed=False)
 
 
 def test_reload_dedup_native_load_with_no_admissible_drafter(tmp_path, monkeypatch):
@@ -431,10 +431,10 @@ def test_reload_dedup_native_load_with_no_admissible_drafter(tmp_path, monkeypat
     backend._gguf_path = str(weight)
     backend._mtp_draft_path = None
 
-    request = LoadRequest(model_path = str(weight))
-    assert _request_matches_loaded_settings(request, backend, None, native_grant_backed = True)
+    request = LoadRequest(model_path=str(weight))
+    assert _request_matches_loaded_settings(request, backend, None, native_grant_backed=True)
     # An ordinary load would launch the root drafter, so it must reload.
-    assert not _request_matches_loaded_settings(request, backend, None, native_grant_backed = False)
+    assert not _request_matches_loaded_settings(request, backend, None, native_grant_backed=False)
 
 
 def test_native_mtp_drafter_rejects_symlinked_later_shard(tmp_path):
@@ -453,8 +453,8 @@ def test_native_mtp_drafter_rejects_symlinked_later_shard(tmp_path):
     except OSError as exc:
         pytest.skip(f"symlinks unavailable: {exc}")
 
-    with pytest.raises(HTTPException, match = "regular file"):
-        _validate_native_mtp_drafter(str(first), str(weight), mtp_search_root = str(tmp_path))
+    with pytest.raises(HTTPException, match="regular file"):
+        _validate_native_mtp_drafter(str(first), str(weight), mtp_search_root=str(tmp_path))
 
 
 def test_native_mtp_drafter_accepts_regular_shard_set(tmp_path):
@@ -466,7 +466,7 @@ def test_native_mtp_drafter_accepts_regular_shard_set(tmp_path):
     first.write_bytes(b"draft")
     (sub / "mtp-model-Q4_0-00002-of-00002.gguf").write_bytes(b"draft")
 
-    _validate_native_mtp_drafter(str(first), str(weight), mtp_search_root = str(tmp_path))
+    _validate_native_mtp_drafter(str(first), str(weight), mtp_search_root=str(tmp_path))
 
 
 def test_status_provenance_survives_deleted_model_directory(tmp_path, monkeypatch):
@@ -502,17 +502,17 @@ def test_native_load_skips_rejected_mtp_candidate_for_next_one(tmp_path):
     larger.write_bytes(b"d" * 5000)
 
     def _usable(candidate: str) -> bool:
-        return _native_gguf_companion_usable(candidate, str(weight), mtp_search_root = str(tmp_path))
+        return _native_gguf_companion_usable(candidate, str(weight), mtp_search_root=str(tmp_path))
 
     # Preferred by size, but it resolves out of the permitted directory.
-    assert not _usable(detect_mtp_file(str(weight), str(tmp_path), skip_root = True))
-    assert detect_mtp_file(str(weight), str(tmp_path), skip_root = True, accept = _usable) == str(
+    assert not _usable(detect_mtp_file(str(weight), str(tmp_path), skip_root=True))
+    assert detect_mtp_file(str(weight), str(tmp_path), skip_root=True, accept=_usable) == str(
         larger.resolve()
     )
     assert _mtp_draft_for_path(
         str(weight),
         True,
-        log_native_fallback = True,
+        log_native_fallback=True,
     ) == str(larger.resolve())
 
 
@@ -531,6 +531,6 @@ def test_native_load_returns_none_when_no_candidate_passes(tmp_path):
         pytest.skip(f"symlinks unavailable: {exc}")
 
     def _usable(candidate: str) -> bool:
-        return _native_gguf_companion_usable(candidate, str(weight), mtp_search_root = str(tmp_path))
+        return _native_gguf_companion_usable(candidate, str(weight), mtp_search_root=str(tmp_path))
 
-    assert detect_mtp_file(str(weight), str(tmp_path), skip_root = True, accept = _usable) is None
+    assert detect_mtp_file(str(weight), str(tmp_path), skip_root=True, accept=_usable) is None

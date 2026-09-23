@@ -364,7 +364,7 @@ class TestNudgeHelpers:
     def _resp(
         self,
         content,
-        tool_calls = None,
+        tool_calls=None,
     ):
         msg = {"role": "assistant", "content": content}
         if tool_calls:
@@ -383,7 +383,7 @@ class TestNudgeHelpers:
         assert nudge_should_retry(self._resp(XML_BASH), {"Bash"}) is False
 
     def test_no_retry_with_structured_calls(self):
-        data = self._resp("", tool_calls = [{"id": "x"}])
+        data = self._resp("", tool_calls=[{"id": "x"}])
         assert nudge_should_retry(data, {"Bash"}) is False
 
     def test_no_retry_when_healing_disabled(self):
@@ -474,9 +474,9 @@ OTHER_XML = '<tool_call>{"name":"other","arguments":{}}</tool_call>'
 
 def _payload(**kwargs):
     defaults = dict(
-        model = "default",
-        messages = [ChatMessage(role = "user", content = "hi")],
-        tools = [LOOKUP_TOOL],
+        model="default",
+        messages=[ChatMessage(role="user", content="hi")],
+        tools=[LOOKUP_TOOL],
     )
     defaults.update(kwargs)
     return ChatCompletionRequest(**defaults)
@@ -484,17 +484,17 @@ def _payload(**kwargs):
 
 def _llama_backend():
     return SimpleNamespace(
-        base_url = "http://llama.test",
-        context_length = 4096,
-        _request_reasoning_kwargs = lambda *_args, **_kwargs: None,
+        base_url="http://llama.test",
+        context_length=4096,
+        _request_reasoning_kwargs=lambda *_args, **_kwargs: None,
     )
 
 
 def _upstream_message(
     content,
-    tool_calls = None,
-    finish_reason = "stop",
-    usage = None,
+    tool_calls=None,
+    finish_reason="stop",
+    usage=None,
 ):
     message = {"role": "assistant", "content": content}
     if tool_calls is not None:
@@ -520,12 +520,12 @@ class ScriptedClient:
     async def post(
         self,
         _url,
-        json = None,
-        timeout = None,
-        headers = None,
+        json=None,
+        timeout=None,
+        headers=None,
     ):
         self.posts.append(json)
-        return httpx.Response(200, json = self.bodies[min(len(self.posts) - 1, len(self.bodies) - 1)])
+        return httpx.Response(200, json=self.bodies[min(len(self.posts) - 1, len(self.bodies) - 1)])
 
     async def aclose(self):
         # The Anthropic pass-through owns its client and closes it in a finally.
@@ -538,7 +538,7 @@ async def _drive_non_streaming(monkeypatch, payload, bodies):
     client = ScriptedClient(bodies)
     monkeypatch.setattr(inf_mod, "nonstreaming_client", lambda: client)
     response = await _openai_passthrough_non_streaming(
-        _llama_backend(), payload, "gguf", monitor_id = None
+        _llama_backend(), payload, "gguf", monitor_id=None
     )
     return client, json.loads(response.body)
 
@@ -551,7 +551,7 @@ async def _drive_stream(monkeypatch, payload, lines):
             return False
 
     async def fake_send(*_args, **_kwargs):
-        return httpx.Response(200, content = b"")
+        return httpx.Response(200, content=b"")
 
     async def fake_items(*_args, **_kwargs):
         for line in lines:
@@ -559,7 +559,7 @@ async def _drive_stream(monkeypatch, payload, lines):
 
     monkeypatch.setattr(inf_mod, "_send_stream_with_preheader_cancel", fake_send)
     monkeypatch.setattr(inf_mod, "_aiter_llama_stream_items", fake_items)
-    monkeypatch.setattr(inf_mod, "api_monitor", ApiMonitor(max_entries = 3))
+    monkeypatch.setattr(inf_mod, "api_monitor", ApiMonitor(max_entries=3))
     response = await _openai_passthrough_stream(
         Request(),
         threading.Event(),
@@ -567,7 +567,7 @@ async def _drive_stream(monkeypatch, payload, lines):
         payload,
         "gguf",
         "chatcmpl-test",
-        monitor_id = None,
+        monitor_id=None,
     )
     return [chunk async for chunk in response.body_iterator]
 
@@ -603,7 +603,7 @@ class TestOpenaiNonStreamingRoute:
             content = '<tool_call>{"name":"Bash","arguments":"echo hi"}</tool_call>'
             _, data = await _drive_non_streaming(
                 monkeypatch,
-                _payload(tools = [BASH_COMMAND_TOOL]),
+                _payload(tools=[BASH_COMMAND_TOOL]),
                 [_upstream_message(content)],
             )
             (call,) = data["choices"][0]["message"]["tool_calls"]
@@ -615,7 +615,7 @@ class TestOpenaiNonStreamingRoute:
         async def _run():
             _, data = await _drive_non_streaming(
                 monkeypatch,
-                _payload(auto_heal_tool_calls = False),
+                _payload(auto_heal_tool_calls=False),
                 [_upstream_message(LOOKUP_XML)],
             )
             choice = data["choices"][0]
@@ -628,7 +628,7 @@ class TestOpenaiNonStreamingRoute:
     def test_no_tools_untouched(self, monkeypatch):
         async def _run():
             _, data = await _drive_non_streaming(
-                monkeypatch, _payload(tools = None), [_upstream_message(LOOKUP_XML)]
+                monkeypatch, _payload(tools=None), [_upstream_message(LOOKUP_XML)]
             )
             assert data["choices"][0]["message"]["content"] == LOOKUP_XML
 
@@ -655,7 +655,7 @@ class TestOpenaiNonStreamingRoute:
             _, data = await _drive_non_streaming(
                 monkeypatch,
                 _payload(),
-                [_upstream_message("", tool_calls = native, finish_reason = "tool_calls")],
+                [_upstream_message("", tool_calls=native, finish_reason="tool_calls")],
             )
             assert data["choices"][0]["message"]["tool_calls"] == native
 
@@ -669,7 +669,7 @@ class TestOpenaiNonStreamingRoute:
             _, data = await _drive_non_streaming(
                 monkeypatch,
                 _payload(),
-                [_upstream_message(LOOKUP_XML, finish_reason = "length")],
+                [_upstream_message(LOOKUP_XML, finish_reason="length")],
             )
             choice = data["choices"][0]
             assert choice["finish_reason"] == "length"
@@ -682,7 +682,7 @@ class TestOpenaiNonStreamingRoute:
         async def _run():
             _, data = await _drive_non_streaming(
                 monkeypatch,
-                _payload(tool_choice = "none"),
+                _payload(tool_choice="none"),
                 [_upstream_message(LOOKUP_XML)],
             )
             message = data["choices"][0]["message"]
@@ -695,7 +695,7 @@ class TestOpenaiNonStreamingRoute:
         async def _run():
             _, data = await _drive_non_streaming(
                 monkeypatch,
-                _payload(tool_choice = {"type": "function", "function": {"name": "other"}}),
+                _payload(tool_choice={"type": "function", "function": {"name": "other"}}),
                 [_upstream_message(LOOKUP_XML)],
             )
             message = data["choices"][0]["message"]
@@ -709,8 +709,8 @@ class TestOpenaiNonStreamingRoute:
             client, data = await _drive_non_streaming(
                 monkeypatch,
                 _payload(
-                    tools = [LOOKUP_TOOL, OTHER_TOOL],
-                    tool_choice = {"type": "function", "function": {"name": "lookup"}},
+                    tools=[LOOKUP_TOOL, OTHER_TOOL],
+                    tool_choice={"type": "function", "function": {"name": "lookup"}},
                 ),
                 [_upstream_message(OTHER_XML)],
             )
@@ -756,7 +756,7 @@ class TestOpenaiNonStreamingRoute:
                 'data: {"id":"c1","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}',
                 "data: [DONE]",
             ]
-            chunks = await _drive_stream(monkeypatch, _payload(stream = True), lines)
+            chunks = await _drive_stream(monkeypatch, _payload(stream=True), lines)
             indexes = {}
             for payload_data in _stream_payloads(chunks):
                 for ch in payload_data.get("choices", []):
@@ -776,7 +776,7 @@ class TestOpenaiNonStreamingRoute:
                 'data: {"id":"c1","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}',
                 "data: [DONE]",
             ]
-            chunks = await _drive_stream(monkeypatch, _payload(stream = True), lines)
+            chunks = await _drive_stream(monkeypatch, _payload(stream=True), lines)
             payloads = _stream_payloads(chunks)
             first_delta = payloads[0]["choices"][0]["delta"]
             assert first_delta == {"role": "assistant"}
@@ -794,7 +794,7 @@ class TestOpenaiNonStreamingRoute:
                 + '},"finish_reason":"stop"}]}',
                 "data: [DONE]",
             ]
-            chunks = await _drive_stream(monkeypatch, _payload(stream = True), lines)
+            chunks = await _drive_stream(monkeypatch, _payload(stream=True), lines)
             payloads = _stream_payloads(chunks)
             assert payloads[0]["choices"][0]["finish_reason"] is None
             assert payloads[0]["choices"][0]["delta"] == {"role": "assistant"}
@@ -812,7 +812,7 @@ class TestNudgeRetryOpenai:
         async def _run():
             client, data = await _drive_non_streaming(
                 monkeypatch,
-                _payload(nudge_tool_calls = True),
+                _payload(nudge_tool_calls=True),
                 [_upstream_message(GARBAGE_SIGNAL), _upstream_message(LOOKUP_XML)],
             )
             assert len(client.posts) == 2  # exactly one retry
@@ -833,30 +833,30 @@ class TestNudgeRetryOpenai:
         async def _run():
             import routes.inference as inf_mod
 
-            monitor = ApiMonitor(max_entries = 3)
+            monitor = ApiMonitor(max_entries=3)
             monkeypatch.setattr(inf_mod, "api_monitor", monitor)
             monitor_id = monitor.start(
-                endpoint = "/v1/chat/completions",
-                method = "POST",
-                model = "gguf",
-                prompt = "hi",
+                endpoint="/v1/chat/completions",
+                method="POST",
+                model="gguf",
+                prompt="hi",
             )
             first = _upstream_message(
                 GARBAGE_SIGNAL,
-                usage = {"prompt_tokens": 7, "completion_tokens": 3, "total_tokens": 10},
+                usage={"prompt_tokens": 7, "completion_tokens": 3, "total_tokens": 10},
             )
             retry = _upstream_message(
                 LOOKUP_XML,
-                usage = {"prompt_tokens": 20, "completion_tokens": 5, "total_tokens": 25},
+                usage={"prompt_tokens": 20, "completion_tokens": 5, "total_tokens": 25},
             )
             client = ScriptedClient([first, retry])
             monkeypatch.setattr(inf_mod, "nonstreaming_client", lambda: client)
 
             response = await _openai_passthrough_non_streaming(
                 _llama_backend(),
-                _payload(nudge_tool_calls = True),
+                _payload(nudge_tool_calls=True),
                 "gguf",
-                monitor_id = monitor_id,
+                monitor_id=monitor_id,
             )
             data = json.loads(response.body)
 
@@ -876,7 +876,7 @@ class TestNudgeRetryOpenai:
         async def _run():
             client, data = await _drive_non_streaming(
                 monkeypatch,
-                _payload(nudge_tool_calls = True),
+                _payload(nudge_tool_calls=True),
                 [_upstream_message(GARBAGE_SIGNAL), _upstream_message(GARBAGE_SIGNAL + "2")],
             )
             assert len(client.posts) == 2
@@ -898,7 +898,7 @@ class TestNudgeRetryOpenai:
         async def _run():
             client, _ = await _drive_non_streaming(
                 monkeypatch,
-                _payload(nudge_tool_calls = True),
+                _payload(nudge_tool_calls=True),
                 [_upstream_message("all done")],
             )
             assert len(client.posts) == 1
@@ -909,7 +909,7 @@ class TestNudgeRetryOpenai:
         async def _run():
             client, data = await _drive_non_streaming(
                 monkeypatch,
-                _payload(nudge_tool_calls = True),
+                _payload(nudge_tool_calls=True),
                 [_upstream_message(LOOKUP_XML)],
             )
             assert len(client.posts) == 1
@@ -921,7 +921,7 @@ class TestNudgeRetryOpenai:
         async def _run():
             client, _ = await _drive_non_streaming(
                 monkeypatch,
-                _payload(auto_heal_tool_calls = False, nudge_tool_calls = True),
+                _payload(auto_heal_tool_calls=False, nudge_tool_calls=True),
                 [_upstream_message(GARBAGE_SIGNAL)],
             )
             assert len(client.posts) == 1
@@ -934,7 +934,7 @@ class TestNudgeRetryAnthropic:
         self,
         monkeypatch,
         bodies,
-        nudge = None,
+        nudge=None,
     ):
         import routes.inference as inf_mod
         from routes.inference import _anthropic_passthrough_non_streaming
@@ -951,7 +951,7 @@ class TestNudgeRetryAnthropic:
             256,
             "msg_test",
             "gguf",
-            nudge_tool_calls = nudge,
+            nudge_tool_calls=nudge,
         )
         return client, json.loads(response.body)
 
@@ -960,7 +960,7 @@ class TestNudgeRetryAnthropic:
             client, data = await self._drive(
                 monkeypatch,
                 [_upstream_message(GARBAGE_SIGNAL), _upstream_message(LOOKUP_XML)],
-                nudge = True,
+                nudge=True,
             )
             assert len(client.posts) == 2
             (block,) = [b for b in data["content"] if b["type"] == "tool_use"]
@@ -973,16 +973,16 @@ class TestNudgeRetryAnthropic:
         async def _run():
             first = _upstream_message(
                 GARBAGE_SIGNAL,
-                usage = {"prompt_tokens": 7, "completion_tokens": 3, "total_tokens": 10},
+                usage={"prompt_tokens": 7, "completion_tokens": 3, "total_tokens": 10},
             )
             retry = _upstream_message(
                 GARBAGE_SIGNAL + "2",
-                usage = {"prompt_tokens": 20, "completion_tokens": 5, "total_tokens": 25},
+                usage={"prompt_tokens": 20, "completion_tokens": 5, "total_tokens": 25},
             )
             client, data = await self._drive(
                 monkeypatch,
                 [first, retry],
-                nudge = True,
+                nudge=True,
             )
 
             assert len(client.posts) == 2
@@ -1027,7 +1027,7 @@ class TestAnthropicForcedToolChoice:
                 256,
                 "msg_test",
                 "gguf",
-                tool_choice = {"type": "function", "function": {"name": "lookup"}},
+                tool_choice={"type": "function", "function": {"name": "lookup"}},
             )
             return json.loads(response.body)
 
@@ -1086,7 +1086,7 @@ class TestAnthropicEmitterHealing:
         self,
         emitter,
         chunks,
-        finish = True,
+        finish=True,
     ):
         lines = []
         for chunk in chunks:
@@ -1097,7 +1097,7 @@ class TestAnthropicEmitterHealing:
 
     def _emitter(
         self,
-        allowed = ("lookup",),
+        allowed=("lookup",),
         **kwargs,
     ):
         from core.inference.anthropic_compat import AnthropicPassthroughEmitter
@@ -1108,9 +1108,9 @@ class TestAnthropicEmitterHealing:
 
     def _chunk(
         self,
-        content = None,
-        tool_calls = None,
-        finish_reason = None,
+        content=None,
+        tool_calls=None,
+        finish_reason=None,
     ):
         delta = {}
         if content is not None:
@@ -1123,8 +1123,8 @@ class TestAnthropicEmitterHealing:
         events = self._events(
             self._emitter(),
             [
-                self._chunk(content = LOOKUP_XML),
-                self._chunk(finish_reason = "stop"),
+                self._chunk(content=LOOKUP_XML),
+                self._chunk(finish_reason="stop"),
             ],
         )
         starts = [e for e in events if e.get("type") == "content_block_start"]
@@ -1144,8 +1144,8 @@ class TestAnthropicEmitterHealing:
         events = self._events(
             self._emitter(),
             [
-                self._chunk(content = f"Let me check {LOOKUP_XML}"),
-                self._chunk(finish_reason = "stop"),
+                self._chunk(content=f"Let me check {LOOKUP_XML}"),
+                self._chunk(finish_reason="stop"),
             ],
         )
         kinds = [
@@ -1168,7 +1168,7 @@ class TestAnthropicEmitterHealing:
     def test_false_alarm_streams_as_text(self):
         events = self._events(
             self._emitter(),
-            [self._chunk(content = "use the <div> tag"), self._chunk(finish_reason = "stop")],
+            [self._chunk(content="use the <div> tag"), self._chunk(finish_reason="stop")],
         )
         texts = [
             e["delta"]["text"]
@@ -1183,9 +1183,9 @@ class TestAnthropicEmitterHealing:
         events = self._events(
             self._emitter(),
             [
-                self._chunk(content = "<tool"),
-                self._chunk(content = '_call>{"name":"lookup","arguments":{}}'),
-                self._chunk(finish_reason = "stop"),
+                self._chunk(content="<tool"),
+                self._chunk(content='_call>{"name":"lookup","arguments":{}}'),
+                self._chunk(finish_reason="stop"),
             ],
         )
         starts = [e for e in events if e.get("type") == "content_block_start"]
@@ -1200,7 +1200,7 @@ class TestAnthropicEmitterHealing:
     def test_max_tokens_wins_over_healed_stop_reason(self):
         events = self._events(
             self._emitter(),
-            [self._chunk(content = LOOKUP_XML), self._chunk(finish_reason = "length")],
+            [self._chunk(content=LOOKUP_XML), self._chunk(finish_reason="length")],
         )
         (message_delta,) = [e for e in events if e.get("type") == "message_delta"]
         assert message_delta["delta"]["stop_reason"] == "max_tokens"
@@ -1216,9 +1216,9 @@ class TestAnthropicEmitterHealing:
         events = self._events(
             self._emitter(),
             [
-                self._chunk(content = "held <tool"),
-                self._chunk(tool_calls = structured),
-                self._chunk(finish_reason = "tool_calls"),
+                self._chunk(content="held <tool"),
+                self._chunk(tool_calls=structured),
+                self._chunk(finish_reason="tool_calls"),
             ],
         )
         texts = [
@@ -1233,8 +1233,8 @@ class TestAnthropicEmitterHealing:
     def test_disable_parallel_caps_healed_calls(self):
         two = LOOKUP_XML + '<tool_call>{"name":"lookup","arguments":{"q":"y"}}</tool_call>'
         events = self._events(
-            self._emitter(disable_parallel_tool_use = True),
-            [self._chunk(content = two), self._chunk(finish_reason = "stop")],
+            self._emitter(disable_parallel_tool_use=True),
+            [self._chunk(content=two), self._chunk(finish_reason="stop")],
         )
         starts = [
             e
@@ -1255,11 +1255,11 @@ class TestAnthropicEmitterHealing:
             }
         ]
         events = self._events(
-            self._emitter(disable_parallel_tool_use = True),
+            self._emitter(disable_parallel_tool_use=True),
             [
-                self._chunk(content = LOOKUP_XML),
-                self._chunk(tool_calls = structured),
-                self._chunk(finish_reason = "tool_calls"),
+                self._chunk(content=LOOKUP_XML),
+                self._chunk(tool_calls=structured),
+                self._chunk(finish_reason="tool_calls"),
             ],
         )
         starts = [
@@ -1275,7 +1275,7 @@ class TestAnthropicEmitterHealing:
         emitter = AnthropicPassthroughEmitter()  # enable_healing never called
         events = self._events(
             emitter,
-            [self._chunk(content = LOOKUP_XML), self._chunk(finish_reason = "stop")],
+            [self._chunk(content=LOOKUP_XML), self._chunk(finish_reason="stop")],
         )
         texts = [
             e["delta"]["text"]
@@ -1290,9 +1290,9 @@ class TestAnthropicNonStreamingRoute:
         self,
         monkeypatch,
         bodies,
-        auto_heal = None,
-        tools = None,
-        tool_choice = "auto",
+        auto_heal=None,
+        tools=None,
+        tool_choice="auto",
     ):
         import routes.inference as inf_mod
         from routes.inference import _anthropic_passthrough_non_streaming
@@ -1309,8 +1309,8 @@ class TestAnthropicNonStreamingRoute:
             256,
             "msg_test",
             "gguf",
-            tool_choice = tool_choice,
-            auto_heal_tool_calls = auto_heal,
+            tool_choice=tool_choice,
+            auto_heal_tool_calls=auto_heal,
         )
         return client, json.loads(response.body)
 
@@ -1328,7 +1328,7 @@ class TestAnthropicNonStreamingRoute:
     def test_opt_out_keeps_legacy_strip(self, monkeypatch):
         async def _run():
             _, data = await self._drive(
-                monkeypatch, [_upstream_message(f"plan {LOOKUP_XML}")], auto_heal = False
+                monkeypatch, [_upstream_message(f"plan {LOOKUP_XML}")], auto_heal=False
             )
             assert data["stop_reason"] == "end_turn"
             (block,) = data["content"]
@@ -1368,7 +1368,7 @@ class TestAnthropicNonStreamingRoute:
     def test_length_beats_tool_use(self, monkeypatch):
         async def _run():
             _, data = await self._drive(
-                monkeypatch, [_upstream_message(LOOKUP_XML, finish_reason = "length")]
+                monkeypatch, [_upstream_message(LOOKUP_XML, finish_reason="length")]
             )
             assert data["stop_reason"] == "max_tokens"
             assert any(b["type"] == "tool_use" for b in data["content"])
@@ -1383,7 +1383,7 @@ class TestAnthropicNonStreamingRoute:
             _, data = await self._drive(
                 monkeypatch,
                 [_upstream_message(f"plan {LOOKUP_XML}")],
-                tool_choice = "none",
+                tool_choice="none",
             )
             assert data["stop_reason"] == "end_turn"
             (block,) = data["content"]
@@ -1453,7 +1453,7 @@ class TestOpenaiStreamingRoute:
                 'data: {"id":"c1","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}',
                 "data: [DONE]",
             ]
-            chunks = await _drive_stream(monkeypatch, _payload(parallel_tool_calls = False), lines)
+            chunks = await _drive_stream(monkeypatch, _payload(parallel_tool_calls=False), lines)
             payloads = _stream_payloads(chunks)
             tool_deltas = [
                 tc
@@ -1544,6 +1544,7 @@ class TestHealerSignalAlignment:
 
     def test_heal_signals_are_promotable_formats_only(self):
         from core.inference.passthrough_healing import _HEAL_SIGNALS
+
         assert set(_HEAL_SIGNALS) == {
             "<tool_call>",
             "<|tool_call>",

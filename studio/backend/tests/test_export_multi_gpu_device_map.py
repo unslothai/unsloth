@@ -35,8 +35,8 @@ def _export_mod(monkeypatch):
 
 def _stub_hardware(monkeypatch, visible, device_map):
     hw = sys.modules["utils.hardware"]
-    monkeypatch.setattr(hw, "get_parent_visible_gpu_ids", lambda: visible, raising = False)
-    monkeypatch.setattr(hw, "get_device_map", lambda ids: device_map, raising = False)
+    monkeypatch.setattr(hw, "get_parent_visible_gpu_ids", lambda: visible, raising=False)
+    monkeypatch.setattr(hw, "get_device_map", lambda ids: device_map, raising=False)
 
 
 # ── _multi_gpu_device_map_kwargs ──
@@ -79,12 +79,12 @@ def test_uuid_mig_mask_falls_back_to_count_detection(monkeypatch):
     mod = _export_mod(monkeypatch)
     monkeypatch.setattr(mod, "_IS_MLX", False)
     hw = sys.modules["utils.hardware"]
-    monkeypatch.setattr(hw, "get_parent_visible_gpu_ids", lambda: [], raising = False)
+    monkeypatch.setattr(hw, "get_parent_visible_gpu_ids", lambda: [], raising=False)
     monkeypatch.setattr(
         hw,
         "get_device_map",
         lambda ids: "balanced" if ids is None else "sequential",
-        raising = False,
+        raising=False,
     )
     assert mod._multi_gpu_device_map_kwargs() == {"device_map": "balanced"}
 
@@ -94,8 +94,8 @@ def test_no_visible_gpus_keeps_loader_default(monkeypatch):
     mod = _export_mod(monkeypatch)
     monkeypatch.setattr(mod, "_IS_MLX", False)
     hw = sys.modules["utils.hardware"]
-    monkeypatch.setattr(hw, "get_parent_visible_gpu_ids", lambda: [], raising = False)
-    monkeypatch.setattr(hw, "get_device_map", lambda ids: "sequential", raising = False)
+    monkeypatch.setattr(hw, "get_parent_visible_gpu_ids", lambda: [], raising=False)
+    monkeypatch.setattr(hw, "get_device_map", lambda ids: "sequential", raising=False)
     assert mod._multi_gpu_device_map_kwargs() == {}
 
 
@@ -114,7 +114,7 @@ def test_hardware_probe_failure_keeps_loader_default(monkeypatch):
     def _boom():
         raise RuntimeError("no GPUs")
 
-    monkeypatch.setattr(hw, "get_parent_visible_gpu_ids", _boom, raising = False)
+    monkeypatch.setattr(hw, "get_parent_visible_gpu_ids", _boom, raising=False)
     assert mod._multi_gpu_device_map_kwargs() == {}
 
 
@@ -171,20 +171,20 @@ def test_load_checkpoint_repairs_legacy_cache_identity_without_rewriting_adapter
         / "snapshots"
         / "0123456789abcdef"
     )
-    snapshot.mkdir(parents = True)
+    snapshot.mkdir(parents=True)
     checkpoint = tmp_path / "checkpoint-100"
     checkpoint.mkdir()
     adapter_path = checkpoint / "adapter_config.json"
     original_adapter = '{"base_model_name_or_path":"' + str(snapshot) + '","r":16}\n'
-    adapter_path.write_text(original_adapter, encoding = "utf-8")
+    adapter_path.write_text(original_adapter, encoding="utf-8")
 
     class _LegacyAdapterLoader:
         @classmethod
         def from_pretrained(cls, **_kwargs):
             model = types.SimpleNamespace(
-                config = types.SimpleNamespace(_name_or_path = str(checkpoint)),
-                peft_config = {
-                    "default": types.SimpleNamespace(base_model_name_or_path = str(snapshot))
+                config=types.SimpleNamespace(_name_or_path=str(checkpoint)),
+                peft_config={
+                    "default": types.SimpleNamespace(base_model_name_or_path=str(snapshot))
                 },
             )
             return model, types.SimpleNamespace()
@@ -207,7 +207,7 @@ def test_load_checkpoint_repairs_legacy_cache_identity_without_rewriting_adapter
         == "unsloth/Llama-3.2-1B-Instruct"
     )
     assert backend.current_model.config._name_or_path == str(checkpoint)
-    assert adapter_path.read_text(encoding = "utf-8") == original_adapter
+    assert adapter_path.read_text(encoding="utf-8") == original_adapter
 
 
 # ── a load that succeeds but offloads to CPU/disk ──
@@ -215,14 +215,14 @@ def test_load_checkpoint_repairs_legacy_cache_identity_without_rewriting_adapter
 
 def test_cpu_offloaded_modules_counts_cpu_and_disk(monkeypatch):
     mod = _export_mod(monkeypatch)
-    model = types.SimpleNamespace(hf_device_map = {"a": 0, "b": "cpu", "c": 1, "d": "disk"})
+    model = types.SimpleNamespace(hf_device_map={"a": 0, "b": "cpu", "c": 1, "d": "disk"})
     assert mod._cpu_offloaded_modules(model) == 2
 
 
 def test_cpu_offloaded_modules_ignores_gpu_only_and_missing_maps(monkeypatch):
     mod = _export_mod(monkeypatch)
-    assert mod._cpu_offloaded_modules(types.SimpleNamespace(hf_device_map = {"a": 0})) == 0
-    assert mod._cpu_offloaded_modules(types.SimpleNamespace(hf_device_map = None)) == 0
+    assert mod._cpu_offloaded_modules(types.SimpleNamespace(hf_device_map={"a": 0})) == 0
+    assert mod._cpu_offloaded_modules(types.SimpleNamespace(hf_device_map=None)) == 0
     assert mod._cpu_offloaded_modules(types.SimpleNamespace()) == 0
 
 
@@ -235,7 +235,7 @@ class _SpillThenCleanLoader:
     def from_pretrained(cls, **kwargs):
         cls.calls.append(kwargs)
         device_map = {"model.layers.0": 0} if len(cls.calls) > 1 else {"model.layers.0": "cpu"}
-        return types.SimpleNamespace(hf_device_map = device_map), types.SimpleNamespace()
+        return types.SimpleNamespace(hf_device_map=device_map), types.SimpleNamespace()
 
 
 def _run_spill_loader(monkeypatch, tmp_path, device_map_kwargs):
@@ -284,7 +284,7 @@ def test_retry_result_is_kept_even_if_it_also_offloads(monkeypatch, tmp_path):
         @classmethod
         def from_pretrained(cls, **kwargs):
             cls.calls.append(kwargs)
-            return types.SimpleNamespace(hf_device_map = {"a": "cpu"}), types.SimpleNamespace()
+            return types.SimpleNamespace(hf_device_map={"a": "cpu"}), types.SimpleNamespace()
 
     monkeypatch.setattr(mod, "FastLanguageModel", _AlwaysSpills)
     monkeypatch.setattr(mod, "detect_audio_type", lambda *a, **k: None)
@@ -337,7 +337,7 @@ def test_planner_refusal_retries_on_the_single_device_loader(monkeypatch, tmp_pa
             if len(cls.calls) == 1:
                 raise DeviceMapInfeasible("2 x 8 GiB is not enough for the head")
             return types.SimpleNamespace(
-                hf_device_map = {"model.layers.0": 0}
+                hf_device_map={"model.layers.0": 0}
             ), types.SimpleNamespace()
 
     monkeypatch.setattr(mod, "FastLanguageModel", _RefusesThenLoads)
@@ -420,7 +420,7 @@ def test_the_retry_names_sequential_rather_than_omitting_the_device_map(monkeypa
             ):
                 raise DeviceMapInfeasible("needs 7.57 GiB free on cuda:0, has 4.10 GiB")
             return types.SimpleNamespace(
-                hf_device_map = {"model.layers.0": 0}
+                hf_device_map={"model.layers.0": 0}
             ), types.SimpleNamespace()
 
     monkeypatch.setattr(mod, "FastLanguageModel", _RefusesAnyPlan)

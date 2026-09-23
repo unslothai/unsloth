@@ -90,16 +90,18 @@ def _inference():
     """``routes.inference``, deferred because it pulls the whole inference stack. One
     indirection, so a test replaces this instead of mutating sys.modules."""
     from routes import inference
+
     return inference
 
 
-@functools.lru_cache(maxsize = 1)
+@functools.lru_cache(maxsize=1)
 def _studio_version() -> str:
     """The version string, resolved once: get_studio_version() shells out to git twice
     on a source checkout, and uncached that lands on the event loop per probe."""
     try:
         # Inside the guard: an ImportError here would 500 a probe about something else.
         from utils.studio_version import get_studio_version
+
         return get_studio_version()
     except Exception:  # noqa: BLE001 -- discovery must not 500 on a version lookup
         return "dev"
@@ -170,14 +172,15 @@ def _server_props() -> dict:
 
 # Slash forms too: FastAPI's redirect never fires. The catch-all fully matches "/props/" and returns
 # index.html; routes/inference.py registers "/v1/models/" likewise.
-@router.get("/props", include_in_schema = False)
-@router.get("/props/", include_in_schema = False)
-@router.get("/v1/props", include_in_schema = False)
-@router.get("/v1/props/", include_in_schema = False)
+@router.get("/props", include_in_schema=False)
+@router.get("/props/", include_in_schema=False)
+@router.get("/v1/props", include_in_schema=False)
+@router.get("/v1/props/", include_in_schema=False)
 async def llama_props(current_subject: str = Depends(get_current_subject)):
     """llama-server-compatible ``GET /props``. The body reveals the resident model, so another account gets the same answer ``/api/inference/status`` gives it."""
     if await asyncio.to_thread(_resident_hidden_from_caller):
         from hub.services.models.account_access import hidden_resident_response
+
         return hidden_resident_response()
     return await asyncio.to_thread(_server_props)
 
@@ -196,8 +199,8 @@ def _resident_hidden_from_caller() -> bool:
     return bool(slot) and account_access.resident_hidden("chat", slot)
 
 
-@router.get("/version", include_in_schema = False)
-@router.get("/version/", include_in_schema = False)
+@router.get("/version", include_in_schema=False)
+@router.get("/version/", include_in_schema=False)
 async def studio_version(current_subject: str = Depends(get_current_subject)):
     """Bare /version only: Ollama spells it /api/version, and answering there is part
     of claiming to be Ollama."""
@@ -206,7 +209,7 @@ async def studio_version(current_subject: str = Depends(get_current_subject)):
 
 
 async def _probe_not_found():
-    raise HTTPException(status_code = 404, detail = "API endpoint not found")
+    raise HTTPException(status_code=404, detail="API endpoint not found")
 
 
 # Without these a POST hit the GET-only catch-all and returned 405, reading as "exists, wrong method". HEAD is
@@ -225,8 +228,8 @@ for _probe_path in sorted(_ENGINE_PROBE_PATHS):
         router.add_api_route(
             _form,
             _probe_not_found,
-            methods = _PROBE_DENIED_METHODS,
-            include_in_schema = False,
+            methods=_PROBE_DENIED_METHODS,
+            include_in_schema=False,
         )
 
 # main.py already 404s an unknown GET under /v1/, so only the other methods need these.
@@ -235,16 +238,16 @@ for _v1_path in sorted(_UNSERVED_V1_PROBE_PATHS):
         router.add_api_route(
             _form,
             _probe_not_found,
-            methods = _PROBE_DENIED_METHODS,
-            include_in_schema = False,
+            methods=_PROBE_DENIED_METHODS,
+            include_in_schema=False,
         )
 
 for _slots_form in _both_forms("/slots/{id_slot}"):
     router.add_api_route(
         _slots_form,
         _probe_not_found,
-        methods = _PROBE_DENIED_METHODS,
-        include_in_schema = False,
+        methods=_PROBE_DENIED_METHODS,
+        include_in_schema=False,
     )
 
 
@@ -255,6 +258,6 @@ def add_get_denials(app) -> None:
     """
     for path in sorted(_ENGINE_PROBE_PATHS) + sorted(_UNSERVED_V1_PROBE_PATHS):
         for form in _both_forms(f"/{path}"):
-            app.add_api_route(form, _probe_not_found, methods = ["GET"], include_in_schema = False)
+            app.add_api_route(form, _probe_not_found, methods=["GET"], include_in_schema=False)
     for form in _both_forms("/slots/{id_slot}"):
-        app.add_api_route(form, _probe_not_found, methods = ["GET"], include_in_schema = False)
+        app.add_api_route(form, _probe_not_found, methods=["GET"], include_in_schema=False)

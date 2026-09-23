@@ -172,7 +172,7 @@ def render_excluded(payload: Mapping[str, Any]) -> str:
         lines.append("  none. Every cell that was measured is in the numbers above.")
         return "\n".join(lines)
     totals = excluded_totals(payload)
-    for reason, count in sorted(totals.items(), key = lambda kv: (-kv[1], kv[0])):
+    for reason, count in sorted(totals.items(), key=lambda kv: (-kv[1], kv[0])):
         lines.append(f"  {count:>4}  {reason}")
     lines.append("")
     for cell in cells:
@@ -370,7 +370,7 @@ def render_summary(
         blocks = ["FRAME HEALTH"]
         for tokens in sorted(frame_stats_by_rung):
             blocks.append(f"  {tokens:,} tokens")
-            blocks.append(render_frame_health(frame_stats_by_rung[tokens], indent = "    "))
+            blocks.append(render_frame_health(frame_stats_by_rung[tokens], indent="    "))
         sections.append("\n".join(blocks))
 
     sections.extend(extra_sections)

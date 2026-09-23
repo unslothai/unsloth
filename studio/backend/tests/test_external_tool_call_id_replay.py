@@ -35,9 +35,9 @@ def _history(tool_call_id):
     ]
 
 
-def _replayed_ids(tool_call_id, provider_type = "openai"):
+def _replayed_ids(tool_call_id, provider_type="openai"):
     out = _build_external_messages(
-        _history(tool_call_id), supports_vision = True, provider_type = provider_type
+        _history(tool_call_id), supports_vision=True, provider_type=provider_type
     )
     assistant = next(m for m in out if m.get("tool_calls"))
     tool = next(m for m in out if m["role"] == "tool")
@@ -65,14 +65,14 @@ def test_short_ids_pass_through_unchanged():
 
 
 def test_replay_applies_on_generic_chat_completions_providers():
-    call_id, output_id = _replayed_ids(MINTED, provider_type = "deepseek")
+    call_id, output_id = _replayed_ids(MINTED, provider_type="deepseek")
     assert call_id == ORIGINAL
     assert output_id == ORIGINAL
 
 
 def test_mistral_maps_foreign_ids_to_nine_alnum_chars():
     for foreign in (MINTED, "tool_call_0", "toolu_01A09q90qw90lq917835lq9", "x" * 80):
-        call_id, output_id = _replayed_ids(foreign, provider_type = "mistral")
+        call_id, output_id = _replayed_ids(foreign, provider_type="mistral")
         assert call_id == output_id
         assert re.fullmatch(r"[a-zA-Z0-9]{9}", call_id)
 
@@ -81,7 +81,7 @@ def test_colliding_bases_keep_the_full_stored_ids():
     a = "call_0:071e73c8-5d38-4d4c-821a-62fe32c7a54a"
     b = "call_0:11111111-2222-4333-8444-555555555555"
     out = _build_external_messages(
-        _history(a) + _history(b), supports_vision = True, provider_type = "openai"
+        _history(a) + _history(b), supports_vision=True, provider_type="openai"
     )
     call_ids = [m["tool_calls"][0]["id"] for m in out if m.get("tool_calls")]
     output_ids = [m["tool_call_id"] for m in out if m["role"] == "tool"]
@@ -92,7 +92,7 @@ def test_mistral_colliding_bases_stay_distinct():
     a = "call_0:071e73c8-5d38-4d4c-821a-62fe32c7a54a"
     b = "call_0:11111111-2222-4333-8444-555555555555"
     out = _build_external_messages(
-        _history(a) + _history(b), supports_vision = True, provider_type = "mistral"
+        _history(a) + _history(b), supports_vision=True, provider_type="mistral"
     )
     call_ids = [m["tool_calls"][0]["id"] for m in out if m.get("tool_calls")]
     output_ids = [m["tool_call_id"] for m in out if m["role"] == "tool"]
@@ -103,7 +103,7 @@ def test_mistral_colliding_bases_stay_distinct():
 
 def test_mistral_native_ids_pass_through_unchanged():
     call_id, output_id = _replayed_ids(
-        "AbCdEfGhI:071e73c8-5d38-4d4c-821a-62fe32c7a54a", provider_type = "mistral"
+        "AbCdEfGhI:071e73c8-5d38-4d4c-821a-62fe32c7a54a", provider_type="mistral"
     )
     assert call_id == "AbCdEfGhI"
     assert output_id == "AbCdEfGhI"
@@ -117,7 +117,7 @@ ANTHROPIC_ID = re.compile(r"[a-zA-Z0-9_-]+")
 
 
 def test_anthropic_rejects_nothing_it_would_have_rejected():
-    call_id, output_id = _replayed_ids("sandboxsess:threadid:approvalid", provider_type = "anthropic")
+    call_id, output_id = _replayed_ids("sandboxsess:threadid:approvalid", provider_type="anthropic")
     assert call_id == output_id
     assert ANTHROPIC_ID.fullmatch(call_id), call_id
 
@@ -126,7 +126,7 @@ def test_anthropic_colliding_bases_stay_legal_and_distinct():
     a = "call_0:071e73c8-5d38-4d4c-821a-62fe32c7a54a"
     b = "call_0:11111111-2222-4333-8444-555555555555"
     out = _build_external_messages(
-        _history(a) + _history(b), supports_vision = True, provider_type = "anthropic"
+        _history(a) + _history(b), supports_vision=True, provider_type="anthropic"
     )
     call_ids = [m["tool_calls"][0]["id"] for m in out if m.get("tool_calls")]
     output_ids = [m["tool_call_id"] for m in out if m["role"] == "tool"]
@@ -139,7 +139,7 @@ def test_anthropic_legal_ids_pass_through_unchanged():
     # Only ids Anthropic would already have refused may change, so a chat that works
     # today keeps byte-identical ids.
     for legal in ("toolu_01A1B2C3D4E5F6G7H8I9J0K1", "call_abc123", "a-b_c"):
-        call_id, output_id = _replayed_ids(legal, provider_type = "anthropic")
+        call_id, output_id = _replayed_ids(legal, provider_type="anthropic")
         assert call_id == output_id == legal
 
 
@@ -148,8 +148,8 @@ def test_anthropic_sanitizing_alone_would_collide():
     # sha256 tail over the unsanitized value is what keeps the map injective.
     out = _build_external_messages(
         _history("pre:fix") + _history("pre_fix"),
-        supports_vision = True,
-        provider_type = "anthropic",
+        supports_vision=True,
+        provider_type="anthropic",
     )
     call_ids = [m["tool_calls"][0]["id"] for m in out if m.get("tool_calls")]
     assert len(set(call_ids)) == 2, call_ids
@@ -159,8 +159,8 @@ def test_replay_is_idempotent_for_every_provider():
     # A normalized id replayed again on turn three must not drift, or the call and its
     # result stop matching.
     for provider in ("openai", "anthropic", "mistral", "gemini", "deepseek", None):
-        once, _ = _replayed_ids(MINTED, provider_type = provider)
-        twice, paired = _replayed_ids(once, provider_type = provider)
+        once, _ = _replayed_ids(MINTED, provider_type=provider)
+        twice, paired = _replayed_ids(once, provider_type=provider)
         assert twice == once == paired, (provider, once, twice)
 
 
@@ -174,7 +174,7 @@ def _mcp_image_history():
     from core.inference import mcp_images
 
     buffer = io.BytesIO()
-    Image.new("RGB", (6, 6), (10, 120, 200)).save(buffer, format = "PNG")
+    Image.new("RGB", (6, 6), (10, 120, 200)).save(buffer, format="PNG")
     envelope = json.dumps(
         [{"data": base64.b64encode(buffer.getvalue()).decode(), "mimeType": "image/png"}]
     )
@@ -204,7 +204,7 @@ def _mcp_image_history():
 
 def test_replayed_mcp_images_become_an_image_turn_on_a_vision_provider():
     out = _build_external_messages(
-        _mcp_image_history(), supports_vision = True, provider_type = "openai"
+        _mcp_image_history(), supports_vision=True, provider_type="openai"
     )
 
     assert [message["role"] for message in out] == ["assistant", "tool", "user"]
@@ -214,7 +214,7 @@ def test_replayed_mcp_images_become_an_image_turn_on_a_vision_provider():
 
 def test_replayed_mcp_images_are_stripped_on_a_text_only_provider():
     out = _build_external_messages(
-        _mcp_image_history(), supports_vision = False, provider_type = "openai"
+        _mcp_image_history(), supports_vision=False, provider_type="openai"
     )
 
     assert [message["role"] for message in out] == ["assistant", "tool"]
@@ -239,7 +239,7 @@ def test_replay_promotion_is_moved_off_the_event_loop(monkeypatch):
 
     out = asyncio.run(
         inference_route._build_external_messages_async(
-            _mcp_image_history(), True, provider_type = "openai"
+            _mcp_image_history(), True, provider_type="openai"
         )
     )
 
@@ -265,7 +265,7 @@ def test_a_plain_conversation_keeps_its_direct_call(monkeypatch):
         inference_route._build_external_messages_async(
             [ChatMessage.model_validate({"role": "user", "content": "hello"})],
             True,
-            provider_type = "openai",
+            provider_type="openai",
         )
     )
 

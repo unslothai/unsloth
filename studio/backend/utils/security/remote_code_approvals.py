@@ -73,7 +73,7 @@ def approval_target_key(targets) -> str:
 def _load() -> dict:
     """Parsed store, or an empty skeleton on any error (fail-safe = re-prompt)."""
     try:
-        with open(_store_path(), encoding = "utf-8-sig") as f:
+        with open(_store_path(), encoding="utf-8-sig") as f:
             data = json.load(f)
         # Validate the shape, not just the version: a hand-edited ``subjects`` that is not a dict would
         # crash lookup/record instead of failing safe.
@@ -96,8 +96,8 @@ def _save(data: dict) -> None:
     storage_roots.ensure_dir(path.parent)
     tmp = path.parent / f".{path.name}.tmp-{os.getpid()}"
     try:
-        with open(tmp, "w", encoding = "utf-8") as f:
-            json.dump(data, f, indent = 2)
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
         try:
             os.chmod(tmp, 0o600)
         except OSError:
@@ -106,7 +106,7 @@ def _save(data: dict) -> None:
     except Exception as exc:
         logger.warning("Could not write remote-code approvals (%s)", exc)
         try:
-            tmp.unlink(missing_ok = True)
+            tmp.unlink(missing_ok=True)
         except OSError:
             pass
 
@@ -129,9 +129,11 @@ def _file_lock():
         try:
             if os.name == "nt":
                 import msvcrt
+
                 msvcrt.locking(fd, msvcrt.LK_LOCK, 1)
             else:
                 import fcntl
+
                 fcntl.flock(fd, fcntl.LOCK_EX)
         except Exception:
             pass
@@ -140,10 +142,12 @@ def _file_lock():
         try:
             if os.name == "nt":
                 import msvcrt
+
                 with contextlib.suppress(Exception):
                     msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
             else:
                 import fcntl
+
                 fcntl.flock(fd, fcntl.LOCK_UN)
         finally:
             os.close(fd)
@@ -164,11 +168,11 @@ def lookup(subject: str, target_key: str) -> Optional[StoredApproval]:
     if entry.get("max_severity") == CRITICAL:
         return None
     return StoredApproval(
-        commit_sha = entry.get("commit_sha"),
-        fingerprint = entry["fingerprint"],
-        max_severity = entry.get("max_severity"),
-        approved_at = entry.get("approved_at", ""),
-        scanner_version = entry.get("scanner_version", 0),
+        commit_sha=entry.get("commit_sha"),
+        fingerprint=entry["fingerprint"],
+        max_severity=entry.get("max_severity"),
+        approved_at=entry.get("approved_at", ""),
+        scanner_version=entry.get("scanner_version", 0),
     )
 
 
@@ -219,7 +223,7 @@ def clear() -> None:
     """Test helper: drop the on-disk store."""
     with _lock:
         try:
-            _store_path().unlink(missing_ok = True)
+            _store_path().unlink(missing_ok=True)
         except OSError:
             pass
 
@@ -236,7 +240,8 @@ def resolve_commit_sha(target: str, hf_token: Optional[str] = None) -> Optional[
         if is_local_path(target) or _env_offline():
             return None
         from huggingface_hub import HfApi
-        return HfApi().model_info(target, token = hf_token).sha
+
+        return HfApi().model_info(target, token=hf_token).sha
     except Exception as exc:
         logger.debug("Could not resolve commit sha for '%s': %s", target, exc)
         return None

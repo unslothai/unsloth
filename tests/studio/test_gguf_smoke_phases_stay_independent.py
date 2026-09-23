@@ -38,7 +38,7 @@ SHARED = ("steps.install", "steps.sdks")
 
 
 def _steps() -> list[dict]:
-    job = yaml.safe_load(WORKFLOW.read_text(encoding = "utf-8"))["jobs"][JOB]
+    job = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))["jobs"][JOB]
     return job["steps"]
 
 
@@ -65,7 +65,7 @@ def _exports(step: dict) -> dict[str, str]:
 
 
 def test_the_workflow_is_a_single_job():
-    jobs = yaml.safe_load(WORKFLOW.read_text(encoding = "utf-8"))["jobs"]
+    jobs = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))["jobs"]
     assert list(jobs) == [JOB], (
         f"Unsloth GGUF CI is meant to be one bundled job; found {list(jobs)}. Splitting it "
         f"back out returns two of the 60 concurrent slots to a pool that was measured "

@@ -16,7 +16,7 @@ from playwright_image_model_footprint import BASE_URL, REPO_ID, _api_payload, _j
 # A refusal: value "off", status "fell_back". The only shape the echoing stub cannot produce.
 DECLINE = os.environ.get("PW_DECLINE", "0") == "1"
 ART = Path(os.environ.get("PW_ART_DIR", "logs/playwright_image_text_encoder"))
-ART.mkdir(parents = True, exist_ok = True)
+ART.mkdir(parents=True, exist_ok=True)
 
 
 def _record(page, state, loads, plans, errors):
@@ -30,11 +30,11 @@ def _record(page, state, loads, plans, errors):
                 "page_errors": errors,
                 "declined": DECLINE,
             },
-            indent = 2,
+            indent=2,
         ),
-        encoding = "utf-8",
+        encoding="utf-8",
     )
-    page.screenshot(path = str(ART / "text-encoder.png"), full_page = True)
+    page.screenshot(path=str(ART / "text-encoder.png"), full_page=True)
 
 
 def main():
@@ -44,21 +44,21 @@ def main():
     held_status = []
 
     def status():
-        result = _api_payload("/api/inference/images/status", {}, full_footprint = True)
+        result = _api_payload("/api/inference/images/status", {}, full_footprint=True)
         if state["loaded"]:
             requested = loads[-1].get("text_encoder_quant")
             value = "fp8" if requested == "int8" else requested
             if DECLINE and requested:
                 value = "off"
             result.update(
-                loaded = True,
-                repo_id = REPO_ID,
-                base_repo = "black-forest-labs/FLUX.2-klein-4B",
-                family = "flux.2-klein",
-                model_kind = "gguf",
-                dtype = "bfloat16",
-                text_encoder_quant = value,
-                resolved = {
+                loaded=True,
+                repo_id=REPO_ID,
+                base_repo="black-forest-labs/FLUX.2-klein-4B",
+                family="flux.2-klein",
+                model_kind="gguf",
+                dtype="bfloat16",
+                text_encoder_quant=value,
+                resolved={
                     "text_encoder_quant": {
                         "value": value,
                         "requested": requested,
@@ -78,10 +78,10 @@ def main():
         engine = getattr(playwright, os.environ.get("PW_BROWSER", "chromium"))
         executable = os.environ.get("PW_EXECUTABLE")
         browser = engine.launch(
-            headless = True, **({"executable_path": executable} if executable else {})
+            headless=True, **({"executable_path": executable} if executable else {})
         )
         context = browser.new_context(
-            viewport = {"width": 1440, "height": 1000}, reduced_motion = "reduce"
+            viewport={"width": 1440, "height": 1000}, reduced_motion="reduce"
         )
         context.add_init_script(
             "localStorage.setItem('unsloth_auth_token', 'rendered-ui-test');"
@@ -176,34 +176,34 @@ def main():
                     },
                 )
             else:
-                _json(route, _api_payload(path, query, full_footprint = True))
+                _json(route, _api_payload(path, query, full_footprint=True))
 
         context.route("**/*", route_request)
         page = context.new_page()
         page.on("pageerror", lambda error: errors.append(str(error)))
-        page.goto(f"{BASE_URL}/images", wait_until = "domcontentloaded")
-        page.get_by_role("button", name = "Advanced", exact = True).click()
-        encoder = page.get_by_role("combobox", name = "Text encoder precision", exact = True)
+        page.goto(f"{BASE_URL}/images", wait_until="domcontentloaded")
+        page.get_by_role("button", name="Advanced", exact=True).click()
+        encoder = page.get_by_role("combobox", name="Text encoder precision", exact=True)
         expect(encoder).to_have_text("Default")
 
         def choose(label):
             encoder.click()
-            page.get_by_role("option", name = label, exact = True).click()
+            page.get_by_role("option", name=label, exact=True).click()
 
         choose("FP8 (storage)")
-        page.get_by_role("button", name = "Select image model").click()
+        page.get_by_role("button", name="Select image model").click()
         klein_row(page).click()
-        gguf = page.get_by_text("GGUF", exact = True)
+        gguf = page.get_by_text("GGUF", exact=True)
         if gguf.count() == 1:
             gguf.click()
         with page.expect_request(lambda request: urlparse(request.url).path == "/api/hub/download"):
-            page.locator("button[data-model-picker-option]").filter(has_text = "Q4_K_M").click()
+            page.locator("button[data-model-picker-option]").filter(has_text="Q4_K_M").click()
         assert plans and all(plan.get("text_encoder_quant") == "fp8" for plan in plans), plans
         assert not loads
         choose("INT8")
         state["complete"] = True
-        expect(page.get_by_role("button", name = "Reapply to loaded model")).to_be_enabled(
-            timeout = 20_000
+        expect(page.get_by_role("button", name="Reapply to loaded model")).to_be_enabled(
+            timeout=20_000
         )
         if DECLINE:
             # The select must show what RAN, or the page advertises a precision nothing is using.
@@ -233,22 +233,22 @@ def main():
             with page.expect_request(
                 lambda request: urlparse(request.url).path == "/api/inference/images/load"
             ):
-                page.get_by_role("button", name = "Reapply to loaded model").click()
-            expect(page.get_by_role("button", name = "Reapply to loaded model")).to_be_enabled()
+                page.get_by_role("button", name="Reapply to loaded model").click()
+            expect(page.get_by_role("button", name="Reapply to loaded model")).to_be_enabled()
             expect(encoder).to_have_text(displayed)
             assert loads[-1].get("text_encoder_quant") == requested, loads[-1]
             if requested is None:
                 assert "text_encoder_quant" not in loads[-1]
         # A completed reload can have the same precision record as its predecessor.
-        state.update(cached = False, complete = False, started = False)
-        page.get_by_role("button", name = "Reapply to loaded model").scroll_into_view_if_needed()
+        state.update(cached=False, complete=False, started=False)
+        page.get_by_role("button", name="Reapply to loaded model").scroll_into_view_if_needed()
         page.locator(".unsloth-model-selector-trigger:visible").click()
         klein_row(page).click()
-        gguf = page.get_by_text("GGUF", exact = True)
+        gguf = page.get_by_text("GGUF", exact=True)
         if gguf.count() == 1:
             gguf.click()
         with page.expect_request(lambda request: urlparse(request.url).path == "/api/hub/download"):
-            page.locator("button[data-model-picker-option]").filter(has_text = "Q4_K_M").click()
+            page.locator("button[data-model-picker-option]").filter(has_text="Q4_K_M").click()
         choose("FP8 (storage)")
         hold_status = True
         with page.expect_request(
@@ -282,7 +282,7 @@ def main():
         # Either order ends the same, and the edit made while the load staged survives: the reseed
         # follows a change of BUILD, not every completed load, and Reapply is how the user applies it.
         expect(encoder).to_have_text("FP8 (storage)")
-        expect(page.get_by_role("button", name = "Reapply to loaded model")).to_be_enabled()
+        expect(page.get_by_role("button", name="Reapply to loaded model")).to_be_enabled()
         assert not errors, errors
         _record(page, state, loads, plans, errors)
         print(

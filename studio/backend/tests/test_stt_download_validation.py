@@ -39,13 +39,13 @@ def test_custom_non_whisper_repo_is_rejected_before_download(monkeypatch):
     started: list = []
     validated: list = []
 
-    def fake_validate(model, hf_token = None):
+    def fake_validate(model, hf_token=None):
         validated.append(model)
         raise SttModelCompatibilityError(
             f"STT model '{model}' is not a compatible Transformers Whisper model."
         )
 
-    def fake_download(model, hf_token = None):
+    def fake_download(model, hf_token=None):
         started.append(model)
 
     monkeypatch.setattr(stt_module, "validate_remote_model", fake_validate)
@@ -54,9 +54,9 @@ def test_custom_non_whisper_repo_is_rejected_before_download(monkeypatch):
     with pytest.raises(HTTPException) as excinfo:
         _run(
             ri.stt_download(
-                SttLoadRequest(model = "owner/chat-model", engine = "transformers"),
-                current_subject = "tester",
-                hf_token = None,
+                SttLoadRequest(model="owner/chat-model", engine="transformers"),
+                current_subject="tester",
+                hf_token=None,
             )
         )
 
@@ -73,20 +73,20 @@ def test_validated_transformers_repo_downloads(monkeypatch):
     monkeypatch.setattr(
         stt_module,
         "validate_remote_model",
-        lambda model, hf_token = None: {"model": model, "revision": revision},
+        lambda model, hf_token=None: {"model": model, "revision": revision},
     )
     monkeypatch.setattr(
         stt_module,
         "start_model_download",
-        lambda model, hf_token = None, revision = None: started.append((model, revision)),
+        lambda model, hf_token=None, revision=None: started.append((model, revision)),
     )
     monkeypatch.setattr(stt_module, "download_status", lambda: {"downloading": True})
 
     resp = _run(
         ri.stt_download(
-            SttLoadRequest(model = "owner/real-whisper", engine = "transformers"),
-            current_subject = "tester",
-            hf_token = None,
+            SttLoadRequest(model="owner/real-whisper", engine="transformers"),
+            current_subject="tester",
+            hf_token=None,
         )
     )
 
@@ -97,22 +97,22 @@ def test_validated_transformers_repo_downloads(monkeypatch):
 def test_gguf_engine_skips_the_transformers_repo_check(monkeypatch):
     started: list = []
 
-    def fail_if_called(model, hf_token = None):
+    def fail_if_called(model, hf_token=None):
         raise AssertionError("GGUF downloads must not run the Transformers repo check")
 
     # whisper-server present, so the GGUF request stays on the GGUF engine.
     monkeypatch.setattr(ggml_module, "is_available", lambda: True)
     monkeypatch.setattr(stt_module, "validate_remote_model", fail_if_called)
     monkeypatch.setattr(
-        ggml_module, "start_model_download", lambda model, hf_token = None: started.append(model)
+        ggml_module, "start_model_download", lambda model, hf_token=None: started.append(model)
     )
     monkeypatch.setattr(ggml_module, "download_status", lambda: {"downloading": True})
 
     resp = _run(
         ri.stt_download(
-            SttLoadRequest(model = "small", engine = "gguf"),
-            current_subject = "tester",
-            hf_token = None,
+            SttLoadRequest(model="small", engine="gguf"),
+            current_subject="tester",
+            hf_token=None,
         )
     )
 
@@ -141,25 +141,25 @@ def test_gguf_download_falls_back_to_transformers_when_server_absent(monkeypatch
     monkeypatch.setattr(ggml_module, "is_available", lambda: False)  # no whisper-server
     # validate_remote_model no-ops curated ids in production; keep it a no-op here.
     monkeypatch.setattr(
-        stt_module, "validate_remote_model", lambda model, hf_token = None: {"model": model}
+        stt_module, "validate_remote_model", lambda model, hf_token=None: {"model": model}
     )
     monkeypatch.setattr(
         stt_module,
         "start_model_download",
-        lambda model, hf_token = None, revision = None: tf_started.append(model),
+        lambda model, hf_token=None, revision=None: tf_started.append(model),
     )
     monkeypatch.setattr(stt_module, "download_status", lambda: {"downloading": True})
     monkeypatch.setattr(
         ggml_module,
         "start_model_download",
-        lambda model, hf_token = None: gguf_started.append(model),
+        lambda model, hf_token=None: gguf_started.append(model),
     )
 
     resp = _run(
         ri.stt_download(
-            SttLoadRequest(model = "small", engine = "gguf"),
-            current_subject = "tester",
-            hf_token = None,
+            SttLoadRequest(model="small", engine="gguf"),
+            current_subject="tester",
+            hf_token=None,
         )
     )
 

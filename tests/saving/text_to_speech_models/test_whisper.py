@@ -23,7 +23,7 @@ except ImportError as exc:
     # reports no results at all.
     pytest.skip(
         f"requires the full unsloth runtime: {exc}",
-        allow_module_level = True,
+        allow_module_level=True,
     )
 
 import sys
@@ -49,12 +49,12 @@ print(f"{'=' * 80}")
 
 
 model, tokenizer = FastModel.from_pretrained(
-    model_name = "unsloth/whisper-large-v3",
-    dtype = None,
-    load_in_4bit = False,
-    auto_model = WhisperForConditionalGeneration,
-    whisper_language = "English",
-    whisper_task = "transcribe",
+    model_name="unsloth/whisper-large-v3",
+    dtype=None,
+    load_in_4bit=False,
+    auto_model=WhisperForConditionalGeneration,
+    whisper_language="English",
+    whisper_task="transcribe",
 )
 
 
@@ -66,16 +66,16 @@ model.generation_config.forced_decoder_ids = None
 
 model = FastModel.get_peft_model(
     model,
-    r = 64,  # Choose any number > 0 ! Suggested 8, 16, 32, 64, 128
-    target_modules = ["q_proj", "v_proj"],
-    lora_alpha = 64,
-    lora_dropout = 0,  # Supports any, but = 0 is optimized
-    bias = "none",  # Supports any, but = "none" is optimized
-    use_gradient_checkpointing = "unsloth",  # True or "unsloth" for very long context
-    random_state = 3407,
-    use_rslora = False,  # We support rank stabilized LoRA
-    loftq_config = None,  # And LoftQ
-    task_type = None,  # ** MUST set this for Whisper **
+    r=64,  # Choose any number > 0 ! Suggested 8, 16, 32, 64, 128
+    target_modules=["q_proj", "v_proj"],
+    lora_alpha=64,
+    lora_dropout=0,  # Supports any, but = 0 is optimized
+    bias="none",  # Supports any, but = "none" is optimized
+    use_gradient_checkpointing="unsloth",  # True or "unsloth" for very long context
+    random_state=3407,
+    use_rslora=False,  # We support rank stabilized LoRA
+    loftq_config=None,  # And LoftQ
+    task_type=None,  # ** MUST set this for Whisper **
 )
 
 print("✅ Model and LoRA adapters loaded successfully!")
@@ -129,12 +129,12 @@ print(f"{'=' * 80}")
 
 
 model, tokenizer = FastModel.from_pretrained(
-    model_name = "./whisper",
-    dtype = None,
-    load_in_4bit = False,
-    auto_model = WhisperForConditionalGeneration,
-    whisper_language = "English",
-    whisper_task = "transcribe",
+    model_name="./whisper",
+    dtype=None,
+    load_in_4bit=False,
+    auto_model=WhisperForConditionalGeneration,
+    whisper_language="English",
+    whisper_task="transcribe",
 )
 
 
@@ -151,7 +151,7 @@ try:
     headers = {
         "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
     }
-    response = requests.get(audio_url, headers = headers)
+    response = requests.get(audio_url, headers=headers)
     response.raise_for_status()
     with open(audio_file, "wb") as f:
         f.write(response.content)
@@ -162,7 +162,7 @@ except Exception as e:
     # so skip.
     pytest.skip(
         f"could not download the test audio fixture from {audio_url}: {e}",
-        allow_module_level = True,
+        allow_module_level=True,
     )
 
 print(f"\n{'=' * 80}")
@@ -177,12 +177,12 @@ FastModel.for_inference(model)
 model.eval()
 whisper = pipeline(
     "automatic-speech-recognition",
-    model = model,
-    tokenizer = tokenizer.tokenizer,
-    feature_extractor = tokenizer.feature_extractor,
-    processor = tokenizer,
-    return_language = True,
-    torch_dtype = torch.float16,
+    model=model,
+    tokenizer=tokenizer.tokenizer,
+    feature_extractor=tokenizer.feature_extractor,
+    processor=tokenizer,
+    return_language=True,
+    torch_dtype=torch.float16,
 )
 audio_file = "Speech_12dB_s16.flac"
 transcribed_text = whisper(audio_file)

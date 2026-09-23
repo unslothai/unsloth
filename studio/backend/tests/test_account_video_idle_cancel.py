@@ -57,13 +57,13 @@ def _reserve_after_first_read(backend: VideoBackend, account: AccountContext) ->
     return event
 
 
-@pytest.fixture(autouse = True)
+@pytest.fixture(autouse=True)
 def isolated(monkeypatch, tmp_path):
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
     monkeypatch.setattr(auth_storage, "DB_PATH", tmp_path / "auth.db")
     monkeypatch.setattr(auth_storage, "_BOOTSTRAP_PW_PATH", tmp_path / ".bootstrap_password")
     monkeypatch.setattr(auth_storage, "_bootstrap_password", None)
-    monkeypatch.setattr(video, "_generation_account", None, raising = False)
+    monkeypatch.setattr(video, "_generation_account", None, raising=False)
     monkeypatch.setattr(gpu_arbiter, "current_owner", lambda: gpu_arbiter.VIDEO)
     monkeypatch.setattr(gpu_arbiter, "owner_account", lambda: ALICE.account_id)
     monkeypatch.setattr(account_access, "repo_is_public", lambda *args, **kwargs: True)
@@ -81,12 +81,13 @@ def _client(account):
             reset_account(token)
 
     app.dependency_overrides[get_current_subject] = subject
-    app.include_router(video.router, prefix = "/api/inference")
+    app.include_router(video.router, prefix="/api/inference")
     return TestClient(app)
 
 
 def _install(monkeypatch, backend):
     import core.inference.video as video_module
+
     monkeypatch.setattr(video_module, "get_video_backend", lambda: backend)
 
 

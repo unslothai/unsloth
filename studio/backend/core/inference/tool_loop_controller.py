@@ -141,7 +141,7 @@ def _healable_keys_from(tools) -> "dict[str, str]":
 _HEAL_ARG_CACHE: "dict[str, str] | None" = None
 
 
-def _heal_arg_key(tool_name: str, tool_schemas = None) -> "str | None":
+def _heal_arg_key(tool_name: str, tool_schemas=None) -> "str | None":
     """The argument a bare string should become, or None when there isn't one.
 
     ``tool_schemas`` is the REQUEST's tool array. MCP tools are discovered at runtime and
@@ -180,7 +180,7 @@ NoopReason = Literal["duplicate", "disabled", "forced_mismatch", "render_html_re
 ToolAction = Literal["execute", "duplicate", "disabled", "forced_mismatch", "render_html_repeat"]
 
 
-@dataclass(frozen = True)
+@dataclass(frozen=True)
 class CoercedArguments:
     """Normalized tool arguments plus whether healing changed the shape."""
 
@@ -194,10 +194,10 @@ def canonical_arguments_text(arguments: Any) -> str:
     Not sorted: the replay must match the token sequence already in the prompt cache (#10791).
     `canonical_tool_call_key` keeps its own sorted key for dedup.
     """
-    return json.dumps(arguments, ensure_ascii = False, sort_keys = False, separators = (",", ":"))
+    return json.dumps(arguments, ensure_ascii=False, sort_keys=False, separators=(",", ":"))
 
 
-@dataclass(frozen = True)
+@dataclass(frozen=True)
 class ToolCallDecision:
     """Decision made before any visible tool event is emitted."""
 
@@ -209,7 +209,7 @@ class ToolCallDecision:
     # conversation replays; otherwise the two are the same.
     card_call_id: str = ""
     key: str = ""
-    provenance: dict[str, Any] = field(default_factory = dict)
+    provenance: dict[str, Any] = field(default_factory=dict)
     status_text: str = ""
     noop_result: str = ""
 
@@ -285,7 +285,7 @@ class ToolCallDecision:
         return tool_call
 
 
-@dataclass(frozen = True)
+@dataclass(frozen=True)
 class ToolCallCompletion:
     """Result/nudge that should be fed back to the next model turn."""
 
@@ -349,7 +349,7 @@ class ToolCallCompletion:
         return split_mcp_images(self.result)[1]
 
 
-@dataclass(frozen = True)
+@dataclass(frozen=True)
 class _ToolCallRecord:
     key: str
     is_error: bool
@@ -365,10 +365,10 @@ def canonical_tool_call_key(tool_name: str, arguments: Mapping[str, Any]) -> str
     """Return a stable key for duplicate detection."""
     canonical_args = json.dumps(
         dict(arguments),
-        ensure_ascii = False,
-        sort_keys = True,
-        separators = (",", ":"),
-        default = _json_default,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=_json_default,
     )
     return f"{tool_name}:{canonical_args}"
 
@@ -415,7 +415,7 @@ def _repair_json_value(text: str) -> Any:
         cursor = match.end()
     parts += [_balanced(text[cursor:], opened), open_string, *reversed(opened)]
     try:
-        return json.loads("".join(parts), strict = False)
+        return json.loads("".join(parts), strict=False)
     except _DECODE_ERRORS:
         return None
 
@@ -576,7 +576,7 @@ def _usable_container(value: Any, want: type) -> bool:
     if not isinstance(value, want):
         return False
     try:
-        dumped = json.dumps(value, allow_nan = False, sort_keys = True, ensure_ascii = False)
+        dumped = json.dumps(value, allow_nan=False, sort_keys=True, ensure_ascii=False)
         dumped.encode("utf-8")  # a lone surrogate survives dumps and dies encoding the reply
         return json.loads(dumped) == value
     except (TypeError, ValueError, RecursionError):
@@ -587,7 +587,7 @@ def _coerce_container(text: str, want: type, repair: bool) -> Any:
     """``text`` read as the DECLARED container, tolerating a Python literal and, when
     ``repair``, unbalanced brackets. Rewriting brackets is what auto-heal opts out of."""
     try:
-        parsed = json.loads(text, strict = False)
+        parsed = json.loads(text, strict=False)
     except _DECODE_ERRORS:
         parsed = None
     if _usable_container(parsed, want):
@@ -678,7 +678,7 @@ def coerce_tool_arguments(
     *,
     heal: bool,
     tool_name: str = "",
-    tool_schemas = None,
+    tool_schemas=None,
 ) -> CoercedArguments:
     """Normalize model-emitted ``function.arguments`` to a dictionary.
 
@@ -688,14 +688,14 @@ def coerce_tool_arguments(
     properties = _declared_properties(tool_name, tool_schemas) if tool_name else None
     if isinstance(raw_args, Mapping):
         return CoercedArguments(
-            coerce_arguments_by_schema(raw_args, properties, repair = heal), False
+            coerce_arguments_by_schema(raw_args, properties, repair=heal), False
         )
     if isinstance(raw_args, str):
         try:
             parsed = json.loads(raw_args)
             if isinstance(parsed, Mapping):
                 return CoercedArguments(
-                    coerce_arguments_by_schema(parsed, properties, repair = heal), False
+                    coerce_arguments_by_schema(parsed, properties, repair=heal), False
                 )
         except (json.JSONDecodeError, ValueError):
             pass
@@ -755,9 +755,9 @@ def provisional_tool_provenance(tool_name: str) -> dict[str, object]:
     orphaned card (cancel/error before the real tool_start) never shows the id."""
     mcp = mcp_display_parts(tool_name)
     return tool_event_provenance(
-        provisional = True,
-        mcp_server = mcp[0] if mcp else None,
-        mcp_tool = mcp[1] if mcp else None,
+        provisional=True,
+        mcp_server=mcp[0] if mcp else None,
+        mcp_tool=mcp[1] if mcp else None,
     )
 
 
@@ -982,6 +982,7 @@ def strip_result_for_model(
     through `model_message` afterwards, so the mask is applied either way."""
     if tool_name is None or tool_name == "web_search":
         from .search_images import strip_images_suffix
+
         result = strip_images_suffix(result)
     # Always, whoever produced it: these bytes run to megabytes and the model must
     # never be shown them as text. Provenance decides whether they become IMAGE
@@ -1161,18 +1162,18 @@ class ToolLoopController:
         tool_name = str(function.get("name") or "").strip()
         coerced = coerce_tool_arguments(
             function.get("arguments", {}),
-            heal = self._auto_heal_tool_calls,
-            tool_name = tool_name,
-            tool_schemas = self._tools,
+            heal=self._auto_heal_tool_calls,
+            tool_name=tool_name,
+            tool_schemas=self._tools,
         )
         key = canonical_tool_call_key(tool_name, coerced.arguments)
         mcp = mcp_display_parts(tool_name)
         provenance = tool_event_provenance(
-            healed = coerced.healed,
-            forced = forced,
-            provisional = provisional,
-            mcp_server = mcp[0] if mcp else None,
-            mcp_tool = mcp[1] if mcp else None,
+            healed=coerced.healed,
+            forced=forced,
+            provisional=provisional,
+            mcp_server=mcp[0] if mcp else None,
+            mcp_tool=mcp[1] if mcp else None,
         )
         action: ToolAction = "execute"
         noop = ""
@@ -1190,15 +1191,15 @@ class ToolLoopController:
             noop = _noop_result("duplicate", tool_name)
 
         return ToolCallDecision(
-            action = action,
-            tool_name = tool_name,
-            arguments = coerced.arguments,
-            tool_call_id = str(tool_call.get("id") or ""),
-            card_call_id = str(tool_call.get("card_id") or ""),
-            key = key,
-            provenance = provenance,
-            status_text = status_for_tool(tool_name, coerced.arguments),
-            noop_result = noop,
+            action=action,
+            tool_name=tool_name,
+            arguments=coerced.arguments,
+            tool_call_id=str(tool_call.get("id") or ""),
+            card_call_id=str(tool_call.get("card_id") or ""),
+            key=key,
+            provenance=provenance,
+            status_text=status_for_tool(tool_name, coerced.arguments),
+            noop_result=noop,
         )
 
     def record_result(self, decision: ToolCallDecision, result: Any) -> ToolCallCompletion:
@@ -1207,10 +1208,10 @@ class ToolLoopController:
         failed = is_tool_error(result_text)
         self._history.append(
             _ToolCallRecord(
-                key = decision.key,
-                is_error = failed,
-                executed = True,
-                action = decision.action,
+                key=decision.key,
+                is_error=failed,
+                executed=True,
+                action=decision.action,
             )
         )
         # One rerun per piece of NEW work, not per call: `read, edit, read, edit` would
@@ -1235,20 +1236,20 @@ class ToolLoopController:
             if decision.tool_name in self._one_shot_tools:
                 self._completed_one_shot_tools.add(decision.tool_name)
         return ToolCallCompletion(
-            decision = decision,
-            result = result_text,
-            is_error = failed,
-            executed = True,
+            decision=decision,
+            result=result_text,
+            is_error=failed,
+            executed=True,
         )
 
     def record_noop(self, decision: ToolCallDecision) -> ToolCallCompletion:
         """Record a controller no-op without creating visible tool output."""
         self._history.append(
             _ToolCallRecord(
-                key = decision.key,
-                is_error = False,
-                executed = False,
-                action = decision.action,
+                key=decision.key,
+                is_error=False,
+                executed=False,
+                action=decision.action,
             )
         )
         if decision.action == "duplicate":
@@ -1259,8 +1260,8 @@ class ToolLoopController:
         elif decision.action in ("disabled", "render_html_repeat"):
             self._force_final_answer = True
         return ToolCallCompletion(
-            decision = decision,
-            result = decision.noop_result,
-            is_error = False,
-            executed = False,
+            decision=decision,
+            result=decision.noop_result,
+            is_error=False,
+            executed=False,
         )

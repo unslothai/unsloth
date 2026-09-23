@@ -68,7 +68,7 @@ finally:
 from storage import credential_secrets, providers_db
 
 
-@pytest.fixture(autouse = True)
+@pytest.fixture(autouse=True)
 def isolated_databases(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     auth_db = tmp_path / "auth.db"
     studio_db = tmp_path / "studio.db"
@@ -102,12 +102,12 @@ def test_provider_create_preserve_replace_clear_and_delete(monkeypatch):
     created = asyncio.run(
         providers_route.create_provider_config(
             ProviderCreate(
-                provider_type = "openai",
-                display_name = "OpenAI",
-                encrypted_api_key = "first",
+                provider_type="openai",
+                display_name="OpenAI",
+                encrypted_api_key="first",
             ),
-            credential = ("alice", None),
-            via_api_key = False,
+            credential=("alice", None),
+            via_api_key=False,
         )
     )
     assert created.has_api_key is True
@@ -116,9 +116,9 @@ def test_provider_create_preserve_replace_clear_and_delete(monkeypatch):
     metadata_only = asyncio.run(
         providers_route.update_provider_config(
             created.id,
-            ProviderUpdate(display_name = "Renamed"),
-            credential = ("alice", None),
-            via_api_key = False,
+            ProviderUpdate(display_name="Renamed"),
+            credential=("alice", None),
+            via_api_key=False,
         )
     )
     assert metadata_only.display_name == "Renamed"
@@ -127,9 +127,9 @@ def test_provider_create_preserve_replace_clear_and_delete(monkeypatch):
     replaced = asyncio.run(
         providers_route.update_provider_config(
             created.id,
-            ProviderUpdate(encrypted_api_key = "second"),
-            credential = ("alice", None),
-            via_api_key = False,
+            ProviderUpdate(encrypted_api_key="second"),
+            credential=("alice", None),
+            via_api_key=False,
         )
     )
     assert replaced.has_api_key is True
@@ -138,9 +138,9 @@ def test_provider_create_preserve_replace_clear_and_delete(monkeypatch):
     cleared = asyncio.run(
         providers_route.update_provider_config(
             created.id,
-            ProviderUpdate(clear_api_key = True),
-            credential = ("alice", None),
-            via_api_key = False,
+            ProviderUpdate(clear_api_key=True),
+            credential=("alice", None),
+            via_api_key=False,
         )
     )
     assert cleared.has_api_key is False
@@ -150,12 +150,12 @@ def test_provider_create_preserve_replace_clear_and_delete(monkeypatch):
 
     asyncio.run(
         providers_route.delete_provider_config(
-            created.id, credential = ("alice", None), via_api_key = False
+            created.id, credential=("alice", None), via_api_key=False
         )
     )
     asyncio.run(
         providers_route.delete_provider_config(
-            created.id, credential = ("alice", None), via_api_key = False
+            created.id, credential=("alice", None), via_api_key=False
         )
     )
 
@@ -175,11 +175,11 @@ def test_endpoint_and_saved_key_update_is_atomic_for_independent_readers(monkeyp
     old_base_url = "http://127.0.0.1:7770/v1"
     new_base_url = "http://127.0.0.1:8880/v1"
     providers_db.create_provider(
-        id = provider_id,
-        provider_type = "custom",
-        display_name = "Atomic TTS",
-        base_url = old_base_url,
-        models = ["kokoro"],
+        id=provider_id,
+        provider_type="custom",
+        display_name="Atomic TTS",
+        base_url=old_base_url,
+        models=["kokoro"],
     )
     credential_secrets.save_provider_api_key(provider_id, "old-secret")
     monkeypatch.setattr(
@@ -196,12 +196,12 @@ def test_endpoint_and_saved_key_update_is_atomic_for_independent_readers(monkeyp
         saved_provider_id: str,
         api_key: str,
         *,
-        connection = None,
+        connection=None,
     ) -> None:
         assert connection is not None
         between_row_and_key.set()
-        assert finish_key_write.wait(timeout = 5)
-        original_save(saved_provider_id, api_key, connection = connection)
+        assert finish_key_write.wait(timeout=5)
+        original_save(saved_provider_id, api_key, connection=connection)
 
     monkeypatch.setattr(credential_secrets, "save_provider_api_key", _paused_save)
     failures: list[BaseException] = []
@@ -212,27 +212,27 @@ def test_endpoint_and_saved_key_update_is_atomic_for_independent_readers(monkeyp
                 providers_route.update_provider_config(
                     provider_id,
                     ProviderUpdate(
-                        base_url = new_base_url,
-                        encrypted_api_key = "replacement-envelope",
+                        base_url=new_base_url,
+                        encrypted_api_key="replacement-envelope",
                     ),
-                    credential = ("alice", None),
-                    via_api_key = False,
+                    credential=("alice", None),
+                    via_api_key=False,
                 )
             )
         except BaseException as exc:
             failures.append(exc)
 
-    writer = threading.Thread(target = _update)
+    writer = threading.Thread(target=_update)
     writer.start()
     try:
-        assert between_row_and_key.wait(timeout = 5)
+        assert between_row_and_key.wait(timeout=5)
         observed_during_write = (
             providers_db.get_provider(provider_id)["base_url"],
             credential_secrets.get_provider_api_key(provider_id),
         )
     finally:
         finish_key_write.set()
-        writer.join(timeout = 5)
+        writer.join(timeout=5)
 
     assert not writer.is_alive()
     assert failures == []
@@ -248,14 +248,14 @@ def test_custom_max_output_tokens_create_update_and_clear():
     created = asyncio.run(
         providers_route.create_provider_config(
             _provider(
-                provider_type = "custom",
-                display_name = "Custom",
-                base_url = "https://example.com/v1",
-                models = ["vendor/model"],
-                max_output_tokens = 131072,
+                provider_type="custom",
+                display_name="Custom",
+                base_url="https://example.com/v1",
+                models=["vendor/model"],
+                max_output_tokens=131072,
             ),
-            credential = ("alice", None),
-            via_api_key = False,
+            credential=("alice", None),
+            via_api_key=False,
         )
     )
     assert created.max_output_tokens == 131072
@@ -264,9 +264,9 @@ def test_custom_max_output_tokens_create_update_and_clear():
     updated = asyncio.run(
         providers_route.update_provider_config(
             created.id,
-            ProviderUpdate(max_output_tokens = 65536),
-            credential = ("alice", None),
-            via_api_key = False,
+            ProviderUpdate(max_output_tokens=65536),
+            credential=("alice", None),
+            via_api_key=False,
         )
     )
     assert updated.max_output_tokens == 65536
@@ -274,9 +274,9 @@ def test_custom_max_output_tokens_create_update_and_clear():
     preserved = asyncio.run(
         providers_route.update_provider_config(
             created.id,
-            ProviderUpdate(display_name = "Renamed Custom"),
-            credential = ("alice", None),
-            via_api_key = False,
+            ProviderUpdate(display_name="Renamed Custom"),
+            credential=("alice", None),
+            via_api_key=False,
         )
     )
     assert preserved.display_name == "Renamed Custom"
@@ -285,9 +285,9 @@ def test_custom_max_output_tokens_create_update_and_clear():
     cleared = asyncio.run(
         providers_route.update_provider_config(
             created.id,
-            ProviderUpdate(max_output_tokens = None),
-            credential = ("alice", None),
-            via_api_key = False,
+            ProviderUpdate(max_output_tokens=None),
+            credential=("alice", None),
+            via_api_key=False,
         )
     )
     assert cleared.max_output_tokens is None
@@ -296,9 +296,9 @@ def test_custom_max_output_tokens_create_update_and_clear():
 @pytest.mark.parametrize("value", [1_048_577, 9_007_199_254_740_991])
 def test_custom_max_output_tokens_accepts_safe_integer_values(value):
     payload = ProviderCreate(
-        provider_type = "custom",
-        display_name = "Custom",
-        max_output_tokens = value,
+        provider_type="custom",
+        display_name="Custom",
+        max_output_tokens=value,
     )
     assert payload.max_output_tokens == value
 
@@ -310,9 +310,9 @@ def test_custom_max_output_tokens_accepts_safe_integer_values(value):
 def test_custom_max_output_tokens_requires_a_safe_integer(value):
     with pytest.raises(ValidationError):
         ProviderCreate(
-            provider_type = "custom",
-            display_name = "Custom",
-            max_output_tokens = value,
+            provider_type="custom",
+            display_name="Custom",
+            max_output_tokens=value,
         )
 
 
@@ -323,13 +323,13 @@ def test_known_and_custom_preset_providers_accept_a_non_null_max_output_override
         created = asyncio.run(
             providers_route.create_provider_config(
                 ProviderCreate(
-                    provider_type = provider_type,
-                    display_name = provider_type,
-                    base_url = "https://example.com/v1",
-                    max_output_tokens = 65536,
+                    provider_type=provider_type,
+                    display_name=provider_type,
+                    base_url="https://example.com/v1",
+                    max_output_tokens=65536,
                 ),
-                credential = ("alice", None),
-                via_api_key = False,
+                credential=("alice", None),
+                via_api_key=False,
             )
         )
         assert created.max_output_tokens == 65536
@@ -343,12 +343,12 @@ def test_chatgpt_subscription_rejects_a_non_null_max_output_override():
         asyncio.run(
             providers_route.create_provider_config(
                 ProviderCreate(
-                    provider_type = "openai_codex",
-                    display_name = "ChatGPT",
-                    max_output_tokens = 65536,
+                    provider_type="openai_codex",
+                    display_name="ChatGPT",
+                    max_output_tokens=65536,
                 ),
-                credential = ("alice", None),
-                via_api_key = False,
+                credential=("alice", None),
+                via_api_key=False,
             )
         )
     assert error.value.status_code == 400
@@ -367,13 +367,13 @@ def test_known_and_custom_preset_providers_accept_an_explicit_null_max_output_ov
         created = asyncio.run(
             providers_route.create_provider_config(
                 ProviderCreate(
-                    provider_type = provider_type,
-                    display_name = provider_type,
-                    base_url = "https://example.com/v1",
-                    max_output_tokens = None,
+                    provider_type=provider_type,
+                    display_name=provider_type,
+                    base_url="https://example.com/v1",
+                    max_output_tokens=None,
                 ),
-                credential = ("alice", None),
-                via_api_key = False,
+                credential=("alice", None),
+                via_api_key=False,
             )
         )
         assert created.max_output_tokens is None
@@ -382,18 +382,18 @@ def test_known_and_custom_preset_providers_accept_an_explicit_null_max_output_ov
 
 def test_known_provider_accepts_max_output_override_update():
     providers_db.create_provider(
-        id = "openai-1",
-        provider_type = "openai",
-        display_name = "OpenAI",
-        base_url = "https://api.openai.com/v1",
+        id="openai-1",
+        provider_type="openai",
+        display_name="OpenAI",
+        base_url="https://api.openai.com/v1",
     )
 
     updated = asyncio.run(
         providers_route.update_provider_config(
             "openai-1",
-            ProviderUpdate(max_output_tokens = 65536),
-            credential = ("alice", None),
-            via_api_key = False,
+            ProviderUpdate(max_output_tokens=65536),
+            credential=("alice", None),
+            via_api_key=False,
         )
     )
     assert updated.max_output_tokens == 65536
@@ -403,18 +403,18 @@ def test_known_provider_accepts_max_output_override_update():
 def test_known_provider_accepts_a_null_max_output_override_update():
     """The counterpart on the update path: a blank field must not block a rename."""
     providers_db.create_provider(
-        id = "openai-1",
-        provider_type = "openai",
-        display_name = "OpenAI",
-        base_url = "https://api.openai.com/v1",
+        id="openai-1",
+        provider_type="openai",
+        display_name="OpenAI",
+        base_url="https://api.openai.com/v1",
     )
 
     updated = asyncio.run(
         providers_route.update_provider_config(
             "openai-1",
-            ProviderUpdate(display_name = "Renamed", max_output_tokens = None),
-            credential = ("alice", None),
-            via_api_key = False,
+            ProviderUpdate(display_name="Renamed", max_output_tokens=None),
+            credential=("alice", None),
+            via_api_key=False,
         )
     )
     assert updated.display_name == "Renamed"
@@ -424,24 +424,24 @@ def test_known_provider_accepts_a_null_max_output_override_update():
 
 def test_provider_update_validates_before_writes_and_rolls_back_metadata(monkeypatch):
     providers_db.create_provider(
-        id = "provider-1",
-        provider_type = "openai",
-        display_name = "Original",
-        base_url = "https://api.openai.com/v1",
+        id="provider-1",
+        provider_type="openai",
+        display_name="Original",
+        base_url="https://api.openai.com/v1",
     )
     credential_secrets.save_provider_api_key("provider-1", "sk-original")
 
     def invalid_envelope(_provider_id, _envelope, **_kwargs):
-        raise HTTPException(status_code = 400, detail = "invalid envelope")
+        raise HTTPException(status_code=400, detail="invalid envelope")
 
     monkeypatch.setattr(providers_route, "resolve_provider_api_key_or_400", invalid_envelope)
     with pytest.raises(HTTPException):
         asyncio.run(
             providers_route.update_provider_config(
                 "provider-1",
-                ProviderUpdate(display_name = "Must not persist", encrypted_api_key = "invalid"),
-                credential = ("alice", None),
-                via_api_key = False,
+                ProviderUpdate(display_name="Must not persist", encrypted_api_key="invalid"),
+                credential=("alice", None),
+                via_api_key=False,
             )
         )
     assert providers_db.get_provider("provider-1")["display_name"] == "Original"
@@ -459,13 +459,13 @@ def test_provider_update_validates_before_writes_and_rolls_back_metadata(monkeyp
         original_save(provider_id, api_key, **kwargs)
 
     monkeypatch.setattr(credential_secrets, "save_provider_api_key", fail_replacement)
-    with pytest.raises(RuntimeError, match = "credential write failure"):
+    with pytest.raises(RuntimeError, match="credential write failure"):
         asyncio.run(
             providers_route.update_provider_config(
                 "provider-1",
-                ProviderUpdate(display_name = "Also rolled back", encrypted_api_key = "valid"),
-                credential = ("alice", None),
-                via_api_key = False,
+                ProviderUpdate(display_name="Also rolled back", encrypted_api_key="valid"),
+                credential=("alice", None),
+                via_api_key=False,
             )
         )
 
@@ -475,10 +475,10 @@ def test_provider_update_validates_before_writes_and_rolls_back_metadata(monkeyp
 
 def test_provider_delete_restores_key_when_provider_delete_fails(monkeypatch):
     providers_db.create_provider(
-        id = "provider-1",
-        provider_type = "openai",
-        display_name = "OpenAI",
-        base_url = "https://api.openai.com/v1",
+        id="provider-1",
+        provider_type="openai",
+        display_name="OpenAI",
+        base_url="https://api.openai.com/v1",
     )
     credential_secrets.save_provider_api_key("provider-1", "sk-original")
 
@@ -486,10 +486,10 @@ def test_provider_delete_restores_key_when_provider_delete_fails(monkeypatch):
         raise RuntimeError("simulated provider delete failure")
 
     monkeypatch.setattr(providers_db, "delete_provider", fail_delete)
-    with pytest.raises(RuntimeError, match = "provider delete failure"):
+    with pytest.raises(RuntimeError, match="provider delete failure"):
         asyncio.run(
             providers_route.delete_provider_config(
-                "provider-1", credential = ("alice", None), via_api_key = False
+                "provider-1", credential=("alice", None), via_api_key=False
             )
         )
 
@@ -506,9 +506,9 @@ def test_credential_writes_reject_a_rotated_request(monkeypatch):
     monkeypatch.setattr(auth_storage, "credential_generation_guard", reject_stale)
     with pytest.raises(HTTPException) as error:
         settings_route.update_hugging_face_token(
-            settings_route.HuggingFaceTokenPayload(token = "hf_stale"),
-            credential = ("alice", "stale-generation"),
-            via_api_key = False,
+            settings_route.HuggingFaceTokenPayload(token="hf_stale"),
+            credential=("alice", "stale-generation"),
+            via_api_key=False,
         )
     assert error.value.status_code == 401
     assert credential_secrets.get_hf_token() is None
@@ -516,10 +516,10 @@ def test_credential_writes_reject_a_rotated_request(monkeypatch):
 
 def test_explicit_provider_key_preserves_the_edited_target():
     payload = ProviderModelsRequest(
-        provider_id = "provider-1",
-        provider_type = "custom",
-        encrypted_api_key = "encrypted-replacement",
-        base_url = "https://new.example/v1",
+        provider_id="provider-1",
+        provider_type="custom",
+        encrypted_api_key="encrypted-replacement",
+        base_url="https://new.example/v1",
     )
     assert providers_route._bind_saved_provider_target(payload) is payload
 
@@ -528,9 +528,9 @@ def test_provider_mutations_reject_api_key_authentication():
     with pytest.raises(HTTPException) as error:
         asyncio.run(
             providers_route.create_provider_config(
-                ProviderCreate(provider_type = "openai", display_name = "Forbidden"),
-                credential = ("alice", None),
-                via_api_key = True,
+                ProviderCreate(provider_type="openai", display_name="Forbidden"),
+                credential=("alice", None),
+                via_api_key=True,
             )
         )
     assert error.value.status_code == 403
@@ -542,7 +542,7 @@ def test_shared_provider_resolver_uses_saved_and_explicit_precedence(monkeypatch
     assert providers_route.resolve_provider_api_key_or_400("provider-1", None) == "saved"
 
     assert (
-        providers_route.resolve_provider_api_key_or_400("provider-1", None, allow_saved_key = False)
+        providers_route.resolve_provider_api_key_or_400("provider-1", None, allow_saved_key=False)
         == ""
     )
 
@@ -555,7 +555,7 @@ def test_shared_provider_resolver_uses_saved_and_explicit_precedence(monkeypatch
     )
     assert (
         providers_route.resolve_provider_api_key_or_400(
-            "provider-1", "ciphertext", prefer_saved_key = True
+            "provider-1", "ciphertext", prefer_saved_key=True
         )
         == "saved"
     )
@@ -563,8 +563,8 @@ def test_shared_provider_resolver_uses_saved_and_explicit_precedence(monkeypatch
         providers_route.resolve_provider_api_key_or_400(
             "provider-1",
             "ciphertext",
-            allow_saved_key = False,
-            prefer_saved_key = True,
+            allow_saved_key=False,
+            prefer_saved_key=True,
         )
         == "explicit:ciphertext"
     )
@@ -596,10 +596,10 @@ def test_provider_model_and_connection_routes_use_saved_key(monkeypatch):
     monkeypatch.setattr(providers_route, "ExternalProviderClient", FakeProviderClient)
 
     providers_db.create_provider(
-        id = "provider-1",
-        provider_type = "mistral",
-        display_name = "Mistral",
-        base_url = "https://api.mistral.ai/v1",
+        id="provider-1",
+        provider_type="mistral",
+        display_name="Mistral",
+        base_url="https://api.mistral.ai/v1",
     )
     credential_secrets.save_provider_api_key("provider-1", "saved-key")
 
@@ -607,41 +607,41 @@ def test_provider_model_and_connection_routes_use_saved_key(monkeypatch):
     auth_storage._credential_encryption_key_cache = None
     credential_secrets._schema_ready = set()
     assert (
-        settings_route.get_hugging_face_token("alice", via_api_key = False).token
+        settings_route.get_hugging_face_token("alice", via_api_key=False).token
         == "hf-after-restart"
     )
 
     models = asyncio.run(
         providers_route.list_provider_models(
             ProviderModelsRequest(
-                provider_type = "custom",
-                provider_id = "provider-1",
-                base_url = "https://attacker.invalid/v1",
+                provider_type="custom",
+                provider_id="provider-1",
+                base_url="https://attacker.invalid/v1",
             ),
-            _current_subject = "alice",
-            via_api_key = False,
+            _current_subject="alice",
+            via_api_key=False,
         )
     )
     result = asyncio.run(
         providers_route.test_provider(
             ProviderTestRequest(
-                provider_type = "custom",
-                provider_id = "provider-1",
-                base_url = "https://attacker.invalid/v1",
+                provider_type="custom",
+                provider_id="provider-1",
+                base_url="https://attacker.invalid/v1",
             ),
-            _current_subject = "alice",
-            via_api_key = False,
+            _current_subject="alice",
+            via_api_key=False,
         )
     )
 
     api_key_models = asyncio.run(
         providers_route.list_provider_models(
             ProviderModelsRequest(
-                provider_type = "custom",
-                provider_id = "provider-1",
+                provider_type="custom",
+                provider_id="provider-1",
             ),
-            _current_subject = "alice",
-            via_api_key = True,
+            _current_subject="alice",
+            via_api_key=True,
         )
     )
 
@@ -663,37 +663,37 @@ def test_hugging_face_routes_are_global_and_idempotent():
     # Exercise a cold encryption-key cache while the real generation guard is active.
     auth_storage._credential_encryption_key_cache = None
     saved = settings_route.update_hugging_face_token(
-        settings_route.HuggingFaceTokenPayload(token = " 'hf_alice' "),
-        credential = credential,
-        via_api_key = False,
+        settings_route.HuggingFaceTokenPayload(token=" 'hf_alice' "),
+        credential=credential,
+        via_api_key=False,
     )
     assert saved.token == "hf_alice"
-    assert settings_route.get_hugging_face_token("alice", via_api_key = False).token == "hf_alice"
-    assert settings_route.get_hugging_face_token("bob", via_api_key = False).token == "hf_alice"
+    assert settings_route.get_hugging_face_token("alice", via_api_key=False).token == "hf_alice"
+    assert settings_route.get_hugging_face_token("bob", via_api_key=False).token == "hf_alice"
 
-    assert settings_route.clear_hugging_face_token(credential, via_api_key = False).has_token is False
-    assert settings_route.clear_hugging_face_token(credential, via_api_key = False).has_token is False
+    assert settings_route.clear_hugging_face_token(credential, via_api_key=False).has_token is False
+    assert settings_route.clear_hugging_face_token(credential, via_api_key=False).has_token is False
 
 
 def test_legacy_migration_never_replaces_newer_credentials(monkeypatch):
     credential = ("alice", None)
     settings_route.update_hugging_face_token(
-        settings_route.HuggingFaceTokenPayload(token = "hf_newer"),
-        credential = credential,
-        via_api_key = False,
+        settings_route.HuggingFaceTokenPayload(token="hf_newer"),
+        credential=credential,
+        via_api_key=False,
     )
     migrated_hf = settings_route.migrate_hugging_face_token(
-        settings_route.HuggingFaceTokenPayload(token = "hf_legacy"),
-        credential = credential,
-        via_api_key = False,
+        settings_route.HuggingFaceTokenPayload(token="hf_legacy"),
+        credential=credential,
+        via_api_key=False,
     )
     assert migrated_hf.token == "hf_newer"
 
     providers_db.create_provider(
-        id = "provider-1",
-        provider_type = "openai",
-        display_name = "OpenAI",
-        base_url = "https://api.openai.com/v1",
+        id="provider-1",
+        provider_type="openai",
+        display_name="OpenAI",
+        base_url="https://api.openai.com/v1",
     )
     credential_secrets.save_provider_api_key("provider-1", "sk-newer")
     monkeypatch.setattr(
@@ -704,9 +704,9 @@ def test_legacy_migration_never_replaces_newer_credentials(monkeypatch):
     migrated_provider = asyncio.run(
         providers_route.migrate_provider_api_key(
             "provider-1",
-            ProviderCredentialMigration(encrypted_api_key = "encrypted-legacy"),
-            credential = credential,
-            via_api_key = False,
+            ProviderCredentialMigration(encrypted_api_key="encrypted-legacy"),
+            credential=credential,
+            via_api_key=False,
         )
     )
     assert migrated_provider.has_api_key is True
@@ -715,21 +715,21 @@ def test_legacy_migration_never_replaces_newer_credentials(monkeypatch):
 
 def test_hugging_face_secret_routes_reject_api_key_authentication():
     with pytest.raises(HTTPException) as get_error:
-        settings_route.get_hugging_face_token("alice", via_api_key = True)
+        settings_route.get_hugging_face_token("alice", via_api_key=True)
     assert get_error.value.status_code == 403
 
     with pytest.raises(HTTPException) as put_error:
         settings_route.update_hugging_face_token(
-            settings_route.HuggingFaceTokenPayload(token = "hf_forbidden"),
-            credential = ("alice", None),
-            via_api_key = True,
+            settings_route.HuggingFaceTokenPayload(token="hf_forbidden"),
+            credential=("alice", None),
+            via_api_key=True,
         )
     assert put_error.value.status_code == 403
 
     with pytest.raises(HTTPException) as delete_error:
         settings_route.clear_hugging_face_token(
             ("alice", None),
-            via_api_key = True,
+            via_api_key=True,
         )
     assert delete_error.value.status_code == 403
 
@@ -745,8 +745,8 @@ def test_codex_update_refreshes_the_plan_catalog_before_validating(monkeypatch):
     created = asyncio.run(
         providers_route.create_provider_config(
             _provider(),
-            credential = ("alice", None),
-            via_api_key = False,
+            credential=("alice", None),
+            via_api_key=False,
         )
     )
     listed = "gpt-5.7-nova"
@@ -762,9 +762,9 @@ def test_codex_update_refreshes_the_plan_catalog_before_validating(monkeypatch):
         asyncio.run(
             providers_route.update_provider_config(
                 created.id,
-                ProviderUpdate(models = [listed]),
-                credential = ("alice", None),
-                via_api_key = False,
+                ProviderUpdate(models=[listed]),
+                credential=("alice", None),
+                via_api_key=False,
             )
         )
     assert refused.value.status_code == 400
@@ -780,9 +780,9 @@ def test_codex_update_refreshes_the_plan_catalog_before_validating(monkeypatch):
         updated = asyncio.run(
             providers_route.update_provider_config(
                 created.id,
-                ProviderUpdate(models = [listed]),
-                credential = ("alice", None),
-                via_api_key = False,
+                ProviderUpdate(models=[listed]),
+                credential=("alice", None),
+                via_api_key=False,
             )
         )
         assert updated.models == [listed]
@@ -797,8 +797,8 @@ def test_codex_update_of_seed_models_never_reaches_upstream(monkeypatch):
     created = asyncio.run(
         providers_route.create_provider_config(
             _provider(),
-            credential = ("alice", None),
-            via_api_key = False,
+            credential=("alice", None),
+            via_api_key=False,
         )
     )
     codex_client.forget_subscription_models(created.id)
@@ -812,9 +812,9 @@ def test_codex_update_of_seed_models_never_reaches_upstream(monkeypatch):
     updated = asyncio.run(
         providers_route.update_provider_config(
             created.id,
-            ProviderUpdate(models = ["gpt-5.4", "gpt-5.5"]),
-            credential = ("alice", None),
-            via_api_key = False,
+            ProviderUpdate(models=["gpt-5.4", "gpt-5.5"]),
+            credential=("alice", None),
+            via_api_key=False,
         )
     )
     assert updated.models == ["gpt-5.4", "gpt-5.5"]
@@ -834,8 +834,8 @@ def test_codex_unrelated_edit_survives_an_unreachable_catalog(monkeypatch):
     created = asyncio.run(
         providers_route.create_provider_config(
             _provider(),
-            credential = ("alice", None),
-            via_api_key = False,
+            credential=("alice", None),
+            via_api_key=False,
         )
     )
 
@@ -847,9 +847,9 @@ def test_codex_unrelated_edit_survives_an_unreachable_catalog(monkeypatch):
     asyncio.run(
         providers_route.update_provider_config(
             created.id,
-            ProviderUpdate(models = [listed]),
-            credential = ("alice", None),
-            via_api_key = False,
+            ProviderUpdate(models=[listed]),
+            credential=("alice", None),
+            via_api_key=False,
         )
     )
     codex_client.forget_subscription_models(created.id)
@@ -867,9 +867,9 @@ def test_codex_unrelated_edit_survives_an_unreachable_catalog(monkeypatch):
         renamed = asyncio.run(
             providers_route.update_provider_config(
                 created.id,
-                ProviderUpdate(display_name = "Work account", models = [listed]),
-                credential = ("alice", None),
-                via_api_key = False,
+                ProviderUpdate(display_name="Work account", models=[listed]),
+                credential=("alice", None),
+                via_api_key=False,
             )
         )
         assert renamed.display_name == "Work account"
@@ -882,9 +882,9 @@ def test_codex_unrelated_edit_survives_an_unreachable_catalog(monkeypatch):
             asyncio.run(
                 providers_route.update_provider_config(
                     created.id,
-                    ProviderUpdate(models = [listed, "gpt-5.9-unheard-of"]),
-                    credential = ("alice", None),
-                    via_api_key = False,
+                    ProviderUpdate(models=[listed, "gpt-5.9-unheard-of"]),
+                    credential=("alice", None),
+                    via_api_key=False,
                 )
             )
         assert refused.value.status_code == 400
@@ -904,8 +904,8 @@ def test_codex_save_refuses_a_seed_the_plan_catalog_omits(monkeypatch):
     created = asyncio.run(
         providers_route.create_provider_config(
             _provider(),
-            credential = ("alice", None),
-            via_api_key = False,
+            credential=("alice", None),
+            via_api_key=False,
         )
     )
 
@@ -922,9 +922,9 @@ def test_codex_save_refuses_a_seed_the_plan_catalog_omits(monkeypatch):
             asyncio.run(
                 providers_route.update_provider_config(
                     created.id,
-                    ProviderUpdate(models = ["gpt-5.4"]),
-                    credential = ("alice", None),
-                    via_api_key = False,
+                    ProviderUpdate(models=["gpt-5.4"]),
+                    credential=("alice", None),
+                    via_api_key=False,
                 )
             )
         assert refused.value.status_code == 400
@@ -932,9 +932,9 @@ def test_codex_save_refuses_a_seed_the_plan_catalog_omits(monkeypatch):
         kept = asyncio.run(
             providers_route.update_provider_config(
                 created.id,
-                ProviderUpdate(models = ["gpt-5.5"]),
-                credential = ("alice", None),
-                via_api_key = False,
+                ProviderUpdate(models=["gpt-5.5"]),
+                credential=("alice", None),
+                via_api_key=False,
             )
         )
         assert kept.models == ["gpt-5.5"]
@@ -955,8 +955,8 @@ def test_codex_save_refuses_a_row_the_account_cannot_vouch_for(monkeypatch):
     created = asyncio.run(
         providers_route.create_provider_config(
             _provider(),
-            credential = ("alice", None),
-            via_api_key = False,
+            credential=("alice", None),
+            via_api_key=False,
         )
     )
 
@@ -968,9 +968,9 @@ def test_codex_save_refuses_a_row_the_account_cannot_vouch_for(monkeypatch):
     asyncio.run(
         providers_route.update_provider_config(
             created.id,
-            ProviderUpdate(models = [listed]),
-            credential = ("alice", None),
-            via_api_key = False,
+            ProviderUpdate(models=[listed]),
+            credential=("alice", None),
+            via_api_key=False,
         )
     )
     codex_client.forget_subscription_models(created.id)
@@ -992,9 +992,9 @@ def test_codex_save_refuses_a_row_the_account_cannot_vouch_for(monkeypatch):
             asyncio.run(
                 providers_route.update_provider_config(
                     created.id,
-                    ProviderUpdate(display_name = "Renamed", models = [listed]),
-                    credential = ("alice", None),
-                    via_api_key = False,
+                    ProviderUpdate(display_name="Renamed", models=[listed]),
+                    credential=("alice", None),
+                    via_api_key=False,
                 )
             )
         assert refused.value.status_code == 400
@@ -1007,9 +1007,9 @@ def test_codex_save_refuses_a_row_the_account_cannot_vouch_for(monkeypatch):
         renamed = asyncio.run(
             providers_route.update_provider_config(
                 created.id,
-                ProviderUpdate(display_name = "Renamed", models = [listed]),
-                credential = ("alice", None),
-                via_api_key = False,
+                ProviderUpdate(display_name="Renamed", models=[listed]),
+                credential=("alice", None),
+                via_api_key=False,
             )
         )
         assert renamed.display_name == "Renamed"
@@ -1037,8 +1037,8 @@ def test_codex_save_records_the_account_it_validated_against(monkeypatch):
     created = asyncio.run(
         providers_route.create_provider_config(
             _provider(),
-            credential = ("alice", None),
-            via_api_key = False,
+            credential=("alice", None),
+            via_api_key=False,
         )
     )
     # Creating does not record: there is no connection behind it yet.
@@ -1049,9 +1049,9 @@ def test_codex_save_records_the_account_it_validated_against(monkeypatch):
         asyncio.run(
             providers_route.update_provider_config(
                 created.id,
-                ProviderUpdate(models = ["gpt-5.4", "gpt-5.5"]),
-                credential = ("alice", None),
-                via_api_key = False,
+                ProviderUpdate(models=["gpt-5.4", "gpt-5.5"]),
+                credential=("alice", None),
+                via_api_key=False,
             )
         )
         assert recorded == [(created.id, "acct-1")]
@@ -1061,9 +1061,9 @@ def test_codex_save_records_the_account_it_validated_against(monkeypatch):
         asyncio.run(
             providers_route.update_provider_config(
                 created.id,
-                ProviderUpdate(display_name = "Renamed"),
-                credential = ("alice", None),
-                via_api_key = False,
+                ProviderUpdate(display_name="Renamed"),
+                credential=("alice", None),
+                via_api_key=False,
             )
         )
         assert recorded == []
@@ -1091,8 +1091,8 @@ def test_codex_save_that_cannot_record_its_proof_keeps_nothing(monkeypatch):
     created = asyncio.run(
         providers_route.create_provider_config(
             _provider(),
-            credential = ("alice", None),
-            via_api_key = False,
+            credential=("alice", None),
+            via_api_key=False,
         )
     )
     provider_id = created.id
@@ -1126,9 +1126,9 @@ def test_codex_save_that_cannot_record_its_proof_keeps_nothing(monkeypatch):
             asyncio.run(
                 providers_route.update_provider_config(
                     provider_id,
-                    ProviderUpdate(models = ["gpt-5.4", listed]),
-                    credential = ("alice", None),
-                    via_api_key = False,
+                    ProviderUpdate(models=["gpt-5.4", listed]),
+                    credential=("alice", None),
+                    via_api_key=False,
                 )
             )
 
@@ -1161,9 +1161,9 @@ def test_codex_save_that_cannot_record_its_proof_keeps_nothing(monkeypatch):
         renamed = asyncio.run(
             providers_route.update_provider_config(
                 provider_id,
-                ProviderUpdate(display_name = "Renamed", models = ["gpt-5.4"]),
-                credential = ("alice", None),
-                via_api_key = False,
+                ProviderUpdate(display_name="Renamed", models=["gpt-5.4"]),
+                credential=("alice", None),
+                via_api_key=False,
             )
         )
         assert renamed.display_name == "Renamed"
@@ -1200,8 +1200,8 @@ def test_codex_save_records_only_the_account_it_actually_validated(monkeypatch):
     created = asyncio.run(
         providers_route.create_provider_config(
             _provider(),
-            credential = ("alice", None),
-            via_api_key = False,
+            credential=("alice", None),
+            via_api_key=False,
         )
     )
     codex_client.forget_subscription_models(created.id)
@@ -1210,9 +1210,9 @@ def test_codex_save_records_only_the_account_it_actually_validated(monkeypatch):
         asyncio.run(
             providers_route.update_provider_config(
                 created.id,
-                ProviderUpdate(models = ["gpt-5.4"]),
-                credential = ("alice", None),
-                via_api_key = False,
+                ProviderUpdate(models=["gpt-5.4"]),
+                credential=("alice", None),
+                via_api_key=False,
             )
         )
         assert recorded == [(created.id, "acct-a")]
@@ -1234,8 +1234,8 @@ def test_deleting_a_codex_connection_releases_its_plan_catalog():
     created = asyncio.run(
         providers_route.create_provider_config(
             _provider(),
-            credential = ("alice", None),
-            via_api_key = False,
+            credential=("alice", None),
+            via_api_key=False,
         )
     )
     provider_id = created.id
@@ -1250,7 +1250,7 @@ def test_deleting_a_codex_connection_releases_its_plan_catalog():
     try:
         asyncio.run(
             providers_route.delete_provider_config(
-                provider_id, credential = ("alice", None), via_api_key = False
+                provider_id, credential=("alice", None), via_api_key=False
             )
         )
         assert providers_db.get_provider(provider_id) is None
@@ -1312,9 +1312,9 @@ def test_codex_proof_rollback_leaves_a_concurrent_save_alone(monkeypatch):
     listed = "gpt-5-codex-max"  # dynamic: carried by the plan, absent from the seed
     created = asyncio.run(
         providers_route.create_provider_config(
-            _provider(display_name = "Original name"),
-            credential = ("alice", None),
-            via_api_key = False,
+            _provider(display_name="Original name"),
+            credential=("alice", None),
+            via_api_key=False,
         )
     )
     provider_id = created.id
@@ -1357,19 +1357,19 @@ def test_codex_proof_rollback_leaves_a_concurrent_save_alone(monkeypatch):
         adds_a_model = asyncio.ensure_future(
             providers_route.update_provider_config(
                 provider_id,
-                ProviderUpdate(models = ["gpt-5.4", listed]),
-                credential = ("alice", None),
-                via_api_key = False,
+                ProviderUpdate(models=["gpt-5.4", listed]),
+                credential=("alice", None),
+                via_api_key=False,
             )
         )
-        await asyncio.wait_for(parked.wait(), timeout = 10)
+        await asyncio.wait_for(parked.wait(), timeout=10)
         # Its row is committed and it is now parked in remember_catalog_account.
         assert providers_db.get_provider(provider_id)["models"] == ["gpt-5.4", listed]
 
         # Another write renames the row while that one hangs. It touches a column the
         # parked request never wrote, so there is nothing of its own to undo there.
         providers_db.update_provider(
-            id = provider_id, display_name = "Renamed while the first save hung"
+            id=provider_id, display_name="Renamed while the first save hung"
         )
 
         gate.set()

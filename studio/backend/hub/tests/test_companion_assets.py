@@ -27,7 +27,7 @@ Q4_K_M_BYTES = 2_604_311_104
 COMPANION_BYTES = 8_229_021_460
 
 
-@pytest.fixture(autouse = True)
+@pytest.fixture(autouse=True)
 def _isolated_state_root(monkeypatch, tmp_path):
     """Companion links live under the app cache root; keep each test to its own."""
     monkeypatch.setattr("utils.paths.storage_roots.cache_root", lambda: tmp_path / "app-cache")
@@ -40,10 +40,10 @@ def _file(
     snapshot: str = "/cache/snap",
 ):
     return SimpleNamespace(
-        file_name = name.rsplit("/", 1)[-1],
-        file_path = f"{snapshot}/{name}",
-        blob_path = f"/cache/blobs/{name.replace('/', '_')}",
-        size_on_disk = size,
+        file_name=name.rsplit("/", 1)[-1],
+        file_path=f"{snapshot}/{name}",
+        blob_path=f"/cache/blobs/{name.replace('/', '_')}",
+        size_on_disk=size,
     )
 
 
@@ -55,14 +55,14 @@ def _repo(
 ):
     snapshot = f"{cache}/models--{repo_id.replace('/', '--')}/snapshots/rev1"
     return SimpleNamespace(
-        repo_id = repo_id,
-        repo_type = "model",
-        repo_path = f"{cache}/models--{repo_id.replace('/', '--')}",
-        revisions = [
+        repo_id=repo_id,
+        repo_type="model",
+        repo_path=f"{cache}/models--{repo_id.replace('/', '--')}",
+        revisions=[
             SimpleNamespace(
-                commit_hash = "rev1",
-                snapshot_path = snapshot,
-                files = [_file(name, size, snapshot = snapshot) for name, size in files],
+                commit_hash="rev1",
+                snapshot_path=snapshot,
+                files=[_file(name, size, snapshot=snapshot) for name, size in files],
             )
         ],
     )
@@ -85,7 +85,7 @@ def _base_repo(repo_id: str = BASE_REPO):
 
 
 def _install(monkeypatch, *repos):
-    scans = [SimpleNamespace(repos = list(repos))]
+    scans = [SimpleNamespace(repos=list(repos))]
     monkeypatch.setattr(cache_inventory, "all_hf_cache_scans", lambda: scans)
     monkeypatch.setattr(companion_cleanup.cache_inventory, "all_hf_cache_scans", lambda: scans)
     return scans
@@ -96,7 +96,7 @@ def _install(monkeypatch, *repos):
 
 def test_two_quants_of_one_family_resolve_to_a_single_companion_base():
     """Both quants derive the same base id, so the cache holds one copy, not two."""
-    scans = [SimpleNamespace(repos = [_gguf_repo(("Q2_K", Q2_K_BYTES), ("Q4_K_M", Q4_K_M_BYTES))])]
+    scans = [SimpleNamespace(repos=[_gguf_repo(("Q2_K", Q2_K_BYTES), ("Q4_K_M", Q4_K_M_BYTES))])]
     required = companion_assets.required_companion_bases(scans)
     assert BASE_REPO.lower() in required
     assert required[BASE_REPO.lower()] == {GGUF_REPO}
@@ -239,7 +239,7 @@ def test_orphan_listing_never_offers_a_repo_that_holds_a_checkpoint(monkeypatch)
     """A base the user picked as a full pipeline, or one that also holds a GGUF, is a model."""
     base = _base_repo()
     base.revisions[0].files.append(
-        _file("flux-2-klein-4b-Q4_K_M.gguf", Q4_K_M_BYTES, snapshot = base.revisions[0].snapshot_path)
+        _file("flux-2-klein-4b-Q4_K_M.gguf", Q4_K_M_BYTES, snapshot=base.revisions[0].snapshot_path)
     )
     _install(monkeypatch, base)
     assert asyncio.run(companion_cleanup.orphan_companions_response())["companions"] == []
@@ -275,7 +275,7 @@ def test_orphan_listing_never_offers_a_base_installed_as_a_full_pipeline(monkeyp
         _file(
             "transformer/diffusion_pytorch_model-00001-of-00002.safetensors",
             7_000_000_000,
-            snapshot = base.revisions[0].snapshot_path,
+            snapshot=base.revisions[0].snapshot_path,
         )
     )
     _install(monkeypatch, base)
@@ -307,7 +307,7 @@ def test_orphan_listing_reports_one_row_per_cache(monkeypatch):
     second = _repo(
         BASE_REPO,
         [("model_index.json", 460), ("vae/diffusion_pytorch_model.safetensors", 900_000)],
-        cache = "/other-cache",
+        cache="/other-cache",
     )
     _install(monkeypatch, first, second)
     result = asyncio.run(companion_cleanup.orphan_companions_response())
@@ -493,7 +493,7 @@ def test_one_full_copy_does_not_hide_an_orphaned_copy_in_another_cache(monkeypat
     full = _repo(
         BASE_REPO,
         [("transformer/diffusion_pytorch_model.safetensors", 5_000_000)],
-        cache = "/full-cache",
+        cache="/full-cache",
     )
     orphan = _repo(BASE_REPO, [("vae/diffusion_pytorch_model.safetensors", 900_000)])
     _install(monkeypatch, full, orphan)
@@ -681,17 +681,17 @@ def test_copies_in_two_cache_roots_are_probed_together(monkeypatch):
     qwen = "Qwen/Qwen-Image"
     scans = [
         SimpleNamespace(
-            repos = [
+            repos=[
                 _repo(
-                    "some-owner/custom", [("FLUX.2-klein-4B-Q4_K_M.gguf", 2_000_000)], cache = "/c1"
+                    "some-owner/custom", [("FLUX.2-klein-4B-Q4_K_M.gguf", 2_000_000)], cache="/c1"
                 )
             ]
         ),
         SimpleNamespace(
-            repos = [_repo("some-owner/custom", [("Qwen-Image-Q4_K_M.gguf", 9_000_000)], cache = "/c2")]
+            repos=[_repo("some-owner/custom", [("Qwen-Image-Q4_K_M.gguf", 9_000_000)], cache="/c2")]
         ),
         SimpleNamespace(
-            repos = [
+            repos=[
                 _repo(klein, [("model_index.json", 460)]),
                 _repo(qwen, [("model_index.json", 460)]),
             ]
@@ -749,7 +749,7 @@ def test_free_up_space_refuses_a_row_that_became_an_installed_model(monkeypatch)
     # The companion-only copy Free up space listed, now carrying a downloaded denoiser.
     _install(monkeypatch, _repo(base, [("transformer/diffusion_pytorch_model.safetensors", 9_000)]))
     with pytest.raises(HTTPException) as excinfo:
-        asyncio.run(deletion.delete_cached_model_response(base, only_if_orphan = True))
+        asyncio.run(deletion.delete_cached_model_response(base, only_if_orphan=True))
     assert excinfo.value.status_code == 409
     assert "no longer an unused asset" in excinfo.value.detail
 
@@ -761,7 +761,7 @@ def test_the_orphan_precondition_lets_a_real_orphan_through(monkeypatch):
 
     _install(monkeypatch, _repo(BASE_REPO, [("model_index.json", 460)]))
     try:
-        deletion._delete_cached_model_blocking(BASE_REPO, None, None, only_if_orphan = True)
+        deletion._delete_cached_model_blocking(BASE_REPO, None, None, only_if_orphan=True)
     except HTTPException as exc:
         assert exc.status_code != 409, exc.detail
 
@@ -776,7 +776,7 @@ def test_a_transformer_only_single_file_in_its_own_base_repo_is_a_checkpoint(mon
     _install(monkeypatch, _repo(dev, [("flux2-dev-fp8.safetensors", 9_000_000)]))
     assert asyncio.run(companion_cleanup.orphan_companions_response())["companions"] == []
     with pytest.raises(HTTPException) as excinfo:
-        deletion._delete_cached_model_blocking(dev, None, None, only_if_orphan = True)
+        deletion._delete_cached_model_blocking(dev, None, None, only_if_orphan=True)
     assert excinfo.value.status_code == 409
 
 
@@ -789,14 +789,14 @@ def test_the_orphan_precondition_is_scoped_to_the_cache_being_deleted(monkeypatc
     dev = "black-forest-labs/FLUX.2-dev"
     _install(
         monkeypatch,
-        _repo(dev, [("transformer/diffusion_pytorch_model.safetensors", 9_000)], cache = "/c1"),
-        _repo(dev, [("model_index.json", 460)], cache = "/c2"),
+        _repo(dev, [("transformer/diffusion_pytorch_model.safetensors", 9_000)], cache="/c1"),
+        _repo(dev, [("model_index.json", 460)], cache="/c2"),
     )
     rows = asyncio.run(companion_cleanup.orphan_companions_response())["companions"]
     assert [r["cache_path"] for r in rows] == ["/c2/models--black-forest-labs--FLUX.2-dev"]
     try:
         deletion._delete_cached_model_blocking(
-            dev, None, None, rows[0]["cache_path"], only_if_orphan = True
+            dev, None, None, rows[0]["cache_path"], only_if_orphan=True
         )
     except HTTPException as exc:
         assert exc.status_code != 409, exc.detail
@@ -834,10 +834,10 @@ def test_the_orphan_precondition_refuses_when_the_target_root_is_not_in_the_scan
     from hub.services.models import deletion
 
     dev = "black-forest-labs/FLUX.2-dev"
-    _install(monkeypatch, _repo(dev, [("model_index.json", 460)], cache = "/c1"))
+    _install(monkeypatch, _repo(dev, [("model_index.json", 460)], cache="/c1"))
     with pytest.raises(HTTPException) as excinfo:
         deletion._delete_cached_model_blocking(
-            dev, None, None, "/unscanned/models--black-forest-labs--FLUX.2-dev", only_if_orphan = True
+            dev, None, None, "/unscanned/models--black-forest-labs--FLUX.2-dev", only_if_orphan=True
         )
     assert excinfo.value.status_code == 503
 

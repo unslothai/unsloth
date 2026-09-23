@@ -20,12 +20,12 @@ LOCALES = REPO / "studio/frontend/src/i18n/locales"
 
 def test_backend_still_emits_an_xpu_version():
     # If this stops being true the frontend field below is dead weight; fail loudly.
-    src = HARDWARE.read_text(encoding = "utf-8")
+    src = HARDWARE.read_text(encoding="utf-8")
     assert 'versions["xpu"]' in src
 
 
 def test_hardware_info_declares_and_maps_xpu():
-    src = HOOK.read_text(encoding = "utf-8")
+    src = HOOK.read_text(encoding="utf-8")
     assert "xpu: string | null;" in src, "HardwareInfo must declare xpu"
     assert "xpu: data?.versions?.xpu ?? null," in src, "xpu must be mapped from the API response"
     # The default must carry the key too, or the first render is `undefined` and the row flickers.
@@ -33,7 +33,7 @@ def test_hardware_info_declares_and_maps_xpu():
 
 
 def test_about_tab_renders_the_xpu_runtime_row():
-    src = ABOUT.read_text(encoding = "utf-8")
+    src = ABOUT.read_text(encoding="utf-8")
     assert 'labelKey: "settings.about.xpu"' in src, "About tab must offer an xpu runtime label"
     assert "hw.xpu" in src
     # The section itself must open for an xpu-only host, not just for cuda/rocm.
@@ -43,7 +43,7 @@ def test_about_tab_renders_the_xpu_runtime_row():
 def test_about_tab_shows_every_runtime_not_just_the_first():
     # hardware.py sets versions["cuda"] and versions["xpu"] independently, so a dual build in forced-XPU mode reports
     # both; returning the first match hid the xpu row on that host.
-    src = ABOUT.read_text(encoding = "utf-8")
+    src = ABOUT.read_text(encoding="utf-8")
     assert "acceleratorRuntimes" in src, "the runtime picker must return all matches"
     assert src.count("rows.push(") == 3, "cuda, rocm and xpu must each be pushed"
     assert "runtimes.map(" in src, "every reported runtime must be rendered"
@@ -56,12 +56,12 @@ def test_the_xpu_label_resolves_in_every_locale():
     # en is the fallback source, so it is the only file that MUST carry the key (check-parity.ts allows partial
     # overlays). Requiring it everywhere would break the next locale added for no gain: the label is a proper noun, so
     # the fallback equals a translation.
-    assert 'xpu: "XPU",' in (LOCALES / "en.ts").read_text(encoding = "utf-8")
+    assert 'xpu: "XPU",' in (LOCALES / "en.ts").read_text(encoding="utf-8")
     # Overlays must not DISAGREE with en. check-parity.ts rejects a key absent from en; this catches the value.
     wrong = [
         p.name
         for p in sorted(LOCALES.glob("*.ts"))
-        for line in p.read_text(encoding = "utf-8").splitlines()
+        for line in p.read_text(encoding="utf-8").splitlines()
         if line.strip().startswith("xpu:") and line.strip() != 'xpu: "XPU",'
     ]
     assert not wrong, f"locales whose xpu label diverges from en: {wrong}"

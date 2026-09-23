@@ -35,10 +35,10 @@ _SHRINK_TIMEOUT_S = 300
 def _run(argv: list[str], timeout: float) -> subprocess.CompletedProcess:
     return subprocess.run(
         argv,
-        stdin = subprocess.DEVNULL,
-        capture_output = True,
-        timeout = timeout,
-        env = child_env_without_native_path_secret(),
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        timeout=timeout,
+        env=child_env_without_native_path_secret(),
         **windows_hidden_subprocess_kwargs(),
     )
 
@@ -204,7 +204,7 @@ def shrink_video_for_llama(
     except (binascii.Error, ValueError):
         return video_b64
     try:
-        with tempfile.TemporaryDirectory(prefix = "unsloth-video-") as tmp:
+        with tempfile.TemporaryDirectory(prefix="unsloth-video-") as tmp:
             source = Path(tmp) / "clip"
             source.write_bytes(raw)
             area, rate, duration = _frame_geometry(ffprobe, source)

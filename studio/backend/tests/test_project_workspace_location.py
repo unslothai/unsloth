@@ -50,7 +50,7 @@ def test_an_unusable_registry_value_falls_through(value):
     assert _documents_from_registry_value(value, True) is None
 
 
-@pytest.mark.skipif(os.name == "nt", reason = "the registry read is the point on Windows")
+@pytest.mark.skipif(os.name == "nt", reason="the registry read is the point on Windows")
 def test_the_registry_is_only_read_on_windows():
     assert _windows_documents_dir() is None
 
@@ -70,13 +70,14 @@ def test_the_projects_override_wins_outright(tmp_path, monkeypatch):
 
 def _probe_payload():
     from routes import chat_history
+
     return chat_history.ChatProject(
-        id = "11111111-2222-3333-4444-555555555555",
-        name = "Probe",
-        instructions = "",
-        archived = False,
-        createdAt = 1,
-        updatedAt = 1,
+        id="11111111-2222-3333-4444-555555555555",
+        name="Probe",
+        instructions="",
+        archived=False,
+        createdAt=1,
+        updatedAt=1,
     )
 
 
@@ -123,7 +124,7 @@ def test_creating_a_project_says_which_folder_failed(tmp_path, monkeypatch):
     )
 
     with pytest.raises(HTTPException) as caught:
-        chat_history.save_project(_probe_payload(), current_subject = "tester")
+        chat_history.save_project(_probe_payload(), current_subject="tester")
 
     assert caught.value.status_code == 500
     detail = str(caught.value.detail)
@@ -148,4 +149,4 @@ def test_a_database_folder_failure_is_not_blamed_on_the_projects_folder(monkeypa
     )
 
     with pytest.raises(PermissionError):
-        chat_history.save_project(_probe_payload(), current_subject = "tester")
+        chat_history.save_project(_probe_payload(), current_subject="tester")

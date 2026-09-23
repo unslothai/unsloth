@@ -17,8 +17,8 @@ from core import _msvc_env
 def _fake_triton(
     monkeypatch,
     inc_dirs,
-    cc = "clang-cl.exe",
-    with_is_clang_cl = True,
+    cc="clang-cl.exe",
+    with_is_clang_cl=True,
 ):
     pkg = types.ModuleType("triton")
     utils = types.ModuleType("triton.windows_utils")
@@ -57,7 +57,7 @@ def test_have_crt_headers_false_when_include_has_only_stdlib(tmp_path, monkeypat
 
 
 def test_have_crt_headers_false_when_include_unset(monkeypatch):
-    monkeypatch.delenv("INCLUDE", raising = False)
+    monkeypatch.delenv("INCLUDE", raising=False)
     assert _msvc_env._have_crt_headers() is False
 
 
@@ -77,14 +77,14 @@ def _sdk_dirs(tmp_path, *, with_toolset):
 
 
 def test_triton_discovery_true_when_dirs_carry_both_headers(tmp_path, monkeypatch):
-    _fake_triton(monkeypatch, _sdk_dirs(tmp_path, with_toolset = True))
+    _fake_triton(monkeypatch, _sdk_dirs(tmp_path, with_toolset=True))
     assert _msvc_env._triton_finds_crt_headers() is True
 
 
 def test_triton_discovery_false_when_sdk_lacks_the_vc_toolset(tmp_path, monkeypatch):
     """A standalone SDK passes the `stdlib.h` check and the compile still dies on `vcruntime.h`
     (measured on an R9700 with the toolset dir removed). This must gate."""
-    _fake_triton(monkeypatch, _sdk_dirs(tmp_path, with_toolset = False))
+    _fake_triton(monkeypatch, _sdk_dirs(tmp_path, with_toolset=False))
     assert _msvc_env._triton_finds_crt_headers() is False
 
 
@@ -122,7 +122,7 @@ def test_triton_discovery_is_unknown_when_the_search_changes_arity(monkeypatch):
     for shape in ((["c:/inc"], []), ("", ["c:/inc"], [], [])):
         pkg = types.ModuleType("triton")
         utils = types.ModuleType("triton.windows_utils")
-        utils.find_msvc_winsdk = lambda s = shape: s
+        utils.find_msvc_winsdk = lambda s=shape: s
         pkg.windows_utils = utils
         monkeypatch.setitem(sys.modules, "triton", pkg)
         monkeypatch.setitem(sys.modules, "triton.windows_utils", utils)
@@ -151,8 +151,8 @@ def test_reachable_is_true_off_win32(monkeypatch):
 
 def test_reachable_via_triton_even_when_include_is_empty(tmp_path, monkeypatch):
     monkeypatch.setattr(sys, "platform", "win32")
-    monkeypatch.delenv("INCLUDE", raising = False)
-    _fake_triton(monkeypatch, _sdk_dirs(tmp_path, with_toolset = True))
+    monkeypatch.delenv("INCLUDE", raising=False)
+    _fake_triton(monkeypatch, _sdk_dirs(tmp_path, with_toolset=True))
     assert _msvc_env.crt_headers_reachable() is True
 
 
@@ -176,8 +176,8 @@ def test_unreachable_discovery_does_not_gate_a_visual_studio_box(tmp_path, monke
     """The dangerous direction. Discovery that cannot be asked is not evidence of a missing SDK, and
     clang-cl locates MSVC itself, so gating here would disable torch.compile on a box that compiles."""
     monkeypatch.setattr(sys, "platform", "win32")
-    monkeypatch.delenv("INCLUDE", raising = False)
-    _fake_triton(monkeypatch, [], cc = "clang-cl.exe")
+    monkeypatch.delenv("INCLUDE", raising=False)
+    _fake_triton(monkeypatch, [], cc="clang-cl.exe")
     monkeypatch.setitem(sys.modules, "triton.windows_utils", None)
     assert _msvc_env.crt_headers_reachable() is True
 
@@ -185,15 +185,15 @@ def test_unreachable_discovery_does_not_gate_a_visual_studio_box(tmp_path, monke
 def test_a_search_that_ran_and_found_nothing_still_gates(tmp_path, monkeypatch):
     """The other half: without this, the #7595 crash is no longer prevented at all."""
     monkeypatch.setattr(sys, "platform", "win32")
-    monkeypatch.delenv("INCLUDE", raising = False)
-    _fake_triton(monkeypatch, [], cc = "clang-cl.exe")
+    monkeypatch.delenv("INCLUDE", raising=False)
+    _fake_triton(monkeypatch, [], cc="clang-cl.exe")
     assert _msvc_env.crt_headers_reachable() is False
 
 
 def test_tinycc_does_not_need_msvc_headers(tmp_path, monkeypatch):
     monkeypatch.setattr(sys, "platform", "win32")
     monkeypatch.setenv("INCLUDE", str(tmp_path))
-    _fake_triton(monkeypatch, [], cc = "tcc.exe")
+    _fake_triton(monkeypatch, [], cc="tcc.exe")
     assert _msvc_env._needs_msvc_headers() is False
     assert _msvc_env.crt_headers_reachable() is True
 
@@ -201,7 +201,7 @@ def test_tinycc_does_not_need_msvc_headers(tmp_path, monkeypatch):
 def test_clang_cl_does_need_msvc_headers(tmp_path, monkeypatch):
     monkeypatch.setattr(sys, "platform", "win32")
     monkeypatch.setenv("INCLUDE", str(tmp_path))
-    _fake_triton(monkeypatch, [], cc = "clang-cl.exe")
+    _fake_triton(monkeypatch, [], cc="clang-cl.exe")
     assert _msvc_env._needs_msvc_headers() is True
     assert _msvc_env.crt_headers_reachable() is False
 
@@ -230,8 +230,8 @@ def test_tinycc_is_not_gated_on_a_release_without_is_clang_cl(tmp_path, monkeypa
     """3.2.0.post18 to 3.5.1.post22 have `get_cc` but no `is_clang_cl`; importing them together
     lost `get_cc` and gated a TinyCC box that compiles fine (7 of the 14 real releases)."""
     monkeypatch.setattr(sys, "platform", "win32")
-    monkeypatch.delenv("INCLUDE", raising = False)
-    _fake_triton(monkeypatch, [], cc = "tcc.exe", with_is_clang_cl = False)
+    monkeypatch.delenv("INCLUDE", raising=False)
+    _fake_triton(monkeypatch, [], cc="tcc.exe", with_is_clang_cl=False)
     monkeypatch.setattr(_msvc_env, "_rocm_clang_cl_present", lambda: True)
     monkeypatch.setattr(_msvc_env, "_triton_is_triton_windows", lambda: True)
     assert _msvc_env._needs_msvc_headers() is False
@@ -241,8 +241,8 @@ def test_tinycc_is_not_gated_on_a_release_without_is_clang_cl(tmp_path, monkeypa
 def test_clang_cl_is_still_gated_without_is_clang_cl(tmp_path, monkeypatch):
     """The other half: dropping the predicate must not drop the detection."""
     monkeypatch.setattr(sys, "platform", "win32")
-    monkeypatch.delenv("INCLUDE", raising = False)
-    _fake_triton(monkeypatch, [], cc = "clang-cl.exe", with_is_clang_cl = False)
+    monkeypatch.delenv("INCLUDE", raising=False)
+    _fake_triton(monkeypatch, [], cc="clang-cl.exe", with_is_clang_cl=False)
     assert _msvc_env._needs_msvc_headers() is True
     assert _msvc_env.crt_headers_reachable() is False
 
@@ -250,8 +250,8 @@ def test_clang_cl_is_still_gated_without_is_clang_cl(tmp_path, monkeypatch):
 def test_a_raising_predicate_does_not_escape(tmp_path, monkeypatch):
     """`is_msvc(None)` is a TypeError. The call used to sit outside the try, so it escaped."""
     monkeypatch.setattr(sys, "platform", "win32")
-    monkeypatch.delenv("INCLUDE", raising = False)
-    _fake_triton(monkeypatch, [], cc = "tcc.exe")
+    monkeypatch.delenv("INCLUDE", raising=False)
+    _fake_triton(monkeypatch, [], cc="tcc.exe")
     build = sys.modules["triton.runtime.build"]
 
     def boom(_c):
@@ -264,7 +264,7 @@ def test_a_raising_predicate_does_not_escape(tmp_path, monkeypatch):
 
 def _fake_triton_38(monkeypatch, inc_dirs, cc):
     """triton-windows 3.8.0.post28: `get_cc` is gone, `_find_compiler(language)` replaces it."""
-    _fake_triton(monkeypatch, inc_dirs, cc = cc)
+    _fake_triton(monkeypatch, inc_dirs, cc=cc)
     build = sys.modules["triton.runtime.build"]
     monkeypatch.delattr(build, "get_cc")
     build._find_compiler = lambda language: cc
@@ -275,8 +275,8 @@ def test_the_get_cc_rename_is_followed(tmp_path, monkeypatch):
     """3.8.0.post28, what a bare `pip install triton-windows` gives you, has no `get_cc`: the
     wheel-layout guess answers from what is installed, not from what Triton will run."""
     monkeypatch.setattr(sys, "platform", "win32")
-    monkeypatch.delenv("INCLUDE", raising = False)
-    _fake_triton_38(monkeypatch, [], cc = "tcc.exe")
+    monkeypatch.delenv("INCLUDE", raising=False)
+    _fake_triton_38(monkeypatch, [], cc="tcc.exe")
     monkeypatch.setattr(_msvc_env, "_rocm_clang_cl_present", lambda: True)
     monkeypatch.setattr(_msvc_env, "_triton_is_triton_windows", lambda: True)
     assert _msvc_env._triton_cc() == "tcc.exe"
@@ -286,8 +286,8 @@ def test_the_get_cc_rename_is_followed(tmp_path, monkeypatch):
 
 def test_the_get_cc_rename_still_gates_clang_cl(tmp_path, monkeypatch):
     monkeypatch.setattr(sys, "platform", "win32")
-    monkeypatch.delenv("INCLUDE", raising = False)
-    _fake_triton_38(monkeypatch, [], cc = "clang-cl.exe")
+    monkeypatch.delenv("INCLUDE", raising=False)
+    _fake_triton_38(monkeypatch, [], cc="clang-cl.exe")
     assert _msvc_env._needs_msvc_headers() is True
     assert _msvc_env.crt_headers_reachable() is False
 
@@ -295,7 +295,7 @@ def test_the_get_cc_rename_still_gates_clang_cl(tmp_path, monkeypatch):
 def test_neither_compiler_name_present_falls_back(tmp_path, monkeypatch):
     monkeypatch.setattr(sys, "platform", "win32")
     monkeypatch.setenv("INCLUDE", str(tmp_path))
-    _fake_triton(monkeypatch, [], cc = "clang-cl.exe")
+    _fake_triton(monkeypatch, [], cc="clang-cl.exe")
     build = sys.modules["triton.runtime.build"]
     monkeypatch.delattr(build, "get_cc")
     monkeypatch.setattr(_msvc_env, "_rocm_clang_cl_present", lambda: False)
@@ -367,7 +367,7 @@ def test_a_compiler_that_actually_works_overrules_the_header_heuristic(tmp_path,
     VCINSTALLDIR and WindowsSdkDir cleared). So a compile that succeeds has to win, or a
     working machine loses torch.compile on the strength of a guess."""
     monkeypatch.setattr(sys, "platform", "win32")
-    monkeypatch.delenv("INCLUDE", raising = False)
+    monkeypatch.delenv("INCLUDE", raising=False)
     _fake_triton(monkeypatch, [str(tmp_path)])
     monkeypatch.setattr(_msvc_env, "_compiles_a_trivial_translation_unit", lambda cc, d: True)
     assert _msvc_env.crt_headers_reachable() is True
@@ -375,7 +375,7 @@ def test_a_compiler_that_actually_works_overrules_the_header_heuristic(tmp_path,
 
 def test_a_compiler_that_fails_still_gates(tmp_path, monkeypatch):
     monkeypatch.setattr(sys, "platform", "win32")
-    monkeypatch.delenv("INCLUDE", raising = False)
+    monkeypatch.delenv("INCLUDE", raising=False)
     _fake_triton(monkeypatch, [str(tmp_path)])
     monkeypatch.setattr(_msvc_env, "_compiles_a_trivial_translation_unit", lambda cc, d: False)
     assert _msvc_env.crt_headers_reachable() is False
@@ -385,7 +385,7 @@ def test_an_unrunnable_probe_keeps_the_header_verdict(tmp_path, monkeypatch):
     """A probe that cannot run says nothing, and #7595 is exactly the case where it might not
     run. Treating unknown as permission would trade a measured protection for an absent one."""
     monkeypatch.setattr(sys, "platform", "win32")
-    monkeypatch.delenv("INCLUDE", raising = False)
+    monkeypatch.delenv("INCLUDE", raising=False)
     _fake_triton(monkeypatch, [str(tmp_path)])
     monkeypatch.setattr(_msvc_env, "_compiles_a_trivial_translation_unit", lambda cc, d: None)
     assert _msvc_env.crt_headers_reachable() is False
@@ -397,8 +397,8 @@ def test_marker_positive_dirs_are_still_probed(tmp_path, monkeypatch):
     mismatched SDK can carry both markers and still fail to compile. The markers must not
     short-circuit the compiler."""
     monkeypatch.setattr(sys, "platform", "win32")
-    monkeypatch.delenv("INCLUDE", raising = False)
-    dirs = _sdk_dirs(tmp_path, with_toolset = True)
+    monkeypatch.delenv("INCLUDE", raising=False)
+    dirs = _sdk_dirs(tmp_path, with_toolset=True)
     _fake_triton(monkeypatch, dirs)
     monkeypatch.setattr(_msvc_env, "_compiles_a_trivial_translation_unit", lambda cc, d: False)
     # The heuristic would say yes; the compiler says no, and the compiler wins.
@@ -410,8 +410,8 @@ def test_marker_positive_dirs_survive_an_unrunnable_probe(tmp_path, monkeypatch)
     """The fallback still has to exist: a host where the compiler cannot be run keeps the
     header verdict, so a complete-looking toolchain is not gated on an absent measurement."""
     monkeypatch.setattr(sys, "platform", "win32")
-    monkeypatch.delenv("INCLUDE", raising = False)
-    _fake_triton(monkeypatch, _sdk_dirs(tmp_path, with_toolset = True))
+    monkeypatch.delenv("INCLUDE", raising=False)
+    _fake_triton(monkeypatch, _sdk_dirs(tmp_path, with_toolset=True))
     monkeypatch.setattr(_msvc_env, "_compiles_a_trivial_translation_unit", lambda cc, d: None)
     assert _msvc_env.crt_headers_reachable() is True
 
@@ -440,21 +440,21 @@ def test_rocm_clang_cl_present_probes_the_platlib_path(tmp_path, monkeypatch):
     monkeypatch.setattr(sysconfig, "get_path", lambda name: str(tmp_path))
     assert _msvc_env._rocm_clang_cl_present() is False
     exe = tmp_path / "_rocm_sdk_core" / "lib" / "llvm" / "bin"
-    exe.mkdir(parents = True)
+    exe.mkdir(parents=True)
     (exe / "clang-cl.exe").write_text("")
     assert _msvc_env._rocm_clang_cl_present() is True
 
 
 def test_toolchain_summary_separates_no_vs_from_a_partial_sdk(tmp_path, monkeypatch):
-    _fake_triton(monkeypatch, [], cc = "clang-cl.exe")
-    monkeypatch.delenv("INCLUDE", raising = False)
+    _fake_triton(monkeypatch, [], cc="clang-cl.exe")
+    monkeypatch.delenv("INCLUDE", raising=False)
     summary = _msvc_env._toolchain_summary()
     assert "compiler=clang-cl.exe" in summary
     assert "include dirs=0" in summary
     assert "missing headers=stdlib.h,vcruntime.h" in summary
     assert "INCLUDE=unset" in summary
 
-    _fake_triton(monkeypatch, _sdk_dirs(tmp_path, with_toolset = False), cc = "clang-cl.exe")
+    _fake_triton(monkeypatch, _sdk_dirs(tmp_path, with_toolset=False), cc="clang-cl.exe")
     monkeypatch.setenv("INCLUDE", str(tmp_path))
     summary = _msvc_env._toolchain_summary()
     assert "include dirs=2" in summary
@@ -515,19 +515,19 @@ def test_gate_is_noop_off_win32(monkeypatch):
 
 
 def test_gate_disables_when_triton_missing(monkeypatch):
-    records = _gate(monkeypatch, triton_importable = False, headers_ok = True)
+    records = _gate(monkeypatch, triton_importable=False, headers_ok=True)
     assert os.environ["TORCHDYNAMO_DISABLE"] == "1"
     assert any("Triton not found" in msg for _, msg in records)
 
 
 def test_gate_disables_when_headers_unreachable(monkeypatch):
-    records = _gate(monkeypatch, triton_importable = True, headers_ok = False)
+    records = _gate(monkeypatch, triton_importable=True, headers_ok=False)
     assert os.environ["TORCHDYNAMO_DISABLE"] == "1"
     assert any("'stdlib.h'" in msg for _, msg in records)
 
 
 def test_gate_enables_when_triton_and_headers_present(monkeypatch):
-    records = _gate(monkeypatch, triton_importable = True, headers_ok = True)
+    records = _gate(monkeypatch, triton_importable=True, headers_ok=True)
     assert "TORCHDYNAMO_DISABLE" not in os.environ
     assert records == [("info", "Triton available — torch.compile enabled")]
 
@@ -537,8 +537,8 @@ def test_gate_does_not_disable_where_triton_already_compiles(monkeypatch, tmp_pa
     monkeypatch.setattr(sys, "platform", "win32")
     monkeypatch.setenv("TORCHDYNAMO_DISABLE", "")
     monkeypatch.delenv("TORCHDYNAMO_DISABLE")
-    monkeypatch.delenv("INCLUDE", raising = False)
-    _fake_triton(monkeypatch, _sdk_dirs(tmp_path, with_toolset = True))
+    monkeypatch.delenv("INCLUDE", raising=False)
+    _fake_triton(monkeypatch, _sdk_dirs(tmp_path, with_toolset=True))
 
     _msvc_env.gate_torch_compile_on_windows(logging.getLogger("test_gate_7595"))
     assert "TORCHDYNAMO_DISABLE" not in os.environ

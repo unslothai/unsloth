@@ -15,13 +15,13 @@ class _Cfg:
 
 
 def _cfg(head_dim):
-    return _Cfg(model_type = "fake", head_dim = head_dim, num_attention_heads = 8)
+    return _Cfg(model_type="fake", head_dim=head_dim, num_attention_heads=8)
 
 
-@pytest.fixture(autouse = True)
+@pytest.fixture(autouse=True)
 def _no_env_override(monkeypatch):
     # The env var short-circuits before the gate, so it must be clear for these.
-    monkeypatch.delenv(u._FLEX_LARGE_HEAD_DIM_ENV_VAR, raising = False)
+    monkeypatch.delenv(u._FLEX_LARGE_HEAD_DIM_ENV_VAR, raising=False)
     monkeypatch.setattr(u, "_flex_kernels_fit_large_head_dim", lambda: True)
 
 
@@ -59,7 +59,7 @@ def test_at_or_below_128_never_takes_flex(head_dim, cudnn_reaches_256):
 
 def test_no_head_dim_means_no_routing(cudnn_reaches_256):
     cudnn_reaches_256(False)
-    assert u._prefers_flex_for_head_dim(_Cfg(model_type = "fake")) is False
+    assert u._prefers_flex_for_head_dim(_Cfg(model_type="fake")) is False
 
 
 def test_env_var_forces_flex_even_when_cudnn_would_serve_it(monkeypatch, cudnn_reaches_256):
@@ -81,20 +81,20 @@ def test_gate_is_off_below_torch_2_14(monkeypatch):
 
 def test_gate_is_off_on_rocm(monkeypatch):
     monkeypatch.setattr(u.torch, "__version__", "2.14.0+cu130")
-    monkeypatch.setattr(u.torch.version, "hip", "6.2.0", raising = False)
+    monkeypatch.setattr(u.torch.version, "hip", "6.2.0", raising=False)
     assert u._sdpa_reaches_cudnn_at_head_dim_256() is False
 
 
 def test_gate_is_off_with_no_cuda(monkeypatch):
     monkeypatch.setattr(u.torch, "__version__", "2.14.0+cu130")
-    monkeypatch.setattr(u.torch.version, "hip", None, raising = False)
+    monkeypatch.setattr(u.torch.version, "hip", None, raising=False)
     monkeypatch.setattr(u.torch.cuda, "is_available", lambda: False)
     assert u._sdpa_reaches_cudnn_at_head_dim_256() is False
 
 
 def test_gate_is_off_below_blackwell(monkeypatch):
     monkeypatch.setattr(u.torch, "__version__", "2.14.0+cu130")
-    monkeypatch.setattr(u.torch.version, "hip", None, raising = False)
+    monkeypatch.setattr(u.torch.version, "hip", None, raising=False)
     monkeypatch.setattr(u.torch.cuda, "is_available", lambda: True)
     monkeypatch.setattr(u.torch.cuda, "device_count", lambda: 1)
     monkeypatch.setattr(u.torch.cuda, "get_device_capability", lambda index: (9, 0))
@@ -103,7 +103,7 @@ def test_gate_is_off_below_blackwell(monkeypatch):
 
 def test_gate_is_on_for_blackwell_on_torch_2_14(monkeypatch):
     monkeypatch.setattr(u.torch, "__version__", "2.14.0+cu130")
-    monkeypatch.setattr(u.torch.version, "hip", None, raising = False)
+    monkeypatch.setattr(u.torch.version, "hip", None, raising=False)
     monkeypatch.setattr(u.torch.cuda, "is_available", lambda: True)
     monkeypatch.setattr(u.torch.cuda, "device_count", lambda: 1)
     monkeypatch.setattr(u.torch.cuda, "get_device_capability", lambda index: (10, 0))
@@ -112,7 +112,7 @@ def test_gate_is_on_for_blackwell_on_torch_2_14(monkeypatch):
 
 def test_a_mixed_box_falls_back_to_the_weakest_card(monkeypatch):
     monkeypatch.setattr(u.torch, "__version__", "2.14.0+cu130")
-    monkeypatch.setattr(u.torch.version, "hip", None, raising = False)
+    monkeypatch.setattr(u.torch.version, "hip", None, raising=False)
     monkeypatch.setattr(u.torch.cuda, "is_available", lambda: True)
     monkeypatch.setattr(u.torch.cuda, "device_count", lambda: 2)
     monkeypatch.setattr(
@@ -126,7 +126,7 @@ def _cuda_box(monkeypatch, shared_memory):
         def __init__(self, index):
             self.shared_memory_per_block_optin = shared_memory[index]
 
-    monkeypatch.setattr(u.torch.version, "hip", None, raising = False)
+    monkeypatch.setattr(u.torch.version, "hip", None, raising=False)
     monkeypatch.setattr(u.torch.cuda, "is_available", lambda: True)
     monkeypatch.setattr(u.torch.cuda, "device_count", lambda: len(shared_memory))
     monkeypatch.setattr(u.torch.cuda, "get_device_properties", _Props)
@@ -154,9 +154,9 @@ def test_flex_kernels_fit_needs_every_card(monkeypatch):
 def test_flex_kernels_fit_is_off_on_rocm_and_without_cuda(monkeypatch):
     monkeypatch.undo()
     _cuda_box(monkeypatch, [232448])
-    monkeypatch.setattr(u.torch.version, "hip", "6.2.0", raising = False)
+    monkeypatch.setattr(u.torch.version, "hip", "6.2.0", raising=False)
     assert u._flex_kernels_fit_large_head_dim() is False
-    monkeypatch.setattr(u.torch.version, "hip", None, raising = False)
+    monkeypatch.setattr(u.torch.version, "hip", None, raising=False)
     monkeypatch.setattr(u.torch.cuda, "is_available", lambda: False)
     assert u._flex_kernels_fit_large_head_dim() is False
 

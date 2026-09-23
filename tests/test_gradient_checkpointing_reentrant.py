@@ -28,6 +28,7 @@ import textwrap
 def _rl_source() -> str:
     import inspect
     from unsloth.models import rl
+
     return inspect.getsource(rl)
 
 
@@ -43,8 +44,8 @@ def _config_post_snippet() -> str:
 class _Config:
     def __init__(
         self,
-        gradient_checkpointing = True,
-        kwargs = None,
+        gradient_checkpointing=True,
+        kwargs=None,
     ):
         self.gradient_checkpointing = gradient_checkpointing
         self.gradient_checkpointing_kwargs = kwargs
@@ -61,17 +62,17 @@ def _run_post(config):
 
 def test_a_config_that_never_set_the_kwargs_gets_reentrant_pinned():
     # This is the case transformers would otherwise fill in with False.
-    config = _run_post(_Config(kwargs = None))
+    config = _run_post(_Config(kwargs=None))
     assert config.gradient_checkpointing_kwargs == {"use_reentrant": True}
 
 
 def test_an_explicit_false_is_overridden():
-    config = _run_post(_Config(kwargs = {"use_reentrant": False}))
+    config = _run_post(_Config(kwargs={"use_reentrant": False}))
     assert config.gradient_checkpointing_kwargs == {"use_reentrant": True}
 
 
 def test_other_checkpoint_kwargs_are_preserved():
-    config = _run_post(_Config(kwargs = {"determinism_check": "none"}))
+    config = _run_post(_Config(kwargs={"determinism_check": "none"}))
     assert config.gradient_checkpointing_kwargs == {
         "determinism_check": "none",
         "use_reentrant": True,
@@ -83,7 +84,7 @@ def test_a_config_asking_for_context_fn_is_left_alone():
     # supported when use_reentrant=False" as soon as a checkpointed forward
     # runs, so pinning here would turn a working setup into a crash.
     sentinel = object()
-    config = _run_post(_Config(kwargs = {"use_reentrant": False, "context_fn": sentinel}))
+    config = _run_post(_Config(kwargs={"use_reentrant": False, "context_fn": sentinel}))
     assert config.gradient_checkpointing_kwargs == {
         "use_reentrant": False,
         "context_fn": sentinel,
@@ -91,20 +92,20 @@ def test_a_config_asking_for_context_fn_is_left_alone():
 
 
 def test_a_config_asking_for_debug_is_left_alone():
-    config = _run_post(_Config(kwargs = {"use_reentrant": False, "debug": True}))
+    config = _run_post(_Config(kwargs={"use_reentrant": False, "debug": True}))
     assert config.gradient_checkpointing_kwargs == {"use_reentrant": False, "debug": True}
 
 
 def test_a_falsy_debug_does_not_block_the_pin():
     # debug=False is the torch default, so it is not a non-reentrant request.
-    config = _run_post(_Config(kwargs = {"debug": False}))
+    config = _run_post(_Config(kwargs={"debug": False}))
     assert config.gradient_checkpointing_kwargs == {"debug": False, "use_reentrant": True}
 
 
 def test_checkpointing_off_is_left_completely_alone():
     # transformers never reads these kwargs in that case, so touching them
     # would only widen the blast radius.
-    config = _run_post(_Config(gradient_checkpointing = False, kwargs = None))
+    config = _run_post(_Config(gradient_checkpointing=False, kwargs=None))
     assert config.gradient_checkpointing_kwargs is None
 
 

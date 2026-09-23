@@ -23,7 +23,7 @@ _EXTRA_PIN = "studio-extra @ https://example.invalid/studio-extra.zip " '; pytho
 
 
 def _install_function() -> ast.FunctionDef:
-    tree = ast.parse(_STACK.read_text(encoding = "utf-8"))
+    tree = ast.parse(_STACK.read_text(encoding="utf-8"))
     return next(
         node
         for node in tree.body
@@ -62,7 +62,7 @@ class TestSharedBaseSelection:
         no_torch: bool = False,
     ) -> Path | None:
         req = tmp_path / "base.txt"
-        req.write_text(textwrap.dedent(body).lstrip(), encoding = "utf-8")
+        req.write_text(textwrap.dedent(body).lstrip(), encoding="utf-8")
         monkeypatch.setattr(ips, "REQ_ROOT", tmp_path)
         monkeypatch.setattr(ips, "NO_TORCH", no_torch)
         return ips._shared_base_requirements()
@@ -82,11 +82,11 @@ class TestSharedBaseSelection:
     def test_any_pip_entry_uses_the_original_file_unchanged(self, tmp_path, monkeypatch, entry):
         selected = self._select(tmp_path, monkeypatch, f"# shared\n{entry}\n")
         assert selected == tmp_path / "base.txt"
-        assert selected.read_text(encoding = "utf-8") == f"# shared\n{entry}\n"
+        assert selected.read_text(encoding="utf-8") == f"# shared\n{entry}\n"
         assert not list(tmp_path.glob(".*-filtered-*.txt"))
 
     def test_no_torch_keeps_its_own_runtime_list(self, tmp_path, monkeypatch):
-        selected = self._select(tmp_path, monkeypatch, _EXTRA_PIN, no_torch = True)
+        selected = self._select(tmp_path, monkeypatch, _EXTRA_PIN, no_torch=True)
         assert selected is None
 
     def test_current_base_file_adds_no_install_step(self):
@@ -95,7 +95,7 @@ class TestSharedBaseSelection:
     def test_a_bom_does_not_read_as_content(self, tmp_path, monkeypatch):
         """PowerShell 5.1 redirection and some Windows editors prepend a UTF-8 BOM."""
         req = tmp_path / "base.txt"
-        req.write_text("# shared\n", encoding = "utf-8-sig")
+        req.write_text("# shared\n", encoding="utf-8-sig")
         monkeypatch.setattr(ips, "REQ_ROOT", tmp_path)
         monkeypatch.setattr(ips, "NO_TORCH", False)
         assert ips._shared_base_requirements() is None
@@ -114,7 +114,7 @@ class TestSharedBaseSelection:
         root ignores the mode bits and Windows does not implement them at all.
         """
         if mode == "unreadable":
-            (tmp_path / "base.txt").write_text(_EXTRA_PIN, encoding = "utf-8")
+            (tmp_path / "base.txt").write_text(_EXTRA_PIN, encoding="utf-8")
 
             def denied(*_args, **_kwargs):
                 raise PermissionError(13, "Permission denied")
@@ -139,12 +139,12 @@ class TestSharedBasePhase:
         def record_install(
             _label,
             *_args,
-            req = None,
+            req=None,
             **_kwargs,
         ):
             installs.append(req)
 
-        module = ast.Module(body = [_shared_base_branch()], type_ignores = [])
+        module = ast.Module(body=[_shared_base_branch()], type_ignores=[])
         namespace = {
             "base_requirements": req,
             "skip_base": skip_base,
@@ -162,8 +162,8 @@ class TestSharedBasePhase:
     @pytest.mark.parametrize("skip_base", [False, True])
     def test_shared_file_is_applied_once_on_both_core_paths(self, tmp_path, skip_base):
         req = tmp_path / "base.txt"
-        req.write_text(_EXTRA_PIN + "\n", encoding = "utf-8")
-        installs, _progress = self._run(req, skip_base = skip_base)
+        req.write_text(_EXTRA_PIN + "\n", encoding="utf-8")
+        installs, _progress = self._run(req, skip_base=skip_base)
         assert installs == [req]
 
     @pytest.mark.parametrize("skip_base", [False, True])
@@ -171,24 +171,24 @@ class TestSharedBasePhase:
         """A skipped step must cost nothing but its progress slot: the denominator
         cannot depend on how much of the install was already there."""
         req = tmp_path / "base.txt"
-        req.write_text(_EXTRA_PIN + "\n", encoding = "utf-8")
-        installs, progress = self._run(req, skip_base = skip_base, satisfied = True)
+        req.write_text(_EXTRA_PIN + "\n", encoding="utf-8")
+        installs, progress = self._run(req, skip_base=skip_base, satisfied=True)
         assert installs == []
         assert progress == (["base requirements (satisfied, skipped)"] if skip_base else [])
 
     def test_shell_handoff_owns_the_progress_slot_when_shared_work_exists(self, tmp_path):
         req = tmp_path / "base.txt"
-        req.write_text(_EXTRA_PIN + "\n", encoding = "utf-8")
-        _installs, progress = self._run(req, skip_base = True)
+        req.write_text(_EXTRA_PIN + "\n", encoding="utf-8")
+        _installs, progress = self._run(req, skip_base=True)
         assert progress == ["base requirements"]
 
     def test_no_selected_file_installs_nothing(self):
-        assert self._run(None, skip_base = True) == ([], [])
+        assert self._run(None, skip_base=True) == ([], [])
 
     def test_shared_phase_is_after_and_outside_the_core_branch(self):
         core = _core_branch()
         shared = _shared_base_branch()
-        between = _STACK.read_text(encoding = "utf-8").splitlines()[core.end_lineno : shared.lineno]
+        between = _STACK.read_text(encoding="utf-8").splitlines()[core.end_lineno : shared.lineno]
         assert "        base_requirements = _shared_base_requirements()" in between
         assert all(isinstance(node, ast.Pass) for node in core.body)
 
@@ -213,7 +213,7 @@ class TestCorePackageOwnership:
 
     def test_base_file_does_not_own_core_distributions(self):
         names = []
-        for line in (_REQ_ROOT / "base.txt").read_text(encoding = "utf-8").splitlines():
+        for line in (_REQ_ROOT / "base.txt").read_text(encoding="utf-8").splitlines():
             text = line.split("#", 1)[0].strip()
             if text and not text.startswith("-"):
                 names.append(canonicalize_name(Requirement(text).name))
@@ -229,11 +229,11 @@ class TestInstallerHandoff:
         ],
     )
     def test_both_installers_delegate_the_core_skip(self, path, needle):
-        assert needle in (_REPO_ROOT / path).read_text(encoding = "utf-8")
+        assert needle in (_REPO_ROOT / path).read_text(encoding="utf-8")
 
     @pytest.mark.parametrize("path", ["install.sh", "install.ps1"])
     def test_python_stack_owns_shared_base_requirements(self, path):
-        assert "base.txt" not in (_REPO_ROOT / path).read_text(encoding = "utf-8")
+        assert "base.txt" not in (_REPO_ROOT / path).read_text(encoding="utf-8")
 
     def test_base_changes_invalidate_the_install_manifest(self):
         assert "base.txt" in install_manifest.TRACKED_REQUIREMENT_FILES

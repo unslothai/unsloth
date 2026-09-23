@@ -16,9 +16,9 @@ import pytest
 SAVE_PY = Path(__file__).resolve().parents[1] / "unsloth" / "save.py"
 
 
-@pytest.fixture(scope = "module")
+@pytest.fixture(scope="module")
 def tree():
-    return ast.parse(SAVE_PY.read_text(encoding = "utf-8"))
+    return ast.parse(SAVE_PY.read_text(encoding="utf-8"))
 
 
 def _func(tree, name):
@@ -48,12 +48,12 @@ def test_unsloth_save_model_strips_the_declaration(tree):
     assert "_strip_absent_mtp_declaration" in _calls(_func(tree, "unsloth_save_model"))
 
 
-@pytest.fixture(scope = "module")
+@pytest.fixture(scope="module")
 def save_module():
     # Skip rather than fail on an older zoo; the AST tests above pin this repo's wiring.
     pytest.importorskip(
         "unsloth_zoo.saving_utils",
-        reason = "unsloth_zoo.saving_utils is unavailable",
+        reason="unsloth_zoo.saving_utils is unavailable",
     )
     from unsloth_zoo import saving_utils
 
@@ -61,7 +61,7 @@ def save_module():
         if not hasattr(saving_utils, name):
             pytest.skip(f"installed unsloth_zoo has no {name}")
     # importorskip only skips ModuleNotFoundError, so catch the circular import by hand.
-    pytest.importorskip("unsloth", reason = "unsloth is not importable on this runner")
+    pytest.importorskip("unsloth", reason="unsloth is not importable on this runner")
     try:
         import unsloth.save as module
     except ImportError as error:
@@ -207,7 +207,7 @@ def test_the_manual_merge_restores_the_config_when_the_write_fails(tree):
     )
 
 
-@pytest.fixture(scope = "module")
+@pytest.fixture(scope="module")
 def save_module_any():
     """`unsloth.save` itself, without the MTP-aware zoo the stripper tests need.
 
@@ -215,7 +215,7 @@ def save_module_any():
     helpers. The cost question below is about this repo's own control flow, so it is answerable
     on any zoo and should not be skipped with them.
     """
-    pytest.importorskip("unsloth", reason = "unsloth is not importable on this runner")
+    pytest.importorskip("unsloth", reason="unsloth is not importable on this runner")
     try:
         import unsloth.save as module
     except ImportError as error:
@@ -244,19 +244,19 @@ def test_a_local_save_does_not_collect_the_resident_state_dict(
             return {"model.embed_tokens.weight": torch.zeros(1)}
 
         def save_pretrained(self, directory, **kwargs):
-            os.makedirs(directory, exist_ok = True)
+            os.makedirs(directory, exist_ok=True)
 
     from unsloth_zoo import saving_utils
 
-    monkeypatch.setattr(saving_utils, "reconcile_mtp_config", lambda *_a, **_k: None, raising = False)
+    monkeypatch.setattr(saving_utils, "reconcile_mtp_config", lambda *_a, **_k: None, raising=False)
     for method in ("lora", "merged_4bit_forced"):
         collected.clear()
         save_module_any.unsloth_generic_save(
             _Model(),
             None,
-            save_directory = str(tmp_path / method),
-            save_method = method,
-            push_to_hub = False,
+            save_directory=str(tmp_path / method),
+            save_method=method,
+            push_to_hub=False,
         )
         assert collected == [], (method, collected)
 
@@ -265,9 +265,9 @@ def test_a_local_save_does_not_collect_the_resident_state_dict(
     save_module_any.unsloth_generic_save(
         _Model(),
         None,
-        save_directory = str(tmp_path / "16bit"),
-        save_method = "merged_16bit",
-        push_to_hub = False,
+        save_directory=str(tmp_path / "16bit"),
+        save_method="merged_16bit",
+        push_to_hub=False,
     )
     assert collected == ["state_dict"], collected
 
@@ -295,7 +295,7 @@ def test_the_written_tensor_names_reach_the_reconciler(save_module_any, monkeypa
             return {"model.embed_tokens.weight": torch.zeros(1)}
 
         def save_pretrained(self, directory, **kwargs):
-            os.makedirs(directory, exist_ok = True)
+            os.makedirs(directory, exist_ok=True)
             # What transformers 5 does: "remove it from state_dict to avoid keeping the ref",
             # one pop per tensor as its shard is written, leaving the caller's dict empty.
             for name in list(kwargs.get("state_dict") or ()):
@@ -306,15 +306,15 @@ def test_the_written_tensor_names_reach_the_reconciler(save_module_any, monkeypa
     monkeypatch.setattr(
         saving_utils,
         "reconcile_mtp_config",
-        lambda directory, tensor_names = None: seen.append(tensor_names),
-        raising = False,
+        lambda directory, tensor_names=None: seen.append(tensor_names),
+        raising=False,
     )
     save_module_any.unsloth_generic_save(
         _Model(),
         None,
-        save_directory = str(tmp_path / "16bit"),
-        save_method = "merged_16bit",
-        push_to_hub = False,
+        save_directory=str(tmp_path / "16bit"),
+        save_method="merged_16bit",
+        push_to_hub=False,
     )
     assert seen == [["model.embed_tokens.weight"]], seen
 
@@ -324,8 +324,8 @@ def test_the_written_tensor_names_reach_the_reconciler(save_module_any, monkeypa
     save_module_any.unsloth_generic_save(
         _Model(),
         None,
-        save_directory = str(tmp_path / "lora"),
-        save_method = "lora",
-        push_to_hub = False,
+        save_directory=str(tmp_path / "lora"),
+        save_method="lora",
+        push_to_hub=False,
     )
     assert seen == [None], seen

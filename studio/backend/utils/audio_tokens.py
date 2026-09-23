@@ -174,7 +174,7 @@ def detect_local_tts_audio_type(directory) -> Optional[str]:
         try:
             if not tok_file.is_file() or tok_file.stat().st_size > _MAX_TOKENIZER_CONFIG_BYTES:
                 continue
-            raw = tok_file.read_text(encoding = "utf-8-sig")
+            raw = tok_file.read_text(encoding="utf-8-sig")
             if not may_hold_audio_tokens(raw):
                 continue
             audio_type = classify_audio_tokens(json.loads(raw))

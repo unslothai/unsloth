@@ -111,15 +111,15 @@ def _request_config(
     training_type: str,
     branch: str,
     selectors: dict,
-    target_modules = None,
+    target_modules=None,
 ) -> dict:
     """Build the worker config the way /training/start does: through the request model, so
     an omitted field arrives as the request model's default rather than as a missing key."""
     request = TrainingStartRequest(
-        model_name = "unsloth/Llama-3.2-1B-Instruct",
-        training_type = training_type,
-        format_type = "alpaca",
-        target_modules = target_modules,
+        model_name="unsloth/Llama-3.2-1B-Instruct",
+        training_type=training_type,
+        format_type="alpaca",
+        target_modules=target_modules,
         **selectors,
     )
     # The route sends an empty list through as None, so the worker never sees a falsy list.
@@ -298,12 +298,12 @@ def test_every_selector_combination_is_covered_by_a_named_case():
         for name, case in SELECTOR_CASES.items()
         if name != "omitted"
     }
-    all_combinations = set(itertools.product((False, True), repeat = 4))
+    all_combinations = set(itertools.product((False, True), repeat=4))
 
     assert covered <= all_combinations
 
 
-@pytest.mark.parametrize("flags", list(itertools.product((False, True), repeat = 4)))
+@pytest.mark.parametrize("flags", list(itertools.product((False, True), repeat=4)))
 def test_cuda_guard_matches_get_peft_regex_for_the_whole_product(flags):
     """Exhaustive 2^4. get_peft_regex raises unless a layer family AND a module type is on
     (unsloth_zoo/peft_utils.py: "No layers to finetune" / "No modules to finetune"), and the
@@ -364,7 +364,7 @@ def test_pre_detect_training_model_runs_the_guard():
         **SELECTOR_CASES["all_false"],
     }
 
-    with pytest.raises(ValueError, match = "Nothing to train"):
+    with pytest.raises(ValueError, match="Nothing to train"):
         _pre_detect_training_model(trainer, config, "model", None, "model", False)
 
     # Detection still ran first: the guard needs the branch it settles.
@@ -450,7 +450,7 @@ def test_all_linear_alongside_other_leaves_is_not_the_keyword():
     )
 
     assert _requests_all_linear(config) is False
-    with pytest.raises(ValueError, match = "Nothing to train"):
+    with pytest.raises(ValueError, match="Nothing to train"):
         _check_finetune_targets_after_detect(_Trainer("vlm"), config)
 
 
@@ -475,7 +475,7 @@ def test_mlx_refuses_an_all_false_request_whose_targets_need_a_layer_family(targ
     no trainable parameters. A VLM raises, but only after the weights are loaded."""
     config = _request_config("LoRA/QLoRA", "text", SELECTOR_CASES["all_false"], target_modules)
 
-    with pytest.raises(ValueError, match = "Nothing to train"):
+    with pytest.raises(ValueError, match="Nothing to train"):
         _check_mlx_finetune_targets(config)
 
 
@@ -493,7 +493,7 @@ def test_mlx_keeps_those_same_targets_once_a_layer_family_is_on(target_modules):
 def test_mlx_still_rejects_an_empty_module_selection_on_the_defaults():
     config = _request_config("LoRA/QLoRA", "text", SELECTOR_CASES["all_false"], None)
 
-    with pytest.raises(ValueError, match = "Nothing to train"):
+    with pytest.raises(ValueError, match="Nothing to train"):
         _check_mlx_finetune_targets(config)
 
 
@@ -529,7 +529,7 @@ def test_mlx_reads_the_vision_selector_with_the_mlx_default_not_the_cuda_one():
     }
     assert _finetune_selectors(config)[0] is True, "the helper still reports the CUDA default"
 
-    with pytest.raises(ValueError, match = "Nothing to train"):
+    with pytest.raises(ValueError, match="Nothing to train"):
         _check_mlx_finetune_targets(config)
 
 
@@ -555,15 +555,15 @@ def test_the_effective_check_refuses_a_text_run_whose_only_selection_was_vision(
     all -- a warning, and a model with no trainable parameters."""
     config = {"training_type": "LoRA/QLoRA", "target_modules": ["Wqkv"]}
 
-    with pytest.raises(ValueError, match = "Nothing to train"):
-        _check_mlx_effective_targets(config, finetune_language = False, finetune_vision = False)
+    with pytest.raises(ValueError, match="Nothing to train"):
+        _check_mlx_effective_targets(config, finetune_language=False, finetune_vision=False)
 
 
 @pytest.mark.parametrize("language, vision", [(True, False), (False, True), (True, True)])
 def test_the_effective_check_passes_whenever_a_layer_family_survives(language, vision):
     config = {"training_type": "LoRA/QLoRA", "target_modules": ["Wqkv"]}
 
-    _check_mlx_effective_targets(config, finetune_language = language, finetune_vision = vision)
+    _check_mlx_effective_targets(config, finetune_language=language, finetune_vision=vision)
 
 
 @pytest.mark.parametrize(
@@ -573,7 +573,7 @@ def test_the_effective_check_still_spares_a_cpt_target(target_modules):
     """embed_tokens and lm_head train on the CPT path with both layer families off."""
     config = {"training_type": "LoRA/QLoRA", "target_modules": target_modules}
 
-    _check_mlx_effective_targets(config, finetune_language = False, finetune_vision = False)
+    _check_mlx_effective_targets(config, finetune_language=False, finetune_vision=False)
 
 
 def test_the_effective_check_runs_after_the_back_fill_at_the_mlx_call_site():

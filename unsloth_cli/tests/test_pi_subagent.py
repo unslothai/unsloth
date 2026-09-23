@@ -10,7 +10,7 @@ import subprocess
 import pytest
 
 
-@pytest.mark.skipif(os.name == "nt", reason = "POSIX process group regression test")
+@pytest.mark.skipif(os.name == "nt", reason="POSIX process group regression test")
 def test_pi_cancel_kills_child_process_group(tmp_path):
     bun = shutil.which("bun")
     if bun is None:
@@ -29,7 +29,7 @@ def test_pi_cancel_kills_child_process_group(tmp_path):
                 "maxTokens": 8192,
             }
         ),
-        encoding = "utf-8",
+        encoding="utf-8",
     )
     driver = tmp_path / "pi-driver.js"
     driver.write_text(
@@ -53,7 +53,7 @@ spawn(
 process.on("SIGTERM", () => {});
 setInterval(() => {}, 1000);
 """,
-        encoding = "utf-8",
+        encoding="utf-8",
     )
     extension = Path(__file__).parents[1] / "pi_subagent.ts"
     test_file = tmp_path / "pi-cancel.test.ts"
@@ -107,20 +107,20 @@ test("cancellation stops the Pi child process group", async () => {{
     expect(existsSync({str(marker)!r})).toBe(false);
 }}, 10_000);
 """,
-        encoding = "utf-8",
+        encoding="utf-8",
     )
 
     completed = subprocess.run(
         [bun, "test", str(test_file)],
-        capture_output = True,
-        text = True,
-        timeout = 15,
+        capture_output=True,
+        text=True,
+        timeout=15,
     )
 
     assert completed.returncode == 0, completed.stdout + completed.stderr
 
 
-@pytest.mark.skipif(os.name == "nt", reason = "POSIX driver script")
+@pytest.mark.skipif(os.name == "nt", reason="POSIX driver script")
 def test_pi_child_error_events_fail_the_tool_call(tmp_path):
     bun = shutil.which("bun")
     if bun is None:
@@ -137,7 +137,7 @@ def test_pi_child_error_events_fail_the_tool_call(tmp_path):
                 "maxTokens": 8192,
             }
         ),
-        encoding = "utf-8",
+        encoding="utf-8",
     )
     # Pi reports model/API failures as message_end events while exiting 0.
     driver = tmp_path / "pi-driver.js"
@@ -164,7 +164,7 @@ const event = task === "pass"
       };
 console.log(JSON.stringify(event));
 """,
-        encoding = "utf-8",
+        encoding="utf-8",
     )
     extension = Path(__file__).parents[1] / "pi_subagent.ts"
     test_file = tmp_path / "pi-error.test.ts"
@@ -219,20 +219,20 @@ test("child error events fail the tool call", async () => {{
     expect(parallelError).toContain("backend unreachable");
 }}, 10_000);
 """,
-        encoding = "utf-8",
+        encoding="utf-8",
     )
 
     completed = subprocess.run(
         [bun, "test", str(test_file)],
-        capture_output = True,
-        text = True,
-        timeout = 15,
+        capture_output=True,
+        text=True,
+        timeout=15,
     )
 
     assert completed.returncode == 0, completed.stdout + completed.stderr
 
 
-@pytest.mark.skipif(os.name == "nt", reason = "POSIX driver script")
+@pytest.mark.skipif(os.name == "nt", reason="POSIX driver script")
 def test_pi_parallel_agents_run_together_and_preserve_transcripts(tmp_path):
     bun = shutil.which("bun")
     if bun is None:
@@ -249,7 +249,7 @@ def test_pi_parallel_agents_run_together_and_preserve_transcripts(tmp_path):
                 "maxTokens": 8192,
             }
         ),
-        encoding = "utf-8",
+        encoding="utf-8",
     )
     starts = tmp_path / "starts"
     driver = tmp_path / "pi-driver.js"
@@ -299,7 +299,7 @@ console.log(JSON.stringify({{
     toolResults: [toolResult],
 }}));
 """,
-        encoding = "utf-8",
+        encoding="utf-8",
     )
     extension = Path(__file__).parents[1] / "pi_subagent.ts"
     test_file = tmp_path / "pi-parallel.test.ts"
@@ -349,20 +349,20 @@ test("parallel tasks launch one child each and retain their transcripts", async 
     expect(result.details.results[1].transcript[1].content[0].text).toBe("TOOL_BETA");
 }}, 10_000);
 """,
-        encoding = "utf-8",
+        encoding="utf-8",
     )
 
     completed = subprocess.run(
         [bun, "test", str(test_file)],
-        capture_output = True,
-        text = True,
-        timeout = 15,
+        capture_output=True,
+        text=True,
+        timeout=15,
     )
 
     assert completed.returncode == 0, completed.stdout + completed.stderr
 
 
-@pytest.mark.skipif(os.name == "nt", reason = "POSIX driver script")
+@pytest.mark.skipif(os.name == "nt", reason="POSIX driver script")
 def test_pi_parallel_agent_cap_spans_concurrent_tool_calls(tmp_path):
     bun = shutil.which("bun")
     if bun is None:
@@ -379,7 +379,7 @@ def test_pi_parallel_agent_cap_spans_concurrent_tool_calls(tmp_path):
                 "maxTokens": 8192,
             }
         ),
-        encoding = "utf-8",
+        encoding="utf-8",
     )
     markers = tmp_path / "active"
     markers.mkdir()
@@ -405,7 +405,7 @@ console.log(JSON.stringify({{
     }},
 }}));
 """,
-        encoding = "utf-8",
+        encoding="utf-8",
     )
     extension = Path(__file__).parents[1] / "pi_subagent.ts"
     test_file = tmp_path / "pi-global-cap.test.ts"
@@ -461,14 +461,14 @@ test("concurrent tool calls share the four-agent cap", async () => {{
     expect(afterQueue.content[0].text).toContain("DONE_C");
 }}, 10_000);
 """,
-        encoding = "utf-8",
+        encoding="utf-8",
     )
 
     completed = subprocess.run(
         [bun, "test", str(test_file)],
-        capture_output = True,
-        text = True,
-        timeout = 15,
+        capture_output=True,
+        text=True,
+        timeout=15,
     )
 
     assert completed.returncode == 0, completed.stdout + completed.stderr

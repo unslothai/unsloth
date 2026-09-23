@@ -37,28 +37,28 @@ sys.path.insert(0, str(REPO))
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--arm", choices = ("eager", "online"), required = True)
+    parser.add_argument("--arm", choices=("eager", "online"), required=True)
     # No default path: it would only exist on one machine.
     parser.add_argument(
         "--dataset",
-        required = True,
-        help = "Parquet/JSONL split, or a Hugging Face dataset id, carrying a text column",
+        required=True,
+        help="Parquet/JSONL split, or a Hugging Face dataset id, carrying a text column",
     )
-    parser.add_argument("--model", default = "unsloth/Qwen3-0.6B", help = "Model id or local path")
-    parser.add_argument("--max-steps", type = int, default = 30)
-    parser.add_argument("--batch-size", type = int, default = 2)
-    parser.add_argument("--grad-accum", type = int, default = 4)
-    parser.add_argument("--max-seq-length", type = int, default = 2048)
-    parser.add_argument("--out", required = True)
-    parser.add_argument("--fresh-cache", action = "store_true", default = True)
-    parser.add_argument("--no-fresh-cache", dest = "fresh_cache", action = "store_false")
+    parser.add_argument("--model", default="unsloth/Qwen3-0.6B", help="Model id or local path")
+    parser.add_argument("--max-steps", type=int, default=30)
+    parser.add_argument("--batch-size", type=int, default=2)
+    parser.add_argument("--grad-accum", type=int, default=4)
+    parser.add_argument("--max-seq-length", type=int, default=2048)
+    parser.add_argument("--out", required=True)
+    parser.add_argument("--fresh-cache", action="store_true", default=True)
+    parser.add_argument("--no-fresh-cache", dest="fresh_cache", action="store_false")
     args = parser.parse_args()
 
     # Fresh cache per run, else the eager arm just reads the other arm's
     # tokenize map out of Arrow and measures a cache hit real users never get.
     if args.fresh_cache:
         cache = WORKSPACE / "unsloth_ab_cache" / f"{args.arm}_{int(time.time())}"
-        cache.mkdir(parents = True, exist_ok = True)
+        cache.mkdir(parents=True, exist_ok=True)
         os.environ["HF_DATASETS_CACHE"] = str(cache)
 
     # Set before anything imports the gate.
@@ -77,22 +77,22 @@ def main() -> int:
 
     def mark(name: str) -> None:
         marks[name] = round(time.perf_counter() - start, 4)
-        print(f"[phase] {name} @ {marks[name]}s", flush = True)
+        print(f"[phase] {name} @ {marks[name]}s", flush=True)
 
     trainer = UnslothTrainer()
     if not trainer.load_model(
-        model_name = args.model,
-        max_seq_length = args.max_seq_length,
-        load_in_4bit = True,
+        model_name=args.model,
+        max_seq_length=args.max_seq_length,
+        load_in_4bit=True,
     ):
-        print("model load failed", file = sys.stderr)
+        print("model load failed", file=sys.stderr)
         return 1
     if not trainer.prepare_model_for_training(
-        use_lora = True,
-        lora_r = 16,
-        lora_alpha = 16,
-        lora_dropout = 0.0,
-        target_modules = [
+        use_lora=True,
+        lora_r=16,
+        lora_alpha=16,
+        lora_dropout=0.0,
+        target_modules=[
             "q_proj",
             "k_proj",
             "v_proj",
@@ -101,9 +101,9 @@ def main() -> int:
             "up_proj",
             "down_proj",
         ],
-        use_gradient_checkpointing = "unsloth",
+        use_gradient_checkpointing="unsloth",
     ):
-        print("model prepare failed", file = sys.stderr)
+        print("model prepare failed", file=sys.stderr)
         return 1
     mark("model_ready")
 
@@ -116,12 +116,12 @@ def main() -> int:
         ".parquet",
     )
     result = trainer.load_and_format_dataset(
-        dataset_source = None if local_split else args.dataset,
-        format_type = "auto",
-        local_datasets = [args.dataset] if local_split else None,
+        dataset_source=None if local_split else args.dataset,
+        format_type="auto",
+        local_datasets=[args.dataset] if local_split else None,
     )
     if result is None:
-        print("dataset load failed", file = sys.stderr)
+        print("dataset load failed", file=sys.stderr)
         return 1
     dataset, eval_dataset = result
     mark("dataset_formatted")
@@ -146,7 +146,7 @@ def main() -> int:
             targs,
             state,
             control,
-            logs = None,
+            logs=None,
             **kwargs,
         ):
             if logs and "loss" in logs:
@@ -167,22 +167,22 @@ def main() -> int:
     trainer._preflight_first_batch = _preflight_with_probe
 
     started = trainer.start_training(
-        dataset = dataset,
-        eval_dataset = eval_dataset,
-        output_dir = f"ab_{args.arm}",  # resolved under Unsloth's outputs root
-        num_epochs = 1,
-        max_steps = args.max_steps,
-        batch_size = args.batch_size,
-        gradient_accumulation_steps = args.grad_accum,
-        learning_rate = 2e-4,
-        weight_decay = 0.01,
-        random_seed = 3407,
-        max_seq_length = args.max_seq_length,
-        packing = False,
-        train_on_completions = False,
+        dataset=dataset,
+        eval_dataset=eval_dataset,
+        output_dir=f"ab_{args.arm}",  # resolved under Unsloth's outputs root
+        num_epochs=1,
+        max_steps=args.max_steps,
+        batch_size=args.batch_size,
+        gradient_accumulation_steps=args.grad_accum,
+        learning_rate=2e-4,
+        weight_decay=0.01,
+        random_seed=3407,
+        max_seq_length=args.max_seq_length,
+        packing=False,
+        train_on_completions=False,
     )
     if not started:
-        print("training failed to start", file = sys.stderr)
+        print("training failed to start", file=sys.stderr)
         return 1
 
     while trainer.training_thread and trainer.training_thread.is_alive():
@@ -241,9 +241,9 @@ def main() -> int:
         payload["mean_loss"] = round(sum(probe.losses) / len(probe.losses), 6)
 
     out = Path(args.out)
-    out.parent.mkdir(parents = True, exist_ok = True)
-    out.write_text(json.dumps(payload, indent = 2), encoding = "utf-8")
-    print(json.dumps({k: v for k, v in payload.items() if k != "step_times"}, indent = 2))
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    print(json.dumps({k: v for k, v in payload.items() if k != "step_times"}, indent=2))
     return 1 if error else 0
 
 

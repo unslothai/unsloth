@@ -44,7 +44,7 @@ from core.inference.llama_cpp import LlamaCppBackend  # noqa: E402
 @pytest.fixture
 def binary(tmp_path):
     path = tmp_path / "llama.cpp" / "build" / "bin" / "llama-server"
-    path.parent.mkdir(parents = True)
+    path.parent.mkdir(parents=True)
     path.write_text("")
     return path
 
@@ -66,7 +66,7 @@ def _no_linux_discovery(monkeypatch):
 class TestDarwin:
     def test_binary_dir_lands_on_dyld_library_path(self, monkeypatch, binary):
         monkeypatch.setattr(sys, "platform", "darwin")
-        monkeypatch.delenv("DYLD_LIBRARY_PATH", raising = False)
+        monkeypatch.delenv("DYLD_LIBRARY_PATH", raising=False)
         _no_linux_discovery(monkeypatch)
         env = _env_for(binary)
         assert env["DYLD_LIBRARY_PATH"].split(os.pathsep)[0] == str(binary.parent)
@@ -101,12 +101,12 @@ class TestDarwin:
         # launches the resolved target instead (see
         # TestDarwinSpawnsTheResolvedBinary).
         real_dir = tmp_path / "llama.cpp" / "build" / "bin"
-        real_dir.mkdir(parents = True)
+        real_dir.mkdir(parents=True)
         (real_dir / "llama-server-real").write_text("")
         wrapper = real_dir / "llama-server"
         wrapper.write_text('#!/bin/sh\nexec "$(dirname "$0")/llama-server-real" "$@"\n')
         monkeypatch.setattr(sys, "platform", "darwin")
-        monkeypatch.delenv("DYLD_LIBRARY_PATH", raising = False)
+        monkeypatch.delenv("DYLD_LIBRARY_PATH", raising=False)
         _no_linux_discovery(monkeypatch)
         env = LlamaCppBackend._llama_server_env_for_binary(str(wrapper))
         assert env["DYLD_LIBRARY_PATH"].split(os.pathsep)[0] == str(real_dir)
@@ -124,7 +124,7 @@ class TestDarwin:
 class TestLinuxUnchanged:
     def test_binary_dir_still_lands_on_ld_library_path(self, monkeypatch, binary):
         monkeypatch.setattr(sys, "platform", "linux")
-        monkeypatch.delenv("LD_LIBRARY_PATH", raising = False)
+        monkeypatch.delenv("LD_LIBRARY_PATH", raising=False)
         monkeypatch.setattr(llama_module, "_wsl_system_rocm_lib_dirs", lambda: [])
         monkeypatch.setattr(llama_module, "_native_linux_system_rocm_lib_dirs", lambda _d: [])
         env = _env_for(binary)
@@ -143,7 +143,7 @@ class TestLinuxUnchanged:
 
     def test_system_rocm_still_precedes_the_bundle(self, monkeypatch, binary):
         monkeypatch.setattr(sys, "platform", "linux")
-        monkeypatch.delenv("LD_LIBRARY_PATH", raising = False)
+        monkeypatch.delenv("LD_LIBRARY_PATH", raising=False)
         monkeypatch.setattr(llama_module, "_wsl_system_rocm_lib_dirs", lambda: ["/wsl/rocm"])
         monkeypatch.setattr(llama_module, "_native_linux_system_rocm_lib_dirs", lambda _d: [])
         env = _env_for(binary)
@@ -153,14 +153,14 @@ class TestLinuxUnchanged:
     def test_use_system_rocm_false_skips_native_linux_prepend(self, monkeypatch, binary):
         # The retry keeps the CUDA and bundle dirs, drops the system ROCm one.
         monkeypatch.setattr(sys, "platform", "linux")
-        monkeypatch.delenv("LD_LIBRARY_PATH", raising = False)
+        monkeypatch.delenv("LD_LIBRARY_PATH", raising=False)
         monkeypatch.setattr(llama_module, "_wsl_system_rocm_lib_dirs", lambda: [])
         monkeypatch.setattr(
             llama_module, "_native_linux_system_rocm_lib_dirs", lambda _d: ["/opt/rocm/lib"]
         )
         with_system = LlamaCppBackend._llama_server_env_for_binary(str(binary))
         bundle_only = LlamaCppBackend._llama_server_env_for_binary(
-            str(binary), use_system_rocm = False
+            str(binary), use_system_rocm=False
         )
         assert with_system["LD_LIBRARY_PATH"].split(":")[0] == "/opt/rocm/lib"
         assert "/opt/rocm/lib" not in bundle_only["LD_LIBRARY_PATH"].split(":")
@@ -171,7 +171,7 @@ class TestLinuxUnchanged:
         # builds its env through this same helper, would keep crashing into the
         # prepend that was already proved wrong on this host.
         monkeypatch.setattr(sys, "platform", "linux")
-        monkeypatch.delenv("LD_LIBRARY_PATH", raising = False)
+        monkeypatch.delenv("LD_LIBRARY_PATH", raising=False)
         monkeypatch.setattr(llama_module, "_wsl_system_rocm_lib_dirs", lambda: [])
         monkeypatch.setattr(
             llama_module, "_native_linux_system_rocm_lib_dirs", lambda _d: ["/opt/rocm/lib"]
@@ -196,7 +196,7 @@ class TestLinuxUnchanged:
         # The in-app updater swaps a new install into the same path. A proof
         # from the old binary must not force the new runtime to stay bundle-only.
         monkeypatch.setattr(sys, "platform", "linux")
-        monkeypatch.delenv("LD_LIBRARY_PATH", raising = False)
+        monkeypatch.delenv("LD_LIBRARY_PATH", raising=False)
         monkeypatch.setattr(llama_module, "_wsl_system_rocm_lib_dirs", lambda: [])
         monkeypatch.setattr(
             llama_module, "_native_linux_system_rocm_lib_dirs", lambda _d: ["/opt/rocm/lib"]
@@ -216,7 +216,7 @@ class TestLinuxUnchanged:
     def test_a_different_build_dir_still_gets_the_prepend(self, monkeypatch, binary, tmp_path):
         # The proof is about one install tree, not about the host in general.
         monkeypatch.setattr(sys, "platform", "linux")
-        monkeypatch.delenv("LD_LIBRARY_PATH", raising = False)
+        monkeypatch.delenv("LD_LIBRARY_PATH", raising=False)
         monkeypatch.setattr(llama_module, "_wsl_system_rocm_lib_dirs", lambda: [])
         monkeypatch.setattr(
             llama_module, "_native_linux_system_rocm_lib_dirs", lambda _d: ["/opt/rocm/lib"]
@@ -224,7 +224,7 @@ class TestLinuxUnchanged:
         monkeypatch.setattr(LlamaCppBackend, "_bundle_only_rocm_dirs", {})
         LlamaCppBackend._remember_bundle_only_rocm(str(binary))
         other = tmp_path / "other" / "llama-server"
-        other.parent.mkdir(parents = True)
+        other.parent.mkdir(parents=True)
         other.write_bytes(b"binary")
         env = LlamaCppBackend._llama_server_env_for_binary(str(other))
         assert env["LD_LIBRARY_PATH"].split(":")[0] == "/opt/rocm/lib"
@@ -233,12 +233,12 @@ class TestLinuxUnchanged:
         # librocdxg is a different mix (WSL). The native-Linux flag must not
         # drop it.
         monkeypatch.setattr(sys, "platform", "linux")
-        monkeypatch.delenv("LD_LIBRARY_PATH", raising = False)
+        monkeypatch.delenv("LD_LIBRARY_PATH", raising=False)
         monkeypatch.setattr(llama_module, "_wsl_system_rocm_lib_dirs", lambda: ["/wsl/rocm"])
         monkeypatch.setattr(
             llama_module, "_native_linux_system_rocm_lib_dirs", lambda _d: ["/opt/rocm/lib"]
         )
-        env = LlamaCppBackend._llama_server_env_for_binary(str(binary), use_system_rocm = False)
+        env = LlamaCppBackend._llama_server_env_for_binary(str(binary), use_system_rocm=False)
         parts = env["LD_LIBRARY_PATH"].split(":")
         assert parts[0] == "/wsl/rocm"
         assert "/opt/rocm/lib" not in parts
@@ -249,8 +249,8 @@ class TestWindowsUnchanged:
     def test_path_is_semicolon_joined_and_no_unix_vars_appear(self, monkeypatch, binary):
         monkeypatch.setattr(sys, "platform", "win32")
         monkeypatch.setenv("PATH", "C:\\existing")
-        monkeypatch.delenv("LD_LIBRARY_PATH", raising = False)
-        monkeypatch.delenv("DYLD_LIBRARY_PATH", raising = False)
+        monkeypatch.delenv("LD_LIBRARY_PATH", raising=False)
+        monkeypatch.delenv("DYLD_LIBRARY_PATH", raising=False)
         _no_linux_discovery(monkeypatch)
         env = _env_for(binary)
         assert env["PATH"].startswith(f"{binary.parent};")
@@ -266,7 +266,7 @@ class TestDarwinSpawnsTheResolvedBinary:
 
     def test_resolve_llama_binary_follows_the_wrapper(self, tmp_path):
         real_dir = tmp_path / "build" / "bin"
-        real_dir.mkdir(parents = True)
+        real_dir.mkdir(parents=True)
         target = real_dir / "llama-server-real"
         target.write_text("")
         wrapper = real_dir / "llama-server"
@@ -284,7 +284,7 @@ class TestExecPathForLaunch:
 
     def _wrapper(self, tmp_path):
         real_dir = tmp_path / "llama.cpp" / "build" / "bin"
-        real_dir.mkdir(parents = True)
+        real_dir.mkdir(parents=True)
         (real_dir / "llama-server-real").write_text("")
         wrapper = real_dir / "llama-server"
         wrapper.write_text('#!/bin/sh\nexec "$(dirname "$0")/llama-server-real" "$@"\n')
@@ -292,7 +292,7 @@ class TestExecPathForLaunch:
 
     def test_a_managed_entrypoint_is_resolved(self, monkeypatch, tmp_path):
         monkeypatch.setattr(sys, "platform", "darwin")
-        monkeypatch.delenv("LLAMA_SERVER_PATH", raising = False)
+        monkeypatch.delenv("LLAMA_SERVER_PATH", raising=False)
         wrapper, target = self._wrapper(tmp_path)
         monkeypatch.setenv("UNSLOTH_LLAMA_CPP_PATH", str(tmp_path / "llama.cpp"))
         assert LlamaCppBackend._exec_path_for_launch(str(wrapper)) == str(target)
@@ -335,11 +335,11 @@ class TestBinaryRevisionPathSpace:
     def _managed_wrapper(self, monkeypatch, tmp_path):
         root = tmp_path / "llama.cpp"
         real_dir = root / "build" / "bin"
-        real_dir.mkdir(parents = True)
+        real_dir.mkdir(parents=True)
         (real_dir / "llama-server-real").write_text("real")
         wrapper = root / "llama-server"
         wrapper.write_text('#!/bin/sh\nexec "$(dirname "$0")/build/bin/llama-server-real" "$@"\n')
-        monkeypatch.delenv("LLAMA_SERVER_PATH", raising = False)
+        monkeypatch.delenv("LLAMA_SERVER_PATH", raising=False)
         monkeypatch.setenv("UNSLOTH_LLAMA_CPP_PATH", str(root))
         monkeypatch.setattr(sys, "platform", "darwin")
         return wrapper
@@ -389,7 +389,7 @@ class TestLocalLinkInstalls:
     def _local_link_tree(self, tmp_path, monkeypatch):
         external = tmp_path / "my-llama-checkout"
         bin_dir = external / "build" / "bin"
-        bin_dir.mkdir(parents = True)
+        bin_dir.mkdir(parents=True)
         (bin_dir / "llama-server-real").write_text("")
         wrapper = external / "llama-server"
         wrapper.write_text(
@@ -399,7 +399,7 @@ class TestLocalLinkInstalls:
         studio_root.mkdir()
         link = studio_root / "llama.cpp"
         link.symlink_to(external)
-        monkeypatch.delenv("LLAMA_SERVER_PATH", raising = False)
+        monkeypatch.delenv("LLAMA_SERVER_PATH", raising=False)
         monkeypatch.setenv("UNSLOTH_LLAMA_CPP_PATH", str(link))
         return link / "llama-server"
 
@@ -451,7 +451,7 @@ class TestTheLoaderPathPrependIsAFixedPoint:
 
     def test_building_the_env_twice_gives_the_same_value(self, monkeypatch, tmp_path):
         binary = tmp_path / "build" / "bin" / "llama-server"
-        binary.parent.mkdir(parents = True)
+        binary.parent.mkdir(parents=True)
         binary.write_bytes(b"\xcf\xfa\xed\xfe")
         monkeypatch.setattr(sys, "platform", "darwin")
         first = LlamaCppBackend._llama_server_env_for_binary(str(binary))
@@ -471,7 +471,7 @@ class TestAnExplicitPinOutranksInferredOwnership:
     @staticmethod
     def _managed_tree_with_a_pinned_wrapper(tmp_path):
         root = tmp_path / "llama.cpp"
-        (root / "build" / "bin").mkdir(parents = True)
+        (root / "build" / "bin").mkdir(parents=True)
         (root / "build" / "bin" / "llama-server").write_bytes(b"\xcf\xfa\xed\xfe")
         for marker in (
             "UNSLOTH_PREBUILT_INFO.json",
@@ -515,13 +515,13 @@ class TestTheCpuFallbackGateIsUnchangedForLinkedTrees:
     @staticmethod
     def _linked_tree(tmp_path, monkeypatch):
         external = tmp_path / "my-llama-checkout"
-        (external / "build" / "bin").mkdir(parents = True)
+        (external / "build" / "bin").mkdir(parents=True)
         (external / "build" / "bin" / "llama-server").write_bytes(b"\xcf\xfa\xed\xfe")
         studio_root = tmp_path / "studio"
         studio_root.mkdir()
         link = studio_root / "llama.cpp"
         link.symlink_to(external)
-        monkeypatch.delenv("LLAMA_SERVER_PATH", raising = False)
+        monkeypatch.delenv("LLAMA_SERVER_PATH", raising=False)
         monkeypatch.setenv("UNSLOTH_LLAMA_CPP_PATH", str(link))
         return str(link / "build" / "bin" / "llama-server")
 
@@ -546,7 +546,7 @@ class TestAWrapperChainIsFollowedToTheEnd:
     @staticmethod
     def _chain(tmp_path, depth):
         real_dir = tmp_path / "build" / "bin"
-        real_dir.mkdir(parents = True)
+        real_dir.mkdir(parents=True)
         real = real_dir / "llama-server"
         real.write_bytes(b"\xcf\xfa\xed\xfe")
         target = "build/bin/llama-server"
@@ -587,7 +587,7 @@ class TestOnlyTheInstallersOwnEntrypointIsSkipped:
     @staticmethod
     def _tree(tmp_path, wrapper_body):
         root = tmp_path / "my-llama-checkout"
-        (root / "build" / "bin").mkdir(parents = True)
+        (root / "build" / "bin").mkdir(parents=True)
         (root / "build" / "bin" / "llama-server").write_bytes(b"\xcf\xfa\xed\xfe")
         entry = root / "llama-server"
         entry.write_text(wrapper_body)
@@ -599,7 +599,7 @@ class TestOnlyTheInstallersOwnEntrypointIsSkipped:
 
     def test_a_users_wrapper_in_a_custom_dir_is_launched_as_written(self, monkeypatch, tmp_path):
         root, entry = self._tree(tmp_path, self._USERS)
-        monkeypatch.delenv("LLAMA_SERVER_PATH", raising = False)
+        monkeypatch.delenv("LLAMA_SERVER_PATH", raising=False)
         monkeypatch.setenv("UNSLOTH_LLAMA_CPP_PATH", str(root))
         monkeypatch.setattr(sys, "platform", "darwin")
         # It really does read as managed; the exemption is the wrapper shape.
@@ -608,7 +608,7 @@ class TestOnlyTheInstallersOwnEntrypointIsSkipped:
 
     def test_the_installers_own_wrapper_is_still_resolved(self, monkeypatch, tmp_path):
         root, entry = self._tree(tmp_path, self._INSTALLER)
-        monkeypatch.delenv("LLAMA_SERVER_PATH", raising = False)
+        monkeypatch.delenv("LLAMA_SERVER_PATH", raising=False)
         monkeypatch.setenv("UNSLOTH_LLAMA_CPP_PATH", str(root))
         monkeypatch.setattr(sys, "platform", "darwin")
         got = LlamaCppBackend._exec_path_for_launch(str(entry))
@@ -622,12 +622,12 @@ class TestOnlyTheInstallersOwnEntrypointIsSkipped:
 
     def test_a_symlink_entrypoint_is_ours_to_resolve(self, monkeypatch, tmp_path):
         root = tmp_path / "t"
-        (root / "build" / "bin").mkdir(parents = True)
+        (root / "build" / "bin").mkdir(parents=True)
         real = root / "build" / "bin" / "llama-server"
         real.write_bytes(b"\xcf\xfa\xed\xfe")
         link = root / "llama-server"
         link.symlink_to(real)
-        monkeypatch.delenv("LLAMA_SERVER_PATH", raising = False)
+        monkeypatch.delenv("LLAMA_SERVER_PATH", raising=False)
         monkeypatch.setenv("UNSLOTH_LLAMA_CPP_PATH", str(root))
         monkeypatch.setattr(sys, "platform", "darwin")
         assert LlamaCppBackend._exec_path_for_launch(str(link)) == str(real.resolve())
@@ -647,7 +647,7 @@ class TestPinningTheInstallersOwnEntrypoint:
     @staticmethod
     def _managed_tree(tmp_path, body):
         root = tmp_path / "llama.cpp"
-        (root / "build" / "bin").mkdir(parents = True)
+        (root / "build" / "bin").mkdir(parents=True)
         (root / "build" / "bin" / "llama-server").write_bytes(b"\xcf\xfa\xed\xfe")
         for marker in (
             "UNSLOTH_PREBUILT_INFO.json",
@@ -665,7 +665,7 @@ class TestPinningTheInstallersOwnEntrypoint:
 
     def test_a_pinned_installer_wrapper_still_resolves(self, monkeypatch, tmp_path):
         root, entry = self._managed_tree(tmp_path, self._INSTALLER)
-        monkeypatch.delenv("UNSLOTH_LLAMA_CPP_PATH", raising = False)
+        monkeypatch.delenv("UNSLOTH_LLAMA_CPP_PATH", raising=False)
         monkeypatch.setenv("LLAMA_SERVER_PATH", str(entry))
         monkeypatch.setattr(sys, "platform", "darwin")
         got = LlamaCppBackend._exec_path_for_launch(str(entry))
@@ -673,7 +673,7 @@ class TestPinningTheInstallersOwnEntrypoint:
 
     def test_a_pinned_custom_wrapper_is_still_preserved(self, monkeypatch, tmp_path):
         _root, entry = self._managed_tree(tmp_path, self._CUSTOM)
-        monkeypatch.delenv("UNSLOTH_LLAMA_CPP_PATH", raising = False)
+        monkeypatch.delenv("UNSLOTH_LLAMA_CPP_PATH", raising=False)
         monkeypatch.setenv("LLAMA_SERVER_PATH", str(entry))
         monkeypatch.setattr(sys, "platform", "darwin")
         assert LlamaCppBackend._exec_path_for_launch(str(entry)) == str(entry)
@@ -694,7 +694,7 @@ class TestLaunchStopsAtSomebodyElsesWrapper:
         import json
 
         root = tmp_path / ".unsloth" / "llama.cpp"
-        (root / "build" / "bin").mkdir(parents = True)
+        (root / "build" / "bin").mkdir(parents=True)
         (root / "UNSLOTH_PREBUILT_INFO.json").write_text(json.dumps({"tag": "b9415"}))
         real = root / "build" / "bin" / "llama-server-real"
         real.write_bytes(b"\x00\x00\x00\x00")

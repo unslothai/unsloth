@@ -93,7 +93,7 @@ def record_line(name: str, blob: bytes) -> str:
 
 def sign_file(path: Path, signer: "list[str]") -> None:
     """Run the signing command over one file, failing the build if it cannot sign."""
-    result = subprocess.run([*signer, str(path)], text = True)
+    result = subprocess.run([*signer, str(path)], text=True)
     if result.returncode != 0:
         raise SystemExit(f"signing failed for {path.name} (exit {result.returncode})")
 
@@ -109,7 +109,7 @@ def sign_wheel(
 
     Returns (written wheel, names signed, names skipped as already signed).
     """
-    out_dir.mkdir(parents = True, exist_ok = True)
+    out_dir.mkdir(parents=True, exist_ok=True)
     destination = out_dir / wheel.name
     signed: list[str] = []
     skipped: list[str] = []
@@ -167,29 +167,29 @@ def sign_wheel(
 
 
 def main(argv: "list[str] | None" = None) -> int:
-    parser = argparse.ArgumentParser(description = __doc__)
-    parser.add_argument("wheels", nargs = "+", type = Path)
-    parser.add_argument("--out", required = True, type = Path)
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("wheels", nargs="+", type=Path)
+    parser.add_argument("--out", required=True, type=Path)
     parser.add_argument(
         "--signer",
-        required = True,
-        help = "signing command; the file to sign is appended as the last argument",
+        required=True,
+        help="signing command; the file to sign is appended as the last argument",
     )
     parser.add_argument(
         "--expect-machine",
-        default = "arm64",
-        choices = ("arm64", "any"),
-        help = "refuse a wheel carrying a PE for another architecture (default: arm64)",
+        default="arm64",
+        choices=("arm64", "any"),
+        help="refuse a wheel carrying a PE for another architecture (default: arm64)",
     )
     args = parser.parse_args(argv)
 
     import shlex
 
-    signer = shlex.split(args.signer, posix = False)
+    signer = shlex.split(args.signer, posix=False)
     require = MACHINE_ARM64 if args.expect_machine == "arm64" else None
     failures = 0
     for wheel in args.wheels:
-        written, signed, skipped = sign_wheel(wheel, args.out, signer, require_machine = require)
+        written, signed, skipped = sign_wheel(wheel, args.out, signer, require_machine=require)
         print(f"{written.name}: signed {len(signed)}, already signed {len(skipped)}")
         for name in signed:
             print(f"  signed  {name}")

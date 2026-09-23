@@ -39,7 +39,7 @@ def owner_local():
             pass
 
     server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-    threading.Thread(target = server.serve_forever, daemon = True).start()
+    threading.Thread(target=server.serve_forever, daemon=True).start()
     try:
         yield server.server_address[1], hits
     finally:
@@ -63,7 +63,7 @@ def rebinding_dns(monkeypatch, owner_local):
 
     monkeypatch.setattr(socket, "getaddrinfo", fake)
     monkeypatch.setattr(providers, "_dns_cache", {})
-    monkeypatch.setattr(external_provider, "_managed_clients", {}, raising = False)
+    monkeypatch.setattr(external_provider, "_managed_clients", {}, raising=False)
     return answers
 
 

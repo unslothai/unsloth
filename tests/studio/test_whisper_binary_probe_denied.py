@@ -26,7 +26,7 @@ SIDECAR = REPO_ROOT / "studio" / "backend" / "core" / "inference" / "stt_ggml_si
 def _is_runnable():
     """Exec the real function alone: importing the module pulls in the whole
     backend (structlog, fastapi), which this check does not need."""
-    tree = ast.parse(SIDECAR.read_text(encoding = "utf-8"))
+    tree = ast.parse(SIDECAR.read_text(encoding="utf-8"))
     for node in tree.body:
         if isinstance(node, ast.FunctionDef) and node.name == "_is_runnable":
             namespace: dict = {"os": os, "sys": sys, "Path": Path}
@@ -39,10 +39,11 @@ def _can_deny() -> bool:
     """Probe rather than infer. Guessing from euid silently drops the only
     behavioural test in any root container, which is most CI images."""
     import tempfile
+
     with tempfile.TemporaryDirectory() as tmp:
         locked = Path(tmp) / "locked"
         locked.mkdir()
-        (locked / "probe").write_text("", encoding = "utf-8")
+        (locked / "probe").write_text("", encoding="utf-8")
         locked.chmod(0o000)
         try:
             (locked / "probe").is_file()
@@ -55,13 +56,13 @@ def _can_deny() -> bool:
 
 denial_capable = pytest.mark.skipif(
     sys.platform == "win32" or not _can_deny(),
-    reason = "this host cannot produce a read denial, so the check would pass vacuously",
+    reason="this host cannot produce a read denial, so the check would pass vacuously",
 )
 
 
 def test_a_readable_executable_is_still_runnable(tmp_path):
     binary = tmp_path / "whisper-server"
-    binary.write_text("", encoding = "utf-8")
+    binary.write_text("", encoding="utf-8")
     binary.chmod(0o755)
     assert _is_runnable()(binary) is True
 
@@ -75,7 +76,7 @@ def test_an_unreadable_install_dir_reads_as_unavailable_not_an_exception(tmp_pat
     install = tmp_path / "whisper.cpp"
     install.mkdir()
     binary = install / "whisper-server"
-    binary.write_text("", encoding = "utf-8")
+    binary.write_text("", encoding="utf-8")
     binary.chmod(0o755)
     install.chmod(0o000)
     try:

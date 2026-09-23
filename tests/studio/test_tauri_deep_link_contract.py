@@ -30,23 +30,23 @@ def test_unsloth_deep_link_parser_guardrails(tmp_path: Path) -> None:
         pytest.skip("node not available")
     probe = subprocess.run(
         ["node", "--experimental-strip-types", "--version"],
-        capture_output = True,
-        text = True,
-        timeout = 5,
+        capture_output=True,
+        text=True,
+        timeout=5,
     )
     if probe.returncode != 0:
         pytest.skip("node --experimental-strip-types not available")
 
     (tmp_path / "parse-deep-link.ts").write_text(
-        PARSER.read_text(encoding = "utf-8"), encoding = "utf-8"
+        PARSER.read_text(encoding="utf-8"), encoding="utf-8"
     )
 
     (tmp_path / "gguf-filename.ts").write_text(
-        GGUF_FILENAME.read_text(encoding = "utf-8"), encoding = "utf-8"
+        GGUF_FILENAME.read_text(encoding="utf-8"), encoding="utf-8"
     )
 
     (tmp_path / "deep-link-intent.ts").write_text(
-        INTENT_GATE.read_text(encoding = "utf-8"), encoding = "utf-8"
+        INTENT_GATE.read_text(encoding="utf-8"), encoding="utf-8"
     )
     script = textwrap.dedent("""
         import assert from "node:assert/strict";
@@ -149,31 +149,31 @@ def test_unsloth_deep_link_parser_guardrails(tmp_path: Path) -> None:
     """)
     result = subprocess.run(
         ["node", "--experimental-strip-types", "--no-warnings", "--input-type=module"],
-        input = script,
-        cwd = tmp_path,
-        capture_output = True,
-        text = True,
-        timeout = 30,
+        input=script,
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        timeout=30,
     )
     assert result.returncode == 0, f"stderr: {result.stderr}\nstdout: {result.stdout}"
 
 
 def test_tauri_registers_only_the_unsloth_scheme() -> None:
-    cargo = tomllib.loads((TAURI / "Cargo.toml").read_text(encoding = "utf-8"))
+    cargo = tomllib.loads((TAURI / "Cargo.toml").read_text(encoding="utf-8"))
     dependencies = cargo["dependencies"]
     assert "tauri-plugin-deep-link" in dependencies
     single_instance = dependencies["tauri-plugin-single-instance"]
     assert isinstance(single_instance, dict)
     assert "deep-link" in single_instance.get("features", [])
 
-    config = json.loads((TAURI / "tauri.conf.json").read_text(encoding = "utf-8"))
+    config = json.loads((TAURI / "tauri.conf.json").read_text(encoding="utf-8"))
     assert config["plugins"]["deep-link"]["desktop"]["schemes"] == ["unsloth"]
 
-    capabilities = json.loads((TAURI / "capabilities/default.json").read_text(encoding = "utf-8"))
+    capabilities = json.loads((TAURI / "capabilities/default.json").read_text(encoding="utf-8"))
     assert "deep-link:default" in capabilities["permissions"]
     assert "core:window:allow-unminimize" in capabilities["permissions"]
 
-    main = (TAURI / "src/main.rs").read_text(encoding = "utf-8")
+    main = (TAURI / "src/main.rs").read_text(encoding="utf-8")
     assert main.index("tauri_plugin_single_instance::init") < main.index(
         "tauri_plugin_deep_link::init()"
     )
@@ -183,6 +183,6 @@ def test_tauri_registers_only_the_unsloth_scheme() -> None:
     assert 'target_os = "linux"' in main
     desktop_template = TAURI / "linux/unsloth.desktop"
     assert config["bundle"]["linux"]["deb"]["desktopTemplate"] == "./linux/unsloth.desktop"
-    desktop = desktop_template.read_text(encoding = "utf-8")
+    desktop = desktop_template.read_text(encoding="utf-8")
     assert "Exec={{exec}} %u" in desktop
     assert "MimeType=x-scheme-handler/unsloth;" in desktop

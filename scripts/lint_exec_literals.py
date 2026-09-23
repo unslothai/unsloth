@@ -90,7 +90,7 @@ def _key(relative: str, call: ast.Call) -> dict:
 def _notebook_source(path: Path, relative: str) -> str:
     """The Python of a notebook's code cells, one blank line apart. A cell is not a module, so they are joined rather than parsed one at a time; a `%magic` or `!command` line is not Python at all and is blanked, which keeps the line count and therefore the reported line numbers honest."""
     try:
-        document = json.loads(path.read_text(encoding = "utf-8"))
+        document = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
         raise SystemExit(f"{relative}: could not be read ({error.__class__.__name__})")
     lines: list[str] = []
@@ -111,7 +111,7 @@ def scan_file(path: Path, relative: str) -> list[dict]:
     else:
         source = path.read_bytes()
     try:
-        tree = ast.parse(source, filename = str(path))
+        tree = ast.parse(source, filename=str(path))
     except (SyntaxError, ValueError, MemoryError, RecursionError) as error:
         if path.suffix == ".ipynb":
             # A notebook that does not parse as one module is ordinary: a cell may be mid-edit, or depend on an earlier `%%capture`. Nothing to check, and failing the build for it would be noise.
@@ -170,16 +170,16 @@ def _counted(entries: list[dict]) -> dict:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description = __doc__)
-    parser.add_argument("--update", action = "store_true", help = "rewrite the baseline")
-    parser.add_argument("--self-test", action = "store_true", help = "check the rule still fires")
-    parser.add_argument("--paths", nargs = "*", help = "scan these instead of the defaults")
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--update", action="store_true", help="rewrite the baseline")
+    parser.add_argument("--self-test", action="store_true", help="check the rule still fires")
+    parser.add_argument("--paths", nargs="*", help="scan these instead of the defaults")
     arguments = parser.parse_args()
 
     if arguments.self_test:
         return self_test()
 
-    document = json.loads(BASELINE_PATH.read_text(encoding = "utf-8"))
+    document = json.loads(BASELINE_PATH.read_text(encoding="utf-8"))
     targets = arguments.paths or document["targets"]
     found = collect(targets)
 
@@ -199,9 +199,9 @@ def main() -> int:
                 }
                 for (f, s, d), n in _counted(found).items()
             ),
-            key = lambda e: (e["file"], e["sink"], e["digest"]),
+            key=lambda e: (e["file"], e["sink"], e["digest"]),
         )
-        BASELINE_PATH.write_text(json.dumps(document, indent = 2) + "\n", encoding = "utf-8")
+        BASELINE_PATH.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
         print(f"baseline: {len(document['entries'])} entries, {len(found)} call sites")
         return 0
 
@@ -272,7 +272,7 @@ def self_test() -> int:
     with tempfile.TemporaryDirectory() as directory:
         for label, source, expected in (("bad", _BAD, 4), ("good", _GOOD, 0)):
             path = Path(directory) / f"{label}.py"
-            path.write_text(source, encoding = "utf-8")
+            path.write_text(source, encoding="utf-8")
             count = len(scan_file(path, f"{label}.py"))
             if count != expected:
                 failures.append(f"{label}: expected {expected} finding(s), got {count}")

@@ -69,19 +69,19 @@ def test_native_search_result_preserves_outcome_and_answer(monkeypatch, content,
         def handler(request):
             body = json.loads(request.content)
             assert any(t["name"] == "web_search" and t["max_uses"] == 5 for t in body["tools"])
-            return httpx.Response(200, content = _anthropic_sse(events))
+            return httpx.Response(200, content=_anthropic_sse(events))
 
-        async with httpx.AsyncClient(transport = httpx.MockTransport(handler)) as transport:
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as transport:
             monkeypatch.setattr(ep_mod, "_http_client", transport)
             return [
                 line
                 async for line in _make_client()._stream_anthropic(
-                    messages = [{"role": "user", "content": "Search for example"}],
-                    model = "claude-sonnet-4-5",
-                    temperature = 0.7,
-                    top_p = 0.95,
-                    max_tokens = 1024,
-                    enabled_tools = ["web_search"],
+                    messages=[{"role": "user", "content": "Search for example"}],
+                    model="claude-sonnet-4-5",
+                    temperature=0.7,
+                    top_p=0.95,
+                    max_tokens=1024,
+                    enabled_tools=["web_search"],
                 )
             ]
 

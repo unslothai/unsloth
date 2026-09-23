@@ -47,8 +47,8 @@ def _armed_deadline(monkeypatch, tmp_path, argv):
 
     def _capture(
         deadline_s,
-        label = "studiobench",
-        log = print,
+        label="studiobench",
+        log=print,
     ):
         seen.append(float(deadline_s))
         return _FakeWatchdog()
@@ -65,7 +65,7 @@ def _armed_deadline(monkeypatch, tmp_path, argv):
 
     args = cli.parse_args([*argv, "--out", str(tmp_path / "out")])
     with pytest.raises(_StopBeforeInstalling):
-        cli.run(args, ab_ref = args.ab)
+        cli.run(args, ab_ref=args.ab)
     assert len(seen) == 1
     return seen[0]
 
@@ -104,6 +104,7 @@ def test_an_attached_run_adds_no_install_budget(monkeypatch, tmp_path):
 def _planned_film_s(tier: str, rungs: int, reps: int, arms: int) -> float:
     """The FILM alone, with no allowance for anything around it: the floor the deadline must clear."""
     from studiobench.scene.schedule import SCENES
+
     return SCENES[tier].duration_ms / 1000.0 * rungs * reps * arms
 
 
@@ -132,7 +133,7 @@ def test_a_standard_ab_at_four_reps_is_not_hard_exited_part_way_through(monkeypa
             "fix",
         ],
     )
-    film_s = _planned_film_s("standard", rungs = 3, reps = 4, arms = 2)
+    film_s = _planned_film_s("standard", rungs=3, reps=4, arms=2)
     assert film_s == pytest.approx(5832)
     assert deadline > cli.TIER_BUDGET_S["standard"] * 3
     assert deadline > film_s
@@ -159,7 +160,7 @@ def test_a_rung_override_the_tier_never_had_is_covered(monkeypatch, tmp_path):
             "fix",
         ],
     )
-    assert deadline > _planned_film_s("standard", rungs = 5, reps = 3, arms = 2)
+    assert deadline > _planned_film_s("standard", rungs=5, reps=3, arms=2)
 
 
 def test_the_scaled_deadline_is_still_capped(monkeypatch, tmp_path):

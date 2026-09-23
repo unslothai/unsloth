@@ -30,7 +30,7 @@ def _open_and_close():
 
 @pytest.mark.parametrize("round_", range(6))
 def test_concurrent_first_opens_never_raise(fresh_db, round_):
-    with ThreadPoolExecutor(max_workers = 8) as pool:
+    with ThreadPoolExecutor(max_workers=8) as pool:
         columns = list(pool.map(lambda _i: _open_and_close(), range(8)))
     expected = {name for name, _decl in storage._ACCOUNT_COLUMNS}
     for seen in columns:
@@ -40,7 +40,7 @@ def test_concurrent_first_opens_never_raise(fresh_db, round_):
 def test_legacy_table_is_migrated_once_under_contention(fresh_db):
     import sqlite3
 
-    storage.DB_PATH.parent.mkdir(parents = True)
+    storage.DB_PATH.parent.mkdir(parents=True)
     conn = sqlite3.connect(storage.DB_PATH)
     conn.execute(
         "CREATE TABLE auth_user (id INTEGER PRIMARY KEY, username TEXT UNIQUE NOT NULL, "
@@ -52,7 +52,7 @@ def test_legacy_table_is_migrated_once_under_contention(fresh_db):
     )
     conn.commit()
     conn.close()
-    with ThreadPoolExecutor(max_workers = 8) as pool:
+    with ThreadPoolExecutor(max_workers=8) as pool:
         list(pool.map(lambda _i: _open_and_close(), range(16)))
     record = storage.get_user_record("unsloth")
     assert record["account_id"] == "owner" and record["role"] == "owner"

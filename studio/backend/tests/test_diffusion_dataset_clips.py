@@ -44,15 +44,15 @@ from routes.training import router as training_router
 
 def _write_png(
     path,
-    color = (200, 100, 50),
-    size = (8, 8),
+    color=(200, 100, 50),
+    size=(8, 8),
 ) -> None:
-    Image.new("RGB", size, color).save(path, format = "PNG")
+    Image.new("RGB", size, color).save(path, format="PNG")
 
 
-def _png_bytes(color = (200, 100, 50), size = (8, 8)) -> bytes:
+def _png_bytes(color=(200, 100, 50), size=(8, 8)) -> bytes:
     buf = io.BytesIO()
-    Image.new("RGB", size, color).save(buf, format = "PNG")
+    Image.new("RGB", size, color).save(buf, format="PNG")
     return buf.getvalue()
 
 
@@ -64,7 +64,7 @@ _MP4_BYTES = b"\x00\x00\x00\x18ftypmp42" + b"\x00" * 64
 @pytest.fixture
 def client():
     app = FastAPI()
-    app.include_router(training_router, prefix = "/api/train")
+    app.include_router(training_router, prefix="/api/train")
     app.dependency_overrides[get_current_subject] = lambda: "test-user"
     return TestClient(app)
 
@@ -74,7 +74,7 @@ def ds_root(monkeypatch, tmp_path):
     import utils.paths as up
 
     root = tmp_path / "assets" / "datasets"
-    root.mkdir(parents = True)
+    root.mkdir(parents=True)
     monkeypatch.setattr(up, "datasets_root", lambda: root)
     return root
 
@@ -131,8 +131,8 @@ def test_clip_captions_resolve_through_the_same_rules_as_images(tmp_path):
         _write_png(folder / f"{stem}.png")
         (folder / f"{stem}.mp4").write_bytes(_MP4_BYTES)
     # A sidecar wins over the metadata row; an EMPTY sidecar is a tombstone that shadows it.
-    (folder / "sidecar.txt").write_text("edited sidecar", encoding = "utf-8")
-    (folder / "tombstone.txt").write_text("   ", encoding = "utf-8")
+    (folder / "sidecar.txt").write_text("edited sidecar", encoding="utf-8")
+    (folder / "tombstone.txt").write_text("   ", encoding="utf-8")
 
     # sidecar.txt is shared by sidecar.png and sidecar.mp4 here on purpose: that sharing is the
     # point, and it is what the upload's stem check refuses to let a user create by accident.
@@ -156,9 +156,9 @@ def test_an_image_only_dataset_summarises_exactly_as_before(tmp_path):
     _write_png(folder / "a.png")
     _write_png(folder / "b.jpg")
     _write_png(folder / "c.webp")
-    (folder / "a.txt").write_text("a cat", encoding = "utf-8")
+    (folder / "a.txt").write_text("a cat", encoding="utf-8")
     (folder / "metadata.jsonl").write_text(
-        json.dumps({"file_name": "b.jpg", "text": "a dog"}) + "\n", encoding = "utf-8"
+        json.dumps({"file_name": "b.jpg", "text": "a dog"}) + "\n", encoding="utf-8"
     )
     (folder / "notes.pdf").write_bytes(b"not a dataset file")
 
@@ -174,9 +174,9 @@ def test_summary_counts_clips_and_their_captions(tmp_path):
     folder.mkdir()
     for name in ("one.mp4", "two.MOV", "three.webm"):
         (folder / name).write_bytes(_MP4_BYTES)
-    (folder / "one.txt").write_text("a waterfall", encoding = "utf-8")
+    (folder / "one.txt").write_text("a waterfall", encoding="utf-8")
     (folder / "captions.jsonl").write_text(
-        json.dumps({"file_name": "two.MOV", "text": "a train"}) + "\n", encoding = "utf-8"
+        json.dumps({"file_name": "two.MOV", "text": "a train"}) + "\n", encoding="utf-8"
     )
 
     summary = _diffusion_dataset_summary(folder)
@@ -202,7 +202,7 @@ def test_info_lists_a_clip_only_dataset(client, ds_root):
     folder = ds_root / "clipset"
     folder.mkdir()
     (folder / "one.mp4").write_bytes(_MP4_BYTES)
-    (folder / "one.txt").write_text("a waterfall", encoding = "utf-8")
+    (folder / "one.txt").write_text("a waterfall", encoding="utf-8")
 
     r = client.get("/api/train/diffusion/info")
     assert r.status_code == 200, r.text
@@ -218,9 +218,9 @@ def test_info_still_skips_a_folder_holding_neither(client, ds_root):
     folder = ds_root / "captions-only"
     folder.mkdir()
     (folder / "metadata.jsonl").write_text(
-        json.dumps({"file_name": "gone.png", "text": "x"}) + "\n", encoding = "utf-8"
+        json.dumps({"file_name": "gone.png", "text": "x"}) + "\n", encoding="utf-8"
     )
-    (folder / "readme.txt").write_text("nothing to train on", encoding = "utf-8")
+    (folder / "readme.txt").write_text("nothing to train on", encoding="utf-8")
 
     r = client.get("/api/train/diffusion/info")
     assert r.status_code == 200, r.text
@@ -232,9 +232,9 @@ def test_list_images_marks_clips_and_leaves_images_unchanged(client, ds_root):
     carry no pixel dimensions and the grid filters them out on ``kind``."""
     folder = ds_root / "both"
     folder.mkdir()
-    _write_png(folder / "still.png", size = (12, 9))
+    _write_png(folder / "still.png", size=(12, 9))
     (folder / "moving.mp4").write_bytes(_MP4_BYTES)
-    (folder / "moving.txt").write_text("a train", encoding = "utf-8")
+    (folder / "moving.txt").write_text("a train", encoding="utf-8")
 
     r = client.get("/api/train/diffusion/dataset/both/images")
     assert r.status_code == 200, r.text
@@ -251,8 +251,8 @@ def test_list_images_marks_clips_and_leaves_images_unchanged(client, ds_root):
 def test_upload_accepts_a_clip_and_its_sidecar_as_a_pair(client, ds_root):
     r = client.post(
         "/api/train/diffusion/dataset",
-        data = {"name": "clipset"},
-        files = [
+        data={"name": "clipset"},
+        files=[
             ("files", ("one.mp4", _MP4_BYTES, "video/mp4")),
             ("files", ("one.txt", b"a waterfall", "text/plain")),
             ("files", ("two.webm", _MP4_BYTES, "video/webm")),
@@ -266,14 +266,14 @@ def test_upload_accepts_a_clip_and_its_sidecar_as_a_pair(client, ds_root):
     assert body["caption_count"] == 1
     folder = ds_root / "clipset"
     assert (folder / "one.mp4").read_bytes() == _MP4_BYTES
-    assert (folder / "one.txt").read_text(encoding = "utf-8") == "a waterfall"
+    assert (folder / "one.txt").read_text(encoding="utf-8") == "a waterfall"
 
 
 def test_upload_still_refuses_an_extension_of_neither_kind(client, ds_root):
     r = client.post(
         "/api/train/diffusion/dataset",
-        data = {"name": "clipset"},
-        files = [("files", ("notes.pdf", b"%PDF-1.4", "application/pdf"))],
+        data={"name": "clipset"},
+        files=[("files", ("notes.pdf", b"%PDF-1.4", "application/pdf"))],
     )
     assert r.status_code == 400, r.text
     # All-or-nothing: the refused batch leaves nothing behind.
@@ -285,8 +285,8 @@ def test_upload_refuses_an_image_and_a_clip_sharing_a_stem(client, ds_root):
     refusal has to cover the cross-kind pair."""
     r = client.post(
         "/api/train/diffusion/dataset",
-        data = {"name": "mixed"},
-        files = [
+        data={"name": "mixed"},
+        files=[
             ("files", ("cat.png", _png_bytes(), "image/png")),
             ("files", ("cat.mp4", _MP4_BYTES, "video/mp4")),
         ],
@@ -306,8 +306,8 @@ def test_upload_refuses_a_clip_whose_stem_is_already_in_the_folder(client, ds_ro
 
     r = client.post(
         "/api/train/diffusion/dataset",
-        data = {"name": "mixed"},
-        files = [("files", ("cat.mp4", _MP4_BYTES, "video/mp4"))],
+        data={"name": "mixed"},
+        files=[("files", ("cat.mp4", _MP4_BYTES, "video/mp4"))],
     )
     assert r.status_code == 400, r.text
     assert not (folder / "cat.mp4").exists()
@@ -318,8 +318,8 @@ def test_upload_does_not_decode_a_clip_as_an_image(client, ds_root):
     Pillow cannot open must not be turned into a 400 by it."""
     r = client.post(
         "/api/train/diffusion/dataset",
-        data = {"name": "clipset"},
-        files = [("files", ("one.mkv", b"\x1a\x45\xdf\xa3" + b"\x00" * 32, "video/x-matroska"))],
+        data={"name": "clipset"},
+        files=[("files", ("one.mkv", b"\x1a\x45\xdf\xa3" + b"\x00" * 32, "video/x-matroska"))],
     )
     assert r.status_code == 200, r.text
     assert r.json()["clip_count"] == 1
@@ -333,12 +333,12 @@ def test_deleting_an_image_keeps_a_clip_of_the_same_stem_captioned(client, ds_ro
     folder.mkdir()
     _write_png(folder / "cat.png")
     (folder / "cat.mp4").write_bytes(_MP4_BYTES)
-    (folder / "cat.txt").write_text("a cat", encoding = "utf-8")
+    (folder / "cat.txt").write_text("a cat", encoding="utf-8")
 
     r = client.delete("/api/train/diffusion/dataset/legacy/image/cat.png")
     assert r.status_code == 200, r.text
     assert not (folder / "cat.png").exists()
-    assert (folder / "cat.txt").read_text(encoding = "utf-8") == "a cat"
+    assert (folder / "cat.txt").read_text(encoding="utf-8") == "a cat"
     assert _diffusion_dataset_summary(folder).caption_count == 1
 
 
@@ -354,11 +354,11 @@ def test_start_refuses_a_clip_only_folder_by_naming_the_clips(tmp_path):
     folder.mkdir()
     for stem in ("a", "b"):
         (folder / f"{stem}.mp4").write_bytes(_MP4_BYTES)
-        (folder / f"{stem}.txt").write_text(f"clip {stem}", encoding = "utf-8")
+        (folder / f"{stem}.txt").write_text(f"clip {stem}", encoding="utf-8")
 
     # The folder IS captioned, by the summary the picker is built from.
     assert _diffusion_dataset_summary(folder).caption_count == 2
-    with pytest.raises(ValueError, match = "No captioned images found"):
+    with pytest.raises(ValueError, match="No captioned images found"):
         discover_image_caption_pairs(folder)
 
     detail = _clip_dataset_refusal(str(folder))
@@ -377,9 +377,9 @@ def test_start_refuses_a_mixed_folder_rather_than_training_the_images_alone(tmp_
     folder = tmp_path / "mixed"
     folder.mkdir()
     _write_png(folder / "still.png")
-    (folder / "still.txt").write_text("a still", encoding = "utf-8")
+    (folder / "still.txt").write_text("a still", encoding="utf-8")
     (folder / "clip.mp4").write_bytes(_MP4_BYTES)
-    (folder / "clip.txt").write_text("a clip", encoding = "utf-8")
+    (folder / "clip.txt").write_text("a clip", encoding="utf-8")
 
     # Two captioned items by the summary, one trainable pair by discovery.
     assert _diffusion_dataset_summary(folder).caption_count == 2
@@ -407,7 +407,7 @@ def test_the_summary_reads_a_video_keyed_metadata_caption(tmp_path):
         "\n".join(
             json.dumps({"video": f"{stem}.mp4", "text": f"clip {stem}"}) for stem in ("a", "b")
         ),
-        encoding = "utf-8",
+        encoding="utf-8",
     )
 
     summary = _diffusion_dataset_summary(folder)
@@ -443,12 +443,12 @@ def test_deleting_an_image_keeps_a_case_folded_clips_caption(client, ds_root, mo
     folder.mkdir()
     _write_png(folder / "cat.png")
     (folder / "CAT.mp4").write_bytes(_MP4_BYTES)
-    (folder / "cat.txt").write_text("a cat", encoding = "utf-8")
+    (folder / "cat.txt").write_text("a cat", encoding="utf-8")
 
     r = client.delete("/api/train/diffusion/dataset/legacy-case/image/cat.png")
     assert r.status_code == 200, r.text
     assert not (folder / "cat.png").exists()
-    assert (folder / "cat.txt").read_text(encoding = "utf-8") == "a cat"
+    assert (folder / "cat.txt").read_text(encoding="utf-8") == "a cat"
 
 
 def test_deleting_an_image_still_drops_its_sidecar_where_case_is_kept(client, ds_root, monkeypatch):
@@ -462,10 +462,10 @@ def test_deleting_an_image_still_drops_its_sidecar_where_case_is_kept(client, ds
     folder.mkdir()
     _write_png(folder / "cat.png")
     (folder / "CAT.mp4").write_bytes(_MP4_BYTES)
-    (folder / "cat.txt").write_text("a cat", encoding = "utf-8")
-    (folder / "CAT.txt").write_text("a CAT", encoding = "utf-8")
+    (folder / "cat.txt").write_text("a cat", encoding="utf-8")
+    (folder / "CAT.txt").write_text("a CAT", encoding="utf-8")
 
     r = client.delete("/api/train/diffusion/dataset/sensitive-case/image/cat.png")
     assert r.status_code == 200, r.text
     assert not (folder / "cat.txt").exists()
-    assert (folder / "CAT.txt").read_text(encoding = "utf-8") == "a CAT"
+    assert (folder / "CAT.txt").read_text(encoding="utf-8") == "a CAT"

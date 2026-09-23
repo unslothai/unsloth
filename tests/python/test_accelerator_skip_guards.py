@@ -216,7 +216,7 @@ def test_no_skip_guard_reads_a_spoofable_accelerator_probe():
     offenders = []
     for path in _python_test_files():
         try:
-            tree = ast.parse(path.read_text(encoding = "utf-8"))
+            tree = ast.parse(path.read_text(encoding="utf-8"))
         except SyntaxError:
             # tests/python/ holds fixtures that are deliberately unparseable on this
             # interpreter (the 3.9 floor checks). Not our business.
@@ -244,7 +244,7 @@ def test_the_spoofed_probe_list_keeps_up_with_the_spoof():
     skip guard reading any of those was un-skipped by the spoof and invisible to the test
     above. Adding a patch to the spoof now fails here until it is called a predicate a skip
     guard could read, or plumbing no guard would."""
-    spoof = ast.parse(_SPOOF.read_text(encoding = "utf-8"))
+    spoof = ast.parse(_SPOOF.read_text(encoding="utf-8"))
     patched = set()
     for node in ast.walk(spoof):
         if not isinstance(node, ast.Assign):
@@ -287,7 +287,7 @@ def test_no_test_lets_a_loader_infer_the_device_from_a_spoofed_probe():
     offenders = []
     for path in _python_test_files():
         try:
-            tree = ast.parse(path.read_text(encoding = "utf-8"))
+            tree = ast.parse(path.read_text(encoding="utf-8"))
         except SyntaxError:
             continue
         for node, name, keyword in _device_inferring_calls(tree):
@@ -376,14 +376,14 @@ def test_the_recorded_answer_survives_the_spoof():
             sys.executable,
             "-c",
             _SURVIVES_THE_SPOOF_PROBE.format(
-                tests_root = str(_TESTS_ROOT),
-                shared_dir = str(_TESTS_ROOT / "_shared"),
+                tests_root=str(_TESTS_ROOT),
+                shared_dir=str(_TESTS_ROOT / "_shared"),
             ),
         ],
-        capture_output = True,
-        text = True,
-        timeout = 300,
-        cwd = str(_TESTS_ROOT.parent),
+        capture_output=True,
+        text=True,
+        timeout=300,
+        cwd=str(_TESTS_ROOT.parent),
     )
     combined = proc.stdout + proc.stderr
     assert proc.returncode == 0, f"the spoof probe failed to run:\n{combined[-4000:]}"
@@ -418,7 +418,7 @@ def test_this_file_never_applies_the_spoof_in_process():
     entirely, on whichever test the xdist scheduler happens to put next on the
     same worker. So pin it structurally rather than trusting it to stay fixed.
     """
-    tree = ast.parse(Path(__file__).read_text(encoding = "utf-8"))
+    tree = ast.parse(Path(__file__).read_text(encoding="utf-8"))
     offenders = [
         f"line {node.lineno}"
         for node in ast.walk(tree)
@@ -441,9 +441,9 @@ def test_the_scanner_would_catch_a_regression(probe, tmp_path):
         "import pytest\nimport torch\n\n\n"
         f"@pytest.mark.skipif(not {probe}(), reason = 'needs a GPU')\n"
         "def test_x():\n    pass\n",
-        encoding = "utf-8",
+        encoding="utf-8",
     )
-    tree = ast.parse(offending.read_text(encoding = "utf-8"))
+    tree = ast.parse(offending.read_text(encoding="utf-8"))
     found = [
         call for decorator in _skipif_calls(tree) for call in _unguarded_spoofed_calls(decorator)
     ]
@@ -560,7 +560,7 @@ def test_no_cuda_only_test_is_gated_on_the_broad_accelerator_probe():
     offenders = []
     for path in _python_test_files():
         try:
-            tree = ast.parse(path.read_text(encoding = "utf-8"))
+            tree = ast.parse(path.read_text(encoding="utf-8"))
         except SyntaxError:
             continue
         for node in ast.walk(tree):

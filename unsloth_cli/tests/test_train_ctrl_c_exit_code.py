@@ -27,15 +27,15 @@ class _FakeThread:
     def is_alive(self):
         return not self._trainer.saved
 
-    def join(self, timeout = None):
+    def join(self, timeout=None):
         self._trainer.finish()
 
 
 class _FakeTrainer:
     is_vlm = False
 
-    def __init__(self, save_error = None):
-        self.progress = SimpleNamespace(error = None, is_completed = False)
+    def __init__(self, save_error=None):
+        self.progress = SimpleNamespace(error=None, is_completed=False)
         self.training_thread = None
         self.stopped = False
         self.saved = False
@@ -54,7 +54,7 @@ class _FakeTrainer:
         self.training_thread = _FakeThread(self)
         return True
 
-    def stop_training(self, save = True):
+    def stop_training(self, save=True):
         self.stopped = True
 
     def get_training_progress(self):
@@ -74,10 +74,10 @@ def _run(tmp_path, monkeypatch, trainer, sleep):
     config = tmp_path / "config.yaml"
     config.write_text(
         "model: unsloth/Qwen3-0.6B\ndata:\n  dataset: yahma/alpaca-cleaned\n",
-        encoding = "utf-8",
+        encoding="utf-8",
     )
     monkeypatch.setattr(train_module, "_create_cli_trainer", lambda *args: trainer)
-    monkeypatch.setattr(train_module, "time", SimpleNamespace(sleep = sleep))
+    monkeypatch.setattr(train_module, "time", SimpleNamespace(sleep=sleep))
     app = typer.Typer()
     app.command()(train_module.train)
     return CliRunner().invoke(app, ["--config", str(config)])
@@ -121,7 +121,7 @@ def test_ctrl_c_after_training_already_completed_exits_zero(tmp_path, monkeypatc
 
 
 def test_ctrl_c_with_a_failed_save_still_reports_the_error(tmp_path, monkeypatch):
-    trainer = _FakeTrainer(save_error = "disk full")
+    trainer = _FakeTrainer(save_error="disk full")
 
     result = _run(tmp_path, monkeypatch, trainer, _interrupt)
 
@@ -131,7 +131,7 @@ def test_ctrl_c_with_a_failed_save_still_reports_the_error(tmp_path, monkeypatch
 
 def _fake_mlx_worker(config, event_queue, stop_queue):
     try:
-        stop_queue.get(timeout = 0.5)
+        stop_queue.get(timeout=0.5)
         status = "Training stopped"
     except queue.Empty:
         status = "Training completed"

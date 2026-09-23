@@ -9,7 +9,7 @@ from auth import storage
 
 def test_login_throttling_does_not_disclose_account_existence(auth_env):
     client, auth, _ = auth_env
-    storage.issue_account_setup_code(username = "alice")
+    storage.issue_account_setup_code(username="alice")
     observed = {}
     for candidate in ("alice", "not-an-account"):
         # Independent attacker sessions, each beginning with empty rate limits.

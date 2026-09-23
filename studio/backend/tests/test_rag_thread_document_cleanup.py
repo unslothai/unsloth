@@ -18,8 +18,8 @@ from storage import rag_db
 @pytest.fixture
 def client(rag_home, stub_embeddings):
     app = FastAPI()
-    app.include_router(chat_history.router, prefix = "/api/chat")
-    app.include_router(rag_routes.router, prefix = "/api/rag")
+    app.include_router(chat_history.router, prefix="/api/chat")
+    app.include_router(rag_routes.router, prefix="/api/rag")
     app.dependency_overrides[get_current_subject] = lambda: "tester"
     return TestClient(app)
 
@@ -27,7 +27,7 @@ def client(rag_home, stub_embeddings):
 def _create_thread(client, thread_id):
     response = client.post(
         "/api/chat/threads",
-        json = {"id": thread_id, "title": "t", "modelType": "base", "createdAt": 1},
+        json={"id": thread_id, "title": "t", "modelType": "base", "createdAt": 1},
     )
     assert response.status_code == 200, response.text
 
@@ -35,7 +35,7 @@ def _create_thread(client, thread_id):
 def _upload(client, thread_id, name, text):
     response = client.post(
         f"/api/rag/threads/{thread_id}/documents",
-        files = {"file": (name, text.encode("utf-8"), "text/plain")},
+        files={"file": (name, text.encode("utf-8"), "text/plain")},
     )
     assert response.status_code == 200, response.text
     body = response.json()
@@ -85,7 +85,7 @@ def test_deleting_a_thread_removes_its_uploaded_documents(client):
     doomed_paths, kept_path = [_stored_path(d) for d in doomed], _stored_path(kept)
     assert all(os.path.isfile(path) for path in doomed_paths)
 
-    response = client.request("DELETE", "/api/chat/threads", json = {"ids": ["doomed"]})
+    response = client.request("DELETE", "/api/chat/threads", json={"ids": ["doomed"]})
 
     assert response.status_code == 200, response.text
     assert _document_ids(client) == {kept}
@@ -112,12 +112,12 @@ def test_clearing_history_removes_every_threads_uploaded_documents(client):
 
 def test_deleting_a_project_removes_its_member_threads_documents(client):
     response = client.post(
-        "/api/chat/projects", json = {"id": "proj", "name": "p", "createdAt": 1, "updatedAt": 1}
+        "/api/chat/projects", json={"id": "proj", "name": "p", "createdAt": 1, "updatedAt": 1}
     )
     assert response.status_code == 200, response.text
     response = client.post(
         "/api/chat/threads",
-        json = {
+        json={
             "id": "member",
             "title": "t",
             "modelType": "base",
@@ -147,7 +147,7 @@ def test_a_recreated_thread_keeps_documents_uploaded_after_the_cutoff(client):
     chat_history._remove_thread_rag_data(["recreated"])
     assert _document_ids(client) == {old, fresh}
 
-    chat_history._remove_thread_rag_data(["recreated"], cutoff = cutoff)
+    chat_history._remove_thread_rag_data(["recreated"], cutoff=cutoff)
 
     assert _document_ids(client) == {fresh}
     assert not os.path.exists(old_path)

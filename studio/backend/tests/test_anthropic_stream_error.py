@@ -57,8 +57,8 @@ def _stream_lines(monkeypatch, events):
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(
             200,
-            content = _anthropic_sse([_MESSAGE_START, *events]),
-            headers = {"content-type": "text/event-stream"},
+            content=_anthropic_sse([_MESSAGE_START, *events]),
+            headers={"content-type": "text/event-stream"},
         )
 
     _mock_http_client(monkeypatch, handler)
@@ -67,11 +67,11 @@ def _stream_lines(monkeypatch, events):
         client = _make_client()
         lines = await _collect(
             client._stream_anthropic(
-                messages = [{"role": "user", "content": "hi"}],
-                model = "claude-opus-4-6",
-                temperature = 0.7,
-                top_p = 0.95,
-                max_tokens = 4096,
+                messages=[{"role": "user", "content": "hi"}],
+                model="claude-opus-4-6",
+                temperature=0.7,
+                top_p=0.95,
+                max_tokens=4096,
             )
         )
         await client.close()

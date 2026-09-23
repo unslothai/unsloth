@@ -60,7 +60,7 @@ def _is_text_mode(node: ast.Call) -> bool:
 
 
 def _collect_text_mode_subprocess_calls() -> list[ast.Call]:
-    tree = ast.parse(SAVE_PY.read_text(encoding = "utf-8"), filename = str(SAVE_PY))
+    tree = ast.parse(SAVE_PY.read_text(encoding="utf-8"), filename=str(SAVE_PY))
     return [
         node
         for node in ast.walk(tree)
@@ -105,7 +105,7 @@ def test_utf8_replace_decodes_non_cp1252_subprocess_output():
         "sys.stdout.buffer.write(('tensor ' + chr(0x201D) + ' x\\n').encode('utf-8'))"
     )
 
-    raw = subprocess.run([sys.executable, "-c", child], capture_output = True).stdout
+    raw = subprocess.run([sys.executable, "-c", child], capture_output=True).stdout
     assert b"\x9d" in raw  # precondition: output carries the cp1252-undefined byte
 
     # Before the fix: cp1252 (the Windows default) cannot decode this output.
@@ -115,10 +115,10 @@ def test_utf8_replace_decodes_non_cp1252_subprocess_output():
     # Correct behaviour after the fix: the exact kwargs save.py now uses.
     result = subprocess.run(
         [sys.executable, "-c", child],
-        capture_output = True,
-        text = True,
-        encoding = "utf-8",
-        errors = "replace",
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
     )
     assert result.stdout.startswith("tensor ")
     assert "”" in result.stdout

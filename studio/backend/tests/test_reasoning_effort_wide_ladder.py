@@ -53,7 +53,7 @@ GPT_OSS_TEMPLATE = """
 WIDE_LEVELS = ["none", "minimal", "low", "medium", "high", "xhigh", "max"]
 
 
-def _shim(levels, architecture = "inkling"):
+def _shim(levels, architecture="inkling"):
     from core.inference.llama_cpp import LlamaCppBackend
 
     backend = object.__new__(LlamaCppBackend)
@@ -112,7 +112,7 @@ def test_a_model_advertising_no_levels_keeps_the_four_level_behaviour():
     assert flags["reasoning_style"] == "reasoning_effort"
     assert flags["reasoning_effort_levels"] == []
 
-    backend = _shim([], architecture = None)
+    backend = _shim([], architecture=None)
     assert backend._request_reasoning_kwargs(None, "low", None) == {"reasoning_effort": "low"}
     assert backend._request_reasoning_kwargs(None, "medium", None) == {"reasoning_effort": "medium"}
     assert backend._request_reasoning_kwargs(None, "high", None) == {"reasoning_effort": "high"}
@@ -129,7 +129,7 @@ def test_a_model_advertising_no_levels_keeps_the_four_level_behaviour():
 def test_a_narrow_ladder_does_not_lose_the_gpt_oss_levels():
     # Advertised levels widen the allowlist rather than replace it, so a level
     # the scan missed is still forwarded.
-    backend = _shim(["high", "max"], architecture = None)
+    backend = _shim(["high", "max"], architecture=None)
     assert backend._request_reasoning_kwargs(None, "low", None) == {"reasoning_effort": "low"}
     assert backend._request_reasoning_kwargs(None, "max", None) == {"reasoning_effort": "max"}
 
@@ -144,13 +144,13 @@ def test_missing_levels_attribute_is_tolerated():
 def test_the_level_renders_in_the_template():
     jinja2 = pytest.importorskip("jinja2")
     template = jinja2.Environment().from_string(WIDE_LADDER_TEMPLATE)
-    assert template.render(reasoning_effort = "max") == "Z"
-    assert template.render(reasoning_effort = "xhigh") == "X"
-    assert template.render(reasoning_effort = "minimal") == "m"
+    assert template.render(reasoning_effort="max") == "Z"
+    assert template.render(reasoning_effort="xhigh") == "X"
+    assert template.render(reasoning_effort="minimal") == "m"
 
 
 def test_other_reasoning_styles_are_untouched():
-    backend = _shim(["low", "high", "max"], architecture = None)
+    backend = _shim(["low", "high", "max"], architecture=None)
     backend._reasoning_style = "enable_thinking"
     assert backend._request_reasoning_kwargs(True, "max", None) == {"enable_thinking": True}
     assert backend._request_reasoning_kwargs(False, None, None) == {"enable_thinking": False}

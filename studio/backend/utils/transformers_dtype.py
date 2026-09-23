@@ -24,7 +24,7 @@ heavyweight import just to read one bool.
 from functools import lru_cache
 
 
-@lru_cache(maxsize = 1)
+@lru_cache(maxsize=1)
 def _has_torch_dtype_kwarg() -> bool:
     """True if the installed transformers still expects the legacy ``torch_dtype``
     name (i.e. predates the ``dtype`` rename). False when ``dtype`` is the accepted

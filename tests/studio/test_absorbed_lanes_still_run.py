@@ -49,7 +49,7 @@ ABSORBED = {
 
 
 def _lint_steps():
-    doc = yaml.safe_load(LINT_CI.read_text(encoding = "utf-8"))
+    doc = yaml.safe_load(LINT_CI.read_text(encoding="utf-8"))
     return doc["jobs"]["source-lint"]["steps"]
 
 
@@ -129,7 +129,7 @@ def test_the_payload_has_exactly_one_definition(lane):
     """The standalone workflow must call the same script, not a copy of its commands."""
     script, workflow = ABSORBED[lane]
     assert (SCRIPTS / script).exists(), f"{script} is gone; the lane and the workflow will drift"
-    doc = yaml.safe_load((WORKFLOWS / workflow).read_text(encoding = "utf-8"))
+    doc = yaml.safe_load((WORKFLOWS / workflow).read_text(encoding="utf-8"))
     runs = "\n".join(
         str(step.get("run", ""))
         for job in doc["jobs"].values()
@@ -146,7 +146,7 @@ def test_the_payload_has_exactly_one_definition(lane):
 def test_the_absorbed_workflow_no_longer_takes_a_slot_per_commit(lane):
     """Absorbing without removing the original trigger doubles the work instead of moving it."""
     workflow = ABSORBED[lane][1]
-    doc = yaml.safe_load((WORKFLOWS / workflow).read_text(encoding = "utf-8"))
+    doc = yaml.safe_load((WORKFLOWS / workflow).read_text(encoding="utf-8"))
     on = doc.get(True) if True in doc else doc.get("on")
     still_per_commit = sorted(k for k in on if k in ("pull_request", "push"))
     assert not still_per_commit, (
@@ -163,7 +163,7 @@ def test_the_nightly_lockfile_audit_survived():
     The nightly one re-reads the same lockfiles against advisories published since, which
     no commit run can do. Removing the per-commit trigger must not take that with it.
     """
-    doc = yaml.safe_load((WORKFLOWS / "lockfile-audit.yml").read_text(encoding = "utf-8"))
+    doc = yaml.safe_load((WORKFLOWS / "lockfile-audit.yml").read_text(encoding="utf-8"))
     on = doc.get(True) if True in doc else doc.get("on")
     assert on.get("schedule"), (
         "lockfile-audit.yml lost its nightly schedule. That run catches advisories "

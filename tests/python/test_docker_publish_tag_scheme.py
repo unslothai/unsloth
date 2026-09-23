@@ -18,9 +18,9 @@ WORKFLOW = REPO_ROOT / ".github" / "workflows" / "docker-publish.yml"
 HUB_README = REPO_ROOT / "docker" / "DOCKERHUB.md"
 
 
-@pytest.fixture(scope = "module")
+@pytest.fixture(scope="module")
 def doc() -> dict:
-    return yaml.safe_load(WORKFLOW.read_text(encoding = "utf-8"))
+    return yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
 
 
 def _tag_rules(doc: dict, job: str) -> list[str]:
@@ -34,7 +34,7 @@ def _tag_rules(doc: dict, job: str) -> list[str]:
 
 
 def test_no_per_commit_tags_are_published(doc: dict):
-    text = WORKFLOW.read_text(encoding = "utf-8")
+    text = WORKFLOW.read_text(encoding="utf-8")
     assert "type=sha" not in text, "sha-<commit> tags are back on every push"
     for job in ("merge", "merge-studio"):
         assert not any(
@@ -74,10 +74,10 @@ def _pin_step(doc: dict) -> dict:
 def _run_pin(step: dict, tmp_path: Path, *, gh: str) -> tuple[subprocess.CompletedProcess, str]:
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
-    (bin_dir / "gh").write_text("#!/usr/bin/env bash\n" + gh + "\n", encoding = "utf-8")
+    (bin_dir / "gh").write_text("#!/usr/bin/env bash\n" + gh + "\n", encoding="utf-8")
     (bin_dir / "gh").chmod(0o755)
     out = tmp_path / "output"
-    out.write_text("", encoding = "utf-8")
+    out.write_text("", encoding="utf-8")
     script = (
         step["run"]
         .replace("${{ github.repository }}", "unslothai/unsloth")
@@ -88,9 +88,9 @@ def _run_pin(step: dict, tmp_path: Path, *, gh: str) -> tuple[subprocess.Complet
     env["PATH"] = f"{bin_dir}{os.pathsep}" + env["PATH"]
     env["GITHUB_OUTPUT"] = str(out)
     res = subprocess.run(
-        ["bash", "-e", "-c", script], capture_output = True, text = True, env = env, timeout = 60
+        ["bash", "-e", "-c", script], capture_output=True, text=True, env=env, timeout=60
     )
-    return res, out.read_text(encoding = "utf-8")
+    return res, out.read_text(encoding="utf-8")
 
 
 def test_the_pin_date_is_the_run_creation_date(doc: dict, tmp_path: Path):
@@ -103,7 +103,7 @@ def test_the_pin_date_is_the_run_creation_date(doc: dict, tmp_path: Path):
     res, out = _run_pin(
         step,
         tmp_path,
-        gh = "echo \"$*\" >&2; printf '2026-09-05T18:17:03Z\\n'",
+        gh="echo \"$*\" >&2; printf '2026-09-05T18:17:03Z\\n'",
     )
     assert res.returncode == 0, res.stdout + res.stderr
     assert out == "date=2026.09.05\n"
@@ -112,7 +112,7 @@ def test_the_pin_date_is_the_run_creation_date(doc: dict, tmp_path: Path):
 
 @pytest.mark.parametrize("gh", ["exit 1", "printf ''", "printf 'null'"])
 def test_an_unreadable_creation_time_fails_prepare(doc: dict, tmp_path: Path, gh: str):
-    res, out = _run_pin(_pin_step(doc), tmp_path, gh = gh)
+    res, out = _run_pin(_pin_step(doc), tmp_path, gh=gh)
     assert res.returncode != 0
     assert "::error::" in res.stdout
     assert out == ""
@@ -127,13 +127,13 @@ def test_the_digest_export_resolves_the_handle(doc: dict):
 
 
 def test_the_hub_readme_lists_the_pins_not_the_handles():
-    text = HUB_README.read_text(encoding = "utf-8")
+    text = HUB_README.read_text(encoding="utf-8")
     assert "core-nightly-<YYYY.MM.DD>" in text
     for stale in ("sha-<commit>", "core-sha-", "build-<run_id>"):
         assert stale not in text
 
 
-@pytest.fixture(scope = "module")
+@pytest.fixture(scope="module")
 def cleanup_job(doc: dict) -> dict:
     assert "cleanup" in doc["jobs"], "the handle cleanup job is missing"
     return doc["jobs"]["cleanup"]
@@ -165,10 +165,10 @@ def _run_manifest(
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     log = tmp_path / "docker.log"
-    (bin_dir / "sleep").write_text("#!/usr/bin/env bash\n", encoding = "utf-8")
+    (bin_dir / "sleep").write_text("#!/usr/bin/env bash\n", encoding="utf-8")
     (bin_dir / "sleep").chmod(0o755)
     (bin_dir / "docker").write_text(
-        "#!/usr/bin/env bash\n" + f"printf '%s\\n' \"$*\" >> {log}\n", encoding = "utf-8"
+        "#!/usr/bin/env bash\n" + f"printf '%s\\n' \"$*\" >> {log}\n", encoding="utf-8"
     )
     (bin_dir / "docker").chmod(0o755)
     probes = tmp_path / "curl.log"
@@ -184,12 +184,12 @@ def _run_manifest(
             else f"  *) printf '{probe_code}' ;;\n"
         )
         + "esac\n",
-        encoding = "utf-8",
+        encoding="utf-8",
     )
     (bin_dir / "curl").chmod(0o755)
     digests = tmp_path / "digests"
     digests.mkdir()
-    (digests / ("a" * 64)).write_text("", encoding = "utf-8")
+    (digests / ("a" * 64)).write_text("", encoding="utf-8")
     script = step.replace("${{ env.REGISTRY }}", "docker.io").replace(
         "${{ env.IMAGE_NAME }}", "unsloth/unsloth"
     )
@@ -201,18 +201,18 @@ def _run_manifest(
     )
     res = subprocess.run(
         ["bash", "-e", "-c", script],
-        capture_output = True,
-        text = True,
-        env = env,
-        cwd = str(digests),
-        timeout = 60,
+        capture_output=True,
+        text=True,
+        env=env,
+        cwd=str(digests),
+        timeout=60,
     )
-    return res, log.read_text(encoding = "utf-8") if log.exists() else ""
+    return res, log.read_text(encoding="utf-8") if log.exists() else ""
 
 
 def _probes(tmp_path: Path) -> list[str]:
     path = tmp_path / "curl.log"
-    return path.read_text(encoding = "utf-8").splitlines() if path.exists() else []
+    return path.read_text(encoding="utf-8").splitlines() if path.exists() else []
 
 
 @pytest.mark.parametrize("job", ["merge", "merge-studio"])
@@ -221,8 +221,8 @@ def test_an_existing_dated_pin_is_never_replaced(doc: dict, job: str, tmp_path: 
     res, log = _run_manifest(
         step,
         tmp_path,
-        existing = ["core-nightly-2026.09.06"],
-        tags = ["core", "core-nightly-2026.09.06", "core-build-777"],
+        existing=["core-nightly-2026.09.06"],
+        tags=["core", "core-nightly-2026.09.06", "core-build-777"],
     )
     assert res.returncode == 0, res.stdout + res.stderr
     assert "-t docker.io/unsloth/unsloth:core " in log
@@ -237,8 +237,8 @@ def test_a_new_dated_pin_is_created(doc: dict, job: str, tmp_path: Path):
     res, log = _run_manifest(
         step,
         tmp_path,
-        existing = [],
-        tags = ["latest", "nightly-2026.09.06", "build-777"],
+        existing=[],
+        tags=["latest", "nightly-2026.09.06", "build-777"],
     )
     assert res.returncode == 0, res.stdout + res.stderr
     for t in ("latest", "nightly-2026.09.06", "build-777"):
@@ -254,9 +254,9 @@ def test_an_unanswered_probe_stops_the_merge(doc: dict, job: str, code: str, tmp
     res, log = _run_manifest(
         step,
         tmp_path,
-        existing = [],
-        tags = ["latest", "nightly-2026.09.06", "build-777"],
-        probe_code = code,
+        existing=[],
+        tags=["latest", "nightly-2026.09.06", "build-777"],
+        probe_code=code,
     )
     assert res.returncode != 0
     assert f"(HTTP {code})" in res.stdout
@@ -287,13 +287,13 @@ def _run_cleanup(
     )
     listing.write_text(
         '{"results": [' + ", ".join(f'{{"name": "{t}"}}' for t in (tags or [])) + "]" + nxt + "}",
-        encoding = "utf-8",
+        encoding="utf-8",
     )
     page2.write_text(
         '{"results": ['
         + ", ".join(f'{{"name": "{t}"}}' for t in (second_page or []))
         + '], "next": null}',
-        encoding = "utf-8",
+        encoding="utf-8",
     )
     (bin_dir / "curl").write_text(
         "#!/usr/bin/env bash\n"
@@ -304,13 +304,13 @@ def _run_cleanup(
         f"  *page=2*) cat {page2} ;;\n"
         f"  *) cat {listing} ;;\n"
         "esac\n",
-        encoding = "utf-8",
+        encoding="utf-8",
     )
     (bin_dir / "curl").chmod(0o755)
     (bin_dir / "date").write_text(
         "#!/usr/bin/env bash\n"
         f'/bin/date -u -d "{today.replace(".", "-")} -${{NIGHTLY_KEEP_DAYS}} days" +%Y.%m.%d\n',
-        encoding = "utf-8",
+        encoding="utf-8",
     )
     (bin_dir / "date").chmod(0o755)
     script = (
@@ -322,21 +322,21 @@ def _run_cleanup(
     assert "${{" not in script, "unexpanded expression in the cleanup step"
     env = dict(os.environ)
     env["PATH"] = f"{bin_dir}{os.pathsep}" + env["PATH"]
-    env.update(IMAGE_NAME = "unsloth/unsloth", NIGHTLY_KEEP_DAYS = "60")
+    env.update(IMAGE_NAME="unsloth/unsloth", NIGHTLY_KEEP_DAYS="60")
     res = subprocess.run(
         ["bash", "-e", "-c", script],
-        capture_output = True,
-        text = True,
-        env = env,
-        cwd = str(tmp_path),
-        timeout = 60,
+        capture_output=True,
+        text=True,
+        env=env,
+        cwd=str(tmp_path),
+        timeout=60,
     )
-    return res, log.read_text(encoding = "utf-8") if log.exists() else ""
+    return res, log.read_text(encoding="utf-8") if log.exists() else ""
 
 
 def test_a_push_removes_both_handles_on_the_namespace_route(cleanup_job: dict, tmp_path: Path):
     step = cleanup_job["steps"][-1]["run"]
-    res, log = _run_cleanup(step, tmp_path, event = "push")
+    res, log = _run_cleanup(step, tmp_path, event="push")
     assert res.returncode == 0, res.stdout + res.stderr
     deletes = [l for l in log.splitlines() if "-X DELETE" in l]
     assert [l.split("/tags/")[1].split(" ")[0] for l in deletes] == ["core-build-777", "build-777"]
@@ -350,13 +350,13 @@ def test_a_push_removes_both_handles_on_the_namespace_route(cleanup_job: dict, t
 def test_a_missing_handle_is_not_a_failure(cleanup_job: dict, tmp_path: Path):
     """A failed merge never created the handle, so 404 on delete is expected."""
     step = cleanup_job["steps"][-1]["run"]
-    res, _ = _run_cleanup(step, tmp_path, event = "push", delete_code = "404")
+    res, _ = _run_cleanup(step, tmp_path, event="push", delete_code="404")
     assert res.returncode == 0, res.stdout + res.stderr
 
 
 def test_a_handle_that_survives_fails_the_job(cleanup_job: dict, tmp_path: Path):
     step = cleanup_job["steps"][-1]["run"]
-    res, _ = _run_cleanup(step, tmp_path, event = "push", delete_code = "403")
+    res, _ = _run_cleanup(step, tmp_path, event="push", delete_code="403")
     assert res.returncode != 0
     assert "not removed" in res.stdout + res.stderr
 
@@ -377,7 +377,7 @@ def test_the_daily_run_prunes_only_old_dated_pins(cleanup_job: dict, tmp_path: P
         "core-nightly",
         "2026.5.9-pt2.10.0-vllm-0.16.0-cu12.8-studio-release-v0.1.43-beta-2026-MAY-31",
     ]
-    res, log = _run_cleanup(step, tmp_path, event = "schedule", tags = tags)
+    res, log = _run_cleanup(step, tmp_path, event="schedule", tags=tags)
     assert res.returncode == 0, res.stdout + res.stderr
     deleted = [l.split("/tags/")[1].split(" ")[0] for l in log.splitlines() if "-X DELETE" in l]
     assert deleted == [
@@ -394,9 +394,9 @@ def test_the_prune_follows_every_page(cleanup_job: dict, tmp_path: Path):
     res, log = _run_cleanup(
         step,
         tmp_path,
-        event = "schedule",
-        tags = ["latest", "nightly-2026.09.05"],
-        second_page = ["nightly-2026.06.01", "core-nightly-2026.06.01", "stable"],
+        event="schedule",
+        tags=["latest", "nightly-2026.09.05"],
+        second_page=["nightly-2026.06.01", "core-nightly-2026.06.01", "stable"],
     )
     assert res.returncode == 0, res.stdout + res.stderr
     deleted = [l.split("/tags/")[1].split(" ")[0] for l in log.splitlines() if "-X DELETE" in l]

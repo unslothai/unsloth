@@ -59,6 +59,7 @@ except Exception:  # noqa: BLE001
 
 try:
     from diffusers.utils.import_utils import is_torch_npu_available as _is_npu
+
     _NPU = bool(_is_npu())
 except Exception:  # noqa: BLE001
     _NPU = False
@@ -68,7 +69,7 @@ except Exception:  # noqa: BLE001
 # * t2``).
 def _adaln_continuous_forward(self, x, conditioning_embedding):
     emb = self.linear(self.silu(conditioning_embedding).to(x.dtype))
-    scale, shift = torch.chunk(emb, 2, dim = 1)
+    scale, shift = torch.chunk(emb, 2, dim=1)
     # original: self.norm(x) * (1 + scale)[:, None, :] + shift[:, None, :]
     return torch.addcmul(shift[:, None, :], self.norm(x), 1 + scale[:, None, :])
 
@@ -76,15 +77,15 @@ def _adaln_continuous_forward(self, x, conditioning_embedding):
 def _adaln_zero_forward(
     self,
     x,
-    timestep = None,
-    class_labels = None,
-    hidden_dtype = None,
-    emb = None,
+    timestep=None,
+    class_labels=None,
+    hidden_dtype=None,
+    emb=None,
 ):
     if self.emb is not None:
-        emb = self.emb(timestep, class_labels, hidden_dtype = hidden_dtype)
+        emb = self.emb(timestep, class_labels, hidden_dtype=hidden_dtype)
     emb = self.linear(self.silu(emb))
-    shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = emb.chunk(6, dim = 1)
+    shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = emb.chunk(6, dim=1)
     # original: self.norm(x) * (1 + scale_msa[:, None]) + shift_msa[:, None]
     x = torch.addcmul(shift_msa[:, None], self.norm(x), 1 + scale_msa[:, None])
     return x, gate_msa, shift_mlp, scale_mlp, gate_mlp
@@ -93,10 +94,10 @@ def _adaln_zero_forward(
 def _adaln_zero_single_forward(
     self,
     x,
-    emb = None,
+    emb=None,
 ):
     emb = self.linear(self.silu(emb))
-    shift_msa, scale_msa, gate_msa = emb.chunk(3, dim = 1)
+    shift_msa, scale_msa, gate_msa = emb.chunk(3, dim=1)
     x = torch.addcmul(shift_msa[:, None], self.norm(x), 1 + scale_msa[:, None])
     return x, gate_msa
 
@@ -155,7 +156,7 @@ def install_compile_safe_patches() -> int:
             continue
         if cls is _RMSNorm:
             _orig_rmsnorm_forward = cls.forward
-        if apply_patch(cls, "forward", new_fn, match_level = "relaxed"):
+        if apply_patch(cls, "forward", new_fn, match_level="relaxed"):
             _patched.append(cls)
         else:
             logger.warning(

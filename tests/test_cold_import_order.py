@@ -30,7 +30,7 @@ _DEFERRED_NAMES = (
 
 def _model_sources():
     for path in sorted(_MODELS_DIR.rglob("*.py")):
-        yield path, ast.parse(path.read_text(encoding = "utf-8"), filename = str(path))
+        yield path, ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
 
 
 def _is_save_module(node, package_depth):
@@ -115,7 +115,7 @@ def test_every_module_that_calls_a_deferred_name_defines_the_shim_for_it():
 
 def test_the_deferred_names_are_still_exported_by_unsloth_save():
     """The gate above also passes on a tree where the names simply went away."""
-    source = (_ROOT / "unsloth" / "save.py").read_text(encoding = "utf-8")
+    source = (_ROOT / "unsloth" / "save.py").read_text(encoding="utf-8")
     tree = ast.parse(source)
     defined = {
         node.name for node in tree.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
@@ -139,10 +139,10 @@ def _run(code):
         path.append(os.environ["PYTHONPATH"])
     return subprocess.run(
         [sys.executable, "-c", textwrap.dedent(code)],
-        capture_output = True,
-        text = True,
-        env = dict(os.environ, PYTHONPATH = os.pathsep.join(path)),
-        timeout = 900,
+        capture_output=True,
+        text=True,
+        env=dict(os.environ, PYTHONPATH=os.pathsep.join(path)),
+        timeout=900,
     )
 
 
@@ -160,7 +160,7 @@ def _models_importable():
 
 _needs_torch = pytest.mark.skipif(
     not _models_importable(),
-    reason = (
+    reason=(
         "importing unsloth.models does not complete in this environment (no torch, or no "
         "accelerator unsloth_zoo recognises)"
     ),
@@ -255,7 +255,7 @@ def test_the_star_export_from_gpu_init_still_carries_the_names():
 
 def test_save_publishes_the_deferred_names_back_over_its_own_shims():
     """Without the publish-back, `inspect.signature` would read `(*args, **kwargs)`."""
-    source = (_ROOT / "unsloth" / "save.py").read_text(encoding = "utf-8")
+    source = (_ROOT / "unsloth" / "save.py").read_text(encoding="utf-8")
     assert "_unsloth_deferred_shim" in source, (
         "unsloth/save.py no longer publishes the deferred names back to unsloth.models, so "
         "the shims stay visible after import"

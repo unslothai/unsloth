@@ -26,26 +26,26 @@ else:
 
 
 def host(
-    system = "Windows",
-    caps = ("89",),
-    driver = (13, 0),
+    system="Windows",
+    caps=("89",),
+    driver=(13, 0),
     **extra,
 ):
     args = dict(
-        system = system,
-        machine = "AMD64" if system == "Windows" else "x86_64",
-        is_windows = system == "Windows",
-        is_linux = system == "Linux",
-        is_macos = False,
-        is_x86_64 = True,
-        is_arm64 = False,
-        nvidia_smi = "nvidia-smi",
-        driver_cuda_version = driver,
-        compute_caps = list(caps),
-        physical_compute_caps = list(caps),
-        visible_cuda_devices = None,
-        has_physical_nvidia = True,
-        has_usable_nvidia = True,
+        system=system,
+        machine="AMD64" if system == "Windows" else "x86_64",
+        is_windows=system == "Windows",
+        is_linux=system == "Linux",
+        is_macos=False,
+        is_x86_64=True,
+        is_arm64=False,
+        nvidia_smi="nvidia-smi",
+        driver_cuda_version=driver,
+        compute_caps=list(caps),
+        physical_compute_caps=list(caps),
+        visible_cuda_devices=None,
+        has_physical_nvidia=True,
+        has_usable_nvidia=True,
     )
     args.update(extra)
     return m.HostInfo(**args)
@@ -56,21 +56,21 @@ def artifact(
     line,
     profile,
     sms,
-    coverage = "targeted",
-    rank = 100,
-    kind = "windows-cuda",
+    coverage="targeted",
+    rank=100,
+    kind="windows-cuda",
 ):
     caps = [str(s) for s in sms]
     return m.PublishedLlamaArtifact(
-        asset_name = name,
-        install_kind = kind,
-        runtime_line = line,
-        coverage_class = coverage,
-        supported_sms = caps,
-        min_sm = int(caps[0]),
-        max_sm = int(caps[-1]),
-        bundle_profile = profile,
-        rank = rank,
+        asset_name=name,
+        install_kind=kind,
+        runtime_line=line,
+        coverage_class=coverage,
+        supported_sms=caps,
+        min_sm=int(caps[0]),
+        max_sm=int(caps[-1]),
+        bundle_profile=profile,
+        rank=rank,
     )
 
 
@@ -91,20 +91,20 @@ ARTIFACTS = [
 ]
 
 
-def release(artifacts = ARTIFACTS):
+def release(artifacts=ARTIFACTS):
     return m.PublishedReleaseBundle(
-        repo = "unslothai/llama.cpp",
-        release_tag = "v1.0",
-        upstream_tag = "b8508",
-        assets = {a.asset_name: f"https://example.com/{a.asset_name}" for a in artifacts},
-        artifacts = list(artifacts),
+        repo="unslothai/llama.cpp",
+        release_tag="v1.0",
+        upstream_tag="b8508",
+        assets={a.asset_name: f"https://example.com/{a.asset_name}" for a in artifacts},
+        artifacts=list(artifacts),
     )
 
 
 BUNDLE = release()
 
 
-@pytest.fixture(autouse = True)
+@pytest.fixture(autouse=True)
 def _isolated(monkeypatch):
     for key in (
         "UNSLOTH_LLAMA_CPP_BACKEND",
@@ -114,7 +114,7 @@ def _isolated(monkeypatch):
         "UNSLOTH_ROCM_GFX_REMEMBERED",
         "CUDA_VISIBLE_DEVICES",
     ):
-        monkeypatch.delenv(key, raising = False)
+        monkeypatch.delenv(key, raising=False)
     monkeypatch.setattr(
         m, "detect_torch_cuda_runtime_preference", lambda *a, **k: m.CudaRuntimePreference(None, [])
     )
@@ -129,14 +129,14 @@ class TestDetectedRuntimeDllsOnlyOrderTheLines:
     def test_a_pascal_card_beside_cuda13_dlls_still_gets_the_cuda12_legacy_bundle(
         self, monkeypatch
     ):
-        pascal = host(caps = ("61",))
+        pascal = host(caps=("61",))
         assert profiles(pascal) == ["cuda12-legacy"]
         # torch or another app installed the CUDA 13 runtime; the card is still Pascal.
         monkeypatch.setattr(m, "detected_windows_runtime_lines", lambda: (["cuda13"], {}))
         assert profiles(pascal) == ["cuda12-legacy"]
 
     def test_the_detected_line_is_tried_first_and_the_other_line_still_follows(self, monkeypatch):
-        ada = host(caps = ("89",))
+        ada = host(caps=("89",))
         assert profiles(ada) == ["cuda13-older", "cuda13-portable", "cuda12-older"]
         monkeypatch.setattr(m, "detected_windows_runtime_lines", lambda: (["cuda12"], {}))
         assert profiles(ada) == ["cuda12-older", "cuda13-older", "cuda13-portable"]
@@ -147,18 +147,18 @@ class TestTheFastPathAgreesWithTheOrdering:
         # torch prefers CUDA 12 while only CUDA 13 DLLs are detected: the selector now moves the
         # cuda12 bundle to the front, so the fast path must call that line selectable too.
         monkeypatch.setattr(m, "detected_windows_runtime_lines", lambda: (["cuda13"], {}))
-        win = host(caps = ("89",))
+        win = host(caps=("89",))
         assert m._runtime_line_selectable(win, "cuda12") is True
         assert m._runtime_line_selectable(win, "cuda13") is True
-        assert m._runtime_line_selectable(host(caps = ("89",), driver = (12, 8)), "cuda13") is False
+        assert m._runtime_line_selectable(host(caps=("89",), driver=(12, 8)), "cuda13") is False
         # Linux still needs the runtime on disk.
         monkeypatch.setattr(m, "detected_linux_runtime_lines", lambda: (["cuda13"], {}))
-        assert m._runtime_line_selectable(host("Linux", caps = ("89",)), "cuda12") is False
+        assert m._runtime_line_selectable(host("Linux", caps=("89",)), "cuda12") is False
 
 
 class TestThePortableBundleIsTheFallbackAttempt:
     def test_it_follows_the_targeted_bundle_instead_of_replacing_it(self):
-        attempts = m.published_windows_cuda_attempts(host(caps = ("89",)), BUNDLE, None)
+        attempts = m.published_windows_cuda_attempts(host(caps=("89",)), BUNDLE, None)
         cuda13 = [a for a in attempts if a.runtime_line == "cuda13"]
         assert [a.coverage_class for a in cuda13] == ["targeted", "portable"]
         assert cuda13[0].bundle_profile == "cuda13-older"
@@ -166,16 +166,16 @@ class TestThePortableBundleIsTheFallbackAttempt:
     def test_it_is_the_only_attempt_when_no_targeted_bundle_covers_the_card(self):
         # sm_100 is in cuda13-newer, so drop that one from the release to force the case.
         thin = release([a for a in ARTIFACTS if a.bundle_profile != "cuda13-newer"])
-        attempts = m.published_windows_cuda_attempts(host(caps = ("100",)), thin, None)
+        attempts = m.published_windows_cuda_attempts(host(caps=("100",)), thin, None)
         assert [a.coverage_class for a in attempts] == ["portable"]
 
 
 def checksums(choice):
     return m.ApprovedReleaseChecksums(
-        repo = BUNDLE.repo,
-        release_tag = BUNDLE.release_tag,
-        upstream_tag = BUNDLE.upstream_tag,
-        artifacts = {
+        repo=BUNDLE.repo,
+        release_tag=BUNDLE.release_tag,
+        upstream_tag=BUNDLE.upstream_tag,
+        artifacts={
             choice.name: m.ApprovedArtifactHash(
                 choice.name, "a" * 64, choice.repo, choice.install_kind
             )
@@ -185,13 +185,13 @@ def checksums(choice):
 
 def choice_for(h):
     return dataclasses.replace(
-        m.published_windows_cuda_attempts(h, BUNDLE, None)[0], expected_sha256 = "a" * 64
+        m.published_windows_cuda_attempts(h, BUNDLE, None)[0], expected_sha256="a" * 64
     )
 
 
 def seed_install(root, h, choice):
     bin_dir = m.install_runtime_dir(root, h)
-    bin_dir.mkdir(parents = True, exist_ok = True)
+    bin_dir.mkdir(parents=True, exist_ok=True)
     ext = ".exe" if h.is_windows else ""
     for name in ("llama-server", "llama-quantize"):
         path = bin_dir / (name + ext)
@@ -199,14 +199,14 @@ def seed_install(root, h, choice):
         path.chmod(0o755)
     m.write_prebuilt_metadata(
         root,
-        host = h,
-        requested_tag = "latest",
-        llama_tag = BUNDLE.upstream_tag,
-        release_tag = BUNDLE.release_tag,
-        choice = choice,
-        approved_checksums = checksums(choice),
-        prebuilt_fallback_used = False,
-        backend_request = "auto",
+        host=h,
+        requested_tag="latest",
+        llama_tag=BUNDLE.upstream_tag,
+        release_tag=BUNDLE.release_tag,
+        choice=choice,
+        approved_checksums=checksums(choice),
+        prebuilt_fallback_used=False,
+        backend_request="auto",
     )
 
 
@@ -228,11 +228,11 @@ def healthy_payload(monkeypatch):
 def fast_path(root):
     return m.existing_install_current_without_plan(
         root,
-        llama_tag = "latest",
-        published_repo = BUNDLE.repo,
-        published_release_tag = "",
-        backend_request = "auto",
-        force_cpu = False,
+        llama_tag="latest",
+        published_repo=BUNDLE.repo,
+        published_release_tag="",
+        backend_request="auto",
+        force_cpu=False,
     )
 
 
@@ -246,16 +246,16 @@ class TestTheKeepPathsRequireSmCoverage:
         masked = host(
             system,
             (),
-            physical_compute_caps = ["89"],
-            has_usable_nvidia = False,
-            visible_cuda_devices = "",
+            physical_compute_caps=["89"],
+            has_usable_nvidia=False,
+            visible_cuda_devices="",
         )
-        swapped = dataclasses.replace(masked, physical_compute_caps = ["120"])
+        swapped = dataclasses.replace(masked, physical_compute_caps=["120"])
         root = tmp_path / "llama"
         seed_install(
             root,
             masked,
-            choice_for(dataclasses.replace(masked, compute_caps = ["89"], has_usable_nvidia = True)),
+            choice_for(dataclasses.replace(masked, compute_caps=["89"], has_usable_nvidia=True)),
         )
         monkeypatch.setattr(m, "_download_host_latest_release_tag", lambda *a: BUNDLE.release_tag)
         assert m.host_profile(masked) == m.host_profile(swapped)

@@ -32,8 +32,8 @@ class _StatusBackend:
         self,
         model_identifier,
         *,
-        native_grant_backed = None,
-        display_label = None,
+        native_grant_backed=None,
+        display_label=None,
     ):
         for name, value in _InferenceRuntimeFields().model_dump().items():
             setattr(self, name, value)
@@ -84,7 +84,7 @@ def status_route(monkeypatch):
 
 
 def test_a_loaded_repo_gguf_reports_its_public_id(status_route):
-    status = status_route(_StatusBackend("org/A-GGUF", native_grant_backed = False))
+    status = status_route(_StatusBackend("org/A-GGUF", native_grant_backed=False))
     assert status.is_gguf is True
     assert status.active_model == "org/A-GGUF"
     assert status.model_identifier == "org/A-GGUF"
@@ -104,7 +104,7 @@ def test_a_backend_without_the_flag_still_reports(status_route):
 def test_a_native_lease_load_reports_the_label_not_the_leased_path(status_route):
     # The leased on-disk path is exactly what /status must not hand back.
     leased = os.path.join(os.sep, "models", "private", "A-Q4_K_M.gguf")
-    status = status_route(_StatusBackend(leased, native_grant_backed = True))
+    status = status_route(_StatusBackend(leased, native_grant_backed=True))
     assert status.model_identifier is None, "the leased path must not be published"
     assert status.active_model == "A-Q4_K_M.gguf"
     assert status.is_local_model is True
@@ -113,7 +113,7 @@ def test_a_native_lease_load_reports_the_label_not_the_leased_path(status_route)
 def test_a_local_path_load_without_a_lease_is_still_local(status_route):
     # is_local_model is provenance, not lease bookkeeping: a plain local path counts.
     local = os.path.join(os.sep, "models", "local", "A-Q4_K_M.gguf")
-    status = status_route(_StatusBackend(local, native_grant_backed = False))
+    status = status_route(_StatusBackend(local, native_grant_backed=False))
     assert status.is_gguf is True
     assert status.is_local_model is True
 
@@ -127,7 +127,7 @@ def test_a_model_cached_behind_the_gguf_is_still_reported(status_route, monkeypa
         "_peek_inference_backend",
         lambda: type("_Reg", (), {"models": {"org/Cached": {}}})(),
     )
-    status = status_route(_StatusBackend("org/A-GGUF", native_grant_backed = False))
+    status = status_route(_StatusBackend("org/A-GGUF", native_grant_backed=False))
     assert status.active_model == "org/A-GGUF"
     assert status.loaded == ["org/A-GGUF", "org/Cached"]
 
@@ -138,14 +138,14 @@ def test_the_gguf_is_not_listed_twice_when_the_registry_names_it(status_route, m
         "_peek_inference_backend",
         lambda: type("_Reg", (), {"models": {"org/A-GGUF": {}}})(),
     )
-    status = status_route(_StatusBackend("org/A-GGUF", native_grant_backed = False))
+    status = status_route(_StatusBackend("org/A-GGUF", native_grant_backed=False))
     assert status.loaded == ["org/A-GGUF"]
 
 
 def test_no_orchestrator_leaves_the_gguf_alone(status_route, monkeypatch):
     # Peek returns None before anything built one; the branch must not construct it.
     monkeypatch.setattr(inference_route, "_peek_inference_backend", lambda: None)
-    status = status_route(_StatusBackend("org/A-GGUF", native_grant_backed = False))
+    status = status_route(_StatusBackend("org/A-GGUF", native_grant_backed=False))
     assert status.loaded == ["org/A-GGUF"]
 
 

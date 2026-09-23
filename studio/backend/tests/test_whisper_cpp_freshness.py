@@ -54,12 +54,12 @@ def _write_marker(install_dir: Path, **overrides) -> Path:
         "asset": "whisper-v1.9.1-unsloth.1-linux-x64-cpu.tar.gz",
         "asset_sha256": None,
         "source": "published",
-        "installed_at_utc": (datetime.now(tz = timezone.utc) - timedelta(days = 1))
+        "installed_at_utc": (datetime.now(tz=timezone.utc) - timedelta(days=1))
         .isoformat()
         .replace("+00:00", "Z"),
     }
     payload.update(overrides)
-    install_dir.mkdir(parents = True, exist_ok = True)
+    install_dir.mkdir(parents=True, exist_ok=True)
     marker = install_dir / "UNSLOTH_WHISPER_PREBUILT_INFO.json"
     marker.write_text(json.dumps(payload))
     return marker
@@ -68,13 +68,13 @@ def _write_marker(install_dir: Path, **overrides) -> Path:
 def _fake_binary(install_dir: Path) -> Path:
     """Stub whisper-server under the canonical cmake install layout."""
     bin_dir = install_dir / "build" / "bin"
-    bin_dir.mkdir(parents = True, exist_ok = True)
+    bin_dir.mkdir(parents=True, exist_ok=True)
     bin_path = bin_dir / "whisper-server"
     bin_path.write_text("stub\n")
     return bin_path
 
 
-@pytest.fixture(autouse = True)
+@pytest.fixture(autouse=True)
 def _reset(monkeypatch, tmp_path):
     # Isolate disk cache per-test; never touch the real cache.
     monkeypatch.setattr(fr, "_cache_dir", lambda: tmp_path / ".freshness")
@@ -132,8 +132,8 @@ def test_is_behind_missing_side_fails_open():
 def test_check_prebuilt_freshness_reports_stale_when_old_and_behind(monkeypatch, tmp_path):
     _write_marker(
         tmp_path,
-        release_tag = "v1.9.1-unsloth.1",
-        installed_at_utc = (datetime.now(tz = timezone.utc) - timedelta(days = 10))
+        release_tag="v1.9.1-unsloth.1",
+        installed_at_utc=(datetime.now(tz=timezone.utc) - timedelta(days=10))
         .isoformat()
         .replace("+00:00", "Z"),
     )
@@ -148,7 +148,7 @@ def test_check_prebuilt_freshness_reports_stale_when_old_and_behind(monkeypatch,
 
 
 def test_marker_reader_prefers_install_root_over_packaging_marker(tmp_path):
-    root_marker = _write_marker(tmp_path, release_tag = "v1.9.1-unsloth.2")
+    root_marker = _write_marker(tmp_path, release_tag="v1.9.1-unsloth.2")
     binary = _fake_binary(tmp_path)
     (binary.parent / root_marker.name).write_text(
         json.dumps({"backend": "slim", "release_tag": "archive-metadata"})

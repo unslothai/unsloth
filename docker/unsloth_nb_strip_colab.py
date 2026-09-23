@@ -69,7 +69,7 @@ def _strip_lines(lines):
 def _strip_cell(cell):
     src = cell.get("source")
     if isinstance(src, str):
-        lines = src.splitlines(keepends = True)
+        lines = src.splitlines(keepends=True)
         as_str = True
     elif isinstance(src, list):
         lines = list(src)
@@ -139,7 +139,7 @@ def _stage_clean(path):
     carries it."""
     try:
         before = _sha256(path)
-        with open(path, "r", encoding = "utf-8") as f:
+        with open(path, "r", encoding="utf-8") as f:
             nb = json.load(f)
     except Exception:
         return None
@@ -151,8 +151,8 @@ def _stage_clean(path):
 
     tmp = path + ".tmp"
     try:
-        with open(tmp, "w", encoding = "utf-8") as f:
-            json.dump(nb, f, indent = 1, ensure_ascii = False)
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(nb, f, indent=1, ensure_ascii=False)
             f.write("\n")
         return tmp, before, _sha256(tmp)
     except Exception:
@@ -183,7 +183,7 @@ def _write_state(state_path, lines):
     with the content unwritten, which strands the notebooks the same way."""
     tmp = state_path + ".tmp"
     try:
-        with open(tmp, "w", encoding = "utf-8") as f:
+        with open(tmp, "w", encoding="utf-8") as f:
             f.write("\n".join(lines) + "\n")
             f.flush()
             os.fsync(f.fileno())
@@ -214,7 +214,7 @@ def _resume(path, rec):
     return _publish(tmp, path, before)
 
 
-def strip_notebook(path, staged = None):
+def strip_notebook(path, staged=None):
     """True if the notebook was modified and written back. `staged`, when given, gets
     {"sha256": ...} for the bytes THIS call wrote, so the caller need not re-read."""
     st = _stage_clean(path)
@@ -253,7 +253,7 @@ def migrate(state_path, dest):
     start simply tries again. The narrow window that is left, a stop between the two
     renames, is reconciled by _resume rather than mistaken for a user edit."""
     try:
-        with open(state_path, "r", encoding = "utf-8") as f:
+        with open(state_path, "r", encoding="utf-8") as f:
             lines = f.read().splitlines()
     except OSError:
         return 0
@@ -305,10 +305,10 @@ def migrate(state_path, dest):
 
 
 def main(argv):
-    ap = argparse.ArgumentParser(description = "Strip the Colab-only intro sentence.")
-    ap.add_argument("--state", help = "sync state file (enables migration mode)")
-    ap.add_argument("--dest", help = "notebooks dir (with --state)")
-    ap.add_argument("paths", nargs = "*", help = "notebooks to strip in place")
+    ap = argparse.ArgumentParser(description="Strip the Colab-only intro sentence.")
+    ap.add_argument("--state", help="sync state file (enables migration mode)")
+    ap.add_argument("--dest", help="notebooks dir (with --state)")
+    ap.add_argument("paths", nargs="*", help="notebooks to strip in place")
     args = ap.parse_args(argv)
 
     if args.state:

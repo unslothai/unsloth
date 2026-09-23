@@ -168,7 +168,7 @@ WEATHER_TOOL = {
 
 
 def log(msg: str) -> None:
-    print(f"[studio-gpu] {msg}", flush = True)
+    print(f"[studio-gpu] {msg}", flush=True)
 
 
 def run(cmd: list[str], **kw) -> subprocess.CompletedProcess:
@@ -181,7 +181,7 @@ def run(cmd: list[str], **kw) -> subprocess.CompletedProcess:
     there is no GPU.
     """
     try:
-        return subprocess.run(cmd, capture_output = True, text = True, **kw)
+        return subprocess.run(cmd, capture_output=True, text=True, **kw)
     except OSError as exc:
         return subprocess.CompletedProcess(cmd, 127, "", f"{type(exc).__name__}: {exc}")
 
@@ -225,7 +225,7 @@ def nvidia_used_mib() -> float | None:
     cmd = _scoped(["nvidia-smi", "--query-gpu=memory.used", "--format=csv,noheader,nounits"])
     if cmd is None:
         return None
-    proc = run(cmd, timeout = 60)
+    proc = run(cmd, timeout=60)
     if proc.returncode != 0:
         return None
     total = 0.0
@@ -383,7 +383,7 @@ def nvidia_compute_apps_listing() -> tuple[dict[int, int], set[int]] | None:
     )
     if cmd is None:
         return None
-    proc = run(cmd, timeout = 60)
+    proc = run(cmd, timeout=60)
     if proc.returncode != 0:
         return None
     return parse_compute_apps(proc.stdout), listed_pids(proc.stdout)
@@ -491,7 +491,7 @@ def gpu_inventory() -> list[str]:
     """
     proc = run(
         ["nvidia-smi", "--query-gpu=name,memory.total,compute_cap", "--format=csv,noheader"],
-        timeout = 60,
+        timeout=60,
     )
     if proc.returncode != 0:
         return []
@@ -559,7 +559,7 @@ def studio_log_text(
                 if start > size:
                     start = 0
                 fh.seek(max(start, size - tail_bytes))
-                parts.append(fh.read().decode("utf-8", errors = "replace"))
+                parts.append(fh.read().decode("utf-8", errors="replace"))
         except OSError:
             continue
     return "\n".join(parts)
@@ -582,7 +582,7 @@ def llama_server_pids() -> list[int]:
         if not entry.name.isdigit():
             continue
         try:
-            cmdline = (entry / "cmdline").read_bytes().decode("utf-8", errors = "replace")
+            cmdline = (entry / "cmdline").read_bytes().decode("utf-8", errors="replace")
         except OSError:
             continue
         argv0 = cmdline.split("\x00", 1)[0]
@@ -612,7 +612,7 @@ def llama_server_argvs() -> dict[int, list[str]]:
         if not entry.name.isdigit():
             continue
         try:
-            raw = (entry / "cmdline").read_bytes().decode("utf-8", errors = "replace")
+            raw = (entry / "cmdline").read_bytes().decode("utf-8", errors="replace")
         except OSError:
             continue
         argv = [part for part in raw.split("\x00") if part]
@@ -664,7 +664,7 @@ class Payload:
     def __init__(self, args: argparse.Namespace) -> None:
         self.args = args
         self.outdir = Path(args.outdir)
-        self.outdir.mkdir(parents = True, exist_ok = True)
+        self.outdir.mkdir(parents=True, exist_ok=True)
         self.art_dir = self.outdir / "playwright"
         self.studio_home = Path(args.studio_home).expanduser().resolve()
         self.repo_root = Path(args.repo_root).expanduser().resolve()
@@ -780,13 +780,14 @@ class Payload:
 
         try:
             import torch
+
             detail["cuda_available"] = bool(torch.cuda.is_available())
             if not torch.cuda.is_available():
                 failures.append("torch.cuda.is_available() is False")
         except Exception as exc:  # noqa: BLE001
             failures.append(f"could not import torch: {type(exc).__name__}: {exc}")
 
-        self.studio_home.mkdir(parents = True, exist_ok = True)
+        self.studio_home.mkdir(parents=True, exist_ok=True)
         free_gb = shutil.disk_usage(self.studio_home).free / 1e9
         detail["studio_home"] = str(self.studio_home)
         detail["free_gb"] = round(free_gb, 1)
@@ -849,7 +850,7 @@ class Payload:
         # An absent auth directory is what re-seeds the bootstrap password;
         # `reset-password` does not. Same thing the repo's own
         # boot-studio-api-only.sh does, for the same reason.
-        shutil.rmtree(self.studio_home / "auth", ignore_errors = True)
+        shutil.rmtree(self.studio_home / "auth", ignore_errors=True)
 
         env = dict(os.environ)
         env["UNSLOTH_STUDIO_HOME"] = str(self.studio_home)
@@ -867,18 +868,18 @@ class Payload:
         handle = open(self.server_log, "ab")
         self.proc = subprocess.Popen(
             cmd,
-            cwd = str(self.repo_root),
-            env = env,
-            stdout = handle,
-            stderr = subprocess.STDOUT,
+            cwd=str(self.repo_root),
+            env=env,
+            stdout=handle,
+            stderr=subprocess.STDOUT,
         )
 
         ok, last, reason = wait_for(
-            probe = lambda: self.studio.get("/api/health", auth = False)[1],
-            accept = health_is_ready,
-            deadline_s = self.args.health_deadline,
-            interval_s = 2.0,
-            alive = self.server_alive,
+            probe=lambda: self.studio.get("/api/health", auth=False)[1],
+            accept=health_is_ready,
+            deadline_s=self.args.health_deadline,
+            interval_s=2.0,
+            alive=self.server_alive,
         )
         detail: dict = {"health": last if isinstance(last, dict) else str(last)[:400]}
         failures = []
@@ -892,7 +893,7 @@ class Payload:
         """Learn the bootstrap password so it can be scrubbed, not so it can be used."""
         path = self.studio_home / "auth" / ".bootstrap_password"
         try:
-            value = path.read_text(encoding = "utf-8").strip()
+            value = path.read_text(encoding="utf-8").strip()
         except OSError:
             return None
         if value:
@@ -910,7 +911,7 @@ class Payload:
         # is put in front of a human on a pull request when startup fails.
         self.remember_bootstrap()
         try:
-            text = self.server_log.read_text(encoding = "utf-8", errors = "replace")
+            text = self.server_log.read_text(encoding="utf-8", errors="replace")
         except OSError:
             return "(no server log)"
         return self.scrub(" | ".join(text.splitlines()[-lines:]))
@@ -958,7 +959,7 @@ class Payload:
             return
         self.proc.terminate()
         try:
-            self.proc.wait(timeout = 60)
+            self.proc.wait(timeout=60)
         except subprocess.TimeoutExpired:
             self.proc.kill()
 
@@ -999,7 +1000,7 @@ class Payload:
                 self.studio.post(
                     "/api/inference/unload",
                     {"model_path": active, "force_cancel_active": True},
-                    timeout = self.args.load_timeout,
+                    timeout=self.args.load_timeout,
                 )
             except StudioError:
                 pass
@@ -1042,7 +1043,7 @@ class Payload:
         # is written past this mark is evidence about this one.
         marks = log_marks(self.server_log, self.studio_home)
         try:
-            self.studio.expect("POST", "/api/inference/load", body, timeout = self.args.load_timeout)
+            self.studio.expect("POST", "/api/inference/load", body, timeout=self.args.load_timeout)
         except StudioError as exc:
             failures.append(str(exc))
         else:
@@ -1058,12 +1059,12 @@ class Payload:
         # discovered here instead. See llama_server_pids().
         server_pids = llama_server_pids()
         verdict = offload_verdict(
-            server_pid = None,
-            server_pids = server_pids,
-            compute_apps = nvidia_compute_apps(),
-            log_text = studio_log_text(self.server_log, self.studio_home, since = marks),
-            device_vram_delta_mib = delta,
-            status = status_body,
+            server_pid=None,
+            server_pids=server_pids,
+            compute_apps=nvidia_compute_apps(),
+            log_text=studio_log_text(self.server_log, self.studio_home, since=marks),
+            device_vram_delta_mib=delta,
+            status=status_body,
         )
         failures += verdict["failures"]
 
@@ -1114,13 +1115,13 @@ class Payload:
             "enable_thinking": False,
             **extra,
         }
-        return self.studio.post("/v1/chat/completions", body, timeout = self.args.chat_timeout)
+        return self.studio.post("/v1/chat/completions", body, timeout=self.args.chat_timeout)
 
     def assert_gpu_inference(self) -> bool:
         detail = self.load_model(
             self.args.chat_model,
-            variant = self.args.chat_variant,
-            label = "chat",
+            variant=self.args.chat_variant,
+            label="chat",
         )
         if not detail["failures"]:
             code, payload = self.chat([{"role": "user", "content": "What is 1+1? Answer briefly."}])
@@ -1223,7 +1224,7 @@ class Payload:
             )
 
         try:
-            self.studio.expect("POST", "/api/inference/load", body, timeout = self.args.load_timeout)
+            self.studio.expect("POST", "/api/inference/load", body, timeout=self.args.load_timeout)
         except StudioError as exc:
             failures.append(f"loading with server flags failed: {exc}"[:600])
             detail["failures"] = failures
@@ -1330,7 +1331,7 @@ class Payload:
             body["gpu_ids"] = list(range(len(cards)))
 
         before = llama_server_argvs()
-        self.studio.expect("POST", "/api/inference/load", body, timeout = self.args.load_timeout)
+        self.studio.expect("POST", "/api/inference/load", body, timeout=self.args.load_timeout)
         code, status = self.studio.get("/api/inference/status")
         argvs = llama_server_argvs()
         # The child that is serving NOW. A relaunch gets a new pid, so taking
@@ -1377,15 +1378,15 @@ class Payload:
         nothing else: same install, same binary, same weights, same session."""
         fetch = run(
             ["git", "-C", str(self.repo_root), "fetch", "--depth", "1", "origin", ref],
-            timeout = 600,
+            timeout=600,
         )
         checkout = run(
             ["git", "-C", str(self.repo_root), "checkout", ref, "--", self._TP_FILE],
-            timeout = 120,
+            timeout=120,
         )
         blob = run(
             ["git", "-C", str(self.repo_root), "hash-object", self._TP_FILE],
-            timeout = 120,
+            timeout=120,
         )
         ok = checkout.returncode == 0
         return ok, (
@@ -1443,7 +1444,7 @@ class Payload:
         ratio = [float(x) for x in self.args.auto_split_ratio.split(",")]
         other = list(reversed(ratio))
 
-        first = self._auto_tp_load(ratio, force = True)
+        first = self._auto_tp_load(ratio, force=True)
         detail["legs"]["requested"] = first
         if first.get("duplicate_flag"):
             failures.append(f"the launch argv is ambiguous: {first['duplicate_flag']}")
@@ -1503,7 +1504,7 @@ class Payload:
                     "max_tokens": 256,
                     "stream": False,
                 },
-                timeout = self.args.chat_timeout,
+                timeout=self.args.chat_timeout,
             )
             choice = (completion.get("choices") or [{}])[0]
             message = choice.get("message") or {}
@@ -1533,7 +1534,7 @@ class Payload:
             )
 
         # ---- deduplication, the half a fix can regress.
-        repeat = self._auto_tp_load(ratio, force = False)
+        repeat = self._auto_tp_load(ratio, force=False)
         detail["legs"]["repeat_same_ratio"] = repeat
         if repeat.get("llama_server_pid") != first.get("llama_server_pid"):
             failures.append(
@@ -1543,7 +1544,7 @@ class Payload:
                 f"reloads the model on every request"
             )
 
-        changed = self._auto_tp_load(other, force = False)
+        changed = self._auto_tp_load(other, force=False)
         detail["legs"]["changed_ratio"] = changed
         if changed.get("llama_server_pid") == first.get("llama_server_pid"):
             failures.append(
@@ -1579,7 +1580,7 @@ class Payload:
             return self.record("auto_tensor_split_baseline", False, detail)
 
         ratio = [float(x) for x in self.args.auto_split_ratio.split(",")]
-        probe = self._auto_tp_load(ratio, force = True)
+        probe = self._auto_tp_load(ratio, force=True)
         detail["probe"] = probe
         failures: list[str] = []
         if probe.get("split_mode") != "tensor":
@@ -1674,7 +1675,7 @@ class Payload:
         # documented default. "truncate_oldest" is the policy that applies to a
         # plain chat; "truncate_middle" is limited to client-tool and
         # response_format passthrough (studio/backend/models/inference.py).
-        code, body = self.chat(long_messages, max_tokens = 32, context_overflow = "truncate_oldest")
+        code, body = self.chat(long_messages, max_tokens=32, context_overflow="truncate_oldest")
         detail["context_overflow"] = "truncate_oldest"
         detail["long_status"] = code
         detail["long_messages"] = len(long_messages)
@@ -1698,7 +1699,7 @@ class Payload:
         # default `context_overflow` must be REFUSED. Without this, the check
         # above passes on a server that compacts everything regardless of what
         # was asked for, and the field name in the request would be decorative.
-        code, body = self.chat(long_messages, max_tokens = 32)
+        code, body = self.chat(long_messages, max_tokens=32)
         detail["long_status_default_policy"] = code
         # The CODE, not just the 400. `openai_error_body` always emits the key
         # and leaves it None for an unclassified failure, so a validation error
@@ -1721,7 +1722,7 @@ class Payload:
 
         # The LENGTH control, and it is not optional either: without it a
         # server that always claims truncation passes the first check.
-        code, body = self.chat([{"role": "user", "content": "Say hi."}], max_tokens = 16)
+        code, body = self.chat([{"role": "user", "content": "Say hi."}], max_tokens=16)
         detail["short_status"] = code
         short_dropped = _dropped(body)
         detail["short_dropped"] = short_dropped
@@ -1819,9 +1820,9 @@ class Payload:
         detail: dict = {}
         code, payload = self.chat(
             [{"role": "user", "content": "What is the weather in Paris right now?"}],
-            tools = [WEATHER_TOOL],
-            tool_choice = "required",
-            max_tokens = 256,
+            tools=[WEATHER_TOOL],
+            tool_choice="required",
+            max_tokens=256,
         )
         detail["http_status"] = code
         if code != 200 or not isinstance(payload, dict):
@@ -1907,10 +1908,10 @@ class Payload:
                     ),
                 }
             ],
-            enable_tools = True,
-            enabled_tools = ["python"],
-            permission_mode = "off",
-            max_tokens = 512,
+            enable_tools=True,
+            enabled_tools=["python"],
+            permission_mode="off",
+            max_tokens=512,
         )
         detail["http_status"] = code
         if code != 200 or not isinstance(payload, dict):
@@ -1930,7 +1931,7 @@ class Payload:
                 if not path.is_file():
                     continue
                 try:
-                    body = path.read_text(encoding = "utf-8", errors = "replace")
+                    body = path.read_text(encoding="utf-8", errors="replace")
                 except OSError:
                     continue
                 if token in body or token in path.name:
@@ -1992,14 +1993,14 @@ class Payload:
         ):
             before = ""
             try:
-                before = self.server_log.read_text(encoding = "utf-8", errors = "replace")
+                before = self.server_log.read_text(encoding="utf-8", errors="replace")
             except OSError:
                 pass
 
             code, payload = self.chat(
                 [{"role": "user", "content": prompt}],
-                enable_tools = True,
-                permission_mode = "off",
+                enable_tools=True,
+                permission_mode="off",
                 # Forced BY NAME. `tool_choice: "required"` was tried first and
                 # changed nothing -- kernel unsloth-probe-studio-r3-0b85d4
                 # returned the same parametric answer, "The current version of
@@ -2010,8 +2011,8 @@ class Payload:
                 # shape. Without a force this measures whether a 2B model
                 # DECIDES to search, which is a model property rather than a
                 # Studio one.
-                tool_choice = {"type": "function", "function": {"name": "web_search"}},
-                max_tokens = 512,
+                tool_choice={"type": "function", "function": {"name": "web_search"}},
+                max_tokens=512,
                 **selection,
             )
             record = {"selection": label, "http_status": code}
@@ -2023,7 +2024,7 @@ class Payload:
                 record["reply"] = ((choice.get("message") or {}).get("content") or "")[:200]
 
             try:
-                after = self.server_log.read_text(encoding = "utf-8", errors = "replace")
+                after = self.server_log.read_text(encoding="utf-8", errors="replace")
             except OSError:
                 after = ""
             # Only what THIS request wrote, so an earlier attempt's tool call
@@ -2056,7 +2057,7 @@ class Payload:
         detail: dict = {}
 
         dataset = self.studio_home / "assets" / "datasets" / "uploads" / "studio_gpu_canary.jsonl"
-        dataset.parent.mkdir(parents = True, exist_ok = True)
+        dataset.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(_HERE / "train_canary.jsonl", dataset)
         detail["dataset"] = str(dataset)
 
@@ -2086,7 +2087,7 @@ class Payload:
 
         try:
             started = self.studio.expect(
-                "POST", "/api/train/start", body, timeout = self.args.chat_timeout
+                "POST", "/api/train/start", body, timeout=self.args.chat_timeout
             )
         except StudioError as exc:
             detail["failures"] = [str(exc)]
@@ -2111,15 +2112,15 @@ class Payload:
             return done
 
         ok, last, reason = wait_for(
-            probe = lambda: self.studio.get("/api/train/status")[1],
-            accept = _accept,
-            deadline_s = self.args.train_deadline,
-            interval_s = 5.0,
+            probe=lambda: self.studio.get("/api/train/status")[1],
+            accept=_accept,
+            deadline_s=self.args.train_deadline,
+            interval_s=5.0,
             # An Unsloth that died mid-training answers every status request
             # with an error, which wait_for retries -- for the whole 1200s
             # deadline, out of a 70-minute session, before reporting it as
             # slowness rather than as death.
-            alive = self.server_alive,
+            alive=self.server_alive,
         )
         status = last if isinstance(last, dict) else {}
         detail["phase"] = status.get("phase")
@@ -2201,8 +2202,8 @@ class Payload:
         try:
             proc = run(
                 [sys.executable, str(installer), "--install-dir", str(install_dir)],
-                env = env,
-                timeout = LLAMA_CPP_INSTALL_TIMEOUT_S,
+                env=env,
+                timeout=LLAMA_CPP_INSTALL_TIMEOUT_S,
             )
         except subprocess.TimeoutExpired:
             return self.record(
@@ -2270,7 +2271,7 @@ class Payload:
                 "POST",
                 "/api/export/load-checkpoint",
                 {"checkpoint_path": adapter_dir, "max_seq_length": 512, "load_in_4bit": True},
-                timeout = self.args.export_timeout,
+                timeout=self.args.export_timeout,
             )
         except StudioError as exc:
             failures.append(f"load-checkpoint failed: {exc}")
@@ -2292,7 +2293,7 @@ class Payload:
                     "quantization_method": self.args.quantization,
                     "push_to_hub": False,
                 },
-                timeout = self.args.export_timeout,
+                timeout=self.args.export_timeout,
             )
         except StudioError as exc:
             failures.append(f"export request failed: {exc}")
@@ -2318,11 +2319,11 @@ class Payload:
             return done
 
         ok, last, reason = wait_for(
-            probe = lambda: self.studio.get("/api/export/status")[1],
-            accept = _accept,
-            deadline_s = self.args.export_deadline,
-            interval_s = 10.0,
-            alive = self.server_alive,
+            probe=lambda: self.studio.get("/api/export/status")[1],
+            accept=_accept,
+            deadline_s=self.args.export_deadline,
+            interval_s=10.0,
+            alive=self.server_alive,
         )
         status = last if isinstance(last, dict) else {}
         detail["last_op_status"] = status.get("last_op_status")
@@ -2354,7 +2355,7 @@ class Payload:
         if not failures and gguf is not None:
             # "and loads" is asserted by loading it. A size check would pass
             # for a file llama.cpp cannot open.
-            reload_detail = self.load_model(str(gguf), variant = None, label = "exported")
+            reload_detail = self.load_model(str(gguf), variant=None, label="exported")
             detail["reload"] = reload_detail
             if reload_detail["failures"]:
                 failures += [
@@ -2489,7 +2490,7 @@ class Payload:
             return self.record("lora_vs_base", False, detail)
 
         def _say(model: str, variant, label: str) -> tuple[str | None, list]:
-            loaded = self.load_model(model, variant = variant, label = label)
+            loaded = self.load_model(model, variant=variant, label=label)
             if loaded["failures"]:
                 return None, [f"{label} did not load: {loaded['failures'][0]}"]
             code, payload = self.chat(prompt)
@@ -2566,7 +2567,7 @@ class Payload:
             code, body = self.studio.post(
                 "/api/inference/images/load",
                 {"model_path": self.args.image_model},
-                timeout = self.args.export_timeout,
+                timeout=self.args.export_timeout,
             )
             detail["load_status"] = code
             if code >= 400:
@@ -2618,7 +2619,7 @@ class Payload:
                     "guidance": 0.0,
                     "seed": 3407,
                 },
-                timeout = self.args.export_timeout,
+                timeout=self.args.export_timeout,
             )
             detail["generate_status"] = code
             images = (body or {}).get("images") if isinstance(body, dict) else None
@@ -2642,7 +2643,7 @@ class Payload:
             )
             if self.studio.token:
                 request.add_header("Authorization", f"Bearer {self.studio.token}")
-            with urllib.request.urlopen(request, timeout = 120) as response:
+            with urllib.request.urlopen(request, timeout=120) as response:
                 png = response.read()
                 detail["content_type"] = response.headers.get("Content-Type")
             detail["png_bytes"] = len(png)
@@ -2690,7 +2691,7 @@ class Payload:
             # Always, or a diffusion pipeline holds the card for whatever runs
             # next and that failure lands on the wrong assertion.
             try:
-                self.studio.post("/api/inference/images/unload", {}, timeout = 120)
+                self.studio.post("/api/inference/images/unload", {}, timeout=120)
             except BaseException:  # noqa: BLE001
                 pass
 
@@ -2762,10 +2763,10 @@ class Payload:
         handle = open(log_path, "ab")
         proc = subprocess.Popen(
             cmd,
-            cwd = str(self.repo_root),
-            env = env,
-            stdout = handle,
-            stderr = subprocess.STDOUT,
+            cwd=str(self.repo_root),
+            env=env,
+            stdout=handle,
+            stderr=subprocess.STDOUT,
         )
 
         api_key = None
@@ -2778,7 +2779,7 @@ class Payload:
                         f"`unsloth run --cloudflare` exited with code {proc.returncode}"
                     )
                     break
-                text = log_path.read_text(encoding = "utf-8", errors = "replace")
+                text = log_path.read_text(encoding="utf-8", errors="replace")
                 if api_key is None and "UNSLOTH_START_API_KEY:" in text:
                     api_key = text.split("UNSLOTH_START_API_KEY:", 1)[1].split("\n", 1)[0].strip()
                     if api_key:
@@ -2799,7 +2800,7 @@ class Payload:
                 # Reported, not failed, and ONLY here: nothing was published,
                 # so there is nothing to have gone wrong with. The reason comes
                 # off the log rather than being assumed.
-                tail = log_path.read_text(encoding = "utf-8", errors = "replace")[-600:]
+                tail = log_path.read_text(encoding="utf-8", errors="replace")[-600:]
                 detail["no_tunnel_reason"] = self.scrub(tail)
                 detail["reported_not_failed"] = True
             else:
@@ -2807,8 +2808,8 @@ class Payload:
                 # live public route to this machine, and the artifact is read
                 # by people who are not running it.
                 self.secrets.add(url)
-                public = Studio(url, timeout = 30.0)
-                code, body = public.get("/api/health", auth = False)
+                public = Studio(url, timeout=30.0)
+                code, body = public.get("/api/health", auth=False)
                 detail["public_health_status"] = code
                 # A tunnel that resolves but serves Cloudflare's own error page
                 # answers 530, which is a URL that does not work.
@@ -2827,7 +2828,7 @@ class Payload:
                         "messages": [{"role": "user", "content": "hi"}],
                         "max_tokens": 8,
                     },
-                    auth = False,
+                    auth=False,
                 )
                 detail["public_unauthenticated_status"] = code
                 if code < 400:
@@ -2841,7 +2842,7 @@ class Payload:
         finally:
             proc.terminate()
             try:
-                proc.wait(timeout = 60)
+                proc.wait(timeout=60)
             except subprocess.TimeoutExpired:
                 proc.kill()
             handle.close()
@@ -2927,10 +2928,10 @@ class Payload:
         handle = open(log_path, "ab")
         proc = subprocess.Popen(
             cmd,
-            cwd = str(self.repo_root),
-            env = env,
-            stdout = handle,
-            stderr = subprocess.STDOUT,
+            cwd=str(self.repo_root),
+            env=env,
+            stdout=handle,
+            stderr=subprocess.STDOUT,
         )
 
         api_key = None
@@ -2941,13 +2942,13 @@ class Payload:
                 if proc.poll() is not None:
                     failures.append(f"`unsloth run` exited early with code {proc.returncode}")
                     break
-                text = log_path.read_text(encoding = "utf-8", errors = "replace")
+                text = log_path.read_text(encoding="utf-8", errors="replace")
                 if api_key is None and "UNSLOTH_START_API_KEY:" in text:
                     api_key = text.split("UNSLOTH_START_API_KEY:", 1)[1].split("\n", 1)[0].strip()
                     if api_key:
                         # Before anything else reads this file.
                         self.secrets.add(api_key)
-                if api_key and health_is_ready(client.get("/api/health", auth = False)[1]):
+                if api_key and health_is_ready(client.get("/api/health", auth=False)[1]):
                     break
                 time.sleep(2.0)
 
@@ -2968,7 +2969,7 @@ class Payload:
                         "max_tokens": 32,
                         "temperature": 0.0,
                     },
-                    timeout = self.args.chat_timeout,
+                    timeout=self.args.chat_timeout,
                 )
                 detail["completion_status"] = code
                 text = ""
@@ -2995,7 +2996,7 @@ class Payload:
                         "messages": [{"role": "user", "content": "hi"}],
                         "max_tokens": 8,
                     },
-                    timeout = self.args.chat_timeout,
+                    timeout=self.args.chat_timeout,
                 )
                 detail["bad_key_status"] = code
                 if code < 400:
@@ -3035,7 +3036,7 @@ class Payload:
         finally:
             proc.terminate()
             try:
-                proc.wait(timeout = 60)
+                proc.wait(timeout=60)
             except subprocess.TimeoutExpired:
                 proc.kill()
             handle.close()
@@ -3078,7 +3079,7 @@ class Payload:
             return self.record("chat_ui_driver", False, detail)
         self.secrets.add(current)
 
-        self.art_dir.mkdir(parents = True, exist_ok = True)
+        self.art_dir.mkdir(parents=True, exist_ok=True)
         rotated = "KaggleT4-Studio-" + os.urandom(8).hex()
         self.secrets.add(rotated)
         env = dict(os.environ)
@@ -3113,11 +3114,11 @@ class Payload:
         try:
             proc = subprocess.run(
                 [sys.executable, str(driver)],
-                cwd = str(self.repo_root),
-                env = env,
-                capture_output = True,
-                text = True,
-                timeout = UI_DRIVER_PROC_TIMEOUT_S,
+                cwd=str(self.repo_root),
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=UI_DRIVER_PROC_TIMEOUT_S,
             )
             rc, out, err = proc.returncode, proc.stdout, proc.stderr
         except subprocess.TimeoutExpired as exc:
@@ -3126,7 +3127,7 @@ class Payload:
             err = "the driver outlived its own wall-clock watchdog"
 
         (self.outdir / "playwright_chat_ui.log").write_text(
-            (out or "") + "\n----- stderr -----\n" + (err or ""), encoding = "utf-8"
+            (out or "") + "\n----- stderr -----\n" + (err or ""), encoding="utf-8"
         )
         detail["returncode"] = rc
         detail["stdout_tail"] = self.scrub(" | ".join((out or "").splitlines()[-25:]))
@@ -3153,7 +3154,7 @@ class Payload:
         redaction is visible to whoever reads the artifact.
         """
         self.remember_bootstrap()
-        return self.scrub(path.read_text(encoding = "utf-8", errors = "replace")).encode("utf-8")
+        return self.scrub(path.read_text(encoding="utf-8", errors="replace")).encode("utf-8")
 
     def emit_evidence(self, passed: bool) -> None:
         """Ship the artifacts back inside the notebook's own cell output.
@@ -3167,7 +3168,7 @@ class Payload:
 
         def _pack(*, with_screenshots: bool, log_tail_bytes: int | None = None) -> bytes:
             buf = io.BytesIO()
-            with tarfile.open(fileobj = buf, mode = "w:gz") as tar:
+            with tarfile.open(fileobj=buf, mode="w:gz") as tar:
                 for name in (
                     "studio_gpu_report.json",
                     "unsloth_cloudflare.log",
@@ -3197,10 +3198,10 @@ class Payload:
                     for shot in sorted(self.art_dir.glob("*.png")):
                         if buf.tell() > MAX_EVIDENCE_BYTES:
                             break
-                        tar.add(shot, arcname = f"playwright/{shot.name}")
+                        tar.add(shot, arcname=f"playwright/{shot.name}")
             return buf.getvalue()
 
-        blob = _pack(with_screenshots = not passed)
+        blob = _pack(with_screenshots=not passed)
         if len(blob) > MAX_EVIDENCE_BYTES:
             # Screenshots are what blow the cap, so screenshots are what goes.
             # The earlier version rebuilt with the report ALONE while saying it
@@ -3208,15 +3209,15 @@ class Payload:
             # playwright_chat_ui.log in exactly the failing runs that need
             # them.
             log(f"evidence bundle is {len(blob)} bytes, over the cap; shipping logs only")
-            blob = _pack(with_screenshots = False)
+            blob = _pack(with_screenshots=False)
         if len(blob) > MAX_EVIDENCE_BYTES:
             log(f"the logs alone are {len(blob)} bytes; shipping their tails")
-            blob = _pack(with_screenshots = False, log_tail_bytes = MAX_LOG_TAIL_BYTES)
+            blob = _pack(with_screenshots=False, log_tail_bytes=MAX_LOG_TAIL_BYTES)
 
         encoded = base64.b64encode(blob).decode("ascii")
         chunks = [encoded[i : i + EVIDENCE_CHUNK] for i in range(0, len(encoded), EVIDENCE_CHUNK)]
         for index, chunk in enumerate(chunks):
-            print(f"{EVIDENCE_PREFIX}{index + 1}/{len(chunks)} {chunk}", flush = True)
+            print(f"{EVIDENCE_PREFIX}{index + 1}/{len(chunks)} {chunk}", flush=True)
 
     # ------------------------------------------------------------------ main
 
@@ -3413,7 +3414,7 @@ class Payload:
     def finish(self) -> int:
         report = self.report()
         (self.outdir / "studio_gpu_report.json").write_text(
-            json.dumps(report, indent = 2), encoding = "utf-8"
+            json.dumps(report, indent=2), encoding="utf-8"
         )
         self.stop_server()
         # Evidence FIRST, then the report line. The launcher's extract_reports
@@ -3426,116 +3427,116 @@ class Payload:
             self.failures.append(f"evidence packaging failed: {type(exc).__name__}: {exc}")
             report = self.report()
             (self.outdir / "studio_gpu_report.json").write_text(
-                json.dumps(report, indent = 2), encoding = "utf-8"
+                json.dumps(report, indent=2), encoding="utf-8"
             )
-        print(RESULT_PREFIX + json.dumps(report), flush = True)
+        print(RESULT_PREFIX + json.dumps(report), flush=True)
         return 0 if report["passed"] else 1
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--outdir", required = True)
-    ap.add_argument("--label", default = "studio-gpu")
-    ap.add_argument("--repo-root", required = True, help = "the unsloth checkout under test")
-    ap.add_argument("--studio-home", required = True, help = "UNSLOTH_STUDIO_HOME for this run")
-    ap.add_argument("--port", type = int, default = 18902)
+    ap.add_argument("--outdir", required=True)
+    ap.add_argument("--label", default="studio-gpu")
+    ap.add_argument("--repo-root", required=True, help="the unsloth checkout under test")
+    ap.add_argument("--studio-home", required=True, help="UNSLOTH_STUDIO_HOME for this run")
+    ap.add_argument("--port", type=int, default=18902)
     ap.add_argument(
         # 2048 constrains the runs, as the brief asks. It also keeps the
         # KV-cache check about the cache: an unconstrained context on a 14.56GB
         # card turns it into an OOM about something else.
         "--studio-ctx",
-        dest = "studio_ctx",
-        type = int,
-        default = 2048,
-        help = "context length to pin the llama.cpp server to",
+        dest="studio_ctx",
+        type=int,
+        default=2048,
+        help="context length to pin the llama.cpp server to",
     )
     ap.add_argument(
         "--image-model",
-        dest = "image_model",
-        default = "unsloth/sdxl-turbo",
-        help = "diffusion repo for the image-generation assertion",
+        dest="image_model",
+        default="unsloth/sdxl-turbo",
+        help="diffusion repo for the image-generation assertion",
     )
     ap.add_argument(
         # OFF by default: it is the last-priority item and it pulls a diffusion
         # checkpoint the rest of the payload has no use for. A dispatch that
         # wants it says so.
         "--image-generation",
-        dest = "image_generation",
-        action = "store_true",
-        default = False,
-        help = "load a diffusion model and generate one 256x256 image at 2 steps",
+        dest="image_generation",
+        action="store_true",
+        default=False,
+        help="load a diffusion model and generate one 256x256 image at 2 steps",
     )
     ap.add_argument(
         # On by default because the directive asks for it, and off-able because
         # it is the one assertion here that reaches the public internet.
         "--no-cloudflare-check",
-        dest = "cloudflare_check",
-        action = "store_false",
-        default = True,
-        help = "skip the quick-tunnel assertion (it opens a public URL)",
+        dest="cloudflare_check",
+        action="store_false",
+        default=True,
+        help="skip the quick-tunnel assertion (it opens a public URL)",
     )
     ap.add_argument(
         # Empty means "use the bootstrap password", which is the behaviour this
         # payload had before. A caller passes `auto` to have one generated.
         "--studio-password",
-        default = "",
-        help = "start Studio with --password and log in with it; 'auto' generates one",
+        default="",
+        help="start Studio with --password and log in with it; 'auto' generates one",
     )
     # MTP-GGUF, not the plain GGUF: multi-token prediction is a distinct
     # serving path in llama.cpp, and a leg pointed at the plain repo cannot
     # tell whether it works.
-    ap.add_argument("--chat-model", default = "unsloth/Qwen3.5-2B-MTP-GGUF")
-    ap.add_argument("--chat-variant", default = "UD-Q4_K_XL")
-    ap.add_argument("--train-model", default = "unsloth/Qwen3.5-2B")
-    ap.add_argument("--max-steps", type = int, default = 8)
-    ap.add_argument("--quantization", default = "q8_0")
+    ap.add_argument("--chat-model", default="unsloth/Qwen3.5-2B-MTP-GGUF")
+    ap.add_argument("--chat-variant", default="UD-Q4_K_XL")
+    ap.add_argument("--train-model", default="unsloth/Qwen3.5-2B")
+    ap.add_argument("--max-steps", type=int, default=8)
+    ap.add_argument("--quantization", default="q8_0")
     ap.add_argument(
         "--gpu-layers",
-        type = int,
-        default = 99,
-        help = "manual GPU layer pin. Above any small model's block count on purpose: "
+        type=int,
+        default=99,
+        help="manual GPU layer pin. Above any small model's block count on purpose: "
         "llama.cpp clamps it, so this means 'all of them'",
     )
-    ap.add_argument("--health-deadline", type = float, default = 420.0)
-    ap.add_argument("--train-deadline", type = float, default = 1200.0)
-    ap.add_argument("--export-deadline", type = float, default = 1200.0)
-    ap.add_argument("--load-timeout", type = float, default = 900.0)
-    ap.add_argument("--export-timeout", type = float, default = 900.0)
-    ap.add_argument("--chat-timeout", type = float, default = 300.0)
-    ap.add_argument("--ui-wall-timeout", type = float, default = 1200.0)
+    ap.add_argument("--health-deadline", type=float, default=420.0)
+    ap.add_argument("--train-deadline", type=float, default=1200.0)
+    ap.add_argument("--export-deadline", type=float, default=1200.0)
+    ap.add_argument("--load-timeout", type=float, default=900.0)
+    ap.add_argument("--export-timeout", type=float, default=900.0)
+    ap.add_argument("--chat-timeout", type=float, default=300.0)
+    ap.add_argument("--ui-wall-timeout", type=float, default=1200.0)
     ap.add_argument(
         "--skip-ui",
-        action = "store_true",
-        help = "do not drive playwright_chat_ui.py (for debugging the API assertions alone)",
+        action="store_true",
+        help="do not drive playwright_chat_ui.py (for debugging the API assertions alone)",
     )
     # Auto tensor-parallel split (unslothai/unsloth#10355, PR #10884).
     ap.add_argument(
         "--legs",
-        default = "",
-        help = "comma-separated assertion names to run, in the order listed here; "
+        default="",
+        help="comma-separated assertion names to run, in the order listed here; "
         "empty runs the standard set. A focused run of one flag on real "
         "multi-GPU hardware does not need a 20-minute training leg to be "
         "meaningful, and a Kaggle session has a ceiling.",
     )
     ap.add_argument(
         "--auto-split-ratio",
-        default = "3,1",
-        help = "the per-GPU ratio the auto tensor-parallel check asks for. Skewed "
+        default="3,1",
+        help="the per-GPU ratio the auto tensor-parallel check asks for. Skewed "
         "on purpose: an even ratio is what the planner emits anyway, so it "
         "cannot tell a forwarded ratio from a default one.",
     )
     ap.add_argument(
         "--base-sha",
-        default = "",
-        help = "run the auto tensor-parallel check against this revision FIRST, with "
+        default="",
+        help="run the auto tensor-parallel check against this revision FIRST, with "
         "only studio/backend/core/inference/llama_cpp.py swapped, so the two "
         "legs differ by the change under test and by nothing else. The base "
         "leg must reproduce the defect or the comparison is void.",
     )
     ap.add_argument(
         "--head-sha",
-        default = "",
-        help = "the revision to restore after a --base-sha leg (default: HEAD).",
+        default="",
+        help="the revision to restore after a --base-sha leg (default: HEAD).",
     )
     return ap.parse_args(argv)
 

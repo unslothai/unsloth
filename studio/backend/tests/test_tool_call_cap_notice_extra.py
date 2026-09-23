@@ -55,8 +55,8 @@ def _blocks(queries):
 def _run_safetensors(
     turn_texts,
     *,
-    exec_results = None,
-    max_tool_iterations = 4,
+    exec_results=None,
+    max_tool_iterations=4,
 ):
     """Drive the safetensors loop and return (payloads seen by the model, exec_fn)."""
     seen = []
@@ -71,11 +71,11 @@ def _run_safetensors(
 
     exec_fn = FakeExecuteTool(exec_results or ["r"] * 64)
     loop = run_safetensors_tool_loop(
-        single_turn = _gen,
-        messages = [{"role": "user", "content": "hi"}],
-        tools = [{"type": "function", "function": {"name": "web_search"}}],
-        execute_tool = exec_fn,
-        max_tool_iterations = max_tool_iterations,
+        single_turn=_gen,
+        messages=[{"role": "user", "content": "hi"}],
+        tools=[{"type": "function", "function": {"name": "web_search"}}],
+        execute_tool=exec_fn,
+        max_tool_iterations=max_tool_iterations,
     )
     _collect_events(loop)
     return seen, exec_fn
@@ -112,9 +112,9 @@ class TestNoticeIsSilentOnNormalTurns:
 
         list(
             backend.generate_chat_completion_with_tools(
-                messages = [{"role": "user", "content": "go"}],
-                tools = [{"type": "function", "function": {"name": "web_search"}}],
-                max_tool_iterations = 2,
+                messages=[{"role": "user", "content": "go"}],
+                tools=[{"type": "function", "function": {"name": "web_search"}}],
+                max_tool_iterations=2,
             )
         )
 
@@ -135,7 +135,7 @@ class TestNoticeIsPerTurn:
         over = ["q%d" % i for i in range(_MAX_TOOL_CALLS_PER_TURN + 2)]
         seen, _exec_fn = _run_safetensors(
             [_blocks(over), _blocks(["later-1", "later-2"]), "final"],
-            max_tool_iterations = 6,
+            max_tool_iterations=6,
         )
 
         # Turn 2 is told about the 2 skipped calls; turn 3 inherits that one message from
@@ -149,7 +149,7 @@ class TestNoticeIsPerTurn:
         skipped = over[_MAX_TOOL_CALLS_PER_TURN:]
         _seen, exec_fn = _run_safetensors(
             [_blocks(over), _blocks(skipped), "final"],
-            max_tool_iterations = 6,
+            max_tool_iterations=6,
         )
 
         # Nothing about the first turn marks the skipped calls as already done, so the
@@ -170,10 +170,10 @@ class TestDisableParallelToolUse:
 
         list(
             backend.generate_chat_completion_with_tools(
-                messages = [{"role": "user", "content": "go"}],
-                tools = [{"type": "function", "function": {"name": "web_search"}}],
-                max_tool_iterations = 2,
-                disable_parallel_tool_use = True,
+                messages=[{"role": "user", "content": "go"}],
+                tools=[{"type": "function", "function": {"name": "web_search"}}],
+                max_tool_iterations=2,
+                disable_parallel_tool_use=True,
             )
         )
 
@@ -196,13 +196,13 @@ class TestSkippedCallsLeaveNoOrphanUi:
                 return
 
         loop = run_safetensors_tool_loop(
-            single_turn = _gen,
-            messages = [{"role": "user", "content": "hi"}],
-            tools = [{"type": "function", "function": {"name": "web_search"}}],
-            execute_tool = FakeExecuteTool(["r"] * n),
-            max_tool_iterations = 2,
+            single_turn=_gen,
+            messages=[{"role": "user", "content": "hi"}],
+            tools=[{"type": "function", "function": {"name": "web_search"}}],
+            execute_tool=FakeExecuteTool(["r"] * n),
+            max_tool_iterations=2,
         )
-        events = _collect_events(loop, max_events = 400)
+        events = _collect_events(loop, max_events=400)
 
         starts = [e for e in events if e.get("type") == "tool_start"]
         ends = [e for e in events if e.get("type") == "tool_end"]
@@ -238,9 +238,9 @@ def test_cap_notice_does_not_invite_a_spent_one_shot_retry(
         )
         list(
             engine.generate_chat_completion_with_tools(
-                messages = [{"role": "user", "content": "go"}],
-                tools = tools,
-                max_tool_iterations = 3,
+                messages=[{"role": "user", "content": "go"}],
+                tools=tools,
+                max_tool_iterations=3,
             )
         )
         messages = payloads[1]["messages"]
@@ -255,11 +255,11 @@ def test_cap_notice_does_not_invite_a_spent_one_shot_retry(
         executor = FakeExecuteTool([render_result] + ["OK"] * 7)
         list(
             run_safetensors_tool_loop(
-                single_turn = generate,
-                messages = [{"role": "user", "content": "go"}],
-                tools = None if backend == "safetensors_unrestricted" else tools,
-                execute_tool = executor,
-                max_tool_iterations = 3,
+                single_turn=generate,
+                messages=[{"role": "user", "content": "go"}],
+                tools=None if backend == "safetensors_unrestricted" else tools,
+                execute_tool=executor,
+                max_tool_iterations=3,
             )
         )
         executed = executor.calls
@@ -288,7 +288,7 @@ def test_skipped_arguments_are_reserved_in_result_budgets(monkeypatch, backend):
 
     random_source = random.Random(11154)
     alphabet = string.ascii_letters + string.digits
-    code = "print(" + json.dumps("".join(random_source.choices(alphabet, k = 4000))) + ")"
+    code = "print(" + json.dumps("".join(random_source.choices(alphabet, k=4000))) + ")"
     calls = [{"name": "web_search", "arguments": {"query": f"q{i}"}} for i in range(8)]
     calls.append({"name": "python", "arguments": {"code": code}})
     text = "".join("<tool_call>" + json.dumps(call) + "</tool_call>" for call in calls)
@@ -303,7 +303,7 @@ def test_skipped_arguments_are_reserved_in_result_budgets(monkeypatch, backend):
 
     def execute(name, arguments, *, result_budget_tokens, **kwargs):
         budgets.append(result_budget_tokens)
-        return "".join(random_source.choices(alphabet, k = 2 * max(0, result_budget_tokens - 24)))
+        return "".join(random_source.choices(alphabet, k=2 * max(0, result_budget_tokens - 24)))
 
     if backend == "gguf":
         streams = [[_sse({"content": text}), _done()], [_sse({"content": "done"}), _done()]]
@@ -311,8 +311,8 @@ def test_skipped_arguments_are_reserved_in_result_budgets(monkeypatch, backend):
 
         def count_tokens(
             messages,
-            _unused = None,
-            tools = None,
+            _unused=None,
+            tools=None,
             **kwargs,
         ):
             return estimate_messages_tokens_conservative(
@@ -323,23 +323,23 @@ def test_skipped_arguments_are_reserved_in_result_budgets(monkeypatch, backend):
         monkeypatch.setattr("core.inference.tools.execute_tool", execute)
         list(
             engine.generate_chat_completion_with_tools(
-                messages = [{"role": "user", "content": "go"}],
-                tools = tools,
-                max_tool_iterations = 2,
-                max_tokens = 3500,
+                messages=[{"role": "user", "content": "go"}],
+                tools=tools,
+                max_tool_iterations=2,
+                max_tokens=3500,
             )
         )
         seen = [payload["messages"] for payload in payloads]
     else:
         list(
             run_safetensors_tool_loop(
-                single_turn = generate,
-                messages = [{"role": "user", "content": "go"}],
-                tools = tools,
-                execute_tool = execute,
-                max_tool_iterations = 2,
-                context_length = 4096,
-                max_tokens = 3500,
+                single_turn=generate,
+                messages=[{"role": "user", "content": "go"}],
+                tools=tools,
+                execute_tool=execute,
+                max_tool_iterations=2,
+                context_length=4096,
+                max_tokens=3500,
             )
         )
     assert len(budgets) == 8

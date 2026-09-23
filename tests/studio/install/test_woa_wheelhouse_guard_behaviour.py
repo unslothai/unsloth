@@ -44,7 +44,7 @@ INSTALL_PS1 = REPO_ROOT / "install.ps1"
 CORP = "https://corp.example/simple"
 PYPI = "https://pypi.org/simple"
 
-requires_pwsh = pytest.mark.skipif(shutil.which("pwsh") is None, reason = "PowerShell is unavailable")
+requires_pwsh = pytest.mark.skipif(shutil.which("pwsh") is None, reason="PowerShell is unavailable")
 
 HELPERS = (
     "Test-WoaVersionAtLeast",
@@ -64,7 +64,7 @@ HELPERS = (
 )
 
 
-INSTALL_SRC = INSTALL_PS1.read_text(encoding = "utf-8-sig")
+INSTALL_SRC = INSTALL_PS1.read_text(encoding="utf-8-sig")
 
 
 def _function(source: str, name: str) -> str:
@@ -117,7 +117,7 @@ _UV_POLICY_ENV = (
 _UV_POLICY_ENV_FOLDED = frozenset(name.upper() for name in _UV_POLICY_ENV)
 
 
-def _scrubbed_environ(environ = None) -> dict[str, str]:
+def _scrubbed_environ(environ=None) -> dict[str, str]:
     """`environ` (default: this session's) minus every resolver-policy variable."""
     items = (os.environ if environ is None else environ).items()
     return {key: value for key, value in items if key.upper() not in _UV_POLICY_ENV_FOLDED}
@@ -131,13 +131,13 @@ def _run(script: str, *, cwd: str | pathlib.Path | None = None) -> str:
     # directory onto the env dict handed to it and leaves every other key exactly as scrubbed.
     proc = run_pwsh(
         ["pwsh", "-NoProfile", "-NonInteractive", "-Command", PRELUDE + "\n" + script],
-        capture_output = True,
-        text = True,
-        encoding = "utf-8",
-        errors = "replace",
-        timeout = 120,
-        env = env,
-        cwd = None if cwd is None else str(cwd),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=120,
+        env=env,
+        cwd=None if cwd is None else str(cwd),
     )
     assert proc.returncode == 0, f"pwsh failed: {proc.stdout}\n{proc.stderr}"
     return proc.stdout.strip()
@@ -206,7 +206,7 @@ def no_uv_config_dir(tmp_path):
         assert not (parent / "uv.toml").is_file(), f"a uv.toml above the tmp dir: {parent}"
         pyproject = parent / "pyproject.toml"
         if pyproject.is_file():
-            text = pyproject.read_text(encoding = "utf-8", errors = "replace")
+            text = pyproject.read_text(encoding="utf-8", errors="replace")
             assert not re.search(
                 r"(?m)^\s*\[+tool\.uv(\.|\])", text
             ), f"a [tool.uv] table above the tmp dir: {pyproject}"
@@ -255,7 +255,7 @@ def test_pypi_counts_only_when_the_resolve_would_reach_it(no_uv_config_dir, env,
     config half of the same question is `test_a_uv_config_decides_whether_pypi_is_in_the_resolve`.
     """
     sets = "".join(f'$env:{key} = "{value}"; ' for key, value in env.items())
-    assert _run(sets + "Test-WoaResolveReachesPyPI", cwd = no_uv_config_dir) == str(reaches)
+    assert _run(sets + "Test-WoaResolveReachesPyPI", cwd=no_uv_config_dir) == str(reaches)
 
 
 @requires_pwsh
@@ -332,14 +332,14 @@ UV_CONFIG_CASES = [
 @pytest.mark.parametrize(
     ("name", "filename", "text", "reaches"),
     UV_CONFIG_CASES,
-    ids = [case[0] for case in UV_CONFIG_CASES],
+    ids=[case[0] for case in UV_CONFIG_CASES],
 )
 def test_a_uv_config_decides_whether_pypi_is_in_the_resolve(
     tmp_path, name, filename, text, reaches
 ):
     work = tmp_path / name
     work.mkdir()
-    (work / filename).write_text(text, encoding = "utf-8")
+    (work / filename).write_text(text, encoding="utf-8")
     # APPDATA/ProgramData would let the developer's own uv.toml decide the answer.
     out = _run(f"""
 Remove-Item Env:UV_OFFLINE,Env:PIP_NO_INDEX,Env:UV_DEFAULT_INDEX,Env:UV_INDEX_URL,\

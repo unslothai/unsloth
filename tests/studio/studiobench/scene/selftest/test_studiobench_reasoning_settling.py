@@ -111,11 +111,11 @@ def test_an_unsettled_census_is_withheld_rather_than_guessed():
     """
     res = _run(
         _settled_reply(
-            spansOpen = None,
-            spansOpenReason = "the span census was still changing when the budget ran out",
-            openMs = None,
-            openCensored = True,
-            openCensoredReason = "the span census was still changing when the budget ran out",
+            spansOpen=None,
+            spansOpenReason="the span census was still changing when the budget ran out",
+            openMs=None,
+            openCensored=True,
+            openCensoredReason="the span census was still changing when the budget ran out",
         )
     )
     assert res.expect["highlight_spans_while_open"] is None, (
@@ -130,7 +130,7 @@ def test_an_unsettled_census_is_withheld_rather_than_guessed():
 def test_a_censored_timing_is_absent_not_none():
     """A `None` in `timings` is dropped downstream and becomes an invisible missing cell."""
     res = _run(
-        _settled_reply(openMs = None, openCensored = True, openCensoredReason = "never went quiet")
+        _settled_reply(openMs=None, openCensored=True, openCensoredReason="never went quiet")
     )
     assert "open_ms" not in res.timings, (
         "a censored timing must not be carried as a key at all; downstream it is dropped for "
@@ -150,12 +150,12 @@ def test_the_failure_reason_names_the_clause_that_actually_failed():
     """
     res = _run(
         _settled_reply(
-            panes = 16,
-            openCount = 16,
-            afterClose = 0,
-            openMs = None,
-            openCensored = True,
-            openCensoredReason = "the open count reached 16 but the span census kept changing",
+            panes=16,
+            openCount=16,
+            afterClose=0,
+            openMs=None,
+            openCensored=True,
+            openCensoredReason="the open count reached 16 but the span census kept changing",
         )
     )
     assert res.expect_ok is False
@@ -168,13 +168,13 @@ def test_the_failure_reason_names_the_clause_that_actually_failed():
 
 
 def test_a_genuine_pane_failure_still_names_the_panes():
-    res = _run(_settled_reply(openCount = 9, panes = 10))
+    res = _run(_settled_reply(openCount=9, panes=10))
     assert res.expect_ok is False
     assert "9 of 10" in res.reason
 
 
 def test_panes_left_open_after_collapse_are_reported():
-    res = _run(_settled_reply(afterClose = 3))
+    res = _run(_settled_reply(afterClose=3))
     assert res.expect_ok is False
     assert "still open after collapsing" in res.reason
 

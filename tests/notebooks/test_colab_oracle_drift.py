@@ -59,9 +59,9 @@ def oracle(tmp_path, monkeypatch):
     returned dict to make upstream differ from what is committed on disk."""
     upstream = dict(UPSTREAM)
     for upstream_name, snapshot_name in nv.COLAB_ORACLE_FILES.items():
-        (tmp_path / snapshot_name).write_text(UPSTREAM[upstream_name], encoding = "utf-8")
+        (tmp_path / snapshot_name).write_text(UPSTREAM[upstream_name], encoding="utf-8")
 
-    def fake_urlopen(url, timeout = None):
+    def fake_urlopen(url, timeout=None):
         name = url.rsplit("/", 1)[-1]
         return io.BytesIO(upstream[name].encode("utf-8"))
 
@@ -72,28 +72,28 @@ def oracle(tmp_path, monkeypatch):
 def _diff(
     snapshot_dir,
     strict,
-    full = False,
+    full=False,
 ):
     return nv.cmd_colab_diff(
-        argparse.Namespace(snapshot_dir = str(snapshot_dir), strict = strict, full = full)
+        argparse.Namespace(snapshot_dir=str(snapshot_dir), strict=strict, full=full)
     )
 
 
 def test_no_drift_is_clean(oracle):
     _, snapshot_dir = oracle
-    assert _diff(snapshot_dir, strict = True) == 0
+    assert _diff(snapshot_dir, strict=True) == 0
 
 
 def test_pip_drift_fails_strict(oracle):
     upstream, snapshot_dir = oracle
     upstream["pip-freeze.gpu.txt"] = PIP.replace("accelerate==1.13.0", "accelerate==1.14.0")
-    assert _diff(snapshot_dir, strict = True) == 1
+    assert _diff(snapshot_dir, strict=True) == 1
 
 
 def test_pip_drift_is_advisory_without_strict(oracle):
     upstream, snapshot_dir = oracle
     upstream["pip-freeze.gpu.txt"] = PIP.replace("accelerate==1.13.0", "accelerate==1.14.0")
-    assert _diff(snapshot_dir, strict = False) == 0
+    assert _diff(snapshot_dir, strict=False) == 0
 
 
 @pytest.mark.parametrize(
@@ -110,7 +110,7 @@ def test_non_rule_oracles_never_fail_strict(oracle, capsys, name, drifted):
     nothing resolves a rule against these two files."""
     upstream, snapshot_dir = oracle
     upstream[name] = drifted
-    assert _diff(snapshot_dir, strict = True) == 0
+    assert _diff(snapshot_dir, strict=True) == 0
     # Reported, just not fatal -- the signal is the point, the failure was not.
     out = capsys.readouterr().out
     assert "CHANGED" in out
@@ -125,7 +125,7 @@ def test_a_capped_listing_says_how_to_see_the_rest(oracle, capsys):
     upstream, snapshot_dir = oracle
     upstream["pip-freeze.gpu.txt"] = "".join(f"pkg{i}=={i}.0\n" for i in range(200)) + PIP
 
-    assert _diff(snapshot_dir, strict = False) == 0
+    assert _diff(snapshot_dir, strict=False) == 0
 
     capped = capsys.readouterr().out
     assert "more new entries (--full to list them)" in capped, capped
@@ -136,7 +136,7 @@ def test_full_lists_every_drifted_entry(oracle, capsys):
     upstream, snapshot_dir = oracle
     upstream["pip-freeze.gpu.txt"] = "".join(f"pkg{i}=={i}.0\n" for i in range(200)) + PIP
 
-    assert _diff(snapshot_dir, strict = False, full = True) == 0
+    assert _diff(snapshot_dir, strict=False, full=True) == 0
 
     full = capsys.readouterr().out
     assert "more new entries" not in full, full
@@ -160,11 +160,11 @@ def test_refresh_all_writes_every_snapshot(oracle, tmp_path):
         upstream[key] = upstream[key].replace("2.10.0", "2.11.0").replace("4.5.3", "4.6.0")
         upstream[key] = upstream[key].replace("1ubuntu1.24", "1ubuntu1.25")
     out_dir = tmp_path / "fresh"
-    rc = nv.cmd_refresh_colab(argparse.Namespace(all = True, snapshot_dir = str(out_dir), out = None))
+    rc = nv.cmd_refresh_colab(argparse.Namespace(all=True, snapshot_dir=str(out_dir), out=None))
     assert rc == 0
     for upstream_name, snapshot_name in nv.COLAB_ORACLE_FILES.items():
-        assert (out_dir / snapshot_name).read_text(encoding = "utf-8") == upstream[upstream_name]
-    assert _diff(out_dir, strict = True) == 0
+        assert (out_dir / snapshot_name).read_text(encoding="utf-8") == upstream[upstream_name]
+    assert _diff(out_dir, strict=True) == 0
 
 
 def test_refresh_without_all_still_writes_only_pip(oracle, tmp_path):
@@ -173,16 +173,16 @@ def test_refresh_without_all_still_writes_only_pip(oracle, tmp_path):
     _, _ = oracle
     dest = tmp_path / "pip_only"
     out = dest / "just_pip.txt"
-    rc = nv.cmd_refresh_colab(argparse.Namespace(all = False, snapshot_dir = str(dest), out = str(out)))
+    rc = nv.cmd_refresh_colab(argparse.Namespace(all=False, snapshot_dir=str(dest), out=str(out)))
     assert rc == 0
-    assert out.read_text(encoding = "utf-8") == PIP
+    assert out.read_text(encoding="utf-8") == PIP
     assert sorted(p.name for p in dest.iterdir()) == ["just_pip.txt"]
 
 
 def test_workflow_diffs_before_it_refreshes():
     """The ordering bug itself: refresh-colab overwrites the committed pip
     snapshot, so a diff placed after it compares upstream with upstream."""
-    wf = (REPO_ROOT / ".github/workflows/notebooks-ci.yml").read_text(encoding = "utf-8")
+    wf = (REPO_ROOT / ".github/workflows/notebooks-ci.yml").read_text(encoding="utf-8")
     for job in ("static", "static-with-pypi"):
         rest = wf.split(f"\n  {job}:", 1)[1]
         # Up to the next job key, which is the next line indented exactly two.
@@ -212,7 +212,7 @@ def test_refresh_all_is_atomic(oracle, tmp_path, monkeypatch):
     for key in upstream:
         upstream[key] = "REFRESHED\n"
 
-    def flaky(url, timeout = None):
+    def flaky(url, timeout=None):
         name = url.rsplit("/", 1)[-1]
         if name != nv.COLAB_STRICT_ORACLE:
             raise urllib.error.URLError("network down")
@@ -220,11 +220,11 @@ def test_refresh_all_is_atomic(oracle, tmp_path, monkeypatch):
 
     monkeypatch.setattr(nv.urllib.request, "urlopen", flaky)
     rc = nv.cmd_refresh_colab(
-        argparse.Namespace(all = True, snapshot_dir = str(snapshot_dir), out = None)
+        argparse.Namespace(all=True, snapshot_dir=str(snapshot_dir), out=None)
     )
     assert rc == 2
     for upstream_name, snapshot_name in nv.COLAB_ORACLE_FILES.items():
-        assert (snapshot_dir / snapshot_name).read_text(encoding = "utf-8") == UPSTREAM[
+        assert (snapshot_dir / snapshot_name).read_text(encoding="utf-8") == UPSTREAM[
             upstream_name
         ], f"{snapshot_name} was overwritten even though the refresh failed"
 
@@ -234,12 +234,12 @@ def test_refresh_all_writes_nothing_into_a_fresh_dir_on_failure(oracle, tmp_path
     directory is left behind for a later --strict to read as clean."""
     upstream, _ = oracle
 
-    def dead(url, timeout = None):
+    def dead(url, timeout=None):
         raise urllib.error.URLError("network down")
 
     monkeypatch.setattr(nv.urllib.request, "urlopen", dead)
     dest = tmp_path / "never_created"
-    assert nv.cmd_refresh_colab(argparse.Namespace(all = True, snapshot_dir = str(dest), out = None)) == 2
+    assert nv.cmd_refresh_colab(argparse.Namespace(all=True, snapshot_dir=str(dest), out=None)) == 2
     assert not dest.exists()
 
 
@@ -247,7 +247,7 @@ def test_cron_lint_survives_a_strict_drift_failure():
     """The strict step exits 1 on a Colab rotation, which is exactly when the
     live-PyPI pass is worth having. Without `if: always()` on the steps after
     it, the job would only ever lint on the days nothing drifted."""
-    wf = (REPO_ROOT / ".github/workflows/notebooks-ci.yml").read_text(encoding = "utf-8")
+    wf = (REPO_ROOT / ".github/workflows/notebooks-ci.yml").read_text(encoding="utf-8")
     rest = wf.split("\n  static-with-pypi:", 1)[1]
     nxt = re.search(r"^  [A-Za-z0-9_-]+:$", rest, re.M)
     body = rest[: nxt.start()] if nxt else rest
@@ -274,7 +274,7 @@ def test_a_missing_strict_snapshot_fails_strict(oracle):
     requirement."""
     _, snapshot_dir = oracle
     (snapshot_dir / nv.COLAB_ORACLE_FILES["os-info-gpu.txt"]).unlink()
-    assert _diff(snapshot_dir, strict = True) == 1
+    assert _diff(snapshot_dir, strict=True) == 1
 
 
 def test_a_missing_pip_snapshot_fails_strict(oracle):
@@ -285,14 +285,14 @@ def test_a_missing_pip_snapshot_fails_strict(oracle):
     first deletion however pip's absence were handled."""
     _, snapshot_dir = oracle
     (snapshot_dir / nv.COLAB_ORACLE_FILES["pip-freeze.gpu.txt"]).unlink()
-    assert _diff(snapshot_dir, strict = True) == 1
+    assert _diff(snapshot_dir, strict=True) == 1
 
 
 def test_a_missing_advisory_snapshot_stays_advisory(oracle):
     """apt-list carries no rule-bearing key, so its absence must not redden the cron."""
     _, snapshot_dir = oracle
     (snapshot_dir / nv.COLAB_ORACLE_FILES["apt-list-gpu.txt"]).unlink()
-    assert _diff(snapshot_dir, strict = True) == 0
+    assert _diff(snapshot_dir, strict=True) == 0
 
 
 def test_a_strict_key_absent_from_both_oracles_fails_strict(oracle):
@@ -305,9 +305,9 @@ def test_a_strict_key_absent_from_both_oracles_fails_strict(oracle):
     without_python = "R version 4.5.3\n"
     upstream["os-info-gpu.txt"] = without_python
     (snapshot_dir / nv.COLAB_ORACLE_FILES["os-info-gpu.txt"]).write_text(
-        without_python, encoding = "utf-8"
+        without_python, encoding="utf-8"
     )
-    assert _diff(snapshot_dir, strict = True) == 1
+    assert _diff(snapshot_dir, strict=True) == 1
 
 
 def test_an_unreadable_strict_value_fails_strict(oracle):
@@ -321,9 +321,9 @@ def test_an_unreadable_strict_value_fails_strict(oracle):
     reformatted = "Python version 3.14\nR version 4.5.3\n"
     upstream["os-info-gpu.txt"] = reformatted
     (snapshot_dir / nv.COLAB_ORACLE_FILES["os-info-gpu.txt"]).write_text(
-        reformatted, encoding = "utf-8"
+        reformatted, encoding="utf-8"
     )
-    assert _diff(snapshot_dir, strict = True) == 1
+    assert _diff(snapshot_dir, strict=True) == 1
 
 
 def test_an_advisory_oracle_that_will_not_fetch_does_not_fail_the_refresh(oracle, tmp_path, capsys):
@@ -335,15 +335,15 @@ def test_an_advisory_oracle_that_will_not_fetch_does_not_fail_the_refresh(oracle
     upstream, _ = oracle
     real = nv.urllib.request.urlopen
 
-    def flaky(url, timeout = None):
+    def flaky(url, timeout=None):
         if url.endswith("apt-list-gpu.txt"):
             raise urllib.error.URLError("boom")
-        return real(url, timeout = timeout)
+        return real(url, timeout=timeout)
 
     nv.urllib.request.urlopen = flaky
     try:
         out_dir = tmp_path / "partial"
-        rc = nv.cmd_refresh_colab(argparse.Namespace(all = True, snapshot_dir = str(out_dir), out = None))
+        rc = nv.cmd_refresh_colab(argparse.Namespace(all=True, snapshot_dir=str(out_dir), out=None))
     finally:
         nv.urllib.request.urlopen = real
     assert rc == 0
@@ -360,14 +360,14 @@ def test_a_rule_bearing_oracle_that_will_not_fetch_still_fails_the_refresh(oracl
     """pip is what --colab-pin resolves against, so its absence is fatal and writes nothing."""
     upstream, _ = oracle
 
-    def dead(url, timeout = None):
+    def dead(url, timeout=None):
         raise urllib.error.URLError("boom")
 
     real = nv.urllib.request.urlopen
     nv.urllib.request.urlopen = dead
     try:
         out_dir = tmp_path / "none"
-        rc = nv.cmd_refresh_colab(argparse.Namespace(all = True, snapshot_dir = str(out_dir), out = None))
+        rc = nv.cmd_refresh_colab(argparse.Namespace(all=True, snapshot_dir=str(out_dir), out=None))
     finally:
         nv.urllib.request.urlopen = real
     assert rc == 2
@@ -394,7 +394,7 @@ def test_a_refresh_never_acknowledges_a_payload_the_rules_cannot_read(
     upstream, _ = oracle
     upstream[name] = payload
     out_dir = tmp_path / "rotated"
-    rc = nv.cmd_refresh_colab(argparse.Namespace(all = True, snapshot_dir = str(out_dir), out = None))
+    rc = nv.cmd_refresh_colab(argparse.Namespace(all=True, snapshot_dir=str(out_dir), out=None))
     assert rc == 2
     assert not out_dir.exists()
 
@@ -423,7 +423,7 @@ def test_a_failed_write_restores_the_whole_snapshot_set(oracle, tmp_path, monkey
 
     monkeypatch.setattr(nv, "_atomic_write_bytes", flaky)
     rc = nv.cmd_refresh_colab(
-        argparse.Namespace(all = True, snapshot_dir = str(snapshot_dir), out = None)
+        argparse.Namespace(all=True, snapshot_dir=str(snapshot_dir), out=None)
     )
     assert rc == 2
     monkeypatch.setattr(nv, "_atomic_write_bytes", real_write)
@@ -448,7 +448,7 @@ def test_a_write_failure_removes_a_file_that_was_not_there_before(oracle, tmp_pa
         return real_write(path, data)
 
     monkeypatch.setattr(nv, "_atomic_write_bytes", flaky)
-    rc = nv.cmd_refresh_colab(argparse.Namespace(all = True, snapshot_dir = str(out_dir), out = None))
+    rc = nv.cmd_refresh_colab(argparse.Namespace(all=True, snapshot_dir=str(out_dir), out=None))
     assert rc == 2
     assert list(out_dir.iterdir()) == []
 
@@ -474,7 +474,7 @@ def test_a_pin_file_missing_a_seed_package_is_not_acknowledged(oracle, tmp_path,
         line for line in PIP.splitlines() if not line.startswith(f"{dropped}==")
     )
     out_dir = tmp_path / f"missing_{dropped}"
-    rc = nv.cmd_refresh_colab(argparse.Namespace(all = True, snapshot_dir = str(out_dir), out = None))
+    rc = nv.cmd_refresh_colab(argparse.Namespace(all=True, snapshot_dir=str(out_dir), out=None))
     assert rc == 2
     assert not out_dir.exists()
 
@@ -502,7 +502,7 @@ def test_a_rollback_survives_a_filesystem_that_is_still_full(oracle, tmp_path, m
 
     monkeypatch.setattr(nv, "_atomic_write_bytes", full_disk)
     rc = nv.cmd_refresh_colab(
-        argparse.Namespace(all = True, snapshot_dir = str(snapshot_dir), out = None)
+        argparse.Namespace(all=True, snapshot_dir=str(snapshot_dir), out=None)
     )
     assert rc == 2
     monkeypatch.setattr(nv, "_atomic_write_bytes", real_write)
@@ -534,14 +534,14 @@ def test_an_unfetchable_rule_bearing_oracle_fails_strict(oracle, capsys):
     upstream, snapshot_dir = oracle
     real = nv.urllib.request.urlopen
 
-    def flaky(url, timeout = None):
+    def flaky(url, timeout=None):
         if url.endswith("os-info-gpu.txt"):
             raise urllib.error.URLError("boom")
-        return real(url, timeout = timeout)
+        return real(url, timeout=timeout)
 
     nv.urllib.request.urlopen = flaky
     try:
-        assert _diff(snapshot_dir, strict = True) == 1
+        assert _diff(snapshot_dir, strict=True) == 1
     finally:
         nv.urllib.request.urlopen = real
     assert "::error::" in capsys.readouterr().out
@@ -552,14 +552,14 @@ def test_an_unfetchable_advisory_oracle_stays_a_warning(oracle, capsys):
     upstream, snapshot_dir = oracle
     real = nv.urllib.request.urlopen
 
-    def flaky(url, timeout = None):
+    def flaky(url, timeout=None):
         if url.endswith("apt-list-gpu.txt"):
             raise urllib.error.URLError("boom")
-        return real(url, timeout = timeout)
+        return real(url, timeout=timeout)
 
     nv.urllib.request.urlopen = flaky
     try:
-        assert _diff(snapshot_dir, strict = True) == 0
+        assert _diff(snapshot_dir, strict=True) == 0
     finally:
         nv.urllib.request.urlopen = real
     assert "::warning::" in capsys.readouterr().out

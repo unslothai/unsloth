@@ -25,7 +25,7 @@ _UV_SAFE_PATH_TMPDIRS: list[str] = []
 @atexit.register
 def _cleanup_uv_safe_path_tmpdirs() -> None:
     while _UV_SAFE_PATH_TMPDIRS:
-        shutil.rmtree(_UV_SAFE_PATH_TMPDIRS.pop(), ignore_errors = True)
+        shutil.rmtree(_UV_SAFE_PATH_TMPDIRS.pop(), ignore_errors=True)
 
 
 def uv_safe_path(path: object) -> str:
@@ -51,9 +51,9 @@ def uv_safe_path(path: object) -> str:
     try:
         if not os.path.isfile(s):
             return s
-        tmp_dir = tempfile.mkdtemp(prefix = "unsloth_uv_")
+        tmp_dir = tempfile.mkdtemp(prefix="unsloth_uv_")
         if " " in tmp_dir:
-            shutil.rmtree(tmp_dir, ignore_errors = True)
+            shutil.rmtree(tmp_dir, ignore_errors=True)
             return s
         source_name = os.path.basename(s) or "uv_args.txt"
         if " " in source_name:
@@ -63,7 +63,7 @@ def uv_safe_path(path: object) -> str:
             alias_dir = os.path.join(tmp_dir, "source")
             source_dir = os.path.abspath(os.path.dirname(s) or os.curdir)
             try:
-                os.symlink(source_dir, alias_dir, target_is_directory = True)
+                os.symlink(source_dir, alias_dir, target_is_directory=True)
                 dst = os.path.join(alias_dir, source_name)
             except OSError:
                 # No symlink permission: copy instead. That loses relative -r/-c
@@ -75,5 +75,5 @@ def uv_safe_path(path: object) -> str:
         return dst
     except Exception:
         if tmp_dir is not None:  # don't leak the temp dir if the copy failed
-            shutil.rmtree(tmp_dir, ignore_errors = True)
+            shutil.rmtree(tmp_dir, ignore_errors=True)
         return s

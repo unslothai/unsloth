@@ -38,7 +38,7 @@ from routes.training import router as training_router
 @pytest.fixture
 def client():
     app = FastAPI()
-    app.include_router(training_router, prefix = "/api/train")
+    app.include_router(training_router, prefix="/api/train")
     app.dependency_overrides[get_current_subject] = lambda: "test-user"
     return TestClient(app)
 
@@ -48,7 +48,7 @@ def ds_root(monkeypatch, tmp_path):
     import utils.paths as up
 
     root = tmp_path / "assets" / "datasets"
-    root.mkdir(parents = True)
+    root.mkdir(parents=True)
     out = tmp_path / "outputs"
     out.mkdir()
     monkeypatch.setattr(up, "datasets_root", lambda: root)
@@ -60,14 +60,15 @@ def _stills_dataset(root: Path, name: str = "cat-photos") -> Path:
     folder = root / name
     folder.mkdir()
     buf = io.BytesIO()
-    Image.new("RGB", (8, 8)).save(buf, format = "PNG")
+    Image.new("RGB", (8, 8)).save(buf, format="PNG")
     (folder / "a.png").write_bytes(buf.getvalue())
-    (folder / "a.txt").write_text("a cat", encoding = "utf-8")
+    (folder / "a.txt").write_text("a cat", encoding="utf-8")
     return folder
 
 
 def _clip_families() -> set[str]:
     from core.training.diffusion_train_common import CLIP_TRAINED_FAMILIES
+
     return set(CLIP_TRAINED_FAMILIES)
 
 
@@ -76,6 +77,7 @@ def _trainable_here() -> set[str]:
     it from ``family_train_infos()`` for an unrelated reason, and these tests are about the
     picker gate, not about that probe."""
     from core.training.diffusion_train_common import family_train_infos
+
     return {i["name"] for i in family_train_infos()}
 
 
@@ -110,11 +112,11 @@ def _report_clips(
     def fake(folder: Path):
         base = real(folder)
         return model(
-            name = base.name,
-            path = base.path,
-            image_count = base.image_count if images is None else images,
-            caption_count = base.caption_count,
-            clip_count = count,
+            name=base.name,
+            path=base.path,
+            image_count=base.image_count if images is None else images,
+            caption_count=base.caption_count,
+            clip_count=count,
         )
 
     monkeypatch.setattr(tr, "_diffusion_dataset_summary", fake)
@@ -153,7 +155,7 @@ def test_a_clip_family_is_offered_as_soon_as_a_clip_dataset_is_listable(
     _stills_dataset(ds_root, "video-clips")
     # A folder of clips, so images = 0: with stills left in it this is the mixed case, which
     # test_a_mixed_folder_does_not_advertise_a_clip_family covers and which Start refuses.
-    _report_clips(monkeypatch, 3, images = 0)
+    _report_clips(monkeypatch, 3, images=0)
 
     body = client.get("/api/train/diffusion/info").json()
     assert [d["name"] for d in body["datasets"]] == ["video-clips"]
@@ -218,11 +220,11 @@ def test_a_mixed_folder_does_not_advertise_a_clip_family():
 
     def summary(name, images, clips_):
         return DiffusionDatasetSummary(
-            name = name,
-            path = f"/ds/{name}",
-            image_count = images,
-            clip_count = clips_,
-            caption_count = clips_ + images,
+            name=name,
+            path=f"/ds/{name}",
+            image_count=images,
+            clip_count=clips_,
+            caption_count=clips_ + images,
         )
 
     mixed_only = {i["name"] for i in tr._ui_trainable_families([summary("mixed", 4, 6)])}
@@ -288,10 +290,11 @@ def test_the_start_preflight_still_takes_a_clip_dataset_for_the_withheld_family(
     accepts a folder of captioned clips for a clip family. Nothing about a direct API start
     depends on what the picker chose to show."""
     from core.training.diffusion_train_common import discover_training_pairs
+
     for family in sorted(_clip_families()):
         (tmp_path / f"{family}.mp4").write_bytes(b"\x00" * 16)
-        (tmp_path / f"{family}.txt").write_text("a rabbit in a meadow", encoding = "utf-8")
-        pairs = discover_training_pairs(family, tmp_path, verify_images = True)
+        (tmp_path / f"{family}.txt").write_text("a rabbit in a meadow", encoding="utf-8")
+        pairs = discover_training_pairs(family, tmp_path, verify_images=True)
         assert [Path(p).name for p, _ in pairs] == [f"{family}.mp4"]
         assert pairs[0][1] == "a rabbit in a meadow"
         for p in tmp_path.iterdir():

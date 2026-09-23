@@ -69,21 +69,21 @@ def _call(monkeypatch, path: Path | None, **overrides):
             lambda *_a, **_k: (str(path), 4_000_000_000),
         )
     kwargs = dict(
-        repo_id = "org/repo",
-        quant = "Q4_K_M",
-        n_ctx = 4096,
-        cache_type_kv = None,
-        n_parallel = None,
-        speculative_type = None,
-        spec_draft_n_max = None,
-        spec_draft_cache_type = None,
-        ctx_checkpoints = None,
-        disable_vision = False,
-        n_batch = None,
-        n_ubatch = None,
-        tensor_parallel = False,
-        request = None,
-        current_subject = "test",
+        repo_id="org/repo",
+        quant="Q4_K_M",
+        n_ctx=4096,
+        cache_type_kv=None,
+        n_parallel=None,
+        speculative_type=None,
+        spec_draft_n_max=None,
+        spec_draft_cache_type=None,
+        ctx_checkpoints=None,
+        disable_vision=False,
+        n_batch=None,
+        n_ubatch=None,
+        tensor_parallel=False,
+        request=None,
+        current_subject="test",
     )
     kwargs.update(overrides)
     return asyncio.run(models_routes.get_kv_cache_estimate(**kwargs))
@@ -101,7 +101,7 @@ def test_every_parameter_an_old_caller_sent_is_still_accepted(tmp_path):
 
 
 def test_an_old_callers_request_still_answers_the_old_keys(monkeypatch, tmp_path):
-    out = _call(monkeypatch, _gguf(tmp_path), n_ctx = 4096)
+    out = _call(monkeypatch, _gguf(tmp_path), n_ctx=4096)
     assert _LEGACY_KEYS <= set(out), f"missing legacy keys: {_LEGACY_KEYS - set(out)}"
     assert out["kv_bytes"] and out["kv_bytes"] > 0
     assert out["weights_bytes"] == 4_000_000_000
@@ -112,19 +112,19 @@ def test_the_answer_for_a_pinned_context_did_not_move(monkeypatch, tmp_path):
     """The added parameters default to what the previous version implied, so an
     unchanged request must produce an unchanged number."""
     gguf = _gguf(tmp_path)
-    before = _call(monkeypatch, gguf, n_ctx = 4096)
+    before = _call(monkeypatch, gguf, n_ctx=4096)
     # Exactly what an old client sends: no n_parallel, no speculative_type.
-    after = _call(monkeypatch, gguf, n_ctx = 4096, n_parallel = None, speculative_type = None)
+    after = _call(monkeypatch, gguf, n_ctx=4096, n_parallel=None, speculative_type=None)
     assert before["kv_bytes"] == after["kv_bytes"]
 
 
 def test_omitting_the_context_sizes_at_the_models_native_length(monkeypatch, tmp_path):
     """The new shape: no n_ctx. The response says which length it used."""
     gguf = _gguf(tmp_path)
-    native = _call(monkeypatch, gguf, n_ctx = None)
+    native = _call(monkeypatch, gguf, n_ctx=None)
     assert native["n_ctx"] == 8192
     assert native["native_context"] == 8192
-    explicit = _call(monkeypatch, gguf, n_ctx = 8192)
+    explicit = _call(monkeypatch, gguf, n_ctx=8192)
     assert native["kv_bytes"] == explicit["kv_bytes"]
 
 
@@ -144,5 +144,5 @@ def test_the_failure_answer_carries_every_key(monkeypatch):
 def test_speculative_modes_that_cost_nothing_report_none(monkeypatch, tmp_path):
     gguf = _gguf(tmp_path)
     for mode in (None, "", "off", "ngram"):
-        out = _call(monkeypatch, gguf, speculative_type = mode)
+        out = _call(monkeypatch, gguf, speculative_type=mode)
         assert out["spec_bytes"] is None, f"{mode!r} reserved memory"

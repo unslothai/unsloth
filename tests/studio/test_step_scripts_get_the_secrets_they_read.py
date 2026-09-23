@@ -132,7 +132,7 @@ def _secret_backed_names() -> frozenset[str]:
     for allowed in _INDEXED_FOR.values():
         names |= allowed[1]
     for path in WORKFLOWS:
-        doc = yaml.safe_load(path.read_text(encoding = "utf-8")) or {}
+        doc = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
         # From parsed values, not the raw text: a comment that explains `secrets.A || secrets.B`
         # would otherwise make B a secret.
         for value in _strings(doc):
@@ -165,7 +165,7 @@ def _supplies_a_secret(value, key: str | None = None) -> bool:
 
 
 def _unmapped(path: Path) -> list[str]:
-    doc = yaml.safe_load(path.read_text(encoding = "utf-8")) or {}
+    doc = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     workflow_env = doc.get("env") or {}
     found = []
     for job_name, job in (doc.get("jobs") or {}).items():
@@ -189,7 +189,7 @@ def test_the_workflows_are_found():
     assert len(WORKFLOWS) > 20, "the glob stopped finding the workflows"
 
 
-@pytest.mark.parametrize("path", WORKFLOWS, ids = [p.name for p in WORKFLOWS])
+@pytest.mark.parametrize("path", WORKFLOWS, ids=[p.name for p in WORKFLOWS])
 def test_every_secret_a_step_reads_is_in_its_env(path):
     unmapped = _unmapped(path)
     assert not unmapped, (
@@ -243,14 +243,14 @@ def test_an_inline_read_of_an_alias_is_caught_in_a_workflow_that_never_maps_it(t
         "      - name: Scan\n"
         "        run: |\n"
         '          curl -H "x-apikey: $VT_API_KEY" https://example.invalid\n',
-        encoding = "utf-8",
+        encoding="utf-8",
     )
     assert _unmapped(workflow) == ["w.yml :: scan :: Scan reads VT_API_KEY without mapping it"]
-    mapped = workflow.read_text(encoding = "utf-8").replace(
+    mapped = workflow.read_text(encoding="utf-8").replace(
         "      - name: Scan\n",
         "      - name: Scan\n        env:\n          VT_API_KEY: ${{ secrets.VIRUS_TOTAL_API_TOKEN }}\n",
     )
-    workflow.write_text(mapped, encoding = "utf-8")
+    workflow.write_text(mapped, encoding="utf-8")
     assert _unmapped(workflow) == []
 
 
@@ -376,9 +376,9 @@ def _misdrawn(doc: dict, name: str) -> list[str]:
     return wrong
 
 
-@pytest.mark.parametrize("path", WORKFLOWS, ids = [p.name for p in WORKFLOWS])
+@pytest.mark.parametrize("path", WORKFLOWS, ids=[p.name for p in WORKFLOWS])
 def test_every_secret_mapping_draws_on_the_secret_its_key_is_known_by(path):
-    wrong = _misdrawn(yaml.safe_load(path.read_text(encoding = "utf-8")) or {}, path.name)
+    wrong = _misdrawn(yaml.safe_load(path.read_text(encoding="utf-8")) or {}, path.name)
     assert not wrong, "\n".join(wrong)
 
 
@@ -406,7 +406,7 @@ def test_a_step_reading_the_run_token_must_map_it(tmp_path):
         "      - name: Call\n"
         "        run: |\n"
         '          curl -H "Authorization: Bearer $GITHUB_TOKEN" https://api.github.com\n',
-        encoding = "utf-8",
+        encoding="utf-8",
     )
     assert _unmapped(workflow) == ["t.yml :: api :: Call reads GITHUB_TOKEN without mapping it"]
 

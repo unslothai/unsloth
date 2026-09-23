@@ -31,7 +31,7 @@ def test_model_preflight_short_circuits_when_the_hub_is_unreachable(monkeypatch)
         raise AssertionError("metadata was fetched despite an unreachable Hub")
 
     monkeypatch.setattr(training_routes, "_hub_unreachable", unreachable)
-    monkeypatch.setattr(training_routes, "hf_model_info", hf_model_info, raising = False)
+    monkeypatch.setattr(training_routes, "hf_model_info", hf_model_info, raising=False)
 
     started = time.monotonic()
     with pytest.raises(Exception) as excinfo:

@@ -50,8 +50,8 @@ class _Unsized:
 class _Trainer:
     def __init__(
         self,
-        train_dataset = None,
-        eval_dataset = None,
+        train_dataset=None,
+        eval_dataset=None,
     ):
         self.train_dataset = train_dataset
         self.eval_dataset = eval_dataset
@@ -61,10 +61,10 @@ BIG = dnp.ZOO_MIN_ROWS_FOR_MULTIPROC
 SMALL = dnp.ZOO_MIN_ROWS_FOR_MULTIPROC - 1
 
 
-@pytest.fixture(autouse = True)
+@pytest.fixture(autouse=True)
 def _reset(monkeypatch):
     dnp.reset_warning_state()
-    monkeypatch.delenv(dnp.NUM_PROC_ENV_VAR, raising = False)
+    monkeypatch.delenv(dnp.NUM_PROC_ENV_VAR, raising=False)
     # Pin CPUs, memory and both start methods so the assertions are about the wrapper, not this machine.
     # Auto is min(max(cpus // 2, AUTO_NUM_PROC_CAP)), so reaching the cap needs >= 2 * AUTO_NUM_PROC_CAP usable CPUs
     pytest.importorskip("psutil")
@@ -159,23 +159,23 @@ def test_auto_large_split_gets_the_bounded_count():
 
 def test_auto_uses_the_largest_split_not_the_smallest():
     """A big train split must still be bounded when eval is small."""
-    trainer = _Trainer(train_dataset = _Split(BIG), eval_dataset = _Split(10))
+    trainer = _Trainer(train_dataset=_Split(BIG), eval_dataset=_Split(10))
     assert dnp.resolve_responses_only_num_proc(trainer, None) == dnp.AUTO_NUM_PROC_CAP
 
 
 def test_auto_unsized_split_passes_none_through():
-    trainer = _Trainer(train_dataset = _Unsized())
+    trainer = _Trainer(train_dataset=_Unsized())
     assert dnp.resolve_responses_only_num_proc(trainer, None) is None
 
 
 @pytest.mark.parametrize(
     "trainer",
     [
-        _Trainer(train_dataset = _Split(BIG), eval_dataset = _Unsized()),
-        _Trainer(train_dataset = _Unsized(), eval_dataset = _Split(BIG)),
-        _Trainer(train_dataset = _Split(BIG), eval_dataset = {"a": _Unsized()}),
+        _Trainer(train_dataset=_Split(BIG), eval_dataset=_Unsized()),
+        _Trainer(train_dataset=_Unsized(), eval_dataset=_Split(BIG)),
+        _Trainer(train_dataset=_Split(BIG), eval_dataset={"a": _Unsized()}),
     ],
-    ids = ["unsized-eval", "unsized-train", "unsized-eval-dict"],
+    ids=["unsized-eval", "unsized-train", "unsized-eval-dict"],
 )
 def test_an_unsized_split_does_not_hide_a_large_sized_one(trainer):
     """Regression: one unsized split disabled the bound for every other split.
@@ -189,7 +189,7 @@ def test_an_unsized_split_does_not_hide_a_large_sized_one(trainer):
 
 
 def test_auto_dict_eval_dataset_is_unpacked():
-    trainer = _Trainer(train_dataset = _Split(10), eval_dataset = {"a": _Split(BIG)})
+    trainer = _Trainer(train_dataset=_Split(10), eval_dataset={"a": _Split(BIG)})
     assert dnp.resolve_responses_only_num_proc(trainer, None) == dnp.AUTO_NUM_PROC_CAP
 
 
@@ -215,11 +215,11 @@ def test_env_override_still_wins_for_explicit_values(monkeypatch):
 @pytest.mark.parametrize(
     "trainer",
     [
-        _Trainer(train_dataset = _Split(SMALL)),
-        _Trainer(train_dataset = _Unsized()),
+        _Trainer(train_dataset=_Split(SMALL)),
+        _Trainer(train_dataset=_Unsized()),
         _Trainer(),
     ],
-    ids = ["small-split", "unsized-split", "no-splits"],
+    ids=["small-split", "unsized-split", "no-splits"],
 )
 def test_env_override_wins_on_the_split_size_shortcut(monkeypatch, trainer):
     """The escape hatch must win everywhere, including the early return.
@@ -251,7 +251,7 @@ def _split(monkeypatch):
 @pytest.mark.parametrize(
     "requested",
     [None, 32, 1],
-    ids = ["auto", "explicit-count", "explicit-one"],
+    ids=["auto", "explicit-count", "explicit-one"],
 )
 def test_serial_is_none_not_one_on_spawn(_spawn, requested):
     """On spawn the zoo must be left to veto, not handed a Pool(1).
@@ -268,7 +268,7 @@ def test_serial_is_none_not_one_on_spawn(_spawn, requested):
 @pytest.mark.parametrize(
     "requested",
     [None, 32, 1],
-    ids = ["auto", "explicit-count", "explicit-one"],
+    ids=["auto", "explicit-count", "explicit-one"],
 )
 def test_one_worker_when_only_multiprocess_is_on_spawn(_split, requested):
     """The zoo's veto reads stdlib multiprocessing, so it would not fire here.

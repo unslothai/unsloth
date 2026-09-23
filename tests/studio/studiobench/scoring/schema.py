@@ -165,7 +165,7 @@ class PayloadSchemaError(AssertionError):
     """Raised when a payload contains a number that cannot be interpreted."""
 
 
-@dataclass(frozen = True)
+@dataclass(frozen=True)
 class Measure:
     """One number, plus everything needed to know whether it means anything.
 
@@ -196,12 +196,12 @@ class Measure:
 
     @classmethod
     def not_attempted(cls, unit: str, reason: str) -> "Measure":
-        return cls(value = None, attempted = False, unit = unit, note = reason)
+        return cls(value=None, attempted=False, unit=unit, note=reason)
 
     @classmethod
     def failed(cls, unit: str, reason: str) -> "Measure":
         """Attempted, but produced no usable reading. Distinct from both zero and skipped."""
-        return cls(value = None, attempted = True, unit = unit, note = reason)
+        return cls(value=None, attempted=True, unit=unit, note=reason)
 
     @classmethod
     def read(
@@ -211,7 +211,7 @@ class Measure:
         floor: float | None = None,
         note: str | None = None,
     ) -> "Measure":
-        return cls(value = float(value), attempted = True, unit = unit, floor = floor, note = note)
+        return cls(value=float(value), attempted=True, unit=unit, floor=floor, note=note)
 
     @property
     def has_reading(self) -> bool:
@@ -284,18 +284,18 @@ class Measure:
                 f"{key} carries a value but {attempted_key} is false; a row cannot both have a "
                 "reading and claim it was never attempted"
             )
-        return cls.read(float(value), unit, floor = floor, note = reason)
+        return cls.read(float(value), unit, floor=floor, note=reason)
 
     @classmethod
     def from_json(cls, blob: Mapping[str, Any]) -> "Measure":
         if blob.get("kind") != MEASURE_KIND:
             raise PayloadSchemaError(f"not a measure object: {blob!r}")
         return cls(
-            value = blob.get("value"),
-            attempted = bool(blob.get("attempted")),
-            unit = blob.get("unit", ""),
-            floor = blob.get("floor"),
-            note = blob.get("note"),
+            value=blob.get("value"),
+            attempted=bool(blob.get("attempted")),
+            unit=blob.get("unit", ""),
+            floor=blob.get("floor"),
+            note=blob.get("note"),
         )
 
 
@@ -393,7 +393,7 @@ def validate_payload(payload: Mapping[str, Any]) -> None:
         raise PayloadSchemaError("`excluded_cells` must be a list")
 
     problems: list[str] = []
-    _walk_for_bare_zeros(payload, path = "$", problems = problems)
+    _walk_for_bare_zeros(payload, path="$", problems=problems)
     if problems:
         joined = "\n  ".join(problems)
         raise PayloadSchemaError(

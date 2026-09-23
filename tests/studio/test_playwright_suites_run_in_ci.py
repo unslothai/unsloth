@@ -87,7 +87,7 @@ def _executable_text(path: Path) -> str:
     playwright_strip_ansi_smoke.py in both, so reading the whole file left deleting
     the step alone undetected.
     """
-    document = yaml.safe_load(path.read_text(encoding = "utf-8"))
+    document = yaml.safe_load(path.read_text(encoding="utf-8"))
     if not isinstance(document, dict):
         return ""
     parts: list[str] = []
@@ -135,7 +135,7 @@ def _ci_text() -> str:
             else:
                 reached = _invoked(path.name, text) or _invoked(rel, text)
             if reached:
-                parts.append(path.read_text(encoding = "utf-8", errors = "replace"))
+                parts.append(path.read_text(encoding="utf-8", errors="replace"))
                 remaining.remove(path)
                 text = "\n".join(parts)
                 added = True
@@ -158,7 +158,7 @@ def test_every_playwright_driver_is_invoked_by_ci():
 
 def test_mcp_argument_driver_launches_the_managed_studio_python():
     document = yaml.safe_load(
-        (REPO / ".github" / "workflows" / "studio-ui-smoke.yml").read_text(encoding = "utf-8")
+        (REPO / ".github" / "workflows" / "studio-ui-smoke.yml").read_text(encoding="utf-8")
     )
     steps = document["jobs"]["ui-smoke"]["steps"]
     run = next(
@@ -166,7 +166,7 @@ def test_mcp_argument_driver_launches_the_managed_studio_python():
         for step in steps
         if step.get("name") == "MCP arguments end to end (Playwright)"
     )
-    driver = (REPO / "tests" / "studio" / "playwright_mcp_arguments.py").read_text(encoding = "utf-8")
+    driver = (REPO / "tests" / "studio" / "playwright_mcp_arguments.py").read_text(encoding="utf-8")
 
     assert 'export STUDIO_MCP_PYTHON="$studio_home/unsloth_studio/bin/python"' in run
     assert 'os.environ.get("STUDIO_MCP_PYTHON", sys.executable)' in driver
@@ -187,7 +187,7 @@ def test_the_exemptions_are_still_exempt_and_still_exist():
 
 def test_tool_activity_install_enforces_the_script_allowlist():
     document = yaml.safe_load(
-        (REPO / ".github" / "workflows" / "studio-ui-smoke.yml").read_text(encoding = "utf-8")
+        (REPO / ".github" / "workflows" / "studio-ui-smoke.yml").read_text(encoding="utf-8")
     )
     steps = document["jobs"]["ui-smoke"]["steps"]
     run = next(
@@ -213,7 +213,7 @@ def test_the_linux_job_still_drives_all_three_browser_engines():
     change moved it out of.
     """
     document = yaml.safe_load(
-        (REPO / ".github" / "workflows" / "studio-ui-smoke.yml").read_text(encoding = "utf-8")
+        (REPO / ".github" / "workflows" / "studio-ui-smoke.yml").read_text(encoding="utf-8")
     )
     job = document["jobs"]["ui-indicator"]
     # Two narrowings, each closing a way this check could pass on nothing:
@@ -272,7 +272,7 @@ def test_no_build_gate_sits_behind_a_browser_smoke():
     they belong last. Asserted by step index, since the ordering is the whole guarantee.
     """
     document = yaml.safe_load(
-        (REPO / ".github" / "workflows" / "studio-frontend-ci.yml").read_text(encoding = "utf-8")
+        (REPO / ".github" / "workflows" / "studio-frontend-ci.yml").read_text(encoding="utf-8")
     )
     names = [str(step.get("name", "")) for step in document["jobs"]["build"]["steps"]]
     gates = [
@@ -318,7 +318,7 @@ def test_every_smoke_report_is_covered_by_the_failure_upload():
     `logs/playwright-*` path uploaded every report except that one.
     """
     workflow = yaml.safe_load(
-        (REPO / ".github" / "workflows" / "studio-frontend-ci.yml").read_text(encoding = "utf-8")
+        (REPO / ".github" / "workflows" / "studio-frontend-ci.yml").read_text(encoding="utf-8")
     )
     steps = workflow["jobs"]["build"]["steps"]
     upload = next(s for s in steps if s.get("name") == "Upload browser smoke artifacts")
@@ -331,7 +331,7 @@ def test_every_smoke_report_is_covered_by_the_failure_upload():
 
     uncovered = []
     for driver in smokes:
-        text = driver.read_text(encoding = "utf-8")
+        text = driver.read_text(encoding="utf-8")
         for out in sorted(set(re.findall(r'"(logs/[^"]+)"', text))):
             stem = out.split("%")[0].split("{")[0]
             if not any(fnmatch(stem, p) or stem.startswith(p.rstrip("*")) for p in patterns):
@@ -351,7 +351,7 @@ def test_a_continue_on_error_smoke_can_still_upload_its_report():
     is the whole point. Each such smoke must be named in the upload condition.
     """
     workflow = yaml.safe_load(
-        (REPO / ".github" / "workflows" / "studio-frontend-ci.yml").read_text(encoding = "utf-8")
+        (REPO / ".github" / "workflows" / "studio-frontend-ci.yml").read_text(encoding="utf-8")
     )
     steps = workflow["jobs"]["build"]["steps"]
     upload = next(s for s in steps if s.get("name") == "Upload browser smoke artifacts")

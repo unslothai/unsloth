@@ -54,9 +54,9 @@ def _log_progress_step(job_key: str, repo_id: str, variant: Optional[str], progr
             return  # download restarted; resync without logging
     logger.info(
         "hub_download_progress",
-        repo_id = repo_id,
-        variant = variant or "",
-        percent = step * 10,
+        repo_id=repo_id,
+        variant=variant or "",
+        percent=step * 10,
     )
 
 
@@ -139,7 +139,7 @@ def _walk_files(root: Path) -> "tuple[list[Path], bool]":
             continue
         for entry in entries:
             try:
-                if entry.is_dir(follow_symlinks = False):
+                if entry.is_dir(follow_symlinks=False):
                     stack.append(Path(entry.path))
                 elif entry.is_file():
                     files.append(Path(entry.path))
@@ -162,7 +162,7 @@ def _variant_main_shard_present(
         # A sidecar left by a deleted quant answers the quant matcher, so the job is re-adopted.
         if is_appledouble_metadata(path):
             continue
-        if variant_file_matcher(relative, companions = False):
+        if variant_file_matcher(relative, companions=False):
             return True
     return None if not complete else False
 
@@ -173,7 +173,7 @@ def _retained_snapshot_dirs(entry: Path) -> list[Path]:
         snapshots = [child for child in (entry / "snapshots").iterdir() if child.is_dir()]
     except OSError:
         return []
-    return sorted(snapshots, key = snapshot_selection_key, reverse = True)
+    return sorted(snapshots, key=snapshot_selection_key, reverse=True)
 
 
 def _variant_present_in_any_snapshot(
@@ -203,7 +203,7 @@ def _materialized_bytes(snapshot_dir: Path, variant_file_matcher: "VariantFileMa
 
     def _accepts(relative: str, *, companions: bool) -> bool:
         try:
-            return bool(variant_file_matcher(relative, companions = companions))
+            return bool(variant_file_matcher(relative, companions=companions))
         except TypeError:
             return bool(variant_file_matcher(relative))
 
@@ -214,7 +214,7 @@ def _materialized_bytes(snapshot_dir: Path, variant_file_matcher: "VariantFileMa
             relative = path.relative_to(snapshot_dir).as_posix()
         except ValueError:
             continue
-        if _accepts(relative, companions = False):
+        if _accepts(relative, companions=False):
             try:
                 if path.is_file():
                     owns_a_main = True
@@ -228,7 +228,7 @@ def _materialized_bytes(snapshot_dir: Path, variant_file_matcher: "VariantFileMa
     for path in entries:
         try:
             relative = path.relative_to(snapshot_dir).as_posix()
-            if not _accepts(relative, companions = True) or not path.is_file():
+            if not _accepts(relative, companions=True) or not path.is_file():
                 continue
             total += path.stat().st_size
         except (OSError, ValueError):
@@ -261,7 +261,7 @@ def _snapshot_complete_on_disk(
         repo_type,
         repo_id,
         variant,
-        hub_cache = entry.parent,
+        hub_cache=entry.parent,
     ):
         return False
     manifest = entry_manifest.get()
@@ -271,11 +271,11 @@ def _snapshot_complete_on_disk(
         if not metadata_expected:
             return False
         manifest = download_manifest.Manifest(
-            repo_type = repo_type,
-            repo_id = repo_id,
-            variant = variant,
-            started_at = "",
-            expected_files = metadata_expected,
+            repo_type=repo_type,
+            repo_id=repo_id,
+            variant=variant,
+            started_at="",
+            expected_files=metadata_expected,
         )
     # ANY retained snapshot: the variant can be complete in an older revision while the newest holds only a sibling, and checking the newest alone left that download at 99% forever. An older revision can carry the same FILENAMES at the same sizes with different content and verify_against_disk does not read sha256, so require the entries to resolve to known hashes; with none resolved the filename check stands alone.
     for snap in snapshots:
@@ -298,7 +298,7 @@ def _referenced_commits(entry: Path) -> "frozenset[str]":
             if not ref.is_file():
                 continue
             commit = download_manifest.normalized_commit_hash(
-                ref.read_text(encoding = "utf-8").strip()
+                ref.read_text(encoding="utf-8").strip()
             )
         except (OSError, ValueError):
             continue
@@ -398,13 +398,13 @@ def compute_snapshot_progress(
         preferred_repo_cache_dirs(
             repo_type,
             repo_id,
-            force_active = force_active,
-            active_root = active_root,
-            scan_errors = scan_errors,
+            force_active=force_active,
+            active_root=active_root,
+            scan_errors=scan_errors,
         )
         if active_root is not None
         else preferred_repo_cache_dirs(
-            repo_type, repo_id, force_active = force_active, scan_errors = scan_errors
+            repo_type, repo_id, force_active=force_active, scan_errors=scan_errors
         )
     )
     for entry in cache_dirs:
@@ -465,14 +465,14 @@ def compute_snapshot_progress(
         # Largest wins deliberately: preferring the freshest mtime reads better against a corpse but oscillates between two genuinely live writers, which is what a broken advisory lock produces. A corpse should not outlive the job that made it (a terminal job sweeps its own blobs, and a backend that died first is caught at boot); if one survives both, over-reading until the next sweep is a smaller wrong than a reading that will not sit still.
         in_progress_bytes = sum(partial_bytes.values())
         snapshot_dirs: "_Lazy[list[Path]]" = _Lazy(
-            lambda entry = entry: _retained_snapshot_dirs(entry)
+            lambda entry=entry: _retained_snapshot_dirs(entry)
         )
         entry_manifest: "_Lazy[Optional[download_manifest.Manifest]]" = _Lazy(
-            lambda entry = entry: download_manifest.read_manifest(
+            lambda entry=entry: download_manifest.read_manifest(
                 repo_type,
                 repo_id,
                 variant,
-                hub_cache = entry.parent,
+                hub_cache=entry.parent,
             )
         )
         if variant is not None:
@@ -489,7 +489,7 @@ def compute_snapshot_progress(
                     for snap in snapshot_dirs.get()
                     if not expected_hashes or _snapshot_resolves_to(manifest, snap, expected_hashes)
                 ),
-                default = 0,
+                default=0,
             )
             # Clamped, because the matcher behind the no-manifest half accepts every companion in the repo and so can overshoot.
             if expected_total > 0:
@@ -516,17 +516,17 @@ def compute_snapshot_progress(
                 in_progress_bytes,
                 cache_path,
                 _snapshot_complete_on_disk(
-                    repo_type = repo_type,
-                    repo_id = repo_id,
-                    variant = variant,
-                    entry = entry,
-                    snapshot_dirs = snapshot_dirs,
-                    entry_manifest = entry_manifest,
-                    metadata_files = metadata_files,
-                    expected_total = expected_total,
-                    completed_bytes = completed_bytes,
-                    in_progress_bytes = in_progress_bytes,
-                    expected_hashes = expected_hashes,
+                    repo_type=repo_type,
+                    repo_id=repo_id,
+                    variant=variant,
+                    entry=entry,
+                    snapshot_dirs=snapshot_dirs,
+                    entry_manifest=entry_manifest,
+                    metadata_files=metadata_files,
+                    expected_total=expected_total,
+                    completed_bytes=completed_bytes,
+                    in_progress_bytes=in_progress_bytes,
+                    expected_hashes=expected_hashes,
                 ),
                 target_present,
             )
@@ -535,13 +535,13 @@ def compute_snapshot_progress(
     selected = max(
         readings,
         # complete_on_disk last-but-one: two remembered caches can clamp to the SAME byte total while only one has a manifest that verifies against disk, and root order then capped the response at 99%.
-        key = lambda item: (item[0] + item[1], bool(item[3]), item[0]),
-        default = None,
+        key=lambda item: (item[0] + item[1], bool(item[3]), item[0]),
+        default=None,
     )
     if selected is None:
         # Nothing measured AND a root that could not be listed: the cache may be entirely intact behind that error, so this is unknown, not gone.
         if scan_errors:
-            return _empty_progress(expected_bytes, measured = False)
+            return _empty_progress(expected_bytes, measured=False)
         return empty
 
     completed_bytes, in_progress_bytes, cache_path, complete_on_disk, target_present = selected
@@ -636,16 +636,16 @@ async def snapshot_progress_response(
     try:
         return await asyncio.to_thread(
             compute_snapshot_progress,
-            repo_type = repo_type,
-            repo_id = repo_id,
-            job_key = job_key,
-            expected_bytes = expected_bytes,
-            hf_token = hf_token,
-            registry = registry,
-            metadata_resolver = metadata_resolver,
-            variant = variant,
-            variant_file_matcher = variant_file_matcher,
-            expected_files_resolver = expected_files_resolver,
+            repo_type=repo_type,
+            repo_id=repo_id,
+            job_key=job_key,
+            expected_bytes=expected_bytes,
+            hf_token=hf_token,
+            registry=registry,
+            metadata_resolver=metadata_resolver,
+            variant=variant,
+            variant_file_matcher=variant_file_matcher,
+            expected_files_resolver=expected_files_resolver,
         )
     except Exception as e:
         logger.warning(
@@ -653,6 +653,6 @@ async def snapshot_progress_response(
             repo_type,
             repo_id,
             type(e).__name__,
-            download_registry.scrub_secrets(str(e), hf_token = hf_token),
+            download_registry.scrub_secrets(str(e), hf_token=hf_token),
         )
-        return _empty_progress(expected_bytes, measured = False)
+        return _empty_progress(expected_bytes, measured=False)

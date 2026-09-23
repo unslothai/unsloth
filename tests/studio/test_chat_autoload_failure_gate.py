@@ -39,7 +39,7 @@ def _wait_gate_source() -> str:
     """The gate module with its two ponyfill imports dropped; PONYFILLS supplies those."""
     gate = "\n".join(
         line
-        for line in WAIT_GATE.read_text(encoding = "utf-8").splitlines()
+        for line in WAIT_GATE.read_text(encoding="utf-8").splitlines()
         if not line.startswith(
             (
                 "import ",
@@ -809,10 +809,10 @@ def _require_node():
     try:
         result = subprocess.run(
             ["node", "--experimental-strip-types", "--version"],
-            capture_output = True,
-            text = True,
+            capture_output=True,
+            text=True,
             # A cold Windows runner is slow to start node; an impatient probe would fail the gate.
-            timeout = 60,
+            timeout=60,
         )
     except (OSError, subprocess.SubprocessError):
         pytest.skip("node could not be started")
@@ -822,7 +822,7 @@ def _require_node():
 
 def _build_harness(run_dir: Path):
     """Slice autoLoadSmallestModel and its helpers verbatim out of the adapter."""
-    lines = ADAPTER.read_text(encoding = "utf-8").splitlines()
+    lines = ADAPTER.read_text(encoding="utf-8").splitlines()
     start = next(
         (i for i, line in enumerate(lines) if line.startswith("const MAX_AUTO_LOAD_ATTEMPTS")),
         None,
@@ -870,7 +870,7 @@ def _build_harness(run_dir: Path):
     # Any mention, not just a call. useChatRuntimeStore, toast and GPU_LAYERS_AUTO are all used in this region without a
     # following paren, and each would be the same ReferenceError; they pass today only because the preamble happens to
     # define them. Comments are stripped first so a name discussed in prose does not count as a use.
-    code = re.sub(r"/\*.*?\*/", "", body, flags = re.S)
+    code = re.sub(r"/\*.*?\*/", "", body, flags=re.S)
     code = re.sub(r"//[^\n]*", "", code)
     preamble = PREAMBLE + PONYFILLS + _wait_gate_source()
     missing = sorted(
@@ -896,7 +896,7 @@ def _build_harness(run_dir: Path):
         + body
         + "\nexport { autoLoadSmallestModel, resolveQueuedEmptyLocalModel };\n"
         + "export function storeState() { return STORE; }\n",
-        encoding = "utf-8",
+        encoding="utf-8",
     )
 
 
@@ -908,8 +908,8 @@ def _run(
 ) -> dict:
     _require_node()
     # Its own directory per invocation: a shared file lets one runner read another's rewrite.
-    TEMP.mkdir(parents = True, exist_ok = True)
-    run_dir = Path(tempfile.mkdtemp(prefix = "run", dir = TEMP))
+    TEMP.mkdir(parents=True, exist_ok=True)
+    run_dir = Path(tempfile.mkdtemp(prefix="run", dir=TEMP))
     _build_harness(run_dir)
     # The real send path always supplies an abort signal, so every scenario
     # exercises the signal plumbing whichever entry point it enters through.
@@ -953,17 +953,17 @@ def _run(
         """
         )
     )
-    (run_dir / "run.mts").write_text(script, encoding = "utf-8")
+    (run_dir / "run.mts").write_text(script, encoding="utf-8")
     completed = subprocess.run(
         ["node", "--experimental-strip-types", "--no-warnings", "run.mts"],
-        cwd = str(run_dir),
-        capture_output = True,
-        text = True,
+        cwd=str(run_dir),
+        capture_output=True,
+        text=True,
         # Explicit: text alone decodes with the Windows ANSI code page, which mangles the non-ASCII toast copy node
         # emits as UTF-8.
-        encoding = "utf-8",
-        timeout = 60,
-        env = dict(os.environ, NODE_NO_WARNINGS = "1"),
+        encoding="utf-8",
+        timeout=60,
+        env=dict(os.environ, NODE_NO_WARNINGS="1"),
     )
     assert completed.returncode == 0, f"stderr: {completed.stderr}\nstdout: {completed.stdout}"
     last = [line for line in completed.stdout.strip().splitlines() if line.strip()][-1]
@@ -1544,7 +1544,7 @@ def test_a_failed_cancel_does_not_latch_the_toast_action_off():
     """The retry latch must clear once the request settles, or every later
     Cancel click is swallowed."""
     src = (WORKDIR / "studio/frontend/src/features/chat/api/chat-adapter.ts").read_text(
-        encoding = "utf-8"
+        encoding="utf-8"
     )
     helper = src.split("async function ensureDefaultModelDownloaded", 1)[1]
     helper = helper.split("async function autoLoadSmallestModel", 1)[0]
@@ -1826,7 +1826,7 @@ def test_a_load_still_in_flight_at_the_cap_refuses_instead_of_auto_loading():
     out = _run(
         "scenario({ serverLoading: ['org/slow-model-GGUF'],"
         " ggufRepos: [GEMMA], variants: { [GEMMA.repo_id]: GEMMA_VARIANTS } })",
-        prelude = _EXPIRE_CLI_LOAD_WAIT,
+        prelude=_EXPIRE_CLI_LOAD_WAIT,
     )
 
     assert _loaded_paths(out) == []
@@ -1870,7 +1870,7 @@ def test_a_queued_turn_binds_the_incoming_model_not_the_one_being_replaced():
         "scenario({ visibleCheckpoint: EXTERNAL, serverResident: 'org/outgoing-GGUF',"
         " serverLoading: ['org/slow-model-GGUF'], serverLoadingClearsAfter: 2,"
         " ggufRepos: [GEMMA], variants: { [GEMMA.repo_id]: GEMMA_VARIANTS } })",
-        queued = True,
+        queued=True,
     )
 
     assert out["result"]["loaded"] is True
@@ -1884,8 +1884,8 @@ def test_a_queued_turn_refuses_rather_than_auto_loading_over_a_cli_load():
     out = _run(
         "scenario({ visibleCheckpoint: EXTERNAL, serverLoading: ['org/slow-model-GGUF'],"
         " ggufRepos: [GEMMA], variants: { [GEMMA.repo_id]: GEMMA_VARIANTS } })",
-        prelude = _EXPIRE_CLI_LOAD_WAIT,
-        queued = True,
+        prelude=_EXPIRE_CLI_LOAD_WAIT,
+        queued=True,
     )
 
     assert _loaded_paths(out) == []
@@ -1900,7 +1900,7 @@ def test_a_queued_turn_still_binds_a_resident_model_on_an_idle_server():
     out = _run(
         "scenario({ visibleCheckpoint: EXTERNAL, serverResident: 'org/resident-GGUF',"
         " ggufRepos: [GEMMA], variants: { [GEMMA.repo_id]: GEMMA_VARIANTS } })",
-        queued = True,
+        queued=True,
     )
 
     assert out["result"]["loaded"] is True
@@ -1913,7 +1913,7 @@ def test_a_queued_turn_on_an_empty_idle_server_still_auto_loads():
     out = _run(
         "scenario({ visibleCheckpoint: EXTERNAL, ggufRepos: [GEMMA],"
         " variants: { [GEMMA.repo_id]: GEMMA_VARIANTS } })",
-        queued = True,
+        queued=True,
     )
 
     assert _loaded_paths(out) == [GEMMA_REPO]

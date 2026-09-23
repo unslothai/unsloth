@@ -15,7 +15,7 @@ from core.inference.llama_admission import (
 )
 
 
-@pytest.fixture(autouse = True)
+@pytest.fixture(autouse=True)
 def reset():
     reset_llama_admission_queues()
     yield
@@ -24,7 +24,7 @@ def reset():
 
 def reserve(queue, tokens, capacity):
     config = LlamaAdmissionConfig()
-    return queue.reserve(capacity = capacity, config = config, tokens = tokens, budget = 35000)
+    return queue.reserve(capacity=capacity, config=config, tokens=tokens, budget=35000)
 
 
 def test_a_parked_holder_keeps_its_context_until_someone_is_blocked_on_it():
@@ -50,7 +50,7 @@ def test_a_resume_wins_its_room_back_and_is_not_overtaken():
         assert first.park()
         assert first.release_parked_cache() == 29000
         busy = reserve(queue, 20000, 4).lease_nowait()  # blocks the resume, not a small arrival
-        resumed = asyncio.create_task(first.unpark_async(poll_s = 0.001))
+        resumed = asyncio.create_task(first.unpark_async(poll_s=0.001))
         await asyncio.sleep(0.01)
         assert not resumed.done(), "a spare slot does not justify exceeding the KV budget"
         arrivals = [reserve(queue, 8000, 4) for _ in range(4)]
@@ -78,10 +78,10 @@ def test_a_claim_it_cannot_pay_for_does_not_pin_the_slot_a_later_one_needs(timeo
         second = reserve(queue, 35000, 1).lease_nowait()
         assert second is not None, "the whole cache, freed by the first chat's erasure"
         assert second.park()
-        ahead = asyncio.create_task(first.unpark_async(poll_s = 0.001, timeout_s = timeout_s))
+        ahead = asyncio.create_task(first.unpark_async(poll_s=0.001, timeout_s=timeout_s))
         await asyncio.sleep(0.05)
         assert not ahead.done(), "the cache is committed; 10000 more does not fit"
-        await asyncio.wait_for(second.unpark_async(poll_s = 0.001), 1)
+        await asyncio.wait_for(second.unpark_async(poll_s=0.001), 1)
         second.release()
         await asyncio.wait_for(ahead, 1)
         assert queue.snapshot().committed == 10000
@@ -100,13 +100,13 @@ def test_a_claim_it_cannot_pay_for_does_not_pin_the_slot_a_later_one_needs(timeo
     ],
 )
 def test_erasure_unconfirmed_keeps_the_context(monkeypatch, save_dir, other, body, ok):
-    server = SimpleNamespace(base_url = "http://s", _auth_headers = {}, _slot_save_dir = save_dir)
+    server = SimpleNamespace(base_url="http://s", _auth_headers={}, _slot_save_dir=save_dir)
 
     sent = []
 
     def post(url, **kwargs):
         sent.append((url, kwargs["params"]))
-        return SimpleNamespace(raise_for_status = lambda: None, json = lambda: body)
+        return SimpleNamespace(raise_for_status=lambda: None, json=lambda: body)
 
     monkeypatch.setattr(llama_cpp.httpx, "post", post)
     target = "http://other" if other else server.base_url

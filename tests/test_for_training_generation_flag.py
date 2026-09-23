@@ -42,7 +42,7 @@ def _helpers_used_by(method, tree):
 
 def _for_training(module, class_name):
     path = Path(__file__).parents[1] / "unsloth" / "models" / module
-    tree = ast.parse(path.read_text(encoding = "utf-8"))
+    tree = ast.parse(path.read_text(encoding="utf-8"))
     model_class = next(
         node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == class_name
     )
@@ -52,8 +52,8 @@ def _for_training(module, class_name):
         if isinstance(node, ast.FunctionDef) and node.name == "for_training"
     )
     method.decorator_list = []
-    compiled = ast.Module(body = _helpers_used_by(method, tree) + [method], type_ignores = [])
-    namespace = _Namespace(os = os)
+    compiled = ast.Module(body=_helpers_used_by(method, tree) + [method], type_ignores=[])
+    namespace = _Namespace(os=os)
     exec(compile(ast.fix_missing_locations(compiled), str(path), "exec"), namespace)
     return namespace["for_training"]
 

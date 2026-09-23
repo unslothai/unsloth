@@ -111,8 +111,8 @@ class FakeTransport:
         self,
         turns,
         *,
-        heals = False,
-        max_turns = 20,
+        heals=False,
+        max_turns=20,
     ):
         self.turns = [list(turn) for turn in turns]
         self.heals_text_tool_calls = heals
@@ -163,14 +163,14 @@ def _run(transport, **policy_kwargs):
         out: list[str] = []
         agen = stream_with_studio_tools(
             transport,
-            run = ToolLoopRun(
-                messages = [{"role": "user", "content": "hi"}],
-                session_id = "s1",
-                thread_id = "t1",
-                model = "asked-for-model",
+            run=ToolLoopRun(
+                messages=[{"role": "user", "content": "hi"}],
+                session_id="s1",
+                thread_id="t1",
+                model="asked-for-model",
             ),
-            policy = ToolLoopPolicy(**fields),
-            cancel_event = threading.Event(),
+            policy=ToolLoopPolicy(**fields),
+            cancel_event=threading.Event(),
         )
         async for line in agen:
             out.append(line)

@@ -67,7 +67,7 @@ def _remove_upload(stored_path: str | None, *, keep_path: str | None = None) -> 
         if os.path.isfile(target) and os.path.commonpath([uploads, target]) == uploads:
             os.remove(target)
     except Exception:  # noqa: BLE001 - upload cleanup must not block ingestion.
-        logger.warning("failed to remove RAG upload %s", stored_path, exc_info = True)
+        logger.warning("failed to remove RAG upload %s", stored_path, exc_info=True)
 
 
 def _emit(job_id: str, event: dict) -> None:
@@ -103,7 +103,7 @@ def _progress(conn, job_id: str, stage: str, progress: float) -> None:
         raise job_leases.JobLeaseLost("Account is retired")
     if not job_leases.renew_owned(conn, job_leases.INGESTION, job_id):
         raise job_leases.JobLeaseLost("Ingestion job lease was reclaimed")
-    _set_job(conn, job_id, status = "running", stage = stage, progress = progress)
+    _set_job(conn, job_id, status="running", stage=stage, progress=progress)
     _emit(job_id, {"type": "progress", "stage": stage, "progress": progress})
 
 
@@ -119,7 +119,7 @@ def _abort_if_document_deleted(conn, job_id: str, document_id: str) -> bool:
     if not account_is_retired() and store.get_document(conn, document_id) is not None:
         return False
     conn.rollback()
-    _set_job(conn, job_id, status = "cancelled", stage = "done", progress = 1.0)
+    _set_job(conn, job_id, status="cancelled", stage="done", progress=1.0)
     _emit(job_id, {"type": "error", "stage": "cancelled", "error": "Document was deleted"})
     return True
 
@@ -137,7 +137,7 @@ def _embed_pass(
     for i in range(0, len(texts), _EMBED_BATCH):
         batch = texts[i : i + _EMBED_BATCH]
         out, batch_identity = embeddings.encode_with_identity(
-            batch, model_name = model_name, normalize = True
+            batch, model_name=model_name, normalize=True
         )
         changed = changed or (identity is not None and batch_identity != identity)
         identity = batch_identity
@@ -190,7 +190,7 @@ def _ocr_scanned_pages(
         return pages, set()
     required = {p.page_number for p in pages if p.needs_ocr}
     # Optional short/blank pages must not displace actual scans from the budget.
-    scanned.sort(key = lambda number: number not in required)
+    scanned.sort(key=lambda number: number not in required)
     if len(scanned) > config.OCR_MAX_PAGES:
         logger.warning(
             "OCR: %d scanned pages exceed OCR_MAX_PAGES=%d; pages past the cap stay "
@@ -202,10 +202,10 @@ def _ocr_scanned_pages(
     _progress(conn, job_id, "ocr", 0.25)
     texts = {}
     if captioner.vision_endpoint() is not None:
-        page_pngs = parsers.render_pdf_pages(stored_path, scanned, dpi = config.OCR_DPI)
+        page_pngs = parsers.render_pdf_pages(stored_path, scanned, dpi=config.OCR_DPI)
         texts = captioner.ocr_pages(
             page_pngs,
-            on_progress = lambda done, total: _progress(
+            on_progress=lambda done, total: _progress(
                 conn, job_id, "ocr", 0.25 + 0.15 * done / total
             ),
         )
@@ -228,7 +228,7 @@ def _ocr_scanned_pages(
         if text:
             original = (page.text or "").strip()
             merged = text if not original or original in text else f"{original}\n\n{text}"
-            out.append(Page(text = merged, page_number = page.page_number, char_count = len(merged)))
+            out.append(Page(text=merged, page_number=page.page_number, char_count=len(merged)))
             ocred.add(page.page_number)
         else:
             out.append(page)
@@ -254,9 +254,9 @@ def _replace_old_document(
             conn.rollback()
             return
         store.delete_document(conn, old_id)
-        _remove_upload(old_path, keep_path = keep_path)
+        _remove_upload(old_path, keep_path=keep_path)
     except Exception:  # noqa: BLE001 - the new document is already live
-        logger.warning("failed to remove replaced document %s", old_id, exc_info = True)
+        logger.warning("failed to remove replaced document %s", old_id, exc_info=True)
 
 
 def _retire_orphan_after_failure(
@@ -283,12 +283,12 @@ def _retire_orphan_after_failure(
             return
         if store.get_document(conn, document_id) is None:
             conn.rollback()
-            store.set_document_status(conn, old_id, "failed", error = "Indexing did not finish")
+            store.set_document_status(conn, old_id, "failed", error="Indexing did not finish")
             return
         store.delete_document(conn, old_id)
-        _remove_upload(old_path, keep_path = keep_path)
+        _remove_upload(old_path, keep_path=keep_path)
     except Exception:  # noqa: BLE001 - cleanup must not mask the original failure
-        logger.warning("failed to retire orphaned document %s", old_id, exc_info = True)
+        logger.warning("failed to retire orphaned document %s", old_id, exc_info=True)
 
 
 def _run(
@@ -310,7 +310,7 @@ def _run(
         scanned_pages = {p.page_number for p in pages if p.needs_ocr}
         ocred: set[int] = set()
         if is_pdf:
-            pages, ocred = _ocr_scanned_pages(pages, stored_path, conn, job_id, ocr = ocr)
+            pages, ocred = _ocr_scanned_pages(pages, stored_path, conn, job_id, ocr=ocr)
         caption_on = config.CAPTION_IMAGES if caption is None else caption
         # Skip all figure work (PDF rasterization included) without a vision model.
         if caption_on and is_pdf and captioner.vision_endpoint() is not None:
@@ -320,26 +320,26 @@ def _run(
             try:
                 fig_pages = parsers.pages_with_figures(
                     stored_path,
-                    max_pages = config.CAPTION_MAX_PAGES,
+                    max_pages=config.CAPTION_MAX_PAGES,
                     # Skip only pages OCR actually transcribed; a scanned figure page past the OCR cap still tiles.
-                    exclude_pages = ocred,
+                    exclude_pages=ocred,
                 )
                 tiles = (
                     parsers.render_pdf_figure_tiles(
                         stored_path,
                         fig_pages,
-                        dpi = config.FIGURE_DPI,
-                        rows = config.FIGURE_TILE_ROWS,
-                        cols = config.FIGURE_TILE_COLS,
-                        overlap = config.FIGURE_TILE_OVERLAP,
-                        fullpage = config.FIGURE_FULLPAGE,
-                        max_tiles = config.CAPTION_MAX_IMAGES,
+                        dpi=config.FIGURE_DPI,
+                        rows=config.FIGURE_TILE_ROWS,
+                        cols=config.FIGURE_TILE_COLS,
+                        overlap=config.FIGURE_TILE_OVERLAP,
+                        fullpage=config.FIGURE_FULLPAGE,
+                        max_tiles=config.CAPTION_MAX_IMAGES,
                     )
                     if fig_pages
                     else []
                 )
             except Exception:
-                logger.warning("figure tiling failed for job %s", job_id, exc_info = True)
+                logger.warning("figure tiling failed for job %s", job_id, exc_info=True)
                 tiles = []
             if tiles:
                 complete_captions: set[int] = set()
@@ -358,8 +358,8 @@ def _run(
                 captions = captioner.merge_page_captions(
                     captioner.caption_images(
                         tiles,
-                        on_caption = record_caption,
-                        on_progress = lambda done, total: _progress(
+                        on_caption=record_caption,
+                        on_progress=lambda done, total: _progress(
                             conn, job_id, "captioning", 0.4 + 0.2 * done / total
                         ),
                     )
@@ -379,9 +379,9 @@ def _run(
         count = embeddings.token_counter(model_name)
         chunks = chunking.chunk_pages(
             pages,
-            max_tokens = config.CHUNK_TOKENS,
-            overlap = config.CHUNK_OVERLAP,
-            count = count,
+            max_tokens=config.CHUNK_TOKENS,
+            overlap=config.CHUNK_OVERLAP,
+            count=count,
         )
         if not chunks:
             if _abort_if_document_deleted(conn, job_id, document_id):
@@ -412,9 +412,10 @@ def _run(
         if stored_path.lower().endswith(".pdf"):
             try:
                 from . import locators
+
                 regions = locators.pdf_regions_for_chunks(stored_path, pages, chunks)
             except Exception:
-                logger.warning("pdf region location failed for job %s", job_id, exc_info = True)
+                logger.warning("pdf region location failed for job %s", job_id, exc_info=True)
                 regions = None
 
         _progress(conn, job_id, "storing", 0.95)
@@ -425,10 +426,10 @@ def _run(
         # recorded as a completed ingestion.
         if _abort_if_document_deleted(conn, job_id, document_id):
             return
-        store.set_document_status(conn, document_id, "completed", num_chunks = len(chunks))
+        store.set_document_status(conn, document_id, "completed", num_chunks=len(chunks))
         _replace_old_document(conn, replaces, stored_path, document_id)
 
-        _set_job(conn, job_id, status = "completed", stage = "done", progress = 1.0)
+        _set_job(conn, job_id, status="completed", stage="done", progress=1.0)
         _emit(job_id, {"type": "complete", "num_chunks": len(chunks)})
     except job_leases.JobLeaseLost:
         logger.info("ingestion job %s stopped after its lease was reclaimed", job_id)
@@ -437,8 +438,8 @@ def _run(
         try:
             if conn is None:
                 conn = rag_db.get_connection()
-            store.set_document_status(conn, document_id, "failed", error = str(exc))
-            _set_job(conn, job_id, status = "failed", stage = "error", error = str(exc))
+            store.set_document_status(conn, document_id, "failed", error=str(exc))
+            _set_job(conn, job_id, status="failed", stage="error", error=str(exc))
         except Exception:  # noqa: BLE001
             logger.exception("failed to record ingestion failure for job %s", job_id)
         _emit(job_id, {"type": "error", "stage": "error", "error": str(exc)})
@@ -523,7 +524,7 @@ def start_ingestion(
                 ).fetchone()
                 if job is not None:
                     conn.commit()
-                    _remove_upload(stored_path, keep_path = doc.get("stored_path"))
+                    _remove_upload(stored_path, keep_path=doc.get("stored_path"))
                     return existing, job["id"]
             empty_completed = (
                 doc is not None and doc.get("status") == "completed" and not doc.get("num_chunks")
@@ -542,8 +543,8 @@ def start_ingestion(
                 # Retry empty, stale or orphaned documents; keep the old copy until success.
                 replaces = (existing, doc.get("stored_path"))
             else:
-                job_id = _new_job(conn, existing, scope, status = "completed", progress = 1.0)
-                _remove_upload(stored_path, keep_path = doc.get("stored_path"))
+                job_id = _new_job(conn, existing, scope, status="completed", progress=1.0)
+                _remove_upload(stored_path, keep_path=doc.get("stored_path"))
                 with _jobs_lock:
                     _jobs[account_key(job_id)] = queue.Queue()
                 _emit(
@@ -554,23 +555,23 @@ def start_ingestion(
                 return existing, job_id
         if dedupe:
             for failed in store.failed_documents_by_hash(conn, scope, sha):
-                store.delete_document(conn, failed["id"], commit = False)
-                _remove_upload(failed.get("stored_path"), keep_path = stored_path)
+                store.delete_document(conn, failed["id"], commit=False)
+                _remove_upload(failed.get("stored_path"), keep_path=stored_path)
 
         document_id = store.create_document(
             conn,
-            scope = scope,
-            filename = filename,
-            sha256 = sha,
-            kb_id = kb_id,
-            thread_id = thread_id,
-            project_id = project_id,
-            status = "pending",
-            stored_path = stored_path,
-            embedding_model = effective_identity,
-            linked_folder_id = linked_folder_id,
-            linked_relative_path = linked_relative_path,
-            commit = False,
+            scope=scope,
+            filename=filename,
+            sha256=sha,
+            kb_id=kb_id,
+            thread_id=thread_id,
+            project_id=project_id,
+            status="pending",
+            stored_path=stored_path,
+            embedding_model=effective_identity,
+            linked_folder_id=linked_folder_id,
+            linked_relative_path=linked_relative_path,
+            commit=False,
         )
         job_id = _new_job(conn, document_id, scope)
     finally:
@@ -594,11 +595,11 @@ def start_ingestion(
             _run(*args)
             return document_id, job_id
         worker = account_thread(
-            target = _run,
+            target=_run,
             # effective_model, not the raw model_name, pins the embedder for the whole job: a Settings change
             # mid-ingestion must not switch tokenizer or embedder between batches.
-            args = args,
-            daemon = True,
+            args=args,
+            daemon=True,
         )
         with _jobs_lock:
             _workers[account_key(job_id)] = worker
@@ -750,7 +751,7 @@ def job_events(job_id: str):
     try:
         while True:
             try:
-                event = q.get(timeout = _SSE_POLL_SECONDS)
+                event = q.get(timeout=_SSE_POLL_SECONDS)
             except queue.Empty:
                 try:
                     row = get_job_status(job_id)
@@ -758,7 +759,7 @@ def job_events(job_id: str):
                     # A transient status read must not abort the stream: routes/rag.py would turn it into a terminal
                     # error frame and the UI would drop a document whose worker is still running.
                     logger.warning(
-                        "job_events status read failed for %s; continuing", job_id, exc_info = True
+                        "job_events status read failed for %s; continuing", job_id, exc_info=True
                     )
                     yield {"type": "heartbeat"}
                     continue
@@ -824,7 +825,7 @@ def retire_account_ingestions() -> None:
         # Never join from the worker itself.
         if worker is None or worker is threading.current_thread():
             continue
-        worker.join(timeout = _RETIRE_JOIN_SECONDS)
+        worker.join(timeout=_RETIRE_JOIN_SECONDS)
         if worker.is_alive():
             stragglers.append(key if isinstance(key, str) else key[1])
     if stragglers:

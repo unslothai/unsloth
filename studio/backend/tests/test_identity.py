@@ -23,7 +23,7 @@ HOST = "127.0.0.1"  # the proof is bound to the connection address...
 PORT = 8765  # ...and port
 
 
-@pytest.fixture(autouse = True)
+@pytest.fixture(autouse=True)
 def isolated_auth_db(tmp_path, monkeypatch):
     monkeypatch.setattr(storage, "DB_PATH", tmp_path / "auth.db")
     monkeypatch.setattr(storage, "_identity_secret_cache", None)
@@ -73,9 +73,9 @@ def _identity_client() -> TestClient:
         pytest.skip(f"routes.auth not importable in this environment: {exc}")
 
     app = FastAPI()
-    app.include_router(router, prefix = "/api/auth")
+    app.include_router(router, prefix="/api/auth")
     # base_url host:port become scope["server"], which the route binds the proof to.
-    return TestClient(app, base_url = f"http://{HOST}:{PORT}")
+    return TestClient(app, base_url=f"http://{HOST}:{PORT}")
 
 
 def test_identity_route_returns_matching_proof():

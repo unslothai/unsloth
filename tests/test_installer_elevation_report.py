@@ -36,7 +36,7 @@ REPORT_RS = REPO_ROOT / "studio" / "src-tauri" / "src" / "diagnostics" / "report
 
 
 def _read(path: Path) -> str:
-    return path.read_text(encoding = "utf-8")
+    return path.read_text(encoding="utf-8")
 
 
 def _code_only(text: str) -> str:

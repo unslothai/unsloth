@@ -32,6 +32,7 @@ def _cache_dir() -> Path:
     """Lazy import so tests can stub storage_roots."""
     try:
         from utils.paths.storage_roots import cache_root
+
         return cache_root() / "llama_cpp_freshness"
     except Exception:
         return Path.home() / ".unsloth" / "studio" / "cache" / "llama_cpp_freshness"
@@ -41,9 +42,9 @@ def read_install_marker(binary_path: Optional[str]) -> Optional[dict]:
     """Walk up from binary_path to find UNSLOTH_PREBUILT_INFO.json. None = no marker (source build / custom path) or invalid JSON."""
     return _flow.read_install_marker(
         binary_path,
-        marker_name = _INSTALL_MARKER_NAME,
-        cache = _marker_cache,
-        log_message = "failed to parse install marker",
+        marker_name=_INSTALL_MARKER_NAME,
+        cache=_marker_cache,
+        log_message="failed to parse install marker",
     )
 
 
@@ -53,32 +54,32 @@ def _load_disk_cache(repo: str) -> Optional[tuple[float, Optional[str]]]:
 
 def _save_disk_cache(repo: str, latest_tag: Optional[str]) -> None:
     _flow.save_disk_cache(
-        repo, latest_tag, _cache_dir(), log_message = "freshness cache write failed"
+        repo, latest_tag, _cache_dir(), log_message="freshness cache write failed"
     )
 
 
 def _fetch_latest_release_tag(repo: str, timeout: float = 5.0) -> Optional[str]:
     """Newest published release tag for `repo`, by publish time (see freshness_flow for why this is not GitHub's /releases/latest pointer)."""
-    return _flow.fetch_latest_release_tag(repo, timeout, log_message = "freshness fetch failed")
+    return _flow.fetch_latest_release_tag(repo, timeout, log_message="freshness fetch failed")
 
 
 def latest_published_release(repo: str, *, force_refresh: bool = False) -> Optional[str]:
     """Latest release tag with 24h success and 60s failure caches."""
     return _flow.latest_published_release(
         repo,
-        force_refresh = force_refresh,
-        memo = _release_memo,
-        failed_at = _release_failed_at,
-        cache_dir = lambda: _cache_dir(),
-        fetch = lambda r: _fetch_latest_release_tag(r),
-        save = lambda r, tag: _save_disk_cache(r, tag),
+        force_refresh=force_refresh,
+        memo=_release_memo,
+        failed_at=_release_failed_at,
+        cache_dir=lambda: _cache_dir(),
+        fetch=lambda r: _fetch_latest_release_tag(r),
+        save=lambda r, tag: _save_disk_cache(r, tag),
     )
 
 
 def _fetch_latest_release_assets(repo: str, timeout: float = 5.0) -> Optional[dict[str, int]]:
     """Asset name -> size (bytes) for the newest published release of `repo`, selected exactly like _fetch_latest_release_tag. None on any failure."""
     return _flow.fetch_latest_release_assets(
-        repo, timeout, log_message = "freshness asset fetch failed"
+        repo, timeout, log_message="freshness asset fetch failed"
     )
 
 
@@ -86,9 +87,9 @@ def latest_release_assets(repo: str, *, force_refresh: bool = False) -> Optional
     """Newest-release asset sizes for `repo`, memoized (24h TTL). None when offline and never fetched. In-memory only, so a restart simply re-fetches."""
     return _flow.latest_release_assets(
         repo,
-        force_refresh = force_refresh,
-        memo = _assets_memo,
-        fetch = lambda r: _fetch_latest_release_assets(r),
+        force_refresh=force_refresh,
+        memo=_assets_memo,
+        fetch=lambda r: _fetch_latest_release_assets(r),
     )
 
 
@@ -117,7 +118,7 @@ def update_download_size_bytes(
         repos.append(binary_repo)
     want = f"app-{latest_tag}-{suffix}"
     for r in repos:
-        assets = latest_release_assets(r, force_refresh = force_refresh)
+        assets = latest_release_assets(r, force_refresh=force_refresh)
         if not assets:
             continue
         if want in assets:
@@ -167,25 +168,25 @@ def check_prebuilt_freshness(
     # Display prefers the normalized base tag, comparison uses the FULL identity, since /releases/latest returns the full tag_name and comparing the two produced a permanent "downgrade" banner. The marker records a normalized base tag ("tag", e.g. b9596) and the full "release_tag" (b9596-mix-<sha>), with deliberately opposite fallbacks.
     return _flow.check_freshness(
         binary_path,
-        threshold_days = threshold_days,
-        now = now,
-        read_marker = lambda p: read_install_marker(p),
-        latest_release = lambda repo: latest_published_release(repo),
-        behind = lambda installed, latest: is_behind(installed, latest),
-        display_tag = lambda marker: marker.get("tag") or marker.get("release_tag"),
-        compare_tag = lambda marker: marker.get("release_tag") or marker.get("tag"),
+        threshold_days=threshold_days,
+        now=now,
+        read_marker=lambda p: read_install_marker(p),
+        latest_release=lambda repo: latest_published_release(repo),
+        behind=lambda installed, latest: is_behind(installed, latest),
+        display_tag=lambda marker: marker.get("tag") or marker.get("release_tag"),
+        compare_tag=lambda marker: marker.get("release_tag") or marker.get("tag"),
     )
 
 
 def format_stale_warning(info: dict) -> str:
     """Human-readable one-liner for stale prebuilt info."""
-    return _flow.format_stale_warning(info, component = "llama.cpp")
+    return _flow.format_stale_warning(info, component="llama.cpp")
 
 
 def reset_caches(*, drop_disk: bool = False) -> None:
     """Drop the in-memory freshness caches. The no-arg form is test-only. With ``drop_disk = True`` also delete the on-disk 24h release cache, used by the post-install/update path: clearing memory alone leaves the stale same-base value on disk, so if the post-install GitHub refresh cannot reach the network ``latest_published_release`` would replay that stale disk value (see its last-good fallback) and the banner could linger. Dropping the disk cache makes latest read None in that offline case, so the banner fails open instead of pointing at the just-replaced build."""
     _flow.reset_caches(
         (_marker_cache, _release_memo, _release_failed_at, _assets_memo),
-        drop_disk = drop_disk,
-        cache_dir = lambda: _cache_dir(),
+        drop_disk=drop_disk,
+        cache_dir=lambda: _cache_dir(),
     )

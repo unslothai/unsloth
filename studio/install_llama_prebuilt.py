@@ -338,7 +338,7 @@ JSON_FETCH_ATTEMPTS = 3
 DEFAULT_GITHUB_RELEASE_SCAN_MAX_PAGES = env_int(
     "UNSLOTH_LLAMA_GITHUB_RELEASE_SCAN_MAX_PAGES",
     5,
-    minimum = 1,
+    minimum=1,
 )
 SERVER_PORT_BIND_ATTEMPTS = 3
 SERVER_BIND_RETRY_WINDOW_SECONDS = 5.0
@@ -346,7 +346,7 @@ TTY_PROGRESS_START_DELAY_SECONDS = 0.5
 DEFAULT_MAX_PREBUILT_RELEASE_FALLBACKS = env_int(
     "UNSLOTH_LLAMA_MAX_PREBUILT_RELEASE_FALLBACKS",
     2,
-    minimum = 1,
+    minimum=1,
 )
 # Deeper macOS-only walk-back: upstream can ship a run of prebuilts built for a
 # newer macOS than the host, only caught at validate time, so an older host must
@@ -354,7 +354,7 @@ DEFAULT_MAX_PREBUILT_RELEASE_FALLBACKS = env_int(
 DEFAULT_MAX_MACOS_RELEASE_FALLBACKS = env_int(
     "UNSLOTH_LLAMA_MAX_MACOS_RELEASE_FALLBACKS",
     16,
-    minimum = 1,
+    minimum=1,
 )
 # Last upstream macOS release before ggml-org moved macOS builds to Tahoe.
 _PINNED_MACOS_FALLBACK_TAG = "b9415"
@@ -413,12 +413,12 @@ class HostInfo:
     # compute_caps holds only the VISIBLE ones and empties under a mask, which is the
     # selector's unknown-SM path: it skips min_sm/max_sm and could hand a masked sm_61
     # host an sm_70 floor.
-    physical_compute_caps: list[str] = field(default_factory = list)
+    physical_compute_caps: list[str] = field(default_factory=list)
     has_intel_gpu: bool = False
     # AMD present, ROCm unusable. Probed only when neither NVIDIA nor ROCm is usable.
     has_amd_gpu_without_rocm: bool = False
     rocm_gfx_target: str | None = None
-    rocm_gfx_targets: list[str] = field(default_factory = list)
+    rocm_gfx_targets: list[str] = field(default_factory=list)
     # (major, minor) from platform.mac_ver(); None off macOS or if unparseable.
     # Skips a macos prebuilt whose minimum-OS exceeds this host.
     macos_version: tuple[int, int] | None = None
@@ -456,7 +456,7 @@ class AssetChoice:
     mapped_targets: list[str] | None = None
 
 
-@dataclass(frozen = True)
+@dataclass(frozen=True)
 class PublishedLlamaArtifact:
     asset_name: str
     install_kind: str
@@ -470,7 +470,7 @@ class PublishedLlamaArtifact:
     # ROCm bundles only: the umbrella gfx target (e.g. "gfx110X") and the
     # concrete gfx archs it covers (e.g. ["gfx1100", "gfx1101", ...]).
     gfx_target: str | None = None
-    mapped_targets: list[str] = field(default_factory = list)
+    mapped_targets: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -486,10 +486,10 @@ class PublishedReleaseBundle:
     resolved_source_ref: str | None = None
     source_commit: str | None = None
     source_commit_short: str | None = None
-    assets: dict[str, str] = field(default_factory = dict)
+    assets: dict[str, str] = field(default_factory=dict)
     manifest_asset_name: str = DEFAULT_PUBLISHED_MANIFEST_ASSET
-    artifacts: list[PublishedLlamaArtifact] = field(default_factory = list)
-    selection_log: list[str] = field(default_factory = list)
+    artifacts: list[PublishedLlamaArtifact] = field(default_factory=list)
+    selection_log: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -507,7 +507,7 @@ class LinuxCudaSelection:
 CudaRuntimePreference = _core.CudaRuntimePreference
 
 
-@dataclass(frozen = True)
+@dataclass(frozen=True)
 class ApprovedArtifactHash:
     asset_name: str
     sha256: str
@@ -530,16 +530,16 @@ class ApprovedReleaseChecksums:
     # git tree id of ggml/ in the built source: changes exactly when ggml does,
     # so it is the ABI key for slim whisper bundles.
     ggml_tree: str | None = None
-    artifacts: dict[str, ApprovedArtifactHash] = field(default_factory = dict)
+    artifacts: dict[str, ApprovedArtifactHash] = field(default_factory=dict)
 
 
-@dataclass(frozen = True)
+@dataclass(frozen=True)
 class ResolvedPublishedRelease:
     bundle: PublishedReleaseBundle
     checksums: ApprovedReleaseChecksums
 
 
-@dataclass(frozen = True)
+@dataclass(frozen=True)
 class SourceBuildPlan:
     source_url: str
     source_ref: str
@@ -552,7 +552,7 @@ class SourceBuildPlan:
     source_commit: str | None = None
 
 
-@dataclass(frozen = True)
+@dataclass(frozen=True)
 class InstallReleasePlan:
     requested_tag: str
     llama_tag: str
@@ -605,7 +605,7 @@ _LOG_TO_STDOUT = False
 
 
 def log(message: str) -> None:
-    print(f"[llama-prebuilt] {message}", file = sys.stdout if _LOG_TO_STDOUT else sys.stderr)
+    print(f"[llama-prebuilt] {message}", file=sys.stdout if _LOG_TO_STDOUT else sys.stderr)
 
 
 def log_lines(lines: Iterable[str]) -> None:
@@ -674,7 +674,7 @@ def normalize_source_commit(value: str | None) -> str | None:
 
 
 def validate_schema_version(payload: dict[str, Any], *, label: str) -> None:
-    _core.validate_schema_version(payload, label = label)
+    _core.validate_schema_version(payload, label=label)
 
 
 def repo_slug_from_source(value: str | None) -> str | None:
@@ -906,10 +906,10 @@ def download_bytes(
         return _core.download_bytes(
             _OPS,
             url,
-            timeout = timeout,
-            attempts = attempts,
-            headers = headers,
-            progress_label = progress_label,
+            timeout=timeout,
+            attempts=attempts,
+            headers=headers,
+            progress_label=progress_label,
         )
 
     # Cache only small metadata. Archive downloads must never be held in memory.
@@ -955,12 +955,12 @@ def download_file_verified(
     url: str, destination: Path, *, expected_sha256: str | None, label: str
 ) -> None:
     _core.download_file_verified(
-        _OPS, url, destination, expected_sha256 = expected_sha256, label = label
+        _OPS, url, destination, expected_sha256=expected_sha256, label=label
     )
 
 
 def upstream_source_archive_urls(tag: str) -> list[str]:
-    encoded_tag = urllib.parse.quote(tag, safe = "")
+    encoded_tag = urllib.parse.quote(tag, safe="")
     return [
         f"https://codeload.github.com/{UPSTREAM_REPO}/tar.gz/refs/tags/{encoded_tag}",
         f"https://github.com/{UPSTREAM_REPO}/archive/refs/tags/{encoded_tag}.tar.gz",
@@ -968,7 +968,7 @@ def upstream_source_archive_urls(tag: str) -> list[str]:
 
 
 def commit_source_archive_urls(repo: str, source_commit: str) -> list[str]:
-    encoded_commit = urllib.parse.quote(source_commit, safe = "")
+    encoded_commit = urllib.parse.quote(source_commit, safe="")
     return [
         f"https://codeload.github.com/{repo}/tar.gz/{encoded_commit}",
         f"https://github.com/{repo}/archive/{encoded_commit}.tar.gz",
@@ -1022,14 +1022,14 @@ def github_releases(
 
 
 def web_release_tags(repo: str, *, limit: int = 30) -> list[str]:
-    return _core.web_release_tags(_OPS, repo, limit = limit)
+    return _core.web_release_tags(_OPS, repo, limit=limit)
 
 
 def web_release_payload(repo: str, tag: str) -> dict[str, Any]:
     # Upstream publishes every bNNNN build as a prerelease, so the tag already answers
     # the label question if its page cannot be reached.
     default = True if repo == UPSTREAM_REPO and is_release_tag_like(tag) else None
-    return _core.web_release_payload(_OPS, repo, tag, prerelease_default = default)
+    return _core.web_release_payload(_OPS, repo, tag, prerelease_default=default)
 
 
 def upstream_web_release_tags(repo: str, *, limit: int = 30) -> list[str]:
@@ -1038,7 +1038,7 @@ def upstream_web_release_tags(repo: str, *, limit: int = 30) -> list[str]:
     Filtered to bNNNN: upstream's designated latest is a versioned pointer release
     whose only asset is nightly-tag.txt, so it never names a release carrying binaries.
     """
-    return [tag for tag in web_release_tags(repo, limit = limit) if is_release_tag_like(tag)]
+    return [tag for tag in web_release_tags(repo, limit=limit) if is_release_tag_like(tag)]
 
 
 def latest_upstream_release_tag() -> str:
@@ -1069,7 +1069,7 @@ def latest_upstream_release_tag() -> str:
             return rest_tag
         raise reason
     try:
-        tags = upstream_web_release_tags(UPSTREAM_REPO, limit = 10)
+        tags = upstream_web_release_tags(UPSTREAM_REPO, limit=10)
     except Exception as exc:  # noqa: BLE001 - the REST cause is the one worth reporting
         if rest_tag:
             log(f"could not resolve a build tag from the release feed ({exc}); using {rest_tag}")
@@ -1154,7 +1154,7 @@ def _web_release_payloads(repo: str, reason: Exception) -> Iterable[dict[str, An
     only the releases actually looked at cost a request.
     """
     try:
-        tags = upstream_web_release_tags(repo, limit = DEFAULT_GITHUB_RELEASE_SCAN_MAX_PAGES * 4)
+        tags = upstream_web_release_tags(repo, limit=DEFAULT_GITHUB_RELEASE_SCAN_MAX_PAGES * 4)
     except Exception as exc:  # noqa: BLE001 - report both causes
         raise RuntimeError(f"{reason}; release feed fallback also failed: {exc}") from reason
     if not tags:
@@ -1218,7 +1218,7 @@ def iter_release_payloads_by_time(
             raise
 
     try:
-        listing = github_releases(repo, max_pages = DEFAULT_GITHUB_RELEASE_SCAN_MAX_PAGES)
+        listing = github_releases(repo, max_pages=DEFAULT_GITHUB_RELEASE_SCAN_MAX_PAGES)
     except RELEASE_LISTING_TRANSPORT_ERRORS as exc:
         if not _web_fallback_eligible(repo):
             raise
@@ -1230,7 +1230,7 @@ def iter_release_payloads_by_time(
         for release in listing
         if isinstance(release, dict) and release_is_selectable(repo, release)
     ]
-    releases.sort(key = release_time_sort_key, reverse = True)
+    releases.sort(key=release_time_sort_key, reverse=True)
     for release in releases:
         yield release
 
@@ -1248,10 +1248,10 @@ def synthetic_checksums_for_release(
     repo: str, release_tag: str, upstream_tag: str
 ) -> ApprovedReleaseChecksums:
     return ApprovedReleaseChecksums(
-        repo = repo,
-        release_tag = release_tag,
-        upstream_tag = upstream_tag,
-        artifacts = {},
+        repo=repo,
+        release_tag=release_tag,
+        upstream_tag=upstream_tag,
+        artifacts={},
     )
 
 
@@ -1278,7 +1278,7 @@ def _masked_nvidia_selection_host(host: HostInfo) -> HostInfo | None:
             "selecting against the physical compute caps "
             f"{','.join(host.physical_compute_caps)} the mask hid"
         )
-        return dataclasses_replace(host, compute_caps = list(host.physical_compute_caps))
+        return dataclasses_replace(host, compute_caps=list(host.physical_compute_caps))
     return host
 
 
@@ -1289,9 +1289,9 @@ def direct_upstream_release_plan(
     if not isinstance(release_tag, str) or not release_tag:
         return None
     if not direct_release_matches_request(
-        release_tag = release_tag,
-        llama_tag = release_tag,
-        requested_tag = requested_tag,
+        release_tag=release_tag,
+        llama_tag=release_tag,
+        requested_tag=requested_tag,
     ):
         return None
 
@@ -1303,7 +1303,7 @@ def direct_upstream_release_plan(
         if host.has_usable_nvidia or masked_host is not None:
             selection_host = masked_host or host
             torch_preference = detect_torch_cuda_runtime_preference(
-                selection_host, gpu_hidden_by_mask = masked_host is not None
+                selection_host, gpu_hidden_by_mask=masked_host is not None
             )
             attempts.extend(
                 windows_cuda_attempts(
@@ -1321,12 +1321,12 @@ def direct_upstream_release_plan(
             if hip_url:
                 attempts.append(
                     AssetChoice(
-                        repo = repo,
-                        tag = release_tag,
-                        name = hip_asset,
-                        url = hip_url,
-                        source_label = "upstream",
-                        install_kind = "windows-hip",
+                        repo=repo,
+                        tag=release_tag,
+                        name=hip_asset,
+                        url=hip_url,
+                        source_label="upstream",
+                        install_kind="windows-hip",
                     )
                 )
         # Intel or AMD-without-usable-ROCm: use the Vulkan prebuilt, matching the published
@@ -1342,12 +1342,12 @@ def direct_upstream_release_plan(
             if vulkan_url:
                 attempts.append(
                     AssetChoice(
-                        repo = repo,
-                        tag = release_tag,
-                        name = vulkan_asset,
-                        url = vulkan_url,
-                        source_label = "upstream",
-                        install_kind = "windows-vulkan",
+                        repo=repo,
+                        tag=release_tag,
+                        name=vulkan_asset,
+                        url=vulkan_url,
+                        source_label="upstream",
+                        install_kind="windows-vulkan",
                     )
                 )
         cpu_asset = f"llama-{release_tag}-bin-win-cpu-x64.zip"
@@ -1355,12 +1355,12 @@ def direct_upstream_release_plan(
         if cpu_url:
             attempts.append(
                 AssetChoice(
-                    repo = repo,
-                    tag = release_tag,
-                    name = cpu_asset,
-                    url = cpu_url,
-                    source_label = "upstream",
-                    install_kind = "windows-cpu",
+                    repo=repo,
+                    tag=release_tag,
+                    name=cpu_asset,
+                    url=cpu_url,
+                    source_label="upstream",
+                    install_kind="windows-cpu",
                 )
             )
     elif host.is_windows and host.is_arm64:
@@ -1374,7 +1374,7 @@ def direct_upstream_release_plan(
                     assets,
                     torch_preference.runtime_line,
                     torch_preference.selection_log,
-                    arch = "arm64",
+                    arch="arm64",
                 )
             )
             attempts[:] = _drop_blackwell_incapable_windows_cuda(host, attempts)
@@ -1387,12 +1387,12 @@ def direct_upstream_release_plan(
         if cpu_url:
             attempts.append(
                 AssetChoice(
-                    repo = repo,
-                    tag = release_tag,
-                    name = cpu_asset,
-                    url = cpu_url,
-                    source_label = "upstream",
-                    install_kind = "windows-arm64",
+                    repo=repo,
+                    tag=release_tag,
+                    name=cpu_asset,
+                    url=cpu_url,
+                    source_label="upstream",
+                    install_kind="windows-arm64",
                 )
             )
     elif host.is_macos and host.is_arm64:
@@ -1401,12 +1401,12 @@ def direct_upstream_release_plan(
         if asset_url:
             attempts.append(
                 AssetChoice(
-                    repo = repo,
-                    tag = release_tag,
-                    name = asset_name,
-                    url = asset_url,
-                    source_label = "upstream",
-                    install_kind = "macos-arm64",
+                    repo=repo,
+                    tag=release_tag,
+                    name=asset_name,
+                    url=asset_url,
+                    source_label="upstream",
+                    install_kind="macos-arm64",
                 )
             )
     elif host.is_macos and host.is_x86_64:
@@ -1415,12 +1415,12 @@ def direct_upstream_release_plan(
         if asset_url:
             attempts.append(
                 AssetChoice(
-                    repo = repo,
-                    tag = release_tag,
-                    name = asset_name,
-                    url = asset_url,
-                    source_label = "upstream",
-                    install_kind = "macos-x64",
+                    repo=repo,
+                    tag=release_tag,
+                    name=asset_name,
+                    url=asset_url,
+                    source_label="upstream",
+                    install_kind="macos-x64",
                 )
             )
     elif host.is_linux and host.is_x86_64 and not host.has_usable_nvidia and not host.has_rocm:
@@ -1437,12 +1437,12 @@ def direct_upstream_release_plan(
             if vulkan_url:
                 attempts.append(
                     AssetChoice(
-                        repo = repo,
-                        tag = release_tag,
-                        name = vulkan_asset,
-                        url = vulkan_url,
-                        source_label = "upstream",
-                        install_kind = "linux-vulkan",
+                        repo=repo,
+                        tag=release_tag,
+                        name=vulkan_asset,
+                        url=vulkan_url,
+                        source_label="upstream",
+                        install_kind="linux-vulkan",
                     )
                 )
         asset_name = f"llama-{release_tag}-bin-ubuntu-x64.tar.gz"
@@ -1450,12 +1450,12 @@ def direct_upstream_release_plan(
         if asset_url:
             attempts.append(
                 AssetChoice(
-                    repo = repo,
-                    tag = release_tag,
-                    name = asset_name,
-                    url = asset_url,
-                    source_label = "upstream",
-                    install_kind = "linux-cpu",
+                    repo=repo,
+                    tag=release_tag,
+                    name=asset_name,
+                    url=asset_url,
+                    source_label="upstream",
+                    install_kind="linux-cpu",
                 )
             )
     elif host.is_linux and host.is_arm64 and not host.has_usable_nvidia:
@@ -1473,12 +1473,12 @@ def direct_upstream_release_plan(
             if vulkan_url:
                 attempts.append(
                     AssetChoice(
-                        repo = repo,
-                        tag = release_tag,
-                        name = vulkan_asset,
-                        url = vulkan_url,
-                        source_label = "upstream",
-                        install_kind = "linux-vulkan",
+                        repo=repo,
+                        tag=release_tag,
+                        name=vulkan_asset,
+                        url=vulkan_url,
+                        source_label="upstream",
+                        install_kind="linux-vulkan",
                     )
                 )
         asset_name = f"llama-{release_tag}-bin-ubuntu-arm64.tar.gz"
@@ -1486,12 +1486,12 @@ def direct_upstream_release_plan(
         if asset_url:
             attempts.append(
                 AssetChoice(
-                    repo = repo,
-                    tag = release_tag,
-                    name = asset_name,
-                    url = asset_url,
-                    source_label = "upstream",
-                    install_kind = "linux-arm64",
+                    repo=repo,
+                    tag=release_tag,
+                    name=asset_name,
+                    url=asset_url,
+                    source_label="upstream",
+                    install_kind="linux-arm64",
                 )
             )
     if not attempts:
@@ -1509,11 +1509,11 @@ def direct_upstream_release_plan(
     for attempt in verified:
         attempt.unmanifested_digest = True
     return InstallReleasePlan(
-        requested_tag = requested_tag,
-        llama_tag = release_tag,
-        release_tag = release_tag,
-        attempts = verified,
-        approved_checksums = synthetic_checksums_for_release(
+        requested_tag=requested_tag,
+        llama_tag=release_tag,
+        release_tag=release_tag,
+        attempts=verified,
+        approved_checksums=synthetic_checksums_for_release(
             repo,
             release_tag,
             release_tag,
@@ -1547,7 +1547,7 @@ def resolve_simple_install_release_plans(
             host,
             published_repo,
             published_release_tag,
-            max_release_fallbacks = max_release_fallbacks,
+            max_release_fallbacks=max_release_fallbacks,
         )
     requested_tag = normalized_requested_llama_tag(llama_tag)
     allow_older_release_fallback = requested_tag == "latest" and not published_release_tag
@@ -1684,21 +1684,21 @@ def parse_published_artifact(raw: Any) -> PublishedLlamaArtifact | None:
         else []
     )
     return PublishedLlamaArtifact(
-        asset_name = asset_name,
-        install_kind = install_kind,
-        runtime_line = runtime_line if isinstance(runtime_line, str) and runtime_line else None,
-        coverage_class = coverage_class
+        asset_name=asset_name,
+        install_kind=install_kind,
+        runtime_line=runtime_line if isinstance(runtime_line, str) and runtime_line else None,
+        coverage_class=coverage_class
         if isinstance(coverage_class, str) and coverage_class
         else None,
-        supported_sms = supported_sms,
-        min_sm = min_sm,
-        max_sm = max_sm,
-        bundle_profile = bundle_profile
+        supported_sms=supported_sms,
+        min_sm=min_sm,
+        max_sm=max_sm,
+        bundle_profile=bundle_profile
         if isinstance(bundle_profile, str) and bundle_profile
         else None,
-        rank = rank,
-        gfx_target = gfx_target,
-        mapped_targets = mapped_targets,
+        rank=rank,
+        gfx_target=gfx_target,
+        mapped_targets=mapped_targets,
     )
 
 
@@ -1720,8 +1720,8 @@ def parse_published_release_bundle(
         ("bytes", manifest_url),
         lambda: download_bytes(
             manifest_url,
-            timeout = 30,
-            headers = auth_headers(manifest_url),
+            timeout=30,
+            headers=auth_headers(manifest_url),
         ),
     )
     manifest_sha256 = sha256_bytes(manifest_bytes)
@@ -1737,7 +1737,7 @@ def parse_published_release_bundle(
         )
     validate_schema_version(
         manifest_payload,
-        label = f"published manifest {DEFAULT_PUBLISHED_MANIFEST_ASSET} in {repo}@{release_tag}",
+        label=f"published manifest {DEFAULT_PUBLISHED_MANIFEST_ASSET} in {repo}@{release_tag}",
     )
     component = manifest_payload.get("component")
     upstream_tag = manifest_payload.get("upstream_tag")
@@ -1781,29 +1781,29 @@ def parse_published_release_bundle(
     if source_commit:
         selection_log.append(f"published_release: source_commit={source_commit}")
     return PublishedReleaseBundle(
-        repo = repo,
-        release_tag = release_tag,
-        upstream_tag = upstream_tag,
-        manifest_sha256 = manifest_sha256,
-        source_repo = source_repo if isinstance(source_repo, str) and source_repo else None,
-        source_repo_url = source_repo_url
+        repo=repo,
+        release_tag=release_tag,
+        upstream_tag=upstream_tag,
+        manifest_sha256=manifest_sha256,
+        source_repo=source_repo if isinstance(source_repo, str) and source_repo else None,
+        source_repo_url=source_repo_url
         if isinstance(source_repo_url, str) and source_repo_url
         else None,
-        source_ref_kind = source_ref_kind,
-        requested_source_ref = requested_source_ref
+        source_ref_kind=source_ref_kind,
+        requested_source_ref=requested_source_ref
         if isinstance(requested_source_ref, str) and requested_source_ref
         else None,
-        resolved_source_ref = resolved_source_ref
+        resolved_source_ref=resolved_source_ref
         if isinstance(resolved_source_ref, str) and resolved_source_ref
         else None,
-        source_commit = source_commit,
-        source_commit_short = source_commit_short
+        source_commit=source_commit,
+        source_commit_short=source_commit_short
         if isinstance(source_commit_short, str) and source_commit_short
         else None,
-        assets = assets,
-        manifest_asset_name = DEFAULT_PUBLISHED_MANIFEST_ASSET,
-        artifacts = artifacts,
-        selection_log = selection_log,
+        assets=assets,
+        manifest_asset_name=DEFAULT_PUBLISHED_MANIFEST_ASSET,
+        artifacts=artifacts,
+        selection_log=selection_log,
     )
 
 
@@ -1816,7 +1816,7 @@ def parse_approved_release_checksums(
         )
     validate_schema_version(
         payload,
-        label = f"published checksum asset {DEFAULT_PUBLISHED_SHA256_ASSET}",
+        label=f"published checksum asset {DEFAULT_PUBLISHED_SHA256_ASSET}",
     )
     if payload.get("component") != "llama.cpp":
         raise RuntimeError(
@@ -1855,10 +1855,10 @@ def parse_approved_release_checksums(
         repo_value = raw_entry.get("repo")
         kind_value = raw_entry.get("kind")
         artifacts[asset_name] = ApprovedArtifactHash(
-            asset_name = asset_name,
-            sha256 = digest,
-            repo = repo_value if isinstance(repo_value, str) and repo_value else None,
-            kind = kind_value if isinstance(kind_value, str) and kind_value else None,
+            asset_name=asset_name,
+            sha256=digest,
+            repo=repo_value if isinstance(repo_value, str) and repo_value else None,
+            kind=kind_value if isinstance(kind_value, str) and kind_value else None,
         )
 
     source_commit = normalize_source_commit(payload.get("source_commit"))
@@ -1870,26 +1870,26 @@ def parse_approved_release_checksums(
     requested_source_ref = payload.get("requested_source_ref")
     resolved_source_ref = payload.get("resolved_source_ref")
     return ApprovedReleaseChecksums(
-        repo = repo,
-        release_tag = release_tag,
-        upstream_tag = upstream_tag,
-        source_repo = source_repo if isinstance(source_repo, str) and source_repo else None,
-        source_repo_url = source_repo_url
+        repo=repo,
+        release_tag=release_tag,
+        upstream_tag=upstream_tag,
+        source_repo=source_repo if isinstance(source_repo, str) and source_repo else None,
+        source_repo_url=source_repo_url
         if isinstance(source_repo_url, str) and source_repo_url
         else None,
-        source_ref_kind = source_ref_kind,
-        requested_source_ref = requested_source_ref
+        source_ref_kind=source_ref_kind,
+        requested_source_ref=requested_source_ref
         if isinstance(requested_source_ref, str) and requested_source_ref
         else None,
-        resolved_source_ref = resolved_source_ref
+        resolved_source_ref=resolved_source_ref
         if isinstance(resolved_source_ref, str) and resolved_source_ref
         else None,
-        source_commit = source_commit,
-        source_commit_short = source_commit_short
+        source_commit=source_commit,
+        source_commit_short=source_commit_short
         if isinstance(source_commit_short, str) and source_commit_short
         else None,
-        ggml_tree = ggml_tree if isinstance(ggml_tree, str) and ggml_tree else None,
-        artifacts = artifacts,
+        ggml_tree=ggml_tree if isinstance(ggml_tree, str) and ggml_tree else None,
+        artifacts=artifacts,
     )
 
 
@@ -1919,7 +1919,7 @@ def iter_published_release_bundles(
     releases = (
         [github_release(repo, published_release_tag)]
         if published_release_tag
-        else github_releases(repo, max_pages = DEFAULT_GITHUB_RELEASE_SCAN_MAX_PAGES)
+        else github_releases(repo, max_pages=DEFAULT_GITHUB_RELEASE_SCAN_MAX_PAGES)
     )
     for release in releases:
         if not published_release_tag and (release.get("draft") or release.get("prerelease")):
@@ -2109,20 +2109,20 @@ def linux_cuda_choice_from_release(
         seen_attempts.add(asset_name)
         attempts.append(
             AssetChoice(
-                repo = release.repo,
-                tag = release.release_tag,
-                name = asset_name,
-                url = asset_url,
-                source_label = "published",
-                is_ready_bundle = True,
-                install_kind = cuda_install_kind,
-                bundle_profile = artifact.bundle_profile,
-                runtime_line = artifact.runtime_line,
-                coverage_class = artifact.coverage_class,
-                supported_sms = artifact.supported_sms,
-                min_sm = artifact.min_sm,
-                max_sm = artifact.max_sm,
-                selection_log = list(selection_log)
+                repo=release.repo,
+                tag=release.release_tag,
+                name=asset_name,
+                url=asset_url,
+                source_label="published",
+                is_ready_bundle=True,
+                install_kind=cuda_install_kind,
+                bundle_profile=artifact.bundle_profile,
+                runtime_line=artifact.runtime_line,
+                coverage_class=artifact.coverage_class,
+                supported_sms=artifact.supported_sms,
+                min_sm=artifact.min_sm,
+                max_sm=artifact.max_sm,
+                selection_log=list(selection_log)
                 + [
                     "linux_cuda_selection: selected "
                     f"{asset_name} runtime_line={artifact.runtime_line} coverage_class={artifact.coverage_class} reason={reason}"
@@ -2196,7 +2196,7 @@ def linux_cuda_choice_from_release(
         if coverage_candidates:
             artifact, url = sorted(
                 coverage_candidates,
-                key = lambda item: (
+                key=lambda item: (
                     _sm_range(item[0]),
                     item[0].rank,
                     item[0].max_sm or 0,
@@ -2225,7 +2225,7 @@ def linux_cuda_choice_from_release(
             "linux_cuda_selection: attempt "
             f"{attempt.name} runtime_line={attempt.runtime_line} coverage_class={attempt.coverage_class}"
         ]
-    return LinuxCudaSelection(attempts = attempts, selection_log = selection_log)
+    return LinuxCudaSelection(attempts=attempts, selection_log=selection_log)
 
 
 def latest_published_linux_cuda_tag(host: HostInfo, published_repo: str) -> str | None:
@@ -2236,7 +2236,7 @@ def latest_published_linux_cuda_tag(host: HostInfo, published_repo: str) -> str 
 
 
 def iter_upstream_releases() -> Iterable[dict[str, Any]]:
-    for release in github_releases(UPSTREAM_REPO, max_pages = DEFAULT_GITHUB_RELEASE_SCAN_MAX_PAGES):
+    for release in github_releases(UPSTREAM_REPO, max_pages=DEFAULT_GITHUB_RELEASE_SCAN_MAX_PAGES):
         if release.get("draft") or release.get("prerelease"):
             continue
         yield release
@@ -2370,7 +2370,7 @@ def _download_host_resolved_release(
             _release_asset_download_url(repo, release_tag, artifact.asset_name),
         )
     _validate_checksums_against_bundle(repo, bundle, checksums)
-    return ResolvedPublishedRelease(bundle = bundle, checksums = checksums)
+    return ResolvedPublishedRelease(bundle=bundle, checksums=checksums)
 
 
 def published_release_matches_request(bundle: PublishedReleaseBundle, requested_ref: str) -> bool:
@@ -2404,8 +2404,8 @@ def resolve_published_release(
                 f"but requested {normalized_requested}"
             )
         return ResolvedPublishedRelease(
-            bundle = bundle,
-            checksums = validated_checksums_for_bundle(repo, bundle),
+            bundle=bundle,
+            checksums=validated_checksums_for_bundle(repo, bundle),
         )
 
     skipped_invalid = 0
@@ -2421,7 +2421,7 @@ def resolve_published_release(
                 f"{repo}@{bundle.release_tag} ({exc})"
             )
             continue
-        return ResolvedPublishedRelease(bundle = bundle, checksums = checksums)
+        return ResolvedPublishedRelease(bundle=bundle, checksums=checksums)
 
     if normalized_requested == "latest":
         if skipped_invalid:
@@ -2502,8 +2502,8 @@ def iter_resolved_published_releases(
                 f"but requested {normalized_requested}"
             )
         yield ResolvedPublishedRelease(
-            bundle = bundle,
-            checksums = validated_checksums_for_bundle(repo, bundle),
+            bundle=bundle,
+            checksums=validated_checksums_for_bundle(repo, bundle),
         )
         return
 
@@ -2527,7 +2527,7 @@ def iter_resolved_published_releases(
             )
             continue
         yielded_valid = True
-        yield ResolvedPublishedRelease(bundle = bundle, checksums = checksums)
+        yield ResolvedPublishedRelease(bundle=bundle, checksums=checksums)
 
     if yielded_valid:
         return
@@ -2628,40 +2628,40 @@ def source_build_plan_for_release(release: ResolvedPublishedRelease) -> SourceBu
     source_url = source_clone_url_for_release(checksums, release.bundle)
     if exact_source is not None and source_url and source_commit:
         return SourceBuildPlan(
-            source_url = source_url,
-            source_ref = source_commit,
-            source_ref_kind = "commit",
-            compatibility_upstream_tag = release.bundle.upstream_tag,
-            source_repo = source_repo,
-            source_repo_url = source_repo_url,
-            requested_source_ref = requested_source_ref,
-            resolved_source_ref = resolved_source_ref,
-            source_commit = source_commit,
+            source_url=source_url,
+            source_ref=source_commit,
+            source_ref_kind="commit",
+            compatibility_upstream_tag=release.bundle.upstream_tag,
+            source_repo=source_repo,
+            source_repo_url=source_repo_url,
+            requested_source_ref=requested_source_ref,
+            resolved_source_ref=resolved_source_ref,
+            source_commit=source_commit,
         )
     source_ref = checkout_friendly_ref(source_ref_kind, resolved_source_ref or requested_source_ref)
     if source_url and source_ref and source_ref_kind in {"tag", "branch", "pull", "commit"}:
         return SourceBuildPlan(
-            source_url = source_url,
-            source_ref = source_ref,
-            source_ref_kind = source_ref_kind,
-            compatibility_upstream_tag = release.bundle.upstream_tag,
-            source_repo = source_repo,
-            source_repo_url = source_repo_url,
-            requested_source_ref = requested_source_ref,
-            resolved_source_ref = resolved_source_ref,
-            source_commit = source_commit,
+            source_url=source_url,
+            source_ref=source_ref,
+            source_ref_kind=source_ref_kind,
+            compatibility_upstream_tag=release.bundle.upstream_tag,
+            source_repo=source_repo,
+            source_repo_url=source_repo_url,
+            requested_source_ref=requested_source_ref,
+            resolved_source_ref=resolved_source_ref,
+            source_commit=source_commit,
         )
     return SourceBuildPlan(
-        source_url = source_url_from_repo_slug(UPSTREAM_REPO)
+        source_url=source_url_from_repo_slug(UPSTREAM_REPO)
         or "https://github.com/ggml-org/llama.cpp",
-        source_ref = release.bundle.upstream_tag,
-        source_ref_kind = "tag",
-        compatibility_upstream_tag = release.bundle.upstream_tag,
-        source_repo = source_repo,
-        source_repo_url = source_repo_url,
-        requested_source_ref = requested_source_ref,
-        resolved_source_ref = resolved_source_ref,
-        source_commit = source_commit,
+        source_ref=release.bundle.upstream_tag,
+        source_ref_kind="tag",
+        compatibility_upstream_tag=release.bundle.upstream_tag,
+        source_repo=source_repo,
+        source_repo_url=source_repo_url,
+        requested_source_ref=requested_source_ref,
+        resolved_source_ref=resolved_source_ref,
+        source_commit=source_commit,
     )
 
 
@@ -2683,11 +2683,11 @@ def resolve_source_build_plan(
             pass
         inferred_kind = infer_source_ref_kind(normalized_requested)
         return SourceBuildPlan(
-            source_url = "https://github.com/ggml-org/llama.cpp",
-            source_ref = checkout_friendly_ref(inferred_kind, normalized_requested)
+            source_url="https://github.com/ggml-org/llama.cpp",
+            source_ref=checkout_friendly_ref(inferred_kind, normalized_requested)
             or normalized_requested,
-            source_ref_kind = inferred_kind,
-            compatibility_upstream_tag = normalized_requested,
+            source_ref_kind=inferred_kind,
+            compatibility_upstream_tag=normalized_requested,
         )
 
     if published_repo:
@@ -2702,10 +2702,10 @@ def resolve_source_build_plan(
             pass
     latest_tag = latest_upstream_release_tag()
     return SourceBuildPlan(
-        source_url = "https://github.com/ggml-org/llama.cpp",
-        source_ref = latest_tag,
-        source_ref_kind = "tag",
-        compatibility_upstream_tag = latest_tag,
+        source_url="https://github.com/ggml-org/llama.cpp",
+        source_ref=latest_tag,
+        source_ref_kind="tag",
+        compatibility_upstream_tag=latest_tag,
     )
 
 
@@ -2727,12 +2727,12 @@ def run_capture(
         env = {**(os.environ if env is None else env), "__COMPAT_LAYER": "RunAsInvoker"}
     result = subprocess.run(
         command,
-        capture_output = True,
-        text = True,
-        encoding = "utf-8",
-        errors = "replace",
-        timeout = timeout,
-        env = env,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=timeout,
+        env=env,
         **windows_hidden_subprocess_kwargs(),
     )
     if check and result.returncode != 0:
@@ -2918,7 +2918,7 @@ def detect_host(*, probe_rocm_with_nvidia: bool = False) -> HostInfo:
         # container leftovers), which would otherwise misclassify an AMD
         # ROCm host as NVIDIA and short-circuit the ROCm path.
         try:
-            listing = run_capture([nvidia_smi, "-L"], timeout = 20)
+            listing = run_capture([nvidia_smi, "-L"], timeout=20)
             gpu_lines = [line for line in listing.stdout.splitlines() if line.startswith("GPU ")]
             if gpu_lines:
                 has_physical_nvidia = True
@@ -2927,7 +2927,7 @@ def detect_host(*, probe_rocm_with_nvidia: bool = False) -> HostInfo:
             pass
 
         try:
-            result = run_capture([nvidia_smi], timeout = 20)
+            result = run_capture([nvidia_smi], timeout=20)
             merged = "\n".join(part for part in (result.stdout, result.stderr) if part)
             # Newer NVIDIA drivers (e.g. 610.x on Windows) print
             # "CUDA UMD Version: X.Y" instead of the legacy
@@ -2951,7 +2951,7 @@ def detect_host(*, probe_rocm_with_nvidia: bool = False) -> HostInfo:
                     "--query-gpu=index,uuid,compute_cap",
                     "--format=csv,noheader",
                 ],
-                timeout = 20,
+                timeout=20,
             )
             visible_gpu_rows: list[tuple[str, str, str]] = []
             for raw in caps.stdout.splitlines():
@@ -3095,8 +3095,8 @@ def detect_host(*, probe_rocm_with_nvidia: bool = False) -> HostInfo:
             try:
                 _result = run_capture(
                     [_exe, *_cmd[1:]],
-                    timeout = 10,
-                    env = _dxg_probe_env if _cmd[0] == "rocminfo" else None,
+                    timeout=10,
+                    env=_dxg_probe_env if _cmd[0] == "rocminfo" else None,
                 )
             except Exception:
                 continue
@@ -3142,7 +3142,7 @@ def detect_host(*, probe_rocm_with_nvidia: bool = False) -> HostInfo:
             if not _exe:
                 continue
             try:
-                _result = run_capture([_exe, *_cmd[1:]], timeout = 10)
+                _result = run_capture([_exe, *_cmd[1:]], timeout=10)
             except Exception:
                 continue
             if _result.returncode == 0 and _result.stdout.strip():
@@ -3183,7 +3183,7 @@ def detect_host(*, probe_rocm_with_nvidia: bool = False) -> HostInfo:
             # No early break: a laptop can pair an Intel iGPU with an AMD dGPU.
             for _vendor_file in glob.glob("/sys/class/drm/card*/device/vendor"):
                 try:
-                    with open(_vendor_file, encoding = "utf-8") as _vf:
+                    with open(_vendor_file, encoding="utf-8") as _vf:
                         _vendor_id = _vf.read().strip().lower()
                 except (OSError, UnicodeDecodeError):
                     continue
@@ -3211,7 +3211,7 @@ def detect_host(*, probe_rocm_with_nvidia: bool = False) -> HostInfo:
                                 "Get-CimInstance Win32_VideoController | "
                                 "Select-Object -ExpandProperty Name",
                             ],
-                            timeout = 15,
+                            timeout=15,
                         )
                         if _result.returncode == 0:
                             _names = _result.stdout.lower()
@@ -3223,26 +3223,26 @@ def detect_host(*, probe_rocm_with_nvidia: bool = False) -> HostInfo:
                         pass
 
     return HostInfo(
-        system = system,
-        machine = machine,
-        is_windows = is_windows,
-        is_linux = is_linux,
-        is_macos = is_macos,
-        is_x86_64 = is_x86_64,
-        is_arm64 = is_arm64,
-        nvidia_smi = nvidia_smi,
-        driver_cuda_version = driver_cuda_version,
-        compute_caps = compute_caps,
-        physical_compute_caps = physical_compute_caps,
-        visible_cuda_devices = visible_cuda_devices,
-        has_physical_nvidia = has_physical_nvidia,
-        has_usable_nvidia = has_usable_nvidia,
-        has_rocm = has_rocm,
-        has_intel_gpu = has_intel_gpu,
-        has_amd_gpu_without_rocm = has_amd_gpu_without_rocm,
-        rocm_gfx_target = rocm_gfx_target,
-        rocm_gfx_targets = rocm_gfx_targets,
-        macos_version = macos_version,
+        system=system,
+        machine=machine,
+        is_windows=is_windows,
+        is_linux=is_linux,
+        is_macos=is_macos,
+        is_x86_64=is_x86_64,
+        is_arm64=is_arm64,
+        nvidia_smi=nvidia_smi,
+        driver_cuda_version=driver_cuda_version,
+        compute_caps=compute_caps,
+        physical_compute_caps=physical_compute_caps,
+        visible_cuda_devices=visible_cuda_devices,
+        has_physical_nvidia=has_physical_nvidia,
+        has_usable_nvidia=has_usable_nvidia,
+        has_rocm=has_rocm,
+        has_intel_gpu=has_intel_gpu,
+        has_amd_gpu_without_rocm=has_amd_gpu_without_rocm,
+        rocm_gfx_target=rocm_gfx_target,
+        rocm_gfx_targets=rocm_gfx_targets,
+        macos_version=macos_version,
     )
 
 
@@ -3273,13 +3273,13 @@ def _apply_host_overrides(
     if force_cpu:
         return dataclasses_replace(
             host,
-            has_usable_nvidia = False,
-            has_physical_nvidia = False,
-            has_rocm = False,
-            rocm_gfx_target = None,
-            rocm_gfx_targets = [],
-            has_intel_gpu = False,
-            has_amd_gpu_without_rocm = False,
+            has_usable_nvidia=False,
+            has_physical_nvidia=False,
+            has_rocm=False,
+            rocm_gfx_target=None,
+            rocm_gfx_targets=[],
+            has_intel_gpu=False,
+            has_amd_gpu_without_rocm=False,
         )
     gfx = _normalize_forwarded_gfx(override_rocm_gfx)
     if gfx:
@@ -3313,11 +3313,11 @@ def _apply_host_overrides(
         ):
             _advisory = False
         if gfx != _manual and _active and gfx != _active and _advisory:
-            return dataclasses_replace(host, has_rocm = True)
+            return dataclasses_replace(host, has_rocm=True)
         return dataclasses_replace(
             host,
-            has_rocm = True,
-            rocm_gfx_target = gfx,
+            has_rocm=True,
+            rocm_gfx_target=gfx,
             # ADD the forwarded arch to the probe's per-GPU list, never replace it: that
             # list is the PHYSICAL inventory _should_auto_vulkan_for_amd_windows() reads,
             # and a forward says which GPU HIP should target, not which cards exist.
@@ -3325,7 +3325,7 @@ def _apply_host_overrides(
             # auto-route a box with a HIP-capable card to Vulkan, which then enumerates
             # that card regardless of HIP_VISIBLE_DEVICES. An empty probe still yields
             # [gfx], so the driver-only host the forward exists for keeps auto-Vulkan.
-            rocm_gfx_targets = list(dict.fromkeys([*_physical, gfx])),
+            rocm_gfx_targets=list(dict.fromkeys([*_physical, gfx])),
         )
     # The arch a previous install recorded, replayed by the updater. A remembered
     # probe result, not an operator override, so it only fills a gap: a host whose
@@ -3334,12 +3334,12 @@ def _apply_host_overrides(
     if remembered and not _active_rocm_gfx_target(host):
         return dataclasses_replace(
             host,
-            has_rocm = True,
-            rocm_gfx_target = remembered,
-            rocm_gfx_targets = list(dict.fromkeys([*_host_rocm_gfx_targets(host), remembered])),
+            has_rocm=True,
+            rocm_gfx_target=remembered,
+            rocm_gfx_targets=list(dict.fromkeys([*_host_rocm_gfx_targets(host), remembered])),
         )
     if override_has_rocm and not host.has_rocm:
-        return dataclasses_replace(host, has_rocm = True)
+        return dataclasses_replace(host, has_rocm=True)
     return host
 
 
@@ -3524,16 +3524,16 @@ def windows_cuda_attempts(
             )
         attempts.append(
             AssetChoice(
-                repo = UPSTREAM_REPO,
-                tag = llama_tag,
-                name = selected_name,
-                url = asset_url,
-                source_label = "upstream",
-                install_kind = install_kind,
-                runtime_line = runtime_line,
-                runtime_name = runtime_archive_name,
-                runtime_url = runtime_archive_url,
-                selection_log = attempt_log,
+                repo=UPSTREAM_REPO,
+                tag=llama_tag,
+                name=selected_name,
+                url=asset_url,
+                source_label="upstream",
+                install_kind=install_kind,
+                runtime_line=runtime_line,
+                runtime_name=runtime_archive_name,
+                runtime_url=runtime_archive_url,
+                selection_log=attempt_log,
             )
         )
     return attempts
@@ -3626,7 +3626,7 @@ def published_windows_cuda_attempts(
                 },
                 preferred_runtime_line,
                 selection_log,
-                arch = arch,
+                arch=arch,
             )
             if attempt.runtime_line
         ]
@@ -3698,7 +3698,7 @@ def published_windows_cuda_attempts(
             picks.append(
                 sorted(
                     targeted,
-                    key = lambda item: (
+                    key=lambda item: (
                         _sm_range(item[0]),
                         item[0].rank,
                         item[0].max_sm or 0,
@@ -3729,21 +3729,21 @@ def published_windows_cuda_attempts(
                 )
             attempts.append(
                 AssetChoice(
-                    repo = release.repo,
-                    tag = release.release_tag,
-                    name = artifact.asset_name,
-                    url = asset_url,
-                    source_label = "published",
-                    install_kind = install_kind,
-                    runtime_line = runtime_line,
-                    runtime_name = runtime_archive_name,
-                    runtime_url = runtime_archive_url,
-                    bundle_profile = artifact.bundle_profile,
-                    coverage_class = artifact.coverage_class,
-                    supported_sms = artifact.supported_sms,
-                    min_sm = artifact.min_sm,
-                    max_sm = artifact.max_sm,
-                    selection_log = attempt_log,
+                    repo=release.repo,
+                    tag=release.release_tag,
+                    name=artifact.asset_name,
+                    url=asset_url,
+                    source_label="published",
+                    install_kind=install_kind,
+                    runtime_line=runtime_line,
+                    runtime_name=runtime_archive_name,
+                    runtime_url=runtime_archive_url,
+                    bundle_profile=artifact.bundle_profile,
+                    coverage_class=artifact.coverage_class,
+                    supported_sms=artifact.supported_sms,
+                    min_sm=artifact.min_sm,
+                    max_sm=artifact.max_sm,
+                    selection_log=attempt_log,
                 )
             )
     return attempts
@@ -3762,7 +3762,7 @@ def resolve_windows_cuda_choices(
         upstream_assets,
         torch_preference.runtime_line,
         torch_preference.selection_log,
-        arch = arch,
+        arch=arch,
     )
     return attempts
 
@@ -3774,8 +3774,8 @@ def resolve_linux_cuda_choice(
     selection = linux_cuda_choice_from_release(
         host,
         release,
-        preferred_runtime_line = torch_preference.runtime_line,
-        selection_preamble = torch_preference.selection_log,
+        preferred_runtime_line=torch_preference.runtime_line,
+        selection_preamble=torch_preference.selection_log,
     )
     if selection is not None:
         return selection
@@ -3790,7 +3790,7 @@ def published_asset_choice_for_kind(
 ) -> AssetChoice | None:
     candidates = sorted(
         (artifact for artifact in release.artifacts if artifact.install_kind == install_kind),
-        key = lambda artifact: (artifact.rank, artifact.asset_name),
+        key=lambda artifact: (artifact.rank, artifact.asset_name),
     )
     for artifact in candidates:
         if host is not None and install_kind in VULKAN_INSTALL_KINDS:
@@ -3807,15 +3807,15 @@ def published_asset_choice_for_kind(
         if not asset_url:
             continue
         return AssetChoice(
-            repo = release.repo,
-            tag = release.release_tag,
-            name = artifact.asset_name,
-            url = asset_url,
-            source_label = "published",
-            install_kind = install_kind,
-            bundle_profile = artifact.bundle_profile,
-            runtime_line = artifact.runtime_line,
-            selection_log = list(release.selection_log)
+            repo=release.repo,
+            tag=release.release_tag,
+            name=artifact.asset_name,
+            url=asset_url,
+            source_label="published",
+            install_kind=install_kind,
+            bundle_profile=artifact.bundle_profile,
+            runtime_line=artifact.runtime_line,
+            selection_log=list(release.selection_log)
             + [f"published_selection: selected {artifact.asset_name} install_kind={install_kind}"],
         )
     return None
@@ -3835,7 +3835,7 @@ def _detect_host_rocm_version() -> tuple[int, int] | None:
         os.path.join(rocm_root, "lib", "rocm_version"),
     ):
         try:
-            with open(path, encoding = "utf-8") as fh:
+            with open(path, encoding="utf-8") as fh:
                 parts = fh.read().strip().split("-")[0].split(".")
             # Explicit length guard avoids relying on the broad except
             # below to swallow IndexError when the version file contains
@@ -3849,7 +3849,7 @@ def _detect_host_rocm_version() -> tuple[int, int] | None:
         try:
             # Off on Windows w/o a HIP SDK (avoids the UAC/DiskPart prompt);
             # hipconfig below and the version-file reads above cover that case.
-            result = run_capture([amd_smi, "version"], timeout = 5)
+            result = run_capture([amd_smi, "version"], timeout=5)
             if result.returncode == 0:
                 m = re.search(r"ROCm version:\s*(\d+)\.(\d+)", result.stdout)
                 if m:
@@ -3861,12 +3861,12 @@ def _detect_host_rocm_version() -> tuple[int, int] | None:
         try:
             result = subprocess.run(
                 [hipconfig, "--version"],
-                stdout = subprocess.PIPE,
-                stderr = subprocess.DEVNULL,
-                text = True,
-                encoding = "utf-8",
-                errors = "replace",
-                timeout = 5,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=5,
             )
             if result.returncode == 0:
                 raw = (result.stdout or "").strip().split("\n")[0]
@@ -3888,12 +3888,12 @@ def _detect_host_rocm_version() -> tuple[int, int] | None:
         try:
             _result = subprocess.run(
                 [_exe, *_cmd[1:]],
-                stdout = subprocess.PIPE,
-                stderr = subprocess.DEVNULL,
-                text = True,
-                encoding = "utf-8",
-                errors = "replace",
-                timeout = 5,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=5,
             )
         except Exception:
             continue
@@ -3937,15 +3937,15 @@ def published_rocm_choice_for_host(
         if not asset_url:
             continue
         return AssetChoice(
-            repo = release.repo,
-            tag = release.release_tag,
-            name = artifact.asset_name,
-            url = asset_url,
-            source_label = "published",
-            install_kind = install_kind,
-            gfx_target = artifact.gfx_target,
-            mapped_targets = list(artifact.mapped_targets),
-            selection_log = list(release.selection_log)
+            repo=release.repo,
+            tag=release.release_tag,
+            name=artifact.asset_name,
+            url=asset_url,
+            source_label="published",
+            install_kind=install_kind,
+            gfx_target=artifact.gfx_target,
+            mapped_targets=list(artifact.mapped_targets),
+            selection_log=list(release.selection_log)
             + [
                 f"rocm_selection: gpu={host.rocm_gfx_target} "
                 f"selected published {artifact.asset_name}"
@@ -3981,7 +3981,7 @@ def resolve_upstream_asset_choice(host: HostInfo, llama_tag: str) -> AssetChoice
                     continue
                 _parts = tuple(int(p) for p in _m.group(1).split("."))
                 rocm_candidates.append((_parts, _name))
-            rocm_candidates.sort(reverse = True)
+            rocm_candidates.sort(reverse=True)
             _host_rocm_version = _detect_host_rocm_version()
             _compatible: list[tuple[tuple[int, ...], str]] = rocm_candidates
             if _host_rocm_version is not None:
@@ -4008,12 +4008,12 @@ def resolve_upstream_asset_choice(host: HostInfo, llama_tag: str) -> AssetChoice
                     "this may fail preflight and fall back to a source build (safe)"
                 )
                 return AssetChoice(
-                    repo = UPSTREAM_REPO,
-                    tag = llama_tag,
-                    name = rocm_name,
-                    url = upstream_assets[rocm_name],
-                    source_label = "upstream",
-                    install_kind = "linux-rocm",
+                    repo=UPSTREAM_REPO,
+                    tag=llama_tag,
+                    name=rocm_name,
+                    url=upstream_assets[rocm_name],
+                    source_label="upstream",
+                    install_kind="linux-rocm",
                 )
             # No ROCm prebuilt available -- fall back to source build
             raise PrebuiltFallback(
@@ -4035,12 +4035,12 @@ def resolve_upstream_asset_choice(host: HostInfo, llama_tag: str) -> AssetChoice
             if vulkan_name in upstream_assets:
                 log(f"{vendor} detected -- using upstream Vulkan prebuilt {vulkan_name}")
                 return AssetChoice(
-                    repo = UPSTREAM_REPO,
-                    tag = llama_tag,
-                    name = vulkan_name,
-                    url = upstream_assets[vulkan_name],
-                    source_label = "upstream",
-                    install_kind = "linux-vulkan",
+                    repo=UPSTREAM_REPO,
+                    tag=llama_tag,
+                    name=vulkan_name,
+                    url=upstream_assets[vulkan_name],
+                    source_label="upstream",
+                    install_kind="linux-vulkan",
                 )
             log(f"{vendor} detected but no Vulkan prebuilt found -- falling back to CPU")
 
@@ -4048,12 +4048,12 @@ def resolve_upstream_asset_choice(host: HostInfo, llama_tag: str) -> AssetChoice
         if upstream_name not in upstream_assets:
             raise PrebuiltFallback("upstream Linux CPU asset was not found")
         return AssetChoice(
-            repo = UPSTREAM_REPO,
-            tag = llama_tag,
-            name = upstream_name,
-            url = upstream_assets[upstream_name],
-            source_label = "upstream",
-            install_kind = "linux-cpu",
+            repo=UPSTREAM_REPO,
+            tag=llama_tag,
+            name=upstream_name,
+            url=upstream_assets[upstream_name],
+            source_label="upstream",
+            install_kind="linux-cpu",
         )
 
     if host.is_windows and host.is_x86_64:
@@ -4077,12 +4077,12 @@ def resolve_upstream_asset_choice(host: HostInfo, llama_tag: str) -> AssetChoice
             if hip_name in upstream_assets:
                 log(f"AMD ROCm detected on Windows -- trying upstream HIP prebuilt {hip_name}")
                 return AssetChoice(
-                    repo = UPSTREAM_REPO,
-                    tag = llama_tag,
-                    name = hip_name,
-                    url = upstream_assets[hip_name],
-                    source_label = "upstream",
-                    install_kind = "windows-hip",
+                    repo=UPSTREAM_REPO,
+                    tag=llama_tag,
+                    name=hip_name,
+                    url=upstream_assets[hip_name],
+                    source_label="upstream",
+                    install_kind="windows-hip",
                 )
             log("AMD ROCm detected on Windows but no HIP prebuilt found -- falling back to CPU")
 
@@ -4098,12 +4098,12 @@ def resolve_upstream_asset_choice(host: HostInfo, llama_tag: str) -> AssetChoice
             if vulkan_name in upstream_assets:
                 log(f"{vendor} detected on Windows -- using upstream Vulkan prebuilt {vulkan_name}")
                 return AssetChoice(
-                    repo = UPSTREAM_REPO,
-                    tag = llama_tag,
-                    name = vulkan_name,
-                    url = upstream_assets[vulkan_name],
-                    source_label = "upstream",
-                    install_kind = "windows-vulkan",
+                    repo=UPSTREAM_REPO,
+                    tag=llama_tag,
+                    name=vulkan_name,
+                    url=upstream_assets[vulkan_name],
+                    source_label="upstream",
+                    install_kind="windows-vulkan",
                 )
             log(f"{vendor} detected on Windows but no Vulkan prebuilt found -- falling back to CPU")
 
@@ -4111,12 +4111,12 @@ def resolve_upstream_asset_choice(host: HostInfo, llama_tag: str) -> AssetChoice
         if upstream_name not in upstream_assets:
             raise PrebuiltFallback("upstream Windows CPU asset was not found")
         return AssetChoice(
-            repo = UPSTREAM_REPO,
-            tag = llama_tag,
-            name = upstream_name,
-            url = upstream_assets[upstream_name],
-            source_label = "upstream",
-            install_kind = "windows-cpu",
+            repo=UPSTREAM_REPO,
+            tag=llama_tag,
+            name=upstream_name,
+            url=upstream_assets[upstream_name],
+            source_label="upstream",
+            install_kind="windows-cpu",
         )
 
     if host.is_windows and host.is_arm64:
@@ -4124,7 +4124,7 @@ def resolve_upstream_asset_choice(host: HostInfo, llama_tag: str) -> AssetChoice
         if host.has_usable_nvidia and _upstream_arm64_cuda_allowed():
             attempts = _drop_blackwell_incapable_windows_cuda(
                 host,
-                resolve_windows_cuda_choices(host, llama_tag, upstream_assets, arch = "arm64"),
+                resolve_windows_cuda_choices(host, llama_tag, upstream_assets, arch="arm64"),
             )
             if attempts:
                 return attempts[0]
@@ -4133,12 +4133,12 @@ def resolve_upstream_asset_choice(host: HostInfo, llama_tag: str) -> AssetChoice
         if upstream_name not in upstream_assets:
             raise PrebuiltFallback("upstream Windows ARM64 CPU asset was not found")
         return AssetChoice(
-            repo = UPSTREAM_REPO,
-            tag = llama_tag,
-            name = upstream_name,
-            url = upstream_assets[upstream_name],
-            source_label = "upstream",
-            install_kind = "windows-arm64",
+            repo=UPSTREAM_REPO,
+            tag=llama_tag,
+            name=upstream_name,
+            url=upstream_assets[upstream_name],
+            source_label="upstream",
+            install_kind="windows-arm64",
         )
 
     if host.is_macos and host.is_arm64:
@@ -4146,12 +4146,12 @@ def resolve_upstream_asset_choice(host: HostInfo, llama_tag: str) -> AssetChoice
         if upstream_name not in upstream_assets:
             raise PrebuiltFallback("upstream macOS arm64 asset was not found")
         return AssetChoice(
-            repo = UPSTREAM_REPO,
-            tag = llama_tag,
-            name = upstream_name,
-            url = upstream_assets[upstream_name],
-            source_label = "upstream",
-            install_kind = "macos-arm64",
+            repo=UPSTREAM_REPO,
+            tag=llama_tag,
+            name=upstream_name,
+            url=upstream_assets[upstream_name],
+            source_label="upstream",
+            install_kind="macos-arm64",
         )
 
     if host.is_macos and host.is_x86_64:
@@ -4159,12 +4159,12 @@ def resolve_upstream_asset_choice(host: HostInfo, llama_tag: str) -> AssetChoice
         if upstream_name not in upstream_assets:
             raise PrebuiltFallback("upstream macOS x64 asset was not found")
         return AssetChoice(
-            repo = UPSTREAM_REPO,
-            tag = llama_tag,
-            name = upstream_name,
-            url = upstream_assets[upstream_name],
-            source_label = "upstream",
-            install_kind = "macos-x64",
+            repo=UPSTREAM_REPO,
+            tag=llama_tag,
+            name=upstream_name,
+            url=upstream_assets[upstream_name],
+            source_label="upstream",
+            install_kind="macos-x64",
         )
 
     raise PrebuiltFallback(f"no prebuilt policy exists for {host.system} {host.machine}")
@@ -4192,7 +4192,7 @@ def resolve_release_asset_choice(
     if host.is_windows and host.is_x86_64 and (host.has_usable_nvidia or masked_host is not None):
         selection_host = masked_host or host
         torch_preference = detect_torch_cuda_runtime_preference(
-            selection_host, gpu_hidden_by_mask = masked_host is not None
+            selection_host, gpu_hidden_by_mask=masked_host is not None
         )
         published_attempts = published_windows_cuda_attempts(
             selection_host,
@@ -4229,7 +4229,7 @@ def resolve_release_asset_choice(
             choices = [
                 choice
                 for choice in (
-                    published_asset_choice_for_kind(release, "windows-vulkan", host = host),
+                    published_asset_choice_for_kind(release, "windows-vulkan", host=host),
                     published_asset_choice_for_kind(release, "windows-cpu"),
                 )
                 if choice is not None
@@ -4259,7 +4259,7 @@ def resolve_release_asset_choice(
                     release,
                     torch_preference.runtime_line,
                     torch_preference.selection_log,
-                    arch = "arm64",
+                    arch="arm64",
                 ),
             )
             if published_arm64_cuda:
@@ -4286,7 +4286,7 @@ def resolve_release_asset_choice(
                     host,
                     llama_tag,
                     upstream_arm64_assets,
-                    arch = "arm64",
+                    arch="arm64",
                 ),
             )
             if upstream_arm64_cuda:
@@ -4345,11 +4345,11 @@ def copy_globs(
     *,
     required: bool = True,
 ) -> None:
-    destination.mkdir(parents = True, exist_ok = True)
+    destination.mkdir(parents=True, exist_ok=True)
     matched_sources: dict[str, Path] = {}
     for path in sorted(
         (candidate for candidate in source_dir.rglob("*") if candidate.is_file()),
-        key = lambda candidate: (
+        key=lambda candidate: (
             len(candidate.relative_to(source_dir).parts),
             str(candidate),
         ),
@@ -4381,7 +4381,7 @@ def ensure_converter_scripts(install_dir: Path, llama_tag: str) -> None:
         source_url = f"{raw_base}/convert_hf_to_gguf.py"
         data = download_bytes(
             source_url,
-            progress_label = f"Downloading {download_label_from_url(source_url)}",
+            progress_label=f"Downloading {download_label_from_url(source_url)}",
         )
         if not data:
             raise RuntimeError(f"downloaded empty converter script from {source_url}")
@@ -4467,12 +4467,12 @@ def ensure_diffusion_visual_server(
                     "DiffusionGemma serving needs DG_VISUAL_BIN or a source build"
                 )
             return
-        bin_dir.mkdir(parents = True, exist_ok = True)
+        bin_dir.mkdir(parents=True, exist_ok=True)
         download_file_verified(
             match[1],
             target,
-            expected_sha256 = match[2],
-            label = f"diffusion visual server {match[0]}",
+            expected_sha256=match[2],
+            label=f"diffusion visual server {match[0]}",
         )
         if not host.is_windows:
             target.chmod(0o755)
@@ -4493,11 +4493,11 @@ def extracted_archive_root(extract_dir: Path) -> Path:
 
 
 def copy_directory_contents(source_dir: Path, destination: Path) -> None:
-    destination.mkdir(parents = True, exist_ok = True)
+    destination.mkdir(parents=True, exist_ok=True)
     for item in source_dir.iterdir():
         target = destination / item.name
         if item.is_dir():
-            shutil.copytree(item, target, dirs_exist_ok = True)
+            shutil.copytree(item, target, dirs_exist_ok=True)
         else:
             shutil.copy2(item, target)
 
@@ -4522,7 +4522,7 @@ def remove_agent_instruction_files(root: Path) -> int:
         return 0
 
     removed = 0
-    for current_dir, dirnames, filenames in os.walk(root, topdown = True, followlinks = False):
+    for current_dir, dirnames, filenames in os.walk(root, topdown=True, followlinks=False):
         current_path = Path(current_dir)
         # followlinks=False still follows Windows junctions.
         if current_path != root and _is_link_or_junction(current_path):
@@ -4565,7 +4565,7 @@ def hydrate_source_tree(
     # tree); fall back to codeload/archive for vanilla builds whose commit is real.
     source_urls = ([asset_url] if asset_url else []) + repo_urls
     label = source_label or f"llama.cpp source tree for {source_ref}"
-    extract_dir = Path(tempfile.mkdtemp(prefix = "source-extract-", dir = work_dir))
+    extract_dir = Path(tempfile.mkdtemp(prefix="source-extract-", dir=work_dir))
 
     try:
         log(f"downloading {label}")
@@ -4578,8 +4578,8 @@ def hydrate_source_tree(
                 download_file_verified(
                     source_url,
                     archive_path,
-                    expected_sha256 = expected_sha256,
-                    label = label,
+                    expected_sha256=expected_sha256,
+                    label=label,
                 )
                 downloaded = True
                 break
@@ -4622,11 +4622,11 @@ def normalize_install_layout(install_dir: Path, host: HostInfo) -> tuple[Path, P
     build_bin = install_dir / "build" / "bin"
     if host.is_windows:
         exec_dir = build_bin / "Release"
-        exec_dir.mkdir(parents = True, exist_ok = True)
+        exec_dir.mkdir(parents=True, exist_ok=True)
         return exec_dir / "llama-server.exe", exec_dir / "llama-quantize.exe"
 
-    install_dir.mkdir(parents = True, exist_ok = True)
-    build_bin.mkdir(parents = True, exist_ok = True)
+    install_dir.mkdir(parents=True, exist_ok=True)
+    build_bin.mkdir(parents=True, exist_ok=True)
     return install_dir / "llama-server", install_dir / "llama-quantize"
 
 
@@ -4669,7 +4669,7 @@ def overlay_directory_for_choice(install_dir: Path, choice: AssetChoice, host: H
         path = install_dir / "build" / "bin" / "Release"
     else:
         path = install_dir / "build" / "bin"
-    path.mkdir(parents = True, exist_ok = True)
+    path.mkdir(parents=True, exist_ok=True)
     return path
 
 
@@ -4765,7 +4765,7 @@ install_lock_path = _core.install_lock_path
 
 def install_staging_root(install_dir: Path) -> Path:
     root = install_dir.parent / INSTALL_STAGING_ROOT_NAME
-    root.mkdir(parents = True, exist_ok = True)
+    root.mkdir(parents=True, exist_ok=True)
     return root
 
 
@@ -4780,7 +4780,7 @@ def prune_install_staging_root(install_dir: Path) -> None:
 def create_install_staging_dir(install_dir: Path) -> Path:
     staging_dir = Path(
         tempfile.mkdtemp(
-            prefix = f"{install_dir.name}.staging-", dir = install_staging_root(install_dir)
+            prefix=f"{install_dir.name}.staging-", dir=install_staging_root(install_dir)
         )
     )
     log(f"created install staging dir {staging_dir}")
@@ -4836,7 +4836,7 @@ def replace_with_busy_retry(
 
 def remove_tree(path: Path | None) -> None:
     if path and path.exists():
-        shutil.rmtree(path, ignore_errors = True)
+        shutil.rmtree(path, ignore_errors=True)
 
 
 def _clear_readonly_and_retry(func: Callable[[str], Any], path: str, excinfo: Any) -> None:
@@ -5092,7 +5092,7 @@ def activate_staged_dir(staging_dir: Path, dst: Path) -> None:
         # (ENOTEMPTY re-raises above), and if a partially removed aside-move left one
         # behind, os.symlink's FileExistsError fails the activation into the rollback
         # path instead of silently half-merging two installs.
-        shutil.copytree(staging_dir, dst, dirs_exist_ok = True, symlinks = True)
+        shutil.copytree(staging_dir, dst, dirs_exist_ok=True, symlinks=True)
         remove_tree(staging_dir)
 
 
@@ -5147,7 +5147,7 @@ def move_install_dir_aside(
             # file (which merge into populated trees) cannot simply be given the same
             # flag. activate_staged_dir can, because a dst os.replace refused is empty
             # or absent.
-            shutil.copytree(src, copy_tmp, symlinks = True)
+            shutil.copytree(src, copy_tmp, symlinks=True)
             os.replace(copy_tmp, dst)
         except BaseException:
             remove_tree(copy_tmp)
@@ -5165,7 +5165,7 @@ def activate_install_tree(staging_dir: Path, install_dir: Path, host: HostInfo) 
             had_existing = True
             rollback_dir = unique_install_side_path(install_dir, "rollback")
             log(f"moving existing install to rollback path {rollback_dir}")
-            move_install_dir_aside(install_dir, rollback_dir, busy_retry = True)
+            move_install_dir_aside(install_dir, rollback_dir, busy_retry=True)
             moved_aside = True
             log(f"moved existing install to rollback path {rollback_dir.name}")
 
@@ -5248,7 +5248,7 @@ def activate_install_tree(staging_dir: Path, install_dir: Path, host: HostInfo) 
                         # dereferenced into a real tree; dirs_exist_ok stays off
                         # so a leftover tree at install_dir is never merged into
                         # a half-and-half install confirm_install_tree accepts.
-                        shutil.copytree(rollback_dir, install_dir, symlinks = True)
+                        shutil.copytree(rollback_dir, install_dir, symlinks=True)
                     except Exception as copy_exc:
                         log(f"copying the previous install back also failed: {copy_exc}")
                         raise restore_exc from copy_exc
@@ -5300,7 +5300,7 @@ def activate_install_tree(staging_dir: Path, install_dir: Path, host: HostInfo) 
             # newer one that does not.
             if not _install_tree_is_usable(rollback_dir, host):
                 known_good = newest_usable_install_side_path(
-                    install_dir, host, exclude = rollback_dir
+                    install_dir, host, exclude=rollback_dir
                 )
                 if known_good is not None:
                     log(
@@ -5314,7 +5314,7 @@ def activate_install_tree(staging_dir: Path, install_dir: Path, host: HostInfo) 
             # turns repeated failure into an unbounded pile. Exactly one tree is
             # ever exempt, so switching which one it is does not grow the cap.
             superseded = prune_stale_install_side_paths(
-                install_dir, keep = (retained_dir, failed_dir)
+                install_dir, keep=(retained_dir, failed_dir)
             )
             if superseded:
                 log(f"removed {superseded} superseded install tree(s) from earlier failed updates")
@@ -5329,15 +5329,15 @@ def activate_install_tree(staging_dir: Path, install_dir: Path, host: HostInfo) 
         try:
             cleanup_install_side_paths(
                 install_dir,
-                staging_dir = staging_dir,
-                rollback_dir = None if keep_rollback else rollback_dir,
-                failed_dir = failed_dir,
-                active_dir = install_dir,
+                staging_dir=staging_dir,
+                rollback_dir=None if keep_rollback else rollback_dir,
+                failed_dir=failed_dir,
+                active_dir=install_dir,
             )
         except Exception as cleanup_exc:
             cleanup_error = cleanup_exc
             log(f"cleanup after rollback failure also failed: {cleanup_exc}")
-        details = textwrap.shorten(str(exc), width = 200, placeholder = "...")
+        details = textwrap.shorten(str(exc), width=200, placeholder="...")
         kept = f"; previous install kept at {retained_dir}" if keep_rollback else ""
         # The recovery is the first step here that needs free space -- everything
         # before it renames or deletes -- so a disk-full it hits is not implied by
@@ -5374,7 +5374,7 @@ def activate_install_tree(staging_dir: Path, install_dir: Path, host: HostInfo) 
         # confirm_install_tree just passed, so anything retained under the
         # staging root is provably no longer the last copy of anything and can
         # go. This is the only point where that is true.
-        stale = prune_stale_install_side_paths(install_dir, keep = (rollback_dir,))
+        stale = prune_stale_install_side_paths(install_dir, keep=(rollback_dir,))
         if stale:
             log(f"removed {stale} install tree(s) left behind by earlier failed updates")
     finally:
@@ -5391,12 +5391,12 @@ def install_from_archives(
     download_file_verified(
         choice.url,
         main_archive,
-        expected_sha256 = choice.expected_sha256,
-        label = f"prebuilt archive {choice.name}",
+        expected_sha256=choice.expected_sha256,
+        label=f"prebuilt archive {choice.name}",
     )
 
-    install_dir.mkdir(parents = True, exist_ok = True)
-    extract_dir = Path(tempfile.mkdtemp(prefix = "extract-", dir = work_dir))
+    install_dir.mkdir(parents=True, exist_ok=True)
+    extract_dir = Path(tempfile.mkdtemp(prefix="extract-", dir=work_dir))
     runtime_extract_dir: Path | None = None
 
     try:
@@ -5414,18 +5414,18 @@ def install_from_archives(
             download_file_verified(
                 choice.runtime_url,
                 runtime_archive,
-                expected_sha256 = choice.runtime_sha256,
-                label = f"prebuilt runtime archive {choice.runtime_name}",
+                expected_sha256=choice.runtime_sha256,
+                label=f"prebuilt runtime archive {choice.runtime_name}",
             )
-            runtime_extract_dir = Path(tempfile.mkdtemp(prefix = "extract-runtime-", dir = work_dir))
+            runtime_extract_dir = Path(tempfile.mkdtemp(prefix="extract-runtime-", dir=work_dir))
             extract_archive(runtime_archive, runtime_extract_dir)
         source_dir = extract_dir
         overlay_dir = overlay_directory_for_choice(install_dir, choice, host)
-        copy_globs(source_dir, overlay_dir, runtime_patterns_for_choice(choice), required = True)
+        copy_globs(source_dir, overlay_dir, runtime_patterns_for_choice(choice), required=True)
         for _subdir in runtime_subdirs_for_choice(choice):
             _src_subdir = source_dir / _subdir
             if _src_subdir.is_dir():
-                shutil.copytree(_src_subdir, overlay_dir / _subdir, dirs_exist_ok = True)
+                shutil.copytree(_src_subdir, overlay_dir / _subdir, dirs_exist_ok=True)
         if runtime_extract_dir is not None:
             # The runtime archive only contributes the CUDA DLLs.
             # Restrict the overlay to the cudart bundle's known
@@ -5441,13 +5441,13 @@ def install_from_archives(
                 runtime_extract_dir,
                 overlay_dir,
                 paired_runtime_dll_patterns(choice),
-                required = False,
+                required=False,
             )
         copy_globs(
             source_dir,
             install_dir,
             metadata_patterns_for_choice(choice),
-            required = False,
+            required=False,
         )
     finally:
         remove_tree(extract_dir)
@@ -5499,7 +5499,7 @@ def ensure_repo_shape(install_dir: Path) -> None:
 
 def validation_model_cache_path(install_dir: Path) -> Path:
     cache_dir = install_dir.parent / VALIDATION_MODEL_CACHE_DIRNAME
-    cache_dir.mkdir(parents = True, exist_ok = True)
+    cache_dir.mkdir(parents=True, exist_ok=True)
     return cache_dir / VALIDATION_MODEL_CACHE_FILENAME
 
 
@@ -5539,7 +5539,8 @@ def _fetch_validation_model_bytes() -> bytes:
         repo_id, revision, filename = parts
         try:
             from huggingface_hub import hf_hub_download
-            local = hf_hub_download(repo_id = repo_id, filename = filename, revision = revision)
+
+            local = hf_hub_download(repo_id=repo_id, filename=filename, revision=revision)
             return validated_validation_model_bytes(Path(local).read_bytes())
         except Exception as exc:
             log(
@@ -5549,7 +5550,7 @@ def _fetch_validation_model_bytes() -> bytes:
     return validated_validation_model_bytes(
         download_bytes(
             TEST_MODEL_URL,
-            progress_label = f"Downloading {download_label_from_url(TEST_MODEL_URL)}",
+            progress_label=f"Downloading {download_label_from_url(TEST_MODEL_URL)}",
         )
     )
 
@@ -5613,7 +5614,7 @@ def free_local_port() -> int:
 
 def read_log_excerpt(log_path: Path, *, max_lines: int = 60) -> str:
     try:
-        content = log_path.read_text(encoding = "utf-8", errors = "replace")
+        content = log_path.read_text(encoding="utf-8", errors="replace")
     except (FileNotFoundError, UnicodeDecodeError):
         return ""
     return "\n".join(content.splitlines()[-max_lines:])
@@ -5682,7 +5683,7 @@ def dedupe_existing_dirs(paths: Iterable[str | Path], *, skip_unusable: bool = F
 
 def linux_missing_libraries(binary_path: Path, *, env: dict[str, str] | None = None) -> list[str]:
     try:
-        result = run_capture(["ldd", str(binary_path)], timeout = 20, env = env)
+        result = run_capture(["ldd", str(binary_path)], timeout=20, env=env)
     except Exception:
         return []
 
@@ -5746,12 +5747,12 @@ def python_runtime_dirs() -> list[str]:
     # readable root must not abort discovery; it could not have served DLLs to
     # the loader anyway. Matches the always-lenient serve-time copy in
     # backend/utils/prebuilt/runtime_libs.py.
-    return dedupe_existing_dirs(candidates, skip_unusable = True)
+    return dedupe_existing_dirs(candidates, skip_unusable=True)
 
 
 def ldconfig_runtime_dirs(required_libraries: Iterable[str]) -> list[str]:
     try:
-        result = run_capture(["ldconfig", "-p"], timeout = 20)
+        result = run_capture(["ldconfig", "-p"], timeout=20)
     except Exception:
         return []
 
@@ -5771,7 +5772,7 @@ def ldconfig_runtime_dirs(required_libraries: Iterable[str]) -> list[str]:
 
 def linux_runtime_dirs(binary_path: Path) -> list[str]:
     # ldd may execute the binary, so probe it with a secret-free env.
-    missing = linux_missing_libraries(binary_path, env = scrubbed_environ())
+    missing = linux_missing_libraries(binary_path, env=scrubbed_environ())
     if not missing:
         return []
     return linux_runtime_dirs_for_required_libraries(missing)
@@ -5991,7 +5992,7 @@ def macos_dyld_load_issues(
             env.pop(noisy, None)
         env.pop("DYLD_INSERT_LIBRARIES", None)
         try:
-            result = run_capture([str(binary_path), "--version"], timeout = 60, env = env)
+            result = run_capture([str(binary_path), "--version"], timeout=60, env=env)
         except Exception as exc:
             # A timeout or a refusal to spawn is not evidence of a bad link, and
             # calling it one would reject a healthy bundle on a loaded machine.
@@ -6060,7 +6061,7 @@ def preflight_macos_installed_binaries(
         log("installed binaries match their recorded digests; skipping the dyld load probe")
         return False
     loaded: set[str] = set()
-    load_issues = macos_dyld_load_issues(binaries, install_dir, host, loaded = loaded)
+    load_issues = macos_dyld_load_issues(binaries, install_dir, host, loaded=loaded)
     if load_issues:
         raise PrebuiltFallback(
             "macos prebuilt does not load on this host:\n" + "\n".join(load_issues)
@@ -6083,7 +6084,7 @@ def preflight_linux_installed_binaries(
     issues: list[str] = []
     for binary_path in binaries:
         env = binary_env(binary_path, install_dir, host)
-        missing = linux_missing_libraries(binary_path, env = env)
+        missing = linux_missing_libraries(binary_path, env=env)
         if not missing:
             continue
         runtime_dirs = [part for part in env.get("LD_LIBRARY_PATH", "").split(os.pathsep) if part]
@@ -6139,7 +6140,7 @@ def windows_runtime_dirs() -> list[str]:
         candidates.extend(toolkit_base.glob("v*/lib/x64"))
 
     candidates.extend(Path(path) for path in python_runtime_dirs())
-    return dedupe_existing_dirs(candidates, skip_unusable = True)
+    return dedupe_existing_dirs(candidates, skip_unusable=True)
 
 
 def windows_runtime_dirs_for_patterns(
@@ -6181,7 +6182,7 @@ def _wsl_system_rocm_lib_dirs() -> list[str]:
     try:
         if not os.path.exists("/dev/dxg"):
             return []
-        with open("/proc/version", encoding = "utf-8", errors = "replace") as fh:
+        with open("/proc/version", encoding="utf-8", errors="replace") as fh:
             if "microsoft" not in fh.read().lower():
                 return []
     except (OSError, UnicodeDecodeError):
@@ -6361,8 +6362,8 @@ def isolated_runtime_home() -> str:
     # home via getpwuid is out of scope; that needs OS sandboxing.)
     global _isolated_runtime_home_dir
     if _isolated_runtime_home_dir is None:
-        path = tempfile.mkdtemp(prefix = "unsloth-prebuilt-home-")
-        atexit.register(shutil.rmtree, path, ignore_errors = True)
+        path = tempfile.mkdtemp(prefix="unsloth-prebuilt-home-")
+        atexit.register(shutil.rmtree, path, ignore_errors=True)
         _isolated_runtime_home_dir = path
     return _isolated_runtime_home_dir
 
@@ -6397,7 +6398,7 @@ def binary_env(
         ]
         existing = [part for part in env.get("PATH", "").split(os.pathsep) if part]
         required = dedupe_existing_dirs(path_dirs)
-        inherited = dedupe_existing_dirs(existing, skip_unusable = True)
+        inherited = dedupe_existing_dirs(existing, skip_unusable=True)
         env["PATH"] = os.pathsep.join(dict.fromkeys([*required, *inherited]))
     elif host.is_linux:
         ld_dirs = [
@@ -6419,13 +6420,13 @@ def binary_env(
         # An inherited entry under a mode-000 parent or a stale NFS mount is not
         # ours to require. The bundle's own dirs stay strict.
         required = dedupe_existing_dirs(ld_dirs)
-        inherited = dedupe_existing_dirs(existing, skip_unusable = True)
+        inherited = dedupe_existing_dirs(existing, skip_unusable=True)
         env["LD_LIBRARY_PATH"] = os.pathsep.join(dict.fromkeys([*required, *inherited]))
     elif host.is_macos:
         dyld_dirs = [str(binary_path.parent), str(install_dir)]
         existing = [part for part in env.get("DYLD_LIBRARY_PATH", "").split(os.pathsep) if part]
         required = dedupe_existing_dirs(dyld_dirs)
-        inherited = dedupe_existing_dirs(existing, skip_unusable = True)
+        inherited = dedupe_existing_dirs(existing, skip_unusable=True)
         env["DYLD_LIBRARY_PATH"] = os.pathsep.join(dict.fromkeys([*required, *inherited]))
     return env
 
@@ -6442,12 +6443,12 @@ def validate_quantize(
     command = [str(quantize_path), str(probe_path), str(quantized_path), "Q6_K", "2"]
     result = subprocess.run(
         command,
-        capture_output = True,
-        text = True,
-        encoding = "utf-8",
-        errors = "replace",
-        timeout = 120,
-        env = binary_env(quantize_path, install_dir, host, runtime_line = runtime_line),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=120,
+        env=binary_env(quantize_path, install_dir, host, runtime_line=runtime_line),
         **windows_hidden_subprocess_kwargs(),
     )
     if result.returncode != 0 or not quantized_path.exists() or quantized_path.stat().st_size == 0:
@@ -6526,20 +6527,20 @@ def validate_server(
         if _enable_gpu_layers:
             command.extend(["--n-gpu-layers", "1"])
 
-        log_fd, log_name = tempfile.mkstemp(prefix = "llama-server-", suffix = ".log")
+        log_fd, log_name = tempfile.mkstemp(prefix="llama-server-", suffix=".log")
         os.close(log_fd)
         log_path = Path(log_name)
         process: subprocess.Popen[str] | None = None
         try:
-            with log_path.open("w", encoding = "utf-8", errors = "replace") as log_handle:
+            with log_path.open("w", encoding="utf-8", errors="replace") as log_handle:
                 process = subprocess.Popen(
                     command,
-                    stdout = log_handle,
-                    stderr = subprocess.STDOUT,
-                    text = True,
-                    encoding = "utf-8",
-                    errors = "replace",
-                    env = binary_env(server_path, install_dir, host, runtime_line = runtime_line),
+                    stdout=log_handle,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    env=binary_env(server_path, install_dir, host, runtime_line=runtime_line),
                     **_validation_server_kwargs(),
                     **windows_hidden_subprocess_kwargs(),
                 )
@@ -6553,7 +6554,7 @@ def validate_server(
                 last_error: Exception | None = None
                 while time.time() < deadline:
                     if process.poll() is not None:
-                        process.wait(timeout = 5)
+                        process.wait(timeout=5)
                         log_handle.flush()
                         output = read_log_excerpt(log_path)
                         exited_quickly = (
@@ -6565,7 +6566,7 @@ def validate_server(
                             and is_retryable_server_bind_error(
                                 last_error,
                                 output,
-                                exited_quickly = exited_quickly,
+                                exited_quickly=exited_quickly,
                             )
                         ):
                             log(
@@ -6579,11 +6580,11 @@ def validate_server(
                     payload = json.dumps({"prompt": "a", "n_predict": 1}).encode("utf-8")
                     request = urllib.request.Request(
                         f"http://127.0.0.1:{port}/completion",
-                        data = payload,
-                        headers = {"Content-Type": "application/json"},
+                        data=payload,
+                        headers={"Content-Type": "application/json"},
                     )
                     try:
-                        with urllib.request.urlopen(request, timeout = 5) as response:
+                        with urllib.request.urlopen(request, timeout=5) as response:
                             status_code = response.status
                             response_body = response.read().decode("utf-8", "replace")
                             if status_code == 200:
@@ -6612,7 +6613,7 @@ def validate_server(
                 if _terminate_validation_server(process):
                     _announce_child("stopped", process.pid)
             try:
-                log_path.unlink(missing_ok = True)
+                log_path.unlink(missing_ok=True)
             except Exception:
                 pass
     if last_failure is not None:
@@ -6659,7 +6660,8 @@ def _validation_server_kwargs() -> "dict[str, Any]":
         # already gone by the time this ran.
         try:
             import ctypes
-            ctypes.CDLL("libc.so.6", use_errno = True).prctl(_PR_SET_PDEATHSIG, signal.SIGTERM)
+
+            ctypes.CDLL("libc.so.6", use_errno=True).prctl(_PR_SET_PDEATHSIG, signal.SIGTERM)
             if os.getppid() != owner_pid:
                 os._exit(1)
         except Exception:
@@ -6675,7 +6677,7 @@ def _announce_child(state: str, pid: int) -> None:
     Unsloth adopts the pid so its own sweep can reach it; run by hand the line is
     just noise on stdout.
     """
-    print(f"UNSLOTH_INSTALLER_CHILD {state} {pid}", flush = True)
+    print(f"UNSLOTH_INSTALLER_CHILD {state} {pid}", flush=True)
 
 
 def _group_is_running(pgid: "int | None") -> bool:
@@ -6727,7 +6729,7 @@ def _terminate_validation_server(process: "subprocess.Popen", grace: float = 5.0
     else:
         process.terminate()
     try:
-        process.wait(timeout = grace)
+        process.wait(timeout=grace)
     except subprocess.TimeoutExpired:
         pass
     # The leader exiting is not the answer: a member that ignored the SIGTERM
@@ -6742,7 +6744,7 @@ def _terminate_validation_server(process: "subprocess.Popen", grace: float = 5.0
     elif pgid is None and process.poll() is None:
         process.kill()
     try:
-        process.wait(timeout = grace)
+        process.wait(timeout=grace)
     except subprocess.TimeoutExpired:
         pass
     return not _group_is_running(pgid) and process.poll() is not None
@@ -6778,7 +6780,7 @@ def collect_system_report(host: HostInfo, choice: AssetChoice | None, install_di
         lines.extend(choice.selection_log)
     if host.nvidia_smi:
         try:
-            smi = run_capture([host.nvidia_smi], timeout = 20)
+            smi = run_capture([host.nvidia_smi], timeout=20)
             excerpt = "\n".join((smi.stdout + smi.stderr).splitlines()[:20])
             lines.append("nvidia-smi:")
             lines.append(excerpt)
@@ -6791,7 +6793,7 @@ def collect_system_report(host: HostInfo, choice: AssetChoice | None, install_di
             server_env = binary_env(server_binary, install_dir, host)
             lines.append(
                 "linux_missing_libs="
-                + (",".join(linux_missing_libraries(server_binary, env = server_env)) or "none")
+                + (",".join(linux_missing_libraries(server_binary, env=server_env)) or "none")
             )
             lines.append(
                 "linux_runtime_dirs="
@@ -6807,7 +6809,7 @@ def collect_system_report(host: HostInfo, choice: AssetChoice | None, install_di
                 )
             )
             try:
-                ldd = run_capture(["ldd", str(server_binary)], timeout = 20, env = server_env)
+                ldd = run_capture(["ldd", str(server_binary)], timeout=20, env=server_env)
                 lines.append("ldd llama-server:")
                 lines.append((ldd.stdout + ldd.stderr).strip())
             except Exception as exc:
@@ -6831,7 +6833,7 @@ def collect_system_report(host: HostInfo, choice: AssetChoice | None, install_di
         server_binary = install_dir / "llama-server"
         if server_binary.exists():
             try:
-                otool = run_capture(["otool", "-L", str(server_binary)], timeout = 20)
+                otool = run_capture(["otool", "-L", str(server_binary)], timeout=20)
                 lines.append("otool -L llama-server:")
                 lines.append((otool.stdout + otool.stderr).strip())
             except Exception as exc:
@@ -6890,7 +6892,7 @@ def apply_approved_hashes(
         candidate_names.extend(
             windows_cuda_asset_aliases(
                 attempt.name,
-                compatibility_tag = checksums.upstream_tag,
+                compatibility_tag=checksums.upstream_tag,
             )
         )
         seen_names: set[str] = set()
@@ -7035,8 +7037,8 @@ def _linux_published_attempts(host: HostInfo, bundle: PublishedReleaseBundle) ->
         selection = linux_cuda_choice_from_release(
             host,
             bundle,
-            preferred_runtime_line = torch_preference.runtime_line,
-            selection_preamble = torch_preference.selection_log,
+            preferred_runtime_line=torch_preference.runtime_line,
+            selection_preamble=torch_preference.selection_log,
         )
         if selection is not None:
             attempts.extend(selection.attempts)
@@ -7054,20 +7056,20 @@ def _linux_published_attempts(host: HostInfo, bundle: PublishedReleaseBundle) ->
         # which all three must state; this is the normal published-bundle branch. Reaching here
         # already means not has_rocm (it is the else).
         if (host.has_intel_gpu or host.has_amd_gpu_without_rocm) and not host.has_physical_nvidia:
-            vulkan_choice = published_asset_choice_for_kind(bundle, "linux-vulkan", host = host)
+            vulkan_choice = published_asset_choice_for_kind(bundle, "linux-vulkan", host=host)
             if vulkan_choice is not None:
                 attempts.append(vulkan_choice)
         # Below ROCm and Vulkan on purpose: a masked NVIDIA host with usable ROCm keeps ROCm.
         selection_host = _masked_nvidia_selection_host(host)
         if selection_host is not None:
             torch_preference = detect_torch_cuda_runtime_preference(
-                selection_host, gpu_hidden_by_mask = True
+                selection_host, gpu_hidden_by_mask=True
             )
             masked_selection = linux_cuda_choice_from_release(
                 selection_host,
                 bundle,
-                preferred_runtime_line = torch_preference.runtime_line,
-                selection_preamble = torch_preference.selection_log,
+                preferred_runtime_line=torch_preference.runtime_line,
+                selection_preamble=torch_preference.selection_log,
             )
             if masked_selection is not None:
                 attempts.extend(masked_selection.attempts)
@@ -7199,7 +7201,7 @@ def _fork_manifest_release_plans(
             published_repo,
             published_release_tag,
             # macOS takes the newest release from the CDN and walks back through the API.
-            continue_after_fast_path = host.is_macos,
+            continue_after_fast_path=host.is_macos,
         ):
             bundle = resolved_release.bundle
             checksums = resolved_release.checksums
@@ -7238,12 +7240,12 @@ def _fork_manifest_release_plans(
                 continue
 
             yield InstallReleasePlan(
-                requested_tag = requested_tag,
-                llama_tag = resolved_tag,
-                release_tag = bundle.release_tag,
-                attempts = attempts,
-                approved_checksums = checksums,
-                walk_back = (
+                requested_tag=requested_tag,
+                llama_tag=resolved_tag,
+                release_tag=bundle.release_tag,
+                attempts=attempts,
+                approved_checksums=checksums,
+                walk_back=(
                     _core.walk_back_for(host, skipped_newest) if resolved_count == 0 else None
                 ),
             )
@@ -7424,10 +7426,10 @@ def write_prebuilt_metadata(
     # pair fields added for #5106) are added to one side but not the
     # other, which would cause every install to look stale.
     fingerprint = expected_install_fingerprint(
-        llama_tag = llama_tag,
-        release_tag = release_tag,
-        choice = choice,
-        approved_checksums = approved_checksums,
+        llama_tag=llama_tag,
+        release_tag=release_tag,
+        choice=choice,
+        approved_checksums=approved_checksums,
     )
     if fingerprint is None:
         raise PrebuiltFallback(f"cannot compute install fingerprint for {choice.name}")
@@ -7519,7 +7521,7 @@ def write_prebuilt_metadata(
         "installed_at_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     }
     (install_dir / "UNSLOTH_PREBUILT_INFO.json").write_text(
-        json.dumps(metadata, indent = 2) + "\n", encoding = "utf-8"
+        json.dumps(metadata, indent=2) + "\n", encoding="utf-8"
     )
 
 
@@ -7538,7 +7540,7 @@ def _write_marker(marker_path: Path, marker: dict) -> bool:
     an unexpected exit no longer falls back to a source build, so failing here
     would abort setup over a metadata refresh.
     """
-    data = (json.dumps(marker, indent = 2) + "\n").encode("utf-8")
+    data = (json.dumps(marker, indent=2) + "\n").encode("utf-8")
     try:
         original = marker_path.stat()
     except OSError:
@@ -7553,9 +7555,9 @@ def _write_marker(marker_path: Path, marker: dict) -> bool:
         # readable only by whoever ran setup. chmod after the swap would leave a
         # window.
         with tempfile.NamedTemporaryFile(
-            prefix = marker_path.name + ".tmp-",
-            dir = marker_path.parent,
-            delete = False,
+            prefix=marker_path.name + ".tmp-",
+            dir=marker_path.parent,
+            delete=False,
         ) as handle:
             tmp_path = Path(handle.name)
             handle.write(data)
@@ -7730,23 +7732,23 @@ def sync_marker_selection(
     """
     marker_path = install_dir / "UNSLOTH_PREBUILT_INFO.json"
     try:
-        marker = json.loads(marker_path.read_text(encoding = "utf-8"))
+        marker = json.loads(marker_path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return
     if not isinstance(marker, dict):
         return
     patch = _marker_selection_patch(
         marker,
-        choice = choice,
-        backend_request = backend_request,
-        persist_force_cpu = persist_force_cpu,
-        persist_llama_backend = persist_llama_backend,
-        ggml_tree = ggml_tree,
-        rocm_gfx = rocm_gfx,
-        install_dir = install_dir,
-        host = host,
-        prebuilt_fallback_used = prebuilt_fallback_used,
-        walk_back = walk_back,
+        choice=choice,
+        backend_request=backend_request,
+        persist_force_cpu=persist_force_cpu,
+        persist_llama_backend=persist_llama_backend,
+        ggml_tree=ggml_tree,
+        rocm_gfx=rocm_gfx,
+        install_dir=install_dir,
+        host=host,
+        prebuilt_fallback_used=prebuilt_fallback_used,
+        walk_back=walk_back,
     )
     if not patch:
         return
@@ -7804,7 +7806,7 @@ def expected_install_fingerprint(
         "coverage_class": choice.coverage_class,
     }
     return hashlib.sha256(
-        json.dumps(payload, sort_keys = True, separators = (",", ":")).encode("utf-8")
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     ).hexdigest()
 
 
@@ -7813,7 +7815,7 @@ def load_prebuilt_metadata(install_dir: Path) -> dict[str, Any] | None:
     if not metadata_path.is_file():
         return None
     try:
-        payload = json.loads(metadata_path.read_text(encoding = "utf-8"))
+        payload = json.loads(metadata_path.read_text(encoding="utf-8"))
     except Exception:
         return None
     if not isinstance(payload, dict):
@@ -8239,10 +8241,10 @@ def runtime_payload_is_healthy(install_dir: Path, host: HostInfo, choice: AssetC
         host,
         runtime_payload_health_groups(
             choice.install_kind,
-            source_label = choice.source_label,
-            runtime_name = choice.runtime_name,
-            tag = choice.tag,
-            install_dir = install_dir,
+            source_label=choice.source_label,
+            runtime_name=choice.runtime_name,
+            tag=choice.tag,
+            install_dir=install_dir,
         ),
     )
 
@@ -8422,10 +8424,10 @@ def macos_product_version() -> str:
     try:
         done = subprocess.run(
             ["/usr/bin/sw_vers"],
-            capture_output = True,
-            text = True,
-            timeout = 10,
-            check = False,
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
         )
         if done.returncode == 0:
             values: "dict[str, str]" = {}
@@ -8595,7 +8597,7 @@ def _marker_install_fingerprint(marker: "dict[str, Any]") -> "str | None":
     payload = {key: marker.get(key) for key in keys}
     payload["upstream_tag"] = marker.get("tag")
     return hashlib.sha256(
-        json.dumps(payload, sort_keys = True, separators = (",", ":")).encode("utf-8")
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     ).hexdigest()
 
 
@@ -8630,7 +8632,7 @@ def _newest_release_tag_from_releases(repo: str, releases: "Iterable[Any]") -> "
     ]
     if not published:
         return None
-    return max(published, key = release_time_sort_key)["tag_name"]
+    return max(published, key=release_time_sort_key)["tag_name"]
 
 
 def _api_newest_release_tag(repo: str) -> "str | None":
@@ -8642,7 +8644,7 @@ def _api_newest_release_tag(repo: str) -> "str | None":
     """
     try:
         return _newest_release_tag_from_releases(
-            repo, github_releases(repo, max_pages = DEFAULT_GITHUB_RELEASE_SCAN_MAX_PAGES)
+            repo, github_releases(repo, max_pages=DEFAULT_GITHUB_RELEASE_SCAN_MAX_PAGES)
         )
     except Exception as exc:  # noqa: BLE001 - unreachable is a reason to do the work
         log(f"could not resolve the latest release from the GitHub API ({exc})")
@@ -8659,7 +8661,7 @@ def _api_newest_release_tag_for_upstream(
     candidate too, and the newest of them all is what the selector would install.
     """
     try:
-        releases = github_releases(repo, max_pages = DEFAULT_GITHUB_RELEASE_SCAN_MAX_PAGES)
+        releases = github_releases(repo, max_pages=DEFAULT_GITHUB_RELEASE_SCAN_MAX_PAGES)
     except Exception as exc:  # noqa: BLE001 - unreachable is a reason to do the work
         log(f"could not list the releases packaging {upstream_tag} ({exc})")
         return None
@@ -9047,21 +9049,21 @@ def existing_install_current_without_plan(
     if unsatisfied and (route is None or route.backend != "auto"):
         # The caller's route was computed for the request, which this install does not run.
         route = route_backend_request(
-            backend = "auto",
-            published_repo = published_repo,
-            published_release_tag = published_release_tag,
-            override_has_rocm = override_has_rocm,
-            override_rocm_gfx = override_rocm_gfx,
-            cpu_mechanism = force_cpu,
+            backend="auto",
+            published_repo=published_repo,
+            published_release_tag=published_release_tag,
+            override_has_rocm=override_has_rocm,
+            override_rocm_gfx=override_rocm_gfx,
+            cpu_mechanism=force_cpu,
         )
     if route is None:
         route = route_backend_request(
-            backend = backend_request,
-            published_repo = published_repo,
-            published_release_tag = published_release_tag,
-            override_has_rocm = override_has_rocm,
-            override_rocm_gfx = override_rocm_gfx,
-            cpu_mechanism = force_cpu,
+            backend=backend_request,
+            published_repo=published_repo,
+            published_release_tag=published_release_tag,
+            override_has_rocm=override_has_rocm,
+            override_rocm_gfx=override_rocm_gfx,
+            cpu_mechanism=force_cpu,
         )
     host = route.host
     # The ROUTED repo: a Linux arm64 Vulkan host goes upstream, and the marker records that.
@@ -9084,13 +9086,13 @@ def existing_install_current_without_plan(
         return False
     # (3) the release this run would ask for is the release that is installed.
     expected_release = _expected_release_tag_without_plan(
-        marker, llama_tag, route.published_repo, route.published_release_tag, host = host
+        marker, llama_tag, route.published_repo, route.published_release_tag, host=host
     )
     if not _release_expectation_met(
         marker,
         expected_release,
         host,
-        pinned = bool((route.published_release_tag or "").strip()),
+        pinned=bool((route.published_release_tag or "").strip()),
     ):
         return False
     # (4) the marker was written whole by this installer, so its fields can be trusted.
@@ -9122,7 +9124,7 @@ def existing_install_current_without_plan(
             binaries,
             install_dir,
             host,
-            load_probe = not _macos_load_record_is_current(marker, host),
+            load_probe=not _macos_load_record_is_current(marker, host),
         )
     except Exception:  # noqa: BLE001
         return False
@@ -9196,10 +9198,10 @@ def _kept_install_payload_is_healthy(install_dir: Path, host: HostInfo) -> bool:
                 tuple(group)
                 for group in runtime_payload_health_groups(
                     kind,
-                    source_label = source_label,
-                    runtime_name = runtime_asset,
-                    tag = marker_tag if isinstance(marker_tag, str) else None,
-                    install_dir = install_dir,
+                    source_label=source_label,
+                    runtime_name=runtime_asset,
+                    tag=marker_tag if isinstance(marker_tag, str) else None,
+                    install_dir=install_dir,
                 )
             }
             for kind in kinds
@@ -9221,20 +9223,20 @@ def platform_only_host() -> HostInfo:
     machine = platform.machine().lower()
     is_macos = system == "Darwin"
     return HostInfo(
-        system = system,
-        machine = machine,
-        is_windows = system == "Windows",
-        is_linux = system == "Linux",
-        is_macos = is_macos,
-        is_x86_64 = machine in {"x86_64", "amd64"},
-        is_arm64 = machine in {"arm64", "aarch64"},
-        nvidia_smi = None,
-        driver_cuda_version = None,
-        compute_caps = [],
-        visible_cuda_devices = None,
-        has_physical_nvidia = False,
-        has_usable_nvidia = False,
-        macos_version = parse_macos_version(platform.mac_ver()[0]) if is_macos else None,
+        system=system,
+        machine=machine,
+        is_windows=system == "Windows",
+        is_linux=system == "Linux",
+        is_macos=is_macos,
+        is_x86_64=machine in {"x86_64", "amd64"},
+        is_arm64=machine in {"arm64", "aarch64"},
+        nvidia_smi=None,
+        driver_cuda_version=None,
+        compute_caps=[],
+        visible_cuda_devices=None,
+        has_physical_nvidia=False,
+        has_usable_nvidia=False,
+        macos_version=parse_macos_version(platform.mac_ver()[0]) if is_macos else None,
     )
 
 
@@ -9287,7 +9289,7 @@ def installed_runtime_health(
     # X_OK answers true for it and exists() does too, while _file_status in the
     # finder asks is_file() and rejects the tree. Failed extraction leaves exactly
     # that.
-    if _damaged_entrypoint(root, host, selected_root_only = True) is not None:
+    if _damaged_entrypoint(root, host, selected_root_only=True) is not None:
         return False, "llama_runtime_binaries_missing"
     return True, ""
 
@@ -9398,10 +9400,10 @@ def _binary_image_runs(
     try:
         result = run_capture(
             [str(path), "--version"],
-            timeout = 60,
+            timeout=60,
             # runtime_line puts the CUDA toolkit on PATH; a pair-less Windows install
             # cannot start without it.
-            env = binary_env(path, install_dir, host, runtime_line = runtime_line),
+            env=binary_env(path, install_dir, host, runtime_line=runtime_line),
         )
     except OSError as exc:
         if exc.errno == errno.ENOEXEC or getattr(exc, "winerror", None) == _ERROR_BAD_EXE_FORMAT:
@@ -9476,7 +9478,7 @@ def _existing_install_runs(install_dir: Path, host: HostInfo) -> bool:
         # Each preflight is a no-op outside its platform.
         preflight_linux_installed_binaries(binaries, install_dir, host)
         probed = preflight_macos_installed_binaries(
-            binaries, install_dir, host, load_probe = not recorded_bytes_intact
+            binaries, install_dir, host, load_probe=not recorded_bytes_intact
         )
     except Exception:
         return False
@@ -9612,17 +9614,17 @@ def existing_install_matches_choice(
                 [runtime_dir / "llama-server", runtime_dir / "llama-quantize"],
                 install_dir,
                 host,
-                load_probe = not (
+                load_probe=not (
                     runtime_files_matched and _macos_load_record_is_current(metadata, host)
                 ),
             )
         except Exception:
             return False
     expected_fingerprint = expected_install_fingerprint(
-        llama_tag = llama_tag,
-        release_tag = release_tag,
-        choice = choice,
-        approved_checksums = approved_checksums,
+        llama_tag=llama_tag,
+        release_tag=release_tag,
+        choice=choice,
+        approved_checksums=approved_checksums,
     )
     if not expected_fingerprint:
         return False
@@ -9659,10 +9661,10 @@ def existing_install_matches_plan(
     return existing_install_matches_choice(
         install_dir,
         host,
-        llama_tag = plan.llama_tag,
-        release_tag = plan.release_tag,
-        choice = plan.attempts[0],
-        approved_checksums = plan.approved_checksums,
+        llama_tag=plan.llama_tag,
+        release_tag=plan.release_tag,
+        choice=plan.attempts[0],
+        approved_checksums=plan.approved_checksums,
     )
 
 
@@ -9701,15 +9703,15 @@ def validate_prebuilt_choice(
         source_ref,
         install_dir,
         work_dir,
-        source_repo = source_repo,
-        expected_sha256 = source_archive.sha256 if source_archive is not None else None,
-        source_label = (
+        source_repo=source_repo,
+        expected_sha256=source_archive.sha256 if source_archive is not None else None,
+        source_label=(
             f"llama.cpp source tree for {source_repo}@{source_ref}"
             if exact_source
             else f"llama.cpp source tree for {llama_tag}"
         ),
-        exact_source = exact_source,
-        asset_url = asset_url,
+        exact_source=exact_source,
+        asset_url=asset_url,
     )
     log(f"overlaying prebuilt bundle {choice.name} into {install_dir}")
     server_path, quantize_path = install_from_archives(choice, host, install_dir, work_dir)
@@ -9728,19 +9730,19 @@ def validate_prebuilt_choice(
     ensure_repo_shape(install_dir)
     write_prebuilt_metadata(
         install_dir,
-        host = host,
-        requested_tag = requested_tag,
-        llama_tag = llama_tag,
-        release_tag = release_tag,
-        choice = choice,
-        approved_checksums = approved_checksums,
-        prebuilt_fallback_used = prebuilt_fallback_used,
-        force_cpu = force_cpu,
-        llama_backend = llama_backend,
-        backend_request = backend_request,
-        rocm_gfx = rocm_gfx,
-        walk_back = walk_back,
-        macos_load_probe_passed = macos_load_probe_passed,
+        host=host,
+        requested_tag=requested_tag,
+        llama_tag=llama_tag,
+        release_tag=release_tag,
+        choice=choice,
+        approved_checksums=approved_checksums,
+        prebuilt_fallback_used=prebuilt_fallback_used,
+        force_cpu=force_cpu,
+        llama_backend=llama_backend,
+        backend_request=backend_request,
+        rocm_gfx=rocm_gfx,
+        walk_back=walk_back,
+        macos_load_probe_passed=macos_load_probe_passed,
     )
     if prebuilt_needs_functional_validation(choice):
         # Only branch that reads the probe, so this is where a lazy one is fetched.
@@ -9751,15 +9753,15 @@ def validate_prebuilt_choice(
             quantized_path,
             install_dir,
             host,
-            runtime_line = choice.runtime_line,
+            runtime_line=choice.runtime_line,
         )
         validate_server(
             server_path,
             probe_path,
             host,
             install_dir,
-            runtime_line = choice.runtime_line,
-            install_kind = choice.install_kind,
+            runtime_line=choice.runtime_line,
+            install_kind=choice.install_kind,
         )
         log(f"staged prebuilt validation succeeded for {choice.name}")
     return server_path, quantize_path
@@ -9785,7 +9787,7 @@ def validate_existing_install(
     if not server_path.is_file():
         raise PrebuiltFallback(f"llama-server not found at {server_path}")
 
-    with tempfile.TemporaryDirectory(prefix = "unsloth-llama-source-validate-") as tmp:
+    with tempfile.TemporaryDirectory(prefix="unsloth-llama-source-validate-") as tmp:
         work_dir = Path(tmp)
         probe_path = work_dir / "stories260K.gguf"
         quantized_path = work_dir / "stories260K-q4.gguf"
@@ -9803,7 +9805,7 @@ def validate_existing_install(
             probe_path,
             host,
             install_dir,
-            install_kind = install_kind,
+            install_kind=install_kind,
         )
     log(f"staged source-build validation succeeded for {install_dir}")
 
@@ -9854,10 +9856,10 @@ def validate_prebuilt_attempts(
             and existing_install_matches_choice(
                 existing_install_dir,
                 host,
-                llama_tag = llama_tag,
-                release_tag = release_tag,
-                choice = attempt,
-                approved_checksums = approved_checksums,
+                llama_tag=llama_tag,
+                release_tag=release_tag,
+                choice=attempt,
+                approved_checksums=approved_checksums,
             )
             # Skip a matching candidate unless it still needs the DiffusionGemma
             # backfill re-extract (gated per-attempt, not per-plan).
@@ -9888,17 +9890,17 @@ def validate_prebuilt_attempts(
                 staging_dir,
                 work_dir,
                 probe,
-                requested_tag = requested_tag,
-                llama_tag = llama_tag,
-                release_tag = release_tag,
-                approved_checksums = approved_checksums,
-                prebuilt_fallback_used = tried_fallback,
-                quantized_path = quantized_path,
-                force_cpu = force_cpu,
-                llama_backend = llama_backend,
-                backend_request = backend_request,
-                rocm_gfx = rocm_gfx,
-                walk_back = walk_back,
+                requested_tag=requested_tag,
+                llama_tag=llama_tag,
+                release_tag=release_tag,
+                approved_checksums=approved_checksums,
+                prebuilt_fallback_used=tried_fallback,
+                quantized_path=quantized_path,
+                force_cpu=force_cpu,
+                llama_backend=llama_backend,
+                backend_request=backend_request,
+                rocm_gfx=rocm_gfx,
+                walk_back=walk_back,
             )
         except Exception as exc:
             remove_tree(staging_dir)
@@ -10232,6 +10234,7 @@ def _windows_present_class_instances(class_key_path: str) -> set[str] | None:
     try:
         import ctypes
         from ctypes import wintypes
+
         cfgmgr = ctypes.WinDLL("cfgmgr32.dll")
     except Exception:
         return None
@@ -10440,7 +10443,7 @@ def _amd_vulkan_icd_usable(path: str) -> bool:
     is a registration with no device behind it. A bare name is accepted, since the loader
     resolves it through a search path this cannot see."""
     try:
-        with open(path, "r", encoding = "utf-8") as handle:
+        with open(path, "r", encoding="utf-8") as handle:
             manifest = json.load(handle)
         library = (manifest.get("ICD") or {}).get("library_path")
     except Exception:
@@ -10523,12 +10526,12 @@ def _vulkan_only_host(host: HostInfo) -> HostInfo:
     """
     return dataclasses_replace(
         host,
-        has_usable_nvidia = False,
-        has_physical_nvidia = False,
-        has_rocm = False,
-        rocm_gfx_target = None,
-        rocm_gfx_targets = [],
-        has_intel_gpu = True,
+        has_usable_nvidia=False,
+        has_physical_nvidia=False,
+        has_rocm=False,
+        rocm_gfx_target=None,
+        rocm_gfx_targets=[],
+        has_intel_gpu=True,
     )
 
 
@@ -10553,7 +10556,7 @@ def _backend_only_release_plans(
     for plan in plans:
         attempts = _backend_only_attempts(plan.attempts, backend)
         if attempts:
-            filtered.append(dataclasses_replace(plan, attempts = attempts))
+            filtered.append(dataclasses_replace(plan, attempts=attempts))
     if not filtered:
         raise BackendUnavailable(f"no {backend} prebuilt bundle attempts were available")
     return filtered
@@ -10773,11 +10776,11 @@ def scratch_dir(prefix: str) -> Iterator[Path]:
     replace the in-flight exception and lose EXIT_NO_SPACE. Not
     TemporaryDirectory(ignore_cleanup_errors = True), which is 3.10+ (setup.sh
     still runs this helper under the host python, and we support 3.9)."""
-    path = Path(tempfile.mkdtemp(prefix = prefix))
+    path = Path(tempfile.mkdtemp(prefix=prefix))
     try:
         yield path
     finally:
-        shutil.rmtree(path, ignore_errors = True)
+        shutil.rmtree(path, ignore_errors=True)
 
 
 def _first_existing_ancestor(path: Path) -> Path:
@@ -10864,12 +10867,12 @@ def route_backend_request(
     """Apply a backend request to the host profile without fetching releases."""
     if host is None:
         detected_host = (
-            detect_host(probe_rocm_with_nvidia = True) if backend == "rocm" else detect_host()
+            detect_host(probe_rocm_with_nvidia=True) if backend == "rocm" else detect_host()
         )
     elif backend == "rocm" and host.has_usable_nvidia and not host.has_rocm:
         # The shared automatic profile deliberately skips AMD probes once CUDA
         # is usable. Re-probe for an explicit ROCm option or environment request.
-        detected_host = detect_host(probe_rocm_with_nvidia = True)
+        detected_host = detect_host(probe_rocm_with_nvidia=True)
     else:
         detected_host = host
     if backend == "rocm":
@@ -10877,15 +10880,15 @@ def route_backend_request(
         # attempts that strict backend filtering then discards.
         detected_host = dataclasses_replace(
             detected_host,
-            has_physical_nvidia = False,
-            has_usable_nvidia = False,
+            has_physical_nvidia=False,
+            has_usable_nvidia=False,
         )
     force_cpu = cpu_mechanism or backend == "cpu"
     resolved_host = _apply_host_overrides(
         detected_host,
-        override_has_rocm = override_has_rocm,
-        override_rocm_gfx = override_rocm_gfx,
-        force_cpu = force_cpu,
+        override_has_rocm=override_has_rocm,
+        override_rocm_gfx=override_rocm_gfx,
+        force_cpu=force_cpu,
     )
     # Read before the route, which rewrites the host to Vulkan-only and drops the AMD
     # arch. Kept in the marker so the next update forwards the same --rocm-gfx.
@@ -10894,18 +10897,18 @@ def route_backend_request(
         resolved_host,
         published_repo,
         published_release_tag,
-        force_cpu = force_cpu,
-        llama_backend = backend,
+        force_cpu=force_cpu,
+        llama_backend=backend,
     )
     return BackendRoute(
-        backend = backend,
-        host = routed_host,
-        published_repo = repo,
-        published_release_tag = release_tag,
-        persist_llama_backend = persist_llama_backend,
-        persist_rocm_gfx = persist_rocm_gfx,
+        backend=backend,
+        host=routed_host,
+        published_repo=repo,
+        published_release_tag=release_tag,
+        persist_llama_backend=persist_llama_backend,
+        persist_rocm_gfx=persist_rocm_gfx,
         # Only the integrated-GPU preference turns away from a runnable HIP bundle.
-        rocm_fallback_host = (
+        rocm_fallback_host=(
             resolved_host
             if (
                 resolved_host.has_rocm
@@ -10945,7 +10948,7 @@ def _with_rocm_behind_vulkan(
         attempts = [attempt for attempt in plan.attempts if attempt.install_kind not in cpu_kinds]
         if len(attempts) == len(plan.attempts):
             return plan
-        return dataclasses_replace(plan, attempts = attempts) if attempts else None
+        return dataclasses_replace(plan, attempts=attempts) if attempts else None
 
     def _drop_cpu_only(candidates: "Sequence[InstallReleasePlan]") -> list[InstallReleasePlan]:
         """Apply _without_cpu across releases, or fail rather than install CPU."""
@@ -10987,7 +10990,7 @@ def _with_rocm_behind_vulkan(
             len(plan.attempts),
         )
         out.append(
-            dataclasses_replace(plan, attempts = [*plan.attempts[:at], *extra, *plan.attempts[at:]])
+            dataclasses_replace(plan, attempts=[*plan.attempts[:at], *extra, *plan.attempts[at:]])
         )
     if plans and not out:
         raise PrebuiltFallback(_NO_GPU_BUNDLE)
@@ -11009,13 +11012,13 @@ def select_backend_install(
     """Resolve bundles for a backend, or raise BackendUnavailable if none match."""
     if route is None:
         route = route_backend_request(
-            backend = backend,
-            published_repo = published_repo,
-            published_release_tag = published_release_tag,
-            override_has_rocm = override_has_rocm,
-            override_rocm_gfx = override_rocm_gfx,
-            cpu_mechanism = cpu_mechanism,
-            host = host,
+            backend=backend,
+            published_repo=published_repo,
+            published_release_tag=published_release_tag,
+            override_has_rocm=override_has_rocm,
+            override_rocm_gfx=override_rocm_gfx,
+            cpu_mechanism=cpu_mechanism,
+            host=host,
         )
     requested_tag, release_plans = resolve_simple_install_release_plans(
         llama_tag, route.host, route.published_repo, route.published_release_tag
@@ -11033,14 +11036,14 @@ def select_backend_install(
     if route.backend in CONCRETE_BACKENDS and not route.host.is_macos:
         release_plans = _backend_only_release_plans(release_plans, route.backend)
     return BackendSelection(
-        backend = route.backend,
-        host = route.host,
-        published_repo = route.published_repo,
-        published_release_tag = route.published_release_tag,
-        requested_tag = requested_tag,
-        release_plans = release_plans,
-        persist_llama_backend = route.persist_llama_backend,
-        persist_rocm_gfx = route.persist_rocm_gfx,
+        backend=route.backend,
+        host=route.host,
+        published_repo=route.published_repo,
+        published_release_tag=route.published_release_tag,
+        requested_tag=requested_tag,
+        release_plans=release_plans,
+        persist_llama_backend=route.persist_llama_backend,
+        persist_rocm_gfx=route.persist_rocm_gfx,
     )
 
 
@@ -11079,7 +11082,7 @@ def install_prebuilt(
             # Read and plan from the marker under the install lock so a waiting
             # update cannot undo a concurrent backend switch.
             backend, backend_mandatory = effective_backend_request(
-                llama_backend, install_dir = install_dir
+                llama_backend, install_dir=install_dir
             )
             if backend != "auto" and not backend_mandatory:
                 log(f"honouring the backend recorded by this install: {backend}")
@@ -11143,21 +11146,21 @@ def install_prebuilt(
                 # Reused: routing runs nvidia-smi and the ROCm probes, and the re-check needs the same answer.
                 if route is None:
                     route = route_backend_request(
-                        backend = requested_backend,
-                        published_repo = published_repo,
-                        published_release_tag = published_release_tag,
-                        override_has_rocm = override_has_rocm,
-                        override_rocm_gfx = override_rocm_gfx,
-                        cpu_mechanism = force_cpu,
+                        backend=requested_backend,
+                        published_repo=published_repo,
+                        published_release_tag=published_release_tag,
+                        override_has_rocm=override_has_rocm,
+                        override_rocm_gfx=override_rocm_gfx,
+                        cpu_mechanism=force_cpu,
                     )
                 host = route.host
                 try:
                     return select_backend_install(
-                        backend = route.backend,
-                        llama_tag = llama_tag,
-                        published_repo = route.published_repo,
-                        published_release_tag = route.published_release_tag,
-                        route = route,
+                        backend=route.backend,
+                        llama_tag=llama_tag,
+                        published_repo=route.published_repo,
+                        published_release_tag=route.published_release_tag,
+                        route=route,
                     )
                 except (BusyInstallConflict, PrebuiltFallback):
                     raise
@@ -11168,31 +11171,31 @@ def install_prebuilt(
             # back to the bundle on disk. One HEAD instead. Routed once and handed to both, since
             # _select would otherwise repeat the probes.
             initial_route = route_backend_request(
-                backend = backend,
-                published_repo = published_repo,
-                published_release_tag = published_release_tag,
-                override_has_rocm = override_has_rocm,
-                override_rocm_gfx = override_rocm_gfx,
-                cpu_mechanism = force_cpu,
+                backend=backend,
+                published_repo=published_repo,
+                published_release_tag=published_release_tag,
+                override_has_rocm=override_has_rocm,
+                override_rocm_gfx=override_rocm_gfx,
+                cpu_mechanism=force_cpu,
             )
             if existing_install_current_without_plan(
                 install_dir,
-                llama_tag = llama_tag,
-                published_repo = published_repo,
-                published_release_tag = published_release_tag,
+                llama_tag=llama_tag,
+                published_repo=published_repo,
+                published_release_tag=published_release_tag,
                 # As effective_backend_request resolved it: an explicit --llama-backend naming
                 # another is a request to CHANGE the install.
-                backend_request = backend,
-                force_cpu = force_cpu,
+                backend_request=backend,
+                force_cpu=force_cpu,
                 # The SAME forwarded detection initial_route was built from: without these,
                 # the "auto" re-derivation inside rebuilds the profile from a bare probe, which
                 # on any host whose AMD identity arrives as --rocm-gfx can never match.
-                override_has_rocm = override_has_rocm,
-                override_rocm_gfx = override_rocm_gfx,
-                route = initial_route,
+                override_has_rocm=override_has_rocm,
+                override_rocm_gfx=override_rocm_gfx,
+                route=initial_route,
                 # Only an explicit name re-asserts a request the last install could not
                 # honour; a request read back off the marker retries when something moves.
-                backend_request_mandatory = backend_mandatory,
+                backend_request_mandatory=backend_mandatory,
             ):
                 return
             # A request detection had to replace; kept so the marker records the CHOICE.
@@ -11232,17 +11235,17 @@ def install_prebuilt(
                 """Update selection fields when the existing bundle is reused."""
                 sync_marker_selection(
                     install_dir,
-                    choice = reused,
+                    choice=reused,
                     # A later candidate reused after the preferred failed is a fallback to retry.
-                    prebuilt_fallback_used = used_fallback,
-                    backend_request = persist_backend_request,
-                    persist_force_cpu = persist_force_cpu,
-                    persist_llama_backend = persisted_llama_backend(persist_llama_backend, reused),
-                    ggml_tree = recorded_ggml_tree(plan.approved_checksums, reused),
-                    rocm_gfx = persist_rocm_gfx,
-                    walk_back = plan.walk_back,
+                    prebuilt_fallback_used=used_fallback,
+                    backend_request=persist_backend_request,
+                    persist_force_cpu=persist_force_cpu,
+                    persist_llama_backend=persisted_llama_backend(persist_llama_backend, reused),
+                    ggml_tree=recorded_ggml_tree(plan.approved_checksums, reused),
+                    rocm_gfx=persist_rocm_gfx,
+                    walk_back=plan.walk_back,
                     # The routed host, so an older marker gains host_profile and runtime_files here.
-                    host = host,
+                    host=host,
                 )
 
             if release_plans and existing_install_matches_plan(install_dir, host, release_plans[0]):
@@ -11304,19 +11307,19 @@ def install_prebuilt(
                             install_dir,
                             work_dir,
                             probe,
-                            requested_tag = requested_tag,
-                            llama_tag = plan.llama_tag,
-                            release_tag = plan.release_tag,
-                            approved_checksums = plan.approved_checksums,
-                            initial_fallback_used = release_index > 0,
+                            requested_tag=requested_tag,
+                            llama_tag=plan.llama_tag,
+                            release_tag=plan.release_tag,
+                            approved_checksums=plan.approved_checksums,
+                            initial_fallback_used=release_index > 0,
                             # Skip is gated per-attempt inside, so pass the dir always.
-                            existing_install_dir = install_dir,
+                            existing_install_dir=install_dir,
                             # Persist only the deliberate choice, not a transient fallback.
-                            force_cpu = persist_force_cpu,
-                            llama_backend = persist_llama_backend,
-                            backend_request = persist_backend_request,
-                            rocm_gfx = persist_rocm_gfx,
-                            walk_back = plan.walk_back,
+                            force_cpu=persist_force_cpu,
+                            llama_backend=persist_llama_backend,
+                            backend_request=persist_backend_request,
+                            rocm_gfx=persist_rocm_gfx,
+                            walk_back=plan.walk_back,
                         )
                     except ExistingInstallSatisfied as satisfied:
                         # Third reuse path: the reinstall was skipped, so
@@ -11421,35 +11424,35 @@ def install_prebuilt(
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description = "Install and validate a prebuilt llama.cpp bundle for Unsloth Studio."
+        description="Install and validate a prebuilt llama.cpp bundle for Unsloth Studio."
     )
-    parser.add_argument("--install-dir", help = "Target ~/.unsloth/llama.cpp directory")
+    parser.add_argument("--install-dir", help="Target ~/.unsloth/llama.cpp directory")
     parser.add_argument(
         "--llama-tag",
-        default = DEFAULT_LLAMA_TAG,
-        help = (
+        default=DEFAULT_LLAMA_TAG,
+        help=(
             "llama.cpp release tag. Defaults to the latest usable published Unsloth "
             "release unless UNSLOTH_LLAMA_TAG overrides it."
         ),
     )
     parser.add_argument(
         "--published-repo",
-        default = DEFAULT_PUBLISHED_REPO,
-        help = "Published bundle repository",
+        default=DEFAULT_PUBLISHED_REPO,
+        help="Published bundle repository",
     )
     parser.add_argument(
         "--published-release-tag",
-        default = DEFAULT_PUBLISHED_TAG,
-        help = (
+        default=DEFAULT_PUBLISHED_TAG,
+        help=(
             "Published GitHub release tag to pin. By default, scan releases "
             "until a usable published llama.cpp release bundle is found."
         ),
     )
     parser.add_argument(
         "--has-rocm",
-        action = "store_true",
-        default = False,
-        help = (
+        action="store_true",
+        default=False,
+        help=(
             "Assert that an AMD ROCm GPU is present. When set, skips the internal "
             "hipinfo/amd-smi probe and forces has_rocm=True in the host profile. "
             "Used by setup.ps1/setup.sh to forward their own ROCm detection result "
@@ -11458,8 +11461,8 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--rocm-gfx",
-        default = os.environ.get("UNSLOTH_ROCM_GFX_ARCH"),
-        help = (
+        default=os.environ.get("UNSLOTH_ROCM_GFX_ARCH"),
+        help=(
             "Forward the AMD gfx target (e.g. gfx1151) that setup.ps1/setup.sh "
             "resolved, so the per-gfx ROCm prebuilt is selected even when the "
             "installer's own hipinfo/amd-smi probe cannot report it. Implies "
@@ -11468,9 +11471,9 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--cpu-fallback",
-        action = "store_true",
-        default = False,
-        help = (
+        action="store_true",
+        default=False,
+        help=(
             "Select the CPU prebuilt for this OS/arch even when a GPU is present. "
             "Automatic/transient: setup.sh uses this as a last resort for arm64 Linux "
             "GPU hosts whose source build failed. Does NOT persist, so a later update "
@@ -11480,9 +11483,9 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--force-cpu",
-        action = "store_true",
-        default = False,
-        help = (
+        action="store_true",
+        default=False,
+        help=(
             "Deliberate CPU-only install (UNSLOTH_LLAMA_CPP_BACKEND=cpu). Drops GPU "
             "detection like --cpu-fallback but also records force_cpu in the marker, so "
             "the in-app updater re-asserts CPU and never re-routes to a GPU/Vulkan "
@@ -11491,8 +11494,8 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--llama-backend",
-        choices = (*REQUESTABLE_BACKENDS, "hip"),
-        help = (
+        choices=(*REQUESTABLE_BACKENDS, "hip"),
+        help=(
             "Install the llama.cpp prebuilt for this backend and record the choice, "
             "so later updates keep it instead of re-detecting. cuda and rocm (alias "
             "hip) also opt out of the automatic Vulkan routes. A backend with no "
@@ -11505,30 +11508,30 @@ def parse_args() -> argparse.Namespace:
     resolve_group = parser.add_mutually_exclusive_group()
     resolve_group.add_argument(
         "--resolve-llama-tag",
-        nargs = "?",
-        const = "latest",
-        help = "Resolve a llama.cpp tag such as 'latest' to the logical upstream release tag.",
+        nargs="?",
+        const="latest",
+        help="Resolve a llama.cpp tag such as 'latest' to the logical upstream release tag.",
     )
     resolve_group.add_argument(
         "--resolve-install-tag",
-        nargs = "?",
-        const = "latest",
-        help = (
+        nargs="?",
+        const="latest",
+        help=(
             "Resolve a llama.cpp tag such as 'latest' to the concrete upstream tag "
             "selected by the current published-release policy."
         ),
     )
     resolve_group.add_argument(
         "--resolve-source-build",
-        nargs = "?",
-        const = "latest",
-        help = ("Resolve the source-build fallback plan."),
+        nargs="?",
+        const="latest",
+        help=("Resolve the source-build fallback plan."),
     )
     resolve_group.add_argument(
         "--resolve-prebuilt",
-        nargs = "?",
-        const = "latest",
-        help = (
+        nargs="?",
+        const="latest",
+        help=(
             "Report whether an official prebuilt exists for this host without "
             "downloading. Plans against --published-repo (defaults to the "
             "fork). Use --output-format json."
@@ -11536,9 +11539,9 @@ def parse_args() -> argparse.Namespace:
     )
     resolve_group.add_argument(
         "--resolve-backends",
-        nargs = "?",
-        const = "latest",
-        help = (
+        nargs="?",
+        const="latest",
+        help=(
             "Report every llama.cpp backend installable on this host, plus what "
             "--install-dir currently runs, without downloading. Feeds the Unsloth "
             "backend picker. Use --output-format json."
@@ -11546,8 +11549,8 @@ def parse_args() -> argparse.Namespace:
     )
     resolve_group.add_argument(
         "--validate-install",
-        metavar = "DIR",
-        help = (
+        metavar="DIR",
+        help=(
             "Run the staged llama-server smoke test against an existing build "
             "tree (setup.sh source-build post-check, #5854). Exit 2 on failure. "
             "Normally gated by UNSLOTH_LLAMA_STAGED_VALIDATION; this flag always "
@@ -11556,41 +11559,41 @@ def parse_args() -> argparse.Namespace:
     )
     resolve_group.add_argument(
         "--check-installed",
-        metavar = "DIR",
-        help = (
+        metavar="DIR",
+        help=(
             "Exit 0 when the install at DIR is complete and its binaries load (the same "
             "network-free check the updater uses before keeping an install), else 2."
         ),
     )
     parser.add_argument(
         "--install-kind",
-        default = None,
-        help = (
+        default=None,
+        help=(
             "Install kind for --validate-install GPU offload (e.g. linux-cuda, "
             "linux-rocm, macos-arm64). When omitted, host detection decides."
         ),
     )
     parser.add_argument(
         "--check-existing-install",
-        default = None,
-        metavar = "DIR",
-        help = (
+        default=None,
+        metavar="DIR",
+        help=(
             "Exit 0 when setup.sh may reuse DIR instead of building from source, "
             "1 when it must not. Prints nothing."
         ),
     )
     parser.add_argument(
         "--output-format",
-        choices = ("plain", "json"),
-        default = "plain",
-        help = "Resolver output format. Defaults to plain.",
+        choices=("plain", "json"),
+        default="plain",
+        help="Resolver output format. Defaults to plain.",
     )
     return parser.parse_args()
 
 
 def emit_resolver_output(payload: dict[str, Any], *, output_format: str) -> None:
     if output_format == "json":
-        print(json.dumps(payload, sort_keys = True))
+        print(json.dumps(payload, sort_keys=True))
         return
     if "llama_tag" in payload:
         print(payload["llama_tag"])
@@ -11610,7 +11613,7 @@ def emit_resolver_output(payload: dict[str, Any], *, output_format: str) -> None
             )
         )
         return
-    print(json.dumps(payload, sort_keys = True))
+    print(json.dumps(payload, sort_keys=True))
 
 
 def requested_backend_arg(args: argparse.Namespace) -> str | None:
@@ -11641,21 +11644,21 @@ def _resolve_prebuilt_payload(
 ) -> dict[str, Any]:
     """--resolve-prebuilt for one backend, through the install path's own selector."""
     route = route_backend_request(
-        backend = resolved_llama_backend(backend),
-        published_repo = args.published_repo,
-        published_release_tag = args.published_release_tag or "",
-        override_has_rocm = args.has_rocm,
-        override_rocm_gfx = args.rocm_gfx,
-        cpu_mechanism = args.cpu_fallback,
+        backend=resolved_llama_backend(backend),
+        published_repo=args.published_repo,
+        published_release_tag=args.published_release_tag or "",
+        override_has_rocm=args.has_rocm,
+        override_rocm_gfx=args.rocm_gfx,
+        cpu_mechanism=args.cpu_fallback,
     )
     try:
         return _selection_payload(
             select_backend_install(
-                backend = route.backend,
-                llama_tag = requested_tag,
-                published_repo = route.published_repo,
-                published_release_tag = route.published_release_tag,
-                route = route,
+                backend=route.backend,
+                llama_tag=requested_tag,
+                published_repo=route.published_repo,
+                published_release_tag=route.published_release_tag,
+                route=route,
             )
         )
     except PrebuiltFallback:
@@ -11687,20 +11690,20 @@ def resolve_backends_payload(
             entry: dict[str, Any] = {"backend": backend}
             try:
                 selection = select_backend_install(
-                    backend = backend,
-                    llama_tag = requested_tag,
-                    published_repo = args.published_repo,
-                    published_release_tag = pinned_to,
-                    override_has_rocm = args.has_rocm,
-                    override_rocm_gfx = args.rocm_gfx,
-                    host = host,
+                    backend=backend,
+                    llama_tag=requested_tag,
+                    published_repo=args.published_repo,
+                    published_release_tag=pinned_to,
+                    override_has_rocm=args.has_rocm,
+                    override_rocm_gfx=args.rocm_gfx,
+                    host=host,
                 )
             except BackendUnavailable as exc:
-                entry.update(available = False, reason = "unavailable", detail = str(exc))
+                entry.update(available=False, reason="unavailable", detail=str(exc))
             except PrebuiltFallback as exc:
-                entry.update(available = False, reason = "no_prebuilt", detail = str(exc))
+                entry.update(available=False, reason="no_prebuilt", detail=str(exc))
             except Exception as exc:  # noqa: BLE001 - one backend must not sink the list
-                entry.update(available = False, reason = "error", detail = str(exc))
+                entry.update(available=False, reason="error", detail=str(exc))
             else:
                 payload = _selection_payload(selection)
                 entry.update(
@@ -11750,7 +11753,7 @@ def main() -> int:
                 load_prebuilt_metadata(install_dir), host
             )
         except Exception as exc:
-            print(f"install check failed: {exc}", file = sys.stderr)
+            print(f"install check failed: {exc}", file=sys.stderr)
             runs = False
         return EXIT_SUCCESS if runs else EXIT_FALLBACK
 
@@ -11758,14 +11761,14 @@ def main() -> int:
         try:
             validate_existing_install(
                 Path(args.validate_install),
-                install_kind = args.install_kind,
+                install_kind=args.install_kind,
             )
         except PrebuiltFallback as exc:
             # A full disk is not a bad build: the CPU source rebuild needs more space.
             fatal = _environment_fatal_reason(exc)
             if fatal:
                 _fail_no_space(f"install validation failed: {fatal}")
-            print(str(exc), file = sys.stderr)
+            print(str(exc), file=sys.stderr)
             raise SystemExit(EXIT_FALLBACK) from exc
         return EXIT_SUCCESS
 
@@ -11780,7 +11783,7 @@ def main() -> int:
                 "requested_tag": normalized_requested_llama_tag(args.resolve_llama_tag),
                 "llama_tag": resolved,
             },
-            output_format = args.output_format,
+            output_format=args.output_format,
         )
         return EXIT_SUCCESS
 
@@ -11795,7 +11798,7 @@ def main() -> int:
                 "requested_tag": normalized_requested_llama_tag(args.resolve_install_tag),
                 "llama_tag": resolved,
             },
-            output_format = args.output_format,
+            output_format=args.output_format,
         )
         return EXIT_SUCCESS
 
@@ -11813,7 +11816,7 @@ def main() -> int:
                 "source_ref": plan.source_ref,
                 "compatibility_upstream_tag": plan.compatibility_upstream_tag,
             },
-            output_format = args.output_format,
+            output_format=args.output_format,
         )
         return EXIT_SUCCESS
 
@@ -11824,10 +11827,10 @@ def main() -> int:
         # Use the install selector without consulting the current marker choice.
         payload = _resolve_prebuilt_payload(
             args.resolve_prebuilt,
-            backend = requested_backend_arg(args),
-            args = args,
+            backend=requested_backend_arg(args),
+            args=args,
         )
-        emit_resolver_output(payload, output_format = args.output_format)
+        emit_resolver_output(payload, output_format=args.output_format)
         return EXIT_SUCCESS
 
     if args.resolve_backends is not None:
@@ -11835,10 +11838,10 @@ def main() -> int:
         emit_resolver_output(
             resolve_backends_payload(
                 args.resolve_backends,
-                args = args,
-                install_dir = (Path(args.install_dir).expanduser() if args.install_dir else None),
+                args=args,
+                install_dir=(Path(args.install_dir).expanduser() if args.install_dir else None),
             ),
-            output_format = args.output_format,
+            output_format=args.output_format,
         )
         return EXIT_SUCCESS
 
@@ -11851,18 +11854,18 @@ def main() -> int:
     _LOG_TO_STDOUT = True
     install_arg = Path(args.install_dir).expanduser()
     install_prebuilt(
-        install_dir = install_arg.resolve(),
-        llama_tag = args.llama_tag,
-        published_repo = args.published_repo,
-        published_release_tag = args.published_release_tag or "",
-        override_has_rocm = args.has_rocm,
-        override_rocm_gfx = args.rocm_gfx,
+        install_dir=install_arg.resolve(),
+        llama_tag=args.llama_tag,
+        published_repo=args.published_repo,
+        published_release_tag=args.published_release_tag or "",
+        override_has_rocm=args.has_rocm,
+        override_rocm_gfx=args.rocm_gfx,
         # Only the transient rescue is passed as a mechanism. A deliberate CPU
         # choice arrives as the backend request below, which is what makes it
         # persist; --cpu-fallback stays unrecorded and heals to GPU (#6097).
-        force_cpu = args.cpu_fallback,
-        llama_backend = requested_backend_arg(args),
-        instruction_cleanup_root = install_arg.absolute(),
+        force_cpu=args.cpu_fallback,
+        llama_backend=requested_backend_arg(args),
+        instruction_cleanup_root=install_arg.absolute(),
     )
     return EXIT_SUCCESS
 
@@ -11892,6 +11895,6 @@ if __name__ == "__main__":
         fatal = _environment_fatal_reason(exc)
         if fatal:
             _fail_no_space(f"prebuilt install failed: {fatal}")
-        message = textwrap.shorten(str(exc), width = 400, placeholder = "...")
+        message = textwrap.shorten(str(exc), width=400, placeholder="...")
         log(f"fatal helper error: {message}")
         raise SystemExit(EXIT_ERROR)

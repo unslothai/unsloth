@@ -67,13 +67,13 @@ print("RESULT " + json.dumps({{"device_type": device_type, "targets": targets}})
 """
 
 
-@pytest.fixture(scope = "module")
+@pytest.fixture(scope="module")
 def routed():
-    code = _CHILD.format(tests = str(_TESTS_DIR), arches = list(_ARCHES))
+    code = _CHILD.format(tests=str(_TESTS_DIR), arches=list(_ARCHES))
     # get_device_type() returns "mlx" before it ever looks at torch on Darwin arm64 with mlx installed, so the spoof
     # would be ignored. Force the GPU path to keep the assertion live there instead of skipping it.
     env = {**os.environ, "UNSLOTH_FORCE_GPU_PATH": "1"}
-    proc = subprocess.run([sys.executable, "-c", code], capture_output = True, text = True, env = env)
+    proc = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, env=env)
     line = next((l for l in proc.stdout.splitlines() if l.startswith("RESULT ")), None)
     assert line, f"child produced no result.\nstdout:\n{proc.stdout}\nstderr:\n{proc.stderr}"
     return json.loads(line[len("RESULT ") :])
@@ -94,4 +94,5 @@ def test_device_type_is_hip(routed):
 def test_rocm_gfx_family(gfx):
     # Pure mapping (no torch): each gfx picks the right per-family ROCm bundle.
     from unsloth_zoo import llama_cpp as lc
+
     assert lc._rocm_gfx_family(gfx) == _ARCHES[gfx][1]

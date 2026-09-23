@@ -20,7 +20,7 @@ _BACKEND = Path(__file__).resolve().parent.parent
 
 
 def _src(rel):
-    return (_BACKEND / rel).read_text(encoding = "utf-8")
+    return (_BACKEND / rel).read_text(encoding="utf-8")
 
 
 def _func_src(rel, name):
@@ -42,7 +42,7 @@ def _patch(monkeypatch, *, torch: bool, device, apple: bool):
 
 def test_cpu_with_torch_unsupported_no_accelerator(monkeypatch):
     # PyTorch present but no accelerator: unsupported with no_accelerator, not "PyTorch missing".
-    _patch(monkeypatch, torch = True, device = hw.DeviceType.CPU, apple = False)
+    _patch(monkeypatch, torch=True, device=hw.DeviceType.CPU, apple=False)
     # Both branches below sit AFTER the gpu-present-but-unusable one, so they are only
     # reachable on a host with no accelerator at all. The verdict is module state that
     # detection writes and that current_chat_only_verdict() re-derives from a 60 second
@@ -60,7 +60,7 @@ def test_cpu_with_torch_unsupported_no_accelerator(monkeypatch):
 
 
 def test_cuda_with_torch_supports_export(monkeypatch):
-    _patch(monkeypatch, torch = True, device = hw.DeviceType.CUDA, apple = False)
+    _patch(monkeypatch, torch=True, device=hw.DeviceType.CUDA, apple=False)
     cap = hw.export_capability()
     assert cap["export_supported"] is True
     assert cap["export_unsupported_reason"] is None
@@ -68,18 +68,18 @@ def test_cuda_with_torch_supports_export(monkeypatch):
 
 
 def test_xpu_with_torch_supports_export(monkeypatch):
-    _patch(monkeypatch, torch = True, device = hw.DeviceType.XPU, apple = False)
+    _patch(monkeypatch, torch=True, device=hw.DeviceType.XPU, apple=False)
     assert hw.export_capability()["export_supported"] is True
 
 
 def test_mlx_without_torch_supports_export(monkeypatch):
     # Apple Silicon MLX exports without PyTorch.
-    _patch(monkeypatch, torch = False, device = hw.DeviceType.MLX, apple = True)
+    _patch(monkeypatch, torch=False, device=hw.DeviceType.MLX, apple=True)
     assert hw.export_capability()["export_supported"] is True
 
 
 def test_no_torch_non_apple_reports_pytorch_missing(monkeypatch):
-    _patch(monkeypatch, torch = False, device = hw.DeviceType.CPU, apple = False)
+    _patch(monkeypatch, torch=False, device=hw.DeviceType.CPU, apple=False)
     # Both branches below sit AFTER the gpu-present-but-unusable one, so they are only
     # reachable on a host with no accelerator at all. The verdict is module state that
     # detection writes and that current_chat_only_verdict() re-derives from a 60 second
@@ -97,7 +97,7 @@ def test_no_torch_non_apple_reports_pytorch_missing(monkeypatch):
 def test_apple_without_mlx_reports_mlx_unavailable(monkeypatch):
     # Apple + CPU means the MLX stack is missing; reason is mlx_unavailable regardless of torch.
     for has_torch in (False, True):
-        _patch(monkeypatch, torch = has_torch, device = hw.DeviceType.CPU, apple = True)
+        _patch(monkeypatch, torch=has_torch, device=hw.DeviceType.CPU, apple=True)
         cap = hw.export_capability()
         assert cap["export_supported"] is False
         assert cap["export_unsupported_reason"] == "mlx_unavailable"
@@ -106,7 +106,7 @@ def test_apple_without_mlx_reports_mlx_unavailable(monkeypatch):
 
 def test_apple_no_torch_install_reports_no_torch(monkeypatch):
     # GGUF-only by request: the message must not send the user to `unsloth studio update`.
-    _patch(monkeypatch, torch = False, device = hw.DeviceType.CPU, apple = True)
+    _patch(monkeypatch, torch=False, device=hw.DeviceType.CPU, apple=True)
     monkeypatch.setattr(hw, "current_chat_only_verdict", lambda: ("no_torch", None))
     cap = hw.export_capability()
     assert cap["export_supported"] is False
@@ -134,8 +134,8 @@ def test_export_backend_imports_without_torch(monkeypatch):
 
     # Drop any preloaded copies so the guarded import paths re-run under the block.
     for m in [k for k in sys.modules if k.split(".")[0] in {"torch", "unsloth"}]:
-        monkeypatch.delitem(sys.modules, m, raising = False)
-    monkeypatch.delitem(sys.modules, "core.export.export", raising = False)
+        monkeypatch.delitem(sys.modules, m, raising=False)
+    monkeypatch.delitem(sys.modules, "core.export.export", raising=False)
     monkeypatch.setattr(builtins, "__import__", blocking_import)
 
     mod = importlib.import_module("core.export.export")

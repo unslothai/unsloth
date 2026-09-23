@@ -21,7 +21,7 @@ def test_outetts_v3_speakerless_prompt_stops_before_generated_features():
     expected = "<|im_start|>\n<|text_start|>Read this aloud.<|text_end|>\n<|audio_start|>\n"
 
     assert build_dac_tts_prompt("Read this aloud.") == expected
-    assert LlamaCppBackend._TTS_PROMPTS["dac"][0].format(text = "Read this aloud.") == expected
+    assert LlamaCppBackend._TTS_PROMPTS["dac"][0].format(text="Read this aloud.") == expected
     assert "<|global_features_start|>" not in expected
 
 
@@ -39,17 +39,17 @@ def test_native_outetts_uses_the_same_speakerless_prompt(monkeypatch):
     backend = InferenceBackend.__new__(InferenceBackend)
     backend._audio_codec_manager = SimpleNamespace()
     monkeypatch.setattr(backend, "_patch_repetition_penalty_processor", lambda: None)
-    with pytest.raises(RuntimeError, match = "prompt captured"):
+    with pytest.raises(RuntimeError, match="prompt captured"):
         backend._generate_dac(
-            SimpleNamespace(device = "cpu", dtype = torch.float32),
+            SimpleNamespace(device="cpu", dtype=torch.float32),
             tokenizer,
             "Read this aloud.",
-            temperature = 0.6,
-            top_k = 50,
-            top_p = 0.95,
-            min_p = 0.0,
-            max_new_tokens = 64,
-            repetition_penalty = 1.1,
+            temperature=0.6,
+            top_k=50,
+            top_p=0.95,
+            min_p=0.0,
+            max_new_tokens=64,
+            repetition_penalty=1.1,
         )
     assert captured == [
         "<|im_start|>\n<|text_start|>Read this aloud.<|text_end|>\n<|audio_start|>\n"
@@ -64,7 +64,7 @@ def _string(value: str) -> bytes:
 def _write_gguf(
     path,
     tokens,
-    token_types = None,
+    token_types=None,
 ):
     metadata = _string("general.architecture") + struct.pack("<I", 8) + _string("llama")
     if tokens is not None:
@@ -87,7 +87,7 @@ def _snac_vocab():
     return [*base, *(f"<custom_token_{i}>" for i in range(10_002))]
 
 
-@pytest.fixture(autouse = True)
+@pytest.fixture(autouse=True)
 def _clear_cache():
     gguf_metadata._TTS_AUDIO_TYPE_CACHE.clear()
 
@@ -101,7 +101,7 @@ def test_atomic_replacement_invalidates_a_same_size_same_mtime_verdict(tmp_path)
     assert read_gguf_tts_audio_type(str(path)) == "bicodec"
     original = path.stat()
     os.replace(replacement, path)
-    os.utime(path, ns = (path.stat().st_atime_ns, original.st_mtime_ns))
+    os.utime(path, ns=(path.stat().st_atime_ns, original.st_mtime_ns))
     assert path.stat().st_size == original.st_size
     assert path.stat().st_mtime_ns == original.st_mtime_ns
     assert read_gguf_tts_audio_type(str(path)) is None

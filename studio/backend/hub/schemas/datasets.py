@@ -16,7 +16,7 @@ class CheckFormatRequest(BaseModel):
     prefer_local_cache: bool = False
     local_path: Optional[str] = None
 
-    @model_validator(mode = "before")
+    @model_validator(mode="before")
     @classmethod
     def _compat_split(cls, values: Any) -> Any:
         if isinstance(values, dict) and "split" in values:
@@ -66,8 +66,8 @@ class AiAssistMappingResponse(BaseModel):
 
 
 class UploadDatasetResponse(BaseModel):
-    filename: str = Field(..., description = "Original filename")
-    stored_path: str = Field(..., description = "Absolute path stored on backend")
+    filename: str = Field(..., description="Original filename")
+    stored_path: str = Field(..., description="Absolute path stored on backend")
 
 
 class LocalDatasetItem(BaseModel):
@@ -88,7 +88,7 @@ class LocalDatasetItem(BaseModel):
 
 
 class LocalDatasetsResponse(BaseModel):
-    datasets: List[LocalDatasetItem] = Field(default_factory = list)
+    datasets: List[LocalDatasetItem] = Field(default_factory=list)
 
 
 class CachedDatasetItem(BaseModel):
@@ -105,7 +105,7 @@ class CachedDatasetItem(BaseModel):
 
 
 class CachedDatasetsResponse(BaseModel):
-    cached: List[CachedDatasetItem] = Field(default_factory = list)
+    cached: List[CachedDatasetItem] = Field(default_factory=list)
 
 
 class LocalDatasetOptionsRequest(BaseModel):
@@ -121,7 +121,7 @@ class DatasetSplitOption(BaseModel):
 
 class LocalDatasetOptionsResponse(BaseModel):
     cache_available: bool = False
-    splits: List[DatasetSplitOption] = Field(default_factory = list)
+    splits: List[DatasetSplitOption] = Field(default_factory=list)
 
 
 class DeleteCachedDatasetResponse(BaseModel):

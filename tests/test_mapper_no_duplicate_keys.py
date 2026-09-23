@@ -14,7 +14,7 @@ MAPPER_PATH = os.path.join(os.path.dirname(__file__), os.pardir, "unsloth", "mod
 
 
 def _duplicate_int_to_float_keys():
-    with open(MAPPER_PATH, encoding = "utf-8") as f:
+    with open(MAPPER_PATH, encoding="utf-8") as f:
         tree = ast.parse(f.read(), MAPPER_PATH)
 
     for node in ast.walk(tree):

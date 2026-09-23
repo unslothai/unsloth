@@ -39,6 +39,7 @@ def _live_cache_dir() -> str:
     """Unsloth's LIVE hub cache root. Read from utils rather than ``diffusion.hub_cache_dir`` to
     avoid a circular import, the same way diffusion_auto_policy does."""
     from utils.hf_cache_settings import active_hf_hub_cache
+
     return active_hf_hub_cache()
 
 
@@ -255,11 +256,13 @@ def read_checkpoint_header(checkpoint_path: Path | str) -> dict[str, tuple[int, 
     path = str(checkpoint_path)
     if path.lower().endswith(".gguf"):
         from gguf import GGUFReader
+
         for tensor in GGUFReader(path).tensors:
             names_shapes[str(tensor.name)] = tuple(int(x) for x in tensor.shape)
     else:
         from safetensors import safe_open
-        with safe_open(path, framework = "pt") as handle:
+
+        with safe_open(path, framework="pt") as handle:
             for name in handle.keys():
                 names_shapes[name] = tuple(handle.get_slice(name).get_shape())
     return names_shapes
@@ -349,9 +352,9 @@ def _load_extras_file(
         hf_token,
         # The plan counts an extras file cached under EITHER root and stages neither, so this has to resolve both or it
         # re-pulls what the planner skipped, inline and outside the manager.
-        reuse_other_cache_root = True,
+        reuse_other_cache_root=True,
         # the switch's locality gate cleared these three artifacts by name
-        local_files_only = local_files_only,
+        local_files_only=local_files_only,
     )
     return load_file(path)
 
@@ -369,7 +372,7 @@ def ltx23_extras_files(checkpoint_path: Path | str) -> tuple[str, ...]:
     (they are otherwise fetched inline, outside the panel's progress, cancel and disk preflight)."""
     variant = checkpoint_variant(checkpoint_path)
     return tuple(
-        template.format(variant = variant)
+        template.format(variant=variant)
         for template in (_EXTRAS_TEXT_PROJ, _EXTRAS_VIDEO_VAE, _EXTRAS_AUDIO_VAE)
     )
 
@@ -416,7 +419,7 @@ def ltx23_verbatim_sigmas(pipe: Any) -> Any:
             "shift": cfg.get("shift", 1.0),
             "shift_terminal": cfg.get("shift_terminal", None),
         }
-        register(use_dynamic_shifting = False, shift = 1.0, shift_terminal = None)
+        register(use_dynamic_shifting=False, shift=1.0, shift_terminal=None)
         try:
             yield
         finally:
@@ -440,7 +443,7 @@ def _build_from_config(
         state.pop(key)
     with init_empty_weights():
         model = model_cls.from_config(config)
-    model.load_state_dict(state, strict = True, assign = True)
+    model.load_state_dict(state, strict=True, assign=True)
     return model.to(torch_dtype)
 
 
@@ -471,7 +474,7 @@ def load_ltx23_transformer(
         **LTX_2_3_TRANSFORMER_CONFIG_OVERRIDES,
     }
     if is_gguf:
-        kwargs["quantization_config"] = diffusers.GGUFQuantizationConfig(compute_dtype = torch_dtype)
+        kwargs["quantization_config"] = diffusers.GGUFQuantizationConfig(compute_dtype=torch_dtype)
     return LTX2VideoTransformer3DModel.from_single_file(dit_state, **kwargs)
 
 
@@ -490,7 +493,7 @@ def load_ltx23_connectors(
     if not any(k.startswith("text_embedding_projection") for k in connector_state):
         connector_state = dict(connector_state)
         connector_state.update(
-            _load_extras_file(_EXTRAS_TEXT_PROJ.format(variant = variant), hf_token, local_files_only)
+            _load_extras_file(_EXTRAS_TEXT_PROJ.format(variant=variant), hf_token, local_files_only)
         )
     return _build_from_config(
         LTX2TextConnectors,
@@ -510,9 +513,10 @@ def load_ltx23_vae(
     local_files_only: bool = False,
 ) -> Any:
     from diffusers import AutoencoderKLLTX2Video
+
     if not vae_state:
         vae_state = _load_extras_file(
-            _EXTRAS_VIDEO_VAE.format(variant = variant), hf_token, local_files_only
+            _EXTRAS_VIDEO_VAE.format(variant=variant), hf_token, local_files_only
         )
     return _build_from_config(
         AutoencoderKLLTX2Video,
@@ -520,7 +524,7 @@ def load_ltx23_vae(
         vae_state,
         _VIDEO_VAE_RENAME,
         torch_dtype,
-        remove_suffixes = _VIDEO_VAE_REMOVE_SUFFIXES,
+        remove_suffixes=_VIDEO_VAE_REMOVE_SUFFIXES,
     )
 
 
@@ -538,7 +542,7 @@ def load_ltx23_audio_vae_and_vocoder(
 
     if not audio_vae_state or not vocoder_state:
         combined = _load_extras_file(
-            _EXTRAS_AUDIO_VAE.format(variant = variant), hf_token, local_files_only
+            _EXTRAS_AUDIO_VAE.format(variant=variant), hf_token, local_files_only
         )
         audio_vae_state = {
             k[len("audio_vae.") :]: v for k, v in combined.items() if k.startswith("audio_vae.")
@@ -562,7 +566,7 @@ def load_ltx23_audio_vae_and_vocoder(
 
     with init_empty_weights():
         vocoder = LTX2VocoderWithBWE.from_config(_VOCODER_CONFIG)
-    vocoder.load_state_dict(vocoder_state, strict = True, assign = True)
+    vocoder.load_state_dict(vocoder_state, strict=True, assign=True)
     return audio_vae, vocoder.to(torch_dtype)
 
 
@@ -617,33 +621,33 @@ def load_ltx23_pipeline(
 
     transformer = load_ltx23_transformer(
         groups["dit"],
-        base_repo = base_repo,
-        torch_dtype = torch_dtype,
-        is_gguf = is_gguf,
-        hf_token = hf_token,
-        local_files_only = local_files_only,
+        base_repo=base_repo,
+        torch_dtype=torch_dtype,
+        is_gguf=is_gguf,
+        hf_token=hf_token,
+        local_files_only=local_files_only,
     )
     connectors = load_ltx23_connectors(
         groups["connectors"],
-        variant = variant,
-        torch_dtype = torch_dtype,
-        hf_token = hf_token,
-        local_files_only = local_files_only,
+        variant=variant,
+        torch_dtype=torch_dtype,
+        hf_token=hf_token,
+        local_files_only=local_files_only,
     )
     vae = load_ltx23_vae(
         groups["vae"],
-        variant = variant,
-        torch_dtype = torch_dtype,
-        hf_token = hf_token,
-        local_files_only = local_files_only,
+        variant=variant,
+        torch_dtype=torch_dtype,
+        hf_token=hf_token,
+        local_files_only=local_files_only,
     )
     audio_vae, vocoder = load_ltx23_audio_vae_and_vocoder(
         groups["audio_vae"],
         groups["vocoder"],
-        variant = variant,
-        torch_dtype = torch_dtype,
-        hf_token = hf_token,
-        local_files_only = local_files_only,
+        variant=variant,
+        torch_dtype=torch_dtype,
+        hf_token=hf_token,
+        local_files_only=local_files_only,
     )
 
     # Shared 2.0/2.3 components from the base repo via model_index, so upstream class renames break loudly here rather
@@ -653,7 +657,7 @@ def load_ltx23_pipeline(
     # downloaded, after eviction.
     cache_dir = _live_cache_dir()
     index = LTX2Pipeline.load_config(
-        base_repo, token = hf_token, local_files_only = local_files_only, cache_dir = cache_dir
+        base_repo, token=hf_token, local_files_only=local_files_only, cache_dir=cache_dir
     )
 
     def _sub(name: str, **extra: Any) -> Any:
@@ -661,25 +665,25 @@ def load_ltx23_pipeline(
         module = transformers if library == "transformers" else __import__("diffusers")
         return getattr(module, class_name).from_pretrained(
             base_repo,
-            subfolder = name,
-            token = hf_token,
-            local_files_only = local_files_only,
-            cache_dir = cache_dir,
+            subfolder=name,
+            token=hf_token,
+            local_files_only=local_files_only,
+            cache_dir=cache_dir,
             **extra,
         )
 
     scheduler = _sub("scheduler")
     tokenizer = _sub("tokenizer")
     if text_encoder is None:
-        text_encoder = _sub("text_encoder", torch_dtype = torch_dtype)
+        text_encoder = _sub("text_encoder", torch_dtype=torch_dtype)
 
     return LTX2Pipeline(
-        scheduler = scheduler,
-        text_encoder = text_encoder,
-        tokenizer = tokenizer,
-        connectors = connectors,
-        transformer = transformer,
-        vae = vae,
-        audio_vae = audio_vae,
-        vocoder = vocoder,
+        scheduler=scheduler,
+        text_encoder=text_encoder,
+        tokenizer=tokenizer,
+        connectors=connectors,
+        transformer=transformer,
+        vae=vae,
+        audio_vae=audio_vae,
+        vocoder=vocoder,
     )

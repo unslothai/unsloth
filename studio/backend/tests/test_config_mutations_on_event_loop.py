@@ -149,9 +149,9 @@ def _drive(monkeypatch, case: _Case):
     monkeypatch.setattr(auth_routes, "_LOGIN_IP_BUCKETS", {})
 
     app = FastAPI()
-    app.include_router(auth_routes.router, prefix = "/api/auth")
-    app.include_router(mcp_routes.router, prefix = "/api/mcp-servers")
-    app.include_router(provider_routes.router, prefix = "/api/providers")
+    app.include_router(auth_routes.router, prefix="/api/auth")
+    app.include_router(mcp_routes.router, prefix="/api/mcp-servers")
+    app.include_router(provider_routes.router, prefix="/api/providers")
     app.dependency_overrides[get_current_subject] = lambda: "u"
     app.dependency_overrides[get_current_subject_allow_password_change] = lambda: "u"
     app.dependency_overrides[authenticated_via_api_key] = lambda: False
@@ -176,7 +176,7 @@ def _drive(monkeypatch, case: _Case):
     return threads, loop_threads[0]
 
 
-@pytest.mark.parametrize("case", _MUTATIONS.values(), ids = list(_MUTATIONS))
+@pytest.mark.parametrize("case", _MUTATIONS.values(), ids=list(_MUTATIONS))
 def test_a_state_changing_handler_runs_on_the_event_loop_thread(monkeypatch, case):
     threads, loop_thread = _drive(monkeypatch, case)
     assert (
@@ -184,7 +184,7 @@ def test_a_state_changing_handler_runs_on_the_event_loop_thread(monkeypatch, cas
     ), f"{case.path} ran in the threadpool, so its check-then-write is no longer serialized"
 
 
-@pytest.mark.parametrize("case", _READS.values(), ids = list(_READS))
+@pytest.mark.parametrize("case", _READS.values(), ids=list(_READS))
 def test_a_read_only_handler_stays_off_the_event_loop_thread(monkeypatch, case):
     threads, loop_thread = _drive(monkeypatch, case)
     assert threads[0] != loop_thread, f"{case.path} read its store on the event loop thread"

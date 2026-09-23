@@ -41,10 +41,10 @@ def _write_snapshot(hub_cache: Path, repo: str, revision: str, filename: str) ->
     """Lay out one finished pinned download: a blob plus its snapshot entry."""
     repo_cache = hub_cache / f"models--{repo.replace('/', '--')}"
     blob = repo_cache / "blobs" / "etag"
-    blob.parent.mkdir(parents = True, exist_ok = True)
+    blob.parent.mkdir(parents=True, exist_ok=True)
     blob.write_bytes(b"weights")
     entry = repo_cache / "snapshots" / revision / filename
-    entry.parent.mkdir(parents = True, exist_ok = True)
+    entry.parent.mkdir(parents=True, exist_ok=True)
     entry.write_bytes(b"weights")
     return entry
 
@@ -64,8 +64,8 @@ def test_a_lost_revision_record_still_finds_the_downloaded_model(tmp_path, monke
         ggml_mod, "_write_revision_record", lambda repo_id, rev: recorded.append((repo_id, rev))
     )
 
-    assert snapshot_mod._fallback_revisions(repo, hub_cache = tmp_path) == [revision]
-    assert ggml_mod._cached_model_path("tiny", hub_cache = tmp_path) is not None
+    assert snapshot_mod._fallback_revisions(repo, hub_cache=tmp_path) == [revision]
+    assert ggml_mod._cached_model_path("tiny", hub_cache=tmp_path) is not None
     assert recorded == [(repo, revision)], "the record was not rebuilt from the cache"
 
 
@@ -73,12 +73,12 @@ def test_fallback_revisions_prefers_refs_main_and_skips_junk(tmp_path):
     """refs/main first when it exists, and only 40-hex snapshot dirs qualify."""
     repo = "owner/repo"
     repo_cache = tmp_path / "models--owner--repo"
-    (repo_cache / "snapshots" / ("b" * 40)).mkdir(parents = True)
-    (repo_cache / "snapshots" / "not-a-sha").mkdir(parents = True)
-    (repo_cache / "refs").mkdir(parents = True)
-    (repo_cache / "refs" / "main").write_text("c" * 40, encoding = "utf-8")
+    (repo_cache / "snapshots" / ("b" * 40)).mkdir(parents=True)
+    (repo_cache / "snapshots" / "not-a-sha").mkdir(parents=True)
+    (repo_cache / "refs").mkdir(parents=True)
+    (repo_cache / "refs" / "main").write_text("c" * 40, encoding="utf-8")
 
-    assert snapshot_mod._fallback_revisions(repo, hub_cache = tmp_path) == ["c" * 40, "b" * 40]
+    assert snapshot_mod._fallback_revisions(repo, hub_cache=tmp_path) == ["c" * 40, "b" * 40]
 
 
 @pytest.mark.parametrize(
@@ -107,7 +107,7 @@ def test_a_cancel_during_metadata_leaves_the_shared_cache_alone(
     monkeypatch.setattr(
         huggingface_hub,
         "HfApi",
-        lambda *a, **k: SimpleNamespace(model_info = lambda *a, **k: _FakeInfo()),
+        lambda *a, **k: SimpleNamespace(model_info=lambda *a, **k: _FakeInfo()),
     )
     monkeypatch.setattr(
         module, "_claim_stt_repository", lambda repo: claims.append(repo) or (None, None)
@@ -121,7 +121,7 @@ def test_a_cancel_during_metadata_leaves_the_shared_cache_alone(
 
     state = state_factory()
     state._cancelled = True  # as cancel() leaves it during metadata
-    state._run(model_id, None, hub_cache = tmp_path)
+    state._run(model_id, None, hub_cache=tmp_path)
 
     assert claims == [], "a cancelled run still reserved the repository"
     assert prepares == [], "a cancelled run still rewrote the shared cache"
@@ -142,14 +142,14 @@ def test_restarting_a_cancelling_download_is_not_a_silent_no_op(state_factory, m
     release = threading.Event()
     state._model_id = model_id
     state._cancelled = True
-    state._thread = threading.Thread(target = release.wait, daemon = True)
+    state._thread = threading.Thread(target=release.wait, daemon=True)
     state._thread.start()
     try:
-        with pytest.raises(snapshot_mod.SttModelIdError, match = "cancelling"):
+        with pytest.raises(snapshot_mod.SttModelIdError, match="cancelling"):
             state.start(model_id)
     finally:
         release.set()
-        state._thread.join(timeout = 5)
+        state._thread.join(timeout=5)
 
 
 def test_a_worker_that_ignores_sigterm_is_killed():
@@ -167,11 +167,11 @@ def test_a_worker_that_ignores_sigterm_is_killed():
             started = time.monotonic()
             worker_mod.terminate_download(process)
             assert time.monotonic() - started < 0.2, "cancel() waited on the worker"
-            assert process.wait(timeout = 10) != 0
+            assert process.wait(timeout=10) != 0
     finally:
         if process.poll() is None:
             process.kill()
-            process.wait(timeout = 10)
+            process.wait(timeout=10)
 
 
 @pytest.mark.parametrize(
@@ -188,19 +188,19 @@ def test_status_never_stats_the_cache_under_the_download_lock(state_factory, mod
     observed = []
 
     def probe(*args, **kwargs):
-        observed.append(state._lock.acquire(blocking = False))
+        observed.append(state._lock.acquire(blocking=False))
         if observed[-1]:
             state._lock.release()
         return 1
 
     state._downloaded_bytes = probe
     state._model_id = model_id
-    state._thread = threading.Thread(target = lambda: time.sleep(0.3), daemon = True)
+    state._thread = threading.Thread(target=lambda: time.sleep(0.3), daemon=True)
     state._thread.start()
     try:
         assert state.status()["bytes_done"] == 1
     finally:
-        state._thread.join(timeout = 5)
+        state._thread.join(timeout=5)
     assert observed == [True], "progress was computed while holding the download lock"
 
 
@@ -234,9 +234,9 @@ def test_progress_cannot_mix_a_new_runs_bytes_with_the_old_runs_total(
     state._hub_cache = tmp_path
     state._total_bytes = 1000
     state._etag = "etag"
-    state._selected_files = (snapshot_mod._SelectedHubFile(path = "f", size = 1000, blob_key = None),)
+    state._selected_files = (snapshot_mod._SelectedHubFile(path="f", size=1000, blob_key=None),)
     release = threading.Event()
-    state._thread = threading.Thread(target = release.wait, daemon = True)
+    state._thread = threading.Thread(target=release.wait, daemon=True)
     state._thread.start()
 
     real = state._downloaded_bytes
@@ -250,7 +250,7 @@ def test_progress_cannot_mix_a_new_runs_bytes_with_the_old_runs_total(
         status = state.status()
     finally:
         release.set()
-        state._thread.join(timeout = 5)
+        state._thread.join(timeout=5)
 
     assert status["bytes_total"] == 1000
     assert status["bytes_done"] == 0, "the probe read the restarted run's fields"
@@ -270,6 +270,6 @@ def test_mtmd_rejects_a_revision_that_is_not_an_immutable_commit(monkeypatch, tm
 
     monkeypatch.setattr(huggingface_hub, "get_hf_file_metadata", lambda *a, **k: _Meta())
     state = mtmd_mod._MtmdDownloadState()
-    state._run("qwen3-asr-0.6b", None, hub_cache = tmp_path)
+    state._run("qwen3-asr-0.6b", None, hub_cache=tmp_path)
 
     assert state.status()["error"] is not None

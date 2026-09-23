@@ -24,7 +24,7 @@ from utils import native_tls
 import os
 
 
-@pytest.fixture(autouse = True)
+@pytest.fixture(autouse=True)
 def _reset_activation(monkeypatch):
     monkeypatch.setattr(native_tls, "_activated", False)
     for key in (
@@ -33,7 +33,7 @@ def _reset_activation(monkeypatch):
         "UV_SYSTEM_CERTS",
         "UV_NATIVE_TLS",
     ):
-        monkeypatch.delenv(key, raising = False)
+        monkeypatch.delenv(key, raising=False)
     yield
     # monkeypatch cannot undo vars that were absent, so drop what setdefault added.
     for key in ("UNSLOTH_STUDIO_NATIVE_TLS", "UV_SYSTEM_CERTS", "UV_NATIVE_TLS"):
@@ -163,7 +163,7 @@ def test_activate_fails_open_when_injection_raises(monkeypatch):
 def test_linux_desktop_owner_flips_native_tls_default(
     monkeypatch, platform, desktop_kind, expected
 ):
-    monkeypatch.delenv("UNSLOTH_STUDIO_NATIVE_TLS", raising = False)
+    monkeypatch.delenv("UNSLOTH_STUDIO_NATIVE_TLS", raising=False)
     monkeypatch.setattr(sys, "platform", platform)
     monkeypatch.setenv("UNSLOTH_STUDIO_DESKTOP_OWNER_KIND", desktop_kind)
     assert native_tls.native_tls_enabled() is expected
@@ -270,8 +270,8 @@ def test_disabled_activation_leaves_the_flag_env_absent(monkeypatch):
 def _run_inline_gate(
     monkeypatch,
     platform,
-    owner_kind = None,
-    flag = None,
+    owner_kind=None,
+    flag=None,
 ):
     import os
 
@@ -282,24 +282,24 @@ def _run_inline_gate(
         monkeypatch.setenv("UNSLOTH_STUDIO_NATIVE_TLS", flag)
     # The gate reads only sys.platform and sys.path off the handed-in `sys`;
     # `import truststore` still finds _fake_truststore's stub in the real sys.modules.
-    child_sys = _types.SimpleNamespace(platform = platform, path = [])
+    child_sys = _types.SimpleNamespace(platform=platform, path=[])
     namespace = {"os": os, "sys": child_sys, "_TRUSTSTORE_VENDOR": "/vendor"}
     exec(native_tls.inline_gate_source(), namespace)
     return calls
 
 
 def test_inline_gate_injects_for_linux_desktop_child(monkeypatch):
-    assert _run_inline_gate(monkeypatch, "linux", owner_kind = "tauri") == ["inject"]
+    assert _run_inline_gate(monkeypatch, "linux", owner_kind="tauri") == ["inject"]
 
 
 def test_inline_gate_skips_headless_linux_child(monkeypatch):
-    assert _run_inline_gate(monkeypatch, "linux", owner_kind = "") == []
+    assert _run_inline_gate(monkeypatch, "linux", owner_kind="") == []
 
 
 def test_inline_gate_opt_out_wins_over_desktop_owner(monkeypatch):
-    assert _run_inline_gate(monkeypatch, "linux", owner_kind = "tauri", flag = "0") == []
+    assert _run_inline_gate(monkeypatch, "linux", owner_kind="tauri", flag="0") == []
 
 
 def test_inline_gate_keeps_platform_and_opt_in_defaults(monkeypatch):
-    assert _run_inline_gate(monkeypatch, "darwin", owner_kind = "") == ["inject"]
-    assert _run_inline_gate(monkeypatch, "linux", owner_kind = "", flag = "1") == ["inject"]
+    assert _run_inline_gate(monkeypatch, "darwin", owner_kind="") == ["inject"]
+    assert _run_inline_gate(monkeypatch, "linux", owner_kind="", flag="1") == ["inject"]

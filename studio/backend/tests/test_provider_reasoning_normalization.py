@@ -66,18 +66,18 @@ SHAPES = {
 
 def _relay(body: str) -> list[str]:
     def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, content = body, headers = {"content-type": "text/event-stream"})
+        return httpx.Response(200, content=body, headers={"content-type": "text/event-stream"})
 
-    ep_mod._http_client = httpx.AsyncClient(transport = httpx.MockTransport(handler))
+    ep_mod._http_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
     client = ExternalProviderClient(
-        provider_type = "ollama", base_url = "http://endpoint.invalid/v1", api_key = ""
+        provider_type="ollama", base_url="http://endpoint.invalid/v1", api_key=""
     )
 
     async def run() -> list[str]:
         return [
             line
             async for line in client.stream_chat_completion(
-                messages = [{"role": "user", "content": "ping"}], model = "m"
+                messages=[{"role": "user", "content": "ping"}], model="m"
             )
         ]
 

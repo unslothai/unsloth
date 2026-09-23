@@ -101,7 +101,7 @@ class ToolConfinementUnavailable(RuntimeError):
     """This host cannot confine a managed account's tool process."""
 
 
-@dataclass(frozen = True)
+@dataclass(frozen=True)
 class Confinement:
     """``preexec`` runs in the forked child (Linux); ``wrap`` rewrites argv (macOS)."""
 
@@ -170,12 +170,14 @@ def _ensure_dirs(paths) -> list[str]:
 def _readable_account_roots() -> list[str]:
     """Account workspace: readable, never writable, else a tool could rewrite its own grants."""
     from utils.paths.storage_roots import workspace_root
+
     return _ensure_dirs((workspace_root(),))
 
 
 def _writable_roots() -> list[str]:
     from core.inference.tools import sandbox_root
     from utils.paths.storage_roots import project_workspaces_root, tmp_root
+
     return _ensure_dirs((sandbox_root(), tmp_root(), project_workspaces_root()))
 
 
@@ -183,6 +185,7 @@ def _hf_cache_roots() -> tuple[str, ...]:
     """Install-wide HF cache: an ancestor read grant would leak other accounts' repos and tokens."""
     try:
         from utils.hf_cache_settings import known_hf_cache_homes, known_hf_hub_caches
+
         return tuple(str(p) for p in (*known_hf_cache_homes(), *known_hf_hub_caches()))
     except Exception:
         return ()
@@ -195,6 +198,7 @@ def _protected_roots() -> list[str]:
         shared_tmp_root,
         studio_root,
     )
+
     return _with_shared_bases(
         _existing((studio_root(),)),
         (
@@ -268,8 +272,9 @@ _libc = None
 if sys.platform == "linux":
     try:
         import ctypes.util
+
         _name = ctypes.util.find_library("c")
-        _libc = ctypes.CDLL(_name, use_errno = True) if _name else None
+        _libc = ctypes.CDLL(_name, use_errno=True) if _name else None
     except (OSError, AttributeError):
         _libc = None
 
@@ -307,6 +312,7 @@ def _handled_mask(abi: int) -> int:
 
 def _device_nodes() -> list[str]:
     import glob
+
     return _existing((*_DEVICE_NODES, *_ACCELERATOR_NODES, *sorted(glob.glob("/dev/nvidia[0-9]*"))))
 
 
@@ -394,8 +400,8 @@ def _linux_confinement(sandbox_site_dir: str) -> Optional[Confinement]:
     handled = _handled_mask(abi)
     rules = _landlock_rules(abi, sandbox_site_dir)
     return Confinement(
-        mechanism = f"landlock-abi{abi}",
-        preexec = partial(_landlock_preexec, handled, rules, _SCOPE_SIGNAL),
+        mechanism=f"landlock-abi{abi}",
+        preexec=partial(_landlock_preexec, handled, rules, _SCOPE_SIGNAL),
     )
 
 
@@ -496,12 +502,12 @@ def _macos_confinement(sandbox_site_dir: str) -> Optional[Confinement]:
         (shared_sandbox_root(), str(shared_project_workspaces_root()), *_hf_cache_roots()),
     )
     profile = macos_profile(
-        read_roots = read_roots,
-        hidden_roots = hidden_roots,
-        account_read_roots = _readable_account_roots(),
-        writable_roots = writable_roots,
+        read_roots=read_roots,
+        hidden_roots=hidden_roots,
+        account_read_roots=_readable_account_roots(),
+        writable_roots=writable_roots,
     )
-    return Confinement(mechanism = "sandbox-exec", wrapper = (sandbox_exec, "-p", profile))
+    return Confinement(mechanism="sandbox-exec", wrapper=(sandbox_exec, "-p", profile))
 
 
 def account_confinement(sandbox_site_dir: str) -> Optional[Confinement]:
@@ -516,5 +522,5 @@ def account_confinement(sandbox_site_dir: str) -> Optional[Confinement]:
     if confinement is not None:
         return confinement
     if unconfined_tools_allowed():
-        return Confinement(mechanism = "unconfined-by-owner")
+        return Confinement(mechanism="unconfined-by-owner")
     raise ToolConfinementUnavailable(refusal_message())

@@ -116,7 +116,7 @@ def _run(body: str) -> dict:
         {textwrap.dedent(body)}
         """
     )
-    return run_harness(TEMP, _harness_source(), script, sources = SOURCES)
+    return run_harness(TEMP, _harness_source(), script, sources=SOURCES)
 
 
 def test_returning_from_compare_reattaches_the_materialized_thread() -> None:

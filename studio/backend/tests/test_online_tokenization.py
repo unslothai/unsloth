@@ -41,7 +41,7 @@ datasets = pytest.importorskip("datasets")
 ROWS = MIN_ROWS_FOR_ONLINE + 5
 
 
-def _text_dataset(n = ROWS, extra_columns = None):
+def _text_dataset(n=ROWS, extra_columns=None):
     data = {
         "text": [f"row {i}" for i in range(n)],
         "conversations": [[{"role": "user", "content": str(i)}] for i in range(n)],
@@ -59,9 +59,9 @@ class _Tokenizer:
     def __call__(
         self,
         texts,
-        truncation = True,
-        max_length = 8,
-        add_special_tokens = True,
+        truncation=True,
+        max_length=8,
+        add_special_tokens=True,
     ):
         if isinstance(texts, str):
             texts = [texts]
@@ -75,24 +75,24 @@ class _Processor(_Tokenizer):
 
 def _base_kwargs(**overrides):
     kwargs = dict(
-        dataset = _text_dataset(),
-        eval_dataset = None,
-        processing_class = _Tokenizer(),
-        model = SimpleNamespace(),
-        text_field = "text",
-        packing = False,
-        num_train_epochs = 1,
-        max_steps = 0,
-        grad_accum = 4,
-        workers = 4,
+        dataset=_text_dataset(),
+        eval_dataset=None,
+        processing_class=_Tokenizer(),
+        model=SimpleNamespace(),
+        text_field="text",
+        packing=False,
+        num_train_epochs=1,
+        max_steps=0,
+        grad_accum=4,
+        workers=4,
     )
     kwargs.update(overrides)
     return kwargs
 
 
-@pytest.fixture(autouse = True)
+@pytest.fixture(autouse=True)
 def _no_env_override(monkeypatch):
-    monkeypatch.delenv(ENV_FLAG, raising = False)
+    monkeypatch.delenv(ENV_FLAG, raising=False)
     # The gate refuses on spawn platforms; these tests describe Linux behaviour
     # and simulate the other platforms explicitly where that is the point.
     monkeypatch.setattr(sys, "platform", "linux")
@@ -166,27 +166,27 @@ def test_streaming_dataset_object_is_refused_even_without_the_flag():
     """`IterableDataset` also has `with_transform` in recent `datasets`, so the
     check is an isinstance and not a `hasattr`."""
     stream = datasets.Dataset.from_dict({"text": ["a", "b"]}).to_iterable_dataset()
-    decision = decide_online_tokenization(**_base_kwargs(dataset = stream))
+    decision = decide_online_tokenization(**_base_kwargs(dataset=stream))
     assert not decision.enabled
     assert "map-style" in decision.reason
 
 
 def test_a_plain_list_dataset_is_refused():
-    decision = decide_online_tokenization(**_base_kwargs(dataset = [{"text": "a"}] * ROWS))
+    decision = decide_online_tokenization(**_base_kwargs(dataset=[{"text": "a"}] * ROWS))
     assert not decision.enabled
     assert "map-style" in decision.reason
 
 
 @pytest.mark.parametrize("column", ["input_ids", "labels", "prompt", "completion"])
 def test_an_already_tokenized_dataset_is_refused(column):
-    dataset = _text_dataset(extra_columns = {column: [[1, 2, 3]] * ROWS})
-    decision = decide_online_tokenization(**_base_kwargs(dataset = dataset))
+    dataset = _text_dataset(extra_columns={column: [[1, 2, 3]] * ROWS})
+    decision = decide_online_tokenization(**_base_kwargs(dataset=dataset))
     assert not decision.enabled
     assert column in decision.reason
 
 
 def test_a_processor_is_refused():
-    decision = decide_online_tokenization(**_base_kwargs(processing_class = _Processor()))
+    decision = decide_online_tokenization(**_base_kwargs(processing_class=_Processor()))
     assert not decision.enabled
     assert "processor" in decision.reason
 
@@ -202,14 +202,14 @@ def test_a_model_needing_token_type_ids_is_refused(monkeypatch):
         pass
 
     _GemmaLike.__module__ = "fake_gemma_modelling"
-    decision = decide_online_tokenization(**_base_kwargs(model = _GemmaLike()))
+    decision = decide_online_tokenization(**_base_kwargs(model=_GemmaLike()))
     assert not decision.enabled
     assert "token_type_ids" in decision.reason
 
 
 def test_missing_text_column_is_refused():
     dataset = datasets.Dataset.from_dict({"conversations": [[]] * ROWS})
-    decision = decide_online_tokenization(**_base_kwargs(dataset = dataset))
+    decision = decide_online_tokenization(**_base_kwargs(dataset=dataset))
     assert not decision.enabled
     assert "text" in decision.reason
 
@@ -221,7 +221,7 @@ def test_a_null_text_row_is_refused():
     texts = [f"row {i}" for i in range(ROWS)]
     texts[137] = None
     dataset = datasets.Dataset.from_dict({"text": texts})
-    decision = decide_online_tokenization(**_base_kwargs(dataset = dataset))
+    decision = decide_online_tokenization(**_base_kwargs(dataset=dataset))
     assert not decision.enabled
     assert "null" in decision.reason
 
@@ -233,11 +233,11 @@ def test_a_null_text_row_is_refused():
         [[f"row {i}"] for i in range(ROWS)],
         [{"content": "x"}] * ROWS,
     ],
-    ids = ["ints", "lists", "structs"],
+    ids=["ints", "lists", "structs"],
 )
 def test_a_text_column_that_is_not_strings_is_refused(column):
     dataset = datasets.Dataset.from_dict({"text": column})
-    decision = decide_online_tokenization(**_base_kwargs(dataset = dataset))
+    decision = decide_online_tokenization(**_base_kwargs(dataset=dataset))
     assert not decision.enabled
     assert "not strings" in decision.reason
 
@@ -246,7 +246,7 @@ def test_a_null_text_row_in_the_eval_split_is_refused():
     texts = [f"row {i}" for i in range(64)]
     texts[7] = None
     eval_dataset = datasets.Dataset.from_dict({"text": texts})
-    decision = decide_online_tokenization(**_base_kwargs(eval_dataset = eval_dataset))
+    decision = decide_online_tokenization(**_base_kwargs(eval_dataset=eval_dataset))
     assert not decision.enabled
     assert "eval split" in decision.reason and "null" in decision.reason
 
@@ -261,7 +261,7 @@ def test_the_text_column_check_reads_metadata_and_never_a_row():
             raise AssertionError("the gate read a row")
 
     dataset = _text_dataset()
-    unreadable = _Unreadable(dataset.data, info = dataset.info)
+    unreadable = _Unreadable(dataset.data, info=dataset.info)
     assert text_column_defect(unreadable, "text") is None
 
 
@@ -271,7 +271,7 @@ def test_a_spawn_start_method_keeps_the_eager_path_on_linux(monkeypatch):
     process. A Linux host set to spawn is the same hazard."""
     import multiprocessing
 
-    monkeypatch.setattr(multiprocessing, "get_start_method", lambda allow_none = False: "spawn")
+    monkeypatch.setattr(multiprocessing, "get_start_method", lambda allow_none=False: "spawn")
     decision = decide_online_tokenization(**_base_kwargs())
     assert not decision.enabled
     assert "spawn" in decision.reason and "fork" in decision.reason
@@ -282,7 +282,7 @@ def test_an_unset_start_method_falls_back_to_the_platform_default(monkeypatch):
     `set_start_method()` raise, so the default is read off the method list."""
     import multiprocessing
 
-    monkeypatch.setattr(multiprocessing, "get_start_method", lambda allow_none = False: None)
+    monkeypatch.setattr(multiprocessing, "get_start_method", lambda allow_none=False: None)
     monkeypatch.setattr(multiprocessing, "get_all_start_methods", lambda: ["fork", "spawn"])
     assert decide_online_tokenization(**_base_kwargs()).enabled
 
@@ -321,13 +321,13 @@ def test_the_hook_detector_reads_the_installed_trl(monkeypatch):
 
 
 def test_too_few_workers_is_refused():
-    decision = decide_online_tokenization(**_base_kwargs(workers = 1))
+    decision = decide_online_tokenization(**_base_kwargs(workers=1))
     assert not decision.enabled
     assert "workers" in decision.reason
 
 
 def test_a_small_dataset_keeps_the_eager_path():
-    decision = decide_online_tokenization(**_base_kwargs(dataset = _text_dataset(100)))
+    decision = decide_online_tokenization(**_base_kwargs(dataset=_text_dataset(100)))
     assert not decision.enabled
     assert "smaller than" in decision.reason
 
@@ -336,13 +336,13 @@ def test_multi_epoch_runs_keep_the_eager_path():
     """The lazy view re-tokenizes on every pass; the eager one reads Arrow.
     Measured at +2.9% of steady-state training time over 2.4 epochs, against a
     saving that is paid once, so anything past a single pass stays eager."""
-    decision = decide_online_tokenization(**_base_kwargs(num_train_epochs = 3))
+    decision = decide_online_tokenization(**_base_kwargs(num_train_epochs=3))
     assert not decision.enabled
     assert "one pass" in decision.reason
 
 
 def test_a_step_capped_run_of_unknown_length_keeps_the_eager_path():
-    decision = decide_online_tokenization(**_base_kwargs(max_steps = 500))
+    decision = decide_online_tokenization(**_base_kwargs(max_steps=500))
     assert not decision.enabled
     assert "unknown length" in decision.reason
 
@@ -351,7 +351,7 @@ def test_a_resolved_sub_epoch_step_cap_may_go_online():
     """`max_steps` alone says nothing about passes, but a caller that has
     resolved it to a fraction of an epoch has answered the question."""
     decision = decide_online_tokenization(
-        **_base_kwargs(max_steps = 60, resolved_max_steps_epochs = 0.02)
+        **_base_kwargs(max_steps=60, resolved_max_steps_epochs=0.02)
     )
     assert decision.enabled, decision.reason
 
@@ -360,7 +360,7 @@ def test_a_resolved_sub_epoch_step_cap_may_go_online():
 
 
 def test_a_raw_eval_split_is_transformed_alongside_the_train_split():
-    decision = decide_online_tokenization(**_base_kwargs(eval_dataset = _text_dataset(64)))
+    decision = decide_online_tokenization(**_base_kwargs(eval_dataset=_text_dataset(64)))
     assert decision.enabled, decision.reason
 
 
@@ -368,14 +368,14 @@ def test_an_eval_split_the_transform_cannot_serve_disables_the_feature():
     """`skip_prepare_dataset` skips the EVAL prep too, so an eval split the
     online path cannot tokenize would reach the model as raw text."""
     bad_eval = datasets.Dataset.from_dict({"something_else": ["x"] * 8})
-    decision = decide_online_tokenization(**_base_kwargs(eval_dataset = bad_eval))
+    decision = decide_online_tokenization(**_base_kwargs(eval_dataset=bad_eval))
     assert not decision.enabled
     assert "eval" in decision.reason
 
 
 def test_an_already_tokenized_eval_split_disables_the_feature():
     tokenized_eval = datasets.Dataset.from_dict({"text": ["x"] * 8, "input_ids": [[1, 2]] * 8})
-    decision = decide_online_tokenization(**_base_kwargs(eval_dataset = tokenized_eval))
+    decision = decide_online_tokenization(**_base_kwargs(eval_dataset=tokenized_eval))
     assert not decision.enabled
     assert "eval" in decision.reason
 
@@ -394,11 +394,11 @@ def test_env_flag_zero_forces_the_eager_path(monkeypatch):
 def test_env_flag_one_overrides_the_cost_gates_only(monkeypatch):
     monkeypatch.setenv(ENV_FLAG, "1")
     forced = decide_online_tokenization(
-        **_base_kwargs(dataset = _text_dataset(10), num_train_epochs = 5)
+        **_base_kwargs(dataset=_text_dataset(10), num_train_epochs=5)
     )
     assert forced.enabled, forced.reason
     # ...but never a correctness gate: a VLM stays eager however hard it is asked.
-    assert not decide_online_tokenization(**_base_kwargs(is_vlm = True)).enabled
+    assert not decide_online_tokenization(**_base_kwargs(is_vlm=True)).enabled
 
 
 def test_an_unrecognised_env_value_is_not_an_override(monkeypatch):
@@ -439,10 +439,10 @@ def test_the_view_is_immutable_and_leaves_the_original_alone():
     dataset = _text_dataset(32)
     view = attach_online_tokenization(
         dataset,
-        tokenizer = _Tokenizer(),
-        text_field = "text",
-        max_length = 8,
-        add_special_tokens = True,
+        tokenizer=_Tokenizer(),
+        text_field="text",
+        max_length=8,
+        add_special_tokens=True,
     )
     assert view is not dataset
     assert "input_ids" in view[0]
@@ -454,13 +454,13 @@ def test_the_view_yields_the_same_row_count_and_order():
     dataset = _text_dataset(32)
     view = attach_online_tokenization(
         dataset,
-        tokenizer = _Tokenizer(),
-        text_field = "text",
-        max_length = 8,
-        add_special_tokens = True,
+        tokenizer=_Tokenizer(),
+        text_field="text",
+        max_length=8,
+        add_special_tokens=True,
     )
     assert len(view) == len(dataset)
-    assert view[5]["input_ids"] == _Tokenizer()(["row 5"], max_length = 8)["input_ids"][0]
+    assert view[5]["input_ids"] == _Tokenizer()(["row 5"], max_length=8)["input_ids"][0]
 
 
 def test_the_view_attests_its_truncation_width():
@@ -468,10 +468,10 @@ def test_the_view_attests_its_truncation_width():
     row -- and scanning a lazy split is the eager tokenize pass all over again."""
     view = attach_online_tokenization(
         _text_dataset(32),
-        tokenizer = _Tokenizer(),
-        text_field = "text",
-        max_length = 1234,
-        add_special_tokens = True,
+        tokenizer=_Tokenizer(),
+        text_field="text",
+        max_length=1234,
+        add_special_tokens=True,
     )
     assert view.__dict__[TRUNCATION_ATTESTATION_ATTR] == 1234
 
@@ -482,10 +482,10 @@ def test_the_transformed_view_still_reports_its_backing_columns():
     which is why that probe reads a row rather than the metadata."""
     view = attach_online_tokenization(
         _text_dataset(32),
-        tokenizer = _Tokenizer(),
-        text_field = "text",
-        max_length = 8,
-        add_special_tokens = True,
+        tokenizer=_Tokenizer(),
+        text_field="text",
+        max_length=8,
+        add_special_tokens=True,
     )
     assert "text" in dataset_column_names(view)
     assert "input_ids" not in dataset_column_names(view)
@@ -495,22 +495,22 @@ def test_the_transformed_view_still_reports_its_backing_columns():
 
 
 def test_add_special_tokens_is_off_when_the_template_emits_a_bos():
-    tokenizer = SimpleNamespace(bos_token = "<s>", chat_template = "<s>{{ x }}")
+    tokenizer = SimpleNamespace(bos_token="<s>", chat_template="<s>{{ x }}")
     assert resolve_add_special_tokens(tokenizer, "hello") is False
 
 
 def test_add_special_tokens_is_off_when_the_text_already_starts_with_bos():
-    tokenizer = SimpleNamespace(bos_token = "<s>", chat_template = "{{ x }}")
+    tokenizer = SimpleNamespace(bos_token="<s>", chat_template="{{ x }}")
     assert resolve_add_special_tokens(tokenizer, "<s>hello") is False
 
 
 def test_add_special_tokens_stays_on_otherwise():
-    tokenizer = SimpleNamespace(bos_token = "<s>", chat_template = "{{ x }}")
+    tokenizer = SimpleNamespace(bos_token="<s>", chat_template="{{ x }}")
     assert resolve_add_special_tokens(tokenizer, "hello") is True
 
 
 def test_no_bos_token_means_add_special_tokens_stays_on():
-    tokenizer = SimpleNamespace(bos_token = None, chat_template = "")
+    tokenizer = SimpleNamespace(bos_token=None, chat_template="")
     assert resolve_add_special_tokens(tokenizer, "hello") is True
 
 
@@ -536,7 +536,7 @@ def test_dataset_supports_with_transform_rejects_none_and_streams():
 
 
 def test_a_disabled_decision_never_carries_worker_settings():
-    decision = OnlineTokenizationDecision(enabled = False, reason = "test")
+    decision = OnlineTokenizationDecision(enabled=False, reason="test")
     assert decision.workers == 0
     assert decision.prewarm_batches == 0
     assert "off" in decision.as_log_line()

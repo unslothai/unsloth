@@ -205,7 +205,7 @@ def _line_from_signal(line: str) -> None:
 
 
 def _emit(line: str) -> None:
-    print(line, flush = True)
+    print(line, flush=True)
 
 
 def _write_line(line: str) -> None:
@@ -228,7 +228,7 @@ def _log_from_signal(msg: str) -> None:
 def _out(key: str, value: str) -> None:
     path = os.environ.get("GITHUB_OUTPUT")
     if path:
-        with open(path, "a", encoding = "utf-8") as fh:
+        with open(path, "a", encoding="utf-8") as fh:
             if "\n" in value:
                 delim = f"ghadelim{uuid.uuid4().hex}"
                 fh.write(f"{key}<<{delim}\n{value}\n{delim}\n")
@@ -267,7 +267,7 @@ INFLIGHT = (
 
 def _inflight_read() -> list[dict]:
     try:
-        data = json.loads(INFLIGHT.read_text(encoding = "utf-8"))
+        data = json.loads(INFLIGHT.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return []
     return data if isinstance(data, list) else []
@@ -275,8 +275,8 @@ def _inflight_read() -> list[dict]:
 
 def _inflight_write(entries: list[dict]) -> None:
     try:
-        INFLIGHT.parent.mkdir(parents = True, exist_ok = True)
-        INFLIGHT.write_text(json.dumps(entries, indent = 1), encoding = "utf-8")
+        INFLIGHT.parent.mkdir(parents=True, exist_ok=True)
+        INFLIGHT.write_text(json.dumps(entries, indent=1), encoding="utf-8")
     except OSError:
         pass  # bookkeeping only; never fail a run over it
 
@@ -348,9 +348,9 @@ def sweep_orphans(owner: str | None = None) -> list[str]:
         try:
             proc = subprocess.run(
                 ["kaggle", "kernels", "delete", slug, "-y"],
-                capture_output = True,
-                text = True,
-                timeout = 180,
+                capture_output=True,
+                text=True,
+                timeout=180,
             )
         except Exception:  # noqa: BLE001
             keep.append(entry)  # try again next time rather than forget it
@@ -395,7 +395,7 @@ def push(
         if not delete_kernel(slug):
             _log(f"could not discard the previous push attempt {slug}")
 
-    workdir = Path(tempfile.mkdtemp(prefix = "kaggle-t4-ci-"))
+    workdir = Path(tempfile.mkdtemp(prefix="kaggle-t4-ci-"))
     try:
         out = ""
         for attempt in range(PUSH_ATTEMPTS):
@@ -428,9 +428,9 @@ def push(
                         "kernel_sources": [],
                         "model_sources": [],
                     },
-                    indent = 2,
+                    indent=2,
                 ),
-                encoding = "utf-8",
+                encoding="utf-8",
             )
 
             try:
@@ -446,9 +446,9 @@ def push(
                         "-t",
                         str(kernel_timeout_sec),
                     ],
-                    capture_output = True,
-                    text = True,
-                    timeout = PUSH_SUBPROCESS_TIMEOUT_SEC,
+                    capture_output=True,
+                    text=True,
+                    timeout=PUSH_SUBPROCESS_TIMEOUT_SEC,
                 )
                 out = proc.stdout + proc.stderr
             except subprocess.TimeoutExpired:
@@ -476,7 +476,7 @@ def push(
             time.sleep(delay)
         return _pushed(False, "push_failed", out, attempted)
     finally:
-        shutil.rmtree(workdir, ignore_errors = True)
+        shutil.rmtree(workdir, ignore_errors=True)
 
 
 def _already_gone(text: str) -> bool:
@@ -508,9 +508,9 @@ def delete_kernel(slug: str, deadline: float | None = None) -> bool:
         try:
             proc = subprocess.run(
                 ["kaggle", "kernels", "delete", slug, "-y"],
-                capture_output = True,
-                text = True,
-                timeout = timeout,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
             )
         except Exception as exc:  # noqa: BLE001
             _log(f"delete {slug} did not run: {type(exc).__name__}")
@@ -603,7 +603,7 @@ def _clamp_socket(resp, seconds: float) -> None:
 def _read_within(
     resp,
     deadline: float,
-    sink = None,
+    sink=None,
 ) -> bytes:
     """Read a response body under the ABSOLUTE deadline, not a socket timeout. ``urlopen(timeout=...)`` bounds each blocking socket operation, so a server that keeps trickling bytes renews it indefinitely and ``resp.read()`` runs past the evidence budget into the wall clock ``release()`` needs, with billable kernels still up. So: one chunk at a time, deadline re-checked before each, and ``read1`` so a chunk is at most ONE underlying socket read (``read(n)`` loops until it has n bytes, which a slow trickle can stretch arbitrarily). ``sink`` streams straight to disk, which also keeps a response nobody sized out of memory."""
     reader = getattr(resp, "read1", None) or resp.read
@@ -643,13 +643,13 @@ def list_outputs(
         url = f"{API_ROOT}/kernels/output?{urllib.parse.urlencode(params)}"
         req = urllib.request.Request(
             url,
-            headers = {
+            headers={
                 "Authorization": f"Bearer {_bearer()}",
                 "User-Agent": "unsloth-kaggle-t4-ci/1.0",
             },
         )
         try:
-            with urllib.request.urlopen(req, timeout = call_timeout) as resp:
+            with urllib.request.urlopen(req, timeout=call_timeout) as resp:
                 data = json.loads(_read_within(resp, deadline))
         except TimeoutError:
             # The budget ran out mid-body. Same answer as running out between pages: stop, and say the listing is incomplete.
@@ -661,7 +661,7 @@ def list_outputs(
         if not (data.get("hasNextPageToken") and token):
             truncated = False
             break
-        params = dict(params, pageToken = token)
+        params = dict(params, pageToken=token)
     return {"files": files, "log": log, "truncated": truncated}
 
 
@@ -679,8 +679,8 @@ def fetch_evidence(
 ) -> dict:
     """Pull the executed notebooks and the kernel log by direct URL rather than the bulk download: the bulk call returns the WHOLE of /kaggle/working as one stream, and a previous incident lost two PASSING notebooks because a multi-GB saved model sorted alphabetically ahead of them and the stream broke partway through. ``deadline`` is the shared evidence budget (EVIDENCE_BUDGET_SEC), an absolute ``time.time()`` covering every kernel of the run, so this phase cannot eat the wall clock release() needs."""
     deadline = _evidence_deadline(deadline)
-    outdir.mkdir(parents = True, exist_ok = True)
-    listing = list_outputs(slug, timeout = min(timeout, 120), deadline = deadline)
+    outdir.mkdir(parents=True, exist_ok=True)
+    listing = list_outputs(slug, timeout=min(timeout, 120), deadline=deadline)
     fetched = []
     truncated = bool(listing.get("truncated"))
     for entry in listing["files"]:
@@ -701,21 +701,21 @@ def fetch_evidence(
         dest = outdir / name
         part = dest.with_suffix(dest.suffix + ".part")
         try:
-            req = urllib.request.Request(url, headers = {"User-Agent": "unsloth-kaggle-t4-ci/1.0"})
-            with urllib.request.urlopen(req, timeout = call_timeout) as resp, part.open("wb") as fh:
-                _read_within(resp, deadline, sink = fh)
+            req = urllib.request.Request(url, headers={"User-Agent": "unsloth-kaggle-t4-ci/1.0"})
+            with urllib.request.urlopen(req, timeout=call_timeout) as resp, part.open("wb") as fh:
+                _read_within(resp, deadline, sink=fh)
             # Only publish once it parses: a download killed mid-write leaves a file of plausible size, which is evidence that looks present and is not.
-            json.loads(part.read_text(encoding = "utf-8", errors = "replace"))
+            json.loads(part.read_text(encoding="utf-8", errors="replace"))
             part.replace(dest)
             fetched.append(dest.name)
         except Exception as exc:  # noqa: BLE001
             # A listed notebook that did not land is missing evidence, whether the budget ran out mid-body or the transfer failed, so the collection is incomplete and has to say so rather than read as a complete set that happens to be short.
             _log(f"could not fetch {name}: {type(exc).__name__}")
-            part.unlink(missing_ok = True)
+            part.unlink(missing_ok=True)
             truncated = True
     log_path = outdir / "kernel.log"
     if listing.get("log"):
-        log_path.write_text(listing["log"], encoding = "utf-8")
+        log_path.write_text(listing["log"], encoding="utf-8")
     return {
         "notebooks": fetched,
         "log": log_path.name if log_path.exists() else None,
@@ -760,7 +760,7 @@ def extract_reports(outdir: Path) -> list[dict]:
     # rglob, not glob: each kernel collects into its own subdirectory so two cannot overwrite each other's kernel.log.
     for nb_path in sorted(outdir.rglob(f"*{OUTPUT_SUFFIX}")):
         try:
-            nb = json.loads(nb_path.read_text(encoding = "utf-8", errors = "replace"))
+            nb = json.loads(nb_path.read_text(encoding="utf-8", errors="replace"))
         except Exception:  # noqa: BLE001
             continue
         # Valid JSON is not necessarily a notebook, and one malformed file must not take its neighbours' reports with it: an exception here used to reach the collector, which then judged the kernel infra, posted success and released it, hiding a real failure behind a mangled file.
@@ -779,7 +779,7 @@ def extract_reports(outdir: Path) -> list[dict]:
                     continue
                 _consume(text)
     for log_path in sorted(outdir.rglob("kernel.log")):
-        raw = log_path.read_text(encoding = "utf-8", errors = "replace")
+        raw = log_path.read_text(encoding="utf-8", errors="replace")
         _consume(flatten_kernel_log(raw))
     return reports
 
@@ -826,70 +826,70 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument(
         "--notebook",
-        required = True,
-        action = "append",
-        help = "kernel notebook to push. Repeatable: all of them "
+        required=True,
+        action="append",
+        help="kernel notebook to push. Repeatable: all of them "
         "are pushed before any of them is waited on",
     )
     # NOT required, and not a constant: the owner is a property of the TOKEN this process was handed, and CI now hands it one of several. Passing the name is still allowed but is CHECKED against the token rather than trusted, because the failure worth catching is a name and a credential that disagree: the push fails, or worse, the cleanup deletes under a name that owns nothing and the real kernel bills on unwatched.
     ap.add_argument(
         "--user",
-        default = "",
-        help = "Kaggle account to push under. Defaults to the account the token "
+        default="",
+        help="Kaggle account to push under. Defaults to the account the token "
         "authenticates as; when given, it must MATCH that account",
     )
-    ap.add_argument("--outdir", required = True)
+    ap.add_argument("--outdir", required=True)
     ap.add_argument(
-        "--expect", type = int, default = 2, help = "payload reports this kernel should produce"
+        "--expect", type=int, default=2, help="payload reports this kernel should produce"
     )
     ap.add_argument(
         "--kernel-timeout-sec",
-        type = int,
-        default = 3600,
-        help = "hard ceiling enforced by KAGGLE on the session",
+        type=int,
+        default=3600,
+        help="hard ceiling enforced by KAGGLE on the session",
     )
     ap.add_argument(
         "--max-wait",
-        type = int,
-        default = 4200,
-        help = "wall clock this invocation gives the kernels, measured from BEFORE the first push",
+        type=int,
+        default=4200,
+        help="wall clock this invocation gives the kernels, measured from BEFORE the first push",
     )
-    ap.add_argument("--poll-every", type = int, default = 60)
+    ap.add_argument("--poll-every", type=int, default=60)
     ap.add_argument(
-        "--keep-kernel", action = "store_true", help = "do not delete the kernel after collecting"
+        "--keep-kernel", action="store_true", help="do not delete the kernel after collecting"
     )
     ap.add_argument(
         "--dispatch",
-        action = "store_true",
-        help = "push and EXIT, without waiting, collecting or deleting. The kernel "
+        action="store_true",
+        help="push and EXIT, without waiting, collecting or deleting. The kernel "
         "is collected later by collect.py, which finds it by its slug",
     )
     ap.add_argument(
         "--commit-sha",
-        default = "",
-        help = "the commit under test. Written into the slug, which is the only "
+        default="",
+        help="the commit under test. Written into the slug, which is the only "
         "record a later collector has of what the result is about",
     )
     ap.add_argument(
         "--kind",
-        default = "",
-        choices = ("", *KIND_CODES),
-        help = "which workflow is dispatching, so the collector knows which "
+        default="",
+        choices=("", *KIND_CODES),
+        help="which workflow is dispatching, so the collector knows which "
         "commit status context to report the result under",
     )
     ap.add_argument(
         "--slot",
-        default = "1",
-        choices = tuple("123456789"),
-        help = "the workflow's session slot. Written into the slug when it is not 1, "
+        default="1",
+        choices=tuple("123456789"),
+        help="the workflow's session slot. Written into the slug when it is not 1, "
         "so a retry of a slot-2 run is recognised as the same session and a slot-2 "
         "dispatch beside slot 1 is not",
     )
     ap.add_argument(
         "--deadline-epoch",
-        type = int,
-        default = 0,
-        help = "unix time at which the CALLER is killed. Nothing is pushed unless "
+        type=int,
+        default=0,
+        help="unix time at which the CALLER is killed. Nothing is pushed unless "
         "worst_case_seconds() still fits before it. 0 disables the check",
     )
     args = ap.parse_args()
@@ -915,7 +915,7 @@ def main() -> int:
     socket.setdefaulttimeout(SOCKET_TIMEOUT_SEC)
 
     outdir = Path(args.outdir)
-    outdir.mkdir(parents = True, exist_ok = True)
+    outdir.mkdir(parents=True, exist_ok=True)
     result: dict = {
         "verdict": "infra",
         "reason": "",
@@ -961,7 +961,7 @@ def main() -> int:
 
     def finish(code: int = 0) -> int:
         release()
-        (outdir / "launch_result.json").write_text(json.dumps(result, indent = 2), encoding = "utf-8")
+        (outdir / "launch_result.json").write_text(json.dumps(result, indent=2), encoding="utf-8")
         _out("verdict", result["verdict"])
         _out("reason", result["reason"])
         _out("slug", result["slug"] or "")
@@ -972,7 +972,7 @@ def main() -> int:
         """Does the job's remaining wall clock still cover the worst case? Asked TWICE, because the answer expires: everything between the two asks is time the guard already granted."""
         if not args.deadline_epoch:
             return True
-        need = worst_case_seconds(args.max_wait, len(args.notebook), dispatch = args.dispatch)
+        need = worst_case_seconds(args.max_wait, len(args.notebook), dispatch=args.dispatch)
         left = int(args.deadline_epoch - time.time())
         if left >= need:
             _log(f"{left}s left of the job deadline, worst case {need}s ({after})")
@@ -987,7 +987,7 @@ def main() -> int:
             f"worst case is {need}s. Pushing now risks the runner being killed while "
             "kernels are still up, which would bill accelerator quota to their own "
             "ceiling. Nothing was pushed and nothing was learned about this change.",
-            flush = True,
+            flush=True,
         )
         return False
 
@@ -1049,10 +1049,10 @@ def main() -> int:
                 Path(notebook),
                 args.user,
                 args.kernel_timeout_sec,
-                attempted = entry["attempted"],
-                kind = args.kind,
-                commit_sha = args.commit_sha,
-                slot = args.slot,
+                attempted=entry["attempted"],
+                kind=args.kind,
+                commit_sha=args.commit_sha,
+                slot=args.slot,
             )
             entry["slug"] = pushed.get("slug")
             entry["push_error"] = (
@@ -1099,7 +1099,7 @@ def main() -> int:
                 entry["evidence"] = fetch_evidence(
                     entry["slug"],
                     outdir / entry["slug"].rsplit("/", 1)[-1],
-                    deadline = evidence_deadline,
+                    deadline=evidence_deadline,
                 )
                 _log(f"collected {entry['slug']}: {entry['evidence']}")
             except Exception as exc:  # noqa: BLE001

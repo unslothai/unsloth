@@ -62,11 +62,11 @@ MEASURE = """() => [...document.querySelectorAll('button[data-case]')].map(butto
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description = __doc__)
-    parser.add_argument("engines", nargs = "*", default = ["chromium"])
-    parser.add_argument("--out", type = Path, default = Path("logs/playwright-composer-icons"))
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("engines", nargs="*", default=["chromium"])
+    parser.add_argument("--out", type=Path, default=Path("logs/playwright-composer-icons"))
     args = parser.parse_args()
-    args.out.mkdir(parents = True, exist_ok = True)
+    args.out.mkdir(parents=True, exist_ok=True)
     port = int(os.environ.get("PW_PORT", "5417"))
     server = start_vite(port)
     results = []
@@ -75,14 +75,14 @@ def main() -> None:
         wait_for_smoke_page(
             f"http://127.0.0.1:{port}/smoke-composer-icons.html",
             "/smoke-composer-icons-main.tsx",
-            proc = server,
+            proc=server,
         )
         with sync_playwright() as pw:
             for engine in args.engines:
                 browser = getattr(pw, engine).launch()
                 try:
                     for dpr in (1, 1.25, 1.5, 1.75, 2, 3):
-                        context = browser.new_context(device_scale_factor = dpr)
+                        context = browser.new_context(device_scale_factor=dpr)
                         try:
                             page = context.new_page()
                             # The wait_for below is the other half of the same cold start:
@@ -91,20 +91,20 @@ def main() -> None:
                             page.set_default_timeout(NAV_TIMEOUT_MS)
                             page.goto(
                                 f"http://127.0.0.1:{port}/smoke-composer-icons.html",
-                                wait_until = "domcontentloaded",
-                                timeout = NAV_TIMEOUT_MS,
+                                wait_until="domcontentloaded",
+                                timeout=NAV_TIMEOUT_MS,
                             )
                             page.locator("button[data-case]").last.wait_for()
                             for font, zoom, dark, direction in itertools.product(
                                 (0.75, 1, 1.25), (0.8, 1, 1.25), (False, True), ("ltr", "rtl")
                             ):
                                 case = dict(
-                                    engine = engine,
-                                    dpr = dpr,
-                                    font = font,
-                                    zoom = zoom,
-                                    dark = dark,
-                                    direction = direction,
+                                    engine=engine,
+                                    dpr=dpr,
+                                    font=font,
+                                    zoom=zoom,
+                                    dark=dark,
+                                    direction=direction,
                                 )
                                 page.evaluate(
                                     """async ({font, zoom, dark, direction}) => {
@@ -119,7 +119,7 @@ def main() -> None:
                                 )
                                 measures = page.evaluate(MEASURE)
                                 assert len(measures) == 6, measures
-                                results.append(dict(case = case, measures = measures))
+                                results.append(dict(case=case, measures=measures))
                                 for measure in measures:
                                     offsets = [
                                         measure[key]
@@ -130,26 +130,26 @@ def main() -> None:
                                         max(map(abs, offsets)) > 0.02
                                         or min(measure["width"], measure["height"]) <= 0
                                     ):
-                                        failures.append(dict(case = case, measure = measure))
+                                        failures.append(dict(case=case, measure=measure))
                                 if font == zoom == 1 and direction == "ltr":
                                     page.screenshot(
-                                        path = str(
+                                        path=str(
                                             args.out
                                             / f"{engine}-{dpr}-{'dark' if dark else 'light'}.png"
                                         )
                                     )
                         finally:
                             context.close()
-                    print(f"{engine}: checked 216 configurations / 1296 icons", flush = True)
+                    print(f"{engine}: checked 216 configurations / 1296 icons", flush=True)
                 finally:
                     browser.close()
     finally:
         stop_process(server)
         (args.out / "report.json").write_text(
-            json.dumps(dict(results = results, failures = failures), indent = 2), encoding = "utf-8"
+            json.dumps(dict(results=results, failures=failures), indent=2), encoding="utf-8"
         )
-    assert not failures, json.dumps(failures[:8], indent = 2)
-    print(f"PASS: {len(results) * 6} rendered icons centered", flush = True)
+    assert not failures, json.dumps(failures[:8], indent=2)
+    print(f"PASS: {len(results) * 6} rendered icons centered", flush=True)
 
 
 if __name__ == "__main__":

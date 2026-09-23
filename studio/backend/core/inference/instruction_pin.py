@@ -154,7 +154,7 @@ def last_substantive_instruction(
     if skip_latest and users:
         users = users[:-1]
     for message in reversed(users):
-        if is_substantive(message, min_chars = min_chars):
+        if is_substantive(message, min_chars=min_chars):
             text = _text_of(message).strip()
             if text:
                 return text
@@ -264,7 +264,7 @@ def pinned_instruction_ids(
             continue
         group = turns[index]
         head = group[0]
-        if not is_substantive(head, min_chars = min_chars):
+        if not is_substantive(head, min_chars=min_chars):
             continue
         cost = _protected_cost(turns, index)
         if spent + cost > ceiling:

@@ -41,11 +41,11 @@ def home(monkeypatch, tmp_path):
 def _private_gguf(
     account,
     home,
-    filename = "shared-model.gguf",
+    filename="shared-model.gguf",
 ):
     """A checkpoint in a scan folder registered in *account*'s own database."""
     root = home / "accounts" / account.account_id / "private_models"
-    root.mkdir(parents = True, exist_ok = True)
+    root.mkdir(parents=True, exist_ok=True)
     model = root / filename
     model.write_bytes(b"GGUF" + b"\0" * 64)
 
@@ -64,10 +64,10 @@ def _private_gguf(
 
 def _request():
     return SimpleNamespace(
-        scope = {},
-        state = SimpleNamespace(),
-        url = SimpleNamespace(path = "/v1/chat/completions"),
-        headers = {},
+        scope={},
+        state=SimpleNamespace(),
+        url=SimpleNamespace(path="/v1/chat/completions"),
+        headers={},
     )
 
 

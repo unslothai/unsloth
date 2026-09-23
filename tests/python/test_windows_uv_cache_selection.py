@@ -35,7 +35,7 @@ from unsloth_pwsh_runner import run_pwsh
 REPO_ROOT = Path(__file__).resolve().parents[2]
 INSTALL_PS1 = REPO_ROOT / "install.ps1"
 
-requires_pwsh = pytest.mark.skipif(shutil.which("pwsh") is None, reason = "PowerShell is unavailable")
+requires_pwsh = pytest.mark.skipif(shutil.which("pwsh") is None, reason="PowerShell is unavailable")
 
 # The selector and everything it calls, in source order. Sliced rather than copied, so a change to
 # install.ps1 that this file does not expect fails here instead of passing against a stale paste.
@@ -44,7 +44,7 @@ _LAST = "    function Restore-StudioUvCacheEnvironment {"
 
 
 def _selector_source() -> str:
-    source = INSTALL_PS1.read_text(encoding = "utf-8")
+    source = INSTALL_PS1.read_text(encoding="utf-8")
     start = source.index(_FIRST)
     end = source.index(_LAST)
     # Dedented one level: the functions live inside Install-UnslothStudio in the real file.
@@ -98,11 +98,11 @@ def _select(
     isolated: bool = False,
     env: dict | None = None,
 ) -> dict:
-    studio_root.mkdir(parents = True, exist_ok = True)
+    studio_root.mkdir(parents=True, exist_ok=True)
     # A .ps1 rather than a shell script, so this runs on the Windows agents too; `exit 0` so
     # $LASTEXITCODE is set, which is what the selector reads before trusting the answer.
     stub = studio_root.parent / "uv-stub.ps1"
-    stub.write_text(f"Write-Output {_ps_literal(uv_answer)}\nexit 0\n", encoding = "utf-8")
+    stub.write_text(f"Write-Output {_ps_literal(uv_answer)}\nexit 0\n", encoding="utf-8")
     merged = {
         key: value
         for key, value in os.environ.items()
@@ -113,31 +113,31 @@ def _select(
     # answering the wrong mode. See tests/_shared/unsloth_pwsh_runner.py.
     result = run_pwsh(
         ["pwsh", "-NoProfile", "-NonInteractive", "-Command", _script(studio_root, stub, isolated)],
-        check = True,
-        capture_output = True,
-        text = True,
-        env = merged,
+        check=True,
+        capture_output=True,
+        text=True,
+        env=merged,
     )
     return json.loads(result.stdout.strip().splitlines()[-1])
 
 
 def _warm(cache: Path) -> Path:
     """A cache holding package BYTES, which is the only thing that counts as warm."""
-    (cache / "archive-v0" / "torch").mkdir(parents = True, exist_ok = True)
+    (cache / "archive-v0" / "torch").mkdir(parents=True, exist_ok=True)
     (cache / "archive-v0" / "torch" / "libtorch.so").write_text("x")
     (cache / "CACHEDIR.TAG").write_text("x")
     return cache
 
 
 def _cold(cache: Path) -> Path:
-    cache.mkdir(parents = True, exist_ok = True)
+    cache.mkdir(parents=True, exist_ok=True)
     (cache / "CACHEDIR.TAG").write_text("x")
     return cache
 
 
 def _record(studio_root: Path, cache: Path) -> None:
-    (studio_root / "cache").mkdir(parents = True, exist_ok = True)
-    (studio_root / "cache" / "uv-cache-dir").write_text(f"{cache}\n", encoding = "utf-8")
+    (studio_root / "cache").mkdir(parents=True, exist_ok=True)
+    (studio_root / "cache" / "uv-cache-dir").write_text(f"{cache}\n", encoding="utf-8")
 
 
 # ── the modes that already worked, so a regression in the port is visible ──────────────────
@@ -166,7 +166,7 @@ def test_a_cold_default_falls_back_to_the_studio_cache(tmp_path):
 @requires_pwsh
 def test_metadata_only_is_not_warm(tmp_path):
     default = tmp_path / "uvdefault"
-    (default / "wheels-v1").mkdir(parents = True)
+    (default / "wheels-v1").mkdir(parents=True)
     (default / "wheels-v1" / "index.msgpack").write_text("x")
     assert _select(tmp_path / "studio", str(default))["mode"] == "studio"
 
@@ -175,7 +175,7 @@ def test_metadata_only_is_not_warm(tmp_path):
 def test_a_caller_override_still_outranks_everything(tmp_path):
     mine = _warm(tmp_path / "mine")
     verdict = _select(
-        tmp_path / "studio", str(_warm(tmp_path / "uvdefault")), env = {"UV_CACHE_DIR": str(mine)}
+        tmp_path / "studio", str(_warm(tmp_path / "uvdefault")), env={"UV_CACHE_DIR": str(mine)}
     )
     assert verdict["mode"] == "custom", verdict
     assert verdict["dir"] == str(mine), verdict
@@ -186,7 +186,7 @@ def test_a_caller_override_still_outranks_everything(tmp_path):
 @requires_pwsh
 def test_isolation_wins_over_a_warm_default(tmp_path):
     root = tmp_path / "studio"
-    verdict = _select(root, str(_warm(tmp_path / "uvdefault")), isolated = True)
+    verdict = _select(root, str(_warm(tmp_path / "uvdefault")), isolated=True)
     assert verdict["mode"] == "isolated", verdict
     assert verdict["dir"] == str(root / "cache" / "uv"), verdict
     # Isolation records too, or a previous install's marker outlives the choice.
@@ -205,7 +205,7 @@ def test_uv_no_cache_records_nothing_even_when_the_directory_is_decided(tmp_path
     env = {"UV_NO_CACHE": "1"}
     if not isolated:
         env["UV_CACHE_DIR"] = str(tmp_path / "callercache")
-    verdict = _select(root, str(_warm(tmp_path / "uvdefault")), isolated = isolated, env = env)
+    verdict = _select(root, str(_warm(tmp_path / "uvdefault")), isolated=isolated, env=env)
     assert verdict["mode"] == ("isolated" if isolated else "custom"), verdict
     assert verdict["marker"] == "", verdict
 
@@ -216,7 +216,7 @@ def test_the_same_two_branches_do_record_without_uv_no_cache(tmp_path, isolated)
     """So the guard above is not simply switching recording off."""
     root = tmp_path / "studio"
     env = {} if isolated else {"UV_CACHE_DIR": str(tmp_path / "callercache")}
-    verdict = _select(root, str(_warm(tmp_path / "uvdefault")), isolated = isolated, env = env)
+    verdict = _select(root, str(_warm(tmp_path / "uvdefault")), isolated=isolated, env=env)
     assert verdict["marker"] != "", verdict
 
 
@@ -248,14 +248,14 @@ def test_a_recorded_cache_that_went_cold_loses_to_the_default(tmp_path):
 def test_isolation_still_wins_over_a_warm_marker(tmp_path):
     root = tmp_path / "studio"
     _record(root, _warm(root / "cache" / "uv"))
-    assert _select(root, str(_warm(tmp_path / "uvdefault")), isolated = True)["mode"] == "isolated"
+    assert _select(root, str(_warm(tmp_path / "uvdefault")), isolated=True)["mode"] == "isolated"
 
 
 @requires_pwsh
 @pytest.mark.parametrize("value", ["1", "y", "Y", "t", "T", "true", "TRUE", "Yes", "on"])
 def test_uv_no_cache_stands_the_selection_down(tmp_path, value):
     root = tmp_path / "studio"
-    verdict = _select(root, str(_warm(tmp_path / "uvdefault")), env = {"UV_NO_CACHE": value})
+    verdict = _select(root, str(_warm(tmp_path / "uvdefault")), env={"UV_NO_CACHE": value})
     assert verdict["mode"] == "studio", verdict
     # Nothing recorded: a marker written here would name a cache this install never filled.
     assert verdict["marker"] == "", verdict
@@ -266,7 +266,7 @@ def test_uv_no_cache_stands_the_selection_down(tmp_path, value):
 def test_a_false_uv_no_cache_does_not_stand_it_down(tmp_path, value):
     root = tmp_path / "studio"
     assert (
-        _select(root, str(_warm(tmp_path / "uvdefault")), env = {"UV_NO_CACHE": value})["mode"]
+        _select(root, str(_warm(tmp_path / "uvdefault")), env={"UV_NO_CACHE": value})["mode"]
         == "shared"
     )
 
@@ -276,7 +276,7 @@ def test_a_false_uv_no_cache_does_not_stand_it_down(tmp_path, value):
 def test_a_bucket_lookalike_is_not_warmth(tmp_path, name):
     """`archive-*` matches all three, and uv can reuse the bytes in none of them."""
     default = tmp_path / "uvdefault"
-    (default / name / "pkg").mkdir(parents = True)
+    (default / name / "pkg").mkdir(parents=True)
     (default / name / "pkg" / "payload.so").write_text("x")
     (default / "CACHEDIR.TAG").write_text("x")
     assert _select(tmp_path / "studio", str(default))["mode"] == "studio"
@@ -290,7 +290,7 @@ def test_a_studio_cache_with_an_unusable_bucket_is_not_a_fallback(tmp_path):
     Selecting that cache anyway turns an install that reported success into a uv error.
     """
     root = tmp_path / "studio"
-    (root / "cache" / "uv").mkdir(parents = True)
+    (root / "cache" / "uv").mkdir(parents=True)
     (root / "cache" / "uv" / "archive-v0").write_text("not a directory")
     cold = tmp_path / "colddefault"
     cold.mkdir()
@@ -304,7 +304,7 @@ def test_the_launch_does_not_repoint_into_a_rejected_studio_cache(tmp_path):
     """Selection already preferred the warm cache here; the repoint used to hand the backend
     the Studio cache regardless, because it only asked about the root."""
     root = tmp_path / "studio"
-    (root / "cache" / "uv").mkdir(parents = True)
+    (root / "cache" / "uv").mkdir(parents=True)
     (root / "cache" / "uv" / "archive-v0").write_text("not a directory")
     default = _warm(tmp_path / "uvdefault")
     verdict = _select(root, str(default))
@@ -329,7 +329,7 @@ def test_a_marker_naming_a_deleted_cache_is_no_more_evidence_than_none(tmp_path)
     warm_root = tmp_path / "studio-warm"
     _warm(warm_root / "cache" / "uv")
     (warm_root / "cache" / "uv-cache-dir").write_text(
-        str(tmp_path / "deleted-cache"), encoding = "utf-8"
+        str(tmp_path / "deleted-cache"), encoding="utf-8"
     )
     chosen = _select(warm_root, str(_warm(tmp_path / "uvdefault")))
     assert chosen["mode"] == "shared", chosen
@@ -337,7 +337,7 @@ def test_a_marker_naming_a_deleted_cache_is_no_more_evidence_than_none(tmp_path)
     cold_root = tmp_path / "studio-cold"
     studio_cache = _warm(cold_root / "cache" / "uv")
     (cold_root / "cache" / "uv-cache-dir").write_text(
-        str(tmp_path / "deleted-cache"), encoding = "utf-8"
+        str(tmp_path / "deleted-cache"), encoding="utf-8"
     )
     cold = tmp_path / "colddefault"
     cold.mkdir()
@@ -353,7 +353,7 @@ def test_a_cold_recorded_cache_that_still_exists_falls_through(tmp_path):
     _warm(root / "cache" / "uv")
     cold = tmp_path / "coldrec"
     cold.mkdir()
-    (root / "cache" / "uv-cache-dir").write_text(str(cold), encoding = "utf-8")
+    (root / "cache" / "uv-cache-dir").write_text(str(cold), encoding="utf-8")
     assert _select(root, str(_warm(tmp_path / "uvdefault")))["mode"] == "shared"
 
 
@@ -367,11 +367,11 @@ def test_a_real_bucket_beside_a_lookalike_is_still_warm(tmp_path):
 
 @requires_pwsh
 @pytest.mark.skipif(
-    os.name == "nt", reason = "mode bits; the Windows ACL equivalent needs a second account"
+    os.name == "nt", reason="mode bits; the Windows ACL equivalent needs a second account"
 )
 @pytest.mark.skipif(
     os.geteuid() == 0 if hasattr(os, "geteuid") else False,
-    reason = "root writes through the mode bits",
+    reason="root writes through the mode bits",
 )
 def test_a_populated_cache_we_cannot_write_is_refused(tmp_path):
     """uv renames distributions into the buckets and aborts when it cannot, so selecting one
@@ -387,11 +387,11 @@ def test_a_populated_cache_we_cannot_write_is_refused(tmp_path):
 
 @requires_pwsh
 @pytest.mark.skipif(
-    os.name == "nt", reason = "mode bits; the Windows ACL equivalent needs a second account"
+    os.name == "nt", reason="mode bits; the Windows ACL equivalent needs a second account"
 )
 @pytest.mark.skipif(
     os.geteuid() == 0 if hasattr(os, "geteuid") else False,
-    reason = "root writes through the mode bits",
+    reason="root writes through the mode bits",
 )
 def test_an_unwritable_bucket_is_refused_too(tmp_path):
     """The `sudo -E` leftover: the root is ours and one bucket is not."""
@@ -529,18 +529,18 @@ def test_an_unmarked_cold_studio_cache_does_not_block_the_shared_one(tmp_path):
 
 @requires_pwsh
 @pytest.mark.skipif(
-    os.name == "nt", reason = "mode bits; the Windows ACL equivalent needs a second account"
+    os.name == "nt", reason="mode bits; the Windows ACL equivalent needs a second account"
 )
 @pytest.mark.skipif(
     os.geteuid() == 0 if hasattr(os, "geteuid") else False,
-    reason = "root reads through the mode bits",
+    reason="root reads through the mode bits",
 )
 def test_a_marker_we_cannot_even_stat_does_not_cost_us_uvs_default(tmp_path):
     """Test-Path throws inside an ACL-denied directory under ErrorActionPreference = Stop, and
     the selector wraps the whole candidate loop, so an unreachable marker used to take uv's
     default down with it -- a first run elevated, a second one not."""
     locked = tmp_path / "locked"
-    (locked / "uv").mkdir(parents = True)
+    (locked / "uv").mkdir(parents=True)
     locked.chmod(0o000)
     root = tmp_path / "studio"
     _record(root, locked / "uv")
@@ -559,17 +559,17 @@ def test_a_trailing_separator_in_the_marker_is_the_same_directory(tmp_path):
     studio branch exists to avoid."""
     root = tmp_path / "studio"
     studio_cache = _warm(root / "cache" / "uv")
-    (root / "cache" / "uv-cache-dir").write_text(f"{studio_cache}{os.sep}\n", encoding = "utf-8")
+    (root / "cache" / "uv-cache-dir").write_text(f"{studio_cache}{os.sep}\n", encoding="utf-8")
     assert _select(root, str(_warm(tmp_path / "uvdefault")))["mode"] == "studio"
 
 
 @requires_pwsh
 @pytest.mark.skipif(
-    os.name == "nt", reason = "mode bits; the Windows ACL equivalent needs a second account"
+    os.name == "nt", reason="mode bits; the Windows ACL equivalent needs a second account"
 )
 @pytest.mark.skipif(
     os.geteuid() == 0 if hasattr(os, "geteuid") else False,
-    reason = "root writes through the mode bits",
+    reason="root writes through the mode bits",
 )
 def test_the_launch_does_not_repoint_at_a_studio_cache_it_cannot_fill(tmp_path):
     """Repointing at a cache uv aborts on hands the autostarted backend a dead cache after an
@@ -588,11 +588,11 @@ def test_the_launch_does_not_repoint_at_a_studio_cache_it_cannot_fill(tmp_path):
 
 @requires_pwsh
 @pytest.mark.skipif(
-    os.name == "nt", reason = "mode bits; the Windows ACL equivalent needs a second account"
+    os.name == "nt", reason="mode bits; the Windows ACL equivalent needs a second account"
 )
 @pytest.mark.skipif(
     os.geteuid() == 0 if hasattr(os, "geteuid") else False,
-    reason = "root writes through the mode bits",
+    reason="root writes through the mode bits",
 )
 def test_a_fallback_we_cannot_write_is_not_a_fallback(tmp_path):
     """The probe refuses a whole cache for one bucket uv may never touch, so a warm cache and an
@@ -616,11 +616,11 @@ def test_a_fallback_we_cannot_write_is_not_a_fallback(tmp_path):
 
 @requires_pwsh
 @pytest.mark.skipif(
-    os.name == "nt", reason = "mode bits; the Windows ACL equivalent needs a second account"
+    os.name == "nt", reason="mode bits; the Windows ACL equivalent needs a second account"
 )
 @pytest.mark.skipif(
     os.geteuid() == 0 if hasattr(os, "geteuid") else False,
-    reason = "root writes through the mode bits",
+    reason="root writes through the mode bits",
 )
 def test_a_writable_studio_cache_still_wins_over_a_refused_one(tmp_path):
     """The rule above must not turn into "a refused cache always wins"."""
@@ -660,8 +660,8 @@ def test_the_harness_hands_powershell_the_path_it_was_given(value):
     """
     result = run_pwsh(
         ["pwsh", "-NoProfile", "-NonInteractive", "-Command", f"Write-Output {_ps_literal(value)}"],
-        check = True,
-        capture_output = True,
-        text = True,
+        check=True,
+        capture_output=True,
+        text=True,
     )
     assert result.stdout.strip("\r\n") == value

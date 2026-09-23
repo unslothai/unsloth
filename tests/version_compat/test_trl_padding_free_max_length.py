@@ -28,9 +28,9 @@ import pytest
 
 
 if importlib.util.find_spec("torch") is None:
-    pytest.skip("torch not installed", allow_module_level = True)
+    pytest.skip("torch not installed", allow_module_level=True)
 if importlib.util.find_spec("trl") is None or importlib.util.find_spec("unsloth") is None:
-    pytest.skip("trl or unsloth not installed", allow_module_level = True)
+    pytest.skip("trl or unsloth not installed", allow_module_level=True)
 
 # Spoof CUDA before any unsloth import, so CPU-only runners can still patch.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -42,7 +42,7 @@ import torch  # noqa: E402
 
 
 def _eager_compile(
-    model = None,
+    model=None,
     *args,
     **kwargs,
 ):
@@ -51,7 +51,7 @@ def _eager_compile(
     return lambda fn: fn
 
 
-@pytest.fixture(scope = "module", autouse = True)
+@pytest.fixture(scope="module", autouse=True)
 def _cpu_only_torch():
     """Hold the eager-compile spoof for this module only.
 
@@ -75,7 +75,7 @@ _MODEL_MAX_SEQ_LENGTH = 128
 _USER_MAX_LENGTH = 64
 
 
-@pytest.fixture(scope = "module", autouse = True)
+@pytest.fixture(scope="module", autouse=True)
 def patched_sft(_cpu_only_torch):
     """Import unsloth, and force both halves of the SFT patch on.
 
@@ -91,6 +91,7 @@ def patched_sft(_cpu_only_torch):
     _cpu_only_torch.setattr(torch, "compile", _eager_compile)
     try:
         import torch._dynamo
+
         _cpu_only_torch.setattr(torch._dynamo.config, "disable", True)
     except Exception:
         pass
@@ -105,18 +106,19 @@ def patched_sft(_cpu_only_torch):
         _patch_trl_trainer()
 
 
-@pytest.fixture(scope = "module")
+@pytest.fixture(scope="module")
 def trl_has_guard(patched_sft):
     from trl.trainer import sft_trainer
+
     return "`max_length` is not enforced" in inspect.getsource(sft_trainer)
 
 
-def _load_plain(model_max_seq_length = _MODEL_MAX_SEQ_LENGTH):
+def _load_plain(model_max_seq_length=_MODEL_MAX_SEQ_LENGTH):
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
     try:
         tok = AutoTokenizer.from_pretrained(_MODEL)
-        model = AutoModelForCausalLM.from_pretrained(_MODEL, dtype = torch.float32)
+        model = AutoModelForCausalLM.from_pretrained(_MODEL, dtype=torch.float32)
     except OSError as e:
         pytest.skip(f"could not fetch {_MODEL} (network/hub): {str(e)[:150]}")
     if tok.pad_token is None:
@@ -127,9 +129,9 @@ def _load_plain(model_max_seq_length = _MODEL_MAX_SEQ_LENGTH):
 
 def _build(
     tmp_path,
-    dataset = None,
-    model_max_seq_length = _MODEL_MAX_SEQ_LENGTH,
-    eval_dataset = None,
+    dataset=None,
+    model_max_seq_length=_MODEL_MAX_SEQ_LENGTH,
+    eval_dataset=None,
     **config_kwargs,
 ):
     """Construct the Unsloth-patched SFTTrainer over a long, truncatable dataset."""
@@ -144,24 +146,24 @@ def _build(
         else Dataset.from_list([{"text": "The quick brown fox. " * 200}] * 4)
     )
     cfg = SFTConfig(
-        output_dir = str(tmp_path),
-        per_device_train_batch_size = 2,
-        max_steps = 1,
-        report_to = "none",
-        save_strategy = "no",
-        use_cpu = True,
-        dataset_text_field = "text",
-        fp16 = False,
-        bf16 = False,
-        optim = "adamw_torch",
+        output_dir=str(tmp_path),
+        per_device_train_batch_size=2,
+        max_steps=1,
+        report_to="none",
+        save_strategy="no",
+        use_cpu=True,
+        dataset_text_field="text",
+        fp16=False,
+        bf16=False,
+        optim="adamw_torch",
         **config_kwargs,
     )
     return SFTTrainer(
-        model = model,
-        processing_class = tok,
-        args = cfg,
-        train_dataset = ds,
-        eval_dataset = eval_dataset,
+        model=model,
+        processing_class=tok,
+        args=cfg,
+        train_dataset=ds,
+        eval_dataset=eval_dataset,
     )
 
 
@@ -190,7 +192,7 @@ def test_explicit_max_length_resolves_the_same_on_every_trl(tmp_path, trl_has_gu
 
     Every TRL must truncate to the user's limit, even when `max_length` is cleared.
     """
-    trainer = _build(tmp_path, max_length = _USER_MAX_LENGTH)
+    trainer = _build(tmp_path, max_length=_USER_MAX_LENGTH)
     args = trainer.args
 
     assert args.padding_free is True
@@ -204,6 +206,7 @@ def test_explicit_max_length_resolves_the_same_on_every_trl(tmp_path, trl_has_gu
 
 def _trl_default_max_length():
     import dataclasses
+
     for field in dataclasses.fields(_pristine_sft_config_cls()):
         if field.name == "max_length":
             return field.default
@@ -233,7 +236,7 @@ def test_an_untouched_max_length_default_does_not_cap_the_model_context(
     def _long_text(tok):
         return Dataset.from_list([{"text": "The quick brown fox. " * 4000}] * 4)
 
-    trainer = _build(tmp_path, dataset = _long_text, model_max_seq_length = model_cap)
+    trainer = _build(tmp_path, dataset=_long_text, model_max_seq_length=model_cap)
     args = trainer.args
 
     assert args.max_seq_length == model_cap
@@ -268,11 +271,12 @@ def test_a_rebuilt_default_config_still_does_not_cap_the_model(tmp_path, trl_has
 
     if path == "cli":
         from transformers import HfArgumentParser
+
         (cfg,) = HfArgumentParser((SFTConfig,)).parse_args_into_dataclasses(
             ["--output_dir", str(tmp_path)]
         )
     else:
-        cfg = dataclasses.replace(SFTConfig(output_dir = str(tmp_path)), learning_rate = 1e-4)
+        cfg = dataclasses.replace(SFTConfig(output_dir=str(tmp_path)), learning_rate=1e-4)
     assert cfg.max_length == default_max_length
 
     model, tok = _load_plain(8192)
@@ -292,10 +296,10 @@ def test_a_rebuilt_default_config_still_does_not_cap_the_model(tmp_path, trl_has
     from trl import SFTTrainer
 
     trainer = SFTTrainer(
-        model = model,
-        processing_class = tok,
-        args = cfg,
-        train_dataset = Dataset.from_list([{"text": text}] * 4),
+        model=model,
+        processing_class=tok,
+        args=cfg,
+        train_dataset=Dataset.from_list([{"text": text}] * 4),
     )
     assert _longest(trainer) == 8192, (
         f"a config rebuilt via {path} carried its resolved default back in and capped an "
@@ -320,25 +324,25 @@ def test_an_explicit_max_length_equal_to_the_default_keeps_the_model_length(tmp_
 
     model, tok = _load_plain(8192)
     cfg = SFTConfig(
-        output_dir = str(tmp_path),
-        per_device_train_batch_size = 2,
-        max_steps = 1,
-        report_to = "none",
-        save_strategy = "no",
-        use_cpu = True,
-        dataset_text_field = "text",
-        fp16 = False,
-        bf16 = False,
-        optim = "adamw_torch",
-        max_length = default_max_length,
+        output_dir=str(tmp_path),
+        per_device_train_batch_size=2,
+        max_steps=1,
+        report_to="none",
+        save_strategy="no",
+        use_cpu=True,
+        dataset_text_field="text",
+        fp16=False,
+        bf16=False,
+        optim="adamw_torch",
+        max_length=default_max_length,
     )
     from trl import SFTTrainer
 
     trainer = SFTTrainer(
-        model = model,
-        processing_class = tok,
-        args = cfg,
-        train_dataset = Dataset.from_list([{"text": "The quick brown fox. " * 4000}] * 4),
+        model=model,
+        processing_class=tok,
+        args=cfg,
+        train_dataset=Dataset.from_list([{"text": "The quick brown fox. " * 4000}] * 4),
     )
     assert _longest(trainer) == 8192
 
@@ -372,10 +376,10 @@ def test_max_seq_length_still_beats_max_length(tmp_path, trl_has_guard):
 
     trainer = _build(
         tmp_path,
-        dataset = _long_text,
-        model_max_seq_length = 8192,
-        max_seq_length = big,
-        max_length = small,
+        dataset=_long_text,
+        model_max_seq_length=8192,
+        max_seq_length=big,
+        max_length=small,
     )
     args = trainer.args
 
@@ -387,7 +391,7 @@ def test_max_seq_length_still_beats_max_length(tmp_path, trl_has_guard):
     assert _longest(trainer) == big
 
 
-def _tokenized_dataset(tok, with_labels = False):
+def _tokenized_dataset(tok, with_labels=False):
     from datasets import Dataset
 
     ids = tok("The quick brown fox. " * 200)["input_ids"]
@@ -407,7 +411,7 @@ def _collated_width(trainer):
     "name, dataset",
     [
         ("input_ids", lambda tok: _tokenized_dataset(tok)),
-        ("labels", lambda tok: _tokenized_dataset(tok, with_labels = True)),
+        ("labels", lambda tok: _tokenized_dataset(tok, with_labels=True)),
     ],
 )
 def test_pretokenized_rows_are_truncated_so_the_cap_is_really_enforced(
@@ -424,7 +428,7 @@ def test_pretokenized_rows_are_truncated_so_the_cap_is_really_enforced(
     """
     if not trl_has_guard:
         pytest.skip("no guard in this TRL: the block under test is not generated at all")
-    trainer = _build(tmp_path, dataset = dataset)
+    trainer = _build(tmp_path, dataset=dataset)
     args = trainer.args
 
     assert _longest(trainer) == _MODEL_MAX_SEQ_LENGTH, f"{name}: rows were not truncated"
@@ -464,8 +468,8 @@ def test_a_with_transform_dataset_keeps_its_cap(tmp_path, trl_has_guard):
 
     # Dropping padding-free keeps `max_length` for TRL's collator, and that collator has never truncated on any TRL from
     # 0.22.2 to main: truncation lives only in _prepare_dataset, which returns pre-tokenized rows untouched.
-    with pytest.raises(ValueError, match = "cannot be enforced"):
-        _build(tmp_path, dataset = _transformed)
+    with pytest.raises(ValueError, match="cannot be enforced"):
+        _build(tmp_path, dataset=_transformed)
 
 
 def test_a_raw_eval_split_is_left_for_the_tokenizer(tmp_path, trl_has_guard):
@@ -480,7 +484,7 @@ def test_a_raw_eval_split_is_left_for_the_tokenizer(tmp_path, trl_has_guard):
 
     text = "The quick brown fox. " * 200
     raw = Dataset.from_list([{"text": text}] * 4)
-    trainer = _build(tmp_path, dataset = _tokenized_dataset, eval_dataset = {"validation": raw})
+    trainer = _build(tmp_path, dataset=_tokenized_dataset, eval_dataset={"validation": raw})
 
     assert trainer.args.max_length is None
     split = trainer.eval_dataset["validation"]
@@ -505,7 +509,7 @@ def test_a_torch_formatted_dataset_is_still_truncated(tmp_path, trl_has_guard):
         ds.set_format("torch")
         return ds
 
-    trainer = _build(tmp_path, dataset = _formatted)
+    trainer = _build(tmp_path, dataset=_formatted)
     # The train split was tokenized and capped, so the cap is consumed.
     assert trainer.args.max_length is None
     assert _longest(trainer) == _MODEL_MAX_SEQ_LENGTH, "formatted rows were not truncated"
@@ -521,7 +525,7 @@ def test_every_named_eval_split_is_truncated(tmp_path, trl_has_guard):
         pytest.skip("no guard in this TRL: the block under test is not generated at all")
     tok = _load_plain()[1]
     evals = {"validation": _tokenized_dataset(tok), "test": _tokenized_dataset(tok)}
-    trainer = _build(tmp_path, dataset = _tokenized_dataset, eval_dataset = evals)
+    trainer = _build(tmp_path, dataset=_tokenized_dataset, eval_dataset=evals)
 
     assert trainer.args.max_length is None
     for name, split in trainer.eval_dataset.items():
@@ -553,8 +557,8 @@ def test_unprepared_datasets_keep_their_length_cap(tmp_path, trl_has_guard):
     """
     trainer = _build(
         tmp_path,
-        dataset = _short_tokenized_dataset,
-        dataset_kwargs = {"skip_prepare_dataset": True},
+        dataset=_short_tokenized_dataset,
+        dataset_kwargs={"skip_prepare_dataset": True},
     )
     args = trainer.args
 
@@ -597,11 +601,11 @@ def test_transformed_datasets_are_refused_rather_than_run_uncapped(tmp_path, trl
     run that trains on rows longer than the user asked for."""
     if not trl_has_guard:
         # No guard in this TRL: the block is never generated, so nothing changes.
-        trainer = _build(tmp_path, dataset = _transformed_dataset)
+        trainer = _build(tmp_path, dataset=_transformed_dataset)
         assert trainer.args.max_length == _MODEL_MAX_SEQ_LENGTH
         return
-    with pytest.raises(ValueError, match = "cannot be enforced"):
-        _build(tmp_path, dataset = _transformed_dataset)
+    with pytest.raises(ValueError, match="cannot be enforced"):
+        _build(tmp_path, dataset=_transformed_dataset)
 
 
 def _short_transformed_dataset(tok):
@@ -620,7 +624,7 @@ def _short_transformed_dataset(tok):
 
 def test_a_transformed_dataset_within_the_cap_is_not_refused(tmp_path, trl_has_guard):
     """The refusal is on an OBSERVED overlength row, not on the dataset shape."""
-    trainer = _build(tmp_path, dataset = _short_transformed_dataset)
+    trainer = _build(tmp_path, dataset=_short_transformed_dataset)
     assert trainer.args.max_length == _MODEL_MAX_SEQ_LENGTH, "the cap must survive"
     if trl_has_guard:
         assert trainer.args.padding_free is False
@@ -633,11 +637,11 @@ def test_a_tokenized_eval_split_that_cannot_be_truncated_is_refused(tmp_path, tr
     if not trl_has_guard:
         pytest.skip("no guard in this TRL: the block under test is not generated at all")
     tok = _load_plain()[1]
-    with pytest.raises(ValueError, match = "cannot be enforced"):
+    with pytest.raises(ValueError, match="cannot be enforced"):
         _build(
             tmp_path,
-            dataset = _tokenized_dataset,
-            eval_dataset = _transformed_dataset(tok),
+            dataset=_tokenized_dataset,
+            eval_dataset=_transformed_dataset(tok),
         )
 
 
@@ -654,8 +658,8 @@ def test_a_transformed_eval_split_within_the_cap_is_not_refused(tmp_path, trl_ha
     tok = _load_plain()[1]
     trainer = _build(
         tmp_path,
-        dataset = _tokenized_dataset,
-        eval_dataset = _short_transformed_dataset(tok),
+        dataset=_tokenized_dataset,
+        eval_dataset=_short_transformed_dataset(tok),
     )
     assert trainer.args.max_length == _MODEL_MAX_SEQ_LENGTH, "the cap must survive"
     assert trainer.args.padding_free is False
@@ -700,7 +704,7 @@ def test_pristine_trl_config_without_max_seq_length_still_truncates(tmp_path, tr
 
     config_cls = _pristine_sft_config_cls()
     assert not hasattr(
-        config_cls(output_dir = str(tmp_path)), "max_seq_length"
+        config_cls(output_dir=str(tmp_path)), "max_seq_length"
     ), "this TRL declares max_seq_length, so the regression cannot be reproduced here"
 
     model, tok = _load_plain()
@@ -709,26 +713,26 @@ def test_pristine_trl_config_without_max_seq_length_still_truncates(tmp_path, tr
     assert untruncated > _MODEL_MAX_SEQ_LENGTH, "row must be overlength to be interesting"
 
     cfg = config_cls(
-        output_dir = str(tmp_path),
-        per_device_train_batch_size = 2,
-        max_steps = 1,
-        report_to = "none",
-        save_strategy = "no",
-        use_cpu = True,
-        dataset_text_field = "text",
-        fp16 = False,
-        bf16 = False,
-        optim = "adamw_torch",
-        max_length = _MODEL_MAX_SEQ_LENGTH,
-        padding_free = True,
+        output_dir=str(tmp_path),
+        per_device_train_batch_size=2,
+        max_steps=1,
+        report_to="none",
+        save_strategy="no",
+        use_cpu=True,
+        dataset_text_field="text",
+        fp16=False,
+        bf16=False,
+        optim="adamw_torch",
+        max_length=_MODEL_MAX_SEQ_LENGTH,
+        padding_free=True,
     )
     from trl import SFTTrainer
 
     trainer = SFTTrainer(
-        model = model,
-        processing_class = tok,
-        args = cfg,
-        train_dataset = Dataset.from_list([{"text": text}] * 4),
+        model=model,
+        processing_class=tok,
+        args=cfg,
+        train_dataset=Dataset.from_list([{"text": text}] * 4),
     )
 
     # The cap has to land somewhere the Zoo's sft_prepare_dataset reads it.
@@ -773,7 +777,7 @@ def test_generator_copies_the_cap_without_a_hasattr_gate():
 
 def test_padding_free_off_keeps_max_length(tmp_path):
     """Nothing is cleared when padding-free is not in play."""
-    trainer = _build(tmp_path, padding_free = False)
+    trainer = _build(tmp_path, padding_free=False)
 
     assert trainer.args.padding_free is False
     assert trainer.args.max_length == _MODEL_MAX_SEQ_LENGTH
@@ -781,7 +785,7 @@ def test_padding_free_off_keeps_max_length(tmp_path):
 
 def test_packing_keeps_max_length(tmp_path):
     """TRL's guard only fires without packing, so packing runs keep max_length."""
-    trainer = _build(tmp_path, packing = True)
+    trainer = _build(tmp_path, packing=True)
 
     assert trainer.args.packing is True
     assert trainer.args.max_length == _MODEL_MAX_SEQ_LENGTH
@@ -813,6 +817,7 @@ def test_generator_only_emits_the_none_for_a_trl_that_guards():
 )
 def test_padding_free_error_matcher(message, expected):
     from unsloth.trainer import _should_skip_auto_padding_free_error
+
     assert _should_skip_auto_padding_free_error(ValueError(message)) is expected
 
 
@@ -837,8 +842,8 @@ def _late_overlength_dataset(tok):
 def test_a_later_overlength_row_is_not_hidden_by_a_short_first_one(tmp_path, trl_has_guard):
     if not trl_has_guard:
         pytest.skip("no guard in this TRL: the block under test is not generated at all")
-    with pytest.raises(ValueError, match = "cannot be enforced"):
-        _build(tmp_path, dataset = _late_overlength_dataset)
+    with pytest.raises(ValueError, match="cannot be enforced"):
+        _build(tmp_path, dataset=_late_overlength_dataset)
 
 
 def test_the_cap_check_reads_the_whole_split():
@@ -863,7 +868,7 @@ def test_a_raw_train_split_does_not_excuse_a_tokenized_eval_split(tmp_path, trl_
     if not trl_has_guard:
         pytest.skip("no guard in this TRL: the block under test is not generated at all")
     tok = _load_plain()[1]
-    trainer = _build(tmp_path, eval_dataset = _tokenized_dataset(tok))
+    trainer = _build(tmp_path, eval_dataset=_tokenized_dataset(tok))
 
     assert trainer.args.max_length is None, "the cap was consumed"
     assert (
@@ -871,7 +876,7 @@ def test_a_raw_train_split_does_not_excuse_a_tokenized_eval_split(tmp_path, trl_
     ), "the eval split was left over the cap"
 
 
-def _tokenized_stream(tok, rows = 4096):
+def _tokenized_stream(tok, rows=4096):
     """A pre-tokenized IterableDataset whose overlength row is past the scan."""
     from datasets import Dataset
 
@@ -894,7 +899,7 @@ def test_a_pretokenized_stream_is_truncated_without_num_proc(tmp_path, trl_has_g
     if not trl_has_guard:
         pytest.skip("no guard in this TRL: the block under test is not generated at all")
     tok = _load_plain()[1]
-    trainer = _build(tmp_path, dataset = _tokenized_stream, dataset_num_proc = 4)
+    trainer = _build(tmp_path, dataset=_tokenized_stream, dataset_num_proc=4)
 
     assert trainer.args.max_length is None
     widths = [len(row["input_ids"]) for row in trainer.train_dataset]
@@ -916,8 +921,8 @@ def test_an_unrewritable_stream_is_refused_not_assumed(tmp_path, trl_has_guard):
         type(stream).column_names = property(lambda self: None)
         return stream
 
-    with pytest.raises(ValueError, match = "cannot be enforced"):
-        _build(tmp_path, dataset = _opaque_stream)
+    with pytest.raises(ValueError, match="cannot be enforced"):
+        _build(tmp_path, dataset=_opaque_stream)
 
 
 # --- what the fifth review round found ---------------------------------------
@@ -935,10 +940,11 @@ def test_keep_end_truncation_keeps_the_end(tmp_path, trl_has_guard):
 
     def _tail_marked(tok):
         from datasets import Dataset
+
         row = {"input_ids": list(ids), "attention_mask": [1] * len(ids)}
         return Dataset.from_list([dict(row) for _ in range(4)])
 
-    trainer = _build(tmp_path, dataset = _tail_marked, truncation_mode = "keep_end")
+    trainer = _build(tmp_path, dataset=_tail_marked, truncation_mode="keep_end")
 
     kept = trainer.train_dataset[0]["input_ids"]
     assert len(kept) == _MODEL_MAX_SEQ_LENGTH
@@ -950,7 +956,7 @@ def test_keep_start_is_still_the_default(tmp_path, trl_has_guard):
         pytest.skip("no guard in this TRL: the block under test is not generated at all")
     tok = _load_plain()[1]
     ids = tok("The quick brown fox. " * 200)["input_ids"]
-    trainer = _build(tmp_path, dataset = _tokenized_dataset)
+    trainer = _build(tmp_path, dataset=_tokenized_dataset)
     assert trainer.train_dataset[0]["input_ids"] == ids[:_MODEL_MAX_SEQ_LENGTH]
 
 
@@ -974,8 +980,8 @@ def test_a_packed_split_is_not_truncated_at_all(tmp_path, trl_has_guard):
         }
         return Dataset.from_list([dict(row) for _ in range(4)])
 
-    with pytest.raises(ValueError, match = "cannot be enforced"):
-        _build(tmp_path, dataset = _packed)
+    with pytest.raises(ValueError, match="cannot be enforced"):
+        _build(tmp_path, dataset=_packed)
 
 
 def test_rows_left_fully_masked_are_dropped(tmp_path, trl_has_guard):
@@ -999,7 +1005,7 @@ def test_rows_left_fully_masked_are_dropped(tmp_path, trl_has_guard):
         rows.append({"input_ids": short, "attention_mask": [1] * len(short), "labels": list(short)})
         return Dataset.from_list(rows)
 
-    trainer = _build(tmp_path, dataset = _tail_labelled)
+    trainer = _build(tmp_path, dataset=_tail_labelled)
 
     for row in trainer.train_dataset:
         assert any(l != -100 for l in row["labels"]), "a fully masked row survived"
@@ -1020,7 +1026,7 @@ def test_a_column_that_is_not_per_token_is_left_alone(tmp_path, trl_has_guard):
         row = {"input_ids": list(ids), "attention_mask": [1] * len(ids), "doc_spans": [1, 2, 3]}
         return Dataset.from_list([dict(row) for _ in range(4)])
 
-    trainer = _build(tmp_path, dataset = _with_sidecar)
+    trainer = _build(tmp_path, dataset=_with_sidecar)
     if "doc_spans" in trainer.train_dataset.column_names:
         assert trainer.train_dataset[0]["doc_spans"] == [1, 2, 3]
 
@@ -1052,7 +1058,7 @@ def test_a_scalar_column_does_not_defeat_truncation(tmp_path, trl_has_guard):
     """The token columns are truncatable, so the run must not die on the id."""
     if not trl_has_guard:
         pytest.skip("no guard in this TRL: the block under test is not generated at all")
-    trainer = _build(tmp_path, dataset = _scalar_torch_formatted_dataset)
+    trainer = _build(tmp_path, dataset=_scalar_torch_formatted_dataset)
     assert _longest(trainer) <= _MODEL_MAX_SEQ_LENGTH
 
 
@@ -1082,6 +1088,7 @@ def _mask_supervised_dataset(tok):
     that still has something to train on is what pins the filter itself.
     """
     from datasets import Dataset
+
     return Dataset.from_list(
         [_mask_row(tok, "completion_mask", long) for long in (True, True, False, False)]
     )
@@ -1095,7 +1102,7 @@ def test_rows_whose_mask_is_truncated_away_are_dropped(tmp_path, trl_has_guard):
     # at all. TRL resolves a None from the TRAIN sample, and this split has no prompt/completion columns, so the
     # effective mode would be False, the collator would ignore the mask, and filtering on it would be deleting rows
     # that still carry full-sequence supervision.
-    trainer = _build(tmp_path, dataset = _mask_supervised_dataset, completion_only_loss = True)
+    trainer = _build(tmp_path, dataset=_mask_supervised_dataset, completion_only_loss=True)
     assert len(trainer.train_dataset) == 2, "the rows that kept their completion were dropped too"
     for row in trainer.train_dataset:
         assert any(
@@ -1106,6 +1113,7 @@ def test_rows_whose_mask_is_truncated_away_are_dropped(tmp_path, trl_has_guard):
 def _assistant_mask_dataset(tok):
     """The same shape, supervised by `assistant_masks` instead."""
     from datasets import Dataset
+
     return Dataset.from_list(
         [_mask_row(tok, "assistant_masks", long) for long in (True, True, False, False)]
     )
@@ -1114,6 +1122,7 @@ def _assistant_mask_dataset(tok):
 def _all_unsupervised_dataset(tok):
     """Every row loses its supervision to the truncation."""
     from datasets import Dataset
+
     return Dataset.from_list([_mask_row(tok, "completion_mask", True) for _ in range(4)])
 
 
@@ -1125,7 +1134,7 @@ def test_assistant_masks_are_filtered_even_with_the_loss_mode_off(tmp_path, trl_
     all -100 and the row carries no supervised token."""
     if not trl_has_guard:
         pytest.skip("no guard in this TRL: the block under test is not generated at all")
-    trainer = _build(tmp_path, dataset = _assistant_mask_dataset, assistant_only_loss = False)
+    trainer = _build(tmp_path, dataset=_assistant_mask_dataset, assistant_only_loss=False)
     assert len(trainer.train_dataset) == 2, "the rows that kept their completion were dropped too"
     for row in trainer.train_dataset:
         assert any(
@@ -1143,11 +1152,11 @@ def test_a_cap_below_all_supervision_is_a_clear_error(tmp_path, trl_has_guard):
     """
     if not trl_has_guard:
         pytest.skip("no guard in this TRL: the block under test is not generated at all")
-    with pytest.raises(ValueError, match = "no supervised token"):
+    with pytest.raises(ValueError, match="no supervised token"):
         _build(
             tmp_path,
-            dataset = _all_unsupervised_dataset,
-            completion_only_loss = True,
+            dataset=_all_unsupervised_dataset,
+            completion_only_loss=True,
         )
 
 
@@ -1157,11 +1166,11 @@ def test_skip_prepare_dataset_does_not_excuse_an_overlength_row(tmp_path, trl_ha
     reach the model with `max_length` set and ignored."""
     if not trl_has_guard:
         pytest.skip("no guard in this TRL: the block under test is not generated at all")
-    with pytest.raises(ValueError, match = "cannot be enforced"):
+    with pytest.raises(ValueError, match="cannot be enforced"):
         _build(
             tmp_path,
-            dataset = _tokenized_dataset,
-            dataset_kwargs = {"skip_prepare_dataset": True},
+            dataset=_tokenized_dataset,
+            dataset_kwargs={"skip_prepare_dataset": True},
         )
 
 
@@ -1201,7 +1210,7 @@ def test_the_codegen_carries_the_third_round_fixes():
     assert "if not (_unsloth_within_cap(train_dataset)" in block
 
 
-def _stub_trainer_class(prepares_late = False):
+def _stub_trainer_class(prepares_late=False):
     """A minimal class carrying `evaluate`, wrapped the way rl.py wraps it.
 
     `prepares_late` picks which side of TRL 1.7.0 the stub imitates, since that
@@ -1221,7 +1230,7 @@ def _stub_trainer_class(prepares_late = False):
 
             def evaluate(
                 self,
-                eval_dataset = None,
+                eval_dataset=None,
                 **kw,
             ):
                 # The 1.7.0 shape, and the string the probe looks for.
@@ -1229,7 +1238,7 @@ def _stub_trainer_class(prepares_late = False):
 
             def predict(
                 self,
-                test_dataset = None,
+                test_dataset=None,
                 **kw,
             ):
                 seen["ds"] = test_dataset
@@ -1239,14 +1248,14 @@ def _stub_trainer_class(prepares_late = False):
         class Stub:
             def evaluate(
                 self,
-                eval_dataset = None,
+                eval_dataset=None,
                 **kw,
             ):
                 seen["ds"] = eval_dataset
 
             def predict(
                 self,
-                test_dataset = None,
+                test_dataset=None,
                 **kw,
             ):
                 seen["ds"] = test_dataset
@@ -1275,7 +1284,7 @@ def test_evaluate_caps_a_pretokenized_split_handed_over_later():
     Stub, seen = _stub_trainer_class()
     stub = Stub()
     stub.args = _Args(cap, None)
-    stub.evaluate(eval_dataset = late)
+    stub.evaluate(eval_dataset=late)
 
     got = seen["ds"]
     assert max(len(r) for r in got["input_ids"]) <= cap
@@ -1297,7 +1306,7 @@ def test_a_retained_max_length_does_not_excuse_a_late_split():
     Stub, seen = _stub_trainer_class()
     stub = Stub()
     stub.args = _Args(_MODEL_MAX_SEQ_LENGTH, _MODEL_MAX_SEQ_LENGTH)
-    stub.evaluate(eval_dataset = late)
+    stub.evaluate(eval_dataset=late)
     assert max(len(r) for r in seen["ds"]["input_ids"]) <= _MODEL_MAX_SEQ_LENGTH
 
 
@@ -1310,7 +1319,7 @@ def test_a_raw_late_split_is_still_left_alone_with_max_length_set():
     Stub, seen = _stub_trainer_class()
     stub = Stub()
     stub.args = _Args(_MODEL_MAX_SEQ_LENGTH, _MODEL_MAX_SEQ_LENGTH)
-    stub.evaluate(eval_dataset = raw)
+    stub.evaluate(eval_dataset=raw)
     assert seen["ds"] is raw
 
 
@@ -1322,7 +1331,7 @@ def test_evaluate_leaves_a_raw_text_split_alone():
     Stub, seen = _stub_trainer_class()
     stub = Stub()
     stub.args = _Args(_MODEL_MAX_SEQ_LENGTH, None)
-    stub.evaluate(eval_dataset = raw)
+    stub.evaluate(eval_dataset=raw)
     assert seen["ds"] is raw
 
 
@@ -1331,7 +1340,7 @@ def test_evaluate_caps_every_split_of_a_dict():
     Stub, seen = _stub_trainer_class()
     stub = Stub()
     stub.args = _Args(_MODEL_MAX_SEQ_LENGTH, None)
-    stub.evaluate(eval_dataset = {"a": _tokenized_dataset(tok), "b": _tokenized_dataset(tok)})
+    stub.evaluate(eval_dataset={"a": _tokenized_dataset(tok), "b": _tokenized_dataset(tok)})
     for split in seen["ds"].values():
         assert max(len(r) for r in split["input_ids"]) <= _MODEL_MAX_SEQ_LENGTH
 
@@ -1378,14 +1387,14 @@ def test_the_predict_entry_point_is_capped_too():
     class Stub:
         def evaluate(
             self,
-            eval_dataset = None,
+            eval_dataset=None,
             **kw,
         ):
             seen["eval"] = eval_dataset
 
         def predict(
             self,
-            test_dataset = None,
+            test_dataset=None,
             **kw,
         ):
             seen["predict"] = test_dataset
@@ -1397,7 +1406,7 @@ def test_the_predict_entry_point_is_capped_too():
     late = _tokenized_dataset(tok)
     stub = Stub()
     stub.args = _Args(_MODEL_MAX_SEQ_LENGTH, None)
-    stub.predict(test_dataset = late)
+    stub.predict(test_dataset=late)
     assert max(len(r) for r in seen["predict"]["input_ids"]) <= _MODEL_MAX_SEQ_LENGTH
 
 
@@ -1408,7 +1417,7 @@ def test_a_trainer_without_predict_is_not_broken():
     class OnlyEvaluate:
         def evaluate(
             self,
-            eval_dataset = None,
+            eval_dataset=None,
             **kw,
         ):
             return eval_dataset
@@ -1432,7 +1441,7 @@ def test_evaluate_caps_an_iterable_split():
     Stub, seen = _stub_trainer_class()
     stub = Stub()
     stub.args = _Args(_MODEL_MAX_SEQ_LENGTH, None)
-    stub.evaluate(eval_dataset = late)
+    stub.evaluate(eval_dataset=late)
 
     got = seen["ds"]
     assert got is not late, "the stream came back untouched"
@@ -1456,7 +1465,7 @@ def test_evaluate_honours_keep_end():
     stub = Stub()
     stub.args = _Args(_MODEL_MAX_SEQ_LENGTH, None)
     stub.args.truncation_mode = "keep_end"
-    stub.evaluate(eval_dataset = late)
+    stub.evaluate(eval_dataset=late)
 
     assert seen["ds"]["input_ids"] == tail
 
@@ -1486,7 +1495,7 @@ def test_evaluate_drops_rows_left_with_no_supervision():
     Stub, seen = _stub_trainer_class()
     stub = Stub()
     stub.args = _Args(cap, None)
-    stub.evaluate(eval_dataset = late)
+    stub.evaluate(eval_dataset=late)
 
     got = seen["ds"]
     assert len(got) == 1, "the row with no supervised token left should be gone"
@@ -1511,7 +1520,7 @@ def test_evaluate_leaves_a_packed_split_alone():
     Stub, seen = _stub_trainer_class()
     stub = Stub()
     stub.args = _Args(_MODEL_MAX_SEQ_LENGTH, None)
-    stub.evaluate(eval_dataset = packed)
+    stub.evaluate(eval_dataset=packed)
     assert seen["ds"] is packed
 
 
@@ -1635,14 +1644,14 @@ def test_eval_packing_on_a_late_split_follows_whether_trl_packs_it():
     def _run(
         prepares_late,
         eval_packing,
-        strategy = "wrapped",
+        strategy="wrapped",
     ):
-        Stub, seen = _stub_trainer_class(prepares_late = prepares_late)
+        Stub, seen = _stub_trainer_class(prepares_late=prepares_late)
         stub = Stub()
         stub.args = _Args(_MODEL_MAX_SEQ_LENGTH, None)
         stub.args.eval_packing = eval_packing
         stub.args.packing_strategy = strategy
-        stub.evaluate(eval_dataset = _late())
+        stub.evaluate(eval_dataset=_late())
         return max(len(r) for r in seen["ds"]["input_ids"])
 
     # Both sides of the change, deterministically, so this pins the wrapper's logic rather than whichever TRL happens to
@@ -1681,7 +1690,7 @@ def _packing_aware_stub():
     seen = {}
 
     class Base:  # transformers.Trainer
-        def get_eval_dataloader(self, eval_dataset = None):
+        def get_eval_dataloader(self, eval_dataset=None):
             seen["dataloader"] = (
                 self.eval_dataset[eval_dataset]
                 if isinstance(eval_dataset, str)
@@ -1693,7 +1702,7 @@ def _packing_aware_stub():
 
         def evaluate(
             self,
-            eval_dataset = None,
+            eval_dataset=None,
             **kw,
         ):
             override = eval_dataset is not None
@@ -1706,7 +1715,7 @@ def _packing_aware_stub():
 
         def evaluate(
             self,
-            eval_dataset = None,
+            eval_dataset=None,
             **kw,
         ):
             if (
@@ -1715,7 +1724,7 @@ def _packing_aware_stub():
                 and not isinstance(eval_dataset, str)
             ):
                 eval_dataset = self._prepare_dataset(eval_dataset)
-            return super().evaluate(eval_dataset = eval_dataset, **kw)
+            return super().evaluate(eval_dataset=eval_dataset, **kw)
 
     _wrap_sft_evaluate_cap(Stub)
     return Stub, seen
@@ -1765,7 +1774,7 @@ def test_a_split_no_packer_reaches_is_still_capped_under_eval_packing():
     stub.args.packing = False
     stub._skip_prepare_dataset = False
     stub.eval_dataset = {"validation": _tokenized_dataset(tok)}
-    stub.evaluate(eval_dataset = "validation")
+    stub.evaluate(eval_dataset="validation")
     assert "prepared" not in seen
     assert (
         max(len(r) for r in seen["dataloader"]["input_ids"]) <= cap
@@ -1773,9 +1782,9 @@ def test_a_split_no_packer_reaches_is_still_capped_under_eval_packing():
 
     # `skip_prepare_dataset`: the split IS passed, and TRL still never packs it.
     seen = _run(
-        lambda s: s.evaluate(eval_dataset = s.eval_dataset),
-        eval_packing = True,
-        skip_prepare = True,
+        lambda s: s.evaluate(eval_dataset=s.eval_dataset),
+        eval_packing=True,
+        skip_prepare=True,
     )
     assert "prepared" not in seen
     assert (
@@ -1784,7 +1793,7 @@ def test_a_split_no_packer_reaches_is_still_capped_under_eval_packing():
 
     # The control, and the deferral this branch exists for: when TRL really does
     # prepare the split, the packer must still receive the FULL rows.
-    seen = _run(lambda s: s.evaluate(eval_dataset = s.eval_dataset), eval_packing = True)
+    seen = _run(lambda s: s.evaluate(eval_dataset=s.eval_dataset), eval_packing=True)
     assert (
         max(len(r) for r in seen["prepared"]["input_ids"]) > cap
     ), "the split was cut before TRL's packer could redistribute the overflow"
@@ -1822,7 +1831,7 @@ def test_predict_still_caps_under_eval_packing_on_every_trl():
     stub = Stub()
     stub.args = _Args(_MODEL_MAX_SEQ_LENGTH, None)
     stub.args.eval_packing = True
-    stub.predict(test_dataset = late)
+    stub.predict(test_dataset=late)
     got = seen["ds"]
     assert max(len(r) for r in got["input_ids"]) <= _MODEL_MAX_SEQ_LENGTH
 
@@ -1836,7 +1845,7 @@ def test_predict_caps_a_split_under_eval_packing():
     class Stub:
         def evaluate(
             self,
-            eval_dataset = None,
+            eval_dataset=None,
             **kw,
         ):
             seen["eval"] = eval_dataset
@@ -1882,7 +1891,7 @@ def test_evaluate_intersects_labels_with_the_masks():
     Stub, seen = _stub_trainer_class()
     stub = Stub()
     stub.args = _Args(cap, None)
-    stub.evaluate(eval_dataset = late)
+    stub.evaluate(eval_dataset=late)
 
     got = seen["ds"]
     assert len(got) == 1, "the row whose label and mask never agree should be gone"
@@ -1916,14 +1925,14 @@ def test_evaluate_uses_the_trainer_resolved_completion_only_mode():
     stub.args = _Args(cap, None)
     # What the trainer resolved from the TRAIN split, which this eval split cannot see.
     stub.args._unsloth_completion_only_loss = True
-    stub.evaluate(eval_dataset = late)
+    stub.evaluate(eval_dataset=late)
     assert len(seen["ds"]) == 0, "the mask truncated to all zeros, so the row has no supervision"
 
     # Without the trainer's answer this split alone reads as full-sequence loss.
     Stub, seen = _stub_trainer_class()
     stub = Stub()
     stub.args = _Args(cap, None)
-    stub.evaluate(eval_dataset = late)
+    stub.evaluate(eval_dataset=late)
     assert len(seen["ds"]) == 1
 
 
@@ -1960,7 +1969,7 @@ def test_evaluate_caps_a_split_that_carries_no_column_metadata():
     Stub, seen = _stub_trainer_class()
     stub = Stub()
     stub.args = _Args(_MODEL_MAX_SEQ_LENGTH, None)
-    stub.evaluate(eval_dataset = NoMetadata(rows))
+    stub.evaluate(eval_dataset=NoMetadata(rows))
 
     got = seen["ds"]
     assert all(len(r["input_ids"]) <= _MODEL_MAX_SEQ_LENGTH for r in got)
@@ -1993,7 +2002,7 @@ def test_evaluate_caps_a_split_with_no_map(monkeypatch):
     Stub, seen = _stub_trainer_class()
     stub = Stub()
     stub.args = _Args(cap, None)
-    stub.evaluate(eval_dataset = MapLess(rows))
+    stub.evaluate(eval_dataset=MapLess(rows))
 
     got = seen["ds"]
     assert len(got) == 3
@@ -2027,7 +2036,7 @@ def test_evaluate_caps_a_with_transform_split():
     Stub, seen = _stub_trainer_class()
     stub = Stub()
     stub.args = _Args(cap, None)
-    stub.evaluate(eval_dataset = shaped)
+    stub.evaluate(eval_dataset=shaped)
 
     got = seen["ds"]
     assert got is not shaped, "the transformed split came back untouched"
@@ -2066,12 +2075,12 @@ def test_a_capped_stream_is_still_iterable_style():
     Stub, seen = _stub_trainer_class()
     stub = Stub()
     stub.args = _Args(cap, None)
-    stub.evaluate(eval_dataset = _torch_stream(rows))
+    stub.evaluate(eval_dataset=_torch_stream(rows))
 
     got = seen["ds"]
     assert isinstance(got, torch.utils.data.IterableDataset), "the stream lost its kind"
     # And the loader the trainer would build reads it without asking for a length.
-    loader = torch.utils.data.DataLoader(got, batch_size = None, collate_fn = lambda x: x)
+    loader = torch.utils.data.DataLoader(got, batch_size=None, collate_fn=lambda x: x)
     read = list(loader)
     assert len(read) == 3
     assert all(len(r["input_ids"]) <= cap for r in read)
@@ -2106,7 +2115,7 @@ def test_a_short_split_is_still_filtered_for_supervision():
     Stub, seen = _stub_trainer_class()
     stub = Stub()
     stub.args = _Args(cap, None)
-    stub.evaluate(eval_dataset = late)
+    stub.evaluate(eval_dataset=late)
 
     got = seen["ds"]
     assert len(got) == 1, "the row with no supervised token should be gone"
@@ -2130,7 +2139,7 @@ def test_a_short_and_fully_supervised_split_comes_back_untouched():
         Stub, seen = _stub_trainer_class()
         stub = Stub()
         stub.args = _Args(cap, None)
-        stub.evaluate(eval_dataset = late)
+        stub.evaluate(eval_dataset=late)
         assert seen["ds"] is late
 
 
@@ -2143,7 +2152,7 @@ def _stub_with_stored_eval():
     class Stub:
         def evaluate(
             self,
-            eval_dataset = None,
+            eval_dataset=None,
             **kw,
         ):
             seen["ds"] = self.eval_dataset if eval_dataset is None else eval_dataset
@@ -2191,7 +2200,7 @@ def test_the_stored_split_is_restored_even_when_evaluate_raises():
     class Stub:
         def evaluate(
             self,
-            eval_dataset = None,
+            eval_dataset=None,
             **kw,
         ):
             raise RuntimeError("boom")
@@ -2277,14 +2286,14 @@ def _late_cap_helpers():
     class Stub:
         def evaluate(
             self,
-            eval_dataset = None,
+            eval_dataset=None,
             **kw,
         ):
             seen["ds"] = eval_dataset
 
         def predict(
             self,
-            test_dataset = None,
+            test_dataset=None,
             **kw,
         ):
             seen["ds"] = test_dataset
@@ -2297,7 +2306,7 @@ class _EvalArgs:
     def __init__(
         self,
         cap,
-        max_length = None,
+        max_length=None,
     ):
         self.max_seq_length = cap
         self.max_length = max_length
@@ -2379,11 +2388,11 @@ def test_predict_keeps_every_row_it_was_given():
     stub = Stub()
     stub.args = _EvalArgs(_MODEL_MAX_SEQ_LENGTH)
 
-    stub.predict(test_dataset = rows)
+    stub.predict(test_dataset=rows)
     assert len(seen["ds"]) == 2, "predict dropped a row it must return a prediction for"
 
     # evaluate still drops it: a loss over an all -100 row is meaningless.
-    stub.evaluate(eval_dataset = rows)
+    stub.evaluate(eval_dataset=rows)
     assert len(seen["ds"]) == 1
 
 
@@ -2399,11 +2408,11 @@ def test_the_memo_does_not_serve_a_stale_cap_for_a_mutable_split():
     stub = Stub()
     stub.args = _EvalArgs(_MODEL_MAX_SEQ_LENGTH)
 
-    stub.evaluate(eval_dataset = rows)
+    stub.evaluate(eval_dataset=rows)
     assert len(list(seen["ds"])) == 1
 
     rows.append(_row())
-    stub.evaluate(eval_dataset = rows)
+    stub.evaluate(eval_dataset=rows)
     assert len(list(seen["ds"])) == 2, "the memo served a cap taken before the append"
 
 
@@ -2415,9 +2424,9 @@ def test_the_memo_still_reuses_an_unchanged_datasets_split():
     stub = Stub()
     stub.args = _EvalArgs(_MODEL_MAX_SEQ_LENGTH)
 
-    stub.evaluate(eval_dataset = late)
+    stub.evaluate(eval_dataset=late)
     first = seen["ds"]
-    stub.evaluate(eval_dataset = late)
+    stub.evaluate(eval_dataset=late)
     assert seen["ds"] is first
 
 
@@ -2482,15 +2491,15 @@ def test_the_max_length_seed_rewrite_is_required():
 
     from unsloth.models import rl_replacements
 
-    with _pytest.raises(RuntimeError, match = "required source edit"):
+    with _pytest.raises(RuntimeError, match="required source edit"):
         rl_replacements._replace_or_fallback(
             "def f():\n    pass\n",
             '    max_seq_length = getattr(args, "max_length", 0)',
             '    max_seq_length = getattr(args, "max_length", 0) or 0',
-            fallback_pattern = _re.compile(r"^nothing matches this$", _re.MULTILINE),
-            fallback_new = r"x",
-            where = "sft_prepare_dataset max_length seed",
-            required = True,
+            fallback_pattern=_re.compile(r"^nothing matches this$", _re.MULTILINE),
+            fallback_new=r"x",
+            where="sft_prepare_dataset max_length seed",
+            required=True,
         )
 
 
@@ -2506,9 +2515,9 @@ def test_an_optional_rewrite_still_only_warns():
             source,
             "not present either",
             "x",
-            fallback_pattern = _re.compile(r"^nothing matches this$", _re.MULTILINE),
-            fallback_new = r"x",
-            where = "dataset_num_proc",
+            fallback_pattern=_re.compile(r"^nothing matches this$", _re.MULTILINE),
+            fallback_new=r"x",
+            where="dataset_num_proc",
         )
         == source
     )
@@ -2609,12 +2618,12 @@ def test_a_transformed_split_is_not_memoized_by_fingerprint():
     stub = Stub()
     stub.args = _EvalArgs(_MODEL_MAX_SEQ_LENGTH)
 
-    stub.evaluate(eval_dataset = split)
+    stub.evaluate(eval_dataset=split)
     assert len(seen["ds"]) == 2, "both rows are supervised on the first pass"
 
     # Same object, same `_fingerprint`; only the transform's closure moved.
     supervised["both"] = False
-    stub.evaluate(eval_dataset = split)
+    stub.evaluate(eval_dataset=split)
     assert len(seen["ds"]) == 1, "the memo served a cap taken before the change"
 
 
@@ -2736,12 +2745,12 @@ def test_a_transformed_tokenized_split_keeps_its_cap(tmp_path, trl_has_guard):
     if not trl_has_guard:
         pytest.skip("no guard in this TRL: the block under test is not generated at all")
     tok = _load_plain()[1]
-    with pytest.raises(ValueError, match = "cannot be enforced"):
+    with pytest.raises(ValueError, match="cannot be enforced"):
         _build(
             tmp_path,
-            dataset = _transformed_tokenized_dataset,
-            padding_free = True,
-            max_length = _MODEL_MAX_SEQ_LENGTH,
+            dataset=_transformed_tokenized_dataset,
+            padding_free=True,
+            max_length=_MODEL_MAX_SEQ_LENGTH,
         )
 
 
@@ -2753,9 +2762,9 @@ def test_a_transformed_split_within_the_cap_keeps_max_length_and_trains(tmp_path
         pytest.skip("no guard in this TRL: the block under test is not generated at all")
     trainer = _build(
         tmp_path,
-        dataset = _transformed_short_dataset,
-        padding_free = True,
-        max_length = _MODEL_MAX_SEQ_LENGTH,
+        dataset=_transformed_short_dataset,
+        padding_free=True,
+        max_length=_MODEL_MAX_SEQ_LENGTH,
     )
     assert trainer.args.max_length is not None, "nothing else enforces the cap"
 
@@ -2770,12 +2779,12 @@ def test_an_unprobeable_tokenized_stream_keeps_its_cap(tmp_path, trl_has_guard):
     rows = [{"input_ids": list(ids), "attention_mask": [1] * len(ids)}] * 4
     # Same reasoning as the transformed split above: the cap is kept, so the
     # overlength rows are reported instead of being served uncapped.
-    with pytest.raises(ValueError, match = "cannot be enforced"):
+    with pytest.raises(ValueError, match="cannot be enforced"):
         _build(
             tmp_path,
-            dataset = lambda _tok: _SharedIteratorStream(rows),
-            padding_free = True,
-            max_length = _MODEL_MAX_SEQ_LENGTH,
+            dataset=lambda _tok: _SharedIteratorStream(rows),
+            padding_free=True,
+            max_length=_MODEL_MAX_SEQ_LENGTH,
         )
 
 
@@ -2876,7 +2885,7 @@ def test_the_dataloader_builders_cap_a_late_split_too(method, keyword):
 
     def _builder(
         self,
-        split = None,
+        split=None,
         **kw,
     ):
         seen["ds"] = split
@@ -2930,7 +2939,7 @@ def test_capping_a_one_shot_stream_twice_does_not_eat_its_rows():
     class Stub:
         def evaluate(
             self,
-            eval_dataset = None,
+            eval_dataset=None,
             **kw,
         ):
             # What Trainer.evaluate does: hand the stored split to the builder.
@@ -2938,7 +2947,7 @@ def test_capping_a_one_shot_stream_twice_does_not_eat_its_rows():
 
         def get_eval_dataloader(
             self,
-            eval_dataset = None,
+            eval_dataset=None,
             **kw,
         ):
             split = self.eval_dataset if eval_dataset is None else eval_dataset
@@ -3014,19 +3023,19 @@ def test_a_transformed_eval_split_keeps_its_cap(tmp_path, trl_has_guard):
     if not trl_has_guard:
         pytest.skip("no guard in this TRL: the block under test is not generated at all")
     tok = _load_plain()[1]
-    with pytest.raises(ValueError, match = "cannot be enforced"):
+    with pytest.raises(ValueError, match="cannot be enforced"):
         _build(
             tmp_path,
-            eval_dataset = _transformed_tokenized_dataset(tok),
-            padding_free = True,
-            max_length = _MODEL_MAX_SEQ_LENGTH,
+            eval_dataset=_transformed_tokenized_dataset(tok),
+            padding_free=True,
+            max_length=_MODEL_MAX_SEQ_LENGTH,
         )
     # And held, not cleared, when the yielded rows do fit.
     trainer = _build(
         tmp_path,
-        eval_dataset = _transformed_short_dataset(tok),
-        padding_free = True,
-        max_length = _MODEL_MAX_SEQ_LENGTH,
+        eval_dataset=_transformed_short_dataset(tok),
+        padding_free=True,
+        max_length=_MODEL_MAX_SEQ_LENGTH,
     )
     assert trainer.args.max_length is not None, "nothing else truncates the yielded rows"
 
@@ -3052,7 +3061,7 @@ def test_a_one_shot_stream_slices_every_aligned_column():
     class Stub:
         def evaluate(
             self,
-            eval_dataset = None,
+            eval_dataset=None,
             **kw,
         ):
             seen["rows"] = list(eval_dataset)
@@ -3126,11 +3135,11 @@ def test_switching_truncation_mode_re_caps_the_same_split():
     stub.args = _Args(_MODEL_MAX_SEQ_LENGTH, None)
 
     stub.args.truncation_mode = "keep_start"
-    stub.evaluate(eval_dataset = late)
+    stub.evaluate(eval_dataset=late)
     starts = list(seen["ds"]["input_ids"][0])
 
     stub.args.truncation_mode = "keep_end"
-    stub.evaluate(eval_dataset = late)
+    stub.evaluate(eval_dataset=late)
     ends = list(seen["ds"]["input_ids"][0])
 
     full = list(late["input_ids"][0])
@@ -3148,7 +3157,7 @@ def test_the_late_cap_refuses_a_truncation_mode_it_cannot_honour():
     stub = Stub()
     stub.args = _Args(_MODEL_MAX_SEQ_LENGTH, None)
     stub.args.truncation_mode = "keep_middle"
-    stub.evaluate(eval_dataset = late)
+    stub.evaluate(eval_dataset=late)
     assert seen["ds"] is late, "the split was cut under a mode we cannot honour"
 
 
@@ -3182,6 +3191,7 @@ def _cap_scan_shapes():
 @pytest.mark.parametrize("dataset, expected", _cap_scan_shapes())
 def test_the_importable_cap_scan_matches_the_generated_one(dataset, expected):
     from unsloth.models.rl import pretokenized_within_cap
+
     assert pretokenized_within_cap(dataset, 3) is expected
 
 
@@ -3229,9 +3239,9 @@ def test_every_eval_split_counts_towards_the_cap():
 
 
 def _padding_free_fallback(
-    train = None,
-    evals = None,
-    max_length = 3,
+    train=None,
+    evals=None,
+    max_length=3,
 ):
     """Run the auto-padding-free retry with an init that rejects padding-free.
 
@@ -3245,16 +3255,16 @@ def _padding_free_fallback(
 
     def original_init(
         self,
-        model = None,
-        args = None,
-        data_collator = None,
-        train_dataset = None,
-        eval_dataset = None,
+        model=None,
+        args=None,
+        data_collator=None,
+        train_dataset=None,
+        eval_dataset=None,
         **kw,
     ):
         pass
 
-    config = SimpleNamespace(max_length = max_length, padding_free = True)
+    config = SimpleNamespace(max_length=max_length, padding_free=True)
     kwargs = {"train_dataset": train, "eval_dataset": evals}
     bound_train, bound_evals = _bound_splits(original_init, (None, config), kwargs)
     assert bound_train is train and bound_evals is evals
@@ -3269,8 +3279,8 @@ def test_the_padding_free_fallback_refuses_a_split_it_cannot_cap():
     from datasets import Dataset
 
     over = Dataset.from_dict({"input_ids": [[1, 2], [3, 4, 5, 6]]})
-    assert _padding_free_fallback(train = over) is False
-    assert _padding_free_fallback(evals = {"validation": over}) is False
+    assert _padding_free_fallback(train=over) is False
+    assert _padding_free_fallback(evals={"validation": over}) is False
 
 
 def test_the_padding_free_fallback_still_runs_when_the_cap_holds():
@@ -3278,9 +3288,9 @@ def test_the_padding_free_fallback_still_runs_when_the_cap_holds():
     and the second needs no truncating. The fallback must not become a wall."""
     from datasets import Dataset
 
-    assert _padding_free_fallback(train = Dataset.from_dict({"input_ids": [[1, 2]]})) is True
-    assert _padding_free_fallback(train = Dataset.from_dict({"text": ["hello"]})) is True
-    assert _padding_free_fallback(train = None, max_length = None) is True
+    assert _padding_free_fallback(train=Dataset.from_dict({"input_ids": [[1, 2]]})) is True
+    assert _padding_free_fallback(train=Dataset.from_dict({"text": ["hello"]})) is True
+    assert _padding_free_fallback(train=None, max_length=None) is True
 
 
 def test_the_fallback_reads_splits_through_the_signature():
@@ -3290,11 +3300,11 @@ def test_the_fallback_reads_splits_through_the_signature():
 
     def moved(
         self,
-        model = None,
-        processing_class = None,
-        args = None,
-        train_dataset = None,
-        eval_dataset = None,
+        model=None,
+        processing_class=None,
+        args=None,
+        train_dataset=None,
+        eval_dataset=None,
     ):
         pass
 
@@ -3333,8 +3343,8 @@ def test_a_later_row_that_cannot_take_the_slice_does_not_raise():
     from unsloth.models.rl import _CappedRows
 
     rows = [
-        _row(range(10), token_type_ids = [0] * 10),
-        _row(range(10), token_type_ids = None),
+        _row(range(10), token_type_ids=[0] * 10),
+        _row(range(10), token_type_ids=None),
     ]
 
     class Split:
@@ -3364,7 +3374,7 @@ def test_a_misaligned_later_row_keeps_its_own_length():
 
     # Longer than the tokens, not shorter, so cutting it is visible: a shorter
     # value comes back unchanged from the slice either way.
-    rows = [_row(range(10), labels = [1] * 10), _row(range(10), labels = [1] * 20)]
+    rows = [_row(range(10), labels=[1] * 10), _row(range(10), labels=[1] * 20)]
     capped = _CappedRows(rows, slice(None, 4), (), ("input_ids", "labels"))
     out = list(capped)
     assert out[0]["labels"] == [1] * 4
@@ -3379,7 +3389,7 @@ def test_input_ids_comes_first_so_every_column_is_measured():
 
     # Worst case spelled out, since a set's own order is stable within a run.
     names = ("labels", "attention_mask", "input_ids")
-    kept = _sliceable_per_token(None, names, 4, _row(range(10), labels = [1] * 10))
+    kept = _sliceable_per_token(None, names, 4, _row(range(10), labels=[1] * 10))
     assert kept[0] == "input_ids", kept
 
 
@@ -3388,7 +3398,7 @@ def test_a_custom_per_token_column_rides_along_with_the_slice():
     `input_ids` was cut and a custom collator got mismatched rows."""
     from unsloth.models.rl import _sliceable_per_token
 
-    probed = _row(range(10), loss_mask = [1] * 10)
+    probed = _row(range(10), loss_mask=[1] * 10)
     kept = _sliceable_per_token(None, set(probed), 4, probed)
     assert "loss_mask" in kept
 
@@ -3398,7 +3408,7 @@ def test_a_coincidentally_long_text_column_does_not_ride_along():
     Only a flat vector of scalars is a per-token field."""
     from unsloth.models.rl import _sliceable_per_token
 
-    probed = _row(range(10), messages = [{"role": "user"}] * 10, tags = ["a"] * 10, text = "0123456789")
+    probed = _row(range(10), messages=[{"role": "user"}] * 10, tags=["a"] * 10, text="0123456789")
     kept = _sliceable_per_token(None, set(probed), 4, probed)
     assert "messages" not in kept and "tags" not in kept and "text" not in kept
 
@@ -3463,7 +3473,7 @@ def test_the_late_evaluation_memo_is_bounded():
     stub.args = _EvalArgs(_MODEL_MAX_SEQ_LENGTH)
     for _ in range(rl._EVAL_CAP_MEMO_MAX * 3):
         # A fresh object each time, as a per-epoch validation subset would be.
-        stub.evaluate(eval_dataset = _tokenized_dataset(tok))
+        stub.evaluate(eval_dataset=_tokenized_dataset(tok))
     memo = getattr(stub, "_unsloth_eval_cap_memo", {})
     assert 0 < len(memo) <= rl._EVAL_CAP_MEMO_MAX, len(memo)
 
@@ -3510,7 +3520,7 @@ def test_completion_only_reads_the_columns_the_split_actually_yields():
     from datasets import Dataset
 
     ds = Dataset.from_list([{"prompt": "a", "completion": "b", "input_ids": [1, 2]}])
-    ds.set_format("numpy", columns = ["input_ids"], output_all_columns = False)
+    ds.set_format("numpy", columns=["input_ids"], output_all_columns=False)
     assert "completion" in ds.column_names
     assert ds.format.get("columns") == ["input_ids"]
     assert "completion" not in ds[0]
@@ -3554,10 +3564,10 @@ def test_a_zoo_that_already_normalizes_the_seed_is_left_alone():
             done,
             old,
             new,
-            fallback_pattern = R._ZOO_MAX_LENGTH_SEED,
-            fallback_new = r'\g<indent>max_seq_length = getattr(args, "max_length", 0) or 0',
-            where = "test",
-            required = True,
+            fallback_pattern=R._ZOO_MAX_LENGTH_SEED,
+            fallback_new=r'\g<indent>max_seq_length = getattr(args, "max_length", 0) or 0',
+            where="test",
+            required=True,
         )
         == done
     )
@@ -3568,10 +3578,10 @@ def test_a_zoo_that_already_normalizes_the_seed_is_left_alone():
             todo,
             old,
             new,
-            fallback_pattern = R._ZOO_MAX_LENGTH_SEED,
-            fallback_new = r'\g<indent>max_seq_length = getattr(args, "max_length", 0) or 0',
-            where = "test",
-            required = True,
+            fallback_pattern=R._ZOO_MAX_LENGTH_SEED,
+            fallback_new=r'\g<indent>max_seq_length = getattr(args, "max_length", 0) or 0',
+            where="test",
+            required=True,
         )
         == done
     )
@@ -3588,10 +3598,10 @@ def test_a_single_quoted_normalized_seed_is_recognised():
     old = '    max_seq_length = getattr(args, "max_length", 0)'
     new = '    max_seq_length = getattr(args, "max_length", 0) or 0'
     kwargs = dict(
-        fallback_pattern = R._ZOO_MAX_LENGTH_SEED,
-        fallback_new = r'\g<indent>max_seq_length = getattr(args, "max_length", 0) or 0',
-        where = "test",
-        required = True,
+        fallback_pattern=R._ZOO_MAX_LENGTH_SEED,
+        fallback_new=r'\g<indent>max_seq_length = getattr(args, "max_length", 0) or 0',
+        where="test",
+        required=True,
     )
     single = "def f():\n    max_seq_length = getattr(args, 'max_length', 0) or 0\n"
     assert R._replace_or_fallback(single, old, new, **kwargs) == single
@@ -3616,12 +3626,12 @@ def test_the_late_cap_prefers_the_trainers_resolved_completion_mode():
             setattr(stub.args, name, None)
     stub.completion_only_loss = True
 
-    stub.evaluate(eval_dataset = _tokenized_dataset(tok))
+    stub.evaluate(eval_dataset=_tokenized_dataset(tok))
     assert getattr(stub.args, "_unsloth_resolved_completion_only") is True
 
     # And False is an answer too, not an absence.
     stub.completion_only_loss = False
-    stub.evaluate(eval_dataset = _tokenized_dataset(tok))
+    stub.evaluate(eval_dataset=_tokenized_dataset(tok))
     assert getattr(stub.args, "_unsloth_resolved_completion_only") is False
 
 

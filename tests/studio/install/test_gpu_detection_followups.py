@@ -74,15 +74,15 @@ def _run_detect_host(
         return real_listdir(p)
 
     patches = [
-        patch.object(prebuilt_mod.platform, "system", return_value = system),
-        patch.object(prebuilt_mod.platform, "machine", return_value = machine),
-        patch.object(prebuilt_mod.platform, "mac_ver", return_value = ("", ("", "", ""), "")),
-        patch.object(prebuilt_mod.shutil, "which", side_effect = lambda n: which_map.get(n)),
-        patch.object(prebuilt_mod, "run_capture", side_effect = _make_run_capture(rocminfo_stdout)),
-        patch.object(prebuilt_mod.os.path, "isdir", side_effect = fake_isdir),
-        patch.object(prebuilt_mod.os, "listdir", side_effect = fake_listdir),
-        patch.object(prebuilt_mod.os, "access", return_value = False),
-        patch.dict(prebuilt_mod.os.environ, env or {}, clear = False),
+        patch.object(prebuilt_mod.platform, "system", return_value=system),
+        patch.object(prebuilt_mod.platform, "machine", return_value=machine),
+        patch.object(prebuilt_mod.platform, "mac_ver", return_value=("", ("", "", ""), "")),
+        patch.object(prebuilt_mod.shutil, "which", side_effect=lambda n: which_map.get(n)),
+        patch.object(prebuilt_mod, "run_capture", side_effect=_make_run_capture(rocminfo_stdout)),
+        patch.object(prebuilt_mod.os.path, "isdir", side_effect=fake_isdir),
+        patch.object(prebuilt_mod.os, "listdir", side_effect=fake_listdir),
+        patch.object(prebuilt_mod.os, "access", return_value=False),
+        patch.dict(prebuilt_mod.os.environ, env or {}, clear=False),
     ]
     for p in patches:
         p.start()
@@ -103,41 +103,41 @@ class TestDetectHostProcFallback:
     def test_proc_fallback_marks_physical_nvidia_when_smi_absent(self):
         """No nvidia-smi, but /proc/driver/nvidia/gpus is populated -> NVIDIA."""
         host = _run_detect_host(
-            which_map = {},  # nvidia-smi resolves to None
-            proc_dir_entries = ["0000:01:00.0"],
+            which_map={},  # nvidia-smi resolves to None
+            proc_dir_entries=["0000:01:00.0"],
         )
         assert host.has_physical_nvidia is True
 
     def test_proc_fallback_has_usable_nvidia_when_devices_visible(self):
         """Default CUDA_VISIBLE_DEVICES (unset) -> visible tokens non-empty -> usable."""
         host = _run_detect_host(
-            which_map = {},
-            proc_dir_entries = ["0000:01:00.0"],
+            which_map={},
+            proc_dir_entries=["0000:01:00.0"],
         )
         assert host.has_usable_nvidia is True
 
     def test_proc_fallback_not_usable_when_devices_hidden(self):
         """CUDA_VISIBLE_DEVICES='' hides all GPUs -> physical yes, usable no."""
         host = _run_detect_host(
-            which_map = {},
-            proc_dir_entries = ["0000:01:00.0"],
-            env = {"CUDA_VISIBLE_DEVICES": ""},
+            which_map={},
+            proc_dir_entries=["0000:01:00.0"],
+            env={"CUDA_VISIBLE_DEVICES": ""},
         )
         assert host.has_physical_nvidia is True
         assert host.has_usable_nvidia is False
 
     def test_empty_proc_dir_does_not_mark_nvidia(self):
         """A driver dir that exists but is empty must not assert a GPU."""
-        host = _run_detect_host(which_map = {}, proc_dir_entries = [])
+        host = _run_detect_host(which_map={}, proc_dir_entries=[])
         assert host.has_physical_nvidia is False
 
     def test_proc_fallback_is_linux_only(self):
         """The /proc fallback must not run on Windows (path is Linux-only)."""
         host = _run_detect_host(
-            system = "Windows",
-            machine = "amd64",
-            which_map = {},
-            proc_dir_entries = ["0000:01:00.0"],
+            system="Windows",
+            machine="amd64",
+            which_map={},
+            proc_dir_entries=["0000:01:00.0"],
         )
         assert host.has_physical_nvidia is False
 
@@ -149,9 +149,9 @@ class TestDetectHostNvidiaPrecedence:
     def test_rocm_probe_skipped_when_proc_nvidia_present(self):
         """rocminfo reports gfx1100, but a proc-detected NVIDIA GPU wins."""
         host = _run_detect_host(
-            which_map = {"rocminfo": "/usr/bin/rocminfo"},
-            proc_dir_entries = ["0000:01:00.0"],
-            rocminfo_stdout = "  Name:                    gfx1100\n",
+            which_map={"rocminfo": "/usr/bin/rocminfo"},
+            proc_dir_entries=["0000:01:00.0"],
+            rocminfo_stdout="  Name:                    gfx1100\n",
         )
         assert host.has_usable_nvidia is True
         assert host.has_rocm is False
@@ -159,9 +159,9 @@ class TestDetectHostNvidiaPrecedence:
     def test_rocm_detected_when_no_nvidia(self):
         """With no NVIDIA signal at all, rocminfo gfx1100 -> has_rocm True."""
         host = _run_detect_host(
-            which_map = {"rocminfo": "/usr/bin/rocminfo"},
-            proc_dir_entries = [],
-            rocminfo_stdout = "  Name:                    gfx1100\n",
+            which_map={"rocminfo": "/usr/bin/rocminfo"},
+            proc_dir_entries=[],
+            rocminfo_stdout="  Name:                    gfx1100\n",
         )
         assert host.has_usable_nvidia is False
         assert host.has_rocm is True
@@ -172,21 +172,21 @@ class TestDetectHostNvidiaPrecedence:
 
 class TestOverridesStillWin:
     def test_forwarded_gfx_forces_rocm_on_non_nvidia_host(self):
-        host = _run_detect_host(which_map = {}, proc_dir_entries = [])
+        host = _run_detect_host(which_map={}, proc_dir_entries=[])
         assert host.has_rocm is False
-        overridden = _apply_host_overrides(host, override_rocm_gfx = "gfx1100")
+        overridden = _apply_host_overrides(host, override_rocm_gfx="gfx1100")
         assert overridden.has_rocm is True
         assert overridden.rocm_gfx_target == "gfx1100"
 
     def test_override_has_rocm_forces_rocm(self):
-        host = _run_detect_host(which_map = {}, proc_dir_entries = [])
-        overridden = _apply_host_overrides(host, override_has_rocm = True)
+        host = _run_detect_host(which_map={}, proc_dir_entries=[])
+        overridden = _apply_host_overrides(host, override_has_rocm=True)
         assert overridden.has_rocm is True
 
     def test_force_cpu_drops_nvidia_attributes(self):
-        host = _run_detect_host(which_map = {}, proc_dir_entries = ["0000:01:00.0"])
+        host = _run_detect_host(which_map={}, proc_dir_entries=["0000:01:00.0"])
         assert host.has_usable_nvidia is True
-        overridden = _apply_host_overrides(host, force_cpu = True)
+        overridden = _apply_host_overrides(host, force_cpu=True)
         assert overridden.has_usable_nvidia is False
         assert overridden.has_physical_nvidia is False
         assert overridden.has_rocm is False
@@ -196,9 +196,9 @@ class TestOverridesStillWin:
 
 
 class TestSetupShHardening:
-    @pytest.fixture(scope = "class")
+    @pytest.fixture(scope="class")
     def setup_src(self) -> str:
-        return SETUP_SH.read_text(encoding = "utf-8")
+        return SETUP_SH.read_text(encoding="utf-8")
 
     def test_has_usable_nvidia_helper_exists(self, setup_src):
         assert "_setup_has_usable_nvidia_gpu()" in setup_src
@@ -293,9 +293,9 @@ class TestSetupShHardening:
 class TestBackendExportLeafClassification:
     """A mirror base path containing "rocm"/"gfx" must not mislabel a cu*/cpu index; classification uses TORCH_INDEX_URL's leaf only."""
 
-    @pytest.fixture(scope = "class")
+    @pytest.fixture(scope="class")
     def install_src(self) -> str:
-        return (PACKAGE_ROOT / "install.sh").read_text(encoding = "utf-8")
+        return (PACKAGE_ROOT / "install.sh").read_text(encoding="utf-8")
 
     def test_export_block_uses_leaf(self, install_src):
         anchor = install_src.find("_torch_index_leaf=")
@@ -311,7 +311,7 @@ class TestBackendExportLeafClassification:
         import subprocess as sp
 
         script = tmp_path / "leaf.sh"
-        src = (PACKAGE_ROOT / "install.sh").read_text(encoding = "utf-8")
+        src = (PACKAGE_ROOT / "install.sh").read_text(encoding="utf-8")
         anchor = src.find("_torch_index_leaf=")
         block = src[anchor : src.find("esac", anchor) + 4]
         # Drive the extracted block with adversarial mirror URLs.
@@ -331,7 +331,7 @@ class TestBackendExportLeafClassification:
         }
         for url, expected in cases.items():
             out = sp.run(
-                ["sh", str(script), url], capture_output = True, text = True, timeout = 30
+                ["sh", str(script), url], capture_output=True, text=True, timeout=30
             ).stdout.strip()
             assert out == expected, f"{url} classified as {out!r}, expected {expected!r}"
 
@@ -363,10 +363,10 @@ def _stack_nvidia_usable(cvd):
         patch.object(
             stack_mod.shutil,
             "which",
-            side_effect = lambda n: "/usr/bin/nvidia-smi" if n == "nvidia-smi" else None,
+            side_effect=lambda n: "/usr/bin/nvidia-smi" if n == "nvidia-smi" else None,
         ),
-        patch.object(stack_mod.subprocess, "run", side_effect = fake_run),
-        patch.dict(stack_mod.os.environ, env, clear = False),
+        patch.object(stack_mod.subprocess, "run", side_effect=fake_run),
+        patch.dict(stack_mod.os.environ, env, clear=False),
     ):
         if cvd is None:
             stack_mod.os.environ.pop("CUDA_VISIBLE_DEVICES", None)
@@ -412,9 +412,9 @@ class TestHiddenCvdNotUsable:
             "nvidia-smi": "/usr/bin/nvidia-smi",
         }
         with (
-            patch.object(stack_mod.shutil, "which", side_effect = which_map.get),
-            patch.object(stack_mod.subprocess, "run", side_effect = fake_run),
-            patch.dict(stack_mod.os.environ, {"CUDA_VISIBLE_DEVICES": "-1"}, clear = False),
+            patch.object(stack_mod.shutil, "which", side_effect=which_map.get),
+            patch.object(stack_mod.subprocess, "run", side_effect=fake_run),
+            patch.dict(stack_mod.os.environ, {"CUDA_VISIBLE_DEVICES": "-1"}, clear=False),
         ):
             assert stack_mod._has_rocm_gpu() is True
 
@@ -431,7 +431,7 @@ class TestHiddenCvdNotUsable:
             end = src.find("\n}", start) + 2
             blocks.append(src[start:end])
         fake_bin = tmp_path / "bin"
-        fake_bin.mkdir(exist_ok = True)
+        fake_bin.mkdir(exist_ok=True)
         smi = fake_bin / "nvidia-smi"
         smi.write_text("#!/bin/sh\necho 'GPU 0: NVIDIA Fake (UUID: GPU-x)'\n")
         smi.chmod(0o755)
@@ -447,7 +447,7 @@ class TestHiddenCvdNotUsable:
         else:
             env["CUDA_VISIBLE_DEVICES"] = cvd
         return sp.run(
-            ["sh", str(script)], capture_output = True, text = True, timeout = 30, env = env
+            ["sh", str(script)], capture_output=True, text=True, timeout=30, env=env
         ).stdout.strip()
 
     @pytest.mark.parametrize(
@@ -455,7 +455,7 @@ class TestHiddenCvdNotUsable:
         [(None, "usable"), ("", "not_usable"), ("-1", "not_usable"), ("0", "usable")],
     )
     def test_install_sh_helper_cvd(self, tmp_path, cvd, expected):
-        src = (PACKAGE_ROOT / "install.sh").read_text(encoding = "utf-8")
+        src = (PACKAGE_ROOT / "install.sh").read_text(encoding="utf-8")
         out = self._run_sh_helper(
             tmp_path,
             src,
@@ -469,7 +469,7 @@ class TestHiddenCvdNotUsable:
         [(None, "usable"), ("", "not_usable"), ("-1", "not_usable"), ("0", "usable")],
     )
     def test_setup_sh_helper_cvd(self, tmp_path, cvd, expected):
-        src = SETUP_SH.read_text(encoding = "utf-8")
+        src = SETUP_SH.read_text(encoding="utf-8")
         out = self._run_sh_helper(
             tmp_path,
             src,
@@ -491,7 +491,7 @@ class TestSetupShPhysicalNvidiaSurvivesTheMask:
 
     @pytest.mark.parametrize("cvd", [None, "", "-1", "0"])
     def test_the_physical_probe_ignores_every_mask(self, tmp_path, cvd):
-        src = SETUP_SH.read_text(encoding = "utf-8")
+        src = SETUP_SH.read_text(encoding="utf-8")
         out = TestHiddenCvdNotUsable()._run_sh_helper(
             tmp_path,
             src,
@@ -516,12 +516,12 @@ class TestSetupShSourceBuildBackendChoice:
         usable,
         physical,
         amd,
-        hipcc = "false",
-        nvcc = "true",
+        hipcc="false",
+        nvcc="true",
     ):
         import subprocess as sp
 
-        src = SETUP_SH.read_text(encoding = "utf-8")
+        src = SETUP_SH.read_text(encoding="utf-8")
         start = src.index("_select_nvcc() {")
         end = src.index('_BUILD_DESC="building"', start)
         body = src[start:end]
@@ -540,7 +540,7 @@ class TestSetupShSourceBuildBackendChoice:
             'echo "${GPU_BACKEND:-cpu}"\n'
         )
         return sp.run(
-            ["bash", str(script)], capture_output = True, text = True, timeout = 30
+            ["bash", str(script)], capture_output=True, text=True, timeout=30
         ).stdout.strip()
 
     @pytest.mark.parametrize(
@@ -560,7 +560,7 @@ class TestSetupShSourceBuildBackendChoice:
 
     def test_a_toolkit_without_any_gpu_never_selects_cuda(self, tmp_path):
         # The guard the physical gate was written for: nvcc present, no GPU at all.
-        assert self._decide(tmp_path, "false", "false", "false", nvcc = "true") == "cpu"
+        assert self._decide(tmp_path, "false", "false", "false", nvcc="true") == "cpu"
 
 
 class TestRedactInstallOutput:

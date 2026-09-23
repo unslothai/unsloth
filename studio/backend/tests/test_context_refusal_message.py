@@ -38,7 +38,7 @@ from routes.inference import (  # noqa: E402
 _SERVER_ERROR = "the request (7153 tokens) exceeds the available context size (5120 tokens)"
 
 
-@pytest.fixture(autouse = True)
+@pytest.fixture(autouse=True)
 def _no_carried_refusal():
     """Each test starts with no diagnosis, and leaves none behind."""
     context_refusal.clear()
@@ -76,14 +76,14 @@ def test_no_diagnosis_keeps_the_generic_advice():
 
 def test_long_history_keeps_the_generic_advice():
     # A long thread: the newest turn is a small part of what could not be evicted.
-    context_refusal.record_fit(_refusal(irreducible = 5000, latest_turn = 300))
+    context_refusal.record_fit(_refusal(irreducible=5000, latest_turn=300))
     message = _friendly_error(ValueError(_SERVER_ERROR))
     assert "shorten the conversation" in message
     assert "does not fit on its own" not in message
 
 
 def test_single_oversized_turn_says_shortening_will_not_help():
-    context_refusal.record_fit(_refusal(irreducible = 5600, latest_turn = 5400))
+    context_refusal.record_fit(_refusal(irreducible=5600, latest_turn=5400))
     message = _friendly_error(ValueError(_SERVER_ERROR))
     assert "The message just sent does not fit on its own" in message
     assert "shortening the conversation will not help" in message
@@ -91,7 +91,7 @@ def test_single_oversized_turn_says_shortening_will_not_help():
 
 
 def test_oversized_tool_result_names_the_tool():
-    context_refusal.record_fit(_refusal(irreducible = 5600, latest_turn = 5400, role = "tool"))
+    context_refusal.record_fit(_refusal(irreducible=5600, latest_turn=5400, role="tool"))
     message = _friendly_error(ValueError(_SERVER_ERROR))
     assert "A tool returned more than this context window can hold" in message
     assert "smaller slice" in message
@@ -100,13 +100,13 @@ def test_oversized_tool_result_names_the_tool():
 
 
 def test_function_role_is_treated_as_a_tool_result():
-    context_refusal.record_fit(_refusal(irreducible = 5600, latest_turn = 5400, role = "function"))
+    context_refusal.record_fit(_refusal(irreducible=5600, latest_turn=5400, role="function"))
     assert "A tool returned" in _friendly_error(ValueError(_SERVER_ERROR))
 
 
 def test_an_oversized_assistant_prefill_does_not_ask_the_user_to_split_it():
     # Auto-continue resends the truncated reply, which the user did not write.
-    context_refusal.record_fit(_refusal(irreducible = 5600, latest_turn = 5400, role = "assistant"))
+    context_refusal.record_fit(_refusal(irreducible=5600, latest_turn=5400, role="assistant"))
     message = _friendly_error(ValueError(_SERVER_ERROR))
     assert "The reply being continued is already too long for this window" in message
     assert "start a new reply" in message
@@ -116,7 +116,7 @@ def test_an_oversized_assistant_prefill_does_not_ask_the_user_to_split_it():
 @pytest.mark.parametrize("role", ["system", "developer"])
 def test_oversized_instructions_point_at_the_system_prompt(role):
     # These survive eviction, so splitting one preserves the total and resolves nothing.
-    context_refusal.record_fit(_refusal(irreducible = 5600, latest_turn = 5400, role = role))
+    context_refusal.record_fit(_refusal(irreducible=5600, latest_turn=5400, role=role))
     message = _friendly_error(ValueError(_SERVER_ERROR))
     assert "The system instructions do not fit on their own" in message
     assert "shorten the system prompt" in message
@@ -124,7 +124,7 @@ def test_oversized_instructions_point_at_the_system_prompt(role):
 
 
 def test_a_dominating_assistant_prefill_hedges_the_same_way():
-    context_refusal.record_fit(_refusal(irreducible = 5120, latest_turn = 3500, role = "assistant"))
+    context_refusal.record_fit(_refusal(irreducible=5120, latest_turn=3500, role="assistant"))
     message = _friendly_error(ValueError(_SERVER_ERROR))
     assert "Most of this prompt is the reply being continued" in message
     assert "shortening the conversation will not help much" in message
@@ -133,7 +133,7 @@ def test_a_dominating_assistant_prefill_hedges_the_same_way():
 @pytest.mark.parametrize("role", ["", "moderator"])
 def test_an_unnameable_role_is_never_blamed(role):
     # Unspecific advice beats advice aimed at the wrong turn.
-    context_refusal.record_fit(_refusal(irreducible = 5600, latest_turn = 5400, role = role))
+    context_refusal.record_fit(_refusal(irreducible=5600, latest_turn=5400, role=role))
     message = _friendly_error(ValueError(_SERVER_ERROR))
     for named in (
         "the message just sent",
@@ -152,10 +152,10 @@ def test_every_wording_keeps_the_counts_and_the_client_markers():
     # are all the user has to size the window by.
     for refusal in (
         None,
-        _refusal(irreducible = 5000, latest_turn = 300),
-        _refusal(irreducible = 5000, latest_turn = 4800),
-        _refusal(irreducible = 5000, latest_turn = 4800, role = "tool"),
-        _refusal(irreducible = 5600, latest_turn = 5400, role = "tool"),
+        _refusal(irreducible=5000, latest_turn=300),
+        _refusal(irreducible=5000, latest_turn=4800),
+        _refusal(irreducible=5000, latest_turn=4800, role="tool"),
+        _refusal(irreducible=5600, latest_turn=5400, role="tool"),
     ):
         context_refusal.clear()
         if refusal is not None:
@@ -187,20 +187,20 @@ def test_every_wording_keeps_the_counts_and_the_client_markers():
     ],
 )
 def test_dominating_the_floor_is_not_the_same_as_not_fitting(latest_turn, expected):
-    context_refusal.record_fit(_refusal(irreducible = 5120, latest_turn = latest_turn))
+    context_refusal.record_fit(_refusal(irreducible=5120, latest_turn=latest_turn))
     assert expected in _friendly_error(ValueError(_SERVER_ERROR))
 
 
 def test_a_turn_that_merely_dominates_hedges_its_advice():
     # Trimming the rest buys little, but "will not help" would overstate the numbers.
-    context_refusal.record_fit(_refusal(irreducible = 5120, latest_turn = 3500))
+    context_refusal.record_fit(_refusal(irreducible=5120, latest_turn=3500))
     message = _friendly_error(ValueError(_SERVER_ERROR))
     assert "shortening the conversation will not help much" in message
     assert "send it in smaller pieces" in message
 
 
 def test_a_dominating_tool_result_hedges_the_same_way():
-    context_refusal.record_fit(_refusal(irreducible = 5120, latest_turn = 3500, role = "tool"))
+    context_refusal.record_fit(_refusal(irreducible=5120, latest_turn=3500, role="tool"))
     message = _friendly_error(ValueError(_SERVER_ERROR))
     assert "Most of this prompt is a single tool result" in message
     assert "shortening the conversation will not help much" in message
@@ -218,7 +218,7 @@ def test_a_turn_the_window_could_have_held_is_never_called_too_big(role):
     every hard wording here would be a false claim about it.
     """
     context_refusal.record_fit(
-        _refusal(irreducible = 5000, latest_turn = 4800, role = role, prompt_target = 4096)
+        _refusal(irreducible=5000, latest_turn=4800, role=role, prompt_target=4096)
     )
     message = _friendly_error(ValueError(_SERVER_ERROR))
     assert "Most of this prompt is" in message
@@ -234,7 +234,7 @@ def test_a_turn_the_window_could_have_held_is_never_called_too_big(role):
 def test_a_recorded_prompt_budget_does_not_move_the_hard_boundary():
     # Same turn and window, differing only in what Max Tokens reserved. "Can hold" means
     # the window, so both read the same.
-    with_budget = _refusal(irreducible = 5000, latest_turn = 4800, prompt_target = 4096)
+    with_budget = _refusal(irreducible=5000, latest_turn=4800, prompt_target=4096)
     without_budget = dict(with_budget)
     without_budget.pop("prompt_target")
     context_refusal.record_fit(with_budget)
@@ -245,7 +245,7 @@ def test_a_recorded_prompt_budget_does_not_move_the_hard_boundary():
 
 def test_a_diagnosis_for_a_different_window_is_ignored():
     # A model reload between the fit and the error: that shape describes another window.
-    context_refusal.record_fit(_refusal(irreducible = 5000, latest_turn = 4800, context_length = 8192))
+    context_refusal.record_fit(_refusal(irreducible=5000, latest_turn=4800, context_length=8192))
     assert "shorten the conversation" in _friendly_error(ValueError(_SERVER_ERROR))
 
 
@@ -263,7 +263,7 @@ def _tool_catalogue_counter(catalogue_tokens: int):
 
     def count(messages):
         body = sum(
-            max(1, len(json.dumps(message, ensure_ascii = False)) // 4) for message in messages
+            max(1, len(json.dumps(message, ensure_ascii=False)) // 4) for message in messages
         )
         return body + catalogue_tokens
 
@@ -297,14 +297,14 @@ def _refuse_and_explain(
     """Drive the real path: fit -> recorded diagnosis -> the message the user reads."""
     _, truncation = fit_rolling_context(
         _thread(
-            system_tokens = system_tokens,
-            turn_tokens = turn_tokens,
-            role = role,
-            history_turns = history_turns,
+            system_tokens=system_tokens,
+            turn_tokens=turn_tokens,
+            role=role,
+            history_turns=history_turns,
         ),
-        context_length = window,
-        max_tokens = None,
-        count_tokens = _tool_catalogue_counter(catalogue),
+        context_length=window,
+        max_tokens=None,
+        count_tokens=_tool_catalogue_counter(catalogue),
     )
     assert truncation is not None and not truncation["fits"]
     _context_truncated_sse_chunk("cmpl-1", "model", truncation)
@@ -323,7 +323,7 @@ def test_a_tool_catalogue_is_not_the_message_just_sent():
     remedy is fewer tools or a bigger window, and neither is "send it in smaller pieces".
     """
     truncation, message = _refuse_and_explain(
-        window = 8192, catalogue = 6000, system_tokens = 200, turn_tokens = 20
+        window=8192, catalogue=6000, system_tokens=200, turn_tokens=20
     )
     # The raw counts really are that lopsided; the floor is why.
     assert truncation["latest_turn_tokens"] > 0.9 * truncation["irreducible_tokens"]
@@ -336,7 +336,7 @@ def test_a_catalogue_bigger_than_the_window_never_makes_a_tiny_turn_unsendable()
     # The false claim, not just the unhelpful one: a catalogue over the window pushes the
     # one-message count past it, reporting a twenty-token turn as unsendable.
     truncation, message = _refuse_and_explain(
-        window = 4096, catalogue = 4200, system_tokens = 200, turn_tokens = 20
+        window=4096, catalogue=4200, system_tokens=200, turn_tokens=20
     )
     assert truncation["latest_turn_tokens"] > truncation["context_length"]
     assert "does not fit on its own" not in message
@@ -354,10 +354,10 @@ def _servable_without_history(*, window: int, catalogue: int, system_tokens: int
     (dropping turns off a doomed request loses them for nothing), and llama-server admits
     a prompt on size alone, so "served" is the untrimmed prompt landing under `n_ctx`.
     """
-    messages = _thread(system_tokens = system_tokens, turn_tokens = 20, history_turns = 0)
+    messages = _thread(system_tokens=system_tokens, turn_tokens=20, history_turns=0)
     count = _tool_catalogue_counter(catalogue)
     sent, _ = fit_rolling_context(
-        messages, context_length = window, max_tokens = None, count_tokens = count
+        messages, context_length=window, max_tokens=None, count_tokens=count
     )
     return count(sent) < window
 
@@ -371,10 +371,10 @@ def test_a_two_message_thread_is_never_told_to_shorten_the_conversation():
     work, and measurably does not: with the history at zero the request is still refused.
     """
     truncation, message = _refuse_and_explain(
-        window = 4096, catalogue = 0, system_tokens = 5000, turn_tokens = 20, history_turns = 0
+        window=4096, catalogue=0, system_tokens=5000, turn_tokens=20, history_turns=0
     )
     assert truncation["irreducible_tokens"] >= truncation["context_length"]
-    assert not _servable_without_history(window = 4096, catalogue = 0, system_tokens = 5000)
+    assert not _servable_without_history(window=4096, catalogue=0, system_tokens=5000)
     assert "Even with every earlier turn dropped" in message
     assert "shortening the conversation will not help" in message
     assert "the system prompt and any tools that are enabled" in message
@@ -391,10 +391,10 @@ def test_a_floor_under_the_window_keeps_the_advice_that_still_works():
     false claim.
     """
     truncation, message = _refuse_and_explain(
-        window = 8192, catalogue = 6000, system_tokens = 200, turn_tokens = 20
+        window=8192, catalogue=6000, system_tokens=200, turn_tokens=20
     )
     assert truncation["irreducible_tokens"] < truncation["context_length"]
-    assert _servable_without_history(window = 8192, catalogue = 6000, system_tokens = 200)
+    assert _servable_without_history(window=8192, catalogue=6000, system_tokens=200)
     assert "shorten the conversation" in message
     assert "will not help" not in message
 
@@ -402,7 +402,7 @@ def test_a_floor_under_the_window_keeps_the_advice_that_still_works():
 def test_a_diagnosis_for_a_different_window_claims_nothing_about_the_floor():
     # A reload between the fit and the error: that floor was measured elsewhere, so the
     # "cannot be shortened" claim has no evidence behind it either.
-    context_refusal.record_fit(_refusal(irreducible = 9000, latest_turn = 300, context_length = 8192))
+    context_refusal.record_fit(_refusal(irreducible=9000, latest_turn=300, context_length=8192))
     message = _friendly_error(ValueError(_SERVER_ERROR))
     assert "shorten the conversation" in message
     assert "Even with every earlier turn dropped" not in message
@@ -419,7 +419,7 @@ def test_a_diagnosis_for_a_different_window_claims_nothing_about_the_floor():
 )
 def test_a_catalogue_does_not_cost_a_turn_that_really_is_the_problem(turn_tokens, expected):
     _, message = _refuse_and_explain(
-        window = 8192, catalogue = 1500, system_tokens = 200, turn_tokens = turn_tokens
+        window=8192, catalogue=1500, system_tokens=200, turn_tokens=turn_tokens
     )
     assert expected in message
 
@@ -427,11 +427,11 @@ def test_a_catalogue_does_not_cost_a_turn_that_really_is_the_problem(turn_tokens
 def test_a_tool_result_beside_a_catalogue_is_judged_on_its_own_size():
     # The same trap on a role the user cannot edit.
     _, small = _refuse_and_explain(
-        window = 8192, catalogue = 6000, system_tokens = 200, turn_tokens = 20, role = "tool"
+        window=8192, catalogue=6000, system_tokens=200, turn_tokens=20, role="tool"
     )
     assert "tool result" not in small and "shorten the conversation" in small
     _, large = _refuse_and_explain(
-        window = 8192, catalogue = 1500, system_tokens = 200, turn_tokens = 5000, role = "tool"
+        window=8192, catalogue=1500, system_tokens=200, turn_tokens=5000, role="tool"
     )
     assert "Most of this prompt is a single tool result" in large
 
@@ -439,12 +439,12 @@ def test_a_tool_result_beside_a_catalogue_is_judged_on_its_own_size():
 def test_the_floor_is_never_all_of_either_count():
     # A nonsense floor must not drive either side to zero and invent a ratio.
     context_refusal.record_fit(
-        _refusal(irreducible = 5120, latest_turn = 5000) | {"shared_prompt_tokens": 99999}
+        _refusal(irreducible=5120, latest_turn=5000) | {"shared_prompt_tokens": 99999}
     )
     assert "Most of this prompt is" not in _friendly_error(ValueError(_SERVER_ERROR))
     for bad in (None, "", -5, "junk"):
         context_refusal.record_fit(
-            _refusal(irreducible = 5120, latest_turn = 3500) | {"shared_prompt_tokens": bad}
+            _refusal(irreducible=5120, latest_turn=3500) | {"shared_prompt_tokens": bad}
         )
         assert "Most of this prompt is the message just sent" in _friendly_error(
             ValueError(_SERVER_ERROR)
@@ -463,13 +463,13 @@ def test_an_unrenderable_turn_records_no_floor_to_subtract():
     def _rejects_a_lone_tool_result(messages):
         if len(messages) == 1 and messages[0].get("role") == "tool":
             raise RuntimeError("template rejected the message")
-        return sum(max(1, len(json.dumps(m, ensure_ascii = False)) // 4) for m in messages) + 6000
+        return sum(max(1, len(json.dumps(m, ensure_ascii=False)) // 4) for m in messages) + 6000
 
     _, truncation = fit_rolling_context(
-        _thread(system_tokens = 200, turn_tokens = 20, role = "tool"),
-        context_length = 8192,
-        max_tokens = None,
-        count_tokens = _rejects_a_lone_tool_result,
+        _thread(system_tokens=200, turn_tokens=20, role="tool"),
+        context_length=8192,
+        max_tokens=None,
+        count_tokens=_rejects_a_lone_tool_result,
     )
     assert truncation is not None and not truncation["fits"]
     assert truncation["shared_prompt_tokens"] == 0
@@ -498,7 +498,7 @@ def _gemma_style_counter(catalogue_tokens: int):
                 )
                 if not anchored:
                     continue
-            total += max(1, len(json.dumps(message, ensure_ascii = False)) // 4)
+            total += max(1, len(json.dumps(message, ensure_ascii=False)) // 4)
         return total
 
     return count
@@ -561,10 +561,10 @@ def test_a_turn_the_template_renders_as_nothing_is_not_counted_as_the_floor(
     that was measured, which is still a tokenizer count of exactly its contribution.
     """
     _, truncation = fit_rolling_context(
-        _tool_loop_thread(turn_tokens, system_tokens = system_tokens),
-        context_length = 8192,
-        max_tokens = None,
-        count_tokens = _gemma_style_counter(1500),
+        _tool_loop_thread(turn_tokens, system_tokens=system_tokens),
+        context_length=8192,
+        max_tokens=None,
+        count_tokens=_gemma_style_counter(1500),
     )
     assert truncation is not None and not truncation["fits"]
     # Not the floor reported as the turn: a number that moves with the result's size
@@ -616,7 +616,7 @@ def test_an_estimated_turn_names_no_turn_at_all(role, hard, soft):
     The producer prices such a turn by difference now, so this flag is only ever False
     when nothing could be counted, and there the generic advice is the honest answer.
     """
-    estimated = _refusal(irreducible = 5120, latest_turn = 5400, role = role) | {
+    estimated = _refusal(irreducible=5120, latest_turn=5400, role=role) | {
         "latest_turn_exact": False
     }
     context_refusal.record_fit(estimated)
@@ -633,7 +633,7 @@ def test_an_estimated_turn_names_no_turn_at_all(role, hard, soft):
 def test_a_measured_turn_still_gets_the_hard_wording():
     # The gate is provenance, not size: a counted turn over the window is unchanged.
     context_refusal.record_fit(
-        _refusal(irreducible = 5120, latest_turn = 5400, role = "tool") | {"latest_turn_exact": True}
+        _refusal(irreducible=5120, latest_turn=5400, role="tool") | {"latest_turn_exact": True}
     )
     assert "A tool returned more than this context window can hold" in _friendly_error(
         ValueError(_SERVER_ERROR)
@@ -642,7 +642,7 @@ def test_a_measured_turn_still_gets_the_hard_wording():
 
 def test_a_payload_without_the_flag_is_read_as_a_count():
     # Absent means a producer that predates the flag, and every one of those counted.
-    refusal = _refusal(irreducible = 5120, latest_turn = 5400, role = "tool")
+    refusal = _refusal(irreducible=5120, latest_turn=5400, role="tool")
     refusal.pop("latest_turn_exact", None)
     context_refusal.record_fit(refusal)
     assert "A tool returned more than this context window can hold" in _friendly_error(
@@ -669,7 +669,7 @@ def test_a_sparse_tool_result_is_blamed_for_no_more_than_it_rendered():
     def count(messages):
         total = 0
         for index, message in enumerate(messages):
-            text = json.dumps(message, ensure_ascii = False)
+            text = json.dumps(message, ensure_ascii=False)
             if message.get("role") == "tool":
                 previous = messages[index - 1] if index else None
                 if not (
@@ -683,10 +683,10 @@ def test_a_sparse_tool_result_is_blamed_for_no_more_than_it_rendered():
                 total += max(1, len(text) // 4)
         return total
 
-    thread = _tool_loop_thread(20, system_tokens = 2000, history_turns = 0)
+    thread = _tool_loop_thread(20, system_tokens=2000, history_turns=0)
     thread[-1]["content"] = ("\n" * 40 + "\t" * 40) * 205
     _, truncation = fit_rolling_context(
-        thread, context_length = 2048, max_tokens = 512, count_tokens = count
+        thread, context_length=2048, max_tokens=512, count_tokens=count
     )
     assert truncation is not None and not truncation["fits"]
     # The estimate this replaced really would have blamed the turn: 8,218 against a
@@ -711,7 +711,7 @@ def test_a_sparse_tool_result_is_blamed_for_no_more_than_it_rendered():
 
 def test_a_diagnosis_with_no_window_recorded_is_still_usable():
     # The server's own number stands in for the window it did not record.
-    refusal = _refusal(irreducible = 5600, latest_turn = 5400)
+    refusal = _refusal(irreducible=5600, latest_turn=5400)
     refusal.pop("context_length")
     context_refusal.record_fit(refusal)
     assert "does not fit on its own" in _friendly_error(ValueError(_SERVER_ERROR))
@@ -719,14 +719,14 @@ def test_a_diagnosis_with_no_window_recorded_is_still_usable():
 
 @pytest.mark.parametrize("field", ["irreducible_tokens", "latest_turn_tokens"])
 def test_a_diagnosis_missing_its_counts_falls_back(field):
-    refusal = _refusal(irreducible = 5000, latest_turn = 4800)
+    refusal = _refusal(irreducible=5000, latest_turn=4800)
     refusal[field] = 0
     context_refusal.record_fit(refusal)
     assert "shorten the conversation" in _friendly_error(ValueError(_SERVER_ERROR))
 
 
 def test_unparsable_counts_do_not_raise():
-    refusal = _refusal(irreducible = 5000, latest_turn = 4800)
+    refusal = _refusal(irreducible=5000, latest_turn=4800)
     refusal["irreducible_tokens"] = "lots"
     context_refusal.record_fit(refusal)
     assert "shorten the conversation" in _friendly_error(ValueError(_SERVER_ERROR))
@@ -737,28 +737,28 @@ def test_unparsable_counts_do_not_raise():
 
 def test_a_fit_that_succeeded_clears_an_earlier_refusal():
     # A tool loop refuses on one iteration and fits on the next: no stale refusal.
-    context_refusal.record_fit(_refusal(irreducible = 5000, latest_turn = 4800))
+    context_refusal.record_fit(_refusal(irreducible=5000, latest_turn=4800))
     context_refusal.record_fit({"fits": True, "dropped_messages": 4})
     assert context_refusal.latest_refusal() is None
     assert "shorten the conversation" in _friendly_error(ValueError(_SERVER_ERROR))
 
 
 def test_non_dict_events_are_ignored():
-    context_refusal.record_fit(_refusal(irreducible = 5000, latest_turn = 4800))
+    context_refusal.record_fit(_refusal(irreducible=5000, latest_turn=4800))
     for value in (None, "fits", 7, ["fits"]):
         context_refusal.record_fit(value)
     assert context_refusal.latest_refusal() is not None
 
 
 def test_the_sse_chunk_records_the_refusal_it_forwards():
-    refusal = _refusal(irreducible = 5000, latest_turn = 4800)
+    refusal = _refusal(irreducible=5000, latest_turn=4800)
     line = _context_truncated_sse_chunk("cmpl-1", "model", refusal)
     assert "context_truncated" in line
     assert context_refusal.latest_refusal() == refusal
 
 
 def test_the_sse_chunk_clears_on_a_fit_that_succeeded():
-    context_refusal.record_fit(_refusal(irreducible = 5000, latest_turn = 4800))
+    context_refusal.record_fit(_refusal(irreducible=5000, latest_turn=4800))
     _context_truncated_sse_chunk("cmpl-1", "model", {"fits": True, "dropped_messages": 2})
     assert context_refusal.latest_refusal() is None
 
@@ -767,7 +767,7 @@ def test_the_drain_records_each_fit_not_the_running_total():
     # `_accumulate_context_truncation` sums `dropped_messages` across a tool loop, so the
     # refusal must be the per-fit event or it reports counts no fit produced.
     first = {"type": "context_truncated", "fits": True, "dropped_messages": 4}
-    second = {"type": "context_truncated", **_refusal(irreducible = 5000, latest_turn = 4800)}
+    second = {"type": "context_truncated", **_refusal(irreducible=5000, latest_turn=4800)}
     combined = _accumulate_context_truncation(None, first)
     combined = _accumulate_context_truncation(combined, second)
     assert combined["dropped_messages"] == 4
@@ -778,7 +778,7 @@ def test_the_drain_records_each_fit_not_the_running_total():
 
 
 def test_the_recorded_diagnosis_is_a_copy():
-    refusal = _refusal(irreducible = 5000, latest_turn = 4800)
+    refusal = _refusal(irreducible=5000, latest_turn=4800)
     context_refusal.record_fit(refusal)
     refusal["latest_turn_tokens"] = 1
     assert context_refusal.latest_refusal()["latest_turn_tokens"] == 4800
@@ -788,7 +788,7 @@ def test_the_recorded_diagnosis_is_a_copy():
 
 
 def _record_in_worker():
-    context_refusal.record_fit(_refusal(irreducible = 5600, latest_turn = 5400))
+    context_refusal.record_fit(_refusal(irreducible=5600, latest_turn=5400))
     return "drained"
 
 
@@ -858,7 +858,7 @@ def test_a_drain_that_fits_clears_an_earlier_refusal_through_the_slot():
 
     async def _run():
         context_refusal.open_slot()
-        context_refusal.record_fit(_refusal(irreducible = 5000, latest_turn = 4800))
+        context_refusal.record_fit(_refusal(irreducible=5000, latest_turn=4800))
         await _drain_like_the_route(_fits)
         return context_refusal.latest_refusal()
 
@@ -867,14 +867,14 @@ def test_a_drain_that_fits_clears_an_earlier_refusal_through_the_slot():
 
 def test_opening_a_slot_starts_empty():
     # Two requests on one connection: the second must not inherit the first's refusal.
-    context_refusal.record_fit(_refusal(irreducible = 5000, latest_turn = 4800))
+    context_refusal.record_fit(_refusal(irreducible=5000, latest_turn=4800))
     context_refusal.open_slot()
     assert context_refusal.latest_refusal() is None
 
 
 def test_both_non_streaming_gguf_drains_open_a_slot_first():
     # Dropping either `open_slot` would silently restore the generic advice.
-    source = (Path(_BACKEND_DIR) / "routes" / "inference.py").read_text(encoding = "utf-8")
+    source = (Path(_BACKEND_DIR) / "routes" / "inference.py").read_text(encoding="utf-8")
     for drain in ("_drain_gguf_tool_loop", "_drain_gguf_choices"):
         spawn = f"asyncio.create_task(asyncio.to_thread({drain}))"
         assert spawn in source
@@ -893,7 +893,7 @@ def _respawn_refit_then_refused():
     nothing recorded out in the stream's own context first.
     """
     yield "the first tokens, before llama-server died"
-    context_refusal.record_fit(_refusal(irreducible = 5600, latest_turn = 5400, role = "tool"))
+    context_refusal.record_fit(_refusal(irreducible=5600, latest_turn=5400, role="tool"))
     raise ValueError(_SERVER_ERROR)
 
 
@@ -921,7 +921,7 @@ async def _stream_like_the_tool_route(*, with_slot: bool):
 def _drive(*, with_slot: bool) -> str:
     async def _run():
         async def _consume():
-            return [chunk async for chunk in _stream_like_the_tool_route(with_slot = with_slot)]
+            return [chunk async for chunk in _stream_like_the_tool_route(with_slot=with_slot)]
 
         # Iterated from a task of its own, as a streaming response body is.
         return await asyncio.create_task(_consume())
@@ -932,13 +932,13 @@ def _drive(*, with_slot: bool) -> str:
 def test_a_streaming_tool_loop_without_a_slot_loses_the_respawn_refusal():
     # The regression: two context copies between the refit and the message, and no slot
     # in the stream's own context because the prompt that fit recorded nothing there.
-    message = _drive(with_slot = False)
+    message = _drive(with_slot=False)
     assert "shorten the conversation" in message, message
     assert "tool" not in message, message
 
 
 def test_a_streaming_tool_loop_with_a_slot_keeps_the_respawn_refusal():
-    message = _drive(with_slot = True)
+    message = _drive(with_slot=True)
     assert "A tool returned more than this context window can hold" in message, message
     assert "ask for a smaller slice of the file or page" in message, message
 
@@ -949,7 +949,7 @@ def test_both_streaming_tool_loops_open_a_slot_first():
     The no-tool streams reach `generate_chat_completion`, which has no refit callback,
     and their own fit is recorded out in the stream where the message is built.
     """
-    source = (Path(_BACKEND_DIR) / "routes" / "inference.py").read_text(encoding = "utf-8")
+    source = (Path(_BACKEND_DIR) / "routes" / "inference.py").read_text(encoding="utf-8")
     loops = (
         ("async def gguf_tool_stream():", "gen = gguf_generate_with_tools()"),
         ("async def _anthropic_tool_stream(", "gen = run_gen()"),

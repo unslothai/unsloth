@@ -80,7 +80,7 @@ def _file_suffix(path: str) -> str:
 def _hf_cache_snapshot_ref(local_path: str) -> Optional[tuple[str, str, Path]]:
     """Return provenance for an HF-cache snapshot path, else ``None``. An inactive Unsloth cache loads by its snapshot path but keeps the ``models--org--repo/snapshots/<rev>`` layout, so the gate recovers its provenance and scans that exact commit instead of exempting it."""
     try:
-        path = Path(local_path).resolve(strict = False)
+        path = Path(local_path).resolve(strict=False)
     except (OSError, ValueError):
         return None
     for parent in path.parents:
@@ -119,7 +119,7 @@ def _index_prefixes(load_subdirs) -> tuple:
 def _indexed_shard_paths(
     model_name: str,
     hf_token: Optional[str],
-    load_subdirs = (),
+    load_subdirs=(),
     revision: Optional[str] = None,
 ):
     """Repo-relative weight paths a load could fetch via weight-index files. Returns a set (empty when the repo ships no index files, a definitive "nothing sharded") or None when the lookup was inconclusive (transient error) so the caller treats a flagged subdir pickle conservatively. Reads only small JSON indexes, never weights. Indexes are looked up at the root and each ``load_subdirs`` root, with ``weight_map`` entries re-prefixed to repo-relative paths; ``revision`` scopes to a cached commit."""
@@ -139,16 +139,16 @@ def _indexed_shard_paths(
         for filename in _TRANSFORMERS_INDEX_FILES:
             # Most repos are unsharded, so avoid caching expected 404s for optional indexes.
             if hf_file_definitely_absent(
-                model_name, prefix + filename, revision = revision, token = hf_token or None
+                model_name, prefix + filename, revision=revision, token=hf_token or None
             ):
                 continue
             try:
                 index_path = hf_hub_download(
                     model_name,
                     prefix + filename,
-                    revision = revision,
-                    token = hf_token or None,
-                    cache_dir = active_hf_hub_cache(),
+                    revision=revision,
+                    token=hf_token or None,
+                    cache_dir=active_hf_hub_cache(),
                 )
             except EntryNotFoundError:
                 continue
@@ -156,7 +156,7 @@ def _indexed_shard_paths(
                 inconclusive = True
                 continue
             try:
-                weight_map = (json.loads(open(index_path, encoding = "utf-8-sig").read()) or {}).get(
+                weight_map = (json.loads(open(index_path, encoding="utf-8-sig").read()) or {}).get(
                     "weight_map"
                 ) or {}
                 for shard in weight_map.values():
@@ -184,7 +184,7 @@ class FileSecurityDecision:
 
     model_name: str
     blocked: bool
-    unsafe_files: list = field(default_factory = list)
+    unsafe_files: list = field(default_factory=list)
     reason: str = ""
 
     def response_payload(self) -> dict:
@@ -204,8 +204,9 @@ def security_load_subdirs(
     """Snapshot subdirectories a load calls ``from_pretrained`` on, for scoping the scan. Most models load from the root (``()``); Spark-TTS / BiCodec load ``<snapshot>/LLM``, so ``LLM/`` is a load root for them. Metadata-only (tokenizer special tokens), cached. ``local_files_only`` skips the remote tokenizer fetch, and callers deciding whether a cache already on disk is usable must pass it: that work is meant to be pure filesystem, and a hung hub would otherwise block local snapshot resolution."""
     try:
         from utils.models.model_config import detect_audio_type, load_model_defaults
+
         if (
-            detect_audio_type(model_name, hf_token = hf_token, local_files_only = local_files_only)
+            detect_audio_type(model_name, hf_token=hf_token, local_files_only=local_files_only)
             == "bicodec"
         ):
             return ("LLM",)
@@ -221,6 +222,7 @@ def load_scan_target(model_name: str, load_subdirs: tuple) -> tuple:
     """Map a load alias to the ``(repo_id, load_subdirs)`` the load actually fetches. The Spark-TTS / BiCodec alias ``<parent>/LLM`` is downloaded by the trainer as ``unsloth/<parent>`` and loaded from ``LLM/``, so scan that repo with ``LLM`` as a load root (the literal alias 404s and fails open). Everything else is unchanged."""
     try:
         from utils.paths import is_local_path
+
         if is_local_path(model_name):
             return model_name, load_subdirs
     except Exception:
@@ -230,6 +232,7 @@ def load_scan_target(model_name: str, load_subdirs: tuple) -> tuple:
     if name.endswith("/LLM") and name.count("/") == 1:
         try:
             from utils.models.model_config import load_model_defaults
+
             if (load_model_defaults(name) or {}).get("audio_type") == "bicodec":
                 parent = name[: -len("/LLM")]
                 return f"unsloth/{parent}", tuple(dict.fromkeys((*load_subdirs, "LLM")))
@@ -252,10 +255,10 @@ def _fetch_security_status(
         try:
             info = hf_model_info(
                 model_name,
-                revision = revision,
-                token = token_arg,
-                securityStatus = True,
-                timeout = timeout,
+                revision=revision,
+                token=token_arg,
+                securityStatus=True,
+                timeout=timeout,
             )
             return getattr(info, "security_repo_status", None)
         except Exception as exc:
@@ -270,7 +273,7 @@ def _fetch_security_status(
     return None
 
 
-def _st_load_roots(snapshot: Path, load_subdirs = ()) -> list:
+def _st_load_roots(snapshot: Path, load_subdirs=()) -> list:
     """Directories a SentenceTransformer load deserializes weights from: the snapshot root plus each module path in modules.json and each explicit ``from_pretrained`` load subdirectory. Local, no network. Mirrors the online gate (which ignores unreferenced nested pickles the loader never opens) so the offline gate doesn't over-block."""
     roots = [snapshot]
 
@@ -286,7 +289,8 @@ def _st_load_roots(snapshot: Path, load_subdirs = ()) -> list:
         _add_repo_root(subdir)
     try:
         import json
-        modules = json.loads((snapshot / "modules.json").read_text(encoding = "utf-8-sig"))
+
+        modules = json.loads((snapshot / "modules.json").read_text(encoding="utf-8-sig"))
     except (OSError, ValueError):
         return roots
     for module in modules if isinstance(modules, list) else ():
@@ -320,7 +324,7 @@ def _indexed_pickle_shards(index_path: Path, root: Path, snapshot: Path) -> list
 
     try:
         # JSON is UTF-8 by spec; pin it so a non-ASCII index is not misdecoded under Windows' cp1252.
-        parsed = json.loads(index_path.read_text(encoding = "utf-8-sig"))
+        parsed = json.loads(index_path.read_text(encoding="utf-8-sig"))
     except (OSError, ValueError) as exc:
         raise OSError(f"unreadable weight index: {index_path}") from exc
     weight_map = parsed.get("weight_map") if isinstance(parsed, dict) else None
@@ -348,7 +352,7 @@ def _loader_resolves(root: Path, name: str) -> bool:
     return (root / name).is_file()
 
 
-def _cached_pickle_weight_files(snapshot: Path, load_subdirs = ()) -> list:
+def _cached_pickle_weight_files(snapshot: Path, load_subdirs=()) -> list:
     """Pickle weight files a SentenceTransformer/Transformers load deserializes from snapshot's ST load roots, EXCLUDING those whose weight family also ships an inert safetensors in the same dir (the loader prefers it): a base pickle is suppressed only by a base model.safetensors, an adapter pickle only by adapter_model.safetensors, and an unrelated safetensors is no substitute. Covers both direct-child pickles AND pickle shards referenced by a local weight index (which the loader follows into nested dirs, matching the online gate). Raises OSError, so the caller fails CLOSED, if the snapshot root or a weight index is unreadable, or an index reference escapes the snapshot."""
     blocked = []
     seen = set()
@@ -397,11 +401,12 @@ def _evaluate_local_snapshot(
     snapshot_path: Optional[Path] = None,
     *,
     context: str,
-    load_subdirs = (),
+    load_subdirs=(),
 ) -> FileSecurityDecision:
     """Inspect cached weights when the Hub scan cannot be used."""
     if snapshot_path is None:
         from utils.utils import hf_cache_snapshot_dir
+
         try:
             snapshot = hf_cache_snapshot_dir(model_name)
         except Exception:
@@ -413,11 +418,11 @@ def _evaluate_local_snapshot(
             return FileSecurityDecision(
                 model_name,
                 True,
-                reason = f"{context}; could not inspect the local cache",
+                reason=f"{context}; could not inspect the local cache",
             )
     else:
         try:
-            snapshot = snapshot_path.resolve(strict = True)
+            snapshot = snapshot_path.resolve(strict=True)
             if not snapshot.is_dir():
                 raise OSError("snapshot is not a directory")
         except (OSError, RuntimeError, ValueError):
@@ -430,14 +435,14 @@ def _evaluate_local_snapshot(
             return FileSecurityDecision(
                 model_name,
                 True,
-                reason = f"{context}; could not inspect the selected model snapshot",
+                reason=f"{context}; could not inspect the selected model snapshot",
             )
 
     if snapshot is None:
         return FileSecurityDecision(
             model_name,
             False,
-            reason = f"{context}; nothing cached to load",
+            reason=f"{context}; nothing cached to load",
         )
 
     try:
@@ -451,14 +456,14 @@ def _evaluate_local_snapshot(
         return FileSecurityDecision(
             model_name,
             True,
-            reason = f"{context}; could not read the local cache",
+            reason=f"{context}; could not read the local cache",
         )
 
     if not pickles:
         return FileSecurityDecision(
             model_name,
             False,
-            reason = f"{context}; cached weights are inert (safetensors/gguf)",
+            reason=f"{context}; cached weights are inert (safetensors/gguf)",
         )
 
     # Snapshot-relative posix paths (match the online gate; disambiguate same-named pickles).
@@ -474,8 +479,8 @@ def _evaluate_local_snapshot(
     return FileSecurityDecision(
         model_name,
         True,
-        unsafe_files = [{"path": rel, "level": "unscanned"} for rel in rel_paths],
-        reason = (f"{context}; unscanned pickle weights with no safetensors alternative: {names}"),
+        unsafe_files=[{"path": rel, "level": "unscanned"} for rel in rel_paths],
+        reason=(f"{context}; unscanned pickle weights with no safetensors alternative: {names}"),
     )
 
 
@@ -483,7 +488,7 @@ def evaluate_file_security(
     model_name: str,
     hf_token: Optional[str] = None,
     *,
-    load_subdirs = (),
+    load_subdirs=(),
     local_only_load: bool = False,
 ) -> FileSecurityDecision:
     """Block a load when HF's security scan flags unsafe serialized files. Call UNCONDITIONALLY before any load (independent of trust_remote_code): a malicious pickle deserializes during ``from_pretrained`` regardless. Metadata-only; when the scan is unavailable, exact cached snapshots receive a local fail-closed inspection while unresolved remote refs remain fail-open. ``load_subdirs`` names subdirs the load calls ``from_pretrained`` on (e.g. ``("LLM",)`` for Spark-TTS / BiCodec, loading ``<snapshot>/LLM``): a flagged file directly under one is root-level there and blocks, and an index inside it is honored when scoping shards. ``local_only_load`` marks an offline load and skips the Hub request."""
@@ -495,35 +500,36 @@ def evaluate_file_security(
     selected_snapshot = None
     try:
         from utils.paths import is_local_path
+
         if is_local_path(model_name):
             cache_ref = _hf_cache_snapshot_ref(model_name)
             if cache_ref is None:
-                return FileSecurityDecision(model_name, False, reason = "local path; no Hub scan")
+                return FileSecurityDecision(model_name, False, reason="local path; no Hub scan")
             model_name, snapshot_revision, selected_snapshot = cache_ref
     except Exception:
         # Cannot classify the path -> do not block on that account.
-        return FileSecurityDecision(model_name, False, reason = "path check failed; not blocked")
+        return FileSecurityDecision(model_name, False, reason="path check failed; not blocked")
 
     # Offline: inspect the local cache and fail closed rather than hang on model_info or fail open.
     if local_only_load:
         return _evaluate_local_snapshot(
             model_name,
             selected_snapshot,
-            context = "offline",
-            load_subdirs = load_subdirs,
+            context="offline",
+            load_subdirs=load_subdirs,
         )
 
-    status = _fetch_security_status(model_name, hf_token, revision = snapshot_revision)
+    status = _fetch_security_status(model_name, hf_token, revision=snapshot_revision)
     if not isinstance(status, dict):
         if selected_snapshot is not None:
             return _evaluate_local_snapshot(
                 model_name,
                 selected_snapshot,
-                context = "Hub scan unavailable",
-                load_subdirs = load_subdirs,
+                context="Hub scan unavailable",
+                load_subdirs=load_subdirs,
             )
         return FileSecurityDecision(
-            model_name, False, reason = "scan unavailable; allowed (fail-open)"
+            model_name, False, reason="scan unavailable; allowed (fail-open)"
         )
     if selected_snapshot is not None:
         try:
@@ -534,8 +540,8 @@ def evaluate_file_security(
             return _evaluate_local_snapshot(
                 model_name,
                 selected_snapshot,
-                context = "invalid cached model metadata",
-                load_subdirs = load_subdirs,
+                context="invalid cached model metadata",
+                load_subdirs=load_subdirs,
             )
 
     # Block a non-``safe`` flagged file scoped to the load-path RCE vector. Not gated on ``scansDone`` (often false even when clean), and unknown levels fail closed. Subdir pickles and inert formats are not loaded by from_pretrained and do not block; an unavailable status is fail-open only for an unresolved remote ref.
@@ -564,7 +570,7 @@ def evaluate_file_security(
 
     if maybe_shard:
         indexed = _indexed_shard_paths(
-            model_name, hf_token, load_subdirs, revision = snapshot_revision
+            model_name, hf_token, load_subdirs, revision=snapshot_revision
         )
         for m in maybe_shard:
             # Block if a root index lists this shard, or if the lookup was inconclusive. A definitive "no index / not listed" stays non-blocking (e.g. NeMo nemo/*.distcp).
@@ -582,7 +588,7 @@ def evaluate_file_security(
                 model_name,
                 ", ".join(f"{s['path']}({s['level']})" for s in skipped),
             )
-        return FileSecurityDecision(model_name, False, reason = "no unsafe files in the load path")
+        return FileSecurityDecision(model_name, False, reason="no unsafe files in the load path")
 
     names = ", ".join(u["path"] for u in unsafe if u["path"]) or "unknown files"
     logger.warning(
@@ -593,6 +599,6 @@ def evaluate_file_security(
     return FileSecurityDecision(
         model_name,
         True,
-        unsafe_files = unsafe,
-        reason = f"Hugging Face security scan flagged unsafe files: {names}",
+        unsafe_files=unsafe,
+        reason=f"Hugging Face security scan flagged unsafe files: {names}",
     )

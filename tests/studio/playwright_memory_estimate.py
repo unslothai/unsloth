@@ -102,7 +102,7 @@ ART_DIR = os.environ.get("PW_ART_DIR", "logs/playwright_memory_estimate")
 # re-derives its baseline once mount-time work lands.
 CONFIG_SETTLE_MS = int(os.environ.get("STUDIO_CONFIG_SETTLE_MS", "1000"))
 ART = Path(ART_DIR)
-ART.mkdir(parents = True, exist_ok = True)
+ART.mkdir(parents=True, exist_ok=True)
 STRICT = os.environ.get("STUDIO_UI_STRICT", "0") == "1"
 PLAYWRIGHT_BROWSER = os.environ.get("STUDIO_PLAYWRIGHT_BROWSER", "chromium").lower()
 PLAYWRIGHT_CHANNEL = os.environ.get("STUDIO_PLAYWRIGHT_CHANNEL") or None
@@ -146,15 +146,15 @@ _failed: list[str] = []
 
 
 def step(s: str) -> None:
-    print(f"[ui-memest] STEP {s}", flush = True)
+    print(f"[ui-memest] STEP {s}", flush=True)
 
 
 def info(s: str) -> None:
-    print(f"[ui-memest] {s}", flush = True)
+    print(f"[ui-memest] {s}", flush=True)
 
 
 def fail(m: str) -> None:
-    print(f"[ui-memest] FAIL: {m}", flush = True)
+    print(f"[ui-memest] FAIL: {m}", flush=True)
     _failed.append(m)
 
 
@@ -190,11 +190,11 @@ def _login_token_via_api(base: str, user: str, pw: str) -> str:
 
     req = urllib.request.Request(
         f"{base}/api/auth/login",
-        data = json.dumps({"username": user, "password": pw}).encode(),
-        headers = {"Content-Type": "application/json"},
-        method = "POST",
+        data=json.dumps({"username": user, "password": pw}).encode(),
+        headers={"Content-Type": "application/json"},
+        method="POST",
     )
-    with urllib.request.urlopen(req, timeout = 15) as r:
+    with urllib.request.urlopen(req, timeout=15) as r:
         return json.loads(r.read().decode())["access_token"]
 
 
@@ -294,15 +294,15 @@ def _handle_estimate(route) -> None:
         record["response_status"] = 404
         record["response"] = body
         route.fulfill(
-            status = 404,
-            content_type = "application/json",
-            body = json.dumps(body),
+            status=404,
+            content_type="application/json",
+            body=json.dumps(body),
         )
         return
     body = dict(UNAVAILABLE_BODY) if mode == "unavailable" else _available_body(payload)
     record["response_status"] = 200
     record["response"] = body
-    route.fulfill(status = 200, content_type = "application/json", body = json.dumps(body))
+    route.fulfill(status=200, content_type="application/json", body=json.dumps(body))
 
 
 def write_transcript() -> None:
@@ -323,10 +323,10 @@ def write_transcript() -> None:
                     },
                     "exchanges": exchanges,
                 },
-                indent = 2,
-                default = str,
+                indent=2,
+                default=str,
             ),
-            encoding = "utf-8",
+            encoding="utf-8",
         )
         info(f"wrote {len(exchanges)} estimate exchange(s) to {ART / TRANSCRIPT_NAME}")
     except Exception as exc:
@@ -334,9 +334,9 @@ def write_transcript() -> None:
 
 
 with sync_playwright() as p:
-    _watchdog = install_wall_clock_watchdog(WALL_TIMEOUT_S, label = "ui-memest", info = info)
+    _watchdog = install_wall_clock_watchdog(WALL_TIMEOUT_S, label="ui-memest", info=info)
     # Health pre-flight: a bash-side health wait can pass before the auth DB migrates.
-    wait_for_health(BASE, timeout = 30.0, info = info)
+    wait_for_health(BASE, timeout=30.0, info=info)
     if PLAYWRIGHT_BROWSER not in ("chromium", "firefox", "webkit"):
         fail(f"unsupported STUDIO_PLAYWRIGHT_BROWSER={PLAYWRIGHT_BROWSER!r}")
         sys.exit(1)
@@ -351,12 +351,12 @@ with sync_playwright() as p:
         sys.exit(1)
     browser = browser_type.launch(**launch_kwargs)
     ctx = browser.new_context(
-        viewport = {"width": 1280, "height": 900},
-        reduced_motion = "reduce",
+        viewport={"width": 1280, "height": 900},
+        reduced_motion="reduce",
         # One assertion reads a number the app formatted with `toLocaleString`, whose group separator is a property of
         # the locale. Left to the engine's default, 8192 renders "8,192" on one runner and "8 192" on another, and the
         # gate would be measuring the runner.
-        locale = "en-US",
+        locale="en-US",
     )
     install_view_transition_killer(ctx)
     # On the CONTEXT, not the page: a page replaced by the recovery helper below would otherwise lose the
@@ -380,10 +380,10 @@ with sync_playwright() as p:
         _n[0] += 1
         try:
             page.screenshot(
-                path = str(ART / f"{_n[0]:02d}-{name}.png"),
-                full_page = True,
-                timeout = 90_000,
-                animations = "disabled",
+                path=str(ART / f"{_n[0]:02d}-{name}.png"),
+                full_page=True,
+                timeout=90_000,
+                animations="disabled",
             )
         except Exception as exc:
             info(f"WARN: screenshot {name} failed: {exc}")
@@ -401,8 +401,8 @@ with sync_playwright() as p:
             page,
             ART,
             name,
-            info = info,
-            extra = {
+            info=info,
+            extra={
                 "missed_selector": missed,
                 "option_rows": rows,
                 "estimate_exchanges": exchanges[-4:],
@@ -417,28 +417,28 @@ with sync_playwright() as p:
         ctx.add_init_script(
             f"try{{localStorage.setItem('unsloth_auth_token', {json.dumps(_tok)});}}catch(e){{}}"
         )
-        page.goto(BASE, wait_until = "domcontentloaded", timeout = 60_000)
+        page.goto(BASE, wait_until="domcontentloaded", timeout=60_000)
     else:
         step("setup: change-password")
         form_err: Exception | None = None
         for _attempt in range(3):
             try:
-                page.goto(f"{BASE}/change-password", wait_until = "domcontentloaded", timeout = 60_000)
+                page.goto(f"{BASE}/change-password", wait_until="domcontentloaded", timeout=60_000)
                 try:
-                    page.wait_for_load_state("networkidle", timeout = 30_000)
+                    page.wait_for_load_state("networkidle", timeout=30_000)
                 except Exception:
                     pass
                 pw_field = page.locator("#new-password")
-                pw_field.wait_for(state = "visible", timeout = 60_000)
-                pw_field.fill(NEW, timeout = 60_000)
-                page.fill("#confirm-password", NEW, timeout = 60_000)
+                pw_field.wait_for(state="visible", timeout=60_000)
+                pw_field.fill(NEW, timeout=60_000)
+                page.fill("#confirm-password", NEW, timeout=60_000)
                 status, _ = click_and_wait_for_response(
                     page,
-                    url_substr = "/api/auth/change-password",
-                    method = "POST",
-                    do_click = lambda: page.locator('button[type="submit"]').click(),
-                    timeout_ms = 30_000,
-                    info = lambda m: print(f"[ui-memest]   {m}", flush = True),
+                    url_substr="/api/auth/change-password",
+                    method="POST",
+                    do_click=lambda: page.locator('button[type="submit"]').click(),
+                    timeout_ms=30_000,
+                    info=lambda m: print(f"[ui-memest]   {m}", flush=True),
                 )
                 if status is not None and status >= 400:
                     raise AssertionError(
@@ -455,28 +455,28 @@ with sync_playwright() as p:
                 print(
                     f"[ui-memest]   change-password attempt {_attempt + 1} failed: "
                     f"{type(e).__name__}: {str(e)[:200]}; page.url={cur_url}",
-                    flush = True,
+                    flush=True,
                 )
                 if _attempt < 2:
                     page = recover_or_replace_page(
                         page,
                         ctx,
-                        default_timeout_ms = 60_000,
-                        info = lambda m: print(f"[ui-memest]   recovery: {m}", flush = True),
+                        default_timeout_ms=60_000,
+                        info=lambda m: print(f"[ui-memest]   recovery: {m}", flush=True),
                     )
                     page.on("pageerror", _on_pageerror)
         if form_err is not None:
             raise form_err
 
     try:
-        page.wait_for_load_state("networkidle", timeout = 30_000)
+        page.wait_for_load_state("networkidle", timeout=30_000)
     except Exception:
         pass
     composer = page.locator('textarea[aria-label="Message input"]')
     last_err: Exception | None = None
     for _attempt in range(2):
         try:
-            composer.wait_for(state = "visible", timeout = 60_000)
+            composer.wait_for(state="visible", timeout=60_000)
             last_err = None
             break
         except Exception as e:
@@ -486,10 +486,10 @@ with sync_playwright() as p:
                 page = recover_or_replace_page(
                     page,
                     ctx,
-                    default_timeout_ms = 60_000,
-                    goto_url = BASE,
-                    settle_networkidle = True,
-                    info = lambda m: print(f"[ui-memest]   recovery: {m}", flush = True),
+                    default_timeout_ms=60_000,
+                    goto_url=BASE,
+                    settle_networkidle=True,
+                    info=lambda m: print(f"[ui-memest]   recovery: {m}", flush=True),
                 )
                 page.on("pageerror", _on_pageerror)
                 composer = page.locator('textarea[aria-label="Message input"]')
@@ -511,7 +511,7 @@ with sync_playwright() as p:
             page.locator(TRIGGER).first.click()
             page.wait_for_timeout(900)
             popover = page.locator(POPOVER).first
-        popover.wait_for(state = "visible", timeout = 30_000)
+        popover.wait_for(state="visible", timeout=30_000)
         return popover
 
     def close_picker():
@@ -524,24 +524,24 @@ with sync_playwright() as p:
     def reveal_on_device_row(popover, hint):
         """Bring the row into view without clicking it: a single-quant row loads its
         quant on click and closes the picker, taking the gear with it."""
-        od = page.get_by_role("tab", name = "On Device").first
+        od = page.get_by_role("tab", name="On Device").first
         if _count(od):
             od.click()
             page.wait_for_timeout(700)
         try:
             popover.locator("[data-model-picker-option]").first.wait_for(
-                state = "attached", timeout = 20_000
+                state="attached", timeout=20_000
             )
         except Exception:
             pass
-        row = popover.locator("[data-model-picker-option]", has_text = hint).first
+        row = popover.locator("[data-model-picker-option]", has_text=hint).first
         if _count(row) == 0:
             search = popover.locator("[data-model-picker-search-input]").first
             if _count(search):
                 search.click()
                 search.fill(hint)
                 page.wait_for_timeout(700)
-                row = popover.locator("[data-model-picker-option]", has_text = hint).first
+                row = popover.locator("[data-model-picker-option]", has_text=hint).first
         return row if _count(row) else None
 
     def select_on_device_row(popover, hint):
@@ -555,8 +555,8 @@ with sync_playwright() as p:
     def row_gear(
         popover,
         hint,
-        quant = None,
-        timeout_ms = SOLE_QUANT_SETTLE_MS,
+        quant=None,
+        timeout_ms=SOLE_QUANT_SETTLE_MS,
     ):
         # The gear is a sibling of the row, not inside [data-model-picker-option]. The
         # quant is anchored to the end: every label is "<repo> <quant>", so an unanchored
@@ -564,16 +564,16 @@ with sync_playwright() as p:
         pattern = f"^Inference settings for .*{re.escape(hint)}"
         if quant:
             pattern += f".* {re.escape(quant)}$"
-        gear = popover.get_by_role("button", name = re.compile(pattern, re.IGNORECASE)).first
+        gear = popover.get_by_role("button", name=re.compile(pattern, re.IGNORECASE)).first
         try:
-            gear.wait_for(state = "visible", timeout = timeout_ms)
+            gear.wait_for(state="visible", timeout=timeout_ms)
         except Exception:
             return None
         return gear
 
     def config_is_open(popover):
         """Back is unique to the config page and always rendered inside the picker."""
-        return _count(popover.get_by_role("button", name = "Back to model list")) > 0
+        return _count(popover.get_by_role("button", name="Back to model list")) > 0
 
     def open_config(popover, hint):
         if reveal_on_device_row(popover, hint) is None:
@@ -582,7 +582,7 @@ with sync_playwright() as p:
         # The quant first: with "Expand quantizations" on, a repo-only lookup finds some gear straight away and which
         # one is arbitrary. Repo-only stays as the fallback, for the collapsed sole-quant row whose label carries its
         # own quant.
-        gear = row_gear(popover, hint, quant = GGUF_VARIANT, timeout_ms = QUANT_GEAR_MS)
+        gear = row_gear(popover, hint, quant=GGUF_VARIANT, timeout_ms=QUANT_GEAR_MS)
         if gear is None:
             gear = row_gear(popover, hint)
         if gear is None:
@@ -597,7 +597,7 @@ with sync_playwright() as p:
                 if reveal_on_device_row(popover, hint) is None:
                     diagnose("no-row-gear-after-reopen", f"[data-model-picker-option] {hint!r}")
                     return None
-            gear = row_gear(popover, hint, quant = GGUF_VARIANT, timeout_ms = QUANT_GEAR_MS) or (
+            gear = row_gear(popover, hint, quant=GGUF_VARIANT, timeout_ms=QUANT_GEAR_MS) or (
                 row_gear(popover, hint)
             )
         if gear is None:
@@ -614,7 +614,7 @@ with sync_playwright() as p:
 
     def context_input(popover):
         for role in ("textbox", "spinbutton"):
-            loc = popover.get_by_role(role, name = "Context Length").first
+            loc = popover.get_by_role(role, name="Context Length").first
             if _count(loc):
                 return loc
         loc = popover.locator('input[aria-label="Context Length"]').first
@@ -661,10 +661,10 @@ with sync_playwright() as p:
         row is unreachable by role", and a single locator that answers no to both
         cannot.
         """
-        found = _first_visible(page.get_by_role("button", name = ESTIMATE_LABEL), "role=button")
+        found = _first_visible(page.get_by_role("button", name=ESTIMATE_LABEL), "role=button")
         if found is not None:
             return found
-        return _first_visible(page.locator("button").filter(has_text = ESTIMATE_LABEL), "button+text")
+        return _first_visible(page.locator("button").filter(has_text=ESTIMATE_LABEL), "button+text")
 
     def estimate_visible() -> bool:
         return estimate_button() is not None
@@ -794,7 +794,7 @@ with sync_playwright() as p:
                 fail(f"{label}: could not type {value} into the Context Length control: {exc}")
                 return None, None
             record = wait_for_estimate_post(
-                lambda rec: rec["request"].get("n_ctx") == value, since = before
+                lambda rec: rec["request"].get("n_ctx") == value, since=before
             )
             if record is not None:
                 _used_contexts.add(value)
@@ -822,9 +822,9 @@ with sync_playwright() as p:
         write_transcript()
         shoot("03-config-failed")
         browser.close()
-        print(f"[ui-memest] RESULT: FAIL ({len(_failed)} issue(s))", flush = True)
+        print(f"[ui-memest] RESULT: FAIL ({len(_failed)} issue(s))", flush=True)
         for m in _failed:
-            print(f"[ui-memest]   - {m}", flush = True)
+            print(f"[ui-memest]   - {m}", flush=True)
         sys.exit(1)
     shoot("03-config-open")
 
@@ -1066,9 +1066,9 @@ with sync_playwright() as p:
     browser.close()
 
 if _failed:
-    print(f"[ui-memest] RESULT: FAIL ({len(_failed)} issue(s))", flush = True)
+    print(f"[ui-memest] RESULT: FAIL ({len(_failed)} issue(s))", flush=True)
     for m in _failed:
-        print(f"[ui-memest]   - {m}", flush = True)
+        print(f"[ui-memest]   - {m}", flush=True)
     sys.exit(1)
-print(f"[ui-memest] RESULT: PASS ({len(exchanges)} estimate exchange(s) recorded)", flush = True)
+print(f"[ui-memest] RESULT: PASS ({len(exchanges)} estimate exchange(s) recorded)", flush=True)
 sys.exit(0)

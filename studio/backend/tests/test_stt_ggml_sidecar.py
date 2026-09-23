@@ -39,21 +39,21 @@ def _shared_setup_1(monkeypatch):
     monkeypatch.setattr(
         GgmlSttSidecar,
         "_wait_for_server",
-        staticmethod(lambda process, port, cancel_event = None: None),
+        staticmethod(lambda process, port, cancel_event=None: None),
     )
 
 
-@pytest.fixture(autouse = True)
+@pytest.fixture(autouse=True)
 def isolate_runtime_and_stub_audio_decoder(monkeypatch, tmp_path):
     """Unit tests exercise orchestration, not PyAV container parsing."""
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "studio"))
-    monkeypatch.delenv("WHISPER_SERVER_PATH", raising = False)
-    monkeypatch.delenv("UNSLOTH_WHISPER_CPP_PATH", raising = False)
+    monkeypatch.delenv("WHISPER_SERVER_PATH", raising=False)
+    monkeypatch.delenv("UNSLOTH_WHISPER_CPP_PATH", raising=False)
     monkeypatch.setenv("PATH", "")
     monkeypatch.setattr(
         ggml_module,
         "_decode_audio_bounded",
-        lambda audio, cancel_event = None: np.zeros(16000, dtype = np.float32),
+        lambda audio, cancel_event=None: np.zeros(16000, dtype=np.float32),
     )
 
 
@@ -81,6 +81,7 @@ def test_custom_repo_ids_are_rejected():
 
 def test_curated_ids_mirror_transformers_sidecar():
     from core.inference.stt_sidecar import STT_MODELS
+
     assert list(GGML_STT_MODELS.keys()) == list(STT_MODELS.keys())
 
 
@@ -118,9 +119,9 @@ def test_env_binary_override_wins(monkeypatch, tmp_path):
 
 
 def test_env_dir_override_scans_layouts(monkeypatch, tmp_path):
-    monkeypatch.delenv("WHISPER_SERVER_PATH", raising = False)
+    monkeypatch.delenv("WHISPER_SERVER_PATH", raising=False)
     build_bin = tmp_path / "build" / "bin"
-    build_bin.mkdir(parents = True)
+    build_bin.mkdir(parents=True)
     binary = build_bin / _SERVER_NAME
     binary.write_text("#!/bin/sh\n")
     binary.chmod(0o755)  # find_whisper_server_binary requires an executable
@@ -129,7 +130,7 @@ def test_env_dir_override_scans_layouts(monkeypatch, tmp_path):
 
 
 def test_missing_binary_reports_unavailable(monkeypatch, tmp_path):
-    monkeypatch.delenv("WHISPER_SERVER_PATH", raising = False)
+    monkeypatch.delenv("WHISPER_SERVER_PATH", raising=False)
     monkeypatch.setenv("UNSLOTH_WHISPER_CPP_PATH", str(tmp_path / "nope"))
     monkeypatch.setattr(ggml_module, "_managed_whisper_cpp_dir", lambda: tmp_path / "gone")
     monkeypatch.setattr(ggml_module.shutil, "which", lambda name: None)
@@ -157,17 +158,17 @@ def test_non_executable_binary_is_not_runnable(monkeypatch, tmp_path):
 def _slim_install(
     tmp_path,
     *,
-    install_kind = "slim",
-    with_ggml = True,
-    linked_libraries = None,
-    backend = "cpu",
-    linked_runtime_directories = None,
-    runtime_wiring_version = None,
+    install_kind="slim",
+    with_ggml=True,
+    linked_libraries=None,
+    backend="cpu",
+    linked_runtime_directories=None,
+    runtime_wiring_version=None,
 ) -> str:
     """A managed-looking install tree: marker at the root, server in build/bin."""
     install_dir = tmp_path / "whisper.cpp"
     bin_dir = install_dir / "build" / "bin"
-    bin_dir.mkdir(parents = True)
+    bin_dir.mkdir(parents=True)
     binary = bin_dir / _SERVER_NAME
     binary.write_text("#!/bin/sh\n")
     binary.chmod(0o755)
@@ -205,17 +206,17 @@ def _slim_install(
 def test_slim_guard_flags_missing_ggml_links(monkeypatch, tmp_path):
     # A slim marker whose linked ggml runtime is gone must read as engine
     # unavailable (reinstall), never crash into a server launch.
-    binary = _slim_install(tmp_path, with_ggml = False)
+    binary = _slim_install(tmp_path, with_ggml=False)
     assert ggml_module.slim_runtime_intact(binary) is False
     monkeypatch.setattr(ggml_module, "find_whisper_server_binary", lambda: binary)
     assert not ggml_module.is_available()
-    with pytest.raises(SttEngineUnavailableError, match = "ggml"):
+    with pytest.raises(SttEngineUnavailableError, match="ggml"):
         ggml_module.ensure_engine_available()
 
 
 def test_slim_guard_passes_with_links_in_place(monkeypatch, tmp_path):
     names = _core_ggml_names()
-    binary = _slim_install(tmp_path, with_ggml = True, linked_libraries = names)
+    binary = _slim_install(tmp_path, with_ggml=True, linked_libraries=names)
     assert ggml_module.slim_runtime_intact(binary) is True
     monkeypatch.setattr(ggml_module, "find_whisper_server_binary", lambda: binary)
     assert ggml_module.ensure_engine_available() == binary
@@ -225,7 +226,7 @@ def test_slim_guard_verifies_the_marker_linked_libraries(monkeypatch, tmp_path):
     # New markers record the exact wired filenames; one missing name flips the
     # install to unavailable even when the legacy core ggml names are present.
     names = ["libggml.dylib", "libggml-base.dylib", "libggml-metal.dylib"]
-    binary = _slim_install(tmp_path, with_ggml = True, linked_libraries = names)
+    binary = _slim_install(tmp_path, with_ggml=True, linked_libraries=names)
     bin_dir = Path(binary).parent
     for name in names[:-1]:
         (bin_dir / name).write_bytes(b"ggml")
@@ -240,13 +241,13 @@ def test_slim_guard_malformed_authoritative_marker_fails_closed(tmp_path):
     for bad in ("not-a-list", [], [1, 2]):
         root = tmp_path / f"case_{type(bad).__name__}_{len(str(bad))}"
         root.mkdir()
-        binary = _slim_install(root, with_ggml = True, linked_libraries = bad)
+        binary = _slim_install(root, with_ggml=True, linked_libraries=bad)
         assert ggml_module.slim_runtime_intact(binary) is False
 
 
 def test_slim_guard_prefers_authoritative_root_marker(tmp_path):
     names = _core_ggml_names()
-    binary = _slim_install(tmp_path, with_ggml = True, linked_libraries = names)
+    binary = _slim_install(tmp_path, with_ggml=True, linked_libraries=names)
     packaging_marker = Path(binary).parent / "UNSLOTH_WHISPER_PREBUILT_INFO.json"
     packaging_marker.write_text(json.dumps({"backend": "slim", "release_tag": "packaging"}))
     assert ggml_module._whisper_install_marker(binary)["install_kind"] == "slim"
@@ -254,7 +255,7 @@ def test_slim_guard_prefers_authoritative_root_marker(tmp_path):
 
 
 def test_slim_guard_rejects_invalid_root_even_with_inner_marker(tmp_path):
-    binary = _slim_install(tmp_path, with_ggml = True, linked_libraries = ["libggml.so.0"])
+    binary = _slim_install(tmp_path, with_ggml=True, linked_libraries=["libggml.so.0"])
     root_marker = Path(binary).parents[2] / "UNSLOTH_WHISPER_PREBUILT_INFO.json"
     root_marker.write_text("not json")
     (Path(binary).parent / root_marker.name).write_text(json.dumps({"backend": "slim"}))
@@ -265,10 +266,10 @@ def test_slim_guard_rejects_missing_rocm_catalog(tmp_path):
     names = [*_core_ggml_names(), "libggml-hip.so"]
     binary = _slim_install(
         tmp_path,
-        linked_libraries = names,
-        backend = "rocm",
-        linked_runtime_directories = ["hipblaslt", "rocblas"],
-        runtime_wiring_version = 2,
+        linked_libraries=names,
+        backend="rocm",
+        linked_runtime_directories=["hipblaslt", "rocblas"],
+        runtime_wiring_version=2,
     )
     bin_dir = Path(binary).parent
     (bin_dir / "libggml-hip.so").write_bytes(b"ggml")
@@ -285,10 +286,10 @@ def test_slim_guard_accepts_rocm_wiring_without_a_hipblaslt_catalog(tmp_path):
     names = ["libggml.so.0", "libggml-base.so.0", "libggml-hip.so"]
     binary = _slim_install(
         tmp_path,
-        linked_libraries = names,
-        backend = "rocm",
-        linked_runtime_directories = ["rocblas"],
-        runtime_wiring_version = 3,
+        linked_libraries=names,
+        backend="rocm",
+        linked_runtime_directories=["rocblas"],
+        runtime_wiring_version=3,
     )
     (Path(binary).parent / "libggml-hip.so").write_bytes(b"ggml")
     assert ggml_module.slim_runtime_intact(binary) is True
@@ -303,10 +304,10 @@ def test_slim_guard_rejects_rocm_wiring_without_rocblas(tmp_path):
         root.mkdir()
         binary = _slim_install(
             root,
-            linked_libraries = names,
-            backend = "rocm",
-            linked_runtime_directories = case,
-            runtime_wiring_version = 3,
+            linked_libraries=names,
+            backend="rocm",
+            linked_runtime_directories=case,
+            runtime_wiring_version=3,
         )
         (Path(binary).parent / "libggml-hip.so").write_bytes(b"ggml")
         assert ggml_module.slim_runtime_intact(binary) is False
@@ -322,10 +323,10 @@ def test_slim_guard_rejects_an_empty_catalog_the_marker_names(tmp_path):
         root.mkdir()
         binary = _slim_install(
             root,
-            linked_libraries = names,
-            backend = "rocm",
-            linked_runtime_directories = ["hipblaslt", "rocblas"],
-            runtime_wiring_version = 3,
+            linked_libraries=names,
+            backend="rocm",
+            linked_runtime_directories=["hipblaslt", "rocblas"],
+            runtime_wiring_version=3,
         )
         bin_dir = Path(binary).parent
         (bin_dir / "libggml-hip.so").write_bytes(b"ggml")
@@ -340,10 +341,10 @@ def test_slim_guard_rejects_rocm_wiring_with_no_version(tmp_path):
     names = ["libggml.so.0", "libggml-base.so.0", "libggml-hip.so"]
     binary = _slim_install(
         tmp_path,
-        linked_libraries = names,
-        backend = "rocm",
-        linked_runtime_directories = ["rocblas"],
-        runtime_wiring_version = None,
+        linked_libraries=names,
+        backend="rocm",
+        linked_runtime_directories=["rocblas"],
+        runtime_wiring_version=None,
     )
     (Path(binary).parent / "libggml-hip.so").write_bytes(b"ggml")
     assert ggml_module.slim_runtime_intact(binary) is False
@@ -355,10 +356,10 @@ def test_slim_guard_rejects_rocm_wiring_with_an_unknown_catalog(tmp_path):
     names = ["libggml.so.0", "libggml-base.so.0", "libggml-hip.so"]
     binary = _slim_install(
         tmp_path,
-        linked_libraries = names,
-        backend = "rocm",
-        linked_runtime_directories = ["rocblas", "unexpected"],
-        runtime_wiring_version = 3,
+        linked_libraries=names,
+        backend="rocm",
+        linked_runtime_directories=["rocblas", "unexpected"],
+        runtime_wiring_version=3,
     )
     (Path(binary).parent / "libggml-hip.so").write_bytes(b"ggml")
     assert ggml_module.slim_runtime_intact(binary) is False
@@ -370,10 +371,10 @@ def test_slim_guard_accepts_newer_rocm_wiring_version(tmp_path):
     names = [*_core_ggml_names(), "libggml-hip.so"]
     binary = _slim_install(
         tmp_path,
-        linked_libraries = names,
-        backend = "rocm",
-        linked_runtime_directories = ["hipblaslt", "rocblas"],
-        runtime_wiring_version = 3,
+        linked_libraries=names,
+        backend="rocm",
+        linked_runtime_directories=["hipblaslt", "rocblas"],
+        runtime_wiring_version=3,
     )
     (Path(binary).parent / "libggml-hip.so").write_bytes(b"ggml")
     assert ggml_module.slim_runtime_intact(binary) is True
@@ -384,10 +385,10 @@ def test_slim_guard_rejects_pre_catalog_rocm_wiring_version(tmp_path):
     names = [*_core_ggml_names(), "libggml-hip.so"]
     binary = _slim_install(
         tmp_path,
-        linked_libraries = names,
-        backend = "rocm",
-        linked_runtime_directories = ["hipblaslt", "rocblas"],
-        runtime_wiring_version = 1,
+        linked_libraries=names,
+        backend="rocm",
+        linked_runtime_directories=["hipblaslt", "rocblas"],
+        runtime_wiring_version=1,
     )
     (Path(binary).parent / "libggml-hip.so").write_bytes(b"ggml")
     assert ggml_module.slim_runtime_intact(binary) is False
@@ -398,10 +399,10 @@ def test_slim_guard_accepts_windows_rocm_dll_overlay(monkeypatch, tmp_path):
     names = ["ggml.dll", "ggml-base.dll", "ggml-hip.dll", "amdhip64.dll"]
     binary = _slim_install(
         tmp_path,
-        linked_libraries = names,
-        backend = "rocm",
-        linked_runtime_directories = [],
-        runtime_wiring_version = 2,
+        linked_libraries=names,
+        backend="rocm",
+        linked_runtime_directories=[],
+        runtime_wiring_version=2,
     )
     for name in names:
         (Path(binary).parent / name).write_bytes(b"dll")
@@ -415,10 +416,10 @@ def test_slim_guard_windows_rocm_still_expects_no_catalogs(monkeypatch, tmp_path
     names = ["ggml.dll", "ggml-base.dll", "ggml-hip.dll", "amdhip64.dll"]
     binary = _slim_install(
         tmp_path,
-        linked_libraries = names,
-        backend = "rocm",
-        linked_runtime_directories = ["rocblas"],
-        runtime_wiring_version = 2,
+        linked_libraries=names,
+        backend="rocm",
+        linked_runtime_directories=["rocblas"],
+        runtime_wiring_version=2,
     )
     for name in names:
         (Path(binary).parent / name).write_bytes(b"dll")
@@ -427,10 +428,10 @@ def test_slim_guard_windows_rocm_still_expects_no_catalogs(monkeypatch, tmp_path
 
 def test_slim_guard_ignores_fat_and_markerless_installs(tmp_path):
     # Fat installs carry their own ggml; no marker means source/custom build.
-    fat = _slim_install(tmp_path / "fat", install_kind = None, with_ggml = False)
+    fat = _slim_install(tmp_path / "fat", install_kind=None, with_ggml=False)
     assert ggml_module.slim_runtime_intact(fat) is True
     bare = tmp_path / "bare" / _SERVER_NAME
-    bare.parent.mkdir(parents = True)
+    bare.parent.mkdir(parents=True)
     bare.write_text("#!/bin/sh\n")
     assert ggml_module.slim_runtime_intact(str(bare)) is True
 
@@ -505,7 +506,7 @@ def test_child_env_adds_cuda_runtime_dirs_for_cuda_bundle(monkeypatch, tmp_path)
     module_name = "ggml-cuda.dll" if sys.platform == "win32" else "libggml-cuda.so.0"
     (bindir / module_name).write_text("")
     cuda_dir = tmp_path / "nvidia" / "cuda_runtime" / "lib"
-    cuda_dir.mkdir(parents = True)
+    cuda_dir.mkdir(parents=True)
     monkeypatch.setattr(rl, "python_runtime_dirs", lambda: [str(cuda_dir)])
     env = ggml_module._whisper_server_child_env(str(bindir / _SERVER_NAME))
     parts = env[_loader_path_var()].split(os.pathsep)
@@ -525,7 +526,7 @@ def test_child_env_omits_cuda_runtime_dirs_for_cpu_bundle(monkeypatch, tmp_path)
     bindir.mkdir()
     (bindir / _SERVER_NAME).write_text("#!/bin/sh\n")
     cuda_dir = tmp_path / "nvidia" / "cuda_runtime" / "lib"
-    cuda_dir.mkdir(parents = True)
+    cuda_dir.mkdir(parents=True)
     called = {"n": 0}
 
     def _fake_dirs():
@@ -550,7 +551,7 @@ def test_engine_unavailable_is_stt_unavailable():
 
 
 def test_pcm_to_wav_bytes_shape_and_rate():
-    pcm = np.zeros(3200, dtype = np.float32)
+    pcm = np.zeros(3200, dtype=np.float32)
     data = ggml_module._pcm_to_wav_bytes(pcm)
     with wave.open(io.BytesIO(data)) as w:
         assert w.getnchannels() == 1
@@ -560,10 +561,10 @@ def test_pcm_to_wav_bytes_shape_and_rate():
 
 
 def test_pcm_to_wav_bytes_clips_out_of_range():
-    pcm = np.array([2.0, -2.0], dtype = np.float32)
+    pcm = np.array([2.0, -2.0], dtype=np.float32)
     data = ggml_module._pcm_to_wav_bytes(pcm)
     with wave.open(io.BytesIO(data)) as w:
-        frames = np.frombuffer(w.readframes(2), dtype = "<i2")
+        frames = np.frombuffer(w.readframes(2), dtype="<i2")
     assert frames[0] == 32767
     assert frames[1] == -32767
 
@@ -592,7 +593,7 @@ def test_transcribe_rejects_unknown_language(monkeypatch):
     monkeypatch.setattr(ggml_module, "_known_whisper_languages", lambda: frozenset({"en", "fr"}))
     sidecar = GgmlSttSidecar()
     with pytest.raises(SttLanguageError):
-        sidecar.transcribe(b"RIFF", model = "small", language = "xx-QQ")
+        sidecar.transcribe(b"RIFF", model="small", language="xx-QQ")
 
 
 def test_load_requires_downloaded_model(monkeypatch):
@@ -624,7 +625,7 @@ def test_update_maintenance_unloads_and_blocks_new_loads(monkeypatch):
         def terminate(self):
             self.running = False
 
-        def wait(self, timeout = None):
+        def wait(self, timeout=None):
             return 0
 
     monkeypatch.setattr(ggml_module, "forget_pid", lambda _pid: None)
@@ -635,7 +636,7 @@ def test_update_maintenance_unloads_and_blocks_new_loads(monkeypatch):
     with sidecar.update_maintenance() as model_was_active:
         assert model_was_active is True
         assert sidecar.loaded_model is None
-        with pytest.raises(SttEngineUnavailableError, match = "being updated"):
+        with pytest.raises(SttEngineUnavailableError, match="being updated"):
             sidecar.load("small")
 
     assert sidecar._update_in_progress is False
@@ -659,7 +660,7 @@ def test_server_pid_is_tracked_for_parent_lifetime(monkeypatch):
         def terminate(self):
             self.terminated = True
 
-        def wait(self, timeout = None):
+        def wait(self, timeout=None):
             return 0
 
     events = []
@@ -694,7 +695,7 @@ def test_training_forces_whisper_server_off_gpu(monkeypatch):
         def terminate(self):
             pass
 
-        def wait(self, timeout = None):
+        def wait(self, timeout=None):
             return 0
 
     monkeypatch.setattr(ggml_module.subprocess, "Popen", FakeProcess)
@@ -718,7 +719,7 @@ def test_training_forces_whisper_server_off_gpu(monkeypatch):
 
 def test_cpu_root_marker_forces_no_gpu_despite_inner_packaging_marker(monkeypatch, tmp_path):
     names = _core_ggml_names()
-    binary = _slim_install(tmp_path, with_ggml = True, linked_libraries = names)
+    binary = _slim_install(tmp_path, with_ggml=True, linked_libraries=names)
     (Path(binary).parent / "UNSLOTH_WHISPER_PREBUILT_INFO.json").write_text(
         json.dumps({"backend": "slim"})
     )
@@ -738,7 +739,7 @@ def test_cpu_root_marker_forces_no_gpu_despite_inner_packaging_marker(monkeypatc
         def terminate(self):
             pass
 
-        def wait(self, timeout = None):
+        def wait(self, timeout=None):
             return 0
 
     monkeypatch.setattr(ggml_module.subprocess, "Popen", FakeProcess)
@@ -776,7 +777,7 @@ def test_startup_is_cancellable_before_training(monkeypatch):
         def kill(self):
             self.killed = True
 
-        def wait(self, timeout = None):
+        def wait(self, timeout=None):
             return 0
 
     monkeypatch.setattr(ggml_module.subprocess, "Popen", FakeProcess)
@@ -784,7 +785,7 @@ def test_startup_is_cancellable_before_training(monkeypatch):
     monkeypatch.setattr(ggml_module, "forget_pid", lambda pid: None)
 
     # The server never reports ready, so _wait_for_server loops until cancelled.
-    def never_ready(req, timeout = None):
+    def never_ready(req, timeout=None):
         raise OSError("connection refused")
 
     monkeypatch.setattr(ggml_module.urllib.request, "urlopen", never_ready)
@@ -799,7 +800,7 @@ def test_startup_is_cancellable_before_training(monkeypatch):
         except Exception as exc:  # noqa: BLE001 - recorded for the assertion below
             result["error"] = exc
 
-    thread = threading.Thread(target = _load)
+    thread = threading.Thread(target=_load)
     thread.start()
     try:
         deadline = time.monotonic() + 5
@@ -810,7 +811,7 @@ def test_startup_is_cancellable_before_training(monkeypatch):
         # Blocks until the cancelled startup has been reaped and the lock freed.
         sidecar.wait_for_load_to_settle()
     finally:
-        thread.join(timeout = 5)
+        thread.join(timeout=5)
 
     assert thread.is_alive() is False
     assert isinstance(result.get("error"), SttLoadCancelledError)
@@ -840,7 +841,7 @@ class _FakeWhisperHandler(http.server.BaseHTTPRequestHandler):
 @pytest.fixture()
 def fake_whisper_server():
     server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _FakeWhisperHandler)
-    thread = threading.Thread(target = server.serve_forever, daemon = True)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     yield server.server_address[1]
     server.shutdown()
@@ -851,12 +852,12 @@ def test_transcribe_joins_segments_one_line(monkeypatch, fake_whisper_server):
     monkeypatch.setattr(ggml_module, "_cached_model_path", lambda model_id: "/tmp/ggml.bin")
     sidecar = GgmlSttSidecar()
 
-    def fake_load(model = None):
+    def fake_load(model=None):
         sidecar._port = fake_whisper_server
         sidecar._model_id = ggml_module.resolve_ggml_model_id(model)
 
     monkeypatch.setattr(sidecar, "load", fake_load)
-    result = sidecar.transcribe(b"RIFF", model = "small", language = "en", fast = True)
+    result = sidecar.transcribe(b"RIFF", model="small", language="en", fast=True)
     assert result["text"] == "Hello world. Second line."
     assert result["language"] == "en"
     assert result["model"] == "small"
@@ -869,7 +870,7 @@ def test_transcribe_maps_bad_payload_to_decode_error(monkeypatch, fake_whisper_s
     monkeypatch.setattr(_FakeWhisperHandler, "response_text", None)
     sidecar = GgmlSttSidecar()
 
-    def fake_load(model = None):
+    def fake_load(model=None):
         sidecar._port = fake_whisper_server
         sidecar._model_id = ggml_module.resolve_ggml_model_id(model)
 
@@ -877,7 +878,7 @@ def test_transcribe_maps_bad_payload_to_decode_error(monkeypatch, fake_whisper_s
     from core.inference.stt_sidecar import SttAudioDecodeError
 
     with pytest.raises(SttAudioDecodeError):
-        sidecar.transcribe(b"RIFF", model = "small")
+        sidecar.transcribe(b"RIFF", model="small")
 
 
 def test_beam_size_matches_fast_flag(monkeypatch, fake_whisper_server):
@@ -902,13 +903,13 @@ def test_beam_size_matches_fast_flag(monkeypatch, fake_whisper_server):
     try:
         sidecar = GgmlSttSidecar()
 
-        def fake_load(model = None):
+        def fake_load(model=None):
             sidecar._port = fake_whisper_server
             sidecar._model_id = ggml_module.resolve_ggml_model_id(model)
 
         monkeypatch.setattr(sidecar, "load", fake_load)
-        sidecar.transcribe(b"RIFF", model = "small", fast = True)
-        sidecar.transcribe(b"RIFF", model = "small", fast = False)
+        sidecar.transcribe(b"RIFF", model="small", fast=True)
+        sidecar.transcribe(b"RIFF", model="small", fast=False)
     finally:
         _FakeWhisperHandler.do_POST = orig_post
     assert b'name="beam_size"\r\n\r\n1' in seen[0]
@@ -960,6 +961,7 @@ def test_curated_gguf_dictation_repos_are_hidden():
 
 def test_stt_load_has_no_engine_wide_cancel_endpoint():
     import routes.inference as inference_route
+
     assert not hasattr(inference_route, "stt_load_cancel")
     assert all(route.path != "/audio/stt/load/cancel" for route in inference_route.router.routes)
 
@@ -986,11 +988,11 @@ def test_gguf_status_accessors_do_not_block_on_the_inference_lock():
         # Mimic transcribe() holding self._lock across the whole HTTP call.
         with sidecar._lock:
             holder_has_lock.set()
-            release.wait(timeout = 5)
+            release.wait(timeout=5)
 
-    holder = threading.Thread(target = _hold_inference_lock)
+    holder = threading.Thread(target=_hold_inference_lock)
     holder.start()
-    assert holder_has_lock.wait(timeout = 5)
+    assert holder_has_lock.wait(timeout=5)
 
     result: dict = {}
 
@@ -998,14 +1000,14 @@ def test_gguf_status_accessors_do_not_block_on_the_inference_lock():
         result["model"] = sidecar.loaded_model
         result["device"] = sidecar.device
 
-    reader = threading.Thread(target = _read_status)
+    reader = threading.Thread(target=_read_status)
     reader.start()
-    reader.join(timeout = 2)
+    reader.join(timeout=2)
     blocked = reader.is_alive()
 
     release.set()
-    holder.join(timeout = 5)
-    reader.join(timeout = 5)
+    holder.join(timeout=5)
+    reader.join(timeout=5)
 
     assert not blocked, "loaded_model/device blocked on self._lock (should be lock-free)"
     assert result == {"model": "small", "device": "whisper.cpp"}
@@ -1060,8 +1062,8 @@ def test_gguf_unload_targets_transformers_fallback_without_whisper_server(monkey
 
         def unload(
             self,
-            wait = True,
-            expected_model = None,
+            wait=True,
+            expected_model=None,
         ):
             calls.append(self.name)
 
@@ -1069,7 +1071,7 @@ def test_gguf_unload_targets_transformers_fallback_without_whisper_server(monkey
 
     monkeypatch.setattr(stt_registry, "sidecar_for", lambda name: _Sidecar(name))
 
-    resp = asyncio.run(ri.stt_unload(engine = "gguf", current_subject = "tester"))
+    resp = asyncio.run(ri.stt_unload(engine="gguf", current_subject="tester"))
     assert resp.status_code == 200
     # gguf is served by the Transformers fallback here, so that is what unloads.
     assert calls == ["transformers"]
@@ -1086,8 +1088,8 @@ def test_unload_all_attempts_every_backend_even_when_one_fails(monkeypatch):
 
         def unload(
             self,
-            wait = True,
-            expected_model = None,
+            wait=True,
+            expected_model=None,
         ):
             attempted.append(self.name)
             if self.name == "transformers":
@@ -1098,7 +1100,7 @@ def test_unload_all_attempts_every_backend_even_when_one_fails(monkeypatch):
     monkeypatch.setattr(stt_registry, "sidecar_for", lambda name: _Sidecar(name))
 
     with pytest.raises(HTTPException) as excinfo:
-        asyncio.run(ri.stt_unload(engine = None, current_subject = "tester"))
+        asyncio.run(ri.stt_unload(engine=None, current_subject="tester"))
 
     assert excinfo.value.status_code == 500
     # The later engines are still attempted after transformers raised. mtmd is
@@ -1120,8 +1122,8 @@ def test_free_stt_frees_gguf_even_when_transformers_unload_raises(monkeypatch):
 
         def unload(
             self,
-            wait = True,
-            expected_model = None,
+            wait=True,
+            expected_model=None,
         ):
             raise RuntimeError("transformers unload failed")
 
@@ -1138,8 +1140,8 @@ def test_free_stt_frees_gguf_even_when_transformers_unload_raises(monkeypatch):
 
         def unload(
             self,
-            wait = True,
-            expected_model = None,
+            wait=True,
+            expected_model=None,
         ):
             self.unloaded = True
 
@@ -1173,10 +1175,10 @@ def test_unload_without_a_resident_backend_does_not_crash(monkeypatch):
     seen: dict = {}
 
     def _unload(
-        engines = None,
+        engines=None,
         *,
-        wait = True,
-        expected_model = None,
+        wait=True,
+        expected_model=None,
     ):
         seen["engines"] = engines
         seen["expected_model"] = expected_model
@@ -1185,7 +1187,7 @@ def test_unload_without_a_resident_backend_does_not_crash(monkeypatch):
     monkeypatch.setattr(orchestrator, "peek_inference_backend", lambda: None)
     monkeypatch.setattr(stt_registry, "unload", _unload)
 
-    asyncio.run(ri.stt_unload(engine = None, model = "whisper-small", current_subject = "tester"))
+    asyncio.run(ri.stt_unload(engine=None, model="whisper-small", current_subject="tester"))
 
     assert seen["engines"] is None
     assert seen["expected_model"] == "whisper-small"
@@ -1225,4 +1227,4 @@ def test_both_unload_callables_accept_the_arguments_the_route_passes(monkeypatch
 
     for unload in (registry_unload, orchestrator_unload):
         # Exactly how routes/inference.py::stt_unload calls it.
-        inspect.signature(unload).bind(["whisper"], expected_model = "whisper-small")
+        inspect.signature(unload).bind(["whisper"], expected_model="whisper-small")

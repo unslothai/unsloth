@@ -27,7 +27,7 @@ def unavailable_reason():
 def settings_for(row):
     config = json.loads(row.get("builtin_config_json") or "{}") if row else {}
     return BlenderSettings(
-        port = config.get("port", 9876), blender_path = config.get("blender_path", "")
+        port=config.get("port", 9876), blender_path=config.get("blender_path", "")
     )
 
 
@@ -48,20 +48,20 @@ def resolve_server(row: dict) -> dict:
     }
 
 
-def catalog_item(row = None):
+def catalog_item(row=None):
     reason = unavailable_reason()
     return McpBuiltinResponse(
         **settings_for(row).model_dump(),
-        server_id = row["id"] if row else None,
-        is_enabled = bool(row and row["is_enabled"]),
-        available = reason is None,
-        unavailable_reason = reason,
-        min_blender_version = MIN_BLENDER_VERSION,
+        server_id=row["id"] if row else None,
+        is_enabled=bool(row and row["is_enabled"]),
+        available=reason is None,
+        unavailable_reason=reason,
+        min_blender_version=MIN_BLENDER_VERSION,
     )
 
 
 async def _bridge_version(port):
-    reader, writer = await asyncio.open_connection("127.0.0.1", port, limit = 16384)
+    reader, writer = await asyncio.open_connection("127.0.0.1", port, limit=16384)
     try:
         request = {
             "type": "execute",
@@ -90,33 +90,33 @@ async def probe(
     settings: BlenderSettings,
     *,
     check_bridge: bool = True,
-    on_tools = None,
+    on_tools=None,
 ) -> McpServerProbeResult:
     reason = unavailable_reason()
     if reason:
-        return McpServerProbeResult(ok = False, error = reason)
+        return McpServerProbeResult(ok=False, error=reason)
     try:
         await asyncio.to_thread(ensure_runtime)
     except Exception:
         return McpServerProbeResult(
-            ok = False,
-            error = "Could not set up Blender MCP. Check the backend's internet connection and cache permissions, then retry. Downloads must match the pinned checksum.",
+            ok=False,
+            error="Could not set up Blender MCP. Check the backend's internet connection and cache permissions, then retry. Downloads must match the pinned checksum.",
         )
     row = resolve_server(
         {"builtin_id": "blender", "builtin_config_json": settings.model_dump_json()}
     )
     env = json.loads(row["headers_json"])
     try:
-        tools = await list_tools_async(row["url"], headers = env, timeout = 15)
+        tools = await list_tools_async(row["url"], headers=env, timeout=15)
     except Exception:
         return McpServerProbeResult(
-            ok = False,
-            error = "Could not connect to Blender MCP. Check the Unsloth backend installation and retry.",
+            ok=False,
+            error="Could not connect to Blender MCP. Check the Unsloth backend installation and retry.",
         )
-    result = McpServerProbeResult(ok = True, tool_count = len(tools))
+    result = McpServerProbeResult(ok=True, tool_count=len(tools))
     if check_bridge:
         try:
-            await asyncio.wait_for(_bridge_version(settings.port), timeout = 5)
+            await asyncio.wait_for(_bridge_version(settings.port), timeout=5)
             result.blender_ready = True
         except Exception:
             result.blender_ready = False

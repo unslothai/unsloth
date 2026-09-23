@@ -41,7 +41,7 @@ def _drafter_pairing_stem(name: str, *, kind: str) -> str:
         rf"-(?:{_GGUF_KNOWN_QUANT_RE.pattern})(?:-[0-9]+(?:\.[0-9]+)?bpw)?$",
         "",
         stem,
-        flags = re.IGNORECASE,
+        flags=re.IGNORECASE,
     )
     # A borrowed MTP head is published as mtp-<model>-shared-<quant>.gguf, so -shared marks the head's FORM, not the family. Left in, the stem is <model>-shared, which never prefixes <model>-<quant>, so the local scan could not pair the head the hub picker prefers. MTP only: no other kind borrows.
     if kind == "mtp":
@@ -53,7 +53,7 @@ def _drafter_matches_weight(candidate_name: str, weight_name: Optional[str], *, 
     """Whether a drafter pairs with the weight, by name. A multi-model folder must not attach a foreign drafter, so the family the drafter names has to PREFIX the weight filename at a non-alphanumeric boundary. That blocks one direction of a ``DeepSeek-V4-Flash-Lite`` / ``DeepSeek-V4-Flash`` pair but not the other, since the shorter family name is a prefix of the longer weight. Exact equality cannot replace the prefix rule (``mtp-gemma-4-12B-it.gguf`` really does ship beside ``gemma-4-12B-it-qat-*.gguf``), so the remaining direction is settled by ranking: callers prefer the longest matching stem (see _drafter_stem_rank)."""
     if weight_name is None:
         return True
-    stem = _drafter_pairing_stem(candidate_name, kind = kind)
+    stem = _drafter_pairing_stem(candidate_name, kind=kind)
     weight = weight_name.lower()
     return (
         bool(stem)
@@ -64,7 +64,7 @@ def _drafter_matches_weight(candidate_name: str, weight_name: Optional[str], *, 
 
 def _drafter_stem_rank(candidate_name: str, *, kind: str) -> int:
     """Sort key placing the most specific family first (longest stem wins): both ``mtp-DeepSeek-V4-Flash-BF16.gguf`` and ``mtp-DeepSeek-V4-Flash-0731-BF16.gguf`` prefix-match a 0731 weight, and only the second is really its drafter."""
-    return -len(_drafter_pairing_stem(candidate_name, kind = kind) or "")
+    return -len(_drafter_pairing_stem(candidate_name, kind=kind) or "")
 
 
 def _drafter_launch_path(candidate: Path) -> str:
@@ -91,6 +91,7 @@ def _drafter_split_is_complete(candidate: Path) -> bool:
 def _drafter_total_size(candidate: Path) -> int:
     """Bytes across every shard. Candidates are collapsed to shard 1, so a split copy must be summed or it would outrank a smaller single file."""
     from utils.models.model_config import colocated_split_shards
+
     try:
         shards, _ = colocated_split_shards(candidate)
         return sum(shard.stat().st_size for shard in shards)
@@ -108,10 +109,10 @@ def _drafter_names_other_weight(
     """Whether a sidecar names a DIFFERENT weight sitting beside it. A sidecar that names no family at all (the published ``dflash-kquant.gguf``, whose stem is a precision token) has to stay eligible, so "does it name a family" cannot be answered from the sidecar name alone. It is answered against the weights actually present: only a stem that pairs with some OTHER weight in the same repo or folder is evidence the sidecar belongs to that neighbour rather than to the weight being loaded."""
     if weight_name is None:
         return False
-    if _drafter_matches_weight(candidate_name, weight_name, kind = kind):
+    if _drafter_matches_weight(candidate_name, weight_name, kind=kind):
         return False
     return any(
-        _drafter_matches_weight(candidate_name, other, kind = kind) for other in other_weight_names
+        _drafter_matches_weight(candidate_name, other, kind=kind) for other in other_weight_names
     )
 
 

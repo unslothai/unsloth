@@ -32,7 +32,7 @@ def _http_error(name: str, *, fallback: str | None = None) -> Exception:
     response = requests.Response()
     response.status_code = 404 if "Entry" in name else 401
     try:
-        return cls(name, response = response)
+        return cls(name, response=response)
     except TypeError:
         # The plain-Exception base takes a message and nothing else.
         return cls(name)
@@ -76,7 +76,7 @@ def test_the_real_remote_404_reads_as_absent(monkeypatch):
     """Both supported Hub exception layouts report a remote 404 as absent."""
     _patch_metadata(
         monkeypatch,
-        _raise(_http_error("RemoteEntryNotFoundError", fallback = "EntryNotFoundError")),
+        _raise(_http_error("RemoteEntryNotFoundError", fallback="EntryNotFoundError")),
     )
 
     assert hf_file_definitely_absent("Org/Model", "adapter_config.json") is True
@@ -103,7 +103,7 @@ def test_offline_is_not_absence(monkeypatch):
         lambda: TimeoutError("slow"),
         lambda: ValueError("nonsense"),
     ],
-    ids = ["gated", "missing-repo", "timeout", "unexpected"],
+    ids=["gated", "missing-repo", "timeout", "unexpected"],
 )
 def test_every_other_failure_falls_through_to_the_caller(monkeypatch, make_exc):
     """Only confirmed remote 404s may short-circuit caller behavior."""
@@ -140,16 +140,16 @@ def test_an_unimportable_hub_is_not_an_answer(monkeypatch):
 def test_the_probe_writes_nothing_to_the_cache(monkeypatch, tmp_path):
     """A 404 probe leaves refs, snapshots, and no-exist markers unchanged."""
     repo_dir = tmp_path / "models--Org--Model"
-    (repo_dir / "refs").mkdir(parents = True)
-    (repo_dir / "snapshots" / ("a" * 40)).mkdir(parents = True)
-    (repo_dir / "refs" / "main").write_text("a" * 40, encoding = "utf-8")
+    (repo_dir / "refs").mkdir(parents=True)
+    (repo_dir / "snapshots" / ("a" * 40)).mkdir(parents=True)
+    (repo_dir / "refs" / "main").write_text("a" * 40, encoding="utf-8")
 
     before = sorted(str(p.relative_to(tmp_path)) for p in tmp_path.rglob("*"))
     _patch_metadata(monkeypatch, _raise(EntryNotFoundError("no such file")))
 
     assert hf_file_definitely_absent("Org/Model", "adapter_config.json") is True
     assert sorted(str(p.relative_to(tmp_path)) for p in tmp_path.rglob("*")) == before
-    assert (repo_dir / "refs" / "main").read_text(encoding = "utf-8") == "a" * 40
+    assert (repo_dir / "refs" / "main").read_text(encoding="utf-8") == "a" * 40
 
 
 def test_the_lora_base_probe_skips_the_download_when_the_file_is_absent(monkeypatch):
@@ -171,7 +171,7 @@ def test_a_present_adapter_config_still_resolves_its_base(monkeypatch, tmp_path)
     from utils.models import model_config
 
     cfg = tmp_path / "adapter_config.json"
-    cfg.write_text('{"base_model_name_or_path": "unsloth/Qwen3-1.7B"}', encoding = "utf-8")
+    cfg.write_text('{"base_model_name_or_path": "unsloth/Qwen3-1.7B"}', encoding="utf-8")
     monkeypatch.setattr(huggingface_hub, "hf_hub_download", lambda *_a, **_k: str(cfg))
     _patch_metadata(monkeypatch, lambda *_a, **_k: object())
 
@@ -205,7 +205,7 @@ def test_the_chat_template_search_skips_paths_the_listing_does_not_name(monkeypa
 
 
 def _functions(path: Path) -> dict:
-    tree = ast.parse(path.read_text(encoding = "utf-8"))
+    tree = ast.parse(path.read_text(encoding="utf-8"))
     return {
         node.name: node
         for node in ast.walk(tree)

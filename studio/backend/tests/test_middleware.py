@@ -23,9 +23,10 @@ if str(_BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(_BACKEND_ROOT))
 
 
-@pytest.fixture(scope = "module")
+@pytest.fixture(scope="module")
 def main_module():
     import main as _main  # noqa: F401
+
     return _main
 
 
@@ -35,27 +36,27 @@ def main_module():
 def _make_protected_app(
     max_bytes: int,
     main_module,
-    request_max_bytes_getter = None,
+    request_max_bytes_getter=None,
     upload_passthrough_prefixes: tuple = (),
-    upload_passthrough_max_bytes_getter = None,
+    upload_passthrough_max_bytes_getter=None,
     upload_passthrough_exact_paths: tuple = (),
     chunked_upload_exact_paths: tuple = (),
 ):
     app = FastAPI()
     app.add_middleware(
         main_module.MaxBodyMiddleware,
-        max_bytes_getter = lambda: max_bytes,
-        protected_prefixes = (
+        max_bytes_getter=lambda: max_bytes,
+        protected_prefixes=(
             "/v1/chat/completions",
             "/api/inference",
             "/api/settings",
             "/api/train",
         ),
-        request_max_bytes_getter = request_max_bytes_getter,
-        upload_passthrough_prefixes = upload_passthrough_prefixes,
-        upload_passthrough_max_bytes_getter = upload_passthrough_max_bytes_getter,
-        upload_passthrough_exact_paths = upload_passthrough_exact_paths,
-        chunked_upload_exact_paths = chunked_upload_exact_paths,
+        request_max_bytes_getter=request_max_bytes_getter,
+        upload_passthrough_prefixes=upload_passthrough_prefixes,
+        upload_passthrough_max_bytes_getter=upload_passthrough_max_bytes_getter,
+        upload_passthrough_exact_paths=upload_passthrough_exact_paths,
+        chunked_upload_exact_paths=chunked_upload_exact_paths,
     )
 
     @app.post("/v1/chat/completions")
@@ -95,21 +96,21 @@ class TestMaxBodyMiddleware:
     def test_small_protected_body_passes(self, main_module):
         app = _make_protected_app(1024, main_module)
         c = TestClient(app)
-        r = c.post("/v1/chat/completions", json = {"text": "x" * 100})
+        r = c.post("/v1/chat/completions", json={"text": "x" * 100})
         assert r.status_code == 200
         assert r.json()["n"] == 100
 
     def test_large_declared_content_length_rejected(self, main_module):
         app = _make_protected_app(1024, main_module)
         c = TestClient(app)
-        r = c.post("/v1/chat/completions", json = {"text": "x" * 5000})
+        r = c.post("/v1/chat/completions", json={"text": "x" * 5000})
         assert r.status_code == 413
         assert "too large" in r.json()["detail"].lower()
 
     def test_unprotected_prefix_passes_large_body(self, main_module):
         app = _make_protected_app(1024, main_module)
         c = TestClient(app)
-        r = c.post("/api/other", json = {"text": "x" * 5000})
+        r = c.post("/api/other", json={"text": "x" * 5000})
         assert r.status_code == 200
         assert r.json()["unprotected"] is True
 
@@ -117,17 +118,17 @@ class TestMaxBodyMiddleware:
         app = _make_protected_app(
             4096,
             main_module,
-            request_max_bytes_getter = lambda path: 128 if path.endswith("/transcribe/raw") else 4096,
+            request_max_bytes_getter=lambda path: 128 if path.endswith("/transcribe/raw") else 4096,
         )
         c = TestClient(app)
 
         rejected = c.post(
             "/api/inference/audio/transcribe/raw",
-            content = b"x" * 129,
+            content=b"x" * 129,
         )
         accepted = c.post(
             "/api/inference/audio/transcribe/raw",
-            content = b"x" * 128,
+            content=b"x" * 128,
         )
 
         assert rejected.status_code == 413
@@ -187,7 +188,7 @@ class TestMaxBodyMiddleware:
         c = TestClient(app)
         r = c.put(
             "/api/settings/upload-limit",
-            json = {"max_upload_size_mb": 500, "padding": "x" * 5000},
+            json={"max_upload_size_mb": 500, "padding": "x" * 5000},
         )
         assert r.status_code == 413
         assert "too large" in r.json()["detail"].lower()
@@ -206,8 +207,8 @@ class TestMaxBodyMiddleware:
 
         r = c.post(
             "/v1/chat/completions",
-            content = gen(),
-            headers = {"content-type": "application/json"},
+            content=gen(),
+            headers={"content-type": "application/json"},
         )
         assert r.status_code == 413
         assert "too large" in r.json()["detail"].lower()
@@ -223,8 +224,8 @@ class TestMaxBodyMiddleware:
 
         r = c.post(
             "/v1/chat/completions",
-            content = gen(),
-            headers = {"content-type": "application/json"},
+            content=gen(),
+            headers={"content-type": "application/json"},
         )
         assert r.status_code == 200
         assert r.json()["n"] == 50
@@ -239,14 +240,14 @@ class TestMaxBodyMiddleware:
         app = _make_protected_app(
             128,
             main_module,
-            upload_passthrough_prefixes = ("/api/train/upload",),
-            upload_passthrough_max_bytes_getter = lambda: 1024,
+            upload_passthrough_prefixes=("/api/train/upload",),
+            upload_passthrough_max_bytes_getter=lambda: 1024,
         )
         c = TestClient(app)
         r = c.post(
             "/api/train/upload",
-            content = b"x" * 512,
-            headers = {"content-type": "application/octet-stream"},
+            content=b"x" * 512,
+            headers={"content-type": "application/octet-stream"},
         )
         assert r.status_code == 200
         assert r.json()["total"] == 512
@@ -270,6 +271,7 @@ class TestMaxBodyMiddleware:
         # The exact-path passthrough must NOT sweep in the JSON sub-routes under the same prefix: a prefix match would let a large
         # caption/import body bypass the default JSON cap and be buffered up to the far larger upload limit.
         from utils.upload_limits import default_request_body_limit_bytes
+
         for path in (
             "/api/train/diffusion/dataset/my-set/caption/img.png",
             "/api/train/diffusion/dataset/import-example",
@@ -298,8 +300,8 @@ class TestMaxBodyMiddleware:
         app = _make_protected_app(
             128,
             main_module,
-            upload_passthrough_max_bytes_getter = lambda _p: 1024,
-            upload_passthrough_exact_paths = ("/api/train/diffusion/dataset",),
+            upload_passthrough_max_bytes_getter=lambda _p: 1024,
+            upload_passthrough_exact_paths=("/api/train/diffusion/dataset",),
         )
 
         @app.post("/api/train/diffusion/dataset")
@@ -311,16 +313,16 @@ class TestMaxBodyMiddleware:
         for path in ("/api/train/diffusion/dataset", "/api/train/diffusion/dataset/"):
             r = c.post(
                 path,
-                content = b"x" * 512,
-                headers = {"content-type": "application/octet-stream"},
+                content=b"x" * 512,
+                headers={"content-type": "application/octet-stream"},
             )
             assert r.status_code == 200, path
             assert r.json()["total"] == 512, path
         # A slashed JSON sub-route is still NOT passthrough: over-cap body is rejected.
         r = c.post(
             "/api/train/diffusion/dataset/import-example/",
-            content = b"x" * 512,
-            headers = {"content-type": "application/octet-stream"},
+            content=b"x" * 512,
+            headers={"content-type": "application/octet-stream"},
         )
         assert r.status_code == 413
         assert (
@@ -349,14 +351,14 @@ class TestMaxBodyMiddleware:
         app = _make_protected_app(
             128,
             main_module,
-            upload_passthrough_prefixes = ("/api/train/upload",),
-            upload_passthrough_max_bytes_getter = lambda: 256,
+            upload_passthrough_prefixes=("/api/train/upload",),
+            upload_passthrough_max_bytes_getter=lambda: 256,
         )
         c = TestClient(app)
         r = c.post(
             "/api/train/upload",
-            content = b"x" * 512,
-            headers = {"content-type": "application/octet-stream"},
+            content=b"x" * 512,
+            headers={"content-type": "application/octet-stream"},
         )
         assert r.status_code == 413
         assert "256" in r.json()["detail"]
@@ -365,8 +367,8 @@ class TestMaxBodyMiddleware:
         app = _make_protected_app(
             128,
             main_module,
-            upload_passthrough_prefixes = ("/api/train/upload",),
-            upload_passthrough_max_bytes_getter = lambda: 1024,
+            upload_passthrough_prefixes=("/api/train/upload",),
+            upload_passthrough_max_bytes_getter=lambda: 1024,
         )
         c = TestClient(app)
 
@@ -376,8 +378,8 @@ class TestMaxBodyMiddleware:
 
         r = c.post(
             "/api/train/upload",
-            content = gen(),
-            headers = {"content-type": "application/octet-stream"},
+            content=gen(),
+            headers={"content-type": "application/octet-stream"},
         )
         assert r.status_code == 411
         assert "Content-Length" in r.json()["detail"]
@@ -386,9 +388,9 @@ class TestMaxBodyMiddleware:
         app = _make_protected_app(
             128,
             main_module,
-            upload_passthrough_exact_paths = ("/api/train/upload",),
-            chunked_upload_exact_paths = ("/api/train/upload",),
-            upload_passthrough_max_bytes_getter = lambda path: 1024,
+            upload_passthrough_exact_paths=("/api/train/upload",),
+            chunked_upload_exact_paths=("/api/train/upload",),
+            upload_passthrough_max_bytes_getter=lambda path: 1024,
         )
         c = TestClient(app)
 
@@ -398,8 +400,8 @@ class TestMaxBodyMiddleware:
 
         r = c.post(
             "/api/train/upload",
-            content = small(),
-            headers = {"content-type": "application/octet-stream"},
+            content=small(),
+            headers={"content-type": "application/octet-stream"},
         )
         assert r.status_code == 200
 
@@ -409,8 +411,8 @@ class TestMaxBodyMiddleware:
 
         r = c.post(
             "/api/train/upload",
-            content = large(),
-            headers = {"content-type": "application/octet-stream"},
+            content=large(),
+            headers={"content-type": "application/octet-stream"},
         )
         assert r.status_code == 413
 
@@ -424,9 +426,9 @@ class TestMaxBodyMiddleware:
         app = _make_protected_app(
             128,
             main_module,
-            upload_passthrough_exact_paths = ("/api/train/upload",),
-            chunked_upload_exact_paths = (),
-            upload_passthrough_max_bytes_getter = lambda path: 1024,
+            upload_passthrough_exact_paths=("/api/train/upload",),
+            chunked_upload_exact_paths=(),
+            upload_passthrough_max_bytes_getter=lambda path: 1024,
         )
         c = TestClient(app)
 
@@ -435,8 +437,8 @@ class TestMaxBodyMiddleware:
 
         r = c.post(
             "/api/train/upload",
-            content = body(),
-            headers = {"content-type": "application/octet-stream"},
+            content=body(),
+            headers={"content-type": "application/octet-stream"},
         )
         assert r.status_code == 411
 
@@ -445,10 +447,10 @@ class TestMaxBodyMiddleware:
         app = FastAPI()
         app.add_middleware(
             main_module.MaxBodyMiddleware,
-            max_bytes_getter = lambda: 128,
-            protected_prefixes = ("/api/train",),
-            upload_passthrough_exact_paths = ("/api/train/ds",),
-            upload_passthrough_max_bytes_getter = lambda path: 10_000,
+            max_bytes_getter=lambda: 128,
+            protected_prefixes=("/api/train",),
+            upload_passthrough_exact_paths=("/api/train/ds",),
+            upload_passthrough_max_bytes_getter=lambda path: 10_000,
         )
 
         @app.post("/api/train/ds")
@@ -466,12 +468,12 @@ class TestMaxBodyMiddleware:
         # The exact upload path takes the large cap: a 512-byte body passes.
         r = c.post(
             "/api/train/ds",
-            content = b"x" * 512,
-            headers = {"content-type": "application/octet-stream"},
+            content=b"x" * 512,
+            headers={"content-type": "application/octet-stream"},
         )
         assert r.status_code == 200 and r.json()["total"] == 512
         # The sibling JSON sub-route keeps the 128-byte default cap: a large body is 413'd.
-        r = c.post("/api/train/ds/import-example", json = {"text": "x" * 5000})
+        r = c.post("/api/train/ds/import-example", json={"text": "x" * 5000})
         assert r.status_code == 413
 
 
@@ -492,9 +494,9 @@ def _make_csp_app(main_module, attach_nonce: str | None = None):
         if attach_nonce:
             headers[main_module._CSP_SCRIPT_NONCE_HEADER] = attach_nonce
         return Response(
-            content = b"<html></html>",
-            media_type = "text/html",
-            headers = headers,
+            content=b"<html></html>",
+            media_type="text/html",
+            headers=headers,
         )
 
     return app
@@ -547,8 +549,8 @@ class TestSecurityHeadersMiddleware:
         assert "https://ds.example.com" in directives["connect-src"]
 
     def test_connect_src_unchanged_without_mirror(self, main_module, monkeypatch):
-        monkeypatch.delenv("HF_ENDPOINT", raising = False)
-        monkeypatch.delenv("HF_DATASETS_SERVER", raising = False)
+        monkeypatch.delenv("HF_ENDPOINT", raising=False)
+        monkeypatch.delenv("HF_DATASETS_SERVER", raising=False)
         app = _make_csp_app(main_module)
         r = TestClient(app).get("/plain")
         csp = r.headers["content-security-policy"]
@@ -560,7 +562,7 @@ class TestSecurityHeadersMiddleware:
 
     def test_internal_nonce_header_is_spliced_into_csp_and_stripped(self, main_module):
         nonce = "test-nonce-abc"
-        app = _make_csp_app(main_module, attach_nonce = nonce)
+        app = _make_csp_app(main_module, attach_nonce=nonce)
         c = TestClient(app)
         r = c.get("/with-nonce")
         csp = r.headers["content-security-policy"]
@@ -579,7 +581,7 @@ class TestSecurityHeadersMiddleware:
         # The docs pages run vendored bundles off this origin, so the docs branch may relax
         # style/font/worker only. A third party in script-src here would reach the tokens
         # localStorage holds for the whole origin.
-        docs = main_module._build_csp(docs = True)
+        docs = main_module._build_csp(docs=True)
         directives = {
             chunk.strip().split(" ", 1)[0]: chunk.strip()
             for chunk in docs.split(";")
@@ -588,7 +590,7 @@ class TestSecurityHeadersMiddleware:
         assert directives["script-src"] == "script-src 'self'"
         assert "'unsafe-inline'" not in directives["script-src"]
         assert "cdn.jsdelivr.net" not in docs
-        nonced = main_module._build_csp("XYZ", docs = True)
+        nonced = main_module._build_csp("XYZ", docs=True)
         assert "script-src 'self' 'nonce-XYZ';" in nonced
 
         assert "blob:" in directives["worker-src"]
@@ -665,7 +667,7 @@ class TestSecurityHeadersMiddleware:
     def test_docs_urls_follow_the_root_path(self, main_module):
         # Behind a path-stripping proxy the browser sees a prefix the server never does, so
         # every URL the pages emit has to carry it, as FastAPI's own docs routes do.
-        c = TestClient(main_module.app, root_path = "/studio")
+        c = TestClient(main_module.app, root_path="/studio")
         docs = c.get("/docs").text
         assert "'/studio/openapi.json'" in docs
         assert "'/studio/docs/oauth2-redirect'" in docs
@@ -689,7 +691,7 @@ class TestSecurityHeadersMiddleware:
             "<script>\n  const ui = SwaggerUIBundle({url: '/openapi.json'})\n</script>\n"
             "</body></html>"
         )
-        r = main_module._nonced_docs_response(reflowed, tag = main_module._SWAGGER_INIT_TAG)
+        r = main_module._nonced_docs_response(reflowed, tag=main_module._SWAGGER_INIT_TAG)
         nonce = r.headers[main_module._CSP_SCRIPT_NONCE_HEADER]
         body = r.body.decode()
         assert f'<script nonce="{nonce}">' in body
@@ -699,7 +701,7 @@ class TestSecurityHeadersMiddleware:
         with pytest.raises(RuntimeError):
             main_module._nonced_docs_response(
                 "<html><body>no inline script</body></html>",
-                tag = main_module._SWAGGER_INIT_TAG,
+                tag=main_module._SWAGGER_INIT_TAG,
             )
 
     def test_docs_assets_are_served_from_this_origin(self, main_module):
@@ -739,7 +741,7 @@ class TestSecurityHeadersMiddleware:
                 yield b"a"
                 yield b"b"
 
-            return StreamingResponse(gen(), media_type = "text/plain")
+            return StreamingResponse(gen(), media_type="text/plain")
 
         r = TestClient(app).get("/stream")
         assert r.status_code == 200
@@ -754,7 +756,7 @@ class TestSecurityHeadersMiddleware:
 
         @app.get(main_module._ARTIFACT_PREVIEW_FRAME_PATH)
         async def frame():
-            return Response(content = b"<html></html>", media_type = "text/html")
+            return Response(content=b"<html></html>", media_type="text/html")
 
         r = TestClient(app).get(main_module._ARTIFACT_PREVIEW_FRAME_PATH)
         assert r.status_code == 200
@@ -857,7 +859,7 @@ class TestSecurityHeadersMiddleware:
                 finally:
                     state["cleaned_up"] = True
 
-            return StreamingResponse(gen(), media_type = "text/event-stream")
+            return StreamingResponse(gen(), media_type="text/event-stream")
 
         scope = {
             "type": "http",
@@ -893,7 +895,7 @@ class TestSecurityHeadersMiddleware:
                     body_started.set()
 
             # Must return without raising the anyio cancel-scope RuntimeError.
-            await asyncio.wait_for(app(scope, receive, send), timeout = 5.0)
+            await asyncio.wait_for(app(scope, receive, send), timeout=5.0)
             return sent
 
         sent = asyncio.run(run())
@@ -964,23 +966,23 @@ class TestFrontendAssets:
         (tmp_path / "index.html").write_text("<!doctype html><title>remote</title>")
         assets = tmp_path / "assets"
         assets.mkdir()
-        (assets / "app.js").write_text("export {};", encoding = "utf-8")
+        (assets / "app.js").write_text("export {};", encoding="utf-8")
         app = FastAPI()
         app.state.cloudflare_url = None
-        assert main_module.setup_frontend(app, tmp_path, tunnel_only = True)
+        assert main_module.setup_frontend(app, tmp_path, tunnel_only=True)
         client = TestClient(app)
-        remote_client = TestClient(app, base_url = "https://remote.trycloudflare.com")
+        remote_client = TestClient(app, base_url="https://remote.trycloudflare.com")
         headers = {"CF-Connecting-IP": "198.51.100.7"}
         assert client.get("/").status_code == 404
         assert client.get("/assets/app.js").status_code == 404
-        assert remote_client.get("/", headers = headers).status_code == 404
+        assert remote_client.get("/", headers=headers).status_code == 404
 
         app.state.cloudflare_url = "https://remote.trycloudflare.com"
-        assert remote_client.get("/", headers = headers).status_code == 200
-        assert remote_client.get("/settings/api", headers = headers).status_code == 200
-        assert remote_client.get("/assets/app.js", headers = headers).status_code == 200
-        assert client.get("/", headers = headers).status_code == 404
-        assert client.get("/settings/api", headers = headers).status_code == 404
+        assert remote_client.get("/", headers=headers).status_code == 200
+        assert remote_client.get("/settings/api", headers=headers).status_code == 200
+        assert remote_client.get("/assets/app.js", headers=headers).status_code == 200
+        assert client.get("/", headers=headers).status_code == 404
+        assert client.get("/settings/api", headers=headers).status_code == 404
         assert client.get("/").status_code == 404
 
     def test_hashed_assets_are_compressed_and_cached(self, tmp_path, main_module):
@@ -988,15 +990,15 @@ class TestFrontendAssets:
         (tmp_path / "page-abc123.js").write_bytes(content)
         app = FastAPI()
         assets_app = GZipMiddleware(
-            main_module.ImmutableStaticFiles(directory = tmp_path),
-            minimum_size = 1024,
-            compresslevel = 6,
+            main_module.ImmutableStaticFiles(directory=tmp_path),
+            minimum_size=1024,
+            compresslevel=6,
         )
-        app.mount("/assets", assets_app, name = "assets")
+        app.mount("/assets", assets_app, name="assets")
 
         response = TestClient(app).get(
             "/assets/page-abc123.js",
-            headers = {"Accept-Encoding": "gzip"},
+            headers={"Accept-Encoding": "gzip"},
         )
 
         assert response.status_code == 200
@@ -1006,19 +1008,19 @@ class TestFrontendAssets:
         assert "accept-encoding" in response.headers["vary"].lower()
 
     def test_asset_revalidation_keeps_immutable_cache_header(self, tmp_path, main_module):
-        (tmp_path / "page-abc123.js").write_text("export {};", encoding = "utf-8")
+        (tmp_path / "page-abc123.js").write_text("export {};", encoding="utf-8")
         app = FastAPI()
         app.mount(
             "/assets",
-            main_module.ImmutableStaticFiles(directory = tmp_path),
-            name = "assets",
+            main_module.ImmutableStaticFiles(directory=tmp_path),
+            name="assets",
         )
         client = TestClient(app)
         first = client.get("/assets/page-abc123.js")
 
         response = client.get(
             "/assets/page-abc123.js",
-            headers = {"If-None-Match": first.headers["etag"]},
+            headers={"If-None-Match": first.headers["etag"]},
         )
 
         assert response.status_code == 304
@@ -1029,15 +1031,15 @@ class TestFrontendAssets:
         (tmp_path / "page-abc123.js").write_bytes(content)
         app = FastAPI()
         assets_app = main_module._AssetGZipMiddleware(
-            main_module.ImmutableStaticFiles(directory = tmp_path),
-            minimum_size = 1024,
-            compresslevel = 6,
+            main_module.ImmutableStaticFiles(directory=tmp_path),
+            minimum_size=1024,
+            compresslevel=6,
         )
-        app.mount("/assets", assets_app, name = "assets")
+        app.mount("/assets", assets_app, name="assets")
 
         response = TestClient(app).get(
             "/assets/page-abc123.js",
-            headers = {"Accept-Encoding": "gzip", "Range": "bytes=0-99"},
+            headers={"Accept-Encoding": "gzip", "Range": "bytes=0-99"},
         )
 
         assert response.status_code == 206
@@ -1067,15 +1069,15 @@ def health_app(tmp_path, monkeypatch):
     # two-tuple here raised IndexError once main added the detail field.
     monkeypatch.setattr(_main, "_hardware_snapshot", lambda: (False, None, None))
     app = FastAPI()
-    app.add_api_route("/api/health", _main.health_check, methods = ["GET"])
+    app.add_api_route("/api/health", _main.health_check, methods=["GET"])
 
     import secrets as _secrets
 
     storage.create_initial_user(
-        username = storage.DEFAULT_ADMIN_USERNAME,
-        password = "human-password-123",
-        jwt_secret = _secrets.token_urlsafe(64),
-        must_change_password = False,
+        username=storage.DEFAULT_ADMIN_USERNAME,
+        password="human-password-123",
+        jwt_secret=_secrets.token_urlsafe(64),
+        must_change_password=False,
     )
     return app
 
@@ -1114,7 +1116,7 @@ class TestHealthAuthGate:
         c = TestClient(health_app)
         r = c.get(
             "/api/health",
-            headers = {"Authorization": "Bearer not-a-real-token"},
+            headers={"Authorization": "Bearer not-a-real-token"},
         )
         assert r.status_code == 200
         body = r.json()
@@ -1132,7 +1134,7 @@ class TestHealthAuthGate:
         c = TestClient(health_app)
         r = c.get(
             "/api/health",
-            headers = {"Authorization": f"Bearer {token}"},
+            headers={"Authorization": f"Bearer {token}"},
         )
         assert r.status_code == 200
         body = r.json()
@@ -1183,10 +1185,10 @@ def _connect_src(policy: str) -> list[str]:
 
 
 class TestCspHfEndpoints:
-    @pytest.fixture(autouse = True)
+    @pytest.fixture(autouse=True)
     def _clean_env(self, monkeypatch):
-        monkeypatch.delenv("HF_ENDPOINT", raising = False)
-        monkeypatch.delenv("HF_DATASETS_SERVER", raising = False)
+        monkeypatch.delenv("HF_ENDPOINT", raising=False)
+        monkeypatch.delenv("HF_DATASETS_SERVER", raising=False)
         import utils.hf_endpoint as _mod
 
         monkeypatch.setattr(_mod, "_ds_mirror_warned", False)
@@ -1326,22 +1328,22 @@ class TestCspHfEndpoints:
         """A loopback endpoint means the BROWSER's localhost anywhere else: dead,
         or an unrelated service that would be handed the user's Hub token."""
         monkeypatch.setenv("HF_ENDPOINT", endpoint)
-        local = TestClient(main_module.app, client = ("127.0.0.1", 40000))
+        local = TestClient(main_module.app, client=("127.0.0.1", 40000))
         assert local.get("/api/health").json()["hf_endpoint"] == loopback_sees
-        remote = TestClient(main_module.app, client = ("192.168.1.50", 40000))
+        remote = TestClient(main_module.app, client=("192.168.1.50", 40000))
         assert remote.get("/api/health").json()["hf_endpoint"] == remote_sees
 
     def test_a_tunneled_client_is_not_mistaken_for_a_local_one(self, main_module, monkeypatch):
         """Through the managed tunnel the socket peer IS loopback: it is the local
         cloudflared process, not the visitor."""
         monkeypatch.setenv("HF_ENDPOINT", "http://127.0.0.1:9700")
-        c = TestClient(main_module.app, client = ("127.0.0.1", 40000))
-        tunneled = c.get("/api/health", headers = {"CF-Connecting-IP": "8.8.8.8"})
+        c = TestClient(main_module.app, client=("127.0.0.1", 40000))
+        tunneled = c.get("/api/health", headers={"CF-Connecting-IP": "8.8.8.8"})
         assert tunneled.json()["hf_endpoint"] == "https://huggingface.co"
         assert c.get("/api/health").json()["hf_endpoint"] == "http://127.0.0.1:9700"
         # A forged header from a non-loopback peer is ignored (client_ip's rule).
-        remote = TestClient(main_module.app, client = ("192.168.1.50", 40000))
-        forged = remote.get("/api/health", headers = {"CF-Connecting-IP": "127.0.0.1"})
+        remote = TestClient(main_module.app, client=("192.168.1.50", 40000))
+        forged = remote.get("/api/health", headers={"CF-Connecting-IP": "127.0.0.1"})
         assert forged.json()["hf_endpoint"] == "https://huggingface.co"
 
     @pytest.mark.parametrize(
@@ -1360,12 +1362,12 @@ class TestCspHfEndpoints:
         """10.0.0.5 means the VISITOR's 10.0.0.5, one step out from localhost. A
         LAN client is on the backend's network and still gets the real value."""
         monkeypatch.setenv("HF_ENDPOINT", endpoint)
-        tunneled = TestClient(main_module.app, client = ("127.0.0.1", 40000))
-        seen = tunneled.get("/api/health", headers = {"CF-Connecting-IP": "8.8.8.8"}).json()[
+        tunneled = TestClient(main_module.app, client=("127.0.0.1", 40000))
+        seen = tunneled.get("/api/health", headers={"CF-Connecting-IP": "8.8.8.8"}).json()[
             "hf_endpoint"
         ]
         assert seen == remote_sees
-        lan = TestClient(main_module.app, client = ("192.168.1.50", 40000))
+        lan = TestClient(main_module.app, client=("192.168.1.50", 40000))
         lan_expected = "https://huggingface.co" if "127.0.0.1" in endpoint else endpoint
         assert lan.get("/api/health").json()["hf_endpoint"] == lan_expected
 
@@ -1394,23 +1396,23 @@ class TestRemoteAccessCORS:
 
         app.add_middleware(
             main_module.RemoteAccessCORSMiddleware,
-            remote_access_state = app.state,
-            allow_origins = allow_origins or cors_origins_for_mode(api_only = True, secure = False),
-            allow_credentials = True,
-            allow_methods = ["*"],
-            allow_headers = ["*"],
-            max_age = 60,
+            remote_access_state=app.state,
+            allow_origins=allow_origins or cors_origins_for_mode(api_only=True, secure=False),
+            allow_credentials=True,
+            allow_methods=["*"],
+            allow_headers=["*"],
+            max_age=60,
         )
         return app, TestClient(app)
 
     def _allowed(self, client, origin):
-        response = client.get("/api/auth/status", headers = {"Origin": origin})
+        response = client.get("/api/auth/status", headers={"Origin": origin})
         return response.headers.get("access-control-allow-origin")
 
     def _preflight(self, client, origin):
         return client.options(
             "/api/auth/status",
-            headers = {
+            headers={
                 "Origin": origin,
                 "Access-Control-Request-Method": "GET",
                 "Access-Control-Request-Headers": "authorization",

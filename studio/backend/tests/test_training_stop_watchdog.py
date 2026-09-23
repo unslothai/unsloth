@@ -33,7 +33,7 @@ def _shared_setup_1(monkeypatch):
     b = TrainingBackend()
     calls = _record_force_terminate(monkeypatch, b)
 
-    proc = _FakeProc(alive = True)
+    proc = _FakeProc(alive=True)
     b._proc = proc
     return b, calls, proc
 
@@ -42,7 +42,7 @@ def _shared_setup_2(monkeypatch):
     b = TrainingBackend()
     calls = _record_force_terminate(monkeypatch, b)
 
-    b._proc = _FakeProc(alive = True)
+    b._proc = _FakeProc(alive=True)
     return b, calls
 
 
@@ -73,7 +73,7 @@ _lg.get_logger = lambda name: logging.getLogger(name)
 _stub("loggers", _lg)
 _stub("structlog", _types.ModuleType("structlog"))
 _hw = _types.ModuleType("utils.hardware")
-_hw.get_device = lambda: _types.SimpleNamespace(value = "cpu")
+_hw.get_device = lambda: _types.SimpleNamespace(value="cpu")
 _hw.prepare_gpu_selection = lambda *a, **k: (None, None)
 _stub("utils.hardware", _hw)
 _npl = _types.ModuleType("utils.native_path_leases")
@@ -134,11 +134,11 @@ class _FakeProc:
     def kill(self):
         self.killed = True
 
-    def join(self, timeout = None):
+    def join(self, timeout=None):
         pass
 
 
-def _wait_until(predicate, timeout = 5.0):
+def _wait_until(predicate, timeout=5.0):
     deadline = time.time() + timeout
     while time.time() < deadline:
         if predicate():
@@ -150,11 +150,11 @@ def _wait_until(predicate, timeout = 5.0):
 def _record_force_terminate(monkeypatch, b):
     """Replace force_terminate + escalation finalize with recorders (no DB/OS)."""
     calls: list = []
-    monkeypatch.setattr(b, "force_terminate", lambda target_proc = None: calls.append("force"))
+    monkeypatch.setattr(b, "force_terminate", lambda target_proc=None: calls.append("force"))
     monkeypatch.setattr(
         b,
         "_finalize_stopped_after_escalation",
-        lambda target_proc = None, watched_job_id = None: calls.append("final"),
+        lambda target_proc=None, watched_job_id=None: calls.append("final"),
     )
     return calls
 
@@ -168,11 +168,11 @@ def test_watchdog_escalates_after_grace_once_complete_seen(monkeypatch):
     b, calls, proc = _shared_setup_1(monkeypatch)
     b._complete_seen.set()  # worker reported "complete" -> save is done
 
-    b._start_stop_watchdog(cancel = False)
+    b._start_stop_watchdog(cancel=False)
     assert _wait_until(
         lambda: calls == ["force", "final"]
     ), "watchdog must force_terminate a worker still alive after the post-save grace"
-    b._stop_watchdog.join(timeout = 5)
+    b._stop_watchdog.join(timeout=5)
 
 
 # (b) The absolute cap is a last-resort backstop, not a save killer.
@@ -183,14 +183,14 @@ def test_watchdog_does_not_kill_save_still_saving_within_window(monkeypatch):
     monkeypatch.setitem(_G, "_STOP_GRACE_S", 100.0)
     monkeypatch.setitem(_G, "_STOP_TIMEOUT_S", 100.0)
     b, calls, proc = _shared_setup_1(monkeypatch)
-    b._start_stop_watchdog(cancel = False)
+    b._start_stop_watchdog(cancel=False)
 
     time.sleep(0.3)
     assert calls == [], "an in-progress save must not be killed within the absolute window"
     assert b._stop_watchdog.is_alive()
 
     proc._alive = False
-    b._stop_watchdog.join(timeout = 5)
+    b._stop_watchdog.join(timeout=5)
 
 
 def test_watchdog_backstop_fires_for_save_after_absolute_timeout(monkeypatch):
@@ -198,11 +198,11 @@ def test_watchdog_backstop_fires_for_save_after_absolute_timeout(monkeypatch):
     monkeypatch.setitem(_G, "_STOP_GRACE_S", 100.0)  # never trips (no complete)
     monkeypatch.setitem(_G, "_STOP_TIMEOUT_S", 0.05)
     b, calls = _shared_setup_2(monkeypatch)
-    b._start_stop_watchdog(cancel = False)
+    b._start_stop_watchdog(cancel=False)
     assert _wait_until(
         lambda: calls == ["force", "final"]
     ), "the absolute backstop must force_terminate a save that never completes"
-    b._stop_watchdog.join(timeout = 5)
+    b._stop_watchdog.join(timeout=5)
 
 
 def test_cancel_uses_shorter_absolute_timeout(monkeypatch):
@@ -211,11 +211,11 @@ def test_cancel_uses_shorter_absolute_timeout(monkeypatch):
     monkeypatch.setitem(_G, "_STOP_TIMEOUT_S", 100.0)  # save cap would not fire
     monkeypatch.setitem(_G, "_CANCEL_TIMEOUT_S", 0.05)
     b, calls = _shared_setup_2(monkeypatch)
-    b._start_stop_watchdog(cancel = True)
+    b._start_stop_watchdog(cancel=True)
     assert _wait_until(
         lambda: calls == ["force", "final"]
     ), "a cancel must escalate on the shorter cancel timeout"
-    b._stop_watchdog.join(timeout = 5)
+    b._stop_watchdog.join(timeout=5)
 
 
 # (c) No force-kill when the worker exits cleanly and promptly.
@@ -227,12 +227,12 @@ def test_watchdog_no_op_on_clean_quick_exit(monkeypatch):
     b, calls, proc = _shared_setup_1(monkeypatch)
     b._complete_seen.set()  # save done; worker is about to exit on its own
 
-    b._start_stop_watchdog(cancel = False)
+    b._start_stop_watchdog(cancel=False)
     # Worker exits promptly, well before the grace period elapses.
     time.sleep(0.1)
     proc._alive = False
 
-    b._stop_watchdog.join(timeout = 5)
+    b._stop_watchdog.join(timeout=5)
     assert not b._stop_watchdog.is_alive()
     assert calls == [], "a clean quick exit must not trigger force_terminate"
 
@@ -244,15 +244,15 @@ def test_watchdog_no_op_when_worker_superseded(monkeypatch):
     b = TrainingBackend()
     calls = _record_force_terminate(monkeypatch, b)
 
-    old_proc = _FakeProc(alive = True)
+    old_proc = _FakeProc(alive=True)
     b._proc = old_proc
     b._complete_seen.set()
-    b._start_stop_watchdog(cancel = False)
+    b._start_stop_watchdog(cancel=False)
 
     # A new run takes over the handle before the grace elapses.
-    b._proc = _FakeProc(alive = True)
+    b._proc = _FakeProc(alive=True)
 
-    b._stop_watchdog.join(timeout = 5)
+    b._stop_watchdog.join(timeout=5)
     assert calls == [], "watchdog must not force_terminate a superseded worker"
 
 
@@ -265,9 +265,9 @@ def test_new_run_gets_its_own_watchdog(monkeypatch):
     def _blocked_watchdog(
         target_proc,
         cancel,
-        watched_job_id = None,
-        grace_s = None,
-        terminal_seen = False,
+        watched_job_id=None,
+        grace_s=None,
+        terminal_seen=False,
     ):
         started.append(target_proc)
         # No timeout: the finally always releases this, so a superseded watchdog stays alive
@@ -276,16 +276,16 @@ def test_new_run_gets_its_own_watchdog(monkeypatch):
 
     monkeypatch.setattr(b, "_stop_watchdog_loop", _blocked_watchdog)
 
-    old_proc = _FakeProc(alive = True)
+    old_proc = _FakeProc(alive=True)
     b._proc = old_proc
-    b._start_stop_watchdog(cancel = False)
+    b._start_stop_watchdog(cancel=False)
     first_wd = b._stop_watchdog
     assert _wait_until(lambda: started == [old_proc])
 
     # New run: a fresh worker replaces the handle, so its stop gets a new watcher.
-    new_proc = _FakeProc(alive = True)
+    new_proc = _FakeProc(alive=True)
     b._proc = new_proc
-    b._start_stop_watchdog(cancel = False)
+    b._start_stop_watchdog(cancel=False)
     second_wd = b._stop_watchdog
 
     try:
@@ -295,24 +295,24 @@ def test_new_run_gets_its_own_watchdog(monkeypatch):
         assert b._stop_watchdog_proc is new_proc
     finally:
         release.set()
-        first_wd.join(timeout = 5)
-        second_wd.join(timeout = 5)
+        first_wd.join(timeout=5)
+        second_wd.join(timeout=5)
 
 
 def test_force_terminate_targets_only_captured_proc():
     # Superseded: force_terminate(target) must not touch a different current worker.
     b = TrainingBackend()
-    old_proc = _FakeProc(alive = True)
-    new_proc = _FakeProc(alive = True)
+    old_proc = _FakeProc(alive=True)
+    new_proc = _FakeProc(alive=True)
     b._proc = new_proc
-    b.force_terminate(target_proc = old_proc)
+    b.force_terminate(target_proc=old_proc)
     assert new_proc.terminated is False, "must not terminate the new run's worker"
     assert old_proc.terminated is False, "must not terminate a handle that is not current"
 
     # Matching: the captured handle is the current worker, so it is terminated.
-    p = _FakeProc(alive = True)
+    p = _FakeProc(alive=True)
     b._proc = p
-    b.force_terminate(target_proc = p)
+    b.force_terminate(target_proc=p)
     assert p.terminated is True
 
 
@@ -326,7 +326,7 @@ def test_finalize_runs_even_if_force_terminate_raises(monkeypatch):
     monkeypatch.setitem(_G, "_STOP_TIMEOUT_S", 100.0)
     b = TrainingBackend()
 
-    def _boom(target_proc = None):
+    def _boom(target_proc=None):
         raise RuntimeError("kill() failed on wedged child")
 
     finalized: list = []
@@ -334,17 +334,17 @@ def test_finalize_runs_even_if_force_terminate_raises(monkeypatch):
     monkeypatch.setattr(
         b,
         "_finalize_stopped_after_escalation",
-        lambda target_proc = None, watched_job_id = None: finalized.append(True),
+        lambda target_proc=None, watched_job_id=None: finalized.append(True),
     )
 
-    b._proc = _FakeProc(alive = True)
+    b._proc = _FakeProc(alive=True)
     b._complete_seen.set()
-    b._start_stop_watchdog(cancel = False)
+    b._start_stop_watchdog(cancel=False)
 
     assert _wait_until(
         lambda: finalized == [True]
     ), "finalize must run even when force_terminate raises"
-    b._stop_watchdog.join(timeout = 5)
+    b._stop_watchdog.join(timeout=5)
 
 
 def test_finalize_after_escalation_clears_state(monkeypatch):
@@ -353,13 +353,13 @@ def test_finalize_after_escalation_clears_state(monkeypatch):
     finstop: list = []
     monkeypatch.setattr(b, "_finish_stopped_run", lambda *a, **k: finstop.append(a))
 
-    b._proc = _FakeProc(alive = True)  # wedged: still reports alive
+    b._proc = _FakeProc(alive=True)  # wedged: still reports alive
     b._should_stop = True
     b.current_job_id = "job_c"
     b._db_run_created = True
     b._progress.is_training = True
 
-    b._finalize_stopped_after_escalation(watched_job_id = "job_c")
+    b._finalize_stopped_after_escalation(watched_job_id="job_c")
 
     assert b._proc is None, "the wedged handle must be dropped so is_training_active clears"
     assert b._progress.is_training is False
@@ -375,13 +375,13 @@ def test_finalize_after_escalation_preserves_output_dir(monkeypatch):
     finstop: list = []
     monkeypatch.setattr(b, "_finish_stopped_run", lambda *a, **k: finstop.append(a))
 
-    b._proc = _FakeProc(alive = True)
+    b._proc = _FakeProc(alive=True)
     b._should_stop = True
     b.current_job_id = "job_c"
     b._db_run_created = True
     b._output_dir = "/tmp/outputs/run-123"
 
-    b._finalize_stopped_after_escalation(watched_job_id = "job_c")
+    b._finalize_stopped_after_escalation(watched_job_id="job_c")
 
     # _finish_stopped_run(run_id, output_dir, batch, final_step, final_loss, duration, loss_history)
     assert finstop and finstop[0][0] == "job_c"
@@ -394,14 +394,14 @@ def test_finalize_after_escalation_clears_output_dir_on_cancel(monkeypatch):
     finstop: list = []
     monkeypatch.setattr(b, "_finish_stopped_run", lambda *a, **k: finstop.append((a, k)))
 
-    b._proc = _FakeProc(alive = True)
+    b._proc = _FakeProc(alive=True)
     b._should_stop = True
     b._cancel_requested = True
     b.current_job_id = "job_c"
     b._db_run_created = True
     b._output_dir = "/tmp/outputs/run-123"
 
-    b._finalize_stopped_after_escalation(watched_job_id = "job_c")
+    b._finalize_stopped_after_escalation(watched_job_id="job_c")
 
     assert finstop and finstop[0][0][0] == "job_c"
     assert finstop[0][0][1] is None, "a cancelled run must not record a checkpoint path"
@@ -414,18 +414,18 @@ def test_stop_training_starts_watchdog_only_when_worker_alive(monkeypatch):
     b = TrainingBackend()
     b.current_job_id = "job_idle"
     b._proc = None
-    assert b.stop_training(save = True, expected_job_id = "job_idle") is True
+    assert b.stop_training(save=True, expected_job_id="job_idle") is True
     assert b._stop_watchdog is None
 
 
 def test_stop_training_expected_job_mismatch_leaves_current_run_untouched():
     b = TrainingBackend()
     b.current_job_id = "job_new"
-    b._proc = _FakeProc(alive = True)
+    b._proc = _FakeProc(alive=True)
     b._stop_queue = queue.Queue()
     b._progress.status_message = "Training"
 
-    assert b.stop_training(save = False, expected_job_id = "job_old") is False
+    assert b.stop_training(save=False, expected_job_id="job_old") is False
     assert b._should_stop is False
     assert b._cancel_requested is False
     assert b._stop_queue.empty()
@@ -437,7 +437,7 @@ def test_stop_training_expected_job_mismatch_leaves_current_run_untouched():
 def test_reset_training_expected_job_mismatch_leaves_current_run_untouched(monkeypatch):
     b = TrainingBackend()
     b.current_job_id = "job_new"
-    b._proc = _FakeProc(alive = True)
+    b._proc = _FakeProc(alive=True)
     b._cancel_requested = True
     b._progress.is_training = True
     b.loss_history = [1.0]
@@ -447,7 +447,7 @@ def test_reset_training_expected_job_mismatch_leaves_current_run_untouched(monke
 
     monkeypatch.setattr(b, "force_terminate", fail_if_terminated)
 
-    assert b.reset_training_state(expected_job_id = "job_old") == "superseded"
+    assert b.reset_training_state(expected_job_id="job_old") == "superseded"
     assert b.current_job_id == "job_new"
     assert b._proc is not None
     assert b._proc.is_alive() is True
@@ -461,8 +461,8 @@ def test_scoped_stop_identity_check_is_serialized_with_new_start():
 
     b = TrainingBackend()
     b.current_job_id = "job_old"
-    old_proc = _FakeProc(alive = False)
-    new_proc = _FakeProc(alive = True)
+    old_proc = _FakeProc(alive=False)
+    new_proc = _FakeProc(alive=True)
     b._proc = old_proc
     result: list[bool] = []
     entered = threading.Event()
@@ -471,20 +471,20 @@ def test_scoped_stop_identity_check_is_serialized_with_new_start():
         entered.set()
         result.append(
             b.stop_training(
-                save = False,
-                expected_job_id = "job_old",
+                save=False,
+                expected_job_id="job_old",
             )
         )
 
     with training_lifecycle_guard():
-        thread = threading.Thread(target = stop_old_run)
+        thread = threading.Thread(target=stop_old_run)
         thread.start()
-        assert entered.wait(timeout = 1.0)
+        assert entered.wait(timeout=1.0)
         b.current_job_id = "job_new"
         b._proc = new_proc
         b._stop_queue = queue.Queue()
 
-    thread.join(timeout = 5.0)
+    thread.join(timeout=5.0)
     assert result == [False]
     assert b.current_job_id == "job_new"
     assert b._proc is new_proc
@@ -502,14 +502,14 @@ def test_finalize_after_escalation_no_ops_when_superseded(monkeypatch):
     finstop: list = []
     monkeypatch.setattr(b, "_finish_stopped_run", lambda *a, **k: finstop.append(a))
 
-    old_proc = _FakeProc(alive = False)  # force-terminated worker we were watching
-    new_proc = _FakeProc(alive = True)  # a new run already took over
+    old_proc = _FakeProc(alive=False)  # force-terminated worker we were watching
+    new_proc = _FakeProc(alive=True)  # a new run already took over
     b._proc = new_proc
     b.current_job_id = "job_new"
     b._db_run_created = True
     b._progress.is_training = True
 
-    b._finalize_stopped_after_escalation(target_proc = old_proc)
+    b._finalize_stopped_after_escalation(target_proc=old_proc)
 
     assert b._proc is new_proc, "must not drop the new run's handle"
     assert b._progress.is_training is True, "must not mark the new run stopped"
@@ -522,13 +522,13 @@ def test_finalize_after_escalation_runs_for_its_own_worker(monkeypatch):
     finstop: list = []
     monkeypatch.setattr(b, "_finish_stopped_run", lambda *a, **k: finstop.append(a))
 
-    proc = _FakeProc(alive = False)
+    proc = _FakeProc(alive=False)
     b._proc = proc
     b.current_job_id = "job_a"
     b._db_run_created = True
     b._progress.is_training = True
 
-    b._finalize_stopped_after_escalation(target_proc = proc, watched_job_id = "job_a")
+    b._finalize_stopped_after_escalation(target_proc=proc, watched_job_id="job_a")
 
     assert b._proc is None
     assert b._progress.is_training is False
@@ -542,13 +542,13 @@ def test_finalize_after_escalation_no_ops_on_job_change_during_startup(monkeypat
     finstop: list = []
     monkeypatch.setattr(b, "_finish_stopped_run", lambda *a, **k: finstop.append(a))
 
-    old_proc = _FakeProc(alive = False)  # old worker, dead; new _proc not installed yet
+    old_proc = _FakeProc(alive=False)  # old worker, dead; new _proc not installed yet
     b._proc = old_proc  # still the old handle (== target), so proc guard would pass
     b.current_job_id = "job_new"  # but the new run already claimed the job id
     b._db_run_created = True
     b._progress.is_training = True
 
-    b._finalize_stopped_after_escalation(target_proc = old_proc, watched_job_id = "job_old")
+    b._finalize_stopped_after_escalation(target_proc=old_proc, watched_job_id="job_old")
 
     assert b._proc is old_proc, "must not drop the handle during a new run's startup"
     assert b._progress.is_training is True, "must not mark the starting run stopped"
@@ -563,7 +563,7 @@ def test_later_cancel_tightens_watchdog_timeout(monkeypatch):
     monkeypatch.setitem(_G, "_STOP_TIMEOUT_S", 100.0)  # save cap would not fire
     monkeypatch.setitem(_G, "_CANCEL_TIMEOUT_S", 0.05)
     b, calls = _shared_setup_2(monkeypatch)
-    b._start_stop_watchdog(cancel = False)  # started as a save-stop with the long cap
+    b._start_stop_watchdog(cancel=False)  # started as a save-stop with the long cap
     time.sleep(0.15)
     assert calls == [], "a save-stop must not escalate on the short cancel cap yet"
 
@@ -572,7 +572,7 @@ def test_later_cancel_tightens_watchdog_timeout(monkeypatch):
     assert _wait_until(
         lambda: calls == ["force", "final"]
     ), "a later cancel must tighten the watchdog to the shorter cancel cap"
-    b._stop_watchdog.join(timeout = 5)
+    b._stop_watchdog.join(timeout=5)
 
 
 # (f) DB finalize/flush are safe when the watchdog and pump race (see Item 4).
@@ -606,13 +606,13 @@ def test_stop_without_save_creates_missing_row_before_signal(monkeypatch):
     b = TrainingBackend()
     b.current_job_id, b._db_config = "job_missing", {"model_name": "m"}
     b._stop_queue = queue.Queue()
-    assert b.stop_training(save = False, expected_job_id = "job_missing") is True
+    assert b.stop_training(save=False, expected_job_id="job_missing") is True
     assert [run["id"] for run in recs["created"]] == ["job_missing"]
     assert b._stop_queue.get_nowait() == {"type": "stop", "save": False}
 
     b._cancel_requested = b._should_stop = False
     sys.modules["storage.studio_db"].mark_run_cancel_requested = lambda _run_id: False
-    assert b.stop_training(save = False, expected_job_id = "job_missing") is False
+    assert b.stop_training(save=False, expected_job_id="job_missing") is False
     assert not b._cancel_requested and b._stop_queue.empty()
 
     new_queue = queue.Queue()
@@ -625,7 +625,7 @@ def test_stop_without_save_creates_missing_row_before_signal(monkeypatch):
         return True
 
     sys.modules["storage.studio_db"].mark_run_cancel_requested = _supersede
-    assert b.stop_training(save = False, expected_job_id = "job_old") is False
+    assert b.stop_training(save=False, expected_job_id="job_old") is False
     assert not b._cancel_requested and new_queue.empty()
 
 
@@ -652,13 +652,13 @@ def test_finalize_run_in_db_single_winner_under_concurrency(monkeypatch):
 
     def worker():
         start.wait()
-        b._finalize_run_in_db(status = "stopped")
+        b._finalize_run_in_db(status="stopped")
 
-    threads = [threading.Thread(target = worker) for _ in range(8)]
+    threads = [threading.Thread(target=worker) for _ in range(8)]
     for t in threads:
         t.start()
     for t in threads:
-        t.join(timeout = 5)
+        t.join(timeout=5)
 
     assert len(recs["finished"]) == 1, f"finalize must run once, got {len(recs['finished'])}"
     assert attempts == 3
@@ -673,7 +673,7 @@ def test_finalize_run_in_db_no_ops_on_job_mismatch(monkeypatch):
     b._db_run_created = True
     b._run_finalized = False
 
-    b._finalize_run_in_db(status = "stopped", expected_job_id = "job_old")
+    b._finalize_run_in_db(status="stopped", expected_job_id="job_old")
 
     assert recs["finished"] == [], "a superseded job id must not finalize the current run"
     assert b._run_finalized is False
@@ -694,11 +694,11 @@ def test_concurrent_flush_claims_each_metric_once(monkeypatch):
         for _ in range(50):
             b._flush_metrics_to_db()
 
-    threads = [threading.Thread(target = worker) for _ in range(6)]
+    threads = [threading.Thread(target=worker) for _ in range(6)]
     for t in threads:
         t.start()
     for t in threads:
-        t.join(timeout = 5)
+        t.join(timeout=5)
     b._flush_metrics_to_db()  # drain any remainder
 
     steps = sorted(m["step"] for m in recs["inserted"])
@@ -714,7 +714,7 @@ def test_flush_pins_to_passed_run_id(monkeypatch):
     b._db_run_created = True
     b._metric_buffer[:] = [{"step": 1}, {"step": 2}]
 
-    b._flush_metrics_to_db(run_id = "job_old")
+    b._flush_metrics_to_db(run_id="job_old")
 
     assert recs["insert_ids"] == ["job_old"], "metrics must go to the captured run, not the new one"
     assert recs["progress_ids"] == ["job_old"]
@@ -729,13 +729,13 @@ def test_finalize_uses_snapshot_run_id_across_new_run(monkeypatch):
     b._db_run_created = True
     b._run_finalized = False
 
-    def hijack(run_id = None):
+    def hijack(run_id=None):
         # Simulate a new run taking over during the flush (after the finalize claim).
         b.current_job_id = "job_y"
 
     monkeypatch.setattr(b, "_flush_metrics_to_db", hijack)
 
-    b._finalize_run_in_db(status = "stopped", expected_job_id = "job_x")
+    b._finalize_run_in_db(status="stopped", expected_job_id="job_x")
 
     assert [f["id"] for f in recs["finished"]] == [
         "job_x"
@@ -768,12 +768,12 @@ def test_ensure_db_run_created_publishes_only_after_insert(monkeypatch):
     monkeypatch.setitem(sys.modules, "storage.studio_db", fake_db)
 
     b._run_intent_lock.acquire()
-    creator = threading.Thread(target = b._ensure_db_run_created)
+    creator = threading.Thread(target=b._ensure_db_run_created)
     creator.start()
     time.sleep(0.02)
     assert b._db_create_in_progress is False
     b._run_intent_lock.release()
-    creator.join(timeout = 5)
+    creator.join(timeout=5)
 
     assert observed["flag_during_create"] is False, "flag must not be published before insert"
     assert observed["in_progress_during_create"] is True
@@ -847,12 +847,12 @@ def test_escalation_finalizes_watched_run_by_id_end_to_end(monkeypatch):
     b._db_run_created = True
     b._db_config = {"model_name": "org/model", "hf_token": "hf_secret"}
     b._should_stop = True
-    b._proc = _FakeProc(alive = False)
+    b._proc = _FakeProc(alive=False)
     b._progress.is_training = True
     b._progress.step = 42
     b._metric_buffer[:] = [{"step": 41}, {"step": 42}]
 
-    b._finalize_stopped_after_escalation(target_proc = b._proc, watched_job_id = "job_old")
+    b._finalize_stopped_after_escalation(target_proc=b._proc, watched_job_id="job_old")
 
     assert [f["id"] for f in recs["finished"]] == ["job_old"], "must finish the captured run by id"
     assert recs["finished"][0]["status"] == "error"
@@ -868,14 +868,14 @@ def test_escalation_holds_provenance_lock_until_terminal_write_finishes(monkeypa
     b._db_run_created = True
     b._db_config = {"model_name": "org/model"}
     b._should_stop = True
-    b._proc = _FakeProc(alive = False)
+    b._proc = _FakeProc(alive=False)
     entered = threading.Event()
     release = threading.Event()
     acquired = threading.Event()
 
     def finish(*_args, **_kwargs):
         entered.set()
-        assert release.wait(timeout = 5)
+        assert release.wait(timeout=5)
 
     def acquire_provenance():
         with b._provenance_lock:
@@ -883,20 +883,20 @@ def test_escalation_holds_provenance_lock_until_terminal_write_finishes(monkeypa
 
     monkeypatch.setattr(b, "_finish_stopped_run", finish)
     finalize_thread = threading.Thread(
-        target = b._finalize_stopped_after_escalation,
-        kwargs = {
+        target=b._finalize_stopped_after_escalation,
+        kwargs={
             "target_proc": b._proc,
             "watched_job_id": "job_serialized",
         },
     )
     finalize_thread.start()
-    assert entered.wait(timeout = 5)
-    provenance_thread = threading.Thread(target = acquire_provenance)
+    assert entered.wait(timeout=5)
+    provenance_thread = threading.Thread(target=acquire_provenance)
     provenance_thread.start()
-    assert not acquired.wait(timeout = 0.1)
+    assert not acquired.wait(timeout=0.1)
     release.set()
-    finalize_thread.join(timeout = 5)
-    provenance_thread.join(timeout = 5)
+    finalize_thread.join(timeout=5)
+    provenance_thread.join(timeout=5)
 
     assert not finalize_thread.is_alive()
     assert not provenance_thread.is_alive()
@@ -911,14 +911,14 @@ def test_escalation_defers_when_row_cannot_be_created_here(monkeypatch):
     called: list = []
     monkeypatch.setattr(b, "_finish_stopped_run", lambda *a, **k: called.append(a))
 
-    b._proc = _FakeProc(alive = False)
+    b._proc = _FakeProc(alive=False)
     b.current_job_id = "job_q"
     b._db_run_created = False  # row not created yet
     b._db_config = None  # ... and cannot be created here
     b._run_finalized = False
     b._progress.is_training = True
 
-    b._finalize_stopped_after_escalation(target_proc = b._proc, watched_job_id = "job_q")
+    b._finalize_stopped_after_escalation(target_proc=b._proc, watched_job_id="job_q")
 
     assert called == [], "must not finalize when the row can't be established here"
     assert b._run_finalized is False, "must not claim the finalize the pump still owes"
@@ -935,11 +935,11 @@ def test_escalation_creates_row_then_finalizes_when_start_create_failed(monkeypa
     b.current_job_id = "job_s"
     b._db_config = {"model_name": "m"}  # so _ensure_db_run_created can create the row
     b._db_run_created = False  # start-time create failed
-    b._proc = _FakeProc(alive = True)  # wedged: still reports alive
+    b._proc = _FakeProc(alive=True)  # wedged: still reports alive
     b._should_stop = True
     b._progress.is_training = True
 
-    b._finalize_stopped_after_escalation(target_proc = b._proc, watched_job_id = "job_s")
+    b._finalize_stopped_after_escalation(target_proc=b._proc, watched_job_id="job_s")
 
     assert [c["id"] for c in recs["created"]] == ["job_s"], "must create the missing row"
     assert [f["id"] for f in recs["finished"]] == ["job_s"], "must finish the created row by id"
@@ -953,8 +953,8 @@ def test_escalation_does_not_drop_a_new_runs_handle(monkeypatch):
     b = TrainingBackend()
     b.current_job_id = "job_old"
     b._db_run_created = True
-    old_proc = _FakeProc(alive = False)
-    new_proc = _FakeProc(alive = True)
+    old_proc = _FakeProc(alive=False)
+    new_proc = _FakeProc(alive=True)
     b._proc = old_proc
 
     def hijack(*a, **k):
@@ -962,7 +962,7 @@ def test_escalation_does_not_drop_a_new_runs_handle(monkeypatch):
 
     monkeypatch.setattr(b, "_finish_stopped_run", hijack)
 
-    b._finalize_stopped_after_escalation(target_proc = old_proc, watched_job_id = "job_old")
+    b._finalize_stopped_after_escalation(target_proc=old_proc, watched_job_id="job_old")
 
     assert b._proc is new_proc, "must not drop the handle a new run installed during finalize"
 
@@ -1013,7 +1013,7 @@ def test_finish_stopped_run_error_leaves_new_run_untouched(monkeypatch):
 # ----------------------------------------------------------------------------
 
 
-def _complete_event(output_dir = "/tmp/out"):
+def _complete_event(output_dir="/tmp/out"):
     return {
         "type": "complete",
         "output_dir": output_dir,
@@ -1029,7 +1029,7 @@ def test_terminal_event_arms_watchdog_and_reaps_wedged_worker(monkeypatch):
     calls = _record_force_terminate(monkeypatch, b)
     monkeypatch.setattr(b, "_finalize_run_in_db", lambda **kw: None)
 
-    proc = _FakeProc(alive = True)
+    proc = _FakeProc(alive=True)
     b._proc = proc
     b.current_job_id = "job_1"
 
@@ -1040,7 +1040,7 @@ def test_terminal_event_arms_watchdog_and_reaps_wedged_worker(monkeypatch):
     assert _wait_until(
         lambda: calls == ["force", "final"]
     ), "a worker still alive after the completion grace must be force-terminated"
-    b._stop_watchdog.join(timeout = 5)
+    b._stop_watchdog.join(timeout=5)
 
 
 def test_terminal_error_event_also_arms_watchdog(monkeypatch):
@@ -1051,14 +1051,14 @@ def test_terminal_error_event_also_arms_watchdog(monkeypatch):
     calls = _record_force_terminate(monkeypatch, b)
     monkeypatch.setattr(b, "_finalize_run_in_db", lambda **kw: None)
 
-    b._proc = _FakeProc(alive = True)
+    b._proc = _FakeProc(alive=True)
     b.current_job_id = "job_1"
 
     b._handle_event({"type": "error", "error": "boom", "stack": ""})
 
     assert b._complete_seen.is_set(), "a terminal error leaves nothing to save"
     assert _wait_until(lambda: calls == ["force", "final"])
-    b._stop_watchdog.join(timeout = 5)
+    b._stop_watchdog.join(timeout=5)
 
 
 def test_normal_completion_never_force_terminates(monkeypatch):
@@ -1069,7 +1069,7 @@ def test_normal_completion_never_force_terminates(monkeypatch):
     calls = _record_force_terminate(monkeypatch, b)
     monkeypatch.setattr(b, "_finalize_run_in_db", lambda **kw: None)
 
-    proc = _FakeProc(alive = True)
+    proc = _FakeProc(alive=True)
     b._proc = proc
     b.current_job_id = "job_1"
 
@@ -1077,7 +1077,7 @@ def test_normal_completion_never_force_terminates(monkeypatch):
     time.sleep(0.1)
     proc._alive = False  # worker exits on its own, well inside the grace
 
-    b._stop_watchdog.join(timeout = 5)
+    b._stop_watchdog.join(timeout=5)
     assert calls == [], "a worker that exits on its own must never be force-terminated"
 
 
@@ -1087,11 +1087,11 @@ def test_completion_watchdog_does_not_preempt_a_stop_watchdog(monkeypatch):
     monkeypatch.setattr(b, "_finalize_run_in_db", lambda **kw: None)
     monkeypatch.setattr(b, "_stop_watchdog_loop", lambda *a, **k: None)
 
-    b._proc = _FakeProc(alive = True)
+    b._proc = _FakeProc(alive=True)
     b.current_job_id = "job_1"
-    b._start_stop_watchdog(cancel = False)
+    b._start_stop_watchdog(cancel=False)
     first = b._stop_watchdog
-    first.join(timeout = 5)
+    first.join(timeout=5)
 
     # Still the watcher of record for this proc while it is alive.
     b._stop_watchdog = first
@@ -1115,9 +1115,9 @@ def test_escalation_finalize_keeps_completed_status_message(monkeypatch):
     b._run_finalized = True  # the pump already recorded the terminal DB state
     monkeypatch.setattr(b, "_ensure_db_run_created", lambda: None)
 
-    proc = _FakeProc(alive = False)
+    proc = _FakeProc(alive=False)
     b._proc = proc
-    b._finalize_stopped_after_escalation(target_proc = proc, watched_job_id = "job_1")
+    b._finalize_stopped_after_escalation(target_proc=proc, watched_job_id="job_1")
 
     assert b._progress.status_message == "Training completed! Model saved to /tmp/out"
     assert b._progress.error is None
@@ -1141,9 +1141,9 @@ def test_escalation_finalize_still_reports_a_stop_as_stopped(monkeypatch):
     b._run_finalized = True
     monkeypatch.setattr(b, "_ensure_db_run_created", lambda: None)
 
-    proc = _FakeProc(alive = False)
+    proc = _FakeProc(alive=False)
     b._proc = proc
-    b._finalize_stopped_after_escalation(target_proc = proc, watched_job_id = "job_1")
+    b._finalize_stopped_after_escalation(target_proc=proc, watched_job_id="job_1")
 
     assert b._progress.status_message == "Training stopped."
 
@@ -1151,11 +1151,11 @@ def test_escalation_finalize_still_reports_a_stop_as_stopped(monkeypatch):
 def test_pump_loop_exits_when_the_watchdog_drops_the_handle(monkeypatch):
     # The watchdog drops _proc last; a drop between the pump's two reads killed the pump.
     b = TrainingBackend()
-    proc = _FakeProc(alive = True)
+    proc = _FakeProc(alive=True)
     b._proc = proc
     b._event_queue = queue.Queue()
 
-    def _read_queue(_q, timeout_sec = None):
+    def _read_queue(_q, timeout_sec=None):
         b._proc = None  # watchdog finalizes concurrently
         return None
 
@@ -1167,9 +1167,9 @@ def test_pump_loop_exits_when_the_watchdog_drops_the_handle(monkeypatch):
         b._pump_loop()
         done.set()
 
-    t = threading.Thread(target = _run, daemon = True)
+    t = threading.Thread(target=_run, daemon=True)
     t.start()
-    assert done.wait(timeout = 5), "pump must return cleanly, not die on a dropped handle"
+    assert done.wait(timeout=5), "pump must return cleanly, not die on a dropped handle"
     assert b._pump_running is False
 
 
@@ -1178,11 +1178,11 @@ def test_pump_loop_exits_when_the_watchdog_drops_the_handle(monkeypatch):
 # ----------------------------------------------------------------------------
 
 
-def _running_backend(job_id = "job_1"):
+def _running_backend(job_id="job_1"):
     b = TrainingBackend()
     b.current_job_id = job_id
-    b._proc = _FakeProc(alive = True)
-    b._progress = _TP(is_training = True, status_message = "Training in progress...")
+    b._proc = _FakeProc(alive=True)
+    b._progress = _TP(is_training=True, status_message="Training in progress...")
     b._finalize_run_in_db = lambda **kw: None
     b._ensure_db_run_created = lambda: None
     b._start_stop_watchdog = lambda **kw: None
@@ -1219,9 +1219,9 @@ def test_is_run_finished_does_not_leak_into_the_next_run():
     assert b.is_run_finished() is True
     # start_training's reset block.
     b._complete_seen.clear()
-    b._progress = _TP(is_training = True, status_message = "Initializing training...")
+    b._progress = _TP(is_training=True, status_message="Initializing training...")
     b.current_job_id = "job_2"
-    b._proc = _FakeProc(alive = True)
+    b._proc = _FakeProc(alive=True)
     assert b.is_run_finished() is False
 
 
@@ -1337,7 +1337,7 @@ def test_terminal_stall_arms_the_exit_watchdog(monkeypatch):
         lambda: calls == ["force", "final"]
     ), "a wedged worker on the terminal stall path must still be reaped"
     if b._stop_watchdog:
-        b._stop_watchdog.join(timeout = 5)
+        b._stop_watchdog.join(timeout=5)
 
 
 def test_recoverable_stall_does_not_arm_the_watchdog(monkeypatch):
@@ -1364,7 +1364,7 @@ def test_terminal_error_releases_an_in_flight_stop_watchdog(monkeypatch):
     b, calls = _shared_setup_3(monkeypatch)
 
     b._should_stop = True
-    b._start_stop_watchdog(cancel = False)  # the stop's own watchdog, now in flight
+    b._start_stop_watchdog(cancel=False)  # the stop's own watchdog, now in flight
     first = b._stop_watchdog
     assert first is not None and first.is_alive()
 
@@ -1375,7 +1375,7 @@ def test_terminal_error_releases_an_in_flight_stop_watchdog(monkeypatch):
     assert _wait_until(
         lambda: calls == ["force", "final"]
     ), "the in-flight watchdog must escalate on the grace, not the save backstop"
-    first.join(timeout = 5)
+    first.join(timeout=5)
 
 
 def test_terminal_stall_releases_an_in_flight_stop_watchdog(monkeypatch):
@@ -1388,7 +1388,7 @@ def test_terminal_stall_releases_an_in_flight_stop_watchdog(monkeypatch):
     b._proc.terminate = lambda: None  # worker ignores the terminate request
 
     b._should_stop = True
-    b._start_stop_watchdog(cancel = False)  # the stop's own watchdog, now in flight
+    b._start_stop_watchdog(cancel=False)  # the stop's own watchdog, now in flight
     first = b._stop_watchdog
     assert first is not None and first.is_alive()
 
@@ -1399,4 +1399,4 @@ def test_terminal_stall_releases_an_in_flight_stop_watchdog(monkeypatch):
     assert _wait_until(
         lambda: calls == ["force", "final"]
     ), "the in-flight watchdog must escalate on the grace, not the save backstop"
-    first.join(timeout = 5)
+    first.join(timeout=5)

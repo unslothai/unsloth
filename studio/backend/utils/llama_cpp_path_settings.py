@@ -46,8 +46,8 @@ def mark_managed_llama_cpp_path(directory: Path | str) -> bool:
         os.environ.pop(MANAGED_LLAMA_CPP_PATH_MARKER, None)
         return False
     try:
-        managed = expanded_user_path(directory).resolve(strict = False)
-        inherited = expanded_user_path(configured).resolve(strict = False)
+        managed = expanded_user_path(directory).resolve(strict=False)
+        inherited = expanded_user_path(configured).resolve(strict=False)
         is_managed = inherited == managed
     except (OSError, RuntimeError, ValueError):
         is_managed = False
@@ -175,7 +175,7 @@ def host_gpu_vendors() -> Optional[set[str]]:
     else:
         for vendor_file in Path(_DRM_ROOT).glob("card*/device/vendor"):
             try:
-                vendor = _DRM_VENDOR.get(vendor_file.read_text(encoding = "utf-8").strip().lower())
+                vendor = _DRM_VENDOR.get(vendor_file.read_text(encoding="utf-8").strip().lower())
             except OSError:
                 continue
             if vendor:
@@ -245,8 +245,8 @@ def resolve_llama_server_binary(
     directory: Path | str, *, platform: Optional[str] = None
 ) -> Optional[Path]:
     """Return the first executable llama-server in a supported layout, GPU-capable preferred."""
-    usable = lambda candidate: _usable_binary(candidate, platform = platform)  # noqa: E731
-    ordered = prefer_gpu_capable(llama_server_candidates(directory, platform = platform), usable)
+    usable = lambda candidate: _usable_binary(candidate, platform=platform)  # noqa: E731
+    ordered = prefer_gpu_capable(llama_server_candidates(directory, platform=platform), usable)
     return next((candidate for candidate in ordered if usable(candidate)), None)
 
 
@@ -255,6 +255,7 @@ def get_stored_custom_llama_cpp_path() -> Optional[Path]:
     try:
         from storage.studio_db import get_app_setting
         from utils.account_context import OWNER, run_as
+
         value = run_as(OWNER, get_app_setting, CUSTOM_LLAMA_CPP_PATH_SETTING_KEY, None)
     except Exception:
         # A settings DB problem must not take the bundled runtime down with it.
@@ -295,7 +296,7 @@ def _canonical_directory(value: str) -> Path:
     if len(raw) > MAX_CUSTOM_LLAMA_CPP_PATH_LENGTH:
         raise ValueError("The llama.cpp folder path is too long.")
     try:
-        directory = expanded_user_path(raw).resolve(strict = True)
+        directory = expanded_user_path(raw).resolve(strict=True)
     except (OSError, RuntimeError, ValueError) as exc:
         raise ValueError("The llama.cpp folder does not exist or cannot be accessed.") from exc
     if not directory.is_dir():
@@ -317,6 +318,7 @@ def set_custom_llama_cpp_path(value: Optional[str]) -> Optional[Path]:
     directory = _canonical_directory(value) if value is not None else None
     with _settings_lock:
         from storage.studio_db import upsert_app_settings
+
         upsert_app_settings(
             {CUSTOM_LLAMA_CPP_PATH_SETTING_KEY: (str(directory) if directory is not None else None)}
         )

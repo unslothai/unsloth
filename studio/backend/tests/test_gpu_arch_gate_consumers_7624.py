@@ -46,7 +46,7 @@ def vulkan_probe(monkeypatch):
     def _explode(*_args, **_kwargs):
         raise AssertionError("ROCm arch gate consulted on a Vulkan build")
 
-    monkeypatch.setattr(LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda _b = None: True))
+    monkeypatch.setattr(LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda _b=None: True))
     monkeypatch.setattr(
         LlamaCppBackend, "_find_llama_server_binary", staticmethod(lambda: "/fake/llama-server")
     )
@@ -54,7 +54,7 @@ def vulkan_probe(monkeypatch):
         LlamaCppBackend,
         "_run_vulkan_probe",
         staticmethod(
-            lambda _b = None: [
+            lambda _b=None: [
                 {
                     "index": 0,
                     "free_mib": 12049,
@@ -83,7 +83,7 @@ class TestGateIsInertOnVulkanBuilds:
     rather than assumed, since the case for leaving them unfiltered rests on it."""
 
     def test_flag_changes_nothing_on_a_vulkan_build(self, vulkan_probe):
-        gated = LlamaCppBackend._get_gpu_memory("/fake/llama-server", for_llama_server = True)
+        gated = LlamaCppBackend._get_gpu_memory("/fake/llama-server", for_llama_server=True)
         plain = LlamaCppBackend._get_gpu_memory("/fake/llama-server")
         assert gated == plain
         # Real rows, not two empty lists agreeing with each other.
@@ -91,7 +91,7 @@ class TestGateIsInertOnVulkanBuilds:
 
     def test_free_memory_wrapper_is_inert_too(self, vulkan_probe):
         assert LlamaCppBackend._get_gpu_free_memory(
-            "/fake/llama-server", for_llama_server = True
+            "/fake/llama-server", for_llama_server=True
         ) == LlamaCppBackend._get_gpu_free_memory("/fake/llama-server")
 
     def test_vulkan_ordinal_preflight_sees_every_ordinal(self, vulkan_probe):
@@ -117,7 +117,7 @@ def _backend(
     tmp_path: Path,
     memory,
     *,
-    gated_out = frozenset(),
+    gated_out=frozenset(),
 ):
     """Placement harness whose GPU probe HONORS ``for_llama_server``. ``gated_out``
     stands in for devices absent from mapped_targets, so the test sees the gate's real
@@ -126,7 +126,7 @@ def _backend(
     calls: list[bool] = []
     backend._probe_calls = calls
 
-    def _probe(_binary = None, *, for_llama_server = False):
+    def _probe(_binary=None, *, for_llama_server=False):
         calls.append(for_llama_server)
         rows = list(memory)
         if for_llama_server:
@@ -134,7 +134,7 @@ def _backend(
         return rows
 
     backend._get_gpu_memory = _probe
-    backend._get_gpu_free_memory = lambda _binary = None, **kw: [
+    backend._get_gpu_free_memory = lambda _binary=None, **kw: [
         (index, free) for index, free, _total in _probe(_binary, **kw)
     ]
     backend._read_gguf_metadata = lambda _path: None
@@ -144,8 +144,8 @@ def _backend(
     backend._resolve_launch_mmproj_path = lambda **kwargs: None
     backend._apu_ram_shortfall_message = lambda *args, **kwargs: None
     backend._amd_apu_wants_unified_memory = lambda *args, **kwargs: False
-    backend._find_llama_server_binary = lambda include_denied = False: "/fake/llama-server"
-    backend._is_vulkan_backend = lambda _binary = None: False
+    backend._find_llama_server_binary = lambda include_denied=False: "/fake/llama-server"
+    backend._is_vulkan_backend = lambda _binary=None: False
     backend._wait_for_health = lambda timeout, **_kw: True
     backend._detect_audio_type_strict = lambda: None
     backend._apply_detected_audio = lambda _detected: True
@@ -168,14 +168,14 @@ def _launch(backend, gguf, **load_kwargs):
                 "stdout": (),
                 "poll": lambda self: None,
                 "terminate": lambda self: None,
-                "wait": lambda self, timeout = None: 0,
+                "wait": lambda self, timeout=None: 0,
                 "kill": lambda self: None,
             },
         )()
 
-    with patch.object(subprocess, "Popen", side_effect = fake_popen):
+    with patch.object(subprocess, "Popen", side_effect=fake_popen):
         assert backend.load_model(
-            GgufLoadIntent(gguf_path = str(gguf), model_identifier = "test", **load_kwargs)
+            GgufLoadIntent(gguf_path=str(gguf), model_identifier="test", **load_kwargs)
         )
     return captured
 
@@ -191,7 +191,7 @@ class TestPlacementOptsInForAutoOnly:
 
     def test_explicit_pin_does_not_opt_in(self, tmp_path):
         backend, gguf = _backend(tmp_path, [(0, 12049, 16384), (1, 40000, 65536)])
-        _launch(backend, gguf, gpu_ids = [1])
+        _launch(backend, gguf, gpu_ids=[1])
         assert backend._probe_calls, "placement never probed the GPUs"
         assert not any(backend._probe_calls), "an explicit pin was silently arch-gated"
 
@@ -201,9 +201,9 @@ class TestPlacementOptsInForAutoOnly:
         # "device kernel image is invalid" and the user learns which card is wrong,
         # rather than being relocated onto GPU 0 or dropped to CPU behind their back.
         backend, gguf = _backend(
-            tmp_path, [(0, 12049, 16384), (1, 40000, 65536)], gated_out = frozenset({1})
+            tmp_path, [(0, 12049, 16384), (1, 40000, 65536)], gated_out=frozenset({1})
         )
-        captured = _launch(backend, gguf, gpu_ids = [1])
+        captured = _launch(backend, gguf, gpu_ids=[1])
         env = captured["env"]
         assert env.get("HIP_VISIBLE_DEVICES") == "1" or env.get("CUDA_VISIBLE_DEVICES") == "1", (
             f"explicit pin on the uncovered GPU did not reach the child: "
@@ -214,7 +214,7 @@ class TestPlacementOptsInForAutoOnly:
         # The #7624 shape: the uncovered device reports the larger free pool and
         # would win the free-VRAM rank. Automatic placement must land on GPU 0.
         backend, gguf = _backend(
-            tmp_path, [(0, 12049, 16384), (1, 40000, 65536)], gated_out = frozenset({1})
+            tmp_path, [(0, 12049, 16384), (1, 40000, 65536)], gated_out=frozenset({1})
         )
         captured = _launch(backend, gguf)
         env = captured["env"]
@@ -238,13 +238,13 @@ class TestWaitForVramSettleStaysUnfiltered:
 
         seen: list[dict] = []
 
-        def _probe(binary = None, **kwargs):
+        def _probe(binary=None, **kwargs):
             seen.append(dict(kwargs))
             return [(0, 12049)]
 
         monkeypatch.setattr(LlamaCppBackend, "_get_gpu_free_memory", staticmethod(_probe))
         LlamaCppBackend._wait_for_vram_settle(
-            max_wait = 0.05, interval = 0.01, since_kill = _time.monotonic()
+            max_wait=0.05, interval=0.01, since_kill=_time.monotonic()
         )
         assert seen, "the settle poll never probed"
         assert all(
@@ -262,7 +262,7 @@ class TestRagAutoStaysUnfiltered:
 
         seen: list[dict] = []
 
-        def _probe(binary = None, **kwargs):
+        def _probe(binary=None, **kwargs):
             seen.append(dict(kwargs))
             return [(0, 12049)]
 
@@ -285,7 +285,7 @@ class TestEmbedLlamaServerOptsIn:
         monkeypatch.setattr(uh, "is_apple_silicon", lambda: False)
         seen: list[dict] = []
 
-        def _probe(binary = None, **kwargs):
+        def _probe(binary=None, **kwargs):
             seen.append(dict(kwargs))
             return [(0, 12049)]
 
@@ -499,7 +499,7 @@ class TestArchCrashRetryFiresAtMostOnce:
         source = Path(LlamaCppBackend.__module__.replace(".", "/"))
         path = Path(__file__).resolve().parent.parent / "core" / "inference" / "llama_cpp.py"
         assert path.exists(), source
-        text = path.read_text(encoding = "utf-8")
+        text = path.read_text(encoding="utf-8")
         assert text.count('label = "-archfallback"') == 1
         assert text.count("_arch_crash_retry_gpu_ids(") == 2  # definition + the one call site
 
@@ -588,7 +588,7 @@ class TestArchRetryDropsTensorSplit:
         # respawn is one straight-line block with no test seam, so pin that the
         # drop happens between narrowing the device set and the respawn.
         path = Path(__file__).resolve().parent.parent / "core" / "inference" / "llama_cpp.py"
-        text = path.read_text(encoding = "utf-8")
+        text = path.read_text(encoding="utf-8")
         # Two call sites: the arch-crash retry, and the manual-split launch the
         # gate narrows. Both mask devices out from under a positional ratio.
         assert text.count("self._without_tensor_split(") == 2
@@ -605,7 +605,7 @@ class TestArchRetryRestoresTheMemoryPolicy:
     @staticmethod
     def _source():
         path = Path(__file__).resolve().parent.parent / "core" / "inference" / "llama_cpp.py"
-        return path.read_text(encoding = "utf-8")
+        return path.read_text(encoding="utf-8")
 
     def test_the_launch_snapshots_what_cmd_means(self):
         text = self._source()
@@ -677,42 +677,44 @@ class TestEmbedLlamaServerPinsTheGatedGpus:
         *,
         gated,
         everything,
-        archs = frozenset({"gfx1030"}),
+        archs=frozenset({"gfx1030"}),
     ):
         """Stub a ROCm host, the gate marker, and both probes. Returns the
         per-call kwargs seen, so a test can COUNT calls -- raising inside a spy
         here would be swallowed by the caller's ``except Exception``."""
         seen: list[dict] = []
 
-        def _probe(binary = None, *, for_llama_server = False):
+        def _probe(binary=None, *, for_llama_server=False):
             seen.append({"binary": binary, "for_llama_server": for_llama_server})
             rows = gated if for_llama_server else everything
             return [(idx, free, 0) for idx, free in rows]
 
         monkeypatch.setattr(LlamaCppBackend, "_host_torch_is_rocm", staticmethod(lambda: True))
         monkeypatch.setattr(
-            LlamaCppBackend, "_installed_llama_gfx_archs", staticmethod(lambda _b = None: archs)
+            LlamaCppBackend, "_installed_llama_gfx_archs", staticmethod(lambda _b=None: archs)
         )
         monkeypatch.setattr(LlamaCppBackend, "_get_gpu_memory", staticmethod(_probe))
         return seen
 
     def test_a_narrowing_gate_yields_the_surviving_ids(self, monkeypatch):
-        self._probes(monkeypatch, gated = [(1, 24000)], everything = [(0, 60000), (1, 24000)])
+        self._probes(monkeypatch, gated=[(1, 24000)], everything=[(0, 60000), (1, 24000)])
         from core.rag.embed_llama_server import LlamaServerBackend
+
         assert LlamaServerBackend._arch_gated_gpu_ids("/fake/llama-server") == [1]
 
     def test_full_coverage_needs_no_mask(self, monkeypatch):
         self._probes(
-            monkeypatch, gated = [(0, 60000), (1, 24000)], everything = [(0, 60000), (1, 24000)]
+            monkeypatch, gated=[(0, 60000), (1, 24000)], everything=[(0, 60000), (1, 24000)]
         )
         from core.rag.embed_llama_server import LlamaServerBackend
+
         assert LlamaServerBackend._arch_gated_gpu_ids("/fake/llama-server") == []
 
     def test_unknown_coverage_fails_open_without_probing(self, monkeypatch):
         # NVIDIA, CPU-only, Vulkan and macOS have no mapped_targets marker. The
         # marker check comes first, so neither probe may run at all.
         seen = self._probes(
-            monkeypatch, gated = [(1, 24000)], everything = [(0, 1), (1, 24000)], archs = None
+            monkeypatch, gated=[(1, 24000)], everything=[(0, 1), (1, 24000)], archs=None
         )
         from core.rag.embed_llama_server import LlamaServerBackend
 
@@ -720,7 +722,7 @@ class TestEmbedLlamaServerPinsTheGatedGpus:
         assert seen == [], f"the GPU probe ran despite unknown arch coverage: {seen}"
 
     def test_a_non_rocm_host_never_probes(self, monkeypatch):
-        seen = self._probes(monkeypatch, gated = [(1, 24000)], everything = [(0, 1), (1, 24000)])
+        seen = self._probes(monkeypatch, gated=[(1, 24000)], everything=[(0, 1), (1, 24000)])
         monkeypatch.setattr(LlamaCppBackend, "_host_torch_is_rocm", staticmethod(lambda: False))
         from core.rag.embed_llama_server import LlamaServerBackend
 
@@ -732,7 +734,7 @@ class TestEmbedLlamaServerPinsTheGatedGpus:
         monkeypatch.setattr(
             LlamaCppBackend,
             "_installed_llama_gfx_archs",
-            staticmethod(lambda _b = None: (_ for _ in ()).throw(RuntimeError("marker"))),
+            staticmethod(lambda _b=None: (_ for _ in ()).throw(RuntimeError("marker"))),
         )
         from core.rag.embed_llama_server import LlamaServerBackend
 
@@ -749,11 +751,11 @@ class TestEmbedLlamaServerPinsTheGatedGpus:
         return calls
 
     def test_the_launch_env_masks_the_child_to_them(self, monkeypatch):
-        self._probes(monkeypatch, gated = [(1, 24000)], everything = [(0, 60000), (1, 24000)])
+        self._probes(monkeypatch, gated=[(1, 24000)], everything=[(0, 60000), (1, 24000)])
         calls = self._spy_visibility(monkeypatch)
         from core.rag.embed_llama_server import LlamaServerBackend
 
-        env = LlamaServerBackend()._build_env("/fake/llama-server", use_gpu = True)
+        env = LlamaServerBackend()._build_env("/fake/llama-server", use_gpu=True)
         # prefer_rocr: a HIP-only mask still lets HSA enumerate the unsupported
         # agent, which is the segfault the pin exists to avoid.
         assert calls == [("1", {"prefer_rocr": True})], calls
@@ -761,12 +763,12 @@ class TestEmbedLlamaServerPinsTheGatedGpus:
 
     def test_an_ungated_host_leaves_the_env_alone(self, monkeypatch):
         self._probes(
-            monkeypatch, gated = [(0, 60000), (1, 24000)], everything = [(0, 60000), (1, 24000)]
+            monkeypatch, gated=[(0, 60000), (1, 24000)], everything=[(0, 60000), (1, 24000)]
         )
         calls = self._spy_visibility(monkeypatch)
         from core.rag.embed_llama_server import LlamaServerBackend
 
-        LlamaServerBackend()._build_env("/fake/llama-server", use_gpu = True)
+        LlamaServerBackend()._build_env("/fake/llama-server", use_gpu=True)
         assert calls == [], f"an unnarrowed host was masked anyway: {calls}"
 
     def test_a_uuid_mask_leaves_the_inherited_mask_in_place(self, monkeypatch):
@@ -775,7 +777,7 @@ class TestEmbedLlamaServerPinsTheGatedGpus:
         ordinals with no physical mapping, and pinning them would replace the mask
         with numbers ROCr resolves against the whole host, exposing cards the parent
         hid -- the dropped one included."""
-        self._probes(monkeypatch, gated = [(1, 24000)], everything = [(0, 60000), (1, 24000)])
+        self._probes(monkeypatch, gated=[(1, 24000)], everything=[(0, 60000), (1, 24000)])
         calls = self._spy_visibility(monkeypatch)
         # torch must be importable, not just _torch_is_rocm patched:
         # _active_gpu_visibility_mask reads the ROCr mask only inside its `import
@@ -785,12 +787,12 @@ class TestEmbedLlamaServerPinsTheGatedGpus:
         monkeypatch.setitem(sys.modules, "torch", types.SimpleNamespace())
         monkeypatch.setattr(LlamaCppBackend, "_torch_is_rocm", staticmethod(lambda _t: True))
         monkeypatch.setattr(sys, "platform", "linux")
-        monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising = False)
-        monkeypatch.delenv("HIP_VISIBLE_DEVICES", raising = False)
+        monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
+        monkeypatch.delenv("HIP_VISIBLE_DEVICES", raising=False)
         monkeypatch.setenv("ROCR_VISIBLE_DEVICES", "GPU-DEADBEEFDEADBEEF")
         from core.rag.embed_llama_server import LlamaServerBackend
 
-        env = LlamaServerBackend()._build_env("/fake/llama-server", use_gpu = True)
+        env = LlamaServerBackend()._build_env("/fake/llama-server", use_gpu=True)
         assert calls == [], f"an unmappable mask was rewritten with ordinals: {calls}"
         assert env["ROCR_VISIBLE_DEVICES"] == "GPU-DEADBEEFDEADBEEF"
 
@@ -799,13 +801,13 @@ class TestEmbedLlamaServerPinsTheGatedGpus:
         when HIP_VISIBLE_DEVICES is unset, so a blank CUDA mask alone leaves an
         inherited HIP pin in charge and the child keeps a device, and the VRAM its
         context costs, on a load that chose the CPU."""
-        self._probes(monkeypatch, gated = [(1, 24000)], everything = [(0, 60000), (1, 24000)])
+        self._probes(monkeypatch, gated=[(1, 24000)], everything=[(0, 60000), (1, 24000)])
         calls = self._spy_visibility(monkeypatch)
         monkeypatch.setenv("HIP_VISIBLE_DEVICES", "0")
         monkeypatch.setenv("ROCR_VISIBLE_DEVICES", "0")
         from core.rag.embed_llama_server import LlamaServerBackend
 
-        env = LlamaServerBackend()._build_env("/fake/llama-server", use_gpu = False)
+        env = LlamaServerBackend()._build_env("/fake/llama-server", use_gpu=False)
         assert calls == []  # no pin: the gate has nothing to narrow on a CPU load
         assert env["CUDA_VISIBLE_DEVICES"] == ""
         assert env["HIP_VISIBLE_DEVICES"] == "-1"
@@ -823,7 +825,7 @@ class TestTheGateNeverRewritesAnUnmappableMask:
     def _rocm_host(monkeypatch, *, gated, everything):
         seen: list[bool] = []
 
-        def _probe(binary = None, *, for_llama_server = False):
+        def _probe(binary=None, *, for_llama_server=False):
             seen.append(for_llama_server)
             rows = gated if for_llama_server else everything
             return [(idx, free, 0) for idx, free in rows]
@@ -832,15 +834,15 @@ class TestTheGateNeverRewritesAnUnmappableMask:
         monkeypatch.setattr(
             LlamaCppBackend,
             "_installed_llama_gfx_archs",
-            staticmethod(lambda _b = None: frozenset({"gfx1030"})),
+            staticmethod(lambda _b=None: frozenset({"gfx1030"})),
         )
         monkeypatch.setattr(LlamaCppBackend, "_get_gpu_memory", staticmethod(_probe))
         for _var in ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES"):
-            monkeypatch.delenv(_var, raising = False)
+            monkeypatch.delenv(_var, raising=False)
         return seen
 
     def test_an_unmappable_mask_stops_the_pin_before_either_probe(self, monkeypatch):
-        seen = self._rocm_host(monkeypatch, gated = [(1, 24000)], everything = [(0, 60000), (1, 24000)])
+        seen = self._rocm_host(monkeypatch, gated=[(1, 24000)], everything=[(0, 60000), (1, 24000)])
         monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "GPU-deadbeefdeadbeef")
 
         assert LlamaCppBackend._arch_gate_survivors("/fake/llama-server") == []
@@ -849,13 +851,13 @@ class TestTheGateNeverRewritesAnUnmappableMask:
     def test_an_index_mask_still_narrows(self, monkeypatch):
         # The fail-open must key on "set but unparseable", not on "unset": an
         # ordinary numeric mask still maps back, so the gate keeps working.
-        self._rocm_host(monkeypatch, gated = [(1, 24000)], everything = [(0, 60000), (1, 24000)])
+        self._rocm_host(monkeypatch, gated=[(1, 24000)], everything=[(0, 60000), (1, 24000)])
         monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0,1")
 
         assert LlamaCppBackend._arch_gate_survivors("/fake/llama-server") == [1]
 
     def test_no_mask_at_all_still_narrows(self, monkeypatch):
-        self._rocm_host(monkeypatch, gated = [(1, 24000)], everything = [(0, 60000), (1, 24000)])
+        self._rocm_host(monkeypatch, gated=[(1, 24000)], everything=[(0, 60000), (1, 24000)])
 
         assert LlamaCppBackend._arch_gate_survivors("/fake/llama-server") == [1]
 
@@ -872,10 +874,10 @@ class TestTheGateNeverRewritesAnUnmappableMask:
         ],
     )
     def test_which_masks_count_as_unmappable(self, monkeypatch, mask, unmappable):
-        monkeypatch.delenv("HIP_VISIBLE_DEVICES", raising = False)
-        monkeypatch.delenv("ROCR_VISIBLE_DEVICES", raising = False)
+        monkeypatch.delenv("HIP_VISIBLE_DEVICES", raising=False)
+        monkeypatch.delenv("ROCR_VISIBLE_DEVICES", raising=False)
         if mask is None:
-            monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising = False)
+            monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
         else:
             monkeypatch.setenv("CUDA_VISIBLE_DEVICES", mask)
 
@@ -910,7 +912,7 @@ class TestCpuSentinelDropsAnInheritedDevicePick:
         monkeypatch.setenv("LLAMA_ARG_DEVICE", "HIP0")
         monkeypatch.setenv("LLAMA_ARG_MAIN_GPU", "0")
         backend = LlamaServerBackend.__new__(LlamaServerBackend)
-        env = backend._build_env(str(tmp_path / "llama-server"), use_gpu = False)
+        env = backend._build_env(str(tmp_path / "llama-server"), use_gpu=False)
         assert "LLAMA_ARG_DEVICE" not in env
         assert "LLAMA_ARG_MAIN_GPU" not in env
         assert env["CUDA_VISIBLE_DEVICES"] == ""
@@ -921,10 +923,10 @@ class TestCpuSentinelDropsAnInheritedDevicePick:
 
         monkeypatch.setenv("LLAMA_ARG_DEVICE", "HIP0")
         monkeypatch.setattr(
-            LlamaCppBackend, "_arch_gate_survivors", staticmethod(lambda _b = None: [])
+            LlamaCppBackend, "_arch_gate_survivors", staticmethod(lambda _b=None: [])
         )
         backend = LlamaServerBackend.__new__(LlamaServerBackend)
-        env = backend._build_env(str(tmp_path / "llama-server"), use_gpu = True)
+        env = backend._build_env(str(tmp_path / "llama-server"), use_gpu=True)
         assert env["LLAMA_ARG_DEVICE"] == "HIP0"
 
 
@@ -972,7 +974,7 @@ class _StubProcess:
     def terminate(self):
         pass
 
-    def wait(self, timeout = None):
+    def wait(self, timeout=None):
         return 0
 
     def kill(self):
@@ -983,16 +985,16 @@ class _StubProcess:
 
 
 _GATED_REQUEST = dict(
-    model_identifier = "owner/repo",
-    hf_variant = "Q4_K_M",
-    n_ctx = 8192,
-    gpu_memory_mode = "manual",
-    gpu_layers = 99,
-    tensor_split = (0.5, 0.5),
+    model_identifier="owner/repo",
+    hf_variant="Q4_K_M",
+    n_ctx=8192,
+    gpu_memory_mode="manual",
+    gpu_layers=99,
+    tensor_split=(0.5, 0.5),
 )
 
 
-def _post_gate_backend(dropped, *, live_split = None):
+def _post_gate_backend(dropped, *, live_split=None):
     """Live state after a manual-split launch the arch gate normalized: the ratio
     left the argv (``_tensor_split`` is None), and the drop was recorded."""
     backend = LlamaCppBackend()
@@ -1021,7 +1023,7 @@ class TestGatedSplitStillDeduplicates:
     def test_a_different_ratio_still_reloads(self):
         """The excuse is for the ratio that was dropped, not for any ratio."""
         backend = _post_gate_backend((0.5, 0.5))
-        changed = dict(_GATED_REQUEST, tensor_split = (0.9, 0.1))
+        changed = dict(_GATED_REQUEST, tensor_split=(0.9, 0.1))
         assert backend.adopt_load_intent_if_matched(GgufLoadIntent(**changed)) is False
 
     def test_a_launch_that_dropped_nothing_records_nothing(self):
@@ -1033,8 +1035,8 @@ class TestGatedSplitStillDeduplicates:
     def test_no_drop_never_excuses_a_live_split(self):
         """Both sides None must not read as "the gate dropped this": a server
         RUNNING a ratio has to reload for a request that asks for none."""
-        backend = _post_gate_backend(None, live_split = [0.5, 0.5])
-        no_split = dict(_GATED_REQUEST, tensor_split = None)
+        backend = _post_gate_backend(None, live_split=[0.5, 0.5])
+        no_split = dict(_GATED_REQUEST, tensor_split=None)
         assert backend.adopt_load_intent_if_matched(GgufLoadIntent(**no_split)) is False
 
 
@@ -1049,14 +1051,14 @@ class TestGatedTensorModeStillDeduplicates:
         return backend
 
     def test_identical_repeat_request_matches(self):
-        request = dict(_GATED_REQUEST, tensor_parallel = True)
+        request = dict(_GATED_REQUEST, tensor_parallel=True)
         backend = self._backend(True)
         assert backend.adopt_load_intent_if_matched(GgufLoadIntent(**request)) is True
 
     def test_a_launch_that_dropped_nothing_still_reloads(self):
         """No recorded drop means no excuse: a layer server has to reload for a
         request that genuinely asks for tensor parallelism."""
-        request = dict(_GATED_REQUEST, tensor_parallel = True)
+        request = dict(_GATED_REQUEST, tensor_parallel=True)
         backend = self._backend(False)
         assert backend.adopt_load_intent_if_matched(GgufLoadIntent(**request)) is False
 
@@ -1065,7 +1067,7 @@ class TestGatedTensorModeStillDeduplicates:
         for a request that asks for none, whatever an earlier launch recorded."""
         backend = self._backend(True)
         backend._tensor_parallel = True
-        request = dict(_GATED_REQUEST, tensor_parallel = False)
+        request = dict(_GATED_REQUEST, tensor_parallel=False)
         assert backend.adopt_load_intent_if_matched(GgufLoadIntent(**request)) is False
 
 
@@ -1082,6 +1084,7 @@ class TestArchRetryAsksResidencyTheSameWayTheLaunchDid:
         import inspect
 
         from core.inference.llama_cpp import LlamaCppBackend
+
         return inspect.getsource(LlamaCppBackend.load_model)
 
     def test_every_probe_vulkan_gate_admits_the_directio_probe(self):

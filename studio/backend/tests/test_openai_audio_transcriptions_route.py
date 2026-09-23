@@ -21,7 +21,7 @@ from routes.inference import router
 from utils.api_errors import install_api_error_handlers
 
 
-def _make_client(monkeypatch, transcribe = None):
+def _make_client(monkeypatch, transcribe=None):
     calls = []
 
     async def _fake_transcribe(
@@ -29,9 +29,9 @@ def _make_client(monkeypatch, transcribe = None):
         model,
         language,
         fast,
-        engine = None,
-        request = None,
-        device = None,
+        engine=None,
+        request=None,
+        device=None,
     ):
         calls.append(
             {
@@ -51,22 +51,22 @@ def _make_client(monkeypatch, transcribe = None):
 
     app = FastAPI()
     install_api_error_handlers(app)
-    app.include_router(router, prefix = "/v1")
+    app.include_router(router, prefix="/v1")
     app.dependency_overrides[get_current_subject] = lambda: "test-user"
     return TestClient(app), calls
 
 
 def _post(
     cli,
-    data = None,
-    filename = "clip.wav",
-    content = b"RIFFfake",
-    content_type = "audio/wav",
+    data=None,
+    filename="clip.wav",
+    content=b"RIFFfake",
+    content_type="audio/wav",
 ):
     return cli.post(
         "/v1/audio/transcriptions",
-        files = {"file": (filename, content, content_type)},
-        data = data or {},
+        files={"file": (filename, content, content_type)},
+        data=data or {},
     )
 
 
@@ -83,7 +83,7 @@ def test_json_response_is_text_only(monkeypatch):
 
 def test_text_response_is_plain_body(monkeypatch):
     cli, calls = _make_client(monkeypatch)
-    resp = _post(cli, data = {"response_format": "text"})
+    resp = _post(cli, data={"response_format": "text"})
     assert resp.status_code == 200
     assert resp.headers["content-type"].startswith("text/plain")
     assert resp.text == "hello sloth"
@@ -91,14 +91,14 @@ def test_text_response_is_plain_body(monkeypatch):
 
 def test_whisper1_and_missing_model_map_to_sidecar_default(monkeypatch):
     cli, calls = _make_client(monkeypatch)
-    assert _post(cli, data = {"model": "whisper-1"}).status_code == 200
+    assert _post(cli, data={"model": "whisper-1"}).status_code == 200
     assert _post(cli).status_code == 200
     assert [c["model"] for c in calls] == [None, None]
 
 
 def test_explicit_model_passes_through(monkeypatch):
     cli, calls = _make_client(monkeypatch)
-    resp = _post(cli, data = {"model": "large-v3-turbo", "language": "de"})
+    resp = _post(cli, data={"model": "large-v3-turbo", "language": "de"})
     assert resp.status_code == 200
     assert calls[0]["model"] == "large-v3-turbo"
     assert calls[0]["language"] == "de"
@@ -106,7 +106,7 @@ def test_explicit_model_passes_through(monkeypatch):
 
 def test_unknown_response_format_is_400(monkeypatch):
     cli, calls = _make_client(monkeypatch)
-    resp = _post(cli, data = {"response_format": "srt"})
+    resp = _post(cli, data={"response_format": "srt"})
     assert resp.status_code == 400
     assert "srt" in resp.json()["error"]["message"]
     assert calls == []
@@ -115,7 +115,7 @@ def test_unknown_response_format_is_400(monkeypatch):
 def test_missing_file_is_rejected(monkeypatch):
     # install_api_error_handlers maps validation errors to a 400 OpenAI envelope on /v1.
     cli, calls = _make_client(monkeypatch)
-    resp = cli.post("/v1/audio/transcriptions", data = {"model": "whisper-1"})
+    resp = cli.post("/v1/audio/transcriptions", data={"model": "whisper-1"})
     assert resp.status_code == 400
     assert calls == []
 
@@ -124,10 +124,10 @@ def test_sidecar_errors_keep_their_status(monkeypatch):
     # The shared error mapping (SttModelIdError -> 422, empty audio -> 400, ...) sits inside
     # _transcribe_audio_result; the route must not swallow or rewrap what it raises.
     async def _bad_model(raw):
-        raise HTTPException(status_code = 422, detail = "Unknown STT model id.")
+        raise HTTPException(status_code=422, detail="Unknown STT model id.")
 
-    cli, calls = _make_client(monkeypatch, transcribe = _bad_model)
-    resp = _post(cli, data = {"model": "not-a-model"})
+    cli, calls = _make_client(monkeypatch, transcribe=_bad_model)
+    resp = _post(cli, data={"model": "not-a-model"})
     assert resp.status_code == 422
     assert "Unknown STT model id." in resp.json()["error"]["message"]
 
@@ -147,6 +147,7 @@ def test_an_mtmd_only_model_forces_its_engine():
 def test_whisper_ids_keep_the_default_engine():
     """Whisper ids are shared with the Transformers sidecar, so nothing is forced."""
     from routes.inference import _stt_engine_for_model
+
     for model in (None, "", "whisper-1", "small", "large-v3-turbo", "openai/whisper-tiny"):
         assert _stt_engine_for_model(model) is None, model
 
@@ -169,7 +170,7 @@ def test_the_studio_json_route_also_forwards_the_request(monkeypatch):
     cli = TestClient(app)
     resp = cli.post(
         "/audio/transcribe",
-        json = {"audio": base64.b64encode(b"RIFFfake").decode()},
+        json={"audio": base64.b64encode(b"RIFFfake").decode()},
     )
     assert resp.status_code == 200
     assert calls[0]["raw"] == b"RIFFfake"
@@ -178,7 +179,7 @@ def test_the_studio_json_route_also_forwards_the_request(monkeypatch):
 
 def test_verbose_json_carries_language_and_duration(monkeypatch):
     cli, calls = _make_client(monkeypatch)
-    resp = _post(cli, data = {"response_format": "verbose_json", "language": "en"})
+    resp = _post(cli, data={"response_format": "verbose_json", "language": "en"})
     assert resp.status_code == 200
     assert resp.json() == {
         "task": "transcribe",
@@ -196,17 +197,17 @@ def test_verbose_json_without_a_language_is_refused_before_any_work(monkeypatch)
     It refuses before the sidecar runs, so no GPU is burnt and no row is opened."""
     cli, calls = _make_client(monkeypatch)
     api_monitor.clear()
-    resp = _post(cli, data = {"response_format": "verbose_json"})
+    resp = _post(cli, data={"response_format": "verbose_json"})
     assert resp.status_code == 501
     assert "language" in resp.json()["error"]["message"]
     assert calls == []
-    assert api_monitor.snapshot(include_details = False) == []
+    assert api_monitor.snapshot(include_details=False) == []
 
 
 def test_verbose_json_works_when_the_caller_supplies_a_language(monkeypatch):
     # Echoing a language the caller named is correct, so this half of verbose_json works.
     cli, calls = _make_client(monkeypatch)
-    resp = _post(cli, data = {"response_format": "verbose_json", "language": "en"})
+    resp = _post(cli, data={"response_format": "verbose_json", "language": "en"})
     assert resp.status_code == 200
     assert resp.json()["language"] == "en"
 
@@ -219,8 +220,8 @@ def test_verbose_json_never_emits_a_null_duration(monkeypatch):
     async def _empty(raw):
         return {"text": "", "language": "en", "duration": None, "model": "small"}
 
-    cli, calls = _make_client(monkeypatch, transcribe = _empty)
-    resp = _post(cli, data = {"response_format": "verbose_json", "language": "en"})
+    cli, calls = _make_client(monkeypatch, transcribe=_empty)
+    resp = _post(cli, data={"response_format": "verbose_json", "language": "en"})
     assert resp.json()["duration"] == 0.0
 
 
@@ -229,7 +230,7 @@ def test_timestamp_granularities_are_refused_not_dropped(monkeypatch):
     cli, calls = _make_client(monkeypatch)
     resp = _post(
         cli,
-        data = {
+        data={
             "response_format": "verbose_json",
             "language": "en",
             "timestamp_granularities[]": "word",
@@ -255,8 +256,8 @@ def test_verbose_json_validates_against_the_openai_client_model(monkeypatch, res
     async def _result(raw):
         return dict(result)
 
-    cli, calls = _make_client(monkeypatch, transcribe = _result)
-    resp = _post(cli, data = {"response_format": "verbose_json", "language": "en"})
+    cli, calls = _make_client(monkeypatch, transcribe=_result)
+    resp = _post(cli, data={"response_format": "verbose_json", "language": "en"})
     assert resp.status_code == 200
     openai_types.TranscriptionVerbose.model_validate(resp.json())
 
@@ -265,14 +266,14 @@ def test_subtitle_formats_are_still_400(monkeypatch):
     # srt/vtt need per-segment timing the sidecar does not report yet.
     cli, calls = _make_client(monkeypatch)
     for fmt in ("srt", "vtt"):
-        assert _post(cli, data = {"response_format": fmt}).status_code == 400
+        assert _post(cli, data={"response_format": fmt}).status_code == 400
 
 
 def test_transcription_opens_a_monitor_row(monkeypatch):
     cli, calls = _make_client(monkeypatch)
     api_monitor.clear()
-    assert _post(cli, filename = "meeting.wav").status_code == 200
-    rows = api_monitor.snapshot(include_details = False)
+    assert _post(cli, filename="meeting.wav").status_code == 200
+    rows = api_monitor.snapshot(include_details=False)
     assert len(rows) == 1
     assert rows[0]["endpoint"] == "/v1/audio/transcriptions"
     assert rows[0]["status"] == "completed"
@@ -283,12 +284,12 @@ def test_transcription_opens_a_monitor_row(monkeypatch):
 
 def test_sidecar_failure_records_an_error_row(monkeypatch):
     async def _boom(raw):
-        raise HTTPException(status_code = 409, detail = "Model is busy.")
+        raise HTTPException(status_code=409, detail="Model is busy.")
 
-    cli, calls = _make_client(monkeypatch, transcribe = _boom)
+    cli, calls = _make_client(monkeypatch, transcribe=_boom)
     api_monitor.clear()
     assert _post(cli).status_code == 409
-    rows = api_monitor.snapshot(include_details = False)
+    rows = api_monitor.snapshot(include_details=False)
     assert len(rows) == 1
     assert rows[0]["status"] == "error"
     assert rows[0]["error"] == "Model is busy."
@@ -297,12 +298,12 @@ def test_sidecar_failure_records_an_error_row(monkeypatch):
 def test_client_abort_records_a_cancelled_row(monkeypatch):
     # SttTranscriptionCancelledError surfaces as a 499, so the row is a cancellation.
     async def _cancelled(raw):
-        raise HTTPException(status_code = 499, detail = "Transcription cancelled")
+        raise HTTPException(status_code=499, detail="Transcription cancelled")
 
-    cli, calls = _make_client(monkeypatch, transcribe = _cancelled)
+    cli, calls = _make_client(monkeypatch, transcribe=_cancelled)
     api_monitor.clear()
     assert _post(cli).status_code == 499
-    rows = api_monitor.snapshot(include_details = False)
+    rows = api_monitor.snapshot(include_details=False)
     assert len(rows) == 1
     assert rows[0]["status"] == "cancelled"
     assert not rows[0]["error"]
@@ -324,12 +325,12 @@ def test_a_dict_detail_never_strands_the_row(monkeypatch, detail):
     which skipped finish() and left the row at "running" forever."""
 
     async def _boom(raw):
-        raise HTTPException(status_code = 400, detail = detail)
+        raise HTTPException(status_code=400, detail=detail)
 
-    cli, calls = _make_client(monkeypatch, transcribe = _boom)
+    cli, calls = _make_client(monkeypatch, transcribe=_boom)
     api_monitor.clear()
     assert _post(cli).status_code == 400
-    rows = api_monitor.snapshot(include_details = False)
+    rows = api_monitor.snapshot(include_details=False)
     assert len(rows) == 1
     assert rows[0]["status"] == "error"
     assert rows[0]["error"]
@@ -343,11 +344,11 @@ def test_a_baseexception_still_closes_the_row(monkeypatch, exc):
     async def _boom(raw):
         raise exc("bang")
 
-    cli, calls = _make_client(monkeypatch, transcribe = _boom)
+    cli, calls = _make_client(monkeypatch, transcribe=_boom)
     api_monitor.clear()
     with pytest.raises(BaseException):
         _post(cli)
-    rows = api_monitor.snapshot(include_details = False)
+    rows = api_monitor.snapshot(include_details=False)
     assert len(rows) == 1
     assert rows[0]["status"] == "error"
     assert rows[0]["error"]
@@ -358,11 +359,11 @@ def test_a_real_cancellederror_records_a_cancelled_row(monkeypatch):
     async def _cancelled(raw):
         raise asyncio.CancelledError()
 
-    cli, calls = _make_client(monkeypatch, transcribe = _cancelled)
+    cli, calls = _make_client(monkeypatch, transcribe=_cancelled)
     api_monitor.clear()
     with pytest.raises(BaseException):
         _post(cli)
-    rows = api_monitor.snapshot(include_details = False)
+    rows = api_monitor.snapshot(include_details=False)
     assert len(rows) == 1
     assert rows[0]["status"] == "cancelled"
 
@@ -372,11 +373,11 @@ def test_a_non_http_failure_records_a_friendly_error_row(monkeypatch):
     async def _boom(raw):
         raise RuntimeError("sidecar exploded")
 
-    cli, calls = _make_client(monkeypatch, transcribe = _boom)
+    cli, calls = _make_client(monkeypatch, transcribe=_boom)
     api_monitor.clear()
     with pytest.raises(RuntimeError):
         _post(cli)
-    rows = api_monitor.snapshot(include_details = False)
+    rows = api_monitor.snapshot(include_details=False)
     assert len(rows) == 1
     assert rows[0]["status"] == "error"
     assert "sidecar exploded" not in rows[0]["error"]
@@ -392,10 +393,10 @@ def test_the_monitor_label_never_carries_a_local_path(monkeypatch):
             "model": "/home/me/models/whisper-large-v3",
         }
 
-    cli, calls = _make_client(monkeypatch, transcribe = _pathy)
+    cli, calls = _make_client(monkeypatch, transcribe=_pathy)
     api_monitor.clear()
     assert _post(cli).status_code == 200
-    row = api_monitor.snapshot(include_details = False)[0]
+    row = api_monitor.snapshot(include_details=False)[0]
     assert "/" not in row["model"]
     assert row["model"] == "whisper-large-v3"
 
@@ -412,14 +413,14 @@ def test_skip_api_monitor_suppresses_the_row(monkeypatch):
 
     api_monitor.clear()
     assert _post(TestClient(cli.app)).status_code == 200
-    assert api_monitor.snapshot(include_details = False) == []
+    assert api_monitor.snapshot(include_details=False) == []
 
 
 def _install_external(
     monkeypatch,
     *,
-    enabled = True,
-    media_type = "application/json",
+    enabled=True,
+    media_type="application/json",
 ):
     client_args = []
     transcription_calls = []
@@ -442,7 +443,7 @@ def _install_external(
         provider_id,
         encrypted_api_key,
         *,
-        allow_saved_key = True,
+        allow_saved_key=True,
     ):
         credential_calls.append(
             {
@@ -479,14 +480,14 @@ def test_provider_id_routes_to_external_endpoint_without_loading_the_sidecar(mon
     client_args, transcription_calls, credential_calls = _install_external(monkeypatch)
     resp = _post(
         cli,
-        data = {
+        data={
             "provider_id": "conn-1",
             "model": "Systran/faster-distil-whisper-large-v3",
             "language": "en",
         },
-        filename = "dictation.webm",
-        content = b"webm-audio",
-        content_type = "audio/webm",
+        filename="dictation.webm",
+        content=b"webm-audio",
+        content_type="audio/webm",
     )
 
     assert resp.status_code == 200
@@ -515,10 +516,10 @@ def test_provider_id_routes_to_external_endpoint_without_loading_the_sidecar(mon
 
 def test_external_text_response_keeps_plain_text_shape(monkeypatch):
     cli, sidecar_calls = _make_client(monkeypatch)
-    _install_external(monkeypatch, media_type = "text/plain")
+    _install_external(monkeypatch, media_type="text/plain")
     resp = _post(
         cli,
-        data = {
+        data={
             "provider_id": "conn-1",
             "model": "whisper-1",
             "response_format": "text",
@@ -534,7 +535,7 @@ def test_external_text_response_keeps_plain_text_shape(monkeypatch):
 def test_external_connection_requires_a_model(monkeypatch):
     cli, sidecar_calls = _make_client(monkeypatch)
     client_args, _, _ = _install_external(monkeypatch)
-    resp = _post(cli, data = {"provider_id": "conn-1"})
+    resp = _post(cli, data={"provider_id": "conn-1"})
 
     assert resp.status_code == 400
     assert "model is required" in resp.json()["error"]["message"]
@@ -548,10 +549,10 @@ def test_external_connection_requires_a_model(monkeypatch):
 )
 def test_external_connection_must_exist_and_be_enabled(monkeypatch, provider_id, enabled, status):
     cli, sidecar_calls = _make_client(monkeypatch)
-    client_args, _, _ = _install_external(monkeypatch, enabled = enabled)
+    client_args, _, _ = _install_external(monkeypatch, enabled=enabled)
     resp = _post(
         cli,
-        data = {"provider_id": provider_id, "model": "whisper-1"},
+        data={"provider_id": provider_id, "model": "whisper-1"},
     )
 
     assert resp.status_code == status
@@ -569,7 +570,7 @@ def test_external_connection_validates_the_url_before_reading_its_key(monkeypatc
     monkeypatch.setattr(routes_module, "validate_provider_base_url", _reject_url)
     resp = _post(
         cli,
-        data = {"provider_id": "conn-1", "model": "whisper-1"},
+        data={"provider_id": "conn-1", "model": "whisper-1"},
     )
 
     assert resp.status_code == 400
@@ -582,9 +583,9 @@ def test_api_key_callers_cannot_spend_a_saved_external_stt_key(monkeypatch):
     client_args, _, credential_calls = _install_external(monkeypatch)
     resp = cli.post(
         "/v1/audio/transcriptions",
-        files = {"file": ("clip.wav", b"RIFFfake", "audio/wav")},
-        data = {"provider_id": "conn-1", "model": "whisper-1"},
-        headers = {"Authorization": "Bearer sk-unsloth-test"},
+        files={"file": ("clip.wav", b"RIFFfake", "audio/wav")},
+        data={"provider_id": "conn-1", "model": "whisper-1"},
+        headers={"Authorization": "Bearer sk-unsloth-test"},
     )
 
     assert resp.status_code == 200
@@ -598,7 +599,7 @@ def test_external_connection_accepts_a_legacy_encrypted_key(monkeypatch):
     _, _, credential_calls = _install_external(monkeypatch)
     resp = _post(
         cli,
-        data = {
+        data={
             "provider_id": "conn-1",
             "model": "whisper-1",
             "encrypted_api_key": "sealed-key",
@@ -618,13 +619,13 @@ def test_external_upstream_errors_are_502(monkeypatch):
 
     async def _reject(self, **kwargs):
         request = httpx.Request("POST", "http://stt.local:8000/v1/audio/transcriptions")
-        response = httpx.Response(503, text = "not ready", request = request)
-        raise httpx.HTTPStatusError("rejected", request = request, response = response)
+        response = httpx.Response(503, text="not ready", request=request)
+        raise httpx.HTTPStatusError("rejected", request=request, response=response)
 
     monkeypatch.setattr(routes_module.ExternalProviderClient, "create_transcription", _reject)
     resp = _post(
         cli,
-        data = {"provider_id": "conn-1", "model": "whisper-1"},
+        data={"provider_id": "conn-1", "model": "whisper-1"},
     )
 
     assert resp.status_code == 502
@@ -660,15 +661,15 @@ def test_external_disconnect_cancels_the_upstream_request(monkeypatch):
     async def _run():
         with pytest.raises(asyncio.CancelledError):
             await routes_module._external_stt_transcription(
-                provider_id = "conn-1",
-                raw = b"RIFFfake",
-                filename = "clip.wav",
-                content_type = "audio/wav",
-                model = "whisper-1",
-                language = None,
-                response_format = "json",
-                encrypted_api_key = None,
-                request = _DisconnectingRequest(),
+                provider_id="conn-1",
+                raw=b"RIFFfake",
+                filename="clip.wav",
+                content_type="audio/wav",
+                model="whisper-1",
+                language=None,
+                response_format="json",
+                encrypted_api_key=None,
+                request=_DisconnectingRequest(),
             )
 
     asyncio.run(_run())
@@ -685,28 +686,28 @@ def test_external_client_sends_openai_compatible_multipart(monkeypatch):
 
     class _HttpClient:
         async def post(self, url, **kwargs):
-            captured.update(url = url, **kwargs)
+            captured.update(url=url, **kwargs)
             request = httpx.Request("POST", url)
             return httpx.Response(
                 200,
-                content = b'{"text":"hello"}',
-                headers = {"content-type": "application/json; charset=utf-8"},
-                request = request,
+                content=b'{"text":"hello"}',
+                headers={"content-type": "application/json; charset=utf-8"},
+                request=request,
             )
 
     monkeypatch.setattr(provider_module, "_http_client", _HttpClient())
     client = provider_module.ExternalProviderClient(
-        provider_type = "custom",
-        base_url = "https://stt.example.com/v1",
-        api_key = "sk-test",
+        provider_type="custom",
+        base_url="https://stt.example.com/v1",
+        api_key="sk-test",
     )
     body, media_type = asyncio.run(
         client.create_transcription(
-            audio = b"webm-audio",
-            filename = "dictation.webm",
-            content_type = "audio/webm",
-            model = "whisper-1",
-            language = "en",
+            audio=b"webm-audio",
+            filename="dictation.webm",
+            content_type="audio/webm",
+            model="whisper-1",
+            language="en",
         )
     )
 
@@ -745,13 +746,13 @@ def test_verbose_json_is_forwarded_to_the_provider_verbatim(monkeypatch):
     api_monitor.clear()
     resp = _post(
         cli,
-        data = {"provider_id": "conn-1", "model": "whisper-1", "response_format": "verbose_json"},
+        data={"provider_id": "conn-1", "model": "whisper-1", "response_format": "verbose_json"},
     )
     assert resp.status_code == 200
     assert sidecar_calls[-1]["response_format"] == "verbose_json"
     # The monitor preview reads the body without consuming it.
     assert resp.json()["segments"] == [{"id": 0, "text": "remote words"}]
-    assert api_monitor.snapshot(include_details = False)[0]["reply_preview"] == "remote words"
+    assert api_monitor.snapshot(include_details=False)[0]["reply_preview"] == "remote words"
 
 
 def test_external_transcription_opens_a_monitor_row(monkeypatch):
@@ -760,11 +761,11 @@ def test_external_transcription_opens_a_monitor_row(monkeypatch):
     api_monitor.clear()
     resp = _post(
         cli,
-        data = {"provider_id": "conn-1", "model": "Systran/faster-distil-whisper-large-v3"},
-        filename = "dictation.webm",
+        data={"provider_id": "conn-1", "model": "Systran/faster-distil-whisper-large-v3"},
+        filename="dictation.webm",
     )
     assert resp.status_code == 200
-    rows = api_monitor.snapshot(include_details = False)
+    rows = api_monitor.snapshot(include_details=False)
     assert len(rows) == 1
     assert rows[0]["endpoint"] == "/v1/audio/transcriptions"
     assert rows[0]["status"] == "completed"
@@ -775,31 +776,31 @@ def test_external_transcription_opens_a_monitor_row(monkeypatch):
 
 def test_external_transcription_reply_preview_for_plain_text(monkeypatch):
     cli, sidecar_calls = _make_client(monkeypatch)
-    _install_external(monkeypatch, media_type = "text/plain")
+    _install_external(monkeypatch, media_type="text/plain")
     api_monitor.clear()
     resp = _post(
         cli,
-        data = {
+        data={
             "provider_id": "conn-1",
             "model": "Systran/faster-distil-whisper-large-v3",
             "response_format": "text",
         },
     )
     assert resp.status_code == 200
-    assert api_monitor.snapshot(include_details = False)[0]["reply_preview"] == "remote words"
+    assert api_monitor.snapshot(include_details=False)[0]["reply_preview"] == "remote words"
 
 
 def test_external_transcription_failure_records_an_error_row(monkeypatch):
     # A disabled connection is rejected before the proxy call; the row still closes.
     cli, sidecar_calls = _make_client(monkeypatch)
-    _install_external(monkeypatch, enabled = False)
+    _install_external(monkeypatch, enabled=False)
     api_monitor.clear()
     resp = _post(
         cli,
-        data = {"provider_id": "conn-1", "model": "Systran/faster-distil-whisper-large-v3"},
+        data={"provider_id": "conn-1", "model": "Systran/faster-distil-whisper-large-v3"},
     )
     assert resp.status_code >= 400
-    rows = api_monitor.snapshot(include_details = False)
+    rows = api_monitor.snapshot(include_details=False)
     assert len(rows) == 1
     assert rows[0]["status"] == "error"
     assert rows[0]["error"]
@@ -809,14 +810,14 @@ def test_external_reply_preview_handles_an_uppercase_json_media_type(monkeypatch
     # Content-Type is case-insensitive, so Application/JSON is still a JSON envelope and
     # the row should show the transcript, not the whole {"text": ...} wrapper.
     cli, sidecar_calls = _make_client(monkeypatch)
-    _install_external(monkeypatch, media_type = "Application/JSON")
+    _install_external(monkeypatch, media_type="Application/JSON")
     api_monitor.clear()
     resp = _post(
         cli,
-        data = {"provider_id": "conn-1", "model": "Systran/faster-distil-whisper-large-v3"},
+        data={"provider_id": "conn-1", "model": "Systran/faster-distil-whisper-large-v3"},
     )
     assert resp.status_code == 200
-    assert api_monitor.snapshot(include_details = False)[0]["reply_preview"] == "remote words"
+    assert api_monitor.snapshot(include_details=False)[0]["reply_preview"] == "remote words"
 
 
 def test_timestamp_granularities_reach_a_capable_provider(monkeypatch):
@@ -826,7 +827,7 @@ def test_timestamp_granularities_reach_a_capable_provider(monkeypatch):
     _client_args, transcription_calls, _creds = _install_external(monkeypatch)
     resp = _post(
         cli,
-        data = {
+        data={
             "provider_id": "conn-1",
             "model": "whisper-1",
             "response_format": "verbose_json",
@@ -862,11 +863,11 @@ def test_the_provider_client_sends_granularities_as_a_repeated_field(monkeypatch
 
     _asyncio.run(
         client.create_transcription(
-            audio = b"x",
-            filename = "a.wav",
-            content_type = "audio/wav",
-            model = "whisper-1",
-            timestamp_granularities = ["word"],
+            audio=b"x",
+            filename="a.wav",
+            content_type="audio/wav",
+            model="whisper-1",
+            timestamp_granularities=["word"],
         )
     )
     assert sent["data"]["timestamp_granularities[]"] == ["word"]
@@ -886,12 +887,12 @@ def test_a_sidecar_failure_does_not_leak_the_requested_path(monkeypatch, request
     would not split either one on a Linux host."""
 
     async def _boom(raw):
-        raise HTTPException(status_code = 409, detail = "Model is busy.")
+        raise HTTPException(status_code=409, detail="Model is busy.")
 
-    cli, calls = _make_client(monkeypatch, transcribe = _boom)
+    cli, calls = _make_client(monkeypatch, transcribe=_boom)
     api_monitor.clear()
-    assert _post(cli, data = {"model": requested}).status_code == 409
-    row = api_monitor.snapshot(include_details = False)[0]
+    assert _post(cli, data={"model": requested}).status_code == 409
+    row = api_monitor.snapshot(include_details=False)[0]
     assert row["status"] == "error"
     assert row["model"] == expected
     assert "/" not in row["model"] and "\\" not in row["model"]
@@ -905,9 +906,9 @@ def test_the_proxied_row_never_carries_a_local_path(monkeypatch):
     cli, _sidecar_calls = _make_client(monkeypatch)
     _client_args, transcription_calls, _creds = _install_external(monkeypatch)
     api_monitor.clear()
-    resp = _post(cli, data = {"provider_id": "conn-1", "model": "/home/ana/models/whisper-v3"})
+    resp = _post(cli, data={"provider_id": "conn-1", "model": "/home/ana/models/whisper-v3"})
     assert resp.status_code == 200
-    row = api_monitor.snapshot(include_details = False)[0]
+    row = api_monitor.snapshot(include_details=False)[0]
     assert row["model"] == "whisper-v3"
     # Only the label is redacted; the provider is still asked for what the client sent.
     assert transcription_calls[-1]["model"] == "/home/ana/models/whisper-v3"

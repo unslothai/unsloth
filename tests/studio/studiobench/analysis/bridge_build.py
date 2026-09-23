@@ -45,7 +45,7 @@ class BridgeArm:
     page: Any
     react_version: str = ""
     bundle_text: str = ""
-    snapshots: list[Any] = field(default_factory = list)
+    snapshots: list[Any] = field(default_factory=list)
 
 
 def collect_arm(
@@ -64,7 +64,7 @@ def collect_arm(
     """
     from ..instruments.coverage import PreciseCoverage
 
-    cov = PreciseCoverage(arm.cdp, detailed = detailed)
+    cov = PreciseCoverage(arm.cdp, detailed=detailed)
     cov.start()
     try:
         snapshots: list[Any] = []
@@ -108,12 +108,12 @@ def build(
     bridge = build_bridge(
         dev_arm.snapshots,
         prod_arm.snapshots,
-        rungs = rungs,
-        react_version = prod_arm.react_version or dev_arm.react_version,
-        bundle_source = prod_arm.bundle_text,
-        anchor_names = anchor_names,
-        react_url_filter = react_url_filter,
-        anchor_url_filter = anchor_url_filter,
+        rungs=rungs,
+        react_version=prod_arm.react_version or dev_arm.react_version,
+        bundle_source=prod_arm.bundle_text,
+        anchor_names=anchor_names,
+        react_url_filter=react_url_filter,
+        anchor_url_filter=anchor_url_filter,
     )
     if symbols_dir and bridge.status != FAILED:
         bridge.save(symbols_dir)
@@ -338,7 +338,7 @@ def verify_build_provenance(
     that is deliberate: each of these conditions produces numbers that look
     entirely reasonable and describe a different program.
     """
-    out = assert_production_bundle(page, base_url = base_url)
+    out = assert_production_bundle(page, base_url=base_url)
     if require_attribution:
         out.update(assert_attribution_build(page))
     out.update(assert_profiling_build_loaded(page))

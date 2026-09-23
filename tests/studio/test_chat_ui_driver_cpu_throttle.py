@@ -19,7 +19,7 @@ from pathlib import Path
 
 
 DRIVER_PATH = Path(__file__).resolve().parent / "playwright_chat_ui.py"
-DRIVER = DRIVER_PATH.read_text(encoding = "utf-8")
+DRIVER = DRIVER_PATH.read_text(encoding="utf-8")
 
 
 def _code_only(source: str) -> str:

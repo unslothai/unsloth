@@ -38,6 +38,7 @@ if _backend_dir not in sys.path:
     sys.path.insert(0, _backend_dir)
 try:
     from utils.desktop_shell_env import import_rocm_env_from_login_shell as _import_rocm_env
+
     _import_rocm_env()
 except Exception:
     pass
@@ -48,7 +49,7 @@ if sys.platform == "win32":
     for _win_stream in (sys.stdout, sys.stderr):
         if _win_stream is not None and hasattr(_win_stream, "reconfigure"):
             try:
-                _win_stream.reconfigure(encoding = "utf-8", errors = "replace")
+                _win_stream.reconfigure(encoding="utf-8", errors="replace")
             except Exception:
                 pass
     del _win_stream
@@ -86,7 +87,7 @@ if sys.platform == "win32":
 
         try:
             if os.path.isdir(_default_root):
-                for _ver in sorted(os.listdir(_default_root), key = _ver_key, reverse = True):
+                for _ver in sorted(os.listdir(_default_root), key=_ver_key, reverse=True):
                     _bin = os.path.join(_default_root, _ver, "bin")
                     if os.path.isdir(_bin):
                         candidates.append(_bin)
@@ -109,6 +110,7 @@ if sys.platform == "win32":
     _scripts_dir = os.path.dirname(sys.executable)
     if os.path.isfile(os.path.join(_scripts_dir, "hipInfo.exe")):
         import shutil as _shutil
+
         if not _shutil.which("hipinfo.exe"):
             os.environ["PATH"] = _scripts_dir + os.pathsep + os.environ.get("PATH", "")
         del _shutil
@@ -129,6 +131,7 @@ if sys.platform == "win32":
         _found_rocm_bnb = False
         try:
             import importlib.util as _ilu
+
             _bnb_spec = _ilu.find_spec("bitsandbytes")
             # submodule_search_locations (not spec.origin) handles editable installs
             if _bnb_spec and _bnb_spec.submodule_search_locations:
@@ -144,7 +147,7 @@ if sys.platform == "win32":
                         if _km:
                             _all_vers_main.append(_km.group(1))
                 if _all_vers_main:
-                    _bnb_rocm_ver = max(_all_vers_main, key = lambda v: int(v))
+                    _bnb_rocm_ver = max(_all_vers_main, key=lambda v: int(v))
         except Exception as _e:
             _logging.getLogger(__name__).warning(
                 "Windows ROCm: BNB DLL detection failed (%s); leaving BNB_ROCM_VERSION as is",
@@ -164,6 +167,7 @@ if sys.platform == "win32":
     # Setting BNB_ROCM_VERSION makes bitsandbytes log a benign override notice; drop that record only.
     if os.environ.get("BNB_ROCM_VERSION"):
         import logging as _logging
+
         _logging.getLogger("bitsandbytes.cextension").addFilter(
             lambda _r: "environment variable detected" not in _r.getMessage()
         )
@@ -179,6 +183,7 @@ elif sys.platform.startswith("linux") and "HSA_ENABLE_DXG_DETECTION" not in os.e
         ):
             os.environ["HSA_ENABLE_DXG_DETECTION"] = "1"
             import logging as _logging
+
             _logging.getLogger(__name__).info(
                 "WSL ROCm: set HSA_ENABLE_DXG_DETECTION=1 (librocdxg bridge present)"
             )
@@ -292,7 +297,7 @@ def _read_studio_install_id() -> str:
     try:
         token = (
             (_STUDIO_ROOT_RESOLVED / "share" / "studio_install_id")
-            .read_text(encoding = "utf-8")
+            .read_text(encoding="utf-8")
             .strip()
         )
     except (OSError, ValueError):
@@ -422,7 +427,7 @@ def get_unsloth_version() -> str:
     root = _Path(__file__).resolve().parents[2] / "unsloth"
     for version_file in (root / "_version.py", root / "models" / "_utils.py"):
         try:
-            for line in version_file.read_text(encoding = "utf-8").splitlines():
+            for line in version_file.read_text(encoding="utf-8").splitlines():
                 if line.startswith("__version__ = "):
                     return line.split("=", 1)[1].strip().strip('"').strip("'")
         except (OSError, UnicodeDecodeError):
@@ -452,6 +457,7 @@ _DESKTOP_OWNER = _load_desktop_owner()
 # operator choice.
 if _DESKTOP_OWNER:
     from utils.host_policy import apply_stdio_mcp_loopback_default as _apply_desktop_stdio_default
+
     _apply_desktop_stdio_default("127.0.0.1")
     del _apply_desktop_stdio_default
 
@@ -464,6 +470,7 @@ def _start_helper_precache_if_enabled() -> None:
     """Start optional Helper LLM GGUF pre-cache only after explicit opt-in."""
     try:
         from utils.helper_precache_settings import should_preload_helper_on_startup
+
         if not should_preload_helper_on_startup():
             return
     except Exception:
@@ -474,11 +481,12 @@ def _start_helper_precache_if_enabled() -> None:
     def _precache():
         try:
             from utils.datasets.llm_assist import precache_helper_gguf
+
             precache_helper_gguf()
         except Exception:
             pass  # non-critical
 
-    threading.Thread(target = _precache, daemon = True, name = "helper-gguf-precache").start()
+    threading.Thread(target=_precache, daemon=True, name="helper-gguf-precache").start()
 
 
 def _run_llama_cpp_startup_probes(app: FastAPI) -> None:
@@ -514,13 +522,14 @@ def _run_llama_cpp_startup_probes(app: FastAPI) -> None:
                 "MTP GGUFs will load without speculative decoding."
             )
             _log.warning(_msg)
-            print(f"WARNING: {_msg}", flush = True)
+            print(f"WARNING: {_msg}", flush=True)
         if _freshness.get("stale"):
             _msg = format_stale_warning(_freshness)
             _log.warning(_msg)
-            print(f"WARNING: {_msg}", flush = True)
+            print(f"WARNING: {_msg}", flush=True)
     except Exception as _probe_exc:
         import structlog as _structlog
+
         _structlog.get_logger(__name__).debug("llama.cpp startup probes failed: %s", _probe_exc)
 
 
@@ -531,10 +540,10 @@ def _start_llama_cpp_probes_if_enabled(app: FastAPI) -> None:
         return
 
     threading.Thread(
-        target = _run_llama_cpp_startup_probes,
-        args = (app,),
-        daemon = True,
-        name = "llama-cpp-startup-probe",
+        target=_run_llama_cpp_startup_probes,
+        args=(app,),
+        daemon=True,
+        name="llama-cpp-startup-probe",
     ).start()
 
 
@@ -560,10 +569,10 @@ def _start_post_warm_thread() -> bool:
         _post_warm_generation += 1
         mine = _post_warm_generation
         thread = threading.Thread(
-            target = _post_warm_background_work,
-            args = (mine,),
-            daemon = True,
-            name = f"post-warm-{mine}",
+            target=_post_warm_background_work,
+            args=(mine,),
+            daemon=True,
+            name=f"post-warm-{mine}",
         )
         _post_warm_thread = thread
     thread.start()
@@ -600,13 +609,15 @@ def _start_linked_folder_auto_sync(generation: Optional[int]) -> None:
     try:
         from core.rag.folder_sync import start_auto_sync
         from storage.studio_db import get_chat_project
+
         start_auto_sync(
-            admission_lock = _post_warm_lock,
-            admit = lambda: _post_warm_generation == generation,
-            project_exists = lambda project_id: get_chat_project(project_id) is not None,
+            admission_lock=_post_warm_lock,
+            admit=lambda: _post_warm_generation == generation,
+            project_exists=lambda project_id: get_chat_project(project_id) is not None,
         )
     except Exception as exc:
         import structlog as _structlog
+
         _structlog.get_logger(__name__).warning(
             "linked-folder auto-sync failed at startup: %s", exc
         )
@@ -629,6 +640,7 @@ def _post_warm_background_work(generation: Optional[int] = None) -> None:
     # self-heals. Opt out with UNSLOTH_DISABLE_MLX_AUTOREPAIR=1; after the warm, the probe imports MLX.
     try:
         from utils.mlx_repair import start_mlx_autorepair_if_needed
+
         if _post_warm_retired(generation):
             return
         start_mlx_autorepair_if_needed()
@@ -650,6 +662,7 @@ def _post_warm_background_work(generation: Optional[int] = None) -> None:
             _refresh_dense_quant_capability()
         except Exception as _dq_exc:  # noqa: BLE001 -- a picker label must never break the warm
             import structlog as _structlog
+
             _structlog.get_logger(__name__).debug("dense quant capability skipped: %s", _dq_exc)
 
     if _post_warm_retired(generation):
@@ -670,6 +683,7 @@ def _post_warm_background_work(generation: Optional[int] = None) -> None:
             prewarm_diffusers_if_image_models_exist()
     except Exception as _prewarm_exc:  # noqa: BLE001 -- latency work must never end the worker
         import structlog as _structlog
+
         _structlog.get_logger(__name__).debug("diffusers prewarm skipped: %s", _prewarm_exc)
 
 
@@ -734,9 +748,10 @@ async def lifespan(app: FastAPI):
     if not getattr(app.state, "frontend_mounted", False):
         try:
             from routes.llama_compat import add_get_denials
+
             add_get_denials(app)
         except Exception:  # noqa: BLE001 -- never block startup over a discovery route
-            _lifespan_log.warning("could not install API-only probe denials", exc_info = True)
+            _lifespan_log.warning("could not install API-only probe denials", exc_info=True)
 
     # Move the legacy sandbox up here rather than from the first request: the copy can be minutes when the
     # studio home is on another filesystem.
@@ -745,6 +760,7 @@ async def lifespan(app: FastAPI):
             migrate_legacy_sandbox_in_background,
             start_sandbox_recovery,
         )
+
         migrate_legacy_sandbox_in_background()
         # A tree renamed for deletion by a run that was killed, and the workspace deletes it left pending:
         # both waited for the next Python or terminal call, which ordinary chat never makes.
@@ -755,7 +771,7 @@ async def lifespan(app: FastAPI):
     # Remove stale .venv_overlay from old versions; switching now uses .venv_t5/.
     overlay_dir = Path(__file__).resolve().parent.parent.parent / ".venv_overlay"
     if overlay_dir.is_dir():
-        shutil.rmtree(overlay_dir, ignore_errors = True)
+        shutil.rmtree(overlay_dir, ignore_errors=True)
 
     # Hardware detection and MLX autorepair moved out of this lifespan: both import heavy
     # runtimes and uvicorn binds only once this returns, so they held the login screen.
@@ -763,6 +779,7 @@ async def lifespan(app: FastAPI):
     # Before the first writer, so startup's own connections stop checkpointing too.
     try:
         from storage.studio_db import open_wal_keeper
+
         open_wal_keeper()
     except Exception as exc:
         _lifespan_log.warning("studio.db WAL keeper failed at startup: %s", exc)
@@ -771,6 +788,7 @@ async def lifespan(app: FastAPI):
 
     try:
         from core.training.account_jobs import startup_reconciliation_accounts
+
         _reconcile_accounts = startup_reconciliation_accounts()
     except Exception as exc:
         _lifespan_log.warning("could not enumerate accounts to reconcile: %s", exc)
@@ -779,12 +797,14 @@ async def lifespan(app: FastAPI):
     for _account in _reconcile_accounts:
         try:
             from storage.studio_db import cleanup_orphaned_runs
+
             _run_as(_account, cleanup_orphaned_runs)
         except Exception as exc:
             _lifespan_log.warning("cleanup_orphaned_runs failed at startup: %s", exc)
 
         try:
             from storage.chat_generation_runs_db import reconcile_orphaned_runs
+
             reconciled_chat_runs = _run_as(_account, reconcile_orphaned_runs)
             if reconciled_chat_runs:
                 _lifespan_log.warning(
@@ -797,6 +817,7 @@ async def lifespan(app: FastAPI):
         # Each account has its own rag.db, so its stuck ingestion jobs are only visible from inside it.
         try:
             from storage.rag_db import reconcile_orphaned_ingestion_jobs
+
             _run_as(_account, reconcile_orphaned_ingestion_jobs)
         except Exception as exc:
             _lifespan_log.warning("reconcile_orphaned_ingestion_jobs failed at startup: %s", exc)
@@ -806,6 +827,7 @@ async def lifespan(app: FastAPI):
         # keeps serving needs the same reconciliation on an interval, bounded to runs whose progress lease has
         # expired.
         from core.inference.chat_generation_runs import start_lease_sweeper
+
         start_lease_sweeper(app)
     except Exception as exc:
         _lifespan_log.warning("chat generation lease sweeper failed to start: %s", exc)
@@ -822,6 +844,7 @@ async def lifespan(app: FastAPI):
     reap_hub_orphan_workers()
     try:
         from hub.utils.download_manifest import migrate_ordinary_v2_manifests_for_downgrade
+
         migrated_manifests = migrate_ordinary_v2_manifests_for_downgrade()
         if migrated_manifests:
             _lifespan_log.info(
@@ -886,7 +909,7 @@ async def lifespan(app: FastAPI):
                     storage.DEFAULT_ADMIN_USERNAME,
                     bootstrap_path,
                     storage.get_bootstrap_password(),
-                    autofill_available = _autofill,
+                    autofill_available=_autofill,
                 )
             )
             + "\n"
@@ -896,6 +919,7 @@ async def lifespan(app: FastAPI):
     # A metadata read and a thread start; the install itself runs on that thread.
     try:
         from utils.diffusers_repair import start_diffusers_autorepair_if_needed
+
         start_diffusers_autorepair_if_needed()
     except Exception as _diffusers_exc:  # noqa: BLE001 -- a self-heal must never block startup
         _lifespan_log.warning("diffusers autorepair skipped: %s", _diffusers_exc)
@@ -943,6 +967,7 @@ async def lifespan(app: FastAPI):
     await shutdown_flows()
     try:
         from core.rag.folder_sync import stop_auto_sync
+
         stop_auto_sync()
     except Exception as exc:
         _lifespan_log.warning("linked-folder auto-sync failed at shutdown: %s", exc)
@@ -982,15 +1007,15 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title = "Unsloth UI Backend",
-    version = UNSLOTH_VERSION,
-    description = "Backend API for Unsloth UI - Training and Model Management",
-    lifespan = lifespan,
+    title="Unsloth UI Backend",
+    version=UNSLOTH_VERSION,
+    description="Backend API for Unsloth UI - Training and Model Management",
+    lifespan=lifespan,
     # Swagger UI and ReDoc are re-registered below on these same paths, against vendored assets instead of
     # a CDN: FastAPI's built-ins point at cdn.jsdelivr.net, and this origin holds the auth tokens.
-    docs_url = None,
-    redoc_url = None,
-    swagger_ui_oauth2_redirect_url = None,
+    docs_url=None,
+    redoc_url=None,
+    swagger_ui_oauth2_redirect_url=None,
 )
 app.state.secure = os.environ.get("UNSLOTH_SECURE") == "1"
 
@@ -1000,7 +1025,7 @@ if os.environ.get("UNSLOTH_STUDIO_ENABLE_MCP") == "1":
 
     from mcp_server import BearerTokenMiddleware, create_studio_mcp
 
-    _studio_mcp_app = create_studio_mcp().http_app(path = "/")
+    _studio_mcp_app = create_studio_mcp().http_app(path="/")
     _studio_mcp_lifespan = _studio_mcp_app.lifespan
     _mcp_token = os.environ.get("UNSLOTH_STUDIO_MCP_TOKEN")
     if not _mcp_token:
@@ -1013,8 +1038,8 @@ from loggers.config import LogConfig
 from loggers.handlers import LoggingMiddleware
 
 logger = LogConfig.setup_logging(
-    service_name = "unsloth-studio-backend",
-    env = os.getenv("ENVIRONMENT_TYPE", "production"),
+    service_name="unsloth-studio-backend",
+    env=os.getenv("ENVIRONMENT_TYPE", "production"),
 )
 
 app.add_middleware(LoggingMiddleware)
@@ -1170,14 +1195,14 @@ class SecurityHeadersMiddleware:
                 if not isinstance(raw, list):
                     raw = list(raw)
                     message["headers"] = raw
-                headers = MutableHeaders(raw = raw)
+                headers = MutableHeaders(raw=raw)
                 # Strip the internal nonce hand-off header so it never reaches the client
                 nonce = headers.get(_CSP_SCRIPT_NONCE_HEADER)
                 if nonce is not None:
                     del headers[_CSP_SCRIPT_NONCE_HEADER]
                 headers.setdefault(
                     "Content-Security-Policy",
-                    _build_csp(nonce, docs = path in _DOCS_PATHS),
+                    _build_csp(nonce, docs=path in _DOCS_PATHS),
                 )
                 # Omit X-Frame-Options in Colab: DENY would block serve_kernel_port_as_iframe regardless of CSP.
                 if not _IS_COLAB and path != _ARTIFACT_PREVIEW_FRAME_PATH:
@@ -1218,18 +1243,18 @@ _OAUTH2_REDIRECT_TAG = _re.compile(r"<script>")
 def _nonced_docs_response(html: str, *, tag: "_re.Pattern[str]") -> HTMLResponse:
     """Hand the page's own inline script a nonce; injected script never gets one."""
     nonce = _secrets_for_docs.token_urlsafe(16)
-    nonced, replaced = tag.subn(f'<script nonce="{nonce}">', html, count = 1)
+    nonced, replaced = tag.subn(f'<script nonce="{nonce}">', html, count=1)
     if not replaced:
         # Upstream retemplated the page: fail loudly rather than serve a blank one.
         raise RuntimeError(f"docs template changed, inline script tag not found: {tag.pattern!r}")
-    return HTMLResponse(nonced, headers = {_CSP_SCRIPT_NONCE_HEADER: nonce})
+    return HTMLResponse(nonced, headers={_CSP_SCRIPT_NONCE_HEADER: nonce})
 
 
 if _DOCS_ASSETS_DIR.is_dir():
     app.mount(
         _DOCS_ASSETS_URL,
-        StaticFiles(directory = _DOCS_ASSETS_DIR),
-        name = "docs-assets",
+        StaticFiles(directory=_DOCS_ASSETS_DIR),
+        name="docs-assets",
     )
 
     def _docs_url(request: Request, path: str) -> str:
@@ -1238,35 +1263,35 @@ if _DOCS_ASSETS_DIR.is_dir():
         escapes the mapping and 404s."""
         return f"{request.scope.get('root_path', '').rstrip('/')}{path}"
 
-    @app.get("/docs", include_in_schema = False)
+    @app.get("/docs", include_in_schema=False)
     async def swagger_ui_html(request: Request):
         assets = _docs_url(request, _DOCS_ASSETS_URL)
         html = get_swagger_ui_html(
-            openapi_url = _docs_url(request, app.openapi_url),
-            title = f"{app.title} - Swagger UI",
-            oauth2_redirect_url = _docs_url(request, "/docs/oauth2-redirect"),
-            swagger_js_url = f"{assets}/swagger-ui-bundle.js",
-            swagger_css_url = f"{assets}/swagger-ui.css",
-            swagger_favicon_url = f"{assets}/favicon-32x32.png",
+            openapi_url=_docs_url(request, app.openapi_url),
+            title=f"{app.title} - Swagger UI",
+            oauth2_redirect_url=_docs_url(request, "/docs/oauth2-redirect"),
+            swagger_js_url=f"{assets}/swagger-ui-bundle.js",
+            swagger_css_url=f"{assets}/swagger-ui.css",
+            swagger_favicon_url=f"{assets}/favicon-32x32.png",
         ).body.decode()
-        return _nonced_docs_response(html, tag = _SWAGGER_INIT_TAG)
+        return _nonced_docs_response(html, tag=_SWAGGER_INIT_TAG)
 
-    @app.get("/docs/oauth2-redirect", include_in_schema = False)
+    @app.get("/docs/oauth2-redirect", include_in_schema=False)
     async def swagger_ui_redirect():
         # This page is nothing but an inline script, so it needs the nonce too.
         html = get_swagger_ui_oauth2_redirect_html().body.decode()
-        return _nonced_docs_response(html, tag = _OAUTH2_REDIRECT_TAG)
+        return _nonced_docs_response(html, tag=_OAUTH2_REDIRECT_TAG)
 
-    @app.get("/redoc", include_in_schema = False)
+    @app.get("/redoc", include_in_schema=False)
     async def redoc_html(request: Request):
         assets = _docs_url(request, _DOCS_ASSETS_URL)
         # ReDoc's bundle carries no inline init, so this one needs no nonce.
         return HTMLResponse(
             get_redoc_html(
-                openapi_url = _docs_url(request, app.openapi_url),
-                title = f"{app.title} - ReDoc",
-                redoc_js_url = f"{assets}/redoc.standalone.js",
-                redoc_favicon_url = f"{assets}/favicon-32x32.png",
+                openapi_url=_docs_url(request, app.openapi_url),
+                title=f"{app.title} - ReDoc",
+                redoc_js_url=f"{assets}/redoc.standalone.js",
+                redoc_favicon_url=f"{assets}/favicon-32x32.png",
             ).body.decode()
         )
 
@@ -1412,9 +1437,9 @@ class MaxBodyMiddleware:
         app,
         max_bytes_getter,
         protected_prefixes: tuple,
-        request_max_bytes_getter = None,
+        request_max_bytes_getter=None,
         upload_passthrough_prefixes: tuple = (),
-        upload_passthrough_max_bytes_getter = None,
+        upload_passthrough_max_bytes_getter=None,
         upload_passthrough_exact_paths: tuple = (),
         chunked_upload_exact_paths: tuple = (),
     ):
@@ -1533,13 +1558,13 @@ class MaxBodyMiddleware:
 
 app.add_middleware(
     MaxBodyMiddleware,
-    max_bytes_getter = default_request_body_limit_bytes,
-    protected_prefixes = _BODY_PROTECTED_PREFIXES,
-    request_max_bytes_getter = _get_request_body_max_bytes,
-    upload_passthrough_prefixes = _BODY_UPLOAD_PASSTHROUGH_PREFIXES,
-    upload_passthrough_max_bytes_getter = _get_upload_passthrough_request_max_bytes,
-    upload_passthrough_exact_paths = _BODY_UPLOAD_PASSTHROUGH_EXACT_PATHS,
-    chunked_upload_exact_paths = _CHUNKED_UPLOAD_EXACT_PATHS,
+    max_bytes_getter=default_request_body_limit_bytes,
+    protected_prefixes=_BODY_PROTECTED_PREFIXES,
+    request_max_bytes_getter=_get_request_body_max_bytes,
+    upload_passthrough_prefixes=_BODY_UPLOAD_PASSTHROUGH_PREFIXES,
+    upload_passthrough_max_bytes_getter=_get_upload_passthrough_request_max_bytes,
+    upload_passthrough_exact_paths=_BODY_UPLOAD_PASSTHROUGH_EXACT_PATHS,
+    chunked_upload_exact_paths=_CHUNKED_UPLOAD_EXACT_PATHS,
 )
 
 # Tracks in-flight inference requests for idle auto-unload; off -> passthrough.
@@ -1551,11 +1576,11 @@ app.add_middleware(LlamaKeepWarmMiddleware)
 from starlette.responses import RedirectResponse as _RedirectResponse  # noqa: E402
 
 
-@app.get("/recipes", include_in_schema = False)
-@app.get("/recipes/{rest:path}", include_in_schema = False)
+@app.get("/recipes", include_in_schema=False)
+@app.get("/recipes/{rest:path}", include_in_schema=False)
 async def _recipes_redirect(rest: str = ""):
     target = "/data-recipes" + (("/" + rest) if rest else "")
-    return _RedirectResponse(url = target, status_code = 308)
+    return _RedirectResponse(url=target, status_code=308)
 
 
 from utils.host_policy import cors_origins_for_mode  # noqa: E402
@@ -1582,24 +1607,24 @@ class RemoteAccessCORSMiddleware(CORSMiddleware):
 
 
 _cors_origins = cors_origins_for_mode(
-    api_only = os.environ.get("UNSLOTH_API_ONLY") == "1",
-    secure = os.environ.get("UNSLOTH_SECURE") == "1",
+    api_only=os.environ.get("UNSLOTH_API_ONLY") == "1",
+    secure=os.environ.get("UNSLOTH_SECURE") == "1",
 )
 
 app.add_middleware(
     RemoteAccessCORSMiddleware,
-    remote_access_state = app.state,
-    allow_origins = _cors_origins,
-    allow_credentials = True,
-    allow_methods = ["*"],
-    allow_headers = ["*"],
+    remote_access_state=app.state,
+    allow_origins=_cors_origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
     # allow_headers is the REQUEST side; a response header is unreadable to JS unless
     # exposed, and Studio is cross-origin from tauri://localhost and tunnels.
-    expose_headers = ["X-Unsloth-Conflict-Kind"],
+    expose_headers=["X-Unsloth-Conflict-Kind"],
     # is_allowed_origin closes the moment the tunnel URL clears, but a preflight already cached by the browser
     # does not. Measured in WebKit: with Starlette's 600s default, a state-changing request still REACHED the
     # server after remote access was stopped. Keep the stale window short.
-    max_age = 60,
+    max_age=60,
 )
 
 from utils.keyless_api_access import KeylessToolPolicyMiddleware  # noqa: E402
@@ -1610,57 +1635,57 @@ from utils.remote_access_settings import RemoteAccessStopResponseMiddleware  # n
 
 app.add_middleware(RemoteAccessStopResponseMiddleware)
 
-app.include_router(auth_router, prefix = "/api/auth", tags = ["auth"])
+app.include_router(auth_router, prefix="/api/auth", tags=["auth"])
 app.include_router(
-    __import__("routes.accounts", fromlist = ["router"]).router,
-    prefix = "/api/accounts",
-    tags = ["accounts"],
+    __import__("routes.accounts", fromlist=["router"]).router,
+    prefix="/api/accounts",
+    tags=["accounts"],
 )
-app.include_router(training_router, prefix = "/api/train", tags = ["training"])
-app.include_router(models_router, prefix = "/api/models", tags = ["models"])
-app.include_router(chat_history_router, prefix = "/api/chat", tags = ["chat"])
-app.include_router(research_runs_router, prefix = "/api/chat/research-runs", tags = ["research-runs"])
+app.include_router(training_router, prefix="/api/train", tags=["training"])
+app.include_router(models_router, prefix="/api/models", tags=["models"])
+app.include_router(chat_history_router, prefix="/api/chat", tags=["chat"])
+app.include_router(research_runs_router, prefix="/api/chat/research-runs", tags=["research-runs"])
 app.include_router(
     chat_generation_runs_router,
-    prefix = "/api/inference/chat-runs",
-    tags = ["inference"],
+    prefix="/api/inference/chat-runs",
+    tags=["inference"],
 )
-app.include_router(inference_router, prefix = "/api/inference", tags = ["inference"])
+app.include_router(inference_router, prefix="/api/inference", tags=["inference"])
 # Unsloth-only inference endpoints (cancel, etc.) are not on the /v1 OpenAI-compat prefix.
-app.include_router(inference_studio_router, prefix = "/api/inference", tags = ["inference"])
+app.include_router(inference_studio_router, prefix="/api/inference", tags=["inference"])
 
 # Unsloth-only text-to-video endpoints; not exposed on the /v1 OpenAI-compat prefix.
-app.include_router(video_router, prefix = "/api/inference", tags = ["inference"])
-app.include_router(video_openai_router, prefix = "/api/inference", tags = ["inference"])
-app.include_router(video_openai_router, prefix = "/v1", tags = ["openai-compat"])
+app.include_router(video_router, prefix="/api/inference", tags=["inference"])
+app.include_router(video_openai_router, prefix="/api/inference", tags=["inference"])
+app.include_router(video_openai_router, prefix="/v1", tags=["openai-compat"])
 
-app.include_router(inference_router, prefix = "/v1", tags = ["openai-compat"])
+app.include_router(inference_router, prefix="/v1", tags=["openai-compat"])
 # llama-server / Ollama discovery probes. Declares its own full paths (/props, /version, /api/tags, ...) so it
 # needs no prefix, and must be registered ahead of the SPA catch-all in serve_frontend() or /props and /version
 # go on resolving to index.html with a 200.
-app.include_router(llama_compat_router, tags = ["openai-compat"])
-app.include_router(preview_router, prefix = "/p", tags = ["preview"])
-app.include_router(providers_router, prefix = "/api/providers", tags = ["providers"])
+app.include_router(llama_compat_router, tags=["openai-compat"])
+app.include_router(preview_router, prefix="/p", tags=["preview"])
+app.include_router(providers_router, prefix="/api/providers", tags=["providers"])
 
-app.include_router(openai_codex_auth_router, prefix = "/api/providers", tags = ["providers"])
+app.include_router(openai_codex_auth_router, prefix="/api/providers", tags=["providers"])
 
-app.include_router(settings_router, prefix = "/api/settings", tags = ["settings"])
-app.include_router(mcp_servers_router, prefix = "/api/mcp/servers", tags = ["mcp"])
-app.include_router(skills_router, prefix = "/api/skills", tags = ["skills"])
-app.include_router(prompts_router, prefix = "/api/prompts", tags = ["prompts"])
-app.include_router(profile_stats_router, prefix = "/api/profile", tags = ["profile"])
-app.include_router(datasets_router, prefix = "/api/datasets", tags = ["datasets"])
-app.include_router(data_recipe_router, prefix = "/api/data-recipe", tags = ["data-recipe"])
-app.include_router(llama_router, prefix = "/api/llama", tags = ["llama"])
-app.include_router(whisper_router, prefix = "/api/whisper", tags = ["whisper"])
-app.include_router(export_router, prefix = "/api/export", tags = ["export"])
-app.include_router(rag_router, prefix = "/api/rag", tags = ["rag"])
-app.include_router(training_history_router, prefix = "/api/train", tags = ["training-history"])
-app.include_router(hub_inventory_router, prefix = "/api/hub", tags = ["hub"])
-app.include_router(hub_datasets_router, prefix = "/api/hub/datasets", tags = ["hub"])
-app.include_router(picker_templates_router, prefix = "/api/picker", tags = ["picker"])
-app.include_router(hub_token_router, prefix = "/api/hub", tags = ["hub"])
-app.include_router(youtube_router, prefix = "/api/youtube", tags = ["youtube"])
+app.include_router(settings_router, prefix="/api/settings", tags=["settings"])
+app.include_router(mcp_servers_router, prefix="/api/mcp/servers", tags=["mcp"])
+app.include_router(skills_router, prefix="/api/skills", tags=["skills"])
+app.include_router(prompts_router, prefix="/api/prompts", tags=["prompts"])
+app.include_router(profile_stats_router, prefix="/api/profile", tags=["profile"])
+app.include_router(datasets_router, prefix="/api/datasets", tags=["datasets"])
+app.include_router(data_recipe_router, prefix="/api/data-recipe", tags=["data-recipe"])
+app.include_router(llama_router, prefix="/api/llama", tags=["llama"])
+app.include_router(whisper_router, prefix="/api/whisper", tags=["whisper"])
+app.include_router(export_router, prefix="/api/export", tags=["export"])
+app.include_router(rag_router, prefix="/api/rag", tags=["rag"])
+app.include_router(training_history_router, prefix="/api/train", tags=["training-history"])
+app.include_router(hub_inventory_router, prefix="/api/hub", tags=["hub"])
+app.include_router(hub_datasets_router, prefix="/api/hub/datasets", tags=["hub"])
+app.include_router(picker_templates_router, prefix="/api/picker", tags=["picker"])
+app.include_router(hub_token_router, prefix="/api/hub", tags=["hub"])
+app.include_router(youtube_router, prefix="/api/youtube", tags=["youtube"])
 
 # Re-wrap /v1/* client errors into OpenAI/Anthropic envelopes; non-/v1 keeps {"detail": ...}.
 install_api_error_handlers(app)
@@ -1844,6 +1869,7 @@ def _inference_active() -> bool:
     busy"."""
     try:
         from state import active_generations
+
         if active_generations.count() > 0:
             return True
     except Exception:
@@ -1895,7 +1921,7 @@ async def _desktop_shell_subject(request: Request) -> Optional[str]:
     from starlette.concurrency import run_in_threadpool
 
     if await run_in_threadpool(storage.validate_desktop_secret, secret) is None:
-        raise HTTPException(status_code = 401, detail = "Desktop authentication failed")
+        raise HTTPException(status_code=401, detail="Desktop authentication failed")
     return storage.DEFAULT_ADMIN_USERNAME
 
 
@@ -2039,30 +2065,30 @@ def studio_update_status(_current_subject: str = Depends(get_current_subject)):
 
 @app.get("/api/studio/release-notes")
 def studio_release_notes(
-    version: str = Query(..., max_length = 64),
+    version: str = Query(..., max_length=64),
     refresh: bool = Query(False),
     _current_subject: str = Depends(get_current_subject),
 ):
     """Return the newest release's notes. `version` is echoed, not looked up."""
     if not is_supported_version_query(version):
-        raise HTTPException(status_code = 422, detail = "Invalid version.")
-    return get_release_notes(version, refresh = refresh)
+        raise HTTPException(status_code=422, detail="Invalid version.")
+    return get_release_notes(version, refresh=refresh)
 
 
 @app.get(
     "/api/studio/download-transport-capabilities",
-    response_model = TransportCapabilities,
+    response_model=TransportCapabilities,
 )
 def studio_download_transport_capabilities(
     probe: bool = False, _current_subject: str = Depends(get_current_subject)
 ):
     # Sync def, so FastAPI runs this in the threadpool and an opted-in probe cannot block the loop.
-    return asdict(get_download_transport_capabilities(probe = probe))
+    return asdict(get_download_transport_capabilities(probe=probe))
 
 
 @app.post(
     "/api/shutdown",
-    dependencies = [Depends(get_current_subject), Depends(auth_policy.require_owner)],
+    dependencies=[Depends(get_current_subject), Depends(auth_policy.require_owner)],
 )
 async def shutdown_server(request: Request, current_subject: str = Depends(get_current_subject)):
     """Gracefully shut down the Unsloth Studio server.
@@ -2078,7 +2104,7 @@ async def shutdown_server(request: Request, current_subject: str = Depends(get_c
 async def desktop_shutdown_server(request: Request):
     """The desktop shell's quit path, authenticated by its secret."""
     if await _desktop_shell_subject(request) is None:
-        raise HTTPException(status_code = 401, detail = "Desktop authentication failed")
+        raise HTTPException(status_code=401, detail="Desktop authentication failed")
     return _schedule_shutdown(request)
 
 
@@ -2092,6 +2118,7 @@ def _schedule_shutdown(request: Request) -> dict:
             # Fallback when not launched via run_server() (e.g. direct uvicorn)
             import signal
             import os
+
             os.kill(os.getpid(), signal.SIGTERM)
 
     request.app.state._shutdown_task = asyncio.create_task(_delayed_shutdown())
@@ -2257,7 +2284,7 @@ def _probe_dense_quant_supported() -> bool:
             return bool(dense_quant_host_capable(resolve_diffusion_device_target()))
         for ordinal in range(count):
             with diffusion_device_scope(ordinal):
-                if not dense_quant_host_capable(resolve_diffusion_device_target(ordinal = ordinal)):
+                if not dense_quant_host_capable(resolve_diffusion_device_target(ordinal=ordinal)):
                     return False
         return True
     except Exception:  # noqa: BLE001 -- a capability probe must never fail a status request
@@ -2288,7 +2315,7 @@ def _probe_dense_quant_schemes() -> list[str]:
         for ordinal in range(count):
             with diffusion_device_scope(ordinal):
                 schemes = list(
-                    auto_scheme_candidates_cached(resolve_diffusion_device_target(ordinal = ordinal))
+                    auto_scheme_candidates_cached(resolve_diffusion_device_target(ordinal=ordinal))
                 )
             common = schemes if common is None else [s for s in common if s in schemes]
         return common or []
@@ -2357,7 +2384,7 @@ def get_system_info(
     logger = logging.getLogger(__name__)
 
     gpu_info, inference_gpu_info = _get_cached_system_gpu_info(
-        logger, refresh_memory = refresh_memory
+        logger, refresh_memory=refresh_memory
     )
 
     memory = psutil.virtual_memory()
@@ -2401,12 +2428,12 @@ def get_system_info(
         "platform": platform.platform(),
         "python_version": platform.python_version(),
         "device_backend": _backend_label(get_device()),
-        "cpu_count": psutil.cpu_count(logical = True),
+        "cpu_count": psutil.cpu_count(logical=True),
         "uptime_seconds": max(0, round(time.time() - boot_time)) if boot_time else None,
         "cpu": {
-            "logical_count": psutil.cpu_count(logical = True),
-            "physical_count": psutil.cpu_count(logical = False),
-            "usage_percent": psutil.cpu_percent(interval = None),
+            "logical_count": psutil.cpu_count(logical=True),
+            "physical_count": psutil.cpu_count(logical=False),
+            "usage_percent": psutil.cpu_percent(interval=None),
             "frequency_mhz": cpu_freq_mhz,
         },
         "memory": {
@@ -2471,6 +2498,7 @@ def get_disk_space(
     roots = []
     try:
         from utils.hf_cache_settings import get_hf_cache_paths
+
         paths = get_hf_cache_paths()
         roots.extend((paths.hub_cache, paths.xet_cache))
     except Exception as exc:  # noqa: BLE001 - a settings read must not cost the reading
@@ -2560,7 +2588,7 @@ def get_disk_space(
                 break
 
     if readings:
-        tightest = min(readings, key = lambda r: r["free_gb"])
+        tightest = min(readings, key=lambda r: r["free_gb"])
         answer = dict(tightest)
         # An API key reaches this route through get_current_subject, and `path` is a raw host
         # path naming the service account and its home layout. The repo already draws that
@@ -2581,7 +2609,7 @@ def get_disk_space(
         from utils.account_context import is_owner_context
 
         return redact_inventory_host_paths(
-            answer, via_api_key = via_api_key or not is_owner_context()
+            answer, via_api_key=via_api_key or not is_owner_context()
         )
     # Every probe failed. Nulls, not zeros: diskPressure() reads a zero total as psutil having
     # failed and a zero free as a full disk, and this is neither.
@@ -2632,7 +2660,7 @@ def get_hardware_info(
         devices = get_backend_visible_gpu_info().get("devices", [])
         body["gpus"] = [
             {"name": d.get("name"), "vram_total_gb": d.get("memory_total_gb")}
-            for d in sorted(devices, key = lambda d: d.get("visible_ordinal", 0))
+            for d in sorted(devices, key=lambda d: d.get("visible_ordinal", 0))
         ]
         body["llama_cpp"] = get_installed_llama_version()
     return body
@@ -2865,7 +2893,7 @@ class ImmutableStaticFiles(StaticFiles):
         full_path,
         stat_result,
         scope,
-        status_code = 200,
+        status_code=200,
     ):
         response = super().file_response(full_path, stat_result, scope, status_code)
         response.headers["Cache-Control"] = _IMMUTABLE_ASSET_CACHE_CONTROL
@@ -2900,6 +2928,7 @@ def _is_remote_frontend_request(scope, app_state) -> bool:
     of the sockets the runtime LAN listener bound, both identified by the connection itself rather than a
     client header the caller controls."""
     from lan_access import request_on_lan_listener
+
     return _is_live_cloudflare_frontend_request(scope, app_state) or request_on_lan_listener(scope)
 
 
@@ -2912,7 +2941,7 @@ class _TunnelOnlyFrontend:
         if scope["type"] != "http" or _is_remote_frontend_request(scope, self.app_state):
             await self.frontend_app(scope, receive, send)
             return
-        await Response(status_code = 404)(scope, receive, send)
+        await Response(status_code=404)(scope, receive, send)
 
 
 def setup_frontend(
@@ -2929,13 +2958,13 @@ def setup_frontend(
     assets_dir = build_path / "assets"
     if assets_dir.exists():
         assets_app = _AssetGZipMiddleware(
-            ImmutableStaticFiles(directory = assets_dir),
-            minimum_size = 1024,
-            compresslevel = 6,
+            ImmutableStaticFiles(directory=assets_dir),
+            minimum_size=1024,
+            compresslevel=6,
         )
         if tunnel_only:
             assets_app = _TunnelOnlyFrontend(assets_app, app.state)
-        app.mount("/assets", assets_app, name = "assets")
+        app.mount("/assets", assets_app, name="assets")
 
     def _frontend_request_allowed(request: Request) -> bool:
         return not tunnel_only or _is_remote_frontend_request(request.scope, app.state)
@@ -2956,15 +2985,15 @@ def setup_frontend(
         if nonce:
             headers[_CSP_SCRIPT_NONCE_HEADER] = nonce
         return Response(
-            content = content,
-            media_type = "text/html",
-            headers = headers,
+            content=content,
+            media_type="text/html",
+            headers=headers,
         )
 
     @app.get("/")
     async def serve_root(request: Request):
         if not _frontend_request_allowed(request):
-            return Response(status_code = 404)
+            return Response(status_code=404)
         return _build_index_response(request)
 
     @app.get("/{full_path:path}")
@@ -2972,14 +3001,14 @@ def setup_frontend(
         # Unknown API paths: raise a real 404 so the api_errors handlers render the right envelope
         # for /v1/* ({"detail": ...} for /api/*). The request path is "/" + full_path.
         if full_path in {"api", "v1"} or full_path.startswith(("api/", "v1/")):
-            raise HTTPException(status_code = 404, detail = "API endpoint not found")
+            raise HTTPException(status_code=404, detail="API endpoint not found")
         if not _frontend_request_allowed(request):
-            return Response(status_code = 404)
+            return Response(status_code=404)
 
         file_path = (build_path / full_path).resolve()
 
         if not file_path.is_relative_to(build_path.resolve()):
-            return Response(status_code = 403)
+            return Response(status_code=403)
 
         if file_path.is_file():
             return FileResponse(file_path)
@@ -2988,7 +3017,7 @@ def setup_frontend(
         # app shell, which reads as "supported" to a client that checks the status before the body. Deliberately
         # after the file lookup, so a build that ever ships one of these names still serves it.
         if is_engine_probe_path(full_path):
-            raise HTTPException(status_code = 404, detail = "API endpoint not found")
+            raise HTTPException(status_code=404, detail="API endpoint not found")
 
         # Serve index.html as bytes - avoids Content-Length mismatch
         return _build_index_response(request)

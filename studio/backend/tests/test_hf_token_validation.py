@@ -19,7 +19,7 @@ if _BACKEND_DIR not in sys.path:
 import utils.hf_token_validation as validation
 
 
-@pytest.fixture(autouse = True)
+@pytest.fixture(autouse=True)
 def _reset_validation_state():
     validation.reset_hf_token_validation_state()
     yield
@@ -31,11 +31,11 @@ def test_cached_token_does_not_spend_another_attempt(monkeypatch):
 
     def _check(token):
         calls.append(token)
-        return validation.TokenValidationResult(status = "valid")
+        return validation.TokenValidationResult(status="valid")
 
     monkeypatch.setattr(validation, "_check_remote", _check)
-    first = validation.validate_hf_token("hf_valid", rate_key = "user:ip")
-    second = validation.validate_hf_token("hf_valid", rate_key = "user:ip")
+    first = validation.validate_hf_token("hf_valid", rate_key="user:ip")
+    second = validation.validate_hf_token("hf_valid", rate_key="user:ip")
 
     assert first.status == second.status == "valid"
     assert calls == ["hf_valid"]
@@ -45,19 +45,19 @@ def test_three_uncached_attempts_per_hour(monkeypatch):
     monkeypatch.setattr(
         validation,
         "_check_remote",
-        lambda _token: validation.TokenValidationResult(status = "invalid"),
+        lambda _token: validation.TokenValidationResult(status="invalid"),
     )
 
     for index in range(3):
-        result = validation.validate_hf_token(f"hf_bad_{index}", rate_key = "user:ip")
+        result = validation.validate_hf_token(f"hf_bad_{index}", rate_key="user:ip")
         assert result.status == "invalid"
 
-    limited = validation.validate_hf_token("hf_bad_4", rate_key = "user:ip")
+    limited = validation.validate_hf_token("hf_bad_4", rate_key="user:ip")
     assert limited.status == "rate_limited"
     assert limited.retry_after_seconds is not None
     assert limited.retry_after_seconds > 0
 
-    other_user = validation.validate_hf_token("hf_other", rate_key = "other:ip")
+    other_user = validation.validate_hf_token("hf_other", rate_key="other:ip")
     assert other_user.status == "invalid"
 
 
@@ -69,13 +69,13 @@ def test_window_rolls_forward(monkeypatch):
     monkeypatch.setattr(
         validation,
         "_check_remote",
-        lambda _token: validation.TokenValidationResult(status = "invalid"),
+        lambda _token: validation.TokenValidationResult(status="invalid"),
     )
 
-    assert validation.validate_hf_token("hf_a", rate_key = "user:ip").status == "invalid"
-    assert validation.validate_hf_token("hf_b", rate_key = "user:ip").status == "rate_limited"
+    assert validation.validate_hf_token("hf_a", rate_key="user:ip").status == "invalid"
+    assert validation.validate_hf_token("hf_b", rate_key="user:ip").status == "rate_limited"
     clock["now"] += 11.0
-    assert validation.validate_hf_token("hf_b", rate_key = "user:ip").status == "invalid"
+    assert validation.validate_hf_token("hf_b", rate_key="user:ip").status == "invalid"
 
 
 @pytest.mark.parametrize(
@@ -85,8 +85,8 @@ def test_window_rolls_forward(monkeypatch):
 def test_remote_status_classification(monkeypatch, status_code, expected):
     response = httpx.Response(
         status_code,
-        request = httpx.Request("GET", "https://huggingface.co/api/whoami-v2"),
-        headers = {"Retry-After": "42"} if status_code == 429 else None,
+        request=httpx.Request("GET", "https://huggingface.co/api/whoami-v2"),
+        headers={"Retry-After": "42"} if status_code == 429 else None,
     )
 
     class _Session:
@@ -106,7 +106,7 @@ def test_remote_status_classification(monkeypatch, status_code, expected):
 def test_wrapped_http_401_is_invalid(monkeypatch):
     response = httpx.Response(
         401,
-        request = httpx.Request("GET", "https://huggingface.co/api/whoami-v2"),
+        request=httpx.Request("GET", "https://huggingface.co/api/whoami-v2"),
     )
 
     class _Session:
@@ -134,10 +134,10 @@ def test_raw_token_is_not_retained(monkeypatch):
     monkeypatch.setattr(
         validation,
         "_check_remote",
-        lambda _token: validation.TokenValidationResult(status = "valid"),
+        lambda _token: validation.TokenValidationResult(status="valid"),
     )
     token = "hf_do_not_store_this_value"
-    validation.validate_hf_token(token, rate_key = "user:ip")
+    validation.validate_hf_token(token, rate_key="user:ip")
 
     assert token not in repr(validation._cache)
     assert token not in repr(validation._attempts)
@@ -152,14 +152,14 @@ def test_unexpected_remote_exception_releases_singleflight(monkeypatch):
         calls += 1
         if calls == 1:
             raise RuntimeError("unexpected failure")
-        return validation.TokenValidationResult(status = "valid")
+        return validation.TokenValidationResult(status="valid")
 
     monkeypatch.setattr(validation, "_check_remote", _check)
 
-    with pytest.raises(RuntimeError, match = "unexpected failure"):
-        validation.validate_hf_token("hf_test", rate_key = "user:ip")
+    with pytest.raises(RuntimeError, match="unexpected failure"):
+        validation.validate_hf_token("hf_test", rate_key="user:ip")
 
-    result = validation.validate_hf_token("hf_test", rate_key = "user:ip")
+    result = validation.validate_hf_token("hf_test", rate_key="user:ip")
     assert result.status == "valid"
     assert calls == 2
     assert validation._inflight == {}

@@ -59,20 +59,20 @@ def test_degenerate_box_does_not_produce_a_zero_dimension():
 
 def _cuda(free_mib: int, total_mib: int) -> DeviceMemory:
     return DeviceMemory(
-        backend = "cuda",
-        device = "cuda",
-        memory_kind = "discrete_vram",
-        free_mib = free_mib,
-        total_mib = total_mib,
+        backend="cuda",
+        device="cuda",
+        memory_kind="discrete_vram",
+        free_mib=free_mib,
+        total_mib=total_mib,
     )
 
 
 def _shortfall(**kwargs) -> str:
     # 4096x4096 on a card with ~14 GB free is well past both arms of the guard.
     message = image_activation_shortfall_message(
-        device_memory = _cuda(free_mib = 14000, total_mib = 16000),
-        width = 4096,
-        height = 4096,
+        device_memory=_cuda(free_mib=14000, total_mib=16000),
+        width=4096,
+        height=4096,
         **kwargs,
     )
     assert message is not None
@@ -86,7 +86,7 @@ def test_slider_driven_refusal_keeps_the_resolution_remedy():
 
 
 def test_source_driven_refusal_points_at_the_upload_instead():
-    message = _shortfall(source_driven = True)
+    message = _shortfall(source_driven=True)
     assert "Upload a smaller source image" in message
     # The wrong advice must be gone, not merely accompanied.
     assert "Generate at a smaller resolution" not in message
@@ -95,6 +95,6 @@ def test_source_driven_refusal_points_at_the_upload_instead():
 
 def test_batch_note_still_composes_with_either_remedy():
     for source_driven in (False, True):
-        message = _shortfall(batch_size = 4, source_driven = source_driven)
+        message = _shortfall(batch_size=4, source_driven=source_driven)
         assert "or a smaller batch size" in message
         assert "at a batch of 4" in message

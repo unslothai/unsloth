@@ -28,10 +28,11 @@ import pytest
 pytest.importorskip("trl")
 
 
-@pytest.fixture(scope = "module")
+@pytest.fixture(scope="module")
 def patched():
     import unsloth  # noqa: F401
     import trl.trainer.sft_config as config_module
+
     return config_module.SFTConfig
 
 
@@ -98,7 +99,7 @@ def test_torch_save_load_round_trip(patched, tmp_path, use_pristine):
     path = tmp_path / f"training_args_{int(use_pristine)}.bin"
     torch.save(args, path)
 
-    restored = torch.load(path, weights_only = False)
+    restored = torch.load(path, weights_only=False)
     assert restored.output_dir == args.output_dir
     assert restored.max_steps == args.max_steps
 
@@ -135,10 +136,10 @@ def test_checkpoint_loads_without_unsloth(patched, tmp_path):
     env.pop("UNSLOTH_COMPILE_LOCATION", None)
     process = subprocess.run(
         [sys.executable, "-c", script, str(path)],
-        capture_output = True,
-        text = True,
-        env = env,
-        cwd = str(tmp_path),
+        capture_output=True,
+        text=True,
+        env=env,
+        cwd=str(tmp_path),
     )
     assert process.returncode == 0, process.stderr[-3000:]
 
@@ -169,10 +170,10 @@ def test_training_arguments_conversion_keeps_unsloth_fields(patched, tmp_path):
     assert "args = UnslothSFTConfig(**dict_args)" in source, source[:2000]
 
     training_arguments = TrainingArguments(
-        output_dir = str(tmp_path),
-        bf16 = False,
-        fp16 = False,
-        use_cpu = True,
+        output_dir=str(tmp_path),
+        bf16=False,
+        fp16=False,
+        use_cpu=True,
     )
     dict_args = training_arguments.to_dict()
     dict_args["hub_token"] = training_arguments.hub_token
@@ -199,7 +200,7 @@ def test_every_patched_config_pickles_portably(tmp_path):
         except TypeError:
             # Not a config that takes an output_dir; nothing to pickle.
             continue
-        pickle.dumps(args, protocol = 2)
+        pickle.dumps(args, protocol=2)
         assert not config_class.__module__.startswith("Unsloth"), (
             f"{name} pickles under {config_class.__module__}, which does not exist "
             "without a compiled cache"
@@ -353,17 +354,17 @@ print("UNSLOTH_PROBE " + json.dumps(result))
 """
 
 
-@pytest.fixture(scope = "module")
+@pytest.fixture(scope="module")
 def pristine_probe(tmp_path_factory):
     environment = dict(os.environ)
     # Keep the generated module out of the shared cache directory.
     environment["UNSLOTH_COMPILE_LOCATION"] = str(tmp_path_factory.mktemp("compiled_cache"))
     finished = subprocess.run(
         [sys.executable, "-c", _PRISTINE_PROBE],
-        capture_output = True,
-        text = True,
-        timeout = 1800,
-        env = environment,
+        capture_output=True,
+        text=True,
+        timeout=1800,
+        env=environment,
     )
     marker = [line for line in finished.stdout.splitlines() if line.startswith("UNSLOTH_PROBE ")]
     if not marker:

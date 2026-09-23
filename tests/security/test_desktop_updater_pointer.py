@@ -120,7 +120,7 @@ sys.exit(2)
 
 
 def _step(name):
-    job = yaml.safe_load(UPDATER_WORKFLOW.read_text(encoding = "utf-8"))["jobs"]["publish-updater"]
+    job = yaml.safe_load(UPDATER_WORKFLOW.read_text(encoding="utf-8"))["jobs"]["publish-updater"]
     steps = {step.get("name"): step for step in job["steps"]}
     assert name in steps, sorted(steps)
     return steps[name]
@@ -139,14 +139,14 @@ def _release(
     tag,
     *,
     release_id,
-    complete = True,
-    draft = False,
-    prerelease = False,
-    published_at = "2026-01-01T00:00:00Z",
-    legacy = False,
-    manifest_only = False,
-    drop = (),
-    assets = None,
+    complete=True,
+    draft=False,
+    prerelease=False,
+    published_at="2026-01-01T00:00:00Z",
+    legacy=False,
+    manifest_only=False,
+    drop=(),
+    assets=None,
 ):
     if assets is not None:
         names = list(assets)
@@ -170,7 +170,7 @@ def _release(
     }
 
 
-def _manifest(tag, *, legacy = False):
+def _manifest(tag, *, legacy=False):
     base = (
         f"Unsloth-Desktop-{tag.removeprefix('v').replace('.', '_').replace('-', '_')}"
         if legacy
@@ -193,14 +193,14 @@ def _world(
     releases,
     manifests,
     latest,
-    race_latest = None,
+    race_latest=None,
 ):
     state = {"releases": releases, "manifests": manifests, "latest": latest}
     if race_latest:
         state["race_latest"] = race_latest
-    tmp_path.mkdir(parents = True, exist_ok = True)
+    tmp_path.mkdir(parents=True, exist_ok=True)
     path = tmp_path / "github.json"
-    path.write_text(json.dumps(state), encoding = "utf-8")
+    path.write_text(json.dumps(state), encoding="utf-8")
     return path
 
 
@@ -210,21 +210,21 @@ def _run_step(
     *,
     release_tag,
     state_path,
-    repair_pointer = "true",
+    repair_pointer="true",
 ):
-    tmp_path.mkdir(parents = True, exist_ok = True)
+    tmp_path.mkdir(parents=True, exist_ok=True)
     fake_bin = tmp_path / "bin"
-    fake_bin.mkdir(exist_ok = True)
+    fake_bin.mkdir(exist_ok=True)
     body = fake_bin / "fake_gh.py"
-    body.write_text(FAKE_GH_BODY, encoding = "utf-8")
+    body.write_text(FAKE_GH_BODY, encoding="utf-8")
     gh = fake_bin / "gh"
-    gh.write_text(f'#!/bin/sh\nexec "$FAKE_GH_PYTHON" "{body}" "$@"\n', encoding = "utf-8")
+    gh.write_text(f'#!/bin/sh\nexec "$FAKE_GH_PYTHON" "{body}" "$@"\n', encoding="utf-8")
     gh.chmod(0o755)
 
     log = tmp_path / "commands.log"
-    log.write_text("", encoding = "utf-8")
+    log.write_text("", encoding="utf-8")
     output = tmp_path / "github-output"
-    output.write_text("", encoding = "utf-8")
+    output.write_text("", encoding="utf-8")
     env = os.environ.copy()
     env.update(
         {
@@ -242,18 +242,18 @@ def _run_step(
     )
     result = subprocess.run(
         ["bash", "-c", script],
-        cwd = tmp_path,
-        env = env,
-        text = True,
-        capture_output = True,
-        check = False,
+        cwd=tmp_path,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
     )
     outputs = {}
-    for line in output.read_text(encoding = "utf-8").splitlines():
+    for line in output.read_text(encoding="utf-8").splitlines():
         if "=" in line:
             key, value = line.split("=", 1)
             outputs[key] = value
-    return result, log.read_text(encoding = "utf-8").splitlines(), outputs
+    return result, log.read_text(encoding="utf-8").splitlines(), outputs
 
 
 def _run(
@@ -261,10 +261,10 @@ def _run(
     *,
     release_tag,
     releases,
-    manifest = None,
-    manifests = None,
-    latest = None,
-    race_latest = None,
+    manifest=None,
+    manifests=None,
+    latest=None,
+    race_latest=None,
 ):
     """Run the repair step. `latest` defaults to the release being repaired."""
     if manifests is None:
@@ -276,19 +276,19 @@ def _run(
                     manifests[release["tag_name"]] = manifest
     state_path = _world(
         tmp_path,
-        releases = releases,
-        manifests = manifests,
-        latest = release_tag if latest is None else latest,
-        race_latest = race_latest,
+        releases=releases,
+        manifests=manifests,
+        latest=release_tag if latest is None else latest,
+        race_latest=race_latest,
     )
     result, commands, _ = _run_step(
-        tmp_path, _step_run(), release_tag = release_tag, state_path = state_path
+        tmp_path, _step_run(), release_tag=release_tag, state_path=state_path
     )
     return result, commands
 
 
 def _latest_of(tmp_path):
-    return json.loads((tmp_path / "github.json").read_text(encoding = "utf-8"))["latest"]
+    return json.loads((tmp_path / "github.json").read_text(encoding="utf-8"))["latest"]
 
 
 # ------------------------------------------------------------------ the gate
@@ -297,16 +297,16 @@ def _latest_of(tmp_path):
 def _run_gate(tmp_path, *, release_tag, assets, repair_pointer):
     state_path = _world(
         tmp_path,
-        releases = [_release(release_tag, release_id = 1, assets = assets)],
-        manifests = {},
-        latest = release_tag,
+        releases=[_release(release_tag, release_id=1, assets=assets)],
+        manifests={},
+        latest=release_tag,
     )
     return _run_step(
         tmp_path,
         _step(GATE_NAME)["run"],
-        release_tag = release_tag,
-        state_path = state_path,
-        repair_pointer = repair_pointer,
+        release_tag=release_tag,
+        state_path=state_path,
+        repair_pointer=repair_pointer,
     )
 
 
@@ -337,9 +337,9 @@ def test_the_gate_classifies_every_shape_of_release(tmp_path):
     for index, (assets, repair_pointer, expected) in enumerate(cases):
         result, _, outputs = _run_gate(
             tmp_path / f"case{index}",
-            release_tag = "v0.1.53-beta",
-            assets = assets,
-            repair_pointer = repair_pointer,
+            release_tag="v0.1.53-beta",
+            assets=assets,
+            repair_pointer=repair_pointer,
         )
         label = (assets, repair_pointer)
         if expected is None:
@@ -351,13 +351,13 @@ def test_the_gate_classifies_every_shape_of_release(tmp_path):
 
 
 def test_the_gate_fails_closed_when_the_release_cannot_be_read(tmp_path):
-    state_path = _world(tmp_path, releases = [], manifests = {}, latest = None)
+    state_path = _world(tmp_path, releases=[], manifests={}, latest=None)
     result, _, outputs = _run_step(
         tmp_path,
         _step(GATE_NAME)["run"],
-        release_tag = "v0.1.53-beta",
-        state_path = state_path,
-        repair_pointer = "false",
+        release_tag="v0.1.53-beta",
+        state_path=state_path,
+        repair_pointer="false",
     )
     assert result.returncode == 1
     assert "refusing to advance the channel" in result.stderr
@@ -370,18 +370,18 @@ def test_the_gate_fails_closed_when_the_release_cannot_be_read(tmp_path):
 def test_the_newest_complete_desktop_release_is_restored_without_copying_assets(tmp_path):
     result, commands = _run(
         tmp_path,
-        release_tag = "v0.1.53-beta",
-        releases = [
-            _release("v0.1.52-beta", release_id = 52, published_at = "2026-03-01T00:00:00Z"),
-            _release("v0.1.51-beta", release_id = 51, published_at = "2026-02-01T00:00:00Z"),
+        release_tag="v0.1.53-beta",
+        releases=[
+            _release("v0.1.52-beta", release_id=52, published_at="2026-03-01T00:00:00Z"),
+            _release("v0.1.51-beta", release_id=51, published_at="2026-02-01T00:00:00Z"),
             _release(
                 "v0.1.53-beta",
-                release_id = 53,
-                complete = False,
-                published_at = "2026-04-01T00:00:00Z",
+                release_id=53,
+                complete=False,
+                published_at="2026-04-01T00:00:00Z",
             ),
         ],
-        manifests = {
+        manifests={
             "v0.1.52-beta": _manifest("v0.1.52-beta"),
             "v0.1.51-beta": _manifest("v0.1.51-beta"),
         },
@@ -397,9 +397,9 @@ def test_the_newest_complete_desktop_release_is_restored_without_copying_assets(
     assert not [line for line in commands if line.startswith("gh release upload")]
     assert _latest_of(tmp_path) == "v0.1.52-beta"
 
-    restored = json.loads((tmp_path / "restore-latest" / "latest.json").read_text(encoding = "utf-8"))
+    restored = json.loads((tmp_path / "restore-latest" / "latest.json").read_text(encoding="utf-8"))
     assert restored == _manifest("v0.1.52-beta")
-    summary = (tmp_path / "step-summary.md").read_text(encoding = "utf-8")
+    summary = (tmp_path / "step-summary.md").read_text(encoding="utf-8")
     assert "points back to v0.1.52-beta" in summary
     assert "404" in summary
 
@@ -407,12 +407,12 @@ def test_the_newest_complete_desktop_release_is_restored_without_copying_assets(
 def test_legacy_downloads_are_restored_during_migration(tmp_path):
     result, commands = _run(
         tmp_path,
-        release_tag = "v0.1.802-beta",
-        releases = [
-            _release("v0.1.802-beta", release_id = 802, complete = False),
-            _release("v0.1.801-beta", release_id = 801, legacy = True),
+        release_tag="v0.1.802-beta",
+        releases=[
+            _release("v0.1.802-beta", release_id=802, complete=False),
+            _release("v0.1.801-beta", release_id=801, legacy=True),
         ],
-        manifests = {"v0.1.801-beta": _manifest("v0.1.801-beta", legacy = True)},
+        manifests={"v0.1.801-beta": _manifest("v0.1.801-beta", legacy=True)},
     )
     assert result.returncode == 0, result.stderr
     assert "gh release download v0.1.801-beta --pattern latest.json" in "\n".join(commands)
@@ -420,7 +420,7 @@ def test_legacy_downloads_are_restored_during_migration(tmp_path):
     assert _latest_of(tmp_path) == "v0.1.801-beta"
     # A pre-rename release cannot serve the stable links, and the summary says so rather than reporting the downloads as
     # repaired.
-    summary = (tmp_path / "step-summary.md").read_text(encoding = "utf-8")
+    summary = (tmp_path / "step-summary.md").read_text(encoding="utf-8")
     assert "predates the stable asset names" in summary
 
 
@@ -428,12 +428,12 @@ def test_a_release_holding_only_a_manifest_is_not_a_restore_candidate(tmp_path):
     """`latest.json` alone is the state the old carry-forward repair left behind."""
     result, commands = _run(
         tmp_path,
-        release_tag = "v0.1.53-beta",
-        releases = [
-            _release("v0.1.53-beta", release_id = 53, complete = False),
-            _release("v0.1.52-beta", release_id = 52, manifest_only = True),
+        release_tag="v0.1.53-beta",
+        releases=[
+            _release("v0.1.53-beta", release_id=53, complete=False),
+            _release("v0.1.52-beta", release_id=52, manifest_only=True),
         ],
-        manifests = {"v0.1.52-beta": _manifest("v0.1.52-beta")},
+        manifests={"v0.1.52-beta": _manifest("v0.1.52-beta")},
     )
     assert result.returncode == 1
     assert "nothing to restore" in result.stderr
@@ -443,21 +443,21 @@ def test_a_release_holding_only_a_manifest_is_not_a_restore_candidate(tmp_path):
 def test_incomplete_draft_and_prerelease_releases_are_never_restored(tmp_path):
     result, commands = _run(
         tmp_path,
-        release_tag = "v0.1.53-beta",
-        releases = [
-            _release("v0.1.53-beta", release_id = 53, complete = False),
-            _release("v0.1.52-beta", release_id = 52, draft = True),
-            _release("v0.1.51-beta", release_id = 51, prerelease = True),
-            _release("v0.1.50-beta", release_id = 50, complete = False),
+        release_tag="v0.1.53-beta",
+        releases=[
+            _release("v0.1.53-beta", release_id=53, complete=False),
+            _release("v0.1.52-beta", release_id=52, draft=True),
+            _release("v0.1.51-beta", release_id=51, prerelease=True),
+            _release("v0.1.50-beta", release_id=50, complete=False),
         ],
-        manifests = {"v0.1.52-beta": _manifest("v0.1.52-beta")},
+        manifests={"v0.1.52-beta": _manifest("v0.1.52-beta")},
     )
     # An explicit repair request that cannot be honoured leaves production broken, so it must go red rather than finish
     # green with nothing done.
     assert result.returncode == 1
     assert "nothing to restore" in result.stderr
     assert not [line for line in commands if "--method PATCH" in line]
-    summary = (tmp_path / "step-summary.md").read_text(encoding = "utf-8")
+    summary = (tmp_path / "step-summary.md").read_text(encoding="utf-8")
     assert "still returning 404" in summary
 
 
@@ -469,17 +469,17 @@ def test_a_prebuilt_release_holding_the_pointer_is_repaired(tmp_path):
     """
     result, commands = _run(
         tmp_path,
-        release_tag = "b8475",
-        releases = [
+        release_tag="b8475",
+        releases=[
             _release(
                 "b8475",
-                release_id = 8475,
-                assets = ["llama-b8475-bin-ubuntu-x64.zip"],
-                published_at = "2026-04-01T00:00:00Z",
+                release_id=8475,
+                assets=["llama-b8475-bin-ubuntu-x64.zip"],
+                published_at="2026-04-01T00:00:00Z",
             ),
-            _release("v0.1.52-beta", release_id = 52, published_at = "2026-03-01T00:00:00Z"),
+            _release("v0.1.52-beta", release_id=52, published_at="2026-03-01T00:00:00Z"),
         ],
-        manifests = {"v0.1.52-beta": _manifest("v0.1.52-beta")},
+        manifests={"v0.1.52-beta": _manifest("v0.1.52-beta")},
     )
     assert result.returncode == 0, result.stderr
     assert any("releases/52 -f make_latest=true" in line for line in commands)
@@ -490,15 +490,15 @@ def test_the_highest_version_wins_over_a_later_publish_time(tmp_path):
     """A republished older release must not drag the pointer onto an older build."""
     result, commands = _run(
         tmp_path,
-        release_tag = "v0.1.54-beta",
-        releases = [
+        release_tag="v0.1.54-beta",
+        releases=[
             _release(
-                "v0.1.54-beta", release_id = 54, complete = False, published_at = "2026-05-01T00:00:00Z"
+                "v0.1.54-beta", release_id=54, complete=False, published_at="2026-05-01T00:00:00Z"
             ),
-            _release("v0.1.52-beta", release_id = 52, published_at = "2026-04-01T00:00:00Z"),
-            _release("v0.1.53-beta", release_id = 53, published_at = "2026-03-01T00:00:00Z"),
+            _release("v0.1.52-beta", release_id=52, published_at="2026-04-01T00:00:00Z"),
+            _release("v0.1.53-beta", release_id=53, published_at="2026-03-01T00:00:00Z"),
         ],
-        manifests = {
+        manifests={
             "v0.1.52-beta": _manifest("v0.1.52-beta"),
             "v0.1.53-beta": _manifest("v0.1.53-beta"),
         },
@@ -515,13 +515,13 @@ def test_an_unsound_candidate_is_skipped_for_the_next_one(tmp_path):
     )
     result, commands = _run(
         tmp_path,
-        release_tag = "v0.1.54-beta",
-        releases = [
-            _release("v0.1.54-beta", release_id = 54, complete = False),
-            _release("v0.1.53-beta", release_id = 53),
-            _release("v0.1.52-beta", release_id = 52),
+        release_tag="v0.1.54-beta",
+        releases=[
+            _release("v0.1.54-beta", release_id=54, complete=False),
+            _release("v0.1.53-beta", release_id=53),
+            _release("v0.1.52-beta", release_id=52),
         ],
-        manifests = {
+        manifests={
             "v0.1.53-beta": broken,
             "v0.1.52-beta": _manifest("v0.1.52-beta"),
         },
@@ -535,12 +535,12 @@ def test_a_manifest_naming_a_missing_bundle_is_refused(tmp_path):
     """Prefix-matching a URL says nothing about the asset still being there."""
     result, commands = _run(
         tmp_path,
-        release_tag = "v0.1.53-beta",
-        releases = [
-            _release("v0.1.53-beta", release_id = 53, complete = False),
-            _release("v0.1.52-beta", release_id = 52, drop = ("Unsloth-Desktop-ARM64.app.tar.gz",)),
+        release_tag="v0.1.53-beta",
+        releases=[
+            _release("v0.1.53-beta", release_id=53, complete=False),
+            _release("v0.1.52-beta", release_id=52, drop=("Unsloth-Desktop-ARM64.app.tar.gz",)),
         ],
-        manifests = {"v0.1.52-beta": _manifest("v0.1.52-beta")},
+        manifests={"v0.1.52-beta": _manifest("v0.1.52-beta")},
     )
     assert result.returncode == 1
     assert "names a missing asset" in result.stderr
@@ -552,12 +552,12 @@ def test_a_manifest_with_an_empty_signature_is_refused(tmp_path):
     manifest["platforms"]["windows-x86_64"]["signature"] = "   "
     result, commands = _run(
         tmp_path,
-        release_tag = "v0.1.53-beta",
-        releases = [
-            _release("v0.1.53-beta", release_id = 53, complete = False),
-            _release("v0.1.52-beta", release_id = 52),
+        release_tag="v0.1.53-beta",
+        releases=[
+            _release("v0.1.53-beta", release_id=53, complete=False),
+            _release("v0.1.52-beta", release_id=52),
         ],
-        manifests = {"v0.1.52-beta": manifest},
+        manifests={"v0.1.52-beta": manifest},
     )
     assert result.returncode == 1
     assert "has no signature" in result.stderr
@@ -567,12 +567,12 @@ def test_a_manifest_with_an_empty_signature_is_refused(tmp_path):
 def test_a_manifest_naming_another_release_is_refused(tmp_path):
     result, commands = _run(
         tmp_path,
-        release_tag = "v0.1.54-beta",
-        releases = [
-            _release("v0.1.54-beta", release_id = 54, complete = False),
-            _release("v0.1.53-beta", release_id = 53),
+        release_tag="v0.1.54-beta",
+        releases=[
+            _release("v0.1.54-beta", release_id=54, complete=False),
+            _release("v0.1.53-beta", release_id=53),
         ],
-        manifests = {"v0.1.53-beta": _manifest("v0.1.52-beta")},
+        manifests={"v0.1.53-beta": _manifest("v0.1.52-beta")},
     )
     assert result.returncode == 1
     assert "names v0.1.52-beta" in result.stderr
@@ -586,12 +586,12 @@ def test_a_manifest_with_a_moving_bundle_url_is_refused(tmp_path):
     )
     result, commands = _run(
         tmp_path,
-        release_tag = "v0.1.53-beta",
-        releases = [
-            _release("v0.1.53-beta", release_id = 53, complete = False),
-            _release("v0.1.52-beta", release_id = 52),
+        release_tag="v0.1.53-beta",
+        releases=[
+            _release("v0.1.53-beta", release_id=53, complete=False),
+            _release("v0.1.52-beta", release_id=52),
         ],
-        manifests = {"v0.1.52-beta": manifest},
+        manifests={"v0.1.52-beta": manifest},
     )
     assert result.returncode == 1
     assert "URL is not pinned to its release" in result.stderr
@@ -601,12 +601,12 @@ def test_a_manifest_with_a_moving_bundle_url_is_refused(tmp_path):
 def test_a_manifest_without_a_usable_version_is_refused(tmp_path):
     result, commands = _run(
         tmp_path,
-        release_tag = "v0.1.53-beta",
-        releases = [
-            _release("v0.1.53-beta", release_id = 53, complete = False),
-            _release("v0.1.52-beta", release_id = 52),
+        release_tag="v0.1.53-beta",
+        releases=[
+            _release("v0.1.53-beta", release_id=53, complete=False),
+            _release("v0.1.52-beta", release_id=52),
         ],
-        manifests = {"v0.1.52-beta": {"version": "latest", "platforms": {}}},
+        manifests={"v0.1.52-beta": {"version": "latest", "platforms": {}}},
     )
     assert result.returncode == 1
     assert "declares invalid version" in result.stderr
@@ -617,14 +617,14 @@ def test_a_draft_or_prerelease_target_is_refused(tmp_path):
     # /releases/latest never resolves to a draft or prerelease, so a repair aimed at one cannot affect the endpoint. The
     # source filter already refuses them; the target is held to the same rule.
     for state in ("draft", "prerelease"):
-        target = _release("v0.1.53-beta", release_id = 53, complete = False)
+        target = _release("v0.1.53-beta", release_id=53, complete=False)
         target[state] = True
         result, commands = _run(
             tmp_path / state,
-            release_tag = "v0.1.53-beta",
-            releases = [target, _release("v0.1.52-beta", release_id = 52)],
-            manifests = {"v0.1.52-beta": _manifest("v0.1.52-beta")},
-            latest = "v0.1.52-beta",
+            release_tag="v0.1.53-beta",
+            releases=[target, _release("v0.1.52-beta", release_id=52)],
+            manifests={"v0.1.52-beta": _manifest("v0.1.52-beta")},
+            latest="v0.1.52-beta",
         )
         assert result.returncode != 0, f"{state} target was accepted"
         assert f"is a {state}" in result.stderr, result.stderr
@@ -637,10 +637,10 @@ def test_a_target_missing_from_the_release_listing_is_refused(tmp_path):
     # draft/prerelease refusal above would degrade into no check. Fail closed instead.
     result, commands = _run(
         tmp_path,
-        release_tag = "v0.1.53-beta",
-        releases = [_release("v0.1.52-beta", release_id = 52)],
-        manifests = {"v0.1.52-beta": _manifest("v0.1.52-beta")},
-        latest = "v0.1.52-beta",
+        release_tag="v0.1.53-beta",
+        releases=[_release("v0.1.52-beta", release_id=52)],
+        manifests={"v0.1.52-beta": _manifest("v0.1.52-beta")},
+        latest="v0.1.52-beta",
     )
     assert result.returncode != 0, result.stdout
     assert "is not among the 100 most recent releases" in result.stderr, result.stderr
@@ -651,17 +651,17 @@ def test_a_pointer_that_moved_on_is_left_alone(tmp_path):
     """Between the dispatch and the PATCH someone else fixed or replaced Latest."""
     result, commands = _run(
         tmp_path,
-        release_tag = "v0.1.53-beta",
-        releases = [
-            _release("v0.1.53-beta", release_id = 53, complete = False),
-            _release("v0.1.52-beta", release_id = 52),
-            _release("v0.1.54-beta", release_id = 54, published_at = "2026-06-01T00:00:00Z"),
+        release_tag="v0.1.53-beta",
+        releases=[
+            _release("v0.1.53-beta", release_id=53, complete=False),
+            _release("v0.1.52-beta", release_id=52),
+            _release("v0.1.54-beta", release_id=54, published_at="2026-06-01T00:00:00Z"),
         ],
-        manifests = {
+        manifests={
             "v0.1.52-beta": _manifest("v0.1.52-beta"),
             "v0.1.54-beta": _manifest("v0.1.54-beta"),
         },
-        latest = "v0.1.54-beta",
+        latest="v0.1.54-beta",
     )
     assert result.returncode == 0, result.stderr
     assert not [line for line in commands if "--method PATCH" in line], commands
@@ -672,16 +672,16 @@ def test_a_pointer_that_moved_on_is_left_alone(tmp_path):
 def test_a_pointer_moved_by_someone_else_after_the_patch_fails_loudly(tmp_path):
     result, commands = _run(
         tmp_path,
-        release_tag = "v0.1.53-beta",
-        releases = [
-            _release("v0.1.53-beta", release_id = 53, complete = False),
-            _release("v0.1.52-beta", release_id = 52),
+        release_tag="v0.1.53-beta",
+        releases=[
+            _release("v0.1.53-beta", release_id=53, complete=False),
+            _release("v0.1.52-beta", release_id=52),
             _release(
-                "v0.1.55-beta", release_id = 55, published_at = "2026-07-01T00:00:00Z", complete = False
+                "v0.1.55-beta", release_id=55, published_at="2026-07-01T00:00:00Z", complete=False
             ),
         ],
-        manifests = {"v0.1.52-beta": _manifest("v0.1.52-beta")},
-        race_latest = "v0.1.55-beta",
+        manifests={"v0.1.52-beta": _manifest("v0.1.52-beta")},
+        race_latest="v0.1.55-beta",
     )
     assert result.returncode == 1
     assert "another run may have moved it" in result.stderr

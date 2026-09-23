@@ -30,7 +30,7 @@ _WRITE_LOCK = threading.Lock()
 
 
 def _links_path(*, create: bool = False) -> Optional[Path]:
-    root = state_root(create = create)
+    root = state_root(create=create)
     if root is None:
         return None
     return root / _LINKS_FILENAME
@@ -46,7 +46,7 @@ def read_companion_links() -> dict[str, list[str]]:
     if path is None:
         return {}
     try:
-        payload = json.loads(path.read_text(encoding = "utf-8"))
+        payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return {}
     if not isinstance(payload, dict) or payload.get("version") != _LINKS_VERSION:
@@ -65,7 +65,7 @@ def read_companion_links() -> dict[str, list[str]]:
 
 
 def _write_companion_links(links: dict[str, list[str]]) -> bool:
-    path = _links_path(create = True)
+    path = _links_path(create=True)
     if path is None:
         return False
     if len(links) > _MAX_LINKS:
@@ -74,7 +74,7 @@ def _write_companion_links(links: dict[str, list[str]]) -> bool:
     tmp = path.with_name(f".{path.name}.tmp-{uuid.uuid4().hex[:8]}")
     try:
         # NOT sort_keys: json.loads keeps document order, so the file IS the recency record the trim reads.
-        tmp.write_text(json.dumps(payload, indent = 2), encoding = "utf-8")
+        tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
         os.replace(tmp, path)
         return True
     except OSError as exc:
@@ -118,6 +118,7 @@ def record_companion_link(checkpoint_repo_id: str, base_repo_id: str) -> bool:
 def _snapshot_relative_names(repo) -> Iterable[str]:
     """Every cached file of *repo* as a SNAPSHOT-RELATIVE posix name. ``CachedFileInfo.file_name`` is the basename alone; the path inside the snapshot only comes back from ``file_path`` relative to ``snapshot_path``. Family detection reads the whole relative name, so a GGUF filed under ``FLUX.2-klein/model-Q4_K_M.gguf`` is a dependent that a basename-only scan cannot see. The inventory and cleanup scanners already reconstruct it this way; this is the same reconstruction, so all three agree on what a cached file is called."""
     from hub.services.models.cache_inventory import cached_repo_files
+
     for revision in getattr(repo, "revisions", ()) or ():
         snapshot = getattr(revision, "snapshot_path", None)
         for file in cached_repo_files(revision):
@@ -164,6 +165,7 @@ def _component_only_repo_ids() -> set[str]:
     """Curated sd.cpp component repo ids, under every identity they can be cached as."""
     try:
         from core.inference.diffusion_families import sd_cpp_companion_only_repo_ids
+
         return {_normalise(r) for r in _with_mirrors(sd_cpp_companion_only_repo_ids())}
     except Exception as exc:  # noqa: BLE001 -- no table means no exclusions, as before
         logger.debug("sd.cpp companion table unavailable: %s", exc)
@@ -272,6 +274,7 @@ def _curated_base_ids() -> set[str]:
     ids: set[str] = set()
     try:
         from core.inference.diffusion_families import _FAMILIES
+
         ids |= {fam.base_repo for fam in _FAMILIES if getattr(fam, "base_repo", None)}
     except Exception as exc:  # noqa: BLE001 -- no table means no extra candidates, as before
         logger.debug("Companion base table unavailable: %s", exc)
@@ -318,6 +321,7 @@ def _detect_family(repo_id: str, gguf_filename: Optional[str]):
     """``detect_family_for_pick`` that never raises and never imports at module scope."""
     try:
         from core.inference.diffusion_families import detect_family_for_pick
+
         return detect_family_for_pick(repo_id, gguf_filename)
     except Exception:  # noqa: BLE001
         return None
@@ -358,6 +362,7 @@ def known_companion_base_ids() -> set[str]:
     # The native engine's component-only repos ARE the companions for an sd.cpp pick, and the largest half of the footprint; leaving them out made them link-only strangers. Safe against a chat model borrowed as a text encoder, since the orphan listing skips any repo holding a GGUF.
     try:
         from core.inference.diffusion_families import sd_cpp_companion_only_repo_ids
+
         bases |= set(sd_cpp_companion_only_repo_ids())
     except Exception as exc:  # noqa: BLE001 -- one missing table never hides the rest
         logger.debug("sd.cpp companion table unavailable: %s", exc)
@@ -444,6 +449,7 @@ def _canonical(repo_id: str) -> str:
     """``canonical_base``, degrading to the id itself when the family tables are unavailable."""
     try:
         from core.inference.diffusion_families import canonical_base
+
         return canonical_base(repo_id)
     except Exception:  # noqa: BLE001
         return repo_id

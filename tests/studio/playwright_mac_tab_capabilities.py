@@ -78,7 +78,7 @@ OLD = os.environ.get("STUDIO_OLD_PW") or os.environ["STUDIO_PW"]
 # staging one) never reaches it. Must differ from OLD, or the change is rejected.
 NEW = os.environ.get("STUDIO_NEW_PW") or f"{OLD}-Rotated1!"
 ART = Path(os.environ.get("PW_ART_DIR", "logs/playwright_mac_tabs"))
-ART.mkdir(parents = True, exist_ok = True)
+ART.mkdir(parents=True, exist_ok=True)
 
 # How long to keep polling the backend. The reported crash landed at t+66s, so the window has to reach well past that;
 # the workflow narrows it to 120s because nothing in this phase runs the launcher's watchdog and the longer window buys
@@ -166,15 +166,15 @@ def signed_out(url: str) -> bool:
 
 
 def info(s: str) -> None:
-    print(f"[mac-tabs] {s}", flush = True)
+    print(f"[mac-tabs] {s}", flush=True)
 
 
 def step(s: str) -> None:
-    print(f"[mac-tabs] STEP {s}", flush = True)
+    print(f"[mac-tabs] STEP {s}", flush=True)
 
 
 def fail(m: str) -> None:
-    print(f"[mac-tabs] FAIL: {m}", flush = True)
+    print(f"[mac-tabs] FAIL: {m}", flush=True)
     _failed.append(m)
 
 
@@ -246,7 +246,7 @@ def _probe_once(path: str, timeout: float) -> tuple[int, dict | None, str]:
     """
     deadline = time.monotonic() + timeout
     try:
-        with urllib.request.urlopen(f"{BASE}{path}", timeout = timeout) as resp:
+        with urllib.request.urlopen(f"{BASE}{path}", timeout=timeout) as resp:
             kind = "ok" if resp.status == 200 else "http"
             body = _read_within(resp, deadline)
             try:
@@ -294,7 +294,7 @@ def _get_json(path: str, timeout: float = PROBE_TIMEOUT_S) -> tuple[int, dict | 
     def attempt() -> None:
         outcome.append(_probe_once(path, timeout))
 
-    worker = threading.Thread(target = attempt, name = f"probe-{path}", daemon = True)
+    worker = threading.Thread(target=attempt, name=f"probe-{path}", daemon=True)
     worker.start()
     worker.join(timeout)
     if outcome:
@@ -335,7 +335,7 @@ def await_recovery(
         # Never hand out more budget than the window has left either. A probe started near the end with the default
         # PROBE_TIMEOUT_S can outlive the window by most of that budget on its own.
         probe_began = time.monotonic()
-        status, _, kind = _get_json(LIVENESS_PATH, timeout = min(PROBE_TIMEOUT_S, remaining))
+        status, _, kind = _get_json(LIVENESS_PATH, timeout=min(PROBE_TIMEOUT_S, remaining))
         # Recorded in the same shape and on the same clock as the poller's samples, so
         # the caller can lay them end to end. Without this a stall that starts after
         # sampling stops is invisible: the verdict knows it waited, but nothing knows
@@ -378,7 +378,7 @@ def _stall_windows(samples: list[dict]) -> list[tuple[float, float, bool]]:
     The third element says the span was still open when sampling stopped, which is the
     only shape that can be a terminal stall.
     """
-    ordered = sorted(samples, key = lambda s: s["t"])
+    ordered = sorted(samples, key=lambda s: s["t"])
     spans: list[tuple[float, float, bool]] = []
     open_start = None
     for s in ordered:
@@ -405,7 +405,7 @@ class BackendSurvivalPoller:
     def __init__(self) -> None:
         self.samples: list[dict] = []
         self.stop = threading.Event()
-        self.thread = threading.Thread(target = self._run, name = "survival-poll", daemon = True)
+        self.thread = threading.Thread(target=self._run, name="survival-poll", daemon=True)
 
     def start(self) -> None:
         self.thread.start()
@@ -436,7 +436,7 @@ class BackendSurvivalPoller:
 
     def finish(self) -> None:
         self.stop.set()
-        self.thread.join(timeout = 30)
+        self.thread.join(timeout=30)
 
     def report(
         self,
@@ -511,14 +511,14 @@ class BackendSurvivalPoller:
         # instead of none.
         observed = list(self.samples) + list(recovery_samples)
         (ART / "survival_samples.json").write_text(
-            json.dumps(observed, indent = 1),
-            encoding = "utf-8",
+            json.dumps(observed, indent=1),
+            encoding="utf-8",
         )
-        sampling_ended = max((s["t"] for s in self.samples), default = 0.0)
+        sampling_ended = max((s["t"] for s in self.samples), default=0.0)
         spans = _stall_windows(observed)
         terminal = next((sp for sp in spans if sp[2]), None)
-        longest = max(((end - start) for start, end, _ in spans), default = 0.0)
-        widest = max(spans, key = lambda sp: sp[1] - sp[0], default = None)
+        longest = max(((end - start) for start, end, _ in spans), default=0.0)
+        widest = max(spans, key=lambda sp: sp[1] - sp[0], default=None)
 
         if final_kind == "refused":
             fail(
@@ -572,7 +572,7 @@ class BackendSurvivalPoller:
                 f"longest {round(longest, 1)}s, worst single probe {worst_ms}ms against a "
                 f"{PROBE_TIMEOUT_S}s budget. {cleared} Not a failure here. See "
                 "logs/studio_tabs.log for which request was in flight.",
-                flush = True,
+                flush=True,
             )
 
 
@@ -591,7 +591,7 @@ def rotate_password(page) -> None:
     """
     step("completing the forced password change")
     try:
-        page.locator("#new-password").wait_for(state = "visible", timeout = 60000)
+        page.locator("#new-password").wait_for(state="visible", timeout=60000)
         current = page.locator("#current-password")
         if current.count() > 0:
             current.fill(OLD)
@@ -599,12 +599,12 @@ def rotate_password(page) -> None:
         confirm = page.locator("#confirm-password")
         if confirm.count() > 0:
             confirm.fill(NEW)
-        page.get_by_role("button", name = re.compile(r"^change password$", re.I)).first.click()
-        page.wait_for_url(lambda url: not signed_out(url), timeout = 60000)
+        page.get_by_role("button", name=re.compile(r"^change password$", re.I)).first.click()
+        page.wait_for_url(lambda url: not signed_out(url), timeout=60000)
         info("password rotated")
     except Exception as exc:
         info(f"forced password change did not complete: {exc!r}")
-        page.screenshot(path = str(ART / "change_password_failed.png"))
+        page.screenshot(path=str(ART / "change_password_failed.png"))
 
 
 def log_in(page) -> bool:
@@ -621,14 +621,14 @@ def log_in(page) -> bool:
       (auth-form.tsx:329-342). Requiring one made the fill a no-op.
     * The submit button is labelled "Login", not "Sign in".
     """
-    page.goto(BASE, wait_until = "domcontentloaded", timeout = 120000)
+    page.goto(BASE, wait_until="domcontentloaded", timeout=120000)
     # A backend that still has its one-time bootstrap password injects it into the page and signs itself in, landing on
     # /change-password with no login form ever rendered. Check that BEFORE waiting on #password, or the wait burns 60s
     # and reports "no password field" for a session that is actually authenticated.
     try:
         page.wait_for_url(
             lambda url: "/change-password" in url or "/login" in url,
-            timeout = 30000,
+            timeout=30000,
         )
     except Exception:
         pass
@@ -644,7 +644,7 @@ def log_in(page) -> bool:
         pw_box = page.locator("#password") if signed_out(page.url) else None
         if pw_box is not None:
             try:
-                pw_box.wait_for(state = "visible", timeout = 60000)
+                pw_box.wait_for(state="visible", timeout=60000)
             except Exception:
                 # No form after a full minute is either a genuinely password-less
                 # desktop build or a frontend that never rendered. The redirect check
@@ -653,13 +653,13 @@ def log_in(page) -> bool:
                 pw_box = None
         if pw_box is not None:
             pw_box.fill(OLD)
-            submit = page.get_by_role("button", name = re.compile(r"^(login|sign in)$", re.I))
+            submit = page.get_by_role("button", name=re.compile(r"^(login|sign in)$", re.I))
             submit.first.click()
             # Settle on the post-auth route rather than sleeping a fixed 3s.
             try:
                 page.wait_for_url(
                     lambda url: not signed_out(url),
-                    timeout = 60000,
+                    timeout=60000,
                 )
             except Exception:
                 info(f"still on {page.url} 60s after submitting the login form")
@@ -673,13 +673,13 @@ def log_in(page) -> bool:
 
     # Prove it rather than assume it: land somewhere authed and check we stayed.
     try:
-        page.goto(f"{BASE}/chat", wait_until = "domcontentloaded", timeout = 60000)
+        page.goto(f"{BASE}/chat", wait_until="domcontentloaded", timeout=60000)
         page.wait_for_timeout(1500)
     except Exception as exc:
         info(f"post-login navigation raised {exc!r}")
     if signed_out(page.url):
         info(f"still signed out after the login attempt (at {page.url})")
-        page.screenshot(path = str(ART / "login_failed.png"))
+        page.screenshot(path=str(ART / "login_failed.png"))
         return False
     info("signed in")
     return True
@@ -700,7 +700,7 @@ _ROW_STATE_JS = """(ids) => {
 }"""
 
 
-def row_states(page, ids = INLINE_ROW_IDS) -> dict:
+def row_states(page, ids=INLINE_ROW_IDS) -> dict:
     """DOM state of each nav row by test id; None for a row that is not rendered."""
     return page.evaluate(_ROW_STATE_JS, list(ids)) or {}
 
@@ -804,15 +804,15 @@ def assert_pending_state_on_forced_verdict(page) -> None:
     body = json.dumps(provisional)
 
     def serve_provisional(route) -> None:
-        route.fulfill(status = 200, content_type = "application/json", body = body)
+        route.fulfill(status=200, content_type="application/json", body=body)
 
     page.route(_HEALTH_ROUTE, serve_provisional)
     try:
         try:
-            page.goto(f"{BASE}/chat", wait_until = "domcontentloaded", timeout = 60000)
-            page.wait_for_selector(f'[data-testid="nav-row-{GATED_ROW_ID}"]', timeout = 30000)
+            page.goto(f"{BASE}/chat", wait_until="domcontentloaded", timeout=60000)
+            page.wait_for_selector(f'[data-testid="nav-row-{GATED_ROW_ID}"]', timeout=30000)
         except Exception as exc:
-            page.screenshot(path = str(ART / "forced_pending_missing_row.png"))
+            page.screenshot(path=str(ART / "forced_pending_missing_row.png"))
             fail(
                 f"the {GATED_ROW_ID} nav row never rendered under an unmeasured verdict "
                 f"({exc!r}); it is pinned inline by default, so either the sidebar did not "
@@ -836,7 +836,7 @@ def assert_pending_state_on_forced_verdict(page) -> None:
             if time.monotonic() >= deadline:
                 break
             time.sleep(0.25)
-        page.screenshot(path = str(ART / "forced_pending.png"))
+        page.screenshot(path=str(ART / "forced_pending.png"))
         if not got:
             fail(f"the {GATED_ROW_ID} nav row vanished between the wait and the read")
         elif got["disabled"]:
@@ -871,7 +871,7 @@ def drive_tabs(page) -> None:
     for route, row_id, name in TABS:
         step(f"open {name} ({route})")
         try:
-            page.goto(f"{BASE}{route}", wait_until = "domcontentloaded", timeout = 60000)
+            page.goto(f"{BASE}{route}", wait_until="domcontentloaded", timeout=60000)
             page.wait_for_timeout(1500)
         except Exception as exc:
             fail(f"navigating to {route} raised {exc!r}")
@@ -908,7 +908,7 @@ def drive_tabs(page) -> None:
         try:
             row = page.locator(f'[data-testid="nav-row-{row_id}"]')
             if row.count() > 0 and row.first.is_enabled():
-                row.first.click(timeout = 10000)
+                row.first.click(timeout=10000)
                 page.wait_for_timeout(1000)
             elif row.count() > 0:
                 info(f"{name}: nav row present but disabled (measured verdict)")
@@ -923,23 +923,23 @@ def drive_tabs(page) -> None:
         except Exception as exc:
             info(f"{name}: row click did not land ({exc!r})")
 
-        page.screenshot(path = str(ART / f"tab_{row_id}.png"), full_page = False)
+        page.screenshot(path=str(ART / f"tab_{row_id}.png"), full_page=False)
 
 
 def main() -> int:
     step("waiting for the backend to answer")
-    if not wait_for_health(BASE, timeout = 600):
+    if not wait_for_health(BASE, timeout=600):
         fail("backend never answered /api/health")
         return 1
 
     poller = BackendSurvivalPoller()
     poller.start()
     began = time.monotonic()
-    watchdog = install_wall_clock_watchdog(WALL_TIMEOUT_S, label = "mac-tabs", info = info)
+    watchdog = install_wall_clock_watchdog(WALL_TIMEOUT_S, label="mac-tabs", info=info)
 
     with sync_playwright() as pw:
-        browser = pw.chromium.launch(args = chromium_launch_args(sys.platform))
-        ctx = browser.new_context(viewport = {"width": 1440, "height": 900})
+        browser = pw.chromium.launch(args=chromium_launch_args(sys.platform))
+        ctx = browser.new_context(viewport={"width": 1440, "height": 900})
         install_view_transition_killer(ctx)
         page = ctx.new_page()
         page.on(
@@ -972,10 +972,10 @@ def main() -> int:
             while remaining > 0:
                 page.wait_for_timeout(min(15000, int(remaining * 1000)))
                 # Keep the UI doing real work so the backend is genuinely serving.
-                page.goto(f"{BASE}/chat", wait_until = "domcontentloaded", timeout = 60000)
+                page.goto(f"{BASE}/chat", wait_until="domcontentloaded", timeout=60000)
                 remaining = SURVIVAL_S - (time.monotonic() - began)
 
-        page.screenshot(path = str(ART / "final.png"))
+        page.screenshot(path=str(ART / "final.png"))
         ctx.close()
         browser.close()
 
@@ -987,10 +987,10 @@ def main() -> int:
     kind, status, waited, recovery = await_recovery()
     info(f"post-run {LIVENESS_PATH}: {kind} after {waited}s of watching, {len(recovery)} probe(s)")
     poller.report(
-        final_kind = kind,
-        final_status = status,
-        final_wait_s = waited,
-        recovery_samples = recovery,
+        final_kind=kind,
+        final_status=status,
+        final_wait_s=waited,
+        recovery_samples=recovery,
     )
 
     # Cancelled only now. The recovery watch adds up to RECOVERY_WINDOW_S after the UI drive, so disarming before it ran
@@ -999,11 +999,11 @@ def main() -> int:
     watchdog.cancel()
 
     if _failed:
-        print(f"[mac-tabs] {len(_failed)} FAILURE(S)", flush = True)
+        print(f"[mac-tabs] {len(_failed)} FAILURE(S)", flush=True)
         for m in _failed:
-            print(f"[mac-tabs]   - {m}", flush = True)
+            print(f"[mac-tabs]   - {m}", flush=True)
         return 1
-    print("[mac-tabs] PASS", flush = True)
+    print("[mac-tabs] PASS", flush=True)
     return 0
 
 

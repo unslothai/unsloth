@@ -22,7 +22,7 @@ _RUN_PY = Path(__file__).resolve().parents[2] / "studio" / "backend" / "run.py"
 
 
 def _module() -> ast.Module:
-    return ast.parse(_RUN_PY.read_text(encoding = "utf-8"))
+    return ast.parse(_RUN_PY.read_text(encoding="utf-8"))
 
 
 def _tee_stream_cls() -> ast.ClassDef:
@@ -74,7 +74,7 @@ def test_streams_are_normalized_before_the_logger_import():
     does `self._file = file or stdout`, so a None stdout is captured permanently
     the moment `from loggers import get_logger` runs.
     """
-    src = _RUN_PY.read_text(encoding = "utf-8")
+    src = _RUN_PY.read_text(encoding="utf-8")
     assert "\n_normalize_standard_streams()" in src, (
         "run.py never calls _normalize_standard_streams(); a console-less launch "
         "keeps sys.stdout/stderr as None and dies on the first log call"

@@ -129,9 +129,9 @@ def _workflows() -> list:
     return sorted(_WORKFLOWS.glob("*.yml"))
 
 
-@pytest.mark.parametrize("workflow", _workflows(), ids = lambda p: p.name)
+@pytest.mark.parametrize("workflow", _workflows(), ids=lambda p: p.name)
 def test_a_path_filtered_workflow_lists_the_actions_it_uses(workflow):
-    doc = yaml.safe_load(workflow.read_text(encoding = "utf-8"))
+    doc = yaml.safe_load(workflow.read_text(encoding="utf-8"))
     if not isinstance(doc, dict):
         pytest.skip("not a workflow mapping")
     actions = _local_actions(doc.get("jobs") or {})
@@ -180,11 +180,11 @@ def test_a_helper_file_beside_the_manifest_is_checked_too(tmp_path):
     manifest alone would pass while a helper-only change skipped every consuming workflow.
     """
     action = ".github/actions/grown"
-    (tmp_path / action).mkdir(parents = True)
+    (tmp_path / action).mkdir(parents=True)
     (tmp_path / action / "action.yml").write_text("name: grown\n")
     (tmp_path / action / "run.sh").write_text("echo hi\n")
 
-    files = _action_files(action, root = tmp_path)
+    files = _action_files(action, root=tmp_path)
     assert files == [f"{action}/action.yml", f"{action}/run.sh"]
 
     manifest_only = [f"{action}/action.yml"]
@@ -200,7 +200,7 @@ def test_the_pre_existing_list_does_not_outlive_the_problem():
     waiver quietly re-permits a regression someone already paid to fix."""
     still_unlisted = set()
     for workflow in _workflows():
-        doc = yaml.safe_load(workflow.read_text(encoding = "utf-8"))
+        doc = yaml.safe_load(workflow.read_text(encoding="utf-8"))
         if not isinstance(doc, dict):
             continue
         actions = _local_actions(doc.get("jobs") or {})
@@ -220,6 +220,6 @@ def test_the_guard_sees_a_workflow_that_uses_a_local_action():
     users = [
         w
         for w in _workflows()
-        if _local_actions(yaml.safe_load(w.read_text(encoding = "utf-8")) or {})
+        if _local_actions(yaml.safe_load(w.read_text(encoding="utf-8")) or {})
     ]
     assert users, "no workflow uses a local action, so this guard checks nothing"

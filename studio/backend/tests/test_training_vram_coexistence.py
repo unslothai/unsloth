@@ -37,14 +37,14 @@ class _GpuCacheResetMixin:
 
 def _fake_inference_backend(
     *,
-    active = None,
-    loading = None,
-    alive = False,
+    active=None,
+    loading=None,
+    alive=False,
 ):
     inf = SimpleNamespace(
-        active_model_name = active,
-        loading_models = set(loading or []),
-        models = {},
+        active_model_name=active,
+        loading_models=set(loading or []),
+        models={},
     )
     inf._ensure_subprocess_alive = lambda: alive
     inf._shutdown_subprocess = MagicMock()
@@ -55,18 +55,18 @@ def _fake_inference_backend(
 
 def _fake_llama_backend(
     *,
-    active = False,
-    identifier = "model.gguf",
-    gpu_offload = None,
-    loaded = None,
+    active=False,
+    identifier="model.gguf",
+    gpu_offload=None,
+    loaded=None,
 ):
     # A healthy active server is loaded; pass loaded=False for a mid-start one.
     is_loaded = active if loaded is None else loaded
     llama = SimpleNamespace(
-        is_active = active,
-        is_loaded = is_loaded,
-        model_identifier = identifier,
-        _gpu_offload_active = gpu_offload,
+        is_active=active,
+        is_loaded=is_loaded,
+        model_identifier=identifier,
+        _gpu_offload_active=gpu_offload,
     )
     llama.unload_model = MagicMock()
     return llama
@@ -84,16 +84,16 @@ def _patch_backends(inf, llama):
 
 def _fake_stt_sidecar(
     *,
-    model = None,
-    device = None,
-    loading = False,
+    model=None,
+    device=None,
+    loading=False,
 ):
     sidecar = SimpleNamespace(
-        loaded_model = model,
-        device = device,
-        is_loading = lambda: loading,
+        loaded_model=model,
+        device=device,
+        is_loading=lambda: loading,
     )
-    sidecar.cancel_pending_load = MagicMock(return_value = loading)
+    sidecar.cancel_pending_load = MagicMock(return_value=loading)
     sidecar.wait_for_load_to_settle = MagicMock()
     sidecar.unload = MagicMock()
     return sidecar
@@ -101,16 +101,16 @@ def _fake_stt_sidecar(
 
 def _fake_ggml_sidecar(
     *,
-    model = None,
-    device = None,
-    loading = False,
+    model=None,
+    device=None,
+    loading=False,
 ):
     ggml = SimpleNamespace(
-        loaded_model = model,
-        device = device,
-        is_loading = lambda: loading,
+        loaded_model=model,
+        device=device,
+        is_loading=lambda: loading,
     )
-    ggml.cancel_pending_load = MagicMock(return_value = loading)
+    ggml.cancel_pending_load = MagicMock(return_value=loading)
     ggml.wait_for_load_to_settle = MagicMock()
     ggml.unload = MagicMock()
     return ggml
@@ -144,7 +144,7 @@ def _patch_ggml_stt(sidecar):
 
 class TestSummarizeResidentChat(_GpuCacheResetMixin, unittest.TestCase):
     def test_nothing_resident(self):
-        with _patch_backends(_fake_inference_backend(), _fake_llama_backend(active = False)):
+        with _patch_backends(_fake_inference_backend(), _fake_llama_backend(active=False)):
             self.assertEqual(
                 tv.summarize_resident_chat(),
                 {"hf": None, "gguf": None, "loading": False, "any": False},
@@ -152,7 +152,7 @@ class TestSummarizeResidentChat(_GpuCacheResetMixin, unittest.TestCase):
 
     def test_hf_resident_via_active_model(self):
         with _patch_backends(
-            _fake_inference_backend(active = "unsloth/Qwen3-4B"), _fake_llama_backend(active = False)
+            _fake_inference_backend(active="unsloth/Qwen3-4B"), _fake_llama_backend(active=False)
         ):
             out = tv.summarize_resident_chat()
         self.assertEqual(out["hf"], "unsloth/Qwen3-4B")
@@ -162,8 +162,8 @@ class TestSummarizeResidentChat(_GpuCacheResetMixin, unittest.TestCase):
     def test_hf_resident_while_still_loading(self):
         # Mid-load: no active model yet but VRAM is held -> flag in-flight.
         with _patch_backends(
-            _fake_inference_backend(active = None, loading = ["unsloth/Qwen3-4B"]),
-            _fake_llama_backend(active = False),
+            _fake_inference_backend(active=None, loading=["unsloth/Qwen3-4B"]),
+            _fake_llama_backend(active=False),
         ):
             out = tv.summarize_resident_chat()
         self.assertEqual(out["hf"], "unsloth/Qwen3-4B")
@@ -173,8 +173,8 @@ class TestSummarizeResidentChat(_GpuCacheResetMixin, unittest.TestCase):
     def test_replacement_hf_load_is_in_flight(self):
         # Swap: new model loading while old still active -> unsafe to keep.
         with _patch_backends(
-            _fake_inference_backend(active = "unsloth/old", loading = ["unsloth/new"]),
-            _fake_llama_backend(active = False),
+            _fake_inference_backend(active="unsloth/old", loading=["unsloth/new"]),
+            _fake_llama_backend(active=False),
         ):
             out = tv.summarize_resident_chat()
         self.assertEqual(out["hf"], "unsloth/old")
@@ -184,7 +184,7 @@ class TestSummarizeResidentChat(_GpuCacheResetMixin, unittest.TestCase):
         # A llama-server confirmed to run entirely on CPU holds no VRAM.
         with _patch_backends(
             _fake_inference_backend(),
-            _fake_llama_backend(active = True, identifier = "cpu.gguf", gpu_offload = False),
+            _fake_llama_backend(active=True, identifier="cpu.gguf", gpu_offload=False),
         ):
             out = tv.summarize_resident_chat()
         self.assertIsNone(out["gguf"])
@@ -194,7 +194,7 @@ class TestSummarizeResidentChat(_GpuCacheResetMixin, unittest.TestCase):
         # Active but not yet healthy -- still allocating, so unsafe to size.
         with _patch_backends(
             _fake_inference_backend(),
-            _fake_llama_backend(active = True, loaded = False, identifier = "starting.gguf"),
+            _fake_llama_backend(active=True, loaded=False, identifier="starting.gguf"),
         ):
             out = tv.summarize_resident_chat()
         self.assertEqual(out["gguf"], "starting.gguf")
@@ -203,7 +203,7 @@ class TestSummarizeResidentChat(_GpuCacheResetMixin, unittest.TestCase):
     def test_bare_alive_subprocess_without_model_is_not_resident(self):
         # Bare-alive subprocess (no model, only CUDA context) must NOT count.
         with _patch_backends(
-            _fake_inference_backend(active = None, alive = True), _fake_llama_backend(active = False)
+            _fake_inference_backend(active=None, alive=True), _fake_llama_backend(active=False)
         ):
             out = tv.summarize_resident_chat()
         self.assertIsNone(out["hf"])
@@ -211,7 +211,7 @@ class TestSummarizeResidentChat(_GpuCacheResetMixin, unittest.TestCase):
 
     def test_gguf_resident(self):
         with _patch_backends(
-            _fake_inference_backend(), _fake_llama_backend(active = True, identifier = "gemma.gguf")
+            _fake_inference_backend(), _fake_llama_backend(active=True, identifier="gemma.gguf")
         ):
             out = tv.summarize_resident_chat()
         self.assertEqual(out["gguf"], "gemma.gguf")
@@ -220,7 +220,7 @@ class TestSummarizeResidentChat(_GpuCacheResetMixin, unittest.TestCase):
 
     def test_one_backend_raising_does_not_break_the_other(self):
         bad_inf = SimpleNamespace()  # missing attributes -> AttributeError
-        with _patch_backends(bad_inf, _fake_llama_backend(active = True)):
+        with _patch_backends(bad_inf, _fake_llama_backend(active=True)):
             out = tv.summarize_resident_chat()
         self.assertIsNone(out["hf"])
         self.assertTrue(out["any"])  # GGUF still detected
@@ -228,7 +228,7 @@ class TestSummarizeResidentChat(_GpuCacheResetMixin, unittest.TestCase):
 
 class TestSummarizeResidentStt(_GpuCacheResetMixin, unittest.TestCase):
     def test_reports_resident_model(self):
-        sidecar = _fake_stt_sidecar(model = "small", device = "cuda")
+        sidecar = _fake_stt_sidecar(model="small", device="cuda")
         with _patch_stt(sidecar):
             out = tv.summarize_resident_stt()
         self.assertEqual(out["model"], "small")
@@ -237,7 +237,7 @@ class TestSummarizeResidentStt(_GpuCacheResetMixin, unittest.TestCase):
         self.assertFalse(out["loading"])
 
     def test_reports_inflight_load(self):
-        sidecar = _fake_stt_sidecar(loading = True)
+        sidecar = _fake_stt_sidecar(loading=True)
         with _patch_stt(sidecar):
             out = tv.summarize_resident_stt()
         self.assertTrue(out["any"])
@@ -249,7 +249,7 @@ class TestSummarizeResidentStt(_GpuCacheResetMixin, unittest.TestCase):
         self.assertFalse(out["any"])
 
     def test_reports_resident_gguf_when_transformers_idle(self):
-        ggml = _fake_ggml_sidecar(model = "small", device = "whisper.cpp")
+        ggml = _fake_ggml_sidecar(model="small", device="whisper.cpp")
         with _patch_stt(_fake_stt_sidecar()), _patch_ggml_stt(ggml):
             out = tv.summarize_resident_stt()
         self.assertEqual(out["model"], "small")
@@ -260,8 +260,8 @@ class TestSummarizeResidentStt(_GpuCacheResetMixin, unittest.TestCase):
         # A Transformers model resident on CPU holds no VRAM, but a GGUF
         # whisper-server still binding its accelerator backend does; the CPU
         # model must not hide that in-flight startup from training admission.
-        sidecar = _fake_stt_sidecar(model = "small", device = "cpu")
-        ggml = _fake_ggml_sidecar(loading = True)
+        sidecar = _fake_stt_sidecar(model="small", device="cpu")
+        ggml = _fake_ggml_sidecar(loading=True)
         with _patch_stt(sidecar), _patch_ggml_stt(ggml):
             out = tv.summarize_resident_stt()
         self.assertEqual(out["model"], "small")
@@ -273,17 +273,17 @@ class TestSummarizeResidentStt(_GpuCacheResetMixin, unittest.TestCase):
 
 
 _BASE_KW = dict(
-    model_name = "unsloth/Qwen3-4B",
-    hf_token = None,
-    training_type = "LoRA/QLoRA",
-    load_in_4bit = True,
-    batch_size = 2,
-    max_seq_length = 2048,
-    lora_rank = 16,
-    target_modules = None,
-    gradient_checkpointing = "unsloth",
-    optimizer = "adamw_8bit",
-    gpu_ids = None,
+    model_name="unsloth/Qwen3-4B",
+    hf_token=None,
+    training_type="LoRA/QLoRA",
+    load_in_4bit=True,
+    batch_size=2,
+    max_seq_length=2048,
+    lora_rank=16,
+    target_modules=None,
+    gradient_checkpointing="unsloth",
+    optimizer="adamw_8bit",
+    gpu_ids=None,
 )
 
 
@@ -292,13 +292,13 @@ class TestCanKeepAuto(_GpuCacheResetMixin, unittest.TestCase):
         self,
         auto_return,
         *,
-        device = DeviceType.CUDA,
+        device=DeviceType.CUDA,
         **overrides,
     ):
         kw = {**_BASE_KW, **overrides}
         with (
-            patch("utils.hardware.get_device", return_value = device),
-            patch("utils.hardware.auto_select_gpu_ids", return_value = auto_return) as auto_mock,
+            patch("utils.hardware.get_device", return_value=device),
+            patch("utils.hardware.auto_select_gpu_ids", return_value=auto_return) as auto_mock,
         ):
             keep, info = tv.can_keep_chat_during_training(**kw)
         return keep, info, auto_mock
@@ -327,7 +327,7 @@ class TestCanKeepAuto(_GpuCacheResetMixin, unittest.TestCase):
         self.assertFalse(keep)
 
     def test_unload_on_non_accelerator(self):
-        keep, info, auto_mock = self._run(([0], {}), device = DeviceType.CPU)
+        keep, info, auto_mock = self._run(([0], {}), device=DeviceType.CPU)
         self.assertFalse(keep)
         self.assertEqual(info["mode"], "non_accelerator")
         auto_mock.assert_not_called()
@@ -336,7 +336,7 @@ class TestCanKeepAuto(_GpuCacheResetMixin, unittest.TestCase):
         # XPU is a first-class training backend: the keep-guard must size it,
         # not blanket-unload it as a non-accelerator.
         meta = {"selection_mode": "auto", "required_gb": 10.0, "usable_gb": 30.0}
-        keep, info, auto_mock = self._run(([0], meta), device = DeviceType.XPU)
+        keep, info, auto_mock = self._run(([0], meta), device=DeviceType.XPU)
         self.assertTrue(keep)
         self.assertNotEqual(info.get("mode"), "non_accelerator")
         auto_mock.assert_called_once()
@@ -344,20 +344,20 @@ class TestCanKeepAuto(_GpuCacheResetMixin, unittest.TestCase):
     def test_full_finetuning_forces_16bit_in_estimate(self):
         meta = {"selection_mode": "auto", "required_gb": 10.0, "usable_gb": 30.0}
         _keep, _info, auto_mock = self._run(
-            ([0], meta), training_type = "Full Finetuning", load_in_4bit = True
+            ([0], meta), training_type="Full Finetuning", load_in_4bit=True
         )
         self.assertFalse(auto_mock.call_args.kwargs["load_in_4bit"])
 
     def test_hf_token_forwarded(self):
         meta = {"selection_mode": "auto", "required_gb": 10.0, "usable_gb": 30.0}
-        _keep, _info, auto_mock = self._run(([0], meta), hf_token = "hf_secret")
+        _keep, _info, auto_mock = self._run(([0], meta), hf_token="hf_secret")
         self.assertEqual(auto_mock.call_args.kwargs["hf_token"], "hf_secret")
 
     def test_probe_exception_defaults_to_unload(self):
         kw = {**_BASE_KW}
         with (
-            patch("utils.hardware.get_device", return_value = DeviceType.CUDA),
-            patch("utils.hardware.auto_select_gpu_ids", side_effect = RuntimeError("boom")),
+            patch("utils.hardware.get_device", return_value=DeviceType.CUDA),
+            patch("utils.hardware.auto_select_gpu_ids", side_effect=RuntimeError("boom")),
         ):
             keep, info = tv.can_keep_chat_during_training(**kw)
         self.assertFalse(keep)
@@ -375,8 +375,8 @@ class TestCanKeepExplicit(_GpuCacheResetMixin, unittest.TestCase):
         devices,
         resolved,
         gpu_ids,
-        est_meta = None,
-        resolve_side_effect = None,
+        est_meta=None,
+        resolve_side_effect=None,
     ):
         kw = {**_BASE_KW, "gpu_ids": gpu_ids}
         resolve_kwargs = (
@@ -385,14 +385,14 @@ class TestCanKeepExplicit(_GpuCacheResetMixin, unittest.TestCase):
             else {"return_value": resolved}
         )
         with (
-            patch("utils.hardware.get_device", return_value = DeviceType.CUDA),
+            patch("utils.hardware.get_device", return_value=DeviceType.CUDA),
             patch(
                 "utils.hardware.estimate_required_model_memory_gb",
-                return_value = (required, est_meta or {}),
+                return_value=(required, est_meta or {}),
             ),
             patch(
                 "utils.hardware.get_visible_gpu_utilization",
-                return_value = {"devices": devices},
+                return_value={"devices": devices},
             ),
             patch("utils.hardware.resolve_requested_gpu_ids", **resolve_kwargs),
             patch("utils.hardware.auto_select_gpu_ids") as auto_mock,
@@ -402,7 +402,7 @@ class TestCanKeepExplicit(_GpuCacheResetMixin, unittest.TestCase):
 
     def test_keep_when_chosen_gpu_has_room(self):
         devices = [{"index": 0, "vram_total_gb": 80.0, "vram_used_gb": 20.0}]
-        keep, info, auto_mock = self._run(required = 30.0, devices = devices, resolved = [0], gpu_ids = [0])
+        keep, info, auto_mock = self._run(required=30.0, devices=devices, resolved=[0], gpu_ids=[0])
         # free 60 >= 30*1.15+4 = 38.5
         self.assertTrue(keep)
         self.assertEqual(info["mode"], "explicit")
@@ -410,7 +410,7 @@ class TestCanKeepExplicit(_GpuCacheResetMixin, unittest.TestCase):
 
     def test_unload_when_chosen_gpu_too_tight(self):
         devices = [{"index": 0, "vram_total_gb": 24.0, "vram_used_gb": 20.0}]
-        keep, _, _ = self._run(required = 10.0, devices = devices, resolved = [0], gpu_ids = [0])
+        keep, _, _ = self._run(required=10.0, devices=devices, resolved=[0], gpu_ids=[0])
         # free 4 < 10*1.15+4 = 15.5
         self.assertFalse(keep)
 
@@ -422,21 +422,21 @@ class TestCanKeepExplicit(_GpuCacheResetMixin, unittest.TestCase):
             {"index": 0, "vram_total_gb": 24.0, "vram_used_gb": 4.0},
             {"index": 1, "vram_total_gb": 24.0, "vram_used_gb": 14.0},
         ]
-        keep, info, _ = self._run(required = 22.0, devices = devices, resolved = [0, 1], gpu_ids = [0, 1])
+        keep, info, _ = self._run(required=22.0, devices=devices, resolved=[0, 1], gpu_ids=[0, 1])
         self.assertFalse(keep)
-        self.assertAlmostEqual(info["usable_gb"], 28.5, places = 3)
+        self.assertAlmostEqual(info["usable_gb"], 28.5, places=3)
 
     def test_requested_gpu_missing_from_devices_counts_as_zero(self):
         devices = [{"index": 0, "vram_total_gb": 80.0, "vram_used_gb": 5.0}]
         # resolved [3] is absent -> free 0 -> unload.
-        keep, _, _ = self._run(required = 5.0, devices = devices, resolved = [3], gpu_ids = [3])
+        keep, _, _ = self._run(required=5.0, devices=devices, resolved=[3], gpu_ids=[3])
         self.assertFalse(keep)
 
     def test_unload_when_estimate_none(self):
         with (
-            patch("utils.hardware.get_device", return_value = DeviceType.CUDA),
-            patch("utils.hardware.estimate_required_model_memory_gb", return_value = (None, {})),
-            patch("utils.hardware.resolve_requested_gpu_ids", return_value = [0]),
+            patch("utils.hardware.get_device", return_value=DeviceType.CUDA),
+            patch("utils.hardware.estimate_required_model_memory_gb", return_value=(None, {})),
+            patch("utils.hardware.resolve_requested_gpu_ids", return_value=[0]),
         ):
             keep, info = tv.can_keep_chat_during_training(**{**_BASE_KW, "gpu_ids": [0]})
         self.assertFalse(keep)
@@ -450,14 +450,14 @@ class TestCanKeepExplicit(_GpuCacheResetMixin, unittest.TestCase):
             {"index": 1, "vram_total_gb": 80.0, "vram_used_gb": 70.0},  # 10 free
         ]
         keep, info, _ = self._run(
-            required = 40.0,
-            devices = devices,
-            resolved = [0, 1],
-            gpu_ids = [0, 1],
-            est_meta = {"vram_breakdown": {"min_per_gpu_2": 25.0}},
+            required=40.0,
+            devices=devices,
+            resolved=[0, 1],
+            gpu_ids=[0, 1],
+            est_meta={"vram_breakdown": {"min_per_gpu_2": 25.0}},
         )
         self.assertFalse(keep)
-        self.assertAlmostEqual(info["min_free_gb"], 10.0, places = 3)
+        self.assertAlmostEqual(info["min_free_gb"], 10.0, places=3)
 
     def test_per_gpu_floor_passes_when_even(self):
         # Same aggregate, but both GPUs clear the 25 GB per-GPU floor -> keep.
@@ -466,22 +466,22 @@ class TestCanKeepExplicit(_GpuCacheResetMixin, unittest.TestCase):
             {"index": 1, "vram_total_gb": 80.0, "vram_used_gb": 50.0},  # 30 free
         ]
         keep, _, _ = self._run(
-            required = 40.0,
-            devices = devices,
-            resolved = [0, 1],
-            gpu_ids = [0, 1],
-            est_meta = {"vram_breakdown": {"min_per_gpu_2": 25.0}},
+            required=40.0,
+            devices=devices,
+            resolved=[0, 1],
+            gpu_ids=[0, 1],
+            est_meta={"vram_breakdown": {"min_per_gpu_2": 25.0}},
         )
         self.assertTrue(keep)
 
     def test_invalid_gpu_ids_keeps_chat_instead_of_unloading(self):
         # resolve raising -> request will 400 before training, so leave chat alone.
         keep, info, _ = self._run(
-            required = 5.0,
-            devices = [],
-            resolved = None,
-            gpu_ids = [99],
-            resolve_side_effect = ValueError("Invalid gpu_ids [99]"),
+            required=5.0,
+            devices=[],
+            resolved=None,
+            gpu_ids=[99],
+            resolve_side_effect=ValueError("Invalid gpu_ids [99]"),
         )
         self.assertTrue(keep)
         self.assertEqual(info["reason"], "invalid_gpu_ids")
@@ -492,10 +492,10 @@ class TestCanKeepExplicit(_GpuCacheResetMixin, unittest.TestCase):
 
 class TestFreeChatModels(_GpuCacheResetMixin, unittest.TestCase):
     def test_unloads_both_backends(self):
-        inf = _fake_inference_backend(active = "unsloth/Qwen3-4B")
-        llama = _fake_llama_backend(active = True, identifier = "gemma.gguf")
+        inf = _fake_inference_backend(active="unsloth/Qwen3-4B")
+        llama = _fake_llama_backend(active=True, identifier="gemma.gguf")
         with _patch_backends(inf, llama):
-            freed = tv.free_chat_models_for_training(reason = "test")
+            freed = tv.free_chat_models_for_training(reason="test")
         inf._shutdown_subprocess.assert_called_once()
         llama.unload_model.assert_called_once()
         self.assertIn("hf:unsloth/Qwen3-4B", freed)
@@ -507,9 +507,9 @@ class TestFreeChatModels(_GpuCacheResetMixin, unittest.TestCase):
 
     def test_unloads_gguf_only(self):
         inf = _fake_inference_backend()  # nothing resident
-        llama = _fake_llama_backend(active = True, identifier = "gemma.gguf")
+        llama = _fake_llama_backend(active=True, identifier="gemma.gguf")
         with _patch_backends(inf, llama):
-            freed = tv.free_chat_models_for_training(reason = "test")
+            freed = tv.free_chat_models_for_training(reason="test")
         inf._shutdown_subprocess.assert_not_called()
         llama.unload_model.assert_called_once()
         self.assertEqual(freed, ["gguf:gemma.gguf"])
@@ -517,48 +517,48 @@ class TestFreeChatModels(_GpuCacheResetMixin, unittest.TestCase):
     def test_leaves_cpu_only_gguf_alone(self):
         # Killing a CPU-only llama-server cannot reclaim VRAM, so don't.
         inf = _fake_inference_backend()
-        llama = _fake_llama_backend(active = True, identifier = "cpu.gguf", gpu_offload = False)
+        llama = _fake_llama_backend(active=True, identifier="cpu.gguf", gpu_offload=False)
         with _patch_backends(inf, llama):
-            freed = tv.free_chat_models_for_training(reason = "test")
+            freed = tv.free_chat_models_for_training(reason="test")
         llama.unload_model.assert_not_called()
         self.assertEqual(freed, [])
 
     def test_unloads_inflight_hf_load(self):
-        inf = _fake_inference_backend(active = None, loading = ["unsloth/Qwen3-4B"])
-        llama = _fake_llama_backend(active = False)
+        inf = _fake_inference_backend(active=None, loading=["unsloth/Qwen3-4B"])
+        llama = _fake_llama_backend(active=False)
         with _patch_backends(inf, llama):
-            freed = tv.free_chat_models_for_training(reason = "test")
+            freed = tv.free_chat_models_for_training(reason="test")
         inf._shutdown_subprocess.assert_called_once()
         self.assertEqual(freed, ["hf:unsloth/Qwen3-4B"])
 
     def test_nothing_to_free(self):
         inf = _fake_inference_backend()
-        llama = _fake_llama_backend(active = False)
+        llama = _fake_llama_backend(active=False)
         with _patch_backends(inf, llama):
-            freed = tv.free_chat_models_for_training(reason = "test")
+            freed = tv.free_chat_models_for_training(reason="test")
         self.assertEqual(freed, [])
 
     def test_hf_failure_still_unloads_gguf(self):
         bad_inf = SimpleNamespace()  # AttributeError on access
-        llama = _fake_llama_backend(active = True, identifier = "gemma.gguf")
+        llama = _fake_llama_backend(active=True, identifier="gemma.gguf")
         with _patch_backends(bad_inf, llama):
-            freed = tv.free_chat_models_for_training(reason = "test")
+            freed = tv.free_chat_models_for_training(reason="test")
         llama.unload_model.assert_called_once()
         self.assertEqual(freed, ["gguf:gemma.gguf"])
 
 
 class TestFreeSttModel(_GpuCacheResetMixin, unittest.TestCase):
     def test_unloads_resident_model(self):
-        sidecar = _fake_stt_sidecar(model = "small", device = "cuda")
+        sidecar = _fake_stt_sidecar(model="small", device="cuda")
         with _patch_stt(sidecar):
-            freed = tv.free_stt_model_for_training(reason = "test")
+            freed = tv.free_stt_model_for_training(reason="test")
         sidecar.unload.assert_called_once()
         self.assertEqual(freed, ["stt:small"])
 
     def test_cancels_inflight_load_and_waits_to_settle(self):
-        sidecar = _fake_stt_sidecar(loading = True)
+        sidecar = _fake_stt_sidecar(loading=True)
         with _patch_stt(sidecar):
-            freed = tv.free_stt_model_for_training(reason = "test")
+            freed = tv.free_stt_model_for_training(reason="test")
         sidecar.cancel_pending_load.assert_called_once()
         # The cancelled loader may still hold VRAM; we wait for it to release.
         sidecar.wait_for_load_to_settle.assert_called_once()
@@ -569,9 +569,9 @@ class TestFreeSttModel(_GpuCacheResetMixin, unittest.TestCase):
     def test_cancels_inflight_load_then_unloads_settled_model(self):
         # A load that finished before observing the cancel leaves a resident
         # model behind; it must be unloaded so training reclaims the memory.
-        sidecar = _fake_stt_sidecar(model = "small", loading = True)
+        sidecar = _fake_stt_sidecar(model="small", loading=True)
         with _patch_stt(sidecar):
-            freed = tv.free_stt_model_for_training(reason = "test")
+            freed = tv.free_stt_model_for_training(reason="test")
         sidecar.cancel_pending_load.assert_called_once()
         sidecar.wait_for_load_to_settle.assert_called_once()
         sidecar.unload.assert_called_once()
@@ -580,10 +580,10 @@ class TestFreeSttModel(_GpuCacheResetMixin, unittest.TestCase):
     def test_cancelled_load_still_unloads_gguf_sidecar(self):
         # Cancelling a Transformers load must not skip the GGUF sidecar; both
         # engines can hold memory at once (engine switch or direct load calls).
-        sidecar = _fake_stt_sidecar(loading = True)
-        ggml = _fake_ggml_sidecar(model = "small")
+        sidecar = _fake_stt_sidecar(loading=True)
+        ggml = _fake_ggml_sidecar(model="small")
         with _patch_stt(sidecar), _patch_ggml_stt(ggml):
-            freed = tv.free_stt_model_for_training(reason = "test")
+            freed = tv.free_stt_model_for_training(reason="test")
         sidecar.cancel_pending_load.assert_called_once()
         ggml.unload.assert_called_once()
         self.assertEqual(freed, ["stt:loading", "stt:small"])
@@ -591,7 +591,7 @@ class TestFreeSttModel(_GpuCacheResetMixin, unittest.TestCase):
     def test_leaves_empty_sidecar_alone(self):
         sidecar = _fake_stt_sidecar()
         with _patch_stt(sidecar):
-            freed = tv.free_stt_model_for_training(reason = "test")
+            freed = tv.free_stt_model_for_training(reason="test")
         sidecar.unload.assert_not_called()
         self.assertEqual(freed, [])
 
@@ -600,9 +600,9 @@ class TestFreeSttModel(_GpuCacheResetMixin, unittest.TestCase):
         # coordinator must cancel and wait for it, not skip it, before training
         # claims the accelerator memory it is binding.
         sidecar = _fake_stt_sidecar()  # Transformers idle
-        ggml = _fake_ggml_sidecar(loading = True)
+        ggml = _fake_ggml_sidecar(loading=True)
         with _patch_stt(sidecar), _patch_ggml_stt(ggml):
-            freed = tv.free_stt_model_for_training(reason = "test")
+            freed = tv.free_stt_model_for_training(reason="test")
         ggml.cancel_pending_load.assert_called_once()
         ggml.wait_for_load_to_settle.assert_called_once()
         ggml.unload.assert_not_called()  # nothing surfaced after the wait
@@ -611,19 +611,19 @@ class TestFreeSttModel(_GpuCacheResetMixin, unittest.TestCase):
 
 class TestCoordinateModels(_GpuCacheResetMixin, unittest.TestCase):
     def _run(self, chat, stt, keep_results):
-        keep = MagicMock(side_effect = keep_results)
+        keep = MagicMock(side_effect=keep_results)
         with (
-            patch.object(tv, "summarize_resident_chat", return_value = chat),
-            patch.object(tv, "summarize_resident_stt", return_value = stt),
+            patch.object(tv, "summarize_resident_chat", return_value=chat),
+            patch.object(tv, "summarize_resident_stt", return_value=stt),
             patch.object(
                 tv,
                 "free_stt_model_for_training",
-                return_value = ["stt:small"],
+                return_value=["stt:small"],
             ) as free_stt,
             patch.object(
                 tv,
                 "free_chat_models_for_training",
-                return_value = ["hf:chat"],
+                return_value=["hf:chat"],
             ) as free_chat,
         ):
             freed = tv.coordinate_models_for_training(keep)

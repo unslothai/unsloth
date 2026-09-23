@@ -65,6 +65,7 @@ def _account_key(value):
 
 def _public_mcp_address(url: str) -> str:
     from fastapi import HTTPException
+
     detail = "Managed accounts may only use public-network HTTP MCP servers."
     try:
         parsed = urlsplit(url)
@@ -76,7 +77,7 @@ def _public_mcp_address(url: str) -> str:
         if "%" in host:
             raise ValueError("Scoped addresses are not public")
         port = parsed.port or (443 if parsed.scheme == "https" else 80)
-        addresses = socket.getaddrinfo(host, port, type = socket.SOCK_STREAM)
+        addresses = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
         if not addresses:
             raise ValueError("No addresses")
         for *_, sockaddr in addresses:
@@ -86,7 +87,7 @@ def _public_mcp_address(url: str) -> str:
                 raise ValueError("Non-public address")
         return addresses[0][4][0]
     except (OSError, ValueError, UnicodeError) as exc:
-        raise HTTPException(status_code = 400, detail = detail) from exc
+        raise HTTPException(status_code=400, detail=detail) from exc
 
 
 def validate_mcp_address(url: str) -> None:
@@ -94,9 +95,10 @@ def validate_mcp_address(url: str) -> None:
         return
     if is_stdio(url):
         from fastapi import HTTPException
+
         raise HTTPException(
-            status_code = 400,
-            detail = "Only the installation owner may register local-command MCP servers.",
+            status_code=400,
+            detail="Only the installation owner may register local-command MCP servers.",
         )
     _public_mcp_address(url)
 
@@ -117,13 +119,13 @@ def _public_http_client_factory(**kwargs):
             address = await asyncio.to_thread(_public_mcp_address, str(request.url))
             origin = (request.url.scheme, request.url.host, request.url.port)
             if origin not in self.transports:
-                self.transports[origin] = http.AsyncHTTPTransport(trust_env = False)
+                self.transports[origin] = http.AsyncHTTPTransport(trust_env=False)
             pinned = http.Request(
-                method = request.method,
-                url = request.url.copy_with(host = address),
-                headers = request.headers,
-                stream = request.stream,
-                extensions = {**request.extensions, "sni_hostname": request.url.host},
+                method=request.method,
+                url=request.url.copy_with(host=address),
+                headers=request.headers,
+                stream=request.stream,
+                extensions={**request.extensions, "sni_hostname": request.url.host},
             )
             return await self.transports[origin].handle_async_request(pinned)
 
@@ -135,7 +137,7 @@ def _public_http_client_factory(**kwargs):
     kwargs["transport"] = PublicTransport()
     kwargs.setdefault("follow_redirects", True)
     if kwargs.get("timeout") is None:
-        kwargs["timeout"] = http.Timeout(30.0, read = 300.0)
+        kwargs["timeout"] = http.Timeout(30.0, read=300.0)
     return client_type(**kwargs)
 
 
@@ -210,7 +212,7 @@ def parse_stdio_command(address: str) -> list[str]:
     agree on quoting (notably Windows backslash paths)."""
     posix = sys.platform != "win32"
     if posix:
-        return shlex.split(address, posix = posix)
+        return shlex.split(address, posix=posix)
     if address.lstrip().startswith("'"):
         raise ValueError("Single-quoted executables are not supported on Windows")
     return _split_windows_command_line(address)
@@ -348,9 +350,9 @@ def _oauth_store():
         account_id = current_account_id()
         if account_id not in _account_oauth_token_stores:
             _account_oauth_token_stores[account_id] = FileTreeStore(
-                data_directory = ensure_dir(account_path("mcp-oauth-tokens")),
-                key_sanitization_strategy = AlwaysHashStrategy(),
-                collection_sanitization_strategy = AlwaysHashStrategy(),
+                data_directory=ensure_dir(account_path("mcp-oauth-tokens")),
+                key_sanitization_strategy=AlwaysHashStrategy(),
+                collection_sanitization_strategy=AlwaysHashStrategy(),
             )
         return _account_oauth_token_stores[account_id]
     if _oauth_token_store is None:
@@ -361,9 +363,9 @@ def _oauth_store():
         # Hash keys/collections: fastmcp uses raw URLs as keys, and FileTreeStore would treat the "://" as nested
         # directories.
         _oauth_token_store = FileTreeStore(
-            data_directory = ensure_dir(studio_root() / "mcp-oauth-tokens"),
-            key_sanitization_strategy = AlwaysHashStrategy(),
-            collection_sanitization_strategy = AlwaysHashStrategy(),
+            data_directory=ensure_dir(studio_root() / "mcp-oauth-tokens"),
+            key_sanitization_strategy=AlwaysHashStrategy(),
+            collection_sanitization_strategy=AlwaysHashStrategy(),
         )
     return _oauth_token_store
 
@@ -378,7 +380,7 @@ def _strip_client_id_under_basic_auth(auth) -> None:
         logger.warning("MCP OAuth: prepare_token_auth missing; client_id fixup skipped")
         return
 
-    def prepare_token_auth(data, headers = None):
+    def prepare_token_auth(data, headers=None):
         data, headers = prepare(data, headers)
         if "Authorization" in headers:
             data = {k: v for k, v in data.items() if k != "client_id"}
@@ -394,7 +396,7 @@ def _strip_client_id_under_basic_auth(auth) -> None:
 def _oauth(url: str):
     from fastmcp.client.auth import OAuth
 
-    auth = OAuth(mcp_url = url, token_storage = _oauth_store())
+    auth = OAuth(mcp_url=url, token_storage=_oauth_store())
     _strip_client_id_under_basic_auth(auth)
     return auth
 
@@ -492,8 +494,9 @@ def _stdio_env(headers: Optional[dict], command: Optional[str] = None) -> Option
         base = os.environ.get("PATH", "")
     try:
         from utils.node_runtime import path_with_managed_node
+
         require_npm, require_npx = _runtime_requirements(command)
-        patched = path_with_managed_node(base, require_npm = require_npm, require_npx = require_npx)
+        patched = path_with_managed_node(base, require_npm=require_npm, require_npx=require_npx)
     except (ImportError, OSError, ValueError):
         patched = base
     if patched and patched != env.get(key):
@@ -511,7 +514,7 @@ def _stdio_argv(parts: list, env: Optional[dict]) -> list:
     if not isinstance(path, str):
         path = os.environ.get("PATH", "")
     try:
-        resolved = shutil.which(parts[0], path = path)
+        resolved = shutil.which(parts[0], path=path)
     except OSError:
         resolved = None
     if _IS_WINDOWS and resolved is None and explicit_path and not os.path.dirname(parts[0]):
@@ -533,7 +536,7 @@ def _stdio_argv(parts: list, env: Optional[dict]) -> list:
                 node = (
                     sibling_node
                     if os.path.isfile(sibling_node)
-                    else shutil.which("node", path = path)
+                    else shutil.which("node", path=path)
                 )
                 cli_exists = os.path.isfile(cli)
             except OSError:
@@ -578,10 +581,10 @@ def _client(
         argv = _stdio_argv(parts, env)
         return Client(
             StdioTransport(
-                command = argv[0],
-                args = argv[1:],
-                env = env,
-                keep_alive = False,
+                command=argv[0],
+                args=argv[1:],
+                env=env,
+                keep_alive=False,
             )
         )
 
@@ -598,7 +601,7 @@ def _client(
         kwargs["httpx_client_factory"] = _public_http_client_factory
         if auth is not None:
             auth.httpx_client_factory = _public_http_client_factory
-    return Client(transport_cls(url = url, headers = headers or None, auth = auth, **kwargs))
+    return Client(transport_cls(url=url, headers=headers or None, auth=auth, **kwargs))
 
 
 _SESSION_IDLE_TTL = 300.0
@@ -675,7 +678,7 @@ def _is_protocol_error(exc: BaseException) -> bool:
         ("mcp.shared.exceptions", "McpError"),
     ):
         try:
-            cls = getattr(__import__(module, fromlist = [name]), name, None)
+            cls = getattr(__import__(module, fromlist=[name]), name, None)
         except Exception:  # noqa: BLE001
             continue
         if cls is not None and isinstance(exc, cls):
@@ -734,7 +737,7 @@ def _needs_idle_recheck(session, idle_for: float, remaining: Optional[float]) ->
 def _session_responsive(
     session,
     budget: Optional[float] = None,
-    cancel_event = None,
+    cancel_event=None,
     timeout_is_fatal: bool = True,
 ) -> bool:
     """Whether a session left dirty by an abandoned call can be reused: the server must answer inside
@@ -758,7 +761,7 @@ def _session_responsive(
     probe = getattr(client, "list_tools_mcp", None) or client.list_tools
     try:
         # margin=0: a wedged loop must fail inside the window, not 15s past it.
-        session.run(_race_tool_call(probe(), window, cancel_event), window, margin = 0.0)
+        session.run(_race_tool_call(probe(), window, cancel_event), window, margin=0.0)
     except _MCPCancelled:
         raise
     except (asyncio.TimeoutError, _SessionWedged):
@@ -828,7 +831,7 @@ class _McpSession:
             self.loop = asyncio.ProactorEventLoop()
         else:
             self.loop = asyncio.new_event_loop()
-        self._thread = account_thread(target = self._run_loop, name = "mcp-session", daemon = True)
+        self._thread = account_thread(target=self._run_loop, name="mcp-session", daemon=True)
         self._thread.start()
 
     def _run_loop(self) -> None:
@@ -946,7 +949,7 @@ class _McpSession:
             self.client = None
         thread = getattr(self, "_thread", None)
         if thread is not None:
-            thread.join(timeout = 5.0)
+            thread.join(timeout=5.0)
 
 
 _mcp_sessions: dict[tuple, _McpSession] = {}
@@ -1086,7 +1089,7 @@ def _get_session(
         # connect it is queueing behind, so an HTTP caller is not cut off at stdio's cold-start cap here either.
         window = _connect_window(url, remaining)
         lock_deadline = None if window is None else time.monotonic() + window
-        while not key_lock.lock.acquire(timeout = 0.05):
+        while not key_lock.lock.acquire(timeout=0.05):
             if cancel_event is not None and cancel_event.is_set():
                 raise _MCPCancelled
             if lock_deadline is not None and time.monotonic() >= lock_deadline:
@@ -1129,9 +1132,9 @@ def _get_session(
                         if not _mcp_reaper_started:
                             _mcp_reaper_started = True
                             threading.Thread(
-                                target = _session_reaper, name = "mcp-session-reaper", daemon = True
+                                target=_session_reaper, name="mcp-session-reaper", daemon=True
                             ).start()
-                            atexit.register(close_mcp_sessions, all_accounts = True)
+                            atexit.register(close_mcp_sessions, all_accounts=True)
                 for victim in evicted:
                     logger.info("Evicting LRU idle MCP session: %s", _session_log_id(victim.url))
                 if evicted:
@@ -1171,7 +1174,7 @@ def _release_session(session: _McpSession, defer_close: bool = False) -> None:
             ]
             if not idle:
                 break
-            _, oldest = min(idle, key = lambda item: item[0])
+            _, oldest = min(idle, key=lambda item: item[0])
             victims.append(_mcp_sessions.pop(oldest))
             mine.pop(oldest)
             _discard_key_lock(oldest)
@@ -1224,7 +1227,7 @@ def _evict_lru_locked() -> list:
         idle = [(s.last_used, k) for k, s in candidates.items() if s.in_flight == 0]
         if not idle:
             break
-        _, oldest = min(idle, key = lambda item: item[0])
+        _, oldest = min(idle, key=lambda item: item[0])
         victims.append(_mcp_sessions.pop(oldest))
         candidates.pop(oldest)
         _discard_key_lock(oldest)
@@ -1233,7 +1236,7 @@ def _evict_lru_locked() -> list:
 
 def close_mcp_sessions(
     url: Optional[str] = None,
-    headers = _ANY_HEADERS,
+    headers=_ANY_HEADERS,
     *,
     all_accounts: bool = False,
 ) -> None:
@@ -1308,7 +1311,7 @@ def _close_all(sessions: list) -> None:
     # machinery down before normal atexit callbacks, so submitting there raises ("can't register atexit after
     # shutdown") and the whole cleanup aborts with stdio subprocesses still up.
     width = min(len(pending), _MAX_CLOSE_THREADS)
-    threads = [threading.Thread(target = _drain, name = "mcp-close", daemon = True) for _ in range(width)]
+    threads = [threading.Thread(target=_drain, name="mcp-close", daemon=True) for _ in range(width)]
     for thread in threads:
         thread.start()
     # Each worker may take several sessions in turn, so the wait scales with the rounds it has to make rather than
@@ -1347,7 +1350,7 @@ def _close_detached(sessions: list) -> None:
         overflow = sessions[room:]
         if _mcp_cleanup_queue and _mcp_cleanup_worker is None:
             _mcp_cleanup_worker = threading.Thread(
-                target = _cleanup_worker, name = "mcp-cleanup", daemon = True
+                target=_cleanup_worker, name="mcp-cleanup", daemon=True
             )
             _mcp_cleanup_worker.start()
     _close_all(overflow)
@@ -1407,7 +1410,7 @@ def _reset_after_fork() -> None:
 
 
 if hasattr(os, "register_at_fork"):
-    os.register_at_fork(after_in_child = _reset_after_fork)
+    os.register_at_fork(after_in_child=_reset_after_fork)
 
 
 def _reap_idle_sessions(now: Optional[float] = None) -> None:
@@ -1444,9 +1447,9 @@ async def list_tools_async(
     async def _fetch() -> list[dict]:
         async with _client(url, headers, use_oauth) as client:
             tools = await client.list_tools()
-        return [t.model_dump(exclude_none = True) for t in tools]
+        return [t.model_dump(exclude_none=True) for t in tools]
 
-    return await asyncio.wait_for(_fetch(), timeout = timeout)
+    return await asyncio.wait_for(_fetch(), timeout=timeout)
 
 
 # Discovered-tool cache, keyed by MCP server id. get_enabled_mcp_tools() probes a server only
@@ -1575,7 +1578,7 @@ def _uri_mime(uri: Any) -> Optional[str]:
     data: URI still resolves; a bare host goes, since a host name is not a file name."""
     split = urlsplit(str(uri))
     cleaned = urlunsplit((split.scheme, split.netloc if split.path else "", split.path, "", ""))
-    return mimetypes.guess_type(cleaned, strict = False)[0]
+    return mimetypes.guess_type(cleaned, strict=False)[0]
 
 
 def _image_mime(mime: Any) -> Optional[str]:
@@ -1787,13 +1790,13 @@ async def _race_tool_call(
     started = time.monotonic()
     call_task = asyncio.create_task(call_coro)
     if cancel_event is None:
-        return await asyncio.wait_for(call_task, timeout = timeout)
+        return await asyncio.wait_for(call_task, timeout=timeout)
     watch_task = asyncio.create_task(_watch_cancel())
     try:
         done, pending = await asyncio.wait(
             {call_task, watch_task},
-            timeout = timeout,
-            return_when = asyncio.FIRST_COMPLETED,
+            timeout=timeout,
+            return_when=asyncio.FIRST_COMPLETED,
         )
     finally:
         for t in (call_task, watch_task):
@@ -1803,7 +1806,7 @@ async def _race_tool_call(
         # it just leaves the session dirty.
         left = _unwind_budget(unwind_timeout, timeout, time.monotonic() - started)
         if left:
-            await asyncio.wait({call_task, watch_task}, timeout = left)
+            await asyncio.wait({call_task, watch_task}, timeout=left)
     if not done:
         raise asyncio.TimeoutError
     if call_task in done:
@@ -1858,7 +1861,7 @@ def _call_session_tool(
             # interleave operations on one stateful stdio server (browser, REPL). HTTP multiplexes by request id, so
             # its calls run in parallel as they did one-shot.
             if session.serialize_calls:
-                while not session.call_lock.acquire(timeout = 0.05):
+                while not session.call_lock.acquire(timeout=0.05):
                     if cancel_event is not None and cancel_event.is_set():
                         raise _MCPCancelled
                     rem = _remaining()
@@ -1902,7 +1905,7 @@ def _call_session_tool(
             elif (
                 session.dirty or _needs_idle_recheck(session, idle_for, _remaining())
             ) and not _session_responsive(
-                session, _remaining(), cancel_event, timeout_is_fatal = session.dirty
+                session, _remaining(), cancel_event, timeout_is_fatal=session.dirty
             ):
                 # Dirty: still stuck on the abandoned call. Idle HTTP: the server may have expired the session while
                 # nothing was using it, and no HTTP transport lets us ask. Either way it failed to answer, so
@@ -1916,7 +1919,7 @@ def _call_session_tool(
                 rem = _remaining()
                 # raise_on_error=False for the same reason as the one-shot path.
                 coro = _race_tool_call(
-                    session.client.call_tool(name, args, raise_on_error = False),
+                    session.client.call_tool(name, args, raise_on_error=False),
                     rem,
                     cancel_event,
                     # Only a cached session is worth waiting on.
@@ -1966,7 +1969,7 @@ def _call_session_tool(
             # here, so the close defers to the release below.
             if discard_session:
                 _drop_session(key, session)
-            _release_session(session, defer_close = not ephemeral)
+            _release_session(session, defer_close=not ephemeral)
             if locked:
                 session.call_lock.release()
         if not retry:
@@ -1981,9 +1984,9 @@ def call_tool_sync(
     args: dict,
     timeout: Optional[float] = 300.0,
     use_oauth: bool = False,
-    cancel_event = None,
+    cancel_event=None,
     scope: Optional[str] = None,
-    config_check = None,
+    config_check=None,
 ) -> str:
     """Call one MCP tool and return its flattened text/image result. Never raises: every failure comes
     back as an "Error: ..." string for the model.
@@ -2006,7 +2009,7 @@ def call_tool_sync(
             # raise_on_error=False lets an is_error result (which may still carry image content) reach _flatten_result
             # instead of FastMCP raising ToolError and dropping the images. Transport failures still raise (handled
             # below).
-            return await client.call_tool(name, args, raise_on_error = False)
+            return await client.call_tool(name, args, raise_on_error=False)
 
     try:
         if is_stdio(url) or (scope and not use_oauth):

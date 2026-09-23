@@ -68,7 +68,7 @@ async def _send_unauthorized(send: Any, scope_type: str) -> None:
 def _dump(value: Any) -> Any:
     """Convert Pydantic responses to plain JSON values for MCP clients."""
     if hasattr(value, "model_dump"):
-        return value.model_dump(mode = "json")
+        return value.model_dump(mode="json")
     return value
 
 
@@ -83,7 +83,7 @@ def create_studio_mcp() -> FastMCP:
     """Create the Unsloth MCP server and register the high-value tools."""
     mcp = FastMCP(
         "Unsloth Studio",
-        instructions = (
+        instructions=(
             "Use read tools to inspect the local Unsloth state before starting GPU work. "
             "Training and export tools can consume substantial VRAM and write files. "
             "Never expose tokens or local paths from tool results unless the user asks."
@@ -100,9 +100,9 @@ def create_studio_mcp() -> FastMCP:
         from utils.hardware import get_gpu_utilization
 
         training, export, inference = await _gather_status(
-            get_training_status(current_subject = "mcp"),
-            get_export_status(current_subject = "mcp"),
-            get_inference_status(current_subject = "mcp"),
+            get_training_status(current_subject="mcp"),
+            get_export_status(current_subject="mcp"),
+            get_inference_status(current_subject="mcp"),
         )
         return {
             "training": _dump(training),
@@ -116,13 +116,15 @@ def create_studio_mcp() -> FastMCP:
     async def list_local_models(models_dir: str = "./models") -> dict[str, Any]:
         """List local and cached models available to Unsloth."""
         from routes.models import list_local_models as list_models
-        return _dump(await list_models(models_dir = models_dir, current_subject = "mcp"))
+
+        return _dump(await list_models(models_dir=models_dir, current_subject="mcp"))
 
     @mcp.tool
     async def get_training_status() -> dict[str, Any]:
         """Read the active training job, phase, progress, and recent metrics."""
         from routes.training import get_training_status as get_status
-        return _dump(await get_status(current_subject = "mcp"))
+
+        return _dump(await get_status(current_subject="mcp"))
 
     @mcp.tool
     async def start_training(config: dict[str, Any]) -> dict[str, Any]:
@@ -135,16 +137,17 @@ def create_studio_mcp() -> FastMCP:
         from routes.training import start_training as start
 
         request = TrainingStartRequest.model_validate(config)
-        return _dump(await start(request, current_subject = "mcp", via_api_key = True))
+        return _dump(await start(request, current_subject="mcp", via_api_key=True))
 
     @mcp.tool
     async def stop_training(expected_job_id: str, save: bool = True) -> dict[str, Any]:
         """Stop the identified training job at its next safe checkpoint."""
         from routes.training import TrainingStopRequest, stop_training as stop
+
         return _dump(
             await stop(
-                TrainingStopRequest(save = save, expected_job_id = expected_job_id),
-                current_subject = "mcp",
+                TrainingStopRequest(save=save, expected_job_id=expected_job_id),
+                current_subject="mcp",
             )
         )
 
@@ -156,7 +159,7 @@ def create_studio_mcp() -> FastMCP:
         # Clamp here (direct call skips Query bounds); a negative LIMIT = no limit.
         limit = _clamp(limit, 1, 200)
         offset = max(0, offset)
-        return _dump(await list_runs(limit = limit, offset = offset, current_subject = "mcp"))
+        return _dump(await list_runs(limit=limit, offset=offset, current_subject="mcp"))
 
     @mcp.tool
     def validate_recipe(recipe: dict[str, Any]) -> dict[str, Any]:
@@ -166,12 +169,13 @@ def create_studio_mcp() -> FastMCP:
 
         # Direct call, so the ViaApiKey dependency never runs and its `= False` default would read as a UI
         # session; this surface is a remote static bearer.
-        return _dump(validate(RecipePayload(recipe = recipe), via_api_key = True))
+        return _dump(validate(RecipePayload(recipe=recipe), via_api_key=True))
 
     @mcp.tool
     def get_recipe_job_status(job_id: str) -> dict[str, Any]:
         """Read the status of a Data Recipe job."""
         from routes.data_recipe.jobs import job_status
+
         return _dump(job_status(job_id))
 
     @mcp.tool
@@ -186,7 +190,7 @@ def create_studio_mcp() -> FastMCP:
         # Clamp here (direct call skips FastAPI's Query bounds).
         limit = _clamp(limit, 1, 500)
         offset = max(0, offset)
-        return _dump(job_dataset(job_id, limit = limit, offset = offset))
+        return _dump(job_dataset(job_id, limit=limit, offset=offset))
 
     @mcp.tool
     async def load_checkpoint(
@@ -213,14 +217,14 @@ def create_studio_mcp() -> FastMCP:
         # Omit an unset load_in_4bit so the route can pick 16-bit for a full fine-tune.
         optional = {} if load_in_4bit is None else {"load_in_4bit": load_in_4bit}
         request = LoadCheckpointRequest(
-            checkpoint_path = checkpoint_path,
-            max_seq_length = max_seq_length,
-            trust_remote_code = trust_remote_code,
-            approved_remote_code_fingerprint = approved_remote_code_fingerprint,
-            hf_token = hf_token,
+            checkpoint_path=checkpoint_path,
+            max_seq_length=max_seq_length,
+            trust_remote_code=trust_remote_code,
+            approved_remote_code_fingerprint=approved_remote_code_fingerprint,
+            hf_token=hf_token,
             **optional,
         )
-        return _dump(await load(request, current_subject = "mcp", allow_ambient = False))
+        return _dump(await load(request, current_subject="mcp", allow_ambient=False))
 
     @mcp.tool
     async def export_gguf(
@@ -244,16 +248,16 @@ def create_studio_mcp() -> FastMCP:
         from routes.export import export_gguf as export
 
         request = ExportGGUFRequest(
-            save_directory = save_directory,
-            quantization_method = quantization_method,
-            push_to_hub = push_to_hub,
-            repo_id = repo_id,
-            hf_token = hf_token,
-            imatrix = imatrix,
-            imatrix_path = imatrix_path,
-            private = private,
+            save_directory=save_directory,
+            quantization_method=quantization_method,
+            push_to_hub=push_to_hub,
+            repo_id=repo_id,
+            hf_token=hf_token,
+            imatrix=imatrix,
+            imatrix_path=imatrix_path,
+            private=private,
         )
-        return _dump(await export(request, current_subject = "mcp", allow_ambient = False))
+        return _dump(await export(request, current_subject="mcp", allow_ambient=False))
 
     return mcp
 
@@ -262,7 +266,7 @@ async def _gather_status(*coroutines: Any) -> tuple[Any, ...]:
     """Gather independent status calls without letting one optional backend fail all state."""
     import asyncio
 
-    results = await asyncio.gather(*coroutines, return_exceptions = True)
+    results = await asyncio.gather(*coroutines, return_exceptions=True)
     return tuple(
         {"error": str(result)} if isinstance(result, Exception) else result for result in results
     )

@@ -14,7 +14,7 @@ from fastapi import HTTPException
 def _seed_route_source() -> str:
     return (
         Path(__file__).resolve().parent.parent / "routes" / "data_recipe" / "seed.py"
-    ).read_text(encoding = "utf-8")
+    ).read_text(encoding="utf-8")
 
 
 def test_seed_inspect_load_kwargs_disables_remote_code_execution():
@@ -34,7 +34,7 @@ def _load_seed_route(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     *,
-    inline_extraction = True,
+    inline_extraction=True,
 ):
     pytest.importorskip("fastapi")
     pytest.importorskip("multipart")
@@ -96,7 +96,7 @@ def test_unstructured_upload_names_missing_extractor_dependency(
     monkeypatch.setattr(
         seed_route,
         "_extract_text_from_file",
-        _raise(ModuleNotFoundError(f"No module named {package!r}", name = package)),
+        _raise(ModuleNotFoundError(f"No module named {package!r}", name=package)),
     )
 
     result = _run_upload(seed_route, filename, b"%PDF-1.7")
@@ -126,7 +126,7 @@ def test_unstructured_upload_keeps_txt_path_working(monkeypatch, tmp_path):
         ImportError("cannot import internal symbol"),
         ModuleNotFoundError(
             "No module named 'missing_transitive_pkg'",
-            name = "missing_transitive_pkg",
+            name="missing_transitive_pkg",
         ),
     ],
 )
@@ -145,7 +145,7 @@ _TEST_UPLOAD_UID = "0f" * 16
 
 def test_remove_unstructured_block_deletes_directory(monkeypatch, tmp_path):
     seed_route = _load_seed_route(monkeypatch, tmp_path)
-    _run_upload(seed_route, "notes.txt", b"hello", block_id = _TEST_UPLOAD_UID)
+    _run_upload(seed_route, "notes.txt", b"hello", block_id=_TEST_UPLOAD_UID)
     assert _block_files(seed_route, _TEST_UPLOAD_UID) != []
 
     result = asyncio.run(seed_route.remove_unstructured_block(_TEST_UPLOAD_UID))
@@ -173,7 +173,7 @@ def test_remove_unstructured_block_rejects_unsafe_ids(monkeypatch, tmp_path):
 
 def test_remove_unstructured_block_rejects_legacy_node_ids(monkeypatch, tmp_path):
     seed_route = _load_seed_route(monkeypatch, tmp_path)
-    _run_upload(seed_route, "notes.txt", b"hello", block_id = "n1")
+    _run_upload(seed_route, "notes.txt", b"hello", block_id="n1")
     assert _block_files(seed_route, "n1") != []
 
     with pytest.raises(seed_route.HTTPException) as exc:
@@ -189,7 +189,7 @@ def test_remove_unstructured_block_rejects_symlink_escape(monkeypatch, tmp_path)
     outside.mkdir()
     (outside / "victim.txt").write_text("keep me")
     root = seed_route.UNSTRUCTURED_UPLOAD_ROOT
-    root.mkdir(parents = True)
+    root.mkdir(parents=True)
     (root / _TEST_UPLOAD_UID).symlink_to(outside)
 
     with pytest.raises(seed_route.HTTPException) as exc:
@@ -203,7 +203,7 @@ def test_remove_unstructured_block_fails_if_directory_remains(monkeypatch, tmp_p
     seed_route = _load_seed_route(monkeypatch, tmp_path)
     root = seed_route.UNSTRUCTURED_UPLOAD_ROOT
     block_dir = root / _TEST_UPLOAD_UID
-    block_dir.mkdir(parents = True)
+    block_dir.mkdir(parents=True)
     (block_dir / "victim.txt").write_text("keep me")
 
     calls = []
@@ -233,7 +233,7 @@ def test_total_upload_quota_is_scoped_per_block(monkeypatch, tmp_path):
     assert exc.value.status_code == 413
 
     # Another block starts with its own untouched budget.
-    other = _run_upload(seed_route, "c.txt", b"123", block_id = "other")
+    other = _run_upload(seed_route, "c.txt", b"123", block_id="other")
     assert other.status == "ok"
 
 
@@ -257,21 +257,21 @@ def test_an_oversized_native_drop_is_refused_before_it_is_read(monkeypatch, tmp_
     monkeypatch.setattr(
         seed_route,
         "verify_native_path_lease",
-        lambda *a, **k: SimpleNamespace(canonical_path = huge),
-        raising = False,
+        lambda *a, **k: SimpleNamespace(canonical_path=huge),
+        raising=False,
     )
     monkeypatch.setitem(
         sys.modules,
         "utils.native_path_leases",
         SimpleNamespace(
-            NativePathLeaseError = RuntimeError,
-            verify_native_path_lease = lambda *a, **k: SimpleNamespace(canonical_path = huge),
+            NativePathLeaseError=RuntimeError,
+            verify_native_path_lease=lambda *a, **k: SimpleNamespace(canonical_path=huge),
         ),
     )
 
     with pytest.raises(HTTPException) as excinfo:
         asyncio.run(
-            seed_route.upload_unstructured_file(None, "block", native_path_lease = "signed-lease")
+            seed_route.upload_unstructured_file(None, "block", native_path_lease="signed-lease")
         )
     assert excinfo.value.status_code == 413
     assert reads == [], "the file was opened before the size check"
@@ -289,14 +289,14 @@ def test_a_native_drop_over_the_block_budget_is_refused(monkeypatch, tmp_path):
         sys.modules,
         "utils.native_path_leases",
         SimpleNamespace(
-            NativePathLeaseError = RuntimeError,
-            verify_native_path_lease = lambda *a, **k: SimpleNamespace(canonical_path = dropped),
+            NativePathLeaseError=RuntimeError,
+            verify_native_path_lease=lambda *a, **k: SimpleNamespace(canonical_path=dropped),
         ),
     )
 
     with pytest.raises(HTTPException) as excinfo:
         asyncio.run(
-            seed_route.upload_unstructured_file(None, "block", native_path_lease = "signed-lease")
+            seed_route.upload_unstructured_file(None, "block", native_path_lease="signed-lease")
         )
     assert excinfo.value.status_code == 413
 
@@ -311,12 +311,12 @@ class _BlockPlugin:
     def find_spec(
         self,
         fullname,
-        path = None,
-        target = None,
+        path=None,
+        target=None,
     ):
         if fullname == self.name or fullname.startswith(self.name + "."):
             self.attempts += 1
-            raise ModuleNotFoundError(f"No module named {fullname!r}", name = fullname)
+            raise ModuleNotFoundError(f"No module named {fullname!r}", name=fullname)
         return None
 
 
@@ -340,19 +340,19 @@ def test_unstructured_preview_reports_unavailable_without_the_plugin(monkeypatch
 
     with pytest.raises(seed_route.HTTPException) as exc:
         seed_route._read_preview_rows_from_unstructured_file(
-            path = tmp_path / "a.txt", preview_size = 5, chunk_size = None, chunk_overlap = None
+            path=tmp_path / "a.txt", preview_size=5, chunk_size=None, chunk_overlap=None
         )
     assert exc.value.status_code == 500
     assert "Unstructured seed support not available" in exc.value.detail
 
     with pytest.raises(seed_route.HTTPException) as exc:
         seed_route._read_preview_rows_from_multi_files(
-            block_id = "block",
-            file_ids = ["a"],
-            file_names = ["a.txt"],
-            preview_size = 5,
-            chunk_size = None,
-            chunk_overlap = None,
+            block_id="block",
+            file_ids=["a"],
+            file_names=["a.txt"],
+            preview_size=5,
+            chunk_size=None,
+            chunk_overlap=None,
         )
     assert exc.value.status_code == 500
     assert "Unstructured seed support not available" in exc.value.detail
@@ -373,7 +373,7 @@ def test_text_extraction_falls_back_to_raw_without_the_plugin(monkeypatch, tmp_p
     seed_route = _load_seed_route(monkeypatch, tmp_path)
     _without_plugin(monkeypatch, seed_route)
     source = tmp_path / "notes.txt"
-    source.write_text("a\n\n\n\nb", encoding = "utf-8")
+    source.write_text("a\n\n\n\nb", encoding="utf-8")
 
     # The plugin is what collapses the run of blank lines.
     assert seed_route._extract_text_from_file(source, ".txt") == "a\n\n\n\nb"
@@ -389,7 +389,7 @@ def test_plugin_resolution_survives_a_reload_and_normalizes(monkeypatch, tmp_pat
     assert chunking is not None
     assert chunking.resolve_chunking(0, 0)[0] == 1
     source = tmp_path / "notes.txt"
-    source.write_text("a\n\n\n\nb", encoding = "utf-8")
+    source.write_text("a\n\n\n\nb", encoding="utf-8")
     assert seed_route._extract_text_from_file(source, ".txt") == "a\n\nb"
 
 
@@ -1355,13 +1355,13 @@ def test_seed_preview_file_follows_the_config_data_dir(monkeypatch, tmp_path):
 
     response = seed_route.inspect_seed_dataset(
         SimpleNamespace(
-            dataset_name = "org/repo",
-            split = "train",
-            subset = "french",
-            hf_token = None,
-            preview_size = 1,
+            dataset_name="org/repo",
+            split="train",
+            subset="french",
+            hf_token=None,
+            preview_size=1,
         ),
-        allow_ambient_token = False,
+        allow_ambient_token=False,
     )
 
     assert seen[0] == "fr/train.parquet"
@@ -1568,7 +1568,7 @@ def test_validate_resolves_the_hf_seed_endpoint_like_jobs(monkeypatch):
 
     response = validate_module.validate(
         RecipePayload(
-            recipe = {
+            recipe={
                 "seed_config": {
                     "source": {
                         "seed_type": "hf",
@@ -1601,7 +1601,7 @@ def test_validate_answers_when_the_error_collector_cannot_read_the_seed(monkeypa
 
     response = validate_module.validate(
         RecipePayload(
-            recipe = {
+            recipe={
                 "seed_config": {
                     "source": {
                         "seed_type": "hf",

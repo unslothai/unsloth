@@ -28,9 +28,9 @@ TIMEOUT_MS = 60_000
 def api(
     page,
     path,
-    method = "GET",
-    body = None,
-    token = None,
+    method="GET",
+    body=None,
+    token=None,
 ):
     """Call the backend from the page, so the request carries the session cookie."""
     result = page.evaluate(
@@ -60,29 +60,29 @@ def sign_in(page):
     Two branches, as in playwright_thread_scoped_settings.py: a fresh CI boot lands on
     /change-password, a re-run against the same server on /login.
     """
-    page.goto(f"{BASE}/change-password", wait_until = "domcontentloaded", timeout = TIMEOUT_MS)
+    page.goto(f"{BASE}/change-password", wait_until="domcontentloaded", timeout=TIMEOUT_MS)
     try:
-        page.locator("#new-password").wait_for(state = "visible", timeout = 15_000)
+        page.locator("#new-password").wait_for(state="visible", timeout=15_000)
         rotating = True
     except Exception:  # noqa: BLE001 - already rotated, so the form is not there
         rotating = False
     if rotating:
-        page.fill("#new-password", PASSWORD, timeout = TIMEOUT_MS)
-        page.fill("#confirm-password", PASSWORD, timeout = TIMEOUT_MS)
+        page.fill("#new-password", PASSWORD, timeout=TIMEOUT_MS)
+        page.fill("#confirm-password", PASSWORD, timeout=TIMEOUT_MS)
         endpoint = "/api/auth/change-password"
     else:
-        page.goto(f"{BASE}/login", wait_until = "domcontentloaded", timeout = TIMEOUT_MS)
-        page.locator("#password").wait_for(state = "visible", timeout = TIMEOUT_MS)
-        page.fill("#password", PASSWORD, timeout = TIMEOUT_MS)
+        page.goto(f"{BASE}/login", wait_until="domcontentloaded", timeout=TIMEOUT_MS)
+        page.locator("#password").wait_for(state="visible", timeout=TIMEOUT_MS)
+        page.fill("#password", PASSWORD, timeout=TIMEOUT_MS)
         endpoint = "/api/auth/login"
     with page.expect_response(
-        lambda r: endpoint in r.url and r.request.method == "POST", timeout = TIMEOUT_MS
+        lambda r: endpoint in r.url and r.request.method == "POST", timeout=TIMEOUT_MS
     ) as response:
         page.locator('button[type="submit"]').click()
     if response.value.status >= 400:
         raise AssertionError(f"POST {endpoint} returned {response.value.status}")
-    page.goto(f"{BASE}/chat", wait_until = "domcontentloaded", timeout = TIMEOUT_MS)
-    page.locator('button[data-pill-label="Search"]:visible').first.wait_for(timeout = TIMEOUT_MS)
+    page.goto(f"{BASE}/chat", wait_until="domcontentloaded", timeout=TIMEOUT_MS)
+    page.locator('button[data-pill-label="Search"]:visible').first.wait_for(timeout=TIMEOUT_MS)
     return page.evaluate("() => localStorage.getItem('unsloth_auth_token')")
 
 
@@ -99,9 +99,9 @@ def seed_thread(page, token):
     api(
         page,
         "/api/chat/threads",
-        method = "POST",
-        token = token,
-        body = {
+        method="POST",
+        token=token,
+        body={
             "id": thread_id,
             "title": "chat width presets",
             "modelType": "base",
@@ -115,9 +115,9 @@ def seed_thread(page, token):
     api(
         page,
         f"/api/chat/threads/{thread_id}/messages",
-        method = "PUT",
-        token = token,
-        body = {
+        method="PUT",
+        token=token,
+        body={
             "messages": [
                 {
                     "id": user_id,
@@ -150,9 +150,9 @@ def check_widths(page):
     for preset in ("Standard", "Wide", "Full width"):
         page.set_viewport_size({"width": 1440, "height": 900})
         page.keyboard.press("Control+,")
-        page.get_by_role("dialog").get_by_role("button", name = "Appearance", exact = True).click()
-        page.get_by_role("combobox", name = "Chat width").click()
-        page.get_by_role("option", name = preset, exact = True).click()
+        page.get_by_role("dialog").get_by_role("button", name="Appearance", exact=True).click()
+        page.get_by_role("combobox", name="Chat width").click()
+        page.get_by_role("option", name=preset, exact=True).click()
         page.keyboard.press("Escape")
         measurements[preset] = {}
         for width in (390, 768, 900, 1280, 1536, 1920, 2560):
@@ -208,12 +208,12 @@ def check_widths(page):
 if __name__ == "__main__":
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch()
-        page = browser.new_page(viewport = {"width": 1440, "height": 900}, reduced_motion = "reduce")
+        page = browser.new_page(viewport={"width": 1440, "height": 900}, reduced_motion="reduce")
         token = sign_in(page)
         thread_id = os.environ.get("CHAT_THREAD_ID") or seed_thread(page, token)
         page.goto(
-            f"{BASE}/chat?thread={thread_id}", wait_until = "domcontentloaded", timeout = TIMEOUT_MS
+            f"{BASE}/chat?thread={thread_id}", wait_until="domcontentloaded", timeout=TIMEOUT_MS
         )
-        page.locator(".aui-assistant-message-root").wait_for(timeout = TIMEOUT_MS)
+        page.locator(".aui-assistant-message-root").wait_for(timeout=TIMEOUT_MS)
         print(check_widths(page))
         browser.close()

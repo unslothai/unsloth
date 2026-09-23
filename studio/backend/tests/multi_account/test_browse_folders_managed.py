@@ -12,7 +12,7 @@ ALICE = AccountContext("a" * 32, "alice")
 
 def test_managed_browse_suggests_only_the_workspace(isolated_auth):
     root = run_as(ALICE, workspace_root)
-    (root / "models").mkdir(parents = True)
+    (root / "models").mkdir(parents=True)
     response = run_as(ALICE, models_routes.browse_folders, None, False, "alice")
     assert response.current == str(root.resolve())
     assert response.parent is None

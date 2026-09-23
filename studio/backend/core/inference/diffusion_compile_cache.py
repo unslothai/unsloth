@@ -108,7 +108,7 @@ def _manifest_bundle(cdir: Path, manifest: dict[str, Any]) -> Path:
 
 def _read_manifest(path: Path) -> Optional[dict[str, Any]]:
     try:
-        loaded = json.loads(path.read_text(encoding = "utf-8"))
+        loaded = json.loads(path.read_text(encoding="utf-8"))
     except Exception:  # noqa: BLE001 - unreadable/absent/half-written reads as "no manifest"
         return None
     return loaded if isinstance(loaded, dict) else None
@@ -223,6 +223,7 @@ def legacy_cache_root() -> Optional[Path]:
 def _triton_version() -> Optional[str]:
     try:
         import triton  # noqa: PLC0415
+
         return str(getattr(triton, "__version__", None))
     except Exception:  # noqa: BLE001 - triton optional
         return None
@@ -231,6 +232,7 @@ def _triton_version() -> Optional[str]:
 def _diffusers_version() -> Optional[str]:
     try:
         import diffusers  # noqa: PLC0415
+
         return str(getattr(diffusers, "__version__", None))
     except Exception:  # noqa: BLE001
         return None
@@ -298,7 +300,7 @@ def model_fingerprint(
 
 
 def cache_key(env_fp: dict[str, Any], model_fp: dict[str, Any]) -> str:
-    payload = json.dumps({"env": env_fp, "model": model_fp}, sort_keys = True, default = str)
+    payload = json.dumps({"env": env_fp, "model": model_fp}, sort_keys=True, default=str)
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:32]
 
 
@@ -322,7 +324,7 @@ class CacheContext:
     saved: bool = False
     prev_inductor_dir: Optional[str] = None
     prev_inductor_dir_set: bool = False
-    shapes: set = dataclasses.field(default_factory = set)
+    shapes: set = dataclasses.field(default_factory=set)
     # Bumped by every ``register_shape`` that dirties the context. A background save clears ``saved`` -> True only
     # when this still reads what it read before it started, so a shape registered WHILE that save ran cannot be
     # marked persisted by it.
@@ -355,6 +357,7 @@ def begin(
         return None
     try:
         import torch  # noqa: PLC0415
+
         if not (
             hasattr(torch.compiler, "save_cache_artifacts")
             and hasattr(torch.compiler, "load_cache_artifacts")
@@ -367,24 +370,24 @@ def begin(
 
     env_fp = environment_fingerprint()
     model_fp = model_fingerprint(
-        family = family,
-        transformer = transformer,
-        dtype = dtype,
-        quant = quant,
-        attention_backend = attention_backend,
-        compile_kwargs = compile_kwargs,
-        shape_bucket = shape_bucket,
+        family=family,
+        transformer=transformer,
+        dtype=dtype,
+        quant=quant,
+        attention_backend=attention_backend,
+        compile_kwargs=compile_kwargs,
+        shape_bucket=shape_bucket,
     )
     key = cache_key(env_fp, model_fp)
     cdir = cache_root() / key
     ctx = CacheContext(
-        key = key,
-        dir = cdir,
-        bundle = cdir / _BUNDLE_NAME,
-        manifest_path = cdir / _MANIFEST_NAME,
-        env_fp = env_fp,
-        model_fp = model_fp,
-        mode = mode,
+        key=key,
+        dir=cdir,
+        bundle=cdir / _BUNDLE_NAME,
+        manifest_path=cdir / _MANIFEST_NAME,
+        env_fp=env_fp,
+        model_fp=model_fp,
+        mode=mode,
     )
 
     # Same reason as restore(): the previous load's save reads the inductor dir that is about to be repointed.
@@ -395,7 +398,7 @@ def begin(
         )
 
     try:
-        cdir.mkdir(parents = True, exist_ok = True)
+        cdir.mkdir(parents=True, exist_ok=True)
         inductor_dir = str(cdir / "inductor")
         # Startup applies this same test before pinning TORCHINDUCTOR_CACHE_DIR, and this
         # assignment used to overwrite whatever it decided, so a Studio root the builders cannot
@@ -484,11 +487,11 @@ def _load_from_legacy(ctx: CacheContext, logger: Any) -> bool:
     except OSError:
         # Same reason as legacy_cache_root: a pair we cannot even stat is a miss.
         return False
-    if not _try_load(ctx, logger, bundle = bundle, manifest_path = manifest_path):
+    if not _try_load(ctx, logger, bundle=bundle, manifest_path=manifest_path):
         return False
     if _save_enabled(ctx.mode):
         try:
-            ctx.dir.mkdir(parents = True, exist_ok = True)
+            ctx.dir.mkdir(parents=True, exist_ok=True)
             # Under the name the copied manifest names, which is not ctx.bundle unless the legacy
             # pair predates content addressing. Published like begin() does, so the context goes
             # on naming the live bundle in the write root.
@@ -536,7 +539,7 @@ def _try_load(
     bundle = bundle if bundle is not None else ctx.bundle
     manifest_path = manifest_path if manifest_path is not None else ctx.manifest_path
     try:
-        manifest = json.loads(manifest_path.read_text(encoding = "utf-8"))
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     except Exception as exc:  # noqa: BLE001
         _warn(logger, f"compile-cache: unreadable manifest: {exc}")
         return False
@@ -597,7 +600,7 @@ def _atomic_write(path: Path, data: bytes) -> None:
     tmp: Optional[str] = None
     try:
         fd, tmp = tempfile.mkstemp(
-            dir = str(path.parent), prefix = f".{path.name}.", suffix = _TEMP_SUFFIX
+            dir=str(path.parent), prefix=f".{path.name}.", suffix=_TEMP_SUFFIX
         )
         with os.fdopen(fd, "wb") as fh:
             fh.write(data)
@@ -624,7 +627,7 @@ def _atomic_copy(src: Path, dst: Path) -> None:
     """
     tmp: Optional[str] = None
     try:
-        fd, tmp = tempfile.mkstemp(dir = str(dst.parent), prefix = f".{dst.name}.", suffix = _TEMP_SUFFIX)
+        fd, tmp = tempfile.mkstemp(dir=str(dst.parent), prefix=f".{dst.name}.", suffix=_TEMP_SUFFIX)
         os.close(fd)
         shutil.copyfile(src, tmp)
         os.replace(tmp, dst)
@@ -691,6 +694,7 @@ def _write_bundle(ctx: CacheContext, logger: Any) -> bool:
         shapes = sorted(list(s) for s in ctx.shapes)
     try:
         import torch  # noqa: PLC0415
+
         result = torch.compiler.save_cache_artifacts()
     except Exception as exc:  # noqa: BLE001
         _warn(logger, f"compile-cache: save_cache_artifacts failed: {exc}")
@@ -701,7 +705,7 @@ def _write_bundle(ctx: CacheContext, logger: Any) -> bool:
 
     data = result[0]
     try:
-        ctx.dir.mkdir(parents = True, exist_ok = True)
+        ctx.dir.mkdir(parents=True, exist_ok=True)
         digest = hashlib.sha256(data).hexdigest()
         bundle = ctx.dir / _bundle_name(digest)
         manifest = {
@@ -726,7 +730,7 @@ def _write_bundle(ctx: CacheContext, logger: Any) -> bool:
             _atomic_write(bundle, data)
         _atomic_write(
             ctx.manifest_path,
-            json.dumps(manifest, indent = 2, sort_keys = True, default = str).encode("utf-8"),
+            json.dumps(manifest, indent=2, sort_keys=True, default=str).encode("utf-8"),
         )
         ctx.bundle = bundle
         _collect_superseded(ctx.dir, logger)
@@ -794,7 +798,7 @@ def _start_worker_locked() -> None:
     if _worker_thread is not None and _worker_thread.is_alive():
         return
     _worker_thread = threading.Thread(
-        target = _worker_loop, name = "unsloth-compile-cache-save", daemon = True
+        target=_worker_loop, name="unsloth-compile-cache-save", daemon=True
     )
     _worker_thread.start()
 

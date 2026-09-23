@@ -17,6 +17,7 @@ if str(_REPO_ROOT) not in sys.path:
 
 def _studio():
     from unsloth_cli.commands import studio as _studio_mod
+
     return _studio_mod
 
 
@@ -40,7 +41,7 @@ class _FakeStorage:
         self,
         raw_key,
         *,
-        touch = True,
+        touch=True,
     ):
         row = self.keys.get(raw_key)
         if row and row["is_active"]:
@@ -65,7 +66,7 @@ def test_second_run_reuses_the_same_cli_key(studio_home, monkeypatch):
 
     assert first == second
     assert storage.created == ["cli"]
-    secret = studio_mod._cli_api_key_secret_path("cli").read_text(encoding = "utf-8")
+    secret = studio_mod._cli_api_key_secret_path("cli").read_text(encoding="utf-8")
     assert secret.strip() == first
     assert (tmp_path / "auth") in studio_mod._cli_api_key_secret_path("cli").parents
 
@@ -90,7 +91,7 @@ def test_corrupt_secret_file_mints_instead_of_aborting(studio_home, monkeypatch)
     storage = _FakeStorage()
     monkeypatch.setattr(studio_mod, "_load_backend_auth_storage", lambda: storage)
     path = studio_mod._cli_api_key_secret_path("cli")
-    path.parent.mkdir(parents = True)
+    path.parent.mkdir(parents=True)
     path.write_bytes(b"\xff\xfe not utf-8")
 
     minted = studio_mod._create_api_key_inprocess("cli")

@@ -52,7 +52,7 @@ class _Stub:
     def __init__(
         self,
         avail_mib,
-        is_apu = False,
+        is_apu=False,
     ):
         self._avail_mib = avail_mib
         self._is_apu = is_apu
@@ -60,7 +60,7 @@ class _Stub:
     def _available_system_memory_mib(self):
         return self._avail_mib
 
-    def _amd_apu_wants_unified_memory(self, gpu_indices = None):
+    def _amd_apu_wants_unified_memory(self, gpu_indices=None):
         return self._is_apu
 
     _fits_without_paging = LlamaCppBackend._fits_without_paging
@@ -71,14 +71,14 @@ class _Stub:
 def _mode(platform, hw, footprint, avail_mib, monkeypatch, **kwargs):
     rows, vulkan, apu, shared = HARDWARE[hw]
     monkeypatch.setattr(hardware, "is_apple_silicon", lambda: platform == "macos")
-    stub = _Stub(avail_mib, is_apu = apu)
+    stub = _Stub(avail_mib, is_apu=apu)
     return LlamaCppBackend._fit_derived_load_mode(
         stub,
-        model_size = footprint,
-        gpus = rows,
-        shared_gpu_ids = shared,
-        is_vulkan_backend = vulkan,
-        avail_mib = avail_mib,
+        model_size=footprint,
+        gpus=rows,
+        shared_gpu_ids=shared,
+        is_vulkan_backend=vulkan,
+        avail_mib=avail_mib,
         **kwargs,
     )
 
@@ -138,12 +138,12 @@ def test_an_unsized_model_keeps_auto(platform, hw, monkeypatch):
 
 @pytest.mark.parametrize("platform,hw", _OS_GPU)
 def test_an_unsized_kv_keeps_auto(platform, hw, monkeypatch):
-    assert _mode(platform, hw, 8 * GIB, 64 * 1024, monkeypatch, kv_sized = False) is None
+    assert _mode(platform, hw, 8 * GIB, 64 * 1024, monkeypatch, kv_sized=False) is None
 
 
 @pytest.mark.parametrize("platform,hw", _OS_GPU)
 def test_an_unsized_drafter_keeps_auto(platform, hw, monkeypatch):
-    assert _mode(platform, hw, 8 * GIB, 64 * 1024, monkeypatch, mtp_unsized = True) is None
+    assert _mode(platform, hw, 8 * GIB, 64 * 1024, monkeypatch, mtp_unsized=True) is None
 
 
 @pytest.mark.parametrize("platform,hw", _OS_GPU)
@@ -155,10 +155,10 @@ def test_every_footprint_term_is_charged(monkeypatch):
     """Each term alone can push a load over the edge, so none may be dropped."""
     rows_free = 8 * GIB
     base = dict(
-        platform = "linux",
-        hw = "nvidia_discrete",
-        avail_mib = 0,
-        monkeypatch = monkeypatch,
+        platform="linux",
+        hw="nvidia_discrete",
+        avail_mib=0,
+        monkeypatch=monkeypatch,
     )
     # 8 GiB of weights into 24 GiB, with each extra term sized to blow past it.
     for term in (
@@ -170,8 +170,8 @@ def test_every_footprint_term_is_charged(monkeypatch):
         "pipeline_overhead_bytes",
         "soft_overhead",
     ):
-        assert _mode(footprint = rows_free, **base, **{term: 0}) == FIT_MODE
-        assert _mode(footprint = rows_free, **base, **{term: 20 * GIB}) is None
+        assert _mode(footprint=rows_free, **base, **{term: 0}) == FIT_MODE
+        assert _mode(footprint=rows_free, **base, **{term: 20 * GIB}) is None
 
 
 def test_the_extra_devices_pipeline_overhead_is_charged(monkeypatch):
@@ -180,18 +180,18 @@ def test_the_extra_devices_pipeline_overhead_is_charged(monkeypatch):
     load-mode footprint has to carry the same term: 23 GiB across two 12 GiB cards
     with no host RAM to spill into is a fit until the second card's share is
     priced, and claiming that fit would hand the load a loader that cannot page."""
-    base = dict(platform = "linux", hw = "nvidia_multi", avail_mib = 0, monkeypatch = monkeypatch)
-    assert _mode(footprint = 23 * GIB, **base) == FIT_MODE
-    assert _mode(footprint = 23 * GIB, pipeline_overhead_bytes = 2 * GIB, **base) is None
+    base = dict(platform="linux", hw="nvidia_multi", avail_mib=0, monkeypatch=monkeypatch)
+    assert _mode(footprint=23 * GIB, **base) == FIT_MODE
+    assert _mode(footprint=23 * GIB, pipeline_overhead_bytes=2 * GIB, **base) is None
     # Single GPU: the launch's max(0, n - 1) is 0 there, so the term never moves it.
     assert (
         _mode(
-            platform = "linux",
-            hw = "nvidia_discrete",
-            footprint = 23 * GIB,
-            avail_mib = 0,
-            monkeypatch = monkeypatch,
-            pipeline_overhead_bytes = 0,
+            platform="linux",
+            hw="nvidia_discrete",
+            footprint=23 * GIB,
+            avail_mib=0,
+            monkeypatch=monkeypatch,
+            pipeline_overhead_bytes=0,
         )
         == FIT_MODE
     )
@@ -232,7 +232,7 @@ class _DraftStub:
 
 def test_no_cpu_pinned_drafter_charges_nothing():
     stub = _DraftStub(3 * GIB, 512 * MIB)
-    assert stub._cpu_resident_draft_bytes(8192, drafter_path = None) == 0
+    assert stub._cpu_resident_draft_bytes(8192, drafter_path=None) == 0
 
 
 def test_a_cpu_pinned_drafter_is_charged_weights_plus_kv_plus_its_graph():
@@ -244,7 +244,7 @@ def test_a_cpu_pinned_drafter_is_charged_weights_plus_kv_plus_its_graph():
     charges _MTP_DRAFT_COMPUTE_BYTES while _mtp_reserves_gpu, which is False for
     exactly this placement -- so left out here it is nowhere in the footprint."""
     stub = _DraftStub(3 * GIB, 512 * MIB)
-    assert stub._cpu_resident_draft_bytes(8192, drafter_path = "d.gguf") == (
+    assert stub._cpu_resident_draft_bytes(8192, drafter_path="d.gguf") == (
         3 * GIB + 512 * MIB + LlamaCppBackend._MTP_DRAFT_COMPUTE_BYTES
     )
 
@@ -256,17 +256,17 @@ def test_the_cpu_drafters_decode_graph_is_charged_to_host_ram(monkeypatch):
     host-only term."""
     monkeypatch.setattr(hardware, "is_apple_silicon", lambda: False)
     stub = _DraftStub(2 * GIB, 0)
-    draft = stub._cpu_resident_draft_bytes(8192, drafter_path = "d.gguf")
+    draft = stub._cpu_resident_draft_bytes(8192, drafter_path="d.gguf")
     # Room for the weights and the headroom, but not for the graph on top.
     avail_mib = (2 * GIB + LlamaCppBackend._MTP_DRAFT_COMPUTE_BYTES // 2) // MIB + 2 * 1024
 
     def _fit(host_only):
         return LlamaCppBackend._fit_derived_load_mode(
             _Stub(avail_mib),
-            model_size = 8 * GIB,
-            host_only_bytes = host_only,
-            gpus = [(0, 24 * 1024)],
-            avail_mib = avail_mib,
+            model_size=8 * GIB,
+            host_only_bytes=host_only,
+            gpus=[(0, 24 * 1024)],
+            avail_mib=avail_mib,
         )
 
     # Weights and KV alone still read as a fit; the graph is what tips it.
@@ -279,7 +279,7 @@ def test_an_unpriceable_cpu_drafter_abstains(weights, kv):
     """A drafter that is there but cannot be sized is exactly the case that must
     not be silently charged as zero."""
     stub = _DraftStub(weights, kv)
-    assert stub._cpu_resident_draft_bytes(8192, drafter_path = "d.gguf") is None
+    assert stub._cpu_resident_draft_bytes(8192, drafter_path="d.gguf") is None
 
 
 def test_the_cpu_drafter_flips_a_fit_that_only_looked_like_one(monkeypatch):
@@ -292,10 +292,10 @@ def test_the_cpu_drafter_flips_a_fit_that_only_looked_like_one(monkeypatch):
     def _fit(mtp_bytes):
         return LlamaCppBackend._fit_derived_load_mode(
             stub,
-            model_size = 20 * GIB,
-            mtp_bytes = mtp_bytes,
-            gpus = [(0, 8 * 1024)],
-            avail_mib = 16 * 1024,
+            model_size=20 * GIB,
+            mtp_bytes=mtp_bytes,
+            gpus=[(0, 8 * 1024)],
+            avail_mib=16 * 1024,
         )
 
     assert _fit(0) == FIT_MODE
@@ -351,26 +351,26 @@ def test_a_cpu_pinned_drafter_is_not_paid_for_out_of_vram(monkeypatch):
     def _fit(**kwargs):
         return LlamaCppBackend._fit_derived_load_mode(
             stub,
-            model_size = 8 * GIB,
-            gpus = [(0, 24 * 1024)],
-            avail_mib = 4 * 1024,
+            model_size=8 * GIB,
+            gpus=[(0, 24 * 1024)],
+            avail_mib=4 * 1024,
             **kwargs,
         )
 
     assert _fit() == FIT_MODE
-    assert _fit(host_only_bytes = 3 * GIB) is None
+    assert _fit(host_only_bytes=3 * GIB) is None
     # Same bytes on the GPU side of the ledger DO fit the card, which is the
     # difference this term draws.
-    assert _fit(mtp_bytes = 3 * GIB) == FIT_MODE
+    assert _fit(mtp_bytes=3 * GIB) == FIT_MODE
     # And with RAM that can hold them, the host-only term is satisfied too.
     stub._avail_mib = 16 * 1024
     assert (
         LlamaCppBackend._fit_derived_load_mode(
             stub,
-            model_size = 8 * GIB,
-            gpus = [(0, 24 * 1024)],
-            avail_mib = 16 * 1024,
-            host_only_bytes = 3 * GIB,
+            model_size=8 * GIB,
+            gpus=[(0, 24 * 1024)],
+            avail_mib=16 * 1024,
+            host_only_bytes=3 * GIB,
         )
         == FIT_MODE
     )
@@ -395,10 +395,10 @@ def test_the_fitters_margin_is_not_credited_to_the_fit(monkeypatch):
     def _fit(margin):
         return LlamaCppBackend._fit_derived_load_mode(
             stub,
-            model_size = footprint,
-            gpus = rows,
-            fit_margin_mib = margin,
-            avail_mib = 2 * 1024,
+            model_size=footprint,
+            gpus=rows,
+            fit_margin_mib=margin,
+            avail_mib=2 * 1024,
         )
 
     # --fit off (Unsloth proved the placement): no fitter, no margin, the card pays.
@@ -413,9 +413,9 @@ def test_the_margin_is_charged_per_device():
     stub = _Stub(None)  # host RAM unreadable: the VRAM term has to settle it
     rows = [(0, 12 * 1024), (1, 12 * 1024)]
     # 23 GiB fits 24 GiB of raw free, but not 24 - 2 x 1 GiB.
-    assert stub._fits_without_paging(23 * GIB, rows, avail_mib = None) is True
-    assert stub._fits_without_paging(23 * GIB, rows, vram_margin_mib = 1024.0, avail_mib = None) is None
-    assert stub._fits_without_paging(21 * GIB, rows, vram_margin_mib = 1024.0, avail_mib = None) is True
+    assert stub._fits_without_paging(23 * GIB, rows, avail_mib=None) is True
+    assert stub._fits_without_paging(23 * GIB, rows, vram_margin_mib=1024.0, avail_mib=None) is None
+    assert stub._fits_without_paging(21 * GIB, rows, vram_margin_mib=1024.0, avail_mib=None) is True
 
 
 @pytest.mark.parametrize(
@@ -435,9 +435,9 @@ def test_the_margin_is_charged_per_device():
 )
 def test_the_fit_and_the_flag_read_the_same_margin(auto_fit, delta, supports, expected):
     got = LlamaCppBackend._fit_target_margin_mib(
-        auto_fit = auto_fit,
-        fit_target_delta_mib = delta,
-        supports_fit_target = supports,
+        auto_fit=auto_fit,
+        fit_target_delta_mib=delta,
+        supports_fit_target=supports,
     )
     assert got == expected
     # And the emitted flag is that same number, so the margin the child is told to
@@ -494,7 +494,7 @@ def test_the_effective_fitter_state_reads_the_launchs_own_fit_flag():
     def _runs(
         use_fit,
         extras,
-        env = None,
+        env=None,
     ):
         return fit_is_effectively_on(["--fit", "on" if use_fit else "off", *extras], env)
 
@@ -537,6 +537,7 @@ def test_the_effective_fitter_state_reads_the_launchs_own_fit_flag():
 )
 def test_a_pass_through_fit_target_is_the_margin_the_child_really_keeps(extras, env, expected):
     from core.inference.llama_server_args import fit_target_margin_in
+
     assert fit_target_margin_in(extras, env) == expected
 
 
@@ -563,14 +564,14 @@ def _chain(extras, *, user_mode, fit_mode, supports, host_resident):
     """What load_model does, in the same order."""
     managed, rest = apply_model_memory_policy(
         extras,
-        supports_load_mode = supports,
-        weights_in_host_memory = host_resident,
+        supports_load_mode=supports,
+        weights_in_host_memory=host_resident,
     )
     lm_managed, rest = apply_load_mode_policy(
         rest,
-        supports_load_mode = supports,
-        weights_in_host_memory = host_resident,
-        requested_load_mode = user_mode or fit_mode,
+        supports_load_mode=supports,
+        weights_in_host_memory=host_resident,
+        requested_load_mode=user_mode or fit_mode,
     )
     return list(managed) + list(lm_managed) + list(rest)
 
@@ -590,7 +591,7 @@ _CHAIN_AXES = list(
 def test_the_chain_never_emits_an_unknown_or_duplicate_mode(axes, toggles):
     (keep, no_reserve), user, fit, supports, host = axes
     toggles(keep, no_reserve)
-    argv = _chain([], user_mode = user, fit_mode = fit, supports = supports, host_resident = host)
+    argv = _chain([], user_mode=user, fit_mode=fit, supports=supports, host_resident=host)
     # At most one managed mode selector reaches the child.
     assert argv.count("--load-mode") <= 1
     if "--load-mode" in argv:
@@ -609,8 +610,8 @@ def test_the_fit_changes_nothing_a_user_pick_did_not_already_decide(axes, toggle
     if user is None:
         pytest.skip("no user pick to defer to")
     toggles(keep, no_reserve)
-    with_fit = _chain([], user_mode = user, fit_mode = "none", supports = supports, host_resident = host)
-    without = _chain([], user_mode = user, fit_mode = None, supports = supports, host_resident = host)
+    with_fit = _chain([], user_mode=user, fit_mode="none", supports=supports, host_resident=host)
+    without = _chain([], user_mode=user, fit_mode=None, supports=supports, host_resident=host)
     assert with_fit == without
 
 
@@ -622,14 +623,14 @@ def _chain_before_this_change(extras, *, user_mode, supports, host_resident):
     """
     managed, rest = apply_model_memory_policy(
         extras,
-        supports_load_mode = supports,
-        weights_in_host_memory = host_resident,
+        supports_load_mode=supports,
+        weights_in_host_memory=host_resident,
     )
     lm_managed, rest = apply_load_mode_policy(
         rest,
-        supports_load_mode = supports,
-        weights_in_host_memory = host_resident,
-        requested_load_mode = user_mode,
+        supports_load_mode=supports,
+        weights_in_host_memory=host_resident,
+        requested_load_mode=user_mode,
     )
     return list(managed) + list(lm_managed) + list(rest)
 
@@ -646,9 +647,9 @@ def test_an_abstaining_fit_reproduces_the_old_argv_exactly(axes, extras, toggles
     (keep, no_reserve), user, _fit, supports, host = axes
     toggles(keep, no_reserve)
     assert _chain(
-        list(extras), user_mode = user, fit_mode = None, supports = supports, host_resident = host
+        list(extras), user_mode=user, fit_mode=None, supports=supports, host_resident=host
     ) == _chain_before_this_change(
-        list(extras), user_mode = user, supports = supports, host_resident = host
+        list(extras), user_mode=user, supports=supports, host_resident=host
     )
 
 
@@ -656,7 +657,7 @@ def test_an_abstaining_fit_reproduces_the_old_argv_exactly(axes, extras, toggles
 def test_the_model_memory_settings_still_win_over_the_fit(toggle_pair, toggles):
     keep, no_reserve = toggle_pair
     toggles(keep, no_reserve)
-    argv = _chain([], user_mode = None, fit_mode = "none", supports = True, host_resident = True)
+    argv = _chain([], user_mode=None, fit_mode="none", supports=True, host_resident=True)
     if no_reserve:
         # "Don't reserve system RAM" vetoes none outright.
         assert "none" not in argv
@@ -668,7 +669,7 @@ def test_the_model_memory_settings_still_win_over_the_fit(toggle_pair, toggles):
 
 def test_the_fit_applies_when_both_toggles_are_off(toggles):
     toggles(False, False)
-    assert _chain([], user_mode = None, fit_mode = "none", supports = True, host_resident = True) == [
+    assert _chain([], user_mode=None, fit_mode="none", supports=True, host_resident=True) == [
         "--load-mode",
         "none",
     ]
@@ -676,7 +677,7 @@ def test_the_fit_applies_when_both_toggles_are_off(toggles):
 
 def test_an_old_binary_gets_the_pre_enum_spelling(toggles):
     toggles(False, False)
-    assert _chain([], user_mode = None, fit_mode = "none", supports = False, host_resident = True) == [
+    assert _chain([], user_mode=None, fit_mode="none", supports=False, host_resident=True) == [
         "--no-mmap"
     ]
 
@@ -685,10 +686,10 @@ def test_a_hand_typed_flag_still_wins_by_last_arg(toggles):
     toggles(False, False)
     argv = _chain(
         ["--load-mode", "mmap"],
-        user_mode = None,
-        fit_mode = "none",
-        supports = True,
-        host_resident = True,
+        user_mode=None,
+        fit_mode="none",
+        supports=True,
+        host_resident=True,
     )
     # Managed block first, the user's copy after it, so llama.cpp's last-wins
     # parsing lands on the user's.
@@ -720,13 +721,13 @@ def test_the_cpu_fallback_drops_the_fits_load_mode(monkeypatch):
         "none",
     ]
     with (
-        mock.patch.object(lc.LlamaCppBackend, "_is_vulkan_backend", return_value = True),
-        mock.patch.object(lc.LlamaCppBackend, "_cpu_isolated_replay", return_value = list(replay)),
-        mock.patch.object(lc.LlamaCppBackend, "_cpu_isolated_binary", return_value = "cpu-server"),
+        mock.patch.object(lc.LlamaCppBackend, "_is_vulkan_backend", return_value=True),
+        mock.patch.object(lc.LlamaCppBackend, "_cpu_isolated_replay", return_value=list(replay)),
+        mock.patch.object(lc.LlamaCppBackend, "_cpu_isolated_binary", return_value="cpu-server"),
         mock.patch.object(
             lc.LlamaCppBackend,
             "_llama_server_env_for_binary",
-            return_value = {lc._loader_path_var(): "/staged"},
+            return_value={lc._loader_path_var(): "/staged"},
         ),
     ):
         out, _reason, _note = backend._prepare_cpu_fallback_launch("llama-server", replay, {}, {})
@@ -746,13 +747,13 @@ def test_the_cpu_fallback_keeps_a_load_mode_the_user_asked_for(monkeypatch):
     backend._fit_load_mode_flags = []  # user pick: nothing recorded
     replay = ["llama-server", "-m", "model.gguf", "--load-mode", "none"]
     with (
-        mock.patch.object(lc.LlamaCppBackend, "_is_vulkan_backend", return_value = True),
-        mock.patch.object(lc.LlamaCppBackend, "_cpu_isolated_replay", return_value = list(replay)),
-        mock.patch.object(lc.LlamaCppBackend, "_cpu_isolated_binary", return_value = "cpu-server"),
+        mock.patch.object(lc.LlamaCppBackend, "_is_vulkan_backend", return_value=True),
+        mock.patch.object(lc.LlamaCppBackend, "_cpu_isolated_replay", return_value=list(replay)),
+        mock.patch.object(lc.LlamaCppBackend, "_cpu_isolated_binary", return_value="cpu-server"),
         mock.patch.object(
             lc.LlamaCppBackend,
             "_llama_server_env_for_binary",
-            return_value = {lc._loader_path_var(): "/staged"},
+            return_value={lc._loader_path_var(): "/staged"},
         ),
     ):
         out, _reason, _note = backend._prepare_cpu_fallback_launch("llama-server", replay, {}, {})
@@ -807,8 +808,8 @@ def test_the_arch_crash_retry_voids_the_fit_the_weights_only_floor_still_allows(
     # The retry really does move off the fitted card.
     assert LlamaCppBackend._arch_crash_retry_gpu_ids([0], [0, 1]) == [1]
 
-    assert stub._fits_without_paging(footprint, rows, gpu_indices = [0]) is True
-    assert stub._fits_without_paging(footprint, rows, gpu_indices = [1]) is False
+    assert stub._fits_without_paging(footprint, rows, gpu_indices=[0]) is True
+    assert stub._fits_without_paging(footprint, rows, gpu_indices=[1]) is False
     # ...while the weights-only refusal the retry runs stays silent, so nothing on
     # that path would take the fit's "none" back out on its own.
     assert LlamaCppBackend._host_offload_shortfall_message(weights - 4_000 * MIB, 20_000) is None
@@ -872,7 +873,7 @@ def test_the_no_flash_rewrite_really_grows_the_footprint_the_fit_priced():
     from core.inference.llama_cpp import LlamaCppBackend as B
 
     cmd = ["llama-server", "--flash-attn", "on", "--cache-type-k", "q8_0", "--cache-type-v", "q8_0"]
-    out = B._with_flash_attn_off(cmd, mla = True)
+    out = B._with_flash_attn_off(cmd, mla=True)
     assert out is not None
     # Flash attention really is off...
     assert "on" not in out[out.index("--flash-attn") : out.index("--flash-attn") + 2]
@@ -908,7 +909,7 @@ def test_a_pass_through_placement_override_voids_the_vram_credit(extras, monkeyp
     an OOM kill where llama.cpp's own default would have demand-paged."""
     assert _mode("linux", "nvidia_discrete", 8 * GIB, 4 * 1024, monkeypatch) == FIT_MODE
     assert (
-        _mode("linux", "nvidia_discrete", 8 * GIB, 4 * 1024, monkeypatch, extra_args = extras) is None
+        _mode("linux", "nvidia_discrete", 8 * GIB, 4 * 1024, monkeypatch, extra_args=extras) is None
     )
 
 
@@ -917,7 +918,7 @@ def test_an_override_still_takes_none_when_host_ram_holds_the_whole_load(extras,
     """The credit is dropped, not the answer: 8 GiB against 64 GiB of RAM is
     resident wherever these flags put it, so the pick stands."""
     assert (
-        _mode("linux", "nvidia_discrete", 8 * GIB, 64 * 1024, monkeypatch, extra_args = extras)
+        _mode("linux", "nvidia_discrete", 8 * GIB, 64 * 1024, monkeypatch, extra_args=extras)
         == FIT_MODE
     )
 
@@ -937,7 +938,7 @@ def test_an_override_still_takes_none_when_host_ram_holds_the_whole_load(extras,
 )
 def test_extras_that_leave_placement_alone_keep_the_fit(extras, monkeypatch):
     assert (
-        _mode("linux", "nvidia_discrete", 8 * GIB, 4 * 1024, monkeypatch, extra_args = extras)
+        _mode("linux", "nvidia_discrete", 8 * GIB, 4 * 1024, monkeypatch, extra_args=extras)
         == FIT_MODE
     )
 
@@ -1022,7 +1023,7 @@ def test_an_inherited_device_selection_voids_the_vram_credit(monkeypatch):
             8 * GIB,
             4 * 1024,
             monkeypatch,
-            extra_args = ["--device", "CUDA0"],
+            extra_args=["--device", "CUDA0"],
         )
         == FIT_MODE
     )
@@ -1071,8 +1072,8 @@ def test_a_narrowing_device_pass_through_voids_the_vram_credit(
             20 * GIB,
             2 * 1024,
             monkeypatch,
-            extra_args = extras,
-            gpu_indices = gpu_indices,
+            extra_args=extras,
+            gpu_indices=gpu_indices,
         )
         == expected
     )
@@ -1092,8 +1093,8 @@ def test_the_device_narrowing_is_counted_against_what_the_fit_credits(monkeypatc
                 10 * GIB,
                 2 * 1024,
                 monkeypatch,
-                extra_args = extras,
-                gpu_indices = [0],
+                extra_args=extras,
+                gpu_indices=[0],
             )
             == expected
         )
@@ -1107,11 +1108,11 @@ def _multi(footprint, avail_mib, monkeypatch, **kwargs):
     monkeypatch.setattr(hardware, "is_apple_silicon", lambda: False)
     return LlamaCppBackend._fit_derived_load_mode(
         _Stub(avail_mib),
-        model_size = footprint,
-        gpus = [(0, 12 * 1024), (1, 12 * 1024)],
-        shared_gpu_ids = set(),
-        is_vulkan_backend = False,
-        avail_mib = avail_mib,
+        model_size=footprint,
+        gpus=[(0, 12 * 1024), (1, 12 * 1024)],
+        shared_gpu_ids=set(),
+        is_vulkan_backend=False,
+        avail_mib=avail_mib,
         **kwargs,
     )
 
@@ -1135,7 +1136,7 @@ def test_a_starving_split_voids_the_pooled_vram_credit(extras, monkeypatch):
     """18 GiB across 2x12 GiB fits the pool but not one card, and RAM is far too
     small to hold the spill. Crediting both cards anyway would emit the no-mmap
     flag for weights that then have nowhere pageable to live."""
-    assert _multi(18 * GIB, 4 * 1024, monkeypatch, extra_args = extras) is None
+    assert _multi(18 * GIB, 4 * 1024, monkeypatch, extra_args=extras) is None
 
 
 @pytest.mark.parametrize(
@@ -1144,7 +1145,7 @@ def test_a_starving_split_voids_the_pooled_vram_credit(extras, monkeypatch):
 )
 def test_an_inherited_starving_split_voids_it_too(env_value, monkeypatch):
     """The child inherits these exactly as it inherits LLAMA_ARG_DEVICE."""
-    assert _multi(18 * GIB, 4 * 1024, monkeypatch, env = env_value) is None
+    assert _multi(18 * GIB, 4 * 1024, monkeypatch, env=env_value) is None
 
 
 @pytest.mark.parametrize(
@@ -1162,7 +1163,7 @@ def test_an_inherited_starving_split_voids_it_too(env_value, monkeypatch):
     ],
 )
 def test_a_split_that_starves_nobody_keeps_the_fit(extras, monkeypatch):
-    assert _multi(18 * GIB, 4 * 1024, monkeypatch, extra_args = extras) == FIT_MODE
+    assert _multi(18 * GIB, 4 * 1024, monkeypatch, extra_args=extras) == FIT_MODE
 
 
 def test_a_starving_split_is_a_no_op_on_a_single_gpu(monkeypatch):
@@ -1175,7 +1176,7 @@ def test_a_starving_split_is_a_no_op_on_a_single_gpu(monkeypatch):
             8 * GIB,
             4 * 1024,
             monkeypatch,
-            extra_args = ["--split-mode", "none"],
+            extra_args=["--split-mode", "none"],
         )
         == FIT_MODE
     )
@@ -1183,7 +1184,7 @@ def test_a_starving_split_is_a_no_op_on_a_single_gpu(monkeypatch):
 
 def test_a_starving_split_still_takes_none_when_ram_holds_the_load(monkeypatch):
     """The credit is dropped, not the answer, exactly as for the other overrides."""
-    assert _multi(18 * GIB, 64 * 1024, monkeypatch, extra_args = ["-sm", "none"]) == FIT_MODE
+    assert _multi(18 * GIB, 64 * 1024, monkeypatch, extra_args=["-sm", "none"]) == FIT_MODE
 
 
 @pytest.mark.parametrize(
@@ -1227,12 +1228,12 @@ def _vulkan(footprint, avail_mib, monkeypatch, **kwargs):
     monkeypatch.setattr(hardware, "is_apple_silicon", lambda: False)
     return LlamaCppBackend._fit_derived_load_mode(
         _Stub(avail_mib),
-        model_size = footprint,
-        gpus = [(0, 12 * 1024), (1, 12 * 1024), (2, 12 * 1024)],
-        shared_gpu_ids = set(),
-        is_vulkan_backend = True,
-        avail_mib = avail_mib,
-        gpu_indices = [0, 1],
+        model_size=footprint,
+        gpus=[(0, 12 * 1024), (1, 12 * 1024), (2, 12 * 1024)],
+        shared_gpu_ids=set(),
+        is_vulkan_backend=True,
+        avail_mib=avail_mib,
+        gpu_indices=[0, 1],
         **kwargs,
     )
 
@@ -1250,7 +1251,7 @@ def _vulkan(footprint, avail_mib, monkeypatch, **kwargs):
 def test_a_replaced_vulkan_pin_voids_the_credit(extras, monkeypatch):
     """Unsloth pins Vulkan0,Vulkan1 from the credited ordinals; a pass-through
     --device lands after it and last-wins."""
-    assert _vulkan(18 * GIB, 4 * 1024, monkeypatch, extra_args = extras) is None
+    assert _vulkan(18 * GIB, 4 * 1024, monkeypatch, extra_args=extras) is None
 
 
 @pytest.mark.parametrize(
@@ -1262,7 +1263,7 @@ def test_a_replaced_vulkan_pin_voids_the_credit(extras, monkeypatch):
     ],
 )
 def test_a_restated_vulkan_pin_keeps_the_fit(extras, monkeypatch):
-    assert _vulkan(18 * GIB, 4 * 1024, monkeypatch, extra_args = extras) == FIT_MODE
+    assert _vulkan(18 * GIB, 4 * 1024, monkeypatch, extra_args=extras) == FIT_MODE
 
 
 def test_a_replaced_cuda_pin_is_still_judged_by_count(monkeypatch):
@@ -1272,13 +1273,13 @@ def test_a_replaced_cuda_pin_is_still_judged_by_count(monkeypatch):
     assert (
         LlamaCppBackend._fit_derived_load_mode(
             _Stub(4 * 1024),
-            model_size = 18 * GIB,
-            gpus = [(0, 12 * 1024), (1, 12 * 1024), (2, 12 * 1024)],
-            shared_gpu_ids = set(),
-            is_vulkan_backend = False,
-            avail_mib = 4 * 1024,
-            gpu_indices = [0, 1],
-            extra_args = ["--device", "CUDA1,CUDA2"],
+            model_size=18 * GIB,
+            gpus=[(0, 12 * 1024), (1, 12 * 1024), (2, 12 * 1024)],
+            shared_gpu_ids=set(),
+            is_vulkan_backend=False,
+            avail_mib=4 * 1024,
+            gpu_indices=[0, 1],
+            extra_args=["--device", "CUDA1,CUDA2"],
         )
         == FIT_MODE
     )
@@ -1299,7 +1300,7 @@ def test_a_cpu_pinned_projector_is_charged_to_host_ram(monkeypatch):
             8 * GIB,
             4 * 1024,
             monkeypatch,
-            mmproj_pinned_bytes = 10 * GIB,
+            mmproj_pinned_bytes=10 * GIB,
         )
         is None
     )
@@ -1314,7 +1315,7 @@ def test_a_cpu_pinned_projector_fits_when_ram_really_holds_it(monkeypatch):
             8 * GIB,
             64 * 1024,
             monkeypatch,
-            mmproj_pinned_bytes = 10 * GIB,
+            mmproj_pinned_bytes=10 * GIB,
         )
         == FIT_MODE
     )
@@ -1334,7 +1335,7 @@ class _MixedRocmStub(_Stub):
         super().__init__(avail_mib)
         self._unified = set(unified)
 
-    def _amd_apu_wants_unified_memory(self, gpu_indices = None):
+    def _amd_apu_wants_unified_memory(self, gpu_indices=None):
         if gpu_indices is None:
             return bool(self._unified)
         return any(idx in self._unified for idx in gpu_indices)
@@ -1344,12 +1345,12 @@ def _mixed_rocm(footprint, avail_mib, unified, rows, monkeypatch, **kwargs):
     monkeypatch.setattr(hardware, "is_apple_silicon", lambda: False)
     return LlamaCppBackend._fit_derived_load_mode(
         _MixedRocmStub(avail_mib, unified),
-        model_size = footprint,
-        gpus = rows,
-        shared_gpu_ids = set(),
-        is_vulkan_backend = False,
-        avail_mib = avail_mib,
-        gpu_indices = [idx for idx, _free in rows],
+        model_size=footprint,
+        gpus=rows,
+        shared_gpu_ids=set(),
+        is_vulkan_backend=False,
+        avail_mib=avail_mib,
+        gpu_indices=[idx for idx, _free in rows],
         **kwargs,
     )
 
@@ -1420,9 +1421,9 @@ def test_a_cpu_only_kv_cache_is_charged_to_host_ram_alone(extras, env, monkeypat
             8 * GIB,
             4 * 1024,
             monkeypatch,
-            kv_cache_bytes = 12 * GIB,
-            extra_args = extras,
-            env = env or {},
+            kv_cache_bytes=12 * GIB,
+            extra_args=extras,
+            env=env or {},
         )
         is None
     )
@@ -1450,9 +1451,9 @@ def test_an_offloaded_kv_cache_is_still_pooled(extras, env, monkeypatch):
             8 * GIB,
             4 * 1024,
             monkeypatch,
-            kv_cache_bytes = 12 * GIB,
-            extra_args = extras,
-            env = env or {},
+            kv_cache_bytes=12 * GIB,
+            extra_args=extras,
+            env=env or {},
         )
         == FIT_MODE
     )
@@ -1469,8 +1470,8 @@ def test_a_cpu_only_kv_cache_is_not_charged_twice(monkeypatch):
             8 * GIB,
             32 * 1024,
             monkeypatch,
-            kv_cache_bytes = 12 * GIB,
-            extra_args = ["-nkvo"],
+            kv_cache_bytes=12 * GIB,
+            extra_args=["-nkvo"],
         )
         == FIT_MODE
     )
@@ -1510,8 +1511,8 @@ def test_a_tensor_split_pays_the_buffer_on_every_device():
     b._vocab_size = 151936
     b._embedding_length = 4096
     b._feed_forward_length = 12288
-    layer = b._estimate_compute_buffer_bytes(n_ubatch = 2048, n_parallel = 1)
-    tensor = b._estimate_compute_buffer_bytes(n_ubatch = 2048, n_parallel = 1, per_device_tensor = True)
+    layer = b._estimate_compute_buffer_bytes(n_ubatch=2048, n_parallel=1)
+    tensor = b._estimate_compute_buffer_bytes(n_ubatch=2048, n_parallel=1, per_device_tensor=True)
     assert tensor == layer
     # 4-GPU tensor split: three more copies than the layer lump.
     assert 4 * tensor - layer > GIB
@@ -1520,9 +1521,9 @@ def test_a_tensor_split_pays_the_buffer_on_every_device():
 def test_the_replicated_buffer_can_decide_the_fit(monkeypatch):
     """23 GiB across two 12 GiB cards with no host RAM is a fit until the second
     device's copy of the compute buffer is priced."""
-    base = dict(platform = "linux", hw = "nvidia_multi", avail_mib = 0, monkeypatch = monkeypatch)
-    assert _mode(footprint = 22 * GIB, compute_buffer_flat = GIB, **base) == FIT_MODE
-    assert _mode(footprint = 22 * GIB, compute_buffer_flat = 3 * GIB, **base) is None
+    base = dict(platform="linux", hw="nvidia_multi", avail_mib=0, monkeypatch=monkeypatch)
+    assert _mode(footprint=22 * GIB, compute_buffer_flat=GIB, **base) == FIT_MODE
+    assert _mode(footprint=22 * GIB, compute_buffer_flat=3 * GIB, **base) is None
 
 
 # ------------------------------- a drafter split between the GPU and the host
@@ -1560,7 +1561,8 @@ def test_the_replicated_buffer_can_decide_the_fit(monkeypatch):
 )
 def test_a_partial_draft_offload_is_recognised(extras, env, n_draft_layers, expected):
     from core.inference.llama_cpp import _draft_is_split_across_host
-    assert _draft_is_split_across_host(extras, env or {}, n_draft_layers = n_draft_layers) is expected
+
+    assert _draft_is_split_across_host(extras, env or {}, n_draft_layers=n_draft_layers) is expected
 
 
 def test_the_draft_whole_offload_threshold_matches_the_main_model():
@@ -1578,18 +1580,18 @@ def test_the_draft_whole_offload_threshold_matches_the_main_model():
     from core.inference.llama_cpp import _draft_is_split_across_host
 
     # The boundary itself, from both spellings and the env twin.
-    assert _draft_is_split_across_host(["-ngld", "28"], {}, n_draft_layers = 28) is True
-    assert _draft_is_split_across_host(["--spec-draft-ngl=12"], {}, n_draft_layers = 12) is True
+    assert _draft_is_split_across_host(["-ngld", "28"], {}, n_draft_layers=28) is True
+    assert _draft_is_split_across_host(["--spec-draft-ngl=12"], {}, n_draft_layers=12) is True
     assert (
-        _draft_is_split_across_host([], {"LLAMA_ARG_N_GPU_LAYERS_DRAFT": "28"}, n_draft_layers = 28)
+        _draft_is_split_across_host([], {"LLAMA_ARG_N_GPU_LAYERS_DRAFT": "28"}, n_draft_layers=28)
         is True
     )
     # One above it clears the whole drafter onto the card, so a real fit survives.
-    assert _draft_is_split_across_host(["-ngld", "29"], {}, n_draft_layers = 28) is False
+    assert _draft_is_split_across_host(["-ngld", "29"], {}, n_draft_layers=28) is False
     # The same threshold the main model uses, asked of its own predicate over a
     # stub: a count equal to the block count is partial there too. A premise test,
     # here to pin the two thresholds together.
-    stub = SimpleNamespace(n_layers = 28)
+    stub = SimpleNamespace(n_layers=28)
     assert B._partially_offloads_layers(stub, ["-ngl", "28"], {}) is True
     assert B._partially_offloads_layers(stub, ["-ngl", "29"], {}) is False
 
@@ -1640,7 +1642,7 @@ def test_the_cpu_projector_retry_voids_the_fit_it_was_proved_against():
     weights, projector = 16 * GIB, 4 * GIB
 
     assert stub._fits_without_paging(weights + projector, rows) is True
-    assert stub._fits_without_paging(weights + projector, rows, host_only_bytes = projector) is False
+    assert stub._fits_without_paging(weights + projector, rows, host_only_bytes=projector) is False
 
 
 def test_the_cpu_projector_retry_drops_the_fits_load_mode():
@@ -1690,7 +1692,7 @@ def test_context_checkpoint_snapshots_move_the_fit_verdict(monkeypatch):
     backend = _checkpoint_swa_backend()
     ctx = 8192
     base = backend._estimate_kv_cache_bytes(ctx, "f16")
-    snapshotted = backend._estimate_kv_cache_bytes(ctx, "f16", ctx_checkpoints = 8)
+    snapshotted = backend._estimate_kv_cache_bytes(ctx, "f16", ctx_checkpoints=8)
     assert snapshotted - base > 2 * GIB
 
     model = 16 * GIB
@@ -1700,10 +1702,10 @@ def test_context_checkpoint_snapshots_move_the_fit_verdict(monkeypatch):
     def _verdict(kv_bytes):
         return LlamaCppBackend._fit_derived_load_mode(
             stub,
-            model_size = model,
-            kv_cache_bytes = kv_bytes,
-            gpus = rows,
-            avail_mib = 1024,
+            model_size=model,
+            kv_cache_bytes=kv_bytes,
+            gpus=rows,
+            avail_mib=1024,
         )
 
     assert _verdict(base) == FIT_MODE
@@ -1760,7 +1762,7 @@ def test_an_unpriced_projector_is_the_difference_between_a_fit_and_an_oom(monkey
 
     def _verdict(model_size):
         return LlamaCppBackend._fit_derived_load_mode(
-            stub, model_size = model_size, gpus = rows, avail_mib = 1024
+            stub, model_size=model_size, gpus=rows, avail_mib=1024
         )
 
     assert _verdict(weights) == FIT_MODE
@@ -1801,8 +1803,8 @@ def _allowance(mmproj_bytes, *, on_host):
     Bound here rather than in a class body so a missing method fails the tests that
     rely on it instead of erroring out the whole module at import.
     """
-    stub = SimpleNamespace(_MMPROJ_VRAM_SAFETY = LlamaCppBackend._MMPROJ_VRAM_SAFETY)
-    return LlamaCppBackend._inherited_mmproj_soft_overhead(stub, mmproj_bytes, on_host = on_host)
+    stub = SimpleNamespace(_MMPROJ_VRAM_SAFETY=LlamaCppBackend._MMPROJ_VRAM_SAFETY)
+    return LlamaCppBackend._inherited_mmproj_soft_overhead(stub, mmproj_bytes, on_host=on_host)
 
 
 def test_an_inherited_projector_carries_the_same_safety_allowance_as_a_resolved_one():
@@ -1816,12 +1818,12 @@ def test_an_inherited_projector_carries_the_same_safety_allowance_as_a_resolved_
     projector = 8 * GIB
     expected = int(projector * (LlamaCppBackend._MMPROJ_VRAM_SAFETY - 1.0))
 
-    assert _allowance(projector, on_host = False) == expected
+    assert _allowance(projector, on_host=False) == expected
     assert expected > 0
     # Host arm: the resolved projector is priced raw there too, so no allowance.
-    assert _allowance(projector, on_host = True) == 0
+    assert _allowance(projector, on_host=True) == 0
     # Nothing inherited, nothing to charge.
-    assert _allowance(0, on_host = False) == 0
+    assert _allowance(0, on_host=False) == 0
 
 
 def test_the_projector_allowance_flips_a_fit_that_only_looked_like_one(monkeypatch):
@@ -1832,7 +1834,7 @@ def test_the_projector_allowance_flips_a_fit_that_only_looked_like_one(monkeypat
     """
     projector = 8 * GIB
     footprint = 22 * GIB
-    allowance = _allowance(projector, on_host = False)
+    allowance = _allowance(projector, on_host=False)
 
     assert _mode("linux", "nvidia_discrete", footprint, 512, monkeypatch) == FIT_MODE
     assert (
@@ -1842,7 +1844,7 @@ def test_the_projector_allowance_flips_a_fit_that_only_looked_like_one(monkeypat
             footprint,
             512,
             monkeypatch,
-            soft_overhead = allowance,
+            soft_overhead=allowance,
         )
         is None
     )
@@ -1908,11 +1910,11 @@ def test_the_fit_prices_pass_through_adapter_weights(tmp_path, monkeypatch):
     def _verdict(extras):
         return LlamaCppBackend._fit_derived_load_mode(
             stub,
-            model_size = 18 * GIB,
-            gpus = rows,
-            avail_mib = 1024,
-            extra_args = extras,
-            env = {},
+            model_size=18 * GIB,
+            gpus=rows,
+            avail_mib=1024,
+            extra_args=extras,
+            env={},
         )
 
     # The same load, with and without the adapter the extras pass through.
@@ -1944,11 +1946,11 @@ def test_the_fit_prices_the_legacy_two_token_scaled_adapter(tmp_path, monkeypatc
     def _verdict(extras):
         return LlamaCppBackend._fit_derived_load_mode(
             stub,
-            model_size = 18 * GIB,
-            gpus = [(0, 20 * 1024)],
-            avail_mib = 1024,
-            extra_args = extras,
-            env = {},
+            model_size=18 * GIB,
+            gpus=[(0, 20 * 1024)],
+            avail_mib=1024,
+            extra_args=extras,
+            env={},
         )
 
     assert _verdict([]) == FIT_MODE
@@ -1973,11 +1975,11 @@ def test_an_unreadable_adapter_abstains(tmp_path, monkeypatch):
     stub = _Stub(1024)
     got = LlamaCppBackend._fit_derived_load_mode(
         stub,
-        model_size = 8 * GIB,
-        gpus = [(0, 24 * 1024)],
-        avail_mib = 1024,
-        extra_args = ["--lora", str(tmp_path / "missing.gguf")],
-        env = {},
+        model_size=8 * GIB,
+        gpus=[(0, 24 * 1024)],
+        avail_mib=1024,
+        extra_args=["--lora", str(tmp_path / "missing.gguf")],
+        env={},
     )
     assert got is None
 
@@ -1987,6 +1989,7 @@ def test_adapter_flags_really_reach_the_child():
     pass-through layer lets them through. It is a denylist, and none of the four
     adapter flags is on it."""
     from core.inference.llama_server_args import validate_extra_args
+
     for flag in ("--lora", "--lora-scaled", "--control-vector", "--control-vector-scaled"):
         assert validate_extra_args([flag, "/a.gguf:0.5"]) == [flag, "/a.gguf:0.5"]
 
@@ -2033,9 +2036,9 @@ def test_a_chained_retry_cannot_eat_the_users_own_load_mode():
         """The real policy call and the real strip, twice, as the retry does."""
         managed, extras = apply_load_mode_policy(
             list(user),
-            supports_load_mode = True,
-            weights_in_host_memory = True,
-            requested_load_mode = requested,
+            supports_load_mode=True,
+            weights_in_host_memory=True,
+            requested_load_mode=requested,
         )
         # What load_model records as the fit's own flags: only when the fit chose.
         fit_flags = list(managed) if requested else []
@@ -2068,7 +2071,7 @@ def test_the_fit_still_emits_when_the_extras_pick_nothing():
     extras = ["-ngl", "-1", "--temp", "0.7"]
     assert extra_args_select_load_mode(extras) is False
     managed, passed = apply_load_mode_policy(
-        extras, supports_load_mode = True, requested_load_mode = FIT_MODE
+        extras, supports_load_mode=True, requested_load_mode=FIT_MODE
     )
     assert managed == ["--load-mode", FIT_MODE]
     assert passed == extras
@@ -2215,13 +2218,13 @@ def test_the_cpu_replay_and_the_launch_record_disagree(monkeypatch):
     backend._fit_load_mode_flags = ["--load-mode", FIT_MODE]
     launched = ["llama-server", "-m", "model.gguf", "--load-mode", FIT_MODE]
     with (
-        mock.patch.object(lc.LlamaCppBackend, "_is_vulkan_backend", return_value = True),
-        mock.patch.object(lc.LlamaCppBackend, "_cpu_isolated_replay", return_value = list(launched)),
-        mock.patch.object(lc.LlamaCppBackend, "_cpu_isolated_binary", return_value = "cpu-server"),
+        mock.patch.object(lc.LlamaCppBackend, "_is_vulkan_backend", return_value=True),
+        mock.patch.object(lc.LlamaCppBackend, "_cpu_isolated_replay", return_value=list(launched)),
+        mock.patch.object(lc.LlamaCppBackend, "_cpu_isolated_binary", return_value="cpu-server"),
         mock.patch.object(
             lc.LlamaCppBackend,
             "_llama_server_env_for_binary",
-            return_value = {lc._loader_path_var(): "/staged"},
+            return_value={lc._loader_path_var(): "/staged"},
         ),
     ):
         replay, _reason, _note = backend._prepare_cpu_fallback_launch(
@@ -2277,8 +2280,8 @@ def test_the_replayed_cpu_fallback_recomputes_the_memory_record():
 def _no_flash_fit_rewriter(
     extra_args,
     *,
-    manual_gpu_layers = None,
-    env = None,
+    manual_gpu_layers=None,
+    env=None,
 ):
     """The nested `_enable_managed_fit_for_no_flash` as a callable: it closes over
     load_model's locals, so compiling its source is the only way to run the REAL rewrite."""
@@ -2340,17 +2343,17 @@ def test_an_inherited_fit_off_survives_the_no_flash_retry():
     """
     off = ["llama-server", "--fit", "off", "--flash-attn", "off"]
     for value in ("off", "0", "false", "no", "disabled", " OFF "):
-        rewrite = _no_flash_fit_rewriter(None, env = {"LLAMA_ARG_FIT": value})
+        rewrite = _no_flash_fit_rewriter(None, env={"LLAMA_ARG_FIT": value})
         assert rewrite(off) == off, value
 
     # Only an off. An inherited "on" leaves the managed placement re-placeable as before,
     # and an empty value is not an answer.
     for value in ("on", "1", ""):
-        rewrite = _no_flash_fit_rewriter(None, env = {"LLAMA_ARG_FIT": value})
+        rewrite = _no_flash_fit_rewriter(None, env={"LLAMA_ARG_FIT": value})
         assert rewrite(off)[off.index("--fit") + 1] == "on", value
 
     # A user's own --fit token skips whatever the environment says, as it already did.
-    theirs = _no_flash_fit_rewriter(["--fit", "on"], env = {"LLAMA_ARG_FIT": "off"})
+    theirs = _no_flash_fit_rewriter(["--fit", "on"], env={"LLAMA_ARG_FIT": "off"})
     assert theirs(off) == off
 
 
@@ -2376,14 +2379,14 @@ def test_a_fixed_layer_count_keeps_the_no_flash_retry_on_its_placement():
     (common/fit.cpp:377) for any count but -1, so the retry keeps the fixed placement and
     the flip would only buy a reserve priced for a re-placement that cannot happen.
     """
-    rewrite = _no_flash_fit_rewriter(None, manual_gpu_layers = 20)
+    rewrite = _no_flash_fit_rewriter(None, manual_gpu_layers=20)
     fixed = ["llama-server", "--gpu-layers", "20", "--fit", "off"]
     assert rewrite(fixed) == fixed
 
     # The argv count decides on its own: llama.cpp reads the tokens, not this process.
     assert _no_flash_fit_rewriter(None)(fixed) == fixed
     # And an inherited count, which the fitting path emits no -ngl to lose to.
-    inherited = _no_flash_fit_rewriter(None, env = {"LLAMA_ARG_N_GPU_LAYERS": "20"})
+    inherited = _no_flash_fit_rewriter(None, env={"LLAMA_ARG_N_GPU_LAYERS": "20"})
     auto = ["llama-server", "--fit", "off"]
     assert inherited(auto) == auto
     # llama.cpp's own default is not an override, so an auto placement still re-places.
@@ -2396,16 +2399,16 @@ def test_the_reserve_holds_for_a_placement_the_fitter_will_not_move():
     re-placement available the reserve prices the padded, f16-floored V."""
     from core.inference.llama_cpp import _placement_is_fitter_proof, _reserved_flash_attn_state
 
-    assert _reserved_flash_attn_state(True, None, gpu_layers = 20, env = {}) is False
-    assert _reserved_flash_attn_state(True, ["-ngl", "20"], env = {}) is False
-    assert _reserved_flash_attn_state(True, None, env = {"LLAMA_ARG_N_GPU_LAYERS": "20"}) is False
+    assert _reserved_flash_attn_state(True, None, gpu_layers=20, env={}) is False
+    assert _reserved_flash_attn_state(True, ["-ngl", "20"], env={}) is False
+    assert _reserved_flash_attn_state(True, None, env={"LLAMA_ARG_N_GPU_LAYERS": "20"}) is False
     # Auto placements keep the planned answer: the retry really is re-placed there.
-    assert _reserved_flash_attn_state(True, None, gpu_layers = -1, env = {}) is True
-    assert _reserved_flash_attn_state(True, ["-ngl", "-1"], env = {}) is True
-    assert _reserved_flash_attn_state(True, None, env = {}) is True
+    assert _reserved_flash_attn_state(True, None, gpu_layers=-1, env={}) is True
+    assert _reserved_flash_attn_state(True, ["-ngl", "-1"], env={}) is True
+    assert _reserved_flash_attn_state(True, None, env={}) is True
 
-    assert _placement_is_fitter_proof(["--gpu-layers=20"], env = {}) is True
-    assert _placement_is_fitter_proof(["--n-gpu-layers", "0"], env = {}) is True
-    assert _placement_is_fitter_proof(["-ngl", "auto"], env = {}) is False
-    assert _placement_is_fitter_proof(None, gpu_layers = 0, env = {}) is True
-    assert _placement_is_fitter_proof(None, env = {}) is False
+    assert _placement_is_fitter_proof(["--gpu-layers=20"], env={}) is True
+    assert _placement_is_fitter_proof(["--n-gpu-layers", "0"], env={}) is True
+    assert _placement_is_fitter_proof(["-ngl", "auto"], env={}) is False
+    assert _placement_is_fitter_proof(None, gpu_layers=0, env={}) is True
+    assert _placement_is_fitter_proof(None, env={}) is False

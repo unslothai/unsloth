@@ -18,19 +18,19 @@ from _playwright_robust import stop_process
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "--browsers", nargs = "+", default = ["chromium", "firefox", "webkit", "chrome", "msedge"]
+        "--browsers", nargs="+", default=["chromium", "firefox", "webkit", "chrome", "msedge"]
     )
-    parser.add_argument("--output", default = "temp/queue-validation/compatibility")
+    parser.add_argument("--output", default="temp/queue-validation/compatibility")
     args = parser.parse_args()
     root = Path(__file__).resolve().parents[2]
     output = (root / args.output).resolve()
     output.relative_to(root)
-    output.mkdir(parents = True, exist_ok = True)
+    output.mkdir(parents=True, exist_ok=True)
     temp = browser_tmpdir()
     try:
         return _run(args, root, output, temp)
     finally:
-        shutil.rmtree(temp, ignore_errors = True)
+        shutil.rmtree(temp, ignore_errors=True)
 
 
 # Branded Chrome and Edge put `$TMPDIR/<vendor dir>/SingletonSocket` at launch and abort
@@ -42,7 +42,7 @@ BROWSER_SOCKETS = (
     "/com.google.Chrome.XXXXXX/SingletonSocket",
     "/com.microsoft.Edge.XXXXXX/SingletonSocket",
 )
-LONGEST_SOCKET = max(BROWSER_SOCKETS, key = len)
+LONGEST_SOCKET = max(BROWSER_SOCKETS, key=len)
 
 
 def sun_path_max() -> int:
@@ -55,14 +55,14 @@ def browser_tmpdir() -> Path:
     The system temp dir is used when it fits. An inherited TMPDIR that is too long, or that sits
     inside the checkout, falls back to /tmp, the one short path every POSIX host has."""
     root = Path(__file__).resolve().parents[2]
-    made = Path(tempfile.mkdtemp(prefix = "uqv-"))
+    made = Path(tempfile.mkdtemp(prefix="uqv-"))
     if os.name == "nt" or (
         len(os.fsencode(made)) + len(LONGEST_SOCKET) <= sun_path_max()
         and root not in made.resolve().parents
     ):
         return made
     made.rmdir()
-    return Path(tempfile.mkdtemp(prefix = "uqv-", dir = "/tmp"))
+    return Path(tempfile.mkdtemp(prefix="uqv-", dir="/tmp"))
 
 
 def _run(args, root: Path, output: Path, temp: Path) -> int:
@@ -79,7 +79,7 @@ def _run(args, root: Path, output: Path, temp: Path) -> int:
             if browser in ("chrome", "msedge"):
                 current["PW_CHANNEL"] = browser
             log = output / f"{browser}-{script.removesuffix('.py')}.log"
-            with log.open("w", encoding = "utf-8") as stream:
+            with log.open("w", encoding="utf-8") as stream:
                 group = (
                     {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
                     if os.name == "nt"
@@ -87,14 +87,14 @@ def _run(args, root: Path, output: Path, temp: Path) -> int:
                 )
                 process = subprocess.Popen(
                     [sys.executable, str(root / "tests/studio" / script)],
-                    cwd = root,
-                    env = current,
-                    stdout = stream,
-                    stderr = subprocess.STDOUT,
+                    cwd=root,
+                    env=current,
+                    stdout=stream,
+                    stderr=subprocess.STDOUT,
                     **group,
                 )
                 try:
-                    code = process.wait(timeout = 180)
+                    code = process.wait(timeout=180)
                 except subprocess.TimeoutExpired:
                     stop_process(process)
                     stream.write("FAIL: simulation exceeded 180 seconds\n")
@@ -107,8 +107,8 @@ def _run(args, root: Path, output: Path, temp: Path) -> int:
                 "log": str(log.relative_to(root)),
             }
             verdicts.append(verdict)
-            print(json.dumps(verdict), flush = True)
-    (output / "results.json").write_text(json.dumps(verdicts, indent = 2) + "\n", encoding = "utf-8")
+            print(json.dumps(verdict), flush=True)
+    (output / "results.json").write_text(json.dumps(verdicts, indent=2) + "\n", encoding="utf-8")
     return int(any(v["exit_code"] for v in verdicts))
 
 

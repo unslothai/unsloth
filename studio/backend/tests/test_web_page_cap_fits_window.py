@@ -37,7 +37,7 @@ def _shared_setup_1():
     return budget, first, text
 
 
-@pytest.fixture(autouse = True)
+@pytest.fixture(autouse=True)
 def _unknown_window(monkeypatch):
     """Default to "no model loaded" so each test states the window it means."""
     monkeypatch.setattr(tools, "_loaded_context_tokens", lambda: None)
@@ -146,13 +146,13 @@ class TestTheWindowIsReadPerRequest:
         monkeypatch.undo()
         monkeypatch.setattr(
             "routes.inference.get_llama_cpp_backend",
-            lambda: SimpleNamespace(is_loaded = False, context_length = None),
+            lambda: SimpleNamespace(is_loaded=False, context_length=None),
         )
         monkeypatch.setattr(
             "core.research_runs._peek_inference_backend",
             lambda: SimpleNamespace(
-                active_model_name = "native/model",
-                models = {"native/model": {"context_length": 4864}},
+                active_model_name="native/model",
+                models={"native/model": {"context_length": 4864}},
             ),
         )
         assert tools._loaded_context_tokens() == 4864
@@ -168,7 +168,7 @@ class TestTheWindowIsReadPerRequest:
         monkeypatch.setattr("routes.inference.get_llama_cpp_backend", _boom)
         monkeypatch.setattr(
             "core.research_runs._peek_inference_backend",
-            lambda: SimpleNamespace(active_model_name = None, models = {}, max_seq_length = 8192),
+            lambda: SimpleNamespace(active_model_name=None, models={}, max_seq_length=8192),
         )
         assert tools._loaded_context_tokens() == 8192
 
@@ -195,7 +195,7 @@ class TestTheWindowIsReadPerRequest:
             tools._REQUEST_CONTEXT_TOKENS.reset(token)
 
     def test_execute_tool_scopes_the_window_for_the_call(self):
-        tools.execute_tool("render_html", {"html": "<p>x</p>"}, context_tokens = 4864)
+        tools.execute_tool("render_html", {"html": "<p>x</p>"}, context_tokens=4864)
         assert tools._REQUEST_CONTEXT_TOKENS.get() == 4864
 
 
@@ -250,8 +250,8 @@ class TestToolResultsAlsoFitTheWindow:
     def test_an_explicit_limit_still_wins(self, monkeypatch):
         _window(monkeypatch, 5120)
 
-        assert tools._truncate("x" * 500, limit = 100).startswith("x" * 100)
-        assert tools._truncate("x" * 50, limit = 100) == "x" * 50
+        assert tools._truncate("x" * 500, limit=100).startswith("x" * 100)
+        assert tools._truncate("x" * 50, limit=100) == "x" * 50
 
     def test_a_result_that_fits_is_returned_untouched(self, monkeypatch):
         _window(monkeypatch, 262_144)
@@ -285,6 +285,7 @@ class TestADenseResultIsSizedByWhatItCosts:
 
     def _dense_tokens(self, text):
         from core.inference.context_window import estimate_messages_tokens_dense
+
         return estimate_messages_tokens_dense([{"role": "tool", "content": text}])
 
     def test_a_cjk_page_is_cut_to_the_share_it_was_promised(self, monkeypatch):
@@ -377,14 +378,14 @@ class TestDenseAsciiIsMeasuredNotEstimated:
         self,
         monkeypatch,
         ctx,
-        rate = None,
+        rate=None,
     ):
         """A loaded llama.cpp backend that prices text at a real dense-ASCII rate."""
         rate = self._RATE if rate is None else rate
         backend = SimpleNamespace(
-            is_loaded = True,
-            context_length = ctx,
-            count_chat_tokens = lambda messages, *a, **k: int(
+            is_loaded=True,
+            context_length=ctx,
+            count_chat_tokens=lambda messages, *a, **k: int(
                 sum(len(m["content"]) for m in messages) / rate
             ),
         )
@@ -418,7 +419,7 @@ class TestDenseAsciiIsMeasuredNotEstimated:
         """The blast radius: at a real English rate the exact count agrees with the
         estimate, so nothing that already fitted is shrunk."""
         _window(monkeypatch, 5120)
-        self._serving(monkeypatch, 5120, rate = 4.2)
+        self._serving(monkeypatch, 5120, rate=4.2)
         text = (
             "Artificial intelligence is the study of machines that perceive their "
             "environment and take actions that maximise the chance of a goal. "
@@ -443,7 +444,7 @@ class TestDenseAsciiIsMeasuredNotEstimated:
 
         monkeypatch.setattr(
             "routes.inference.get_llama_cpp_backend",
-            lambda: SimpleNamespace(is_loaded = True, context_length = 5120, count_chat_tokens = _boom),
+            lambda: SimpleNamespace(is_loaded=True, context_length=5120, count_chat_tokens=_boom),
         )
         text = "0123456789abcdef" * 2000
 
@@ -453,7 +454,7 @@ class TestDenseAsciiIsMeasuredNotEstimated:
         _window(monkeypatch, 5120)
         monkeypatch.setattr(
             "routes.inference.get_llama_cpp_backend",
-            lambda: SimpleNamespace(is_loaded = False),
+            lambda: SimpleNamespace(is_loaded=False),
         )
 
         assert tools._dense_char_limit("0123456789abcdef" * 2000, 7168) == 7168
@@ -481,9 +482,9 @@ class TestDenseAsciiIsMeasuredNotEstimated:
         monkeypatch.setattr(
             "routes.inference.get_llama_cpp_backend",
             lambda: SimpleNamespace(
-                is_loaded = True,
-                context_length = 5120,
-                count_chat_tokens = lambda messages, *a, **k: sum(
+                is_loaded=True,
+                context_length=5120,
+                count_chat_tokens=lambda messages, *a, **k: sum(
                     _price(m["content"]) for m in messages
                 ),
             ),
@@ -525,7 +526,7 @@ class TestDenseAsciiIsMeasuredNotEstimated:
         monkeypatch.setattr(
             "routes.inference.get_llama_cpp_backend",
             lambda: SimpleNamespace(
-                is_loaded = True, context_length = 5120, count_chat_tokens = _count_chat_tokens
+                is_loaded=True, context_length=5120, count_chat_tokens=_count_chat_tokens
             ),
         )
         text = "0123456789abcdef" * 2000
@@ -546,9 +547,9 @@ class TestDenseAsciiIsMeasuredNotEstimated:
         monkeypatch.setattr(
             "routes.inference.get_llama_cpp_backend",
             lambda: SimpleNamespace(
-                is_loaded = True,
-                context_length = 5120,
-                count_chat_tokens = lambda messages, *a, **k: 11,  # framing, whatever is sent
+                is_loaded=True,
+                context_length=5120,
+                count_chat_tokens=lambda messages, *a, **k: 11,  # framing, whatever is sent
             ),
         )
 
@@ -634,11 +635,11 @@ class TestTheProbeIsNotPaidForTwice:
         self,
         monkeypatch,
         ctx,
-        rate = None,
-        identified = True,
-        pid = 4242,
-        extra_args = None,
-        gguf = "/models/qwen3-4b.gguf",
+        rate=None,
+        identified=True,
+        pid=4242,
+        extra_args=None,
+        gguf="/models/qwen3-4b.gguf",
     ):
         """A loaded llama.cpp backend that counts the calls it is asked to make.
 
@@ -654,11 +655,11 @@ class TestTheProbeIsNotPaidForTwice:
             return 8 + int(len(body) / rate)
 
         backend = SimpleNamespace(
-            is_loaded = True, context_length = ctx, count_chat_tokens = count_chat_tokens
+            is_loaded=True, context_length=ctx, count_chat_tokens=count_chat_tokens
         )
         if identified:
             # What a real backend exposes once a GGUF is resident.
-            backend._process = SimpleNamespace(pid = pid)
+            backend._process = SimpleNamespace(pid=pid)
             backend.model_identifier = "Qwen3-4B"
             backend._gguf_load_identity = ((gguf, 66306, 4242, 1),)
             backend._chat_template_override = None
@@ -684,7 +685,7 @@ class TestTheProbeIsNotPaidForTwice:
         ever decides whether a count that came in OVER budget is a real measurement, so
         for this result it is bought and never read: 2 counter calls where 1 answers."""
         _window(monkeypatch, 5120)
-        calls, _ = self._serving(monkeypatch, 5120, rate = 4.2)
+        calls, _ = self._serving(monkeypatch, 5120, rate=4.2)
         text = ("The build finished and the archive was uploaded to the release bucket. ") * 400
         budget = tools._tool_result_char_budget()
 
@@ -734,12 +735,12 @@ class TestTheProbeIsNotPaidForTwice:
         budget = tools._tool_result_char_budget()
 
         dense_calls, _ = self._serving(
-            monkeypatch, 5120, rate = 1.33, pid = 111, gguf = "/models/dense.gguf"
+            monkeypatch, 5120, rate=1.33, pid=111, gguf="/models/dense.gguf"
         )
         dense = tools._dense_char_limit(text, budget)
 
         sparse_calls, _ = self._serving(
-            monkeypatch, 5120, rate = 4.2, pid = 222, gguf = "/models/sparse.gguf"
+            monkeypatch, 5120, rate=4.2, pid=222, gguf="/models/sparse.gguf"
         )
         sparse = tools._dense_char_limit(text, budget)
 
@@ -751,7 +752,7 @@ class TestTheProbeIsNotPaidForTwice:
         """Nothing to tie a count to means no key guaranteed to change when the rendering
         does, so the safe answer is to keep paying. Every lightweight double lands here."""
         _window(monkeypatch, 5120)
-        calls, _ = self._serving(monkeypatch, 5120, identified = False)
+        calls, _ = self._serving(monkeypatch, 5120, identified=False)
         budget, first, text = _shared_setup_1()
         spent = len(calls)
         calls.clear()
@@ -775,14 +776,14 @@ class TestTheProbeIsNotPaidForTwice:
         monkeypatch.setattr(
             "routes.inference.get_llama_cpp_backend",
             lambda: SimpleNamespace(
-                is_loaded = True,
-                context_length = 5120,
-                count_chat_tokens = count_chat_tokens,
-                _process = SimpleNamespace(pid = 4242),
-                model_identifier = "Qwen3-4B",
-                _gguf_load_identity = (("/models/qwen3-4b.gguf", 66306, 4242, 1),),
-                _chat_template_override = None,
-                _extra_args = None,
+                is_loaded=True,
+                context_length=5120,
+                count_chat_tokens=count_chat_tokens,
+                _process=SimpleNamespace(pid=4242),
+                model_identifier="Qwen3-4B",
+                _gguf_load_identity=(("/models/qwen3-4b.gguf", 66306, 4242, 1),),
+                _chat_template_override=None,
+                _extra_args=None,
             ),
         )
         text = "0123456789abcdef" * 2000
@@ -813,7 +814,7 @@ class TestTheProbeIsNotPaidForTwice:
         """
         monkeypatch.setattr(tools, "_MAX_OUTPUT_CHARS", 1_000_000)
         _window(monkeypatch, 262_144)
-        calls, _ = self._serving(monkeypatch, 262_144, rate = 4.0)
+        calls, _ = self._serving(monkeypatch, 262_144, rate=4.0)
         budget = tools._tool_result_char_budget()
 
         assert budget > tools._MAX_PAGE_CHARS, "the premise: prefixes far exceed the page cap"
@@ -845,14 +846,14 @@ class TestTheProbeIsNotPaidForTwice:
         monkeypatch.setattr(
             "routes.inference.get_llama_cpp_backend",
             lambda: SimpleNamespace(
-                is_loaded = True,
-                context_length = 5120,
-                count_chat_tokens = lambda messages, *a, **k: 11,
-                _process = SimpleNamespace(pid = 7),
-                model_identifier = "Gemma-4",
-                _gguf_load_identity = (("/models/gemma-4.gguf", 66306, 7, 1),),
-                _chat_template_override = None,
-                _extra_args = None,
+                is_loaded=True,
+                context_length=5120,
+                count_chat_tokens=lambda messages, *a, **k: 11,
+                _process=SimpleNamespace(pid=7),
+                model_identifier="Gemma-4",
+                _gguf_load_identity=(("/models/gemma-4.gguf", 66306, 7, 1),),
+                _chat_template_override=None,
+                _extra_args=None,
             ),
         )
 
@@ -873,16 +874,16 @@ class TestTheProbeIsNotPaidForTwice:
         text = "0123456789abcdef" * 2000
         budget = tools._tool_result_char_budget()
 
-        self._serving(monkeypatch, 5120, rate = 1.33, pid = 900)
+        self._serving(monkeypatch, 5120, rate=1.33, pid=900)
         dense = tools._dense_char_limit(text, budget)
 
         # Reloaded with only a pass-through template added. Everything managed is identical.
         calls, backend = self._serving(
             monkeypatch,
             5120,
-            rate = 4.2,
-            pid = 901,
-            extra_args = ["--chat-template", "chatml"],
+            rate=4.2,
+            pid=901,
+            extra_args=["--chat-template", "chatml"],
         )
         sparse = tools._dense_char_limit(text, budget)
 
@@ -898,11 +899,11 @@ class TestTheProbeIsNotPaidForTwice:
         text = "0123456789abcdef" * 2000
         budget = tools._tool_result_char_budget()
 
-        self._serving(monkeypatch, 5120, rate = 1.33, pid = 5)
+        self._serving(monkeypatch, 5120, rate=1.33, pid=5)
         tools._dense_char_limit(text, budget)
 
         calls, _ = self._serving(
-            monkeypatch, 5120, rate = 1.33, pid = 5, extra_args = ["--chat-template-file", "/x.jinja"]
+            monkeypatch, 5120, rate=1.33, pid=5, extra_args=["--chat-template-file", "/x.jinja"]
         )
         tools._dense_char_limit(text, budget)
 
@@ -915,10 +916,10 @@ class TestTheProbeIsNotPaidForTwice:
         text = "0123456789abcdef" * 2000
         budget = tools._tool_result_char_budget()
 
-        self._serving(monkeypatch, 5120, pid = 1000)
+        self._serving(monkeypatch, 5120, pid=1000)
         first = tools._dense_char_limit(text, budget)
 
-        calls, _ = self._serving(monkeypatch, 5120, pid = 1001)
+        calls, _ = self._serving(monkeypatch, 5120, pid=1001)
         second = tools._dense_char_limit(text, budget)
 
         assert second == first, "same configuration, same answer"
@@ -940,8 +941,8 @@ class TestTheProbeIsNotPaidForTwice:
         self,
         monkeypatch,
         ctx,
-        rate = None,
-        fallback_rate = None,
+        rate=None,
+        fallback_rate=None,
     ):
         """`/apply-template` is down but `/tokenize` is not.
 
@@ -959,14 +960,14 @@ class TestTheProbeIsNotPaidForTwice:
             return int(len(body) / (fallback_rate or rate)) or 1  # no framing: the fallback
 
         backend = SimpleNamespace(
-            is_loaded = True,
-            context_length = ctx,
-            count_chat_tokens = count_chat_tokens,
-            _process = SimpleNamespace(pid = 77),
-            model_identifier = "Qwen3-4B",
-            _gguf_load_identity = (("/models/qwen3-4b.gguf", 66306, 4242, 1),),
-            _chat_template_override = None,
-            _extra_args = None,
+            is_loaded=True,
+            context_length=ctx,
+            count_chat_tokens=count_chat_tokens,
+            _process=SimpleNamespace(pid=77),
+            model_identifier="Qwen3-4B",
+            _gguf_load_identity=(("/models/qwen3-4b.gguf", 66306, 4242, 1),),
+            _chat_template_override=None,
+            _extra_args=None,
         )
         monkeypatch.setattr("routes.inference.get_llama_cpp_backend", lambda: backend)
         return calls
@@ -1008,7 +1009,7 @@ class TestTheProbeIsNotPaidForTwice:
         """Strict costs the same two llama-server calls as non-strict when the template
         renders, so verification is free in the case that matters."""
         _window(monkeypatch, 5120)
-        calls, _ = self._serving(monkeypatch, 5120, rate = 4.2)
+        calls, _ = self._serving(monkeypatch, 5120, rate=4.2)
         text = ("The build finished and the archive was uploaded to the release bucket. ") * 400
         budget = tools._tool_result_char_budget()
 
@@ -1043,7 +1044,7 @@ class TestTheProbeIsNotPaidForTwice:
 
         # 64 English results, each of which fits on its first count, so `_framing()` never
         # runs and the baseline is never offered to the cache.
-        self._serving(monkeypatch, 5120, rate = 4.2)
+        self._serving(monkeypatch, 5120, rate=4.2)
         for index in range(tools._PROBE_COUNT_CACHE_ENTRIES):
             tools._dense_char_limit(
                 f"{index:04d}" + ("The build finished and the archive was uploaded. ") * 400,
@@ -1054,7 +1055,7 @@ class TestTheProbeIsNotPaidForTwice:
         assert tools._PROBE_BASELINE not in held, "and the baseline really is not in it"
 
         # Now dense results arrive. The first pays for the baseline; the rest must not.
-        calls, _ = self._serving(monkeypatch, 5120, rate = 1.33)
+        calls, _ = self._serving(monkeypatch, 5120, rate=1.33)
         tools._dense_char_limit("D1" + "0123456789abcdef" * 2000, budget)
         calls.clear()
         tools._dense_char_limit("D2" + "0123456789abcdef" * 2000, budget)
@@ -1100,7 +1101,7 @@ class TestTheProbeIsNotPaidForTwice:
                     errors.append(exc)
 
         try:
-            threads = [threading.Thread(target = worker, args = (seed,)) for seed in range(12)]
+            threads = [threading.Thread(target=worker, args=(seed,)) for seed in range(12)]
             for thread in threads:
                 thread.start()
             for thread in threads:

@@ -42,7 +42,7 @@ class _Backend:
         self,
         job_id,
         *,
-        before_spawn = None,
+        before_spawn=None,
         **kwargs,
     ):
         self.kwargs = kwargs
@@ -70,8 +70,8 @@ def test_start_gives_the_model_preflight_only_the_callers_token(
     def _probe(
         model_name,
         hf_token,
-        load_in_4bit = True,
-        is_embedding = False,
+        load_in_4bit=True,
+        is_embedding=False,
     ):
         probed.append(hf_token)
         return None
@@ -85,15 +85,15 @@ def test_start_gives_the_model_preflight_only_the_callers_token(
     monkeypatch.setattr("utils.hardware.ensure_hardware_detected", lambda: None)
 
     request = TrainingStartRequest(
-        model_name = "unsloth/tiny-model",
-        training_type = "LoRA/QLoRA",
-        format_type = "alpaca",
-        hf_token = request_token,
-        load_in_4bit = False,
-        trust_remote_code = True,
+        model_name="unsloth/tiny-model",
+        training_type="LoRA/QLoRA",
+        format_type="alpaca",
+        hf_token=request_token,
+        load_in_4bit=False,
+        trust_remote_code=True,
     )
     response = asyncio.run(
-        tr.start_training(request = request, current_subject = "alice", via_api_key = via_api_key)
+        tr.start_training(request=request, current_subject="alice", via_api_key=via_api_key)
     )
 
     assert response.status == "queued", response
@@ -137,15 +137,15 @@ def test_private_cached_dataset_requires_caller_authorization(
     monkeypatch.setattr(hf_tokens, "_explicit_token_reaches_repo", lambda *a, **k: authorized)
 
     request = TrainingStartRequest(
-        model_name = "unsloth/tiny-model",
-        training_type = "LoRA/QLoRA",
-        format_type = "alpaca",
-        hf_token = request_token,
-        hf_dataset = "org/private-dataset",
-        dataset_known_cached = True,
-        load_in_4bit = False,
+        model_name="unsloth/tiny-model",
+        training_type="LoRA/QLoRA",
+        format_type="alpaca",
+        hf_token=request_token,
+        hf_dataset="org/private-dataset",
+        dataset_known_cached=True,
+        load_in_4bit=False,
     )
-    start = tr.start_training(request = request, current_subject = "alice", via_api_key = via_api_key)
+    start = tr.start_training(request=request, current_subject="alice", via_api_key=via_api_key)
     if refused:
         with pytest.raises(HTTPException) as error:
             asyncio.run(start)
@@ -176,16 +176,16 @@ def test_snapshot_cached_during_the_metadata_probe_is_authorized(
 
     monkeypatch.setattr(tr, "_remote_untrainable_model_format", denied)
     request = TrainingStartRequest(
-        model_name = "org/private-model",
-        training_type = "LoRA/QLoRA",
-        format_type = "alpaca",
+        model_name="org/private-model",
+        training_type="LoRA/QLoRA",
+        format_type="alpaca",
     )
     if refused:
         with pytest.raises(HTTPException) as error:
-            tr._reject_untrainable_model_request(request, hf_token = token)
+            tr._reject_untrainable_model_request(request, hf_token=token)
         assert error.value.detail["code"] == "hf_model_access_denied"
     else:
-        result = tr._reject_untrainable_model_request(request, hf_token = token)
+        result = tr._reject_untrainable_model_request(request, hf_token=token)
         assert result.cached_model_pin == ("org/private-model", str(tmp_path))
 
 
@@ -216,15 +216,15 @@ def test_dataset_cached_after_the_first_scan_is_not_pinned(monkeypatch, tmp_path
     monkeypatch.setattr(hf_tokens, "_explicit_token_reaches_repo", lambda *a, **k: False)
 
     request = TrainingStartRequest(
-        model_name = "unsloth/tiny-model",
-        training_type = "LoRA/QLoRA",
-        format_type = "alpaca",
-        hf_dataset = "org/private-dataset",
-        dataset_known_cached = True,
-        load_in_4bit = False,
+        model_name="unsloth/tiny-model",
+        training_type="LoRA/QLoRA",
+        format_type="alpaca",
+        hf_dataset="org/private-dataset",
+        dataset_known_cached=True,
+        load_in_4bit=False,
     )
     with pytest.raises(HTTPException):
-        asyncio.run(tr.start_training(request = request, current_subject = "alice", via_api_key = True))
+        asyncio.run(tr.start_training(request=request, current_subject="alice", via_api_key=True))
     assert backend.kwargs is None
 
 
@@ -248,25 +248,25 @@ def test_local_snapshot_path_in_the_hub_cache_requires_caller_authorization(
         root / "models--org--private-model" / "snapshots" if inside_cache else tmp_path / "local"
     )
     snapshot = parent / "0123456789abcdef0123456789abcdef01234567"
-    snapshot.mkdir(parents = True)
+    snapshot.mkdir(parents=True)
     (snapshot / "config.json").write_text('{"model_type":"llama"}')
     (snapshot / "model.safetensors").write_bytes(b"cached weights")
-    monkeypatch.setattr(hf_cache_state, "hf_cache_roots", lambda scan_errors = None: [root])
+    monkeypatch.setattr(hf_cache_state, "hf_cache_roots", lambda scan_errors=None: [root])
     monkeypatch.setattr(tr, "hf_env_offline", lambda: False)
     monkeypatch.setattr(hf_tokens, "_explicit_token_reaches_repo", lambda *a, **k: False)
-    root.mkdir(exist_ok = True)
+    root.mkdir(exist_ok=True)
 
     request = TrainingStartRequest(
-        model_name = str(snapshot),
-        training_type = "LoRA/QLoRA",
-        format_type = "alpaca",
+        model_name=str(snapshot),
+        training_type="LoRA/QLoRA",
+        format_type="alpaca",
     )
     if refused:
         with pytest.raises(HTTPException) as error:
-            tr._reject_untrainable_model_request(request, hf_token = token)
+            tr._reject_untrainable_model_request(request, hf_token=token)
         assert error.value.detail["code"] == "hf_model_access_denied"
     else:
-        result = tr._reject_untrainable_model_request(request, hf_token = token)
+        result = tr._reject_untrainable_model_request(request, hf_token=token)
         assert result.model_name == str(snapshot.resolve())
 
 
@@ -275,10 +275,10 @@ def test_cached_repo_id_for_path(monkeypatch, tmp_path):
 
     root = tmp_path / "hub"
     snapshot = root / "models--Org--Private-Model" / "snapshots" / "abc"
-    snapshot.mkdir(parents = True)
+    snapshot.mkdir(parents=True)
     outside = tmp_path / "models--org--lookalike" / "snapshots" / "abc"
-    outside.mkdir(parents = True)
-    monkeypatch.setattr(hf_cache_state, "hf_cache_roots", lambda scan_errors = None: [root])
+    outside.mkdir(parents=True)
+    monkeypatch.setattr(hf_cache_state, "hf_cache_roots", lambda scan_errors=None: [root])
 
     assert hf_cache_state.cached_repo_id_for_path(snapshot) == "Org/Private-Model"
     assert (
@@ -336,11 +336,11 @@ def test_training_worker_holds_only_the_callers_credential(
     (tmp_path / "token").write_text("hf_operator_file")
     env = {key: value for key, value in os.environ.items() if key not in _HF_TOKEN_ENV}
     env.update(
-        HF_HOME = str(tmp_path),
-        HF_TOKEN = "hf_operator_env",
-        HUGGING_FACE_HUB_TOKEN = "hf_operator_env",
-        HF_HUB_OFFLINE = "1",
-        PYTHONPATH = os.pathsep.join(filter(None, (str(_BACKEND), env.get("PYTHONPATH")))),
+        HF_HOME=str(tmp_path),
+        HF_TOKEN="hf_operator_env",
+        HUGGING_FACE_HUB_TOKEN="hf_operator_env",
+        HF_HUB_OFFLINE="1",
+        PYTHONPATH=os.pathsep.join(filter(None, (str(_BACKEND), env.get("PYTHONPATH")))),
     )
     config = {
         "model_name": "org/model",
@@ -351,11 +351,11 @@ def test_training_worker_holds_only_the_callers_credential(
 
     out = subprocess.run(
         [sys.executable, "-c", _WORKER_PROBE, json.dumps(config)],
-        cwd = str(_BACKEND),
-        env = env,
-        capture_output = True,
-        text = True,
-        timeout = 300,
+        cwd=str(_BACKEND),
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=300,
     )
 
     assert out.returncode == 0, out.stderr[-2000:]
@@ -392,18 +392,18 @@ def test_parent_gpu_probe_uses_only_authorized_token(monkeypatch, allow_ambient,
     monkeypatch.setattr(training_module, "should_use_mlx_training_backend", lambda **kwargs: False)
     monkeypatch.setattr(hardware, "get_device", lambda: hardware.DeviceType.CUDA)
     monkeypatch.setattr(
-        hardware, "_resolve_model_identifier_for_gpu_estimate", lambda name, hf_token = None: name
+        hardware, "_resolve_model_identifier_for_gpu_estimate", lambda name, hf_token=None: name
     )
     monkeypatch.setattr(hf_api, "get_session", lambda: Session())
     backend = training_module.TrainingBackend()
     with pytest.raises(Captured):
         backend.start_training(
             "credential-probe",
-            model_name = "org/public-model",
-            training_type = "LoRA/QLoRA",
-            hf_token = token,
-            allow_ambient = allow_ambient,
-            load_in_4bit = False,
+            model_name="org/public-model",
+            training_type="LoRA/QLoRA",
+            hf_token=token,
+            allow_ambient=allow_ambient,
+            load_in_4bit=False,
         )
     assert seen == [expected]
 
@@ -424,7 +424,7 @@ def test_private_cached_model_requires_caller_authorization(
     # Also as a real cache repo lays it out. has_cached_model asks for a snapshot the load could
     # consume rather than for the repo directory alone, so a bare directory is not evidence.
     _revision = tmp_path / "snapshots" / "abc"
-    _revision.mkdir(parents = True, exist_ok = True)
+    _revision.mkdir(parents=True, exist_ok=True)
     (_revision / "config.json").write_text('{"model_type":"llama"}')
     (_revision / "model.safetensors").write_bytes(b"cached weights")
     monkeypatch.setattr(training_module, "_resolve_model_snapshot", lambda *a, **k: str(tmp_path))
@@ -447,15 +447,15 @@ def test_private_cached_model_requires_caller_authorization(
         (lambda *a: None) if cached_path == "public_metadata" else denied,
     )
     request = TrainingStartRequest(
-        model_name = "org/private-model",
-        training_type = "LoRA/QLoRA",
-        format_type = "alpaca",
-        model_known_cached = cached_path == "known",
-        resume_from_checkpoint = str(tmp_path) if cached_path == "resume" else None,
-        model_snapshot_path = str(tmp_path) if cached_path == "resume" else None,
+        model_name="org/private-model",
+        training_type="LoRA/QLoRA",
+        format_type="alpaca",
+        model_known_cached=cached_path == "known",
+        resume_from_checkpoint=str(tmp_path) if cached_path == "resume" else None,
+        model_snapshot_path=str(tmp_path) if cached_path == "resume" else None,
     )
     with pytest.raises(HTTPException) as error:
-        tr._reject_untrainable_model_request(request, hf_token = token)
+        tr._reject_untrainable_model_request(request, hf_token=token)
     assert error.value.detail["code"] == "hf_model_access_denied"
 
 
@@ -469,7 +469,7 @@ def test_authorized_cached_models_remain_available(monkeypatch, tmp_path, token,
     # Also as a real cache repo lays it out. has_cached_model asks for a snapshot the load could
     # consume rather than for the repo directory alone, so a bare directory is not evidence.
     _revision = tmp_path / "snapshots" / "abc"
-    _revision.mkdir(parents = True, exist_ok = True)
+    _revision.mkdir(parents=True, exist_ok=True)
     (_revision / "config.json").write_text('{"model_type":"llama"}')
     (_revision / "model.safetensors").write_bytes(b"cached weights")
     monkeypatch.setattr(training_module, "_resolve_model_snapshot", lambda *a, **k: str(tmp_path))
@@ -479,12 +479,12 @@ def test_authorized_cached_models_remain_available(monkeypatch, tmp_path, token,
     monkeypatch.setattr(tr, "hf_env_offline", lambda: False)
     monkeypatch.setattr(hf_tokens, "_explicit_token_reaches_repo", lambda *a, **k: authorized)
     request = TrainingStartRequest(
-        model_name = "org/model",
-        model_known_cached = True,
-        training_type = "LoRA/QLoRA",
-        format_type = "alpaca",
+        model_name="org/model",
+        model_known_cached=True,
+        training_type="LoRA/QLoRA",
+        format_type="alpaca",
     )
-    result = tr._reject_untrainable_model_request(request, hf_token = token)
+    result = tr._reject_untrainable_model_request(request, hf_token=token)
     assert result.model_name == "org/model"
 
 
@@ -505,16 +505,16 @@ def test_chat_coexistence_preserves_anonymous_token(monkeypatch):
     monkeypatch.setattr(hardware, "auto_select_gpu_ids", select)
     with pytest.raises(Captured):
         can_keep_chat_during_training(
-            model_name = "org/model",
-            hf_token = False,
-            training_type = "LoRA/QLoRA",
-            load_in_4bit = False,
-            batch_size = 1,
-            max_seq_length = 128,
-            lora_rank = 16,
-            target_modules = None,
-            gradient_checkpointing = "unsloth",
-            optimizer = "adamw_8bit",
-            gpu_ids = None,
+            model_name="org/model",
+            hf_token=False,
+            training_type="LoRA/QLoRA",
+            load_in_4bit=False,
+            batch_size=1,
+            max_seq_length=128,
+            lora_rank=16,
+            target_modules=None,
+            gradient_checkpointing="unsloth",
+            optimizer="adamw_8bit",
+            gpu_ids=None,
         )
     assert seen == [False]

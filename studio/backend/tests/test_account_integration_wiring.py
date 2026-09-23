@@ -39,7 +39,7 @@ def _isolated_auth_db(
     tmp_path,
     monkeypatch,
     *,
-    owner_must_change = False,
+    owner_must_change=False,
 ):
     monkeypatch.setattr(storage, "DB_PATH", tmp_path / "auth.db")
     monkeypatch.setattr(storage, "_BOOTSTRAP_PW_PATH", tmp_path / ".bootstrap_password")
@@ -50,7 +50,7 @@ def _isolated_auth_db(
         "unsloth",
         "owner-password",
         secrets.token_urlsafe(32),
-        must_change_password = owner_must_change,
+        must_change_password=owner_must_change,
     )
 
 
@@ -73,12 +73,12 @@ def _client_for(account):
             reset_account(token)
 
     app.dependency_overrides[get_current_subject] = subject
-    app.include_router(inference.router, prefix = "/v1")
+    app.include_router(inference.router, prefix="/v1")
     return TestClient(app)
 
 
 def _credentials(token):
-    return authentication.HTTPAuthorizationCredentials(scheme = "Bearer", credentials = token)
+    return authentication.HTTPAuthorizationCredentials(scheme="Bearer", credentials=token)
 
 
 _FULL_ACCESS = "Full access is unavailable while more than one account exists."
@@ -103,7 +103,7 @@ _REQUESTS = {
         {"disable_sandbox": True},
     ],
 )
-@pytest.mark.parametrize("account", [OWNER, ALICE], ids = ["owner", "alice"])
+@pytest.mark.parametrize("account", [OWNER, ALICE], ids=["owner", "alice"])
 def test_full_access_is_refused_at_the_door_in_multi_mode(
     multi_user, monkeypatch, path, flags, account
 ):
@@ -112,7 +112,7 @@ def test_full_access_is_refused_at_the_door_in_multi_mode(
 
     monkeypatch.setattr(inference, "get_llama_cpp_backend", never)
     with _client_for(account) as client:
-        response = client.post(path, json = {**_REQUESTS[path], **flags})
+        response = client.post(path, json={**_REQUESTS[path], **flags})
     assert response.status_code == 400, response.text
     assert response.json()["detail"] == _FULL_ACCESS
 
@@ -122,12 +122,12 @@ def test_single_account_full_access_passes_the_door(monkeypatch, path):
     monkeypatch.setattr(policy, "installation_is_multi_user", lambda: False)
 
     def backend():
-        raise HTTPException(status_code = 503, detail = "no backend in this test")
+        raise HTTPException(status_code=503, detail="no backend in this test")
 
     monkeypatch.setattr(inference, "get_llama_cpp_backend", backend)
     monkeypatch.setattr(inference, "produce_openai_chat_completions", lambda *a, **k: backend())
     with _client_for(OWNER) as client:
-        response = client.post(path, json = {**_REQUESTS[path], "bypass_permissions": True})
+        response = client.post(path, json={**_REQUESTS[path], "bypass_permissions": True})
     assert response.status_code != 400 or response.json().get("detail") != _FULL_ACCESS
 
 
@@ -151,10 +151,10 @@ def test_desktop_marker_only_authenticates_the_owner(auth_db):
     owner_secret = storage.get_user_record("unsloth")["jwt_secret"]
     alice_secret = storage.get_user_record("alice")["jwt_secret"]
     owner_token = authentication.create_access_token(
-        subject = "unsloth", desktop = True, secret = owner_secret
+        subject="unsloth", desktop=True, secret=owner_secret
     )
     alice_token = authentication.create_access_token(
-        subject = "alice", desktop = True, secret = alice_secret
+        subject="alice", desktop=True, secret=alice_secret
     )
     assert authentication.is_desktop_access_token(owner_token)
     assert not authentication.is_desktop_access_token(alice_token)
@@ -165,10 +165,10 @@ def test_desktop_marker_does_not_bypass_a_managed_password_change(auth_db):
         "alice",
         "alice-password",
         secrets.token_urlsafe(32),
-        must_change_password = True,
+        must_change_password=True,
     )
     alice_secret = storage.get_user_record("alice")["jwt_secret"]
-    token = authentication.create_access_token(subject = "alice", desktop = True, secret = alice_secret)
+    token = authentication.create_access_token(subject="alice", desktop=True, secret=alice_secret)
     with pytest.raises(HTTPException) as refused:
         asyncio.run(authentication.get_current_subject(_credentials(token)))
     assert refused.value.status_code == 403
@@ -176,9 +176,9 @@ def test_desktop_marker_does_not_bypass_a_managed_password_change(auth_db):
 
 
 def test_desktop_marker_still_bypasses_the_owner_password_change(tmp_path, monkeypatch):
-    _isolated_auth_db(tmp_path, monkeypatch, owner_must_change = True)
+    _isolated_auth_db(tmp_path, monkeypatch, owner_must_change=True)
     owner_secret = storage.get_user_record("unsloth")["jwt_secret"]
-    token = authentication.create_access_token(subject = "unsloth", desktop = True, secret = owner_secret)
+    token = authentication.create_access_token(subject="unsloth", desktop=True, secret=owner_secret)
     assert asyncio.run(authentication.get_current_subject(_credentials(token))) == "unsloth"
     policy.invalidate_account_cache()
 
@@ -190,16 +190,16 @@ def test_refresh_drops_the_desktop_marker_for_a_managed_account(auth_db):
         "alice",
         "alice-password",
         secrets.token_urlsafe(32),
-        must_change_password = True,
+        must_change_password=True,
     )
     alice_secret = storage.get_user_record("alice")["jwt_secret"]
     refresh = authentication.create_refresh_token(
-        subject = "alice", desktop = True, secret = alice_secret
+        subject="alice", desktop=True, secret=alice_secret
     )
     app = FastAPI()
-    app.include_router(auth_routes.router, prefix = "/api/auth")
+    app.include_router(auth_routes.router, prefix="/api/auth")
     with TestClient(app) as client:
-        response = client.post("/api/auth/refresh", json = {"refresh_token": refresh})
+        response = client.post("/api/auth/refresh", json={"refresh_token": refresh})
     assert response.status_code == 200, response.text
     assert response.json()["must_change_password"] is True
     assert not authentication.is_desktop_access_token(response.json()["access_token"])

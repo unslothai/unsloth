@@ -89,7 +89,7 @@ def _flatten(result: Any) -> Optional[list]:
             return None
     import torch  # noqa: PLC0415
 
-    return [torch.tensor(layout, dtype = torch.int64), *flat]
+    return [torch.tensor(layout, dtype=torch.int64), *flat]
 
 
 def _unflatten(stored: tuple, device: Any) -> tuple:
@@ -135,6 +135,7 @@ def install(
     try:
         # Lazy: core.training imports parts of core.inference, so a module-level import would be circular.
         from core.training.diffusion_train_extras import PersistentConditioningCache
+
         signature = inspect.signature(encode)
         cache = PersistentConditioningCache(root, family, 0)
     except Exception as exc:  # noqa: BLE001 - cache is best-effort
@@ -171,7 +172,7 @@ def install(
             }
             if not all(_json_safe(v) for v in keyed.values()):
                 return encode(*args, **kwargs)
-            payload = json.dumps({"load": load_fp, "args": keyed}, sort_keys = True, default = str)
+            payload = json.dumps({"load": load_fp, "args": keyed}, sort_keys=True, default=str)
             key = cache.text_key(
                 f"inference::{hashlib.sha256(payload.encode('utf-8')).hexdigest()}"
             )
@@ -219,6 +220,7 @@ def _target_device(pipe: Any, bound: inspect.BoundArguments) -> Any:
 def _diffusers_version() -> Optional[str]:
     try:
         import diffusers  # noqa: PLC0415
+
         return str(getattr(diffusers, "__version__", None))
     except Exception:  # noqa: BLE001
         return None
@@ -232,6 +234,7 @@ def _source_revision(ref: Any) -> str:
     """
     try:
         from core.training.diffusion_train_extras import source_revision  # noqa: PLC0415
+
         return source_revision(ref)
     except Exception:  # noqa: BLE001 - best-effort, never block a load
         return "unresolved"

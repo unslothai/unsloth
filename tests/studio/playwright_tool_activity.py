@@ -133,7 +133,7 @@ def open_page(
     page.on("pageerror", lambda e: errors.append(str(e)))
     page.goto(f"{base_url}/{PAGE}?fillers={fillers}{query}")
     try:
-        page.wait_for_function("() => window.__probeReady", timeout = 30_000)
+        page.wait_for_function("() => window.__probeReady", timeout=30_000)
     except Exception:
         # A page that never mounts looks exactly like a slow one. Say which.
         raise RuntimeError(
@@ -164,10 +164,10 @@ def run(base_url: str, pw) -> dict:
     # `msedge` is a chromium CHANNEL, not an engine: the branded build, which
     # trails Chromium by weeks, so a Chromium-first regression hides there.
     if ENGINE == "msedge":
-        browser = pw.chromium.launch(channel = "msedge")
+        browser = pw.chromium.launch(channel="msedge")
     else:
         browser = getattr(pw, ENGINE).launch()
-    context = browser.new_context(viewport = {"width": 1200, "height": 900})
+    context = browser.new_context(viewport={"width": 1200, "height": 900})
     page = context.new_page()
     console: list[str] = []
     page.on("console", lambda m: console.append(f"{m.type}: {m.text}"))
@@ -240,7 +240,7 @@ def run(base_url: str, pw) -> dict:
         view first, so centring the answer hands the chevron arm a scroll the
         preference arm never gets. Driven that way they appear to differ by ~665px.
         """
-        fresh(page, base_url, False, query = "&only=uncontrolled")
+        fresh(page, base_url, False, query="&only=uncontrolled")
         page.evaluate(
             """() => document.querySelector('[data-probe="uncontrolled-trigger"]')
                        .scrollIntoView({block: "start"})"""
@@ -301,7 +301,7 @@ def run(base_url: str, pw) -> dict:
             p.append(f"7: the {card} card stayed pinned open after approval was granted")
 
     # --- 8 strict mode ----------------------------------------------------
-    fresh(page, base_url, True, query = "&strict=1")
+    fresh(page, base_url, True, query="&strict=1")
     scene = probe(page)
     s["8_strict_mode"] = scene
     for card in ("controlled", "uncontrolled"):
@@ -312,7 +312,7 @@ def run(base_url: str, pw) -> dict:
         p.append(f"8: React reported a render loop: {loop_errors[0]}")
 
     # --- 9 rtl ------------------------------------------------------------
-    fresh(page, base_url, True, query = "&rtl=1")
+    fresh(page, base_url, True, query="&rtl=1")
     scene = probe(page)
     s["9_rtl"] = scene
     for card in ("controlled", "uncontrolled"):
@@ -320,7 +320,7 @@ def run(base_url: str, pw) -> dict:
             p.append(f"9: {card} is open under dir=rtl with the preference ON")
 
     # --- 10 reduced motion ------------------------------------------------
-    reduced = browser.new_context(viewport = {"width": 1200, "height": 900}, reduced_motion = "reduce")
+    reduced = browser.new_context(viewport={"width": 1200, "height": 900}, reduced_motion="reduce")
     reduced_page = reduced.new_page()
     fresh(reduced_page, base_url, True)
     scene = probe(reduced_page)
@@ -347,7 +347,7 @@ def run(base_url: str, pw) -> dict:
     # --- 12 storage denied -------------------------------------------------
     # Safari private browsing and a cookies-blocked profile both surface as
     # localStorage throwing rather than as an absent API.
-    denied = browser.new_context(viewport = {"width": 1200, "height": 900})
+    denied = browser.new_context(viewport={"width": 1200, "height": 900})
     denied.add_init_script(
         """() => {
           const boom = () => { throw new DOMException("denied", "SecurityError"); };
@@ -399,7 +399,7 @@ def run(base_url: str, pw) -> dict:
         ("null", "null"),
         ("corrupt json", None),
     ]:
-        seeded = browser.new_context(viewport = {"width": 1200, "height": 900})
+        seeded = browser.new_context(viewport={"width": 1200, "height": 900})
         blob = (
             "{not json"
             if raw is None
@@ -429,7 +429,7 @@ def run(base_url: str, pw) -> dict:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--json", action = "store_true")
+    ap.add_argument("--json", action="store_true")
     options = ap.parse_args()
 
     base_url = os.environ.get("SMOKE_BASE_URL") or ""
@@ -440,8 +440,8 @@ def main() -> int:
         wait_for_smoke_page(
             f"{base_url}/{PAGE}",
             ENTRY,
-            proc = server,
-            info = lambda m: print(m, file = sys.stderr),
+            proc=server,
+            info=lambda m: print(m, file=sys.stderr),
         )
     try:
         with sync_playwright() as pw:
@@ -451,17 +451,17 @@ def main() -> int:
             stop_process(server)
 
     if options.json:
-        print(json.dumps(results, indent = 2))
+        print(json.dumps(results, indent=2))
     else:
-        print(json.dumps(results["scenes"], indent = 2))
+        print(json.dumps(results["scenes"], indent=2))
 
-    print(file = sys.stderr)
+    print(file=sys.stderr)
     if results["problems"]:
-        print(f"PROBLEMS ({ENGINE}):", file = sys.stderr)
+        print(f"PROBLEMS ({ENGINE}):", file=sys.stderr)
         for problem in results["problems"]:
-            print(f"  - {problem}", file = sys.stderr)
+            print(f"  - {problem}", file=sys.stderr)
         return 1
-    print(f"{ENGINE}: every scene matched its expectation", file = sys.stderr)
+    print(f"{ENGINE}: every scene matched its expectation", file=sys.stderr)
     return 0
 
 

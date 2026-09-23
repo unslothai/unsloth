@@ -77,7 +77,7 @@ def run_sft_training(monkeypatch):
 
     class _FakeVisionModel:
         @staticmethod
-        def for_training(model, use_gradient_checkpointing = True):
+        def for_training(model, use_gradient_checkpointing=True):
             seen["for_training"].append(use_gradient_checkpointing)
             return model
 
@@ -110,9 +110,9 @@ def run_sft_training(monkeypatch):
     def _run(
         gradient_checkpointing,
         *,
-        is_audio_vlm = False,
-        use_lora = True,
-        text = False,
+        is_audio_vlm=False,
+        use_lora=True,
+        text=False,
     ):
         t = tmod.UnslothTrainer()
         t.model = _FakeModel()
@@ -127,18 +127,18 @@ def run_sft_training(monkeypatch):
         monkeypatch.setattr(
             t,
             "_configure_online_tokenization",
-            lambda **kwargs: types.SimpleNamespace(enabled = False),
-            raising = True,
+            lambda **kwargs: types.SimpleNamespace(enabled=False),
+            raising=True,
         )
 
         assert t.prepare_model_for_training(
-            use_lora = use_lora,
-            use_gradient_checkpointing = gradient_checkpointing,
+            use_lora=use_lora,
+            use_gradient_checkpointing=gradient_checkpointing,
         )
         dataset = [{"text": "hi"}] if text else [{"messages": []}]
         t._train_worker(
             {"dataset": dataset, "final_format": "text" if text else "vision"},
-            max_steps = 1,
+            max_steps=1,
         )
 
         assert seen["config_args"] is not None, "the SFT config was never built"
@@ -164,7 +164,7 @@ def test_none_reaches_both_the_sft_config_and_for_training(run_sft_training):
 
 @pytest.mark.parametrize("use_lora", [True, False])
 def test_audio_vlm_honours_none_as_well(run_sft_training, use_lora):
-    seen = run_sft_training("none", is_audio_vlm = True, use_lora = use_lora)
+    seen = run_sft_training("none", is_audio_vlm=True, use_lora=use_lora)
 
     assert seen["config_args"]["gradient_checkpointing"] is False
     assert "gradient_checkpointing_kwargs" not in seen["config_args"]
@@ -180,7 +180,7 @@ def test_audio_vlm_honours_none_as_well(run_sft_training, use_lora):
 )
 @pytest.mark.parametrize("is_audio_vlm", [False, True])
 def test_the_default_path_still_checkpoints(run_sft_training, choice, mode, is_audio_vlm):
-    seen = run_sft_training(choice, is_audio_vlm = is_audio_vlm)
+    seen = run_sft_training(choice, is_audio_vlm=is_audio_vlm)
 
     assert seen["config_args"]["gradient_checkpointing"] is True
     assert seen["config_args"]["gradient_checkpointing_kwargs"] == {"use_reentrant": False}
@@ -188,7 +188,7 @@ def test_the_default_path_still_checkpoints(run_sft_training, choice, mode, is_a
 
 
 def test_full_finetuning_honours_none_too(run_sft_training):
-    seen = run_sft_training("none", use_lora = False)
+    seen = run_sft_training("none", use_lora=False)
 
     assert seen["config_args"]["gradient_checkpointing"] is False
     assert "gradient_checkpointing_kwargs" not in seen["config_args"]
@@ -199,7 +199,7 @@ def test_full_finetuning_honours_none_too(run_sft_training):
 @pytest.mark.parametrize("use_lora", [True, False])
 def test_a_text_run_carries_the_choice_into_sft_config(run_sft_training, choice, enabled, use_lora):
     """TRL defaults checkpointing on, and train() re-enables it from SFTConfig."""
-    seen = run_sft_training(choice, text = True, use_lora = use_lora)
+    seen = run_sft_training(choice, text=True, use_lora=use_lora)
 
     assert seen["config_args"]["gradient_checkpointing"] is enabled
 
@@ -209,7 +209,7 @@ def load_model_run(monkeypatch):
     """Drive the real ``load_model`` against a stubbed loader and report what it passed."""
     seen = {"loads": [], "for_training": [], "stamp": None}
 
-    def _record_for_training(use_gradient_checkpointing = True):
+    def _record_for_training(use_gradient_checkpointing=True):
         seen["for_training"].append(use_gradient_checkpointing)
 
     class _FakeLoader:
@@ -226,12 +226,12 @@ def load_model_run(monkeypatch):
             seen["stamp"] = kwargs.get("use_gradient_checkpointing")
             model._unsloth_gradient_checkpointing = seen["stamp"]
             model.for_training = _record_for_training
-            return model, types.SimpleNamespace(image_processor = object())
+            return model, types.SimpleNamespace(image_processor=object())
 
         @staticmethod
         def get_peft_model(
             model,
-            use_gradient_checkpointing = "unsloth",
+            use_gradient_checkpointing="unsloth",
             **kwargs,
         ):
             # Adding adapters re-records the mode.
@@ -259,9 +259,9 @@ def load_model_run(monkeypatch):
     def _run(
         gradient_checkpointing,
         *,
-        full_finetuning = False,
-        kind = "vision",
-        fail_once = None,
+        full_finetuning=False,
+        kind="vision",
+        fail_once=None,
     ):
         audio_type = "audio_vlm" if kind == "audio_vlm" else None
         monkeypatch.setattr(tmod, "detect_audio_type_checked", lambda *a, **k: (audio_type, True))
@@ -269,15 +269,15 @@ def load_model_run(monkeypatch):
         _FakeLoader.fail_once_with = fail_once
 
         t = tmod.UnslothTrainer()
-        monkeypatch.setattr(t, "_cleanup_audio_artifacts", lambda: None, raising = True)
+        monkeypatch.setattr(t, "_cleanup_audio_artifacts", lambda: None, raising=True)
         assert t.load_model(
-            model_name = "unsloth/Qwen2-VL-7B-Instruct",
-            max_seq_length = 2048,
-            is_dataset_image = kind == "vision",
-            is_dataset_audio = kind == "audio_vlm",
-            local_files_only = True,
-            full_finetuning = full_finetuning,
-            use_gradient_checkpointing = gradient_checkpointing,
+            model_name="unsloth/Qwen2-VL-7B-Instruct",
+            max_seq_length=2048,
+            is_dataset_image=kind == "vision",
+            is_dataset_audio=kind == "audio_vlm",
+            local_files_only=True,
+            full_finetuning=full_finetuning,
+            use_gradient_checkpointing=gradient_checkpointing,
         )
         return t, seen
 
@@ -291,7 +291,7 @@ def load_model_run(monkeypatch):
 @pytest.mark.parametrize("full_finetuning", [True, False])
 def test_the_loader_is_told_the_choice(load_model_run, kind, full_finetuning, choice, mode):
     """A full finetune never revisits the loaded mode, which must be True, False or "unsloth"."""
-    _, seen = load_model_run(choice, full_finetuning = full_finetuning, kind = kind)
+    _, seen = load_model_run(choice, full_finetuning=full_finetuning, kind=kind)
 
     assert seen["loads"][-1]["use_gradient_checkpointing"] is mode, (
         "the model was not loaded with the chosen mode, so the trainer restores another one "
@@ -305,8 +305,8 @@ def test_the_retry_after_a_source_code_failure_keeps_the_choice(load_model_run):
     """The retry reloads the model, so it re-records the mode and must not lose it."""
     _, seen = load_model_run(
         "none",
-        full_finetuning = True,
-        fail_once = OSError("could not get source code"),
+        full_finetuning=True,
+        fail_once=OSError("could not get source code"),
     )
 
     assert len(seen["loads"]) == 2, "the retry never ran, so this asserts nothing"
@@ -319,11 +319,11 @@ def test_a_later_mode_applies_only_where_adapters_are_added(
     load_model_run, monkeypatch, use_lora, kind
 ):
     """LoRA re-applies a prepare-time mode; a full finetune keeps the loaded one."""
-    t, seen = load_model_run("unsloth", full_finetuning = not use_lora, kind = kind)
+    t, seen = load_model_run("unsloth", full_finetuning=not use_lora, kind=kind)
     warnings = []
     monkeypatch.setattr(tmod.logger, "warning", lambda message, *a, **k: warnings.append(message))
 
-    assert t.prepare_model_for_training(use_lora = use_lora, use_gradient_checkpointing = "none")
+    assert t.prepare_model_for_training(use_lora=use_lora, use_gradient_checkpointing="none")
 
     expected = False if use_lora else "unsloth"
     assert t._use_gradient_checkpointing == expected
@@ -333,7 +333,7 @@ def test_a_later_mode_applies_only_where_adapters_are_added(
 
 def _cli_load_model_calls():
     cli = _BACKEND.parent.parent / "unsloth_cli" / "commands" / "train.py"
-    tree = ast.parse(cli.read_text(encoding = "utf-8"))
+    tree = ast.parse(cli.read_text(encoding="utf-8"))
     calls = [
         node
         for node in ast.walk(tree)
@@ -383,8 +383,8 @@ def test_the_mlx_adapter_keeps_the_mode_it_was_loaded_with():
     from core.training.training import _MLXTrainerAdapter
 
     adapter = _MLXTrainerAdapter()
-    assert adapter.load_model(model_name = "unsloth/Qwen3-4B", use_gradient_checkpointing = False)
-    assert adapter.prepare_model_for_training(use_lora = True)
+    assert adapter.load_model(model_name="unsloth/Qwen3-4B", use_gradient_checkpointing=False)
+    assert adapter.prepare_model_for_training(use_lora=True)
 
     assert adapter._peft_config["gradient_checkpointing"] is False
     assert adapter._model_config["gradient_checkpointing"] is False
@@ -397,14 +397,14 @@ def test_the_mlx_adapter_rejects_load_arguments_it_would_drop():
     signature = inspect.signature(_MLXTrainerAdapter.load_model)
 
     with pytest.raises(TypeError):
-        signature.bind(object(), model_name = "unsloth/Qwen3-4B", model_revision = "abc123")
+        signature.bind(object(), model_name="unsloth/Qwen3-4B", model_revision="abc123")
 
 
 @pytest.mark.parametrize("full_finetuning", [True, False])
 def test_omitting_the_argument_keeps_the_choice(load_model_run, full_finetuning):
-    t, _ = load_model_run("none", full_finetuning = full_finetuning)
+    t, _ = load_model_run("none", full_finetuning=full_finetuning)
 
-    assert t.prepare_model_for_training(use_lora = not full_finetuning)
+    assert t.prepare_model_for_training(use_lora=not full_finetuning)
 
     assert t.model._unsloth_gradient_checkpointing is False
     assert t._use_gradient_checkpointing is False
@@ -412,7 +412,7 @@ def test_omitting_the_argument_keeps_the_choice(load_model_run, full_finetuning)
 
 def _trainer_calls_to(method):
     worker = _BACKEND / "core" / "training" / "worker.py"
-    tree = ast.parse(worker.read_text(encoding = "utf-8"))
+    tree = ast.parse(worker.read_text(encoding="utf-8"))
     return [
         node
         for node in ast.walk(tree)

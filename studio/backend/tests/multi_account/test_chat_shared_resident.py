@@ -41,7 +41,7 @@ def client_for(account):
 
     app.dependency_overrides[get_current_subject] = subject
     app.dependency_overrides[authenticated_via_api_key] = lambda: False
-    app.include_router(inference.router, prefix = "/api/inference")
+    app.include_router(inference.router, prefix="/api/inference")
     return TestClient(app)
 
 
@@ -94,10 +94,10 @@ def shared(monkeypatch, accounts):
     """Bob loaded RESIDENT; the arbiter and the resident record say so."""
     llama = FakeLlama()
     standard = SimpleNamespace(
-        active_model_name = None,
-        models = {},
-        get_loading_model = lambda: None,
-        loading_models = (),
+        active_model_name=None,
+        models={},
+        get_loading_model=lambda: None,
+        loading_models=(),
     )
     for name in ("_resident_accounts", "_prior_resident_accounts", "_resident_sharers"):
         monkeypatch.setattr(access, name, {})
@@ -129,17 +129,17 @@ def reuse_load(monkeypatch, account):
 
     def response(_backend, status, *a, **k):
         responses.append(status)
-        return SimpleNamespace(status = status, model = RESIDENT)
+        return SimpleNamespace(status=status, model=RESIDENT)
 
     monkeypatch.setattr(inference, "_gguf_load_response", response)
     fastapi_request = SimpleNamespace(
-        app = SimpleNamespace(state = SimpleNamespace(llama_parallel_slots = 1))
+        app=SimpleNamespace(state=SimpleNamespace(llama_parallel_slots=1))
     )
-    request = LoadRequest(model_path = RESIDENT, gguf_variant = VARIANT)
+    request = LoadRequest(model_path=RESIDENT, gguf_variant=VARIANT)
     result = run_as(
         account,
         lambda: asyncio.run(
-            inference._load_model_impl(request, fastapi_request, current_subject = account.username)
+            inference._load_model_impl(request, fastapi_request, current_subject=account.username)
         ),
     )
     assert responses == ["already_loaded"], responses
@@ -180,7 +180,7 @@ def test_a_sharer_leaving_keeps_the_model_for_the_others(monkeypatch, shared, ac
     # Bob is mid-generation: alice's share release must not be a gpu_busy refusal.
     with run_as(accounts["bob"], active_generations.ActiveGeneration, threading.Event()):
         with client_for(accounts["alice"]) as client:
-            left = client.post("/api/inference/unload", json = {"model_path": RESIDENT})
+            left = client.post("/api/inference/unload", json={"model_path": RESIDENT})
     assert left.status_code == 200, left.text
     assert not shared.unloaded
     assert sees_resident(accounts["bob"])
@@ -188,7 +188,7 @@ def test_a_sharer_leaving_keeps_the_model_for_the_others(monkeypatch, shared, ac
     assert status_for(accounts["alice"]) == {"loaded": [], "loading": [], "yours": False}
     # The last sharer's unload is a real teardown and clears the set.
     with client_for(accounts["bob"]) as client:
-        gone = client.post("/api/inference/unload", json = {"model_path": RESIDENT})
+        gone = client.post("/api/inference/unload", json={"model_path": RESIDENT})
     assert gone.status_code == 200, gone.text
     assert shared.unloaded
     assert "chat" not in access._resident_sharers

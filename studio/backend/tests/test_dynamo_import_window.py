@@ -39,7 +39,7 @@ def warm(monkeypatch):
     """``utils.torch_warmup`` with its dynamo latch reset, so each test starts cold."""
     from utils import torch_warmup
 
-    monkeypatch.setattr(torch_warmup, "_dynamo_done", False, raising = False)
+    monkeypatch.setattr(torch_warmup, "_dynamo_done", False, raising=False)
     return torch_warmup
 
 
@@ -66,12 +66,12 @@ def test_reports_false_when_utils_is_not_bound_on_the_parent(warm, monkeypatch):
     """The failure an ``import`` cannot observe. Both imports succeed here; only the
     attribute read distinguishes the broken state, so a probe that merely imported would
     report success in exactly the case that matters."""
-    _fake_torch(monkeypatch, bind_utils = False)
+    _fake_torch(monkeypatch, bind_utils=False)
     assert warm.ensure_dynamo_imported() is False
 
 
 def test_reports_true_and_latches_once_dynamo_is_whole(warm, monkeypatch):
-    _fake_torch(monkeypatch, bind_utils = True)
+    _fake_torch(monkeypatch, bind_utils=True)
     assert warm.ensure_dynamo_imported() is True
     assert warm._dynamo_done is True
 
@@ -90,7 +90,7 @@ def test_concurrent_callers_import_once(warm, monkeypatch):
     first one latches legitimately queue on the lock, so a bound on lock entries is a race
     against thread scheduling; the double-checked flag inside the lock is what guarantees
     the import body runs once, and that is the property worth pinning."""
-    _fake_torch(monkeypatch, bind_utils = True)
+    _fake_torch(monkeypatch, bind_utils=True)
 
     real_import = builtins.__import__
     imports = []
@@ -106,7 +106,7 @@ def test_concurrent_callers_import_once(warm, monkeypatch):
 
     results = []
     threads = [
-        threading.Thread(target = lambda: results.append(warm.ensure_dynamo_imported()))
+        threading.Thread(target=lambda: results.append(warm.ensure_dynamo_imported()))
         for _ in range(12)
     ]
     for t in threads:
@@ -141,6 +141,7 @@ def test_the_stage_list_and_its_purge_contract_are_untouched():
     purge-on-failure mapping whose only plausible entry for a dynamo stage would be torch,
     and purging torch is never right. This pins that decision."""
     from utils import torch_warmup
+
     assert [name for name, _ in torch_warmup._STAGES] == [
         "hardware",
         "inference_backend",
@@ -150,7 +151,7 @@ def test_the_stage_list_and_its_purge_contract_are_untouched():
 
 
 def _load_pipeline_body():
-    tree = ast.parse((_BACKEND / "core/inference/diffusion.py").read_text(encoding = "utf-8"))
+    tree = ast.parse((_BACKEND / "core/inference/diffusion.py").read_text(encoding="utf-8"))
     return next(
         node
         for node in ast.walk(tree)
@@ -191,7 +192,7 @@ def test_load_path_closes_the_window_before_every_dynamo_consumer():
 
     # And ahead of the plain `import diffusers` too, which pulls dynamo in by itself: every
     # module in diffusers.hooks evaluates @torch.compiler.disable() at class-body time.
-    src = (_BACKEND / "core/inference/diffusion.py").read_text(encoding = "utf-8").splitlines()
+    src = (_BACKEND / "core/inference/diffusion.py").read_text(encoding="utf-8").splitlines()
     first_diffusers = next(
         n for n, line in enumerate(src, 1) if line.strip() == "import diffusers" and n > body.lineno
     )
@@ -209,7 +210,7 @@ def test_the_video_path_closes_the_window_before_each_of_its_diffusers_imports()
     a video load issued right after startup can recreate exactly the race this PR closes for
     images. Every ``import diffusers`` in this file must be preceded by the guard.
     """
-    src = (_BACKEND / "core/inference/video.py").read_text(encoding = "utf-8").splitlines()
+    src = (_BACKEND / "core/inference/video.py").read_text(encoding="utf-8").splitlines()
     # A call to assert_pipeline_class_available counts: it closes the window itself, ahead of its
     # own `import diffusers`, so an import below one is already protected.
     guards = [
@@ -241,7 +242,7 @@ def test_the_pipeline_class_probe_closes_the_window_itself():
     once here covers every caller, including any added later, which chasing call sites does not.
     """
     tree = ast.parse(
-        (_BACKEND / "core/inference/diffusion_families.py").read_text(encoding = "utf-8")
+        (_BACKEND / "core/inference/diffusion_families.py").read_text(encoding="utf-8")
     )
     fn = next(
         n
@@ -277,7 +278,7 @@ def test_every_request_thread_entry_point_reaches_that_probe():
         ("core/inference/video.py", "video validation"),
         ("core/training/diffusion_train_common.py", "training preflight"),
     ):
-        src = (_BACKEND / rel).read_text(encoding = "utf-8")
+        src = (_BACKEND / rel).read_text(encoding="utf-8")
         assert (
             "assert_pipeline_class_available(" in src
         ), f"{caller} ({rel}) no longer routes through the guarded probe; it needs its own guard"
@@ -286,7 +287,7 @@ def test_every_request_thread_entry_point_reaches_that_probe():
 def test_load_failure_is_logged_with_a_traceback():
     """The client only ever receives str(exc), so without exc_info here a one-line failure
     cannot be attributed to any call site. Both issues stalled for exactly this reason."""
-    source = (_BACKEND / "core/inference/diffusion.py").read_text(encoding = "utf-8")
+    source = (_BACKEND / "core/inference/diffusion.py").read_text(encoding="utf-8")
     tree = ast.parse(source)
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
@@ -319,6 +320,7 @@ def test_the_dynamo_failure_is_rewritten_into_something_actionable():
 def test_the_rewrite_finds_the_failure_through_an_exception_chain():
     """It surfaces from inside diffusers, so it arrives wrapped."""
     from core.inference.diffusion import dynamo_partial_init_message
+
     try:
         try:
             raise AttributeError("module 'torch._dynamo' has no attribute 'utils'")
@@ -333,6 +335,7 @@ def test_a_suppressed_context_is_not_followed():
     __context__ past it would answer a visible, unrelated failure with restart advice that does
     not apply. Same walk as _gated_in_chain, which is what this file's neighbour already does."""
     from core.inference.diffusion import dynamo_partial_init_message
+
     try:
         try:
             raise AttributeError("module 'torch._dynamo' has no attribute 'utils'")
@@ -349,6 +352,7 @@ def test_an_explicit_cause_is_still_followed():
     """``raise ... from inner`` sets __suppress_context__ too, but the cause is explicit: the
     raiser is pointing AT the inner error, so the rewrite must still find it."""
     from core.inference.diffusion import dynamo_partial_init_message
+
     try:
         try:
             raise AttributeError("module 'torch._dynamo' has no attribute 'utils'")
@@ -392,7 +396,7 @@ def test_the_rewrite_is_wired_into_the_load_failure_handler():
 
 
 def _load_pipeline_failure_handler():
-    tree = ast.parse((_BACKEND / "core/inference/diffusion.py").read_text(encoding = "utf-8"))
+    tree = ast.parse((_BACKEND / "core/inference/diffusion.py").read_text(encoding="utf-8"))
     for node in ast.walk(tree):
         if isinstance(node, ast.Try):
             seg = ast.unparse(node)
@@ -406,7 +410,7 @@ def test_trainer_reads_dynamo_config_defensively():
     half-built module, raising at import time where nothing handles it."""
     # AST, not a substring search: the prose explaining why this form is wrong necessarily
     # contains the wrong form, so a text match would fail on its own comment.
-    tree = ast.parse((_BACKEND / "core/training/trainer.py").read_text(encoding = "utf-8"))
+    tree = ast.parse((_BACKEND / "core/training/trainer.py").read_text(encoding="utf-8"))
     bare = [
         node
         for node in ast.walk(tree)

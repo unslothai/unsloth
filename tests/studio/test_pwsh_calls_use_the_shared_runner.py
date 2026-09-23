@@ -242,7 +242,7 @@ def _private_env_names(tree: ast.AST) -> set[str]:
 
 def direct_pwsh_calls(path: Path) -> list[tuple[int, str]]:
     """Every subprocess spawn of PowerShell in `path` that bypasses the shared runner."""
-    tree = ast.parse(path.read_text(encoding = "utf-8"), filename = str(path))
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
     finder = _PwshCallFinder(_pwsh_bound_names(tree), _private_env_names(tree))
     finder.visit(tree)
     return sorted(finder.found)
@@ -332,7 +332,7 @@ class TestEveryPwshCallUsesTheSharedRunner:
         }
         for source, lineno in cases.items():
             path = tmp_path / "test_probe.py"
-            path.write_text(source, encoding = "utf-8")
+            path.write_text(source, encoding="utf-8")
             found = direct_pwsh_calls(path)
             assert [line for line, _ in found] == [lineno], f"missed: {source!r} -> {found!r}"
 
@@ -352,5 +352,5 @@ class TestEveryPwshCallUsesTheSharedRunner:
         ]
         for source in cases:
             path = tmp_path / "test_probe.py"
-            path.write_text(source, encoding = "utf-8")
+            path.write_text(source, encoding="utf-8")
             assert direct_pwsh_calls(path) == [], f"false positive on {source!r}"

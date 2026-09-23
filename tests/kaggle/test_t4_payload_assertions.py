@@ -37,7 +37,7 @@ def _shared_setup_2(tmp_path):
     from run_t4_smoke import check_reference, reference_failures
 
     ref = tmp_path / "ref.json"
-    _write_reference(ref, config = REFERENCE_CONFIG)
+    _write_reference(ref, config=REFERENCE_CONFIG)
     return check_reference, ref, reference_failures
 
 
@@ -45,7 +45,7 @@ def _shared_setup_3(tmp_path):
     from run_t4_smoke import check_reference
 
     ref = tmp_path / "ref.json"
-    _write_reference(ref, config = REFERENCE_CONFIG)
+    _write_reference(ref, config=REFERENCE_CONFIG)
     return check_reference, ref
 
 
@@ -143,25 +143,28 @@ def test_the_canary_must_be_the_whole_answer():
     from run_t4_smoke import CANARY, canary_failures
 
     run = {"run_index": 0, "generated": CANARY + "<|im_start|>and on it went"}
-    failures = canary_failures(run, require = True)
+    failures = canary_failures(run, require=True)
     assert failures and "exactly" in failures[0]
 
 
 def test_the_canary_tolerates_surrounding_whitespace_only():
     from run_t4_smoke import CANARY, canary_failures
-    assert canary_failures({"run_index": 0, "generated": CANARY}, require = True) == []
-    assert canary_failures({"run_index": 0, "generated": "\n" + CANARY + " \n"}, require = True) == []
+
+    assert canary_failures({"run_index": 0, "generated": CANARY}, require=True) == []
+    assert canary_failures({"run_index": 0, "generated": "\n" + CANARY + " \n"}, require=True) == []
 
 
 def test_a_missing_canary_is_still_a_failure():
     from run_t4_smoke import canary_failures
-    failures = canary_failures({"run_index": 1, "generated": "def my_function():"}, require = True)
+
+    failures = canary_failures({"run_index": 1, "generated": "def my_function():"}, require=True)
     assert failures and "did not emit" in failures[0]
 
 
 def test_the_canary_can_be_downgraded_to_a_warning():
     from run_t4_smoke import canary_failures
-    assert canary_failures({"run_index": 1, "generated": "nope"}, require = False) == []
+
+    assert canary_failures({"run_index": 1, "generated": "nope"}, require=False) == []
 
 
 # -------------------------------------- run_t4_smoke.py: optimisation checks
@@ -182,6 +185,7 @@ def test_an_infinite_gradient_norm_is_not_an_applied_update():
 
 def test_one_finite_gradient_norm_is_enough():
     from run_t4_smoke import optimisation_failures
+
     metrics = [
         {"step": 1, "loss": 10.0, "grad_norm": NAN},
         {"step": 2, "loss": 5.0, "grad_norm": INF},
@@ -216,26 +220,30 @@ def _adapter_state(**over) -> dict:
 
 def test_a_saved_adapter_that_reloads_with_weights_passes():
     from run_t4_smoke import saved_adapter_failures
+
     assert saved_adapter_failures(_adapter_state()) == []
 
 
 def test_an_adapter_whose_weight_file_cannot_be_read_is_a_failure():
     from run_t4_smoke import saved_adapter_failures
+
     failures = saved_adapter_failures(
-        _adapter_state(tensors = None, error = "SafetensorError: header too small")
+        _adapter_state(tensors=None, error="SafetensorError: header too small")
     )
     assert failures and "could not be read back" in failures[0]
 
 
 def test_an_adapter_with_no_tensors_is_a_failure():
     from run_t4_smoke import saved_adapter_failures
-    failures = saved_adapter_failures(_adapter_state(tensors = 0, parameters = 0))
+
+    failures = saved_adapter_failures(_adapter_state(tensors=0, parameters=0))
     assert failures and "no tensors" in failures[0]
 
 
 def test_an_adapter_with_non_finite_weights_is_a_failure():
     from run_t4_smoke import saved_adapter_failures
-    failures = saved_adapter_failures(_adapter_state(non_finite_tensors = ["...lora_B.weight"]))
+
+    failures = saved_adapter_failures(_adapter_state(non_finite_tensors=["...lora_B.weight"]))
     assert failures and "non-finite" in failures[0]
 
 
@@ -243,7 +251,7 @@ def test_an_all_zero_adapter_is_a_failure():
     """lora_B starts at zero, so an all-zero file is an untrained adapter."""
     from run_t4_smoke import saved_adapter_failures
 
-    failures = saved_adapter_failures(_adapter_state(nonzero_tensors = 0, nonzero_b_tensors = 0))
+    failures = saved_adapter_failures(_adapter_state(nonzero_tensors=0, nonzero_b_tensors=0))
     assert failures and "saved lora_B matrices is zero" in failures[0]
 
 
@@ -257,7 +265,7 @@ def test_an_adapter_whose_b_matrices_are_all_zero_is_a_failure():
     from run_t4_smoke import saved_adapter_failures
 
     failures = saved_adapter_failures(
-        _adapter_state(nonzero_tensors = 112, b_tensors = 112, nonzero_b_tensors = 0)
+        _adapter_state(nonzero_tensors=112, b_tensors=112, nonzero_b_tensors=0)
     )
     assert failures and "saved lora_B matrices is zero" in failures[0]
 
@@ -267,7 +275,7 @@ def test_an_adapter_with_no_b_matrices_at_all_is_unusable_rather_than_fine():
     from run_t4_smoke import saved_adapter_failures
 
     failures = saved_adapter_failures(
-        _adapter_state(nonzero_tensors = 112, b_tensors = 0, nonzero_b_tensors = 0)
+        _adapter_state(nonzero_tensors=112, b_tensors=0, nonzero_b_tensors=0)
     )
     assert failures and "is a lora_B matrix" in failures[0]
 
@@ -283,22 +291,24 @@ def test_an_adapter_nobody_checked_the_names_of_is_not_a_pass():
     from run_t4_smoke import saved_adapter_failures
 
     failures = saved_adapter_failures(
-        _adapter_state(keys_checked = False, keys_error = "ImportError: no such name")
+        _adapter_state(keys_checked=False, keys_error="ImportError: no such name")
     )
     assert failures and "never checked" in failures[0]
 
 
 def test_an_adapter_missing_tensors_peft_names_is_a_failure():
     from run_t4_smoke import saved_adapter_failures
+
     failures = saved_adapter_failures(
-        _adapter_state(keys_missing = ["base_model.model.q_proj.lora_B.weight"])
+        _adapter_state(keys_missing=["base_model.model.q_proj.lora_B.weight"])
     )
     assert failures and "does not carry" in failures[0]
 
 
 def test_lora_tensors_under_names_peft_does_not_use_are_a_failure():
     from run_t4_smoke import saved_adapter_failures
-    failures = saved_adapter_failures(_adapter_state(keys_unexpected = ["q_proj.lora_B.weight"]))
+
+    failures = saved_adapter_failures(_adapter_state(keys_unexpected=["q_proj.lora_B.weight"]))
     assert failures and "ignores them silently" in failures[0]
 
 
@@ -323,7 +333,7 @@ def test_a_non_lora_tensor_beside_the_adapter_is_not_a_failure(tmp_path):
         {lora: torch.ones(8, 16) * 0.01, embedding: torch.ones(4, 4)},
         str(tmp_path / "adapter_model.safetensors"),
     )
-    state = verify_saved_adapter(tmp_path, peft_keys = {"keys": [lora]})
+    state = verify_saved_adapter(tmp_path, peft_keys={"keys": [lora]})
     assert state["keys_extra"] == [embedding]
     assert state["keys_unexpected"] == []
     assert saved_adapter_failures(state) == []
@@ -364,10 +374,10 @@ def test_an_adapter_peft_would_ignore_on_reload_does_not_pass(tmp_path):
 
     def _base():
         torch.manual_seed(0)
-        return GPT2LMHeadModel(GPT2Config(n_layer = 1, n_head = 2, n_embd = 32, vocab_size = 64))
+        return GPT2LMHeadModel(GPT2Config(n_layer=1, n_head=2, n_embd=32, vocab_size=64))
 
     model = get_peft_model(
-        _base(), LoraConfig(r = 4, target_modules = ["c_attn"], task_type = "CAUSAL_LM")
+        _base(), LoraConfig(r=4, target_modules=["c_attn"], task_type="CAUSAL_LM")
     )
     # lora_B starts at zero and only an applied optimizer step moves it.
     with torch.no_grad():
@@ -378,7 +388,7 @@ def test_an_adapter_peft_would_ignore_on_reload_does_not_pass(tmp_path):
     keys = peft_adapter_keys(model)
     assert keys["keys"], keys
 
-    good = verify_saved_adapter(tmp_path, peft_keys = keys)
+    good = verify_saved_adapter(tmp_path, peft_keys=keys)
     assert good["keys_checked"] is True
     assert saved_adapter_failures(good) == []
 
@@ -388,7 +398,7 @@ def test_an_adapter_peft_would_ignore_on_reload_does_not_pass(tmp_path):
         {name.removeprefix("base_model.model."): value for name, value in tensors.items()},
         str(weights),
     )
-    broken = verify_saved_adapter(tmp_path, peft_keys = keys)
+    broken = verify_saved_adapter(tmp_path, peft_keys=keys)
 
     assert broken["tensors"] == good["tensors"]
     assert broken["nonzero_b_tensors"] == good["nonzero_b_tensors"] > 0
@@ -400,7 +410,7 @@ def test_an_adapter_peft_would_ignore_on_reload_does_not_pass(tmp_path):
     assert "ignores them silently" in " ".join(failures)
 
     # Explicit: PEFT's infer_device() believes tests/_zoo_aggressive_cuda_spoof.py.
-    reloaded = PeftModel.from_pretrained(_base(), str(tmp_path), torch_device = "cpu")
+    reloaded = PeftModel.from_pretrained(_base(), str(tmp_path), torch_device="cpu")
     b_matrices = [p for n, p in reloaded.named_parameters() if "lora_B" in n]
     assert b_matrices and all(float(p.abs().sum()) == 0.0 for p in b_matrices), (
         "peft loaded the renamed keys after all, so this test no longer describes "
@@ -410,7 +420,8 @@ def test_an_adapter_peft_would_ignore_on_reload_does_not_pass(tmp_path):
 
 def test_a_missing_adapter_config_is_a_failure():
     from run_t4_smoke import saved_adapter_failures
-    failures = saved_adapter_failures(_adapter_state(config_readable = False))
+
+    failures = saved_adapter_failures(_adapter_state(config_readable=False))
     assert failures and "adapter_config.json" in failures[0]
 
 
@@ -430,7 +441,7 @@ def test_the_adapter_check_reads_a_real_file_it_just_wrote(tmp_path):
     }
     peft_keys = {"keys": sorted(written)}
     save_file(written, str(tmp_path / "adapter_model.safetensors"))
-    state = verify_saved_adapter(tmp_path, peft_keys = peft_keys)
+    state = verify_saved_adapter(tmp_path, peft_keys=peft_keys)
     assert state["tensors"] == 2
     assert state["nonzero_tensors"] == 1
     assert state["b_tensors"] == 1
@@ -448,13 +459,13 @@ def test_the_adapter_check_reads_a_real_file_it_just_wrote(tmp_path):
         },
         str(tmp_path / "adapter_model.safetensors"),
     )
-    trained = verify_saved_adapter(tmp_path, peft_keys = peft_keys)
+    trained = verify_saved_adapter(tmp_path, peft_keys=peft_keys)
     assert trained["nonzero_b_tensors"] == 1
     assert saved_adapter_failures(trained) == []
 
     save_file({"a.lora_B.weight": torch.zeros(4, 4)}, str(tmp_path / "adapter_model.safetensors"))
     failures = saved_adapter_failures(
-        verify_saved_adapter(tmp_path, peft_keys = {"keys": ["a.lora_B.weight"]})
+        verify_saved_adapter(tmp_path, peft_keys={"keys": ["a.lora_B.weight"]})
     )
     assert failures and "saved lora_B matrices is zero" in failures[0]
 
@@ -477,7 +488,7 @@ def test_a_syntactically_valid_but_empty_adapter_config_is_not_a_pass(tmp_path):
     )
     for body in ("{}", "[]"):
         (tmp_path / "adapter_config.json").write_text(body)
-        state = verify_saved_adapter(tmp_path, peft_keys = {"keys": ["q_proj.lora_B.weight"]})
+        state = verify_saved_adapter(tmp_path, peft_keys={"keys": ["q_proj.lora_B.weight"]})
         assert state["config_readable"] is True, "it IS readable JSON; that was never the question"
         assert state["config_loadable"] is False, body
         failures = saved_adapter_failures(state)
@@ -512,14 +523,14 @@ def test_an_adapter_config_for_a_different_adapter_than_the_one_trained_fails(tm
         )
     )
     keys = {"keys": ["q_proj.lora_B.weight"]}
-    state = verify_saved_adapter(tmp_path, expected = requested, peft_keys = keys)
+    state = verify_saved_adapter(tmp_path, expected=requested, peft_keys=keys)
     assert state["config_loadable"] is True
     assert state["config_differences"], state
     failures = saved_adapter_failures(state)
     assert failures and "different adapter than the one that was trained" in failures[0]
 
     (tmp_path / "adapter_config.json").write_text(json.dumps({"peft_type": "LORA", **requested}))
-    good = verify_saved_adapter(tmp_path, expected = requested, peft_keys = keys)
+    good = verify_saved_adapter(tmp_path, expected=requested, peft_keys=keys)
     assert good["config_differences"] == []
     assert saved_adapter_failures(good) == []
 
@@ -542,7 +553,7 @@ def _write_reference(
                 "metrics": [{"step": s, "loss": 1.0 / s, "grad_norm": 3.0} for s in (1, 2, 3)],
             }
         ),
-        encoding = "utf-8",
+        encoding="utf-8",
     )
 
 
@@ -568,7 +579,7 @@ def test_a_band_check_against_a_reference_from_another_card_is_refused(tmp_path)
                 "metrics": [{"step": s, "loss": 1.0 / s, "grad_norm": 3.0} for s in (1, 2, 3)],
             }
         ),
-        encoding = "utf-8",
+        encoding="utf-8",
     )
     observed = [{"step": s, "loss": 1.0 / s, "grad_norm": 3.0} for s in (1, 2, 3)]
     verdict = check_reference(
@@ -576,10 +587,10 @@ def test_a_band_check_against_a_reference_from_another_card_is_refused(tmp_path)
         ref,
         0.10,
         0.05,
-        max_steps = 3,
-        config = REFERENCE_CONFIG,
-        model = "unsloth/Qwen2.5-0.5B-Instruct",
-        environment = {"gpu_name": "Tesla P100-PCIE-16GB", "gpu_capability": "sm_60"},
+        max_steps=3,
+        config=REFERENCE_CONFIG,
+        model="unsloth/Qwen2.5-0.5B-Instruct",
+        environment={"gpu_name": "Tesla P100-PCIE-16GB", "gpu_capability": "sm_60"},
     )
     assert verdict["status"] == "hardware_mismatch", verdict
     # Refused BEFORE any number is compared: the metrics here are identical to
@@ -595,10 +606,10 @@ def test_a_band_check_against_a_reference_from_another_card_is_refused(tmp_path)
         ref,
         0.10,
         0.05,
-        max_steps = 3,
-        config = REFERENCE_CONFIG,
-        model = "unsloth/Qwen2.5-0.5B-Instruct",
-        environment = {"gpu_name": "Tesla T4", "gpu_capability": "sm_75"},
+        max_steps=3,
+        config=REFERENCE_CONFIG,
+        model="unsloth/Qwen2.5-0.5B-Instruct",
+        environment={"gpu_name": "Tesla T4", "gpu_capability": "sm_75"},
     )
     assert same["status"] == "ok", same
     assert reference_failures(same, 0.10) == []
@@ -618,9 +629,9 @@ def test_a_reference_that_records_no_hardware_is_unchecked_not_a_mismatch(tmp_pa
         ref,
         0.10,
         0.05,
-        max_steps = 3,
-        config = REFERENCE_CONFIG,
-        environment = {"gpu_name": "Tesla T4", "gpu_capability": "sm_75"},
+        max_steps=3,
+        config=REFERENCE_CONFIG,
+        environment={"gpu_name": "Tesla T4", "gpu_capability": "sm_75"},
     )
     assert verdict["status"] == "ok", verdict
     assert "gpu_name" in verdict["config_unchecked"]
@@ -630,11 +641,11 @@ def test_a_reference_that_records_no_hardware_is_unchecked_not_a_mismatch(tmp_pa
 @pytest.mark.parametrize(
     "environment",
     [
-        pytest.param({"error": "RuntimeError: no CUDA driver"}, id = "probe_raised"),
-        pytest.param({"python": "3.12.13", "torch": "2.10.0"}, id = "probe_saw_no_gpu"),
-        pytest.param({}, id = "empty"),
-        pytest.param(None, id = "not_supplied"),
-        pytest.param({"gpu_name": "Tesla T4", "gpu_capability": None}, id = "one_key_missing"),
+        pytest.param({"error": "RuntimeError: no CUDA driver"}, id="probe_raised"),
+        pytest.param({"python": "3.12.13", "torch": "2.10.0"}, id="probe_saw_no_gpu"),
+        pytest.param({}, id="empty"),
+        pytest.param(None, id="not_supplied"),
+        pytest.param({"gpu_name": "Tesla T4", "gpu_capability": None}, id="one_key_missing"),
     ],
 )
 def test_a_run_that_cannot_name_its_card_is_refused_not_waved_through(tmp_path, environment):
@@ -662,7 +673,7 @@ def test_a_run_that_cannot_name_its_card_is_refused_not_waved_through(tmp_path, 
                 "metrics": [{"step": s, "loss": 1.0 / s, "grad_norm": 3.0} for s in (1, 2, 3)],
             }
         ),
-        encoding = "utf-8",
+        encoding="utf-8",
     )
     observed = [{"step": s, "loss": 1.0 / s, "grad_norm": 3.0} for s in (1, 2, 3)]
     verdict = check_reference(
@@ -670,10 +681,10 @@ def test_a_run_that_cannot_name_its_card_is_refused_not_waved_through(tmp_path, 
         ref,
         0.10,
         0.05,
-        max_steps = 3,
-        config = REFERENCE_CONFIG,
-        model = "unsloth/Qwen2.5-0.5B-Instruct",
-        environment = environment,
+        max_steps=3,
+        config=REFERENCE_CONFIG,
+        model="unsloth/Qwen2.5-0.5B-Instruct",
+        environment=environment,
     )
     assert verdict["status"] == "hardware_unverified", verdict
     assert verdict["deviations"] == [], "refused before any number was compared"
@@ -689,7 +700,7 @@ def test_the_committed_reference_names_the_card_the_gate_reads(tmp_path):
     into a skip, which is the shape of every defect this suite keeps finding.
     """
     reference = SMOKE_DIR / "references" / "t4_qwen2.5-0.5b.json"
-    environment = json.loads(reference.read_text(encoding = "utf-8"))["environment"]
+    environment = json.loads(reference.read_text(encoding="utf-8"))["environment"]
     assert environment["gpu_name"] == "Tesla T4"
     assert environment["gpu_capability"] == "sm_75"
 
@@ -720,8 +731,8 @@ def test_a_reference_captured_with_another_learning_rate_is_refused(tmp_path):
         ref,
         0.10,
         0.05,
-        max_steps = 3,
-        config = dict(REFERENCE_CONFIG, learning_rate = 0.005),
+        max_steps=3,
+        config=dict(REFERENCE_CONFIG, learning_rate=0.005),
     )
     assert verdict["status"] == "config_mismatch"
     assert verdict["config_differences"] == [
@@ -738,9 +749,9 @@ def test_a_reference_captured_for_another_model_is_refused(tmp_path):
         ref,
         0.10,
         0.05,
-        max_steps = 3,
-        config = REFERENCE_CONFIG,
-        model = "unsloth/Llama-3.2-1B-Instruct",
+        max_steps=3,
+        config=REFERENCE_CONFIG,
+        model="unsloth/Llama-3.2-1B-Instruct",
     )
     assert verdict["status"] == "config_mismatch"
     assert reference_failures(verdict, 0.10)
@@ -751,7 +762,7 @@ def test_the_repeat_count_does_not_invalidate_a_reference(tmp_path):
     check_reference, ref = _shared_setup_3(tmp_path)
     observed = [{"step": s, "loss": 1.0 / s, "grad_norm": 3.0} for s in (1, 2, 3)]
     verdict = check_reference(
-        observed, ref, 0.10, 0.05, max_steps = 3, config = dict(REFERENCE_CONFIG, repeat = 5)
+        observed, ref, 0.10, 0.05, max_steps=3, config=dict(REFERENCE_CONFIG, repeat=5)
     )
     assert verdict["status"] == "ok"
 
@@ -762,9 +773,9 @@ def test_a_reference_that_predates_a_setting_does_not_refuse_on_it(tmp_path):
 
     ref = tmp_path / "ref.json"
     older = {k: v for k, v in REFERENCE_CONFIG.items() if k != "gradient_checkpointing"}
-    _write_reference(ref, config = older)
+    _write_reference(ref, config=older)
     observed = [{"step": s, "loss": 1.0 / s, "grad_norm": 3.0} for s in (1, 2, 3)]
-    verdict = check_reference(observed, ref, 0.10, 0.05, max_steps = 3, config = REFERENCE_CONFIG)
+    verdict = check_reference(observed, ref, 0.10, 0.05, max_steps=3, config=REFERENCE_CONFIG)
     assert verdict["status"] == "ok"
     # `model` too: the helper's reference names one and this call observed none, and a pin present on one side only did
     # not run, so it is recorded rather than skipped in silence.
@@ -775,16 +786,16 @@ def test_the_reference_check_still_works_without_an_observed_config(tmp_path):
     """Backwards compatible: the step-count guard is what it always was."""
     check_reference, ref = _shared_setup_3(tmp_path)
     observed = [{"step": s, "loss": 1.0 / s, "grad_norm": 3.0} for s in (1, 2, 3)]
-    assert check_reference(observed, ref, 0.10, 0.05, max_steps = 3)["status"] == "ok"
+    assert check_reference(observed, ref, 0.10, 0.05, max_steps=3)["status"] == "ok"
     assert (
-        check_reference(observed, ref, 0.10, 0.05, max_steps = 10)["status"] == "step_count_mismatch"
+        check_reference(observed, ref, 0.10, 0.05, max_steps=10)["status"] == "step_count_mismatch"
     )
 
 
 def test_a_shifted_step_coordinate_is_refused_by_the_band_check(tmp_path):
     check_reference, ref, reference_failures = _shared_setup_2(tmp_path)
     observed = [{"step": 1, "loss": 1.0 / s, "grad_norm": 3.0} for s in (1, 2, 3)]
-    verdict = check_reference(observed, ref, 0.10, 0.05, max_steps = 3)
+    verdict = check_reference(observed, ref, 0.10, 0.05, max_steps=3)
     assert verdict["status"] == "step_mismatch"
     assert verdict["step_differences"] == [
         {"index": 1, "reference": 2, "observed": 1},
@@ -806,9 +817,9 @@ def test_the_model_revision_travels_with_the_reference(tmp_path):
         ref,
         0.10,
         0.05,
-        max_steps = 3,
-        resolved_checkpoint = "unsloth/Qwen2.5-0.5B-Instruct-unsloth-bnb-4bit",
-        resolved_revision = "10413c288cb9629acdf60b3e0229f3ba75efe413",
+        max_steps=3,
+        resolved_checkpoint="unsloth/Qwen2.5-0.5B-Instruct-unsloth-bnb-4bit",
+        resolved_revision="10413c288cb9629acdf60b3e0229f3ba75efe413",
     )
     assert same["status"] == "ok"
 
@@ -817,9 +828,9 @@ def test_the_model_revision_travels_with_the_reference(tmp_path):
         ref,
         0.10,
         0.05,
-        max_steps = 3,
-        resolved_checkpoint = "unsloth/Qwen2.5-0.5B-Instruct-unsloth-bnb-4bit",
-        resolved_revision = "0000000000000000000000000000000000000000",
+        max_steps=3,
+        resolved_checkpoint="unsloth/Qwen2.5-0.5B-Instruct-unsloth-bnb-4bit",
+        resolved_revision="0000000000000000000000000000000000000000",
     )
     assert moved["status"] == "config_mismatch"
     assert reference_failures(moved, 0.10)
@@ -829,7 +840,7 @@ def test_a_reference_with_no_recorded_revision_does_not_refuse(tmp_path):
     """The committed file predates this; unknown is unknown, not a mismatch."""
     check_reference, ref = _shared_setup_3(tmp_path)
     observed = [{"step": s, "loss": 1.0 / s, "grad_norm": 3.0} for s in (1, 2, 3)]
-    verdict = check_reference(observed, ref, 0.10, 0.05, max_steps = 3, resolved_revision = "abc123")
+    verdict = check_reference(observed, ref, 0.10, 0.05, max_steps=3, resolved_revision="abc123")
     assert verdict["status"] == "ok"
     assert "resolved_revision" in verdict["config_unchecked"]
 
@@ -845,7 +856,7 @@ def test_a_pin_the_run_could_not_read_is_recorded_as_unchecked(tmp_path):
     payload["resolved_revision"] = "10413c288cb9629acdf60b3e0229f3ba75efe413"
     ref.write_text(json.dumps(payload))
     observed = [{"step": s, "loss": 1.0 / s, "grad_norm": 3.0} for s in (1, 2, 3)]
-    verdict = check_reference(observed, ref, 0.10, 0.05, max_steps = 3)
+    verdict = check_reference(observed, ref, 0.10, 0.05, max_steps=3)
     assert verdict["status"] == "ok"
     assert "resolved_revision" in verdict["config_unchecked"]
     assert "resolved_checkpoint" not in verdict["config_unchecked"]
@@ -881,7 +892,7 @@ def test_the_committed_reference_pins_the_model_it_was_captured_on():
     from run_t4_smoke import DEFAULT_MODEL
 
     reference = json.loads(
-        (SMOKE_DIR / "references" / "t4_qwen2.5-0.5b.json").read_text(encoding = "utf-8")
+        (SMOKE_DIR / "references" / "t4_qwen2.5-0.5b.json").read_text(encoding="utf-8")
     )
     assert reference["model"] == DEFAULT_MODEL
 
@@ -943,17 +954,17 @@ def _drive_main(monkeypatch, tmp_path, cycles: dict, argv: list[str]) -> tuple[i
             return real_run(cmd, *a, **kw)
         index = int(cmd[cmd.index("--cycle") + 1])
         outdir = Path(cmd[cmd.index("--outdir") + 1])
-        outdir.mkdir(parents = True, exist_ok = True)
+        outdir.mkdir(parents=True, exist_ok=True)
         payload = cycles.get(index)
         if payload is None:
-            return types.SimpleNamespace(returncode = 1)
-        (outdir / "cycle_report.json").write_text(json.dumps(payload), encoding = "utf-8")
-        return types.SimpleNamespace(returncode = 0)
+            return types.SimpleNamespace(returncode=1)
+        (outdir / "cycle_report.json").write_text(json.dumps(payload), encoding="utf-8")
+        return types.SimpleNamespace(returncode=0)
 
     monkeypatch.setattr(run_t4_smoke.subprocess, "run", fake_run)
     monkeypatch.setattr(sys, "argv", ["run_t4_smoke.py", "--outdir", str(tmp_path)] + argv)
     code = run_t4_smoke.main()
-    return code, json.loads((tmp_path / "t4_smoke_report.json").read_text(encoding = "utf-8"))
+    return code, json.loads((tmp_path / "t4_smoke_report.json").read_text(encoding="utf-8"))
 
 
 def test_every_requested_repeat_is_compared_against_the_baseline(monkeypatch, tmp_path):
@@ -1045,6 +1056,7 @@ def _gptoss_result(**over) -> dict:
 
 def test_a_healthy_gptoss_run_passes():
     from run_gptoss_t4 import failures_for
+
     assert failures_for(_gptoss_result(), _gptoss_args()) == []
 
 
@@ -1052,7 +1064,7 @@ def test_gptoss_fails_when_the_forced_float32_path_stopped_firing():
     from run_gptoss_t4 import failures_for
 
     result = _gptoss_result(
-        precision = {
+        precision={
             "fp16": True,
             "bf16": False,
             "force_float32_env": None,
@@ -1069,8 +1081,8 @@ def test_gptoss_does_not_demand_float32_on_a_card_with_bf16():
     from run_gptoss_t4 import failures_for
 
     result = _gptoss_result(
-        environment = {"bf16_supported": True, "gpu_name": "NVIDIA A100"},
-        precision = {
+        environment={"bf16_supported": True, "gpu_name": "NVIDIA A100"},
+        precision={
             "fp16": False,
             "bf16": True,
             "force_float32_env": None,
@@ -1094,7 +1106,7 @@ def test_gptoss_measures_compilation_across_training_only():
     from run_gptoss_t4 import failures_for
 
     result = _gptoss_result(
-        compile = {"available": True, "unique_graphs": 32, "unique_graphs_delta": 0}
+        compile={"available": True, "unique_graphs": 32, "unique_graphs_delta": 0}
     )
     failures = failures_for(result, _gptoss_args())
     assert failures and any("eager" in f for f in failures)
@@ -1113,7 +1125,7 @@ def test_gptoss_requires_the_forcing_to_be_on_rather_than_merely_recorded(value)
     from run_gptoss_t4 import failures_for
 
     result = _gptoss_result(
-        precision = {
+        precision={
             "fp16": False,
             "bf16": False,
             "force_float32_env": value,
@@ -1128,7 +1140,7 @@ def test_gptoss_refuses_a_compile_check_that_has_no_baseline():
     """A post-training read with no pre-training one to subtract."""
     from run_gptoss_t4 import failures_for
 
-    result = _gptoss_result(compile = {"available": True, "unique_graphs": 32})
+    result = _gptoss_result(compile={"available": True, "unique_graphs": 32})
     failures = failures_for(result, _gptoss_args())
     assert failures and any("pre-training dynamo counters" in f for f in failures)
 
@@ -1137,9 +1149,9 @@ def test_gptoss_compile_counters_report_a_delta():
     from run_gptoss_t4 import compile_counters
 
     before = compile_counters()
-    after = compile_counters(before = before)
+    after = compile_counters(before=before)
     assert after["unique_graphs_delta"] == 0
-    fake = compile_counters(before = {"available": True, "unique_graphs": 5, "calls_captured": 9})
+    fake = compile_counters(before={"available": True, "unique_graphs": 5, "calls_captured": 9})
     assert fake["unique_graphs_delta"] == fake["unique_graphs"] - 5
 
 
@@ -1147,7 +1159,7 @@ def test_gptoss_fails_when_no_optimizer_update_was_applied():
     from run_gptoss_t4 import failures_for
 
     result = _gptoss_result(
-        metrics = [{"step": s, "loss": 3.0 - s, "grad_norm": 0.0} for s in (1, 2, 3)]
+        metrics=[{"step": s, "loss": 3.0 - s, "grad_norm": 0.0} for s in (1, 2, 3)]
     )
     failures = failures_for(result, _gptoss_args())
     assert failures and any("optimizer update" in f for f in failures)
@@ -1178,8 +1190,8 @@ def test_gptoss_does_not_infer_a_verdict_from_an_unlogged_grad_norm():
     from run_gptoss_t4 import failures_for
 
     result = _gptoss_result(
-        metrics = [{"step": s, "loss": 3.0 - s} for s in (1, 2, 3)],
-        adapter_update = _moved(),
+        metrics=[{"step": s, "loss": 3.0 - s} for s in (1, 2, 3)],
+        adapter_update=_moved(),
     )
     assert failures_for(result, _gptoss_args()) == []
 
@@ -1195,8 +1207,8 @@ def test_gptoss_fails_when_nothing_at_all_can_say_the_adapter_moved():
     from run_gptoss_t4 import failures_for
 
     result = _gptoss_result(
-        metrics = [{"step": s, "loss": 3.0 - s} for s in (1, 2, 3)],
-        adapter_update = {"ok": False, "error": "RuntimeError: meta tensor"},
+        metrics=[{"step": s, "loss": 3.0 - s} for s in (1, 2, 3)],
+        adapter_update={"ok": False, "error": "RuntimeError: meta tensor"},
     )
     failures = failures_for(result, _gptoss_args())
     assert any("could not be established" in f for f in failures), failures
@@ -1211,7 +1223,7 @@ def test_gptoss_fails_when_the_adapter_is_the_one_it_started_with():
     from run_gptoss_t4 import failures_for
 
     result = _gptoss_result(
-        adapter_update = _moved(changed = False, abs_sum_after = 100.0, b_abs_sum_after = 0.0),
+        adapter_update=_moved(changed=False, abs_sum_after=100.0, b_abs_sum_after=0.0),
     )
     failures = failures_for(result, _gptoss_args())
     assert any("no optimizer update was applied" in f for f in failures), failures
@@ -1271,7 +1283,7 @@ def test_gptoss_fails_when_the_checkpoint_did_not_stay_on_the_gpu(placement, exp
     """
     from run_gptoss_t4 import failures_for
 
-    result = _gptoss_result(placement_after_load = placement)
+    result = _gptoss_result(placement_after_load=placement)
     failures = failures_for(result, _gptoss_args())
     assert any(expected in f for f in failures), failures
 
@@ -1285,7 +1297,7 @@ def test_gptoss_accepts_the_placement_the_probe_measured():
     from run_gptoss_t4 import failures_for
 
     result = _gptoss_result(
-        placement_after_load = {
+        placement_after_load={
             "parameters_by_device": {"cuda:0": 20_900_000_000},
             "hf_device_map_devices": None,
             "offloaded": False,
@@ -1303,7 +1315,7 @@ def test_gptoss_refuses_a_placement_record_it_cannot_read():
     from run_gptoss_t4 import failures_for
 
     result = _gptoss_result(
-        placement_after_load = {"parameters_by_device": {"cuda:0": 20_900_000_000}},
+        placement_after_load={"parameters_by_device": {"cuda:0": 20_900_000_000}},
     )
     failures = failures_for(result, _gptoss_args())
     assert any("whether the loader offloaded" in f for f in failures), failures
@@ -1318,7 +1330,7 @@ def test_grpo_fails_when_nothing_at_all_can_say_the_adapter_moved():
     from run_grpo_t4 import failures_for
 
     result = _grpo_result(
-        metrics = [{"step": s, "loss": 0.0} for s in (1, 2, 3)],
+        metrics=[{"step": s, "loss": 0.0} for s in (1, 2, 3)],
     )
     failures = failures_for(result, _grpo_args())
     assert any("could not be established" in f for f in failures), failures
@@ -1326,9 +1338,10 @@ def test_grpo_fails_when_nothing_at_all_can_say_the_adapter_moved():
 
 def test_grpo_reads_the_adapter_when_the_trainer_logged_no_norms():
     from run_grpo_t4 import failures_for
+
     result = _grpo_result(
-        metrics = [{"step": s, "loss": 0.0} for s in (1, 2, 3)],
-        adapter_update = _moved(),
+        metrics=[{"step": s, "loss": 0.0} for s in (1, 2, 3)],
+        adapter_update=_moved(),
     )
     assert failures_for(result, _grpo_args()) == []
 
@@ -1375,7 +1388,7 @@ def test_the_adapter_reading_beats_the_grad_norms_it_is_a_proxy_for():
     from training_evidence import update_verdict
 
     healthy = [{"step": s, "loss": 1.0, "grad_norm": 2.0} for s in (1, 2)]
-    frozen = _moved(changed = False, abs_sum_after = 100.0, b_abs_sum_after = 0.0)
+    frozen = _moved(changed=False, abs_sum_after=100.0, b_abs_sum_after=0.0)
     verdict = update_verdict(healthy, frozen)
     assert verdict["verdict"] == "not_applied"
     assert "bitwise identical" in verdict["detail"]
@@ -1496,9 +1509,9 @@ def test_a_non_finite_adapter_turns_both_legs_red():
         "non_finite": True,
         "error": "1 of 4 LoRA tensors hold non-finite weights",
     }
-    gptoss = gptoss_failures(_gptoss_result(adapter_update = corrupt), _gptoss_args())
+    gptoss = gptoss_failures(_gptoss_result(adapter_update=corrupt), _gptoss_args())
     assert gptoss and any("non-finite weights" in f for f in gptoss)
-    grpo = grpo_failures(_grpo_result(adapter_update = corrupt), _grpo_args())
+    grpo = grpo_failures(_grpo_result(adapter_update=corrupt), _grpo_args())
     assert grpo and any("non-finite weights" in f for f in grpo)
 
 
@@ -1557,6 +1570,7 @@ def _grpo_result(**over) -> dict:
 
 def test_a_healthy_grpo_run_passes():
     from run_grpo_t4 import failures_for
+
     assert failures_for(_grpo_result(), _grpo_args()) == []
 
 
@@ -1568,7 +1582,7 @@ def test_grpo_fails_when_a_step_logged_no_reward():
         {"step": 2, "loss": 0.0},
         {"step": 3, "loss": 0.0, "reward": 0.5, "reward_std": 0.2},
     ]
-    failures = failures_for(_grpo_result(log_history = history), _grpo_args())
+    failures = failures_for(_grpo_result(log_history=history), _grpo_args())
     assert failures and any("every step" in f for f in failures)
 
 
@@ -1578,13 +1592,13 @@ def test_grpo_ignores_the_summary_entry_that_carries_no_loss():
 
     history = [{"step": s, "loss": 0.0, "reward": 0.5, "reward_std": 0.2} for s in (1, 2, 3)]
     history.append({"step": 3})
-    assert failures_for(_grpo_result(log_history = history), _grpo_args()) == []
+    assert failures_for(_grpo_result(log_history=history), _grpo_args()) == []
 
 
 def test_grpo_fails_when_every_gradient_norm_is_nan():
     from run_grpo_t4 import failures_for
 
-    result = _grpo_result(metrics = [{"step": s, "loss": 0.0, "grad_norm": NAN} for s in (1, 2, 3)])
+    result = _grpo_result(metrics=[{"step": s, "loss": 0.0, "grad_norm": NAN} for s in (1, 2, 3)])
     failures = failures_for(result, _grpo_args())
     assert failures and any("optimizer update" in f for f in failures)
 
@@ -1593,7 +1607,7 @@ def test_grpo_fails_when_the_final_generation_skipped_the_trained_adapter():
     from run_grpo_t4 import failures_for
 
     result = _grpo_result(
-        fast_generate_lora = {"requested": True, "applied": False, "error": "AttributeError: x"}
+        fast_generate_lora={"requested": True, "applied": False, "error": "AttributeError: x"}
     )
     failures = failures_for(result, _grpo_args())
     assert failures and any("adapter" in f for f in failures)
@@ -1603,7 +1617,7 @@ def test_grpo_records_the_engine_it_built_before_a_later_failure(monkeypatch, tm
     """Construction succeeded and training raised: the report must say so."""
     import run_grpo_t4
 
-    def exploding_train(args, report = None):
+    def exploding_train(args, report=None):
         if report is not None:
             report["engine_built"] = True
         raise RuntimeError("CUDA error: an illegal memory access was encountered")
@@ -1613,7 +1627,7 @@ def test_grpo_records_the_engine_it_built_before_a_later_failure(monkeypatch, tm
     monkeypatch.setattr(run_grpo_t4, "vllm_facts", lambda: {"version": "0.11.2"})
     monkeypatch.setattr(sys, "argv", ["run_grpo_t4.py", "--outdir", str(tmp_path)])
     code = run_grpo_t4.main()
-    report = json.loads((tmp_path / "t4_smoke_report.json").read_text(encoding = "utf-8"))
+    report = json.loads((tmp_path / "t4_smoke_report.json").read_text(encoding="utf-8"))
     assert code == 1
     assert report["engine_built"] is True
     assert any("illegal memory access" in f for f in report["failures"])
@@ -1622,7 +1636,7 @@ def test_grpo_records_the_engine_it_built_before_a_later_failure(monkeypatch, tm
 def test_grpo_still_reports_an_engine_that_never_built(monkeypatch, tmp_path):
     import run_grpo_t4
 
-    def exploding_train(args, report = None):
+    def exploding_train(args, report=None):
         raise RuntimeError("EngineCore failed to start")
 
     monkeypatch.setattr(run_grpo_t4, "train", exploding_train)
@@ -1630,7 +1644,7 @@ def test_grpo_still_reports_an_engine_that_never_built(monkeypatch, tmp_path):
     monkeypatch.setattr(run_grpo_t4, "vllm_facts", lambda: {"version": "0.11.2"})
     monkeypatch.setattr(sys, "argv", ["run_grpo_t4.py", "--outdir", str(tmp_path)])
     assert run_grpo_t4.main() == 1
-    report = json.loads((tmp_path / "t4_smoke_report.json").read_text(encoding = "utf-8"))
+    report = json.loads((tmp_path / "t4_smoke_report.json").read_text(encoding="utf-8"))
     assert report["engine_built"] is False
 
 
@@ -1639,7 +1653,7 @@ def test_grpo_still_reports_an_engine_that_never_built(monkeypatch, tmp_path):
 
 def test_the_recapture_recipe_selects_the_control_report_by_label():
     """`reports[0]` is whichever kernel slug sorted first, not the control."""
-    readme = (SMOKE_DIR / "references" / "README.md").read_text(encoding = "utf-8")
+    readme = (SMOKE_DIR / "references" / "README.md").read_text(encoding="utf-8")
     assert 'reports"][0]' not in readme.replace(" ", "")
     assert '"control"' in readme
     recipe = readme[readme.index("## Capturing one") :]
@@ -1647,7 +1661,7 @@ def test_the_recapture_recipe_selects_the_control_report_by_label():
 
 
 def _recapture_recipe() -> str:
-    readme = (SMOKE_DIR / "references" / "README.md").read_text(encoding = "utf-8")
+    readme = (SMOKE_DIR / "references" / "README.md").read_text(encoding="utf-8")
     body = readme.split("python - <<'PY'\n", 1)[1]
     return body.split("\nPY\n", 1)[0]
 
@@ -1668,9 +1682,9 @@ def test_the_recapture_recipe_records_the_kernel_it_came_from(tmp_path, monkeypa
     reports = []
     for slug, leg_names in kernels:
         directory = evidence / slug.rsplit("/", 1)[-1]
-        directory.mkdir(parents = True)
+        directory.mkdir(parents=True)
         for leg in leg_names:
-            (directory / f"t4_{leg}_output.ipynb").write_text("{}", encoding = "utf-8")
+            (directory / f"t4_{leg}_output.ipynb").write_text("{}", encoding="utf-8")
             reports.append(
                 {
                     "label": leg,
@@ -1685,16 +1699,16 @@ def test_the_recapture_recipe_records_the_kernel_it_came_from(tmp_path, monkeypa
             )
     (evidence / "launch_result.json").write_text(
         json.dumps({"reports": reports, "kernels": [{"slug": s} for s, _ in kernels]}),
-        encoding = "utf-8",
+        encoding="utf-8",
     )
-    (tmp_path / "tests" / "kaggle" / "t4_smoke" / "references").mkdir(parents = True)
+    (tmp_path / "tests" / "kaggle" / "t4_smoke" / "references").mkdir(parents=True)
 
     monkeypatch.chdir(tmp_path)
     exec(compile(_recapture_recipe(), "<recapture-recipe>", "exec"), {"__name__": "__main__"})
 
     written = json.loads(
         (tmp_path / "tests/kaggle/t4_smoke/references/t4_qwen2.5-0.5b.json").read_text(
-            encoding = "utf-8"
+            encoding="utf-8"
         )
     )
     assert written["source_kernel"] == "danielhanchen/unsloth-t4-ci-9f0e1a2b"
@@ -1704,7 +1718,7 @@ def test_the_recapture_recipe_records_the_kernel_it_came_from(tmp_path, monkeypa
 
 def test_the_committed_reference_names_a_kernel_and_not_a_leg():
     reference = json.loads(
-        (SMOKE_DIR / "references" / "t4_qwen2.5-0.5b.json").read_text(encoding = "utf-8")
+        (SMOKE_DIR / "references" / "t4_qwen2.5-0.5b.json").read_text(encoding="utf-8")
     )
     assert "/" in reference["source_kernel"], reference["source_kernel"]
 
@@ -1724,9 +1738,9 @@ def test_reports_are_not_ordered_control_first(tmp_path):
         ("unsloth-t4-ci-0a1b2c3d", ("gptoss", "frontier")),
     ):
         kernel = tmp_path / slug
-        kernel.mkdir(parents = True)
+        kernel.mkdir(parents=True)
         for leg in legs:
-            (kernel / f"t4_{leg}_output.ipynb").write_text(notebook(leg), encoding = "utf-8")
+            (kernel / f"t4_{leg}_output.ipynb").write_text(notebook(leg), encoding="utf-8")
 
     labels = [r["label"] for r in extract_reports(tmp_path)]
     assert labels[0] != "control"
@@ -1758,7 +1772,7 @@ def test_gptoss_fails_when_the_cards_bf16_support_is_unreadable(environment):
     """
     from run_gptoss_t4 import failures_for
 
-    result = _gptoss_result(environment = environment)
+    result = _gptoss_result(environment=environment)
     failures = failures_for(result, _gptoss_args())
     assert failures and any("bf16" in f for f in failures), failures
 
@@ -1772,8 +1786,8 @@ def test_gptoss_still_reads_a_bf16_card_and_a_t4_the_way_it_did():
     assert (
         failures_for(
             _gptoss_result(
-                environment = {"bf16_supported": True, "gpu_name": "NVIDIA A100"},
-                precision = {"fp16": False, "bf16": True, "force_float32_env": None},
+                environment={"bf16_supported": True, "gpu_name": "NVIDIA A100"},
+                precision={"fp16": False, "bf16": True, "force_float32_env": None},
             ),
             _gptoss_args(),
         )
@@ -1815,8 +1829,8 @@ def test_batched_generation_runs_end_to_end_against_a_stub_model():
         def __call__(
             self,
             text,
-            return_tensors = None,
-            padding = False,
+            return_tensors=None,
+            padding=False,
         ):
             texts = [text] if isinstance(text, str) else list(text)
             # One token per character, so a length spread in the prompts is a
@@ -1829,14 +1843,14 @@ def test_batched_generation_runs_end_to_end_against_a_stub_model():
             # padded-width slice below depends on.
             padded = [[0] * (width - len(i)) + i for i in ids]
             return _Enc(
-                input_ids = torch.tensor(padded),
-                attention_mask = torch.tensor([[0] * (width - len(i)) + [1] * len(i) for i in ids]),
+                input_ids=torch.tensor(padded),
+                attention_mask=torch.tensor([[0] * (width - len(i)) + [1] * len(i) for i in ids]),
             )
 
         def decode(
             self,
             row,
-            skip_special_tokens = False,
+            skip_special_tokens=False,
         ):
             return "".join(chr(int(v)) for v in row if int(v) != 0)
 
@@ -1845,9 +1859,9 @@ def test_batched_generation_runs_end_to_end_against_a_stub_model():
 
         def generate(
             self,
-            input_ids = None,
-            attention_mask = None,
-            max_new_tokens = 8,
+            input_ids=None,
+            attention_mask=None,
+            max_new_tokens=8,
             **_kw,
         ):
             # Append the same continuation to every row, derived from that
@@ -1863,7 +1877,7 @@ def test_batched_generation_runs_end_to_end_against_a_stub_model():
     # whose largest batch could never have been formed. Lengths 1..8 so every
     # batch pads and the padded-width slice is exercised rather than skipped.
     prompts = ["abcdefgh"[:n] * 1 for n in range(1, 9)]
-    record = batched_generation(_Model(), _Tok(), prompts, max_new_tokens = 4)
+    record = batched_generation(_Model(), _Tok(), prompts, max_new_tokens=4)
 
     assert record["distinct_lengths"] == 8, "the stub prompts must actually pad"
     assert record["padding_side_observed"] == "left"
@@ -1874,6 +1888,7 @@ def test_batched_generation_runs_end_to_end_against_a_stub_model():
 
 def test_a_healthy_batched_generation_record_reports_no_failures():
     from run_t4_smoke import batched_generation_failures
+
     assert batched_generation_failures(_batch_record()) == []
 
 
@@ -1889,7 +1904,7 @@ def test_a_batch_whose_prompts_are_all_one_length_is_reported_as_proving_nothing
     whole file keeps being caught by.
     """
     failures = batched_generation_failures(
-        _batch_record(prompt_token_lengths = [12] * 8, distinct_lengths = 1)
+        _batch_record(prompt_token_lengths=[12] * 8, distinct_lengths=1)
     )
     assert any("nothing was ever padded" in f for f in failures), failures
 
@@ -1905,11 +1920,11 @@ def test_a_padding_side_silently_flipped_to_right_is_a_failure():
     """
     assert any(
         "padding_side_after" in f
-        for f in batched_generation_failures(_batch_record(padding_side_after = "right"))
+        for f in batched_generation_failures(_batch_record(padding_side_after="right"))
     )
     assert any(
         "padding_side_observed" in f
-        for f in batched_generation_failures(_batch_record(padding_side_observed = "right"))
+        for f in batched_generation_failures(_batch_record(padding_side_observed="right"))
     )
 
 
@@ -1934,9 +1949,9 @@ def test_empty_generations_are_a_failure_even_when_every_batch_agrees():
     """
     failures = batched_generation_failures(
         _batch_record(
-            singles = [""] * 8,
-            empty_outputs = [0, 1, 2, 3, 4, 5, 6, 7],
-            batched = {"2": [""] * 8, "4": [""] * 8, "8": [""] * 8},
+            singles=[""] * 8,
+            empty_outputs=[0, 1, 2, 3, 4, 5, 6, 7],
+            batched={"2": [""] * 8, "4": [""] * 8, "8": [""] * 8},
         )
     )
     assert any("generated nothing at all" in f for f in failures), failures
@@ -1952,13 +1967,13 @@ def test_an_empty_row_inside_a_batch_is_a_failure_even_when_the_singles_are_fine
     left-padded row attending to nothing, reported as a pass.
     """
     record = _batch_record(
-        batched = {
+        batched={
             "2": [f"out{i}" for i in range(8)],
             "4": [f"out{i}" for i in range(8)],
             "8": [f"out{i}" if i != 2 else "" for i in range(8)],
         },
-        agrees = {"2": True, "4": True, "8": False},
-        empty_batched_outputs = {"8": [2]},
+        agrees={"2": True, "4": True, "8": False},
+        empty_batched_outputs={"8": [2]},
     )
     failures = batched_generation_failures(record, "unsloth/gemma-4-E2B-it")
     assert any("inside the batch" in f and "[2]" in f for f in failures), failures
@@ -1986,8 +2001,8 @@ def test_batched_generation_records_a_row_that_is_empty_only_inside_the_batch():
         def __call__(
             self,
             text,
-            return_tensors = None,
-            padding = False,
+            return_tensors=None,
+            padding=False,
         ):
             texts = [text] if isinstance(text, str) else list(text)
             ids = [[ord(c) % 100 + 1 for c in t] for t in texts]
@@ -1996,14 +2011,14 @@ def test_batched_generation_records_a_row_that_is_empty_only_inside_the_batch():
             width = max(len(i) for i in ids)
             padded = [[0] * (width - len(i)) + i for i in ids]
             return _Enc(
-                input_ids = torch.tensor(padded),
-                attention_mask = torch.tensor([[0] * (width - len(i)) + [1] * len(i) for i in ids]),
+                input_ids=torch.tensor(padded),
+                attention_mask=torch.tensor([[0] * (width - len(i)) + [1] * len(i) for i in ids]),
             )
 
         def decode(
             self,
             row,
-            skip_special_tokens = False,
+            skip_special_tokens=False,
         ):
             return "".join(chr(int(v)) for v in row if int(v) != 0)
 
@@ -2012,9 +2027,9 @@ def test_batched_generation_records_a_row_that_is_empty_only_inside_the_batch():
 
         def generate(
             self,
-            input_ids = None,
-            attention_mask = None,
-            max_new_tokens = 8,
+            input_ids=None,
+            attention_mask=None,
+            max_new_tokens=8,
             **_kw,
         ):
             outs = []
@@ -2027,7 +2042,7 @@ def test_batched_generation_records_a_row_that_is_empty_only_inside_the_batch():
             return torch.tensor(outs)
 
     prompts = ["abcdefgh"[:n] for n in range(1, 9)]
-    record = batched_generation(_EmptyRowInsideBatch8(), _Tok(), prompts, max_new_tokens = 4)
+    record = batched_generation(_EmptyRowInsideBatch8(), _Tok(), prompts, max_new_tokens=4)
 
     assert record["empty_outputs"] == [], "the singles were fine; that is the point"
     assert record["empty_batched_outputs"] == {"8": [2]}
@@ -2040,13 +2055,14 @@ def test_too_few_prompts_to_fill_the_largest_batch_is_reported():
 
     """A batch size larger than the prompt list silently becomes one small batch."""
     failures = batched_generation_failures(
-        _batch_record(singles = ["a", "b"], prompt_token_lengths = [5, 9], distinct_lengths = 2)
+        _batch_record(singles=["a", "b"], prompt_token_lengths=[5, 9], distinct_lengths=2)
     )
     assert any("never actually formed" in f for f in failures), failures
 
 
 def test_a_missing_batched_record_is_a_failure_not_a_pass():
     from run_t4_smoke import batched_generation_failures
+
     """A leg where the check never ran must not look like a leg where it passed."""
     assert batched_generation_failures(None) == ["batched generation was never run"]
 
@@ -2133,7 +2149,8 @@ def _gguf_record(**over):
 
 def test_a_healthy_gguf_export_reports_no_failures():
     from gguf_export import export_failures
-    assert export_failures(_gguf_record(), accept_quantizations = ("q8_0",)) == []
+
+    assert export_failures(_gguf_record(), accept_quantizations=("q8_0",)) == []
 
 
 def test_an_export_that_reported_ok_but_wrote_no_gguf_is_a_failure():
@@ -2143,7 +2160,7 @@ def test_an_export_that_reported_ok_but_wrote_no_gguf_is_a_failure():
     calls it a successful export."""
     from gguf_export import export_failures
 
-    failures = export_failures(_gguf_record(ggufs = []), accept_quantizations = ("q8_0",))
+    failures = export_failures(_gguf_record(ggufs=[]), accept_quantizations=("q8_0",))
     assert failures and "no .gguf" in failures[0]
     assert "_gguf sibling" in failures[0]
 
@@ -2168,9 +2185,10 @@ def test_a_gguf_search_finds_the_file_in_the_sibling_directory(tmp_path):
 
 def test_a_gguf_that_is_only_a_header_is_not_an_export():
     from gguf_export import export_failures
+
     failures = export_failures(
         _gguf_record(
-            ggufs = [
+            ggufs=[
                 {
                     "path": "/tmp/q8p_gguf/x.Q8_0.gguf",
                     "mb": 0.1,
@@ -2179,7 +2197,7 @@ def test_a_gguf_that_is_only_a_header_is_not_an_export():
                 }
             ]
         ),
-        accept_quantizations = ("q8_0",),
+        accept_quantizations=("q8_0",),
     )
     assert failures and "header and no weights" in failures[0]
 
@@ -2191,7 +2209,7 @@ def test_a_model_allowed_to_override_the_quantization_still_passes():
     from gguf_export import export_failures
 
     record = _gguf_record(
-        ggufs = [
+        ggufs=[
             {
                 "path": "/tmp/g_gguf/gpt-oss-20b.MXFP4.gguf",
                 "mb": 11800.0,
@@ -2200,14 +2218,15 @@ def test_a_model_allowed_to_override_the_quantization_still_passes():
             }
         ]
     )
-    assert export_failures(record, accept_quantizations = ("mxfp4",)) == []
+    assert export_failures(record, accept_quantizations=("mxfp4",)) == []
     # ... and a leg that does NOT accept it still says so.
-    failures = export_failures(record, accept_quantizations = ("q8_0",))
+    failures = export_failures(record, accept_quantizations=("q8_0",))
     assert failures and "accepted quantization" in failures[0]
 
 
 def test_a_gguf_that_no_runner_could_execute_is_a_failure():
     from gguf_export import run_failures
+
     failures = run_failures(
         {
             "gguf": "/tmp/q8p_gguf/x.gguf",
@@ -2220,6 +2239,7 @@ def test_a_gguf_that_no_runner_could_execute_is_a_failure():
 
 def test_one_successful_runner_is_enough():
     from gguf_export import run_failures
+
     assert (
         run_failures(
             {
@@ -2317,7 +2337,7 @@ PARENT_ONLY_DESTS = {
 
 
 def _smoke_source() -> str:
-    return (SMOKE_DIR / "run_t4_smoke.py").read_text(encoding = "utf-8")
+    return (SMOKE_DIR / "run_t4_smoke.py").read_text(encoding="utf-8")
 
 
 def _child_command_block() -> str:

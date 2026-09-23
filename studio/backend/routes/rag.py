@@ -57,7 +57,7 @@ def _require_rag() -> None:
     than the 500 plus traceback a raising connection would produce, and rag_db's warn-once keeps the
     log quiet however often this fires."""
     if not rag_db.rag_available():
-        raise HTTPException(status_code = 503, detail = _UNAVAILABLE_DETAIL)
+        raise HTTPException(status_code=503, detail=_UNAVAILABLE_DETAIL)
 
 
 @contextmanager
@@ -71,7 +71,7 @@ def _rag_unavailable_as_503(cleanup_path: str | None = None) -> Iterator[None]:
         yield
     except rag_db.RagExtensionUnavailable as exc:
         _remove_stored_upload(cleanup_path)
-        raise HTTPException(status_code = 503, detail = _UNAVAILABLE_DETAIL) from exc
+        raise HTTPException(status_code=503, detail=_UNAVAILABLE_DETAIL) from exc
 
 
 def _rag_connection() -> sqlite3.Connection:
@@ -135,8 +135,8 @@ def _persist_upload_stream(source, filename: str, *, empty_detail: str) -> tuple
     ext = os.path.splitext(filename)[1].lower()
     if ext not in config.UPLOAD_EXTS:
         raise HTTPException(
-            status_code = 400,
-            detail = f"Unsupported file type '{ext}'. Allowed: {sorted(config.UPLOAD_EXTS)}",
+            status_code=400,
+            detail=f"Unsupported file type '{ext}'. Allowed: {sorted(config.UPLOAD_EXTS)}",
         )
     uploads = ensure_dir(rag_uploads_root())
     stored_path = str(uploads / f"{uuid.uuid4().hex}{ext}")
@@ -160,12 +160,12 @@ def _persist_upload_stream(source, filename: str, *, empty_detail: str) -> tuple
     if cap and size > cap:
         _remove_stored_upload(stored_path)
         raise HTTPException(
-            status_code = 413,
-            detail = f"File exceeds the {cap // (1024 * 1024)} MB upload limit.",
+            status_code=413,
+            detail=f"File exceeds the {cap // (1024 * 1024)} MB upload limit.",
         )
     if size == 0:
         _remove_stored_upload(stored_path)
-        raise HTTPException(status_code = 400, detail = empty_detail)
+        raise HTTPException(status_code=400, detail=empty_detail)
     return stored_path, filename, digest.hexdigest()
 
 
@@ -175,7 +175,7 @@ def _save_upload(file: UploadFile) -> tuple[str, str, str]:
     return _persist_upload_stream(
         file.file,
         filename,
-        empty_detail = "Uploaded file is empty.",
+        empty_detail="Uploaded file is empty.",
     )
 
 
@@ -190,13 +190,13 @@ def _save_native_path_upload(lease: str) -> tuple[str, str, str]:
     try:
         grant = verify_native_path_lease(
             lease,
-            operation = "attach",
-            expected_kind = "attachment",
-            expected_path_type = "file",
-            allowed_suffixes = sorted(config.UPLOAD_EXTS),
+            operation="attach",
+            expected_kind="attachment",
+            expected_path_type="file",
+            allowed_suffixes=sorted(config.UPLOAD_EXTS),
         )
     except NativePathLeaseError as exc:
-        raise HTTPException(status_code = 400, detail = str(exc)) from exc
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     account_path(grant.canonical_path)
     # Path.name is one component, so a "\" in it is part of the name, as in "AC\DC.pdf".
@@ -206,10 +206,10 @@ def _save_native_path_upload(lease: str) -> tuple[str, str, str]:
             return _persist_upload_stream(
                 source,
                 filename,
-                empty_detail = "Dropped file is empty.",
+                empty_detail="Dropped file is empty.",
             )
     except OSError as exc:
-        raise HTTPException(status_code = 400, detail = "Dropped file could not be read.") from exc
+        raise HTTPException(status_code=400, detail="Dropped file could not be read.") from exc
 
 
 def _resolve_document_upload(
@@ -218,7 +218,7 @@ def _resolve_document_upload(
     if native_path_lease:
         return _save_native_path_upload(native_path_lease)
     if file is None:
-        raise HTTPException(status_code = 400, detail = "No file was provided.")
+        raise HTTPException(status_code=400, detail="No file was provided.")
     return _save_upload(file)
 
 
@@ -232,7 +232,7 @@ def _remove_stored_upload(stored_path: str | None) -> None:
         if os.path.isfile(target) and os.path.commonpath([uploads, target]) == uploads:
             os.remove(target)
     except Exception:  # noqa: BLE001 - DB/index deletion has already succeeded.
-        logger.warning("failed to remove RAG upload %s", stored_path, exc_info = True)
+        logger.warning("failed to remove RAG upload %s", stored_path, exc_info=True)
 
 
 def _is_managed_preview_path(stored_path: str) -> bool:
@@ -261,12 +261,12 @@ def _doc_view(row: dict) -> dict:
 
 
 class CreateKbRequest(BaseModel):
-    name: str = Field(min_length = 1, max_length = 200)
+    name: str = Field(min_length=1, max_length=200)
     description: str | None = None
 
 
 class UpdateKbRequest(BaseModel):
-    name: str | None = Field(default = None, max_length = 200)
+    name: str | None = Field(default=None, max_length=200)
     description: str | None = None
 
 
@@ -275,24 +275,24 @@ class SearchRequest(BaseModel):
     kb_id: str | None = None
     thread_id: str | None = None
     project_id: str | None = None
-    top_k: int = Field(default = config.TOP_K_HYBRID, ge = 1, le = 50)
+    top_k: int = Field(default=config.TOP_K_HYBRID, ge=1, le=50)
     min_score: float = 0.0
     mode: str = "hybrid"
 
 
 class LinkFolderRequest(BaseModel):
-    name: str | None = Field(default = None, alias = "displayName", max_length = 200)
-    auto_sync: bool = Field(default = True, alias = "autoSync")
-    native_path_lease: str = Field(alias = "nativePathLease", min_length = 1)
+    name: str | None = Field(default=None, alias="displayName", max_length=200)
+    auto_sync: bool = Field(default=True, alias="autoSync")
+    native_path_lease: str = Field(alias="nativePathLease", min_length=1)
 
 
 class UpdateFolderRequest(BaseModel):
-    name: str | None = Field(default = None, max_length = 200)
-    auto_sync: bool | None = Field(default = None, alias = "autoSync")
+    name: str | None = Field(default=None, max_length=200)
+    auto_sync: bool | None = Field(default=None, alias="autoSync")
 
 
 def _resolve_linked_folder_path(
-    native_path_lease: str, *, verifier = None
+    native_path_lease: str, *, verifier=None
 ) -> tuple[str, tuple[int, int]]:
     """Resolve a desktop grant; the injectable verifier keeps resolution unit-testable."""
     from utils.native_path_leases import NativePathLeaseError, verify_native_path_lease
@@ -301,9 +301,9 @@ def _resolve_linked_folder_path(
     try:
         grant = verify(
             native_path_lease,
-            operation = "link-documents",
-            expected_kind = "document-folder",
-            expected_path_type = "directory",
+            operation="link-documents",
+            expected_kind="document-folder",
+            expected_path_type="directory",
         )
         device_id = getattr(grant, "device_id", None)
         file_id = getattr(grant, "file_id", None)
@@ -314,9 +314,9 @@ def _resolve_linked_folder_path(
             (device_id, file_id),
         )
     except NativePathLeaseError as exc:
-        raise HTTPException(status_code = 400, detail = str(exc)) from exc
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     except ValueError as exc:
-        raise HTTPException(status_code = 400, detail = str(exc)) from exc
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 def _folder_view(row: dict) -> dict:
@@ -370,19 +370,21 @@ def _require_scope_owner(
         detail = "Knowledge base not found"
     else:
         from storage.studio_db import get_chat_project
+
         exists = get_chat_project(scope_id) is not None
         detail = "Project not found"
     if not exists:
-        raise HTTPException(status_code = 404, detail = detail)
+        raise HTTPException(status_code=404, detail=detail)
 
 
 def _require_document_owner(conn: sqlite3.Connection, document: dict) -> None:
     if document.get("kb_id") and store.get_kb(conn, document["kb_id"]) is None:
-        raise HTTPException(status_code = 404, detail = "Document not found")
+        raise HTTPException(status_code=404, detail="Document not found")
     if document.get("project_id"):
         from storage.studio_db import get_chat_project
+
         if get_chat_project(document["project_id"]) is None:
-            raise HTTPException(status_code = 404, detail = "Document not found")
+            raise HTTPException(status_code=404, detail="Document not found")
 
 
 def _create_linked_folder(scope_type: str, scope_id: str, payload: LinkFolderRequest) -> dict:
@@ -391,15 +393,15 @@ def _create_linked_folder(scope_type: str, scope_id: str, payload: LinkFolderReq
         with folder_sync.scope_lock(_scope_for_owner(scope_type, scope_id)):
             _require_scope_owner(scope_type, scope_id)
             folder, job_id = folder_sync.create_folder_with_sync(
-                scope_type = scope_type,
-                scope_id = scope_id,
-                path = path,
-                expected_identity = signed_identity,
-                name = payload.name,
-                auto_sync = payload.auto_sync,
+                scope_type=scope_type,
+                scope_id=scope_id,
+                path=path,
+                expected_identity=signed_identity,
+                name=payload.name,
+                auto_sync=payload.auto_sync,
             )
     except ValueError as exc:
-        raise HTTPException(status_code = 400, detail = str(exc)) from exc
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     job = folder_sync.get_job(job_id)
     return {"linkedFolder": _folder_view(folder), "job": _folder_job_view(job)}
 
@@ -443,9 +445,9 @@ def create_knowledge_base(
     try:
         kb_id = store.create_kb(
             conn,
-            name = payload.name.strip(),
-            description = (payload.description or None),
-            embedding_model = config.effective_embedding_model(),
+            name=payload.name.strip(),
+            description=(payload.description or None),
+            embedding_model=config.effective_embedding_model(),
         )
         return {"id": kb_id, "name": payload.name.strip()}
     finally:
@@ -462,7 +464,7 @@ def update_knowledge_base(
     conn = _rag_connection()
     try:
         if store.get_kb(conn, kb_id) is None:
-            raise HTTPException(status_code = 404, detail = "Knowledge base not found")
+            raise HTTPException(status_code=404, detail="Knowledge base not found")
         sets, params = [], []
         if payload.name is not None:
             sets.append("name=?")
@@ -485,17 +487,17 @@ def delete_knowledge_base(kb_id: str, subject: str = Depends(get_current_subject
     with _rag_unavailable_as_503():
         deleted = folder_sync.retire_and_delete_kb(kb_id)
     if not deleted:
-        raise HTTPException(status_code = 404, detail = "Knowledge base not found")
+        raise HTTPException(status_code=404, detail="Knowledge base not found")
     try:
         folder_sync.delete_retired_scope(store.kb_scope(kb_id))
     except Exception:
-        logger.warning("failed to delete retired knowledge-base scope %s", kb_id, exc_info = True)
+        logger.warning("failed to delete retired knowledge-base scope %s", kb_id, exc_info=True)
     return {"ok": True}
 
 
 def _raise_if_scope_retired(scope: str, detail: str = "Knowledge base is being deleted") -> None:
     if folder_sync.scope_retired(scope):
-        raise HTTPException(status_code = 409, detail = detail)
+        raise HTTPException(status_code=409, detail=detail)
 
 
 # The three upload routes stay sync so FastAPI runs them in the threadpool; their
@@ -504,7 +506,7 @@ def _raise_if_scope_retired(scope: str, detail: str = "Knowledge base is being d
 def upload_kb_document(
     kb_id: str,
     file: UploadFile | None = File(None),
-    native_path_lease: str | None = Form(None, alias = "nativePathLease"),
+    native_path_lease: str | None = Form(None, alias="nativePathLease"),
     ocr: bool | None = Form(None),
     caption: bool | None = Form(None),
     subject: str = Depends(get_current_subject),
@@ -513,7 +515,7 @@ def upload_kb_document(
     conn = _rag_connection()
     try:
         if store.get_kb(conn, kb_id) is None:
-            raise HTTPException(status_code = 404, detail = "Knowledge base not found")
+            raise HTTPException(status_code=404, detail="Knowledge base not found")
     finally:
         conn.close()
     scope = store.kb_scope(kb_id)
@@ -530,9 +532,9 @@ def upload_kb_document(
                     None,
                     filename,
                     stored_path,
-                    ocr = ocr,
-                    caption = caption,
-                    content_hash = content_hash,
+                    ocr=ocr,
+                    caption=caption,
+                    content_hash=content_hash,
                 )
     except Exception:
         _remove_stored_upload(stored_path)
@@ -567,7 +569,7 @@ def link_kb_folder(
 def upload_thread_document(
     thread_id: str,
     file: UploadFile | None = File(None),
-    native_path_lease: str | None = Form(None, alias = "nativePathLease"),
+    native_path_lease: str | None = Form(None, alias="nativePathLease"),
     ocr: bool | None = Form(None),
     caption: bool | None = Form(None),
     subject: str = Depends(get_current_subject),
@@ -581,9 +583,9 @@ def upload_thread_document(
             thread_id,
             filename,
             stored_path,
-            ocr = ocr,
-            caption = caption,
-            content_hash = content_hash,
+            ocr=ocr,
+            caption=caption,
+            content_hash=content_hash,
         )
     return {"documentId": document_id, "jobId": job_id, "filename": filename}
 
@@ -618,7 +620,7 @@ def _discard_document(document_id: str) -> None:
 def upload_project_document(
     project_id: str,
     file: UploadFile | None = File(None),
-    native_path_lease: str | None = Form(None, alias = "nativePathLease"),
+    native_path_lease: str | None = Form(None, alias="nativePathLease"),
     ocr: bool | None = Form(None),
     caption: bool | None = Form(None),
     subject: str = Depends(get_current_subject),
@@ -627,7 +629,7 @@ def upload_project_document(
     from storage.studio_db import get_chat_project
 
     if get_chat_project(project_id) is None:
-        raise HTTPException(status_code = 404, detail = "Project not found")
+        raise HTTPException(status_code=404, detail="Project not found")
     scope = store.project_scope(project_id)
     _raise_if_scope_retired(scope, "Project is being deleted")
     stored_path, filename, content_hash = _resolve_document_upload(file, native_path_lease)
@@ -642,10 +644,10 @@ def upload_project_document(
                     None,
                     filename,
                     stored_path,
-                    project_id = project_id,
-                    ocr = ocr,
-                    caption = caption,
-                    content_hash = content_hash,
+                    project_id=project_id,
+                    ocr=ocr,
+                    caption=caption,
+                    content_hash=content_hash,
                 )
     except Exception:
         _remove_stored_upload(stored_path)
@@ -654,7 +656,7 @@ def upload_project_document(
     # RAG cleanup has already listed the project's documents
     if get_chat_project(project_id) is None:
         _discard_document(document_id)
-        raise HTTPException(status_code = 404, detail = "Project not found")
+        raise HTTPException(status_code=404, detail="Project not found")
     return {"documentId": document_id, "jobId": job_id, "filename": filename}
 
 
@@ -683,18 +685,18 @@ def link_project_folder(
 
 @router.get("/linked-folders")
 def list_linked_folders(
-    scope_type: str | None = Query(default = None),
-    scope_id: str | None = Query(default = None),
+    scope_type: str | None = Query(default=None),
+    scope_id: str | None = Query(default=None),
     subject: str = Depends(get_current_subject),
 ) -> dict:
     _require_rag()
     if bool(scope_type) != bool(scope_id):
         raise HTTPException(
-            status_code = 400, detail = "scope_type and scope_id must be provided together"
+            status_code=400, detail="scope_type and scope_id must be provided together"
         )
     if scope_type:
         if scope_type not in {"knowledge_base", "project"}:
-            raise HTTPException(status_code = 400, detail = "Unsupported linked-folder scope")
+            raise HTTPException(status_code=400, detail="Unsupported linked-folder scope")
         scope = (
             store.kb_scope(scope_id)
             if scope_type == "knowledge_base"
@@ -713,7 +715,7 @@ def list_linked_folders(
         from storage.studio_db import list_chat_projects
 
         project_names = {
-            row["id"]: row["name"] for row in list_chat_projects(include_archived = True)
+            row["id"]: row["name"] for row in list_chat_projects(include_archived=True)
         }
         rows = [row for scope in scopes for row in folder_sync.list_folders(scope)]
         for row in rows:
@@ -731,23 +733,23 @@ def update_linked_folder(
 ) -> dict:
     _require_rag()
     try:
-        row = folder_sync.update_folder(folder_id, name = payload.name, auto_sync = payload.auto_sync)
+        row = folder_sync.update_folder(folder_id, name=payload.name, auto_sync=payload.auto_sync)
     except KeyError as exc:
-        raise HTTPException(status_code = 404, detail = "Linked folder not found") from exc
+        raise HTTPException(status_code=404, detail="Linked folder not found") from exc
     except ValueError as exc:
-        raise HTTPException(status_code = 400, detail = str(exc)) from exc
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"linkedFolder": _folder_view(row)}
 
 
 @router.delete("/linked-folders/{folder_id}")
 def unlink_folder(
     folder_id: str,
-    remove_index: bool = Query(default = True),
+    remove_index: bool = Query(default=True),
     subject: str = Depends(get_current_subject),
 ) -> dict:
     _require_rag()
-    if not folder_sync.delete_folder(folder_id, remove_index = remove_index):
-        raise HTTPException(status_code = 404, detail = "Linked folder not found")
+    if not folder_sync.delete_folder(folder_id, remove_index=remove_index):
+        raise HTTPException(status_code=404, detail="Linked folder not found")
     return {"ok": True}
 
 
@@ -757,7 +759,7 @@ def sync_folder(folder_id: str, subject: str = Depends(get_current_subject)) -> 
     try:
         return {"job": _folder_job_view(folder_sync.get_job(folder_sync.request_sync(folder_id)))}
     except KeyError as exc:
-        raise HTTPException(status_code = 404, detail = "Linked folder not found") from exc
+        raise HTTPException(status_code=404, detail="Linked folder not found") from exc
 
 
 @router.post("/linked-folders/{folder_id}/rebuild")
@@ -766,11 +768,11 @@ def rebuild_folder(folder_id: str, subject: str = Depends(get_current_subject)) 
     try:
         return {
             "job": _folder_job_view(
-                folder_sync.get_job(folder_sync.request_sync(folder_id, rebuild = True))
+                folder_sync.get_job(folder_sync.request_sync(folder_id, rebuild=True))
             )
         }
     except KeyError as exc:
-        raise HTTPException(status_code = 404, detail = "Linked folder not found") from exc
+        raise HTTPException(status_code=404, detail="Linked folder not found") from exc
 
 
 @router.get("/documents")
@@ -787,7 +789,7 @@ def list_all_uploaded_documents(subject: str = Depends(get_current_subject)) -> 
 
     from storage.studio_db import list_chat_projects
 
-    project_names = {p["id"]: p["name"] for p in list_chat_projects(include_archived = True)}
+    project_names = {p["id"]: p["name"] for p in list_chat_projects(include_archived=True)}
 
     out = []
     for doc in docs:
@@ -813,11 +815,11 @@ def delete_document(document_id: str, subject: str = Depends(get_current_subject
     try:
         doc = store.get_visible_document(conn, document_id)
         if doc is None:
-            raise HTTPException(status_code = 404, detail = "Document not found")
+            raise HTTPException(status_code=404, detail="Document not found")
         if doc.get("linked_folder_id"):
             raise HTTPException(
-                status_code = 409,
-                detail = "Linked-folder documents are managed by folder synchronization",
+                status_code=409,
+                detail="Linked-folder documents are managed by folder synchronization",
             )
         store.delete_document(conn, document_id)
         _remove_stored_upload(doc.get("stored_path"))
@@ -832,7 +834,7 @@ def job_status(job_id: str, subject: str = Depends(get_current_subject)) -> dict
     with _rag_unavailable_as_503():
         row = ingestion.get_job_status(job_id)
     if row is None:
-        raise HTTPException(status_code = 404, detail = "Job not found")
+        raise HTTPException(status_code=404, detail="Job not found")
     return {
         "id": row["id"],
         "documentId": row["document_id"],
@@ -846,7 +848,7 @@ def job_status(job_id: str, subject: str = Depends(get_current_subject)) -> dict
 
 # POST too: quick tunnels hold a streamed GET until it closes. The hidden GET keeps old clients.
 @router.post("/jobs/{job_id}/events")
-@router.get("/jobs/{job_id}/events", include_in_schema = False)
+@router.get("/jobs/{job_id}/events", include_in_schema=False)
 def job_events(job_id: str, subject: str = Depends(get_current_subject)) -> StreamingResponse:
     _require_rag()
 
@@ -860,8 +862,8 @@ def job_events(job_id: str, subject: str = Depends(get_current_subject)) -> Stre
 
     return StreamingResponse(
         gen(),
-        media_type = "text/event-stream",
-        headers = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
 
 
@@ -895,19 +897,19 @@ def folder_job_status(job_id: str, subject: str = Depends(get_current_subject)) 
     _require_rag()
     row = folder_sync.get_job(job_id)
     if row is None:
-        raise HTTPException(status_code = 404, detail = "Folder sync job not found")
+        raise HTTPException(status_code=404, detail="Folder sync job not found")
     return _folder_job_view(row)
 
 
 # POST too, for the same reason as /jobs/{job_id}/events above.
 @router.post("/linked-folder-jobs/{job_id}/events")
-@router.get("/linked-folder-jobs/{job_id}/events", include_in_schema = False)
+@router.get("/linked-folder-jobs/{job_id}/events", include_in_schema=False)
 def folder_job_events(
     job_id: str, subject: str = Depends(get_current_subject)
 ) -> StreamingResponse:
     _require_rag()
     if folder_sync.get_job(job_id) is None:
-        raise HTTPException(status_code = 404, detail = "Folder sync job not found")
+        raise HTTPException(status_code=404, detail="Folder sync job not found")
 
     def gen():
         for event in folder_sync.job_events(job_id):
@@ -927,8 +929,8 @@ def folder_job_events(
 
     return StreamingResponse(
         gen(),
-        media_type = "text/event-stream",
-        headers = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
 
 
@@ -950,7 +952,7 @@ def search(payload: SearchRequest, subject: str = Depends(get_current_subject)) 
                 scopes.append(store.thread_scope(payload.thread_id))
             if not scopes:
                 raise HTTPException(
-                    status_code = 400, detail = "Provide kb_id, project_id, or thread_id"
+                    status_code=400, detail="Provide kb_id, project_id, or thread_id"
                 )
             scope = scopes[0] if len(scopes) == 1 else scopes
 
@@ -959,7 +961,7 @@ def search(payload: SearchRequest, subject: str = Depends(get_current_subject)) 
         elif payload.mode == "dense":
             hits = retrieval.retrieve_dense(conn, scope, payload.query, payload.top_k)
         else:
-            hits = retrieval.retrieve_hybrid(conn, scope, payload.query, k = payload.top_k)
+            hits = retrieval.retrieve_hybrid(conn, scope, payload.query, k=payload.top_k)
         hits = retrieval.filter_min_score(hits, payload.min_score)
         rows = store.chunks_by_id(conn, [h.chunk_id for h in hits])
         results = []
@@ -1042,7 +1044,7 @@ def _verify_document_token(document_id: str, token: str) -> AccountContext | Non
 @router.get("/documents/{document_id}/preview-target")
 def preview_target(
     document_id: str,
-    chunk_id: str | None = Query(default = None),
+    chunk_id: str | None = Query(default=None),
     subject: str = Depends(get_current_subject),
 ) -> dict:
     """Resolve a citation to filename, page, and highlight regions."""
@@ -1051,7 +1053,7 @@ def preview_target(
     try:
         doc = store.get_visible_document(conn, document_id)
         if doc is None:
-            raise HTTPException(status_code = 404, detail = "Document not found")
+            raise HTTPException(status_code=404, detail="Document not found")
         _require_document_owner(conn, doc)
         ext = os.path.splitext(doc["filename"])[1].lower()
         out = {
@@ -1090,15 +1092,15 @@ def document_file_url(
     """Mint a short-lived signed URL for the source file."""
     if no_credential:
         raise HTTPException(
-            status_code = 403,
-            detail = "Document links can only be created from the Unsloth UI or with an API key.",
+            status_code=403,
+            detail="Document links can only be created from the Unsloth UI or with an API key.",
         )
     _require_rag()
     conn = _rag_connection()
     try:
         doc = store.get_visible_document(conn, document_id)
         if doc is None or not doc.get("stored_path"):
-            raise HTTPException(status_code = 404, detail = "Document file not available")
+            raise HTTPException(status_code=404, detail="Document file not available")
         _require_document_owner(conn, doc)
     finally:
         conn.close()
@@ -1106,7 +1108,7 @@ def document_file_url(
     return {"url": f"/api/rag/documents/{document_id}/file-signed?token={token}"}
 
 
-@router.get("/documents/{document_id}/file-signed", response_model = None)
+@router.get("/documents/{document_id}/file-signed", response_model=None)
 def document_file_signed(document_id: str, token: str = Query(...)) -> FileResponse:
     """Serve the source file gated by the HMAC token (no bearer) so pdf.js range
     requests work."""
@@ -1114,7 +1116,7 @@ def document_file_signed(document_id: str, token: str = Query(...)) -> FileRespo
     # a connection on its first call, which is not work an unverified token should buy.
     account = _verify_document_token(document_id, token)
     if account is None:
-        raise HTTPException(status_code = 401, detail = "Invalid or expired token")
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
     # No auth dependency on this route, so without this bind every read hits the owner's store.
     marker = bind_account(account)
     try:
@@ -1128,15 +1130,15 @@ def document_file_signed(document_id: str, token: str = Query(...)) -> FileRespo
             conn.close()
         stored_path = (doc or {}).get("stored_path")
         if not doc or not stored_path or not os.path.isfile(stored_path):
-            raise HTTPException(status_code = 404, detail = "Document file not found")
+            raise HTTPException(status_code=404, detail="Document file not found")
         if not _is_managed_preview_path(stored_path):
-            raise HTTPException(status_code = 403, detail = "Forbidden")
+            raise HTTPException(status_code=403, detail="Forbidden")
     finally:
         reset_account(marker)
     ext = os.path.splitext(doc["filename"])[1].lower()
     return FileResponse(
         stored_path,
-        media_type = _CONTENT_TYPES.get(ext, "application/octet-stream"),
+        media_type=_CONTENT_TYPES.get(ext, "application/octet-stream"),
         # linked documents are named by a posix relative path, invalid in this header
-        filename = doc["filename"].rsplit("/", 1)[-1],
+        filename=doc["filename"].rsplit("/", 1)[-1],
     )

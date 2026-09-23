@@ -44,16 +44,16 @@ def backend(monkeypatch):
     return engine
 
 
-def _resident(engine, repo_id = "org/model"):
-    engine._state = SimpleNamespace(repo_id = repo_id)
+def _resident(engine, repo_id="org/model"):
+    engine._state = SimpleNamespace(repo_id=repo_id)
 
 
 def _background_load(
     engine,
     account_id,
-    repo_id = "org/other",
+    repo_id="org/other",
 ):
-    engine._loading = _LoadingState(repo_id = repo_id, base_repo = repo_id, account_id = account_id)
+    engine._loading = _LoadingState(repo_id=repo_id, base_repo=repo_id, account_id=account_id)
 
 
 def _pending_invocation(engine, account_id):
@@ -65,14 +65,14 @@ def test_the_resident_owner_can_eject_while_another_account_queues_a_replacement
     _resident(backend)
     _background_load(backend, ALICE)
     # Alice is merely downloading. Bob owns what is loaded, and require_resident_control said so.
-    assert backend.unload(expected_account = BOB)["loaded"] is False
+    assert backend.unload(expected_account=BOB)["loaded"] is False
     assert backend._unload_waiters == 0
 
 
 def test_a_foreign_account_cannot_cancel_a_pending_background_load(backend):
     _background_load(backend, ALICE)
     with pytest.raises(account_access.GpuBusyForAnotherAccountError):
-        backend.unload(expected_account = BOB)
+        backend.unload(expected_account=BOB)
     # Refused before the fence moved: the victim's load is untouched.
     assert backend._unload_waiters == 0 and not backend._cancel_event.is_set()
     assert backend._loading is not None
@@ -82,14 +82,14 @@ def test_a_foreign_account_cannot_cancel_a_pending_cpu_load(backend):
     # No GPU claim and no published resident: the invocation record is the only owner there is.
     _pending_invocation(backend, ALICE)
     with pytest.raises(account_access.GpuBusyForAnotherAccountError):
-        backend.unload(expected_account = BOB)
+        backend.unload(expected_account=BOB)
     assert backend._unload_waiters == 0 and not backend._cancel_event.is_set()
 
 
 def test_the_account_that_started_the_load_can_still_cancel_it(backend):
     _background_load(backend, ALICE)
     _pending_invocation(backend, ALICE)
-    backend.unload(expected_account = ALICE)
+    backend.unload(expected_account=ALICE)
     assert backend._cancel_event.is_set() and backend._loading is None
     assert backend._unload_waiters == 0
 
@@ -99,7 +99,7 @@ def test_an_active_foreign_generation_still_refuses_the_eject(backend):
     backend._active_generate_cancel = threading.Event()
     backend._active_generate_account = ALICE
     with pytest.raises(account_access.GpuBusyForAnotherAccountError):
-        backend.unload(expected_account = BOB)
+        backend.unload(expected_account=BOB)
     assert not backend._active_generate_cancel.is_set()
 
 
@@ -113,13 +113,13 @@ def test_a_refused_eject_leaves_no_fence_behind(backend, monkeypatch):
         raise boom
 
     monkeypatch.setattr(backend, "_unload_locked", explode)
-    with pytest.raises(RuntimeError, match = "teardown exploded"):
+    with pytest.raises(RuntimeError, match="teardown exploded"):
         backend.unload()
     assert backend._unload_waiters == 0 and backend._teardown_waiters == 0
 
 
 def test_the_owner_can_eject_an_idle_backend(backend):
-    assert backend.unload(expected_account = OWNER)["loaded"] is False
+    assert backend.unload(expected_account=OWNER)["loaded"] is False
 
 
 def test_a_preflight_caller_cannot_block_the_owner_of_the_load_in_flight(backend):
@@ -127,7 +127,7 @@ def test_a_preflight_caller_cannot_block_the_owner_of_the_load_in_flight(backend
     runs. The admitted load owns the epoch, so Alice can still cancel her own construction."""
     _background_load(backend, ALICE)
     _pending_invocation(backend, BOB)
-    backend.unload(expected_account = ALICE)
+    backend.unload(expected_account=ALICE)
     assert backend._cancel_event.is_set() and backend._loading is None
 
 
@@ -135,7 +135,7 @@ def test_a_preflight_caller_cannot_block_the_resident_owner(backend):
     """Same, with a published resident instead of a load in flight."""
     _resident(backend)
     _pending_invocation(backend, BOB)
-    assert backend.unload(expected_account = ALICE)["loaded"] is False
+    assert backend.unload(expected_account=ALICE)["loaded"] is False
 
 
 def test_an_eject_arriving_between_the_wait_and_the_lock_is_waited_out(backend, monkeypatch):
@@ -164,19 +164,19 @@ def test_an_eject_arriving_between_the_wait_and_the_lock_is_waited_out(backend, 
     monkeypatch.setattr(backend, "_wait_for_pending_unloads", racing_wait)
 
     @_account_owned_load
-    def admitted(self, *, _load_token = None):
+    def admitted(self, *, _load_token=None):
         return _load_token
 
     def release():
-        started.wait(timeout = 10)
+        started.wait(timeout=10)
         with backend._load_cancel_lock:
             backend._unload_waiters -= 1
             backend._unload_fence_clear.set()
 
-    releaser = threading.Thread(target = release, daemon = True)
+    releaser = threading.Thread(target=release, daemon=True)
     releaser.start()
     token = admitted(backend)
-    releaser.join(timeout = 10)
+    releaser.join(timeout=10)
 
     assert calls["waits"] == 2, "the load registered without waiting the racing eject out"
     assert token == backend._load_token
@@ -195,9 +195,9 @@ def test_a_load_waiting_out_an_eject_sleeps_instead_of_spinning(backend):
     polls = {"n": 0}
     real_wait = backend._unload_fence_clear.wait
 
-    def counted(timeout = None):
+    def counted(timeout=None):
         polls["n"] += 1
-        return real_wait(timeout = timeout)
+        return real_wait(timeout=timeout)
 
     backend._unload_fence_clear.wait = counted
 
@@ -207,10 +207,10 @@ def test_a_load_waiting_out_an_eject_sleeps_instead_of_spinning(backend):
             backend._unload_waiters -= 1
             backend._unload_fence_clear.set()
 
-    releaser = threading.Thread(target = release, daemon = True)
+    releaser = threading.Thread(target=release, daemon=True)
     releaser.start()
     backend._wait_for_pending_unloads()
-    releaser.join(timeout = 10)
+    releaser.join(timeout=10)
 
     # ~5 polls at the 0.1s timeout. A spin does tens of thousands in the same half second.
     assert polls["n"] <= 20, polls
@@ -242,15 +242,15 @@ def test_a_cancelled_load_still_reports_the_repos_it_is_reading(backend):
     """The eject drops _loading at once, but that load's thread reads on until it unwinds, holding
     no lock inside _prefetch_files. The delete guard must keep refusing until it is done."""
     backend._loading = _LoadingState(
-        repo_id = "org/model-GGUF",
-        base_repo = "org/base",
-        account_id = ALICE,
-        fetch_repo = "mirror/base",
+        repo_id="org/model-GGUF",
+        base_repo="org/base",
+        account_id=ALICE,
+        fetch_repo="mirror/base",
     )
     everything = {"org/model-GGUF", "org/base", "mirror/base"}
     cancelled_token = backend._load_token
 
-    backend.unload(expected_account = ALICE)
+    backend.unload(expected_account=ALICE)
 
     assert backend._loading is None
     assert set(backend.draining_repo_ids()) == everything, "deletable while still being read"
@@ -266,7 +266,7 @@ def test_a_cancelled_load_still_reports_the_repos_it_is_reading(backend):
 def test_the_load_thread_releases_its_own_drain(backend, monkeypatch):
     """Nothing else knows when a prefetch returned, and during one there is no record to key on."""
     backend._loading = _LoadingState(
-        repo_id = "org/model-GGUF", base_repo = "org/base", account_id = ALICE
+        repo_id="org/model-GGUF", base_repo="org/base", account_id=ALICE
     )
     token = backend._load_token
     with backend._load_cancel_lock:
@@ -276,7 +276,7 @@ def test_the_load_thread_releases_its_own_drain(backend, monkeypatch):
         backend, "load_pipeline", lambda **kw: (_ for _ in ()).throw(RuntimeError("cancelled"))
     )
     monkeypatch.setattr("core.inference.diffusion.detect_family_for_pick", lambda *a, **k: None)
-    backend._run_load(repo_id = "org/model-GGUF", _load_token = token)
+    backend._run_load(repo_id="org/model-GGUF", _load_token=token)
 
     assert backend.draining_repo_ids() == (), "the thread returned and nothing released its repos"
 
@@ -284,7 +284,7 @@ def test_the_load_thread_releases_its_own_drain(backend, monkeypatch):
 def test_an_eject_with_no_load_in_flight_holds_nothing(backend):
     """Nothing is reading, so holding ids would only refuse deletes for no reason."""
     _resident(backend)
-    backend.unload(expected_account = ALICE)
+    backend.unload(expected_account=ALICE)
     assert backend._draining_repos == {} and backend.draining_repo_ids() == ()
 
 
@@ -300,13 +300,13 @@ def test_a_generation_turned_away_by_the_load_fence_sleeps_on_it(backend):
     real_fence = backend._unload_fence_clear.wait
     real_teardown = backend._teardown_drained.wait
 
-    def counted_teardown(timeout = None):
+    def counted_teardown(timeout=None):
         polls["teardown"] += 1
-        return real_teardown(timeout = timeout)
+        return real_teardown(timeout=timeout)
 
-    def counted_fence(timeout = None):
+    def counted_fence(timeout=None):
         polls["fence"] += 1
-        return real_fence(timeout = timeout)
+        return real_fence(timeout=timeout)
 
     backend._teardown_drained.wait = counted_teardown
     backend._unload_fence_clear.wait = counted_fence
@@ -317,11 +317,11 @@ def test_a_generation_turned_away_by_the_load_fence_sleeps_on_it(backend):
             backend._unload_waiters -= 1
             backend._unload_fence_clear.set()
 
-    releaser = threading.Thread(target = release, daemon = True)
+    releaser = threading.Thread(target=release, daemon=True)
     releaser.start()
     with backend._generation_slot(threading.Event()):
         pass
-    releaser.join(timeout = 10)
+    releaser.join(timeout=10)
 
     # ~4 sleeps across the 0.4s fence. A spin does tens of thousands, on the wrong event.
     assert polls["fence"] >= 2, polls

@@ -100,7 +100,7 @@ class FakeTransport:
         self,
         turns,
         *,
-        max_turns = 20,
+        max_turns=20,
     ):
         self.turns = [list(turn) for turn in turns]
         self.requests: list[dict] = []
@@ -121,8 +121,8 @@ class FakeTransport:
 def _tool_end(
     result,
     *,
-    tool_call_id = "hosted-1",
-    tool_name = "web_search",
+    tool_call_id="hosted-1",
+    tool_name="web_search",
 ):
     """The hosted tool_end frame the replay cases send."""
     return _hosted_event(
@@ -159,28 +159,28 @@ def _run(transport, *, nudge_tool_calls: bool | None = None):
         out: list[str] = []
         agen = stream_with_studio_tools(
             transport,
-            run = ToolLoopRun(
-                messages = [{"role": "user", "content": "hi"}],
-                session_id = "s1",
-                thread_id = "t1",
+            run=ToolLoopRun(
+                messages=[{"role": "user", "content": "hi"}],
+                session_id="s1",
+                thread_id="t1",
             ),
-            policy = ToolLoopPolicy(
-                tools = [WEB],
-                max_calls = 25,
-                timeout = 300,
-                permission_mode = "off",
-                confirm_calls = False,
-                bypass_permissions = False,
-                rag_scope = None,
-                nudge_tool_calls = nudge_tool_calls,
+            policy=ToolLoopPolicy(
+                tools=[WEB],
+                max_calls=25,
+                timeout=300,
+                permission_mode="off",
+                confirm_calls=False,
+                bypass_permissions=False,
+                rag_scope=None,
+                nudge_tool_calls=nudge_tool_calls,
             ),
-            cancel_event = threading.Event(),
+            cancel_event=threading.Event(),
         )
         async for line in agen:
             out.append(line)
         return out
 
-    return asyncio.run(asyncio.wait_for(_collect(), timeout = 30))
+    return asyncio.run(asyncio.wait_for(_collect(), timeout=30))
 
 
 def _replayed(transport) -> str:
@@ -311,7 +311,7 @@ def test_a_frontend_image_sentinel_is_not_replayed(executed):
     huge = "data:image/png;base64," + ("A" * 20000)
     transport = _one_turn_transport(
         _tool_end(
-            '4\n__IMAGES__:["' + huge + '"]', tool_call_id = "hosted-1", tool_name = "code_execution"
+            '4\n__IMAGES__:["' + huge + '"]', tool_call_id="hosted-1", tool_name="code_execution"
         ),
     )
     _run(transport)
@@ -424,7 +424,7 @@ def test_a_plot_with_no_stdout_is_still_reported(executed):
 def test_a_large_hosted_result_is_capped(executed):
     """Local execution caps what the model sees; the hosted copy must too."""
     transport = _one_turn_transport(
-        _tool_end("D" * 60000, tool_call_id = "hosted-1", tool_name = "code_execution"),
+        _tool_end("D" * 60000, tool_call_id="hosted-1", tool_name="code_execution"),
     )
     _run(transport)
     replayed = _replayed(transport)
@@ -449,7 +449,7 @@ def test_a_stalled_turn_keeps_its_hosted_result(executed):
             [_DONE],
         ]
     )
-    _run(transport, nudge_tool_calls = True)
+    _run(transport, nudge_tool_calls=True)
     assert len(transport.requests) > 1, "the stall reprompt never happened"
     assert "gradient checkpointing lands" in json.dumps(transport.requests[1]["messages"])
 
@@ -476,31 +476,31 @@ def test_a_stalled_continuation_stays_one_assistant_turn(executed):
     async def _collect():
         agen = stream_with_studio_tools(
             transport,
-            run = ToolLoopRun(
-                messages = [
+            run=ToolLoopRun(
+                messages=[
                     {"role": "user", "content": "hi"},
                     {"role": "assistant", "content": "The answer is"},
                 ],
-                session_id = "s1",
-                thread_id = "t1",
-                continue_final_message = True,
+                session_id="s1",
+                thread_id="t1",
+                continue_final_message=True,
             ),
-            policy = ToolLoopPolicy(
-                tools = [WEB],
-                max_calls = 25,
-                timeout = 300,
-                permission_mode = "off",
-                confirm_calls = False,
-                bypass_permissions = False,
-                rag_scope = None,
-                nudge_tool_calls = True,
+            policy=ToolLoopPolicy(
+                tools=[WEB],
+                max_calls=25,
+                timeout=300,
+                permission_mode="off",
+                confirm_calls=False,
+                bypass_permissions=False,
+                rag_scope=None,
+                nudge_tool_calls=True,
             ),
-            cancel_event = threading.Event(),
+            cancel_event=threading.Event(),
         )
         async for _ in agen:
             pass
 
-    asyncio.run(asyncio.wait_for(_collect(), timeout = 30))
+    asyncio.run(asyncio.wait_for(_collect(), timeout=30))
 
     messages = transport.requests[1]["messages"]
     roles = [m["role"] for m in messages]
@@ -639,7 +639,7 @@ def test_the_hosted_cap_follows_the_configured_local_one(executed, monkeypatch):
     """
     monkeypatch.setattr(loop_mod.tools_module, "_MAX_OUTPUT_CHARS", 500)
     transport = _one_turn_transport(
-        _tool_end("D" * 4000, tool_call_id = "hosted-1", tool_name = "code_execution"),
+        _tool_end("D" * 4000, tool_call_id="hosted-1", tool_name="code_execution"),
     )
     _run(transport)
     replayed = _replayed(transport)
@@ -789,7 +789,7 @@ def test_a_stalled_turn_keeps_its_thought_signature(executed):
             [_DONE],
         ]
     )
-    _run(transport, nudge_tool_calls = True)
+    _run(transport, nudge_tool_calls=True)
     reprompted = transport.requests[1]["messages"]
     stalled = [
         m

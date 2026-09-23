@@ -50,7 +50,7 @@ def _tp_backend(
     planner and the new budget check weigh is the model size against the cards.
     That is what makes each case below a statement about ONE variable.
     """
-    backend, gguf = _backend(tmp_path, vulkan = vulkan, memory = memory)
+    backend, gguf = _backend(tmp_path, vulkan=vulkan, memory=memory)
     backend._can_estimate_kv = lambda: True
     backend._estimate_kv_cache_bytes = lambda *a, **k: 0
     backend._compute_buffer_ctx_bytes = lambda *a, **k: 0
@@ -62,9 +62,9 @@ def _tp_backend(
 def _auto_tp(backend, gguf, **kwargs):
     """An auto-mode tensor-parallel load, the shape the PR is about."""
     params = dict(
-        gpu_memory_mode = "auto",
-        tensor_parallel = True,
-        n_ctx = 4096,
+        gpu_memory_mode="auto",
+        tensor_parallel=True,
+        n_ctx=4096,
     )
     params.update(kwargs)
     return _launch(backend, gguf, **params)["cmd"]
@@ -96,7 +96,7 @@ def _normalized(values):
 # --------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("vulkan", [False, True], ids = ["cuda", "vulkan"])
+@pytest.mark.parametrize("vulkan", [False, True], ids=["cuda", "vulkan"])
 @pytest.mark.parametrize(
     "memory, ratio",
     [
@@ -118,18 +118,18 @@ def _normalized(values):
 )
 def test_the_user_ratio_reaches_llama_server_in_auto_mode(tmp_path, memory, ratio, vulkan):
     """The regression in #10355: auto mode dropped the user's ratio."""
-    backend, gguf = _tp_backend(tmp_path, memory = memory, vulkan = vulkan)
+    backend, gguf = _tp_backend(tmp_path, memory=memory, vulkan=vulkan)
     cmd = _auto_tp(
         backend,
         gguf,
-        tensor_split = list(ratio),
-        gpu_ids = [idx for idx, *_ in memory],
+        tensor_split=list(ratio),
+        gpu_ids=[idx for idx, *_ in memory],
     )
 
     assert _flag(cmd, "--split-mode") == "tensor"
     assert _split_values(cmd) is not None, "the user ratio was dropped again"
     assert _normalized(_split_values(cmd)) == pytest.approx(
-        _normalized([float(x) for x in ratio]), abs = 1e-6
+        _normalized([float(x) for x in ratio]), abs=1e-6
     )
 
 
@@ -137,8 +137,8 @@ def test_the_emitted_token_is_plain_decimal(tmp_path):
     """llama.cpp splits --tensor-split on commas and parses each field. A token
     in scientific notation, or one carrying a locale decimal comma, would either
     be read as a different number or split into extra fields."""
-    backend, gguf = _tp_backend(tmp_path, memory = [(0, 24_000, 24_000), (1, 24_000, 24_000)])
-    cmd = _auto_tp(backend, gguf, tensor_split = [0.75, 0.25], gpu_ids = [0, 1])
+    backend, gguf = _tp_backend(tmp_path, memory=[(0, 24_000, 24_000), (1, 24_000, 24_000)])
+    cmd = _auto_tp(backend, gguf, tensor_split=[0.75, 0.25], gpu_ids=[0, 1])
     raw = _flag(cmd, "--tensor-split")
     assert raw is not None
     assert raw.count(",") == 1, f"{raw!r} would parse as more fields than there are GPUs"
@@ -162,8 +162,8 @@ def test_an_extreme_ratio_survives_formatting(tmp_path, ratio):
     rendering collapses a ratio of very small numbers to "0,0", which is a
     division by zero once llama.cpp normalizes it.
     """
-    backend, gguf = _tp_backend(tmp_path, memory = [(0, 24_000, 24_000), (1, 24_000, 24_000)])
-    cmd = _auto_tp(backend, gguf, tensor_split = list(ratio), gpu_ids = [0, 1])
+    backend, gguf = _tp_backend(tmp_path, memory=[(0, 24_000, 24_000), (1, 24_000, 24_000)])
+    cmd = _auto_tp(backend, gguf, tensor_split=list(ratio), gpu_ids=[0, 1])
     raw = _flag(cmd, "--tensor-split")
     if raw is None:
         pytest.skip("the budget check declined this ratio; formatting is not reached")
@@ -172,7 +172,7 @@ def test_an_extreme_ratio_survives_formatting(tmp_path, ratio):
     values = [float(part) for part in raw.split(",")]
     assert sum(values) > 0, f"{raw!r} normalizes to a division by zero"
     assert _normalized(values) == pytest.approx(
-        _normalized([float(x) for x in ratio]), abs = 1e-6
+        _normalized([float(x) for x in ratio]), abs=1e-6
     ), f"{raw!r} is not the proportion that was asked for"
 
 
@@ -194,8 +194,8 @@ def test_an_extreme_ratio_survives_formatting(tmp_path, ratio):
 )
 def test_a_degenerate_ratio_is_dropped_not_forwarded(tmp_path, ratio, why):
     """A bad ratio must leave llama.cpp on its own default, never reach it."""
-    backend, gguf = _tp_backend(tmp_path, memory = [(0, 24_000, 24_000), (1, 24_000, 24_000)])
-    cmd = _auto_tp(backend, gguf, tensor_split = list(ratio), gpu_ids = [0, 1])
+    backend, gguf = _tp_backend(tmp_path, memory=[(0, 24_000, 24_000), (1, 24_000, 24_000)])
+    cmd = _auto_tp(backend, gguf, tensor_split=list(ratio), gpu_ids=[0, 1])
     assert _flag(cmd, "--split-mode") == "tensor", why
     raw = _flag(cmd, "--tensor-split")
     if raw is not None:
@@ -209,10 +209,10 @@ def test_a_ratio_that_overshoots_one_card_is_dropped(tmp_path):
     3:1 puts ~19GB on a 16GB card."""
     backend, gguf = _tp_backend(
         tmp_path,
-        memory = [(0, 16_000, 16_000), (1, 16_000, 16_000)],
-        model_gib = 25,
+        memory=[(0, 16_000, 16_000), (1, 16_000, 16_000)],
+        model_gib=25,
     )
-    cmd = _auto_tp(backend, gguf, tensor_split = [3, 1], gpu_ids = [0, 1])
+    cmd = _auto_tp(backend, gguf, tensor_split=[3, 1], gpu_ids=[0, 1])
     assert _flag(cmd, "--split-mode") == "tensor"
     assert _flag(cmd, "--tensor-split") is None
 
@@ -228,7 +228,7 @@ def test_the_budget_check_agrees_with_the_planner_on_an_even_share(tmp_path):
     charging it once (the planner's rule) accepts while charging it twice
     rejects.
     """
-    backend, gguf = _tp_backend(tmp_path, memory = [(0, 24_000, 24_000), (1, 24_000, 24_000)])
+    backend, gguf = _tp_backend(tmp_path, memory=[(0, 24_000, 24_000), (1, 24_000, 24_000)])
     mib = 1024 * 1024
     cc_per_device_mib = 1024
     backend._compute_buffer_ctx_bytes = lambda *a, **k: cc_per_device_mib * mib
@@ -248,9 +248,9 @@ def test_the_budget_check_agrees_with_the_planner_on_an_even_share(tmp_path):
             [0, 1],
             model_mib * mib,
             4096,
-            n_ubatch = 512,
-            total_by_idx = total_by_idx,
-            vram_fraction = 0.97,
+            n_ubatch=512,
+            total_by_idx=total_by_idx,
+            vram_fraction=0.97,
         )
         is True
     )
@@ -265,7 +265,7 @@ def test_the_context_buffer_is_charged_flat_not_by_the_ratio(tmp_path):
     typed one is #10355 again. Sized to sit exactly in that gap: the planner
     accepts 1:9 here, the aggregate form does not.
     """
-    backend, gguf = _tp_backend(tmp_path, memory = [(0, 24_000, 24_000), (1, 24_000, 24_000)])
+    backend, gguf = _tp_backend(tmp_path, memory=[(0, 24_000, 24_000), (1, 24_000, 24_000)])
     mib = 1024 * 1024
     cc_per_device_mib = 6 * 1024
     backend._compute_buffer_ctx_bytes = lambda *a, **k: cc_per_device_mib * mib
@@ -284,9 +284,9 @@ def test_the_context_buffer_is_charged_flat_not_by_the_ratio(tmp_path):
             [0, 1],
             model_mib * mib,
             4096,
-            n_ubatch = 512,
-            total_by_idx = {0: 24_000, 1: 24_000},
-            vram_fraction = 0.97,
+            n_ubatch=512,
+            total_by_idx={0: 24_000, 1: 24_000},
+            vram_fraction=0.97,
         )
         is True
     )
@@ -295,7 +295,7 @@ def test_the_context_buffer_is_charged_flat_not_by_the_ratio(tmp_path):
 def test_the_budget_check_still_refuses_what_does_not_fit(tmp_path):
     """The other side of the rule above: relaxing the double charge must not
     turn the check into one that accepts anything."""
-    backend, gguf = _tp_backend(tmp_path, memory = [(0, 24_000, 24_000), (1, 24_000, 24_000)])
+    backend, gguf = _tp_backend(tmp_path, memory=[(0, 24_000, 24_000), (1, 24_000, 24_000)])
     mib = 1024 * 1024
     backend._compute_buffer_ctx_bytes = lambda *a, **k: 0
 
@@ -306,9 +306,9 @@ def test_the_budget_check_still_refuses_what_does_not_fit(tmp_path):
             [0, 1],
             40_000 * mib,
             4096,
-            n_ubatch = 512,
-            total_by_idx = {0: 24_000, 1: 24_000},
-            vram_fraction = 0.97,
+            n_ubatch=512,
+            total_by_idx={0: 24_000, 1: 24_000},
+            vram_fraction=0.97,
         )
         is False
     )
@@ -317,7 +317,7 @@ def test_the_budget_check_still_refuses_what_does_not_fit(tmp_path):
 def test_the_budget_check_fails_closed_on_an_unsurveyed_card(tmp_path):
     """gpu_indices and the tensor-parallel survey can disagree. Pricing one
     against the other used to raise KeyError out of load_model."""
-    backend, gguf = _tp_backend(tmp_path, memory = [(0, 24_000, 24_000), (1, 24_000, 24_000)])
+    backend, gguf = _tp_backend(tmp_path, memory=[(0, 24_000, 24_000), (1, 24_000, 24_000)])
     assert (
         backend._tensor_split_fits_budget(
             [1.0, 1.0],
@@ -325,7 +325,7 @@ def test_the_budget_check_fails_closed_on_an_unsurveyed_card(tmp_path):
             [0, 1],
             1024,
             4096,
-            total_by_idx = {0: 24_000},
+            total_by_idx={0: 24_000},
         )
         is False
     )
@@ -335,16 +335,16 @@ def test_manual_mode_is_untouched_by_the_new_branch(tmp_path):
     """Manual mode has always emitted the ratio through its own path. The new
     elif is guarded on `gpu_memory_mode != "manual"`, so this must be
     byte-identical to its pre-PR behaviour."""
-    backend, gguf = _tp_backend(tmp_path, memory = [(0, 24_000, 24_000), (1, 24_000, 24_000)])
+    backend, gguf = _tp_backend(tmp_path, memory=[(0, 24_000, 24_000), (1, 24_000, 24_000)])
     cmd = _launch(
         backend,
         gguf,
-        gpu_memory_mode = "manual",
-        gpu_layers = 99,
-        tensor_parallel = True,
-        tensor_split = [3, 1],
-        gpu_ids = [0, 1],
-        n_ctx = 4096,
+        gpu_memory_mode="manual",
+        gpu_layers=99,
+        tensor_parallel=True,
+        tensor_split=[3, 1],
+        gpu_ids=[0, 1],
+        n_ctx=4096,
     )["cmd"]
     assert _flag(cmd, "--split-mode") == "tensor"
     assert _flag(cmd, "--tensor-split") == "3,1"
@@ -357,16 +357,16 @@ def test_manual_mode_is_untouched_by_the_new_branch(tmp_path):
 
 
 def test_a_single_gpu_never_gets_a_split(tmp_path):
-    backend, gguf = _tp_backend(tmp_path, memory = [(0, 24_000, 24_000)])
-    cmd = _auto_tp(backend, gguf, tensor_split = [3, 1], gpu_ids = [0])
+    backend, gguf = _tp_backend(tmp_path, memory=[(0, 24_000, 24_000)])
+    cmd = _auto_tp(backend, gguf, tensor_split=[3, 1], gpu_ids=[0])
     assert _flag(cmd, "--tensor-split") is None
 
 
 def test_no_gpu_at_all_does_not_raise(tmp_path):
     """CPU-only. The new code divides by len(gpu_indices) and by sum(split);
     neither may be reached with a zero."""
-    backend, gguf = _tp_backend(tmp_path, memory = [])
-    cmd = _auto_tp(backend, gguf, tensor_split = [3, 1])
+    backend, gguf = _tp_backend(tmp_path, memory=[])
+    cmd = _auto_tp(backend, gguf, tensor_split=[3, 1])
     assert _flag(cmd, "--tensor-split") is None
 
 
@@ -376,10 +376,10 @@ def test_cards_whose_driver_reports_no_total(tmp_path):
     the zero-total branch of _vram_usable_mib."""
     backend, gguf = _tp_backend(
         tmp_path,
-        memory = [(0, 24_000, 0), (1, 24_000, 0)],
-        vulkan = True,
+        memory=[(0, 24_000, 0), (1, 24_000, 0)],
+        vulkan=True,
     )
-    cmd = _auto_tp(backend, gguf, tensor_split = [3, 1], gpu_ids = [0, 1])
+    cmd = _auto_tp(backend, gguf, tensor_split=[3, 1], gpu_ids=[0, 1])
     assert _flag(cmd, "--split-mode") == "tensor"
 
 
@@ -389,8 +389,8 @@ def test_paravirtual_metal_never_launches_a_tensor_split(tmp_path, monkeypatch):
     import core.inference.llama_cpp as llama_cpp
 
     monkeypatch.setattr(llama_cpp, "_metal_device_is_paravirtual", lambda: True)
-    backend, gguf = _tp_backend(tmp_path, memory = [(0, 24_000, 24_000), (1, 24_000, 24_000)])
-    cmd = _auto_tp(backend, gguf, tensor_split = [3, 1], gpu_ids = [0, 1])
+    backend, gguf = _tp_backend(tmp_path, memory=[(0, 24_000, 24_000), (1, 24_000, 24_000)])
+    cmd = _auto_tp(backend, gguf, tensor_split=[3, 1], gpu_ids=[0, 1])
     assert _flag(cmd, "--tensor-split") is None
 
 
@@ -418,11 +418,11 @@ def test_a_failed_plan_still_launches_on_vulkan(tmp_path):
     card the planner's reserve filter had dropped."""
     backend, gguf = _tp_backend(
         tmp_path,
-        memory = [(0, 24_000, 24_000), (1, 24_000, 24_000), (2, 200, 24_000)],
-        vulkan = True,
+        memory=[(0, 24_000, 24_000), (1, 24_000, 24_000), (2, 200, 24_000)],
+        vulkan=True,
     )
     _planner_raises(backend)
-    cmd = _auto_tp(backend, gguf, tensor_split = [2, 1, 1])
+    cmd = _auto_tp(backend, gguf, tensor_split=[2, 1, 1])
     assert cmd, "the load must still launch, as it did before the fallback existed"
 
 
@@ -431,22 +431,22 @@ def test_a_failed_plan_still_launches_when_gpu_ids_were_pinned(tmp_path):
     can include a card the tensor-parallel reserve filter excluded."""
     backend, gguf = _tp_backend(
         tmp_path,
-        memory = [(0, 24_000, 24_000), (1, 24_000, 24_000), (2, 200, 24_000)],
+        memory=[(0, 24_000, 24_000), (1, 24_000, 24_000), (2, 200, 24_000)],
     )
     _planner_raises(backend)
-    cmd = _auto_tp(backend, gguf, tensor_split = [2, 1, 1], gpu_ids = [0, 1, 2])
+    cmd = _auto_tp(backend, gguf, tensor_split=[2, 1, 1], gpu_ids=[0, 1, 2])
     assert cmd
 
 
 def test_a_plan_that_fails_before_the_gpu_survey_still_launches(tmp_path):
     """The earliest throw: nothing the fallback reads has been bound yet."""
-    backend, gguf = _tp_backend(tmp_path, memory = [(0, 24_000, 24_000), (1, 24_000, 24_000)])
+    backend, gguf = _tp_backend(tmp_path, memory=[(0, 24_000, 24_000), (1, 24_000, 24_000)])
 
     def _boom(_path):
         raise RuntimeError("simulated GGUF read failure")
 
     backend._get_gguf_size_bytes = _boom
-    cmd = _auto_tp(backend, gguf, tensor_split = [3, 1], gpu_ids = [0, 1])
+    cmd = _auto_tp(backend, gguf, tensor_split=[3, 1], gpu_ids=[0, 1])
     assert cmd
 
 
@@ -457,11 +457,11 @@ def test_a_plan_that_fails_before_the_gpu_survey_still_launches(tmp_path):
 
 def _intent(gguf, **kwargs):
     params = dict(
-        gguf_path = str(gguf),
-        model_identifier = "test",
-        gpu_memory_mode = "auto",
-        tensor_parallel = True,
-        n_ctx = 4096,
+        gguf_path=str(gguf),
+        model_identifier="test",
+        gpu_memory_mode="auto",
+        tensor_parallel=True,
+        n_ctx=4096,
     )
     params.update(kwargs)
     return GgufLoadIntent(**params)
@@ -473,22 +473,22 @@ def _reuses(backend, gguf, **kwargs):
 
 
 def test_an_identical_auto_request_with_a_ratio_reuses_the_server(tmp_path):
-    backend, gguf = _tp_backend(tmp_path, memory = [(0, 24_000, 24_000), (1, 24_000, 24_000)])
-    _auto_tp(backend, gguf, tensor_split = [3, 1], gpu_ids = [0, 1])
-    assert _reuses(backend, gguf, tensor_split = [3, 1], gpu_ids = [0, 1]) is True
+    backend, gguf = _tp_backend(tmp_path, memory=[(0, 24_000, 24_000), (1, 24_000, 24_000)])
+    _auto_tp(backend, gguf, tensor_split=[3, 1], gpu_ids=[0, 1])
+    assert _reuses(backend, gguf, tensor_split=[3, 1], gpu_ids=[0, 1]) is True
 
 
 def test_a_changed_ratio_does_not_reuse_the_server(tmp_path):
-    backend, gguf = _tp_backend(tmp_path, memory = [(0, 24_000, 24_000), (1, 24_000, 24_000)])
-    _auto_tp(backend, gguf, tensor_split = [3, 1], gpu_ids = [0, 1])
-    assert _reuses(backend, gguf, tensor_split = [1, 3], gpu_ids = [0, 1]) is False
+    backend, gguf = _tp_backend(tmp_path, memory=[(0, 24_000, 24_000), (1, 24_000, 24_000)])
+    _auto_tp(backend, gguf, tensor_split=[3, 1], gpu_ids=[0, 1])
+    assert _reuses(backend, gguf, tensor_split=[1, 3], gpu_ids=[0, 1]) is False
 
 
 def test_an_identical_auto_request_with_no_ratio_reuses_the_server(tmp_path):
     """The plain auto tensor-parallel load: the user set no ratio at all."""
-    backend, gguf = _tp_backend(tmp_path, memory = [(0, 24_000, 24_000), (1, 24_000, 24_000)])
-    _auto_tp(backend, gguf, gpu_ids = [0, 1])
-    assert _reuses(backend, gguf, gpu_ids = [0, 1]) is True
+    backend, gguf = _tp_backend(tmp_path, memory=[(0, 24_000, 24_000), (1, 24_000, 24_000)])
+    _auto_tp(backend, gguf, gpu_ids=[0, 1])
+    assert _reuses(backend, gguf, gpu_ids=[0, 1]) is True
 
 
 def test_a_planner_weighted_split_still_reuses_the_server(tmp_path):
@@ -503,14 +503,14 @@ def test_a_planner_weighted_split_still_reuses_the_server(tmp_path):
     """
     backend, gguf = _tp_backend(
         tmp_path,
-        memory = [(0, 24_000, 24_000), (1, 16_000, 16_000)],
-        model_gib = 30,
+        memory=[(0, 24_000, 24_000), (1, 16_000, 16_000)],
+        model_gib=30,
     )
-    cmd = _auto_tp(backend, gguf, gpu_ids = [0, 1])
+    cmd = _auto_tp(backend, gguf, gpu_ids=[0, 1])
     assert (
         _flag(cmd, "--tensor-split") is not None
     ), "this case is only meaningful when the planner emitted its own split"
-    assert _reuses(backend, gguf, gpu_ids = [0, 1]) is True
+    assert _reuses(backend, gguf, gpu_ids=[0, 1]) is True
 
 
 def test_a_rejected_user_ratio_still_reuses_the_server(tmp_path):
@@ -519,24 +519,24 @@ def test_a_rejected_user_ratio_still_reuses_the_server(tmp_path):
     the second launch would decline it identically."""
     backend, gguf = _tp_backend(
         tmp_path,
-        memory = [(0, 16_000, 16_000), (1, 16_000, 16_000)],
-        model_gib = 25,
+        memory=[(0, 16_000, 16_000), (1, 16_000, 16_000)],
+        model_gib=25,
     )
-    cmd = _auto_tp(backend, gguf, tensor_split = [3, 1], gpu_ids = [0, 1])
+    cmd = _auto_tp(backend, gguf, tensor_split=[3, 1], gpu_ids=[0, 1])
     assert _flag(cmd, "--tensor-split") is None
-    assert _reuses(backend, gguf, tensor_split = [3, 1], gpu_ids = [0, 1]) is True
+    assert _reuses(backend, gguf, tensor_split=[3, 1], gpu_ids=[0, 1]) is True
 
 
 def test_an_equivalent_ratio_reuses_the_server(tmp_path):
     """3:1 and 6:2 are the same instruction to llama.cpp."""
-    backend, gguf = _tp_backend(tmp_path, memory = [(0, 24_000, 24_000), (1, 24_000, 24_000)])
-    _auto_tp(backend, gguf, tensor_split = [3, 1], gpu_ids = [0, 1])
-    assert _reuses(backend, gguf, tensor_split = [6, 2], gpu_ids = [0, 1]) is True
+    backend, gguf = _tp_backend(tmp_path, memory=[(0, 24_000, 24_000), (1, 24_000, 24_000)])
+    _auto_tp(backend, gguf, tensor_split=[3, 1], gpu_ids=[0, 1])
+    assert _reuses(backend, gguf, tensor_split=[6, 2], gpu_ids=[0, 1]) is True
 
 
 def test_unload_clears_the_recorded_ratio(tmp_path):
-    backend, gguf = _tp_backend(tmp_path, memory = [(0, 24_000, 24_000), (1, 24_000, 24_000)])
-    _auto_tp(backend, gguf, tensor_split = [3, 1], gpu_ids = [0, 1])
+    backend, gguf = _tp_backend(tmp_path, memory=[(0, 24_000, 24_000), (1, 24_000, 24_000)])
+    _auto_tp(backend, gguf, tensor_split=[3, 1], gpu_ids=[0, 1])
     assert backend._auto_tensor_split is not None
     backend.unload_model()
     assert backend._auto_tensor_split is None
@@ -545,15 +545,15 @@ def test_unload_clears_the_recorded_ratio(tmp_path):
 def test_a_layer_split_load_clears_the_recorded_ratio(tmp_path):
     """Turning tensor parallelism off must not leave the ratio behind: the
     next auto tensor load would compare against a server that never had it."""
-    backend, gguf = _tp_backend(tmp_path, memory = [(0, 24_000, 24_000), (1, 24_000, 24_000)])
-    _auto_tp(backend, gguf, tensor_split = [3, 1], gpu_ids = [0, 1])
+    backend, gguf = _tp_backend(tmp_path, memory=[(0, 24_000, 24_000), (1, 24_000, 24_000)])
+    _auto_tp(backend, gguf, tensor_split=[3, 1], gpu_ids=[0, 1])
     _launch(
         backend,
         gguf,
-        gpu_memory_mode = "auto",
-        tensor_parallel = False,
-        gpu_ids = [0, 1],
-        n_ctx = 4096,
+        gpu_memory_mode="auto",
+        tensor_parallel=False,
+        gpu_ids=[0, 1],
+        n_ctx=4096,
     )
     assert backend._auto_tensor_split is None
 
@@ -589,11 +589,11 @@ def test_the_arch_crash_retry_stops_reporting_the_ratio_it_dropped(tmp_path):
     """
     backend, gguf = _tp_backend(
         tmp_path,
-        memory = [(0, 24_000, 24_000), (1, 24_000, 24_000), (2, 400, 24_000)],
+        memory=[(0, 24_000, 24_000), (1, 24_000, 24_000), (2, 400, 24_000)],
     )
     _crash_once_with_an_arch_error(backend)
 
-    cmd = _auto_tp(backend, gguf, tensor_split = [3, 1])
+    cmd = _auto_tp(backend, gguf, tensor_split=[3, 1])
 
     assert _flag(cmd, "--tensor-split") is None, "the retry kept a split it re-indexed"
     assert backend.tensor_parallel is False
@@ -607,8 +607,8 @@ def test_a_launch_that_does_not_crash_still_reports_its_ratio(tmp_path):
     one, or the PR's own reporting is gone."""
     backend, gguf = _tp_backend(
         tmp_path,
-        memory = [(0, 24_000, 24_000), (1, 24_000, 24_000), (2, 400, 24_000)],
+        memory=[(0, 24_000, 24_000), (1, 24_000, 24_000), (2, 400, 24_000)],
     )
-    cmd = _auto_tp(backend, gguf, tensor_split = [3, 1])
+    cmd = _auto_tp(backend, gguf, tensor_split=[3, 1])
     assert _flag(cmd, "--tensor-split") == "3,1"
     assert backend.tensor_split == [0.75, 0.25]

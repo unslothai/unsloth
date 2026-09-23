@@ -32,7 +32,7 @@ SAVE_SUFFIX = "actions/pip-cache-save"
 
 
 def _jobs(path):
-    doc = yaml.safe_load(path.read_text(encoding = "utf-8")) or {}
+    doc = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     for name, job in (doc.get("jobs") or {}).items():
         yield name, (job.get("steps") or [])
 
@@ -48,7 +48,7 @@ def test_call_sites_exist():
     assert found >= 10, f"only {found} pip-cache-restore call sites found; this test is stale"
 
 
-@pytest.mark.parametrize("path", WORKFLOWS, ids = lambda p: p.name)
+@pytest.mark.parametrize("path", WORKFLOWS, ids=lambda p: p.name)
 def test_no_builtin_setup_python_pip_cache(path):
     for job, steps in _jobs(path):
         for step in steps:
@@ -60,7 +60,7 @@ def test_no_builtin_setup_python_pip_cache(path):
             )
 
 
-@pytest.mark.parametrize("path", WORKFLOWS, ids = lambda p: p.name)
+@pytest.mark.parametrize("path", WORKFLOWS, ids=lambda p: p.name)
 def test_every_restore_names_itself(path):
     for job, steps in _jobs(path):
         for step in _restores(steps):
@@ -107,7 +107,7 @@ def test_jobs_sharing_key_files_still_have_distinct_names():
 
 
 def test_key_is_versioned_and_carries_the_name():
-    action = (REPO / ".github/actions/pip-cache-restore/action.yml").read_text(encoding = "utf-8")
+    action = (REPO / ".github/actions/pip-cache-restore/action.yml").read_text(encoding="utf-8")
     assert 'prefix="pip-v2-${name}-' in action, (
         "the key must stay pip-v2-<name>-... . The v2 segment is what lets "
         "cache-janitor.yml match only post-rename keys: 'Linux' is a valid name, so "
@@ -116,7 +116,7 @@ def test_key_is_versioned_and_carries_the_name():
 
 
 def test_janitor_matches_v2_keys_only():
-    janitor = (REPO / ".github/workflows/cache-janitor.yml").read_text(encoding = "utf-8")
+    janitor = (REPO / ".github/workflows/cache-janitor.yml").read_text(encoding="utf-8")
     assert (
         "pip-v2-*|uv-*|fe-dist-*)" in janitor
     ), "janitor no longer ranks the pip/uv/fe-dist families"
@@ -128,7 +128,7 @@ def test_janitor_matches_v2_keys_only():
 
 def test_save_runs_on_the_default_branch_only():
     action = yaml.safe_load(
-        (REPO / ".github/actions/pip-cache-save/action.yml").read_text(encoding = "utf-8")
+        (REPO / ".github/actions/pip-cache-save/action.yml").read_text(encoding="utf-8")
     )
     condition = " ".join(str(action["runs"]["steps"][0].get("if", "")).split())
     assert "github.ref == 'refs/heads/main'" in condition

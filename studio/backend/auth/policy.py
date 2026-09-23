@@ -101,11 +101,12 @@ def full_access_permitted() -> bool:
 
 
 def _forbid(detail: str) -> HTTPException:
-    return HTTPException(status_code = status.HTTP_403_FORBIDDEN, detail = detail)
+    return HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=detail)
 
 
 async def require_owner() -> None:
     from utils.account_context import current_account
+
     if not current_account().is_owner:
         raise _forbid("Only the installation owner can do this")
 
@@ -117,7 +118,7 @@ def require_account_scope(resource_account_id: Optional[str]) -> None:
     owner_of = resource_account_id or OWNER_ACCOUNT_ID
     if owner_of != current_account_id():
         # 404 rather than 403: existence is itself information.
-        raise HTTPException(status_code = status.HTTP_404_NOT_FOUND, detail = "Not found")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
 
 
 OwnerOnly = Depends(require_owner)

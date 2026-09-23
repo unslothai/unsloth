@@ -45,11 +45,11 @@ def select(legs_by_job: dict, event_name: str) -> dict[str, dict]:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description = __doc__.splitlines()[0])
-    parser.add_argument("--file", required = True, type = Path, help = "the matrix file")
-    parser.add_argument("--event", required = True, help = "github.event_name")
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("--file", required=True, type=Path, help="the matrix file")
+    parser.add_argument("--event", required=True, help="github.event_name")
     args = parser.parse_args(argv)
-    legs_by_job = yaml.safe_load(args.file.read_text(encoding = "utf-8"))
+    legs_by_job = yaml.safe_load(args.file.read_text(encoding="utf-8"))
     if not isinstance(legs_by_job, dict):
         raise SystemExit(f"{args.file}: expected a mapping of job -> legs")
     for job, matrix in select(legs_by_job, args.event).items():

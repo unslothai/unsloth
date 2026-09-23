@@ -89,8 +89,8 @@ import core.inference.llama_cpp as llama_cpp_mod
 class _FakeResponse:
     def __init__(
         self,
-        status_code = 200,
-        body = None,
+        status_code=200,
+        body=None,
     ):
         self.status_code = status_code
         self._body = body or {}
@@ -100,9 +100,9 @@ class _FakeResponse:
 
 
 def _make_backend(
-    effective_ctx = 98304,
-    port = 51234,
-    api_key = None,
+    effective_ctx=98304,
+    port=51234,
+    api_key=None,
 ):
     inst = LlamaCppBackend.__new__(LlamaCppBackend)
     inst._port = port
@@ -119,15 +119,15 @@ def _make_backend(
 
 def _stub_props(
     monkeypatch,
-    status_code = 200,
-    body = None,
-    exc = None,
+    status_code=200,
+    body=None,
+    exc=None,
 ):
     def fake_get(
         url,
-        headers = None,
-        timeout = None,
-        trust_env = None,
+        headers=None,
+        timeout=None,
+        trust_env=None,
     ):
         assert url.endswith("/props")
 
@@ -140,7 +140,7 @@ def _stub_props(
             raise exc
         return _FakeResponse(status_code, body)
 
-    monkeypatch.setattr(llama_cpp_mod.httpx, "get", fake_get, raising = False)
+    monkeypatch.setattr(llama_cpp_mod.httpx, "get", fake_get, raising=False)
 
 
 # ---------------------------------------------------------------------------
@@ -151,23 +151,23 @@ def _stub_props(
 def test_query_n_ctx_reads_default_generation_settings(monkeypatch):
     _stub_props(
         monkeypatch,
-        body = {"default_generation_settings": {"n_ctx": 67584}},
+        body={"default_generation_settings": {"n_ctx": 67584}},
     )
     assert _make_backend()._query_server_n_ctx() == 67584
 
 
 def test_query_n_ctx_non_200_returns_none(monkeypatch):
-    _stub_props(monkeypatch, status_code = 503)
+    _stub_props(monkeypatch, status_code=503)
     assert _make_backend()._query_server_n_ctx() is None
 
 
 def test_query_n_ctx_missing_key_returns_none(monkeypatch):
-    _stub_props(monkeypatch, body = {"default_generation_settings": {}})
+    _stub_props(monkeypatch, body={"default_generation_settings": {}})
     assert _make_backend()._query_server_n_ctx() is None
 
 
 def test_query_n_ctx_swallows_transport_errors(monkeypatch):
-    _stub_props(monkeypatch, exc = RuntimeError("connection refused"))
+    _stub_props(monkeypatch, exc=RuntimeError("connection refused"))
     assert _make_backend()._query_server_n_ctx() is None
 
 
@@ -178,10 +178,10 @@ def test_query_n_ctx_swallows_transport_errors(monkeypatch):
 
 def test_fit_shrunk_ctx_overwrites_advertised_value(monkeypatch):
     """The Nick repro: requested/advertised 98304, server really at 67584."""
-    inst = _make_backend(effective_ctx = 98304)
+    inst = _make_backend(effective_ctx=98304)
     _stub_props(
         monkeypatch,
-        body = {"default_generation_settings": {"n_ctx": 67584}},
+        body={"default_generation_settings": {"n_ctx": 67584}},
     )
     inst._reconcile_effective_ctx_with_server()
     assert inst._effective_context_length == 67584
@@ -189,11 +189,11 @@ def test_fit_shrunk_ctx_overwrites_advertised_value(monkeypatch):
 
 
 def test_props_keeps_total_cache_context_for_slot_preflight(monkeypatch):
-    inst = _make_backend(effective_ctx = 32768)
+    inst = _make_backend(effective_ctx=32768)
     inst._effective_parallel_slots = 4
     _stub_props(
         monkeypatch,
-        body = {"default_generation_settings": {"n_ctx": 8192}},
+        body={"default_generation_settings": {"n_ctx": 8192}},
     )
     inst._reconcile_effective_ctx_with_server()
     assert inst._effective_context_length == 8192
@@ -201,12 +201,12 @@ def test_props_keeps_total_cache_context_for_slot_preflight(monkeypatch):
 
 
 def test_props_does_not_multiply_unified_cache_context(monkeypatch):
-    inst = _make_backend(effective_ctx = 32768)
+    inst = _make_backend(effective_ctx=32768)
     inst._effective_parallel_slots = 4
     inst._kv_cache_unified = True
     _stub_props(
         monkeypatch,
-        body = {"default_generation_settings": {"n_ctx": 32768}},
+        body={"default_generation_settings": {"n_ctx": 32768}},
     )
     inst._reconcile_effective_ctx_with_server()
     assert inst._effective_context_length == 32768
@@ -214,10 +214,10 @@ def test_props_does_not_multiply_unified_cache_context(monkeypatch):
 
 
 def test_matching_ctx_is_left_alone(monkeypatch):
-    inst = _make_backend(effective_ctx = 98304)
+    inst = _make_backend(effective_ctx=98304)
     _stub_props(
         monkeypatch,
-        body = {"default_generation_settings": {"n_ctx": 98304}},
+        body={"default_generation_settings": {"n_ctx": 98304}},
     )
     inst._reconcile_effective_ctx_with_server()
     assert inst._effective_context_length == 98304
@@ -225,12 +225,12 @@ def test_matching_ctx_is_left_alone(monkeypatch):
 
 def test_larger_server_ctx_does_not_inflate_advertised_value(monkeypatch):
     """Never advertise more than the user asked for, even if the server could."""
-    inst = _make_backend(effective_ctx = 32768)
+    inst = _make_backend(effective_ctx=32768)
     _stub_props(
         monkeypatch,
-        body = {"default_generation_settings": {"n_ctx": 65536}},
+        body={"default_generation_settings": {"n_ctx": 65536}},
     )
-    inst._reconcile_effective_ctx_with_server(requested_n_ctx = 32768)
+    inst._reconcile_effective_ctx_with_server(requested_n_ctx=32768)
     assert inst._effective_context_length == 32768
 
 
@@ -241,14 +241,14 @@ def test_explicit_extra_arg_ctx_adopts_larger_confirmed_server_value(monkeypatch
     65983, and /props confirms that llama-server actually allocated 100352.
     Publish the real window while retaining the VRAM warning threshold.
     """
-    inst = _make_backend(effective_ctx = 65983)
+    inst = _make_backend(effective_ctx=65983)
     inst._max_context_length = 65983
     _stub_props(
         monkeypatch,
-        body = {"default_generation_settings": {"n_ctx": 100352}},
+        body={"default_generation_settings": {"n_ctx": 100352}},
     )
 
-    inst._reconcile_effective_ctx_with_server(requested_n_ctx = 100352)
+    inst._reconcile_effective_ctx_with_server(requested_n_ctx=100352)
 
     assert inst._effective_context_length == 100352
     assert inst.context_length == 100352
@@ -262,23 +262,23 @@ def test_no_explicit_flag_never_adopts_a_larger_server_value(monkeypatch):
     past the fit, so a load with no flag passes 0 and llama.cpp's own context
     padding cannot be reported as an override the user never wrote.
     """
-    inst = _make_backend(effective_ctx = 65983)
+    inst = _make_backend(effective_ctx=65983)
     _stub_props(
         monkeypatch,
-        body = {"default_generation_settings": {"n_ctx": 66048}},
+        body={"default_generation_settings": {"n_ctx": 66048}},
     )
 
-    inst._reconcile_effective_ctx_with_server(requested_n_ctx = 0)
+    inst._reconcile_effective_ctx_with_server(requested_n_ctx=0)
 
     assert inst._effective_context_length == 65983
 
 
 def test_unset_effective_ctx_adopts_server_value(monkeypatch):
-    inst = _make_backend(effective_ctx = None)
+    inst = _make_backend(effective_ctx=None)
     inst._context_length = None
     _stub_props(
         monkeypatch,
-        body = {"default_generation_settings": {"n_ctx": 40960}},
+        body={"default_generation_settings": {"n_ctx": 40960}},
     )
     inst._reconcile_effective_ctx_with_server()
     assert inst._effective_context_length == 40960
@@ -286,22 +286,22 @@ def test_unset_effective_ctx_adopts_server_value(monkeypatch):
 
 def test_unset_effective_ctx_still_honours_the_explicit_ceiling(monkeypatch):
     """The unset arm publishes too, so the same ceiling has to bind there."""
-    inst = _make_backend(effective_ctx = None)
+    inst = _make_backend(effective_ctx=None)
     inst._context_length = None
     _stub_props(
         monkeypatch,
-        body = {"default_generation_settings": {"n_ctx": 8192}},
+        body={"default_generation_settings": {"n_ctx": 8192}},
     )
 
-    inst._reconcile_effective_ctx_with_server(requested_n_ctx = 4096)
+    inst._reconcile_effective_ctx_with_server(requested_n_ctx=4096)
 
     assert inst._effective_context_length == 4096
 
 
 def test_props_failure_keeps_studio_value(monkeypatch):
     """A flaky /props must never wipe the computed context."""
-    inst = _make_backend(effective_ctx = 98304)
-    _stub_props(monkeypatch, exc = RuntimeError("boom"))
+    inst = _make_backend(effective_ctx=98304)
+    _stub_props(monkeypatch, exc=RuntimeError("boom"))
     inst._reconcile_effective_ctx_with_server()
     assert inst._effective_context_length == 98304
 
@@ -362,7 +362,7 @@ def test_fit_ctx_floors_auto_request_at_8192_only_under_auto_fit():
 
 
 def test_probe_missing_binary_reports_new_capabilities_false():
-    info = LlamaCppBackend.probe_server_capabilities(binary = "/nonexistent/llama-server")
+    info = LlamaCppBackend.probe_server_capabilities(binary="/nonexistent/llama-server")
     assert info["found"] is False
     assert info["supports_kv_unified"] is False
     assert info["supports_fit_ctx"] is False

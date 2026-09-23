@@ -41,7 +41,7 @@ def snapshot_children(root_pid: int) -> dict:
     if psutil is None:
         return {}
     try:
-        return {p.pid: p for p in psutil.Process(root_pid).children(recursive = True)}
+        return {p.pid: p for p in psutil.Process(root_pid).children(recursive=True)}
     except Exception:  # noqa: BLE001
         return {}
 
@@ -69,7 +69,7 @@ def tree_rss_mb(roots: list) -> Optional[float]:
     read_any = False
     for root in roots:
         try:
-            procs = [root, *root.children(recursive = True)]
+            procs = [root, *root.children(recursive=True)]
         except Exception:  # noqa: BLE001
             continue
         for proc in procs:
@@ -107,7 +107,7 @@ class RssSampler:
         self._t0 = time.monotonic()
         if self.reason is not None:
             return
-        self._thread = threading.Thread(target = self._loop, daemon = True)
+        self._thread = threading.Thread(target=self._loop, daemon=True)
         self._thread.start()
 
     def _loop(self) -> None:
@@ -119,7 +119,7 @@ class RssSampler:
     def stop(self) -> None:
         self._stop.set()
         if self._thread is not None:
-            self._thread.join(timeout = 5)
+            self._thread.join(timeout=5)
         if self.reason is None and not [s for _, s in self.samples if s is not None]:
             self.reason = "no RSS reading succeeded for the browser tree"
 
@@ -140,7 +140,7 @@ class RssSampler:
         return round(max(usable) - usable[0], 1)
 
 
-@register_instrument(name = "rss", level = 0)
+@register_instrument(name="rss", level=0)
 def _rss():
     return RssInstrument()
 

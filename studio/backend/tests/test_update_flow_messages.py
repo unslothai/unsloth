@@ -8,11 +8,11 @@ import pytest
 from utils.prebuilt import update_flow as flow
 
 
-@pytest.fixture(autouse = True)
+@pytest.fixture(autouse=True)
 def _no_github_token(monkeypatch):
     # The rate-limit advice depends on it, and a CI runner may export either.
-    monkeypatch.delenv("GH_TOKEN", raising = False)
-    monkeypatch.delenv("GITHUB_TOKEN", raising = False)
+    monkeypatch.delenv("GH_TOKEN", raising=False)
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
 
 
 def test_format_installer_failure_prefers_fallback_reason_over_path_noise():
@@ -67,13 +67,13 @@ def test_format_installer_failure_prefers_the_verdict_over_an_earlier_rate_limit
 
 def _run_fake_installer(tmp_path, body: str) -> flow.InstallerExit:
     script = tmp_path / "fake_installer.py"
-    script.write_text("import sys\n" + body, encoding = "utf-8")
+    script.write_text("import sys\n" + body, encoding="utf-8")
     with pytest.raises(flow.InstallerExit) as excinfo:
         flow.stream_installer(
             [sys.executable, str(script)],
             {},
-            timeout_seconds = 60,
-            set_progress = lambda _fraction: None,
+            timeout_seconds=60,
+            set_progress=lambda _fraction: None,
         )
     return excinfo.value
 
@@ -193,21 +193,21 @@ def test_format_installer_failure_tells_an_authenticated_run_to_wait(monkeypatch
 
 def test_stream_installer_reads_the_token_from_the_installer_environment(tmp_path, monkeypatch):
     # The advice must follow the env the child ran with, not this process's.
-    monkeypatch.delenv("GH_TOKEN", raising = False)
+    monkeypatch.delenv("GH_TOKEN", raising=False)
     script = tmp_path / "fake_installer.py"
     script.write_text(
         "import sys\n"
         "print('[llama-prebuilt] prebuilt fallback reason: GitHub API returned 403 for "
         "https://api.github.com/repos/unslothai/llama.cpp/releases/latest')\n"
         "sys.exit(2)\n",
-        encoding = "utf-8",
+        encoding="utf-8",
     )
     with pytest.raises(flow.InstallerExit) as excinfo:
         flow.stream_installer(
             [sys.executable, str(script)],
             {"GH_TOKEN": "x"},
-            timeout_seconds = 60,
-            set_progress = lambda _fraction: None,
+            timeout_seconds=60,
+            set_progress=lambda _fraction: None,
         )
     assert "GH_TOKEN" not in str(excinfo.value)
     assert "Wait for the limit to reset" in str(excinfo.value)

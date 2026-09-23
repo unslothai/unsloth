@@ -87,10 +87,10 @@ def _find_padded_loop_with(function: ast.AST) -> ast.With:
 
 
 def _extract_padded_loop_source() -> str:
-    source = _SOURCE_PATH.read_text(encoding = "utf-8")
-    tree = ast.parse(source, filename = str(_SOURCE_PATH))
+    source = _SOURCE_PATH.read_text(encoding="utf-8")
+    tree = ast.parse(source, filename=str(_SOURCE_PATH))
     node = _find_padded_loop_with(_find_target_function(tree))
-    segment = ast.get_source_segment(source, node, padded = True)
+    segment = ast.get_source_segment(source, node, padded=True)
     if segment is None:
         raise AssertionError("could not recover the padded-loop source segment")
     return textwrap.dedent(segment)
@@ -123,18 +123,18 @@ def _eager_chunked_hidden_states_selective_log_softmax(
     hidden_states,
     lm_head,
     index,
-    chunks = 4,
-    logit_scale_multiply = 0.0,
-    logit_scale_divide = 0.0,
-    logit_softcapping = 0.0,
-    temperature = 1.0,
+    chunks=4,
+    logit_scale_multiply=0.0,
+    logit_scale_divide=0.0,
+    logit_softcapping=0.0,
+    temperature=1.0,
 ):
     flat_hidden_states = hidden_states.reshape(-1, hidden_states.shape[-1])
     flat_index = index.reshape(-1)
     all_per_token_logps = []
     for chunk_hidden_states, chunk_index in zip(
-        torch.chunk(flat_hidden_states, chunks = chunks, dim = 0),
-        torch.chunk(flat_index, chunks = chunks, dim = 0),
+        torch.chunk(flat_hidden_states, chunks=chunks, dim=0),
+        torch.chunk(flat_index, chunks=chunks, dim=0),
     ):
         chunk_logits = chunk_hidden_states.to(lm_head.dtype) @ lm_head.t()
         if logit_scale_multiply != 0.0:
@@ -146,8 +146,8 @@ def _eager_chunked_hidden_states_selective_log_softmax(
         chunk_logits = chunk_logits.to(torch.float32)
         if temperature != 1.0:
             chunk_logits = chunk_logits / temperature
-        selected = torch.gather(chunk_logits, dim = -1, index = chunk_index.unsqueeze(-1)).squeeze(-1)
-        all_per_token_logps.append(selected - torch.logsumexp(chunk_logits, dim = -1))
+        selected = torch.gather(chunk_logits, dim=-1, index=chunk_index.unsqueeze(-1)).squeeze(-1)
+        all_per_token_logps.append(selected - torch.logsumexp(chunk_logits, dim=-1))
     out = torch.concat(all_per_token_logps)
     return out.reshape((hidden_states.shape[0], hidden_states.shape[1]))
 
@@ -155,19 +155,19 @@ def _eager_chunked_hidden_states_selective_log_softmax(
 def _eager_chunked_selective_log_softmax(
     logits,
     index,
-    temperature = 1.0,
-    chunks = 4,
+    temperature=1.0,
+    chunks=4,
 ):
     all_per_token_logps = []
     for chunk_logits, chunk_index in zip(
-        torch.chunk(logits.reshape(-1, logits.shape[-1]), chunks = chunks, dim = 0),
-        torch.chunk(index.reshape(-1), chunks = chunks, dim = 0),
+        torch.chunk(logits.reshape(-1, logits.shape[-1]), chunks=chunks, dim=0),
+        torch.chunk(index.reshape(-1), chunks=chunks, dim=0),
     ):
         chunk_logits = chunk_logits.to(torch.float32)
         if temperature != 1.0:
             chunk_logits = chunk_logits / temperature
-        selected = torch.gather(chunk_logits, dim = -1, index = chunk_index.unsqueeze(-1)).squeeze(-1)
-        all_per_token_logps.append(selected - torch.logsumexp(chunk_logits, dim = -1))
+        selected = torch.gather(chunk_logits, dim=-1, index=chunk_index.unsqueeze(-1)).squeeze(-1)
+        all_per_token_logps.append(selected - torch.logsumexp(chunk_logits, dim=-1))
     out = torch.concat(all_per_token_logps)
     return out.reshape((logits.shape[0], logits.shape[1]))
 
@@ -186,7 +186,7 @@ def _load_helpers():
 
         probe_hidden = torch.zeros(1, 2, _HIDDEN)
         probe_head = torch.zeros(_VOCAB, _HIDDEN)
-        probe_index = torch.zeros(1, 2, dtype = torch.long)
+        probe_index = torch.zeros(1, 2, dtype=torch.long)
         real_hidden(probe_hidden, probe_head, probe_index, 1, 0.0, 0.0, 0.0, 1.0)
         real_raw(torch.zeros(1, 2, _VOCAB), probe_index, 1.0, 1)
     except Exception:
@@ -226,8 +226,8 @@ class _StubModel:
 
     def __call__(
         self,
-        input_ids = None,
-        logits_to_keep = None,
+        input_ids=None,
+        logits_to_keep=None,
         **kwargs,
     ):
         hidden = self.embedding[input_ids]
@@ -239,16 +239,16 @@ class _StubModel:
         if logits_to_keep is not None:
             out = out[:, -logits_to_keep:, :]
         self.calls.append({"logits_to_keep": logits_to_keep, "width": out.shape[-1]})
-        return SimpleNamespace(logits = out)
+        return SimpleNamespace(logits=out)
 
 
 def _make_data():
     generator = torch.Generator().manual_seed(1234)
     return SimpleNamespace(
-        embedding = torch.randn(_VOCAB, _HIDDEN, generator = generator),
-        lm_head = torch.randn(_VOCAB, _HIDDEN, generator = generator),
-        input_ids = torch.randint(0, _VOCAB, (_BATCH, _SEQ), generator = generator),
-        attention_mask = torch.ones(_BATCH, _SEQ, dtype = torch.long),
+        embedding=torch.randn(_VOCAB, _HIDDEN, generator=generator),
+        lm_head=torch.randn(_VOCAB, _HIDDEN, generator=generator),
+        input_ids=torch.randint(0, _VOCAB, (_BATCH, _SEQ), generator=generator),
+        attention_mask=torch.ones(_BATCH, _SEQ, dtype=torch.long),
     )
 
 
@@ -256,10 +256,10 @@ def _reference_logprobs(
     data,
     *,
     is_vlm,
-    temperature = 1.0,
-    logit_scale_multiply = 0.0,
-    logit_scale_divide = 0.0,
-    logit_softcapping = 0.0,
+    temperature=1.0,
+    logit_scale_multiply=0.0,
+    logit_scale_divide=0.0,
+    logit_softcapping=0.0,
 ):
     """Per-row expected result, computed independently with ``torch.log_softmax``."""
     logits = data.embedding[data.input_ids].to(data.lm_head.dtype) @ data.lm_head.t()
@@ -273,9 +273,9 @@ def _reference_logprobs(
     if temperature != 1.0:
         logits = logits / temperature
     width = _LOGITS_TO_KEEP if is_vlm else _LOGITS_TO_KEEP + _MAX_LEFT_PAD
-    predictions = torch.log_softmax(logits, dim = -1)[:, -(width + 1) : -1, :]
+    predictions = torch.log_softmax(logits, dim=-1)[:, -(width + 1) : -1, :]
     targets = data.input_ids[:, -width:]
-    return torch.gather(predictions, dim = -1, index = targets.unsqueeze(-1)).squeeze(-1)
+    return torch.gather(predictions, dim=-1, index=targets.unsqueeze(-1)).squeeze(-1)
 
 
 def _build_namespace(
@@ -301,7 +301,7 @@ def _build_namespace(
         "_get_inference_mode_context_manager": lambda _model: contextlib.nullcontext(),
         "model": stub,
         "unwrapped_model": stub,
-        "self": SimpleNamespace(_autocast_dtype = torch.float32),
+        "self": SimpleNamespace(_autocast_dtype=torch.float32),
         "pixel_values": torch.zeros(1, 3) if is_vlm else None,
         "lm_head": data.lm_head,
         "zipped_inputs": rows,
@@ -321,28 +321,28 @@ def _run_padded_loop(
     *,
     returns_hidden_states,
     is_vlm,
-    temperature = 1.0,
-    logit_softcapping = 0.0,
-    logit_scale_multiply = 0.0,
-    logit_scale_divide = 0.0,
+    temperature=1.0,
+    logit_softcapping=0.0,
+    logit_scale_multiply=0.0,
+    logit_scale_divide=0.0,
 ):
     data = _make_data()
     stub = _StubModel(data.embedding, data.lm_head, returns_hidden_states)
     namespace = _build_namespace(
         data,
         stub,
-        is_vlm = is_vlm,
-        temperature = temperature,
-        logit_softcapping = logit_softcapping,
-        logit_scale_multiply = logit_scale_multiply,
-        logit_scale_divide = logit_scale_divide,
+        is_vlm=is_vlm,
+        temperature=temperature,
+        logit_softcapping=logit_softcapping,
+        logit_scale_multiply=logit_scale_multiply,
+        logit_scale_divide=logit_scale_divide,
     )
     exec(_BLOCK_CODE, namespace)
     return SimpleNamespace(
-        data = data,
-        stub = stub,
-        logprobs = namespace["logprobs"],
-        entropies = namespace["entropies"],
+        data=data,
+        stub=stub,
+        logprobs=namespace["logprobs"],
+        entropies=namespace["entropies"],
     )
 
 
@@ -380,11 +380,11 @@ def test_block_free_variables_are_all_stubbed():
     namespace = _build_namespace(
         data,
         _StubModel(data.embedding, data.lm_head, True),
-        is_vlm = False,
-        temperature = 1.0,
-        logit_softcapping = 0.0,
-        logit_scale_multiply = 0.0,
-        logit_scale_divide = 0.0,
+        is_vlm=False,
+        temperature=1.0,
+        logit_softcapping=0.0,
+        logit_scale_multiply=0.0,
+        logit_scale_divide=0.0,
     )
     missing = sorted(_free_variables(_BLOCK_SOURCE) - set(namespace))
     assert missing == [], f"padded loop reads names this test does not stub: {missing}"
@@ -392,47 +392,47 @@ def test_block_free_variables_are_all_stubbed():
 
 def test_text_branch_with_raw_logits_matches_reference():
     """Regression: a forward returning real logits must not reach the lm_head matmul."""
-    result = _run_padded_loop(returns_hidden_states = False, is_vlm = False)
-    expected = _reference_logprobs(result.data, is_vlm = False)
+    result = _run_padded_loop(returns_hidden_states=False, is_vlm=False)
+    expected = _reference_logprobs(result.data, is_vlm=False)
     assert result.logprobs.shape == (_BATCH, _LOGITS_TO_KEEP + _MAX_LEFT_PAD)
     assert result.entropies is None
     assert [call["width"] for call in result.stub.calls] == [_VOCAB] * _BATCH
-    torch.testing.assert_close(result.logprobs, expected, rtol = 1e-5, atol = 1e-5)
+    torch.testing.assert_close(result.logprobs, expected, rtol=1e-5, atol=1e-5)
 
 
 def test_text_branch_with_hidden_states_matches_reference():
     """The unchanged path: hidden states still go through the fused helper."""
-    result = _run_padded_loop(returns_hidden_states = True, is_vlm = False)
-    expected = _reference_logprobs(result.data, is_vlm = False)
+    result = _run_padded_loop(returns_hidden_states=True, is_vlm=False)
+    expected = _reference_logprobs(result.data, is_vlm=False)
     assert [call["width"] for call in result.stub.calls] == [_HIDDEN] * _BATCH
-    torch.testing.assert_close(result.logprobs, expected, rtol = 1e-5, atol = 1e-5)
+    torch.testing.assert_close(result.logprobs, expected, rtol=1e-5, atol=1e-5)
 
 
 @pytest.mark.parametrize(
-    "returns_hidden_states", [True, False], ids = ["hidden_states", "raw_logits"]
+    "returns_hidden_states", [True, False], ids=["hidden_states", "raw_logits"]
 )
 def test_vlm_branch_matches_reference(returns_hidden_states):
     """The VLM arm keeps its own slicing and stays correct at both widths."""
-    result = _run_padded_loop(returns_hidden_states = returns_hidden_states, is_vlm = True)
-    expected = _reference_logprobs(result.data, is_vlm = True)
+    result = _run_padded_loop(returns_hidden_states=returns_hidden_states, is_vlm=True)
+    expected = _reference_logprobs(result.data, is_vlm=True)
     assert result.logprobs.shape == (_BATCH, _LOGITS_TO_KEEP)
     assert [call["logits_to_keep"] for call in result.stub.calls] == [_LOGITS_TO_KEEP + 1] * _BATCH
-    torch.testing.assert_close(result.logprobs, expected, rtol = 1e-5, atol = 1e-5)
+    torch.testing.assert_close(result.logprobs, expected, rtol=1e-5, atol=1e-5)
 
 
 def test_temperature_is_applied_on_both_widths():
     """Temperature is the one transform both helpers apply."""
-    expected = _reference_logprobs(_make_data(), is_vlm = False, temperature = 0.7)
+    expected = _reference_logprobs(_make_data(), is_vlm=False, temperature=0.7)
     for returns_hidden_states in (True, False):
         result = _run_padded_loop(
-            returns_hidden_states = returns_hidden_states,
-            is_vlm = False,
-            temperature = 0.7,
+            returns_hidden_states=returns_hidden_states,
+            is_vlm=False,
+            temperature=0.7,
         )
-        torch.testing.assert_close(result.logprobs, expected, rtol = 1e-5, atol = 1e-5)
+        torch.testing.assert_close(result.logprobs, expected, rtol=1e-5, atol=1e-5)
 
 
-@pytest.mark.parametrize("is_vlm", [False, True], ids = ["text", "vlm"])
+@pytest.mark.parametrize("is_vlm", [False, True], ids=["text", "vlm"])
 def test_raw_logits_skip_scale_and_softcap(is_vlm):
     """Real logits are final: the model forward already scaled and softcapped them.
 
@@ -441,21 +441,21 @@ def test_raw_logits_skip_scale_and_softcap(is_vlm):
     """
     softcapping = 3.0
     data = _make_data()
-    with_softcap = _reference_logprobs(data, is_vlm = is_vlm, logit_softcapping = softcapping)
-    without_softcap = _reference_logprobs(data, is_vlm = is_vlm, logit_softcapping = 0.0)
+    with_softcap = _reference_logprobs(data, is_vlm=is_vlm, logit_softcapping=softcapping)
+    without_softcap = _reference_logprobs(data, is_vlm=is_vlm, logit_softcapping=0.0)
     assert not torch.allclose(
-        with_softcap, without_softcap, rtol = 1e-3, atol = 1e-3
+        with_softcap, without_softcap, rtol=1e-3, atol=1e-3
     ), "the two references are indistinguishable, so this test would prove nothing"
 
     raw = _run_padded_loop(
-        returns_hidden_states = False,
-        is_vlm = is_vlm,
-        logit_softcapping = softcapping,
+        returns_hidden_states=False,
+        is_vlm=is_vlm,
+        logit_softcapping=softcapping,
     )
     hidden = _run_padded_loop(
-        returns_hidden_states = True,
-        is_vlm = is_vlm,
-        logit_softcapping = softcapping,
+        returns_hidden_states=True,
+        is_vlm=is_vlm,
+        logit_softcapping=softcapping,
     )
-    torch.testing.assert_close(raw.logprobs, without_softcap, rtol = 1e-5, atol = 1e-5)
-    torch.testing.assert_close(hidden.logprobs, with_softcap, rtol = 1e-5, atol = 1e-5)
+    torch.testing.assert_close(raw.logprobs, without_softcap, rtol=1e-5, atol=1e-5)
+    torch.testing.assert_close(hidden.logprobs, with_softcap, rtol=1e-5, atol=1e-5)

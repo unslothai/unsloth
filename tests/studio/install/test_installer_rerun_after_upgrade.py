@@ -19,7 +19,7 @@ from pathlib import Path
 STACK = Path(__file__).resolve().parents[3] / "studio" / "install_python_stack.py"
 
 
-def _module(name = "install_python_stack_rerun_probe"):
+def _module(name="install_python_stack_rerun_probe"):
     spec = importlib.util.spec_from_file_location(name, STACK)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -28,13 +28,13 @@ def _module(name = "install_python_stack_rerun_probe"):
 
 def test_an_unchanged_installer_is_not_rerun(monkeypatch):
     module = _module()
-    monkeypatch.delenv(module._INSTALLER_RERUN_ENV, raising = False)
+    monkeypatch.delenv(module._INSTALLER_RERUN_ENV, raising=False)
     assert module._installer_replaced() is False
 
 
 def test_a_replaced_installer_is_rerun_once(monkeypatch):
     module = _module()
-    monkeypatch.delenv(module._INSTALLER_RERUN_ENV, raising = False)
+    monkeypatch.delenv(module._INSTALLER_RERUN_ENV, raising=False)
     monkeypatch.setattr(module, "_read_own_source", lambda: b"the next release")
     assert module._installer_replaced() is True
     # The rerun carries the marker, so a second replacement cannot loop.
@@ -44,7 +44,7 @@ def test_a_replaced_installer_is_rerun_once(monkeypatch):
 
 def test_an_unreadable_installer_keeps_the_running_one(monkeypatch):
     module = _module()
-    monkeypatch.delenv(module._INSTALLER_RERUN_ENV, raising = False)
+    monkeypatch.delenv(module._INSTALLER_RERUN_ENV, raising=False)
     monkeypatch.setattr(module, "_read_own_source", lambda: None)
     assert module._installer_replaced() is False
 
@@ -71,7 +71,7 @@ def test_the_check_follows_the_core_step_and_the_rerun_starts_outside_the_pass_l
 
     Structural, because driving the real pass needs a venv and the network.
     """
-    source = STACK.read_text(encoding = "utf-8")
+    source = STACK.read_text(encoding="utf-8")
     tree = ast.parse(source)
     func = next(
         node

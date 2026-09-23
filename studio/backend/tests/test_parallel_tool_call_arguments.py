@@ -73,9 +73,9 @@ def test_split_top_level_json_objects(text, complete, tail):
 
 def _delta(
     index,
-    name = None,
-    arguments = "",
-    call_id = None,
+    name=None,
+    arguments="",
+    call_id=None,
 ):
     function: dict = {"arguments": arguments}
     if name is not None:
@@ -158,10 +158,10 @@ def test_a_fragment_continues_the_call_still_being_written():
 
 def test_a_stream_that_carries_ids_forks_on_the_id_as_before():
     turn = _Turn()
-    turn.merge_structured([_delta(0, "alpha", '{"a":', call_id = "call_a")])
-    turn.merge_structured([_delta(1, "beta", '{"b":', call_id = "call_b")])
-    turn.merge_structured([_delta(0, None, "1}", call_id = "call_a")])
-    turn.merge_structured([_delta(1, None, "2}", call_id = "call_b")])
+    turn.merge_structured([_delta(0, "alpha", '{"a":', call_id="call_a")])
+    turn.merge_structured([_delta(1, "beta", '{"b":', call_id="call_b")])
+    turn.merge_structured([_delta(0, None, "1}", call_id="call_a")])
+    turn.merge_structured([_delta(1, None, "2}", call_id="call_b")])
 
     assert _shape(turn) == [("alpha", '{"a":1}'), ("beta", '{"b":2}')]
     assert [call["id"] for call in turn.calls()] == ["call_a", "call_b"]
@@ -189,7 +189,7 @@ def test_a_name_only_delta_does_not_rename_the_finished_call():
 def test_an_id_after_one_closed_object_opens_a_call_not_a_claim():
     turn = _Turn()
     turn.merge_structured([_delta(0, "alpha", '{"a":1}')])
-    turn.merge_structured([_delta(0, "beta", '{"b":2}', call_id = "call_b")])
+    turn.merge_structured([_delta(0, "beta", '{"b":2}', call_id="call_b")])
 
     assert _shape(turn) == [("alpha", '{"a":1}'), ("beta", '{"b":2}')]
     assert [call["id"] for call in turn.calls()] == ["call_0_0", "call_b"]
@@ -198,7 +198,7 @@ def test_an_id_after_one_closed_object_opens_a_call_not_a_claim():
 def test_an_id_after_a_closed_fork_opens_a_third_call():
     turn = _Turn()
     turn.merge_structured([_delta(0, "alpha", '{"a":1}{"b":2}')])
-    turn.merge_structured([_delta(0, "gamma", '{"c":3}', call_id = "call_c")])
+    turn.merge_structured([_delta(0, "gamma", '{"c":3}', call_id="call_c")])
 
     assert _shape(turn) == [("alpha", '{"a":1}'), ("alpha", '{"b":2}'), ("gamma", '{"c":3}')]
     ids = [call["id"] for call in turn.calls()]
@@ -217,8 +217,8 @@ def test_nesting_deep_enough_to_exhaust_the_stack_is_unsplittable():
 def test_a_fragment_repeating_the_slots_id_continues_that_call():
     # llama-server grows the name across deltas; forking gives two calls one id.
     turn = _Turn()
-    turn.merge_structured([_delta(0, "web", '{"q":"x"}', call_id = "call_a")])
-    turn.merge_structured([_delta(0, "web_search", "", call_id = "call_a")])
+    turn.merge_structured([_delta(0, "web", '{"q":"x"}', call_id="call_a")])
+    turn.merge_structured([_delta(0, "web_search", "", call_id="call_a")])
 
     assert _shape(turn) == [("web_search", '{"q":"x"}')]
     assert [call["id"] for call in turn.calls()] == ["call_a"]
@@ -270,8 +270,8 @@ def test_an_opening_delta_after_a_closed_call_does_not_claim_it():
     # Landing the opening delta on the finished call glues what follows.
     turn = _Turn()
     turn.merge_structured([_delta(0, "alpha", '{"a":1}')])
-    turn.merge_structured([_delta(0, "beta", "", call_id = "call_b")])
-    turn.merge_structured([_delta(0, None, '{"b":2}', call_id = "call_b")])
+    turn.merge_structured([_delta(0, "beta", "", call_id="call_b")])
+    turn.merge_structured([_delta(0, None, '{"b":2}', call_id="call_b")])
 
     assert _shape(turn) == [("alpha", '{"a":1}'), ("beta", '{"b":2}')]
     ids = [call["id"] for call in turn.calls()]
@@ -305,9 +305,9 @@ def test_a_repeated_id_reaches_its_own_call_across_a_later_split():
     # The index points at the newer call, so matching a repeated id there
     # renamed it and gave it a second copy of the id.
     turn = _Turn()
-    turn.merge_structured([_delta(0, "alpha", '{"a":1}', call_id = "call_a")])
+    turn.merge_structured([_delta(0, "alpha", '{"a":1}', call_id="call_a")])
     turn.merge_structured([_delta(0, "beta", '{"b":')])
-    turn.merge_structured([_delta(0, "alpha_long", "", call_id = "call_a")])
+    turn.merge_structured([_delta(0, "alpha_long", "", call_id="call_a")])
 
     assert _shape(turn) == [("alpha_long", '{"a":1}'), ("beta", '{"b":')]
     ids = [call["id"] for call in turn.calls()]
@@ -544,8 +544,8 @@ def test_an_id_stamped_after_the_object_closed_claims_that_call():
     # An id that names a different call is still the next call opening.
     opened = _Turn()
     opened.merge_structured([_delta(0, "alpha", '{"a":1}')])
-    opened.merge_structured([_delta(0, "beta", "", call_id = "call_b")])
-    opened.merge_structured([_delta(0, None, '{"b":2}', call_id = "call_b")])
+    opened.merge_structured([_delta(0, "beta", "", call_id="call_b")])
+    opened.merge_structured([_delta(0, None, '{"b":2}', call_id="call_b")])
     assert _shape(opened) == [("alpha", '{"a":1}'), ("beta", '{"b":2}')]
 
 
@@ -629,7 +629,7 @@ def test_a_provider_claiming_a_minted_id_displaces_the_id_less_call():
     # call moves aside. The client displaces once the claim lands.
     turn = _Turn()
     turn.merge_structured([_delta(0, "alpha", '{"a":1}')])
-    turn.merge_structured([_delta(1, "beta", '{"b":2}', call_id = "tool_call_0")])
+    turn.merge_structured([_delta(1, "beta", '{"b":2}', call_id="tool_call_0")])
 
     reported = [
         (call.get("card_id") or call["id"], call["function"]["name"]) for call in turn.calls()
@@ -643,7 +643,7 @@ def test_a_claim_on_a_split_born_card_leaves_every_call_its_own():
     # keeps tool_call_1 and the three id-less calls take 0, 2 and 3 in order.
     turn = _Turn()
     turn.merge_structured([_delta(0, "alpha", '{"a":1}{"b":2}{"c":3}')])
-    turn.merge_structured([_delta(1, "beta", '{"d":4}', call_id = "tool_call_1")])
+    turn.merge_structured([_delta(1, "beta", '{"d":4}', call_id="tool_call_1")])
 
     reported = [
         (call.get("card_id") or call["id"], call["function"]["arguments"]) for call in turn.calls()
@@ -683,7 +683,7 @@ def test_a_card_ledger_is_append_only_across_rounds():
 
     second = _Turn()
     second.round = 1
-    second.merge_structured([_delta(0, "beta", '{"b":2}', call_id = "tool_call_0")])
+    second.merge_structured([_delta(0, "beta", '{"b":2}', call_id="tool_call_0")])
     assert [call.get("card_id") for call in second.calls(taken, cards)] == [None]
 
     third = _Turn()
@@ -699,7 +699,7 @@ def test_a_rejected_call_reserves_no_card_id():
     taken: set[str] = set()
     cards: set[str] = set()
     first = _Turn()
-    first.merge_structured([_delta(0, None, '{"a":1}', call_id = "tool_call_0")])
+    first.merge_structured([_delta(0, None, '{"a":1}', call_id="tool_call_0")])
     first.merge_structured([_delta(1, "beta", '{"b":2}')])
     assert [call.get("card_id") for call in first.calls(taken, cards)] == ["tool_call_1"]
 
@@ -715,7 +715,7 @@ def test_a_nameless_claim_does_not_take_a_valid_call_s_card():
     # number back. Nothing is reserved for it here, so the valid call keeps it.
     turn = _Turn()
     turn.merge_structured([_delta(0, "alpha", '{"a":1}')])
-    turn.merge_structured([_delta(1, None, '{"b":2}', call_id = "tool_call_0")])
+    turn.merge_structured([_delta(1, None, '{"b":2}', call_id="tool_call_0")])
 
     reported = [(call.get("card_id"), call["function"]["name"]) for call in turn.calls()]
     assert reported == [("tool_call_0", "alpha")]
@@ -760,8 +760,8 @@ def test_a_stable_id_naming_a_longer_tool_opens_its_own_call():
     # Reading "web_search" as "web" grown gave the id to the completed call.
     turn = _Turn()
     turn.merge_structured([_delta(0, "web", '{"a":1}')])
-    turn.merge_structured([_delta(0, "web_search", "", call_id = "call_b")])
-    turn.merge_structured([_delta(0, None, '{"b":2}', call_id = "call_b")])
+    turn.merge_structured([_delta(0, "web_search", "", call_id="call_b")])
+    turn.merge_structured([_delta(0, None, '{"b":2}', call_id="call_b")])
 
     reported = [
         (call["id"], call["function"]["name"], call["function"]["arguments"])
@@ -798,7 +798,7 @@ def test_a_snapshot_repeated_to_carry_the_id_claims_the_call():
     # The id arrives on a verbatim repeat; a second call runs the tool twice.
     turn = _Turn()
     turn.merge_structured([_delta(0, "alpha", '{"a":1}')])
-    turn.merge_structured([_delta(0, "alpha", '{"a":1}', call_id = "call_a")])
+    turn.merge_structured([_delta(0, "alpha", '{"a":1}', call_id="call_a")])
 
     reported = [
         (call["id"], call["function"]["name"], call["function"]["arguments"])
@@ -812,7 +812,7 @@ def test_a_second_call_that_differs_anywhere_still_opens_its_own():
     # a parallel call of its own however alike the two look.
     turn = _Turn()
     turn.merge_structured([_delta(0, "alpha", '{"a":1}')])
-    turn.merge_structured([_delta(0, "alpha", '{"a":2}', call_id = "call_b")])
+    turn.merge_structured([_delta(0, "alpha", '{"a":2}', call_id="call_b")])
 
     reported = [(call["id"], call["function"]["arguments"]) for call in turn.calls()]
     assert reported == [("call_0_0", '{"a":1}'), ("call_b", '{"a":2}')]
@@ -852,7 +852,7 @@ def test_a_call_the_provider_named_gets_no_card_id():
     # An id on the wire is already the card's id on both sides, so minting a
     # second spelling for it would be the very mismatch this exists to close.
     turn = _Turn()
-    turn.merge_structured([_delta(0, "alpha", '{"a":1}', call_id = "call_a")])
+    turn.merge_structured([_delta(0, "alpha", '{"a":1}', call_id="call_a")])
 
     call = turn.calls()[0]
     assert call["id"] == "call_a"
@@ -877,7 +877,7 @@ def test_a_second_round_keeps_numbering_where_the_first_stopped():
 def test_a_provider_id_in_the_minted_namespace_is_not_handed_out_twice():
     # tool_call_<n> is not reserved to Unsloth.
     turn = _Turn()
-    turn.merge_structured([_delta(0, "alpha", '{"a":1}', call_id = "tool_call_0")])
+    turn.merge_structured([_delta(0, "alpha", '{"a":1}', call_id="tool_call_0")])
     turn.merge_structured([_delta(1, "beta", '{"b":2}')])
 
     reported = [(call["id"], call.get("card_id")) for call in turn.calls()]

@@ -91,7 +91,7 @@ def _load_diffusion_config(
     trust_remote_code,
     revision,
     local_files_only,
-    cache_dir = None,
+    cache_dir=None,
 ):
     """Load the config, aliasing the legacy ``diffusion_gemma`` model_type to the ``diffusion_gemma4``
     classes current transformers ships. AutoConfig raises on the legacy type; catch that, rewrite the
@@ -99,11 +99,11 @@ def _load_diffusion_config(
     try:
         return AutoConfig.from_pretrained(
             model_name,
-            token = token,
-            trust_remote_code = trust_remote_code,
-            revision = revision,
-            local_files_only = local_files_only,
-            cache_dir = cache_dir,
+            token=token,
+            trust_remote_code=trust_remote_code,
+            revision=revision,
+            local_files_only=local_files_only,
+            cache_dir=cache_dir,
         )
     except ValueError as e:
         if "diffusion_gemma" not in str(e):
@@ -114,12 +114,12 @@ def _load_diffusion_config(
         cfg_path = cached_file(
             model_name,
             "config.json",
-            token = token,
-            revision = revision,
-            local_files_only = local_files_only,
-            cache_dir = cache_dir,
+            token=token,
+            revision=revision,
+            local_files_only=local_files_only,
+            cache_dir=cache_dir,
         )
-        with open(cfg_path, encoding = "utf-8") as f:
+        with open(cfg_path, encoding="utf-8") as f:
             cd = json.load(f)
         cd["model_type"] = "diffusion_gemma4"
         cd.setdefault("architectures", ["DiffusionGemma4ModelForBlockDiffusion"])
@@ -141,21 +141,21 @@ class FastDiffusionModel:
 
     @staticmethod
     def from_pretrained(
-        model_name = "google/diffusiongemma-26B-A4B-it",
-        max_seq_length = None,  # API-compat; diffusion uses canvas_length
-        dtype = None,
-        load_in_4bit = False,
-        load_in_8bit = False,
-        load_in_16bit = False,
-        full_finetuning = False,
-        token = None,
-        device_map = "auto",
+        model_name="google/diffusiongemma-26B-A4B-it",
+        max_seq_length=None,  # API-compat; diffusion uses canvas_length
+        dtype=None,
+        load_in_4bit=False,
+        load_in_8bit=False,
+        load_in_16bit=False,
+        full_finetuning=False,
+        token=None,
+        device_map="auto",
         # Planner hints for device_map = "unsloth"; see resolve_unsloth_device_map.
-        device_map_planner_kwargs = None,
-        trust_remote_code = False,
-        attn_implementation = "eager",  # exact match with the reference golden logits
-        revision = None,
-        return_tokenizer = True,
+        device_map_planner_kwargs=None,
+        trust_remote_code=False,
+        attn_implementation="eager",  # exact match with the reference golden logits
+        revision=None,
+        return_tokenizer=True,
         **kwargs,
     ):
         SUPPORTS_BFLOAT16 = is_bfloat16_supported()
@@ -182,7 +182,7 @@ class FastDiffusionModel:
             trust_remote_code,
             revision,
             local_files_only,
-            cache_dir = cache_dir,
+            cache_dir=cache_dir,
         )
         model_type = getattr(config, "model_type", None)
         if not is_diffusion_model_type(model_type):
@@ -197,15 +197,15 @@ class FastDiffusionModel:
         # every component subfolder, so narrowing would leave unet/vae/text_encoder to Xet.
         maybe_prefetch_hf_snapshot(
             model_name,
-            token = token,
-            revision = revision,
-            cache_dir = cache_dir,
-            local_files_only = local_files_only,
-            fast_inference = False,
-            force_download = kwargs.get("force_download", False),
-            use_safetensors = kwargs.get("use_safetensors"),
+            token=token,
+            revision=revision,
+            cache_dir=cache_dir,
+            local_files_only=local_files_only,
+            fast_inference=False,
+            force_download=kwargs.get("force_download", False),
+            use_safetensors=kwargs.get("use_safetensors"),
             # Forward the variant (e.g. "fp16") so the warm keeps variant weights.
-            variant = kwargs.get("variant"),
+            variant=kwargs.get("variant"),
         )
 
         # Optional bitsandbytes quant: the MoE experts (3D Parameters) are not nn.Linear so bnb skips
@@ -215,13 +215,14 @@ class FastDiffusionModel:
         qcfg = None
         if load_in_4bit or load_in_8bit:
             from transformers import BitsAndBytesConfig
+
             if load_in_4bit:
                 qcfg = BitsAndBytesConfig(
-                    load_in_4bit = True,
-                    bnb_4bit_use_double_quant = True,
-                    bnb_4bit_quant_type = "nf4",
-                    bnb_4bit_compute_dtype = dtype,
-                    llm_int8_skip_modules = [
+                    load_in_4bit=True,
+                    bnb_4bit_use_double_quant=True,
+                    bnb_4bit_quant_type="nf4",
+                    bnb_4bit_compute_dtype=dtype,
+                    llm_int8_skip_modules=[
                         "lm_head",
                         "embed_tokens",
                         "experts",
@@ -230,21 +231,21 @@ class FastDiffusionModel:
                     ],
                 )
             else:
-                qcfg = BitsAndBytesConfig(load_in_8bit = True)
+                qcfg = BitsAndBytesConfig(load_in_8bit=True)
 
         # Same leaf-level resolution as llama.py and vision.py: an unresolved "unsloth" becomes
         # torch.device("unsloth") in transformers and raises instead of loading.
         device_map = resolve_unsloth_device_map(
             requested_device_map(device_map),
             model_name,
-            full_finetuning = full_finetuning,
-            skip_reason = (
+            full_finetuning=full_finetuning,
+            skip_reason=(
                 "this checkpoint declares the legacy `diffusion_gemma` type, which only "
                 "loads through an in-memory rewrite the planner cannot see"
                 if getattr(config, "_unsloth_legacy_alias", False)
                 else None
             ),
-            planner_kwargs = planner_kwargs_with_max_memory(
+            planner_kwargs=planner_kwargs_with_max_memory(
                 device_map_planner_kwargs,
                 kwargs,
             ),
@@ -258,27 +259,27 @@ class FastDiffusionModel:
                 },
             ),
             **planner_config_overrides(kwargs),
-            token = token,
-            trust_remote_code = trust_remote_code,
-            revision = revision,
+            token=token,
+            trust_remote_code=trust_remote_code,
+            revision=revision,
             # The dtype the load below uses, which overrides the checkpoint's own.
             **add_dtype_kwargs(dtype),
             **planner_quantization_kwargs(
-                load_in_4bit = load_in_4bit,
-                load_in_8bit = load_in_8bit,
-                quantization_config = qcfg,
+                load_in_4bit=load_in_4bit,
+                load_in_8bit=load_in_8bit,
+                quantization_config=qcfg,
             ),
         )
 
         load_kwargs = dict(
-            dtype = dtype,
-            device_map = device_map,
-            token = token,
-            trust_remote_code = trust_remote_code,
-            attn_implementation = attn_implementation,
-            revision = revision,
-            local_files_only = local_files_only,
-            cache_dir = cache_dir,
+            dtype=dtype,
+            device_map=device_map,
+            token=token,
+            trust_remote_code=trust_remote_code,
+            attn_implementation=attn_implementation,
+            revision=revision,
+            local_files_only=local_files_only,
+            cache_dir=cache_dir,
         )
         # Match the load's weight format to the warm (None/auto already matches).
         if kwargs.get("use_safetensors") is not None:
@@ -309,20 +310,20 @@ class FastDiffusionModel:
         try:
             tokenizer = AutoProcessor.from_pretrained(
                 model_name,
-                token = token,
-                trust_remote_code = trust_remote_code,
-                revision = revision,
-                local_files_only = local_files_only,
-                cache_dir = cache_dir,
+                token=token,
+                trust_remote_code=trust_remote_code,
+                revision=revision,
+                local_files_only=local_files_only,
+                cache_dir=cache_dir,
             )
         except Exception:
             tokenizer = AutoTokenizer.from_pretrained(
                 model_name,
-                token = token,
-                trust_remote_code = trust_remote_code,
-                revision = revision,
-                local_files_only = local_files_only,
-                cache_dir = cache_dir,
+                token=token,
+                trust_remote_code=trust_remote_code,
+                revision=revision,
+                local_files_only=local_files_only,
+                cache_dir=cache_dir,
             )
 
         return model, tokenizer
@@ -330,14 +331,14 @@ class FastDiffusionModel:
     @staticmethod
     def get_peft_model(
         model,
-        r = 16,
-        target_modules = None,
-        lora_alpha = 16,
-        lora_dropout = 0.0,
-        bias = "none",
-        use_gradient_checkpointing = True,
-        random_state = 3407,
-        task_type = None,
+        r=16,
+        target_modules=None,
+        lora_alpha=16,
+        lora_dropout=0.0,
+        bias="none",
+        use_gradient_checkpointing=True,
+        random_state=3407,
+        task_type=None,
         **kwargs,
     ):
         """Attach a PEFT LoRA to the diffusion backbone (attention + dense MLP). No fused kernels."""
@@ -349,18 +350,18 @@ class FastDiffusionModel:
         # use_dora, and any other LoraConfig kwarg outside this allowlist, is silently dropped: Unsloth does
         # not reach this path today, so it is untested on diffusion models.
         lora_kwargs = dict(
-            r = r,
-            lora_alpha = lora_alpha,
-            lora_dropout = lora_dropout,
-            bias = bias,
-            target_modules = target_modules,
-            task_type = task_type,  # None: diffusion has no standard CAUSAL_LM head
+            r=r,
+            lora_alpha=lora_alpha,
+            lora_dropout=lora_dropout,
+            bias=bias,
+            target_modules=target_modules,
+            task_type=task_type,  # None: diffusion has no standard CAUSAL_LM head
             **{k: v for k, v in kwargs.items() if k in ("modules_to_save", "init_lora_weights")},
         )
         # Exclude the vision tower's custom (non-Linear) modules that share suffix names.
         exclude = kwargs.get("exclude_modules", DIFFUSION_LORA_EXCLUDE)
         try:
-            lora_config = LoraConfig(exclude_modules = exclude, **lora_kwargs)
+            lora_config = LoraConfig(exclude_modules=exclude, **lora_kwargs)
         except TypeError:
             # Older PEFT without exclude_modules: scope the target to the text decoder by regex.
             lora_kwargs["target_modules"] = (
@@ -389,7 +390,7 @@ class FastDiffusionModel:
         return model
 
     @staticmethod
-    def for_training(model, use_gradient_checkpointing = True):
+    def for_training(model, use_gradient_checkpointing=True):
         model.train()
         if use_gradient_checkpointing and hasattr(model, "gradient_checkpointing_enable"):
             model.gradient_checkpointing_enable()

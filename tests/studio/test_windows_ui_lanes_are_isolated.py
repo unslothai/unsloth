@@ -61,11 +61,11 @@ def _strip_comments(text: str) -> str:
 
 
 def _lane_body() -> str:
-    return _strip_comments(LANE.read_text(encoding = "utf-8"))
+    return _strip_comments(LANE.read_text(encoding="utf-8"))
 
 
 def _step() -> dict:
-    doc = yaml.safe_load(WORKFLOW.read_text(encoding = "utf-8")) or {}
+    doc = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8")) or {}
     for step in doc["jobs"]["ui-smoke"]["steps"]:
         if "lane" in str(step.get("name", "")).lower():
             return step
@@ -81,7 +81,7 @@ def _step_body() -> str:
 
 def test_the_boot_script_honours_a_per_lane_studio_home() -> None:
     """The enabling change. Without it the lanes share one auth directory."""
-    body = _strip_comments(BOOT.read_text(encoding = "utf-8"))
+    body = _strip_comments(BOOT.read_text(encoding="utf-8"))
     assert "UNSLOTH_STUDIO_HOME" in body, (
         "boot-studio-api-only.sh no longer reads UNSLOTH_STUDIO_HOME, so it is back to "
         "wiping the one legacy auth directory. Two concurrent lanes then race: one wipes "

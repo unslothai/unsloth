@@ -60,7 +60,7 @@ def _note(subject, original, mapped):
     print(
         f"note: {subject} does not exist in this sandbox; "
         f"using the working directory instead ({original} -> {mapped})",
-        file = sys.stderr,
+        file=sys.stderr,
     )
 
 
@@ -86,7 +86,7 @@ def _contained_join(cwd, rel):
 def _map_onto_cwd(
     prefix,
     text,
-    notify = True,
+    notify=True,
 ):
     """Map ``<prefix>/rest`` onto ``./rest`` in the CWD, noting it once.
 
@@ -110,7 +110,7 @@ def _load_sidecar(cwd):
     """Return the persisted ``source -> healed target`` map, or {} on any error
     (missing/corrupt/foreign sidecar degrades to in-process-only behaviour)."""
     try:
-        with open(_sidecar_path(cwd), encoding = "utf-8") as fh:
+        with open(_sidecar_path(cwd), encoding="utf-8") as fh:
             data = json.load(fh)
     except Exception:  # noqa: BLE001 - a bad sidecar must never break user code
         return {}
@@ -130,7 +130,7 @@ def _record_sidecar(cwd, source, target):
             return
         data[source] = target
         tmp = _sidecar_path(cwd) + ".tmp"
-        with open(tmp, "w", encoding = "utf-8") as fh:
+        with open(tmp, "w", encoding="utf-8") as fh:
             json.dump(data, fh)
         os.replace(tmp, _sidecar_path(cwd))
     except Exception:  # noqa: BLE001 - persistence is best effort only
@@ -161,13 +161,13 @@ def _remap_open(file, mode):
     """
     creating = _is_creating_mode(mode)
     # notify=False: emit the notice only once we commit to the mapping below.
-    mapped = _remap(file, notify = False)
+    mapped = _remap(file, notify=False)
     if mapped is not file:
         # Write always heals; a read only when the mapped target exists (else keep the original path so a missing input
         # stays truthful).
         if creating or os.path.exists(mapped):
             # Commit: emit the notice now (the notify=False peek above deferred it).
-            _remap(file, notify = True)
+            _remap(file, notify=True)
             return mapped
         return file
     if not creating:
@@ -207,7 +207,7 @@ def _remap_open(file, mode):
     return remapped
 
 
-def _remap(path, notify = True):
+def _remap(path, notify=True):
     """Map ``<prefix>/rest`` onto ``./rest`` in the CWD; other paths pass through.
 
     ``notify`` is forwarded to ``_map_onto_cwd``; ``_remap_open`` passes False so
@@ -223,7 +223,7 @@ def _remap(path, notify = True):
         # Heal only while the real prefix directory is absent, so a genuine host mount / user directory at that prefix
         # is never shadowed.
         if (text == prefix or text.startswith(prefix + "/")) and not os.path.exists(prefix):
-            return _map_onto_cwd(prefix, text, notify = notify)
+            return _map_onto_cwd(prefix, text, notify=notify)
     return path
 
 
@@ -239,7 +239,7 @@ def _install():
 
     def _open(
         file,
-        mode = "r",
+        mode="r",
         *args,
         **kwargs,
     ):
@@ -247,7 +247,7 @@ def _install():
 
     def _io_open(
         file,
-        mode = "r",
+        mode="r",
         *args,
         **kwargs,
     ):
@@ -264,9 +264,9 @@ def _install():
     def _os_open(
         path,
         flags,
-        mode = 0o777,
+        mode=0o777,
         *,
-        dir_fd = None,
+        dir_fd=None,
     ):
         # Path.touch() etc. go through os.open, not builtins.open. Only O_CREAT can create, so only it maps to
         # "creating" mode; O_TRUNC / O_APPEND without O_CREAT still require the file to exist, so behave as a read.
@@ -274,7 +274,7 @@ def _install():
         mapped = _remap_open(path, logical_mode)
         if dir_fd is None:
             return original_os_open(mapped, flags, mode)
-        return original_os_open(mapped, flags, mode, dir_fd = dir_fd)
+        return original_os_open(mapped, flags, mode, dir_fd=dir_fd)
 
     def _path_mkdir(self, *args, **kwargs):
         # pathlib probes Path.is_dir()/os.stat (unpatched) on FileExistsError, so a bare os.mkdir remap would still

@@ -27,7 +27,7 @@ class UnstructuredSeedReader(SeedReader[UnstructuredSeedSource]):
             orig_name = path_obj.name
             if meta_path.exists():
                 try:
-                    meta = json_mod.loads(meta_path.read_text(encoding = "utf-8"))
+                    meta = json_mod.loads(meta_path.read_text(encoding="utf-8"))
                     orig_name = meta.get("original_filename", path_obj.name)
                 except (json_mod.JSONDecodeError, OSError, UnicodeDecodeError):
                     # Undecodable metadata is as malformed as invalid JSON, so fall back to the file's own name rather
@@ -36,8 +36,8 @@ class UnstructuredSeedReader(SeedReader[UnstructuredSeedSource]):
             file_entries.append((path_obj, orig_name))
 
         path, _ = materialize_multi_file_unstructured_seed(
-            file_entries = file_entries,
-            chunk_size = self.source.chunk_size,
-            chunk_overlap = self.source.chunk_overlap,
+            file_entries=file_entries,
+            chunk_size=self.source.chunk_size,
+            chunk_overlap=self.source.chunk_overlap,
         )
         return str(path)

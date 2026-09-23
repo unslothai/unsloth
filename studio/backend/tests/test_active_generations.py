@@ -19,7 +19,7 @@ sys.path.insert(0, _backend)
 from state import active_generations
 
 
-@pytest.fixture(autouse = True)
+@pytest.fixture(autouse=True)
 def _clean_registry():
     active_generations.reset_for_tests()
     yield
@@ -37,7 +37,7 @@ def test_registry_starts_empty():
 
 def test_entry_lives_only_for_the_block():
     ev = threading.Event()
-    with active_generations.ActiveGeneration(ev, thread_id = "t1", model = "m"):
+    with active_generations.ActiveGeneration(ev, thread_id="t1", model="m"):
         assert active_generations.count() == 1
         assert active_generations.active_thread_ids() == ["t1"]
     assert active_generations.count() == 0
@@ -47,7 +47,7 @@ def test_entry_lives_only_for_the_block():
 def test_entry_is_removed_even_when_the_block_raises():
     ev = threading.Event()
     with pytest.raises(RuntimeError):
-        with active_generations.ActiveGeneration(ev, thread_id = "t1"):
+        with active_generations.ActiveGeneration(ev, thread_id="t1"):
             raise RuntimeError("stream blew up")
     assert active_generations.count() == 0
 
@@ -55,8 +55,8 @@ def test_entry_is_removed_even_when_the_block_raises():
 def test_overlapping_runs_on_one_thread_both_register():
     # A tool continuation registers its next leg before the previous unwinds.
     a, b = threading.Event(), threading.Event()
-    with active_generations.ActiveGeneration(a, thread_id = "t1"):
-        with active_generations.ActiveGeneration(b, thread_id = "t1"):
+    with active_generations.ActiveGeneration(a, thread_id="t1"):
+        with active_generations.ActiveGeneration(b, thread_id="t1"):
             assert active_generations.count() == 2
             assert active_generations.active_thread_ids() == ["t1"]
         assert active_generations.count() == 1
@@ -65,8 +65,8 @@ def test_overlapping_runs_on_one_thread_both_register():
 
 def test_snapshot_is_json_safe_and_ordered_by_start():
     a, b = threading.Event(), threading.Event()
-    with active_generations.ActiveGeneration(a, thread_id = "first", model = "m1"):
-        with active_generations.ActiveGeneration(b, thread_id = "second", model = "m2"):
+    with active_generations.ActiveGeneration(a, thread_id="first", model="m1"):
+        with active_generations.ActiveGeneration(b, thread_id="second", model="m2"):
             snap = active_generations.snapshot()
     assert [e["thread_id"] for e in snap] == ["first", "second"]
     # The threading.Event must not leak into an HTTP response body.
@@ -78,10 +78,10 @@ def test_snapshot_is_json_safe_and_ordered_by_start():
 
 def test_thread_ids_are_deduped_and_skip_unnamed_runs():
     a, b, c = threading.Event(), threading.Event(), threading.Event()
-    with active_generations.ActiveGeneration(a, thread_id = "t1"):
-        with active_generations.ActiveGeneration(b, thread_id = "t1"):
+    with active_generations.ActiveGeneration(a, thread_id="t1"):
+        with active_generations.ActiveGeneration(b, thread_id="t1"):
             # A brand-new chat whose first turn races persistence has no id yet.
-            with active_generations.ActiveGeneration(c, thread_id = None):
+            with active_generations.ActiveGeneration(c, thread_id=None):
                 assert active_generations.active_thread_ids() == ["t1"]
                 assert active_generations.count() == 3
 
@@ -91,8 +91,8 @@ def test_thread_ids_are_deduped_and_skip_unnamed_runs():
 
 def test_cancel_all_sets_every_event():
     a, b = threading.Event(), threading.Event()
-    with active_generations.ActiveGeneration(a, thread_id = "t1"):
-        with active_generations.ActiveGeneration(b, thread_id = "t2"):
+    with active_generations.ActiveGeneration(a, thread_id="t1"):
+        with active_generations.ActiveGeneration(b, thread_id="t2"):
             assert active_generations.cancel_all() == 2
             assert a.is_set() and b.is_set()
 
@@ -104,8 +104,8 @@ def test_cancel_all_on_an_empty_registry_is_a_no_op():
 def test_cancel_thread_leaves_siblings_alone():
     # Per-thread Stop: the rest keep generating, llama-server is untouched.
     a, b = threading.Event(), threading.Event()
-    with active_generations.ActiveGeneration(a, thread_id = "t1"):
-        with active_generations.ActiveGeneration(b, thread_id = "t2"):
+    with active_generations.ActiveGeneration(a, thread_id="t1"):
+        with active_generations.ActiveGeneration(b, thread_id="t2"):
             assert active_generations.cancel_thread("t1") == 1
             assert a.is_set()
             assert not b.is_set()
@@ -113,7 +113,7 @@ def test_cancel_thread_leaves_siblings_alone():
 
 def test_cancel_thread_with_no_match_is_a_no_op():
     a = threading.Event()
-    with active_generations.ActiveGeneration(a, thread_id = "t1"):
+    with active_generations.ActiveGeneration(a, thread_id="t1"):
         assert active_generations.cancel_thread("nope") == 0
         assert active_generations.cancel_thread("") == 0
         assert not a.is_set()
@@ -121,8 +121,8 @@ def test_cancel_thread_with_no_match_is_a_no_op():
 
 def test_cancel_run_targets_only_matching_durable_generation():
     durable, sibling = threading.Event(), threading.Event()
-    with active_generations.ActiveGeneration(durable, thread_id = "t1", run_id = "run-1"):
-        with active_generations.ActiveGeneration(sibling, thread_id = "t1", run_id = "run-2"):
+    with active_generations.ActiveGeneration(durable, thread_id="t1", run_id="run-1"):
+        with active_generations.ActiveGeneration(sibling, thread_id="t1", run_id="run-2"):
             assert active_generations.cancel_run("run-1") == 1
             assert durable.is_set()
             assert not sibling.is_set()
@@ -131,10 +131,10 @@ def test_cancel_run_targets_only_matching_durable_generation():
 def test_same_durable_run_and_event_borrows_existing_registration():
     event = threading.Event()
     with active_generations.ActiveGeneration(
-        event, run_id = "run-1", thread_id = "stale", model = "stale"
+        event, run_id="run-1", thread_id="stale", model="stale"
     ):
         with active_generations.ActiveGeneration(
-            event, run_id = "run-1", thread_id = "thread-1", model = "local"
+            event, run_id="run-1", thread_id="thread-1", model="local"
         ):
             snapshot = active_generations.snapshot()[0]
             assert (active_generations.count(), snapshot["thread_id"], snapshot["model"]) == (
@@ -150,7 +150,7 @@ def test_same_durable_run_and_event_borrows_existing_registration():
 def test_cancel_does_not_unregister_entries():
     # __exit__ owns removal, so a generation mid-cleanup is not lost.
     a = threading.Event()
-    with active_generations.ActiveGeneration(a, thread_id = "t1"):
+    with active_generations.ActiveGeneration(a, thread_id="t1"):
         active_generations.cancel_all()
         assert active_generations.count() == 1
 
@@ -164,18 +164,18 @@ def test_registry_survives_concurrent_register_unregister():
 
     def worker(i: int) -> None:
         try:
-            barrier.wait(timeout = 10)
+            barrier.wait(timeout=10)
             for _ in range(50):
-                with active_generations.ActiveGeneration(threading.Event(), thread_id = f"t{i}"):
+                with active_generations.ActiveGeneration(threading.Event(), thread_id=f"t{i}"):
                     active_generations.snapshot()
         except BaseException as exc:  # noqa: BLE001 - surfaced via assert below
             errors.append(exc)
 
-    threads = [threading.Thread(target = worker, args = (i,)) for i in range(8)]
+    threads = [threading.Thread(target=worker, args=(i,)) for i in range(8)]
     for t in threads:
         t.start()
     for t in threads:
-        t.join(timeout = 30)
+        t.join(timeout=30)
 
     assert errors == []
     assert active_generations.count() == 0
@@ -186,9 +186,9 @@ def test_registry_survives_concurrent_register_unregister():
 
 # The gate lives in routes.inference, which pulls the whole inference stack.
 def _route_gate():
-    pytest.importorskip("fastapi", reason = "inference stack not installed")
+    pytest.importorskip("fastapi", reason="inference stack not installed")
     routes_inference = pytest.importorskip(
-        "routes.inference", reason = "inference stack not installed"
+        "routes.inference", reason="inference stack not installed"
     )
     return routes_inference._raise_or_cancel_active_generations
 
@@ -199,17 +199,17 @@ def gate():
 
 
 def test_gate_allows_a_swap_when_nothing_is_generating(gate):
-    assert gate(force = False, action = "Loading a model") == 0
+    assert gate(force=False, action="Loading a model") == 0
 
 
 def test_gate_refuses_with_409_and_names_the_chats(gate):
     from fastapi import HTTPException
 
     a, b = threading.Event(), threading.Event()
-    with active_generations.ActiveGeneration(a, thread_id = "t1"):
-        with active_generations.ActiveGeneration(b, thread_id = "t2"):
+    with active_generations.ActiveGeneration(a, thread_id="t1"):
+        with active_generations.ActiveGeneration(b, thread_id="t2"):
             with pytest.raises(HTTPException) as exc:
-                gate(force = False, action = "Loading a model")
+                gate(force=False, action="Loading a model")
     assert exc.value.status_code == 409
     detail = exc.value.detail
     assert detail["error"] == "active_generations"
@@ -222,9 +222,9 @@ def test_gate_refuses_with_409_and_names_the_chats(gate):
 def test_gate_message_is_singular_for_one_chat(gate):
     from fastapi import HTTPException
 
-    with active_generations.ActiveGeneration(threading.Event(), thread_id = "t1"):
+    with active_generations.ActiveGeneration(threading.Event(), thread_id="t1"):
         with pytest.raises(HTTPException) as exc:
-            gate(force = False, action = "Unloading the model")
+            gate(force=False, action="Unloading the model")
     message = exc.value.detail["message"]
     assert "1 chat that is still generating" in message
     assert "Unloading the model" in message
@@ -232,14 +232,14 @@ def test_gate_message_is_singular_for_one_chat(gate):
 
 def test_gate_force_cancels_and_returns_the_count(gate):
     a, b = threading.Event(), threading.Event()
-    with active_generations.ActiveGeneration(a, thread_id = "t1"):
-        with active_generations.ActiveGeneration(b, thread_id = "t2"):
-            assert gate(force = True, action = "Loading a model") == 2
+    with active_generations.ActiveGeneration(a, thread_id="t1"):
+        with active_generations.ActiveGeneration(b, thread_id="t2"):
+            assert gate(force=True, action="Loading a model") == 2
             assert a.is_set() and b.is_set()
 
 
 def test_gate_force_with_nothing_running_is_a_no_op(gate):
-    assert gate(force = True, action = "Loading a model") == 0
+    assert gate(force=True, action="Loading a model") == 0
 
 
 # ── the route wiring ──────────────────────────────────────────────────
@@ -251,7 +251,7 @@ def test_tracked_cancel_registers_the_thread_for_its_block():
     from routes.inference import _TrackedCancel
 
     ev = threading.Event()
-    tracker = _TrackedCancel(ev, "cancel-1", thread_id = "t1", model = "m")
+    tracker = _TrackedCancel(ev, "cancel-1", thread_id="t1", model="m")
     tracker.__enter__()
     try:
         assert active_generations.active_thread_ids() == ["t1"]
@@ -267,7 +267,7 @@ def test_tracked_cancel_shares_its_event_with_the_registry():
     from routes.inference import _TrackedCancel
 
     ev = threading.Event()
-    tracker = _TrackedCancel(ev, "cancel-1", thread_id = "t1")
+    tracker = _TrackedCancel(ev, "cancel-1", thread_id="t1")
     tracker.__enter__()
     try:
         active_generations.cancel_all()
@@ -291,13 +291,13 @@ def _stub_load_route(monkeypatch, *, active_model_name):
     monkeypatch.setattr(
         inf_mod,
         "resolve_effective_chat_template_override",
-        lambda model_identifier = None, user_override = None: None,
+        lambda model_identifier=None, user_override=None: None,
     )
     monkeypatch.setattr(inf_mod, "load_inference_config", lambda name: {})
     monkeypatch.setattr(
         inf_mod,
         "_detect_safetensors_features",
-        lambda backend, template, tools = None: {
+        lambda backend, template, tools=None: {
             "supports_reasoning": False,
             "reasoning_style": "enable_thinking",
             "reasoning_effort_levels": [],
@@ -310,12 +310,12 @@ def _stub_load_route(monkeypatch, *, active_model_name):
     monkeypatch.setattr(
         inf_mod,
         "get_inference_backend",
-        lambda: SimpleNamespace(active_model_name = active_model_name, models = {}),
+        lambda: SimpleNamespace(active_model_name=active_model_name, models={}),
     )
     monkeypatch.setattr(
         inf_mod,
         "get_llama_cpp_backend",
-        lambda: SimpleNamespace(is_loaded = False, hf_variant = None, model_identifier = None),
+        lambda: SimpleNamespace(is_loaded=False, hf_variant=None, model_identifier=None),
     )
     return inf_mod
 
@@ -327,14 +327,14 @@ def test_idempotent_load_neither_refuses_nor_cancels_running_chats(monkeypatch):
 
     from models.inference import LoadRequest
 
-    inf_mod = _stub_load_route(monkeypatch, active_model_name = "org/A")
+    inf_mod = _stub_load_route(monkeypatch, active_model_name="org/A")
 
     for force in (False, True):
         ev = threading.Event()
-        with active_generations.ActiveGeneration(ev, thread_id = "t1"):
+        with active_generations.ActiveGeneration(ev, thread_id="t1"):
             response = asyncio.run(
                 inf_mod.load_model(
-                    LoadRequest(model_path = "org/A", force_cancel_active = force),
+                    LoadRequest(model_path="org/A", force_cancel_active=force),
                     object(),
                     "tester",
                 )
@@ -352,12 +352,12 @@ def test_a_real_reload_still_refuses_while_chats_stream(monkeypatch):
 
     from models.inference import LoadRequest
 
-    inf_mod = _stub_load_route(monkeypatch, active_model_name = "org/OTHER")
+    inf_mod = _stub_load_route(monkeypatch, active_model_name="org/OTHER")
 
     ev = threading.Event()
-    with active_generations.ActiveGeneration(ev, thread_id = "t1"):
+    with active_generations.ActiveGeneration(ev, thread_id="t1"):
         with pytest.raises(HTTPException) as exc:
-            asyncio.run(inf_mod.load_model(LoadRequest(model_path = "org/A"), object(), "tester"))
+            asyncio.run(inf_mod.load_model(LoadRequest(model_path="org/A"), object(), "tester"))
     assert exc.value.status_code == 409
     assert exc.value.detail["thread_ids"] == ["t1"]
     assert not ev.is_set()
@@ -373,17 +373,17 @@ def test_a_forced_load_that_fails_preflight_leaves_the_chats_alone(monkeypatch):
 
     from models.inference import LoadRequest
 
-    inf_mod = _stub_load_route(monkeypatch, active_model_name = "org/OTHER")
+    inf_mod = _stub_load_route(monkeypatch, active_model_name="org/OTHER")
     monkeypatch.setattr(inf_mod, "_hf_offline_if_unreachable", contextlib.nullcontext)
     # Stands in for any preflight refusal; a None here is the route's own 400.
     monkeypatch.setattr(inf_mod.ModelConfig, "from_identifier", staticmethod(lambda **kwargs: None))
 
     ev = threading.Event()
-    with active_generations.ActiveGeneration(ev, thread_id = "t1"):
+    with active_generations.ActiveGeneration(ev, thread_id="t1"):
         with pytest.raises(HTTPException) as exc:
             asyncio.run(
                 inf_mod.load_model(
-                    LoadRequest(model_path = "org/A", force_cancel_active = True),
+                    LoadRequest(model_path="org/A", force_cancel_active=True),
                     object(),
                     "tester",
                 )
@@ -402,7 +402,7 @@ def _stub_standard_load_route(monkeypatch):
     import routes.inference as inf_mod
 
     real_sidecar_check = inf_mod._raise_if_sidecar_swap_in_progress
-    _stub_load_route(monkeypatch, active_model_name = "org/OTHER")
+    _stub_load_route(monkeypatch, active_model_name="org/OTHER")
     # _stub_load_route neutralises the sidecar guard; this test is about it.
     monkeypatch.setattr(inf_mod, "_raise_if_sidecar_swap_in_progress", real_sidecar_check)
     monkeypatch.setattr(inf_mod, "_hf_offline_if_unreachable", contextlib.nullcontext)
@@ -412,12 +412,12 @@ def _stub_standard_load_route(monkeypatch):
         "from_identifier",
         staticmethod(
             lambda **kwargs: SimpleNamespace(
-                is_gguf = False,
-                identifier = "org/A",
-                display_name = "A",
-                is_vision = False,
-                gguf_hf_repo = None,
-                gguf_variant = None,
+                is_gguf=False,
+                identifier="org/A",
+                display_name="A",
+                is_vision=False,
+                gguf_hf_repo=None,
+                gguf_variant=None,
             )
         ),
     )
@@ -456,17 +456,17 @@ def test_a_sidecar_swap_reserved_during_the_drain_never_strands_cancelled_chats(
         time.sleep(0.35)
         kw._inflight = 0  # the chat's own request drains last
 
-    thread = threading.Thread(target = _installer, daemon = True)
+    thread = threading.Thread(target=_installer, daemon=True)
     ev = threading.Event()
     try:
-        with active_generations.ActiveGeneration(ev, thread_id = "t1"):
+        with active_generations.ActiveGeneration(ev, thread_id="t1"):
             thread.start()
             with pytest.raises(HTTPException) as exc:
                 asyncio.run(
                     inf_mod.load_model(
-                        LoadRequest(model_path = "org/A", force_cancel_active = True),
+                        LoadRequest(model_path="org/A", force_cancel_active=True),
                         SimpleNamespace(
-                            app = SimpleNamespace(state = SimpleNamespace(llama_parallel_slots = 1))
+                            app=SimpleNamespace(state=SimpleNamespace(llama_parallel_slots=1))
                         ),
                         "tester",
                     )
@@ -477,7 +477,7 @@ def test_a_sidecar_swap_reserved_during_the_drain_never_strands_cancelled_chats(
         assert exc.value.status_code == 409
         assert "transformers installation" in str(exc.value.detail)
     finally:
-        thread.join(timeout = 5)
+        thread.join(timeout=5)
         kw._inflight = 0
 
 
@@ -506,26 +506,26 @@ def test_unload_rechecks_active_generations_under_the_lifecycle_gate(monkeypatch
     torn_down: list[str] = []
     inf_mod, kw = _stub_unload_backends(
         monkeypatch,
-        llama = SimpleNamespace(
-            is_active = True,
-            is_loaded = True,
-            model_identifier = "org/A-GGUF",
-            unload_model = lambda: torn_down.append("gguf"),
+        llama=SimpleNamespace(
+            is_active=True,
+            is_loaded=True,
+            model_identifier="org/A-GGUF",
+            unload_model=lambda: torn_down.append("gguf"),
         ),
-        backend = SimpleNamespace(
-            get_loading_model = lambda: None,
-            unload_model = lambda path: torn_down.append("unsloth"),
+        backend=SimpleNamespace(
+            get_loading_model=lambda: None,
+            unload_model=lambda path: torn_down.append("unsloth"),
         ),
     )
 
     ev = threading.Event()
-    started = active_generations.ActiveGeneration(ev, thread_id = "t1")
+    started = active_generations.ActiveGeneration(ev, thread_id="t1")
 
     async def drive():
         # A load holds the lifecycle gate, so the unload queues behind it.
         kw._lifecycle_lock.acquire()
         task = asyncio.create_task(
-            inf_mod.unload_model(UnloadRequest(model_path = "org/A-GGUF"), "tester")
+            inf_mod.unload_model(UnloadRequest(model_path="org/A-GGUF"), "tester")
         )
         entered = False
         try:
@@ -535,7 +535,7 @@ def test_unload_rechecks_active_generations_under_the_lifecycle_gate(monkeypatch
         finally:
             kw._lifecycle_lock.release()
         try:
-            return await asyncio.wait_for(task, timeout = 5)
+            return await asyncio.wait_for(task, timeout=5)
         finally:
             if entered:
                 started.__exit__(None, None, None)
@@ -558,7 +558,7 @@ def _run_unload(
     requested,
     force,
     torn_down,
-    unload_model = None,
+    unload_model=None,
 ):
     """Drive POST /unload against a backend pair with ``loaded_gguf`` resident.
 
@@ -572,23 +572,23 @@ def _run_unload(
 
     _stub_unload_backends(
         monkeypatch,
-        llama = SimpleNamespace(
-            is_active = True,
-            is_loaded = True,
-            model_identifier = loaded_gguf,
-            unload_model = unload_model or (lambda: torn_down.append("gguf")),
+        llama=SimpleNamespace(
+            is_active=True,
+            is_loaded=True,
+            model_identifier=loaded_gguf,
+            unload_model=unload_model or (lambda: torn_down.append("gguf")),
         ),
         # Nothing on the standard backend: the GGUF above is what is resident.
-        backend = SimpleNamespace(
-            get_loading_model = lambda: None,
-            active_model_name = None,
-            models = {},
-            unload_model = lambda path: torn_down.append("unsloth"),
+        backend=SimpleNamespace(
+            get_loading_model=lambda: None,
+            active_model_name=None,
+            models={},
+            unload_model=lambda path: torn_down.append("unsloth"),
         ),
     )
     return asyncio.run(
         inf_mod.unload_model(
-            UnloadRequest(model_path = requested, force_cancel_active = force), "tester"
+            UnloadRequest(model_path=requested, force_cancel_active=force), "tester"
         )
     )
 
@@ -607,10 +607,10 @@ def test_unload_finds_a_gguf_loaded_from_a_pinned_snapshot(monkeypatch):
     _run_unload(
         inf_mod,
         monkeypatch,
-        loaded_gguf = _PINNED_SNAPSHOT,
-        requested = "Org/Quant",
-        force = False,
-        torn_down = torn_down,
+        loaded_gguf=_PINNED_SNAPSHOT,
+        requested="Org/Quant",
+        force=False,
+        torn_down=torn_down,
     )
     assert torn_down == ["gguf"]
 
@@ -619,10 +619,10 @@ def test_unload_finds_a_gguf_loaded_from_a_pinned_snapshot(monkeypatch):
     _run_unload(
         inf_mod,
         monkeypatch,
-        loaded_gguf = _PINNED_SNAPSHOT,
-        requested = "Org/Other",
-        force = False,
-        torn_down = other,
+        loaded_gguf=_PINNED_SNAPSHOT,
+        requested="Org/Other",
+        force=False,
+        torn_down=other,
     )
     assert other == ["unsloth"]
 
@@ -640,18 +640,18 @@ def test_stop_loading_cancels_an_in_flight_pinned_load(monkeypatch):
         cancelled: list[str] = []
         inf_mod, _kw = _stub_unload_backends(
             monkeypatch,
-            llama = SimpleNamespace(is_active = False, is_loaded = False, model_identifier = None),
-            backend = SimpleNamespace(
-                get_loading_model = lambda: loading,
-                cancel_load = lambda path: (cancelled.append(path), True)[1],
-                active_model_name = None,
-                models = {},
-                unload_model = lambda path: None,
+            llama=SimpleNamespace(is_active=False, is_loaded=False, model_identifier=None),
+            backend=SimpleNamespace(
+                get_loading_model=lambda: loading,
+                cancel_load=lambda path: (cancelled.append(path), True)[1],
+                active_model_name=None,
+                models={},
+                unload_model=lambda path: None,
             ),
         )
         asyncio.run(
             inf_mod.unload_model(
-                UnloadRequest(model_path = requested, force_cancel_active = False), "tester"
+                UnloadRequest(model_path=requested, force_cancel_active=False), "tester"
             )
         )
         return cancelled
@@ -675,17 +675,17 @@ def test_unload_evicts_a_pinned_standard_model_under_its_registered_name(monkeyp
     unloaded: list[str] = []
     inf_mod, _kw = _stub_unload_backends(
         monkeypatch,
-        llama = SimpleNamespace(is_active = False, is_loaded = False, model_identifier = None),
-        backend = SimpleNamespace(
-            get_loading_model = lambda: None,
-            active_model_name = _PINNED_SNAPSHOT,
-            models = {_PINNED_SNAPSHOT: {}},
-            unload_model = lambda path: unloaded.append(path),
+        llama=SimpleNamespace(is_active=False, is_loaded=False, model_identifier=None),
+        backend=SimpleNamespace(
+            get_loading_model=lambda: None,
+            active_model_name=_PINNED_SNAPSHOT,
+            models={_PINNED_SNAPSHOT: {}},
+            unload_model=lambda path: unloaded.append(path),
         ),
     )
     asyncio.run(
         inf_mod.unload_model(
-            UnloadRequest(model_path = "Org/Quant", force_cancel_active = False), "tester"
+            UnloadRequest(model_path="Org/Quant", force_cancel_active=False), "tester"
         )
     )
     assert unloaded == [_PINNED_SNAPSHOT]
@@ -698,14 +698,14 @@ def test_forced_unload_of_a_stale_model_path_leaves_the_chats_alone(monkeypatch)
 
     torn_down: list[str] = []
     ev = threading.Event()
-    with active_generations.ActiveGeneration(ev, thread_id = "t1"):
+    with active_generations.ActiveGeneration(ev, thread_id="t1"):
         response = _run_unload(
             inf_mod,
             monkeypatch,
-            loaded_gguf = "org/B-GGUF",  # what the other tab actually loaded
-            requested = "org/A-GGUF",  # this tab's stale idea of it
-            force = True,
-            torn_down = torn_down,
+            loaded_gguf="org/B-GGUF",  # what the other tab actually loaded
+            requested="org/A-GGUF",  # this tab's stale idea of it
+            force=True,
+            torn_down=torn_down,
         )
         assert not ev.is_set()
         assert active_generations.count() == 1
@@ -721,14 +721,14 @@ def test_forced_unload_of_the_loaded_model_still_stops_its_chats(monkeypatch):
 
     torn_down: list[str] = []
     ev = threading.Event()
-    with active_generations.ActiveGeneration(ev, thread_id = "t1"):
+    with active_generations.ActiveGeneration(ev, thread_id="t1"):
         response = _run_unload(
             inf_mod,
             monkeypatch,
-            loaded_gguf = "org/A-GGUF",
-            requested = "org/A-GGUF",
-            force = True,
-            torn_down = torn_down,
+            loaded_gguf="org/A-GGUF",
+            requested="org/A-GGUF",
+            force=True,
+            torn_down=torn_down,
         )
         assert ev.is_set()
     assert torn_down == ["gguf"]
@@ -745,7 +745,7 @@ def test_forced_unload_lets_the_cancelled_chats_unwind_before_teardown(monkeypat
     inflight = {"n": 1}
     seen = {}
 
-    def _count(current_request_counted = True, *, include_pending = True):
+    def _count(current_request_counted=True, *, include_pending=True):
         # Unwinds one poll after the cancel, like a stream noticing its event.
         if inflight["n"] > 0:
             inflight["n"] -= 1
@@ -761,15 +761,15 @@ def test_forced_unload_lets_the_cancelled_chats_unwind_before_teardown(monkeypat
         seen["inflight_at_teardown"] = inflight["n"]
         torn_down.append("gguf")
 
-    with active_generations.ActiveGeneration(ev, thread_id = "t1"):
+    with active_generations.ActiveGeneration(ev, thread_id="t1"):
         response = _run_unload(
             inf_mod,
             monkeypatch,
-            loaded_gguf = "org/A-GGUF",
-            requested = "org/A-GGUF",
-            force = True,
-            torn_down = torn_down,
-            unload_model = _record_teardown,
+            loaded_gguf="org/A-GGUF",
+            requested="org/A-GGUF",
+            force=True,
+            torn_down=torn_down,
+            unload_model=_record_teardown,
         )
         assert ev.is_set()
 
@@ -787,7 +787,7 @@ def test_unload_drains_on_the_middleware_count_not_just_the_registry(monkeypatch
 
     polls = {"n": 0}
 
-    def _count(current_request_counted = True, *, include_pending = True):
+    def _count(current_request_counted=True, *, include_pending=True):
         polls["n"] += 1
         return 0
 
@@ -797,10 +797,10 @@ def test_unload_drains_on_the_middleware_count_not_just_the_registry(monkeypatch
     response = _run_unload(
         inf_mod,
         monkeypatch,
-        loaded_gguf = "org/A-GGUF",
-        requested = "org/A-GGUF",
-        force = True,
-        torn_down = torn_down,
+        loaded_gguf="org/A-GGUF",
+        requested="org/A-GGUF",
+        force=True,
+        torn_down=torn_down,
     )
     assert torn_down == ["gguf"]
     # Polled, but returned on the first read rather than waiting anything out.
@@ -815,14 +815,14 @@ def test_unforced_unload_of_a_stale_model_path_is_still_a_no_op(monkeypatch):
 
     torn_down: list[str] = []
     ev = threading.Event()
-    with active_generations.ActiveGeneration(ev, thread_id = "t1"):
+    with active_generations.ActiveGeneration(ev, thread_id="t1"):
         response = _run_unload(
             inf_mod,
             monkeypatch,
-            loaded_gguf = "org/B-GGUF",  # what the other tab actually loaded
-            requested = "org/A-GGUF",  # this tab's stale idea of it
-            force = False,
-            torn_down = torn_down,
+            loaded_gguf="org/B-GGUF",  # what the other tab actually loaded
+            requested="org/A-GGUF",  # this tab's stale idea of it
+            force=False,
+            torn_down=torn_down,
         )
         assert not ev.is_set()
         assert active_generations.count() == 1
@@ -840,15 +840,15 @@ def test_unforced_unload_of_the_loaded_model_still_refuses_while_chats_stream(mo
 
     torn_down: list[str] = []
     ev = threading.Event()
-    with active_generations.ActiveGeneration(ev, thread_id = "t1"):
+    with active_generations.ActiveGeneration(ev, thread_id="t1"):
         with pytest.raises(HTTPException) as exc:
             _run_unload(
                 inf_mod,
                 monkeypatch,
-                loaded_gguf = "org/A-GGUF",
-                requested = "org/A-GGUF",
-                force = False,
-                torn_down = torn_down,
+                loaded_gguf="org/A-GGUF",
+                requested="org/A-GGUF",
+                force=False,
+                torn_down=torn_down,
             )
     assert exc.value.status_code == 409
     assert exc.value.detail["thread_ids"] == ["t1"]
@@ -870,26 +870,26 @@ def test_unforced_unload_still_refuses_while_a_gguf_load_is_in_flight(monkeypatc
     torn_down: list[str] = []
     inf_mod, _kw = _stub_unload_backends(
         monkeypatch,
-        llama = SimpleNamespace(
-            is_active = True,
-            is_loaded = False,  # spawned, health check not passed: mid-load
-            model_identifier = "org/B-GGUF",
-            unload_model = lambda: torn_down.append("gguf"),
+        llama=SimpleNamespace(
+            is_active=True,
+            is_loaded=False,  # spawned, health check not passed: mid-load
+            model_identifier="org/B-GGUF",
+            unload_model=lambda: torn_down.append("gguf"),
         ),
-        backend = SimpleNamespace(
-            get_loading_model = lambda: None,
-            active_model_name = None,
-            models = {},
-            unload_model = lambda path: torn_down.append("unsloth"),
+        backend=SimpleNamespace(
+            get_loading_model=lambda: None,
+            active_model_name=None,
+            models={},
+            unload_model=lambda path: torn_down.append("unsloth"),
         ),
     )
 
     ev = threading.Event()
-    with active_generations.ActiveGeneration(ev, thread_id = "t1"):
+    with active_generations.ActiveGeneration(ev, thread_id="t1"):
         with pytest.raises(HTTPException) as exc:
             asyncio.run(
                 inf_mod.unload_model(
-                    UnloadRequest(model_path = "org/A-GGUF", force_cancel_active = False),
+                    UnloadRequest(model_path="org/A-GGUF", force_cancel_active=False),
                     "tester",
                 )
             )
@@ -912,26 +912,26 @@ def test_cancelling_an_in_flight_standard_load_is_not_refused_by_the_chat_gate(m
     inf_mod, _kw = _stub_unload_backends(
         monkeypatch,
         # Nothing on llama-server: the load in flight is a safetensors one.
-        llama = SimpleNamespace(
-            is_active = False,
-            is_loaded = False,
-            model_identifier = None,
-            unload_model = lambda: torn_down.append("gguf"),
+        llama=SimpleNamespace(
+            is_active=False,
+            is_loaded=False,
+            model_identifier=None,
+            unload_model=lambda: torn_down.append("gguf"),
         ),
-        backend = SimpleNamespace(
-            get_loading_model = lambda: "org/B",
-            cancel_load = lambda path: bool(cancelled.append(path)) or True,
-            active_model_name = None,
-            models = {},
-            unload_model = lambda path: torn_down.append("unsloth"),
+        backend=SimpleNamespace(
+            get_loading_model=lambda: "org/B",
+            cancel_load=lambda path: bool(cancelled.append(path)) or True,
+            active_model_name=None,
+            models={},
+            unload_model=lambda path: torn_down.append("unsloth"),
         ),
     )
 
     ev = threading.Event()
-    with active_generations.ActiveGeneration(ev, thread_id = "t1"):
+    with active_generations.ActiveGeneration(ev, thread_id="t1"):
         response = asyncio.run(
             inf_mod.unload_model(
-                UnloadRequest(model_path = "org/B", force_cancel_active = False), "tester"
+                UnloadRequest(model_path="org/B", force_cancel_active=False), "tester"
             )
         )
         # The chat on the previous model is untouched: the load never reached it.
@@ -953,25 +953,25 @@ def test_cancelling_an_in_flight_gguf_load_is_not_refused_by_the_chat_gate(monke
     torn_down: list[str] = []
     inf_mod, _kw = _stub_unload_backends(
         monkeypatch,
-        llama = SimpleNamespace(
-            is_active = True,
-            is_loaded = False,  # spawned, health check not passed: mid-load
-            model_identifier = "org/B-GGUF",
-            unload_model = lambda: torn_down.append("gguf"),
+        llama=SimpleNamespace(
+            is_active=True,
+            is_loaded=False,  # spawned, health check not passed: mid-load
+            model_identifier="org/B-GGUF",
+            unload_model=lambda: torn_down.append("gguf"),
         ),
-        backend = SimpleNamespace(
-            get_loading_model = lambda: None,
-            active_model_name = None,
-            models = {},
-            unload_model = lambda path: torn_down.append("unsloth"),
+        backend=SimpleNamespace(
+            get_loading_model=lambda: None,
+            active_model_name=None,
+            models={},
+            unload_model=lambda path: torn_down.append("unsloth"),
         ),
     )
 
     ev = threading.Event()
-    with active_generations.ActiveGeneration(ev, thread_id = "t1"):
+    with active_generations.ActiveGeneration(ev, thread_id="t1"):
         response = asyncio.run(
             inf_mod.unload_model(
-                UnloadRequest(model_path = "org/B-GGUF", force_cancel_active = False), "tester"
+                UnloadRequest(model_path="org/B-GGUF", force_cancel_active=False), "tester"
             )
         )
         assert not ev.is_set()
@@ -995,8 +995,8 @@ def _install_responses_stream_mock(monkeypatch, chunks):
         content += "data: [DONE]\n\n"
         return httpx.Response(
             200,
-            content = content.encode(),
-            headers = {"content-type": "text/event-stream"},
+            content=content.encode(),
+            headers={"content-type": "text/event-stream"},
         )
 
     transport = httpx.MockTransport(handler)
@@ -1004,20 +1004,20 @@ def _install_responses_stream_mock(monkeypatch, chunks):
     monkeypatch.setattr(
         inf_mod.httpx,
         "AsyncClient",
-        lambda *a, **kw: real_async_client(transport = transport, timeout = kw.get("timeout", 600)),
+        lambda *a, **kw: real_async_client(transport=transport, timeout=kw.get("timeout", 600)),
     )
     monkeypatch.setattr(
         inf_mod,
         "get_llama_cpp_backend",
         lambda: SimpleNamespace(
-            is_loaded = True,
-            is_vision = False,
-            context_length = 4096,
-            base_url = "http://llama.test",
-            supports_reasoning = True,
-            reasoning_always_on = False,
-            _request_reasoning_kwargs = (
-                lambda enable_thinking = None, reasoning_effort = None, preserve_thinking = None: None
+            is_loaded=True,
+            is_vision=False,
+            context_length=4096,
+            base_url="http://llama.test",
+            supports_reasoning=True,
+            reasoning_always_on=False,
+            _request_reasoning_kwargs=(
+                lambda enable_thinking=None, reasoning_effort=None, preserve_thinking=None: None
             ),
         ),
     )
@@ -1039,8 +1039,8 @@ def test_direct_responses_stream_is_visible_to_the_swap_gate(monkeypatch):
     inf_mod = _install_responses_stream_mock(
         monkeypatch, [{"choices": [{"delta": {"content": "33"}}]}]
     )
-    payload = ResponsesRequest(input = "hi", stream = True, model = "org/M-GGUF")
-    messages = [ChatMessage(role = "user", content = "hi")]
+    payload = ResponsesRequest(input="hi", stream=True, model="org/M-GGUF")
+    messages = [ChatMessage(role="user", content="hi")]
     seen = {}
 
     async def run():
@@ -1074,8 +1074,8 @@ def test_forced_reload_stops_a_direct_responses_stream(monkeypatch):
             {"choices": [{"delta": {"content": "3"}}]},
         ],
     )
-    payload = ResponsesRequest(input = "hi", stream = True, model = "org/M-GGUF")
-    messages = [ChatMessage(role = "user", content = "hi")]
+    payload = ResponsesRequest(input="hi", stream=True, model="org/M-GGUF")
+    messages = [ChatMessage(role="user", content="hi")]
 
     async def run():
         response = await inf_mod._responses_stream(payload, messages, _NeverDisconnectedRequest())
@@ -1108,13 +1108,13 @@ def test_forced_reload_stops_a_responses_stream_still_queued_for_a_slot(monkeypa
         llama_admission.ADMISSION_KEEPALIVE_INTERVAL_ENV,
         llama_admission.ADMISSION_MAX_QUEUE_ENV,
     ):
-        monkeypatch.delenv(name, raising = False)
+        monkeypatch.delenv(name, raising=False)
 
     inf_mod = _install_responses_stream_mock(
         monkeypatch, [{"choices": [{"delta": {"content": "33"}}]}]
     )
-    payload = ResponsesRequest(input = "hi", stream = True, model = "org/M-GGUF")
-    messages = [ChatMessage(role = "user", content = "hi")]
+    payload = ResponsesRequest(input="hi", stream=True, model="org/M-GGUF")
+    messages = [ChatMessage(role="user", content="hi")]
 
     llama_admission.reset_llama_admission_queues()
     try:
@@ -1122,7 +1122,7 @@ def test_forced_reload_stops_a_responses_stream_still_queued_for_a_slot(monkeypa
         async def run():
             # Hold the backend's only decode slot so the run below has to queue.
             queue = llama_admission.get_llama_admission_queue("http://llama.test")
-            holder = queue.reserve(capacity = 1, config = llama_admission.LlamaAdmissionConfig())
+            holder = queue.reserve(capacity=1, config=llama_admission.LlamaAdmissionConfig())
             assert holder.lease_nowait() is not None
             response = await inf_mod._responses_stream(
                 payload, messages, _NeverDisconnectedRequest()
@@ -1141,7 +1141,7 @@ def test_forced_reload_stops_a_responses_stream_still_queued_for_a_slot(monkeypa
             assert active_generations.count() == 1, "the queued run never registered"
             assert active_generations.cancel_all() == 1
             # Unbounded queue by default: without the tracked event this never returns while the slot is held.
-            await asyncio.wait_for(task, timeout = 5)
+            await asyncio.wait_for(task, timeout=5)
             return chunks
 
         chunks = asyncio.run(run())
@@ -1172,8 +1172,8 @@ def _install_completions_stream_mock(monkeypatch, events):
 
         return httpx.Response(
             200,
-            content = _chunks(),
-            headers = {"content-type": "text/event-stream"},
+            content=_chunks(),
+            headers={"content-type": "text/event-stream"},
         )
 
     transport = httpx.MockTransport(handler)
@@ -1181,16 +1181,16 @@ def _install_completions_stream_mock(monkeypatch, events):
     monkeypatch.setattr(
         inf_mod.httpx,
         "AsyncClient",
-        lambda *a, **kw: real_async_client(transport = transport, timeout = kw.get("timeout", 600)),
+        lambda *a, **kw: real_async_client(transport=transport, timeout=kw.get("timeout", 600)),
     )
     monkeypatch.setattr(
         inf_mod,
         "get_llama_cpp_backend",
         lambda: SimpleNamespace(
-            is_loaded = True,
-            context_length = 4096,
-            base_url = "http://llama.test",
-            model_identifier = "org/M-GGUF",
+            is_loaded=True,
+            context_length=4096,
+            base_url="http://llama.test",
+            model_identifier="org/M-GGUF",
         ),
     )
     monkeypatch.setattr(inf_mod, "_automatic_model_load_may_run", lambda: False)
@@ -1210,7 +1210,7 @@ class _CompletionsRequest(_NeverDisconnectedRequest):
 
         self._body = body
         self.method = "POST"
-        self.url = SimpleNamespace(path = "/v1/completions")
+        self.url = SimpleNamespace(path="/v1/completions")
 
     async def json(self):
         return self._body
@@ -1292,27 +1292,27 @@ def test_completions_proxy_non_stream_is_visible_to_the_swap_gate(monkeypatch):
         seen["snapshot"] = active_generations.snapshot()
         # And the gate must reach this run, not just see it.
         seen["cancelled"] = active_generations.cancel_all()
-        return httpx.Response(200, json = {"id": "cmpl-x", "choices": [{"text": "33"}]})
+        return httpx.Response(200, json={"id": "cmpl-x", "choices": [{"text": "33"}]})
 
     transport = httpx.MockTransport(handler)
     real_async_client = httpx.AsyncClient
     monkeypatch.setattr(
         inf_mod.httpx,
         "AsyncClient",
-        lambda *a, **kw: real_async_client(transport = transport, timeout = kw.get("timeout", 600)),
+        lambda *a, **kw: real_async_client(transport=transport, timeout=kw.get("timeout", 600)),
     )
     # The pooled client too, so a route that took no per-request one still reaches this transport.
     monkeypatch.setattr(
-        inf_mod, "nonstreaming_client", lambda: real_async_client(transport = transport)
+        inf_mod, "nonstreaming_client", lambda: real_async_client(transport=transport)
     )
     monkeypatch.setattr(
         inf_mod,
         "get_llama_cpp_backend",
         lambda: SimpleNamespace(
-            is_loaded = True,
-            context_length = 4096,
-            base_url = "http://llama.test",
-            model_identifier = "org/M-GGUF",
+            is_loaded=True,
+            context_length=4096,
+            base_url="http://llama.test",
+            model_identifier="org/M-GGUF",
         ),
     )
     monkeypatch.setattr(inf_mod, "_automatic_model_load_may_run", lambda: False)
@@ -1342,8 +1342,8 @@ class _EmbeddingsRequest(_NeverDisconnectedRequest):
 
         self._body = body
         self.method = "POST"
-        self.url = SimpleNamespace(path = "/v1/embeddings")
-        self.state = SimpleNamespace(skip_api_monitor = True)
+        self.url = SimpleNamespace(path="/v1/embeddings")
+        self.state = SimpleNamespace(skip_api_monitor=True)
 
     async def json(self):
         return self._body
@@ -1366,26 +1366,26 @@ def test_embeddings_proxy_is_visible_to_the_swap_gate(monkeypatch):
         seen["count"] = active_generations.count()
         seen["snapshot"] = active_generations.snapshot()
         seen["cancelled"] = active_generations.cancel_all()
-        return httpx.Response(200, json = {"data": [{"embedding": [0.1, 0.2]}]})
+        return httpx.Response(200, json={"data": [{"embedding": [0.1, 0.2]}]})
 
     transport = httpx.MockTransport(handler)
     real_async_client = httpx.AsyncClient
     monkeypatch.setattr(
         inf_mod.httpx,
         "AsyncClient",
-        lambda *a, **kw: real_async_client(transport = transport, timeout = kw.get("timeout", 600)),
+        lambda *a, **kw: real_async_client(transport=transport, timeout=kw.get("timeout", 600)),
     )
     monkeypatch.setattr(
-        inf_mod, "nonstreaming_client", lambda: real_async_client(transport = transport)
+        inf_mod, "nonstreaming_client", lambda: real_async_client(transport=transport)
     )
     monkeypatch.setattr(
         inf_mod,
         "get_llama_cpp_backend",
         lambda: SimpleNamespace(
-            is_loaded = True,
-            context_length = 4096,
-            base_url = "http://llama.test",
-            model_identifier = "org/M-GGUF",
+            is_loaded=True,
+            context_length=4096,
+            base_url="http://llama.test",
+            model_identifier="org/M-GGUF",
         ),
     )
     monkeypatch.setattr(inf_mod, "_automatic_model_load_may_run", lambda: False)
@@ -1421,10 +1421,10 @@ def test_active_generations_redacts_native_model_paths(monkeypatch):
     secret_path = "/home/somebody/models/private-model.gguf"
     _remember_native_path_for_redaction(secret_path, "private-model.gguf")
 
-    request = SimpleNamespace(app = SimpleNamespace(state = SimpleNamespace(llama_parallel_slots = 4)))
+    request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(llama_parallel_slots=4)))
     monkeypatch.setattr(inf_mod, "get_llama_cpp_backend", lambda: SimpleNamespace())
 
-    with active_generations.ActiveGeneration(threading.Event(), thread_id = "t1", model = secret_path):
+    with active_generations.ActiveGeneration(threading.Event(), thread_id="t1", model=secret_path):
         body = asyncio.run(inf_mod.get_active_generations(request, "tester"))
 
     assert body["count"] == 1
@@ -1453,19 +1453,19 @@ def test_legacy_generate_stream_is_visible_to_the_swap_gate(monkeypatch):
         yield "world"
 
     backend = SimpleNamespace(
-        active_model_name = "org/M",
-        models = {"org/M": {}},
-        generate_chat_response = lambda **kw: _fake_generate_chat_response(**kw),
-        reset_generation_state = lambda *a: None,
-        resize_image = lambda img: img,
+        active_model_name="org/M",
+        models={"org/M": {}},
+        generate_chat_response=lambda **kw: _fake_generate_chat_response(**kw),
+        reset_generation_state=lambda *a: None,
+        resize_image=lambda img: img,
     )
     monkeypatch.setattr(inf_mod, "get_inference_backend", lambda: backend)
 
     async def _drain():
         response = await inf_mod.generate_stream(
-            GenerateRequest(messages = [{"role": "user", "content": "hi"}]),
+            GenerateRequest(messages=[{"role": "user", "content": "hi"}]),
             _NeverDisconnectedRequest(),
-            current_subject = "tester",
+            current_subject="tester",
         )
         async for _ in response.body_iterator:
             pass
@@ -1582,12 +1582,12 @@ def test_local_anthropic_tool_stream_is_visible_to_the_swap_gate(monkeypatch):
 
 
 def test_load_and_unload_requests_default_to_not_cancelling():
-    pytest.importorskip("pydantic", reason = "pydantic not installed")
+    pytest.importorskip("pydantic", reason="pydantic not installed")
     from models.inference import LoadRequest, UnloadRequest
 
-    assert LoadRequest(model_path = "m").force_cancel_active is False
-    assert UnloadRequest(model_path = "m").force_cancel_active is False
-    assert LoadRequest(model_path = "m", force_cancel_active = True).force_cancel_active is True
+    assert LoadRequest(model_path="m").force_cancel_active is False
+    assert UnloadRequest(model_path="m").force_cancel_active is False
+    assert LoadRequest(model_path="m", force_cancel_active=True).force_cancel_active is True
 
 
 def _parallel_constants(path: str) -> dict:
@@ -1597,7 +1597,7 @@ def _parallel_constants(path: str) -> dict:
     """
     import ast
 
-    with open(path, encoding = "utf-8") as f:
+    with open(path, encoding="utf-8") as f:
         tree = ast.parse(f.read())
     found = {}
     for node in tree.body:
@@ -1636,7 +1636,7 @@ def _run_server_parallel_default(path: str, consts: dict):
     """Resolve run_server()'s llama_parallel_slots default from run.py's source."""
     import ast
 
-    with open(path, encoding = "utf-8") as f:
+    with open(path, encoding="utf-8") as f:
         tree = ast.parse(f.read())
     for node in tree.body:
         if not isinstance(node, ast.FunctionDef) or node.name != "run_server":
@@ -1672,7 +1672,7 @@ def test_colab_launcher_inherits_the_parallel_default():
     import ast
 
     colab_path = os.path.join(_backend, "colab.py")
-    with open(colab_path, encoding = "utf-8") as f:
+    with open(colab_path, encoding="utf-8") as f:
         tree = ast.parse(f.read())
     consts = _parallel_constants(os.path.join(_backend, "run.py"))
 
@@ -1709,19 +1709,19 @@ def test_a_forced_load_that_loses_to_a_sidecar_install_leaves_the_chats_alone(mo
 
     from models.inference import LoadRequest
 
-    inf_mod = _stub_load_route(monkeypatch, active_model_name = "org/OTHER")
+    inf_mod = _stub_load_route(monkeypatch, active_model_name="org/OTHER")
     monkeypatch.setattr(inf_mod, "_hf_offline_if_unreachable", contextlib.nullcontext)
     monkeypatch.setattr(
         inf_mod.ModelConfig,
         "from_identifier",
         staticmethod(
             lambda **kwargs: SimpleNamespace(
-                is_gguf = False,
-                identifier = "org/A",
-                display_name = "A",
-                is_vision = False,
-                is_lora = False,
-                path = None,
+                is_gguf=False,
+                identifier="org/A",
+                display_name="A",
+                is_vision=False,
+                is_lora=False,
+                path=None,
             )
         ),
     )
@@ -1736,8 +1736,8 @@ def test_a_forced_load_that_loses_to_a_sidecar_install_leaves_the_chats_alone(mo
         seen["calls"] += 1
         if seen["calls"] > 2:
             raise HTTPException(
-                status_code = 409,
-                detail = "A transformers installation is in progress. Retry when it completes.",
+                status_code=409,
+                detail="A transformers installation is in progress. Retry when it completes.",
             )
 
     monkeypatch.setattr(
@@ -1745,18 +1745,18 @@ def test_a_forced_load_that_loses_to_a_sidecar_install_leaves_the_chats_alone(mo
     )
 
     fastapi_request = SimpleNamespace(
-        app = SimpleNamespace(state = SimpleNamespace(llama_parallel_slots = 1))
+        app=SimpleNamespace(state=SimpleNamespace(llama_parallel_slots=1))
     )
 
     ev = threading.Event()
-    with active_generations.ActiveGeneration(ev, thread_id = "t1"):
+    with active_generations.ActiveGeneration(ev, thread_id="t1"):
         with pytest.raises(HTTPException) as exc:
             asyncio.run(
                 inf_mod.load_model(
                     LoadRequest(
-                        model_path = "org/A",
-                        load_in_4bit = False,
-                        force_cancel_active = True,
+                        model_path="org/A",
+                        load_in_4bit=False,
+                        force_cancel_active=True,
                     ),
                     fastapi_request,
                     "tester",
@@ -1781,9 +1781,9 @@ def test_anthropic_passthrough_registers_nothing_until_its_body_starts():
     import routes.inference as inf_mod
 
     llama_backend = SimpleNamespace(
-        base_url = "http://127.0.0.1:8080",
-        context_length = 4096,
-        count_chat_tokens = lambda messages, _unused, tools, **_kwargs: 7,
+        base_url="http://127.0.0.1:8080",
+        context_length=4096,
+        count_chat_tokens=lambda messages, _unused, tools, **_kwargs: 7,
     )
 
     async def _build():
@@ -1799,8 +1799,8 @@ def test_anthropic_passthrough_registers_nothing_until_its_body_starts():
             128,
             "msg_1",
             "org/A",
-            session_id = "s1",
-            cancel_id = "c1",
+            session_id="s1",
+            cancel_id="c1",
         )
 
     # Built and abandoned, as when the request task is cancelled before Starlette calls the response.
@@ -1857,7 +1857,7 @@ def test_audio_generation_is_visible_to_the_swap_gate(monkeypatch):
     monkeypatch.setattr(
         inf_mod,
         "get_llama_cpp_backend",
-        lambda: SimpleNamespace(is_loaded = False, _is_audio = False),
+        lambda: SimpleNamespace(is_loaded=False, _is_audio=False),
     )
     monkeypatch.setattr(inf_mod, "get_inference_backend", lambda: _TtsBackend())
 
@@ -1867,11 +1867,11 @@ def test_audio_generation_is_visible_to_the_swap_gate(monkeypatch):
     monkeypatch.setattr(inf_mod, "_maybe_auto_switch_model", _no_auto_switch)
 
     payload = ChatCompletionRequest(
-        model = "org/TTS",
-        messages = [{"role": "user", "content": "hi"}],
-        thread_id = "thread-tts",
+        model="org/TTS",
+        messages=[{"role": "user", "content": "hi"}],
+        thread_id="thread-tts",
     )
-    asyncio.run(inf_mod.generate_audio(payload, request = None, current_subject = "tester"))
+    asyncio.run(inf_mod.generate_audio(payload, request=None, current_subject="tester"))
 
     assert seen["count"] == 1
     # Named, so the swap dialog can say which chat it would interrupt.
@@ -1887,8 +1887,8 @@ class _ChatRequest(_NeverDisconnectedRequest):
         from types import SimpleNamespace
 
         self.method = "POST"
-        self.url = SimpleNamespace(path = "/v1/chat/completions")
-        self.state = SimpleNamespace(skip_api_monitor = True)
+        self.url = SimpleNamespace(path="/v1/chat/completions")
+        self.state = SimpleNamespace(skip_api_monitor=True)
         self.scope: dict = {}
 
 
@@ -1906,10 +1906,10 @@ def _standard_chat_stubs(monkeypatch, backend):
         inf_mod,
         "get_llama_cpp_backend",
         lambda: SimpleNamespace(
-            is_loaded = False,
-            supports_tools = False,
-            is_vision = False,
-            context_length = None,
+            is_loaded=False,
+            supports_tools=False,
+            is_vision=False,
+            context_length=None,
         ),
     )
     monkeypatch.setattr(inf_mod, "get_inference_backend", lambda: backend)
@@ -1943,8 +1943,8 @@ def test_standard_non_stream_chat_is_visible_to_the_swap_gate(monkeypatch):
         def generate_chat_response(
             self,
             *,
-            cancel_event = None,
-            stats_holder = None,
+            cancel_event=None,
+            stats_holder=None,
             **kwargs,
         ):
             # Sampled mid-generation: exactly the window an /unload lands in.
@@ -1955,18 +1955,18 @@ def test_standard_non_stream_chat_is_visible_to_the_swap_gate(monkeypatch):
             seen["reached_the_decode"] = cancel_event is not None and cancel_event.is_set()
             yield "33"
 
-        def reset_generation_state(self, caller_cancel_event = None):
+        def reset_generation_state(self, caller_cancel_event=None):
             pass
 
     _standard_chat_stubs(monkeypatch, _StandardBackend())
 
     payload = ChatCompletionRequest(
-        model = "org/M",
-        messages = [{"role": "user", "content": "hi"}],
-        thread_id = "thread-chat",
+        model="org/M",
+        messages=[{"role": "user", "content": "hi"}],
+        thread_id="thread-chat",
     )
     response = asyncio.run(
-        inf_mod.openai_chat_completions(payload, _ChatRequest(), current_subject = "tester")
+        inf_mod.openai_chat_completions(payload, _ChatRequest(), current_subject="tester")
     )
 
     assert response.status_code == 200
@@ -1997,15 +1997,15 @@ def test_standard_non_stream_chat_unregisters_when_it_fails(monkeypatch):
             raise RuntimeError("decode exploded")
             yield  # pragma: no cover - generator marker
 
-        def reset_generation_state(self, caller_cancel_event = None):
+        def reset_generation_state(self, caller_cancel_event=None):
             pass
 
     _standard_chat_stubs(monkeypatch, _BrokenBackend())
 
-    payload = ChatCompletionRequest(model = "org/M", messages = [{"role": "user", "content": "hi"}])
+    payload = ChatCompletionRequest(model="org/M", messages=[{"role": "user", "content": "hi"}])
     with pytest.raises(HTTPException):
         asyncio.run(
-            inf_mod.openai_chat_completions(payload, _ChatRequest(), current_subject = "tester")
+            inf_mod.openai_chat_completions(payload, _ChatRequest(), current_subject="tester")
         )
 
     assert active_generations.count() == 0
@@ -2029,7 +2029,7 @@ def test_audio_input_non_stream_chat_is_visible_to_the_swap_gate(monkeypatch):
         def generate_audio_input_response(
             self,
             *,
-            cancel_event = None,
+            cancel_event=None,
             **kwargs,
         ):
             # Sampled mid-transcription: the window a concurrent swap lands in.
@@ -2039,20 +2039,20 @@ def test_audio_input_non_stream_chat_is_visible_to_the_swap_gate(monkeypatch):
             seen["reached_the_decode"] = cancel_event is not None and cancel_event.is_set()
             yield "33"
 
-        def reset_generation_state(self, caller_cancel_event = None):
+        def reset_generation_state(self, caller_cancel_event=None):
             pass
 
     _standard_chat_stubs(monkeypatch, _AudioInputBackend())
     monkeypatch.setattr(inf_mod, "_decode_audio_base64", lambda _b64: object())
 
     payload = ChatCompletionRequest(
-        model = "org/AUDIO-IN",
-        messages = [{"role": "user", "content": "transcribe this"}],
-        audio_base64 = "ZmFrZQ==",
-        thread_id = "thread-audio-in",
+        model="org/AUDIO-IN",
+        messages=[{"role": "user", "content": "transcribe this"}],
+        audio_base64="ZmFrZQ==",
+        thread_id="thread-audio-in",
     )
     response = asyncio.run(
-        inf_mod.openai_chat_completions(payload, _ChatRequest(), current_subject = "tester")
+        inf_mod.openai_chat_completions(payload, _ChatRequest(), current_subject="tester")
     )
 
     assert response.status_code == 200
@@ -2073,14 +2073,14 @@ def _anthropic_route_stubs(monkeypatch, **overrides):
 
     reset_tool_policy()
     backend = SimpleNamespace(
-        is_loaded = True,
-        is_vision = False,
-        supports_tools = True,
-        supports_tool_passthrough = True,
-        model_identifier = "org/M-GGUF",
-        base_url = "http://llama.test",
-        context_length = 4096,
-        count_chat_tokens = lambda *a, **k: 2,
+        is_loaded=True,
+        is_vision=False,
+        supports_tools=True,
+        supports_tool_passthrough=True,
+        model_identifier="org/M-GGUF",
+        base_url="http://llama.test",
+        context_length=4096,
+        count_chat_tokens=lambda *a, **k: 2,
     )
     backend.__dict__.update(overrides)
     monkeypatch.setattr(inf_mod, "get_llama_cpp_backend", lambda: backend)
@@ -2095,8 +2095,8 @@ class _MessagesRequest(_NeverDisconnectedRequest):
         from types import SimpleNamespace
 
         self.method = "POST"
-        self.url = SimpleNamespace(path = "/v1/messages")
-        self.state = SimpleNamespace(skip_api_monitor = True)
+        self.url = SimpleNamespace(path="/v1/messages")
+        self.state = SimpleNamespace(skip_api_monitor=True)
 
 
 @pytest.mark.parametrize("with_server_tools", [False, True])
@@ -2116,20 +2116,20 @@ def test_local_anthropic_non_stream_is_visible_to_the_swap_gate(monkeypatch, wit
         seen["snapshot"] = active_generations.snapshot()
         seen["cancelled"] = active_generations.cancel_all()
 
-    def _gen_plain(*, cancel_event = None, **kwargs):
+    def _gen_plain(*, cancel_event=None, **kwargs):
         _sample()
         seen["reached_the_decode"] = cancel_event is not None and cancel_event.is_set()
         yield "ok"
 
-    def _gen_tools(*, cancel_event = None, **kwargs):
+    def _gen_tools(*, cancel_event=None, **kwargs):
         _sample()
         seen["reached_the_decode"] = cancel_event is not None and cancel_event.is_set()
         yield {"type": "content", "text": "ok"}
 
     inf_mod = _anthropic_route_stubs(
         monkeypatch,
-        generate_chat_completion = _gen_plain,
-        generate_chat_completion_with_tools = _gen_tools,
+        generate_chat_completion=_gen_plain,
+        generate_chat_completion_with_tools=_gen_tools,
     )
 
     fields = {"max_tokens": 16, "messages": [{"role": "user", "content": "hi"}]}
@@ -2139,7 +2139,7 @@ def test_local_anthropic_non_stream_is_visible_to_the_swap_gate(monkeypatch, wit
     payload = AnthropicMessagesRequest(**fields)
 
     response = asyncio.run(
-        inf_mod.anthropic_messages(payload, request = _MessagesRequest(), current_subject = "tester")
+        inf_mod.anthropic_messages(payload, request=_MessagesRequest(), current_subject="tester")
     )
 
     assert response.status_code == 200
@@ -2170,7 +2170,7 @@ def test_anthropic_passthrough_non_stream_is_visible_to_the_swap_gate(monkeypatc
         seen["cancelled"] = active_generations.cancel_all()
         return httpx.Response(
             200,
-            json = {
+            json={
                 "choices": [
                     {"message": {"role": "assistant", "content": "33"}, "finish_reason": "stop"}
                 ]
@@ -2184,19 +2184,19 @@ def test_anthropic_passthrough_non_stream_is_visible_to_the_swap_gate(monkeypatc
     monkeypatch.setattr(
         inf_mod,
         "_cancelable_nonstreaming_client",
-        lambda: real_async_client(transport = transport),
+        lambda: real_async_client(transport=transport),
     )
 
     # enable_tools False keeps the server-tool loop out, so the client tool takes the pass-through.
     payload = AnthropicMessagesRequest(
-        max_tokens = 16,
-        messages = [{"role": "user", "content": "hi"}],
-        enable_tools = False,
-        tools = [{"name": "lookup", "input_schema": {"type": "object", "properties": {}}}],
+        max_tokens=16,
+        messages=[{"role": "user", "content": "hi"}],
+        enable_tools=False,
+        tools=[{"name": "lookup", "input_schema": {"type": "object", "properties": {}}}],
     )
 
     response = asyncio.run(
-        inf_mod.anthropic_messages(payload, request = _MessagesRequest(), current_subject = "tester")
+        inf_mod.anthropic_messages(payload, request=_MessagesRequest(), current_subject="tester")
     )
 
     assert response.status_code == 200
@@ -2230,20 +2230,20 @@ def test_anthropic_passthrough_non_stream_stops_when_the_swap_cancels_it(monkeyp
     monkeypatch.setattr(
         inf_mod,
         "_cancelable_nonstreaming_client",
-        lambda: real_async_client(transport = transport),
+        lambda: real_async_client(transport=transport),
     )
 
     payload = AnthropicMessagesRequest(
-        max_tokens = 16,
-        messages = [{"role": "user", "content": "hi"}],
-        enable_tools = False,
-        tools = [{"name": "lookup", "input_schema": {"type": "object", "properties": {}}}],
+        max_tokens=16,
+        messages=[{"role": "user", "content": "hi"}],
+        enable_tools=False,
+        tools=[{"name": "lookup", "input_schema": {"type": "object", "properties": {}}}],
     )
 
     with pytest.raises(asyncio.CancelledError):
         asyncio.run(
             inf_mod.anthropic_messages(
-                payload, request = _MessagesRequest(), current_subject = "tester"
+                payload, request=_MessagesRequest(), current_subject="tester"
             )
         )
 
@@ -2273,7 +2273,7 @@ def test_audio_generation_unregisters_when_it_fails(monkeypatch):
     monkeypatch.setattr(
         inf_mod,
         "get_llama_cpp_backend",
-        lambda: SimpleNamespace(is_loaded = False, _is_audio = False),
+        lambda: SimpleNamespace(is_loaded=False, _is_audio=False),
     )
     monkeypatch.setattr(inf_mod, "get_inference_backend", lambda: _BrokenTtsBackend())
 
@@ -2283,11 +2283,11 @@ def test_audio_generation_unregisters_when_it_fails(monkeypatch):
     monkeypatch.setattr(inf_mod, "_maybe_auto_switch_model", _no_auto_switch)
 
     payload = ChatCompletionRequest(
-        model = "org/TTS",
-        messages = [{"role": "user", "content": "hi"}],
+        model="org/TTS",
+        messages=[{"role": "user", "content": "hi"}],
     )
     with pytest.raises(HTTPException):
-        asyncio.run(inf_mod.generate_audio(payload, request = None, current_subject = "tester"))
+        asyncio.run(inf_mod.generate_audio(payload, request=None, current_subject="tester"))
 
     assert active_generations.count() == 0
 
@@ -2324,20 +2324,20 @@ def _stub_install_route(monkeypatch, *, in_flight_events):
     monkeypatch.setattr(
         training_mod,
         "get_training_backend",
-        lambda: SimpleNamespace(is_training_active = lambda: False),
+        lambda: SimpleNamespace(is_training_active=lambda: False),
     )
     monkeypatch.setattr(
         export_mod,
         "get_export_backend",
-        lambda: SimpleNamespace(is_export_active = lambda: False, current_checkpoint = None),
+        lambda: SimpleNamespace(is_export_active=lambda: False, current_checkpoint=None),
     )
     monkeypatch.setattr(
         inf_mod,
         "get_inference_backend",
-        lambda: SimpleNamespace(active_model_name = None, load_generation = 0),
+        lambda: SimpleNamespace(active_model_name=None, load_generation=0),
     )
 
-    def _fake_in_flight(current_request_counted = True, *, include_pending = True):
+    def _fake_in_flight(current_request_counted=True, *, include_pending=True):
         return sum(1 for ev in in_flight_events if not ev.is_set())
 
     monkeypatch.setattr(keepwarm, "other_inference_request_count", _fake_in_flight)
@@ -2359,12 +2359,12 @@ def test_confirmed_install_stops_the_chats_it_was_given_permission_to_stop(monke
     from models.inference import InstallLatestTransformersRequest
 
     ev = threading.Event()
-    inf_mod, calls = _stub_install_route(monkeypatch, in_flight_events = [ev])
+    inf_mod, calls = _stub_install_route(monkeypatch, in_flight_events=[ev])
 
-    with active_generations.ActiveGeneration(ev, thread_id = "t1", model = "org/M-GGUF"):
+    with active_generations.ActiveGeneration(ev, thread_id="t1", model="org/M-GGUF"):
         response = asyncio.run(
             inf_mod.install_latest_transformers_route(
-                InstallLatestTransformersRequest(version = "5.0.0", force_cancel_active = True),
+                InstallLatestTransformersRequest(version="5.0.0", force_cancel_active=True),
                 "tester",
             )
         )
@@ -2384,13 +2384,13 @@ def test_unconfirmed_install_still_refuses_while_chats_stream(monkeypatch):
     from models.inference import InstallLatestTransformersRequest
 
     ev = threading.Event()
-    inf_mod, calls = _stub_install_route(monkeypatch, in_flight_events = [ev])
+    inf_mod, calls = _stub_install_route(monkeypatch, in_flight_events=[ev])
 
-    with active_generations.ActiveGeneration(ev, thread_id = "t1"):
+    with active_generations.ActiveGeneration(ev, thread_id="t1"):
         with pytest.raises(HTTPException) as exc:
             asyncio.run(
                 inf_mod.install_latest_transformers_route(
-                    InstallLatestTransformersRequest(version = "5.0.0"),
+                    InstallLatestTransformersRequest(version="5.0.0"),
                     "tester",
                 )
             )
@@ -2414,10 +2414,10 @@ def test_a_confirmed_install_that_cannot_drain_refuses_instead_of_swapping(monke
     ev = threading.Event()
     stuck = threading.Event()
     stuck.set()  # already "cancelled", yet still counted: it never unwinds
-    inf_mod, calls = _stub_install_route(monkeypatch, in_flight_events = [ev, stuck])
+    inf_mod, calls = _stub_install_route(monkeypatch, in_flight_events=[ev, stuck])
     monkeypatch.setattr(inf_mod, "_POST_CANCEL_DRAIN_TIMEOUT_S", 0.05)
 
-    def _never_unwinds(current_request_counted = True, *, include_pending = True):
+    def _never_unwinds(current_request_counted=True, *, include_pending=True):
         return 1
 
     import core.inference.llama_keepwarm as keepwarm
@@ -2428,13 +2428,13 @@ def test_a_confirmed_install_that_cannot_drain_refuses_instead_of_swapping(monke
         # Deadline here too: a regression that drops the drain's bound must fail, not hang the suite.
         return await asyncio.wait_for(
             inf_mod.install_latest_transformers_route(
-                InstallLatestTransformersRequest(version = "5.0.0", force_cancel_active = True),
+                InstallLatestTransformersRequest(version="5.0.0", force_cancel_active=True),
                 "tester",
             ),
-            timeout = 5,
+            timeout=5,
         )
 
-    with active_generations.ActiveGeneration(ev, thread_id = "t1"):
+    with active_generations.ActiveGeneration(ev, thread_id="t1"):
         with pytest.raises(HTTPException) as exc:
             asyncio.run(_install())
 
@@ -2453,11 +2453,11 @@ def test_confirmed_install_does_not_spend_its_cancel_on_an_install_that_will_ref
     from models.inference import InstallLatestTransformersRequest
 
     ev = threading.Event()
-    inf_mod, calls = _stub_install_route(monkeypatch, in_flight_events = [ev])
+    inf_mod, calls = _stub_install_route(monkeypatch, in_flight_events=[ev])
 
     import core.inference.llama_keepwarm as keepwarm
 
-    def _never_drains(current_request_counted = True, *, include_pending = True):
+    def _never_drains(current_request_counted=True, *, include_pending=True):
         # Discounting the registered chat still leaves the counted-only stranger: the drain must not clear.
         return 2
 
@@ -2467,13 +2467,13 @@ def test_confirmed_install_does_not_spend_its_cancel_on_an_install_that_will_ref
     async def _install():
         return await asyncio.wait_for(
             inf_mod.install_latest_transformers_route(
-                InstallLatestTransformersRequest(version = "5.0.0", force_cancel_active = True),
+                InstallLatestTransformersRequest(version="5.0.0", force_cancel_active=True),
                 "tester",
             ),
-            timeout = 5,
+            timeout=5,
         )
 
-    with active_generations.ActiveGeneration(ev, thread_id = "t1"):
+    with active_generations.ActiveGeneration(ev, thread_id="t1"):
         with pytest.raises(HTTPException) as exc:
             asyncio.run(_install())
         # The refusal is the same as before; what changed is that the chat lives.
@@ -2502,7 +2502,7 @@ def _drain_with_counts(monkeypatch, counts, **kwargs):
     remaining = list(counts)
     polls = {"n": 0}
 
-    def _count(current_request_counted = True, *, include_pending = True):
+    def _count(current_request_counted=True, *, include_pending=True):
         polls["n"] += 1
         return remaining.pop(0) if len(remaining) > 1 else remaining[0]
 
@@ -2512,8 +2512,8 @@ def _drain_with_counts(monkeypatch, counts, **kwargs):
     async def _run():
         # Hard test-side deadline: a drain that regresses to waiting forever must fail red, not hang.
         await asyncio.wait_for(
-            inf_mod._wait_for_model_switch_idle(current_request_counted = False, **kwargs),
-            timeout = 5,
+            inf_mod._wait_for_model_switch_idle(current_request_counted=False, **kwargs),
+            timeout=5,
         )
 
     asyncio.run(_run())
@@ -2524,29 +2524,29 @@ def test_forced_swap_does_not_wait_out_the_generations_it_is_about_to_cancel(mon
     # cancel_pending discounts the registered generations, since the caller cancels them right after.
     # Drop the discount and the drain waits on a count only that pending cancel can lower: forever.
     ev = threading.Event()
-    with active_generations.ActiveGeneration(ev, thread_id = "t1"):
-        polls = _drain_with_counts(monkeypatch, [1], cancel_pending = True)
+    with active_generations.ActiveGeneration(ev, thread_id="t1"):
+        polls = _drain_with_counts(monkeypatch, [1], cancel_pending=True)
     assert polls == 1
 
 
 def test_the_same_drain_without_the_discount_would_keep_waiting(monkeypatch):
     # The other half: that count really does block, so the previous test passes by the discount.
     ev = threading.Event()
-    with active_generations.ActiveGeneration(ev, thread_id = "t1"):
-        polls = _drain_with_counts(monkeypatch, [1], timeout_s = 0.05)
+    with active_generations.ActiveGeneration(ev, thread_id="t1"):
+        polls = _drain_with_counts(monkeypatch, [1], timeout_s=0.05)
     assert polls > 1
 
 
 def test_post_cancel_drain_gives_up_on_a_request_that_never_unwinds(monkeypatch):
     # TTS on the subprocess backend observes no cancel event, so a forced swap can cancel it and still
     # see it counted forever. The post-cancel drains hold the gate, so they must expire and proceed.
-    polls = _drain_with_counts(monkeypatch, [1], timeout_s = 0.05)
+    polls = _drain_with_counts(monkeypatch, [1], timeout_s=0.05)
     assert polls > 1
 
 
 def test_drain_returns_as_soon_as_the_cancelled_requests_unwind(monkeypatch):
     # The bound is a backstop: once the count drops the drain returns without sitting out the timeout.
-    polls = _drain_with_counts(monkeypatch, [2, 1, 0], timeout_s = 30)
+    polls = _drain_with_counts(monkeypatch, [2, 1, 0], timeout_s=30)
     assert polls == 3
 
 
@@ -2557,7 +2557,7 @@ def _orchestrator_for_ownership():
     """A real InferenceOrchestrator with just enough stubbed to drive the lock."""
     _route_gate()
     orch_mod = pytest.importorskip(
-        "core.inference.orchestrator", reason = "inference stack not installed"
+        "core.inference.orchestrator", reason="inference stack not installed"
     )
     orch = orch_mod.InferenceOrchestrator.__new__(orch_mod.InferenceOrchestrator)
     orch._gen_lock = threading.Lock()
@@ -2613,7 +2613,7 @@ def test_unload_waits_for_a_request_that_is_admitted_but_not_yet_registered(monk
     remaining = [1, 1, 0]
     seen = {}
 
-    def _count(current_request_counted = True, *, include_pending = True):
+    def _count(current_request_counted=True, *, include_pending=True):
         return remaining.pop(0) if len(remaining) > 1 else remaining[0]
 
     monkeypatch.setattr(keepwarm, "other_inference_request_count", _count)
@@ -2629,11 +2629,11 @@ def test_unload_waits_for_a_request_that_is_admitted_but_not_yet_registered(monk
     response = _run_unload(
         inf_mod,
         monkeypatch,
-        loaded_gguf = "org/A-GGUF",
-        requested = "org/A-GGUF",
-        force = True,
-        torn_down = torn_down,
-        unload_model = _record_teardown,
+        loaded_gguf="org/A-GGUF",
+        requested="org/A-GGUF",
+        force=True,
+        torn_down=torn_down,
+        unload_model=_record_teardown,
     )
 
     assert active_generations.count() == 0
@@ -2735,7 +2735,7 @@ def test_claim_order_matches_send_order_under_concurrent_dispatch():
     # enqueue can put A first in the list while B is first in the subprocess queue: stopping A kills B.
     _route_gate()
     orch_mod = pytest.importorskip(
-        "core.inference.orchestrator", reason = "inference stack not installed"
+        "core.inference.orchestrator", reason="inference stack not installed"
     )
     orch = orch_mod.InferenceOrchestrator.__new__(orch_mod.InferenceOrchestrator)
     orch._active_cancel_events = []
@@ -2747,18 +2747,18 @@ def test_claim_order_matches_send_order_under_concurrent_dispatch():
     barrier = threading.Barrier(4)
 
     def worker(ev):
-        barrier.wait(timeout = 10)
+        barrier.wait(timeout=10)
         with orch._send_order_lock:
             orch._claim_worker(ev)
             # Stand in for _send_cmd: the enqueue must not be separable from the claim.
             sent.append(ev)
 
     events = [threading.Event() for _ in range(4)]
-    threads = [threading.Thread(target = worker, args = (e,)) for e in events]
+    threads = [threading.Thread(target=worker, args=(e,)) for e in events]
     for t in threads:
         t.start()
     for t in threads:
-        t.join(timeout = 30)
+        t.join(timeout=30)
 
     assert orch._active_cancel_events == sent, "claim order must equal send order"
 
@@ -2778,11 +2778,11 @@ def test_responses_stream_reports_reasoning_ttft_and_stop_reason(monkeypatch):
             {"choices": [{"delta": {"content": "hi"}, "finish_reason": "length"}]},
         ],
     )
-    payload = ResponsesRequest(input = "hi", stream = True, model = "org/M-GGUF")
-    messages = [ChatMessage(role = "user", content = "hi")]
+    payload = ResponsesRequest(input="hi", stream=True, model="org/M-GGUF")
+    messages = [ChatMessage(role="user", content="hi")]
 
     monitor_id = api_monitor.start(
-        endpoint = "/v1/responses", method = "POST", model = "org/M-GGUF", prompt = "hi"
+        endpoint="/v1/responses", method="POST", model="org/M-GGUF", prompt="hi"
     )
 
     async def run():
@@ -2828,10 +2828,10 @@ def test_responses_stream_stamps_tool_call_deltas(monkeypatch):
             {"choices": [{"delta": {}, "finish_reason": "tool_calls"}]},
         ],
     )
-    payload = ResponsesRequest(input = "hi", stream = True, model = "org/M-GGUF")
-    messages = [ChatMessage(role = "user", content = "hi")]
+    payload = ResponsesRequest(input="hi", stream=True, model="org/M-GGUF")
+    messages = [ChatMessage(role="user", content="hi")]
     monitor_id = api_monitor.start(
-        endpoint = "/v1/responses", method = "POST", model = "org/M-GGUF", prompt = "hi"
+        endpoint="/v1/responses", method="POST", model="org/M-GGUF", prompt="hi"
     )
     # append_reply would stamp late; assert it happens at the delta instead.
     stamped: list[str] = []

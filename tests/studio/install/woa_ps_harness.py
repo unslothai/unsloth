@@ -31,16 +31,16 @@ INSTALL_PS1 = PACKAGE_ROOT / "install.ps1"
 
 # Read once. Well over a hundred tests want one of these whole files, and none of them
 # mutate what they read.
-INSTALL_SRC = INSTALL_PS1.read_text(encoding = "utf-8")
-SETUP_SRC = SETUP_PS1.read_text(encoding = "utf-8")
-STACK_SRC = STACK_PY.read_text(encoding = "utf-8")
-LLAMA_SRC = STACK_LLAMA.read_text(encoding = "utf-8")
+INSTALL_SRC = INSTALL_PS1.read_text(encoding="utf-8")
+SETUP_SRC = SETUP_PS1.read_text(encoding="utf-8")
+STACK_SRC = STACK_PY.read_text(encoding="utf-8")
+LLAMA_SRC = STACK_LLAMA.read_text(encoding="utf-8")
 CONSTRAINTS_SRC = (
     PACKAGE_ROOT / "studio" / "backend" / "requirements" / "single-env" / "constraints.txt"
-).read_text(encoding = "utf-8")
+).read_text(encoding="utf-8")
 
 PWSH = shutil.which("pwsh")
-requires_pwsh = pytest.mark.skipif(PWSH is None, reason = "pwsh not available")
+requires_pwsh = pytest.mark.skipif(PWSH is None, reason="pwsh not available")
 
 # The channels, mirrors and indexes these tests name over and over. Spelled once so a
 # parametrize row stays one readable line instead of six.
@@ -57,7 +57,7 @@ def _script(*lines: str) -> str:
 
 def _ps(
     script,
-    timeout = 120,
+    timeout=120,
     **kwargs,
 ):
     """Run a PowerShell snippet and hand back the completed process.
@@ -72,20 +72,20 @@ def _ps(
     """
     return run_pwsh(
         [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
-        capture_output = True,
-        text = True,
-        timeout = timeout,
+        capture_output=True,
+        text=True,
+        timeout=timeout,
         **kwargs,
     )
 
 
 def _ps_ok(
     script,
-    timeout = 120,
+    timeout=120,
     **kwargs,
 ):
     """Same, but fail the test with PowerShell's own stderr when it does not exit 0."""
-    done = _ps(script, timeout = timeout, **kwargs)
+    done = _ps(script, timeout=timeout, **kwargs)
     assert done.returncode == 0, done.stderr
     return done
 
@@ -132,7 +132,7 @@ def functions(text: str, *names: str) -> str:
 def _ps_function(path: pathlib.Path, name: str) -> str:
     """A function body by SCRIPT PATH, for the tests that parametrize over the two files."""
     src = {INSTALL_PS1: INSTALL_SRC, SETUP_PS1: SETUP_SRC}.get(path)
-    return _function_source(src if src is not None else path.read_text(encoding = "utf-8"), name)
+    return _function_source(src if src is not None else path.read_text(encoding="utf-8"), name)
 
 
 def _ps_copies(name: str) -> tuple:
@@ -160,7 +160,7 @@ def slice_between(
     start_marker: str,
     end_marker: str,
     *,
-    include_end = False,
+    include_end=False,
 ) -> str:
     """The live text from one marker to the next, sliced out of the script itself.
 

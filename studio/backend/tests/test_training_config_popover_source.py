@@ -21,7 +21,7 @@ _STUDIO_FRONTEND = Path(__file__).resolve().parents[2] / "frontend" / "src" / "f
 
 
 def _read(rel: str) -> str:
-    return (_STUDIO_FRONTEND / rel).read_text(encoding = "utf-8")
+    return (_STUDIO_FRONTEND / rel).read_text(encoding="utf-8")
 
 
 def test_progress_section_prefers_override_over_form_store():

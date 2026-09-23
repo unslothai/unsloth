@@ -22,8 +22,8 @@ if "structlog" not in sys.modules:
             return lambda *args, **kwargs: None
 
     sys.modules["structlog"] = types.SimpleNamespace(
-        BoundLogger = _DummyLogger,
-        get_logger = lambda *args, **kwargs: _DummyLogger(),
+        BoundLogger=_DummyLogger,
+        get_logger=lambda *args, **kwargs: _DummyLogger(),
     )
 
 import routes.models as models_route
@@ -35,7 +35,7 @@ def _variants(**kwargs):
     """The GGUF-variant route response for ``org/repo``, run to completion as the test user."""
     return asyncio.run(
         models_route.get_gguf_variants(
-            repo_id = "org/repo", hf_token = None, current_subject = "test-user", **kwargs
+            repo_id="org/repo", hf_token=None, current_subject="test-user", **kwargs
         )
     )
 
@@ -45,33 +45,33 @@ def _pin_cache_roots(monkeypatch, active, tmp_path):
     monkeypatch.setattr(
         "utils.hf_cache_settings.get_hf_cache_paths",
         lambda: SimpleNamespace(
-            hub_cache = active, hf_home = tmp_path, source = "studio", cache_home = tmp_path
+            hub_cache=active, hf_home=tmp_path, source="studio", cache_home=tmp_path
         ),
     )
     monkeypatch.setattr("hub.utils.hf_cache_state.hf_cache_roots", lambda **kw: [active])
     monkeypatch.setattr(
         "hub.utils.hf_cache_state.hf_cache_root",
-        lambda create = False, root = None, **kw: root if root is not None else active,
+        lambda create=False, root=None, **kw: root if root is not None else active,
     )
 
 
 def _scanned_repos(monkeypatch, *repos):
     """Make the cache walk report exactly ``repos``, in one scan."""
     monkeypatch.setattr(
-        models_route, "_all_hf_cache_scans", lambda: [SimpleNamespace(repos = list(repos))]
+        models_route, "_all_hf_cache_scans", lambda: [SimpleNamespace(repos=list(repos))]
     )
 
 
 def _snapshot_repo(repo_id, repo_path, snapshot, files):
     """A cache repo whose single revision holds ``files`` under ``snapshot``."""
     return _repo(
-        repo_id, [], repo_path, revisions = [SimpleNamespace(files = files, snapshot_path = snapshot)]
+        repo_id, [], repo_path, revisions=[SimpleNamespace(files=files, snapshot_path=snapshot)]
     )
 
 
 def _stub_repo_scan(monkeypatch, repo, active):
     """``_scanned_repos`` plus the task/partial classifiers stubbed out of the way."""
-    monkeypatch.setattr(models_route, "_cached_repo_task", lambda repo_info, selected = None: None)
+    monkeypatch.setattr(models_route, "_cached_repo_task", lambda repo_info, selected=None: None)
     monkeypatch.setattr(models_route, "_cached_repo_partial", lambda *args, **kwargs: False)
     _scanned_repos(monkeypatch, repo)
     monkeypatch.setattr(models_route, "_resolve_hf_cache_dir", lambda: active)
@@ -79,18 +79,18 @@ def _stub_repo_scan(monkeypatch, repo, active):
 
 def _answer(
     repo_id,
-    variants = (),
+    variants=(),
     *,
-    default_variant = None,
-    source = None,
+    default_variant=None,
+    source=None,
 ):
     """The (listing, source) pair the route consumes; *source* is the copy it came from."""
     return GV.VariantsAnswer(
         SimpleNamespace(
-            repo_id = repo_id,
-            variants = list(variants),
-            has_vision = False,
-            default_variant = default_variant,
+            repo_id=repo_id,
+            variants=list(variants),
+            has_vision=False,
+            default_variant=default_variant,
         ),
         source,
     )
@@ -104,10 +104,10 @@ def _repo(
     revisions: list[SimpleNamespace] | None = None,
 ) -> SimpleNamespace:
     return SimpleNamespace(
-        repo_id = repo_id,
-        repo_type = "model",
-        repo_path = repo_path,
-        revisions = revisions or [SimpleNamespace(files = files)],
+        repo_id=repo_id,
+        repo_type="model",
+        repo_path=repo_path,
+        revisions=revisions or [SimpleNamespace(files=files)],
     )
 
 
@@ -118,15 +118,15 @@ def _file(
     blob_path: str | None = None,
 ) -> SimpleNamespace:
     return SimpleNamespace(
-        file_name = name,
-        size_on_disk = size_on_disk,
-        blob_path = blob_path,
+        file_name=name,
+        size_on_disk=size_on_disk,
+        blob_path=blob_path,
     )
 
 
 def test_iter_gguf_paths_matches_extension_case_insensitively(tmp_path):
     nested = tmp_path / "snapshots" / "rev"
-    nested.mkdir(parents = True)
+    nested.mkdir(parents=True)
     lower = nested / "Q4_K_M.gguf"
     upper = nested / "Q8_0.GGUF"
     other = nested / "README.md"
@@ -142,9 +142,9 @@ def test_iter_gguf_paths_matches_extension_case_insensitively(tmp_path):
 def test_legacy_hf_scan_uses_snapshot_path_for_inactive_cache(tmp_path):
     repo = tmp_path / "models--Org--Model"
     snapshot = repo / "snapshots" / "revision"
-    snapshot.mkdir(parents = True)
+    snapshot.mkdir(parents=True)
 
-    [row] = models_route._scan_hf_cache(tmp_path, active_cache = False)
+    [row] = models_route._scan_hf_cache(tmp_path, active_cache=False)
 
     assert row.model_id == "Org/Model"
     assert row.id == str(snapshot.resolve())
@@ -156,7 +156,7 @@ def test_collect_local_models_scans_previous_cache(monkeypatch, tmp_path):
     previous = tmp_path / "previous"
     active.mkdir()
     snapshot = previous / "models--Org--Previous" / "snapshots" / "revision"
-    snapshot.mkdir(parents = True)
+    snapshot.mkdir(parents=True)
 
     monkeypatch.setattr(models_route, "_resolve_hf_cache_dir", lambda: active)
     monkeypatch.setattr("utils.paths.legacy_hf_cache_dir", lambda: tmp_path / "legacy")
@@ -177,10 +177,10 @@ def test_collect_local_models_prefers_complete_previous_copy(monkeypatch, tmp_pa
     active = tmp_path / "active"
     previous = tmp_path / "previous"
     active_partial = active / "models--Org--Model" / "blobs" / "abc.incomplete"
-    active_partial.parent.mkdir(parents = True)
+    active_partial.parent.mkdir(parents=True)
     active_partial.write_bytes(b"partial")
     snapshot = previous / "models--Org--Model" / "snapshots" / "revision"
-    snapshot.mkdir(parents = True)
+    snapshot.mkdir(parents=True)
     (snapshot / "model.safetensors").write_bytes(b"complete")
     build_calls = []
     real_build = download_manifest.build_variant_state_index
@@ -241,7 +241,7 @@ def test_compat_local_inventory_requests_share_scan(monkeypatch, tmp_path):
     monkeypatch.setattr(models_route.asyncio, "to_thread", fake_to_thread)
 
     async def run_requests():
-        request = lambda root = tmp_path: models_route._shared_compat_local_inventory_scan(
+        request = lambda root=tmp_path: models_route._shared_compat_local_inventory_scan(
             root, sources
         )
         first = asyncio.create_task(request(tmp_path))
@@ -254,7 +254,7 @@ def test_compat_local_inventory_requests_share_scan(monkeypatch, tmp_path):
         assert sources in key and isinstance(key[-1], int)
         first.cancel()
         second.cancel()
-        await asyncio.gather(first, second, return_exceptions = True)
+        await asyncio.gather(first, second, return_exceptions=True)
         second = asyncio.create_task(request())
         await asyncio.sleep(0)
         folders[0] = [{"id": 2, "path": "/changed", "created_at": "later"}]
@@ -272,13 +272,13 @@ def test_compat_local_inventory_requests_share_scan(monkeypatch, tmp_path):
     )
 
 
-def _compat_inventory_row(tmp_path, name = "model"):
+def _compat_inventory_row(tmp_path, name="model"):
     return models_route.LocalModelInfo(
-        id = name,
-        display_name = "Model",
-        path = str(tmp_path / f"{name}.gguf"),
-        source = "models_dir",
-        model_format = "gguf",
+        id=name,
+        display_name="Model",
+        path=str(tmp_path / f"{name}.gguf"),
+        source="models_dir",
+        model_format="gguf",
     )
 
 
@@ -415,12 +415,12 @@ def test_legacy_custom_inventory_filters_registered_mtp_root(tmp_path, monkeypat
 
     monkeypatch.setattr(Path, "is_dir", locked_is_dir)
     companion_dir = root / "companion-only"
-    (companion_dir / "other").mkdir(parents = True)
+    (companion_dir / "other").mkdir(parents=True)
     (companion_dir / "mtp-gemma-4-12b-it-Q8_0.gguf").write_bytes(b"x")
     (companion_dir / "other" / "Qwen3.6-27B-Q8_0.gguf").write_bytes(b"x")
     snapshot = root / "models--Org--Nested" / "snapshots" / "revision"
     quant_dir = snapshot / "BF16"
-    quant_dir.mkdir(parents = True)
+    quant_dir.mkdir(parents=True)
     (quant_dir / "Qwen3.6-27B-MTP-BF16.gguf").write_bytes(b"x")
 
     def fail_recursive_variant_scan(*_args, **_kwargs):
@@ -441,7 +441,7 @@ def test_legacy_custom_inventory_filters_registered_mtp_root(tmp_path, monkeypat
     monkeypatch.setattr(models_route, "_resolve_hf_cache_dir", lambda: tmp_path / "active")
 
     rows = models_route.collect_local_models(
-        tmp_path / "models", custom_folders = [{"path": str(root)}]
+        tmp_path / "models", custom_folders=[{"path": str(root)}]
     )
     paths = {row.path for row in rows}
 
@@ -454,7 +454,7 @@ def test_list_cached_gguf_reports_snapshot_load_id_for_inactive_cache(monkeypatc
     """Only a repo outside the active cache needs a snapshot load_id."""
     active = tmp_path / "active"
     snapshot = tmp_path / "legacy" / "models--Org--Away" / "snapshots" / "rev"
-    snapshot.mkdir(parents = True)
+    snapshot.mkdir(parents=True)
     (snapshot / "Q4_K_M.gguf").write_bytes(b"\0")
     away = _snapshot_repo(
         "Org/Away",
@@ -469,7 +469,7 @@ def test_list_cached_gguf_reports_snapshot_load_id_for_inactive_cache(monkeypatc
 
     rows = {
         c["repo_id"]: c
-        for c in asyncio.run(models_route.list_cached_gguf(current_subject = "test-user"))["cached"]
+        for c in asyncio.run(models_route.list_cached_gguf(current_subject="test-user"))["cached"]
     }
 
     assert rows["Org/Away"]["load_id"] == str(snapshot)
@@ -482,10 +482,10 @@ def test_list_cached_gguf_pins_a_snapshot_for_a_recovered_active_cache_repo(monk
     active = tmp_path / "active"
     repo_dir = active / "models--Org--Recovered"
     snapshot = repo_dir / "snapshots" / ("a" * 40)
-    snapshot.mkdir(parents = True)
+    snapshot.mkdir(parents=True)
     (snapshot / "Model-Q4_K_M.gguf").write_bytes(b"\0" * 256)
-    (repo_dir / "refs").mkdir(parents = True)
-    (repo_dir / "refs" / "main").write_text("c" * 40, encoding = "utf-8")
+    (repo_dir / "refs").mkdir(parents=True)
+    (repo_dir / "refs" / "main").write_text("c" * 40, encoding="utf-8")
 
     recovered = _snapshot_repo(
         "Org/Recovered",
@@ -498,15 +498,15 @@ def test_list_cached_gguf_pins_a_snapshot_for_a_recovered_active_cache_repo(monk
 
     rows = {
         c["repo_id"]: c
-        for c in asyncio.run(models_route.list_cached_gguf(current_subject = "test-user"))["cached"]
+        for c in asyncio.run(models_route.list_cached_gguf(current_subject="test-user"))["cached"]
     }
     assert rows["Org/Recovered"]["load_id"] == str(snapshot)
 
     # Control: the same repo with a resolving ref keeps the repo id.
-    (repo_dir / "refs" / "main").write_text("a" * 40, encoding = "utf-8")
+    (repo_dir / "refs" / "main").write_text("a" * 40, encoding="utf-8")
     rows = {
         c["repo_id"]: c
-        for c in asyncio.run(models_route.list_cached_gguf(current_subject = "test-user"))["cached"]
+        for c in asyncio.run(models_route.list_cached_gguf(current_subject="test-user"))["cached"]
     }
     assert "load_id" not in rows["Org/Recovered"]
 
@@ -519,7 +519,7 @@ def test_list_cached_gguf_load_id_follows_snapshot_dir_mtime(monkeypatch, tmp_pa
     repo_dir = tmp_path / "legacy" / "models--Org--Multi"
     older, newer = repo_dir / "snapshots" / "rev-a", repo_dir / "snapshots" / "rev-b"
     for path in (older, newer):
-        path.mkdir(parents = True)
+        path.mkdir(parents=True)
     (older / "Q4_K_M.gguf").write_bytes(b"\0")
     (newer / "Q8_0.gguf").write_bytes(b"\0")
     os.utime(older, (1_000, 1_000))
@@ -529,12 +529,12 @@ def test_list_cached_gguf_load_id_follows_snapshot_dir_mtime(monkeypatch, tmp_pa
         "Org/Multi",
         [],
         repo_dir,
-        revisions = [
+        revisions=[
             # The older directory holds the newer blob, which is what diverges.
             SimpleNamespace(
-                files = [_file("Q4_K_M.gguf", 5_000, blob_path = "b1")], snapshot_path = older
+                files=[_file("Q4_K_M.gguf", 5_000, blob_path="b1")], snapshot_path=older
             ),
-            SimpleNamespace(files = [_file("Q8_0.gguf", 6_000, blob_path = "b2")], snapshot_path = newer),
+            SimpleNamespace(files=[_file("Q8_0.gguf", 6_000, blob_path="b2")], snapshot_path=newer),
         ],
     )
 
@@ -544,7 +544,7 @@ def test_list_cached_gguf_load_id_follows_snapshot_dir_mtime(monkeypatch, tmp_pa
         models_route, "_blob_mtime", lambda f: 9_000 if f.blob_path == "b1" else 1.0
     )
 
-    rows = asyncio.run(models_route.list_cached_gguf(current_subject = "test-user"))["cached"]
+    rows = asyncio.run(models_route.list_cached_gguf(current_subject="test-user"))["cached"]
 
     assert rows[0]["load_id"] == str(newer)
 
@@ -569,7 +569,7 @@ def test_list_cached_gguf_load_id_breaks_mtime_ties_like_variant_discovery(
     repo_dir = legacy / "models--Org--Tied"
     low, high = repo_dir / "snapshots" / "rev-a", repo_dir / "snapshots" / "rev-b"
     for path in (low, high):
-        path.mkdir(parents = True)
+        path.mkdir(parents=True)
     (low / "Model-Q4_K_M.gguf").write_bytes(b"\0")
     (high / "Model-Q5_K_M.gguf").write_bytes(b"\0")
     # One timestamp for both: the tie is the case.
@@ -577,21 +577,21 @@ def test_list_cached_gguf_load_id_breaks_mtime_ties_like_variant_discovery(
         os.utime(path, (1_700_000_000, 1_700_000_000))
 
     revisions = [
-        SimpleNamespace(files = [_file("Model-Q4_K_M.gguf", 5_000)], snapshot_path = low),
-        SimpleNamespace(files = [_file("Model-Q5_K_M.gguf", 6_000)], snapshot_path = high),
+        SimpleNamespace(files=[_file("Model-Q4_K_M.gguf", 5_000)], snapshot_path=low),
+        SimpleNamespace(files=[_file("Model-Q5_K_M.gguf", 6_000)], snapshot_path=high),
     ]
-    repo = _repo("Org/Tied", [], repo_dir, revisions = revisions[::-1] if reverse else revisions)
+    repo = _repo("Org/Tied", [], repo_dir, revisions=revisions[::-1] if reverse else revisions)
 
     _scanned_repos(monkeypatch, repo)
     monkeypatch.setattr(models_route, "_resolve_hf_cache_dir", lambda: active)
     monkeypatch.setattr(
-        "hub.utils.hf_cache_state.hf_cache_roots", lambda **kw: [legacy], raising = False
+        "hub.utils.hf_cache_state.hf_cache_roots", lambda **kw: [legacy], raising=False
     )
 
-    rows = asyncio.run(models_route.list_cached_gguf(current_subject = "test-user"))["cached"]
+    rows = asyncio.run(models_route.list_cached_gguf(current_subject="test-user"))["cached"]
 
     # The shared key's answer, and the directory variant discovery walks first.
-    expected = max((low, high), key = snapshot_selection_key)
+    expected = max((low, high), key=snapshot_selection_key)
     assert rows[0].get("load_id") == str(expected)
     assert next(iter(iter_hf_cache_snapshots("Org/Tied"))) == expected
 
@@ -604,7 +604,7 @@ def test_list_cached_gguf_load_id_skips_partial_split_snapshot(monkeypatch, tmp_
     repo_dir = tmp_path / "legacy" / "models--Org--Split"
     older, newer = repo_dir / "snapshots" / "rev-a", repo_dir / "snapshots" / "rev-b"
     for path in (older, newer):
-        path.mkdir(parents = True)
+        path.mkdir(parents=True)
     (older / "Model-Q8_0.gguf").write_bytes(b"\0")
     # Only part 1 of 3 landed before the download was interrupted.
     (newer / "Model-Q4_K_M-00001-of-00003.gguf").write_bytes(b"\0")
@@ -615,10 +615,10 @@ def test_list_cached_gguf_load_id_skips_partial_split_snapshot(monkeypatch, tmp_
         "Org/Split",
         [],
         repo_dir,
-        revisions = [
-            SimpleNamespace(files = [_file("Model-Q8_0.gguf", 5_000)], snapshot_path = older),
+        revisions=[
+            SimpleNamespace(files=[_file("Model-Q8_0.gguf", 5_000)], snapshot_path=older),
             SimpleNamespace(
-                files = [_file("Model-Q4_K_M-00001-of-00003.gguf", 6_000)], snapshot_path = newer
+                files=[_file("Model-Q4_K_M-00001-of-00003.gguf", 6_000)], snapshot_path=newer
             ),
         ],
     )
@@ -626,7 +626,7 @@ def test_list_cached_gguf_load_id_skips_partial_split_snapshot(monkeypatch, tmp_
     _scanned_repos(monkeypatch, repo)
     monkeypatch.setattr(models_route, "_resolve_hf_cache_dir", lambda: active)
 
-    rows = asyncio.run(models_route.list_cached_gguf(current_subject = "test-user"))["cached"]
+    rows = asyncio.run(models_route.list_cached_gguf(current_subject="test-user"))["cached"]
 
     assert rows[0]["load_id"] == str(older)
 
@@ -636,7 +636,7 @@ def test_list_cached_gguf_marks_partial_when_no_snapshot_is_complete(monkeypatch
     active = tmp_path / "active"
     repo_dir = tmp_path / "legacy" / "models--Org--Torn"
     snapshot = repo_dir / "snapshots" / "rev"
-    snapshot.mkdir(parents = True)
+    snapshot.mkdir(parents=True)
     (snapshot / "Model-Q4_K_M-00001-of-00003.gguf").write_bytes(b"\0")
 
     repo = _snapshot_repo(
@@ -649,14 +649,14 @@ def test_list_cached_gguf_marks_partial_when_no_snapshot_is_complete(monkeypatch
     _scanned_repos(monkeypatch, repo)
     monkeypatch.setattr(models_route, "_resolve_hf_cache_dir", lambda: active)
 
-    rows = asyncio.run(models_route.list_cached_gguf(current_subject = "test-user"))["cached"]
+    rows = asyncio.run(models_route.list_cached_gguf(current_subject="test-user"))["cached"]
 
     assert "load_id" not in rows[0]
     assert rows[0]["partial"] is True
 
     # a commit-pinned active-cache attempt has no refs/main, so the bare id is unusable there too.
     monkeypatch.setattr(models_route, "_resolve_hf_cache_dir", lambda: repo_dir.parent)
-    rows = asyncio.run(models_route.list_cached_gguf(current_subject = "test-user"))["cached"]
+    rows = asyncio.run(models_route.list_cached_gguf(current_subject="test-user"))["cached"]
     assert "load_id" not in rows[0]
     assert rows[0]["partial"] is True
 
@@ -670,7 +670,7 @@ def test_list_cached_gguf_load_id_takes_the_snapshot_holding_a_whole_quant(monke
     repo_dir = tmp_path / "legacy" / "models--Org--Mixed"
     older, newer = repo_dir / "snapshots" / "rev-a", repo_dir / "snapshots" / "rev-b"
     for path in (older, newer):
-        path.mkdir(parents = True)
+        path.mkdir(parents=True)
     (older / "Model-Q4_K_M.gguf").write_bytes(b"\0")
     # rev-b has a complete Q8_0 AND a half-downloaded split Q4_K_M.
     (newer / "Model-Q8_0.gguf").write_bytes(b"\0")
@@ -682,14 +682,14 @@ def test_list_cached_gguf_load_id_takes_the_snapshot_holding_a_whole_quant(monke
         "Org/Mixed",
         [],
         repo_dir,
-        revisions = [
-            SimpleNamespace(files = [_file("Model-Q4_K_M.gguf", 5_000)], snapshot_path = older),
+        revisions=[
+            SimpleNamespace(files=[_file("Model-Q4_K_M.gguf", 5_000)], snapshot_path=older),
             SimpleNamespace(
-                files = [
+                files=[
                     _file("Model-Q8_0.gguf", 5_000),
                     _file("Model-Q4_K_M-00001-of-00003.gguf", 6_000),
                 ],
-                snapshot_path = newer,
+                snapshot_path=newer,
             ),
         ],
     )
@@ -697,7 +697,7 @@ def test_list_cached_gguf_load_id_takes_the_snapshot_holding_a_whole_quant(monke
     _scanned_repos(monkeypatch, repo)
     monkeypatch.setattr(models_route, "_resolve_hf_cache_dir", lambda: active)
 
-    rows = asyncio.run(models_route.list_cached_gguf(current_subject = "test-user"))["cached"]
+    rows = asyncio.run(models_route.list_cached_gguf(current_subject="test-user"))["cached"]
 
     assert rows[0].get("load_id") == str(newer)
     # Every quant that offer advertises is on disk in the snapshot it pinned.
@@ -719,7 +719,7 @@ def test_a_zero_byte_first_gguf_leaves_the_quant_incomplete(tmp_path):
     from utils.models.model_config import _find_local_gguf_by_variant
 
     snapshot = tmp_path / "models--Org--Quant" / "snapshots" / ("a" * 40)
-    snapshot.mkdir(parents = True)
+    snapshot.mkdir(parents=True)
     (snapshot / "A-Q4_K_M.gguf").write_bytes(b"")
     (snapshot / "B-Q4_K_M.gguf").write_bytes(b"\0" * 256)
 
@@ -738,7 +738,7 @@ def test_a_snapshot_scope_from_another_repo_is_not_used(tmp_path):
     other = tmp_path / "models--Org--Other" / "snapshots" / ("a" * 40)
     mine = tmp_path / "models--Org--Quant" / "snapshots" / ("b" * 40)
     for path in (other, mine):
-        path.mkdir(parents = True)
+        path.mkdir(parents=True)
 
     assert GV._snapshot_scope_for_request("Org/Quant", str(other)) is None
     assert GV._snapshot_scope_for_request("Org/Quant", str(mine)) == mine
@@ -753,19 +753,19 @@ def test_a_snapshot_scope_from_another_repo_is_not_used(tmp_path):
             {"Model-Q8_0.gguf": b"\0" * 256, "Model-Q4_K_M-00001-of-00002.gguf": b"\0" * 256},
             "Q8_0",
             {"Q8_0"},
-            id = "the-preferred-quant-is-short-a-shard",
+            id="the-preferred-quant-is-short-a-shard",
         ),
         pytest.param(
             {"Model-Q8_0.gguf": b"\0" * 256, "Model-Q4_K_M.gguf": b"\0" * 128},
             "Q4_K_M",
             {"Q4_K_M", "Q8_0"},
-            id = "both-whole-so-the-usual-preference-stands",
+            id="both-whole-so-the-usual-preference-stands",
         ),
         pytest.param(
             {"Model-Q4_K_M-00001-of-00002.gguf": b"\0" * 256},
             "Q4_K_M",
             set(),
-            id = "nothing-ready-so-the-default-is-a-download-target",
+            id="nothing-ready-so-the-default-is-a-download-target",
         ),
     ],
 )
@@ -775,11 +775,11 @@ def test_the_local_default_variant_is_one_that_can_load(
     """The picker re-checks only that default_variant fits in memory, never that it is downloaded,
     so a quant short a shard gets recommended over a whole one sitting beside it."""
     snapshot = tmp_path / "models--Org--Model" / "snapshots" / ("a" * 40)
-    snapshot.mkdir(parents = True)
+    snapshot.mkdir(parents=True)
     for name, blob in files.items():
         (snapshot / name).write_bytes(blob)
 
-    response = asyncio.run(GV.get_gguf_variants_response(str(snapshot), hf_token = None))
+    response = asyncio.run(GV.get_gguf_variants_response(str(snapshot), hf_token=None))
 
     assert response.default_variant == expected_default
     assert {v.quant for v in response.variants if v.downloaded} == expected_ready
@@ -794,7 +794,7 @@ def test_variant_readiness_is_counted_in_the_snapshot_the_row_pinned(monkeypatch
     repo_dir = active / "models--Org--Quant"
     pinned, sibling = repo_dir / "snapshots" / ("d" * 40), repo_dir / "snapshots" / ("e" * 40)
     for path in (pinned, sibling):
-        path.mkdir(parents = True)
+        path.mkdir(parents=True)
     (pinned / "Model-Q4_K_M.gguf").write_bytes(b"\0" * 256)
     (sibling / "Model-Q8_0.gguf").write_bytes(b"\0" * 256)
     os.utime(pinned, (1_000, 1_000))
@@ -802,21 +802,21 @@ def test_variant_readiness_is_counted_in_the_snapshot_the_row_pinned(monkeypatch
 
     monkeypatch.setattr(
         "hub.utils.gguf.iter_hf_cache_snapshots",
-        lambda repo_id, root = None: [sibling, pinned],
+        lambda repo_id, root=None: [sibling, pinned],
     )
     monkeypatch.setattr(
         "hub.services.models.gguf_variants.iter_hf_cache_snapshots",
-        lambda repo_id, root = None: [sibling, pinned],
+        lambda repo_id, root=None: [sibling, pinned],
     )
 
     scoped = asyncio.run(
-        GV.get_gguf_variants_response("Org/Quant", prefer_local_cache = True, local_path = str(pinned))
+        GV.get_gguf_variants_response("Org/Quant", prefer_local_cache=True, local_path=str(pinned))
     )
     assert {v.quant for v in scoped.variants if v.downloaded} == {"Q4_K_M"}
 
     # Control: naming the sibling counts that directory instead.
     other = asyncio.run(
-        GV.get_gguf_variants_response("Org/Quant", prefer_local_cache = True, local_path = str(sibling))
+        GV.get_gguf_variants_response("Org/Quant", prefer_local_cache=True, local_path=str(sibling))
     )
     assert {v.quant for v in other.variants if v.downloaded} == {"Q8_0"}
 
@@ -834,39 +834,39 @@ def test_a_later_attempts_cancel_marker_does_not_break_the_pinned_quant(monkeypa
     repo_dir = active / "models--Org--Quant"
     pinned, newer = repo_dir / "snapshots" / ("d" * 40), repo_dir / "snapshots" / ("e" * 40)
     for path in (pinned, newer):
-        path.mkdir(parents = True)
+        path.mkdir(parents=True)
     (pinned / "Model-Q4_K_M.gguf").write_bytes(b"\0" * 256)
     os.utime(pinned, (1_000, 1_000))
     os.utime(newer, (2_000, 2_000))
-    (repo_dir / "refs").mkdir(parents = True)
+    (repo_dir / "refs").mkdir(parents=True)
     # Dangling, so the row pins the older complete snapshot.
-    (repo_dir / "refs" / "main").write_text("c" * 40, encoding = "utf-8")
+    (repo_dir / "refs" / "main").write_text("c" * 40, encoding="utf-8")
 
     _pin_cache_roots(monkeypatch, active, tmp_path)
     monkeypatch.setattr(
         GV,
         "list_gguf_variants",
-        lambda repo_id, hf_token = None: (
+        lambda repo_id, hf_token=None: (
             [
                 GgufVariantInfo(
-                    filename = "Model-Q4_K_M.gguf",
-                    quant = "Q4_K_M",
-                    display_label = "Q4_K_M",
-                    size_bytes = 256,
+                    filename="Model-Q4_K_M.gguf",
+                    quant="Q4_K_M",
+                    display_label="Q4_K_M",
+                    size_bytes=256,
                 )
             ],
             False,
             [],
         ),
     )
-    assert download_manifest.write_cancel_marker("model", "Org/Quant", "Q4_K_M", hub_cache = active)
+    assert download_manifest.write_cancel_marker("model", "Org/Quant", "Q4_K_M", hub_cache=active)
 
-    response = asyncio.run(GV.get_gguf_variants_response("Org/Quant", local_path = str(pinned)))
+    response = asyncio.run(GV.get_gguf_variants_response("Org/Quant", local_path=str(pinned)))
     assert {v.quant for v in response.variants if v.downloaded} == {"Q4_K_M"}
     assert not any(v.partial for v in response.variants)
 
     # Control: with refs/main resolving, the marker describes what a repo-id load reads.
-    (repo_dir / "refs" / "main").write_text("e" * 40, encoding = "utf-8")
+    (repo_dir / "refs" / "main").write_text("e" * 40, encoding="utf-8")
     unpinned = asyncio.run(GV.get_gguf_variants_response("Org/Quant"))
     assert all(v.partial for v in unpinned.variants)
 
@@ -884,30 +884,30 @@ def test_the_pins_excuse_covers_only_the_quants_it_holds(monkeypatch, tmp_path):
     repo_dir = active / "models--Org--Quant"
     pinned, newer = repo_dir / "snapshots" / ("d" * 40), repo_dir / "snapshots" / ("e" * 40)
     for path in (pinned, newer):
-        path.mkdir(parents = True)
+        path.mkdir(parents=True)
     (pinned / "Model-Q4_K_M.gguf").write_bytes(b"\0" * 256)
     (newer / "Model-Q8_0-00001-of-00002.gguf").write_bytes(b"\0" * 16)
     os.utime(pinned, (1_000, 1_000))
     os.utime(newer, (2_000, 2_000))
-    (repo_dir / "refs").mkdir(parents = True)
-    (repo_dir / "refs" / "main").write_text("e" * 40, encoding = "utf-8")
+    (repo_dir / "refs").mkdir(parents=True)
+    (repo_dir / "refs" / "main").write_text("e" * 40, encoding="utf-8")
 
     _pin_cache_roots(monkeypatch, active, tmp_path)
     monkeypatch.setattr(
         GV,
         "list_gguf_variants",
-        lambda repo_id, hf_token = None: (
+        lambda repo_id, hf_token=None: (
             [
-                GgufVariantInfo(filename = "Model-Q4_K_M.gguf", quant = "Q4_K_M", size_bytes = 256),
-                GgufVariantInfo(filename = "Model-Q8_0.gguf", quant = "Q8_0", size_bytes = 512),
+                GgufVariantInfo(filename="Model-Q4_K_M.gguf", quant="Q4_K_M", size_bytes=256),
+                GgufVariantInfo(filename="Model-Q8_0.gguf", quant="Q8_0", size_bytes=512),
             ],
             False,
             [],
         ),
     )
-    assert download_manifest.write_cancel_marker("model", "Org/Quant", "Q8_0", hub_cache = active)
+    assert download_manifest.write_cancel_marker("model", "Org/Quant", "Q8_0", hub_cache=active)
 
-    response = asyncio.run(GV.get_gguf_variants_response("Org/Quant", local_path = str(pinned)))
+    response = asyncio.run(GV.get_gguf_variants_response("Org/Quant", local_path=str(pinned)))
     by_quant = {v.quant: v for v in response.variants}
     assert by_quant["Q4_K_M"].downloaded is True and by_quant["Q4_K_M"].partial is False
     assert by_quant["Q8_0"].partial is True
@@ -929,39 +929,39 @@ def test_a_later_attempts_incomplete_blob_does_not_break_the_pinned_quant(monkey
     repo_dir = active / "models--Org--Quant"
     pinned, newer = repo_dir / "snapshots" / ("d" * 40), repo_dir / "snapshots" / ("e" * 40)
     for path in (pinned, newer):
-        path.mkdir(parents = True)
+        path.mkdir(parents=True)
     (pinned / "Model-Q4_K_M.gguf").write_bytes(b"\0" * 256)
     (newer / "Model-Q4_K_M-00001-of-00002.gguf").write_bytes(b"\0" * 16)
     os.utime(pinned, (1_000, 1_000))
     os.utime(newer, (2_000, 2_000))
-    (repo_dir / "blobs").mkdir(parents = True)
+    (repo_dir / "blobs").mkdir(parents=True)
     (repo_dir / "blobs" / f"{sha}.incomplete").write_bytes(b"\0" * 8)
-    (repo_dir / "refs").mkdir(parents = True)
-    (repo_dir / "refs" / "main").write_text("e" * 40, encoding = "utf-8")
+    (repo_dir / "refs").mkdir(parents=True)
+    (repo_dir / "refs" / "main").write_text("e" * 40, encoding="utf-8")
 
     _pin_cache_roots(monkeypatch, active, tmp_path)
     variant = GgufVariantInfo(
-        filename = "Model-Q4_K_M.gguf",
-        quant = "Q4_K_M",
-        display_label = "Q4_K_M",
-        size_bytes = 256,
+        filename="Model-Q4_K_M.gguf",
+        quant="Q4_K_M",
+        display_label="Q4_K_M",
+        size_bytes=256,
     )
     monkeypatch.setattr(
-        GV, "list_gguf_variants", lambda repo_id, hf_token = None: ([variant], False, [])
+        GV, "list_gguf_variants", lambda repo_id, hf_token=None: ([variant], False, [])
     )
     monkeypatch.setattr(
         GV,
         "_gguf_all_variant_requirements",
-        lambda repo_id, hf_token, siblings = None: {
+        lambda repo_id, hf_token, siblings=None: {
             "q4_k_m": plan_from_expected_files(
-                "Q4_K_M", [ExpectedFile(path = "Model-Q4_K_M.gguf", size = 256, sha256 = sha)]
+                "Q4_K_M", [ExpectedFile(path="Model-Q4_K_M.gguf", size=256, sha256=sha)]
             )
         },
     )
     monkeypatch.setattr(GV, "_variant_requirement_cache_get", lambda key: None)
     monkeypatch.setattr(download_registry, "incomplete_blob_hashes", lambda *a, **kw: {sha})
 
-    response = asyncio.run(GV.get_gguf_variants_response("Org/Quant", local_path = str(pinned)))
+    response = asyncio.run(GV.get_gguf_variants_response("Org/Quant", local_path=str(pinned)))
     assert {v.quant for v in response.variants if v.downloaded} == {"Q4_K_M"}
     assert not any(v.partial for v in response.variants)
 
@@ -982,14 +982,14 @@ def test_a_copy_that_loads_beats_a_bigger_one_that_does_not(monkeypatch, tmp_pat
     torn = active / "models--Org--Quant" / "snapshots" / ("d" * 40)
     whole = legacy / "models--Org--Quant" / "snapshots" / ("e" * 40)
     for path in (torn, whole):
-        path.mkdir(parents = True)
+        path.mkdir(parents=True)
     # Bigger, and half a split: size alone would keep this one.
     (torn / "Model-Q4_K_M-00001-of-00002.gguf").write_bytes(b"\0" * 4096)
     for shard in ("00001", "00002"):
         (whole / f"Model-Q4_K_M-{shard}-of-00002.gguf").write_bytes(b"\0" * 256)
     for repo_dir, ref in ((torn.parent.parent, "c" * 40), (whole.parent.parent, "e" * 40)):
-        (repo_dir / "refs").mkdir(parents = True)
-        (repo_dir / "refs" / "main").write_text(ref, encoding = "utf-8")
+        (repo_dir / "refs").mkdir(parents=True)
+        (repo_dir / "refs" / "main").write_text(ref, encoding="utf-8")
 
     def _repo_for(snapshot, size, repo_dir):
         return _snapshot_repo(
@@ -1003,15 +1003,15 @@ def test_a_copy_that_loads_beats_a_bigger_one_that_does_not(monkeypatch, tmp_pat
         models_route,
         "_all_hf_cache_scans",
         lambda: [
-            SimpleNamespace(repos = [_repo_for(torn, 4096, torn.parent.parent)]),
-            SimpleNamespace(repos = [_repo_for(whole, 256, whole.parent.parent)]),
+            SimpleNamespace(repos=[_repo_for(torn, 4096, torn.parent.parent)]),
+            SimpleNamespace(repos=[_repo_for(whole, 256, whole.parent.parent)]),
         ],
     )
     monkeypatch.setattr(models_route, "_resolve_hf_cache_dir", lambda: active)
 
     row = {
         c["repo_id"]: c
-        for c in asyncio.run(models_route.list_cached_gguf(current_subject = "test-user"))["cached"]
+        for c in asyncio.run(models_route.list_cached_gguf(current_subject="test-user"))["cached"]
     }["Org/Quant"]
     assert row["cache_path"] == str(whole.parent.parent)
     assert row["load_id"] == str(whole)
@@ -1027,29 +1027,29 @@ def test_list_cached_gguf_pins_a_snapshot_when_the_default_ref_quant_is_torn(mon
     repo_dir = active / "models--Org--Quant"
     older, newer = repo_dir / "snapshots" / ("d" * 40), repo_dir / "snapshots" / ("e" * 40)
     for path in (older, newer):
-        path.mkdir(parents = True)
+        path.mkdir(parents=True)
     for shard in ("00001", "00002"):
         (older / f"Model-Q4_K_M-{shard}-of-00002.gguf").write_bytes(b"\0" * 256)
     (newer / "Model-Q4_K_M-00001-of-00002.gguf").write_bytes(b"\0" * 256)
     os.utime(older, (1_000, 1_000))
     os.utime(newer, (2_000, 2_000))
-    (repo_dir / "refs").mkdir(parents = True)
-    (repo_dir / "refs" / "main").write_text("e" * 40, encoding = "utf-8")
+    (repo_dir / "refs").mkdir(parents=True)
+    (repo_dir / "refs" / "main").write_text("e" * 40, encoding="utf-8")
 
     repo = _repo(
         "Org/Quant",
         [],
         repo_dir,
-        revisions = [
+        revisions=[
             SimpleNamespace(
-                files = [_file("Model-Q4_K_M-00001-of-00002.gguf", 256)], snapshot_path = newer
+                files=[_file("Model-Q4_K_M-00001-of-00002.gguf", 256)], snapshot_path=newer
             ),
             SimpleNamespace(
-                files = [
+                files=[
                     _file("Model-Q4_K_M-00001-of-00002.gguf", 256),
                     _file("Model-Q4_K_M-00002-of-00002.gguf", 256),
                 ],
-                snapshot_path = older,
+                snapshot_path=older,
             ),
         ],
     )
@@ -1058,15 +1058,15 @@ def test_list_cached_gguf_pins_a_snapshot_when_the_default_ref_quant_is_torn(mon
 
     rows = {
         c["repo_id"]: c
-        for c in asyncio.run(models_route.list_cached_gguf(current_subject = "test-user"))["cached"]
+        for c in asyncio.run(models_route.list_cached_gguf(current_subject="test-user"))["cached"]
     }
     assert rows["Org/Quant"]["load_id"] == str(older)
 
     # Control: point the ref at the whole copy and the repo id is what loads again.
-    (repo_dir / "refs" / "main").write_text("d" * 40, encoding = "utf-8")
+    (repo_dir / "refs" / "main").write_text("d" * 40, encoding="utf-8")
     rows = {
         c["repo_id"]: c
-        for c in asyncio.run(models_route.list_cached_gguf(current_subject = "test-user"))["cached"]
+        for c in asyncio.run(models_route.list_cached_gguf(current_subject="test-user"))["cached"]
     }
     assert "load_id" not in rows["Org/Quant"]
 
@@ -1080,34 +1080,34 @@ def test_vision_is_read_from_the_snapshot_the_row_pins(monkeypatch, tmp_path):
     repo_dir = active / "models--Org--Vision"
     older, newer = repo_dir / "snapshots" / ("d" * 40), repo_dir / "snapshots" / ("e" * 40)
     for path in (older, newer):
-        path.mkdir(parents = True)
+        path.mkdir(parents=True)
     for shard in ("00001", "00002"):
         (older / f"Model-Q4_K_M-{shard}-of-00002.gguf").write_bytes(b"\0" * 256)
     (newer / "Model-Q4_K_M-00001-of-00002.gguf").write_bytes(b"\0" * 256)
     (newer / "mmproj-F16.gguf").write_bytes(b"\0" * 256)
     os.utime(older, (1_000, 1_000))
     os.utime(newer, (2_000, 2_000))
-    (repo_dir / "refs").mkdir(parents = True)
-    (repo_dir / "refs" / "main").write_text("e" * 40, encoding = "utf-8")
+    (repo_dir / "refs").mkdir(parents=True)
+    (repo_dir / "refs" / "main").write_text("e" * 40, encoding="utf-8")
 
     repo = _repo(
         "Org/Vision",
         [],
         repo_dir,
-        revisions = [
+        revisions=[
             SimpleNamespace(
-                files = [
+                files=[
                     _file("Model-Q4_K_M-00001-of-00002.gguf", 256),
                     _file("mmproj-F16.gguf", 256),
                 ],
-                snapshot_path = newer,
+                snapshot_path=newer,
             ),
             SimpleNamespace(
-                files = [
+                files=[
                     _file("Model-Q4_K_M-00001-of-00002.gguf", 256),
                     _file("Model-Q4_K_M-00002-of-00002.gguf", 256),
                 ],
-                snapshot_path = older,
+                snapshot_path=older,
             ),
         ],
     )
@@ -1117,7 +1117,7 @@ def test_vision_is_read_from_the_snapshot_the_row_pins(monkeypatch, tmp_path):
     def _row():
         return {
             c["repo_id"]: c
-            for c in asyncio.run(models_route.list_cached_gguf(current_subject = "test-user"))[
+            for c in asyncio.run(models_route.list_cached_gguf(current_subject="test-user"))[
                 "cached"
             ]
         }["Org/Vision"]
@@ -1143,41 +1143,41 @@ def test_vision_is_read_from_the_snapshot_a_repo_id_load_resolves(monkeypatch, t
     repo_dir = active / "models--Org--Vision"
     main, other = repo_dir / "snapshots" / ("d" * 40), repo_dir / "snapshots" / ("e" * 40)
     for path in (main, other):
-        path.mkdir(parents = True)
+        path.mkdir(parents=True)
     for shard in ("00001", "00002"):
         (main / f"Model-Q4_K_M-{shard}-of-00002.gguf").write_bytes(b"\0" * 256)
     # Newest, and holds only the projector: nothing here for a load to land on.
     (other / "mmproj-F16.gguf").write_bytes(b"\0" * 256)
     os.utime(main, (1_000, 1_000))
     os.utime(other, (2_000, 2_000))
-    (repo_dir / "refs").mkdir(parents = True)
-    (repo_dir / "refs" / "main").write_text("d" * 40, encoding = "utf-8")
+    (repo_dir / "refs").mkdir(parents=True)
+    (repo_dir / "refs" / "main").write_text("d" * 40, encoding="utf-8")
 
     repo = _repo(
         "Org/Vision",
         [],
         repo_dir,
-        revisions = [
-            SimpleNamespace(files = [_file("mmproj-F16.gguf", 256)], snapshot_path = other),
+        revisions=[
+            SimpleNamespace(files=[_file("mmproj-F16.gguf", 256)], snapshot_path=other),
             SimpleNamespace(
-                files = [
+                files=[
                     _file("Model-Q4_K_M-00001-of-00002.gguf", 256),
                     _file("Model-Q4_K_M-00002-of-00002.gguf", 256),
                 ],
-                snapshot_path = main,
+                snapshot_path=main,
             ),
         ],
     )
     _scanned_repos(monkeypatch, repo)
     monkeypatch.setattr(models_route, "_resolve_hf_cache_dir", lambda: active)
     monkeypatch.setattr(
-        "hub.utils.gguf.iter_hf_cache_snapshots", lambda repo_id, root = None: [other, main]
+        "hub.utils.gguf.iter_hf_cache_snapshots", lambda repo_id, root=None: [other, main]
     )
 
     def _row():
         return {
             c["repo_id"]: c
-            for c in asyncio.run(models_route.list_cached_gguf(current_subject = "test-user"))[
+            for c in asyncio.run(models_route.list_cached_gguf(current_subject="test-user"))[
                 "cached"
             ]
         }["Org/Vision"]
@@ -1198,39 +1198,39 @@ def test_a_projector_at_the_snapshot_root_serves_a_quant_in_a_subdirectory(monke
     active = tmp_path / "active"
     repo_dir = active / "models--Org--Nested"
     snapshot = repo_dir / "snapshots" / ("d" * 40)
-    (snapshot / "UD-Q4_K_XL").mkdir(parents = True)
+    (snapshot / "UD-Q4_K_XL").mkdir(parents=True)
     for shard in ("00001", "00002"):
         (snapshot / "UD-Q4_K_XL" / f"Model-UD-Q4_K_XL-{shard}-of-00002.gguf").write_bytes(
             b"\0" * 256
         )
     (snapshot / "mmproj-F16.gguf").write_bytes(b"\0" * 256)
-    (repo_dir / "refs").mkdir(parents = True)
-    (repo_dir / "refs" / "main").write_text("d" * 40, encoding = "utf-8")
+    (repo_dir / "refs").mkdir(parents=True)
+    (repo_dir / "refs" / "main").write_text("d" * 40, encoding="utf-8")
 
     repo = _repo(
         "Org/Nested",
         [],
         repo_dir,
-        revisions = [
+        revisions=[
             SimpleNamespace(
-                files = [
+                files=[
                     _file("Model-UD-Q4_K_XL-00001-of-00002.gguf", 256),
                     _file("Model-UD-Q4_K_XL-00002-of-00002.gguf", 256),
                     _file("mmproj-F16.gguf", 256),
                 ],
-                snapshot_path = snapshot,
+                snapshot_path=snapshot,
             )
         ],
     )
     _scanned_repos(monkeypatch, repo)
     monkeypatch.setattr(models_route, "_resolve_hf_cache_dir", lambda: active)
     monkeypatch.setattr(
-        "hub.utils.gguf.iter_hf_cache_snapshots", lambda repo_id, root = None: [snapshot]
+        "hub.utils.gguf.iter_hf_cache_snapshots", lambda repo_id, root=None: [snapshot]
     )
 
     row = {
         c["repo_id"]: c
-        for c in asyncio.run(models_route.list_cached_gguf(current_subject = "test-user"))["cached"]
+        for c in asyncio.run(models_route.list_cached_gguf(current_subject="test-user"))["cached"]
     }["Org/Nested"]
     assert "load_id" not in row
     assert row["has_vision"] is True
@@ -1255,11 +1255,11 @@ def test_an_audio_only_projector_in_the_cache_is_not_vision(monkeypatch, tmp_pat
     active = tmp_path / "active"
     repo_dir = active / "models--Org--Audio"
     snapshot = repo_dir / "snapshots" / ("d" * 40)
-    snapshot.mkdir(parents = True)
+    snapshot.mkdir(parents=True)
     (snapshot / "Model-Q4_K_M.gguf").write_bytes(b"\0" * 256)
     _projector(snapshot / "mmproj-F16.gguf", "clip.has_audio_encoder")
-    (repo_dir / "refs").mkdir(parents = True)
-    (repo_dir / "refs" / "main").write_text("d" * 40, encoding = "utf-8")
+    (repo_dir / "refs").mkdir(parents=True)
+    (repo_dir / "refs" / "main").write_text("d" * 40, encoding="utf-8")
 
     repo = _snapshot_repo(
         "Org/Audio",
@@ -1273,13 +1273,13 @@ def test_an_audio_only_projector_in_the_cache_is_not_vision(monkeypatch, tmp_pat
     _scanned_repos(monkeypatch, repo)
     monkeypatch.setattr(models_route, "_resolve_hf_cache_dir", lambda: active)
     monkeypatch.setattr(
-        "hub.utils.gguf.iter_hf_cache_snapshots", lambda repo_id, root = None: [snapshot]
+        "hub.utils.gguf.iter_hf_cache_snapshots", lambda repo_id, root=None: [snapshot]
     )
 
     def _row():
         return {
             c["repo_id"]: c
-            for c in asyncio.run(models_route.list_cached_gguf(current_subject = "test-user"))[
+            for c in asyncio.run(models_route.list_cached_gguf(current_subject="test-user"))[
                 "cached"
             ]
         }["Org/Audio"]
@@ -1306,15 +1306,15 @@ def test_vision_is_read_from_the_cache_root_holding_the_row(monkeypatch, tmp_pat
     repo_dir = active / "models--Org--Split"
     here = repo_dir / "snapshots" / ("a" * 40)
     there = legacy / "models--Org--Split" / "snapshots" / ("b" * 40)
-    here.mkdir(parents = True)
-    there.mkdir(parents = True)
+    here.mkdir(parents=True)
+    there.mkdir(parents=True)
     for name in ("Model-Q4_K_M.gguf", "mmproj-F16.gguf"):
         (here / name).write_bytes(b"\0" * 256)
     (there / "Model-Q4_K_M.gguf").write_bytes(b"\0" * 256)
     os.utime(here, (1_000, 1_000))
     os.utime(there, (2_000, 2_000))
-    (repo_dir / "refs").mkdir(parents = True)
-    (repo_dir / "refs" / "main").write_text("a" * 40, encoding = "utf-8")
+    (repo_dir / "refs").mkdir(parents=True)
+    (repo_dir / "refs" / "main").write_text("a" * 40, encoding="utf-8")
 
     repo = _snapshot_repo(
         "Org/Split",
@@ -1328,7 +1328,7 @@ def test_vision_is_read_from_the_cache_root_holding_the_row(monkeypatch, tmp_pat
 
     row = {
         c["repo_id"]: c
-        for c in asyncio.run(models_route.list_cached_gguf(current_subject = "test-user"))["cached"]
+        for c in asyncio.run(models_route.list_cached_gguf(current_subject="test-user"))["cached"]
     }["Org/Split"]
     assert row["has_vision"] is True
 
@@ -1340,13 +1340,13 @@ def test_vision_is_not_invented_for_a_copy_that_ships_no_projector(monkeypatch, 
     repo_dir = active / "models--Org--Plain"
     here = repo_dir / "snapshots" / ("a" * 40)
     there = legacy / "models--Org--Plain" / "snapshots" / ("b" * 40)
-    here.mkdir(parents = True)
-    there.mkdir(parents = True)
+    here.mkdir(parents=True)
+    there.mkdir(parents=True)
     (here / "Model-Q4_K_M.gguf").write_bytes(b"\0" * 256)
     for name in ("Model-Q4_K_M.gguf", "mmproj-F16.gguf"):
         (there / name).write_bytes(b"\0" * 256)
-    (repo_dir / "refs").mkdir(parents = True)
-    (repo_dir / "refs" / "main").write_text("a" * 40, encoding = "utf-8")
+    (repo_dir / "refs").mkdir(parents=True)
+    (repo_dir / "refs" / "main").write_text("a" * 40, encoding="utf-8")
 
     repo = _snapshot_repo("Org/Plain", repo_dir, here, [_file("Model-Q4_K_M.gguf", 256)])
     _scanned_repos(monkeypatch, repo)
@@ -1355,7 +1355,7 @@ def test_vision_is_not_invented_for_a_copy_that_ships_no_projector(monkeypatch, 
 
     row = {
         c["repo_id"]: c
-        for c in asyncio.run(models_route.list_cached_gguf(current_subject = "test-user"))["cached"]
+        for c in asyncio.run(models_route.list_cached_gguf(current_subject="test-user"))["cached"]
     }["Org/Plain"]
     assert row["has_vision"] is False
 
@@ -1370,7 +1370,7 @@ def test_metadata_resolves_from_the_snapshot_holding_the_whole_quant(monkeypatch
     repo_dir = tmp_path / "models--Org--Quant"
     older, newer = repo_dir / "snapshots" / ("d" * 40), repo_dir / "snapshots" / ("e" * 40)
     for path in (older, newer):
-        path.mkdir(parents = True)
+        path.mkdir(parents=True)
     for shard in ("00001", "00002"):
         (older / f"Model-Q4_K_M-{shard}-of-00002.gguf").write_bytes(b"\0" * 256)
     (newer / "Model-Q4_K_M-00001-of-00002.gguf").write_bytes(b"\0" * 256)
@@ -1378,7 +1378,7 @@ def test_metadata_resolves_from_the_snapshot_holding_the_whole_quant(monkeypatch
     os.utime(newer, (2_000, 2_000))
 
     monkeypatch.setattr(
-        "hub.utils.gguf.iter_hf_cache_snapshots", lambda repo_id, root = None: [newer, older]
+        "hub.utils.gguf.iter_hf_cache_snapshots", lambda repo_id, root=None: [newer, older]
     )
 
     assert iter_snapshots_preferring_whole("Org/Quant", "Q4_K_M") == [older, newer]
@@ -1392,11 +1392,11 @@ def test_list_cached_gguf_includes_non_suffix_repo_when_cache_contains_gguf(monk
         [_file("Q4_K_M.gguf", 5_000), _file("README.md", 10)],
         tmp_path / "models--HauhauCS--Gemma",
     )
-    scan = SimpleNamespace(repos = [repo])
+    scan = SimpleNamespace(repos=[repo])
 
     monkeypatch.setattr(models_route, "_all_hf_cache_scans", lambda: [scan])
 
-    result = asyncio.run(models_route.list_cached_gguf(current_subject = "test-user"))
+    result = asyncio.run(models_route.list_cached_gguf(current_subject="test-user"))
 
     assert result["cached"] == [
         {
@@ -1416,11 +1416,11 @@ def test_list_cached_gguf_matches_extension_case_insensitively(monkeypatch, tmp_
         [_file("Q8_0.GGUF", 7_000)],
         tmp_path / "models--Org--Model-Without-Suffix",
     )
-    scan = SimpleNamespace(repos = [repo])
+    scan = SimpleNamespace(repos=[repo])
 
     monkeypatch.setattr(models_route, "_all_hf_cache_scans", lambda: [scan])
 
-    result = asyncio.run(models_route.list_cached_gguf(current_subject = "test-user"))
+    result = asyncio.run(models_route.list_cached_gguf(current_subject="test-user"))
 
     assert result["cached"] == [
         {
@@ -1486,7 +1486,7 @@ def test_is_hidden_model_hides_dictation_models(tmp_path):
 def test_list_cached_models_hides_custom_whisper_by_config(monkeypatch, tmp_path):
     repo_path = tmp_path / "models--user--whisper-finetune"
     snap = repo_path / "snapshots" / "abc"
-    snap.mkdir(parents = True)
+    snap.mkdir(parents=True)
     (snap / "config.json").write_text(
         '{"model_type": "whisper", "architectures": ["WhisperForConditionalGeneration"]}'
     )
@@ -1502,13 +1502,13 @@ def test_list_cached_models_hides_custom_whisper_by_config(monkeypatch, tmp_path
     monkeypatch.setattr(models_route, "_is_hidden_model", spy)
     repo = _repo(
         "user/whisper-finetune",
-        [SimpleNamespace(file_name = "model.safetensors", size_on_disk = 10)],
+        [SimpleNamespace(file_name="model.safetensors", size_on_disk=10)],
         repo_path,
     )
     _scanned_repos(monkeypatch, repo)
 
     result = asyncio.run(
-        models_route.list_cached_models(current_subject = "test-user", hf_token = None)
+        models_route.list_cached_models(current_subject="test-user", hf_token=None)
     )
     # The route passed the snapshot path (not just the repo id) ...
     assert any(str(repo_path) in values for values in captured)
@@ -1560,7 +1560,7 @@ def test_is_hidden_model_prefers_existing_relative_path(monkeypatch, tmp_path):
     from core.rag import config as rag_config
 
     embedder = tmp_path / "models" / "embedder"
-    embedder.mkdir(parents = True)
+    embedder.mkdir(parents=True)
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(rag_config, "effective_embedding_model", lambda: "models/embedder")
     monkeypatch.setattr(rag_config, "effective_gguf_repo", lambda: "org/embedder-GGUF")
@@ -1590,7 +1590,7 @@ def test_is_hidden_model_keeps_env_default_hidden_after_override(monkeypatch):
     """A persisted override must not expose the deployment's env default."""
     from core.rag import config as rag_config
 
-    monkeypatch.delenv("RAG_EMBED_GGUF_REPO", raising = False)
+    monkeypatch.delenv("RAG_EMBED_GGUF_REPO", raising=False)
     monkeypatch.setattr(rag_config, "EMBEDDING_MODEL", "org/env-default")
     monkeypatch.setattr(rag_config, "effective_embedding_model", lambda: "org/custom")
     monkeypatch.setattr(rag_config, "effective_gguf_repo", lambda: "org/custom-GGUF")
@@ -1639,12 +1639,12 @@ def test_hidden_models_importable_without_heavy_model_stack():
         print("HIDDEN_MODELS_IMPORT_OK")
         """
     )
-    env = dict(os.environ, PYTHONPATH = str(backend))
+    env = dict(os.environ, PYTHONPATH=str(backend))
     proc = subprocess.run(
         [sys.executable, "-c", code],
-        capture_output = True,
-        text = True,
-        env = env,
+        capture_output=True,
+        text=True,
+        env=env,
     )
     assert proc.returncode == 0, proc.stderr
     assert "HIDDEN_MODELS_IMPORT_OK" in proc.stdout
@@ -1667,7 +1667,7 @@ def test_list_cached_gguf_hides_llama_validation_probe(monkeypatch, tmp_path):
     )
     _scanned_repos(monkeypatch, probe, real)
 
-    result = asyncio.run(models_route.list_cached_gguf(current_subject = "test-user"))
+    result = asyncio.run(models_route.list_cached_gguf(current_subject="test-user"))
 
     repo_ids = [c["repo_id"] for c in result["cached"]]
     assert "ggml-org/models" not in repo_ids
@@ -1685,11 +1685,11 @@ def test_list_cached_gguf_skips_repos_without_positive_gguf_size(monkeypatch, tm
         [_file("Q4_K_M.gguf", 0)],
         tmp_path / "models--Org--ZeroSize",
     )
-    scan = SimpleNamespace(repos = [missing, zero])
+    scan = SimpleNamespace(repos=[missing, zero])
 
     monkeypatch.setattr(models_route, "_all_hf_cache_scans", lambda: [scan])
 
-    result = asyncio.run(models_route.list_cached_gguf(current_subject = "test-user"))
+    result = asyncio.run(models_route.list_cached_gguf(current_subject="test-user"))
 
     assert result["cached"] == []
 
@@ -1710,12 +1710,12 @@ def test_list_cached_gguf_keeps_largest_duplicate_repo_across_scans(monkeypatch,
         models_route,
         "_all_hf_cache_scans",
         lambda: [
-            SimpleNamespace(repos = [smaller]),
-            SimpleNamespace(repos = [larger]),
+            SimpleNamespace(repos=[smaller]),
+            SimpleNamespace(repos=[larger]),
         ],
     )
 
-    result = asyncio.run(models_route.list_cached_gguf(current_subject = "test-user"))
+    result = asyncio.run(models_route.list_cached_gguf(current_subject="test-user"))
 
     assert result["cached"] == [
         {
@@ -1735,15 +1735,15 @@ def test_list_cached_gguf_dedupes_shared_blobs_across_revisions(monkeypatch, tmp
         "Org/SharedBlobRepo",
         [],
         tmp_path / "models--Org--SharedBlobRepo",
-        revisions = [
-            SimpleNamespace(files = [_file("Q4_K_M.gguf", 5_000, blob_path = shared)]),
-            SimpleNamespace(files = [_file("Q4_K_M.gguf", 5_000, blob_path = shared)]),
+        revisions=[
+            SimpleNamespace(files=[_file("Q4_K_M.gguf", 5_000, blob_path=shared)]),
+            SimpleNamespace(files=[_file("Q4_K_M.gguf", 5_000, blob_path=shared)]),
         ],
     )
 
     _scanned_repos(monkeypatch, repo)
 
-    result = asyncio.run(models_route.list_cached_gguf(current_subject = "test-user"))
+    result = asyncio.run(models_route.list_cached_gguf(current_subject="test-user"))
 
     assert result["cached"] == [
         {
@@ -1769,7 +1769,7 @@ def test_list_cached_models_skips_non_suffix_repo_when_gguf_files_exist(monkeypa
 
     _scanned_repos(monkeypatch, mixed)
 
-    result = asyncio.run(models_route.list_cached_models(current_subject = "test-user"))
+    result = asyncio.run(models_route.list_cached_models(current_subject="test-user"))
 
     assert result["cached"] == []
 
@@ -1791,13 +1791,13 @@ def test_list_cached_models_prefers_complete_over_larger_partial(monkeypatch, tm
     monkeypatch.setattr(
         models_route,
         "_cached_repo_partial",
-        lambda repo_id, repo_cache_dir = None, snapshot_dir = None: "root_b" in str(repo_cache_dir),
+        lambda repo_id, repo_cache_dir=None, snapshot_dir=None: "root_b" in str(repo_cache_dir),
     )
-    monkeypatch.setattr(models_route, "_cached_repo_task", lambda repo_info, selected = None: None)
+    monkeypatch.setattr(models_route, "_cached_repo_task", lambda repo_info, selected=None: None)
     # List the partial (larger) FIRST, so the old size-only rule would have picked it.
     _scanned_repos(monkeypatch, partial, complete)
 
-    result = asyncio.run(models_route.list_cached_models(current_subject = "test-user"))
+    result = asyncio.run(models_route.list_cached_models(current_subject="test-user"))
 
     assert len(result["cached"]) == 1
     row = result["cached"][0]
@@ -1820,7 +1820,7 @@ def test_list_cached_gguf_includes_mixed_repo_with_gguf_and_safetensors(monkeypa
 
     _scanned_repos(monkeypatch, mixed)
 
-    result = asyncio.run(models_route.list_cached_gguf(current_subject = "test-user"))
+    result = asyncio.run(models_route.list_cached_gguf(current_subject="test-user"))
 
     assert result["cached"] == [
         {
@@ -1845,7 +1845,7 @@ def test_list_cached_gguf_handles_none_size_on_disk(monkeypatch, tmp_path):
 
     _scanned_repos(monkeypatch, partial)
 
-    result = asyncio.run(models_route.list_cached_gguf(current_subject = "test-user"))
+    result = asyncio.run(models_route.list_cached_gguf(current_subject="test-user"))
 
     assert result["cached"] == [
         {
@@ -1879,7 +1879,7 @@ def test_list_cached_gguf_skips_malformed_repo_without_wiping_response(monkeypat
 
     _scanned_repos(monkeypatch, _ExplodingRepo(), healthy)
 
-    result = asyncio.run(models_route.list_cached_gguf(current_subject = "test-user"))
+    result = asyncio.run(models_route.list_cached_gguf(current_subject="test-user"))
 
     assert result["cached"] == [
         {
@@ -1907,7 +1907,7 @@ def test_list_cached_gguf_skips_repo_with_only_mmproj_gguf(monkeypatch, tmp_path
 
     _scanned_repos(monkeypatch, mmproj_only)
 
-    result = asyncio.run(models_route.list_cached_gguf(current_subject = "test-user"))
+    result = asyncio.run(models_route.list_cached_gguf(current_subject="test-user"))
 
     assert result["cached"] == []
 
@@ -1926,7 +1926,7 @@ def test_list_cached_models_includes_repo_with_only_mmproj_gguf(monkeypatch, tmp
 
     _scanned_repos(monkeypatch, mmproj_aux)
 
-    result = asyncio.run(models_route.list_cached_models(current_subject = "test-user"))
+    result = asyncio.run(models_route.list_cached_models(current_subject="test-user"))
 
     assert result["cached"] == [{"repo_id": "Org/MmprojAux", "size_bytes": 15_000, "task": None}]
 
@@ -1951,7 +1951,7 @@ def test_list_cached_models_tags_diffusers_pipeline_as_text_to_image(monkeypatch
 
     _scanned_repos(monkeypatch, diffusion, checkpoint)
 
-    result = asyncio.run(models_route.list_cached_models(current_subject = "test-user"))
+    result = asyncio.run(models_route.list_cached_models(current_subject="test-user"))
     by_repo = {c["repo_id"]: c["task"] for c in result["cached"]}
     assert by_repo == {
         "Tongyi-MAI/Z-Image-Turbo": "text-to-image",
@@ -1984,7 +1984,7 @@ def test_list_cached_models_marks_companion_only_pipeline_partial(monkeypatch, t
 
     _scanned_repos(monkeypatch, companion_only, complete)
 
-    result = asyncio.run(models_route.list_cached_models(current_subject = "test-user"))
+    result = asyncio.run(models_route.list_cached_models(current_subject="test-user"))
     by_repo = {c["repo_id"]: c for c in result["cached"]}
     assert by_repo["black-forest-labs/FLUX.1-dev"].get("partial") is True
     assert by_repo["Tongyi-MAI/Z-Image-Turbo"].get("partial") is None
@@ -2004,7 +2004,7 @@ def test_list_cached_gguf_includes_vision_repo_with_main_gguf_and_mmproj(monkeyp
 
     _scanned_repos(monkeypatch, vision_repo)
 
-    result = asyncio.run(models_route.list_cached_gguf(current_subject = "test-user"))
+    result = asyncio.run(models_route.list_cached_gguf(current_subject="test-user"))
 
     assert result["cached"] == [
         {
@@ -2021,10 +2021,10 @@ def test_list_cached_gguf_includes_vision_repo_with_main_gguf_and_mmproj(monkeyp
 def _gfile(name: str, size: int, mtime: float) -> SimpleNamespace:
     """A cached file carrying a Hugging Face ``blob_last_modified`` timestamp."""
     return SimpleNamespace(
-        file_name = name,
-        size_on_disk = size,
-        blob_path = None,
-        blob_last_modified = mtime,
+        file_name=name,
+        size_on_disk=size,
+        blob_path=None,
+        blob_last_modified=mtime,
     )
 
 
@@ -2032,7 +2032,7 @@ def test_all_hf_cache_scans_uses_shared_inventory(monkeypatch, tmp_path):
     from hub.utils import inventory_scan
 
     active = SimpleNamespace(
-        repos = [_repo("Org/Active", [_file("Q4_K_M.gguf", 5_000)], tmp_path / "active")]
+        repos=[_repo("Org/Active", [_file("Q4_K_M.gguf", 5_000)], tmp_path / "active")]
     )
 
     monkeypatch.setattr(inventory_scan, "all_hf_cache_scans", lambda: [active])
@@ -2042,7 +2042,7 @@ def test_all_hf_cache_scans_uses_shared_inventory(monkeypatch, tmp_path):
 
     # End-to-end: the endpoint still returns the active cache's repo.
     monkeypatch.setattr(models_route, "_all_hf_cache_scans", lambda: [active])
-    result = asyncio.run(models_route.list_cached_gguf(current_subject = "test-user"))
+    result = asyncio.run(models_route.list_cached_gguf(current_subject="test-user"))
     assert result["cached"] == [
         {
             "repo_id": "Org/Active",
@@ -2074,7 +2074,7 @@ def test_list_cached_gguf_sorts_newest_first_grouping_by_latest_quant(monkeypatc
 
     _scanned_repos(monkeypatch, older, newer)
 
-    result = asyncio.run(models_route.list_cached_gguf(current_subject = "test-user"))
+    result = asyncio.run(models_route.list_cached_gguf(current_subject="test-user"))
 
     assert [c["repo_id"] for c in result["cached"]] == ["Org/Newer", "Org/Older"]
     assert result["cached"][0]["last_modified"] == 3_000.0
@@ -2090,9 +2090,9 @@ def test_list_cached_gguf_dedupe_keeps_newest_timestamp(monkeypatch, tmp_path):
         monkeypatch.setattr(
             models_route,
             "_all_hf_cache_scans",
-            lambda s = scans: [SimpleNamespace(repos = [s[0]]), SimpleNamespace(repos = [s[1]])],
+            lambda s=scans: [SimpleNamespace(repos=[s[0]]), SimpleNamespace(repos=[s[1]])],
         )
-        result = asyncio.run(models_route.list_cached_gguf(current_subject = "t"))
+        result = asyncio.run(models_route.list_cached_gguf(current_subject="t"))
         assert len(result["cached"]) == 1
         assert result["cached"][0]["last_modified"] == 9_000.0
 
@@ -2103,34 +2103,34 @@ def test_gguf_variants_mmproj_does_not_mark_quant_downloaded(monkeypatch, tmp_pa
     not make that quant appear downloaded."""
     variants = [
         SimpleNamespace(
-            filename = "model-Q4_K_M.gguf",
-            quant = "Q4_K_M",
-            display_label = None,
-            size_bytes = 10_000,
+            filename="model-Q4_K_M.gguf",
+            quant="Q4_K_M",
+            display_label=None,
+            size_bytes=10_000,
         ),
         SimpleNamespace(
-            filename = "model-F16.gguf",
-            quant = "F16",
-            display_label = None,
-            size_bytes = 20_000,
+            filename="model-F16.gguf",
+            quant="F16",
+            display_label=None,
+            size_bytes=20_000,
         ),
     ]
     monkeypatch.setattr(
         GV,
         "list_gguf_variants",
-        lambda repo_id, hf_token = None: (variants, True, []),
+        lambda repo_id, hf_token=None: (variants, True, []),
     )
     monkeypatch.setattr(
         GV,
         "_local_main_gguf_blobs_by_quant",
-        lambda _repo_id, repo_cache_dir = None: {},
+        lambda _repo_id, repo_cache_dir=None: {},
     )
 
     snap = tmp_path / "models--org--repo" / "snapshots" / "rev"
-    snap.mkdir(parents = True)
+    snap.mkdir(parents=True)
     (snap / "model-Q4_K_M.gguf").write_bytes(b"x" * 10_000)  # real weight, fully present
     (snap / "mmproj-F16.gguf").write_bytes(b"y" * 20_000)  # mmproj adapter, label "F16"
-    monkeypatch.setattr(GV, "iter_hf_cache_snapshots", lambda _repo_id, root = None: [snap])
+    monkeypatch.setattr(GV, "iter_hf_cache_snapshots", lambda _repo_id, root=None: [snap])
 
     result = _variants()
 
@@ -2141,7 +2141,7 @@ def test_gguf_variants_mmproj_does_not_mark_quant_downloaded(monkeypatch, tmp_pa
 
 def test_gguf_variants_route_scopes_local_probe_to_selected_cache(monkeypatch, tmp_path):
     snapshot = tmp_path / "inactive" / "models--org--repo" / "snapshots" / "rev"
-    snapshot.mkdir(parents = True)
+    snapshot.mkdir(parents=True)
     calls = []
 
     async def scoped_variants(repo_id, **kwargs):
@@ -2156,7 +2156,7 @@ def test_gguf_variants_route_scopes_local_probe_to_selected_cache(monkeypatch, t
         lambda model, *, is_local: context_calls.append((model, is_local)) or 8192,
     )
 
-    result = _variants(prefer_local_cache = True, local_path = str(snapshot))
+    result = _variants(prefer_local_cache=True, local_path=str(snapshot))
 
     assert calls == [
         (
@@ -2177,7 +2177,7 @@ def test_gguf_variants_route_reads_context_from_the_pinned_snapshot(monkeypatch,
     """Enumeration may be repo wide, but the native context must come from the pinned snapshot
     or the dialog offers a length the model cannot serve."""
     snapshot = tmp_path / "active" / "models--org--repo" / "snapshots" / "rev"
-    snapshot.mkdir(parents = True)
+    snapshot.mkdir(parents=True)
 
     async def scoped_variants(repo_id, **kwargs):
         return _answer(repo_id)
@@ -2190,7 +2190,7 @@ def test_gguf_variants_route_reads_context_from_the_pinned_snapshot(monkeypatch,
         lambda model, *, is_local: context_calls.append((model, is_local)) or 4096,
     )
 
-    _variants(prefer_local_cache = False, local_path = str(snapshot))
+    _variants(prefer_local_cache=False, local_path=str(snapshot))
 
     assert context_calls == [(str(snapshot.resolve()), True)]
 
@@ -2199,7 +2199,7 @@ def test_gguf_variants_route_ignores_a_pin_naming_another_repo(monkeypatch, tmp_
     """Control: a pin naming another repo falls back to the repo id rather than reporting a
     stranger's metadata."""
     other = tmp_path / "active" / "models--org--other" / "snapshots" / "rev"
-    other.mkdir(parents = True)
+    other.mkdir(parents=True)
 
     async def scoped_variants(repo_id, **kwargs):
         return _answer(repo_id)
@@ -2212,7 +2212,7 @@ def test_gguf_variants_route_ignores_a_pin_naming_another_repo(monkeypatch, tmp_
         lambda model, *, is_local: context_calls.append((model, is_local)) or 4096,
     )
 
-    _variants(prefer_local_cache = False, local_path = str(other))
+    _variants(prefer_local_cache=False, local_path=str(other))
 
     assert context_calls == [("org/repo", False)]
 
@@ -2231,7 +2231,7 @@ def test_gguf_variants_route_forwards_offline(monkeypatch):
         models_route, "_read_native_context_length", lambda model, *, is_local: None
     )
 
-    _variants(offline = True)
+    _variants(offline=True)
 
     assert calls == [
         {"prefer_local_cache": False, "offline": True, "local_path": None, "hf_token": None}
@@ -2243,7 +2243,7 @@ def test_native_context_read_gives_up_when_the_cache_walk_drags(monkeypatch, tmp
     "Loading variants…" with no quant to click. It reports None and stops walking instead."""
     visited = []
 
-    def dragging_walk(root, deadline = None):
+    def dragging_walk(root, deadline=None):
         for index in range(200):
             time.sleep(0.01)
             visited.append(index)
@@ -2253,7 +2253,7 @@ def test_native_context_read_gives_up_when_the_cache_walk_drags(monkeypatch, tmp
     monkeypatch.setattr(models_route, "_NATIVE_CONTEXT_READ_TIMEOUT_SECONDS", 0.1)
 
     started = time.monotonic()
-    result = models_route._read_native_context_length(str(tmp_path), is_local = True)
+    result = models_route._read_native_context_length(str(tmp_path), is_local=True)
     elapsed = time.monotonic() - started
 
     assert result is None
@@ -2269,7 +2269,7 @@ def test_native_context_read_budget_binds_on_a_walk_that_yields_nothing(monkeypa
     yielding nothing. Checking the budget per yield alone would never check it at all."""
     handed = []
 
-    def walk(root, deadline = None):
+    def walk(root, deadline=None):
         handed.append(deadline)
         for _ in range(200):
             time.sleep(0.005)
@@ -2282,7 +2282,7 @@ def test_native_context_read_budget_binds_on_a_walk_that_yields_nothing(monkeypa
     monkeypatch.setattr(models_route, "_NATIVE_CONTEXT_READ_TIMEOUT_SECONDS", 0.05)
 
     started = time.monotonic()
-    assert models_route._read_native_context_length(str(tmp_path), is_local = True) is None
+    assert models_route._read_native_context_length(str(tmp_path), is_local=True) is None
     assert handed and handed[0] is not None, "the walker was given no deadline"
     assert time.monotonic() - started < 1
 
@@ -2291,7 +2291,7 @@ def test_native_context_read_budget_is_checked_between_caches(monkeypatch, tmp_p
     """A repo present in several caches must not restart the budget per cache."""
     walked = []
 
-    def walk(root, deadline = None):
+    def walk(root, deadline=None):
         walked.append(str(root))
         time.sleep(0.2)
         return iter(())
@@ -2304,7 +2304,7 @@ def test_native_context_read_budget_is_checked_between_caches(monkeypatch, tmp_p
         lambda _kind, _repo: [tmp_path / "a", tmp_path / "b", tmp_path / "c"],
     )
 
-    models_route._read_native_context_length("org/repo", is_local = False)
+    models_route._read_native_context_length("org/repo", is_local=False)
     assert len(walked) < 3, f"every cache was walked despite the budget: {walked}"
 
 
@@ -2316,7 +2316,7 @@ def test_native_context_read_budget_covers_cache_discovery(monkeypatch, tmp_path
         time.sleep(0.4)
         return [tmp_path / "a", tmp_path / "b", tmp_path / "c"]
 
-    def slow_walk(root, deadline = None):
+    def slow_walk(root, deadline=None):
         time.sleep(0.3)
         return iter(())
 
@@ -2326,7 +2326,7 @@ def test_native_context_read_budget_covers_cache_discovery(monkeypatch, tmp_path
     monkeypatch.setattr(models_route, "_NATIVE_CONTEXT_READ_TIMEOUT_SECONDS", 0.05)
 
     started = time.monotonic()
-    assert models_route._read_native_context_length("org/repo", is_local = False) is None
+    assert models_route._read_native_context_length("org/repo", is_local=False) is None
     # Discovery itself is not interruptible; a walk on top of it means the budget restarted.
     assert time.monotonic() - started < 0.55
 
@@ -2349,14 +2349,14 @@ def test_gguf_variants_route_answers_when_a_header_read_never_returns(monkeypatc
             repo_id,
             [
                 SimpleNamespace(
-                    filename = "model-Q4_K_M.gguf",
-                    quant = "Q4_K_M",
-                    size_bytes = 10,
-                    download_size_bytes = 10,
-                    downloaded = True,
+                    filename="model-Q4_K_M.gguf",
+                    quant="Q4_K_M",
+                    size_bytes=10,
+                    download_size_bytes=10,
+                    downloaded=True,
                 )
             ],
-            default_variant = "Q4_K_M",
+            default_variant="Q4_K_M",
         )
 
     monkeypatch.setattr(GV, "get_gguf_variants_answer", scoped_variants)
@@ -2364,7 +2364,7 @@ def test_gguf_variants_route_answers_when_a_header_read_never_returns(monkeypatc
     async def drive():
         began = time.monotonic()
         answer = await models_route.get_gguf_variants(
-            repo_id = str(tmp_path), hf_token = None, current_subject = "test-user"
+            repo_id=str(tmp_path), hf_token=None, current_subject="test-user"
         )
         return answer, time.monotonic() - began
 
@@ -2465,7 +2465,7 @@ def test_offline_reads_context_from_the_copy_the_variants_came_from(monkeypatch,
     context_calls = []
 
     async def scoped_variants(repo_id, **kwargs):
-        return _answer(repo_id, source = kwargs["local_path"])
+        return _answer(repo_id, source=kwargs["local_path"])
 
     monkeypatch.setattr(GV, "get_gguf_variants_answer", scoped_variants)
     monkeypatch.setattr(
@@ -2474,7 +2474,7 @@ def test_offline_reads_context_from_the_copy_the_variants_came_from(monkeypatch,
         lambda model, *, is_local: context_calls.append((model, is_local)) or 4096,
     )
 
-    _variants(offline = True, prefer_local_cache = False, local_path = str(tmp_path))
+    _variants(offline=True, prefer_local_cache=False, local_path=str(tmp_path))
     assert context_calls == [(str(tmp_path), True)]
 
 
@@ -2483,20 +2483,20 @@ def test_native_context_read_still_reports_a_length_within_budget(monkeypatch, t
     gguf = tmp_path / "model-Q4_K_M.gguf"
     gguf.write_bytes(b"x")
 
-    monkeypatch.setattr(models_route, "_iter_gguf_paths", lambda root, deadline = None: iter([gguf]))
+    monkeypatch.setattr(models_route, "_iter_gguf_paths", lambda root, deadline=None: iter([gguf]))
     monkeypatch.setattr("utils.models.gguf_metadata.read_gguf_context_length", lambda _path: 8192)
 
-    assert models_route._read_native_context_length(str(tmp_path), is_local = True) == 8192
+    assert models_route._read_native_context_length(str(tmp_path), is_local=True) == 8192
 
 
 def test_native_context_read_skips_online_only_file(monkeypatch, tmp_path):
     """A cloud placeholder keeps its logical filename without being opened for metadata."""
     gguf = tmp_path / "model-Q4_K_M.gguf"
     gguf.write_bytes(b"placeholder")
-    monkeypatch.setattr(models_route, "_iter_gguf_paths", lambda root, deadline = None: iter([gguf]))
+    monkeypatch.setattr(models_route, "_iter_gguf_paths", lambda root, deadline=None: iter([gguf]))
     monkeypatch.setattr(
         "utils.paths.path_utils.file_contents_available_locally",
-        lambda path, stat_result = None: False,
+        lambda path, stat_result=None: False,
     )
 
     def forbidden(_path):
@@ -2504,24 +2504,24 @@ def test_native_context_read_skips_online_only_file(monkeypatch, tmp_path):
 
     monkeypatch.setattr("utils.models.gguf_metadata.read_gguf_context_length", forbidden)
 
-    assert models_route._read_native_context_length(str(tmp_path), is_local = True) is None
+    assert models_route._read_native_context_length(str(tmp_path), is_local=True) is None
 
 
 def test_gguf_variants_ignore_big_endian_siblings(monkeypatch, tmp_path):
     siblings = [
-        SimpleNamespace(rfilename = "model-Q4_K_M-be.gguf", size = 100),
-        SimpleNamespace(rfilename = "model-Q4_K_M.gguf", size = 10),
+        SimpleNamespace(rfilename="model-Q4_K_M-be.gguf", size=100),
+        SimpleNamespace(rfilename="model-Q4_K_M.gguf", size=10),
     ]
     monkeypatch.setattr(
         GV,
         "list_gguf_variants",
-        lambda repo_id, hf_token = None: (
+        lambda repo_id, hf_token=None: (
             [
                 SimpleNamespace(
-                    filename = "model-Q4_K_M.gguf",
-                    quant = "Q4_K_M",
-                    display_label = None,
-                    size_bytes = 10,
+                    filename="model-Q4_K_M.gguf",
+                    quant="Q4_K_M",
+                    display_label=None,
+                    size_bytes=10,
                 )
             ],
             False,
@@ -2531,13 +2531,13 @@ def test_gguf_variants_ignore_big_endian_siblings(monkeypatch, tmp_path):
     monkeypatch.setattr(
         GV,
         "_local_main_gguf_blobs_by_quant",
-        lambda _repo_id, repo_cache_dir = None: {},
+        lambda _repo_id, repo_cache_dir=None: {},
     )
 
     snap = tmp_path / "models--org--repo" / "snapshots" / "rev"
-    snap.mkdir(parents = True)
+    snap.mkdir(parents=True)
     (snap / "model-Q4_K_M.gguf").write_bytes(b"x" * 10)
-    monkeypatch.setattr(GV, "iter_hf_cache_snapshots", lambda _repo_id, root = None: [snap])
+    monkeypatch.setattr(GV, "iter_hf_cache_snapshots", lambda _repo_id, root=None: [snap])
 
     result = _variants()
 
@@ -2549,27 +2549,27 @@ def test_gguf_variants_ignore_big_endian_siblings(monkeypatch, tmp_path):
 def test_gguf_variants_cached_big_endian_does_not_satisfy_variant(monkeypatch, tmp_path):
     variants = [
         SimpleNamespace(
-            filename = "model-Q4_K_M.gguf",
-            quant = "Q4_K_M",
-            display_label = None,
-            size_bytes = 10,
+            filename="model-Q4_K_M.gguf",
+            quant="Q4_K_M",
+            display_label=None,
+            size_bytes=10,
         ),
     ]
     monkeypatch.setattr(
         GV,
         "list_gguf_variants",
-        lambda repo_id, hf_token = None: (variants, False, []),
+        lambda repo_id, hf_token=None: (variants, False, []),
     )
     monkeypatch.setattr(
         GV,
         "_local_main_gguf_blobs_by_quant",
-        lambda _repo_id, repo_cache_dir = None: {},
+        lambda _repo_id, repo_cache_dir=None: {},
     )
 
     snap = tmp_path / "models--org--repo" / "snapshots" / "rev"
-    snap.mkdir(parents = True)
+    snap.mkdir(parents=True)
     (snap / "model-Q4_K_M-be.gguf").write_bytes(b"x" * 10)
-    monkeypatch.setattr(GV, "iter_hf_cache_snapshots", lambda _repo_id, root = None: [snap])
+    monkeypatch.setattr(GV, "iter_hf_cache_snapshots", lambda _repo_id, root=None: [snap])
 
     result = _variants()
 
@@ -2590,11 +2590,11 @@ def test_legacy_gguf_progress_delegates_to_shared_service(monkeypatch):
 
     result = asyncio.run(
         models_route.get_gguf_download_progress(
-            repo_id = "org/repo",
-            variant = "Q4_K_M",
-            expected_bytes = 20,
-            hf_token = "token",
-            current_subject = "test-user",
+            repo_id="org/repo",
+            variant="Q4_K_M",
+            expected_bytes=20,
+            hf_token="token",
+            current_subject="test-user",
         )
     )
 
@@ -2617,10 +2617,10 @@ def test_legacy_model_progress_delegates_to_shared_service(monkeypatch, mlx_load
 
     result = asyncio.run(
         models_route.get_download_progress(
-            repo_id = "org/repo",
-            hf_token = "token",
-            current_subject = "test-user",
-            mlx_load = mlx_load,
+            repo_id="org/repo",
+            hf_token="token",
+            current_subject="test-user",
+            mlx_load=mlx_load,
         )
     )
 
@@ -2635,7 +2635,7 @@ def test_legacy_delete_delegates_to_shared_service(monkeypatch):
         repo_id,
         variant,
         hf_token,
-        cache_path = None,
+        cache_path=None,
     ):
         calls.append((repo_id, variant, hf_token, cache_path))
         return {"status": "deleted", "repo_id": repo_id}
@@ -2647,11 +2647,11 @@ def test_legacy_delete_delegates_to_shared_service(monkeypatch):
 
     result = asyncio.run(
         models_route.delete_cached_model(
-            repo_id = "org/repo",
-            variant = None,
-            cache_path = "/data/hf/hub",
-            hf_token = "token",
-            current_subject = "test-user",
+            repo_id="org/repo",
+            variant=None,
+            cache_path="/data/hf/hub",
+            hf_token="token",
+            current_subject="test-user",
         )
     )
 
@@ -2711,11 +2711,11 @@ def test_local_model_task_classifies_suffix_only_gguf_from_architecture(tmp_path
     metadata = gguf_string("general.architecture") + struct.pack("<I", 8) + gguf_string("flux")
     model_path.write_bytes(struct.pack("<IIQQ", 0x46554747, 3, 0, 1) + metadata)
     model = SimpleNamespace(
-        model_format = None,
-        path = str(model_path),
-        model_id = None,
-        display_name = "Opaque",
-        id = str(model_path),
+        model_format=None,
+        path=str(model_path),
+        model_id=None,
+        display_name="Opaque",
+        id=str(model_path),
     )
 
     assert models_route._local_model_task(model) == "text-to-image"
@@ -2726,6 +2726,7 @@ def test_arch_to_task_tags_speech_archs_as_speech():
     for arch in models_route._SPEECH_GGUF_ARCHS:
         assert models_route._arch_to_task(arch) == models_route._SPEECH_TASK
     from core.inference.llama_cpp import LlamaCppBackend
+
     assert models_route._SPEECH_GGUF_ARCHS == set(LlamaCppBackend._SPEECH_ARCHES)
 
 
@@ -2774,7 +2775,7 @@ def test_arch_to_task_agrees_with_the_loader_on_ambiguous_archs():
         fname = f"{fam.name}-Q4_K_M.gguf"
         task = models_route._arch_to_task("lumina2", (repo, fname))
         try:
-            backend.validate_load_request(repo, gguf_filename = fname, model_kind = "gguf")
+            backend.validate_load_request(repo, gguf_filename=fname, model_kind="gguf")
             loader_accepts = True
         except (ValueError, FileNotFoundError):
             loader_accepts = False
@@ -2792,31 +2793,31 @@ def _clear_chat_delete_guards(monkeypatch):
         routes_inference,
         "get_llama_cpp_backend",
         lambda: SimpleNamespace(
-            is_active = False,
-            is_loaded = False,
-            model_identifier = None,
-            hf_variant = None,
+            is_active=False,
+            is_loaded=False,
+            model_identifier=None,
+            hf_variant=None,
         ),
     )
     monkeypatch.setattr(
         core_inference,
         "get_inference_backend",
-        lambda: SimpleNamespace(active_model_name = None),
+        lambda: SimpleNamespace(active_model_name=None),
     )
 
 
 def _idle_video_backend():
     return SimpleNamespace(
-        status = lambda: {"loaded": False, "repo_id": None},
-        loading_repo_ids = lambda: (),
+        status=lambda: {"loaded": False, "repo_id": None},
+        loading_repo_ids=lambda: (),
     )
 
 
 def _idle_diffusion_engine():
     return SimpleNamespace(
-        status = lambda: {"loaded": False, "repo_id": None},
-        loaded_repo_ids = lambda: (),
-        loading_repo_ids = lambda: (),
+        status=lambda: {"loaded": False, "repo_id": None},
+        loaded_repo_ids=lambda: (),
+        loading_repo_ids=lambda: (),
     )
 
 
@@ -2832,9 +2833,9 @@ def test_delete_cached_refuses_diffusion_loaded_repo(monkeypatch):
         der,
         "get_active_diffusion_engine",
         lambda: SimpleNamespace(
-            status = lambda: {"loaded": True, "repo_id": "org/Z-Image-GGUF"},
-            loaded_repo_ids = lambda: (),
-            loading_repo_ids = lambda: (),
+            status=lambda: {"loaded": True, "repo_id": "org/Z-Image-GGUF"},
+            loaded_repo_ids=lambda: (),
+            loading_repo_ids=lambda: (),
         ),
     )
     monkeypatch.setattr(video_mod, "get_video_backend", _idle_video_backend)
@@ -2860,8 +2861,8 @@ def test_delete_cached_refuses_video_loaded_repo(monkeypatch):
         video_mod,
         "get_video_backend",
         lambda: SimpleNamespace(
-            status = lambda: {"loaded": True, "repo_id": "unsloth/LTX-2.3-GGUF"},
-            loading_repo_ids = lambda: (),
+            status=lambda: {"loaded": True, "repo_id": "unsloth/LTX-2.3-GGUF"},
+            loading_repo_ids=lambda: (),
         ),
     )
 
@@ -2886,13 +2887,13 @@ def test_delete_cached_refuses_loaded_native_companion_repo(monkeypatch):
         der,
         "get_active_diffusion_engine",
         lambda: SimpleNamespace(
-            status = lambda: {"loaded": True, "repo_id": "unsloth/FLUX.1-dev-GGUF"},
-            loaded_repo_ids = lambda: (
+            status=lambda: {"loaded": True, "repo_id": "unsloth/FLUX.1-dev-GGUF"},
+            loaded_repo_ids=lambda: (
                 "unsloth/FLUX.1-dev-GGUF",
                 "black-forest-labs/FLUX.1-dev",
                 "unsloth/flux-text-encoders",
             ),
-            loading_repo_ids = lambda: (),
+            loading_repo_ids=lambda: (),
         ),
     )
     monkeypatch.setattr(video_mod, "get_video_backend", _idle_video_backend)
@@ -2927,9 +2928,9 @@ def test_delete_cached_rechecks_the_load_guard_after_reserving_the_scope(monkeyp
             return () if reads["n"] == 1 else ("unsloth/MiniMax-H3-GGUF",)
 
         return SimpleNamespace(
-            status = lambda: {"loaded": False, "repo_id": None},
-            loaded_repo_ids = lambda: (),
-            loading_repo_ids = _loading_repo_ids,
+            status=lambda: {"loaded": False, "repo_id": None},
+            loaded_repo_ids=lambda: (),
+            loading_repo_ids=_loading_repo_ids,
         )
 
     monkeypatch.setattr(video_mod, "get_video_backend", _backend)
@@ -2955,9 +2956,9 @@ def test_delete_cached_refuses_repo_a_diffusion_load_is_downloading(monkeypatch)
         der,
         "get_active_diffusion_engine",
         lambda: SimpleNamespace(
-            status = lambda: {"loaded": False, "repo_id": None},
-            loaded_repo_ids = lambda: (),
-            loading_repo_ids = lambda: ("unsloth/Qwen-Image-2512-GGUF",),
+            status=lambda: {"loaded": False, "repo_id": None},
+            loaded_repo_ids=lambda: (),
+            loading_repo_ids=lambda: ("unsloth/Qwen-Image-2512-GGUF",),
         ),
     )
     monkeypatch.setattr(video_mod, "get_video_backend", _idle_video_backend)
@@ -2984,10 +2985,10 @@ def test_delete_cached_refuses_repo_a_cancelled_diffusion_load_is_releasing(monk
         der,
         "get_active_diffusion_engine",
         lambda: SimpleNamespace(
-            status = lambda: {"loaded": False, "repo_id": None},
-            loaded_repo_ids = lambda: (),
-            loading_repo_ids = lambda: (),
-            draining_repo_ids = lambda: ("unsloth/Qwen-Image-2512-GGUF",),
+            status=lambda: {"loaded": False, "repo_id": None},
+            loaded_repo_ids=lambda: (),
+            loading_repo_ids=lambda: (),
+            draining_repo_ids=lambda: ("unsloth/Qwen-Image-2512-GGUF",),
         ),
     )
     monkeypatch.setattr(video_mod, "get_video_backend", _idle_video_backend)
@@ -3011,9 +3012,9 @@ def test_delete_cached_is_unaffected_by_a_backend_without_a_drain(monkeypatch):
         der,
         "get_active_diffusion_engine",
         lambda: SimpleNamespace(
-            status = lambda: {"loaded": False, "repo_id": None},
-            loaded_repo_ids = lambda: (),
-            loading_repo_ids = lambda: (),
+            status=lambda: {"loaded": False, "repo_id": None},
+            loaded_repo_ids=lambda: (),
+            loading_repo_ids=lambda: (),
         ),
     )
     monkeypatch.setattr(video_mod, "get_video_backend", _idle_video_backend)
@@ -3033,9 +3034,9 @@ def test_delete_cached_allows_sibling_of_loaded_diffusion_repo(monkeypatch):
         der,
         "get_active_diffusion_engine",
         lambda: SimpleNamespace(
-            status = lambda: {"loaded": True, "repo_id": "Qwen/Qwen-Image-2512"},
-            loaded_repo_ids = lambda: (),
-            loading_repo_ids = lambda: (),
+            status=lambda: {"loaded": True, "repo_id": "Qwen/Qwen-Image-2512"},
+            loaded_repo_ids=lambda: (),
+            loading_repo_ids=lambda: (),
         ),
     )
     monkeypatch.setattr(video_mod, "get_video_backend", _idle_video_backend)
@@ -3043,7 +3044,7 @@ def test_delete_cached_allows_sibling_of_loaded_diffusion_repo(monkeypatch):
     monkeypatch.setattr(
         deletion,
         "_delete_cached_model_blocking",
-        lambda repo_id, variant, hf_token, cache_path = None, **_kw: {
+        lambda repo_id, variant, hf_token, cache_path=None, **_kw: {
             "status": "deleted",
             "repo_id": repo_id,
         },
@@ -3071,8 +3072,8 @@ def test_cached_repo_partial_scopes_probe_to_snapshot_dir(monkeypatch):
     def _fake(
         repo_type,
         repo_id,
-        repo_cache_dir = None,
-        snapshot_dir = None,
+        repo_cache_dir=None,
+        snapshot_dir=None,
     ):
         calls.append((repo_type, repo_id, repo_cache_dir, snapshot_dir))
         return False
@@ -3098,22 +3099,22 @@ def test_repo_has_pipeline_index_requires_root_model_index(tmp_path):
     # Only a ROOT model_index.json makes a repo pipeline-loadable, so a nested subdir one must NOT clear the single_file flag; the helper scopes by snapshot path.
     snap = tmp_path / "snapshots" / "abc"
     nested = SimpleNamespace(
-        file_name = "model_index.json",
-        file_path = snap / "prior" / "model_index.json",
+        file_name="model_index.json",
+        file_path=snap / "prior" / "model_index.json",
     )
     repo_nested = SimpleNamespace(
-        repo_id = "unsloth/nested-index",
-        revisions = [SimpleNamespace(files = [nested], snapshot_path = snap)],
+        repo_id="unsloth/nested-index",
+        revisions=[SimpleNamespace(files=[nested], snapshot_path=snap)],
     )
     assert models_route._repo_has_pipeline_index(repo_nested) is False
 
     root = SimpleNamespace(
-        file_name = "model_index.json",
-        file_path = snap / "model_index.json",
+        file_name="model_index.json",
+        file_path=snap / "model_index.json",
     )
     repo_root = SimpleNamespace(
-        repo_id = "unsloth/root-index",
-        revisions = [SimpleNamespace(files = [root], snapshot_path = snap)],
+        repo_id="unsloth/root-index",
+        revisions=[SimpleNamespace(files=[root], snapshot_path=snap)],
     )
     assert models_route._repo_has_pipeline_index(repo_root) is True
 
@@ -3129,7 +3130,7 @@ def test_pipeline_scans_read_the_snapshot_the_loader_will_open(tmp_path):
     old_snap = repo_dir / "snapshots" / "old"
     new_snap = repo_dir / "snapshots" / "new"
     for d in (old_snap / "transformer", new_snap / "vae"):
-        d.mkdir(parents = True)
+        d.mkdir(parents=True)
     # A real manifest, not "{}": the scan reads the denoiser names off it, and one declaring none
     # has nothing it can prove absent.
     manifest = json.dumps(
@@ -3139,8 +3140,8 @@ def test_pipeline_scans_read_the_snapshot_the_loader_will_open(tmp_path):
             "vae": ["diffusers", "AutoencoderKL"],
         }
     )
-    (old_snap / "model_index.json").write_text(manifest, encoding = "utf-8")
-    (new_snap / "model_index.json").write_text(manifest, encoding = "utf-8")
+    (old_snap / "model_index.json").write_text(manifest, encoding="utf-8")
+    (new_snap / "model_index.json").write_text(manifest, encoding="utf-8")
     # Real weights, not just the dirs: an empty transformer/ is a torn denoiser, not a present one.
     (old_snap / "transformer" / "diffusion_pytorch_model.safetensors").write_bytes(b"\0" * 256)
     (new_snap / "vae" / "diffusion_pytorch_model.safetensors").write_bytes(b"\0" * 256)
@@ -3150,15 +3151,15 @@ def test_pipeline_scans_read_the_snapshot_the_loader_will_open(tmp_path):
 
     def _rev(snap, files):
         return SimpleNamespace(
-            snapshot_path = snap,
-            last_modified = float(snap.stat().st_mtime),
-            files = [SimpleNamespace(file_name = Path(f).name, file_path = snap / f) for f in files],
+            snapshot_path=snap,
+            last_modified=float(snap.stat().st_mtime),
+            files=[SimpleNamespace(file_name=Path(f).name, file_path=snap / f) for f in files],
         )
 
     info = SimpleNamespace(
-        repo_id = "Org/Repo",
-        repo_path = repo_dir,
-        revisions = [
+        repo_id="Org/Repo",
+        repo_path=repo_dir,
+        revisions=[
             _rev(old_snap, ["model_index.json", "transformer/diffusion_pytorch_model.safetensors"]),
             _rev(new_snap, ["model_index.json", "vae/diffusion_pytorch_model.safetensors"]),
         ],
@@ -3196,7 +3197,7 @@ def test_pipeline_scans_read_the_snapshot_the_loader_will_open(tmp_path):
             {},
         ),
     ],
-    ids = ["dual-denoiser", "half-sharded"],
+    ids=["dual-denoiser", "half-sharded"],
 )
 def test_both_cached_listings_agree_on_a_torn_pipeline(extra_files, manifest_extra, tmp_path):
     # /api/models/cached-models ORs the repo-wide helper while the hub inventory calls the snapshot
@@ -3211,7 +3212,7 @@ def test_both_cached_listings_agree_on_a_torn_pipeline(extra_files, manifest_ext
     manifest.update(manifest_extra)
     repo_dir = tmp_path / "models--Org--Repo"
     snapshot = repo_dir / "snapshots" / "abc"
-    snapshot.mkdir(parents = True)
+    snapshot.mkdir(parents=True)
     files = {
         "model_index.json": json.dumps(manifest).encode(),
         "vae/diffusion_pytorch_model.safetensors": b"\0" * 256,
@@ -3221,17 +3222,17 @@ def test_both_cached_listings_agree_on_a_torn_pipeline(extra_files, manifest_ext
     files.update(extra_files)
     for name, blob in files.items():
         target = snapshot / name
-        target.parent.mkdir(parents = True, exist_ok = True)
+        target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(blob)
     info = SimpleNamespace(
-        repo_id = "Org/Repo",
-        repo_path = repo_dir,
-        revisions = [
+        repo_id="Org/Repo",
+        repo_path=repo_dir,
+        revisions=[
             SimpleNamespace(
-                snapshot_path = snapshot,
-                last_modified = float(snapshot.stat().st_mtime),
-                files = [
-                    SimpleNamespace(file_name = Path(n).name, file_path = snapshot / n) for n in files
+                snapshot_path=snapshot,
+                last_modified=float(snapshot.stat().st_mtime),
+                files=[
+                    SimpleNamespace(file_name=Path(n).name, file_path=snapshot / n) for n in files
                 ],
             )
         ],
@@ -3261,13 +3262,13 @@ def test_list_cached_models_flags_single_file_diffusion_repos(monkeypatch, tmp_p
     monkeypatch.setattr(
         models_route,
         "_cached_repo_task",
-        lambda repo_info, selected = None: (
+        lambda repo_info, selected=None: (
             "text-to-image" if "Qwen-Image" in repo_info.repo_id else None
         ),
     )
     _scanned_repos(monkeypatch, single, pipeline, chat)
 
-    result = asyncio.run(models_route.list_cached_models(current_subject = "test-user"))
+    result = asyncio.run(models_route.list_cached_models(current_subject="test-user"))
 
     rows = {r["repo_id"]: r for r in result["cached"]}
     assert rows["unsloth/Qwen-Image-fp8-single"].get("single_file") is True
@@ -3344,7 +3345,7 @@ def test_a_companion_mirror_is_listed_but_flagged_so_no_picker_offers_it(monkeyp
 
     rows = {
         r["repo_id"]: r
-        for r in asyncio.run(models_route.list_cached_models(current_subject = "test-user"))["cached"]
+        for r in asyncio.run(models_route.list_cached_models(current_subject="test-user"))["cached"]
     }
 
     # Listed, so it stays visible and deletable...
@@ -3412,15 +3413,15 @@ def test_hub_cached_rows_carry_the_task_the_pickers_filter_on(monkeypatch, tmp_p
     monkeypatch.setattr(
         catalog_classification,
         "_cached_repo_task",
-        lambda repo_info, selected = None: "text-to-image",
+        lambda repo_info, selected=None: "text-to-image",
     )
-    assert cache_inventory._cached_row_task(repo, gguf = False) == "text-to-image"
+    assert cache_inventory._cached_row_task(repo, gguf=False) == "text-to-image"
     monkeypatch.setattr(
         catalog_classification,
         "_repo_gguf_task",
-        lambda repo_info, selected = None: "text-generation",
+        lambda repo_info, selected=None: "text-generation",
     )
-    assert cache_inventory._cached_row_task(repo, gguf = True) == "text-generation"
+    assert cache_inventory._cached_row_task(repo, gguf=True) == "text-generation"
 
 
 def test_hub_cached_gguf_task_uses_the_selected_snapshot(monkeypatch, tmp_path):
@@ -3428,10 +3429,10 @@ def test_hub_cached_gguf_task_uses_the_selected_snapshot(monkeypatch, tmp_path):
 
     selected = tmp_path / "models--org--model" / "snapshots" / "selected"
     repo = SimpleNamespace(
-        repo_id = "org/model",
-        repo_type = "model",
-        repo_path = selected.parents[1],
-        revisions = [],
+        repo_id="org/model",
+        repo_type="model",
+        repo_path=selected.parents[1],
+        revisions=[],
     )
     observed = []
 
@@ -3453,15 +3454,15 @@ def test_hub_cached_gguf_task_uses_the_selected_snapshot(monkeypatch, tmp_path):
     )
     monkeypatch.setattr(cache_inventory, "_cache_inventory_fields", lambda *a, **k: {})
 
-    def classify(repo_info, snapshot = None):
+    def classify(repo_info, snapshot=None):
         observed.append((repo_info, snapshot))
         return "text-generation"
 
     monkeypatch.setattr(catalog_classification, "_repo_gguf_task", classify)
 
     rows = cache_inventory._scan_cached_gguf(
-        cache_scans = [SimpleNamespace(repos = [repo])],
-        active_hub_cache = tmp_path,
+        cache_scans=[SimpleNamespace(repos=[repo])],
+        active_hub_cache=tmp_path,
     )
 
     assert rows[0]["task"] == "text-generation"
@@ -3472,11 +3473,11 @@ def test_hub_cached_row_task_never_hides_a_row_when_classification_fails(monkeyp
     # Best-effort, like the models API: a classifier that raises leaves the row untagged rather than dropping it.
     from hub.services.models import cache_inventory
 
-    def _boom(repo_info, selected = None):
+    def _boom(repo_info, selected=None):
         raise RuntimeError("unreadable")
 
-    monkeypatch.setattr("routes.models._cached_repo_task", _boom, raising = True)
-    assert cache_inventory._cached_row_task(_pipeline_repo("a/b", tmp_path), gguf = False) is None
+    monkeypatch.setattr("routes.models._cached_repo_task", _boom, raising=True)
+    assert cache_inventory._cached_row_task(_pipeline_repo("a/b", tmp_path), gguf=False) is None
 
 
 def test_hub_local_rows_are_tagged_with_their_task():
@@ -3507,7 +3508,7 @@ def test_pipeline_class_guard_fires_before_any_download():
 
     from core.inference.diffusion_families import assert_pipeline_class_available
 
-    stub = types.SimpleNamespace(__version__ = "0.35.2")
+    stub = types.SimpleNamespace(__version__="0.35.2")
     real = sys.modules.get("diffusers")
     sys.modules["diffusers"] = stub
     try:
@@ -3565,7 +3566,7 @@ def test_pipeline_class_guard_is_silent_when_diffusers_is_absent(monkeypatch):
 
     from core.inference.diffusion_families import assert_pipeline_class_available
 
-    monkeypatch.delitem(sys.modules, "diffusers", raising = False)
+    monkeypatch.delitem(sys.modules, "diffusers", raising=False)
     real_import = builtins.__import__
 
     def _blocked(name, *args, **kwargs):
@@ -3604,11 +3605,11 @@ def test_cached_pipeline_needs_a_detectable_image_family(monkeypatch):
     # A top-level model_index.json only proves the repo is a diffusers pipeline: an unsloth-hosted pipeline of a class this backend
     # cannot assemble cleared the trust gate, was advertised, then failed validate_load_request. Both gates now, like the video branch.
     monkeypatch.setattr(
-        _classification, "_repo_has_pipeline_index", lambda info, selected = None: True
+        _classification, "_repo_has_pipeline_index", lambda info, selected=None: True
     )
 
     def _task(repo_id):
-        return models_route._cached_repo_task(SimpleNamespace(repo_id = repo_id, repo_path = "/x"))
+        return models_route._cached_repo_task(SimpleNamespace(repo_id=repo_id, repo_path="/x"))
 
     # Trusted AND a detected family -> claimed by Images.
     assert _task("unsloth/Z-Image-Turbo") == "text-to-image"
@@ -3624,7 +3625,7 @@ def test_cached_repo_task_agrees_with_the_image_loader(monkeypatch):
     from core.inference.diffusion import DiffusionBackend
 
     monkeypatch.setattr(
-        _classification, "_repo_has_pipeline_index", lambda info, selected = None: True
+        _classification, "_repo_has_pipeline_index", lambda info, selected=None: True
     )
     backend = DiffusionBackend.__new__(DiffusionBackend)
     for repo_id in (
@@ -3633,7 +3634,7 @@ def test_cached_repo_task_agrees_with_the_image_loader(monkeypatch):
         "unsloth/some-unsupported-pipeline",
         "unsloth/stable-audio-open-1.0",
     ):
-        task = models_route._cached_repo_task(SimpleNamespace(repo_id = repo_id, repo_path = "/x"))
+        task = models_route._cached_repo_task(SimpleNamespace(repo_id=repo_id, repo_path="/x"))
         try:
             backend.validate_load_request(repo_id)
             loader_accepts = True
@@ -3657,9 +3658,9 @@ def test_cached_picker_hides_a_family_this_diffusers_cannot_build(monkeypatch):
     # Present in this environment's diffusers, so the row is offered.
     assert family_pipeline_available(fam) is True
 
-    monkeypatch.setattr(models_module, "_repo_is_diffusers", lambda info, selected = None: True)
+    monkeypatch.setattr(models_module, "_repo_is_diffusers", lambda info, selected=None: True)
     monkeypatch.setattr("core.inference.diffusion._is_trusted_diffusion_repo", lambda repo_id: True)
-    info = types.SimpleNamespace(repo_id = "unsloth/Z-Image-Turbo")
+    info = types.SimpleNamespace(repo_id="unsloth/Z-Image-Turbo")
     assert models_module._cached_repo_task(info) == "text-to-image"
 
     # An older diffusers without the pipeline class hides the row instead.
@@ -3693,7 +3694,7 @@ def _pretend_old_diffusers(monkeypatch, *, engine):
     """
     import core.inference.diffusion_engine_router as router
 
-    monkeypatch.setitem(sys.modules, "diffusers", types.SimpleNamespace(__version__ = "0.36.0"))
+    monkeypatch.setitem(sys.modules, "diffusers", types.SimpleNamespace(__version__="0.36.0"))
     monkeypatch.setattr(router, "predict_engine", lambda fam, **kwargs: engine)
 
 
@@ -3702,7 +3703,7 @@ def test_gguf_picker_hides_a_family_no_engine_here_can_build(monkeypatch):
     # these families -- still showed as text-to-image on a diffusers too old to build them, and every pick died.
     from core.inference.sd_cpp_engine import ENGINE_DIFFUSERS
 
-    _pretend_old_diffusers(monkeypatch, engine = ENGINE_DIFFUSERS)
+    _pretend_old_diffusers(monkeypatch, engine=ENGINE_DIFFUSERS)
 
     # The flat diffusion-arch branch (FLUX.2) and the ambiguous one (Z-Image ships as "lumina2").
     assert (
@@ -3724,7 +3725,7 @@ def test_gguf_picker_keeps_a_family_the_native_engine_serves(monkeypatch):
     # The opposite mistake: on a CPU/MPS or force-native host sd.cpp loads the GGUF and never instantiates a diffusers class, so hiding the row would withhold a working model.
     from core.inference.sd_cpp_engine import ENGINE_SD_CPP
 
-    _pretend_old_diffusers(monkeypatch, engine = ENGINE_SD_CPP)
+    _pretend_old_diffusers(monkeypatch, engine=ENGINE_SD_CPP)
 
     assert models_route._arch_to_task("flux2", ("unsloth/FLUX.2-klein-4B-GGUF",)) == "text-to-image"
     assert models_route._arch_to_task("lumina2", ("unsloth/Z-Image-Turbo-GGUF",)) == "text-to-image"
@@ -3739,20 +3740,20 @@ def test_the_loader_demands_the_diffusers_class_only_when_diffusers_loads_it(mon
 
     backend = DiffusionBackend.__new__(DiffusionBackend)
 
-    _pretend_old_diffusers(monkeypatch, engine = ENGINE_SD_CPP)
+    _pretend_old_diffusers(monkeypatch, engine=ENGINE_SD_CPP)
     fam = backend.validate_load_request(
         "unsloth/FLUX.2-klein-4B-GGUF",
-        gguf_filename = "flux2-klein-4b-Q4_0.gguf",
-        model_kind = "gguf",
+        gguf_filename="flux2-klein-4b-Q4_0.gguf",
+        model_kind="gguf",
     )
     assert fam.name == "flux.2-klein"
 
-    _pretend_old_diffusers(monkeypatch, engine = ENGINE_DIFFUSERS)
+    _pretend_old_diffusers(monkeypatch, engine=ENGINE_DIFFUSERS)
     with pytest.raises(ValueError) as excinfo:
         backend.validate_load_request(
             "unsloth/FLUX.2-klein-4B-GGUF",
-            gguf_filename = "flux2-klein-4b-Q4_0.gguf",
-            model_kind = "gguf",
+            gguf_filename="flux2-klein-4b-Q4_0.gguf",
+            model_kind="gguf",
         )
     # ValueError, not RuntimeError: /images/load maps RuntimeError to 409 and /images/download-plan catches only (ValueError, FileNotFoundError), so the message escaped as a 500.
     assert "Flux2KleinPipeline" in str(excinfo.value)
@@ -3761,14 +3762,14 @@ def test_the_loader_demands_the_diffusers_class_only_when_diffusers_loads_it(mon
 def test_the_video_picker_hides_a_family_this_diffusers_cannot_build(monkeypatch):
     # Same gap on the video branches: LTX-2's pipeline class is 0.39-only too, and video has no native engine to fall back
     # to, so the load asserts it unconditionally (video.py -> assert_pipeline_class_available).
-    monkeypatch.setattr(_classification, "_repo_is_diffusers", lambda info, selected = None: True)
-    info = SimpleNamespace(repo_id = "Lightricks/LTX-2", repo_path = "/x")
+    monkeypatch.setattr(_classification, "_repo_is_diffusers", lambda info, selected=None: True)
+    info = SimpleNamespace(repo_id="Lightricks/LTX-2", repo_path="/x")
     # Offered on this environment's diffusers ...
     assert models_route._arch_to_task("ltxv") == models_route._VIDEO_GEN_TASK
     assert models_route._cached_repo_task(info) == models_route._VIDEO_GEN_TASK
 
     # ... and hidden on one that has no LTX2Pipeline.
-    monkeypatch.setitem(sys.modules, "diffusers", types.SimpleNamespace(__version__ = "0.36.0"))
+    monkeypatch.setitem(sys.modules, "diffusers", types.SimpleNamespace(__version__="0.36.0"))
     assert models_route._arch_to_task("ltxv") == models_route._UNSUPPORTED_DIFFUSION_TASK
     assert models_route._cached_repo_task(info) is None
 
@@ -3777,6 +3778,7 @@ def test_every_shipped_video_family_resolves_on_this_diffusers():
     # Drift guard: the video picker hides a family whose pipeline class the installed diffusers lacks, so a stale class name here would hide a working model.
     from core.inference.diffusion_families import family_pipeline_available
     from core.inference.video_families import _FAMILIES as _VIDEO_FAMILIES
+
     for fam in _VIDEO_FAMILIES:
         assert family_pipeline_available(
             fam
@@ -3795,11 +3797,11 @@ def test_the_gguf_picker_and_the_image_loader_agree_on_an_old_diffusers(monkeypa
         ("lumina2", "unsloth/Z-Image-Turbo-GGUF", "z-image-turbo-Q8_0.gguf"),
     )
     for engine in (ENGINE_DIFFUSERS, ENGINE_SD_CPP):
-        _pretend_old_diffusers(monkeypatch, engine = engine)
+        _pretend_old_diffusers(monkeypatch, engine=engine)
         for arch, repo_id, filename in picks:
             task = models_route._arch_to_task(arch, (repo_id, filename))
             try:
-                backend.validate_load_request(repo_id, gguf_filename = filename, model_kind = "gguf")
+                backend.validate_load_request(repo_id, gguf_filename=filename, model_kind="gguf")
                 loader_accepts = True
             except (ValueError, FileNotFoundError, RuntimeError):
                 loader_accepts = False
@@ -3815,10 +3817,10 @@ def test_a_cancelled_siblings_resume_survives_the_local_listing(monkeypatch, tmp
     active = tmp_path / "active"
     repo_dir = active / "models--Org--Quant"
     snapshot = repo_dir / "snapshots" / ("d" * 40)
-    snapshot.mkdir(parents = True)
+    snapshot.mkdir(parents=True)
     (snapshot / "Model-Q4_K_M.gguf").write_bytes(b"\0" * 256)
-    (repo_dir / "refs").mkdir(parents = True)
-    (repo_dir / "refs" / "main").write_text("d" * 40, encoding = "utf-8")
+    (repo_dir / "refs").mkdir(parents=True)
+    (repo_dir / "refs" / "main").write_text("d" * 40, encoding="utf-8")
 
     _pin_cache_roots(monkeypatch, active, tmp_path)
 
@@ -3829,14 +3831,14 @@ def test_a_cancelled_siblings_resume_survives_the_local_listing(monkeypatch, tmp
     monkeypatch.setattr(GV, "list_gguf_variants", _no_remote)
 
     # Control: nothing cancelled, so the repo holds one quant and nothing else.
-    only_complete = asyncio.run(GV.get_gguf_variants_response("Org/Quant", prefer_local_cache = True))
+    only_complete = asyncio.run(GV.get_gguf_variants_response("Org/Quant", prefer_local_cache=True))
     assert [(v.quant, v.downloaded) for v in only_complete.variants] == [("Q4_K_M", True)]
 
     from hub.utils import download_manifest
 
-    assert download_manifest.write_cancel_marker("model", "Org/Quant", "Q8_0", hub_cache = active)
+    assert download_manifest.write_cancel_marker("model", "Org/Quant", "Q8_0", hub_cache=active)
 
-    response = asyncio.run(GV.get_gguf_variants_response("Org/Quant", prefer_local_cache = True))
+    response = asyncio.run(GV.get_gguf_variants_response("Org/Quant", prefer_local_cache=True))
     assert {v.quant for v in response.variants if v.downloaded} == {"Q4_K_M"}
     assert {v.quant for v in response.variants if v.partial} == {"Q8_0"}
 
@@ -3848,10 +3850,10 @@ def test_a_cancelled_sibling_survives_a_failed_remote_listing(monkeypatch, tmp_p
     active = tmp_path / "active"
     repo_dir = active / "models--Org--Quant"
     snapshot = repo_dir / "snapshots" / ("d" * 40)
-    snapshot.mkdir(parents = True)
+    snapshot.mkdir(parents=True)
     (snapshot / "Model-Q4_K_M.gguf").write_bytes(b"\0" * 256)
-    (repo_dir / "refs").mkdir(parents = True)
-    (repo_dir / "refs" / "main").write_text("d" * 40, encoding = "utf-8")
+    (repo_dir / "refs").mkdir(parents=True)
+    (repo_dir / "refs" / "main").write_text("d" * 40, encoding="utf-8")
 
     _pin_cache_roots(monkeypatch, active, tmp_path)
 
@@ -3862,7 +3864,7 @@ def test_a_cancelled_sibling_survives_a_failed_remote_listing(monkeypatch, tmp_p
 
     from hub.utils import download_manifest
 
-    assert download_manifest.write_cancel_marker("model", "Org/Quant", "Q8_0", hub_cache = active)
+    assert download_manifest.write_cancel_marker("model", "Org/Quant", "Q8_0", hub_cache=active)
 
     # No prefer_local_cache: this is the route the expander uses.
     response = asyncio.run(GV.get_gguf_variants_response("Org/Quant"))
@@ -3877,10 +3879,10 @@ def test_a_cancelled_siblings_marker_shows_on_the_repo_row(monkeypatch, tmp_path
     active = tmp_path / "active"
     repo_dir = active / "models--Org--Quant"
     snapshot = repo_dir / "snapshots" / ("d" * 40)
-    snapshot.mkdir(parents = True)
+    snapshot.mkdir(parents=True)
     (snapshot / "Model-Q4_K_M.gguf").write_bytes(b"\0" * 256)
-    (repo_dir / "refs").mkdir(parents = True)
-    (repo_dir / "refs" / "main").write_text("d" * 40, encoding = "utf-8")
+    (repo_dir / "refs").mkdir(parents=True)
+    (repo_dir / "refs" / "main").write_text("d" * 40, encoding="utf-8")
 
     _pin_cache_roots(monkeypatch, active, tmp_path)
 
@@ -3896,7 +3898,7 @@ def test_a_cancelled_siblings_marker_shows_on_the_repo_row(monkeypatch, tmp_path
     before = _row()
     assert before["has_variant_state"] is False
 
-    assert download_manifest.write_cancel_marker("model", "Org/Quant", "Q8_0", hub_cache = active)
+    assert download_manifest.write_cancel_marker("model", "Org/Quant", "Q8_0", hub_cache=active)
 
     after = _row()
     # The signals that would otherwise have to carry it.
@@ -3953,8 +3955,8 @@ def test_variant_scans_for_different_requests_do_not_share(monkeypatch):
     async def drive():
         await GV.get_gguf_variants_response("/models/a")
         await GV.get_gguf_variants_response("/models/b")
-        await GV.get_gguf_variants_response("/models/a", offline = True)
-        await GV.get_gguf_variants_response("/models/a", local_path = "/other")
+        await GV.get_gguf_variants_response("/models/a", offline=True)
+        await GV.get_gguf_variants_response("/models/a", local_path="/other")
 
     asyncio.run(drive())
     assert len(scans) == 4
@@ -4017,19 +4019,19 @@ def test_offline_context_follows_the_hf_cache_when_it_answers(monkeypatch, tmp_p
     from the cache. Picking local_path on the offline flag alone attached another copy's
     context to the cache's variants. Real service, no stub."""
     cache_snapshot = tmp_path / "hub" / "models--org--repo" / "snapshots" / "rev"
-    cache_snapshot.mkdir(parents = True)
+    cache_snapshot.mkdir(parents=True)
     context_calls = []
 
     monkeypatch.setattr(
         GV,
         "select_gguf_cache_snapshot",
-        lambda repo_id, root = None: (
+        lambda repo_id, root=None: (
             [
                 SimpleNamespace(
-                    filename = "m-Q4_K_M.gguf",
-                    quant = "Q4_K_M",
-                    display_label = None,
-                    size_bytes = 10,
+                    filename="m-Q4_K_M.gguf",
+                    quant="Q4_K_M",
+                    display_label=None,
+                    size_bytes=10,
                 )
             ],
             False,
@@ -4046,11 +4048,11 @@ def test_offline_context_follows_the_hf_cache_when_it_answers(monkeypatch, tmp_p
 
     asyncio.run(
         models_route.get_gguf_variants(
-            repo_id = "org/repo",
-            offline = True,
-            local_path = str(tmp_path),  # an ordinary directory, not this repo's cache
-            hf_token = None,
-            current_subject = "test-user",
+            repo_id="org/repo",
+            offline=True,
+            local_path=str(tmp_path),  # an ordinary directory, not this repo's cache
+            hf_token=None,
+            current_subject="test-user",
         )
     )
     assert context_calls == [(str(cache_snapshot), True)]
@@ -4062,19 +4064,19 @@ def test_offline_context_follows_the_cache_the_variants_were_read_from(monkeypat
     first, and can attach another copy's context to these variants. Real service, no stub."""
     legacy_repo = tmp_path / "legacy" / "hub" / "models--org--repo"
     legacy_snapshot = legacy_repo / "snapshots" / "rev"
-    legacy_snapshot.mkdir(parents = True)
+    legacy_snapshot.mkdir(parents=True)
     context_calls = []
 
     monkeypatch.setattr(
         GV,
         "select_gguf_cache_snapshot",
-        lambda repo_id, root = None: (
+        lambda repo_id, root=None: (
             [
                 SimpleNamespace(
-                    filename = "m-Q4_K_M.gguf",
-                    quant = "Q4_K_M",
-                    display_label = None,
-                    size_bytes = 10,
+                    filename="m-Q4_K_M.gguf",
+                    quant="Q4_K_M",
+                    display_label=None,
+                    size_bytes=10,
                 )
             ],
             False,
@@ -4089,7 +4091,7 @@ def test_offline_context_follows_the_cache_the_variants_were_read_from(monkeypat
         lambda model, *, is_local: context_calls.append((model, is_local)) or 4096,
     )
 
-    _variants(offline = True, local_path = str(legacy_repo))
+    _variants(offline=True, local_path=str(legacy_repo))
     assert context_calls == [(str(legacy_snapshot), True)]
 
 
@@ -4099,7 +4101,7 @@ def test_failed_hub_context_follows_the_cache_the_variants_were_read_from(monkey
     different cache copy first."""
     legacy_repo = tmp_path / "legacy" / "hub" / "models--org--repo"
     legacy_snapshot = legacy_repo / "snapshots" / "rev"
-    legacy_snapshot.mkdir(parents = True)
+    legacy_snapshot.mkdir(parents=True)
     context_calls = []
 
     def _unreachable(*args, **kwargs):
@@ -4109,13 +4111,13 @@ def test_failed_hub_context_follows_the_cache_the_variants_were_read_from(monkey
     monkeypatch.setattr(
         GV,
         "select_gguf_cache_snapshot",
-        lambda repo_id, root = None: (
+        lambda repo_id, root=None: (
             [
                 SimpleNamespace(
-                    filename = "m-Q4_K_M.gguf",
-                    quant = "Q4_K_M",
-                    display_label = None,
-                    size_bytes = 10,
+                    filename="m-Q4_K_M.gguf",
+                    quant="Q4_K_M",
+                    display_label=None,
+                    size_bytes=10,
                 )
             ],
             False,
@@ -4130,7 +4132,7 @@ def test_failed_hub_context_follows_the_cache_the_variants_were_read_from(monkey
         lambda model, *, is_local: context_calls.append((model, is_local)) or 4096,
     )
 
-    _variants(local_path = str(legacy_repo))
+    _variants(local_path=str(legacy_repo))
     assert context_calls == [(str(legacy_snapshot), True)]
 
 
@@ -4149,12 +4151,12 @@ def test_switching_cache_storage_does_not_join_a_stuck_scan(monkeypatch, tmp_pat
     monkeypatch.setattr(
         studio_db,
         "get_app_setting",
-        lambda key, default = None: (
+        lambda key, default=None: (
             str(cache_home[0]) if key == hf_cache_settings.CACHE_HOME_SETTING_KEY else default
         ),
     )
 
-    def scan(repo_id, root = None):
+    def scan(repo_id, root=None):
         scanned.append(str(root))
         if "wedgedvol" in str(root):
             wedged.wait(5)
@@ -4166,11 +4168,11 @@ def test_switching_cache_storage_does_not_join_a_stuck_scan(monkeypatch, tmp_pat
     monkeypatch.setattr(GV, "_snapshot_scope_for_request", lambda *a, **k: None)
 
     async def drive():
-        stuck = asyncio.ensure_future(GV.get_gguf_variants_answer("org/repo", offline = True))
+        stuck = asyncio.ensure_future(GV.get_gguf_variants_answer("org/repo", offline=True))
         await asyncio.sleep(0.2)
         cache_home[0] = tmp_path / "healthyvol"
-        second = asyncio.ensure_future(GV.get_gguf_variants_answer("org/repo", offline = True))
-        done, _ = await asyncio.wait({second}, timeout = 1.5)
+        second = asyncio.ensure_future(GV.get_gguf_variants_answer("org/repo", offline=True))
+        done, _ = await asyncio.wait({second}, timeout=1.5)
         for task in (stuck, second):
             task.cancel()
         return bool(done)
@@ -4188,12 +4190,12 @@ def test_switching_cache_storage_does_not_join_a_stuck_scan(monkeypatch, tmp_pat
 def test_gguf_variants_route_carries_local_resolution(monkeypatch, tmp_path):
     # The CLI gate reads resolved_locally, so the legacy constructor must carry it.
     monkeypatch.chdir(tmp_path)
-    (tmp_path / "models" / "qwen").mkdir(parents = True)
+    (tmp_path / "models" / "qwen").mkdir(parents=True)
     (tmp_path / "models" / "qwen" / "q-Q4_K_M.gguf").write_bytes(b"GGUF")
 
     result = asyncio.run(
         models_route.get_gguf_variants(
-            repo_id = "models/qwen", hf_token = None, current_subject = "test-user"
+            repo_id="models/qwen", hf_token=None, current_subject="test-user"
         )
     )
     assert result.resolved_locally is True
@@ -4215,7 +4217,7 @@ def _write_cached_gguf(
 
     repo_dir = hub_cache / ("models--" + repo_id.replace("/", "--"))
     snapshot = repo_dir / "snapshots" / revision
-    snapshot.mkdir(parents = True, exist_ok = True)
+    snapshot.mkdir(parents=True, exist_ok=True)
     (snapshot / filename).write_bytes(b"GGUF" + b"\0" * (size - 4))
     if mtime is not None:
         os.utime(snapshot, (mtime, mtime))
@@ -4230,10 +4232,10 @@ def _pin_caches(monkeypatch, active: Path, roots: list[Path]) -> None:
         hf_cache_settings,
         "get_hf_cache_paths",
         lambda: SimpleNamespace(
-            hf_home = active.parent,
-            hub_cache = active,
-            xet_cache = active.parent / "xet",
-            source = "test",
+            hf_home=active.parent,
+            hub_cache=active,
+            xet_cache=active.parent / "xet",
+            source="test",
         ),
     )
     # **kw so the stub keeps matching the real signature, which now takes scan_errors.
@@ -4258,11 +4260,11 @@ def test_failed_hub_lists_the_selected_cache_not_another_one(monkeypatch, tmp_pa
     """
     active = tmp_path / "active" / "hub"
     selected = tmp_path / "selected" / "hub"
-    active.mkdir(parents = True)
-    selected.mkdir(parents = True)
+    active.mkdir(parents=True)
+    selected.mkdir(parents=True)
     # The active copy is newer, so only a scoped lookup can surface the selected one.
-    _write_cached_gguf(active, "org/repo", "m-Q4_K_M.gguf", mtime = 2_000_000_000)
-    selected_repo = _write_cached_gguf(selected, "org/repo", "m-Q8_0.gguf", mtime = 1_000_000_000)
+    _write_cached_gguf(active, "org/repo", "m-Q4_K_M.gguf", mtime=2_000_000_000)
+    selected_repo = _write_cached_gguf(selected, "org/repo", "m-Q8_0.gguf", mtime=1_000_000_000)
 
     _pin_caches(monkeypatch, active, [active, selected])
     _unreachable_hub(monkeypatch)
@@ -4275,7 +4277,7 @@ def test_failed_hub_lists_the_selected_cache_not_another_one(monkeypatch, tmp_pa
         lambda model, *, is_local: context_calls.append((str(model), is_local)) or 4096,
     )
 
-    response = _variants(local_path = str(selected_repo))
+    response = _variants(local_path=str(selected_repo))
     assert sorted(v.quant for v in response.variants) == ["Q8_0"]
     # The context length has to come off that same copy, down to the snapshot.
     assert context_calls == [(str(selected_repo / "snapshots" / "rev"), True)]
@@ -4291,8 +4293,8 @@ def test_an_unreadable_cache_root_is_skipped_not_fatal(tmp_path):
 
     blocked_root = tmp_path / "blocked" / "hub"
     readable_root = tmp_path / "readable" / "hub"
-    blocked_root.mkdir(parents = True)
-    readable_root.mkdir(parents = True)
+    blocked_root.mkdir(parents=True)
+    readable_root.mkdir(parents=True)
     blocked_repo = _write_cached_gguf(blocked_root, "org/repo", "m-Q4_K_M.gguf")
     _write_cached_gguf(readable_root, "org/repo", "m-Q8_0.gguf")
 
@@ -4306,13 +4308,13 @@ def test_an_unreadable_cache_root_is_skipped_not_fatal(tmp_path):
             pytest.skip("filesystem does not enforce the permission (root?)")
 
         # Scoped at the unreadable root: no snapshots, and no exception.
-        assert list(iter_hf_cache_snapshots("org/repo", root = blocked_root)) == []
-        assert list_gguf_variants_from_hf_cache("org/repo", root = blocked_root) is None
+        assert list(iter_hf_cache_snapshots("org/repo", root=blocked_root)) == []
+        assert list_gguf_variants_from_hf_cache("org/repo", root=blocked_root) is None
 
         # A readable root is still walked normally.
-        readable = list(iter_hf_cache_snapshots("org/repo", root = readable_root))
+        readable = list(iter_hf_cache_snapshots("org/repo", root=readable_root))
         assert len(readable) == 1
-        listed = list_gguf_variants_from_hf_cache("org/repo", root = readable_root)
+        listed = list_gguf_variants_from_hf_cache("org/repo", root=readable_root)
         assert listed is not None
         assert [v.quant for v in listed[0]] == ["Q8_0"]
     finally:
@@ -4327,10 +4329,10 @@ def test_another_caches_quant_is_offered_as_a_download_not_as_downloaded(monkeyp
     """
     pinned_root = tmp_path / "pinned" / "hub"
     other_root = tmp_path / "other" / "hub"
-    pinned_root.mkdir(parents = True)
-    other_root.mkdir(parents = True)
+    pinned_root.mkdir(parents=True)
+    other_root.mkdir(parents=True)
     pinned_repo = pinned_root / "models--org--repo"
-    (pinned_repo / "snapshots" / "rev").mkdir(parents = True)
+    (pinned_repo / "snapshots" / "rev").mkdir(parents=True)
     _write_cached_gguf(other_root, "org/repo", "m-Q8_0.gguf")
 
     _pin_caches(monkeypatch, pinned_root, [pinned_root, other_root])
@@ -4340,7 +4342,7 @@ def test_another_caches_quant_is_offered_as_a_download_not_as_downloaded(monkeyp
         models_route, "_read_native_context_length", lambda model, *, is_local: None
     )
 
-    response = _variants(local_path = str(pinned_repo))
+    response = _variants(local_path=str(pinned_repo))
     assert [v.quant for v in response.variants] == ["Q8_0"]
     assert [v.downloaded for v in response.variants] == [False]
 
@@ -4351,12 +4353,12 @@ def test_context_follows_the_answering_revision_not_a_sibling(monkeypatch, tmp_p
     The read walks the whole dir, so naming the dir let a skipped revision supply the length.
     """
     hub_cache = tmp_path / "hub"
-    hub_cache.mkdir(parents = True)
+    hub_cache.mkdir(parents=True)
     # Only the newer snapshot holds a whole quant, so it is the one that answers.
     repo_dir = _write_cached_gguf(
-        hub_cache, "org/repo", "m-Q4_K_M.gguf", mtime = 1_000_000_000, revision = "older"
+        hub_cache, "org/repo", "m-Q4_K_M.gguf", mtime=1_000_000_000, revision="older"
     )
-    _write_cached_gguf(hub_cache, "org/repo", "m-Q8_0.gguf", mtime = 2_000_000_000, revision = "newer")
+    _write_cached_gguf(hub_cache, "org/repo", "m-Q8_0.gguf", mtime=2_000_000_000, revision="newer")
 
     _pin_caches(monkeypatch, hub_cache, [hub_cache])
     _unreachable_hub(monkeypatch)
@@ -4369,7 +4371,7 @@ def test_context_follows_the_answering_revision_not_a_sibling(monkeypatch, tmp_p
         lambda model, *, is_local: context_calls.append((str(model), is_local)) or 4096,
     )
 
-    response = _variants(local_path = str(repo_dir))
+    response = _variants(local_path=str(repo_dir))
     assert [v.quant for v in response.variants] == ["Q8_0"]
     assert context_calls == [(str(repo_dir / "snapshots" / "newer"), True)]
 
@@ -4377,7 +4379,7 @@ def test_context_follows_the_answering_revision_not_a_sibling(monkeypatch, tmp_p
 def _point_ref_at(repo_dir: Path, revision: str) -> None:
     """Widening needs this ref to name the answering revision."""
     refs = repo_dir / "refs"
-    refs.mkdir(parents = True, exist_ok = True)
+    refs.mkdir(parents=True, exist_ok=True)
     (refs / "main").write_text(revision)
 
 
@@ -4386,9 +4388,9 @@ def _cached_repo_variants(
     hub_cache,
     repo_dir,
     *,
-    local_path = None,
-    active = None,
-    prefer_local_cache = True,
+    local_path=None,
+    active=None,
+    prefer_local_cache=True,
 ):
     _pin_caches(monkeypatch, active or hub_cache, [active, hub_cache] if active else [hub_cache])
     _unreachable_hub(monkeypatch)
@@ -4398,12 +4400,12 @@ def _cached_repo_variants(
     )
     return asyncio.run(
         models_route.get_gguf_variants(
-            repo_id = "org/repo",
+            repo_id="org/repo",
             # True is what the on-device card sends; False falls back through the dead Hub.
-            prefer_local_cache = prefer_local_cache,
-            local_path = str(local_path or repo_dir),
-            hf_token = None,
-            current_subject = "test-user",
+            prefer_local_cache=prefer_local_cache,
+            local_path=str(local_path or repo_dir),
+            hf_token=None,
+            current_subject="test-user",
         )
     )
 
@@ -4413,9 +4415,9 @@ def test_a_quant_only_an_older_revision_holds_is_still_listed(monkeypatch, tmp_p
     hub_cache = tmp_path / "hub"
     hub_cache.mkdir()
     repo_dir = _write_cached_gguf(
-        hub_cache, "org/repo", "m-Q4_K_M.gguf", mtime = 1_000_000_000, revision = "older"
+        hub_cache, "org/repo", "m-Q4_K_M.gguf", mtime=1_000_000_000, revision="older"
     )
-    _write_cached_gguf(hub_cache, "org/repo", "m-Q8_0.gguf", mtime = 2_000_000_000, revision = "newer")
+    _write_cached_gguf(hub_cache, "org/repo", "m-Q8_0.gguf", mtime=2_000_000_000, revision="newer")
     _point_ref_at(repo_dir, "newer")
 
     response = _cached_repo_variants(monkeypatch, hub_cache, repo_dir)
@@ -4429,9 +4431,9 @@ def test_merged_unlabelled_quants_are_told_apart(monkeypatch, tmp_path):
     hub_cache = tmp_path / "hub"
     hub_cache.mkdir()
     repo_dir = _write_cached_gguf(
-        hub_cache, "org/repo", "foo.gguf", mtime = 1_000_000_000, revision = "older"
+        hub_cache, "org/repo", "foo.gguf", mtime=1_000_000_000, revision="older"
     )
-    _write_cached_gguf(hub_cache, "org/repo", "bar.gguf", mtime = 2_000_000_000, revision = "newer")
+    _write_cached_gguf(hub_cache, "org/repo", "bar.gguf", mtime=2_000_000_000, revision="newer")
     _point_ref_at(repo_dir, "newer")
 
     response = _cached_repo_variants(monkeypatch, hub_cache, repo_dir)
@@ -4449,17 +4451,17 @@ def test_a_quant_cached_twice_is_listed_once(monkeypatch, tmp_path):
         hub_cache,
         "org/repo",
         "m-Q4_K_M.gguf",
-        mtime = 1_000_000_000,
-        revision = "older",
-        size = 128,
+        mtime=1_000_000_000,
+        revision="older",
+        size=128,
     )
     _write_cached_gguf(
         hub_cache,
         "org/repo",
         "m-Q4_K_M.gguf",
-        mtime = 2_000_000_000,
-        revision = "newer",
-        size = 64,
+        mtime=2_000_000_000,
+        revision="newer",
+        size=64,
     )
     _point_ref_at(repo_dir, "newer")
 
@@ -4477,10 +4479,10 @@ def test_a_sibling_revisions_torn_quant_is_listed_but_not_ready(monkeypatch, tmp
         hub_cache,
         "org/repo",
         "m-Q4_K_M-00001-of-00002.gguf",
-        mtime = 1_000_000_000,
-        revision = "older",
+        mtime=1_000_000_000,
+        revision="older",
     )
-    _write_cached_gguf(hub_cache, "org/repo", "m-Q8_0.gguf", mtime = 2_000_000_000, revision = "newer")
+    _write_cached_gguf(hub_cache, "org/repo", "m-Q8_0.gguf", mtime=2_000_000_000, revision="newer")
     _point_ref_at(repo_dir, "newer")
 
     response = _cached_repo_variants(monkeypatch, hub_cache, repo_dir)
@@ -4496,15 +4498,15 @@ def test_a_whole_sibling_copy_replaces_a_torn_one(monkeypatch, tmp_path):
     hub_cache = tmp_path / "hub"
     hub_cache.mkdir()
     repo_dir = _write_cached_gguf(
-        hub_cache, "org/repo", "m-Q4_K_M.gguf", mtime = 1_000_000_000, revision = "older"
+        hub_cache, "org/repo", "m-Q4_K_M.gguf", mtime=1_000_000_000, revision="older"
     )
-    _write_cached_gguf(hub_cache, "org/repo", "m-Q8_0.gguf", mtime = 2_000_000_000, revision = "newer")
+    _write_cached_gguf(hub_cache, "org/repo", "m-Q8_0.gguf", mtime=2_000_000_000, revision="newer")
     _write_cached_gguf(
         hub_cache,
         "org/repo",
         "m-Q4_K_M-00001-of-00002.gguf",
-        mtime = 2_000_000_000,
-        revision = "newer",
+        mtime=2_000_000_000,
+        revision="newer",
     )
     _point_ref_at(repo_dir, "newer")
 
@@ -4520,24 +4522,24 @@ def test_a_projector_alone_in_a_sibling_does_not_claim_vision(monkeypatch, tmp_p
     hub_cache = tmp_path / "hub"
     hub_cache.mkdir()
     repo_dir = _write_cached_gguf(
-        hub_cache, "org/repo", "m-Q8_0.gguf", mtime = 2_000_000_000, revision = "newer"
+        hub_cache, "org/repo", "m-Q8_0.gguf", mtime=2_000_000_000, revision="newer"
     )
     _write_cached_gguf(
         hub_cache,
         "org/repo",
         "m-Q4_K_M-00001-of-00002.gguf",
-        mtime = 2_000_000_000,
-        revision = "newer",
+        mtime=2_000_000_000,
+        revision="newer",
     )
     _write_cached_gguf(
         hub_cache,
         "org/repo",
         "m-Q4_K_M-00001-of-00002.gguf",
-        mtime = 1_000_000_000,
-        revision = "older",
+        mtime=1_000_000_000,
+        revision="older",
     )
     _write_cached_gguf(
-        hub_cache, "org/repo", "mmproj-F16.gguf", mtime = 1_000_000_000, revision = "older"
+        hub_cache, "org/repo", "mmproj-F16.gguf", mtime=1_000_000_000, revision="older"
     )
     _point_ref_at(repo_dir, "newer")
 
@@ -4550,13 +4552,13 @@ def test_a_merged_rows_projector_still_flags_vision(monkeypatch, tmp_path):
     hub_cache = tmp_path / "hub"
     hub_cache.mkdir()
     repo_dir = _write_cached_gguf(
-        hub_cache, "org/repo", "m-Q8_0.gguf", mtime = 2_000_000_000, revision = "newer"
+        hub_cache, "org/repo", "m-Q8_0.gguf", mtime=2_000_000_000, revision="newer"
     )
     _write_cached_gguf(
-        hub_cache, "org/repo", "m-Q4_K_M.gguf", mtime = 1_000_000_000, revision = "older"
+        hub_cache, "org/repo", "m-Q4_K_M.gguf", mtime=1_000_000_000, revision="older"
     )
     _write_cached_gguf(
-        hub_cache, "org/repo", "mmproj-F16.gguf", mtime = 1_000_000_000, revision = "older"
+        hub_cache, "org/repo", "mmproj-F16.gguf", mtime=1_000_000_000, revision="older"
     )
     _point_ref_at(repo_dir, "newer")
 
@@ -4571,20 +4573,20 @@ def test_a_replaced_row_does_not_keep_its_donors_vision(monkeypatch, tmp_path):
     hub_cache = tmp_path / "hub"
     hub_cache.mkdir()
     repo_dir = _write_cached_gguf(
-        hub_cache, "org/repo", "m-Q8_0.gguf", mtime = 3_000_000_000, revision = "newest"
+        hub_cache, "org/repo", "m-Q8_0.gguf", mtime=3_000_000_000, revision="newest"
     )
     _write_cached_gguf(
         hub_cache,
         "org/repo",
         "m-Q4_K_M-00001-of-00002.gguf",
-        mtime = 2_000_000_000,
-        revision = "middle",
+        mtime=2_000_000_000,
+        revision="middle",
     )
     _write_cached_gguf(
-        hub_cache, "org/repo", "mmproj-F16.gguf", mtime = 2_000_000_000, revision = "middle"
+        hub_cache, "org/repo", "mmproj-F16.gguf", mtime=2_000_000_000, revision="middle"
     )
     _write_cached_gguf(
-        hub_cache, "org/repo", "m-Q4_K_M.gguf", mtime = 1_000_000_000, revision = "oldest"
+        hub_cache, "org/repo", "m-Q4_K_M.gguf", mtime=1_000_000_000, revision="oldest"
     )
     _point_ref_at(repo_dir, "newest")
 
@@ -4599,12 +4601,12 @@ def test_the_unreachable_hub_fallback_also_unions(monkeypatch, tmp_path):
     hub_cache = tmp_path / "hub"
     hub_cache.mkdir()
     repo_dir = _write_cached_gguf(
-        hub_cache, "org/repo", "m-Q4_K_M.gguf", mtime = 1_000_000_000, revision = "older"
+        hub_cache, "org/repo", "m-Q4_K_M.gguf", mtime=1_000_000_000, revision="older"
     )
-    _write_cached_gguf(hub_cache, "org/repo", "m-Q8_0.gguf", mtime = 2_000_000_000, revision = "newer")
+    _write_cached_gguf(hub_cache, "org/repo", "m-Q8_0.gguf", mtime=2_000_000_000, revision="newer")
     _point_ref_at(repo_dir, "newer")
 
-    response = _cached_repo_variants(monkeypatch, hub_cache, repo_dir, prefer_local_cache = False)
+    response = _cached_repo_variants(monkeypatch, hub_cache, repo_dir, prefer_local_cache=False)
 
     assert [v.quant for v in response.variants] == ["Q8_0", "Q4_K_M"]
 
@@ -4616,12 +4618,12 @@ def test_a_repo_outside_the_active_cache_gains_no_siblings(monkeypatch, tmp_path
     active.mkdir()
     other.mkdir()
     repo_dir = _write_cached_gguf(
-        other, "org/repo", "m-Q4_K_M.gguf", mtime = 1_000_000_000, revision = "older"
+        other, "org/repo", "m-Q4_K_M.gguf", mtime=1_000_000_000, revision="older"
     )
-    _write_cached_gguf(other, "org/repo", "m-Q8_0.gguf", mtime = 2_000_000_000, revision = "newer")
+    _write_cached_gguf(other, "org/repo", "m-Q8_0.gguf", mtime=2_000_000_000, revision="newer")
     _point_ref_at(repo_dir, "newer")
 
-    response = _cached_repo_variants(monkeypatch, other, repo_dir, active = active)
+    response = _cached_repo_variants(monkeypatch, other, repo_dir, active=active)
 
     assert [v.quant for v in response.variants] == ["Q8_0"]
 
@@ -4631,13 +4633,13 @@ def test_a_row_pinned_to_one_revision_gains_no_siblings(monkeypatch, tmp_path):
     hub_cache = tmp_path / "hub"
     hub_cache.mkdir()
     repo_dir = _write_cached_gguf(
-        hub_cache, "org/repo", "m-Q4_K_M.gguf", mtime = 1_000_000_000, revision = "older"
+        hub_cache, "org/repo", "m-Q4_K_M.gguf", mtime=1_000_000_000, revision="older"
     )
-    _write_cached_gguf(hub_cache, "org/repo", "m-Q8_0.gguf", mtime = 2_000_000_000, revision = "newer")
+    _write_cached_gguf(hub_cache, "org/repo", "m-Q8_0.gguf", mtime=2_000_000_000, revision="newer")
     _point_ref_at(repo_dir, "newer")
 
     response = _cached_repo_variants(
-        monkeypatch, hub_cache, repo_dir, local_path = repo_dir / "snapshots" / "newer"
+        monkeypatch, hub_cache, repo_dir, local_path=repo_dir / "snapshots" / "newer"
     )
 
     assert [v.quant for v in response.variants] == ["Q8_0"]
@@ -4650,7 +4652,7 @@ def test_a_case_variant_repo_dir_still_names_its_snapshot(monkeypatch, tmp_path)
     on a case-sensitive filesystem and the length fell back to a repo-wide walk.
     """
     hub_cache = tmp_path / "hub"
-    hub_cache.mkdir(parents = True)
+    hub_cache.mkdir(parents=True)
     repo_dir = _write_cached_gguf(hub_cache, "org/repo", "m-Q8_0.gguf")
 
     _pin_caches(monkeypatch, hub_cache, [hub_cache])
@@ -4666,9 +4668,9 @@ def test_a_case_variant_repo_dir_still_names_its_snapshot(monkeypatch, tmp_path)
 
     response = asyncio.run(
         models_route.get_gguf_variants(
-            repo_id = "org/Repo",  # on disk as models--org--repo
-            hf_token = None,
-            current_subject = "test-user",
+            repo_id="org/Repo",  # on disk as models--org--repo
+            hf_token=None,
+            current_subject="test-user",
         )
     )
     assert [v.quant for v in response.variants] == ["Q8_0"]
@@ -4681,18 +4683,18 @@ def test_a_download_scope_is_not_listed_as_a_quant(monkeypatch, tmp_path):
     twice, the second permanently partial, costing the picker its single-quant
     collapse. A real cancelled quant must still survive, or it loses its resume."""
     repo_dir = tmp_path / "models--org--repo"
-    (repo_dir / "snapshots" / "rev").mkdir(parents = True)
+    (repo_dir / "snapshots" / "rev").mkdir(parents=True)
 
     monkeypatch.setattr(
         GV,
         "select_gguf_cache_snapshot",
-        lambda repo_id, root = None: (
+        lambda repo_id, root=None: (
             [
                 SimpleNamespace(
-                    filename = "m-Q4_K_S.gguf",
-                    quant = "Q4_K_S",
-                    display_label = None,
-                    size_bytes = 10,
+                    filename="m-Q4_K_S.gguf",
+                    quant="Q4_K_S",
+                    display_label=None,
+                    size_bytes=10,
                 )
             ],
             False,
@@ -4707,18 +4709,18 @@ def test_a_download_scope_is_not_listed_as_a_quant(monkeypatch, tmp_path):
         lambda *a, **k: (
             [
                 SimpleNamespace(
-                    filename = "m-Q4_K_S.gguf",
-                    quant = "@diffusion",
-                    display_label = None,
-                    size_bytes = 10,
-                    download_size_bytes = 10,
+                    filename="m-Q4_K_S.gguf",
+                    quant="@diffusion",
+                    display_label=None,
+                    size_bytes=10,
+                    download_size_bytes=10,
                 ),
                 SimpleNamespace(
-                    filename = "m-Q6_K.gguf",
-                    quant = "Q6_K",
-                    display_label = None,
-                    size_bytes = 20,
-                    download_size_bytes = 20,
+                    filename="m-Q6_K.gguf",
+                    quant="Q6_K",
+                    display_label=None,
+                    size_bytes=20,
+                    download_size_bytes=20,
                 ),
             ],
             False,
@@ -4728,7 +4730,7 @@ def test_a_download_scope_is_not_listed_as_a_quant(monkeypatch, tmp_path):
         models_route, "_read_native_context_length", lambda model, *, is_local: None
     )
 
-    response = _variants(offline = True, local_path = str(repo_dir))
+    response = _variants(offline=True, local_path=str(repo_dir))
     quants = [v.quant for v in response.variants]
     assert "@diffusion" not in quants
     assert quants == ["Q4_K_S", "Q6_K"]
@@ -4742,20 +4744,20 @@ def test_a_scope_alone_in_state_is_not_an_answer(monkeypatch, tmp_path):
     no .gguf, it reconstructs as "@diffusion.gguf", a file never on disk. So scopes
     alone must make the fallback decline and let the next answer through."""
     repo_dir = tmp_path / "models--org--repo"
-    (repo_dir / "snapshots" / "rev").mkdir(parents = True)
+    (repo_dir / "snapshots" / "rev").mkdir(parents=True)
 
-    monkeypatch.setattr(GV, "select_gguf_cache_snapshot", lambda repo_id, root = None: None)
+    monkeypatch.setattr(GV, "select_gguf_cache_snapshot", lambda repo_id, root=None: None)
     monkeypatch.setattr(
         GV,
         "list_partial_gguf_variants_from_state",
         lambda *a, **k: (
             [
                 SimpleNamespace(
-                    filename = "@diffusion.gguf",
-                    quant = "@diffusion",
-                    display_label = None,
-                    size_bytes = 0,
-                    download_size_bytes = 0,
+                    filename="@diffusion.gguf",
+                    quant="@diffusion",
+                    display_label=None,
+                    size_bytes=0,
+                    download_size_bytes=0,
                 )
             ],
             False,
@@ -4765,7 +4767,7 @@ def test_a_scope_alone_in_state_is_not_an_answer(monkeypatch, tmp_path):
         models_route, "_read_native_context_length", lambda model, *, is_local: None
     )
 
-    response = _variants(offline = True, local_path = str(repo_dir))
+    response = _variants(offline=True, local_path=str(repo_dir))
     assert response.variants == []
 
 
@@ -4773,27 +4775,27 @@ def test_a_cancelled_quant_beside_a_scope_still_answers_from_state(monkeypatch, 
     """Dropping scopes must not cost the fallback its reason to exist: a cancelled quant
     with no snapshot keeps its row, and its resume."""
     repo_dir = tmp_path / "models--org--repo"
-    (repo_dir / "snapshots" / "rev").mkdir(parents = True)
+    (repo_dir / "snapshots" / "rev").mkdir(parents=True)
 
-    monkeypatch.setattr(GV, "select_gguf_cache_snapshot", lambda repo_id, root = None: None)
+    monkeypatch.setattr(GV, "select_gguf_cache_snapshot", lambda repo_id, root=None: None)
     monkeypatch.setattr(
         GV,
         "list_partial_gguf_variants_from_state",
         lambda *a, **k: (
             [
                 SimpleNamespace(
-                    filename = "m-Q6_K.gguf",
-                    quant = "Q6_K",
-                    display_label = None,
-                    size_bytes = 20,
-                    download_size_bytes = 20,
+                    filename="m-Q6_K.gguf",
+                    quant="Q6_K",
+                    display_label=None,
+                    size_bytes=20,
+                    download_size_bytes=20,
                 ),
                 SimpleNamespace(
-                    filename = "@diffusion.gguf",
-                    quant = "@diffusion",
-                    display_label = None,
-                    size_bytes = 0,
-                    download_size_bytes = 0,
+                    filename="@diffusion.gguf",
+                    quant="@diffusion",
+                    display_label=None,
+                    size_bytes=0,
+                    download_size_bytes=0,
                 ),
             ],
             False,
@@ -4803,7 +4805,7 @@ def test_a_cancelled_quant_beside_a_scope_still_answers_from_state(monkeypatch, 
         models_route, "_read_native_context_length", lambda model, *, is_local: None
     )
 
-    response = _variants(offline = True, local_path = str(repo_dir))
+    response = _variants(offline=True, local_path=str(repo_dir))
     assert [(v.quant, v.partial) for v in response.variants] == [("Q6_K", True)]
 
 
@@ -4837,7 +4839,7 @@ def _arch_gguf(path: Path, architecture: str) -> Path:
         data = value.encode()
         return struct.pack("<Q", len(data)) + data
 
-    path.parent.mkdir(parents = True, exist_ok = True)
+    path.parent.mkdir(parents=True, exist_ok=True)
     metadata = string("general.architecture") + struct.pack("<I", 8) + string(architecture)
     path.write_bytes(struct.pack("<IIQQ", 0x46554747, 3, 0, 1) + metadata)
     return path
@@ -4856,7 +4858,7 @@ def _both_walk_orders(root: Path, monkeypatch, classify):
     answers = []
     for order in (paths, list(reversed(paths))):
         monkeypatch.setattr(
-            _classification, "_iter_gguf_paths", lambda _root, deadline = None, _o = order: iter(_o)
+            _classification, "_iter_gguf_paths", lambda _root, deadline=None, _o=order: iter(_o)
         )
         answers.append(classify())
     return answers
@@ -4870,7 +4872,7 @@ def test_a_mixed_gguf_repo_classifies_the_same_in_either_walk_order(tmp_path, mo
     repo_dir = tmp_path / "models--BlackStone-Yu--Z-Image-Turbo-GGUF"
     _arch_gguf(repo_dir / "Qwen3-4B-UD-Q6_K_XL.gguf", "qwen3")
     _arch_gguf(repo_dir / "z_image_turbo-Q6_K.gguf", "lumina2")
-    repo_info = SimpleNamespace(repo_id = "BlackStone-Yu/Z-Image-Turbo-GGUF", repo_path = str(repo_dir))
+    repo_info = SimpleNamespace(repo_id="BlackStone-Yu/Z-Image-Turbo-GGUF", repo_path=str(repo_dir))
 
     answers = _both_walk_orders(
         repo_dir, monkeypatch, lambda: models_route._repo_gguf_task(repo_info)
@@ -4878,7 +4880,7 @@ def test_a_mixed_gguf_repo_classifies_the_same_in_either_walk_order(tmp_path, mo
     assert answers == ["text-to-image", "text-to-image"], answers
 
 
-@pytest.mark.parametrize("active_copy", [False, True], ids = ["pinned", "bare-repo-id"])
+@pytest.mark.parametrize("active_copy", [False, True], ids=["pinned", "bare-repo-id"])
 def test_cached_gguf_task_comes_from_the_snapshot_the_row_loads(monkeypatch, tmp_path, active_copy):
     """A historical diffusion GGUF must not hide the selected text snapshot from Chat."""
     active = tmp_path / "active"
@@ -4890,28 +4892,28 @@ def test_cached_gguf_task_comes_from_the_snapshot_the_row_loads(monkeypatch, tmp
     text = _arch_gguf(selected / "model-Q4_K_M.gguf", "llama")
     os.utime(historical, (1_000_000, 1_000_000))
     os.utime(selected, (2_000_000, 2_000_000))
-    (repo_dir / "refs").mkdir(parents = True)
+    (repo_dir / "refs").mkdir(parents=True)
     (repo_dir / "refs" / "main").write_text("selected")
 
     repo_info = _repo(
         "Org/Mixed-History-GGUF",
         [],
         repo_dir,
-        revisions = [
+        revisions=[
             SimpleNamespace(
-                files = [_file(diffusion.name, diffusion.stat().st_size)],
-                snapshot_path = historical,
+                files=[_file(diffusion.name, diffusion.stat().st_size)],
+                snapshot_path=historical,
             ),
             SimpleNamespace(
-                files = [_file(text.name, text.stat().st_size)],
-                snapshot_path = selected,
+                files=[_file(text.name, text.stat().st_size)],
+                snapshot_path=selected,
             ),
         ],
     )
     monkeypatch.setattr(models_route, "_resolve_hf_cache_dir", lambda: active)
 
     assert models_route._repo_gguf_task(repo_info) == "text-to-image"
-    [row] = models_route.cached_gguf_rows([SimpleNamespace(repos = [repo_info])])
+    [row] = models_route.cached_gguf_rows([SimpleNamespace(repos=[repo_info])])
 
     assert row["task"] == "text-generation"
     if active_copy:
@@ -4928,11 +4930,11 @@ def test_a_mixed_local_gguf_folder_classifies_the_same_in_either_walk_order(tmp_
     _arch_gguf(folder / "t5xxl-Q8_0.gguf", "t5encoder")
     _arch_gguf(folder / "flux1-dev-Q4_K_M.gguf", "flux")
     model = SimpleNamespace(
-        path = str(folder),
-        id = str(folder),
-        model_id = None,
-        display_name = "flux-bundle",
-        model_format = "gguf",
+        path=str(folder),
+        id=str(folder),
+        model_id=None,
+        display_name="flux-bundle",
+        model_format="gguf",
     )
 
     answers = _both_walk_orders(folder, monkeypatch, lambda: models_route._local_model_task(model))
@@ -4947,7 +4949,7 @@ def test_a_pure_text_gguf_folder_is_never_promoted_to_a_media_task(tmp_path, mon
     _arch_gguf(repo_dir / "DeepSeek-V4-Flash-0731-UD-Q4_K_XL.gguf", "deepseek4")
     _arch_gguf(repo_dir / "dspark-DeepSeek-V4-Flash-0731-Q8_0.gguf", "deepseek4")
     repo_info = SimpleNamespace(
-        repo_id = "unsloth/DeepSeek-V4-Flash-0731-GGUF", repo_path = str(repo_dir)
+        repo_id="unsloth/DeepSeek-V4-Flash-0731-GGUF", repo_path=str(repo_dir)
     )
 
     answers = _both_walk_orders(
@@ -4960,10 +4962,10 @@ def test_a_pure_text_gguf_folder_is_never_promoted_to_a_media_task(tmp_path, mon
 
 
 def _saved_pipeline(root: Path, class_name: str) -> Path:
-    root.mkdir(parents = True, exist_ok = True)
+    root.mkdir(parents=True, exist_ok=True)
     (root / "model_index.json").write_text(json.dumps({"_class_name": class_name}))
     for component in ("transformer", "vae", "text_encoder"):
-        (root / component).mkdir(parents = True, exist_ok = True)
+        (root / component).mkdir(parents=True, exist_ok=True)
         (root / component / "config.json").write_text("{}")
         (root / component / "diffusion_pytorch_model.safetensors").write_bytes(b"w" * 2048)
     return root
@@ -4979,11 +4981,11 @@ def test_a_moved_image_pipeline_is_classified_from_its_saved_pipeline_class(tmp_
         tmp_path / "N-AI-Models" / "0f3d1a2b4c5d6e7f8091a2b3c4d5e6f708192a3b", "FluxPipeline"
     )
     model = SimpleNamespace(
-        path = str(snapshot),
-        id = str(snapshot),
-        model_id = None,
-        display_name = snapshot.name,
-        model_format = None,
+        path=str(snapshot),
+        id=str(snapshot),
+        model_id=None,
+        display_name=snapshot.name,
+        model_format=None,
     )
     assert models_route._local_model_task(model) == "text-to-image"
 
@@ -4995,11 +4997,11 @@ def test_a_moved_pipeline_that_names_no_known_family_is_still_not_tagged(tmp_pat
         tmp_path / "N-AI-Models" / "1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d", "SomeOtherPipeline"
     )
     model = SimpleNamespace(
-        path = str(snapshot),
-        id = str(snapshot),
-        model_id = None,
-        display_name = snapshot.name,
-        model_format = None,
+        path=str(snapshot),
+        id=str(snapshot),
+        model_id=None,
+        display_name=snapshot.name,
+        model_format=None,
     )
     assert models_route._local_model_task(model) is None
 
@@ -5025,11 +5027,11 @@ def test_a_moved_image_pipeline_the_picker_shows_is_one_the_loader_accepts(tmp_p
     for name, class_name in cases.items():
         snapshot = _saved_pipeline(tmp_path / "N-AI-Models" / name, class_name)
         model = SimpleNamespace(
-            path = str(snapshot),
-            id = str(snapshot),
-            model_id = None,
-            display_name = snapshot.name,
-            model_format = None,
+            path=str(snapshot),
+            id=str(snapshot),
+            model_id=None,
+            display_name=snapshot.name,
+            model_format=None,
         )
         task = models_route._local_model_task(model)
         try:
@@ -5045,11 +5047,11 @@ def test_a_moved_image_pipeline_the_picker_shows_is_one_the_loader_accepts(tmp_p
     # said no.
     layered = _saved_pipeline(tmp_path / "N-AI-Models" / "qwen-image-layered", "QwenImagePipeline")
     layered_model = SimpleNamespace(
-        path = str(layered),
-        id = str(layered),
-        model_id = None,
-        display_name = layered.name,
-        model_format = None,
+        path=str(layered),
+        id=str(layered),
+        model_id=None,
+        display_name=layered.name,
+        model_format=None,
     )
     assert models_route._local_model_task(layered_model) is None
     with pytest.raises(ValueError):
@@ -5068,25 +5070,25 @@ def test_family_needles_recover_the_repo_id_from_the_hf_cache_directory(tmp_path
         / "snapshots"
         / "0f3d1a2b4c5d6e7f8091a2b3c4d5e6f708192a3b"
     )
-    snapshot.mkdir(parents = True)
+    snapshot.mkdir(parents=True)
     model = SimpleNamespace(
-        path = str(snapshot),
-        id = str(snapshot),
-        model_id = None,
-        display_name = snapshot.name,
-        model_format = None,
+        path=str(snapshot),
+        id=str(snapshot),
+        model_id=None,
+        display_name=snapshot.name,
+        model_format=None,
     )
     assert "black-forest-labs/FLUX.1-dev" in models_route._local_family_needles(model)
 
     # A directory that merely sits under a folder named for a family must not gain a needle.
     plain = tmp_path / "flux" / "my-checkpoint"
-    plain.mkdir(parents = True)
+    plain.mkdir(parents=True)
     plain_model = SimpleNamespace(
-        path = str(plain),
-        id = str(plain),
-        model_id = None,
-        display_name = plain.name,
-        model_format = None,
+        path=str(plain),
+        id=str(plain),
+        model_id=None,
+        display_name=plain.name,
+        model_format=None,
     )
     assert set(models_route._local_family_needles(plain_model)) == {"my-checkpoint"}
 
@@ -5114,9 +5116,9 @@ def test_only_the_first_shard_of_a_split_gguf_is_read_to_classify_a_repo(tmp_pat
     monkeypatch.setattr(
         catalog_classification,
         "_iter_gguf_paths",
-        lambda _root, deadline = None: iter(sorted(repo_dir.rglob("*.gguf"), reverse = True)),
+        lambda _root, deadline=None: iter(sorted(repo_dir.rglob("*.gguf"), reverse=True)),
     )
-    repo_info = SimpleNamespace(repo_id = "unsloth/Big-GGUF", repo_path = str(repo_dir))
+    repo_info = SimpleNamespace(repo_id="unsloth/Big-GGUF", repo_path=str(repo_dir))
 
     assert models_route._repo_gguf_task(repo_info) == "text-generation"
     assert read == ["Big-Q4_K_M-00001-of-00003.gguf"], read
@@ -5136,7 +5138,7 @@ def test_a_gguf_folder_walk_stops_on_its_budget_instead_of_holding_the_listing(t
     assert models_route._gguf_folder_task(folder, ("someone/model",)) == "text-generation"
     # A budget already spent buys nothing.
     spent = models_route._gguf_folder_task(
-        folder, ("someone/model",), deadline = time.monotonic() - 1
+        folder, ("someone/model",), deadline=time.monotonic() - 1
     )
     assert spent is None
 
@@ -5152,7 +5154,7 @@ def test_a_slow_walk_cannot_hand_back_the_encoder_this_function_exists_to_avoid(
     _arch_gguf(folder / "flux1-dev-Q4_K_M.gguf", "flux")
     ordered = sorted(folder.rglob("*.gguf"))
 
-    def _slow_walk(_root, deadline = None):
+    def _slow_walk(_root, deadline=None):
         # Spends the whole walk budget before yielding anything, like a cold network mount.
         time.sleep(models_route._TASK_CLASSIFY_WALK_SECONDS + 0.05)
         return iter(ordered)
@@ -5242,7 +5244,7 @@ def test_a_truncated_classification_never_answers_speech(tmp_path, monkeypatch):
     monkeypatch.undo()
 
     # The walk giving up at its deadline with only the csm quant yielded.
-    def truncating(root, deadline = None):
+    def truncating(root, deadline=None):
         yield folder / "csm-1b-Q4_0.gguf"
         while deadline is not None and time.monotonic() < deadline:
             time.sleep(0.01)
@@ -5308,7 +5310,7 @@ def test_a_sibling_whose_header_will_not_read_keeps_speech_off_the_folder(tmp_pa
         folder = tmp_path / f"unreadable-{label}"
         _arch_gguf(folder / "aaa-csm.gguf", "llama-csm")
         sibling = folder / "zzz-qwen3-Q4_K_M.gguf"
-        sibling.parent.mkdir(parents = True, exist_ok = True)
+        sibling.parent.mkdir(parents=True, exist_ok=True)
         write_sibling(sibling)
         assert models_route._gguf_folder_task(folder, ("someone/mixed-GGUF",)) is None, label
 
@@ -5331,10 +5333,10 @@ def test_speech_gguf_classification_preserves_decoder_provenance(tmp_path):
     hints = ("unsloth/csm-1b-GGUF", "csm-1b-Q4_0.gguf", "sesame-csm", "text-to-speech")
     assert models_route._arch_to_task("llama-csm") == models_route._SPEECH_TASK
     for arch in (None, "", "llama", "qwen3", "flux"):
-        assert models_route._arch_to_task(arch, name_hints = hints) != models_route._SPEECH_TASK
+        assert models_route._arch_to_task(arch, name_hints=hints) != models_route._SPEECH_TASK
     # Orpheus ships as a llama GGUF. Its family hint makes it speech-only, and the
     # codec field is what lets Audio route it instead of mistaking it for CSM.
-    assert models_route._arch_to_task("llama", name_hints = ("unsloth/orpheus-3b-0.1-ft-GGUF",)) == (
+    assert models_route._arch_to_task("llama", name_hints=("unsloth/orpheus-3b-0.1-ft-GGUF",)) == (
         models_route._SPEECH_TASK
     )
     assert _classification._arch_to_audio_type("llama-csm", hints) == "csm"
@@ -5343,7 +5345,7 @@ def test_speech_gguf_classification_preserves_decoder_provenance(tmp_path):
     )
     snapshot = tmp_path / "snapshot"
     _arch_gguf(snapshot / "orpheus-3b-q4.gguf", "llama")
-    repo = SimpleNamespace(repo_id = "community/orpheus-3b-GGUF", repo_path = snapshot)
+    repo = SimpleNamespace(repo_id="community/orpheus-3b-GGUF", repo_path=snapshot)
     assert _classification._repo_gguf_audio_type(repo, snapshot) == "snac"
 
 
@@ -5387,7 +5389,7 @@ def test_a_pipeline_index_this_listing_cannot_read_leaves_the_model_untagged(tmp
 
     bomb = tmp_path / "bomb"
     bomb.mkdir()
-    (bomb / "model_index.json").write_text('{"a":' * 100_000, encoding = "utf-8")
+    (bomb / "model_index.json").write_text('{"a":' * 100_000, encoding="utf-8")
     assert read(bomb) is None
 
     bom = tmp_path / "bom"
@@ -5402,7 +5404,7 @@ def test_a_pipeline_index_this_listing_cannot_read_leaves_the_model_untagged(tmp
     plain.mkdir()
     (plain / "model_index.json").write_text(
         json.dumps({"_class_name": "FluxPipeline", "_name_or_path": "café"}),
-        encoding = "utf-8",
+        encoding="utf-8",
     )
     assert read(plain) == "FluxPipeline"
 
@@ -5418,13 +5420,13 @@ def test_a_remote_code_pipeline_class_is_not_read_out_of_its_list_form(tmp_path)
     root = tmp_path / "9f3c1a2b"
     root.mkdir()
     (root / "model_index.json").write_text(
-        json.dumps({"_class_name": ["my_custom_flux", "FluxPipeline"]}), encoding = "utf-8"
+        json.dumps({"_class_name": ["my_custom_flux", "FluxPipeline"]}), encoding="utf-8"
     )
     assert pipeline_class_from_index(str(root)) is None
 
     # The plain string form of the same class is still read, so this is a shape check, not a ban.
     (root / "model_index.json").write_text(
-        json.dumps({"_class_name": "FluxPipeline"}), encoding = "utf-8"
+        json.dumps({"_class_name": "FluxPipeline"}), encoding="utf-8"
     )
     assert pipeline_class_from_index(str(root)) == "FluxPipeline"
 
@@ -5458,11 +5460,11 @@ def test_a_pipelines_component_dirs_do_not_inherit_the_repo_id(tmp_path):
 
     def _row(directory):
         return SimpleNamespace(
-            path = str(directory),
-            id = str(directory),
-            model_id = None,
-            display_name = directory.name,
-            model_format = "diffusers",
+            path=str(directory),
+            id=str(directory),
+            model_id=None,
+            display_name=directory.name,
+            model_format="diffusers",
         )
 
     # The snapshot root is the #8407 case: it must still recover the id and classify.
@@ -5502,7 +5504,7 @@ def test_a_pipeline_index_outranks_a_family_keyword_in_an_ancestor_directory(tmp
     from core.inference import diffusion_families as families
 
     checkpoint = tmp_path / "flux.1" / "checkpoint"
-    checkpoint.mkdir(parents = True)
+    checkpoint.mkdir(parents=True)
     (checkpoint / "model_index.json").write_text(
         json.dumps({"_class_name": "QwenImagePipeline", "_diffusers_version": "0.39.0"})
     )
@@ -5525,15 +5527,15 @@ def test_reading_the_index_first_leaves_remote_picks_and_overrides_alone(tmp_pat
         assert families.detect_family_for_pick(repo_id) is families.detect_family(repo_id, None)
 
     checkpoint = tmp_path / "flux.1" / "checkpoint"
-    checkpoint.mkdir(parents = True)
+    checkpoint.mkdir(parents=True)
     (checkpoint / "model_index.json").write_text(json.dumps({"_class_name": "QwenImagePipeline"}))
     # An explicit override still wins over both the index and the path.
-    assert families.detect_family_for_pick(str(checkpoint), override = "flux.1") is (
+    assert families.detect_family_for_pick(str(checkpoint), override="flux.1") is (
         families.detect_family(str(checkpoint), "flux.1")
     )
     # A bare directory with no index still resolves through the GGUF filename.
     assert families.detect_family_for_pick(
-        str(tmp_path / "anon"), gguf_filename = "flux1-dev-Q4_K_M.gguf"
+        str(tmp_path / "anon"), gguf_filename="flux1-dev-Q4_K_M.gguf"
     ) is families.detect_family("x/flux1-dev-Q4_K_M.gguf", None)
 
 
@@ -5582,7 +5584,7 @@ def test_the_listing_probe_reads_the_installed_version_instead_of_importing_diff
 
     z_image, h3 = _listing_families()
     installed = ["0.39.0"]
-    monkeypatch.delitem(sys.modules, "diffusers", raising = False)
+    monkeypatch.delitem(sys.modules, "diffusers", raising=False)
     monkeypatch.setattr(importlib.metadata, "version", lambda name: installed[0])
 
     assert family_pipeline_available(z_image) is True
@@ -5606,7 +5608,7 @@ def test_the_listing_probe_fails_open_when_the_version_is_unknowable(monkeypatch
     from core.inference.diffusion_families import family_pipeline_available
 
     z_image, h3 = _listing_families()
-    monkeypatch.delitem(sys.modules, "diffusers", raising = False)
+    monkeypatch.delitem(sys.modules, "diffusers", raising=False)
 
     def _not_installed(name):
         raise importlib.metadata.PackageNotFoundError(name)
@@ -5698,7 +5700,7 @@ def test_the_load_path_stays_the_authority_on_a_nonstandard_build(monkeypatch):
     monkeypatch.setitem(sys.modules, "diffusers", nonstandard)
 
     assert family_pipeline_available(z_image) is True
-    with pytest.raises(ValueError, match = "ZImagePipeline"):
+    with pytest.raises(ValueError, match="ZImagePipeline"):
         assert_pipeline_class_available("ZImagePipeline", "z-image")
 
 
@@ -5712,7 +5714,7 @@ def test_the_listing_probe_does_not_read_a_module_that_is_still_importing(monkey
     z_image, h3 = _listing_families()
 
     partial = types.ModuleType("diffusers")
-    spec = importlib.util.spec_from_loader("diffusers", loader = None)
+    spec = importlib.util.spec_from_loader("diffusers", loader=None)
     spec._initializing = True
     partial.__spec__ = spec
     monkeypatch.setitem(sys.modules, "diffusers", partial)
@@ -5746,7 +5748,7 @@ def test_the_listing_probe_reads_a_vendor_or_prerelease_version(monkeypatch):
     sdxl = detect_family("stabilityai/stable-diffusion-xl-base-1.0")
     assert sdxl is not None
     installed = ["0.40.0+dfsg"]
-    monkeypatch.delitem(sys.modules, "diffusers", raising = False)
+    monkeypatch.delitem(sys.modules, "diffusers", raising=False)
     monkeypatch.setattr(importlib.metadata, "version", lambda name: installed[0])
 
     assert family_pipeline_available(sdxl) is True
@@ -5796,7 +5798,7 @@ def test_the_listing_probe_hides_a_class_the_installed_diffusers_predates(monkey
     assert wan is not None and family_probe_class(wan) == "WanPipeline"
 
     installed = ["0.32.0"]
-    monkeypatch.delitem(sys.modules, "diffusers", raising = False)
+    monkeypatch.delitem(sys.modules, "diffusers", raising=False)
     monkeypatch.setattr(importlib.metadata, "version", lambda name: installed[0])
 
     assert family_pipeline_available(wan) is False  # WanPipeline arrived in 0.33.0
@@ -5814,7 +5816,7 @@ def test_cached_model_rows_pins_snapshot_load_id_for_inactive_cache(monkeypatch,
     active = tmp_path / "active"
     active.mkdir()
     snapshot = tmp_path / "legacy" / "models--Org--Away" / "snapshots" / "rev"
-    snapshot.mkdir(parents = True)
+    snapshot.mkdir(parents=True)
     away = _snapshot_repo(
         "Org/Away",
         tmp_path / "legacy" / "models--Org--Away",
@@ -5822,7 +5824,7 @@ def test_cached_model_rows_pins_snapshot_load_id_for_inactive_cache(monkeypatch,
         [_file("model.safetensors", 5_000)],
     )
     here_snapshot = active / "models--Org--Here" / "snapshots" / "rev"
-    here_snapshot.mkdir(parents = True)
+    here_snapshot.mkdir(parents=True)
     here = _snapshot_repo(
         "Org/Here",
         active / "models--Org--Here",
@@ -5830,7 +5832,7 @@ def test_cached_model_rows_pins_snapshot_load_id_for_inactive_cache(monkeypatch,
         [_file("model.safetensors", 6_000)],
     )
 
-    monkeypatch.setattr(models_route, "_cached_repo_task", lambda repo_info, selected = None: None)
+    monkeypatch.setattr(models_route, "_cached_repo_task", lambda repo_info, selected=None: None)
     monkeypatch.setattr(models_route, "_cached_repo_partial", lambda *args, **kwargs: False)
     _scanned_repos(monkeypatch, away, here)
     monkeypatch.setattr(models_route, "_resolve_hf_cache_dir", lambda: active)
@@ -5847,7 +5849,7 @@ def test_cached_model_rows_flags_adapter_repos(monkeypatch, tmp_path):
     a key that is never set and offers the adapter as a whole model."""
     active = tmp_path / "active"
     adapter_snap = active / "models--Org--Lora" / "snapshots" / "rev"
-    adapter_snap.mkdir(parents = True)
+    adapter_snap.mkdir(parents=True)
     (adapter_snap / "adapter_config.json").write_text("{}")
     adapter = _snapshot_repo(
         "Org/Lora",
@@ -5856,7 +5858,7 @@ def test_cached_model_rows_flags_adapter_repos(monkeypatch, tmp_path):
         [_file("adapter_model.safetensors", 4_000)],
     )
     merged_snap = active / "models--Org--Merged" / "snapshots" / "rev"
-    merged_snap.mkdir(parents = True)
+    merged_snap.mkdir(parents=True)
     (merged_snap / "config.json").write_text("{}")
     merged = _snapshot_repo(
         "Org/Merged",
@@ -5865,7 +5867,7 @@ def test_cached_model_rows_flags_adapter_repos(monkeypatch, tmp_path):
         [_file("model.safetensors", 9_000)],
     )
 
-    monkeypatch.setattr(models_route, "_cached_repo_task", lambda repo_info, selected = None: None)
+    monkeypatch.setattr(models_route, "_cached_repo_task", lambda repo_info, selected=None: None)
     monkeypatch.setattr(models_route, "_cached_repo_partial", lambda *args, **kwargs: False)
     _scanned_repos(monkeypatch, adapter, merged)
     monkeypatch.setattr(models_route, "_resolve_hf_cache_dir", lambda: active)
@@ -5885,11 +5887,11 @@ def test_cached_model_rows_marks_encoder_only_repos_unchattable(monkeypatch, tmp
         repo_id,
         config,
         *,
-        modules_json = False,
+        modules_json=False,
     ):
         owner, name = repo_id.split("/")
         snap = active / f"models--{owner}--{name}" / "snapshots" / "rev"
-        snap.mkdir(parents = True)
+        snap.mkdir(parents=True)
         (snap / "config.json").write_text(json.dumps(config))
         if modules_json:
             (snap / "modules.json").write_text("[]")
@@ -5904,7 +5906,7 @@ def test_cached_model_rows_marks_encoder_only_repos_unchattable(monkeypatch, tmp
     embedder = _cached(
         "sentence-transformers/all-MiniLM-L6-v2",
         {"model_type": "bert", "architectures": ["BertModel"]},
-        modules_json = True,
+        modules_json=True,
     )
     clip = _cached(
         "openai/clip-vit-base-patch32",
@@ -5915,7 +5917,7 @@ def test_cached_model_rows_marks_encoder_only_repos_unchattable(monkeypatch, tmp
         {"model_type": "qwen3", "architectures": ["Qwen3ForCausalLM"]},
     )
 
-    monkeypatch.setattr(models_route, "_cached_repo_task", lambda repo_info, selected = None: None)
+    monkeypatch.setattr(models_route, "_cached_repo_task", lambda repo_info, selected=None: None)
     monkeypatch.setattr(models_route, "_cached_repo_partial", lambda *args, **kwargs: False)
     _scanned_repos(monkeypatch, embedder, clip, chat)
     monkeypatch.setattr(models_route, "_resolve_hf_cache_dir", lambda: active)
@@ -5940,12 +5942,12 @@ def test_cached_model_rows_pins_the_snapshot_that_holds_the_weights(monkeypatch,
     repo_dir = tmp_path / "legacy" / "models--Org--Chatty"
 
     complete = repo_dir / "snapshots" / "complete"
-    complete.mkdir(parents = True)
+    complete.mkdir(parents=True)
     (complete / "config.json").write_text("{}")
     (complete / "model.safetensors").write_bytes(b"\0" * 64)
 
     metadata_only = repo_dir / "snapshots" / "metadata"
-    metadata_only.mkdir(parents = True)
+    metadata_only.mkdir(parents=True)
     (metadata_only / "config.json").write_text("{}")
     (metadata_only / "tokenizer.json").write_text("{}")
 
@@ -5957,9 +5959,9 @@ def test_cached_model_rows_pins_the_snapshot_that_holds_the_weights(monkeypatch,
         "Org/Chatty",
         [],
         repo_dir,
-        revisions = [
-            SimpleNamespace(files = [_file("model.safetensors", 5_000)], snapshot_path = complete),
-            SimpleNamespace(files = [_file("config.json", 100)], snapshot_path = metadata_only),
+        revisions=[
+            SimpleNamespace(files=[_file("model.safetensors", 5_000)], snapshot_path=complete),
+            SimpleNamespace(files=[_file("config.json", 100)], snapshot_path=metadata_only),
         ],
     )
 
@@ -5977,11 +5979,11 @@ def test_repo_model_can_chat_still_reads_a_metadata_only_snapshot(tmp_path):
     repo_dir = tmp_path / "models--Org--Embedder"
 
     weights_only = repo_dir / "snapshots" / "weights"
-    weights_only.mkdir(parents = True)
+    weights_only.mkdir(parents=True)
     (weights_only / "model.safetensors").write_bytes(b"\0" * 64)
 
     metadata_only = repo_dir / "snapshots" / "metadata"
-    metadata_only.mkdir(parents = True)
+    metadata_only.mkdir(parents=True)
     (metadata_only / "config.json").write_text(
         json.dumps({"model_type": "bert", "architectures": ["BertModel"]})
     )
@@ -5993,9 +5995,9 @@ def test_repo_model_can_chat_still_reads_a_metadata_only_snapshot(tmp_path):
         "Org/Embedder",
         [],
         repo_dir,
-        revisions = [
-            SimpleNamespace(files = [], snapshot_path = weights_only),
-            SimpleNamespace(files = [], snapshot_path = metadata_only),
+        revisions=[
+            SimpleNamespace(files=[], snapshot_path=weights_only),
+            SimpleNamespace(files=[], snapshot_path=metadata_only),
         ],
     )
 
@@ -6014,12 +6016,12 @@ def test_cached_model_rows_skips_a_weights_only_snapshot(monkeypatch, tmp_path):
     repo_dir = tmp_path / "legacy" / "models--Org--Chatty"
 
     complete = repo_dir / "snapshots" / "complete"
-    complete.mkdir(parents = True)
+    complete.mkdir(parents=True)
     (complete / "config.json").write_text("{}")
     (complete / "model.safetensors").write_bytes(b"\0" * 64)
 
     weights_only = repo_dir / "snapshots" / "weights"
-    weights_only.mkdir(parents = True)
+    weights_only.mkdir(parents=True)
     (weights_only / "model.safetensors").write_bytes(b"\0" * 64)
     (weights_only / "model.safetensors.index.json").write_text("{}")
 
@@ -6031,9 +6033,9 @@ def test_cached_model_rows_skips_a_weights_only_snapshot(monkeypatch, tmp_path):
         "Org/Chatty",
         [],
         repo_dir,
-        revisions = [
-            SimpleNamespace(files = [_file("model.safetensors", 5_000)], snapshot_path = complete),
-            SimpleNamespace(files = [_file("model.safetensors", 5_000)], snapshot_path = weights_only),
+        revisions=[
+            SimpleNamespace(files=[_file("model.safetensors", 5_000)], snapshot_path=complete),
+            SimpleNamespace(files=[_file("model.safetensors", 5_000)], snapshot_path=weights_only),
         ],
     )
 
@@ -6053,7 +6055,7 @@ def test_cached_model_rows_skips_a_weights_only_snapshot(monkeypatch, tmp_path):
             "model-00001-of-00002.safetensors": b"\0" * 64,
         },
     ],
-    ids = ["metadata-only", "torn-shards"],
+    ids=["metadata-only", "torn-shards"],
 )
 def test_cached_model_rows_pins_when_the_active_ref_cannot_serve_a_load(
     monkeypatch, tmp_path, ref_files
@@ -6068,18 +6070,18 @@ def test_cached_model_rows_pins_when_the_active_ref_cannot_serve_a_load(
     repo_dir = active / "models--Org--Chatty"
 
     complete = repo_dir / "snapshots" / "complete"
-    complete.mkdir(parents = True)
+    complete.mkdir(parents=True)
     (complete / "config.json").write_text("{}")
     (complete / "model.safetensors").write_bytes(b"\0" * 64)
 
     broken_ref = repo_dir / "snapshots" / "broken"
-    broken_ref.mkdir(parents = True)
+    broken_ref.mkdir(parents=True)
     for filename, payload in ref_files.items():
         (broken_ref / filename).write_bytes(payload)
 
-    (repo_dir / "refs").mkdir(parents = True)
+    (repo_dir / "refs").mkdir(parents=True)
     (repo_dir / "refs" / "main").write_text("broken")
-    (repo_dir / "blobs").mkdir(parents = True)
+    (repo_dir / "blobs").mkdir(parents=True)
     (repo_dir / "blobs" / "unfinished.incomplete").write_bytes(b"")
 
     os.utime(complete, (1_000_000, 1_000_000))
@@ -6089,16 +6091,16 @@ def test_cached_model_rows_pins_when_the_active_ref_cannot_serve_a_load(
         "Org/Chatty",
         [],
         repo_dir,
-        revisions = [
-            SimpleNamespace(files = [_file("model.safetensors", 5_000)], snapshot_path = complete),
+        revisions=[
+            SimpleNamespace(files=[_file("model.safetensors", 5_000)], snapshot_path=complete),
             SimpleNamespace(
-                files = [_file(filename, len(payload)) for filename, payload in ref_files.items()],
-                snapshot_path = broken_ref,
+                files=[_file(filename, len(payload)) for filename, payload in ref_files.items()],
+                snapshot_path=broken_ref,
             ),
         ],
     )
 
-    monkeypatch.setattr(models_route, "_cached_repo_task", lambda repo_info, selected = None: None)
+    monkeypatch.setattr(models_route, "_cached_repo_task", lambda repo_info, selected=None: None)
     _scanned_repos(monkeypatch, repo)
     monkeypatch.setattr(models_route, "_resolve_hf_cache_dir", lambda: active.resolve())
 
@@ -6141,34 +6143,34 @@ def test_cached_model_rows_scope_pipeline_partialness_to_the_pinned_snapshot(mon
             files["transformer/diffusion_pytorch_model.safetensors"] = b"\0" * 64
         for name, payload in files.items():
             target = snapshot / name
-            target.parent.mkdir(parents = True, exist_ok = True)
+            target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(payload)
         return files
 
-    complete_files = write_pipeline(complete, with_transformer = True)
-    broken_files = write_pipeline(broken, with_transformer = False)
+    complete_files = write_pipeline(complete, with_transformer=True)
+    broken_files = write_pipeline(broken, with_transformer=False)
     os.utime(complete, (1_000_000, 1_000_000))
     os.utime(broken, (2_000_000, 2_000_000))
-    (repo_dir / "refs").mkdir(parents = True)
+    (repo_dir / "refs").mkdir(parents=True)
     (repo_dir / "refs" / "main").write_text("broken")
 
     repo = _repo(
         "Org/Pipeline",
         [],
         repo_dir,
-        revisions = [
+        revisions=[
             SimpleNamespace(
-                files = [_file(name, len(payload)) for name, payload in complete_files.items()],
-                snapshot_path = complete,
+                files=[_file(name, len(payload)) for name, payload in complete_files.items()],
+                snapshot_path=complete,
             ),
             SimpleNamespace(
-                files = [_file(name, len(payload)) for name, payload in broken_files.items()],
-                snapshot_path = broken,
+                files=[_file(name, len(payload)) for name, payload in broken_files.items()],
+                snapshot_path=broken,
             ),
         ],
     )
 
-    monkeypatch.setattr(models_route, "_cached_repo_task", lambda repo_info, selected = None: None)
+    monkeypatch.setattr(models_route, "_cached_repo_task", lambda repo_info, selected=None: None)
     monkeypatch.setattr(models_route, "_cached_repo_partial", lambda *args, **kwargs: False)
     _scanned_repos(monkeypatch, repo)
     monkeypatch.setattr(models_route, "_resolve_hf_cache_dir", lambda: active.resolve())
@@ -6190,13 +6192,13 @@ def test_active_cache_repo_with_a_serving_ref_keeps_its_bare_id(tmp_path):
         revisions = []
         for commit, files in snaps.items():
             snap = repo_dir / "snapshots" / commit
-            snap.mkdir(parents = True)
+            snap.mkdir(parents=True)
             for fname in files:
                 (snap / fname).write_text("{}")
-            revisions.append(SimpleNamespace(snapshot_path = snap, files = []))
-        (repo_dir / "refs").mkdir(parents = True)
+            revisions.append(SimpleNamespace(snapshot_path=snap, files=[]))
+        (repo_dir / "refs").mkdir(parents=True)
         (repo_dir / "refs" / "main").write_text(ref)
-        return SimpleNamespace(repo_id = f"Org/{name}", repo_path = repo_dir, revisions = revisions)
+        return SimpleNamespace(repo_id=f"Org/{name}", repo_path=repo_dir, revisions=revisions)
 
     healthy = _build("Healthy", "good", {"good": ["config.json", "model.safetensors"]})
     assert models_route._repo_model_load_id(healthy, active.resolve()) is None
@@ -6218,13 +6220,13 @@ def test_cached_model_rows_ignores_a_training_args_bin_when_pinning(monkeypatch,
     repo_dir = tmp_path / "legacy" / "models--Org--Tuned"
 
     complete = repo_dir / "snapshots" / "complete"
-    complete.mkdir(parents = True)
+    complete.mkdir(parents=True)
     (complete / "config.json").write_text("{}")
     (complete / "model.safetensors").write_bytes(b"\0" * 64)
 
     # config.json + the Trainer artefact landed; the shards are still coming.
     decoy = repo_dir / "snapshots" / "decoy"
-    decoy.mkdir(parents = True)
+    decoy.mkdir(parents=True)
     (decoy / "config.json").write_text("{}")
     (decoy / "training_args.bin").write_bytes(b"\0" * 64)
 
@@ -6235,9 +6237,9 @@ def test_cached_model_rows_ignores_a_training_args_bin_when_pinning(monkeypatch,
         "Org/Tuned",
         [],
         repo_dir,
-        revisions = [
-            SimpleNamespace(files = [_file("model.safetensors", 5_000)], snapshot_path = complete),
-            SimpleNamespace(files = [_file("training_args.bin", 64)], snapshot_path = decoy),
+        revisions=[
+            SimpleNamespace(files=[_file("model.safetensors", 5_000)], snapshot_path=complete),
+            SimpleNamespace(files=[_file("training_args.bin", 64)], snapshot_path=decoy),
         ],
     )
 
@@ -6260,16 +6262,16 @@ def test_cached_model_rows_classifies_the_selected_revision_not_the_history(monk
     repo_dir = active / "models--Org--Tuned"
 
     adapter = repo_dir / "snapshots" / "lorarev"
-    adapter.mkdir(parents = True)
+    adapter.mkdir(parents=True)
     (adapter / "adapter_config.json").write_text("{}")
     (adapter / "adapter_model.safetensors").write_bytes(b"\0" * 512)
 
     merged = repo_dir / "snapshots" / "mergedrev"
-    merged.mkdir(parents = True)
+    merged.mkdir(parents=True)
     (merged / "config.json").write_text("{}")
     (merged / "model.safetensors").write_bytes(b"\0" * 9_000)
 
-    (repo_dir / "refs").mkdir(parents = True)
+    (repo_dir / "refs").mkdir(parents=True)
     (repo_dir / "refs" / "main").write_text("mergedrev")
     os.utime(adapter, (1_000_000, 1_000_000))
     os.utime(merged, (2_000_000, 2_000_000))
@@ -6278,9 +6280,9 @@ def test_cached_model_rows_classifies_the_selected_revision_not_the_history(monk
         "Org/Tuned",
         [],
         repo_dir,
-        revisions = [
-            SimpleNamespace(files = [_file("adapter_model.safetensors", 512)], snapshot_path = adapter),
-            SimpleNamespace(files = [_file("model.safetensors", 9_000)], snapshot_path = merged),
+        revisions=[
+            SimpleNamespace(files=[_file("adapter_model.safetensors", 512)], snapshot_path=adapter),
+            SimpleNamespace(files=[_file("model.safetensors", 9_000)], snapshot_path=merged),
         ],
     )
 
@@ -6298,11 +6300,11 @@ def test_cached_model_rows_judge_chat_capability_on_the_selected_revision(monkey
     active = tmp_path / "active"
     repo_dir = active / "models--Org--Repurposed"
     old = repo_dir / "snapshots" / "aaaold"
-    old.mkdir(parents = True)
+    old.mkdir(parents=True)
     (old / "config.json").write_text(json.dumps({"model_type": "qwen3"}))
     (old / "model.safetensors").write_bytes(b"\0" * 32)
     new = repo_dir / "snapshots" / "bbbnew"
-    new.mkdir(parents = True)
+    new.mkdir(parents=True)
     (new / "config.json").write_text(
         json.dumps({"model_type": "bert", "architectures": ["BertModel"]})
     )
@@ -6312,9 +6314,9 @@ def test_cached_model_rows_judge_chat_capability_on_the_selected_revision(monkey
         "Org/Repurposed",
         [],
         repo_dir,
-        revisions = [
-            SimpleNamespace(files = [_file("model.safetensors", 9_000)], snapshot_path = old),
-            SimpleNamespace(files = [_file("config.json", 12)], snapshot_path = new),
+        revisions=[
+            SimpleNamespace(files=[_file("model.safetensors", 9_000)], snapshot_path=old),
+            SimpleNamespace(files=[_file("config.json", 12)], snapshot_path=new),
         ],
     )
 
@@ -6332,13 +6334,13 @@ def test_cached_model_rows_judge_diffusers_on_the_selected_revision(monkeypatch,
     active = tmp_path / "active"
     repo_dir = active / "models--Org--Repurposed"
     causal = repo_dir / "snapshots" / "causal"
-    causal.mkdir(parents = True)
+    causal.mkdir(parents=True)
     (causal / "config.json").write_text(
         json.dumps({"model_type": "qwen3", "architectures": ["Qwen3ForCausalLM"]})
     )
     (causal / "model.safetensors").write_bytes(b"\0" * 64)
     pipeline = repo_dir / "snapshots" / "pipeline"
-    (pipeline / "vae").mkdir(parents = True)
+    (pipeline / "vae").mkdir(parents=True)
     manifest = json.dumps(
         {
             "_class_name": "FluxPipeline",
@@ -6350,23 +6352,23 @@ def test_cached_model_rows_judge_diffusers_on_the_selected_revision(monkeypatch,
     (pipeline / "vae" / "diffusion_pytorch_model.safetensors").write_bytes(b"\0" * 64)
     os.utime(causal, (1_000_000, 1_000_000))
     os.utime(pipeline, (2_000_000, 2_000_000))
-    (repo_dir / "refs").mkdir(parents = True)
+    (repo_dir / "refs").mkdir(parents=True)
     (repo_dir / "refs" / "main").write_text("pipeline")
     repo = _repo(
         "Org/Repurposed",
         [],
         repo_dir,
-        revisions = [
+        revisions=[
             SimpleNamespace(
-                files = [_file("config.json", 64), _file("model.safetensors", 64)],
-                snapshot_path = causal,
+                files=[_file("config.json", 64), _file("model.safetensors", 64)],
+                snapshot_path=causal,
             ),
             SimpleNamespace(
-                files = [
+                files=[
                     _file("model_index.json", len(manifest)),
                     _file("vae/diffusion_pytorch_model.safetensors", 64),
                 ],
-                snapshot_path = pipeline,
+                snapshot_path=pipeline,
             ),
         ],
     )
@@ -6387,7 +6389,7 @@ def test_cached_model_rows_flag_a_selected_modular_pipeline_as_diffusers(monkeyp
     active = tmp_path / "active"
     repo_dir = active / "models--Org--Custom-Pipeline"
     snapshot = repo_dir / "snapshots" / "rev"
-    (snapshot / "transformer").mkdir(parents = True)
+    (snapshot / "transformer").mkdir(parents=True)
     manifest = json.dumps(
         {
             "_class_name": "ModularPipeline",
@@ -6397,20 +6399,20 @@ def test_cached_model_rows_flag_a_selected_modular_pipeline_as_diffusers(monkeyp
     (snapshot / "modular_model_index.json").write_text(manifest)
     (snapshot / "transformer" / "config.json").write_text("{}")
     (snapshot / "transformer" / "diffusion_pytorch_model.safetensors").write_bytes(b"\0" * 64)
-    (repo_dir / "refs").mkdir(parents = True)
+    (repo_dir / "refs").mkdir(parents=True)
     (repo_dir / "refs" / "main").write_text("rev")
     repo = _repo(
         "Org/Custom-Pipeline",
         [],
         repo_dir,
-        revisions = [
+        revisions=[
             SimpleNamespace(
-                files = [
+                files=[
                     _file("modular_model_index.json", len(manifest)),
                     _file("transformer/config.json", 2),
                     _file("transformer/diffusion_pytorch_model.safetensors", 64),
                 ],
-                snapshot_path = snapshot,
+                snapshot_path=snapshot,
             )
         ],
     )
@@ -6434,7 +6436,7 @@ def test_cached_model_rows_flag_a_diffusion_repo_this_backend_cannot_load(monkey
     active = tmp_path / "active"
     repo_dir = active / "models--someuser--my-sdxl-finetune"
     snap = repo_dir / "snapshots" / "rev"
-    (snap / "unet").mkdir(parents = True)
+    (snap / "unet").mkdir(parents=True)
     (snap / "model_index.json").write_text(json.dumps({"_class_name": "StableDiffusionXLPipeline"}))
     (snap / "unet" / "diffusion_pytorch_model.safetensors").write_bytes(b"\0" * 32)
     repo = _snapshot_repo(
@@ -6471,7 +6473,7 @@ def test_cached_model_rows_pins_a_commit_pinned_repo_with_no_default_ref(monkeyp
 
     commit = "a" * 40
     complete = repo_dir / "snapshots" / commit
-    complete.mkdir(parents = True)
+    complete.mkdir(parents=True)
     (complete / "config.json").write_text("{}")
     (complete / "model.safetensors").write_bytes(b"\0" * 64)
     # No refs/ directory at all: the shape a revision=<sha> fetch leaves behind.
@@ -6499,18 +6501,18 @@ def test_cached_model_rows_keeps_a_recovered_repo_that_can_serve_a_load(monkeypa
     def _recovered(name, files):
         repo_dir = active / f"models--Org--{name}"
         snapshot = repo_dir / "snapshots" / ("b" * 40)
-        snapshot.mkdir(parents = True)
+        snapshot.mkdir(parents=True)
         for filename, blob in files.items():
             (snapshot / filename).write_bytes(blob)
-        (repo_dir / "refs").mkdir(parents = True)
+        (repo_dir / "refs").mkdir(parents=True)
         # Dangling: names a commit with no directory, which is what recovery fires on.
         (repo_dir / "refs" / "main").write_text("d" * 40)
         return snapshot, _repo(
             f"Org/{name}",
             [],
             repo_dir,
-            revisions = [
-                SimpleNamespace(files = [_file("model.safetensors", 5_000)], snapshot_path = snapshot),
+            revisions=[
+                SimpleNamespace(files=[_file("model.safetensors", 5_000)], snapshot_path=snapshot),
             ],
         )
 
@@ -6519,7 +6521,7 @@ def test_cached_model_rows_keeps_a_recovered_repo_that_can_serve_a_load(monkeypa
     )
     _, metadata_only = _recovered("Half", {"config.json": b"{}"})
 
-    monkeypatch.setattr(models_route, "_cached_repo_task", lambda repo_info, selected = None: None)
+    monkeypatch.setattr(models_route, "_cached_repo_task", lambda repo_info, selected=None: None)
     monkeypatch.setattr(models_route, "_cached_repo_partial", lambda *args, **kwargs: False)
     monkeypatch.setattr(
         models_route, "_recovered_repo_is_unusable_by_repo_id", lambda repo_info: True
@@ -6620,4 +6622,5 @@ def test_a_name_that_moved_out_of_routes_models_still_resolves_there(name):
 def test_the_video_page_probe_resolves_the_helper_it_imports():
     """The exact import that broke, asserted at its own call site."""
     from routes.models import _video_family_buildable
+
     assert callable(_video_family_buildable)

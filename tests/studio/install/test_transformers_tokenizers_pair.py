@@ -69,7 +69,7 @@ STRANDED_TOKENIZERS = "0.23.2"
 def _requirements(path: pathlib.Path) -> list[Requirement]:
     """Parsed requirement lines; comments, flags and unparseable lines dropped."""
     out: list[Requirement] = []
-    for line in path.read_text(encoding = "utf-8").splitlines():
+    for line in path.read_text(encoding="utf-8").splitlines():
         text = line.split("#", 1)[0].strip()
         if not text or text.startswith("-"):
             continue
@@ -256,16 +256,16 @@ def _compile(args: list[str], stdin: str | None = None) -> dict[str, str]:
     try:
         proc = subprocess.run(
             [_uv(), "pip", "compile", *args],
-            input = stdin,
-            capture_output = True,
-            text = True,
-            timeout = _COMPILE_TIMEOUT_S,
-            cwd = REPO_ROOT,
+            input=stdin,
+            capture_output=True,
+            text=True,
+            timeout=_COMPILE_TIMEOUT_S,
+            cwd=REPO_ROOT,
             # uv resolves aarch64-apple-darwin against macOS 12 by default, and mlx ships
             # macosx_14_0 wheels only, so the resolve would fail for a reason that has nothing
             # to do with the pair under test. Pin the deployment target instead of inheriting
             # whatever the host happens to export.
-            env = {**os.environ, "MACOSX_DEPLOYMENT_TARGET": "15.0"},
+            env={**os.environ, "MACOSX_DEPLOYMENT_TARGET": "15.0"},
         )
     except subprocess.TimeoutExpired:
         pytest.skip(f"uv pip compile exceeded {_COMPILE_TIMEOUT_S}s; treating as index trouble")
@@ -290,7 +290,7 @@ def _declared_window(version: str) -> SpecifierSet:
     table, so the check keeps being true after a pin moves."""
     url = f"https://pypi.org/pypi/transformers/{version}/json"
     try:
-        with urllib.request.urlopen(url, timeout = 30) as response:
+        with urllib.request.urlopen(url, timeout=30) as response:
             metadata = json.load(response)
     except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError) as exc:
         # Same rule as _compile: an index that is slow, throttling or serving something
@@ -323,7 +323,7 @@ def test_a_fresh_macos_arm64_install_ends_with_a_consistent_pair():
     ]
     core = _compile(
         ["-", *platform_args, "--override", str(DARWIN_OVERRIDES)],
-        stdin = "unsloth\nunsloth-zoo\n",
+        stdin="unsloth\nunsloth-zoo\n",
     )
     overlay = _compile([str(EXTRAS_NO_DEPS), "--no-deps", *platform_args])
 

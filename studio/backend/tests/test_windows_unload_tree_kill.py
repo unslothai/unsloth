@@ -42,7 +42,7 @@ IS_WINDOWS = sys.platform == "win32"
 IS_LINUX = sys.platform.startswith("linux")
 
 
-@pytest.fixture(autouse = True)
+@pytest.fixture(autouse=True)
 def _warm_the_owner_identity():
     """Read this process's own identity before anything here fakes `_pid_identity`.
 
@@ -70,7 +70,7 @@ _TREE = textwrap.dedent(
 def _alive(pid: int) -> bool:
     if IS_WINDOWS:
         out = subprocess.run(
-            ["tasklist", "/FI", f"PID eq {pid}", "/NH"], capture_output = True, text = True
+            ["tasklist", "/FI", f"PID eq {pid}", "/NH"], capture_output=True, text=True
         ).stdout
         return str(pid) in out
     try:
@@ -124,7 +124,7 @@ def _signals_that_never_land(pids):
 def _hard_kill(pid: int) -> None:
     try:
         if IS_WINDOWS:
-            subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], capture_output = True)
+            subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True)
         else:
             os.kill(pid, signal.SIGKILL)
     except Exception:
@@ -154,7 +154,7 @@ def tree(tmp_path):
         _hard_kill(child_pid)
         try:
             leader.kill()
-            leader.wait(timeout = 10)
+            leader.wait(timeout=10)
         except Exception:
             pass
 
@@ -170,7 +170,7 @@ def _windows_shaped_identity(pid: int):
     real start time the same way keeps the real ordering between leader and child.
     """
     try:
-        with open(f"/proc/{pid}/stat", encoding = "utf-8") as fh:
+        with open(f"/proc/{pid}/stat", encoding="utf-8") as fh:
             stat = fh.read()
         ticks = int(stat[stat.rfind(")") + 2 :].split()[19])
     except Exception:
@@ -178,7 +178,7 @@ def _windows_shaped_identity(pid: int):
     return f"{ticks >> 32}:{ticks & 0xFFFF_FFFF}"
 
 
-@pytest.mark.skipif(not IS_LINUX, reason = "reads real start times out of /proc")
+@pytest.mark.skipif(not IS_LINUX, reason="reads real start times out of /proc")
 def test_the_windows_walk_claims_a_real_child(monkeypatch, tree):
     """The guard this replaces returned [] for every Windows caller, which is the
     whole of #9790: the unload had nothing to terminate but the leader."""
@@ -191,7 +191,7 @@ def test_the_windows_walk_claims_a_real_child(monkeypatch, tree):
     ], f"collect_descendants({leader.pid}) -> {collected}, missing the spawned child"
 
 
-@pytest.mark.skipif(not IS_LINUX, reason = "reads real start times out of /proc")
+@pytest.mark.skipif(not IS_LINUX, reason="reads real start times out of /proc")
 def test_the_windows_walk_claims_nothing_without_a_readable_root(monkeypatch, tree):
     """Windows keeps a creating pid on a process forever, so with no creation time for
     the root there is no way to tell its children from a stranger left behind by an
@@ -294,7 +294,7 @@ def test_the_kill_does_not_re_expand_a_rejected_stranger(monkeypatch):
         },
     )
     killed = []
-    monkeypatch.setattr(pl, "_windows_terminate_pid", lambda pid, identity = None: killed.append(pid))
+    monkeypatch.setattr(pl, "_windows_terminate_pid", lambda pid, identity=None: killed.append(pid))
 
     # Reaching for /T at all is the regression: the expansion happens inside Windows, so
     # no assertion on the resulting pid set can see it once the call has been made.
@@ -331,7 +331,7 @@ def test_the_windows_walk_skips_a_candidate_whose_identity_cannot_be_read(monkey
 # ── the terminate side ──
 
 
-@pytest.mark.skipif(IS_WINDOWS, reason = "the real taskkill is covered below")
+@pytest.mark.skipif(IS_WINDOWS, reason="the real taskkill is covered below")
 def test_the_windows_terminate_reaps_every_survivor(monkeypatch, tree):
     """`_windows_terminate_collected` is the whole Windows arm of terminate_descendants.
     Only `taskkill`, which does not exist here, is stood in for; the pids, the liveness
@@ -339,7 +339,7 @@ def test_the_windows_terminate_reaps_every_survivor(monkeypatch, tree):
     leader, child_pid = tree
     asked = []
 
-    def fake_taskkill(pid, identity = None):
+    def fake_taskkill(pid, identity=None):
         asked.append(pid)
         _hard_kill(pid)
         return True
@@ -347,7 +347,7 @@ def test_the_windows_terminate_reaps_every_survivor(monkeypatch, tree):
     monkeypatch.setattr(pl, "_windows_terminate_pid", fake_taskkill)
     collected = [(child_pid, pl._pid_identity(child_pid))]
     leader.terminate()
-    leader.wait(timeout = 10)
+    leader.wait(timeout=10)
     pl._windows_terminate_collected(collected)
     assert asked == [child_pid]
     assert _wait_dead(child_pid), "the spawned child outlived the unload"
@@ -364,7 +364,7 @@ def test_the_windows_terminate_skips_a_recycled_pid(monkeypatch):
     monkeypatch.setattr(pl, "_pid_is_zombie", lambda pid: False)
     monkeypatch.setattr(pl, "_pid_identity", lambda pid: "0:999")
     asked = []
-    monkeypatch.setattr(pl, "_windows_terminate_pid", lambda pid, identity = None: asked.append(pid))
+    monkeypatch.setattr(pl, "_windows_terminate_pid", lambda pid, identity=None: asked.append(pid))
     pl._windows_terminate_collected([(4242, "0:1")])
     assert asked == []
 
@@ -377,9 +377,9 @@ def test_the_windows_terminate_works_deepest_first(monkeypatch):
     identities = {10: "0:10", 11: "0:11", 12: "0:12"}
     monkeypatch.setattr(pl, "_pid_identity", lambda pid: identities[pid])
     order = []
-    monkeypatch.setattr(pl, "_windows_terminate_pid", lambda pid, identity = None: order.append(pid))
+    monkeypatch.setattr(pl, "_windows_terminate_pid", lambda pid, identity=None: order.append(pid))
     monkeypatch.setattr(
-        pl, "_windows_collect_descendants_known", lambda pid, identity = None: ([], True)
+        pl, "_windows_collect_descendants_known", lambda pid, identity=None: ([], True)
     )
     # collect_descendants emits breadth first, so the parent comes before its child.
     pl._windows_terminate_collected([(10, "0:10"), (11, "0:11"), (12, "0:12")])
@@ -415,7 +415,7 @@ def test_the_windows_terminate_leaves_an_unreadable_identity_alone(monkeypatch):
 # ── the real thing, on a real Windows runner ──
 
 
-@pytest.mark.skipif(not IS_WINDOWS, reason = "the Windows arms, unfaked")
+@pytest.mark.skipif(not IS_WINDOWS, reason="the Windows arms, unfaked")
 def test_windows_unload_reaps_the_spawned_child_for_real(tree):
     """The round-2 repro, as a test: snapshot the tree, terminate the leader the way
     Popen does, then sweep. On the guarded code the sweep had nothing to sweep and the
@@ -426,12 +426,12 @@ def test_windows_unload_reaps_the_spawned_child_for_real(tree):
         pid for pid, _ in collected
     ], f"collect_descendants({leader.pid}) -> {collected}"
     leader.terminate()
-    leader.wait(timeout = 10)
-    pl.terminate_descendants(collected, timeout = 10.0)
+    leader.wait(timeout=10)
+    pl.terminate_descendants(collected, timeout=10.0)
     assert _wait_dead(child_pid), "the spawned child outlived the unload"
 
 
-@pytest.mark.skipif(not IS_WINDOWS, reason = "Toolhelp snapshot")
+@pytest.mark.skipif(not IS_WINDOWS, reason="Toolhelp snapshot")
 def test_the_toolhelp_snapshot_reads_this_process_as_its_parent(tree):
     """The table itself, before any filtering: a real Popen child has to be listed
     under this interpreter's pid."""
@@ -495,7 +495,7 @@ def test_an_unload_tree_kills_a_server_that_ignored_the_terminate(monkeypatch):
     b = _make_backend()
     b._process.pid = 4242
     b._process.poll.return_value = None  # still running after terminate and kill
-    cleared, killed = _instrument(monkeypatch, gone = False)
+    cleared, killed = _instrument(monkeypatch, gone=False)
     b._kill_process()
     assert killed == [4242]
     assert cleared == [], "dropped the pidfile while the server was still running"
@@ -505,7 +505,7 @@ def test_an_unload_clears_the_pidfile_once_the_tree_kill_worked(monkeypatch):
     b = _make_backend()
     b._process.pid = 4242
     b._process.poll.return_value = None
-    cleared, killed = _instrument(monkeypatch, gone = True)
+    cleared, killed = _instrument(monkeypatch, gone=True)
     b._kill_process()
     assert killed == [4242]
     assert cleared == [1]
@@ -517,7 +517,7 @@ def test_an_unload_that_already_worked_does_not_tree_kill(monkeypatch):
     b = _make_backend()
     b._process.pid = 4242
     b._process.poll.return_value = 0
-    cleared, killed = _instrument(monkeypatch, gone = False)
+    cleared, killed = _instrument(monkeypatch, gone=False)
     b._kill_process()
     assert killed == []
     assert cleared == [1]
@@ -528,8 +528,8 @@ def test_an_unload_with_nothing_to_kill_still_clears_the_pidfile(monkeypatch):
     without spawning one use. There is nothing to prove gone, so a stale pidfile from a
     previous run must not be kept forever."""
     b = _make_backend()
-    b._process = mock.Mock(spec = [])  # no pid, no terminate, no poll
-    cleared, killed = _instrument(monkeypatch, gone = False)
+    b._process = mock.Mock(spec=[])  # no pid, no terminate, no poll
+    cleared, killed = _instrument(monkeypatch, gone=False)
     b._kill_process()
     assert killed == []
     assert cleared == [1]
@@ -578,7 +578,7 @@ def test_owner_verified_still_leaves_a_recycled_pid_alone(monkeypatch):
     monkeypatch.setattr(pl, "_tracked_pids", {4242: "WHEN-WE-SPAWNED-IT"})
     monkeypatch.setattr(pl, "_tracked_pgids", {})
     monkeypatch.setattr(pl, "_write_breadcrumb", lambda: None)
-    pl.terminate_pid(4242, timeout = 0.01, owner_verified = True)
+    pl.terminate_pid(4242, timeout=0.01, owner_verified=True)
     assert signalled == []
     assert 4242 not in pl._tracked_pids, "a provably recycled pid must not stay recorded"
 
@@ -596,7 +596,7 @@ def test_a_stand_in_process_with_a_pid_is_never_signalled(monkeypatch):
     """
     b = _make_backend()
     b._process = type("P", (), {"pid": 4242})()
-    cleared, killed = _instrument(monkeypatch, gone = False)
+    cleared, killed = _instrument(monkeypatch, gone=False)
     b._kill_process()
     assert killed == [], "signalled a pid this backend never spawned"
     assert cleared == [1], "kept the pidfile for a stand-in that can never confirm an exit"
@@ -627,7 +627,7 @@ def test_a_stand_in_with_a_pid_leaves_a_real_bystander_running():
         ), f"the unload terminated an unrelated process (rc {bystander.poll()})"
     finally:
         bystander.kill()
-        bystander.wait(timeout = 10)
+        bystander.wait(timeout=10)
 
 
 # ── the surviving-root fallback, and what it leaves behind ──
@@ -660,19 +660,19 @@ def test_the_surviving_root_fallback_does_not_re_expand_the_tree(monkeypatch):
     monkeypatch.setattr(
         pl,
         "_windows_collect_descendants_known",
-        lambda pid, identity = None: ([(600, "0:600")], True) if pid == 500 else ([], True),
+        lambda pid, identity=None: ([(600, "0:600")], True) if pid == 500 else ([], True),
     )
     dead: "set[int]" = set()
     killed = []
 
-    def _kill(pid, identity = None):
+    def _kill(pid, identity=None):
         killed.append(pid)
         dead.add(pid)
         return True
 
     monkeypatch.setattr(pl, "_windows_terminate_pid", _kill)
 
-    pl.terminate_pid(500, timeout = 0.01, owner_verified = True)
+    pl.terminate_pid(500, timeout=0.01, owner_verified=True)
     # Root first, then the snapshot deepest-first. The root is stopped the moment the
     # snapshot exists, because working through the snapshot spends one `taskkill` per
     # descendant and a root that is still running can spawn into a window that nothing
@@ -703,11 +703,11 @@ def test_the_surviving_root_fallback_keeps_the_record_when_something_lives(monke
     monkeypatch.setattr(
         pl,
         "_windows_collect_descendants_known",
-        lambda pid, identity = None: ([(600, "0:600")], True) if pid == 500 else ([], True),
+        lambda pid, identity=None: ([(600, "0:600")], True) if pid == 500 else ([], True),
     )
-    monkeypatch.setattr(pl, "_windows_terminate_pid", lambda pid, identity = None: True)
+    monkeypatch.setattr(pl, "_windows_terminate_pid", lambda pid, identity=None: True)
 
-    pl.terminate_pid(500, timeout = 0.01, owner_verified = True)
+    pl.terminate_pid(500, timeout=0.01, owner_verified=True)
     assert 500 in pl._tracked_pids, "dropped the only handle on a worker that is still up"
 
 
@@ -722,11 +722,11 @@ def test_a_descendant_that_would_not_die_is_reported(monkeypatch):
     monkeypatch.setattr(pl, "_pid_is_zombie", lambda pid: False)
     monkeypatch.setattr(pl, "_pid_identity", lambda pid: f"0:{pid}")
     monkeypatch.setattr(
-        pl, "_windows_collect_descendants_known", lambda pid, identity = None: ([], True)
+        pl, "_windows_collect_descendants_known", lambda pid, identity=None: ([], True)
     )
     # Returns True, and the process is still there. The read-back is the only thing that
     # can tell the difference.
-    monkeypatch.setattr(pl, "_windows_terminate_pid", lambda pid, identity = None: True)
+    monkeypatch.setattr(pl, "_windows_terminate_pid", lambda pid, identity=None: True)
     assert pl._windows_terminate_collected([(10, "0:10"), (11, "0:11")]) == [
         (11, "0:11"),
         (10, "0:10"),
@@ -740,13 +740,13 @@ def test_a_descendant_that_did_die_is_not_reported(monkeypatch):
     monkeypatch.setattr(pl, "_pid_is_zombie", lambda pid: False)
     monkeypatch.setattr(pl, "_pid_identity", lambda pid: f"0:{pid}")
     monkeypatch.setattr(
-        pl, "_windows_collect_descendants_known", lambda pid, identity = None: ([], True)
+        pl, "_windows_collect_descendants_known", lambda pid, identity=None: ([], True)
     )
-    monkeypatch.setattr(pl, "_windows_terminate_pid", lambda pid, identity = None: True)
+    monkeypatch.setattr(pl, "_windows_terminate_pid", lambda pid, identity=None: True)
     assert pl._windows_terminate_collected([(10, "0:10")]) == []
 
 
-@pytest.mark.skipif(IS_WINDOWS, reason = "the POSIX arm")
+@pytest.mark.skipif(IS_WINDOWS, reason="the POSIX arm")
 def test_the_posix_sweep_reports_a_child_the_signals_did_not_reach(tree):
     """Same contract on POSIX, with the real child and the real liveness probe.
 
@@ -758,7 +758,7 @@ def test_the_posix_sweep_reports_a_child_the_signals_did_not_reach(tree):
     collected = pl.collect_descendants(leader.pid)
     assert child_pid in [pid for pid, _ in collected]
     with _signals_that_never_land([child_pid]):
-        survivors = pl.terminate_descendants(collected, timeout = 0.2)
+        survivors = pl.terminate_descendants(collected, timeout=0.2)
         assert child_pid in [
             pid for pid, _ in survivors
         ], "a child that is plainly still running was reported dead"
@@ -773,7 +773,7 @@ def test_an_unload_keeps_the_pidfile_when_a_descendant_survives(monkeypatch):
     b._process.pid = 4242
     b._process.poll.return_value = 0  # the leader itself went down on the terminate
     b._terminate_descendants = lambda *a, **kw: [(777, "0:777")]
-    cleared, killed = _instrument(monkeypatch, gone = True)
+    cleared, killed = _instrument(monkeypatch, gone=True)
     b._kill_process()
     assert killed == [], "the leader exited, so there is nothing to tree kill"
     assert cleared == [], "dropped the pidfile with a worker of this server still running"
@@ -785,7 +785,7 @@ def test_an_unload_clears_the_pidfile_when_every_descendant_died(monkeypatch):
     b._process.pid = 4242
     b._process.poll.return_value = 0
     b._terminate_descendants = lambda *a, **kw: []
-    cleared, killed = _instrument(monkeypatch, gone = True)
+    cleared, killed = _instrument(monkeypatch, gone=True)
     b._kill_process()
     assert cleared == [1]
 
@@ -804,7 +804,7 @@ def test_a_surviving_descendant_is_adopted_so_a_later_sweep_can_reach_it(monkeyp
     monkeypatch.setattr(
         pl,
         "adopt_pid",
-        lambda pid, identity = None, from_snapshot = False: adopted.append(
+        lambda pid, identity=None, from_snapshot=False: adopted.append(
             (pid, identity, from_snapshot)
         ),
     )
@@ -874,7 +874,7 @@ def test_an_unenumerable_tree_keeps_the_pidfile(monkeypatch):
     b._process.poll.return_value = 0
     b._collect_descendants = lambda *a, **kw: ([], False)
     b._terminate_descendants = lambda *a, **kw: []
-    cleared, _killed = _instrument(monkeypatch, gone = True)
+    cleared, _killed = _instrument(monkeypatch, gone=True)
     b._kill_process()
     assert cleared == [], "dropped the pidfile after a walk that could not be made"
 
@@ -892,10 +892,10 @@ def test_a_live_but_unverifiable_descendant_is_reported_not_signalled(monkeypatc
     monkeypatch.setattr(pl, "_pid_is_zombie", lambda pid: False)
     monkeypatch.setattr(pl, "_pid_identity", lambda pid: None)  # unreadable NOW
     monkeypatch.setattr(
-        pl, "_windows_collect_descendants_known", lambda pid, identity = None: ([], True)
+        pl, "_windows_collect_descendants_known", lambda pid, identity=None: ([], True)
     )
     killed = []
-    monkeypatch.setattr(pl, "_windows_terminate_pid", lambda pid, identity = None: killed.append(pid))
+    monkeypatch.setattr(pl, "_windows_terminate_pid", lambda pid, identity=None: killed.append(pid))
     assert pl._windows_terminate_collected([(11, "0:11")]) == [(11, "0:11")]
     assert killed == [], "an unverifiable pid must never be signalled"
 
@@ -908,10 +908,10 @@ def test_a_pid_that_provably_moved_on_is_neither_killed_nor_adopted(monkeypatch)
     monkeypatch.setattr(pl, "_pid_is_zombie", lambda pid: False)
     monkeypatch.setattr(pl, "_pid_identity", lambda pid: "0:999")  # somebody else
     monkeypatch.setattr(
-        pl, "_windows_collect_descendants_known", lambda pid, identity = None: ([], True)
+        pl, "_windows_collect_descendants_known", lambda pid, identity=None: ([], True)
     )
     killed = []
-    monkeypatch.setattr(pl, "_windows_terminate_pid", lambda pid, identity = None: killed.append(pid))
+    monkeypatch.setattr(pl, "_windows_terminate_pid", lambda pid, identity=None: killed.append(pid))
     assert pl._windows_terminate_collected([(11, "0:11")]) == []
     assert killed == []
 
@@ -946,7 +946,7 @@ def test_a_walk_that_failed_partway_is_not_a_table(monkeypatch):
     deletes the record and the pidfile for workers the walk never reached. The Windows
     scanner in studio/src-tauri/src/process.rs already makes this distinction.
     """
-    source = Path(pl.__file__).read_text(encoding = "utf-8")
+    source = Path(pl.__file__).read_text(encoding="utf-8")
     start = source.index("def _windows_child_pid_map")
     body = source[start : source.index("\ndef ", start + 10)]
     assert "ERROR_NO_MORE_FILES = 18" in body
@@ -970,7 +970,7 @@ def test_a_failed_late_walk_kills_the_survivor_and_reports_it(monkeypatch):
     monkeypatch.setattr(pl, "_pid_is_zombie", lambda pid: False)
     monkeypatch.setattr(pl, "_pid_identity", lambda pid: f"0:{pid}")
     monkeypatch.setattr(
-        pl, "_windows_collect_descendants_known", lambda pid, identity = None: ([], False)
+        pl, "_windows_collect_descendants_known", lambda pid, identity=None: ([], False)
     )
     killed = []
     dead: "set[int]" = set()
@@ -980,7 +980,7 @@ def test_a_failed_late_walk_kills_the_survivor_and_reports_it(monkeypatch):
     # outlived its own kill would satisfy the assertion for the wrong reason.
     monkeypatch.setattr(pl, "_pid_alive", lambda pid: pid not in dead)
 
-    def _kill(pid, identity = None):
+    def _kill(pid, identity=None):
         killed.append(pid)
         dead.add(pid)
         return True
@@ -997,9 +997,9 @@ def test_a_successful_late_walk_still_reports_nothing(monkeypatch):
     monkeypatch.setattr(pl, "_pid_is_zombie", lambda pid: False)
     monkeypatch.setattr(pl, "_pid_identity", lambda pid: f"0:{pid}")
     monkeypatch.setattr(
-        pl, "_windows_collect_descendants_known", lambda pid, identity = None: ([], True)
+        pl, "_windows_collect_descendants_known", lambda pid, identity=None: ([], True)
     )
-    monkeypatch.setattr(pl, "_windows_terminate_pid", lambda pid, identity = None: True)
+    monkeypatch.setattr(pl, "_windows_terminate_pid", lambda pid, identity=None: True)
     assert pl._windows_terminate_collected([(11, "0:11")]) == []
 
 
@@ -1011,16 +1011,16 @@ def test_an_unenumerable_tree_is_not_a_completed_tree_kill(monkeypatch):
     monkeypatch.setattr(pl, "_pid_alive", lambda pid: False)  # the root itself went down
     monkeypatch.setattr(pl, "_pid_is_zombie", lambda pid: False)
     monkeypatch.setattr(pl, "_pid_identity", lambda pid: f"0:{pid}")
-    monkeypatch.setattr(pl, "_windows_terminate_pid", lambda pid, identity = None: True)
+    monkeypatch.setattr(pl, "_windows_terminate_pid", lambda pid, identity=None: True)
 
     monkeypatch.setattr(
-        pl, "_windows_collect_descendants_known", lambda pid, identity = None: ([], False)
+        pl, "_windows_collect_descendants_known", lambda pid, identity=None: ([], False)
     )
     assert pl._windows_terminate_validated_tree(500) is False
 
     # And a walk that DID run, with nothing under the root, is still a completed kill.
     monkeypatch.setattr(
-        pl, "_windows_collect_descendants_known", lambda pid, identity = None: ([], True)
+        pl, "_windows_collect_descendants_known", lambda pid, identity=None: ([], True)
     )
     assert pl._windows_terminate_validated_tree(500) is True
 
@@ -1035,11 +1035,11 @@ def test_a_live_unverifiable_descendant_is_an_incomplete_tree_kill(monkeypatch):
     """
     monkeypatch.setattr(pl, "_is_linux", lambda: False)
     monkeypatch.setattr(pl, "_pid_is_zombie", lambda pid: False)
-    monkeypatch.setattr(pl, "_windows_terminate_pid", lambda pid, identity = None: True)
+    monkeypatch.setattr(pl, "_windows_terminate_pid", lambda pid, identity=None: True)
     monkeypatch.setattr(
         pl,
         "_windows_collect_descendants_known",
-        lambda pid, identity = None: ([(600, "0:600")], True) if pid == 500 else ([], True),
+        lambda pid, identity=None: ([(600, "0:600")], True) if pid == 500 else ([], True),
     )
     # The root dies, the descendant survives, and its identity is unreadable NOW.
     monkeypatch.setattr(pl, "_pid_alive", lambda pid: pid == 600)
@@ -1131,7 +1131,7 @@ def test_the_handle_identity_is_read_through_the_handle(monkeypatch):
         created_ptr._obj.dwLowDateTime = 4242
         return 1
 
-    kernel32 = _FakeKernel32(GetProcessTimes = _times)
+    kernel32 = _FakeKernel32(GetProcessTimes=_times)
     assert pl._windows_identity_of_handle(kernel32, 77) == "7:4242"
     # A failed read is None, never a fabricated match.
     assert pl._windows_identity_of_handle(kernel32, 78) is None
@@ -1167,13 +1167,13 @@ def test_a_pid_recycled_before_the_job_assignment_is_not_assigned(monkeypatch):
         return 1
 
     kernel32 = _FakeKernel32(
-        OpenProcess = _open,
-        GetProcessTimes = _times,
-        AssignProcessToJobObject = lambda job, handle: assigned.append(handle) or 1,
-        CloseHandle = lambda handle: closed.append(handle) or 1,
+        OpenProcess=_open,
+        GetProcessTimes=_times,
+        AssignProcessToJobObject=lambda job, handle: assigned.append(handle) or 1,
+        CloseHandle=lambda handle: closed.append(handle) or 1,
     )
     # ctypes has no WinDLL off Windows, so it is created rather than replaced.
-    monkeypatch.setattr(ctypes, "WinDLL", lambda *a, **k: kernel32, raising = False)
+    monkeypatch.setattr(ctypes, "WinDLL", lambda *a, **k: kernel32, raising=False)
     monkeypatch.setattr(pl, "_is_windows", lambda: True)
     monkeypatch.setattr(pl, "_win_job_handle", 4321)
     monkeypatch.setattr(pl, "_signalable", lambda pid: True)
@@ -1230,12 +1230,12 @@ def test_the_forced_kill_goes_through_the_handle_it_verified(monkeypatch):
         return 1
 
     kernel32 = _FakeKernel32(
-        OpenProcess = lambda rights, inherit, pid: 91,
-        GetProcessTimes = _times,
-        TerminateProcess = lambda handle, code: terminated.append(handle) or 1,
-        CloseHandle = lambda handle: closed.append(handle) or 1,
+        OpenProcess=lambda rights, inherit, pid: 91,
+        GetProcessTimes=_times,
+        TerminateProcess=lambda handle, code: terminated.append(handle) or 1,
+        CloseHandle=lambda handle: closed.append(handle) or 1,
     )
-    monkeypatch.setattr(ctypes, "WinDLL", lambda *a, **k: kernel32, raising = False)
+    monkeypatch.setattr(ctypes, "WinDLL", lambda *a, **k: kernel32, raising=False)
     monkeypatch.setattr(
         subprocess,
         "run",
@@ -1269,7 +1269,7 @@ def test_the_forced_kill_goes_through_the_handle_it_verified(monkeypatch):
     monkeypatch.setattr(
         subprocess,
         "run",
-        lambda *a, **k: spawned.append(a[0]) or _types.SimpleNamespace(returncode = 0),
+        lambda *a, **k: spawned.append(a[0]) or _types.SimpleNamespace(returncode=0),
     )
     monkeypatch.setattr(pl, "_provably_the_same", lambda pid, identity: True)
     assert pl._windows_terminate_pid(4242, "0:4242") is True
@@ -1298,7 +1298,7 @@ def test_no_windows_kill_path_calls_taskkill_slash_t_any_more():
     import ast
     from pathlib import Path
 
-    tree = ast.parse(Path(pl.__file__).read_text(encoding = "utf-8"))
+    tree = ast.parse(Path(pl.__file__).read_text(encoding="utf-8"))
     callers = [
         node.func.id
         for node in ast.walk(tree)
@@ -1348,11 +1348,11 @@ def test_an_unverifiable_late_descendant_is_reported_not_dropped(monkeypatch):
     monkeypatch.setattr(pl, "_signalable", lambda pid: True)
     monkeypatch.setattr(pl, "_pid_alive", lambda pid: True)
     monkeypatch.setattr(pl, "_pid_is_zombie", lambda pid: False)
-    monkeypatch.setattr(pl, "_windows_terminate_pid", lambda pid, identity = None: None)
+    monkeypatch.setattr(pl, "_windows_terminate_pid", lambda pid, identity=None: None)
     monkeypatch.setattr(
         pl,
         "_windows_collect_descendants_known",
-        lambda pid, identity = None: ([(late_pid, "0:6001")], True),
+        lambda pid, identity=None: ([(late_pid, "0:6001")], True),
     )
     # The survivor still reads as itself; the late descendant has become unreadable.
     monkeypatch.setattr(
@@ -1394,12 +1394,12 @@ def test_the_root_is_stopped_before_its_snapshot_is_worked_through(monkeypatch):
     monkeypatch.setattr(
         pl,
         "_windows_collect_descendants_known",
-        lambda pid, identity = None: ([(child, "0:701")], True) if pid == root else ([], True),
+        lambda pid, identity=None: ([(child, "0:701")], True) if pid == root else ([], True),
     )
     dead: "set[int]" = set()
     order = []
 
-    def _kill(pid, identity = None):
+    def _kill(pid, identity=None):
         order.append(pid)
         dead.add(pid)
         # A root that is still alive keeps spawning. This is what the old order allowed.
@@ -1435,7 +1435,7 @@ def test_a_child_started_after_the_snapshot_is_still_reached(monkeypatch):
     monkeypatch.setattr(pl, "_pid_identity", identities.get)
     snapshot_taken: "list[int]" = []
 
-    def _collect(pid, identity = None):
+    def _collect(pid, identity=None):
         if pid == root:
             snapshot_taken.append(pid)
             # The late child does not exist yet: it is started while the root is being
@@ -1450,7 +1450,7 @@ def test_a_child_started_after_the_snapshot_is_still_reached(monkeypatch):
     dead: "set[int]" = set()
     order: "list[int]" = []
 
-    def _kill(pid, identity = None):
+    def _kill(pid, identity=None):
         order.append(pid)
         dead.add(pid)
         return True
@@ -1479,11 +1479,11 @@ def test_an_unaccounted_late_child_keeps_the_record(monkeypatch):
     monkeypatch.setattr(
         pl,
         "_windows_collect_descendants_known",
-        lambda pid, identity = None: ([(child, "0:901")], True) if pid == root else ([], False),
+        lambda pid, identity=None: ([(child, "0:901")], True) if pid == root else ([], False),
     )
     dead: "set[int]" = set()
     monkeypatch.setattr(
-        pl, "_windows_terminate_pid", lambda pid, identity = None: dead.add(pid) or True
+        pl, "_windows_terminate_pid", lambda pid, identity=None: dead.add(pid) or True
     )
     monkeypatch.setattr(pl, "_pid_alive", lambda pid: pid not in dead)
 
@@ -1577,7 +1577,7 @@ def test_a_child_of_a_late_child_is_reached_too(monkeypatch):
     killed: "list[int]" = []
     walks = {"n": 0}
 
-    def _collect(pid, identity = None):
+    def _collect(pid, identity=None):
         if pid != survivor:
             return [], True
         walks["n"] += 1
@@ -1591,7 +1591,7 @@ def test_a_child_of_a_late_child_is_reached_too(monkeypatch):
     monkeypatch.setattr(
         pl,
         "_windows_terminate_pid",
-        lambda pid, identity = None: (killed.append(pid), dead.add(pid), True)[-1],
+        lambda pid, identity=None: (killed.append(pid), dead.add(pid), True)[-1],
     )
     monkeypatch.setattr(pl, "_pid_alive", lambda pid: pid not in dead)
 
@@ -1614,7 +1614,7 @@ def test_a_subtree_that_keeps_growing_is_reported_rather_than_looped_on(monkeypa
     monkeypatch.setattr(pl, "_pid_is_zombie", lambda pid: False)
     spawned = {"n": 0}
 
-    def _collect(pid, identity = None):
+    def _collect(pid, identity=None):
         if pid != survivor:
             return [], True
         spawned["n"] += 1
@@ -1624,7 +1624,7 @@ def test_a_subtree_that_keeps_growing_is_reported_rather_than_looped_on(monkeypa
     monkeypatch.setattr(pl, "_windows_collect_descendants_known", _collect)
     monkeypatch.setattr(pl, "_pid_identity", lambda pid: f"0:{pid}")
     monkeypatch.setattr(pl, "_pid_alive", lambda pid: True)
-    monkeypatch.setattr(pl, "_windows_terminate_pid", lambda pid, identity = None: True)
+    monkeypatch.setattr(pl, "_windows_terminate_pid", lambda pid, identity=None: True)
 
     survivors = pl._windows_terminate_collected([(survivor, "0:500")])
     assert spawned["n"] == pl._LATE_WALK_ROUNDS, spawned
@@ -1648,7 +1648,7 @@ def test_a_grandchild_is_captured_before_its_parent_is_removed(monkeypatch):
     dead: "set[int]" = set()
     killed: "list[int]" = []
 
-    def _collect(pid, identity = None):
+    def _collect(pid, identity=None):
         # The root's walk names the intermediate only: the grandchild does not exist yet.
         if pid == survivor:
             return [(middle, f"{middle}")], True
@@ -1663,7 +1663,7 @@ def test_a_grandchild_is_captured_before_its_parent_is_removed(monkeypatch):
     monkeypatch.setattr(
         pl,
         "_windows_terminate_pid",
-        lambda pid, identity = None: (killed.append(pid), dead.add(pid), True)[-1],
+        lambda pid, identity=None: (killed.append(pid), dead.add(pid), True)[-1],
     )
     monkeypatch.setattr(pl, "_pid_alive", lambda pid: pid not in dead)
 
@@ -1686,7 +1686,7 @@ def test_a_walk_that_fails_below_an_intermediate_keeps_the_record(monkeypatch):
     dead: "set[int]" = set()
     killed: "list[int]" = []
 
-    def _collect(pid, identity = None):
+    def _collect(pid, identity=None):
         if pid == survivor:
             return [(middle, f"{middle}")], True
         if pid == middle:
@@ -1697,7 +1697,7 @@ def test_a_walk_that_fails_below_an_intermediate_keeps_the_record(monkeypatch):
     monkeypatch.setattr(
         pl,
         "_windows_terminate_pid",
-        lambda pid, identity = None: (killed.append(pid), dead.add(pid), True)[-1],
+        lambda pid, identity=None: (killed.append(pid), dead.add(pid), True)[-1],
     )
     monkeypatch.setattr(pl, "_pid_alive", lambda pid: pid not in dead)
 
@@ -1764,9 +1764,9 @@ def test_a_survivor_whose_identity_cannot_be_read_is_still_reported(monkeypatch)
     monkeypatch.setattr(pl, "_pid_is_zombie", lambda pid: False)
     monkeypatch.setattr(pl, "_pid_alive", lambda pid: True)
     monkeypatch.setattr(
-        pl, "_windows_collect_descendants_known", lambda pid, identity = None: ([], True)
+        pl, "_windows_collect_descendants_known", lambda pid, identity=None: ([], True)
     )
-    monkeypatch.setattr(pl, "_windows_terminate_pid", lambda pid, identity = None: True)
+    monkeypatch.setattr(pl, "_windows_terminate_pid", lambda pid, identity=None: True)
     reads = {"n": 0}
 
     def _identity(pid):
@@ -1797,11 +1797,11 @@ def test_a_tree_kill_does_not_follow_the_number_to_a_stranger(monkeypatch):
     walked: "list[int]" = []
     alive = {500, 600}
 
-    def _collect(pid, identity = None):
+    def _collect(pid, identity=None):
         walked.append(pid)
         return ([(600, "0:600")], True) if pid == 500 else ([], True)
 
-    def _kill(pid, identity = None):
+    def _kill(pid, identity=None):
         killed.append(pid)
         alive.discard(pid)
         return True
@@ -1828,12 +1828,12 @@ def test_the_root_is_killed_through_the_identity_the_caller_validated(monkeypatc
     monkeypatch.setattr(pl, "_pid_is_zombie", lambda pid: False)
     monkeypatch.setattr(pl, "_pid_identity", lambda pid: "0:500")
     monkeypatch.setattr(
-        pl, "_windows_collect_descendants_known", lambda pid, identity = None: ([], True)
+        pl, "_windows_collect_descendants_known", lambda pid, identity=None: ([], True)
     )
     seen: "list[tuple[int, object]]" = []
     alive = {500}
 
-    def _kill(pid, identity = None):
+    def _kill(pid, identity=None):
         seen.append((pid, identity))
         alive.discard(pid)
         return True
@@ -1858,12 +1858,12 @@ def test_a_subtree_deeper_than_the_capture_depth_is_unresolved(monkeypatch):
     monkeypatch.setattr(pl, "_pid_alive", lambda pid: True)
     monkeypatch.setattr(pl, "_pid_is_zombie", lambda pid: False)
     monkeypatch.setattr(pl, "_pid_identity", lambda pid: f"0:{pid}")
-    monkeypatch.setattr(pl, "_windows_terminate_pid", lambda pid, identity = None: True)
+    monkeypatch.setattr(pl, "_windows_terminate_pid", lambda pid, identity=None: True)
     # Every process has exactly one child, one number higher, forever.
     monkeypatch.setattr(
         pl,
         "_windows_collect_descendants_known",
-        lambda pid, identity = None: ([(pid + 1, f"0:{pid + 1}")], True),
+        lambda pid, identity=None: ([(pid + 1, f"0:{pid + 1}")], True),
     )
     attempted: "list[tuple[int, object]]" = []
     unresolved: "list[tuple[int, object]]" = []
@@ -1920,7 +1920,7 @@ def test_a_survivor_with_no_readable_identity_is_not_adopted(monkeypatch):
     monkeypatch.setattr(pl, "_write_breadcrumb", lambda: None)
     monkeypatch.setattr(pl, "_tracked_pids", recorded)
 
-    pl.adopt_pid(777, None, from_snapshot = True)
+    pl.adopt_pid(777, None, from_snapshot=True)
     assert recorded == {}, recorded
 
     # A child this process has just spawned is the other case, and it still captures one.
@@ -1982,12 +1982,12 @@ def stubborn_tree(tmp_path):
             _hard_kill(pid)
         try:
             leader.kill()
-            leader.wait(timeout = 10)
+            leader.wait(timeout=10)
         except Exception:
             pass
 
 
-@pytest.mark.skipif(IS_WINDOWS, reason = "POSIX signals; the Windows arm is faked below")
+@pytest.mark.skipif(IS_WINDOWS, reason="POSIX signals; the Windows arm is faked below")
 def test_a_descendant_that_died_on_the_kill_is_not_reported_as_a_survivor(stubborn_tree):
     """The read-back used to answer "still there" for four processes it had just killed.
 
@@ -2000,14 +2000,14 @@ def test_a_descendant_that_died_on_the_kill_is_not_reported_as_a_survivor(stubbo
     assert known, "the walk itself failed, so this test proves nothing"
     assert sorted(pid for pid, _ in collected) == sorted(kids)
 
-    survivors = pl.terminate_descendants(collected, timeout = 1.0)
+    survivors = pl.terminate_descendants(collected, timeout=1.0)
 
     assert survivors == [], f"reported {survivors} as still running"
     for pid in kids:
         assert not _alive(pid), f"{pid} was reported gone and is not"
 
 
-@pytest.mark.skipif(IS_WINDOWS, reason = "POSIX signals; the Windows arm is faked below")
+@pytest.mark.skipif(IS_WINDOWS, reason="POSIX signals; the Windows arm is faked below")
 def test_a_descendant_that_refuses_to_die_is_still_reported(stubborn_tree):
     """The other half. A grace period that swallowed a real survivor would be worse than
     the immediate read it replaces: the record and the pidfile are the only handles left on
@@ -2023,7 +2023,7 @@ def test_a_descendant_that_refuses_to_die_is_still_reported(stubborn_tree):
     assert known
     with _signals_that_never_land([victim]):
         started = time.monotonic()
-        survivors = pl.terminate_descendants(collected, timeout = 1.0)
+        survivors = pl.terminate_descendants(collected, timeout=1.0)
         elapsed = time.monotonic() - started
 
         assert [pid for pid, _ in survivors] == [victim], survivors
@@ -2033,7 +2033,7 @@ def test_a_descendant_that_refuses_to_die_is_still_reported(stubborn_tree):
         assert elapsed < 1.0 + pl._KILL_SETTLE_SECONDS + 3.0, elapsed
 
 
-@pytest.mark.skipif(IS_WINDOWS, reason = "kills a real process and reads it back")
+@pytest.mark.skipif(IS_WINDOWS, reason="kills a real process and reads it back")
 def test_confirming_an_exit_waits_for_the_kill_to_land():
     victim = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(300)"])
     try:
@@ -2044,7 +2044,7 @@ def test_confirming_an_exit_waits_for_the_kill_to_land():
     finally:
         _hard_kill(victim.pid)
         try:
-            victim.wait(timeout = 10)
+            victim.wait(timeout=10)
         except Exception:
             pass
 
@@ -2109,7 +2109,7 @@ def test_the_settled_report_keeps_the_callers_order(monkeypatch):
     assert survivors == [(602, "0:602"), (600, "0:600")]
 
 
-def _terminate_then_linger(monkeypatch, reads_after_the_kill = 3):
+def _terminate_then_linger(monkeypatch, reads_after_the_kill=3):
     """Fake Windows where `TerminateProcess` returns before the process is gone.
 
     Returns the list the kills are recorded in. Everything stays visible until the kill,
@@ -2124,7 +2124,7 @@ def _terminate_then_linger(monkeypatch, reads_after_the_kill = 3):
         reads[pid] = reads.get(pid, 0) + 1
         return reads[pid] <= reads_after_the_kill
 
-    def _terminate(pid, identity = None):
+    def _terminate(pid, identity=None):
         killed.append(pid)
         return True
 
@@ -2148,7 +2148,7 @@ def test_the_validated_tree_kill_gives_the_terminate_time_to_land(monkeypatch):
     """
     killed = _terminate_then_linger(monkeypatch)
     monkeypatch.setattr(
-        pl, "_windows_collect_descendants_known", lambda pid, identity = None: ([], True)
+        pl, "_windows_collect_descendants_known", lambda pid, identity=None: ([], True)
     )
     assert pl._windows_terminate_validated_tree(500, "0:500") is True
     assert killed == [500]
@@ -2162,9 +2162,9 @@ def test_the_validated_tree_kill_still_reports_a_root_it_could_not_stop(monkeypa
     monkeypatch.setattr(pl, "_pid_alive", lambda pid: True)
     monkeypatch.setattr(pl, "_pid_is_zombie", lambda pid: False)
     monkeypatch.setattr(pl, "_pid_identity", lambda pid: f"0:{pid}")
-    monkeypatch.setattr(pl, "_windows_terminate_pid", lambda pid, identity = None: True)
+    monkeypatch.setattr(pl, "_windows_terminate_pid", lambda pid, identity=None: True)
     monkeypatch.setattr(
-        pl, "_windows_collect_descendants_known", lambda pid, identity = None: ([], True)
+        pl, "_windows_collect_descendants_known", lambda pid, identity=None: ([], True)
     )
     started = time.monotonic()
     assert pl._windows_terminate_validated_tree(500, "0:500") is False
@@ -2178,7 +2178,7 @@ def test_the_windows_sweep_separates_a_dying_descendant_from_a_stuck_one(monkeyp
     real_alive = pl._pid_alive
     monkeypatch.setattr(pl, "_pid_alive", lambda pid: True if pid == 601 else real_alive(pid))
     monkeypatch.setattr(
-        pl, "_windows_collect_descendants_known", lambda pid, identity = None: ([], True)
+        pl, "_windows_collect_descendants_known", lambda pid, identity=None: ([], True)
     )
     survivors = pl._windows_terminate_collected([(600, "0:600"), (601, "0:601")])
     assert sorted(killed) == [600, 601]
@@ -2197,18 +2197,18 @@ def test_a_windows_shutdown_does_not_report_a_leader_that_is_merely_dying(monkey
     """
     _terminate_then_linger(monkeypatch)
     monkeypatch.setattr(
-        pl, "_windows_collect_descendants_known", lambda pid, identity = None: ([], True)
+        pl, "_windows_collect_descendants_known", lambda pid, identity=None: ([], True)
     )
     monkeypatch.setattr(pl, "_group_has_members", lambda pgid: False)
     monkeypatch.setattr(pl, "_write_breadcrumb", lambda: None)
     monkeypatch.setattr(pl, "_tracked_pids", {500: "0:500"})
     monkeypatch.setattr(pl, "_tracked_pgids", {})
 
-    assert pl.terminate_all(timeout = 3.0) == []
+    assert pl.terminate_all(timeout=3.0) == []
     assert pl._tracked_pids == {}, "the record was written back for a process that is gone"
 
 
-@pytest.mark.skipif(IS_WINDOWS, reason = "POSIX signals; the Windows arm is above")
+@pytest.mark.skipif(IS_WINDOWS, reason="POSIX signals; the Windows arm is above")
 def test_a_posix_shutdown_does_not_report_a_child_that_is_merely_dying(monkeypatch, tmp_path):
     """The same defect on the POSIX shutdown path, with a real process.
 
@@ -2230,21 +2230,21 @@ def test_a_posix_shutdown_does_not_report_a_child_that_is_merely_dying(monkeypat
             "-c",
             "import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(300)",
         ],
-        start_new_session = True,
+        start_new_session=True,
     )
     try:
         pl.adopt_pid(child.pid)
         assert pl._tracked_pids.get(child.pid) is not None
 
-        survivors = pl.terminate_all(timeout = 1.0)
+        survivors = pl.terminate_all(timeout=1.0)
 
         assert survivors == [], f"reported {survivors} as still running"
         assert pl._tracked_pids == {}, "the record was written back for a process that is gone"
-        assert child.wait(timeout = 10) is not None
+        assert child.wait(timeout=10) is not None
     finally:
         _hard_kill(child.pid)
         try:
-            child.wait(timeout = 10)
+            child.wait(timeout=10)
         except Exception:
             pass
 
@@ -2262,7 +2262,7 @@ def test_a_windows_startup_sweep_consumes_the_record_it_has_emptied(monkeypatch,
 
     _terminate_then_linger(monkeypatch)
     monkeypatch.setattr(
-        pl, "_windows_collect_descendants_known", lambda pid, identity = None: ([], True)
+        pl, "_windows_collect_descendants_known", lambda pid, identity=None: ([], True)
     )
     monkeypatch.setattr(pl, "_group_has_members", lambda pgid: False)
     record = tmp_path / "4321.json"
@@ -2276,7 +2276,7 @@ def test_a_windows_startup_sweep_consumes_the_record_it_has_emptied(monkeypatch,
         )
     )
 
-    killed, deferred = pl._reap_one_record(record, timeout = 3.0)
+    killed, deferred = pl._reap_one_record(record, timeout=3.0)
 
     assert killed == [500]
     assert deferred is False
@@ -2286,7 +2286,7 @@ def test_a_windows_startup_sweep_consumes_the_record_it_has_emptied(monkeypatch,
 # ── the teardown lock is not held across a kill killpg already did ──
 
 
-@pytest.mark.skipif(IS_WINDOWS, reason = "no killpg here, so the branch below is POSIX-only")
+@pytest.mark.skipif(IS_WINDOWS, reason="no killpg here, so the branch below is POSIX-only")
 def test_a_killed_process_group_makes_the_tree_kill_unnecessary(monkeypatch):
     """`_kill_process_group` sends killpg SIGKILL to this exact tree eleven lines earlier.
 
@@ -2300,7 +2300,7 @@ def test_a_killed_process_group_makes_the_tree_kill_unnecessary(monkeypatch):
     b._process.pid = 4242
     b._process.poll.return_value = None
     b._leading_process_group = lambda pid: pid  # POSIX, and the server leads its own group
-    cleared, killed = _instrument(monkeypatch, gone = False)
+    cleared, killed = _instrument(monkeypatch, gone=False)
     confirmed = []
     monkeypatch.setattr(
         LlamaCppBackend,
@@ -2323,7 +2323,7 @@ def test_without_a_process_group_the_tree_kill_still_runs(monkeypatch):
     b = _make_backend()  # _leading_process_group already answers None
     b._process.pid = 4242
     b._process.poll.return_value = None
-    cleared, killed = _instrument(monkeypatch, gone = False)
+    cleared, killed = _instrument(monkeypatch, gone=False)
     confirmed = []
     monkeypatch.setattr(
         LlamaCppBackend,
@@ -2338,7 +2338,7 @@ def test_without_a_process_group_the_tree_kill_still_runs(monkeypatch):
     assert cleared == [], "dropped the pidfile while the server was still running"
 
 
-@pytest.mark.skipif(IS_WINDOWS, reason = "deletes os.killpg, which is not here to delete")
+@pytest.mark.skipif(IS_WINDOWS, reason="deletes os.killpg, which is not here to delete")
 def test_a_process_group_with_no_killpg_still_tree_kills(monkeypatch):
     """The second half of the condition. `_kill_process_group` is a no-op when `os.killpg`
     is missing, so a pgid on its own is not evidence that anything was signalled, and
@@ -2350,8 +2350,8 @@ def test_a_process_group_with_no_killpg_still_tree_kills(monkeypatch):
     b._process.pid = 4242
     b._process.poll.return_value = None
     b._leading_process_group = lambda pid: pid
-    monkeypatch.delattr(lc.os, "killpg", raising = False)
-    cleared, killed = _instrument(monkeypatch, gone = True)
+    monkeypatch.delattr(lc.os, "killpg", raising=False)
+    cleared, killed = _instrument(monkeypatch, gone=True)
     confirmed = []
     monkeypatch.setattr(
         LlamaCppBackend,
@@ -2386,7 +2386,7 @@ def test_confirming_a_group_kill_signals_nothing(monkeypatch):
     monkeypatch.setattr(
         pl,
         "_windows_terminate_pid",
-        lambda pid, identity = None: signalled.append(("taskkill", pid, 0)),
+        lambda pid, identity=None: signalled.append(("taskkill", pid, 0)),
     )
 
     monkeypatch.setattr(pl, "pid_is_running", lambda pid: False)

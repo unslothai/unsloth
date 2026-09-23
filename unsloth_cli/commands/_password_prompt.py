@@ -102,6 +102,7 @@ class _RestoreTtyOnSignals:
 
     def __exit__(self, *exc) -> None:
         import signal
+
         for sig, previous in self._previous:
             try:
                 signal.signal(sig, previous)
@@ -252,7 +253,7 @@ def prompt_new_password(
         out = sys.stderr
     pending_timeout = first_key_timeout
     while True:
-        password = read_masked("New password: ", out, first_key_timeout = pending_timeout)
+        password = read_masked("New password: ", out, first_key_timeout=pending_timeout)
         pending_timeout = None
         if len(password) < MIN_PASSWORD_LENGTH:
             out.write(f"Password must be at least {MIN_PASSWORD_LENGTH} characters. Try again.\n")

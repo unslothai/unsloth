@@ -63,7 +63,7 @@ class _Sibling:
 def _materialize(root, files):
     for path, _ in files:
         target = root / path
-        target.parent.mkdir(parents = True, exist_ok = True)
+        target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(b"x" * 512)
     (root / "config.json").write_text("{}")
     return root
@@ -128,8 +128,8 @@ def test_an_interrupted_bpw_folder_is_labelled_like_its_row(tmp_path):
     from hub.utils.gguf import list_empty_gguf_variant_dirs
 
     snapshot = tmp_path / "models--acme--m" / "snapshots" / "rev"
-    (snapshot / "IQ4_XS-3.57bpw").mkdir(parents = True)
-    assert list_empty_gguf_variant_dirs("acme/m", root = tmp_path) == {"IQ4_XS-3.57bpw"}
+    (snapshot / "IQ4_XS-3.57bpw").mkdir(parents=True)
+    assert list_empty_gguf_variant_dirs("acme/m", root=tmp_path) == {"IQ4_XS-3.57bpw"}
 
 
 def test_files_at_one_base_quant_do_not_share_a_key():
@@ -198,7 +198,7 @@ def test_a_bpw_row_reads_as_its_own_quant_and_needs_no_scope_suffix():
     """``IQ4_XS-3.57bpw`` is the label byteshape publishes and the loader reports, so it
     is showable as it stands. Only a key qualified by a path needs a second name."""
     variants = [
-        GgufVariantInfo(filename = path, quant = gguf_variant_key(path), size_bytes = 1)
+        GgufVariantInfo(filename=path, quant=gguf_variant_key(path), size_bytes=1)
         for path, _ in BPW_FILES
     ]
     _apply_gguf_display_labels(variants)
@@ -272,7 +272,7 @@ def test_empty_folder_cleanup_takes_only_the_variants_own_folder(tmp_path):
 
     snapshot = tmp_path / "repo" / "snapshots" / "rev"
     for folder in ("IQ4_XS", "IQ4_XS-3.57bpw", "model-IQ4_XS-3.57bpw", "IQ4_XS-3.94bpw"):
-        (snapshot / folder).mkdir(parents = True)
+        (snapshot / folder).mkdir(parents=True)
 
     class _Repo:
         repo_path = str(tmp_path / "repo")
@@ -293,7 +293,7 @@ def test_empty_folder_cleanup_still_takes_a_bare_quant_folder(tmp_path):
 
     snapshot = tmp_path / "repo" / "snapshots" / "rev"
     for folder in ("Q6_K", "model-Q6_K", "Q4_K_M"):
-        (snapshot / folder).mkdir(parents = True)
+        (snapshot / folder).mkdir(parents=True)
 
     class _Repo:
         repo_path = str(tmp_path / "repo")

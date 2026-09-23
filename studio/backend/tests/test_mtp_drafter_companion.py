@@ -129,7 +129,7 @@ def test_extract_model_size_b(model_id, size_b):
 
 
 def _sib(name: str, size: int, sha: str):
-    return SimpleNamespace(rfilename = name, size = size, lfs = {"sha256": sha})
+    return SimpleNamespace(rfilename=name, size=size, lfs={"sha256": sha})
 
 
 GEMMA_SIBLINGS = [
@@ -232,8 +232,8 @@ def test_old_manifest_resume_reclassifies_drafter():
     # Pre-fix manifests could leak the drafter into a quant's expected
     # files; resume must classify it as a companion, not a main shard.
     old = [
-        ExpectedFile(path = "gemma-4-12b-it-Q8_0.gguf", size = 8_000, sha256 = "main-q8"),
-        ExpectedFile(path = "mtp-gemma-4-12b-it.gguf", size = 100, sha256 = "drafter"),
+        ExpectedFile(path="gemma-4-12b-it-Q8_0.gguf", size=8_000, sha256="main-q8"),
+        ExpectedFile(path="mtp-gemma-4-12b-it.gguf", size=100, sha256="drafter"),
     ]
     plan = plan_from_expected_files("Q8_0", old)
     assert plan.main_hashes == frozenset({"main-q8"})
@@ -381,7 +381,7 @@ def test_detect_dspark_file_keeps_a_split_sidecar_on_its_snapshot_path(tmp_path)
     blobs = tmp_path / "blobs"
     snapshot = tmp_path / "snapshots" / "abc"
     blobs.mkdir()
-    snapshot.mkdir(parents = True)
+    snapshot.mkdir(parents=True)
     weight = snapshot / "model-Q4_K_M.gguf"
     weight.write_bytes(b"target")
 
@@ -449,7 +449,7 @@ def test_detect_mtp_file_search_root(tmp_path):
     sub.mkdir()
     (sub / "gemma-4-12b-it-Q4_K_M.gguf").write_bytes(b"x")
     (tmp_path / "mtp-gemma-4-12b-it.gguf").write_bytes(b"x")
-    found = detect_mtp_file(str(sub / "gemma-4-12b-it-Q4_K_M.gguf"), search_root = str(tmp_path))
+    found = detect_mtp_file(str(sub / "gemma-4-12b-it-Q4_K_M.gguf"), search_root=str(tmp_path))
     assert found is not None and found.endswith("mtp-gemma-4-12b-it.gguf")
 
 
@@ -473,7 +473,7 @@ def test_quant_directory_selection_finds_repo_root_mtp(tmp_path):
 
 def test_bare_relative_gguf_directory_is_local_source(tmp_path, monkeypatch):
     model_dir = tmp_path / "outputs" / "gemma"
-    model_dir.mkdir(parents = True)
+    model_dir.mkdir(parents=True)
     weight = model_dir / "gemma-4-E4B-it-qat-Q4_0.gguf"
     weight.write_bytes(b"x")
     monkeypatch.chdir(tmp_path)
@@ -538,7 +538,7 @@ def test_detect_mtp_file_requires_model_name_boundary(tmp_path, companion_path):
     weight = tmp_path / "gemma-4-E4B-item-qat-Q4_0.gguf"
     weight.write_bytes(b"x")
     companion = tmp_path / companion_path
-    companion.parent.mkdir(parents = True, exist_ok = True)
+    companion.parent.mkdir(parents=True, exist_ok=True)
     companion.write_bytes(b"x")
 
     assert detect_mtp_file(str(weight)) is None
@@ -566,7 +566,7 @@ def test_native_companion_parent_accepts_root_and_mtp_subdir(tmp_path):
     nested_drafter.write_bytes(b"x")
 
     assert native_gguf_companion_parent_allowed(root_drafter, weight)
-    assert native_gguf_companion_parent_allowed(nested_drafter, weight, allowed_subdirs = ("mtp",))
+    assert native_gguf_companion_parent_allowed(nested_drafter, weight, allowed_subdirs=("mtp",))
 
 
 def test_native_companion_parent_rejects_other_nested_directory(tmp_path):
@@ -590,12 +590,12 @@ def test_native_companion_parent_rejects_mtp_symlink_escape(tmp_path):
     drafter = outside / "mtp-gemma-4-E4B-it-Q4_0.gguf"
     drafter.write_bytes(b"x")
     try:
-        (model_dir / "MTP").symlink_to(outside, target_is_directory = True)
+        (model_dir / "MTP").symlink_to(outside, target_is_directory=True)
     except OSError as exc:
         pytest.skip(f"symlinks unavailable: {exc}")
 
     assert not native_gguf_companion_parent_allowed(
-        model_dir / "MTP" / drafter.name, weight, allowed_subdirs = ("mtp",)
+        model_dir / "MTP" / drafter.name, weight, allowed_subdirs=("mtp",)
     )
 
 
@@ -608,10 +608,10 @@ def _loaded_backend(weight, drafter_path):
     b = LlamaCppBackend()
     # Shape matches atexit cleanup expectations (terminate/wait/kill).
     b._process = SimpleNamespace(
-        poll = lambda: None,
-        terminate = lambda: None,
-        wait = lambda timeout = None: 0,
-        kill = lambda: None,
+        poll=lambda: None,
+        terminate=lambda: None,
+        wait=lambda timeout=None: 0,
+        kill=lambda: None,
     )
     b._healthy = True
     b._model_identifier = "local-gemma"
@@ -630,17 +630,17 @@ def _loaded_backend(weight, drafter_path):
 
 def _target_state_kwargs(weight, mtp_draft_path):
     return dict(
-        model_identifier = "local-gemma",
-        hf_variant = None,
-        n_ctx = 4096,
-        cache_type_kv = None,
-        speculative_type = "auto",
-        spec_draft_n_max = None,
-        chat_template_override = None,
-        extra_args = None,
-        is_vision = False,
-        gguf_path = str(weight),
-        mtp_draft_path = mtp_draft_path,
+        model_identifier="local-gemma",
+        hf_variant=None,
+        n_ctx=4096,
+        cache_type_kv=None,
+        speculative_type="auto",
+        spec_draft_n_max=None,
+        chat_template_override=None,
+        extra_args=None,
+        is_vision=False,
+        gguf_path=str(weight),
+        mtp_draft_path=mtp_draft_path,
     )
 
 
@@ -663,10 +663,10 @@ def test_already_in_target_state_bounces_on_new_drafter(tmp_path):
         GgufLoadIntent(**_target_state_kwargs(weight, str(drafter)))
     )
     intent = dict(
-        model_identifier = "local-gemma",
-        n_ctx = 4096,
-        mtp_draft_path = str(drafter),
-        compare_mtp_draft = True,
+        model_identifier="local-gemma",
+        n_ctx=4096,
+        mtp_draft_path=str(drafter),
+        compare_mtp_draft=True,
     )
     assert b.adopt_load_intent_if_matched(GgufLoadIntent(**intent))
     intent["mtp_draft_path"] = None
@@ -693,7 +693,7 @@ def test_detect_gguf_model_rejects_mtp_subdir_copy(tmp_path):
 def test_registered_mtp_root_keeps_descendant_models_and_excludes_companions(tmp_path, monkeypatch):
     root = tmp_path / "MTP"
     nested = root / "BF16"
-    nested.mkdir(parents = True)
+    nested.mkdir(parents=True)
     main = root / "Qwen3.6-27B-MTP-001-of-002.gguf"
     terminal = root / "gemma-4-12b-it-Q8_0-MTP.gguf"
     prefixed = root / "mtp-gemma-4-12b-it-Q8_0.gguf"
@@ -715,7 +715,7 @@ def test_registered_mtp_root_keeps_descendant_models_and_excludes_companions(tmp
         "Q8_0",
         f"BF16/{nested_model.name}",
     )
-    config = ModelConfig.from_identifier(str(root), gguf_variant = hub_variants[0].quant)
+    config = ModelConfig.from_identifier(str(root), gguf_variant=hub_variants[0].quant)
     assert config and config.is_gguf and config.gguf_file == str(main.resolve())
 
 
@@ -756,7 +756,7 @@ def test_download_mtp_prefers_root_over_new_scheme_copies(monkeypatch):
 
     from core.inference.llama_cpp import LlamaCppBackend
 
-    monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)  # online: skip reuse probe
+    monkeypatch.delenv("HF_HUB_OFFLINE", raising=False)  # online: skip reuse probe
     captured = {}
 
     def _fake_companion(
@@ -765,16 +765,16 @@ def test_download_mtp_prefers_root_over_new_scheme_copies(monkeypatch):
         hf_token,
         pick,
         label,
-        cancel_event = None,
-        near_path = None,
-        reuse_snapshot_sibling = True,
+        cancel_event=None,
+        near_path=None,
+        reuse_snapshot_sibling=True,
     ):
         captured["pick"] = pick
         return None
 
     b = LlamaCppBackend()
     b._download_companion_gguf = _fake_companion
-    b._download_mtp(hf_repo = "unsloth/gemma-4-E4B-it-qat-mobile-GGUF")
+    b._download_mtp(hf_repo="unsloth/gemma-4-E4B-it-qat-mobile-GGUF")
 
     repo_files = [
         "MTP/mtp-gemma-4-E4B-it-BF16.gguf",
@@ -791,14 +791,14 @@ def test_companion_downloads_forward_the_load_cancel_event(monkeypatch):
     from core.inference.llama_cpp import LlamaCppBackend
     import core.inference.llama_cpp as llama_cpp_module
 
-    monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+    monkeypatch.delenv("HF_HUB_OFFLINE", raising=False)
     monkeypatch.setattr(
         llama_cpp_module, "_companion_snapshot_sibling", lambda near_path, pick: None
     )
     event = threading.Event()
     seen = []
     b = LlamaCppBackend()
-    b.probe_server_capabilities = lambda binary = None: {
+    b.probe_server_capabilities = lambda binary=None: {
         "supports_dspark": True,
         "supports_dflash": True,
     }
@@ -808,10 +808,10 @@ def test_companion_downloads_forward_the_load_cancel_event(monkeypatch):
         return None
 
     b._download_companion_gguf = _fake_companion
-    b._download_mmproj(hf_repo = "org/repo", cancel_event = event)
-    b._download_mtp(hf_repo = "org/repo", cancel_event = event)
-    b._download_dspark(hf_repo = "org/repo", cancel_event = event)
-    b._download_dflash(hf_repo = "org/repo", cancel_event = event)
+    b._download_mmproj(hf_repo="org/repo", cancel_event=event)
+    b._download_mtp(hf_repo="org/repo", cancel_event=event)
+    b._download_dspark(hf_repo="org/repo", cancel_event=event)
+    b._download_dflash(hf_repo="org/repo", cancel_event=event)
 
     assert {label for label, _ in seen} == {
         "mmproj",
@@ -829,7 +829,7 @@ def _seed_snapshot(tmp_path, names):
     snap = tmp_path / "snap"
     for rel in names:
         f = snap / rel
-        f.parent.mkdir(parents = True, exist_ok = True)
+        f.parent.mkdir(parents=True, exist_ok=True)
         f.write_bytes(b"x")
     return snap
 
@@ -839,7 +839,7 @@ def _hub_snapshot(tmp_path, names):
     snap = tmp_path / "hub" / "models--unsloth--Qwen3.8-Flash-Next-GGUF" / "snapshots" / "abc"
     for rel in names:
         f = snap / rel
-        f.parent.mkdir(parents = True, exist_ok = True)
+        f.parent.mkdir(parents=True, exist_ok=True)
         f.write_bytes(b"x")
     return snap
 
@@ -853,9 +853,9 @@ def _capture_companion_download(backend):
         hf_token,
         pick,
         label,
-        cancel_event = None,
-        near_path = None,
-        reuse_snapshot_sibling = True,
+        cancel_event=None,
+        near_path=None,
+        reuse_snapshot_sibling=True,
     ):
         captured["pick"] = pick
         captured["near_path"] = near_path
@@ -870,7 +870,7 @@ def test_download_mtp_refetches_when_the_cache_holds_only_a_shared_head(tmp_path
     from core.inference.llama_cpp import LlamaCppBackend
     import utils.models.gguf_metadata as gm
 
-    monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+    monkeypatch.delenv("HF_HUB_OFFLINE", raising=False)
     monkeypatch.setattr(gm, "read_gguf_nextn_predict_layers", lambda p: 0)
     snap = _hub_snapshot(
         tmp_path,
@@ -880,7 +880,7 @@ def test_download_mtp_refetches_when_the_cache_holds_only_a_shared_head(tmp_path
     captured = _capture_companion_download(b)
 
     got = b._download_mtp(
-        hf_repo = "unsloth/Qwen3.8-Flash-Next-GGUF", near_path = str(snap / "UD-IQ1_S" / "model.gguf")
+        hf_repo="unsloth/Qwen3.8-Flash-Next-GGUF", near_path=str(snap / "UD-IQ1_S" / "model.gguf")
     )
     assert "pick" in captured, "a lone shared head was reused without consulting the repo"
     assert got == "/downloaded/mtp-Qwen3.8-Flash-Next-Q8_0.gguf"
@@ -890,7 +890,7 @@ def test_download_mtp_still_reuses_a_cached_self_contained_head(tmp_path, monkey
     from core.inference.llama_cpp import LlamaCppBackend
     import utils.models.gguf_metadata as gm
 
-    monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+    monkeypatch.delenv("HF_HUB_OFFLINE", raising=False)
     monkeypatch.setattr(gm, "read_gguf_nextn_predict_layers", lambda p: 0)
     snap = _hub_snapshot(
         tmp_path,
@@ -904,7 +904,7 @@ def test_download_mtp_still_reuses_a_cached_self_contained_head(tmp_path, monkey
     captured = _capture_companion_download(b)
 
     got = b._download_mtp(
-        hf_repo = "unsloth/Qwen3.8-Flash-Next-GGUF", near_path = str(snap / "UD-IQ1_S" / "model.gguf")
+        hf_repo="unsloth/Qwen3.8-Flash-Next-GGUF", near_path=str(snap / "UD-IQ1_S" / "model.gguf")
     )
     assert "pick" not in captured
     assert got is not None and Path(got).name == "mtp-Qwen3.8-Flash-Next-Q8_0.gguf"
@@ -924,7 +924,7 @@ def test_download_mtp_keeps_a_lone_shared_head_offline(tmp_path, monkeypatch):
     captured = _capture_companion_download(b)
 
     got = b._download_mtp(
-        hf_repo = "unsloth/Qwen3.8-Flash-Next-GGUF", near_path = str(snap / "UD-IQ1_S" / "model.gguf")
+        hf_repo="unsloth/Qwen3.8-Flash-Next-GGUF", near_path=str(snap / "UD-IQ1_S" / "model.gguf")
     )
     assert "pick" not in captured
     assert got is not None and Path(got).name == "mtp-Qwen3.8-Flash-Next-shared-Q8_0.gguf"
@@ -934,13 +934,13 @@ def _stub_hub(
     monkeypatch,
     published,
     *,
-    listing_fails = False,
+    listing_fails=False,
 ):
     """The live repo without a network, stubbed below the helper's own snapshot lookup."""
     import core.inference.llama_cpp as llama_cpp_module
     import huggingface_hub
 
-    def _list(repo, token = None):
+    def _list(repo, token=None):
         if listing_fails:
             raise ConnectionError("hub unreachable")
         return list(published)
@@ -950,7 +950,7 @@ def _stub_hub(
     monkeypatch.setattr(
         llama_cpp_module,
         "hf_hub_download_with_xet_fallback",
-        lambda repo, fn, token, cancel_event = None, cache_dir = None: "/downloaded/" + fn,
+        lambda repo, fn, token, cancel_event=None, cache_dir=None: "/downloaded/" + fn,
     )
 
 
@@ -960,7 +960,7 @@ def test_download_mtp_lists_the_repo_past_the_helpers_own_snapshot_reuse(tmp_pat
     from core.inference.llama_cpp import LlamaCppBackend
     import utils.models.gguf_metadata as gm
 
-    monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+    monkeypatch.delenv("HF_HUB_OFFLINE", raising=False)
     monkeypatch.setattr(gm, "read_gguf_nextn_predict_layers", lambda p: 0)
     snap = _hub_snapshot(
         tmp_path,
@@ -976,8 +976,8 @@ def test_download_mtp_lists_the_repo_past_the_helpers_own_snapshot_reuse(tmp_pat
     )
 
     got = LlamaCppBackend()._download_mtp(
-        hf_repo = "unsloth/Qwen3.8-Flash-Next-GGUF",
-        near_path = str(snap / "UD-IQ1_S" / "model.gguf"),
+        hf_repo="unsloth/Qwen3.8-Flash-Next-GGUF",
+        near_path=str(snap / "UD-IQ1_S" / "model.gguf"),
     )
     assert got is not None and Path(got).name == "mtp-Qwen3.8-Flash-Next-Q8_0.gguf", (
         f"the fall-through handed back {got}; the helper reused the snapshot copy "
@@ -991,17 +991,17 @@ def test_download_mtp_keeps_the_borrowing_head_when_the_listing_never_answers(
     from core.inference.llama_cpp import LlamaCppBackend
     import utils.models.gguf_metadata as gm
 
-    monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+    monkeypatch.delenv("HF_HUB_OFFLINE", raising=False)
     monkeypatch.setattr(gm, "read_gguf_nextn_predict_layers", lambda p: 0)
     snap = _hub_snapshot(
         tmp_path,
         ["UD-IQ1_S/model.gguf", "MTP/mtp-Qwen3.8-Flash-Next-shared-Q8_0.gguf"],
     )
-    _stub_hub(monkeypatch, [], listing_fails = True)
+    _stub_hub(monkeypatch, [], listing_fails=True)
 
     got = LlamaCppBackend()._download_mtp(
-        hf_repo = "unsloth/Qwen3.8-Flash-Next-GGUF",
-        near_path = str(snap / "UD-IQ1_S" / "model.gguf"),
+        hf_repo="unsloth/Qwen3.8-Flash-Next-GGUF",
+        near_path=str(snap / "UD-IQ1_S" / "model.gguf"),
     )
     assert got is not None and Path(got).name == "mtp-Qwen3.8-Flash-Next-shared-Q8_0.gguf"
 
@@ -1022,7 +1022,7 @@ def test_download_mtp_reuses_cached_root_drafter_offline(tmp_path, monkeypatch):
     )
     monkeypatch.setattr(mc, "_iter_hf_cache_snapshots", lambda repo: [snap])
 
-    got = LlamaCppBackend()._download_mtp(hf_repo = "unsloth/gemma-4-E4B-it-qat-mobile-GGUF")
+    got = LlamaCppBackend()._download_mtp(hf_repo="unsloth/gemma-4-E4B-it-qat-mobile-GGUF")
     assert got is not None and Path(got).name == "mtp-gemma-4-E4B-it.gguf"
 
 
@@ -1042,7 +1042,7 @@ def test_download_mtp_reuses_cached_subdir_copy_when_no_root_offline(tmp_path, m
     )
     monkeypatch.setattr(mc, "_iter_hf_cache_snapshots", lambda repo: [snap])
 
-    got = LlamaCppBackend()._download_mtp(hf_repo = "unsloth/gemma-4-E4B-it-qat-mobile-GGUF")
+    got = LlamaCppBackend()._download_mtp(hf_repo="unsloth/gemma-4-E4B-it-qat-mobile-GGUF")
     assert got is not None and Path(got).name == "mtp-gemma-4-E4B-it-BF16.gguf"
 
 
@@ -1058,7 +1058,7 @@ def test_download_mtp_prefers_root_across_snapshots_offline(tmp_path, monkeypatc
     snap_full = _seed_snapshot(tmp_path / "old", ["mtp-gemma-4-E4B-it.gguf"])
     monkeypatch.setattr(mc, "_iter_hf_cache_snapshots", lambda repo: [snap_partial, snap_full])
 
-    got = LlamaCppBackend()._download_mtp(hf_repo = "unsloth/gemma-4-E4B-it-qat-mobile-GGUF")
+    got = LlamaCppBackend()._download_mtp(hf_repo="unsloth/gemma-4-E4B-it-qat-mobile-GGUF")
     assert got is not None and Path(got).name == "mtp-gemma-4-E4B-it.gguf"
 
 
@@ -1074,7 +1074,7 @@ def test_download_mtp_reuse_follows_snapshot_order_offline(tmp_path, monkeypatch
     oldest = _seed_snapshot(tmp_path / "oldest", ["mtp-gemma-4-E4B-it.gguf"])
     monkeypatch.setattr(mc, "_iter_hf_cache_snapshots", lambda repo: [newest, oldest])
 
-    got = LlamaCppBackend()._download_mtp(hf_repo = "unsloth/gemma-4-E4B-it-qat-mobile-GGUF")
+    got = LlamaCppBackend()._download_mtp(hf_repo="unsloth/gemma-4-E4B-it-qat-mobile-GGUF")
     assert got is not None and Path(got).parent.parent.name == "newest"
 
 
@@ -1086,8 +1086,8 @@ def test_download_mtp_prefers_main_snapshot_offline(tmp_path, monkeypatch):
     snapshots = tmp_path / "models--unsloth--gemma" / "snapshots"
     old = snapshots / "old"
     new = snapshots / "new"
-    old.mkdir(parents = True)
-    new.mkdir(parents = True)
+    old.mkdir(parents=True)
+    new.mkdir(parents=True)
     main = old / "gemma-UD-Q4_K_XL.gguf"
     old_drafter = old / "mtp-gemma.gguf"
     new_drafter = new / "mtp-gemma.gguf"
@@ -1097,8 +1097,8 @@ def test_download_mtp_prefers_main_snapshot_offline(tmp_path, monkeypatch):
     monkeypatch.setattr(mc, "_iter_hf_cache_snapshots", lambda _repo: [new, old])
 
     got = LlamaCppBackend()._download_mtp(
-        hf_repo = "unsloth/gemma-GGUF",
-        near_path = str(main),
+        hf_repo="unsloth/gemma-GGUF",
+        near_path=str(main),
     )
 
     assert got == str(old_drafter)
@@ -1123,7 +1123,7 @@ def test_download_mtp_skips_discovery_for_embedded_head(tmp_path, monkeypatch):
     backend = LlamaCppBackend()
     backend._download_companion_gguf = _unexpected_download
 
-    assert backend._download_mtp(hf_repo = "org/repo", near_path = str(main)) is None
+    assert backend._download_mtp(hf_repo="org/repo", near_path=str(main)) is None
     assert reached is False
 
 
@@ -1134,7 +1134,7 @@ def test_download_mtp_online_skips_cache_reuse(tmp_path, monkeypatch):
     from core.inference.llama_cpp import LlamaCppBackend
     import utils.models.model_config as mc
 
-    monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+    monkeypatch.delenv("HF_HUB_OFFLINE", raising=False)
     snap = _seed_snapshot(tmp_path, ["mtp-gemma-4-E4B-it.gguf"])
     monkeypatch.setattr(mc, "_iter_hf_cache_snapshots", lambda repo: [snap])
 
@@ -1146,16 +1146,16 @@ def test_download_mtp_online_skips_cache_reuse(tmp_path, monkeypatch):
         hf_token,
         pick,
         label,
-        cancel_event = None,
-        near_path = None,
-        reuse_snapshot_sibling = True,
+        cancel_event=None,
+        near_path=None,
+        reuse_snapshot_sibling=True,
     ):
         reached["hit"] = True
         return None
 
     b = LlamaCppBackend()
     b._download_companion_gguf = _fake_companion
-    assert b._download_mtp(hf_repo = "unsloth/gemma-4-E4B-it-qat-mobile-GGUF") is None
+    assert b._download_mtp(hf_repo="unsloth/gemma-4-E4B-it-qat-mobile-GGUF") is None
     assert reached.get("hit") is True
 
 
@@ -1166,7 +1166,7 @@ def _dspark_download_probe(
     monkeypatch,
     *,
     supports_dspark,
-    cached = None,
+    cached=None,
 ):
     """Run _download_dspark against a stubbed capability probe and an optionally
     cached sidecar; report whether the ~11 GB fetch (and even the repo listing)
@@ -1174,11 +1174,11 @@ def _dspark_download_probe(
     from core.inference.llama_cpp import LlamaCppBackend
     import core.inference.llama_cpp as llama_cpp_module
 
-    monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+    monkeypatch.delenv("HF_HUB_OFFLINE", raising=False)
     monkeypatch.setattr(
         LlamaCppBackend,
         "probe_server_capabilities",
-        classmethod(lambda cls, binary = None: {"supports_dspark": supports_dspark}),
+        classmethod(lambda cls, binary=None: {"supports_dspark": supports_dspark}),
     )
     monkeypatch.setattr(
         llama_cpp_module, "_companion_snapshot_sibling", lambda near_path, pick: cached
@@ -1191,9 +1191,9 @@ def _dspark_download_probe(
         hf_token,
         pick,
         label,
-        cancel_event = None,
-        near_path = None,
-        outcome = None,
+        cancel_event=None,
+        near_path=None,
+        outcome=None,
     ):
         reached["hit"] = True
         if outcome is not None:
@@ -1203,9 +1203,9 @@ def _dspark_download_probe(
     b = LlamaCppBackend()
     b._download_companion_gguf = _fake_companion
     got = b._download_dspark(
-        hf_repo = "unsloth/DeepSeek-V4-Flash-0731-GGUF",
-        near_path = "/cache/snap/DeepSeek-V4-Flash-0731-Q4_K_M.gguf",
-        binary = "/fake/llama-server",
+        hf_repo="unsloth/DeepSeek-V4-Flash-0731-GGUF",
+        near_path="/cache/snap/DeepSeek-V4-Flash-0731-Q4_K_M.gguf",
+        binary="/fake/llama-server",
     )
     return got, reached.get("hit", False)
 
@@ -1214,13 +1214,13 @@ def test_download_dspark_skips_the_fetch_when_the_binary_cannot_run_it(monkeypat
     """The sidecar is ~11 GB and _build_speculative_flags drops DSpark outright on
     a binary without --spec-type draft-dspark (every prebuilt in the known-broken
     window included), so the capability must be checked BEFORE the download."""
-    got, reached = _dspark_download_probe(monkeypatch, supports_dspark = False)
+    got, reached = _dspark_download_probe(monkeypatch, supports_dspark=False)
     assert got is None
     assert reached is False
 
 
 def test_download_dspark_fetches_when_the_binary_supports_it(monkeypatch):
-    got, reached = _dspark_download_probe(monkeypatch, supports_dspark = True)
+    got, reached = _dspark_download_probe(monkeypatch, supports_dspark=True)
     assert got == "/cache/dspark-DeepSeek-V4-Flash-0731-Q8_0.gguf"
     assert reached is True
 
@@ -1231,11 +1231,11 @@ def test_download_dspark_records_whether_the_repo_publishes_a_sidecar(monkeypatc
     from core.inference.llama_cpp import LlamaCppBackend
     import core.inference.llama_cpp as llama_cpp_module
 
-    monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+    monkeypatch.delenv("HF_HUB_OFFLINE", raising=False)
     monkeypatch.setattr(
         LlamaCppBackend,
         "probe_server_capabilities",
-        classmethod(lambda cls, binary = None: {"supports_dspark": True}),
+        classmethod(lambda cls, binary=None: {"supports_dspark": True}),
     )
     monkeypatch.setattr(
         llama_cpp_module, "_companion_snapshot_sibling", lambda near_path, pick: None
@@ -1248,9 +1248,9 @@ def test_download_dspark_records_whether_the_repo_publishes_a_sidecar(monkeypatc
             hf_token,
             pick,
             label,
-            cancel_event = None,
-            near_path = None,
-            outcome = None,
+            cancel_event=None,
+            near_path=None,
+            outcome=None,
         ):
             if outcome is not None:
                 outcome["listed"] = listed
@@ -1261,7 +1261,7 @@ def test_download_dspark_records_whether_the_repo_publishes_a_sidecar(monkeypatc
     for listed, expect_absent in ((False, True), (True, False)):
         b = LlamaCppBackend()
         b._download_companion_gguf = _companion(listed)
-        assert b._download_dspark(hf_repo = "org/repo", binary = "/fake/llama-server") is None
+        assert b._download_dspark(hf_repo="org/repo", binary="/fake/llama-server") is None
         assert b._dspark_sidecar_absent is expect_absent
 
 
@@ -1272,7 +1272,7 @@ def test_an_unreachable_hub_is_not_recorded_as_a_missing_sidecar(monkeypatch, tm
     from core.inference.llama_cpp import LlamaCppBackend
     import core.inference.llama_cpp as llama_cpp_module
 
-    monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+    monkeypatch.delenv("HF_HUB_OFFLINE", raising=False)
     monkeypatch.setattr(
         llama_cpp_module, "_companion_snapshot_sibling", lambda near_path, pick: None
     )
@@ -1281,7 +1281,7 @@ def test_an_unreachable_hub_is_not_recorded_as_a_missing_sidecar(monkeypatch, tm
         llama_cpp_module, "_hub_cache_dir_for_snapshot_path", lambda p: str(tmp_path)
     )
 
-    def _explode(repo, token = None):
+    def _explode(repo, token=None):
         raise ConnectionError("hub unreachable")
 
     monkeypatch.setattr("huggingface_hub.list_repo_files", _explode)
@@ -1292,11 +1292,11 @@ def test_an_unreachable_hub_is_not_recorded_as_a_missing_sidecar(monkeypatch, tm
     b._cancel_event.clear()
     assert (
         b._download_companion_gguf(
-            hf_repo = "org/repo",
-            hf_token = None,
-            pick = lambda names: None,
-            label = "DSpark drafter",
-            outcome = outcome,
+            hf_repo="org/repo",
+            hf_token=None,
+            pick=lambda names: None,
+            label="DSpark drafter",
+            outcome=outcome,
         )
         is None
     )
@@ -1309,7 +1309,7 @@ def test_download_dspark_still_reports_a_cached_sidecar_it_cannot_run(monkeypatc
     comparing it against the launched None and reloading the same drafter-free
     server each time. _build_speculative_flags re-checks and still falls back."""
     cached = "/cache/snap/dspark/dspark-DeepSeek-V4-Flash-0731-Q8_0.gguf"
-    got, reached = _dspark_download_probe(monkeypatch, supports_dspark = False, cached = cached)
+    got, reached = _dspark_download_probe(monkeypatch, supports_dspark=False, cached=cached)
     assert got == cached
     assert reached is False
 
@@ -1384,7 +1384,7 @@ def test_root_mtp_ranking_spans_the_search_root(tmp_path):
     exact = root / "mtp-model_v2-Q8_0.gguf"
     exact.write_bytes(b"exact")
 
-    found = detect_mtp_file(str(weight), search_root = str(root))
+    found = detect_mtp_file(str(weight), search_root=str(root))
     assert found is not None and Path(found).name == exact.name
 
 
@@ -1450,7 +1450,7 @@ def test_a_rejected_candidate_does_not_win_the_tier_comparison(tmp_path):
     accepted = tmp_path / "MTP" / "mtp-model_v2-Q8_0.gguf"
     accepted.write_bytes(b"mid")
 
-    found = detect_mtp_file(str(weight), accept = lambda candidate: rejected.name not in candidate)
+    found = detect_mtp_file(str(weight), accept=lambda candidate: rejected.name not in candidate)
     assert found is not None and Path(found).name == accepted.name
 
 
@@ -1497,7 +1497,7 @@ def test_detect_mtp_file_skip_root_ignores_root_drafter(tmp_path):
     assert detect_mtp_file(str(weight), str(tmp_path)) == str(
         (tmp_path / "mtp-model.gguf").resolve()
     )
-    assert detect_mtp_file(str(weight), str(tmp_path), skip_root = True) == str(subdir_copy.resolve())
+    assert detect_mtp_file(str(weight), str(tmp_path), skip_root=True) == str(subdir_copy.resolve())
 
 
 def test_detect_mtp_file_rejects_weight_copy_inside_mtp_dir(tmp_path):
@@ -1530,8 +1530,8 @@ def test_detect_mtp_file_keeps_snapshot_path_for_sharded_subdir_drafter(tmp_path
     blobs = tmp_path / "blobs"
     snapshot = tmp_path / "snapshots" / "abc"
     sub = snapshot / "MTP"
-    blobs.mkdir(parents = True)
-    sub.mkdir(parents = True)
+    blobs.mkdir(parents=True)
+    sub.mkdir(parents=True)
 
     (blobs / "sha_weight").write_bytes(b"w")
     weight = snapshot / "model-Q4_0.gguf"
@@ -1570,8 +1570,8 @@ def test_detect_mtp_file_keeps_snapshot_path_for_sharded_root_drafter(tmp_path):
     """The root branch needs the same shard handling as the MTP/ branch."""
     blobs = tmp_path / "blobs"
     snapshot = tmp_path / "snapshots" / "abc"
-    blobs.mkdir(parents = True)
-    snapshot.mkdir(parents = True)
+    blobs.mkdir(parents=True)
+    snapshot.mkdir(parents=True)
 
     (blobs / "sha_weight").write_bytes(b"w")
     weight = snapshot / "model-Q4_0.gguf"
@@ -1724,7 +1724,7 @@ def test_a_cached_dspark_drafter_is_never_launched_as_an_mtp_drafter(tmp_path, m
         snap = tmp_path / f"snap{len(list(tmp_path.iterdir()))}"
         for rel in files:
             path = snap / rel
-            path.parent.mkdir(parents = True, exist_ok = True)
+            path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(b"x")
         return snap
 
@@ -1761,7 +1761,7 @@ def test_cached_mtp_lookup_ranks_nested_copies_like_the_download(tmp_path, monke
     ]
     snap = tmp_path / "snap"
     for rel in [*published, "UD-IQ1_S/model.gguf"]:
-        (snap / rel).parent.mkdir(parents = True, exist_ok = True)
+        (snap / rel).parent.mkdir(parents=True, exist_ok=True)
         (snap / rel).write_bytes(b"x")
 
     monkeypatch.setattr(
@@ -1786,7 +1786,7 @@ def test_cached_mtp_lookup_rejects_non_drafters_parked_under_mtp(tmp_path, monke
 
     snap = tmp_path / "snap"
     for rel in ("MTP/mmproj-BF16.gguf", "MTP/imatrix_unsloth.gguf", "model-Q4_K_M.gguf"):
-        (snap / rel).parent.mkdir(parents = True, exist_ok = True)
+        (snap / rel).parent.mkdir(parents=True, exist_ok=True)
         (snap / rel).write_bytes(b"x")
 
     monkeypatch.setattr(
@@ -1798,26 +1798,26 @@ def test_cached_mtp_lookup_rejects_non_drafters_parked_under_mtp(tmp_path, monke
 
 def test_local_scan_prefers_the_fit_measurable_head_over_the_smaller_shared_one(tmp_path):
     root = tmp_path / "local"
-    (root / "MTP").mkdir(parents = True)
+    (root / "MTP").mkdir(parents=True)
     for i in (1, 2, 3):
         (root / f"Qwen3.8-Flash-Next-UD-IQ1_S-0000{i}-of-00003.gguf").write_bytes(b"x" * 64)
     (root / "MTP" / "mtp-Qwen3.8-Flash-Next-shared-Q8_0.gguf").write_bytes(b"x" * 64)
     (root / "MTP" / "mtp-Qwen3.8-Flash-Next-Q8_0.gguf").write_bytes(b"x" * 128)
     found = detect_mtp_file(
-        str(root / "Qwen3.8-Flash-Next-UD-IQ1_S-00001-of-00003.gguf"), search_root = str(root)
+        str(root / "Qwen3.8-Flash-Next-UD-IQ1_S-00001-of-00003.gguf"), search_root=str(root)
     )
     assert found is not None and Path(found).name == "mtp-Qwen3.8-Flash-Next-Q8_0.gguf"
 
 
 def test_local_scan_keeps_precision_above_the_borrow_tiebreak(tmp_path):
     root = tmp_path / "local"
-    (root / "MTP").mkdir(parents = True)
+    (root / "MTP").mkdir(parents=True)
     for i in (1, 2, 3):
         (root / f"Qwen3.8-Flash-Next-UD-IQ1_S-0000{i}-of-00003.gguf").write_bytes(b"x" * 64)
     (root / "MTP" / "mtp-Qwen3.8-Flash-Next-BF16.gguf").write_bytes(b"x" * 512)
     (root / "MTP" / "mtp-Qwen3.8-Flash-Next-shared-Q8_0.gguf").write_bytes(b"x" * 64)
     found = detect_mtp_file(
-        str(root / "Qwen3.8-Flash-Next-UD-IQ1_S-00001-of-00003.gguf"), search_root = str(root)
+        str(root / "Qwen3.8-Flash-Next-UD-IQ1_S-00001-of-00003.gguf"), search_root=str(root)
     )
     assert found is not None and Path(found).name == "mtp-Qwen3.8-Flash-Next-shared-Q8_0.gguf"
 
@@ -1836,21 +1836,21 @@ def test_a_shared_head_pairs_with_its_target_in_the_local_scan(tmp_path):
     weight = "qwen3.8-flash-next-ud-iq1_s-00001-of-00003.gguf"
     for tier in ("Q8_0", "BF16", "Q4_K_M"):
         name = f"mtp-Qwen3.8-Flash-Next-shared-{tier}.gguf"
-        assert _drafter_pairing_stem(name, kind = "mtp") == "qwen3.8-flash-next"
-        assert _drafter_matches_weight(name, weight, kind = "mtp"), name
+        assert _drafter_pairing_stem(name, kind="mtp") == "qwen3.8-flash-next"
+        assert _drafter_matches_weight(name, weight, kind="mtp"), name
     # A different family is still rejected, which is the whole point of pairing.
-    assert not _drafter_matches_weight("mtp-Some-Other-shared-Q8_0.gguf", weight, kind = "mtp")
+    assert not _drafter_matches_weight("mtp-Some-Other-shared-Q8_0.gguf", weight, kind="mtp")
     # Only MTP publishes a borrowed form, so no other kind changes meaning.
-    assert _drafter_pairing_stem("dspark-Model-shared-Q8_0.gguf", kind = "dspark") == "model-shared"
+    assert _drafter_pairing_stem("dspark-Model-shared-Q8_0.gguf", kind="dspark") == "model-shared"
 
     root = tmp_path / "local"
-    (root / "MTP").mkdir(parents = True)
+    (root / "MTP").mkdir(parents=True)
     for i in (1, 2, 3):
         (root / f"Qwen3.8-Flash-Next-UD-IQ1_S-0000{i}-of-00003.gguf").write_bytes(b"x" * 64)
     shared = root / "MTP" / "mtp-Qwen3.8-Flash-Next-shared-Q8_0.gguf"
     shared.write_bytes(b"x" * 64)
     found = detect_mtp_file(
-        str(root / "Qwen3.8-Flash-Next-UD-IQ1_S-00001-of-00003.gguf"), search_root = str(root)
+        str(root / "Qwen3.8-Flash-Next-UD-IQ1_S-00001-of-00003.gguf"), search_root=str(root)
     )
     assert found is not None and Path(found).name == shared.name
 
@@ -1865,7 +1865,7 @@ def test_cached_dspark_lookup_prefers_q8_and_excludes_dflash(tmp_path, monkeypat
         "dflash-model-Q8_0.gguf",
     ):
         path = snap / rel
-        path.parent.mkdir(parents = True, exist_ok = True)
+        path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(b"x")
     monkeypatch.setattr(
         "utils.models.model_config._iter_hf_cache_snapshots",
@@ -1891,31 +1891,31 @@ def _cache_repo(tmp_path: Path, repo_id: str, names: list[str]):
     repo_dir = tmp_path / f"models--{repo_id.replace('/', '--')}"
     snap = repo_dir / "snapshots" / "rev1"
     blobs = repo_dir / "blobs"
-    snap.mkdir(parents = True)
-    blobs.mkdir(parents = True)
+    snap.mkdir(parents=True)
+    blobs.mkdir(parents=True)
     files = []
     for index, name in enumerate(names):
         blob = blobs / f"sha{index}"
         blob.write_bytes(b"x" * 64)
         link = snap / name
-        link.parent.mkdir(parents = True, exist_ok = True)
+        link.parent.mkdir(parents=True, exist_ok=True)
         link.symlink_to(blob)
         files.append(
             SimpleNamespace(
                 # Basename, like huggingface_hub (file_path.name) and our own
                 # recovery scan (entry.name); the directory only reaches the
                 # predicates via _repo_file_matches' snapshot-relative rebuild.
-                file_name = Path(name).name,
-                file_path = str(link),
-                blob_path = str(blob),
-                size_on_disk = 64,
+                file_name=Path(name).name,
+                file_path=str(link),
+                blob_path=str(blob),
+                size_on_disk=64,
             )
         )
     return SimpleNamespace(
-        repo_id = repo_id,
-        repo_type = "model",
-        repo_path = repo_dir,
-        revisions = [SimpleNamespace(files = files, snapshot_path = str(snap))],
+        repo_id=repo_id,
+        repo_type="model",
+        repo_path=repo_dir,
+        revisions=[SimpleNamespace(files=files, snapshot_path=str(snap))],
     ), snap
 
 
@@ -1933,7 +1933,7 @@ def test_deleting_one_of_several_variants_keeps_the_dspark_drafter(tmp_path):
         ],
     )
     _delete_gguf_variant_from_repos(
-        "unsloth/DeepSeek-V4-Flash-0731-GGUF", "Q4_K_M", [repo], None, root = tmp_path
+        "unsloth/DeepSeek-V4-Flash-0731-GGUF", "Q4_K_M", [repo], None, root=tmp_path
     )
 
     assert not (snap / "model-Q4_K_M.gguf").is_symlink()
@@ -1952,7 +1952,7 @@ def test_deleting_the_last_variant_reclaims_an_opt_in_dspark_drafter(tmp_path):
         ["model-Q4_K_M.gguf", "dspark/dspark-DeepSeek-V4-Flash-0731-BF16.gguf"],
     )
     _delete_gguf_variant_from_repos(
-        "unsloth/DeepSeek-V4-Flash-0731-GGUF", "Q4_K_M", [repo], None, root = tmp_path
+        "unsloth/DeepSeek-V4-Flash-0731-GGUF", "Q4_K_M", [repo], None, root=tmp_path
     )
 
     assert not (snap / "model-Q4_K_M.gguf").is_symlink()
@@ -1977,7 +1977,7 @@ def test_a_suffix_scheme_sidecar_is_not_mistaken_for_a_quant(tmp_path):
         ],
     )
     _delete_gguf_variant_from_repos(
-        "unsloth/DeepSeek-V4-Flash-0731-GGUF", "Q8_0", [repo], None, root = tmp_path
+        "unsloth/DeepSeek-V4-Flash-0731-GGUF", "Q8_0", [repo], None, root=tmp_path
     )
 
     assert not (snap / "model-Q8_0.gguf").is_symlink()
@@ -1986,7 +1986,7 @@ def test_a_suffix_scheme_sidecar_is_not_mistaken_for_a_quant(tmp_path):
 
     # ...and it still goes with the last variant.
     _delete_gguf_variant_from_repos(
-        "unsloth/DeepSeek-V4-Flash-0731-GGUF", "Q4_K_M", [repo], None, root = tmp_path
+        "unsloth/DeepSeek-V4-Flash-0731-GGUF", "Q4_K_M", [repo], None, root=tmp_path
     )
     assert not (snap / "dspark" / "DeepSeek-V4-Flash-0731-Q8_0-dspark.gguf").is_symlink()
 
@@ -1999,7 +1999,7 @@ def test_deleting_the_last_variant_keeps_a_dflash_weight(tmp_path):
     repo, snap = _cache_repo(
         tmp_path, "org/Model-GGUF", ["model-Q4_K_M.gguf", "dflash-model-Q8_0.gguf"]
     )
-    _delete_gguf_variant_from_repos("org/Model-GGUF", "Q4_K_M", [repo], None, root = tmp_path)
+    _delete_gguf_variant_from_repos("org/Model-GGUF", "Q4_K_M", [repo], None, root=tmp_path)
 
     assert not (snap / "model-Q4_K_M.gguf").is_symlink()
     assert (snap / "dflash-model-Q8_0.gguf").is_symlink()
@@ -2012,7 +2012,7 @@ def test_deleting_the_last_variant_still_reclaims_mtp_and_mmproj(tmp_path):
     repo, snap = _cache_repo(
         tmp_path, "org/Model-GGUF", ["model-Q4_K_M.gguf", "mtp-model.gguf", "mmproj-F16.gguf"]
     )
-    _delete_gguf_variant_from_repos("org/Model-GGUF", "Q4_K_M", [repo], None, root = tmp_path)
+    _delete_gguf_variant_from_repos("org/Model-GGUF", "Q4_K_M", [repo], None, root=tmp_path)
 
     assert not (snap / "model-Q4_K_M.gguf").is_symlink()
     assert not (snap / "mtp-model.gguf").is_symlink()
@@ -2058,6 +2058,7 @@ def test_is_dflash_drafter_path(path, expected):
         _is_dspark_drafter_path,
         _is_mtp_only_drafter_path,
     )
+
     assert _is_dflash_drafter_path(path) is expected
     if expected:
         # The three kinds partition: a DFlash sidecar launched as MTP or DSpark
@@ -2078,6 +2079,7 @@ def test_is_dflash_drafter_path(path, expected):
 )
 def test_canonicalize_spec_mode_accepts_dflash(value, expected):
     from core.inference.llama_cpp import _canonicalize_spec_mode
+
     assert _canonicalize_spec_mode(value) == expected
 
 
@@ -2085,7 +2087,7 @@ def test_canonicalize_spec_mode_accepts_dflash(value, expected):
 
 _NEEDS_BASH = pytest.mark.skipif(
     sys.platform == "win32",
-    reason = "fake llama-server is a bash stub; Windows has no direct executor",
+    reason="fake llama-server is a bash stub; Windows has no direct executor",
 )
 
 
@@ -2136,8 +2138,8 @@ def test_missing_binary_reports_no_dflash():
 def _spec_backend(
     monkeypatch,
     *,
-    supports_dflash = True,
-    supports_dspark = True,
+    supports_dflash=True,
+    supports_dspark=True,
 ):
     from core.inference.llama_cpp import LlamaCppBackend
 
@@ -2155,7 +2157,7 @@ def _spec_backend(
     monkeypatch.setattr(
         LlamaCppBackend,
         "probe_server_capabilities",
-        classmethod(lambda cls, binary = None: caps),
+        classmethod(lambda cls, binary=None: caps),
     )
     backend = LlamaCppBackend()
     backend._nextn_predict_layers = None
@@ -2164,13 +2166,13 @@ def _spec_backend(
 
 def _spec_flags(backend, **kwargs):
     base = dict(
-        speculative_type = None,
-        spec_draft_n_max = None,
-        extra_args = None,
-        model_identifier = "unsloth/Muse-Glimmer-30B-GGUF",
-        model_path = None,
-        gpus = True,
-        binary = "/fake/llama-server",
+        speculative_type=None,
+        spec_draft_n_max=None,
+        extra_args=None,
+        model_identifier="unsloth/Muse-Glimmer-30B-GGUF",
+        model_path=None,
+        gpus=True,
+        binary="/fake/llama-server",
     )
     base.update(kwargs)
     return backend._build_speculative_flags(**base)
@@ -2181,7 +2183,7 @@ def test_auto_launches_dflash_when_a_sidecar_is_present(monkeypatch):
     B200 with the published 1.52 GiB sidecar this is 1.21x-1.36x decode over
     spec-off at n_max=2, at 61-77% draft acceptance."""
     backend = _spec_backend(monkeypatch)
-    flags = _spec_flags(backend, speculative_type = "auto", dflash_draft_path = "/m/dflash-kquant.gguf")
+    flags = _spec_flags(backend, speculative_type="auto", dflash_draft_path="/m/dflash-kquant.gguf")
 
     assert flags == [
         "--model-draft",
@@ -2198,14 +2200,14 @@ def test_auto_launches_dflash_when_a_sidecar_is_present(monkeypatch):
 
 def test_auto_uses_the_cpu_draft_depth_off_gpu(monkeypatch):
     backend = _spec_backend(monkeypatch)
-    flags = _spec_flags(backend, speculative_type = "auto", dflash_draft_path = "/m/d.gguf", gpus = False)
+    flags = _spec_flags(backend, speculative_type="auto", dflash_draft_path="/m/d.gguf", gpus=False)
     assert flags[-2:] == ["--spec-draft-n-max", "3"]
 
 
 def test_a_user_draft_depth_override_reaches_dflash(monkeypatch):
     backend = _spec_backend(monkeypatch)
     flags = _spec_flags(
-        backend, speculative_type = "dflash", dflash_draft_path = "/m/d.gguf", spec_draft_n_max = 6
+        backend, speculative_type="dflash", dflash_draft_path="/m/d.gguf", spec_draft_n_max=6
     )
     assert flags[-2:] == ["--spec-draft-n-max", "6"]
     assert backend._spec_draft_n_max == 6
@@ -2214,8 +2216,8 @@ def test_a_user_draft_depth_override_reaches_dflash(monkeypatch):
 def test_auto_does_not_emit_dflash_when_the_binary_cannot_run_it(monkeypatch):
     """A --spec-type the binary does not know aborts the launch, so the sidecar
     being on disk is not enough. Published prebuilts predate the arch."""
-    backend = _spec_backend(monkeypatch, supports_dflash = False)
-    flags = _spec_flags(backend, speculative_type = "auto", dflash_draft_path = "/m/dflash-kquant.gguf")
+    backend = _spec_backend(monkeypatch, supports_dflash=False)
+    flags = _spec_flags(backend, speculative_type="auto", dflash_draft_path="/m/dflash-kquant.gguf")
 
     assert "draft-dflash" not in flags
     assert "--model-draft" not in flags
@@ -2224,8 +2226,8 @@ def test_auto_does_not_emit_dflash_when_the_binary_cannot_run_it(monkeypatch):
 
 
 def test_forced_dflash_without_the_capability_falls_back(monkeypatch):
-    backend = _spec_backend(monkeypatch, supports_dflash = False)
-    flags = _spec_flags(backend, speculative_type = "dflash", dflash_draft_path = "/m/d.gguf")
+    backend = _spec_backend(monkeypatch, supports_dflash=False)
+    flags = _spec_flags(backend, speculative_type="dflash", dflash_draft_path="/m/d.gguf")
 
     assert flags == ["--spec-default"]
     assert backend._speculative_type == "default"
@@ -2234,7 +2236,7 @@ def test_forced_dflash_without_the_capability_falls_back(monkeypatch):
 
 def test_forced_dflash_without_a_sidecar_falls_back(monkeypatch):
     backend = _spec_backend(monkeypatch)
-    flags = _spec_flags(backend, speculative_type = "dflash", dflash_draft_path = None)
+    flags = _spec_flags(backend, speculative_type="dflash", dflash_draft_path=None)
 
     assert flags == ["--spec-default"]
     assert backend._spec_fallback_reason == "drafter_not_found"
@@ -2253,10 +2255,10 @@ def test_a_dropped_unloadable_drafter_reports_its_own_reason(monkeypatch):
     flags = _spec_flags(
         backend,
         # The arm is _mtp_drafter_missing, which is the name-only (Gemma) MTP shape.
-        model_identifier = "unsloth/gemma-4-12b-it-GGUF",
-        speculative_type = "mtp",
-        mtp_draft_path = None,
-        mtp_drafter_unloadable = True,
+        model_identifier="unsloth/gemma-4-12b-it-GGUF",
+        speculative_type="mtp",
+        mtp_draft_path=None,
+        mtp_drafter_unloadable=True,
     )
 
     assert backend._spec_fallback_reason == "drafter_unloadable"
@@ -2277,10 +2279,10 @@ def test_a_dropped_sidecar_is_explained_on_a_non_gemma_quant(monkeypatch, mode):
     backend = _spec_backend(monkeypatch)
     flags = _spec_flags(
         backend,
-        model_identifier = "0bserverx/Qwen3.8-27B-Heretic-Abliterated-Uncensored-GGUF",
-        speculative_type = mode,
-        mtp_draft_path = None,
-        mtp_drafter_unloadable = True,
+        model_identifier="0bserverx/Qwen3.8-27B-Heretic-Abliterated-Uncensored-GGUF",
+        speculative_type=mode,
+        mtp_draft_path=None,
+        mtp_drafter_unloadable=True,
     )
 
     assert backend._spec_fallback_reason == "drafter_unloadable"
@@ -2294,9 +2296,9 @@ def test_a_plain_quant_with_no_sidecar_at_all_is_untouched(monkeypatch):
     backend = _spec_backend(monkeypatch)
     _spec_flags(
         backend,
-        model_identifier = "0bserverx/Qwen3.8-27B-Heretic-Abliterated-Uncensored-GGUF",
-        speculative_type = "auto",
-        mtp_draft_path = None,
+        model_identifier="0bserverx/Qwen3.8-27B-Heretic-Abliterated-Uncensored-GGUF",
+        speculative_type="auto",
+        mtp_draft_path=None,
     )
 
     assert backend._spec_fallback_reason is None
@@ -2307,9 +2309,9 @@ def test_a_genuinely_absent_drafter_still_reports_not_found(monkeypatch):
     backend = _spec_backend(monkeypatch)
     _spec_flags(
         backend,
-        model_identifier = "unsloth/gemma-4-12b-it-GGUF",
-        speculative_type = "mtp",
-        mtp_draft_path = None,
+        model_identifier="unsloth/gemma-4-12b-it-GGUF",
+        speculative_type="mtp",
+        mtp_draft_path=None,
     )
 
     assert backend._spec_fallback_reason == "drafter_not_found"
@@ -2322,9 +2324,9 @@ def test_dspark_keeps_first_refusal_when_a_repo_ships_both(monkeypatch):
     backend = _spec_backend(monkeypatch)
     flags = _spec_flags(
         backend,
-        speculative_type = "auto",
-        dspark_draft_path = "/m/dspark-x-Q8_0.gguf",
-        dflash_draft_path = "/m/dflash-kquant.gguf",
+        speculative_type="auto",
+        dspark_draft_path="/m/dspark-x-Q8_0.gguf",
+        dflash_draft_path="/m/dflash-kquant.gguf",
     )
     assert "draft-dspark" in flags
     assert "draft-dflash" not in flags
@@ -2335,7 +2337,7 @@ def test_dspark_emission_is_unchanged(monkeypatch):
     """Regression guard on the behaviour this PR must not touch."""
     backend = _spec_backend(monkeypatch)
     flags = _spec_flags(
-        backend, speculative_type = "dspark", dspark_draft_path = "/m/dspark-x-Q8_0.gguf"
+        backend, speculative_type="dspark", dspark_draft_path="/m/dspark-x-Q8_0.gguf"
     )
     assert flags == [
         "--model-draft",
@@ -2351,8 +2353,8 @@ def test_dspark_emission_is_unchanged(monkeypatch):
 def test_a_dflash_sidecar_alone_does_not_change_the_mtp_or_off_paths(monkeypatch):
     """Forced modes stay forced: a sidecar sitting on disk must not promote."""
     backend = _spec_backend(monkeypatch)
-    assert _spec_flags(backend, speculative_type = "off", dflash_draft_path = "/m/d.gguf") == []
-    flags = _spec_flags(backend, speculative_type = "ngram", dflash_draft_path = "/m/d.gguf")
+    assert _spec_flags(backend, speculative_type="off", dflash_draft_path="/m/d.gguf") == []
+    flags = _spec_flags(backend, speculative_type="ngram", dflash_draft_path="/m/d.gguf")
     assert "draft-dflash" not in flags
     assert flags[:2] == ["--spec-type", "ngram-mod"]
 
@@ -2469,16 +2471,16 @@ def _dflash_download_probe(
     monkeypatch,
     *,
     supports_dflash,
-    cached = None,
+    cached=None,
 ):
     from core.inference.llama_cpp import LlamaCppBackend
     import core.inference.llama_cpp as llama_cpp_module
 
-    monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+    monkeypatch.delenv("HF_HUB_OFFLINE", raising=False)
     monkeypatch.setattr(
         LlamaCppBackend,
         "probe_server_capabilities",
-        classmethod(lambda cls, binary = None: {"supports_dflash": supports_dflash}),
+        classmethod(lambda cls, binary=None: {"supports_dflash": supports_dflash}),
     )
     monkeypatch.setattr(
         llama_cpp_module, "_companion_snapshot_sibling", lambda near_path, pick: cached
@@ -2491,10 +2493,10 @@ def _dflash_download_probe(
         hf_token,
         pick,
         label,
-        cancel_event = None,
-        near_path = None,
-        outcome = None,
-        on_transient_failure = None,
+        cancel_event=None,
+        near_path=None,
+        outcome=None,
+        on_transient_failure=None,
     ):
         reached["hit"] = True
         reached["picked"] = pick(
@@ -2512,15 +2514,15 @@ def _dflash_download_probe(
     b = LlamaCppBackend()
     b._download_companion_gguf = _fake_companion
     got = b._download_dflash(
-        hf_repo = "unsloth/Muse-Glimmer-30B-GGUF",
-        near_path = "/cache/snap/Muse-Glimmer-30B-UD-Q4_K_XL.gguf",
-        binary = "/fake/llama-server",
+        hf_repo="unsloth/Muse-Glimmer-30B-GGUF",
+        near_path="/cache/snap/Muse-Glimmer-30B-UD-Q4_K_XL.gguf",
+        binary="/fake/llama-server",
     )
     return got, reached
 
 
 def test_download_dflash_fetches_when_the_binary_supports_it(tmp_path, monkeypatch):
-    got, reached = _dflash_download_probe(tmp_path, monkeypatch, supports_dflash = True)
+    got, reached = _dflash_download_probe(tmp_path, monkeypatch, supports_dflash=True)
     assert got == str(tmp_path / "dflash-kquant.gguf")
     assert reached["hit"] is True
     # The picker must select the sidecar, not the weight or the projector.
@@ -2530,7 +2532,7 @@ def test_download_dflash_fetches_when_the_binary_supports_it(tmp_path, monkeypat
 def test_download_dflash_skips_the_fetch_when_the_binary_cannot_run_it(tmp_path, monkeypatch):
     """Same gate as DSpark: _build_speculative_flags drops DFlash outright on a
     binary without --spec-type draft-dflash, so the file would never be opened."""
-    got, reached = _dflash_download_probe(tmp_path, monkeypatch, supports_dflash = False)
+    got, reached = _dflash_download_probe(tmp_path, monkeypatch, supports_dflash=False)
     assert got is None
     assert reached.get("hit", False) is False
 
@@ -2543,7 +2545,7 @@ def test_download_dflash_still_reports_a_cached_sidecar_it_cannot_run(tmp_path, 
     before handing the path back."""
     cached = str(_write_gguf(tmp_path / "dflash-kquant.gguf", "dflash"))
     got, reached = _dflash_download_probe(
-        tmp_path, monkeypatch, supports_dflash = False, cached = cached
+        tmp_path, monkeypatch, supports_dflash=False, cached=cached
     )
     assert got == cached
     assert reached.get("hit", False) is False
@@ -2555,11 +2557,11 @@ def test_download_dflash_records_whether_the_repo_publishes_a_sidecar(monkeypatc
     from core.inference.llama_cpp import LlamaCppBackend
     import core.inference.llama_cpp as llama_cpp_module
 
-    monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+    monkeypatch.delenv("HF_HUB_OFFLINE", raising=False)
     monkeypatch.setattr(
         LlamaCppBackend,
         "probe_server_capabilities",
-        classmethod(lambda cls, binary = None: {"supports_dflash": True}),
+        classmethod(lambda cls, binary=None: {"supports_dflash": True}),
     )
     monkeypatch.setattr(
         llama_cpp_module, "_companion_snapshot_sibling", lambda near_path, pick: None
@@ -2572,10 +2574,10 @@ def test_download_dflash_records_whether_the_repo_publishes_a_sidecar(monkeypatc
             hf_token,
             pick,
             label,
-            cancel_event = None,
-            near_path = None,
-            outcome = None,
-            on_transient_failure = None,
+            cancel_event=None,
+            near_path=None,
+            outcome=None,
+            on_transient_failure=None,
         ):
             if outcome is not None:
                 outcome["listed"] = listed
@@ -2586,7 +2588,7 @@ def test_download_dflash_records_whether_the_repo_publishes_a_sidecar(monkeypatc
     for listed, expect_absent in ((False, True), (True, False)):
         b = LlamaCppBackend()
         b._download_companion_gguf = _companion(listed)
-        assert b._download_dflash(hf_repo = "org/repo", binary = "/fake/llama-server") is None
+        assert b._download_dflash(hf_repo="org/repo", binary="/fake/llama-server") is None
         assert b._dflash_sidecar_absent is expect_absent
 
 
@@ -2596,7 +2598,7 @@ def test_a_cached_dflash_drafter_is_never_launched_as_an_mtp_drafter(tmp_path, m
     from core.inference.llama_cpp import LlamaCppBackend
 
     snap = tmp_path / "snapshots" / "abc"
-    snap.mkdir(parents = True)
+    snap.mkdir(parents=True)
     # Real headers: the cached lookup confirms general.architecture before it
     # hands a path to --model-draft.
     for name in ("dflash-kquant.gguf", "model-Q4_K_M.gguf"):
@@ -2633,11 +2635,11 @@ def _dflash_download_pick(monkeypatch, *, listing, near_path):
     from core.inference.llama_cpp import LlamaCppBackend
     import core.inference.llama_cpp as llama_cpp_module
 
-    monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+    monkeypatch.delenv("HF_HUB_OFFLINE", raising=False)
     monkeypatch.setattr(
         LlamaCppBackend,
         "probe_server_capabilities",
-        classmethod(lambda cls, binary = None: {"supports_dflash": True}),
+        classmethod(lambda cls, binary=None: {"supports_dflash": True}),
     )
     monkeypatch.setattr(
         llama_cpp_module, "_companion_snapshot_sibling", lambda near_path, pick: None
@@ -2650,10 +2652,10 @@ def _dflash_download_pick(monkeypatch, *, listing, near_path):
         hf_token,
         pick,
         label,
-        cancel_event = None,
-        near_path = None,
-        outcome = None,
-        on_transient_failure = None,
+        cancel_event=None,
+        near_path=None,
+        outcome=None,
+        on_transient_failure=None,
     ):
         picked["name"] = pick(listing)
         return None
@@ -2661,9 +2663,9 @@ def _dflash_download_pick(monkeypatch, *, listing, near_path):
     b = LlamaCppBackend()
     b._download_companion_gguf = _fake_companion
     b._download_dflash(
-        hf_repo = "org/repo",
-        near_path = near_path,
-        binary = "/fake/llama-server",
+        hf_repo="org/repo",
+        near_path=near_path,
+        binary="/fake/llama-server",
     )
     return picked.get("name")
 
@@ -2674,8 +2676,8 @@ def test_download_dflash_skips_a_sidecar_named_after_another_weight(monkeypatch)
     assert (
         _dflash_download_pick(
             monkeypatch,
-            listing = _MULTI_FAMILY_LISTING,
-            near_path = "/cache/snap/model-B-Q4_K_M.gguf",
+            listing=_MULTI_FAMILY_LISTING,
+            near_path="/cache/snap/model-B-Q4_K_M.gguf",
         )
         == "dflash-kquant.gguf"
     )
@@ -2687,8 +2689,8 @@ def test_download_dflash_takes_the_sidecar_naming_this_weight(monkeypatch):
     assert (
         _dflash_download_pick(
             monkeypatch,
-            listing = _MULTI_FAMILY_LISTING,
-            near_path = "/cache/snap/model-A-Q4_K_M.gguf",
+            listing=_MULTI_FAMILY_LISTING,
+            near_path="/cache/snap/model-A-Q4_K_M.gguf",
         )
         == "dflash-model-A-Q8_0.gguf"
     )
@@ -2702,12 +2704,12 @@ def test_download_dflash_keeps_the_single_published_sidecar(monkeypatch, sidecar
     assert (
         _dflash_download_pick(
             monkeypatch,
-            listing = [
+            listing=[
                 "Muse-Glimmer-30B-UD-Q4_K_XL.gguf",
                 "mmproj-Muse-Glimmer-30B-Q8_0.gguf",
                 sidecar,
             ],
-            near_path = "/cache/snap/Muse-Glimmer-30B-UD-Q4_K_XL.gguf",
+            near_path="/cache/snap/Muse-Glimmer-30B-UD-Q4_K_XL.gguf",
         )
         == sidecar
     )
@@ -2719,7 +2721,7 @@ def test_cached_dflash_lookup_pairs_with_the_selected_weight(tmp_path, monkeypat
     from core.inference.llama_cpp import LlamaCppBackend
 
     snap = tmp_path / "snapshots" / "abc"
-    snap.mkdir(parents = True)
+    snap.mkdir(parents=True)
     for name in _MULTI_FAMILY_LISTING:
         _write_gguf(snap / name, "dflash" if name.startswith("dflash-") else "llama")
     monkeypatch.setattr(
@@ -2731,7 +2733,7 @@ def test_cached_dflash_lookup_pairs_with_the_selected_weight(tmp_path, monkeypat
         ("model-B-Q4_K_M.gguf", "dflash-kquant.gguf"),
         ("model-A-Q4_K_M.gguf", "dflash-model-A-Q8_0.gguf"),
     ):
-        assert b._cached_repo_dflash_drafter("org/repo", near_path = str(snap / weight)) == str(
+        assert b._cached_repo_dflash_drafter("org/repo", near_path=str(snap / weight)) == str(
             snap / expected
         )
     # No weight in hand: precision order, exactly as before.
@@ -2742,7 +2744,7 @@ def test_cached_dflash_lookup_keeps_the_single_published_sidecar(tmp_path, monke
     from core.inference.llama_cpp import LlamaCppBackend
 
     snap = tmp_path / "snapshots" / "abc"
-    snap.mkdir(parents = True)
+    snap.mkdir(parents=True)
     for name in ("Muse-Glimmer-30B-UD-Q4_K_XL.gguf", "dflash-kquant.gguf"):
         _write_gguf(snap / name, "dflash" if name.startswith("dflash-") else "muse-glimmer")
     monkeypatch.setattr(
@@ -2751,7 +2753,7 @@ def test_cached_dflash_lookup_keeps_the_single_published_sidecar(tmp_path, monke
 
     b = LlamaCppBackend()
     assert b._cached_repo_dflash_drafter(
-        "org/repo", near_path = str(snap / "Muse-Glimmer-30B-UD-Q4_K_XL.gguf")
+        "org/repo", near_path=str(snap / "Muse-Glimmer-30B-UD-Q4_K_XL.gguf")
     ) == str(snap / "dflash-kquant.gguf")
 
 
@@ -2764,7 +2766,7 @@ def test_local_and_remote_dflash_pairing_agree(tmp_path):
     others = ["model-A-Q4_K_M.gguf", "model-B-Q4_K_M.gguf"]
     ranked = sorted(
         ("dflash-model-A-Q8_0.gguf", "dflash-kquant.gguf"),
-        key = lambda name: dflash_repo_preference_key(name, "model-B-Q4_K_M.gguf", others),
+        key=lambda name: dflash_repo_preference_key(name, "model-B-Q4_K_M.gguf", others),
     )
     assert ranked[0] == "dflash-kquant.gguf"
 
@@ -2796,7 +2798,7 @@ def test_dflash_stays_unreclaimable_even_though_auto_now_launches_it(tmp_path):
         "org/Model-GGUF",
         ["model-Q4_K_M.gguf", "dflash-kquant.gguf", "dspark-model-Q8_0.gguf"],
     )
-    _delete_gguf_variant_from_repos("org/Model-GGUF", "Q4_K_M", [repo], None, root = tmp_path)
+    _delete_gguf_variant_from_repos("org/Model-GGUF", "Q4_K_M", [repo], None, root=tmp_path)
 
     assert not (snap / "model-Q4_K_M.gguf").is_symlink()
     assert (snap / "dflash-kquant.gguf").is_symlink()
@@ -2894,7 +2896,7 @@ def test_detect_dflash_file_validates_a_candidate_before_reading_its_header(tmp_
         # accept is handed the resolved launch path, not the candidate.
         return leased in Path(launch).parents
 
-    assert detect_dflash_file(str(weight), accept = _inside_the_lease) is None
+    assert detect_dflash_file(str(weight), accept=_inside_the_lease) is None
     assert reads == []  # the out-of-grant target was never opened
 
 
@@ -2904,7 +2906,7 @@ def test_detect_dflash_file_still_checks_the_header_of_an_accepted_candidate(tmp
     weight = _write_gguf(tmp_path / "model-Q4_K_M.gguf", "llama")
     _write_gguf(tmp_path / "dflash-something-Q8_0.gguf", "llama")
 
-    assert detect_dflash_file(str(weight), accept = lambda launch: True) is None
+    assert detect_dflash_file(str(weight), accept=lambda launch: True) is None
 
 
 # ── Remote candidates are validated by header, not by name ───────────
@@ -2923,17 +2925,17 @@ def _dflash_repo_download(
     monkeypatch,
     *,
     listing,
-    sibling = None,
+    sibling=None,
 ):
     """Drive _download_dflash over a repo listing whose files exist in tmp_path."""
     from core.inference.llama_cpp import LlamaCppBackend
     import core.inference.llama_cpp as llama_cpp_module
 
-    monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+    monkeypatch.delenv("HF_HUB_OFFLINE", raising=False)
     monkeypatch.setattr(
         LlamaCppBackend,
         "probe_server_capabilities",
-        classmethod(lambda cls, binary = None: {"supports_dflash": True}),
+        classmethod(lambda cls, binary=None: {"supports_dflash": True}),
     )
     monkeypatch.setattr(
         llama_cpp_module, "_companion_snapshot_sibling", lambda near_path, pick: sibling
@@ -2946,10 +2948,10 @@ def _dflash_repo_download(
         hf_token,
         pick,
         label,
-        cancel_event = None,
-        near_path = None,
-        outcome = None,
-        on_transient_failure = None,
+        cancel_event=None,
+        near_path=None,
+        outcome=None,
+        on_transient_failure=None,
     ):
         target = pick(listing)
         if outcome is not None:
@@ -2962,9 +2964,9 @@ def _dflash_repo_download(
     b = LlamaCppBackend()
     b._download_companion_gguf = _fake_companion
     got = b._download_dflash(
-        hf_repo = "org/repo",
-        near_path = str(tmp_path / "model-Q4_K_M.gguf"),
-        binary = "/fake/llama-server",
+        hf_repo="org/repo",
+        near_path=str(tmp_path / "model-Q4_K_M.gguf"),
+        binary="/fake/llama-server",
     )
     return b, got, fetched
 
@@ -2983,7 +2985,7 @@ def test_download_dflash_falls_through_a_candidate_that_is_not_a_dflash_model(
     b, got, fetched = _dflash_repo_download(
         tmp_path,
         monkeypatch,
-        listing = ["model-Q4_K_M.gguf", "dflash-model-Q8_0.gguf", "dflash-kquant.gguf"],
+        listing=["model-Q4_K_M.gguf", "dflash-model-Q8_0.gguf", "dflash-kquant.gguf"],
     )
 
     assert got == str(sidecar)
@@ -3000,7 +3002,7 @@ def test_download_dflash_reports_no_sidecar_when_every_candidate_is_a_weight(tmp
     b, got, fetched = _dflash_repo_download(
         tmp_path,
         monkeypatch,
-        listing = ["model-Q4_K_M.gguf", "dflash-model-Q8_0.gguf"],
+        listing=["model-Q4_K_M.gguf", "dflash-model-Q8_0.gguf"],
     )
 
     assert got is None
@@ -3014,24 +3016,24 @@ def test_download_dflash_validates_the_snapshot_sibling_it_reuses(tmp_path, monk
     from core.inference.llama_cpp import LlamaCppBackend
 
     snap = tmp_path / "models--org--repo" / "snapshots" / "abc"
-    snap.mkdir(parents = True)
+    snap.mkdir(parents=True)
     _write_gguf(snap / "model-Q4_K_M.gguf", "llama")
     _write_gguf(snap / "dflash-model-Q8_0.gguf", "llama")
     sidecar = _write_gguf(snap / "dflash-kquant.gguf", "dflash")
 
-    monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+    monkeypatch.delenv("HF_HUB_OFFLINE", raising=False)
     monkeypatch.setattr(
         LlamaCppBackend,
         "probe_server_capabilities",
-        classmethod(lambda cls, binary = None: {"supports_dflash": True}),
+        classmethod(lambda cls, binary=None: {"supports_dflash": True}),
     )
 
     b = LlamaCppBackend()
     b._download_companion_gguf = lambda **kwargs: pytest.fail("the reuse must not download")
     assert b._download_dflash(
-        hf_repo = "org/repo",
-        near_path = str(snap / "model-Q4_K_M.gguf"),
-        binary = "/fake/llama-server",
+        hf_repo="org/repo",
+        near_path=str(snap / "model-Q4_K_M.gguf"),
+        binary="/fake/llama-server",
     ) == str(sidecar)
 
 
@@ -3041,7 +3043,7 @@ def test_cached_dflash_lookup_skips_a_prefixed_file_of_another_architecture(tmp_
     from core.inference.llama_cpp import LlamaCppBackend
 
     snap = tmp_path / "snapshots" / "abc"
-    snap.mkdir(parents = True)
+    snap.mkdir(parents=True)
     _write_gguf(snap / "model-Q4_K_M.gguf", "llama")
     _write_gguf(snap / "dflash-model-Q8_0.gguf", "llama")
     _write_gguf(snap / "dflash-kquant.gguf", "dflash")
@@ -3051,7 +3053,7 @@ def test_cached_dflash_lookup_skips_a_prefixed_file_of_another_architecture(tmp_
 
     b = LlamaCppBackend()
     assert b._cached_repo_dflash_drafter(
-        "org/repo", near_path = str(snap / "model-Q4_K_M.gguf")
+        "org/repo", near_path=str(snap / "model-Q4_K_M.gguf")
     ) == str(snap / "dflash-kquant.gguf")
 
 
@@ -3098,7 +3100,7 @@ def _dflash_fetch_during_auto_load(monkeypatch, *, supports_dspark, supports_dfl
         LlamaCppBackend,
         "probe_server_capabilities",
         classmethod(
-            lambda cls, binary = None: {
+            lambda cls, binary=None: {
                 "found": True,
                 "supports_dspark": supports_dspark,
                 "supports_dflash": supports_dflash,
@@ -3115,8 +3117,8 @@ def _dflash_fetch_during_auto_load(monkeypatch, *, supports_dspark, supports_dfl
     backend = LlamaCppBackend()
     seen: dict = {"dflash_fetched": False}
     monkeypatch.setattr(backend, "_find_llama_server_binary", lambda **_kwargs: "/bin/llama")
-    monkeypatch.setattr(backend, "_is_vulkan_backend", lambda _binary = None: False)
-    monkeypatch.setattr(backend, "_get_gpu_memory", lambda _binary = None, **_kw: [(0, 4096, 8192)])
+    monkeypatch.setattr(backend, "_is_vulkan_backend", lambda _binary=None: False)
+    monkeypatch.setattr(backend, "_get_gpu_memory", lambda _binary=None, **_kw: [(0, 4096, 8192)])
     monkeypatch.setattr(backend, "_gguf_path_is_diffusion", lambda *_args: False)
     monkeypatch.setattr(backend, "_kill_process", lambda: None)
     monkeypatch.setattr(
@@ -3143,10 +3145,10 @@ def _dflash_fetch_during_auto_load(monkeypatch, *, supports_dspark, supports_dfl
     with pytest.raises(_StopAfterDownloads):
         backend.load_model(
             GgufLoadIntent(
-                hf_repo = "org/repo",
-                hf_variant = "Q4_K_M",
-                model_identifier = "org/repo",
-                speculative_type = "auto",
+                hf_repo="org/repo",
+                hf_variant="Q4_K_M",
+                model_identifier="org/repo",
+                speculative_type="auto",
             )
         )
     return seen
@@ -3157,9 +3159,9 @@ def test_auto_still_fetches_dflash_when_the_binary_cannot_run_dspark(monkeypatch
     a reason to skip the drafter it CAN launch."""
     seen = _dflash_fetch_during_auto_load(
         monkeypatch,
-        supports_dspark = False,
-        supports_dflash = True,
-        dspark_cached = "/cache/snap/dspark-model-Q8_0.gguf",
+        supports_dspark=False,
+        supports_dflash=True,
+        dspark_cached="/cache/snap/dspark-model-Q8_0.gguf",
     )
     assert seen["dflash_fetched"] is True
 
@@ -3169,9 +3171,9 @@ def test_auto_stands_down_on_dflash_for_a_dspark_it_can_launch(monkeypatch):
     the ~1.5 GiB DFlash fetch would buy a file the load never opens."""
     seen = _dflash_fetch_during_auto_load(
         monkeypatch,
-        supports_dspark = True,
-        supports_dflash = True,
-        dspark_cached = "/cache/snap/dspark-model-Q8_0.gguf",
+        supports_dspark=True,
+        supports_dflash=True,
+        dspark_cached="/cache/snap/dspark-model-Q8_0.gguf",
     )
     assert seen["dflash_fetched"] is False
 
@@ -3181,9 +3183,9 @@ def test_auto_fetches_dflash_when_the_repo_ships_no_dspark_sidecar(monkeypatch):
     publishes only the DFlash companion."""
     seen = _dflash_fetch_during_auto_load(
         monkeypatch,
-        supports_dspark = True,
-        supports_dflash = True,
-        dspark_cached = None,
+        supports_dspark=True,
+        supports_dflash=True,
+        dspark_cached=None,
     )
     assert seen["dflash_fetched"] is True
 
@@ -3209,8 +3211,8 @@ def test_from_identifier_hands_the_boundary_to_every_drafter_kind(tmp_path, monk
     def _recorder(kind):
         def _detect(
             path,
-            search_root = None,
-            accept = None,
+            search_root=None,
+            accept=None,
             **kwargs,
         ):
             seen[kind] = (path, search_root, accept)
@@ -3231,7 +3233,7 @@ def test_from_identifier_hands_the_boundary_to_every_drafter_kind(tmp_path, monk
         calls.append((candidate, gguf_file, kind, search_root))
         return False
 
-    config = ModelConfig.from_identifier(str(weight), drafter_accept = _accept)
+    config = ModelConfig.from_identifier(str(weight), drafter_accept=_accept)
 
     assert config is not None
     assert set(seen) == {"mtp", "dspark", "dflash"}
@@ -3254,8 +3256,8 @@ def test_from_identifier_without_a_boundary_scans_exactly_as_before(tmp_path, mo
 
     def _detect(
         path,
-        search_root = None,
-        accept = None,
+        search_root=None,
+        accept=None,
         **kwargs,
     ):
         accepts.append(accept)
@@ -3298,7 +3300,7 @@ def test_from_identifier_never_reads_a_sidecar_outside_the_boundary(tmp_path, mo
     def _inside_the_lease(candidate, gguf_file, kind, search_root):
         return Path(search_root) in Path(candidate).parents
 
-    config = ModelConfig.from_identifier(str(weight), drafter_accept = _inside_the_lease)
+    config = ModelConfig.from_identifier(str(weight), drafter_accept=_inside_the_lease)
 
     assert config is not None
     assert config.gguf_dflash_file is None
@@ -3329,6 +3331,7 @@ def test_from_identifier_never_reads_a_sidecar_outside_the_boundary(tmp_path, mo
 )
 def test_is_root_dflash_drafter_path(path, expected):
     from core.inference.llama_cpp import _is_root_dflash_drafter_path
+
     assert _is_root_dflash_drafter_path(path) is expected
 
 
@@ -3350,7 +3353,7 @@ def test_download_dflash_never_fetches_a_nested_dflash_named_weight(tmp_path, mo
     b, got, fetched = _dflash_repo_download(
         tmp_path,
         monkeypatch,
-        listing = ["model-Q4_K_M.gguf", "quants/dflash-model-Q8_0.gguf"],
+        listing=["model-Q4_K_M.gguf", "quants/dflash-model-Q8_0.gguf"],
     )
 
     assert got is None
@@ -3366,7 +3369,7 @@ def test_download_dflash_still_takes_the_root_sidecar_beside_a_nested_one(tmp_pa
     b, got, fetched = _dflash_repo_download(
         tmp_path,
         monkeypatch,
-        listing = ["model-Q4_K_M.gguf", "quants/dflash-model-Q8_0.gguf", "dflash-kquant.gguf"],
+        listing=["model-Q4_K_M.gguf", "quants/dflash-model-Q8_0.gguf", "dflash-kquant.gguf"],
     )
 
     assert got == str(sidecar)
@@ -3379,7 +3382,7 @@ def test_cached_dflash_lookup_ignores_a_nested_dflash_named_weight(tmp_path, mon
     from core.inference.llama_cpp import LlamaCppBackend
 
     snap = tmp_path / "snapshots" / "abc"
-    (snap / "quants").mkdir(parents = True)
+    (snap / "quants").mkdir(parents=True)
     _write_gguf(snap / "model-Q4_K_M.gguf", "llama")
     _write_gguf(snap / "quants" / "dflash-model-Q8_0.gguf", "dflash")
     monkeypatch.setattr(
@@ -3388,7 +3391,7 @@ def test_cached_dflash_lookup_ignores_a_nested_dflash_named_weight(tmp_path, mon
 
     b = LlamaCppBackend()
     assert (
-        b._cached_repo_dflash_drafter("org/repo", near_path = str(snap / "model-Q4_K_M.gguf")) is None
+        b._cached_repo_dflash_drafter("org/repo", near_path=str(snap / "model-Q4_K_M.gguf")) is None
     )
 
 
@@ -3406,8 +3409,8 @@ def _split_companion_download(tmp_path, monkeypatch, listing):
     from core.inference.llama_cpp import LlamaCppBackend
     import core.inference.llama_cpp as llama_cpp_module
 
-    monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
-    monkeypatch.setattr("huggingface_hub.list_repo_files", lambda repo, token = None: list(listing))
+    monkeypatch.delenv("HF_HUB_OFFLINE", raising=False)
+    monkeypatch.setattr("huggingface_hub.list_repo_files", lambda repo, token=None: list(listing))
     monkeypatch.setattr(llama_cpp_module, "_hub_download_in_flight", lambda hf_repo: False)
     fetched: list[str] = []
 
@@ -3416,12 +3419,12 @@ def _split_companion_download(tmp_path, monkeypatch, listing):
         filename,
         token,
         *,
-        cancel_event = None,
-        cache_dir = None,
+        cancel_event=None,
+        cache_dir=None,
     ):
         fetched.append(filename)
         path = tmp_path / filename
-        path.parent.mkdir(parents = True, exist_ok = True)
+        path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(b"x")
         return str(path)
 
@@ -3431,10 +3434,10 @@ def _split_companion_download(tmp_path, monkeypatch, listing):
         return next((n for n in sorted(names) if Path(n).name.startswith("dflash-")), None)
 
     got = LlamaCppBackend()._download_companion_gguf(
-        hf_repo = "org/repo",
-        hf_token = None,
-        pick = _pick,
-        label = "DFlash drafter",
+        hf_repo="org/repo",
+        hf_token=None,
+        pick=_pick,
+        label="DFlash drafter",
     )
     return got, fetched
 
@@ -3473,7 +3476,7 @@ def test_companion_snapshot_reuse_skips_an_incomplete_split_sidecar(tmp_path):
     from core.inference.llama_cpp import _companion_snapshot_sibling
 
     snap = tmp_path / "models--org--repo" / "snapshots" / "abc"
-    snap.mkdir(parents = True)
+    snap.mkdir(parents=True)
     (snap / "model-Q4_K_M.gguf").write_bytes(b"x")
     first = snap / "dflash-kquant-00001-of-00002.gguf"
     first.write_bytes(b"y")
@@ -3498,7 +3501,7 @@ def test_offline_companion_cache_hit_skips_an_incomplete_split(tmp_path, monkeyp
     monkeypatch.setattr(llama_cpp_module, "_hub_download_in_flight", lambda hf_repo: False)
     monkeypatch.setattr(
         "huggingface_hub.list_repo_files",
-        lambda repo, token = None: ["dflash-kquant-00001-of-00002.gguf"],
+        lambda repo, token=None: ["dflash-kquant-00001-of-00002.gguf"],
     )
     first = tmp_path / "dflash-kquant-00001-of-00002.gguf"
     first.write_bytes(b"x")
@@ -3518,14 +3521,14 @@ def test_offline_companion_cache_hit_skips_an_incomplete_split(tmp_path, monkeyp
     # drafter rather than one llama-server cannot open.
     assert (
         b._download_companion_gguf(
-            hf_repo = "org/repo", hf_token = None, pick = _pick, label = "DFlash drafter"
+            hf_repo="org/repo", hf_token=None, pick=_pick, label="DFlash drafter"
         )
         is None
     )
 
     (tmp_path / "dflash-kquant-00002-of-00002.gguf").write_bytes(b"y")
     assert b._download_companion_gguf(
-        hf_repo = "org/repo", hf_token = None, pick = _pick, label = "DFlash drafter"
+        hf_repo="org/repo", hf_token=None, pick=_pick, label="DFlash drafter"
     ) == str(first)
 
 
@@ -3538,7 +3541,7 @@ def test_cached_dflash_lookup_skips_an_incomplete_split_set(tmp_path, monkeypatc
     from core.inference.llama_cpp import LlamaCppBackend
 
     snap = tmp_path / "snapshots" / "abc"
-    snap.mkdir(parents = True)
+    snap.mkdir(parents=True)
     weight = _write_gguf(snap / "model-Q4_K_M.gguf", "llama")
     first = _write_gguf(snap / "dflash-kquant-00001-of-00002.gguf", "dflash")
     monkeypatch.setattr(
@@ -3546,10 +3549,10 @@ def test_cached_dflash_lookup_skips_an_incomplete_split_set(tmp_path, monkeypatc
     )
 
     b = LlamaCppBackend()
-    assert b._cached_repo_dflash_drafter("org/repo", near_path = str(weight)) is None
+    assert b._cached_repo_dflash_drafter("org/repo", near_path=str(weight)) is None
 
     _write_gguf(snap / "dflash-kquant-00002-of-00002.gguf", "dflash")
-    assert b._cached_repo_dflash_drafter("org/repo", near_path = str(weight)) == str(first)
+    assert b._cached_repo_dflash_drafter("org/repo", near_path=str(weight)) == str(first)
 
 
 def test_cached_dflash_lookup_falls_through_from_a_half_split_to_a_whole_one(tmp_path, monkeypatch):
@@ -3558,7 +3561,7 @@ def test_cached_dflash_lookup_falls_through_from_a_half_split_to_a_whole_one(tmp
     from core.inference.llama_cpp import LlamaCppBackend
 
     snap = tmp_path / "snapshots" / "abc"
-    snap.mkdir(parents = True)
+    snap.mkdir(parents=True)
     weight = _write_gguf(snap / "model-Q4_K_M.gguf", "llama")
     # Q8_0 outranks BF16, so the incomplete set is the candidate tried first.
     _write_gguf(snap / "dflash-kquant-Q8_0-00001-of-00002.gguf", "dflash")
@@ -3567,7 +3570,7 @@ def test_cached_dflash_lookup_falls_through_from_a_half_split_to_a_whole_one(tmp
         "utils.models.model_config._iter_hf_cache_snapshots", lambda *a, **k: [snap]
     )
 
-    assert LlamaCppBackend()._cached_repo_dflash_drafter("org/repo", near_path = str(weight)) == str(
+    assert LlamaCppBackend()._cached_repo_dflash_drafter("org/repo", near_path=str(weight)) == str(
         whole
     )
 
@@ -3586,11 +3589,11 @@ def _dflash_hub_download(tmp_path, monkeypatch, *, listing, fetch):
     from core.inference.llama_cpp import LlamaCppBackend
     import core.inference.llama_cpp as llama_cpp_module
 
-    monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+    monkeypatch.delenv("HF_HUB_OFFLINE", raising=False)
     monkeypatch.setattr(
         LlamaCppBackend,
         "probe_server_capabilities",
-        classmethod(lambda cls, binary = None: {"supports_dflash": True}),
+        classmethod(lambda cls, binary=None: {"supports_dflash": True}),
     )
     monkeypatch.setattr(llama_cpp_module, "_hub_download_in_flight", lambda hf_repo: False)
     monkeypatch.setattr("huggingface_hub.list_repo_files", listing)
@@ -3600,7 +3603,7 @@ def _dflash_hub_download(tmp_path, monkeypatch, *, listing, fetch):
     monkeypatch.setattr("utils.models.model_config._iter_hf_cache_snapshots", lambda *a, **k: [])
 
     b = LlamaCppBackend()
-    got = b._download_dflash(hf_repo = "org/repo", binary = "/fake/llama-server")
+    got = b._download_dflash(hf_repo="org/repo", binary="/fake/llama-server")
     return b, got
 
 
@@ -3612,10 +3615,10 @@ def test_download_dflash_asks_again_after_a_listing_that_never_answered(tmp_path
     """An unreachable Hub says nothing about the repo, so recording it as "publishes
     none" would strand the model without the sidecar it does publish."""
 
-    def _listing(repo, token = None):
+    def _listing(repo, token=None):
         raise ConnectionError("hub unreachable")
 
-    b, got = _dflash_hub_download(tmp_path, monkeypatch, listing = _listing, fetch = _never_fetched)
+    b, got = _dflash_hub_download(tmp_path, monkeypatch, listing=_listing, fetch=_never_fetched)
 
     assert got is None
     assert b._dflash_sidecar_absent is False
@@ -3631,16 +3634,16 @@ def test_download_dflash_asks_again_after_a_download_that_dropped(tmp_path, monk
         filename,
         token,
         *,
-        cancel_event = None,
-        cache_dir = None,
+        cancel_event=None,
+        cache_dir=None,
     ):
         raise ConnectionError("connection reset")
 
     b, got = _dflash_hub_download(
         tmp_path,
         monkeypatch,
-        listing = lambda repo, token = None: ["model-Q4_K_M.gguf", "dflash-kquant.gguf"],
-        fetch = _fetch,
+        listing=lambda repo, token=None: ["model-Q4_K_M.gguf", "dflash-kquant.gguf"],
+        fetch=_fetch,
     )
 
     assert got is None
@@ -3655,10 +3658,10 @@ def test_download_dflash_does_not_ask_again_after_a_permanent_hub_error(tmp_path
     class RepositoryNotFoundError(Exception):
         pass
 
-    def _listing(repo, token = None):
+    def _listing(repo, token=None):
         raise RepositoryNotFoundError("404")
 
-    b, got = _dflash_hub_download(tmp_path, monkeypatch, listing = _listing, fetch = _never_fetched)
+    b, got = _dflash_hub_download(tmp_path, monkeypatch, listing=_listing, fetch=_never_fetched)
 
     assert got is None
     assert b._dflash_retry_needed is False
@@ -3675,16 +3678,16 @@ def test_download_dflash_does_not_ask_again_when_this_machine_is_the_problem(tmp
         filename,
         token,
         *,
-        cancel_event = None,
-        cache_dir = None,
+        cancel_event=None,
+        cache_dir=None,
     ):
         raise OSError(errno.ENOSPC, "No space left on device")
 
     b, got = _dflash_hub_download(
         tmp_path,
         monkeypatch,
-        listing = lambda repo, token = None: ["model-Q4_K_M.gguf", "dflash-kquant.gguf"],
-        fetch = _fetch,
+        listing=lambda repo, token=None: ["model-Q4_K_M.gguf", "dflash-kquant.gguf"],
+        fetch=_fetch,
     )
 
     assert got is None
@@ -3702,8 +3705,8 @@ def test_download_dflash_treats_a_header_rejection_as_settled(tmp_path, monkeypa
         filename,
         token,
         *,
-        cancel_event = None,
-        cache_dir = None,
+        cancel_event=None,
+        cache_dir=None,
     ):
         # An ordinary weight that merely carries the sidecar's naming.
         return str(_write_gguf(tmp_path / filename, "llama"))
@@ -3711,8 +3714,8 @@ def test_download_dflash_treats_a_header_rejection_as_settled(tmp_path, monkeypa
     b, got = _dflash_hub_download(
         tmp_path,
         monkeypatch,
-        listing = lambda repo, token = None: ["model-Q4_K_M.gguf", "dflash-model-Q8_0.gguf"],
-        fetch = _fetch,
+        listing=lambda repo, token=None: ["model-Q4_K_M.gguf", "dflash-model-Q8_0.gguf"],
+        fetch=_fetch,
     )
 
     assert got is None
@@ -3730,8 +3733,8 @@ def test_download_dflash_reaches_the_real_sidecar_behind_an_impostor(tmp_path, m
         filename,
         token,
         *,
-        cancel_event = None,
-        cache_dir = None,
+        cancel_event=None,
+        cache_dir=None,
     ):
         arch = "dflash" if filename == "dflash-kquant.gguf" else "llama"
         return str(_write_gguf(tmp_path / filename, arch))
@@ -3739,12 +3742,12 @@ def test_download_dflash_reaches_the_real_sidecar_behind_an_impostor(tmp_path, m
     b, got = _dflash_hub_download(
         tmp_path,
         monkeypatch,
-        listing = lambda repo, token = None: [
+        listing=lambda repo, token=None: [
             "model-Q4_K_M.gguf",
             "dflash-model-Q8_0.gguf",
             "dflash-kquant.gguf",
         ],
-        fetch = _fetch,
+        fetch=_fetch,
     )
 
     assert got == str(tmp_path / "dflash-kquant.gguf")
@@ -3834,7 +3837,7 @@ def test_download_dflash_skips_a_root_weight_too_big_to_be_a_drafter(monkeypatch
         LlamaCppBackend,
         "_remote_root_gguf_sizes",
         staticmethod(
-            lambda repo, token = None: {
+            lambda repo, token=None: {
                 "dflash-Qwen3.6-27B-BF16.gguf": 40_000,
                 "dflash-kquant.gguf": 500,
             }
@@ -3842,8 +3845,8 @@ def test_download_dflash_skips_a_root_weight_too_big_to_be_a_drafter(monkeypatch
     )
     picked = _dflash_download_pick(
         monkeypatch,
-        listing = ["Qwen3.6-27B-Q4_K_M.gguf", "dflash-Qwen3.6-27B-BF16.gguf", "dflash-kquant.gguf"],
-        near_path = str(weight),
+        listing=["Qwen3.6-27B-Q4_K_M.gguf", "dflash-Qwen3.6-27B-BF16.gguf", "dflash-kquant.gguf"],
+        near_path=str(weight),
     )
     assert picked == "dflash-kquant.gguf"
 
@@ -3855,7 +3858,7 @@ def test_download_companion_refuses_a_listing_missing_part_of_a_split_set(monkey
     import core.inference.llama_cpp as llama_cpp_module
     import huggingface_hub
 
-    monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+    monkeypatch.delenv("HF_HUB_OFFLINE", raising=False)
     monkeypatch.setattr(
         llama_cpp_module, "_companion_snapshot_sibling", lambda near_path, pick: None
     )
@@ -3865,21 +3868,21 @@ def test_download_companion_refuses_a_listing_missing_part_of_a_split_set(monkey
     monkeypatch.setattr(
         huggingface_hub,
         "list_repo_files",
-        lambda repo, token = None: ["dflash-kquant-00001-of-00002.gguf"],
+        lambda repo, token=None: ["dflash-kquant-00001-of-00002.gguf"],
     )
     downloads: list = []
     monkeypatch.setattr(
         llama_cpp_module,
         "hf_hub_download_with_xet_fallback",
         lambda *a, **k: downloads.append(a) or "/tmp/x.gguf",
-        raising = False,
+        raising=False,
     )
     b = LlamaCppBackend()
     got = b._download_companion_gguf(
-        hf_repo = "org/repo",
-        hf_token = None,
-        pick = lambda files: next(iter(files), None),
-        label = "DFlash drafter",
+        hf_repo="org/repo",
+        hf_token=None,
+        pick=lambda files: next(iter(files), None),
+        label="DFlash drafter",
     )
     assert got is None
     assert downloads == []
@@ -3924,7 +3927,7 @@ def test_download_dflash_sums_a_split_family_before_the_size_bound(monkeypatch, 
         LlamaCppBackend,
         "_remote_root_gguf_sizes",
         staticmethod(
-            lambda repo, token = None: {
+            lambda repo, token=None: {
                 "dflash-big-00001-of-00002.gguf": 6_000,
                 "dflash-big-00002-of-00002.gguf": 6_000,
                 "dflash-kquant.gguf": 500,
@@ -3933,13 +3936,13 @@ def test_download_dflash_sums_a_split_family_before_the_size_bound(monkeypatch, 
     )
     picked = _dflash_download_pick(
         monkeypatch,
-        listing = [
+        listing=[
             "model-Q4_K_M.gguf",
             "dflash-big-00001-of-00002.gguf",
             "dflash-big-00002-of-00002.gguf",
             "dflash-kquant.gguf",
         ],
-        near_path = str(weight),
+        near_path=str(weight),
     )
     assert picked == "dflash-kquant.gguf"
 
@@ -3955,20 +3958,20 @@ def test_download_companion_records_an_incomplete_listing_as_settled():
 
     mp = _pytest.MonkeyPatch()
     try:
-        mp.delenv("HF_HUB_OFFLINE", raising = False)
+        mp.delenv("HF_HUB_OFFLINE", raising=False)
         mp.setattr(llama_cpp_module, "_companion_snapshot_sibling", lambda near_path, pick: None)
         mp.setattr(
             huggingface_hub,
             "list_repo_files",
-            lambda repo, token = None: ["dspark-kquant-00001-of-00002.gguf"],
+            lambda repo, token=None: ["dspark-kquant-00001-of-00002.gguf"],
         )
         outcome: dict = {}
         got = LlamaCppBackend()._download_companion_gguf(
-            hf_repo = "org/repo",
-            hf_token = None,
-            pick = lambda files: next(iter(files), None),
-            label = "DSpark drafter",
-            outcome = outcome,
+            hf_repo="org/repo",
+            hf_token=None,
+            pick=lambda files: next(iter(files), None),
+            label="DSpark drafter",
+            outcome=outcome,
         )
     finally:
         mp.undo()
@@ -3986,17 +3989,17 @@ def test_download_dflash_reaches_the_complete_family_behind_an_incomplete_one(
     weight = tmp_path / "model-B-Q4_K_M.gguf"
     weight.write_bytes(b"x" * 10_000)
     monkeypatch.setattr(
-        LlamaCppBackend, "_remote_root_gguf_sizes", staticmethod(lambda repo, token = None: {})
+        LlamaCppBackend, "_remote_root_gguf_sizes", staticmethod(lambda repo, token=None: {})
     )
     picked = _dflash_download_pick(
         monkeypatch,
-        listing = [
+        listing=[
             "model-B-Q4_K_M.gguf",
             # Ranks first by naming this weight, but the set is missing shard 2.
             "dflash-model-B-00001-of-00002.gguf",
             "dflash-kquant.gguf",
         ],
-        near_path = str(weight),
+        near_path=str(weight),
     )
     assert picked == "dflash-kquant.gguf"
 
@@ -4047,7 +4050,7 @@ def _write_drafter_gguf(
     if split_count:
         writer.add_uint16("split.count", split_count)
     for name in tensors:
-        writer.add_tensor(name, np.zeros((2, 2), dtype = np.float32))
+        writer.add_tensor(name, np.zeros((2, 2), dtype=np.float32))
     writer.write_header_to_file()
     writer.write_kv_data_to_file()
     writer.write_tensors_to_file()
@@ -4072,7 +4075,8 @@ _HEAD_EXTRACT = ["output.weight", "blk.64.attn_norm.weight", "blk.64.nextn.eh_pr
 )
 def test_mtp_drafter_loads_standalone(tmp_path, tensors, shared, expected):
     from core.inference.llama_cpp import _mtp_drafter_loads_standalone
-    drafter = _write_drafter_gguf(tmp_path / "mtp-model.gguf", tensors = tensors, shared = shared)
+
+    drafter = _write_drafter_gguf(tmp_path / "mtp-model.gguf", tensors=tensors, shared=shared)
     assert _mtp_drafter_loads_standalone(str(drafter)) is expected
 
 
@@ -4086,7 +4090,7 @@ def test_a_lone_file_claiming_to_be_a_split_set_is_still_judged(tmp_path):
     """
     from core.inference.llama_cpp import _mtp_drafter_loads_standalone
 
-    drafter = _write_drafter_gguf(tmp_path / "mtp-model.gguf", tensors = _HEAD_EXTRACT, split_count = 2)
+    drafter = _write_drafter_gguf(tmp_path / "mtp-model.gguf", tensors=_HEAD_EXTRACT, split_count=2)
     assert _mtp_drafter_loads_standalone(str(drafter)) is False
 
 
@@ -4095,12 +4099,12 @@ def test_a_complete_split_drafter_is_judged_across_every_shard(tmp_path):
     from core.inference.llama_cpp import _mtp_drafter_loads_standalone
 
     _write_drafter_gguf(
-        tmp_path / "mtp-model-00001-of-00002.gguf", tensors = _HEAD_EXTRACT, split_count = 2
+        tmp_path / "mtp-model-00001-of-00002.gguf", tensors=_HEAD_EXTRACT, split_count=2
     )
     _write_drafter_gguf(
         tmp_path / "mtp-model-00002-of-00002.gguf",
-        tensors = ["token_embd.weight"],
-        split_count = 2,
+        tensors=["token_embd.weight"],
+        split_count=2,
     )
     # The embeddings live in shard 2; judging shard 1 alone would drop a working set.
     assert _mtp_drafter_loads_standalone(str(tmp_path / "mtp-model-00001-of-00002.gguf")) is True
@@ -4110,12 +4114,12 @@ def test_a_complete_split_drafter_is_judged_across_every_shard(tmp_path):
     headless = tmp_path / "headless"
     headless.mkdir()
     _write_drafter_gguf(
-        headless / "mtp-model-00001-of-00002.gguf", tensors = _HEAD_EXTRACT, split_count = 2
+        headless / "mtp-model-00001-of-00002.gguf", tensors=_HEAD_EXTRACT, split_count=2
     )
     _write_drafter_gguf(
         headless / "mtp-model-00002-of-00002.gguf",
-        tensors = ["blk.65.nextn.eh_proj.weight"],
-        split_count = 2,
+        tensors=["blk.65.nextn.eh_proj.weight"],
+        split_count=2,
     )
     assert _mtp_drafter_loads_standalone(str(headless / "mtp-model-00001-of-00002.gguf")) is False
 
@@ -4125,7 +4129,7 @@ def test_an_incomplete_split_drafter_fails_open(tmp_path):
     from core.inference.llama_cpp import _mtp_drafter_loads_standalone
 
     lone = _write_drafter_gguf(
-        tmp_path / "mtp-model-00001-of-00003.gguf", tensors = _HEAD_EXTRACT, split_count = 3
+        tmp_path / "mtp-model-00001-of-00003.gguf", tensors=_HEAD_EXTRACT, split_count=3
     )
     assert _mtp_drafter_loads_standalone(str(lone)) is True
 
@@ -4135,7 +4139,7 @@ def test_the_drafter_verdict_is_cached_per_file_version(tmp_path):
     from core.inference.llama_cpp import _mtp_drafter_loads_standalone
     from utils.models import gguf_metadata
 
-    drafter = _write_drafter_gguf(tmp_path / "mtp-model.gguf", tensors = _HEAD_EXTRACT)
+    drafter = _write_drafter_gguf(tmp_path / "mtp-model.gguf", tensors=_HEAD_EXTRACT)
     calls: list[str] = []
     real = gguf_metadata._parse_gguf_has_named_tensor
 
@@ -4153,7 +4157,7 @@ def test_the_drafter_verdict_is_cached_per_file_version(tmp_path):
         # Rewritten in place with its embeddings: a new (mtime, size) is a new answer, so
         # a repaired sidecar is picked up rather than served from the cache.
         _write_drafter_gguf(
-            tmp_path / "mtp-model.gguf", tensors = ["token_embd.weight", *_HEAD_EXTRACT]
+            tmp_path / "mtp-model.gguf", tensors=["token_embd.weight", *_HEAD_EXTRACT]
         )
         assert _mtp_drafter_loads_standalone(str(drafter)) is True
     finally:
@@ -4172,9 +4176,10 @@ def test_mtp_drafter_loads_standalone_fails_open_on_an_unreadable_header(tmp_pat
 
 def test_mtp_drafter_loads_standalone_needs_only_token_embd(tmp_path):
     from core.inference.llama_cpp import _mtp_drafter_loads_standalone
+
     drafter = _write_drafter_gguf(
         tmp_path / "mtp-model.gguf",
-        tensors = ["token_embd.weight", "output.weight", "blk.48.nextn.eh_proj.weight"],
-        arch = "qwen4exp",
+        tensors=["token_embd.weight", "output.weight", "blk.48.nextn.eh_proj.weight"],
+        arch="qwen4exp",
     )
     assert _mtp_drafter_loads_standalone(str(drafter))

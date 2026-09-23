@@ -130,7 +130,7 @@ if already_imported:
         f"to ensure all optimizations are applied. Your code may run slower or encounter "
         f"memory issues without these optimizations.\n\n"
         f"Please restructure your imports with 'import unsloth' at the top of your file.",
-        stacklevel = 2,
+        stacklevel=2,
     )
 del already_imported, critical_modules
 
@@ -410,7 +410,7 @@ elif DEVICE_TYPE == "cuda":
     old_is_bf16_supported = torch.cuda.is_bf16_supported
     if "including_emulation" in str(inspect.signature(old_is_bf16_supported)):
 
-        def is_bf16_supported(including_emulation = False):
+        def is_bf16_supported(including_emulation=False):
             return old_is_bf16_supported(including_emulation)
 
         torch.cuda.is_bf16_supported = is_bf16_supported
@@ -466,7 +466,7 @@ if TRITON_IMPORT_ERROR is not None:
             f"Unsloth: `triton` could not be imported ({TRITON_IMPORT_ERROR}), so the fused Triton "
             "kernels are unavailable and training will be slower or may fail.\n"
             "On Windows install `triton-windows`, on Linux reinstall `triton`.",
-            stacklevel = 2,
+            stacklevel=2,
         )
     else:
         # No usable accelerator anyway (CPU only install, or UNSLOTH_ALLOW_CPU=1): expected state.

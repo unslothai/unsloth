@@ -16,7 +16,7 @@ def _shared_setup_1():
     from core import research_runs as worker
 
     _create()
-    supervisor = worker.ResearchSupervisor(SimpleNamespace(state = SimpleNamespace(server_port = 1)))
+    supervisor = worker.ResearchSupervisor(SimpleNamespace(state=SimpleNamespace(server_port=1)))
     return supervisor, worker
 
 
@@ -51,7 +51,7 @@ def _shared_setup_4(supervisor, worker):
 
 def _shared_setup_5():
     _create()
-    plan = research_db.set_plan("run-1", _plan(), expected_revision = 0)
+    plan = research_db.set_plan("run-1", _plan(), expected_revision=0)
     research_db.approve("run-1", 1, plan["planHash"])
     research_db.claim_next("worker-1")
 
@@ -59,8 +59,8 @@ def _shared_setup_5():
 def _shared_setup_6():
     cancelled: list[str] = []
     request = SimpleNamespace(
-        app = SimpleNamespace(
-            state = SimpleNamespace(research_supervisor = SimpleNamespace(cancel = cancelled.append))
+        app=SimpleNamespace(
+            state=SimpleNamespace(research_supervisor=SimpleNamespace(cancel=cancelled.append))
         )
     )
     return cancelled, request
@@ -102,22 +102,22 @@ def research_home(tmp_path, monkeypatch):
 
 
 def _create(
-    run_id = "run-1",
-    assistant_message_id = "assistant-1",
+    run_id="run-1",
+    assistant_message_id="assistant-1",
     *,
-    thread_id = "thread-1",
-    user_message_id = "user-1",
-    rag_scope = None,
-    instructions = "",
-    budgets = None,
+    thread_id="thread-1",
+    user_message_id="user-1",
+    rag_scope=None,
+    instructions="",
+    budgets=None,
 ):
     return research_db.create_run(
-        run_id = run_id,
-        owner_subject = "alice",
-        thread_id = thread_id,
-        user_message_id = user_message_id,
-        assistant_message_id = assistant_message_id,
-        config = {
+        run_id=run_id,
+        owner_subject="alice",
+        thread_id=thread_id,
+        user_message_id=user_message_id,
+        assistant_message_id=assistant_message_id,
+        config={
             "model": "local-model",
             "inferenceRequest": {"model": "local-model"},
             "ragScope": rag_scope,
@@ -130,7 +130,7 @@ def _create(
                 "toolTimeoutSeconds": 10,
             },
         },
-        created_at = 10,
+        created_at=10,
     )
 
 
@@ -148,14 +148,14 @@ def test_row_fork_waits_for_research_to_settle(research_home, status):
     finally:
         conn.close()
     assert "thread-1" not in active_generations.active_thread_ids()
-    payload = chat_history.ChatForkRequest(newThreadId = "fork-1", createdAt = 20)
+    payload = chat_history.ChatForkRequest(newThreadId="fork-1", createdAt=20)
     if status in research_db.ACTIVE_STATUSES:
         with pytest.raises(HTTPException) as exc:
-            chat_history.fork_thread("thread-1", payload, current_subject = "alice")
+            chat_history.fork_thread("thread-1", payload, current_subject="alice")
         assert exc.value.status_code == 409
         assert studio_db.get_chat_thread("fork-1") is None
     else:
-        response = chat_history.fork_thread("thread-1", payload, current_subject = "alice")
+        response = chat_history.fork_thread("thread-1", payload, current_subject="alice")
         assert response.thread.forkedFromMessageId == "assistant-1"
         assert len(response.messages) == 2
 
@@ -174,14 +174,14 @@ def test_source_persistence_rejects_url_outside_run_allowlist(research_home):
         "websitePolicy": {"allowedDomains": ["arxiv.org"], "blockedDomains": []},
     }
     research_db.create_run(
-        run_id = "limited",
-        owner_subject = "alice",
-        thread_id = "thread-1",
-        user_message_id = "user-1",
-        assistant_message_id = None,
-        config = config,
+        run_id="limited",
+        owner_subject="alice",
+        thread_id="thread-1",
+        user_message_id="user-1",
+        assistant_message_id=None,
+        config=config,
     )
-    with pytest.raises(ValueError, match = "website access policy"):
+    with pytest.raises(ValueError, match="website access policy"):
         research_db.upsert_source(
             "limited",
             0,
@@ -204,6 +204,7 @@ def _plan():
 
 def test_planner_uses_valid_json_from_reasoning_when_content_is_empty():
     from core import research_runs as worker
+
     reasoning = (
         "I will return the strict JSON now.\n"
         + json.dumps(_plan())
@@ -214,6 +215,7 @@ def test_planner_uses_valid_json_from_reasoning_when_content_is_empty():
 
 def test_agent_uses_valid_action_json_from_reasoning_when_content_is_invalid():
     from core import research_runs as worker
+
     action = {
         "action": "fetch",
         "title": "Read the primary source",
@@ -231,6 +233,7 @@ def test_agent_uses_valid_action_json_from_reasoning_when_content_is_invalid():
 
 def test_agent_action_preserves_a_bounded_research_state():
     from core.research.parsing import _validate_agent_action
+
     action = _validate_agent_action(
         {
             "action": "search",
@@ -290,31 +293,31 @@ def test_synthesis_evidence_budget_tracks_loaded_context(monkeypatch):
     from core import research_runs as worker
 
     # Unknown context keeps the full cap (backwards compatible).
-    monkeypatch.setattr(worker, "_loaded_context_length", lambda _inf = None: None)
+    monkeypatch.setattr(worker, "_loaded_context_length", lambda _inf=None: None)
     assert worker._synthesis_evidence_budget() == worker._MAX_SYNTHESIS_EVIDENCE_CHARS
 
     # A small context shrinks the budget so evidence fits, and the rest of the prompt eats into
     # it, but the output reserve is capped at half the window so the budget never collapses to 0
     # and empties the prompt (which is worse than a truncated one).
-    monkeypatch.setattr(worker, "_loaded_context_length", lambda _inf = None: 2048)
+    monkeypatch.setattr(worker, "_loaded_context_length", lambda _inf=None: 2048)
     small = worker._synthesis_evidence_budget()
     assert 0 < small < worker._MAX_SYNTHESIS_EVIDENCE_CHARS
     assert worker._synthesis_evidence_budget(small) == 0
 
     # The rest of the prompt counts against the same budget, not just the evidence.
-    monkeypatch.setattr(worker, "_loaded_context_length", lambda _inf = None: 16384)
+    monkeypatch.setattr(worker, "_loaded_context_length", lambda _inf=None: 16384)
     roomy = worker._synthesis_evidence_budget()
     assert 0 < worker._synthesis_evidence_budget(8_000) < roomy
 
     # A large context uses (and clamps to) the full cap.
-    monkeypatch.setattr(worker, "_loaded_context_length", lambda _inf = None: 32768)
+    monkeypatch.setattr(worker, "_loaded_context_length", lambda _inf=None: 32768)
     assert worker._synthesis_evidence_budget() == worker._MAX_SYNTHESIS_EVIDENCE_CHARS
 
 
 def test_synthesis_context_budgets_model_derived_json_with_evidence(monkeypatch):
     from core import research_runs as worker
 
-    monkeypatch.setattr(worker, "_loaded_context_length", lambda _inf = None: 8192)
+    monkeypatch.setattr(worker, "_loaded_context_length", lambda _inf=None: 8192)
     notes = [f"### Step {index}\n" + "evidence " * 2_000 for index in range(6)]
     audit = {"thesis": "a" * 3_000}
     research_state = {"summary": "s" * 3_000}
@@ -361,7 +364,7 @@ def test_loaded_context_length_reads_orchestrator(monkeypatch):
         models = {"Qwen2.5-14B-Instruct": {"context_length": 8192}}
 
     monkeypatch.setattr(
-        core_inference, "get_inference_backend", lambda: _Orchestrator(), raising = False
+        core_inference, "get_inference_backend", lambda: _Orchestrator(), raising=False
     )
     assert worker._loaded_context_length() == 8192
     assert worker._synthesis_evidence_budget() < worker._MAX_SYNTHESIS_EVIDENCE_CHARS
@@ -370,7 +373,7 @@ def test_loaded_context_length_reads_orchestrator(monkeypatch):
         active_model_name = None
         models: dict = {}
 
-    monkeypatch.setattr(core_inference, "get_inference_backend", lambda: _NoModel(), raising = False)
+    monkeypatch.setattr(core_inference, "get_inference_backend", lambda: _NoModel(), raising=False)
     assert worker._loaded_context_length() is None
     assert worker._synthesis_evidence_budget() == worker._MAX_SYNTHESIS_EVIDENCE_CHARS
 
@@ -493,16 +496,16 @@ def test_streamed_reasoning_is_batched_before_database_writes(research_home, mon
             writes.append((event_type, data)) or len(writes)
         ),
     )
-    supervisor = worker.ResearchSupervisor(SimpleNamespace(state = SimpleNamespace(server_port = 1)))
+    supervisor = worker.ResearchSupervisor(SimpleNamespace(state=SimpleNamespace(server_port=1)))
 
     report, reasoning, finish_reason, _usage = asyncio.run(
         supervisor._stream_completion(
             run,
             [{"role": "user", "content": "question"}],
-            report_progress = False,
-            phase = "planning",
-            max_tokens = 16384,
-            enable_thinking = False,
+            report_progress=False,
+            phase="planning",
+            max_tokens=16384,
+            enable_thinking=False,
         )
     )
 
@@ -544,7 +547,7 @@ def test_report_text_schema_migration_is_idempotent():
 def test_schema_and_state_transitions(research_home):
     run = _create()
     assert run["status"] == "planning"
-    result = research_db.set_plan("run-1", _plan(), expected_revision = 0)
+    result = research_db.set_plan("run-1", _plan(), expected_revision=0)
     assert result["planRevision"] == 1
     assert len(research_db.get_run("run-1")["steps"]) == 2
 
@@ -639,7 +642,7 @@ def test_owner_scoped_claim_schema_migrates_to_global(tmp_path, monkeypatch):
     assert primary_key == ["thread_id"]
     assert [tuple(row) for row in claims] == [("alice", "shared-thread")]
     assert [tuple(row) for row in runs] == [("alice-run", "queued"), ("bob-run", "failed")]
-    with pytest.raises(research_db.ResearchConflictError, match = "does not own"):
+    with pytest.raises(research_db.ResearchConflictError, match="does not own"):
         research_db.retry("bob-run")
     assert research_db.claim_next("migration-worker")["id"] == "alice-run"
 
@@ -689,7 +692,7 @@ def test_owner_scoped_claim_migration_rolls_back_on_interruption(tmp_path, monke
 
     monkeypatch.setattr(studio_db.sqlite3, "connect", _failing_connect)
     studio_db._schema_ready = set()
-    with pytest.raises(RuntimeError, match = "simulated crash"):
+    with pytest.raises(RuntimeError, match="simulated crash"):
         studio_db.get_connection()
 
     # Recover: the interrupted migration left nothing half-applied, so a clean boot
@@ -735,7 +738,7 @@ def test_pruning_messages_preserves_runs_whose_user_message_survives(research_ho
         if message["id"] != "temporary"
     ]
 
-    studio_db.sync_chat_messages("thread-1", survivors, prune_missing = True)
+    studio_db.sync_chat_messages("thread-1", survivors, prune_missing=True)
 
     assert research_db.get_run("run-1") is not None
     assert research_db.has_thread_claim("thread-1") is True
@@ -752,7 +755,7 @@ def test_pruning_skips_research_turn_messages(research_home, removed_id):
         if message["id"] != removed_id
     ]
 
-    studio_db.sync_chat_messages("thread-1", survivors, prune_missing = True)
+    studio_db.sync_chat_messages("thread-1", survivors, prune_missing=True)
 
     assert research_db.get_run("run-1") is not None
     assert research_db.has_thread_claim("thread-1") is True
@@ -770,7 +773,7 @@ def test_pruning_exempts_research_messages_even_when_updates_allowed(research_ho
     ]
 
     studio_db.sync_chat_messages(
-        "thread-1", survivors, prune_missing = True, allow_research_update = True
+        "thread-1", survivors, prune_missing=True, allow_research_update=True
     )
 
     assert research_db.get_run("run-1") is not None
@@ -834,13 +837,13 @@ def test_autosave_round_trip_with_client_drift_saves_other_messages(research_hom
 def test_upsert_rejects_client_edit_but_allows_internal_writer(research_home):
     _create()
     original = studio_db.get_chat_message("thread-1", "user-1")
-    with pytest.raises(studio_db.ChatMessageProtectedError, match = "server-managed"):
+    with pytest.raises(studio_db.ChatMessageProtectedError, match="server-managed"):
         studio_db.upsert_chat_message(
             {**original, "content": [{"type": "text", "text": "client edit"}]}
         )
     studio_db.upsert_chat_message(
         {**original, "content": [{"type": "text", "text": "server update"}]},
-        allow_research_update = True,
+        allow_research_update=True,
     )
     assert studio_db.get_chat_message("thread-1", "user-1")["content"] == [
         {"type": "text", "text": "server update"}
@@ -886,9 +889,9 @@ def test_delete_thread_cancels_active_research_run(research_home):
     cancelled, request = _shared_setup_6()
     asyncio.run(
         chat_history.delete_threads(
-            chat_history.ChatDeleteRequest(ids = ["thread-1"]),
+            chat_history.ChatDeleteRequest(ids=["thread-1"]),
             request,
-            current_subject = "alice",
+            current_subject="alice",
         )
     )
 
@@ -914,7 +917,7 @@ def test_project_delete_cancels_runs_captured_by_delete_transaction(research_hom
 
     deleted = asyncio.run(
         chat_history.delete_project(
-            "project-1", request, delete_files = False, current_subject = "alice"
+            "project-1", request, delete_files=False, current_subject="alice"
         )
     )
 
@@ -931,7 +934,7 @@ def test_clear_history_cancels_runs_captured_by_delete_transaction(research_home
 
     cancelled, request = _shared_setup_6()
 
-    asyncio.run(chat_history.clear_history(request, current_subject = "alice"))
+    asyncio.run(chat_history.clear_history(request, current_subject="alice"))
 
     assert studio_db.get_chat_thread("thread-1") is None
     assert research_db.get_run("run-1") is None
@@ -940,16 +943,16 @@ def test_clear_history_cancels_runs_captured_by_delete_transaction(research_home
 
 def test_delete_attachment_rejects_research_message(research_home):
     _create()
-    with pytest.raises(studio_db.ChatMessageProtectedError, match = "server-managed"):
+    with pytest.raises(studio_db.ChatMessageProtectedError, match="server-managed"):
         studio_db.delete_chat_attachment("user-1", "any-attachment")
 
 
 def test_revision_hash_conflicts_and_idempotent_approval(research_home):
     _create()
-    first = research_db.set_plan("run-1", _plan(), expected_revision = 0)
-    with pytest.raises(research_db.ResearchConflictError, match = "revision"):
-        research_db.set_plan("run-1", _plan(), expected_revision = 0)
-    with pytest.raises(research_db.ResearchConflictError, match = "hash"):
+    first = research_db.set_plan("run-1", _plan(), expected_revision=0)
+    with pytest.raises(research_db.ResearchConflictError, match="revision"):
+        research_db.set_plan("run-1", _plan(), expected_revision=0)
+    with pytest.raises(research_db.ResearchConflictError, match="hash"):
         research_db.approve("run-1", 1, "0" * 64)
 
     assert research_db.approve("run-1", 1, first["planHash"]) == "queued"
@@ -963,8 +966,8 @@ def test_planner_cannot_finalize_after_its_lease_timestamp_expires(research_home
     assert research_db.claim_next("planner-1") is not None
     _shared_setup_3()
 
-    with pytest.raises(research_db.ResearchConflictError, match = "no longer owns"):
-        research_db.set_plan("run-1", _plan(), worker_id = "planner-1")
+    with pytest.raises(research_db.ResearchConflictError, match="no longer owns"):
+        research_db.set_plan("run-1", _plan(), worker_id="planner-1")
     assert research_db.get_run("run-1")["status"] == "planning"
 
 
@@ -991,7 +994,7 @@ def test_expired_worker_cannot_write_progress_or_execution_state(research_home):
             "Stale",
             "stale",
             "running",
-            worker_id = "worker-1",
+            worker_id="worker-1",
         )
         is False
     )
@@ -1016,7 +1019,7 @@ def test_expired_worker_cannot_write_progress_or_execution_state(research_home):
             "worker-1",
             "failed",
             "expired",
-            allow_expired = True,
+            allow_expired=True,
         )
         == "failed"
     )
@@ -1028,8 +1031,8 @@ def test_stale_planner_cannot_overwrite_new_lease_owner(research_home):
     _shared_setup_3()
     assert research_db.claim_next("planner-2") is not None
 
-    with pytest.raises(research_db.ResearchConflictError, match = "no longer owns"):
-        research_db.set_plan("run-1", _plan(), worker_id = "planner-1")
+    with pytest.raises(research_db.ResearchConflictError, match="no longer owns"):
+        research_db.set_plan("run-1", _plan(), worker_id="planner-1")
     run = research_db.get_run("run-1")
     assert run["status"] == "planning"
     assert run["plan"] is None
@@ -1059,7 +1062,7 @@ def test_event_replay_is_monotonic_for_shared_run(research_home):
     _create()
     for number in range(4):
         research_db.append_event("run-1", "progress", {"number": number})
-    events = research_db.list_events("run-1", after = 2)
+    events = research_db.list_events("run-1", after=2)
     assert [event["seq"] for event in events] == [3, 4, 5]
     assert [event["data"]["number"] for event in events] == [1, 2, 3]
 
@@ -1077,8 +1080,8 @@ def test_recovery_releases_expired_leases(research_home, status):
     finally:
         conn.close()
 
-    assert research_db.recover_expired(now = 100) == 1
-    claimed = research_db.claim_next("replacement", lease_ms = 1000)
+    assert research_db.recover_expired(now=100) == 1
+    claimed = research_db.claim_next("replacement", lease_ms=1000)
     assert claimed is not None
     expected = "planning" if status == "planning" else "running"
     assert claimed["status"] == expected
@@ -1087,7 +1090,7 @@ def test_recovery_releases_expired_leases(research_home, status):
 def test_execution_reset_clears_steps_and_sources(research_home):
     plan = _shared_setup_2()
     research_db.upsert_execution_step(
-        "run-1", 0, "Old step", "old query", "completed", worker_id = "worker-1"
+        "run-1", 0, "Old step", "old query", "completed", worker_id="worker-1"
     )
     research_db.upsert_source("run-1", 0, "https://old.example", "Old", "Stale", "worker-1")
     research_db.upsert_document_source(
@@ -1111,8 +1114,9 @@ def test_execution_reset_clears_steps_and_sources(research_home):
 
 def test_supervisor_stop_signals_tool_cancellation_before_task_cancelled(research_home):
     from core.research_runs import ResearchSupervisor
+
     async def scenario():
-        supervisor = ResearchSupervisor(SimpleNamespace(state = SimpleNamespace()))
+        supervisor = ResearchSupervisor(SimpleNamespace(state=SimpleNamespace()))
         cancel_event = supervisor._cancel_event("run-1")
 
         async def active_run():
@@ -1134,7 +1138,7 @@ def test_recovered_supervisor_waits_for_actual_server_port(research_home):
     from core.research_runs import ResearchSupervisor
 
     _create()
-    supervisor = ResearchSupervisor(SimpleNamespace(state = SimpleNamespace()), poll_seconds = 0.01)
+    supervisor = ResearchSupervisor(SimpleNamespace(state=SimpleNamespace()), poll_seconds=0.01)
 
     async def scenario():
         task = asyncio.create_task(supervisor._loop())
@@ -1144,10 +1148,10 @@ def test_recovered_supervisor_waits_for_actual_server_port(research_home):
 
     asyncio.run(scenario())
     assert research_db.get_run("run-1")["status"] == "planning"
-    with pytest.raises(RuntimeError, match = "server port"):
+    with pytest.raises(RuntimeError, match="server port"):
         supervisor._endpoint()
 
-    supervisor.note_request_address(SimpleNamespace(scope = {"server": ("127.0.0.1", 4321)}))
+    supervisor.note_request_address(SimpleNamespace(scope={"server": ("127.0.0.1", 4321)}))
     assert supervisor._endpoint() == "http://127.0.0.1:4321/v1/chat/completions"
 
 
@@ -1176,7 +1180,7 @@ def test_partial_report_is_persisted_and_emits_an_event(research_home):
     run = research_db.get_run("run-1")
     assert run["report"] == "Partial report"
     assert run["lastEventSeq"] == before + 1
-    [event] = research_db.list_events("run-1", after = before)
+    [event] = research_db.list_events("run-1", after=before)
     assert event["type"] == "report.updated"
     assert event["data"] == {"length": 14, "delta": " report", "offset": 7, "attempt": 0}
 
@@ -1333,7 +1337,7 @@ def test_agent_action_queries_are_redacted_before_they_leave_the_supervisor():
         )["action"]
         == "fetch"
     )
-    with pytest.raises(ValueError, match = "unknown URL"):
+    with pytest.raises(ValueError, match="unknown URL"):
         _validate_agent_action(
             {"action": "fetch", "url": "https://invented.example"},
             {"https://example.com"},
@@ -1360,7 +1364,7 @@ def test_research_agent_actions_are_model_directed_and_url_bounded():
         "Acme sources"
     )
     assert _sanitize_public_query("公开研究资料") == "公开研究资料"
-    with pytest.raises(ValueError, match = "only private"):
+    with pytest.raises(ValueError, match="only private"):
         _sanitize_public_query(
             "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9."
             "eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIn0."
@@ -1466,10 +1470,10 @@ def test_research_budget_defaults_support_long_runs():
 
     config = _sanitize_config(
         CreateResearchRun(
-            threadId = "thread-1",
-            userMessageId = "user-1",
-            inferenceRequest = {"model": "local-model"},
-            instructions = "  Answer in Spanish.  ",
+            threadId="thread-1",
+            userMessageId="user-1",
+            inferenceRequest={"model": "local-model"},
+            instructions="  Answer in Spanish.  ",
         ),
         {"modelId": "local-model"},
     )
@@ -1484,8 +1488,8 @@ def test_research_budget_defaults_support_long_runs():
     }
     assert config["instructions"] == "Answer in Spanish."
     ResearchPlan(
-        title = "Long plan",
-        steps = [{"title": f"Step {index}", "query": f"query {index}"} for index in range(30)],
+        title="Long plan",
+        steps=[{"title": f"Step {index}", "query": f"query {index}"} for index in range(30)],
     )
 
 
@@ -1494,10 +1498,10 @@ def test_research_budget_limits_allow_unlimited_model_requests():
     from routes.research_runs import CreateResearchRun, _sanitize_config
 
     payload = CreateResearchRun(
-        threadId = "thread-1",
-        userMessageId = "user-1",
-        inferenceRequest = {"model": "local-model"},
-        budgets = {
+        threadId="thread-1",
+        userMessageId="user-1",
+        inferenceRequest={"model": "local-model"},
+        budgets={
             "maxSteps": 30,
             "maxSources": 100,
             "modelTimeoutSeconds": 7200,
@@ -1515,13 +1519,13 @@ def test_research_budget_limits_allow_unlimited_model_requests():
         payload.budgets["modelTimeoutSeconds"] = rejected
         with pytest.raises(
             HTTPException,
-            match = "modelTimeoutSeconds must be 0 \\(unlimited\\) or between 10 and 31536000",
+            match="modelTimeoutSeconds must be 0 \\(unlimited\\) or between 10 and 31536000",
         ):
             _sanitize_config(payload, {"modelId": "local-model"})
 
     payload.budgets["modelTimeoutSeconds"] = 7200
     payload.budgets["maxSteps"] = 31
-    with pytest.raises(HTTPException, match = "maxSteps must be between 1 and 30"):
+    with pytest.raises(HTTPException, match="maxSteps must be between 1 and 30"):
         _sanitize_config(payload, {"modelId": "local-model"})
 
 
@@ -1538,7 +1542,7 @@ def test_retry_is_bounded_and_resumes_from_saved_plan(research_home):
     finally:
         conn.close()
 
-    assert research_db.retry("run-1", max_retries = 1) == "queued"
+    assert research_db.retry("run-1", max_retries=1) == "queued"
     retried = research_db.get_run("run-1")
     assert retried["retryCount"] == 1
     assert retried["report"] is None
@@ -1548,8 +1552,8 @@ def test_retry_is_bounded_and_resumes_from_saved_plan(research_home):
     assert research_db.list_events("run-1")[-1]["data"]["attempt"] == 1
     research_db.claim_next("worker-2")
     research_db.finish("run-1", "worker-2", "failed", "again")
-    with pytest.raises(research_db.ResearchConflictError, match = "budget"):
-        research_db.retry("run-1", max_retries = 1)
+    with pytest.raises(research_db.ResearchConflictError, match="budget"):
+        research_db.retry("run-1", max_retries=1)
 
 
 def test_retry_of_unapproved_plan_requires_approval_again(research_home):
@@ -1569,14 +1573,14 @@ def test_retry_of_unapproved_plan_requires_approval_again(research_home):
 
 def test_thread_allows_only_one_research_run_but_original_can_retry(research_home):
     _create()
-    with pytest.raises(research_db.ResearchConflictError, match = "already has"):
-        _create("run-2", assistant_message_id = None)
+    with pytest.raises(research_db.ResearchConflictError, match="already has"):
+        _create("run-2", assistant_message_id=None)
 
     assert research_db.request_cancel("run-1") == "cancelling"
     research_db.claim_next("worker-1")
     research_db.finish("run-1", "worker-1", "cancelled")
-    with pytest.raises(research_db.ResearchConflictError, match = "already has"):
-        _create("run-2", assistant_message_id = None)
+    with pytest.raises(research_db.ResearchConflictError, match="already has"):
+        _create("run-2", assistant_message_id=None)
     assert research_db.retry("run-1") == "planning"
 
 
@@ -1596,17 +1600,17 @@ def test_planner_prompt_shields_untrusted_conversation(research_home, monkeypatc
             "createdAt": 5,
         }
     )
-    _create(user_message_id = "user-inj", assistant_message_id = None)
+    _create(user_message_id="user-inj", assistant_message_id=None)
 
-    supervisor = worker.ResearchSupervisor(SimpleNamespace(state = SimpleNamespace(server_port = 1)))
+    supervisor = worker.ResearchSupervisor(SimpleNamespace(state=SimpleNamespace(server_port=1)))
     captured: dict = {}
 
     async def fake_stream_completion(
         run,
         messages,
         *,
-        json_mode = False,
-        report_progress = True,
+        json_mode=False,
+        report_progress=True,
         **kwargs,
     ):
         captured["planner"] = messages[1]["content"]
@@ -1628,12 +1632,12 @@ def test_planner_prompt_shields_untrusted_conversation(research_home, monkeypatc
         pytest.param(
             ("", "Repeated a truncated source URL.", "length", None),
             False,
-            id = "length",
+            id="length",
         ),
         pytest.param(
             ("<!-- UNSLOTH_FINAL_REPORT -->\n", "Analysis.", "stop", None),
             True,
-            id = "marker-only",
+            id="marker-only",
         ),
     ),
 )
@@ -1664,12 +1668,12 @@ def test_supervisor_planning_and_research_are_durable_with_mocked_io(
         }
     )
     _create(
-        assistant_message_id = None,
-        user_message_id = "user-2",
-        rag_scope = rag_scope,
-        instructions = "Write the final report in Spanish.",
+        assistant_message_id=None,
+        user_message_id="user-2",
+        rag_scope=rag_scope,
+        instructions="Write the final report in Spanish.",
     )
-    supervisor = worker.ResearchSupervisor(SimpleNamespace(state = SimpleNamespace(server_port = 1)))
+    supervisor = worker.ResearchSupervisor(SimpleNamespace(state=SimpleNamespace(server_port=1)))
     report_response = "# Final report\n\nGrounded result [source](https://example.com)."
     control_call_options = []
     decision_prompts = []
@@ -1701,8 +1705,8 @@ def test_supervisor_planning_and_research_are_durable_with_mocked_io(
         run,
         messages,
         *,
-        json_mode = False,
-        report_progress = True,
+        json_mode=False,
+        report_progress=True,
         **kwargs,
     ):
         system = messages[0]["content"]
@@ -1887,7 +1891,7 @@ _SCRAPE_BUDGETS = {
 }
 
 
-def _patch_web_rank(monkeypatch, *, retrieve = None):
+def _patch_web_rank(monkeypatch, *, retrieve=None):
     """Stub the ephemeral web-RAG so loop-integration tests need no sqlite/vec store: by
     default each scraped page renders as one ``<chunk>`` block, mirroring the real
     ``retrieve_web_chunks`` output (whose retrieval/ranking is covered in test_web_rank.py)."""
@@ -1899,7 +1903,7 @@ def _patch_web_rank(monkeypatch, *, retrieve = None):
         *,
         top_n,
         min_score,
-        char_budget = None,
+        char_budget=None,
         **kwargs,
     ):
         blocks, sources = [], []
@@ -1918,7 +1922,8 @@ def _patch_web_rank(monkeypatch, *, retrieve = None):
 
 def _bare_supervisor(monkeypatch):
     from core import research_runs as worker
-    supervisor = worker.ResearchSupervisor(SimpleNamespace(state = SimpleNamespace(server_port = 1)))
+
+    supervisor = worker.ResearchSupervisor(SimpleNamespace(state=SimpleNamespace(server_port=1)))
     return worker, supervisor
 
 
@@ -1926,15 +1931,15 @@ def _run_search_then_finish(
     monkeypatch,
     fake_tool,
     *,
-    retrieve = None,
-    decision_payloads = None,
+    retrieve=None,
+    decision_payloads=None,
 ):
     """Drive the supplied decisions (by default one search followed by finish) and return
     the completed run plus the synthesis prompts the model was given."""
     from core import research_runs as worker
 
-    _patch_web_rank(monkeypatch, retrieve = retrieve)
-    supervisor = worker.ResearchSupervisor(SimpleNamespace(state = SimpleNamespace(server_port = 1)))
+    _patch_web_rank(monkeypatch, retrieve=retrieve)
+    supervisor = worker.ResearchSupervisor(SimpleNamespace(state=SimpleNamespace(server_port=1)))
     decisions = iter(
         decision_payloads
         or (
@@ -1968,8 +1973,8 @@ def _run_search_then_finish(
         run,
         messages,
         *,
-        json_mode = False,
-        report_progress = True,
+        json_mode=False,
+        report_progress=True,
         **kwargs,
     ):
         system = messages[0]["content"]
@@ -2022,7 +2027,7 @@ def _two_source_search():
 
 
 def test_auto_scrape_retrieves_page_chunks_into_synthesis_evidence(research_home, monkeypatch):
-    _create(budgets = _SCRAPE_BUDGETS)
+    _create(budgets=_SCRAPE_BUDGETS)
     url_calls = []
 
     def fake_tool(name, arguments, *args, **kwargs):
@@ -2047,7 +2052,7 @@ def test_auto_scrape_retrieves_page_chunks_into_synthesis_evidence(research_home
 
 
 def test_synthesis_audit_precedes_the_report(research_home, monkeypatch):
-    _create(budgets = _SCRAPE_BUDGETS)
+    _create(budgets=_SCRAPE_BUDGETS)
 
     def fake_tool(name, arguments, *args, **kwargs):
         if arguments.get("url"):
@@ -2081,7 +2086,7 @@ def test_synthesis_audit_precedes_the_report(research_home, monkeypatch):
 
 
 def test_last_tool_step_preserves_pre_action_state_for_synthesis(research_home, monkeypatch):
-    _create(budgets = {**_SCRAPE_BUDGETS, "maxSteps": 1})
+    _create(budgets={**_SCRAPE_BUDGETS, "maxSteps": 1})
 
     def fake_tool(name, arguments, *args, **kwargs):
         if arguments.get("url"):
@@ -2091,7 +2096,7 @@ def test_last_tool_step_preserves_pre_action_state_for_synthesis(research_home, 
     completed, synthesis_prompts = _run_search_then_finish(
         monkeypatch,
         fake_tool,
-        decision_payloads = (
+        decision_payloads=(
             json.dumps(
                 {
                     "action": "search",
@@ -2113,7 +2118,7 @@ def test_last_tool_step_preserves_pre_action_state_for_synthesis(research_home, 
 
 
 def test_auto_scrape_persists_chunk_excerpt_for_resume(research_home, monkeypatch):
-    _create(budgets = _SCRAPE_BUDGETS)
+    _create(budgets=_SCRAPE_BUDGETS)
 
     def fake_tool(name, arguments, *args, **kwargs):
         url = arguments.get("url")
@@ -2137,7 +2142,7 @@ def test_auto_scrape_persists_chunk_excerpt_for_resume(research_home, monkeypatc
 
 
 def test_auto_scrape_ignores_fetch_failures(research_home, monkeypatch):
-    _create(budgets = _SCRAPE_BUDGETS)
+    _create(budgets=_SCRAPE_BUDGETS)
     url_calls = []
 
     def fake_tool(name, arguments, *args, **kwargs):
@@ -2182,8 +2187,8 @@ def test_auto_scrape_skipped_on_small_context(research_home, monkeypatch):
     # grounding is skipped (snippet-only) even when maxAutoScrape is set.
     from core import research_runs as worker
 
-    monkeypatch.setattr(worker, "_loaded_context_length", lambda _inf = None: 2048)
-    _create(budgets = _SCRAPE_BUDGETS)
+    monkeypatch.setattr(worker, "_loaded_context_length", lambda _inf=None: 2048)
+    _create(budgets=_SCRAPE_BUDGETS)
 
     def fake_tool(name, arguments, *args, **kwargs):
         if arguments.get("url"):
@@ -2203,9 +2208,9 @@ def test_synthesis_pass_runs_at_synthesis_phase(research_home, monkeypatch):
     # penalty is injected (an aggressive one degenerates small local models into a word-salad).
     from core import research_runs as worker
 
-    _create(budgets = _SCRAPE_BUDGETS)
+    _create(budgets=_SCRAPE_BUDGETS)
     _patch_web_rank(monkeypatch)
-    supervisor = worker.ResearchSupervisor(SimpleNamespace(state = SimpleNamespace(server_port = 1)))
+    supervisor = worker.ResearchSupervisor(SimpleNamespace(state=SimpleNamespace(server_port=1)))
     decisions = iter(
         (
             json.dumps({"action": "search", "title": "Find", "query": "q"}),
@@ -2218,8 +2223,8 @@ def test_synthesis_pass_runs_at_synthesis_phase(research_home, monkeypatch):
         run,
         messages,
         *,
-        json_mode = False,
-        report_progress = True,
+        json_mode=False,
+        report_progress=True,
         **kwargs,
     ):
         system = messages[0]["content"]
@@ -2257,9 +2262,9 @@ def test_auto_scrape_respects_char_budgets(research_home, monkeypatch):
             "question",
             step_sources,
             set(),
-            limit = worker._AUTO_SCRAPE_TOP_K,
-            tool_timeout = 10,
-            website_policy = None,
+            limit=worker._AUTO_SCRAPE_TOP_K,
+            tool_timeout=10,
+            website_policy=None,
         )
     )
     # the folded evidence is bounded chunks, not the 150k of raw page bodies (capped at
@@ -2275,7 +2280,7 @@ def test_auto_scrape_falls_back_when_no_relevant_chunks(research_home, monkeypat
     # When hybrid retrieval surfaces nothing above the floor (covered in test_web_rank.py),
     # the step yields no scraped section and the caller keeps the snippet evidence.
     worker, supervisor = _bare_supervisor(monkeypatch)
-    _patch_web_rank(monkeypatch, retrieve = lambda *a, **k: ("", []))
+    _patch_web_rank(monkeypatch, retrieve=lambda *a, **k: ("", []))
     monkeypatch.setattr(worker, "execute_tool", lambda *a, **k: "unrelated boilerplate content")
     step_sources = [{"url": "https://s.example.com", "title": "S"}]
     section, fetched = asyncio.run(
@@ -2284,9 +2289,9 @@ def test_auto_scrape_falls_back_when_no_relevant_chunks(research_home, monkeypat
             "find the special token",
             step_sources,
             set(),
-            limit = worker._AUTO_SCRAPE_TOP_K,
-            tool_timeout = 10,
-            website_policy = None,
+            limit=worker._AUTO_SCRAPE_TOP_K,
+            tool_timeout=10,
+            website_policy=None,
         )
     )
     assert section == ""
@@ -2340,9 +2345,9 @@ def test_auto_scrape_skips_already_fetched_urls(research_home, monkeypatch):
             "question",
             step_sources,
             {"https://x.example.com"},
-            limit = worker._AUTO_SCRAPE_TOP_K,
-            tool_timeout = 10,
-            website_policy = None,
+            limit=worker._AUTO_SCRAPE_TOP_K,
+            tool_timeout=10,
+            website_policy=None,
         )
     )
     assert called == ["https://y.example.com"]
@@ -2369,9 +2374,9 @@ def test_auto_scrape_honors_numeric_limit(research_home, monkeypatch):
             "question",
             step_sources,
             set(),
-            limit = 1,
-            tool_timeout = 10,
-            website_policy = None,
+            limit=1,
+            tool_timeout=10,
+            website_policy=None,
         )
     )
     assert len(called) == 1
@@ -2431,7 +2436,7 @@ def test_recovered_running_research_resumes_durable_progress(research_home, monk
     _shared_setup_3()
     assert research_db.recover_expired() == 1
 
-    supervisor = worker.ResearchSupervisor(SimpleNamespace(state = SimpleNamespace(server_port = 1)))
+    supervisor = worker.ResearchSupervisor(SimpleNamespace(state=SimpleNamespace(server_port=1)))
     recovered = research_db.claim_next(supervisor.worker_id)
     assert recovered["claimedFromStatus"] == "running"
 
@@ -2494,15 +2499,15 @@ def test_knowledge_base_evidence_beyond_the_source_cap_is_not_synthesized(
     from core import research_runs as worker
 
     _create(
-        rag_scope = {"kb_id": "kb-1", "default_top_k": 4},
-        budgets = {
+        rag_scope={"kb_id": "kb-1", "default_top_k": 4},
+        budgets={
             "maxSteps": 3,
             "maxSources": 1,
             "modelTimeoutSeconds": 30,
             "toolTimeoutSeconds": 10,
         },
     )
-    supervisor = worker.ResearchSupervisor(SimpleNamespace(state = SimpleNamespace(server_port = 1)))
+    supervisor = worker.ResearchSupervisor(SimpleNamespace(state=SimpleNamespace(server_port=1)))
     decisions = iter(
         (
             json.dumps({"action": "search", "title": "First", "query": "first query"}),
@@ -2568,15 +2573,15 @@ def test_create_without_assistant_id_does_not_eagerly_create_message(research_ho
     from routes.research_runs import CreateResearchRun, create_research_run
 
     before = studio_db.list_chat_messages("thread-1")
-    request = SimpleNamespace(app = SimpleNamespace(state = SimpleNamespace()))
+    request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace()))
     run = create_research_run(
         CreateResearchRun(
-            threadId = "thread-1",
-            userMessageId = "user-1",
-            inferenceRequest = {"model": "local-model"},
+            threadId="thread-1",
+            userMessageId="user-1",
+            inferenceRequest={"model": "local-model"},
         ),
         request,
-        current_subject = "alice",
+        current_subject="alice",
     )
 
     assert run["assistantMessageId"] is None
@@ -2607,17 +2612,17 @@ def test_route_rejects_textless_research_before_claim(research_home, content, at
             "createdAt": 2,
         }
     )
-    request = SimpleNamespace(app = SimpleNamespace(state = SimpleNamespace()))
+    request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace()))
 
-    with pytest.raises(HTTPException, match = "non-empty text") as caught:
+    with pytest.raises(HTTPException, match="non-empty text") as caught:
         create_research_run(
             CreateResearchRun(
-                threadId = "thread-1",
-                userMessageId = "user-1",
-                inferenceRequest = {"model": "local-model"},
+                threadId="thread-1",
+                userMessageId="user-1",
+                inferenceRequest={"model": "local-model"},
             ),
             request,
-            current_subject = "alice",
+            current_subject="alice",
         )
 
     assert caught.value.status_code == 400
@@ -2647,12 +2652,12 @@ def test_route_accepts_canonical_text_content_shapes(research_home, content):
     )
     run = create_research_run(
         CreateResearchRun(
-            threadId = "thread-1",
-            userMessageId = "user-1",
-            inferenceRequest = {"model": "local-model"},
+            threadId="thread-1",
+            userMessageId="user-1",
+            inferenceRequest={"model": "local-model"},
         ),
-        SimpleNamespace(app = SimpleNamespace(state = SimpleNamespace())),
-        current_subject = "alice",
+        SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace())),
+        current_subject="alice",
     )
 
     assert run["status"] == "planning"
@@ -2665,22 +2670,22 @@ def test_route_rejects_overlapping_active_run_for_thread(research_home):
     from routes.research_runs import CreateResearchRun, create_research_run
 
     _create()
-    request = SimpleNamespace(app = SimpleNamespace(state = SimpleNamespace()))
+    request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace()))
     with pytest.raises(HTTPException) as caught:
         create_research_run(
             CreateResearchRun(
-                threadId = "thread-1",
-                userMessageId = "user-1",
-                inferenceRequest = {"model": "local-model"},
+                threadId="thread-1",
+                userMessageId="user-1",
+                inferenceRequest={"model": "local-model"},
             ),
             request,
-            current_subject = "alice",
+            current_subject="alice",
         )
     assert caught.value.status_code == 409
 
 
 def test_assistant_discovery_binding_and_terminal_fallback_are_idempotent(research_home):
-    _create(assistant_message_id = None)
+    _create(assistant_message_id=None)
     studio_db.upsert_chat_message(
         {
             "id": "frontend-assistant",
@@ -2719,17 +2724,17 @@ def test_assistant_discovery_binding_and_terminal_fallback_are_idempotent(resear
     )
     _create(
         "run-2",
-        assistant_message_id = None,
-        thread_id = "thread-2",
-        user_message_id = "user-2",
+        assistant_message_id=None,
+        thread_id="thread-2",
+        user_message_id="user-2",
     )
     research_db.set_plan("run-2", _plan())
     assert research_db.request_cancel("run-2") == "cancelled"
     first_id, first_created = research_db.create_and_bind_terminal_fallback(
-        "run-2", text = "Research cancelled.", status = "cancelled"
+        "run-2", text="Research cancelled.", status="cancelled"
     )
     second_id, second_created = research_db.create_and_bind_terminal_fallback(
-        "run-2", text = "Research cancelled.", status = "cancelled"
+        "run-2", text="Research cancelled.", status="cancelled"
     )
     assert first_created is True
     assert second_created is False
@@ -2759,11 +2764,11 @@ def test_research_claim_lasts_for_thread_lifetime(research_home):
             "createdAt": 20,
         }
     )
-    with pytest.raises(research_db.ResearchConflictError, match = "already has"):
+    with pytest.raises(research_db.ResearchConflictError, match="already has"):
         _create(
             "run-2",
-            assistant_message_id = None,
-            user_message_id = "user-new",
+            assistant_message_id=None,
+            user_message_id="user-new",
         )
 
     studio_db.delete_chat_threads(["thread-1"])
@@ -2773,14 +2778,14 @@ def test_research_claim_lasts_for_thread_lifetime(research_home):
 def test_research_claim_is_global_across_authenticated_subjects(research_home):
     first = _create()
 
-    with pytest.raises(research_db.ResearchConflictError, match = "already has"):
+    with pytest.raises(research_db.ResearchConflictError, match="already has"):
         research_db.create_run(
-            run_id = "run-2",
-            owner_subject = "bob",
-            thread_id = "thread-1",
-            user_message_id = "user-1",
-            assistant_message_id = None,
-            config = first["config"],
+            run_id="run-2",
+            owner_subject="bob",
+            thread_id="thread-1",
+            user_message_id="user-1",
+            assistant_message_id=None,
+            config=first["config"],
         )
 
     assert research_db.has_thread_claim("thread-1") is True
@@ -2794,12 +2799,12 @@ def test_shared_chat_subject_can_follow_and_cancel_research(research_home):
     )
 
     _create()
-    visible = get_research_run("run-1", current_subject = "bob")
-    active = active_research_runs("thread-1", current_subject = "bob")
+    visible = get_research_run("run-1", current_subject="bob")
+    active = active_research_runs("thread-1", current_subject="bob")
     cancelled = cancel_research_run(
         "run-1",
-        SimpleNamespace(app = SimpleNamespace(state = SimpleNamespace())),
-        current_subject = "bob",
+        SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace())),
+        current_subject="bob",
     )
 
     assert visible["ownerSubject"] == "alice"
@@ -2817,12 +2822,12 @@ def test_shared_chat_subject_can_repoint_stopped_research(research_home):
 
     reused = create_research_run(
         CreateResearchRun(
-            threadId = "thread-1",
-            userMessageId = "user-2",
-            inferenceRequest = {"model": "local-model"},
+            threadId="thread-1",
+            userMessageId="user-2",
+            inferenceRequest={"model": "local-model"},
         ),
-        SimpleNamespace(app = SimpleNamespace(state = SimpleNamespace())),
-        current_subject = "bob",
+        SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace())),
+        current_subject="bob",
     )
 
     assert reused["id"] == "run-1"
@@ -2854,7 +2859,7 @@ def test_terminal_sse_event_contains_report_and_complete_snapshot(research_home)
     )
     report = "# Durable report\n\nFinal markdown."
     assert (
-        research_db.finish("run-1", "worker-1", "completed", event_payload = {"report": report})
+        research_db.finish("run-1", "worker-1", "completed", event_payload={"report": report})
         == "completed"
     )
 
@@ -2866,9 +2871,9 @@ def test_terminal_sse_event_contains_report_and_complete_snapshot(research_home)
         research_events(
             "run-1",
             FakeRequest(),
-            after = 0,
-            last_event_id = None,
-            current_subject = "alice",
+            after=0,
+            last_event_id=None,
+            current_subject="alice",
         )
     )
 
@@ -2908,8 +2913,8 @@ def test_worker_terminal_paths_create_one_fallback_without_frontend_message(
 ):
     from core import research_runs as worker
 
-    _create(assistant_message_id = None)
-    supervisor = worker.ResearchSupervisor(SimpleNamespace(state = SimpleNamespace(server_port = 1)))
+    _create(assistant_message_id=None)
+    supervisor = worker.ResearchSupervisor(SimpleNamespace(state=SimpleNamespace(server_port=1)))
     claimed = research_db.claim_next(supervisor.worker_id)
 
     if cancelled:
@@ -2939,7 +2944,7 @@ def test_worker_terminal_paths_create_one_fallback_without_frontend_message(
 
 
 def test_create_run_atomically_creates_exact_frontend_placeholder(research_home):
-    run = _create(assistant_message_id = "unstable-assistant")
+    run = _create(assistant_message_id="unstable-assistant")
     message = studio_db.get_chat_message("thread-1", "unstable-assistant")
 
     assert run["assistantMessageId"] == "unstable-assistant"
@@ -2966,7 +2971,7 @@ def test_create_run_conflict_rolls_back_placeholder_and_run(research_home):
         }
     )
     with pytest.raises(research_db.ResearchConflictError):
-        _create(assistant_message_id = "conflict")
+        _create(assistant_message_id="conflict")
     assert research_db.get_run("run-1") is None
     assert studio_db.get_chat_message("thread-1", "conflict")["parentId"] is None
 
@@ -2989,7 +2994,7 @@ def test_create_run_rejects_binding_to_populated_reply(research_home):
         }
     )
     with pytest.raises(research_db.ResearchConflictError):
-        _create(assistant_message_id = "prior-answer")
+        _create(assistant_message_id="prior-answer")
     assert research_db.get_run("run-1") is None
     preserved = studio_db.get_chat_message("thread-1", "prior-answer")
     assert preserved["content"][0]["text"] == "existing answer"
@@ -3004,7 +3009,7 @@ def test_create_run_rejects_binding_to_populated_reply(research_home):
             "createdAt": 5,
         }
     )
-    run = _create(assistant_message_id = "empty-placeholder")
+    run = _create(assistant_message_id="empty-placeholder")
     assert run["assistantMessageId"] == "empty-placeholder"
 
 
@@ -3024,7 +3029,7 @@ def test_create_run_binds_through_a_preamble_beside_the_handoff(research_home):
             "createdAt": 6,
         }
     )
-    run = _create(assistant_message_id = "preamble-and-call")
+    run = _create(assistant_message_id="preamble-and-call")
     assert run["assistantMessageId"] == "preamble-and-call"
 
 
@@ -3043,7 +3048,7 @@ def test_create_run_still_rejects_an_answer_beside_an_unrelated_tool_call(resear
         }
     )
     with pytest.raises(research_db.ResearchConflictError):
-        _create(assistant_message_id = "answer-and-other-call")
+        _create(assistant_message_id="answer-and-other-call")
     assert research_db.get_run("run-1") is None
 
 
@@ -3063,7 +3068,7 @@ def test_create_run_rejects_a_completed_answer_even_beside_the_handoff(research_
         }
     )
     with pytest.raises(research_db.ResearchConflictError):
-        _create(assistant_message_id = "sources-and-call")
+        _create(assistant_message_id="sources-and-call")
     assert research_db.get_run("run-1") is None
 
 
@@ -3086,7 +3091,7 @@ def test_update_assistant_replaces_report_parts_without_duplication(research_hom
             "metadata": {"researchRunId": "run-1"},
             "createdAt": 3,
         },
-        allow_research_update = True,
+        allow_research_update=True,
     )
     run = research_db.get_run("run-1")
     source = {"url": "https://new.example", "title": "New", "snippet": "Evidence"}
@@ -3130,7 +3135,7 @@ def test_shutdown_releases_worker_lease_immediately(research_home):
     from core.research_runs import ResearchSupervisor
 
     _create()
-    supervisor = ResearchSupervisor(SimpleNamespace(state = SimpleNamespace(server_port = 1)))
+    supervisor = ResearchSupervisor(SimpleNamespace(state=SimpleNamespace(server_port=1)))
     assert research_db.claim_next(supervisor.worker_id) is not None
 
     asyncio.run(supervisor.stop())
@@ -3142,7 +3147,7 @@ def test_lost_lease_stops_worker_before_more_writes(research_home):
     from core.research_runs import LeaseLost, ResearchSupervisor
 
     _create()
-    supervisor = ResearchSupervisor(SimpleNamespace(state = SimpleNamespace(server_port = 1)))
+    supervisor = ResearchSupervisor(SimpleNamespace(state=SimpleNamespace(server_port=1)))
     research_db.claim_next(supervisor.worker_id)
     assert research_db.release_worker_leases(supervisor.worker_id) == 1
 
@@ -3353,10 +3358,10 @@ def test_completion_cancellation_closes_loopback_request(research_home, monkeypa
         )
         # Wait for the request to actually be in flight rather than guessing how
         # long that takes: cancelling before it starts tests nothing.
-        await asyncio.wait_for(in_flight.wait(), timeout = _CANCEL_TIMEOUT_S)
+        await asyncio.wait_for(in_flight.wait(), timeout=_CANCEL_TIMEOUT_S)
         supervisor.cancel("run-1")
         with pytest.raises(worker.RunCancelled):
-            await asyncio.wait_for(task, timeout = _CANCEL_TIMEOUT_S)
+            await asyncio.wait_for(task, timeout=_CANCEL_TIMEOUT_S)
 
     asyncio.run(scenario())
     assert request_cancelled["value"] is True
@@ -3388,10 +3393,10 @@ def test_stream_line_wait_is_interruptible_by_cancellation(research_home):
         task = asyncio.create_task(consume())
         # Wait for the request to actually be in flight rather than guessing how
         # long that takes: cancelling before it starts tests nothing.
-        await asyncio.wait_for(in_flight.wait(), timeout = _CANCEL_TIMEOUT_S)
+        await asyncio.wait_for(in_flight.wait(), timeout=_CANCEL_TIMEOUT_S)
         supervisor.cancel("run-1")
         with pytest.raises(worker.RunCancelled):
-            await asyncio.wait_for(task, timeout = _CANCEL_TIMEOUT_S)
+            await asyncio.wait_for(task, timeout=_CANCEL_TIMEOUT_S)
 
     asyncio.run(scenario())
     assert iterator_cancelled["value"] is True
@@ -3437,10 +3442,10 @@ def test_stream_open_wait_is_interruptible_by_cancellation(research_home, monkey
         )
         # Wait for the request to actually be in flight rather than guessing how
         # long that takes: cancelling before it starts tests nothing.
-        await asyncio.wait_for(in_flight.wait(), timeout = _CANCEL_TIMEOUT_S)
+        await asyncio.wait_for(in_flight.wait(), timeout=_CANCEL_TIMEOUT_S)
         supervisor.cancel("run-1")
         with pytest.raises(worker.RunCancelled):
-            await asyncio.wait_for(task, timeout = _CANCEL_TIMEOUT_S)
+            await asyncio.wait_for(task, timeout=_CANCEL_TIMEOUT_S)
 
     asyncio.run(scenario())
     assert request_cancelled["value"] is True
@@ -3468,10 +3473,10 @@ def test_route_maps_unstable_assistant_conflict_to_409(research_home):
             "inferenceRequest": {"model": "local-model"},
         }
     )
-    request = SimpleNamespace(app = SimpleNamespace(state = SimpleNamespace()))
+    request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace()))
 
     with pytest.raises(HTTPException) as caught:
-        create_research_run(payload, request, current_subject = "alice")
+        create_research_run(payload, request, current_subject="alice")
     assert caught.value.status_code == 409
 
 
@@ -3486,9 +3491,9 @@ def test_route_accepts_max_tokens_without_treating_it_as_a_credential(research_h
             "inferenceRequest": {"model": "local-model", "maxTokens": 1024},
         }
     )
-    request = SimpleNamespace(app = SimpleNamespace(state = SimpleNamespace()))
+    request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace()))
 
-    run = create_research_run(payload, request, current_subject = "alice")
+    run = create_research_run(payload, request, current_subject="alice")
 
     assert run["config"]["inferenceRequest"]["maxTokens"] == 1024
 
@@ -3518,16 +3523,17 @@ def test_merge_scraped_evidence_handles_empty_sides():
     assert _merge_scraped_evidence("", "only chunk") == "only chunk"
 
 
-def _route_sync(messages, *, prune_missing = False):
+def _route_sync(messages, *, prune_missing=False):
     """Drive the real PUT /threads/{id}/messages against the real database."""
     from routes import chat_history
+
     return chat_history.replace_thread_messages(
         "thread-1",
         chat_history.ChatMessageSyncRequest(
-            messages = [chat_history.ChatMessage(**message) for message in messages],
-            pruneMissing = prune_missing,
+            messages=[chat_history.ChatMessage(**message) for message in messages],
+            pruneMissing=prune_missing,
         ),
-        current_subject = "alice",
+        current_subject="alice",
     )
 
 
@@ -3573,7 +3579,7 @@ def test_route_prune_cannot_delete_research_messages(research_home):
     )
 
     # Client asks to keep nothing: the research turn survives, the rest goes.
-    _route_sync([], prune_missing = True)
+    _route_sync([], prune_missing=True)
 
     assert studio_db.get_chat_message("thread-1", "user-1") is not None
     assert studio_db.get_chat_message("thread-1", "assistant-1") is not None
@@ -3581,7 +3587,7 @@ def test_route_prune_cannot_delete_research_messages(research_home):
     assert research_db.get_run("run-1") is not None
 
 
-def _thread_imports_cleanly(thread_id = "thread-1") -> bool:
+def _thread_imports_cleanly(thread_id="thread-1") -> bool:
     """Whether every parent link resolves, which is what MessageRepository.import needs.
 
     assistant-ui's addOrUpdateMessage raises "Parent message not found" on a dangling
@@ -3621,7 +3627,7 @@ def test_deleting_an_ancestor_reseats_the_protected_prompt(research_home):
             "content": [{"type": "text", "text": "What changed?"}],
             "createdAt": 3,
         },
-        allow_research_update = True,
+        allow_research_update=True,
     )
 
     # What the client sends after deleting "ancestor": survivors only, the research content
@@ -3646,7 +3652,7 @@ def test_deleting_an_ancestor_reseats_the_protected_prompt(research_home):
                 "createdAt": 3,
             },
         ],
-        prune_missing = True,
+        prune_missing=True,
     )
 
     assert studio_db.get_chat_message("thread-1", "ancestor") is None
@@ -3681,7 +3687,7 @@ def test_a_protected_prompt_roots_when_the_whole_chain_is_pruned(research_home):
             "content": [{"type": "text", "text": "What changed?"}],
             "createdAt": 3,
         },
-        allow_research_update = True,
+        allow_research_update=True,
     )
 
     _route_sync(
@@ -3695,7 +3701,7 @@ def test_a_protected_prompt_roots_when_the_whole_chain_is_pruned(research_home):
                 "createdAt": 3,
             }
         ],
-        prune_missing = True,
+        prune_missing=True,
     )
 
     assert studio_db.get_chat_message("thread-1", "ancestor") is None
@@ -3731,7 +3737,7 @@ def test_omitting_the_whole_research_pair_keeps_the_turn_joined(research_home):
                 "content": [{"type": "text", "text": message_id}],
                 "createdAt": created_at,
             },
-            allow_research_update = True,
+            allow_research_update=True,
         )
 
     # Both protected ids omitted, which is exactly what a lossy re-serialize of a research
@@ -3747,7 +3753,7 @@ def test_omitting_the_whole_research_pair_keeps_the_turn_joined(research_home):
                 "createdAt": 1,
             }
         ],
-        prune_missing = True,
+        prune_missing=True,
     )
 
     assert studio_db.get_chat_message("thread-1", "user-1")["parentId"] == "root"
@@ -3777,7 +3783,7 @@ def _ancestor_and_research_prompt() -> None:
             "content": [{"type": "text", "text": "What changed?"}],
             "createdAt": 3,
         },
-        allow_research_update = True,
+        allow_research_update=True,
     )
 
 
@@ -3787,7 +3793,7 @@ def test_an_authorized_sync_still_reseats_a_research_row_it_omits(research_home)
     # so the reseat has to be derived from the research ids, not from `protected`.
     _ancestor_and_research_prompt()
 
-    studio_db.sync_chat_messages("thread-1", [], prune_missing = True, allow_research_update = True)
+    studio_db.sync_chat_messages("thread-1", [], prune_missing=True, allow_research_update=True)
 
     assert studio_db.get_chat_message("thread-1", "ancestor") is None
     assert studio_db.get_chat_message("thread-1", "user-1")["parentId"] is None
@@ -3829,8 +3835,8 @@ def test_an_authorized_reparent_of_a_research_row_is_not_overwritten(research_ho
                 "createdAt": 3,
             },
         ],
-        prune_missing = True,
-        allow_research_update = True,
+        prune_missing=True,
+        allow_research_update=True,
     )
 
     assert studio_db.get_chat_message("thread-1", "ancestor") is None
@@ -3838,7 +3844,7 @@ def test_an_authorized_reparent_of_a_research_row_is_not_overwritten(research_ho
     assert _thread_imports_cleanly()
 
 
-def _new_user_message(message_id = "user-2", created_at = 20):
+def _new_user_message(message_id="user-2", created_at=20):
     studio_db.upsert_chat_message(
         {
             "id": message_id,
@@ -3853,14 +3859,14 @@ def _new_user_message(message_id = "user-2", created_at = 20):
 
 def _rebind(
     user_message_id,
-    assistant_message_id = None,
-    thread_id = "thread-1",
+    assistant_message_id=None,
+    thread_id="thread-1",
 ):
     return research_db.rebind_cancelled(
-        thread_id = thread_id,
-        user_message_id = user_message_id,
-        assistant_message_id = assistant_message_id,
-        config = {
+        thread_id=thread_id,
+        user_message_id=user_message_id,
+        assistant_message_id=assistant_message_id,
+        config={
             "model": "local-model",
             "inferenceRequest": {"model": "local-model"},
             "ragScope": None,
@@ -3894,18 +3900,18 @@ def test_stopped_run_is_repointed_at_a_newer_message(research_home):
 
 
 def test_no_placeholder_rebind_gets_a_fresh_terminal_fallback(research_home):
-    _create(assistant_message_id = None)
+    _create(assistant_message_id=None)
     _cancel_run()
     first_id, first_created = research_db.create_and_bind_terminal_fallback(
-        "run-1", text = "Research cancelled.", status = "cancelled"
+        "run-1", text="Research cancelled.", status="cancelled"
     )
     assert first_created is True
 
-    assert _rebind(_new_user_message(), assistant_message_id = None) is not None
+    assert _rebind(_new_user_message(), assistant_message_id=None) is not None
     research_db.set_plan("run-1", _plan())
     assert research_db.request_cancel("run-1") == "cancelled"
     second_id, second_created = research_db.create_and_bind_terminal_fallback(
-        "run-1", text = "Research cancelled again.", status = "cancelled"
+        "run-1", text="Research cancelled again.", status="cancelled"
     )
 
     assert second_created is True
@@ -4014,15 +4020,15 @@ def test_repointing_refuses_a_message_that_is_not_this_thread_s_question(researc
 def test_route_repoints_a_stopped_run_at_the_next_question(research_home):
     from routes.research_runs import CreateResearchRun, create_research_run
 
-    request = SimpleNamespace(app = SimpleNamespace(state = SimpleNamespace()))
+    request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace()))
     created = create_research_run(
         CreateResearchRun(
-            threadId = "thread-1",
-            userMessageId = "user-1",
-            inferenceRequest = {"model": "local-model"},
+            threadId="thread-1",
+            userMessageId="user-1",
+            inferenceRequest={"model": "local-model"},
         ),
         request,
-        current_subject = "alice",
+        current_subject="alice",
     )
     assert created["status"] == "planning"
 
@@ -4033,12 +4039,12 @@ def test_route_repoints_a_stopped_run_at_the_next_question(research_home):
     _new_user_message()
     reused = create_research_run(
         CreateResearchRun(
-            threadId = "thread-1",
-            userMessageId = "user-2",
-            inferenceRequest = {"model": "local-model"},
+            threadId="thread-1",
+            userMessageId="user-2",
+            inferenceRequest={"model": "local-model"},
         ),
         request,
-        current_subject = "alice",
+        current_subject="alice",
     )
     assert reused["id"] == created["id"]
     assert reused["status"] == "planning"
@@ -4049,26 +4055,26 @@ def test_route_still_refuses_a_second_run_while_one_is_going(research_home):
     from fastapi import HTTPException
     from routes.research_runs import CreateResearchRun, create_research_run
 
-    request = SimpleNamespace(app = SimpleNamespace(state = SimpleNamespace()))
+    request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace()))
     create_research_run(
         CreateResearchRun(
-            threadId = "thread-1",
-            userMessageId = "user-1",
-            inferenceRequest = {"model": "local-model"},
+            threadId="thread-1",
+            userMessageId="user-1",
+            inferenceRequest={"model": "local-model"},
         ),
         request,
-        current_subject = "alice",
+        current_subject="alice",
     )
     _new_user_message()
-    with pytest.raises(HTTPException, match = "already has") as caught:
+    with pytest.raises(HTTPException, match="already has") as caught:
         create_research_run(
             CreateResearchRun(
-                threadId = "thread-1",
-                userMessageId = "user-2",
-                inferenceRequest = {"model": "local-model"},
+                threadId="thread-1",
+                userMessageId="user-2",
+                inferenceRequest={"model": "local-model"},
             ),
             request,
-            current_subject = "alice",
+            current_subject="alice",
         )
     assert caught.value.status_code == 409
 
@@ -4087,7 +4093,7 @@ def test_repointing_unbinds_the_reply_it_leaves_behind(research_home):
         }
     )
 
-    reused = _rebind(_new_user_message(), assistant_message_id = "assistant-2")
+    reused = _rebind(_new_user_message(), assistant_message_id="assistant-2")
     assert reused is not None
     assert reused["assistantMessageId"] == "assistant-2"
 
@@ -4174,7 +4180,7 @@ def test_cancel_route_sync_cannot_cross_a_rebind(research_home):
             "createdAt": 21,
         }
     )
-    assert _rebind(_new_user_message(), assistant_message_id = "assistant-2") is not None
+    assert _rebind(_new_user_message(), assistant_message_id="assistant-2") is not None
 
     # A cancel request can hold this snapshot while another tab starts the next question.
     _sync_assistant(stopped)
@@ -4210,10 +4216,10 @@ def test_a_stopped_worker_does_not_stamp_cancelled_on_the_next_question(research
             # No placeholder written by hand: rebind_cancelled creates and binds it, exactly
             # as the endpoint does for the next armed question.
             research_db.rebind_cancelled(
-                thread_id = "thread-1",
-                user_message_id = _new_user_message(),
-                assistant_message_id = "assistant-2",
-                config = dict(real_get_run("run-1")["config"]),
+                thread_id="thread-1",
+                user_message_id=_new_user_message(),
+                assistant_message_id="assistant-2",
+                config=dict(real_get_run("run-1")["config"]),
             )
         return real_get_run(run_id, *args, **kwargs)
 
@@ -4253,7 +4259,7 @@ def test_terminal_write_cannot_cross_a_rebind_after_the_worker_guard(research_ho
                     "createdAt": 21,
                 }
             )
-            assert _rebind(_new_user_message(), assistant_message_id = "assistant-2") is not None
+            assert _rebind(_new_user_message(), assistant_message_id="assistant-2") is not None
         return original_update(*args, **kwargs)
 
     monkeypatch.setattr(supervisor, "_plan", cancelled_plan)
@@ -4271,8 +4277,8 @@ def test_terminal_write_cannot_cross_a_rebind_after_the_worker_guard(research_ho
 def test_terminal_fallback_cannot_cross_a_no_placeholder_rebind(research_home, monkeypatch):
     from core import research_runs as worker
 
-    _create(assistant_message_id = None)
-    supervisor = worker.ResearchSupervisor(SimpleNamespace(state = SimpleNamespace(server_port = 1)))
+    _create(assistant_message_id=None)
+    supervisor = worker.ResearchSupervisor(SimpleNamespace(state=SimpleNamespace(server_port=1)))
     cancelled_plan, claimed, original_update = _shared_setup_4(supervisor, worker)
     rebound = False
 
@@ -4280,7 +4286,7 @@ def test_terminal_fallback_cannot_cross_a_no_placeholder_rebind(research_home, m
         nonlocal rebound
         if not rebound:
             rebound = True
-            assert _rebind(_new_user_message(), assistant_message_id = None) is not None
+            assert _rebind(_new_user_message(), assistant_message_id=None) is not None
         return original_update(*args, **kwargs)
 
     monkeypatch.setattr(supervisor, "_plan", cancelled_plan)
@@ -4318,7 +4324,7 @@ def test_terminal_write_cannot_cross_a_retry_after_the_worker_guard(research_hom
     assert "Research cancelled." not in json.dumps(reply["content"])
 
 
-def _attachment_only_message(message_id = "user-img", created_at = 40):
+def _attachment_only_message(message_id="user-img", created_at=40):
     """What the composer sends for an image-only turn: attachments, no text."""
     studio_db.upsert_chat_message(
         {
@@ -4333,25 +4339,25 @@ def _attachment_only_message(message_id = "user-img", created_at = 40):
     return message_id
 
 
-def _create_via_route(user_message_id, question = None):
+def _create_via_route(user_message_id, question=None):
     from fastapi import Request
     from routes.research_runs import CreateResearchRun, create_research_run
 
     payload = CreateResearchRun(
-        threadId = "thread-1",
-        userMessageId = user_message_id,
-        assistantMessageId = None,
-        inferenceRequest = {"model": "local-model"},
+        threadId="thread-1",
+        userMessageId=user_message_id,
+        assistantMessageId=None,
+        inferenceRequest={"model": "local-model"},
         **({"question": question} if question is not None else {}),
     )
     request = Request(
         {
             "type": "http",
             "headers": [],
-            "app": SimpleNamespace(state = SimpleNamespace(research_supervisor = None)),
+            "app": SimpleNamespace(state=SimpleNamespace(research_supervisor=None)),
         }
     )
-    return create_research_run(payload, request, current_subject = "alice")
+    return create_research_run(payload, request, current_subject="alice")
 
 
 def test_an_attachment_only_turn_researches_the_handed_off_question(research_home):
@@ -4362,7 +4368,7 @@ def test_an_attachment_only_turn_researches_the_handed_off_question(research_hom
     """
     message_id = _attachment_only_message()
 
-    run = _create_via_route(message_id, question = "What does this revenue chart show for Q3?")
+    run = _create_via_route(message_id, question="What does this revenue chart show for Q3?")
 
     assert run["status"] == "planning"
     assert run["config"]["question"] == "What does this revenue chart show for Q3?"
@@ -4423,7 +4429,7 @@ def test_planner_opt_out_is_only_sent_where_the_model_has_one(research_home, mon
     monkeypatch.setattr(
         worker.db, "append_worker_event", lambda run_id, worker_id, event_type, data: 1
     )
-    supervisor = worker.ResearchSupervisor(SimpleNamespace(state = SimpleNamespace(server_port = 1)))
+    supervisor = worker.ResearchSupervisor(SimpleNamespace(state=SimpleNamespace(server_port=1)))
     external = {
         "model": "m",
         "providerId": "p1",
@@ -4438,35 +4444,35 @@ def test_planner_opt_out_is_only_sent_where_the_model_has_one(research_home, mon
             supervisor._stream_completion(
                 run,
                 [{"role": "user", "content": "question"}],
-                report_progress = False,
-                phase = "planning",
-                enable_thinking = False,
+                report_progress=False,
+                phase="planning",
+                enable_thinking=False,
             )
         )
         return payloads[0]
 
     # gpt-oss has no "none" effort, so the planner keeps the chat's effort instead.
     no_off = planner_payload(
-        supportsReasoning = True, supportsReasoningOff = False, reasoningEffort = "high"
+        supportsReasoning=True, supportsReasoningOff=False, reasoningEffort="high"
     )
     assert "enable_thinking" not in no_off and no_off["reasoning_effort"] == "high"
     plain = planner_payload(
-        supportsReasoning = False, supportsReasoningOff = False, enableThinking = True
+        supportsReasoning=False, supportsReasoningOff=False, enableThinking=True
     )
     assert "enable_thinking" not in plain and "reasoning_effort" not in plain
     with_off = planner_payload(
-        supportsReasoning = True, supportsReasoningOff = True, reasoningEffort = "high"
+        supportsReasoning=True, supportsReasoningOff=True, reasoningEffort="high"
     )
     assert with_off["enable_thinking"] is False and with_off["reasoning_effort"] == "none"
     # A run queued or retried from before these flags existed carries neither, so the gate has
     # to treat unknown like non-reasoning: a resumed legacy run must not be the one request that
     # sends a field the model may not take.
-    older_run = planner_payload(reasoningEffort = "high")
+    older_run = planner_payload(reasoningEffort="high")
     assert "enable_thinking" not in older_run and "reasoning_effort" not in older_run
 
     # Mistral documents reasoning_effort for mistral-small-latest and mistral-medium-3-5 only, and the
     # provider branch now writes it for every model, so the planner opt-out must not reach a
     # non-reasoning model such as mistral-large-latest.
     external["providerType"] = "mistral"
-    mistral = planner_payload(supportsReasoning = False, supportsReasoningOff = False)
+    mistral = planner_payload(supportsReasoning=False, supportsReasoningOff=False)
     assert "enable_thinking" not in mistral and "reasoning_effort" not in mistral

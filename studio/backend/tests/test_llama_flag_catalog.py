@@ -28,7 +28,7 @@ def _call(
     monkeypatch,
     capabilities,
     *,
-    raises = False,
+    raises=False,
 ):
     """Run the route with a stubbed probe, returning the response model."""
     import routes.inference as inference_route
@@ -41,7 +41,7 @@ def _call(
             return capabilities
 
     monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: _Backend())
-    return asyncio.run(inference_route.get_llama_flags(current_subject = "test"))
+    return asyncio.run(inference_route.get_llama_flags(current_subject="test"))
 
 
 def test_a_parsed_catalogue_is_returned(monkeypatch):
@@ -57,7 +57,7 @@ def test_a_failed_probe_is_unverifiable_not_empty_of_flags(monkeypatch):
     # The distinction the editor turns into copy: probe_ok False means "cannot
     # check", and every argument has to be let through. Reporting no flags as if
     # the binary supported none would mark every correct flag as a typo.
-    result = _call(monkeypatch, {}, raises = True)
+    result = _call(monkeypatch, {}, raises=True)
 
     assert result.probe_ok is False
     assert result.flags == {}
@@ -144,7 +144,7 @@ def _probe_with_help(
     binary.chmod(0o755)
 
     def _run(_cmd, **kwargs):
-        return types.SimpleNamespace(stdout = help_text, stderr = "", returncode = returncode)
+        return types.SimpleNamespace(stdout=help_text, stderr="", returncode=returncode)
 
     monkeypatch.setattr("core.inference.llama_cpp.subprocess.run", _run)
     # Keyed on (path, mtime, size), so a fresh file per test is a fresh probe.
@@ -193,7 +193,7 @@ def test_short_aliases_are_published_too(monkeypatch, tmp_path):
 def test_a_help_that_exited_nonzero_says_so(monkeypatch, tmp_path):
     # Partial output parses fine, so nothing else in the dict would reveal that the
     # rest of the catalogue is missing.
-    caps = _probe_with_help(monkeypatch, tmp_path, _HELP_WITH_A_REMOVAL_STUB, returncode = 1)
+    caps = _probe_with_help(monkeypatch, tmp_path, _HELP_WITH_A_REMOVAL_STUB, returncode=1)
 
     assert caps["help_probe_ok"] is False
 
@@ -221,7 +221,7 @@ def test_the_denylist_can_be_read_without_probing(monkeypatch):
             return {"found": True, "flags": {"--top-k": "x"}}
 
     monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: _Backend())
-    result = asyncio.run(inference_route.get_llama_flags(managed_only = True, current_subject = "test"))
+    result = asyncio.run(inference_route.get_llama_flags(managed_only=True, current_subject="test"))
 
     assert probed is False
     assert "--agent" in result.managed
@@ -252,7 +252,7 @@ def test_the_published_slot_default_is_the_effective_one(monkeypatch):
     assert inference_route._effective_parallel_slots(4) == 4
     assert inference_route._effective_parallel_slots(1) == 1
     # The diffusion runner receives no --parallel at all.
-    assert inference_route._effective_parallel_slots(4, diffusion_kind = True) == 1
+    assert inference_route._effective_parallel_slots(4, diffusion_kind=True) == 1
 
 
 def test_an_unreadable_probe_keeps_the_asked_for_slot_count(monkeypatch):

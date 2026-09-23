@@ -230,6 +230,7 @@ def redact_log_text(text: str) -> str:
     text = _FLAG_RE.sub(_redact_kv, text)
     try:
         from utils.native_path_leases import redact_native_paths
+
         text = redact_native_paths(text)
     except Exception:
         pass

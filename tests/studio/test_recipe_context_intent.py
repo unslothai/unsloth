@@ -44,7 +44,7 @@ def _harness_source() -> str:
 
 def _run(script: str) -> dict:
     require_node(SOURCES)
-    return run_harness(TEMP, _harness_source(), script, sources = SOURCES)
+    return run_harness(TEMP, _harness_source(), script, sources=SOURCES)
 
 
 def test_only_mlx_reads_a_positive_context_echo_as_a_pin():

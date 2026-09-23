@@ -129,7 +129,7 @@ def _local_gguf_path(repo_id: str, gguf_filename: str) -> Optional[str]:
         # loader resolves a staged file through. Read directly rather than through
         # ``diffusion.hub_cache_dir``: that module imports this one.
         for root in (active_hf_hub_cache(), None):
-            hit = try_to_load_from_cache(repo_id, gguf_filename, cache_dir = root)
+            hit = try_to_load_from_cache(repo_id, gguf_filename, cache_dir=root)
             if isinstance(hit, str) and Path(hit).is_file():
                 return hit
     except Exception:  # noqa: BLE001 — a cache we cannot read is not a verdict
@@ -159,10 +159,11 @@ def _hub_revision(repo_id: str, gguf_filename: str, hf_token: Optional[str]) -> 
     one, and an offline or erroring host must leave today's verdict alone."""
     try:
         from huggingface_hub import get_hf_file_metadata, hf_hub_url
+
         meta = get_hf_file_metadata(
             hf_hub_url(repo_id, gguf_filename),
-            token = hf_token,
-            timeout = _HEADER_TIMEOUT_SECONDS,
+            token=hf_token,
+            timeout=_HEADER_TIMEOUT_SECONDS,
         )
     except Exception:  # noqa: BLE001 — a revision we cannot read is not a verdict
         return None
@@ -197,15 +198,15 @@ def _ranged_stream(session: Any, url: str, headers: dict) -> Any:
         return session.stream(
             "GET",
             url,
-            headers = headers,
-            timeout = _HEADER_TIMEOUT_SECONDS,
-            follow_redirects = True,
+            headers=headers,
+            timeout=_HEADER_TIMEOUT_SECONDS,
+            follow_redirects=True,
         )
     return session.get(
         url,
-        headers = headers,
-        timeout = _HEADER_TIMEOUT_SECONDS,
-        stream = True,
+        headers=headers,
+        timeout=_HEADER_TIMEOUT_SECONDS,
+        stream=True,
     )
 
 
@@ -266,10 +267,10 @@ def _read_gguf_header(
 
     def _fetch() -> None:
         try:
-            headers = dict(build_hf_headers(token = hf_token))
+            headers = dict(build_hf_headers(token=hf_token))
             headers["Range"] = f"bytes=0-{max_bytes - 1}"
             with _ranged_stream(
-                get_session(), hf_hub_url(repo_id, gguf_filename, revision = revision), headers
+                get_session(), hf_hub_url(repo_id, gguf_filename, revision=revision), headers
             ) as response:
                 holder[0] = response
                 # 206 or nothing. A server (or a proxy) that ignored the Range header answers 200
@@ -302,7 +303,7 @@ def _read_gguf_header(
     watchdog = threading.Timer(timeout_seconds, lambda: _interrupt_read(holder[0]))
     watchdog.daemon = True
     watchdog.start()
-    worker = threading.Thread(target = _fetch, name = "gguf-header-read", daemon = True)
+    worker = threading.Thread(target=_fetch, name="gguf-header-read", daemon=True)
     worker.start()
     worker.join(timeout_seconds)
     if worker.is_alive():
@@ -483,7 +484,8 @@ def _arch_from_prefix(prefix: bytes, gguf_filename: str) -> Optional[str]:
         import tempfile
 
         from utils.models.gguf_metadata import read_gguf_architecture
-        with tempfile.TemporaryDirectory(prefix = "unsloth-speech-probe-") as probe_dir:
+
+        with tempfile.TemporaryDirectory(prefix="unsloth-speech-probe-") as probe_dir:
             # Named after the real file, like the chat-side probe: a GGUF declaring no
             # architecture is judged by its name, which a temp name would lose.
             probe_path = os.path.join(probe_dir, os.path.basename(gguf_filename))

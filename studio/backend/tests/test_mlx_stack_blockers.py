@@ -277,7 +277,7 @@ def test_a_long_import_error_is_folded_to_one_bounded_line(monkeypatch):
 def test_a_malformed_installed_version_is_bounded_too(monkeypatch):
     """Version metadata is read from disk, and an interrupted install can leave junk."""
     junk = "1.0\n" + "y" * 500
-    _fake_versions(monkeypatch, _healthy(mlx = junk))
+    _fake_versions(monkeypatch, _healthy(mlx=junk))
     monkeypatch.setattr(mr, "_mlx_runtime_import_blocker", lambda: None)
     blocker = mr.mlx_stack_blockers()[0]
     assert "\n" not in blocker
@@ -344,8 +344,8 @@ def test_an_install_that_died_part_way_still_counts_as_mutating(monkeypatch, out
 
     def run(*a, **k):
         if outcome == "timeout":
-            raise sp.TimeoutExpired(cmd = "uv", timeout = 1)
-        return sp.CompletedProcess(args = "uv", returncode = 1, stdout = "boom")
+            raise sp.TimeoutExpired(cmd="uv", timeout=1)
+        return sp.CompletedProcess(args="uv", returncode=1, stdout="boom")
 
     monkeypatch.setattr(mr.subprocess, "run", run)
     assert mr.attempt_mlx_repair() is False
@@ -367,9 +367,9 @@ def test_a_venv_uv_refuses_is_not_marked_mutated(monkeypatch):
         mr.subprocess,
         "run",
         lambda *a, **k: sp.CompletedProcess(
-            args = "uv",
-            returncode = 2,
-            stdout = mr._UNRESOLVED_PYTHON_MARKER + " at /x",
+            args="uv",
+            returncode=2,
+            stdout=mr._UNRESOLVED_PYTHON_MARKER + " at /x",
         ),
     )
     assert mr.attempt_mlx_repair() is False

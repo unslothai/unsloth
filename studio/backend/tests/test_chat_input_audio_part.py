@@ -29,13 +29,13 @@ AUDIO_B64 = "UklGRiQAAABXQVZF"
 
 
 def _request(*messages, **fields) -> ChatCompletionRequest:
-    return ChatCompletionRequest(model = "local", messages = list(messages), **fields)
+    return ChatCompletionRequest(model="local", messages=list(messages), **fields)
 
 
 def _audio_message(
-    data = AUDIO_B64,
-    role = "user",
-    text = "what is said here?",
+    data=AUDIO_B64,
+    role="user",
+    text="what is said here?",
 ):
     return {
         "role": role,
@@ -62,7 +62,7 @@ def test_input_audio_part_is_lifted_onto_the_audio_field():
 
 
 def test_an_explicit_audio_base64_wins():
-    payload = _request(_audio_message(data = "b2xkZXI="), audio_base64 = AUDIO_B64)
+    payload = _request(_audio_message(data="b2xkZXI="), audio_base64=AUDIO_B64)
 
     _normalise_chat_content_parts(payload)
 
@@ -74,7 +74,7 @@ def test_two_recordings_are_refused_rather_than_reduced_to_one():
 
     A request to compare two clips would have been answered from the last one alone.
     """
-    payload = _request(_audio_message(data = "Zmlyc3Q="), _audio_message(data = "c2Vjb25k"))
+    payload = _request(_audio_message(data="Zmlyc3Q="), _audio_message(data="c2Vjb25k"))
 
     with pytest.raises(HTTPException) as exc:
         _reject_unsupported_content_parts(payload)
@@ -88,7 +88,7 @@ def test_an_audio_part_on_a_non_user_role_is_refused():
     Dropping it in silence let a later question about an assistant-history clip be answered from
     text alone, where this shape used to fail validation outright.
     """
-    payload = _request(_audio_message(role = "assistant"))
+    payload = _request(_audio_message(role="assistant"))
 
     with pytest.raises(HTTPException) as exc:
         _reject_unsupported_content_parts(payload)
@@ -119,7 +119,7 @@ def test_a_part_with_no_type_is_still_a_validation_error():
         _request({"role": "user", "content": [{"text": "hi"}]})
 
 
-def _route_client(prefix = ""):
+def _route_client(prefix=""):
     """The real inference router, with only the auth dependency stubbed."""
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
@@ -127,9 +127,9 @@ def _route_client(prefix = ""):
     import routes.inference as inference_route
 
     app = FastAPI()
-    app.include_router(inference_route.router, prefix = prefix)
+    app.include_router(inference_route.router, prefix=prefix)
     app.dependency_overrides[get_current_subject] = lambda: "test"
-    return TestClient(app, raise_server_exceptions = False)
+    return TestClient(app, raise_server_exceptions=False)
 
 
 def _count_tokens_client():
@@ -145,7 +145,7 @@ def test_the_count_route_refuses_an_audio_part_the_way_it_refuses_the_field():
     with _count_tokens_client() as client:
         response = client.post(
             "/chat/count_tokens",
-            json = {"model": "default", "messages": [_audio_message()]},
+            json={"model": "default", "messages": [_audio_message()]},
         )
 
     assert response.status_code == 503
@@ -156,7 +156,7 @@ def test_the_count_route_refuses_an_unmodelled_part_like_the_completion_does():
     with _count_tokens_client() as client:
         response = client.post(
             "/chat/count_tokens",
-            json = {
+            json={
                 "model": "default",
                 "messages": [
                     {"role": "user", "content": [{"type": "file", "file": {"file_id": "file_abc"}}]}
@@ -188,7 +188,7 @@ def test_the_completion_route_takes_the_documented_audio_part():
     with _route_client("/v1") as client:
         response = client.post(
             "/v1/chat/completions",
-            json = {"model": "local", "messages": [_audio_message()]},
+            json={"model": "local", "messages": [_audio_message()]},
         )
 
     assert response.status_code != 422
@@ -200,7 +200,7 @@ def test_the_completion_route_refuses_an_unmodelled_part():
     with _route_client("/v1") as client:
         response = client.post(
             "/v1/chat/completions",
-            json = {
+            json={
                 "model": "local",
                 "messages": [
                     {"role": "user", "content": [{"type": "file", "file": {"file_id": "file_abc"}}]}
@@ -224,7 +224,7 @@ def test_a_non_string_part_type_is_a_validation_error_not_a_500():
     with _route_client("/v1") as client:
         response = client.post(
             "/v1/chat/completions",
-            json = {
+            json={
                 "model": "local",
                 "messages": [{"role": "user", "content": [{"type": [{"a": 1}], "x": 1}]}],
             },
@@ -242,7 +242,7 @@ def test_the_external_path_refuses_audio_rather_than_dropping_it():
     with _route_client("/v1") as client:
         response = client.post(
             "/v1/chat/completions",
-            json = {"model": "gpt-4o", "provider_type": "openai", "messages": [_audio_message()]},
+            json={"model": "gpt-4o", "provider_type": "openai", "messages": [_audio_message()]},
         )
 
     assert response.status_code == 400
@@ -253,7 +253,7 @@ def test_the_external_path_refuses_an_unmodelled_part_rather_than_dropping_it():
     with _route_client("/v1") as client:
         response = client.post(
             "/v1/chat/completions",
-            json = {
+            json={
                 "model": "gpt-4o",
                 "provider_type": "openai",
                 "messages": [
@@ -280,7 +280,7 @@ def test_a_recording_carried_on_an_earlier_turn_is_refused():
     ask. Refuse instead, until the field can carry a recording with its turn.
     """
     payload = _request(
-        _audio_message(text = "transcribe this"),
+        _audio_message(text="transcribe this"),
         {"role": "assistant", "content": "It says hello."},
         {"role": "user", "content": [{"type": "text", "text": "who is in the background?"}]},
     )
@@ -296,7 +296,7 @@ def test_a_recording_on_the_latest_user_turn_is_still_lifted():
     payload = _request(
         {"role": "user", "content": [{"type": "text", "text": "transcribe this"}]},
         {"role": "assistant", "content": "Sure."},
-        _audio_message(text = "what about this one?"),
+        _audio_message(text="what about this one?"),
     )
 
     _normalise_chat_content_parts(payload)
@@ -330,7 +330,7 @@ def test_the_tts_route_refuses_an_unmodelled_part():
     with _route_client() as client:
         response = client.post(
             "/audio/generate",
-            json = {
+            json={
                 "model": "default",
                 "messages": [
                     {
@@ -357,7 +357,7 @@ def test_the_tts_route_refuses_an_audio_part():
     with _route_client() as client:
         response = client.post(
             "/audio/generate",
-            json = {"model": "default", "messages": [_audio_message(text = "read this out")]},
+            json={"model": "default", "messages": [_audio_message(text="read this out")]},
         )
 
     assert response.status_code == 400
@@ -366,12 +366,13 @@ def test_the_tts_route_refuses_an_audio_part():
 
 def _durable_run(content):
     from routes.chat_generation_runs import CreateChatGenerationRun
+
     return CreateChatGenerationRun(
-        runId = "run-1",
-        threadId = "thread-1",
-        userMessageId = "user-1",
-        assistantMessageId = "assistant-1",
-        requestPayload = {"model": "default", "messages": [{"role": "user", "content": content}]},
+        runId="run-1",
+        threadId="thread-1",
+        userMessageId="user-1",
+        assistantMessageId="assistant-1",
+        requestPayload={"model": "default", "messages": [{"role": "user", "content": content}]},
     )
 
 
@@ -428,7 +429,7 @@ def test_the_tts_route_refuses_a_recording_that_was_already_lifted():
     By then the part is gone and only ``audio_base64`` is set, so a parts-only guard would let
     the route speak the text and drop the recording.
     """
-    payload = _request(_audio_message(text = "read this out"))
+    payload = _request(_audio_message(text="read this out"))
     _normalise_chat_content_parts(payload)
     assert payload.audio_base64 == AUDIO_B64
 
@@ -476,7 +477,7 @@ def test_the_preview_route_refuses_misplaced_audio_before_it_loads():
     import routes.preview as preview_route
 
     payload = _request(
-        _audio_message(text = "transcribe this"),
+        _audio_message(text="transcribe this"),
         {"role": "assistant", "content": "It says hello."},
         {"role": "user", "content": [{"type": "text", "text": "who is in the background?"}]},
     )
@@ -502,7 +503,7 @@ def test_the_text_only_checkpoint_refusal_precedes_the_branch_that_consumes_audi
     text alone, so the refusal has to sit in front of it. This pins that ordering; whether the
     refusal fires for a real checkpoint is covered by the GGUF/transformers suites, not here.
     """
-    source = Path(inference_route.__file__).read_text(encoding = "utf-8")
+    source = Path(inference_route.__file__).read_text(encoding="utf-8")
     branch = source.index('if payload.audio_base64 and not model_info.get("has_audio_input"):')
     consume = source.index('if payload.audio_base64 and model_info.get("has_audio_input"):')
 

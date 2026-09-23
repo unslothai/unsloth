@@ -107,7 +107,7 @@ def _write_new_skill_manifest(
     *,
     root: Optional[Path] = None,
 ) -> None:
-    base = base.resolve(strict = True)
+    base = base.resolve(strict=True)
     if root is None:
         # The owner's home: ~/.agents/skills, both levels checked.
         agents = base / ".agents"
@@ -118,19 +118,19 @@ def _write_new_skill_manifest(
         root = base / root
         ancestors = (root,)
     _require_unlinked_agent_path(base, *ancestors)
-    root.mkdir(mode = 0o700, parents = True, exist_ok = True)
+    root.mkdir(mode=0o700, parents=True, exist_ok=True)
     _require_unlinked_agent_path(base, *ancestors)
 
     skill_dir = root / name
-    skill_dir.mkdir(mode = 0o700)
+    skill_dir.mkdir(mode=0o700)
     skill_file = skill_dir / "SKILL.md"
     directories = (*ancestors, skill_dir)
-    expected = [os.stat(path, follow_symlinks = False) for path in directories]
+    expected = [os.stat(path, follow_symlinks=False) for path in directories]
 
     def revalidate(descriptor: int) -> None:
         _require_unlinked_agent_path(base, *directories)
-        current = [os.stat(path, follow_symlinks = False) for path in directories]
-        file_status = os.stat(skill_file, follow_symlinks = False)
+        current = [os.stat(path, follow_symlinks=False) for path in directories]
+        file_status = os.stat(skill_file, follow_symlinks=False)
         if (
             not all(map(os.path.samestat, expected, current))
             or _is_linked_path(skill_file)
@@ -159,11 +159,11 @@ def _write_new_skill_manifest(
             os.close(descriptor)
             descriptor = None
         try:
-            current = [os.stat(path, follow_symlinks = False) for path in directories]
+            current = [os.stat(path, follow_symlinks=False) for path in directories]
             if all(map(os.path.samestat, expected, current)):
                 # Remove only the manifest this call created; another writer's file stays.
                 if created_status is not None and os.path.samestat(
-                    os.stat(skill_file, follow_symlinks = False), created_status
+                    os.stat(skill_file, follow_symlinks=False), created_status
                 ):
                     skill_file.unlink()
                 skill_dir.rmdir()
@@ -186,7 +186,7 @@ def _open_within(root: Path, identity, parts: tuple[str, ...]) -> int:
         for index, part in enumerate(parts):
             last = index == len(parts) - 1
             part_flags = flags | (getattr(os, "O_BINARY", 0) if last else os.O_DIRECTORY)
-            opened = os.open(part, part_flags, dir_fd = descriptor)
+            opened = os.open(part, part_flags, dir_fd=descriptor)
             os.close(descriptor)
             descriptor = opened
     except BaseException:
@@ -200,7 +200,7 @@ def _read_limited(
     limit: int,
     *,
     contained_in: Optional[Path] = None,
-    identity = None,
+    identity=None,
 ) -> bytes:
     descriptor: Optional[int] = None
     try:
@@ -222,18 +222,18 @@ def _read_limited(
         if contained_in is not None and not _DIR_FD_OPENS:
             if _is_linked_path(contained_in):
                 raise SkillError("Skill resources cannot use symbolic links or reparse points.")
-            root_status = os.stat(contained_in, follow_symlinks = False)
+            root_status = os.stat(contained_in, follow_symlinks=False)
             if identity is not None and not os.path.samestat(root_status, identity):
                 raise SkillError("Skill directory changed after it was selected.")
-            root = contained_in.resolve(strict = True)
+            root = contained_in.resolve(strict=True)
             relative = path.relative_to(contained_in)
             current = contained_in
             for part in relative.parts:
                 current = current / part
                 if _is_linked_path(current):
                     raise SkillError("Skill resources cannot use symbolic links or reparse points.")
-            path.resolve(strict = True).relative_to(root)
-            current_status = os.stat(path, follow_symlinks = False)
+            path.resolve(strict=True).relative_to(root)
+            current_status = os.stat(path, follow_symlinks=False)
             if not os.path.samestat(status, current_status):
                 raise SkillError("Skill resource changed while it was being opened.")
         if status.st_size > limit:
@@ -340,7 +340,7 @@ def _parse_skill_markdown(raw: bytes, parent_name: Optional[str] = None) -> dict
         **({"allowed_tools": allowed_tools} if allowed_tools is not None else {}),
     }
     try:
-        json.dumps(parsed, ensure_ascii = False).encode("utf-8")
+        json.dumps(parsed, ensure_ascii=False).encode("utf-8")
     except UnicodeEncodeError as exc:
         raise SkillError("Skill fields must contain valid Unicode.") from exc
     return parsed
@@ -352,7 +352,7 @@ def _validate_skill_dir(skill_dir: Path) -> tuple[dict, Path]:
     target = skill_dir
     if _is_linked_path(skill_dir):
         try:
-            target = skill_dir.resolve(strict = True)
+            target = skill_dir.resolve(strict=True)
         except OSError as exc:
             raise SkillError("Skill directory is missing or unsafe.") from exc
     if _is_linked_path(target) or not target.is_dir():
@@ -361,7 +361,7 @@ def _validate_skill_dir(skill_dir: Path) -> tuple[dict, Path]:
     if _is_linked_path(manifest) or not manifest.is_file():
         raise SkillError("Skill directory must contain a regular SKILL.md file.")
     metadata = _parse_skill_markdown(
-        _read_limited(manifest, MAX_SKILL_MD_BYTES, contained_in = target),
+        _read_limited(manifest, MAX_SKILL_MD_BYTES, contained_in=target),
         skill_dir.name,
     )
     return metadata, target
@@ -406,7 +406,7 @@ def _load_overrides() -> dict[str, bool]:
     # A damaged toggle file counts as empty; the next toggle rewrites it.
     path = _override_path()
     try:
-        payload = json.loads(path.read_text(encoding = "utf-8"))
+        payload = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
         return {}
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
@@ -431,13 +431,13 @@ def _load_overrides() -> dict[str, bool]:
 
 def _save_overrides(overrides: dict[str, bool]) -> None:
     path = _override_path()
-    path.parent.mkdir(parents = True, exist_ok = True)
+    path.parent.mkdir(parents=True, exist_ok=True)
     fd, temporary_name = tempfile.mkstemp(
-        prefix = ".skill-overrides-", suffix = ".json", dir = path.parent
+        prefix=".skill-overrides-", suffix=".json", dir=path.parent
     )
     try:
-        with os.fdopen(fd, "w", encoding = "utf-8") as handle:
-            json.dump(overrides, handle, sort_keys = True, separators = (",", ":"))
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(overrides, handle, sort_keys=True, separators=(",", ":"))
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(temporary_name, path)
@@ -451,10 +451,10 @@ def _save_overrides(overrides: dict[str, bool]) -> None:
 
 def _candidate_dirs(root: Path) -> list[Path]:
     try:
-        resolved_root = root.expanduser().resolve(strict = True)
+        resolved_root = root.expanduser().resolve(strict=True)
         if not resolved_root.is_dir():
             return []
-        candidates = sorted(resolved_root.iterdir(), key = lambda path: path.name)
+        candidates = sorted(resolved_root.iterdir(), key=lambda path: path.name)
     except (FileNotFoundError, NotADirectoryError):
         return []
     except OSError as exc:
@@ -517,7 +517,7 @@ def _discover(home: Optional[Path]) -> list[tuple[dict, Optional[Path], Optional
             }
             try:
                 metadata, skill_dir = _validate_skill_dir(candidate)
-                identity = os.stat(skill_dir, follow_symlinks = False)
+                identity = os.stat(skill_dir, follow_symlinks=False)
             except OSError:
                 found.append(
                     ({**base, "error": "Skill directory is missing or unsafe."}, None, None)
@@ -561,7 +561,7 @@ def list_skills(*, home: Optional[Path] = None) -> list[dict]:
 def enabled_skills(*, home: Optional[Path] = None) -> list[dict]:
     return [
         skill
-        for skill in list_skills(home = home)
+        for skill in list_skills(home=home)
         if skill["valid"] and not skill["shadowed"] and skill["enabled"]
     ]
 
@@ -585,7 +585,7 @@ def set_skill_enabled(
     if not isinstance(enabled, bool):
         raise SkillError("Skill enabled state must be a boolean.")
     with _LOCK:
-        record, _, _ = _selected_skill(name, home = home)
+        record, _, _ = _selected_skill(name, home=home)
         overrides = _load_overrides()
         if enabled == _default_enabled(record["source"]):
             overrides.pop(record["name"], None)
@@ -616,8 +616,8 @@ def create_skill(
 
     frontmatter = yaml.safe_dump(
         {"name": normalized, "description": description.strip()},
-        allow_unicode = True,
-        sort_keys = False,
+        allow_unicode=True,
+        sort_keys=False,
     )
     manifest = f"---\n{frontmatter}---\n\n{instructions.strip()}\n".encode("utf-8")
     metadata = _parse_skill_markdown(manifest, normalized)
@@ -629,7 +629,7 @@ def create_skill(
     else:
         base, root = workspace_root(), Path(_MANAGED_SKILLS_DIR)
         # A fresh account's workspace may not exist yet; its own private root is safe to make.
-        base.mkdir(mode = 0o700, parents = True, exist_ok = True)
+        base.mkdir(mode=0o700, parents=True, exist_ok=True)
     with _LOCK:
         overrides = _load_overrides()
         had_override = normalized in overrides
@@ -643,7 +643,7 @@ def create_skill(
 
         try:
             try:
-                _write_new_skill_manifest(base, normalized, manifest, root = root)
+                _write_new_skill_manifest(base, normalized, manifest, root=root)
             except FileExistsError as exc:
                 raise SkillError(f"Skill '{normalized}' already exists.") from exc
             except OSError as exc:
@@ -736,7 +736,7 @@ def read_skill_resource(
     if isinstance(page_chars, bool) or not isinstance(page_chars, int) or page_chars <= 0:
         raise SkillError("Skill resource page size must be a positive integer.")
     with _LOCK:
-        record, skill_dir, identity = _selected_skill(name, home = home)
+        record, skill_dir, identity = _selected_skill(name, home=home)
         if not record["enabled"]:
             raise SkillError(f"Skill '{record['name']}' is disabled.")
         path = _normalize_resource_path(resource)
@@ -744,17 +744,17 @@ def read_skill_resource(
             if _is_linked_path(skill_dir):
                 raise SkillError("Skill resources cannot use symbolic links or reparse points.")
             if identity is not None and not os.path.samestat(
-                os.stat(skill_dir, follow_symlinks = False), identity
+                os.stat(skill_dir, follow_symlinks=False), identity
             ):
                 raise SkillError("Skill directory changed after it was selected.")
-            root = skill_dir.resolve(strict = True)
+            root = skill_dir.resolve(strict=True)
             candidate = skill_dir.joinpath(*path.parts)
             current = skill_dir
             for part in path.parts:
                 current = current / part
                 if _is_linked_path(current):
                     raise SkillError("Skill resources cannot use symbolic links or reparse points.")
-            candidate.resolve(strict = True).relative_to(root)
+            candidate.resolve(strict=True).relative_to(root)
         except SkillError:
             raise
         except (FileNotFoundError, NotADirectoryError) as exc:
@@ -762,7 +762,7 @@ def read_skill_resource(
         except (OSError, ValueError) as exc:
             raise SkillError("Skill resource path must stay inside the skill directory.") from exc
         raw = _read_limited(
-            candidate, MAX_SKILL_FILE_BYTES, contained_in = skill_dir, identity = identity
+            candidate, MAX_SKILL_FILE_BYTES, contained_in=skill_dir, identity=identity
         )
         try:
             content = raw.decode("utf-8")

@@ -38,11 +38,11 @@ def client(monkeypatch):
     app.dependency_overrides[settings.get_current_subject] = lambda: "admin"
     # Classified by caller now, so the app must be able to say which caller this is.
     app.dependency_overrides[settings.allow_ambient_hf_token] = lambda: True
-    return TestClient(app, raise_server_exceptions = False)
+    return TestClient(app, raise_server_exceptions=False)
 
 
-def _resolve(c, model = "unsloth/bge-small-en-v1.5"):
-    return c.get("/embedding-model/resolve", params = {"model": model})
+def _resolve(c, model="unsloth/bge-small-en-v1.5"):
+    return c.get("/embedding-model/resolve", params={"model": model})
 
 
 def test_sentence_transformers_backend_points_at_the_model_repo(client, monkeypatch):
@@ -103,7 +103,7 @@ def test_resolution_selects_the_backend_for_the_new_model_not_the_old_one(client
     monkeypatch.setattr(
         settings,
         "_llama_backend_active",
-        lambda model = None: seen.append(model) or False,
+        lambda model=None: seen.append(model) or False,
     )
     import utils.utils as utils
 
@@ -122,7 +122,7 @@ def test_runtime_st_failure_is_planned_as_a_managed_gguf_download(client, monkey
     monkeypatch.setattr(
         embeddings,
         "_resolve_auto_for_model",
-        lambda model = None: "sentence-transformers",
+        lambda model=None: "sentence-transformers",
     )
     monkeypatch.setattr(embeddings, "sentence_transformers_runtime_available", lambda: False)
     monkeypatch.setattr(embeddings, "_llama_server_runtime_available", lambda: True)
@@ -313,10 +313,10 @@ def test_repo_file_listing_uses_a_deadline(monkeypatch):
     import utils.utils as utils
 
     seen = {}
-    monkeypatch.setattr(huggingface_hub, "list_repo_files", lambda repo, token = None: [repo])
+    monkeypatch.setattr(huggingface_hub, "list_repo_files", lambda repo, token=None: [repo])
 
     def _bounded(fn, timeout, name):
-        seen.update(timeout = timeout, name = name)
+        seen.update(timeout=timeout, name=name)
         return fn()
 
     monkeypatch.setattr(utils, "call_with_deadline", _bounded)
@@ -419,18 +419,18 @@ def test_sentence_transformers_size_matches_the_full_snapshot_download(monkeypat
     import huggingface_hub
 
     siblings = [
-        _types.SimpleNamespace(rfilename = "config.json", size = 10),
-        _types.SimpleNamespace(rfilename = "tokenizer.json", size = 20),
-        _types.SimpleNamespace(rfilename = "tokenizer.bin", size = 30),
-        _types.SimpleNamespace(rfilename = "model.safetensors", size = 100),
-        _types.SimpleNamespace(rfilename = "pytorch_model.bin", size = 110),
-        _types.SimpleNamespace(rfilename = "old.gguf", size = 1_000),
-        _types.SimpleNamespace(rfilename = "consolidated.00.pth", size = 2_000),
+        _types.SimpleNamespace(rfilename="config.json", size=10),
+        _types.SimpleNamespace(rfilename="tokenizer.json", size=20),
+        _types.SimpleNamespace(rfilename="tokenizer.bin", size=30),
+        _types.SimpleNamespace(rfilename="model.safetensors", size=100),
+        _types.SimpleNamespace(rfilename="pytorch_model.bin", size=110),
+        _types.SimpleNamespace(rfilename="old.gguf", size=1_000),
+        _types.SimpleNamespace(rfilename="consolidated.00.pth", size=2_000),
     ]
     monkeypatch.setattr(
         huggingface_hub,
         "model_info",
-        lambda repo, files_metadata, token: _types.SimpleNamespace(siblings = siblings),
+        lambda repo, files_metadata, token: _types.SimpleNamespace(siblings=siblings),
     )
 
     # The full-snapshot worker keeps configs/tokenizers and the safetensors copy, while
@@ -510,6 +510,7 @@ def test_candidates_follow_the_loader_order(monkeypatch):
 
 def test_stored_off_convention_repo_is_the_preferred_candidate(monkeypatch):
     import utils.embedding_model_settings as ems
+
     monkeypatch.setattr(
         ems,
         "get_stored_gguf_repo",
@@ -579,7 +580,7 @@ def test_the_resolved_repo_is_what_the_loader_opens(monkeypatch):
 
     ems._invalidate_cache()
     ems.set_rag_embedding_model(
-        "unsloth/Qwen3-Embedding-4B", gguf_repo = "Qwen/Qwen3-Embedding-4B-GGUF"
+        "unsloth/Qwen3-Embedding-4B", gguf_repo="Qwen/Qwen3-Embedding-4B-GGUF"
     )
     assert rag_config.effective_gguf_repo() == "Qwen/Qwen3-Embedding-4B-GGUF"
 
@@ -605,7 +606,7 @@ def test_the_chosen_backend_is_read_back_by_the_loader(monkeypatch):
     from core.rag import embeddings as rag_embeddings
 
     ems._invalidate_cache()
-    ems.set_rag_embedding_model("unsloth/Qwen3-Embedding-8B", backend = "sentence-transformers")
+    ems.set_rag_embedding_model("unsloth/Qwen3-Embedding-8B", backend="sentence-transformers")
     assert ems.get_stored_backend("unsloth/Qwen3-Embedding-8B") == "sentence-transformers"
     assert rag_embeddings._resolve_auto_for_model() == "sentence-transformers"
 
@@ -646,8 +647,8 @@ def test_the_token_is_a_header_not_a_query_parameter(client, monkeypatch):
 
     client.get(
         "/embedding-model/resolve",
-        params = {"model": "acme/gated-embedder"},
-        headers = {"X-Unsloth-HF-Token": "hf_secret"},
+        params={"model": "acme/gated-embedder"},
+        headers={"X-Unsloth-HF-Token": "hf_secret"},
     )
     assert seen["token"] == "hf_secret"
 
@@ -721,7 +722,7 @@ def test_a_cached_safetensors_model_is_selectable_offline(client, monkeypatch, t
     monkeypatch.setattr(settings, "_st_weight_files", lambda m, t: None)
     monkeypatch.setattr(settings, "_remote_embedding_gguf_plan", lambda c, t: None)
     monkeypatch.setattr(settings, "_search_hub_for_gguf", lambda m, t: None)
-    monkeypatch.setattr(settings, "_cached_embedding_gguf", lambda c, require_variant = True: None)
+    monkeypatch.setattr(settings, "_cached_embedding_gguf", lambda c, require_variant=True: None)
     monkeypatch.setattr(settings, "_hf_snapshot_size", lambda repo, token: None)
     import utils.utils as utils
 

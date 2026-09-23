@@ -15,19 +15,19 @@ class _Cfg:
 
 
 def _text_only():
-    return _Cfg(model_type = "fake", head_dim = 256, num_attention_heads = 8)
+    return _Cfg(model_type="fake", head_dim=256, num_attention_heads=8)
 
 
 def _multimodal():
-    text = _Cfg(model_type = "fake", head_dim = 256, num_attention_heads = 8)
+    text = _Cfg(model_type="fake", head_dim=256, num_attention_heads=8)
     return _Cfg(
-        model_type = "fake_vl",
-        text_config = text,
-        vision_config = _Cfg(model_type = "fake_vision", head_dim = 64, num_attention_heads = 8),
+        model_type="fake_vl",
+        text_config=text,
+        vision_config=_Cfg(model_type="fake_vision", head_dim=64, num_attention_heads=8),
     )
 
 
-@pytest.fixture(autouse = True)
+@pytest.fixture(autouse=True)
 def _reset_probe_cache(monkeypatch):
     monkeypatch.setattr(u, "_flex_kernels_fit_large_head_dim", lambda: True)
     u._ATTN_IMPL_MAPPING_SUPPORTED.clear()
@@ -110,7 +110,7 @@ def test_force_enable_still_opts_in_qwen3_5():
 
 @pytest.fixture
 def _no_env(monkeypatch):
-    monkeypatch.delenv(u._FLEX_LARGE_HEAD_DIM_ENV_VAR, raising = False)
+    monkeypatch.delenv(u._FLEX_LARGE_HEAD_DIM_ENV_VAR, raising=False)
 
 
 def test_large_head_dim_is_detected_from_config_by_default(_no_env):
@@ -119,7 +119,7 @@ def test_large_head_dim_is_detected_from_config_by_default(_no_env):
 
 def test_small_head_dim_is_left_on_sdpa_by_default(_no_env):
     assert (
-        u._prefers_flex_for_head_dim(_Cfg(model_type = "llama", head_dim = 128, num_attention_heads = 8))
+        u._prefers_flex_for_head_dim(_Cfg(model_type="llama", head_dim=128, num_attention_heads=8))
         is False
     )
 
@@ -128,13 +128,13 @@ def test_head_dim_derived_from_hidden_size_when_absent(_no_env):
     # older configs omit head_dim; hidden_size / num_attention_heads is the same quantity
     assert (
         u._prefers_flex_for_head_dim(
-            _Cfg(model_type = "fake", hidden_size = 2048, num_attention_heads = 8)
+            _Cfg(model_type="fake", hidden_size=2048, num_attention_heads=8)
         )
         is True
     )
     assert (
         u._prefers_flex_for_head_dim(
-            _Cfg(model_type = "fake", hidden_size = 1024, num_attention_heads = 8)
+            _Cfg(model_type="fake", hidden_size=1024, num_attention_heads=8)
         )
         is False
     )
@@ -143,13 +143,13 @@ def test_head_dim_derived_from_hidden_size_when_absent(_no_env):
 def test_per_layer_head_dims_take_the_maximum(_no_env):
     # 5.x per_layer_config: the largest layer decides.
     cfg = _Cfg(
-        model_type = "fake",
-        head_dim = 128,
-        num_attention_heads = 8,
-        per_layer_config = [
-            _Cfg(head_dim = 128),
-            _Cfg(head_dim = 128),
-            _Cfg(head_dim = 512),
+        model_type="fake",
+        head_dim=128,
+        num_attention_heads=8,
+        per_layer_config=[
+            _Cfg(head_dim=128),
+            _Cfg(head_dim=128),
+            _Cfg(head_dim=512),
         ],
     )
     assert u._text_attention_head_dim(cfg) == 512
@@ -159,29 +159,29 @@ def test_per_layer_head_dims_take_the_maximum(_no_env):
 def test_a_homogeneous_small_config_is_unaffected_by_the_per_layer_read(_no_env):
     # 4.x configs have no per_layer_config at all; the global head_dim must still decide.
     assert (
-        u._prefers_flex_for_head_dim(_Cfg(model_type = "fake", head_dim = 128, num_attention_heads = 8))
+        u._prefers_flex_for_head_dim(_Cfg(model_type="fake", head_dim=128, num_attention_heads=8))
         is False
     )
 
 
 def test_excluded_model_stays_on_sdpa_even_at_large_head_dim(_no_env):
     assert (
-        u._prefers_flex_for_head_dim(_Cfg(model_type = "gemma2", head_dim = 256, num_attention_heads = 8))
+        u._prefers_flex_for_head_dim(_Cfg(model_type="gemma2", head_dim=256, num_attention_heads=8))
         is False
     )
 
 
 def test_a_vision_tower_alone_never_turns_it_on(_no_env):
     cfg = _Cfg(
-        model_type = "fake_vl",
-        text_config = _Cfg(model_type = "fake", head_dim = 64, num_attention_heads = 8),
-        vision_config = _Cfg(model_type = "fake_vision", head_dim = 256, num_attention_heads = 8),
+        model_type="fake_vl",
+        text_config=_Cfg(model_type="fake", head_dim=64, num_attention_heads=8),
+        vision_config=_Cfg(model_type="fake_vision", head_dim=256, num_attention_heads=8),
     )
     assert u._prefers_flex_for_head_dim(cfg) is False
 
 
 def test_missing_head_dim_is_not_a_guess(_no_env):
-    assert u._prefers_flex_for_head_dim(_Cfg(model_type = "fake")) is False
+    assert u._prefers_flex_for_head_dim(_Cfg(model_type="fake")) is False
 
 
 @pytest.mark.parametrize("value", ["0", " 0 "])
@@ -194,7 +194,7 @@ def test_env_var_zero_forces_sdpa(monkeypatch, value):
 def test_env_var_nonzero_forces_flex(monkeypatch, value):
     monkeypatch.setenv(u._FLEX_LARGE_HEAD_DIM_ENV_VAR, value)
     assert (
-        u._prefers_flex_for_head_dim(_Cfg(model_type = "llama", head_dim = 64, num_attention_heads = 8))
+        u._prefers_flex_for_head_dim(_Cfg(model_type="llama", head_dim=64, num_attention_heads=8))
         is True
     )
 
@@ -204,7 +204,7 @@ def test_empty_env_var_falls_back_to_the_config(monkeypatch):
     monkeypatch.setenv(u._FLEX_LARGE_HEAD_DIM_ENV_VAR, "")
     assert u._prefers_flex_for_head_dim(_text_only()) is True
     assert (
-        u._prefers_flex_for_head_dim(_Cfg(model_type = "llama", head_dim = 64, num_attention_heads = 8))
+        u._prefers_flex_for_head_dim(_Cfg(model_type="llama", head_dim=64, num_attention_heads=8))
         is False
     )
 
@@ -215,17 +215,17 @@ def test_forcing_the_env_var_outranks_flash_attention(monkeypatch, env, expected
 
     monkeypatch.setattr(u, "HAS_FLASH_ATTENTION", True)
     if env is None:
-        monkeypatch.delenv(u._FLEX_LARGE_HEAD_DIM_ENV_VAR, raising = False)
+        monkeypatch.delenv(u._FLEX_LARGE_HEAD_DIM_ENV_VAR, raising=False)
     else:
         monkeypatch.setenv(u._FLEX_LARGE_HEAD_DIM_ENV_VAR, env)
     cfg = T.LlamaConfig(
-        hidden_size = 512,
-        num_attention_heads = 4,
-        num_key_value_heads = 4,
-        head_dim = 128,
-        num_hidden_layers = 1,
-        intermediate_size = 64,
-        vocab_size = 128,
+        hidden_size=512,
+        num_attention_heads=4,
+        num_key_value_heads=4,
+        head_dim=128,
+        num_hidden_layers=1,
+        intermediate_size=64,
+        vocab_size=128,
     )
     resolved = u.resolve_attention_implementation(T.LlamaForCausalLM, cfg)
     assert resolved == expected
@@ -262,28 +262,28 @@ def test_forcing_the_env_var_cannot_override_an_architecture_opt_out(monkeypatch
 def _mask_for(
     create,
     attention_mask,
-    q_len = 64,
-    head_dim = 256,
-    bsz = 2,
+    q_len=64,
+    head_dim=256,
+    bsz=2,
 ):
     import torch
     import transformers as T
 
     cfg = T.LlamaConfig(
-        hidden_size = 2048,
-        num_attention_heads = 8,
-        num_key_value_heads = 8,
-        num_hidden_layers = 1,
-        head_dim = head_dim,
-        vocab_size = 128,
+        hidden_size=2048,
+        num_attention_heads=8,
+        num_key_value_heads=8,
+        num_hidden_layers=1,
+        head_dim=head_dim,
+        vocab_size=128,
     )
     cfg._attn_implementation = "sdpa"
     return create(
-        config = cfg,
-        inputs_embeds = torch.zeros(bsz, q_len, cfg.hidden_size, dtype = torch.bfloat16),
-        attention_mask = attention_mask,
-        past_key_values = None,
-        position_ids = torch.arange(q_len).unsqueeze(0).expand(bsz, -1),
+        config=cfg,
+        inputs_embeds=torch.zeros(bsz, q_len, cfg.hidden_size, dtype=torch.bfloat16),
+        attention_mask=attention_mask,
+        past_key_values=None,
+        position_ids=torch.arange(q_len).unsqueeze(0).expand(bsz, -1),
     )
 
 
@@ -301,16 +301,16 @@ def test_upstream_skips_the_mask_for_an_unpadded_batch():
 
     create = _uncompiled_create_causal_mask()
     assert _mask_for(create, None) is None
-    assert _mask_for(create, torch.ones(2, 64, dtype = torch.long)) is None
+    assert _mask_for(create, torch.ones(2, 64, dtype=torch.long)) is None
 
 
 def test_upstream_still_materialises_a_mask_when_padded():
     import torch
 
     create = _uncompiled_create_causal_mask()
-    right = torch.ones(2, 64, dtype = torch.long)
+    right = torch.ones(2, 64, dtype=torch.long)
     right[0, -8:] = 0
-    left = torch.ones(2, 64, dtype = torch.long)
+    left = torch.ones(2, 64, dtype=torch.long)
     left[0, :8] = 0
     assert _mask_for(create, right) is not None
     assert _mask_for(create, left) is not None

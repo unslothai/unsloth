@@ -84,13 +84,13 @@ _SOURCE = ("ggml-org/llama.cpp", "upstream-source")
 def _asset_choice(**overrides):
     name = overrides.pop("name", "llama-b9001-bin-ubuntu-x64.tar.gz")
     defaults = dict(
-        repo = "unslothai/llama.cpp",
-        tag = "release-1",
-        name = name,
-        url = f"https://example.com/{name}",
-        source_label = "upstream",
-        install_kind = "linux-cpu",
-        expected_sha256 = "a" * 64,
+        repo="unslothai/llama.cpp",
+        tag="release-1",
+        name=name,
+        url=f"https://example.com/{name}",
+        source_label="upstream",
+        install_kind="linux-cpu",
+        expected_sha256="a" * 64,
     )
     defaults.update(overrides)
     return LLAMA.AssetChoice(**defaults)
@@ -98,7 +98,7 @@ def _asset_choice(**overrides):
 
 def _artifact(asset_name: str, sha256: str, origin: "tuple[str, str]"):
     repo, kind = origin
-    return LLAMA.ApprovedArtifactHash(asset_name = asset_name, sha256 = sha256, repo = repo, kind = kind)
+    return LLAMA.ApprovedArtifactHash(asset_name=asset_name, sha256=sha256, repo=repo, kind=kind)
 
 
 def _release_checksums(*assets: "tuple[str, str, tuple[str, str]]"):
@@ -107,11 +107,11 @@ def _release_checksums(*assets: "tuple[str, str, tuple[str, str]]"):
     for asset_name, sha256, origin in assets:
         artifacts[asset_name] = _artifact(asset_name, sha256, origin)
     return LLAMA.ApprovedReleaseChecksums(
-        repo = "unslothai/llama.cpp",
-        release_tag = "release-1",
-        upstream_tag = "b9001",
-        source_commit = "deadbeef",
-        artifacts = artifacts,
+        repo="unslothai/llama.cpp",
+        release_tag="release-1",
+        upstream_tag="b9001",
+        source_commit="deadbeef",
+        artifacts=artifacts,
     )
 
 
@@ -132,7 +132,7 @@ def _install(
     tmp_path: Path,
     monkeypatch,
     *,
-    host = LINUX,
+    host=LINUX,
 ) -> Path:
     """A healthy install plus a marker written by the REAL write_prebuilt_metadata.
 
@@ -140,20 +140,20 @@ def _install(
     marker it cannot recompute, so a hand-written one would make every "the fast path
     accepts" baseline below pass for the wrong reason.
     """
-    install_dir = KEEP.build_install(tmp_path, host = host, marker = None)
+    install_dir = KEEP.build_install(tmp_path, host=host, marker=None)
     _fill_payload(install_dir, host)
     choice = _asset_choice()
     checksums = _release_checksums((choice.name, choice.expected_sha256, _UPSTREAM))
     LLAMA.write_prebuilt_metadata(
         install_dir,
-        host = host,
-        requested_tag = "latest",
-        llama_tag = "b9001",
-        release_tag = "release-1",
-        choice = choice,
-        approved_checksums = checksums,
-        prebuilt_fallback_used = False,
-        backend_request = "auto",
+        host=host,
+        requested_tag="latest",
+        llama_tag="b9001",
+        release_tag="release-1",
+        choice=choice,
+        approved_checksums=checksums,
+        prebuilt_fallback_used=False,
+        backend_request="auto",
     )
     monkeypatch.setattr(LLAMA, "detect_host", lambda **_k: host)
     # The one HEAD the precheck makes. Answered locally: this file never reaches the network.
@@ -164,32 +164,32 @@ def _install(
         "UNSLOTH_ROCM_GFX_ARCH",
         "UNSLOTH_ROCM_GFX_REMEMBERED",
     ):
-        monkeypatch.delenv(name, raising = False)
+        monkeypatch.delenv(name, raising=False)
     return install_dir
 
 
 def _fast_path(install_dir: Path, **overrides) -> bool:
     kwargs = dict(
-        llama_tag = "latest",
-        published_repo = "unslothai/llama.cpp",
-        published_release_tag = "",
-        backend_request = "auto",
-        force_cpu = False,
+        llama_tag="latest",
+        published_repo="unslothai/llama.cpp",
+        published_release_tag="",
+        backend_request="auto",
+        force_cpu=False,
     )
     kwargs.update(overrides)
     return LLAMA.existing_install_current_without_plan(install_dir, **kwargs)
 
 
-def _files_match(install_dir: Path, host = LINUX) -> bool:
+def _files_match(install_dir: Path, host=LINUX) -> bool:
     return LLAMA._runtime_files_match(install_dir, host, LLAMA.load_prebuilt_metadata(install_dir))
 
 
 def _marker(install_dir: Path) -> dict:
-    return json.loads((install_dir / MARKER_NAME).read_text(encoding = "utf-8"))
+    return json.loads((install_dir / MARKER_NAME).read_text(encoding="utf-8"))
 
 
 def _rewrite_marker(install_dir: Path, payload: dict) -> None:
-    (install_dir / MARKER_NAME).write_text(json.dumps(payload, indent = 2) + "\n", encoding = "utf-8")
+    (install_dir / MARKER_NAME).write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
 
 
 def _truncate_half(path: Path) -> None:
@@ -259,8 +259,8 @@ def test_the_healthy_install_is_accepted_by_the_fast_path(tmp_path, monkeypatch)
     def boom(*_a, **_k):
         raise AssertionError("the precheck must not reach the GitHub API")
 
-    monkeypatch.setattr(LLAMA, "fetch_release_bundle", boom, raising = False)
-    monkeypatch.setattr(LLAMA, "resolve_release_tag", boom, raising = False)
+    monkeypatch.setattr(LLAMA, "fetch_release_bundle", boom, raising=False)
+    monkeypatch.setattr(LLAMA, "resolve_release_tag", boom, raising=False)
     assert _fast_path(install_dir) is True
     assert _files_match(install_dir) is True
     recorded = _marker(install_dir)["runtime_files"]
@@ -573,7 +573,7 @@ def _whisper_install(
     fingerprint the keep path recomputes is genuinely self-consistent."""
     install_dir = tmp_path / "whisper.cpp"
     bin_dir = WHISPER.runtime_bin_dir(install_dir, WHISPER_LINUX)
-    bin_dir.mkdir(parents = True)
+    bin_dir.mkdir(parents=True)
     server = WHISPER.installed_server_path(install_dir, WHISPER_LINUX)
     server.write_bytes(b"#!/bin/sh\necho whisper\nexit 0\n")
     server.chmod(0o755)
@@ -589,12 +589,12 @@ def _whisper_install(
     selection = _whisper_selection(
         **(
             dict(
-                install_kind = "slim",
-                paired_llama_tag = "b9001",
-                linked_from = str(tmp_path / "llama.cpp" / "build" / "bin"),
-                linked_libraries = linked,
-                runtime_wiring_version = WHISPER.SLIM_RUNTIME_WIRING_VERSION,
-                linked_runtime_directories = (),
+                install_kind="slim",
+                paired_llama_tag="b9001",
+                linked_from=str(tmp_path / "llama.cpp" / "build" / "bin"),
+                linked_libraries=linked,
+                runtime_wiring_version=WHISPER.SLIM_RUNTIME_WIRING_VERSION,
+                linked_runtime_directories=(),
             )
             if slim
             else {}
@@ -607,7 +607,7 @@ def _whisper_install(
 
 
 def _whisper_marker(install_dir: Path) -> dict:
-    return json.loads((install_dir / WHISPER.METADATA_FILENAME).read_text(encoding = "utf-8"))
+    return json.loads((install_dir / WHISPER.METADATA_FILENAME).read_text(encoding="utf-8"))
 
 
 def _whisper_keep(install_dir: Path) -> bool:
@@ -692,7 +692,7 @@ def test_whisper_a_slim_install_is_kept_only_while_its_paired_ggml_tree_stands(
 ):
     """A slim bundle ships no ggml of its own: it hardlinks llama's. So "intact" here is
     a statement about ANOTHER install, and a llama update that moved ggml retires it."""
-    install_dir = _whisper_install(tmp_path, monkeypatch, slim = True)
+    install_dir = _whisper_install(tmp_path, monkeypatch, slim=True)
     assert _whisper_keep(install_dir) is True
 
     monkeypatch.setattr(WHISPER, "installed_llama_ggml_tree", lambda *_a, **_k: "ggml-tree-bbbb")
@@ -707,7 +707,7 @@ def test_whisper_a_slim_install_is_kept_only_while_its_paired_ggml_tree_stands(
 
 @pytest.mark.parametrize("missing", ("libggml.so.0", "libggml-base.so.0"))
 def test_whisper_a_slim_install_missing_a_wired_library_is_rejected(tmp_path, monkeypatch, missing):
-    install_dir = _whisper_install(tmp_path, monkeypatch, slim = True)
+    install_dir = _whisper_install(tmp_path, monkeypatch, slim=True)
     assert _whisper_keep(install_dir) is True
     bin_dir = WHISPER.runtime_bin_dir(install_dir, WHISPER_LINUX)
     (bin_dir / missing).unlink()
@@ -723,7 +723,7 @@ def test_whisper_a_wired_library_truncated_to_one_byte_is_rejected(tmp_path, mon
     recorded size catches it for the price of a stat; the paired ggml tree above answers
     the different question of whether llama's runtime moved out from under it.
     """
-    install_dir = _whisper_install(tmp_path, monkeypatch, slim = True)
+    install_dir = _whisper_install(tmp_path, monkeypatch, slim=True)
     bin_dir = WHISPER.runtime_bin_dir(install_dir, WHISPER_LINUX)
     (bin_dir / "libggml.so.0").write_bytes(b"\x00")
     assert WHISPER.installed_tree_is_intact(install_dir, WHISPER_LINUX) is False
@@ -731,7 +731,7 @@ def test_whisper_a_wired_library_truncated_to_one_byte_is_rejected(tmp_path, mon
 
 
 # ── PART 4: the marker rewrite as a filesystem operation ─────────────────────────────
-@dataclasses.dataclass(frozen = True)
+@dataclasses.dataclass(frozen=True)
 class _Writer:
     name: str
     module: Any
@@ -742,25 +742,25 @@ class _Writer:
 
 WRITERS = (
     _Writer(
-        name = "llama._write_marker",
-        module = LLAMA,
-        filename = MARKER_NAME,
-        rewrite = lambda directory, payload: LLAMA._write_marker(directory / MARKER_NAME, payload),
-        raises_on_failure = False,
+        name="llama._write_marker",
+        module=LLAMA,
+        filename=MARKER_NAME,
+        rewrite=lambda directory, payload: LLAMA._write_marker(directory / MARKER_NAME, payload),
+        raises_on_failure=False,
     ),
     _Writer(
-        name = "prebuilt_core.write_live_marker",
-        module = CORE,
-        filename = MARKER_NAME,
-        rewrite = lambda directory, payload: CORE.write_live_marker(directory / MARKER_NAME, payload),
-        raises_on_failure = True,
+        name="prebuilt_core.write_live_marker",
+        module=CORE,
+        filename=MARKER_NAME,
+        rewrite=lambda directory, payload: CORE.write_live_marker(directory / MARKER_NAME, payload),
+        raises_on_failure=True,
     ),
     _Writer(
-        name = "node._write_metadata_payload",
-        module = NODE,
-        filename = NODE.METADATA_FILENAME,
-        rewrite = lambda directory, payload: NODE._write_metadata_payload(directory, payload),
-        raises_on_failure = True,
+        name="node._write_metadata_payload",
+        module=NODE,
+        filename=NODE.METADATA_FILENAME,
+        rewrite=lambda directory, payload: NODE._write_metadata_payload(directory, payload),
+        raises_on_failure=True,
     ),
 )
 _WRITER_IDS = [writer.name for writer in WRITERS]
@@ -784,7 +784,7 @@ def _live_marker(
 ) -> Path:
     path = tmp_path / writer.filename
     path.write_text(
-        json.dumps({"release_tag": "release-0", "tag": "b9000"}) + "\n", encoding = "utf-8"
+        json.dumps({"release_tag": "release-0", "tag": "b9000"}) + "\n", encoding="utf-8"
     )
     path.chmod(mode)
     return path
@@ -794,11 +794,11 @@ def _temp_siblings(directory: Path) -> list:
     return sorted(p.name for p in directory.iterdir() if ".tmp-" in p.name)
 
 
-@pytest.mark.parametrize("writer", WRITERS, ids = _WRITER_IDS)
+@pytest.mark.parametrize("writer", WRITERS, ids=_WRITER_IDS)
 def test_a_rewritten_marker_is_valid_json_and_keeps_the_keys_the_ui_reads(tmp_path, writer):
     _live_marker(tmp_path, writer)
     writer.rewrite(tmp_path, _LIVE_PAYLOAD)
-    written = json.loads((tmp_path / writer.filename).read_text(encoding = "utf-8"))
+    written = json.loads((tmp_path / writer.filename).read_text(encoding="utf-8"))
     assert written == _LIVE_PAYLOAD
     assert written["release_tag"] == "release-1" and written["tag"] == "b9001"
     assert _temp_siblings(tmp_path) == []
@@ -806,23 +806,23 @@ def test_a_rewritten_marker_is_valid_json_and_keeps_the_keys_the_ui_reads(tmp_pa
 
 @POSIX_ONLY
 @pytest.mark.parametrize("mode", (0o600, 0o644, 0o664, 0o444))
-@pytest.mark.parametrize("writer", WRITERS, ids = _WRITER_IDS)
+@pytest.mark.parametrize("writer", WRITERS, ids=_WRITER_IDS)
 def test_a_rewritten_marker_keeps_its_mode(tmp_path, writer, mode):
     """NamedTemporaryFile is 0600 and os.replace keeps the SOURCE file's mode, so without
     the restore a refresh silently makes a group-shared install's marker private. 0o444
     is the read-only case the temp-and-replace shape exists to support: a plain write
     would need the file writable, not the directory."""
-    path = _live_marker(tmp_path, writer, mode = mode)
+    path = _live_marker(tmp_path, writer, mode=mode)
     writer.rewrite(tmp_path, _LIVE_PAYLOAD)
     assert stat.S_IMODE(path.stat().st_mode) == mode
-    assert json.loads(path.read_text(encoding = "utf-8"))["tag"] == "b9001"
+    assert json.loads(path.read_text(encoding="utf-8"))["tag"] == "b9001"
     assert _temp_siblings(tmp_path) == []
 
 
 @POSIX_ONLY
 @NEEDS_CHOWN
 @NOT_ROOT
-@pytest.mark.parametrize("writer", WRITERS, ids = _WRITER_IDS)
+@pytest.mark.parametrize("writer", WRITERS, ids=_WRITER_IDS)
 def test_a_group_shared_marker_keeps_its_group(tmp_path, writer):
     """A real chown, not a recorded call: the marker is put into a secondary group of
     this user and has to come back out of the rewrite in that group, because os.replace
@@ -840,12 +840,12 @@ def test_a_group_shared_marker_keeps_its_group(tmp_path, writer):
 
     writer.rewrite(tmp_path, _LIVE_PAYLOAD)
     assert path.stat().st_gid == shared
-    assert json.loads(path.read_text(encoding = "utf-8"))["tag"] == "b9001"
+    assert json.loads(path.read_text(encoding="utf-8"))["tag"] == "b9001"
     assert _temp_siblings(tmp_path) == []
 
 
 @NEEDS_CHOWN
-@pytest.mark.parametrize("writer", WRITERS, ids = _WRITER_IDS)
+@pytest.mark.parametrize("writer", WRITERS, ids=_WRITER_IDS)
 def test_every_marker_writer_asks_for_the_owner_then_falls_back_to_the_group(
     tmp_path, writer, monkeypatch
 ):
@@ -883,7 +883,7 @@ def test_every_marker_writer_asks_for_the_owner_then_falls_back_to_the_group(
 
 
 @NEEDS_CHOWN
-@pytest.mark.parametrize("writer", WRITERS, ids = _WRITER_IDS)
+@pytest.mark.parametrize("writer", WRITERS, ids=_WRITER_IDS)
 def test_a_permitted_writer_restores_the_owner_and_asks_no_further(tmp_path, writer, monkeypatch):
     """The root case: when the combined call is allowed, the fallback must not run, or the
     owner just restored would be left in place by luck rather than by intent."""
@@ -904,7 +904,7 @@ def test_a_permitted_writer_restores_the_owner_and_asks_no_further(tmp_path, wri
 
 @NEEDS_CHOWN
 @NOT_ROOT
-@pytest.mark.parametrize("writer", WRITERS, ids = _WRITER_IDS)
+@pytest.mark.parametrize("writer", WRITERS, ids=_WRITER_IDS)
 def test_a_marker_owned_by_another_user_still_keeps_its_group(tmp_path, writer, monkeypatch):
     """The case uid -1 exists for, on the install it matters for.
 
@@ -915,7 +915,7 @@ def test_a_marker_owned_by_another_user_still_keeps_its_group(tmp_path, writer, 
     marker, the mode restore beside it undone. The kernel rule is simulated, since a test
     cannot own a file as another user; the simulation refuses exactly what POSIX refuses.
     """
-    path = _live_marker(tmp_path, writer, mode = 0o640)
+    path = _live_marker(tmp_path, writer, mode=0o640)
     other_uid = os.geteuid() + 1
     shared_gid = os.getegid() + 1
     applied: list = []
@@ -936,7 +936,7 @@ def test_a_marker_owned_by_another_user_still_keeps_its_group(tmp_path, writer, 
     writer.rewrite(tmp_path, _LIVE_PAYLOAD)
     # Narrow window: os.stat is the whole interpreter's, so it is restored immediately.
     monkeypatch.undo()
-    assert json.loads(path.read_text(encoding = "utf-8"))["tag"] == "b9001"
+    assert json.loads(path.read_text(encoding="utf-8"))["tag"] == "b9001"
     assert applied == [(-1, shared_gid)], "the group must survive a marker owned by someone else"
 
 
@@ -954,37 +954,37 @@ class _StatWithOwner:
 
 
 @NEEDS_CHOWN
-@pytest.mark.parametrize("writer", WRITERS, ids = _WRITER_IDS)
+@pytest.mark.parametrize("writer", WRITERS, ids=_WRITER_IDS)
 def test_a_chown_that_is_refused_does_not_abort_the_write(tmp_path, writer, monkeypatch):
     """Ownership is best effort; the refreshed marker is not. Declining to write because
     the group could not be restored would leave the field the refresh exists to record
     (a deliberate --force-cpu, a re-probed version) unrecorded."""
-    path = _live_marker(tmp_path, writer, mode = 0o640)
+    path = _live_marker(tmp_path, writer, mode=0o640)
 
     def refuse(*_a, **_k):
         raise PermissionError(errno.EPERM, "Operation not permitted")
 
     monkeypatch.setattr(writer.module.os, "chown", refuse)
     writer.rewrite(tmp_path, _LIVE_PAYLOAD)
-    assert json.loads(path.read_text(encoding = "utf-8")) == _LIVE_PAYLOAD
+    assert json.loads(path.read_text(encoding="utf-8")) == _LIVE_PAYLOAD
     if not WINDOWS_HOST:
         assert stat.S_IMODE(path.stat().st_mode) == 0o640
     assert _temp_siblings(tmp_path) == []
 
 
-@pytest.mark.parametrize("writer", WRITERS, ids = _WRITER_IDS)
+@pytest.mark.parametrize("writer", WRITERS, ids=_WRITER_IDS)
 def test_a_platform_with_no_os_chown_at_all_still_writes(tmp_path, writer, monkeypatch):
     """Windows: os.chown does not exist. Each writer catches AttributeError beside OSError
     for exactly this, and the rewrite has to complete anyway."""
     path = _live_marker(tmp_path, writer)
-    monkeypatch.delattr(writer.module.os, "chown", raising = False)
+    monkeypatch.delattr(writer.module.os, "chown", raising=False)
     assert not hasattr(writer.module.os, "chown")
     writer.rewrite(tmp_path, _LIVE_PAYLOAD)
-    assert json.loads(path.read_text(encoding = "utf-8")) == _LIVE_PAYLOAD
+    assert json.loads(path.read_text(encoding="utf-8")) == _LIVE_PAYLOAD
     assert _temp_siblings(tmp_path) == []
 
 
-@pytest.mark.parametrize("writer", WRITERS, ids = _WRITER_IDS)
+@pytest.mark.parametrize("writer", WRITERS, ids=_WRITER_IDS)
 def test_a_replace_that_fails_leaves_the_previous_marker_whole(tmp_path, writer, monkeypatch):
     """The reason for temp-and-replace at all.
 
@@ -1009,11 +1009,11 @@ def test_a_replace_that_fails_leaves_the_previous_marker_whole(tmp_path, writer,
         assert writer.rewrite(tmp_path, _LIVE_PAYLOAD) is False
 
     assert path.read_bytes() == before
-    assert json.loads(path.read_text(encoding = "utf-8"))["tag"] == "b9000"
+    assert json.loads(path.read_text(encoding="utf-8"))["tag"] == "b9000"
     assert _temp_siblings(tmp_path) == []
 
 
-@pytest.mark.parametrize("writer", WRITERS, ids = _WRITER_IDS)
+@pytest.mark.parametrize("writer", WRITERS, ids=_WRITER_IDS)
 def test_a_write_that_fails_before_the_swap_strands_no_temp_file(tmp_path, writer, monkeypatch):
     """The ENOSPC this shape is built to tolerate, raised from the write itself: the temp
     path is tracked outside the try precisely so it can still be removed."""

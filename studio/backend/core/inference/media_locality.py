@@ -90,7 +90,7 @@ def normalized_pick(pick: MediaModelPick) -> MediaModelPick:
     sole = resolve_local_single_file(pick.model_path)
     if sole is None:
         return pick
-    return replace(pick, gguf_filename = sole, model_kind = "single_file")
+    return replace(pick, gguf_filename=sole, model_kind="single_file")
 
 
 def is_edit_only(pick: MediaModelPick) -> bool:
@@ -120,7 +120,7 @@ def _cached_snapshot_file(repo_id: str, filename: str) -> Optional[str]:
 
     from core.inference.diffusion import hub_cache_dir
 
-    hit = try_to_load_from_cache(repo_id, filename, cache_dir = hub_cache_dir())
+    hit = try_to_load_from_cache(repo_id, filename, cache_dir=hub_cache_dir())
     return hit if isinstance(hit, str) else None
 
 
@@ -148,7 +148,7 @@ def encoder_repo_complete(repo_id: str) -> bool:
     if index is None:
         # a repo known to be sharded has no unsharded reading, so a missing index means a partial
         return repo_id not in _SHARDED_ENCODER_REPOS
-    with open(index, encoding = "utf-8") as handle:
+    with open(index, encoding="utf-8") as handle:
         shards = sorted(set((json.load(handle).get("weight_map") or {}).values()))
     return bool(shards) and cache_holds_files(repo_id, shards)
 
@@ -243,7 +243,7 @@ def planners_for(owner: str, pick: MediaModelPick) -> list:
     if fam is None:
         return [backend_for(owner)]
     kind = resolve_model_kind(pick.gguf_filename, pick.model_kind)
-    predicted = predict_engine(fam, model_kind = kind)
+    predicted = predict_engine(fam, model_kind=kind)
     names = [predicted]
     if predicted == ENGINE_SD_CPP and not native_binary_installed():
         names.append(ENGINE_DIFFUSERS)
@@ -286,7 +286,7 @@ def _pipeline_components_present(root: Path) -> bool:
         if not index_file.is_file():
             continue
         try:
-            with open(index_file, encoding = "utf-8-sig") as handle:
+            with open(index_file, encoding="utf-8-sig") as handle:
                 index = json.load(handle)
         except Exception as exc:  # noqa: BLE001 -- an index the loader cannot read is not complete
             logger.debug("media auto-switch: unreadable pipeline index under %s: %s", root, exc)
@@ -350,7 +350,7 @@ def _cached_snapshot_root(repo_id: str, revision: str = "") -> Optional[Path]:
         if pinned.is_dir():
             return pinned
         try:
-            ref = (repo_dir / "refs" / candidate).read_text(encoding = "utf-8").strip()
+            ref = (repo_dir / "refs" / candidate).read_text(encoding="utf-8").strip()
         except OSError:
             continue
         resolved = snapshots / ref if ref else None
@@ -438,7 +438,7 @@ def _shards_declared(component: Path) -> bool:
 
     for index_file in component.glob("*.index.json"):
         try:
-            with open(index_file, encoding = "utf-8-sig") as handle:
+            with open(index_file, encoding="utf-8-sig") as handle:
                 if (json.load(handle) or {}).get("weight_map"):
                     return True
         except Exception:  # noqa: BLE001 -- an unreadable index declares nothing
@@ -452,7 +452,7 @@ def _shards_present(component: Path) -> bool:
 
     for index_file in component.glob("*.index.json"):
         try:
-            with open(index_file, encoding = "utf-8-sig") as handle:
+            with open(index_file, encoding="utf-8-sig") as handle:
                 weight_map = (json.load(handle) or {}).get("weight_map") or {}
         except Exception:  # noqa: BLE001 -- an unreadable shard index is not evidence of presence
             return False
@@ -500,14 +500,14 @@ def missing_download_bytes(
         plans = [
             planner.download_plan(
                 target.model_path,
-                gguf_filename = target.gguf_filename,
-                model_kind = target.model_kind,
-                gpu_ordinal = ordinal,
-                hf_token = hf_token,
+                gguf_filename=target.gguf_filename,
+                model_kind=target.model_kind,
+                gpu_ordinal=ordinal,
+                hf_token=hf_token,
                 # Only the verdict, not the probe: this asks whether the pick is already on disk, so it must count the
                 # SAME files the load will fetch. Clearing the probe drops the pre-cast encoder and the GGUF
                 # dense-transformer widening, which is how a "fully downloaded" answer goes wrong.
-                memory_verdict = False,
+                memory_verdict=False,
             )
             or {}
             for planner in planners_for(owner, target)
@@ -522,7 +522,7 @@ def missing_download_bytes(
         return None
     if hidden_ltx23_extras(owner, target):
         return UNSIZED_MISSING
-    missing = max((max(0, int(plan.get("total_bytes") or 0)) for plan in plans), default = 0)
+    missing = max((max(0, int(plan.get("total_bytes") or 0)) for plan in plans), default=0)
     # both planners coerce an unknown size to zero, so entries decide and bytes only describe
     if not missing and any(plan.get("entries") for plan in plans):
         return UNSIZED_MISSING

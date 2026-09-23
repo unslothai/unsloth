@@ -37,13 +37,13 @@ def cache(monkeypatch, tmp_path):
     reject a partial."""
     root = tmp_path / "hub"
     entry = root / "models--Org--Model"
-    (entry / "blobs").mkdir(parents = True)
+    (entry / "blobs").mkdir(parents=True)
     monkeypatch.setenv("HF_HUB_CACHE", str(root))
     monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
     for module in (download_registry, hf_cache_state):
-        monkeypatch.setattr(module, "hf_cache_root", lambda **_kw: root, raising = False)
+        monkeypatch.setattr(module, "hf_cache_root", lambda **_kw: root, raising=False)
     monkeypatch.setattr(hf_cache_state, "hf_cache_roots", lambda *_a, **_k: [root])
-    monkeypatch.setattr(hf_cache_state, "hf_partials_are_resumable", lambda _root = None: True)
+    monkeypatch.setattr(hf_cache_state, "hf_partials_are_resumable", lambda _root=None: True)
     return entry
 
 
@@ -54,7 +54,7 @@ def _record(transport: str, entry: Path):
         "model",
         "Org/Model",
         "Q4_K_M",
-        [ExpectedFile(path = "model-Q4_K_M.gguf", size = 4096, sha256 = BLOB)],
+        [ExpectedFile(path="model-Q4_K_M.gguf", size=4096, sha256=BLOB)],
         transport,
     )
     download_registry._write_marker(entry, transport, "Q4_K_M")
@@ -92,7 +92,7 @@ def test_a_row_with_no_partial_left_has_nothing_to_resume(cache):
 def test_a_writer_that_cannot_reopen_anything_never_promises_a_resume(cache, monkeypatch):
     """The ordinary install: hub >= 1.18 refetches from zero, so even a legacy-named
     survivor is litter."""
-    monkeypatch.setattr(hf_cache_state, "hf_partials_are_resumable", lambda _root = None: False)
+    monkeypatch.setattr(hf_cache_state, "hf_partials_are_resumable", lambda _root=None: False)
     _record("http", cache)
     _partial(cache, LEGACY_PARTIAL)
     assert partial_resume_available("model", "Org/Model", "Q4_K_M") is False
@@ -115,7 +115,7 @@ def test_a_siblings_resumable_partial_does_not_speak_for_this_one(cache):
         "model",
         "Org/Model",
         "Q8_0",
-        [ExpectedFile(path = "model-Q8_0.gguf", size = 4096, sha256 = sibling)],
+        [ExpectedFile(path="model-Q8_0.gguf", size=4096, sha256=sibling)],
         "http",
     )
     download_registry._write_marker(cache, "http", "Q8_0")
@@ -135,8 +135,8 @@ def _record_with_companion(transport: str, entry: Path):
         "Org/Model",
         "Q4_K_M",
         [
-            ExpectedFile(path = "model-Q4_K_M.gguf", size = 4096, sha256 = BLOB),
-            ExpectedFile(path = "mmproj-F16.gguf", size = 2048, sha256 = COMPANION),
+            ExpectedFile(path="model-Q4_K_M.gguf", size=4096, sha256=BLOB),
+            ExpectedFile(path="mmproj-F16.gguf", size=2048, sha256=COMPANION),
         ],
         transport,
     )
@@ -191,13 +191,13 @@ def split_cache(monkeypatch, tmp_path):
     first = root / "models--Org--Model"
     second = root / "models--Org--Model.case-variant"
     for entry in (first, second):
-        (entry / "blobs").mkdir(parents = True)
+        (entry / "blobs").mkdir(parents=True)
     monkeypatch.setenv("HF_HUB_CACHE", str(root))
     monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
     monkeypatch.setattr(
         download_registry, "iter_active_repo_cache_dirs", lambda *_a, **_k: iter((first, second))
     )
-    monkeypatch.setattr(hf_cache_state, "hf_partials_are_resumable", lambda _root = None: True)
+    monkeypatch.setattr(hf_cache_state, "hf_partials_are_resumable", lambda _root=None: True)
     return first, second
 
 
@@ -246,16 +246,16 @@ def two_roots(monkeypatch, tmp_path):
     active = tmp_path / "hub"
     previous = tmp_path / "old" / "hub"
     for root in (active, previous):
-        (root / "models--Org--Model" / "blobs").mkdir(parents = True)
+        (root / "models--Org--Model" / "blobs").mkdir(parents=True)
     monkeypatch.setenv("HF_HUB_CACHE", str(active))
     monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
-    monkeypatch.setattr(hf_cache_state, "hf_partials_are_resumable", lambda _root = None: True)
+    monkeypatch.setattr(hf_cache_state, "hf_partials_are_resumable", lambda _root=None: True)
     for module in (download_registry, hf_cache_state):
         monkeypatch.setattr(
             module,
             "hf_cache_root",
-            lambda root = None, **_kw: Path(root) if root is not None else active,
-            raising = False,
+            lambda root=None, **_kw: Path(root) if root is not None else active,
+            raising=False,
         )
     monkeypatch.setattr(hf_cache_state, "hf_cache_roots", lambda *_a, **_k: [active, previous])
     return active / "models--Org--Model", previous / "models--Org--Model"
@@ -271,9 +271,9 @@ def _record_in(
         "model",
         "Org/Model",
         variant,
-        [ExpectedFile(path = f"model-{variant or 'main'}.gguf", size = 4096, sha256 = blob)],
+        [ExpectedFile(path=f"model-{variant or 'main'}.gguf", size=4096, sha256=blob)],
         transport,
-        hub_cache = entry.parent,
+        hub_cache=entry.parent,
     )
     download_registry._write_marker(entry, transport, variant)
 

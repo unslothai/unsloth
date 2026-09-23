@@ -69,13 +69,13 @@ def _request():
 
     return SimpleNamespace(
         # These cases drive the tool loop, whose confirm gate asks over these frames.
-        headers = {"X-Unsloth-Events": "1"},
-        state = SimpleNamespace(skip_api_monitor = True),
-        is_disconnected = is_disconnected,
+        headers={"X-Unsloth-Events": "1"},
+        state=SimpleNamespace(skip_api_monitor=True),
+        is_disconnected=is_disconnected,
     )
 
 
-@pytest.fixture(autouse = True)
+@pytest.fixture(autouse=True)
 def _clean_policy():
     from state.tool_policy import reset_tool_policy
 
@@ -113,10 +113,10 @@ def _payload(**overrides):
     from models.inference import ChatCompletionRequest
 
     base = dict(
-        messages = [{"role": "user", "content": "what is 2+2?"}],
-        provider_id = "saved-1",
-        external_model = "gpt-5.4",
-        stream = True,
+        messages=[{"role": "user", "content": "what is 2+2?"}],
+        provider_id="saved-1",
+        external_model="gpt-5.4",
+        stream=True,
     )
     base.update(overrides)
     return ChatCompletionRequest(**base)
@@ -124,7 +124,7 @@ def _payload(**overrides):
 
 def _run(inf, payload):
     async def go():
-        resp = await inf._proxy_to_external_provider(payload, _request(), current_subject = "t")
+        resp = await inf._proxy_to_external_provider(payload, _request(), current_subject="t")
         return [chunk async for chunk in resp.body_iterator]
 
     return _drive(go())
@@ -139,6 +139,7 @@ def _run(inf, payload):
 # the expectations below are derived from the old behaviour, not restated.
 def _merge_base_takes_studio_loop(payload, provider_type: str) -> bool:
     from routes.inference import _explicit_studio_tool_loop_requested
+
     return (
         provider_type == "openai_codex"
         and payload.stream is True
@@ -166,7 +167,7 @@ SELF_HOSTED_PROVIDERS = ("llama_cpp", "vllm", "ollama", "custom")
 def test_a_hosted_tool_request_still_reaches_the_provider(monkeypatch, provider_type, selection):
     """Shape 1: only hosted names, on a provider that hosts them."""
     inf = _install(monkeypatch, provider_type)
-    payload = _payload(enable_tools = True, enabled_tools = selection)
+    payload = _payload(enable_tools=True, enabled_tools=selection)
 
     assert _merge_base_takes_studio_loop(payload, provider_type) is False
 
@@ -208,9 +209,9 @@ def test_an_api_request_without_resolved_server_tools_stays_undated(monkeypatch)
     _run(
         inf,
         _payload(
-            enable_tools = True,
-            enabled_tools = ["unknown_tool"],
-            run_tools_locally = True,
+            enable_tools=True,
+            enabled_tools=["unknown_tool"],
+            run_tools_locally=True,
         ),
     )
 
@@ -249,7 +250,7 @@ def test_an_ollama_connection_still_dates_a_studio_composed_system_prompt(monkey
     _run(
         inf,
         _payload(
-            messages = [
+            messages=[
                 {"role": "system", "content": "Be terse."},
                 {"role": "user", "content": "what is 2+2?"},
             ]
@@ -304,10 +305,10 @@ def test_full_access_on_ollama_keeps_the_date_the_nudge_costs_nothing_to_carry(m
         _run(
             inf,
             _payload(
-                enable_tools = True,
-                enabled_tools = ["terminal"],
-                run_tools_locally = True,
-                bypass_permissions = True,
+                enable_tools=True,
+                enabled_tools=["terminal"],
+                run_tools_locally=True,
+                bypass_permissions=True,
             ),
         )
 
@@ -321,7 +322,7 @@ def test_a_hosted_code_execution_is_not_dropped(monkeypatch):
     so a loop that captures this request executes web_search itself and silently
     never runs the other half of what the user turned on."""
     inf = _install(monkeypatch, "openai")
-    _run(inf, _payload(enable_tools = True, enabled_tools = ["web_search", "code_execution"]))
+    _run(inf, _payload(enable_tools=True, enabled_tools=["web_search", "code_execution"]))
     assert "code_execution" in (FakeExternalClient.last["passthrough"]["enabled_tools"] or [])
 
 
@@ -340,10 +341,10 @@ def test_a_code_execution_with_run_tools_locally_still_answers_the_confirm_gate(
     # record is the evidence nothing was sent.
     FakeExternalClient.last = {}
     payload = _payload(
-        enable_tools = True,
-        enabled_tools = ["code_execution"],
-        run_tools_locally = True,
-        confirm_tool_calls = True,
+        enable_tools=True,
+        enabled_tools=["code_execution"],
+        run_tools_locally=True,
+        confirm_tool_calls=True,
     )
     with pytest.raises(HTTPException) as excinfo:
         _run(inf, payload)
@@ -357,9 +358,9 @@ def test_a_code_execution_with_run_tools_locally_still_reaches_the_provider(monk
     _run(
         inf,
         _payload(
-            enable_tools = True,
-            enabled_tools = ["code_execution"],
-            run_tools_locally = True,
+            enable_tools=True,
+            enabled_tools=["code_execution"],
+            run_tools_locally=True,
         ),
     )
     assert FakeExternalClient.last["passthrough"]["enabled_tools"] == ["code_execution"]
@@ -372,7 +373,7 @@ def test_a_self_hosted_provider_still_runs_studios_own_web_search(monkeypatch, p
     assert provider_hosted_tools(provider_type) == frozenset()
     inf = _install(monkeypatch, provider_type)
     with pytest.raises(LoopEntered):
-        _run(inf, _payload(enable_tools = True, enabled_tools = ["web_search"]))
+        _run(inf, _payload(enable_tools=True, enabled_tools=["web_search"]))
 
 
 @pytest.mark.parametrize(
@@ -411,14 +412,15 @@ def test_a_unknown_tool_names_never_read_as_hosted(monkeypatch):
     forwarding a name the provider has no tool for."""
     from routes.inference import _selects_only_provider_hosted_tools
 
-    payload = _payload(enable_tools = True, enabled_tools = ["web_search", "not_a_tool"])
+    payload = _payload(enable_tools=True, enabled_tools=["web_search", "not_a_tool"])
     assert _selects_only_provider_hosted_tools(payload, "openai") is False
 
 
 @pytest.mark.parametrize("bad", [None, 5, {"web_search": True}, ["web_search", 5]])
 def test_a_malformed_enabled_tools_is_not_a_hosted_request(bad):
     from routes.inference import _selects_only_provider_hosted_tools
-    payload = SimpleNamespace(enabled_tools = bad, mcp_enabled = False)
+
+    payload = SimpleNamespace(enabled_tools=bad, mcp_enabled=False)
     assert _selects_only_provider_hosted_tools(payload, "openai") is False
 
 
@@ -441,19 +443,19 @@ def test_mcp_intent_with_no_tools_is_not_refused_for_a_prompt_it_can_never_show(
         lambda: _noop_mcp(),
     )
     inf = _install(monkeypatch, "openai")
-    payload = _payload(mcp_enabled = True)
+    payload = _payload(mcp_enabled=True)
 
     async def is_disconnected():
         return False
 
     headerless = SimpleNamespace(
-        headers = {},
-        state = SimpleNamespace(skip_api_monitor = True),
-        is_disconnected = is_disconnected,
+        headers={},
+        state=SimpleNamespace(skip_api_monitor=True),
+        is_disconnected=is_disconnected,
     )
 
     async def go():
-        resp = await inf._proxy_to_external_provider(payload, headerless, current_subject = "t")
+        resp = await inf._proxy_to_external_provider(payload, headerless, current_subject="t")
         return [chunk async for chunk in resp.body_iterator]
 
     # No LoopEntered and no HTTPException: the request proxies through.
@@ -465,19 +467,19 @@ def test_tool_choice_none_is_not_refused_for_a_prompt_it_can_never_show(monkeypa
     turn under tool_choice "none", so no call and no approval prompt can happen. A
     headerless stream must still get its clean text answer."""
     inf = _install(monkeypatch, "openai")
-    payload = _payload(enable_tools = True, enabled_tools = ["python"], tool_choice = "none")
+    payload = _payload(enable_tools=True, enabled_tools=["python"], tool_choice="none")
 
     async def is_disconnected():
         return False
 
     headerless = SimpleNamespace(
-        headers = {},
-        state = SimpleNamespace(skip_api_monitor = True),
-        is_disconnected = is_disconnected,
+        headers={},
+        state=SimpleNamespace(skip_api_monitor=True),
+        is_disconnected=is_disconnected,
     )
 
     async def go():
-        resp = await inf._proxy_to_external_provider(payload, headerless, current_subject = "t")
+        resp = await inf._proxy_to_external_provider(payload, headerless, current_subject="t")
         return [chunk async for chunk in resp.body_iterator]
 
     # Reaches the loop rather than being refused; the loop then withdraws the catalogue per
@@ -494,23 +496,23 @@ def test_a_refused_request_does_not_strand_a_running_monitor_entry(monkeypatch):
     from fastapi import HTTPException
 
     inf = _install(monkeypatch, "openai")
-    monitor = ApiMonitor(max_entries = 3)
+    monitor = ApiMonitor(max_entries=3)
     monkeypatch.setattr(inf, "api_monitor", monitor)
-    payload = _payload(enable_tools = True, enabled_tools = ["python"])
+    payload = _payload(enable_tools=True, enabled_tools=["python"])
 
     async def is_disconnected():
         return False
 
     headerless = SimpleNamespace(
-        headers = {},
-        state = SimpleNamespace(),
-        url = SimpleNamespace(path = "/v1/chat/completions"),
-        method = "POST",
-        is_disconnected = is_disconnected,
+        headers={},
+        state=SimpleNamespace(),
+        url=SimpleNamespace(path="/v1/chat/completions"),
+        method="POST",
+        is_disconnected=is_disconnected,
     )
 
     async def go():
-        return await inf._proxy_to_external_provider(payload, headerless, current_subject = "t")
+        return await inf._proxy_to_external_provider(payload, headerless, current_subject="t")
 
     with pytest.raises(HTTPException) as exc:
         _drive(go())
@@ -524,7 +526,7 @@ def test_b_an_omitted_permission_mode_arms_the_auto_gate(monkeypatch):
     """`permission_mode` unset on a streaming request resolves to "auto" with
     the confirm gate ON, so high-risk calls still prompt."""
     inf = _install(monkeypatch, "llama_cpp")
-    payload = _payload(enable_tools = True, enabled_tools = ["python"])
+    payload = _payload(enable_tools=True, enabled_tools=["python"])
     assert payload.permission_mode is None
     assert payload.confirm_tool_calls is None
 
@@ -536,7 +538,7 @@ def test_b_an_omitted_permission_mode_arms_the_auto_gate(monkeypatch):
 
 
 @pytest.mark.parametrize(
-    "nudge_tool_calls", [None, False, True], ids = ["omitted", "disabled", "enabled"]
+    "nudge_tool_calls", [None, False, True], ids=["omitted", "disabled", "enabled"]
 )
 def test_b_external_tool_loop_receives_requested_nudge_setting(monkeypatch, nudge_tool_calls):
     """The external Unsloth loop must receive the request-level nudge policy."""
@@ -546,9 +548,9 @@ def test_b_external_tool_loop_receives_requested_nudge_setting(monkeypatch, nudg
     )
     inf = _install(monkeypatch, "openai")
     payload = _payload(
-        enable_tools = True,
-        enabled_tools = ["python"],
-        nudge_tool_calls = nudge_tool_calls,
+        enable_tools=True,
+        enabled_tools=["python"],
+        nudge_tool_calls=nudge_tool_calls,
     )
 
     with pytest.raises(LoopEntered) as excinfo:
@@ -560,7 +562,7 @@ def test_b_external_tool_loop_receives_requested_nudge_setting(monkeypatch, nudg
 def test_b_the_external_and_codex_paths_derive_the_gate_identically():
     """Both policy constructions must read the same policy expressions off the
     payload; a divergence would make one path quietly more permissive."""
-    tree = ast.parse(_ROUTE_SOURCE.read_text(encoding = "utf-8"))
+    tree = ast.parse(_ROUTE_SOURCE.read_text(encoding="utf-8"))
     modes: set[str] = set()
     confirms: set[str] = set()
     for node in ast.walk(tree):
@@ -665,14 +667,14 @@ def _run_loop(
         out = []
         agen = stream_with_studio_tools(
             _Transport(),
-            run = ToolLoopRun(
-                messages = [{"role": "user", "content": "hi"}],
-                session_id = "s1",
-                thread_id = "t1",
-                tool_choice = None,
+            run=ToolLoopRun(
+                messages=[{"role": "user", "content": "hi"}],
+                session_id="s1",
+                thread_id="t1",
+                tool_choice=None,
             ),
-            policy = ToolLoopPolicy(
-                tools = [
+            policy=ToolLoopPolicy(
+                tools=[
                     {
                         "type": "function",
                         "function": {
@@ -682,14 +684,14 @@ def _run_loop(
                         },
                     }
                 ],
-                max_calls = 25,
-                timeout = 300,
-                permission_mode = "auto",
-                confirm_calls = True,
-                bypass_permissions = False,
-                rag_scope = None,
+                max_calls=25,
+                timeout=300,
+                permission_mode="auto",
+                confirm_calls=True,
+                bypass_permissions=False,
+                rag_scope=None,
             ),
-            cancel_event = threading.Event(),
+            cancel_event=threading.Event(),
         )
         async for line in agen:
             out.append(line)
@@ -707,7 +709,7 @@ def _run_loop(
 
 
 def test_b_a_benign_python_call_runs_without_an_approval_frame(monkeypatch):
-    starts, executed = _run_loop(monkeypatch, code = "print(2 + 2)")
+    starts, executed = _run_loop(monkeypatch, code="print(2 + 2)")
     assert [s["awaiting_confirmation"] for s in starts] == [False]
     assert [c["name"] for c in executed] == ["python"]
 
@@ -715,8 +717,8 @@ def test_b_a_benign_python_call_runs_without_an_approval_frame(monkeypatch):
 def test_b_a_credential_reading_python_call_is_gated(monkeypatch):
     starts, executed = _run_loop(
         monkeypatch,
-        code = "print(open('/home/u/.ssh/id_rsa').read())",
-        verdict = "deny",
+        code="print(open('/home/u/.ssh/id_rsa').read())",
+        verdict="deny",
     )
     assert [s["awaiting_confirmation"] for s in starts] == [True]
     assert executed == []
@@ -729,6 +731,6 @@ def test_a_request_without_tools_never_scans_the_skill_roots(monkeypatch):
         raise AssertionError("skill roots scanned for a request that asked for no tools")
 
     monkeypatch.setattr(inf, "_enabled_agent_skills", _scan)
-    chunks = _run(inf, _payload(enable_tools = False))
+    chunks = _run(inf, _payload(enable_tools=False))
     assert FakeExternalClient.last["passthrough"] is not None
     assert any("hi" in chunk for chunk in chunks)

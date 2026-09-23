@@ -55,10 +55,10 @@ def detect_dflash_file(
 
     def _rank(candidate: Path) -> tuple[int, int, int, int, str]:
         # A sidecar naming THIS weight's family first, then any unpaired one, then precision, then total size so a split copy cannot outrank a smaller single file, then name for a stable order.
-        paired = _drafter_matches_weight(candidate.name, weight_name, kind = "dflash")
+        paired = _drafter_matches_weight(candidate.name, weight_name, kind="dflash")
         return (
             0 if paired else 1,
-            _drafter_stem_rank(candidate.name, kind = "dflash") if paired else 0,
+            _drafter_stem_rank(candidate.name, kind="dflash") if paired else 0,
             dflash_precision_rank(candidate.name),
             _drafter_total_size(candidate),
             candidate.name.lower(),
@@ -118,7 +118,7 @@ def detect_dflash_file(
             kept.append(candidate)
         candidates = kept
 
-    for candidate in sorted(candidates, key = _rank):
+    for candidate in sorted(candidates, key=_rank):
         # Resolve and validate before opening anything: a dflash-*.gguf reached through a native grant can be a symlink outside the lease, and reading the header first cannot be undone.
         try:
             launch = _drafter_launch_path(candidate)

@@ -115,7 +115,7 @@ def isolate_home(env: dict[str, str], scratch_dir: str) -> dict[str, str]:
     """Repoint home/profile vars at ``scratch_dir`` and drop credential-store
     pointers so a compromised downloaded server cannot read token caches or cred
     files through the environment. Mutates and returns ``env``."""
-    os.makedirs(scratch_dir, exist_ok = True)
+    os.makedirs(scratch_dir, exist_ok=True)
     for name in HOME_ENV_NAMES:
         if name in env:
             env[name] = scratch_dir
@@ -130,7 +130,7 @@ def wsl_system_rocm_lib_dirs() -> list[str]:
     try:
         if not os.path.exists("/dev/dxg"):
             return []
-        with open("/proc/version", encoding = "utf-8", errors = "replace") as fh:
+        with open("/proc/version", encoding="utf-8", errors="replace") as fh:
             if "microsoft" not in fh.read().lower():
                 return []
     except OSError:

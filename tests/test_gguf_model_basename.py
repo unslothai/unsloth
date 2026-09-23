@@ -37,7 +37,7 @@ def _load_helper():
     without the full ML stack, and the helper is pure string/stat logic. Same ast
     lift as test_export_capability.py.
     """
-    src = _SAVE_PY.read_text(encoding = "utf-8")
+    src = _SAVE_PY.read_text(encoding="utf-8")
     tree = ast.parse(src)
     for node in tree.body:
         if isinstance(node, ast.FunctionDef) and node.name == "_model_basename":
@@ -101,7 +101,7 @@ _REGRESSION_LABELS = {
 @pytest.mark.parametrize(
     "label, name_or_path, expected",
     _TABLE_A,
-    ids = [row[0] for row in _TABLE_A],
+    ids=[row[0] for row in _TABLE_A],
 )
 def test_model_basename(label, name_or_path, expected):
     assert _load_helper()(name_or_path) == expected
@@ -110,7 +110,7 @@ def test_model_basename(label, name_or_path, expected):
 @pytest.mark.parametrize(
     "label, name_or_path, expected",
     [row for row in _TABLE_A if row[0] in _REGRESSION_LABELS],
-    ids = [row[0] for row in _TABLE_A if row[0] in _REGRESSION_LABELS],
+    ids=[row[0] for row in _TABLE_A if row[0] in _REGRESSION_LABELS],
 )
 def test_working_inputs_are_unchanged(label, name_or_path, expected):
     """The fix must be inert for every input that already worked."""
@@ -150,7 +150,7 @@ _GGUF_DIR = r"C:\Users\u\.unsloth\exports\MyModel\_tmp_model_ab12_gguf"
 @pytest.mark.parametrize(
     "label, name_or_path, _expected",
     [row for row in _TABLE_A if row[0] not in _REGRESSION_LABELS],
-    ids = [row[0] for row in _TABLE_A if row[0] not in _REGRESSION_LABELS],
+    ids=[row[0] for row in _TABLE_A if row[0] not in _REGRESSION_LABELS],
 )
 def test_quantize_output_stays_inside_gguf_directory(label, name_or_path, _expected):
     """save.py:2073 joins the stem onto gguf_directory. Prove it cannot escape.
@@ -175,7 +175,7 @@ def test_unfixed_derivation_really_did_escape():
 
 
 def _gguf_func_src(name: str) -> str:
-    src = _SAVE_PY.read_text(encoding = "utf-8")
+    src = _SAVE_PY.read_text(encoding="utf-8")
     tree = ast.parse(src)
     for node in ast.walk(tree):
         if isinstance(node, ast.FunctionDef) and node.name == name:
@@ -203,7 +203,7 @@ def test_helper_is_module_level_and_adds_no_locals_to_the_gguf_entrypoint():
     unsloth_generic_save(**arguments). Any NEW local bound before that line
     becomes an unexpected keyword argument and breaks every GGUF export on
     every OS, so the helper must live at module level."""
-    src = _SAVE_PY.read_text(encoding = "utf-8")
+    src = _SAVE_PY.read_text(encoding="utf-8")
     tree = ast.parse(src)
 
     assert any(

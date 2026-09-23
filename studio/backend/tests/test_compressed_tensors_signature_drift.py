@@ -28,7 +28,7 @@ def _route_pieces():
     Lifting them out with `ast` is what lets this run beside a transformers the backend
     environment cannot hold.
     """
-    tree = ast.parse(_ROUTE.read_text(encoding = "utf-8"))
+    tree = ast.parse(_ROUTE.read_text(encoding="utf-8"))
     literals = {}
     diagnosis = None
     for node in tree.body:
@@ -46,7 +46,7 @@ def _route_pieces():
     assert diagnosis is not None, "_diagnosis_text moved; this guard reads the wrong text"
     namespace = {"re": re}
     exec(  # noqa: S102 - the source is this repository's own, read from disk above
-        compile(ast.Module(body = [diagnosis], type_ignores = []), str(_ROUTE), "exec"),
+        compile(ast.Module(body=[diagnosis], type_ignores=[]), str(_ROUTE), "exec"),
         namespace,
     )
     return literals["_MISSING_COMPRESSED_TENSORS_SIGNATURES"], namespace["_diagnosis_text"]
@@ -68,11 +68,11 @@ def _refusals_from_installed_transformers():
     from transformers.utils import quantization_config as config_module
 
     messages = {}
-    with patch.object(config_module, "is_compressed_tensors_available", return_value = False):
+    with patch.object(config_module, "is_compressed_tensors_available", return_value=False):
         with pytest.raises(ImportError) as raised:
             config_module.CompressedTensorsConfig()
         messages["config"] = str(raised.value)
-    with patch.object(quantizer_module, "is_compressed_tensors_available", return_value = False):
+    with patch.object(quantizer_module, "is_compressed_tensors_available", return_value=False):
         quantizer = quantizer_module.CompressedTensorsHfQuantizer.__new__(
             quantizer_module.CompressedTensorsHfQuantizer
         )
@@ -85,6 +85,7 @@ def _refusals_from_installed_transformers():
 def test_the_installed_transformers_refusals_are_both_recognised():
     """The drift guard proper, runnable against any transformers on any host."""
     import transformers
+
     for site, message in _refusals_from_installed_transformers().items():
         assert "pip install" in message, (site, message)
         assert _matches(message), (
@@ -116,7 +117,7 @@ def test_no_other_quantizer_family_is_claimed():
     package_dir = Path(quantizers_package.__file__).parent
     scanned, claimed = set(), []
     for source_file in sorted(package_dir.glob("quantizer_*.py")):
-        tree = ast.parse(source_file.read_text(encoding = "utf-8"))
+        tree = ast.parse(source_file.read_text(encoding="utf-8"))
         for node in ast.walk(tree):
             if not isinstance(node, ast.Raise) or node.exc is None:
                 continue
@@ -137,7 +138,7 @@ def test_this_guard_needs_no_studio_backend_dependency():
 
     An import of fastapi or the route module puts it back inside the `<5.5` pin.
     """
-    tree = ast.parse(Path(__file__).read_text(encoding = "utf-8"))
+    tree = ast.parse(Path(__file__).read_text(encoding="utf-8"))
     imported = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
@@ -157,7 +158,7 @@ def test_a_workflow_that_installs_a_modern_transformers_actually_collects_this_f
     workflow = (
         Path(__file__).resolve().parents[3] / ".github" / "workflows" / "consolidated-tests-ci.yml"
     )
-    text = workflow.read_text(encoding = "utf-8")
+    text = workflow.read_text(encoding="utf-8")
     assert (
         "studio/backend/tests/test_compressed_tensors_signature_drift.py" in text
     ), "the modern-transformers matrix does not collect this file"

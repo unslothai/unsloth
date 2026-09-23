@@ -33,8 +33,8 @@ def _reset_db(tmp_path, monkeypatch):
 
 def _encode(arguments: list[str]) -> str:
     return routes_mcp.encode_stdio_command(
-        McpStdioCommand(command = sys.executable, arguments = [str(FIXTURE), *arguments]),
-        current_subject = "u",
+        McpStdioCommand(command=sys.executable, arguments=[str(FIXTURE), *arguments]),
+        current_subject="u",
     ).url
 
 
@@ -44,7 +44,7 @@ def _launched_state(url: str, environment: dict[str, str]) -> dict:
         environment,
         "launch_state",
         {},
-        timeout = 20,
+        timeout=20,
     )
     assert not output.startswith("Error:"), output
     return json.loads(output)
@@ -68,8 +68,8 @@ def test_stdio_arguments_survive_real_crud_import_probe_and_launch(tmp_path, mon
 
     probe = asyncio.run(
         routes_mcp.test_mcp_server(
-            McpServerTestRequest(url = encoded, headers = environment),
-            current_subject = "u",
+            McpServerTestRequest(url=encoded, headers=environment),
+            current_subject="u",
         )
     )
     assert (probe.ok, probe.tool_count, probe.error) == (True, 1, None)
@@ -77,21 +77,21 @@ def test_stdio_arguments_survive_real_crud_import_probe_and_launch(tmp_path, mon
     created = asyncio.run(
         routes_mcp.create_mcp_server(
             McpServerCreate(
-                display_name = "argument echo",
-                url = encoded,
-                headers = environment,
+                display_name="argument echo",
+                url=encoded,
+                headers=environment,
             ),
-            current_subject = "u",
+            current_subject="u",
         )
     )
     persisted = mcp_servers_db.get_server(created.id)
     assert persisted["url"] == encoded
     assert json.loads(persisted["headers_json"]) == environment
 
-    listed = routes_mcp.list_mcp_servers(current_subject = "u")
+    listed = routes_mcp.list_mcp_servers(current_subject="u")
     assert [row.id for row in listed] == [created.id]
     decoded = routes_mcp.decode_stdio_command(
-        McpStdioDecodeRequest(url = listed[0].url), current_subject = "u"
+        McpStdioDecodeRequest(url=listed[0].url), current_subject="u"
     )
     assert decoded.command == sys.executable
     assert decoded.arguments == [str(FIXTURE), *original_arguments]
@@ -106,12 +106,12 @@ def test_stdio_arguments_survive_real_crud_import_probe_and_launch(tmp_path, mon
     updated = asyncio.run(
         routes_mcp.update_mcp_server(
             created.id,
-            McpServerUpdate(url = edited_url, headers = edited_environment),
-            current_subject = "u",
+            McpServerUpdate(url=edited_url, headers=edited_environment),
+            current_subject="u",
         )
     )
     assert updated.url == edited_url
-    refreshed = asyncio.run(routes_mcp.refresh_mcp_server_tools(created.id, current_subject = "u"))
+    refreshed = asyncio.run(routes_mcp.refresh_mcp_server_tools(created.id, current_subject="u"))
     assert (refreshed.ok, refreshed.tool_count) == (True, 1)
     assert _launched_state(updated.url, edited_environment) == {
         "arguments": edited_arguments,
@@ -122,7 +122,7 @@ def test_stdio_arguments_survive_real_crud_import_probe_and_launch(tmp_path, mon
     imported = asyncio.run(
         routes_mcp.import_mcp_servers(
             McpServerImportRequest(
-                config = {
+                config={
                     "mcpServers": {
                         "imported echo": {
                             "command": sys.executable,
@@ -132,7 +132,7 @@ def test_stdio_arguments_survive_real_crud_import_probe_and_launch(tmp_path, mon
                     }
                 }
             ),
-            current_subject = "u",
+            current_subject="u",
         )
     )
     assert imported.errors == []
@@ -148,14 +148,14 @@ def test_stdio_arguments_survive_real_crud_import_probe_and_launch(tmp_path, mon
     }
 
 
-@pytest.mark.skipif(os.name != "nt", reason = "requires Windows batch launch semantics")
+@pytest.mark.skipif(os.name != "nt", reason="requires Windows batch launch semantics")
 @pytest.mark.timeout(45)
 def test_safe_arguments_survive_a_real_windows_batch_launcher(tmp_path, monkeypatch):
     _reset_db(tmp_path, monkeypatch)
     launcher = tmp_path / "mcp-server-example.cmd"
     launcher.write_text(
         f'@echo off\r\n"{sys.executable}" "{FIXTURE}" %*\r\n',
-        encoding = "utf-8",
+        encoding="utf-8",
     )
     arguments = [
         "--port",
@@ -166,8 +166,8 @@ def test_safe_arguments_survive_a_real_windows_batch_launcher(tmp_path, monkeypa
         "",
     ]
     url = routes_mcp.encode_stdio_command(
-        McpStdioCommand(command = str(launcher), arguments = arguments),
-        current_subject = "u",
+        McpStdioCommand(command=str(launcher), arguments=arguments),
+        current_subject="u",
     ).url
 
     assert _launched_state(url, {"UNSLOTH_MCP_ARGUMENT_MARKER": "batch"}) == {

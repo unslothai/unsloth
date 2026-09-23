@@ -41,10 +41,10 @@ def _factory(failures: int):
 
 
 def test_a_slow_start_is_retried_until_a_session_opens():
-    make, calls = _factory(failures = 2)
+    make, calls = _factory(failures=2)
     slept = []
     assert (
-        open_session_with_retry(make, retry_on = _NotCreated, sleep = slept.append, log = lambda _m: None)
+        open_session_with_retry(make, retry_on=_NotCreated, sleep=slept.append, log=lambda _m: None)
         == "session"
     )
     assert calls["n"] == 3
@@ -52,10 +52,10 @@ def test_a_slow_start_is_retried_until_a_session_opens():
 
 
 def test_a_safari_that_never_starts_still_fails():
-    make, calls = _factory(failures = 10)
-    with pytest.raises(_NotCreated, match = "timed out 3"):
+    make, calls = _factory(failures=10)
+    with pytest.raises(_NotCreated, match="timed out 3"):
         open_session_with_retry(
-            make, retry_on = _NotCreated, sleep = lambda _s: None, log = lambda _m: None
+            make, retry_on=_NotCreated, sleep=lambda _s: None, log=lambda _m: None
         )
     assert calls["n"] == 3, "the retry must stay bounded"
 
@@ -69,13 +69,13 @@ def test_other_errors_are_not_retried():
 
     with pytest.raises(ValueError):
         open_session_with_retry(
-            make, retry_on = _NotCreated, sleep = lambda _s: None, log = lambda _m: None
+            make, retry_on=_NotCreated, sleep=lambda _s: None, log=lambda _m: None
         )
     assert calls["n"] == 1
 
 
 def test_the_safari_driver_opens_its_session_through_the_retry_and_only_there():
-    tree = ast.parse((HERE / "selenium_composer_safari.py").read_text(encoding = "utf-8"))
+    tree = ast.parse((HERE / "selenium_composer_safari.py").read_text(encoding="utf-8"))
     direct = [
         n
         for n in ast.walk(tree)

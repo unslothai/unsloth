@@ -39,7 +39,7 @@ _MALFORMED_CONFIG = {"config.json": "{not json"}
         (_BNB_QUANTIZED, {}, True),
         (_MALFORMED_CONFIG, {}, True),
     ],
-    ids = [
+    ids=[
         "full_finetune",
         "full_finetune_explicit_4bit",
         "lora_adapter",
@@ -52,7 +52,7 @@ def test_load_checkpoint_uses_16bit_for_unquantized_full_finetunes(
 ):
     for name, content in files.items():
         text = content if isinstance(content, str) else json.dumps(content)
-        (tmp_path / name).write_text(text, encoding = "utf-8")
+        (tmp_path / name).write_text(text, encoding="utf-8")
 
     monkeypatch.setattr(export_routes, "_ensure_export_supported", _fake_ensure_export_supported)
     backend = MagicMock()
@@ -60,13 +60,13 @@ def test_load_checkpoint_uses_16bit_for_unquantized_full_finetunes(
     monkeypatch.setattr(export_routes, "get_export_backend", lambda: backend)
 
     app = FastAPI()
-    app.include_router(export_routes.router, prefix = "/api/export")
+    app.include_router(export_routes.router, prefix="/api/export")
     app.dependency_overrides[get_current_subject] = lambda: "alice"
     app.dependency_overrides[allow_ambient_hf_token] = lambda: True
 
     response = TestClient(app).post(
         "/api/export/load-checkpoint",
-        json = {"checkpoint_path": str(tmp_path), "hf_token": None, **extra},
+        json={"checkpoint_path": str(tmp_path), "hf_token": None, **extra},
     )
 
     assert response.status_code == 200
@@ -77,7 +77,7 @@ def _hub_client(monkeypatch, backend):
     monkeypatch.setattr(export_routes, "_ensure_export_supported", _fake_ensure_export_supported)
     monkeypatch.setattr(export_routes, "get_export_backend", lambda: backend)
     app = FastAPI()
-    app.include_router(export_routes.router, prefix = "/api/export")
+    app.include_router(export_routes.router, prefix="/api/export")
     app.dependency_overrides[get_current_subject] = lambda: "alice"
     app.dependency_overrides[allow_ambient_hf_token] = lambda: True
     return TestClient(app)
@@ -94,7 +94,7 @@ def _hub_client(monkeypatch, backend):
         ),
         (True, {"model_type": "llama"}, True),
     ],
-    ids = ["remote_full_finetune", "remote_bnb_quantized", "remote_lora_adapter"],
+    ids=["remote_full_finetune", "remote_bnb_quantized", "remote_lora_adapter"],
 )
 def test_load_checkpoint_resolves_hub_ids_before_choosing_4bit(
     monkeypatch, tmp_path, adapter_on_hub, hub_config, expected
@@ -102,7 +102,7 @@ def test_load_checkpoint_resolves_hub_ids_before_choosing_4bit(
     """A Hub id never touches the local filesystem, so without this the request keeps the
     request model's True default and a remote full fine-tune exports as 4-bit anyway."""
     config_file = tmp_path / "config.json"
-    config_file.write_text(json.dumps(hub_config), encoding = "utf-8")
+    config_file.write_text(json.dumps(hub_config), encoding="utf-8")
 
     monkeypatch.setattr(
         export_routes,
@@ -114,7 +114,7 @@ def test_load_checkpoint_resolves_hub_ids_before_choosing_4bit(
 
     response = _hub_client(monkeypatch, backend).post(
         "/api/export/load-checkpoint",
-        json = {"checkpoint_path": "unsloth/Llama-3.2-1B-Instruct", "hf_token": None},
+        json={"checkpoint_path": "unsloth/Llama-3.2-1B-Instruct", "hf_token": None},
     )
 
     assert response.status_code == 200
@@ -128,12 +128,12 @@ def test_hub_lookup_failure_keeps_the_old_default(monkeypatch):
     def _boom(
         repo_id,
         filename,
-        token = None,
+        token=None,
     ):
         raise OSError("no network")
 
     import huggingface_hub
 
-    monkeypatch.setattr(huggingface_hub, "file_exists", _boom, raising = False)
+    monkeypatch.setattr(huggingface_hub, "file_exists", _boom, raising=False)
     assert export_routes._hub_config("org/model", None) is None
     assert export_routes._is_unquantized_full_finetune("org/model", None) is False

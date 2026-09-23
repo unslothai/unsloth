@@ -25,7 +25,7 @@ _GATED = (
 )
 
 
-def _gated(text = _GATED):
+def _gated(text=_GATED):
     """A real GatedRepoError by type, without hub's constructor: HfHubHTTPError.__init__ requires a
     response on hub 1.x but not on 0.x, and the pin spans both. The helper screens on type and
     str() only, so a message-carrying subclass pins the contract on either version."""
@@ -39,7 +39,7 @@ def _gated(text = _GATED):
 
 
 def test_no_token_asks_for_access_and_a_token():
-    message = hub_access_message(_gated(), had_token = False)
+    message = hub_access_message(_gated(), had_token=False)
 
     assert message is not None
     assert "black-forest-labs/FLUX.2-klein-9B is gated" in message
@@ -51,7 +51,7 @@ def test_no_token_asks_for_access_and_a_token():
 
 
 def test_a_token_that_still_bounces_names_the_account():
-    message = hub_access_message(_gated(), had_token = True)
+    message = hub_access_message(_gated(), had_token=True)
 
     assert message is not None
     assert "not on its access list" in message
@@ -68,7 +68,7 @@ def test_a_metadata_api_url_names_the_model_not_the_endpoint():
             "403 Client Error. (Request ID: ViT1Bf7O) Cannot access gated repo for url "
             "https://huggingface.co/api/models/ardent-figment/gated-model."
         ),
-        had_token = False,
+        had_token=False,
     )
 
     assert message is not None
@@ -82,7 +82,7 @@ def test_a_non_repo_api_url_falls_back_rather_than_inventing_a_repo():
         _gated(
             "403 Client Error. Cannot access gated repo for url https://huggingface.co/api/whoami-v2."
         ),
-        had_token = False,
+        had_token=False,
     )
 
     assert message is not None
@@ -92,7 +92,7 @@ def test_a_non_repo_api_url_falls_back_rather_than_inventing_a_repo():
 
 def test_an_unparseable_repo_still_gives_the_instruction():
     message = hub_access_message(
-        _gated("403 Client Error. Cannot access gated repo."), had_token = False
+        _gated("403 Client Error. Cannot access gated repo."), had_token=False
     )
 
     assert message is not None
@@ -109,7 +109,7 @@ def test_an_unparseable_repo_still_gives_the_instruction():
 )
 def test_other_failures_keep_their_own_text(exc):
     # None is the signal to fall back to str(exc); rewriting these would bury the cause.
-    assert hub_access_message(exc, had_token = False) is None
+    assert hub_access_message(exc, had_token=False) is None
 
 
 def test_a_wrapped_gated_error_is_still_rewritten():
@@ -120,7 +120,7 @@ def test_a_wrapped_gated_error_is_still_rewritten():
         except Exception as inner:
             raise OSError("We couldn't connect to huggingface.co to load this model.") from inner
     except OSError as outer:
-        message = hub_access_message(outer, had_token = False)
+        message = hub_access_message(outer, had_token=False)
 
     assert message is not None
     assert "black-forest-labs/FLUX.2-klein-9B is gated" in message
@@ -130,7 +130,7 @@ def test_a_self_referential_chain_terminates():
     exc = ValueError("boom")
     exc.__context__ = exc
 
-    assert hub_access_message(exc, had_token = False) is None
+    assert hub_access_message(exc, had_token=False) is None
 
 
 def test_an_ambient_token_counts_as_a_token(monkeypatch):
@@ -153,7 +153,7 @@ def test_a_disabled_implicit_token_is_not_a_token(monkeypatch):
     from huggingface_hub.utils import _headers
 
     monkeypatch.setattr(constants, "HF_HUB_DISABLE_IMPLICIT_TOKEN", True)
-    monkeypatch.setattr(_headers, "get_token", lambda: "hf_cached_login", raising = False)
+    monkeypatch.setattr(_headers, "get_token", lambda: "hf_cached_login", raising=False)
 
     # Real get_token_to_send, so this pins hub's actual policy rather than a stand-in.
     assert _hf_token_in_play(None) is False

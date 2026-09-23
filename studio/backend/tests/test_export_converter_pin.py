@@ -34,10 +34,10 @@ _SCRIPTS_DIR = "UNSLOTH_LLAMA_CPP_SCRIPTS_DIR"
 _CONVERTER_TAG = "UNSLOTH_LLAMA_CPP_CONVERTER_TAG"
 
 
-def _export_mod(monkeypatch, *, mlx = False):
+def _export_mod(monkeypatch, *, mlx=False):
     _install_export_backend_stubs(monkeypatch)
-    monkeypatch.delenv(_SCRIPTS_DIR, raising = False)
-    monkeypatch.delenv(_CONVERTER_TAG, raising = False)
+    monkeypatch.delenv(_SCRIPTS_DIR, raising=False)
+    monkeypatch.delenv(_CONVERTER_TAG, raising=False)
     mod = _load_module(
         "test_core_export_backend_converter_pin", "core/export/export.py", monkeypatch
     )
@@ -50,8 +50,8 @@ def _export_mod(monkeypatch, *, mlx = False):
 def _zoo(
     monkeypatch,
     *,
-    internal_pin = True,
-    incomplete = False,
+    internal_pin=True,
+    incomplete=False,
 ):
     """The installed unsloth_zoo, with the pieces the pin looks for."""
     llama_cpp = sys.modules["unsloth_zoo.llama_cpp"]
@@ -64,7 +64,7 @@ def _zoo(
 
     @contextlib.contextmanager
     def _internal_scripts_dir_pin(folder):
-        if not held.acquire(blocking = False):
+        if not held.acquire(blocking=False):
             raise RuntimeError("internal_scripts_dir_pin re-entered: the real one deadlocks here")
         calls["internal"].append(folder)
         existing = os.environ.get(_SCRIPTS_DIR)
@@ -81,17 +81,17 @@ def _zoo(
 
     if internal_pin:
         monkeypatch.setattr(
-            llama_cpp, "internal_scripts_dir_pin", _internal_scripts_dir_pin, raising = False
+            llama_cpp, "internal_scripts_dir_pin", _internal_scripts_dir_pin, raising=False
         )
     else:
-        monkeypatch.delattr(llama_cpp, "internal_scripts_dir_pin", raising = False)
+        monkeypatch.delattr(llama_cpp, "internal_scripts_dir_pin", raising=False)
 
     def _converter_dir_is_incomplete(folder):
         calls["incomplete"].append(folder)
         return incomplete
 
     monkeypatch.setattr(
-        llama_cpp, "_converter_dir_is_incomplete", _converter_dir_is_incomplete, raising = False
+        llama_cpp, "_converter_dir_is_incomplete", _converter_dir_is_incomplete, raising=False
     )
     return llama_cpp, calls
 
@@ -146,7 +146,7 @@ def test_an_incomplete_install_is_not_pinned(monkeypatch):
     """An entrypoint with no conversion/ beside it cannot run, and pinning it is what
     stops the staged resolver from fetching a co-versioned set that can."""
     mod = _export_mod(monkeypatch)
-    _llama_cpp, calls = _zoo(monkeypatch, incomplete = True)
+    _llama_cpp, calls = _zoo(monkeypatch, incomplete=True)
 
     with mod._llama_cpp_scripts_pin():
         assert _SCRIPTS_DIR not in os.environ
@@ -157,7 +157,7 @@ def test_older_zoo_still_gets_a_scoped_pin(monkeypatch):
     """No internal-pin helper to call, so the variable is scoped by hand. The strict-scan
     exemption cannot be avoided on those builds, but the leak can."""
     mod = _export_mod(monkeypatch)
-    llama_cpp, _calls = _zoo(monkeypatch, internal_pin = False)
+    llama_cpp, _calls = _zoo(monkeypatch, internal_pin=False)
 
     with mod._llama_cpp_scripts_pin():
         assert os.environ[_SCRIPTS_DIR] == llama_cpp.LLAMA_CPP_DEFAULT_DIR
@@ -177,7 +177,7 @@ def test_the_pin_unwinds_when_the_conversion_raises(monkeypatch):
 def test_mlx_leaves_the_pinning_to_unsloth_zoo(monkeypatch):
     """The MLX save path installs llama.cpp and pins it itself, so there is nothing to
     add here."""
-    mod = _export_mod(monkeypatch, mlx = True)
+    mod = _export_mod(monkeypatch, mlx=True)
     _llama_cpp, calls = _zoo(monkeypatch)
 
     with mod._llama_cpp_scripts_pin():
@@ -189,7 +189,7 @@ def test_mlx_export_does_not_nest_the_pin(monkeypatch):
     """unsloth_zoo's pin holds a plain threading.Lock for the whole conversion, so
     entering it here and again inside save_pretrained_gguf hangs a Mac GGUF export
     for good. The stub raises where the real one would block."""
-    mod = _export_mod(monkeypatch, mlx = True)
+    mod = _export_mod(monkeypatch, mlx=True)
     llama_cpp, _calls = _zoo(monkeypatch)
 
     with mod._llama_cpp_scripts_pin():
@@ -213,7 +213,7 @@ def test_a_gguf_export_leaves_no_pin_behind(tmp_path, monkeypatch):
         def save_pretrained_gguf(self, model_save_path, tokenizer, **kwargs):
             seen["pinned_during_conversion"] = os.environ.get(_SCRIPTS_DIR)
             output_dir = Path(f"{model_save_path}_gguf")
-            output_dir.mkdir(parents = True, exist_ok = True)
+            output_dir.mkdir(parents=True, exist_ok=True)
             (output_dir / "converted.gguf").write_bytes(b"gguf")
 
     backend = mod.ExportBackend.__new__(mod.ExportBackend)
@@ -232,7 +232,7 @@ def test_a_gguf_export_leaves_no_pin_behind(tmp_path, monkeypatch):
 def test_zoo_without_the_pin_warns_once_and_runs(monkeypatch):
     mod = _export_mod(monkeypatch)
     llama_cpp = sys.modules["unsloth_zoo.llama_cpp"]
-    monkeypatch.delattr(llama_cpp, "_resolve_local_convert_script", raising = False)
+    monkeypatch.delattr(llama_cpp, "_resolve_local_convert_script", raising=False)
     warnings = []
     monkeypatch.setattr(
         mod.logger, "warning", lambda message, *args, **kwargs: warnings.append(message)

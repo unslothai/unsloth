@@ -36,18 +36,18 @@ from unsloth_pwsh_runner import run_pwsh
 # skipped off Windows rather than faked. The rejecting direction is platform neutral and runs everywhere.
 needs_pathext = pytest.mark.skipif(
     sys.platform != "win32",
-    reason = "needs Windows PATHEXT resolution to map a bare name onto the .exe",
+    reason="needs Windows PATHEXT resolution to map a bare name onto the .exe",
 )
 
 # Opt in, so an offline or rate limited run does not fail on what the digest already pins.
 needs_network = pytest.mark.skipif(
     not os.environ.get("UNSLOTH_NETWORK_TESTS"),
-    reason = "set UNSLOTH_NETWORK_TESTS=1 to fetch the pinned release asset",
+    reason="set UNSLOTH_NETWORK_TESTS=1 to fetch the pinned release asset",
 )
 
 pytestmark = pytest.mark.skipif(
     shutil.which("pwsh") is None,
-    reason = "pwsh is required to execute the Windows step bodies",
+    reason="pwsh is required to execute the Windows step bodies",
 )
 
 
@@ -60,16 +60,16 @@ RUNNER_APPEND = r"if ((Test-Path -LiteralPath variable:\LASTEXITCODE)) { exit $L
 WINDOWS_GUARD = "matrix.platform == 'windows-latest'"
 
 
-@functools.lru_cache(maxsize = 1)
+@functools.lru_cache(maxsize=1)
 def workflow():
-    return yaml.safe_load(WORKFLOW.read_text(encoding = "utf-8"))
+    return yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
 
 
 def step(name):
     return next(s for s in workflow()["jobs"]["build"]["steps"] if s.get("name") == name)
 
 
-@functools.lru_cache(maxsize = 1)
+@functools.lru_cache(maxsize=1)
 def pinned():
     env = step("Install trusted-signing-cli")["env"]
     return env["TRUSTED_SIGNING_CLI_URL"], env["TRUSTED_SIGNING_CLI_SHA256"]
@@ -78,7 +78,7 @@ def pinned():
 def write_step_script(directory, name, filename):
     body = step(name)["run"]
     path = pathlib.Path(directory) / filename
-    path.write_text(f"{RUNNER_PREPEND}\n{body}\n{RUNNER_APPEND}\n", encoding = "utf-8")
+    path.write_text(f"{RUNNER_PREPEND}\n{body}\n{RUNNER_APPEND}\n", encoding="utf-8")
     return path
 
 
@@ -89,10 +89,10 @@ def run_step(script, env):
     # would look exactly like a step body that failed closed -- the opposite of what the test claims to have proven.
     result = run_pwsh(
         ["pwsh", "-NoProfile", "-Command", f". '{script}'"],
-        capture_output = True,
-        text = True,
-        env = full,
-        timeout = 300,
+        capture_output=True,
+        text=True,
+        env=full,
+        timeout=300,
     )
     return result.returncode, result.stdout + result.stderr
 
@@ -120,12 +120,12 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         pass
 
 
-@pytest.fixture(scope = "session")
+@pytest.fixture(scope="session")
 def asset_server():
     handler = _Handler
     handler.payload = b"MZ" + b"\x00" * 4094 + b"pretend trusted-signing-cli"
     server = http.server.HTTPServer(("127.0.0.1", 0), handler)
-    thread = threading.Thread(target = server.serve_forever, daemon = True)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     yield f"http://127.0.0.1:{server.server_port}/trusted-signing-cli.exe", handler
     server.shutdown()
@@ -138,7 +138,7 @@ def sandbox(tmp_path):
     runner_temp = tmp_path / "runner_temp"
     runner_temp.mkdir()
     github_path = tmp_path / "github_path"
-    github_path.write_text("", encoding = "utf-8")
+    github_path.write_text("", encoding="utf-8")
     return {
         "install": install,
         "verify": verify,
@@ -244,10 +244,10 @@ def test_installing_twice_is_idempotent(sandbox, asset_server):
 def test_a_path_containing_spaces_still_works(tmp_path, asset_server):
     url, handler = asset_server
     spaced = tmp_path / "Program Files" / "runner temp"
-    spaced.mkdir(parents = True)
+    spaced.mkdir(parents=True)
     install = write_step_script(tmp_path, "Install trusted-signing-cli", "install.ps1")
     github_path = tmp_path / "github_path"
-    github_path.write_text("", encoding = "utf-8")
+    github_path.write_text("", encoding="utf-8")
 
     code, out = run_step(
         install,
@@ -322,9 +322,9 @@ def test_an_empty_digest_pin_cannot_pass(sandbox, asset_server):
 
 
 def _fake_on_path(directory, name, script):
-    directory.mkdir(parents = True, exist_ok = True)
+    directory.mkdir(parents=True, exist_ok=True)
     target = directory / name
-    target.write_text(script, encoding = "utf-8")
+    target.write_text(script, encoding="utf-8")
     target.chmod(0o755)
     return target
 
@@ -336,7 +336,7 @@ def _real_exe_on_path(directory, source):
     `.exe`, which is also what the verify step compares against. The branch under
     test decides which real binary is borrowed.
     """
-    directory.mkdir(parents = True, exist_ok = True)
+    directory.mkdir(parents=True, exist_ok=True)
     target = directory / "trusted-signing-cli.exe"
     shutil.copy2(source, target)
     return target
@@ -374,7 +374,7 @@ def test_verify_fails_when_nothing_is_on_path(sandbox):
 @needs_pathext
 def test_verify_fails_when_the_binary_cannot_start(sandbox):
     directory = sandbox["runner_temp"] / "trusted-signing-cli"
-    directory.mkdir(parents = True)
+    directory.mkdir(parents=True)
     (directory / "trusted-signing-cli.exe").write_bytes(b"\x00\x01not an executable")
 
     code, out = run_step(sandbox["verify"], {**sandbox["env"], "PATH": _path_with(directory)})
@@ -481,5 +481,5 @@ def test_the_real_asset_declares_the_arguments_the_signing_script_passes(sandbox
 def test_the_signing_script_still_calls_the_tool_by_bare_name():
     # Only reads a file in the tree.
     script = REPO / "studio" / "src-tauri" / "windows" / "sign-with-trusted-signing.ps1"
-    text = script.read_text(encoding = "utf-8")
+    text = script.read_text(encoding="utf-8")
     assert "& trusted-signing-cli @trustedSigningArgs" in text

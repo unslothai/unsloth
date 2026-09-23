@@ -17,15 +17,15 @@ from core.inference import local_model_resolver as resolver
 from utils.hardware import hardware as hw
 
 
-@pytest.fixture(autouse = True)
+@pytest.fixture(autouse=True)
 def _host_serves_non_gguf(monkeypatch):
     """Pin the host-capability gates: these tests are about the config rules, not this machine."""
     monkeypatch.setattr(resolver, "_host_has_a_non_gguf_backend", lambda: True)
     # the device, not the helper, so a test setting DEVICE for itself still wins.
-    monkeypatch.setattr(hw, "DEVICE", hw.DeviceType.CUDA, raising = False)
+    monkeypatch.setattr(hw, "DEVICE", hw.DeviceType.CUDA, raising=False)
 
 
-@pytest.fixture(autouse = True)
+@pytest.fixture(autouse=True)
 def _clean_resolver_index():
     """Drop the scan cache around every test: the index is keyed by id and has a TTL."""
     resolver.invalidate_index()
@@ -36,12 +36,12 @@ def _clean_resolver_index():
 def _checkpoint(root, name: str, config: dict):
     """An on-disk non-GGUF checkpoint carrying *config*: what the index scan needs to see."""
     path = root / name
-    path.mkdir(parents = True)
-    (path / "config.json").write_text(json.dumps(config), encoding = "utf-8")
+    path.mkdir(parents=True)
+    (path / "config.json").write_text(json.dumps(config), encoding="utf-8")
     (path / "model.safetensors").write_bytes(b"\0" * 32)
-    (path / "tokenizer.json").write_text("{}", encoding = "utf-8")
-    (path / "tokenizer_config.json").write_text("{}", encoding = "utf-8")
-    return SimpleNamespace(id = str(path), path = str(path))
+    (path / "tokenizer.json").write_text("{}", encoding="utf-8")
+    (path / "tokenizer_config.json").write_text("{}", encoding="utf-8")
+    return SimpleNamespace(id=str(path), path=str(path))
 
 
 def _classifies(info, config: dict):
@@ -181,13 +181,14 @@ def _safe_dir_name(text: str) -> str:
     """A fixture directory name Windows will accept: `{"id": 1}` spells out as `bad-marker-dict-{'id': 1}`,
     which windows-latest rejected with NotADirectoryError [WinError 267] while Linux built it happily."""
     import re
+
     return re.sub(r"[^A-Za-z0-9._-]", "_", text)[:60]
 
 
 @pytest.mark.parametrize(
     "value",
     [None, False, True, -1, "151655", "", [], (), {}, {"id": 1}, [1, None], [1, "2"]],
-    ids = [
+    ids=[
         "null",
         "false",
         "true",

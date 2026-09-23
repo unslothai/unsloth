@@ -47,7 +47,7 @@ def _install_call_linenos(node) -> list[int]:
 
 def test_all_entrypoints_install_the_patch():
     for path in _ENTRYPOINTS:
-        assert _install_call_linenos(ast.parse(path.read_text(encoding = "utf-8"))), (
+        assert _install_call_linenos(ast.parse(path.read_text(encoding="utf-8"))), (
             f"{path.relative_to(_BACKEND)} never calls {_INSTALL}() -- torchao's int8 GEMM "
             "keeps syncing the device on every linear and cannot be CUDA-graph captured."
         )
@@ -69,7 +69,7 @@ def _strip_docstrings(node):
 
 
 def _function_dump(path: Path, name: str) -> str:
-    tree = ast.parse(path.read_text(encoding = "utf-8"))
+    tree = ast.parse(path.read_text(encoding="utf-8"))
     for node in tree.body:
         if isinstance(node, ast.FunctionDef) and node.name == name:
             return ast.dump(_strip_docstrings(node))
@@ -129,7 +129,7 @@ def test_finder_answers_for_both_torchao_homes(monkeypatch):
         "torchao.quantization.quantize_.workflows.int8.kernels",
     )
     if _IMPORT_FIXES.is_file():
-        text = _IMPORT_FIXES.read_text(encoding = "utf-8")
+        text = _IMPORT_FIXES.read_text(encoding="utf-8")
         for name in _TORCHAO_INTMM_MODULES:
             assert f'"{name}"' in text, f"unsloth/import_fixes.py does not list {name}"
 
@@ -176,7 +176,7 @@ def test_real_torchao_int_mm_is_patched_and_bit_identical():
     generator = torch.Generator().manual_seed(0)
 
     def randint8(*shape):
-        return torch.randint(-127, 127, shape, dtype = torch.int8, generator = generator)
+        return torch.randint(-127, 127, shape, dtype=torch.int8, generator=generator)
 
     cases = [
         (randint8(64, 64), randint8(64, 64)),

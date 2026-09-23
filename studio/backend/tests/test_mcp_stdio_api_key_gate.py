@@ -25,7 +25,7 @@ def _reset_db(tmp_path, monkeypatch):
     mcp_client.invalidate_tool_cache()
 
 
-@pytest.fixture(autouse = True)
+@pytest.fixture(autouse=True)
 def _isolate_stdio_env():
     """apply_stdio_mcp_loopback_default() mutates os.environ plus a module flag
     monkeypatch cannot roll back; snapshot and restore both."""
@@ -77,15 +77,15 @@ def test_stdio_command_codec_refuses_api_key_before_work(
     with pytest.raises(HTTPException) as exc:
         if operation == "encode":
             routes_mcp.encode_stdio_command(
-                McpStdioCommand(command = "python", arguments = ["--token", "secret"]),
-                current_subject = "api-key-user",
-                via_api_key = True,
+                McpStdioCommand(command="python", arguments=["--token", "secret"]),
+                current_subject="api-key-user",
+                via_api_key=True,
             )
         else:
             routes_mcp.decode_stdio_command(
-                McpStdioDecodeRequest(url = "python --token secret"),
-                current_subject = "api-key-user",
-                via_api_key = True,
+                McpStdioDecodeRequest(url="python --token secret"),
+                current_subject="api-key-user",
+                via_api_key=True,
             )
     assert exc.value.status_code == 403
 
@@ -102,9 +102,9 @@ def test_test_endpoint_refuses_stdio_from_api_key(tmp_path, monkeypatch, stdio_o
     with pytest.raises(HTTPException) as exc:
         asyncio.run(
             routes_mcp.test_mcp_server(
-                McpServerTestRequest(url = STDIO_CMD),
-                current_subject = "api-key-user",
-                via_api_key = True,
+                McpServerTestRequest(url=STDIO_CMD),
+                current_subject="api-key-user",
+                via_api_key=True,
             )
         )
     assert exc.value.status_code == 403
@@ -125,9 +125,9 @@ def test_test_endpoint_allows_http_from_api_key(tmp_path, monkeypatch, stdio_on)
     monkeypatch.setattr(routes_mcp, "list_tools_async", _probe)
     res = asyncio.run(
         routes_mcp.test_mcp_server(
-            McpServerTestRequest(url = "https://example.com/mcp"),
-            current_subject = "api-key-user",
-            via_api_key = True,
+            McpServerTestRequest(url="https://example.com/mcp"),
+            current_subject="api-key-user",
+            via_api_key=True,
         )
     )
     assert res.ok is True
@@ -146,9 +146,9 @@ def test_create_refuses_stdio_from_api_key_and_writes_nothing(tmp_path, monkeypa
     with pytest.raises(HTTPException) as exc:
         asyncio.run(
             routes_mcp.create_mcp_server(
-                McpServerCreate(display_name = "Local", url = STDIO_CMD),
-                current_subject = "api-key-user",
-                via_api_key = True,
+                McpServerCreate(display_name="Local", url=STDIO_CMD),
+                current_subject="api-key-user",
+                via_api_key=True,
             )
         )
     assert exc.value.status_code == 403
@@ -163,9 +163,9 @@ def test_create_allows_http_from_api_key(tmp_path, monkeypatch, stdio_on):
     _reset_db(tmp_path, monkeypatch)
     resp = asyncio.run(
         routes_mcp.create_mcp_server(
-            McpServerCreate(display_name = "Remote", url = "https://example.com/mcp"),
-            current_subject = "api-key-user",
-            via_api_key = True,
+            McpServerCreate(display_name="Remote", url="https://example.com/mcp"),
+            current_subject="api-key-user",
+            via_api_key=True,
         )
     )
     assert resp.url == "https://example.com/mcp"
@@ -176,14 +176,14 @@ def test_update_refuses_http_to_stdio_conversion_from_api_key(tmp_path, monkeypa
     import routes.mcp_servers as routes_mcp
 
     _reset_db(tmp_path, monkeypatch)
-    mcp_servers_db.create_server(id = "s1", display_name = "A", url = "https://a/mcp")
+    mcp_servers_db.create_server(id="s1", display_name="A", url="https://a/mcp")
     with pytest.raises(HTTPException) as exc:
         asyncio.run(
             routes_mcp.update_mcp_server(
                 "s1",
-                McpServerUpdate(url = STDIO_CMD),
-                current_subject = "api-key-user",
-                via_api_key = True,
+                McpServerUpdate(url=STDIO_CMD),
+                current_subject="api-key-user",
+                via_api_key=True,
             )
         )
     assert exc.value.status_code == 403
@@ -207,14 +207,14 @@ def test_update_refuses_any_edit_of_a_stdio_row_from_api_key(
     import routes.mcp_servers as routes_mcp
 
     _reset_db(tmp_path, monkeypatch)
-    mcp_servers_db.create_server(id = "s1", display_name = "Local", url = STDIO_CMD)
+    mcp_servers_db.create_server(id="s1", display_name="Local", url=STDIO_CMD)
     with pytest.raises(HTTPException) as exc:
         asyncio.run(
             routes_mcp.update_mcp_server(
                 "s1",
                 McpServerUpdate(**payload_kwargs),
-                current_subject = "api-key-user",
-                via_api_key = True,
+                current_subject="api-key-user",
+                via_api_key=True,
             )
         )
     assert exc.value.status_code == 403
@@ -230,7 +230,7 @@ def test_update_regates_after_the_oauth_clear_await(tmp_path, monkeypatch, stdio
 
     _reset_db(tmp_path, monkeypatch)
     mcp_servers_db.create_server(
-        id = "s1", display_name = "Remote", url = "https://a/mcp", is_enabled = True, use_oauth = True
+        id="s1", display_name="Remote", url="https://a/mcp", is_enabled=True, use_oauth=True
     )
 
     async def _clear_then_convert(url):
@@ -242,9 +242,9 @@ def test_update_regates_after_the_oauth_clear_await(tmp_path, monkeypatch, stdio
         asyncio.run(
             routes_mcp.update_mcp_server(
                 "s1",
-                McpServerUpdate(headers = {"LD_PRELOAD": "/tmp/evil.so"}, use_oauth = False),
-                current_subject = "api-key-user",
-                via_api_key = True,
+                McpServerUpdate(headers={"LD_PRELOAD": "/tmp/evil.so"}, use_oauth=False),
+                current_subject="api-key-user",
+                via_api_key=True,
             )
         )
     assert exc.value.status_code == 403
@@ -259,18 +259,18 @@ def test_update_allows_http_row_but_redacts_saved_headers_from_keyless(
 
     _reset_db(tmp_path, monkeypatch)
     mcp_servers_db.create_server(
-        id = "s1",
-        display_name = "A",
-        url = "https://a/mcp",
-        headers_json = '{"Authorization": "Bearer t"}',
+        id="s1",
+        display_name="A",
+        url="https://a/mcp",
+        headers_json='{"Authorization": "Bearer t"}',
     )
     resp = asyncio.run(
         routes_mcp.update_mcp_server(
             "s1",
-            McpServerUpdate(display_name = "B"),
-            current_subject = "api-key-user",
-            via_api_key = True,
-            no_credential = True,
+            McpServerUpdate(display_name="B"),
+            current_subject="api-key-user",
+            via_api_key=True,
+            no_credential=True,
         )
     )
     assert resp.display_name == "B"
@@ -284,11 +284,11 @@ def test_refresh_refuses_stored_stdio_from_api_key(tmp_path, monkeypatch, stdio_
     import routes.mcp_servers as routes_mcp
 
     _reset_db(tmp_path, monkeypatch)
-    mcp_servers_db.create_server(id = "stdio1", display_name = "Local", url = STDIO_CMD, is_enabled = True)
+    mcp_servers_db.create_server(id="stdio1", display_name="Local", url=STDIO_CMD, is_enabled=True)
     with pytest.raises(HTTPException) as exc:
         asyncio.run(
             routes_mcp.refresh_mcp_server_tools(
-                "stdio1", current_subject = "api-key-user", via_api_key = True
+                "stdio1", current_subject="api-key-user", via_api_key=True
             )
         )
     assert exc.value.status_code == 403
@@ -298,14 +298,14 @@ def test_refresh_allows_http_from_api_key(tmp_path, monkeypatch, stdio_on):
     import routes.mcp_servers as routes_mcp
 
     _reset_db(tmp_path, monkeypatch)
-    mcp_servers_db.create_server(id = "s1", display_name = "A", url = "https://a/mcp")
+    mcp_servers_db.create_server(id="s1", display_name="A", url="https://a/mcp")
 
     async def _probe(**kwargs):
         return []
 
     monkeypatch.setattr(routes_mcp, "list_tools_async", _probe)
     res = asyncio.run(
-        routes_mcp.refresh_mcp_server_tools("s1", current_subject = "api-key-user", via_api_key = True)
+        routes_mcp.refresh_mcp_server_tools("s1", current_subject="api-key-user", via_api_key=True)
     )
     assert res.ok is True
 
@@ -329,9 +329,9 @@ def test_import_from_api_key_keeps_http_and_reports_stdio(tmp_path, monkeypatch,
     _reset_db(tmp_path, monkeypatch)
     res = asyncio.run(
         routes_mcp.import_mcp_servers(
-            McpServerImportRequest(config = _MIXED_CONFIG),
-            current_subject = "api-key-user",
-            via_api_key = True,
+            McpServerImportRequest(config=_MIXED_CONFIG),
+            current_subject="api-key-user",
+            via_api_key=True,
         )
     )
     assert [s.display_name for s in res.created] == ["remote"]
@@ -342,9 +342,9 @@ def test_import_from_api_key_keeps_http_and_reports_stdio(tmp_path, monkeypatch,
     # the stdio entry is still an error, and no row is duplicated.
     again = asyncio.run(
         routes_mcp.import_mcp_servers(
-            McpServerImportRequest(config = _MIXED_CONFIG),
-            current_subject = "api-key-user",
-            via_api_key = True,
+            McpServerImportRequest(config=_MIXED_CONFIG),
+            current_subject="api-key-user",
+            via_api_key=True,
         )
     )
     assert again.created == []
@@ -368,26 +368,26 @@ def test_ui_session_still_creates_and_imports_stdio(tmp_path, monkeypatch, stdio
     own_cmd = "/bin/echo hello"
     created = asyncio.run(
         routes_mcp.create_mcp_server(
-            McpServerCreate(display_name = "Local", url = own_cmd),
-            current_subject = "owner",
-            via_api_key = False,
+            McpServerCreate(display_name="Local", url=own_cmd),
+            current_subject="owner",
+            via_api_key=False,
         )
     )
     assert created.url == own_cmd
     renamed = asyncio.run(
         routes_mcp.update_mcp_server(
             created.id,
-            McpServerUpdate(display_name = "Local FS"),
-            current_subject = "owner",
-            via_api_key = False,
+            McpServerUpdate(display_name="Local FS"),
+            current_subject="owner",
+            via_api_key=False,
         )
     )
     assert renamed.display_name == "Local FS"
     res = asyncio.run(
         routes_mcp.import_mcp_servers(
-            McpServerImportRequest(config = _MIXED_CONFIG),
-            current_subject = "owner",
-            via_api_key = False,
+            McpServerImportRequest(config=_MIXED_CONFIG),
+            current_subject="owner",
+            via_api_key=False,
         )
     )
     assert res.errors == []
@@ -442,7 +442,7 @@ def test_data_recipe_mcp_tools_refuses_stdio_from_api_key():
     from routes.data_recipe.mcp import list_mcp_tools
 
     with pytest.raises(HTTPException) as exc:
-        list_mcp_tools(McpToolsListRequest(mcp_providers = [_STDIO_PROVIDER]), via_api_key = True)
+        list_mcp_tools(McpToolsListRequest(mcp_providers=[_STDIO_PROVIDER]), via_api_key=True)
     assert exc.value.status_code == 403
 
 
@@ -450,9 +450,9 @@ def test_data_recipe_job_refuses_stdio_recipe_from_api_key():
     from models.data_recipe import RecipePayload
     from routes.data_recipe.jobs import create_job
 
-    payload = RecipePayload(recipe = _STDIO_RECIPE)
+    payload = RecipePayload(recipe=_STDIO_RECIPE)
     with pytest.raises(HTTPException) as exc:
-        create_job(payload, request = None, credential = ("u", None), via_api_key = True)
+        create_job(payload, request=None, credential=("u", None), via_api_key=True)
     assert exc.value.status_code == 403
 
 
@@ -460,9 +460,9 @@ def test_data_recipe_validate_refuses_stdio_recipe_from_api_key():
     from models.data_recipe import RecipePayload
     from routes.data_recipe.validate import validate
 
-    payload = RecipePayload(recipe = _STDIO_RECIPE)
+    payload = RecipePayload(recipe=_STDIO_RECIPE)
     with pytest.raises(HTTPException) as exc:
-        validate(payload, via_api_key = True)
+        validate(payload, via_api_key=True)
     assert exc.value.status_code == 403
 
 
@@ -476,19 +476,19 @@ def test_list_hides_stdio_rows_from_api_keys(tmp_path, monkeypatch, stdio_on):
 
     _reset_db(tmp_path, monkeypatch)
     mcp_servers_db.create_server(
-        id = "stdio1",
-        display_name = "FS",
-        url = "npx server --token sk-argv-secret",
-        headers_json = '{"API_KEY": "sk-env-secret"}',
+        id="stdio1",
+        display_name="FS",
+        url="npx server --token sk-argv-secret",
+        headers_json='{"API_KEY": "sk-env-secret"}',
     )
     mcp_servers_db.create_server(
-        id = "http1",
-        display_name = "R",
-        url = "https://example.com/mcp",
-        headers_json = '{"Authorization": "Bearer t"}',
+        id="http1",
+        display_name="R",
+        url="https://example.com/mcp",
+        headers_json='{"Authorization": "Bearer t"}',
     )
 
-    keyed = routes_mcp.list_mcp_servers(current_subject = "u", via_api_key = True)
+    keyed = routes_mcp.list_mcp_servers(current_subject="u", via_api_key=True)
     assert [row.id for row in keyed] == ["http1"]
     serialized = repr([row.model_dump() for row in keyed])
     assert "sk-argv-secret" not in serialized
@@ -497,7 +497,7 @@ def test_list_hides_stdio_rows_from_api_keys(tmp_path, monkeypatch, stdio_on):
     assert keyed[0].headers == {"Authorization": "Bearer t"}
 
     keyless = routes_mcp.list_mcp_servers(
-        current_subject = "u", via_api_key = False, no_credential = True
+        current_subject="u", via_api_key=False, no_credential=True
     )
     assert [row.id for row in keyless] == ["http1"]
     assert keyless[0].headers == {}
@@ -508,12 +508,12 @@ def test_list_shows_stdio_rows_to_a_ui_session(tmp_path, monkeypatch, stdio_on):
 
     _reset_db(tmp_path, monkeypatch)
     mcp_servers_db.create_server(
-        id = "stdio1",
-        display_name = "FS",
-        url = "npx server --token sk-argv-secret",
-        headers_json = '{"API_KEY": "sk-env-secret"}',
+        id="stdio1",
+        display_name="FS",
+        url="npx server --token sk-argv-secret",
+        headers_json='{"API_KEY": "sk-env-secret"}',
     )
-    rows = routes_mcp.list_mcp_servers(current_subject = "u", via_api_key = False)
+    rows = routes_mcp.list_mcp_servers(current_subject="u", via_api_key=False)
     assert [row.id for row in rows] == ["stdio1"]
     assert rows[0].url == "npx server --token sk-argv-secret"
     assert rows[0].headers == {"API_KEY": "sk-env-secret"}

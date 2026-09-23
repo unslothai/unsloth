@@ -27,20 +27,20 @@ def _capture_body(provider_type: str, model: str, **kwargs) -> dict:
     def handler(request: httpx.Request) -> httpx.Response:
         captured["body"] = json.loads(request.content.decode())
         sse = 'data: {"choices":[{"index":0,"delta":{"content":"ok"}}]}\n\n' "data: [DONE]\n\n"
-        return httpx.Response(200, content = sse, headers = {"content-type": "text/event-stream"})
+        return httpx.Response(200, content=sse, headers={"content-type": "text/event-stream"})
 
-    mock_client = httpx.AsyncClient(transport = httpx.MockTransport(handler))
+    mock_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
     client = ExternalProviderClient(
-        provider_type = provider_type,
-        base_url = "http://127.0.0.1:11434/v1",
-        api_key = "",
+        provider_type=provider_type,
+        base_url="http://127.0.0.1:11434/v1",
+        api_key="",
     )
 
     async def run() -> None:
         try:
             async for _ in client.stream_chat_completion(
-                messages = [{"role": "user", "content": "hi"}],
-                model = model,
+                messages=[{"role": "user", "content": "hi"}],
+                model=model,
                 **kwargs,
             ):
                 pass
@@ -70,7 +70,7 @@ def test_ollama_forwards_reasoning_effort(effort):
     body = _capture_body(
         "ollama",
         "thinkingcap-27b-bottlecap:latest",
-        reasoning_effort = effort,
+        reasoning_effort=effort,
     )
     assert body["reasoning_effort"] == effort
 
@@ -79,7 +79,7 @@ def test_ollama_thinking_off_maps_to_reasoning_effort_none():
     body = _capture_body(
         "ollama",
         "thinkingcap-27b-bottlecap:latest",
-        enable_thinking = False,
+        enable_thinking=False,
     )
     assert body["reasoning_effort"] == "none"
 
@@ -88,7 +88,7 @@ def test_ollama_thinking_on_defaults_to_medium():
     body = _capture_body(
         "ollama",
         "thinkingcap-27b-bottlecap:latest",
-        enable_thinking = True,
+        enable_thinking=True,
     )
     assert body["reasoning_effort"] == "medium"
 
@@ -97,8 +97,8 @@ def test_ollama_explicit_effort_wins_over_enable_thinking():
     body = _capture_body(
         "ollama",
         "thinkingcap-27b-bottlecap:latest",
-        enable_thinking = True,
-        reasoning_effort = "high",
+        enable_thinking=True,
+        reasoning_effort="high",
     )
     assert body["reasoning_effort"] == "high"
 
@@ -111,6 +111,6 @@ def test_ollama_maps_reasoning_effort_aliases(incoming, expected):
     body = _capture_body(
         "ollama",
         "thinkingcap-27b-bottlecap:latest",
-        reasoning_effort = incoming,
+        reasoning_effort=incoming,
     )
     assert body["reasoning_effort"] == expected

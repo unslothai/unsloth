@@ -23,7 +23,7 @@ from studio.backend.tests.test_anthropic_messages import _mock_backend
 
 def image_block():
     buffer = BytesIO()
-    Image.new("RGB", (2, 2), "red").save(buffer, format = "WEBP")
+    Image.new("RGB", (2, 2), "red").save(buffer, format="WEBP")
     return {
         "type": "image",
         "source": {
@@ -117,11 +117,11 @@ def test_native_image_http_generation_and_count(monkeypatch, vision):
 
     _mock_backend(
         monkeypatch,
-        is_vision = vision,
-        supports_tool_passthrough = True,
-        base_url = "http://llama.test",
-        effective_parallel_slots = 4,
-        count_chat_tokens = count,
+        is_vision=vision,
+        supports_tool_passthrough=True,
+        base_url="http://llama.test",
+        effective_parallel_slots=4,
+        count_chat_tokens=count,
     )
     monkeypatch.setattr(inf, "_maybe_auto_switch_model", switch)
     real_client = httpx.AsyncClient
@@ -130,7 +130,7 @@ def test_native_image_http_generation_and_count(monkeypatch, vision):
         seen["wire"] = json.loads(request.content)
         return httpx.Response(
             200,
-            json = {
+            json={
                 "choices": [
                     {
                         "message": {"role": "assistant", "content": "The image is red."},
@@ -144,15 +144,15 @@ def test_native_image_http_generation_and_count(monkeypatch, vision):
     monkeypatch.setattr(
         inf.httpx,
         "AsyncClient",
-        lambda **kwargs: real_client(transport = httpx.MockTransport(capture)),
+        lambda **kwargs: real_client(transport=httpx.MockTransport(capture)),
     )
     app = FastAPI()
-    app.include_router(inf.router, prefix = "/v1")
+    app.include_router(inf.router, prefix="/v1")
     app.dependency_overrides[inf.get_current_subject] = lambda: "test"
     body = payload([{"type": "text", "text": "capture"}, image_block()])
     with TestClient(app) as client:
-        response = client.post("/v1/messages", json = body)
-        counted = client.post("/v1/messages/count_tokens", json = body)
+        response = client.post("/v1/messages", json=body)
+        counted = client.post("/v1/messages/count_tokens", json=body)
     assert response.status_code == 200, response.text
     assert counted.status_code == 200, counted.text
     image_tokens = inf._OPENAI_LLAMA_ADMISSION_IMAGE_TOKENS if vision else 0
@@ -177,16 +177,16 @@ def test_text_only_tool_image_keeps_the_server_tool_permission_gate(monkeypatch)
     async def switch(*args, **kwargs):
         switched.append(kwargs)
 
-    backend = _mock_backend(monkeypatch, is_vision = False)
+    backend = _mock_backend(monkeypatch, is_vision=False)
     monkeypatch.setattr(inf, "_maybe_auto_switch_model", switch)
     body = payload([{"type": "text", "text": "capture"}, image_block()])
     del body["tools"]
-    body.update(enable_tools = True, permission_mode = "ask")
+    body.update(enable_tools=True, permission_mode="ask")
     app = FastAPI()
-    app.include_router(inf.router, prefix = "/v1")
+    app.include_router(inf.router, prefix="/v1")
     app.dependency_overrides[inf.get_current_subject] = lambda: "test"
     with TestClient(app) as client:
-        response = client.post("/v1/messages", json = body)
+        response = client.post("/v1/messages", json=body)
     assert response.status_code == 400, response.text
     assert "permission_mode" in response.text
     assert switched == [] and backend.calls == []

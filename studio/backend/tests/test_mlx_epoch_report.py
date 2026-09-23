@@ -15,7 +15,7 @@ _TREE = ast.parse(textwrap.dedent(inspect.getsource(_worker._run_mlx_training)))
 class _StubMLXTrainer:
     def __init__(self):
         self._step_callbacks = []
-        self.state = SimpleNamespace(epoch = None)
+        self.state = SimpleNamespace(epoch=None)
 
     def add_step_callback(self, fn):
         self._step_callbacks.append(fn)
@@ -45,10 +45,10 @@ def _step_callback_block():
 def _run_step_callback(
     step,
     state_epoch,
-    rows = 0,
-    max_train_rows = None,
+    rows=0,
+    max_train_rows=None,
 ):
-    block = compile(ast.Module(body = _step_callback_block(), type_ignores = []), "<on_step>", "exec")
+    block = compile(ast.Module(body=_step_callback_block(), type_ignores=[]), "<on_step>", "exec")
     events = []
     trainer = _StubMLXTrainer()
     namespace = dict(vars(_worker))
@@ -85,7 +85,7 @@ def test_mlx_step_callback_reports_zero_before_the_trainer_has_an_epoch():
 
 
 def test_mlx_step_callback_counts_a_bounded_run_over_the_whole_dataset():
-    progress = _run_step_callback(60, 2.0, rows = 1000, max_train_rows = 250)
+    progress = _run_step_callback(60, 2.0, rows=1000, max_train_rows=250)
 
     assert progress[0]["epoch"] == 0.5
 

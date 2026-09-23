@@ -13,7 +13,7 @@ def _read(relative: str) -> str:
     path = ROOT / relative
     if not path.exists():
         path = ROOT / "unsloth_repo" / relative
-    return path.read_text(encoding = "utf-8")
+    return path.read_text(encoding="utf-8")
 
 
 def test_preset_interface_includes_load_config():

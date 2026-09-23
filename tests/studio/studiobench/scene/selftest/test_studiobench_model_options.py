@@ -51,4 +51,4 @@ assert.deepEqual(Array.from(options, (button) => button.label), ["Model A", "Mod
 menuOpen = false;
 assert.equal(context.window.__sb.dom.modelOptions().length, 0);
 """
-    subprocess.run([node, "-e", script, str(dom_js)], check = True, timeout = 10)
+    subprocess.run([node, "-e", script, str(dom_js)], check=True, timeout=10)

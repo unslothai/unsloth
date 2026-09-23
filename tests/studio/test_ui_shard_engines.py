@@ -50,7 +50,7 @@ ENGINES = ("chromium", "firefox", "webkit")
 
 
 def _doc() -> dict:
-    return yaml.safe_load(WORKFLOW.read_text(encoding = "utf-8"))
+    return yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
 
 
 def _shards() -> list[dict]:
@@ -110,7 +110,7 @@ def test_the_engine_key_distinguishes_the_engine_set() -> None:
         )
 
 
-@pytest.mark.parametrize("cell", _shards(), ids = lambda c: c["shard"])
+@pytest.mark.parametrize("cell", _shards(), ids=lambda c: c["shard"])
 def test_shard_installs_every_engine_it_drives(cell: dict) -> None:
     installed = set(cell["engines"].split())
     driven = _engines_driven_by(cell["shard"])
@@ -122,7 +122,7 @@ def test_shard_installs_every_engine_it_drives(cell: dict) -> None:
     )
 
 
-@pytest.mark.parametrize("cell", _shards(), ids = lambda c: c["shard"])
+@pytest.mark.parametrize("cell", _shards(), ids=lambda c: c["shard"])
 def test_shard_installs_nothing_it_never_drives(cell: dict) -> None:
     installed = set(cell["engines"].split())
     driven = _engines_driven_by(cell["shard"])

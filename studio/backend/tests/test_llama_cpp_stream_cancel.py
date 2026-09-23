@@ -76,7 +76,7 @@ def test_generate_chat_completion_swallows_internal_stream_cancel(monkeypatch):
     chunks = list(
         backend.generate_chat_completion(
             [{"role": "user", "content": "hi"}],
-            cancel_event = threading.Event(),
+            cancel_event=threading.Event(),
         )
     )
 
@@ -95,7 +95,7 @@ class _StallUpstream:
         self._sock.listen(1)
         self.port = self._sock.getsockname()[1]
         self._stop = threading.Event()
-        self._thread = threading.Thread(target = self._serve, daemon = True)
+        self._thread = threading.Thread(target=self._serve, daemon=True)
 
     @property
     def url(self) -> str:
@@ -111,7 +111,7 @@ class _StallUpstream:
             self._sock.close()
         except OSError:
             pass
-        self._thread.join(timeout = 5)
+        self._thread.join(timeout=5)
 
     def _serve(self) -> None:
         try:
@@ -149,7 +149,7 @@ class _StallUpstream:
             chunk = b"data: hello\n\n"
             conn.sendall(b"%x\r\n%s\r\n" % (len(chunk), chunk))
             # Stall: stay open and silent until the client shuts its side down.
-            while not self._stop.wait(timeout = 0.05):
+            while not self._stop.wait(timeout=0.05):
                 try:
                     conn.settimeout(0.05)
                     if conn.recv(1) == b"":
@@ -171,11 +171,11 @@ def test_cancel_interrupts_a_read_blocked_on_a_mid_stream_stall():
             time.sleep(0.3)
             cancel_event.set()
 
-        threading.Thread(target = _cancel_soon, daemon = True).start()
+        threading.Thread(target=_cancel_soon, daemon=True).start()
 
         started = time.monotonic()
         with httpx.Client(
-            limits = httpx.Limits(max_keepalive_connections = 0), trust_env = False
+            limits=httpx.Limits(max_keepalive_connections=0), trust_env=False
         ) as client:
             with pytest.raises(_LlamaStreamCancelled):
                 with LlamaCppBackend._stream_with_retry(
@@ -183,7 +183,7 @@ def test_cancel_interrupts_a_read_blocked_on_a_mid_stream_stall():
                     server.url,
                     {},
                     cancel_event,
-                    first_token_deadline = started + 30,
+                    first_token_deadline=started + 30,
                 ) as response:
                     for _chunk in response.iter_text():
                         pass  # first chunk arrives, then the read blocks silently

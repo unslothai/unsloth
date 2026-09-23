@@ -96,17 +96,17 @@ def test_export_commands_seed_compile_location(tmp_path, command_name):
     for key in ("UNSLOTH_STUDIO_HOME", "STUDIO_HOME", "UNSLOTH_PORTABLE"):
         env.pop(key, None)
     env.update(
-        HOME = str(tmp_path / "home"),
-        UNSLOTH_HOME = str(unsloth_home),
-        PYTHONPATH = str(REPO_ROOT),
+        HOME=str(tmp_path / "home"),
+        UNSLOTH_HOME=str(unsloth_home),
+        PYTHONPATH=str(REPO_ROOT),
     )
     completed = subprocess.run(
         [sys.executable, "-c", PROBE, command_name, str(REPO_ROOT)],
-        cwd = str(workdir),
-        env = env,
-        capture_output = True,
-        text = True,
-        timeout = 300,
+        cwd=str(workdir),
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=300,
     )
     assert completed.returncode == 0, completed.stderr
     line = next(l for l in completed.stdout.splitlines() if l.startswith("PROBE "))
@@ -130,7 +130,7 @@ def test_node_discovery_does_not_build_the_cache_tree(tmp_path):
     aimed at a remote server. The merge base created nothing here.
     """
     home = tmp_path / "home"
-    (home / ".unsloth" / "studio").mkdir(parents = True)
+    (home / ".unsloth" / "studio").mkdir(parents=True)
     probe = (
         "import json, os, sys\n"
         f"sys.path.insert(0, {str(REPO_ROOT)!r})\n"
@@ -144,11 +144,11 @@ def test_node_discovery_does_not_build_the_cache_tree(tmp_path):
     )
     completed = subprocess.run(
         [sys.executable, "-c", probe],
-        cwd = str(tmp_path),
-        env = {"HOME": str(home), "PATH": os.environ.get("PATH", "/usr/bin:/bin")},
-        capture_output = True,
-        text = True,
-        timeout = 300,
+        cwd=str(tmp_path),
+        env={"HOME": str(home), "PATH": os.environ.get("PATH", "/usr/bin:/bin")},
+        capture_output=True,
+        text=True,
+        timeout=300,
     )
     assert completed.returncode == 0, completed.stderr
     line = next(l for l in completed.stdout.splitlines() if l.startswith("PROBE "))

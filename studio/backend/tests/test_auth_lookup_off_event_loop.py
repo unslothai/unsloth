@@ -23,7 +23,7 @@ SUBJECT = "test-user"
 
 
 def _credentials(token: str) -> HTTPAuthorizationCredentials:
-    return HTTPAuthorizationCredentials(scheme = "Bearer", credentials = token)
+    return HTTPAuthorizationCredentials(scheme="Bearer", credentials=token)
 
 
 def _record_thread(threads: list[int], result):
@@ -53,7 +53,7 @@ def _jwt_case(monkeypatch, threads):
         "get_user_record",
         _record_thread(threads, _record(SECRET)),
     )
-    token = jwt.encode({"sub": SUBJECT}, SECRET, algorithm = authentication.ALGORITHM)
+    token = jwt.encode({"sub": SUBJECT}, SECRET, algorithm=authentication.ALGORITHM)
     return authentication.get_current_subject(_credentials(token))
 
 
@@ -112,7 +112,7 @@ def test_the_status_route_reads_off_the_event_loop_thread(monkeypatch):
     )
 
     app = FastAPI()
-    app.include_router(auth_routes.router, prefix = "/api/auth")
+    app.include_router(auth_routes.router, prefix="/api/auth")
     loop_threads: list[int] = []
 
     @app.get("/loop-thread")

@@ -35,9 +35,9 @@ _CAPS = {
 
 @pytest.fixture
 def mtp_backend(tmp_path, monkeypatch):
-    backend, _ = _backend(tmp_path, vulkan = False, memory = _MEMORY)
+    backend, _ = _backend(tmp_path, vulkan=False, memory=_MEMORY)
     monkeypatch.setattr(
-        type(backend), "probe_server_capabilities", classmethod(lambda cls, binary = None: _CAPS)
+        type(backend), "probe_server_capabilities", classmethod(lambda cls, binary=None: _CAPS)
     )
     # The name is what _is_mtp_model_name reads, so this GGUF resolves to MTP.
     return backend, _write_gguf(tmp_path / "Qwen3.5-9B-MTP.gguf")
@@ -51,7 +51,7 @@ def _slots(cmd: list[str]) -> int:
 @pytest.mark.parametrize("speculative", ["auto", "mtp", "mtp+ngram", "ngram", "off"])
 def test_the_launch_serves_the_slots_that_were_asked_for(mtp_backend, requested, speculative):
     backend, gguf = mtp_backend
-    cmd = _launch(backend, gguf, n_parallel = requested, speculative_type = speculative)["cmd"]
+    cmd = _launch(backend, gguf, n_parallel=requested, speculative_type=speculative)["cmd"]
     assert _slots(cmd) == requested
 
 
@@ -62,8 +62,8 @@ def test_extras_owned_mtp_keeps_the_slots_too(mtp_backend, requested):
     cmd = _launch(
         backend,
         gguf,
-        n_parallel = requested,
-        extra_args = ["--spec-type", "draft-mtp"],
+        n_parallel=requested,
+        extra_args=["--spec-type", "draft-mtp"],
     )["cmd"]
     assert _slots(cmd) == requested
 
@@ -73,7 +73,7 @@ def test_an_inherited_spec_env_does_not_take_the_slots(mtp_backend, monkeypatch,
     """LLAMA_ARG_SPEC_TYPE cannot be cleared by a later flag, so it used to clamp."""
     backend, gguf = mtp_backend
     monkeypatch.setenv("LLAMA_ARG_SPEC_TYPE", "draft-mtp")
-    cmd = _launch(backend, gguf, n_parallel = requested)["cmd"]
+    cmd = _launch(backend, gguf, n_parallel=requested)["cmd"]
     assert _slots(cmd) == requested
 
 
@@ -81,18 +81,18 @@ def test_an_inherited_spec_env_does_not_take_the_slots(mtp_backend, monkeypatch,
 def test_the_batch_floor_follows_the_slot_count(mtp_backend, requested):
     """llama-server aborts below the slot count, so -b rises with an MTP load too."""
     backend, gguf = mtp_backend
-    cmd = _launch(backend, gguf, n_parallel = requested, n_batch = 1, speculative_type = "mtp")["cmd"]
+    cmd = _launch(backend, gguf, n_parallel=requested, n_batch=1, speculative_type="mtp")["cmd"]
     assert _slots(cmd) == requested
     assert int(cmd[cmd.index("--batch-size") + 1]) >= max(2, requested)
 
 
 def test_a_build_without_kv_unified_still_falls_back_to_one_slot(tmp_path, monkeypatch):
     """The one downgrade that survives: more slots would split the context window."""
-    backend, gguf = _backend(tmp_path, vulkan = False, memory = _MEMORY)
+    backend, gguf = _backend(tmp_path, vulkan=False, memory=_MEMORY)
     monkeypatch.setattr(
         type(backend),
         "probe_server_capabilities",
-        classmethod(lambda cls, binary = None: {**_CAPS, "supports_kv_unified": False}),
+        classmethod(lambda cls, binary=None: {**_CAPS, "supports_kv_unified": False}),
     )
-    cmd = _launch(backend, gguf, n_parallel = 4, speculative_type = "mtp")["cmd"]
+    cmd = _launch(backend, gguf, n_parallel=4, speculative_type="mtp")["cmd"]
     assert _slots(cmd) == 1

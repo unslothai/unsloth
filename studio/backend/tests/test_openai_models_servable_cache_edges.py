@@ -27,7 +27,7 @@ import routes.inference as inf  # noqa: E402
 from core.inference import local_model_resolver as resolver
 
 
-@pytest.fixture(autouse = True)
+@pytest.fixture(autouse=True)
 def _clean_cache():
     def _reset():
         inf._SERVABLE_SCAN_CACHE["entry"] = None
@@ -37,9 +37,9 @@ def _clean_cache():
     _reset()
 
 
-def _catalog(n = 3, tag = "m"):
+def _catalog(n=3, tag="m"):
     return [
-        SimpleNamespace(id = f"repo/{tag}{i}", path = f"/models/{tag}{i}", task = None) for i in range(n)
+        SimpleNamespace(id=f"repo/{tag}{i}", path=f"/models/{tag}{i}", task=None) for i in range(n)
     ]
 
 
@@ -77,11 +77,11 @@ def test_concurrent_callers_do_not_corrupt_the_cache(stub):
         except BaseException as exc:  # noqa: BLE001
             errors.append(exc)
 
-    threads = [threading.Thread(target = _go) for _ in range(16)]
+    threads = [threading.Thread(target=_go) for _ in range(16)]
     for t in threads:
         t.start()
     for t in threads:
-        t.join(timeout = 60)
+        t.join(timeout=60)
     assert not errors, f"concurrent access raised: {errors}"
     assert set(results) == {5}, "every caller must see the whole catalog"
 
@@ -149,9 +149,9 @@ def test_media_and_stt_tasks_stay_excluded(monkeypatch):
     monkeypatch.setattr("core.inference.local_model_resolver.local_load_dir", lambda p: p)
     monkeypatch.setattr(inf, "_resolves_to_resident", lambda key, **kw: False)
     catalog = [
-        SimpleNamespace(id = "repo/text", path = "/m/text", task = None),
-        SimpleNamespace(id = "repo/stt", path = "/m/stt", task = inf._STT_MODEL_TASK),
-        SimpleNamespace(id = "repo/tts", path = "/m/tts", task = inf._TTS_MODEL_TASK),
+        SimpleNamespace(id="repo/text", path="/m/text", task=None),
+        SimpleNamespace(id="repo/stt", path="/m/stt", task=inf._STT_MODEL_TASK),
+        SimpleNamespace(id="repo/tts", path="/m/tts", task=inf._TTS_MODEL_TASK),
     ]
     rows = inf._servable_catalog_rows(catalog, 111.0)
     assert [r[0].id for r in rows] == ["repo/text"]
@@ -271,7 +271,7 @@ def test_an_additions_only_invalidation_also_refreshes_the_scan(monkeypatch):
 
     assert inf._servable_catalog_rows(catalog, 222.0)[0][2] == ("Q4_K_M",)
     quants["/models/q0"] = ("Q8_0", "Q4_K_M")
-    resolver.invalidate_index(additions_only = True)
+    resolver.invalidate_index(additions_only=True)
     assert inf._servable_catalog_rows(catalog, 222.0)[0][2] == ("Q8_0", "Q4_K_M")
 
 

@@ -205,8 +205,8 @@ async def _shared_policy_read(current_subject: str = Depends(get_current_subject
 
 router = APIRouter()
 _account_settings_router = APIRouter()
-_owner_settings_router = APIRouter(dependencies = [Depends(_require_installation_owner)])
-_shared_settings_router = APIRouter(dependencies = [Depends(_shared_policy_read)])
+_owner_settings_router = APIRouter(dependencies=[Depends(_require_installation_owner)])
+_shared_settings_router = APIRouter(dependencies=[Depends(_shared_policy_read)])
 
 logger = get_logger(__name__)
 
@@ -215,36 +215,36 @@ class ImageGenerationPresetParams(BaseModel):
     """Bounds track DiffusionGenerateRequest. A preset the generate endpoint would refuse is not
     a usable preset: selecting it would make every following Generate fail validation."""
 
-    model_config = ConfigDict(extra = "forbid")
+    model_config = ConfigDict(extra="forbid")
 
     negativePrompt: str = ""
-    width: int = Field(default = 1024, ge = 256, le = 2752, multiple_of = 16)
-    height: int = Field(default = 1024, ge = 256, le = 2752, multiple_of = 16)
-    steps: int = Field(default = 9, ge = 1, le = 100)
-    guidance: float = Field(default = 0, ge = 0, le = 20)
-    batchSize: int = Field(default = 1, ge = 1, le = 32)
-    runs: int = Field(default = 1, ge = 1)
+    width: int = Field(default=1024, ge=256, le=2752, multiple_of=16)
+    height: int = Field(default=1024, ge=256, le=2752, multiple_of=16)
+    steps: int = Field(default=9, ge=1, le=100)
+    guidance: float = Field(default=0, ge=0, le=20)
+    batchSize: int = Field(default=1, ge=1, le=32)
+    runs: int = Field(default=1, ge=1)
 
 
 class VideoGenerationPresetParams(BaseModel):
     """Bounds track VideoGenerateRequest, as the image params track theirs."""
 
-    model_config = ConfigDict(extra = "forbid")
+    model_config = ConfigDict(extra="forbid")
 
     negativePrompt: str = ""
-    width: int = Field(default = 768, ge = 32, le = 2048)
-    height: int = Field(default = 512, ge = 32, le = 2048)
-    durationSeconds: float = Field(default = 3, gt = 0, le = 3600)
-    steps: int = Field(default = 8, ge = 1, le = 100)
-    guidance: float = Field(default = 1, ge = 0, le = 20)
-    flowShift: Optional[float] = Field(default = None, gt = 0, le = 100)
-    audioFlowShift: Optional[float] = Field(default = None, gt = 0, le = 100)
+    width: int = Field(default=768, ge=32, le=2048)
+    height: int = Field(default=512, ge=32, le=2048)
+    durationSeconds: float = Field(default=3, gt=0, le=3600)
+    steps: int = Field(default=8, ge=1, le=100)
+    guidance: float = Field(default=1, ge=0, le=20)
+    flowShift: Optional[float] = Field(default=None, gt=0, le=100)
+    audioFlowShift: Optional[float] = Field(default=None, gt=0, le=100)
 
 
 class MediaGenerationPreset(BaseModel):
-    model_config = ConfigDict(extra = "forbid")
+    model_config = ConfigDict(extra="forbid")
 
-    name: str = Field(..., min_length = 1, max_length = 80)
+    name: str = Field(..., min_length=1, max_length=80)
 
     @field_validator("name")
     @classmethod
@@ -271,28 +271,28 @@ class MediaGenerationPresetState(BaseModel):
     them, so a second stored copy would only ever compete with it.
     """
 
-    model_config = ConfigDict(extra = "forbid")
+    model_config = ConfigDict(extra="forbid")
 
-    activePreset: str = Field(default = "Default", min_length = 1, max_length = 80)
+    activePreset: str = Field(default="Default", min_length=1, max_length=80)
 
 
 class ImageGenerationPresetState(MediaGenerationPresetState):
-    currentParams: ImageGenerationPresetParams = Field(default_factory = ImageGenerationPresetParams)
+    currentParams: ImageGenerationPresetParams = Field(default_factory=ImageGenerationPresetParams)
 
 
 class VideoGenerationPresetState(MediaGenerationPresetState):
-    currentParams: VideoGenerationPresetParams = Field(default_factory = VideoGenerationPresetParams)
+    currentParams: VideoGenerationPresetParams = Field(default_factory=VideoGenerationPresetParams)
 
 
 class ImageGenerationPresetSettings(ImageGenerationPresetState):
     # No cap on the read: upsert_media_generation_preset owns the limit, and refusing to report a store
     # that somehow exceeds it would only turn a GET into a 500.
-    customPresets: list[ImageGenerationPreset] = Field(default_factory = list)
+    customPresets: list[ImageGenerationPreset] = Field(default_factory=list)
     saved: bool = False
 
 
 class VideoGenerationPresetSettings(VideoGenerationPresetState):
-    customPresets: list[VideoGenerationPreset] = Field(default_factory = list)
+    customPresets: list[VideoGenerationPreset] = Field(default_factory=list)
     saved: bool = False
 
 
@@ -445,7 +445,7 @@ def _get_generation_preset_settings(kind, schema):
 
 @_account_settings_router.get(
     "/generation-presets/image",
-    response_model = ImageGenerationPresetSettings,
+    response_model=ImageGenerationPresetSettings,
 )
 def get_image_generation_preset_settings(
     current_subject: str = Depends(get_current_subject),
@@ -469,7 +469,7 @@ def update_image_generation_preset_settings(
 
 @_account_settings_router.get(
     "/generation-presets/video",
-    response_model = VideoGenerationPresetSettings,
+    response_model=VideoGenerationPresetSettings,
 )
 def get_video_generation_preset_settings(
     current_subject: str = Depends(get_current_subject),
@@ -502,7 +502,7 @@ def _upsert_custom_generation_preset(
             lambda stored: _validated_readable_model(schema, stored) is not None,
         )
     except ValueError as exc:
-        raise HTTPException(status_code = 409, detail = str(exc)) from exc
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     return {"saved": True}
 
 
@@ -528,13 +528,13 @@ def delete_custom_generation_preset(
 ) -> dict[str, bool]:
     name = name.strip()
     if not name or name == "Default" or len(name) > 80:
-        raise HTTPException(status_code = 422, detail = "Invalid preset name")
+        raise HTTPException(status_code=422, detail="Invalid preset name")
     delete_media_generation_preset(kind, name)
     return {"deleted": True}
 
 
 class UploadLimitPayload(BaseModel):
-    max_upload_size_mb: int = Field(..., ge = MIN_UPLOAD_LIMIT_MB, le = MAX_UPLOAD_LIMIT_MB)
+    max_upload_size_mb: int = Field(..., ge=MIN_UPLOAD_LIMIT_MB, le=MAX_UPLOAD_LIMIT_MB)
 
 
 class UploadLimitResponse(BaseModel):
@@ -547,7 +547,7 @@ class UploadLimitResponse(BaseModel):
 
 
 class HuggingFaceTokenPayload(BaseModel):
-    token: str = Field(..., min_length = 1, max_length = 512)
+    token: str = Field(..., min_length=1, max_length=512)
 
     @field_validator("token")
     @classmethod
@@ -563,17 +563,17 @@ class HuggingFaceTokenResponse(BaseModel):
     has_token: bool = False
 
 
-@_account_settings_router.get("/hugging-face-token", response_model = HuggingFaceTokenResponse)
+@_account_settings_router.get("/hugging-face-token", response_model=HuggingFaceTokenResponse)
 def get_hugging_face_token(
     _current_subject: str = Depends(get_current_subject),
     via_api_key: bool = Depends(authenticated_via_api_key),
 ) -> HuggingFaceTokenResponse:
     require_ui_session(via_api_key)
     token = credential_secrets.get_hf_token()
-    return HuggingFaceTokenResponse(token = token, has_token = token is not None)
+    return HuggingFaceTokenResponse(token=token, has_token=token is not None)
 
 
-@_account_settings_router.put("/hugging-face-token", response_model = HuggingFaceTokenResponse)
+@_account_settings_router.put("/hugging-face-token", response_model=HuggingFaceTokenResponse)
 def update_hugging_face_token(
     payload: HuggingFaceTokenPayload,
     credential: tuple = Depends(get_current_credential),
@@ -585,11 +585,11 @@ def update_hugging_face_token(
     credential_secrets.get_or_create_credential_encryption_key()
     with current_credential_write(credential):
         credential_secrets.save_hf_token(payload.token)
-    return HuggingFaceTokenResponse(token = payload.token, has_token = True)
+    return HuggingFaceTokenResponse(token=payload.token, has_token=True)
 
 
 @_account_settings_router.put(
-    "/hugging-face-token/migrate", response_model = HuggingFaceTokenResponse
+    "/hugging-face-token/migrate", response_model=HuggingFaceTokenResponse
 )
 def migrate_hugging_face_token(
     payload: HuggingFaceTokenPayload,
@@ -602,10 +602,10 @@ def migrate_hugging_face_token(
     with current_credential_write(credential):
         credential_secrets.save_hf_token_if_absent(payload.token)
         token = credential_secrets.get_hf_token()
-    return HuggingFaceTokenResponse(token = token, has_token = token is not None)
+    return HuggingFaceTokenResponse(token=token, has_token=token is not None)
 
 
-@_account_settings_router.delete("/hugging-face-token", response_model = HuggingFaceTokenResponse)
+@_account_settings_router.delete("/hugging-face-token", response_model=HuggingFaceTokenResponse)
 def clear_hugging_face_token(
     credential: tuple = Depends(get_current_credential),
     via_api_key: bool = Depends(authenticated_via_api_key),
@@ -613,7 +613,7 @@ def clear_hugging_face_token(
     require_ui_session(via_api_key)
     with current_credential_write(credential):
         credential_secrets.delete_hf_token()
-    return HuggingFaceTokenResponse(token = None, has_token = False)
+    return HuggingFaceTokenResponse(token=None, has_token=False)
 
 
 class HelperPrecachePayload(BaseModel):
@@ -695,9 +695,9 @@ class ModelMemoryResponse(BaseModel):
 class VramBudgetPayload(BaseModel):
     # None clears the stored budget so env/default applies again; it cannot also mean "leave untouched", hence
     # required rather than defaulted: with a default, a client that dropped the field would silently discard it.
-    fraction: Optional[float] = Field(ge = VRAM_FRACTION_MIN, le = VRAM_FRACTION_MAX)
+    fraction: Optional[float] = Field(ge=VRAM_FRACTION_MIN, le=VRAM_FRACTION_MAX)
 
-    @field_validator("fraction", mode = "before")
+    @field_validator("fraction", mode="before")
     @classmethod
     def _reject_bool(cls, value: object) -> object:
         if isinstance(value, bool):
@@ -718,7 +718,7 @@ class VramBudgetResponse(BaseModel):
 
 
 class HuggingFaceCachePayload(BaseModel):
-    cache_home: Optional[str] = Field(default = None, max_length = 4096)
+    cache_home: Optional[str] = Field(default=None, max_length=4096)
 
 
 class HuggingFaceCacheResponse(BaseModel):
@@ -759,7 +759,7 @@ class CacheInventoryResponse(BaseModel):
 class CachePurgePayload(BaseModel):
     # Cache identifiers, never paths: the backend owns the mapping from a key to
     # a directory, so a caller cannot name one of its own.
-    keys: list[str] = Field(min_length = 1, max_length = len(CACHE_KEYS))
+    keys: list[str] = Field(min_length=1, max_length=len(CACHE_KEYS))
 
 
 class CachePurgeResultResponse(BaseModel):
@@ -776,7 +776,7 @@ class CachePurgeResponse(BaseModel):
 
 
 class LlamaCppPathPayload(BaseModel):
-    path: Optional[str] = Field(default = None, max_length = MAX_CUSTOM_LLAMA_CPP_PATH_LENGTH)
+    path: Optional[str] = Field(default=None, max_length=MAX_CUSTOM_LLAMA_CPP_PATH_LENGTH)
 
 
 class LlamaCppPathResponse(BaseModel):
@@ -792,12 +792,12 @@ class LlamaCppPathResponse(BaseModel):
 class OpenAIAutoSwitchPayload(BaseModel):
     enabled: bool
     # None leaves the stored value untouched (partial updates can't clobber it).
-    auto_unload_idle_seconds: Optional[int] = Field(default = None, ge = 0)
+    auto_unload_idle_seconds: Optional[int] = Field(default=None, ge=0)
     auto_unload_keep_kv: Optional[bool] = None
     auto_download_model: Optional[bool] = None
     auto_unload_api_only: Optional[bool] = None
     # The image/video TTL is its own setting, not a share of the chat one.
-    media_auto_unload_idle_seconds: Optional[int] = Field(default = None, ge = 0)
+    media_auto_unload_idle_seconds: Optional[int] = Field(default=None, ge=0)
     media_auto_switch_model: Optional[bool] = None
 
 
@@ -847,32 +847,32 @@ class ModelOverridePayload(BaseModel):
     mode) are left to it, since their valid sets follow the llama.cpp build.
     """
 
-    model_id: str = Field(..., min_length = 1, max_length = MAX_MODEL_OVERRIDE_KEY_LEN)
+    model_id: str = Field(..., min_length=1, max_length=MAX_MODEL_OVERRIDE_KEY_LEN)
     # None leaves the stored value alone (the UI has no control for flags); [] clears them.
     llama_extra_args: Optional[list[str]] = None
     # ge=1: the setter drops a falsy value, so reject 0 here instead of discarding it silently.
-    max_seq_length: Optional[int] = Field(default = None, ge = 1, le = 1048576)
-    custom_context_length: Optional[int] = Field(default = None, ge = 1, le = 1048576)
-    kv_cache_dtype: Optional[str] = Field(default = None, max_length = 32)
+    max_seq_length: Optional[int] = Field(default=None, ge=1, le=1048576)
+    custom_context_length: Optional[int] = Field(default=None, ge=1, le=1048576)
+    kv_cache_dtype: Optional[str] = Field(default=None, max_length=32)
     # A discrete set, enforced by the normalizer; these bounds only block absurd values.
-    mlx_kv_bits: Optional[int] = Field(default = None, ge = 2, le = 8)
-    speculative_type: Optional[str] = Field(default = None, max_length = 32)
-    spec_draft_n_max: Optional[int] = Field(default = None, ge = 1, le = 16)
+    mlx_kv_bits: Optional[int] = Field(default=None, ge=2, le=8)
+    speculative_type: Optional[str] = Field(default=None, max_length=32)
+    spec_draft_n_max: Optional[int] = Field(default=None, ge=1, le=16)
     # Parallel decode slots (llama-server --parallel), GGUF-only; None follows the server default.
-    n_parallel: Optional[int] = Field(default = None, ge = PARALLEL_SLOTS_MIN, le = PARALLEL_SLOTS_MAX)
-    reasoning_budget: Optional[int] = Field(default = None, ge = -1, le = 2_147_483_647)
+    n_parallel: Optional[int] = Field(default=None, ge=PARALLEL_SLOTS_MIN, le=PARALLEL_SLOTS_MAX)
+    reasoning_budget: Optional[int] = Field(default=None, ge=-1, le=2_147_483_647)
     reasoning_budget_message: Optional[str] = None
     # prompt batch sizes (--batch-size / --ubatch-size), gguf-only; none = llama.cpp defaults
-    n_batch: Optional[int] = Field(default = None, ge = BATCH_SIZE_MIN, le = BATCH_SIZE_MAX)
-    n_ubatch: Optional[int] = Field(default = None, ge = BATCH_SIZE_MIN, le = BATCH_SIZE_MAX)
+    n_batch: Optional[int] = Field(default=None, ge=BATCH_SIZE_MIN, le=BATCH_SIZE_MAX)
+    n_ubatch: Optional[int] = Field(default=None, ge=BATCH_SIZE_MIN, le=BATCH_SIZE_MAX)
     # model_override_load_kwargs already applies all four off a stored row, so a route that drops them leaves the
     # setting reaching a picker load and nothing else.
-    load_mode: Optional[str] = Field(default = None, max_length = 32)
-    spec_draft_cache_type: Optional[str] = Field(default = None, max_length = 32)
+    load_mode: Optional[str] = Field(default=None, max_length=32)
+    spec_draft_cache_type: Optional[str] = Field(default=None, max_length=32)
     # Stored on "is not None", not on truth: 0 checkpoints and a 0 or -1 cache are
     # meaningful values (none kept; cache disabled; no limit). Bounds mirror LoadRequest.
-    ctx_checkpoints: Optional[int] = Field(default = None, ge = 0, le = CTX_CHECKPOINTS_MAX)
-    cache_ram: Optional[int] = Field(default = None, ge = CACHE_RAM_MIN_MIB, le = CACHE_RAM_MAX_MIB)
+    ctx_checkpoints: Optional[int] = Field(default=None, ge=0, le=CTX_CHECKPOINTS_MAX)
+    cache_ram: Optional[int] = Field(default=None, ge=CACHE_RAM_MIN_MIB, le=CACHE_RAM_MAX_MIB)
     # Does this client know the four above exist? A save REPLACES the entry, so an omission from a build that
     # predates them is indistinguishable from a user clearing them. Only a client that sets this may clear by
     # omission; default False, so an old payload is the safe case.
@@ -886,9 +886,9 @@ class ModelOverridePayload(BaseModel):
     chat_template_override: Optional[str] = None
     gpu_memory_mode: Optional[Literal["auto", "manual"]] = None
     # -1 is Auto (llama.cpp --fit sizes the offload); the normalizer treats it as unset.
-    gpu_layers: Optional[int] = Field(default = None, ge = -1, le = 1024)
-    n_cpu_moe: Optional[int] = Field(default = None, ge = 0, le = 1024)
-    gpu_ids: Optional[list[int]] = Field(default = None, max_length = MAX_GPU_IDS)
+    gpu_layers: Optional[int] = Field(default=None, ge=-1, le=1024)
+    n_cpu_moe: Optional[int] = Field(default=None, ge=0, le=1024)
+    gpu_ids: Optional[list[int]] = Field(default=None, max_length=MAX_GPU_IDS)
     # Which index space gpu_ids is in. Absent means physical, the only thing a client
     # written before this field could have meant.
     gpu_index_kind: Optional[Literal["physical", "vulkan"]] = None
@@ -927,7 +927,7 @@ class ModelOverridePayload(BaseModel):
         "gpu_layers",
         "n_cpu_moe",
         "gpu_ids",
-        mode = "before",
+        mode="before",
     )
     @classmethod
     def _no_booleans(cls, value: Any) -> Any:
@@ -952,17 +952,17 @@ class ModelOverridesResponse(BaseModel):
 
 def _upload_limit_response(limit_mb: int) -> UploadLimitResponse:
     return UploadLimitResponse(
-        max_upload_size_mb = limit_mb,
-        max_upload_size_bytes = upload_limit_bytes(limit_mb),
-        max_upload_size_label = upload_limit_label(limit_mb),
-        default_upload_size_mb = default_upload_limit_mb(),
+        max_upload_size_mb=limit_mb,
+        max_upload_size_bytes=upload_limit_bytes(limit_mb),
+        max_upload_size_label=upload_limit_label(limit_mb),
+        default_upload_size_mb=default_upload_limit_mb(),
     )
 
 
 def _helper_precache_response(enabled: bool | None = None) -> HelperPrecacheResponse:
     return HelperPrecacheResponse(
-        enabled = get_helper_precache_enabled() if enabled is None else enabled,
-        disabled_by_env = helper_model_disabled_by_env(),
+        enabled=get_helper_precache_enabled() if enabled is None else enabled,
+        disabled_by_env=helper_model_disabled_by_env(),
     )
 
 
@@ -970,19 +970,20 @@ def _download_transport_response(mode: str | None = None) -> DownloadTransportRe
     # No Xet probe: this renders a row, not a download start. The free-RAM gate is asked for
     # anyway, since the row states what the next download will use.
     from hub.utils.download_registry import get_download_transport_capabilities
-    caps = get_download_transport_capabilities(ram_gate = True)
+
+    caps = get_download_transport_capabilities(ram_gate=True)
     return DownloadTransportResponse(
-        mode = get_download_transport_mode() if mode is None else mode,
-        xet_available = caps.xet.available,
-        xet_unavailable_reason = caps.xet.reason,
-        auto_resolves_to = caps.auto_resolves_to,
-        auto_reason = caps.auto_reason,
+        mode=get_download_transport_mode() if mode is None else mode,
+        xet_available=caps.xet.available,
+        xet_unavailable_reason=caps.xet.reason,
+        auto_resolves_to=caps.auto_resolves_to,
+        auto_reason=caps.auto_reason,
     )
 
 
 def _chat_preferences_response(enabled: bool | None = None) -> ChatPreferencesResponse:
     return ChatPreferencesResponse(
-        show_model_disclaimer = (get_show_model_disclaimer() if enabled is None else enabled)
+        show_model_disclaimer=(get_show_model_disclaimer() if enabled is None else enabled)
     )
 
 
@@ -1091,11 +1092,11 @@ def _model_memory_response() -> ModelMemoryResponse:
     keep_resident, no_ram_reserve = get_model_memory_settings()
     mlock_active = _model_memory_mlock_active(should_mlock())
     return ModelMemoryResponse(
-        keep_resident = keep_resident,
-        no_ram_reserve = no_ram_reserve,
-        mlock_active = mlock_active,
-        reload_required = _model_memory_reload_required(),
-        memlock_limit_bytes = memlock_limit_bytes() if mlock_active else None,
+        keep_resident=keep_resident,
+        no_ram_reserve=no_ram_reserve,
+        mlock_active=mlock_active,
+        reload_required=_model_memory_reload_required(),
+        memlock_limit_bytes=memlock_limit_bytes() if mlock_active else None,
     )
 
 
@@ -1126,9 +1127,9 @@ def _vram_budget_reload_required(fraction: float) -> bool:
 def _vram_budget_response() -> VramBudgetResponse:
     fraction, is_stored = get_vram_budget_state()
     return VramBudgetResponse(
-        fraction = fraction,
-        is_stored = is_stored,
-        reload_required = _vram_budget_reload_required(fraction),
+        fraction=fraction,
+        is_stored=is_stored,
+        reload_required=_vram_budget_reload_required(fraction),
     )
 
 
@@ -1153,31 +1154,31 @@ def _llama_cpp_path_reload_required() -> bool:
 def _llama_cpp_path_response() -> LlamaCppPathResponse:
     return LlamaCppPathResponse(
         **custom_llama_cpp_path_status(),
-        reload_required = _llama_cpp_path_reload_required(),
+        reload_required=_llama_cpp_path_reload_required(),
     )
 
 
-@_owner_settings_router.get("/hugging-face-cache", response_model = HuggingFaceCacheResponse)
+@_owner_settings_router.get("/hugging-face-cache", response_model=HuggingFaceCacheResponse)
 def get_hugging_face_cache(
     current_subject: str = Depends(get_current_subject),
 ) -> HuggingFaceCacheResponse:
     return _hugging_face_cache_response()
 
 
-@_owner_settings_router.put("/hugging-face-cache", response_model = HuggingFaceCacheResponse)
+@_owner_settings_router.put("/hugging-face-cache", response_model=HuggingFaceCacheResponse)
 def update_hugging_face_cache(
     payload: HuggingFaceCachePayload, current_subject: str = Depends(get_current_subject)
 ) -> HuggingFaceCacheResponse:
     try:
         set_hf_cache_home(payload.cache_home)
     except RuntimeError as exc:
-        raise HTTPException(status_code = 409, detail = str(exc)) from exc
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ValueError as exc:
-        raise HTTPException(status_code = 400, detail = str(exc)) from exc
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return _hugging_face_cache_response()
 
 
-@_owner_settings_router.get("/caches", response_model = CacheInventoryResponse)
+@_owner_settings_router.get("/caches", response_model=CacheInventoryResponse)
 async def get_caches(
     refresh: bool = False,
     current_subject: str = Depends(get_current_subject),
@@ -1195,11 +1196,11 @@ async def get_caches(
         require_ui_session(via_api_key)
     # A cold walk of a large hub or triton cache is seconds of stat calls, so it
     # stays off the event loop.
-    inventory = await asyncio.to_thread(cache_inventory, refresh = refresh)
+    inventory = await asyncio.to_thread(cache_inventory, refresh=refresh)
     return CacheInventoryResponse(**inventory)
 
 
-@_owner_settings_router.post("/caches/purge", response_model = CachePurgeResponse)
+@_owner_settings_router.post("/caches/purge", response_model=CachePurgeResponse)
 async def purge_caches_endpoint(
     payload: CachePurgePayload,
     current_subject: str = Depends(get_current_subject),
@@ -1214,18 +1215,18 @@ async def purge_caches_endpoint(
             exc,
             400,
             str(exc),
-            event = "settings.purge_caches_failed",
-            log = logger,
+            event="settings.purge_caches_failed",
+            log=logger,
         ) from exc
     return CachePurgeResponse(**result)
 
 
-@_owner_settings_router.get("/llama-cpp-path", response_model = LlamaCppPathResponse)
+@_owner_settings_router.get("/llama-cpp-path", response_model=LlamaCppPathResponse)
 def get_llama_cpp_path(current_subject: str = Depends(get_current_subject)) -> LlamaCppPathResponse:
     return _llama_cpp_path_response()
 
 
-@_owner_settings_router.put("/llama-cpp-path", response_model = LlamaCppPathResponse)
+@_owner_settings_router.put("/llama-cpp-path", response_model=LlamaCppPathResponse)
 def update_llama_cpp_path(
     payload: LlamaCppPathPayload,
     current_subject: str = Depends(get_current_subject),
@@ -1236,24 +1237,24 @@ def update_llama_cpp_path(
     try:
         set_custom_llama_cpp_path(payload.path)
     except RuntimeError as exc:
-        raise HTTPException(status_code = 409, detail = str(exc)) from exc
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ValueError as exc:
         raise log_and_http_error(
             exc,
             400,
             str(exc),
-            event = "settings.update_llama_cpp_path_failed",
-            log = logger,
+            event="settings.update_llama_cpp_path_failed",
+            log=logger,
         ) from exc
     return _llama_cpp_path_response()
 
 
-@_shared_settings_router.get("/upload-limit", response_model = UploadLimitResponse)
+@_shared_settings_router.get("/upload-limit", response_model=UploadLimitResponse)
 def get_upload_limit(current_subject: str = Depends(get_current_subject)) -> UploadLimitResponse:
     return _upload_limit_response(get_upload_limit_mb())
 
 
-@_owner_settings_router.put("/upload-limit", response_model = UploadLimitResponse)
+@_owner_settings_router.put("/upload-limit", response_model=UploadLimitResponse)
 def update_upload_limit(
     payload: UploadLimitPayload, current_subject: str = Depends(get_current_subject)
 ) -> UploadLimitResponse:
@@ -1263,21 +1264,21 @@ def update_upload_limit(
         raise log_and_http_error(
             exc,
             400,
-            safe_error_detail(exc, fallback = "Invalid upload limit."),
-            event = "settings.update_upload_limit_failed",
-            log = logger,
+            safe_error_detail(exc, fallback="Invalid upload limit."),
+            event="settings.update_upload_limit_failed",
+            log=logger,
         ) from exc
     return _upload_limit_response(limit_mb)
 
 
-@_shared_settings_router.get("/helper-precache", response_model = HelperPrecacheResponse)
+@_shared_settings_router.get("/helper-precache", response_model=HelperPrecacheResponse)
 def get_helper_precache(
     current_subject: str = Depends(get_current_subject),
 ) -> HelperPrecacheResponse:
     return _helper_precache_response()
 
 
-@_owner_settings_router.put("/helper-precache", response_model = HelperPrecacheResponse)
+@_owner_settings_router.put("/helper-precache", response_model=HelperPrecacheResponse)
 def update_helper_precache(
     payload: HelperPrecachePayload, current_subject: str = Depends(get_current_subject)
 ) -> HelperPrecacheResponse:
@@ -1287,21 +1288,21 @@ def update_helper_precache(
         raise log_and_http_error(
             exc,
             400,
-            safe_error_detail(exc, fallback = "Invalid Helper LLM pre-cache setting."),
-            event = "settings.update_helper_precache_failed",
-            log = logger,
+            safe_error_detail(exc, fallback="Invalid Helper LLM pre-cache setting."),
+            event="settings.update_helper_precache_failed",
+            log=logger,
         ) from exc
     return _helper_precache_response(enabled)
 
 
-@_shared_settings_router.get("/download-transport", response_model = DownloadTransportResponse)
+@_shared_settings_router.get("/download-transport", response_model=DownloadTransportResponse)
 def get_download_transport(
     current_subject: str = Depends(get_current_subject),
 ) -> DownloadTransportResponse:
     return _download_transport_response()
 
 
-@_owner_settings_router.put("/download-transport", response_model = DownloadTransportResponse)
+@_owner_settings_router.put("/download-transport", response_model=DownloadTransportResponse)
 def update_download_transport(
     payload: DownloadTransportPayload, current_subject: str = Depends(get_current_subject)
 ) -> DownloadTransportResponse:
@@ -1311,14 +1312,14 @@ def update_download_transport(
         raise log_and_http_error(
             exc,
             400,
-            safe_error_detail(exc, fallback = "Invalid download transport."),
-            event = "settings.update_download_transport_failed",
-            log = logger,
+            safe_error_detail(exc, fallback="Invalid download transport."),
+            event="settings.update_download_transport_failed",
+            log=logger,
         ) from exc
     return _download_transport_response(mode)
 
 
-@_owner_settings_router.post("/xet-notice/reserve", response_model = XetNoticeResponse)
+@_owner_settings_router.post("/xet-notice/reserve", response_model=XetNoticeResponse)
 def post_xet_notice_reserve(
     payload: XetNoticeReservePayload, current_subject: str = Depends(get_current_subject)
 ) -> XetNoticeResponse:
@@ -1329,15 +1330,15 @@ def post_xet_notice_reserve(
         raise log_and_http_error(
             exc,
             500,
-            safe_error_detail(exc, fallback = "Could not reserve the Xet download notice."),
-            event = "settings.reserve_xet_notice_failed",
-            log = logger,
+            safe_error_detail(exc, fallback="Could not reserve the Xet download notice."),
+            event="settings.reserve_xet_notice_failed",
+            log=logger,
         ) from exc
     return XetNoticeResponse(**result)
 
 
 @_account_settings_router.post(
-    "/igpu-carveout-notice/dismiss", response_model = IgpuCarveoutNoticeResponse
+    "/igpu-carveout-notice/dismiss", response_model=IgpuCarveoutNoticeResponse
 )
 def post_igpu_carveout_notice_dismiss(
     payload: IgpuCarveoutNoticeDismissPayload, current_subject: str = Depends(get_current_subject)
@@ -1355,21 +1356,21 @@ def post_igpu_carveout_notice_dismiss(
         raise log_and_http_error(
             exc,
             500,
-            safe_error_detail(exc, fallback = "Could not dismiss the GPU memory notice."),
-            event = "settings.dismiss_igpu_carveout_notice_failed",
-            log = logger,
+            safe_error_detail(exc, fallback="Could not dismiss the GPU memory notice."),
+            event="settings.dismiss_igpu_carveout_notice_failed",
+            log=logger,
         ) from exc
-    return IgpuCarveoutNoticeResponse(dismissed_at_gb = stored)
+    return IgpuCarveoutNoticeResponse(dismissed_at_gb=stored)
 
 
-@_account_settings_router.get("/chat-preferences", response_model = ChatPreferencesResponse)
+@_account_settings_router.get("/chat-preferences", response_model=ChatPreferencesResponse)
 def get_chat_preferences(
     current_subject: str = Depends(get_current_subject),
 ) -> ChatPreferencesResponse:
     return _chat_preferences_response()
 
 
-@_account_settings_router.put("/chat-preferences", response_model = ChatPreferencesResponse)
+@_account_settings_router.put("/chat-preferences", response_model=ChatPreferencesResponse)
 def update_chat_preferences(
     payload: ChatPreferencesPayload, current_subject: str = Depends(get_current_subject)
 ) -> ChatPreferencesResponse:
@@ -1379,14 +1380,14 @@ def update_chat_preferences(
         raise log_and_http_error(
             exc,
             500,
-            safe_error_detail(exc, fallback = "Could not save chat preferences."),
-            event = "settings.update_chat_preferences_failed",
-            log = logger,
+            safe_error_detail(exc, fallback="Could not save chat preferences."),
+            event="settings.update_chat_preferences_failed",
+            log=logger,
         ) from exc
     return _chat_preferences_response(enabled)
 
 
-@_account_settings_router.post("/chat-preferences/migrate", response_model = ChatPreferencesResponse)
+@_account_settings_router.post("/chat-preferences/migrate", response_model=ChatPreferencesResponse)
 def migrate_chat_preferences(
     payload: ChatPreferencesMigrationPayload, current_subject: str = Depends(get_current_subject)
 ) -> ChatPreferencesResponse:
@@ -1396,34 +1397,34 @@ def migrate_chat_preferences(
         raise log_and_http_error(
             exc,
             500,
-            safe_error_detail(exc, fallback = "Could not migrate chat preferences."),
-            event = "settings.migrate_chat_preferences_failed",
-            log = logger,
+            safe_error_detail(exc, fallback="Could not migrate chat preferences."),
+            event="settings.migrate_chat_preferences_failed",
+            log=logger,
         ) from exc
     return _chat_preferences_response(enabled)
 
 
-@_owner_settings_router.get("/model-memory", response_model = ModelMemoryResponse)
+@_owner_settings_router.get("/model-memory", response_model=ModelMemoryResponse)
 def get_model_memory(current_subject: str = Depends(get_current_subject)) -> ModelMemoryResponse:
     return _model_memory_response()
 
 
-@_owner_settings_router.put("/model-memory", response_model = ModelMemoryResponse)
+@_owner_settings_router.put("/model-memory", response_model=ModelMemoryResponse)
 def update_model_memory(
     payload: ModelMemoryPayload, current_subject: str = Depends(get_current_subject)
 ) -> ModelMemoryResponse:
     try:
         set_model_memory_settings(
-            keep_resident = payload.keep_resident,
-            no_ram_reserve = payload.no_ram_reserve,
+            keep_resident=payload.keep_resident,
+            no_ram_reserve=payload.no_ram_reserve,
         )
     except ValueError as exc:
         raise log_and_http_error(
             exc,
             400,
-            safe_error_detail(exc, fallback = "Invalid model memory setting."),
-            event = "settings.update_model_memory_failed",
-            log = logger,
+            safe_error_detail(exc, fallback="Invalid model memory setting."),
+            event="settings.update_model_memory_failed",
+            log=logger,
         ) from exc
     return _model_memory_response()
 
@@ -1460,14 +1461,14 @@ _LAST_LOCAL_MODEL_CLOCK_SLACK_MS = 5 * 60 * 1000
 
 
 class LastLocalModelPayload(BaseModel):
-    id: str = Field(..., min_length = 1, max_length = MAX_MODEL_OVERRIDE_KEY_LEN)
+    id: str = Field(..., min_length=1, max_length=MAX_MODEL_OVERRIDE_KEY_LEN)
     kind: Literal["gguf", "model"]
-    gguf_variant: Optional[str] = Field(default = None, max_length = MAX_GGUF_VARIANT_KEY_LEN)
+    gguf_variant: Optional[str] = Field(default=None, max_length=MAX_GGUF_VARIANT_KEY_LEN)
     # Epoch ms of the load; orders writes from surfaces that keep their own local shadow.
-    loaded_at: Optional[int] = Field(default = None, ge = 0)
+    loaded_at: Optional[int] = Field(default=None, ge=0)
     # The client clock when the request was sent: the skew (server_now - client_now) translates loaded_at
     # into the server frame. Never persisted.
-    client_now: Optional[int] = Field(default = None, ge = 0)
+    client_now: Optional[int] = Field(default=None, ge=0)
 
 
 class LastLocalModelResponse(BaseModel):
@@ -1479,22 +1480,22 @@ class LastLocalModelResponse(BaseModel):
     server_now: Optional[int] = None
 
 
-@_account_settings_router.get("/last-local-model", response_model = LastLocalModelResponse)
+@_account_settings_router.get("/last-local-model", response_model=LastLocalModelResponse)
 def get_last_local_model(
     current_subject: str = Depends(get_current_subject),
 ) -> LastLocalModelResponse:
     stored = _read_last_local_model(current_subject)
     _now = int(time.time() * 1000)
     if stored is None:
-        return LastLocalModelResponse(server_now = _now)
+        return LastLocalModelResponse(server_now=_now)
     try:
         payload = LastLocalModelPayload(**stored)
     except Exception:
-        return LastLocalModelResponse(server_now = _now)
-    return LastLocalModelResponse(**payload.model_dump(exclude = {"client_now"}), server_now = _now)
+        return LastLocalModelResponse(server_now=_now)
+    return LastLocalModelResponse(**payload.model_dump(exclude={"client_now"}), server_now=_now)
 
 
-@_account_settings_router.put("/last-local-model", response_model = LastLocalModelResponse)
+@_account_settings_router.put("/last-local-model", response_model=LastLocalModelResponse)
 def update_last_local_model(
     payload: LastLocalModelPayload, current_subject: str = Depends(get_current_subject)
 ) -> LastLocalModelResponse:
@@ -1509,10 +1510,10 @@ def update_last_local_model(
             if payload.client_now is not None:
                 # Into the server frame: fresh loads land near now, re-issued shadows stay old.
                 _shifted = payload.loaded_at + (_server_now - payload.client_now)
-                payload = payload.model_copy(update = {"loaded_at": max(0, _shifted)})
+                payload = payload.model_copy(update={"loaded_at": max(0, _shifted)})
             _cap = _server_now + _LAST_LOCAL_MODEL_CLOCK_SLACK_MS
             if payload.loaded_at > _cap:
-                payload = payload.model_copy(update = {"loaded_at": _cap})
+                payload = payload.model_copy(update={"loaded_at": _cap})
             stored = _read_last_local_model(current_subject)
             if stored is not None:
                 try:
@@ -1525,11 +1526,11 @@ def update_last_local_model(
                     and payload.loaded_at < current.loaded_at
                 ):
                     return LastLocalModelResponse(
-                        **current.model_dump(exclude = {"client_now"}), server_now = _server_now
+                        **current.model_dump(exclude={"client_now"}), server_now=_server_now
                     )
-        upsert_app_settings({_key: payload.model_dump(exclude = {"client_now"})})
+        upsert_app_settings({_key: payload.model_dump(exclude={"client_now"})})
     return LastLocalModelResponse(
-        **payload.model_dump(exclude = {"client_now"}), server_now = _server_now
+        **payload.model_dump(exclude={"client_now"}), server_now=_server_now
     )
 
 
@@ -1553,11 +1554,12 @@ class DiffusionAcceleratorFallbackResponse(BaseModel):
 
 def _diffusion_accelerator_fallback_response() -> DiffusionAcceleratorFallbackResponse:
     from core.inference.sd_cpp_backend import accelerator_runtime_failure_state
+
     return DiffusionAcceleratorFallbackResponse(**accelerator_runtime_failure_state())
 
 
 @_owner_settings_router.get(
-    "/diffusion-accelerator-fallback", response_model = DiffusionAcceleratorFallbackResponse
+    "/diffusion-accelerator-fallback", response_model=DiffusionAcceleratorFallbackResponse
 )
 def get_diffusion_accelerator_fallback(
     current_subject: str = Depends(get_current_subject),
@@ -1571,7 +1573,7 @@ def get_diffusion_accelerator_fallback(
 
 
 @_owner_settings_router.delete(
-    "/diffusion-accelerator-fallback", response_model = DiffusionAcceleratorFallbackResponse
+    "/diffusion-accelerator-fallback", response_model=DiffusionAcceleratorFallbackResponse
 )
 def clear_diffusion_accelerator_fallback(
     current_subject: str = Depends(get_current_subject),
@@ -1587,12 +1589,12 @@ def clear_diffusion_accelerator_fallback(
     return _diffusion_accelerator_fallback_response()
 
 
-@_owner_settings_router.get("/vram-budget", response_model = VramBudgetResponse)
+@_owner_settings_router.get("/vram-budget", response_model=VramBudgetResponse)
 def get_vram_budget(current_subject: str = Depends(get_current_subject)) -> VramBudgetResponse:
     return _vram_budget_response()
 
 
-@_owner_settings_router.put("/vram-budget", response_model = VramBudgetResponse)
+@_owner_settings_router.put("/vram-budget", response_model=VramBudgetResponse)
 def update_vram_budget(
     payload: VramBudgetPayload, current_subject: str = Depends(get_current_subject)
 ) -> VramBudgetResponse:
@@ -1602,9 +1604,9 @@ def update_vram_budget(
         raise log_and_http_error(
             exc,
             400,
-            safe_error_detail(exc, fallback = "Invalid VRAM budget."),
-            event = "settings.update_vram_budget_failed",
-            log = logger,
+            safe_error_detail(exc, fallback="Invalid VRAM budget."),
+            event="settings.update_vram_budget_failed",
+            log=logger,
         ) from exc
     return _vram_budget_response()
 
@@ -1617,29 +1619,29 @@ class CodingAgentsResponse(BaseModel):
     detected: list[str]
 
 
-@_owner_settings_router.get("/coding-agents", response_model = CodingAgentsResponse)
+@_owner_settings_router.get("/coding-agents", response_model=CodingAgentsResponse)
 def get_coding_agents(current_subject: str = Depends(get_current_subject)) -> CodingAgentsResponse:
-    return CodingAgentsResponse(detected = detect_installed_coding_agents())
+    return CodingAgentsResponse(detected=detect_installed_coding_agents())
 
 
-@_owner_settings_router.get("/openai-auto-switch", response_model = OpenAIAutoSwitchResponse)
+@_owner_settings_router.get("/openai-auto-switch", response_model=OpenAIAutoSwitchResponse)
 def get_openai_auto_switch(
     current_subject: str = Depends(get_current_subject),
 ) -> OpenAIAutoSwitchResponse:
     return OpenAIAutoSwitchResponse(
-        enabled = get_openai_auto_switch_enabled(),
-        auto_unload_idle_seconds = get_stored_auto_unload_idle_seconds(),
-        idle_unload_active = get_auto_unload_idle_seconds() > 0,
-        auto_unload_keep_kv = get_auto_unload_keep_kv(),
-        auto_download_model = get_stored_openai_auto_download_enabled(),
-        auto_unload_api_only = get_auto_unload_api_only(),
-        media_auto_unload_idle_seconds = get_stored_media_auto_unload_idle_seconds(),
-        media_idle_unload_active = get_media_auto_unload_idle_seconds() > 0,
-        media_auto_switch_model = get_media_auto_switch_enabled(),
+        enabled=get_openai_auto_switch_enabled(),
+        auto_unload_idle_seconds=get_stored_auto_unload_idle_seconds(),
+        idle_unload_active=get_auto_unload_idle_seconds() > 0,
+        auto_unload_keep_kv=get_auto_unload_keep_kv(),
+        auto_download_model=get_stored_openai_auto_download_enabled(),
+        auto_unload_api_only=get_auto_unload_api_only(),
+        media_auto_unload_idle_seconds=get_stored_media_auto_unload_idle_seconds(),
+        media_idle_unload_active=get_media_auto_unload_idle_seconds() > 0,
+        media_auto_switch_model=get_media_auto_switch_enabled(),
     )
 
 
-@_owner_settings_router.put("/openai-auto-switch", response_model = OpenAIAutoSwitchResponse)
+@_owner_settings_router.put("/openai-auto-switch", response_model=OpenAIAutoSwitchResponse)
 def update_openai_auto_switch(
     payload: OpenAIAutoSwitchPayload, current_subject: str = Depends(get_current_subject)
 ) -> OpenAIAutoSwitchResponse:
@@ -1665,28 +1667,29 @@ def update_openai_auto_switch(
         raise log_and_http_error(
             exc,
             400,
-            safe_error_detail(exc, fallback = "Invalid OpenAI auto-switch setting."),
-            event = "settings.update_openai_auto_switch_failed",
-            log = logger,
+            safe_error_detail(exc, fallback="Invalid OpenAI auto-switch setting."),
+            event="settings.update_openai_auto_switch_failed",
+            log=logger,
         ) from exc
     idle_unload_active = get_auto_unload_idle_seconds() > 0
     if not keep_kv or not idle_unload_is_configured():
         from core.inference.llama_keepwarm import purge_kv_resume
+
         purge_kv_resume()
     return OpenAIAutoSwitchResponse(
-        enabled = enabled,
-        auto_unload_idle_seconds = idle_seconds,
-        idle_unload_active = idle_unload_active,
-        auto_unload_keep_kv = keep_kv,
-        auto_download_model = auto_download,
-        auto_unload_api_only = api_only,
-        media_auto_unload_idle_seconds = media_idle_seconds,
-        media_idle_unload_active = get_media_auto_unload_idle_seconds() > 0,
-        media_auto_switch_model = media_auto_switch,
+        enabled=enabled,
+        auto_unload_idle_seconds=idle_seconds,
+        idle_unload_active=idle_unload_active,
+        auto_unload_keep_kv=keep_kv,
+        auto_download_model=auto_download,
+        auto_unload_api_only=api_only,
+        media_auto_unload_idle_seconds=media_idle_seconds,
+        media_idle_unload_active=get_media_auto_unload_idle_seconds() > 0,
+        media_auto_switch_model=media_auto_switch,
     )
 
 
-@_owner_settings_router.get("/openai-auto-switch/overrides", response_model = ModelOverridesResponse)
+@_owner_settings_router.get("/openai-auto-switch/overrides", response_model=ModelOverridesResponse)
 def get_openai_auto_switch_overrides(
     model_id: Optional[str] = None,
     alias_id: Optional[str] = None,
@@ -1702,11 +1705,12 @@ def get_openai_auto_switch_overrides(
     resolved: Optional[dict] = None
     if model_id:
         from utils.openai_auto_switch_settings import resolve_override_for_load
+
         resolved_key, resolved = resolve_override_for_load(model_id, alias_id, gguf_variant)
     return ModelOverridesResponse(
-        overrides = get_model_overrides(),
-        resolved = resolved,
-        resolved_key = resolved_key,
+        overrides=get_model_overrides(),
+        resolved=resolved,
+        resolved_key=resolved_key,
     )
 
 
@@ -1860,7 +1864,7 @@ def _serialized_override_write(func):
     return wrapper
 
 
-@_owner_settings_router.put("/openai-auto-switch/overrides", response_model = ModelOverridesResponse)
+@_owner_settings_router.put("/openai-auto-switch/overrides", response_model=ModelOverridesResponse)
 @_serialized_override_write
 def update_openai_auto_switch_override(
     payload: ModelOverridePayload, current_subject: str = Depends(get_current_subject)
@@ -1882,7 +1886,7 @@ def update_openai_auto_switch_override(
         # look non-empty (they are bools, so exclude_none does not drop them) and break the legacy "no fields
         # means remove".
         saved_fields = payload.model_dump(
-            exclude = {
+            exclude={
                 "model_id",
                 "llama_extra_args",
                 "remove",
@@ -1890,7 +1894,7 @@ def update_openai_auto_switch_override(
                 "mirrors_server_tuning",
                 "mirrors_reasoning_budget",
             },
-            exclude_none = True,
+            exclude_none=True,
         )
         if payload.remove is not None:
             is_removal = payload.remove
@@ -1935,13 +1939,13 @@ def update_openai_auto_switch_override(
         if not payload.fill_absent_fields and requested_extra_args:
             requested_extra_args = strip_shadowing_flags(
                 requested_extra_args,
-                strip_context = False,
-                strip_cache = False,
-                strip_spec = False,
-                strip_template = False,
-                strip_split_mode = False,
-                strip_reasoning_budget = reset_reasoning_budget,
-                strip_reasoning_budget_message = reset_reasoning_budget_message,
+                strip_context=False,
+                strip_cache=False,
+                strip_spec=False,
+                strip_template=False,
+                strip_split_mode=False,
+                strip_reasoning_budget=reset_reasoning_budget,
+                strip_reasoning_budget_message=reset_reasoning_budget_message,
             )
         # Not validated on an explicit remove: a 400 would only leave the override in place.
         if payload.remove is True:
@@ -1981,7 +1985,7 @@ def update_openai_auto_switch_override(
                     _alias_ids.append(_candidate)
             # Load order, not collection order: a lookup reads the concrete load path before the advertised repo
             # id, so reading the repo row first adopts tuning no load has used.
-            _alias_ids.sort(key = lambda _key: not is_cache_load_path_key(_key))
+            _alias_ids.sort(key=lambda _key: not is_cache_load_path_key(_key))
             # Taken as a unit from the first row that exists, not field by field down the list: a load stops at the
             # first non-empty row rather than merging, so filling a gap in the winner from a loser would switch
             # dormant tuning on.
@@ -2027,7 +2031,7 @@ def update_openai_auto_switch_override(
                 if alias_id not in removed_keys:
                     removed_keys.append(alias_id)
             for removed_id in removed_keys:
-                set_model_override(removed_id, llama_extra_args = [], max_seq_length = None)
+                set_model_override(removed_id, llama_extra_args=[], max_seq_length=None)
         else:
             # Save under the key a load resolves to, as the removal branch does: the literal
             # id would leave two keys for one model, making every other casing ambiguous.
@@ -2058,64 +2062,64 @@ def update_openai_auto_switch_override(
                 _kept_reasoning_budget_message = ""
             set_model_override(
                 target_id,
-                llama_extra_args = extra_args,
-                keep_empty_extra_args = keep_empty,
-                max_seq_length = payload.max_seq_length,
-                custom_context_length = payload.custom_context_length,
-                kv_cache_dtype = payload.kv_cache_dtype,
-                mlx_kv_bits = payload.mlx_kv_bits,
-                speculative_type = payload.speculative_type,
-                spec_draft_n_max = payload.spec_draft_n_max,
-                n_parallel = payload.n_parallel,
-                reasoning_budget = (
+                llama_extra_args=extra_args,
+                keep_empty_extra_args=keep_empty,
+                max_seq_length=payload.max_seq_length,
+                custom_context_length=payload.custom_context_length,
+                kv_cache_dtype=payload.kv_cache_dtype,
+                mlx_kv_bits=payload.mlx_kv_bits,
+                speculative_type=payload.speculative_type,
+                spec_draft_n_max=payload.spec_draft_n_max,
+                n_parallel=payload.n_parallel,
+                reasoning_budget=(
                     None
                     if payload.fill_absent_fields and reset_reasoning_budget
                     else _kept_reasoning_budget
                 ),
-                reasoning_budget_message = (
+                reasoning_budget_message=(
                     None
                     if payload.fill_absent_fields and reset_reasoning_budget_message
                     else _kept_reasoning_budget_message
                 ),
-                n_batch = payload.n_batch,
-                n_ubatch = payload.n_ubatch,
-                load_mode = _kept_tuning["load_mode"],
-                spec_draft_cache_type = _kept_tuning["spec_draft_cache_type"],
-                ctx_checkpoints = _kept_tuning["ctx_checkpoints"],
-                cache_ram = _kept_tuning["cache_ram"],
-                tensor_parallel = payload.tensor_parallel,
-                disable_vision = payload.disable_vision,
-                chat_template_override = payload.chat_template_override,
-                gpu_memory_mode = payload.gpu_memory_mode,
-                gpu_layers = payload.gpu_layers,
-                n_cpu_moe = payload.n_cpu_moe,
-                gpu_ids = payload.gpu_ids,
-                gpu_index_kind = payload.gpu_index_kind,
-                fill_absent_fields = payload.fill_absent_fields,
+                n_batch=payload.n_batch,
+                n_ubatch=payload.n_ubatch,
+                load_mode=_kept_tuning["load_mode"],
+                spec_draft_cache_type=_kept_tuning["spec_draft_cache_type"],
+                ctx_checkpoints=_kept_tuning["ctx_checkpoints"],
+                cache_ram=_kept_tuning["cache_ram"],
+                tensor_parallel=payload.tensor_parallel,
+                disable_vision=payload.disable_vision,
+                chat_template_override=payload.chat_template_override,
+                gpu_memory_mode=payload.gpu_memory_mode,
+                gpu_layers=payload.gpu_layers,
+                n_cpu_moe=payload.n_cpu_moe,
+                gpu_ids=payload.gpu_ids,
+                gpu_index_kind=payload.gpu_index_kind,
+                fill_absent_fields=payload.fill_absent_fields,
             )
             # A repo cached outside the active HF cache is keyed here by its repo id
             if not payload.fill_absent_fields:
                 for alias_id in cached_repo_alias_keys(target_id):
-                    set_model_override(alias_id, llama_extra_args = [], max_seq_length = None)
+                    set_model_override(alias_id, llama_extra_args=[], max_seq_length=None)
     except ValueError as exc:
         raise log_and_http_error(
             exc,
             400,
-            safe_error_detail(exc, fallback = "Invalid model launch override."),
-            event = "settings.update_model_override_failed",
-            log = logger,
+            safe_error_detail(exc, fallback="Invalid model launch override."),
+            event="settings.update_model_override_failed",
+            log=logger,
         ) from exc
-    return ModelOverridesResponse(overrides = get_model_overrides(), removed_keys = removed_keys)
+    return ModelOverridesResponse(overrides=get_model_overrides(), removed_keys=removed_keys)
 
 
 class EmbeddingModelPayload(BaseModel):
-    embedding_model: str = Field(..., min_length = 1, max_length = MAX_EMBEDDING_MODEL_LENGTH)
+    embedding_model: str = Field(..., min_length=1, max_length=MAX_EMBEDDING_MODEL_LENGTH)
     # The repo /resolve named, stored so the loader opens what was downloaded.
-    gguf_repo: Optional[str] = Field(default = None, max_length = MAX_EMBEDDING_MODEL_LENGTH)
+    gguf_repo: Optional[str] = Field(default=None, max_length=MAX_EMBEDDING_MODEL_LENGTH)
     # And the backend it needs, so a model with no GGUF is not sent to llama-server.
     backend: Optional[Literal["llama", "sentence-transformers"]] = None
     # Token for gated/private repos during verification (not stored).
-    hf_token: Optional[str] = Field(default = None, max_length = 512)
+    hf_token: Optional[str] = Field(default=None, max_length=512)
     # Skip HF verification (offline installs, local paths HF can't see).
     force: bool = False
 
@@ -2135,18 +2139,19 @@ class EmbeddingModelResponse(BaseModel):
 def _embedding_model_response() -> EmbeddingModelResponse:
     model = get_rag_embedding_model()
     return EmbeddingModelResponse(
-        embedding_model = model,
-        embedding_gguf_repo = effective_gguf_repo_for_embedding_model(model),
-        default_embedding_model = default_embedding_model(),
-        default_embedding_gguf_repo = default_gguf_repo(),
-        is_custom = get_stored_embedding_model() is not None,
-        loaded = _embedder_is_loaded(model),
-        backend_loaded = _any_embedder_is_loaded(),
+        embedding_model=model,
+        embedding_gguf_repo=effective_gguf_repo_for_embedding_model(model),
+        default_embedding_model=default_embedding_model(),
+        default_embedding_gguf_repo=default_gguf_repo(),
+        is_custom=get_stored_embedding_model() is not None,
+        loaded=_embedder_is_loaded(model),
+        backend_loaded=_any_embedder_is_loaded(),
     )
 
 
 def _embedder_is_loaded(model: str) -> bool:
     from core.rag import embeddings
+
     try:
         return embeddings.backend_is_loaded(model)
     except Exception:  # noqa: BLE001 - probe must never block reading settings
@@ -2156,6 +2161,7 @@ def _embedder_is_loaded(model: str) -> bool:
 def _any_embedder_is_loaded() -> bool:
     """Whether any embedder is resident, whichever model it belongs to."""
     from core.rag import embeddings
+
     try:
         return embeddings.backend_is_loaded()
     except Exception:  # noqa: BLE001 - probe must never block reading settings
@@ -2167,6 +2173,7 @@ def _ambient_hf_token() -> Optional[str]:
     repo is scanned rather than failing open. None if unavailable."""
     try:
         from huggingface_hub import get_token
+
         return get_token()
     except Exception:
         return None
@@ -2175,6 +2182,7 @@ def _ambient_hf_token() -> Optional[str]:
 def _model_names_gguf_repo(model: str) -> bool:
     """Whether ``model`` is a repo id naming GGUF weights, per the embedder's rule."""
     from core.rag import embeddings
+
     try:
         return embeddings._model_names_gguf_repo(model)
     except Exception:  # noqa: BLE001 - a name test that cannot answer blocks nothing
@@ -2185,6 +2193,7 @@ def _llama_runtime_available() -> bool:
     """Whether a llama-server binary this install can launch is present. Shares the embedder's own probe
     so the resolver and the loader cannot disagree about whether the backend exists."""
     from core.rag import embeddings
+
     try:
         return embeddings._llama_server_runtime_available()
     except Exception:  # noqa: BLE001 - an unanswerable probe must not block saving
@@ -2197,6 +2206,7 @@ def _llama_backend_active(model: str | None = None) -> bool:
     process loads only inert GGUF, so the ST pickle gate below must not hard-block a repo whose GGUF
     companion is clean. Before any backend is built this reflects the resolver."""
     from core.rag import embeddings
+
     try:
         if model is not None:
             return embeddings.resolved_backend_for_model(model) == "llama-server"
@@ -2209,6 +2219,7 @@ def _resolves_as_local_gguf(model: str) -> bool:
     """True when ``model`` is a local .gguf file or a directory holding one, so a save on the
     llama-server backend needs no HF verification: the artifact itself is the proof."""
     from core.rag.embed_llama_server import LlamaServerBackend
+
     try:
         return LlamaServerBackend._resolve_local_gguf(model) is not None
     except Exception:  # noqa: BLE001 - dir without .gguf, filesystem oddity
@@ -2277,7 +2288,7 @@ def _no_embedding_weights_error(candidates: list[str]) -> str:
     )
 
 
-@_owner_settings_router.get("/embedding-model", response_model = EmbeddingModelResponse)
+@_owner_settings_router.get("/embedding-model", response_model=EmbeddingModelResponse)
 def get_embedding_model(
     current_subject: str = Depends(get_current_subject),
 ) -> EmbeddingModelResponse:
@@ -2305,6 +2316,7 @@ def _embedding_gguf_candidates(model: str) -> list[str]:
         return rag_config.gguf_repo_candidates(model)
     try:
         from utils.embedding_model_settings import get_stored_gguf_repo
+
         stored = get_stored_gguf_repo(model)
     except Exception:  # noqa: BLE001 - resolver still has derived candidates
         stored = None
@@ -2317,7 +2329,7 @@ def _embedding_gguf_candidates(model: str) -> list[str]:
 _GGUF_MIRROR_SEARCH_LIMIT = 25
 _GGUF_LIST_DEADLINE_S = 20.0
 _EMBEDDING_RESOLVE_DEADLINE: ContextVar[float | None] = ContextVar(
-    "embedding-resolve-deadline", default = None
+    "embedding-resolve-deadline", default=None
 )
 
 
@@ -2333,7 +2345,7 @@ def _call_with_embedding_resolve_budget(fn, *, name: str):
         raise TimeoutError("embedding model resolution deadline expired")
     from utils.utils import call_with_deadline
 
-    return call_with_deadline(fn, timeout, name = name)
+    return call_with_deadline(fn, timeout, name=name)
 
 
 def _with_embedding_resolve_budget(fn):
@@ -2355,9 +2367,10 @@ def _with_embedding_resolve_budget(fn):
 def _list_repo_files_bounded(repo: str, hf_token: Optional[str]) -> list[str]:
     """List a Hub repo without letting a blackholed route pin Settings forever."""
     from huggingface_hub import list_repo_files
+
     return _call_with_embedding_resolve_budget(
-        lambda: list_repo_files(repo, token = hf_token),
-        name = "embed-settings-repo-listing",
+        lambda: list_repo_files(repo, token=hf_token),
+        name="embed-settings-repo-listing",
     )
 
 
@@ -2375,6 +2388,7 @@ def _gguf_files_for_pick(names: list[str], picked: str) -> Optional[list[str]]:
     so a single selected shard is not a usable plan, and incomplete published families are rejected.
     Deferred to the loader so the plan offered here and the transfer name one set."""
     from core.rag.embed_llama_server import LlamaServerBackend
+
     return LlamaServerBackend._split_family(names, picked)
 
 
@@ -2410,15 +2424,15 @@ def _search_hub_for_gguf(model: str, hf_token: Optional[str]) -> Optional[tuple[
         hits = _call_with_embedding_resolve_budget(
             lambda: list(
                 HfApi().list_models(
-                    search = base,
-                    author = owner,
-                    filter = ["gguf"],
-                    sort = "downloads",
-                    limit = _GGUF_MIRROR_SEARCH_LIMIT,
-                    token = hf_token,
+                    search=base,
+                    author=owner,
+                    filter=["gguf"],
+                    sort="downloads",
+                    limit=_GGUF_MIRROR_SEARCH_LIMIT,
+                    token=hf_token,
                 )
             ),
-            name = "embed-settings-model-search",
+            name="embed-settings-model-search",
         )
     except Exception:  # noqa: BLE001 - offline or rate limited
         return None
@@ -2443,7 +2457,7 @@ def _cached_embedding_gguf(candidates: list[str], *, require_variant: bool) -> O
 
     for candidate in candidates:
         try:
-            if LlamaServerBackend._resolve_cached_gguf(candidate, require_variant = require_variant):
+            if LlamaServerBackend._resolve_cached_gguf(candidate, require_variant=require_variant):
                 return candidate
         except Exception:  # noqa: BLE001 - a bad cache entry is just a miss
             continue
@@ -2499,6 +2513,7 @@ def _st_backend_available() -> bool:
     has no torch, so the safetensors fallback is not on offer there."""
     try:
         from core.rag import embeddings
+
         return embeddings.sentence_transformers_runtime_available()
     except Exception:  # noqa: BLE001 - a broken import path is a no
         return False
@@ -2508,6 +2523,7 @@ def _is_st_weight_name(basename: str) -> bool:
     """Whether a filename is a checkpoint, not just something ending in a suffix. Shared with the loader
     so the plan and the cache check cannot disagree."""
     from utils.utils import is_st_weight_name
+
     return is_st_weight_name(basename)
 
 
@@ -2549,6 +2565,7 @@ def _cached_snapshot_has_st_weights(model: str) -> bool:
     come back ready with no checkpoint ST can load. No network."""
     try:
         from utils.utils import snapshot_has_st_weights
+
         return snapshot_has_st_weights(model)
     except Exception:  # noqa: BLE001 - an unreadable cache is not a proof of weights
         return False
@@ -2561,6 +2578,7 @@ def _cached_st_source(model: str):
     it."""
     try:
         from utils.utils import cached_st_source
+
         return cached_st_source(model)
     except Exception:  # noqa: BLE001 - an unreadable cache is not a proof of weights
         return None
@@ -2605,6 +2623,7 @@ def _sentence_transformers_fallback_allowed(model: str) -> bool:
     """Whether a newly selected model can actually be served by ST in this process."""
     try:
         from core.rag import embeddings
+
         return embeddings.sentence_transformers_fallback_allowed(model)
     except Exception:  # noqa: BLE001 - an unknown backend is not a safe fallback
         return False
@@ -2616,8 +2635,8 @@ def _hf_files_size(repo: str, files: list[str], hf_token: Optional[str]) -> Opti
         from huggingface_hub import model_info
 
         info = _call_with_embedding_resolve_budget(
-            lambda: model_info(repo, files_metadata = True, token = hf_token),
-            name = "embed-settings-file-size",
+            lambda: model_info(repo, files_metadata=True, token=hf_token),
+            name="embed-settings-file-size",
         )
         wanted = set(files)
         total = sum(
@@ -2635,8 +2654,8 @@ def _hf_snapshot_size(repo: str, hf_token: Optional[str]) -> Optional[int]:
         from hub.utils.snapshot_filters import snapshot_download_size
 
         info = _call_with_embedding_resolve_budget(
-            lambda: model_info(repo, files_metadata = True, token = hf_token),
-            name = "embed-settings-snapshot-size",
+            lambda: model_info(repo, files_metadata=True, token=hf_token),
+            name="embed-settings-snapshot-size",
         )
         total = snapshot_download_size(info.siblings or [])
         return total or None
@@ -2704,7 +2723,7 @@ def _resolve_embedding_model_plan(
         """
         if not repo:
             return False
-        return not cached_read_refused(token, repo_id = repo, is_cached = lambda: True)
+        return not cached_read_refused(token, repo_id=repo, is_cached=lambda: True)
 
     # No pre-gate on ``resolved``: every cache lookup below is authorized against the repo it
     # actually matched, so gating the lookup as well probed the Hub on every resolve, including
@@ -2722,7 +2741,7 @@ def _resolve_embedding_model_plan(
         # not a Hub repo for the download manager to fetch.
         if _local_sentence_transformer_is_present(resolved):
             return EmbeddingModelResolveResponse(
-                embedding_model = resolved, backend = backend, cached = True
+                embedding_model=resolved, backend=backend, cached=True
             )
         # The alias-aware predicate alone, which already pairs the ST file family with the loadable check per candidate;
         # the repo the cache hit came from is what the PUT verifies and scans.
@@ -2740,9 +2759,9 @@ def _resolve_embedding_model_plan(
             # is_embedding_model gates on tags, so a feature-extraction repo publishing no loadable checkpoint would be
             # offered as a download ST cannot open.
             return EmbeddingModelResolveResponse(
-                embedding_model = resolved,
-                backend = backend,
-                error = (
+                embedding_model=resolved,
+                backend=backend,
+                error=(
                     f"No sentence-transformers weights found in {resolved!r}. "
                     "The repository publishes no checkpoint this backend can load."
                 ),
@@ -2756,11 +2775,11 @@ def _resolve_embedding_model_plan(
         else:
             download_repo = source[0]
         return EmbeddingModelResolveResponse(
-            embedding_model = resolved,
-            backend = backend,
-            download_repo = download_repo,
-            cached = cached,
-            size_bytes = None if cached else _hf_snapshot_size(download_repo, token),
+            embedding_model=resolved,
+            backend=backend,
+            download_repo=download_repo,
+            cached=cached,
+            size_bytes=None if cached else _hf_snapshot_size(download_repo, token),
         )
 
     local_gguf = _resolves_as_local_gguf(resolved)
@@ -2775,9 +2794,9 @@ def _resolve_embedding_model_plan(
     )
     if llama_only and not _llama_runtime_available():
         return EmbeddingModelResolveResponse(
-            embedding_model = resolved,
-            backend = backend,
-            error = (
+            embedding_model=resolved,
+            backend=backend,
+            error=(
                 f"{resolved!r} can only be embedded by the llama-server backend "
                 "here, and no llama-server binary was found. Install llama.cpp or "
                 "set LLAMA_SERVER_PATH / UNSLOTH_LLAMA_CPP_PATH."
@@ -2786,39 +2805,39 @@ def _resolve_embedding_model_plan(
 
     # A local .gguf (file or folder) is already the artifact; nothing to fetch.
     if local_gguf:
-        return EmbeddingModelResolveResponse(embedding_model = resolved, backend = backend, cached = True)
+        return EmbeddingModelResolveResponse(embedding_model=resolved, backend=backend, cached=True)
     local_error = _local_gguf_backend_error(resolved)
     if local_error:
         return EmbeddingModelResolveResponse(
-            embedding_model = resolved, backend = backend, error = local_error
+            embedding_model=resolved, backend=backend, error=local_error
         )
 
     candidates = _embedding_gguf_candidates(resolved)
     # Match the loader's online fast path exactly: only the preferred repo and
     # only the configured variant can suppress the download offer.
-    cached_repo = _cached_embedding_gguf(candidates[:1], require_variant = True)
+    cached_repo = _cached_embedding_gguf(candidates[:1], require_variant=True)
     if cached_repo and not _authorized(cached_repo):
         cached_repo = None
     if cached_repo:
         return EmbeddingModelResolveResponse(
-            embedding_model = resolved,
-            backend = backend,
-            download_repo = cached_repo,
-            cached = True,
+            embedding_model=resolved,
+            backend=backend,
+            download_repo=cached_repo,
+            cached=True,
         )
     plan = _remote_embedding_gguf_plan(candidates, token) or _search_hub_for_gguf(resolved, token)
     if plan is None:
         # The loader's offline fallback accepts any complete cached quant from
         # any candidate only after its bounded online listing fails.
-        cached_repo = _cached_embedding_gguf(candidates, require_variant = False)
+        cached_repo = _cached_embedding_gguf(candidates, require_variant=False)
         if cached_repo and not _authorized(cached_repo):
             cached_repo = None
         if cached_repo:
             return EmbeddingModelResolveResponse(
-                embedding_model = resolved,
-                backend = backend,
-                download_repo = cached_repo,
-                cached = True,
+                embedding_model=resolved,
+                backend=backend,
+                download_repo=cached_repo,
+                cached=True,
             )
         # No GGUF from this publisher: run it on its own safetensors only when
         # configuration/runtime policy can actually select ST for this model.
@@ -2836,19 +2855,19 @@ def _resolve_embedding_model_plan(
             st_plan = None
         if st_plan is None:
             return EmbeddingModelResolveResponse(
-                embedding_model = resolved,
-                backend = backend,
-                error = _no_embedding_weights_error(candidates),
+                embedding_model=resolved,
+                backend=backend,
+                error=_no_embedding_weights_error(candidates),
             )
         st_repo, _st_files = st_plan
         return EmbeddingModelResolveResponse(
-            embedding_model = resolved,
-            backend = "sentence-transformers",
-            download_repo = st_repo,
+            embedding_model=resolved,
+            backend="sentence-transformers",
+            download_repo=st_repo,
             # Same alias-aware predicate, asked about the repo the plan named
             # rather than the alias the user typed, which the gate above authorized.
-            cached = _cached_snapshot_has_st_weights(st_repo),
-            size_bytes = _hf_snapshot_size(st_repo, token),
+            cached=_cached_snapshot_has_st_weights(st_repo),
+            size_bytes=_hf_snapshot_size(st_repo, token),
         )
     repo, files = plan
     # A gated repo can publish its filenames, so a plan coming back is not authorization to
@@ -2856,28 +2875,28 @@ def _resolve_embedding_model_plan(
     # caller asked about, so it is authorized in its own right like every other candidate.
     if _authorized(repo) and _cached_embedding_gguf_files(repo, files):
         return EmbeddingModelResolveResponse(
-            embedding_model = resolved,
-            backend = backend,
-            download_repo = repo,
-            files = files,
-            cached = True,
+            embedding_model=resolved,
+            backend=backend,
+            download_repo=repo,
+            files=files,
+            cached=True,
         )
     return EmbeddingModelResolveResponse(
-        embedding_model = resolved,
-        backend = backend,
-        download_repo = repo,
-        files = files,
-        size_bytes = _hf_files_size(repo, files, token),
+        embedding_model=resolved,
+        backend=backend,
+        download_repo=repo,
+        files=files,
+        size_bytes=_hf_files_size(repo, files, token),
     )
 
 
 @_owner_settings_router.get(
-    "/embedding-model/resolve", response_model = EmbeddingModelResolveResponse
+    "/embedding-model/resolve", response_model=EmbeddingModelResolveResponse
 )
 def resolve_embedding_model(
     model: str,
     # Header, not a query param: keeps a gated-repo token out of URLs and logs.
-    hf_token: Optional[str] = Header(None, alias = "X-Unsloth-HF-Token"),
+    hf_token: Optional[str] = Header(None, alias="X-Unsloth-HF-Token"),
     allow_ambient_token: bool = Depends(allow_ambient_hf_token),
     current_subject: str = Depends(get_current_subject),
 ) -> EmbeddingModelResolveResponse:
@@ -2892,17 +2911,17 @@ def resolve_embedding_model(
         raise log_and_http_error(
             exc,
             400,
-            safe_error_detail(exc, fallback = "Invalid embedding model."),
-            event = "settings.resolve_embedding_model_failed",
-            log = logger,
+            safe_error_detail(exc, fallback="Invalid embedding model."),
+            event="settings.resolve_embedding_model_failed",
+            log=logger,
         ) from exc
     # Classified, not just trimmed: a bare strip makes a UI session look like an API key and
     # costs it its own cached marker. The GET must refuse exactly what the PUT refuses.
-    token = hf_token_arg(hf_token, allow_ambient_token = allow_ambient_token)
+    token = hf_token_arg(hf_token, allow_ambient_token=allow_ambient_token)
     return _resolve_embedding_model_plan(resolved, token)
 
 
-@_owner_settings_router.put("/embedding-model", response_model = EmbeddingModelResponse)
+@_owner_settings_router.put("/embedding-model", response_model=EmbeddingModelResponse)
 def update_embedding_model(
     payload: EmbeddingModelPayload,
     allow_ambient_token: bool = Depends(allow_ambient_hf_token),
@@ -2922,11 +2941,11 @@ def update_embedding_model(
         raise log_and_http_error(
             exc,
             400,
-            safe_error_detail(exc, fallback = "Invalid embedding model."),
-            event = "settings.update_embedding_model_failed",
-            log = logger,
+            safe_error_detail(exc, fallback="Invalid embedding model."),
+            event="settings.update_embedding_model_failed",
+            log=logger,
         ) from exc
-    hf_token = hf_token_arg(payload.hf_token, allow_ambient_token = allow_ambient_token)
+    hf_token = hf_token_arg(payload.hf_token, allow_ambient_token=allow_ambient_token)
     from utils.utils import hf_env_offline
 
     # Offline, both the Hub malware scan and the is-embedding check are unreachable and degrade
@@ -2938,13 +2957,13 @@ def update_embedding_model(
     requested_repo = (payload.gguf_repo or "").strip() or None
     if payload.backend is not None and payload.backend != plan.backend:
         raise HTTPException(
-            status_code = 400,
-            detail = "The embedding backend no longer matches the server resolution. Resolve it again.",
+            status_code=400,
+            detail="The embedding backend no longer matches the server resolution. Resolve it again.",
         )
     if requested_repo is not None and requested_repo != plan.download_repo:
         raise HTTPException(
-            status_code = 400,
-            detail = "The embedding download repository was not validated for this model.",
+            status_code=400,
+            detail="The embedding download repository was not validated for this model.",
         )
     destination_is_llama = plan.backend == "llama"
     # Verify and scan the repo the loader will actually open: a slashless alias resolves under
@@ -2989,9 +3008,9 @@ def update_embedding_model(
             )
         if evaluate_file_security(
             verify_target,
-            hf_token = scan_token,
-            load_subdirs = load_subdirs,
-            local_only_load = local_only_load,
+            hf_token=scan_token,
+            load_subdirs=load_subdirs,
+            local_only_load=local_only_load,
         ).blocked:
             # 403, not 409: the client routes every 409 into the forceable "save anyway" flow, but this is a
             # hard, non-forceable security refusal.
@@ -3006,14 +3025,14 @@ def update_embedding_model(
                     f"{model!r} is flagged as unsafe by Hugging Face's security scan and "
                     "cannot be used as the embedding model."
                 )
-            raise HTTPException(status_code = 403, detail = detail)
+            raise HTTPException(status_code=403, detail=detail)
     if model != default_embedding_model() and not payload.force and not is_local_gguf:
         from core.rag import config as rag_config
 
         # A GGUF-named repo on llama-server is loaded from its .gguf files, which rarely carry ST metadata, so verify
         # GGUF availability instead of the embedding-metadata gate.
         gguf_named = destination_is_llama and rag_config._names_gguf(model)
-        if not gguf_named and not is_embedding_model(verify_target, hf_token = hf_token):
+        if not gguf_named and not is_embedding_model(verify_target, hf_token=hf_token):
             # Offline, is_embedding_model can only confirm the ST layout, so a cached and loadable transformers-native
             # embedder (gte-modernbert and the like) is accepted rather than 409'd where online would not. Uncached
             # still 409s.
@@ -3024,13 +3043,13 @@ def update_embedding_model(
             # A cached private repo accepted here becomes this deployment's embedder.
             offline_cached = (
                 local_only_load
-                and cache_reads_authorized(hf_token, repo_id = verify_target)
+                and cache_reads_authorized(hf_token, repo_id=verify_target)
                 and hf_cache_snapshot_is_loadable(verify_target)
             )
             if not offline_cached:
                 raise HTTPException(
-                    status_code = 409,
-                    detail = (
+                    status_code=409,
+                    detail=(
                         f"Could not verify {model!r} as an embedding model on "
                         "Hugging Face (it may be the wrong model type, gated, or "
                         "you may be offline)."
@@ -3039,7 +3058,7 @@ def update_embedding_model(
         # Any plan error counts, not just llama ones: is_embedding_model gates on tags, so a repo with no loadable
         # checkpoint passes it and would be persisted anyway.
         if plan.error:
-            raise HTTPException(status_code = 409, detail = plan.error)
+            raise HTTPException(status_code=409, detail=plan.error)
     trusted_backend = None
     trusted_gguf_repo = None
     trusted_gguf_files = None
@@ -3062,10 +3081,10 @@ def update_embedding_model(
         trusted_download_pending = True
     set_rag_embedding_model(
         model,
-        gguf_repo = trusted_gguf_repo,
-        backend = trusted_backend,
-        download_pending = trusted_download_pending,
-        gguf_files = trusted_gguf_files,
+        gguf_repo=trusted_gguf_repo,
+        backend=trusted_backend,
+        download_pending=trusted_download_pending,
+        gguf_files=trusted_gguf_files,
     )
     logger.info(
         "settings.embedding_model_updated subject=%s model=%s forced=%s",
@@ -3076,7 +3095,7 @@ def update_embedding_model(
     return _embedding_model_response()
 
 
-@_owner_settings_router.post("/embedding-model/unload", response_model = EmbeddingModelResponse)
+@_owner_settings_router.post("/embedding-model/unload", response_model=EmbeddingModelResponse)
 def unload_embedding_model(
     current_subject: str = Depends(get_current_subject),
 ) -> EmbeddingModelResponse:
@@ -3090,7 +3109,7 @@ def unload_embedding_model(
     return _embedding_model_response()
 
 
-@_owner_settings_router.delete("/embedding-model", response_model = EmbeddingModelResponse)
+@_owner_settings_router.delete("/embedding-model", response_model=EmbeddingModelResponse)
 def reset_embedding_model(
     current_subject: str = Depends(get_current_subject),
 ) -> EmbeddingModelResponse:
@@ -3104,14 +3123,14 @@ class PreviewLinkRotateResponse(BaseModel):
     rotated: bool = True
 
 
-@_owner_settings_router.post("/preview-links/rotate", response_model = PreviewLinkRotateResponse)
+@_owner_settings_router.post("/preview-links/rotate", response_model=PreviewLinkRotateResponse)
 def rotate_preview_links(
     current_subject: str = Depends(get_current_subject),
 ) -> PreviewLinkRotateResponse:
     """Rotate the preview-link signing secret, revoking every previously shared `/p` link."""
     rotate_preview_link_secret()
     logger.info("settings.preview_links_rotated subject=%s", current_subject)
-    return PreviewLinkRotateResponse(rotated = True)
+    return PreviewLinkRotateResponse(rotated=True)
 
 
 class KeylessApiAccessPayload(BaseModel):
@@ -3176,14 +3195,14 @@ class RemoteAccessResponse(BaseModel):
 
 def _require_ui_session(via_api_key: bool = Depends(authenticated_via_api_key)) -> None:
     if via_api_key:
-        raise HTTPException(status_code = 403, detail = "Remote access requires a UI session.")
+        raise HTTPException(status_code=403, detail="Remote access requires a UI session.")
 
 
 def _remote_access_response(request: Request) -> RemoteAccessResponse:
     return RemoteAccessResponse(**remote_access_status(request.app.state))
 
 
-@_owner_settings_router.get("/remote-access", response_model = RemoteAccessResponse)
+@_owner_settings_router.get("/remote-access", response_model=RemoteAccessResponse)
 def get_remote_access(
     request: Request,
     current_subject: str = Depends(get_current_subject),
@@ -3192,7 +3211,7 @@ def get_remote_access(
     return _remote_access_response(request)
 
 
-@_owner_settings_router.post("/remote-access/start", response_model = RemoteAccessResponse)
+@_owner_settings_router.post("/remote-access/start", response_model=RemoteAccessResponse)
 def start_remote_access_route(
     request: Request,
     current_subject: str = Depends(get_current_subject),
@@ -3201,12 +3220,12 @@ def start_remote_access_route(
     try:
         response = RemoteAccessResponse(**start_remote_access(request.app.state))
     except RuntimeError as exc:
-        raise HTTPException(status_code = 409, detail = str(exc)) from exc
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     logger.info("settings.remote_access_start_requested subject=%s", current_subject)
     return response
 
 
-@_owner_settings_router.post("/remote-access/stop", response_model = RemoteAccessResponse)
+@_owner_settings_router.post("/remote-access/stop", response_model=RemoteAccessResponse)
 def stop_remote_access_route(
     request: Request,
     current_subject: str = Depends(get_current_subject),
@@ -3215,21 +3234,21 @@ def stop_remote_access_route(
     try:
         status = stop_remote_access(request.app.state)
     except RuntimeError as exc:
-        raise HTTPException(status_code = 409, detail = str(exc)) from exc
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     status.update(
-        state = "off",
-        url = None,
-        error = None,
-        managed_by = None,
-        can_start = False,
-        can_stop = False,
+        state="off",
+        url=None,
+        error=None,
+        managed_by=None,
+        can_start=False,
+        can_stop=False,
     )
     response = RemoteAccessResponse(**status)
     logger.info("settings.remote_access_stop_requested subject=%s", current_subject)
     return response
 
 
-@_owner_settings_router.put("/remote-access/auto-start", response_model = RemoteAccessResponse)
+@_owner_settings_router.put("/remote-access/auto-start", response_model=RemoteAccessResponse)
 def update_remote_access_auto_start(
     request: Request,
     payload: RemoteAccessAutoStartPayload,
@@ -3237,7 +3256,7 @@ def update_remote_access_auto_start(
     _ui_session: None = Depends(_require_ui_session),
 ) -> RemoteAccessResponse:
     if bool(getattr(request.app.state, "remote_access_is_colab", False)):
-        raise HTTPException(status_code = 409, detail = "colab")
+        raise HTTPException(status_code=409, detail="colab")
     set_remote_access_auto_start(payload.enabled)
     logger.info(
         "settings.remote_access_auto_start_updated subject=%s enabled=%s",
@@ -3252,7 +3271,7 @@ class LanAccessAutoStartPayload(BaseModel):
 
 
 class LanAccessPortPayload(BaseModel):
-    port: Optional[StrictInt] = Field(ge = 1, le = 65535)
+    port: Optional[StrictInt] = Field(ge=1, le=65535)
 
 
 class LanAccessResponse(BaseModel):
@@ -3280,7 +3299,7 @@ def _lan_access_response(request: Request) -> LanAccessResponse:
     return LanAccessResponse(**lan_access_status(request.app))
 
 
-@_owner_settings_router.get("/lan-access", response_model = LanAccessResponse)
+@_owner_settings_router.get("/lan-access", response_model=LanAccessResponse)
 def get_lan_access(
     request: Request,
     current_subject: str = Depends(get_current_subject),
@@ -3289,7 +3308,7 @@ def get_lan_access(
     return _lan_access_response(request)
 
 
-@_owner_settings_router.post("/lan-access/start", response_model = LanAccessResponse)
+@_owner_settings_router.post("/lan-access/start", response_model=LanAccessResponse)
 def start_lan_access_route(
     request: Request,
     current_subject: str = Depends(get_current_subject),
@@ -3298,12 +3317,12 @@ def start_lan_access_route(
     try:
         response = LanAccessResponse(**start_lan_access(request.app))
     except RuntimeError as exc:
-        raise HTTPException(status_code = 409, detail = str(exc)) from exc
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     logger.info("settings.lan_access_start_requested subject=%s", current_subject)
     return response
 
 
-@_owner_settings_router.post("/lan-access/stop", response_model = LanAccessResponse)
+@_owner_settings_router.post("/lan-access/stop", response_model=LanAccessResponse)
 def stop_lan_access_route(
     request: Request,
     current_subject: str = Depends(get_current_subject),
@@ -3312,12 +3331,12 @@ def stop_lan_access_route(
     try:
         response = LanAccessResponse(**stop_lan_access(request.app))
     except RuntimeError as exc:
-        raise HTTPException(status_code = 409, detail = str(exc)) from exc
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     logger.info("settings.lan_access_stop_requested subject=%s", current_subject)
     return response
 
 
-@_owner_settings_router.put("/lan-access/auto-start", response_model = LanAccessResponse)
+@_owner_settings_router.put("/lan-access/auto-start", response_model=LanAccessResponse)
 def update_lan_access_auto_start(
     request: Request,
     payload: LanAccessAutoStartPayload,
@@ -3325,7 +3344,7 @@ def update_lan_access_auto_start(
     _ui_session: None = Depends(_require_ui_session),
 ) -> LanAccessResponse:
     if bool(getattr(request.app.state, "lan_access_is_colab", False)):
-        raise HTTPException(status_code = 409, detail = "colab")
+        raise HTTPException(status_code=409, detail="colab")
     set_lan_access_auto_start(payload.enabled)
     logger.info(
         "settings.lan_access_auto_start_updated subject=%s enabled=%s",
@@ -3335,7 +3354,7 @@ def update_lan_access_auto_start(
     return _lan_access_response(request)
 
 
-@_owner_settings_router.put("/lan-access/port", response_model = LanAccessResponse)
+@_owner_settings_router.put("/lan-access/port", response_model=LanAccessResponse)
 def update_lan_access_port(
     request: Request,
     payload: LanAccessPortPayload,
@@ -3345,7 +3364,7 @@ def update_lan_access_port(
     try:
         response = LanAccessResponse(**save_lan_access_port(request.app, payload.port))
     except RuntimeError as exc:
-        raise HTTPException(status_code = 409, detail = str(exc)) from exc
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     logger.info(
         "settings.lan_access_port_updated subject=%s port=%s",
         current_subject,
@@ -3354,14 +3373,14 @@ def update_lan_access_port(
     return response
 
 
-@_owner_settings_router.get("/preview-sharing", response_model = PreviewSharingResponse)
+@_owner_settings_router.get("/preview-sharing", response_model=PreviewSharingResponse)
 def get_preview_sharing(
     current_subject: str = Depends(get_current_subject),
 ) -> PreviewSharingResponse:
-    return PreviewSharingResponse(enabled = get_preview_sharing_enabled())
+    return PreviewSharingResponse(enabled=get_preview_sharing_enabled())
 
 
-@_owner_settings_router.put("/preview-sharing", response_model = PreviewSharingResponse)
+@_owner_settings_router.put("/preview-sharing", response_model=PreviewSharingResponse)
 def update_preview_sharing(
     payload: PreviewSharingPayload, current_subject: str = Depends(get_current_subject)
 ) -> PreviewSharingResponse:
@@ -3372,24 +3391,24 @@ def update_preview_sharing(
         raise log_and_http_error(
             exc,
             400,
-            safe_error_detail(exc, fallback = "Invalid preview sharing setting."),
-            event = "settings.update_preview_sharing_failed",
-            log = logger,
+            safe_error_detail(exc, fallback="Invalid preview sharing setting."),
+            event="settings.update_preview_sharing_failed",
+            log=logger,
         ) from exc
     logger.info("settings.preview_sharing_updated subject=%s enabled=%s", current_subject, enabled)
-    return PreviewSharingResponse(enabled = enabled)
+    return PreviewSharingResponse(enabled=enabled)
 
 
 def _managed_provider_urls_response() -> ManagedProviderUrlsResponse:
     # The EFFECTIVE answer, not the stored preference: a switch reading back on while every save
     # is refused would be the worst of the three things this could say.
     return ManagedProviderUrlsResponse(
-        allowed = get_managed_private_provider_urls_allowed(),
-        locked_by_environment = private_urls_locked_by_environment(),
+        allowed=get_managed_private_provider_urls_allowed(),
+        locked_by_environment=private_urls_locked_by_environment(),
     )
 
 
-@_shared_settings_router.get("/managed-provider-urls", response_model = ManagedProviderUrlsResponse)
+@_shared_settings_router.get("/managed-provider-urls", response_model=ManagedProviderUrlsResponse)
 def get_managed_provider_urls(
     current_subject: str = Depends(get_current_subject),
 ) -> ManagedProviderUrlsResponse:
@@ -3398,7 +3417,7 @@ def get_managed_provider_urls(
     return _managed_provider_urls_response()
 
 
-@_owner_settings_router.put("/managed-provider-urls", response_model = ManagedProviderUrlsResponse)
+@_owner_settings_router.put("/managed-provider-urls", response_model=ManagedProviderUrlsResponse)
 def update_managed_provider_urls(
     payload: ManagedProviderUrlsPayload,
     current_subject: str = Depends(get_current_subject),
@@ -3417,9 +3436,9 @@ def update_managed_provider_urls(
         raise log_and_http_error(
             exc,
             400,
-            safe_error_detail(exc, fallback = "Invalid managed provider URL setting."),
-            event = "settings.update_managed_provider_urls_failed",
-            log = logger,
+            safe_error_detail(exc, fallback="Invalid managed provider URL setting."),
+            event="settings.update_managed_provider_urls_failed",
+            log=logger,
         ) from exc
     logger.info(
         "settings.managed_provider_urls_updated subject=%s allowed=%s", current_subject, allowed
@@ -3427,14 +3446,14 @@ def update_managed_provider_urls(
     return _managed_provider_urls_response()
 
 
-@_account_settings_router.get("/current-date-prompt", response_model = CurrentDatePromptResponse)
+@_account_settings_router.get("/current-date-prompt", response_model=CurrentDatePromptResponse)
 def get_current_date_prompt(
     current_subject: str = Depends(get_current_subject),
 ) -> CurrentDatePromptResponse:
-    return CurrentDatePromptResponse(enabled = get_current_date_prompt_enabled())
+    return CurrentDatePromptResponse(enabled=get_current_date_prompt_enabled())
 
 
-@_account_settings_router.put("/current-date-prompt", response_model = CurrentDatePromptResponse)
+@_account_settings_router.put("/current-date-prompt", response_model=CurrentDatePromptResponse)
 def update_current_date_prompt(
     payload: CurrentDatePromptPayload, current_subject: str = Depends(get_current_subject)
 ) -> CurrentDatePromptResponse:
@@ -3445,14 +3464,14 @@ def update_current_date_prompt(
         raise log_and_http_error(
             exc,
             400,
-            safe_error_detail(exc, fallback = "Invalid current date prompt setting."),
-            event = "settings.update_current_date_prompt_failed",
-            log = logger,
+            safe_error_detail(exc, fallback="Invalid current date prompt setting."),
+            event="settings.update_current_date_prompt_failed",
+            log=logger,
         ) from exc
     logger.info(
         "settings.current_date_prompt_updated subject=%s enabled=%s", current_subject, enabled
     )
-    return CurrentDatePromptResponse(enabled = enabled)
+    return CurrentDatePromptResponse(enabled=enabled)
 
 
 def _require_ui_session_for_keyless(via_api_key: bool = Depends(authenticated_via_api_key)) -> None:
@@ -3461,21 +3480,21 @@ def _require_ui_session_for_keyless(via_api_key: bool = Depends(authenticated_vi
     both are ``authenticated_via_api_key``, so one check covers them."""
     if via_api_key:
         raise HTTPException(
-            status_code = 403,
-            detail = "Keyless API access can only be changed from the Unsloth UI.",
+            status_code=403,
+            detail="Keyless API access can only be changed from the Unsloth UI.",
         )
 
 
 def _keyless_api_access_response(request: Request) -> KeylessApiAccessResponse:
     scope, tools = get_keyless_api_access_settings()
     return KeylessApiAccessResponse(
-        scope = scope,
-        tools = tools,
-        exposure = access_exposure(request.app.state),
+        scope=scope,
+        tools=tools,
+        exposure=access_exposure(request.app.state),
     )
 
 
-@_owner_settings_router.get("/keyless-api-access", response_model = KeylessApiAccessResponse)
+@_owner_settings_router.get("/keyless-api-access", response_model=KeylessApiAccessResponse)
 def get_keyless_api_access(
     request: Request,
     current_subject: str = Depends(get_current_subject),
@@ -3484,7 +3503,7 @@ def get_keyless_api_access(
     return _keyless_api_access_response(request)
 
 
-@_owner_settings_router.put("/keyless-api-access", response_model = KeylessApiAccessResponse)
+@_owner_settings_router.put("/keyless-api-access", response_model=KeylessApiAccessResponse)
 def update_keyless_api_access(
     request: Request,
     payload: KeylessApiAccessPayload,
@@ -3492,7 +3511,7 @@ def update_keyless_api_access(
     _ui_session: None = Depends(_require_ui_session_for_keyless),
 ) -> KeylessApiAccessResponse:
     """Choose which routes are served without an API key, and whether tools come too."""
-    scope, tools = set_keyless_api_access(payload.scope, tools = payload.tools)
+    scope, tools = set_keyless_api_access(payload.scope, tools=payload.tools)
     logger.info(
         "settings.keyless_api_access_updated subject=%s scope=%s tools=%s exposure=%s",
         current_subject,
@@ -3517,11 +3536,11 @@ def _is_bundled_avatar_url(value: str) -> bool:
 
 
 class PersonalizationProfile(BaseModel):
-    model_config = ConfigDict(extra = "ignore")
+    model_config = ConfigDict(extra="ignore")
 
-    displayName: str = Field("", max_length = 200)
-    nickname: str = Field("", max_length = 200)
-    avatarDataUrl: Optional[str] = Field(None, max_length = MAX_AVATAR_DATA_URL_BYTES)
+    displayName: str = Field("", max_length=200)
+    nickname: str = Field("", max_length=200)
+    avatarDataUrl: Optional[str] = Field(None, max_length=MAX_AVATAR_DATA_URL_BYTES)
     avatarShape: Literal["circle", "rounded"] = "circle"
     showGreetingSloth: bool = True
 
@@ -3536,18 +3555,18 @@ class PersonalizationProfile(BaseModel):
 
 
 class PersonalizationCustomColors(BaseModel):
-    model_config = ConfigDict(extra = "ignore")
+    model_config = ConfigDict(extra="ignore")
 
-    accent: Optional[str] = Field(None, pattern = r"^#[0-9a-fA-F]{6}$")
-    background: Optional[str] = Field(None, pattern = r"^#[0-9a-fA-F]{6}$")
-    foreground: Optional[str] = Field(None, pattern = r"^#[0-9a-fA-F]{6}$")
+    accent: Optional[str] = Field(None, pattern=r"^#[0-9a-fA-F]{6}$")
+    background: Optional[str] = Field(None, pattern=r"^#[0-9a-fA-F]{6}$")
+    foreground: Optional[str] = Field(None, pattern=r"^#[0-9a-fA-F]{6}$")
 
 
 class PersonalizationCustomColorModes(BaseModel):
-    model_config = ConfigDict(extra = "ignore")
+    model_config = ConfigDict(extra="ignore")
 
-    light: PersonalizationCustomColors = Field(default_factory = PersonalizationCustomColors)
-    dark: PersonalizationCustomColors = Field(default_factory = PersonalizationCustomColors)
+    light: PersonalizationCustomColors = Field(default_factory=PersonalizationCustomColors)
+    dark: PersonalizationCustomColors = Field(default_factory=PersonalizationCustomColors)
 
 
 MAX_IMPORTED_FONTS = 3
@@ -3577,10 +3596,10 @@ _FONT_DATA_URL_PATTERN = re.compile(
 
 
 class PersonalizationImportedFont(BaseModel):
-    model_config = ConfigDict(extra = "ignore")
+    model_config = ConfigDict(extra="ignore")
 
-    name: str = Field(..., min_length = 1, max_length = 100)
-    dataUrl: str = Field(..., max_length = MAX_FONT_DATA_URL_LENGTH)
+    name: str = Field(..., min_length=1, max_length=100)
+    dataUrl: str = Field(..., max_length=MAX_FONT_DATA_URL_LENGTH)
 
     @field_validator("name")
     @classmethod
@@ -3633,7 +3652,7 @@ MAX_SIDEBAR_MENU_INPUT_ITEMS = 4 * len(SIDEBAR_MENU_ITEM_DEFAULTS)
 
 
 class PersonalizationSidebarMenuItem(BaseModel):
-    model_config = ConfigDict(extra = "ignore")
+    model_config = ConfigDict(extra="ignore")
 
     id: Literal[
         "api",
@@ -3650,7 +3669,7 @@ class PersonalizationSidebarMenuItem(BaseModel):
 
 def _default_sidebar_menu() -> "list[PersonalizationSidebarMenuItem]":
     return [
-        PersonalizationSidebarMenuItem(id = item_id, visible = visible)
+        PersonalizationSidebarMenuItem(id=item_id, visible=visible)
         for item_id, visible in SIDEBAR_MENU_ITEM_DEFAULTS.items()
     ]
 
@@ -3669,7 +3688,7 @@ SidebarNavItemId = Literal[
 
 
 class PersonalizationSidebarNavItem(BaseModel):
-    model_config = ConfigDict(extra = "ignore")
+    model_config = ConfigDict(extra="ignore")
 
     id: SidebarNavItemId
     pinned: bool = True
@@ -3677,21 +3696,21 @@ class PersonalizationSidebarNavItem(BaseModel):
 
 def _default_sidebar_nav() -> "list[PersonalizationSidebarNavItem]":
     return [
-        PersonalizationSidebarNavItem(id = item_id, pinned = pinned)
+        PersonalizationSidebarNavItem(id=item_id, pinned=pinned)
         for item_id, pinned in SIDEBAR_NAV_ITEM_DEFAULTS.items()
     ]
 
 
 class PersonalizationCustomization(BaseModel):
-    model_config = ConfigDict(extra = "ignore")
+    model_config = ConfigDict(extra="ignore")
 
-    colors: PersonalizationCustomColorModes = Field(default_factory = PersonalizationCustomColorModes)
-    uiFont: Optional[str] = Field(None, max_length = 200)
-    headingFont: Optional[str] = Field(None, max_length = 200)
-    chatFont: Optional[str] = Field(None, max_length = 200)
-    codeFont: Optional[str] = Field(None, max_length = 200)
+    colors: PersonalizationCustomColorModes = Field(default_factory=PersonalizationCustomColorModes)
+    uiFont: Optional[str] = Field(None, max_length=200)
+    headingFont: Optional[str] = Field(None, max_length=200)
+    chatFont: Optional[str] = Field(None, max_length=200)
+    codeFont: Optional[str] = Field(None, max_length=200)
     importedFonts: list[PersonalizationImportedFont] = Field(
-        default_factory = list, max_length = MAX_IMPORTED_FONTS
+        default_factory=list, max_length=MAX_IMPORTED_FONTS
     )
 
     @field_validator("importedFonts")
@@ -3709,27 +3728,27 @@ class PersonalizationCustomization(BaseModel):
         # Selected font names reach CSS the same way imported names do.
         return value if value is None else _check_font_name(value)
 
-    uiFontSize: Optional[int] = Field(None, ge = 12, le = 20)
-    codeFontSize: Optional[int] = Field(None, ge = 10, le = 20)
+    uiFontSize: Optional[int] = Field(None, ge=12, le=20)
+    codeFontSize: Optional[int] = Field(None, ge=10, le=20)
     chatWidth: Literal["standard", "wide", "full"] = "standard"
-    contrast: int = Field(50, ge = 0, le = 100)
+    contrast: int = Field(50, ge=0, le=100)
     pointerCursors: bool = False
     reduceMotion: Literal["system", "on", "off"] = "system"
     fontSmoothing: bool = True
     sidebarMenu: list[PersonalizationSidebarMenuItem] = Field(
-        default_factory = _default_sidebar_menu,
-        max_length = MAX_SIDEBAR_MENU_INPUT_ITEMS,
+        default_factory=_default_sidebar_menu,
+        max_length=MAX_SIDEBAR_MENU_INPUT_ITEMS,
     )
     # Order is the sidebar's render order, so the validator keeps the client's.
     sidebarNav: list[PersonalizationSidebarNavItem] = Field(
-        default_factory = _default_sidebar_nav,
-        max_length = MAX_SIDEBAR_NAV_INPUT_ITEMS,
+        default_factory=_default_sidebar_nav,
+        max_length=MAX_SIDEBAR_NAV_INPUT_ITEMS,
     )
     # Rows still following an automatic rule rather than a choice the user made. None means the
     # record predates the field, which the client tells apart from an explicit empty list: a
     # server-filled default would reapply a rule the user had already overruled.
     sidebarNavAuto: Optional[list[SidebarNavItemId]] = Field(
-        None, max_length = MAX_SIDEBAR_NAV_INPUT_ITEMS
+        None, max_length=MAX_SIDEBAR_NAV_INPUT_ITEMS
     )
 
     @field_validator("sidebarNavAuto")
@@ -3751,7 +3770,7 @@ class PersonalizationCustomization(BaseModel):
         items = [item for item in value if not (item.id in seen or seen.add(item.id))]
         for item_id, visible in SIDEBAR_MENU_ITEM_DEFAULTS.items():
             if item_id not in seen:
-                items.append(PersonalizationSidebarMenuItem(id = item_id, visible = visible))
+                items.append(PersonalizationSidebarMenuItem(id=item_id, visible=visible))
         return items
 
     @field_validator("sidebarNav")
@@ -3764,27 +3783,27 @@ class PersonalizationCustomization(BaseModel):
         items = [item for item in value if not (item.id in seen or seen.add(item.id))]
         for item_id, pinned in SIDEBAR_NAV_ITEM_DEFAULTS.items():
             if item_id not in seen:
-                items.append(PersonalizationSidebarNavItem(id = item_id, pinned = pinned))
+                items.append(PersonalizationSidebarNavItem(id=item_id, pinned=pinned))
         return items
 
 
 class PersonalizationAppearance(BaseModel):
-    model_config = ConfigDict(extra = "ignore")
+    model_config = ConfigDict(extra="ignore")
 
     theme: Literal["light", "dark", "system"] = "system"
     palette: Literal["standard", "classic", "minimal"] = "standard"
-    language: Optional[str] = Field(None, max_length = 20)
+    language: Optional[str] = Field(None, max_length=20)
     customization: PersonalizationCustomization = Field(
-        default_factory = PersonalizationCustomization
+        default_factory=PersonalizationCustomization
     )
 
 
 class PersonalizationPayload(BaseModel):
-    model_config = ConfigDict(extra = "ignore")
+    model_config = ConfigDict(extra="ignore")
 
     version: int = PERSONALIZATION_VERSION
-    profile: PersonalizationProfile = Field(default_factory = PersonalizationProfile)
-    appearance: PersonalizationAppearance = Field(default_factory = PersonalizationAppearance)
+    profile: PersonalizationProfile = Field(default_factory=PersonalizationProfile)
+    appearance: PersonalizationAppearance = Field(default_factory=PersonalizationAppearance)
 
 
 class PersonalizationResponse(PersonalizationPayload):
@@ -3797,7 +3816,7 @@ class PersonalizationResponse(PersonalizationPayload):
     greetingSlothSaved: bool = False
 
 
-@_account_settings_router.get("/personalization", response_model = PersonalizationResponse)
+@_account_settings_router.get("/personalization", response_model=PersonalizationResponse)
 def get_personalization_settings(
     current_subject: str = Depends(get_current_subject),
 ) -> PersonalizationResponse:
@@ -3827,23 +3846,23 @@ def _merge_personalization(base: dict, overlay: dict) -> dict:
     return merged
 
 
-@_account_settings_router.put("/personalization", response_model = PersonalizationPayload)
+@_account_settings_router.put("/personalization", response_model=PersonalizationPayload)
 def update_personalization_settings(
     payload: PersonalizationPayload, current_subject: str = Depends(get_current_subject)
 ) -> PersonalizationPayload:
     try:
         # exclude_unset so absent fields are not persisted as defaults; merge so
         # fields the request omits keep whatever the record already stored.
-        incoming = payload.model_dump(exclude_unset = True)
+        incoming = payload.model_dump(exclude_unset=True)
         merged = _merge_personalization(get_personalization(), incoming)
         set_personalization(merged)
     except ValueError as exc:
         raise log_and_http_error(
             exc,
             400,
-            safe_error_detail(exc, fallback = "Invalid personalization settings."),
-            event = "settings.update_personalization_failed",
-            log = logger,
+            safe_error_detail(exc, fallback="Invalid personalization settings."),
+            event="settings.update_personalization_failed",
+            log=logger,
         ) from exc
     # Return the stored record, not the defaults-filled request, so the response
     # matches storage (and the next GET) for fields the client omitted.
@@ -3879,7 +3898,7 @@ class DebugLogResponse(BaseModel):
     reason: Optional[str] = None
     source_id: Optional[str] = None
     realpath: Optional[str] = None
-    lines: list[str] = Field(default_factory = list)
+    lines: list[str] = Field(default_factory=list)
     cursor: Optional[str] = None
     reset: bool = False
     reset_reason: Optional[str] = None
@@ -3894,7 +3913,7 @@ class DebugLogResponse(BaseModel):
     size_bytes: int = 0
 
 
-@_owner_settings_router.get("/debug/logs/sources", response_model = DebugLogSourcesResponse)
+@_owner_settings_router.get("/debug/logs/sources", response_model=DebugLogSourcesResponse)
 def get_debug_log_sources(
     current_subject: str = Depends(get_current_subject),
     _ui_session: None = Depends(_require_ui_session),
@@ -3911,14 +3930,14 @@ def get_debug_log_sources(
     # directory a user opening "the log folder" expects to land in.
     roots = debug_log_sources.candidate_roots()
     return DebugLogSourcesResponse(
-        sources = [DebugLogSourceModel(**vars(source)) for source in sources],
-        default_source_id = debug_log_sources.default_source_id(),
-        file_logging_disabled = debug_log_sources.file_logging_disabled(),
-        log_root = str(roots[0]) if roots else None,
+        sources=[DebugLogSourceModel(**vars(source)) for source in sources],
+        default_source_id=debug_log_sources.default_source_id(),
+        file_logging_disabled=debug_log_sources.file_logging_disabled(),
+        log_root=str(roots[0]) if roots else None,
     )
 
 
-@_owner_settings_router.get("/debug/logs", response_model = DebugLogResponse)
+@_owner_settings_router.get("/debug/logs", response_model=DebugLogResponse)
 def get_debug_log(
     source: Optional[str] = None,
     cursor: Optional[str] = None,
@@ -3938,8 +3957,8 @@ def get_debug_log(
     if not source_id:
         disabled = debug_log_sources.file_logging_disabled()
         return DebugLogResponse(
-            status = "disabled" if disabled else "missing",
-            reason = (
+            status="disabled" if disabled else "missing",
+            reason=(
                 "File logging is turned off (UNSLOTH_STUDIO_NO_FILE_LOG=1)."
                 if disabled
                 else "No log files have been written yet."
@@ -3950,38 +3969,39 @@ def get_debug_log(
     if path is None:
         # An id the enumeration no longer produces. 404 here (unlike the content
         # states above) so a stale picker refetches its sources.
-        raise HTTPException(status_code = 404, detail = "Unknown log source.")
+        raise HTTPException(status_code=404, detail="Unknown log source.")
 
     try:
         result = debug_log_reader.read_since(path, cursor, lines)
     except FileNotFoundError:
         return DebugLogResponse(
-            status = "missing",
-            reason = "The log file was removed.",
-            source_id = source_id,
+            status="missing",
+            reason="The log file was removed.",
+            source_id=source_id,
         )
     except (OSError, PermissionError) as exc:
         # The message embeds the path, so it goes through redaction too.
         from utils.log_redaction import redact_log_text
+
         return DebugLogResponse(
-            status = "unreadable",
-            reason = redact_log_text(str(exc)),
-            source_id = source_id,
+            status="unreadable",
+            reason=redact_log_text(str(exc)),
+            source_id=source_id,
         )
 
     return DebugLogResponse(
-        status = "empty" if (result.size_bytes == 0 and not result.lines) else "ok",
-        source_id = source_id,
-        realpath = str(path),
-        lines = result.lines,
-        cursor = result.cursor,
-        reset = result.reset,
-        reset_reason = result.reset_reason,
-        dropped_bytes = result.dropped_bytes,
-        truncated_head = result.truncated_head,
-        more_pending = result.more_pending,
-        file_logging_disabled = debug_log_sources.source_is_frozen(source_id),
-        size_bytes = result.size_bytes,
+        status="empty" if (result.size_bytes == 0 and not result.lines) else "ok",
+        source_id=source_id,
+        realpath=str(path),
+        lines=result.lines,
+        cursor=result.cursor,
+        reset=result.reset,
+        reset_reason=result.reset_reason,
+        dropped_bytes=result.dropped_bytes,
+        truncated_head=result.truncated_head,
+        more_pending=result.more_pending,
+        file_logging_disabled=debug_log_sources.source_is_frozen(source_id),
+        size_bytes=result.size_bytes,
     )
 
 
@@ -4010,10 +4030,10 @@ def export_debug_logs(
     """
     from utils import debug_log_export
 
-    if not _DEBUG_LOG_EXPORT_LOCK.acquire(blocking = False):
+    if not _DEBUG_LOG_EXPORT_LOCK.acquire(blocking=False):
         raise HTTPException(
-            status_code = 429,
-            detail = "A log export is already running. Wait for it to finish and try again.",
+            status_code=429,
+            detail="A log export is already running. Wait for it to finish and try again.",
         )
     try:
         archive = debug_log_export.build_log_archive()
@@ -4034,8 +4054,8 @@ def export_debug_logs(
 
     return StreamingResponse(
         _chunks(),
-        media_type = "application/zip",
-        headers = {
+        media_type="application/zip",
+        headers={
             # Neither shipping caller reads this back: the browser names the Blob
             # itself and the desktop path names the file in Rust. It is here for
             # a curl or address-bar caller, so do not assume the button uses it.
@@ -4050,7 +4070,7 @@ def export_debug_logs(
         # Belt and braces with the `finally` above: on a client abort Starlette
         # cancels the task group without raising GeneratorExit, so that `finally`
         # waits for a cyclic GC pass, holding up to SPOOL_MAX_BYTES meanwhile.
-        background = BackgroundTask(archive.close),
+        background=BackgroundTask(archive.close),
     )
 
 

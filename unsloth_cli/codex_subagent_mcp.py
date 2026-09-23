@@ -39,7 +39,7 @@ def _config() -> dict:
     if not path:
         raise RuntimeError(f"Missing {_CODEX_SUBAGENT_CONFIG_ENV}.")
     try:
-        config = json.loads(Path(path).read_text(encoding = "utf-8"))
+        config = json.loads(Path(path).read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
         raise RuntimeError("Could not read the local Codex agent configuration.") from exc
     if not isinstance(config, dict):
@@ -145,7 +145,7 @@ def run_local_agent(task: str, cancel_event: threading.Event | None = None) -> s
     try:
         while True:
             try:
-                stdout, stderr = process.communicate(timeout = _CANCEL_POLL_SECONDS)
+                stdout, stderr = process.communicate(timeout=_CANCEL_POLL_SECONDS)
                 break
             except subprocess.TimeoutExpired:
                 if cancel_event.is_set():
@@ -167,10 +167,10 @@ def main() -> None:
     if len(sys.argv) > 1:
         os.environ[_CODEX_SUBAGENT_CONFIG_ENV] = sys.argv[1]
     serve(
-        run_agent = run_local_agent,
-        tool_name = _CODEX_SUBAGENT_MCP_TOOL,
-        tool_description = _CODEX_SUBAGENT_TOOL_DESCRIPTION,
-        instructions = _SERVER_INSTRUCTIONS,
+        run_agent=run_local_agent,
+        tool_name=_CODEX_SUBAGENT_MCP_TOOL,
+        tool_description=_CODEX_SUBAGENT_TOOL_DESCRIPTION,
+        instructions=_SERVER_INSTRUCTIONS,
     )
 
 

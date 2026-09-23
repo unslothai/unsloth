@@ -38,9 +38,9 @@ CAPTURE_ELEMENTS = ("pulsesrc", "alsasrc")
 def _extract(appimage: Path, workdir: Path) -> Path:
     subprocess.run(
         [str(appimage), "--appimage-extract"],
-        cwd = workdir,
-        check = True,
-        stdout = subprocess.DEVNULL,
+        cwd=workdir,
+        check=True,
+        stdout=subprocess.DEVNULL,
     )
     return workdir / "squashfs-root"
 
@@ -51,7 +51,7 @@ def _hook_environment(appdir: Path) -> dict[str, str]:
     wanted = {"GIO_MODULE_DIR"}
     environment: dict[str, str] = {}
     for hook in sorted((appdir / "apprun-hooks").glob("*.sh")):
-        for line in hook.read_text(encoding = "utf-8", errors = "replace").splitlines():
+        for line in hook.read_text(encoding="utf-8", errors="replace").splitlines():
             match = EXPORT.match(line.strip())
             if not match:
                 continue
@@ -75,7 +75,7 @@ def main() -> None:
     if not appimage.is_file():
         raise SystemExit(f"AppImage does not exist: {appimage}")
 
-    workdir = Path(tempfile.mkdtemp(prefix = "unsloth-appimage-media."))
+    workdir = Path(tempfile.mkdtemp(prefix="unsloth-appimage-media."))
     try:
         appdir = _extract(appimage, workdir)
         os.environ.update(_hook_environment(appdir))
@@ -144,7 +144,7 @@ def main() -> None:
             f"({size} bytes of I420) on this host"
         )
     finally:
-        shutil.rmtree(workdir, ignore_errors = True)
+        shutil.rmtree(workdir, ignore_errors=True)
 
 
 if __name__ == "__main__":

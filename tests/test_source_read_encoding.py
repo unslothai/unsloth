@@ -93,14 +93,14 @@ def _tracked_test_files(repo: Path):
     try:
         listed = subprocess.run(
             ["git", "-C", str(repo), "ls-files", "-z", "--", "*.py"],
-            capture_output = True,
-            timeout = 60,
+            capture_output=True,
+            timeout=60,
         )
     except (OSError, subprocess.SubprocessError):
         return None
     if listed.returncode != 0:
         return None
-    names = listed.stdout.decode("utf-8", errors = "replace").split("\0")
+    names = listed.stdout.decode("utf-8", errors="replace").split("\0")
     return [
         repo / name
         for name in names
@@ -668,7 +668,7 @@ def _is_module_receiver(name, modules) -> bool:
     )
 
 
-def _path_expr(call: ast.Call, modules = NO_MODULES):
+def _path_expr(call: ast.Call, modules=NO_MODULES):
     """The expression naming the file the call reads.
 
     Usually the receiver, but a module or the Path class in that slot means the
@@ -735,8 +735,8 @@ def _is_checked_in_root(
     node: ast.AST,
     module_names: set,
     shadowed,
-    derived = (),
-    attrs = (),
+    derived=(),
+    attrs=(),
 ) -> bool:
     """True when a path expression anchors on something that ships in the repo."""
     if isinstance(node, (ast.Tuple, ast.List, ast.Set)):
@@ -837,7 +837,7 @@ def _checked_in_locals(
     func,
     module_names: set,
     shadowed,
-    seed = (),
+    seed=(),
 ) -> set:
     """Locals that only ever hold a checked-in path.
 
@@ -1055,8 +1055,8 @@ def _checked_in_params(tree: ast.Module, module_names: set) -> set:
 
 def _checked_in_path_calls(
     tree: ast.Module,
-    modules = NO_MODULES,
-    visible_at = None,
+    modules=NO_MODULES,
+    visible_at=None,
 ):
     """Yield calls, at any depth, whose path is provably a checked-in file.
 
@@ -1080,7 +1080,7 @@ def _checked_in_path_calls(
     def visit(
         node,
         shadowed,
-        derived = frozenset(),
+        derived=frozenset(),
     ):
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
             shadowed = shadowed | _local_names(node)
@@ -1173,7 +1173,7 @@ def _pins_encoding(call: ast.Call, position: int | None) -> bool:
     return _names_encoding(call)
 
 
-def _offender(call: ast.Call, modules = NO_MODULES) -> str | None:
+def _offender(call: ast.Call, modules=NO_MODULES) -> str | None:
     """The call's name if it reads text without an encoding, else None."""
     func = call.func
     if isinstance(func, ast.Attribute):
@@ -1258,7 +1258,7 @@ def _scan_one(tree: ast.Module, rel: str):
     calls.update({id(c): c for c in _checked_in_path_calls(tree, modules, visible_at)})
     not_paths = _non_path_names(tree)
     temp_roots = _temp_rooted_names(tree)
-    for call in sorted(calls.values(), key = lambda c: (c.lineno, c.col_offset)):
+    for call in sorted(calls.values(), key=lambda c: (c.lineno, c.col_offset)):
         func = call.func
         if (
             isinstance(func, ast.Attribute)
@@ -1292,7 +1292,7 @@ def _batches():
 def test_checked_in_file_reads_name_an_encoding(batch: int):
     offenders = []
     for path in _batches()[batch]:
-        tree = ast.parse(path.read_text(encoding = "utf-8"), filename = str(path))
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         offenders.extend(_scan(tree, path.relative_to(REPO).as_posix()))
     assert offenders == [], (
         f"{len(offenders)} file reads in the test trees touch a checked-in file "

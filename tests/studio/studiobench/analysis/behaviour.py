@@ -169,7 +169,7 @@ def clipboard_coverage(base_row: dict, treat_row: dict) -> list[dict]:
                     f"clipboard_readable:{label}",
                     None,
                     str(_expect(row, "clipboard_note") or "the clipboard could not be read back"),
-                    required = True,
+                    required=True,
                 )
             )
             continue
@@ -180,7 +180,7 @@ def clipboard_coverage(base_row: dict, treat_row: dict) -> list[dict]:
                 clip is not None and clip > 0,
                 f"{clip} characters reached the clipboard with {mounted} of {total} messages "
                 f"mounted (mounted fraction {fraction})",
-                required = True,
+                required=True,
             )
         )
     # THE CHECK THAT DETECTS THE DATA LOSS, scored against THE THREAD rather than the other arm.
@@ -201,7 +201,7 @@ def clipboard_coverage(base_row: dict, treat_row: dict) -> list[dict]:
                 "the base arm did not mount the whole thread, so there is no measurement of how "
                 "long the conversation's visible text actually is to score either clipboard "
                 f"against (base selection {reference}, mounted fraction {base_full})",
-                required = True,
+                required=True,
             )
         )
         return out
@@ -221,7 +221,7 @@ def clipboard_coverage(base_row: dict, treat_row: dict) -> list[dict]:
                     else f" ({coverage:.3f} of it, allowed "
                     f"{MIN_CLIPBOARD_COVERAGE}-{MAX_CLIPBOARD_COVERAGE})"
                 ),
-                required = True,
+                required=True,
             )
         )
     # Reported, never gated: on a windowed arm the selection is SUPPOSED to be short.
@@ -312,7 +312,7 @@ def thread_survives_reopen(base_row: dict, treat_row: dict) -> list[dict]:
                 "reached a ready state, so nothing here says the thread came back "
                 f"(outstanding {failed or 'unrecorded'})"
             )
-        out.append(_check(f"reopen_keeps_every_message:{label}", ok, detail, required = required))
+        out.append(_check(f"reopen_keeps_every_message:{label}", ok, detail, required=required))
         # The route matters as much as the count: a row measured after a full page navigation is a row
         # about a page load. See `_click_or_navigate`.
         via = _expect(row, "reopened_via")
@@ -414,7 +414,7 @@ def scroll_travelled(base_row: dict, treat_row: dict) -> list[dict]:
             for extent, _ in (_extent_of(base_row), _extent_of(treat_row))
             if isinstance(extent, (int, float))
         ),
-        default = None,
+        default=None,
     )
     for label, row in (("base", base_row), ("treatment", treat_row)):
         fraction = _expect(row, "travel_fraction")

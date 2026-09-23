@@ -58,7 +58,7 @@ def _resolve(env_overrides: dict[str, str], home: Path) -> dict[str, str]:
         if value:
             env.setdefault(name, value)
     env.update(env_overrides)
-    out = subprocess.run([sys.executable, "-c", PROBE], env = env, capture_output = True, text = True)
+    out = subprocess.run([sys.executable, "-c", PROBE], env=env, capture_output=True, text=True)
     # Not check = True: the child's stderr is the only thing that says why, and swallowing it is
     # how a dead interpreter passes for a wrong answer.
     assert out.returncode == 0, f"probe failed ({out.returncode}): {out.stderr.strip()}"
@@ -131,15 +131,15 @@ def test_the_builder_and_the_resolver_agree_on_the_same_directory(tmp_path):
     home.mkdir()
     root = tmp_path / "portable"
     built = root / "whisper.cpp"
-    built.mkdir(parents = True)
+    built.mkdir(parents=True)
     r = _resolve({"UNSLOTH_HOME": str(root)}, home)
     assert r["whisper"] == str(built)
 
 
 def _record_note(studio: Path, master: Path) -> None:
     """What setup.sh writes at the end of a master-root install."""
-    (studio / "share").mkdir(parents = True, exist_ok = True)
-    (studio / "share" / ".unsloth-master-root").write_text(f"{master}\n", encoding = "utf-8")
+    (studio / "share").mkdir(parents=True, exist_ok=True)
+    (studio / "share" / ".unsloth-master-root").write_text(f"{master}\n", encoding="utf-8")
 
 
 def test_a_recorded_master_root_outlives_the_command_that_set_it(tmp_path):
@@ -150,7 +150,7 @@ def test_a_recorded_master_root_outlives_the_command_that_set_it(tmp_path):
     home.mkdir()
     root = tmp_path / "portable"
     studio = root / "studio"
-    studio.mkdir(parents = True)
+    studio.mkdir(parents=True)
     _record_note(studio, root)
     # UNSLOTH_STUDIO_HOME alone: what the installer's launcher actually persists.
     r = _resolve({"UNSLOTH_STUDIO_HOME": str(studio)}, home)
@@ -181,7 +181,7 @@ def test_a_note_copied_into_an_unrelated_install_is_ignored(tmp_path):
     home = tmp_path / "home"
     home.mkdir()
     other = tmp_path / "other"
-    (other / "studio").mkdir(parents = True)
+    (other / "studio").mkdir(parents=True)
     studio = tmp_path / "custom"
     studio.mkdir()
     _record_note(studio, other)
@@ -195,8 +195,8 @@ def test_an_empty_note_is_not_a_root(tmp_path):
     home = tmp_path / "home"
     home.mkdir()
     studio = tmp_path / "custom"
-    (studio / "share").mkdir(parents = True)
-    (studio / "share" / ".unsloth-master-root").write_text("\n", encoding = "utf-8")
+    (studio / "share").mkdir(parents=True)
+    (studio / "share" / ".unsloth-master-root").write_text("\n", encoding="utf-8")
     r = _resolve({"UNSLOTH_STUDIO_HOME": str(studio)}, home)
     assert r["master"] is None
     assert r["node"] == str(studio / "node")
@@ -208,7 +208,7 @@ def test_an_explicit_studio_home_without_a_note_does_not_borrow_anothers(tmp_pat
     # OTHER install while Studio ran from here.
     home = tmp_path / "home"
     legacy_master = home / ".unsloth"
-    (legacy_master / "studio").mkdir(parents = True)
+    (legacy_master / "studio").mkdir(parents=True)
     _record_note(legacy_master / "studio", legacy_master)
     named = tmp_path / "named"
     named.mkdir()
@@ -225,8 +225,8 @@ def test_a_flat_recorded_root_is_still_honoured(tmp_path):
     home = tmp_path / "home"
     home.mkdir()
     flat = tmp_path / "flat"
-    (flat / "share").mkdir(parents = True)
-    (flat / "share" / ".unsloth-master-root").write_text(f"{flat}\n", encoding = "utf-8")
+    (flat / "share").mkdir(parents=True)
+    (flat / "share" / ".unsloth-master-root").write_text(f"{flat}\n", encoding="utf-8")
     r = _resolve({"UNSLOTH_STUDIO_HOME": str(flat)}, home)
     assert r["master"] == str(flat)
     assert r["node"] == str(flat / "node")
@@ -237,7 +237,7 @@ def test_a_default_install_reads_no_note(tmp_path):
     # Nothing writes the note for a default install, so the legacy tree must not acquire a
     # master root by accident: this is the path every existing user is on.
     home = tmp_path / "home"
-    (home / ".unsloth" / "studio" / "share").mkdir(parents = True)
+    (home / ".unsloth" / "studio" / "share").mkdir(parents=True)
     r = _resolve({}, home)
     assert r["master"] is None
     assert r["node"] == str(home / ".unsloth" / "node")
@@ -274,8 +274,8 @@ def _install_llama_server(directory: Path) -> Path:
     # all three discovery tests fail on a Windows runner for a reason in the fixture.
     name = "llama-server.exe" if sys.platform == "win32" else "llama-server"
     binary = directory / "build" / "bin" / name
-    binary.parent.mkdir(parents = True, exist_ok = True)
-    binary.write_text("#!/bin/sh\nexit 0\n", encoding = "utf-8")
+    binary.parent.mkdir(parents=True, exist_ok=True)
+    binary.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
     binary.chmod(0o755)
     return binary
 
@@ -295,9 +295,9 @@ def _discover(env_overrides: dict[str, str], home: Path) -> dict[str, str]:
     env.update(env_overrides)
     out = subprocess.run(
         [sys.executable, "-c", _DISCOVERY_PROBE],
-        env = env,
-        capture_output = True,
-        text = True,
+        env=env,
+        capture_output=True,
+        text=True,
     )
     assert out.returncode == 0, f"discovery probe failed ({out.returncode}): {out.stderr.strip()}"
     return json.loads(out.stdout.strip().splitlines()[-1])
@@ -309,7 +309,7 @@ def test_discovery_finds_the_llama_server_the_master_root_holds(tmp_path):
     home = tmp_path / "home"
     home.mkdir()
     root = tmp_path / "portable"
-    (root / "studio").mkdir(parents = True)
+    (root / "studio").mkdir(parents=True)
     binary = _install_llama_server(root / "llama.cpp")
 
     result = _discover({"UNSLOTH_HOME": str(root)}, home)
@@ -332,7 +332,7 @@ def test_discovery_still_prefers_a_plain_custom_studio_root(tmp_path):
 
 def test_discovery_still_finds_a_legacy_install(tmp_path):
     home = tmp_path / "home"
-    (home / ".unsloth" / "studio").mkdir(parents = True)
+    (home / ".unsloth" / "studio").mkdir(parents=True)
     binary = _install_llama_server(home / ".unsloth" / "llama.cpp")
 
     result = _discover({}, home)

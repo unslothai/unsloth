@@ -46,7 +46,8 @@ def denoiser_prequant_source(
         return None
     try:
         from .diffusion_prequant import usable_prequant_source
-        return usable_prequant_source(fam, wanted, path_override = path_override, base_repo = base_repo)
+
+        return usable_prequant_source(fam, wanted, path_override=path_override, base_repo=base_repo)
     except Exception:  # noqa: BLE001 -- an unanswerable registry keeps the released bf16 denoiser
         return None
 
@@ -62,7 +63,7 @@ def denoiser_prequant_cached(
     """Whether the artifact this seed would open is ALREADY on disk, answered without a Hub call.
     The offline twin of the ``model_info`` probe the online plan makes, so a load that may not
     download can still seed from the cache an earlier load built. Never raises."""
-    source = denoiser_prequant_source(fam, scheme, base_repo = base_repo, path_override = path_override)
+    source = denoiser_prequant_source(fam, scheme, base_repo=base_repo, path_override=path_override)
     if source is None:
         return False
     if getattr(source, "kind", None) != "repo":
@@ -70,7 +71,8 @@ def denoiser_prequant_cached(
         return True
     try:
         from .diffusion_prequant import prequant_checkpoint_cached
-        return prequant_checkpoint_cached(source, cache_dir = cache_dir)
+
+        return prequant_checkpoint_cached(source, cache_dir=cache_dir)
     except Exception:  # noqa: BLE001 -- an unreadable cache is not proof the artifact is there
         return False
 
@@ -96,12 +98,13 @@ def denoiser_prequant_pipe_kwargs(
         if not pipeline_seed_supported(fam):
             return {}
         source = denoiser_prequant_source(
-            fam, scheme, base_repo = base_repo, path_override = path_override
+            fam, scheme, base_repo=base_repo, path_override=path_override
         )
         if source is None:
             return {}
         if target is not None:
             from .diffusion_transformer_quant import dense_transformer_supported
+
             if not dense_transformer_supported(target):
                 return {}
         import diffusers
@@ -124,15 +127,15 @@ def denoiser_prequant_pipe_kwargs(
             transformer_cls,
             base_repo,
             source,
-            device = device,
-            dtype = dtype,
-            hf_token = hf_token,
-            scheme = scheme,
-            min_features = DEFAULT_MIN_LINEAR_FEATURES,
-            fast_accum = fast_accum,
-            cache_dir = cache_dir,
-            local_files_only = local_files_only,
-            logger = logger,
+            device=device,
+            dtype=dtype,
+            hf_token=hf_token,
+            scheme=scheme,
+            min_features=DEFAULT_MIN_LINEAR_FEATURES,
+            fast_accum=fast_accum,
+            cache_dir=cache_dir,
+            local_files_only=local_files_only,
+            logger=logger,
         )
         if module is None:
             if logger is not None:

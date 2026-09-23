@@ -72,33 +72,33 @@ def _asset_or_skip(asset: str) -> Path:
 
 def _host(**kw) -> HostInfo:
     base = dict(
-        system = "Linux",
-        machine = "x86_64",
-        is_windows = False,
-        is_linux = True,
-        is_macos = False,
-        is_x86_64 = True,
-        is_arm64 = False,
-        nvidia_smi = None,
-        driver_cuda_version = None,
-        compute_caps = [],
-        visible_cuda_devices = None,
-        has_physical_nvidia = False,
-        has_usable_nvidia = False,
+        system="Linux",
+        machine="x86_64",
+        is_windows=False,
+        is_linux=True,
+        is_macos=False,
+        is_x86_64=True,
+        is_arm64=False,
+        nvidia_smi=None,
+        driver_cuda_version=None,
+        compute_caps=[],
+        visible_cuda_devices=None,
+        has_physical_nvidia=False,
+        has_usable_nvidia=False,
     )
     base.update(kw)
     return HostInfo(**base)
 
 
 LINUX = _host()
-WINDOWS = _host(system = "Windows", machine = "AMD64", is_windows = True, is_linux = False)
+WINDOWS = _host(system="Windows", machine="AMD64", is_windows=True, is_linux=False)
 WINDOWS_ARM64 = _host(
-    system = "Windows",
-    machine = "ARM64",
-    is_windows = True,
-    is_linux = False,
-    is_x86_64 = False,
-    is_arm64 = True,
+    system="Windows",
+    machine="ARM64",
+    is_windows=True,
+    is_linux=False,
+    is_x86_64=False,
+    is_arm64=True,
 )
 
 
@@ -158,12 +158,12 @@ def _unpack_bundle(asset: str, backend, tag, source, host, into: Path) -> Path:
     """
     root = into / asset.replace(".zip", "")
     runtime_dir = ILP.install_runtime_dir(root, host)
-    runtime_dir.mkdir(parents = True, exist_ok = True)
+    runtime_dir.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(ASSET_DIR / asset) as archive:
         archive.extractall(runtime_dir)
     (root / "UNSLOTH_PREBUILT_INFO.json").write_text(
-        json.dumps(_marker_for(asset, backend, tag, source), indent = 2),
-        encoding = "utf-8",
+        json.dumps(_marker_for(asset, backend, tag, source), indent=2),
+        encoding="utf-8",
     )
     return root
 
@@ -171,7 +171,7 @@ def _unpack_bundle(asset: str, backend, tag, source, host, into: Path) -> Path:
 @pytest.mark.parametrize(
     "asset,backend,tag,source,host",
     BUNDLES,
-    ids = [entry[0].replace(".zip", "") for entry in BUNDLES],
+    ids=[entry[0].replace(".zip", "") for entry in BUNDLES],
 )
 def test_a_real_release_bundle_is_healthy(asset, backend, tag, source, host, tmp_path):
     """A shipped bundle, extracted and marked, must not be called broken.
@@ -182,7 +182,7 @@ def test_a_real_release_bundle_is_healthy(asset, backend, tag, source, host, tmp
     """
     _asset_or_skip(asset)
     root = _unpack_bundle(asset, backend, tag, source, host, tmp_path)
-    assert ILP.installed_runtime_health(root, host = host) == (True, ""), asset
+    assert ILP.installed_runtime_health(root, host=host) == (True, ""), asset
 
 
 @pytest.mark.parametrize(
@@ -209,7 +209,7 @@ def test_a_file_quarantined_from_a_real_windows_bundle_is_caught(victim, tmp_pat
     _asset_or_skip(asset)
     root = _unpack_bundle(asset, None, "b10798", "published", WINDOWS, tmp_path)
     (ILP.install_runtime_dir(root, WINDOWS) / victim).unlink()
-    verdict = ILP.installed_runtime_health(root, host = WINDOWS)
+    verdict = ILP.installed_runtime_health(root, host=WINDOWS)
     assert verdict is not None and verdict[0] is False, victim
     assert verdict[1] in {
         "llama_runtime_payload_incomplete",
@@ -230,10 +230,10 @@ def test_a_windows_cuda_bundle_without_its_paired_runtime_is_incomplete(tmp_path
     runtime_dir = ILP.install_runtime_dir(root, WINDOWS)
     assert not list(runtime_dir.glob("cudart64_*.dll")), "the bundle is expected to ship no cudart"
 
-    marker = json.loads((root / "UNSLOTH_PREBUILT_INFO.json").read_text(encoding = "utf-8"))
+    marker = json.loads((root / "UNSLOTH_PREBUILT_INFO.json").read_text(encoding="utf-8"))
     marker["runtime_asset"] = "cudart-llama-bin-win-cuda-12.8-x64.zip"
-    (root / "UNSLOTH_PREBUILT_INFO.json").write_text(json.dumps(marker), encoding = "utf-8")
-    assert ILP.installed_runtime_health(root, host = WINDOWS) == (
+    (root / "UNSLOTH_PREBUILT_INFO.json").write_text(json.dumps(marker), encoding="utf-8")
+    assert ILP.installed_runtime_health(root, host=WINDOWS) == (
         False,
         "llama_runtime_payload_incomplete",
     )
@@ -303,7 +303,7 @@ def _managed_copy(tmp_path: Path) -> Path:
     if source is None:
         pytest.skip("no managed llama.cpp install on this machine")
     destination = tmp_path / "managed"
-    shutil.copytree(source, destination, symlinks = True)
+    shutil.copytree(source, destination, symlinks=True)
     return destination
 
 
@@ -370,9 +370,9 @@ def test_a_quarantined_binary_in_the_real_install_is_caught(victim, tmp_path):
     fixture here."""
     root = _managed_copy(tmp_path)
     host = ILP.platform_only_host()
-    assert ILP.installed_runtime_health(root, host = host) == (True, ""), "copy must start healthy"
+    assert ILP.installed_runtime_health(root, host=host) == (True, ""), "copy must start healthy"
     (ILP.install_runtime_dir(root, host) / victim).unlink()
-    assert ILP.installed_runtime_health(root, host = host) == (
+    assert ILP.installed_runtime_health(root, host=host) == (
         False,
         "llama_runtime_binaries_missing",
     )
@@ -398,7 +398,7 @@ def test_no_single_missing_file_in_the_real_install_causes_a_repair_loop(tmp_pat
         # Moved out rather than renamed: every payload pattern ends in a star, so a renamed
         # file is still matched by its own group.
         shutil.move(str(path), str(vault / path.name))
-        probe = ILP.installed_runtime_health(root, host = host)
+        probe = ILP.installed_runtime_health(root, host=host)
         if probe is not None and probe[0] is False and ILP._existing_install_runs(root, host):
             loops.append((path.name, probe[1]))
         shutil.move(str(vault / path.name), str(path))
@@ -426,10 +426,10 @@ def test_quarantining_a_soname_is_reported_broken(tmp_path):
     if not soname.is_file() or twin is None:
         pytest.skip("this install does not carry a versioned twin of libllama")
 
-    (tmp_path / "vault").mkdir(exist_ok = True)
+    (tmp_path / "vault").mkdir(exist_ok=True)
     shutil.move(str(soname), str(tmp_path / "vault" / soname.name))
     assert twin.is_file(), "the twin is what keeps the glob satisfied"
-    verdict = ILP.installed_runtime_health(root, host = host)
+    verdict = ILP.installed_runtime_health(root, host=host)
     assert (
         verdict is not None and verdict[0] is False
     ), f"a runtime missing its SONAME cannot load, but the probe said {verdict}"
@@ -454,22 +454,22 @@ def test_the_soname_quarantine_really_breaks_the_runtime(tmp_path):
     try:
         before = subprocess.run(
             [str(server), "--version"],
-            capture_output = True,
-            timeout = 120,
-            env = environment,
+            capture_output=True,
+            timeout=120,
+            env=environment,
         )
     except OSError as error:
         pytest.skip(f"cannot exec the managed llama-server here: {error}")
     if before.returncode != 0:
         pytest.skip("the managed llama-server does not start on this machine to begin with")
 
-    (tmp_path / "vault").mkdir(exist_ok = True)
+    (tmp_path / "vault").mkdir(exist_ok=True)
     shutil.move(str(soname), str(tmp_path / "vault" / soname.name))
     after = subprocess.run(
         [str(server), "--version"],
-        capture_output = True,
-        timeout = 120,
-        env = environment,
+        capture_output=True,
+        timeout=120,
+        env=environment,
     )
     assert after.returncode != 0, "removing the SONAME must break the binary, or there is no defect"
     # No assertion on the probe's verdict here: that is the subject of the test above, and
@@ -497,7 +497,7 @@ def test_the_capability_cache_on_this_machine_is_the_shape_the_new_reader_expect
     cache = Path.home() / ".unsloth" / "studio" / "desktop_capability_cache.json"
     if not cache.is_file():
         pytest.skip("the desktop has never written a capability cache on this machine")
-    entry = json.loads(cache.read_text(encoding = "utf-8"))
+    entry = json.loads(cache.read_text(encoding="utf-8"))
     schema = entry.get("schema")
     if schema is None or schema >= 4:
         pytest.skip(f"this cache was written by the new desktop already (schema {schema})")
@@ -530,7 +530,7 @@ def test_the_capability_payload_names_the_runtime_keys():
     Only the names, not the literal that sets them: which installs the CLI reports health
     for is policy, while renaming a key breaks the wire contract with every shipped desktop.
     """
-    source = (PACKAGE_ROOT / "unsloth_cli" / "commands" / "studio.py").read_text(encoding = "utf-8")
+    source = (PACKAGE_ROOT / "unsloth_cli" / "commands" / "studio.py").read_text(encoding="utf-8")
     assert "llama_runtime_ok" in source
     assert "llama_runtime_reason" in source
 
@@ -580,11 +580,11 @@ def test_quarantining_a_split_entrypoint_library_is_reported_broken(victim, tmp_
     library = runtime_dir / victim
     if not library.is_file():
         pytest.skip(f"this install predates the impl split: no {victim}")
-    assert ILP.installed_runtime_health(root, host = host) == (True, ""), "copy must start healthy"
+    assert ILP.installed_runtime_health(root, host=host) == (True, ""), "copy must start healthy"
 
-    (tmp_path / "vault").mkdir(exist_ok = True)
+    (tmp_path / "vault").mkdir(exist_ok=True)
     shutil.move(str(library), str(tmp_path / "vault" / victim))
-    verdict = ILP.installed_runtime_health(root, host = host)
+    verdict = ILP.installed_runtime_health(root, host=host)
     assert (
         verdict is not None and verdict[0] is False
     ), f"a runtime missing {victim} cannot load, but the probe said {verdict}"
@@ -599,8 +599,8 @@ def test_an_older_monolithic_linux_release_is_not_asked_for_the_impl_libraries()
     would reinstall it on every check forever. Same build number as the Windows side, and
     for the same reason: it is one upstream commit, not one platform's packaging.
     """
-    before = ILP.runtime_payload_health_groups("linux-cuda", source_label = "published", tag = "b9279")
-    after = ILP.runtime_payload_health_groups("linux-cuda", source_label = "published", tag = "b9283")
+    before = ILP.runtime_payload_health_groups("linux-cuda", source_label="published", tag="b9279")
+    after = ILP.runtime_payload_health_groups("linux-cuda", source_label="published", tag="b9283")
     flat_before = {pattern for group in before for pattern in group}
     flat_after = {pattern for group in after for pattern in group}
     assert "libllama-server-impl.so*" not in flat_before
@@ -609,7 +609,7 @@ def test_an_older_monolithic_linux_release_is_not_asked_for_the_impl_libraries()
     assert "libllama-quantize-impl.so*" in flat_after
     # A source build ships neither, whatever the tag says.
     source_built = ILP.runtime_payload_health_groups(
-        "linux-cuda", source_label = "source", tag = "b10360"
+        "linux-cuda", source_label="source", tag="b10360"
     )
     assert not any("impl" in pattern for group in source_built for pattern in group)
 
@@ -637,7 +637,7 @@ def test_a_stripped_execute_bit_is_not_reused_as_an_exact_release_match(tmp_path
     mode = server.stat().st_mode
     server.chmod(mode & ~0o111)
     try:
-        assert ILP.installed_runtime_health(root, host = host) == (
+        assert ILP.installed_runtime_health(root, host=host) == (
             False,
             "llama_runtime_binaries_missing",
         )
@@ -682,15 +682,15 @@ def _installed_trio_bundle(tmp_path: Path) -> Path:
         raw,
         runtime_dir,
         ["llama-server", "llama-quantize", "llama-diffusion-gemma-visual-server", "lib*.so*"],
-        required = True,
+        required=True,
     )
     for name in ("llama-server", "llama-quantize"):
         binary = runtime_dir / name
         binary.chmod(0o755)
         shutil.copy2(binary, root / name)
         (root / name).chmod(0o755)
-    (root / "convert_hf_to_gguf.py").write_text("", encoding = "utf-8")
-    (root / "gguf-py").mkdir(exist_ok = True)
+    (root / "convert_hf_to_gguf.py").write_text("", encoding="utf-8")
+    (root / "gguf-py").mkdir(exist_ok=True)
     (root / "UNSLOTH_PREBUILT_INFO.json").write_text(
         json.dumps(
             {
@@ -702,7 +702,7 @@ def _installed_trio_bundle(tmp_path: Path) -> Path:
             }
         )
         + "\n",
-        encoding = "utf-8",
+        encoding="utf-8",
     )
     return root
 
@@ -731,7 +731,7 @@ def test_the_flattened_trio_installs_healthy(tmp_path):
             f"{name} must be a flattened regular file, or this test is not measuring "
             "what the installer produces"
         )
-    assert ILP.installed_runtime_health(root, host = host) == (True, "")
+    assert ILP.installed_runtime_health(root, host=host) == (True, "")
 
 
 @pytest.mark.parametrize(
@@ -759,9 +759,9 @@ def test_quarantining_a_soname_beside_a_versionless_copy_is_reported_broken(vict
     versionless = runtime_dir / f"{victim[: victim.index('.so')]}.so"
     assert versionless.is_file(), "the versionless twin is what used to keep the group satisfied"
 
-    (tmp_path / "vault").mkdir(exist_ok = True)
+    (tmp_path / "vault").mkdir(exist_ok=True)
     shutil.move(str(soname), str(tmp_path / "vault" / victim))
-    verdict = ILP.installed_runtime_health(root, host = host)
+    verdict = ILP.installed_runtime_health(root, host=host)
     assert (
         verdict is not None and verdict[0] is False
     ), f"a runtime missing {victim} cannot load, but the probe said {verdict}"

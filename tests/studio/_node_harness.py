@@ -35,7 +35,7 @@ def source_path(relative_path: str) -> Path:
 
 
 def read(path: Path) -> str:
-    return path.read_text(encoding = "utf-8")
+    return path.read_text(encoding="utf-8")
 
 
 def require_code_anchor(marker: str, role: str) -> None:
@@ -69,9 +69,9 @@ def require_node(sources: Iterable[Path]) -> None:
             pytest.skip("studio chat sources not present")
     probe = subprocess.run(
         ["node", "--experimental-strip-types", "--version"],
-        capture_output = True,
-        text = True,
-        timeout = 30,
+        capture_output=True,
+        text=True,
+        timeout=30,
     )
     if probe.returncode != 0:
         pytest.skip("node --experimental-strip-types not available")
@@ -92,17 +92,17 @@ def run_harness(
     """
     if sources:
         harness_source = resolve_dependencies(harness_source, tuple(sources))
-    temp_root.mkdir(parents = True, exist_ok = True)
-    workdir = Path(tempfile.mkdtemp(prefix = "run", dir = str(temp_root)))
-    (workdir / "harness.ts").write_text(harness_source, encoding = "utf-8")
-    (workdir / "run.mts").write_text(script, encoding = "utf-8")
+    temp_root.mkdir(parents=True, exist_ok=True)
+    workdir = Path(tempfile.mkdtemp(prefix="run", dir=str(temp_root)))
+    (workdir / "harness.ts").write_text(harness_source, encoding="utf-8")
+    (workdir / "run.mts").write_text(script, encoding="utf-8")
     result = subprocess.run(
         ["node", "--experimental-strip-types", "--no-warnings", "run.mts"],
-        cwd = str(workdir),
-        capture_output = True,
-        text = True,
-        timeout = 60,
-        env = dict(os.environ, NODE_NO_WARNINGS = "1"),
+        cwd=str(workdir),
+        capture_output=True,
+        text=True,
+        timeout=60,
+        env=dict(os.environ, NODE_NO_WARNINGS="1"),
     )
     assert result.returncode == 0, f"stderr: {result.stderr}\nstdout: {result.stdout}"
     lines = [line for line in result.stdout.strip().splitlines() if line.strip()]

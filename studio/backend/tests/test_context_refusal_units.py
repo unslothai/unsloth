@@ -70,9 +70,9 @@ def test_an_estimated_turn_never_claims_to_be_most_of_the_prompt():
 
     _fitted, truncation = fit_rolling_context(
         messages,
-        context_length = context_length,
-        max_tokens = 512,
-        count_tokens = _gemma_like_counter,
+        context_length=context_length,
+        max_tokens=512,
+        count_tokens=_gemma_like_counter,
     )
     assert truncation is not None and truncation["fits"] is False
     assert truncation["irreducible_tokens"] == 8629, "a real count of the rendered prompt"
@@ -106,9 +106,9 @@ def test_a_dominant_tool_result_still_gets_the_tool_advice():
 
     _fitted, truncation = fit_rolling_context(
         messages,
-        context_length = context_length,
-        max_tokens = 64,
-        count_tokens = _gemma_like_counter,
+        context_length=context_length,
+        max_tokens=64,
+        count_tokens=_gemma_like_counter,
     )
     assert truncation is not None and truncation["fits"] is False
 
@@ -172,8 +172,8 @@ def test_a_respawn_refit_that_refuses_is_not_lost_when_the_retry_is_refused():
 
     context_refusal.open_slot()
     try:
-        with pytest.raises(RuntimeError, match = "exceed_context_size_error"):
-            with backend._open_chat_stream_with_respawn_retry({}, None, on_respawn = _on_respawn):
+        with pytest.raises(RuntimeError, match="exceed_context_size_error"):
+            with backend._open_chat_stream_with_respawn_retry({}, None, on_respawn=_on_respawn):
                 forwarded["value"] = True
 
         assert attempts["n"] == 2

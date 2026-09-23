@@ -25,7 +25,7 @@ _LOAD_EVENT_NAMES = {
 _LOAD_ACTIVE_PHASES = frozenset({"downloading", "finalizing"})
 
 
-@dataclass(frozen = True)
+@dataclass(frozen=True)
 class _ProgressState:
     active: bool
     phase: str
@@ -33,7 +33,7 @@ class _ProgressState:
     step: int
 
 
-@dataclass(frozen = True)
+@dataclass(frozen=True)
 class _LoadProgressState:
     phase: str
     bucket: int
@@ -117,7 +117,7 @@ def log_media_load_progress(media: str, phase: Any, fraction: Any) -> None:
         _last_load_state[media] = current
 
     if should_log:
-        logger.info(event, phase = phase_name, percent = bucket * 10)
+        logger.info(event, phase=phase_name, percent=bucket * 10)
 
 
 def log_media_generation_progress(media: str, progress: Mapping[str, Any]) -> None:

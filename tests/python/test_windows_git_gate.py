@@ -23,7 +23,7 @@ _TAIL = "if (-not $_localLlamaBuilt) {"
 
 def _git_gate_block() -> str:
     """Slice the real $gitNeeded computation out of setup.ps1 so the test cannot drift."""
-    source = SETUP_PS1.read_text(encoding = "utf-8")
+    source = SETUP_PS1.read_text(encoding="utf-8")
     start = source.index(_START)
     brace = source.index("{", source.index(_TAIL, start))
     depth = 0
@@ -40,7 +40,7 @@ def _git_gate_block() -> str:
 def _function(name: str) -> str:
     """Inject the real helper the block calls; an undefined one is a silent no-op
     under Continue, which would let the layout scan always report 'nothing built'."""
-    source = SETUP_PS1.read_text(encoding = "utf-8")
+    source = SETUP_PS1.read_text(encoding="utf-8")
     start = source.index(f"function {name} {{")
     depth = 0
     for index in range(source.index("{", start), len(source)):
@@ -74,15 +74,15 @@ def _needs_git(env: dict[str, str]) -> bool:
     # See tests/_shared/unsloth_pwsh_runner.py.
     result = run_pwsh(
         ["pwsh", "-NoProfile", "-NonInteractive", "-Command", _script()],
-        check = True,
-        capture_output = True,
-        text = True,
-        env = merged,
+        check=True,
+        capture_output=True,
+        text=True,
+        env=merged,
     )
     return result.stdout.strip() == "True"
 
 
-pwsh_only = pytest.mark.skipif(shutil.which("pwsh") is None, reason = "PowerShell is unavailable")
+pwsh_only = pytest.mark.skipif(shutil.which("pwsh") is None, reason="PowerShell is unavailable")
 
 
 @pwsh_only
@@ -111,7 +111,7 @@ def test_git_is_required_only_for_local_and_source_builds(env, expected):
 
 @pwsh_only
 def test_a_built_local_llama_dir_drops_the_source_build_git_requirement(tmp_path):
-    (tmp_path / "llama-server.exe").write_text("", encoding = "utf-8")
+    (tmp_path / "llama-server.exe").write_text("", encoding="utf-8")
     env = {
         "UNSLOTH_LOCAL_LLAMA_CPP_DIR": str(tmp_path),
         "UNSLOTH_LLAMA_FORCE_COMPILE": "1",

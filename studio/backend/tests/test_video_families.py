@@ -23,9 +23,9 @@ from core.inference.video_minimax_h3 import (
 
 
 def test_h3_measured_diffusers_memory_estimates():
-    assert estimate_h3_diffusers_vram_gb(960, 544, 124) == pytest.approx(73.68, abs = 0.02)
-    assert estimate_h3_diffusers_vram_gb(1344, 768, 124) == pytest.approx(78.74, abs = 0.02)
-    assert estimate_h3_diffusers_vram_gb(1344, 768, 345) == pytest.approx(96.98, abs = 0.02)
+    assert estimate_h3_diffusers_vram_gb(960, 544, 124) == pytest.approx(73.68, abs=0.02)
+    assert estimate_h3_diffusers_vram_gb(1344, 768, 124) == pytest.approx(78.74, abs=0.02)
+    assert estimate_h3_diffusers_vram_gb(1344, 768, 345) == pytest.approx(96.98, abs=0.02)
     assert estimate_h3_diffusers_host_ram_gb(126) == 150
     assert estimate_h3_diffusers_host_ram_gb(132) == 85
 
@@ -41,14 +41,14 @@ def test_the_host_floor_tracks_the_components_the_load_holds():
 
     # Unset is the released pair, so the shipped number is unchanged to the decimal.
     assert estimate_h3_diffusers_host_ram_gb(
-        126, text_encoder_gb = H3_TEXT_ENCODER_BF16_GB, transformer_gb = H3_TRANSFORMER_BF16_GB
-    ) == pytest.approx(150.0, abs = 0.001)
+        126, text_encoder_gb=H3_TEXT_ENCODER_BF16_GB, transformer_gb=H3_TRANSFORMER_BF16_GB
+    ) == pytest.approx(150.0, abs=0.001)
     # The hosted int8 conditioner + int8 denoiser: the sum, not the released one.
     assert estimate_h3_diffusers_host_ram_gb(
-        126, text_encoder_gb = 27.2, transformer_gb = 20.3
-    ) == pytest.approx(64.5, abs = 0.001)
+        126, text_encoder_gb=27.2, transformer_gb=20.3
+    ) == pytest.approx(64.5, abs=0.001)
     # Above the tier the answer is the tier's, whatever the components.
-    assert estimate_h3_diffusers_host_ram_gb(132, text_encoder_gb = 27.2, transformer_gb = 20.3) == 85
+    assert estimate_h3_diffusers_host_ram_gb(132, text_encoder_gb=27.2, transformer_gb=20.3) == 85
 
 
 @pytest.mark.parametrize(
@@ -69,9 +69,9 @@ def test_detect_ltx2(repo_id):
 
 
 def test_detect_override_and_unknown():
-    assert detect_video_family("x", override = "ltx-2").name == "ltx-2"
-    assert detect_video_family("x", override = "ltx2").name == "ltx-2"
-    assert detect_video_family("x", override = "nope") is None
+    assert detect_video_family("x", override="ltx-2").name == "ltx-2"
+    assert detect_video_family("x", override="ltx2").name == "ltx-2"
+    assert detect_video_family("x", override="nope") is None
     # A short alias must not match inside an unrelated word.
     assert detect_video_family("someorg/deluxtreme-model") is None
 
@@ -122,10 +122,10 @@ def test_detect_wan_t2v_a14b(repo_id):
 
 def test_detect_wan_overrides():
     # Short aliases the picker / GGUF filenames use resolve to the right family.
-    assert detect_video_family("x", override = "wan2.2-5b").name == "wan2.2-ti2v-5b"
-    assert detect_video_family("x", override = "wan-ti2v").name == "wan2.2-ti2v-5b"
-    assert detect_video_family("x", override = "wan2.2-14b").name == "wan2.2-t2v-a14b"
-    assert detect_video_family("x", override = "wan-t2v").name == "wan2.2-t2v-a14b"
+    assert detect_video_family("x", override="wan2.2-5b").name == "wan2.2-ti2v-5b"
+    assert detect_video_family("x", override="wan-ti2v").name == "wan2.2-ti2v-5b"
+    assert detect_video_family("x", override="wan2.2-14b").name == "wan2.2-t2v-a14b"
+    assert detect_video_family("x", override="wan-t2v").name == "wan2.2-t2v-a14b"
 
 
 def test_wan_and_ltx_do_not_cross_route():
@@ -238,19 +238,19 @@ def test_generation_defaults_fallback_honors_family():
     # When no identifier names a known variant (an opaque local path under an explicit family_override), the resolved family's own default is used, not the hardcoded LTX 40/4.0.
     assert default_video_generation_params("/models/my-clip", "/models/my-clip") == (40, 4.0)
     assert default_video_generation_params(
-        "/models/my-clip", "/models/my-clip", fallback = (50, 5.0)
+        "/models/my-clip", "/models/my-clip", fallback=(50, 5.0)
     ) == (50, 5.0)
     # A recognised token still wins over the fallback.
-    assert default_video_generation_params("wan2.2-ti2v-5b", fallback = (8, 1.0)) == (50, 5.0)
+    assert default_video_generation_params("wan2.2-ti2v-5b", fallback=(8, 1.0)) == (50, 5.0)
 
 
 def test_generation_defaults_wan_is_segment_not_substring():
     # "wan" must match as a name segment, not a raw substring, so an opaque repo/path ("swan", "taiwan") does not pick up Wan's 50-step/CFG-5 schedule.
     assert default_video_generation_params(
-        "user/swan-video", "Lightricks/LTX-2", fallback = (40, 4.0)
+        "user/swan-video", "Lightricks/LTX-2", fallback=(40, 4.0)
     ) == (40, 4.0)
     assert default_video_generation_params(
-        "taiwan-clips.gguf", "user/taiwan-clips", fallback = (40, 4.0)
+        "taiwan-clips.gguf", "user/taiwan-clips", fallback=(40, 4.0)
     ) == (40, 4.0)
     # Genuine Wan identifiers (segment-initial, with a version suffix or separator) still match.
     assert default_video_generation_params("wan2.2-ti2v-5b-Q4_K_M.gguf") == (50, 5.0)
@@ -311,7 +311,7 @@ def test_hv15_detection_and_flags():
     assert fam.guidance_via_guider is True
     assert fam.frame_step == 4 and fam.resolution_multiple == 16
     assert fam.has_audio is False
-    assert detect_video_family("x/y", override = "hv15") is fam
+    assert detect_video_family("x/y", override="hv15") is fam
     # The incompatible HunyuanVideo 1.0 repos must NOT be claimed: their model_index pins HunyuanVideoPipeline.
     assert detect_video_family("hunyuanvideo-community/HunyuanVideo") is None
 
@@ -356,7 +356,7 @@ def test_video_resolution_presets_are_upstream_sanctioned():
     SUPPORTED_SIZES asserts on.
     """
 
-    def buckets(base_size, patch_size = 16):
+    def buckets(base_size, patch_size=16):
         num_patches = round((base_size / patch_size) ** 2)
         out, wp, hp = [], num_patches, 1
         while wp > 0:
@@ -369,7 +369,7 @@ def test_video_resolution_presets_are_upstream_sanctioned():
         return out
 
     for name, base_size in (("hunyuanvideo-1.5", 640), ("hunyuanvideo-1.5-720p", 960)):
-        fam = detect_video_family("x/y", override = name)
+        fam = detect_video_family("x/y", override=name)
         allowed = buckets(base_size)
         for size in fam.resolution_presets:
             assert size in allowed, f"{name}: {size} is not a bucket of this tier"

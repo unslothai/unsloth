@@ -407,6 +407,7 @@ def quiet_third_party_progress_bars() -> None:
     if "huggingface_hub" in sys.modules:
         try:
             from huggingface_hub.utils import disable_progress_bars
+
             disable_progress_bars()
         except Exception:  # noqa: BLE001 - quieting logs must never break startup
             pass
@@ -476,14 +477,14 @@ class LogConfig:
             ).startswith("utf8"):
                 if hasattr(stream, "reconfigure"):
                     try:
-                        stream.reconfigure(encoding = "utf-8", errors = "replace")
+                        stream.reconfigure(encoding="utf-8", errors="replace")
                     except Exception:
                         pass
 
         structlog.configure(
-            processors = [
+            processors=[
                 # Ordered to control output field order.
-                structlog.processors.TimeStamper(fmt = "iso"),
+                structlog.processors.TimeStamper(fmt="iso"),
                 structlog.processors.add_log_level,
                 structlog.contextvars.merge_contextvars,
                 structlog.processors.format_exc_info,
@@ -505,14 +506,14 @@ class LogConfig:
                 },
                 (
                     # Preserve order; the wrapper adds the human-readable traceback copy.
-                    with_readable_traceback(structlog.processors.JSONRenderer(sort_keys = False))
+                    with_readable_traceback(structlog.processors.JSONRenderer(sort_keys=False))
                     if env == "production"
                     else structlog.dev.ConsoleRenderer()
                 ),
             ],
-            wrapper_class = structlog.make_filtering_bound_logger(log_level),
-            logger_factory = _current_stdout_logger_factory,
-            cache_logger_on_first_use = True,
+            wrapper_class=structlog.make_filtering_bound_logger(log_level),
+            logger_factory=_current_stdout_logger_factory,
+            cache_logger_on_first_use=True,
         )
 
         # Silence third-party tqdm bars; they carry no signal and corrupt JSON records.

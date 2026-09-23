@@ -71,7 +71,7 @@ REPLACEMENT = "�"
 # The desktop app spawns Windows PowerShell 5.1; pwsh stands in elsewhere. The OEM-code-page bug only reproduces on 5.1,
 # which the Windows runner covers.
 _PWSH = shutil.which("powershell") if sys.platform == "win32" else shutil.which("pwsh")
-pwsh_only = pytest.mark.skipif(_PWSH is None, reason = "PowerShell is unavailable")
+pwsh_only = pytest.mark.skipif(_PWSH is None, reason="PowerShell is unavailable")
 
 
 def _harness(redirected_probe: bool) -> str:
@@ -127,7 +127,7 @@ def _section(source: str, title: str) -> str:
 
 def _banner_footer_harness() -> str:
     """Print setup.ps1's real banner and footer with the redirected sink on."""
-    source = SETUP_PS1.read_text(encoding = "utf-8")
+    source = SETUP_PS1.read_text(encoding="utf-8")
     return f"""
 $ErrorActionPreference = 'Stop'
 $_UnslothUtf8NoBom = New-Object System.Text.UTF8Encoding $false
@@ -173,7 +173,7 @@ def _run_capturing_bytes(
         / "python"
         / f"_{stem}_probe_{int(use_command_shape)}_{uuid.uuid4().hex}.ps1"
     )
-    tmp.write_text(script, encoding = "utf-8")
+    tmp.write_text(script, encoding="utf-8")
     try:
         base = [_PWSH, "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass"]
         if use_command_shape:
@@ -184,26 +184,26 @@ def _run_capturing_bytes(
         # run_pwsh, not subprocess.run: the byte-level cases read this stdout as the setup log, and an interpreter that
         # aborted leaves an empty or truncated stream, which reads as the banner being mangled or lost.
         # See tests/_shared/unsloth_pwsh_runner.py.
-        proc = run_pwsh(argv, stdout = subprocess.PIPE, stderr = subprocess.PIPE, timeout = 180)
-        assert proc.returncode == 0, proc.stderr.decode("utf-8", errors = "replace")
+        proc = run_pwsh(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=180)
+        assert proc.returncode == 0, proc.stderr.decode("utf-8", errors="replace")
         return proc.stdout
     finally:
-        tmp.unlink(missing_ok = True)
+        tmp.unlink(missing_ok=True)
 
 
 @pwsh_only
-@pytest.mark.parametrize("use_command_shape", [False, True], ids = ["-File", "-Command-merged"])
+@pytest.mark.parametrize("use_command_shape", [False, True], ids=["-File", "-Command-merged"])
 def test_setup_output_is_valid_utf8(use_command_shape: bool) -> None:
     """Strict decode. Lossy decoding here would hide the exact regression."""
-    raw = _run_capturing_bytes(_harness(redirected_probe = True), use_command_shape)
+    raw = _run_capturing_bytes(_harness(redirected_probe=True), use_command_shape)
     text = raw.decode("utf-8")  # strict on purpose; UnicodeDecodeError is the failure
     assert REPLACEMENT not in text, "output contains U+FFFD (OEM bytes decoded as UTF-8)"
 
 
 @pwsh_only
-@pytest.mark.parametrize("use_command_shape", [False, True], ids = ["-File", "-Command-merged"])
+@pytest.mark.parametrize("use_command_shape", [False, True], ids=["-File", "-Command-merged"])
 def test_banner_glyphs_survive_the_pipe(use_command_shape: bool) -> None:
-    raw = _run_capturing_bytes(_harness(redirected_probe = True), use_command_shape)
+    raw = _run_capturing_bytes(_harness(redirected_probe=True), use_command_shape)
     text = raw.decode("utf-8")
     assert text.count(SLOTH) == 1, "sloth emoji lost or duplicated"
     assert "??" not in text, "emoji was transcoded to '?' by a non-UTF-8 code page"
@@ -211,9 +211,9 @@ def test_banner_glyphs_survive_the_pipe(use_command_shape: bool) -> None:
 
 
 @pwsh_only
-@pytest.mark.parametrize("use_command_shape", [False, True], ids = ["-File", "-Command-merged"])
+@pytest.mark.parametrize("use_command_shape", [False, True], ids=["-File", "-Command-merged"])
 def test_every_step_appears_exactly_once(use_command_shape: bool) -> None:
-    raw = _run_capturing_bytes(_harness(redirected_probe = True), use_command_shape)
+    raw = _run_capturing_bytes(_harness(redirected_probe=True), use_command_shape)
     text = raw.decode("utf-8")
     for sentinel in ("none (chat-only / GGUF)", "enabled", "installing OXC validator runtime..."):
         assert (
@@ -222,10 +222,10 @@ def test_every_step_appears_exactly_once(use_command_shape: bool) -> None:
 
 
 @pwsh_only
-@pytest.mark.parametrize("use_command_shape", [False, True], ids = ["-File", "-Command-merged"])
+@pytest.mark.parametrize("use_command_shape", [False, True], ids=["-File", "-Command-merged"])
 def test_step_label_and_value_stay_on_one_line(use_command_shape: bool) -> None:
     """The `gpu` / newline / `none (chat-only / GGUF)` split."""
-    raw = _run_capturing_bytes(_harness(redirected_probe = True), use_command_shape)
+    raw = _run_capturing_bytes(_harness(redirected_probe=True), use_command_shape)
     lines = raw.decode("utf-8").splitlines()
     matches = [line for line in lines if "gpu" in line]
     assert len(matches) == 1, f"expected one gpu line, got {matches!r}"
@@ -235,19 +235,19 @@ def test_step_label_and_value_stay_on_one_line(use_command_shape: bool) -> None:
 # The banner and the footer are the two blocks a user actually reads in the desktop setup log, and neither goes through
 # step/substep, so they need their own byte-level coverage.
 @pwsh_only
-@pytest.mark.parametrize("use_command_shape", [False, True], ids = ["-File", "-Command-merged"])
+@pytest.mark.parametrize("use_command_shape", [False, True], ids=["-File", "-Command-merged"])
 def test_banner_and_footer_are_valid_utf8(use_command_shape: bool) -> None:
-    raw = _run_capturing_bytes(_banner_footer_harness(), use_command_shape, stem = "banner_footer")
+    raw = _run_capturing_bytes(_banner_footer_harness(), use_command_shape, stem="banner_footer")
     text = raw.decode("utf-8")  # strict on purpose
     assert REPLACEMENT not in text, "banner/footer contain U+FFFD (OEM bytes decoded as UTF-8)"
     assert "??" not in text, "emoji was transcoded to '?' by a non-UTF-8 code page"
 
 
 @pwsh_only
-@pytest.mark.parametrize("use_command_shape", [False, True], ids = ["-File", "-Command-merged"])
+@pytest.mark.parametrize("use_command_shape", [False, True], ids=["-File", "-Command-merged"])
 def test_banner_and_footer_print_once_each(use_command_shape: bool) -> None:
     """One sink, so no line survives twice even when *>&1 merges the streams."""
-    raw = _run_capturing_bytes(_banner_footer_harness(), use_command_shape, stem = "banner_footer")
+    raw = _run_capturing_bytes(_banner_footer_harness(), use_command_shape, stem="banner_footer")
     text = raw.decode("utf-8")
     assert text.count(SLOTH) == 1, "sloth emoji lost or duplicated"
     assert text.count(f"  {SLOTH} Unsloth Studio Setup") == 1
@@ -342,15 +342,15 @@ WRITE_HOST_ALLOW_LIST = {
 }
 
 
-@pytest.mark.parametrize("path", [SETUP_PS1, INSTALL_PS1], ids = ["setup.ps1", "install.ps1"])
+@pytest.mark.parametrize("path", [SETUP_PS1, INSTALL_PS1], ids=["setup.ps1", "install.ps1"])
 def test_entry_scripts_set_the_utf8_invariant(path: Path) -> None:
-    source = path.read_text(encoding = "utf-8")
+    source = path.read_text(encoding="utf-8")
     assert "[Console]::OutputEncoding = $_UnslothUtf8NoBom" in source
     assert "$env:PYTHONUTF8 = '1'" in source
     assert "$env:PYTHONIOENCODING = 'utf-8'" in source
 
 
-@pytest.mark.parametrize("path", [SETUP_PS1, INSTALL_PS1], ids = ["setup.ps1", "install.ps1"])
+@pytest.mark.parametrize("path", [SETUP_PS1, INSTALL_PS1], ids=["setup.ps1", "install.ps1"])
 def test_entry_scripts_have_no_bom(path: Path) -> None:
     """5.1 parses BOM-less scripts as ANSI, so the fix stays ASCII-only.
 
@@ -360,19 +360,19 @@ def test_entry_scripts_have_no_bom(path: Path) -> None:
     assert not path.read_bytes().startswith(b"\xef\xbb\xbf")
 
 
-@pytest.mark.parametrize("path", [SETUP_PS1, INSTALL_PS1], ids = ["setup.ps1", "install.ps1"])
+@pytest.mark.parametrize("path", [SETUP_PS1, INSTALL_PS1], ids=["setup.ps1", "install.ps1"])
 def test_step_helper_emits_one_record(path: Path) -> None:
     """-NoNewline splits a logical line once a redirected consumer sees records."""
-    source = _strip_comments(path.read_text(encoding = "utf-8"))
+    source = _strip_comments(path.read_text(encoding="utf-8"))
     match = re.search(r"(?m)^\s*function step\b", source)
     assert match, f"no step function in {path.name}"
     body = source[match.start() : match.start() + 2000]
     assert "-NoNewline" not in body
 
 
-@pytest.mark.parametrize("path", [SETUP_PS1, INSTALL_PS1], ids = ["setup.ps1", "install.ps1"])
+@pytest.mark.parametrize("path", [SETUP_PS1, INSTALL_PS1], ids=["setup.ps1", "install.ps1"])
 def test_write_host_only_survives_inside_gated_helpers(path: Path) -> None:
-    source = path.read_text(encoding = "utf-8")
+    source = path.read_text(encoding="utf-8")
     masked = _mask_literals(source)
     spans = [_function_span(masked, name) for name in WRITE_HOST_ALLOW_LIST[path]]
     lines = source.splitlines()
@@ -390,10 +390,10 @@ def test_write_host_only_survives_inside_gated_helpers(path: Path) -> None:
     )
 
 
-@pytest.mark.parametrize("path", [SETUP_PS1, INSTALL_PS1], ids = ["setup.ps1", "install.ps1"])
+@pytest.mark.parametrize("path", [SETUP_PS1, INSTALL_PS1], ids=["setup.ps1", "install.ps1"])
 def test_every_allow_listed_helper_rules_out_the_redirected_sink(path: Path) -> None:
     """The allow-list is only safe while each entry still checks the sink."""
-    masked = _mask_literals(path.read_text(encoding = "utf-8"))
+    masked = _mask_literals(path.read_text(encoding="utf-8"))
     for name in WRITE_HOST_ALLOW_LIST[path]:
         lo, hi = _function_span(masked, name)
         assert "$script:StudioStdoutRedirected" in masked[lo:hi], (
@@ -402,10 +402,10 @@ def test_every_allow_listed_helper_rules_out_the_redirected_sink(path: Path) -> 
         )
 
 
-@pytest.mark.parametrize("path", [SETUP_PS1, INSTALL_PS1], ids = ["setup.ps1", "install.ps1"])
+@pytest.mark.parametrize("path", [SETUP_PS1, INSTALL_PS1], ids=["setup.ps1", "install.ps1"])
 def test_the_sink_helper_is_defined_before_the_first_line_it_prints(path: Path) -> None:
     """PowerShell resolves functions at call time, but not before their line runs."""
-    masked = _mask_literals(path.read_text(encoding = "utf-8"))
+    masked = _mask_literals(path.read_text(encoding="utf-8"))
     definition = masked.index("function Write-StudioLine")
     first_call = min(m.start() for m in re.finditer(r"\bWrite-StudioLine\b", masked))
     assert first_call == definition + len(
@@ -413,19 +413,19 @@ def test_the_sink_helper_is_defined_before_the_first_line_it_prints(path: Path) 
     ), f"{path.name} calls Write-StudioLine before defining it"
 
 
-@pytest.mark.parametrize("path", [SETUP_PS1, INSTALL_PS1], ids = ["setup.ps1", "install.ps1"])
+@pytest.mark.parametrize("path", [SETUP_PS1, INSTALL_PS1], ids=["setup.ps1", "install.ps1"])
 def test_the_sink_helper_writes_through_the_console_handle(path: Path) -> None:
-    masked = _mask_literals(path.read_text(encoding = "utf-8"))
+    masked = _mask_literals(path.read_text(encoding="utf-8"))
     lo, hi = _function_span(masked, "Write-StudioLine")
-    body = path.read_text(encoding = "utf-8")[lo:hi]
+    body = path.read_text(encoding="utf-8")[lo:hi]
     assert "[Console]::Out.WriteLine($Message)" in body
     # Tauri reads line by line, so a buffered line is a line the user never sees.
     assert "[Console]::Out.Flush()" in body
 
 
-@pytest.mark.parametrize("path", [SETUP_PS1, INSTALL_PS1], ids = ["setup.ps1", "install.ps1"])
+@pytest.mark.parametrize("path", [SETUP_PS1, INSTALL_PS1], ids=["setup.ps1", "install.ps1"])
 def test_entry_scripts_resolve_the_redirect_sink_once(path: Path) -> None:
-    source = path.read_text(encoding = "utf-8")
+    source = path.read_text(encoding="utf-8")
     assert "$script:StudioStdoutRedirected = [Console]::IsOutputRedirected" in source
 
 
@@ -435,11 +435,11 @@ def test_refresh_environment_cannot_clobber_the_python_encoding_vars() -> None:
     Without the guard a registry PYTHONUTF8=0 reloads over ours and every later
     Python child goes back to mojibake.
     """
-    source = SETUP_PS1.read_text(encoding = "utf-8")
+    source = SETUP_PS1.read_text(encoding="utf-8")
     assert "$key -eq 'PYTHONUTF8' -or $key -eq 'PYTHONIOENCODING'" in source
 
 
-@pytest.mark.parametrize("path", [SETUP_PS1, INSTALL_PS1], ids = ["setup.ps1", "install.ps1"])
+@pytest.mark.parametrize("path", [SETUP_PS1, INSTALL_PS1], ids=["setup.ps1", "install.ps1"])
 def test_entry_scripts_bind_a_utf8_writer_when_there_is_no_console(path: Path) -> None:
     """The setter needs a console handle, and the desktop spawns us without one.
 
@@ -447,7 +447,7 @@ def test_entry_scripts_bind_a_utf8_writer_when_there_is_no_console(path: Path) -
     after, so Console.Out would rebuild on the old code page and redirected
     step/substep, whose only sink it is, would stay locale-encoded.
     """
-    source = path.read_text(encoding = "utf-8")
+    source = path.read_text(encoding="utf-8")
     assert "[Console]::OpenStandardOutput()" in source
     assert "[Console]::SetOut(" in source
     # stderr is decoded identically and the failure text is built from it.
@@ -466,7 +466,7 @@ def test_managed_cli_command_uses_the_utf8_switch_not_just_env() -> None:
 
     https://docs.python.org/3/using/cmdline.html#cmdoption-X
     """
-    source = (REPO_ROOT / "studio" / "src-tauri" / "src" / "process.rs").read_text(encoding = "utf-8")
+    source = (REPO_ROOT / "studio" / "src-tauri" / "src" / "process.rs").read_text(encoding="utf-8")
     assert re.search(
         r'"-X"\s*,\s*"utf8"', source
     ), "the managed CLI child needs -X utf8, not just the env vars"
@@ -478,7 +478,7 @@ def test_managed_cli_command_uses_the_utf8_switch_not_just_env() -> None:
 )
 def test_rust_windows_spawns_force_utf8(rust_file: str) -> None:
     """The Rust readers decode as UTF-8, so their Windows children must emit it."""
-    source = (REPO_ROOT / "studio" / "src-tauri" / "src" / rust_file).read_text(encoding = "utf-8")
+    source = (REPO_ROOT / "studio" / "src-tauri" / "src" / rust_file).read_text(encoding="utf-8")
     assert 'cmd.env("PYTHONUTF8", "1");' in source, f"{rust_file} does not force PYTHONUTF8"
     assert (
         'cmd.env("PYTHONIOENCODING", "utf-8");' in source
@@ -515,11 +515,11 @@ _WINDOWS_POWERSHELL = (
 )
 
 windows_only = pytest.mark.skipif(
-    sys.platform != "win32", reason = "the console-less spawn is a Win32 state"
+    sys.platform != "win32", reason="the console-less spawn is a Win32 state"
 )
 powershell_51_only = pytest.mark.skipif(
     _WINDOWS_POWERSHELL is None or not _WINDOWS_POWERSHELL.is_file(),
-    reason = "Windows PowerShell 5.1 is unavailable",
+    reason="Windows PowerShell 5.1 is unavailable",
 )
 
 # Documented kernel32 calls and nothing else, so the probe reaches the target state without the scripts under test
@@ -582,7 +582,7 @@ def _slice_banner(source: str, masked: str) -> str:
 
 def _console_less_probe(path: Path) -> str:
     """Assemble a probe out of the script's own preamble, helpers and banner."""
-    source = path.read_text(encoding = "utf-8")
+    source = path.read_text(encoding="utf-8")
     masked = _mask_literals(source)
     # Sliced too: it is what turns the Write-Host throw into a dead script rather than a skipped line, so restating it
     # would be assuming the result.
@@ -638,7 +638,7 @@ def _console_less_probe(path: Path) -> str:
     return assembled
 
 
-@lru_cache(maxsize = None)
+@lru_cache(maxsize=None)
 def _run_console_less(path: Path, source: str | None = None) -> tuple[int, bytes, str]:
     """Spawn the probe the way install.rs spawns the installer, and read bytes.
 
@@ -655,12 +655,12 @@ def _run_console_less(path: Path, source: str | None = None) -> tuple[int, bytes
         # See tests/_shared/unsloth_pwsh_runner.py.
         proc = run_pwsh(
             [str(_WINDOWS_POWERSHELL), *TAURI_FLAGS, "-File", str(probe)],
-            stdout = subprocess.PIPE,
-            stderr = subprocess.PIPE,
-            creationflags = CREATE_NO_WINDOW,
-            timeout = 180,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            creationflags=CREATE_NO_WINDOW,
+            timeout=180,
         )
-    return proc.returncode, proc.stdout, proc.stderr.decode("utf-8", errors = "replace")
+    return proc.returncode, proc.stdout, proc.stderr.decode("utf-8", errors="replace")
 
 
 def _decode_like_install_rs(raw: bytes) -> str:
@@ -673,7 +673,7 @@ def _decode_like_install_rs(raw: bytes) -> str:
     records = raw.split(b"\n")
     if records and records[-1] == b"":
         records.pop()  # read_until returning Ok(0) at EOF, not an empty line
-    return "\n".join(r.rstrip(b"\r\n").decode("utf-8", errors = "replace") for r in records)
+    return "\n".join(r.rstrip(b"\r\n").decode("utf-8", errors="replace") for r in records)
 
 
 def _explain(path: Path, code: int, raw: bytes, err: str) -> str:
@@ -719,7 +719,7 @@ def _banner_or_explain(path: Path) -> tuple[str, str]:
 
 @windows_only
 @powershell_51_only
-@pytest.mark.parametrize("path", [SETUP_PS1, INSTALL_PS1], ids = ["setup.ps1", "install.ps1"])
+@pytest.mark.parametrize("path", [SETUP_PS1, INSTALL_PS1], ids=["setup.ps1", "install.ps1"])
 def test_banner_survives_a_console_less_spawn(path: Path) -> None:
     """Without the sink this exits 1 with 2 bytes: the banner never arrives."""
     _banner_or_explain(path)
@@ -727,7 +727,7 @@ def test_banner_survives_a_console_less_spawn(path: Path) -> None:
 
 @windows_only
 @powershell_51_only
-@pytest.mark.parametrize("path", [SETUP_PS1, INSTALL_PS1], ids = ["setup.ps1", "install.ps1"])
+@pytest.mark.parametrize("path", [SETUP_PS1, INSTALL_PS1], ids=["setup.ps1", "install.ps1"])
 def test_console_less_banner_is_valid_utf8(path: Path) -> None:
     """Lossy first: it names how bad the stream is before the strict decode."""
     lossy, detail = _banner_or_explain(path)
@@ -743,7 +743,7 @@ def test_console_less_banner_is_valid_utf8(path: Path) -> None:
 
 @windows_only
 @powershell_51_only
-@pytest.mark.parametrize("path", [SETUP_PS1, INSTALL_PS1], ids = ["setup.ps1", "install.ps1"])
+@pytest.mark.parametrize("path", [SETUP_PS1, INSTALL_PS1], ids=["setup.ps1", "install.ps1"])
 def test_console_less_banner_keeps_its_glyphs(path: Path) -> None:
     text, detail = _banner_or_explain(path)
     assert SLOTH in text, "the sloth did not reach stdout" + detail
@@ -774,7 +774,7 @@ _VT_FAST_PATH = re.compile(
 
 def _probe_without_the_vt_fast_path(path: Path) -> str:
     probe = _console_less_probe(path)
-    stripped, count = _VT_FAST_PATH.subn("", probe, count = 1)
+    stripped, count = _VT_FAST_PATH.subn("", probe, count=1)
     assert count == 1, (
         f"{path.name}: the VT fast path is not in the sliced probe in the shape this test "
         f"removes, so nothing was being compared. Update _VT_FAST_PATH."
@@ -791,7 +791,7 @@ def _vt_verdict(err: str) -> str:
 
 @windows_only
 @powershell_51_only
-@pytest.mark.parametrize("path", [SETUP_PS1, INSTALL_PS1], ids = ["setup.ps1", "install.ps1"])
+@pytest.mark.parametrize("path", [SETUP_PS1, INSTALL_PS1], ids=["setup.ps1", "install.ps1"])
 def test_a_redirected_stream_is_answered_false_and_gets_no_escape_bytes(path: Path) -> None:
     """The branch the desktop app actually takes, asserted on the code that ships.
 
@@ -820,7 +820,7 @@ def test_a_redirected_stream_is_answered_false_and_gets_no_escape_bytes(path: Pa
     # The guard is load-bearing, and this is what says so. Without it the property alone decides,
     # and on a redirected stream it says True. If this ever stops differing, the early return has
     # become redundant and the comment above it is wrong.
-    bare_code, _, bare_err = _run_console_less(path, source = _probe_without_the_vt_fast_path(path))
+    bare_code, _, bare_err = _run_console_less(path, source=_probe_without_the_vt_fast_path(path))
     assert bare_code == 0, f"the fast-path-less probe exited {bare_code}:\n{bare_err}"
     assert _vt_verdict(bare_err) == "True", (
         f"without the redirect check the property answered {_vt_verdict(bare_err)}, not True. The "

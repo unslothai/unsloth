@@ -57,10 +57,10 @@ def _evict_chat() -> None:
     for pending in list(getattr(orchestrator, "loading_models", ()) or ()):
         orchestrator.cancel_load(pending)
     # Kill the subprocess too: its base CUDA context holds VRAM diffusion needs.
-    orchestrator._shutdown_subprocess(timeout = 5.0)
+    orchestrator._shutdown_subprocess(timeout=5.0)
     # The driver reclaims the killed VRAM asynchronously, so wait for it to settle before diffusion allocates, else a
     # warm handoff can transiently OOM.
-    llama._wait_for_vram_settle(since_kill = time.monotonic())
+    llama._wait_for_vram_settle(since_kill=time.monotonic())
     from hub.services.models.account_access import clear_resident
 
     clear_resident(CHAT)
@@ -69,11 +69,13 @@ def _evict_chat() -> None:
 def _evict_diffusion() -> None:
     # Unload whichever engine the router has active (diffusers or native sd.cpp).
     from core.inference.diffusion_engine_router import get_active_diffusion_engine
+
     get_active_diffusion_engine().unload()
 
 
 def _evict_video() -> None:
     from core.inference.video import get_video_backend
+
     get_video_backend().unload()
 
 
@@ -100,6 +102,7 @@ class GpuBusyForAnotherAccountError(GpuOwnerBusyError):
     @property
     def retry_after(self) -> int:
         from core.inference.llama_admission import estimate_gpu_retry_after
+
         return estimate_gpu_retry_after()
 
     def as_http_exception(self, path: Optional[str] = None):
@@ -110,14 +113,14 @@ class GpuBusyForAnotherAccountError(GpuOwnerBusyError):
         retry_after = self.retry_after
         message = "Another account is generating on the resident model. Retry after it finishes."
         detail = (
-            error_body_for_path(path, message, status = 409, code = "gpu_busy", param = "model")
+            error_body_for_path(path, message, status=409, code="gpu_busy", param="model")
             if path and path.startswith("/v1/")
             else {"error": "gpu_busy", "message": message, "retry_after": retry_after}
         )
         return HTTPException(
-            status_code = 409,
-            detail = detail,
-            headers = {"Retry-After": str(retry_after)},
+            status_code=409,
+            detail=detail,
+            headers={"Retry-After": str(retry_after)},
         )
 
 
@@ -126,6 +129,7 @@ def other_accounts_active(account_id: str) -> int:
 
     # Image and video jobs never enter active_generations, so ask their own trackers too.
     from hub.services.models.account_access import foreign_media_generations
+
     return active_generations.foreign_count(account_id) + foreign_media_generations(account_id)
 
 
@@ -149,7 +153,7 @@ def require_no_foreign_generations(
 
 def acquire_for_request(
     owner: str,
-    register = None,
+    register=None,
     **kwargs,
 ) -> Any:
     try:

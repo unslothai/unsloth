@@ -25,7 +25,7 @@ POWERSHELLS = [shell for shell in ("pwsh", "powershell") if shutil.which(shell)]
 
 
 def _extract(pattern: str, source: str) -> str:
-    match = re.search(pattern, source, flags = re.DOTALL)
+    match = re.search(pattern, source, flags=re.DOTALL)
     assert match is not None, f"install.ps1 block not found: {pattern}"
     return match.group(0)
 
@@ -39,12 +39,12 @@ def _link_dir(link: Path, target: Path) -> None:
     if os.name == "nt":
         subprocess.run(
             ["cmd", "/c", "mklink", "/J", str(link), str(target)],
-            check = True,
-            capture_output = True,
-            text = True,
+            check=True,
+            capture_output=True,
+            text=True,
         )
     else:
-        os.symlink(target, link, target_is_directory = True)
+        os.symlink(target, link, target_is_directory=True)
 
 
 def _run_powershell(shell: str, script: str, env: dict[str, str]) -> str:
@@ -59,15 +59,15 @@ def _run_powershell(shell: str, script: str, env: dict[str, str]) -> str:
     # correctly, so this decoded the transport wrongly rather than catching a real defect.
     result = run_pwsh(
         [shell, "-NoProfile", "-NonInteractive", "-Command", script],
-        check = True,
-        capture_output = True,
-        text = True,
-        encoding = "utf-8",
+        check=True,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
         # strict, so the next mismatch raises here rather than turning into U+FFFD and
         # failing an assertion somewhere downstream about a value that was written fine.
-        errors = "strict",
-        env = env,
-        timeout = 30,
+        errors="strict",
+        env=env,
+        timeout=30,
     )
     return result.stdout.strip()
 
@@ -146,7 +146,7 @@ def _uv_cache_functions(source: str) -> str:
     )
 
 
-@pytest.mark.skipif(not POWERSHELLS, reason = "PowerShell is unavailable")
+@pytest.mark.skipif(not POWERSHELLS, reason="PowerShell is unavailable")
 @pytest.mark.parametrize("shell", POWERSHELLS)
 @pytest.mark.parametrize(
     "reported_version,accepted",
@@ -163,16 +163,16 @@ def _uv_cache_functions(source: str) -> str:
 def test_path_python_wrapper_resolves_to_real_executable(
     tmp_path: Path, shell: str, reported_version: str, accepted: bool
 ):
-    source = INSTALL_PS1.read_text(encoding = "utf-8")
+    source = INSTALL_PS1.read_text(encoding="utf-8")
     finder = _extract(r"    function Find-CompatiblePython \{.*?\n    \}\n", source)
-    (tmp_path / "sitecustomize.py").write_text('print("STARTUP_BANNER")\n', encoding = "utf-8")
+    (tmp_path / "sitecustomize.py").write_text('print("STARTUP_BANNER")\n', encoding="utf-8")
     if os.name == "nt":
         wrapper = tmp_path / "python.bat"
         wrapper.write_text(
             f'@echo off\nif "%~1"=="--version" (\n'
             f"echo Python {reported_version}\nexit /b 0\n)\n"
             f'@"{sys.executable}" %*\n',
-            encoding = "utf-8",
+            encoding="utf-8",
         )
     else:
         wrapper = tmp_path / "python-wrapper"
@@ -180,7 +180,7 @@ def test_path_python_wrapper_resolves_to_real_executable(
             '#!/bin/sh\nif [ "$1" = "--version" ]; then\n'
             f"printf 'Python {reported_version}\\n'\nexit 0\nfi\n"
             f'exec {shlex.quote(sys.executable)} "$@"\n',
-            encoding = "utf-8",
+            encoding="utf-8",
         )
         wrapper.chmod(0o755)
 
@@ -215,7 +215,7 @@ Write-Output $found.Path
         assert not found
 
 
-@pytest.mark.skipif(not POWERSHELLS, reason = "PowerShell is unavailable")
+@pytest.mark.skipif(not POWERSHELLS, reason="PowerShell is unavailable")
 @pytest.mark.parametrize("shell", POWERSHELLS)
 def test_arch_probe_ignores_startup_output(tmp_path: Path, shell: str):
     """Startup output must not reach the arch tag.
@@ -223,9 +223,9 @@ def test_arch_probe_ignores_startup_output(tmp_path: Path, shell: str):
     The caller compares the tag with -eq "win-amd64", so a contaminated answer reads
     as "unknown" and Windows on ARM silently settles for a native ARM64 interpreter.
     """
-    source = INSTALL_PS1.read_text(encoding = "utf-8")
+    source = INSTALL_PS1.read_text(encoding="utf-8")
     probe = _extract(r"    function Get-PythonPlatformTag \{.*?\n    \}\n", source)
-    (tmp_path / "sitecustomize.py").write_text('print("STARTUP_BANNER")\n', encoding = "utf-8")
+    (tmp_path / "sitecustomize.py").write_text('print("STARTUP_BANNER")\n', encoding="utf-8")
 
     script = f"""
 $ErrorActionPreference = "Stop"
@@ -239,13 +239,13 @@ Write-Output (Get-PythonPlatformTag $env:TEST_PYTHON)
     assert tag and "\n" not in tag and "startup_banner" not in tag, tag
 
 
-@pytest.mark.skipif(not POWERSHELLS, reason = "PowerShell is unavailable")
+@pytest.mark.skipif(not POWERSHELLS, reason="PowerShell is unavailable")
 @pytest.mark.parametrize("shell", POWERSHELLS)
 def test_venv_base_home_comes_from_pyvenv_config(tmp_path: Path, shell: str):
-    source = INSTALL_PS1.read_text(encoding = "utf-8")
+    source = INSTALL_PS1.read_text(encoding="utf-8")
     reader = _extract(r"    function Get-VenvBaseHome \{.*?\n    \}\n", source)
     expected = tmp_path / "removed-base-python"
-    (tmp_path / "pyvenv.cfg").write_text(f"home = {expected}\n", encoding = "utf-8")
+    (tmp_path / "pyvenv.cfg").write_text(f"home = {expected}\n", encoding="utf-8")
 
     script = f"""
 $ErrorActionPreference = "Stop"
@@ -257,7 +257,7 @@ Write-Output (Get-VenvBaseHome -VenvRoot $env:TEST_VENV_ROOT)
     assert _run_powershell(shell, script, env) == str(expected)
 
 
-@pytest.mark.skipif(not POWERSHELLS, reason = "PowerShell is unavailable")
+@pytest.mark.skipif(not POWERSHELLS, reason="PowerShell is unavailable")
 @pytest.mark.parametrize("shell", POWERSHELLS)
 @pytest.mark.parametrize("case", ["partial", "clean"])
 def test_rollback_keeps_state_when_the_move_stops_partway(tmp_path: Path, shell: str, case: str):
@@ -268,11 +268,11 @@ def test_rollback_keeps_state_when_the_move_stops_partway(tmp_path: Path, shell:
     clears StudioVenvRollbackDir -- the sole record of where the other half went --
     and the environment is stranded with no way to restore or even name it.
     """
-    source = INSTALL_PS1.read_text(encoding = "utf-8")
+    source = INSTALL_PS1.read_text(encoding="utf-8")
     rollback = _extract(r"    function Start-StudioVenvRollback \{.*?\n    \}\n", source)
     existing = tmp_path / "unsloth_studio"
-    (existing / "Scripts").mkdir(parents = True)
-    (existing / "Scripts" / "unsloth.exe").write_text("locked", encoding = "utf-8")
+    (existing / "Scripts").mkdir(parents=True)
+    (existing / "Scripts" / "unsloth.exe").write_text("locked", encoding="utf-8")
 
     script = f"""
 $ErrorActionPreference = "Stop"
@@ -319,7 +319,7 @@ Write-Output ("dir=" + [string]$script:StudioVenvRollbackDir)
     assert f"moved aside:    {state['dir']}" in out, out
 
 
-@pytest.mark.skipif(not POWERSHELLS, reason = "PowerShell is unavailable")
+@pytest.mark.skipif(not POWERSHELLS, reason="PowerShell is unavailable")
 @pytest.mark.parametrize("shell", POWERSHELLS)
 def test_restoring_a_split_move_never_deletes_the_half_left_behind(tmp_path: Path, shell: str):
     """Restoration must merge the two halves, not clear the destination first.
@@ -330,7 +330,7 @@ def test_restoring_a_split_move_never_deletes_the_half_left_behind(tmp_path: Pat
     exist nowhere else. Keeping the rollback active is only safe if restoration
     takes a merge path, so this pins the file that never moved to being still there.
     """
-    source = INSTALL_PS1.read_text(encoding = "utf-8")
+    source = INSTALL_PS1.read_text(encoding="utf-8")
     blocks = "".join(
         _extract(rf"    function {name} \{{.*?\n    \}}\n", source)
         for name in (
@@ -343,10 +343,10 @@ def test_restoring_a_split_move_never_deletes_the_half_left_behind(tmp_path: Pat
     )
     target = tmp_path / "unsloth_studio"
     backup = tmp_path / "unsloth_studio.rollback.20260804120000.999"
-    (target / "Scripts").mkdir(parents = True)
-    (target / "Scripts" / "unsloth.exe").write_text("irreplaceable", encoding = "utf-8")
-    (backup / "Lib" / "site-packages").mkdir(parents = True)
-    (backup / "Lib" / "site-packages" / "marker.txt").write_text("moved", encoding = "utf-8")
+    (target / "Scripts").mkdir(parents=True)
+    (target / "Scripts" / "unsloth.exe").write_text("irreplaceable", encoding="utf-8")
+    (backup / "Lib" / "site-packages").mkdir(parents=True)
+    (backup / "Lib" / "site-packages" / "marker.txt").write_text("moved", encoding="utf-8")
 
     script = f"""
 $ErrorActionPreference = "Stop"
@@ -369,13 +369,13 @@ Write-Output ("active=" + $script:StudioVenvRollbackActive)
     out = _run_powershell(shell, script, env)
 
     # The file that never moved is the whole point: the pre-merge path deleted it.
-    assert (target / "Scripts" / "unsloth.exe").read_text(encoding = "utf-8") == "irreplaceable", out
+    assert (target / "Scripts" / "unsloth.exe").read_text(encoding="utf-8") == "irreplaceable", out
     assert (target / "Lib" / "site-packages" / "marker.txt").is_file(), out
     assert not backup.exists(), out
     assert "active=False" in out, out
 
 
-@pytest.mark.skipif(not POWERSHELLS, reason = "PowerShell is unavailable")
+@pytest.mark.skipif(not POWERSHELLS, reason="PowerShell is unavailable")
 @pytest.mark.parametrize("shell", POWERSHELLS)
 def test_merging_a_split_move_keeps_every_sibling_at_its_own_path(tmp_path: Path, shell: str):
     """Each entry must land at its own path, not nested under the previous one.
@@ -386,7 +386,7 @@ def test_merging_a_split_move_keeps_every_sibling_at_its_own_path(tmp_path: Path
     back with pyvenv.cfg buried inside Lib. One entry per level hides it, so this
     uses several.
     """
-    source = INSTALL_PS1.read_text(encoding = "utf-8")
+    source = INSTALL_PS1.read_text(encoding="utf-8")
     blocks = "".join(
         _extract(rf"    function {name} \{{.*?\n    \}}\n", source)
         for name in (
@@ -399,15 +399,15 @@ def test_merging_a_split_move_keeps_every_sibling_at_its_own_path(tmp_path: Path
     )
     target = tmp_path / "unsloth_studio"
     backup = tmp_path / "unsloth_studio.rollback.20260804120000.999"
-    (target / "Scripts").mkdir(parents = True)
-    (target / "Scripts" / "unsloth.exe").write_text("irreplaceable", encoding = "utf-8")
+    (target / "Scripts").mkdir(parents=True)
+    (target / "Scripts" / "unsloth.exe").write_text("irreplaceable", encoding="utf-8")
     (target / "Lib").mkdir()
-    (target / "Lib" / "stayed.py").write_text("stayed", encoding = "utf-8")
-    (backup / "Lib" / "site-packages").mkdir(parents = True)
-    (backup / "Lib" / "site-packages" / "marker.txt").write_text("moved", encoding = "utf-8")
-    (backup / "Lib" / "other.py").write_text("other", encoding = "utf-8")
-    (backup / "pyvenv.cfg").write_text("cfg", encoding = "utf-8")
-    (backup / "unsloth_install_manifest.json").write_text("{}", encoding = "utf-8")
+    (target / "Lib" / "stayed.py").write_text("stayed", encoding="utf-8")
+    (backup / "Lib" / "site-packages").mkdir(parents=True)
+    (backup / "Lib" / "site-packages" / "marker.txt").write_text("moved", encoding="utf-8")
+    (backup / "Lib" / "other.py").write_text("other", encoding="utf-8")
+    (backup / "pyvenv.cfg").write_text("cfg", encoding="utf-8")
+    (backup / "unsloth_install_manifest.json").write_text("{}", encoding="utf-8")
 
     script = f"""
 $ErrorActionPreference = "Stop"
@@ -444,7 +444,7 @@ Write-Output ("active=" + $script:StudioVenvRollbackActive)
     assert "active=False" in out, out
 
 
-@pytest.mark.skipif(not POWERSHELLS, reason = "PowerShell is unavailable")
+@pytest.mark.skipif(not POWERSHELLS, reason="PowerShell is unavailable")
 @pytest.mark.parametrize("shell", POWERSHELLS)
 @pytest.mark.parametrize("side", ["destination", "source"])
 def test_merging_a_split_move_never_walks_through_a_link(tmp_path: Path, shell: str, side: str):
@@ -454,7 +454,7 @@ def test_merging_a_split_move_never_walks_through_a_link(tmp_path: Path, shell: 
     $StudioHome, and replaces the link with a real directory. Either half can carry
     the link, so both directions are pinned here.
     """
-    source = INSTALL_PS1.read_text(encoding = "utf-8")
+    source = INSTALL_PS1.read_text(encoding="utf-8")
     blocks = "".join(
         _extract(rf"    function {name} \{{.*?\n    \}}\n", source)
         for name in (
@@ -470,14 +470,14 @@ def test_merging_a_split_move_never_walks_through_a_link(tmp_path: Path, shell: 
     # A sibling of the environment, never under it.
     outside = tmp_path / "outside"
     outside.mkdir()
-    (outside / "keep.txt").write_text("untouched", encoding = "utf-8")
+    (outside / "keep.txt").write_text("untouched", encoding="utf-8")
     target.mkdir()
     backup.mkdir()
 
     linked, real = (target, backup) if side == "destination" else (backup, target)
     _link_dir(linked / "Lib", outside)
     (real / "Lib").mkdir()
-    (real / "Lib" / "payload.txt").write_text("venv-only", encoding = "utf-8")
+    (real / "Lib" / "payload.txt").write_text("venv-only", encoding="utf-8")
 
     script = f"""
 $ErrorActionPreference = "Stop"
@@ -501,21 +501,21 @@ Write-Output ("active=" + $script:StudioVenvRollbackActive)
     # Nothing from the environment may be written through the link.
     assert not (outside / "payload.txt").exists(), out
     assert sorted(p.name for p in outside.iterdir()) == ["keep.txt"], out
-    assert (outside / "keep.txt").read_text(encoding = "utf-8") == "untouched", out
+    assert (outside / "keep.txt").read_text(encoding="utf-8") == "untouched", out
     # An unresolved conflict keeps both copies, so the rollback stays tracked.
     assert "active=True" in out, out
 
 
-@pytest.mark.skipif(not POWERSHELLS, reason = "PowerShell is unavailable")
+@pytest.mark.skipif(not POWERSHELLS, reason="PowerShell is unavailable")
 @pytest.mark.parametrize("shell", POWERSHELLS)
 @pytest.mark.parametrize("case", ["missing", "unlaunchable", "working"])
 def test_managed_python_readiness_probe(tmp_path: Path, shell: str, case: str):
-    source = INSTALL_PS1.read_text(encoding = "utf-8")
+    source = INSTALL_PS1.read_text(encoding="utf-8")
     readiness = _extract(r"    function Test-VenvPythonReady \{.*?\n    \}\n", source)
     python_exe = tmp_path / "broken-python.cmd"
     expected = "False"
     if case == "unlaunchable":
-        python_exe.write_text("@exit /b 17\n", encoding = "utf-8")
+        python_exe.write_text("@exit /b 17\n", encoding="utf-8")
     elif case == "working":
         python_exe = Path(sys.executable)
         expected = "True"
@@ -531,7 +531,7 @@ Write-Output (Test-VenvPythonReady -PythonExe $env:TEST_MANAGED_PYTHON)
 
 
 def test_readiness_gate_precedes_installs_and_names_both_interpreters():
-    source = INSTALL_PS1.read_text(encoding = "utf-8")
+    source = INSTALL_PS1.read_text(encoding="utf-8")
     gate = source.index("if (-not (Test-VenvPythonReady -PythonExe $VenvPython))")
     marker = source.index(
         '[System.IO.File]::WriteAllText((Join-Path $VenvDir ".unsloth-studio-owned"), "")'
@@ -547,7 +547,7 @@ def test_readiness_gate_precedes_installs_and_names_both_interpreters():
 
 
 def test_uv_cache_lifecycle_wraps_all_install_time_uv_work():
-    source = INSTALL_PS1.read_text(encoding = "utf-8")
+    source = INSTALL_PS1.read_text(encoding="utf-8")
     root = source.index('$VenvDir = Join-Path $StudioHome "unsloth_studio"')
     capture = source.index("$hadPreviousUvCacheDir =")
     first_uv_probe = source.index("if (-not (Test-UvVersionOk))", capture)
@@ -572,7 +572,7 @@ def test_uv_cache_lifecycle_wraps_all_install_time_uv_work():
 
 
 def test_uv_cache_option_and_environment_parsers_cannot_drift():
-    source = INSTALL_PS1.read_text(encoding = "utf-8")
+    source = INSTALL_PS1.read_text(encoding="utf-8")
     parse_start = source.index("# ── Parse flags ──")
     root = source.index('$VenvDir = Join-Path $StudioHome "unsloth_studio"', parse_start)
     parser = source[parse_start:root]
@@ -588,61 +588,61 @@ def _prepare_uv_default(local_app_data: Path, state: str) -> Path:
     shared = local_app_data / "uv" / "cache"
     if state == "missing":
         return shared
-    shared.parent.mkdir(parents = True)
+    shared.parent.mkdir(parents=True)
     if state == "unavailable":
-        shared.write_text("not a directory", encoding = "utf-8")
+        shared.write_text("not a directory", encoding="utf-8")
         return shared
     shared.mkdir()
     if state == "markers":
-        (shared / "CACHEDIR.TAG" / "inside").mkdir(parents = True)
-        (shared / "CACHEDIR.TAG" / "inside" / "payload").write_text("keep", encoding = "utf-8")
-        (shared / ".gitignore").write_text("*\n", encoding = "utf-8")
+        (shared / "CACHEDIR.TAG" / "inside").mkdir(parents=True)
+        (shared / "CACHEDIR.TAG" / "inside" / "payload").write_text("keep", encoding="utf-8")
+        (shared / ".gitignore").write_text("*\n", encoding="utf-8")
     elif state == "scaffolding":
         (shared / "sdists-v9").mkdir()
-        (shared / "sdists-v9" / ".git").write_text("", encoding = "utf-8")
-        (shared / "sdists-v9" / ".gitignore").write_text("", encoding = "utf-8")
-        (shared / "interpreter-v4" / "key").mkdir(parents = True)
+        (shared / "sdists-v9" / ".git").write_text("", encoding="utf-8")
+        (shared / "sdists-v9" / ".gitignore").write_text("", encoding="utf-8")
+        (shared / "interpreter-v4" / "key").mkdir(parents=True)
         (shared / "interpreter-v4" / "key" / "metadata.msgpack").write_bytes(b"metadata")
-        (shared / ".lock").write_text("", encoding = "utf-8")
+        (shared / ".lock").write_text("", encoding="utf-8")
     elif state == "populated":
-        (shared / "archive-v0" / "package").mkdir(parents = True)
+        (shared / "archive-v0" / "package").mkdir(parents=True)
         (shared / "archive-v0" / "package" / "payload.py").write_text(
-            "cached = True\n", encoding = "utf-8"
+            "cached = True\n", encoding="utf-8"
         )
     elif state == "metadata-only":
         # wheels-v* is .msgpack/.http only on uv 0.10: one `--dry-run` leaves a file.
-        (shared / "wheels-v6" / "pypi" / "torch").mkdir(parents = True)
+        (shared / "wheels-v6" / "pypi" / "torch").mkdir(parents=True)
         (shared / "wheels-v6" / "pypi" / "torch" / "2.11.0-cp313.msgpack").write_bytes(b"meta")
         (shared / "wheels-v6" / "pypi" / "torch" / "2.11.0.http").write_bytes(b"meta")
-        (shared / "sdists-v9" / "pypi" / "pkg").mkdir(parents = True)
+        (shared / "sdists-v9" / "pypi" / "pkg").mkdir(parents=True)
         (shared / "sdists-v9" / "pypi" / "pkg" / "revision.rev").write_bytes(b"meta")
         (shared / "sdists-v9" / "pypi" / "pkg" / "download.lock").write_bytes(b"")
     elif state == "builds":
         # What modern uv calls the old built-wheels-* bucket.
-        (shared / "builds-v0" / "pkg").mkdir(parents = True)
-        (shared / "builds-v0" / "pkg" / "module.py").write_text("x = 1\n", encoding = "utf-8")
+        (shared / "builds-v0" / "pkg").mkdir(parents=True)
+        (shared / "builds-v0" / "pkg" / "module.py").write_text("x = 1\n", encoding="utf-8")
     elif state == "symlinked-bucket":
         target = local_app_data / "elsewhere" / "pkg"
-        target.mkdir(parents = True)
+        target.mkdir(parents=True)
         (target / "payload.so").write_bytes(b"data")
-        (shared / "archive-v0").symlink_to(target.parent, target_is_directory = True)
+        (shared / "archive-v0").symlink_to(target.parent, target_is_directory=True)
     elif state == "denied-bucket":
-        (shared / "archive-v0" / "package").mkdir(parents = True)
-        (shared / "archive-v0" / "package" / "payload.py").write_text("x\n", encoding = "utf-8")
+        (shared / "archive-v0" / "package").mkdir(parents=True)
+        (shared / "archive-v0" / "package" / "payload.py").write_text("x\n", encoding="utf-8")
         (shared / "archive-v0").chmod(0o000)
     elif state == "denied-leaf":
-        (shared / "archive-v0" / "visible").mkdir(parents = True)
-        (shared / "archive-v0" / "visible" / "payload.py").write_text("x\n", encoding = "utf-8")
+        (shared / "archive-v0" / "visible").mkdir(parents=True)
+        (shared / "archive-v0" / "visible" / "payload.py").write_text("x\n", encoding="utf-8")
         hidden = shared / "archive-v0" / "aaa hidden"
         hidden.mkdir()
-        (hidden / "other.py").write_text("y\n", encoding = "utf-8")
+        (hidden / "other.py").write_text("y\n", encoding="utf-8")
         hidden.chmod(0o000)
     else:
         raise AssertionError(f"unknown uv cache fixture: {state}")
     return shared
 
 
-@pytest.mark.skipif(not POWERSHELLS, reason = "PowerShell is unavailable")
+@pytest.mark.skipif(not POWERSHELLS, reason="PowerShell is unavailable")
 @pytest.mark.parametrize("shell", POWERSHELLS)
 @pytest.mark.parametrize(
     ("case", "initial_value", "isolated", "default_state", "expected_mode"),
@@ -676,7 +676,7 @@ def test_uv_cache_selector_precedence_and_launch_handoff(
 ):
     if default_state.startswith("denied") and (os.name == "nt" or os.geteuid() == 0):
         pytest.skip("POSIX mode bits do not deny this caller")
-    source = INSTALL_PS1.read_text(encoding = "utf-8")
+    source = INSTALL_PS1.read_text(encoding="utf-8")
     functions = _uv_cache_functions(source)
     studio_root = tmp_path / "studio root"
     local_app_data = tmp_path / "local app data"
@@ -686,18 +686,18 @@ def test_uv_cache_selector_precedence_and_launch_handoff(
     configured = tmp_path / "uv.toml cache"
     effective_cache = configured if case == "configured" else shared
     if case == "configured":
-        (configured / "wheels-v5" / "package").mkdir(parents = True)
+        (configured / "wheels-v5" / "package").mkdir(parents=True)
         (configured / "wheels-v5" / "package" / "torch.whl").write_bytes(b"wheel")
     if initial_value == "CUSTOM":
         initial_value = str(custom)
 
     if os.name == "nt":
         uv_stub = tmp_path / "uv-cache-dir.cmd"
-        uv_stub.write_text("@echo %TEST_UV_EFFECTIVE_CACHE%\r\n", encoding = "utf-8")
+        uv_stub.write_text("@echo %TEST_UV_EFFECTIVE_CACHE%\r\n", encoding="utf-8")
     else:
         uv_stub = tmp_path / "uv-cache-dir"
         uv_stub.write_text(
-            '#!/bin/sh\nprintf "%s\\n" "$TEST_UV_EFFECTIVE_CACHE"\n', encoding = "utf-8"
+            '#!/bin/sh\nprintf "%s\\n" "$TEST_UV_EFFECTIVE_CACHE"\n', encoding="utf-8"
         )
         uv_stub.chmod(0o755)
 
@@ -784,9 +784,9 @@ try {{
     assert result["Restored"] == result["StoredBefore"]
     if default_state == "markers":
         assert (shared / "CACHEDIR.TAG" / "inside" / "payload").read_text(
-            encoding = "utf-8"
+            encoding="utf-8"
         ) == "keep"
-        assert (shared / ".gitignore").read_text(encoding = "utf-8") == "*\n"
+        assert (shared / ".gitignore").read_text(encoding="utf-8") == "*\n"
 
     # The marker `unsloth studio update` reads back, so it reuses the cache this install
     # used instead of re-deriving it from content that a runtime install can change.
@@ -794,11 +794,11 @@ try {{
     # Every mode records, custom included: a marker left by a previous install would aim
     # later updates at a cache this one never filled.
     marker = studio_root / "cache" / "uv-cache-dir"
-    recorded = marker.read_text(encoding = "utf-8-sig").strip()
+    recorded = marker.read_text(encoding="utf-8-sig").strip()
     assert norm(recorded) == norm(str(expected_selected)), case
 
 
-@pytest.mark.skipif(not POWERSHELLS, reason = "PowerShell is unavailable")
+@pytest.mark.skipif(not POWERSHELLS, reason="PowerShell is unavailable")
 @pytest.mark.parametrize("shell", POWERSHELLS)
 @pytest.mark.parametrize(
     ("initial_present", "initial_value"),
@@ -808,7 +808,7 @@ try {{
 def test_uv_cache_selection_restores_caller_on_success_and_failure(
     tmp_path: Path, shell: str, initial_present: bool, initial_value: str, fail: bool
 ):
-    source = INSTALL_PS1.read_text(encoding = "utf-8")
+    source = INSTALL_PS1.read_text(encoding="utf-8")
     functions = _uv_cache_functions(source)
     script = f"""
 $ErrorActionPreference = "Stop"
@@ -865,10 +865,10 @@ try {{
     assert result["Restored"] == result["StoredBefore"]
 
 
-@pytest.mark.skipif(not POWERSHELLS, reason = "PowerShell is unavailable")
+@pytest.mark.skipif(not POWERSHELLS, reason="PowerShell is unavailable")
 @pytest.mark.parametrize("shell", POWERSHELLS)
 def test_two_uv_cache_lifecycles_in_one_session_use_their_own_roots(tmp_path: Path, shell: str):
-    source = INSTALL_PS1.read_text(encoding = "utf-8")
+    source = INSTALL_PS1.read_text(encoding="utf-8")
     functions = _uv_cache_functions(source)
     script = f"""
 $ErrorActionPreference = "Stop"
@@ -913,13 +913,13 @@ foreach ($root in @($env:TEST_STUDIO_HOME_ONE, $env:TEST_STUDIO_HOME_TWO)) {{
     assert result["ProviderPresentAfter"] is False
 
 
-@pytest.mark.skipif(not POWERSHELLS, reason = "PowerShell is unavailable")
+@pytest.mark.skipif(not POWERSHELLS, reason="PowerShell is unavailable")
 @pytest.mark.parametrize("shell", POWERSHELLS)
 def test_a_non_ascii_marker_survives_the_rollback(tmp_path: Path, shell: str):
     """The update writes this file BOM-less UTF-8, and Windows PowerShell 5.1 reads a
     BOM-less file with the active ANSI code page, so a non-ASCII path came back as
     mojibake and the rollback wrote that back over a marker that had been correct."""
-    source = INSTALL_PS1.read_text(encoding = "utf-8")
+    source = INSTALL_PS1.read_text(encoding="utf-8")
     functions = "".join(
         _extract(rf"    function {name} \{{.*?\n    \}}\n", source)
         for name in (
@@ -932,7 +932,7 @@ def test_a_non_ascii_marker_survives_the_rollback(tmp_path: Path, shell: str):
     marker = studio_root / "cache" / "uv-cache-dir"
     previous = tmp_path / "kaffee cache"
     # As the Python backfill writes it: UTF-8, no BOM.
-    marker.parent.mkdir(parents = True)
+    marker.parent.mkdir(parents=True)
     marker.write_bytes(f"{previous}\n".replace("kaffee", "k\u00e4ffee").encode("utf-8"))
     expected = str(previous).replace("kaffee", "k\u00e4ffee")
 
@@ -957,7 +957,7 @@ Restore-StudioUvCacheMarker -StudioRoot $env:TEST_STUDIO_HOME
     _assert_same_text(result["After"], expected, "the rollback did not restore the marker it saved")
 
 
-@pytest.mark.skipif(not POWERSHELLS, reason = "PowerShell is unavailable")
+@pytest.mark.skipif(not POWERSHELLS, reason="PowerShell is unavailable")
 @pytest.mark.parametrize("shell", POWERSHELLS)
 @pytest.mark.parametrize("preexisting", [True, False])
 def test_a_rolled_back_install_restores_the_previous_uv_cache_marker(
@@ -966,7 +966,7 @@ def test_a_rolled_back_install_restores_the_previous_uv_cache_marker(
     """The marker describes the environment, so it goes back when the environment does:
     install.ps1 restores the previous venv on failure, and a marker for an install that
     never happened would outlive it."""
-    source = INSTALL_PS1.read_text(encoding = "utf-8")
+    source = INSTALL_PS1.read_text(encoding="utf-8")
     functions = "".join(
         _extract(rf"    function {name} \{{.*?\n    \}}\n", source)
         for name in (
@@ -980,8 +980,8 @@ def test_a_rolled_back_install_restores_the_previous_uv_cache_marker(
     previous = tmp_path / "previous cache"
     chosen = tmp_path / "chosen cache"
     if preexisting:
-        marker.parent.mkdir(parents = True)
-        marker.write_text(f"{previous}\n", encoding = "utf-8")
+        marker.parent.mkdir(parents=True)
+        marker.write_text(f"{previous}\n", encoding="utf-8")
 
     script = f"""
 $ErrorActionPreference = "Stop"
@@ -1010,12 +1010,12 @@ $after = if (Test-Path -LiteralPath $env:TEST_MARKER) {{
         assert norm(result["After"]) == norm(str(previous))
 
 
-@pytest.mark.skipif(not POWERSHELLS, reason = "PowerShell is unavailable")
+@pytest.mark.skipif(not POWERSHELLS, reason="PowerShell is unavailable")
 @pytest.mark.parametrize("shell", POWERSHELLS)
 def test_a_relative_cache_is_recorded_absolute(tmp_path: Path, shell: str):
     """`uv cache dir` answers a relative cache-dir with the relative spelling, and the
     update resolves the marker against ITS working directory, not the installer's."""
-    source = INSTALL_PS1.read_text(encoding = "utf-8")
+    source = INSTALL_PS1.read_text(encoding="utf-8")
     functions = "".join(
         _extract(rf"    function {name} \{{.*?\n    \}}\n", source)
         for name in ("Resolve-StudioUvCachePath", "Write-StudioUvCacheMarker")
@@ -1042,12 +1042,12 @@ Write-StudioUvCacheMarker -StudioRoot $env:TEST_STUDIO_HOME -Cache "relcache"
     ), recorded
 
 
-@pytest.mark.skipif(not POWERSHELLS, reason = "PowerShell is unavailable")
+@pytest.mark.skipif(not POWERSHELLS, reason="PowerShell is unavailable")
 @pytest.mark.parametrize("shell", POWERSHELLS)
 def test_a_relative_working_directory_moves_the_relative_cache(tmp_path: Path, shell: str):
     """UV_WORKING_DIR is where uv starts, so a relative cache hangs off it and not off the
     installer's own directory. It may itself be relative, against the installer's."""
-    source = INSTALL_PS1.read_text(encoding = "utf-8")
+    source = INSTALL_PS1.read_text(encoding="utf-8")
     functions = "".join(
         _extract(rf"    function {name} \{{.*?\n    \}}\n", source)
         for name in ("Resolve-StudioUvCachePath", "Write-StudioUvCacheMarker")
@@ -1076,7 +1076,7 @@ Write-StudioUvCacheMarker -StudioRoot $env:TEST_STUDIO_HOME -Cache "relcache"
     ), recorded
 
 
-@pytest.mark.skipif(not POWERSHELLS, reason = "PowerShell is unavailable")
+@pytest.mark.skipif(not POWERSHELLS, reason="PowerShell is unavailable")
 @pytest.mark.parametrize("shell", POWERSHELLS)
 def test_an_unreadable_cache_directory_does_not_abort_the_install(tmp_path: Path, shell: str):
     """The marker is optional, so probing for it must not fail the install: under
@@ -1084,13 +1084,13 @@ def test_an_unreadable_cache_directory_does_not_abort_the_install(tmp_path: Path
     UnauthorizedAccessException rather than returning $false."""
     if os.name == "nt" or os.geteuid() == 0:
         pytest.skip("POSIX mode bits do not deny this caller")
-    source = INSTALL_PS1.read_text(encoding = "utf-8")
+    source = INSTALL_PS1.read_text(encoding="utf-8")
     functions = "".join(
         _extract(rf"    function {name} \{{.*?\n    \}}\n", source)
         for name in ("Resolve-StudioUvCachePath", "Write-StudioUvCacheMarker")
     )
     studio_root = tmp_path / "studio root"
-    (studio_root / "cache").mkdir(parents = True)
+    (studio_root / "cache").mkdir(parents=True)
     (studio_root / "cache").chmod(0o000)
 
     script = f"""
