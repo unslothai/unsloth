@@ -386,6 +386,20 @@ const SingleContent = memo(function SingleContent({
     isArtifactPanelLayoutActive &&
     !isArtifactLayoutAnimating;
 
+  // Dragging the panel shut leaves showContextPanel true, so the layout effect below
+  // never runs again and opening another artifact resizes nothing. Bring it back here
+  // instead, only when it is actually collapsed, so a width the user chose survives.
+  const openArtifactId = artifact?.id ?? null;
+  useEffect(() => {
+    if (!showContextPanel || !openArtifactId) return;
+    const panel = artifactPanelRef.current;
+    if (!panel?.isCollapsed()) return;
+    // expand() alone restores whatever width it had before, which for a panel dragged
+    // to nothing is nothing.
+    panel.expand();
+    panel.resize(ARTIFACT_PANEL_DEFAULT_SIZE);
+  }, [openArtifactId, showContextPanel]);
+
   useEffect(() => {
     const panel = artifactPanelRef.current;
     if (!panel) return;
