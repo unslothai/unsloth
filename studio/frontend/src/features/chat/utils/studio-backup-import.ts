@@ -213,6 +213,14 @@ export function studioBackupToConversations(
     const forkedFromMessageId = messageIds.get(
       str(thread.forkedFromMessageId) ?? "",
     );
+    // Points into this thread's own messages, so it remaps like any other id. Dropping it
+    // would restore the fork without its "Continued from chat" divider.
+    const forkBoundaryMessageId = messageIds.get(
+      str(thread.forkBoundaryMessageId) ?? "",
+    );
+    // A name, not an id, so it restores as it stands. Without it the restored fork numbers
+    // its own forks from its whole title, giving "Notes (1) (1)".
+    const forkTitleBase = str(thread.forkTitleBase);
     const projectId = str(thread.projectId);
     const pairId = str(thread.pairId);
     const modelId = str(thread.modelId);
@@ -241,6 +249,8 @@ export function studioBackupToConversations(
               ...(forkedFromMessageId ? { forkedFromMessageId } : {}),
             }
           : {}),
+        ...(forkBoundaryMessageId ? { forkBoundaryMessageId } : {}),
+        ...(forkTitleBase ? { forkTitleBase } : {}),
         ...(isDict(thread.settings) &&
         Object.keys(restorableSettings(thread.settings)).length > 0
           ? {

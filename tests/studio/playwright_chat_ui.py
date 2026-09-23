@@ -1590,9 +1590,11 @@ with sync_playwright() as p:
                 return {
                     // The scale the size tokens are multiplied by: index.css sets the 15px
                     // product default, and the appearance store overrides it inline as
-                    // preference / 16 for any other size.
-                    uiFontScale: getComputedStyle(root)
-                        .getPropertyValue('--ui-font-scale').trim(),
+                    // preference / 16 for any other size. Resolved through a length rather
+                    // than read as a property: since #11648 it is a calc() of the size and
+                    // interface scales, and an unregistered custom property reads back as
+                    // that expression, not a number.
+                    uiFontScale: (() => { const probe = document.createElement('div'); probe.style.cssText = 'position:absolute;visibility:hidden;width:calc(10000px * var(--ui-font-scale, 1))'; document.body.appendChild(probe); const px = parseFloat(getComputedStyle(probe).width); probe.remove(); return String(px / 10000); })(),
                     actualRenderLinux: root.classList.contains('render-linux'),
                     isDesktopLinux: ua.includes('linux') && !ua.includes('android'),
                     isDark: root.classList.contains('dark'),

@@ -362,10 +362,10 @@ export function DocumentsRagSection(): ReactElement {
             accessToken={hfToken || undefined}
             disabled={!embeddingModel}
             busy={isSavingEmbeddingModel}
-            className="w-[260px] max-[360px]:w-full"
+            className="w-[calc(260px*var(--ui-space-scale,1))] max-[360px]:w-full"
           />
           {embeddingModelError ? (
-            <span className="max-w-[300px] text-right text-xs text-destructive">
+            <span className="max-w-[calc(300px*var(--ui-space-scale,1))] text-right text-xs text-destructive">
               {embeddingModelError}
             </span>
           ) : null}
@@ -420,7 +420,7 @@ export function DocumentsRagSection(): ReactElement {
               </Button>
             ) : null}
           </div>
-          <span className="max-w-[300px] text-right text-xs text-muted-foreground">
+          <span className="max-w-[calc(300px*var(--ui-space-scale,1))] text-right text-xs text-muted-foreground">
             {t("settings.general.rag.reindexWarning")}
           </span>
         </div>
