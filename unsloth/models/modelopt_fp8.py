@@ -302,6 +302,11 @@ _TASK_CLASS_SUFFIXES = (
     "ForSequenceClassification",
     "ForTokenClassification",
     "ForQuestionAnswering",
+    "ForMultipleChoice",
+    "ForImageClassification",
+    "ForAudioClassification",
+    "ForAudioFrameClassification",
+    "ForVideoClassification",
 )
 
 

@@ -522,6 +522,33 @@ def test_a_declined_modelopt_format_still_refuses_to_load_in_process(tmp_path):
         FastModel.from_pretrained(str(tmp_path), load_in_4bit = False, load_in_16bit = True)
 
 
+@needs_per_tensor_fp8
+@pytest.mark.skipif(not has_real_cuda(), reason = "FastLanguageModel loads need an accelerator")
+def test_fast_llama_checks_fp8_hardware_on_the_rewritten_config(tmp_path):
+    """The early check sees `modelopt`; the rewritten `fp8` plan must be checked too.
+    Runs in a subprocess: FastLanguageModel patches the Llama classes for the whole process."""
+    import subprocess
+    import sys
+
+    _write_tiny_modelopt_llama(str(tmp_path))
+    code = f"""
+import unsloth
+from unsloth import FastLanguageModel
+from unsloth.models import llama
+from unsloth.models._utils import get_quant_type
+seen = []
+llama.verify_fp8_support_if_applicable = lambda config: seen.append(get_quant_type(config))
+try:
+    FastLanguageModel.from_pretrained({str(tmp_path)!r}, load_in_4bit = False, max_seq_length = 64)
+except Exception:
+    pass  # the tiny checkpoint ships no tokenizer; the checks run before that
+print("SEEN", seen)
+"""
+    out = subprocess.run([sys.executable, "-c", code], capture_output = True, text = True, timeout = 600)
+    seen = [line for line in out.stdout.splitlines() if line.startswith("SEEN")]
+    assert seen and "'fp8'" in seen[-1], (out.stdout[-2000:], out.stderr[-2000:])
+
+
 def test_config_branch_moves_rope_extension_onto_the_config():
     # A ModelOpt load passes config=, so a context extension's rope_scaling kwarg would reach the
     # model init and raise TypeError; it has to be set on the config instead.
@@ -569,6 +596,27 @@ def test_task_heads_stay_out_of_the_rewritten_plan_only_for_task_loads():
     other = SimpleNamespace(quantization_config = {"quant_method": "gptq"})
     assert not keep_task_heads_unquantized(other, AutoModelForSequenceClassification)
     assert "modules_to_not_convert" not in other.quantization_config
+
+
+@pytest.mark.parametrize(
+    "task",
+    [
+        "AutoModelForMultipleChoice",
+        "AutoModelForImageClassification",
+        "AutoModelForAudioClassification",
+    ],
+)
+def test_other_task_auto_classes_keep_their_head_out(task):
+    import transformers
+    from unsloth.models.modelopt_fp8 import keep_task_heads_unquantized
+
+    if not hasattr(transformers, task):
+        pytest.skip(f"no {task}")
+    config = SimpleNamespace(
+        quantization_config = {"quant_method": "fp8", "modules_to_not_convert": ["lm_head"]}
+    )
+    assert keep_task_heads_unquantized(config, getattr(transformers, task))
+    assert {"score", "classifier"} <= set(config.quantization_config["modules_to_not_convert"])
 
 
 def test_every_transformers_task_head_name_is_kept_out():

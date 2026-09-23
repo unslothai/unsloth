@@ -2615,6 +2615,9 @@ class FastLlamaModel:
         )
 
         _modelopt_rewritten = modelopt_rewritten(model_config)
+        if _modelopt_rewritten:
+            # The check above saw `modelopt`; the load now needs fp8 hardware like any fp8 checkpoint.
+            verify_fp8_support_if_applicable(model_config)
         if _modelopt_rewritten and num_labels is not None:
             # num_labels builds AutoModelForSequenceClassification; its new `score` has no fp8
             # weight on disk.
