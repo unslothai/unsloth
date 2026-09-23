@@ -630,7 +630,11 @@ def compiled_dits_active(pipe: Any) -> bool:
     return False
 
 
-def settle_compile_fallback(state: Any, pipe: Any, logger: Any = None) -> Optional[str]:
+def settle_compile_fallback(
+    state: Any,
+    pipe: Any,
+    logger: Any = None,
+) -> Optional[str]:
     """After a render, fold a runtime compile fallback into ``state.speed_optims`` (image and video backends share it).
 
     Adds ``compile_fallback_eager`` once, and drops ``compiled`` only when NO guarded DiT still runs compiled, so a
