@@ -184,7 +184,8 @@ def _fill_missing_loss(cls):
     if "labels" not in parameters:
         return False
 
-    state = {"returns_loss": None}
+    # Per instance: two configs of one remote class can differ in whether the loss works.
+    state_key = "_unsloth_returns_loss"
 
     def _loss_from(output, labels, kwargs):
         logits = (
@@ -245,17 +246,18 @@ def _fill_missing_loss(cls):
     def forward(self, *args, **kwargs):
         args, kwargs = _bind(args, kwargs)
         labels = kwargs.get("labels", None)
-        if labels is None or state["returns_loss"] is True:
+        returns_loss = self.__dict__.get(state_key, None)
+        if labels is None or returns_loss is True:
             return original(self, *args, **kwargs)
-        if state["returns_loss"] is None:
+        if returns_loss is None:
             try:
                 output = original(self, *args, **kwargs)
                 if _has_own_loss(output):
-                    state["returns_loss"] = True
+                    self.__dict__[state_key] = True
                     return output
             except (AttributeError, TypeError, KeyError):
                 pass
-            state["returns_loss"] = False
+            self.__dict__[state_key] = False
             print(
                 f"Unsloth: `{cls.__name__}.forward` accepts `labels` but returns no loss, "
                 "so the causal LM loss is computed from its logits."

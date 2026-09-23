@@ -177,6 +177,35 @@ def test_a_tuple_output_with_its_own_loss_is_left_alone():
         assert float(out[0]) == 42.0 and out[1].shape == (1, 4, 32)
 
 
+@pytest.mark.parametrize("healthy_first", [True, False])
+def test_loss_support_is_decided_per_instance(healthy_first):
+    """One remote class, two configs: only the broken one gets the synthesized loss."""
+
+    class Mixed(Outer):
+        def forward(
+            self,
+            input_ids = None,
+            labels = None,
+            **kwargs,
+        ):
+            logits = self.lm_head(self.model(input_ids))
+            if labels is not None and self.config.own_loss:
+                return CausalLMOutputWithPast(loss = torch.tensor(42.0), logits = logits)
+            return CausalLMOutputWithPast(logits = logits)
+
+    Mixed.__module__ = "transformers_modules.tiny_remote.modeling_tiny"
+    from unsloth.models.remote_code_shims import apply_remote_code_shims
+
+    healthy, broken = Mixed(TinyConfig(own_loss = True)), Mixed(TinyConfig(own_loss = False))
+    apply_remote_code_shims(healthy)
+    apply_remote_code_shims(broken)
+    ids = torch.randint(0, 32, (1, 4))
+    order = [healthy, broken] if healthy_first else [broken, healthy]
+    for model in order + order:
+        loss = float(model(input_ids = ids, labels = ids).loss)
+        assert (loss == 42.0) is (model is healthy), (model.config.own_loss, loss)
+
+
 def test_transformers_own_classes_are_not_touched():
     from unsloth.models.remote_code_shims import (
         apply_remote_code_shims,
