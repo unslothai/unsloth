@@ -269,13 +269,16 @@ _OMNI_AUTO_CLASS_NAMES = (
 
 def _read_safetensors_keys(path):
     from safetensors import safe_open
-
     with safe_open(path, framework = "pt") as handle:
         return list(handle.keys())
 
 
 def _adapter_weight_keys(
-    adapter_name, token = None, revision = None, local_files_only = False, cache_dir = None
+    adapter_name,
+    token = None,
+    revision = None,
+    local_files_only = False,
+    cache_dir = None,
 ):
     """Tensor names of a saved adapter without loading its weights, or None."""
     try:
@@ -317,7 +320,11 @@ def _composition_children(model_config):
     return tuple(names) or ("thinker",)
 
 
-def _adapter_targets_text_core(peft_config, weight_keys = None, wrapper_children = ("thinker",)):
+def _adapter_targets_text_core(
+    peft_config,
+    weight_keys = None,
+    wrapper_children = ("thinker",),
+):
     """True when an adapter was trained on an extracted thinker (`text_only = True`).
 
     A thinker's own weights are keyed `model.layers...`; anything trained on the kept
@@ -329,7 +336,9 @@ def _adapter_targets_text_core(peft_config, weight_keys = None, wrapper_children
     children = set(wrapper_children)
     if weight_keys:
         roots = {
-            (key[len("base_model.model.") :] if key.startswith("base_model.model.") else key).split(".", 1)[0]
+            (key[len("base_model.model.") :] if key.startswith("base_model.model.") else key).split(
+                ".", 1
+            )[0]
             for key in weight_keys
         }
         return not (roots & children)
