@@ -713,7 +713,10 @@ def test_response_details_metadata_is_persisted_without_backend_schema_change():
     assert "responseDetails: buildResponseDetails(finishedAt)" in src
     assert "toolCalls: Array.from(" in src
     assert "!isExternalRequest && supportsTools && toolsEnabled" in src
-    assert "!isExternalRequest && supportsTools && codeToolsEnabled" in src
+    # #11628: Code is recorded from the placement the request actually sends, a hosted sandbox or Studio's local
+    # python/terminal/edit_file, so an external connection without a sandbox still reports Code when it runs locally.
+    assert "hostedCodeToolsForThisTurn.length > 0 ||" in src
+    assert "studioLocalCodeTools.length > 0" in src
     assert re.search(r"selectedModelSummary\?\.name\s*\|\|\s*responseModelId", src)
     assert "providerName" in src
     assert "cancelId" in src

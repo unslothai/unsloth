@@ -71,7 +71,12 @@ def test_css_default_scale_matches_the_store_default():
     assert "effectiveUiFontSize !== UI_FONT_SIZE_RANGE.default" in STORE
     assert "effectiveUiFontSize / UI_FONT_SIZE_CSS_BASE" in STORE
     scale = int(rng.group(3)) / int(base.group(1))
-    assert f"--ui-font-scale: {scale:g};" in INDEX_CSS
+    # Since #11648 the store writes --ui-font-size-scale and index.css derives --ui-font-scale from it and the
+    # browser-only interface scale, so the default lives in the fallback of that derivation.
+    assert (
+        f"--ui-font-scale: calc(var(--ui-font-size-scale, {scale:g}) * var(--ui-interface-scale, 1));"
+    ) in INDEX_CSS
+    assert '"--ui-font-size-scale"' in STORE
 
 
 def test_named_text_tokens_scale():
@@ -127,16 +132,12 @@ def test_cn_knows_the_ui_typography_tokens():
 
 def test_icons_follow_the_ui_font_size_itself():
     """Standard glyphs render at --ui-icon-size, which follows the UI font
-    size itself: matches it below the 16px CSS scale base and grows at half the
-    change above it (setting 20 gives 18px icons), so icons track the text
-    when shrinking and read slightly smaller than it when growing. Sub 16px
-    glyphs keep their proportions through the same curve as a factor.
-    Sonner toast text and action labels are text, so they follow at full
-    rate everywhere."""
-    assert (
-        "--ui-icon-size: min(calc(1rem * var(--ui-font-scale, 1)), "
-        "calc(0.5rem + 0.5rem * var(--ui-font-scale, 1)));"
-    ) in INDEX_CSS
+    size itself. Since #11648 icons scale linearly with --ui-font-scale, the
+    same factor as the text (setting 20 gives 20px icons), where they used to
+    grow at half the rate above the 16px base. Sub 16px and oversized glyphs
+    keep their proportions through the same factor. Sonner toast text and
+    action labels are text, so they follow at full rate everywhere."""
+    assert "--ui-icon-size: calc(1rem * var(--ui-font-scale, 1));" in INDEX_CSS
     assert "--icon-size: var(--ui-icon-size);" in INDEX_CSS
     assert "& svg.size-4 { width: var(--ui-icon-size); height: var(--ui-icon-size); }" in INDEX_CSS
     assert "font-size: calc(13px * var(--ui-font-scale, 1)) !important;" in INDEX_CSS
@@ -145,7 +146,7 @@ def test_icons_follow_the_ui_font_size_itself():
     assert "width: var(--ui-icon-size) !important;" in INDEX_CSS
     assert "svg:not(.unsloth-tick) {" in INDEX_CSS
     # Oversized art glyphs stay proportional instead of uniform.
-    assert "& svg.size-6 { width: min(calc(1.5rem" in INDEX_CSS
+    assert "& svg.size-6 { width: calc(1.5rem * var(--ui-font-scale, 1));" in INDEX_CSS
     for scope in (
         "[data-slot='dropdown-menu-content']",
         "[data-slot='select-content']",
