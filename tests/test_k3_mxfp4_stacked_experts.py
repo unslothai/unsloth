@@ -887,3 +887,14 @@ def test_only_blocks_the_remote_moe_shim_dispatches_are_stacked():
     model.layers[1].mlp.ep_size = 2
     plan = plan_mxfp4_keep_packed(model, _keys())
     assert plan.blocks == [] and len(plan.linears) == 2 * E * 3
+
+
+def test_a_packed_linear_without_its_scale_is_not_kept_packed():
+    """Every packed weight needs its scale in the checkpoint: kept packed, a missing one would be
+    left as uninitialised bytes (the loader only reports it as missing)."""
+    from unsloth.models.compressed_tensors_bnb import plan_mxfp4_keep_packed
+
+    _, model = _tiny_model("transformers_modules.k3s_noscale.modeling_tinymoe")
+    extra = ("model.layers.0.proj.weight_packed", "model.layers.0.proj.weight_scale")
+    assert plan_mxfp4_keep_packed(model, _keys(extra = extra)).linears == ["layers.0.proj"]
+    assert plan_mxfp4_keep_packed(model, _keys(extra = extra[:1])) is None

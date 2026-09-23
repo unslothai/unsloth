@@ -922,7 +922,12 @@ def plan_mxfp4_keep_packed(model, keys) -> Optional[Mxfp4KeepPackedPlan]:
     """Plan an all-or-nothing keep-packed load of ``keys`` into ``model``. ``None`` (nothing
     stays packed; the existing route loads the checkpoint) when there is nothing packed, when a
     MoE layer is packed only in part, or when a packed module has no home in ``model``."""
-    if not any(k.endswith(".weight_packed") for k in keys):
+    packed = [k[: -len(".weight_packed")] for k in keys if k.endswith(".weight_packed")]
+    if not packed:
+        return None
+    # Kept packed, a scale missing from the checkpoint would stay uninitialised bytes.
+    present = set(keys)
+    if any(prefix + ".weight_scale" not in present for prefix in packed):
         return None
     prefixes = packed_expert_prefixes(keys)
     if not prefixes and any(_PACKED_EXPERT_KEY.match(k) for k in keys):
