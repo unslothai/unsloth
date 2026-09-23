@@ -42,6 +42,7 @@ const QUEUED_SETTING_KEYS = [
   "loadedIsGguf",
   "autoHealToolCalls",
   "nudgeToolCalls",
+  "deduplicateToolCalls",
   "maxToolCallsPerMessage",
   "toolCallTimeout",
   "autoCompactEnabled",

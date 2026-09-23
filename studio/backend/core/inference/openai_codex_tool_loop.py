@@ -50,6 +50,7 @@ class CodexToolPolicy:
     bypass_permissions: bool
     rag_scope: dict[str, Any] | None
     nudge_tool_calls: bool | None = None
+    deduplicate_tool_calls: bool | None = None
 
 
 class CodexTransport:
@@ -121,6 +122,7 @@ def stream_codex_with_studio_tools(
             rag_scope = policy.rag_scope,
             auto_heal = False,
             nudge_tool_calls = policy.nudge_tool_calls,
+            deduplicate_tool_calls = policy.deduplicate_tool_calls,
         ),
         cancel_event = cancel_event,
     )
