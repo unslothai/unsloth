@@ -166,6 +166,8 @@ export const ptBR = {
       noChatsYet: "Nenhum chat ainda",
       // Shown under an empty project folder in the sidebar.
       noChats: "Nenhum chat",
+      // Shown in the Projects section when every project is pinned, so it has no rows.
+      allProjectsPinned: "Todos os projetos fixados",
       showMore: "Mostrar mais",
       showLess: "Mostrar menos",
       settings: "Configurações",
@@ -1987,6 +1989,7 @@ export const ptBR = {
       expires: "Expira {value}",
       actionsFor: "Ações para {name}",
       copyPrefix: "Copiar prefixo",
+      copyFailed: "Não foi possível copiar",
       revokeToken: "Revogar token",
       revokeTitle: 'Revogar token de acesso "{name}"?',
       revokeDescription:

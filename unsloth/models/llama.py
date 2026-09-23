@@ -2777,7 +2777,12 @@ class FastLlamaModel:
                 # owns the weights, which it never does here: vLLM has no classification head, so this
                 # branch loaded the weights in-process even though the caller asked for fast_inference.
                 from unsloth.models.vision import _attach_bnb_multidevice_hooks
+                from unsloth.models._remote_code_buffers import (
+                    restore_remote_code_non_persistent_buffers,
+                )
 
+                # transformers 5 leaves remote code's non-persistent buffers (RoPE inv_freq) uninitialised.
+                restore_remote_code_non_persistent_buffers(model)
                 _attach_bnb_multidevice_hooks(
                     model,
                     load_in_4bit = load_in_4bit,
@@ -2830,7 +2835,12 @@ class FastLlamaModel:
                         **kwargs,
                     )
                 from unsloth.models.vision import _attach_bnb_multidevice_hooks
+                from unsloth.models._remote_code_buffers import (
+                    restore_remote_code_non_persistent_buffers,
+                )
 
+                # transformers 5 leaves remote code's non-persistent buffers (RoPE inv_freq) uninitialised.
+                restore_remote_code_non_persistent_buffers(model)
                 _attach_bnb_multidevice_hooks(
                     model,
                     load_in_4bit = load_in_4bit,

@@ -99,6 +99,19 @@ class DiffusionFamily:
     # True for families whose text-to-image pipeline ALSO accepts reference image(s) (FLUX.2 ``image``): no
     # ``strength``, size from width/height.
     reference: bool = False
+    # True when the text-to-image pipeline also follows edit instructions over ``image`` (Qwen-Image-2.1), at the
+    # requested size. Never inferred from ``reference``: a reference family is not necessarily trained to edit.
+    unified_edit: bool = False
+    # Condition images per call, INCLUDING the init image; overflow is refused, never sliced.
+    max_condition_images: int = 4
+    condition_image_mode: str = "RGB"
+    dimension_multiple: int = 16
+    max_output_side: int = 2048
+    max_output_pixels: int = 2048 * 2048
+    # Accepted condition-image preprocessing resolutions (square side, by area); empty = no such control.
+    reference_resolutions: tuple[int, ...] = field(default_factory = tuple)
+    # Activation-guard cost of one condition pixel relative to one output pixel.
+    condition_pixel_weight: float = 1.0
     # Extra lowercased substrings (besides ``name``) that map a repo id here.
     aliases: tuple[str, ...] = field(default_factory = tuple)
     # True for families whose activations overflow float16 (-> black image); the backend promotes a resolved float16
@@ -156,6 +169,8 @@ class DiffusionFamily:
     # carries the upstream base in its tag name whatever tree was built, so the tag cannot answer
     # this, and a custom SD_CLI_PATH build has no record at all.
     sd_cpp_arch_marker: Optional[str] = None
+    # Literal an sd.cpp build carries once it can EDIT this family; the arch marker proves text-to-image only.
+    sd_cpp_edit_marker: Optional[str] = None
     # True when Unsloth can TRAIN a LoRA on this family; the training-start path refuses a non-trainable family up
     # front.
     trainable: bool = False
@@ -396,6 +411,18 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         # passes. Without this flag diffusion.py refuses reference images for this family and the
         # capability ships dark.
         reference = True,
+        # Model card: ten inputs, alpha kept for the VAE, 32 px grid (16x VAE, 2x2 token groups), 2K presets up to
+        # 2400 x 1792. ``reference_resolutions`` maps to the pipeline's ``output_resolution``.
+        unified_edit = True,
+        max_condition_images = 10,
+        condition_image_mode = "RGBA",
+        dimension_multiple = 32,
+        max_output_side = 2752,
+        max_output_pixels = 2400 * 1792,
+        reference_resolutions = (512, 1024, 2048),
+        # Condition tokens are prefilled once into a KV cache, not denoised per step. Measured on an RTX 3090: about
+        # 2.5-2.7 GiB per 1024-square condition image against the estimator's 8 GiB per output megapixel.
+        condition_pixel_weight = 0.32,
         aliases = ("qwen_image_21", "qwenimage21", "qwen-image-21"),
         # Built by us from Qwen/Qwen-Image-2.1 itself: the same 238 tensors under upstream's own
         # names, cast fp32 -> bf16 and written as one file, because sd-cli takes --vae as a single
@@ -422,16 +449,15 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         # 5.0), with the per-tensor precision the dynamic recipe assigns. Measured on this host
         # against the 2.1-capable build, one prompt at 1024 with 20 steps and a shared seed:
         # LPIPS 0.02894 / SSIM 0.95908 between the two, 36.5 s against 39.0 s, both coherent.
-        # Text to image only, which is all this family exposes (edit is False, and there are no
-        # img2img / inpaint pipelines). Upstream's docs/qwen_image_2.1.md requires a separate
-        # mmproj through --llm_vision before a GGUF encoder can do image editing; turning editing
-        # on here without adding it would load an encoder that logs "vision disabled" and carry on.
+        # The vision projector (--llm_vision) is what native editing needs; text-to-image never reads it (a fixed-seed
+        # render is byte-identical with and without it). Listed here so download, readiness and delete guards see it.
         sd_cpp_text_encoders = (
             (
                 "unsloth/Qwen3-VL-8B-Instruct-GGUF",
                 "Qwen3-VL-8B-Instruct-UD-Q4_K_XL.gguf",
                 "llm",
             ),
+            ("unsloth/Qwen3-VL-8B-Instruct-GGUF", "mmproj-F16.gguf", "llm_vision"),
         ),
         sd_cpp_sampling_method = "euler",
         # No flow shift on purpose. Qwen-Image pins 3.0, but upstream sd.cpp selects a
@@ -443,6 +469,8 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         # release (both sd-cli and sd-server, CPU and CUDA) carries this literal, and the five
         # older ones, including the previous pin, do not.
         sd_cpp_arch_marker = "qwen_image_2_1",
+        # The edit path's no-projector refusal: in the pinned build, absent from the one before it.
+        sd_cpp_edit_marker = "Qwen Image 2.1 editing requires Qwen3-VL vision weights",
     ),
     DiffusionFamily(
         name = "z-image",
@@ -1060,6 +1088,8 @@ def prefer_ungated_mirror(
 
     Declines to today's behaviour under ``UNSLOTH_DIFFUSION_NO_MIRROR``, for a local path, or when
     the upstream already satisfies the load from cache and switching would re-pull tens of GiB.
+    Under that opt-out a mirror id picked directly maps back to its upstream, cached or not: even
+    a cached mirror is listed on the Hub before it loads.
     ``files`` sharpens that last test to the names about to be fetched; without it any weight
     counts.
 
@@ -1069,8 +1099,10 @@ def prefer_ungated_mirror(
     is unused, kept so callers need not care.
     """
     del hf_token  # noqa: F841 -- signature stability only
+    if os.environ.get("UNSLOTH_DIFFUSION_NO_MIRROR", "").strip():
+        return base if _is_local_path(base) else canonical_base(base)
     mirror = mirror_repo(base)
-    if not mirror or os.environ.get("UNSLOTH_DIFFUSION_NO_MIRROR", "").strip():
+    if not mirror:
         return base
     # a local path is never a Hub id: rewriting one sends loads the other sites resolve on disk to the Hub, skipping
     # the copy already downloaded
@@ -1098,6 +1130,11 @@ _GENERATION_DEFAULTS: tuple[tuple[str, int, float], ...] = (
     ("flux.2-klein-base", 50, 4.0),
     ("flux.2-klein", 4, 1.0),
     ("flux.2-dev", 28, 4.0),  # full (non-distilled)
+    # Qwen-Image-2.1: 40 steps, no guidance. Before the generic qwen-image key.
+    ("qwen-image-2.1", 40, 1.0),
+    ("qwen-image-21", 40, 1.0),
+    ("qwen_image_21", 40, 1.0),
+    ("qwenimage21", 40, 1.0),
     ("qwen-image", 20, 4.0),
     ("z-image", 20, 4.0),
     # Lumina Image 2.0 card: 50 steps, guidance 4 (plus cfg_trunc_ratio 0.25, which the loader passes itself).
@@ -1343,6 +1380,17 @@ def _too_old_message(pipeline_class: str, family_name: str, installed: str) -> s
             f"diffusers {installed}. Upgrade with: pip install -U diffusers."
         )
     if minimum in _UNRELEASED_MIN_DIFFUSERS:
+        try:
+            from utils.diffusers_repair import diffusers_repair_installed
+            installed_since = diffusers_repair_installed()
+        except Exception:  # noqa: BLE001 - no self-heal module is no repair
+            installed_since = False
+        if installed_since:
+            return (
+                f"'{family_name}' needs diffusers >= {minimum} ({pipeline_class}). Unsloth has just "
+                f"installed it, but this session already loaded diffusers {installed}. Restart "
+                "Unsloth Studio to use it."
+            )
         remedy = _diffusers_main_archive_remedy()
         return (
             f"'{family_name}' needs diffusers >= {minimum} ({pipeline_class}), which has not been "
@@ -1426,6 +1474,16 @@ def assert_pipeline_class_available(
         close_dynamo_import_window(get_logger(__name__))
     except Exception:  # noqa: BLE001, S110 - optimisation only, and this module has no logger
         pass
+
+    if "diffusers" not in sys.modules:
+        try:
+            from utils.diffusers_repair import IN_FLIGHT_MESSAGE, diffusers_repair_in_flight
+            repairing = diffusers_repair_in_flight()
+        except Exception:  # noqa: BLE001 - no self-heal module is no repair
+            repairing = False
+        # Importing now would read files the install is replacing, and pin the release for the session.
+        if repairing:
+            raise ValueError(IN_FLIGHT_MESSAGE)
 
     try:
         import diffusers
