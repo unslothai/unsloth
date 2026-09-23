@@ -102,7 +102,7 @@ function harness({
         },
         "./inbox": { runConfigInbox: inbox },
         "./link-address": linkAddress,
-        get "./links"() {
+        get "./runtime"() {
           parserLoads += 1;
           return loadParser();
         },

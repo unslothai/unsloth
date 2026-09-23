@@ -20,7 +20,7 @@ const { sharedExtraArgsError, validSharedExtraArgs } = await import(
 const { diagnoseExtraArgs, extraArgsAreLoadable, formatExtraArgs } =
   await import("../src/features/model-picker/model-config/llama-extra-args.ts");
 const { mergeSharedRunConfig } = await import(
-  "../src/features/model-picker/sharing/inbox.ts"
+  "../src/features/model-picker/sharing/fields.ts"
 );
 const { DEFAULT_PER_MODEL_CONFIG } = await import(
   "../src/features/model-picker/model-config/per-model-config.ts"
@@ -615,7 +615,7 @@ test("shared reasoning messages reject invisible separators and format controls"
   }
 });
 
-test("text stays literal through a single decode, including encoded delimiters and HTML", () => {
+test("custom reasoning messages cannot enter links as plain text, HTML or encoded instructions", () => {
   for (const message of [
     '<img src=x onerror="globalThis.injected=true">',
     "</textarea><script>alert(1)</script>",
@@ -629,10 +629,19 @@ test("text stays literal through a single decode, including encoded delimiters a
   ]) {
     const value = { config: { reasoningBudgetMessage: message } };
     for (const base of [undefined, "http://localhost:8888/chat"]) {
-      assert.deepEqual(parseRunConfigLink(createRunConfigLink(value, base)), {
-        kind: "valid",
-        value,
-      });
+      assert.throws(
+        () => createRunConfigLink(value, base),
+        /Custom reasoning messages/,
+      );
+      for (const text of [message, JSON.stringify(message)]) {
+        const prefix = base ? `${base}#run?` : "unsloth://run?";
+        assert.equal(
+          parseRunConfigLink(
+            `${prefix}v=1&reasoningBudgetMessage=${encodeURIComponent(text)}`,
+          ).kind,
+          "invalid",
+        );
+      }
     }
   }
 });

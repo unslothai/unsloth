@@ -37,9 +37,11 @@ const { buildLocalInventoryRows } = await import(
 const { ggufVariantsMatch, residentModelIdMatches } = await import(
   "../src/features/hub/lib/model-identity.ts"
 );
-const { isRunConfigVariantUnresolved, resolveRunConfigTarget } = await import(
-  "./helpers/sharing-target.ts"
-);
+const {
+  isRunConfigModelInput,
+  isRunConfigVariantUnresolved,
+  resolveRunConfigTarget,
+} = await import("./helpers/sharing-target.ts");
 const { modelConfigTarget } = await import(
   "../src/features/model-picker/model-config/model-config-handoff.ts"
 );
@@ -88,6 +90,8 @@ function harness({
   variantDelayMs = 0,
   resolvedLocally = false,
   checkLocalPath = false,
+  localResponse,
+  hubResponse,
 }: {
   cachedGguf?: CachedGgufRepo[];
   cachedModels?: CachedModelRepo[];
@@ -106,6 +110,8 @@ function harness({
   variantDelayMs?: number;
   resolvedLocally?: boolean;
   checkLocalPath?: boolean;
+  localResponse?: unknown;
+  hubResponse?: unknown;
 } = {}) {
   const scans: string[] = [];
   const requests: URL[] = [];
@@ -132,11 +138,15 @@ function harness({
             ? (listingsByRepo[request.searchParams.get("repo_id") ?? ""] ?? [])
             : variants;
           return new Response(
-            JSON.stringify({
-              variants: listed,
-              default_variant: listed[0]?.quant,
-              resolved_locally: resolvedLocally,
-            }),
+            JSON.stringify(
+              localResponse !== undefined
+                ? localResponse
+                : {
+                    variants: listed,
+                    default_variant: listed[0]?.quant,
+                    resolved_locally: resolvedLocally,
+                  },
+            ),
             { status },
           );
         },
@@ -156,11 +166,13 @@ function harness({
           if (variantDelayMs)
             await new Promise((resolve) => setTimeout(resolve, variantDelayMs));
           if (hubError) throw new Error("Hub listing unavailable");
-          return {
-            variants: hubVariants,
-            default_variant: defaultVariant,
-            dependencies_resolved: hubMetadataAvailable,
-          };
+          return hubResponse !== undefined
+            ? hubResponse
+            : {
+                variants: hubVariants,
+                default_variant: defaultVariant,
+                dependencies_resolved: hubMetadataAvailable,
+              };
         },
         residentModelIdMatches,
         useDeviceInventoryStore: {
@@ -331,8 +343,12 @@ for (const id of [
   "C:\\Models\\quantized-qwen",
   "\\\\server\\models\\quantized-qwen",
   "/mnt/c/Models/quantized-qwen",
+  "models/owner/checkpoint-500",
+  "models\\checkpoint-500",
+  "checkpoint-500",
 ]) {
   test(`settings-only imports discover local GGUF folders without Hub access: ${id}`, async () => {
+    assert.equal(isRunConfigModelInput(id), true);
     const app = harness({ inventoryError: true, hubError: true });
     const input = resolveRunConfigTarget(
       {
@@ -363,21 +379,38 @@ for (const id of [
   });
 }
 
-test("local native folders keep native loading even with a GGUF name or shared format hint", async () => {
-  for (const isGguf of [undefined, true, false]) {
-    const app = harness({ variants: [] });
-    const input = resolveRunConfigTarget(
-      { config: {}, isGguf },
-      selection,
-      "/models/native-GGUF",
-    );
-    assert.ok(input);
-    const resolved = await app.resolve(input);
-    assert.equal(resolved.meta.isGguf, false);
-    assert.equal(resolved.meta.ggufVariant, undefined);
-    assert.deepEqual(app.hubRequests, []);
-  }
-});
+for (const id of [
+  "/models/native-GGUF",
+  "models/owner/checkpoint-500",
+  "models\\checkpoint-500",
+  "checkpoint-500",
+]) {
+  test(`local native folders keep native loading despite shared format hints: ${id}`, async () => {
+    assert.equal(isRunConfigModelInput(id), true);
+    for (const isGguf of [undefined, true, false]) {
+      const app = harness({ variants: [] });
+      const input = resolveRunConfigTarget(
+        { config: {}, isGguf },
+        selection,
+        id,
+      );
+      assert.ok(input);
+      const resolved = await app.resolve(input);
+      assert.equal(resolved.meta.isGguf, false);
+      assert.equal(resolved.meta.ggufVariant, undefined);
+      assert.equal(resolved.meta.source, "local");
+      assert.equal(
+        wantsDownloadManagerStaging({ id, ...resolved.meta }),
+        false,
+      );
+      assert.equal(app.requests.length, 1);
+      assert.equal(app.requests[0].searchParams.get("local_path"), id);
+      assert.equal(app.requests[0].searchParams.get("offline"), "true");
+      assert.deepEqual(app.scans, []);
+      assert.deepEqual(app.hubRequests, []);
+    }
+  });
+}
 
 test("local discovery rejects failed requests instead of guessing the model format", async () => {
   const app = harness({ status: 503 });
@@ -1009,4 +1042,61 @@ test("inventory scans and each variant listing have independent timeout budgets"
     await new Promise<void>((resolve) => setImmediate(resolve));
   }
   assert.equal((await pending).meta.loadId, "/cache/available");
+});
+
+test("malformed variant responses cannot mark a model downloaded or redirect a local path to the Hub", async () => {
+  for (const response of [
+    null,
+    {},
+    { variants: {} },
+    { variants: [null] },
+    ...[
+      { filename: 1 },
+      { filename: "" },
+      { quant: null },
+      { quant: "" },
+      { size_bytes: -1 },
+      { size_bytes: "1024" },
+      { downloaded: "true" },
+      { partial: "false" },
+    ].map((invalid) => ({ variants: [{ ...quant, ...invalid }] })),
+    { variants: [quant], default_variant: {} },
+    { variants: [quant], resolved_locally: "true" },
+    { variants: [quant], dependencies_resolved: "false" },
+  ]) {
+    const local = harness({ localResponse: response, checkLocalPath: true });
+    const input = resolveRunConfigTarget(
+      { config: {} },
+      selection,
+      "./models/native",
+    );
+    assert.ok(input);
+    await assert.rejects(
+      local.resolve(input),
+      /Invalid GGUF variants response/,
+    );
+    assert.deepEqual(local.hubRequests, []);
+    assert.deepEqual(local.scans, []);
+
+    const cached = harness({
+      localResponse: response,
+      cachedGguf: [{ repo_id: model, size_bytes: 1024 }],
+    });
+    const resolved = await cached.resolve();
+    assert.equal(resolved.meta.isDownloaded, undefined);
+    assert.equal(resolved.meta.loadId, undefined);
+
+    const hub = harness({ hubResponse: response });
+    const unresolved = {
+      ...target,
+      meta: { ...target.meta, ggufVariant: quant.filename },
+    };
+    assert.equal(await hub.resolve(unresolved), unresolved);
+    assert.equal(
+      isRunConfigVariantUnresolved(
+        modelConfigTarget(unresolved.id, unresolved.meta),
+      ),
+      true,
+    );
+  }
 });

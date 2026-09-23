@@ -17,6 +17,7 @@ import {
   resolveCachedRunConfigTarget,
 } from "./cached-target";
 import { type RunConfigRequest, runConfigInbox } from "./inbox";
+import { cancelEditedRunConfigImport } from "./receive-link";
 import { resolveRunConfigTarget } from "./target";
 
 export type RunConfigNavigation = {
@@ -160,6 +161,7 @@ export function openRunConfigTarget({
       requestId: pending.id,
       ...(pending.newChatId !== undefined && { newChatId: pending.newChatId }),
       ...pending.target,
+      displayName: pending.target.id,
     });
     return;
   }
@@ -179,17 +181,25 @@ export function openRunConfigTarget({
   }
   const controller = new AbortController();
   const loadingToast = toast.loading("Resolving shared model…");
-  resolveCachedRunConfigTarget(target, {
-    hfToken,
-    inventoryVersion,
-    signal: controller.signal,
-    checkLocalPath: !pending.value.model || Boolean(pending.selectedModel),
-  })
-    .then((resolved) => {
+  Promise.all([
+    resolveCachedRunConfigTarget(target, {
+      hfToken,
+      inventoryVersion,
+      signal: controller.signal,
+      checkLocalPath: !pending.value.model || Boolean(pending.selectedModel),
+    }),
+    import("./runtime"),
+  ])
+    .then(([resolved]) => {
       if (
         controller.signal.aborted ||
         runConfigInbox.getSnapshot() !== pending
       ) {
+        return;
+      }
+      const key = modelConfigDraftKey(resolved.id, resolved.meta.ggufVariant);
+      if (runConfigInbox.wasEdited(key)) {
+        cancelEditedRunConfigImport(key);
         return;
       }
       runConfigInbox.submit({

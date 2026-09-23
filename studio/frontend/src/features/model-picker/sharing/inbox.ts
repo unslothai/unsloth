@@ -3,7 +3,6 @@
 
 import type { ModelConfigHandoffRequest } from "../model-config/model-config-handoff";
 import type { PerModelConfig } from "../model-config/per-model-config";
-import { SHARED_CONFIG_KEYS } from "./fields";
 import type { SharedRunConfig } from "./links";
 
 export type RunConfigRequest = {
@@ -16,41 +15,15 @@ export type RunConfigRequest = {
   newChatId?: ModelConfigHandoffRequest["newChatId"];
 };
 
-export function mergeSharedRunConfig(
-  defaults: PerModelConfig,
-  patch: Partial<PerModelConfig>,
-  isGguf: boolean,
-): PerModelConfig {
-  const provided = Object.fromEntries(
-    SHARED_CONFIG_KEYS.filter((key) => Object.hasOwn(patch, key))
-      .map((key) => [key, patch[key]] as const)
-      .filter(([, value]) => value !== undefined)
-      .map(([key, value]) => [key, Array.isArray(value) ? [...value] : value]),
-  );
-  if (isGguf && Object.hasOwn(provided, "maxSeqLength")) {
-    provided.customContextLength ??= provided.maxSeqLength;
-    provided.maxSeqLength = null;
-  }
-  if (
-    Object.hasOwn(provided, "customContextLength") &&
-    !Object.hasOwn(provided, "maxSeqLength")
-  ) {
-    provided.maxSeqLength = null;
-  }
-  if (
-    Object.hasOwn(provided, "maxSeqLength") &&
-    !Object.hasOwn(provided, "customContextLength")
-  ) {
-    provided.customContextLength = null;
-  }
-  return { ...defaults, ...provided };
-}
-
 export function createRunConfigInbox() {
   let pending: RunConfigRequest | null = null;
   const listeners = new Set<() => void>();
   const editors = new Map<string, number>();
+  const editedDrafts = new Set<string>();
   const publish = (next: RunConfigRequest | null) => {
+    if (next?.id !== pending?.id) {
+      editedDrafts.clear();
+    }
     pending = next;
     for (const listener of listeners) {
       listener();
@@ -58,6 +31,10 @@ export function createRunConfigInbox() {
   };
   return {
     getSnapshot: () => pending,
+    recordEdit: (draftKey: string) => {
+      if (pending) editedDrafts.add(draftKey);
+    },
+    wasEdited: (draftKey: string) => editedDrafts.has(draftKey),
     subscribe: (listener: () => void) => {
       listeners.add(listener);
       return () => {

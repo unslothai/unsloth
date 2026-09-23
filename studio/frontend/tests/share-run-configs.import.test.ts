@@ -276,10 +276,9 @@ test("model-only links do not mark settings edited or report a settings import",
   assert.deepEqual(app.successes, []);
 });
 
-test("review lists only changed fields including cleared context aliases and exact prompt/argv values", async (t) => {
+test("review lists only changed fields including cleared context aliases and exact argv values", async (t) => {
   const patch = {
     customContextLength: 8192,
-    reasoningBudgetMessage: "Read <this>\nand then continue",
     llamaExtraArgs: ["--rope-scaling", "yarn"],
     tensorParallel: DEFAULT_PER_MODEL_CONFIG.tensorParallel,
   };
@@ -294,7 +293,6 @@ test("review lists only changed fields including cleared context aliases and exa
     {
       customContextLength: 8192,
       maxSeqLength: null,
-      reasoningBudgetMessage: patch.reasoningBudgetMessage,
       llamaExtraArgs: patch.llamaExtraArgs,
     },
   ]);

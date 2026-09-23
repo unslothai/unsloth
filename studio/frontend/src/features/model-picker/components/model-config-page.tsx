@@ -3161,11 +3161,13 @@ export function ModelConfigPage({
         </div>
       )}
 
-      <SharedRunConfigReview
-        config={importedConfig}
-        draftConfig={configState}
-        currentConfig={config}
-      />
+      {importedConfig && (
+        <SharedRunConfigReview
+          config={importedConfig}
+          draftConfig={configState}
+          currentConfig={config}
+        />
+      )}
       {sharedVariantUnresolved && (
         <p
           role="status"

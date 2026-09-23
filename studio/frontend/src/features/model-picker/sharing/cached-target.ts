@@ -29,11 +29,53 @@ type ResolutionOptions = {
   signal: AbortSignal;
   checkLocalPath?: boolean;
 };
-type CachedVariantsResponse = GgufVariantsResponse & {
+type CachedVariantsResponse = Pick<
+  GgufVariantsResponse,
+  "variants" | "default_variant" | "dependencies_resolved"
+> & {
   resolved_locally?: boolean;
 };
 
 export class RunConfigResolutionError extends Error {}
+
+function readVariantsResponse(value: unknown): CachedVariantsResponse {
+  if (!value || typeof value !== "object") {
+    throw new Error("Invalid GGUF variants response.");
+  }
+  const response = value as Partial<CachedVariantsResponse>;
+  if (
+    !Array.isArray(response.variants) ||
+    !response.variants.every(
+      (variant) =>
+        variant &&
+        typeof variant === "object" &&
+        typeof variant.filename === "string" &&
+        variant.filename.length > 0 &&
+        typeof variant.quant === "string" &&
+        variant.quant.length > 0 &&
+        typeof variant.size_bytes === "number" &&
+        Number.isFinite(variant.size_bytes) &&
+        variant.size_bytes >= 0 &&
+        (variant.downloaded === undefined ||
+          typeof variant.downloaded === "boolean") &&
+        (variant.partial === undefined || typeof variant.partial === "boolean"),
+    ) ||
+    (response.default_variant != null &&
+      typeof response.default_variant !== "string") ||
+    (response.resolved_locally !== undefined &&
+      typeof response.resolved_locally !== "boolean") ||
+    (response.dependencies_resolved !== undefined &&
+      typeof response.dependencies_resolved !== "boolean")
+  ) {
+    throw new Error("Invalid GGUF variants response.");
+  }
+  return {
+    variants: response.variants,
+    default_variant: response.default_variant ?? null,
+    resolved_locally: response.resolved_locally === true,
+    dependencies_resolved: response.dependencies_resolved === true,
+  };
+}
 
 function listCachedVariants(
   id: string,
@@ -49,13 +91,13 @@ function listCachedVariants(
     if (!response.ok) {
       throw new Error("Could not check cached GGUF variants.");
     }
-    return response.json();
+    return readVariantsResponse(await response.json());
   });
 }
 
 function findCachedVariant(
   target: RunConfigTarget,
-  listing: GgufVariantsResponse,
+  listing: CachedVariantsResponse,
 ) {
   const requested = target.meta.ggufVariant ?? listing.default_variant;
   return listing.variants.find(
@@ -69,7 +111,7 @@ function findCachedVariant(
 
 function resolveLocalTarget(
   target: RunConfigTarget,
-  listing: GgufVariantsResponse,
+  listing: CachedVariantsResponse,
 ): RunConfigTarget {
   if (isStandaloneGgufPath(target.id)) {
     return {
@@ -200,7 +242,7 @@ async function resolveHubRunConfigTarget(
         },
       };
     }
-    let listing: GgufVariantsResponse;
+    let listing: CachedVariantsResponse;
     try {
       listing = await listCachedVariants(
         candidate.loadId,
@@ -239,11 +281,13 @@ async function resolveHubVariantTarget(
   ) {
     return target;
   }
-  let listing: GgufVariantsResponse;
+  let listing: CachedVariantsResponse;
   try {
-    listing = await listGgufVariants(target.id, options.hfToken, {
-      signal: options.signal,
-    });
+    listing = readVariantsResponse(
+      await listGgufVariants(target.id, options.hfToken, {
+        signal: options.signal,
+      }),
+    );
   } catch {
     options.signal.throwIfAborted();
     return target;

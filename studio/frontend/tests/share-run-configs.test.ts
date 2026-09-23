@@ -13,10 +13,10 @@ installLocalStorageFake();
 
 const { createRunConfigLink, parseRunConfigLink, MAX_RUN_CONFIG_URL_LENGTH } =
   await import("./helpers/sharing-links.ts");
-const { SHARED_CONFIG_KEYS } = await import(
+const { SHARED_CONFIG_KEYS, mergeSharedRunConfig } = await import(
   "../src/features/model-picker/sharing/fields.ts"
 );
-const { createRunConfigInbox, mergeSharedRunConfig } = await import(
+const { createRunConfigInbox } = await import(
   "../src/features/model-picker/sharing/inbox.ts"
 );
 const { resolveRunConfigTarget } = await import("./helpers/sharing-target.ts");
@@ -35,7 +35,7 @@ const fullConfig: PerModelConfig = {
   specDraftCacheDtype: "q4_0",
   nParallel: 4,
   reasoningBudget: 0,
-  reasoningBudgetMessage: "Think less\n回答 🦥",
+  reasoningBudgetMessage: "",
   nBatch: 2048,
   nUbatch: 512,
   loadMode: "mmap+mlock",

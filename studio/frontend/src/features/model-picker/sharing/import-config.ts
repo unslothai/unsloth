@@ -9,12 +9,8 @@ import {
   readModelConfigDraft,
 } from "../model-config/model-config-draft";
 import type { PerModelConfig } from "../model-config/per-model-config";
-import { SHARED_CONFIG_KEYS } from "./fields";
-import {
-  type RunConfigRequest,
-  mergeSharedRunConfig,
-  runConfigInbox,
-} from "./inbox";
+import { SHARED_CONFIG_KEYS, mergeSharedRunConfig } from "./fields";
+import { type RunConfigRequest, runConfigInbox } from "./inbox";
 
 export function scheduleRunConfigImport({
   canImport,

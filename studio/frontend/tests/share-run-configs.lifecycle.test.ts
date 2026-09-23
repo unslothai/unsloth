@@ -5,6 +5,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { ChatSearch } from "../src/features/chat/chat-page.tsx";
 import type * as CachedTarget from "../src/features/model-picker/sharing/cached-target.ts";
+import type * as Receiver from "../src/features/model-picker/sharing/receive-link.ts";
+import type * as ImportConfig from "../src/features/model-picker/sharing/import-config.ts";
 import type * as Lifecycle from "../src/features/model-picker/sharing/link-lifecycle.ts";
 import {
   installLocalStorageFake,
@@ -17,10 +19,15 @@ installLocalStorageFake();
 const { createRunConfigInbox } = await import(
   "../src/features/model-picker/sharing/inbox.ts"
 );
-const { modelConfigDraftKey } = await import(
+const drafts = await import(
   "../src/features/model-picker/model-config/model-config-draft.ts"
 );
-const { modelConfigHandoffForDestination } = await import(
+const { modelConfigDraftKey } = drafts;
+const fields = await import("../src/features/model-picker/sharing/fields.ts");
+const { DEFAULT_PER_MODEL_CONFIG } = await import(
+  "../src/features/model-picker/model-config/per-model-config.ts"
+);
+const { modelConfigHandoffForDestination, modelConfigTarget } = await import(
   "../src/features/model-picker/model-config/model-config-handoff.ts"
 );
 const { resolveRunConfigTarget } = await import("./helpers/sharing-target.ts");
@@ -49,7 +56,7 @@ function deferred<T>() {
 }
 const settle = () => new Promise<void>((resolve) => setImmediate(resolve));
 
-function harness() {
+function harness(ui: Promise<unknown> = Promise.resolve({})) {
   const inbox = createRunConfigInbox();
   inbox.submit({
     id: "first",
@@ -83,6 +90,42 @@ function harness() {
     setActiveProjectId: (id: null) => calls.push(["project", id]),
     setIncognito: (value: boolean) => calls.push(["incognito", value]),
   };
+  const notices: string[] = [];
+  const receiver = loadWithStubs<typeof Receiver>(
+    new URL(
+      "../src/features/model-picker/sharing/receive-link.ts",
+      import.meta.url,
+    ),
+    {
+      "@/features/auth": {},
+      "@/features/deep-links": {
+        createDeepLinkIntentGate: () => undefined,
+      },
+      "@/lib/api-base": {},
+      "@/lib/toast": {
+        toast: { info: (message: string) => notices.push(message) },
+      },
+      "../model-config/model-config-draft": drafts,
+      "../model-config/model-config-handoff": {
+        clearModelConfigHandoff: (id: string) =>
+          calls.push(["clear handoff", id]),
+      },
+      "./inbox": { runConfigInbox: inbox },
+      "./link-address": {},
+    },
+  );
+  const { scheduleRunConfigImport } = loadWithStubs<typeof ImportConfig>(
+    new URL(
+      "../src/features/model-picker/sharing/import-config.ts",
+      import.meta.url,
+    ),
+    {
+      "@/lib/toast": { toast: { success: () => undefined } },
+      "../model-config/model-config-draft": drafts,
+      "./fields": fields,
+      "./inbox": { runConfigInbox: inbox },
+    },
+  );
   const lifecycle = loadWithStubs<typeof Lifecycle>(
     new URL(
       "../src/features/model-picker/sharing/link-lifecycle.ts",
@@ -131,6 +174,8 @@ function harness() {
       },
       "./inbox": { runConfigInbox: inbox },
       "./target": { resolveRunConfigTarget },
+      "./runtime": ui,
+      "./receive-link": receiver,
     },
   );
   const context = {
@@ -185,6 +230,9 @@ function harness() {
   };
   return {
     runtime,
+    notices,
+    receiver,
+    scheduleRunConfigImport,
     prepare,
     ...lifecycle,
     inbox,
@@ -200,6 +248,40 @@ function harness() {
     destination,
   };
 }
+
+for (const cancelled of [false, true]) {
+  test(`shared settings wait for their UI before opening the editor; cancelled=${cancelled}`, async () => {
+    const ui = deferred<object>();
+    const app = harness(ui.promise);
+    const cleanup = app.openRunConfigTarget(app.open);
+    app.lookups[0].result.resolve(app.target);
+    await settle();
+    assert.equal(app.inbox.getSnapshot()?.target, undefined);
+    assert.deepEqual(app.calls, []);
+    if (cancelled) cleanup?.();
+    ui.resolve({});
+    await settle();
+    assert.deepEqual(
+      app.inbox.getSnapshot()?.target,
+      cancelled ? undefined : app.target,
+    );
+    assert.deepEqual(app.errors, []);
+    assert.equal(app.loading.size, 0);
+  });
+}
+
+test("a failed sharing UI download clears the import without opening an unconfigured editor", async () => {
+  const ui = deferred<object>();
+  const app = harness(ui.promise);
+  app.openRunConfigTarget(app.open);
+  app.lookups[0].result.resolve(app.target);
+  ui.reject(new Error("Chunk unavailable"));
+  await settle();
+  assert.equal(app.inbox.getSnapshot(), null);
+  assert.deepEqual(app.calls, []);
+  assert.equal(app.errors.length, 1);
+  assert.equal(app.loading.size, 0);
+});
 
 for (const pathname of ["/chat", "/hub", "/settings"]) {
   for (const newChatId of [null, "current-draft"]) {
@@ -250,7 +332,12 @@ for (const pathname of ["/chat", "/hub", "/settings"]) {
         location: destination,
         pending,
       });
-      const handoff = { requestId: "first", newChatId, ...app.target };
+      const handoff = {
+        requestId: "first",
+        newChatId,
+        ...app.target,
+        displayName: app.target.id,
+      };
       assert.deepEqual(app.calls, [["handoff", handoff]]);
       assert.equal(
         modelConfigHandoffForDestination(handoff, { active: true, newChatId }),
@@ -305,6 +392,7 @@ for (const chatSearch of [
       {
         requestId: "first",
         ...app.target,
+        displayName: app.target.id,
       },
     ]);
   });
@@ -390,7 +478,10 @@ test("availability binds the canonical draft before handing off the editor", asy
     ["thread", null],
     ["project", null],
     ["incognito", false],
-    ["handoff", { requestId: "first", ...app.target }],
+    [
+      "handoff",
+      { requestId: "first", ...app.target, displayName: app.target.id },
+    ],
   ]);
   assert.equal(
     app.inbox.getSnapshot()?.draftKey,
@@ -437,7 +528,7 @@ for (const selectedModel of [
     assert.equal(app.inbox.getSnapshot()?.draftKey, key);
     assert.deepEqual(app.calls.at(-1), [
       "handoff",
-      { requestId: pending.id, ...target },
+      { requestId: pending.id, ...target, displayName: target.id },
     ]);
     assert.deepEqual(app.inbox.take(pending.id, key), pending.value.config);
     assert.equal(app.inbox.take(pending.id, key), null);
@@ -494,7 +585,7 @@ test("an unresolved offline GGUF target still hands its settings to the editor",
     app.openRunConfigTarget({ ...app.open, pending });
     assert.deepEqual(app.calls.at(-1), [
       "handoff",
-      { requestId: "first", ...lookup.target },
+      { requestId: "first", ...lookup.target, displayName: lookup.target.id },
     ]);
     assert.equal(lookup.target.meta.ggufVariant, ggufVariant);
     assert.deepEqual(
@@ -571,3 +662,113 @@ for (const failure of [false, true]) {
     assert.deepEqual(app.errors, []);
   });
 }
+
+for (const phase of ["resolving", "resolved", "scheduled"] as const) {
+  test(`newer edits survive a shared import while ${phase}`, async (t) => {
+    const app = harness();
+    const key = modelConfigDraftKey(app.target.id, app.target.meta.ggufVariant);
+    t.after(drafts.retainModelConfigDraft(key));
+    drafts.primeModelConfigDraft(
+      key,
+      {
+        config: { ...DEFAULT_PER_MODEL_CONFIG, nParallel: 1 },
+        remembered: false,
+      },
+      "none",
+    );
+    app.openRunConfigTarget(app.open);
+    if (phase !== "resolving") {
+      app.lookups[0].result.resolve(app.target);
+      await settle();
+    }
+    if (phase === "scheduled") {
+      app.openRunConfigTarget({
+        ...app.open,
+        pending: app.inbox.getSnapshot(),
+      });
+      app.scheduleRunConfigImport({
+        canImport: true,
+        ready: true,
+        hydrated: true,
+        isGguf: true,
+        key,
+        pending: app.inbox.getSnapshot(),
+        onImport: () => assert.fail("A newer edit must not be overwritten"),
+      });
+    }
+    app.receiver.cancelRunConfigImportForEdit(key);
+    drafts.markModelConfigDraftEdited(key);
+    drafts.patchModelConfigDraft(key, { nParallel: 7 });
+    if (phase === "resolving") app.lookups[0].result.resolve(app.target);
+    await settle();
+    assert.equal(drafts.readModelConfigDraft(key)?.config.nParallel, 7);
+    assert.equal(drafts.isModelConfigDraftEdited(key), true);
+    assert.equal(app.inbox.getSnapshot(), null);
+    assert.deepEqual(app.notices, ["Run settings import cancelled"]);
+    assert.deepEqual(app.errors, []);
+  });
+}
+
+test("older edits and edits to another quant do not prevent an intentional import", async (t) => {
+  const app = harness();
+  const key = modelConfigDraftKey(app.target.id, app.target.meta.ggufVariant);
+  t.after(drafts.retainModelConfigDraft(key));
+  drafts.primeModelConfigDraft(
+    key,
+    {
+      config: { ...DEFAULT_PER_MODEL_CONFIG, nParallel: 7 },
+      remembered: false,
+    },
+    "none",
+  );
+  drafts.markModelConfigDraftEdited(key);
+  app.openRunConfigTarget(app.open);
+  app.receiver.cancelRunConfigImportForEdit(
+    modelConfigDraftKey(app.target.id, "Q8_0"),
+  );
+  app.lookups[0].result.resolve(app.target);
+  await settle();
+  app.openRunConfigTarget({ ...app.open, pending: app.inbox.getSnapshot() });
+  app.scheduleRunConfigImport({
+    canImport: true,
+    ready: true,
+    hydrated: true,
+    isGguf: true,
+    key,
+    pending: app.inbox.getSnapshot(),
+    onImport: () => undefined,
+  });
+  await settle();
+  assert.equal(drafts.readModelConfigDraft(key)?.config.nParallel, 3);
+  assert.deepEqual(app.notices, []);
+});
+
+test("reopening a link clears the previous request's edit history", () => {
+  const app = harness();
+  const key = modelConfigDraftKey(app.target.id, app.target.meta.ggufVariant);
+  app.receiver.cancelRunConfigImportForEdit(key);
+  assert.equal(app.inbox.wasEdited(key), true);
+  app.inbox.submit({ id: "reopened", value: app.open.pending.value });
+  assert.equal(app.inbox.wasEdited(key), false);
+});
+
+test("link handoffs preserve the full repository owner in the editor heading", async () => {
+  for (const owner of ["unsloth", "evil-org"]) {
+    const app = harness();
+    const target = { ...app.target, id: `${owner}/Qwen3-8B-GGUF` };
+    app.openRunConfigTarget(app.open);
+    app.lookups[0].result.resolve(target);
+    await settle();
+    app.openRunConfigTarget({ ...app.open, pending: app.inbox.getSnapshot() });
+    const call = app.calls.at(-1) as [string, Target & { displayName: string }];
+    assert.equal(call[0], "handoff");
+    const editor = modelConfigTarget(
+      call[1].id,
+      call[1].meta,
+      call[1].displayName,
+    );
+    assert.equal(editor.displayName, `${owner}/Qwen3-8B-GGUF · Q4_K_M`);
+    assert.equal(editor.configId, target.id);
+    assert.equal(editor.id, target.meta.loadId);
+  }
+});

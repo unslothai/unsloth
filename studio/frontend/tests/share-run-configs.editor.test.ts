@@ -6,6 +6,7 @@ import test from "node:test";
 import ts from "typescript";
 import type { SharedRunConfigControls as Controls } from "../src/features/model-picker/sharing/config-controls.tsx";
 import type { SharedRunConfigReview as Review } from "../src/features/model-picker/sharing/config-review.tsx";
+import type { SharedRunConfigActions as Actions } from "../src/features/model-picker/sharing/config-ui.tsx";
 import * as events from "../src/features/model-picker/sharing/editor-events.ts";
 import type { SharedRunConfigLinkEditor as LinkEditor } from "../src/features/model-picker/sharing/link-editor.tsx";
 import type { SharedRunConfigLinkHandler as LinkHandler } from "../src/features/model-picker/sharing/link-handler.tsx";
@@ -24,6 +25,7 @@ import {
 registerBundlerResolver();
 installLocalStorageFake();
 const fields = await import("../src/features/model-picker/sharing/fields.ts");
+const { mergeSharedRunConfig } = fields;
 const validators = await import(
   "../src/features/model-picker/sharing/validators.ts"
 );
@@ -37,7 +39,7 @@ const { DEFAULT_PER_MODEL_CONFIG } = await import(
 const { modelConfigDraftKey } = await import(
   "../src/features/model-picker/model-config/model-config-draft.ts"
 );
-const { createRunConfigInbox, mergeSharedRunConfig } = await import(
+const { createRunConfigInbox } = await import(
   "../src/features/model-picker/sharing/inbox.ts"
 );
 const targetModule = await import("./helpers/sharing-target.ts");
@@ -184,6 +186,7 @@ test("sharing empty arguments and templates preserves recipient overrides unless
     ...DEFAULT_PER_MODEL_CONFIG,
     llamaExtraArgs: ["--threads", "8"],
     chatTemplateOverride: "{{ messages }}",
+    reasoningBudgetMessage: "Recipient message",
   };
   for (const llamaExtraArgs of [undefined, null, [], ["--threads", "4"]]) {
     states = [];
@@ -191,6 +194,7 @@ test("sharing empty arguments and templates preserves recipient overrides unless
       ...DEFAULT_PER_MODEL_CONFIG,
       llamaExtraArgs,
       chatTemplateOverride: "",
+      reasoningBudgetMessage: "Sender instruction",
     };
     const render = () => {
       cursor = 0;
@@ -223,6 +227,19 @@ test("sharing empty arguments and templates preserves recipient overrides unless
       (element) =>
         element.type === checkbox &&
         element.props.id === "share-chatTemplateOverride",
+    );
+    const messageChoice = tree.find(
+      (element) => element.props.id === "share-reasoningBudgetMessage",
+    );
+    assert.ok(messageChoice);
+    assert.equal(messageChoice.props.disabled, true);
+    assert.equal(messageChoice.props.checked, false);
+    assert.equal(
+      importedConfig(tree).reasoningBudgetMessage,
+      recipient.reasoningBudgetMessage,
+    );
+    assert.ok(
+      text(tree).includes("Custom reasoning messages cannot be shared"),
     );
     assert.ok(templateChoice);
     assert.equal(templateChoice.props.checked, false);
@@ -270,7 +287,7 @@ test("sharing empty arguments and templates preserves recipient overrides unless
   }
 });
 
-test("Share opens and closes its dialog; dismissing a pending import gives feedback", async () => {
+test("Share opens and closes its dialog", () => {
   const inbox = createRunConfigInbox();
   const target = {
     id: "owner/Model-GGUF",
@@ -287,22 +304,18 @@ test("Share opens and closes its dialog; dismissing a pending import gives feedb
     value: { config: { nParallel: 3 } },
   });
   let sharing = false;
-  let release: (() => void) | undefined;
-  const notices: { message: string; id: string; description: string }[] = [];
   const dialog = Symbol("share dialog");
   const button = Symbol("button");
-  const { SharedRunConfigControls } = loadWithStubs<{
-    SharedRunConfigControls: typeof Controls;
+  const { SharedRunConfigActions } = loadWithStubs<{
+    SharedRunConfigActions: typeof Actions;
   }>(
     new URL(
-      "../src/features/model-picker/sharing/config-controls.tsx",
+      "../src/features/model-picker/sharing/config-ui.tsx",
       import.meta.url,
     ),
     {
       "react/jsx-runtime": stubJsxRuntime(),
       react: {
-        lazy: () => dialog,
-        Suspense: Symbol("suspense"),
         useState: () => [
           sharing,
           (value: boolean) => {
@@ -312,24 +325,15 @@ test("Share opens and closes its dialog; dismissing a pending import gives feedb
         useSyncExternalStore: (_subscribe: unknown, get: () => unknown) =>
           get(),
         useEffect: () => undefined,
-        useLayoutEffect: (effect: () => (() => void) | undefined) => {
-          release ??= effect();
-        },
       },
       "@/components/ui/button": { Button: button },
-      "@/lib/toast": {
-        toast: {
-          info: (
-            message: string,
-            options: { id: string; description: string },
-          ) => notices.push({ message, ...options }),
-        },
-      },
       "../model-config/model-config-draft": {
         modelConfigDraftKey,
       },
       "./inbox": { runConfigInbox: inbox },
       "./import-config": { scheduleRunConfigImport: () => undefined },
+      "./config-review": {},
+      "./share-dialog": { ShareRunConfigDialog: dialog },
     },
   );
   const props = {
@@ -342,7 +346,7 @@ test("Share opens and closes its dialog; dismissing a pending import gives feedb
     disabled: false,
     onImport: () => undefined,
   };
-  const render = () => elements(SharedRunConfigControls(props));
+  const render = () => elements(SharedRunConfigActions(props));
   const initial = render();
   assert.equal(
     initial.some((element) => element.type === dialog),
@@ -359,9 +363,89 @@ test("Share opens and closes its dialog; dismissing a pending import gives feedb
     render().some((element) => element.type === dialog),
     false,
   );
+  assert.equal(inbox.getSnapshot()?.id, "pending");
+});
+
+test("closing an editor before its sharing UI loads cancels the import, while effect replay retains it", async () => {
+  const inbox = createRunConfigInbox();
+  const target = {
+    id: "owner/model",
+    displayName: "Model",
+    isGguf: false,
+    apiLoadable: true,
+    meta: { source: "hub" as const, isLora: false },
+  };
+  const key = modelConfigDraftKey(target.id, undefined);
+  inbox.submit({
+    id: "pending",
+    draftKey: key,
+    value: { config: { nParallel: 3 } },
+  });
+  const effects: (() => (() => void) | undefined)[] = [];
+  const notices: { id: string; description: string }[] = [];
+  const actions = Symbol("lazy sharing UI");
+  const { SharedRunConfigControls } = loadWithStubs<{
+    SharedRunConfigControls: typeof Controls;
+  }>(
+    new URL(
+      "../src/features/model-picker/sharing/config-controls.tsx",
+      import.meta.url,
+    ),
+    {
+      "react/jsx-runtime": stubJsxRuntime(),
+      "@/components/lazy-import-boundary": {
+        LazyImportBoundary: "boundary",
+        LazyImportFailure: "failure",
+      },
+      "@/components/ui/button": { Button: Symbol("button") },
+      react: {
+        lazy: () => actions,
+        Suspense: Symbol("suspense"),
+        useLayoutEffect: (effect: () => (() => void) | undefined) => {
+          effects.push(effect);
+        },
+      },
+      "@/lib/toast": {
+        toast: {
+          info: (_message: string, options: (typeof notices)[number]) =>
+            notices.push(options),
+        },
+      },
+      "../model-config/model-config-draft": { modelConfigDraftKey },
+      "./inbox": { runConfigInbox: inbox },
+    },
+  );
+  const props = {
+    className: "h-9 rounded-full",
+    target,
+    config: DEFAULT_PER_MODEL_CONFIG,
+    ready: true,
+    hydrated: true,
+    canImport: true,
+    disabled: false,
+    onImport: () => undefined,
+  };
+  SharedRunConfigControls({ ...props, canImport: false });
+  assert.equal(effects[0](), undefined);
+  const tree = elements(SharedRunConfigControls(props));
+  assert.equal(tree[0].type, "boundary");
+  const fallback = tree[0].props.fallback as StubElement;
+  assert.equal(fallback.props.disabled, true);
+  assert.equal(fallback.props.className, props.className);
+  assert.equal(
+    tree.find((element) => element.type === actions)?.props.target,
+    target,
+  );
+  const release = effects[1]();
   assert.ok(release);
-  assert.equal(notices.length, 0);
   release();
+  SharedRunConfigControls(props);
+  const releaseRemounted = effects[2]();
+  await Promise.resolve();
+  assert.equal(inbox.getSnapshot()?.id, "pending");
+  assert.ok(releaseRemounted);
+  assert.equal(notices.length, 0);
+  releaseRemounted();
   await Promise.resolve();
   assert.equal(inbox.getSnapshot(), null);
   assert.equal(notices.length, 1);
@@ -410,7 +494,7 @@ test("edit cancellation includes contained controls and excludes portaled dialog
   );
 });
 
-test("review renders field labels and full prompt/argument values as text without HTML injection", () => {
+test("review renders field labels and argument values as text", () => {
   const { SharedRunConfigReview } = loadWithStubs<{
     SharedRunConfigReview: typeof Review;
   }>(
@@ -431,10 +515,9 @@ test("review renders field labels and full prompt/argument values as text withou
     }),
     null,
   );
-  const prompt = "<img src=x onerror=alert(1)>\nContinue after thinking";
   const args = ["--rope-scaling", "yarn"];
   const imported = {
-    reasoningBudgetMessage: prompt,
+    nParallel: 3,
     llamaExtraArgs: args,
     maxSeqLength: null,
   };
@@ -444,8 +527,7 @@ test("review renders field labels and full prompt/argument values as text withou
     currentConfig: { ...DEFAULT_PER_MODEL_CONFIG, ...imported },
   });
   assert.ok(text(tree).includes("Settings changed by link (3)"));
-  assert.ok(text(tree).includes("Reasoning budget message"));
-  assert.ok(text(tree).includes(prompt));
+  assert.ok(text(tree).includes("Parallel slots"));
   assert.ok(text(tree).includes("--rope-scaling yarn"));
   assert.ok(text(tree).includes("Default"));
   assert.ok(
@@ -463,7 +545,7 @@ test("review renders field labels and full prompt/argument values as text withou
     ).includes("already match"),
   );
   for (const changed of [
-    { reasoningBudgetMessage: "Edited through the other editor" },
+    { nParallel: 7 },
     { llamaExtraArgs: ["--threads", "4"] },
     DEFAULT_PER_MODEL_CONFIG,
   ]) {
@@ -633,6 +715,12 @@ test("settings-only chooser keeps the import while accepting recipient-local mod
     "\\\\server\\models\\model.gguf",
     "/mnt/c/Models/model.gguf",
     "./models/native",
+    "models/owner/checkpoint-500",
+    "models\\checkpoint-500",
+    "models/my native model",
+    "checkpoint-500",
+    ".\\models\\checkpoint-500",
+    "../models/checkpoint-500",
     "~/models/native",
     "ollama-manifest:registry.ollama.ai/library/llama3/latest",
   ]) {
@@ -719,6 +807,10 @@ test("startup intake waits for mount effects and survives strict effect replay",
           effects.push(effect),
       },
       "./inbox": { runConfigInbox: inbox },
+      "@/components/lazy-import-boundary": {
+        LazyImportBoundary: "boundary",
+        LazyImportFailure: "failure",
+      },
       "./receive-link": {
         receiveStartupRunConfigUrl: () => {
           received += 1;
@@ -758,7 +850,11 @@ test("startup intake waits for mount effects and survives strict effect replay",
   assert.equal(shown?.props.chatSearch, chatSearch);
   authChanged?.();
   assert.equal(revisions, 1);
-  inbox.clear("link");
+  const boundary = render() as StubElement;
+  assert.equal(boundary.type, "boundary");
+  const failure = boundary.props.fallback as StubElement;
+  assert.equal(failure.type, "failure");
+  (failure.props.onDismiss as () => void)();
   assert.equal(render(), null);
   cleanup?.();
   assert.equal(disposed, true);

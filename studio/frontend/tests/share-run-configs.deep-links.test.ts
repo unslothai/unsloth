@@ -55,8 +55,8 @@ function harness(sharedLinks = true) {
         toast: { error: (message: string) => errors.push(message) },
       },
       "@/features/deep-links": {
-        parseUnslothDeepLink,
         createDeepLinkIntentGate,
+        parseUnslothDeepLink,
       },
       "../model-config/model-config-draft": {
         markModelConfigDraftEdited: () => undefined,
@@ -67,7 +67,7 @@ function harness(sharedLinks = true) {
       },
       "./inbox": { runConfigInbox: inbox },
       "./link-address": linkAddress,
-      "./links": { parseRunConfigLink },
+      "./runtime": { parseRunConfigLink },
       "@/features/auth": { hasAuthToken: () => true },
     },
   );

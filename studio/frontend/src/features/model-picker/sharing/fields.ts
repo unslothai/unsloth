@@ -17,7 +17,12 @@ export const SHARED_CONFIG_FIELDS: Record<SharedConfigKey, Field> = {
   specDraftCacheDtype: { label: "Draft KV cache type" },
   nParallel: { label: "Parallel slots" },
   reasoningBudget: { label: "Reasoning budget" },
-  reasoningBudgetMessage: { label: "Reasoning budget message", text: true },
+  reasoningBudgetMessage: {
+    label: "Reasoning budget message",
+    text: true,
+    error:
+      "Custom reasoning messages cannot be shared through links. Configure them locally instead.",
+  },
   nBatch: { label: "Batch size" },
   nUbatch: { label: "Micro-batch size" },
   loadMode: { label: "Load mode" },
@@ -64,4 +69,34 @@ export function formatSharedConfigValue(
     : typeof value === "string" && value !== ""
       ? value
       : JSON.stringify(value);
+}
+
+export function mergeSharedRunConfig(
+  defaults: PerModelConfig,
+  patch: Partial<PerModelConfig>,
+  isGguf: boolean,
+): PerModelConfig {
+  const provided = Object.fromEntries(
+    SHARED_CONFIG_KEYS.filter((key) => Object.hasOwn(patch, key))
+      .map((key) => [key, patch[key]] as const)
+      .filter(([, value]) => value !== undefined)
+      .map(([key, value]) => [key, Array.isArray(value) ? [...value] : value]),
+  );
+  if (isGguf && Object.hasOwn(provided, "maxSeqLength")) {
+    provided.customContextLength ??= provided.maxSeqLength;
+    provided.maxSeqLength = null;
+  }
+  if (
+    Object.hasOwn(provided, "customContextLength") &&
+    !Object.hasOwn(provided, "maxSeqLength")
+  ) {
+    provided.maxSeqLength = null;
+  }
+  if (
+    Object.hasOwn(provided, "maxSeqLength") &&
+    !Object.hasOwn(provided, "customContextLength")
+  ) {
+    provided.customContextLength = null;
+  }
+  return { ...defaults, ...provided };
 }

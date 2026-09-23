@@ -17,7 +17,6 @@ import {
   N_PARALLEL_MAX,
   N_PARALLEL_MIN,
   SPECULATIVE_TYPES,
-  isReasoningBudgetMessageValid,
 } from "../model-config/per-model-config";
 import { validSharedExtraArgs } from "./extra-args";
 import type { SharedConfigKey } from "./fields";
@@ -36,28 +35,6 @@ const nullable =
 const choice = (value: unknown, values: readonly unknown[]): boolean =>
   values.includes(value);
 const boolean: Validator = (value) => typeof value === "boolean";
-
-function validSharedReasoningMessage(value: unknown): value is string {
-  if (typeof value !== "string" || !isReasoningBudgetMessageValid(value)) {
-    return false;
-  }
-  for (const character of value) {
-    const code = character.codePointAt(0) ?? 0;
-    if (
-      (code < 32 && code !== 9 && code !== 10 && code !== 13) ||
-      (code >= 0x7f && code <= 0x9f) ||
-      (code >= 0xd800 && code <= 0xdfff) ||
-      code === 0x200b ||
-      (code >= 0x202a && code <= 0x202e) ||
-      (code >= 0x2060 && code <= 0x2064) ||
-      (code >= 0x2066 && code <= 0x2069) ||
-      code === 0xfeff
-    ) {
-      return false;
-    }
-  }
-  return true;
-}
 
 const gpuId: Validator = (value) => integer(value, 0, 255);
 const cacheType = nullable(
@@ -80,7 +57,7 @@ export const SHARED_CONFIG_VALIDATORS: Record<SharedConfigKey, Validator> = {
     integer(value, N_PARALLEL_MIN, N_PARALLEL_MAX),
   ),
   reasoningBudget: (value) => integer(value, -1, 2_147_483_647),
-  reasoningBudgetMessage: validSharedReasoningMessage,
+  reasoningBudgetMessage: (value) => value === "",
   nBatch: nullable((value) => integer(value, N_BATCH_MIN, N_BATCH_MAX)),
   nUbatch: nullable((value) => integer(value, N_BATCH_MIN, N_BATCH_MAX)),
   loadMode: nullable((value) => choice(value, LOAD_MODES)),

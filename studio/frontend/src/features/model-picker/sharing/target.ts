@@ -8,7 +8,6 @@ import {
 } from "@/features/chat";
 import { isValidRepoId as isShareableModelId } from "@/features/deep-links";
 import { looksLikeLocalPath } from "@/lib/local-path";
-import type { ModelPickTarget } from "../components/model-selector/types";
 import type { ModelConfigHandoffRequest } from "../model-config/model-config-handoff";
 import {
   ggufVariantsMatch,
@@ -21,22 +20,13 @@ import type { SharedRunConfig } from "./links";
 const ggufName = /(?:-gguf|\.gguf)$/i;
 const invalidCharacters = /[\p{Cc}\p{Cs}]/u;
 
-export function isRunConfigVariantUnresolved(target: ModelPickTarget): boolean {
-  return (
-    target.meta.source === "hub" &&
-    target.isGguf &&
-    !target.meta.isDownloaded &&
-    (!target.ggufVariant || target.ggufVariant.toLowerCase().endsWith(".gguf"))
-  );
-}
-
 export function isRunConfigModelInput(model: string): boolean {
   return (
     model.length > 0 &&
     model === model.trim() &&
     !invalidCharacters.test(model) &&
     !model.includes("://") &&
-    (isShareableModelId(model) ||
+    (!model.includes(":") ||
       looksLikeLocalPath(model) ||
       isStandaloneGgufPath(model) ||
       isOllamaModelId(model))

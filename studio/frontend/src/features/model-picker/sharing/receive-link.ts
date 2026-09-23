@@ -13,7 +13,10 @@ import {
 } from "@/features/deep-links";
 import { isTauri } from "@/lib/api-base";
 import { toast } from "@/lib/toast";
-import { markModelConfigDraftEdited } from "../model-config/model-config-draft";
+import {
+  markModelConfigDraftEdited,
+  modelConfigDraftKey,
+} from "../model-config/model-config-draft";
 import {
   clearModelConfigHandoff,
   createModelConfigHandoffRequestId,
@@ -115,10 +118,20 @@ function clearPendingImport() {
 }
 
 export function cancelRunConfigImportForEdit(draftKey: string): void {
+  runConfigInbox.recordEdit(draftKey);
   const pending = runConfigInbox.getSnapshot();
-  if (pending?.draftKey !== draftKey) {
+  const targetKey = pending?.target
+    ? modelConfigDraftKey(pending.target.id, pending.target.meta.ggufVariant)
+    : undefined;
+  if (pending?.draftKey !== draftKey && targetKey !== draftKey) {
     return;
   }
+  cancelEditedRunConfigImport(draftKey);
+}
+
+export function cancelEditedRunConfigImport(draftKey: string): void {
+  const pending = runConfigInbox.getSnapshot();
+  if (!pending) return;
   clearPendingImport();
   if (Object.keys(pending.value.config).length > 0) {
     markModelConfigDraftEdited(draftKey);
@@ -145,7 +158,7 @@ async function receiveRunConfigUrl(
     saveRecovery();
   }
   try {
-    const { parseRunConfigLink } = await import("./links");
+    const { parseRunConfigLink } = await import("./runtime");
     if (revision !== intakeRevision) {
       return;
     }
