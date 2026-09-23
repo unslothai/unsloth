@@ -493,8 +493,10 @@ def test_peft_lora_on_a_packed_linear_matches_the_dense_decode(bias):
 
 
 def test_peft_merge_densifies_exactly_and_unmerge_restores_the_packed_bytes():
-    packed_model, dense_model = _lora_pair()
-    x = torch.randn(3, 64, dtype = torch.bfloat16)
+    # Moderate scales and a fixed input: with weights up to 2**23 the bf16 merged-vs-unmerged
+    # comparison below cancels catastrophically for some random inputs.
+    packed_model, dense_model = _lora_pair(scale_range = (118, 134))
+    x = torch.randn(3, 64, generator = torch.Generator().manual_seed(0)).to(torch.bfloat16)
     base = packed_model.base_model.model[0].base_layer
     packed_bytes, scale = base.weight_packed, base.weight_scale
     with torch.no_grad():
