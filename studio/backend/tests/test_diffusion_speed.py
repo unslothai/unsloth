@@ -357,6 +357,17 @@ def test_speed_default_cudnn_benchmark_only_on_cuda(monkeypatch):
     assert applied["cudnn_benchmark"] is False  # not CUDA -> no autotune flip
 
 
+def test_speed_default_skips_cudnn_benchmark_on_rocm(monkeypatch):
+    torch = _stub_torch(monkeypatch)
+    torch.version = types.SimpleNamespace(hip = "7.13.0")
+    pipe = _Pipe(with_compile = True)
+    applied = apply_speed_optims(
+        pipe, _target(), is_gguf = True, family = _family(), speed_mode = SPEED_DEFAULT
+    )
+    assert applied["cudnn_benchmark"] is False
+    assert torch.backends.cudnn.benchmark is False
+
+
 def test_speed_max_enables_tf32_and_fused_qkv(monkeypatch):
     torch = _stub_torch(monkeypatch)
     pipe = _Pipe(with_compile = True, with_fuse = True)
