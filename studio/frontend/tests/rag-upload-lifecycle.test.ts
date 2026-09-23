@@ -364,3 +364,45 @@ test("a new chat's id committed after its upload finished keeps tracking the job
     app.dispose();
   }
 });
+
+test("leaving a new chat for another one after its upload finished drops the job", async () => {
+  let signal: AbortSignal | undefined;
+  const app = harness({
+    events: async function* (_jobId, streamSignal) {
+      signal = streamSignal;
+      yield { type: "progress", progress: 0.4, stage: "captioning" };
+      await new Promise<void>((_resolve, reject) => {
+        streamSignal?.addEventListener("abort", () =>
+          reject(new DOMException("Fetch is aborted", "AbortError")),
+        );
+      });
+    },
+  });
+  try {
+    app.setScope(null);
+    let hook = app.render();
+    await flush();
+    await hook.upload([report()], async () => ({
+      type: "thread",
+      threadId: "thread",
+    }));
+    await flush();
+    assert.equal(signal?.aborted, false, "the job was never tracked");
+    // Before the new chat's id commits, the user opens a different chat.
+    app.setScope({ type: "thread", threadId: "other" });
+    hook = app.render();
+    await flush();
+    await flush();
+    hook = app.render();
+    assert.equal(
+      signal?.aborted,
+      true,
+      "the new chat's job kept streaming into the chat the user opened",
+    );
+    assert.deepEqual(hook.documents, []);
+    assert.equal(hook.hasIndexing, false);
+    assert.deepEqual(app.errors, []);
+  } finally {
+    app.dispose();
+  }
+});
