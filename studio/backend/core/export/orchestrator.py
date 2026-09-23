@@ -487,7 +487,6 @@ class ExportOrchestrator:
         validate_job_paths({"checkpoint_path": checkpoint_path})
         if load_in_4bit is None:
             from utils.models.checkpoints import is_unquantized_full_finetune
-
             load_in_4bit = not is_unquantized_full_finetune(checkpoint_path, hf_token)
             if not load_in_4bit:
                 logger.info(
