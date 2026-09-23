@@ -21,6 +21,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import {
+  COMBINED_EXPORT_FORMATS_LIST,
   type ConvExportFormat,
   EXPORT_FORMATS_LIST,
   type SidebarItem,
@@ -37,6 +38,7 @@ import {
   usePinnedChatsStore,
 } from "@/features/chat";
 import { isDownloadCancelled } from "@/lib/native-files";
+import { useLocale, useT } from "@/i18n";
 import { toast } from "@/lib/toast";
 import {
   Archive02Icon,
@@ -45,26 +47,38 @@ import {
   Folder01Icon,
   PinIcon,
 } from "@hugeicons/core-free-icons";
+import { MessageCircleIcon } from "@/lib/hugeicons-derived";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate, useRouterState } from "@tanstack/react-router";
-import { useRef, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { useSettingsDialogStore } from "../stores/settings-dialog-store";
+
+import { useLibraryProjectLabels } from "./use-library-project-labels";
+import {
+  DEFAULT_LIBRARY_FILTERS,
+  filterLibraryItems,
+  groupLibraryItems,
+  type LibraryFilters,
+} from "./data-library";
+import {
+  ChatLibraryGroups,
+  LibraryRow,
+  LibraryToolbar,
+} from "./data-library-controls";
 
 const MANAGE_PAGE_SIZE = 20;
 
-function formatCreatedAt(ms: number): string {
-  return new Date(ms).toLocaleDateString(undefined, {
-    year: "numeric",
-    month: "long",
-    day: "numeric",
-  });
-}
-
-function chatCount(n: number): string {
-  return n === 1 ? "1 chat" : `${n} chats`;
-}
-
 export function ManageChatsView() {
+  const t = useT();
+  const locale = useLocale();
+  const labels = useLibraryProjectLabels();
+  const chatCount = (count: number) =>
+    t(
+      count === 1
+        ? "settings.data.library.oneChat"
+        : "settings.data.library.chatCount",
+      { count },
+    );
   const { items } = useChatSidebarItems({ requireMessages: false });
   const { projects } = useChatProjects();
   const navigate = useNavigate();
@@ -90,17 +104,40 @@ export function ManageChatsView() {
   const [busy, setBusy] = useState(false);
   const lastToggledId = useRef<string | null>(null);
 
-  const visible = items.slice(0, visibleCount);
+  const [filters, setFilters] = useState(DEFAULT_LIBRARY_FILTERS);
+  const projectNames = useMemo(
+    () => new Map(projects.map((p) => [p.id, p.name])),
+    [projects],
+  );
+  const filtered = useMemo(
+    () => filterLibraryItems(items, filters, projectNames, labels, locale),
+    [items, filters, projectNames, labels, locale],
+  );
+  const visible = groupLibraryItems(
+    filtered.slice(0, visibleCount),
+    projectNames,
+    labels,
+  ).flatMap((group) => group.items);
   const selectedItems = items.filter((item) => selectedIds.has(item.id));
+
+  function changeFilters(next: LibraryFilters) {
+    setFilters(next);
+    setSelectedIds(new Set());
+    lastToggledId.current = null;
+    setVisibleCount(MANAGE_PAGE_SIZE);
+  }
   const selectedCount = selectedItems.length;
+  const visibleSelectedCount = visible.filter((item) =>
+    selectedIds.has(item.id),
+  ).length;
   const allVisibleSelected =
-    visible.length > 0 && visible.every((item) => selectedIds.has(item.id));
+    visible.length > 0 && visibleSelectedCount === visible.length;
   const allSelectedPinned =
     selectedCount > 0 &&
     selectedItems.every((item) => pinnedIds.includes(item.id));
-  const projectNames = new Map(projects.map((p) => [p.id, p.name]));
 
   function toggleRow(index: number, shiftKey: boolean) {
+    if (busy) return;
     const rowId = visible[index].id;
     const target = !selectedIds.has(rowId);
     const anchorId = lastToggledId.current;
@@ -126,9 +163,15 @@ export function ManageChatsView() {
   }
 
   function toggleAllVisible() {
-    setSelectedIds(
-      allVisibleSelected ? new Set() : new Set(visible.map((item) => item.id)),
-    );
+    if (busy) return;
+    setSelectedIds((previous) => {
+      const next = new Set(previous);
+      for (const item of visible) {
+        if (allVisibleSelected) next.delete(item.id);
+        else next.add(item.id);
+      }
+      return next;
+    });
     lastToggledId.current = null;
   }
 
@@ -172,8 +215,13 @@ export function ManageChatsView() {
   const handleArchive = () =>
     run(
       () => archiveChatItems(selectedItems, openChatId, resetView),
-      `Archived ${chatCount(selectedCount)}`,
-      "Failed to archive chats",
+      t(
+        selectedCount === 1
+          ? "settings.data.archivedOneChat"
+          : "settings.data.archivedChatCount",
+        { count: selectedCount },
+      ),
+      t("settings.data.failedToArchiveChats"),
     );
 
   const handleDelete = () =>
@@ -184,8 +232,8 @@ export function ManageChatsView() {
         deleteChatItems(selectedItems, openChatId, resetView, {
           deleteFiles: alwaysDeleteChatFiles,
         }),
-      `Deleted ${chatCount(selectedCount)}`,
-      "Failed to delete chats",
+      t("settings.data.library.deletedChats", { count: selectedCount }),
+      t("settings.data.library.deleteFailed"),
     );
 
   const handleMove = (projectId: string | null) =>
@@ -196,16 +244,26 @@ export function ManageChatsView() {
         );
       },
       projectId
-        ? `Moved ${chatCount(selectedCount)} to ${projectNames.get(projectId) ?? "project"}`
-        : `Moved ${chatCount(selectedCount)} to Recents`,
-      "Failed to move chats",
+        ? t("settings.data.library.movedChatsToProject", {
+            count: selectedCount,
+            project: projectNames.get(projectId) ?? labels.unavailableProject,
+          })
+        : t("settings.data.library.movedChatsToRecents", {
+            count: selectedCount,
+          }),
+      t("settings.data.library.moveFailed"),
     );
 
   function handleTogglePin() {
     const ids = selectedItems.map((item) => item.id);
     setPinned(ids, !allSelectedPinned);
     toast.success(
-      `${allSelectedPinned ? "Unpinned" : "Pinned"} ${chatCount(ids.length)}`,
+      t(
+        allSelectedPinned
+          ? "settings.data.library.unpinnedChats"
+          : "settings.data.library.pinnedChats",
+        { count: ids.length },
+      ),
     );
     setSelectedIds(new Set());
   }
@@ -222,193 +280,211 @@ export function ManageChatsView() {
         await exportBulkConversationsSeparate(threadIds, format, basename);
       }
     } catch (error) {
-      if (!isDownloadCancelled(error)) toast.error("Export failed.");
+      if (!isDownloadCancelled(error))
+        toast.error(t("settings.data.exportFailed"));
     }
-  }
-
-  if (items.length === 0) {
-    return (
-      <p className="py-8 text-center text-sm text-muted-foreground">
-        No chats.
-      </p>
-    );
   }
 
   const actionsDisabled = busy || selectedCount === 0;
 
   return (
     <div className="flex flex-col gap-4">
+      <LibraryToolbar
+        filters={filters}
+        onChange={changeFilters}
+        placeholder={t("settings.data.library.searchChats")}
+        projects={projectNames}
+        disabled={busy}
+      />
       <div className="flex flex-wrap items-center gap-2">
         <div className="flex flex-1 items-center gap-3 px-1">
           <Checkbox
             checked={
               allVisibleSelected
                 ? true
-                : selectedCount > 0
+                : visibleSelectedCount > 0
                   ? "indeterminate"
                   : false
             }
+            disabled={busy || visible.length === 0}
             onCheckedChange={toggleAllVisible}
-            aria-label="Select all visible chats"
-            title="Select all visible"
+            aria-label={t("settings.data.library.selectAll")}
+            title={t("settings.data.library.selectAll")}
           />
           <span className="text-xs text-muted-foreground">
             {selectedCount > 0
-              ? `${chatCount(selectedCount)} selected`
-              : chatCount(items.length)}
+              ? t("settings.data.library.selectedChats", {
+                  count: selectedCount,
+                })
+              : chatCount(filtered.length)}
           </span>
         </div>
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild={true}>
-            <Button variant="outline" size="sm" disabled={actionsDisabled}>
-              <HugeiconsIcon
-                icon={Folder01Icon}
-                strokeWidth={1.75}
-                className="size-3.5 mr-1.5"
-              />
-              Move
-            </Button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="end" className="w-52">
-            <DropdownMenuItem
-              disabled={selectedItems.every((item) => !item.projectId)}
-              onSelect={() => void handleMove(null)}
-            >
-              Recents
-            </DropdownMenuItem>
-            {projects.map((project) => (
-              <DropdownMenuItem
-                key={project.id}
-                onSelect={() => void handleMove(project.id)}
-              >
-                <HugeiconsIcon
-                  icon={Folder01Icon}
-                  strokeWidth={1.75}
-                  className="size-4"
-                />
-                <span className="truncate">{project.name}</span>
-              </DropdownMenuItem>
-            ))}
-          </DropdownMenuContent>
-        </DropdownMenu>
-        <Button
-          variant="outline"
-          size="sm"
-          disabled={actionsDisabled}
-          onClick={handleTogglePin}
-        >
-          <HugeiconsIcon
-            icon={PinIcon}
-            strokeWidth={1.75}
-            className="size-3.5 mr-1.5"
-          />
-          {allSelectedPinned ? "Unpin" : "Pin"}
-        </Button>
-        <Button
-          variant="outline"
-          size="sm"
-          disabled={actionsDisabled}
-          onClick={() => void handleArchive()}
-        >
-          <HugeiconsIcon
-            icon={Archive02Icon}
-            strokeWidth={1.75}
-            className="size-3.5 mr-1.5"
-          />
-          Archive
-        </Button>
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild={true}>
-            <Button variant="outline" size="sm" disabled={actionsDisabled}>
-              <HugeiconsIcon
-                icon={Download01Icon}
-                strokeWidth={1.75}
-                className="size-3.5 mr-1.5"
-              />
-              Export
-            </Button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="end" className="w-56">
-            {EXPORT_FORMATS_LIST.map(({ fmt, label }) => (
-              <DropdownMenuItem
-                key={`m-${fmt}`}
-                onSelect={() => void handleExport(fmt, true)}
-              >
-                {label} (combined)
-              </DropdownMenuItem>
-            ))}
-            <DropdownMenuSeparator />
-            {EXPORT_FORMATS_LIST.map(({ fmt, label }) => (
-              <DropdownMenuItem
-                key={`s-${fmt}`}
-                onSelect={() => void handleExport(fmt, false)}
-              >
-                {label} (per chat)
-              </DropdownMenuItem>
-            ))}
-          </DropdownMenuContent>
-        </DropdownMenu>
-        <Button
-          variant="outline"
-          size="sm"
-          disabled={actionsDisabled}
-          onClick={() => setConfirmingDelete(true)}
-          className="text-destructive hover:text-destructive hover:border-destructive/60"
-        >
-          <HugeiconsIcon
-            icon={Delete02Icon}
-            strokeWidth={1.75}
-            className="size-3.5 mr-1.5"
-          />
-          Delete
-        </Button>
-      </div>
-
-      <div>
-        <div className="flex items-center gap-4 border-b border-border/60 px-1 pb-2 text-xs font-semibold text-foreground">
-          <span className="w-4 shrink-0" />
-          <span className="flex-1">Name</span>
-          <span className="w-28 shrink-0">Project</span>
-          <span className="w-32 shrink-0">Date created</span>
-        </div>
-        {visible.map((item, index) => (
-          <div
-            key={item.id}
-            className="group flex items-center gap-4 border-b border-border/40 px-1 py-2.5 text-sm last:border-0 hover:bg-muted/40"
-          >
-            <Checkbox
-              checked={selectedIds.has(item.id)}
-              onClick={(e) => toggleRow(index, e.shiftKey)}
-              aria-label={`Select "${item.title}"`}
-            />
-            <button
-              type="button"
-              onClick={() => openChat(item)}
-              className="min-w-0 flex-1 truncate text-left hover:underline"
-              title={item.title}
-            >
-              {item.title}
-            </button>
-            <span className="w-28 shrink-0 truncate text-muted-foreground">
-              {item.projectId ? (projectNames.get(item.projectId) ?? "") : ""}
-            </span>
-            <span className="w-32 shrink-0 text-muted-foreground tabular-nums">
-              {formatCreatedAt(item.createdAt)}
-            </span>
-          </div>
-        ))}
-        {items.length > visibleCount ? (
-          <div className="flex justify-center pt-3">
+        {selectedCount > 0 && (
+          <>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild={true}>
+                <Button variant="outline" size="sm" disabled={actionsDisabled}>
+                  <HugeiconsIcon
+                    icon={Folder01Icon}
+                    strokeWidth={1.75}
+                    className="size-3.5 mr-1.5"
+                  />
+                  {t("settings.data.library.move")}
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-52">
+                <DropdownMenuItem
+                  disabled={selectedItems.every((item) => !item.projectId)}
+                  onSelect={() => void handleMove(null)}
+                >
+                  {t("shell.navigation.recents")}
+                </DropdownMenuItem>
+                {projects.map((project) => (
+                  <DropdownMenuItem
+                    key={project.id}
+                    onSelect={() => void handleMove(project.id)}
+                  >
+                    <HugeiconsIcon
+                      icon={Folder01Icon}
+                      strokeWidth={1.75}
+                      className="size-4"
+                    />
+                    <span className="truncate">{project.name}</span>
+                  </DropdownMenuItem>
+                ))}
+              </DropdownMenuContent>
+            </DropdownMenu>
             <Button
               variant="outline"
               size="sm"
-              onClick={() => setVisibleCount(visibleCount + MANAGE_PAGE_SIZE)}
+              disabled={actionsDisabled}
+              onClick={handleTogglePin}
             >
-              Show more ({items.length - visibleCount})
+              <HugeiconsIcon
+                icon={PinIcon}
+                strokeWidth={1.75}
+                className="size-3.5 mr-1.5"
+              />
+              {allSelectedPinned
+                ? t("settings.data.library.unpin")
+                : t("settings.data.library.pin")}
             </Button>
-          </div>
-        ) : null}
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={actionsDisabled}
+              onClick={() => void handleArchive()}
+            >
+              <HugeiconsIcon
+                icon={Archive02Icon}
+                strokeWidth={1.75}
+                className="size-3.5 mr-1.5"
+              />
+              {t("settings.data.library.archive")}
+            </Button>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild={true}>
+                <Button variant="outline" size="sm" disabled={actionsDisabled}>
+                  <HugeiconsIcon
+                    icon={Download01Icon}
+                    strokeWidth={1.75}
+                    className="size-3.5 mr-1.5"
+                  />
+                  {t("common.export")}
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-56">
+                {COMBINED_EXPORT_FORMATS_LIST.map(({ fmt, label }) => (
+                  <DropdownMenuItem
+                    key={`m-${fmt}`}
+                    onSelect={() => void handleExport(fmt, true)}
+                  >
+                    {label} {t("settings.chat.exportCombinedSuffix")}
+                  </DropdownMenuItem>
+                ))}
+                <DropdownMenuSeparator />
+                {EXPORT_FORMATS_LIST.map(({ fmt, label }) => (
+                  <DropdownMenuItem
+                    key={`s-${fmt}`}
+                    onSelect={() => void handleExport(fmt, false)}
+                  >
+                    {label} {t("settings.chat.exportPerChatSuffix")}
+                  </DropdownMenuItem>
+                ))}
+              </DropdownMenuContent>
+            </DropdownMenu>
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={actionsDisabled}
+              onClick={() => setConfirmingDelete(true)}
+              className="text-destructive hover:text-destructive hover:border-destructive/60"
+            >
+              <HugeiconsIcon
+                icon={Delete02Icon}
+                strokeWidth={1.75}
+                className="size-3.5 mr-1.5"
+              />
+              {t("common.delete")}
+            </Button>
+          </>
+        )}
       </div>
+
+      {filtered.length === 0 ? (
+        <p
+          role="status"
+          className="py-8 text-center text-sm text-muted-foreground"
+        >
+          {t("settings.data.library.noChats")}
+        </p>
+      ) : (
+        <ChatLibraryGroups items={visible} projects={projectNames}>
+          {(item) => (
+            <LibraryRow
+              title={item.title}
+              date={
+                filters.sort === "updated" ? item.updatedAt : item.createdAt
+              }
+              onOpen={() => openChat(item)}
+              leading={
+                <>
+                  <Checkbox
+                    checked={selectedIds.has(item.id)}
+                    disabled={busy}
+                    onClick={(event) =>
+                      toggleRow(
+                        visible.findIndex((row) => row.id === item.id),
+                        event.shiftKey,
+                      )
+                    }
+                    aria-label={t("settings.data.library.selectItem", {
+                      title: item.title,
+                    })}
+                  />
+                  <HugeiconsIcon
+                    icon={MessageCircleIcon}
+                    className="size-4 shrink-0 text-muted-foreground"
+                  />
+                </>
+              }
+            />
+          )}
+        </ChatLibraryGroups>
+      )}
+      {filtered.length > visibleCount && (
+        <div className="flex justify-center">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setVisibleCount((count) => count + MANAGE_PAGE_SIZE)}
+          >
+            {t("settings.voice.recents.showMore", {
+              count: filtered.length - visibleCount,
+            })}
+          </Button>
+        </div>
+      )}
 
       <AlertDialog
         open={confirmingDelete}
@@ -419,18 +495,18 @@ export function ManageChatsView() {
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>
-              Delete {chatCount(selectedCount)}
+              {t("settings.data.library.deleteChatsTitle", {
+                count: selectedCount,
+              })}
             </AlertDialogTitle>
             <AlertDialogDescription>
-              Delete the{" "}
-              {selectedCount === 1
-                ? "selected chat"
-                : `${selectedCount} selected chats`}
-              ? This cannot be undone.
+              {t("settings.data.library.deleteChatsWarning", {
+                count: selectedCount,
+              })}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogCancel>{t("common.cancel")}</AlertDialogCancel>
             <AlertDialogAction
               variant="destructive"
               onClick={() => {
@@ -438,7 +514,7 @@ export function ManageChatsView() {
                 void handleDelete();
               }}
             >
-              Delete
+              {t("common.delete")}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

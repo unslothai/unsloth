@@ -13,14 +13,25 @@ tools_dir="$1"
 mkdir -p "$tools_dir"
 
 script_dir="$(cd -- "$(dirname -- "$0")" && pwd -P)"
+
+safe_emoji_font="/usr/share/fonts/truetype/noto/NotoColorEmoji.ttf"
+safe_emoji_license="/usr/share/doc/fonts-noto-color-emoji/copyright"
+[[ -f "$safe_emoji_font" ]] || {
+  echo "fonts-noto-color-emoji is required: $safe_emoji_font" >&2
+  exit 1
+}
+[[ -f "$safe_emoji_license" ]] || {
+  echo "fonts-noto-color-emoji license is required: $safe_emoji_license" >&2
+  exit 1
+}
 LINUXDEPLOY_URL="https://github.com/tauri-apps/binary-releases/releases/download/linuxdeploy/linuxdeploy-x86_64.AppImage"
 LINUXDEPLOY_SHA256="e762bea85c8eb0d4b3508d46e5c1f037f717d0f9303ae3b4aafc8b04991fa1ef"
 GTK_PLUGIN_URL="https://raw.githubusercontent.com/tauri-apps/linuxdeploy-plugin-gtk/b5eb8d05b4c0ed40107fe2158c5d8527f94568ef/linuxdeploy-plugin-gtk.sh"
 GTK_PLUGIN_SHA256="cb379f9b0733e9ad9f8bd78f8c2fa038aef2478523bb7d4c8e64ff6a1ea3501a"
 GSTREAMER_PLUGIN_URL="https://raw.githubusercontent.com/tauri-apps/linuxdeploy-plugin-gstreamer/2a2e67491c32995a3f279ad0ecbe77abd512b42a/linuxdeploy-plugin-gstreamer.sh"
 GSTREAMER_PLUGIN_SHA256="c107b49d84edbffc6ab226ed1007e0626a4f7aa2c3a36b7782bef62351d49e94"
-APPIMAGE_PLUGIN_URL="https://github.com/linuxdeploy/linuxdeploy-plugin-appimage/releases/download/continuous/linuxdeploy-plugin-appimage-x86_64.AppImage"
-APPIMAGE_PLUGIN_SHA256="a45d3e227bc7f397e9cf6bfa4c9507494efa2293357b6e86690a3de2ca992e79"
+APPIMAGE_PLUGIN_URL="https://github.com/linuxdeploy/linuxdeploy-plugin-appimage/releases/download/1-alpha-20250213-1/linuxdeploy-plugin-appimage-x86_64.AppImage"
+APPIMAGE_PLUGIN_SHA256="992d502a248e14ab185448ddf6f6e7d25558cb84d4623c354c3af350c25fccb3"
 
 fetch() {
   local url="$1" digest="$2" name="$3"
@@ -43,6 +54,9 @@ install -m 755 \
   "$script_dir/finalize-complete-appimage.sh" \
   "$tools_dir/finalize-complete-appimage.sh"
 
+install -m 644 "$script_dir/appimage-fonts.conf" "$tools_dir/unsloth-appimage-fonts.conf"
+install -m 644 "$safe_emoji_font" "$tools_dir/UnslothSafeEmoji.ttf"
+install -m 644 "$safe_emoji_license" "$tools_dir/UnslothSafeEmoji.LICENSE"
 
 # Let GTK select X11 or Wayland instead of forcing X11.
 sed -i '/export GDK_BACKEND=x11/d' "$tools_dir/linuxdeploy-plugin-gtk.sh"

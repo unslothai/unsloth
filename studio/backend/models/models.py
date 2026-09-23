@@ -153,14 +153,21 @@ class GgufVariantDetail(BaseModel):
 
     filename: str = Field(..., description = "GGUF filename (e.g., 'gemma-3-4b-it-Q4_K_M.gguf')")
     quant: str = Field(..., description = "Quantization label or internal GGUF variant key")
-    # Mirrors hub.schemas.inventory.GgufVariantDetail. The route builds THIS model, so a field
-    # that exists only on the hub twin is dropped by pydantic without a word, and a qualified
-    # row falls back to rendering its whole relative path.
+    # Mirrors hub.schemas.inventory.GgufVariantDetail. The route builds THIS model, so a field that exists only
+    # on the hub twin is dropped by pydantic without a word and a qualified row falls back to rendering its whole
+    # relative path.
     display_label: Optional[str] = Field(
         None, description = "Optional user-facing label when quant is an internal key"
     )
     size_bytes: int = Field(0, description = "File size in bytes")
     download_size_bytes: int = Field(0, description = "Total bytes needed to download this variant")
+    # Mirrors hub.schemas.inventory.GgufVariantDetail; see display_label above.
+    pending_drafter_filename: Optional[str] = Field(
+        None, description = "Missing separate drafter when the main GGUF is already cached"
+    )
+    pending_drafter_size_bytes: int = Field(
+        0, description = "Remote size of pending_drafter_filename"
+    )
     downloaded: bool = Field(
         False, description = "Whether this variant is already in the local HF cache"
     )
@@ -201,6 +208,10 @@ class GgufVariantsResponse(BaseModel):
         False,
         description = "Whether this answer came from resolving repo_id as a local path",
     )
+    dependencies_resolved: bool = Field(
+        False,
+        description = "Whether Hub metadata was available to resolve the variant's required companion files",
+    )
     loadable_variants: Optional[List[str]] = Field(
         None,
         description = (
@@ -220,7 +231,7 @@ class LocalModelInfo(BaseModel):
     id: str = Field(..., description = "Identifier to use for loading/training")
     display_name: str = Field(..., description = "Display label")
     path: str = Field(..., description = "Local path where model data was discovered")
-    source: Literal["models_dir", "hf_cache", "lmstudio", "custom"] = Field(
+    source: Literal["models_dir", "hf_cache", "lmstudio", "ollama", "hermes", "custom"] = Field(
         ...,
         description = "Discovery source",
     )
@@ -251,6 +262,10 @@ class LocalModelInfo(BaseModel):
         "('text-to-image' for diffusion, 'text-generation' otherwise). Lets the "
         "Images picker show only diffusion GGUFs.",
     )
+    audio_type: Optional[str] = Field(
+        None,
+        description = "Detected output-audio architecture or codec used by Audio runtime policy",
+    )
 
 
 class LocalModelListResponse(BaseModel):
@@ -264,6 +279,10 @@ class LocalModelListResponse(BaseModel):
     lmstudio_dirs: List[str] = Field(
         default_factory = list,
         description = "LM Studio model directories that were scanned",
+    )
+    hermes_dirs: List[str] = Field(
+        default_factory = list,
+        description = "Hermes model directories that were scanned",
     )
     models: List[LocalModelInfo] = Field(
         default_factory = list,

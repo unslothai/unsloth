@@ -3,6 +3,18 @@
 
 from __future__ import annotations
 
+from core.training.account_jobs import (
+    account_process_spec,
+    init_job_owner,
+    job_busy,
+    job_control,
+    job_pump,
+    job_read,
+    owned_job,
+    validate_recipe_access,
+    worker_alive,
+)
+from utils.account_context import account_thread
 import asyncio
 import json
 import queue
@@ -16,7 +28,7 @@ from typing import Any
 
 import multiprocessing as mp
 
-from ..jsonable import to_preview_jsonable
+from ..jsonable import to_preview_jsonable_row
 from .constants import (
     EVENT_JOB_CANCELLING,
     EVENT_JOB_CANCELLED,
@@ -116,6 +128,12 @@ class Subscription:
 class JobManager:
     def __init__(self) -> None:
         """Single-job runner (in-mem). Simple on purpose, not a whole platform."""
+        init_job_owner(
+            self,
+            lambda: worker_alive(self),
+            lambda: self.cancel(self._job.job_id) if self._job else None,
+            self._clear_account_result,
+        )
         self._lock = threading.Lock()
         self._job: Job | None = None
         self._proc: mp.Process | None = None
@@ -125,6 +143,13 @@ class JobManager:
         self._pump_thread: threading.Thread | None = None
         self._seq: int = 0
 
+    def _clear_account_result(self):
+        self._job = None
+        self._events.clear()
+        # Old subscribers retain their private queues but never receive a successor's events.
+        self._subs.clear()
+
+    @owned_job()
     def start(
         self,
         *,
@@ -138,6 +163,7 @@ class JobManager:
         minted by the route layer; revoked on terminal state so the key's
         live window is no longer than the run.
         """
+        validate_recipe_access(recipe)
         llm_columns = recipe.get("columns") or []
         llm_column_count = 0
         if isinstance(llm_columns, list):
@@ -177,25 +203,35 @@ class JobManager:
                 native_path_secret_removed_for_child_start(),
             ):
                 mp_q = _CTX.Queue()
+                process_args, process_kwargs = account_process_spec(
+                    "core.data_recipe.jobs.worker",
+                    "run_job_process",
+                    cache_env,
+                    {"event_queue": mp_q, "recipe": recipe, "run": run_payload},
+                )
                 proc = _CTX.Process(
                     target = run_without_native_path_secret,
-                    args = ("core.data_recipe.jobs.worker", "run_job_process", cache_env),
-                    kwargs = {"event_queue": mp_q, "recipe": recipe, "run": run_payload},
+                    args = process_args,
+                    kwargs = process_kwargs,
                     daemon = True,
                 )
-                proc.start()
-                from utils.process_lifetime import adopt_pid
+                from utils.process_lifetime import adopt_pid, spawn_on_lifetime_thread
 
-                adopt_pid(proc.pid)  # bind to parent lifetime (Windows job / sweep)
+                # Linux PDEATHSIG follows the spawning thread. A sync request's pool
+                # thread can retire while this recipe is still generating (#11002).
+                spawn_on_lifetime_thread(proc.start)
+
+                adopt_pid(proc.pid)
 
             self._mp_q = mp_q
             self._proc = proc
-            self._pump_thread = threading.Thread(target = self._pump_loop, daemon = True)
+            self._pump_thread = account_thread(target = self._pump_loop, daemon = True)
             self._pump_thread.start()
 
             self._emit({"type": EVENT_JOB_ENQUEUED, "ts": time.time(), "job_id": job_id})
             return job_id
 
+    @job_control
     def cancel(self, job_id: str) -> bool:
         """Hard stop. We terminate the subprocess. Quick + reliable."""
         with self._lock:
@@ -211,6 +247,7 @@ class JobManager:
                 pass
             return True
 
+    @job_read(lambda self, *args, **kwargs: None)
     def get_status(self, job_id: str) -> dict | None:
         """UI-friendly structured snapshot; an alternative to SSE."""
         with self._lock:
@@ -272,6 +309,7 @@ class JobManager:
                 "finished_at": job.finished_at,
             }
 
+    @job_read(lambda self: {"status": "busy" if job_busy(self) else "idle"})
     def get_current_status(self) -> dict | None:
         """Single-job convenience (last/current)."""
         job_id = self.get_current_job_id()
@@ -279,11 +317,12 @@ class JobManager:
             return None
         return self.get_status(job_id)
 
+    @job_read(lambda self, *args, **kwargs: None)
     def get_current_job_id(self) -> str | None:
-        """Return current job_id (or None)."""
         with self._lock:
             return None if self._job is None else self._job.job_id
 
+    @job_read(lambda self, *args, **kwargs: None)
     def get_analysis(self, job_id: str) -> dict | None:
         """Final profiling output (only after job completes)."""
         with self._lock:
@@ -291,6 +330,7 @@ class JobManager:
                 return None
             return self._job.analysis
 
+    @job_read(lambda self, *args, **kwargs: None)
     def get_dataset(
         self,
         job_id: str,
@@ -377,7 +417,7 @@ class JobManager:
                 dataframe = dataframe.drop(columns = [helper_col])
 
         rows = dataframe.to_dict(orient = "records")
-        return {"dataset": to_preview_jsonable(rows), "total": total}
+        return {"dataset": to_preview_jsonable_row(rows), "total": total}
 
     @staticmethod
     def _load_dataset_page_with_data_designer(
@@ -388,8 +428,9 @@ class JobManager:
         dataframe = read_parquet_dataset(parquet_dir)
         total = int(len(dataframe.index))
         rows = dataframe.iloc[offset : offset + limit].to_dict(orient = "records")
-        return {"dataset": to_preview_jsonable(rows), "total": total}
+        return {"dataset": to_preview_jsonable_row(rows), "total": total}
 
+    @job_read(lambda self, *args, **kwargs: None)
     def subscribe(
         self,
         job_id: str,
@@ -462,12 +503,14 @@ class JobManager:
 
     def _safe_handle_event(self, job: Job, event: dict) -> None:
         """Apply one event, swallowing any handler error so the pump can't die."""
+        # Worker exited: drain + finalize, guarded so an error can't strand the run "active".
         try:
             self._handle_event(job, event)
         except Exception:
             etype = event.get("type") if isinstance(event, dict) else type(event).__name__
             logger.exception("Data-recipe job pump: failed to handle %s event; skipping", etype)
 
+    @job_pump
     def _pump_loop(self) -> None:
         """Background thread: consume worker events and update the job snapshot.
 
@@ -483,8 +526,7 @@ class JobManager:
             try:
                 event = self._read_queue_with_timeout(mp_q, timeout_sec = 0.25)
             except Exception:
-                # If a read keeps raising after the worker died, finalize instead
-                # of spinning forever; only retry while the worker is still alive.
+                # Only retry while the worker is alive; otherwise finalize instead of spinning forever.
                 logger.exception("Data-recipe job pump: queue read failed; continuing")
                 if proc.is_alive():
                     time.sleep(0.1)
@@ -498,7 +540,6 @@ class JobManager:
             if proc.is_alive():
                 continue
 
-            # Worker exited: drain + finalize, guarded so an error can't strand the run "active".
             try:
                 for e in self._drain_queue(mp_q):
                     self._safe_handle_event(job, e)

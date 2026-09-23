@@ -65,8 +65,8 @@ PORT = int(os.environ.get("SMOKE_PORT", "5186"))
 _EXTERNAL = os.environ.get("SMOKE_BASE_URL", "").strip()
 BASE = _EXTERNAL or f"http://127.0.0.1:{PORT}"
 OWNS_SERVER = not _EXTERNAL
-# Under logs/ like every sibling harness. A default of "." would drop an untracked
-# stream-pacing.json in the repo root every run; logs/ is gitignored, so the tree stays clean.
+# Under logs/ like every sibling harness. A default of "." would drop an untracked stream-pacing.json in the repo root
+# every run; logs/ is gitignored, so the tree stays clean.
 OUT = Path(os.environ.get("PW_ART_DIR", "logs/playwright-stream-pacing"))
 LABEL = "stream-pacing"
 
@@ -192,8 +192,7 @@ def main() -> int:
             f"only {results['paintedChars']} characters painted of {TOTAL_CHARS} sent "
             f"(floor {floor}); the budgets below measured no workload"
         )
-    # paintedChars is a high-water mark and survives a completion render that truncates the
-    # bubble. settledChars is the DOM a reader is actually left looking at.
+    # paintedChars is a high-water mark and survives a completion render that truncates the bubble.
     if results["settledChars"] < floor:
         failures.append(
             f"the reply settled at {results['settledChars']} characters of {TOTAL_CHARS} "
@@ -210,10 +209,9 @@ def main() -> int:
             f"longest stall {results['longestStallMs']:.0f}ms exceeds "
             f"{MAX_LONGEST_STALL_MS}ms (the bubble stopped growing while text arrived)"
         )
-    # The long-task total is the sensitive metric and the one that goes false-green most
-    # quietly: an engine without the longtask entry type, or an observer that stopped
-    # delivering, reports 0ms and sails under the budget without raising. Same reasoning as
-    # the painted-characters floor above.
+    # The long-task total is the sensitive metric and the one that goes false-green most quietly: an engine without the
+    # longtask entry type, or an observer that stopped delivering, reports 0ms and sails under the budget without
+    # raising.
     if not results.get("longTaskSupported"):
         failures.append(
             "this engine reports no longtask entries, so the long-task budget measured "

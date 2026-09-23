@@ -23,21 +23,63 @@ on:
   pull_request:
     paths:
       - 'install.ps1'
+      - '.github/actions/frontend-dist-restore/action.yml'
+      - '.github/actions/frontend-dist-save/action.yml'
+      - '.github/actions/uv-cache-restore/action.yml'
+      - '.github/actions/uv-cache-save/action.yml'
       - 'scripts/uninstall.ps1'
       - 'tests/studio/test_uninstall_*.ps1'
       - 'tests/studio/test_psmodulepath_normalization.ps1'
       - 'studio/setup.ps1'
       - 'studio/setup.bat'
-      - 'studio/install_python_stack.py'
-      - 'studio/install_llama_prebuilt.py'
       - 'studio/backend/requirements/**'
-      - 'unsloth_cli/commands/studio.py'
-      - 'unsloth_cli/__init__.py'
-      - 'unsloth_cli/_system_dir_guard.py'
       - 'pyproject.toml'
+      # The two installer entrypoints above are not self-contained: these are their
+      # first-order local imports, so a commit touching only one of them changes what
+      # this workflow runs while matching none of the entrypoints. Invisible while the
+      # push trigger was unfiltered, because every commit re-ran this after merge.
+      - 'studio/nvidia_probe.py'
+      - 'studio/prebuilt_core.py'
+      # setup.sh runs this at setup.sh:5130 and setup.ps1 at setup.ps1:9025, so it is the
+      # last executed edge of the installer chain that was not listed here.
+      - 'studio/backend/utils/**'
+      - 'studio/install_*.py'
+      - 'studio/node_prebuilt_pins.json'
+      - 'unsloth_cli/**'
+      # frontend-dist-restore keys its cache on exactly these three globs, and a miss
+      # makes the checked-out setup.ps1 run npm run build (setup.ps1:5060), so a
+      # Windows-only build failure changes this job's verdict. Mirrors the cache key
+      # rather than studio/frontend/**: the key excludes tests, scripts and e2e, and a
+      # change confined to those cannot cause the miss that triggers the build.
+      - 'studio/frontend/*'
+      - 'studio/frontend/src/**'
+      - 'studio/frontend/public/**'
       - '.github/workflows/studio-windows-update-smoke.yml'
   push:
     branches: [main]
+    paths:
+      - 'install.ps1'
+      - '.github/actions/frontend-dist-restore/action.yml'
+      - '.github/actions/frontend-dist-save/action.yml'
+      - '.github/actions/uv-cache-restore/action.yml'
+      - '.github/actions/uv-cache-save/action.yml'
+      - 'scripts/uninstall.ps1'
+      - 'tests/studio/test_uninstall_*.ps1'
+      - 'tests/studio/test_psmodulepath_normalization.ps1'
+      - 'studio/setup.ps1'
+      - 'studio/setup.bat'
+      - 'studio/backend/requirements/**'
+      - 'pyproject.toml'
+      - 'studio/nvidia_probe.py'
+      - 'studio/prebuilt_core.py'
+      - 'studio/backend/utils/**'
+      - 'studio/install_*.py'
+      - 'studio/node_prebuilt_pins.json'
+      - 'unsloth_cli/**'
+      - 'studio/frontend/*'
+      - 'studio/frontend/src/**'
+      - 'studio/frontend/public/**'
+      - '.github/workflows/studio-windows-update-smoke.yml'
   workflow_dispatch:
 
 concurrency:
@@ -162,6 +204,24 @@ jobs:
             }
           }
 
+      # 96s of a ~257s install on Windows (`[72s] building frontend...` -> `[168s]
+      # frontend built`, 37% of it), spent in five Windows jobs on every commit to
+      # produce byte-identical output. The key hashes exactly the paths
+      # studio/setup.ps1:3526-3549 checks before rebuilding, so a hit means the build
+      # inputs are byte-identical; the action's own reasoning, and the assertion that
+      # a hit was actually REUSED rather than rebuilt, live in
+      # .github/actions/frontend-dist-restore and -save.
+      # The uv download cache, which install-unsloth-local restores for the Linux and
+      # macOS jobs and this hand-written pwsh install never had. install.ps1 preserves the
+      # UV_CACHE_DIR the action exports; the key lives in .github/actions/uv-cache-restore.
+      - name: Restore the uv download cache
+        id: uv-cache
+        uses: ./.github/actions/uv-cache-restore
+
+      - name: Restore the built frontend
+        id: fe-dist
+        uses: ./.github/actions/frontend-dist-restore
+
       - name: Install Unsloth (--local, --no-torch)
         shell: pwsh
         env:
@@ -190,6 +250,22 @@ jobs:
             Tee-Object -FilePath logs/install.log |
             ForEach-Object { '[{0,4:N0}s] {1}' -f $sw.Elapsed.TotalSeconds, $_ }
           if ($LASTEXITCODE -ne 0) { throw "install.ps1 exited with code $LASTEXITCODE" }
+
+      # Paired with the restore above: asserts the hit was reused (a `building
+      # frontend` line after a hit fails the job -- otherwise the cache costs a
+      # download, saves nothing, and still reports a hit), then saves on main only.
+      - name: Save the built frontend
+        uses: ./.github/actions/frontend-dist-save
+        with:
+          cache-hit: ${{ steps.fe-dist.outputs.cache-hit }}
+          key: ${{ steps.fe-dist.outputs.key }}
+
+      # Paired with the uv restore above: pruned to built wheels, saved on main only.
+      - name: Save the uv download cache
+        uses: ./.github/actions/uv-cache-save
+        with:
+          cache-hit: ${{ steps.uv-cache.outputs.cache-hit }}
+          key: ${{ steps.uv-cache.outputs.key }}
 
       - name: Assert install.ps1 used the Windows llama.cpp prebuilt
         run: |

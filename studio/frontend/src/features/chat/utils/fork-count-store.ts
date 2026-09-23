@@ -1,34 +1,25 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-/**
- * One fork-count subscription per rendered thread, shared by every message badge.
- *
- * The badge used to own a `CHAT_HISTORY_UPDATED_EVENT` listener and a request per
- * message, so a 200-message thread spent 200 requests on every history event, and
- * streaming raises one of those per chunk.
- */
+/** One fork-count subscription per rendered thread, shared by every message badge. The badge used
+ *  to own a `CHAT_HISTORY_UPDATED_EVENT` listener and a request per message, so a 200-message
+ *  thread spent 200 requests on every history event, and streaming raises one per chunk. */
 import {
   CHAT_HISTORY_UPDATED_EVENT,
   getThreadForkCounts,
 } from "../api/chat-api";
-import { isAssistantLocalThreadId } from "./thread-ids";
+import { isThreadIncognito } from "./chat-history-storage";
 
 // Same reasoning as the sidebar's refresh: each quiet window costs one fetch.
 export const FORK_COUNT_REFRESH_DEBOUNCE_MS = 300;
 
 // The ceiling on how long a real fork change can sit unrendered. A trailing edge alone is a
-// starvation hazard, not merely a slow path: CHAT_HISTORY_UPDATED_EVENT fires once per streaming
-// chunk, so a reply running in a background thread resets the timer forever and a fork deleted
-// from the sidebar keeps its old badge for as long as that reply runs, which on a queued or long
-// generation is minutes. The event is a bare Event with no detail and six other consumers, so
-// telling fork changes apart from chunks would mean changing a contract well outside this store;
-// bounding the wait fixes the same problem inside it.
-//
-// 2000 rather than something tighter because the cost of the bound is one whole-thread fetch per
-// window for as long as a stream runs. At 300ms that is the per-chunk traffic this store exists
-// to remove; at 2000 it is under a sixth of it, and it is paid only while something is actually
-// streaming.
+// starvation hazard: CHAT_HISTORY_UPDATED_EVENT fires once per streaming chunk, so a reply
+// running in a background thread resets the timer forever and a deleted fork keeps its old
+// badge for minutes. The event is a bare Event with six other consumers, so telling fork
+// changes apart from chunks would mean changing a contract well outside this store. 2000
+// rather than tighter because the bound costs one whole-thread fetch per window while a
+// stream runs; at 300ms that is the per-chunk traffic this store exists to remove.
 export const FORK_COUNT_REFRESH_MAX_WAIT_MS = 2000;
 
 type Counts = ReadonlyMap<string, number>;
@@ -52,16 +43,13 @@ let listening = false;
 async function refresh(threadId: string): Promise<void> {
   const entry = entries.get(threadId);
   if (!entry) return;
-  // A thread the server has never seen cannot have forks, so this request can only
-  // ever 404 -- and getThreadForkCounts already maps that to an empty map, which is
-  // what the entry starts as. It is a round trip whose answer is known.
-  //
-  // Not a rounding error: a new chat is in exactly this state, and this store
-  // refreshes on CHAT_HISTORY_UPDATED_EVENT, which fires once per streaming chunk.
-  // So the first reply in a new chat pays one guaranteed-useless request per debounce
-  // window for as long as it streams. The heavy-thread smoke is what noticed --
-  // it counts requests issued inside a measured interaction, and these landed there.
-  if (isAssistantLocalThreadId(threadId)) return;
+  // A temporary chat is the one thread whose forks cannot exist: ensureThreadRecord marks it and
+  // returns without a row. The row decides that, not the id, since a `__LOCALID_` prefix belongs
+  // to every chat the app creates. Skipped because the answer is already the empty map the entry
+  // holds, not to dodge a failure: fork_counts_for_thread GROUPs without looking the source up,
+  // so an unknown thread gets 200 and an empty map here, unlike the per-thread routes, which
+  // reject a missing thread.
+  if (isThreadIncognito(threadId)) return;
   const seq = ++entry.seq;
   let counts: Counts;
   try {
@@ -92,17 +80,16 @@ function runRefresh(): void {
 }
 
 function onHistoryUpdated(): void {
-  // Clear and reschedule, as the sidebar refresh does. Returning while a timer exists would
-  // make this a leading-edge throttle: streaming fires this event per chunk, so the timer
-  // would expire mid-stream and the next chunk would start another window, costing one
-  // whole-thread fetch every FORK_COUNT_REFRESH_DEBOUNCE_MS for as long as the reply runs.
-  // Fork counts cannot change during generation, so every one of those is wasted.
+  // Clear and reschedule, as the sidebar refresh does. Returning while a timer exists would make
+  // this a leading-edge throttle: streaming fires this event per chunk, so the timer would
+  // expire mid-stream and the next chunk would start another window, costing one whole-thread
+  // fetch every FORK_COUNT_REFRESH_DEBOUNCE_MS for as long as the reply runs. Fork counts cannot
+  // change during generation, so every one of those is wasted.
   if (pendingRefresh) clearTimeout(pendingRefresh);
   pendingRefresh = setTimeout(runRefresh, FORK_COUNT_REFRESH_DEBOUNCE_MS);
-  // The bound. Deliberately not restarted while it is already running, or a per-chunk event
-  // stream would push it out exactly the way it pushes out the trailing edge, and the ceiling
-  // would not be a ceiling. Implemented as a second timer rather than a Date.now() deadline so
-  // it is driven by the same clock as the debounce and can be tested without a fake Date.
+  // The bound. Deliberately not restarted while it is already running, or a per-chunk event stream
+  // would push it out the way it pushes out the trailing edge. A second timer rather than a
+  // Date.now() deadline so it shares the debounce's clock and can be tested without a fake Date.
   if (!maxWaitTimer) {
     maxWaitTimer = setTimeout(runRefresh, FORK_COUNT_REFRESH_MAX_WAIT_MS);
   }

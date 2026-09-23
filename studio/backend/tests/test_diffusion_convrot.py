@@ -289,7 +289,7 @@ def test_format_tag_follows_the_rotation():
     [
         (pq.PREQUANT_FORMAT, {}, True),
         (pq.PREQUANT_FORMAT_ROTATED, _meta(["a"]), True),
-        # A rotated artifact tagged v1 loads clean on a Studio predating the online half and
+        # A rotated artifact tagged v1 loads clean on an Unsloth predating the online half and
         # renders wrong pixels. Refuse it here too: whoever wrote the tag is not to be trusted
         # about the rest of the file either.
         (pq.PREQUANT_FORMAT, _meta(["a"]), False),
@@ -315,9 +315,9 @@ def test_h3_int8_resolves_to_the_rotated_artifact_with_the_plain_one_behind_it()
     src = pq.resolve_prequant_source(fam, "int8")
     assert src.location == "unsloth/MiniMax-H3-FP8"
     assert src.filename == "MiniMax-H3-INT8-ConvRot.pt"
-    assert src.fallback_filename == "MiniMax-H3-INT8.pt"
+    assert "MiniMax-H3-INT8.pt" in src.fallback_filenames
     # fp8 is untouched: one artifact, the derived name.
-    assert pq.resolve_prequant_source(fam, "fp8").filename == "MiniMax-H3-FP8.pt"
+    assert pq.resolve_prequant_source(fam, "fp8").filename == "MiniMax-H3-FP8.safetensors"
 
 
 # ── end to end through the prequant loader ────────────────────────────────────────

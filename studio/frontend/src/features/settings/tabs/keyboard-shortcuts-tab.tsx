@@ -9,55 +9,66 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { useT } from "@/i18n";
+import { isTauri } from "@/lib/api-base";
 import { cn } from "@/lib/utils";
 import {
   Alert01Icon,
   ArrowTurnBackwardIcon,
   Delete02Icon,
+  EnergyRectangleIcon,
   PencilEdit02Icon,
   Search01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useEffect, useMemo, useState } from "react";
-import { SettingsRow } from "../components/settings-row";
-import { SettingsSection } from "../components/settings-section";
+import {
+  type ReactNode,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import {
   SHORTCUT_DEFS,
-  SHORTCUT_GROUPS,
+  SHORTCUT_SLOTS,
+  type ShortcutBinding,
   type ShortcutDef,
-  type ShortcutGroup,
   type ShortcutId,
+  type ShortcutSlot,
   bindingFromEvent,
+  defaultBindingFor,
   formatBindingLabel,
   formatBindingValue,
   isAcceptableBinding,
+  isBrowserReservedBinding,
   isMacPlatform,
+  keystrokeMatchesBinding,
   parseBinding,
 } from "../lib/keyboard-shortcuts";
 import {
   findConflicts,
+  isSlotOverridden,
   resolveBinding,
   shortcutOwningBinding,
   useKeyboardShortcutsStore,
 } from "../stores/keyboard-shortcuts-store";
 
-const GROUP_LABEL_KEYS = {
-  general: "settings.keyboardShortcuts.groups.general",
-  chat: "settings.keyboardShortcuts.groups.chat",
-} as const satisfies Record<ShortcutGroup, string>;
-
-/** The ⌘⇧O chip. Renders the placeholder text when nothing is bound. */
-function BindingChip({
+/** The ⇧⌘O key cap. Plain text when the slot carries no chord. */
+function Chord({
   label,
   tone,
+  note,
 }: {
   label: string;
   tone: "assigned" | "unassigned" | "recording";
+  /** Why the browser may swallow this chord. Hover only, so the caps stay a
+   *  clean column. */
+  note?: string;
 }) {
-  return (
+  const cap = (
     <span
       className={cn(
-        "inline-flex min-w-16 items-center justify-center rounded-md px-2 py-1 text-xs font-medium tabular-nums",
+        // Width hugs the chord, so ⌘, and ⇧⌘O share a left edge.
+        "inline-flex h-7 items-center rounded-md px-2.5 text-xs font-medium tabular-nums",
         tone === "assigned" && "bg-muted text-foreground",
         tone === "unassigned" && "text-muted-foreground",
         tone === "recording" &&
@@ -67,37 +78,53 @@ function BindingChip({
       {label}
     </span>
   );
+  if (!note) return cap;
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild={true}>{cap}</TooltipTrigger>
+      <TooltipContent className="max-w-[260px] leading-snug">
+        {note}
+      </TooltipContent>
+    </Tooltip>
+  );
 }
 
-function IconButton({
+/** Borderless pencil / trash / undo. */
+function RowIconButton({
   icon,
   label,
   onClick,
-  disabled,
+  className,
 }: {
   icon: typeof PencilEdit02Icon;
   label: string;
   onClick: () => void;
-  disabled?: boolean;
+  className?: string;
 }) {
   return (
     <Tooltip>
       <TooltipTrigger asChild={true}>
-        <Button
+        <button
           type="button"
-          variant="ghost"
-          size="icon"
-          className="size-8 text-muted-foreground hover:text-foreground"
           aria-label={label}
-          disabled={disabled}
           onClick={onClick}
+          className={cn(
+            "inline-flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+            className,
+          )}
         >
           <HugeiconsIcon icon={icon} strokeWidth={1.75} className="size-4" />
-        </Button>
+        </button>
       </TooltipTrigger>
       <TooltipContent>{label}</TooltipContent>
     </Tooltip>
   );
+}
+
+/** Which row and which of its two chords the recorder is listening for. */
+interface RecordingTarget {
+  id: ShortcutId;
+  slot: ShortcutSlot;
 }
 
 export function KeyboardShortcutsTab() {
@@ -109,9 +136,13 @@ export function KeyboardShortcutsTab() {
   const resetAll = useKeyboardShortcutsStore((s) => s.resetAll);
 
   const [query, setQuery] = useState("");
-  const [recordingId, setRecordingId] = useState<ShortcutId | null>(null);
+  const [recording, setRecording] = useState<RecordingTarget | null>(null);
   // Shown under the row being recorded when the pressed chord is rejected.
   const [recordingError, setRecordingError] = useState<string | null>(null);
+  // Search the list by pressing a chord instead of typing its name.
+  const [byKeystroke, setByKeystroke] = useState(false);
+  const [keystroke, setKeystroke] = useState<ShortcutBinding | null>(null);
+  const searchRef = useRef<HTMLInputElement>(null);
 
   const mac = isMacPlatform();
   const conflicts = useMemo(() => findConflicts(overrides), [overrides]);
@@ -119,91 +150,239 @@ export function KeyboardShortcutsTab() {
   // Capture phase, so the chord being recorded reaches this listener before the
   // shortcut it is replacing fires and before Radix's Escape-to-close.
   useEffect(() => {
-    if (!recordingId) return;
+    if (!recording) return;
+    const def = SHORTCUT_DEFS.find((entry) => entry.id === recording.id);
     const onKeyDown = (event: KeyboardEvent) => {
+      // Tab held bare is never an acceptable binding, so it is still what it was: the way out. Left
+      // swallowed with the rest, a row that records bare keys had no keyboard exit at all, since
+      // Escape is a chord there and Enter or Space on the focused pencil records instead of
+      // pressing it. Not prevented, so focus moves on as it would have.
+      if (
+        event.code === "Tab" &&
+        !event.metaKey &&
+        !event.ctrlKey &&
+        !event.altKey
+      ) {
+        setRecording(null);
+        setRecordingError(null);
+        return;
+      }
       event.preventDefault();
       event.stopPropagation();
+      // Every keydown is swallowed above, so bare Escape is the only way out of recording. The
+      // exception is a row that takes bare keys: Escape is the chord it ships, so recording it has
+      // to be possible, and the pencil cancels there instead.
       if (
         event.code === "Escape" &&
         !event.metaKey &&
         !event.ctrlKey &&
         !event.altKey &&
-        !event.shiftKey
+        !event.shiftKey &&
+        !def?.allowBareKey
       ) {
-        setRecordingId(null);
+        setRecording(null);
         setRecordingError(null);
         return;
       }
       const binding = bindingFromEvent(event);
       // Modifier held on its own: the user is still assembling the chord.
       if (!binding) return;
-      if (!isAcceptableBinding(binding)) {
+      if (!isAcceptableBinding(binding, def?.allowBareKey)) {
         setRecordingError(t("settings.keyboardShortcuts.needsModifier"));
         return;
       }
-      setBinding(recordingId, formatBindingValue(binding));
-      setRecordingId(null);
+      setBinding(recording.id, recording.slot, formatBindingValue(binding));
+      setRecording(null);
       setRecordingError(null);
     };
     window.addEventListener("keydown", onKeyDown, { capture: true });
     return () =>
       window.removeEventListener("keydown", onKeyDown, { capture: true });
-  }, [recordingId, setBinding, t]);
+  }, [recording, setBinding, t]);
+
+  // Capture phase, as the recorder is: the chord has to arrive before the shortcut
+  // it names fires, and before Radix's Escape closes the dialog. The recorder owns
+  // the keyboard while it runs, so this stands down for it.
+  useEffect(() => {
+    if (!byKeystroke || recording) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      // Only while the box has focus: the rest of the tab keeps its own keys.
+      if (document.activeElement !== searchRef.current) return;
+      // Read the key through the binding, not event.code, so the fallback for an
+      // engine that reports no code covers Tab and Escape here too.
+      const binding = bindingFromEvent(event);
+      // Modifier on its own: the chord is still being assembled.
+      if (!binding) return;
+      const bare = !binding.mod && !binding.ctrl && !binding.alt;
+      // Tab still moves focus: a mode that swallowed it would trap the keyboard here.
+      if (binding.code === "Tab" && bare) return;
+      event.preventDefault();
+      event.stopPropagation();
+      // Escape backs out a step at a time: the chord first, then the mode. It is the one
+      // shipped default the box cannot take as a query (declineToolRequest): the recorder
+      // can free Escape because it swallows keys for a single chord, while this mode
+      // persists, so freeing it here would leave a focused box eating the dialog's own
+      // dismiss for as long as the mode is on. That row is found by name instead, where
+      // the query also matches the "Esc" cap. Shift+Escape is unaffected and searchable.
+      if (binding.code === "Escape" && bare && !binding.shift) {
+        if (keystroke) setKeystroke(null);
+        else setByKeystroke(false);
+        return;
+      }
+      setKeystroke(binding);
+    };
+    window.addEventListener("keydown", onKeyDown, { capture: true });
+    return () =>
+      window.removeEventListener("keydown", onKeyDown, { capture: true });
+  }, [byKeystroke, recording, keystroke]);
+
+  const toggleByKeystroke = () => {
+    // The two searches filter the same list, so leaving one arms the other empty.
+    setByKeystroke((on) => !on);
+    setQuery("");
+    setKeystroke(null);
+    searchRef.current?.focus();
+  };
 
   const matches = useMemo(() => {
+    if (byKeystroke) {
+      // Nothing pressed yet: the whole list, not an empty one.
+      if (!keystroke) return null;
+      return new Set(
+        SHORTCUT_DEFS.filter((def) =>
+          SHORTCUT_SLOTS.some((slot) => {
+            const parsed = parseBinding(resolveBinding(overrides, def.id, slot));
+            return parsed ? keystrokeMatchesBinding(keystroke, parsed) : false;
+          }),
+        ).map((def) => def.id),
+      );
+    }
     const q = query.trim().toLowerCase();
     if (!q) return null;
     return new Set(
       SHORTCUT_DEFS.filter((def) => {
         const haystack = `${t(def.labelKey)} ${t(def.descriptionKey)}`;
         if (haystack.toLowerCase().includes(q)) return true;
-        const value = resolveBinding(overrides, def.id);
-        const parsed = parseBinding(value);
-        return parsed
-          ? formatBindingLabel(parsed, mac).toLowerCase().includes(q)
-          : false;
+        return SHORTCUT_SLOTS.some((slot) => {
+          const parsed = parseBinding(resolveBinding(overrides, def.id, slot));
+          return parsed
+            ? formatBindingLabel(parsed, mac).toLowerCase().includes(q)
+            : false;
+        });
       }).map((def) => def.id),
     );
-  }, [query, t, overrides, mac]);
+  }, [query, t, overrides, mac, byKeystroke, keystroke]);
 
-  const groups = SHORTCUT_GROUPS.map((group) => ({
-    group,
-    defs: SHORTCUT_DEFS.filter(
-      (def) => def.group === group && (!matches || matches.has(def.id)),
-    ),
-  })).filter((entry) => entry.defs.length > 0);
+  // One list, in registry order, so the daily rows sit above the fold.
+  const visible = SHORTCUT_DEFS.filter(
+    // A web-only row on the desktop build would bind a chord whose handler
+    // returns, so it is left out rather than shown as a key that does nothing.
+    (def) => (!matches || matches.has(def.id)) && !(isTauri && def.webOnly),
+  );
 
-  // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Chip, hint, badge and buttons all read one resolved binding; splitting only passes it around.
-  const renderRow = (def: ShortcutDef) => {
-    const value = resolveBinding(overrides, def.id);
+  const startRecording = (def: ShortcutDef, slot: ShortcutSlot) => {
+    setRecordingError(null);
+    setRecording(
+      recording?.id === def.id && recording.slot === slot
+        ? null
+        : { id: def.id, slot },
+    );
+  };
+
+  /** One chord line: cap and pencil left, trash right. A row with an
+   *  alternate stacks two. */
+  const renderSlot = (def: ShortcutDef, slot: ShortcutSlot): ReactNode => {
+    const value = resolveBinding(overrides, def.id, slot);
     const parsed = parseBinding(value);
-    const recording = recordingId === def.id;
-    const conflicted = conflicts.has(def.id) && !recording;
-    // Say which side of a clash this row is on, since only the owner runs.
-    const shadowed =
-      conflicted && shortcutOwningBinding(overrides, value) !== def.id;
-    const label = recording
-      ? t("settings.keyboardShortcuts.recording")
-      : parsed
-        ? formatBindingLabel(parsed, mac)
-        : t("settings.keyboardShortcuts.unassigned");
-    const overridden = Object.hasOwn(overrides, def.id);
+    const isRecording = recording?.id === def.id && recording.slot === slot;
+    const slotName = t(
+      slot === "primary"
+        ? "settings.keyboardShortcuts.primarySlot"
+        : "settings.keyboardShortcuts.alternateSlot",
+    );
+    // The warning rides the cap's tooltip, not a third line of description.
+    const reserved =
+      !isTauri && !isRecording && isBrowserReservedBinding(value);
 
     return (
-      <SettingsRow
+      <div key={slot} className="flex items-center justify-between gap-3">
+        <div className="flex items-center gap-1">
+          <Chord
+            label={
+              isRecording
+                ? t("settings.keyboardShortcuts.recording")
+                : parsed
+                  ? formatBindingLabel(parsed, mac)
+                  : t("settings.keyboardShortcuts.unassigned")
+            }
+            tone={
+              isRecording ? "recording" : parsed ? "assigned" : "unassigned"
+            }
+            note={
+              reserved
+                ? t("settings.keyboardShortcuts.browserReserved")
+                : undefined
+            }
+          />
+          <RowIconButton
+            icon={PencilEdit02Icon}
+            label={`${t("settings.keyboardShortcuts.edit")} (${slotName})`}
+            onClick={() => startRecording(def, slot)}
+          />
+          {isSlotOverridden(overrides, def.id, slot) ? (
+            <RowIconButton
+              icon={ArrowTurnBackwardIcon}
+              label={`${t("settings.keyboardShortcuts.reset")} (${slotName})`}
+              onClick={() => resetBinding(def.id, slot)}
+            />
+          ) : null}
+        </div>
+        {parsed && !isRecording ? (
+          <RowIconButton
+            icon={Delete02Icon}
+            label={`${t("settings.keyboardShortcuts.clear")} (${slotName})`}
+            onClick={() => clearBinding(def.id, slot)}
+          />
+        ) : null}
+      </div>
+    );
+  };
+
+  const renderRow = (def: ShortcutDef) => {
+    const isRecording = recording?.id === def.id;
+    const conflicted = conflicts.has(def.id) && !isRecording;
+    // Say which side of a clash this row is on, since only the owner runs.
+    const shadowed =
+      conflicted &&
+      SHORTCUT_SLOTS.every((slot) => {
+        const value = resolveBinding(overrides, def.id, slot);
+        return !value || shortcutOwningBinding(overrides, value) !== def.id;
+      });
+    // Anything this action ships an alternate for keeps its line, cleared or not: hiding a cleared
+    // slot would take its restore control with it, and Reset all is not a way back from one edit.
+    const hasAlternate =
+      defaultBindingFor(def, "alternate", mac) !== null ||
+      resolveBinding(overrides, def.id, "alternate") !== null ||
+      (recording?.id === def.id && recording.slot === "alternate");
+
+    return (
+      <div
         key={def.id}
-        label={t(def.labelKey)}
-        description={
-          <span className="flex flex-col gap-0.5">
-            <span>{t(def.descriptionKey)}</span>
-            {recording ? (
-              <span className="text-xs text-primary">
+        data-settings-label={t(def.labelKey)}
+        className="group/row flex items-center gap-6 py-3.5"
+      >
+        <div className="flex min-w-0 flex-1 basis-0 flex-col gap-0.5">
+          <span className="text-sm font-medium text-foreground">
+            {t(def.labelKey)}
+          </span>
+          <span className="text-xs leading-snug text-muted-foreground">
+            {isRecording ? (
+              <span className="text-primary">
                 {recordingError ??
                   t("settings.keyboardShortcuts.recordingHint")}
               </span>
-            ) : null}
-            {conflicted ? (
-              <span className="flex items-center gap-1 text-xs text-amber-500">
+            ) : conflicted ? (
+              <span className="flex items-center gap-1 text-amber-500">
                 <HugeiconsIcon
                   icon={Alert01Icon}
                   strokeWidth={1.75}
@@ -213,83 +392,119 @@ export function KeyboardShortcutsTab() {
                   ? t("settings.keyboardShortcuts.conflictShadowed")
                   : t("settings.keyboardShortcuts.conflict")}
               </span>
-            ) : null}
+            ) : (
+              t(def.descriptionKey)
+            )}
           </span>
-        }
-      >
-        <div className="flex items-center gap-1">
-          <BindingChip
-            label={label}
-            tone={recording ? "recording" : parsed ? "assigned" : "unassigned"}
-          />
-          <IconButton
-            icon={PencilEdit02Icon}
-            label={t("settings.keyboardShortcuts.edit")}
-            onClick={() => {
-              setRecordingError(null);
-              setRecordingId(recording ? null : def.id);
-            }}
-          />
-          {overridden ? (
-            <IconButton
-              icon={ArrowTurnBackwardIcon}
-              label={t("settings.keyboardShortcuts.reset")}
-              onClick={() => resetBinding(def.id)}
-            />
-          ) : null}
-          <IconButton
-            icon={Delete02Icon}
-            label={t("settings.keyboardShortcuts.clear")}
-            disabled={!parsed}
-            onClick={() => clearBinding(def.id)}
-          />
         </div>
-      </SettingsRow>
+        {/* pl-10 nudges the caps off the descriptions: the labels run long
+            enough that a bare half-and-half split left them crowding. */}
+        <div className="flex flex-1 basis-0 flex-col gap-1.5 pl-10">
+          {renderSlot(def, "primary")}
+          {/* Only the actions that ship an alternate have a second line: there
+              is no affordance for adding one. */}
+          {hasAlternate ? renderSlot(def, "alternate") : null}
+        </div>
+      </div>
     );
   };
 
   return (
-    <div className="flex flex-col gap-6">
-      <SettingsSection
-        title={t("settings.keyboardShortcuts.title")}
-        description={t("settings.keyboardShortcuts.description")}
-      >
-        <div className="relative py-3">
-          <HugeiconsIcon
-            icon={Search01Icon}
-            strokeWidth={2}
-            className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground"
-          />
-          <Input
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            placeholder={t("settings.keyboardShortcuts.searchPlaceholder")}
-            className="pl-9"
-            aria-label={t("settings.keyboardShortcuts.searchPlaceholder")}
-          />
-        </div>
-      </SettingsSection>
+    <div className="flex flex-col gap-5">
+      <header className="flex flex-col gap-1">
+        <h1
+          data-settings-label={t("settings.keyboardShortcuts.title")}
+          className="text-xl font-semibold font-heading"
+        >
+          {t("settings.keyboardShortcuts.title")}
+        </h1>
+      </header>
 
-      {groups.length === 0 ? (
+      <div className="relative">
+        <HugeiconsIcon
+          icon={Search01Icon}
+          strokeWidth={2}
+          className="pointer-events-none absolute left-4 top-1/2 size-4 -translate-y-1/2 text-muted-foreground"
+        />
+        <Input
+          ref={searchRef}
+          // Chord mode shows the press, not text: the field is read-only there and
+          // the capture listener above is what fills it.
+          value={
+            byKeystroke
+              ? keystroke
+                ? formatBindingLabel(keystroke, mac)
+                : ""
+              : query
+          }
+          onChange={(e) => setQuery(e.target.value)}
+          readOnly={byKeystroke}
+          placeholder={t(
+            byKeystroke
+              ? "settings.keyboardShortcuts.keystrokePlaceholder"
+              : "settings.keyboardShortcuts.searchPlaceholder",
+          )}
+          className={cn(
+            "h-11 rounded-full pl-11 pr-12",
+            byKeystroke && "font-medium tabular-nums",
+          )}
+          aria-label={t(
+            byKeystroke
+              ? "settings.keyboardShortcuts.keystrokePlaceholder"
+              : "settings.keyboardShortcuts.searchPlaceholder",
+          )}
+        />
+        <Tooltip>
+          <TooltipTrigger asChild={true}>
+            <button
+              type="button"
+              aria-pressed={byKeystroke}
+              aria-label={t(
+                byKeystroke
+                  ? "settings.keyboardShortcuts.searchByName"
+                  : "settings.keyboardShortcuts.searchByKeystrokes",
+              )}
+              onClick={toggleByKeystroke}
+              className={cn(
+                "absolute right-2 top-1/2 inline-flex size-8 -translate-y-1/2 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+                byKeystroke && "bg-muted text-foreground",
+              )}
+            >
+              <HugeiconsIcon
+                icon={EnergyRectangleIcon}
+                strokeWidth={1.75}
+                className="size-4"
+              />
+            </button>
+          </TooltipTrigger>
+          <TooltipContent>
+            {t(
+              byKeystroke
+                ? "settings.keyboardShortcuts.searchByName"
+                : "settings.keyboardShortcuts.searchByKeystrokes",
+            )}
+          </TooltipContent>
+        </Tooltip>
+      </div>
+
+      {visible.length === 0 ? (
         <p className="text-sm text-muted-foreground">
           {t("settings.keyboardShortcuts.noResults")}
         </p>
       ) : (
-        groups.map(({ group, defs }) => (
-          <SettingsSection key={group} title={t(GROUP_LABEL_KEYS[group])}>
-            {defs.map(renderRow)}
-          </SettingsSection>
-        ))
+        // No frame: the dividers alone separate the rows, and they line up
+        // with the heading and the search box above.
+        <div className="divide-y divide-border/60">{visible.map(renderRow)}</div>
       )}
 
-      <div className="flex justify-start border-t border-border/60 pt-4">
+      <div className="flex justify-start pt-1">
         <Button
           type="button"
           variant="outline"
           size="sm"
           disabled={Object.keys(overrides).length === 0}
           onClick={() => {
-            setRecordingId(null);
+            setRecording(null);
             setRecordingError(null);
             resetAll();
           }}

@@ -313,7 +313,6 @@ class TestConsumersShareTheProbe:
     def test_probe_installed_torch_version_uses_the_shared_result(self):
         with patch.object(stack_mod.subprocess, "run", return_value = _probe_result()) as mock_run:
             assert stack_mod._probe_installed_torch_version() == "2.9.1+cu128"
-            # Second consumer, same run: no new interpreter.
             assert stack_mod._probe_installed_torch_version() == "2.9.1+cu128"
         assert mock_run.call_count == 1
 

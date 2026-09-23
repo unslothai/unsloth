@@ -26,7 +26,9 @@ def _assume_the_restricted_load_is_available(monkeypatch):
     Without this, a machine with no (or a skewed) torchao turns every hosted-prequant decision
     below into "keep the dense weights". The capability is covered in test_diffusion_prequant.py."""
     import core.inference.diffusion_prequant as _pq
-    monkeypatch.setattr(_pq, "restricted_prequant_load_supported", lambda scheme = None: True)
+    monkeypatch.setattr(
+        _pq, "restricted_prequant_load_supported", lambda scheme = None, filename = None: True
+    )
 
 
 from core.inference.diffusion_auto_policy import (
@@ -110,7 +112,7 @@ def test_klein_base_9b_is_sized_like_the_9b_not_the_4b():
     )
     assert base_9b == nine_b
     assert base_9b is not None and default is not None and base_9b[0] > 2 * default[0]
-    # The unsloth mirror is what Studio actually loads, and canonical_base has to route it here too.
+    # The unsloth mirror is what Unsloth actually loads, and canonical_base has to route it here too.
     assert (
         family_bf16_components_gb(_fam("flux.2-klein"), base_repo = "unsloth/FLUX.2-klein-base-9B")
         == base_9b
@@ -272,7 +274,7 @@ def test_a_local_override_is_never_gated_on_disk_space(monkeypatch):
 def test_the_cached_probe_is_pinned_to_the_active_cache_root(monkeypatch):
     """Unpinned, cached_checkpoint_path reads only huggingface_hub's import-time constant.
 
-    Studio's cache folder is a setting, so after it changes the retry proves the checkpoint cached
+    Unsloth's cache folder is a setting, so after it changes the retry proves the checkpoint cached
     in the LIVE root while an unpinned probe here still calls it uncached and re-applies the gate,
     defeating the moved-cache retry this excuse exists for. The retry and the loader both pin the
     active root; so must this.
@@ -519,3 +521,47 @@ def test_the_refusal_only_offers_auto_where_auto_exists():
     )
     assert "Auto" not in te
     assert te.endswith("Leave it unset to keep the dense bf16 encoder.")
+
+
+def test_every_family_with_a_hosted_prequant_can_be_sized():
+    """A family the size table does not know cannot use its own hosted checkpoints.
+
+    ``resolve_dense_quant_candidate`` returns None without a size entry, so
+    ``_pipeline_planned_denoiser_scheme`` has nothing to seed from and the loader keeps the dense
+    transformer, which is precisely the download the prequant rows exist to avoid. The family
+    looks complete from its own entry, so the miss is only visible from here.
+    """
+    from core.inference.diffusion_auto_policy import _FAMILY_BF16_GB
+    from core.inference.diffusion_families import _FAMILIES
+
+    unsizable = [
+        f.name
+        for f in _FAMILIES
+        if (getattr(f, "prequant_repos", ()) or ()) and f.name not in _FAMILY_BF16_GB
+    ]
+    assert not unsizable, (
+        f"these families declare hosted pre-quant checkpoints the auto policy cannot size, so "
+        f"the seed is never chosen and the dense transformer is downloaded instead: {unsizable}"
+    )
+
+
+def test_qwen_image_21_sizes_a_dense_quant_candidate():
+    """The concrete case, with the numbers, so a wrong entry is as visible as a missing one."""
+    from core.inference.diffusion_auto_policy import _FAMILY_BF16_GB, estimate_dense_quant
+    from core.inference.diffusion_families import detect_family
+
+    fam = detect_family("Qwen/Qwen-Image-2.1")
+    transformer, encoders, vae = _FAMILY_BF16_GB[fam.name]
+    # From Qwen/Qwen-Image-2.1's own sibling metadata: 14.23 / 17.53 / 1.35 GB, bf16 on disk.
+    assert 13.5 < transformer < 15.0, transformer
+    assert 17.0 < encoders < 18.0, encoders
+    assert 1.0 < vae < 2.0, vae
+    # And it is NOT Qwen-Image's row: a different architecture, with a smaller DiT and a larger
+    # encoder, so copying that entry would misplan in both directions at once.
+    assert (transformer, encoders, vae) != _FAMILY_BF16_GB["qwen-image"]
+    assert transformer < _FAMILY_BF16_GB["qwen-image"][0]
+    assert encoders > _FAMILY_BF16_GB["qwen-image"][1]
+
+    est = estimate_dense_quant(fam, "fp8", base_repo = fam.base_repo, prequant_available = True)
+    assert est is not None, "no estimate means the pipeline seed is never chosen"
+    assert est.prequant and est.steady_transformer_mib > 0
