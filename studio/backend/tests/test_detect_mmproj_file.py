@@ -380,6 +380,42 @@ def test_trusted_companion_snapshot_finds_nested_projector(tmp_path: Path):
     ) == str(projector.resolve())
 
 
+def test_a_containing_trusted_root_does_not_recurse_into_a_sibling_quant(tmp_path: Path):
+    """#10599's widening must not reach the quant next door.
+
+    ``allow_disjoint_search_root`` used to set ``recursive_root`` for every root, including
+    the one holding the weights, which is the case the incremental walk at the top of
+    detect_mmproj_file exists to confine. Every other quant subdirectory of the snapshot
+    became a candidate, and since none of them shares a prefix with the weight stem they
+    all tie at zero, so the shorter-stem rule handed UD-Q4_K_XL the IQ1_S projector.
+    """
+    snapshot = tmp_path / "snapshots" / "rev"
+    weight = _touch(snapshot / "UD-Q4_K_XL" / "Qwen3-VL-235B-UD-Q4_K_XL.gguf")
+    mine = _touch(snapshot / "UD-Q4_K_XL" / "mmproj-UD-Q4_K_XL.gguf")
+    _touch(snapshot / "UD-IQ1_S" / "Qwen3-VL-235B-UD-IQ1_S.gguf")
+    _touch(snapshot / "UD-IQ1_S" / "mmproj-UD-IQ1_S.gguf")
+
+    assert detect_mmproj_file(
+        str(weight), search_root = str(snapshot), allow_disjoint_search_root = True
+    ) == str(mine.resolve())
+
+
+def test_a_containing_trusted_root_keeps_its_own_root_level_projector(tmp_path: Path):
+    """The same guard, where the only correct projector sits at the snapshot root.
+
+    The ancestor walk still has to reach it, and a foreign quant's projector must not win
+    on a longer shared prefix just because the recursion made it a candidate.
+    """
+    snapshot = tmp_path / "snapshots" / "rev"
+    weight = _touch(snapshot / "UD-Q4_K_XL" / "vision-model-UD-Q4_K_XL.gguf")
+    root_level = _touch(snapshot / "mmproj-F16.gguf")
+    _touch(snapshot / "UD-IQ1_S" / "mmproj-vision-model-UD-Q4_K_XL-F16.gguf")
+
+    assert detect_mmproj_file(
+        str(weight), search_root = str(snapshot), allow_disjoint_search_root = True
+    ) == str(root_level.resolve())
+
+
 def test_finds_the_projector_hermes_stages_under_assets(tmp_path: Path):
     """Hermes keeps a download's mmproj in models/assets/ so its router never lists it as a
     model; the weight sits one level up. A sibling-only walk loads Qwen3.8-27B text-only."""

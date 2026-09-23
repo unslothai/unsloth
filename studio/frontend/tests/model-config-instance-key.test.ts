@@ -123,9 +123,14 @@ test("every mirrored setting moves the instance key", () => {
   for (const changed of changes) {
     assert.notEqual(modelConfigInstanceKey(MODEL, VARIANT, changed), base);
   }
-  // The GPU pick is a set, not an order.
-  assert.equal(
+  // The GPU pick is an order, not a set: the list order is the device order, so a
+  // reorder is a different config and has to move the key like any other edit.
+  assert.notEqual(
     modelConfigInstanceKey(MODEL, VARIANT, { ...LIVE, selectedGpuIds: [1, 0] }),
+    base,
+  );
+  assert.equal(
+    modelConfigInstanceKey(MODEL, VARIANT, { ...LIVE, selectedGpuIds: [...LIVE.selectedGpuIds!] }),
     base,
   );
 });

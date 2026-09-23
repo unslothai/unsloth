@@ -18,6 +18,31 @@ from .test_account_lifecycle import auth_env, matrix  # noqa: F401
 ALICE = AccountContext("alice-id", "alice")
 BOB = AccountContext("bob-id", "bob")
 
+
+def _keep_the_interpreter_walk_out_of_the_fixtures(tmp_path, monkeypatch):
+    """Drop the interpreter roots that contain *tmp_path*.
+
+    ``_landlock_rules`` grants an interpreter root child by child, descending
+    past whatever is protected. A checkout whose virtualenv sits above the
+    pytest tmp directory therefore walks straight into the fake /etc and /run
+    these tests build, and grants them on a path that has nothing to do with
+    the system-root split being measured: the fake root lands in the rule list
+    whole, and the whole-list comparison picks up every other worker's tmp
+    directory as it comes and goes. On CI the venv is never an ancestor of the
+    tmp dir, so it does not show there.
+
+    None of these tests is about interpreter roots, which have their own
+    coverage, so take those roots out rather than read a rule list that cannot
+    answer the question being asked.
+    """
+    original = tool_confinement._interpreter_roots
+    monkeypatch.setattr(
+        tool_confinement,
+        "_interpreter_roots",
+        lambda: [r for r in original() if not tool_confinement._contains(r, str(tmp_path))],
+    )
+
+
 LANDLOCK = (
     sys.platform == "linux"
     and tool_confinement.landlock_abi() >= tool_confinement._MIN_LANDLOCK_ABI
@@ -369,14 +394,32 @@ def test_install_under_a_granted_root_stays_hidden(tmp_path, monkeypatch):
         auth = home / "auth" / "auth.db"
         auth.parent.mkdir(parents = True, exist_ok = True)
         auth.write_text("OWNER_AUTH_DB", encoding = "utf-8")
-        out = run_as(
+        # Three separate claims, run as three separate commands. They used to share one
+        # command line, and once the credential pre-flight in tools.py learned to refuse a
+        # command that NAMES the auth database, that one line was refused whole: the reach
+        # probes passed because nothing ran at all, and the usability probe could not run
+        # either. Split, each claim is answered by the layer that actually owns it.
+        reach = run_as(
             BOB,
             tools._bash_exec,
-            f"cat {auth}; echo rc=$?; ls {home}; echo ls_rc=$?; python -c 'import sys; print(sys.prefix)'",
+            f"cat {auth}; echo rc=$?",
             session_id = "chat",
         )
-        assert "OWNER_AUTH_DB" not in out and "rc=0" not in out and "ls_rc=0" not in out, out
-        assert sys.prefix in out, out
+        assert "OWNER_AUTH_DB" not in reach and "rc=0" not in reach, reach
+
+        listing = run_as(BOB, tools._bash_exec, f"ls {home}; echo ls_rc=$?", session_id = "chat")
+        assert "OWNER_AUTH_DB" not in listing and "ls_rc=0" not in listing, listing
+
+        # Names no part of the auth path, so nothing short-circuits it: this is the half
+        # that says the rest of the granted root is still usable, which is the whole point
+        # of hiding one directory inside it rather than revoking the root.
+        usable = run_as(
+            BOB,
+            tools._bash_exec,
+            "python -c 'import sys; print(sys.prefix)'",
+            session_id = "chat",
+        )
+        assert sys.prefix in usable, usable
         rules = run_as(BOB, tool_confinement._landlock_rules, 3, tools._SANDBOX_SITE_DIR)
         assert all(not tool_confinement._contains(p, str(home.resolve())) for p, _ in rules)
     finally:
@@ -416,6 +459,42 @@ def test_sandbox_home_under_a_granted_root_hides_other_accounts(tmp_path, monkey
     finally:
         import shutil
         shutil.rmtree(base, ignore_errors = True)
+
+
+@pytest.mark.skipif(not LANDLOCK, reason = "Landlock not available on this kernel")
+def test_a_rule_path_removed_before_the_child_opens_it_does_not_kill_the_call(tmp_path):
+    """A grant whose directory went between the walk and the child is dropped, not fatal.
+
+    `_landlock_rules` walks a granted ancestor child by child, and the child opens each path
+    afterwards. Anything that removes one in between -- a cache purge, a model delete, an
+    account delete, another test sharing the interpreter prefix -- used to raise out of
+    preexec_fn, so the tool call died as "Exception occurred in preexec_fn" and named neither
+    the path nor the reason. Landlock denies by default, so a dropped grant only narrows the
+    child.
+    """
+    gone = tmp_path / "granted-then-removed"
+    gone.mkdir()
+    rules = [
+        (str(tmp_path), tool_confinement._FS_READ_DIR),
+        (str(gone), tool_confinement._FS_READ_DIR),
+    ]
+    handled = tool_confinement._handled_mask(tool_confinement.landlock_abi())
+    gone.rmdir()
+
+    # Forked, because _landlock_preexec restricts the process it runs in and pytest is not a
+    # process to restrict.
+    pid = os.fork()
+    if pid == 0:
+        try:
+            tool_confinement._landlock_preexec(handled, rules)
+        except BaseException:
+            os._exit(1)
+        os._exit(0)
+    _, status = os.waitpid(pid, 0)
+    assert os.WIFEXITED(status) and os.WEXITSTATUS(status) == 0, (
+        "a rule path that disappeared before the child opened it took the whole launch down; "
+        "landlock denies by default, so the grant should be dropped instead"
+    )
 
 
 @pytest.mark.skipif(not LANDLOCK, reason = "Landlock not available on this kernel")
@@ -507,11 +586,12 @@ def test_macos_profile_hides_the_hf_cache(tmp_path, monkeypatch):
     assert profile.index(f'(allow file-read* (subpath "{prefix.resolve()}"))') < deny
 
 
-def test_bases_outside_a_granted_root_leave_the_landlock_rules_unchanged(tmp_path):
+def test_bases_outside_a_granted_root_leave_the_landlock_rules_unchanged(tmp_path, monkeypatch):
     if sys.platform != "linux":
         pytest.skip("Linux rule builder")
     from utils.paths.storage_roots import studio_root
 
+    _keep_the_interpreter_walk_out_of_the_fixtures(tmp_path, monkeypatch)
     run_as(ALICE, tools._get_workdir, "chat")
     rules = run_as(ALICE, tool_confinement._landlock_rules, 3, tools._SANDBOX_SITE_DIR)
     install_only = tool_confinement._existing((run_as(ALICE, studio_root),))
@@ -723,6 +803,7 @@ def test_runtime_secret_mounts_are_excluded_from_the_system_grant(tmp_path, monk
     (run / "secrets" / "db_password").write_text("hunter2")
     (run / "credentials" / "svc" / "token").parent.mkdir()
     (run / "credentials" / "svc" / "token").write_text("token")
+    _keep_the_interpreter_walk_out_of_the_fixtures(tmp_path, monkeypatch)
     monkeypatch.setattr(tool_confinement, "_SYSTEM_READ_ROOTS", (str(run),))
     # The shipped list, relocated under the fake /run, so the test reads the real constant.
     monkeypatch.setattr(
@@ -765,6 +846,7 @@ def test_privileged_etc_secrets_are_excluded_from_the_system_grant(tmp_path, mon
         "ssl/certs/ca.pem",
     ):
         (etc / name).write_text(name)
+    _keep_the_interpreter_walk_out_of_the_fixtures(tmp_path, monkeypatch)
     monkeypatch.setattr(tool_confinement, "_SYSTEM_READ_ROOTS", (str(etc),))
     monkeypatch.setattr(
         tool_confinement,

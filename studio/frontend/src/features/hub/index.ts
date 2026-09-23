@@ -7,6 +7,7 @@ export {
   finishExternalJob,
   jobKeyOf,
   pendingDrafterPresentation,
+  type StagedDownloadProgress,
   startExternalJob,
   subscribeJobListeners,
   type TransportMode,
@@ -113,6 +114,7 @@ export {
 } from "./lib/model-identity";
 export {
   formatBytes,
+  formatRate,
   formatRelativeShort,
   ownerOf,
   repoOf,

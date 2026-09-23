@@ -28,6 +28,8 @@ import {
 import { useShallow } from "zustand/react/shallow";
 import "@xyflow/react/dist/style.css";
 import { Button } from "@/components/ui/button";
+import { GuidedTour, useGuidedTourController } from "@/features/tour";
+import { buildRecipeEditorTourSteps } from "./tour";
 import { BlockSheet } from "./components/block-sheet";
 import { LayoutControls } from "./components/controls/layout-controls";
 import { RunValidateFloatingControls } from "./components/controls/run-validate-floating-controls";
@@ -390,6 +392,20 @@ export function RecipeStudioPage({
     auxNodePositions,
     llmAuxVisibility,
   });
+  const tourSteps = useMemo(
+    () =>
+      buildRecipeEditorTourSteps({
+        // A placeholder stands in until the recipe loads, so the canvas steps would hit nothing.
+        isGraphView: activeView === "editor" && initialRecipeReady,
+        supportsEasyMode,
+      }),
+    [activeView, initialRecipeReady, supportsEasyMode],
+  );
+  const tour = useGuidedTourController({
+    id: "recipe-editor",
+    steps: tourSteps,
+  });
+
   const executionLocked = runtimeVisualState.executionLocked;
   const canvasInteractive = interactive && !executionLocked;
   const runBusy = previewLoading || fullLoading || executionLocked;
@@ -663,7 +679,7 @@ export function RecipeStudioPage({
         nodesConnectable={canvasInteractive}
         elementsSelectable={canvasInteractive}
         fitView={false}
-        className="h-full w-full rounded-t-none"
+        className="@container/canvas h-full w-full rounded-t-none"
       >
         <LayoutControls
           direction={layoutDirection}
@@ -723,7 +739,7 @@ export function RecipeStudioPage({
             </div>
           </div>
         )}
-        <Panel position="top-right" className="m-3">
+        <Panel position="top-right" className="m-3" data-tour="recipe-add-step">
           <BlockSheet
             container={sheetContainer}
             sheetView={sheetView}
@@ -809,6 +825,7 @@ export function RecipeStudioPage({
       }
     >
       <main className="flex min-h-0 w-full flex-1 flex-col">
+        <GuidedTour {...tour.tourProps} />
         <div
           className="relative flex min-h-0 w-full flex-1 flex-col overflow-hidden border"
           ref={setSheetContainer}
@@ -828,6 +845,7 @@ export function RecipeStudioPage({
             }}
           />
           <div
+            data-tour="recipe-canvas"
             className="flex min-h-0 w-full flex-1 rounded-t-none"
             ref={flowContainerRef}
           >

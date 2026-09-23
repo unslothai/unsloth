@@ -214,13 +214,24 @@ async def download_model_response(
             raise HTTPException(status_code = 400, detail = f"Invalid scope_id: {body.scope_id!r}")
         variant = scope_variant
     key = _download_job_key(repo_id, variant)
-    # Off the event loop: resolving "auto" can run the Xet reachability probe, and a blackholed DNS makes that outlast its 3s budget while every other request waits behind it.
+    # Size and Auto resolution may perform network probes, so keep both off the event loop.
+    largest_file_bytes = await asyncio.to_thread(
+        download_lifecycle.largest_download_file_bytes,
+        "model",
+        repo_id,
+        variant = variant,
+        # Mirror the claim and the worker below: files are honoured only under a scope_id.
+        files = scoped_files if scope_variant is not None else None,
+        hf_token = hf_token,
+        allow_ambient_token = allow_ambient_token,
+    )
     use_xet, transport_reason = await asyncio.to_thread(
         download_lifecycle.resolve_requested_use_xet,
         getattr(body, "transport_mode", None),
         body.use_xet,
+        largest_file_bytes = largest_file_bytes,
     )
-    transport = download_lifecycle.resolve_transport(use_xet)
+    transport = download_lifecycle.resolve_transport(use_xet, largest_file_bytes = largest_file_bytes)
     logger.info("Download transport for %s: %s (%s)", repo_id, transport, transport_reason)
     from utils.hf_cache_settings import get_hf_cache_paths
 
@@ -703,6 +714,7 @@ async def get_download_progress_response(
     repo_id: str,
     expected_bytes: int = 0,
     hf_token: Optional[str] = None,
+    mlx_load: bool = False,
 ) -> dict:
     """Return download progress for any HuggingFace model repo.
 
@@ -716,6 +728,26 @@ async def get_download_progress_response(
     if account_access.managed_account():
         await asyncio.to_thread(account_access.require_download_progress_access, _registry, repo_id)
         hf_token = account_access.account_hf_token(hf_token)
+    if mlx_load:
+
+        def _metadata(repo, token):
+            total, hashes, _files = cache_inventory.get_mlx_load_plan_cached(repo, token)
+            return total, hashes
+
+        def _files(repo, token):
+            return cache_inventory.get_mlx_load_plan_cached(repo, token)[2]
+
+        return await snapshot_progress.snapshot_progress_response(
+            repo_type = "model",
+            repo_id = repo_id,
+            job_key = _download_job_key(repo_id, "@mlx"),
+            expected_bytes = 0,
+            hf_token = hf_token,
+            registry = _registry,
+            metadata_resolver = _metadata,
+            expected_files_resolver = _files,
+            variant = "@mlx",
+        )
     return await snapshot_progress.snapshot_progress_response(
         repo_type = "model",
         repo_id = repo_id,

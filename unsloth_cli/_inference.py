@@ -132,10 +132,41 @@ def read_json_checking_deferred_error(url: str, response):
     return require_completed_padded_body(url, raise_for_deferred_error(url, body))
 
 
-def ensure_studio_backend_path() -> None:
+_cache_env_seeded = False
+
+
+def _seed_cache_env() -> None:
+    """Pin the cache locations the backend pins, for in-process CLI commands.
+
+    Otherwise they inherit unsloth_zoo's relative UNSLOTH_COMPILE_LOCATION, resolved against the
+    working directory, leaving an unsloth_compiled_cache cache_cleanup will not remove (#8865).
+    """
+    global _cache_env_seeded
+    if _cache_env_seeded:
+        return
+    _cache_env_seeded = True
+    try:
+        from utils.paths.storage_roots import setup_cache_env
+        setup_cache_env()
+    except Exception:  # noqa: BLE001 - never fail a command over cache placement
+        pass
+
+
+def ensure_studio_backend_path(*, seed_cache_env: bool = True) -> None:
+    """Put studio/backend on sys.path, and by default pin the cache locations too.
+
+    `seed_cache_env = False` is for callers that only want to IMPORT a path helper.
+    setup_cache_env() creates every cache directory it pins, so seeding it from
+    `unsloth start`'s Node discovery turned a read-only lookup into 18 mkdirs under a home
+    that may have nothing to do with the command being run -- including one against a remote
+    server. Seeding stays on for the ML entry points, where the pins are the point.
+    """
     backend_dir = str(Path(__file__).resolve().parents[1] / "studio" / "backend")
     if backend_dir not in sys.path:
         sys.path.insert(0, backend_dir)
+    if seed_cache_env:
+        # After the path insert, before the caller's backend import pulls in unsloth_zoo.compiler.
+        _seed_cache_env()
 
 
 def configure_quiet_logging() -> None:
@@ -372,15 +403,30 @@ class ChatBackend:
         messages: list,
         *,
         system_prompt: str,
-        temperature: float,
-        top_p: float,
-        top_k: int,
+        temperature: Optional[float],
+        top_p: Optional[float],
+        top_k: Optional[int],
         max_new_tokens: Optional[int],
-        repetition_penalty: float,
+        repetition_penalty: Optional[float],
         enable_thinking: bool,
         use_adapter: Optional[bool] = None,
     ):
         self.reply_hit_token_limit = False
+        ensure_studio_backend_path(seed_cache_env = False)
+        from utils.inference.inference_config import resolve_effective_sampling
+
+        model_id = getattr(
+            self._backend, "model_identifier" if self._kind == "gguf" else "active_model_name", None
+        )
+        sampling = resolve_effective_sampling(
+            model_id,
+            dict(
+                temperature = temperature,
+                top_p = top_p,
+                top_k = top_k,
+                repetition_penalty = repetition_penalty,
+            ),
+        )
         if self._kind == "gguf":
             # llama-server takes the system prompt as the first message.
             msgs = list(messages)
@@ -389,25 +435,19 @@ class ChatBackend:
             return self._watch_metadata(
                 self._backend.generate_chat_completion(
                     messages = msgs,
-                    temperature = temperature,
-                    top_p = top_p,
-                    top_k = top_k,
                     max_tokens = max_new_tokens,
-                    repetition_penalty = repetition_penalty,
                     enable_thinking = enable_thinking,
+                    **sampling,
                 )
             )
         holder: dict = {}
         gen_kwargs = dict(
             messages = messages,
             system_prompt = system_prompt,
-            temperature = temperature,
-            top_p = top_p,
-            top_k = top_k,
             max_new_tokens = max_new_tokens,
-            repetition_penalty = repetition_penalty,
             enable_thinking = enable_thinking,
             stats_holder = holder,
+            **sampling,
         )
         if use_adapter is not None:
             stream = self._backend.generate_with_adapter_control(
@@ -859,9 +899,10 @@ class HttpChatBackend:
             "model_path": model,
             "hf_token": hf_token,
             "max_seq_length": max_seq_length,
-            "load_in_4bit": load_in_4bit,
             "tensor_parallel": tensor_parallel,
         }
+        if load_in_4bit is not None:
+            payload["load_in_4bit"] = load_in_4bit
         if llama_extra_args:
             payload["llama_extra_args"] = llama_extra_args
         if speculative_type is not None:
@@ -884,11 +925,11 @@ class HttpChatBackend:
         messages: list,
         *,
         system_prompt: str,
-        temperature: float,
-        top_p: float,
-        top_k: int,
+        temperature: Optional[float],
+        top_p: Optional[float],
+        top_k: Optional[int],
         max_new_tokens: Optional[int],
-        repetition_penalty: float,
+        repetition_penalty: Optional[float],
         enable_thinking: bool,
         use_adapter: Optional[bool] = None,
     ):
@@ -901,12 +942,15 @@ class HttpChatBackend:
             "model": "default",
             "messages": msgs,
             "stream": True,
-            "temperature": temperature,
-            "top_p": top_p,
-            "top_k": top_k,
-            "repetition_penalty": repetition_penalty,
             "enable_thinking": enable_thinking,
         }
+        sampling = dict(
+            temperature = temperature,
+            top_p = top_p,
+            top_k = top_k,
+            repetition_penalty = repetition_penalty,
+        )
+        body.update({key: value for key, value in sampling.items() if value is not None})
         if max_new_tokens is not None:
             body["max_tokens"] = max_new_tokens
         resp = self._request("POST", "/v1/chat/completions", body)
@@ -957,6 +1001,14 @@ class HttpChatBackend:
 
     def close(self) -> None:
         pass
+
+
+def server_load_opts(ctx, load_opts: dict) -> dict:
+    """Drop an untyped --load-in-4bit so the server can keep a resident model's precision."""
+    opts = dict(load_opts)
+    if ctx.get_parameter_source("load_in_4bit").name != "COMMANDLINE":
+        opts["load_in_4bit"] = None
+    return opts
 
 
 def connect_studio_server(

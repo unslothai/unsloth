@@ -14,9 +14,48 @@ import os
 import sys
 from pathlib import Path
 
+from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 from playwright.sync_api import expect, sync_playwright
 
 from _playwright_robust import start_vite, stop_process, wait_for_smoke_page
+
+# The row a search result lands on carries .settings-search-hit for a 1.6 s flash. Polling for
+# the class races that window, and a slow runner (Firefox on Windows) can check on either side
+# of it. Record every element that gains the class instead, so the check sees each flash.
+ARM_SEARCH_HITS = """() => {
+    if (!window.__searchHits) {
+        window.__searchHits = [];
+        new MutationObserver(records => {
+            for (const record of records) {
+                const before = (record.oldValue || '').split(/\\s+/);
+                if (record.target.classList.contains('settings-search-hit') && !before.includes('settings-search-hit')) {
+                    window.__searchHits.push(record.target);
+                }
+            }
+        }).observe(document.body, { subtree: true, attributes: true, attributeFilter: ['class'], attributeOldValue: true });
+    }
+    window.__searchHits.length = 0;
+}"""
+
+
+def search_to(page, target):
+    """Pick `target` from the settings search, with the hit recorder armed before the click."""
+    page.evaluate(ARM_SEARCH_HITS)
+    page.locator("aside input").fill(target)
+    page.locator("aside").get_by_role("button", name = target, exact = True).click()
+
+
+def expect_search_hit(page, label):
+    """Exactly one element flashed, it is the requested row, and it is the one still on screen."""
+    try:
+        page.wait_for_function("() => window.__searchHits.length > 0")
+    except PlaywrightTimeoutError:
+        raise AssertionError(f"search for {label!r} flashed no row") from None
+    hits = page.evaluate(
+        "() => window.__searchHits.map(el => ({ label: el.dataset.settingsLabel ?? null, connected: el.isConnected }))"
+    )
+    assert hits == [{"label": label, "connected": True}], f"search for {label!r} flashed {hits}"
+
 
 FIXTURE = """(() => {
     localStorage.setItem('unsloth_chat_legacy_imported_to_studio_db', 'true');
@@ -229,35 +268,26 @@ def run(page):
                 "button", name = "Manage", exact = True
             ).click()
         expect(page.get_by_role("button", name = "Back to Data", exact = True)).to_be_visible()
-        page.locator("aside input").fill(target)
-        page.locator("aside").get_by_role("button", name = target, exact = True).click()
-        expect(page.locator(".settings-search-hit")).to_have_attribute(
-            "data-settings-label", target
-        )
+        search_to(page, target)
         expect(page.get_by_role("button", name = "Back to Data", exact = True)).to_have_count(0)
+        expect_search_hit(page, target)
         assert not deletes()
         checks.append(f"search-{source}-to-{target}")
 
     for shelf in ["chats", "images", "videos", "audio"]:
         page.evaluate("shelf => window.__settingsSmoke.openArchived(shelf)", shelf)
         expect(page.get_by_role("heading", name = f"Archived {shelf}", exact = True)).to_be_visible()
-        page.locator("aside input").fill("Chat sandbox files")
-        page.locator("aside").get_by_role("button", name = "Chat sandbox files", exact = True).click()
-        expect(page.locator(".settings-search-hit")).to_have_attribute(
-            "data-settings-label", "Chat sandbox files"
-        )
+        search_to(page, "Chat sandbox files")
         expect(page.get_by_role("button", name = "Back to Data", exact = True)).to_have_count(0)
+        expect_search_hit(page, "Chat sandbox files")
         checks.append(f"archive-request-after-search-{shelf}")
 
     reset(holdExport = True)
     export_row = page.locator('[data-settings-label="Export chat history"]')
     export_row.get_by_role("button", name = "Export", exact = True).click()
     page.wait_for_function("typeof window.__dataFixture.releaseExport === 'function'")
-    page.locator("aside input").fill("Chat sandbox files")
-    page.locator("aside").get_by_role("button", name = "Chat sandbox files", exact = True).click()
-    expect(page.locator(".settings-search-hit")).to_have_attribute(
-        "data-settings-label", "Chat sandbox files"
-    )
+    search_to(page, "Chat sandbox files")
+    expect_search_hit(page, "Chat sandbox files")
     expect(export_row.get_by_role("button", name = "Exporting...", exact = True)).to_be_disabled()
     with page.expect_download():
         page.evaluate("window.__dataFixture.releaseExport()")
@@ -586,7 +616,25 @@ def run_library_locales(page):
         text = page.evaluate(
             """async locale => {
             const api = await import('/src/i18n/index.ts');
-            await api.setLocale(locale);
+            let result = await api.setLocale(locale);
+            // Every catalog but `en` is a lazy import of its own, so a hiccup fetching
+            // one leaves setLocale reporting the failure and `messages[locale]` unset.
+            // Reaching straight into it then threw "Cannot read properties of undefined
+            // (reading 'settings')", a TypeError out of an eval naming neither the
+            // locale nor the cause, and the leg failed with nothing to act on
+            // (Frontend CI 35478582784, Windows Chromium, on main). The loader keeps a
+            // retry URL for exactly this case, so ask once more before giving up, and
+            // give up with something that says which locale and what the store thinks.
+            if (api.messages[locale] === undefined) {
+                result = await api.setLocale(locale);
+            }
+            if (api.messages[locale] === undefined) {
+                throw new Error(
+                    'locale ' + locale + ': catalog never loaded (catalogFailed='
+                    + api.getLocaleCatalogFailed() + ', active=' + api.getLocale()
+                    + ', setLocale=' + JSON.stringify(result) + ')'
+                );
+            }
             return {
                 ...api.messages[locale].settings.data.library,
                 manage: api.translate('settings.data.manageChats'),
@@ -717,14 +765,9 @@ def run_library_locales(page):
             )
             expect(page.get_by_text(text[empty_key], exact = True)).to_be_visible()
             if locale == "es" and shelf == "chats":
-                page.locator("aside input").fill(text["archived"])
-                page.locator("aside").get_by_role(
-                    "button", name = text["archived"], exact = True
-                ).click()
-                expect(page.locator(".settings-search-hit")).to_have_attribute(
-                    "data-settings-label", text["archived"]
-                )
+                search_to(page, text["archived"])
                 expect(page.get_by_role("button", name = text["back"], exact = True)).to_have_count(0)
+                expect_search_hit(page, text["archived"])
                 checks.append("localized-settings-search-exits-archive")
             checks.append(f"library-locale-{locale}-{shelf}")
     # Change locale with the archive and its query still mounted.

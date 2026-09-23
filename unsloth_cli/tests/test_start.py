@@ -162,6 +162,7 @@ def test_claude_settings_overlay_pins_local_routing_and_auth():
         assert overlay["env"][name] == ""
     # The attribution-header suppression is preserved alongside it.
     assert overlay["env"]["CLAUDE_CODE_ATTRIBUTION_HEADER"] == "0"
+    assert overlay["env"]["CLAUDE_CODE_TOTAL_TOKENS_REMINDER"] == "off"
     # Subagents fall through to the served model instead of a user's opus/sonnet pin.
     assert overlay["env"]["CLAUDE_CODE_SUBAGENT_MODEL"] == "inherit"
 
@@ -1565,6 +1566,7 @@ def test_connect_claude_no_launch(fake_studio):
     # Attribution header is suppressed for the session via env + --settings, never
     # by writing the user's ~/.claude/settings.json.
     _assert_env_set(result.output, "CLAUDE_CODE_ATTRIBUTION_HEADER", "0")
+    _assert_env_set(result.output, "CLAUDE_CODE_TOTAL_TOKENS_REMINDER", "off")
     # Claude assumes 200k for an unrecognized model id and clamps the auto-compact
     # window into [100k, that], so the real window has to be pinned as well.
     _assert_env_set(result.output, "CLAUDE_CODE_MAX_CONTEXT_TOKENS", str(MODEL["context_length"]))
@@ -1584,6 +1586,60 @@ def test_connect_claude_no_launch(fake_studio):
         assert settings_path.stat().st_mode & 0o777 == 0o600
     assert "--plugin-dir" not in command
     assert ".claude/settings.json" not in result.output
+
+
+def test_connect_prints_the_running_models_load_warning(fake_studio, monkeypatch):
+    notice = (
+        "Not enough disk space to download BF16 (7.5 GB needed, 7.5 GB free), "
+        "so Q4_1 (2.4 GB) was loaded instead."
+    )
+    http_json = start._http_json
+
+    def with_warning(
+        method,
+        url,
+        token,
+        payload = None,
+        timeout = 30,
+        error = None,
+    ):
+        if url.endswith("/api/inference/status"):
+            return {"is_gguf": True, "model_identifier": MODEL["id"], "memory_warning": notice}
+        return http_json(method, url, token, payload, timeout, error)
+
+    monkeypatch.setattr(start, "_http_json", with_warning)
+    result = CliRunner().invoke(start.start_app, ["claude", "--no-launch", "--model", MODEL["id"]])
+
+    assert result.exit_code == 0, result.output
+    assert f"Warning: {notice}" in result.stderr
+    assert f"Warning: {notice}" not in result.stdout
+
+
+def test_connect_skips_the_load_warning_of_another_active_model(fake_studio, monkeypatch):
+    http_json = start._http_json
+
+    def other_model_warns(
+        method,
+        url,
+        token,
+        payload = None,
+        timeout = 30,
+        error = None,
+    ):
+        if url.endswith("/api/inference/status"):
+            return {
+                "is_gguf": True,
+                "active_model": "unsloth/Other-GGUF",
+                "model_identifier": "unsloth/Other-GGUF",
+                "memory_warning": "Not enough disk space to download BF16, so Q4_1 was loaded instead.",
+            }
+        return http_json(method, url, token, payload, timeout, error)
+
+    monkeypatch.setattr(start, "_http_json", other_model_warns)
+    result = CliRunner().invoke(start.start_app, ["claude", "--no-launch", "--model", MODEL["id"]])
+
+    assert result.exit_code == 0, result.output
+    assert "Warning: Not enough disk space" not in result.output
 
 
 def test_connect_claude_session_settings_follow_forwarded_settings(fake_studio):
@@ -1822,6 +1878,7 @@ def test_connect_claude_launch_scrubs_conflicting_auth_env(fake_studio, monkeypa
     assert captured["env"]["ANTHROPIC_BASE_URL"] == BASE
     assert captured["env"]["ANTHROPIC_MODEL"] == MODEL["id"]
     assert captured["env"]["CLAUDE_CODE_ATTRIBUTION_HEADER"] == "0"
+    assert captured["env"]["CLAUDE_CODE_TOTAL_TOKENS_REMINDER"] == "off"
 
 
 @pytest.mark.skipif(
@@ -7677,8 +7734,8 @@ def test_hub_gguf_files_ignores_auxiliary_ggufs(monkeypatch):
     assert start._hub_gguf_files("owner/mmproj-pack") == []
 
 
-def test_hub_gguf_files_ignores_dspark_and_dflash_drafters(monkeypatch):
-    # Mirrors hub.utils.gguf.is_mtp_drafter_path: basename prefix (all three kinds) or exact
+def test_hub_gguf_files_ignores_prefixed_drafters(monkeypatch):
+    # Mirrors hub.utils.gguf.is_mtp_drafter_path: basename prefix (every kind) or exact
     # parent dir (mtp/, dspark/ only -- dflash/ is a real family name).
     monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
     monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising = False)
@@ -7686,10 +7743,12 @@ def test_hub_gguf_files_ignores_dspark_and_dflash_drafters(monkeypatch):
         "siblings": [
             {"rfilename": "DSpark-drafter-Q2K-Q8.gguf"},
             {"rfilename": "dflash-drafter-Q8_0.gguf"},
+            {"rfilename": "eagle3-gpt-oss-20b-Q8_0.gguf"},
             {"rfilename": "dspark/DeepSeek-V4-Flash-Q8_0.gguf"},
             # Family names, not companions: these ARE the model.
             {"rfilename": "Qwen3.6-35B-A3B-DFlash-Q4_K_M.gguf"},
             {"rfilename": "DFlash/Qwen3.6-27B-DFlash-Q4_K_M.gguf"},
+            {"rfilename": "Llama-3.1-8B-Eagle3-Q4_K_M.gguf"},
         ]
     }
     monkeypatch.setattr(
@@ -7700,6 +7759,7 @@ def test_hub_gguf_files_ignores_dspark_and_dflash_drafters(monkeypatch):
     assert start._hub_gguf_files("owner/dspark-pack") == [
         "Qwen3.6-35B-A3B-DFlash-Q4_K_M.gguf",
         "DFlash/Qwen3.6-27B-DFlash-Q4_K_M.gguf",
+        "Llama-3.1-8B-Eagle3-Q4_K_M.gguf",
     ]
 
 

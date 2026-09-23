@@ -20,6 +20,52 @@ export const de = {
     settings: "Eingabeeinstellungen",
     preview: "Formatierte Vorschau",
   },
+  promptQueue: {
+    loading: "Eingereihte Nachrichten werden geladen",
+    listLabel: "Eingereihte Nachrichten",
+    regionLabel: "Nachrichtenwarteschlange, {current} von {total}",
+    itemLabel: "Eingereihte Nachricht {position} von {total}: {prompt}",
+    reorderInstructions: "Ziehe den Griff, um die Reihenfolge zu ändern. Wenn der Griff fokussiert ist, verschiebst du mit Auf oder Ab um eine Position und mit Pos1 oder Ende an den Anfang oder das Ende.",
+    dragTooltip: "Zum Umsortieren ziehen",
+    reorderLabel: "Eingereihte Nachricht {position} von {total} umsortieren",
+    paused: "Pausiert",
+    steer: "Umlenken",
+    steerTooltip: "Die Antwort unterbrechen und diese Nachricht als Nächstes senden",
+    steerLabel: "Mit eingereihter Nachricht {position} umlenken",
+    removeTooltip: "Aus der Warteschlange entfernen",
+    removeLabel: "Eingereihte Nachricht {position} entfernen",
+    moreTooltip: "Weitere Optionen",
+    moreLabel: "Weitere Optionen für eingereihte Nachricht {position}",
+    editItem: "Nachricht bearbeiten",
+    copyItem: "Nachricht kopieren",
+    editLabel: "Eingereihte Nachricht {position} bearbeiten",
+    cancel: "Abbrechen",
+    save: "Speichern",
+    turnOffQueueing: "Einreihen ausschalten",
+    turnOnQueueing: "Einreihen einschalten",
+    resume: "Warteschlange fortsetzen",
+    queueButton: "Nachricht einreihen",
+    steerButton: "Antwort umlenken",
+    sendTooltip: "Nachricht senden ({shortcut})",
+    sendLabel: "Nachricht senden",
+    followUpTooltip: "{action} ({send}) · {opposite} für das Gegenteil",
+    announceUpdated: "Eingereihte Nachricht aktualisiert.",
+    announceEditFailed: "Diese Nachricht kann nicht mehr bearbeitet werden, weil sich die Warteschlange geändert hat.",
+    announceRemoved: "Nachricht aus der Warteschlange entfernt.",
+    announceSteered: "Diese Nachricht lenkt die Antwort als Nächstes um.",
+    announceSteerFailed: "Diese Nachricht konnte die Antwort nicht umlenken. Prüfe die Warteschlange und versuche es erneut.",
+    announceCopied: "Nachricht kopiert.",
+    announceCopyFailed: "Diese Nachricht konnte nicht kopiert werden. Versuche es erneut.",
+    announceQueueingOn: "Neue Folgenachrichten werden nach der aktuellen Antwort eingereiht.",
+    announceQueueingOff: "Neue Folgenachrichten lenken die aktuelle Antwort um.",
+    announceMoved: "Nachricht an Position {position} von {total} verschoben.",
+    announceMoveFailed: "Die Warteschlange hat sich geändert, bevor diese Nachricht verschoben werden konnte. Versuche es erneut.",
+    announceDragReset: "Die Warteschlange hat sich geändert. Ziehe erneut, um die übrigen Nachrichten umzusortieren.",
+    editingHint: "Nachricht wird bearbeitet",
+    queueingOffHint: "Neue Nachrichten unterbrechen und laufen als Nächstes.",
+    queueingOnHint: "Neue Nachrichten warten auf ihren Platz.",
+    queueingHintShared: "Die Warteschlange bleibt erhalten.",
+  },
   picker: {
     onDevice: "Auf dem Gerät",
     huggingFace: "Hugging Face",
@@ -119,6 +165,10 @@ export const de = {
       export: "Exportieren",
       recents: "Zuletzt verwendet",
       noChatsYet: "Noch keine Chats",
+      // Shown under an empty project folder in the sidebar.
+      noChats: "Keine Chats",
+      // Shown in the Projects section when every project is pinned, so it has no rows.
+      allProjectsPinned: "Alle Projekte angepinnt",
       showMore: "Mehr anzeigen",
       showLess: "Weniger anzeigen",
       settings: "Einstellungen",
@@ -149,6 +199,7 @@ export const de = {
       unpinChats: "Chats lösen",
       archiveChats: "Chats archivieren",
       markUnread: "Als ungelesen markieren",
+      markRead: "Als gelesen markieren",
       deleteChats: "Chats löschen",
       deleteTitle: "Chats löschen",
       deleteDescription: "{count} Chats löschen? Das lässt sich nicht rückgängig machen.",
@@ -167,11 +218,12 @@ export const de = {
       priority: "Priorität",
       lastUpdated: "Zuletzt aktualisiert",
       manualOrder: "Manuelle Reihenfolge",
-      moveUp: "Nach oben",
-      moveDown: "Nach unten",
+      switchedToManual: "Manuell sortiert: Zeilen zum Umordnen ziehen",
       organizeChats: "Chats organisieren",
       organizeProjects: "Projekte organisieren",
       sortPinnedChats: "Angeheftete Chats sortieren",
+      moveUp: "Nach oben",
+      moveDown: "Nach unten",
     },
     dialog: {
       deleteChat: {
@@ -203,9 +255,19 @@ export const de = {
   settings: {
     accounts: {
       title: "Konten",
-      description: "Private Studio-Konten anlegen. Neue Nutzer melden sich mit einem einmaligen Einrichtungscode an und wählen ein Passwort.",
+      description: "Private Unsloth-Konten anlegen. Neue Nutzer melden sich mit einem einmaligen Einrichtungscode an und wählen ein Passwort.",
       username: "Benutzername",
       create: "Konto anlegen",
+      createDescription: "Teilen Sie einen Einrichtungscode, damit die Person ihr eigenes Passwort wählen kann.",
+      actionsFor: "{username} verwalten",
+      actions: "Aktionen",
+      search: "Konten suchen",
+      noResults: "Keine passenden Konten",
+      created: "Erstellt",
+      status: "Status",
+      loginHint: "Melden Sie sich als {username} mit diesem Code als Passwort an und wählen Sie dann ein neues Passwort.",
+      privateAccount: "Privates Konto",
+      empty: "Noch keine weiteren Konten",
       setupCode: "Einrichtungscode",
       setupFor: "Einrichtungscode für {username}",
       shownOnce: "Kopieren Sie diesen Code jetzt und geben Sie ihn an den Kontoinhaber weiter. Er wird nur hier angezeigt und kann innerhalb von 60 Minuten einmal verwendet werden.",
@@ -215,13 +277,13 @@ export const de = {
       copyFailed: "Kopieren nicht möglich. Markieren und kopieren Sie den Einrichtungscode oben.",
       dismiss: "Fertig",
       owner: "Installationsinhaber",
-      active: "Aktiv",
-      inactive: "Inaktiv",
+      active: "Aktiviert",
+      inactive: "Deaktiviert",
       regenerate: "Einrichtungscode neu erstellen",
       resetTitle: "Passwort von {username} zurücksetzen?",
       resetDescription: "Ein neu erstellter Einrichtungscode ersetzt das Passwort von {username}, meldet die Person ab und widerruft ihre API-Schlüssel. Geben Sie ihr den neuen Code, damit sie wieder ein Passwort wählen kann.",
       deactivate: "Deaktivieren",
-      reactivate: "Reaktivieren",
+      reactivate: "Aktivieren",
       delete: "Konto löschen",
       deleteTitle: "{username} löschen?",
       deleteDescription: "Dadurch werden die Sitzungen von {username} widerrufen und laufende Arbeiten abgebrochen. Chats, Einstellungen, Zugangsdaten, Uploads, Datensätze, Trainingsläufe, Ausgaben, Exporte, Galerien, Sandboxes, Projekte und temporäre Dateien werden stillgelegt. Verzeichnisse werden beiseite umbenannt, nie gelöscht. Wird dieser Benutzername erneut angelegt, beginnt ein neues Konto ohne diese Daten.",
@@ -258,9 +320,10 @@ export const de = {
     },
     keyboardShortcuts: {
       title: "Tastenkürzel",
-      description:
-        "Ändere ein Kürzel oder lösche es, um die Tastenkombination für Browser oder Betriebssystem freizugeben.",
       searchPlaceholder: "Kürzel suchen…",
+      keystrokePlaceholder: "Kürzel drücken, um zu suchen",
+      searchByKeystrokes: "Nach Tastendruck suchen",
+      searchByName: "Nach Name suchen",
       noResults: "Keine Kürzel passen zu dieser Suche.",
       unassigned: "Nicht zugewiesen",
       recording: "Tasten drücken…",
@@ -457,6 +520,14 @@ export const de = {
           label: "Nachricht senden",
           description: "Den Inhalt des Eingabefelds senden",
         },
+        queueMessage: {
+          label: "Nachricht einreihen",
+          description: "Den Entwurf ans Ende der Warteschlange senden",
+        },
+        steerMessage: {
+          label: "Antwort steuern",
+          description: "Die laufende Antwort stoppen und den Entwurf als Nächstes senden",
+        },
         cycleReasoningEffort: {
           label: "Denkaufwand durchschalten",
           description: "Durch die Stufen des Denkaufwands blättern",
@@ -497,7 +568,16 @@ export const de = {
       sourceHint: "Die Modell-Runner schreiben eigene Protokolle. Ein fehlgeschlagener Ladevorgang oder eine fehlgeschlagene Generierung wird deshalb oft dort erklärt und nicht im Server-Protokoll.",
       path: "Speicherort",
       pathCopy: "Pfad kopieren",
-      refreshSection: "Aktualisierung",
+      currentSession: "Aktuell",
+      statusLive: "Live",
+      statusPaused: "Pausiert",
+      statusStale: "Veraltet",
+      filterPlaceholder: "Zeilen filtern",
+      lineCount: "{count} Zeilen",
+      filteredLineCount: "{shown} von {total} Zeilen",
+      wrapLines: "Zeilen umbrechen",
+      jumpToLatest: "Zum Ende springen",
+      noMatches: "Keine Zeilen passen zum Filter.",
       mode: "Modus",
       modeLive: "Live",
       modeInterval: "Alle 3 Sekunden",
@@ -523,7 +603,7 @@ export const de = {
       openLogsFolderFailed: "Der Protokollordner konnte nicht geöffnet werden.",
       exportFailed: "Die Protokolle konnten nicht heruntergeladen werden.",
       exportTooOld: "Das laufende Unsloth-Backend ist zu alt für den Protokollexport. Aktualisieren Sie dieses Backend und starten Sie es neu.",
-      exportForbidden: "Zum Herunterladen aller Protokolle ist eine angemeldete Studio-Sitzung erforderlich. Ein API-Schlüssel genügt nicht.",
+      exportForbidden: "Zum Herunterladen aller Protokolle ist eine angemeldete Unsloth-Sitzung erforderlich. Ein API-Schlüssel genügt nicht.",
       keywords: "Fehlersuche Debugging Protokoll Protokolle Log Logs Fehler Absturz Stacktrace Diagnose Problembehebung debug",
     },
     voice: {
@@ -831,6 +911,18 @@ export const de = {
         revoked: "Alle Vorschaulinks widerrufen",
         revokeError: "Vorschaulinks konnten nicht widerrufen werden",
       },
+      managedProviderUrls: {
+        sectionTitle: "Verwaltete Konten",
+        enableLabel: "Lokale und Netzwerkverbindungen",
+        enableDescription:
+          "Verwaltete Konten dürfen ihre Verbindungen auf lokale oder Netzwerkadressen richten, etwa einen Ollama- oder llama.cpp-Server auf diesem Computer oder in Ihrem LAN. Standardmäßig aus, denn damit erreichen diese Konten Dienste, die auf Ihrem Computer und in Ihrem Netzwerk laufen.",
+        lockedByEnvironment:
+          "Durch UNSLOTH_STUDIO_BLOCK_PRIVATE_PROVIDER_URLS=1 auf diesem Server festgelegt, das private Adressen für alle Konten ablehnt.",
+        loadError:
+          "Verbindungseinstellungen für verwaltete Konten konnten nicht geladen werden.",
+        saveError:
+          "Verbindungseinstellungen für verwaltete Konten konnten nicht gespeichert werden.",
+      },
       notifications: {
         sectionTitle: "Benachrichtigungen",
         showLlamaUpdates: "llama.cpp-Update-Benachrichtigungen",
@@ -839,6 +931,9 @@ export const de = {
         showLoadedModels: "Anzeige geladener Modelle",
         showLoadedModelsDescription:
           "Zeigt unten rechts eine kleine Karte mit allen derzeit im Speicher befindlichen Modellen (Chat, Sprache, Bild, Video) und einer Schaltfläche, um jedes einzeln zu entladen.",
+        showWhisperUpdates: "whisper.cpp-Update-Benachrichtigungen",
+        showWhisperUpdatesDescription:
+          "Benachrichtigt, wenn ein neuerer whisper.cpp-Build für Speech-to-Text-Modelle verfügbar ist. Deaktivieren Sie dies, wenn Sie nie Audio transkribieren.",
       },
       startup: {
         sectionTitle: "Autostart",
@@ -1070,7 +1165,7 @@ export const de = {
       custom: {
         chatWidth: {
           label: "Chatbreite",
-          description: "Breite von Nachrichten und Eingabefeld festlegen. Volle Breite nutzt den Platz zwischen den Seitenleisten.",
+          description: "Breite von Nachrichten und Eingabefeld.",
           standard: "Standard",
           wide: "Breit",
           full: "Volle Breite",
@@ -1143,7 +1238,6 @@ export const de = {
         },
         contrast: {
           label: "Kontrast",
-          description: "Intensität von Rahmen und sekundärem Text.",
         },
         reduceMotion: {
           label: "Bewegung reduzieren",
@@ -1173,7 +1267,7 @@ export const de = {
       sidebarNav: {
         title: "Seitenleisten-Navigation",
         description:
-          "Tabs der Seitenleiste anheften und neu anordnen. Nicht angeheftete Tabs sammeln sich im Menü „Mehr“; ein einzelner nicht angehefteter Tab wird ausgeblendet, statt ein Menü mit nur einem Eintrag zu erhalten. „Neuer Chat“ bleibt fest.",
+          "Tabs der Seitenleiste anheften und neu anordnen. Nicht angeheftete Tabs landen im Menü „Mehr“.",
         dragToReorder: "Zum Neuanordnen ziehen",
         pinToSidebar: "{name} an die Seitenleiste anheften",
         moreHolds: "Mehr ({count})",
@@ -1181,7 +1275,7 @@ export const de = {
       sidebarMenu: {
         title: "Seitenleistenmenü",
         description:
-          "Elemente im Profilmenü der Seitenleiste anzeigen, ausblenden und neu anordnen. Einstellungen, Hilfe, Abmelden und Herunterfahren bleiben an ihrem Platz.",
+          "Verknüpfungen im Profilmenü auswählen und neu anordnen.",
         darkModeToggle: "Umschalter für den dunklen Modus",
         dragToReorder: "Zum Neuanordnen ziehen",
       },
@@ -1215,7 +1309,11 @@ export const de = {
       },
       gpu: {
         title: "GPU-Geräte",
-        ggufInference: "GGUF-Inferenz",
+        memory: "GPU-Speicher",
+        sharedWithSystemRam: "Mit dem System-RAM geteilt",
+        estimatedAvailable: "Geschätzt verfügbar: {value}",
+        sharedEstimatedAvailable: "Gemeinsamer System-RAM: geschätzt {value} verfügbar",
+        ggufInference: "Speicher für GGUF-Modelle",
         unavailable: "nicht verfügbar",
         detecting: "Suche nach GPUs...",
         unreadable: "Die Hardware dieses Servers konnte nicht gelesen werden.",
@@ -1281,6 +1379,8 @@ export const de = {
           sourceBuild: "Dieses llama.cpp wurde aus dem Quellcode gebaut; sein Backend lässt sich hier nicht wechseln.",
           customPath: "Ein benutzerdefinierter llama.cpp-Ordner ist ausgewählt. Dessen Build bestimmt das Compute-Backend.",
           unresolved: "Die verfügbaren Backends konnten nicht geprüft werden. Prüfe deine Verbindung und versuche es erneut.",
+          updateChecksDisabled:
+            "Update-Prüfungen sind deaktiviert (UNSLOTH_DISABLE_UPDATE_CHECK=1), daher werden die verfügbaren Backends nicht abgefragt.",
         },
         // Wird nicht angezeigt: zusätzliche Begriffe für die Einstellungssuche.
         llamaBackendKeywords:
@@ -1330,6 +1430,61 @@ export const de = {
         copied: "Pfad kopiert",
         openError: "Der Ordner konnte nicht geöffnet werden",
         copyError: "Der Pfad konnte nicht kopiert werden",
+        caches: {
+          label: "Cache-Dateien",
+          description:
+            "{size} in Caches, davon können {reclaimable} jetzt geleert werden.",
+          hint: "Paket-Downloads, kompilierte Kernel und Übertragungs-Caches, die Unsloth bei Bedarf neu aufbaut. Heruntergeladene Modelle, Projekte, Chats, Einstellungen und Ihr Hugging Face-Token werden hier nie geleert.",
+          keywords:
+            "Cache Caches leeren löschen bereinigen aufräumen Speicherplatz freigeben Festplatte temporär kompiliert cache caches purge prune clear clean free space disk uv pip npm bun triton inductor cuda numba matplotlib vllm compiled xet temporary",
+          measuring: "Cache-Größen werden ermittelt...",
+          measureFailed: "Die Caches konnten nicht gemessen werden",
+          empty: "Keine Cache-Dateien gefunden.",
+          detailsAction: "Details",
+          recheckAction: "Erneut prüfen",
+          hideDetailsAction: "Details ausblenden",
+          clearAction: "Caches leeren",
+          clearOneAction: "Leeren",
+          clearingAction: "Wird geleert...",
+          confirmTitle: "Zwischengespeicherte Dateien leeren?",
+          confirmDescription: "Das gibt etwa {size} frei.",
+          confirmOneTitle: "{name} leeren?",
+          safety:
+            "Unsloth baut einen Cache beim nächsten Bedarf neu auf. Heruntergeladene Modelle, Projekte, Chats, Einstellungen und Ihr Hugging Face-Token bleiben unberührt.",
+          hubCost:
+            "Das ist der Modell-Cache. Wenn Sie ihn leeren, werden diese Modelle beim nächsten Verwenden erneut heruntergeladen.",
+          datasetsCost:
+            "Wenn Sie das leeren, werden diese Datensätze beim nächsten Verwenden erneut heruntergeladen.",
+          blocked: "Nicht geleert: {reason}",
+          cleared: "{size} geleert",
+          partial: "Einige Cache-Dateien konnten nicht entfernt werden",
+          clearFailed: "Die Caches konnten nicht geleert werden",
+          names: {
+            uv: "uv-Paket-Cache",
+            pip: "pip-Download-Cache",
+            npm: "npm-Paket-Cache",
+            bun: "Bun-Paket-Cache",
+            torchInductor: "Torch Inductor-Kompilierungs-Cache",
+            torchExtensions: "Torch-Erweiterungs-Builds",
+            triton: "Triton-Kernel-Cache",
+            cuda: "CUDA-Kernel-Cache",
+            numba: "Numba-Kompilierungs-Cache",
+            matplotlib: "Matplotlib-Schriften-Cache",
+            vllm: "vLLM-Cache",
+            unslothCompiled: "Kompilierte Unsloth-Module",
+            hfXet: "Hugging Face-Übertragungs-Cache",
+            hfAssets: "Hugging Face-Asset-Cache",
+            hfDatasets: "Hugging Face-Datensatz-Cache",
+            hfHub: "Hugging Face-Modell-Cache",
+          },
+        },
+        lowDisk: {
+          title: "Der Speicherplatz wird knapp",
+          criticalTitle: "Der Speicherplatz ist kritisch knapp",
+          description:
+            "{free} frei von {total}. Das Leeren der Caches kann Speicherplatz freigeben.",
+          action: "Caches ansehen",
+        },
       },
       environment: {
         title: "Umgebung",
@@ -1444,9 +1599,9 @@ export const de = {
           "Überspringt Bestätigungsabfragen. Nur in vertrauenswürdigen Umgebungen verwenden.",
       },
       remote: {
-        title: "Mit einem entfernten Unsloth Studio verbinden",
+        title: "Mit einem entfernten Unsloth verbinden",
         description:
-          "Richten Sie unsloth start auf ein anderswo laufendes Unsloth Studio aus, indem Sie diese Variablen vor dem Aufruf setzen (oder --api-key direkt übergeben):",
+          "Richten Sie unsloth start auf ein anderswo laufendes Unsloth aus, indem Sie diese Variablen vor dem Aufruf setzen (oder --api-key direkt übergeben):",
       },
       passthrough: {
         title: "Argumente an den Agenten übergeben",
@@ -1460,6 +1615,25 @@ export const de = {
       },
     },
     chat: {
+      groups: {
+        conversations: { title: "Gespräche" },
+        files: { title: "Dateien und Einfügen" },
+        display: { title: "Anzeige" },
+        composer: { title: "Nachrichtenfeld" },
+        menu: { title: "Chatmenü" },
+        advanced: { title: "Erweitert" },
+        contextTitle: "Kontext",
+      },
+      projectAttachmentsHint:
+        "Diese Einstellung lässt sich im Anhangmenü jedes Chats einzeln ändern.",
+      rememberParamsPerModelHint:
+        "Wenn deaktiviert, verwenden alle Modelle dieselben Einstellungen.",
+      autoCompactHint:
+        "Nur lokale GGUF-Chats. Verdrängte Runden werden indexiert, sodass das Modell sie zurückholen kann, und ein Reset zitiert die dauerhaft geltenden Anweisungen, die hineinpassen, wortgetreu und mit Vorrang für die ältesten und neuesten vor allem dazwischen. Archivieren setzt einen gespeicherten Chat und den Vektorindex voraus; ohne sie werden ältere Runden verworfen. Verwendet die eingestellte Kontextlänge, nicht den verfügbaren VRAM.",
+      pastedTextShortDescription:
+        "Eingefügter Text ab {count} Zeichen wird als .txt-Datei angehängt. Kürzerer Text bleibt im Nachrichtenfeld.",
+      pastedTextOffDescription:
+        "Eingefügter Text bleibt unabhängig von seiner Länge im Nachrichtenfeld.",
       projectsSection: "Projektbereich anzeigen",
       projectsSectionDescription:
         "Gruppiert Projekt-Chats unter einer Überschrift für Projekte. Deaktiviere dies, um sie stattdessen unter den zuletzt verwendeten Chats aufzulisten.",
@@ -1483,13 +1657,14 @@ export const de = {
           "Elemente im seitlichen Plus-Menü des Chats anheften. Die übrigen werden unter „Mehr“ angezeigt.",
         chatWithFiles: "Chat mit Dateien (RAG)",
         mcp: "MCP",
-        skills: "Agentenfähigkeiten",
+        skills: "Fähigkeiten",
         savedPrompts: "Gespeicherte Prompts",
         compareChat: "Chats vergleichen",
         exportChat: "Chat exportieren",
       },
       pastedTextThreshold: "Lange Einfügungen verdichten",
-      pastedTextThresholdDescription: "Eingefügter Text, der länger ist, wird zu einem .txt-Anhang, statt das Nachrichtenfeld zu füllen. Mit {shortcut} wird trotzdem in das Nachrichtenfeld eingefügt.",
+      pastedTextThresholdDescription:
+        "Mit {shortcut} direkt in das Nachrichtenfeld einfügen.",
       pastedTextThresholdOff: "Aus",
       showResponseModel: "Antwortmodell anzeigen",
       showResponseModelDescription:
@@ -1499,32 +1674,26 @@ export const de = {
         "Zeigt „LLMs können Fehler machen“ unter dem Chatfeld an.",
       projectAttachments: "Dateien projektweit teilen",
       projectAttachmentsDescription:
-        "Standard für Dateien, die in einem Chat innerhalb eines Projekts angehängt werden: für das gesamte Projekt indizieren, damit jeder Chat darin sie nutzen kann. Jeder Chat kann dies im Anhangsmenü überschreiben.",
+        "Stellt neue Chat-Anhänge allen Chats im Projekt zur Verfügung.",
       rememberParamsPerModel: "Einstellungen pro Modell merken",
       rememberParamsPerModelDescription:
-        "Beim Modellwechsel werden Temperatur, Prompt und die weiteren Einstellungen wiederhergestellt, die Sie zuletzt mit diesem Modell verwendet haben. Aus: ein Satz Einstellungen für alle Modelle.",
+        "Stellt den zuletzt verwendeten Prompt, die Temperatur und weitere Einstellungen pro Modell wieder her.",
       autoCompact: "Lange Chats automatisch komprimieren",
       autoCompactDescription:
-        "Wenn ein lokaler GGUF-Chat die festgelegte Kontextlänge erreicht, werden ältere Gesprächsrunden verworfen, statt einen Fehler zurückzugeben. Dies richtet sich nicht nach freiem VRAM.",
-      compactionStyle: "Wenn der Kontext voll ist",
-      compactionStyleDescription:
-        "Die Servervorgabe behält UNSLOTH_CONTEXT_POLICY bei. Gespräch zurücksetzen behält die letzte Runde und dauerhafte Anweisungen. Ein gleitendes Fenster verwirft die ältesten Runden und kann mehr aktuellen Verlauf behalten.",
-      compactionStyleInherit: "Servervorgabe verwenden",
-      compactionStyleCheckpoint: "Gespräch zurücksetzen",
-      compactionStyleRollingDefault:
-        "Älteste Runden verwerfen (~25 % zusätzlicher Platz)",
-      compactionStyleRolling10:
-        "Älteste Runden verwerfen (~10 % zusätzlicher Platz)",
-      compactionStyleRolling5:
-        "Älteste Runden verwerfen (~5 % zusätzlicher Platz)",
-      compactionStyleRollingNone:
-        "Älteste Runden verwerfen (keine zusätzliche Kürzung)",
+        "Ältere Runden wandern in ein durchsuchbares Archiv, wenn ein Chat voll läuft.",
       autoCompactKeywords:
-        "Komprimierung automatisch Kontext Fenster kürzen gleitend Prüfpunkt Reserve compaction rolling checkpoint headroom",
+        "Komprimierung automatisch Kontext Fenster kürzen gleitend Prüfpunkt Reserve Archiv Abruf Suche compaction rolling checkpoint headroom archive retrieval rag",
+      visibility: {
+        collapsed: "Eingeklappt",
+        auto: "Während der Ausführung ausklappen",
+        expanded: "Immer ausgeklappt",
+      },
+      visibilityKeywords:
+        "einklappen eingeklappt ausklappen ausgeklappt offen geschlossen Denken Reasoning Tool-Aufrufe Tool-Aktivität gruppieren Streaming",
       thinking: {
-        collapseByDefault: "Denken standardmäßig einklappen",
-        collapseByDefaultDescription:
-          "Das Denken bleibt eingeklappt, während das Modell denkt, statt automatisch aufzuklappen. Zum Lesen einen Block ausklappen.",
+        visibility: "Denken",
+        visibilityDescription:
+          "Wie das Denken geöffnet wird. Einzelne Blöcke lassen sich weiterhin selbst aus- und einklappen.",
       },
       currentDate: {
         label: "Dem Modell das heutige Datum mitteilen",
@@ -1534,15 +1703,20 @@ export const de = {
         saveError: "Einstellungen zum aktuellen Datum konnten nicht aktualisiert werden",
       },
       tools: {
-        collapseByDefault: "Tool-Aktivität standardmäßig einklappen",
-        collapseByDefaultDescription:
-          "Tool-Eingaben und -Ausgaben bleiben während der Ausführung eingeklappt. Zum Prüfen eine Tool-Zeile ausklappen.",
+        visibility: "Tool-Aufrufe",
+        visibilityDescription:
+          "Wie die Tool-Aktivität geöffnet wird. Einzelne Aufrufe lassen sich weiterhin selbst aus- und einklappen.",
+        foldIntoThinking: "Tool-Aufrufe unter Denken gruppieren",
+        foldIntoThinkingDescription:
+          "Die Tool-Aufrufe eines Zuges im Denken-Block statt in eigenen Zeilen anzeigen.",
+        foldIntoThinkingBlocked:
+          "Nicht verfügbar, solange Tool-Aufrufe auf „Immer ausgeklappt“ stehen, dann bleiben sie in eigenen Zeilen.",
       },
       webSearch: {
         title: "Websuche",
         images: "Bilder aus der Websuche anzeigen",
         imagesDescription:
-          "Lässt die Websuche Bilder liefern und holt eines für jeden Punkt, den eine Antwort auflistet. Vorschaubilder lädt und verkleinert Unsloth, der Browser kontaktiert keine Bildhosts.",
+          "Bilder in Suchergebnisse aufnehmen.",
       },
       artifacts: {
         title: "Canvas",
@@ -1843,6 +2017,7 @@ export const de = {
       expires: "Läuft {value} ab",
       actionsFor: "Aktionen für {name}",
       copyPrefix: "Präfix kopieren",
+      copyFailed: "Kopieren fehlgeschlagen",
       revokeToken: "Token widerrufen",
       revokeTitle: "Zugriffstoken „{name}“ widerrufen?",
       revokeDescription:
@@ -1921,7 +2096,7 @@ export const de = {
         desktopAvailableDescription:
           "Aktualisieren Sie jetzt. Die Desktop-App wird nach Abschluss des Updates neu gestartet.",
         desktopExternalServer:
-          "Führen Sie `unsloth studio update` in dem Terminal aus, über das Sie Ihren Server gestartet haben.",
+          "Die App ist mit einem bereits laufenden Studio-Server verbunden und kann ihn nicht aktualisieren. Stoppen Sie diesen Server, beenden Sie die Desktop-App und öffnen Sie sie erneut, um das Update zu installieren.",
         desktopManualInstall:
           "Öffnen Sie die Release-Seite, um das neueste Linux-Paket zu installieren.",
         desktopCheckFailed: "Die Suche nach Updates ist fehlgeschlagen",
@@ -2674,11 +2849,11 @@ export const de = {
     tooLarge: "Größer als der VRAM, wird auf die CPU ausgelagert. Eine kleinere Quantisierung läuft schneller",
   },
   skills: {
-    title: "Agentenfähigkeiten",
+    title: "Fähigkeiten",
     description: "Fähigkeiten werden aus deinen Standard-Agentenordnern erkannt. Aktiviere sie hier und tippe dann @ im Chat, um eine zu erwähnen.",
     precedence: "~/.agents/skills hat Vorrang vor ~/.claude/skills.",
     refresh: "Aktualisieren",
-    empty: "Keine Agentenfähigkeiten gefunden. Lege einen SKILL.md-Ordner unter ~/.agents/skills oder ~/.claude/skills an und aktualisiere dann.",
+    empty: "Keine Fähigkeiten gefunden. Lege einen SKILL.md-Ordner unter ~/.agents/skills oder ~/.claude/skills an und aktualisiere dann.",
     sourceAgents: "Agents",
     sourceClaude: "Claude",
     sourceBundled: "Mitgeliefert",
@@ -2688,7 +2863,7 @@ export const de = {
     shadowedBy: "Eine andere Fähigkeit ({source}) mit diesem Namen hat Vorrang.",
     enable: "{name} aktivieren",
     disable: "{name} deaktivieren",
-    updateError: "Agentenfähigkeit konnte nicht aktualisiert werden",
-    mentions: "Agentenfähigkeiten",
+    updateError: "Fähigkeit konnte nicht aktualisiert werden",
+    mentions: "Fähigkeiten",
   },
 } satisfies DeepPartialMessageTree<typeof en>;

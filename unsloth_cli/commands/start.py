@@ -2116,7 +2116,7 @@ def _hub_gguf_files(repo: str) -> Optional[list]:
 
 
 # Mirrors hub.utils.gguf._DRAFTER_KINDS / _DRAFTER_DIR_KINDS: dspark and dflash are the same DeepSeek V4 Flash drafter, but dflash/ is also a real family name, so only mtp/ and dspark/ count as a companion folder.
-_DRAFTER_KINDS = ("mtp", "dspark", "dflash")
+_DRAFTER_KINDS = ("mtp", "dspark", "dflash", "eagle3")
 _DRAFTER_DIR_KINDS = ("mtp", "dspark")
 
 
@@ -2754,6 +2754,8 @@ def _claude_local_env(base: str, key: str, entry: dict) -> dict:
         "ANTHROPIC_AUTH_TOKEN": key,
         "ANTHROPIC_MODEL": model_id,
         "CLAUDE_CODE_ATTRIBUTION_HEADER": "0",
+        # Per-tool countdown reminders change the system prefix on local models.
+        "CLAUDE_CODE_TOTAL_TOKENS_REMINDER": "off",
         "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
         "CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS": "1",
         "CLAUDE_CODE_NO_FLICKER": "1",
@@ -3532,7 +3534,9 @@ def _refresh_windows_path() -> None:
 def _managed_node_tools() -> Optional[tuple[Path, Path, bool]]:
     # Best-effort: any failure here means "no managed Node", never a broken launch.
     try:
-        ensure_studio_backend_path()
+        # Discovery only: this answers "is there a managed Node", including for a launch aimed
+        # at a remote server, so it must not create the cache tree on the way past.
+        ensure_studio_backend_path(seed_cache_env = False)
         from utils.node_runtime import managed_node_binary, resolve_node_executable
         node = Path(managed_node_binary())
     except (ImportError, OSError, RuntimeError, TypeError, ValueError):
@@ -4075,6 +4079,16 @@ def _connect(
             # That server was started FROM these knobs, so inferring a target here would reload what was just loaded.
             infer_resident = server is None,
         )
+        status = _inference_status(base, key) if model else {}
+        # A GGUF can be active while the resolved entry is another resident model.
+        if status.get("memory_warning") and any(
+            _model_id_matches(
+                (entry or {}).get("id"), status_id, allow_casefold = is_loopback_url(base)
+            )
+            for status_id in (status.get("active_model"), status.get("model_identifier"))
+            if status_id
+        ):
+            typer.echo(f"Warning: {status['memory_warning']}", err = True)
     except BaseException:
         _shutdown_auto_served()
         raise

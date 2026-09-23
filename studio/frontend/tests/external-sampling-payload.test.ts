@@ -90,9 +90,12 @@ const buildSamplingFields = new Function(
 function bodyFor(
   providerType: string,
   params = PARAMS,
+  apiType?: "chat_completions" | "responses",
+  modelId?: string,
+  baseUrl?: string,
 ): Record<string, number> {
   return buildSamplingFields(
-    getProviderCapabilities(providerType),
+    getProviderCapabilities(providerType, apiType, modelId, baseUrl),
     params,
     { providerType },
     minPSamplingPayload,
@@ -142,6 +145,16 @@ test("custom stays on the OpenAI-compatible baseline", () => {
   assert.ok(!("top_k" in body));
   assert.equal(body.presence_penalty, PARAMS.presencePenalty);
   assert.equal(body.temperature, PARAMS.temperature);
+});
+
+test("custom Responses sends gateway sampling but omits it for managed fixed models", () => {
+  const gateway = bodyFor("custom", PARAMS, "responses", "gpt-5.5", "https://gateway.example/v1");
+  assert.equal(gateway.temperature, PARAMS.temperature);
+  assert.equal(gateway.top_p, PARAMS.topP);
+  const managed = bodyFor("custom", PARAMS, "responses", "gpt-5.5", "https://api.openai.com/v1");
+  assert.ok(!("temperature" in managed));
+  assert.ok(!("top_p" in managed));
+  assert.match(source, /getProviderCapabilities\(\s*externalProvider\?\.providerType,\s*externalProvider\?\.apiType,\s*externalSelection\?\.modelId,\s*externalProvider\?\.baseUrl/);
 });
 
 test("ollama is sent none of the three its /v1 layer drops", () => {

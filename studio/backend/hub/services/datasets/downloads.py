@@ -55,6 +55,9 @@ _account_registries = {}
 _account_registry_lock = threading.Lock()
 # The HF cache is shared across per-account registries, so a reservation must reach all of them.
 _deleting: set[str] = set()
+# Whole-cache purges in flight. Counted, like DownloadRegistry._purging, and kept here
+# so a registry created for an account DURING a purge starts out reserved too.
+_purging = 0
 
 
 def _account_registry():
@@ -67,6 +70,11 @@ def _account_registry():
             registry = download_registry.DownloadRegistry()
             for reserved in _deleting:
                 registry.begin_delete(reserved)
+            # Same reason as the line above: a purge holding every OTHER registry would not
+            # hold this one, and the account whose first download creates it would write into
+            # a tree being removed.
+            for _ in range(_purging):
+                registry.begin_cache_purge()
             _account_registries[account_id] = registry
         return registry
 
@@ -92,6 +100,37 @@ def end_delete(repo_id: str) -> None:
         _deleting.discard(key)
         for registry in (_registry, *_account_registries.values()):
             registry.end_delete(repo_id)
+
+
+def begin_cache_purge() -> bool:
+    """Reserve EVERY dataset registry for a whole-cache purge, or none of them.
+
+    A managed-account install does not have one dataset registry, it has one per account
+    (:func:`_account_registry`). Reserving only the singleton left every other account's
+    download invisible to the purge, which would then remove files under its worker. Same
+    all-or-nothing shape as :func:`begin_delete`, and the count is recorded so a registry
+    created after this returns is born reserved rather than free to claim work.
+    """
+    global _purging
+    with _account_registry_lock:
+        reserved = []
+        for registry in (_registry, *_account_registries.values()):
+            if not registry.begin_cache_purge():
+                for done in reserved:
+                    done.end_cache_purge()
+                return False
+            reserved.append(registry)
+        _purging += 1
+        return True
+
+
+def end_cache_purge() -> None:
+    global _purging
+    with _account_registry_lock:
+        if _purging:
+            _purging -= 1
+        for registry in (_registry, *_account_registries.values()):
+            registry.end_cache_purge()
 
 
 def _download_job_key(repo_id: str) -> str:
@@ -235,14 +274,21 @@ async def download_dataset_response(
     repo_id = await asyncio.to_thread(resolve_cached_repo_id_case, repo_id, repo_type = "dataset")
     key = _download_job_key(repo_id)
 
-    # Off the event loop: resolving "auto" can run the Xet reachability probe, and a blackholed DNS
-    # makes that outlast its 3s budget while every other request waits behind it.
+    # Size and Auto resolution may perform network probes, so keep both off the event loop.
+    largest_file_bytes = await asyncio.to_thread(
+        download_lifecycle.largest_download_file_bytes,
+        "dataset",
+        repo_id,
+        hf_token = hf_token,
+        allow_ambient_token = allow_ambient_token,
+    )
     use_xet, transport_reason = await asyncio.to_thread(
         download_lifecycle.resolve_requested_use_xet,
         getattr(body, "transport_mode", None),
         body.use_xet,
+        largest_file_bytes = largest_file_bytes,
     )
-    transport = download_lifecycle.resolve_transport(use_xet)
+    transport = download_lifecycle.resolve_transport(use_xet, largest_file_bytes = largest_file_bytes)
     logger.info("Download transport for %s: %s (%s)", repo_id, transport, transport_reason)
     from utils.hf_cache_settings import get_hf_cache_paths
 

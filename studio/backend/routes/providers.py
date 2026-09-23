@@ -6,6 +6,8 @@ configurations and their API keys, the RSA public key used to encrypt those keys
 listing.
 """
 
+import asyncio
+import json
 import time
 import uuid
 from typing import Optional
@@ -41,9 +43,12 @@ from core.inference.external_provider import ExternalProviderClient
 from core.inference import openai_codex_auth, openai_codex_client
 from core.inference.provider_model_capabilities import (
     MODEL_CAPABILITY_PROVIDERS,
+    MODELS_DEV_URL,
     provider_model_capabilities,
+    trim_models_dev_catalog,
 )
 from models.providers import (
+    ModelCatalogResponse,
     ProviderCreate,
     ProviderCredentialMigration,
     ProviderModelsRequest,
@@ -57,12 +62,16 @@ from models.providers import (
 )
 from storage import credential_secrets, providers_db
 from hub.services.models import account_access
+from utils.paths.storage_roots import cache_root
 from utils.utils import safe_curated_detail, log_and_http_error
 
 logger = structlog.get_logger(__name__)
 
 
 router = APIRouter(dependencies = [Depends(get_current_subject)])
+
+_MAX_RESPONSES_CONNECTIVITY_MODELS = 5
+_PROVIDER_CONNECTIVITY_TIMEOUT_SECONDS = 15.0
 
 
 def _provider_response(row: dict) -> ProviderResponse:
@@ -71,6 +80,7 @@ def _provider_response(row: dict) -> ProviderResponse:
         provider_type = row["provider_type"],
         display_name = row["display_name"],
         base_url = row["base_url"],
+        api_type = row.get("api_type", "chat_completions"),
         is_enabled = bool(row["is_enabled"]),
         has_api_key = credential_secrets.has_secret(
             credential_secrets.PROVIDER_API_KEY_KIND,
@@ -256,6 +266,7 @@ async def create_provider_config(
             models = payload.models,
             available_models = payload.available_models,
             max_output_tokens = payload.max_output_tokens,
+            api_type = payload.api_type,
         )
         try:
             if api_key:
@@ -346,6 +357,7 @@ async def update_provider_config(
         "models",
         "available_models",
         "max_output_tokens",
+        "api_type",
     }
     metadata_requested = bool(payload.model_fields_set & metadata_fields)
 
@@ -376,6 +388,7 @@ async def update_provider_config(
             is_enabled = payload.is_enabled,
             models = payload.models,
             available_models = payload.available_models,
+            api_type = payload.api_type,
         )
         if max_output_tokens_requested:
             metadata_updates["max_output_tokens"] = payload.max_output_tokens
@@ -388,6 +401,7 @@ async def update_provider_config(
         models = existing.get("models") or [],
         available_models = existing.get("available_models") or [],
         max_output_tokens = existing.get("max_output_tokens"),
+        api_type = existing.get("api_type", "chat_completions"),
     )
 
     def _current_matches(current: dict, field: str, written) -> bool:
@@ -583,27 +597,63 @@ def _bind_saved_provider_target(payload):
         update = {
             "provider_type": config["provider_type"],
             "base_url": config["base_url"],
+            "api_type": config.get("api_type", "chat_completions"),
         }
     )
 
 
-async def _test_custom_provider_connectivity(client, model_id: str) -> ProviderTestResult:
+async def _test_custom_provider_connectivity(
+    client,
+    model_id: str,
+    api_type: str = "chat_completions",
+) -> ProviderTestResult:
     """Probe a custom OpenAI-compatible endpoint without assuming /chat/completions. TTS-only gateways such as
     Kokoro expose ``/models`` and ``/audio/speech`` but not ``/chat/completions``. Try those first, then fall
     back to a chat probe."""
     model_id = (model_id or "").strip()
     models_error: Exception | None = None
+    models = None
     try:
         models = await client.list_models()
+    except Exception as exc:
+        models_error = exc
+
+    if models is not None and api_type != "responses":
         return ProviderTestResult(
             success = True,
             message = f"Connected successfully. Found {len(models)} model(s).",
             models_count = len(models),
         )
-    except Exception as exc:
-        models_error = exc
+
+    responses_model_ids: list[str] = []
+    if model_id and api_type == "responses":
+        responses_model_ids = [model_id]
+    elif api_type == "responses" and models is not None:
+        for model in models:
+            candidate = model.get("id") if isinstance(model, dict) else None
+            candidate = candidate.strip() if isinstance(candidate, str) else ""
+            if candidate and candidate not in responses_model_ids:
+                responses_model_ids.append(candidate)
+            if len(responses_model_ids) >= _MAX_RESPONSES_CONNECTIVITY_MODELS:
+                break
+        if not responses_model_ids:
+            return ProviderTestResult(
+                success = False,
+                message = (
+                    "Connection failed: /models responded, but no model ID was available "
+                    "to test the Responses endpoint."
+                ),
+                models_count = len(models),
+            )
+        model_id = responses_model_ids[0]
 
     if not model_id:
+        if models is not None:
+            return ProviderTestResult(
+                success = True,
+                message = f"Connected successfully. Found {len(models)} model(s).",
+                models_count = len(models),
+            )
         return ProviderTestResult(
             success = False,
             message = (
@@ -611,6 +661,56 @@ async def _test_custom_provider_connectivity(client, model_id: str) -> ProviderT
                 f"provided to test further. {safe_curated_detail(models_error)}"
             ),
             models_count = None,
+        )
+
+    if api_type == "responses":
+        last_failure = "Responses endpoint returned no completion."
+        for response_model_id in responses_model_ids:
+            try:
+                received_response = False
+                model_failure: str | None = None
+                response_stream = client.stream_chat_completion(
+                    messages = [{"role": "user", "content": "ping"}],
+                    model = response_model_id,
+                    temperature = None,
+                    top_p = None,
+                    max_tokens = 16,
+                )
+
+                async def consume_response_stream():
+                    nonlocal received_response, model_failure
+                    async for line in response_stream:
+                        if line.startswith("data: ") and line[6:].strip() != "[DONE]":
+                            event = json.loads(line[6:])
+                            received_response = received_response or bool(event.get("choices"))
+                            if event.get("error"):
+                                model_failure = event["error"].get(
+                                    "message", "Responses request failed"
+                                )
+
+                try:
+                    await asyncio.wait_for(
+                        consume_response_stream(),
+                        timeout = _PROVIDER_CONNECTIVITY_TIMEOUT_SECONDS,
+                    )
+                finally:
+                    await response_stream.aclose()
+                if received_response and model_failure is None:
+                    return ProviderTestResult(
+                        success = True,
+                        message = "Connected successfully. Responses endpoint responded.",
+                    )
+                last_failure = model_failure or "Responses endpoint returned no completion."
+            except asyncio.TimeoutError:
+                last_failure = (
+                    "Responses endpoint timed out after "
+                    f"{_PROVIDER_CONNECTIVITY_TIMEOUT_SECONDS:g} seconds."
+                )
+            except Exception as exc:
+                last_failure = safe_curated_detail(exc)
+        return ProviderTestResult(
+            success = False,
+            message = f"Connection failed: {last_failure}",
         )
 
     try:
@@ -699,12 +799,15 @@ async def test_provider(
         provider_type = payload.provider_type,
         base_url = base_url,
         api_key = api_key,
-        timeout = 15.0,
+        api_type = payload.api_type,
+        timeout = _PROVIDER_CONNECTIVITY_TIMEOUT_SECONDS,
     )
 
     try:
         if payload.provider_type == "custom":
-            return await _test_custom_provider_connectivity(client, payload.model_id or "")
+            return await _test_custom_provider_connectivity(
+                client, payload.model_id or "", payload.api_type
+            )
         if info.get("model_list_mode") == "curated":
             await client.verify_models_endpoint_lightweight()
             return ProviderTestResult(
@@ -739,6 +842,67 @@ async def test_provider(
 
 _MODEL_CAPABILITY_CACHE_TTL_SECONDS = 3600.0
 _model_capability_cache: dict[str, tuple[float, list[dict]]] = {}
+
+
+_MODEL_CATALOG_TTL_SECONDS = 24 * 3600.0
+_model_catalog_cache: dict | None = None
+
+
+def _model_catalog_cache_path():
+    return cache_root() / "model_catalog.json"
+
+
+def _read_model_catalog_file() -> dict | None:
+    try:
+        data = json.loads(_model_catalog_cache_path().read_text(encoding = "utf-8"))
+    except (OSError, ValueError):
+        return None
+    if (
+        isinstance(data, dict)
+        and isinstance(data.get("providers"), dict)
+        and isinstance(data.get("fetched_at"), (int, float))
+    ):
+        return data
+    return None
+
+
+def _write_model_catalog_file(data: dict) -> None:
+    try:
+        path = _model_catalog_cache_path()
+        path.parent.mkdir(parents = True, exist_ok = True)
+        path.write_text(json.dumps(data), encoding = "utf-8")
+    except OSError as exc:
+        logger.warning("providers.model_catalog_cache_write_failed", error = str(exc))
+
+
+async def _fetch_models_dev_catalog() -> dict:
+    from core.inference.external_provider import _client
+
+    response = await _client().get(MODELS_DEV_URL, timeout = 20.0)
+    response.raise_for_status()
+    return {"fetched_at": time.time(), "providers": trim_models_dev_catalog(response.json())}
+
+
+@router.get("/model-catalog", response_model = ModelCatalogResponse)
+async def get_model_catalog(_current_subject: str = Depends(get_current_subject)):
+    global _model_catalog_cache
+    cached = _model_catalog_cache or _read_model_catalog_file()
+    if cached is not None and time.time() - cached["fetched_at"] < _MODEL_CATALOG_TTL_SECONDS:
+        _model_catalog_cache = cached
+        return cached
+    try:
+        fresh = await _fetch_models_dev_catalog()
+    except Exception as exc:
+        logger.warning("providers.model_catalog_refresh_failed", error = str(exc))
+        if cached is not None:
+            _model_catalog_cache = cached
+            return cached
+        raise HTTPException(
+            status_code = 503, detail = "The model catalog is unavailable offline."
+        ) from None
+    _model_catalog_cache = fresh
+    _write_model_catalog_file(fresh)
+    return fresh
 
 
 @router.post("/model-capabilities", response_model = list[ProviderModelCapabilityInfo])
@@ -777,6 +941,7 @@ async def list_provider_model_capabilities(
         provider_type = payload.provider_type,
         base_url = base_url,
         api_key = api_key,
+        api_type = payload.api_type,
         timeout = 15.0,
     )
     try:
@@ -844,6 +1009,7 @@ async def list_provider_models(
         provider_type = payload.provider_type,
         base_url = base_url,
         api_key = api_key,
+        api_type = payload.api_type,
         timeout = 15.0,
     )
 

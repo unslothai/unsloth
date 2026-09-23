@@ -19,6 +19,7 @@ import {
 import {
   type ScanFolderInfo,
   addScanFolder,
+  formatBytes,
   listScanFolders,
   removeScanFolder,
   scanFolderStatusCopy,
@@ -61,8 +62,7 @@ function formatError(error: unknown): string {
 
 function formatFreeSpace(bytes: number | null): string | null {
   if (bytes === null || !Number.isFinite(bytes)) return null;
-  const gb = bytes / 1024 ** 3;
-  return gb >= 10 ? `${Math.round(gb)} GB free` : `${gb.toFixed(1)} GB free`;
+  return `${formatBytes(bytes)} free`;
 }
 
 export function OnDeviceFoldersDialog({
@@ -258,7 +258,7 @@ export function OnDeviceFoldersDialog({
     <>
       <Dialog open={open} onOpenChange={onOpenChange}>
         <DialogContent
-          className="flex max-h-[90dvh] flex-col gap-0 overflow-hidden p-0 sm:max-w-[620px] lg:max-w-[660px] xl:max-w-[680px] [&_[data-slot=dialog-close]]:right-3 [&_[data-slot=dialog-close]]:top-3"
+          className="flex max-h-[90dvh] flex-col gap-0 overflow-hidden p-0 sm:max-w-[calc(620px*var(--ui-space-scale,1))] lg:max-w-[calc(660px*var(--ui-space-scale,1))] xl:max-w-[calc(680px*var(--ui-space-scale,1))] [&_[data-slot=dialog-close]]:right-3 [&_[data-slot=dialog-close]]:top-3"
           overlayClassName="bg-black/20 backdrop-blur-none"
         >
           <DialogHeader className="shrink-0 border-b border-border/60 px-5 py-4">

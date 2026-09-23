@@ -163,6 +163,72 @@ def test_detect_reasoning_flags_none_template_returns_all_false():
     assert flags["reasoning_style"] == "enable_thinking"
 
 
+# Tool guards shipped templates actually write, each read as "no tools" by the older
+# exact-substring scan. A false greys out the Search and Code pills, so the user cannot correct it.
+@pytest.mark.parametrize(
+    "label, guard",
+    [
+        # Granite 3.3 aliases the list before branching on it.
+        (
+            "granite_alias",
+            "{%- if tools and not available_tools -%}{{- tools | tojson }}{%- endif -%}",
+        ),
+        # No spaces inside the tag.
+        ("tight_whitespace", "{%-if tools%}{{- tools | tojson }}{%- endif -%}"),
+        # `is not none` rather than a truth test.
+        ("is_not_none", "{% if tools is not none %}{{ tools | tojson }}{% endif %}"),
+        # No guard at all, straight into the loop.
+        ("unguarded_loop", "{%- for tool in tools %}{{- tool | tojson }}{%- endfor %}"),
+        # An elif arm.
+        (
+            "elif_arm",
+            "{%- if documents %}{{- documents }}{%- elif tools %}{{- tools }}{%- endif %}",
+        ),
+    ],
+)
+def test_detect_reasoning_flags_reads_tool_guards_however_they_are_written(label, guard):
+    from core.inference.llama_cpp import detect_reasoning_flags
+    flags = detect_reasoning_flags(guard, f"vendor/{label}")
+    assert flags["supports_tools"] is True
+
+
+@pytest.mark.parametrize(
+    "label, template",
+    [
+        # Prose, not a tool block.
+        ("prose_only", "{{- 'You are a helpful assistant with access to tools.' }}"),
+        # Studio passes tools as a kwarg, not a message field.
+        (
+            "phi4_message_scoped",
+            "{% if message['role'] == 'system' and 'tools' in message"
+            " and message['tools'] is not none %}{{ message['tools'] }}{% endif %}",
+        ),
+        # Excluding tool turns is not handling them.
+        (
+            "negated_role_check",
+            "{% for m in messages %}{% if m.role != 'tool' %}{{ m.content }}"
+            "{% endif %}{% endfor %}",
+        ),
+        # The word in a Jinja comment is not a capability.
+        (
+            "tool_calls_in_comment",
+            "{# tool_calls are deliberately unsupported #}"
+            "{% for m in messages %}{{ m.content }}{% endfor %}",
+        ),
+        # Llama 3.1's other switches: neither renders a schema.
+        (
+            "adjacent_switch_names",
+            "{%- if builtin_tools %}{{- 'x' }}{%- endif %}"
+            "{%- if tools_in_user_message %}{{- 'y' }}{%- endif %}",
+        ),
+    ],
+)
+def test_detect_reasoning_flags_does_not_invent_tool_support(label, template):
+    from core.inference.llama_cpp import detect_reasoning_flags
+    flags = detect_reasoning_flags(template, f"vendor/{label}")
+    assert flags["supports_tools"] is False
+
+
 def test_detect_reasoning_flags_deepseek_v4_exposes_none_high_max():
     """DeepSeek-V4-Flash: enable_thinking gate + reasoning_effort 'max' preamble.
     Classified as the hybrid style with the full none/high/max ladder even
