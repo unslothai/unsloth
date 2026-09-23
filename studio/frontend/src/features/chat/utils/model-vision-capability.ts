@@ -26,3 +26,11 @@ export function isKnownTextOnlySelection(
   }
   return catalogModel?.isVision === false;
 }
+
+
+/** Preserve missing or malformed backend capability metadata as unknown. */
+export function normalizeGgufVisionCapability(
+  value: unknown,
+): boolean | undefined {
+  return typeof value === "boolean" ? value : undefined;
+}

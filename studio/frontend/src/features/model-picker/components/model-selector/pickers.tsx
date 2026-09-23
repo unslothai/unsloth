@@ -14,6 +14,7 @@ import {
 import { usePlatformStore } from "@/config/env";
 import { INVENTORY_FRESHNESS_WINDOW_MS } from "@/features/hub/inventory";
 import { ApiProviderLogo } from "@/features/chat";
+import { normalizeGgufVisionCapability } from "@/features/chat/utils/model-vision-capability";
 import {
   type ScanFolderInfo,
   addScanFolder,
@@ -1457,7 +1458,7 @@ function normalizeGgufVariantsResponse(
 ): {
   variants: GgufVariantDetail[];
   defaultVariant: string | null;
-  hasVision: boolean;
+  hasVision: boolean | undefined;
   contextLength: number | null;
   resolvedLocally: boolean;
   dependenciesResolved: boolean;
@@ -1471,7 +1472,7 @@ function normalizeGgufVariantsResponse(
       typeof res?.default_variant === "string" && res.default_variant.length > 0
         ? res.default_variant
         : null,
-    hasVision: res?.has_vision === true,
+    hasVision: normalizeGgufVisionCapability(res?.has_vision),
     contextLength:
       typeof contextLength === "number" &&
       Number.isFinite(contextLength) &&
@@ -1500,7 +1501,7 @@ function ggufVariantExpectedBytes(variant: GgufVariantDetail): number {
  *  mounts the expander, so this is its only source. */
 interface SoleDownloadedQuant {
   variant: GgufVariantDetail;
-  hasVision: boolean;
+  hasVision: boolean | undefined;
 }
 
 /** The repo's one complete quant, or null when Hub metadata cannot verify its dependencies. */
@@ -1704,7 +1705,7 @@ function GgufVariantExpander({
   const deleteDisabled = variantActions?.deleteDisabled ?? false;
   const [variants, setVariants] = useState<GgufVariantDetail[] | null>(null);
   const [defaultVariant, setDefaultVariant] = useState<string | null>(null);
-  const [hasVision, setHasVision] = useState(false);
+  const [hasVision, setHasVision] = useState<boolean | undefined>(undefined);
   // Native max context (GGUF metadata); only set once a variant is downloaded.
   const [nativeContext, setNativeContext] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
@@ -1741,7 +1742,9 @@ function GgufVariantExpander({
         setVariants(normalized.variants);
         setDefaultVariant(normalized.defaultVariant);
         setHasVision(normalized.hasVision);
-        onHasVision?.(normalized.hasVision);
+        if (normalized.hasVision !== undefined) {
+          onHasVision?.(normalized.hasVision);
+        }
         setNativeContext(normalized.contextLength);
         setResolvedLocally(normalized.resolvedLocally);
       })
@@ -1766,7 +1769,7 @@ function GgufVariantExpander({
   // Repo-level true only proves that some mmproj exists; the loader may reject
   // it for this quant/model family. Absence is authoritative text-only
   // evidence, while presence remains unknown until load.
-  const variantVisionHint = hasVision ? undefined : false;
+  const variantVisionHint = hasVision === false ? false : undefined;
   // The prefix test cannot see a marker-less relative directory like "models/my-image-model",
   // so whether the checkpoint is on disk is asked of the listing, not of the spelling.
   const checkpointIsLocal = isLocalPath || resolvedLocally;
@@ -5744,7 +5747,7 @@ export function HubModelPicker({
       // readSoleQuant already read the repo's mmproj verdict, and this collapsed row is
       // the only place it can reach the chat warning: forward it conservatively, as the
       // expander does, so a known text-only sole quant still warns.
-      isVision: sole.hasVision ? undefined : false,
+      isVision: sole.hasVision === false ? false : undefined,
       pipelineTag: c.task ?? null,
     };
     return (

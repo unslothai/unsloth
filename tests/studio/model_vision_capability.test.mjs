@@ -4,7 +4,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { isKnownTextOnlySelection } from "../../studio/frontend/src/features/chat/utils/model-vision-capability.ts";
+import {
+  isKnownTextOnlySelection,
+  normalizeGgufVisionCapability,
+} from "../../studio/frontend/src/features/chat/utils/model-vision-capability.ts";
 
 test("undefined catalog target is not treated as text-only", () => {
   assert.equal(isKnownTextOnlySelection({}, undefined), false);
@@ -39,6 +42,23 @@ test("unknown GGUF capability does not trust a stale catalog false", () => {
     false,
   );
 });
+test("missing and malformed GGUF vision metadata remain unknown", () => {
+  for (const value of [undefined, null, "false", 0]) {
+    const isVision = normalizeGgufVisionCapability(value);
+    assert.equal(isVision, undefined);
+    assert.equal(
+      isKnownTextOnlySelection({ isGguf: true, isVision }),
+      false,
+    );
+  }
+  assert.equal(normalizeGgufVisionCapability(false), false);
+  assert.equal(
+    isKnownTextOnlySelection({ isGguf: true, isVision: false }),
+    true,
+  );
+});
+
+
 
 test("known text-only non-GGUF still emits the warning", () => {
   assert.equal(
