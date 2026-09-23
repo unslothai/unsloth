@@ -113,6 +113,148 @@ _remove_agent_instruction_files() {
     done
 }
 
+# ── BEGIN mirror fallback (kept identical in install.sh and studio/setup.sh) ──
+# A package host that is blocked, or too slow to serve a small index page within the probe budget, is swapped for a public mirror that passes the same probe. Hosts that the user has already redirected are left alone, the choice reaches every child through the env vars uv, pip, npm and the Unsloth helpers already read, and UNSLOTH_MIRROR_FALLBACK=0 turns it off.
+_MIRROR_CERNET="https://mirrors.cernet.edu.cn"
+_MIRROR_PYPI="$_MIRROR_CERNET/pypi/web/simple"
+
+# Prints ok, slow (answered but missed the budget) or blocked.
+_mirror_probe() {
+    _mp_rc=0
+    _mp_code=$(curl -sL -o /dev/null -w '%{http_code}' --connect-timeout 5 --max-time 10 "$1" 2>/dev/null) || _mp_rc=$?
+    case "$_mp_code" in
+        2??) if [ "$_mp_rc" -eq 0 ]; then echo ok; else echo slow; fi ;;
+        *) echo blocked ;;
+    esac
+}
+
+_mirror_url() {
+    case "$1:$2" in
+        pypi:default) echo "https://pypi.org/simple/pip/" ;;
+        pypi:mirror) echo "$_MIRROR_PYPI/pip/" ;;
+        torch:default) echo "https://download.pytorch.org/whl/cpu/torchaudio/" ;;
+        torch:mirror) echo "$_MIRROR_CERNET/pytorch/whl/cpu/torchaudio/" ;;
+        node:default) echo "https://nodejs.org/dist/index.tab" ;;
+        node:mirror) echo "$_MIRROR_CERNET/nodejs-release/index.tab" ;;
+        npm:default) echo "https://registry.npmjs.org/npm/latest" ;;
+        npm:mirror) echo "https://registry.npmmirror.com/npm/latest" ;;
+    esac
+}
+
+# True when the user already chose an index for uv ($1 = uv) or pip ($1 = pip), by env var or config file.
+_mirror_index_configured() {
+    if [ "$1" = uv ]; then
+        [ -n "${UV_DEFAULT_INDEX:-}${UV_INDEX_URL:-}${UV_INDEX:-}${UV_EXTRA_INDEX_URL:-}" ] && return 0
+        _mic_key='\[\[index\]\]|(pip\.)?(index|index-url|default-index|extra-index-url|no-index)[[:space:]]*='
+        set -- "${UV_CONFIG_FILE:-}" "${XDG_CONFIG_HOME:-$HOME/.config}/uv/uv.toml" /etc/xdg/uv/uv.toml /etc/uv/uv.toml
+    else
+        [ -n "${PIP_INDEX_URL:-}${PIP_EXTRA_INDEX_URL:-}${PIP_NO_INDEX:-}" ] && return 0
+        _mic_key='(index[-_]url|extra[-_]index[-_]url|no[-_]index)[[:space:]]*[=:]'
+        set -- "${PIP_CONFIG_FILE:-}" "${XDG_CONFIG_HOME:-$HOME/.config}/pip/pip.conf" "$HOME/.pip/pip.conf" "$HOME/Library/Application Support/pip/pip.conf" /etc/xdg/pip/pip.conf /etc/pip.conf
+    fi
+    for _mic_file in "$@"; do
+        if [ -f "$_mic_file" ] && grep -Eq "^[[:space:]]*($_mic_key)" "$_mic_file" 2>/dev/null; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+# Probes the $2 (default or mirror) URL of every host after $2 in parallel, leaving each result in $1/<host>.$2.
+_mirror_probe_all() {
+    _mpa_dir="$1"
+    _mpa_column="$2"
+    shift 2
+    _mpa_pids=""
+    for _mpa_host in "$@"; do
+        _mirror_probe "$(_mirror_url "$_mpa_host" "$_mpa_column")" > "$_mpa_dir/$_mpa_host.$_mpa_column" &
+        _mpa_pids="$_mpa_pids $!"
+    done
+    for _mpa_pid in $_mpa_pids; do
+        wait "$_mpa_pid" || true
+    done
+}
+
+# Points host $1 at its mirror; $2 is how the default probe went (slow or blocked).
+_mirror_use() {
+    case "$1" in
+        pypi)
+            # uv's unsafe-first-match fetches every index and fails outright when one is unreachable, so pypi.org stays as the second index only while it still answers.
+            if [ "$_mf_uv" = true ] && [ "$2" = slow ]; then
+                export UV_INDEX="$_MIRROR_PYPI" UV_DEFAULT_INDEX="https://pypi.org/simple" UV_INDEX_STRATEGY="${UV_INDEX_STRATEGY:-unsafe-first-match}"
+            elif [ "$_mf_uv" = true ]; then
+                export UV_DEFAULT_INDEX="$_MIRROR_PYPI"
+            fi
+            if [ "$_mf_pip" = true ]; then
+                export PIP_INDEX_URL="$_MIRROR_PYPI"
+                if [ "$2" = slow ]; then
+                    export PIP_EXTRA_INDEX_URL="https://pypi.org/simple"
+                fi
+            fi
+            _mu_from="pypi.org"
+            _mu_to="$_MIRROR_PYPI" ;;
+        torch)
+            export UNSLOTH_PYTORCH_MIRROR="$_MIRROR_CERNET/pytorch/whl"
+            _mu_from="download.pytorch.org"
+            _mu_to="$UNSLOTH_PYTORCH_MIRROR" ;;
+        node)
+            export UNSLOTH_NODE_MIRROR="$_MIRROR_CERNET/nodejs-release"
+            _mu_from="nodejs.org"
+            _mu_to="$UNSLOTH_NODE_MIRROR" ;;
+        npm)
+            export UNSLOTH_NPM_REGISTRY="https://registry.npmmirror.com"
+            _mu_from="registry.npmjs.org"
+            _mu_to="$UNSLOTH_NPM_REGISTRY" ;;
+    esac
+    step "mirror" "$_mu_from is $2; using $_mu_to" "$C_WARN"
+    _mf_used=true
+}
+
+_mirror_fallback() {
+    case "${UNSLOTH_MIRROR_FALLBACK:-}" in
+        0|false|False|FALSE|no|off) return 0 ;;
+    esac
+    [ -z "${_UNSLOTH_MIRROR_PROBED:-}" ] || return 0
+    command -v curl >/dev/null 2>&1 || return 0
+    export _UNSLOTH_MIRROR_PROBED=1
+    _mf_uv=true
+    _mf_pip=true
+    _mf_used=false
+    _mirror_index_configured uv && _mf_uv=false
+    _mirror_index_configured pip && _mf_pip=false
+    _mf_hosts=""
+    if [ "$_mf_uv" = true ] || [ "$_mf_pip" = true ]; then
+        _mf_hosts="pypi"
+    fi
+    [ -n "${UNSLOTH_PYTORCH_MIRROR:-}${UNSLOTH_TORCH_INDEX_URL:-}" ] || _mf_hosts="$_mf_hosts torch"
+    [ -n "${UNSLOTH_NODE_MIRROR:-}" ] || _mf_hosts="$_mf_hosts node"
+    [ -n "${UNSLOTH_NPM_REGISTRY:-}" ] || _mf_hosts="$_mf_hosts npm"
+    [ -n "$_mf_hosts" ] || return 0
+    _mf_dir=$(mktemp -d 2>/dev/null) || return 0
+    # shellcheck disable=SC2086
+    _mirror_probe_all "$_mf_dir" default $_mf_hosts
+    _mf_failed=""
+    for _mf_host in $_mf_hosts; do
+        [ "$(cat "$_mf_dir/$_mf_host.default")" = ok ] || _mf_failed="$_mf_failed $_mf_host"
+    done
+    if [ -n "$_mf_failed" ]; then
+        # shellcheck disable=SC2086
+        _mirror_probe_all "$_mf_dir" mirror $_mf_failed
+        for _mf_host in $_mf_failed; do
+            if [ "$(cat "$_mf_dir/$_mf_host.mirror")" = ok ]; then
+                _mirror_use "$_mf_host" "$(cat "$_mf_dir/$_mf_host.default")"
+            fi
+        done
+        if [ "$_mf_used" = true ]; then
+            substep "Set UNSLOTH_MIRROR_FALLBACK=0 to always use the default hosts."
+        fi
+    fi
+    rm -rf "$_mf_dir"
+}
+# ── END mirror fallback ──
+
+_mirror_fallback
+
 # ── Corporate-mirror / proxy escape hatch for the frontend npm/bun install (#6491) ──
 # studio/frontend/.npmrc pins registry=https://registry.npmjs.org/ as a supply-chain
 # lock. A project-level pin overrides a corporate user's ~/.npmrc proxy, so the install
