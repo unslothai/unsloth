@@ -245,3 +245,37 @@ def test_offloaded_leftovers_materialize_in_the_requested_dtype(offload, tmp_pat
     with torch.no_grad():
         out = model(ids)
     assert out.dtype == torch.float32
+
+
+class _EetqLikeLinear(nn.Module):
+    """transformers' EetqLinear: int8 weight plus deliberately float16 weight_scales / bias Parameters."""
+
+    def __init__(self):
+        super().__init__()
+        self.weight = nn.Parameter(torch.zeros(8, 8, dtype = torch.int8), requires_grad = False)
+        self.weight_scales = nn.Parameter(torch.ones(8, dtype = torch.float16))
+        self.bias = nn.Parameter(torch.zeros(8, dtype = torch.float16))
+
+
+class _Fp8LikeLinear(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.weight = nn.Parameter(torch.zeros(8, 8).to(torch.float8_e4m3fn), requires_grad = False)
+        self.bias = nn.Parameter(torch.zeros(8, dtype = torch.float16))
+
+
+def test_quantized_modules_keep_their_own_float_parameters():
+    cast = _load_helper()
+    model = _TinyDecoder()
+    model.eetq = _EetqLikeLinear()
+    model.fp8 = _Fp8LikeLinear()
+    model.quantized.bias = nn.Parameter(torch.zeros(32, dtype = torch.float16))
+    cast(model, torch.bfloat16)
+    assert model.eetq.weight_scales.dtype == torch.float16
+    assert model.eetq.bias.dtype == torch.float16
+    assert model.eetq.weight.dtype == torch.int8
+    assert model.fp8.bias.dtype == torch.float16
+    assert model.quantized.bias.dtype == torch.float16
+    # Leftovers on unquantized modules are still repaired.
+    assert model.embed_tokens.weight.dtype == torch.bfloat16
+    assert model.A_log.dtype == torch.bfloat16

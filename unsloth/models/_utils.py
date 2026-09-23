@@ -1219,19 +1219,28 @@ def _cast_text_only_prequantized_params(model, dtype):
             keep_fp32 = [k for k, v in get_dtype_plan(dtype).items() if v == torch.float32]
         except Exception:
             keep_fp32 = []
+    def _is_quantized_storage(t):
+        # Params4bit / Int8Params and tensor subclasses (torchao) or int / 1-byte float (EETQ int8, FP8) weights.
+        if type(t) is not torch.nn.Parameter or type(t.data) is not torch.Tensor:
+            return True
+        return not t.dtype.is_floating_point or t.dtype.itemsize == 1
+
     n_cast = 0
-    for name, param in model.named_parameters():
-        # Params4bit / Int8Params and tensor subclasses (torchao, fp8) hold quantized storage.
-        if type(param) is not torch.nn.Parameter or type(param.data) is not torch.Tensor:
+    for module_name, module in model.named_modules():
+        own = list(module.named_parameters(recurse = False))
+        # A quantized module's fp16 scales / bias are the kernel's contract (EETQ weight_scales), not leftovers.
+        if any(_is_quantized_storage(t) for _, t in own):
             continue
-        # Offloaded (cpu / disk) params are meta placeholders; accelerate casts the stored value to the placeholder's dtype when it materializes it, so recasting the placeholder covers them.
-        if param.dtype not in (torch.float16, torch.bfloat16):
-            continue
-        target = torch.float32 if any(re.search(k, name) for k in keep_fp32) else dtype
-        if param.dtype == target:
-            continue
-        param.data = param.data.to(target)
-        n_cast += 1
+        for param_name, param in own:
+            name = f"{module_name}.{param_name}" if module_name else param_name
+            # Offloaded (cpu / disk) params are meta placeholders; accelerate casts the stored value to the placeholder's dtype when it materializes it, so recasting the placeholder covers them.
+            if param.dtype not in (torch.float16, torch.bfloat16):
+                continue
+            target = torch.float32 if any(re.search(k, name) for k in keep_fp32) else dtype
+            if param.dtype == target:
+                continue
+            param.data = param.data.to(target)
+            n_cast += 1
     return n_cast
 
 
