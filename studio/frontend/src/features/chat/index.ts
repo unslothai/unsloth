@@ -116,6 +116,7 @@ export {
   planSidebarDrop,
   rowKey,
   sectionRingKey,
+  SIDEBAR_TAIL_SCOPE,
   STAY,
   type DropEdge,
   type SidebarDragItem,
