@@ -390,8 +390,12 @@ def _tiny_omni_checkpoint(path):
 
 
 @pytest.mark.parametrize("text_only", [True, False], ids = ["thinker", "kept_wrapper"])
-@pytest.mark.parametrize("target_modules", [None, ["q_proj", "v_proj"]], ids = ["unsloth_regex", "leaf_list"])
-def test_an_omni_adapter_reloads_onto_the_model_it_was_trained_on(tmp_path, text_only, target_modules):
+@pytest.mark.parametrize(
+    "target_modules", [None, ["q_proj", "v_proj"]], ids = ["unsloth_regex", "leaf_list"]
+)
+def test_an_omni_adapter_reloads_onto_the_model_it_was_trained_on(
+    tmp_path, text_only, target_modules
+):
     # A leaf-name list reloads as a set that matches either layout, so the saved weight
     # keys (model.layers vs thinker.model.layers) are what decide.
     if not torch.cuda.is_available():

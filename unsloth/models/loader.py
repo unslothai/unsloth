@@ -267,7 +267,12 @@ _OMNI_AUTO_CLASS_NAMES = (
 )
 
 
-def _adapter_weight_keys(adapter_name, token = None, revision = None, local_files_only = False):
+def _adapter_weight_keys(
+    adapter_name,
+    token = None,
+    revision = None,
+    local_files_only = False,
+):
     """Tensor names of a saved adapter from the safetensors header only, or None."""
     try:
         local = os.path.expanduser(adapter_name)
