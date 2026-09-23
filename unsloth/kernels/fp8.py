@@ -112,11 +112,28 @@ def weight_dequant_block(
     return y
 
 
+def _is_transposed_view(x):
+    return x.dim() == 2 and x.shape[0] > 1 and x.shape[1] > 1 and x.stride(0) == 1 and x.stride(1) != 1
+
+
+def _has_fbgemm_rowwise():
+    try:
+        return hasattr(torch.ops.fbgemm, "quantize_fp8_per_row") and hasattr(
+            torch.ops.fbgemm, "f8f8bf16_rowwise"
+        )
+    except Exception:
+        return False
+
+
 def weight_dequant(
     x: torch.Tensor,
     s: torch.Tensor,
     dtype = torch.bfloat16,
 ):
+    # A transposed view (fast_lora backward passes W.t()) keeps its scales in storage order, and a square
+    # weight cannot be told apart by shape, so dequantize the storage layout and transpose the result.
+    if _is_transposed_view(x):
+        return weight_dequant(x.t(), s, dtype).t()
     # Per-tensor scale: single value for entire weight matrix
     if s.numel() == 1:
         return x.to(dtype) * s.view(1, 1).to(dtype)
@@ -134,7 +151,7 @@ def weight_dequant(
     else:
         # Block quantized weight: scale shape is (ceil(m/block_m), ceil(n/block_n)). Go through the
         # any-shape helper so fast_dequantize's callers get the pre-sm89 fallback too.
-        return _blockwise_weight_dequant_any_shape(x, s, [128, 128], dtype)
+        return _blockwise_weight_dequant_any_shape(x, s, getattr(s, "block_size", None) or [128, 128], dtype)
 
 
 # Copied from huggingface.co/deepseek-ai/DeepSeek-V3 inference/kernel.py
@@ -509,8 +526,12 @@ class FbgemmFp8Linear_matmul(torch.autograd.Function):
         weight_scale,
         bias = None,
     ):
-        if weight.shape[0] == weight_scale.shape[0] and (
-            weight.shape[0] % 8 == 0 and weight.shape[1] % 8 == 0
+        if (
+            weight.shape[0] == weight_scale.shape[0]
+            and (weight.shape[0] % 8 == 0 and weight.shape[1] % 8 == 0)
+            and not _is_transposed_view(weight)
+            and _has_fbgemm_rowwise()
+            and not _fp8_kernel_unsupported(weight, torch.float8_e4m3fn)
         ):
             # The kernel needs weight dims divisible by 8 (else "cutlass cannot implement"), and padding plus
             # f8f8bf16 is slower than dequant plus bf16 matmul.
@@ -538,11 +559,9 @@ class FbgemmFp8Linear_matmul(torch.autograd.Function):
             output = output.to(x.device, x.dtype)
             output = output.reshape(output_shape)
             del x_quantized, x_scale
-        elif (
-            weight.shape[0] != weight_scale.shape[0] and weight.shape[1] == weight_scale.shape[0]
-        ) or (weight.shape[0] % 8 != 0 or weight.shape[1] % 8 != 0):
-            # Transposed weight/scale (backward dY@W) or a non-divisible-by-8 shape (Qwen 2.5 VL 7B gate proj
-            # 3420x1280): dequant is preferred.
+        elif weight_scale.shape[0] in (weight.shape[0], weight.shape[1]):
+            # Transposed weight/scale (backward dY@W), a non-divisible-by-8 shape (Qwen 2.5 VL 7B gate proj
+            # 3420x1280), no FBGEMM (compressed-tensors FP8 checkpoints) or a pre-sm89 GPU: dequant.
             W_deq = weight_dequant(weight, weight_scale).T
             output = torch_matmul(x, W_deq)
             output = output + bias if bias is not None else output
