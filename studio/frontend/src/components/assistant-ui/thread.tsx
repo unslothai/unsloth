@@ -260,6 +260,7 @@ import {
 } from "@/features/chat/utils/composer-send-guard";
 import { deleteThreadMessage } from "@/features/chat/utils/delete-thread-message";
 import {
+  chatThreadExistsOnBackend,
   getStoredChatThread,
   updateStoredChatThread,
 } from "@/features/chat/utils/chat-history-storage";
@@ -1816,11 +1817,9 @@ const ForkContinuationRule: FC = () => {
           title="Open the chat this was forked from"
           // Checked on the way out, not on render: the tombstone set is this tab's own, so a
           // source deleted on another device still looks openable until something asks for it.
+          // Only a definite "no" stops the trip; an unreachable backend is not a deletion.
           onClick={async () => {
-            const source = await getStoredChatThread(sourceThreadId).catch(
-              () => undefined,
-            );
-            if (!source) {
+            if ((await chatThreadExistsOnBackend(sourceThreadId)) === false) {
               toast.info("That chat has been deleted.");
               return;
             }

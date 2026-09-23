@@ -18,17 +18,25 @@ type Module = {
     messages: unknown[],
     options?: SyncOptions,
   ) => Promise<unknown>;
+  chatThreadExistsOnBackend: (
+    threadId: string,
+  ) => Promise<boolean | undefined>;
 };
 
 type Published = [string, string | null | undefined, string | null | undefined];
 
 function harness(
-  thread: Record<string, unknown> | undefined = {
+  // null is the backend saying it has no such thread, which is what a 404 becomes.
+  thread: Record<string, unknown> | null | undefined = {
     id: "fork-1",
     forkBoundaryMessageId: "m1",
     forkedFromThreadId: "src",
   },
-  options: { deletedSources?: Set<string>; failReadsFrom?: number } = {},
+  options: {
+    deletedSources?: Set<string>;
+    failReadsFrom?: number;
+    legacyThreads?: Record<string, Record<string, unknown>>;
+  } = {},
 ) {
   const published: Published[] = [];
   const threadReads: string[] = [];
@@ -52,9 +60,21 @@ function harness(
           }
           return thread;
         },
-        saveChatThread: async () => {},
+        // Echoes the record back, like the real endpoint: returning nothing makes the legacy
+        // re-import fail, which would hide the very fallback these tests are about.
+        saveChatThread: async (t: unknown) => t,
       },
-      "../db": { DEXIE_DB_NAME: "test", db: {} },
+      "../db": {
+        DEXIE_DB_NAME: "test",
+        db: {
+          threads: {
+            get: async (id: string) => options.legacyThreads?.[id],
+          },
+          messages: {
+            where: () => ({ equals: () => ({ toArray: async () => [] }) }),
+          },
+        },
+      },
       "./chat-thread-tombstones": {
         isChatThreadDeleted: (id: string) =>
           options.deletedSources?.has(id) ?? false,
@@ -146,6 +166,43 @@ test("a source deleted in this tab keeps the words and drops the link", async ()
   await module.syncStoredChatMessages("fork-1", [], { pruneMissing: true });
 
   assert.deepEqual(published, [["fork-1", "m1", null]]);
+});
+
+// --- the backlink's existence check ------------------------------------------
+
+test("the backend's answer is what decides, not this browser's legacy row", async () => {
+  // getStoredChatThread re-imports the Dexie row when the backend has none, which is the very
+  // case a source deleted on another device produces. A 404 has to stay a "no" through it.
+  const { module } = harness(null, {
+    legacyThreads: {
+      src: { id: "src", title: "Deleted elsewhere", modelType: "base", createdAt: 1 },
+    },
+  });
+
+  assert.equal(await module.chatThreadExistsOnBackend("src"), false);
+});
+
+test("a source the backend still holds is openable", async () => {
+  const { module } = harness({ id: "src" });
+
+  assert.equal(await module.chatThreadExistsOnBackend("src"), true);
+});
+
+test("a backend that could not answer is not a deletion", async () => {
+  const { module } = harness(undefined, { failReadsFrom: 1 });
+
+  // Undefined, not false: the divider navigates rather than claiming the chat is gone.
+  assert.equal(await module.chatThreadExistsOnBackend("src"), undefined);
+});
+
+test("a source this tab deleted needs no round trip", async () => {
+  const { module, threadReads } = harness(
+    { id: "src" },
+    { deletedSources: new Set(["src"]) },
+  );
+
+  assert.equal(await module.chatThreadExistsOnBackend("src"), false);
+  assert.deepEqual(threadReads, []);
 });
 
 test("a failed thread read leaves the delete alone", async () => {

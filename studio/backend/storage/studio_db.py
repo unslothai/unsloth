@@ -3892,7 +3892,29 @@ def _fork_boundary_reseat(conn, thread_id: str, pruned: set):
     boundary = row["fork_boundary_message_id"] if row is not None else None
     if boundary is None or boundary not in pruned:
         return _NO_RESEAT
-    return _surviving_parent_id(conn, thread_id, boundary, pruned)
+    return _surviving_visible_ancestor(conn, thread_id, boundary, pruned)
+
+
+def _surviving_visible_ancestor(
+    conn: sqlite3.Connection, thread_id: str, message_id: str, pruned: set
+) -> "str | None":
+    """The nearest ancestor of `message_id` that survives `pruned` and paints a row.
+
+    The divider rides the row it names, so an ancestor the thread renders as nothing cannot
+    carry it; landing there loses the divider as surely as landing on a deleted row does.
+    None when no visible inherited history is left, which is a boundary to clear."""
+    seen = {message_id}
+    candidate = _surviving_parent_id(conn, thread_id, message_id, pruned)
+    while candidate is not None and candidate not in seen:
+        seen.add(candidate)
+        row = conn.execute(
+            "SELECT role FROM chat_messages WHERE thread_id = ? AND id = ?",
+            (thread_id, candidate),
+        ).fetchone()
+        if row is not None and row["role"] in _RENDERED_MESSAGE_ROLES:
+            return candidate
+        candidate = _surviving_parent_id(conn, thread_id, candidate, pruned)
+    return None
 
 
 def _reseat_protected_messages(conn, thread_id: str, reseat_parents: dict) -> None:

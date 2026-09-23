@@ -318,6 +318,7 @@ export {
   shouldAttachPastedText,
 } from "./utils/pasted-text";
 export {
+  chatThreadExistsOnBackend,
   deleteStoredChatThreads,
   ensureStoredChatThread,
   getStoredChatThread,

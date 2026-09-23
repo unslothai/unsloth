@@ -1638,3 +1638,53 @@ def test_pruning_an_earlier_message_leaves_the_boundary_alone(tmp_path, monkeypa
     assert (
         studio_db.get_chat_thread("f")["forkBoundaryMessageId"] == forked["forkBoundaryMessageId"]
     )
+
+
+def test_the_reseat_skips_an_ancestor_that_paints_no_row(tmp_path, monkeypatch):
+    """A system message can survive a prune that takes the boundary. It renders as nothing,
+    so parking the divider there loses it just as surely as leaving it on the deleted row."""
+    _reset_studio_db(tmp_path, monkeypatch)
+    studio_db.upsert_chat_thread({**_thread("src"), "title": "Imported"})
+    studio_db.sync_chat_messages(
+        "src",
+        [
+            _stored_message(id = "m1", parentId = None, createdAt = 1),
+            _stored_message(id = "m2", parentId = "m1", role = "assistant", createdAt = 2),
+            _stored_message(id = "m3", parentId = "m2", role = "system", createdAt = 3),
+            _stored_message(id = "m4", parentId = "m3", createdAt = 4),
+        ],
+    )
+    forked = _fork("src", "f", 10)
+    copied = studio_db.list_chat_messages("f")
+    by_id = {m["id"]: m for m in copied}
+    boundary = forked["forkBoundaryMessageId"]
+
+    # Prune the boundary; the system message directly above it survives.
+    studio_db.sync_chat_messages(
+        "f", [m for m in copied if m["id"] != boundary], prune_missing = True
+    )
+
+    moved = studio_db.get_chat_thread("f")["forkBoundaryMessageId"]
+    assert by_id[moved]["role"] == "assistant"
+
+
+def test_the_reseat_clears_when_only_hidden_ancestors_survive(tmp_path, monkeypatch):
+    _reset_studio_db(tmp_path, monkeypatch)
+    studio_db.upsert_chat_thread({**_thread("src"), "title": "Imported"})
+    studio_db.sync_chat_messages(
+        "src",
+        [
+            _stored_message(id = "m1", parentId = None, role = "system", createdAt = 1),
+            _stored_message(id = "m2", parentId = "m1", createdAt = 2),
+        ],
+    )
+    forked = _fork("src", "f", 10)
+    copied = studio_db.list_chat_messages("f")
+    boundary = forked["forkBoundaryMessageId"]
+
+    studio_db.sync_chat_messages(
+        "f", [m for m in copied if m["id"] != boundary], prune_missing = True
+    )
+
+    # Only the system prompt is left, so there is no visible inherited history to close.
+    assert studio_db.get_chat_thread("f")["forkBoundaryMessageId"] is None

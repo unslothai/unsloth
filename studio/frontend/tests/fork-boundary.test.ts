@@ -140,9 +140,12 @@ test("the label links back to the source chat, and only while there is one", () 
   const text = findDeclaration("ForkContinuationRule").getText();
   // Same navigation the fork action itself uses.
   assert.match(text, /to: "\/chat",\s*search: \{ thread: sourceThreadId \}/);
-  // The local tombstone set is this tab's own, so existence is settled on the way out.
-  assert.match(text, /await getStoredChatThread\(sourceThreadId\)/);
-  assert.match(text, /if \(!source\) \{[^}]*toast\.info/s);
+  // The local tombstone set is this tab's own, so existence is settled on the way out, and
+  // against the backend: getStoredChatThread answers with this browser's legacy row instead.
+  assert.match(text, /await chatThreadExistsOnBackend\(sourceThreadId\)/);
+  assert.doesNotMatch(text, /getStoredChatThread/);
+  // Only a definite "no" stops the trip; undefined means the backend could not say.
+  assert.match(text, /=== false\) \{[^}]*toast\.info/s);
   assert.match(text, /sourceThreadId \? \(/);
   // A deleted source keeps the words but drops the button.
   assert.match(text, /<span className=\{labelClass\}>\{label\}<\/span>/);

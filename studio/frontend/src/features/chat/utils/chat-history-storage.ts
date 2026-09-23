@@ -725,6 +725,26 @@ async function retryFailedThreadRecord(
   return (await getChatThread(threadId)) ?? undefined;
 }
 
+/**
+ * Whether the backend still holds this chat: true, false, or undefined when it could not say.
+ *
+ * Not `getStoredChatThread`, which answers with this browser's legacy row when the backend has
+ * none. That fallback is right for opening a chat and wrong for asking whether one is still
+ * there, which is the question a chat deleted on another device turns on. Undefined is kept
+ * distinct so an unreachable backend is not reported as a deletion.
+ */
+export async function chatThreadExistsOnBackend(
+  threadId: string,
+): Promise<boolean | undefined> {
+  if (isThreadIncognito(threadId)) return false;
+  if (isChatThreadDeleted(threadId)) return false;
+  try {
+    return (await getChatThread(threadId)) !== null;
+  } catch {
+    return undefined;
+  }
+}
+
 /** Hand the "Continued from chat" divider where it sits, from a thread just read. */
 function publishForkBoundary(thread: ThreadRecord): void {
   setForkBoundary(
