@@ -288,7 +288,7 @@ def csp_connect_sources() -> tuple[str, str]:
     alike. The path belongs in the request URL, not in the policy, so the source
     is reduced to scheme://host[:port].
     """
-    return (_origin_of(get_hf_endpoint()), _origin_of(get_hf_datasets_server()))
+    return (_origin_of(browser_hf_endpoint()), _origin_of(get_hf_datasets_server()))
 
 
 def csp_asset_sources() -> tuple[str, ...]:
@@ -321,6 +321,13 @@ def get_hf_endpoint() -> str:
     return _sanitize(hf_endpoint_url().rstrip("/"), _DEFAULT_HF_ENDPOINT, "HF_ENDPOINT")
 
 
+def browser_hf_endpoint() -> str:
+    """The endpoint the browser uses. The ModelScope adapter's loopback listener is for
+    this process only; the browser reaches ModelScope through its authenticated mount."""
+    from utils.hub_settings import MODELSCOPE, active_source
+    return _DEFAULT_HF_ENDPOINT if active_source() == MODELSCOPE else get_hf_endpoint()
+
+
 def get_hf_datasets_server() -> str:
     """Return the datasets-server base URL (no trailing slash).
 
@@ -334,7 +341,7 @@ def get_hf_datasets_server() -> str:
         endpoint = raw if "://" in raw else "https://" + raw
         return _sanitize(endpoint.rstrip("/"), _DEFAULT_DATASETS_SERVER, "HF_DATASETS_SERVER")
     global _ds_mirror_warned
-    if not _ds_mirror_warned and get_hf_endpoint() != _DEFAULT_HF_ENDPOINT:
+    if not _ds_mirror_warned and browser_hf_endpoint() != _DEFAULT_HF_ENDPOINT:
         _ds_mirror_warned = True
         logger.warning(
             "HF_ENDPOINT is set to %s but HF_DATASETS_SERVER is unset; "

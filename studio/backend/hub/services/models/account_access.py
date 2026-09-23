@@ -546,8 +546,17 @@ def _public_verdict(repo_id: str, repo_type: str) -> bool | None:
     return cached[1] if cached is not None and cached[0] > time.monotonic() else None
 
 
+def _source_speaks_for_the_cache() -> bool:
+    # ModelScope's org/name says nothing about a same-named Hugging Face snapshot the shared
+    # cache may already hold.
+    from utils.hub_settings import MODELSCOPE, active_source
+    return active_source() != MODELSCOPE
+
+
 def repo_is_public(repo_id: str, repo_type: str = "model") -> bool:
     """Only an anonymous Hub answer proves a shared-cache repo public."""
+    if not _source_speaks_for_the_cache():
+        return False
     key = _public_key(repo_id, repo_type)
     name = f"{key[0]}|{repo_type}:{repo_id.lower()}"
     with _public_lock:
@@ -825,6 +834,11 @@ def authorize_download(repo_id: str, repo_type: str, hf_token) -> None:
     """A cache hit is not proof the requester may read private Hub content."""
     if not managed_account():
         return
+    if not _source_speaks_for_the_cache():
+        raise HTTPException(
+            status_code = 403,
+            detail = "Only the installation owner can download while ModelScope is the model source",
+        )
     try:
         api = HfApi()
         token = account_hf_token(hf_token)

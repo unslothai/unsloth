@@ -396,11 +396,16 @@ from utils.client_ip import client_ip
 from utils.hf_endpoint import (
     DEFAULTS_BY_HEALTH_KEY as _HF_ENDPOINT_DEFAULTS,
     endpoint_is_reachable_by as _endpoint_is_reachable_by,
+    browser_hf_endpoint,
     csp_asset_sources,
     csp_connect_sources,
-    get_hf_endpoint,
     get_hf_datasets_server,
 )
+from hub.modelscope.router import (
+    BROWSER_PREFIX as _MODELSCOPE_BROWSER_PREFIX,
+    build_router as _build_modelscope_router,
+)
+from utils.hub_settings import active_source as _active_hub_source
 from utils.update_status import (
     get_studio_install_source_status,
     get_studio_update_status,
@@ -1063,7 +1068,7 @@ def _reportable_hf_endpoints(request) -> dict:
     """
     reported = {}
     for key, value in (
-        ("hf_endpoint", get_hf_endpoint()),
+        ("hf_endpoint", browser_hf_endpoint()),
         ("hf_datasets_server", get_hf_datasets_server()),
     ):
         if _endpoint_is_reachable_by(value, client_ip(request)):
@@ -1645,6 +1650,9 @@ app.include_router(hub_inventory_router, prefix = "/api/hub", tags = ["hub"])
 app.include_router(hub_datasets_router, prefix = "/api/hub/datasets", tags = ["hub"])
 app.include_router(picker_templates_router, prefix = "/api/picker", tags = ["picker"])
 app.include_router(hub_token_router, prefix = "/api/hub", tags = ["hub"])
+app.include_router(
+    _build_modelscope_router(browser = True), prefix = _MODELSCOPE_BROWSER_PREFIX, tags = ["hub"]
+)
 app.include_router(youtube_router, prefix = "/api/youtube", tags = ["youtube"])
 
 # Re-wrap /v1/* client errors into OpenAI/Anthropic envelopes; non-/v1 keeps {"detail": ...}.
@@ -1922,6 +1930,7 @@ async def health_check(request: Request):
         # Unauthenticated on purpose: an endpoint URL is not a host fingerprint,
         # and the frontend needs it before a token exists.
         **_reportable_hf_endpoints(request),
+        "hub_source": _active_hub_source(),
         **({"desktop_owner": owner} if (owner := _desktop_owner()) else {}),
     }
     # Lockstep with /api/liveness: the launcher falls back to this route on a backend too old

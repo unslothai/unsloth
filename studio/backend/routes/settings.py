@@ -79,7 +79,13 @@ from utils.download_transport_settings import (
     get_download_transport_mode,
     set_download_transport_mode,
 )
-from utils.hub_settings import HubSettings, get_hub_settings, set_hub_settings
+from utils.hub_settings import (
+    HubSettings,
+    active_source,
+    get_hub_settings,
+    set_hub_settings,
+    set_hub_source,
+)
 from picker.schemas import MAX_CHAT_TEMPLATE_BYTES, chat_template_byte_length
 from utils.reasoning_budget import validate_reasoning_budget_message
 from utils.coding_agents import CODING_AGENTS, detect_installed_coding_agents
@@ -644,10 +650,17 @@ class HubSettingsPayload(BaseModel):
     datasets_server_follows_endpoint: StrictBool
 
 
+class HubSourcePayload(BaseModel):
+    source: Literal["huggingface", "modelscope"]
+
+
 class HubSettingsResponse(BaseModel):
     # Empty means the official Hugging Face Hub.
     hf_endpoint: str
     datasets_server_follows_endpoint: bool
+    source: Literal["huggingface", "modelscope"]
+    # Differs from source only when the ModelScope adapter could not start.
+    active_source: Literal["huggingface", "modelscope"]
 
 
 class XetNoticeReservePayload(BaseModel):
@@ -1334,6 +1347,8 @@ def _hub_settings_response(settings: HubSettings) -> HubSettingsResponse:
     return HubSettingsResponse(
         hf_endpoint = settings.hf_endpoint,
         datasets_server_follows_endpoint = settings.datasets_server_follows_endpoint,
+        source = settings.source,
+        active_source = active_source(),
     )
 
 
@@ -1357,6 +1372,13 @@ def update_hub(
             log = logger,
         ) from exc
     return _hub_settings_response(settings)
+
+
+@_owner_settings_router.put("/hub/source", response_model = HubSettingsResponse)
+def update_hub_source(
+    payload: HubSourcePayload, current_subject: str = Depends(get_current_subject)
+) -> HubSettingsResponse:
+    return _hub_settings_response(set_hub_source(payload.source))
 
 
 @_owner_settings_router.post("/xet-notice/reserve", response_model = XetNoticeResponse)

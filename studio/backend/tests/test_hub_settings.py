@@ -48,6 +48,7 @@ def store(monkeypatch):
     monkeypatch.setattr(hub_settings, "_operator_env", None)
     monkeypatch.setenv("HF_ENDPOINT", "hf-mirror.com")
     monkeypatch.setenv("HF_DATASETS_SERVER", OPERATOR_DS)
+    monkeypatch.delenv(hub_settings.SOURCE_ENV, raising = False)
     yield values
     # Point the imported libraries back at the restored environment for later test files.
     monkeypatch.undo()
@@ -110,7 +111,12 @@ def test_route_saves_and_reports(client, store):
         "/hub",
         json = {"hf_endpoint": "HTTPS://hf-mirror.com/", "datasets_server_follows_endpoint": True},
     ).json()
-    assert body == {"hf_endpoint": MIRROR, "datasets_server_follows_endpoint": True}
+    assert body == {
+        "hf_endpoint": MIRROR,
+        "datasets_server_follows_endpoint": True,
+        "source": "huggingface",
+        "active_source": "huggingface",
+    }
     assert client.get("/hub").json() == body
     assert os.environ["HF_DATASETS_SERVER"] == MIRROR
 
@@ -262,3 +268,61 @@ def test_hub_decisions_are_remembered_per_endpoint(store, monkeypatch):
     utils_module._hf_reachability = (time.monotonic(), True)
     hub_settings.set_hub_settings("https://b.example.com", False)
     assert utils_module._hf_reachability is None
+
+
+def test_modelscope_points_hub_clients_at_the_adapter_and_back(store, monkeypatch):
+    import huggingface_hub.constants as constants
+    import hub.modelscope.router as modelscope
+    from utils.hf_endpoint import browser_hf_endpoint
+
+    monkeypatch.setattr(modelscope, "internal_endpoint", lambda: "http://127.0.0.1:1234")
+    settings = hub_settings.set_hub_source("modelscope")
+    assert (settings.source, hub_settings.active_source()) == ("modelscope", "modelscope")
+    assert os.environ["HF_ENDPOINT"] == constants.ENDPOINT == "http://127.0.0.1:1234"
+    # Workers spawned from here on gate on the source too.
+    assert os.environ[hub_settings.SOURCE_ENV] == "modelscope"
+    # The loopback listener is this process's; the browser uses its own mount.
+    assert browser_hf_endpoint() == "https://huggingface.co"
+
+    hub_settings.set_hub_source("huggingface")
+    assert os.environ["HF_ENDPOINT"] == MIRROR == browser_hf_endpoint()
+
+    def no_adapter():
+        raise RuntimeError("port exhausted")
+
+    monkeypatch.setattr(modelscope, "internal_endpoint", no_adapter)
+    assert hub_settings.set_hub_source("modelscope").source == "modelscope"
+    assert hub_settings.active_source() == "huggingface" and os.environ["HF_ENDPOINT"] == MIRROR
+
+
+def test_modelscope_answers_never_open_the_shared_cache_or_trust_code(store, monkeypatch):
+    from fastapi import HTTPException
+
+    from hub.services.models import account_access
+    from utils.security import trusted_org
+
+    monkeypatch.setenv(hub_settings.SOURCE_ENV, hub_settings.MODELSCOPE)
+    monkeypatch.setattr(account_access, "_public_repos", {})
+    monkeypatch.setattr(account_access, "_hub_public_answer", lambda *_, **__: True)
+    monkeypatch.setattr(account_access, "managed_account", lambda: True)
+    monkeypatch.setattr(trusted_org, "_verdict_cache", {})
+    assert account_access.repo_is_public("org/repo") is False
+    with pytest.raises(HTTPException) as refused:
+        account_access.authorize_download("org/repo", "model", None)
+    assert refused.value.status_code == 403
+    assert trusted_org.is_trusted_org_repo("unsloth/Qwen3-8B", verify_remote = False) is False
+
+    monkeypatch.setenv(hub_settings.SOURCE_ENV, hub_settings.HUGGINGFACE)
+    assert account_access.repo_is_public("org/repo") is True
+    assert trusted_org.is_trusted_org_repo("unsloth/Qwen3-8B", verify_remote = False) is True
+
+
+def test_route_switches_the_source(client, store, monkeypatch):
+    import hub.modelscope.router as modelscope
+
+    monkeypatch.setattr(modelscope, "internal_endpoint", lambda: "http://127.0.0.1:1234")
+    body = client.put("/hub/source", json = {"source": "modelscope"}).json()
+    assert (body["source"], body["active_source"]) == ("modelscope", "modelscope")
+    assert client.get("/hub").json()["source"] == "modelscope"
+    assert client.put("/hub/source", json = {"source": "gitee"}).status_code == 422
+    client.put("/hub/source", json = {"source": "huggingface"})
