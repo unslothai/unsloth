@@ -1302,3 +1302,11 @@ export function reasoningFieldsAfterCatalogRefresh(
       caps.supportsReasoning && !caps.supportsReasoningOff ? true : current.reasoningEnabled,
   };
 }
+
+/** llama.cpp accepts this template option; other OpenAI-compatible APIs may reject it.
+ * The selected model's template must itself support preserve_thinking. */
+export function providerSupportsPreserveThinking(
+  providerType: string | null | undefined,
+): boolean {
+  return providerType === "llama_cpp";
+}

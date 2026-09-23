@@ -548,6 +548,7 @@ class _Turn:
     round: int = 0
     healed: list[dict[str, Any]] = field(default_factory = list)
     text: list[str] = field(default_factory = list)
+    reasoning: list[str] = field(default_factory = list)
     reasoning_extra: dict[str, Any] | None = None
     finish_reason: str | None = None
     # Results from tools the PROVIDER ran this turn, keyed by call id so a repeated end event cannot record the same
@@ -1363,6 +1364,9 @@ async def stream_with_studio_tools(
 
                 delta = choice.get("delta")
                 delta = delta if isinstance(delta, dict) else {}
+                reasoning = delta.get("reasoning_content")
+                if getattr(transport, "preserves_reasoning", False) and isinstance(reasoning, str):
+                    turn.reasoning.append(reasoning)
                 content = delta.get("content")
                 raw_calls = delta.get("tool_calls")
                 extra = delta.get("extra_content")
@@ -1564,6 +1568,8 @@ async def stream_with_studio_tools(
                             else stalled_hosted
                         ),
                     }
+                    if turn.reasoning:
+                        stalled_message["reasoning_content"] = "".join(turn.reasoning)
                     if turn.reasoning_extra:
                         # Gemini 3 stows the text part's thoughtSignature here and its translator pins it back on from
                         # this field alone, so a turn replayed without it is rejected.
@@ -1871,6 +1877,8 @@ async def stream_with_studio_tools(
                 if assistant_message["content"]
                 else hosted_text
             )
+        if turn.reasoning:
+            assistant_message["reasoning_content"] = "".join(turn.reasoning)
         if turn.reasoning_extra:
             assistant_message["extra_content"] = turn.reasoning_extra
         if assistant_tool_calls:

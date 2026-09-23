@@ -794,9 +794,12 @@ export function SharedComposer({
       : reasoningEffort;
   const effectiveReasoningVisualEnabled =
     effectiveReasoningEnabled && displayedEffort !== "none";
-  const reasoningDisabled = !modelLoaded || !effectiveSupportsReasoning;
+  const reasoningDisabled =
+    !modelLoaded || !(effectiveSupportsReasoning || supportsPreserveThinking);
   const showReasoningControl =
-    effectiveSupportsReasoning || effectiveReasoningAlwaysOn;
+    effectiveSupportsReasoning ||
+    effectiveReasoningAlwaysOn ||
+    supportsPreserveThinking;
   // enable_thinking_effort (GLM-5.2: high|max + disable) reuses the effort dropdown; it just also
   // carries an Off row via supportsReasoningOff.
   const isEffort =
@@ -807,9 +810,11 @@ export function SharedComposer({
   const narrowEffortMenu =
     effectiveReasoningStyle === "enable_thinking_effort" &&
     !supportsPreserveThinking;
-  const thinkingActiveLook = isEffort
-    ? reasoningLockedOn || (effectiveReasoningVisualEnabled && !reasoningDisabled)
-    : reasoningLockedOn || (effectiveReasoningEnabled && !reasoningDisabled);
+  const thinkingActiveLook = !effectiveSupportsReasoning
+    ? preserveThinking && !reasoningDisabled
+    : isEffort
+      ? reasoningLockedOn || (effectiveReasoningVisualEnabled && !reasoningDisabled)
+      : reasoningLockedOn || (effectiveReasoningEnabled && !reasoningDisabled);
   // Two-pill gating. Search: supportsTools (Code/python plus local web_search) OR
   // supportsBuiltinWebSearch (OpenAI/Anthropic/OpenRouter/Kimi). Code: supportsTools OR the
   // provider's own sandbox, per providerSupportsBuiltinCodeExecution.
@@ -2766,6 +2771,7 @@ export function SharedComposer({
                       ))}
                   </>
                 ) : (
+                  effectiveSupportsReasoning &&
                   effectiveSupportsReasoningOff &&
                   !reasoningLockedOn && (
                     <DropdownMenuItem
@@ -2799,8 +2805,8 @@ export function SharedComposer({
                       e.preventDefault();
                       const next = !preserveThinking;
                       setPreserveThinking(next);
-                      // Preserve thinking requires thinking on.
-                      if (next) {
+                      // Only local models couple this setting to generation controls.
+                      if (next && !isExternalModel) {
                         setReasoningEnabled(true);
                         applyQwenThinkingParams(true);
                       }

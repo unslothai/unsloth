@@ -20,6 +20,7 @@ const {
 
   providerSupportsBuiltinWebSearch,
   providerSupportsFastMode,
+  providerSupportsPreserveThinking,
 } = await import("../src/features/chat/provider-capabilities.ts");
 
 const {
@@ -492,5 +493,13 @@ test("hosted Code is only claimed where the backend registry hosts code_executio
         assert.ok(backendSandboxes.has(providerType), `${providerType} ${model}`);
       }
     }
+  }
+});
+
+
+test("preserve thinking is available only for explicit llama.cpp connections", () => {
+  assert.equal(providerSupportsPreserveThinking("llama_cpp"), true);
+  for (const provider of [undefined, null, "custom", "vllm", "ollama", "openai", "anthropic", "openrouter"]) {
+    assert.equal(providerSupportsPreserveThinking(provider), false);
   }
 });

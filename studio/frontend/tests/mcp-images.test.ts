@@ -424,7 +424,7 @@ test("the send path bounds the run's own results before serializing them", () =>
   );
   assert.match(
     adapter,
-    /const messages = boundMcpImageResults\(rawMessages, \{\n\s*readsImages: targetReadsImages,\n\s*localMarkers: mcpImagesLocalMarkers,\n\s*\}\);\n\s*const survivingMessages = pruneOutboundHistory\(\n\s*messages,/,
+    /const messages = boundMcpImageResults\(rawMessages, \{\n\s*readsImages: targetReadsImages,\n\s*localMarkers: mcpImagesLocalMarkers,\n\s*\}\);\n\s*const replayReasoning = [\s\S]*?;\n\s*const survivingMessages = pruneOutboundHistory\(messages, replayReasoning\);/,
   );
   assert.doesNotMatch(adapter, /boundMcpImageEnvelopes\(outboundMessages/);
   assert.doesNotMatch(adapter, /stripMcpImageEnvelopes\(outboundMessages/);
