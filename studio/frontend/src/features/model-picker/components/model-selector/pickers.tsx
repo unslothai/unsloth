@@ -3575,6 +3575,9 @@ export function HubModelPicker({
       familyOf: catalog
         ? (id) => groupForRepoId(id, catalog)?.canonicalId.toLowerCase()
         : undefined,
+      pinnedFamilies: catalog
+        ?.filter((g) => g.pinToTop)
+        .map((g) => g.canonicalId.toLowerCase()),
     });
     if (!communityRecommendedEnabled) return unslothRows;
     // Appended below everything unsloth publishes, so scrolling past the unsloth uploads continues

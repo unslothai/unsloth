@@ -1576,6 +1576,8 @@ export function ModelsPage() {
             deferredCapabilityFilter !== "all" ||
             (tab === "downloaded" && typeFilterActive)),
         typeFilterActive,
+        // A single format filter makes every row's format dot the same.
+        showFormatDots: isDatasetMode || deferredFormatFilter === "all",
       };
     },
     [
