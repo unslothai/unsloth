@@ -733,9 +733,15 @@ def _tokenizer_free_load(path, root):
     not (HAS_CT and HAS_CONVERTERS), reason = "needs compressed-tensors and the transformers 5 loader"
 )
 @pytest.mark.parametrize("variant", ["symmetric", "asymmetric", "actorder", "int8", "mxfp4"])
-def test_packed_checkpoint_loads_as_linear4bit_bit_identical_to_disk_route(variant, tmp_path):
+def test_packed_checkpoint_loads_as_linear4bit_bit_identical_to_disk_route(
+    variant, tmp_path, monkeypatch
+):
     from unsloth import FastLanguageModel
 
+    if variant == "mxfp4":
+        # MXFP4 stays packed by default (tests/test_mxfp4_compressed_linear.py); this is the
+        # opt-out bitsandbytes route.
+        monkeypatch.setenv("UNSLOTH_MXFP4_KEEP_PACKED", "0")
     packed_dir, bf16_dir = _write_tiny_packed_llama(
         str(tmp_path),
         asymmetric = variant == "asymmetric",

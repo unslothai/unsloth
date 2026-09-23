@@ -546,3 +546,254 @@ def test_keep_packed_off_restores_the_nf4_experts(tmp_path, monkeypatch):
     experts = model.layers[0].mlp.experts
     assert isinstance(experts, nn.ModuleList)
     assert isinstance(experts[0].w1, bnb.nn.Linear4bit)
+
+
+def test_plan_stacks_the_experts_and_keeps_every_other_packed_linear_all_or_nothing():
+    from unsloth.models.compressed_tensors_bnb import plan_mxfp4_keep_packed
+
+    _, model = _tiny_model("transformers_modules.k3s_plan_a.modeling_tinymoe")
+    plan = plan_mxfp4_keep_packed(model, _keys())
+    assert [name for name, *_ in plan.blocks] == ["layers.0.mlp", "layers.1.mlp"]
+    assert plan.linears == []
+    # A packed Linear outside the experts stays packed on its own.
+    extra = ("model.layers.0.proj.weight_packed", "model.layers.0.proj.weight_scale")
+    plan = plan_mxfp4_keep_packed(model, _keys(extra = extra))
+    assert len(plan.blocks) == 2 and plan.linears == ["layers.0.proj"]
+    # A layer packed only in part, or a packed module with no home: nothing stays packed.
+    assert (
+        plan_mxfp4_keep_packed(model, _keys(drop = "model.layers.1.mlp.experts.0.w2.weight_packed"))
+        is None
+    )
+    assert plan_mxfp4_keep_packed(model, _keys(extra = ("model.nowhere.weight_packed",))) is None
+    assert plan_mxfp4_keep_packed(model, ["model.layers.0.proj.weight"]) is None
+    # Experts that are not the plain layout a stack replaces stay packed one Linear each.
+    _, model = _tiny_model("transformers_modules.k3s_plan_b.modeling_tinymoe")
+    for layer in model.layers:
+        for expert in layer.mlp.experts:
+            expert.w2 = nn.Linear(I, H, bias = True, device = "meta")
+    plan = plan_mxfp4_keep_packed(model, _keys())
+    assert plan.blocks == [] and len(plan.linears) == 2 * E * 3
+
+
+def _packed_expert_linears(model, seed = 0):
+    """Every expert Linear as a filled Mxfp4PackedLinear, as the compressed-tensors route adopts them."""
+    from unsloth.models.mxfp4_compressed_linear import make_mxfp4_packed_linear
+
+    g = torch.Generator().manual_seed(seed)
+    for layer in model.layers:
+        for expert in layer.mlp.experts:
+            for proj in ("w1", "w2", "w3"):
+                old = getattr(expert, proj)
+                new = make_mxfp4_packed_linear(
+                    old.in_features, old.out_features, dtype = torch.bfloat16
+                )
+                new.weight_packed.data.copy_(
+                    torch.randint(0, 256, new.weight_packed.shape, dtype = torch.uint8, generator = g)
+                )
+                new.weight_scale.data.copy_(
+                    torch.randint(118, 125, new.weight_scale.shape, dtype = torch.uint8, generator = g)
+                )
+                setattr(expert, proj, new)
+
+
+def test_compressed_tensors_route_stacks_the_adopted_experts_verbatim():
+    from unsloth.models.mxfp4_compressed_linear import stack_packed_expert_linears
+
+    torch.manual_seed(0)
+    mod, _ = _tiny_model("transformers_modules.k3s_ct_stack.modeling_tinymoe")
+    model = mod.TinyMoeForCausalLM(mod.TinyMoeConfig(num_hidden_layers = 2)).to(torch.bfloat16)
+    _packed_expert_linears(model)
+    # Snapshots: the per-expert bytes are released as they are stacked.
+    before = [
+        {
+            (e, p): types.SimpleNamespace(
+                weight_packed = getattr(x, p).weight_packed.clone(),
+                weight_scale = getattr(x, p).weight_scale.clone(),
+            )
+            for e, x in enumerate(layer.mlp.experts)
+            for p in ("w1", "w2", "w3")
+        }
+        for layer in model.layers
+    ]
+    x = torch.randn(5, H).to(torch.bfloat16)
+    want = [[expert(x) for expert in layer.mlp.experts] for layer in model.layers]
+    old_experts = list(model.layers[0].mlp.experts)
+    assert stack_packed_expert_linears(model, ["layers.0.mlp", "layers.1.mlp"]) == [
+        "layers.0.mlp",
+        "layers.1.mlp",
+    ]
+    assert all("weight_packed" not in x.w1._parameters for x in old_experts)
+    for index, layer in enumerate(model.layers):
+        experts = layer.mlp.experts
+        assert isinstance(experts, Mxfp4StackedExperts)
+        for e in range(E):
+            gate_up = experts.gate_up_proj.data[e].reshape(2 * I, H // 2)
+            assert torch.equal(gate_up[:I], before[index][(e, "w1")].weight_packed)
+            assert torch.equal(gate_up[I:], before[index][(e, "w3")].weight_packed)
+            assert torch.equal(
+                experts.down_proj.data[e].reshape(H, I // 2), before[index][(e, "w2")].weight_packed
+            )
+            assert torch.equal(
+                experts.down_proj.mxfp4_scales[e], before[index][(e, "w2")].weight_scale
+            )
+            torch.testing.assert_close(experts[e](x), want[index][e], atol = 1e-2, rtol = 1e-2)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs a CUDA device")
+@pytest.mark.skipif(not HAS_CT, reason = "needs compressed-tensors")
+def test_remote_code_checkpoint_16bit_load_keeps_packed_stacks(tmp_path, monkeypatch):
+    """A 16-bit load (and any load on transformers without the converter hook) goes through
+    compressed-tensors' own quantizer: its MXFP4 modules are adopted, then each MoE layer's
+    experts are stacked once the weights are in."""
+    from transformers import AutoModelForCausalLM
+    from unsloth.models.mxfp4_compressed_linear import install_compressed_tensors_keep_packed
+
+    monkeypatch.delenv("UNSLOTH_MXFP4_KEEP_PACKED", raising = False)
+    assert install_compressed_tensors_keep_packed()
+    path, tensors = _write_checkpoint(str(tmp_path))
+    model = AutoModelForCausalLM.from_pretrained(
+        path, trust_remote_code = True, dtype = torch.bfloat16, device_map = {"": 0}
+    )
+    for layer_index, layer in enumerate(model.layers):
+        experts = layer.mlp.experts
+        assert isinstance(experts, Mxfp4StackedExperts), type(experts)
+        assert type(layer.proj) is nn.Linear and layer.proj.weight.dtype == torch.bfloat16
+        prefix = f"layers.{layer_index}.mlp.experts"
+        for e in range(E):
+            gate_up = experts.gate_up_proj.data[e].reshape(2 * I, H // 2).cpu()
+            assert torch.equal(gate_up[:I], tensors[f"{prefix}.{e}.w1.weight_packed"])
+            assert torch.equal(gate_up[I:], tensors[f"{prefix}.{e}.w3.weight_packed"])
+            assert torch.equal(
+                experts.down_proj.mxfp4_scales[e].cpu(), tensors[f"{prefix}.{e}.w2.weight_scale"]
+            )
+    assert not any("weight_packed" in n for n, _ in model.named_parameters())
+    ids = torch.randint(0, 128, (2, 8), device = "cuda:0")
+    model.eval()
+    with torch.no_grad():
+        port = model(input_ids = ids).logits
+    prepare_remote_moe_for_training(model, verbose = False)
+    with torch.no_grad():
+        grouped = model(input_ids = ids).logits
+    torch.testing.assert_close(grouped, port, atol = 5e-2, rtol = 5e-2)
+
+
+def _saved_state(path):
+    from safetensors.torch import load_file
+
+    state = {}
+    for name in os.listdir(path):
+        if name.endswith(".safetensors"):
+            state.update(load_file(os.path.join(path, name)))
+    return state
+
+
+def _packed_tiny_model(name):
+    mod, _ = _tiny_model(name)
+    config = mod.TinyMoeConfig(num_hidden_layers = 2)
+    model = mod.TinyMoeForCausalLM(config).to(torch.bfloat16)
+    swap_in_packed_mxfp4_experts(model, _keys(), torch.bfloat16)
+    _materialize_packed(model)
+    return mod, model
+
+
+def test_full_save_writes_the_checkpoints_per_expert_keys(tmp_path):
+    """A full save of packed (or merged dense) stacks writes `experts.<i>.w1 / w2 / w3.weight`, the
+    names the remote code loads, drops the MXFP4 config, and leaves the model as it was."""
+    from unsloth_zoo.temporary_patches import mxfp4 as mx
+
+    mx.patch_save_pretrained_mxfp4()
+    mod, model = _packed_tiny_model("transformers_modules.k3s_save_a.modeling_tinymoe")
+    model.config.quantization_config = _mxfp4_plan()
+    stacks = [layer.mlp.experts for layer in model.layers]
+    model.save_pretrained(str(tmp_path / "packed"))
+    assert [layer.mlp.experts for layer in model.layers] == stacks
+    assert model.config.quantization_config == _mxfp4_plan()
+    state = _saved_state(str(tmp_path / "packed"))
+    assert not any("gate_up" in k or "down_proj" in k or "blocks" in k for k in state)
+    assert "quantization_config" not in json.load(open(tmp_path / "packed" / "config.json"))
+    for index, layer in enumerate(model.layers):
+        gate_up = layer.mlp.experts.gate_up_proj.dequantize(torch.bfloat16).cpu()  # (E, H, 2I)
+        down = layer.mlp.experts.down_proj.dequantize(torch.bfloat16).cpu()  # (E, I, H)
+        for e in range(E):
+            prefix = f"layers.{index}.mlp.experts.{e}"
+            assert torch.equal(state[f"{prefix}.w1.weight"], gate_up[e, :, :I].t())
+            assert torch.equal(state[f"{prefix}.w3.weight"], gate_up[e, :, I:].t())
+            assert torch.equal(state[f"{prefix}.w2.weight"], down[e].t())
+    # The remote code's own per-expert loop on the saved weights gives the packed model's output.
+    plain = mod.TinyMoeForCausalLM(mod.TinyMoeConfig(num_hidden_layers = 2)).to(torch.bfloat16)
+    plain.load_state_dict(state, strict = True)
+    ids = torch.randint(0, 128, (2, 8))
+    model.eval(), plain.eval()
+    with torch.no_grad():
+        torch.testing.assert_close(
+            plain(input_ids = ids).logits, model(input_ids = ids).logits, atol = 0, rtol = 0
+        )
+
+    # A merged adapter leaves a dense stack: written under the same per-expert names.
+    experts = model.layers[0].mlp.experts
+    dense = experts.gate_up_proj.dequantize(torch.bfloat16) + 0.25
+    packed_param = experts.gate_up_proj
+    experts.gate_up_proj = nn.Parameter(dense, requires_grad = False)
+    model.save_pretrained(str(tmp_path / "merged"))
+    state = _saved_state(str(tmp_path / "merged"))
+    assert torch.equal(state["layers.0.mlp.experts.1.w3.weight"], dense[1, :, I:].t().cpu())
+    experts.gate_up_proj = packed_param
+
+    class Wrapper(nn.Module):
+        def __init__(self, base_layer):
+            super().__init__()
+            self.base_layer = base_layer
+
+    model.layers[1].mlp.experts = Wrapper(model.layers[1].mlp.experts)
+    with pytest.raises(RuntimeError, match = "merge_and_unload"):
+        model.save_pretrained(str(tmp_path / "wrapped"))
+
+
+def test_dense_save_config_skips_the_dense_modules_under_bitsandbytes():
+    from transformers import BitsAndBytesConfig, PretrainedConfig
+    from unsloth_zoo.temporary_patches.mxfp4 import _config_for_dense_save
+
+    config = PretrainedConfig()
+    config.quantization_config = BitsAndBytesConfig(
+        load_in_4bit = True, llm_int8_skip_modules = ["lm_head"]
+    )
+    restore = _config_for_dense_save(config, ["layers.0.mlp.experts"])
+    assert config.quantization_config.llm_int8_skip_modules == ["lm_head", "layers.0.mlp.experts"]
+    restore()
+    assert config.quantization_config.llm_int8_skip_modules == ["lm_head"]
+    text = PretrainedConfig()
+    config = PretrainedConfig(text_config = text)
+    config.text_config = text
+    config.quantization_config, text.quantization_config = _mxfp4_plan(), _mxfp4_plan()
+    restore = _config_for_dense_save(config, [])
+    assert not hasattr(config, "quantization_config") and not hasattr(text, "quantization_config")
+    restore()
+    assert config.quantization_config == text.quantization_config == _mxfp4_plan()
+
+
+@pytest.mark.skipif(
+    not (HAS_CT and HAS_CONVERTERS),
+    reason = "needs compressed-tensors and the transformers 5.8+ loader",
+)
+def test_a_kept_packed_load_registers_no_decompress_op():
+    """Every packed module stays packed, so nothing may be routed through the decompressor;
+    declined, the decompress catch-all is back."""
+    from transformers import BitsAndBytesConfig
+    from transformers.quantizers import auto as quantizers_auto
+    from unsloth.models.compressed_tensors_bnb import (
+        _build_quantization_config,
+        install_compressed_tensors_bnb_quantizer,
+    )
+
+    assert install_compressed_tensors_bnb_quantizer()
+    cls = quantizers_auto.AUTO_QUANTIZER_MAPPING["bitsandbytes_4bit"]
+    quantizer = cls(BitsAndBytesConfig(load_in_4bit = True))
+    quantizer._unsloth_ct_config = _build_quantization_config(_mxfp4_plan())
+    quantizer._unsloth_ct_dtype = torch.bfloat16
+    quantizer._unsloth_dtype_plan, quantizer._unsloth_plan_dicts = {}, []
+    ops = lambda convs: [type(op).__name__ for c in convs for op in getattr(c, "operations", [])]  # noqa: E731
+    quantizer._unsloth_keep_packed, quantizer._unsloth_packed_experts = True, ["layers.0.mlp"]
+    kept = ops(quantizer.update_weight_conversions([]))
+    assert kept.count("StackPackedExperts") == 4 and "DecompressPackedWeights" not in kept
+    quantizer._unsloth_keep_packed, quantizer._unsloth_packed_experts = False, []
+    assert "DecompressPackedWeights" in ops(quantizer.update_weight_conversions([]))
