@@ -1628,6 +1628,21 @@ def test_a_stale_whole_record_save_cannot_move_the_boundary_back(tmp_path, monke
     assert studio_db.get_chat_thread("fork-1")["archived"] is True
 
 
+def test_a_patch_repeating_the_stored_title_keeps_the_base(tmp_path, monkeypatch):
+    """Renaming a pair patches every thread in it, so one can be sent the name it already has.
+    That is not a rename, and clearing there would cost its next fork a number."""
+    _reset_studio_db(tmp_path, monkeypatch)
+    studio_db.upsert_chat_thread({**_thread("src"), "title": "Notes"})
+    studio_db.sync_chat_messages("src", [_msg("m1", None, 1)])
+    forked = _fork("src", "fork-1", 99)
+    assert forked["title"] == "Notes (1)"
+
+    studio_db.update_chat_thread("fork-1", {"title": "Notes (1)"})
+
+    assert studio_db.get_chat_thread("fork-1")["forkTitleBase"] == "Notes"
+    assert _fork("fork-1", "fork-2", 100)["title"] == "Notes (2)"
+
+
 def test_a_whole_record_rename_clears_the_base_it_carries(tmp_path, monkeypatch):
     """The record a client read still holds the old base, so the title has to decide alone."""
     _reset_studio_db(tmp_path, monkeypatch)
