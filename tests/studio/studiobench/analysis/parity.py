@@ -155,6 +155,88 @@ def in_flight(base: Optional[dict], treat: Optional[dict]) -> set[int]:
     return out
 
 
+def _latched_fences(capture: dict) -> Optional[int]:
+    """How many code fences this capture found LATCHED, or None when it read no fences at all."""
+    total: Optional[int] = None
+    for m in capture.get("messages") or []:
+        fences = m.get("fences") if isinstance(m, dict) else None
+        if isinstance(fences, list):
+            total = (total or 0) + sum(1 for f in fences if isinstance(f, dict) and f.get("latched"))
+    return total
+
+
+def fence_latch_residue(
+    base: Optional[dict], treat: Optional[dict], skip: Optional[set[int]] = None
+) -> list[int]:
+    """Messages whose digests differ ONLY in which of their code fences had been scrolled past.
+
+    A CODE FENCE'S HIGHLIGHT STATE IS SCROLL HISTORY. `code-fence-defer.tsx` renders a fence the
+    reader has not come near as a plain shell (`data-unsloth-fence-deferred="true"`) and upgrades it
+    to token spans the first time it comes within a viewport, one way only, for the life of the
+    mount. So the same fence serialises as a shell on an arm whose viewport never passed it and as
+    spans on one whose did, on ONE build. On the r100K fast film `reasoning_toggle` leaves the
+    viewport either near the tail or ~20,000px higher, a coin flip per cell on the same build, and
+    the higher landing latches every fence in msg11/13/15 for the rest of the cell. A null control
+    whose four cells all happened to land low measured every later action stable, and backend-only
+    pull requests failed on `msg15(assistant):1847269->2150610c`.
+
+    THE RULE, per message, and every clause has to hold: the same role; the same number of fences;
+    the message with every fence replaced by a marker (`digest_unfenced`) identical, so anything
+    OUTSIDE a fence is still compared exactly; a fence latched on both arms, or on neither, identical
+    in full, so a highlighting or shell regression on a fence both arms reached is still a
+    difference; and a fence latched on ONE arm only identical in its TEXT. At least one fence must be
+    in that last case, or the difference is not a latch.
+
+    WHAT THIS GIVES UP, said plainly: the token markup of a fence that only ONE arm had latched is not
+    compared, because it has no counterpart on the other arm to compare with. The same fence
+    latched on both arms in another cell, or at the bottom of the thread where every cell latches it
+    at mount, still carries that comparison.
+
+    THE ONE REGRESSION THIS COULD OTHERWISE SWALLOW is a build whose fences never upgrade at all:
+    every one of its fences reads as "not latched" against a base that latched some. So when one arm
+    latched NOTHING anywhere in the thread and the other latched something, nothing is excused.
+
+    A capture recorded before the fence fields existed carries none, and is scored exactly as before.
+    """
+    if not isinstance(base, dict) or not isinstance(treat, dict):
+        return []
+    bl, tl = _latched_fences(base), _latched_fences(treat)
+    if bl is None or tl is None or (bl == 0) != (tl == 0):
+        return []
+    skip = skip or set()
+    bm, tm = _messages(base), _messages(treat)
+    out: list[int] = []
+    for i in sorted(set(bm) & set(tm)):
+        if i in skip:
+            continue
+        b, t = bm[i], tm[i]
+        if b.get("digest") == t.get("digest") or b.get("role") != t.get("role"):
+            continue
+        bf, tf = b.get("fences"), t.get("fences")
+        if not isinstance(bf, list) or not isinstance(tf, list) or not bf or len(bf) != len(tf):
+            continue
+        if b.get("digest_unfenced") is None or b.get("digest_unfenced") != t.get("digest_unfenced"):
+            continue
+        one_arm = False
+        explained = True
+        for x, y in zip(bf, tf):
+            if not isinstance(x, dict) or not isinstance(y, dict):
+                explained = False
+                break
+            if bool(x.get("latched")) == bool(y.get("latched")):
+                if x.get("digest") != y.get("digest"):
+                    explained = False
+                    break
+            elif x.get("text") is None or x.get("text") != y.get("text"):
+                explained = False
+                break
+            else:
+                one_arm = True
+        if explained and one_arm:
+            out.append(i)
+    return out
+
+
 def _scaffold(capture: dict) -> tuple[Optional[str], Optional[int]]:
     """The thread with every message elided, falling back to the whole-thread digest.
 
@@ -512,6 +594,9 @@ def settled_messages_moved(base: dict, treat: dict) -> list[str]:
     """
     bm, tm = _messages(base), _messages(treat)
     streaming = in_flight(base, treat)
+    # A fence one arm had scrolled past and the other had not is scroll history, not a rendering:
+    # see `fence_latch_residue`.
+    latched = set(fence_latch_residue(base, treat, streaming))
     out: list[str] = []
     for i in sorted(set(bm) & set(tm)):
         b, t = bm[i], tm[i]
@@ -520,7 +605,7 @@ def settled_messages_moved(base: dict, treat: dict) -> list[str]:
             continue
         # Flagged in flight by the arm that COULD place its stream; its digest is a point in a stream on
         # that arm whatever role it carries, so it is withheld like any other.
-        if i in streaming:
+        if i in streaming or i in latched:
             continue
         if b.get("role") == "user" and b.get("digest") != t.get("digest"):
             out.append(f"msg{i}(user):{b.get('chars')}->{t.get('chars')}c")
@@ -655,6 +740,11 @@ def compare(base: Optional[dict], treat: Optional[dict]) -> dict:
     # regression inside the streaming message lands as NOT COMPARABLE, and a REORDER past another
     # message of the same role is demoted from DIFFER (10 of 11 injected differences still DIFFER).
     streaming = in_flight(base, treat)
+    # FENCES ONE ARM HAD SCROLLED PAST AND THE OTHER HAD NOT, compared on their text rather than their
+    # token markup (see `fence_latch_residue`). NOT a refusal: everything these messages carry was
+    # compared, and a message is only here when all of it agreed but the latch, so it can reach MATCH.
+    latched = set(fence_latch_residue(base, treat, streaming))
+    skip = streaming | latched
     # ── THE COMPOSER IS NOT A RENDERING DIFFERENCE ──────────────────────────────────────────────
     #
     # One arm finished and one still writing has its MESSAGES withheld correctly, but the dock is
@@ -684,7 +774,7 @@ def compare(base: Optional[dict], treat: Optional[dict]) -> dict:
         and _run_state_disagrees(base, treat)
         and scaffold_moved(base, treat)
         and not overlays_moved(base, treat)
-        and not _messages_moved(base, treat, streaming)
+        and not _messages_moved(base, treat, skip)
     ):
         bc, tc = _scaffold(base)[1], _scaffold(treat)[1]
         return {
@@ -702,10 +792,11 @@ def compare(base: Optional[dict], treat: Optional[dict]) -> dict:
             ),
             "moved": [],
             "in_flight": sorted(streaming),
+            "fence_latch": sorted(latched),
             "style_verdict": style_verdict,
             "style_reason": style_reason,
         }
-    if not _any_moved(base, treat, streaming):
+    if not _any_moved(base, treat, skip):
         bm, tm = _messages(base), _messages(treat)
         unsettled = sorted(
             i
@@ -735,6 +826,7 @@ def compare(base: Optional[dict], treat: Optional[dict]) -> dict:
                 ),
                 "moved": [],
                 "in_flight": sorted(streaming),
+                "fence_latch": sorted(latched),
                 "not_digested": unsettled,
                 "style_verdict": style_verdict,
                 "style_reason": style_reason,
@@ -750,14 +842,16 @@ def compare(base: Optional[dict], treat: Optional[dict]) -> dict:
             "reason": "",
             "moved": [],
             "in_flight": sorted(streaming),
+            "fence_latch": sorted(latched),
             "style_verdict": style_verdict,
             "style_reason": style_reason,
         }
     return {
         "verdict": DIFFER,
         "reason": "",
-        "moved": localise(base, treat, streaming),
+        "moved": localise(base, treat, skip),
         "in_flight": sorted(streaming),
+        "fence_latch": sorted(latched),
         "style_verdict": style_verdict,
         "style_reason": style_reason,
     }
