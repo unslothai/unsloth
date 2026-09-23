@@ -218,7 +218,7 @@ def test_non_peft_gguf_uses_checkpoint_as_input_not_output(
         (False, {"lm_head.weight": "consolidated"}),
     ],
 )
-def test_full_finetune_gguf_writes_trained_weights_not_source_checkpoint(
+def test_gguf_converts_trained_or_supplied_weights_not_source_checkpoint(
     monkeypatch, tmp_path, full_finetuning, state_dict
 ):
     checkpoint = tmp_path / "checkpoint"
@@ -249,6 +249,13 @@ def test_full_finetune_gguf_writes_trained_weights_not_source_checkpoint(
     monkeypatch.setattr(save_mod, "_resolve_imatrix_file", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(save_mod, "dtype_from_config", lambda _config: save_mod.torch.float16)
     monkeypatch.setattr(save_mod, "create_ollama_modelfile", lambda *_args, **_kwargs: None)
+    preflight = []
+    monkeypatch.setattr(
+        save_mod,
+        "_preflight_gguf_disk",
+        lambda **kwargs: preflight.append((kwargs["needs_merge"], kwargs["state_dict"]))
+        or (kwargs["save_directory"], True),
+    )
 
     def _save_to_gguf(**kwargs):
         seen.update(kwargs)
@@ -271,7 +278,7 @@ def test_full_finetune_gguf_writes_trained_weights_not_source_checkpoint(
     assert model.saved_to == [(str(requested), state_dict)]
     assert tokenizer.saved_to == [str(requested)]
     assert os.listdir(checkpoint) == []
-    assert save_mod._gguf_writes_16bit_checkpoint(model, state_dict) is True
+    assert preflight == [(True, state_dict)]
     assert save_mod._gguf_model_input_directory(model, str(requested), state_dict) == str(requested)
 
 

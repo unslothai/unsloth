@@ -3704,6 +3704,23 @@ class TestTheCacheIsChargedOnTheConversionFilesystem:
         state.update(conversion_free = self.BASE + self.CONVERSION)
         assert self._preflight() == ("model", True)
 
+    def test_a_supplied_state_dict_reaches_both_sizing_helpers(self, state, monkeypatch):
+        state.update(conversion_free = self.BASE + self.CONVERSION)
+        state_dict = {"lm_head.weight": "trained"}
+        seen = []
+        monkeypatch.setattr(
+            S, "_fallback_checkpoint_extra_bytes", lambda model, sd: seen.append(sd) or 0
+        )
+        monkeypatch.setattr(
+            S,
+            "_gguf_model_input_directory",
+            lambda model, directory, sd: seen.append(sd) or directory,
+        )
+        S._preflight_gguf_disk(
+            _FakeModel(), "model", "f32", first_conversion = "f32", state_dict = state_dict
+        )
+        assert seen == [state_dict, state_dict]
+
     def test_a_cache_elsewhere_is_not_charged_here(self, state):
         """The premise reversed: only a cache on THIS disk costs the pre-warm."""
         state.update(cache_device = 3)
