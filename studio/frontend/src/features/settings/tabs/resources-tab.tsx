@@ -761,7 +761,7 @@ export function ResourcesTab() {
                     })}
                   </div>
                 ) : (
-                  <div className="flex w-[392px] shrink-0 flex-col items-stretch gap-2.5 max-[992px]:w-full">
+                  <div className="flex w-[calc(392px*var(--ui-space-scale,1))] shrink-0 flex-col items-stretch gap-2.5 max-[992px]:w-full">
                     {/* Ruled between the three readings: run together they are
                       easy to misread as one number. */}
                     {/* min-w-0 on each reading, or truncate cannot fire: a flex
@@ -838,7 +838,7 @@ export function ResourcesTab() {
           hint={t("settings.resources.storage.modelsFolderHint")}
           className="max-[840px]:flex-col max-[840px]:items-stretch max-[840px]:gap-2"
         >
-          <div className="grid w-[392px] min-w-0 grid-cols-[minmax(0,1fr)_auto] gap-x-2 gap-y-1.5 max-[840px]:w-full">
+          <div className="grid w-[calc(392px*var(--ui-space-scale,1))] min-w-0 grid-cols-[minmax(0,1fr)_auto] gap-x-2 gap-y-1.5 max-[840px]:w-full">
             <div className="relative min-w-0">
               <Input
                 readOnly

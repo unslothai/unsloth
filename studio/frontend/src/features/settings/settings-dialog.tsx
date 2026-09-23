@@ -468,7 +468,7 @@ export function SettingsDialog() {
           <div className="flex h-full min-h-0 min-w-0 w-full max-sm:flex-col">
             {/* Match the app shell: tabs on the sidebar fill, content on the
                 page fill, so both track the active palette. */}
-            <aside className="font-heading flex w-[248px] shrink-0 flex-col border-r border-sidebar-border bg-sidebar text-sidebar-foreground p-2 dark:border-r-0 max-sm:w-full max-sm:border-r-0 max-sm:border-b max-sm:border-sidebar-border">
+            <aside className="font-heading flex w-[calc(248px*var(--ui-space-scale,1))] shrink-0 flex-col border-r border-sidebar-border bg-sidebar text-sidebar-foreground p-2 dark:border-r-0 max-sm:w-full max-sm:border-r-0 max-sm:border-b max-sm:border-sidebar-border">
               <div className="relative mx-1 mt-3 mb-2 shrink-0 max-sm:hidden">
                 <HugeiconsIcon
                   icon={Search01Icon}

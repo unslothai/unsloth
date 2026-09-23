@@ -1575,7 +1575,7 @@ export function AgentsTab() {
                     )}
                   </SelectValue>
                 </SelectTrigger>
-                <SelectContent align="start" className="min-w-[16rem]">
+                <SelectContent align="start" className="min-w-[calc(16rem*var(--ui-space-scale,1))]">
                   {variants.map((variant) => {
                     // Size only: the recommended/downloaded tags wrapped every
                     // row onto two lines and made the list hard to scan.

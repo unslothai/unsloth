@@ -27,12 +27,18 @@ test("browser update searches keep routing to About", () => {
   assert.ok(index.about.includes(UPDATE_ENTRY));
 });
 
-test("interface scale is searchable only on desktop", () => {
+test("interface scale is searchable on every build", () => {
+  // The browser build scales through the UI tokens, so the row renders there
+  // too and search has to find it.
   const desktop = createSettingsSearchIndex({ desktop: true, closeToTray: true });
   const browser = createSettingsSearchIndex({ desktop: false, closeToTray: false });
 
   assert.ok(desktop.appearance.includes(INTERFACE_SCALE_ENTRY));
-  assert.ok(!browser.appearance.includes(INTERFACE_SCALE_ENTRY));
+  assert.ok(browser.appearance.includes(INTERFACE_SCALE_ENTRY));
+  assert.equal(
+    desktop.appearance.filter((key) => key === INTERFACE_SCALE_ENTRY).length,
+    1,
+  );
 });
 
 // The words a user types for this feature are not substrings of any of its

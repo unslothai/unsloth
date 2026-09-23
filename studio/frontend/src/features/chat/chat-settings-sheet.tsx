@@ -185,7 +185,7 @@ export function ParamSlider({
     return (
       <div className="flex items-center gap-3">
         {/* A floor rather than a fixed width, so a longer label is never clipped. */}
-        <div className="flex min-w-[104px] shrink-0 items-center gap-1.5">
+        <div className="flex min-w-[calc(104px*var(--ui-space-scale,1))] shrink-0 items-center gap-1.5">
           <span className="text-ui-13 font-medium leading-[1.25] tracking-nav text-nav-fg">
             {label}
           </span>
@@ -1649,7 +1649,7 @@ export function ChatSettingsPanel({
                   }}
                   placeholder="Random"
                   aria-label="Seed"
-                  className="panel-field h-8 w-[84px] shrink-0"
+                  className="panel-field h-8 w-[calc(84px*var(--ui-space-scale,1))] shrink-0"
                 />
               </div>
             ) : null}
@@ -1783,7 +1783,7 @@ export function ChatSettingsPanel({
                 onChange={(event) => setSystemPromptDraft(event.target.value)}
                 placeholder="You are a helpful assistant..."
                 fieldSizing="fixed"
-                className="min-h-[20rem] max-h-[48dvh] overflow-y-auto rounded-none border-0 text-sm leading-6 focus-visible:ring-0"
+                className="min-h-[calc(20rem*var(--ui-space-scale,1))] max-h-[48dvh] overflow-y-auto rounded-none border-0 text-sm leading-6 focus-visible:ring-0"
                 rows={14}
               />
             </div>
@@ -1829,7 +1829,7 @@ export function ChatSettingsPanel({
   if (isMobile) {
     return (
       <Sheet open={open} onOpenChange={onOpenChange}>
-        <SheetContent side="right" className="w-[18rem] p-0 font-heading">
+        <SheetContent side="right" className="w-[calc(18rem*var(--ui-space-scale,1))] p-0 font-heading">
           <SheetHeader className="sr-only">
             <SheetTitle>Run settings</SheetTitle>
             <SheetDescription>Chat inference settings</SheetDescription>

@@ -37,7 +37,10 @@ test("the spacing scale is the font-size preference, normalised at the default",
     CSS,
     /--ui-space-scale:\s*calc\(var\(--ui-font-scale, 1\) \/ 0\.9375\);/,
   );
-  assert.match(CSS, /--ui-font-scale:\s*0\.9375;/);
+  assert.match(
+    CSS,
+    /--ui-font-scale:\s*calc\(var\(--ui-font-size-scale, 0\.9375\) \* var\(--ui-interface-scale, 1\)\);/,
+  );
 });
 
 test("every tailwind spacing utility goes through it", () => {
@@ -237,5 +240,94 @@ test("the stylesheet's comments stay comments", () => {
   assert.ok(
     stripped.includes("--spacing: calc(0.25rem * var(--ui-space-scale, 1));"),
     "the spacing step is no longer a declaration of its own",
+  );
+});
+
+test("no hand-set length above a hairline skips the scale", () => {
+  // A one-off w-[232px] beside scaled text and padding is the cramped row the
+  // preference exists to fix. Hairlines and 1-3px nudges stay put; so do the
+  // images, which stage content at their own size, the desktop titlebar, which
+  // belongs to the OS window, and the activity grid, whose cells JS measures.
+  const FIXED_BY_DESIGN = new Set([
+    "components/tauri/window-titlebar.tsx",
+    "components/assistant-ui/image.tsx",
+    "components/assistant-ui/search-image.tsx",
+    "components/assistant-ui/tool-ui-image-generation.tsx",
+    "features/profile/components/stats/token-activity-card.tsx",
+  ]);
+  const LENGTH =
+    /(?<=[\s"'`:!(\[])-?(?:size|w|h|min-w|min-h|max-w|max-h|basis|gap|gap-x|gap-y|space-x|space-y|p|px|py|pt|pb|pl|pr|ps|pe|m|mx|my|mt|mb|ml|mr|ms|me|top|bottom|left|right|inset|inset-x|inset-y|start|end|translate-x|translate-y)-\[(\d*\.?\d+)(px|rem)\]/g;
+  const bare = SOURCES.filter(
+    (file) => /\.tsx?$/.test(file) && !FIXED_BY_DESIGN.has(file),
+  ).flatMap((file) =>
+    [...readSrc(file).matchAll(LENGTH)]
+      .filter((m) => Number(m[1]) * (m[2] === "rem" ? 16 : 1) > 3)
+      .map((m) => `${file}: ${m[0]}`),
+  );
+  assert.deepEqual(bare, [], "these lengths ignore the UI font size");
+});
+
+test("icons grow at the rate of the text beside them", () => {
+  // A half-rate curve left a 20px label beside an 18px glyph in a row padded
+  // for 20px, so the icons read shrunken at every size above the default.
+  assert.match(CSS, /--ui-icon-size: calc\(1rem \* var\(--ui-font-scale, 1\)\);/);
+  assert.match(
+    CSS,
+    /--ui-icon-size-sm: calc\(0\.875rem \* var\(--ui-font-scale, 1\)\);/,
+  );
+  assert.doesNotMatch(
+    CSS,
+    /min\(calc\([\d.]+(?:px|rem) \* var\(--ui-font-scale/,
+    "an icon is still on the half-rate curve",
+  );
+  // The scoped icon rules match an arbitrary glyph size in both spellings,
+  // or the scaled class slips past them.
+  for (const px of ["15", "18"]) {
+    assert.ok(
+      CSS.includes(
+        `& svg:is(.size-\\[${px}px\\], [class~='size-[calc(${px}px*var(--ui-space-scale,1))]'])`,
+      ),
+      `size-[${px}px] is matched in only one spelling`,
+    );
+  }
+});
+
+test("named widths scale, container breakpoints do not", () => {
+  // max-w-md holds the same scaled text as the rest, so it grows with it.
+  for (const [name, rem] of [
+    ["xs", "20rem"],
+    ["md", "28rem"],
+    ["2xl", "42rem"],
+    ["7xl", "80rem"],
+  ]) {
+    assert.ok(
+      CSS.includes(`--container-${name}: calc(${rem} * var(--ui-space-scale, 1));`),
+      `--container-${name} ignores the UI font size`,
+    );
+  }
+  // Declared outside @theme, so Tailwind still bakes the literal into every
+  // @container query (a query cannot read a custom property).
+  const theme = CSS.slice(CSS.indexOf("@theme inline {"));
+  assert.doesNotMatch(
+    theme.slice(0, theme.indexOf("\n}")),
+    /--container-md:/,
+  );
+});
+
+test("the plain stylesheets' controls follow the scale", () => {
+  const HUB = readSrc("features/hub/hub.css");
+  for (const rule of [".hub-action-btn {", ".hub-run-action-btn {", ".hub-download-fab {"]) {
+    const at = HUB.indexOf(rule);
+    assert.notEqual(at, -1, `${rule} is gone`);
+    const body = HUB.slice(at, HUB.indexOf("}", at));
+    assert.match(
+      body,
+      /(?:height|width): calc\([\d.]+rem \* var\(--ui-space-scale, 1\)\)/,
+      `${rule} has a fixed size`,
+    );
+  }
+  assert.match(
+    CSS,
+    /\.panel-slider \[data-slot="slider-thumb"\] \{\s*width: calc\(0\.875rem \* var\(--ui-space-scale, 1\)\) !important;/,
   );
 });

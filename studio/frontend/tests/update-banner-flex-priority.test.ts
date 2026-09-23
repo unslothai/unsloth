@@ -219,7 +219,7 @@ test("the llama.cpp card takes the desktop updater's floor only with its changel
   // Only the conditional branch may carry a floor.
   assert.doesNotMatch(classes(LLAMA, "pointer-events-auto flex "), /min-h-/);
   assert.doesNotMatch(slot, /\bmin-h-0\b/);
-  assert.ok(LLAMA.includes("max-w-[448px]"));
+  assert.ok(LLAMA.includes("max-w-[calc(448px*var(--ui-space-scale,1))]"));
 });
 
 test("the llama.cpp changelog uses the desktop update notes layout", () => {

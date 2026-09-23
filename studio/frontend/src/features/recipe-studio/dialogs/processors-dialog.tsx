@@ -71,7 +71,7 @@ export function ProcessorsDialog({
         position="absolute"
         overlayPosition="absolute"
         overlayClassName="bg-transparent"
-        className="corner-squircle max-h-[650px] overflow-auto sm:max-w-2xl shadow-border"
+        className="corner-squircle max-h-[calc(650px*var(--ui-space-scale,1))] overflow-auto sm:max-w-2xl shadow-border"
       >
         <VisuallyHidden.Root>
           <DialogTitle>Processors</DialogTitle>
@@ -114,7 +114,7 @@ export function ProcessorsDialog({
                 />
                 <Textarea
                   id={templateId}
-                  className="corner-squircle nodrag min-h-[220px]"
+                  className="corner-squircle nodrag min-h-[calc(220px*var(--ui-space-scale,1))]"
                   value={schemaProcessor.template}
                   onChange={(event) =>
                     updateSchema({ template: event.target.value })
