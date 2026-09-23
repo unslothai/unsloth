@@ -4091,7 +4091,7 @@ function VideoGenerator({
                 variant="outline"
                 onClick={handleCancelGenerate}
               >
-                <Spinner variant="ring" className="mr-2 size-4" />
+                <Spinner className="mr-2 size-4" />
                 Cancel
               </Button>
             ) : (
@@ -4186,7 +4186,7 @@ function VideoGenerator({
             ) : selected ? (
               // The selected record's link has not landed yet; spin in place.
               <div className="flex flex-col items-center gap-3 text-muted-foreground">
-                <Spinner variant="ring" className="size-8" />
+                <Spinner className="size-8" />
                 <p className="text-sm">Loading…</p>
               </div>
             ) : busy === "generating" ? null : (
@@ -4210,9 +4210,8 @@ function VideoGenerator({
                   selectedSrc ? "inset-x-0 bottom-4" : "inset-0 items-center",
                 )}
               >
-                <div className="w-72 max-w-full rounded-xl bg-background/85 p-3 shadow-lg backdrop-blur dark:bg-card/95">
+                <div className="w-72 max-w-full rounded-xl bg-background/85 p-3 shadow-lg ring-1 ring-border backdrop-blur">
                   <ModelLoadDescription
-                    variant="floating"
                     className="min-h-0"
                     title={null}
                     message="Starting…"
@@ -4241,8 +4240,8 @@ function VideoGenerator({
               {/* In-progress generation: a placeholder tile at the front so past clips stay browsable while
                   the new one renders. */}
               {busy === "generating" && (
-                <div className="flex size-16 shrink-0 animate-pulse items-center justify-center rounded-[10px] bg-muted/50">
-                  <Spinner variant="ring" className="size-6 text-muted-foreground" />
+                <div className="flex size-16 shrink-0 animate-pulse items-center justify-center rounded-[10px] bg-muted/50 ring-2 ring-primary/30">
+                  <Spinner className="size-5 text-muted-foreground" />
                 </div>
               )}
               {/* The card is a wrapper, not a button: the actions menu must be the select button's SIBLING,
