@@ -223,10 +223,11 @@ _BACKEND_IDS_PROBE = "Hello world! def f(x): return x**2  # code\n你好 éè Α
 
 
 def _backend_roundtrip(backend, text):
-    """(round_trips, ids) of a raw tokenizers.Tokenizer, or (None, None) if it cannot be probed."""
+    """(round_trips, ids) of a raw tokenizers.Tokenizer, or (None, None) if it cannot be probed.
+    A single leading space counts as a round trip: ByteLevel(add_prefix_space = True) adds it by design."""
     try:
         ids = backend.encode(text, add_special_tokens = False).ids
-        return backend.decode(ids, skip_special_tokens = False) == text, ids
+        return backend.decode(ids, skip_special_tokens = False) in (text, " " + text), ids
     except Exception:
         return None, None
 

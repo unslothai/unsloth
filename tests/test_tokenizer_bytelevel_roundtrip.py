@@ -51,9 +51,9 @@ def _write_dir(path, tokenizer, tokenizer_class):
     return str(path)
 
 
-def _byte_level_tokenizer():
+def _byte_level_tokenizer(add_prefix_space = False):
     tok = Tokenizer(models.BPE())
-    tok.pre_tokenizer = pre_tokenizers.ByteLevel(add_prefix_space = False)
+    tok.pre_tokenizer = pre_tokenizers.ByteLevel(add_prefix_space = add_prefix_space)
     tok.decoder = decoders.ByteLevel()
     trainer = trainers.BpeTrainer(
         vocab_size = 400,
@@ -150,6 +150,31 @@ def test_correct_tokenizer_is_untouched(tmp_path, builder, tokenizer_class):
     assert fixed.decode(before_ids) == PROBE
     # Full loader too: ids unchanged against a plain AutoTokenizer load.
     assert _ids(tu.load_correct_tokenizer(path)) == before_ids
+
+
+def test_prefix_space_byte_level_llama_is_repaired(tmp_path):
+    # ByteLevel(add_prefix_space = True) decodes the probe with one leading space by design; that
+    # reference is valid, so the space-dropping rebuilt backend must still be replaced.
+    path = _write_dir(
+        tmp_path / "prefix", _byte_level_tokenizer(add_prefix_space = True), "LlamaTokenizerFast"
+    )
+    tok = tu._apply_post_load_tokenizer_fixes(
+        AutoTokenizer.from_pretrained(path), fix_tokenizer = False
+    )
+    assert _ids(tok) == _reference_ids(path)
+    assert tok.decode(_ids(tok)).lstrip(" ") == PROBE
+
+
+def test_prefix_space_byte_level_generic_is_untouched(tmp_path):
+    path = _write_dir(
+        tmp_path / "prefix_ok",
+        _byte_level_tokenizer(add_prefix_space = True),
+        "PreTrainedTokenizerFast",
+    )
+    loaded = AutoTokenizer.from_pretrained(path)
+    before = loaded.backend_tokenizer.to_str()
+    fixed = tu._apply_post_load_tokenizer_fixes(loaded, fix_tokenizer = True)
+    assert fixed.backend_tokenizer.to_str() == before
 
 
 def test_tokenizer_json_that_does_not_round_trip_is_left_alone(tmp_path):
