@@ -2313,48 +2313,6 @@ def _transformers_rope_scaling_assignment_drops_theta():
         return False
 
 
-def _default_rope_parameters_4x(
-    config,
-    device = None,
-    seq_len = None,
-    **kwargs,
-):
-    """transformers 4.x ``_compute_default_rope_parameters``: plain RoPE, no scaling."""
-    import torch
-
-    base = getattr(config, "rope_theta", None)
-    rope_parameters = getattr(config, "rope_parameters", None)
-    if base is None and isinstance(rope_parameters, dict):
-        base = rope_parameters.get("rope_theta")
-    if base is None:
-        base = 10000.0
-    partial_rotary_factor = getattr(config, "partial_rotary_factor", None)
-    if partial_rotary_factor is None and isinstance(rope_parameters, dict):
-        partial_rotary_factor = rope_parameters.get("partial_rotary_factor")
-    if partial_rotary_factor is None:
-        partial_rotary_factor = 1.0
-    head_dim = getattr(config, "head_dim", None) or config.hidden_size // config.num_attention_heads
-    dim = int(head_dim * partial_rotary_factor)
-    inv_freq = 1.0 / (
-        base
-        ** (torch.arange(0, dim, 2, dtype = torch.int64).to(device = device, dtype = torch.float) / dim)
-    )
-    return inv_freq, 1.0
-
-
-def fix_transformers_rope_init_default():
-    """Restore ``ROPE_INIT_FUNCTIONS["default"]``, which transformers 5 dropped and 4.x-era
-    remote code still indexes (Ling-2.6-flash: ``KeyError: 'default'``). Only added when missing."""
-    try:
-        import transformers.modeling_rope_utils as rope_utils
-    except Exception:
-        return
-    table = getattr(rope_utils, "ROPE_INIT_FUNCTIONS", None)
-    if not isinstance(table, dict) or "default" in table:
-        return
-    table["default"] = _default_rope_parameters_4x
-
-
 _PLAIN_ROPE_KEYS = frozenset({"rope_type", "type", "rope_theta", "partial_rotary_factor"})
 
 
