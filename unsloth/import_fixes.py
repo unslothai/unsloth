@@ -1639,7 +1639,7 @@ def _patch_own_validate_rope(cls):
 
 def fix_transformers_validate_rope_ignore_keys():
     """Accept ``validate_rope(ignore_keys = ...)`` from 5.0-era remote configuration code;
-    transformers 5.1 removed the parameter, raising TypeError in AutoConfig.from_pretrained.
+    transformers 5.4 removed the parameter, raising TypeError in AutoConfig.from_pretrained.
 
     Some configs (e.g. Phi3Config) define their own validator, so every existing subclass is
     patched and an ``__init_subclass__`` hook covers lazily imported and remote configs."""

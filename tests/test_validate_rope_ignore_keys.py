@@ -12,7 +12,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""5.0-era remote configs call ``validate_rope(ignore_keys = ...)``, which 5.1 dropped."""
+"""5.0-era remote configs call ``validate_rope(ignore_keys = ...)``, which 5.4 dropped."""
 
 import inspect
 
