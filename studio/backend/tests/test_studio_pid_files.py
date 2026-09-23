@@ -471,22 +471,38 @@ def test_a_hostname_records_every_address_it_resolves_to(tmp_path):
 def test_port_probe_checks_every_resolved_bind_address(monkeypatch, platform, occupied):
     monkeypatch.setattr(run, "sys", SimpleNamespace(platform = platform))
     bind_attempts = []
+    connect_attempts = []
     sockets = []
 
     class _ProbeSocket:
         def __init__(self, family):
             self.family = family
             self.closed = False
+            self.bound = False
             self.options = []
             sockets.append(self)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            self.close()
 
         def setsockopt(self, *args):
             self.options.append(args)
 
+        def settimeout(self, timeout):
+            pass
+
         def bind(self, sockaddr):
+            self.bound = True
             bind_attempts.append((self.family, sockaddr))
             if occupied and self.family == socket.AF_INET6:
                 raise OSError("address already in use")
+
+        def connect_ex(self, address):
+            connect_attempts.append(address)
+            return errno.ECONNREFUSED
 
         def close(self):
             self.closed = True
@@ -502,7 +518,7 @@ def test_port_probe_checks_every_resolved_bind_address(monkeypatch, platform, oc
     monkeypatch.setattr(
         socket,
         "socket",
-        lambda family, _socktype, _proto: _ProbeSocket(family),
+        lambda family, *_args: _ProbeSocket(family),
     )
 
     assert run._is_port_free("dual-stack.test", 8888) is (not occupied)
@@ -510,13 +526,81 @@ def test_port_probe_checks_every_resolved_bind_address(monkeypatch, platform, oc
         (socket.AF_INET, ("127.0.0.1", 8888)),
         (socket.AF_INET6, ("::1", 8888, 0, 0)),
     ]
+    assert connect_attempts == ([] if occupied else [("127.0.0.1", 8888), ("::1", 8888)])
     assert all(probe.closed for probe in sockets)
-    for probe in sockets:
+    for probe in (p for p in sockets if p.bound):
         assert ((socket.SOL_SOCKET, socket.SO_REUSEADDR, 1) in probe.options) is (
             platform != "win32"
         )
         if probe.family == socket.AF_INET6 and hasattr(socket, "IPV6_V6ONLY"):
             assert (socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1) in probe.options
+
+
+def test_a_wildcard_listener_is_not_reported_as_a_free_loopback_port():
+    # #11623: on Windows a 127.0.0.1 bind succeeds next to another process's
+    # 0.0.0.0 listener, so the desktop backend took over localhost:8888.
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
+        listener.bind(("0.0.0.0", 0))
+        listener.listen()
+        port = listener.getsockname()[1]
+
+        assert run._is_port_free("127.0.0.1", port) is False
+
+
+def _stub_bind_always_succeeds(monkeypatch, host, listening):
+    connect_attempts = []
+
+    class _Socket:
+        def __init__(self, *_args):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            pass
+
+        def setsockopt(self, *args):
+            pass
+
+        def settimeout(self, timeout):
+            pass
+
+        def bind(self, sockaddr):
+            pass
+
+        def connect_ex(self, address):
+            connect_attempts.append(address)
+            return 0 if address in listening else errno.ECONNREFUSED
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(
+        socket,
+        "getaddrinfo",
+        lambda *_args, **_kwargs: [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (host, 8888))],
+    )
+    monkeypatch.setattr(socket, "socket", _Socket)
+    return connect_attempts
+
+
+@pytest.mark.parametrize("platform", ["win32", "darwin", "linux"])
+def test_loopback_port_answered_by_another_process_is_not_free(monkeypatch, platform):
+    # Mimics Windows: the probe bind succeeds, but something already answers on
+    # 127.0.0.1, so _resolve_port has to move on to the next port.
+    monkeypatch.setattr(run, "sys", SimpleNamespace(platform = platform))
+    attempts = _stub_bind_always_succeeds(monkeypatch, "127.0.0.1", {("127.0.0.1", 8888)})
+
+    assert run._is_port_free("127.0.0.1", 8888) is False
+    assert attempts == [("127.0.0.1", 8888)]
+
+
+def test_non_loopback_host_skips_the_connect_probe(monkeypatch):
+    attempts = _stub_bind_always_succeeds(monkeypatch, "192.168.1.20", {("127.0.0.1", 8888)})
+
+    assert run._is_port_free("192.168.1.20", 8888) is True
+    assert attempts == []
 
 
 def test_a_multi_address_record_matches_either_literal(tmp_path):
