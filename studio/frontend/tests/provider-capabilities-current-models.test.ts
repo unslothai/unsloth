@@ -280,7 +280,7 @@ test("the chat-latest aliases advertise no reasoning at all", () => {
   );
 });
 
-test("ChatGPT subscription models expose Unsloth-owned search and code tools", () => {
+test("ChatGPT subscription models expose Unsloth-owned search and local code tools", () => {
 
   setProviderModelCapabilities("openai_codex", {
     "gpt-5.3-codex-spark": { vision: false, studio_tools: true },
@@ -294,7 +294,7 @@ test("ChatGPT subscription models expose Unsloth-owned search and code tools", (
     assert.equal(caps.reasoningStyle, "reasoning_effort", model);
     assert.equal(getExternalMaxOutputTokens("openai_codex", model), 128000, model);
     assert.equal(providerSupportsBuiltinWebSearch("openai_codex", model), true, model);
-    assert.equal(providerSupportsBuiltinCodeExecution("openai_codex", model), true, model);
+    assert.equal(providerSupportsBuiltinCodeExecution("openai_codex", model), false, model);
   }
 });
 
