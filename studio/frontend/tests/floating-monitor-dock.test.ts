@@ -540,6 +540,17 @@ test("a drag that ends without a reconcile still records the position", () => {
   );
 });
 
+test("a vertical or clamped docked drag preserves the saved horizontal position", () => {
+  const update = source.slice(
+    source.indexOf("function updateDrag"),
+    source.indexOf("function finishDrag"),
+  );
+  assert.match(
+    update,
+    /const previousLeft = session\.left;[\s\S]*?const left = clamp\([\s\S]*?if \(narrowedRef\.current && left !== previousLeft\) \{\s*chosenLeftRef\.current = null;/,
+    "clear the saved X only when a docked drag actually changes its horizontal position",
+  );
+});
 test("a press without movement keeps the saved position", () => {
   // The pointer-down used to clear the saved spot, so a grip press that never
   // moved discarded it and the undock restore had nothing to put back.
@@ -626,6 +637,30 @@ test("docking reserves the width the monitor actually renders", () => {
   assert.equal(getFloatingMonitorLayout(scaled).dockedBesideRunSettings, true);
 });
 
+test("docking capacity scales both the left edge and handle clearances", () => {
+  // At 12px UI text the actual monitor width is 205px. The 230px between the
+  // sidebar and panel fits its 12.8px left inset plus 3.2px handle clearance.
+  const scaled = {
+    viewportWidth: 800,
+    sidebarWidth: 280,
+    settingsWidth: 290,
+    monitorWidth: 205,
+    uiSpaceScale: 0.8,
+  };
+  assert.equal(dockedMonitorFits(scaled), true);
+  assert.equal(
+    getFloatingMonitorLayout({
+      isOpen: true,
+      isMobile: false,
+      isChatRoute: true,
+      settingsPanelOpen: true,
+      ...scaled,
+    }).dockedBesideRunSettings,
+    true,
+  );
+});
+
+
 test("the sidebar observer survives the responsive swap", () => {
   // Sidebar swaps its desktop element for a sheet and back, so the lookup has to
   // rerun on the breakpoint or the stale width keeps overriding the committed one.
@@ -645,4 +680,3 @@ test("capacity is re-evaluated on every viewport resize", () => {
   assert.match(source, /const viewportWidth = useSyncExternalStore\(/);
   assert.match(source, /^\s+viewportWidth,$/m);
 });
-

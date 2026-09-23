@@ -390,15 +390,13 @@ function useMonitorLayout(
     if (!session || session.pointerId !== event.pointerId) {
       return;
     }
-    // Only real movement is a placement choice; a press alone is not.
+    // Only real pointer movement is a placement choice; a press alone is not.
     if (event.clientX !== session.startX || event.clientY !== session.startY) {
       session.moved = true;
       hasDraggedRef.current = true;
-      if (narrowedRef.current) {
-        chosenLeftRef.current = null;
-      }
     }
 
+    const previousLeft = session.left;
     const left = clamp(
       session.left + event.clientX - session.startX,
       0,
@@ -409,6 +407,12 @@ function useMonitorLayout(
       0,
       session.maxTop,
     );
+    // Vertical motion and horizontal movement clamped at an edge do not choose
+    // a new X position; preserve the saved full-width placement for undocking.
+    if (narrowedRef.current && left !== previousLeft) {
+      chosenLeftRef.current = null;
+    }
+
     session.startX = event.clientX;
     session.startY = event.clientY;
     session.left = left;
@@ -895,6 +899,7 @@ export function FloatingMonitor() {
       sidebarWidth,
       viewportWidth,
       monitorWidth,
+      uiSpaceScale,
     });
   const systemInfo = useSystemInfo({ enabled: visible, pollMs: 5000 });
   const [panelKey, setPanelKey] = useState(0);

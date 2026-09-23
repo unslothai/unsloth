@@ -52,6 +52,8 @@ export interface FloatingMonitorDockState {
   viewportWidth: number;
   /** The monitor's rendered width; natively resizable, so `w-64` is a floor. */
   monitorWidth?: number;
+  /** Live --ui-space-scale; defaults to 1 before the appearance setting loads. */
+  uiSpaceScale?: number;
 }
 
 export interface FloatingMonitorLayout {
@@ -74,6 +76,7 @@ export function getFloatingMonitorLayout({
   sidebarWidth,
   viewportWidth,
   monitorWidth,
+  uiSpaceScale,
 }: FloatingMonitorDockState): FloatingMonitorLayout {
   // The panel is chat-only and the store survives navigation, so a stale open
   // flag on another route must not move the monitor.
@@ -89,6 +92,7 @@ export function getFloatingMonitorLayout({
       sidebarWidth,
       settingsWidth,
       monitorWidth,
+      uiSpaceScale,
     });
   const suppressed = isOpen && runSettingsVisible && !dockable;
 
@@ -104,11 +108,13 @@ export function dockedMonitorFits({
   sidebarWidth,
   settingsWidth,
   monitorWidth,
+  uiSpaceScale,
 }: {
   viewportWidth: number;
   sidebarWidth: number;
   settingsWidth: number;
   monitorWidth?: number;
+  uiSpaceScale?: number;
 }): boolean {
   // An unmeasured window keeps the dock rather than hiding the monitor on a guess.
   if (!(viewportWidth > 0)) {
@@ -116,14 +122,22 @@ export function dockedMonitorFits({
   }
   const usable =
     viewportWidth - Math.max(0, sidebarWidth) - Math.max(0, settingsWidth);
-  // The rendered width, not `w-64`: the panel is natively resizable and the
-  // constant also scales with `--ui-space-scale`, so at a smaller UI font the
-  // constant over-reserves and suppresses a monitor that would have fitted.
+  const scale =
+    uiSpaceScale !== undefined && Number.isFinite(uiSpaceScale) && uiSpaceScale > 0
+      ? uiSpaceScale
+      : 1;
+  // The monitor starts at the scaled left edge inset and ends at the panel's
+  // scaled resize-handle clearance; there is no second full edge inset on right.
   const width =
     monitorWidth === undefined || !Number.isFinite(monitorWidth)
-      ? FLOATING_MONITOR_WIDTH
+      ? FLOATING_MONITOR_WIDTH * scale
       : monitorWidth;
-  return usable >= width + 2 * FLOATING_MONITOR_EDGE_INSET;
+  return (
+    usable >=
+    width +
+      FLOATING_MONITOR_EDGE_INSET * scale +
+      floatingMonitorHandleClearance(scale)
+  );
 }
 
 /**
