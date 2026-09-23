@@ -331,3 +331,44 @@ test("the plain stylesheets' controls follow the scale", () => {
     /\.panel-slider \[data-slot="slider-thumb"\] \{\s*width: calc\(0\.875rem \* var\(--ui-space-scale, 1\)\) !important;/,
   );
 });
+
+test("a scaled minimum never outgrows its own cap", () => {
+  // CSS lets min win over max, so an uncapped scaled minimum breaks the cap:
+  // at 200% a 20rem editor minimum is 40rem against a 48dvh maximum.
+  for (const [file, cap] of [
+    ["features/chat/chat-settings-sheet.tsx", "48dvh"],
+    ["features/model-picker/components/chat-template-editor-dialog.tsx", "50dvh"],
+  ] as const) {
+    assert.ok(
+      readSrc(file).includes(
+        `min-h-[min(calc(20rem*var(--ui-space-scale,1)),${cap})] max-h-[${cap}]`,
+      ),
+      `${file} lets its minimum pass its cap`,
+    );
+  }
+  // Popovers and selects stop at 100vw-32px, so their minimums do too.
+  for (const [file, width] of [
+    ["features/settings/tabs/agents-tab.tsx", "16rem"],
+    ["features/hub/catalog/gguf-download-card.tsx", "300px"],
+    ["features/hub/catalog/local-on-device-card.tsx", "220px"],
+  ] as const) {
+    assert.ok(
+      readSrc(file).includes(
+        `min-w-[min(calc(${width}*var(--ui-space-scale,1)),calc(100vw-32px))]`,
+      ),
+      `${file} can outgrow a narrow screen`,
+    );
+  }
+});
+
+test("a sidebar row's inset scales on both sides", () => {
+  // Only the measured scrollbar rail stays fixed.
+  assert.ok(
+    SIDEBAR.includes(
+      '"ps-[calc(5px*var(--ui-space-scale,1))] pe-[calc(var(--sidebar-rail,0px)+5px*var(--ui-space-scale,1))]"',
+    ),
+  );
+  assert.ok(
+    SIDEBAR.includes('"ps-1.5 pe-[calc(var(--sidebar-rail,0px)+6px*var(--ui-space-scale,1))]"'),
+  );
+});

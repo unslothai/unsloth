@@ -128,7 +128,7 @@ export function ChatTemplateEditorDialog({
               setError(null);
             }}
             readOnly={readOnly}
-            className="min-h-[calc(20rem*var(--ui-space-scale,1))] max-h-[50dvh] overflow-y-auto rounded-none border-0 font-mono text-xs leading-5 focus-visible:ring-0"
+            className="min-h-[min(calc(20rem*var(--ui-space-scale,1)),50dvh)] max-h-[50dvh] overflow-y-auto rounded-none border-0 font-mono text-xs leading-5 focus-visible:ring-0"
             rows={14}
             spellCheck={false}
             placeholder={defaultLoading ? "Loading model default..." : ""}

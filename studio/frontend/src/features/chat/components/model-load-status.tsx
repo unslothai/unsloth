@@ -97,7 +97,7 @@ export function ModelLoadInlineStatus({
   const hasProgress = typeof progressPercent === "number";
 
   return (
-    <div className="flex min-w-[calc(20rem*var(--ui-space-scale,1))] items-center gap-2.5 text-muted-foreground" title={title}>
+    <div className="flex min-w-[min(calc(20rem*var(--ui-space-scale,1)),100%)] items-center gap-2.5 text-muted-foreground" title={title}>
       <div className="flex items-center gap-1.5 shrink-0">
         <Spinner className="size-3.5 shrink-0" />
         <span className="text-xs">{label}</span>

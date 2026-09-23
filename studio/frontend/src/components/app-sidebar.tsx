@@ -2169,8 +2169,8 @@ export function AppSidebar() {
   // the list scroller add the rail width it does not lose, so both end on the same edge whether or
   // not the scrollbar takes space. Logical sides, since the rail moves under rtl.
   const rowPadding = usesDesktopTitlebar
-    ? "ps-[calc(5px*var(--ui-space-scale,1))] pe-[calc(var(--sidebar-rail,0px)+5px)]"
-    : "ps-1.5 pe-[calc(var(--sidebar-rail,0px)+6px)]";
+    ? "ps-[calc(5px*var(--ui-space-scale,1))] pe-[calc(var(--sidebar-rail,0px)+5px*var(--ui-space-scale,1))]"
+    : "ps-1.5 pe-[calc(var(--sidebar-rail,0px)+6px*var(--ui-space-scale,1))]";
 
   // Inside the scroller the rail already occupies that space. The profile footer also uses this
   // padding deliberately: its width is independent of whether the recent-chat list has a scrollbar.

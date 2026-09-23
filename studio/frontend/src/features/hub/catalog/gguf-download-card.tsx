@@ -1078,7 +1078,7 @@ export function GgufDownloadCard({
             side="bottom"
             sideOffset={8}
             avoidCollisions={false}
-            className="hub-menu-instant menu-soft-surface w-[var(--radix-popover-trigger-width)] min-w-[calc(300px*var(--ui-space-scale,1))] gap-0 overflow-hidden p-0 py-2 ring-0"
+            className="hub-menu-instant menu-soft-surface w-[var(--radix-popover-trigger-width)] min-w-[min(calc(300px*var(--ui-space-scale,1)),calc(100vw-32px))] gap-0 overflow-hidden p-0 py-2 ring-0"
           >
             <div className="max-h-[calc(344px*var(--ui-space-scale,1))] overflow-y-auto [scrollbar-width:thin]">
               {variantMenuItems.map((item) => {
