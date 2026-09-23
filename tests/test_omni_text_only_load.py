@@ -438,3 +438,30 @@ def test_saved_weight_keys_decide_over_the_target_regex():
     assert _adapter_targets_text_core(config, None) is False
     regex = type("Config", (), {"target_modules": r".*\.q_proj"})()
     assert _adapter_targets_text_core(regex, wrapper_keys) is False
+
+
+def test_hub_adapter_keys_come_from_adapter_model_safetensors(monkeypatch):
+    # get_safetensors_metadata only looks for model.safetensors, which an adapter repo lacks.
+    huggingface_hub = pytest.importorskip("huggingface_hub")
+    from unsloth.models.loader import _adapter_weight_keys
+
+    asked = {}
+
+    def fake(self, repo_id, filename, **kwargs):
+        asked.update(repo_id = repo_id, filename = filename, **kwargs)
+        return type("Metadata", (), {"tensors": {"base_model.model.model.layers.0.q_proj.lora_A.weight": None}})()
+
+    monkeypatch.setattr(huggingface_hub.HfApi, "parse_safetensors_file_metadata", fake)
+    keys = _adapter_weight_keys("someone/omni-adapter", token = "t", revision = "r")
+    assert asked == {"repo_id": "someone/omni-adapter", "filename": "adapter_model.safetensors", "revision": "r", "token": "t"}
+    assert keys == ["base_model.model.model.layers.0.q_proj.lora_A.weight"]
+    assert _adapter_weight_keys("someone/omni-adapter", local_files_only = True) is None
+
+
+def test_local_bin_adapter_keys_are_read_without_weights(tmp_path):
+    from unsloth.models.loader import _adapter_weight_keys
+
+    key = "base_model.model.thinker.model.layers.0.q_proj.lora_A.weight"
+    torch.save({key: torch.ones(2, 2)}, tmp_path / "adapter_model.bin")
+    assert _adapter_weight_keys(str(tmp_path)) == [key]
+    assert _adapter_weight_keys(str(tmp_path / "missing")) is None

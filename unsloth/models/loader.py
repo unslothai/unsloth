@@ -267,29 +267,30 @@ _OMNI_AUTO_CLASS_NAMES = (
 )
 
 
-def _adapter_weight_keys(
-    adapter_name,
-    token = None,
-    revision = None,
-    local_files_only = False,
-):
-    """Tensor names of a saved adapter from the safetensors header only, or None."""
+def _adapter_weight_keys(adapter_name, token = None, revision = None, local_files_only = False):
+    """Tensor names of a saved adapter without loading its weights, or None."""
     try:
         local = os.path.expanduser(adapter_name)
         if os.path.isdir(local):
             path = os.path.join(local, "adapter_model.safetensors")
-            if not os.path.exists(path):
-                return None
-            from safetensors import safe_open
+            if os.path.exists(path):
+                from safetensors import safe_open
 
-            with safe_open(path, framework = "pt") as handle:
-                return list(handle.keys())
+                with safe_open(path, framework = "pt") as handle:
+                    return list(handle.keys())
+            path = os.path.join(local, "adapter_model.bin")
+            if os.path.exists(path):
+                return list(torch.load(path, map_location = "meta", weights_only = True).keys())
+            return None
         if local_files_only:
             return None
-        from huggingface_hub import get_safetensors_metadata
+        # get_safetensors_metadata only looks for model.safetensors; PEFT writes adapter_model.safetensors.
+        from huggingface_hub import HfApi
 
-        metadata = get_safetensors_metadata(adapter_name, revision = revision, token = token)
-        return [key for file in metadata.files_metadata.values() for key in file.tensors]
+        metadata = HfApi().parse_safetensors_file_metadata(
+            adapter_name, "adapter_model.safetensors", revision = revision, token = token
+        )
+        return list(metadata.tensors)
     except Exception:
         return None
 
