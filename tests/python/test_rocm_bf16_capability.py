@@ -140,19 +140,42 @@ def _device_type_imports() -> list[str]:
 def _namespace(fake_torch, device_type, workarounds):
     import unsloth.device_type as dt
 
-    namespace = {name: getattr(dt, name) for name in _device_type_imports()}
-    namespace.update(
-        {
-            "torch": fake_torch,
-            "inspect": inspect,
-            "DEVICE_TYPE": device_type,
-            # Recorded, not run: the real one writes Triton and Inductor settings into os.environ.
-            "apply_gfx101x_triton_workaround": lambda *a, **k: workarounds.append((a, k)),
-        }
-    )
+    overrides = {
+        "torch": fake_torch,
+        "inspect": inspect,
+        "DEVICE_TYPE": device_type,
+        # Recorded, not run: the real one writes Triton and Inductor settings into os.environ.
+        "apply_gfx101x_triton_workaround": lambda *a, **k: workarounds.append((a, k)),
+    }
     # hip_visible_archs reads unsloth.device_type's own `torch`, not this fake, so the caller
     # must monkeypatch it.
+    namespace = {
+        name: getattr(dt, name) for name in _device_type_imports() if name not in overrides
+    }
+    namespace.update(overrides)
     return namespace
+
+
+def test_the_conftest_stub_carries_every_name_gpu_init_imports():
+    """tests/conftest.py installs a stub unsloth.device_type when the real one cannot load, and
+    `import unsloth` then imports these names from it. #11615 added two it did not have."""
+    tree = ast.parse((REPO_ROOT / "tests" / "conftest.py").read_text(encoding = "utf-8"))
+    stub = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef) and node.name == "_install_device_type_stub"
+    )
+    provided = {
+        target.attr
+        for node in ast.walk(stub)
+        if isinstance(node, ast.Assign)
+        for target in node.targets
+        if isinstance(target, ast.Attribute)
+        and isinstance(target.value, ast.Name)
+        and target.value.id == "stub"
+    }
+    missing = sorted(set(_device_type_imports()) - provided)
+    assert not missing, f"the device_type stub lacks {missing}, so import unsloth fails under it"
 
 
 def _run_chain(monkeypatch, fake_torch, device_type):
