@@ -491,7 +491,7 @@ test("muted text on a palette surface heads away from that surface", () => {
   // A white custom foreground on a dark page took muted card text from
   // 4.9:1 to 2.1:1 on white cards at 100.
   const panel = CSS.match(
-    /html\[data-contrast-adjust\] :is\(\.bg-card, \.bg-popover, \.bg-sidebar\) \{([^}]*)\}/,
+    /html\[data-contrast-adjust\] :is\(\.bg-card, \.bg-popover, \.bg-sidebar[^)]*\) \{([^}]*)\}/,
   );
   assert.ok(panel, "palette surfaces do not re-derive muted text");
   assert.match(
@@ -500,7 +500,7 @@ test("muted text on a palette surface heads away from that surface", () => {
   );
   // A page-coloured pane inside one is the page again.
   const pane = CSS.match(
-    /html\[data-contrast-adjust\] :is\(\.bg-card, \.bg-popover, \.bg-sidebar\) \.bg-background \{([^}]*)\}/,
+    /html\[data-contrast-adjust\] :is\(\.bg-card, \.bg-popover, \.bg-sidebar[^)]*\) \.bg-background \{([^}]*)\}/,
   );
   assert.ok(pane, "page panes inside palette surfaces keep the panel target");
   assert.match(pane[1] ?? "", /var\(--contrast-target\) var\(--contrast-text-mix\)/);
@@ -528,4 +528,36 @@ test("every near-opaque card spelling takes the panel muted text", () => {
       );
     }
   }
+});
+
+test("surfaces the stylesheet paints take the panel muted text too", () => {
+  // .menu-soft-surface gets bg-popover through @apply, so no class matched it
+  // and model picker and Hub menu labels followed the page instead.
+  const always = CSS.match(
+    /html\[data-contrast-adjust\] :is\(\.bg-card, \.bg-popover, \.bg-sidebar, ([^)]*)\) \{/,
+  );
+  assert.ok(always);
+  for (const surface of [".menu-soft-surface", ".menu-soft-surface-up", ".hub-download-panel"]) {
+    assert.ok(always[1]?.includes(surface), `${surface} is not a panel`);
+    assert.match(
+      CSS + HUB_CSS,
+      new RegExp(`^\\s*${surface.replace(".", "\\.")}[,\\s{][^}]*(bg-popover|var\\(--popover\\))`, "m"),
+      `${surface} no longer paints a popover`,
+    );
+  }
+  // Painted as cards only in dark, so scoped to dark, with their page panes
+  // (the Settings content pane) sent back unless a card in dark as well.
+  const dark = [".settings-surface", ".chat-composer-surface", ".unsloth-composer-surface", ".unsloth-plus-menu", ".dialog-soft-surface"];
+  const reset = CSS.match(
+    /html\[data-contrast-adjust\]\.dark :is\(([^)]*)\) \.bg-background:not\(\[class\*="dark:bg-card"\]\) \{([^}]*)\}/,
+  );
+  assert.ok(reset, "dark card surfaces keep their page panes on the panel target");
+  assert.match(reset[2] ?? "", /var\(--contrast-target\) var\(--contrast-text-mix\)/);
+  const cards = CSS.match(/html\[data-contrast-adjust\]\.dark :is\(\.dark\\:bg-card([^)]*)\) \{/);
+  for (const surface of dark) {
+    assert.ok(reset[1]?.includes(surface), `${surface} page panes are not reset`);
+    assert.ok(cards?.[1]?.includes(surface), `${surface} is not a panel in dark`);
+  }
+  // The card rule comes after both resets, so a pane that is a card in dark wins.
+  assert.ok(CSS.indexOf(cards?.[0] ?? "@") > CSS.indexOf(reset[0]));
 });
