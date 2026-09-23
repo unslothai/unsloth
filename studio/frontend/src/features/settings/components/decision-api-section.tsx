@@ -185,7 +185,44 @@ export function DecisionApiSection(): ReactElement | null {
     }
   };
 
-  if (!settings) return null;
+  const header = (
+    <>
+      <div className="flex items-start gap-3 bg-muted/30 p-4">
+        <div className="flex size-8 shrink-0 items-center justify-center rounded-md border border-border/70 bg-muted/40">
+          <HugeiconsIcon
+            icon={TaskDone01Icon}
+            className="size-4 text-foreground"
+          />
+        </div>
+        <div className="flex min-w-0 flex-col gap-0.5">
+          <h2 className="text-base font-semibold font-heading text-foreground">
+            {t("settings.apiKeys.decisionApi.title")}
+          </h2>
+          <p className="text-xs text-muted-foreground leading-relaxed">
+            {t("settings.apiKeys.decisionApi.description")}
+          </p>
+        </div>
+      </div>
+
+      {error ? (
+        <p className="border-t border-border/60 px-4 py-2.5 text-xs leading-snug text-destructive">
+          {error}
+        </p>
+      ) : null}
+    </>
+  );
+
+  // A failed first load still shows the section, so the owner sees why its controls are missing.
+  if (!settings) {
+    return error ? (
+      <section
+        data-settings-label={t("settings.apiKeys.decisionApi.title")}
+        className="overflow-hidden rounded-lg border border-border/70"
+      >
+        {header}
+      </section>
+    ) : null;
+  }
 
   const current = settings.models.find((m) => m.name === settings.model);
   const knownModel = current !== undefined;
@@ -233,28 +270,7 @@ export function DecisionApiSection(): ReactElement | null {
       data-settings-label={t("settings.apiKeys.decisionApi.title")}
       className="overflow-hidden rounded-lg border border-border/70"
     >
-      <div className="flex items-start gap-3 bg-muted/30 p-4">
-        <div className="flex size-8 shrink-0 items-center justify-center rounded-md border border-border/70 bg-muted/40">
-          <HugeiconsIcon
-            icon={TaskDone01Icon}
-            className="size-4 text-foreground"
-          />
-        </div>
-        <div className="flex min-w-0 flex-col gap-0.5">
-          <h2 className="text-base font-semibold font-heading text-foreground">
-            {t("settings.apiKeys.decisionApi.title")}
-          </h2>
-          <p className="text-xs text-muted-foreground leading-relaxed">
-            {t("settings.apiKeys.decisionApi.description")}
-          </p>
-        </div>
-      </div>
-
-      {error ? (
-        <p className="border-t border-border/60 px-4 py-2.5 text-xs leading-snug text-destructive">
-          {error}
-        </p>
-      ) : null}
+      {header}
 
       <div className="border-t border-border/60 px-4 py-1">
         <SettingsRow

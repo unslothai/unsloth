@@ -106,3 +106,11 @@ test("the client talks to the settings routes and maps the schema", () => {
 test("reports a resident model as loaded only when it is the selected one", () => {
   assert.match(SECTION, /settings\.loadedModel === settings\.model/);
 });
+
+test("a failed first load still renders the section with its error", () => {
+  assert.match(SECTION, /if \(!settings\) \{\s*return error \?/);
+  assert.match(
+    SECTION,
+    /translate\("settings.apiKeys.decisionApi.loadError"\)/,
+  );
+});
