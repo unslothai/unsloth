@@ -250,6 +250,7 @@ def apply_gfx101x_triton_workaround(environ = None, triton_home = None):
     All setdefault: a user who set any of the variables on purpose keeps their value.
     Returns True when the buffer-ops knob was set here, False when it was already set."""
     import os
+
     environ = os.environ if environ is None else environ
     if environ.get("AMDGCN_USE_BUFFER_OPS") is not None:
         return False
@@ -265,6 +266,7 @@ def apply_gfx101x_triton_workaround(environ = None, triton_home = None):
         import getpass
         import re
         import tempfile
+
         user = re.sub(r'[\/:*?"<>|]', "_", getpass.getuser())
         environ["TORCHINDUCTOR_CACHE_DIR"] = os.path.join(
             tempfile.gettempdir(), f"torchinductor_{user}_no_buffer_ops"
