@@ -1092,6 +1092,16 @@ class TestNetworkTargetResolution:
                 f"        return requests.Session()\nAPI().session.get('http://{_H}/')",
                 id = "client_returned_by_a_property",
             ),
+            pytest.param(
+                f"import os, requests\no = os\no.environ['HTTPS_PROXY'] = 'http://{_H}'\n"
+                "requests.get('https://pypi.org/')",
+                id = "proxy_environment_through_an_assigned_os_alias",
+            ),
+            pytest.param(
+                f"import os, requests\ndef configure(o):\n    o.environ['HTTPS_PROXY'] = 'http://{_H}'\n"
+                "configure(os)\nrequests.get('https://pypi.org/')",
+                id = "proxy_environment_through_os_passed_to_a_helper",
+            ),
         ],
     )
     def test_known_untrusted_host_blocked(self, code):

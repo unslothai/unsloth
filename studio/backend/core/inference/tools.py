@@ -17494,6 +17494,8 @@ def _check_signal_escape_patterns(code: str):
                     self._link(target, arg)
                     if self._is_environ(arg):
                         self.environ_names.add(param)  # `configure(os.environ)`
+                    if isinstance(arg, ast.Name) and arg.id in self.os_names:
+                        self.os_names.add(param)  # `configure(os)`
                     if isinstance(arg, ast.Attribute) and arg.attr in _DESTINATION_ATTRS:
                         owner = self._receiver_path(arg.value)
                         if owner is not None:
@@ -18055,6 +18057,10 @@ def _check_signal_escape_patterns(code: str):
         def _apply_proxy(self, target, value, mutated) -> None:
             """`s.proxies = {...}`, `s.proxies["https"] = ...`, `c.base_url = ...`, and the same
             mutation through `p = s.proxies`, configure where the client connects."""
+            if isinstance(target, ast.Subscript) and self._is_environ(target.value):
+                # An environment only known as one once call arguments were bound.
+                self._record_env_proxy(target.slice, value)
+                return
             if isinstance(target, ast.Subscript):
                 if _is_no_proxy(target.slice):
                     return
@@ -18106,6 +18112,12 @@ def _check_signal_escape_patterns(code: str):
                     self.dict_literals.setdefault(target.id, []).append(value)
                 if isinstance(target, ast.Name) and self._is_environ(value):
                     self.environ_names.add(target.id)  # `env = os.environ`
+                if (
+                    isinstance(target, ast.Name)
+                    and isinstance(value, ast.Name)
+                    and value.id in self.os_names
+                ):
+                    self.os_names.add(target.id)  # `o = os`
                 if isinstance(target, ast.Name) and isinstance(value, ast.Lambda):
                     returns = ast.Name(id = _returns_of(target.id), ctx = ast.Store())
                     self._record_flow(returns, value.body, at, node)
