@@ -341,12 +341,22 @@ def _lift_endpoint_hooks_onto_adapters(model):
     return lifted
 
 
+_MODALITY_SUB_CONFIGS = ("vision_config", "audio_config", "speech_config", "sound_config")
+
+
 def _align_root_hook_with_input_embeddings(model):
     """Point the root dispatch hook at the input embedding's device.
 
     accelerate uses the first device in the map, which may not hold the embedding; then only
     input_ids follow it and remote code that builds its mask there hits a device mismatch.
+    Remote-code text models only: native code moves the mask itself, and the root hook moves
+    every input, so a vision or audio tower would get its tensors on the text card.
     Returns the new root device, or None when untouched."""
+    if "transformers_modules" not in (getattr(type(model), "__module__", "") or ""):
+        return None
+    config = getattr(model, "config", None)
+    if any(getattr(config, name, None) is not None for name in _MODALITY_SUB_CONFIGS):
+        return None
     device_map = getattr(model, "hf_device_map", None)
     if not device_map or len(set(device_map.values())) < 2:
         return None

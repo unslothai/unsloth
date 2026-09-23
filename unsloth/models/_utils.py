@@ -5097,13 +5097,33 @@ def get_moe_expert_submodule_leaves(model, target_modules = None) -> List[str]:
     return sorted(leaves)
 
 
-def moe_expert_submodule_regex(leaves) -> str:
-    """The regex alternative that reaches ``experts.<i>.<leaf>`` and ``shared_experts.<leaf>``."""
+def moe_expert_submodule_regex(leaves, prefixes = None) -> str:
+    """The regex alternative that reaches ``experts.<i>.<leaf>`` and ``shared_experts.<leaf>``,
+    under any parent, or only under the parent patterns in ``prefixes``."""
+    parent = r".*" if not prefixes else "(?:" + "|".join(sorted(prefixes)) + ")"
     return (
-        r".*\.(?:experts\.\d+|shared_experts?)\.(?:"
+        parent
+        + r"\.(?:experts\.\d+|shared_experts?)\.(?:"
         + "|".join(re.escape(leaf) for leaf in leaves)
         + r")"
     )
+
+
+def _remote_expert_parents(model):
+    """Parent path patterns (layer indices as ``\\d+``) of expert blocks whose class comes from
+    the checkpoint's own code, e.g. ``model\\.layers\\.\\d+\\.mixer``."""
+    parents = set()
+    for name, module in model.named_modules():
+        matched = _EXPERT_BLOCK_PATTERN.search(name)
+        if matched is None:
+            continue
+        if "transformers_modules" not in (getattr(type(module), "__module__", "") or ""):
+            continue
+        parent = name[: matched.start()]
+        parents.add(
+            r"\.".join(r"\d+" if part.isdigit() else re.escape(part) for part in parent.split("."))
+        )
+    return parents
 
 
 def widen_target_regex_to_expert_submodules(
@@ -5114,14 +5134,12 @@ def widen_target_regex_to_expert_submodules(
     ``(target_modules, detect_targets, leaves)``; ``leaves`` is empty when nothing changed."""
     if not auto_regex or not isinstance(target_modules, str):
         return target_modules, detect_targets, []
-    # Remote code only (Nemotron-Labs-Teacher). Native per-expert layouts (Qwen3-MoE and
-    # friends on transformers 4.x) keep their targets: widening them would add LoRA to every
-    # routed expert, hundreds of millions of parameters nobody asked for.
-    if not any(
-        _EXPERT_BLOCK_PATTERN.search(name)
-        and "transformers_modules" in (getattr(type(module), "__module__", "") or "")
-        for name, module in model.named_modules()
-    ):
+    # Remote-code expert blocks only (Nemotron-Labs-Teacher), and only under their own parents.
+    # Native per-expert layouts (Qwen3-MoE and friends on transformers 4.x, or a native tower
+    # next to remote code) keep their targets: widening them would add LoRA to every routed
+    # expert, hundreds of millions of parameters nobody asked for.
+    parents = _remote_expert_parents(model)
+    if not parents:
         return target_modules, detect_targets, []
     leaves = get_moe_expert_submodule_leaves(model, detect_targets)
     if not leaves:
@@ -5133,7 +5151,7 @@ def widen_target_regex_to_expert_submodules(
     ):
         return target_modules, detect_targets, []
     detect_was_the_regex = detect_targets is target_modules
-    target_modules = f"(?:{target_modules})|(?:{moe_expert_submodule_regex(leaves)})"
+    target_modules = f"(?:{target_modules})|(?:{moe_expert_submodule_regex(leaves, parents)})"
     if detect_was_the_regex:
         detect_targets = target_modules
     return target_modules, detect_targets, leaves

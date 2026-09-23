@@ -13,12 +13,27 @@ def _helper():
     return _align_root_hook_with_input_embeddings
 
 
-def _model(device_map, root_device, embedding_device):
+class _RemoteModel(SimpleNamespace):
+    pass
+
+
+# The Teacher's model class comes from the checkpoint's own modeling file.
+_RemoteModel.__module__ = "transformers_modules.teacher.modeling_nemotron_h"
+
+
+def _model(
+    device_map,
+    root_device,
+    embedding_device,
+    cls = _RemoteModel,
+    config = None,
+):
     embedding = SimpleNamespace(weight = SimpleNamespace(device = embedding_device))
-    return SimpleNamespace(
+    return cls(
         hf_device_map = device_map,
         _hf_hook = SimpleNamespace(execution_device = root_device),
         get_input_embeddings = lambda: embedding,
+        config = config or SimpleNamespace(),
     )
 
 
@@ -70,3 +85,18 @@ def test_model_without_embedding_accessor_is_untouched():
 
     model.get_input_embeddings = broken
     assert align(model) is None
+
+
+def test_native_and_multimodal_models_are_untouched():
+    """Native code moves the mask itself; the root hook moves every input, so a vision or
+    audio tower would get its tensors on the text card."""
+    align = _helper()
+    split = {"model.layers.1": 2, "model.embeddings": 1, "lm_head": 2, "model.layers.0": 0}
+    native = _model(split, 0, torch.device("cuda", 1), cls = SimpleNamespace)
+    assert align(native) is None
+    assert native._hf_hook.execution_device == 0
+    for name in ("vision_config", "audio_config"):
+        config = SimpleNamespace(**{name: SimpleNamespace()})
+        multimodal = _model(split, 0, torch.device("cuda", 1), config = config)
+        assert align(multimodal) is None
+        assert multimodal._hf_hook.execution_device == 0

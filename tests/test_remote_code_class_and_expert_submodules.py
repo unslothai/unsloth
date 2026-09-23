@@ -499,3 +499,31 @@ def test_native_per_expert_layouts_are_not_widened():
         model, generated, generated, auto_regex = True
     )
     assert kept == generated and detect == generated and leaves == []
+
+
+def test_a_native_expert_tower_next_to_remote_code_is_not_widened():
+    """Only the remote expert blocks' own parents gain the nested alternative."""
+    U = _utils()
+
+    class _NativeExpert(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.up_proj = torch.nn.Linear(8, 16, bias = False)
+            self.down_proj = torch.nn.Linear(16, 8, bias = False)
+
+    class _NativeTower(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.experts = torch.nn.ModuleList([_NativeExpert() for _ in range(4)])
+
+    _NativeExpert.__module__ = "transformers.models.some_vlm.modeling_some_vlm"
+    model = _Model()
+    model.visual = torch.nn.ModuleList([_NativeTower(), _NativeTower()])
+    generated = _text_only_regex()
+    widened, _, leaves = U.widen_target_regex_to_expert_submodules(
+        model, generated, generated, auto_regex = True
+    )
+    assert leaves == ["down_proj", "up_proj"]
+    matched = {n for n, _ in model.named_modules() if re.fullmatch(widened, n)}
+    assert any(n.startswith("model.layers.") and ".experts." in n for n in matched)
+    assert not any(n.startswith("visual.") for n in matched)
