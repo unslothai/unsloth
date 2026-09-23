@@ -33,11 +33,14 @@ ct_quant = pytest.importorskip("compressed_tensors.quantization")
 def _zoo_with_float_only_cast(monkeypatch):
     # Routing waits for an unsloth_zoo whose compiled LoRA forward never casts inputs to FP8.
     from unsloth.models import loader_utils
-
     monkeypatch.setattr(loader_utils, "_zoo_peft_forward_keeps_fp8_inputs", lambda: True)
 
 
-def _quantize(W, strategy, block = None):
+def _quantize(
+    W,
+    strategy,
+    block = None,
+):
     o, i = W.shape
     if strategy == "tensor":
         s = W.abs().amax().view(1) / 448
@@ -56,7 +59,14 @@ def _quantize(W, strategy, block = None):
     return Wq, s.to(torch.bfloat16), Wq.float() * full.to(torch.bfloat16).float()
 
 
-def _ct_model(o, i, strategy, bias = False, block = None, weight_type = "float"):
+def _ct_model(
+    o,
+    i,
+    strategy,
+    bias = False,
+    block = None,
+    weight_type = "float",
+):
     torch.manual_seed(0)
     lin = torch.nn.Linear(i, o, bias = bias, device = "cuda", dtype = torch.bfloat16)
     Wq, s, ref = _quantize(torch.randn(o, i, device = "cuda") * 0.02, strategy, block)
@@ -127,13 +137,17 @@ def test_non_fp8_or_unsupported_modules_are_left_alone(monkeypatch):
     model, _ = _ct_model(256, 256, "channel", weight_type = "int")
     assert _route_compressed_tensors_fp8_to_unsloth(model) == 0
     model, _ = _ct_model(256, 256, "channel")
-    model.lin.quantization_scheme.output_activations = model.lin.quantization_scheme.input_activations
+    model.lin.quantization_scheme.output_activations = (
+        model.lin.quantization_scheme.input_activations
+    )
     assert _route_compressed_tensors_fp8_to_unsloth(model) == 0
     model, _ = _ct_model(256, 256, "channel")
     model.lin.weight = torch.nn.Parameter(model.lin.weight.to(torch.bfloat16), requires_grad = False)
     assert _route_compressed_tensors_fp8_to_unsloth(model) == 0
     model, _ = _ct_model(256, 256, "channel")
-    model.lin.weight_scale = torch.nn.Parameter(torch.ones(3, 1, device = "cuda"), requires_grad = False)
+    model.lin.weight_scale = torch.nn.Parameter(
+        torch.ones(3, 1, device = "cuda"), requires_grad = False
+    )
     assert _route_compressed_tensors_fp8_to_unsloth(model) == 0
     model, _ = _ct_model(256, 256, "channel")
     monkeypatch.setenv("UNSLOTH_COMPRESSED_TENSORS_FP8_KERNELS", "0")

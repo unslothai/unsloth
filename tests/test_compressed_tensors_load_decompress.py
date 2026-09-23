@@ -39,7 +39,9 @@ class _Compressor:
         if self.fail_first and len(self.calls) == 1:
             raise RuntimeError("CUDA out of memory")
         lin = model.lin
-        lin.weight = torch.nn.Parameter(torch.ones_like(lin.weight, dtype = torch.float32), requires_grad = False)
+        lin.weight = torch.nn.Parameter(
+            torch.ones_like(lin.weight, dtype = torch.float32), requires_grad = False
+        )
         lin.quantization_status = None
         if hasattr(model, "ct_decompress_hook"):
             model.ct_decompress_hook.remove()
@@ -53,7 +55,9 @@ def _model(compressor):
     model.config = types.SimpleNamespace(quantization_config = {"quant_method": "compressed-tensors"})
     model.hf_quantizer = types.SimpleNamespace(compressor = compressor)
     model.forward = lambda x: model.lin(x)
-    model.ct_decompress_hook = model.register_forward_pre_hook(lambda m, a: compressor.decompress_model(m))
+    model.ct_decompress_hook = model.register_forward_pre_hook(
+        lambda m, a: compressor.decompress_model(m)
+    )
     return model
 
 

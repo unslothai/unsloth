@@ -113,7 +113,9 @@ def weight_dequant_block(
 
 
 def _is_transposed_view(x):
-    return x.dim() == 2 and x.shape[0] > 1 and x.shape[1] > 1 and x.stride(0) == 1 and x.stride(1) != 1
+    return (
+        x.dim() == 2 and x.shape[0] > 1 and x.shape[1] > 1 and x.stride(0) == 1 and x.stride(1) != 1
+    )
 
 
 def _has_fbgemm_rowwise():
@@ -151,7 +153,9 @@ def weight_dequant(
     else:
         # Block quantized weight: scale shape is (ceil(m/block_m), ceil(n/block_n)). Go through the
         # any-shape helper so fast_dequantize's callers get the pre-sm89 fallback too.
-        return _blockwise_weight_dequant_any_shape(x, s, getattr(s, "block_size", None) or [128, 128], dtype)
+        return _blockwise_weight_dequant_any_shape(
+            x, s, getattr(s, "block_size", None) or [128, 128], dtype
+        )
 
 
 # Copied from huggingface.co/deepseek-ai/DeepSeek-V3 inference/kernel.py

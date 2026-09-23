@@ -1298,7 +1298,11 @@ def _compressed_tensors_fp8_block_size(module, weights):
         return None
     strategy = getattr(weights, "strategy", None)
     strategy = str(getattr(strategy, "value", strategy))
-    if strategy not in _CT_FP8_STRATEGIES or getattr(weights, "dynamic", False) or getattr(weights, "actorder", None):
+    if (
+        strategy not in _CT_FP8_STRATEGIES
+        or getattr(weights, "dynamic", False)
+        or getattr(weights, "actorder", None)
+    ):
         return None
     weight = getattr(module, "weight", None)
     scale = getattr(module, "weight_scale", None)
@@ -1311,7 +1315,9 @@ def _compressed_tensors_fp8_block_size(module, weights):
     if strategy == "tensor":
         return [128, 128] if scale.numel() == 1 else None
     if strategy == "channel":
-        return [1, in_features] if tuple(scale.shape) in ((out_features, 1), (out_features,)) else None
+        return (
+            [1, in_features] if tuple(scale.shape) in ((out_features, 1), (out_features,)) else None
+        )
     block = list(getattr(weights, "block_structure", None) or ())
     if len(block) != 2 or scale.dim() != 2:
         return None
@@ -1337,7 +1343,6 @@ def _zoo_peft_forward_keeps_fp8_inputs():
     try:
         import inspect
         from unsloth_zoo import compiler
-
         source = inspect.getsource(compiler.patch_lora_forwards)
     except Exception:
         return False
@@ -1370,7 +1375,10 @@ def _route_compressed_tensors_fp8_to_unsloth(model):
         if scheme is None or getattr(scheme, "weights", None) is None:
             continue
         block = None
-        if isinstance(module, torch.nn.Linear) and getattr(scheme, "output_activations", None) is None:
+        if (
+            isinstance(module, torch.nn.Linear)
+            and getattr(scheme, "output_activations", None) is None
+        ):
             block = _compressed_tensors_fp8_block_size(module, scheme.weights)
         if block is None:
             return 0
