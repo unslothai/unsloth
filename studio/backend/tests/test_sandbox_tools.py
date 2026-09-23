@@ -1116,6 +1116,16 @@ class TestNetworkTargetResolution:
                 f"build = Factory().make\nbuild().get('http://{_H}/')",
                 id = "renamed_bound_factory_method",
             ),
+            pytest.param(
+                "import urllib3\np = urllib3.proxy_from_url('http://pypi.org:8080')\n"
+                f"p.request('GET', 'http://{_H}/')",
+                id = "request_through_a_proxy_manager_factory",
+            ),
+            pytest.param(
+                "from urllib3.contrib.socks import SOCKSProxyManager\n"
+                f"SOCKSProxyManager('socks5://pypi.org:1080').request('GET', 'http://{_H}/')",
+                id = "request_through_a_socks_proxy_manager",
+            ),
         ],
     )
     def test_known_untrusted_host_blocked(self, code):

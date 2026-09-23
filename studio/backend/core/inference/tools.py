@@ -16297,6 +16297,10 @@ def _check_signal_escape_patterns(code: str):
         "urllib3.ProxyManager",
         "urllib3.poolmanager.PoolManager",
         "urllib3.poolmanager.ProxyManager",
+        # Proxy managers built by a factory or for SOCKS relay every request the same way.
+        "urllib3.proxy_from_url",
+        "urllib3.poolmanager.proxy_from_url",
+        "urllib3.contrib.socks.SOCKSProxyManager",
     )
     _SOCKET_CLIENTS = ("socket.socket", "paramiko.SSHClient", "paramiko.client.SSHClient")
     # `build_opener()` returns an `OpenerDirector`, whose `open(fullurl)` sends.
