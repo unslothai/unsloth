@@ -395,7 +395,7 @@ export function DebuggingTab() {
   const revealLogsFolder = useCallback(async () => {
     setRevealing(true);
     try {
-      await openLogsFolder(logRoot);
+      await openLogsFolder(logRoot, realpath);
     } catch (error) {
       toast.error(t("settings.debugging.openLogsFolderFailed"), {
         description: (error as Error).message,
@@ -403,7 +403,7 @@ export function DebuggingTab() {
     } finally {
       setRevealing(false);
     }
-  }, [t, logRoot]);
+  }, [t, logRoot, realpath]);
 
   const downloadAllLogs = useCallback(async () => {
     setExporting(true);

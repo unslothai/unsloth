@@ -289,6 +289,20 @@ test("openLogsFolder falls back to open_logs_dir when no logs root is reported",
   ]);
 });
 
+test("openLogsFolder preserves the selected path with an older backend", async () => {
+  const unix = makeWorld({ isTauri: true });
+  await unix.api.openLogsFolder(null, "/srv/studio-home/logs/server/current.log");
+  assert.deepEqual(unix.invokes, [
+    { command: "open_models_dir", args: { path: "/srv/studio-home/logs/server" } },
+  ]);
+
+  const windows = makeWorld({ isTauri: true });
+  await windows.api.openLogsFolder(null, "C:\\studio-home\\logs\\server\\current.log");
+  assert.deepEqual(windows.invokes, [
+    { command: "open_models_dir", args: { path: "C:\\studio-home\\logs\\server" } },
+  ]);
+});
+
 test("an export that works does not touch the session", async () => {
   // refreshSession clears both stored tokens on ANY non-2xx, so refreshing
   // before every export would let a transient 500 on /api/auth/refresh sign the
@@ -360,7 +374,7 @@ test("openLogsFolder opens the reported logs root", async () => {
   // the backend resolves a custom studio home, which open_logs_dir cannot
   const world = makeWorld({ isTauri: true });
 
-  await world.api.openLogsFolder("/srv/studio-home/logs");
+  await world.api.openLogsFolder("/srv/studio-home/logs", "/other/logs/server/current.log");
   assert.deepEqual(world.invokes, [
     { command: "open_models_dir", args: { path: "/srv/studio-home/logs" } },
   ]);

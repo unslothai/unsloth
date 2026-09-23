@@ -254,20 +254,24 @@ export async function exportAllLogs(): Promise<string | null> {
 }
 
 /**
- * Reveal the logs directory itself, never the subfolder the selected log sits
- * in. Desktop only: in a browser the folder is on the server, not the user's
- * machine, and the button is not rendered.
+ * Reveal the logs directory itself. On an older backend without `log_root`,
+ * fall back to the selected log's directory. Desktop only: in a browser the
+ * folder is on the server, not the user's machine, and the button is not rendered.
  *
  * `logRoot` comes from the backend, which resolves UNSLOTH_STUDIO_HOME and
  * STUDIO_HOME. `open_logs_dir` cannot: it hard-codes ~/.unsloth/studio/logs, so
  * on a custom home it opens an unrelated directory or errors on a missing one.
- * It stays as the fallback for when the sources list has not loaded.
+ * It stays as the fallback for when neither path has loaded.
  */
-export async function openLogsFolder(logRoot?: string | null): Promise<void> {
+export async function openLogsFolder(
+  logRoot?: string | null,
+  selectedRealpath?: string | null,
+): Promise<void> {
   if (!isTauri) return;
   const { invoke } = await import("@tauri-apps/api/core");
-  if (logRoot) {
-    await invoke("open_models_dir", { path: logRoot });
+  const directory = logRoot || (selectedRealpath && parentDirectory(selectedRealpath));
+  if (directory) {
+    await invoke("open_models_dir", { path: directory });
     return;
   }
   await invoke("open_logs_dir");

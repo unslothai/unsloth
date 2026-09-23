@@ -85,3 +85,48 @@ test("an interaction on a toast does not dismiss the dialog under it", () => {
   assert.equal(elsewhere.defaultPrevented, false, "a real outside click must still dismiss");
   assert.deepEqual(seen, [onToast, elsewhere], "the caller's handler was dropped");
 });
+
+test("an interaction on a toast does not dismiss the sheet under it", () => {
+  const { SheetContent } = loadWithStubs<{
+    SheetContent: (props: {
+      onInteractOutside: (event: OutsideEvent) => void;
+      showCloseButton: boolean;
+    }) => StubElement;
+  }>(new URL("../src/components/ui/sheet.tsx", import.meta.url), {
+    "react/jsx-runtime": stubJsxRuntime(),
+    react: { useState: () => [null, () => {}] },
+    "radix-ui": {
+      Dialog: new Proxy({}, { get: (_, part) => `Dialog.${String(part)}` }),
+    },
+    "@/components/app-readiness": { AppPortalGate: "AppPortalGate" },
+    "@/components/ui/button": { Button: "Button" },
+    "@/components/ui/dialog": {
+      DialogPortalContainerContext: { Provider: "Provider" },
+    },
+    "@/lib/utils": { cn: (...classes: unknown[]) => classes.join(" ") },
+    "@hugeicons/core-free-icons": { Cancel01Icon: {} },
+    "@hugeicons/react": { HugeiconsIcon: "HugeiconsIcon" },
+  });
+
+  const seen: OutsideEvent[] = [];
+  const content = findByType(
+    SheetContent({
+      onInteractOutside: (event) => seen.push(event),
+      showCloseButton: false,
+    }),
+    "Dialog.Content",
+  );
+  assert.ok(content);
+  const onInteractOutside = content.props.onInteractOutside as (
+    event: OutsideEvent,
+  ) => void;
+
+  const onToast = outsideEvent(true);
+  const elsewhere = outsideEvent(false);
+  onInteractOutside(onToast);
+  onInteractOutside(elsewhere);
+
+  assert.equal(onToast.defaultPrevented, true, "a toast click closed the sheet");
+  assert.equal(elsewhere.defaultPrevented, false, "a real outside click must still dismiss");
+  assert.deepEqual(seen, [onToast, elsewhere], "the caller's handler was dropped");
+});
