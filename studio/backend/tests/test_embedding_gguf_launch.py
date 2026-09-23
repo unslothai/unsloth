@@ -244,6 +244,51 @@ class TestLoadModelEmitsTheFlag:
             assert f'"{name}"' in src
 
 
+class TestEmbeddingBatchSizedToContext:
+    """MEAN/CLS pooling cannot split a sequence across micro-batches, so llama-server
+    500s on any input past --ubatch-size (512 by default) unless it covers the context."""
+
+    def test_unset_pair_is_raised_to_the_context(self):
+        assert llama_cpp_module._embedding_batch_ubatch(2048, None, None, None, env = {}) == (
+            2048,
+            2048,
+        )
+
+    @pytest.mark.parametrize(
+        "n_batch, n_ubatch, extra_args, env",
+        [
+            (1024, None, None, {}),
+            (None, 256, None, {}),
+            (None, None, ["-ub", "1024"], {}),
+            (None, None, ["--batch-size=4096"], {}),
+            (None, None, None, {"LLAMA_ARG_UBATCH": "768"}),
+        ],
+    )
+    def test_user_batch_sizes_are_kept(self, n_batch, n_ubatch, extra_args, env):
+        assert llama_cpp_module._embedding_batch_ubatch(
+            8192, n_batch, n_ubatch, extra_args, env = env
+        ) == (n_batch, n_ubatch)
+
+    @pytest.mark.parametrize("n_ctx", [0, 256, 512])
+    def test_context_within_the_default_micro_batch_is_left_alone(self, n_ctx):
+        assert llama_cpp_module._embedding_batch_ubatch(n_ctx, None, None, None, env = {}) == (
+            None,
+            None,
+        )
+
+    def test_load_model_applies_it_before_the_fit_for_non_last_pooling(self):
+        src = inspect.getsource(llama_cpp_module.LlamaCppBackend.load_model)
+        call = src.find("n_batch, n_ubatch = _embedding_batch_ubatch(")
+        assert call != -1, "load_model must size the embedding batch pair to the context"
+        assert (
+            src.find("if self.is_embedding_gguf and self._pooling_type != 3:", call - 200, call)
+            != -1
+        ), "only non-LAST embedding pooling needs the single micro-batch"
+        assert call < src.find("_effective_ubatch = _ubatch_for_slots(n_parallel)"), (
+            "the raise must land before the fit prices the compute buffer"
+        )
+
+
 @pytest.mark.parametrize("flag", ["--embedding", "--embeddings", "--pooling"])
 def test_user_extra_args_still_cannot_pass_the_flag(flag):
     # The denylist keeps a user-supplied --embedding off the chat server; the
