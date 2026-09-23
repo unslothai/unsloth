@@ -28,6 +28,7 @@ import torch.nn as nn
 import unsloth  # noqa: F401
 from unsloth.models.modelopt_fp8 import (
     MODELOPT_FP8_KEY_MAPPING,
+    _transformers_accepts_fp8_plan,
     UNSLOTH_MODELOPT_KEY_MAPPING_ATTR,
     arm_modelopt_fp8_loading,
     modelopt_fp8_plan,
@@ -53,6 +54,15 @@ def _sarvam_quant(**overrides):
     }
     quant.update(overrides)
     return quant
+
+
+# transformers 4.x only has dynamic block fp8, so the rewrite is skipped there.
+needs_per_tensor_fp8 = pytest.mark.skipif(
+    not _transformers_accepts_fp8_plan(
+        modelopt_fp8_plan(SimpleNamespace(quantization_config = _sarvam_quant()))
+    ),
+    reason = "this transformers has no per-tensor fp8, so ModelOpt configs are left as is",
+)
 
 
 def test_plan_maps_sarvam_block_to_static_per_tensor_fp8():
@@ -109,11 +119,33 @@ def test_plan_declines_everything_else():
                 }
             }
         ),
+        "static channel activations": _sarvam_quant(
+            config_groups = {
+                "g": {
+                    "weights": {"num_bits": 8, "type": "float"},
+                    "input_activations": {
+                        "num_bits": 8,
+                        "type": "float",
+                        "dynamic": False,
+                        "strategy": "channel",
+                    },
+                }
+            }
+        ),
+        "int8 activations": _sarvam_quant(
+            config_groups = {
+                "g": {
+                    "weights": {"num_bits": 8, "type": "float"},
+                    "input_activations": {"num_bits": 8, "type": "int", "dynamic": False},
+                }
+            }
+        ),
     }
     for name, quant in cases.items():
         assert modelopt_fp8_plan(SimpleNamespace(quantization_config = quant)) is None, name
 
 
+@needs_per_tensor_fp8
 def test_arm_rewrites_config_and_hands_mapping_to_kwargs():
     config = SimpleNamespace(quantization_config = _sarvam_quant())
     plan = arm_modelopt_fp8_loading(config, verbose = False)
@@ -132,6 +164,15 @@ def test_arm_rewrites_config_and_hands_mapping_to_kwargs():
     before = dict(kwargs)
     pop_modelopt_key_mapping(config, kwargs)
     assert kwargs == before
+
+
+def test_transformers_without_per_tensor_fp8_keep_the_config():
+    if _transformers_accepts_fp8_plan({"quant_method": "fp8", "weight_block_size": None}):
+        pytest.skip("this transformers loads per-tensor fp8")
+    config = SimpleNamespace(quantization_config = _sarvam_quant())
+    assert arm_modelopt_fp8_loading(config, verbose = False) is None
+    assert config.quantization_config == _sarvam_quant()
+    assert not hasattr(config, UNSLOTH_MODELOPT_KEY_MAPPING_ATTR)
 
 
 def test_key_mapping_is_anchored():
@@ -156,6 +197,7 @@ def test_key_mapping_is_anchored():
     ]
 
 
+@needs_per_tensor_fp8
 def test_check_and_disable_rewrites_only_when_asked():
     config = SimpleNamespace(quantization_config = _sarvam_quant())
     load_in_4bit, load_in_8bit, method = check_and_disable_bitsandbytes_loading(
@@ -216,6 +258,7 @@ def _tiny_remote_moe():
     return model
 
 
+@needs_per_tensor_fp8
 def test_modulelist_experts_become_fp8_linears():
     quantizer = _fp8_quantizer()
     from transformers.integrations.finegrained_fp8 import FP8Linear
@@ -242,6 +285,7 @@ def test_modulelist_experts_become_fp8_linears():
     assert list(model.model.layers[0].mlp._modules) == ["gate", "experts"]
 
 
+@needs_per_tensor_fp8
 def test_wrapper_hides_only_modulelist_experts():
     from unsloth.import_fixes import _wrap_fp8_replace_for_modulelist_experts
 
@@ -328,6 +372,7 @@ def _write_tiny_modelopt_llama(path):
     return reference
 
 
+@needs_per_tensor_fp8
 @pytest.mark.skipif(not torch.cuda.is_available(), reason = "fp8 kernels need CUDA")
 @pytest.mark.parametrize("dequantize", [False, True])
 def test_tiny_modelopt_llama_round_trip(tmp_path, dequantize):

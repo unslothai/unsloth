@@ -84,6 +84,18 @@ def _group_is_fp8(group) -> bool:
     return True
 
 
+def _activations_map_onto_fp8(inputs) -> bool:
+    """transformers' static fp8 keeps one scalar activation scale per Linear, so static input
+    scales must be per-tensor fp8; dynamic ones are computed on the fly."""
+    if not isinstance(inputs, dict):
+        return False
+    if str(inputs.get("type", "")).lower() != "float" or int(inputs.get("num_bits", 0) or 0) != 8:
+        return False
+    if inputs.get("dynamic", False):
+        return True
+    return inputs.get("strategy", "tensor") in (None, "tensor")
+
+
 def modelopt_fp8_plan(config) -> Optional[dict]:
     """Return the transformers fp8 quantization dict equivalent to ``config``'s ModelOpt FP8
     block, or ``None`` when ``config`` is not a ModelOpt per-tensor FP8 checkpoint."""
@@ -116,6 +128,8 @@ def modelopt_fp8_plan(config) -> Optional[dict]:
         elif any(x is None for x in inputs):
             # Mixed weight-only and W8A8 groups do not map onto one activation scheme.
             return None
+        elif not all(_activations_map_onto_fp8(x) for x in inputs):
+            return None
         elif any(x.get("dynamic", False) for x in inputs):
             activation_scheme = "dynamic"
     ignore = quant.get("ignore")
@@ -136,12 +150,22 @@ def modelopt_fp8_plan(config) -> Optional[dict]:
     return plan
 
 
+def _transformers_accepts_fp8_plan(plan) -> bool:
+    """Older transformers (4.x) only know dynamic block fp8 and reject a per-tensor plan."""
+    try:
+        from transformers.utils.quantization_config import FineGrainedFP8Config
+        FineGrainedFP8Config(**{k: v for k, v in plan.items() if k != "quant_method"})
+    except Exception:
+        return False
+    return True
+
+
 def arm_modelopt_fp8_loading(config, verbose: bool = True) -> Optional[dict]:
     """Rewrite ``config.quantization_config`` from ModelOpt FP8 to the transformers fp8 form
     and park the scale renaming on the config for the loader. Returns the new quantization
     dict, or ``None`` (config untouched) when the checkpoint is not ModelOpt FP8."""
     plan = modelopt_fp8_plan(config)
-    if plan is None:
+    if plan is None or not _transformers_accepts_fp8_plan(plan):
         return None
     try:
         config.quantization_config = dict(plan)
