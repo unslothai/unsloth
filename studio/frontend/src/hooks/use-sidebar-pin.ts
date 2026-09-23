@@ -4,13 +4,14 @@
 import { useCallback, useSyncExternalStore } from "react";
 
 const PINNED_KEY = "sidebar_pinned";
+const WIDE_QUERY = "(min-width: 1024px)";
 
 function loadPinned(): boolean {
   if (typeof window === "undefined") return true;
   try {
     const raw = window.localStorage.getItem(PINNED_KEY);
     // Default to unpinned below lg.
-    if (raw === null) return window.innerWidth >= 1024;
+    if (raw === null) return window.matchMedia(WIDE_QUERY).matches;
     return raw === "true";
   } catch {
     return true;
@@ -31,10 +32,18 @@ function subscribe(cb: () => void) {
       cb();
     }
   };
+  // Re-derive the width default across lg. A stored choice still wins.
+  const wide = window.matchMedia(WIDE_QUERY);
+  const onWidth = () => {
+    pinnedValue = loadPinned();
+    cb();
+  };
   window.addEventListener("storage", onStorage);
+  wide.addEventListener("change", onWidth);
   return () => {
     listeners.delete(cb);
     window.removeEventListener("storage", onStorage);
+    wide.removeEventListener("change", onWidth);
   };
 }
 
