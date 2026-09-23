@@ -3518,7 +3518,7 @@ function VideoGenerator({
         {/* Widened by the pl-8 so the controls keep their old width. */}
         <div
           data-tour="video-settings"
-          className="flex w-full shrink-0 flex-col border-b border-border/60 pl-8 md:w-[calc(400px*var(--ui-space-scale,1))] md:overflow-hidden md:border-r md:border-b-0"
+          className="flex w-full shrink-0 flex-col border-b border-border/60 pl-8 md:w-[min(calc(400px*var(--ui-space-scale,1)),calc(100%-13rem))] md:overflow-hidden md:border-r md:border-b-0"
         >
           {/* pl-0.5 keeps focus rings off the scroll container's edge. */}
           <div

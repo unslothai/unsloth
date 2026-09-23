@@ -394,3 +394,54 @@ test("a sidebar row's inset scales on both sides", () => {
     SIDEBAR.includes('"ps-1.5 pe-[calc(var(--sidebar-rail,0px)+6px*var(--ui-space-scale,1))]"'),
   );
 });
+
+test("a scaled media rail leaves the preview its minimum", () => {
+  // At 200% a shrink-0 rail passed the 50rem split it sits in, clipping the
+  // preview. The header column shrinks the same way, so the dividers line up.
+  for (const [file, width, split] of [
+    ["features/images/images-page.tsx", "408px", "@[50rem]"],
+    ["features/audio/audio-page.tsx", "408px", "@[50rem]"],
+    ["features/video/video-page.tsx", "400px", "md"],
+  ] as const) {
+    const source = readSrc(file);
+    assert.ok(
+      source.includes(
+        `${split}:w-[min(calc(${width}*var(--ui-space-scale,1)),calc(100%-13rem))]`,
+      ),
+      `${file} rail can outgrow its split`,
+    );
+    if (split !== "md") {
+      assert.ok(
+        source.includes(
+          `grid-cols-[minmax(0,calc(${width}*var(--ui-space-scale,1)))_minmax(13rem,1fr)]`,
+        ),
+        `${file} header column drifts from its rail`,
+      );
+    }
+  }
+});
+
+test("the settings rail never takes more than half the dialog", () => {
+  assert.ok(
+    readSrc("features/settings/settings-dialog.tsx").includes(
+      "w-[min(calc(248px*var(--ui-space-scale,1)),50%)] shrink-0",
+    ),
+  );
+});
+
+test("a menu's height cap keeps Radix's available height", () => {
+  // A call-site max-h replaces the component's collision cap through cn.
+  const menu =
+    /<(DropdownMenuContent|DropdownMenuSubContent|SelectContent|ContextMenuContent|ContextMenuSubContent)\b([^>]*)>/g;
+  for (const file of SOURCES) {
+    for (const [, tag, props] of readSrc(file).matchAll(menu)) {
+      for (const [cap] of (props ?? "").matchAll(/max-h-\S+/g)) {
+        assert.match(
+          cap,
+          /var\(--radix-[a-z-]+-content-available-height\)/,
+          `${file} <${tag}> ${cap} can run offscreen`,
+        );
+      }
+    }
+  }
+});

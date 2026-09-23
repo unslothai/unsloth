@@ -63,7 +63,7 @@ export function TrainBaseSelector({
           </span>
         </button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="start" className="max-h-[calc(420px*var(--ui-space-scale,1))] w-[calc(340px*var(--ui-space-scale,1))] overflow-y-auto">
+      <DropdownMenuContent align="start" className="max-h-[min(calc(420px*var(--ui-space-scale,1)),var(--radix-dropdown-menu-content-available-height))] w-[calc(340px*var(--ui-space-scale,1))] overflow-y-auto">
         {families.map((f) => (
           <DropdownMenuGroup key={f.name}>
             <DropdownMenuLabel className="text-ui-11 text-muted-foreground">
