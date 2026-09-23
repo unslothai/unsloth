@@ -1391,24 +1391,24 @@ export function ChatProvidersSettings({
                           key={preset.providerType}
                           value={preset.providerType}
                         >
-                          <span className="flex items-center gap-2">
+                          <span className="flex min-w-0 items-center gap-2">
                             <ApiProviderLogo
                               providerType={preset.providerType}
                               className="size-4"
                               title={preset.displayName}
                             />
-                            {preset.displayName}
+                            <span className="truncate">{preset.displayName}</span>
                           </span>
                         </SelectItem>
                       ))}
                       <SelectItem value={LEGACY_CUSTOM_PROVIDER_TYPE}>
-                        <span className="flex items-center gap-2">
+                        <span className="flex min-w-0 items-center gap-2">
                           <ApiProviderLogo
                             providerType={LEGACY_CUSTOM_PROVIDER_TYPE}
                             className="size-4"
                             title={CUSTOM_PROVIDER_DISPLAY_NAME}
                           />
-                          {CUSTOM_PROVIDER_DISPLAY_NAME}
+                          <span className="truncate">{CUSTOM_PROVIDER_DISPLAY_NAME}</span>
                         </span>
                       </SelectItem>
                     </SelectGroup>
@@ -1424,13 +1424,13 @@ export function ChatProvidersSettings({
                             key={entry.provider_type}
                             value={entry.provider_type}
                           >
-                            <span className="flex items-center gap-2">
+                            <span className="flex min-w-0 items-center gap-2">
                               <ApiProviderLogo
                                 providerType={entry.provider_type}
                                 className="size-4"
                                 title={entry.display_name}
                               />
-                              {entry.display_name}
+                              <span className="truncate">{entry.display_name}</span>
                             </span>
                           </SelectItem>
                         ))}

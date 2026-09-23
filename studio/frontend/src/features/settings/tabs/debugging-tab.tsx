@@ -496,14 +496,14 @@ export function DebuggingTab() {
                       value={source.id}
                       className="font-mono text-ui-12"
                     >
-                      <span className="flex items-center gap-2">
-                        <span>{source.label}</span>
+                      <span className="flex min-w-0 items-center gap-2">
+                        <span className="min-w-0 truncate">{source.label}</span>
                         {source.isCurrent ? (
-                          <span className="rounded-full bg-primary/10 px-1.5 py-px font-sans text-ui-10 font-medium text-primary">
+                          <span className="shrink-0 rounded-full bg-primary/10 px-1.5 py-px font-sans text-ui-10 font-medium text-primary">
                             {t("settings.debugging.currentSession")}
                           </span>
                         ) : null}
-                        <span className="font-sans text-ui-10 text-muted-foreground tabular-nums">
+                        <span className="shrink-0 font-sans text-ui-10 text-muted-foreground tabular-nums">
                           {formatBytes(source.sizeBytes)}
                         </span>
                       </span>
