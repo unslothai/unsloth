@@ -53,7 +53,7 @@ export function ImportDialog({
         position="absolute"
         overlayPosition="absolute"
         overlayClassName="bg-transparent"
-        className="corner-squircle max-h-[calc(650px*var(--ui-space-scale,1))] overflow-auto sm:max-w-2xl shadow-border"
+        className="corner-squircle max-h-[min(calc(650px*var(--ui-space-scale,1)),calc(100dvh-var(--studio-window-chrome-top,0px)-2rem))] overflow-auto sm:max-w-2xl shadow-border"
       >
         <DialogHeader>
           <DialogTitle>Import recipe</DialogTitle>

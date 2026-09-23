@@ -361,6 +361,28 @@ test("a scaled minimum never outgrows its own cap", () => {
   }
 });
 
+test("a scaled dialog keeps the viewport cap it replaces", () => {
+  // A call-site max-h drops DialogContent's own viewport cap, so it restates it.
+  const cap = "calc(100dvh-var(--studio-window-chrome-top,0px)-2rem)";
+  for (const file of [
+    "features/recipe-studio/dialogs/config-dialog.tsx",
+    "features/recipe-studio/dialogs/import-dialog.tsx",
+    "features/recipe-studio/dialogs/preview-dialog.tsx",
+    "features/recipe-studio/dialogs/processors-dialog.tsx",
+  ]) {
+    assert.ok(
+      readSrc(file).includes(`max-h-[min(calc(650px*var(--ui-space-scale,1)),${cap})]`),
+      `${file} can outgrow the viewport`,
+    );
+  }
+});
+
+test("the response details sheet scales its width, not only its cap", () => {
+  const sheet = readSrc("components/assistant-ui/message-response-details-sheet.tsx");
+  assert.ok(sheet.includes("w-[min(calc(28rem*var(--ui-space-scale,1)),100vw)]"));
+  assert.ok(sheet.includes("sm:max-w-[calc(28rem*var(--ui-space-scale,1))]"));
+});
+
 test("a sidebar row's inset scales on both sides", () => {
   // Only the measured scrollbar rail stays fixed.
   assert.ok(

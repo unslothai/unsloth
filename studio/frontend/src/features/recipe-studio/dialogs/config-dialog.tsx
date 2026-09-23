@@ -56,7 +56,7 @@ export function ConfigDialog({
         position="absolute"
         overlayPosition="absolute"
         overlayClassName="bg-transparent"
-        className="corner-squircle max-h-[calc(650px*var(--ui-space-scale,1))] overflow-y-auto overflow-x-hidden sm:max-w-2xl shadow-border"
+        className="corner-squircle max-h-[min(calc(650px*var(--ui-space-scale,1)),calc(100dvh-var(--studio-window-chrome-top,0px)-2rem))] overflow-y-auto overflow-x-hidden sm:max-w-2xl shadow-border"
       >
         <DialogShell
           title={blockDefinition ? blockDefinition.title : undefined}
