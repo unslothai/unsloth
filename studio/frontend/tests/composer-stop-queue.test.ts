@@ -39,8 +39,8 @@ test("stop stays available when the running composer can queue", async () => {
   );
   assert.match(
     controls.slice(queueGuardIndex),
-    /aria-label="Queue message"/,
-    "the queue action must remain available when the draft is queueable",
+    /aria-label=\{followUpLabel\}/,
+    "the follow-up action must remain available when the draft is queueable",
   );
   const stopButton = controls.match(
     /<Button[\s\S]*?aria-label="Stop generating"[\s\S]*?>/,
