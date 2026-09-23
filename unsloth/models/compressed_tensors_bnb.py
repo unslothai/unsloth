@@ -370,7 +370,8 @@ def _layer_expert_scheme(ct_config, full_layer_name, packed_key, n_experts, defa
             break
     if pattern.endswith(".weight"):
         pattern = pattern[: -len(".weight")]
-    pattern = pattern.lstrip("^")
+    # Mixtral-style sources start with the separator (``.experts.*.w1.weight``).
+    pattern = pattern.lstrip("^").lstrip(".")
     # The pattern starts somewhere inside the layer path (``mlp.experts.*.gate_proj``).
     parts = parent.split(".")
     tail = None

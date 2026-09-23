@@ -1003,6 +1003,17 @@ def test_expert_scheme_is_resolved_per_layer():
     with pytest.raises(RuntimeError, match = "different config groups"):
         _layer_expert_scheme(mixed, "model.layers.0.mlp.experts.gate_up_proj", key, 4, None)
 
+    # Mixtral and PhiMoE source patterns begin with the separator.
+    for dotted in (".experts.*.w1.weight_packed$", "^.experts.*.w1.weight_packed"):
+        assert (
+            _layer_expert_scheme(ct, "model.layers.1.mlp.experts.gate_up_proj", dotted, 4, None)
+            is early
+        )
+        assert (
+            _layer_expert_scheme(ct, "model.layers.5.mlp.experts.gate_up_proj", dotted, 4, None)
+            is late
+        )
+
     single = SimpleNamespace(config_groups = {"only": early})
     assert (
         _layer_expert_scheme(single, "model.layers.9.mlp.experts.gate_up_proj", key, 4, "d") == "d"
