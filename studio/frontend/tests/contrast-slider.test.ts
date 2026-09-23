@@ -142,7 +142,7 @@ test("off the default, fills and lines each take their own curve", () => {
     );
   }
   assert.ok(
-    adjusted.includes(`--border: color-mix(in oklab, var(--border-base), ${PANEL_TARGET} var(--contrast-line-mix));`),
+    adjusted.includes("--border: color-mix(in oklab, var(--border-base), var(--contrast-target) var(--contrast-line-mix));"),
   );
   assert.ok(
     adjusted.includes(`--sidebar-border: color-mix(in oklab, var(--sidebar-border-base), ${PANEL_TARGET} var(--contrast-line-mix));`),
@@ -150,7 +150,7 @@ test("off the default, fills and lines each take their own curve", () => {
   // A control outline nobody can find is not low contrast, it is broken, so
   // --input stops short of the hairlines.
   assert.ok(
-    adjusted.includes(`--input: color-mix(in oklab, var(--input-base), ${PANEL_TARGET} var(--contrast-control-mix));`),
+    adjusted.includes("--input: color-mix(in oklab, var(--input-base), var(--contrast-target) var(--contrast-control-mix));"),
   );
 });
 
@@ -293,10 +293,29 @@ test("raising lifts palette fills away from their surfaces under any foreground"
       "background-color: color-mix(in oklab, #2c2c2c, var(--contrast-panel-target, var(--contrast-target, transparent)) var(--contrast-surface-mix, 0%));",
     ),
   );
-  assert.equal(
-    (CSS.match(/--(?:border|input): color-mix\(in oklab, var\(--(?:border|input)-base\), var\(--contrast-panel-target, var\(--contrast-target\)\)/g) ?? []).length,
-    4,
-    "a scoped line re-derivation lost the panel target",
+});
+
+test("lines head away from whatever they are drawn on", () => {
+  // Lines sit on the page as well as on cards. Sent to the panel pole
+  // everywhere, a dark border on a light custom page in dark mode fell from
+  // 10:1 at 50 to 2.9:1 at 100; sent to the page target everywhere, borders
+  // on cards fell to 1.1:1. Every surface scope carries its own lines.
+  const scopes = CSS.slice(
+    CSS.indexOf("/* Muted text and lines on palette surfaces"),
+    CSS.indexOf("/* Code font size"),
+  );
+  const rules = [...scopes.matchAll(/\{([^}]*)\}/g)].map((m) => m[1] ?? "");
+  assert.equal(rules.length, 5);
+  for (const rule of rules) {
+    const target = /--muted-foreground: color-mix\(\s*in oklab,\s*var\(--panel-surface-fg-muted\),\s*(var\(--contrast-panel-target, var\(--contrast-target\)\)|var\(--contrast-target\)) var/.exec(rule)?.[1];
+    assert.ok(target, "scope without muted text");
+    assert.ok(rule.includes(`--border: color-mix(in oklab, var(--border-base), ${target} var(--contrast-line-mix));`));
+    assert.ok(rule.includes(`--input: color-mix(in oklab, var(--input-base), ${target} var(--contrast-control-mix));`));
+  }
+  // The Images page redoes the derivation for its own base, on the page.
+  assert.match(
+    CSS,
+    /html\[data-contrast-adjust\]:not\(\.dark\) \.diffusion-surface \{\s*--border: color-mix\(in oklab, var\(--border-base\), var\(--contrast-target\) var\(--contrast-line-mix\)\);\s*--input: color-mix\(in oklab, var\(--input-base\), var\(--contrast-target\) var\(--contrast-control-mix\)\);/,
   );
 });
 
