@@ -1229,6 +1229,22 @@ def test_settle_fallback_keeps_compiled_while_another_dit_still_compiles(monkeyp
     assert state.speed_optims == ("cuda_graph", "compile_fallback_eager")
 
 
+def test_settle_fallback_sees_a_modular_workflows_named_partition(monkeypatch):
+    # MiniMax-H3's reference workflow compiles transformer_ref through a view; settlement runs on the bare pipe.
+    _stub_torch_compile_errors(monkeypatch)
+
+    def broken(x):
+        raise _BackendCompilerFailed("CantSplit")
+
+    ref = _Dit([_Block(broken)])
+    ds_mod.guard_compiled_blocks(ref)
+    pipe = types.SimpleNamespace(transformer_ref = ref)
+    state = types.SimpleNamespace(speed_optims = ("compiled",))
+    ref.blocks[0](1)
+    assert "CantSplit" in ds_mod.settle_compile_fallback(state, pipe)
+    assert state.speed_optims == ("compile_fallback_eager",)
+
+
 def test_settle_fallback_is_a_noop_without_a_failure(monkeypatch):
     _stub_torch_compile_errors(monkeypatch)
     dit = _Dit([_Block(lambda x: x)])

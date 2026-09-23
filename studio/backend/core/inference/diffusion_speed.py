@@ -621,9 +621,19 @@ def guard_compiled_blocks(transformer: Any, logger: Any = None) -> int:
     return count
 
 
+def _guarded_dits(pipe: Any) -> list:
+    """Every DiT a compile guard can sit on: the standard denoisers plus a modular workflow's named partition
+    (MiniMax-H3's ``transformer_ref`` compiles through a view, so the bare pipe's ``_denoiser_dits`` misses it)."""
+    dits = _denoiser_dits(pipe)
+    extra = getattr(pipe, "transformer_ref", None)
+    if extra is not None and extra not in dits:
+        dits.append(extra)
+    return dits
+
+
 def compiled_dits_active(pipe: Any) -> bool:
     """True while at least one guarded DiT still runs its compiled blocks (dual-DiT pipelines fall back per DiT)."""
-    for transformer in _denoiser_dits(pipe):
+    for transformer in _guarded_dits(pipe):
         guard = getattr(transformer, "_unsloth_compile_guard", None)
         if guard is not None and not guard.error:
             return True
@@ -655,7 +665,7 @@ def settle_compile_fallback(state: Any, pipe: Any, logger: Any = None) -> Option
 
 def compile_fallback_error(pipe: Any) -> Optional[str]:
     """The compile failure a guarded DiT fell back from, or None while every compiled DiT still runs compiled."""
-    for transformer in _denoiser_dits(pipe):
+    for transformer in _guarded_dits(pipe):
         guard = getattr(transformer, "_unsloth_compile_guard", None)
         if guard is not None and guard.error:
             return guard.error
