@@ -278,20 +278,29 @@ class TestMemoization:
         cannot be added without either invalidating or failing this.
 
         The two that exist route through _build_pip_cmd / _build_uv_cmd, which is what
-        makes a function an installer rather than a probe.
+        makes a function an installer rather than a probe. A function whose every such
+        command carries `--target` writes into that directory and not the environment, so
+        it cannot change which torch is installed: #11635's _prefetch_diffusers_main
+        builds into a scratch target only to warm uv's cache.
         """
         tree = ast.parse(Path(stack_mod.__file__).read_text(encoding = "utf-8"))
         installers = {}
         for node in ast.walk(tree):
             if not isinstance(node, ast.FunctionDef):
                 continue
-            called = {
-                sub.func.id
+            builds = [
+                sub
                 for sub in ast.walk(node)
-                if isinstance(sub, ast.Call) and isinstance(sub.func, ast.Name)
-            }
-            if called & {"_build_pip_cmd", "_build_uv_cmd"}:
-                installers[node.name] = called
+                if isinstance(sub, ast.Call)
+                and isinstance(sub.func, ast.Name)
+                and sub.func.id in {"_build_pip_cmd", "_build_uv_cmd"}
+            ]
+            if builds and not all(_writes_only_a_target(node, call) for call in builds):
+                installers[node.name] = {
+                    sub.func.id
+                    for sub in ast.walk(node)
+                    if isinstance(sub, ast.Call) and isinstance(sub.func, ast.Name)
+                }
         assert set(installers) == {"pip_install", "pip_install_try"}, (
             f"a new installer entry point appeared: {sorted(installers)}. It has to drop "
             "the torch classification too, or it will answer for the build it replaced"
@@ -301,12 +310,63 @@ class TestMemoization:
                 f"{name}() installs packages without dropping the memoized torch " "classification"
             )
 
+    @pytest.mark.parametrize(
+        "source, scratch",
+        [
+            ('def f(d):\n    args = ("--no-deps", "--target", d)\n    _build_uv_cmd(args)', True),
+            ('def f(d):\n    args = ("--target", d)\n    _build_uv_cmd((*args, "x"))', True),
+            ('def f(d):\n    _build_pip_cmd(("--target", d, "x"))', True),
+            ('def f(d):\n    args = ("--no-deps",)\n    _build_uv_cmd(args)', False),
+            (
+                'def f(d):\n    args = ("--target", d)\n    _build_uv_cmd(args)\n    _build_uv_cmd(("x",))',
+                False,
+            ),
+            ("def f(args):\n    _build_uv_cmd(args)", False),
+        ],
+    )
+    def test_only_a_command_built_with_target_counts_as_scratch(self, source, scratch):
+        func = ast.parse(source).body[0]
+        calls = [
+            sub
+            for sub in ast.walk(func)
+            if isinstance(sub, ast.Call)
+            and isinstance(sub.func, ast.Name)
+            and sub.func.id.startswith("_build_")
+        ]
+        assert all(_writes_only_a_target(func, call) for call in calls) is scratch
+
     def test_explicit_invalidation_forces_a_reprobe(self):
         with patch.object(stack_mod.subprocess, "run", return_value = _probe_result()) as mock_run:
             stack_mod._probe_torch_runtime()
             stack_mod._invalidate_torch_runtime_probe()
             stack_mod._probe_torch_runtime()
         assert mock_run.call_count == 2
+
+
+def _writes_only_a_target(func: ast.FunctionDef, call: ast.Call) -> bool:
+    """Whether this `_build_*_cmd(args)` call's arguments carry `--target`, read from the
+    tuple passed in or a tuple the function assigned to the name passed in."""
+    tuples = {
+        target.id: node.value
+        for node in ast.walk(func)
+        if isinstance(node, ast.Assign) and isinstance(node.value, ast.Tuple)
+        for target in node.targets
+        if isinstance(target, ast.Name)
+    }
+
+    def carries(node) -> bool:
+        if isinstance(node, ast.Name) and node.id in tuples:
+            return carries(tuples[node.id])
+        if isinstance(node, ast.Starred):
+            return carries(node.value)
+        if isinstance(node, ast.Tuple):
+            return any(
+                (isinstance(item, ast.Constant) and item.value == "--target") or carries(item)
+                for item in node.elts
+            )
+        return False
+
+    return bool(call.args) and carries(call.args[0])
 
 
 class TestConsumersShareTheProbe:
