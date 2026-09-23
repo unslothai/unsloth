@@ -1351,8 +1351,7 @@ def _text_trainable_core(model, text_intent = True):
     for child_name in dropped:
         delattr(model, child_name)
     gc.collect()
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
+    clean_gpu_cache()
     print(
         f"Unsloth: `{type(model).__name__}.forward` requires {', '.join(required)}, which a text "
         f"batch does not carry, so training uses its `{name}` (`{type(core).__name__}`)."
