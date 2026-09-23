@@ -77,7 +77,7 @@ The [Unsloth Docker image](https://hub.docker.com/r/unsloth/unsloth) `unsloth/un
 Unsloth works on **Windows, Linux, WSL** and **macOS**. We support **Multi GPU setups, NVIDIA, AMD, Intel GPUs, CPUs** and the **Vulkan** backend.
 
 ### Run & Build with AI
-* Run and train LLMs, MLX, GGUF, diffusion, embedding, audio models: [Qwen3.8](https://unsloth.ai/docs/models/qwen3.8), [GLM-5.3-Flash](https://unsloth.ai/docs/models/glm-5.3-flash), [Kimi K3](https://unsloth.ai/docs/models/kimi-k3), MiniMax-H3, [DeepSeek-V4](https://unsloth.ai/docs/models/deepseek-v4), [Gemma 4](https://unsloth.ai/docs/models/gemma-4).
+* Run and train LLMs, MLX, GGUF, diffusion, embedding, audio models: [Qwen3.8](https://unsloth.ai/docs/models/qwen3.8), [GLM-5.3-Flash](https://unsloth.ai/docs/models/glm-5.3-flash), [Kimi K3](https://unsloth.ai/docs/models/kimi-k3), [Qwen-Image-2.1](https://unsloth.ai/docs/models/qwen-image-2.1), MiniMax-H3, [DeepSeek-V4](https://unsloth.ai/docs/models/deepseek-v4), [Gemma 4](https://unsloth.ai/docs/models/gemma-4).
 * **Agents & Tools:** Use local models with [Claude Code](https://unsloth.ai/docs/basics/claude-code), [Codex](https://unsloth.ai/docs/basics/codex), and [MCP](https://unsloth.ai/docs/basics/mcp), including tool calling and code execution.
 * **Search & RAG:** Use private and unlimited web search, deep research, auto-compaction (rolling context window) and RAG.
 * **Image and video:** Run and train [image](https://unsloth.ai/docs/basics/diffusion-image) and video diffusion or multimodal models
@@ -179,9 +179,9 @@ docker run -d --name unsloth --gpus all --ipc=host \
   -v unsloth-studio:/opt/unsloth-studio \
   unsloth/unsloth && docker logs -f unsloth
 ```
-The log ends with your links and a generated JupyterLab password, plus a generated Unsloth Studio password on the first run against a new `unsloth-studio` volume; change that one on first sign-in or Unsloth Studio stops after an hour. A reused volume keeps the password already stored on it, and `docker exec unsloth unsloth studio reset-password --username unsloth` mints a new one and prints it. Ctrl-C stops following the log, not the container; `docker rm -f unsloth` deletes it. The Hugging Face cache keeps your models and the `unsloth-studio` volume keeps your accounts, chats and trained models, both across `docker rm`; a volume from an older image is migrated on first start, its old code kept under `.unsloth-studio-legacy/`. Those ports publish on every interface: on a cloud host add `-e UNSLOTH_STUDIO_SECURE=1`, drop `-p 8000:8000` and bind JupyterLab to `-p 127.0.0.1:8888:8888`, or bind both to `127.0.0.1` and use an SSH tunnel. Tags (`unsloth/unsloth:core` for notebooks only), GPU support and options: [Docker Hub](https://hub.docker.com/r/unsloth/unsloth).
+See [Docker docs](https://unsloth.ai/docs/get-started/install/docker) for more information. For cloud hosting / global serving, add `-e UNSLOTH_STUDIO_SECURE=1`, drop `-p 8000:8000` and bind JupyterLab to `-p 127.0.0.1:8888:8888`, or bind both to `127.0.0.1` and use an SSH tunnel. Tags (`unsloth/unsloth:core` for notebooks only), GPU support and options: [Docker Hub](https://hub.docker.com/r/unsloth/unsloth).
 
-On AMD there is a separate image, [`unsloth/unsloth-rocm`](https://hub.docker.com/r/unsloth/unsloth-rocm), with the run command and the supported cards on its [Docker Hub page](https://hub.docker.com/r/unsloth/unsloth-rocm). It carries the training stack only, so there is no Unsloth Studio or JupyterLab in it. On Linux it reaches the card through `/dev/kfd`; on Windows it goes over WSL2's `/dev/dxg` bridge instead, which needs ROCm for WSL on the host (`scripts/install_rocm_wsl_strixhalo.sh`), a docker engine running inside the WSL distribution rather than Docker Desktop's, and a per-architecture build (`ROCM_GFX=<your gfx> bash docker/build.sh --rocm`), since the generic image's torch aborts on the bridge. That build exists for the Strix APUs and RDNA4 (`gfx1150`, `gfx1151`, `gfx1152`, `gfx1200`, `gfx1201`); RDNA3 cards have no bridge path yet. `bash docker/run.sh --rocm` works out the flags on both; on WSL add `UNSLOTH_IMAGE=unsloth-rocm:latest` so it runs that build rather than the published image.
+On AMD there is a separate image, [`unsloth/unsloth-rocm`](https://hub.docker.com/r/unsloth/unsloth-rocm), with the run command and the supported cards on its [Docker Hub page](https://hub.docker.com/r/unsloth/unsloth-rocm).
 
 #### Remote HTTPS & LAN Access
 Server-side tools are on by default - so **be careful**! Keep your password safe, or use `--disable-tools` when exposing Unsloth.
@@ -198,7 +198,7 @@ unsloth studio -H 0.0.0.0 -p 8888
 **LAN Access (home network)**: `Settings > API keys > LAN access`
 
 #### Password management & headless starts
-Exposing Unsloth (`--secure`, `--cloudflare`, or a non-loopback `-H`) asks once at the terminal for a new admin password. Ctrl+C there aborts the launch rather than exposing the auto-generated one; set a password non-interactively instead, or use `-H 127.0.0.1` to stay off the network. On a non-loopback `-H` bind a terminal nobody answers is not a refusal: after ~30s Unsloth starts anyway and shuts down on the bootstrap deadline, so detached launches (`docker run -dt`, `tmux new -d`) are unaffected. Setting `UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT=0` disables that shutdown, so give those launches a password instead. A tunnel gets no such timeout and waits indefinitely rather than publish a public URL unasked, so give a detached `--secure` / `--cloudflare` launch its password non-interactively.
+Exposing Unsloth (`--secure`, `--cloudflare`, or a non-loopback `-H`) asks once at the terminal for a new admin password. Ctrl+C there aborts the launch rather than exposing the auto-generated one; set a password non-interactively instead, or use `-H 127.0.0.1` to stay off the network.
 
 Headless starts:
 ```bash

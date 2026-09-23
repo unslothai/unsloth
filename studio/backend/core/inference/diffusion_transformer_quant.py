@@ -124,6 +124,13 @@ _LTX2_INT8_EXCLUDES = ("audio", "av_cross_attn", "adaln")
 _INT8_FAMILY_EXCLUDE_NAME_TOKENS: dict[str, tuple[str, ...]] = {
     "qwen-image": _QWENIMAGE_INT8_EXCLUDES,
     "qwen-image-edit": _QWENIMAGE_INT8_EXCLUDES,  # same DiT class + unpadded text stream
+    # 2.1 is a 32-block SINGLE-stream DiT: no add_* projections, no txt_mlp, so the 20B MMDiT's
+    # exclusion list does not apply and this one was measured rather than inherited. ``txt_in`` is
+    # here as a QUALITY lever, not the small-M crash guard it is on qwen-image: all four policy arms
+    # rendered a deliberately 2-token prompt without tripping ``_int_mm``'s M floor, so nothing
+    # crashes either way. Excluding it scored LPIPS 0.0642 against 0.1032 with the generic tokens
+    # alone, paired over 16 calibration prompts, -0.0390 CI95 [-0.0708, -0.0072], better on 14/16.
+    "qwen-image-2.1": ("txt_in",),
     "hunyuanvideo-1.5": _HUNYUAN15_INT8_EXCLUDES,
     "hunyuanvideo-1.5-720p": _HUNYUAN15_INT8_EXCLUDES,
     "minimax-h3": _MINIMAX_H3_INT8_EXCLUDES,

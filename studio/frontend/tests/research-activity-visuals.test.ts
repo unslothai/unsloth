@@ -41,7 +41,7 @@ test("timeline labels, icons, times, and disclosure controls share one center", 
   assert.match(trigger, /relative flex min-h-10 w-full items-center/);
   assert.match(
     trigger,
-    /absolute -left-7 top-1\/2 flex size-\[15px\] -translate-y-1\/2/,
+    /absolute -left-7 top-1\/2 flex size-\[calc\(15px\*var\(--ui-space-scale,1\)\)\] -translate-y-1\/2/,
   );
   assert.doesNotMatch(trigger, /items-start|className="mt-0\.5 shrink-0/);
 });

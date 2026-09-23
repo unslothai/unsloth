@@ -495,7 +495,7 @@ function PendingImageThumb({
     <div
       data-reload-snapshot-sensitive
       data-composer-attachment="image"
-      className="relative size-14 shrink-0 overflow-hidden rounded-[14px] border border-foreground/20 bg-muted"
+      className="relative size-14 shrink-0 overflow-hidden rounded-[14px] border border-[color-mix(in_oklab,var(--foreground)_calc(20%*var(--contrast-edge-gain,1)),transparent)] bg-muted"
     >
       <img src={src} alt={file.name} className="h-full w-full object-cover" />
       <button
@@ -811,9 +811,8 @@ export function SharedComposer({
     ? reasoningLockedOn || (effectiveReasoningVisualEnabled && !reasoningDisabled)
     : reasoningLockedOn || (effectiveReasoningEnabled && !reasoningDisabled);
   // Two-pill gating. Search: supportsTools (Code/python plus local web_search) OR
-  // supportsBuiltinWebSearch (OpenAI/Anthropic/OpenRouter/Kimi). Code: the local runtime OR
-  // Anthropic with a model taking code_execution_20250825, the only external code-execution tool
-  // today, per providerSupportsBuiltinCodeExecution.
+  // supportsBuiltinWebSearch (OpenAI/Anthropic/OpenRouter/Kimi). Code: supportsTools OR the
+  // provider's own sandbox, per providerSupportsBuiltinCodeExecution.
   const supportsBuiltinCodeExecution = providerSupportsBuiltinCodeExecution(
     selectedExternalProvider?.providerType,
     effectiveExternalModelId,
@@ -2084,7 +2083,7 @@ export function SharedComposer({
         </DropdownMenuSubTrigger>
         <DropdownMenuSubContent
           collisionPadding={16}
-          className="unsloth-plus-menu w-[208px]"
+          className="unsloth-plus-menu w-[calc(208px*var(--ui-space-scale,1))]"
         >
           {recentPrompts.map((p) => (
             <DropdownMenuItem
@@ -2123,7 +2122,7 @@ export function SharedComposer({
         </DropdownMenuSubTrigger>
         <DropdownMenuSubContent
           collisionPadding={16}
-          className="unsloth-plus-menu w-[208px]"
+          className="unsloth-plus-menu w-[calc(208px*var(--ui-space-scale,1))]"
         >
           {[
             { label: "Training JSONL", fn: exportConversationRawJsonl },
@@ -2177,7 +2176,7 @@ export function SharedComposer({
           <HugeiconsIcon icon={Folder01Icon} strokeWidth={2} />
           Projects
         </DropdownMenuSubTrigger>
-        <DropdownMenuSubContent className="unsloth-plus-menu w-[232px]">
+        <DropdownMenuSubContent className="unsloth-plus-menu w-[calc(232px*var(--ui-space-scale,1))]">
           <DropdownMenuItem onSelect={() => setNewProjectOpen(true)}>
             <HugeiconsIcon icon={FolderAddIcon} strokeWidth={2} />
             New project
@@ -2292,7 +2291,7 @@ export function SharedComposer({
         {pendingAudio && (
           <div
             data-composer-attachment="audio"
-            className="flex items-center gap-2 rounded-lg border border-foreground/20 bg-muted px-3 py-1.5 text-xs"
+            className="flex items-center gap-2 rounded-lg border border-[color-mix(in_oklab,var(--foreground)_calc(20%*var(--contrast-edge-gain,1)),transparent)] bg-muted px-3 py-1.5 text-xs"
           >
             <HeadphonesIcon className="size-3.5 text-muted-foreground" />
             <span data-reload-snapshot-sensitive className="max-w-48 truncate">
@@ -2413,7 +2412,7 @@ export function SharedComposer({
                 aria-label="Tools and attachments"
                 className="unsloth-composer-plus"
               >
-                <PlusIcon className="size-[22px] stroke-[1.75px]" />
+                <PlusIcon className="size-[calc(22px*var(--ui-space-scale,1))] stroke-[1.75px]" />
               </button>
             </DropdownMenuTrigger>
             <DropdownMenuContent
@@ -2421,7 +2420,7 @@ export function SharedComposer({
               align="start"
               sideOffset={0}
               avoidCollisions={true}
-              className="unsloth-plus-menu w-[244px]"
+              className="unsloth-plus-menu w-[calc(244px*var(--ui-space-scale,1))]"
               onCloseAutoFocus={(event) => event.preventDefault()}
             >
               <DropdownMenuItem onSelect={() => fileInputRef.current?.click()}>
@@ -2517,7 +2516,7 @@ export function SharedComposer({
                   <MoreHorizontalIcon className="size-4" />
                   More
                 </DropdownMenuSubTrigger>
-                <DropdownMenuSubContent className="unsloth-plus-menu w-[248px]">
+                <DropdownMenuSubContent className="unsloth-plus-menu w-[calc(248px*var(--ui-space-scale,1))]">
                   {overflowPlusItems.map((id) => (
                     <Fragment key={id}>{plusMenuNodes[id]}</Fragment>
                   ))}
@@ -2544,7 +2543,7 @@ export function SharedComposer({
             aria-label="Exit compare chat"
           >
             <PillGlyph>
-              <Columns2Icon className="size-[14px]" />
+              <Columns2Icon className="size-[calc(14px*var(--ui-space-scale,1))]" />
             </PillGlyph>
             <span>Compare</span>
           </button>
@@ -2572,7 +2571,7 @@ export function SharedComposer({
             }
           >
             <PillGlyph>
-              <GlobeIcon className="size-[15px]" />
+              <GlobeIcon className="size-[calc(15px*var(--ui-space-scale,1))]" />
             </PillGlyph>
             <span>Search</span>
           </button>
@@ -2592,7 +2591,7 @@ export function SharedComposer({
             <PillGlyph>
               <HugeiconsIcon
                 icon={CodeIcon}
-                className="size-[18.5px]"
+                className="size-[calc(18.5px*var(--ui-space-scale,1))]"
                 strokeWidth={2}
               />
             </PillGlyph>
@@ -2657,7 +2656,7 @@ export function SharedComposer({
               <PillGlyph>
                 <HugeiconsIcon
                   icon={PencilRulerIcon}
-                  className="size-[15.5px]"
+                  className="size-[calc(15.5px*var(--ui-space-scale,1))]"
                   strokeWidth={2}
                 />
               </PillGlyph>
@@ -2691,7 +2690,7 @@ export function SharedComposer({
                       reasoningEffort: displayedEffort,
                     })}
                   >
-                    <BulbIcon className="size-[15.5px]" />
+                    <BulbIcon className="size-[calc(15.5px*var(--ui-space-scale,1))]" />
                     {thinkingActiveLook ? (
                       <span className="unsloth-thinking-label">
                         {isEffort
@@ -2702,7 +2701,7 @@ export function SharedComposer({
                           : "Thinking"}
                       </span>
                     ) : null}
-                    <ChevronDownIcon strokeWidth={1.5} className="unsloth-thinking-caret size-[15px]" />
+                    <ChevronDownIcon strokeWidth={1.5} className="unsloth-thinking-caret size-[calc(15px*var(--ui-space-scale,1))]" />
                   </button>
                 )}
               >
@@ -2851,7 +2850,7 @@ export function SharedComposer({
                 })}
               >
                 <PillGlyph>
-                  <BulbIcon className="size-[15.5px]" />
+                  <BulbIcon className="size-[calc(15.5px*var(--ui-space-scale,1))]" />
                 </PillGlyph>
                 {thinkingActiveLook ? (
                   <span className="unsloth-thinking-label">Thinking</span>
@@ -2935,7 +2934,7 @@ export function SharedComposer({
               disabled={!canSend}
               aria-label={t("promptQueue.sendLabel")}
             >
-              <ArrowUpIcon className="unsloth-send-icon size-[22px] stroke-2" />
+              <ArrowUpIcon className="unsloth-send-icon size-[calc(22px*var(--ui-space-scale,1))] stroke-2" />
             </TooltipIconButton>
           )}
         </div>

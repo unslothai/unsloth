@@ -42,6 +42,7 @@
     "smoke-shortcuts-main.tsx",
     "smoke-stream-pacing-main.tsx",
     "smoke-code-block-flicker-main.tsx",
-    "smoke-tool-activity-main.tsx"
+    "smoke-tool-activity-main.tsx",
+    "smoke-reasoning-transcript-main.tsx"
   ]
 }

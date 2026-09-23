@@ -7255,6 +7255,23 @@ sys.exit(0 if installed is not None and required is not None and installed >= re
             $SkipPythonDeps = $false
         }
     }
+    # As setup.sh: the pinned Diffusers main build is installed only by the pass, so an install
+    # that never ran that step (updated by an installer that predates it) kept the release.
+    if ($SkipPythonDeps) {
+        $_diffusersMainMissing = $false
+        try {
+            & python (Join-Path $PSScriptRoot "install_python_stack.py") --diffusers-main-needs-dependency-pass *> $null
+            if ($LASTEXITCODE -eq 0) { $_diffusersMainMissing = $true }
+        } catch {}
+        if ($_diffusersMainMissing) {
+            if ($script:OfflineFastPath -or (Test-UvOfflineRequested)) {
+                substep "pinned Diffusers build is not installed but UV_OFFLINE is set -- left for the next online update" "Yellow"
+            } else {
+                substep "pinned Diffusers build is not installed -- forcing dependency pass..." "Cyan"
+                $SkipPythonDeps = $false
+            }
+        }
+    }
     # ...and for an Intel GPU, or a CPU wheel stays forever. Both escapes reach the XPU install,
     # gated on $XpuIndexUrl, so $_xpuIsReachable holds them back where a pin or no-torch mode
     # sends this host elsewhere and they would re-fire forever.
@@ -8708,6 +8725,39 @@ function Invoke-LlamaHelper {
     }
 }
 
+function Test-LlamaTreeStillHealthy {
+    <#
+    Whether a tree the reuse shortcut is about to keep is one preflight will accept.
+
+    llama-server.exe existing is not enough. Quarantine and a truncated extract both
+    take a library and leave the entrypoint in place, and this branch is only reached
+    once the prebuilt path has already failed, so keeping such a tree returns it byte
+    for byte identical and reports success. Desktop preflight grades the same tree on
+    every launch, so an update that repaired nothing left it offering the same repair
+    forever, which is the loop installed_runtime_health exists to prevent.
+
+    The setup.sh side of this gate is the same call. Both go through
+    install_llama_prebuilt so there is one definition of healthy rather than two that
+    can disagree.
+
+    Healthy on any failure to ask. A helper that cannot run, or a python that is not
+    there yet, must not turn into a rebuild: that trades a wrong keep for a
+    multi-gigabyte source build on a machine whose only fault was an unreadable tree.
+    #>
+    param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$TreeRoot)
+    if ([string]::IsNullOrWhiteSpace($TreeRoot)) { return $true }
+    if (-not (Test-PathQuiet $TreeRoot "Container")) { return $true }
+    try {
+        $probe = Invoke-LlamaHelper -Arguments @("--check-existing-install", $TreeRoot)
+    } catch {
+        return $true
+    }
+    if ($null -eq $probe) { return $true }
+    if ($probe.ExitCode -eq 0) { return $true }
+    step "llama.cpp" "existing build is incomplete; rebuilding" "Yellow"
+    return $false
+}
+
 if ($LlamaSource -ne "https://github.com/ggml-org/llama.cpp") {
     step "llama.cpp" "custom source: $LlamaSource -- forcing source build" "Yellow"
     $NeedLlamaSourceBuild = $true
@@ -9224,8 +9274,19 @@ if ($llamaBinState -eq "Present") {
     }
 }
 
-$WillBuildLlamaFromSource = $NeedLlamaSourceBuild -and `
-    -not ((Test-PathQuiet $LlamaServerBin "Leaf") -and -not $NeedRebuild -and $RequestedLlamaTag -ne "master")
+# One predicate for the plan and the shortcut. The health gate belongs in both: read only
+# by the shortcut, a tree it refuses left $WillBuildLlamaFromSource false, so the git
+# install and Ensure-BuildToolsForLlamaSourceBuild below were skipped and the rebuild the
+# refusal forces then reached cmake on a prebuilt-only box with no toolchain.
+# Asked once, so the helper runs once and its "incomplete" line is printed once. A linked
+# local dir is excluded here as it is everywhere else on this route: nothing reads into the
+# user's own checkout, and the branch below takes it before the shortcut anyway.
+$CanReuseLlamaBuild = (Test-PathQuiet $LlamaServerBin "Leaf") -and -not $NeedRebuild -and `
+    $RequestedLlamaTag -ne "master"
+if ($CanReuseLlamaBuild -and $NeedLlamaSourceBuild -and -not $LocalLlamaCppLinked) {
+    $CanReuseLlamaBuild = Test-LlamaTreeStillHealthy $LlamaCppDir
+}
+$WillBuildLlamaFromSource = $NeedLlamaSourceBuild -and -not $CanReuseLlamaBuild
 if ($WillBuildLlamaFromSource) {
     if (-not $HasGitForBuild) {
         # Phase 1 keeps git optional, so only the automatic fallback after a failed prebuilt
@@ -9259,10 +9320,11 @@ if ($LocalLlamaCppLinked) {
 } elseif (-not $NeedLlamaSourceBuild) {
     Write-StudioLine ""
     step "llama.cpp" "prebuilt (validated)"
-} elseif ((Test-PathQuiet $LlamaServerBin "Leaf") -and -not $NeedRebuild -and $RequestedLlamaTag -ne "master") {
+} elseif ($CanReuseLlamaBuild) {
     # Skip rebuild only for pinned tags (e.g. b8635).  When the requested
     # tag is "master" (a moving target), always rebuild so the binary picks
-    # up new model architecture support (e.g. Gemma 4).
+    # up new model architecture support (e.g. Gemma 4). Health is folded into
+    # $CanReuseLlamaBuild above, so refusing here also planned the toolchain.
     Write-StudioLine ""
     step "llama.cpp" "already built"
 } elseif (-not $HasGitForBuild) {

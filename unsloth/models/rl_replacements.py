@@ -46,7 +46,6 @@ import importlib.util
 from ..device_type import (
     is_hip,
     get_device_type,
-    DEVICE_TYPE,
     DEVICE_TYPE_TORCH,
     DEVICE_COUNT,
     ALLOW_PREQUANTIZED_MODELS,
@@ -909,7 +908,7 @@ def _unsloth_grpo_autocast(self):
     return self._autocast_enabled, self._autocast_dtype
 
 
-def _unsloth_grpo_autocast_kwargs(self, device_type = "cuda"):
+def _unsloth_grpo_autocast_kwargs(self, device_type = DEVICE_TYPE_TORCH):
     """torch.amp.autocast kwargs for GRPO generation."""
     enabled, dtype = _unsloth_grpo_autocast(self)
     if not getattr(self, "_autocast_force_float32", False) and torch.is_autocast_enabled(
@@ -918,6 +917,22 @@ def _unsloth_grpo_autocast_kwargs(self, device_type = "cuda"):
         # Already inside an autocast: inherit its dtype by omitting the key, since autocast passes whatever it gets to set_autocast_dtype.
         return {"enabled": enabled}
     return {"enabled": enabled, "dtype": dtype}
+
+
+def _unsloth_grpo_accumulation_steps(trainer):
+    """Gradient accumulation divisor for the GRPO loss. 1 whenever the model is not training.
+
+    TRL divides by `current_gradient_accumulation_steps` in train mode and by 1.0 in eval, since
+    an eval pass accumulates nothing. Trainer sets that attribute inside the training loop and
+    never clears it, so an in-training evaluation still sees the training window's size and
+    eval_loss comes back that many times too small. Read off `model.training` like TRL does
+    rather than a trainer flag, because that is what the eval loop actually switches.
+    The attribute is also missing when evaluate() runs standalone (#2464), hence the default.
+    """
+    model = getattr(trainer, "model", None)
+    if model is not None and not getattr(model, "training", True):
+        return 1
+    return getattr(trainer, "current_gradient_accumulation_steps", 1)
 
 
 def _unsloth_grpo_vision_inputs(source):
@@ -1146,7 +1161,8 @@ def grpo_trainer__prepare_inputs(function_name, function):
     function = function.replace(
         "with torch.inference_mode():",
         "with torch.inference_mode(), "
-        "torch.amp.autocast(device_type = 'cuda', **_unsloth_grpo_autocast_kwargs(self)):",
+        "torch.amp.autocast(device_type = DEVICE_TYPE_TORCH, "
+        "**_unsloth_grpo_autocast_kwargs(self)):",
     )
     function = function.replace(
         "self.accelerator.unwrap_model(self.model)",
@@ -1838,7 +1854,7 @@ def grpo_trainer__get_per_token_logps(function_name, function):
 
         os.environ["UNSLOTH_RETURN_HIDDEN_STATES"] = "1"
         with torch.amp.autocast(
-            device_type = DEVICE_TYPE,
+            device_type = DEVICE_TYPE_TORCH,
             dtype = self._autocast_dtype,
             enabled = getattr(self, "_autocast_enabled", True),
         ):
@@ -2081,7 +2097,7 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                         def _pg_run_forward(_pg_layout = _pg_layout, _pg_chunks = _pg_chunks):
                             with _get_inference_mode_context_manager(model):
                                 with torch.amp.autocast(
-                                    device_type = "cuda",
+                                    device_type = DEVICE_TYPE_TORCH,
                                     dtype = self._autocast_dtype,
                                     enabled = getattr(self, "_autocast_enabled", True),
                                 ):
@@ -2202,7 +2218,7 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                         _pk_ctgt = (_pk_nz_idx[1:, 1] >= _pk_cstart[_pk_nz_idx[1:, 0]]) & _pk_within
                         with _get_inference_mode_context_manager(model):
                             with torch.amp.autocast(
-                                device_type = "cuda",
+                                device_type = DEVICE_TYPE_TORCH,
                                 dtype = self._autocast_dtype,
                                 enabled = getattr(self, "_autocast_enabled", True),
                             ):
@@ -2267,7 +2283,7 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                             _pk_ref = torch.zeros_like(_pk_result)
                             with _get_inference_mode_context_manager(model):
                                 with torch.amp.autocast(
-                                    device_type = "cuda",
+                                    device_type = DEVICE_TYPE_TORCH,
                                     dtype = self._autocast_dtype,
                                     enabled = getattr(self, "_autocast_enabled", True),
                                 ):
@@ -2442,7 +2458,7 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                     vision_chunk,
                 ) in zipped_inputs:
                     with torch.amp.autocast(
-                        device_type = "cuda",
+                        device_type = DEVICE_TYPE_TORCH,
                         dtype = self._autocast_dtype,
                         enabled = getattr(self, "_autocast_enabled", True),
                     ):
@@ -2746,6 +2762,7 @@ RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_returns_hidd
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_hidden_states_signal))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_get_mm_token_id))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_fix_mm_token_type_ids))
+RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_accumulation_steps))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_vision_inputs))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_split_vision_by_sample))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_unsplit_vision))
@@ -2825,10 +2842,7 @@ def grpo_trainer_compute_loss(function_name, function):
         num_items_in_batch = inputs.get("num_items_in_batch", None)
         sampling_per_token_logps = inputs.get("sampling_per_token_logps", None)
         tool_mask = inputs.get("tool_mask", None)
-        # Missing when evaluate() runs standalone; eval does not accumulate, so fall back to 1 rather than underreport eval_loss (#2464).
-        current_gradient_accumulation_steps = getattr(
-            self, "current_gradient_accumulation_steps", 1
-        )
+        current_gradient_accumulation_steps = _unsloth_grpo_accumulation_steps(self)
         num_processes = self.accelerator.num_processes
 
         input_ids = torch.cat([prompt_ids, completion_ids], dim = 1)

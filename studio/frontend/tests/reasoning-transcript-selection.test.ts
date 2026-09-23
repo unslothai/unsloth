@@ -13,7 +13,7 @@ const CONTENT_REF = /<ReasoningContent[\s\S]*?ref=\{reasoningContentRef\}/;
 const SCOPED_SELECTION_CHECK =
   /selectionIntersectsElement\(\s*window\.getSelection\(\),\s*reasoningContentRef\.current,?\s*\)/g;
 
-test("pagination defers only for a selection intersecting this reasoning block", () => {
+test("transcript activation defers only for a selection intersecting this reasoning block", () => {
   assert.match(REASONING, INTERSECTION_HELPER);
   assert.match(REASONING, CONTENT_REF);
   assert.equal(REASONING.match(SCOPED_SELECTION_CHECK)?.length, 2);

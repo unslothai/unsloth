@@ -227,9 +227,9 @@ export function ProfilePersonalizationPanel() {
               name={previewName}
               imageUrl={shownAvatar}
               size="lg"
-              className="size-[128px] text-[calc(3.2rem*var(--ui-font-scale,1))]"
+              className="size-[calc(128px*var(--ui-space-scale,1))] text-[calc(3.2rem*var(--ui-font-scale,1))]"
             />
-            <span className="absolute inset-0 flex items-center justify-center rounded-full bg-black/45 opacity-0 transition-opacity group-hover:opacity-100">
+            <span className="absolute inset-0 flex items-center justify-center rounded-full bg-black/45 opacity-0 any-pointer-coarse:opacity-100 transition-opacity group-hover:opacity-100">
               <HugeiconsIcon
                 icon={Image01Icon}
                 className="size-8 text-white"
@@ -244,7 +244,7 @@ export function ProfilePersonalizationPanel() {
                 type="button"
                 aria-label={t("settings.profile.pictureOptions")}
                 title={t("settings.profile.pictureOptions")}
-                className="absolute top-[85.36%] left-[85.36%] flex size-9 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full border border-border bg-background text-foreground shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring dark:border-transparent dark:bg-white/[0.14] dark:hover:bg-white/20"
+                className="absolute top-[85.36%] left-[85.36%] flex size-9 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full border border-border bg-background text-foreground shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.14*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255_/_calc(0.2*var(--contrast-wash-gain,1)))]"
               >
                 <HugeiconsIcon
                   icon={Edit03Icon}
@@ -256,7 +256,7 @@ export function ProfilePersonalizationPanel() {
             <PopoverContent
               align="start"
               sideOffset={10}
-              className="w-[320px] gap-4 p-4"
+              className="w-[calc(320px*var(--ui-space-scale,1))] gap-4 p-4"
             >
               <div className="flex items-center justify-between gap-3">
                 <span className="text-ui-11 font-medium uppercase tracking-wide text-muted-foreground">
@@ -319,7 +319,7 @@ export function ProfilePersonalizationPanel() {
                 <span className="text-ui-11 font-medium uppercase tracking-wide text-muted-foreground">
                   {t("settings.profile.chooseSloth")}
                 </span>
-                <div className="grid grid-cols-7 gap-2">
+                <div className="grid grid-cols-7 gap-2 max-[400px]:grid-cols-6">
                   {SLOTH_AVATARS.map((path) => {
                     const url = publicAssetUrl(path);
                     const selected = shownAvatar === url;

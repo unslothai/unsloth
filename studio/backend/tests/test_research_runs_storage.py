@@ -134,6 +134,32 @@ def _create(
     )
 
 
+@pytest.mark.parametrize("status", sorted(research_db.ALL_STATUSES))
+def test_row_fork_waits_for_research_to_settle(research_home, status):
+    from fastapi import HTTPException
+    from routes import chat_history
+    from state import active_generations
+
+    _create()
+    conn = studio_db.get_connection()
+    try:
+        conn.execute("UPDATE research_runs SET status=? WHERE id='run-1'", (status,))
+        conn.commit()
+    finally:
+        conn.close()
+    assert "thread-1" not in active_generations.active_thread_ids()
+    payload = chat_history.ChatForkRequest(newThreadId = "fork-1", createdAt = 20)
+    if status in research_db.ACTIVE_STATUSES:
+        with pytest.raises(HTTPException) as exc:
+            chat_history.fork_thread("thread-1", payload, current_subject = "alice")
+        assert exc.value.status_code == 409
+        assert studio_db.get_chat_thread("fork-1") is None
+    else:
+        response = chat_history.fork_thread("thread-1", payload, current_subject = "alice")
+        assert response.thread.forkedFromMessageId == "assistant-1"
+        assert len(response.messages) == 2
+
+
 def test_source_persistence_rejects_url_outside_run_allowlist(research_home):
     config = {
         "model": "local-model",

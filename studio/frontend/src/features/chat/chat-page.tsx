@@ -54,6 +54,7 @@ import {
 import { useSidebar } from "@/components/ui/sidebar";
 import { Tooltip, TooltipContent } from "@/components/ui/tooltip";
 import { useIsMobile } from "@/hooks/use-mobile";
+import { holdSidebarPinned, releaseSidebarPinned } from "@/hooks/use-sidebar-pin";
 import {
   DOWNLOAD_KIND,
   dismissStartToast,
@@ -250,6 +251,14 @@ import {
   consumeProjectSourcesPending,
   hasProjectSourcesPending,
 } from "@/features/rag/components/project-source-dropzone";
+import {
+  exportConversationCsv,
+  exportConversationMarkdown,
+  exportConversationMessagesJsonl,
+  exportConversationRawJsonl,
+  exportConversationShareGPT,
+  saveChatItemAsProjectSource,
+} from "./prompt-storage/prompt-storage-dialog";
 
 const ProjectSourcesPanel = lazy(() =>
   import("@/features/rag/components/project-sources-panel").then((module) => ({
@@ -800,13 +809,13 @@ function CompareShell({
       <div className="flex min-h-0 min-w-0 flex-1 basis-0 flex-col">
         <div
           data-tour="chat-compare-view"
-          className="flex min-h-0 min-w-0 flex-1 basis-0 flex-col pt-[var(--studio-content-top-inset,0px)] md:flex-row"
+          className="flex min-h-0 min-w-0 flex-1 basis-0 flex-col pt-[var(--studio-content-top-inset,0px)] lg:flex-row"
         >
           {children}
         </div>
         {/* Symmetric: the extra right inset mirrored the viewport's one-sided
             scrollbar gutter, which is now reserved on both edges. */}
-        <div className="shrink-0 bg-background pl-5 pr-5 md:px-[30px] pb-2 pt-1">
+        <div className="shrink-0 bg-background pl-5 pr-5 md:px-[calc(30px*var(--ui-space-scale,1))] pb-2 pt-1">
           <div className="mx-auto w-full max-w-[var(--custom-chat-max-width,48rem)]">{composer}</div>
           {showModelDisclaimer && (
             <p className="composer-footer-note">
@@ -947,9 +956,9 @@ const LoraCompareContent = memo(function LoraCompareContent({
           onInitialHistoryReady={
             threadsSettled ? markInitialHistoryReady : undefined
           }
-          borderClassName="border-t border-border/60 md:border-t-0 md:border-l"
+          borderClassName="border-t border-border/60 lg:border-t-0 lg:border-l"
           header={
-            <div className="shrink-0 px-3 py-1.5 text-start md:text-end md:pr-[calc(4rem+var(--studio-chat-header-right-inset,var(--studio-window-control-inset,0px)))]">
+            <div className="shrink-0 px-3 py-1.5 text-start lg:text-end lg:pr-[calc(4rem*var(--ui-space-scale,1)+var(--studio-chat-header-right-inset,var(--studio-window-control-inset,0px)))]">
               <span className="text-ui-10 font-semibold uppercase tracking-wider text-primary">
                 Fine-tuned
               </span>
@@ -1001,12 +1010,12 @@ function GeneralCompareHeader({
   return (
     <div
       className={cn(
-        "pointer-events-none relative z-40 flex h-[48px] shrink-0 items-start gap-2 bg-background pt-[var(--studio-chat-header-padding-top,11px)]",
+        "pointer-events-none relative z-40 flex h-[calc(48px*var(--ui-space-scale,1))] shrink-0 items-start gap-2 bg-background pt-[var(--studio-chat-header-padding-top,11px)]",
         side === "left"
           ? pinned
             ? "pl-12 pr-3 md:pl-2"
-            : "pl-12 pr-3 md:pl-[calc(0.5rem+max(0px,var(--studio-mac-traffic-light-inset,0px)-var(--sidebar-width-icon,3rem)))]"
-          : "pl-3 pr-[calc(3rem+var(--studio-chat-header-right-inset,var(--studio-window-control-inset,0px)))]",
+            : "pl-12 pr-3 md:pl-[calc(0.5rem*var(--ui-space-scale,1)+max(0px,var(--studio-mac-traffic-light-inset,0px)-var(--sidebar-width-icon,3rem)))]"
+          : "pl-3 pr-[calc(3rem*var(--ui-space-scale,1)+var(--studio-chat-header-right-inset,var(--studio-window-control-inset,0px)))]",
       )}
     >
       <ModelSelector
@@ -1191,7 +1200,7 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
           onInitialHistoryReady={
             threadsSettled ? markInitialHistoryReady : undefined
           }
-          borderClassName="border-t border-sidebar-border md:border-t-0 md:border-l"
+          borderClassName="border-t border-sidebar-border lg:border-t-0 lg:border-l"
           header={
             <GeneralCompareHeader
               side="right"
@@ -1262,14 +1271,13 @@ async function exportProjectConversation(
   threadId: string,
   format: ProjectChatExportFormat,
 ): Promise<void> {
-  const exports = await import("./prompt-storage/prompt-storage-dialog");
-  if (format === "raw-jsonl") return exports.exportConversationRawJsonl(threadId);
+  if (format === "raw-jsonl") return exportConversationRawJsonl(threadId);
   if (format === "messages-jsonl")
-    return exports.exportConversationMessagesJsonl(threadId);
-  if (format === "csv") return exports.exportConversationCsv(threadId);
+    return exportConversationMessagesJsonl(threadId);
+  if (format === "csv") return exportConversationCsv(threadId);
   if (format === CONVERSATION_MARKDOWN_FORMAT)
-    return exports.exportConversationMarkdown(threadId);
-  if (format === "sharegpt-jsonl") return exports.exportConversationShareGPT(threadId);
+    return exportConversationMarkdown(threadId);
+  if (format === "sharegpt-jsonl") return exportConversationShareGPT(threadId);
   // Was a fallthrough return, so an unhandled format silently exported ShareGPT.
   const unhandled: never = format;
   throw new Error(`Unhandled export format: ${String(unhandled)}`);
@@ -1290,9 +1298,6 @@ async function saveProjectChatItemAsSource(
   item: SidebarItem,
   projectId: string,
 ): Promise<void> {
-  const { saveChatItemAsProjectSource } = await import(
-    "./prompt-storage/prompt-storage-dialog"
-  );
   await saveChatItemAsProjectSource(item, projectId);
 }
 
@@ -1719,7 +1724,7 @@ function ProjectLanding({
           }
         >
           {/* Slightly narrower than the composer max; every block shares this. */}
-          <div className="mx-auto flex w-full max-w-[44rem] flex-col pt-[120px] pb-14">
+          <div className="mx-auto flex w-full max-w-[calc(44rem*var(--ui-space-scale,1))] flex-col pt-[calc(120px*var(--ui-space-scale,1))] pb-14">
             <div className="mb-12 flex items-center gap-4">
               <span className="flex size-13 shrink-0 items-center justify-center rounded-[18px] bg-muted text-foreground/80">
                 <HugeiconsIcon
@@ -1828,7 +1833,7 @@ function ProjectLanding({
                     return (
                       <div
                         key={`${item.type}:${item.id}`}
-                        className="flex min-h-[58px] w-full items-center rounded-full px-4 py-2"
+                        className="flex min-h-[calc(58px*var(--ui-space-scale,1))] w-full items-center rounded-full px-4 py-2"
                       >
                         <div className="min-w-0 flex-1">
                           <input
@@ -1875,7 +1880,7 @@ function ProjectLanding({
                   return (
                     <div
                       key={`${item.type}:${item.id}`}
-                      className="group relative flex min-h-[58px] w-full items-center rounded-full transition-colors hover:bg-nav-surface-hover has-[[data-state=open]]:bg-nav-surface-hover"
+                      className="group relative flex min-h-[calc(58px*var(--ui-space-scale,1))] w-full items-center rounded-full transition-colors hover:bg-nav-surface-hover has-[[data-state=open]]:bg-nav-surface-hover"
                     >
                       <button
                         type="button"
@@ -1888,7 +1893,7 @@ function ProjectLanding({
                                 : { compare: item.id, project: projectId },
                           });
                         }}
-                        className="flex min-h-[58px] min-w-0 flex-1 items-center gap-4 rounded-full px-4 py-2 text-left"
+                        className="flex min-h-[calc(58px*var(--ui-space-scale,1))] min-w-0 flex-1 items-center gap-4 rounded-full px-4 py-2 text-left"
                       >
                         <div className="min-w-0 flex-1">
                           <div className="truncate text-ui-15 font-semibold leading-5 text-foreground">
@@ -1911,7 +1916,7 @@ function ProjectLanding({
                             type="button"
                             onClick={(event) => event.stopPropagation()}
                             aria-label="Chat options"
-                            className="absolute right-3 top-1/2 inline-flex size-8 -translate-y-1/2 cursor-pointer items-center justify-center rounded-full text-muted-foreground outline-none transition-opacity hover:bg-foreground/10 md:pointer-fine:opacity-0 md:pointer-fine:pointer-events-none focus-visible:opacity-100 focus-visible:pointer-events-auto group-hover:opacity-100 group-hover:pointer-events-auto data-[state=open]:opacity-100 data-[state=open]:pointer-events-auto"
+                            className="absolute right-3 top-1/2 inline-flex size-8 -translate-y-1/2 cursor-pointer items-center justify-center rounded-full text-muted-foreground outline-none transition-opacity hover:bg-[color-mix(in_oklab,var(--foreground)_calc(10%*var(--contrast-wash-gain,1)),transparent)] md:pointer-fine:opacity-0 md:pointer-fine:pointer-events-none focus-visible:opacity-100 focus-visible:pointer-events-auto group-hover:opacity-100 group-hover:pointer-events-auto data-[state=open]:opacity-100 data-[state=open]:pointer-events-auto"
                           >
                             <HugeiconsIcon
                               icon={MoreVerticalIcon}
@@ -3561,17 +3566,11 @@ export function ChatPage({
     },
     { enabled: active && fastModeSupported },
   );
-  const { isMobile, pinned, setPinned } = useSidebar();
-  // The tour's orientation step spotlights the nav, so show it for that step and put the user's
-  // own pin setting back on the way out; it is persisted, so a tour must not rewrite it.
-  const sidebarWasPinnedRef = useRef(pinned);
-  const showSidebarForTour = useCallback(() => {
-    sidebarWasPinnedRef.current = pinned;
-    setPinned(true);
-  }, [pinned, setPinned]);
-  const restoreSidebarAfterTour = useCallback(() => {
-    if (!sidebarWasPinnedRef.current) setPinned(false);
-  }, [setPinned]);
+  const { isMobile, pinned } = useSidebar();
+  // The tour's orientation step spotlights the nav, so hold it open for that step. The hold is
+  // never persisted, so a tour cannot rewrite the user's pin or the width default.
+  const showSidebarForTour = holdSidebarPinned;
+  const restoreSidebarAfterTour = releaseSidebarPinned;
 
   const enterCompare = useCallback(() => {
     viewBeforeCompareRef.current = { ...search };
@@ -3984,21 +3983,21 @@ export function ChatPage({
         {view.mode !== "compare" && (
           <div
             aria-hidden
-            className="chat-header-fade pointer-events-none absolute left-0 right-[10px] top-[calc(var(--studio-content-top-inset,0px)+var(--studio-chat-header-height,48px)+var(--studio-chat-notice-height,0px))] z-20 h-6 bg-gradient-to-b from-background to-transparent"
+            className="chat-header-fade pointer-events-none absolute left-0 right-[calc(10px*var(--ui-space-scale,1))] top-[calc(var(--studio-content-top-inset,0px)+var(--studio-chat-header-height,48px)+var(--studio-chat-notice-height,0px))] z-20 h-6 bg-gradient-to-b from-background to-transparent"
           />
         )}
         <div
           className={cn(
-            "pointer-events-none absolute top-[var(--studio-content-top-inset,0px)] left-0 right-[10px] z-40 flex h-[var(--studio-chat-header-height,48px)] shrink-0 items-start bg-background pt-[var(--studio-chat-header-padding-top,11px)] pr-[calc(0.5rem+var(--studio-chat-header-right-inset,var(--studio-window-control-inset,0px)))]",
+            "pointer-events-none absolute top-[var(--studio-content-top-inset,0px)] left-0 right-[calc(10px*var(--ui-space-scale,1))] z-40 flex h-[var(--studio-chat-header-height,48px)] shrink-0 items-start bg-background pt-[var(--studio-chat-header-padding-top,11px)] pr-[calc(0.5rem*var(--ui-space-scale,1)+var(--studio-chat-header-right-inset,var(--studio-window-control-inset,0px)))]",
             isMobile
               ? "pl-12"
               : pinned
                 ? "pl-2"
                 : isTauri
                   ? "pl-[var(--studio-collapsed-chat-controls-inset,0.75rem)]"
-                  : "pl-[calc(0.5rem+max(0px,var(--studio-mac-traffic-light-inset,0px)-var(--sidebar-width-icon,3rem)))]",
+                  : "pl-[calc(0.5rem*var(--ui-space-scale,1)+max(0px,var(--studio-mac-traffic-light-inset,0px)-var(--sidebar-width-icon,3rem)))]",
             view.mode === "compare" &&
-              "right-[10px] left-auto w-auto bg-transparent pl-0 pr-[calc(0.5rem+var(--studio-chat-header-right-inset,var(--studio-window-control-inset,0px)))]",
+              "right-[calc(10px*var(--ui-space-scale,1))] left-auto w-auto bg-transparent pl-0 pr-[calc(0.5rem*var(--ui-space-scale,1)+var(--studio-chat-header-right-inset,var(--studio-window-control-inset,0px)))]",
           )}
         >
           <div className="pointer-events-auto flex items-center gap-1">
@@ -4010,7 +4009,7 @@ export function ChatPage({
                 title="New chat"
                 aria-label="New chat"
                 onClick={handleDesktopNewChat}
-                className="!size-[30px] rounded-[10px] text-muted-foreground"
+                className="!size-[calc(30px*var(--ui-space-scale,1))] rounded-[10px] text-muted-foreground"
               >
                 <HugeiconsIcon
                   icon={PencilEdit02Icon}
@@ -4053,7 +4052,7 @@ export function ChatPage({
                 triggerDataTour="chat-model-selector"
                 contentDataTour="chat-model-selector-popover"
                 showCloudIndicator={isExternalModel}
-                className="max-w-[62vw] !pr-3 sm:max-w-none !h-[var(--studio-chat-control-height,34px)]"
+                className="max-w-[62vw] !pr-3 md:max-w-none !h-[var(--studio-chat-control-height,34px)]"
               />
             )}
             {view.mode !== "compare" && currentProjectId && (
@@ -4153,7 +4152,7 @@ export function ChatPage({
                     type="button"
                     onClick={toggleIncognito}
                     className={cn(
-                      "flex size-[30px] cursor-pointer items-center justify-center rounded-[10px] transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+                      "flex size-[calc(30px*var(--ui-space-scale,1))] cursor-pointer items-center justify-center rounded-[10px] transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
                       incognito
                         ? "bg-primary/10 text-primary hover:bg-primary/15"
                         : "text-nav-fg hover:bg-nav-surface-hover hover:text-black dark:hover:text-white",
@@ -4193,7 +4192,7 @@ export function ChatPage({
                       closeArtifactSurface();
                       openResearchPanel(latestResearchRunId);
                     }}
-                    className="relative flex size-[30px] cursor-pointer items-center justify-center rounded-[10px] text-nav-fg transition-colors hover:bg-nav-surface-hover hover:text-black focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring dark:hover:text-white"
+                    className="relative flex size-[calc(30px*var(--ui-space-scale,1))] cursor-pointer items-center justify-center rounded-[10px] text-nav-fg transition-colors hover:bg-nav-surface-hover hover:text-black focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring dark:hover:text-white"
                     aria-label="Open research activity"
                     aria-pressed={openResearchRunId === latestResearchRunId}
                   >
@@ -4221,7 +4220,7 @@ export function ChatPage({
                       useResearchRunStore.getState().closePanel();
                       setSettingsOpen(true);
                     }}
-                    className="flex size-[30px] cursor-pointer items-center justify-center rounded-[10px] text-nav-fg transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                    className="flex size-[calc(30px*var(--ui-space-scale,1))] cursor-pointer items-center justify-center rounded-[10px] text-nav-fg transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                     aria-label="Open run settings"
                   >
                     <HugeiconsIcon
