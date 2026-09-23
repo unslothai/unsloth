@@ -31,6 +31,7 @@ family's official base repos, or a local path the user explicitly picked.
 from __future__ import annotations
 
 import contextlib
+import dataclasses
 import functools
 import inspect
 import os
@@ -1231,6 +1232,47 @@ def _video_auto_denoiser_scheme(
 DENOISER_SEED_DECLINED = "__declined__"
 
 
+def _pipeline_device_mib(pipe: Any) -> int:
+    """MiB the pipeline's modules hold on an accelerator, counting a tensor subclass by its inner
+    storages (its logical dtype over-states a quantized weight) and each storage once."""
+    if pipe is None:
+        return 0
+    seen: set[int] = set()
+    total = 0
+
+    def _add(t: Any) -> None:
+        nonlocal total
+        flatten = getattr(t, "__tensor_flatten__", None)
+        if callable(flatten) and type(t).__name__ not in ("Tensor", "Parameter"):
+            try:
+                for name in flatten()[0]:
+                    _add(getattr(t, name))
+                return
+            except Exception:  # noqa: BLE001 -- fall through to the plain reading
+                pass
+        try:
+            if getattr(getattr(t, "device", None), "type", "cpu") in ("cpu", "meta"):
+                return
+            storage = t.untyped_storage()
+            if storage.data_ptr() in seen:
+                return
+            seen.add(storage.data_ptr())
+            total += int(storage.nbytes())
+        except Exception:  # noqa: BLE001 -- an unreadable tensor adds nothing
+            pass
+
+    components = getattr(pipe, "components", None)
+    modules = components.values() if isinstance(components, dict) else ()
+    for module in modules:
+        for fn in ("parameters", "buffers"):
+            try:
+                for t in getattr(module, fn)():
+                    _add(getattr(t, "data", t))
+            except Exception:  # noqa: BLE001 -- not a torch module
+                break
+    return total // (1024 * 1024)
+
+
 def _video_seed_stays_resident(
     fam: Any,
     *,
@@ -1239,11 +1281,16 @@ def _video_seed_stays_resident(
     memory_mode: Optional[str],
     text_encoder_quant: Optional[str],
     base_repo: Optional[str],
+    reclaimable_mib: int = 0,
 ) -> bool:
-    """True when an artifact-sized memory plan for ``scheme`` keeps the denoiser resident. Offload
-    moves modules with ``Module.to()``, which torchao tensors reject, so the load drops the seed
-    under any offload policy and the plan must ask the same question or drop shards the load then
-    tops up inline. Same arithmetic as ``_plan_for_te_scale`` with ``denoiser_gb`` supplied."""
+    """True when an artifact-sized memory plan for ``scheme`` keeps the denoiser resident.
+
+    Offload moves modules with ``Module.to()``, which torchao tensors reject, so the load drops the
+    seed under any offload policy and the plan must ask the same question or it drops shards the
+    load tops up inline. Same arithmetic as ``_plan_for_te_scale`` with ``denoiser_gb`` supplied.
+
+    ``reclaimable_mib`` is what this backend's resident pipeline holds: the plan runs before the
+    load tears it down, so it is credited back, while other tenants still count against free."""
     components = getattr(fam, "bf16_components_gb", None)
     if not components:
         return True
@@ -1275,9 +1322,15 @@ def _video_seed_stays_resident(
         (denoiser_gb + components[1] * te_scale * dtype_scale + components[2] * vae_scale)
         * mib_per_gb
     )
+    device_memory = settled_snapshot_device_memory(target)
+    if reclaimable_mib > 0 and device_memory.free_mib is not None:
+        free = device_memory.free_mib + int(reclaimable_mib)
+        if device_memory.total_mib is not None:
+            free = min(free, device_memory.total_mib)
+        device_memory = dataclasses.replace(device_memory, free_mib = free)
     planned = plan_diffusion_memory(
         target = target,
-        device_memory = settled_snapshot_device_memory(target),
+        device_memory = device_memory,
         model_dense_mib = model_dense_mib,
         runtime_headroom_mib = estimate_video_runtime_mib(
             width = fam.resolution_presets[0][0],
@@ -2915,6 +2968,7 @@ class VideoBackend:
                 )
                 if scheme is None:
                     return None
+                resident = self._state
                 if not _video_seed_stays_resident(
                     fam,
                     target = target,
@@ -2922,6 +2976,7 @@ class VideoBackend:
                     memory_mode = memory_mode,
                     text_encoder_quant = text_encoder_quant,
                     base_repo = base,
+                    reclaimable_mib = _pipeline_device_mib(getattr(resident, "pipe", None)),
                 ):
                     logger.info(
                         "video.denoiser_prequant: an artifact-sized plan for %s still offloads on "
