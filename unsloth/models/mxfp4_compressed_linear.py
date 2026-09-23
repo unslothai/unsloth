@@ -162,6 +162,18 @@ class Mxfp4PackedLinear(nn.Linear):
         # The packed bytes come from the checkpoint; there is nothing to initialise.
         return
 
+    def _apply(self, fn, *args, **kwargs):
+        # A module cast (`.to(dtype)`, `.half()`, `.float()`) leaves the uint8 bytes alone; the
+        # decode follows it, as a floating weight would.
+        try:
+            dtype = fn(torch.empty(0, dtype = self.compute_dtype)).dtype
+        except Exception:
+            dtype = self.compute_dtype
+        result = super()._apply(fn, *args, **kwargs)
+        if dtype.is_floating_point:
+            self.compute_dtype = dtype
+        return result
+
     def extra_repr(self):
         return (
             f"in_features={self.in_features}, out_features={self.out_features}, "
@@ -420,7 +432,10 @@ def install_compressed_tensors_keep_packed() -> bool:
             plan = matched = None
         if plan is None or not matched:
             return result
+        # transformers 5.x does not pass the load dtype here; the model was built in it.
         dtype = kwargs.get("dtype")
+        if not isinstance(dtype, torch.dtype):
+            dtype = getattr(model, "dtype", None)
         adopted = adopt_compressed_mxfp4_modules(
             model,
             default_format = fmt,
@@ -476,8 +491,9 @@ def _densify(module):
 
 
 def _restore_packed(module):
-    packed, scale, dtype = module.__dict__.pop(_PACKED_STATE)
-    device = module.weight.device
+    packed, scale, _ = module.__dict__.pop(_PACKED_STATE)
+    # The dense weight followed any move or cast since the merge; so do the packed bytes.
+    device, dtype = module.weight.device, module.weight.dtype
     del module._parameters["weight"]
     module.__class__ = Mxfp4PackedLinear
     module.compute_dtype = dtype

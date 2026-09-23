@@ -438,11 +438,13 @@ def test_fast_lora_paths_see_a_transient_decode_and_skip_the_fused_kernels():
     assert not has_mxfp4_base(model.base_model.model.dense)
 
 
-def _lora_pair(bias = False):
+def _lora_pair(bias = False, scale_range = None):
     """PEFT LoRA on a packed Linear and on an nn.Linear holding its exact decode, with the same
     non-zero adapter weights."""
     peft = pytest.importorskip("peft")
     packed = _filled(32, 64, bias = bias)
+    if scale_range is not None:
+        packed.weight_scale.data.clamp_(*scale_range)
     dense = nn.Linear(64, 32, bias = bias, dtype = torch.bfloat16)
     dense.weight.data.copy_(packed.dequantize_weight())
     if bias:
@@ -830,3 +832,50 @@ def test_an_explicit_decompress_request_keeps_the_stock_route(request_kwargs, tm
     ids = torch.randint(0, 256, (1, 12))
     with torch.no_grad():
         assert torch.equal(model(input_ids = ids).logits, reference(input_ids = ids).logits)
+
+
+@pytest.mark.parametrize("cast", [torch.float16, torch.float32])
+def test_a_dtype_cast_reaches_the_merge_and_unmerge(cast):
+    """`.to(dtype)` / `.half()` / `.float()` leave the uint8 bytes alone but must move the decode
+    dtype with them, or a PEFT merge writes a weight in the old dtype and the merged forward fails."""
+    packed_model, dense_model = _lora_pair(scale_range = (118, 134))  # inside fp16's range
+    packed_model.to(cast)
+    dense_model.to(cast)
+    base = packed_model.base_model.model[0].base_layer
+    assert base.compute_dtype == cast and base.weight.dtype == cast
+    x = torch.randn(3, 64, dtype = cast)
+    with torch.no_grad():
+        packed_model.merge_adapter()
+        dense_model.merge_adapter()
+        assert packed_model.base_model.model[0].base_layer.weight.dtype == cast
+        assert torch.equal(packed_model(x), dense_model(x))
+        # Cast while merged, then unmerge: the packed module decodes in the model's new dtype.
+        packed_model.to(torch.bfloat16)
+        packed_model.unmerge_adapter()
+        restored = packed_model.base_model.model[0].base_layer
+        assert type(restored) is Mxfp4PackedLinear and restored.compute_dtype == torch.bfloat16
+        packed_model.merge_adapter()
+        assert packed_model(x.to(torch.bfloat16)).dtype == torch.bfloat16
+
+
+@pytest.mark.skipif(not HAS_CT, reason = "needs compressed-tensors")
+def test_the_sixteen_bit_route_decodes_in_the_load_dtype(tmp_path):
+    """transformers 5.x does not hand the load dtype to the quantizer: the adopted modules take
+    the model's dtype, and a PEFT merge on them runs."""
+    peft = pytest.importorskip("peft")
+    from transformers import AutoModelForCausalLM
+    from unsloth.models.mxfp4_compressed_linear import install_compressed_tensors_keep_packed
+
+    packed_dir, _ = _write_tiny_mxfp4_llama(str(tmp_path))
+    assert install_compressed_tensors_keep_packed()
+    device = "cuda:0" if torch.cuda.is_available() else "cpu"
+    model = AutoModelForCausalLM.from_pretrained(packed_dir, dtype = torch.float16, device_map = {"": device})
+    packed = [m for m in model.modules() if isinstance(m, Mxfp4PackedLinear)]
+    assert len(packed) == 2 * 7
+    assert {m.compute_dtype for m in packed} == {torch.float16}
+    assert {m.weight.dtype for m in packed} == {torch.float16}
+    assert model.model.layers[0].input_layernorm.weight.dtype == torch.float16
+    model = peft.get_peft_model(model, peft.LoraConfig(r = 2, target_modules = ["q_proj"]))
+    merged = model.merge_and_unload()
+    with torch.no_grad():
+        assert merged(input_ids = torch.tensor([[1, 2, 3, 4]], device = device)).logits.isfinite().all()
