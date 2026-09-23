@@ -45,6 +45,14 @@ const MONITOR = new URL(
 );
 const source = readFileSync(MONITOR, "utf8");
 
+const MOUNT_SOURCE = readFileSync(
+  new URL(
+    "../src/features/settings/settings-dialog-mount.tsx",
+    import.meta.url,
+  ),
+  "utf8",
+);
+
 /** The JSX attributes of the monitor's fixed constraint container. */
 function containerAttributes(): string {
   const start = source.indexOf("ref={setConstraintsElement}");
@@ -383,6 +391,19 @@ test("docking does not remount the panel", () => {
     keyed,
     /key=\{`\$\{panelKey\}-/,
     "the panel key must not change with the dock state",
+  );
+});
+
+test("the monitor stays out of the eager bundle until opened, then stays mounted", () => {
+  assert.match(
+    MOUNT_SOURCE,
+    /lazy\(\(\) =>\s*import\("@\/components\/floating-monitor"\)/,
+    "the monitor's sizeable interaction code should load on demand",
+  );
+  assert.match(
+    MOUNT_SOURCE,
+    /isMonitorOpen \|\| monitorWasMounted/,
+    "closing the monitor must retain the loaded component and its state",
   );
 });
 
