@@ -94,6 +94,9 @@ def _drive(
         execute_tool = exec_fn,
         session_id = _SESSION,
         confirm_tool_calls = True,
+        # The confirm-gate mechanics (allow/deny/reissue/dedup) need every call to
+        # prompt; unset defaults to "auto", which only gates high-risk calls.
+        permission_mode = "ask",
     )
     events = []
     for ev in gen:

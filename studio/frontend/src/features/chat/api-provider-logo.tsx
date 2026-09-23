@@ -5,33 +5,13 @@ import { cn } from "@/lib/utils";
 import { DashboardSquare01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { isCustomProviderType } from "./external-providers";
-
-/**
- * Registry logos at `public/provider-logos/{provider_type}.{ext}`; key matches
- * `PROVIDER_REGISTRY` (lowercase). Extension varies per asset (svg preferred).
- */
-const PROVIDER_LOGO_EXT: Record<string, "svg" | "png" | "jpg"> = {
-  openai: "svg",
-  mistral: "svg",
-  gemini: "svg",
-  anthropic: "svg",
-  deepseek: "svg",
-  huggingface: "svg",
-  kimi: "jpg",
-  qwen: "png",
-  openrouter: "svg",
-  vllm: "svg",
-  ollama: "svg",
-  llama_cpp: "svg",
-};
+import { providerLogoPath } from "./provider-logo-path";
 
 export function apiProviderLogoSrc(
   providerType: string | undefined | null,
 ): string | undefined {
-  if (!providerType) return undefined;
-  const ext = PROVIDER_LOGO_EXT[providerType];
-  if (!ext) return undefined;
-  return `${import.meta.env.BASE_URL}provider-logos/${providerType}.${ext}`;
+  const path = providerLogoPath(providerType);
+  return path ? `${import.meta.env.BASE_URL}${path.slice(1)}` : undefined;
 }
 
 interface ApiProviderLogoProps {
@@ -40,10 +20,9 @@ interface ApiProviderLogoProps {
   title?: string;
 }
 
-/**
- * Renders a registry provider's logo when its asset exists under
- * `public/provider-logos/`. OpenAI's is inverted in dark mode for contrast.
- */
+const DARK_INVERT_LOGOS = new Set(["openai", "openai_codex", "ollama", "openrouter"]);
+
+/** Shared hub or connection logo; monochrome ones invert in dark mode. */
 export function ApiProviderLogo({ providerType, className, title }: ApiProviderLogoProps) {
   const src = apiProviderLogoSrc(providerType);
   if (!src && isCustomProviderType(providerType)) {
@@ -63,7 +42,7 @@ export function ApiProviderLogo({ providerType, className, title }: ApiProviderL
       aria-hidden
       className={cn(
         "shrink-0 object-contain",
-        providerType === "openai" && "dark:invert",
+        providerType && DARK_INVERT_LOGOS.has(providerType) && "dark:invert",
         className,
       )}
     />

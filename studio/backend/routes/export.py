@@ -3,6 +3,13 @@
 
 """Export API routes: checkpoint discovery and model export operations."""
 
+from core.training.account_jobs import (
+    account_event_stream,
+    job_busy,
+    job_is_foreign,
+    require_job_owner,
+    validate_job_paths,
+)
 import asyncio
 import json
 import os
@@ -20,7 +27,9 @@ backend_path = Path(__file__).parent.parent.parent
 if str(backend_path) not in sys.path:
     sys.path.insert(0, str(backend_path))
 
-from auth.authentication import get_current_subject
+from auth.authentication import allow_ambient_hf_token, get_current_subject
+from hub.services.models import account_access
+from hub.utils.hf_tokens import HfTokenArg, hf_token_arg
 
 from utils.utils import safe_error_detail
 
@@ -46,14 +55,12 @@ router = APIRouter()
 logger = get_logger(__name__)
 
 
-def _ensure_export_supported() -> None:
-    """Reject a mutating export request up front (HTTP 400) when the host can't export.
-
-    Keeps the backend authoritative even if a client bypasses the UI gate. Read-only endpoints
+async def _ensure_export_supported() -> None:
+    """Reject a mutating export request up front (HTTP 400) when the host can't export. Keeps the
+    backend authoritative even if a client bypasses the UI gate. Read-only endpoints
     (scan/status/logs) are intentionally NOT gated so the Export page can still render the reason.
-    Also refuses (409) while a latest-transformers install is swapping .venv_t5_latest: an
-    export worker spawned mid-swap could activate a half-replaced sidecar.
-    """
+    Also refuses (409) while a latest-transformers install is swapping .venv_t5_latest: an export
+    worker spawned mid-swap could activate a half-replaced sidecar."""
     from utils.transformers_latest import is_install_in_progress
 
     if is_install_in_progress():
@@ -64,7 +71,8 @@ def _ensure_export_supported() -> None:
 
     from utils.hardware import export_capability
 
-    cap = export_capability()
+    # Off-loop: detection is deferred past bind, so the first call can wait on a cold import.
+    cap = await asyncio.to_thread(export_capability)
     if not cap.get("export_supported", True):
         raise HTTPException(
             status_code = 400,
@@ -73,9 +81,84 @@ def _ensure_export_supported() -> None:
         )
 
 
+def _resolve_export_hf_token(
+    raw_token: Optional[str],
+    *,
+    push_to_hub: bool = False,
+    allow_ambient: bool = True,
+) -> HfTokenArg:
+    """The credential this export runs under, as the anonymous-aware sentinel. ``None`` reads
+    downstream as "go and find a credential" (``if token is None: get_token()``), so a caller denied
+    the ambient token is spelled ``False``."""
+    token = raw_token.strip() if isinstance(raw_token, str) and raw_token.strip() else None
+    if push_to_hub and token is None and not allow_ambient:
+        raise HTTPException(
+            status_code = 400,
+            detail = "Hugging Face token is required to push to Hub when authenticated via API key.",
+        )
+    return hf_token_arg(token, allow_ambient_token = allow_ambient)
+
+
+def _authorized_adapter_base(checkpoint_path: str) -> Optional[str]:
+    """The adapter's config names the base the worker loads, so it is authorized like the checkpoint."""
+    if not account_access.managed_account():
+        return None
+    from utils.models import get_base_model_from_lora
+
+    base = get_base_model_from_lora(checkpoint_path)
+    if base:
+        account_access.require_model_access(base)
+    return base or None
+
+
+def _hub_config(repo_id: str, hf_token: HfTokenArg) -> Optional[dict]:
+    """config.json for a Hub repo id, or None when it cannot be resolved.
+
+    The worker loads remote checkpoints too, so a Hub id that never touches the local
+    filesystem would otherwise keep the 4-bit default and re-introduce the very export
+    this function exists to prevent. Only config.json is fetched -- a few KB against the
+    gigabytes the load is about to pull anyway, and cached by huggingface_hub after the
+    first call.
+
+    Every failure (offline, gated without a token, no such repo, no network) returns
+    None, which the caller reads as "unknown" and leaves on the historical default.
+    """
+    try:
+        from huggingface_hub import file_exists, hf_hub_download
+
+        # An adapter repo carries a base config.json as well, so this has to be asked
+        # first or a remote LoRA reads as a full model.
+        if file_exists(repo_id, "adapter_config.json", token = hf_token):
+            return None
+        path = hf_hub_download(repo_id, "config.json", token = hf_token)
+        return json.loads(Path(path).read_text(encoding = "utf-8-sig"))
+    except Exception:
+        return None
+
+
+def _is_unquantized_full_finetune(checkpoint_path: str, hf_token: HfTokenArg = None) -> bool:
+    """Whether this checkpoint is a full model that is not already quantized.
+
+    Only ever used to turn 4-bit OFF, so every uncertain answer here is False and
+    behaves exactly as the code did before.
+    """
+    from utils.models.checkpoints import is_unquantized_full_model_dir
+
+    try:
+        is_local = Path(checkpoint_path).exists()
+    except OSError:
+        return False
+    if is_local:
+        return is_unquantized_full_model_dir(checkpoint_path)
+    config = _hub_config(checkpoint_path, hf_token)
+    return isinstance(config, dict) and "quantization_config" not in config
+
+
 @router.post("/load-checkpoint", response_model = ExportOperationResponse)
 async def load_checkpoint(
-    request: LoadCheckpointRequest, current_subject: str = Depends(get_current_subject)
+    request: LoadCheckpointRequest,
+    current_subject: str = Depends(get_current_subject),
+    allow_ambient: bool = Depends(allow_ambient_hf_token),
 ):
     """Load a checkpoint into the export backend (ExportBackend.load_checkpoint).
 
@@ -84,19 +167,36 @@ async def load_checkpoint(
     chat model here -- if the GPU runs out of memory the load/export fails with
     a clear error instead of tearing down the user's other running workloads.
     """
+    validate_job_paths(request.model_dump())
+    base_model = await asyncio.to_thread(_authorized_adapter_base, request.checkpoint_path)
     try:
-        _ensure_export_supported()
+        await _ensure_export_supported()
+        export_hf_token = _resolve_export_hf_token(request.hf_token, allow_ambient = allow_ambient)
+        load_in_4bit = request.load_in_4bit
+        # Off-loop: a Hub id makes this reach the network, and the SSE log stream is
+        # served from this same event loop.
+        if "load_in_4bit" not in request.model_fields_set and await asyncio.to_thread(
+            _is_unquantized_full_finetune, request.checkpoint_path, export_hf_token
+        ):
+            load_in_4bit = False
+            logger.info(
+                f"Full fine-tune checkpoint {request.checkpoint_path} has no quantization_config - "
+                "loading in 16-bit for export"
+            )
         backend = get_export_backend()
         # Run in a worker thread (spawns and waits on a subprocess, can take
         # minutes) so the event loop stays free to serve the live log SSE stream.
         success, message = await asyncio.to_thread(
             backend.load_checkpoint,
             checkpoint_path = request.checkpoint_path,
+            base_model = base_model,
             max_seq_length = request.max_seq_length,
-            load_in_4bit = request.load_in_4bit,
+            load_in_4bit = load_in_4bit,
             trust_remote_code = request.trust_remote_code,
             approved_remote_code_fingerprint = request.approved_remote_code_fingerprint,
-            hf_token = request.hf_token,
+            hf_token = export_hf_token,
+            # A supplied token cannot say whether it came from a session or an API key.
+            allow_ambient = allow_ambient,
             subject = current_subject,
         )
 
@@ -153,6 +253,7 @@ async def cancel_export(current_subject: str = Depends(get_current_subject)):
     Only the export subprocess is killed; training and inference run in their
     own subprocesses and keep going.
     """
+    require_job_owner(get_export_backend())
     try:
         backend = get_export_backend()
         cancelled = await asyncio.to_thread(backend.cancel_export)
@@ -171,6 +272,14 @@ async def cancel_export(current_subject: str = Depends(get_current_subject)):
 @router.get("/status", response_model = ExportStatusResponse)
 async def get_export_status(current_subject: str = Depends(get_current_subject)):
     """Get export backend status (loaded checkpoint, model type, PEFT flag)."""
+    if job_is_foreign(get_export_backend()):
+        return ExportStatusResponse(
+            current_checkpoint = None,
+            is_vision = False,
+            is_peft = False,
+            is_export_active = bool(get_export_backend().is_export_active()),
+            active_op_kind = "busy" if job_busy(get_export_backend()) else None,
+        )
     try:
         backend = get_export_backend()
         last_op = backend.get_last_op()
@@ -178,7 +287,7 @@ async def get_export_status(current_subject: str = Depends(get_current_subject))
         # does, so the success banner shows an identical path on either route.
         last_op_output_path = None
         if last_op and last_op.get("output_path"):
-            details = _export_details(last_op["output_path"])
+            details = await asyncio.to_thread(_export_details, last_op["output_path"])
             last_op_output_path = (details or {}).get("output_path")
         return ExportStatusResponse(
             current_checkpoint = backend.current_checkpoint,
@@ -212,20 +321,18 @@ async def get_export_logs(
 
     The SSE endpoint (`/logs/stream`) is the low-latency path, but some reverse
     proxies -- notably Cloudflare quick tunnels (`*.trycloudflare.com`) used by
-    `--secure` mode -- buffer `text/event-stream` responses and only flush when
-    the stream closes, so over the tunnel the browser sees nothing for the whole
-    export ("connecting..." with no logs). This endpoint returns the same
-    ring-buffer lines as a short, complete JSON response that no proxy buffers,
-    so the frontend can poll it and still show logs in near real time.
+    `--secure` mode -- buffer streamed GET responses until the stream closes.
+    This endpoint returns the same ring-buffer lines as a short, complete JSON
+    response that no proxy buffers, so the frontend can poll it and still show
+    logs in near real time even where the stream itself does not arrive.
 
     Shares the orchestrator's monotonic `seq` cursor with the SSE stream, so the
     two transports can run together and the client de-dupes by seq.
     """
     try:
         backend = get_export_backend()
-        # No cursor on the first poll of a run: start from the run-start snapshot
-        # so the client gets every line since the run began (matches the SSE
-        # default), not the entire historical ring buffer.
+        # No cursor on the first poll of a run: start from the run-start snapshot so the client gets every line since
+        # the run began (matches the SSE default), not the entire historical ring buffer.
         if since is None:
             cursor = backend.get_run_start_seq()
         else:
@@ -253,18 +360,27 @@ async def get_export_logs(
         )
 
 
-def _try_register_external_export(path: Path) -> tuple[bool, Optional[str]]:
+def _try_register_external_export(
+    path: Path, *, refresh_index: bool = False
+) -> tuple[bool, Optional[str]]:
     """Best-effort registration so absolute exports show up in local scans."""
     try:
-        from storage.studio_db import add_scan_folder
-        folder = add_scan_folder(str(path))
+        from storage.studio_db import add_scan_folder_with_status
+
+        folder, inserted = add_scan_folder_with_status(str(path))
+        if inserted or refresh_index:
+            from core.inference.local_model_resolver import invalidate_index, warm_index_soon
+            invalidate_index()
+            warm_index_soon()
         return True, str(folder.get("path") or path)
     except Exception as exc:
         logger.warning("Could not register export scan folder %s: %s", path, exc)
         return False, None
 
 
-def _export_details(output_path: Optional[str]) -> Optional[Dict[str, Any]]:
+def _export_details(
+    output_path: Optional[str], *, refresh_index: bool = False
+) -> Optional[Dict[str, Any]]:
     """Return relative export paths, keeping external absolute paths visible."""
     if not output_path:
         return None
@@ -272,13 +388,14 @@ def _export_details(output_path: Optional[str]) -> Optional[Dict[str, Any]]:
         from utils.paths.storage_roots import exports_root
 
         path = Path(output_path)
-        # If it's outside exports_root, return the full absolute path
-        # so users can find their files on a different drive.
+        # Outside exports_root, so return the full absolute path and users can find their files on another drive.
         if path.is_absolute():
             try:
                 path.resolve().relative_to(exports_root().resolve())
             except ValueError:
-                registered, registered_path = _try_register_external_export(path)
+                registered, registered_path = _try_register_external_export(
+                    path, refresh_index = refresh_index
+                )
                 return {
                     "output_path": str(path),
                     "scan_folder_registered": registered,
@@ -292,14 +409,17 @@ def _export_details(output_path: Optional[str]) -> Optional[Dict[str, Any]]:
 
 @router.post("/export/merged", response_model = ExportOperationResponse)
 async def export_merged_model(
-    request: ExportMergedModelRequest, current_subject: str = Depends(get_current_subject)
+    request: ExportMergedModelRequest,
+    current_subject: str = Depends(get_current_subject),
+    allow_ambient: bool = Depends(allow_ambient_hf_token),
 ):
     """Export a merged PEFT model (16-bit or 4-bit), optionally pushing to Hub.
 
     Wraps ExportBackend.export_merged_model.
     """
+    validate_job_paths(request.model_dump())
     try:
-        _ensure_export_supported()
+        await _ensure_export_supported()
         backend = get_export_backend()
         success, message, output_path = await asyncio.to_thread(
             backend.export_merged_model,
@@ -307,7 +427,11 @@ async def export_merged_model(
             format_type = request.format_type,
             push_to_hub = request.push_to_hub,
             repo_id = request.repo_id,
-            hf_token = request.hf_token,
+            hf_token = _resolve_export_hf_token(
+                request.hf_token,
+                push_to_hub = request.push_to_hub,
+                allow_ambient = allow_ambient,
+            ),
             private = request.private,
             compressed_method = request.compressed_method,
         )
@@ -318,7 +442,7 @@ async def export_merged_model(
         return ExportOperationResponse(
             success = True,
             message = message,
-            details = _export_details(output_path),
+            details = await asyncio.to_thread(_export_details, output_path, refresh_index = True),
         )
     except HTTPException:
         raise
@@ -326,7 +450,6 @@ async def export_merged_model(
         from utils.transformers_version import SidecarSwapInProgress
 
         if isinstance(e, SidecarSwapInProgress):
-            # Expected loss of the race against a sidecar install: retryable 409.
             raise HTTPException(status_code = 409, detail = str(e))
         logger.error(f"Error exporting merged model: {e}", exc_info = True)
         raise HTTPException(
@@ -337,21 +460,28 @@ async def export_merged_model(
 
 @router.post("/export/base", response_model = ExportOperationResponse)
 async def export_base_model(
-    request: ExportBaseModelRequest, current_subject: str = Depends(get_current_subject)
+    request: ExportBaseModelRequest,
+    current_subject: str = Depends(get_current_subject),
+    allow_ambient: bool = Depends(allow_ambient_hf_token),
 ):
     """Export a non-PEFT base model, optionally pushing to Hub.
 
     Wraps ExportBackend.export_base_model.
     """
+    validate_job_paths(request.model_dump())
     try:
-        _ensure_export_supported()
+        await _ensure_export_supported()
         backend = get_export_backend()
         success, message, output_path = await asyncio.to_thread(
             backend.export_base_model,
             save_directory = request.save_directory,
             push_to_hub = request.push_to_hub,
             repo_id = request.repo_id,
-            hf_token = request.hf_token,
+            hf_token = _resolve_export_hf_token(
+                request.hf_token,
+                push_to_hub = request.push_to_hub,
+                allow_ambient = allow_ambient,
+            ),
             private = request.private,
             base_model_id = request.base_model_id,
         )
@@ -362,7 +492,7 @@ async def export_base_model(
         return ExportOperationResponse(
             success = True,
             message = message,
-            details = _export_details(output_path),
+            details = await asyncio.to_thread(_export_details, output_path, refresh_index = True),
         )
     except HTTPException:
         raise
@@ -370,7 +500,6 @@ async def export_base_model(
         from utils.transformers_version import SidecarSwapInProgress
 
         if isinstance(e, SidecarSwapInProgress):
-            # Expected loss of the race against a sidecar install: retryable 409.
             raise HTTPException(status_code = 409, detail = str(e))
         logger.error(f"Error exporting base model: {e}", exc_info = True)
         raise HTTPException(
@@ -381,14 +510,17 @@ async def export_base_model(
 
 @router.post("/export/gguf", response_model = ExportOperationResponse)
 async def export_gguf(
-    request: ExportGGUFRequest, current_subject: str = Depends(get_current_subject)
+    request: ExportGGUFRequest,
+    current_subject: str = Depends(get_current_subject),
+    allow_ambient: bool = Depends(allow_ambient_hf_token),
 ):
     """Export the current model to GGUF format, optionally pushing to Hub.
 
     Wraps ExportBackend.export_gguf.
     """
+    validate_job_paths(request.model_dump())
     try:
-        _ensure_export_supported()
+        await _ensure_export_supported()
         backend = get_export_backend()
         # A custom path wins; otherwise the imatrix toggle requests the upstream auto-download.
         imatrix_file = request.imatrix_path or (True if request.imatrix else None)
@@ -398,8 +530,13 @@ async def export_gguf(
             quantization_method = request.quantization_method,
             push_to_hub = request.push_to_hub,
             repo_id = request.repo_id,
-            hf_token = request.hf_token,
+            hf_token = _resolve_export_hf_token(
+                request.hf_token,
+                push_to_hub = request.push_to_hub,
+                allow_ambient = allow_ambient,
+            ),
             imatrix_file = imatrix_file,
+            private = request.private,
         )
 
         if not success:
@@ -408,7 +545,7 @@ async def export_gguf(
         return ExportOperationResponse(
             success = True,
             message = message,
-            details = _export_details(output_path),
+            details = await asyncio.to_thread(_export_details, output_path, refresh_index = True),
         )
     except HTTPException:
         raise
@@ -416,7 +553,6 @@ async def export_gguf(
         from utils.transformers_version import SidecarSwapInProgress
 
         if isinstance(e, SidecarSwapInProgress):
-            # Expected loss of the race against a sidecar install: retryable 409.
             raise HTTPException(status_code = 409, detail = str(e))
         logger.error(f"Error exporting GGUF model: {e}", exc_info = True)
         raise HTTPException(
@@ -427,21 +563,28 @@ async def export_gguf(
 
 @router.post("/export/lora", response_model = ExportOperationResponse)
 async def export_lora_adapter(
-    request: ExportLoRAAdapterRequest, current_subject: str = Depends(get_current_subject)
+    request: ExportLoRAAdapterRequest,
+    current_subject: str = Depends(get_current_subject),
+    allow_ambient: bool = Depends(allow_ambient_hf_token),
 ):
     """Export only the LoRA adapter (if the loaded model is PEFT).
 
     Wraps ExportBackend.export_lora_adapter.
     """
+    validate_job_paths(request.model_dump())
     try:
-        _ensure_export_supported()
+        await _ensure_export_supported()
         backend = get_export_backend()
         success, message, output_path = await asyncio.to_thread(
             backend.export_lora_adapter,
             save_directory = request.save_directory,
             push_to_hub = request.push_to_hub,
             repo_id = request.repo_id,
-            hf_token = request.hf_token,
+            hf_token = _resolve_export_hf_token(
+                request.hf_token,
+                push_to_hub = request.push_to_hub,
+                allow_ambient = allow_ambient,
+            ),
             private = request.private,
             gguf = request.gguf,
             gguf_outtype = request.gguf_outtype,
@@ -453,7 +596,7 @@ async def export_lora_adapter(
         return ExportOperationResponse(
             success = True,
             message = message,
-            details = _export_details(output_path),
+            details = await asyncio.to_thread(_export_details, output_path, refresh_index = True),
         )
     except HTTPException:
         raise
@@ -461,7 +604,6 @@ async def export_lora_adapter(
         from utils.transformers_version import SidecarSwapInProgress
 
         if isinstance(e, SidecarSwapInProgress):
-            # Expected loss of the race against a sidecar install: retryable 409.
             raise HTTPException(status_code = 409, detail = str(e))
         logger.error(f"Error exporting LoRA adapter: {e}", exc_info = True)
         raise HTTPException(
@@ -470,17 +612,9 @@ async def export_lora_adapter(
         )
 
 
-# Live export log stream (Server-Sent Events).
-#
-# The export worker's stdout/stderr is piped to the orchestrator as log
-# entries (core/export/worker.py, orchestrator.py); this endpoint streams
-# them to the browser for a live terminal panel during export operations.
-#
-# Shape follows routes/training.py::stream_training_progress: each event
-# carries id/event/data, the stream starts with a `retry:` directive, and
-# `Last-Event-ID` is honored on reconnect.
-
-
+# Live export log SSE. Same shape as stream_training_progress: id/event/data, a leading `retry:`, and
+# Last-Event-ID honoured on reconnect. Worker stdout/stderr reaches the orchestrator as log entries
+# (core/export/worker.py, orchestrator.py); shape follows routes/training.py.
 def _format_sse(
     data: str,
     event: str,
@@ -497,7 +631,9 @@ def _format_sse(
     return "\n".join(lines)
 
 
-@router.get("/logs/stream")
+# POST too: quick tunnels hold a streamed GET until it closes. The hidden GET keeps old clients.
+@router.post("/logs/stream")
+@router.get("/logs/stream", include_in_schema = False)
 async def stream_export_logs(
     request: Request,
     since: Optional[int] = Query(
@@ -522,9 +658,8 @@ async def stream_export_logs(
     """
     backend = get_export_backend()
 
-    # Starting cursor: explicit `since` wins, then Last-Event-ID on reconnect,
-    # else the run-start snapshot so the client sees every line since the run
-    # began even if the SSE connection opened after the export-kickoff POST.
+    # Starting cursor: explicit `since` wins, then Last-Event-ID on reconnect, else the run-start snapshot so the
+    # client sees every line since the run began even if the SSE connection opened after the export-kickoff POST.
     last_event_id = request.headers.get("last-event-id")
     if since is None and last_event_id is not None:
         try:
@@ -546,6 +681,9 @@ async def stream_export_logs(
         idle_since: Optional[float] = None
         try:
             while True:
+                if job_is_foreign(backend):
+                    yield _format_sse('{"status":"busy"}', event = "busy")
+                    return
                 if await request.is_disconnected():
                     return
 
@@ -602,7 +740,7 @@ async def stream_export_logs(
                 pass
 
     return StreamingResponse(
-        event_generator(),
+        account_event_stream(get_export_backend(), event_generator()),
         media_type = "text/event-stream",
         headers = {
             "Cache-Control": "no-cache",

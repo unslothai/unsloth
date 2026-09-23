@@ -19,20 +19,22 @@ import {
   PopoverTrigger,
 } from "@/components/ui/popover";
 import { Progress } from "@/components/ui/progress";
-import { OPTIMIZER_OPTIONS } from "@/config/training";
+import { usePlatformStore } from "@/config/env";
+import { MLX_OPTIMIZER_OPTIONS, OPTIMIZER_OPTIONS } from "@/config/training";
 import { setTrainingCompareHandoff } from "@/features/chat";
 import {
+  getTrainingMethodLabel,
+  type TrainingViewData,
   useTrainingActions,
   useTrainingConfigStore,
   useTrainingRuntimeStore,
 } from "@/features/training";
-import { getTrainingMethodLabel } from "@/features/training/lib/training-methods";
-import type { TrainingViewData } from "@/features/training";
-import type { RunConfigOverride } from "./run-config-override";
 import { useGpuUtilization } from "@/hooks";
 import type { GpuUtilization } from "@/hooks/use-gpu-utilization";
+import { type TranslationKey, useT } from "@/i18n";
 import { cn } from "@/lib/utils";
 import {
+  Alert02Icon,
   ChartAverageIcon,
   DashboardSpeed01Icon,
   FolderExportIcon,
@@ -44,15 +46,17 @@ import {
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { Link, useNavigate } from "@tanstack/react-router";
-import { type ReactElement, type ReactNode, useEffect, useState } from "react";
+import { type ReactElement, type ReactNode, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { ChartSettingsSheet } from "./charts/chart-settings-sheet";
 import {
   formatDuration,
   formatNumber,
   phaseColors,
+  sessionEtaSeconds,
+  sessionStepsPerSecond,
 } from "./progress-section-lib";
-import { useT, type TranslationKey } from "@/i18n";
+import type { RunConfigOverride } from "./run-config-override";
 
 type ConfigGroup = {
   section: string;
@@ -67,6 +71,7 @@ const phaseLabelKeys = {
   loading_dataset: "studio.progress.phase.loadingDataset",
   configuring: "studio.progress.phase.configuring",
   training: "studio.progress.phase.training",
+  finalizing: "studio.progress.phase.finalizing",
   completed: "studio.progress.phase.completed",
   error: "studio.progress.phase.error",
   stopped: "studio.progress.phase.stopped",
@@ -92,6 +97,7 @@ export function ProgressSection({
 }: ProgressSectionProps): ReactElement {
   const t = useT();
   const navigate = useNavigate();
+  const platformDeviceType = usePlatformStore((s) => s.deviceType);
   const trainingMethodLabel = getTrainingMethodLabel(data.trainingMethod);
 
   const config = useTrainingConfigStore(
@@ -127,14 +133,25 @@ export function ProgressSection({
       : Math.round(data.progressPercent);
 
   const elapsed = data.elapsedSeconds;
+  const sessionStartStep = data.sessionStartStep ?? 0;
   const derivedEta =
-    elapsed != null && pct > 0
-      ? Math.round((elapsed * (100 - pct)) / Math.max(pct, 1))
-      : null;
+    sessionStartStep > 0
+      ? sessionEtaSeconds(
+        data.currentStep,
+        sessionStartStep,
+        data.totalSteps,
+        elapsed,
+      )
+      : elapsed != null && pct > 0
+        ? Math.round((elapsed * (100 - pct)) / Math.max(pct, 1))
+        : null;
   const eta = data.etaSeconds ?? derivedEta;
 
-  const stepsPerSecond =
-    elapsed != null && elapsed > 0 ? data.currentStep / elapsed : null;
+  const stepsPerSecond = sessionStepsPerSecond(
+    data.currentStep,
+    sessionStartStep,
+    elapsed,
+  );
   const showHalfwayHint =
     data.phase === "training" && pct >= 50 && pct < 100;
   const showCompletedHint = data.phase === "completed";
@@ -143,8 +160,7 @@ export function ProgressSection({
     await navigate({ to: "/chat" });
   };
 
-  // A finished run can be exported to GGUF: deep-link to the Export page with
-  // this run preselected (its output-dir basename is the export model name).
+  // A finished run can be exported to GGUF: deep-link to Export with this run preselected.
   const exportRunName = data.outputDir
     ? (data.outputDir.replace(/[/\\]+$/, "").split(/[/\\]/).pop() || null)
     : null;
@@ -172,8 +188,7 @@ export function ProgressSection({
     ? data.currentGradNorm
     : (lastValue(data.gradNormHistory) ?? data.currentGradNorm);
 
-  // Prefer the run's saved snapshot when present (#6853). Live falls back to the
-  // editable form store until it loads; History shows blanks, never live form values.
+  // Prefer the run's saved snapshot when present (#6853); History shows blanks, never form values.
   const cfg = configOverride ?? (isHistorical ? undefined : config);
   const cfgEpochs = cfg?.epochs;
   const cfgBatchSize = cfg?.batchSize;
@@ -187,9 +202,16 @@ export function ProgressSection({
   const cfgLoraDropout = cfg?.loraDropout;
   const cfgLoraVariant = cfg?.loraVariant;
 
+  // Mirror the training form: on Mac the MLX backend runs CUDA optimizers as AdamW.
+  const effectiveOptimizer =
+    platformDeviceType === "mac" &&
+    OPTIMIZER_OPTIONS.some((o) => o.value === cfgOptimizerType)
+      ? "adamw"
+      : cfgOptimizerType;
   const optimizerLabel =
-    OPTIMIZER_OPTIONS.find((o) => o.value === cfgOptimizerType)?.label ??
-    cfgOptimizerType;
+    [...OPTIMIZER_OPTIONS, ...MLX_OPTIMIZER_OPTIONS].find(
+      (o) => o.value === effectiveOptimizer,
+    )?.label ?? effectiveOptimizer;
 
   const configItems: ConfigGroup[] = [
     {
@@ -258,21 +280,21 @@ export function ProgressSection({
         <div className="flex flex-col gap-4">
           <div className="flex flex-wrap items-center gap-2">
             <span
-              className={`rounded-full px-2.5 py-1 text-[10px] font-semibold ${phaseColors[data.phase]}`}
+              className={`rounded-full px-2.5 py-1 text-ui-10 font-semibold ${phaseColors[data.phase]}`}
             >
               {t(phaseLabelKeys[data.phase])}
             </span>
             {data.projectName && (
-              <span className="rounded-full border border-border/60 px-2.5 py-1 text-[10px] font-medium text-foreground/80">
+              <span className="rounded-full border border-border/60 px-2.5 py-1 text-ui-10 font-medium text-foreground/80">
                 {data.projectName}
               </span>
             )}
-            <span className="text-[10px] tabular-nums text-muted-foreground">
+            <span className="text-ui-10 tabular-nums text-muted-foreground">
               {t("studio.progress.epoch", {
                 value: formatNumber(data.currentEpoch, 2),
               })}
             </span>
-            <span className="rounded-full border border-border/60 px-2.5 py-1 text-[10px] font-medium tabular-nums text-muted-foreground">
+            <span className="rounded-full border border-border/60 px-2.5 py-1 text-ui-10 font-medium tabular-nums text-muted-foreground">
               {t("studio.progress.percentComplete", { percent: pct })}
             </span>
           </div>
@@ -287,7 +309,7 @@ export function ProgressSection({
               </span>
               <span>{pct}%</span>
             </div>
-            <Progress value={pct} className="h-2 bg-foreground/5" />
+            <Progress value={pct} className="h-2 bg-[color-mix(in_oklab,var(--foreground)_calc(5%*var(--contrast-wash-gain,1)),transparent)]" />
           </div>
 
           {!isHistorical && (
@@ -302,6 +324,25 @@ export function ProgressSection({
             <p className="rounded-2xl border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs text-red-500 leading-relaxed">
               {data.error}
             </p>
+          )}
+
+          {data.warnings.length > 0 && (
+            <div
+              aria-live="polite"
+              className="flex gap-2 rounded-2xl border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-xs leading-relaxed text-amber-700 dark:text-amber-300"
+            >
+              <HugeiconsIcon
+                icon={Alert02Icon}
+                className="mt-0.5 size-4 shrink-0"
+              />
+              <ul className="min-w-0 space-y-1">
+                {data.warnings.map((warning) => (
+                  <li key={warning} className="break-words">
+                    {warning}
+                  </li>
+                ))}
+              </ul>
+            </div>
           )}
 
           <div
@@ -374,14 +415,9 @@ function LiveGpuPanel({
         ? [gpuData]
         : [];
 
-  useEffect(() => {
-    if (selectedGpu > 0 && selectedGpu >= gpus.length) {
-      setSelectedGpu(0);
-    }
-  }, [gpus.length, selectedGpu]);
-
   const gpuCount = gpus.length;
-  const currentGpu: Partial<GpuUtilization> = gpus[selectedGpu] || gpus[0] || {};
+  const selectedGpuIndex = selectedGpu >= 0 && selectedGpu < gpuCount ? selectedGpu : 0;
+  const currentGpu: Partial<GpuUtilization> = gpus[selectedGpuIndex] || {};
 
   return (
     <div className="flex flex-col gap-3">
@@ -392,9 +428,11 @@ function LiveGpuPanel({
           </p>
           {gpuCount > 1 && (
             <select
-              value={selectedGpu}
+              value={selectedGpuIndex}
               onChange={(e) => setSelectedGpu(Number(e.target.value))}
-              className="h-6 cursor-pointer rounded-md border border-border bg-popover px-1.5 py-0.5 text-[11px] text-popover-foreground outline-none hover:bg-muted focus:border-ring transition-colors font-medium appearance-none"
+              // At the 16px coarse-pointer floor a 24px box clips descenders, and a long
+              // device name widens the row past the viewport.
+              className="h-6 cursor-pointer rounded-md border border-border bg-popover px-1.5 py-0.5 text-ui-11 text-popover-foreground outline-none hover:bg-muted focus:border-ring transition-colors font-medium appearance-none pointer-coarse:h-auto pointer-coarse:min-w-0 pointer-coarse:max-w-full"
               title="Select GPU"
             >
               {gpus.map((device, index) => (
@@ -409,7 +447,7 @@ function LiveGpuPanel({
             </select>
           )}
         </div>
-        <span className="text-[11px] text-muted-foreground">
+        <span className="text-ui-11 text-muted-foreground">
           {t("studio.progress.live")}
         </span>
       </div>
@@ -527,7 +565,7 @@ function ConfigPopoverButton({
           <p className="text-xs font-semibold">{t("studio.progress.configLabel")}</p>
           {configItems.map((group) => (
             <div key={group.section} className="flex flex-col gap-1">
-              <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+              <p className="text-ui-10 font-semibold uppercase tracking-wider text-muted-foreground">
                 {group.section}
               </p>
               {group.rows.map(([label, value]) => (
@@ -628,7 +666,7 @@ function MilestoneCallout({
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           {!showCompletedHint && (
-            <p className="text-[10px] font-medium uppercase tracking-[0.12em] text-muted-foreground">
+            <p className="text-ui-10 font-medium uppercase tracking-[0.12em] text-muted-foreground">
               {t("studio.training.milestone")}
             </p>
           )}
@@ -644,7 +682,7 @@ function MilestoneCallout({
           </p>
         </div>
         {!showCompletedHint && (
-          <span className="rounded-full border border-border/60 bg-background/80 px-2 py-0.5 text-[10px] font-medium text-muted-foreground">
+          <span className="rounded-full border border-border/60 bg-background/80 px-2 py-0.5 text-ui-10 font-medium text-muted-foreground">
             50%+
           </span>
         )}
@@ -674,7 +712,7 @@ function MetricStat({
 }): ReactElement {
   return (
     <div className="min-w-0">
-      <p className="text-[11px] text-muted-foreground">{label}</p>
+      <p className="text-ui-11 text-muted-foreground">{label}</p>
       <p
         className={`mt-1 text-base font-semibold tabular-nums ${valueClassName ?? ""}`}
       >

@@ -1,16 +1,15 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Curated MCP tools for driving an Unsloth Studio instance.
-
-The MCP surface deliberately wraps the existing Unsloth services instead of
-duplicating training or export logic. It is opt-in because several tools can
-start GPU work or write model artifacts.
+"""Curated MCP tools for driving an Unsloth Studio instance. The MCP surface deliberately wraps the existing
+Unsloth services instead of duplicating training or export logic. It is opt-in because several tools can start
+GPU work or write model artifacts.
 """
 
 from __future__ import annotations
 
 import hmac
+import asyncio
 from typing import Any
 
 from fastmcp import FastMCP
@@ -26,8 +25,8 @@ class BearerTokenMiddleware:
             # A non-ASCII token cannot be sent in an HTTP header; reject it here.
             raise ValueError("Unsloth MCP bearer token must contain ASCII characters only")
         self.app = app
-        # Compare on raw header bytes: str hmac.compare_digest raises on non-ASCII
-        # input, which would surface as a 500 instead of a clean 401.
+        # Compare on raw header bytes: str hmac.compare_digest raises on non-ASCII input, which would
+        # surface as a 500 instead of a clean 401.
         self.expected = token.encode("utf-8")
 
     async def __call__(self, scope: dict[str, Any], receive: Any, send: Any) -> None:
@@ -74,10 +73,8 @@ def _dump(value: Any) -> Any:
 
 
 def _clamp(value: int, low: int, high: int) -> int:
-    """Clamp an MCP-supplied integer into an inclusive range.
-
-    MCP tools call the Unsloth route functions directly, which skips FastAPI's
-    Query(ge=, le=) validation, so we re-apply the same bounds here.
+    """Clamp an MCP-supplied integer into an inclusive range. MCP tools call the Unsloth route functions
+    directly, which skips FastAPI's Query(ge=, le=) validation, so we re-apply the same bounds here.
     """
     return max(low, min(value, high))
 
@@ -111,7 +108,8 @@ def create_studio_mcp() -> FastMCP:
             "training": _dump(training),
             "export": _dump(export),
             "inference": _dump(inference),
-            "hardware": get_gpu_utilization(),
+            # Off-loop: reaches hardware detection, which blocks on the warm's torch import.
+            "hardware": await asyncio.to_thread(get_gpu_utilization),
         }
 
     @mcp.tool
@@ -137,15 +135,18 @@ def create_studio_mcp() -> FastMCP:
         from routes.training import start_training as start
 
         request = TrainingStartRequest.model_validate(config)
-        # Pass via_api_key explicitly (a direct call leaves it a Depends object).
-        # MCP drives Unsloth like the UI session, so it coexists and frees VRAM.
-        return _dump(await start(request, current_subject = "mcp", via_api_key = False))
+        return _dump(await start(request, current_subject = "mcp", via_api_key = True))
 
     @mcp.tool
-    async def stop_training(save: bool = True) -> dict[str, Any]:
-        """Ask the active training process to stop at its next safe checkpoint."""
+    async def stop_training(expected_job_id: str, save: bool = True) -> dict[str, Any]:
+        """Stop the identified training job at its next safe checkpoint."""
         from routes.training import TrainingStopRequest, stop_training as stop
-        return _dump(await stop(TrainingStopRequest(save = save), current_subject = "mcp"))
+        return _dump(
+            await stop(
+                TrainingStopRequest(save = save, expected_job_id = expected_job_id),
+                current_subject = "mcp",
+            )
+        )
 
     @mcp.tool
     async def list_training_runs(limit: int = 50, offset: int = 0) -> dict[str, Any]:
@@ -163,7 +164,9 @@ def create_studio_mcp() -> FastMCP:
         from models.data_recipe import RecipePayload
         from routes.data_recipe.validate import validate
 
-        return _dump(validate(RecipePayload(recipe = recipe)))
+        # Direct call, so the ViaApiKey dependency never runs and its `= False` default would read as a UI
+        # session; this surface is a remote static bearer.
+        return _dump(validate(RecipePayload(recipe = recipe), via_api_key = True))
 
     @mcp.tool
     def get_recipe_job_status(job_id: str) -> dict[str, Any]:
@@ -189,7 +192,7 @@ def create_studio_mcp() -> FastMCP:
     async def load_checkpoint(
         checkpoint_path: str,
         max_seq_length: int = 2048,
-        load_in_4bit: bool = True,
+        load_in_4bit: bool | None = None,
         trust_remote_code: bool = False,
         approved_remote_code_fingerprint: str | None = None,
         hf_token: str | None = None,
@@ -200,20 +203,24 @@ def create_studio_mcp() -> FastMCP:
         inference; it does not unload them, so a load can fail with a clear
         out-of-memory error if the GPU is already full. Pass hf_token to load a
         gated checkpoint, and approved_remote_code_fingerprint to retry a
-        trust_remote_code load that was blocked pending review.
+        trust_remote_code load that was blocked pending review. Leave
+        load_in_4bit unset to load full fine-tunes in 16-bit and adapters in
+        4-bit.
         """
         from models import LoadCheckpointRequest
         from routes.export import load_checkpoint as load
 
+        # Omit an unset load_in_4bit so the route can pick 16-bit for a full fine-tune.
+        optional = {} if load_in_4bit is None else {"load_in_4bit": load_in_4bit}
         request = LoadCheckpointRequest(
             checkpoint_path = checkpoint_path,
             max_seq_length = max_seq_length,
-            load_in_4bit = load_in_4bit,
             trust_remote_code = trust_remote_code,
             approved_remote_code_fingerprint = approved_remote_code_fingerprint,
             hf_token = hf_token,
+            **optional,
         )
-        return _dump(await load(request, current_subject = "mcp"))
+        return _dump(await load(request, current_subject = "mcp", allow_ambient = False))
 
     @mcp.tool
     async def export_gguf(
@@ -224,6 +231,7 @@ def create_studio_mcp() -> FastMCP:
         hf_token: str | None = None,
         imatrix: bool = False,
         imatrix_path: str | None = None,
+        private: bool = False,
     ) -> dict[str, Any]:
         """Export the loaded model to GGUF using Unsloth's existing path validation.
 
@@ -243,8 +251,9 @@ def create_studio_mcp() -> FastMCP:
             hf_token = hf_token,
             imatrix = imatrix,
             imatrix_path = imatrix_path,
+            private = private,
         )
-        return _dump(await export(request, current_subject = "mcp"))
+        return _dump(await export(request, current_subject = "mcp", allow_ambient = False))
 
     return mcp
 

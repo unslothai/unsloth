@@ -43,6 +43,14 @@ def _patch(monkeypatch, *, torch: bool, device, apple: bool):
 def test_cpu_with_torch_unsupported_no_accelerator(monkeypatch):
     # PyTorch present but no accelerator: unsupported with no_accelerator, not "PyTorch missing".
     _patch(monkeypatch, torch = True, device = hw.DeviceType.CPU, apple = False)
+    # Both branches below sit AFTER the gpu-present-but-unusable one, so they are only
+    # reachable on a host with no accelerator at all. The verdict is module state that
+    # detection writes and that current_chat_only_verdict() re-derives from a 60 second
+    # inventory cache, so without pinning it here this reads whatever an earlier test in
+    # the same worker left behind: a run that has already faked an NVIDIA host answers
+    # "torch_cpu_build" and never reaches the branch being asserted. The rest of this file
+    # already pins the verdict wherever it matters.
+    monkeypatch.setattr(hw, "current_chat_only_verdict", lambda: ("no_gpu", None))
     cap = hw.export_capability()
     assert cap["export_supported"] is False
     assert cap["export_unsupported_reason"] == "no_accelerator"
@@ -72,6 +80,14 @@ def test_mlx_without_torch_supports_export(monkeypatch):
 
 def test_no_torch_non_apple_reports_pytorch_missing(monkeypatch):
     _patch(monkeypatch, torch = False, device = hw.DeviceType.CPU, apple = False)
+    # Both branches below sit AFTER the gpu-present-but-unusable one, so they are only
+    # reachable on a host with no accelerator at all. The verdict is module state that
+    # detection writes and that current_chat_only_verdict() re-derives from a 60 second
+    # inventory cache, so without pinning it here this reads whatever an earlier test in
+    # the same worker left behind: a run that has already faked an NVIDIA host answers
+    # "torch_cpu_build" and never reaches the branch being asserted. The rest of this file
+    # already pins the verdict wherever it matters.
+    monkeypatch.setattr(hw, "current_chat_only_verdict", lambda: ("no_gpu", None))
     cap = hw.export_capability()
     assert cap["export_supported"] is False
     assert cap["export_unsupported_reason"] == "pytorch_not_installed"
@@ -86,6 +102,17 @@ def test_apple_without_mlx_reports_mlx_unavailable(monkeypatch):
         assert cap["export_supported"] is False
         assert cap["export_unsupported_reason"] == "mlx_unavailable"
         assert "MLX" in cap["export_unsupported_message"]
+
+
+def test_apple_no_torch_install_reports_no_torch(monkeypatch):
+    # GGUF-only by request: the message must not send the user to `unsloth studio update`.
+    _patch(monkeypatch, torch = False, device = hw.DeviceType.CPU, apple = True)
+    monkeypatch.setattr(hw, "current_chat_only_verdict", lambda: ("no_torch", None))
+    cap = hw.export_capability()
+    assert cap["export_supported"] is False
+    assert cap["export_unsupported_reason"] == "no_torch"
+    assert "--no-torch" in cap["export_unsupported_message"]
+    assert "unsloth studio update" not in cap["export_unsupported_message"]
 
 
 # -- import safety without PyTorch --------------------------------------------------------------
@@ -138,9 +165,9 @@ def test_main_endpoints_expose_export_capability():
 
 def test_routes_guard_mutating_endpoints():
     r = _src("routes/export.py")
-    assert "def _ensure_export_supported()" in r
+    assert "async def _ensure_export_supported()" in r
     # load + all four export endpoints call the guard.
-    assert r.count("_ensure_export_supported()") >= 6
+    assert r.count("await _ensure_export_supported()") >= 5
 
 
 def test_export_methods_check_runtime():
@@ -154,3 +181,34 @@ def test_export_methods_check_runtime():
 def test_export_capability_reads_no_torch_helper():
     cap = _func_src("utils/hardware/hardware.py", "export_capability")
     assert "_has_torch()" in cap and "DeviceType.MLX" in cap and "is_apple_silicon()" in cap
+
+
+def test_a_failed_detection_is_reported_as_such(monkeypatch):
+    """Do not send the user to fix something that is not wrong. ensure_hardware_detected()
+    records CPU + "detection_failed" when the probe raises, so the host looks CPU-only to
+    export_capability; reporting no_accelerator (or pytorch_not_installed) there points the
+    remediation at hardware or an install that may both be fine."""
+    from utils.hardware import hardware as hw
+
+    monkeypatch.setattr(hw, "get_device", lambda: hw.DeviceType.CPU)
+    monkeypatch.setattr(hw, "CHAT_ONLY_REASON", "detection_failed")
+
+    cap = hw.export_capability()
+
+    assert cap["export_supported"] is False
+    assert cap["export_unsupported_reason"] == "detection_failed"
+    assert "detection failed" in cap["export_unsupported_message"].lower()
+
+
+def test_a_genuinely_cpu_only_host_still_says_no_accelerator(monkeypatch):
+    """The new branch must not swallow the case it sits in front of."""
+    from utils.hardware import hardware as hw
+
+    monkeypatch.setattr(hw, "get_device", lambda: hw.DeviceType.CPU)
+    monkeypatch.setattr(hw, "CHAT_ONLY_REASON", "no_gpu")
+    monkeypatch.setattr(hw, "is_apple_silicon", lambda: False)
+    monkeypatch.setattr(hw, "_has_torch", lambda: True)
+
+    cap = hw.export_capability()
+
+    assert cap["export_unsupported_reason"] == "no_accelerator"

@@ -12,9 +12,15 @@ import {
 import { MascotImg } from "@/components/mascot-img";
 import { Button } from "@/components/ui/button";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
+import { downloadFile, isDownloadCancelled } from "@/lib/native-files";
+import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
-import { CopyIcon, EyeIcon, Maximize2Icon, XIcon } from "lucide-react";
-import { Download01Icon } from "@hugeicons/core-free-icons";
+import { EyeIcon, XIcon } from "lucide-react";
+import {
+  Copy01Icon,
+  Download01Icon,
+  ExpandIcon,
+} from "@hugeicons/core-free-icons";
 import { Tick02Icon } from "@/lib/tick-icon";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
@@ -28,7 +34,7 @@ import { Streamdown } from "streamdown";
 import { ArtifactHtmlFrame, type ArtifactViewMode } from "./html-frame";
 import { useChatArtifactsStore } from "./store";
 import type { ChatArtifact } from "./types";
-import { getArtifactFilename } from "./types";
+import { buildArtifactSourceKey, getArtifactFilename } from "./types";
 
 const COPY_RESET_MS = 2000;
 const artifactSourceCodePlugin = createCodePlugin({
@@ -43,9 +49,9 @@ function buildHtmlFence(source: string): string {
   const fence = "`".repeat(longestBacktickRun + 1);
   return `${fence}html\n${source}\n${fence}`;
 }
-// Sandboxed canvas iframes are deliberately outside the overlay focus trap:
-// granting same-origin sandbox privileges would weaken isolation, so reaching
-// interactive canvas content via keyboard is a known sandbox limitation.
+// Sandboxed canvas iframes are deliberately outside the overlay focus trap: granting same-origin
+// sandbox privileges would weaken isolation, so reaching interactive canvas content via keyboard
+// is a known sandbox limitation.
 const FOCUSABLE_SELECTOR =
   'a[href], button:not([disabled]), textarea:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
@@ -91,18 +97,6 @@ function ArtifactGeneratingPanel() {
   );
 }
 
-function downloadTextFile(filename: string, text: string): void {
-  const blob = new Blob([text], { type: "text/html;charset=utf-8" });
-  const url = URL.createObjectURL(blob);
-  const anchor = document.createElement("a");
-  anchor.href = url;
-  anchor.download = filename;
-  document.body.appendChild(anchor);
-  anchor.click();
-  document.body.removeChild(anchor);
-  window.setTimeout(() => URL.revokeObjectURL(url), 0);
-}
-
 export function ArtifactSurface({
   artifact,
   variant,
@@ -120,6 +114,7 @@ export function ArtifactSurface({
   const [copied, setCopied] = useState(false);
   const copyResetRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const surfaceRef = useRef<HTMLElement>(null);
+  const closeButtonRef = useRef<HTMLButtonElement>(null);
   const previousFocusRef = useRef<Element | null>(null);
   const filename = getArtifactFilename(artifact);
   const sourceMarkdown = useMemo(
@@ -205,9 +200,26 @@ export function ArtifactSurface({
       className={cn(
         "relative flex min-h-0 flex-col bg-background",
         variant === "panel"
-          ? "artifact-panel-shell mx-2 mt-[72px] mb-8 h-[calc(100%_-_104px)] overflow-visible rounded-[28px] border-t border-border/70 bg-card/95"
-          : "h-[min(92vh,900px)] w-[min(96vw,1200px)] overflow-hidden rounded-2xl border border-border shadow-xl",
+          ? "artifact-panel-shell mx-2 mb-8 overflow-visible rounded-[28px] border-t border-border/70 bg-card/95"
+          : "h-[min(92dvh,900px)] w-[min(96vw,1200px)] overflow-hidden rounded-2xl border border-border shadow-xl",
       )}
+      // The chat-model notice is an absolute child of the chat content container, so it spans this
+      // column too, not just the thread pane. Its height is 0 whenever it is off screen, which leaves
+      // the geometry this panel has always had. Both edges move, or the panel overflows the bottom.
+      style={
+        variant === "panel"
+          ? {
+              // 90 above and 32 below, the same 32 the shell's mb-8 draws, so
+              // the three move together with the UI font size. The content
+              // inset inside the 90 is the window's titlebar band, which does
+              // not scale, so only the header and gap above the panel do.
+              marginTop:
+                "calc(var(--studio-content-top-inset, 0px) + (90px - var(--studio-content-top-inset, 0px)) * var(--ui-space-scale, 1) + var(--studio-chat-notice-height, 0px))",
+              height:
+                "calc(100% - var(--studio-content-top-inset, 0px) - (122px - var(--studio-content-top-inset, 0px)) * var(--ui-space-scale, 1) - var(--studio-chat-notice-height, 0px))",
+            }
+          : undefined
+      }
       aria-label={`${artifact.title} canvas`}
     >
       <header
@@ -265,7 +277,19 @@ export function ArtifactSurface({
             size="icon"
             className="size-8"
             disabled={isLoadingArtifact || !hasArtifactCode}
-            onClick={() => downloadTextFile(filename, artifact.code)}
+            onClick={() => {
+              // Route through the native save dialog on desktop; the plain blob-anchor download is silently
+              // dropped by the Tauri WebView2.
+              void downloadFile(
+                artifact.code,
+                filename,
+                "text/html;charset=utf-8",
+              ).catch((err) => {
+                if (!isDownloadCancelled(err)) {
+                  toast.error("Failed to save canvas HTML");
+                }
+              });
+            }}
             aria-label="Download canvas HTML"
           >
             <HugeiconsIcon icon={Download01Icon} className="size-4" />
@@ -282,7 +306,7 @@ export function ArtifactSurface({
             {copied ? (
               <HugeiconsIcon icon={Tick02Icon} strokeWidth={2} className="size-4" />
             ) : (
-              <CopyIcon className="size-4" />
+              <HugeiconsIcon icon={Copy01Icon} className="size-4" />
             )}
           </Button>
           {variant === "panel" && onOpenFullscreen ? (
@@ -294,10 +318,11 @@ export function ArtifactSurface({
               onClick={onOpenFullscreen}
               aria-label="Open canvas fullscreen"
             >
-              <Maximize2Icon className="size-4" />
+              <HugeiconsIcon icon={ExpandIcon} className="size-4" />
             </Button>
           ) : null}
           <Button
+            ref={closeButtonRef}
             type="button"
             variant="ghost"
             size="icon"
@@ -329,13 +354,16 @@ export function ArtifactSurface({
             code={artifact.code}
             title={artifact.title}
             fill={true}
-            // Network mode only for tool-rendered canvases, never fences.
-            allowNetworkAccess={artifact.source === "tool"}
             className="h-full"
+            actionFocusTargetRef={
+              variant === "overlay" ? closeButtonRef : undefined
+            }
           />
         ) : (
           <div className="h-full overflow-auto text-xs leading-relaxed [&_[data-streamdown=code-block]]:!my-0 [&_[data-streamdown=code-block]]:!gap-0 [&_[data-streamdown=code-block]]:!rounded-none [&_[data-streamdown=code-block]]:!border-0 [&_[data-streamdown=code-block]]:!bg-transparent [&_[data-streamdown=code-block]]:!p-0 [&_[data-streamdown=code-block-body]]:!border-0 [&_[data-streamdown=code-block-body]]:!bg-transparent [&_[data-streamdown=code-block-body]]:!p-0 [&_pre]:!m-0 [&_pre]:!bg-transparent [&_pre]:!p-0 [&_pre]:text-xs [&_pre]:leading-relaxed [&_code]:text-xs">
             <Streamdown
+              // Only computed when the source view is actually on screen.
+              key={buildArtifactSourceKey(artifact)}
               mode="streaming"
               plugins={{ code: artifactSourceCodePlugin }}
               controls={{ code: false }}

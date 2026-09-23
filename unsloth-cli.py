@@ -12,7 +12,7 @@ Usage (most options have sensible defaults; this is an extended example):
     --random_state 3407 --use_rslora --per_device_train_batch_size 4 --gradient_accumulation_steps 8 \
     --warmup_steps 5 --max_steps 400 --learning_rate 2e-6 --logging_steps 1 --optim "adamw_8bit" \
     --weight_decay 0.005 --lr_scheduler_type "linear" --seed 3407 --output_dir "outputs" \
-    --report_to "tensorboard" --save_model --save_path "model" --quantization_method "f16" \
+    --report_to "tensorboard" --save_model --save_path "model" --quantization "f16" \
     --push_model --hub_path "hf/model" --hub_token "your_hf_token"
 
 Run `python unsloth-cli.py --help` for the full list of options.
@@ -109,8 +109,7 @@ def _save_or_push_model(model, tokenizer, args, is_mlx):
         print("Warning: The model is not saved!")
         return
 
-    # Enter the GGUF branch when saving or pushing GGUF, so --push_gguf works
-    # without --save_gguf (the local save is guarded separately below).
+    # Enter the GGUF branch when saving or pushing GGUF, so --push_gguf works without --save_gguf.
     if args.save_gguf or args.push_gguf:
         if not args.save_gguf:
             print("Warning: --save_gguf not set, pushing GGUF to hub without saving locally.")
@@ -189,7 +188,10 @@ def run(args):
 
     is_mlx = _is_mlx_backend(unsloth)
 
-    # Load model and tokenizer
+    # MLX routes get_peft_model to FastMLXModel, which ignores use_dora (plain LoRA).
+    if args.use_dora and is_mlx:
+        raise NotImplementedError("DoRA is not supported for MLX training yet.")
+
     device_map, distributed = _prepare_device_map(is_mlx)
     model, tokenizer = FastLanguageModel.from_pretrained(
         model_name = args.model_name,
@@ -199,7 +201,6 @@ def run(args):
         device_map = device_map,
     )
 
-    # Configure PEFT model
     model = FastLanguageModel.get_peft_model(
         model,
         r = args.r,
@@ -219,6 +220,7 @@ def run(args):
         random_state = args.random_state,
         use_rslora = args.use_rslora,
         loftq_config = args.loftq_config,
+        use_dora = args.use_dora,
     )
 
     alpaca_prompt = """Below is an instruction that describes a task, paired with an input that provides further context. Write a response that appropriately completes the request.
@@ -232,7 +234,7 @@ def run(args):
     ### Response:
     {}"""
 
-    EOS_TOKEN = tokenizer.eos_token  # Must add EOS_TOKEN
+    EOS_TOKEN = tokenizer.eos_token
 
     def formatting_prompts_func(examples):
         instructions = examples["instruction"]
@@ -252,7 +254,6 @@ def run(args):
             )
             dataset = loader.load_from_file(args.raw_text_file)
         elif args.dataset.endswith((".txt", ".md", ".json", ".jsonl")):
-            # Auto-detect local raw text files
             loader = _raw_text_loader_for_backend(RawTextDataLoader, tokenizer, is_mlx)
             dataset = loader.load_from_file(args.dataset)
         else:
@@ -263,20 +264,16 @@ def run(args):
             else:
                 dataset = load_dataset(args.dataset, split = "train")
 
-            # Format structured datasets
             dataset = dataset.map(formatting_prompts_func, batched = True)
         return dataset
 
-    # Load dataset using smart loader
     dataset = load_dataset_smart(args)
     print("Data is formatted and ready!")
 
-    # Configure training arguments
     training_args = _build_sft_config(SFTConfig, args, is_mlx, is_bfloat16_supported())
     if distributed:
         training_args.ddp_find_unused_parameters = False
 
-    # Initialize trainer
     trainer = SFTTrainer(
         model = model,
         processing_class = tokenizer,
@@ -373,6 +370,11 @@ if __name__ == "__main__":
         type = str,
         default = None,
         help = "Configuration for LoftQ",
+    )
+    lora_group.add_argument(
+        "--use_dora",
+        action = "store_true",
+        help = "Use DoRA (Weight-Decomposed LoRA)",
     )
 
     training_group = parser.add_argument_group("🎓 Training Options")

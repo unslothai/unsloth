@@ -45,6 +45,7 @@ sys.modules.setdefault("structlog", _structlog_stub)
 import pytest
 
 from utils import llama_cpp_freshness as fr
+from utils.prebuilt import freshness_flow
 
 
 # Helpers.
@@ -161,6 +162,26 @@ def test_read_install_marker_handles_invalid_json(tmp_path):
     assert fr.read_install_marker(str(bin_path)) is None
 
 
+@pytest.mark.parametrize(
+    "payload",
+    ["[]", '["cpu"]', '"cuda"', "123", "true", "null"],
+    ids = ["empty-list", "list", "string", "int", "bool", "null"],
+)
+def test_read_install_marker_rejects_non_object_json(tmp_path, payload):
+    """JSON that parses but is not an object must read as "no marker".
+
+    Every caller treats a non-None return as a mapping -- the update planner, the
+    backend picker and crash recovery all reach straight for ``.get`` -- so a marker
+    holding ``["cpu"]`` used to raise AttributeError out of a plain status read
+    instead of degrading to the source-build path a corrupt file deserves.
+    """
+    install_dir = tmp_path / "llama.cpp"
+    install_dir.mkdir(parents = True)
+    (install_dir / "UNSLOTH_PREBUILT_INFO.json").write_text(payload)
+    bin_path = _fake_binary(install_dir, layout = "root")
+    assert fr.read_install_marker(str(bin_path)) is None
+
+
 def test_read_install_marker_handles_none_path():
     assert fr.read_install_marker(None) is None
 
@@ -185,8 +206,70 @@ def test_latest_published_release_uses_disk_cache(monkeypatch):
 
 
 def test_latest_published_release_returns_none_on_network_failure(monkeypatch):
-    monkeypatch.setattr(fr, "_fetch_latest_release_tag", lambda repo, timeout = 5.0: None)
+    calls = []
+
+    def _failed_fetch(repo, timeout = 5.0):
+        calls.append(repo)
+        return None
+
+    monkeypatch.setattr(fr, "_fetch_latest_release_tag", _failed_fetch)
     assert fr.latest_published_release("unslothai/llama.cpp") is None
+    assert fr.latest_published_release("unslothai/llama.cpp") is None
+    assert calls == ["unslothai/llama.cpp"]
+
+
+def test_latest_published_release_retries_after_failure_ttl(monkeypatch):
+    wall_now = [1000.0]
+    monotonic_now = [100.0]
+    calls = []
+
+    monkeypatch.setattr(fr._flow.time, "time", lambda: wall_now[0])
+    monkeypatch.setattr(fr._flow.time, "monotonic", lambda: monotonic_now[0])
+
+    def _fetch(repo, timeout = 5.0):
+        calls.append(repo)
+        return None if len(calls) == 1 else "b9999"
+
+    monkeypatch.setattr(fr, "_fetch_latest_release_tag", _fetch)
+    assert fr.latest_published_release("unslothai/llama.cpp") is None
+    assert fr.latest_published_release("unslothai/llama.cpp") is None
+
+    # A wall-clock rollback must not extend this in-process failure TTL.
+    wall_now[0] -= 500
+    monotonic_now[0] += fr._flow.RELEASE_FAILURE_CACHE_TTL_SECONDS + 1
+    assert fr.latest_published_release("unslothai/llama.cpp") == "b9999"
+    assert calls == ["unslothai/llama.cpp", "unslothai/llama.cpp"]
+
+
+def test_latest_published_release_force_refresh_bypasses_failure_ttl(monkeypatch):
+    calls = []
+
+    def _fetch(repo, timeout = 5.0):
+        calls.append(repo)
+        return None if len(calls) == 1 else "b9999"
+
+    monkeypatch.setattr(fr, "_fetch_latest_release_tag", _fetch)
+    assert fr.latest_published_release("unslothai/llama.cpp") is None
+    assert fr.latest_published_release("unslothai/llama.cpp", force_refresh = True) == "b9999"
+    assert fr.latest_published_release("unslothai/llama.cpp") == "b9999"
+    assert calls == ["unslothai/llama.cpp", "unslothai/llama.cpp"]
+
+
+def test_reset_caches_clears_release_failure_memo(monkeypatch):
+    calls = []
+
+    def _failed_fetch(repo, timeout = 5.0):
+        calls.append(repo)
+        return None
+
+    monkeypatch.setattr(fr, "_fetch_latest_release_tag", _failed_fetch)
+    assert fr.latest_published_release("unslothai/llama.cpp") is None
+    assert fr.latest_published_release("unslothai/llama.cpp") is None
+
+    fr.reset_caches()
+
+    assert fr.latest_published_release("unslothai/llama.cpp") is None
+    assert calls == ["unslothai/llama.cpp", "unslothai/llama.cpp"]
 
 
 def test_latest_published_release_keeps_old_cache_on_transient_failure(monkeypatch, tmp_path):
@@ -196,8 +279,16 @@ def test_latest_published_release_keeps_old_cache_on_transient_failure(monkeypat
     cache_file = cache_dir / "unslothai__llama.cpp.json"
     yesterday = time.time() - 25 * 60 * 60  # > 24h
     cache_file.write_text(json.dumps({"fetched_at": yesterday, "latest_tag": "b9000"}))
-    monkeypatch.setattr(fr, "_fetch_latest_release_tag", lambda repo, timeout = 5.0: None)
+    calls = []
+
+    def _failed_fetch(repo, timeout = 5.0):
+        calls.append(repo)
+        return None
+
+    monkeypatch.setattr(fr, "_fetch_latest_release_tag", _failed_fetch)
     assert fr.latest_published_release("unslothai/llama.cpp") == "b9000"
+    assert fr.latest_published_release("unslothai/llama.cpp") == "b9000"
+    assert calls == ["unslothai/llama.cpp"]
 
 
 # check_prebuilt_freshness end-to-end.
@@ -279,6 +370,24 @@ def test_check_prebuilt_freshness_fails_open_when_github_unreachable(monkeypatch
     assert info["has_marker"] is True
     assert info["stale"] is False
     assert info["latest_tag"] is None
+
+
+def test_check_prebuilt_freshness_skips_github_when_update_checks_disabled(monkeypatch, tmp_path):
+    install_dir = tmp_path / "llama.cpp"
+    _write_marker(install_dir, tag = "b9190")
+    bin_path = _fake_binary(install_dir)
+
+    def _fetch(repo, timeout = 5.0):
+        raise AssertionError("fetched a release despite UNSLOTH_DISABLE_UPDATE_CHECK=1")
+
+    monkeypatch.setattr(fr, "_fetch_latest_release_tag", _fetch)
+    monkeypatch.setenv("UNSLOTH_DISABLE_UPDATE_CHECK", "1")
+    info = fr.check_prebuilt_freshness(str(bin_path))
+    assert info["has_marker"] is True
+    assert info["installed_tag"] == "b9190"
+    assert info["latest_tag"] is None
+    assert info["behind"] is False
+    assert info["stale"] is False
 
 
 def test_check_prebuilt_freshness_handles_unparseable_install_timestamp(monkeypatch, tmp_path):
@@ -396,8 +505,6 @@ def test_check_prebuilt_freshness_downgrade_guard(monkeypatch, tmp_path):
 def test_fetch_latest_release_tag_uses_publish_time(monkeypatch):
     # Resolves newest by published_at (like the installer), skips drafts/prereleases,
     # and does NOT just take GitHub's first/`/releases/latest` item.
-    import urllib.request
-
     class _Resp:
         def __init__(self, payload):
             self._p = json.dumps(payload).encode()
@@ -431,7 +538,7 @@ def test_fetch_latest_release_tag_uses_publish_time(monkeypatch):
             "published_at": "2026-06-12T00:00:00Z",
         },
     ]
-    monkeypatch.setattr(urllib.request, "urlopen", lambda req, timeout = 5.0: _Resp(payload))
+    monkeypatch.setattr(freshness_flow, "auth_safe_open", lambda req, timeout = 5.0: _Resp(payload))
     assert fr._fetch_latest_release_tag("unslothai/llama.cpp") == "b9596-mix-e6f2453"
 
 
@@ -631,3 +738,20 @@ def test_update_size_missing_inputs_fail_open(monkeypatch):
         is None
     )
     assert fr.update_download_size_bytes({"asset": None}, "b9300", "unslothai/llama.cpp") is None
+
+
+@pytest.mark.parametrize("fetch", ["_fetch_latest_release_tag", "_fetch_latest_release_assets"])
+def test_release_fetch_cannot_outlive_its_deadline(monkeypatch, fetch):
+    """urllib applies its timeout per address, so /api/inference/status inherits that
+    multiplication without a wall-clock deadline; one stalled connect stands in for the
+    walk. Both entry points, since they share the fetch."""
+
+    def _stalls(req, timeout = 5.0):
+        time.sleep(30)  # never returns within the deadline
+        raise AssertionError("deadline did not cut the fetch short")
+
+    monkeypatch.setattr(freshness_flow, "auth_safe_open", _stalls)
+    started = time.monotonic()
+    assert getattr(fr, fetch)("unslothai/llama.cpp", timeout = 0.25) is None
+    # Pins the implemented timeout + 1, not merely "faster than the 30s stall".
+    assert time.monotonic() - started < 2.0

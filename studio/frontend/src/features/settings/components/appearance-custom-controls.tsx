@@ -16,8 +16,16 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Slider } from "@/components/ui/slider";
 import { Switch } from "@/components/ui/switch";
+import { NumericValueInput } from "@/features/model-picker/components/numeric-value-input";
 import { type TranslationKey, useT } from "@/i18n";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { toast } from "@/lib/toast";
@@ -47,12 +55,17 @@ import {
   useAppearanceCustomStore,
 } from "../stores/appearance-custom-store";
 import {
+  INTERFACE_SCALE_RANGE,
+  useInterfaceScaleStore,
+} from "../stores/interface-scale-store";
+import {
   type Palette,
   type ResolvedTheme,
   usePalette,
   useTheme,
 } from "../stores/theme-store";
 import { ColorPickerSwatch } from "./color-picker";
+import { normalizeSizeInputDraft } from "./size-input-value";
 
 /* ------------------------------- Colors -------------------------------- */
 
@@ -65,15 +78,15 @@ const PALETTE_DEFAULT_COLORS: Record<
 > = {
   standard: {
     light: { accent: "#17b88b", background: "#fefefd", foreground: "#262626" },
-    dark: { accent: "#17b88b", background: "#181818", foreground: "#ececec" },
+    dark: { accent: "#17b88b", background: "#181818", foreground: "#dfdfdf" },
   },
   classic: {
     light: { accent: "#339cff", background: "#ffffff", foreground: "#1a1c1f" },
-    dark: { accent: "#4dabff", background: "#181818", foreground: "#ececec" },
+    dark: { accent: "#4dabff", background: "#181818", foreground: "#dfdfdf" },
   },
   minimal: {
     light: { accent: "#171717", background: "#ffffff", foreground: "#171717" },
-    dark: { accent: "#ededed", background: "#181818", foreground: "#ededed" },
+    dark: { accent: "#ededed", background: "#181818", foreground: "#dfdfdf" },
   },
 };
 
@@ -130,7 +143,7 @@ const DEFAULT_FONT_NAMES = {
   code: "JetBrains Mono",
 } as const;
 
-/** Fonts Unsloth Studio already ships (bundled @font-face / fontsource). */
+/** Fonts Unsloth already ships (bundled @font-face / fontsource). */
 const BUNDLED_FONTS = [
   "Inter Variable",
   "Hellix",
@@ -322,7 +335,7 @@ function FontSelect({
           type="button"
           aria-label={ariaLabel}
           aria-expanded={open}
-          className="flex h-8 w-48 cursor-pointer items-center justify-between gap-1.5 rounded-full border border-border bg-background px-3.5 text-xs outline-none transition-colors hover:bg-accent/50 focus-visible:border-ring dark:focus-visible:border-transparent dark:focus-visible:bg-white/[0.12] dark:border-transparent dark:bg-white/[0.06] dark:hover:bg-white/10"
+          className="flex h-8 w-48 cursor-pointer items-center justify-between gap-1.5 rounded-full border border-border bg-background px-3.5 text-xs outline-none transition-colors hover:bg-accent/50 focus-visible:border-ring dark:focus-visible:border-transparent dark:focus-visible:bg-[rgb(255_255_255_/_calc(0.12*var(--contrast-wash-gain,1)))] dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))]"
         >
           <span
             className="min-w-0 truncate"
@@ -761,33 +774,31 @@ function useFontImport(onImported: (name: string) => void) {
   return { inputs, requestUpload, requestFolder, importFile };
 }
 
-function FontSizeInput({
+function SizeInput({
   value,
   range,
   onCommit,
   ariaLabel,
+  unit,
 }: {
   value: number | null;
   range: { min: number; max: number; default: number };
   onCommit: (next: number | null) => void;
   ariaLabel: string;
+  unit: string;
 }) {
   const [draft, setDraft] = useState(value === null ? "" : String(value));
   useEffect(() => {
     setDraft(value === null ? "" : String(value));
   }, [value]);
   const commit = () => {
-    const trimmed = draft.trim();
-    if (trimmed === "") {
-      onCommit(null);
-      return;
-    }
-    const parsed = Number.parseInt(trimmed, 10);
-    if (Number.isNaN(parsed)) {
+    const normalized = normalizeSizeInputDraft(draft, range);
+    if (!normalized) {
       setDraft(value === null ? "" : String(value));
       return;
     }
-    onCommit(Math.min(range.max, Math.max(range.min, parsed)));
+    setDraft(normalized.draft);
+    onCommit(normalized.value);
   };
   return (
     <div className="flex items-center gap-1.5">
@@ -809,8 +820,23 @@ function FontSizeInput({
         aria-label={ariaLabel}
         className="h-8 w-20 text-xs"
       />
-      <span className="text-xs text-muted-foreground">px</span>
+      <span className="text-xs text-muted-foreground">{unit}</span>
     </div>
+  );
+}
+
+export function InterfaceScaleRow() {
+  const t = useT();
+  const interfaceScale = useInterfaceScaleStore((s) => s.scale);
+  const setScale = useInterfaceScaleStore((s) => s.setScale);
+  return (
+    <SizeInput
+      value={interfaceScale}
+      range={INTERFACE_SCALE_RANGE}
+      onCommit={(next) => setScale(next ?? INTERFACE_SCALE_RANGE.default)}
+      ariaLabel={t("settings.appearance.custom.interfaceScale.label")}
+      unit="%"
+    />
   );
 }
 
@@ -821,11 +847,12 @@ export function UiFontSizeRow() {
   );
   const patch = useAppearanceCustomStore((s) => s.patch);
   return (
-    <FontSizeInput
+    <SizeInput
       value={uiFontSize}
       range={UI_FONT_SIZE_RANGE}
       onCommit={(next) => patch({ uiFontSize: next })}
       ariaLabel={t("settings.appearance.custom.uiFontSize.label")}
+      unit="px"
     />
   );
 }
@@ -837,11 +864,12 @@ export function CodeFontSizeRow() {
   );
   const patch = useAppearanceCustomStore((s) => s.patch);
   return (
-    <FontSizeInput
+    <SizeInput
       value={codeFontSize}
       range={CODE_FONT_SIZE_RANGE}
       onCommit={(next) => patch({ codeFontSize: next })}
       ariaLabel={t("settings.appearance.custom.codeFontSize.label")}
+      unit="px"
     />
   );
 }
@@ -861,23 +889,63 @@ export function FontSmoothingSwitch() {
 
 /* ------------------------------ Interface ------------------------------- */
 
+export function ChatWidthSelect() {
+  const t = useT();
+  const chatWidth = useAppearanceCustomStore((s) => s.customization.chatWidth);
+  const patch = useAppearanceCustomStore((s) => s.patch);
+  return (
+    <Select
+      value={chatWidth}
+      onValueChange={(value) => {
+        if (value === "standard" || value === "wide" || value === "full") {
+          patch({ chatWidth: value });
+        }
+      }}
+    >
+      <SelectTrigger
+        className="w-40"
+        aria-label={t("settings.appearance.custom.chatWidth.label")}
+      >
+        <SelectValue />
+      </SelectTrigger>
+      <SelectContent>
+        {(["standard", "wide", "full"] as const).map((width) => (
+          <SelectItem key={width} value={width}>
+            {t(`settings.appearance.custom.chatWidth.${width}`)}
+          </SelectItem>
+        ))}
+      </SelectContent>
+    </Select>
+  );
+}
+
+/** Run settings track and field, sized like the other controls in the column. */
 export function ContrastSliderRow() {
   const t = useT();
   const contrast = useAppearanceCustomStore((s) => s.customization.contrast);
   const patch = useAppearanceCustomStore((s) => s.patch);
   return (
-    <div className="flex w-48 items-center gap-3">
+    <div className="flex w-64 items-center gap-3">
       <Slider
         value={[contrast]}
         min={0}
         max={100}
-        step={5}
+        step={1}
         onValueChange={(values: number[]) => patch({ contrast: values[0] })}
+        className="panel-slider"
         aria-label={t("settings.appearance.custom.contrast.label")}
       />
-      <span className="w-8 text-right text-xs tabular-nums text-muted-foreground">
-        {contrast}
-      </span>
+      <NumericValueInput
+        value={contrast}
+        min={0}
+        max={100}
+        step={1}
+        onChange={(value) => patch({ contrast: value })}
+        ariaLabel={t("settings.appearance.custom.contrast.label")}
+        className="panel-field h-8 w-[84px] shrink-0"
+        fixedWidth={true}
+        size={4}
+      />
     </div>
   );
 }
@@ -956,14 +1024,21 @@ export function ResetCustomizationButton() {
   const t = useT();
   const customization = useAppearanceCustomStore((s) => s.customization);
   const resetAll = useAppearanceCustomStore((s) => s.resetAll);
-  const pristine = isDefaultCustomization(customization);
+  const interfaceScale = useInterfaceScaleStore((s) => s.scale);
+  const resetInterfaceScale = useInterfaceScaleStore((s) => s.reset);
+  const pristine =
+    isDefaultCustomization(customization) &&
+    interfaceScale === INTERFACE_SCALE_RANGE.default;
   return (
     <Button
       type="button"
       variant="outline"
       size="sm"
       disabled={pristine}
-      onClick={resetAll}
+      onClick={() => {
+        resetAll();
+        resetInterfaceScale();
+      }}
     >
       {t("settings.appearance.custom.resetAll")}
     </Button>

@@ -9,13 +9,13 @@ import {
   Globe02Icon,
   HelpCircleIcon,
   Logout05Icon,
-  Message01Icon,
   Moon02Icon,
   PaintBrush02Icon,
   PowerIcon,
   Settings02Icon,
-  UserIcon,
+  UserCircleIcon,
 } from "@hugeicons/core-free-icons";
+import { MessageCircleIcon } from "@/lib/hugeicons-derived";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { Reorder, useDragControls } from "motion/react";
 import { Switch } from "@/components/ui/switch";
@@ -32,10 +32,10 @@ const ITEM_META: Record<
   api: { icon: Globe02Icon, labelKey: "shell.navigation.api" },
   darkMode: { icon: Moon02Icon, labelKey: "settings.appearance.sidebarMenu.darkModeToggle" },
   guidedTour: { icon: CursorInfo02Icon, labelKey: "shell.navigation.guidedTour" },
-  profile: { icon: UserIcon, labelKey: "settings.tabs.profile" },
+  profile: { icon: UserCircleIcon, labelKey: "settings.tabs.profile" },
   appearance: { icon: PaintBrush02Icon, labelKey: "settings.tabs.appearance" },
   resources: { icon: CpuIcon, labelKey: "settings.tabs.resources" },
-  chat: { icon: Message01Icon, labelKey: "settings.tabs.chat" },
+  chat: { icon: MessageCircleIcon, labelKey: "settings.tabs.chat" },
   connections: { icon: CloudIcon, labelKey: "settings.tabs.connections" },
 };
 
@@ -45,7 +45,7 @@ function FixedRow({ icon, label }: { icon: IconSvgElement; label: string }) {
       {/* Spacer where the drag handle sits on movable rows. */}
       <span className="size-4" aria-hidden="true" />
       <HugeiconsIcon icon={icon} strokeWidth={1.75} className="size-4" />
-      <span className="text-[13px]">{label}</span>
+      <span className="text-ui-13">{label}</span>
     </div>
   );
 }
@@ -93,7 +93,7 @@ function MovableRow({ item }: { item: SidebarMenuItemPref }) {
         strokeWidth={1.75}
         className="size-4 text-foreground/80"
       />
-      <span className="text-[13px] text-foreground">{t(meta.labelKey)}</span>
+      <span className="text-ui-13 text-foreground">{t(meta.labelKey)}</span>
       <Switch
         className="ml-auto"
         checked={item.visible}

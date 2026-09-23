@@ -1,0 +1,449 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+import assert from "node:assert/strict";
+import test from "node:test";
+
+import {
+  DENSE_QUANT_KINDS,
+  PRECISION_REFUSAL_TITLE,
+  type ResolvedControl,
+  isDenseQuantKind,
+  isPrecisionRefusal,
+  isResolvedHonored,
+  resolvedBadge,
+  resolvedSeedKey,
+  resolvedSelectValue,
+} from "../src/lib/resolved-precision.ts";
+
+const QUANT_OPTIONS = ["auto", "none", "int8", "fp8", "nvfp4", "mxfp8"] as const;
+const toQuantOption = (v: string) =>
+  QUANT_OPTIONS.find((o) => o === v || (o === "none" && v === "off")) ?? null;
+
+test("a declined explicit precision renders a warning badge naming both sides", () => {
+  // The bug: the badge only rendered for source === "auto", so an explicit FP8 the backend
+  // declined showed nothing while the Precision dropdown kept advertising FP8.
+  const resolved: ResolvedControl = {
+    value: "off",
+    requested: "fp8",
+    source: "explicit",
+    status: "fell_back",
+    reason: "the dense bf16 transformer does not fit resident",
+  };
+  const badge = resolvedBadge("transformer_quant", resolved);
+  assert.ok(badge);
+  assert.equal(badge.label, "FP8 → OFF");
+  assert.equal(badge.tone, "warn");
+  assert.match(badge.tooltip, /You requested FP8/);
+  assert.match(badge.tooltip, /does not fit resident/);
+  assert.equal(isResolvedHonored(resolved), false);
+});
+
+test("an honored explicit request renders no badge", () => {
+  const resolved: ResolvedControl = {
+    value: "fp8",
+    requested: "fp8",
+    source: "explicit",
+    status: "applied",
+    reason: "engaged on the dense fast path",
+  };
+  assert.equal(resolvedBadge("transformer_quant", resolved), null);
+  assert.equal(isResolvedHonored(resolved), true);
+});
+
+test("a backend decision still renders the neutral Auto badge", () => {
+  const resolved: ResolvedControl = {
+    value: "off",
+    requested: null,
+    source: "auto",
+    status: "applied",
+    reason: "not engaged (GGUF transformer loaded)",
+  };
+  const badge = resolvedBadge("transformer_quant", resolved);
+  assert.deepEqual(badge, {
+    label: "Auto: OFF",
+    tone: "auto",
+    tooltip: "not engaged (GGUF transformer loaded)",
+  });
+});
+
+test("a control answered in another vocabulary is not reported as a fallback", () => {
+  // memory_mode is REQUESTED as a mode and ENGAGED as an offload policy, so a raw string compare
+  // would call every honored request a fallback. The backend's status field decides.
+  const resolved: ResolvedControl = {
+    value: "sequential",
+    requested: "low_vram",
+    source: "explicit",
+    status: "applied",
+    reason: "planned from measured free VRAM",
+  };
+  assert.equal(isResolvedHonored(resolved), true);
+  assert.equal(resolvedBadge("memory_mode", resolved), null);
+});
+
+test("an older backend without requested/status keeps today's behaviour", () => {
+  // No status field: an explicit control renders nothing, an auto one renders its Auto badge.
+  assert.equal(
+    resolvedBadge("transformer_quant", { value: "int8", source: "explicit", reason: "requested" }),
+    null,
+  );
+  const auto = resolvedBadge("speed_mode", {
+    value: "eager",
+    source: "auto",
+    reason: "per-kind default",
+  });
+  assert.equal(auto?.label, "Auto: EAGER");
+  assert.equal(auto?.tone, "auto");
+});
+
+test("an older backend still flags a mismatch it can see", () => {
+  // requested present but status absent: fall back to comparing, which is right for the precision
+  // controls (they answer in the vocabulary they are asked in).
+  const resolved: ResolvedControl = {
+    value: "off",
+    requested: "fp8",
+    source: "explicit",
+    reason: "",
+  };
+  assert.equal(isResolvedHonored(resolved), false);
+  assert.equal(resolvedBadge("transformer_quant", resolved)?.tone, "warn");
+});
+
+test("a status this build has never heard of is not read as a decline", () => {
+  // Forwards compat the OTHER way: `status` is typed wider than the backend's union precisely so a
+  // newer backend can add a fourth value. Reading everything except "applied" as a failure threw
+  // that away -- an honored FP8 came back as a red "FP8 → FP8" badge, and memory_mode (asked
+  // "low_vram", answered "sequential") as a "LOW_VRAM → SEQUENTIAL" fallback that never happened.
+  for (const status of ["partially_applied", "downgraded", "ok"]) {
+    const quant: ResolvedControl = {
+      value: "fp8",
+      requested: "fp8",
+      source: "explicit",
+      status,
+      reason: "engaged on the dense fast path",
+    };
+    assert.equal(isResolvedHonored(quant), true, status);
+    assert.equal(resolvedBadge("transformer_quant", quant), null, status);
+    // The select still shows the ask, not the engaged value it would have snapped to.
+    assert.equal(resolvedSelectValue(quant, toQuantOption), "fp8", status);
+
+    const memory: ResolvedControl = {
+      value: "sequential",
+      requested: "low_vram",
+      source: "explicit",
+      status,
+      reason: "planned from measured free VRAM",
+    };
+    assert.equal(resolvedBadge("memory_mode", memory), null, status);
+  }
+  // The two known declines keep warning.
+  for (const status of ["fell_back", "unsupported"]) {
+    const resolved: ResolvedControl = {
+      value: "off",
+      requested: "fp8",
+      source: "explicit",
+      status,
+      reason: "the host cannot run it",
+    };
+    assert.equal(isResolvedHonored(resolved), false, status);
+    assert.equal(resolvedBadge("transformer_quant", resolved)?.tone, "warn", status);
+  }
+});
+
+test("every off spelling counts as an honored off request", () => {
+  for (const [requested, value] of [
+    ["none", "off"],
+    ["off", null],
+    ["", "off"],
+  ] as Array<[string, string | null]>) {
+    assert.equal(
+      isResolvedHonored({ value, requested, source: "explicit", reason: "" }),
+      true,
+      `${requested} -> ${value}`,
+    );
+  }
+});
+
+test("cpu_offload compares as a boolean and formats as On/Off", () => {
+  assert.equal(
+    isResolvedHonored({ value: true, requested: true, source: "explicit", reason: "" }),
+    true,
+  );
+  const declined = resolvedBadge("cpu_offload", {
+    value: false,
+    requested: true,
+    source: "explicit",
+    status: "fell_back",
+    reason: "everything fits on the GPU",
+  });
+  assert.equal(declined?.label, "On → Off");
+});
+
+test("the Precision select seeds from the loaded build", () => {
+  // Auto stays auto (the badge names what it resolved to).
+  assert.equal(
+    resolvedSelectValue(
+      { value: "fp8", requested: null, source: "auto", status: "applied", reason: "" },
+      toQuantOption,
+    ),
+    "auto",
+  );
+  // An honored request re-selects itself.
+  assert.equal(
+    resolvedSelectValue(
+      { value: "int8", requested: "int8", source: "explicit", status: "applied", reason: "" },
+      toQuantOption,
+    ),
+    "int8",
+  );
+  // A DECLINED request snaps to what actually engaged, so the dropdown stops advertising it.
+  assert.equal(
+    resolvedSelectValue(
+      { value: "off", requested: "fp8", source: "explicit", status: "fell_back", reason: "" },
+      toQuantOption,
+    ),
+    "none",
+  );
+  // Nothing resolved: keep whatever the user has typed.
+  assert.equal(resolvedSelectValue(null, toQuantOption), null);
+});
+
+test("the Attention select maps the dispatcher's own name back to its option", () => {
+  const toAttentionOption = (v: string) =>
+    (["auto", "native", "cudnn", "flash3", "sage"] as const).find(
+      (o) => o === v || `_native_${o}` === v,
+    ) ?? null;
+  assert.equal(
+    resolvedSelectValue(
+      {
+        value: "_native_cudnn",
+        requested: "cudnn",
+        source: "explicit",
+        status: "applied",
+        reason: "",
+      },
+      toAttentionOption,
+    ),
+    "cudnn",
+  );
+});
+
+test("the reseed key ignores the entries the backend rewrites mid-session", () => {
+  // The reseed effect used to key on JSON.stringify(resolved). The backend mutates that record at
+  // GENERATION time -- speed_mode and attention_backend when the deferred compile profile engages
+  // on the 3rd image, transformer_cache when the step-cache threshold flips -- so the key changed
+  // with no reload behind it and the effect re-ran, overwriting a Precision the user had picked
+  // but not yet loaded.
+  const atLoad: Record<string, ResolvedControl> = {
+    transformer_quant: { value: "off", requested: null, source: "auto", status: "applied", reason: "" },
+    memory_mode: { value: "none", requested: null, source: "auto", status: "applied", reason: "" },
+    attention_backend: { value: "native", requested: null, source: "auto", status: "applied", reason: "" },
+    speed_mode: { value: "deferred", requested: null, source: "auto", status: "applied", reason: "" },
+    transformer_cache: { value: "off", requested: null, source: "auto", status: "applied", reason: "" },
+  };
+  const key = resolvedSeedKey(atLoad);
+
+  // Generation 3: the compile profile engages and the attention upgrade lands (diffusion.py).
+  const afterThirdImage: Record<string, ResolvedControl> = {
+    ...atLoad,
+    speed_mode: { ...atLoad.speed_mode, value: "default", reason: "auto: compiled on the 3rd image" },
+    attention_backend: { ...atLoad.attention_backend, value: "_native_cudnn", reason: "cuDNN upgrade" },
+  };
+  assert.equal(resolvedSeedKey(afterThirdImage), key, "a mid-session compile must not re-seed");
+  assert.notEqual(
+    JSON.stringify(afterThirdImage),
+    JSON.stringify(atLoad),
+    "the record really did change -- serializing it is what re-fired the effect",
+  );
+
+  // A step-cache toggle (both pages) is the same story.
+  const afterCacheToggle: Record<string, ResolvedControl> = {
+    ...atLoad,
+    transformer_cache: { ...atLoad.transformer_cache, value: "fbcache", reason: "auto: 40 steps" },
+  };
+  assert.equal(resolvedSeedKey(afterCacheToggle), key, "a cache toggle must not re-seed");
+
+  // A real reload still re-seeds: the request and the engaged value both move.
+  const afterReapply: Record<string, ResolvedControl> = {
+    ...atLoad,
+    transformer_quant: {
+      value: "off",
+      requested: "fp8",
+      source: "explicit",
+      status: "fell_back",
+      reason: "the dense bf16 transformer does not fit resident",
+    },
+  };
+  assert.notEqual(resolvedSeedKey(afterReapply), key, "a declined Reapply must re-seed");
+
+  // So does a load that honors a new memory mode, or a new attention request.
+  assert.notEqual(
+    resolvedSeedKey({
+      ...atLoad,
+      memory_mode: { value: "sequential", requested: "low_vram", source: "explicit", status: "applied", reason: "" },
+    }),
+    key,
+  );
+  assert.notEqual(
+    resolvedSeedKey({
+      ...atLoad,
+      attention_backend: { value: "_native_cudnn", requested: "cudnn", source: "explicit", status: "applied", reason: "" },
+    }),
+    key,
+  );
+});
+
+test("the reseed key tolerates an empty or absent record", () => {
+  assert.equal(resolvedSeedKey(null), null);
+  assert.equal(resolvedSeedKey(undefined), null);
+  // An older backend sends the record without requested/status; the key is still a stable string.
+  assert.equal(typeof resolvedSeedKey({}), "string");
+  const older = resolvedSeedKey({
+    transformer_quant: { value: "int8", source: "explicit", reason: "requested" },
+  });
+  assert.equal(typeof older, "string");
+  assert.ok(!/undefined|NaN/.test(older ?? ""), older ?? "");
+});
+
+test("a precision refusal is recognised so it can be shown as an actionable toast", () => {
+  const refusal =
+    "transformer_quant='fp8' could not be used: this device cannot run a dense torchao quant " +
+    "(it needs a CUDA GPU in bf16). Choose Auto to let the backend pick the fastest precision " +
+    "this host can run, or Off to run the checkpoint as-is.";
+  assert.equal(isPrecisionRefusal(refusal), true);
+  assert.equal(isPrecisionRefusal("text_encoder_quant='int8' could not be used: nope."), true);
+  assert.equal(isPrecisionRefusal("A diffusion load is already in progress."), false);
+  assert.equal(PRECISION_REFUSAL_TITLE, "Requested precision is not available");
+});
+
+// The supported kinds mirror the backend constant.
+test("the dense-quant kinds are the two the backend quantises", () => {
+  assert.deepEqual([...DENSE_QUANT_KINDS], ["gguf", "pipeline"]);
+  assert.equal(isDenseQuantKind("gguf"), true);
+  assert.equal(isDenseQuantKind("pipeline"), true);
+  assert.equal(isDenseQuantKind("single_file"), false);
+  assert.equal(isDenseQuantKind(" Pipeline "), true);
+  assert.equal(isDenseQuantKind(null), false);
+  assert.equal(isDenseQuantKind(undefined), false);
+  assert.equal(isDenseQuantKind(""), false);
+});
+
+const ENCODER_OPTIONS = ["auto", "fp8", "fp8_dynamic", "int8", "nvfp4"] as const;
+const toEncoderOption = (v: string) =>
+  ENCODER_OPTIONS.find((o) => o === v || (o === "auto" && (v === "none" || v === "off"))) ?? null;
+
+test("the text encoder select follows what the loaded build actually ran", () => {
+  // "off" (and "none", from an older backend) both mean dense, so both seed Default.
+  assert.equal(
+    resolvedSelectValue({ value: "off", source: "auto", reason: "" }, toEncoderOption),
+    "auto",
+  );
+  assert.equal(
+    resolvedSelectValue({ value: "none", source: "auto", reason: "" }, toEncoderOption),
+    "auto",
+  );
+  assert.equal(
+    resolvedSelectValue(
+      { value: "fp8_dynamic", requested: "fp8_dynamic", source: "explicit", status: "applied", reason: "" },
+      toEncoderOption,
+    ),
+    "fp8_dynamic",
+  );
+  // Downgraded: the select follows what engaged, not what was asked.
+  assert.equal(
+    resolvedSelectValue(
+      { value: "fp8", requested: "int8", source: "explicit", status: "fell_back", reason: "int8 needs resident weights" },
+      toEncoderOption,
+    ),
+    "fp8",
+  );
+  assert.equal(
+    resolvedSelectValue(
+      { value: "off", requested: "nvfp4", source: "explicit", status: "fell_back", reason: "no Blackwell GPU" },
+      toEncoderOption,
+    ),
+    "auto",
+  );
+});
+
+test("the reseed key moves when the text encoder build changes, and only then", () => {
+  const atLoad = {
+    transformer_quant: { value: "fp8", requested: "fp8", source: "explicit", status: "applied", reason: "" },
+    text_encoder_quant: { value: "fp8", requested: "fp8", source: "explicit", status: "applied", reason: "" },
+    memory_mode: { value: "balanced", source: "auto", reason: "" },
+    attention_backend: { value: "native", source: "auto", reason: "" },
+  } satisfies Record<string, ResolvedControl>;
+  const key = resolvedSeedKey(atLoad);
+
+  // Same build, new wording: keying on the whole serialized entry re-seeded here and lost the edit.
+  assert.equal(
+    resolvedSeedKey({
+      ...atLoad,
+      text_encoder_quant: { ...atLoad.text_encoder_quant, reason: "re-measured after the first image" },
+    }),
+    key,
+    "a reason rewrite must not re-seed",
+  );
+  assert.notEqual(
+    resolvedSeedKey({
+      ...atLoad,
+      text_encoder_quant: { value: "off", requested: "fp8", source: "explicit", status: "fell_back", reason: "declined" },
+    }),
+    key,
+    "a declined encoder must re-seed",
+  );
+  assert.notEqual(
+    resolvedSeedKey({
+      ...atLoad,
+      text_encoder_quant: { value: "int8", requested: "int8", source: "explicit", status: "applied", reason: "" },
+    }),
+    key,
+  );
+});
+
+// The text-encoder select's own option vocabulary, as images-page.tsx spells it. Kept in step
+// with that file: these two mappings are the only thing standing between "Dense pinned" and
+// "Default", which since the family-default change are no longer the same request.
+const TE_OPTIONS = ["auto", "none", "fp8", "fp8_dynamic", "int8", "nvfp4"] as const;
+const toTeOption = (v: string) =>
+  TE_OPTIONS.find((o) => o === v || (o === "none" && v === "off")) ?? null;
+
+test("an unset text-encoder request reseeds as Default even when a scheme engaged", () => {
+  // The case a naive fix breaks. Once a family default can pick fp8 for a request nobody made,
+  // mapping the ENGAGED value back would pin fp8 into the select, and the next load would send
+  // it explicitly. `source: "auto"` is what keeps this honest, so assert it end to end rather
+  // than trusting the early return to stay.
+  const autoFp8: ResolvedControl = {
+    value: "fp8",
+    requested: null,
+    source: "auto",
+    status: "applied",
+    reason: "selected automatically for qwen-image-2.1 (no text_encoder_quant requested)",
+  };
+  assert.equal(resolvedSelectValue(autoFp8, toTeOption), "auto");
+});
+
+test("a pinned dense text encoder reseeds as Dense, not Default", () => {
+  // The reported bug: "none"/"off" folded into "auto", so the select snapped back to Default
+  // after a dense load and the next reapply omitted the field, silently restoring the family's
+  // fp8 default and changing output.
+  const pinnedDense: ResolvedControl = {
+    value: "off",
+    requested: "none",
+    source: "explicit",
+    status: "applied",
+    reason: "dense bf16 text encoder(s) loaded",
+  };
+  assert.equal(resolvedSelectValue(pinnedDense, toTeOption), "none");
+
+  // A declined scheme ran dense too, and must read as what ACTUALLY ran, same as the
+  // transformer control.
+  const declined: ResolvedControl = {
+    value: "off",
+    requested: "nvfp4",
+    source: "explicit",
+    status: "unsupported",
+    reason: "nvfp4 needs Blackwell sm_100+",
+  };
+  assert.equal(resolvedSelectValue(declined, toTeOption), "none");
+});

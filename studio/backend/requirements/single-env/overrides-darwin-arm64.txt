@@ -1,8 +1,25 @@
-# mlx-vlm / mlx-lm declare transformers>=5.x which conflicts with the
-# main venv's constraints.txt pin transformers==4.57.6 and forces uv to
-# backtrack unsloth. Relax to match the pin -- per-model 5.x routing
-# happens at runtime via the side-car venvs.
-transformers>=4.57.6
+# Keep mlx-vlm / mlx-lm on the same Transformers version as the main Unsloth
+# environment when uv applies their dependency metadata.
+#
+# A window, not a floor. An override replaces EVERY requirement on the package,
+# including unsloth's own transformers<=5.5.0 cap in pyproject, and install.sh's
+# core install is the one uv command that does not also pass constraints.txt. A
+# bare floor therefore let that resolve pick transformers 5.16.1 (the first
+# release wanting tokenizers>=0.23.1) with tokenizers 0.23.2 on macOS arm64;
+# extras-no-deps.txt then pinned transformers back to 5.5.0 --no-deps and left
+# tokenizers stranded, so every `import transformers`, and so every
+# `import mlx_lm`, raised and Apple Silicon came up chat-only.
+#
+# Unlike the huggingface_hub case below, this cannot go unsatisfiable: that one
+# replaced other packages' requirements ON hub while a direct requirement still
+# had to be met, whereas here no requirement on transformers survives to
+# contradict the window. A future mlx-vlm needing a newer transformers gets this
+# one installed instead, which is what an override is for.
+#
+# Keep in lockstep with constraints.txt; tests/studio/install/
+# test_transformers_tokenizers_pair.py fails if the two disagree.
+transformers>=5.5.0,<=5.5.0; python_version >= "3.10"
+transformers>=4.57.6,<=4.57.6; python_version < "3.10"
 
 # mlx-vlm / mlx-lm pull anyio>=4.14, which fights the constraints.txt cap (needed
 # for the 4.14 Python-3.13 streaming cancel-scope RuntimeError, #6483). The -c
@@ -11,8 +28,16 @@ transformers>=4.57.6
 # wins the fight, so force one consistent <4.14 here too.
 anyio<4.14.0
 
-# mlx-lm 0.31.3 regressed QK-norm archs (gemma4 / qwen3_5): strict load_weights
-# rejects q_norm/k_norm, so those checkpoints fail to load. mlx-lm #1242.
-# The override also drops it from transitive resolution; keep the >=0.22.0 floor
-# (mirrors mlx_repair.py _MLX_MIN_VERSIONS) or the resolver could go below it.
-mlx-lm>=0.22.0,!=0.31.3
+# mlx-audio (pulled by mlx-vlm>=0.5.0) declares huggingface_hub>=1.0.
+#
+# On python < 3.10 we are still on the transformers==4.57.6 stack, which needs
+# hub<1.0, and constraints.txt pins hub==0.36.2 there. Without the cap uv
+# silently backtracks mlx-vlm to 0.4.4, dropping newer VLM/audio support, so the
+# cap stays: the resolver must never pair hub 1.x with pinned transformers 4.x.
+#
+# On python >= 3.10 the premise is gone: constraints.txt, studio.txt,
+# no-torch-runtime.txt and the pyproject studio extra take hub 1.x, so a flat
+# <1.0 here is unsatisfiable (macOS-arm only; uv falls back to pip). 1.31.0 is
+# the floor the Diffusers main build in diffusers-main.txt declares.
+huggingface_hub>=1.31.0,<2.0; python_version >= "3.10"
+huggingface_hub>=0.34.0,<1.0; python_version < "3.10"

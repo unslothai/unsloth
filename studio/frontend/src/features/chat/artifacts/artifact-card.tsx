@@ -23,7 +23,7 @@ import {
 } from "./types";
 
 const CARD_BASE =
-  "group/artifact-card relative flex min-h-[52px] cursor-pointer items-center overflow-hidden rounded-lg border border-border/70 bg-muted/15 px-3 py-2 text-left transition-colors hover:bg-muted/25 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring dark:bg-muted/10 dark:hover:bg-muted/20";
+  "group/artifact-card relative flex min-h-[calc(52px*var(--ui-space-scale,1))] cursor-pointer items-center overflow-hidden rounded-lg border border-border/70 bg-muted/15 px-3 py-2 text-left transition-colors hover:bg-muted/25 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring dark:bg-muted/10 dark:hover:bg-muted/20";
 
 export function ArtifactCard({
   code,
@@ -45,8 +45,8 @@ export function ArtifactCard({
   isStreaming?: boolean;
 }) {
   const activeThreadId = useChatRuntimeStore((state) => state.activeThreadId);
-  // Canvas mode collapses the raw code in place, so offer a Code button too.
-  // Diffusion keeps its code inline, so it needs no Code button.
+  // Canvas mode collapses the raw code in place, so offer a Code button too. Diffusion keeps its
+  // code inline, so it needs no Code button.
   const showCodeButton = useChatRuntimeStore(
     (state) => state.artifactsEnabled && !state.loadedIsDiffusion,
   );
@@ -145,12 +145,12 @@ export function ArtifactCard({
             <span className="truncate text-sm font-medium leading-tight text-foreground">
               {isCode ? "HTML Code" : artifact.title}
             </span>
-            <span className="truncate text-[11px] leading-none text-muted-foreground">
+            <span className="truncate text-ui-11 leading-none text-muted-foreground">
               HTML canvas
             </span>
           </span>
           {isStreaming && !isCode ? (
-            <span className="shimmer shrink-0 rounded-full bg-primary/10 px-2 py-0.5 text-[10px] font-medium text-primary motion-reduce:animate-none">
+            <span className="shimmer shrink-0 rounded-full bg-primary/10 px-2 py-0.5 text-ui-10 font-medium text-primary motion-reduce:animate-none">
               Generating
             </span>
           ) : null}

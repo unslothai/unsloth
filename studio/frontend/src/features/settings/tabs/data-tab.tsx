@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { useIsAccountOwner } from "@/features/auth";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -20,109 +21,208 @@ import {
   DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
 import { usePlatformStore } from "@/config/env";
 import {
+  COMBINED_EXPORT_FORMATS_LIST,
   EXPORT_FORMATS_LIST,
   type FineTuneFormat,
   archiveAllChatItems,
   bulkExportConversationsByScope,
   clearAllChats,
   countAllChats,
+  DeleteChatFilesSwitch,
   downloadArchivedChatExport,
   downloadChatExport,
   exportFineTuneJsonl,
-  importConversationsFromFile,
+  importConversationsFromSource,
+  nativeImportSource,
+  fileImportSource,
+  type ImportSource,
+  offerToDeleteKeptSandboxes,
   useChatPreferencesStore,
   useChatRuntimeStore,
   useChatSidebarItems,
 } from "@/features/chat";
+import {
+  LinkedFoldersManager,
+  listKnowledgeBases,
+  useRagAvailabilityStore,
+} from "@/features/rag";
 import { useT } from "@/i18n";
+
+import { isTauri } from "@/lib/api-base";
 import {
   ChevronDownStandardIcon,
   ChevronRightStandardIcon,
 } from "@/lib/chevron-icons";
+import { isDownloadCancelled, pickNativeChatImport } from "@/lib/native-files";
 import { toast } from "@/lib/toast";
 import {
   Archive02Icon,
-  ArrowLeft01Icon,
+  AudioWave01Icon,
   Delete02Icon,
   Download01Icon,
+  FlimSlateIcon,
+  Image03Icon,
   Tick02Icon,
   Upload01Icon,
 } from "@hugeicons/core-free-icons";
+import {
+  ChevronLeftIcon,
+} from "lucide-react";
+import { MessageCircleIcon } from "@/lib/hugeicons-derived";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate, useRouterState } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
 import { ArchivedChatsView } from "../components/archived-chats-dialog";
 import {
-  createFineTuneRecipeFromChats,
-  loadFineTuneDatasetInTrainTab,
-} from "../components/finetune-recipe";
+  type ArchivedMediaKind,
+  ArchivedMediaView,
+} from "../components/archived-media-dialog";
+import { ManageChatsView } from "../components/manage-chats-view";
+import { DocumentsRagSection } from "../components/documents-rag-section";
 import { SettingsRow } from "../components/settings-row";
 import { SettingsSection } from "../components/settings-section";
 import { UploadedFilesView } from "../components/uploaded-files-dialog";
 import { useSettingsDialogStore } from "../stores/settings-dialog-store";
+import {
+  type FineTuneAction,
+  useSettingsPanelPrefsStore,
+} from "../stores/settings-panel-prefs-store";
 
-export function DataTab() {
+// display order, and the guard against a persisted action this build dropped.
+const FINE_TUNE_ACTIONS: FineTuneAction[] = ["export", "train", "recipes"];
+
+// Which subpage an "open the archive" request lands on.
+const SUBPAGE_FOR_SHELF = {
+  chats: "archived",
+  images: "archived-images",
+  videos: "archived-videos",
+  audio: "archived-audio",
+} as const;
+
+export function DataTab({ searchEntry }: { searchEntry?: string }) {
   const t = useT();
+  const isOwner = useIsAccountOwner();
   const navigate = useNavigate();
-  const archivedChatsRequested = useSettingsDialogStore(
-    (s) => s.archivedChatsRequested,
-  );
+  const archivedRequested = useSettingsDialogStore((s) => s.archivedRequested);
   const consumeArchivedChatsRequest = useSettingsDialogStore(
     (s) => s.consumeArchivedChatsRequest,
   );
   const [confirmOpen, setConfirmOpen] = useState(false);
+  // Preselected from the preference, so the dialog shows what is about to
+  // happen and can still be turned off for this one clear.
+  const [deleteFilesOnClear, setDeleteFilesOnClear] = useState(false);
   const [archiveConfirmOpen, setArchiveConfirmOpen] = useState(false);
   // Subpages swap the Data tab body instead of opening nested dialogs.
-  const [subpage, setSubpage] = useState<"main" | "archived" | "files">(
-    archivedChatsRequested ? "archived" : "main",
+  const [subpage, setSubpage] = useState<
+    | "main"
+    | "manage"
+    | "archived"
+    | "archived-images"
+    | "archived-videos"
+    | "archived-audio"
+    | "files"
+  >(
+    searchEntry
+      ? "main"
+      : archivedRequested ? SUBPAGE_FOR_SHELF[archivedRequested] : "main",
   );
   const [count, setCount] = useState<number | null>(null);
   const [exporting, setExporting] = useState(false);
   const [archivedExporting, setArchivedExporting] = useState(false);
   // Gates the archived subpage Export button.
-  const { archivedItems } = useChatSidebarItems({ requireMessages: false });
+  const { archivedItems } = useChatSidebarItems({
+    requireMessages: false,
+    enabled: subpage === "archived",
+  });
   const [clearing, setClearing] = useState(false);
   const [archiving, setArchiving] = useState(false);
   const [fineTuneExporting, setFineTuneExporting] = useState(false);
   const [openingRecipe, setOpeningRecipe] = useState(false);
   const [loadingTraining, setLoadingTraining] = useState(false);
-  // Chat-only hosts redirect /studio back to /chat, so loading a dataset in
-  // the Train tab would upload it and then strand the user; gate the action
-  // the same way the sidebar gates Train.
+  // Chat-only hosts redirect /studio back to /chat, so loading a dataset in the Train tab would
+  // upload it and then strand the user; gate the action the same way the sidebar gates Train.
   const chatOnly = usePlatformStore((s) => s.isChatOnly());
-  const [fineTuneAction, setFineTuneAction] = useState<
-    "train" | "recipes" | "export"
-  >(chatOnly ? "export" : "train");
+  const ragUnavailable = useRagAvailabilityStore((s) => s.isUnavailable());
+  const ragAvailabilityUnknown = useRagAvailabilityStore((s) =>
+    s.availabilityUnknown(),
+  );
+  const storedFineTuneAction = useSettingsPanelPrefsStore(
+    (s) => s.fineTuneAction,
+  );
+  const setFineTuneAction = useSettingsPanelPrefsStore(
+    (s) => s.setFineTuneAction,
+  );
+  const restoredAction = FINE_TUNE_ACTIONS.includes(storedFineTuneAction)
+    ? storedFineTuneAction
+    : "export";
+  // derived, not corrected: a stored "train" returns when chat-only flips off.
+  const fineTuneAction =
+    chatOnly && restoredAction === "train" ? "export" : restoredAction;
   // Chat Completions (OpenAI messages) is the only export format we ship.
   const fineTuneFormat: FineTuneFormat = "openai";
-
-  // The MLX self-heal can flip chat-only while the dialog is open.
+  // Search needs the main-page anchors even when a subpage is already open.
   useEffect(() => {
-    if (chatOnly) {
-      setFineTuneAction((a) => (a === "train" ? "export" : a));
-    }
-  }, [chatOnly]);
-  // Requests can arrive after Data is already mounted (for example from the
-  // archive-all toast), so always switch before consuming the flag.
-  useEffect(() => {
-    if (!archivedChatsRequested) return;
+    const next = searchEntry
+      ? "main"
+      : archivedRequested
+        ? SUBPAGE_FOR_SHELF[archivedRequested]
+        : null;
+    if (!next) return;
     let cancelled = false;
     queueMicrotask(() => {
       if (cancelled) return;
-      setSubpage("archived");
+      setSubpage(next);
       consumeArchivedChatsRequest();
     });
     return () => {
       cancelled = true;
     };
-  }, [archivedChatsRequested, consumeArchivedChatsRequest]);
+  }, [archivedRequested, searchEntry, consumeArchivedChatsRequest]);
+
+  useEffect(() => {
+    if (!ragAvailabilityUnknown) return;
+    let cancelled = false;
+    let retryTimer: number | undefined;
+    let retryDelayMs = 1_000;
+
+    const probeAvailability = async () => {
+      try {
+        await listKnowledgeBases();
+      } catch {
+        if (cancelled) return;
+        retryTimer = window.setTimeout(() => {
+          retryDelayMs = Math.min(retryDelayMs * 2, 30_000);
+          void probeAvailability();
+        }, retryDelayMs);
+      }
+    };
+
+    void probeAvailability();
+    return () => {
+      cancelled = true;
+      if (retryTimer !== undefined) window.clearTimeout(retryTimer);
+    };
+  }, [ragAvailabilityUnknown]);
 
   const confirmDeleteChats = useChatPreferencesStore(
     (state) => state.confirmDeleteChats,
+  );
+  const alwaysDeleteChatFiles = useChatPreferencesStore(
+    (state) => state.alwaysDeleteChatFiles,
+  );
+  const setAlwaysDeleteChatFiles = useChatPreferencesStore(
+    (state) => state.setAlwaysDeleteChatFiles,
   );
   const setConfirmDeleteChats = useChatPreferencesStore(
     (state) => state.setConfirmDeleteChats,
@@ -140,13 +240,34 @@ export function DataTab() {
   });
 
   useEffect(() => {
-    void countAllChats().then(setCount);
-  }, []);
+    if (subpage !== "main") return;
+    let cancelled = false;
+    void countAllChats().then(
+      (next) => {
+        if (!cancelled) setCount(next);
+      },
+      (error: unknown) => {
+        if (cancelled) return;
+        toast.error(t("common.error"), {
+          description: error instanceof Error ? error.message : String(error),
+        });
+      },
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [subpage, t]);
 
   const handleExport = async () => {
     setExporting(true);
     try {
       await downloadChatExport();
+    } catch (error) {
+      if (!isDownloadCancelled(error)) {
+        toast.error(t("settings.data.exportFailed"), {
+          description: error instanceof Error ? error.message : String(error),
+        });
+      }
     } finally {
       setExporting(false);
     }
@@ -164,30 +285,90 @@ export function DataTab() {
             : t("settings.data.exportedArchivedChatCount", { count: exported }),
       );
     } catch (error) {
-      toast.error(t("settings.data.failedToExportArchivedChats"), {
-        description: error instanceof Error ? error.message : undefined,
-      });
+      if (!isDownloadCancelled(error)) {
+        toast.error(t("settings.data.failedToExportArchivedChats"), {
+          description: error instanceof Error ? error.message : undefined,
+        });
+      }
     } finally {
       setArchivedExporting(false);
     }
   };
 
   const importInputRef = useRef<HTMLInputElement>(null);
-  const handleImport = async (file: File) => {
+  const [importing, setImporting] = useState(false);
+  const handleImport = async (source: ImportSource) => {
+    setImporting(true);
+    // A years-long export is minutes of writes, so the toast counts up rather
+    // than leaving the window looking hung.
+    const toastId = toast.loading(
+      t("settings.chat.importingChats", { count: 0, percent: 0 }),
+    );
     try {
-      const imported = await importConversationsFromFile(file, null);
+      const { imported, failed } = await importConversationsFromSource(
+        source,
+        // This tab has no destination picker, so it chooses nothing and a backup keeps its
+        // own projects. The projects page does pick, and passes null for Recents.
+        undefined,
+        {
+          onProgress: ({ imported: done, bytesRead, totalBytes }) => {
+            const percent = totalBytes
+              ? Math.min(100, Math.round((bytesRead / totalBytes) * 100))
+              : 0;
+            toast.loading(
+              t("settings.chat.importingChats", { count: done, percent }),
+              { id: toastId },
+            );
+          },
+        },
+      );
+      if (imported === 0 && failed === 0) {
+        toast.info(t("settings.chat.importNoConversations"), { id: toastId });
+        return;
+      }
       if (imported === 0) {
-        toast.info(t("settings.chat.importNoConversations"));
-      } else {
-        toast.success(
-          imported === 1
+        // Nothing was created, so however the count is phrased this is a failure.
+        toast.error(t("settings.chat.importFailed"), {
+          id: toastId,
+          description: t("settings.chat.importedChatCountPartial", { count: 0, failed }),
+        });
+        return;
+      }
+      toast.success(
+        failed > 0
+          ? t("settings.chat.importedChatCountPartial", { count: imported, failed })
+          : imported === 1
             ? t("settings.chat.importedOneChat")
             : t("settings.chat.importedChatCount", { count: imported }),
-        );
-        setCount(await countAllChats().catch(() => count));
+        { id: toastId },
+      );
+    } catch (error) {
+      toast.error(t("settings.chat.importFailed"), {
+        id: toastId,
+        description: error instanceof Error ? error.message : undefined,
+      });
+    } finally {
+      setImporting(false);
+      // Chats saved before a failed read still changed the count.
+      setCount(await countAllChats().catch(() => count));
+    }
+  };
+
+  const handleImportClick = async () => {
+    if (!isTauri) {
+      importInputRef.current?.click();
+      return;
+    }
+    try {
+      const selected = await pickNativeChatImport();
+      if (!selected) {
+        return;
       }
-    } catch {
-      toast.error(t("settings.chat.importFailed"));
+      await handleImport(nativeImportSource(selected));
+    } catch (error) {
+      toast.error(t("settings.chat.importFailed"), {
+        description: error instanceof Error ? error.message : String(error),
+      });
     }
   };
 
@@ -219,9 +400,11 @@ export function DataTab() {
     try {
       await exportFineTuneJsonl(fineTuneFormat);
     } catch (error) {
-      toast.error(t("settings.data.fineTuneExportFailed"), {
-        description: error instanceof Error ? error.message : undefined,
-      });
+      if (!isDownloadCancelled(error)) {
+        toast.error(t("settings.data.fineTuneExportFailed"), {
+          description: error instanceof Error ? error.message : undefined,
+        });
+      }
     } finally {
       setFineTuneExporting(false);
     }
@@ -230,6 +413,10 @@ export function DataTab() {
   const handleOpenInRecipes = async () => {
     setOpeningRecipe(true);
     try {
+      // Recipe Studio and its database are not needed unless this action runs.
+      const { createFineTuneRecipeFromChats } = await import(
+        "../components/finetune-recipe"
+      );
       const recipeId = await createFineTuneRecipeFromChats(fineTuneFormat);
       if (!recipeId) return;
       useSettingsDialogStore.getState().closeDialog();
@@ -246,6 +433,12 @@ export function DataTab() {
   const handleUseInTraining = async () => {
     setLoadingTraining(true);
     try {
+      // Same deferred module as above. The training store and datasets-api it also pulls stay eager
+      // either way, since __root.tsx imports the @/features/training barrel that re-exports both;
+      // Recipe Studio is what actually leaves the startup bundle.
+      const { loadFineTuneDatasetInTrainTab } = await import(
+        "../components/finetune-recipe"
+      );
       const loaded = await loadFineTuneDatasetInTrainTab(fineTuneFormat);
       if (!loaded) return;
       useSettingsDialogStore.getState().closeDialog();
@@ -273,11 +466,21 @@ export function DataTab() {
     else void handleFineTuneExport();
   };
 
+  const openClearConfirmation = (deleteFiles?: boolean) => {
+    setDeleteFilesOnClear(deleteFiles ?? alwaysDeleteChatFiles);
+    setConfirmOpen(true);
+  };
+
   const handleClear = async () => {
     setClearing(true);
     try {
-      const result = await clearAllChats();
+      const result = await clearAllChats({
+        deleteFiles: deleteFilesOnClear,
+      });
       const clearedCount = result.deletedThreadIds.length;
+      // A sandbox the backend could not remove, asked for or not.
+      // After a clear there is no row left to reach it from.
+      offerToDeleteKeptSandboxes(result.sandboxesKept);
       const hasFailedStore =
         result.backend === "failed" || result.legacy === "failed";
       if (!hasFailedStore && result.failedThreadIds.length === 0) {
@@ -330,6 +533,35 @@ export function DataTab() {
     }
   };
 
+  if (subpage === "manage") {
+    return (
+      <div className="flex flex-col gap-6">
+        <header className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setSubpage("main")}
+            aria-label={t("settings.data.backToData")}
+            className="settings-back-button inline-flex size-7 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+          >
+            <ChevronLeftIcon className="size-4 rtl:rotate-180" />
+          </button>
+          <h1 className="text-xl font-semibold font-heading">
+            {t("settings.data.title")}
+          </h1>
+        </header>
+        <div className="flex flex-col gap-1">
+          <h2 className="text-sm font-semibold">
+            {t("settings.data.manageChats")}
+          </h2>
+          <p className="text-xs text-muted-foreground">
+            {t("settings.data.manageChatsDescription")}
+          </p>
+        </div>
+        <ManageChatsView />
+      </div>
+    );
+  }
+
   if (subpage === "archived") {
     return (
       <div className="flex flex-col gap-6">
@@ -337,10 +569,10 @@ export function DataTab() {
           <button
             type="button"
             onClick={() => setSubpage("main")}
-            aria-label={`Back to ${t("settings.data.title")}`}
-            className="inline-flex size-7 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+            aria-label={t("settings.data.backToData")}
+            className="settings-back-button inline-flex size-7 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
           >
-            <HugeiconsIcon icon={ArrowLeft01Icon} className="size-4" />
+            <ChevronLeftIcon className="size-4 rtl:rotate-180" />
           </button>
           <h1 className="text-xl font-semibold font-heading">
             {t("settings.data.title")}
@@ -383,6 +615,54 @@ export function DataTab() {
     );
   }
 
+  if (
+    subpage === "archived-images" ||
+    subpage === "archived-videos" ||
+    subpage === "archived-audio"
+  ) {
+    const kind: ArchivedMediaKind =
+      subpage === "archived-images"
+        ? "images"
+        : subpage === "archived-videos"
+          ? "videos"
+          : "audio";
+    const heading = {
+      images: t("settings.data.archivedImages"),
+      videos: t("settings.data.archivedVideos"),
+      audio: t("settings.data.archivedAudio"),
+    }[kind];
+    const description = {
+      images: t("settings.data.archivedImagesDescription"),
+      videos: t("settings.data.archivedVideosDescription"),
+      audio: t("settings.data.archivedAudioDescription"),
+    }[kind];
+    return (
+      <div className="flex flex-col gap-6">
+        <header className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setSubpage("main")}
+            aria-label={t("settings.data.backToData")}
+            className="settings-back-button inline-flex size-7 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+          >
+            <ChevronLeftIcon className="size-4 rtl:rotate-180" />
+          </button>
+          <h1 className="text-xl font-semibold font-heading">
+            {t("settings.data.title")}
+          </h1>
+        </header>
+        <div className="flex flex-col gap-1">
+          <h2 className="text-sm font-semibold">{heading}</h2>
+          <p className="text-xs text-muted-foreground">{description}</p>
+        </div>
+        {/* Keyed by kind: switching shelves on an already-mounted tab otherwise keeps the
+            instance, and a showMore still awaiting the old shelf appends its rows to the new one,
+            which then drives restore and delete through the wrong media API. */}
+        <ArchivedMediaView key={subpage} kind={kind} />
+      </div>
+    );
+  }
+
   if (subpage === "files") {
     return (
       <div className="flex flex-col gap-6">
@@ -390,10 +670,10 @@ export function DataTab() {
           <button
             type="button"
             onClick={() => setSubpage("main")}
-            aria-label={`Back to ${t("settings.data.title")}`}
-            className="inline-flex size-7 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+            aria-label={t("settings.data.backToData")}
+            className="settings-back-button inline-flex size-7 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
           >
-            <HugeiconsIcon icon={ArrowLeft01Icon} className="size-4" />
+            <ChevronLeftIcon className="size-4 rtl:rotate-180" />
           </button>
           <h1 className="text-xl font-semibold font-heading">
             {t("settings.data.title")}
@@ -423,11 +703,199 @@ export function DataTab() {
         </p>
       </header>
 
-      <div className="flex flex-col divide-y divide-border/60">
+      <SettingsSection title={t("settings.data.chatsSection")}>
         <SettingsRow
-          alignTop={true}
+          label={t("settings.data.manageChats")}
+          description={t("settings.data.manageChatsDescription")}
+        >
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setSubpage("manage")}
+          >
+            {t("settings.data.manageAction")}
+          </Button>
+        </SettingsRow>
+        <div
+          data-settings-label={t("settings.data.archives")}
+          className="py-3"
+        >
+          <p className="mb-2 text-sm font-medium">
+            {t("settings.data.archives")}
+          </p>
+          <div className="grid grid-cols-2 gap-2 lg:grid-cols-4">
+            {([
+              ["archived", "archivedChats", "settings.data.archiveChatsLabel", MessageCircleIcon],
+              [
+                "archived-images",
+                "archivedImages",
+                "shell.navigation.images",
+                Image03Icon,
+              ],
+              [
+                "archived-videos",
+                "archivedVideos",
+                "settings.data.archiveVideosLabel",
+                FlimSlateIcon,
+              ],
+              [
+                "archived-audio",
+                "archivedAudio",
+                "shell.navigation.audio",
+                AudioWave01Icon,
+              ],
+            ] as const).map(([page, label, shortLabel, icon]) => (
+              <button
+                key={page}
+                type="button"
+                data-settings-label={t(`settings.data.${label}`)}
+                aria-label={t(`settings.data.${label}`)}
+                onClick={() => setSubpage(page)}
+                className="flex min-w-0 items-center justify-between gap-2 rounded-xl border border-border/60 px-3 py-2.5 text-sm transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                <span className="flex min-w-0 items-center gap-2">
+                  <HugeiconsIcon
+                    icon={icon}
+                    aria-hidden={true}
+                    className="size-4 shrink-0 text-muted-foreground"
+                  />
+                  <span className="truncate">
+                    {t(shortLabel)}
+                  </span>
+                </span>
+                <HugeiconsIcon
+                  icon={ChevronRightStandardIcon}
+                  className="size-3.5 shrink-0 text-muted-foreground"
+                />
+              </button>
+            ))}
+          </div>
+        </div>
+        <SettingsRow
+          label={t("settings.data.archiveAllChats")}
+          description={t("settings.data.archiveAllChatsDescription")}
+        >
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setArchiveConfirmOpen(true)}
+          >
+            <HugeiconsIcon icon={Archive02Icon} className="size-3.5 mr-1.5" />
+            {t("settings.data.archiveAllAction")}
+          </Button>
+        </SettingsRow>
+      </SettingsSection>
+
+      <SettingsSection title={t("settings.data.transferSection")}>
+        <SettingsRow
+          label={t("settings.chat.importChats")}
+          description={t("settings.chat.importChatsDescription")}
+        >
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => void handleImportClick()}
+            // A second pick mid-import would interleave two streams into one
+            // history, and on desktop it retires the running import's handle.
+            disabled={importing}
+          >
+            {importing ? (
+              <Spinner className="size-3.5 mr-1.5" />
+            ) : (
+              <HugeiconsIcon icon={Upload01Icon} className="size-3.5 mr-1.5" />
+            )}
+            {t("settings.chat.importChatsAction")}
+          </Button>
+          <input
+            ref={importInputRef}
+            type="file"
+            accept=".json,.jsonl,.ndjson,.csv"
+            className="hidden"
+            onChange={(e) => {
+              const file = e.target.files?.[0];
+              e.target.value = "";
+              if (file) void handleImport(fileImportSource(file));
+            }}
+          />
+        </SettingsRow>
+        <SettingsRow
+          label={t("settings.chat.exportHistory")}
+          description={t("settings.chat.exportHistoryDescription")}
+        >
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={handleExport}
+            disabled={exporting || count === 0}
+          >
+            <HugeiconsIcon icon={Download01Icon} className="size-3.5 mr-1.5" />
+            {exporting
+              ? t("settings.chat.exportingAction")
+              : t("settings.chat.exportAction")}
+          </Button>
+        </SettingsRow>
+        <SettingsRow
+          label={t("settings.chat.exportConversations")}
+          description={t("settings.data.exportFormatsSummary")}
+          hint={t("settings.chat.exportConversationsDescription")}
+        >
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild={true}>
+              <Button variant="outline" size="sm" disabled={count === 0}>
+                <HugeiconsIcon
+                  icon={Download01Icon}
+                  className="size-3.5 mr-1.5"
+                />
+                {t("settings.chat.exportConversationsAction")}
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-56">
+              {(
+                [
+                  { scope: "recents", label: "exportScopeRecents" },
+                  { scope: "all", label: "exportScopeAll" },
+                ] as const
+              ).map(({ scope, label }) => (
+                <DropdownMenuSub key={scope}>
+                  <DropdownMenuSubTrigger>
+                    <HugeiconsIcon
+                      icon={Download01Icon}
+                      className="size-3.5 mr-1"
+                    />
+                    {t(`settings.chat.${label}`)}
+                  </DropdownMenuSubTrigger>
+                  <DropdownMenuSubContent className="w-56">
+                    {COMBINED_EXPORT_FORMATS_LIST.map(({ fmt, label: fmtLabel }) => (
+                      <DropdownMenuItem
+                        key={`${scope}-m-${fmt}`}
+                        onSelect={() =>
+                          void bulkExportConversationsByScope(scope, fmt, true)
+                        }
+                      >
+                        {fmtLabel} {t("settings.chat.exportCombinedSuffix")}
+                      </DropdownMenuItem>
+                    ))}
+                    <DropdownMenuSeparator />
+                    {EXPORT_FORMATS_LIST.map(({ fmt, label: fmtLabel }) => (
+                      <DropdownMenuItem
+                        key={`${scope}-s-${fmt}`}
+                        onSelect={() =>
+                          void bulkExportConversationsByScope(scope, fmt, false)
+                        }
+                      >
+                        {fmtLabel} {t("settings.chat.exportPerChatSuffix")}
+                      </DropdownMenuItem>
+                    ))}
+                  </DropdownMenuSubContent>
+                </DropdownMenuSub>
+              ))}
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </SettingsRow>
+        <SettingsRow
           label={t("settings.data.fineTuneExport")}
-          description={t("settings.data.fineTuneExportDescription")}
+          description={t("settings.data.trainingSummary")}
+          hint={t("settings.data.fineTuneExportDescription")}
         >
           <div className="flex items-center gap-2">
             <DropdownMenu>
@@ -449,7 +917,7 @@ export function DataTab() {
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end" className="w-56">
-                {(["export", "train", "recipes"] as const).map((action) => (
+                {FINE_TUNE_ACTIONS.map((action) => (
                   <DropdownMenuItem
                     key={action}
                     disabled={action === "train" && chatOnly}
@@ -485,171 +953,90 @@ export function DataTab() {
             </Button>
           </div>
         </SettingsRow>
+      </SettingsSection>
 
-        <SettingsRow
-          label={t("settings.data.archivedChats")}
-          description={t("settings.data.archivedChatsDescription")}
-        >
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => setSubpage("archived")}
-          >
-            {t("settings.data.manageAction")}
-          </Button>
-        </SettingsRow>
-
-        <SettingsRow
-          label={t("settings.data.archiveAllChats")}
-          description={t("settings.data.archiveAllChatsDescription")}
-        >
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => setArchiveConfirmOpen(true)}
-          >
-            <HugeiconsIcon icon={Archive02Icon} className="size-3.5 mr-1.5" />
-            {t("settings.data.archiveAllAction")}
-          </Button>
-        </SettingsRow>
-
+      <SettingsSection title={t("settings.data.deletionSection")}>
         <SettingsRow
           label={t("settings.data.confirmBeforeDeleting")}
-          description={t("settings.data.confirmBeforeDeletingDescription")}
+          description={t("settings.data.confirmDeletionSummary")}
         >
           <Switch
+            aria-label={t("settings.data.confirmBeforeDeleting")}
             checked={confirmDeleteChats}
             onCheckedChange={setConfirmDeleteChats}
           />
         </SettingsRow>
-
         <SettingsRow
-          label={t("settings.chat.exportHistory")}
-          description={t("settings.chat.exportHistoryDescription")}
+          label={t("settings.data.sandboxFiles")}
+          description={t("settings.data.sandboxFilesDescription")}
         >
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={handleExport}
-            disabled={exporting || count === 0}
+          <Select
+            value={alwaysDeleteChatFiles ? "delete" : "keep"}
+            onValueChange={(value) => setAlwaysDeleteChatFiles(value === "delete")}
           >
-            <HugeiconsIcon icon={Download01Icon} className="size-3.5 mr-1.5" />
-            {exporting
-              ? t("settings.chat.exportingAction")
-              : t("settings.chat.exportAction")}
-          </Button>
+            <SelectTrigger
+              size="sm"
+              aria-label={t("settings.data.sandboxFiles")}
+            >
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent align="end">
+              <SelectItem value="keep">
+                {t("settings.data.keepSandboxFiles")}
+              </SelectItem>
+              <SelectItem value="delete">
+                {t("settings.data.deleteSandboxFiles")}
+              </SelectItem>
+            </SelectContent>
+          </Select>
         </SettingsRow>
-
-        <SettingsRow
-          label={t("settings.chat.exportConversations")}
-          description={t("settings.chat.exportConversationsDescription")}
-        >
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild={true}>
-              <Button variant="outline" size="sm" disabled={count === 0}>
-                <HugeiconsIcon
-                  icon={Download01Icon}
-                  className="size-3.5 mr-1.5"
-                />
-                {t("settings.chat.exportConversationsAction")}
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end" className="w-56">
-              {(
-                [
-                  { scope: "recents", label: "exportScopeRecents" },
-                  { scope: "all", label: "exportScopeAll" },
-                ] as const
-              ).map(({ scope, label }) => (
-                <DropdownMenuSub key={scope}>
-                  <DropdownMenuSubTrigger>
-                    <HugeiconsIcon
-                      icon={Download01Icon}
-                      className="size-3.5 mr-1"
-                    />
-                    {t(`settings.chat.${label}`)}
-                  </DropdownMenuSubTrigger>
-                  <DropdownMenuSubContent className="w-56">
-                    {EXPORT_FORMATS_LIST.map(({ fmt, label: fmtLabel }) => (
-                      <DropdownMenuItem
-                        key={`${scope}-m-${fmt}`}
-                        onSelect={() =>
-                          void bulkExportConversationsByScope(scope, fmt, true)
-                        }
-                      >
-                        {fmtLabel} {t("settings.chat.exportCombinedSuffix")}
-                      </DropdownMenuItem>
-                    ))}
-                    <DropdownMenuSeparator />
-                    {EXPORT_FORMATS_LIST.map(({ fmt, label: fmtLabel }) => (
-                      <DropdownMenuItem
-                        key={`${scope}-s-${fmt}`}
-                        onSelect={() =>
-                          void bulkExportConversationsByScope(scope, fmt, false)
-                        }
-                      >
-                        {fmtLabel} {t("settings.chat.exportPerChatSuffix")}
-                      </DropdownMenuItem>
-                    ))}
-                  </DropdownMenuSubContent>
-                </DropdownMenuSub>
-              ))}
-            </DropdownMenuContent>
-          </DropdownMenu>
-        </SettingsRow>
-
-        <SettingsRow
-          destructive={true}
-          // divide-y already draws the row separator; drop the extra border.
-          className="border-t-0 mt-0 pt-3"
-          label={t("settings.chat.clearAllChats")}
-          description={
-            count === null
-              ? t("settings.chat.clearAllChatsDescription")
-              : count === 0
-                ? t("settings.chat.noChatsToClear")
-                : count === 1
-                  ? t("settings.chat.clearOneChatDescription")
-                  : t("settings.chat.clearChatCountDescription", { count })
-          }
-        >
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => setConfirmOpen(true)}
-            disabled={count === 0}
-            className="text-destructive hover:text-destructive hover:border-destructive/60"
+        <p className="pb-3 text-xs leading-relaxed text-muted-foreground">
+          {t("settings.data.projectFilesKept")}
+        </p>
+        <div className="border-t border-border/60">
+          <SettingsRow
+            label={t("settings.chat.clearAllChats")}
+            description={
+              count === null
+                ? t("settings.chat.clearAllChatsDescription")
+                : count === 0
+                  ? t("settings.chat.noChatsToClear")
+                  : count === 1
+                    ? t("settings.chat.clearOneChatDescription")
+                    : t("settings.chat.clearChatCountDescription", { count })
+            }
           >
-            <HugeiconsIcon icon={Delete02Icon} className="size-3.5 mr-1.5" />
-            {t("settings.chat.clearChatsAction")}
-          </Button>
-        </SettingsRow>
-
-        <SettingsRow
-          label={t("settings.chat.importChats")}
-          description={t("settings.chat.importChatsDescription")}
-        >
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => importInputRef.current?.click()}
-          >
-            <HugeiconsIcon icon={Upload01Icon} className="size-3.5 mr-1.5" />
-            {t("settings.chat.importChatsAction")}
-          </Button>
-          <input
-            ref={importInputRef}
-            type="file"
-            accept=".jsonl,.ndjson,.csv"
-            className="hidden"
-            onChange={(e) => {
-              const file = e.target.files?.[0];
-              e.target.value = "";
-              if (file) void handleImport(file);
-            }}
-          />
-        </SettingsRow>
-      </div>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild={true}>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={count === null || count === 0 || clearing}
+                  className="text-destructive hover:text-destructive aria-expanded:text-destructive hover:border-destructive/60"
+                >
+                  <HugeiconsIcon icon={Delete02Icon} className="size-3.5" />
+                  {t("settings.data.deleteAllAction")}
+                  <HugeiconsIcon icon={ChevronDownStandardIcon} className="size-3.5" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-64">
+                <DropdownMenuItem
+                  variant="destructive"
+                  onSelect={() => openClearConfirmation(false)}
+                >
+                  {t("settings.data.deleteChatsOnly")}
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  variant="destructive"
+                  onSelect={() => openClearConfirmation(true)}
+                >
+                  {t("settings.data.deleteChatsAndSandboxes")}
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </SettingsRow>
+        </div>
+      </SettingsSection>
 
       <SettingsSection title={t("settings.data.filesSection")}>
         <SettingsRow
@@ -664,7 +1051,15 @@ export function DataTab() {
             {t("settings.data.manageAction")}
           </Button>
         </SettingsRow>
+        {!ragAvailabilityUnknown && !ragUnavailable ? (
+          <div className="py-3">
+            <LinkedFoldersManager />
+          </div>
+        ) : null}
       </SettingsSection>
+
+      {/* Embedding model settings are installation-wide (owner-only routes). */}
+      {isOwner ? <DocumentsRagSection /> : null}
 
       <Dialog open={archiveConfirmOpen} onOpenChange={setArchiveConfirmOpen}>
         <DialogContent className="max-w-md">
@@ -690,8 +1085,13 @@ export function DataTab() {
         </DialogContent>
       </Dialog>
 
-      <Dialog open={confirmOpen} onOpenChange={setConfirmOpen}>
-        <DialogContent className="max-w-md">
+      <Dialog
+        open={confirmOpen}
+        onOpenChange={(open) => {
+          if (!clearing) setConfirmOpen(open);
+        }}
+      >
+        <DialogContent className="max-w-md" showCloseButton={!clearing}>
           <DialogHeader>
             <DialogTitle>
               {count === 1
@@ -702,8 +1102,21 @@ export function DataTab() {
               {t("settings.chat.clearChatsConfirmDescription")}
             </DialogDescription>
           </DialogHeader>
+          <fieldset disabled={clearing} className="min-w-0 disabled:opacity-50">
+            <DeleteChatFilesSwitch
+              id="clear-chats-delete-files"
+              label={t("settings.data.deleteSandboxFiles")}
+              checked={deleteFilesOnClear}
+              onCheckedChange={setDeleteFilesOnClear}
+              description={t("settings.data.deleteSandboxFilesDescription")}
+            />
+          </fieldset>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setConfirmOpen(false)}>
+            <Button
+              variant="outline"
+              disabled={clearing}
+              onClick={() => setConfirmOpen(false)}
+            >
               {t("common.cancel")}
             </Button>
             <Button

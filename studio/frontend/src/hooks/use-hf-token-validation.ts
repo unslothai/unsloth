@@ -26,20 +26,15 @@ const NO_COMPLETED_VALIDATION: CompletedValidation = {
   token: "",
 };
 
-// Current user access tokens contain 34 characters after the hf_ prefix.
-// Action-time validation still accepts legacy shapes without spending quota
-// on every intermediate value typed into a live form field.
+// Current user access tokens contain 34 characters after the hf_ prefix. Action-time
+// validation still accepts legacy shapes without spending quota on every keystroke.
 const COMPLETE_HF_TOKEN = /^hf_[A-Za-z0-9]{34}$/;
 
-/**
- * Validates the HF token via the whoami-v2 API, debounced to avoid excessive
- * requests while typing. isValid is null until checked.
- */
+/** Validates the HF token via the whoami-v2 API, debounced to avoid excessive requests
+* while typing. isValid is null until checked. */
 export function useHfTokenValidation(token: string): HfTokenValidationState {
-  const debouncedToken = useDebouncedValue(
-    token.trim().replace(/^["']+|["']+$/g, ""),
-    500,
-  );
+  const normalizedToken = token.trim().replace(/^["']+|["']+$/g, "");
+  const debouncedToken = useDebouncedValue(normalizedToken, 500);
   const [completed, setCompleted] = useState<CompletedValidation>(
     NO_COMPLETED_VALIDATION,
   );
@@ -83,7 +78,8 @@ export function useHfTokenValidation(token: string): HfTokenValidationState {
           setCompleted({
             token: debouncedToken,
             isValid: null,
-            error: "Could not verify the token. Check your connection and try again.",
+            error:
+              "Could not verify the token. Check your connection and try again.",
             isChecking: false,
           });
         }
@@ -93,15 +89,23 @@ export function useHfTokenValidation(token: string): HfTokenValidationState {
         setCompleted({
           token: debouncedToken,
           isValid: null,
-          error: "Could not verify the token. Check your connection and try again.",
+          error:
+            "Could not verify the token. Check your connection and try again.",
           isChecking: false,
         });
       },
     );
   }, [debouncedToken, shouldValidate]);
 
-  if (!shouldValidate) return INITIAL;
-  if (completed.token !== debouncedToken) {
+  if (normalizedToken && !normalizedToken.startsWith("hf_")) {
+    return {
+      isValid: false,
+      error: "Token must start with hf_.",
+      isChecking: false,
+    };
+  }
+  if (!COMPLETE_HF_TOKEN.test(normalizedToken)) return INITIAL;
+  if (completed.token !== normalizedToken) {
     return { isValid: null, error: null, isChecking: true };
   }
   return {

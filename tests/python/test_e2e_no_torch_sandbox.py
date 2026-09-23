@@ -28,9 +28,9 @@ FORMAT_DETECTION = DATASETS_DIR / "format_detection.py"
 MODEL_MAPPINGS = DATASETS_DIR / "model_mappings.py"
 VLM_PROCESSING = DATASETS_DIR / "vlm_processing.py"
 ITERABLE = DATASETS_DIR / "iterable.py"
+CELLS = DATASETS_DIR / "cells.py"
 HARDWARE_PY = HARDWARE_DIR / "hardware.py"
 
-# Unsloth venv for server tests
 STUDIO_VENV = Path.home() / ".unsloth" / "studio" / "unsloth_studio"
 
 sys.path.insert(0, str(STUDIO_DIR))
@@ -166,13 +166,8 @@ def no_torch_venv(request, tmp_path_factory):
     return str(py)
 
 
-# Group 1: BEFORE vs AFTER -- Import Chain
-
-
 class TestBeforeAfterImportChain:
     """BEFORE (synthetic top-level torch import) crashes; AFTER (lazy imports) works."""
-
-    # -- BEFORE: crashes --
 
     def test_before_chat_templates_crashes(self, no_torch_venv, sandbox_dir):
         """BEFORE: chat_templates.py with top-level IterableDataset import crashes without torch."""
@@ -193,7 +188,7 @@ class TestBeforeAfterImportChain:
             mm = types.ModuleType('model_mappings')
             mm.MODEL_TO_TEMPLATE_MAPPER = {{}}
             sys.modules['model_mappings'] = mm
-            source = open({str(before_file)!r}).read()
+            source = open({str(before_file)!r}, encoding = "utf-8").read()
             source = source.replace('from .format_detection import', 'from format_detection import')
             source = source.replace('from .model_mappings import', 'from model_mappings import')
             exec(source)
@@ -215,7 +210,7 @@ class TestBeforeAfterImportChain:
             loggers = types.ModuleType('loggers')
             loggers.get_logger = lambda n: None
             sys.modules['loggers'] = loggers
-            exec(open({str(before_file)!r}).read())
+            exec(open({str(before_file)!r}, encoding = "utf-8").read())
         """)
         result = _run_in_sandbox(no_torch_venv, code)
         assert result.returncode != 0, "BEFORE data_collators.py should crash without torch"
@@ -229,19 +224,16 @@ class TestBeforeAfterImportChain:
         pkg_dir = sandbox_dir / "utils" / "datasets"
         pkg_dir.mkdir(parents = True, exist_ok = True)
 
-        # Copy torch-free modules as-is
         shutil.copy2(FORMAT_DETECTION, pkg_dir / "format_detection.py")
         shutil.copy2(MODEL_MAPPINGS, pkg_dir / "model_mappings.py")
         shutil.copy2(VLM_PROCESSING, pkg_dir / "vlm_processing.py")
 
-        # BEFORE data_collators: prepend top-level 'import torch'
         dc_source = DATA_COLLATORS.read_text(encoding = "utf-8")
         (pkg_dir / "data_collators.py").write_text(
             "import torch\n" + dc_source,
             encoding = "utf-8",
         )
 
-        # BEFORE chat_templates: prepend top-level IterableDataset import
         ct_source = CHAT_TEMPLATES.read_text(encoding = "utf-8")
         (pkg_dir / "chat_templates.py").write_text(
             "from torch.utils.data import IterableDataset\n" + ct_source,
@@ -266,8 +258,6 @@ class TestBeforeAfterImportChain:
         assert result.returncode != 0, "BEFORE full import chain should crash without torch"
         assert b"ModuleNotFoundError" in result.stderr or b"ImportError" in result.stderr
 
-    # -- AFTER: succeeds --
-
     def test_after_chat_templates_imports(self, no_torch_venv):
         """AFTER: PR branch chat_templates.py imports fine without torch."""
         code = textwrap.dedent(f"""\
@@ -284,10 +274,14 @@ class TestBeforeAfterImportChain:
             it = types.ModuleType('iterable')
             it.is_streaming_dataset = lambda *a, **k: False
             sys.modules['iterable'] = it
-            source = open({str(CHAT_TEMPLATES)!r}).read()
+            source = open({str(CHAT_TEMPLATES)!r}, encoding = "utf-8").read()
             source = source.replace('from .format_detection import', 'from format_detection import')
             source = source.replace('from .model_mappings import', 'from model_mappings import')
             source = source.replace('from .iterable import', 'from iterable import')
+            # cells.py is stdlib-only, so the exec sites import the real module
+            # rather than another stub: the suite checks what actually ships.
+            sys.path.insert(0, {str(CHAT_TEMPLATES.parent)!r})
+            source = source.replace('from .cells import', 'from cells import')
             exec(source)
             print("OK")
         """)
@@ -304,7 +298,7 @@ class TestBeforeAfterImportChain:
             loggers = types.ModuleType('loggers')
             loggers.get_logger = lambda n: None
             sys.modules['loggers'] = loggers
-            exec(open({str(DATA_COLLATORS)!r}).read())
+            exec(open({str(DATA_COLLATORS)!r}, encoding = "utf-8").read())
             print("OK")
         """)
         result = _run_in_sandbox(no_torch_venv, code)
@@ -321,7 +315,6 @@ class TestBeforeAfterImportChain:
         pkg_dir = sandbox_dir / "utils" / "datasets"
         pkg_dir.mkdir(parents = True, exist_ok = True)
 
-        # Copy AFTER versions (PR branch -- no top-level torch)
         for src in [
             FORMAT_DETECTION,
             MODEL_MAPPINGS,
@@ -329,6 +322,7 @@ class TestBeforeAfterImportChain:
             DATA_COLLATORS,
             CHAT_TEMPLATES,
             ITERABLE,
+            CELLS,
         ]:
             if src.exists():
                 shutil.copy2(src, pkg_dir / src.name)
@@ -369,9 +363,6 @@ class TestBeforeAfterImportChain:
         assert b"OK: full import chain succeeded" in result.stdout
 
 
-# Group 2: Dataclass Instantiation
-
-
 class TestDataclassInstantiation:
     """Dataclass collators instantiate and constants are accessible without torch."""
 
@@ -382,7 +373,7 @@ class TestDataclassInstantiation:
             loggers = types.ModuleType('loggers')
             loggers.get_logger = lambda n: None
             sys.modules['loggers'] = loggers
-            exec(open({str(DATA_COLLATORS)!r}).read())
+            exec(open({str(DATA_COLLATORS)!r}, encoding = "utf-8").read())
             obj = DataCollatorSpeechSeq2SeqWithPadding(processor=None)
             assert obj.processor is None
             print("OK")
@@ -397,7 +388,7 @@ class TestDataclassInstantiation:
             loggers = types.ModuleType('loggers')
             loggers.get_logger = lambda n: None
             sys.modules['loggers'] = loggers
-            exec(open({str(DATA_COLLATORS)!r}).read())
+            exec(open({str(DATA_COLLATORS)!r}, encoding = "utf-8").read())
             obj = DeepSeekOCRDataCollator(processor=None)
             assert obj.processor is None
             assert obj.max_length == 2048
@@ -414,7 +405,7 @@ class TestDataclassInstantiation:
             loggers = types.ModuleType('loggers')
             loggers.get_logger = lambda n: None
             sys.modules['loggers'] = loggers
-            exec(open({str(DATA_COLLATORS)!r}).read())
+            exec(open({str(DATA_COLLATORS)!r}, encoding = "utf-8").read())
             obj = VLMDataCollator(processor=None)
             assert obj.processor is None
             assert obj.max_length == 2048
@@ -441,19 +432,18 @@ class TestDataclassInstantiation:
             it.is_streaming_dataset = lambda *a, **k: False
             sys.modules['iterable'] = it
             ns = {{}}
-            source = open({str(CHAT_TEMPLATES)!r}).read()
+            source = open({str(CHAT_TEMPLATES)!r}, encoding = "utf-8").read()
             source = source.replace('from .format_detection import', 'from format_detection import')
             source = source.replace('from .model_mappings import', 'from model_mappings import')
             source = source.replace('from .iterable import', 'from iterable import')
+            sys.path.insert(0, {str(CHAT_TEMPLATES.parent)!r})
+            source = source.replace('from .cells import', 'from cells import')
             exec(source, ns)
             assert 'Instruction' in ns['DEFAULT_ALPACA_TEMPLATE']
             print("OK")
         """)
         result = _run_in_sandbox(no_torch_venv, code)
         assert result.returncode == 0, f"Failed:\n{result.stderr.decode()}"
-
-
-# Group 3: Edge Cases -- Partial/Broken Torch
 
 
 class TestEdgeCasesBrokenTorch:
@@ -473,7 +463,7 @@ class TestEdgeCasesBrokenTorch:
         code = textwrap.dedent(f"""\
             import sys
             sys.path.insert(0, {str(sandbox_dir)!r})
-            exec(open({str(sandbox_dir / 'data_collators.py')!r}).read())
+            exec(open({str(sandbox_dir / 'data_collators.py')!r}, encoding = "utf-8").read())
             obj = DataCollatorSpeechSeq2SeqWithPadding(processor=None)
             print("OK: data_collators works despite broken torch on sys.path")
         """)
@@ -495,7 +485,7 @@ class TestEdgeCasesBrokenTorch:
         code = textwrap.dedent(f"""\
             import sys
             sys.path.insert(0, {str(sandbox_dir)!r})
-            source = open({str(HARDWARE_PY)!r}).read()
+            source = open({str(HARDWARE_PY)!r}, encoding = "utf-8").read()
             ns = {{'__name__': '__test__'}}
             exec(source, ns)
             result = ns['detect_hardware']()
@@ -530,7 +520,7 @@ class TestEdgeCasesBrokenTorch:
         code = textwrap.dedent(f"""\
             import sys
             sys.path.insert(0, {str(sandbox_dir)!r})
-            source = open({str(HARDWARE_PY)!r}).read()
+            source = open({str(HARDWARE_PY)!r}, encoding = "utf-8").read()
             ns = {{'__name__': '__test__'}}
             exec(source, ns)
             result = ns['detect_hardware']()
@@ -559,10 +549,12 @@ class TestEdgeCasesBrokenTorch:
             sys.modules['iterable'] = it
 
             ns = {{}}
-            source = open({str(CHAT_TEMPLATES)!r}).read()
+            source = open({str(CHAT_TEMPLATES)!r}, encoding = "utf-8").read()
             source = source.replace('from .format_detection import', 'from format_detection import')
             source = source.replace('from .model_mappings import', 'from model_mappings import')
             source = source.replace('from .iterable import', 'from iterable import')
+            sys.path.insert(0, {str(CHAT_TEMPLATES.parent)!r})
+            source = source.replace('from .cells import', 'from cells import')
             exec(source, ns)
 
             # Import succeeds -- this is the fix
@@ -590,9 +582,6 @@ class TestEdgeCasesBrokenTorch:
         assert b"OK: import succeeded" in result.stdout
 
 
-# Group 4: Hardware Detection Without Torch
-
-
 class TestHardwareDetectionNoTorch:
     """Hardware module works without torch, falling back to CPU."""
 
@@ -604,7 +593,7 @@ class TestHardwareDetectionNoTorch:
         code = textwrap.dedent(f"""\
             import sys
             sys.path.insert(0, {str(sandbox_dir)!r})
-            source = open({str(HARDWARE_PY)!r}).read()
+            source = open({str(HARDWARE_PY)!r}, encoding = "utf-8").read()
             ns = {{'__name__': '__test__'}}
             exec(source, ns)
             device = ns['detect_hardware']()
@@ -624,7 +613,7 @@ class TestHardwareDetectionNoTorch:
         code = textwrap.dedent(f"""\
             import sys
             sys.path.insert(0, {str(sandbox_dir)!r})
-            source = open({str(HARDWARE_PY)!r}).read()
+            source = open({str(HARDWARE_PY)!r}, encoding = "utf-8").read()
             ns = {{'__name__': '__test__'}}
             exec(source, ns)
             versions = ns['get_package_versions']()
@@ -642,7 +631,6 @@ class TestHardwareDetectionNoTorch:
         _write_structlog_stub(sandbox_dir)
         _write_hardware_stub(sandbox_dir)
 
-        # Copy the real hardware module into a sandbox package
         hw_sandbox = sandbox_dir / "hw_pkg"
         hw_sandbox.mkdir()
         (hw_sandbox / "__init__.py").write_text("", encoding = "utf-8")
@@ -651,7 +639,7 @@ class TestHardwareDetectionNoTorch:
         code = textwrap.dedent(f"""\
             import sys
             sys.path.insert(0, {str(sandbox_dir)!r})
-            source = open({str(hw_sandbox / 'hardware.py')!r}).read()
+            source = open({str(hw_sandbox / 'hardware.py')!r}, encoding = "utf-8").read()
             ns = {{'__name__': '__test__'}}
             exec(source, ns)
             assert callable(ns['detect_hardware'])
@@ -662,9 +650,6 @@ class TestHardwareDetectionNoTorch:
         result = _run_in_sandbox(no_torch_venv, code)
         assert result.returncode == 0, f"Failed:\n{result.stderr.decode()}"
         assert b"OK:" in result.stdout
-
-
-# Group 5: install.sh Logic (via bash subprocess)
 
 
 class TestInstallShLogic:
@@ -692,7 +677,6 @@ class TestInstallShLogic:
             done
             echo "$_USER_PYTHON"
         """)
-        # --python 3.12
         r = _run_sh(f"{script}" + "\n", timeout = 10)
         r = subprocess.run(
             ["bash", "-c", script + "\n", "_", "--python", "3.12"],
@@ -701,7 +685,6 @@ class TestInstallShLogic:
         )
         assert r.stdout.strip() == b"3.12"
 
-        # --local --python 3.11
         r = subprocess.run(
             ["bash", "-c", script + "\n", "_", "--local", "--python", "3.11"],
             capture_output = True,
@@ -709,7 +692,6 @@ class TestInstallShLogic:
         )
         assert r.stdout.strip() == b"3.11"
 
-        # no --python flag
         r = subprocess.run(
             ["bash", "-c", script + "\n", "_", "--local"],
             capture_output = True,
@@ -763,7 +745,6 @@ class TestInstallShLogic:
             fi
             echo "$PYTHON_VERSION"
         """)
-        # Intel Mac, no override
         r = subprocess.run(
             ["bash", "-c", script + "\n", "_", "true", ""],
             capture_output = True,
@@ -771,7 +752,6 @@ class TestInstallShLogic:
         )
         assert r.stdout.strip() == b"3.12"
 
-        # non-Intel, no override
         r = subprocess.run(
             ["bash", "-c", script + "\n", "_", "false", ""],
             capture_output = True,
@@ -779,7 +759,6 @@ class TestInstallShLogic:
         )
         assert r.stdout.strip() == b"3.13"
 
-        # Intel Mac with --python override
         r = subprocess.run(
             ["bash", "-c", script + "\n", "_", "true", "3.11"],
             capture_output = True,
@@ -828,7 +807,6 @@ class TestInstallShLogic:
             fi
             echo "$SHOULD_RECREATE"
         """)
-        # with override: should NOT recreate
         r = subprocess.run(
             ["bash", "-c", script + "\n", "_", "3.11"],
             capture_output = True,
@@ -836,16 +814,12 @@ class TestInstallShLogic:
         )
         assert r.stdout.strip() == b"false"
 
-        # without override: SHOULD recreate
         r = subprocess.run(
             ["bash", "-c", script + "\n", "_", ""],
             capture_output = True,
             timeout = 10,
         )
         assert r.stdout.strip() == b"true"
-
-
-# Group 6: install_python_stack.py NO_TORCH Filtering
 
 
 class TestInstallPythonStackFiltering:
@@ -864,8 +838,9 @@ class TestInstallPythonStackFiltering:
         if not extras.is_file():
             pytest.skip("extras.txt not found")
 
-        result_path = ips._filter_requirements(extras, ips.NO_TORCH_SKIP_PACKAGES)
-        filtered = Path(result_path).read_text(encoding = "utf-8").lower()
+        result_path = Path(ips._filter_requirements(extras, ips.NO_TORCH_SKIP_PACKAGES))
+        filtered = result_path.read_text(encoding = "utf-8").lower()
+        result_path.unlink()
         lines = [
             l.strip() for l in filtered.splitlines() if l.strip() and not l.strip().startswith("#")
         ]
@@ -883,8 +858,9 @@ class TestInstallPythonStackFiltering:
         if not extras.is_file():
             pytest.skip("extras.txt not found")
 
-        result_path = ips._filter_requirements(extras, ips.NO_TORCH_SKIP_PACKAGES)
-        filtered_text = Path(result_path).read_text(encoding = "utf-8").lower()
+        result_path = Path(ips._filter_requirements(extras, ips.NO_TORCH_SKIP_PACKAGES))
+        filtered_text = result_path.read_text(encoding = "utf-8").lower()
+        result_path.unlink()
 
         must_survive = ["scikit-learn", "loguru", "tiktoken", "einops"]
         original_text = extras.read_text(encoding = "utf-8").lower()
@@ -896,25 +872,24 @@ class TestInstallPythonStackFiltering:
         """UNSLOTH_NO_TORCH=true on Linux -> True; =false on Intel Mac -> False."""
         import install_python_stack as ips
 
-        # Explicit true on Linux
         with (
             mock.patch.dict(os.environ, {"UNSLOTH_NO_TORCH": "true"}),
             mock.patch.object(ips, "IS_MAC_INTEL", False),
         ):
             assert ips._infer_no_torch() is True
 
-        # explicit false on Intel Mac
         with (
             mock.patch.dict(os.environ, {"UNSLOTH_NO_TORCH": "false"}),
             mock.patch.object(ips, "IS_MAC_INTEL", True),
         ):
             assert ips._infer_no_torch() is False
 
-        # Unset on Intel Mac -> True (platform fallback)
+        # Unset on Intel Mac -> True (platform fallback).
         env = os.environ.copy()
         env.pop("UNSLOTH_NO_TORCH", None)
         with (
             mock.patch.dict(os.environ, env, clear = True),
+            mock.patch.object(ips.install_manifest, "recorded_no_torch", lambda *a, **k: None),
             mock.patch.object(ips, "IS_MAC_INTEL", True),
         ):
             assert ips._infer_no_torch() is True
@@ -927,13 +902,9 @@ class TestInstallPythonStackFiltering:
 
         assert "if NO_TORCH:" in source, "NO_TORCH guard not found in install_python_stack.py"
 
-        # macOS guard for triton
         assert (
             "not IS_WINDOWS and not IS_MACOS" in source
         ), "'not IS_WINDOWS and not IS_MACOS' guard for triton not found"
-
-
-# Group 7: Live Server Startup -- Heavyweight
 
 
 def _studio_venv_python() -> Path | None:
@@ -954,6 +925,39 @@ def _server_port() -> int:
 
 server = pytest.mark.server
 
+# from_name as well as discover: only 3.11+ routes named lookups through discover, and
+# Distribution.name is absent on 3.9.
+_HIDE_TORCH_SITECUSTOMIZE = textwrap.dedent(
+    """
+    import importlib.metadata as _metadata
+    import sys
+
+    _HIDDEN = ("torch", "torchvision", "torchaudio")
+    for _name in _HIDDEN:
+        sys.modules[_name] = None
+
+    _discover = _metadata.Distribution.discover.__func__
+    _from_name = _metadata.Distribution.from_name.__func__
+
+    def _hidden(dist):
+        try:
+            return (dist.metadata["Name"] or "").lower() in _HIDDEN
+        except Exception:
+            return False
+
+    def _discover_without_torch(cls, **kwargs):
+        return (d for d in _discover(cls, **kwargs) if not _hidden(d))
+
+    def _from_name_without_torch(cls, name):
+        if name.lower() in _HIDDEN:
+            raise _metadata.PackageNotFoundError(name)
+        return _from_name(cls, name)
+
+    _metadata.Distribution.discover = classmethod(_discover_without_torch)
+    _metadata.Distribution.from_name = classmethod(_from_name_without_torch)
+    """
+)
+
 
 @server
 class TestLiveServerStartup:
@@ -966,7 +970,7 @@ class TestLiveServerStartup:
             pytest.skip("Unsloth venv not found at ~/.unsloth/studio/unsloth_studio")
 
     @pytest.fixture(scope = "class")
-    def server_process(self):
+    def server_process(self, tmp_path_factory):
         """Start the studio backend server without torch, yield (proc, port), then stop."""
         py = _studio_venv_python()
         if py is None:
@@ -975,31 +979,31 @@ class TestLiveServerStartup:
         port = _server_port()
         backend_dir = BACKEND_DIR
 
-        check = subprocess.run(
-            [str(py), "-c", "import torch; print(torch.__version__)"],
-            capture_output = True,
-        )
-        torch_was_installed = check.returncode == 0
-        torch_version = check.stdout.decode().strip() if torch_was_installed else None
-
-        if torch_was_installed:
-            subprocess.run(
-                [
-                    str(py),
-                    "-m",
-                    "pip",
-                    "uninstall",
-                    "-y",
-                    "torch",
-                    "torchvision",
-                    "torchaudio",
-                ],
-                capture_output = True,
-                timeout = 120,
-            )
+        # Preserve packages in the user's Studio venv.
+        hide_dir = tmp_path_factory.mktemp("hide_torch")
+        (hide_dir / "sitecustomize.py").write_text(_HIDE_TORCH_SITECUSTOMIZE, encoding = "utf-8")
 
         env = os.environ.copy()
-        env["PYTHONPATH"] = str(backend_dir)
+        env["PYTHONPATH"] = os.pathsep.join([str(hide_dir), str(backend_dir)])
+
+        # A sitecustomize that never loaded otherwise reads as a puzzling chat_only failure.
+        hidden = subprocess.run(
+            [
+                str(py),
+                "-c",
+                "import importlib.metadata as m, importlib.util as u, sys\n"
+                "try: m.version('torch'); sys.exit('metadata visible')\n"
+                "except m.PackageNotFoundError: pass\n"
+                "assert u.find_spec('torch') is None, 'spec visible'",
+            ],
+            env = env,
+            capture_output = True,
+            timeout = 60,
+        )
+        if hidden.returncode != 0:
+            pytest.fail(
+                f"torch is still visible to the server process: {hidden.stderr.decode(errors = 'replace')}"
+            )
         proc = subprocess.Popen(
             [str(py), str(backend_dir / "run.py"), "--port", str(port)],
             env = env,
@@ -1008,7 +1012,6 @@ class TestLiveServerStartup:
             cwd = str(backend_dir),
         )
 
-        # Wait for server to be ready (poll /api/health)
         import urllib.request
         import urllib.error
 
@@ -1025,47 +1028,17 @@ class TestLiveServerStartup:
 
         if not ready:
             stdout, stderr = proc.communicate(timeout = 5)
-            if torch_was_installed and torch_version:
-                subprocess.run(
-                    [
-                        str(py),
-                        "-m",
-                        "pip",
-                        "install",
-                        f"torch=={torch_version}",
-                        "torchvision",
-                        "torchaudio",
-                    ],
-                    capture_output = True,
-                    timeout = 300,
-                )
             server_output = stdout.decode(errors = "replace") + stderr.decode(errors = "replace")
             pytest.skip(f"Server failed to start within 30 seconds. Output:\n{server_output}")
 
         yield proc, port
 
-        # Cleanup: stop server, reinstall torch
         proc.terminate()
         try:
             proc.wait(timeout = 10)
         except subprocess.TimeoutExpired:
             proc.kill()
             proc.wait(timeout = 5)
-
-        if torch_was_installed and torch_version:
-            subprocess.run(
-                [
-                    str(py),
-                    "-m",
-                    "pip",
-                    "install",
-                    f"torch=={torch_version}",
-                    "torchvision",
-                    "torchaudio",
-                ],
-                capture_output = True,
-                timeout = 300,
-            )
 
     def test_server_starts_without_torch(self, server_process):
         """Server responds to /api/health with chat_only: true."""

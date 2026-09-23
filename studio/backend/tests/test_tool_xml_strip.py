@@ -21,7 +21,7 @@ if _BACKEND_DIR not in sys.path:
 # Extract the regex from source (routes module needs heavy stubbing to import).
 import re as _re
 
-_src = (Path(_BACKEND_DIR) / "routes" / "inference.py").read_text()
+_src = (Path(_BACKEND_DIR) / "routes" / "inference.py").read_text(encoding = "utf-8")
 _m = _re.search(r"_TOOL_XML_RE = _re\.compile\((.*?)\n\)", _src, _re.DOTALL)
 assert _m, "could not extract _TOOL_XML_RE source"
 # The lazy ``(.*?)\n\)`` could grab a shorter expression if an arm is ever wrapped;
@@ -38,6 +38,8 @@ from core.inference.tool_call_parser import (
     _strip_glm_calls,
     _strip_mistral_closed_calls,
 )
+
+from growth import assert_linear  # tests/_shared, on sys.path via tests/conftest.py
 
 from typing import Optional as _Optional
 
@@ -234,10 +236,47 @@ def test_strips_orphan_function_no_close():
     assert "I'll call python:" in cleaned
 
 
-def test_strips_orphan_only_opening_tag():
-    cleaned = _TOOL_XML_RE.sub("", "Search starting.\n<tool_call>")
-    assert "<tool_call>" not in cleaned
-    assert "Search starting." in cleaned
+@pytest.mark.parametrize(
+    "text, removed, kept",
+    [
+        pytest.param(
+            "Search starting.\n<tool_call>",
+            "<tool_call>",
+            "Search starting.",
+            id = "strips_orphan_only_opening_tag",
+        ),
+        # Outer </function></tool_call> truncated by EOS, inner <parameter=...> DRAINED.
+        pytest.param(
+            "and the text is not readable.\n</parameter>\n\n",
+            "</parameter>",
+            "and the text is not readable.",
+            id = "strips_tail_only_parameter_orphan",
+        ),
+        pytest.param(
+            "Global Economic Prospects\n</parameter>\n",
+            "</parameter>",
+            "Global Economic Prospects",
+            id = "strips_tail_only_parameter_orphan_single_newline",
+        ),
+        pytest.param(
+            "Final answer.</parameter>",
+            "</parameter>",
+            "Final answer.",
+            id = "strips_tail_only_parameter_orphan_no_trailing_ws",
+        ),
+        # A complete Mistral call strips only its balanced JSON, leaving following prose intact.
+        pytest.param(
+            '[TOOL_CALLS]web_search{"q":"x"} and then prose',
+            "[TOOL_CALLS]",
+            "and then prose",
+            id = "strips_complete_bracket_tag_keeps_trailing_prose",
+        ),
+    ],
+)
+def test_tool_xml_strip_drops_markup_and_keeps_prose(text, removed, kept):
+    cleaned = _TOOL_XML_RE.sub("", text)
+    assert removed not in cleaned
+    assert kept in cleaned
 
 
 def test_strips_multiple_orphans():
@@ -273,49 +312,34 @@ def test_strips_gemma_native_orphan_closing_tag():
 # ── Tail-only </parameter> (PR #5735 follow-up) ───────────────────
 
 
-def test_strips_tail_only_parameter_orphan():
-    # Outer </function></tool_call> truncated by EOS, inner <parameter=...> DRAINED.
-    cleaned = _TOOL_XML_RE.sub("", "and the text is not readable.\n</parameter>\n\n")
-    assert "</parameter>" not in cleaned
-    assert "and the text is not readable." in cleaned
-
-
-def test_strips_tail_only_parameter_orphan_single_newline():
-    cleaned = _TOOL_XML_RE.sub("", "Global Economic Prospects\n</parameter>\n")
-    assert "</parameter>" not in cleaned
-    assert "Global Economic Prospects" in cleaned
-
-
-def test_strips_tail_only_parameter_orphan_no_trailing_ws():
-    cleaned = _TOOL_XML_RE.sub("", "Final answer.</parameter>")
-    assert "</parameter>" not in cleaned
-    assert "Final answer." in cleaned
-
-
-def test_strips_complete_bracket_tag_keeps_trailing_prose():
-    # A complete Mistral call strips only its balanced JSON, leaving following prose intact.
-    cleaned = _TOOL_XML_RE.sub("", '[TOOL_CALLS]web_search{"q":"x"} and then prose')
-    assert "[TOOL_CALLS]" not in cleaned
-    assert "and then prose" in cleaned
-
-
-def test_strips_unclosed_bracket_tail():
-    # Close brace lost to EOS: the truncated tail strips to the end instead of leaking.
-    cleaned = _TOOL_XML_RE.sub("", 'here [TOOL_CALLS]web_search{"query":"weather"')
-    assert "[TOOL_CALLS]" not in cleaned
-    assert cleaned.strip() == "here"
-
-
-def test_strips_unclosed_rehearsal_tail():
-    cleaned = _TOOL_XML_RE.sub("", 'text python[ARGS]{"code":"print(1)"')
-    assert "[ARGS]" not in cleaned
-    assert cleaned.strip() == "text"
-
-
-def test_strips_hyphenated_mcp_bracket_name():
-    cleaned = _TOOL_XML_RE.sub("", 'x [TOOL_CALLS]mcp__srv__list-issues{"q":"x"}')
-    assert "list-issues" not in cleaned
-    assert cleaned.strip() == "x"
+@pytest.mark.parametrize(
+    "text, removed, expected",
+    [
+        # Close brace lost to EOS: the truncated tail strips to the end instead of leaking.
+        pytest.param(
+            'here [TOOL_CALLS]web_search{"query":"weather"',
+            "[TOOL_CALLS]",
+            "here",
+            id = "strips_unclosed_bracket_tail",
+        ),
+        pytest.param(
+            'text python[ARGS]{"code":"print(1)"',
+            "[ARGS]",
+            "text",
+            id = "strips_unclosed_rehearsal_tail",
+        ),
+        pytest.param(
+            'x [TOOL_CALLS]mcp__srv__list-issues{"q":"x"}',
+            "list-issues",
+            "x",
+            id = "strips_hyphenated_mcp_bracket_name",
+        ),
+    ],
+)
+def test_tool_xml_strip_trims_truncated_bracket_tails(text, removed, expected):
+    cleaned = _TOOL_XML_RE.sub("", text)
+    assert removed not in cleaned
+    assert cleaned.strip() == expected
 
 
 def test_preserves_mid_string_parameter_in_code_sample():
@@ -424,25 +448,29 @@ def test_gdpval_parameter_orphans_get_stripped(leak):
 
 
 def test_no_catastrophic_backtracking_on_open_bracket_spam():
-    # 256KB of '<' must fail fast (literal mismatch char 2), not backtrack.
-    import time
+    """'<' spam must fail fast on the literal mismatch at char 2, not backtrack.
 
-    adv = "<" * (1024 * 256) + "X"
-    t0 = time.perf_counter()
-    _TOOL_XML_RE.sub("", adv)
-    elapsed = time.perf_counter() - t0
-    assert elapsed < 0.5, f"regex took {elapsed*1000:.0f}ms on 256KB '<' spam"
+    Asked as growth rather than as a deadline. Backtracking here is superlinear by
+    definition, so 4x the spam costing ~4x the time IS the property; `elapsed < 0.5`
+    was a budget that said as much about the runner as about the regex.
+    """
+    assert_linear(
+        lambda text: _TOOL_XML_RE.sub("", text),
+        lambda n: "<" * n + "X",
+        "'<' spam",
+        64 * 1024,
+    )
 
 
 def test_no_catastrophic_backtracking_on_orphan_opening_spam():
-    # 1000 unclosed openings: first alt must consume them all greedily.
-    import time
-
-    adv = "<tool_call>X" * 1000
-    t0 = time.perf_counter()
-    cleaned = _TOOL_XML_RE.sub("", adv)
-    elapsed = time.perf_counter() - t0
-    assert elapsed < 0.1, f"regex took {elapsed*1000:.0f}ms on 1000x orphan opens"
+    """1000 unclosed openings: the first alternative must consume them all greedily."""
+    cleaned = assert_linear(
+        lambda text: _TOOL_XML_RE.sub("", text),
+        lambda n: "<tool_call>X" * n,
+        "orphan opens",
+        # 250, so the big leg is the 1000 openings this was previously measured at.
+        250,
+    )
     assert "<tool_call>" not in cleaned
 
 
@@ -458,7 +486,7 @@ def test_route_strip_two_level_nested_bracket_keeps_trailing_prose():
 
 
 def test_route_strip_two_level_nested_rehearsal_keeps_trailing_prose():
-    text = 'note python[ARGS]{"a":{"b":{"c":1}}} done'
+    text = 'note web_search[ARGS]{"a":{"b":{"c":1}}} done'
     cleaned = _strip_tool_xml_for_display(text, auto_heal_tool_calls = True)
     assert cleaned == "note  done"
     assert "[ARGS]" not in cleaned
@@ -668,7 +696,8 @@ def test_route_history_and_passthrough_forward_the_display_gate():
     blocks = {
         "safetensors history": r"Strip stale tool-call XML from prior assistant turns.*?\.strip\(\)",
         "anthropic history": r"Strip stale tool-call XML via the protected display helper.*?\.strip\(\)",
-        "anthropic passthrough": r"gated on the declared tools so an\n.*?\.strip\(\)",
+        # Anchored on the code, not the comment above it, so rewrapping prose cannot break this.
+        "anthropic passthrough": r"if not healing_active:.*?\.strip\(\)",
     }
     for label, pat in blocks.items():
         m = _re.search(pat, _src, _re.DOTALL)
@@ -830,12 +859,16 @@ def test_route_strip_gates_wrapperless_gemma_by_enabled_tools():
     # like the parser/loop, so a disabled/example name in prose is preserved in ...
     prose = "To document syntax you write call:foo{query:example}. That shows the format."
     assert "call:foo{query:example}" in _strip_tool_xml(prose, {"web_search"})
-    # An enabled name is still a real call and stripped.
+    # An enabled name at a line boundary is still a real call and stripped.
     assert "call:web_search" not in _strip_tool_xml(
-        "Answer. call:web_search{query:x}", {"web_search"}
+        "Answer.\ncall:web_search{query:x}", {"web_search"}
     )
-    # No gate (legacy) strips every closed call.
-    assert "call:foo" not in _strip_tool_xml(prose)
+    # Mid-sentence the shape is prose whatever the name, so the answer is kept whole.
+    assert "call:web_search" in _strip_tool_xml("Answer. call:web_search{query:x}", {"web_search"})
+    # No gate (legacy) strips every closed call that owns its position.
+    assert "call:foo" not in _strip_tool_xml(
+        "To document syntax you write\ncall:foo{query:example}"
+    )
 
 
 def test_gemma_strip_gate_empty_tools_preserves_prose():
@@ -849,7 +882,7 @@ def test_gemma_strip_gate_empty_tools_preserves_prose():
     assert "call:foo{query:example}" in _strip_tool_xml(prose, _gemma_strip_gate(None))
     # An enabled tool's real call is still stripped.
     assert "call:web_search" not in _strip_tool_xml(
-        "Answer. call:web_search{query:x}",
+        "Answer.\ncall:web_search{query:x}",
         _gemma_strip_gate([{"function": {"name": "web_search"}}]),
     )
 
@@ -896,10 +929,10 @@ def test_chained_bare_json_strip_consumes_all_calls():
     # would be replayed alongside the structured tool_calls.
     from core.inference.tool_call_parser import strip_leading_bare_json_call
 
-    enabled = {"web_search", "python"}
+    enabled = {"web_search", "get_weather"}
     chained = (
         '{"name":"web_search","parameters":{"q":"first"}};'
-        '{"name":"python","parameters":{"code":"x"}}'
+        '{"name":"get_weather","parameters":{"code":"x"}}'
     )
     assert strip_leading_bare_json_call(chained, enabled_tool_names = enabled) == ""
     assert (

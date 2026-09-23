@@ -3,21 +3,24 @@
 
 "use client";
 
-import { copyToClipboard } from "@/lib/copy-to-clipboard";
+import { stringifyToolResult } from "@/lib/strip-ansi";
 import {
   type ToolCallMessagePartComponent,
   useAuiState,
 } from "@assistant-ui/react";
-import { CopyIcon, FileTextIcon, TerminalIcon } from "lucide-react";
-import { Tick02Icon } from "@/lib/tick-icon";
-import { HugeiconsIcon } from "@hugeicons/react";
+import { FileTextIcon, TerminalIcon } from "lucide-react";
 import { Spinner } from "@/components/ui/spinner";
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { isToolCallRunning, toolArgText } from "./tool-arg-text";
+import { memo, useMemo } from "react";
+import { useToolAwaitingApproval } from "@/features/chat";
 import {
   ToolFallbackContent,
   ToolFallbackRoot,
   ToolFallbackTrigger,
 } from "./tool-fallback";
+import { useToolActivityOpen } from "./use-tool-activity-open";
+import { ScrollPane } from "./scroll-pane";
+import { CopyBtn } from "./tool-code-cell";
 
 /**
  * Renders synthetic `_toolEvent` chunks from `_stream_anthropic` for the
@@ -36,13 +39,13 @@ import {
  */
 interface CodeExecutionArgs {
   kind?: "bash" | "text_editor";
-  command?: string;
-  path?: string;
+  // Straight off the wire: the model, not the schema, decides the JSON type.
+  command?: unknown;
+  path?: unknown;
 }
 
 const MAX_COMMAND_LABEL = 80;
 const MAX_RESULT_DISPLAY = 10_000;
-const COPY_RESET_MS = 2000;
 
 function truncateCommandLabel(text: string): string {
   const normalized = text.replace(/\s+/g, " ").trim();
@@ -60,55 +63,47 @@ function truncateResult(text: string): string {
     : `${text.slice(0, MAX_RESULT_DISPLAY)}\n... (truncated)`;
 }
 
-function CopyBtn({ text }: { text: string }) {
-  const [copied, setCopied] = useState(false);
-  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+export function CodeExecutionResultOutput({ result }: { result: unknown }) {
+  const resultText = useMemo(
+    () => (result == null ? "" : stringifyToolResult(result)),
+    [result],
+  );
+  const displayedResult = useMemo(
+    () => truncateResult(resultText),
+    [resultText],
+  );
 
-  useEffect(() => {
-    return () => {
-      if (timer.current) {
-        clearTimeout(timer.current);
-      }
-    };
-  }, []);
-
-  const copy = useCallback(async () => {
-    if (await copyToClipboard(text)) {
-      setCopied(true);
-      if (timer.current) {
-        clearTimeout(timer.current);
-      }
-      timer.current = setTimeout(() => setCopied(false), COPY_RESET_MS);
-    }
-  }, [text]);
-
+  if (!resultText) {
+    return null;
+  }
   return (
-    <button
-      type="button"
-      onClick={copy}
-      className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-      aria-label="Copy to clipboard"
-    >
-      {copied ? (
-        <HugeiconsIcon icon={Tick02Icon} strokeWidth={2} className="size-3" />
-      ) : (
-        <CopyIcon className="size-3" />
-      )}
-      {copied ? "Copied" : "Copy"}
-    </button>
+    <div>
+      <div className="flex justify-end">
+        <CopyBtn text={resultText} />
+      </div>
+      <ScrollPane
+        className="mt-1 rounded bg-muted/50 p-2"
+        scrollerClassName="max-h-64 overflow-auto whitespace-pre-wrap break-words text-xs"
+      >
+        {displayedResult}
+      </ScrollPane>
+    </div>
   );
 }
+
+
 
 const CodeExecutionToolUIImpl: ToolCallMessagePartComponent = ({
   args,
   result,
   status,
+  toolCallId,
 }) => {
   const parsedArgs = (args as CodeExecutionArgs) ?? {};
   const kind = parsedArgs.kind ?? "bash";
-  const command = parsedArgs.command ?? "";
-  const path = parsedArgs.path ?? "";
-  const isRunning = status?.type === "running";
+  const command = toolArgText(parsedArgs.command);
+  const path = toolArgText(parsedArgs.path);
+  const isRunning = isToolCallRunning(status);
 
   const commandLabel = command ? truncateCommandLabel(command) : "";
 
@@ -145,31 +140,17 @@ const CodeExecutionToolUIImpl: ToolCallMessagePartComponent = ({
         (p as { text: string }).text.length > 0,
     ),
   );
-  const [open, setOpen] = useState(isRunning);
-  useEffect(() => {
-    if (isRunning) {
-      setOpen(true);
-    } else if (hasText) {
-      setOpen(false);
-    }
-  }, [isRunning, hasText]);
-
-  const resultText = useMemo(
-    () =>
-      typeof result === "string"
-        ? result
-        : result != null
-          ? JSON.stringify(result, null, 2)
-          : "",
-    [result],
-  );
-  const displayedResult = useMemo(
-    () => truncateResult(resultText),
-    [resultText],
-  );
+  // Ask permission gates every local tool call, and what is being approved
+  // lives inside the content while Allow/Deny render outside it.
+  const awaitingApproval = useToolAwaitingApproval(toolCallId);
+  const [open, setOpen] = useToolActivityOpen(isRunning, hasText);
 
   return (
-    <ToolFallbackRoot open={open} onOpenChange={setOpen}>
+    <ToolFallbackRoot
+      open={open}
+      onOpenChange={setOpen}
+      awaitingApproval={awaitingApproval}
+    >
       <ToolFallbackTrigger
         toolName={isRunning ? runningLabel : completedLabel}
         status={status}
@@ -181,16 +162,9 @@ const CodeExecutionToolUIImpl: ToolCallMessagePartComponent = ({
             <Spinner className="size-3.5" />
             <span>{runningLabel}</span>
           </div>
-        ) : resultText ? (
-          <div>
-            <div className="flex justify-end">
-              <CopyBtn text={resultText} />
-            </div>
-            <pre className="mt-1 max-h-64 overflow-auto whitespace-pre-wrap break-words rounded bg-muted/50 p-2 text-xs">
-              {displayedResult}
-            </pre>
-          </div>
-        ) : null}
+        ) : (
+          <CodeExecutionResultOutput result={result} />
+        )}
       </ToolFallbackContent>
     </ToolFallbackRoot>
   );

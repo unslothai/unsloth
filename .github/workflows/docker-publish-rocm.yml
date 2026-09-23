@@ -1,0 +1,546 @@
+# Builds and publishes the AMD ROCm Unsloth Docker images: the training base
+# (docker/Dockerfile.rocm, :latest) and Studio, JupyterLab and the notebooks on
+# top of it (docker/Dockerfile.studio-rocm, :studio).
+#
+# No GPU runner needed: the ROCm torch wheels do not probe a device at install
+# time, and the build-time check reads torch.version.hip, a constant baked into
+# the wheel. amd64 only: neither pytorch.org nor repo.amd.com publishes ROCm
+# wheels for arm64.
+#
+# Required secret: DOCKER_API_KEY, the Docker Hub ORGANIZATION access token used
+# by docker-publish.yml. Optional variable HAS_AMD_GPU_RUNNER='true' gates the
+# smoke-test job, which needs a self-hosted runner labelled amd-gpu.
+
+name: Publish ROCm Docker image
+
+on:
+  push:
+    # Tags only, for the reason docker-publish.yml gives: publishing on every merge
+    # was the bulk of the repo's Actions spend. The weekly cron is the cadence.
+    tags: ['v*']
+  schedule:
+    # Weekly, off the hour and offset from the CUDA image's daily run.
+    - cron: '23 5 * * 2'
+  workflow_dispatch:
+    inputs:
+      unsloth_ref:
+        # The stable-tag gates require this EMPTY, so a non-blank default would make
+        # every UI-default dispatch publish SHA tags only.
+        description: 'unsloth git ref override (blank = dispatched branch + stable tags)'
+        required: false
+        default: ''
+      unsloth_zoo_ref:
+        description: 'unsloth-zoo git ref to bake in'
+        required: false
+        default: 'main'
+      notebooks_ref:
+        description: 'unslothai/notebooks git ref to bake into :studio (resolved to one commit)'
+        required: false
+        default: 'main'
+      rocm_version:
+        description: 'ROCm base image version (blank = the Dockerfile default, 7.2.4)'
+        required: false
+        default: ''
+      torch_index_url:
+        description: 'PyTorch ROCm wheel index (blank = the Dockerfile default, rocm7.2)'
+        required: false
+        default: ''
+      rocm_gfx:
+        description: 'AMD per-arch wheels for one gfx (gfx1150/1151/1152/1200/1201), or gfx906 (generic index, no bitsandbytes; pair with rocm_version 6.3.4); blank = generic'
+        required: false
+        default: ''
+
+env:
+  REGISTRY: docker.io
+  IMAGE_NAME: unsloth/unsloth-rocm
+  # The org name, not a person: Docker Hub authenticates an organization access
+  # token as the organization. See docker-publish.yml.
+  REGISTRY_USERNAME: unsloth
+  DEFAULT_ROCM_VERSION: '7.2.4'
+  DEFAULT_TORCH_INDEX_URL: 'https://download.pytorch.org/whl/rocm7.2'
+  # the last ROCm with gfx906 kernels: the default base for rocm_gfx=gfx906
+  GFX906_ROCM_VERSION: '6.3.4'
+
+# Serialise per-ref runs, except on main where each RUN gets its own group: a
+# shared group DISCARDS a pending run when a newer one is queued (see
+# tests/studio/test_main_runs_survive_merge_bursts.py), and the sha alone still
+# pairs a scheduled run with a dispatch on an unchanged main, so the run id is the
+# key there. Never cancel in progress: a half-pushed digest is worse than a stale
+# :latest for a few minutes.
+concurrency:
+  group: docker-publish-rocm-${{ github.ref }}-${{ github.ref == 'refs/heads/main' && github.run_id || '' }}
+  cancel-in-progress: false
+
+# Pushes use Docker Hub registry creds, not GITHUB_TOKEN, so read is enough.
+permissions:
+  contents: read
+
+jobs:
+  # Resolve the refs ONCE, to commits: docker matches a RUN layer on the command
+  # string, so a mutable "main" build arg would reuse the pip layer of an earlier
+  # build and report success with stale bits.
+  prepare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      unsloth_ref: ${{ steps.unsloth_ref.outputs.ref }}
+      zoo_ref: ${{ steps.zoo_ref.outputs.ref }}
+      notebooks_commit: ${{ steps.notebooks.outputs.commit }}
+      rocm_version: ${{ steps.build_args.outputs.rocm_version }}
+      torch_index_url: ${{ steps.build_args.outputs.torch_index_url }}
+      rocm_gfx: ${{ steps.build_args.outputs.rocm_gfx }}
+      # every input at its default: only then may the build take the stable tags
+      stable: ${{ steps.build_args.outputs.stable }}
+      # every input at its default except a set gfx: only then the gfx tag
+      gfx_tag: ${{ steps.build_args.outputs.gfx_tag }}
+    steps:
+      # Precedence: dispatch input, else pushed tag, else trigger sha, else main.
+      - name: Resolve unsloth ref
+        id: unsloth_ref
+        env:
+          INPUT_REF: ${{ github.event.inputs.unsloth_ref }}
+          TAG_REF: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || '' }}
+          PUSH_SHA: ${{ github.sha }}
+        run: |
+          REF="$INPUT_REF"
+          [ -n "$REF" ] || REF="$TAG_REF"
+          [ -n "$REF" ] || REF="$PUSH_SHA"
+          REF="${REF:-main}"
+          if printf '%s' "$REF" | grep -Eq '^[0-9a-f]{40}$'; then
+              SHA="$REF"
+          else
+              # ls-remote exits 0 whether or not a ref matched, so a non-zero exit means
+              # the remote was never reached and the fallback would hand a MUTABLE name
+              # to the build.
+              if ! LS_OUT="$(git ls-remote https://github.com/unslothai/unsloth "$REF")"; then
+                  echo "::error::unslothai/unsloth unreachable; cannot freeze ref '${REF}' to a sha"
+                  exit 1
+              fi
+              SHA="$(printf '%s\n' "$LS_OUT" | awk 'NR==1{print $1}')"
+              [ -n "$SHA" ] || SHA="$REF"
+          fi
+          echo "ref=${SHA}" >> "$GITHUB_OUTPUT"
+          echo "unsloth ref: ${SHA}"
+
+      # only when the tag exists there: unsloth's v* tags are Studio releases
+      - name: Resolve unsloth-zoo ref
+        id: zoo_ref
+        env:
+          INPUT_REF: ${{ github.event.inputs.unsloth_zoo_ref }}
+          IS_TAG: ${{ startsWith(github.ref, 'refs/tags/') }}
+          TAG_NAME: ${{ github.ref_name }}
+        run: |
+          REF="$INPUT_REF"
+          if [ -z "$REF" ] && [ "$IS_TAG" = "true" ]; then
+              # git documents status 2 as "reached the remote, no matching ref"; any
+              # other non-zero means the lookup never happened, so swallowing both
+              # lets a transport blip pair the unsloth tag with zoo main.
+              _rc=0
+              git ls-remote --exit-code --tags https://github.com/unslothai/unsloth-zoo \
+                  "refs/tags/${TAG_NAME}" >/dev/null 2>&1 || _rc=$?
+              if [ "$_rc" = "0" ]; then
+                  REF="$TAG_NAME"
+              elif [ "$_rc" != "2" ]; then
+                  echo "::error::unslothai/unsloth-zoo unreachable (git ls-remote exit ${_rc}); cannot tell whether it carries tag '${TAG_NAME}'"
+                  exit 1
+              fi
+          fi
+          REF="${REF:-main}"
+          if printf '%s' "$REF" | grep -Eq '^[0-9a-f]{40}$'; then
+              SHA="$REF"
+          else
+              if ! LS_OUT="$(git ls-remote https://github.com/unslothai/unsloth-zoo "$REF")"; then
+                  echo "::error::unslothai/unsloth-zoo unreachable; cannot freeze ref '${REF}' to a sha"
+                  exit 1
+              fi
+              SHA="$(printf '%s\n' "$LS_OUT" | awk 'NR==1{print $1}')"
+              [ -n "$SHA" ] || SHA="$REF"
+          fi
+          echo "ref=${SHA}" >> "$GITHUB_OUTPUT"
+          echo "unsloth-zoo ref: ${SHA}"
+
+      # One commit for the notebooks the Studio image bakes, as docker-publish.yml
+      # does: the layer is keyed on this string, so a mutable "main" would be a
+      # cache hit on a later run and ship the old set under a new digest.
+      - name: Resolve unsloth/notebooks commit
+        id: notebooks
+        env:
+          INPUT_REF: ${{ github.event.inputs.notebooks_ref }}
+        run: |
+          REF="${INPUT_REF:-main}"
+          if printf '%s' "$REF" | grep -Eq '^[0-9a-f]{40}$'; then
+              SHA="$REF"
+          else
+              if ! LS_OUT="$(git ls-remote https://github.com/unslothai/notebooks "$REF")"; then
+                  echo "::error::unslothai/notebooks unreachable; cannot freeze ref '${REF}' to a sha"
+                  exit 1
+              fi
+              SHA="$(printf '%s\n' "$LS_OUT" | awk 'NR==1{print $1}')"
+              [ -n "$SHA" ] || SHA="$REF"
+          fi
+          echo "commit=${SHA}" >> "$GITHUB_OUTPUT"
+          echo "notebooks commit: ${SHA}"
+
+      # :latest and the release tags name the DEFAULT build. A dispatch that
+      # changed any input (an older ROCm, another index, a per-arch build) gets
+      # SHA tags only, so it can never overwrite what `docker pull` hands out.
+      - name: Resolve build args and the stable-tag gate
+        id: build_args
+        env:
+          IN_UNSLOTH: ${{ github.event.inputs.unsloth_ref }}
+          IN_ZOO: ${{ github.event.inputs.unsloth_zoo_ref }}
+          IN_NOTEBOOKS: ${{ github.event.inputs.notebooks_ref }}
+          IN_ROCM: ${{ github.event.inputs.rocm_version }}
+          IN_INDEX: ${{ github.event.inputs.torch_index_url }}
+          IN_GFX: ${{ github.event.inputs.rocm_gfx }}
+        run: |
+          GFX="${IN_GFX}"
+          case "$GFX" in
+              ""|gfx906|gfx1150|gfx1151|gfx1152|gfx1200|gfx1201) ;;
+              *) echo "::error::rocm_gfx='${GFX}' has no per-arch wheel index (gfx906 = generic index without bitsandbytes)"; exit 1 ;;
+          esac
+          # gfx906 has no kernels after ROCm 6.3, so its defaults are the last base
+          # that carries it; the public :gfx906 tag names that pair, and a 6.4+
+          # base with gfx906 is refused rather than tagged.
+          DEF_ROCM="$DEFAULT_ROCM_VERSION"
+          DEF_INDEX="$DEFAULT_TORCH_INDEX_URL"
+          if [ "$GFX" = gfx906 ]; then
+              DEF_ROCM="$GFX906_ROCM_VERSION"
+              DEF_INDEX="https://download.pytorch.org/whl/rocm${DEF_ROCM%.*}"
+          fi
+          ROCM="${IN_ROCM:-$DEF_ROCM}"
+          # the index follows the base unless named: a 6.3.4 base with the 7.2
+          # wheels would build (torch.version.hip is set either way) and not run
+          INDEX="${IN_INDEX:-https://download.pytorch.org/whl/rocm${ROCM%.*}}"
+          if [ "$GFX" = gfx906 ]; then
+              case "$ROCM" in
+                  6.[0-3]|6.[0-3].*) ;;
+                  *) echo "::error::rocm_gfx=gfx906 needs a ROCm 6.3 base (AMD dropped gfx906 after 6.3), not ${ROCM}"; exit 1 ;;
+              esac
+          fi
+          # DEFAULTS: every input other than the gfx at its default. STABLE adds a
+          # blank gfx. A per-arch build gets its gfx tag only under DEFAULTS, so a
+          # feature-branch ref plus gfx1151 cannot replace the public gfx1151 image.
+          DEFAULTS=true
+          [ -z "$IN_UNSLOTH" ] || DEFAULTS=false
+          case "$IN_ZOO" in ""|main) ;; *) DEFAULTS=false ;; esac
+          case "$IN_NOTEBOOKS" in ""|main) ;; *) DEFAULTS=false ;; esac
+          [ "$ROCM" = "$DEF_ROCM" ] || DEFAULTS=false
+          [ "$INDEX" = "$DEF_INDEX" ] || DEFAULTS=false
+          STABLE=$DEFAULTS
+          [ -z "$GFX" ] || STABLE=false
+          GFX_TAG=false
+          [ "$DEFAULTS" = "true" ] && [ -n "$GFX" ] && GFX_TAG=true
+          {
+              echo "rocm_version=${ROCM}"
+              echo "torch_index_url=${INDEX}"
+              echo "rocm_gfx=${GFX}"
+              echo "stable=${STABLE}"
+              echo "gfx_tag=${GFX_TAG}"
+          } >> "$GITHUB_OUTPUT"
+          echo "ROCm ${ROCM}, index ${INDEX}, gfx '${GFX}', stable tags: ${STABLE}, gfx tag: ${GFX_TAG}"
+
+  build:
+    needs: prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+    steps:
+      - uses: actions/checkout@v7
+
+      # The ROCm base image plus the wheel cache do not fit the default runner disk.
+      - name: Reclaim disk
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+                      /opt/hostedtoolcache/CodeQL "$AGENT_TOOLSDIRECTORY" || true
+          df -h /
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v4
+        with:
+          username: ${{ env.REGISTRY_USERNAME }}
+          password: ${{ secrets.DOCKER_API_KEY }}
+
+      - name: Resolve labels
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          # The action copies the repo's Apache-2.0; the image ships AGPL-3.0 files too
+          # (docker/smoke_test_rocm.py), as docker-publish.yml records for its images.
+          labels: |
+            org.opencontainers.image.licenses=Apache-2.0 AND AGPL-3.0-only
+
+      - name: Build and push (by digest)
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: ./docker
+          file: ./docker/Dockerfile.rocm
+          platforms: linux/amd64
+          labels: ${{ steps.meta.outputs.labels }}
+          # No cache-from / cache-to. mode=max on the GHA backend would export a
+          # 21.4GB image's intermediate layers into the repo-wide Actions cache,
+          # which already holds 40GB across 45 entries serving the notebooks pip
+          # and GGUF fixtures, and would evict them by LRU. This job also runs
+          # weekly while GHA drops entries unused for 7 days, so the cache would
+          # usually be cold on arrival. Measured cold: 8 min of layer work plus
+          # 5.6 min exporting layers.
+          outputs:    type=image,name=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
+          build-args: |
+            ROCM_VERSION=${{ needs.prepare.outputs.rocm_version }}
+            PYTHON_VERSION=3.12
+            TORCH_INDEX_URL=${{ needs.prepare.outputs.torch_index_url }}
+            ROCM_GFX=${{ needs.prepare.outputs.rocm_gfx }}
+            UNSLOTH_REF=${{ needs.prepare.outputs.unsloth_ref }}
+            UNSLOTH_ZOO_REF=${{ needs.prepare.outputs.zoo_ref }}
+
+  # Attach human-readable tags to the digest pushed above. Only once the Studio
+  # build has its digest too: the Hub page promises every base tag a -studio twin
+  # on the same base, and a :latest that moved while the Studio build then failed
+  # would leave :studio on the previous base. Both digests exist before either tag
+  # moves, and the two tag jobs then run back to back in the same run.
+  tag:
+    runs-on: ubuntu-latest
+    needs: [prepare, build, build-studio]
+    timeout-minutes: 15
+    outputs:
+      tags: ${{ steps.meta.outputs.tags }}
+    steps:
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v4
+        with:
+          username: ${{ env.REGISTRY_USERNAME }}
+          password: ${{ secrets.DOCKER_API_KEY }}
+
+      - name: Resolve tags
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          # latest: a default-input build of the default branch (schedule or dispatch).
+          # A per-arch build gets its gfx in the tag so it is findable, never latest.
+          # An override build's sha tag carries the run id: two experiments at the same
+          # commit would otherwise overwrite each other's only name.
+          tags: |
+            type=raw,value=latest,enable=${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && needs.prepare.outputs.stable == 'true' }}
+            type=ref,event=tag,enable=${{ needs.prepare.outputs.stable == 'true' }}
+            type=schedule,pattern=nightly,enable=${{ needs.prepare.outputs.stable == 'true' }}
+            type=raw,value=${{ needs.prepare.outputs.rocm_gfx }},enable=${{ needs.prepare.outputs.gfx_tag == 'true' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
+            type=sha,prefix=sha-,format=short,suffix=${{ needs.prepare.outputs.rocm_gfx != '' && format('-{0}', needs.prepare.outputs.rocm_gfx) || '' }}${{ needs.prepare.outputs.stable != 'true' && format('-r{0}', github.run_id) || '' }}
+
+      - name: Create manifest
+        env:
+          DIGEST: ${{ needs.build.outputs.digest }}
+        run: |
+          TAG_FLAGS=()
+          while IFS= read -r t; do TAG_FLAGS+=(-t "$t"); done < <(jq -r '.tags[]' <<<"$DOCKER_METADATA_OUTPUT_JSON")
+          docker buildx imagetools create "${TAG_FLAGS[@]}" "${REGISTRY}/${IMAGE_NAME}@${DIGEST}"
+
+      - name: Inspect the result
+        run: |
+          for tag in $(jq -r '.tags[]' <<<"$DOCKER_METADATA_OUTPUT_JSON"); do
+              echo "=== $tag ==="
+              docker buildx imagetools inspect "$tag"
+          done
+
+  # Studio on the base this run pushed (docker/Dockerfile.studio-rocm), the ROCm
+  # half of docker-publish.yml's build-studio. The base by DIGEST, not by tag:
+  # :latest can already be a newer run's by the time this job starts. The Studio
+  # refs are the ones the base baked, so both venvs run the same commit even if
+  # upstream moved mid-run. Before tag, which waits on this job's digest (see there).
+  build-studio:
+    needs: [prepare, build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+    steps:
+      - uses: actions/checkout@v7
+
+      # The 21GB base is pulled onto the runner and Studio adds a second torch on
+      # top, so this clears more than the base build does.
+      - name: Reclaim disk
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+                      /opt/hostedtoolcache "$AGENT_TOOLSDIRECTORY" \
+                      /usr/local/.ghcup /usr/share/swift \
+                      /usr/local/share/powershell /usr/local/lib/node_modules \
+                      /usr/local/julia* /opt/microsoft /usr/share/miniconda \
+                      /opt/az /usr/local/share/boost /usr/local/share/chromium || true
+          sudo docker image prune -af >/dev/null 2>&1 || true
+          df -h /
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v4
+        with:
+          username: ${{ env.REGISTRY_USERNAME }}
+          password: ${{ secrets.DOCKER_API_KEY }}
+
+      - name: Resolve labels
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          # This one ships Studio itself, which is AGPL-3.0.
+          labels: |
+            org.opencontainers.image.licenses=Apache-2.0 AND AGPL-3.0-only
+
+      - name: Build and push (by digest)
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: ./docker
+          file: ./docker/Dockerfile.studio-rocm
+          platforms: linux/amd64
+          labels: ${{ steps.meta.outputs.labels }}
+          # No cache-from / cache-to, for the reason the base build gives.
+          outputs:    type=image,name=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
+          build-args: |
+            BASE_IMAGE=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ needs.build.outputs.digest }}
+            UNSLOTH_STUDIO_REF=${{ needs.prepare.outputs.unsloth_ref }}
+            UNSLOTH_STUDIO_ZOO_REF=${{ needs.prepare.outputs.zoo_ref }}
+            UNSLOTH_NOTEBOOKS_REF=${{ needs.prepare.outputs.notebooks_commit }}
+
+      # The Dockerfile hands install.sh UNSLOTH_ALLOW_CPU=1 for the GPU-less build
+      # only. Image-wide it would reach every process and turn off Unsloth's TRL
+      # trainer patches on GPU hosts (#10825), so check the artifact the registry
+      # serves rather than the Dockerfile text, as docker-publish.yml does.
+      - name: Assert the Studio image env cannot disable training
+        run: |
+          REF='${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.build.outputs.digest }}'
+          ENV_JSON="$(docker buildx imagetools inspect "$REF" --format '{{json .Image}}' \
+                      | jq -c '[.. | objects | select(has("config")) | .config.Env // []] | add')"
+          echo "$ENV_JSON" | jq -r '.[] | select(startswith("UNSLOTH_"))'
+          echo "$ENV_JSON" | jq -e 'map(select(startswith("UNSLOTH_ALLOW_CPU="))) | length == 0' >/dev/null \
+            || { echo "::error::Studio image env carries UNSLOTH_ALLOW_CPU, which disables Unsloth's TRL patches on GPU hosts"; exit 1; }
+
+  # The base's tag rules, each with a -studio leaf and the same gates: :studio
+  # beside :latest, v1.2.3-studio, nightly-studio, gfx1151-studio, sha-<commit>-studio.
+  # After tag, so a :studio never points past its :latest.
+  tag-studio:
+    runs-on: ubuntu-latest
+    needs: [prepare, build-studio, tag]
+    timeout-minutes: 15
+    steps:
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v4
+        with:
+          username: ${{ env.REGISTRY_USERNAME }}
+          password: ${{ secrets.DOCKER_API_KEY }}
+
+      - name: Resolve tags
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          # format(), not a bare ${{ }}-studio: the raw gfx line is matched by name
+          # in tests/python/test_docker_rocm.py and must stay unique to the base.
+          tags: |
+            type=raw,value=studio,enable=${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && needs.prepare.outputs.stable == 'true' }}
+            type=ref,event=tag,suffix=-studio,enable=${{ needs.prepare.outputs.stable == 'true' }}
+            type=schedule,pattern=nightly-studio,enable=${{ needs.prepare.outputs.stable == 'true' }}
+            type=raw,value=${{ format('{0}-studio', needs.prepare.outputs.rocm_gfx) }},enable=${{ needs.prepare.outputs.gfx_tag == 'true' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
+            type=sha,prefix=sha-,format=short,suffix=${{ needs.prepare.outputs.rocm_gfx != '' && format('-{0}', needs.prepare.outputs.rocm_gfx) || '' }}${{ needs.prepare.outputs.stable != 'true' && format('-r{0}', github.run_id) || '' }}-studio
+
+      - name: Create manifest
+        env:
+          DIGEST: ${{ needs.build-studio.outputs.digest }}
+        run: |
+          TAG_FLAGS=()
+          while IFS= read -r t; do TAG_FLAGS+=(-t "$t"); done < <(jq -r '.tags[]' <<<"$DOCKER_METADATA_OUTPUT_JSON")
+          docker buildx imagetools create "${TAG_FLAGS[@]}" "${REGISTRY}/${IMAGE_NAME}@${DIGEST}"
+
+      - name: Inspect the result
+        run: |
+          for tag in $(jq -r '.tags[]' <<<"$DOCKER_METADATA_OUTPUT_JSON"); do
+              echo "=== $tag ==="
+              docker buildx imagetools inspect "$tag"
+          done
+
+  # The Docker Hub page is repository metadata that no push writes, so without
+  # this it stays whatever was set by hand. Mirrors docker-publish.yml's
+  # hub-readme job: synced from docker/DOCKERHUB-ROCM.md whenever :latest moved,
+  # read back rather than trusted, and a token that cannot edit the description
+  # fails the job rather than warning.
+  #
+  # The namespace-scoped route is not a style choice: the legacy
+  # /v2/repositories/{owner}/{repo}/ path answers every organization access token
+  # with 403 "token issued from organization access token is not allowed".
+  hub-readme:
+    # prepare as well as tag: the `if` reads needs.prepare.outputs.stable, and a
+    # job not listed in needs is simply absent from the context, which would make
+    # the condition silently false and the page never update.
+    # tag-studio too: the page describes both images, so it moves once both did.
+    needs: [prepare, tag, tag-studio]
+    if: ${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && needs.prepare.outputs.stable == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Sync docker/DOCKERHUB-ROCM.md to the Docker Hub page
+        env:
+          DOCKER_API_KEY: ${{ secrets.DOCKER_API_KEY }}
+        run: |
+          README=docker/DOCKERHUB-ROCM.md
+          test -s "$README"
+          HUB="https://hub.docker.com/v2/namespaces/${IMAGE_NAME%%/*}/repositories/${IMAGE_NAME#*/}"
+          # Body built from the environment and handed to curl on stdin, so the key is
+          # never a command-line argument.
+          TOKEN="$(python3 -c 'import json,os,sys; sys.stdout.write(json.dumps({"identifier": os.environ["REGISTRY_USERNAME"], "secret": os.environ["DOCKER_API_KEY"]}))' \
+            | curl -sS -X POST https://hub.docker.com/v2/auth/token \
+              -H 'Content-Type: application/json' --data-binary @- \
+            | python3 -c 'import json,sys; print(json.load(sys.stdin).get("access_token",""))')"
+          if [ -z "$TOKEN" ]; then
+            echo "::error::Could not exchange DOCKER_API_KEY for a Hub API token; the Hub page was not updated."
+            exit 1
+          fi
+          BODY="$(python3 -c 'import json,sys; print(json.dumps({"full_description": open(sys.argv[1], encoding="utf-8").read()}))' "$README")"
+          CODE="$(curl -sS -o /tmp/hub_patch.json -w '%{http_code}' -X PATCH "$HUB" \
+            -H "Authorization: Bearer ${TOKEN}" -H 'Content-Type: application/json' \
+            --data-binary "$BODY")"
+          echo "PATCH returned HTTP ${CODE}"
+          LIVE="$(curl -sS -H "Authorization: Bearer ${TOKEN}" "$HUB" \
+            | python3 -c 'import json,sys; print(json.load(sys.stdin).get("full_description",""))')"
+          if [ "$LIVE" != "$(cat "$README")" ]; then
+            echo "::error::The Hub page does not match ${README} after PATCH ${CODE}. DOCKER_API_KEY most likely lacks the repository edit permission on ${IMAGE_NAME}."
+            head -c 400 /tmp/hub_patch.json; echo
+            exit 1
+          fi
+          echo "Hub page for ${IMAGE_NAME} now matches ${README}."
+
+  # Optional: pull THIS run's digest onto a self-hosted AMD GPU runner and train
+  # for five steps. The digest, not a tag: a tag can already point at a newer
+  # run by the time this job starts.
+  smoke-test:
+    needs: [build, tag]
+    if: ${{ vars.HAS_AMD_GPU_RUNNER == 'true' }}
+    runs-on: [self-hosted, amd-gpu]
+    timeout-minutes: 45
+    steps:
+      - name: Pull and smoke-test
+        env:
+          DIGEST: ${{ needs.build.outputs.digest }}
+        run: |
+          IMG="${REGISTRY}/${IMAGE_NAME}@${DIGEST}"
+          echo "smoke-testing $IMG"
+          docker pull "$IMG"
+          # numeric gids: the names do not exist inside the image
+          FLAGS=(--device /dev/kfd --device /dev/dri)
+          for g in video render; do
+              gid="$(getent group "$g" | cut -d: -f3)" || gid=""
+              [ -n "$gid" ] && FLAGS+=(--group-add "$gid")
+          done
+          docker run --rm "${FLAGS[@]}" --ipc=host "$IMG" python /workspace/smoke_test_rocm.py

@@ -8,14 +8,13 @@ import {
   MultiplicationSignCircleIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { Spinner } from "@/components/ui/spinner";
 import { useTheme } from "@/features/settings/stores/theme-store";
+import { createLoadingToastIcon } from "@/lib/toast";
 import { Toaster as Sonner, type ToasterProps } from "sonner";
 
-// Make toast text selectable. Sonner's onPointerDown calls setPointerCapture(),
-// which steals the drag and blocks text selection. dismissible:false would stop
-// it but also kills the close button. So we swallow pointerdown on toast text
-// (never on its buttons) before sonner sees it.
+// Make toast text selectable. Sonner's onPointerDown calls setPointerCapture(), which steals the
+// drag and blocks text selection. dismissible:false would stop it but also kills the close button.
+// So we swallow pointerdown on toast text (never on its buttons) before sonner sees it.
 const handleToastPointerDownCapture = (
   event: React.PointerEvent<HTMLDivElement>,
 ) => {
@@ -78,7 +77,7 @@ const Toaster = ({ ...props }: ToasterProps) => {
             />
           ),
           // App-wide arc spinner so loading toasts match the "Downloading model" toast.
-          loading: <Spinner className="size-4 text-muted-foreground" />,
+          loading: createLoadingToastIcon(),
         }}
         style={
           {

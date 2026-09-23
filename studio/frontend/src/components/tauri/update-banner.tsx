@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { Button } from "@/components/ui/button";
+import { ReleaseNotesPanel } from "@/components/update/release-notes-panel";
 import type {
   DesktopUpdatePolicyMode,
   RetainedUpdateFailure,
@@ -10,6 +11,7 @@ import type {
 } from "@/hooks/use-tauri-update";
 import type { CopySupportDiagnosticsResult } from "@/lib/tauri-diagnostics";
 import { cn } from "@/lib/utils";
+import { useT } from "@/i18n";
 import { CircleAlert, Download } from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
 import { useState } from "react";
@@ -22,6 +24,8 @@ interface UpdateBannerProps {
   isExternalServer?: boolean;
   updatePolicyMode: DesktopUpdatePolicyMode;
   manualReleaseUrl: string | null;
+  // Release page for this version, preferred over the generic changelog.
+  releasePageUrl?: string | null;
   // false fills a shared overlay stack; true self-anchors.
   positioned?: boolean;
   onInstall: () => void;
@@ -30,6 +34,7 @@ interface UpdateBannerProps {
 }
 
 const EASE_OUT_QUART: [number, number, number, number] = [0.165, 0.84, 0.44, 1];
+const LEADING_V = /^v/;
 
 function formatVersion(version: string | null | undefined): string {
   if (!version) return "";
@@ -44,14 +49,18 @@ export function UpdateBanner({
   isExternalServer = false,
   updatePolicyMode,
   manualReleaseUrl,
+  releasePageUrl = null,
   positioned = true,
   onInstall,
   onDismiss,
   onCopyDiagnostics,
 }: UpdateBannerProps) {
+  const t = useT();
   const [copying, setCopying] = useState(false);
   const [manualReport, setManualReport] = useState<string | null>(null);
   const [manualMessage, setManualMessage] = useState<string | null>(null);
+  // Version whose notes are expanded; a new offer collapses the panel.
+  const [notesVersion, setNotesVersion] = useState<string | null>(null);
   const showFailure = Boolean(lastFailure) && !dismissed;
   const showAvailable = status === "available" && !dismissed && !showFailure;
   const show = showFailure || (showAvailable && Boolean(info));
@@ -62,6 +71,9 @@ export function UpdateBanner({
   const currentVersion = formatVersion(info?.currentVersion);
   const latestVersion = formatVersion(info?.version);
   const Icon = showFailure ? CircleAlert : Download;
+  const notesTargetVersion = info?.version?.replace(LEADING_V, "") ?? null;
+  const notesOpen =
+    notesTargetVersion !== null && notesVersion === notesTargetVersion;
 
   async function handleCopyDiagnostics() {
     setCopying(true);
@@ -95,12 +107,17 @@ export function UpdateBanner({
           transition={{ duration: 0.35, ease: EASE_OUT_QUART }}
           className={cn(
             positioned
-              ? "fixed bottom-4 right-4 z-[9999] w-[calc(100vw-2rem)] max-w-[400px]"
-              : "pointer-events-auto w-full",
+              ? "fixed bottom-4 right-4 z-[9999] w-[calc(100vw-2rem)] max-w-[448px]"
+              : cn(
+                  "pointer-events-auto flex w-[calc(100vw-2rem)] max-w-[448px] shrink-0 flex-col",
+                  // Only rendered notes may shrink in the capped rail.
+                  "has-[[data-slot=update-release-notes]]:min-h-[calc(117px+93px*var(--ui-font-scale,1))] has-[[data-slot=update-release-notes]]:shrink max-[383px]:has-[[data-slot=update-release-notes]]:min-h-[calc(24px+224px*var(--ui-font-scale,1))]",
+                ),
           )}
           data-testid="tauri-update-banner"
         >
-          <div className="relative overflow-hidden rounded-[24px] bg-white px-5 pb-4 pt-5 shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:bg-card dark:shadow-[0_8px_28px_-6px_rgba(0,0,0,0.28)]">
+          {/* Paint the full floor even when the notes are short. */}
+          <div className="relative flex max-h-[calc(100dvh_-_2rem)] min-h-0 grow flex-col overflow-hidden rounded-[24px] bg-white px-5 pb-4 pt-5 shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:bg-card dark:shadow-[0_8px_28px_-6px_var(--background)]">
             <button
               type="button"
               onClick={onDismiss}
@@ -124,7 +141,7 @@ export function UpdateBanner({
               </svg>
             </button>
 
-            <div className="flex min-w-0 items-start gap-4 pr-6">
+            <div className="flex min-w-0 shrink-0 items-start gap-4 pr-6">
               <Icon
                 aria-hidden="true"
                 className="mt-1 size-5 shrink-0 text-foreground"
@@ -142,31 +159,60 @@ export function UpdateBanner({
                     </span>
                   </p>
                 )}
-                <p className="mt-1 text-[11px] text-muted-foreground/70">
+                <p className="mt-1 text-ui-11 text-muted-foreground/70">
                   {showFailure
                     ? "Backend recovered. Diagnostics are still available."
                     : isManualLinuxPackage
                       ? "Open the GitHub release page to install the Linux package"
                       : isExternalServer
-                        ? "Run `unsloth studio update` from your terminal"
+                        ? t("settings.about.update.desktopExternalServer")
                         : "A new app update is available"}
                 </p>
               </div>
             </div>
 
             {showFailure && lastFailure && (
-              <p className="mt-3 line-clamp-2 text-xs text-destructive">
+              <p className="mt-3 line-clamp-2 shrink-0 text-xs text-destructive">
                 {lastFailure.error}
               </p>
             )}
 
-            <div className="mt-4 flex flex-wrap items-center justify-end gap-x-1 gap-y-2">
+            {!showFailure && notesTargetVersion ? (
+              <ReleaseNotesPanel
+                version={notesTargetVersion}
+                open={notesOpen}
+                releaseNotesUrl={releasePageUrl ?? manualReleaseUrl}
+              />
+            ) : null}
+
+            <div
+              className={cn(
+                "mt-4 flex shrink-0 flex-wrap items-center gap-x-1 gap-y-2",
+                !showFailure && notesTargetVersion
+                  ? "justify-between"
+                  : "justify-end",
+              )}
+            >
+              {!showFailure && notesTargetVersion ? (
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  className="-ml-2 h-auto whitespace-nowrap rounded-full px-2.5 py-2 text-ui-13 font-medium text-foreground"
+                  onClick={() =>
+                    setNotesVersion(notesOpen ? null : notesTargetVersion)
+                  }
+                  aria-expanded={notesOpen}
+                  data-testid="tauri-update-release-notes-toggle"
+                >
+                  {notesOpen ? "Hide release notes" : "Show release notes"}
+                </Button>
+              ) : null}
               {showFailure ? (
                 <>
                   <Button
                     size="sm"
                     variant="ghost"
-                    className="h-auto rounded-full px-3 py-2 text-[13px] font-medium text-foreground"
+                    className="h-auto rounded-full px-3 py-2 text-ui-13 font-medium text-foreground"
                     onClick={() => {
                       handleCopyDiagnostics().catch(console.error);
                     }}
@@ -176,51 +222,64 @@ export function UpdateBanner({
                   <Button
                     size="sm"
                     variant="ghost"
-                    className="h-auto rounded-full px-3 py-2 text-[13px] font-medium text-foreground"
+                    className="h-auto rounded-full px-3 py-2 text-ui-13 font-medium text-foreground"
                     onClick={onDismiss}
                   >
                     Later
                   </Button>
                   <Button
                     size="sm"
-                    className="-mr-1 h-auto rounded-full px-3.5 py-2 text-[13px]"
+                    className="-mr-1 h-auto rounded-full px-3.5 py-2 text-ui-13"
                     onClick={onInstall}
                     disabled={installDisabled}
                   >
-                    {isManualLinuxPackage ? "Open release page" : "Retry update"}
+                    {isManualLinuxPackage
+                      ? "Open release page"
+                      : "Retry update"}
                   </Button>
                 </>
               ) : (
-                <>
+                <div className="flex flex-wrap items-center justify-end gap-x-1 gap-y-2">
                   <Button
                     size="sm"
                     variant="ghost"
-                    className="h-auto rounded-full px-3 py-2 text-[13px] font-medium text-foreground"
+                    className="h-auto whitespace-nowrap rounded-full px-2.5 py-2 text-ui-13 font-medium text-foreground"
                     onClick={onDismiss}
                   >
                     Remind me later
                   </Button>
                   <Button
                     size="sm"
-                    className="-mr-1 h-auto rounded-full px-3.5 py-2 text-[13px]"
+                    className="-mr-1 h-auto whitespace-nowrap rounded-full px-3 py-2 text-ui-13"
                     onClick={onInstall}
                     disabled={installDisabled}
+                    data-testid="tauri-update-install"
                   >
                     {isManualLinuxPackage ? "Open release page" : "Update"}
                   </Button>
-                </>
+                </div>
               )}
             </div>
-            {manualMessage && (
-              <p className="mt-3 text-xs text-destructive">{manualMessage}</p>
-            )}
-            {manualReport && (
-              <textarea
-                readOnly={true}
-                value={manualReport}
-                onFocus={(event) => event.currentTarget.select()}
-                className="mt-2 h-28 w-full resize-none rounded-lg border border-border/50 bg-muted/30 p-2 font-mono text-[10px] text-muted-foreground"
-              />
+            {(manualMessage || manualReport) && (
+              // The one region that may give up height: the card is capped and clips, and the rail cannot scroll to it.
+              <div
+                className="hover-scrollbar min-h-0 flex-1 overflow-y-auto overscroll-contain"
+                data-testid="tauri-update-manual-report"
+              >
+                {manualMessage && (
+                  <p className="mt-3 text-xs text-destructive">
+                    {manualMessage}
+                  </p>
+                )}
+                {manualReport && (
+                  <textarea
+                    readOnly={true}
+                    value={manualReport}
+                    onFocus={(event) => event.currentTarget.select()}
+                    className="mt-2 h-28 w-full resize-none rounded-lg border border-border/50 bg-muted/30 p-2 font-mono text-ui-10 text-muted-foreground"
+                  />
+                )}
+              </div>
             )}
           </div>
         </motion.div>
