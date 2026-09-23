@@ -151,7 +151,7 @@ export function resolveProgressUpdate(
   };
 }
 
-// The killed partial only grows until the retry worker purges it, so more bytes left than at the attempt change means the new attempt is on screen.
+// The killed partial only grows until the retry worker purges it, and a re-measured completed baseline lowers both counters alike, so more bytes left than at the attempt change means the new attempt is on screen.
 export function floorHoldEnded(
   hold: FloorHold,
   expectedBytes: number,

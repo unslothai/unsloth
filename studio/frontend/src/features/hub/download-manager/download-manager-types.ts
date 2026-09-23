@@ -155,7 +155,7 @@ export interface JobRuntime {
   /**
    * A generation change seen on a status-only tick, held until a progress poll consumes it: status polls twice as often. */
   pendingGenerationChange?: boolean;
-  /** Set on an attempt change: the retry worker purges the killed run's partial only once it starts, so the GGUF floor stays off until the bytes left grow past `remainingBytes` or `until` passes. Bytes left, not bytes or the fraction: the reclaim re-measures the completed-files baseline, which moves both counters of a stale reading, never their difference. */
+  /** Set on an attempt change: the GGUF floor stays off until the retry has purged the killed run's partial (see floorHoldEnded). */
   floorHold?: FloorHold | null;
   idleSinceMs: number | null;
   lastProgressPollAt: number | null;
