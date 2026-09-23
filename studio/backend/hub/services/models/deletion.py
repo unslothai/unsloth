@@ -9,12 +9,17 @@ from hub.services.models import account_access
 
 import asyncio
 import errno
+import inspect
 from pathlib import Path
 from typing import Optional
 
 try:
     from huggingface_hub.utils._shared_blobs import shared_blob_target, sweep_shared_blob
-except ImportError:
+
+    # Private huggingface_hub API: a release that keeps the names but changes the arguments would raise TypeError mid-delete, after the snapshot links are gone, so fall back to the plain unlink instead.
+    inspect.signature(shared_blob_target).bind(Path(), Path())
+    inspect.signature(sweep_shared_blob).bind(Path(), cache_dir = Path())
+except (ImportError, TypeError, ValueError):
     shared_blob_target = None
     sweep_shared_blob = None
 

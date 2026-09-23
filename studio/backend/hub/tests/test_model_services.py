@@ -6137,6 +6137,36 @@ def test_reclaim_replaced_variant_sweeps_shared_xet_blob(monkeypatch, tmp_path):
     assert (repo_dir / "blobs" / "q8blob").exists()
 
 
+def _load_fresh_deletion(monkeypatch, shared_blobs_module):
+    import importlib.util
+
+    monkeypatch.setitem(sys.modules, "huggingface_hub.utils._shared_blobs", shared_blobs_module)
+    spec = importlib.util.spec_from_file_location("_deletion_probe", deletion.__file__)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_shared_blob_helpers_disabled_when_private_signature_changes(monkeypatch):
+    stub = SimpleNamespace(
+        shared_blob_target = lambda blob_path: None,
+        sweep_shared_blob = lambda store_path, cache_root: 0,
+    )
+    fresh = _load_fresh_deletion(monkeypatch, stub)
+    assert fresh.shared_blob_target is None
+    assert fresh.sweep_shared_blob is None
+
+
+def test_shared_blob_helpers_kept_when_signature_matches(monkeypatch):
+    stub = SimpleNamespace(
+        shared_blob_target = lambda blob_path, cache_dir: None,
+        sweep_shared_blob = lambda store_path, *, cache_dir: 0,
+    )
+    fresh = _load_fresh_deletion(monkeypatch, stub)
+    assert fresh.shared_blob_target is stub.shared_blob_target
+    assert fresh.sweep_shared_blob is stub.sweep_shared_blob
+
+
 def test_delete_variant_surfaces_locked_file_as_conflict(monkeypatch, tmp_path):
     """A blob unlink that fails (e.g. a Windows file lock on a loaded model)
     must raise a clear 409, not report a misleading success."""
