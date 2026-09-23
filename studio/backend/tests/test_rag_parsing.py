@@ -349,10 +349,20 @@ def test_docx_keeps_text_in_content_controls_and_tracked_insertions(tmp_path):
     body.insert(len(body) - 1, sdt("<w:p><w:r><w:t>BLOCK-SDT</w:t></w:r></w:p>"))
     p = document.add_paragraph("Client: ")._p
     p.append(sdt("<w:r><w:t>INLINE-SDT</w:t></w:r>"))
-    p.append(parse_xml(f'<w:ins {ns} w:id="1" w:author="a"><w:r><w:t> INSERTED</w:t></w:r></w:ins>'))
-    p.append(parse_xml(f'<w:del {ns} w:id="2" w:author="a"><w:r><w:delText>DELETED</w:delText></w:r></w:del>'))
-    p.append(parse_xml(f'<w:smartTag {ns} w:element="x"><w:r><w:t> TAGGED</w:t></w:r></w:smartTag>'))
-    p.append(parse_xml(f'<w:customXml {ns} w:element="x"><w:r><w:t> CUSTOM</w:t></w:r></w:customXml>'))
+    p.append(
+        parse_xml(f'<w:ins {ns} w:id="1" w:author="a"><w:r><w:t> INSERTED</w:t></w:r></w:ins>')
+    )
+    p.append(
+        parse_xml(
+            f'<w:del {ns} w:id="2" w:author="a"><w:r><w:delText>DELETED</w:delText></w:r></w:del>'
+        )
+    )
+    p.append(
+        parse_xml(f'<w:smartTag {ns} w:element="x"><w:r><w:t> TAGGED</w:t></w:r></w:smartTag>')
+    )
+    p.append(
+        parse_xml(f'<w:customXml {ns} w:element="x"><w:r><w:t> CUSTOM</w:t></w:r></w:customXml>')
+    )
     table = document.add_table(rows = 1, cols = 2)
     table.cell(0, 0).text = "Key"
     table.cell(0, 1)._tc.append(sdt("<w:p><w:r><w:t>CELL-SDT</w:t></w:r></w:p>"))
@@ -378,16 +388,20 @@ def test_docx_keeps_rows_and_cells_wrapped_in_content_controls(tmp_path):
     tr = table.rows[0]._tr
     tc = table.cell(0, 1)._tc
     tr.remove(tc)
-    tr.append(parse_xml(
-        f"<w:sdt {ns}><w:sdtContent><w:tc><w:p><w:r><w:t>CELL-WRAPPED</w:t></w:r></w:p></w:tc>"
-        "</w:sdtContent></w:sdt>"
-    ))
-    table._tbl.append(parse_xml(
-        f"<w:sdt {ns}><w:sdtContent><w:sdt><w:sdtContent><w:tr>"
-        "<w:tc><w:p><w:r><w:t>ROW-A</w:t></w:r></w:p></w:tc>"
-        "<w:tc><w:p><w:r><w:t>ROW-B</w:t></w:r></w:p></w:tc>"
-        "</w:tr></w:sdtContent></w:sdt></w:sdtContent></w:sdt>"
-    ))
+    tr.append(
+        parse_xml(
+            f"<w:sdt {ns}><w:sdtContent><w:tc><w:p><w:r><w:t>CELL-WRAPPED</w:t></w:r></w:p></w:tc>"
+            "</w:sdtContent></w:sdt>"
+        )
+    )
+    table._tbl.append(
+        parse_xml(
+            f"<w:sdt {ns}><w:sdtContent><w:sdt><w:sdtContent><w:tr>"
+            "<w:tc><w:p><w:r><w:t>ROW-A</w:t></w:r></w:p></w:tc>"
+            "<w:tc><w:p><w:r><w:t>ROW-B</w:t></w:r></w:p></w:tc>"
+            "</w:tr></w:sdtContent></w:sdt></w:sdtContent></w:sdt>"
+        )
+    )
     path = tmp_path / "wrapped.docx"
     document.save(str(path))
 

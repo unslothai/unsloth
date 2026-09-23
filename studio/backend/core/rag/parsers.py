@@ -442,7 +442,9 @@ def _docx_unwrap_table_controls(body) -> None:
         content = wrapper.find(_W + "sdtContent") if wrapper.tag == _W + "sdt" else wrapper
         keep = (_W + "tr", _W + "tc", _W + "sdt", _W + "customXml")
         idx = parent.index(wrapper)
-        for i, child in enumerate([c for c in (content if content is not None else ()) if c.tag in keep]):
+        for i, child in enumerate(
+            [c for c in (content if content is not None else ()) if c.tag in keep]
+        ):
             parent.insert(idx + i, child)
         parent.remove(wrapper)
 
