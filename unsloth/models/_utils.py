@@ -1178,7 +1178,8 @@ def _resolve_remote_model_class(auto_model, config, **hub_kwargs):
                 return klass
         except Exception:
             pass
-    if not repo_id:
+    # A Hub fetch only for a load that asked for remote code, with its own options.
+    if not repo_id or not hub_kwargs.get("trust_remote_code", None):
         return None
     try:
         from transformers.dynamic_module_utils import get_class_from_dynamic_module
@@ -1430,8 +1431,9 @@ def resolve_encoder_attention_implementation(
     config,
     model_type = "",
     disable_sdpa_model_names = (),
+    **hub_kwargs,
 ):
-    model_class = resolve_model_class(auto_model, config)
+    model_class = resolve_model_class(auto_model, config, **hub_kwargs)
     supports_sdpa = model_class is not None and getattr(model_class, "_supports_sdpa", False)
     if any(name in model_type.lower() for name in disable_sdpa_model_names):
         return "eager"

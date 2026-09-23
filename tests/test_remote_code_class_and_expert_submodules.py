@@ -136,6 +136,7 @@ def test_fetch_of_a_missing_modeling_module_uses_the_load_options(monkeypatch):
     got = U.resolve_model_class(
         AutoModelForCausalLM,
         config,
+        trust_remote_code = True,
         revision = "deadbeef",
         code_revision = "cafe",
         token = "tok",
@@ -172,7 +173,7 @@ def test_cross_repository_auto_map_skips_the_local_sibling(monkeypatch):
         return Remote
 
     monkeypatch.setattr(dmu, "get_class_from_dynamic_module", fake_get)
-    got = U.resolve_model_class(AutoModelForCausalLM, config)
+    got = U.resolve_model_class(AutoModelForCausalLM, config, trust_remote_code = True)
     assert got is Remote and got is not local_cls
     # Unsplit, with the model path, as from_pretrained calls it.
     assert seen == dict(
@@ -401,7 +402,9 @@ def test_force_download_bypasses_the_imported_sibling(monkeypatch):
         auto = type("AutoModelForCausalLM", (), {})
         assert U._resolve_remote_model_class(auto, cfg) is sibling.FakeForCausalLM
         assert calls == []
-        built = U._resolve_remote_model_class(auto, cfg, force_download = True)
+        built = U._resolve_remote_model_class(
+            auto, cfg, trust_remote_code = True, force_download = True
+        )
         assert (
             built is not sibling.FakeForCausalLM
             and calls
@@ -475,7 +478,10 @@ def test_a_code_revision_skips_the_materialised_sibling(monkeypatch):
     auto = type("AutoModelForCausalLM", (), {})
     assert _utils._resolve_remote_model_class(auto, config) is FromConfigRevision
     assert (
-        _utils._resolve_remote_model_class(auto, config, code_revision = "abc123") is FromCodeRevision
+        _utils._resolve_remote_model_class(
+            auto, config, trust_remote_code = True, code_revision = "abc123"
+        )
+        is FromCodeRevision
     )
 
 
@@ -527,3 +533,56 @@ def test_a_native_expert_tower_next_to_remote_code_is_not_widened():
     matched = {n for n, _ in model.named_modules() if re.fullmatch(widened, n)}
     assert any(n.startswith("model.layers.") and ".experts." in n for n in matched)
     assert not any(n.startswith("visual.") for n in matched)
+
+
+def test_a_load_that_did_not_ask_for_remote_code_never_fetches(monkeypatch):
+    """Without trust_remote_code the resolver may reuse an imported sibling, never the Hub."""
+    import transformers.dynamic_module_utils as dmu
+    from unsloth.models import _utils
+
+    fetched = []
+    monkeypatch.setattr(
+        dmu, "get_class_from_dynamic_module", lambda *a, **k: fetched.append(k) or object
+    )
+    config_cls = type(
+        "TinyConfig", (), {"__module__": "transformers_modules.not_imported.configuration_tiny"}
+    )
+    config = config_cls()
+    config.auto_map = {"AutoModel": "modeling_tiny.TinyModel"}
+    config._name_or_path = "someone/tiny"
+    auto = type("AutoModel", (), {})
+    for trust in (None, False):
+        assert _utils._resolve_remote_model_class(auto, config, trust_remote_code = trust) is None
+    assert fetched == []
+
+
+def test_sentence_transformer_probes_use_the_loads_options(monkeypatch):
+    """Both FastSentenceTransformer class probes see the load's trust, revision, token,
+    cache and offline mode."""
+    import ast
+    import inspect
+
+    from unsloth.models import _utils, sentence_transformer
+
+    seen = []
+    monkeypatch.setattr(
+        _utils, "resolve_model_class", lambda auto, config, **kw: seen.append(kw) or None
+    )
+    options = dict(trust_remote_code = True, revision = "abc", token = "t", local_files_only = True)
+    _utils.resolve_encoder_attention_implementation(object, object(), **options)
+    monkeypatch.setattr(
+        sentence_transformer, "resolve_model_class", lambda auto, config, **kw: seen.append(kw)
+    )
+    sentence_transformer.FastSentenceTransformer._has_add_pooling_layer(object(), object, **options)
+    assert seen == [options, options]
+    probes = {"resolve_encoder_attention_implementation", "_has_add_pooling_layer"}
+    calls = [
+        node
+        for node in ast.walk(ast.parse(inspect.getsource(sentence_transformer)))
+        if isinstance(node, ast.Call)
+        and (getattr(node.func, "id", None) in probes or getattr(node.func, "attr", None) in probes)
+    ]
+    assert len(calls) == 2
+    for call in calls:
+        splats = [getattr(k.value, "id", "") for k in call.keywords if k.arg is None]
+        assert "_remote_class_probe_kwargs" in splats, call.lineno
