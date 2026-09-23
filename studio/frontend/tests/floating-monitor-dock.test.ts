@@ -146,6 +146,32 @@ test("an undocked monitor keeps the resting inset", () => {
   });
 });
 
+test("undocked monitor's right inset follows the live UI space scale", () => {
+  const { min, default: base, max } = UI_FONT_SIZE_RANGE;
+  for (const fontSize of [min, base, max]) {
+    const scale = fontSize / base;
+    const { right } = floatingMonitorConstraintStyle({
+      zIndex: Z_INDEX,
+      dockedBesideRunSettings: false,
+      settingsWidth: 560,
+      uiSpaceScale: scale,
+    });
+    assert.equal(right, FLOATING_MONITOR_EDGE_INSET * scale);
+  }
+  // A missing or invalid scale must preserve the default inset.
+  for (const uiSpaceScale of [undefined, 0, Number.NaN]) {
+    assert.equal(
+      floatingMonitorConstraintStyle({
+        zIndex: Z_INDEX,
+        dockedBesideRunSettings: false,
+        settingsWidth: 560,
+        uiSpaceScale,
+      }).right,
+      FLOATING_MONITOR_EDGE_INSET,
+    );
+  }
+});
+
 test("the docked constraint clears the panel at every draggable width", () => {
   for (const settingsWidth of SETTINGS_WIDTHS) {
     const { right } = floatingMonitorConstraintStyle({

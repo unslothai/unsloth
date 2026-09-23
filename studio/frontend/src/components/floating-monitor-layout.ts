@@ -156,7 +156,8 @@ export function floatingMonitorRightInset({
 }): number {
   return dockedBesideRunSettings
     ? settingsWidth + floatingMonitorHandleClearance(uiSpaceScale)
-    : FLOATING_MONITOR_EDGE_INSET;
+    : FLOATING_MONITOR_EDGE_INSET *
+        (Number.isFinite(uiSpaceScale) && uiSpaceScale > 0 ? uiSpaceScale : 1);
 }
 
 /**
