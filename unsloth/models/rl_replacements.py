@@ -3621,9 +3621,28 @@ def vllm_generation_init_patch():
             override("generate", wrap_generation_call)
             override("chat", wrap_generation_call)
             override("collective_rpc", wrap_collective_rpc)
+            # TRL >= 0.28 builds `SamplingParams(**generation_kwargs)` inside this call, the one site the older-TRL source replacement in rl.py targets; route it through the same helper for this call only.
+            user_sampling_params = getattr(self, "_unsloth_vllm_sampling_params", None)
+            original_sampling_params = vllm_generation.__dict__.get("SamplingParams", None)
+            if user_sampling_params is not None and original_sampling_params is not None:
+
+                def unsloth_sampling_params(*sp_args, **sp_kwargs):
+                    if sp_args:
+                        return original_sampling_params(*sp_args, **sp_kwargs)
+                    return original_sampling_params(
+                        **grpo_update_SamplingParams(
+                            original_sampling_params, sp_kwargs, user_sampling_params
+                        )
+                    )
+
+                vllm_generation.SamplingParams = unsloth_sampling_params
+            else:
+                original_sampling_params = None
             try:
                 return original_generate(self, *args, **kwargs)
             finally:
+                if original_sampling_params is not None:
+                    vllm_generation.SamplingParams = original_sampling_params
                 for name, had_own, bound in reversed(saved):
                     try:
                         if had_own:

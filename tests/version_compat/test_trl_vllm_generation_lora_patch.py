@@ -559,3 +559,113 @@ def generate(self, prompts, **kwargs):
 
     assert cls.generate(self, ["hello"]) == ["generated"]
     assert _lora_requests(log) == ["LORA[%s|True]" % _lora_name()], log
+
+
+# TRL >= 0.28 builds `SamplingParams(**generation_kwargs)` inside `generate`, from the module global, and never sees
+# the trainer's `args.vllm_sampling_params`; the trainer hands them over as `_unsloth_vllm_sampling_params`.
+_GENERATE_BUILDS_SAMPLING_PARAMS = """
+def generate(self, prompts, **kwargs):
+    self.sync_weights()
+    generation_kwargs = {"n": 1, "temperature": 1.0, "min_p": 0.0, "max_tokens": 64, "logprobs": 0}
+    generation_kwargs.update(self.generation_kwargs)
+    sampling_params = SamplingParams(**generation_kwargs)
+    if self.fail:
+        raise RuntimeError("generate failed")
+    return self.llm.generate(prompts, sampling_params = sampling_params)
+"""
+
+
+class FakeSamplingParams:
+    def __init__(
+        self,
+        n = 1,
+        temperature = 1.0,
+        min_p = 0.0,
+        seed = None,
+        max_tokens = 16,
+        logprobs = None,
+        stop = None,
+        include_stop_str_in_output = False,
+    ):
+        self.n = n
+        self.temperature = temperature
+        self.min_p = min_p
+        self.seed = seed
+        self.max_tokens = max_tokens
+        self.logprobs = logprobs
+        self.stop = [] if stop is None else stop
+        self.include_stop_str_in_output = include_stop_str_in_output
+
+
+class SamplingParamsEngine(FakeEngine):
+    def generate(self, *args, **kwargs):
+        self.log.append(("sampling_params", kwargs.get("sampling_params")))
+        return ["generated"]
+
+
+def _sampling_generation(monkeypatch, user_sampling_params, shared_weights = True):
+    cls = _build_fake_trl(monkeypatch, _GENERATE_BUILDS_SAMPLING_PARAMS)
+    module = sys.modules["trl.generation.vllm_generation"]
+    module.SamplingParams = FakeSamplingParams
+    _rl_replacements().vllm_generation_init_patch()
+    log = []
+    self = _make_generation(cls, log, shared_weights = shared_weights, with_lora = shared_weights)
+    self.llm = SamplingParamsEngine(log, shared_weights = shared_weights)
+    self.generation_kwargs = {}
+    self.fail = False
+    if user_sampling_params is not None:
+        self._unsloth_vllm_sampling_params = user_sampling_params
+    return cls, module, self, log
+
+
+def _sent_sampling_params(log):
+    sent = [entry[1] for entry in log if entry[0] == "sampling_params"]
+    assert len(sent) == 1, log
+    return sent[0]
+
+
+def test_user_vllm_sampling_params_reach_the_engine(monkeypatch):
+    user = FakeSamplingParams(
+        min_p = 0.1,
+        seed = 3407,
+        temperature = 0.6,
+        stop = ["<|im_end|>"],
+        include_stop_str_in_output = True,
+    )
+    cls, module, self, log = _sampling_generation(monkeypatch, user)
+    assert cls.generate(self, ["hello"]) == ["generated"]
+    sent = _sent_sampling_params(log)
+    assert isinstance(sent, FakeSamplingParams)
+    assert sent.min_p == 0.1
+    assert sent.stop == ["<|im_end|>"]
+    assert sent.include_stop_str_in_output is True
+    # GRPOConfig still owns these.
+    assert sent.seed is None
+    assert sent.temperature == 1.0
+    assert sent.max_tokens == 64
+    assert module.SamplingParams is FakeSamplingParams
+
+
+def test_no_user_sampling_params_leaves_trl_untouched(monkeypatch):
+    cls, module, self, log = _sampling_generation(monkeypatch, None)
+    cls.generate(self, ["hello"])
+    sent = _sent_sampling_params(log)
+    assert (sent.min_p, sent.stop, sent.include_stop_str_in_output) == (0.0, [], False)
+    assert module.SamplingParams is FakeSamplingParams
+
+
+def test_server_mode_ignores_user_sampling_params(monkeypatch):
+    cls, module, self, log = _sampling_generation(
+        monkeypatch, FakeSamplingParams(min_p = 0.1), shared_weights = False
+    )
+    cls.generate(self, ["hello"])
+    assert _sent_sampling_params(log).min_p == 0.0
+    assert module.SamplingParams is FakeSamplingParams
+
+
+def test_sampling_params_restored_when_generate_raises(monkeypatch):
+    cls, module, self, log = _sampling_generation(monkeypatch, FakeSamplingParams(min_p = 0.1))
+    self.fail = True
+    with pytest.raises(RuntimeError, match = "generate failed"):
+        cls.generate(self, ["hello"])
+    assert module.SamplingParams is FakeSamplingParams
