@@ -320,7 +320,7 @@ function StatusDot({
     <span
       role="img"
       aria-label={label}
-      className={cn("inline-block size-[5px] shrink-0 rounded-full", toneClass)}
+      className={cn("inline-block size-[calc(5px*var(--ui-space-scale,1))] shrink-0 rounded-full", toneClass)}
     />
   );
 }
@@ -488,7 +488,7 @@ export const DiscoverModelRow = memo(function DiscoverModelRow({
                 <span
                   role="img"
                   aria-label="GGUF"
-                  className="inline-block size-[5px] shrink-0 rounded-full bg-format-gguf"
+                  className="inline-block size-[calc(5px*var(--ui-space-scale,1))] shrink-0 rounded-full bg-format-gguf"
                 />
               )}
               {unsupported && (
@@ -644,14 +644,14 @@ export const InventoryRow = memo(function InventoryRow({
         <span
           role="img"
           aria-label="GGUF"
-          className="inline-block size-[5px] shrink-0 rounded-full bg-format-gguf"
+          className="inline-block size-[calc(5px*var(--ui-space-scale,1))] shrink-0 rounded-full bg-format-gguf"
         />
       )}
       {row.modelFormat === "adapter" && (
         <span
           role="img"
           aria-label="Adapter"
-          className="inline-block size-[5px] shrink-0 rounded-full bg-format-adapter"
+          className="inline-block size-[calc(5px*var(--ui-space-scale,1))] shrink-0 rounded-full bg-format-adapter"
         />
       )}
       {partialRepoId ? (
@@ -865,7 +865,7 @@ export const InventoryRow = memo(function InventoryRow({
 
         {metaChips}
 
-        <div className="flex w-[96px] shrink-0 items-center justify-end text-right">
+        <div className="flex w-[calc(96px*var(--ui-space-scale,1))] shrink-0 items-center justify-end text-right">
           {row.kind === "cache" ? (
             <CachedSizeChip
               repoId={row.repoId}

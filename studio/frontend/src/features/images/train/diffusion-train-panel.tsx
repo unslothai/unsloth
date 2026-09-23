@@ -1521,7 +1521,7 @@ export function DiffusionTrainPanel({
   return (
     <div className="flex min-h-0 w-full min-w-0 flex-1 flex-col overflow-y-auto overflow-x-hidden pr-5 sm:pr-8 @[50rem]:flex-row @[50rem]:overflow-hidden">
       {/* Left: configure. The 408px rail and container breakpoint match Create and the shared header. */}
-      <div className="flex w-full min-w-0 shrink-0 flex-col border-b border-border/60 pl-10 @[50rem]:w-[408px] @[50rem]:overflow-hidden @[50rem]:border-r @[50rem]:border-b-0">
+      <div className="flex w-full min-w-0 shrink-0 flex-col border-b border-border/60 pl-10 @[50rem]:w-[calc(408px*var(--ui-space-scale,1))] @[50rem]:overflow-hidden @[50rem]:border-r @[50rem]:border-b-0">
         {/* Keep the former row-level top inset inside the pane so the divider reaches the header. */}
         <div
           ref={attachSettingsScroll}
@@ -1537,7 +1537,7 @@ export function DiffusionTrainPanel({
             <h2 className="flex items-center gap-2 font-heading text-xl font-medium leading-none">
               <HugeiconsIcon
                 icon={TestTubeOutlineIcon}
-                className="size-[18px] shrink-0"
+                className="size-[calc(18px*var(--ui-space-scale,1))] shrink-0"
               />
               Train a LoRA
             </h2>
@@ -1985,7 +1985,7 @@ export function DiffusionTrainPanel({
                   <span className="flex items-center gap-2 font-heading text-xl font-medium leading-none">
                     <HugeiconsIcon
                       icon={Settings02Icon}
-                      className="size-[18px] shrink-0"
+                      className="size-[calc(18px*var(--ui-space-scale,1))] shrink-0"
                     />
                     Train settings
                   </span>

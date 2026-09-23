@@ -129,7 +129,7 @@ function ContextMenuSubTrigger({
       {children}
       <ChevronRightIcon
         strokeWidth={2}
-        className="ml-auto size-[12px]"
+        className="ml-auto size-[calc(12px*var(--ui-space-scale,1))]"
       />
     </ContextMenuPrimitive.SubTrigger>
   );

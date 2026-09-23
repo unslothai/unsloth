@@ -480,7 +480,7 @@ export function DebuggingTab() {
               size="sm"
               data-testid="debug-log-source"
               aria-label={t("settings.debugging.source")}
-              className="max-w-[22rem] font-mono text-ui-12"
+              className="max-w-[calc(22rem*var(--ui-space-scale,1))] font-mono text-ui-12"
             >
               <SelectValue placeholder={t("settings.debugging.missing")} />
             </SelectTrigger>
@@ -733,7 +733,7 @@ export function DebuggingTab() {
               </TooltipContent>
             </Tooltip>
           </div>
-          <div className="flex shrink-0 flex-wrap items-center justify-end gap-1">
+          <div className="flex max-w-full shrink-0 flex-wrap items-center justify-end gap-1">
             <Button
               size="sm"
               variant="ghost"
@@ -774,7 +774,7 @@ export function DebuggingTab() {
                   />
                 </button>
               </TooltipTrigger>
-              <TooltipContent className="max-w-[300px] text-ui-11 leading-snug">
+              <TooltipContent className="max-w-[calc(300px*var(--ui-space-scale,1))] text-ui-11 leading-snug">
                 {t("settings.debugging.exportMaskedNote")}
               </TooltipContent>
             </Tooltip>

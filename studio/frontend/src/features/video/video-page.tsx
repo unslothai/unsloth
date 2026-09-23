@@ -596,7 +596,7 @@ function AdvancedSelect({
           {badge}
         </span>
         <Select value={value} onValueChange={onValueChange}>
-          <SelectTrigger className="h-8 w-[160px] text-xs">
+          <SelectTrigger className="h-8 w-[calc(160px*var(--ui-space-scale,1))] text-xs">
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
@@ -3518,7 +3518,7 @@ function VideoGenerator({
         {/* Widened by the pl-8 so the controls keep their old width. */}
         <div
           data-tour="video-settings"
-          className="flex w-full shrink-0 flex-col border-b border-border/60 pl-8 md:w-[400px] md:overflow-hidden md:border-r md:border-b-0"
+          className="flex w-full shrink-0 flex-col border-b border-border/60 pl-8 md:w-[min(calc(400px*var(--ui-space-scale,1)),calc(100%-13rem))] md:overflow-hidden md:border-r md:border-b-0"
         >
           {/* pl-0.5 keeps focus rings off the scroll container's edge. */}
           <div
@@ -3534,7 +3534,7 @@ function VideoGenerator({
             <div className="min-w-0 grid gap-1.5">
               <h2 className="flex items-center gap-2 font-heading text-xl font-medium leading-none text-foreground">
                 {/* The app's Video icon, same as the sidebar row. */}
-                <HugeiconsIcon icon={FlimSlateIcon} className="size-[18px] shrink-0" />
+                <HugeiconsIcon icon={FlimSlateIcon} className="size-[calc(18px*var(--ui-space-scale,1))] shrink-0" />
                 Create videos
               </h2>
               <p className="text-xs leading-snug text-muted-foreground">

@@ -689,7 +689,7 @@ export function DatasetPreviewDialog({
               )}
 
               {/* Data table */}
-              <div className="flex-1 min-h-[250px] rounded-xl corner-squircle ring-1 ring-border/60 overflow-auto">
+              <div className="flex-1 min-h-[calc(250px*var(--ui-space-scale,1))] rounded-xl corner-squircle ring-1 ring-border/60 overflow-auto">
                 <DataTable columns={tableColumns} data={rows} />
               </div>
 

@@ -77,7 +77,7 @@ export function ProjectSwitcher({
             className="size-icon shrink-0 text-foreground/70"
           />
           <span className="flex min-w-0 flex-1 items-baseline">
-            <span className="min-w-0 flex max-w-[150px] flex-1 items-baseline truncate font-heading text-ui-16 font-medium leading-tight text-black dark:text-foreground">
+            <span className="min-w-0 flex max-w-[calc(150px*var(--ui-space-scale,1))] flex-1 items-baseline truncate font-heading text-ui-16 font-medium leading-tight text-black dark:text-foreground">
               {label}
             </span>
           </span>

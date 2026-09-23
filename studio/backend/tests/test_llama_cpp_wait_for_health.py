@@ -1703,7 +1703,12 @@ class TestHealthWaitMeasuresStalls:
             "subprocess.Popen([sys.executable, '-c', sys.argv[1], '3.0'])\n"
             "time.sleep(60)\n"
         )
-        b, ok, elapsed = self._wait_on_child(monkeypatch, [shim, self._WORKER], healthy_after = 2.5)
+        # A second interpreter has to start before the descendant does any work, and on a loaded runner that
+        # alone outlasted the 0.6s default: the wait gave up on a load that was about to make progress. 1.5s
+        # still sits well under healthy_after, so only descendant work can carry the wait to 2.5s.
+        b, ok, elapsed = self._wait_on_child(
+            monkeypatch, [shim, self._WORKER], healthy_after = 2.5, timeout = 1.5
+        )
         assert ok is True
         assert elapsed >= 2.5
 
