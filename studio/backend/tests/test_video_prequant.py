@@ -11,6 +11,8 @@ still run (and still get tested) in an environment where diffusers cannot be imp
 
 from __future__ import annotations
 
+import types
+
 import pytest
 
 from core.inference.diffusion_prequant import (
@@ -1684,3 +1686,67 @@ def test_the_seeded_denoiser_artifact_is_fetched_under_the_load_cancel_event(mon
         ("unsloth/Wan2.2-TI2V-5B-NVFP4", "Wan2.2-TI2V-5B-NVFP4.pt")
     ]
     assert fetched[0][2] is cancel
+
+
+def test_the_seed_plan_credits_the_resident_pipelines_memory(monkeypatch):
+    """The plan runs before the load tears the old pipeline down, so the bytes it holds count as
+    free, while other tenants still count against it and the total caps the credit."""
+    import core.inference.video as vid
+    from core.inference.diffusion_memory import DeviceMemory
+    from core.inference.video_families import detect_video_family
+
+    fam = detect_video_family("Wan-AI/Wan2.2-TI2V-5B-Diffusers")
+    seen: list = []
+    monkeypatch.setattr(
+        vid,
+        "settled_snapshot_device_memory",
+        lambda _t: DeviceMemory("cuda", "cuda", "discrete_vram", 10_000, 32_000),
+    )
+    monkeypatch.setattr(
+        vid,
+        "plan_diffusion_memory",
+        lambda **kw: seen.append(kw["device_memory"].free_mib)
+        or types.SimpleNamespace(offload_policy = "none"),
+    )
+    target = types.SimpleNamespace(device = "cuda", dtype = None)
+    for credit in (0, 15_000, 40_000):
+        vid._video_seed_stays_resident(
+            fam,
+            target = target,
+            scheme = "fp8",
+            memory_mode = None,
+            text_encoder_quant = None,
+            base_repo = None,
+            reclaimable_mib = credit,
+        )
+    assert seen == [10_000, 25_000, 32_000]
+
+
+def test_the_planner_hands_the_resident_pipelines_bytes_to_the_seed_plan(monkeypatch):
+    import core.inference.video as vid
+    from core.inference.video_families import detect_video_family
+
+    fam = detect_video_family("Wan-AI/Wan2.2-TI2V-5B-Diffusers")
+    backend = vid.VideoBackend()
+    resident_pipe = object()
+    backend._state = types.SimpleNamespace(pipe = resident_pipe)
+    monkeypatch.setattr(vid, "_video_auto_denoiser_scheme", lambda fam, **kw: "fp8")
+    monkeypatch.setattr(
+        vid, "_pipeline_device_mib", lambda pipe: 12_345 if pipe is resident_pipe else 0
+    )
+    captured: dict = {}
+    monkeypatch.setattr(
+        vid, "_video_seed_stays_resident", lambda fam, **kw: captured.update(kw) or True
+    )
+    monkeypatch.setattr(
+        vid,
+        "resolve_diffusion_device_target",
+        lambda **_k: types.SimpleNamespace(device = "cuda", dtype = None, ordinal = None),
+    )
+    assert (
+        backend._video_planned_auto_denoiser_scheme(
+            fam, base = None, kind = "pipeline", transformer_quant = "auto", speed_mode = None
+        )
+        == "fp8"
+    )
+    assert captured["reclaimable_mib"] == 12_345
