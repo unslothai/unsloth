@@ -284,9 +284,9 @@ class TestEmbeddingBatchSizedToContext:
             src.find("if self.is_embedding_gguf and self._pooling_type != 3:", call - 200, call)
             != -1
         ), "only non-LAST embedding pooling needs the single micro-batch"
-        assert call < src.find("_effective_ubatch = _ubatch_for_slots(n_parallel)"), (
-            "the raise must land before the fit prices the compute buffer"
-        )
+        assert call < src.find(
+            "_effective_ubatch = _ubatch_for_slots(n_parallel)"
+        ), "the raise must land before the fit prices the compute buffer"
 
 
 @pytest.mark.parametrize("flag", ["--embedding", "--embeddings", "--pooling"])
