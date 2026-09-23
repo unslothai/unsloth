@@ -1521,13 +1521,13 @@ export function DiffusionTrainPanel({
   return (
     <div className="flex min-h-0 w-full min-w-0 flex-1 flex-col overflow-y-auto overflow-x-hidden pr-5 sm:pr-8 @[50rem]:flex-row @[50rem]:overflow-hidden">
       {/* Left: configure. The 408px rail and container breakpoint match Create and the shared header. */}
-      <div className="flex w-full min-w-0 shrink-0 flex-col border-b border-border/60 pl-10 @[50rem]:w-[408px] @[50rem]:overflow-hidden @[50rem]:border-r @[50rem]:border-b-0">
+      <div className="flex w-full min-w-0 shrink-0 flex-col border-b border-border/60 pl-10 max-sm:pl-5 @[50rem]:w-[calc(408px*var(--ui-space-scale,1))] @[50rem]:overflow-hidden @[50rem]:border-r @[50rem]:border-b-0">
         {/* Keep the former row-level top inset inside the pane so the divider reaches the header. */}
         <div
           ref={attachSettingsScroll}
           onScroll={onSettingsScroll}
           className={cn(
-            "hover-scrollbar panel-scroll-fade-action flex min-h-0 flex-1 flex-col gap-5 overflow-x-hidden pb-6 pl-0.5 pr-8 pt-[42px] @[50rem]:overflow-y-auto",
+            "hover-scrollbar panel-scroll-fade-action flex min-h-0 flex-1 flex-col gap-5 overflow-x-hidden pb-6 pl-0.5 pr-8 pt-[calc(42px*var(--ui-space-scale,1))] @[50rem]:overflow-y-auto",
             settingsFadeClass,
           )}
         >
@@ -1537,7 +1537,7 @@ export function DiffusionTrainPanel({
             <h2 className="flex items-center gap-2 font-heading text-xl font-medium leading-none">
               <HugeiconsIcon
                 icon={TestTubeOutlineIcon}
-                className="size-[18px] shrink-0"
+                className="size-[calc(18px*var(--ui-space-scale,1))] shrink-0"
               />
               Train a LoRA
             </h2>
@@ -1604,6 +1604,7 @@ export function DiffusionTrainPanel({
           {/* the whole field is the drop zone, so a folder can land on the picker, the thumbnails or the
               caption grid. */}
           <div
+            data-tour="images-train-dataset"
             className={cn(
               fieldClass,
               "rounded-lg transition-colors",
@@ -1864,7 +1865,10 @@ export function DiffusionTrainPanel({
         </div>
         {/* In its own footer, as Create's Generate is. The scroll mask provides the fade, so the footer
             stays unpainted to avoid dark-mode banding. */}
-        <div className="relative z-10 flex shrink-0 justify-center pt-0.5 pb-4 pl-8 pr-8">
+        <div
+          data-tour="images-train-start"
+          className="relative z-10 flex shrink-0 justify-center pt-0.5 pb-4 pl-8 pr-8"
+        >
           <Button
             type="button"
             className="relative z-10 h-11 px-8 disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100"
@@ -1887,7 +1891,7 @@ export function DiffusionTrainPanel({
           cards' outer ring from being clipped. */}
       {/* 40px off the rule, the gutter the settings column has off the page edge. */}
       {/* This pane remains a query container for its own stat and chart breakpoints. */}
-      <div className="@container hover-scrollbar relative flex min-w-0 flex-1 flex-col gap-5 pb-7 pl-10 pr-1.5 pt-4 @[50rem]:overflow-y-auto @[50rem]:pt-[42px]">
+      <div className="@container hover-scrollbar relative flex min-w-0 flex-1 flex-col gap-5 pb-7 pl-10 pr-1.5 pt-4 @[50rem]:overflow-y-auto @[50rem]:pt-[calc(42px*var(--ui-space-scale,1))]">
         {viewRun && !hasRun ? (
           <>
             <div className="flex flex-col gap-3">
@@ -1981,7 +1985,7 @@ export function DiffusionTrainPanel({
                   <span className="flex items-center gap-2 font-heading text-xl font-medium leading-none">
                     <HugeiconsIcon
                       icon={Settings02Icon}
-                      className="size-[18px] shrink-0"
+                      className="size-[calc(18px*var(--ui-space-scale,1))] shrink-0"
                     />
                     Train settings
                   </span>

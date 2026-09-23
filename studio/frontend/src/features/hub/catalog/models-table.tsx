@@ -72,12 +72,12 @@ export type AllModelsView = "grid" | "two" | "split";
 const LIST_COLS = {
   model: "flex min-w-0 flex-[2.4] items-center gap-3",
   caps: "hidden min-w-0 flex-[1.7] items-center gap-1.5 md:flex",
-  capsModel: "hidden w-[132px] shrink-0 items-center gap-1.5 md:flex",
-  size: "hidden w-[60px] shrink-0 lg:block",
-  updated: "hidden w-[82px] shrink-0 xl:block",
-  downloads: "hidden w-[104px] shrink-0 items-center gap-1.5 sm:flex",
-  likes: "hidden w-[76px] shrink-0 items-center gap-1.5 sm:flex",
-  actions: "flex w-[64px] shrink-0 items-center justify-end gap-0.5",
+  capsModel: "hidden w-[calc(132px*var(--ui-space-scale,1))] shrink-0 items-center gap-1.5 md:flex",
+  size: "hidden w-[calc(60px*var(--ui-space-scale,1))] shrink-0 lg:block",
+  updated: "hidden w-[calc(82px*var(--ui-space-scale,1))] shrink-0 xl:block",
+  downloads: "hidden w-[calc(104px*var(--ui-space-scale,1))] shrink-0 items-center gap-1.5 sm:flex",
+  likes: "hidden w-[calc(76px*var(--ui-space-scale,1))] shrink-0 items-center gap-1.5 sm:flex",
+  actions: "flex w-[calc(64px*var(--ui-space-scale,1))] shrink-0 items-center justify-end gap-0.5",
 } as const;
 
 function ViewToggleButton({
@@ -143,7 +143,7 @@ export function InventorySortControl({
       title={selected?.label}
       // Capped and shrinkable so a long label truncates instead of wrapping
       // the "On device" heading beside these pills in the narrow split pane.
-      className="h-8 min-w-[72px] max-w-[124px] shrink text-ui-11p5"
+      className="h-8 min-w-[calc(72px*var(--ui-space-scale,1))] max-w-[calc(124px*var(--ui-space-scale,1))] shrink text-ui-11p5"
       triggerContent={
         <span className="flex min-w-0 items-center gap-1">
           <HugeiconsIcon
@@ -179,7 +179,7 @@ export function InventoryTypeFilterControl({
       title={selected?.label}
       // Capped and shrinkable so a long label ("Speech to text") truncates
       // instead of wrapping the "On device" heading beside these pills.
-      className="h-8 min-w-[72px] max-w-[124px] shrink text-ui-11p5"
+      className="h-8 min-w-[calc(72px*var(--ui-space-scale,1))] max-w-[calc(124px*var(--ui-space-scale,1))] shrink text-ui-11p5"
     />
   );
 }
@@ -254,7 +254,7 @@ export function HubListHeader({
                 <HugeiconsIcon
                   icon={Refresh01Icon}
                   strokeWidth={1.75}
-                  className={cn("size-[11px]", isRefreshing && "animate-spin")}
+                  className={cn("size-[calc(11px*var(--ui-space-scale,1))]", isRefreshing && "animate-spin")}
                 />
               </button>
             </TooltipTrigger>
@@ -325,7 +325,7 @@ export function ResultListHeader({ isDataset }: { isDataset: boolean }) {
   );
 }
 
-const STATUS_DOT_CLASS = "inline-block size-[6px] shrink-0 rounded-full";
+const STATUS_DOT_CLASS = "inline-block size-[calc(6px*var(--ui-space-scale,1))] shrink-0 rounded-full";
 
 function TitleMarkers({
   format,
@@ -481,7 +481,7 @@ function RowActions({
   const hfEndpoint = useHfEndpoint();
   const hfUrl = `${hfEndpoint}/${isDataset ? "datasets/" : ""}${row.result.id}`;
   const actionClass =
-    "pointer-events-auto inline-flex size-7 shrink-0 cursor-pointer items-center justify-center rounded-full text-muted-foreground/70 transition-colors hover:bg-foreground/[0.07] hover:text-foreground focus-visible:text-foreground data-[state=open]:bg-foreground/[0.07] data-[state=open]:text-foreground";
+    "pointer-events-auto inline-flex size-7 shrink-0 cursor-pointer items-center justify-center rounded-full text-muted-foreground/70 transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_calc(7%*var(--contrast-wash-gain,1)),transparent)] hover:text-foreground focus-visible:text-foreground data-[state=open]:bg-[color-mix(in_oklab,var(--foreground)_calc(7%*var(--contrast-wash-gain,1)),transparent)] data-[state=open]:text-foreground";
   return (
     <>
       <Tooltip>
@@ -521,7 +521,7 @@ function RowActions({
             />
           </button>
         </DropdownMenuTrigger>
-        <DropdownMenuContent align="end" className="min-w-[184px]">
+        <DropdownMenuContent align="end" className="min-w-[calc(184px*var(--ui-space-scale,1))]">
           <DropdownMenuItem
             onClick={async (event) => {
               event.stopPropagation();
@@ -645,7 +645,7 @@ export const ResultCard = memo(function ResultCard({
       <OwnerAvatar
         owner={row.owner}
         repoName={row.repo}
-        className="size-[52px] shrink-0 rounded-[16px] text-ui-16 ring-1 ring-black/5 dark:ring-white/10"
+        className="size-[calc(52px*var(--ui-space-scale,1))] shrink-0 rounded-[16px] text-ui-16 ring-1 ring-[rgb(0_0_0_/_calc(0.05*var(--contrast-edge-gain,1)))] dark:ring-[rgb(255_255_255_/_calc(0.1*var(--contrast-edge-gain,1)))]"
         remote={false}
       />
       <div className="flex min-w-0 flex-1 flex-col">
@@ -706,7 +706,7 @@ export const ResultCard = memo(function ResultCard({
   return (
     <Tooltip>
       <TooltipTrigger asChild={true}>{card}</TooltipTrigger>
-      <TooltipContent side="top" className="tooltip-compact max-w-[260px]">
+      <TooltipContent side="top" className="tooltip-compact max-w-[calc(260px*var(--ui-space-scale,1))]">
         {tip}
       </TooltipContent>
     </Tooltip>
@@ -751,7 +751,7 @@ export const ResultGridRow = memo(function ResultGridRow({
           <TooltipContent
             side="top"
             align="start"
-            className="tooltip-compact max-w-[280px]"
+            className="tooltip-compact max-w-[calc(280px*var(--ui-space-scale,1))]"
           >
             {tip}
           </TooltipContent>
@@ -764,7 +764,7 @@ export const ResultGridRow = memo(function ResultGridRow({
           <OwnerAvatar
             owner={row.owner}
             repoName={row.repo}
-            className="size-9 shrink-0 rounded-[12px] text-ui-13 ring-1 ring-black/5 dark:ring-white/10"
+            className="size-9 shrink-0 rounded-[12px] text-ui-13 ring-1 ring-[rgb(0_0_0_/_calc(0.05*var(--contrast-edge-gain,1)))] dark:ring-[rgb(255_255_255_/_calc(0.1*var(--contrast-edge-gain,1)))]"
             remote={false}
           />
           <div className="min-w-0 flex-1">
@@ -881,7 +881,7 @@ export const ResultSplitRow = memo(function ResultSplitRow({
       aria-current={selected || undefined}
       data-selected={selected || undefined}
       onClick={() => onSelect(row.id)}
-      className="group/row flex h-full w-full cursor-pointer items-center gap-2.5 rounded-[12px] px-2.5 text-left outline-none transition-colors hover:bg-foreground/[0.04] data-[selected]:bg-foreground/[0.07] focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-inset dark:hover:bg-white/[0.05] dark:data-[selected]:bg-white/[0.08]"
+      className="group/row flex h-full w-full cursor-pointer items-center gap-2.5 rounded-[12px] px-2.5 text-left outline-none transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_calc(4%*var(--contrast-wash-gain,1)),transparent)] data-[selected]:bg-[color-mix(in_oklab,var(--foreground)_calc(7%*var(--contrast-wash-gain,1)),transparent)] focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-inset dark:hover:bg-[rgb(255_255_255_/_calc(0.05*var(--contrast-wash-gain,1)))] dark:data-[selected]:bg-accent"
     >
       <OwnerAvatar
         owner={row.owner}
@@ -913,7 +913,7 @@ export const ResultSplitRow = memo(function ResultSplitRow({
             <HugeiconsIcon
               icon={FavouriteIcon}
               strokeWidth={1.75}
-              className="size-[11px] shrink-0"
+              className="size-[calc(11px*var(--ui-space-scale,1))] shrink-0"
             />
             {formatCompact(row.result.likes)}
           </span>
@@ -921,7 +921,7 @@ export const ResultSplitRow = memo(function ResultSplitRow({
             <HugeiconsIcon
               icon={Download01Icon}
               strokeWidth={1.75}
-              className="size-[11px] shrink-0"
+              className="size-[calc(11px*var(--ui-space-scale,1))] shrink-0"
             />
             {formatCompact(row.result.downloads)}
           </span>
@@ -940,7 +940,7 @@ export const ResultSplitRow = memo(function ResultSplitRow({
   return (
     <Tooltip>
       <TooltipTrigger asChild={true}>{node}</TooltipTrigger>
-      <TooltipContent side="top" className="tooltip-compact max-w-[260px]">
+      <TooltipContent side="top" className="tooltip-compact max-w-[calc(260px*var(--ui-space-scale,1))]">
         {tip}
       </TooltipContent>
     </Tooltip>

@@ -318,6 +318,49 @@ def test_chatbackend_gguf_leaves_max_tokens_unset_for_llama_server():
     assert [call["max_tokens"] for call in fake.calls] == [None, 8]
 
 
+_UNSET_SAMPLING = dict(temperature = None, top_p = None, top_k = None, repetition_penalty = None)
+_GEMMA3_SAMPLING = dict(temperature = 1.0, top_p = 0.95, top_k = 64, repetition_penalty = 1.0)
+
+
+def _clear_sampling_pins(monkeypatch):
+    for field in _GEMMA3_SAMPLING:
+        monkeypatch.delenv(f"UNSLOTH_SAMPLING_{field.upper()}", raising = False)
+
+
+def test_chatbackend_resolves_unset_sampling_to_the_model_recommendation(monkeypatch):
+    _clear_sampling_pins(monkeypatch)
+    fake = _FakeBackend()
+    fake.active_model_name = "unsloth/gemma-3-270m-it"
+    backend = ChatBackend("unsloth", fake)
+
+    list(
+        backend.stream([{"role": "user", "content": "x"}], **{**_STREAM_KWARGS, **_UNSET_SAMPLING})
+    )
+
+    kwargs = fake.calls[0][2]
+    assert {field: kwargs[field] for field in _GEMMA3_SAMPLING} == _GEMMA3_SAMPLING
+
+
+def test_chatbackend_gguf_resolves_unset_sampling_but_keeps_explicit_values(monkeypatch):
+    _clear_sampling_pins(monkeypatch)
+    fake = _FakeGgufBackend()
+    fake.model_identifier = "unsloth/gemma-3-4b-it-GGUF"
+    backend = ChatBackend("gguf", fake)
+
+    list(
+        backend.stream(
+            [{"role": "user", "content": "x"}],
+            **{**_STREAM_KWARGS, **_UNSET_SAMPLING, "temperature": 0.3},
+        )
+    )
+
+    call = fake.calls[0]
+    assert {field: call[field] for field in _GEMMA3_SAMPLING} == {
+        **_GEMMA3_SAMPLING,
+        "temperature": 0.3,
+    }
+
+
 class _FakeStatsBackend:
     def __init__(self, stats):
         self._stats = stats
@@ -1177,6 +1220,44 @@ def test_http_backend_sends_an_explicit_max_tokens(monkeypatch):
     assert _http_stream_body(monkeypatch, 128)["max_tokens"] == 128
 
 
+@pytest.mark.parametrize("command", ["chat", "inference"])
+def test_cli_leaves_unset_sampling_to_the_server(monkeypatch, command):
+    from unsloth_cli.commands import inference as infermod
+
+    module, app, argv = {
+        "chat": (chatmod, _chat_app(), ["fake-model"]),
+        "inference": (infermod, _inference_app(), ["fake-model", "hello"]),
+    }[command]
+    backend = HttpChatBackend("http://localhost:8888", "token")
+    bodies = []
+
+    def fake_request(
+        method,
+        path,
+        payload = None,
+        timeout = None,
+    ):
+        bodies.append(payload)
+        return _FakeSSEResponse([b"data: [DONE]\n"])
+
+    monkeypatch.setattr(backend, "_request", fake_request)
+    monkeypatch.setattr(backend, "close", lambda: None)
+    monkeypatch.setattr(module, "connect_studio_server", lambda *a, **k: backend)
+    if command == "chat":
+        monkeypatch.setattr(chatmod, "resolve_model_config", lambda *a, **k: _FakeConfig())
+        monkeypatch.setattr(chatmod, "_compare_needs_second_model", lambda: False)
+
+    for extra in ([], ["--temperature", "0.3"]):
+        result = CliRunner().invoke(app, [*argv, *extra], input = "hi\n/exit\n")
+        assert result.exit_code == 0, result.output
+
+    sampling = ("temperature", "top_p", "top_k", "repetition_penalty")
+    assert [{k: body[k] for k in sampling if k in body} for body in bodies] == [
+        {},
+        {"temperature": 0.3},
+    ]
+
+
 def _http_finish(monkeypatch, finish_reason):
     backend = HttpChatBackend("http://localhost:8888", "token")
     chunk = json.dumps({"choices": [{"delta": {"content": "hi"}, "finish_reason": finish_reason}]})
@@ -1777,7 +1858,7 @@ def test_chat_forwards_gguf_runtime_options_to_loader(monkeypatch):
             {
                 "hf_token": None,
                 "max_seq_length": 0,
-                "load_in_4bit": True,
+                "load_in_4bit": None,
                 "tensor_parallel": True,
                 "speculative_type": "dspark",
                 "spec_draft_n_max": 3,
@@ -1830,7 +1911,7 @@ def test_inference_forwards_gguf_runtime_options_to_loader(monkeypatch):
             {
                 "hf_token": None,
                 "max_seq_length": 0,
-                "load_in_4bit": True,
+                "load_in_4bit": None,
                 "tensor_parallel": True,
                 "speculative_type": "dspark",
                 "spec_draft_n_max": 3,
@@ -1840,6 +1921,83 @@ def test_inference_forwards_gguf_runtime_options_to_loader(monkeypatch):
     ]
     assert streams[0][0] == [{"role": "user", "content": "hello"}]
     assert closed == [True]
+
+
+def _command_and_argv(command):
+    from unsloth_cli.commands import inference as infermod
+    return {
+        "chat": (chatmod, _chat_app(), ["fake-model"]),
+        "inference": (infermod, _inference_app(), ["fake-model", "hello"]),
+    }[command]
+
+
+@pytest.mark.parametrize("command", ["chat", "inference"])
+@pytest.mark.parametrize(
+    ("flags", "expected"),
+    [([], "omitted"), (["--load-in-4bit"], True), (["--no-load-in-4bit"], False)],
+)
+def test_server_load_sends_load_in_4bit_only_when_typed(monkeypatch, command, flags, expected):
+    """An untyped default must not make the server reload a 16-bit model in 4-bit."""
+    from unsloth_cli import _inference
+
+    module, app, argv = _command_and_argv(command)
+    payloads = []
+
+    def fake_request(
+        self,
+        method,
+        path,
+        payload = None,
+        timeout = None,
+    ):
+        payloads.append(payload)
+        return _FakeLoadResponse()
+
+    monkeypatch.delenv("UNSLOTH_STUDIO_URL", raising = False)
+    monkeypatch.setattr(_inference, "find_studio_server", lambda: "http://127.0.0.1:8888")
+    monkeypatch.setattr(_inference, "verify_studio_identity", lambda base: True)
+    monkeypatch.setattr(_inference, "_studio_token", lambda: "token")
+    monkeypatch.setattr(HttpChatBackend, "_request", fake_request)
+    monkeypatch.setattr(HttpChatBackend, "stream", lambda self, *a, **k: iter(["answer"]))
+    monkeypatch.setattr(module, "load_chat_backend", lambda *a, **k: pytest.fail("loaded locally"))
+    if command == "chat":
+        monkeypatch.setattr(chatmod, "resolve_model_config", lambda *a, **k: _FakeConfig())
+        monkeypatch.setattr(chatmod, "_compare_needs_second_model", lambda: False)
+
+    result = CliRunner().invoke(app, [*argv, *flags], input = "/exit\n")
+
+    assert result.exit_code == 0, result.output
+    assert len(payloads) == 1
+    assert payloads[0].get("load_in_4bit", "omitted") == expected
+
+
+@pytest.mark.parametrize("command", ["chat", "inference"])
+def test_local_load_still_gets_a_load_in_4bit_bool(monkeypatch, command):
+    module, app, argv = _command_and_argv(command)
+    loads = []
+
+    class _FakeBackend:
+        def stream(self, *a, **k):
+            return iter(["answer"])
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(module, "connect_studio_server", lambda *a, **k: None)
+    monkeypatch.setattr(
+        module,
+        "load_chat_backend",
+        lambda model, **kwargs: (loads.append(kwargs["load_in_4bit"]), _FakeBackend())[1],
+    )
+    if command == "chat":
+        monkeypatch.setattr(chatmod, "resolve_model_config", lambda *a, **k: _FakeConfig())
+        monkeypatch.setattr(chatmod, "_compare_needs_second_model", lambda: False)
+
+    for flags in ([], ["--no-load-in-4bit"]):
+        result = CliRunner().invoke(app, [*argv, *flags], input = "/exit\n")
+        assert result.exit_code == 0, result.output
+
+    assert loads == [True, False]
 
 
 @pytest.mark.parametrize("command", ["chat", "inference"])

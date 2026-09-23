@@ -24,6 +24,8 @@ export interface ResearchInferenceRequest {
   maxOutputTokensPublished?: number;
   enableThinking?: boolean;
   reasoningEffort?: string;
+  supportsReasoning?: boolean;
+  supportsReasoningOff?: boolean;
 }
 
 export function buildResearchInferenceRequest(input: {
@@ -38,6 +40,9 @@ export function buildResearchInferenceRequest(input: {
     maxOutputTokensFromSavedCap: boolean;
     /** The model's own published limit, before the connection override is folded in. */
     maxOutputTokensPublished: number | null;
+    /** The model's resolved reasoning control, so the backend never sends a field the model lacks. */
+    supportsReasoning?: boolean;
+    supportsReasoningOff?: boolean;
   };
   temperature: number;
   topP: number;
@@ -59,6 +64,12 @@ export function buildResearchInferenceRequest(input: {
           providerId: input.external.providerId,
           providerType: input.external.providerType,
           externalModel: input.external.modelId,
+          ...(typeof input.external.supportsReasoning === "boolean"
+            ? { supportsReasoning: input.external.supportsReasoning }
+            : {}),
+          ...(typeof input.external.supportsReasoningOff === "boolean"
+            ? { supportsReasoningOff: input.external.supportsReasoningOff }
+            : {}),
           ...(input.external.maxOutputTokens != null &&
           Number.isFinite(input.external.maxOutputTokens) &&
           input.external.maxOutputTokens > 0

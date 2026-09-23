@@ -15,14 +15,21 @@ const {
   clampReasoningEffortToLevels,
   getExternalMaxOutputTokens,
   getExternalReasoningCapabilities,
+  providerHostsCodeExecution,
   providerSupportsBuiltinCodeExecution,
 
   providerSupportsBuiltinWebSearch,
   providerSupportsFastMode,
 } = await import("../src/features/chat/provider-capabilities.ts");
 
-const { providerModelSupportsVision, setProviderModelCapabilities } = await import(
-  "../src/features/chat/external-providers.ts"
+const {
+  providerModelSupportsStudioTools,
+  providerModelSupportsVision,
+  setProviderModelCapabilities,
+} = await import("../src/features/chat/external-providers.ts");
+
+const { codeToolCanRun, selectCodeToolNames } = await import(
+  "../src/features/chat/api/code-tool-placement.ts"
 );
 
 // Every capability table is prefix-based, so an un-widened prefix silently drops a
@@ -280,7 +287,24 @@ test("the chat-latest aliases advertise no reasoning at all", () => {
   );
 });
 
-test("ChatGPT subscription models expose Unsloth-owned search and code tools", () => {
+test("GPT-6 Sol and Luna subscription models use local Code tools", () => {
+  setProviderModelCapabilities("openai_codex", {
+    "gpt-6-sol": { vision: true, studio_tools: true },
+    "gpt-6-luna": { vision: true, studio_tools: true },
+  });
+  for (const model of ["gpt-6-sol", "gpt-6-luna"]) {
+    assert.equal(providerModelSupportsStudioTools("openai_codex", model), true);
+    assert.equal(providerModelSupportsVision("openai_codex", model), true);
+    assert.deepEqual(selectCodeToolNames({
+      codeToolsEnabled: true,
+      hostedCodeExecutionForThisTurn: providerSupportsBuiltinCodeExecution("openai_codex", model),
+      providerHostsCodeExecution: providerHostsCodeExecution("openai_codex"),
+    }), { local: ["python", "terminal", "edit_file"], hosted: [] });
+  }
+});
+
+
+test("ChatGPT subscription models expose Unsloth-owned search and local code tools", () => {
 
   setProviderModelCapabilities("openai_codex", {
     "gpt-5.3-codex-spark": { vision: false, studio_tools: true },
@@ -294,7 +318,29 @@ test("ChatGPT subscription models expose Unsloth-owned search and code tools", (
     assert.equal(caps.reasoningStyle, "reasoning_effort", model);
     assert.equal(getExternalMaxOutputTokens("openai_codex", model), 128000, model);
     assert.equal(providerSupportsBuiltinWebSearch("openai_codex", model), true, model);
-    assert.equal(providerSupportsBuiltinCodeExecution("openai_codex", model), true, model);
+    const hostedCodeExecutionForThisTurn = providerSupportsBuiltinCodeExecution(
+      "openai_codex",
+      model,
+    );
+    const sandbox = providerHostsCodeExecution("openai_codex");
+    assert.deepEqual(
+      selectCodeToolNames({
+        codeToolsEnabled: true,
+        hostedCodeExecutionForThisTurn,
+        providerHostsCodeExecution: sandbox,
+      }),
+      { local: ["python", "terminal", "edit_file"], hosted: [] },
+      model,
+    );
+    assert.equal(
+      codeToolCanRun({
+        hostedCodeExecutionForThisTurn,
+        providerHostsCodeExecution: sandbox,
+        supportsStudioTools: providerModelSupportsStudioTools("openai_codex", model) === true,
+      }),
+      true,
+      model,
+    );
   }
 });
 
@@ -375,4 +421,76 @@ test("a connection override cannot raise a documented per-model cap", () => {
   assert.equal(getExternalMaxOutputTokens("openai", "gpt-5.6-sol", 8192), 8192);
   // a vLLM server hosting an id borrowed from OpenAI has no documented cap of its own
   assert.equal(getExternalMaxOutputTokens("vllm", "gpt-5.6-sol", 131072), 131072);
+});
+
+test("earlier Claude 4 and 3.7 Sonnet keep a Thinking control the backend can serve", () => {
+  // The backend sends these ids manual budget_tokens, but models.dev has no entry for them,
+  // so leaving them to the catalog left the picker with no control at all and the backend
+  // path unreachable. The 4-1 prefix must not claim a two-digit minor either.
+  for (const id of [
+    "claude-opus-4-1-20250805",
+    "claude-opus-4-20250514",
+    "claude-sonnet-4-20250514",
+    "claude-3-7-sonnet-20250219",
+  ]) {
+    const caps = getExternalReasoningCapabilities("anthropic", id);
+    assert.equal(caps.supportsReasoning, true, id);
+    assert.equal(caps.reasoningStyle, "reasoning_effort", id);
+    assert.deepEqual([...caps.reasoningEffortLevels], ["none", "low", "medium", "high"], id);
+  }
+  assert.deepEqual(
+    [...getExternalReasoningCapabilities("anthropic", "claude-opus-4-5-20251101").reasoningEffortLevels],
+    ["none", "low", "medium", "high"],
+  );
+  assert.deepEqual(
+    [...getExternalReasoningCapabilities("anthropic", "claude-sonnet-4-6-20260219").reasoningEffortLevels],
+    ["none", "low", "medium", "high", "max"],
+  );
+});
+
+// #11557: claiming a sandbox the backend registry lacks sends `code_execution` to a connection that runs nothing.
+test("hosted Code is only claimed where the backend registry hosts code_execution", () => {
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  const source = readFileSync(
+    path.join(here, "../../backend/core/inference/providers.py"),
+    "utf8",
+  );
+  const start = source.indexOf("PROVIDER_REGISTRY");
+  const registry = source.slice(start, source.indexOf("\n}\n", start));
+  const entries = [...registry.matchAll(/^ {4}"([a-z0-9_]+)": \{/gm)];
+  assert.ok(entries.length > 5, "PROVIDER_REGISTRY moved");
+  const backendSandboxes = new Set<string>();
+  for (const [i, entry] of entries.entries()) {
+    const body = registry.slice(entry.index, entries[i + 1]?.index);
+    const hosted = /"hosted_tools":\s*\(([^)]*)\)/.exec(body)?.[1] ?? "";
+    if (/"code_execution"/.test(hosted)) backendSandboxes.add(entry[1]);
+  }
+  assert.ok(backendSandboxes.size > 0, "no provider hosts code_execution");
+
+  const models = [
+    "gpt-6-astra",
+    "gpt-5.6-sol",
+    "gpt-5.5-pro",
+    "gpt-5.5",
+    "gpt-5.4",
+    "claude-opus-4-8",
+    "gemini-3-pro",
+  ];
+  for (const [, providerType] of entries) {
+    // studio_tools on: what the removed openai_codex branch keyed on.
+    setProviderModelCapabilities(
+      providerType,
+      Object.fromEntries(models.map((m) => [m, { studio_tools: true }])),
+    );
+    assert.equal(
+      providerHostsCodeExecution(providerType),
+      backendSandboxes.has(providerType),
+      providerType,
+    );
+    for (const model of models) {
+      if (providerSupportsBuiltinCodeExecution(providerType, model)) {
+        assert.ok(backendSandboxes.has(providerType), `${providerType} ${model}`);
+      }
+    }
+  }
 });

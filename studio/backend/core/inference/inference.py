@@ -77,6 +77,66 @@ def _hf_token_for_loader(hf_token: Optional[str] | bool) -> Optional[str] | bool
     return hf_token.strip() if isinstance(hf_token, str) and hf_token.strip() else None
 
 
+def _exact_model_name_for_load(config: ModelConfig, load_in_4bit: bool) -> Optional[str]:
+    """The repo id to hand the loader verbatim, or None to let Unsloth's mapper choose.
+
+    ``config.path`` when the mapped repo is not on disk and the user's own weights are.
+    The mapped repo's cached spelling when it IS on disk under another case: the mapper
+    emits one lowercased id and huggingface_hub keys the cache directory on the id
+    verbatim, so asking for any other spelling re-downloads it (huggingface_hub#3838).
+    """
+    if config.is_local or config.is_lora or not config.path:
+        return None
+    try:
+        from unsloth.models import loader, loader_utils
+
+        # ModelScope downloads every repo id to its own cache, so the HF cache says nothing here.
+        if loader.USE_MODELSCOPE:
+            return None
+        # Resolve the repo the loader will fetch on this host, after its bitsandbytes fallbacks.
+        if not loader.ALLOW_BITSANDBYTES:
+            load_in_4bit = False
+        name = config.path.lower()
+        if name in loader_utils.BAD_MAPPINGS:
+            return None
+        table = (
+            loader_utils.FLOAT_TO_INT_MAPPER if load_in_4bit else loader_utils.MAP_TO_UNSLOTH_16bit
+        )
+        # Avoid fetching the remote mapper for unknown names.
+        if name not in table:
+            return None
+        target = loader_utils.get_model_name(config.path, load_in_4bit = load_in_4bit)
+        if target and not loader.ALLOW_PREQUANTIZED_MODELS:
+            target = loader._strip_unsloth_bnb_4bit_suffix(target)
+    except Exception as e:
+        logger.debug(f"Could not resolve the Unsloth mapping for {config.path}: {e}")
+        return None
+    if not target or target.lower() == name:
+        return None
+    from utils.utils import (
+        active_hf_cache_loadable_snapshot,
+        active_hf_cache_repo_spelling,
+    )
+
+    cached_target = active_hf_cache_repo_spelling(target)
+    if cached_target == target:
+        return None  # on disk under the name the mapper will ask for: nothing to do
+    if cached_target is not None:
+        logger.info(f"Loading cached {cached_target} instead of downloading {target} again")
+        return cached_target
+    snapshot = active_hf_cache_loadable_snapshot(config.path)
+    if snapshot is None:
+        return None
+    try:
+        checkpoint = json.loads((snapshot / "config.json").read_text(encoding = "utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(checkpoint, dict) or checkpoint.get("quantization_config") is not None:
+        return None
+    logger.info(f"Loading cached {config.path} as named instead of downloading {target}")
+    return config.path
+
+
 class HarmonyTextStreamer:
     """Streaming text decoder for the gpt-oss harmony channel protocol.
 
@@ -471,6 +531,34 @@ def _prompt_already_has_bos(tokenizer, prompt):
     return bool(len(ids)) and ids[0] == bos_token_id
 
 
+def _without_image_parts(messages) -> list[dict]:
+    """The same conversation with every image placeholder dropped, collapsing a
+    turn back to its text when that is all it held."""
+    out = []
+    for message in messages:
+        content = message.get("content")
+        if not isinstance(content, list):
+            out.append(message)
+            continue
+        kept = [
+            part
+            for part in content
+            if not (
+                isinstance(part, dict) and part.get("type") in ("image", "image_url", "input_image")
+            )
+        ]
+        if len(kept) == len(content):
+            out.append(message)
+            continue
+        texts = [
+            part.get("text", "")
+            for part in kept
+            if isinstance(part, dict) and part.get("type") == "text"
+        ]
+        out.append({**message, "content": "\n".join(texts) if len(kept) == len(texts) else kept})
+    return out
+
+
 class InferenceBackend:
     """Unified inference backend supporting text, vision, and LoRA models"""
 
@@ -781,15 +869,19 @@ class InferenceBackend:
             logger.info(f"Loading {model_type} model{adapter_info}: {model_name}")
             log_gpu_memory(f"Before loading {model_name}")
 
+            exact_model_name = _exact_model_name_for_load(config, load_in_4bit)
+            use_exact_model_name = exact_model_name is not None
+            load_path = exact_model_name or config.path
             if config.is_vision:
                 model, processor = FastVisionModel.from_pretrained(
-                    model_name = config.path,
+                    model_name = load_path,
                     max_seq_length = max_seq_length,
                     dtype = dtype,
                     load_in_4bit = load_in_4bit,
                     device_map = device_map,
                     token = _hf_token_for_loader(hf_token),
                     trust_remote_code = trust_remote_code,
+                    use_exact_model_name = use_exact_model_name,
                 )
 
                 FastVisionModel.for_inference(model)
@@ -831,13 +923,14 @@ class InferenceBackend:
 
             else:
                 model, tokenizer = FastLanguageModel.from_pretrained(
-                    model_name = config.path,
+                    model_name = load_path,
                     max_seq_length = max_seq_length,
                     dtype = dtype,
                     load_in_4bit = load_in_4bit,
                     device_map = device_map,
                     token = _hf_token_for_loader(hf_token),
                     trust_remote_code = trust_remote_code,
+                    use_exact_model_name = use_exact_model_name,
                 )
 
                 FastLanguageModel.for_inference(model)
@@ -1219,6 +1312,8 @@ class InferenceBackend:
         messages: list,
         system_prompt: str,
         image = None,
+        images: Optional[list] = None,
+        image_ordinal: Optional[int] = None,
         temperature: float = 0.7,
         top_p: float = 0.9,
         top_k: int = 40,
@@ -1240,12 +1335,14 @@ class InferenceBackend:
         ``tools`` / ``enable_thinking`` / ``reasoning_effort`` / ``preserve_thinking`` are forwarded
         into ``apply_chat_template`` so templates that understand them (Qwen3, Llama 3.1+, gpt-oss
         harmony) advertise tool schemas and reasoning controls. ``presence_penalty`` matches the
-        GGUF sampling path (0 disables it).
+        GGUF sampling path (0 disables it). ``images`` is the MLX backend's list spelling.
         """
         yield from self._generate_chat_response_inner(
             messages = messages,
             system_prompt = system_prompt,
             image = image,
+            images = images,
+            image_ordinal = image_ordinal,
             temperature = temperature,
             top_p = top_p,
             top_k = top_k,
@@ -1268,6 +1365,8 @@ class InferenceBackend:
         messages: list,
         system_prompt: str = "",
         image = None,
+        images: Optional[list] = None,
+        image_ordinal: Optional[int] = None,
         temperature: float = 0.7,
         top_p: float = 0.9,
         top_k: int = 40,
@@ -1303,7 +1402,7 @@ class InferenceBackend:
         tokenizer = getattr(tokenizer, "tokenizer", tokenizer)
         top_k = self._normalize_top_k(top_k)
 
-        if is_vision and image:
+        if is_vision and (image or images):
             # Verify the stored processor can handle images; FastVisionModel may
             # return a raw tokenizer instead of a ProcessorMixin (e.g. Gemma-3).
             from transformers import ProcessorMixin
@@ -1328,6 +1427,11 @@ class InferenceBackend:
                     presence_penalty = presence_penalty,
                     continue_final_message = continue_final_message,
                     tools = tools,
+                    images = images,
+                    image_ordinal = image_ordinal,
+                    enable_thinking = enable_thinking,
+                    reasoning_effort = reasoning_effort,
+                    preserve_thinking = preserve_thinking,
                     tool_protocol_active = tool_protocol_active,
                     stop = stop,
                 )
@@ -1338,6 +1442,10 @@ class InferenceBackend:
                     f"({type(processor).__name__}) has no image_processor — "
                     f"falling back to text-only generation (image will be ignored)."
                 )
+                # Really text-only: the promoted history still carries {"type": "image"}
+                # placeholders, and a text template either rejects the list content or
+                # renders image tokens with no pixels behind them.
+                messages = _without_image_parts(messages)
 
         # Text path: messages are already in ChatML format from eval.py.
 
@@ -1480,6 +1588,11 @@ class InferenceBackend:
         presence_penalty: float = 0.0,
         continue_final_message: bool = False,
         tools: Optional[list] = None,
+        images: Optional[list] = None,
+        image_ordinal: Optional[int] = None,
+        enable_thinking: Optional[bool] = None,
+        reasoning_effort: Optional[str] = None,
+        preserve_thinking: Optional[bool] = None,
         tool_protocol_active: Optional[bool] = None,
         stop: Optional[list] = None,
     ) -> Generator[str, None, None]:
@@ -1501,18 +1614,25 @@ class InferenceBackend:
             messages_have_tool_history,
             messages_with_attached_image,
             render_advertising_tools,
-            render_prompt_with_boundary,
             trailing_assistant_text,
             vlm_prompt_issue,
         )
+        from core.inference.mcp_images import (
+            image_marker_parts,
+            pixels_in_marker_order,
+            top_up_image_markers,
+        )
 
+        # History first, the attachment last: the pixels bind to the markers in
+        # order, and the attachment's marker sits on the newest user turn.
+        attached = list(images or []) + ([image] if image is not None else [])
         user_message = last_user_text(messages)
         continue_partial = trailing_assistant_text(messages) if continue_final_message else None
 
         if not user_message:
-            user_message = "Describe this image." if image else "Hello"
+            user_message = "Describe this image." if attached else "Hello"
 
-        if image:
+        if attached:
             has_tool_history = messages_have_tool_history(messages)
             # Client-tools route signature: tool_choice="none" and a forced unknown name
             # also arrive tools=None, and the catalog alone missed them (#10092).
@@ -1527,6 +1647,16 @@ class InferenceBackend:
                 fallback_user_text = user_message,
                 structured_content = True,
             )
+            # The helper leaves existing markers alone, which is right for a retry but
+            # not for replayed MCP pictures: those markers are not the attachment's.
+            _prior_markers = image_marker_parts(vision_messages)
+            vision_messages = top_up_image_markers(
+                vision_messages, len(attached), ordinal = image_ordinal
+            )
+            if image is not None:
+                attached = pixels_in_marker_order(
+                    vision_messages, _prior_markers, list(images or []), image
+                )
             if bool(tools) or has_tool_history or folded_system:
                 # The conversation the LAST render used, not the no-tools probe's (#10092).
                 rendered_with: dict = {"messages": vision_messages}
@@ -1538,6 +1668,9 @@ class InferenceBackend:
                             processor,
                             vision_messages,
                             tools = catalog,
+                            enable_thinking = enable_thinking,
+                            reasoning_effort = reasoning_effort,
+                            preserve_thinking = preserve_thinking,
                             continue_final_message = bool(continue_partial),
                         )
                     except Exception as e:  # noqa: F841 -- read by the fallback below
@@ -1561,6 +1694,9 @@ class InferenceBackend:
                             processor,
                             without_system,
                             tools = catalog,
+                            enable_thinking = enable_thinking,
+                            reasoning_effort = reasoning_effort,
+                            preserve_thinking = preserve_thinking,
                             continue_final_message = bool(continue_partial),
                         )
                         rendered_with["messages"] = without_system
@@ -1594,17 +1730,15 @@ class InferenceBackend:
                         self.active_model_name,
                     )
             else:
-                # Processor's own template skips the choke point (#7066).
-                from core.inference.chat_template_helpers import markup_for_tokenizer
-
-                vision_messages = neutralize_control_markup_in_messages(
-                    vision_messages, None, markup_for_tokenizer(processor)
-                )
 
                 def _render_plain_vision(msgs):
-                    # Partial taken from the swept msgs, not the raw pre-sweep capture.
-                    return render_prompt_with_boundary(
-                        processor, msgs, continue_final_message = bool(continue_partial)
+                    return self._apply_chat_template_for_generation(
+                        processor,
+                        msgs,
+                        enable_thinking = enable_thinking,
+                        reasoning_effort = reasoning_effort,
+                        preserve_thinking = preserve_thinking,
+                        continue_final_message = bool(continue_partial),
                     )
 
                 try:
@@ -1621,7 +1755,7 @@ class InferenceBackend:
                     else:
                         raise
             inputs = processor(
-                image,
+                attached[0] if len(attached) == 1 else attached,
                 input_text,
                 add_special_tokens = False,
                 return_tensors = "pt",
@@ -1663,7 +1797,11 @@ class InferenceBackend:
                 # this request's response protocol. Passing *tools* matches the
                 # render: a named template selects "tool_use", not "default".
                 reasoning_channel_markers = detect_reasoning_channel_markers(processor, tools = tools)
-                if image
+                # Every attached image, not just a bare attachment: a replay-only
+                # turn renders through this processor too, and resolving it to no
+                # markers suppresses the fallback detection and lets native
+                # reasoning output through as visible answer text.
+                if attached
                 else None,
                 reasoning_channel_markers_resolved = True,
                 prompt = prompt_text,
@@ -1698,6 +1836,23 @@ class InferenceBackend:
                 if _vision_input_ids is not None
                 else None
             )
+            if repetition_penalty != 1.0 and _vision_input_ids is not None:
+                from transformers import LogitsProcessorList, RepetitionPenaltyLogitsProcessor
+
+                # Prompt ids skipped: mllama's <|image|> id lies past the LM head.
+                try:
+                    _rp = RepetitionPenaltyLogitsProcessor(
+                        repetition_penalty, prompt_ignore_length = prompt_len
+                    )
+                except TypeError:
+                    # prompt_ignore_length landed in transformers 4.52; the declared
+                    # floor is 4.51.3, where the same slice belongs here instead.
+                    class _PromptSkippingRepetitionPenalty(RepetitionPenaltyLogitsProcessor):
+                        def __call__(self, input_ids, scores):
+                            return super().__call__(input_ids[:, prompt_len:], scores)
+
+                    _rp = _PromptSkippingRepetitionPenalty(repetition_penalty)
+                _pp = LogitsProcessorList([_rp, *(_pp or [])])
             timer = GenerationTimer()
             generation_kwargs["logits_processor"] = with_prefill_boundary_processor(_pp, timer)
             stop_streamer = _StopSequenceStreamer(streamer, stop)

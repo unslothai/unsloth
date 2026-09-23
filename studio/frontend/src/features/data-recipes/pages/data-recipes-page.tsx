@@ -44,7 +44,7 @@ import {
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate } from "@tanstack/react-router";
 import type { ReactElement } from "react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   createRecipeDraft,
   createRecipeFromLearningRecipe,
@@ -53,6 +53,8 @@ import {
   useRecipes,
 } from "../data/recipes-db";
 import { LEARNING_RECIPES } from "../learning-recipes";
+import { GuidedTour, useGuidedTourController } from "@/features/tour";
+import { buildDataRecipesTourSteps } from "../tour";
 
 type TemplateCard = {
   title: string;
@@ -219,7 +221,7 @@ function LearningRecipeCards({
   loadingTemplateId: string | null;
 }): ReactElement {
   return (
-    <div className="grid w-full gap-4 sm:grid-cols-2 xl:grid-cols-3">
+    <div className="grid w-full gap-4 sm:grid-cols-2 xl:grid-cols-3 4xl:grid-cols-4">
       {TEMPLATE_CARDS.map((template) => {
         const learningRecipe = template.learningRecipeId
           ? LEARNING_RECIPE_BY_ID.get(template.learningRecipeId)
@@ -240,7 +242,7 @@ function LearningRecipeCards({
             type="button"
             disabled={isDisabled}
             onClick={() => onSelect(template)}
-            className={`group shadow-border relative overflow-hidden rounded-2xl bg-gradient-to-br dark:bg-white/[0.05] text-left transition-transform ${template.surfaceClassName} enabled:cursor-pointer enabled:hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-70`}
+            className={`group shadow-border relative overflow-hidden rounded-2xl bg-gradient-to-br dark:bg-[rgb(255_255_255_/_calc(0.05*var(--contrast-wash-gain,1)))] text-left transition-transform ${template.surfaceClassName} enabled:cursor-pointer enabled:hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-70`}
           >
             <ShineBorder
               borderWidth={1.2}
@@ -256,7 +258,7 @@ function LearningRecipeCards({
               >
                 {template.difficulty}
               </Badge>
-              <div className="inline-flex size-10 items-center justify-center rounded-xl border border-foreground/10 bg-background/80">
+              <div className="inline-flex size-10 items-center justify-center rounded-xl border border-[color-mix(in_oklab,var(--foreground)_calc(10%*var(--contrast-edge-gain,1)),transparent)] bg-background/80">
                 <HugeiconsIcon
                   icon={template.icon}
                   className="size-5 text-foreground/90"
@@ -270,7 +272,7 @@ function LearningRecipeCards({
                   {template.description}
                 </p>
               </div>
-              <div className="flex items-center gap-1 overflow-hidden whitespace-nowrap">
+              <div className="flex items-center gap-1 overflow-hidden whitespace-nowrap max-xl:flex-wrap max-xl:gap-y-1">
                 {isLoading ? (
                   <Badge variant="outline">Loading...</Badge>
                 ) : (
@@ -321,6 +323,14 @@ export function DataRecipesPage(): ReactElement {
     null,
   );
   const reloadReadySent = useRef(false);
+  const tourSteps = useMemo(
+    () => buildDataRecipesTourSteps({ ready, hasRecipes: recipes.length > 0 }),
+    [ready, recipes.length],
+  );
+  const tour = useGuidedTourController({
+    id: "data-recipes",
+    steps: tourSteps,
+  });
 
   useEffect(() => {
     if (!ready || reloadReadySent.current) {
@@ -409,7 +419,8 @@ export function DataRecipesPage(): ReactElement {
 
   return (
     <div className="min-h-[calc(100dvh-var(--studio-titlebar-height,0px))] bg-background">
-      <main className="mx-auto w-full max-w-7xl px-5 py-8 sm:px-9">
+      <main className="mx-auto w-full max-w-7xl 3xl:max-w-[calc(1440px*var(--ui-space-scale,1))] 4xl:max-w-[calc(1760px*var(--ui-space-scale,1))] px-5 py-8 max-sm:px-4 sm:px-9">
+        <GuidedTour {...tour.tourProps} />
         <div className="flex items-center justify-between gap-4">
           <div>
             <h1 className="text-ui-30 font-semibold leading-[1.04] tracking-[-0.028em] text-foreground sm:text-ui-34">
@@ -421,7 +432,7 @@ export function DataRecipesPage(): ReactElement {
           </div>
           <DropdownMenu>
             <DropdownMenuTrigger asChild={true}>
-              <Button type="button" disabled={isBusy}>
+              <Button type="button" data-tour="recipes-new" disabled={isBusy}>
                 <HugeiconsIcon icon={PlusSignIcon} className="size-4" />
                 New Recipe
                 <HugeiconsIcon
@@ -453,7 +464,10 @@ export function DataRecipesPage(): ReactElement {
 
         {ready ? (
           recipes.length === 0 ? (
-            <Empty className="mt-8 border border-dashed border-border/70 dark:border-none">
+            <Empty
+              data-tour="recipes-templates"
+              className="mt-8 border border-dashed border-border/70 dark:border-none"
+            >
               <EmptyHeader>
                 <EmptyMedia variant="icon">
                   <HugeiconsIcon icon={CookBookIcon} className="size-5" />
@@ -464,7 +478,7 @@ export function DataRecipesPage(): ReactElement {
                   workflows work.
                 </EmptyDescription>
               </EmptyHeader>
-              <EmptyContent className="max-w-6xl items-stretch">
+              <EmptyContent className="max-w-6xl 4xl:max-w-none items-stretch">
                 {/*<Button*/}
                 {/*  type="button"*/}
                 {/*  variant="secondary"*/}
@@ -484,7 +498,7 @@ export function DataRecipesPage(): ReactElement {
               </EmptyContent>
             </Empty>
           ) : (
-            <div className="mt-8 space-y-2">
+            <div data-tour="recipes-list" className="mt-8 space-y-2">
               {recipes.map((recipe) => (
                 <div
                   key={recipe.id}

@@ -235,7 +235,7 @@ class ExportOrchestrator:
         # sweep has taken its snapshot, and the worker adopted below would then outlive
         # Studio holding the model in memory.
         if is_process_shutting_down():
-            raise RuntimeError("Studio is shutting down; not starting an export subprocess")
+            raise RuntimeError("Unsloth is shutting down; not starting an export subprocess")
 
         with (
             child_environment_for_spawn(cache_env),
@@ -295,7 +295,7 @@ class ExportOrchestrator:
                         "export worker (pid %s) survived the reap; leaving it adopted",
                         _spawned_proc.pid,
                     )
-            raise RuntimeError("Studio is shutting down; not starting an export subprocess")
+            raise RuntimeError("Unsloth is shutting down; not starting an export subprocess")
         logger.info("Export subprocess started (pid=%s)", _spawned_proc.pid)
 
     def _shutdown_subprocess(self, timeout: float = 10.0) -> bool:
@@ -623,7 +623,6 @@ class ExportOrchestrator:
         hf_token: HfTokenArg = None,
         imatrix_file = None,
         private: bool = False,
-        gguf_shard_size: Optional[str] = None,
     ) -> Tuple[bool, str, Optional[str]]:
         """Export model in GGUF format. `quantization_method` may be a single method or a list."""
         return self._run_export(
@@ -636,7 +635,6 @@ class ExportOrchestrator:
                 "hf_token": hf_token,
                 "imatrix_file": imatrix_file,
                 "private": private,
-                "gguf_shard_size": gguf_shard_size,
             },
         )
 

@@ -364,6 +364,8 @@ FONT_SCALE_VIEWPORTS = [(921, 534), (390, 500), (320, 480)]
 UI_FONT_SIZE_MAX = 20
 UI_FONT_SIZE_DEFAULT = 15
 UI_FONT_SIZE_CSS_BASE = 16
+# --ui-font-scale as a number, read through a length since the property itself is a calc().
+UI_FONT_SCALE_JS = "(() => { const probe = document.createElement('div'); probe.style.cssText = 'position:absolute;visibility:hidden;width:calc(10000px * var(--ui-font-scale, 1))'; document.body.appendChild(probe); const px = parseFloat(getComputedStyle(probe).width); probe.remove(); return String(px / 10000); })()"
 APPEARANCE_STORE_VERSION = 5
 
 failures: list[str] = []
@@ -523,6 +525,11 @@ MEASURE = """
     toggle: clip(toggle, surface),
     snooze: clip(snooze, surface),
     copy: clip(copy, surface),
+    // The same three unclipped, so a control the card has cut DOWN is as visible
+    // here as one it cut away. Half a button is not the button the card promises.
+    toggleWhole: rect(toggle),
+    snoozeWhole: rect(snooze),
+    copyWhole: rect(copy),
     footer: rect(footer),
     llamaText: llama ? (llama.innerText || '') : '',
     // pointer-events-none costs the rail its scrollbar, so it may only be
@@ -747,6 +754,21 @@ def measure(page, label: str) -> dict:
             f"{label}: the card does not clip its own {name} away",
             box is not None and box["height"] > 1.0 and box["width"] > 1.0,
             f"{name}={box}",
+        )
+    # Clipped to nothing is the loud version. A control the card has cut DOWN is the same
+    # defect one viewport earlier: at the 20px setting the card's floor was a constant that
+    # stopped covering its own content, so the action row overflowed and the last button was
+    # sliced before it disappeared. Asking only that something is left lets the slicing
+    # through, and the slicing is what says the floor is wrong.
+    for name in ("toggle", "snooze", "copy"):
+        box, whole = facts[name], facts[f"{name}Whole"]
+        check(
+            f"{label}: the card shows all of its own {name}",
+            box is not None
+            and whole is not None
+            and box["height"] >= whole["height"] - 1.0
+            and box["width"] >= whole["width"] - 1.0,
+            f"{name}={box} whole={whole}",
         )
     return facts
 
@@ -1261,14 +1283,14 @@ def main() -> int:
                     context.route(pattern, stub(payload))
                 page = context.new_page()
                 boot(page, "/")
-                scale = page.evaluate(
-                    "() => getComputedStyle(document.documentElement)"
-                    ".getPropertyValue('--ui-font-scale').trim()"
-                )
+                # Resolved through a length: since #11648 --ui-font-scale is a calc() of the size and interface
+                # scales, which reads back as that expression, so comparing the raw string to the default always
+                # said "scaled" and this check could not fail.
+                scale = float(page.evaluate("() => " + UI_FONT_SCALE_JS))
                 check(
                     f"{width}x{height} at {UI_FONT_SIZE_MAX}px: the type is actually scaled",
-                    scale not in ("", str(UI_FONT_SIZE_DEFAULT / UI_FONT_SIZE_CSS_BASE)),
-                    f"--ui-font-scale={scale!r}, so the rest of this pass proves nothing",
+                    abs(scale - UI_FONT_SIZE_DEFAULT / UI_FONT_SIZE_CSS_BASE) > 1e-3,
+                    f"--ui-font-scale resolved to {scale!r}, the default, so the rest of this pass proves nothing",
                 )
                 measure(page, f"{width}x{height} at {UI_FONT_SIZE_MAX}px")
                 page.screenshot(path = str(ART / f"{width}x{height}-font{UI_FONT_SIZE_MAX}.png"))

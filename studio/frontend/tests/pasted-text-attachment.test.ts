@@ -531,7 +531,10 @@ test("paste without formatting is the chord each platform binds", () => {
   // Shift+Cmd+V is taken too: web apps bind it, so a host that maps it should
   // reach the field rather than the attachment path.
   assert.ok(
-    isPlainPasteChord(keyEvent("KeyV", { metaKey: true, shiftKey: true }), true),
+    isPlainPasteChord(
+      keyEvent("KeyV", { metaKey: true, shiftKey: true }),
+      true,
+    ),
   );
   assert.ok(
     isPlainPasteChord(
@@ -541,7 +544,10 @@ test("paste without formatting is the chord each platform binds", () => {
   );
   // The other platform's modifier is a different chord, not this one.
   assert.equal(
-    isPlainPasteChord(keyEvent("KeyV", { ctrlKey: true, shiftKey: true }), true),
+    isPlainPasteChord(
+      keyEvent("KeyV", { ctrlKey: true, shiftKey: true }),
+      true,
+    ),
     false,
   );
   assert.equal(
@@ -572,7 +578,10 @@ test("an ordinary paste is left to the attachment threshold", () => {
     false,
   );
   assert.equal(
-    isPlainPasteChord(keyEvent("KeyC", { metaKey: true, shiftKey: true }), true),
+    isPlainPasteChord(
+      keyEvent("KeyC", { metaKey: true, shiftKey: true }),
+      true,
+    ),
     false,
   );
   // Modifiers alone, which is what the first keydowns of the chord carry.
@@ -595,16 +604,10 @@ test("a keyboard reporting no code reads the physical key", () => {
   };
   assert.ok(isPlainPasteChord(optionChord, true));
   // A different physical key on the same glyph path is still refused.
-  assert.equal(
-    isPlainPasteChord({ ...optionChord, keyCode: 67 }, true),
-    false,
-  );
+  assert.equal(isPlainPasteChord({ ...optionChord, keyCode: 67 }, true), false);
   // keyCode wins over key, so a "v" on another physical key does not pass.
   assert.equal(
-    isPlainPasteChord(
-      { ...optionChord, key: "v", keyCode: 67 },
-      true,
-    ),
+    isPlainPasteChord({ ...optionChord, key: "v", keyCode: 67 }, true),
     false,
   );
 });
@@ -721,7 +724,10 @@ test("the composer reads the chord from the keydown and clears it", async () => 
   // A paste event carries no modifiers, so the chord has to come from the
   // keydown before it, on capture so inputProps keeps its own onKeyDown.
   assert.match(thread, /onKeyDownCapture=\{notePlainPasteChord\}/);
-  assert.match(thread, /isPlainPasteChord\(event\)\n\s*\? performance\.now\(\)/);
+  assert.match(
+    thread,
+    /isPlainPasteChord\(event\)\n\s*\? performance\.now\(\)/,
+  );
   // And it lasts only while the keys are down. The paste is the keydown's own
   // default action, so it has already run by the time anything is released,
   // while a menu cannot be reached without letting go first.
@@ -771,28 +777,58 @@ test("the chord carries a bulk paste past the threshold, inline", () => {
   );
 });
 
+/** Every value stored under `key`, anywhere in a locale tree. */
+const valuesForKey = (tree: unknown, key: string): string[] => {
+  const found: string[] = [];
+  const walk = (node: unknown) => {
+    if (typeof node !== "object" || node === null) return;
+    for (const [name, value] of Object.entries(
+      node as Record<string, unknown>,
+    )) {
+      if (name === key && typeof value === "string") found.push(value);
+      else walk(value);
+    }
+  };
+  walk(tree);
+  return found;
+};
+
 test("every locale keeps the shortcut in the threshold description", async () => {
-  const { readdir, readFile } = await import("node:fs/promises");
+  const { readdir } = await import("node:fs/promises");
   const dir = new URL("../src/i18n/locales/", import.meta.url);
   const files = (await readdir(dir)).filter((name) => name.endsWith(".ts"));
   assert.ok(files.length >= 12, "every shipped locale is read");
   for (const name of files) {
-    const source = await readFile(new URL(name, dir), "utf8");
-    const at = source.indexOf("pastedTextThresholdDescription:");
-    assert.notEqual(at, -1, `${name} carries the description`);
-    const nextKey = source.indexOf("pastedTextThresholdOff:", at);
-    assert.notEqual(nextKey, -1, `${name} carries the following setting`);
-    const entry = source.slice(at, nextKey);
+    // The RESOLVED value, not a slice of the source. This used to take
+    // source.indexOf("pastedTextThresholdDescription:") and read to the next
+    // newline, which asserts about the formatter as much as the translation: a
+    // value Prettier wraps onto the following line leaves the slice holding only
+    // the key, and the placeholder is invisible while being right there. ar.ts is
+    // wrapped that way on main today, so this was red on every PR, and every other
+    // locale would have broken it in turn as they got rewrapped. Importing the
+    // module reads what the app reads and cannot be moved by layout.
+    const module = (await import(new URL(name, dir).href)) as Record<
+      string,
+      unknown
+    >;
+    const tree =
+      module[name.replace(/\.ts$/, "").replace(/-/g, "")] ??
+      Object.values(module)[0];
+    const values = valuesForKey(tree, "pastedTextThresholdDescription");
+    assert.equal(
+      values.length,
+      1,
+      `${name} carries the description exactly once`,
+    );
     // The chord reads ⇧⌘V or Ctrl+Shift+V, so the tab supplies it and a
     // translation that drops the placeholder loses the escape hatch.
-    assert.ok(entry.includes("{shortcut}"), `${name} keeps {shortcut}`);
+    assert.ok(values[0].includes("{shortcut}"), `${name} keeps {shortcut}`);
   }
 });
 
 test("the settings label names the chord the composer accepts", async () => {
-  const { formatBindingLabel } = await import(
-    "../src/features/settings/lib/keyboard-shortcuts.ts"
-  );
+  const { formatBindingLabel } =
+    await import("../src/features/settings/lib/keyboard-shortcuts.ts");
   const { readFile } = await import("node:fs/promises");
   for (const mac of [true, false]) {
     const binding = {

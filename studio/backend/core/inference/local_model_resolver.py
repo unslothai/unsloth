@@ -176,20 +176,76 @@ def local_gguf_companion_roots(load_path: str, *, repo_level: bool = False) -> t
             return ()
     except OSError:
         return ()
+    # A sibling must resolve back inside this repo dir: `is_dir()` follows symlinks
+    # (`follow_symlinks=False` is 3.13+) and only the named snapshot was authorized.
+    try:
+        repo_resolved = repo.resolve()
+        # By identity, not spelling: a sibling symlinked to the selected snapshot made one
+        # snapshot look like two, defeating the `len(roots) > 1` guard downstream.
+        selected_resolved = selected.resolve()
+    except OSError as exc:
+        logger.debug("Stopping at unresolvable repo dir %s: %s", repo, exc)
+        return ()
     siblings = []
     try:
         for path in snapshots.iterdir():
             if path == selected:
                 continue
             try:
-                if path.is_dir():
-                    siblings.append(path)
+                if not path.is_dir():
+                    continue
+                path_resolved = path.resolve()
+                if path_resolved == selected_resolved:
+                    logger.debug("Skipping companion snapshot aliasing %s: %s", selected, path)
+                    continue
+                if repo_resolved not in path_resolved.parents:
+                    logger.debug("Skipping companion snapshot outside %s: %s", repo_resolved, path)
+                    continue
+                siblings.append(path)
             except OSError as exc:
                 logger.debug("Skipping unreadable companion snapshot %s: %s", path, exc)
     except OSError as exc:
         logger.debug("Stopping at unreadable companion snapshots dir %s: %s", snapshots, exc)
     siblings.sort(key = snapshot_selection_key, reverse = True)
     return (str(selected), *(str(path) for path in siblings))
+
+
+def local_path_gguf_companion_roots(load_path: str) -> tuple[str, ...]:
+    """Companion roots for a load naming a snapshot DIRECTORY, not a repo id (#10599).
+
+    Widened only when this directory is the one a repo-level selection would hand out
+    anyway, so any other revision counts as pinned; siblings of one ``models--`` dir only.
+    """
+    from pathlib import Path
+    from hub.utils.gguf import select_gguf_cache_snapshot_for_repo_dir
+    from hub.utils.hf_cache_state import same_existing_path
+
+    try:
+        selected = Path(load_path)
+    except (TypeError, ValueError):
+        return ()
+    snapshots = selected.parent
+    repo = snapshots.parent
+    # Same predicate as local_gguf_companion_roots, or the two disagree on what a snapshot is.
+    if snapshots.name != "snapshots" or not repo.name.startswith("models--"):
+        return ()
+    try:
+        if not selected.is_dir():
+            return ()
+    except OSError:
+        return ()
+    try:
+        chosen = select_gguf_cache_snapshot_for_repo_dir(repo)
+    except OSError as exc:
+        logger.debug("Stopping at unreadable repo dir %s: %s", repo, exc)
+        return ()
+    # samefile, not string equality: spellings differ by symlink, or by case on Windows.
+    if chosen is None or not same_existing_path(chosen[3], selected):
+        return ()
+    roots = local_gguf_companion_roots(load_path, repo_level = True)
+    # A lone root is not inert: callers read `roots is not None` as
+    # `allow_disjoint_search_root`, defeating the guard at model_config.py:2062.
+    return roots if len(roots) > 1 else ()
 
 
 def local_gguf_companion_state(roots: tuple[str, ...]) -> tuple:
@@ -355,16 +411,17 @@ def _local_gguf_entry(
 # A LoRA directory can carry a copied config.json and tokenizer beside these, and ModelConfig would then resolve its
 # base model and fetch weights this resolver promises never to download.
 _ADAPTER_MARKERS = ("adapter_config.json", "adapter_model.safetensors", "adapter_model.bin")
-# The multimodal sub-configs the repo's own vision detector reads, which is what tells a served VLM apart from a plain
-# seq2seq wearing the same architecture suffix.
-_MULTIMODAL_CONFIG_KEYS = (
-    "vision_config",
-    "img_processor",
-    "image_token_index",
-    "projector_config",
-    "audio_config",
-)
 _SUPPORTED_CONDITIONAL_AUDIO_MODEL_TYPES = frozenset({"csm", "whisper"})
+_MODALITY_KEY_WORDS = frozenset({"vision", "image", "img", "audio", "video", "projector"})
+# transformers 5 placeholder token ids, read for their VALUE not by the word match: a serialiser emits
+# ``"image_token_id": null`` for a model with none. video_token_index is the transformers 4 spelling (VideoLlava).
+_VISUAL_TOKEN_ID_KEYS = (
+    "image_token_id",
+    "video_token_id",
+    "video_token_index",
+    "vision_start_token_id",
+    "vision_end_token_id",
+)
 
 
 def _read_json(path):
@@ -436,7 +493,7 @@ def _has_safetensors_weights(load_dir) -> bool:
         return False
 
 
-def _is_generative_chat_config(config: dict) -> bool:
+def _is_generative_chat_config(load_dir, config: dict) -> bool:
     """Whether a config.json describes a checkpoint the chat loader can generate with."""
     architectures = config.get("architectures")
     # model_type cannot stand in for the list: transformers' causal mapping lists bert and bart
@@ -449,13 +506,52 @@ def _is_generative_chat_config(config: dict) -> bool:
         return True
     if not any(name.endswith("ForConditionalGeneration") for name in names):
         return False
-    # ForConditionalGeneration is overloaded: T5 and BART wear it too, and the serving path has no AutoModelForSeq2SeqLM
-    # branch, so require a multimodal sub-config.
-    if any(key in config for key in _MULTIMODAL_CONFIG_KEYS):
-        return True
-    # whisper is the audio model rather than wearing one, so it carries no such sub-config. the MLX worker refuses ASR
-    # and TTS outright, so only a Transformers host serves these.
-    return not _host_serves_mlx() and _model_type_is_audio(config.get("model_type"))
+    # These are the audio model rather than wearing one, so they declare no modality below and the
+    # classifier further down refuses them; chat serves them through the transcription path instead.
+    if _model_type_is_audio(config.get("model_type")):
+        return not _host_serves_mlx()
+    # T5 and BART wear the suffix too, and udop-large shows modality cannot separate them.
+    if config.get("is_encoder_decoder") is True:
+        return False
+    if not _config_declares_multimodality(config):
+        return False
+    # The model picker's own classifier; its None means inconclusive, which must not qualify here.
+    from hub.services.models.common import _local_transformers_can_chat
+
+    return _local_transformers_can_chat(load_dir) is True
+
+
+def _config_declares_multimodality(config: dict) -> bool:
+    """Whether a config declares a non-text modality, by whole key words: substrings admit ``revision``."""
+    import re
+
+    for key in config:
+        if not isinstance(key, str):
+            continue
+        # Neither counts alone: transformers 5 nests a text_config in TEXT-ONLY configs too (ClvpConfig), and
+        # audio_token_id would route HiggsAudioV2 and VibeVoiceAsr around the audio allowlist above.
+        if key in ("text_config", "audio_token_id"):
+            continue
+        if key in _VISUAL_TOKEN_ID_KEYS:
+            if _is_placeholder_token_id(config[key]):
+                return True
+            continue
+        if _MODALITY_KEY_WORDS & set(re.split(r"[^a-z0-9]+", key.lower())):
+            return True
+    return False
+
+
+def _is_placeholder_token_id(value) -> bool:
+    """A token id a tokenizer could emit: a non-negative int, or a non-empty list of them. ``bool`` is excluded by
+    hand, or ``"image_token_id": true`` reads as token 1; transformers 5 writes the list form for multi-slot models.
+    """
+    if isinstance(value, bool):
+        return False
+    if isinstance(value, int):
+        return value >= 0
+    if isinstance(value, (list, tuple)):
+        return bool(value) and all(_is_placeholder_token_id(item) for item in value)
+    return False
 
 
 def _model_type_is_audio(model_type) -> bool:
@@ -495,10 +591,13 @@ def _config_is_servable_here(load_dir, config: dict) -> bool:
     # trust_remote_code needs an approval fingerprint a switch has not got; read as data only.
     for name in REMOTE_CODE_CONFIG_FILES:
         candidate = config if name == "config.json" else _read_json(load_dir / name)
+        if not isinstance(candidate, dict):
+            continue
         # truthiness like the consent gate's _config_has_auto_map: an empty map runs nothing.
-        if isinstance(candidate, dict) and candidate.get("auto_map"):
+        # model_file runs repo code too and bypasses trust_remote_code: MLX loaders exec_module it.
+        if candidate.get("auto_map") or candidate.get("model_file"):
             return False
-    return _is_generative_chat_config(config)
+    return _is_generative_chat_config(load_dir, config)
 
 
 def _host_can_serve_minimax_music3() -> bool:
