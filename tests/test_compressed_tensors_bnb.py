@@ -990,3 +990,81 @@ def test_expert_scheme_is_resolved_per_layer():
     assert (
         _layer_expert_scheme(single, "model.layers.9.mlp.experts.gate_up_proj", key, 4, "d") == "d"
     )
+
+
+@pytest.mark.skipif(
+    not (HAS_CT and HAS_CONVERTERS), reason = "needs compressed-tensors and the transformers 5 loader"
+)
+@pytest.mark.parametrize("stack_only_merge", [False, True])
+def test_chained_expert_ops_all_see_the_original_sources(stack_only_merge):
+    """Qwen2/Qwen3-MoE gate/up is MergeModulelist then Concatenate. Every op of the rebuilt chain
+    must run under the original source names, and a MergeModulelist that only stacks lists
+    (transformers 5.0 to 5.6) must be handed the per-expert list, not the stacked bucket."""
+    from transformers.core_model_loading import Concatenate, MergeModulelist
+    from compressed_tensors.compressors import BaseCompressor
+    from compressed_tensors.quantization import QuantizationConfig
+    from compressed_tensors.quantization.utils import calculate_qparams
+    from unsloth.models.compressed_tensors_bnb import (
+        _DecompressPackedWeights,
+        _with_original_sources,
+    )
+
+    class StackOnlyMerge(MergeModulelist):
+        def convert(self, input_dict, source_patterns, target_patterns, **kwargs):
+            size = len(input_dict)
+            return {
+                self.get_target_pattern(size, key, target_patterns): torch.stack(
+                    input_dict.pop(key), dim = self.dim
+                )
+                for key in list(input_dict)
+            }
+
+    torch.manual_seed(0)
+    quant = _w4a16(weights = {"num_bits": 4, "group_size": 32, "symmetric": True})
+    ctc = QuantizationConfig.model_validate(quant)
+    scheme = list(ctc.config_groups.values())[0]
+    comp = BaseCompressor.get_value_from_registry("pack-quantized")
+    sources = ["mlp.experts.*.gate_proj.weight", "mlp.experts.*.up_proj.weight"]
+    targets = ["mlp.experts.gate_up_proj"]
+    plain, packed = {}, {}
+    for p in sources:
+        plain[p] = []
+        packed[p + "_packed$"], packed[p + "_scale$"], packed[p + "_shape$"] = [], [], []
+        for _ in range(4):
+            w = torch.randn(16, 64)
+            scale, _zp = calculate_qparams(
+                w.reshape(16, 2, 32).amin(-1), w.reshape(16, 2, 32).amax(-1), scheme.weights
+            )
+            out = comp.compress({"weight": w, "weight_scale": scale.to(torch.bfloat16)}, scheme)
+            plain[p].append(comp.decompress(dict(out), scheme)["weight"].to(torch.bfloat16))
+            packed[p + "_packed$"].append(out["weight_packed"])
+            packed[p + "_scale$"].append(out["weight_scale"])
+            packed[p + "_shape$"].append(out["weight_shape"])
+
+    merge = StackOnlyMerge(dim = 0) if stack_only_merge else MergeModulelist(dim = 0)
+    want = dict(plain)
+    for op in (MergeModulelist(dim = 0), Concatenate(dim = 1)):
+        want = op.convert(want, source_patterns = sources, target_patterns = targets)
+
+    rebuilt_sources = (
+        [p + "_packed$" for p in sources]
+        + [p + "_scale$" for p in sources]
+        + [p + "_shape$" for p in sources]
+        + [p + "$" for p in sources]
+    )
+    ops = [_DecompressPackedWeights(ctc, torch.bfloat16, stacked = True, scheme = scheme)] + [
+        _with_original_sources(op, sources, sources, receives_buckets = index == 0)
+        for index, op in enumerate([merge, Concatenate(dim = 1)])
+    ]
+    got = dict(packed)
+    for op in ops:
+        got = op.convert(
+            got,
+            source_patterns = rebuilt_sources,
+            target_patterns = targets,
+            full_layer_name = "model.layers.0",
+            model = None,
+            config = None,
+        )
+    assert set(got) == set(targets)
+    torch.testing.assert_close(got[targets[0]], want[targets[0]])

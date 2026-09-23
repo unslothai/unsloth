@@ -41,6 +41,7 @@ Needs the transformers 5 weight-conversion loader; on older transformers the
 loader keeps its previous behaviour (load as published).
 """
 
+import inspect
 import os
 import re
 from typing import Any, Optional
@@ -580,10 +581,19 @@ class _WithOriginalSources:
     is exactly what it sees on an unpacked checkpoint.
     """
 
-    def __init__(self, op, original_sources, weight_sources):
+    def __init__(
+        self,
+        op,
+        original_sources,
+        weight_sources,
+        receives_buckets = True,
+    ):
         self.op = op
         self.original_sources = list(original_sources)
         self.weight_sources = list(weight_sources)
+        # Only the first op of a chain sees the decompressed buckets; a later one (Concatenate
+        # after MergeModulelist) gets the previous op's output and only needs the source names.
+        self.receives_buckets = receives_buckets
 
     def convert(
         self,
@@ -592,11 +602,14 @@ class _WithOriginalSources:
         target_patterns = None,
         **kwargs,
     ):
-        try:
-            from transformers.core_model_loading import MergeModulelist
-        except Exception:  # pragma: no cover
-            MergeModulelist = ()
-        keeps_stack = isinstance(self.op, MergeModulelist) if MergeModulelist else False
+        if not self.receives_buckets:
+            return self.op.convert(
+                input_dict,
+                source_patterns = self.original_sources,
+                target_patterns = target_patterns,
+                **kwargs,
+            )
+        keeps_stack = _merge_takes_a_stacked_tensor(self.op)
         for pattern in self.weight_sources:
             if (pattern + "_packed$") in input_dict and (pattern + "$") in input_dict:
                 # Some experts of one bucket packed and others not: the loader hands both
@@ -612,8 +625,8 @@ class _WithOriginalSources:
             for pattern in self.weight_sources:
                 if key in (pattern + "_packed$", pattern + "$"):
                     new_key = pattern
-                    # A bucket arrives as one pre-stacked tensor. MergeModulelist takes that as
-                    # is; every other op expects the per-expert list the loader collected.
+                    # A bucket arrives as one pre-stacked tensor. A MergeModulelist that passes a
+                    # tensor through takes it as is; every other op expects the per-expert list.
                     if isinstance(value, torch.Tensor) and not keeps_stack:
                         value = list(value.unbind(0))
                     break
@@ -636,7 +649,28 @@ class _WithOriginalSources:
 _with_sources_classes = {}
 
 
-def _with_original_sources(op, original_sources, weight_sources):
+def _merge_takes_a_stacked_tensor(op):
+    """Whether ``op`` is a MergeModulelist whose convert passes a pre-stacked tensor through;
+    before that change it calls torch.stack on whatever it is given."""
+    try:
+        from transformers.core_model_loading import MergeModulelist
+    except Exception:  # pragma: no cover
+        return False
+    if not isinstance(op, MergeModulelist):
+        return False
+    try:
+        source = inspect.getsource(type(op).convert)
+    except (OSError, TypeError):
+        return False
+    return "isinstance(tensors, torch.Tensor)" in source
+
+
+def _with_original_sources(
+    op,
+    original_sources,
+    weight_sources,
+    receives_buckets = True,
+):
     """Wrap ``op`` in a subclass of its own class. transformers' ``WeightConverter`` allows a
     many-to-many mapping only when ``operations`` holds an instance of its internal Ernie ops,
     so the adapter must still be one. ``_WithOriginalSources`` comes first in the MRO, so
@@ -646,7 +680,7 @@ def _with_original_sources(op, original_sources, weight_sources):
         cls = _with_sources_classes[type(op)] = type(
             "WithOriginalSources" + type(op).__name__, (_WithOriginalSources, type(op)), {}
         )
-    return cls(op, original_sources, weight_sources)
+    return cls(op, original_sources, weight_sources, receives_buckets)
 
 
 _installed = False
@@ -770,16 +804,18 @@ def install_compressed_tensors_bnb_quantizer() -> bool:
                         conv = WeightConverter(
                             source_patterns = new_sources,
                             target_patterns = conv._original_target_patterns,
-                            # Only the op that receives the decompressed buckets is adapted; a
-                            # later op in the chain (Concatenate after MergeModulelist) gets the
-                            # previous op's output under the previous op's own contract.
+                            # Every op of the chain runs under the converter's original source
+                            # names; only the first one receives the decompressed buckets.
                             operations = [op_cls(ct_config, dtype, stacked = True, scheme = scheme)]
                             + [
                                 with_sources_cls(
-                                    conv.operations[0], original_sources, weight_sources
+                                    op,
+                                    original_sources,
+                                    weight_sources,
+                                    receives_buckets = index == 0,
                                 )
-                            ]
-                            + list(conv.operations[1:]),
+                                for index, op in enumerate(conv.operations)
+                            ],
                         )
                         self._unsloth_keep_storage_dtype(conv._original_target_patterns)
                 updated.append(conv)
