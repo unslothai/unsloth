@@ -110,6 +110,24 @@ export function canvasErrors(
   return state.entries.filter((entry) => entry.kind === "error");
 }
 
+// The shell's own frames: render() and the listener that writes the page in. They are
+// not the canvas's code, so they help nobody reading the console and mislead the model.
+const WRAPPER_FRAME = "artifact-preview-frame";
+// A stack's first line repeats the message, but not always verbatim: the browser prefixes
+// the error event's message with "Uncaught " and the stack's copy has no prefix.
+const STACK_FRAME = /^\s*at\s/;
+
+/** The stack with the repeated message line and Studio's wrapper frames removed. */
+export function canvasStack(entry: CanvasConsoleEntry): string {
+  const lines = entry.stack.split("\n");
+  const first = lines.findIndex((line) => STACK_FRAME.test(line));
+  const frames = first < 0 ? [] : lines.slice(first);
+  return frames
+    .filter((line) => !line.includes(WRAPPER_FRAME))
+    .join("\n")
+    .trimEnd();
+}
+
 export function describeCanvasLocation(entry: CanvasConsoleEntry): string {
   if (entry.line <= 0) return "";
   return entry.column > 0

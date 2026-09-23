@@ -12,6 +12,7 @@ import {
   appendCanvasEntry,
   buildCanvasFixPrompt,
   canvasErrors,
+  canvasStack,
   emptyCanvasConsole,
   parseCanvasReport,
 } from "../src/features/chat/artifacts/canvas-console.ts";
@@ -171,4 +172,33 @@ test("the Fix button stages text in the composer and never sends it", () => {
   assert.match(frameSource, /aui\.composer\(\)/);
   assert.match(frameSource, /composer\.setText\(/);
   assert.doesNotMatch(frameSource, /\.send\(/);
+});
+
+test("the stack drops the repeated message line and Studio's own frames", () => {
+  // The browser prefixes the error event's message with "Uncaught " but the stack's
+  // copy of it has no prefix, so an exact match left the message printed twice. The
+  // wrapper frames are the shell's render() and its message listener, not the page.
+  const entry = parseCanvasReport({
+    type: "unsloth:artifact-error",
+    message: "Uncaught TypeError: Cannot read properties of null",
+    line: 2,
+    column: 48,
+    stack: [
+      "TypeError: Cannot read properties of null",
+      "    at <anonymous>:2:48",
+      "    at render (http://127.0.0.1:8888/api/inference/artifact-preview-frame?v=87a2oc:129:20)",
+      "    at http://127.0.0.1:8888/api/inference/artifact-preview-frame?v=87a2oc:140:11",
+    ].join("\n"),
+  })!;
+  assert.equal(canvasStack(entry), "    at <anonymous>:2:48");
+});
+
+test("a stack with nothing but the message, or no stack at all, renders as nothing", () => {
+  const bare = parseCanvasReport({
+    type: "unsloth:artifact-error",
+    message: "boom",
+    stack: "Error: boom",
+  })!;
+  assert.equal(canvasStack(bare), "");
+  assert.equal(canvasStack(parseCanvasReport(thrown("boom"))!), "");
 });

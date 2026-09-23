@@ -40,6 +40,7 @@ import {
   appendCanvasEntry,
   buildCanvasFixPrompt,
   canvasErrors,
+  canvasStack,
   emptyCanvasConsole,
   parseCanvasReport,
 } from "./canvas-console";
@@ -68,15 +69,6 @@ type BlockedState = { code: string; uris: string[]; hosts: string[] };
 
 const NOTHING_BLOCKED: BlockedState = { code: "", uris: [], hosts: [] };
 const NO_OUTPUT: CanvasConsoleState = emptyCanvasConsole("");
-
-// The stack's first line repeats the message, so only what follows it is shown.
-function stackBelow(entry: CanvasConsoleEntry): string {
-  const stack = entry.stack.trim();
-  if (!stack || stack === entry.text) return "";
-  return stack.startsWith(entry.text)
-    ? stack.slice(entry.text.length).replace(/^\n/, "")
-    : stack;
-}
 
 // Reports from before a swap belong to the old canvas, so start over rather than append. The
 // cap is checked BEFORE the duplicate scan, so past it a canvas posting unique URIs cannot
@@ -439,15 +431,21 @@ export function ArtifactHtmlFrame({
               </AlertAction>
               <AlertTitle role="alert">{errorTitle}</AlertTitle>
               <AlertDescription>
-                <p className="break-words font-mono text-xs">
+                <p
+                  className="line-clamp-2 break-words font-mono text-ui-11p5"
+                  title={firstError.text}
+                >
                   {firstError.text}
                   {locationLabel(firstError)
                     ? ` (${locationLabel(firstError)})`
                     : ""}
                 </p>
-                <p>{t("settings.chat.artifacts.errorHint")}</p>
-                <div className="flex flex-wrap gap-2">
-                  <Button size="sm" onClick={fixWithModel}>
+                <div className="flex flex-wrap items-center gap-2">
+                  <Button
+                    size="sm"
+                    onClick={fixWithModel}
+                    title={t("settings.chat.artifacts.errorHint")}
+                  >
                     {t("settings.chat.artifacts.errorBannerAction")}
                   </Button>
                   {onConsoleOpenChange ? (
@@ -458,6 +456,13 @@ export function ArtifactHtmlFrame({
                     >
                       {t("settings.chat.artifacts.errorConsoleAction")}
                     </Button>
+                  ) : null}
+                  {errors.length > 1 ? (
+                    <span className="text-xs text-muted-foreground">
+                      {t("settings.chat.artifacts.errorMore", {
+                        count: errors.length - 1,
+                      })}
+                    </span>
                   ) : null}
                 </div>
               </AlertDescription>
@@ -471,7 +476,19 @@ export function ArtifactHtmlFrame({
           dir={locale === "ar" ? "rtl" : "ltr"}
           className="absolute inset-x-0 bottom-0 flex max-h-[45%] min-h-[120px] flex-col border-t border-border bg-background/95 text-xs backdrop-blur"
         >
-          <div className="flex shrink-0 items-center gap-1 border-b border-border/70 px-2 py-1">
+          <div className="flex shrink-0 items-center gap-2 border-b border-border/70 px-2 py-1">
+            <span className="text-xs text-muted-foreground">
+              {t(
+                errorsOnly
+                  ? errors.length === 1
+                    ? "settings.chat.artifacts.consoleErrorCount"
+                    : "settings.chat.artifacts.consoleErrorCountPlural"
+                  : shownEntries.length === 1
+                    ? "settings.chat.artifacts.consoleMessageCount"
+                    : "settings.chat.artifacts.consoleMessageCountPlural",
+                { count: shownEntries.length },
+              )}
+            </span>
             <Button
               size="sm"
               variant={errorsOnly ? "secondary" : "ghost"}
@@ -514,11 +531,16 @@ export function ArtifactHtmlFrame({
                       "text-amber-600 dark:text-amber-400",
                   )}
                 >
+                  {entry.kind === "console" && entry.level !== "log" ? (
+                    <span className="mr-1.5 uppercase text-muted-foreground">
+                      {entry.level}
+                    </span>
+                  ) : null}
                   {entry.text}
                   {locationLabel(entry) ? ` (${locationLabel(entry)})` : ""}
-                  {stackBelow(entry) ? (
+                  {canvasStack(entry) ? (
                     <span className="block text-muted-foreground">
-                      {stackBelow(entry)}
+                      {canvasStack(entry)}
                     </span>
                   ) : null}
                 </li>
