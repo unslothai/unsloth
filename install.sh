@@ -3139,38 +3139,74 @@ case "$OS" in
 esac
 
 # ── BEGIN mirror fallback (kept identical in install.sh and studio/setup.sh) ──
-# A package host that is blocked, or too slow to serve a small index page within the probe budget, is swapped for a public mirror that passes the same probe. Hosts that the user has already redirected are left alone, the choice reaches every child through the env vars uv, pip, npm and the Unsloth helpers already read, and UNSLOTH_MIRROR_FALLBACK=0 turns it off.
+# Each default package host is timed alone on a 1 MiB slice of an artifact it serves. One below 1 MiB/s, or whose index does not answer, is raced against its mirror (CERNET, or npmmirror for npm and uv's Python builds; each mirror URL timed once whatever it backs) and swapped for it when the default is still below 1 MiB/s there, the mirror is faster, and its own index answers. Hosts that the user has already redirected are left alone, the choice reaches every child through the env vars uv, pip, npm and the Unsloth helpers already read, and UNSLOTH_MIRROR_FALLBACK=0 turns it off.
 _MIRROR_CERNET="https://mirrors.cernet.edu.cn"
 _MIRROR_PYPI="$_MIRROR_CERNET/pypi/web/simple"
+_MIRROR_NPM="https://registry.npmmirror.com"
 # GitHub-release mirrors keep only the newest Python builds, while a pinned uv asks for the builds it shipped with; npmmirror keeps every release.
-_MIRROR_PYTHON="https://registry.npmmirror.com/-/binary/python-build-standalone"
+_MIRROR_PYTHON="$_MIRROR_NPM/-/binary/python-build-standalone"
+_MIRROR_MIN_BPS=1048576
 
-# Prints ok, slow (answered but missed the budget) or blocked.
+# Prints "<http code> <bytes/s>" for bytes 0-$3 of $1 within $2 seconds (000: no answer); curl reports the speed so far on a timeout too.
 _mirror_probe() {
-    _mp_rc=0
-    _mp_code=$(curl -sL -o /dev/null -w '%{http_code}' --connect-timeout 5 --max-time 10 "$1" 2>/dev/null) || _mp_rc=$?
-    case "$_mp_code" in
-        2??) if [ "$_mp_rc" -eq 0 ]; then echo ok; else echo slow; fi ;;
-        *) echo blocked ;;
+    _mp_out=$(curl -sL -o /dev/null -r "0-$3" -w '%{http_code} %{speed_download}' --connect-timeout "$2" --max-time "$2" "$1" 2>/dev/null) || true
+    _mp_bps=${_mp_out#* }
+    _mp_bps=${_mp_bps%%.*}
+    case "$_mp_bps" in ''|*[!0-9]*) _mp_bps=0 ;; esac
+    _mp_code=${_mp_out%% *}
+    case "$_mp_code" in [0-9][0-9][0-9]) ;; *) _mp_code=000 ;; esac
+    echo "$_mp_code $_mp_bps"
+}
+
+# Probe URLs: artifacts the installs download, which only need to stay published, served byte for byte by the mirror (every download.pytorch.org index links its wheels to download-r2). CERNET redirects each tree to a different university mirror, so each tree is timed. uv and pip resolve on the *-index URLs, which only need to answer: CERNET's PyPI index and files even sit on different mirrors.
+_mirror_url() {
+    case "$1" in
+        pypi) echo "https://files.pythonhosted.org/packages/72/d6/207945fe69903b9794e2ef3e42608c91a59972567343a6719078d99c71f7/uv-0.12.1-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl" ;;
+        cernet-pypi) echo "$_MIRROR_CERNET/pypi/web/packages/72/d6/207945fe69903b9794e2ef3e42608c91a59972567343a6719078d99c71f7/uv-0.12.1-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl" ;;
+        torch) echo "https://download-r2.pytorch.org/whl/cpu/torch-2.9.1%2Bcpu-cp312-cp312-manylinux_2_28_x86_64.whl" ;;
+        cernet-torch) echo "$_MIRROR_CERNET/pytorch/whl/cpu/torch-2.9.1%2Bcpu-cp312-cp312-manylinux_2_28_x86_64.whl" ;;
+        node) echo "https://nodejs.org/dist/v24.18.0/node-v24.18.0-linux-x64.tar.gz" ;;
+        cernet-node) echo "$_MIRROR_CERNET/nodejs-release/v24.18.0/node-v24.18.0-linux-x64.tar.gz" ;;
+        npm) echo "https://registry.npmjs.org/typescript/-/typescript-5.9.3.tgz" ;;
+        npmmirror) echo "$_MIRROR_NPM/typescript/-/typescript-5.9.3.tgz" ;;
+        astral) echo "https://releases.astral.sh/github/uv/releases/download/0.12.1/uv-x86_64-unknown-linux-gnu.tar.gz" ;;
+        pypi-index) echo "https://pypi.org/simple/uv/" ;;
+        torch-index) echo "https://download.pytorch.org/whl/cpu/torch/" ;;
+        cernet-pypi-index) echo "$_MIRROR_PYPI/uv/" ;;
+        cernet-torch-index) echo "$_MIRROR_CERNET/pytorch/whl/cpu/torch/" ;;
     esac
 }
 
-_mirror_url() {
-    case "$1:$2" in
-        pypi:default) echo "https://pypi.org/simple/pip/" ;;
-        pypi:mirror) echo "$_MIRROR_PYPI/pip/" ;;
-        torch:default) echo "https://download.pytorch.org/whl/cpu/torchaudio/" ;;
-        torch:mirror) echo "$_MIRROR_CERNET/pytorch/whl/cpu/torchaudio/" ;;
-        node:default) echo "https://nodejs.org/dist/index.tab" ;;
-        node:mirror) echo "$_MIRROR_CERNET/nodejs-release/index.tab" ;;
-        npm:default) echo "https://registry.npmjs.org/npm/latest" ;;
-        npm:mirror) echo "https://registry.npmmirror.com/npm/latest" ;;
-        # Any published release will do for the two releases.astral.sh probes: they only check that the host answers.
-        python:default) echo "https://releases.astral.sh/github/python-build-standalone/releases/download/20260728/SHA256SUMS" ;;
-        python:mirror) echo "$_MIRROR_PYTHON/20260728/" ;;
-        uvbin:default) echo "https://releases.astral.sh/github/uv/releases/download/0.12.1/sha256.sum" ;;
-        uvbin:mirror) echo "$_MIRROR_PYPI/uv/" ;;
-    esac
+_mirror_default() {
+    case "$1" in python|uvbin) echo astral ;; *) echo "$1" ;; esac
+}
+
+_mirror_source() {
+    case "$1" in npm|python) echo npmmirror ;; pypi|uvbin) echo cernet-pypi ;; *) echo "cernet-$1" ;; esac
+}
+
+# Starts a 1 KiB answer check, in the background, of the index each named host (pypi, torch) or its CERNET mirror (cernet-<host>) resolves on.
+_mirror_index_probe() {
+    for _mip_name in "$@"; do
+        case "$_mip_name" in
+            pypi|torch|cernet-pypi|cernet-torch)
+                _mirror_probe "$(_mirror_url "$_mip_name-index")" 4 1023 > "$_mf_dir/$_mip_name-index" &
+                _mf_pids="$_mf_pids $!" ;;
+        esac
+    done
+}
+
+_mirror_index_wait() {
+    for _miw_pid in $_mf_pids; do
+        wait "$_miw_pid" || true
+    done
+    _mf_pids=""
+}
+
+_mirror_index_ok() {
+    [ -f "$_mf_dir/$1-index" ] || return 0
+    read -r _mio_code _mio_bps < "$_mf_dir/$1-index"
+    case "$_mio_code" in 2??) return 0 ;; *) return 1 ;; esac
 }
 
 # True when the user already chose a source for uv's index ($1 = uv), uv's Python downloads ($1 = python) or pip's index ($1 = pip), by env var or config file.
@@ -3199,14 +3235,14 @@ _mirror_configured() {
     return 1
 }
 
-# Probes the $2 (default or mirror) URL of every host after $2 in parallel, leaving each result in $1/<host>.$2.
+# Probes the names after $2 in parallel, each within $2 seconds, one "<code> <bytes/s>" file per name in $1.
 _mirror_probe_all() {
     _mpa_dir="$1"
-    _mpa_column="$2"
+    _mpa_secs="$2"
     shift 2
     _mpa_pids=""
-    for _mpa_host in "$@"; do
-        _mirror_probe "$(_mirror_url "$_mpa_host" "$_mpa_column")" > "$_mpa_dir/$_mpa_host.$_mpa_column" &
+    for _mpa_name in "$@"; do
+        _mirror_probe "$(_mirror_url "$_mpa_name")" "$_mpa_secs" 1048575 > "$_mpa_dir/$_mpa_name" &
         _mpa_pids="$_mpa_pids $!"
     done
     for _mpa_pid in $_mpa_pids; do
@@ -3214,7 +3250,7 @@ _mirror_probe_all() {
     done
 }
 
-# Points host $1 at its mirror; $2 is how the default probe went (slow or blocked).
+# Points host $1 at its mirror; $2 is how its default did (slow or blocked), $3 the default's and $4 the mirror's bytes/s.
 _mirror_use() {
     case "$1" in
         pypi)
@@ -3230,7 +3266,7 @@ _mirror_use() {
                     export PIP_EXTRA_INDEX_URL="https://pypi.org/simple"
                 fi
             fi
-            _mu_from="pypi.org"
+            _mu_from="PyPI"
             _mu_to="$_MIRROR_PYPI" ;;
         torch)
             export UNSLOTH_PYTORCH_MIRROR="$_MIRROR_CERNET/pytorch/whl"
@@ -3241,7 +3277,7 @@ _mirror_use() {
             _mu_from="nodejs.org"
             _mu_to="$UNSLOTH_NODE_MIRROR" ;;
         npm)
-            export UNSLOTH_NPM_REGISTRY="https://registry.npmmirror.com"
+            export UNSLOTH_NPM_REGISTRY="$_MIRROR_NPM"
             _mu_from="registry.npmjs.org"
             _mu_to="$UNSLOTH_NPM_REGISTRY" ;;
         python)
@@ -3253,7 +3289,7 @@ _mirror_use() {
             _mu_from="releases.astral.sh (uv)"
             _mu_to="$UNSLOTH_UV_WHEEL_MIRROR" ;;
     esac
-    step "mirror" "$_mu_from is $2; using $_mu_to" "$C_WARN"
+    step "mirror" "$_mu_from is $2 ($(($3 / 1024)) KB/s, mirror $(($4 / 1024)) KB/s); using $_mu_to" "$C_WARN"
     _mf_used=true
 }
 
@@ -3280,19 +3316,41 @@ _mirror_fallback() {
     [ -n "${UNSLOTH_UV_WHEEL_MIRROR:-}${UV_DOWNLOAD_URL:-}${INSTALLER_DOWNLOAD_URL:-}${UV_INSTALLER_GHE_BASE_URL:-}${UV_INSTALLER_GITHUB_BASE_URL:-}" ] || _mf_hosts="$_mf_hosts uvbin"
     [ -n "$_mf_hosts" ] || return 0
     _mf_dir=$(mktemp -d 2>/dev/null) || return 0
-    # shellcheck disable=SC2086
-    _mirror_probe_all "$_mf_dir" default $_mf_hosts
-    _mf_failed=""
-    for _mf_host in $_mf_hosts; do
-        [ "$(cat "$_mf_dir/$_mf_host.default")" = ok ] || _mf_failed="$_mf_failed $_mf_host"
+    # Index hosts only need to answer, and 1 KiB each barely touches the link while the defaults are timed one at a time.
+    _mf_pids=""
+    _mirror_index_probe $_mf_hosts
+    # 1.5 s is enough to tell whether a default makes 1 MiB/s; a slower one is re-timed in the race.
+    for _mf_name in $(for _mf_host in $_mf_hosts; do _mirror_default "$_mf_host"; done | sort -u); do
+        _mirror_probe "$(_mirror_url "$_mf_name")" 1.5 1048575 > "$_mf_dir/$_mf_name"
     done
-    if [ -n "$_mf_failed" ]; then
-        # shellcheck disable=SC2086
-        _mirror_probe_all "$_mf_dir" mirror $_mf_failed
-        for _mf_host in $_mf_failed; do
-            if [ "$(cat "$_mf_dir/$_mf_host.mirror")" = ok ]; then
-                _mirror_use "$_mf_host" "$(cat "$_mf_dir/$_mf_host.default")"
-            fi
+    _mirror_index_wait
+    # A redirect that led nowhere counts as no answer; a default that answers an HTTP error is kept: that is a moved probe artifact, not a blocked host.
+    _mf_slow=""
+    for _mf_host in $_mf_hosts; do
+        read -r _mf_code _mf_bps < "$_mf_dir/$(_mirror_default "$_mf_host")"
+        _mirror_index_ok "$_mf_host" || _mf_code=000
+        case "$_mf_code" in
+            000|3??) _mf_slow="$_mf_slow $_mf_host" ;;
+            2??) [ "$_mf_bps" -ge "$_MIRROR_MIN_BPS" ] || _mf_slow="$_mf_slow $_mf_host" ;;
+        esac
+    done
+    if [ -n "$_mf_slow" ]; then
+        # The default runs again beside the mirror so both share the link the same way.
+        _mirror_index_probe $(for _mf_host in $_mf_slow; do echo "cernet-$_mf_host"; done)
+        _mirror_probe_all "$_mf_dir" 4 $(for _mf_host in $_mf_slow; do _mirror_default "$_mf_host"; _mirror_source "$_mf_host"; done | sort -u)
+        _mirror_index_wait
+        for _mf_host in $_mf_slow; do
+            read -r _mf_code _mf_bps < "$_mf_dir/$(_mirror_default "$_mf_host")"
+            read -r _mf_mcode _mf_mbps < "$_mf_dir/$(_mirror_source "$_mf_host")"
+            _mirror_index_ok "$_mf_host" || _mf_code=000
+            _mirror_index_ok "cernet-$_mf_host" || _mf_mcode=000
+            case "$_mf_code" in
+                2??) _mf_how=slow ;;
+                *) _mf_how=blocked; _mf_bps=0 ;;
+            esac
+            case "$_mf_mcode" in
+                2??) [ "$_mf_bps" -lt "$_MIRROR_MIN_BPS" ] && [ "$_mf_mbps" -gt "$_mf_bps" ] && _mirror_use "$_mf_host" "$_mf_how" "$_mf_bps" "$_mf_mbps" ;;
+            esac
         done
         if [ "$_mf_used" = true ]; then
             substep "Set UNSLOTH_MIRROR_FALLBACK=0 to always use the default hosts."
