@@ -217,3 +217,29 @@ def test_quantizer_resolved_dtype_wins_over_the_request(requested, resolved):
     assert model.in_proj_qkv.weight.dtype == resolved
     assert model.lm_head.weight.dtype == resolved
     assert model.quantized.weight.dtype == torch.float16
+
+
+@pytest.mark.parametrize("offload", ["cpu", "disk"])
+def test_offloaded_leftovers_materialize_in_the_requested_dtype(offload, tmp_path):
+    # device_map with "cpu" / "disk" leaves meta placeholders plus accelerate hooks whose weights
+    # map still holds the float16 checkpoint tensors. accelerate casts that stored value to the
+    # placeholder's dtype on every pre_forward, so the placeholders must be recast too.
+    accelerate = pytest.importorskip("accelerate")
+    cast = _load_helper()
+    model = _TinyDecoder()
+    model.quantized = nn.Identity()
+    model.lm_head.to(torch.float32)
+    model.norm.to(torch.float16)
+    ids = torch.tensor([[1, 2, 3]])
+    if offload == "cpu":
+        accelerate.cpu_offload(model, execution_device = torch.device("cpu"))
+    else:
+        accelerate.disk_offload(model, offload_dir = str(tmp_path), execution_device = torch.device("cpu"))
+    assert model.embed_tokens.weight.device.type == "meta"
+    assert model.embed_tokens.weight.dtype == torch.float16
+    cast(model, torch.float32)
+    assert model.embed_tokens.weight.dtype == torch.float32
+    assert model.in_proj_qkv.weight.dtype == torch.float32
+    with torch.no_grad():
+        out = model(ids)
+    assert out.dtype == torch.float32

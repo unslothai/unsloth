@@ -1224,7 +1224,8 @@ def _cast_text_only_prequantized_params(model, dtype):
         # Params4bit / Int8Params and tensor subclasses (torchao, fp8) hold quantized storage.
         if type(param) is not torch.nn.Parameter or type(param.data) is not torch.Tensor:
             continue
-        if param.dtype not in (torch.float16, torch.bfloat16) or param.device.type == "meta":
+        # Offloaded (cpu / disk) params are meta placeholders; accelerate casts the stored value to the placeholder's dtype when it materializes it, so recasting the placeholder covers them.
+        if param.dtype not in (torch.float16, torch.bfloat16):
             continue
         target = torch.float32 if any(re.search(k, name) for k in keep_fp32) else dtype
         if param.dtype == target:
