@@ -10218,3 +10218,33 @@ def test_the_boundary_marker_waits_out_a_busy_capture_lock(fake_runtime, monkeyp
     assert marks["calls"] == 1
     assert marks["ok"] is True
     assert at_decode.get("phase") == "decode"
+
+
+@pytest.mark.parametrize("resident", [True, False])
+def test_a_failed_replacement_keeps_the_resident_models_nvfp4_state(monkeypatch, resident):
+    """A load that fails before teardown leaves the old model installed, and its CUDA graph still
+    records kernels against the NVFP4 barrier and dispatch tensors; only a load with nothing
+    resident may release them."""
+    import core.inference.video as vid
+    from core.inference import diffusion_nvfp4_linear as lin
+
+    backend = VideoBackend()
+    resets: list = []
+    monkeypatch.setattr(lin, "reset_nvfp4_state", lambda: resets.append(True))
+    monkeypatch.setattr(vid, "clear_gpu_cache", lambda: None)
+
+    def _boom(*_a, **_k):
+        raise RuntimeError("metadata lookup failed")
+
+    monkeypatch.setattr(vid, "_detect_load_family", _boom)
+    if resident:
+        backend._state = types.SimpleNamespace(pipe = None)
+        import core.inference.gpu_arbiter as arbiter
+        import hub.services.models.account_access as access
+
+        monkeypatch.setattr(arbiter, "restore_owner_account", lambda *_a, **_k: None)
+        monkeypatch.setattr(access, "restore_resident_metadata", lambda *_a, **_k: None)
+    backend._load_token = 7
+    backend._run_load(repo_id = "org/model", _load_token = 7)
+
+    assert resets == ([] if resident else [True])
