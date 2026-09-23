@@ -76,7 +76,11 @@ def test_css_default_scale_matches_the_store_default():
     assert (
         f"--ui-font-scale: calc(var(--ui-font-size-scale, {scale:g}) * var(--ui-interface-scale, 1));"
     ) in INDEX_CSS
-    assert '"--ui-font-size-scale"' in STORE
+    # One setter call: the default branch's `setVar("--ui-font-size-scale", null)` must not stand in for it.
+    assert re.search(
+        r'setVar\(\s*"--ui-font-size-scale",\s*String\(effectiveUiFontSize / UI_FONT_SIZE_CSS_BASE\),?\s*\)',
+        STORE,
+    ), "a custom font size no longer writes --ui-font-size-scale"
 
 
 def test_named_text_tokens_scale():
