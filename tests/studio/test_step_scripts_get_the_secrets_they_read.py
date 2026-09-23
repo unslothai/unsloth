@@ -54,6 +54,10 @@ def _reads(script: str, name: str) -> bool:
         re.search(rf"os\.environ\[\s*['\"]{n}['\"]\s*\]", script)
         or re.search(rf"os\.(?:environ\.get|getenv)\(\s*['\"]{n}['\"]", script)
         or re.search(rf"\$\{{?{n}(?![A-Za-z0-9_])", script)
+        # PowerShell and cmd, for the Windows steps.
+        or re.search(rf"\$env:{n}(?![A-Za-z0-9_])", script, re.I)
+        or re.search(rf"%{n}%", script)
+        or re.search(rf"GetEnvironmentVariable\(\s*['\"]{n}['\"]", script)
     ):
         return True
     for var, words in re.findall(r"\bfor\s+(\w+)\s+in\s+([^;\n]+)", script):
@@ -98,6 +102,16 @@ def _secret_backed_names() -> frozenset[str]:
 SECRET_BACKED = _secret_backed_names()
 
 
+def _supplies_a_secret(value) -> bool:
+    """An env entry counts only when its value draws on a `secrets.*` expression: an empty
+    string, a `vars.*` lookup or a misspelled expression is present and still hands the
+    script nothing. `github.token` is the run's own token and counts, as GH_TOKEN mappings use it."""
+    return isinstance(value, str) and any(
+        _SECRET.search(expression) or re.search(r"\bgithub\.token\b", expression)
+        for expression in _EXPRESSION.findall(value)
+    )
+
+
 def _unmapped(path: Path) -> list[str]:
     doc = yaml.safe_load(path.read_text(encoding = "utf-8")) or {}
     workflow_env = doc.get("env") or {}
@@ -110,9 +124,12 @@ def _unmapped(path: Path) -> list[str]:
                 continue
             env = {**workflow_env, **job_env, **(step.get("env") or {})}
             for name in sorted(SECRET_BACKED):
-                if name not in env and _reads(script, name):
+                if _reads(script, name) and not _supplies_a_secret(env.get(name)):
                     label = step.get("name") or f"step {index}"
-                    found.append(f"{path.name} :: {job_name} :: {label} reads {name}")
+                    why = (
+                        "without mapping it" if name not in env else f"but maps it to {env[name]!r}"
+                    )
+                    found.append(f"{path.name} :: {job_name} :: {label} reads {name} {why}")
     return found
 
 
@@ -124,8 +141,8 @@ def test_the_workflows_are_found():
 def test_every_secret_a_step_reads_is_in_its_env(path):
     unmapped = _unmapped(path)
     assert not unmapped, (
-        "these steps read a secret from the environment without mapping it in env:, so it "
-        "is empty or a KeyError on the run that holds it:\n  " + "\n  ".join(unmapped)
+        "these steps read a secret from the environment without an env: entry that supplies it, "
+        "so it is empty or a KeyError on the run that holds it:\n  " + "\n  ".join(unmapped)
     )
 
 
@@ -135,6 +152,10 @@ def test_the_reader_sees_every_spelling_the_workflows_use():
     assert _reads('os.getenv("K")', "K")
     assert _reads('curl -H "Bearer $K"', "K")
     assert _reads('echo "${K}"', "K")
+    assert _reads("Write-Host $env:K", "K")
+    assert _reads("echo %K%", "K")
+    assert _reads("[Environment]::GetEnvironmentVariable('K')", "K")
+    assert not _reads("Write-Host $env:K_OTHER", "K")
     assert _reads('for v in J K L; do [ -z "${!v:-}" ] && exit 1; done', "K")
     # A plain loop over the names, with no indirect read, reads none of them.
     assert not _reads("for v in J K L; do echo $v; done", "K")
@@ -168,10 +189,21 @@ def test_an_inline_read_of_an_alias_is_caught_in_a_workflow_that_never_maps_it(t
         '          curl -H "x-apikey: $VT_API_KEY" https://example.invalid\n',
         encoding = "utf-8",
     )
-    assert _unmapped(workflow) == ["w.yml :: scan :: Scan reads VT_API_KEY"]
+    assert _unmapped(workflow) == ["w.yml :: scan :: Scan reads VT_API_KEY without mapping it"]
     mapped = workflow.read_text(encoding = "utf-8").replace(
         "      - name: Scan\n",
         "      - name: Scan\n        env:\n          VT_API_KEY: ${{ secrets.VIRUS_TOTAL_API_TOKEN }}\n",
     )
     workflow.write_text(mapped, encoding = "utf-8")
     assert _unmapped(workflow) == []
+
+
+def test_an_entry_that_supplies_no_secret_does_not_count():
+    assert _supplies_a_secret("${{ secrets.DOCKER_API_KEY }}")
+    assert _supplies_a_secret("${{ github.event_name == 'push' && secrets.HF_TOKEN || '' }}")
+    assert not _supplies_a_secret("")
+    assert not _supplies_a_secret(None)
+    assert not _supplies_a_secret("${{ vars.DOCKER_API_KEY }}")
+    assert not _supplies_a_secret("${{ secret.DOCKER_API_KEY }}")
+    assert not _supplies_a_secret("secrets.DOCKER_API_KEY")
+    assert _supplies_a_secret("${{ github.token }}")
