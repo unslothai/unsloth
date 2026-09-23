@@ -531,11 +531,12 @@ def test_task_heads_stay_out_of_the_rewritten_plan_only_for_task_loads():
         "lm_head",
         "score",
         "classifier",
+        "classification_head",
         "qa_outputs",
     ]
     # Idempotent, and the resolved concrete class counts too.
     assert keep_task_heads_unquantized(config, None, LlamaForSequenceClassification)
-    assert len(config.quantization_config["modules_to_not_convert"]) == 4
+    assert len(config.quantization_config["modules_to_not_convert"]) == 5
 
     for causal in (AutoModelForCausalLM, LlamaForCausalLM):
         config = rewritten()
@@ -545,6 +546,27 @@ def test_task_heads_stay_out_of_the_rewritten_plan_only_for_task_loads():
     other = SimpleNamespace(quantization_config = {"quant_method": "gptq"})
     assert not keep_task_heads_unquantized(other, AutoModelForSequenceClassification)
     assert "modules_to_not_convert" not in other.quantization_config
+
+
+def test_every_transformers_task_head_name_is_kept_out():
+    """Bart-style sequence classification names its fresh head `classification_head`."""
+    from transformers import BartConfig, BartForSequenceClassification
+    from unsloth.models.modelopt_fp8 import _TASK_HEAD_MODULES
+
+    model = BartForSequenceClassification(
+        BartConfig(
+            d_model = 16,
+            encoder_layers = 1,
+            decoder_layers = 1,
+            encoder_attention_heads = 2,
+            decoder_attention_heads = 2,
+            encoder_ffn_dim = 32,
+            decoder_ffn_dim = 32,
+            vocab_size = 64,
+        )
+    )
+    fresh = {name.split(".")[0] for name, _ in model.named_children()} - {"model"}
+    assert fresh <= set(_TASK_HEAD_MODULES), fresh
 
 
 def test_both_loaders_keep_task_heads_out_of_the_rewrite():

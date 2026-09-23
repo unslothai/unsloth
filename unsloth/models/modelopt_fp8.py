@@ -295,8 +295,9 @@ def pop_modelopt_key_mapping(
 
 # Heads a task class adds on top of the checkpoint (GenericForSequenceClassification and
 # GenericForTokenClassification name theirs `score`; older task classes use `classifier`,
-# question answering `qa_outputs`). They have no fp8 weight or scales on disk.
-_TASK_HEAD_MODULES = ("score", "classifier", "qa_outputs")
+# encoder-decoder ones `classification_head`, question answering `qa_outputs`). They have no
+# fp8 weight or scales on disk.
+_TASK_HEAD_MODULES = ("score", "classifier", "classification_head", "qa_outputs")
 _TASK_CLASS_SUFFIXES = (
     "ForSequenceClassification",
     "ForTokenClassification",
