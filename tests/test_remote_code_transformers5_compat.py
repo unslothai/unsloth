@@ -275,6 +275,58 @@ def test_remote_class_not_used_without_trust(unsloth_loaded, shadow_repo):
     ) == (False, None)
 
 
+def test_only_an_exact_registration_overrides_remote_code(unsloth_loaded):
+    """transformers keeps the repo's auto_map class unless THIS config class is registered;
+    a registered parent config (matched by isinstance) does not count."""
+    import torch.nn as nn
+    from transformers import AutoConfig, AutoModelForCausalLM, PretrainedConfig
+    from unsloth.models._utils import resolve_remote_code_model_class
+
+    class ParentConfig(PretrainedConfig):
+        model_type = "unsloth_exact_registration_parent"
+
+    class ParentModel(nn.Module):
+        config_class = ParentConfig
+
+    class RemoteChildConfig(ParentConfig):
+        pass
+
+    AutoConfig.register(ParentConfig.model_type, ParentConfig, exist_ok = True)
+    AutoModelForCausalLM.register(ParentConfig, ParentModel, exist_ok = True)
+    try:
+        child = RemoteChildConfig(auto_map = {"AutoModelForCausalLM": "modeling_missing.Missing"})
+        assert resolve_remote_code_model_class(
+            AutoModelForCausalLM, child, "/nonexistent/unsloth/repo", trust_remote_code = True
+        ) == (True, None)
+    finally:
+        AutoModelForCausalLM._model_mapping._extra_content.pop(ParentConfig, None)
+        from transformers.models.auto.configuration_auto import CONFIG_MAPPING
+        CONFIG_MAPPING._extra_content.pop(ParentConfig.model_type, None)
+
+
+def test_the_remote_class_lookup_uses_the_loads_code_revision(unsloth_loaded, monkeypatch):
+    import transformers.dynamic_module_utils as dynamic_module_utils
+    from transformers import AutoModelForCausalLM, LlamaConfig
+    from unsloth.models import vision
+    from unsloth.models._utils import resolve_remote_code_model_class
+
+    seen = {}
+
+    def fetch(class_ref, repo, **kwargs):
+        seen.update(kwargs)
+        return None
+
+    monkeypatch.setattr(dynamic_module_utils, "get_class_from_dynamic_module", fetch)
+    config = LlamaConfig(auto_map = {"AutoModelForCausalLM": "modeling_x.X"})
+    resolve_remote_code_model_class(
+        AutoModelForCausalLM, config, "some/repo", trust_remote_code = True, code_revision = "abc"
+    )
+    assert seen.get("code_revision") == "abc"
+    import inspect
+
+    assert 'code_revision = kwargs.get("code_revision", None)' in inspect.getsource(vision)
+
+
 def test_unfetchable_remote_class_is_unknown_not_native(unsloth_loaded):
     from transformers import AutoModelForCausalLM, LlamaConfig
     from unsloth.models._utils import resolve_remote_code_model_class

@@ -117,6 +117,7 @@ import copy
 import re
 from dataclasses import dataclass, field
 import functools
+import threading
 import textwrap
 import logging
 import warnings, subprocess, inspect, psutil, os, math
@@ -1111,6 +1112,18 @@ def resolve_model_class(auto_model, config):
     return result[0] if isinstance(result, (list, tuple)) else result
 
 
+@functools.lru_cache(maxsize = None)
+def _auto_loader_prefers_explicit_local_code():
+    """transformers 5 lets a non-transformers class registered for the exact config class win
+    over the repo's auto_map; 4.x always builds the remote class once trust_remote_code is set."""
+    try:
+        import inspect
+        from transformers.models.auto.auto_factory import _BaseAutoModelClass
+        return "explicit_local_code" in inspect.getsource(_BaseAutoModelClass.from_pretrained)
+    except Exception:
+        return True
+
+
 def resolve_remote_code_model_class(
     auto_model,
     config,
@@ -1127,12 +1140,18 @@ def resolve_remote_code_model_class(
     auto_name = getattr(auto_model, "__name__", None)
     if not isinstance(auto_map, dict) or auto_name not in auto_map:
         return False, None
-    # A class registered by hand, or by an earlier load of this repo, wins over the auto_map.
-    local_class = resolve_model_class(auto_model, config)
-    if local_class is not None and not (getattr(local_class, "__module__", "") or "").startswith(
-        "transformers."
-    ):
-        return False, None
+    # A class registered by hand, or by an earlier load of this repo, wins over the auto_map,
+    # but only an exact registration of this config class, as transformers checks it
+    # (`type(config) in cls._model_mapping`): a subclass of some registered config does not.
+    try:
+        mapping = auto_model._model_mapping
+        if type(config) in mapping and _auto_loader_prefers_explicit_local_code():
+            from transformers.models.auto.auto_factory import _get_model_class
+            local_class = _get_model_class(config, mapping)
+            if not (getattr(local_class, "__module__", "") or "").startswith("transformers."):
+                return False, None
+    except Exception:
+        pass
     class_ref = auto_map[auto_name]
     if isinstance(class_ref, (list, tuple)):
         class_ref = class_ref[0]
@@ -1227,6 +1246,9 @@ def _get_text_only_key_mapping(parent_config, text_config):
 
 # text model_type -> the VLM model_type whose checkpoint a text-only load remaps onto the decoder.
 _TEXT_ONLY_PARENT_MODEL_TYPES = {}
+# Per-thread {decoder model_type: parent conversions} for the conversion lookup, set only for
+# the duration of one text-only `get_model_conversion_mapping` call.
+_TEXT_ONLY_LOOKUP_OVERRIDES = threading.local()
 _TEXT_ONLY_PREFIX_RENAME = r"^language_model\.model\."
 
 
@@ -1262,6 +1284,20 @@ def _install_text_only_conversion_carry():
     if original is None or getattr(original, "_unsloth_text_only_carry", False):
         return
 
+    # Installed once and left in place: swapping the module global per call would let two
+    # concurrent loads see each other's lookup, or restore the original under the other.
+    if not getattr(lookup, "_unsloth_text_only_carry", False):
+
+        @functools.wraps(lookup)
+        def get_checkpoint_conversion_mapping(model_type, *args, **kwargs):
+            overrides = getattr(_TEXT_ONLY_LOOKUP_OVERRIDES, "value", None)
+            if overrides and model_type in overrides:
+                return copy.deepcopy(overrides[model_type])
+            return lookup(model_type, *args, **kwargs)
+
+        get_checkpoint_conversion_mapping._unsloth_text_only_carry = True
+        conversion_mapping.get_checkpoint_conversion_mapping = get_checkpoint_conversion_mapping
+
     @functools.wraps(original)
     def get_model_conversion_mapping(
         model,
@@ -1281,17 +1317,15 @@ def _install_text_only_conversion_carry():
             return original(model, key_mapping, *args, **kwargs)
         extra = _parent_conversions_for_text_only(parent_model_type)
 
-        # For this one call the decoder type has the VLM's conversions, as if transformers had registered them: same place in the list, and the quantizer then rewrites them with the rest (FP8 dequantize before an expert merge).
-        def lookup_with_parent(model_type):
-            if model_type == text_model_type:
-                return copy.deepcopy(extra)
-            return lookup(model_type)
-
-        conversion_mapping.get_checkpoint_conversion_mapping = lookup_with_parent
+        # For this one call, on this thread, the decoder type has the VLM's conversions, as if
+        # transformers had registered them: same place in the list, and the quantizer then
+        # rewrites them with the rest (FP8 dequantize before an expert merge).
+        previous = getattr(_TEXT_ONLY_LOOKUP_OVERRIDES, "value", None)
+        _TEXT_ONLY_LOOKUP_OVERRIDES.value = {**(previous or {}), text_model_type: extra}
         try:
             return original(model, key_mapping, *args, **kwargs)
         finally:
-            conversion_mapping.get_checkpoint_conversion_mapping = lookup
+            _TEXT_ONLY_LOOKUP_OVERRIDES.value = previous
 
     get_model_conversion_mapping._unsloth_text_only_carry = True
     modeling_utils.get_model_conversion_mapping = get_model_conversion_mapping

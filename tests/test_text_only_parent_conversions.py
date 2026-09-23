@@ -144,3 +144,41 @@ def test_other_loads_are_untouched(tiny_minimax):
     model = AutoModelForImageTextToText.from_pretrained(path, dtype = torch.bfloat16)
     state = model.state_dict()
     assert all(torch.equal(state[k], reference[k]) for k in reference)
+
+
+def test_the_parent_conversions_are_per_thread(tiny_minimax):
+    """The carried conversions are visible only to the load that asked for them: a second load
+    on another thread sees transformers' own lookup, and the lookup is never swapped out."""
+    import threading
+
+    import transformers.conversion_mapping as conversion_mapping
+    from unsloth.models import _utils
+
+    path, config, _ = tiny_minimax
+    text_config = _utils._get_text_only_config(config, str(path))
+    _utils._apply_text_only_key_mapping({}, config, text_config)
+    text_type = text_config.model_type
+    lookup = conversion_mapping.get_checkpoint_conversion_mapping
+    assert getattr(lookup, "_unsloth_text_only_carry", False)
+    assert lookup(text_type) is None
+
+    seen = {}
+    inside, done = threading.Event(), threading.Event()
+
+    def other_load():
+        inside.wait(5)
+        seen["other"] = conversion_mapping.get_checkpoint_conversion_mapping(text_type)
+        done.set()
+
+    thread = threading.Thread(target = other_load)
+    thread.start()
+    _utils._TEXT_ONLY_LOOKUP_OVERRIDES.value = {text_type: ["carried"]}
+    try:
+        seen["this"] = conversion_mapping.get_checkpoint_conversion_mapping(text_type)
+        inside.set()
+        done.wait(5)
+    finally:
+        _utils._TEXT_ONLY_LOOKUP_OVERRIDES.value = None
+    thread.join(5)
+    assert seen == {"this": ["carried"], "other": None}
+    assert conversion_mapping.get_checkpoint_conversion_mapping is lookup

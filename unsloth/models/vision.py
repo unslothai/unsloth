@@ -1467,6 +1467,9 @@ class FastBaseModel:
             token = token,
             revision = _revision,
             local_files_only = local_files_only,
+            # The remote code the load itself fetches: same pin, same cache.
+            code_revision = kwargs.get("code_revision", None),
+            cache_dir = kwargs.get("cache_dir", None),
         )
         model_class = resolve_model_class(auto_model, auto_config)
         # Forced float32 loads in bfloat16 then casts to float16. Resolved here, not at the load, because attention resolution and the device-map planner both size the same dtype.
