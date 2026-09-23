@@ -18,7 +18,9 @@ checkpointing flag on a remote composition. Runs offline on CPU with a synthetic
 port's `MoEGate` / `DeepseekV3MoE` idioms defined in a `transformers_modules` namespace."""
 
 import math
+import os
 import sys
+import tempfile
 import types
 
 import pytest
@@ -391,5 +393,55 @@ def test_an_eval_first_training_capable_remote_moe_is_left_alone():
     sys.modules[module.__name__] = module
     try:
         assert not is_remote_deepseek_moe(EvalFirstMoE())
+    finally:
+        sys.modules.pop(module.__name__, None)
+
+
+@pytest.mark.parametrize(
+    "predicate, trains_in_body",
+    [
+        ("self.training and self.ep_size == 1", True),
+        ("self.ep_size == 1 and self.training", True),
+        ("not self.training and self.ep_size == 1", False),
+        ("self.training or self.ep_size == 2", True),
+    ],
+)
+def test_a_compound_training_predicate_is_recognised(predicate, trains_in_body):
+    """`if self.training and self.ep_size == 1:` dispatches its own experts in training."""
+    import sys, textwrap, types
+    from unsloth.models.remote_moe_shims import is_remote_deepseek_moe
+
+    module = types.ModuleType("transformers_modules.compound.modeling_deepseek")
+    train, infer = "y = self.experts[0](hidden_states)", "y = self.moe_infer(hidden_states)"
+    body, other = (train, infer) if trains_in_body else (infer, train)
+    source = textwrap.dedent(f"""
+        class CompoundMoE(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.experts = nn.ModuleList([nn.Linear(2, 2)])
+                self.gate = nn.Linear(2, 1)
+                self.ep_size = 1
+
+            def forward(self, hidden_states):
+                if {predicate}:
+                    {body}
+                else:
+                    {other}
+                return y
+
+            def moe_infer(self, x):
+                return x
+    """)
+    path = os.path.join(tempfile.mkdtemp(dir = os.environ.get("TMPDIR")), "modeling_compound.py")
+    with open(path, "w") as f:
+        f.write("import torch.nn as nn\n" + source)
+    module.__file__ = path
+    namespace = {"nn": nn, "__name__": module.__name__}
+    exec(compile("import torch.nn as nn\n" + source, path, "exec"), namespace)
+    CompoundMoE = namespace["CompoundMoE"]
+    CompoundMoE.__module__ = module.__name__
+    sys.modules[module.__name__] = module
+    try:
+        assert not is_remote_deepseek_moe(CompoundMoE())
     finally:
         sys.modules.pop(module.__name__, None)

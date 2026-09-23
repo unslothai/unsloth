@@ -80,16 +80,46 @@ def _has_own_training_dispatch(body) -> bool:
     through the no-grad `moe_infer`."""
     import ast
 
+    def training_term(node):
+        """+1 for `self.training`, -1 for `not self.training`, else 0."""
+        negated = isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.Not)
+        inner = node.operand if negated else node
+        if isinstance(inner, ast.Attribute) and inner.attr == "training":
+            return -1 if negated else 1
+        return 0
+
+    def training_branches(branch):
+        """The branches of this `if` that training can reach through its `self.training` test."""
+        test = branch.test
+        sign = training_term(test)
+        if sign:
+            # `if self.training:` trains in the body; `if not self.training:` in the else.
+            return [branch.body] if sign > 0 else [branch.orelse]
+        if not isinstance(test, ast.BoolOp):
+            return []
+        signs = {training_term(value) for value in test.values} - {0}
+        branches = []
+        if isinstance(test.op, ast.And):
+            # `self.training and ...` only enters the body in training; `not self.training and ...`
+            # sends training to the else.
+            if 1 in signs:
+                branches.append(branch.body)
+            if -1 in signs:
+                branches.append(branch.orelse)
+        else:
+            # `self.training or ...` always enters the body in training; `not self.training or ...`
+            # may take either branch.
+            if 1 in signs:
+                branches.append(branch.body)
+            if -1 in signs:
+                branches += [branch.body, branch.orelse]
+        return branches
+
     for node in body:
         for sub in ast.walk(node):
             if not isinstance(sub, ast.If):
                 continue
-            test = sub.test
-            negated = isinstance(test, ast.UnaryOp) and isinstance(test.op, ast.Not)
-            inner = test.operand if negated else test
-            if isinstance(inner, ast.Attribute) and inner.attr == "training":
-                # `if self.training:` trains in the body; `if not self.training:` in the else.
-                branch = sub.orelse if negated else sub.body
+            for branch in training_branches(sub):
                 if branch and not _calls_moe_infer(branch):
                     return True
     return False
