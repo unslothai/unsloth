@@ -67,12 +67,19 @@ def summarize_resident_chat() -> Dict[str, Any]:
         logger.warning("Could not inspect GGUF backend: %s", e)
 
     try:
-        from routes.inference import _extra_slots
-        for slot in list(_extra_slots):
-            name = slot.orchestrator.active_model_name or (
-                slot.llama.is_active
-                and getattr(slot.llama, "_gpu_offload_active", None) is not False
-                and (slot.llama.model_identifier or "gguf")
+        import routes.inference as _inference
+        for slot in list(_inference._extra_slots):
+            pending = next(iter(getattr(slot.orchestrator, "loading_models", ()) or ()), None)
+            filling = _inference._loading_slot is not None and _inference._loading_slot[0] is slot
+            name = (
+                slot.orchestrator.active_model_name
+                or pending
+                or (
+                    slot.llama.is_active
+                    and getattr(slot.llama, "_gpu_offload_active", None) is not False
+                    and (slot.llama.model_identifier or "gguf")
+                )
+                or (filling and _inference._loading_slot[1])
             )
             if name:
                 # A model kept alongside cannot be sized here, so the caller frees rather than keeps.

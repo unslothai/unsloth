@@ -1019,7 +1019,7 @@ def test_a_model_still_loading_alongside_keeps_the_chat_claim(backends, monkeypa
 def test_an_idle_sweep_spares_the_slot_a_load_is_filling(backends, monkeypatch):
     _, extra = backends
     monkeypatch.setattr(inf, "_loading_slot", (extra, "org/B-GGUF"))
-    assert inf.unload_extra_models(keep = lambda llama: False, stash = True) == 0
+    assert inf.unload_extra_models(keep = lambda llama: False, stash = True, spare_filling = True) == 0
     assert inf._extra_slots == [extra] and extra.llama.is_active
 
 
@@ -1029,3 +1029,26 @@ def test_a_llama_update_leaves_safetensors_slots_loaded(backends):
     inf._extra_slots.append(safetensors)
     assert inf.unload_extra_models(keep = lambda llama: not llama.is_active, stash = True) == 1
     assert inf._extra_slots == [safetensors] and safetensors.orchestrator.active_model_name
+
+
+def test_a_selective_sweep_stops_a_filling_slot_unless_it_spares_it(backends, monkeypatch):
+    _, extra = backends
+    monkeypatch.setattr(inf, "_loading_slot", (extra, "org/B-GGUF"))
+    assert inf.unload_extra_models(lambda llama: False, True, spare_filling = True) == 0
+    assert inf.unload_extra_models(lambda llama: not llama.is_active, True) == 1
+    assert inf._extra_slots == []
+
+
+def test_training_sees_a_model_still_loading_alongside(backends, monkeypatch):
+    from routes import training_vram
+
+    primary, extra = backends
+    primary.unload_model()
+    extra.llama.unload_model()
+    extra.orchestrator.loading_models = {"org/C"}
+    summary = training_vram.summarize_resident_chat()
+    assert summary["any"] and summary["loading"]
+    extra.orchestrator.loading_models = set()
+    monkeypatch.setattr(inf, "_loading_slot", (extra, "org/D-GGUF"))
+    summary = training_vram.summarize_resident_chat()
+    assert summary["any"] and summary["loading"]
