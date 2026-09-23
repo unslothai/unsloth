@@ -101,7 +101,7 @@ _REPO_PART = re.compile(r"""^[A-Za-z0-9][\w.-]*/[\w.-]+(?:/[\w.\-/]+)?$""")
 
 
 def _split_ref(value: str):
-    """(repo, rev) for a `uses:` value, split at the FIRST `@`.
+    r"""(repo, rev) for a `uses:` value, split at the FIRST `@`.
 
     The first, not the last. A repository name cannot contain `@`, so the first one is
     always the delimiter, and everything after it is the revision however many more it
