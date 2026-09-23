@@ -173,7 +173,7 @@ def arm_compressed_tensors_bnb_loading(config, verbose: bool = True) -> Optional
         if verbose:
             print(
                 "Unsloth: This checkpoint is compressed-tensors packed INT4/INT8. Re-quantizing it "
-                "to bitsandbytes 4-bit on the fly needs transformers >= 5; loading it as published instead."
+                "to bitsandbytes 4-bit on the fly needs transformers 5.8 or later; loading it as published instead."
             )
         return None
     try:

@@ -1439,6 +1439,97 @@ def _restore_dropped_fp8_scales(
         return (0, 0)
 
 
+def _forward_calls_checkpointing(cls):
+    """True when a backbone's own `forward` hands its layers to a checkpoint function."""
+    import inspect
+
+    try:
+        source = inspect.getsource(cls.forward)
+    except Exception:
+        return True  # cannot read it: assume it does and change nothing
+    return "_gradient_checkpointing_func" in source or "checkpoint(" in source
+
+
+def _checkpointed_layer_forward(original):
+    @functools.wraps(original)
+    def forward(self, *args, **kwargs):
+        holder = self.__dict__.get("_unsloth_gradient_checkpointing_holder")
+        holder = holder() if holder is not None else None
+        if (
+            not self.training
+            or holder is None
+            or not getattr(holder, "gradient_checkpointing", False)
+            or not torch.is_grad_enabled()
+            # A cache would be written a second time by the recompute.
+            or kwargs.get("past_key_value") is not None
+            or kwargs.get("past_key_values") is not None
+        ):
+            return original(self, *args, **kwargs)
+        if not args and "hidden_states" in kwargs:
+            # A reentrant checkpoint only tracks gradients through positional tensors.
+            args = (kwargs.pop("hidden_states"),)
+        # The function gradient_checkpointing_enable() installed, so Unsloth's offloaded
+        # checkpoint and the caller's use_reentrant choice apply here too.
+        checkpoint = getattr(holder, "_gradient_checkpointing_func", None)
+        if checkpoint is None:
+            return torch.utils.checkpoint.checkpoint(
+                functools.partial(original, self), *args, use_reentrant = False, **kwargs
+            )
+        return checkpoint(functools.partial(original, self, **kwargs), *args)
+
+    forward._unsloth_manual_checkpoint = True
+    return forward
+
+
+def install_remote_gradient_checkpointing(model, verbose = True):
+    """Remote-code backbones (the DeepSeek-V3 port Kimi-K2.7 ships) carry a
+    `self.gradient_checkpointing` flag their decoder loop never reads, so
+    `gradient_checkpointing_enable()` sets a flag nothing acts on and every activation is
+    still kept. Wrap the decoder layers of such a backbone so the flag really checkpoints.
+    Only remote-code backbones are touched, never a layer that is already a transformers
+    `GradientCheckpointingLayer`, and the wrapper is inert while the flag is False.
+    Returns the class names wrapped."""
+    import types
+    import weakref
+
+    try:
+        from transformers.modeling_layers import GradientCheckpointingLayer
+    except Exception:
+        GradientCheckpointingLayer = ()
+    wrapped = []
+    for _, holder in model.named_modules():
+        holder_cls = type(holder)
+        if "transformers_modules" not in (getattr(holder_cls, "__module__", "") or ""):
+            continue
+        if not hasattr(holder, "gradient_checkpointing"):
+            continue
+        layers = getattr(holder, "layers", None)
+        if not isinstance(layers, torch.nn.ModuleList) or len(layers) == 0:
+            continue
+        if _forward_calls_checkpointing(holder_cls):
+            continue
+        for layer in layers:
+            cls = type(layer)
+            if GradientCheckpointingLayer and isinstance(layer, GradientCheckpointingLayer):
+                continue
+            layer.__dict__["_unsloth_gradient_checkpointing_holder"] = weakref.ref(holder)
+            if not getattr(cls.__dict__.get("forward"), "_unsloth_manual_checkpoint", False):
+                cls.forward = _checkpointed_layer_forward(cls.forward)
+                wrapped.append(cls.__name__)
+            # A device_map load wraps `forward` in an accelerate hook that keeps the bound
+            # original as `_old_forward`; point it at the wrapper or the patch is never reached.
+            if "_old_forward" in vars(layer):
+                layer._old_forward = types.MethodType(cls.forward, layer)
+    wrapped = sorted(set(wrapped))
+    if wrapped and verbose:
+        print(
+            "Unsloth: the remote modeling code never calls a checkpoint function; wrapping "
+            + ", ".join(wrapped)
+            + " so gradient checkpointing actually saves activations."
+        )
+    return wrapped
+
+
 def enable_composite_gradient_checkpointing(model, verbose = True):
     """A remote-code composition (Kimi-K2.7: `KimiK25ForConditionalGeneration` holding a
     `DeepseekV3ForCausalLM`) often leaves `supports_gradient_checkpointing` at its False
@@ -1452,6 +1543,9 @@ def enable_composite_gradient_checkpointing(model, verbose = True):
         return False
     if not isinstance(model, PreTrainedModel):
         return False
+    # For every remote-code model, including one whose outer class already declares support:
+    # the flag is what transformers checks, the wrapper is what makes it do anything.
+    install_remote_gradient_checkpointing(model, verbose = verbose)
     if getattr(type(model), "supports_gradient_checkpointing", False):
         return False
     inner = [
