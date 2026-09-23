@@ -602,3 +602,49 @@ def test_loaders_restore_right_after_from_pretrained():
         with open(os.path.join(_ROOT, relative), encoding = "utf-8") as file:
             source = file.read()
         assert source.count("restore_remote_code_non_persistent_buffers(model)") == calls, relative
+
+
+def test_each_sub_model_is_probed_with_its_own_init_weights():
+    # transformers 5 runs the nearest PreTrainedModel's _init_weights on a module, so the
+    # outer model's init filling a rotary does not mean the inner model's rotary was filled.
+    helper = _load_helper()
+    if not helper._transformers_builds_on_meta():
+        pytest.skip("no-op on transformers 4.x")
+    from transformers import PreTrainedModel
+
+    remote = _remote_module()
+
+    class Inner(PreTrainedModel):
+        config_class = remote.TinyRemoteConfig
+
+        def __init__(self, config):
+            super().__init__(config)
+            self.proj = nn.Linear(config.hidden_size, config.hidden_size, bias = False)
+            self.rotary_emb = remote.TinyRotary(config)
+
+        def _init_weights(self, module):
+            if isinstance(module, nn.Linear):
+                module.weight.data.normal_()
+
+    class Outer(PreTrainedModel):
+        config_class = remote.TinyRemoteConfig
+
+        def __init__(self, config):
+            super().__init__(config)
+            self.inner = Inner(config)
+            self.rotary_emb = remote.TinyRotary(config)
+
+        def _init_weights(self, module):
+            if isinstance(module, remote.TinyRotary):
+                module.inv_freq.fill_(5.0)
+
+    for cls in (Inner, Outer):
+        cls.__module__ = "transformers_modules.unsloth_test_remote_buffers"
+    config = remote.TinyRemoteConfig()
+    model = Outer(config)
+    for rotary in (model.inner.rotary_emb, model.rotary_emb):
+        rotary._buffers["inv_freq"] = torch.zeros_like(rotary.inv_freq)
+    model.initialize_weights()
+    assert helper.restore_remote_code_non_persistent_buffers(model) == 1
+    torch.testing.assert_close(model.inner.rotary_emb.inv_freq, _expected(0, config)[1])
+    torch.testing.assert_close(model.rotary_emb.inv_freq, torch.full((2,), 5.0))

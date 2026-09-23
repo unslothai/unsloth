@@ -85,7 +85,27 @@ def _constructor_kwargs(module):
     return kwargs
 
 
-def _cache_key(module, kwargs):
+def _modules_with_init_weights(model):
+    """Each module of ``model`` once, with the ``_init_weights`` transformers 5 runs on it:
+    that of the nearest enclosing PreTrainedModel, as `initialize_weights` dispatches it."""
+    try:
+        from transformers import PreTrainedModel
+    except Exception:
+        PreTrainedModel = ()
+    seen = set()
+    stack = [(model, getattr(model, "_init_weights", None))]
+    while stack:
+        module, init_weights = stack.pop()
+        if isinstance(module, PreTrainedModel):
+            init_weights = getattr(module, "_init_weights", None)
+        if id(module) in seen:
+            continue
+        seen.add(id(module))
+        yield module, init_weights
+        stack.extend((child, init_weights) for child in reversed(list(module.children())))
+
+
+def _cache_key(module, kwargs, init_weights):
     parts = []
     for name in sorted(kwargs):
         value = kwargs[name]
@@ -94,7 +114,9 @@ def _cache_key(module, kwargs):
             parts.append((name, type(value), repr(value)))
         else:
             parts.append((name, id(value)))
-    return type(module), tuple(parts)
+    # The probe result depends on which `_init_weights` runs, so sub-models do not share it.
+    owner = getattr(init_weights, "__self__", init_weights)
+    return type(module), tuple(parts), id(owner)
 
 
 def _written_by_init_weights(fresh, buffers, init_weights):
@@ -173,17 +195,16 @@ def restore_remote_code_non_persistent_buffers(model):
     dtype = getattr(model, "dtype", None)
     cache = {}
     restored = 0
-    # transformers 5 runs this on every module after building on meta; a buffer it writes
-    # already holds the right value.
-    init_weights = getattr(model, "_init_weights", None)
-    for module in model.modules():
+    # transformers 5 runs the nearest PreTrainedModel's `_init_weights` on every module after
+    # building on meta; a buffer it writes already holds the right value.
+    for module, init_weights in _modules_with_init_weights(model):
         own = getattr(module, "_non_persistent_buffers_set", None)
         if not own or not _is_remote_code_module(module):
             continue
         kwargs = _constructor_kwargs(module)
         if kwargs is None:
             continue
-        key = _cache_key(module, kwargs)
+        key = _cache_key(module, kwargs, init_weights)
         if key not in cache:
             try:
                 cache[key] = _fresh_non_persistent_buffers(module, kwargs, dtype, init_weights)
