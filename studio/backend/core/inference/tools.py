@@ -17163,9 +17163,6 @@ def _check_signal_escape_patterns(code: str):
         {"http_proxy", "https_proxy", "all_proxy", "ws_proxy", "wss_proxy", "ftp_proxy"}
     )
 
-    def _is_os_module(node) -> bool:
-        return isinstance(node, ast.Name) and node.id == "os"
-
     def _is_no_proxy(key) -> bool:
         """A proxy mapping's `no_proxy` entry lists hosts to bypass, not a server to connect to."""
         return isinstance(key, ast.Constant) and key.value == "no_proxy"
@@ -17338,8 +17335,20 @@ def _check_signal_escape_patterns(code: str):
             self.pending_calls: "list[tuple]" = []
             # Proxy and base-URL stores, applied once call arguments are bound.
             self.pending_proxies: "list[tuple]" = []
-            # Values stored in the standard proxy environment variables.
+            # Values stored in the standard proxy environment variables, and the names `os` and
+            # `os.environ` are bound to (`import os as o`, `from os import environ`).
             self.env_proxies: "list[ast.AST]" = []
+            self.os_names: "set[str]" = {"os"}
+            self.environ_names: "set[str]" = set()
+            for imp in nodes:
+                if isinstance(imp, ast.Import):
+                    for alias in imp.names:
+                        if alias.name == "os":
+                            self.os_names.add(alias.asname or "os")
+                elif isinstance(imp, ast.ImportFrom) and imp.module == "os":
+                    for alias in imp.names:
+                        if alias.name == "environ":
+                            self.environ_names.add(alias.asname or "environ")
 
         def _instance_key(self, target) -> "str | None":
             """Where `_register` stores a client bound to `target`."""
@@ -17849,11 +17858,21 @@ def _check_signal_escape_patterns(code: str):
         ) -> None:
             """Queue a possible proxy or base-URL store. It is applied after call arguments are
             bound, so `configure(s.proxies)` mutating its parameter still reaches `s`."""
-            if isinstance(target, ast.Subscript) and _is_os_environ(target.value):
+            if isinstance(target, ast.Subscript) and self._is_environ(target.value):
                 self._record_env_proxy(target.slice, value)
                 return
             self.pending_proxies.append(
                 (target, value, mutated, tuple(self.scope_stack), tuple(self.self_names))
+            )
+
+        def _is_environ(self, node) -> bool:
+            if isinstance(node, ast.Name):
+                return node.id in self.environ_names
+            return (
+                isinstance(node, ast.Attribute)
+                and node.attr == "environ"
+                and isinstance(node.value, ast.Name)
+                and node.value.id in self.os_names
             )
 
         def _record_env_proxy(self, key, value) -> None:
@@ -18088,8 +18107,12 @@ def _check_signal_escape_patterns(code: str):
                 self.pending_calls.append((node, tuple(self.scope_stack), tuple(self.self_names)))
                 func = node.func
                 if isinstance(func, ast.Attribute) and (
-                    _is_os_environ(func.value)
-                    or (func.attr == "putenv" and _is_os_module(func.value))
+                    self._is_environ(func.value)
+                    or (
+                        func.attr == "putenv"
+                        and isinstance(func.value, ast.Name)
+                        and func.value.id in self.os_names
+                    )
                 ):
                     # `os.environ.update(HTTPS_PROXY = ...)`, `setdefault` and `os.putenv`.
                     if func.attr in ("setdefault", "putenv", "__setitem__") and len(node.args) >= 2:

@@ -969,6 +969,16 @@ class TestNetworkTargetResolution:
                 "httpx.get('https://pypi.org/')",
                 id = "proxy_environment_update",
             ),
+            pytest.param(
+                f"import os as o, requests\no.environ['HTTPS_PROXY'] = 'http://{_H}:8080'\n"
+                "requests.get('https://pypi.org/')",
+                id = "proxy_environment_through_os_alias",
+            ),
+            pytest.param(
+                f"from os import environ\nimport requests\nenviron['HTTPS_PROXY'] = 'http://{_H}'\n"
+                "requests.get('https://pypi.org/')",
+                id = "proxy_environment_through_imported_environ",
+            ),
         ],
     )
     def test_known_untrusted_host_blocked(self, code):
@@ -1095,6 +1105,8 @@ class TestNetworkTargetResolution:
             "import socket\ns = socket.socket()\ns.connect(('pypi.org', 443))\ns.sendall(b'x')",
             "import os, requests\nos.environ['NO_PROXY'] = 'localhost'\nrequests.get('https://pypi.org/')",
             "import os, requests\nos.environ['HF_HOME'] = '/tmp/x'\nrequests.get('https://pypi.org/')",
+            "import requests\nenviron = {}\nenviron['HTTPS_PROXY'] = 'http://203.0.113.5'\n"
+            "requests.get('https://pypi.org/')",
         ],
     )
     def test_known_trusted_host_runs(self, code):
