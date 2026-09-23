@@ -883,12 +883,13 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
     if do_bfloat16_mixed_precision:
         dtype = torch.bfloat16
 
+    # A core built from a sub-config (Qwen3-Omni's thinker) carries no architectures.
+    architectures = getattr(self.config, "architectures", None) or [type(self).__name__]
     is_vlm = any(
-        x.endswith(("ForConditionalGeneration", "ForVisionText2Text"))
-        for x in self.config.architectures
+        x.endswith(("ForConditionalGeneration", "ForVisionText2Text")) for x in architectures
     )
     is_vlm = is_vlm or hasattr(self.config, "vision_config")
-    arch = self.config.architectures[0]
+    arch = architectures[0]
 
     # Removing token_type_ids is WRONG for Gemma 3, which uses bidirectional attention.
     if hasattr(self, "generate") and hasattr(self, "forward"):
@@ -1306,6 +1307,122 @@ def _required_non_text_inputs(forward):
     ]
 
 
+def _output_embeddings_of(module):
+    """`get_output_embeddings()`, or the `lm_head` it forgets (transformers 4.x returns None
+    unless a class overrides it, and Qwen3-Omni's thinker does not)."""
+    try:
+        output_embeddings = module.get_output_embeddings()
+    except Exception:
+        output_embeddings = None
+    if output_embeddings is None:
+        output_embeddings = getattr(module, "lm_head", None)
+        if not isinstance(output_embeddings, torch.nn.Module):
+            output_embeddings = None
+    return output_embeddings
+
+
+def _find_text_core(model):
+    """(name, child) of the one direct child a text batch can run through, else None.
+
+    A qualifying child is a PreTrainedModel with its own forward that a text batch can call
+    and both embedding accessors; `language_model` or `thinker` wins when several qualify.
+    """
+    try:
+        from transformers import PreTrainedModel
+    except Exception:
+        return None
+    cores = []
+    for name, child in model.named_children():
+        if not isinstance(child, PreTrainedModel):
+            continue
+        child_forward = getattr(type(child), "forward", None)
+        if child_forward is None or child_forward is torch.nn.Module.forward:
+            continue
+        if _required_non_text_inputs(child_forward):
+            continue
+        try:
+            has_embeddings = (
+                child.get_input_embeddings() is not None
+                and _output_embeddings_of(child) is not None
+            )
+        except Exception:
+            has_embeddings = False
+        if has_embeddings:
+            cores.append((name, child))
+    preferred = [core for core in cores if core[0] in ("language_model", "thinker")]
+    if len(preferred) == 1:
+        cores = preferred
+    if len(cores) != 1:
+        return None
+    return cores[0]
+
+
+def _text_core_output_embeddings(model):
+    return _output_embeddings_of(getattr(model, model._unsloth_text_core))
+
+
+def _delegate_text_forward(model, name, core):
+    """Give a kept wrapper with no forward its core's forward and output embeddings.
+
+    Set on the instance only, so the class, its generate and every other wrapper keep their
+    own behaviour; PEFT and the Trainer call `model.forward` through `nn.Module.__call__`,
+    which reads the instance attribute.
+    """
+    if "_old_forward" in vars(model):
+        # accelerate already wrapped forward on this instance; its hook calls _old_forward.
+        model._old_forward = core.forward
+    else:
+        model.forward = core.forward
+    try:
+        wrapper_output = model.get_output_embeddings()
+    except Exception:
+        wrapper_output = None
+    if wrapper_output is None:
+        # Bound to the wrapper (not a closure over the core) so deepcopy and pickle follow it.
+        model.get_output_embeddings = types.MethodType(_text_core_output_embeddings, model)
+    # Gradient checkpointing makes the embedding output require grad through this accessor;
+    # transformers 5 raises on a wrapper it cannot map, and then LoRA gets no gradient.
+    try:
+        wrapper_input = model.get_input_embeddings()
+    except Exception:
+        wrapper_input = None
+    if wrapper_input is None:
+        model.get_input_embeddings = core.get_input_embeddings
+    model._unsloth_text_core = name
+    return model
+
+
+def _text_core_decoder_prefix(model):
+    """Module path of the decoder a kept wrapper's text forward runs through, else None."""
+    name = getattr(model, "_unsloth_text_core", None)
+    core = getattr(model, name, None) if isinstance(name, str) else None
+    if core is None:
+        return None
+    try:
+        decoder = core.get_decoder()
+    except Exception:
+        decoder = None
+    if isinstance(decoder, torch.nn.Module) and decoder is not core:
+        for child_name, module in core.named_modules():
+            if module is decoder and child_name:
+                return f"{name}.{child_name}"
+    # transformers 5.4's thinker answers get_decoder with itself; the decoder is the child
+    # that owns the core's input embeddings.
+    try:
+        embeddings = core.get_input_embeddings()
+    except Exception:
+        embeddings = None
+    if embeddings is not None:
+        for child_name, child in core.named_children():
+            try:
+                # A vision tower raises here on transformers 5.
+                if child.get_input_embeddings() is embeddings:
+                    return f"{name}.{child_name}"
+            except Exception:
+                continue
+    return name
+
+
 def _text_trainable_core(model, text_intent = True):
     """The module a text batch can train when the loaded wrapper's forward cannot take one.
 
@@ -1322,7 +1439,9 @@ def _text_trainable_core(model, text_intent = True):
     None) are returned unchanged, as is anything ambiguous.
 
     A wrapper with no forward of its own (Qwen3-Omni) is the same case; its
-    `thinker` is what fine-tuning targets.
+    `thinker` is what fine-tuning targets. Kept whole (no text intent), such a
+    wrapper gets the thinker's forward on the instance so `model(input_ids = ...)`
+    still works.
     `UNSLOTH_KEEP_COMPOSED_WRAPPER=1` turns this off.
 
     `text_intent` is True only when the caller passed `text_only = True`: a
@@ -1341,11 +1460,24 @@ def _text_trainable_core(model, text_intent = True):
     if not text_intent:
         # A multimodal load may still generate through the wrapper, so keep it whole.
         if has_no_forward:
-            print(
-                f"Unsloth: `{type(model).__name__}` has no forward of its own, so it cannot be "
-                "trained as loaded. Pass `text_only = True` to from_pretrained to train its "
-                "thinker on text batches instead."
-            )
+            found = _find_text_core(model)
+            if found is not None:
+                # Qwen3-Omni: keep the talker for audio generation, but let a plain
+                # model(input_ids = ...) (eval, KD, a custom loop) run through the thinker
+                # instead of reaching nn.Module.forward.
+                _delegate_text_forward(model, *found)
+                print(
+                    f"Unsloth: `{type(model).__name__}` has no forward of its own, so a text "
+                    f"forward runs through its `{found[0]}` and the rest is kept for generation. "
+                    "Pass `text_only = True` to from_pretrained to train the "
+                    f"`{found[0]}` alone and free the rest."
+                )
+            else:
+                print(
+                    f"Unsloth: `{type(model).__name__}` has no forward of its own, so it cannot be "
+                    "trained as loaded. Pass `text_only = True` to from_pretrained to train its "
+                    "thinker on text batches instead."
+                )
         else:
             print(
                 f"Unsloth: `{type(model).__name__}.forward` requires {', '.join(required)}, so it "
@@ -1353,42 +1485,10 @@ def _text_trainable_core(model, text_intent = True):
                 "train its language model on text batches instead."
             )
         return model
-    try:
-        from transformers import PreTrainedModel
-    except Exception:
+    found = _find_text_core(model)
+    if found is None:
         return model
-    cores = []
-    for name, child in model.named_children():
-        if not isinstance(child, PreTrainedModel):
-            continue
-        child_forward = getattr(type(child), "forward", None)
-        if child_forward is None or child_forward is torch.nn.Module.forward:
-            continue
-        if _required_non_text_inputs(child_forward):
-            continue
-        try:
-            output_embeddings = child.get_output_embeddings()
-        except Exception:
-            output_embeddings = None
-        if output_embeddings is None:
-            # transformers 4.x returns None unless overridden; Qwen3-Omni's thinker has an lm_head.
-            output_embeddings = getattr(child, "lm_head", None)
-            if not isinstance(output_embeddings, torch.nn.Module):
-                output_embeddings = None
-        try:
-            has_embeddings = (
-                child.get_input_embeddings() is not None and output_embeddings is not None
-            )
-        except Exception:
-            has_embeddings = False
-        if has_embeddings:
-            cores.append((name, child))
-    preferred = [core for core in cores if core[0] in ("language_model", "thinker")]
-    if len(preferred) == 1:
-        cores = preferred
-    if len(cores) != 1:
-        return model
-    name, core = cores[0]
+    name, core = found
     dropped = [child_name for child_name, _ in model.named_children() if child_name != name]
     for child_name in dropped:
         delattr(model, child_name)
@@ -1473,6 +1573,12 @@ def _carry_loader_state_to_core(model, core, name):
                 pass
     wrapper_config = getattr(model, "config", None)
     core_config = getattr(core, "config", None)
+    # A sub-config names no architecture; generate and save read it off the core.
+    if core_config is not None and not getattr(core_config, "architectures", None):
+        try:
+            core_config.architectures = [type(core).__name__]
+        except Exception:
+            pass
     quantization_config = getattr(wrapper_config, "quantization_config", None)
     if (
         quantization_config is not None
@@ -2630,6 +2736,18 @@ class FastBaseModel:
             )
         else:
             _audio_kwargs = {}
+        # A kept wrapper whose text forward runs through a core (Qwen3-Omni's thinker) names
+        # its decoder `thinker.model`, which no language tag matches, so LoRA would land on
+        # the vision tower only and a text batch would train nothing.
+        _core_prefix = _text_core_decoder_prefix(model)
+        if _core_prefix and "language_tags" in inspect.signature(get_peft_regex).parameters:
+            _language_tag_default = (
+                inspect.signature(get_peft_regex).parameters["language_tags"].default
+            )
+            if isinstance(_language_tag_default, (list, tuple)):
+                _audio_kwargs["language_tags"] = list(_language_tag_default) + [
+                    re.escape(_core_prefix)
+                ]
         # Remember the caller's ORIGINAL explicit leaf list for MoE expert detection: routing it through get_peft_regex adds the full "mlp|feed_forward|ffn|dense" block even for attention-only leaves, so keying on that regex would train the experts. Only the auto path relies on the regex.
         _moe_detect_target = target_modules if type(target_modules) in (list, tuple) else None
 

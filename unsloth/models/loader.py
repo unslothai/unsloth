@@ -1920,6 +1920,15 @@ class FastModel(FastBaseModel):
                     is_vlm = False
                     # model_config is no longer the repo's config, so anything rebuilding it from model_name (the device-map planner) sees a different model.
                     text_only_decoder = True
+            elif (
+                is_vlm
+                and resolve_model_class(AutoModelForCausalLM, model_config) is None
+                and _resolve_omni_auto_model(model_config) is not None
+            ):
+                # Qwen3-Omni keeps its vision config under thinker_config and has no causal-LM
+                # class, so AutoModelForCausalLM cannot load it. Load the full composition
+                # through its own auto class; text_intent still hands it to its thinker.
+                load_text_only = False
             else:
                 is_vlm = False
         for _cfg_key, _cfg_val in task_config_attrs.items():
