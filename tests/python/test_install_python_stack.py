@@ -1278,7 +1278,10 @@ class TestProgressLineNotes:
             for n in ast.walk(tree)
             if isinstance(n, ast.Call)
             and isinstance(n.func, ast.Attribute)
-            and n.func.attr in {"write", "flush"}
+            # `write` only. A flush emits nothing, so it cannot glue text onto the bar, and the
+            # installer needs one before handing its descriptors to a child (#11566's rerun of
+            # the new installer), or buffered lines land after the child's output.
+            and n.func.attr == "write"
             and isinstance(n.func.value, ast.Attribute)
             and n.func.value.attr == "stdout"
             and not any(lo <= n.lineno <= hi for lo, hi in allowed)

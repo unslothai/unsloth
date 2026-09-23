@@ -233,6 +233,14 @@ def test_no_mirror_is_a_companion_only_repo():
         assert mirror.lower() not in companions, mirror
 
 
+# Vendor bases the catalog offers before their unsloth mirror exists on the Hub. A mirror row for a
+# repo that is not there would 404 every fetch it redirects, so the table cannot lead the upload;
+# this names the gap instead of letting the check below go red on every PR until it closes.
+# Qwen/Qwen-Image-2.1 came in with #11405; unsloth/Qwen-Image-2.1 was not on the Hub on 2026-09-22
+# (unsloth/Qwen-Image-2.1-FP8 and unsloth/Qwen-Image-2.1-GGUF are).
+_MIRRORS_NOT_YET_PUBLISHED = frozenset({"qwen/qwen-image-2.1"})
+
+
 def test_every_third_party_bf16_pipeline_the_catalog_offers_is_mirrored():
     """Lookup is by exact id, so a variant the catalog offers is silently missed until listed.
 
@@ -261,8 +269,18 @@ def test_every_third_party_bf16_pipeline_the_catalog_offers_is_mirrored():
         if not repo.lower().startswith("unsloth/")
         and "hunyuan" not in repo.lower()
         and repo.lower() not in mirrored
+        and repo.lower() not in _MIRRORS_NOT_YET_PUBLISHED
     )
     assert not missing, f"catalog offers these vendor bases with no unsloth mirror: {missing}"
+    # Each pending entry has to still be pending and still offered, so the exception cannot
+    # outlive the gap it names.
+    for repo in _MIRRORS_NOT_YET_PUBLISHED:
+        assert (
+            repo not in mirrored
+        ), f"{repo} is in the mirror table now; drop it from _MIRRORS_NOT_YET_PUBLISHED"
+        assert repo in {
+            o.lower() for o in offered
+        }, f"the catalog no longer offers {repo}; drop it from _MIRRORS_NOT_YET_PUBLISHED"
 
 
 def test_the_qwen_2512_mirror_covers_the_card_tag_route(monkeypatch):
@@ -303,6 +321,22 @@ def test_prefer_ungated_mirror_declines(monkeypatch):
     # 2. already on disk: switching would re-pull tens of GiB
     _all_cached(monkeypatch)
     assert prefer_ungated_mirror(gated) == gated
+
+
+def test_the_opt_out_maps_a_direct_mirror_pick_back_to_its_upstream(monkeypatch):
+    """The picker lists mirror ids, so the opt-out must also undo a mirror picked directly."""
+    mirror, upstream = "unsloth/FLUX.1-dev", "black-forest-labs/FLUX.1-dev"
+    _no_cache(monkeypatch)
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_NO_MIRROR", "1")
+    assert prefer_ungated_mirror(mirror) == upstream
+    # Even a cached mirror: the estimator lists it on the Hub before loading.
+    _all_cached(monkeypatch)
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_NO_MIRROR", "1")
+    for files in (None, [], ["model_index.json"], ["vae/diffusion_pytorch_model.safetensors"]):
+        assert prefer_ungated_mirror(mirror, files = files) == upstream
+    # Without the opt-out a mirror pick is fetched as is.
+    _no_cache(monkeypatch)
+    assert prefer_ungated_mirror(mirror) == mirror
 
 
 def test_a_local_base_directory_is_never_mirrored(monkeypatch, tmp_path):
@@ -8198,21 +8232,39 @@ def test_download_plan_counts_a_cached_lower_auto_prequant(monkeypatch):
         lambda fam, scheme, **kw: source if scheme == "int8" else None,
     )
     monkeypatch.setattr(dmod, "prequant_checkpoint_cached", lambda *a, **k: True)
-
-    plan = DiffusionBackend().download_plan(
-        "unsloth/Qwen-Image-GGUF",
-        gguf_filename = "Qwen-Image-Q4_K_M.gguf",
-        text_encoder_quant = "off",
-    )
-    baseline = DiffusionBackend().download_plan(
-        "unsloth/Qwen-Image-GGUF",
-        gguf_filename = "Qwen-Image-Q4_K_M.gguf",
-        text_encoder_quant = "off",
-        speed_mode = "off",
+    # Whether this install can OPEN an int8 pickle is its own question (#11394): the plan skips a
+    # name it cannot read. torchao 0.18 no longer carries the int8 pickle constructors, so leaving
+    # it to the installed torchao made this test answer that question instead of the one it asks.
+    readable = {"answer": True}
+    monkeypatch.setattr(
+        "core.inference.diffusion_prequant.restricted_prequant_load_supported",
+        lambda *a, **k: readable["answer"],
     )
 
+    def plans():
+        plan = DiffusionBackend().download_plan(
+            "unsloth/Qwen-Image-GGUF",
+            gguf_filename = "Qwen-Image-Q4_K_M.gguf",
+            text_encoder_quant = "off",
+        )
+        baseline = DiffusionBackend().download_plan(
+            "unsloth/Qwen-Image-GGUF",
+            gguf_filename = "Qwen-Image-Q4_K_M.gguf",
+            text_encoder_quant = "off",
+            speed_mode = "off",
+        )
+        return plan, baseline
+
+    plan, baseline = plans()
     assert plan["required_bytes"] - baseline["required_bytes"] == 6 * GB
     assert any(source.filename in entry["files"] for entry in plan["entries"])
+
+    # And the converse, so the pin above cannot hide the gate: an artifact this install cannot
+    # open is not budgeted.
+    readable["answer"] = False
+    plan, baseline = plans()
+    assert plan["required_bytes"] == baseline["required_bytes"]
+    assert not any(source.filename in entry["files"] for entry in plan["entries"])
 
 
 def test_download_plan_omits_the_prequant_under_a_definite_offload_policy(monkeypatch):

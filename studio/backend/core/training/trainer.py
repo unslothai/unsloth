@@ -362,6 +362,8 @@ class UnslothTrainer:
         self.model_load_error = None
         self.dataset_loaded_from_exact_snapshot = False
         self.dataset_snapshot_path = None
+        # A max_steps bound keeps a uniform sample of the rows, so a pass over it is this share of a dataset pass.
+        self._kept_row_fraction = 1.0
 
         self.training_start_time: Optional[float] = None
         self.session_start_step: int = 0
@@ -663,7 +665,9 @@ class UnslothTrainer:
 
                 trainer_ref._update_progress(
                     step = current_step,
-                    epoch = round(state.epoch, 2) if state.epoch else 0,
+                    epoch = round(state.epoch * trainer_ref._kept_row_fraction, 2)
+                    if state.epoch
+                    else 0,
                     loss = loss_value,
                     learning_rate = logs.get("learning_rate", None),
                     elapsed_seconds = elapsed_seconds,
@@ -677,7 +681,9 @@ class UnslothTrainer:
                 )
 
             def on_epoch_end(self, args, state, control, **kwargs):
-                trainer_ref._update_progress(epoch = state.epoch, step = state.global_step)
+                trainer_ref._update_progress(
+                    epoch = state.epoch * trainer_ref._kept_row_fraction, step = state.global_step
+                )
 
             def on_step_end(self, args, state, control, **kwargs):
                 if trainer_ref.should_stop:
@@ -2705,6 +2711,7 @@ class UnslothTrainer:
         try:
             self.dataset_loaded_from_exact_snapshot = False
             self.dataset_snapshot_path = None
+            self._kept_row_fraction = 1.0
             dataset = None
             eval_dataset = None
             dataset_attestation_source = None
@@ -3127,6 +3134,7 @@ class UnslothTrainer:
             ):
 
                 def _log_bound(kept, total):
+                    self._kept_row_fraction = kept / total
                     logger.info(
                         f"Bounded dataset to {kept} of {total} rows for a "
                         f"max_steps run (seed {max_train_rows_seed})\n"

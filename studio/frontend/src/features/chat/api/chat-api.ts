@@ -997,7 +997,9 @@ export interface ForkChatThreadResult {
 
 export async function forkChatThread(
   threadId: string,
-  args: { messageId: string; newThreadId: string; createdAt: number },
+  /** Omit `messageId` to fork at the tip, which the route resolves after its own check that
+   *  the chat is not generating. */
+  args: { messageId?: string; newThreadId: string; createdAt: number },
 ): Promise<ForkChatThreadResult> {
   const response = await authFetch(
     `/api/chat/threads/${encodeURIComponent(threadId)}/fork`,

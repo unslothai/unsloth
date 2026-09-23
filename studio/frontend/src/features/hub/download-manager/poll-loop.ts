@@ -811,6 +811,7 @@ export async function startJob(
     if (
       onOriginRoute &&
       onOriginSelection &&
+      req.skipXetNotice !== true &&
       shouldShowXetNotice({
         kind: req.kind,
         transport: started,

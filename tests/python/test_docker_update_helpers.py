@@ -564,6 +564,33 @@ def test_a_signal_during_the_health_wait_puts_the_service_back_too(tmp_path: Pat
     assert not _scratch(home)
 
 
+def test_a_health_wait_that_expires_before_its_first_check_still_asks_once(tmp_path: Path):
+    """The deadline is whole seconds. With a short wait the clock can step past it before
+    the loop first reads it, and a loop that checked the deadline first then rolled back a
+    Studio it had never probed. Here every read of the clock is 5s after the last, so the
+    deadline has always passed by the first check."""
+    env = _studio_env(tmp_path)
+    env["UNSLOTH_STUDIO_UPDATE_HEALTH_WAIT"] = "1"
+    clock = tmp_path / "clock"
+    clock.write_text("1000000000", encoding = "utf-8")
+    _stub(
+        tmp_path / "bin",
+        "date",
+        'if [ "$*" = "+%s" ]; then\n'
+        f'  t=$(( $(cat "{clock}") + 5 )); echo "$t" > "{clock}"; echo "$t"; exit 0\n'
+        "fi\n"
+        'exec /bin/date "$@"\n',
+    )
+    _stub(tmp_path / "bin", "curl", 'echo "STUB-CURL $*" >> "$STUB_LOG"\nexit 0\n')
+    res = _run(STUDIO_UPDATE, ["--ref", "main"], env)
+    home = Path(env["UNSLOTH_STUDIO_HOME"])
+    calls = _calls(env)
+    assert "STUB-CURL" in calls, "the wait expired without probing Studio once:\n" + calls
+    assert res.returncode == 0, res.stdout + res.stderr
+    assert "answering on port 8000" in res.stdout, res.stdout
+    assert (home / "src" / "NEW_TREE").exists(), "a healthy update was rolled back"
+
+
 def test_studio_update_fails_when_studio_does_not_answer_after_the_restart(tmp_path: Path):
     """A backend that imports can still die at startup; the previous tree is kept
     until /api/health answers, and goes back when it does not."""

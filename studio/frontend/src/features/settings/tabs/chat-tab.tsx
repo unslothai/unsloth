@@ -52,7 +52,7 @@ import { useSettingsDialogStore } from "../stores/settings-dialog-store";
 
 // Adjustable "+" menu items shown in settings, in display order. Icons mirror
 // the ones used in the composer + menu itself.
-const PLUS_MENU_ICON_CLASS = "size-[18px]";
+const PLUS_MENU_ICON_CLASS = "size-[calc(18px*var(--ui-space-scale,1))]";
 const PLUS_MENU_SETTINGS: {
   id: PlusMenuItemId;
   labelKey: TranslationKey;
@@ -408,7 +408,7 @@ export function ChatTab() {
             {currentDatePromptError ? (
               <span
                 role="alert"
-                className="max-w-[260px] text-right text-xs text-destructive"
+                className="max-w-[calc(260px*var(--ui-space-scale,1))] text-right text-xs text-destructive"
               >
                 {currentDatePromptError}
               </span>
