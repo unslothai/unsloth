@@ -9378,7 +9378,84 @@ def pip_install_try(
     if VERBOSE and result.stdout:
         # pip/uv echo index URLs (credentials included) in failure output.
         _safe_print(_redact_install_output(result.stdout))
-    return False
+    return bool(
+        _mirror_retry(
+            args,
+            result.stdout or b"",
+            lambda *retry: pip_install_try(
+                label, *retry, req = req, constrain = constrain, force_pip = force_pip
+            ),
+        )
+    )
+
+
+_PYTORCH_DEFAULT_WHL = "https://download.pytorch.org/whl"
+# The uv and pip half of the installers' _mirror_failed_host (npm never runs here).
+_MIRROR_TRANSPORT_ERROR = re.compile(
+    r"error sending request|timed out|network timeout|connection (reset|refused|closed|aborted)|"
+    r"broken pipe|dns error|failed to lookup address|name resolution|nodename nor servname|"
+    r"network is unreachable|error decoding response body|end of file before message length|"
+    r"unexpected eof|tls handshake|sslerror|"
+    r"certificate verify failed|server error|service unavailable|bad gateway|gateway time-?out|"
+    r"too many requests|max retries exceeded|remotedisconnected|incompleteread",
+    re.IGNORECASE,
+)
+_MIRROR_HOST_NAMES = (
+    ("torch", re.compile(r"download(-r2)?\.pytorch\.org")),
+    ("pypi", re.compile(r"pypi\.org|pythonhosted\.org")),
+)
+_failed_install_output = b""
+
+
+def _mirror_retry(args: "tuple[str, ...]", output: bytes, rerun) -> "bool | None":
+    """Reruns a failed install once through the mirror of the host its output shows failing.
+
+    The installer's probe exports ``_UNSLOTH_MIRROR_SPARE`` as ``host|VAR=URL|...`` entries for
+    the hosts it left on their defaults; each gets one rerun, and later installs keep the mirror
+    only when it worked. None when there is no such host.
+    """
+    global _PYTORCH_WHL_BASE
+    text = output.decode("utf-8", "replace")
+    if not _MIRROR_TRANSPORT_ERROR.search(text):
+        return None
+    torch = any(_PYTORCH_DEFAULT_WHL in arg for arg in args)
+    pinned = _is_pinned_index_cmd(args) or any(
+        arg in ("--find-links", "--no-index") or "://" in arg for arg in args
+    )
+    host = next((name for name, pattern in _MIRROR_HOST_NAMES if pattern.search(text)), None)
+    if host is None and not re.search(r"https?://", text):
+        # A download that stalled or dropped names no URL: the host is the one the command ran on.
+        host = "torch" if torch else "pypi"
+    # A pinned command drops the index vars, so only a torch URL can move to a mirror.
+    if host is None or (host == "torch" and not torch) or (host == "pypi" and pinned):
+        return None
+    spare = os.environ.get("_UNSLOTH_MIRROR_SPARE", "").split()
+    entry = next((e for e in spare if e.split("|", 1)[0] == host), None)
+    if entry is None:
+        return None
+    os.environ["_UNSLOTH_MIRROR_SPARE"] = " ".join(e for e in spare if e != entry)
+    pairs = dict(pair.split("=", 1) for pair in entry.split("|")[1:])
+    _step(
+        "mirror",
+        f"{'download.pytorch.org' if host == 'torch' else 'PyPI'} failed; retrying through {next(iter(pairs.values()))}",
+        _cyan,
+    )
+    saved = ({name: os.environ.get(name) for name in pairs}, _PYTORCH_WHL_BASE)
+    os.environ.update(pairs)
+    if host == "torch" and _PYTORCH_WHL_BASE == _PYTORCH_DEFAULT_WHL:
+        _PYTORCH_WHL_BASE = pairs["UNSLOTH_PYTORCH_MIRROR"].rstrip("/")
+    ok = False
+    try:
+        ok = rerun(*(arg.replace(_PYTORCH_DEFAULT_WHL, _PYTORCH_WHL_BASE) for arg in args))
+    finally:
+        if not ok:
+            for name, value in saved[0].items():
+                if value is None:
+                    os.environ.pop(name, None)
+                else:
+                    os.environ[name] = value
+            _PYTORCH_WHL_BASE = saved[1]
+    return ok
 
 
 def pip_install(
@@ -9388,6 +9465,24 @@ def pip_install(
     constrain: bool = True,
 ) -> None:
     """Build and run a pip install command (uses uv when available, falls back to pip)."""
+    try:
+        _pip_install_once(label, *args, req = req, constrain = constrain)
+    except SystemExit:
+        rerun = (
+            lambda *retry: _pip_install_once(label, *retry, req = req, constrain = constrain) or True
+        )
+        if not _mirror_retry(args, _failed_install_output, rerun):
+            raise
+
+
+def _pip_install_once(
+    label: str,
+    *args: str,
+    req: Path | None = None,
+    constrain: bool = True,
+) -> None:
+    global _failed_install_output
+    _failed_install_output = b""
     # Any pip operation can change which torch is installed, so the memoized
     # classification must not outlive it.
     _invalidate_torch_runtime_probe()
@@ -9435,6 +9530,7 @@ def pip_install(
                 if VERBOSE and result.stdout:
                     _safe_print(_redact_install_output(result.stdout))
                 return
+            _failed_install_output = result.stdout or b""
             if _woa_overrides_are_load_bearing():
                 _step("error", f"{label} failed and pip cannot stand in for it", _red)
                 _safe_print(
@@ -9474,6 +9570,7 @@ def pip_install(
         pip_label = f"{label} (pip)" if USE_UV else label
         result = run(pip_label, pip_cmd, check = False, env = pip_env)
         if result.returncode != 0:
+            _failed_install_output += result.stdout or b""
             # Retry once, and only after clearing something pip named as
             # unremovable: a blind retry of a failing install just doubles the wait.
             cleared = _purge_recordless_distributions(result.stdout)

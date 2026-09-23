@@ -76,6 +76,7 @@ _run() {
 C_WARN=; step() { echo \"STEP \$2\"; }; substep() { echo \"SUBSTEP \$1\"; }
 . '$_WORK/block.sh'
 _mirror_fallback
+eval \"\${_AFTER:-}\"
 for _v in $_VARS; do eval \"[ -z \\\"\\\${\$_v+x}\\\" ] || echo \\\"\$_v=\\\$\$_v\\\"\"; done"
 }
 
@@ -175,6 +176,73 @@ for SH in dash bash; do
     done
     out=$(_run "$SH" MOCK_PYPI=blocked _UNSLOTH_MIRROR_PROBED=1)
     assert_eq "[$SH] a parent installer's probe is not repeated" "" "$(cat "$_WORK/curl.log")"
+    out=$(_run "$SH" MOCK_TORCH=blocked PIP_INDEX_URL=https://corp.example/simple _AFTER='echo "SPARE $_UNSLOTH_MIRROR_SPARE"; _mirror_switch pypi || :; _mirror_switch pypi || echo AGAIN no')
+    assert_eq "[$SH] hosts left on their default, not the switched one, are spared with their blocked-mode vars" "SPARE pypi|UV_DEFAULT_INDEX=$M/pypi/web/simple node|UNSLOTH_NODE_MIRROR=$M/nodejs-release npm|UNSLOTH_NPM_REGISTRY=https://registry.npmmirror.com python|UV_PYTHON_INSTALL_MIRROR=https://registry.npmmirror.com/-/binary/python-build-standalone uvbin|UNSLOTH_UV_WHEEL_MIRROR=$M/pypi/web" "$(echo "$out" | grep '^SPARE')"
+    assert_eq "[$SH] a failed step switches its host once" "STEP PyPI failed; retrying through $M/pypi/web/simple|AGAIN no|UV_DEFAULT_INDEX=$M/pypi/web/simple" "$(echo "$out" | grep -E '^(STEP PyPI failed|AGAIN|UV_DEFAULT_INDEX)' | paste -sd'|' -)"
 done
+
+# Real uv / pip / npm failure output (trimmed): only a transport failure naming a probed default is the mirror's to retry.
+_fail_uv_timeout='error: Failed to fetch: `https://pypi.org/simple/six/`
+  Caused by: error sending request for url (https://pypi.org/simple/six/)
+  Caused by: operation timed out'
+_fail_uv_503='  Caused by: HTTP status server error (503 Service Unavailable) for url (https://download.pytorch.org/whl/cu128/torch/)'
+_fail_pip_timeout="WARNING: Retrying (Retry(total=0, connect=None, read=None, redirect=None, status=None)) after connection broken by 'ReadTimeoutError(\"HTTPSConnectionPool(host='pypi.org', port=443): Read timed out. (read timeout=3.0)\")': /simple/six/"
+_fail_npm='npm error code ECONNRESET: network request to https://registry.npmjs.org/vite failed, reason: socket hang up'
+_fail_python='error: Failed to download https://releases.astral.sh/github/python-build-standalone/releases/download/20260910/cpython-3.12.12.tar.gz: error decoding response body'
+_fail_uv_stall='error: Failed to download `torch==2.9.1+cu128`: Failed to download distribution due to network timeout. Try increasing UV_HTTP_TIMEOUT (current value: 30s).'
+_fail_nover='  Caused by: Because there is no version of torch==1.0.99 [...] hint: `torch` was found on https://download.pytorch.org/whl/cu128, but not at the requested version (torch==1.0.99). A compatible version may be available on a subsequent index (e.g., https://pypi.org/simple).'
+_fail_git='error: Git operation failed: failed to fetch https://github.com/unslothai/unsloth-zoo: Connection reset by peer (os error 54)'
+_failed_host() { printf '%s\n' "$1" > "$_WORK/fail.log"; sh -c ". '$_WORK/block.sh'; _mirror_failed_host '$_WORK/fail.log' '${2:-}'" || echo none; }
+assert_eq "failed host: the default each transport failure names; none for a resolution failure or another host" "pypi torch pypi npm python none none" "$(for _o in "$_fail_uv_timeout" "$_fail_uv_503" "$_fail_pip_timeout" "$_fail_npm" "$_fail_python" "$_fail_nover" "$_fail_git"; do _failed_host "$_o"; done | paste -sd' ' -)"
+assert_eq "failed host: a stalled download names no URL, so the host that ran it; none when another URL is named" "torch none none" "$({ _failed_host "$_fail_uv_stall" torch; _failed_host "$_fail_uv_stall"; _failed_host "$_fail_git" pypi; } | paste -sd' ' -)"
+
+# run_install_cmd(_retry) around the real _run_install_cmd_once; the stub uv logs each run and fails as FAIL says, without a mirror index.
+{ cat "$_WORK/block.sh"; for _f in run_install_cmd _mirror_retry_install _run_install_cmd_once run_install_cmd_retry; do sed -n "/^$_f() {/,/^}/p" "$INSTALL_SH"; done; } > "$_WORK/retry.sh"
+mkdir -p "$_WORK/uvbin"
+cat > "$_WORK/uvbin/uv" <<'EOF'
+#!/bin/sh
+echo "RUN $* ${UV_DEFAULT_INDEX:-}" >&3
+case "$*" in
+    *download.pytorch.org*) printf '%s\n' "$FAIL"; exit 7 ;;
+    *--default-index*) ;;
+    *) [ -n "${UV_DEFAULT_INDEX:-}" ] || { printf '%s\n' "$FAIL"; exit 7; } ;;
+esac
+[ -z "${MIRROR_FAILS:-}" ] || { printf '%s\n' "$FAIL"; exit 8; }
+EOF
+chmod +x "$_WORK/uvbin/uv"
+_retry() {
+    _cmd=$1; shift
+    env -i PATH="$_WORK/uvbin:/usr/bin:/bin" _UNSLOTH_MIRROR_SPARE="pypi|UV_DEFAULT_INDEX=$M/pypi/web/simple torch|UNSLOTH_PYTORCH_MIRROR=$M/pytorch/whl" UNSLOTH_INSTALL_RETRY_DELAY=0 "$@" sh -c "
+step() { echo \"STEP \$2\"; }; substep() { :; }; tauri_stream_log() { :; }; tauri_clear_install_error() { :; }; _redact_install_output() { cat \"\$@\" > /dev/null; }
+_is_verbose() { [ \"\${VERBOSE:-}\" = 1 ]; }
+_uv_download_markers() { if [ -n \"\$1\" ]; then cat >> \"\$1\"; else cat; fi; }
+. '$_WORK/retry.sh'
+TORCH_INDEX_URL=https://download.pytorch.org/whl/cu128
+\$1 3>&1; echo \"RC \$? INDEX=\${UV_DEFAULT_INDEX:-} TORCH=\$TORCH_INDEX_URL SPARE=\$_UNSLOTH_MIRROR_SPARE\"; [ -z \"\${THEN:-}\" ] || { \$THEN 3>&1; echo \"RC \$?\"; }" retry "$_cmd"
+}
+_pipe() { "$@" 2>/dev/null | grep -E '^(RUN|STEP|RC)' | paste -sd'|' -; }
+assert_eq "retry: a PyPI transport failure reruns once on the mirror, which later steps keep" "RUN pip install foo |STEP PyPI failed; retrying through $M/pypi/web/simple|RUN pip install foo $M/pypi/web/simple|RC 0 INDEX=$M/pypi/web/simple TORCH=https://download.pytorch.org/whl/cu128 SPARE=torch|UNSLOTH_PYTORCH_MIRROR=$M/pytorch/whl" "$(_pipe _retry 'run_install_cmd deps uv pip install foo' FAIL="$_fail_uv_timeout")"
+assert_eq "retry: ... also when the output was streamed (verbose)" "RUN pip install foo |STEP PyPI failed; retrying through $M/pypi/web/simple|RUN pip install foo $M/pypi/web/simple|RC 0 INDEX=$M/pypi/web/simple TORCH=https://download.pytorch.org/whl/cu128 SPARE=torch|UNSLOTH_PYTORCH_MIRROR=$M/pytorch/whl" "$(_pipe _retry 'run_install_cmd deps uv pip install foo' FAIL="$_fail_uv_timeout" VERBOSE=1)"
+assert_eq "retry: a resolution failure keeps the default and its spare" "RUN pip install foo |RC 7 INDEX= TORCH=https://download.pytorch.org/whl/cu128 SPARE=pypi|UV_DEFAULT_INDEX=$M/pypi/web/simple torch|UNSLOTH_PYTORCH_MIRROR=$M/pytorch/whl" "$(_pipe _retry 'run_install_cmd deps uv pip install foo' FAIL="$_fail_nover")"
+assert_eq "retry: a failed mirror rerun restores the default for later steps" "RUN pip install foo |STEP PyPI failed; retrying through $M/pypi/web/simple|RUN pip install foo $M/pypi/web/simple|RC 8 INDEX= TORCH=https://download.pytorch.org/whl/cu128 SPARE=torch|UNSLOTH_PYTORCH_MIRROR=$M/pytorch/whl" "$(_pipe _retry 'run_install_cmd deps uv pip install foo' FAIL="$_fail_uv_timeout" MIRROR_FAILS=1)"
+assert_eq "retry: a torch transport failure reruns on the mirror's index, and later torch steps follow" "RUN pip install torch --default-index https://download.pytorch.org/whl/cu128 |STEP download.pytorch.org failed; retrying through $M/pytorch/whl|RUN pip install torch --default-index $M/pytorch/whl/cu128 |RC 0 INDEX= TORCH=$M/pytorch/whl/cu128 SPARE=pypi|UV_DEFAULT_INDEX=$M/pypi/web/simple|RUN pip install torchvision --default-index $M/pytorch/whl/cu128 |RC 0" "$(_pipe _retry 'run_install_cmd torch uv pip install torch --default-index https://download.pytorch.org/whl/cu128' FAIL="$_fail_uv_stall" THEN='run_install_cmd tv uv pip install torchvision --default-index https://download.pytorch.org/whl/cu128')"
+assert_eq "retry: the retrying runner gives the default every attempt before the mirror (a stall naming no URL is its PyPI)" "RUN pip install foo |RUN pip install foo |STEP PyPI failed; retrying through $M/pypi/web/simple|RUN pip install foo $M/pypi/web/simple|RC 0" "$(_pipe _retry 'run_install_cmd_retry deps uv pip install foo' FAIL="$_fail_uv_stall" UNSLOTH_INSTALL_RETRIES=2 | sed 's/ INDEX=.*//')"
+assert_eq "retry: a pinned command is not moved to the PyPI mirror" "RUN pip install x --index-url https://download.pytorch.org/whl/cu128 |RC 7" "$(_pipe _retry 'run_install_cmd x uv pip install x --index-url https://download.pytorch.org/whl/cu128' FAIL="$_fail_uv_timeout" | sed 's/ INDEX=.*//')"
+assert_eq "retry: a torch failure without a torch URL to move is not retried" "RUN pip install torch --torch-backend=auto |RC 7" "$(_pipe _retry 'run_install_cmd tb uv pip install torch --torch-backend=auto' FAIL="$_fail_uv_503" | sed 's/ INDEX=.*//')"
+assert_eq "retry: ... nor a stall under a source the command picks itself" "RUN pip install torch --torch-backend=auto |RC 7" "$(_pipe _retry 'run_install_cmd tb uv pip install torch --torch-backend=auto' FAIL="$_fail_uv_stall" | sed 's/ INDEX=.*//')"
+
+_npm() {
+    printf '%s\n' "$1" > "$_WORK/npm.log"; shift
+    env -i PATH=/usr/bin:/bin _UNSLOTH_MIRROR_SPARE="npm|UNSLOTH_NPM_REGISTRY=$NPMM" "$@" bash -c "
+step() { echo \"STEP \$2\"; }; run_quiet_no_exit() { shift; echo \"RUN \$*\"; [ -z \"\${MIRROR_FAILS:-}\" ]; }
+. '$_WORK/block.sh'
+$(sed -n '/^_npm_mirror_retry() {/,/^}/p' "$SETUP_SH")
+_CAPTURE_LOG='$_WORK/npm.log'; _NPM_REGISTRY_ARGS=()
+_npm_mirror_retry 'npm install'; echo \"RC \$? REG=\${UNSLOTH_NPM_REGISTRY:-} ARGS=\${_NPM_REGISTRY_ARGS[*]}\"" | paste -sd'|' -
+}
+NPMM=https://registry.npmmirror.com
+assert_eq "npm: a registry transport failure reruns once on npmmirror, which later installs keep" "STEP registry.npmjs.org failed; retrying through $NPMM|RUN npm install --no-fund --no-audit --loglevel=error --registry $NPMM|RC 0 REG=$NPMM ARGS=--registry $NPMM" "$(_npm "$_fail_npm")"
+assert_eq "npm: ... not when the rerun fails too" "STEP registry.npmjs.org failed; retrying through $NPMM|RUN npm install --no-fund --no-audit --loglevel=error --registry $NPMM|RC 1 REG= ARGS=" "$(_npm "$_fail_npm" MIRROR_FAILS=1)"
+assert_eq "npm: a dependency conflict is not retried" "RC 1 REG= ARGS=" "$(_npm 'npm error code ERESOLVE: While resolving: vite@7.1.0 from https://registry.npmjs.org/vite')"
 
 summary

@@ -3220,3 +3220,90 @@ class TestExpectedTorchFlavorResolution:
         # reason: it is reached with the pin still in the environment.
         helper = inspect.getsource(ips._recordable_torch_flavor_tag)
         assert "return" in helper and "_explicit_torch_index_url()" not in helper
+
+
+PYPI_SPARE = "pypi|UV_DEFAULT_INDEX=https://m/simple|PIP_INDEX_URL=https://m/simple"
+TORCH_SPARE = "torch|UNSLOTH_PYTORCH_MIRROR=https://m/whl"
+TORCH_WHL = "https://download.pytorch.org/whl"
+PYPI_DOWN = b"Failed to fetch: `https://pypi.org/simple/foo/`\n  Caused by: operation timed out\n"
+TORCH_DOWN = b"HTTP status server error (503) for url (https://download.pytorch.org/whl/cu128/)\n"
+NO_VERSION = b"no version of foo==9\nhint: `foo` was found on https://pypi.org/simple\n"
+PIN = ("--index-url", "https://proxy.example/simple")
+UV_STALL = (
+    b"Failed to download `torch==2.9.1`: Failed to download distribution due to network timeout.\n"
+)
+OTHER_DOWN = b"error sending request for url (https://repo.example/x/): operation timed out\n"
+PIP_RESET_NAMES_NO_HOST = (
+    b"connection broken by 'ConnectionResetError(54, 'Connection reset by peer')': /simple/\n"
+)
+
+
+class TestMirrorRetry:
+    """A transport failure on a default the installer's probe left alone reruns once through its mirror."""
+
+    @pytest.fixture(autouse = True)
+    def _spared(self, monkeypatch):
+        monkeypatch.setattr(ips, "_PYTORCH_WHL_BASE", TORCH_WHL)
+        monkeypatch.setattr(ips, "_step", lambda *a, **k: None)
+        monkeypatch.setattr(ips, "USE_UV", True)
+        with mock.patch.dict(os.environ):
+            for name in ("UV_DEFAULT_INDEX", "PIP_INDEX_URL", "UNSLOTH_PYTORCH_MIRROR"):
+                os.environ.pop(name, None)
+            os.environ["_UNSLOTH_MIRROR_SPARE"] = f"{PYPI_SPARE} {TORCH_SPARE}"
+            yield
+
+    def _runs(self, monkeypatch, ok, failure):
+        runs = []
+
+        def fake_run(cmd, **kwargs):
+            runs.append((cmd, dict(kwargs.get("env") or os.environ)))
+            passed = ok(*runs[-1])
+            output = PIP_RESET_NAMES_NO_HOST if "-m" in cmd else failure
+            return subprocess.CompletedProcess(cmd, 0 if passed else 1, b"" if passed else output)
+
+        monkeypatch.setattr(ips.subprocess, "run", fake_run)
+        return runs
+
+    @pytest.mark.parametrize("installer", ("pip_install", "pip_install_try"))
+    @pytest.mark.parametrize("failure", (PYPI_DOWN, UV_STALL))
+    def test_pypi_transport_failure_moves_to_the_mirror(self, monkeypatch, installer, failure):
+        on_mirror = lambda cmd, env: env.get("UV_DEFAULT_INDEX") == "https://m/simple"
+        runs = self._runs(monkeypatch, on_mirror, failure)
+        assert getattr(ips, installer)("deps", "foo", constrain = False) in (None, True)
+        assert "UV_DEFAULT_INDEX" not in runs[0][1] and on_mirror(*runs[-1])
+        assert os.environ["PIP_INDEX_URL"] == os.environ["UV_DEFAULT_INDEX"] == "https://m/simple"
+        assert os.environ["_UNSLOTH_MIRROR_SPARE"] == TORCH_SPARE
+
+    @pytest.mark.parametrize("installer", ("pip_install", "pip_install_try"))
+    @pytest.mark.parametrize("mirror", ("https://m/whl", None))
+    def test_torch_mirror_is_kept_only_when_it_works(self, monkeypatch, installer, mirror):
+        ok = lambda cmd, env: mirror is not None and "https://m/whl/cu128" in cmd
+        runs = self._runs(monkeypatch, ok, UV_STALL)
+        fails = installer == "pip_install" and mirror is None
+        result = None
+        with pytest.raises(SystemExit) if fails else contextlib.nullcontext():
+            result = getattr(ips, installer)(
+                "torch", "--index-url", f"{TORCH_WHL}/cu128", constrain = False
+            )
+        assert result in (None, mirror is not None)
+        assert "https://m/whl/cu128" in runs[-1][0]
+        assert os.environ["_UNSLOTH_MIRROR_SPARE"] == PYPI_SPARE
+        assert os.environ.get("UNSLOTH_PYTORCH_MIRROR") == mirror
+        assert ips._PYTORCH_WHL_BASE == (mirror or TORCH_WHL)
+
+    # Then torch failing under an install with no torch index to move, and a pinned index.
+    @pytest.mark.parametrize(
+        "failure, pin",
+        (
+            (NO_VERSION, ()),
+            (OTHER_DOWN, ()),
+            (TORCH_DOWN, ()),
+            (PYPI_DOWN, PIN),
+            (UV_STALL, ("x @ https://github.com/x/x/archive/main.zip",)),
+        ),
+    )
+    def test_other_failures_are_not_retried(self, monkeypatch, failure, pin):
+        runs = self._runs(monkeypatch, lambda cmd, env: False, failure)
+        assert not ips.pip_install_try("x", *pin, "foo", constrain = False)
+        assert len(runs) == 1
+        assert os.environ["_UNSLOTH_MIRROR_SPARE"] == f"{PYPI_SPARE} {TORCH_SPARE}"

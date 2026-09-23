@@ -29,7 +29,7 @@ else
 fi
 
 # The pinned attempt must precede the fallback, or the fallback is what actually runs.
-_pinned_at=$(grep -n 'if _uv_install_pinned; then' "$INSTALL_SH" | head -1 | cut -d: -f1)
+_pinned_at=$(grep -n 'if _uv_install_pinned[ ;]' "$INSTALL_SH" | head -1 | cut -d: -f1)
 _fallback_at=$(grep -n 'download "https://astral.sh/uv/install.sh"' "$INSTALL_SH" | head -1 | cut -d: -f1)
 if [ -n "$_pinned_at" ] && [ -n "$_fallback_at" ] && [ "$_pinned_at" -lt "$_fallback_at" ]; then
     ok "the pinned path is tried before the astral fallback"
@@ -394,6 +394,10 @@ if grep -q '^rc=0$' "$WORK/out_noexec"; then
 else
     ok "a uv that cannot execute declines to the fallback"
 fi
+
+_unfetched() ( set +e; tauri_log() { :; }; . "$WORK/uvfns.sh"; HOME="$WORK/home_noexec"; unset UNSLOTH_UV_WHEEL_MIRROR; eval "$1"; _uv_install_pinned > /dev/null 2>&1; echo "$_UIP_UNFETCHED" )
+_got=$(echo $(_unfetched '_uv_pinned_asset() { return 1; }'; _unfetched "_uv_pinned_asset() { echo 'uv-bad.tar.gz 00'; }; download() { return 6; }"; _unfetched "_uv_pinned_asset() { echo 'uv-bad.tar.gz 00'; }; download() { cp -f '$WORK/uv-bad.tar.gz' \"\$2\"; }"))
+if [ "$_got" = "false true false" ]; then ok "_UIP_UNFETCHED: only a download no source served is left for the mirror retry"; else bad "only a download no source served is left for the mirror (got: $_got)"; fi
 
 # And it must not have destroyed the uv the host was already using. The rename publishes over the
 # destination, so validating the new binary only after that point would leave a host whose loader

@@ -212,13 +212,68 @@ _uv_download_markers() {
     '
 }
 
+# Runs an install command; when its output shows a default host's transport failing, reruns it once through that host's mirror.
 run_install_cmd() {
+    _run_install_cmd_once "$@" || _mirror_retry_install "$?" "$@"
+}
+
+# Reruns the install command "$@" that failed with code $1 once through the mirror of the host its output shows failing. Later steps keep that mirror only when the rerun works.
+_mirror_retry_install() {
+    _mri_rc=$1
+    _mri_label=$2
+    shift 2
+    # The host that ran the command, for output that names none; unknown when it pins its own source.
+    case " $* " in
+        *" https://download.pytorch.org/whl"*) _mri_ran=torch ;;
+        *" --index-url "*|*" --default-index "*|*" --find-links "*|*" --no-index "*|*"://"*|*" --torch-backend"*) _mri_ran="" ;;
+        *" uv venv "*|*" uv python install "*) _mri_ran=python ;;
+        *) _mri_ran=pypi ;;
+    esac
+    _mri_host=$(_mirror_failed_host "${_ric_log:-}" "$_mri_ran") || _mri_host=""
+    rm -f "${_ric_log:-}"
+    case "$_mri_host $*" in
+        # A pinned command drops the index vars, so only a torch URL can move to a mirror.
+        "pypi "*" --index-url "*|"pypi "*" --default-index "*) return "$_mri_rc" ;;
+        "torch "*https://download.pytorch.org/whl*|"pypi "*|"python "*) ;;
+        *) return "$_mri_rc" ;;
+    esac
+    _mirror_take "$_mri_host" || return "$_mri_rc"
+    (
+        for _mri_pair in $_MT_PAIRS; do export "$_mri_pair"; done
+        [ "$_mri_host" != torch ] || _ric_torch_mirror=$UNSLOTH_PYTORCH_MIRROR
+        _run_install_cmd_once "$_mri_label" "$@" || { _mri_rc=$?; rm -f "${_ric_log:-}"; exit "$_mri_rc"; }
+    ) || return
+    for _mri_pair in $_MT_PAIRS; do export "$_mri_pair"; done
+    if [ "$_mri_host" = torch ]; then
+        _ric_torch_mirror=$UNSLOTH_PYTORCH_MIRROR
+        case "${TORCH_INDEX_URL:-}" in
+            https://download.pytorch.org/whl*) TORCH_INDEX_URL=$_ric_torch_mirror${TORCH_INDEX_URL#https://download.pytorch.org/whl} ;;
+        esac
+    fi
+}
+
+_run_install_cmd_once() {
     _label="$1"
     shift
+    rm -f "${_ric_log:-}"
+    _ric_log=""
+    if [ -n "${_ric_torch_mirror:-}" ]; then
+        # Once torch has moved to its mirror, every later torch step goes there too.
+        _ric_n=$#
+        for _ric_arg in "$@"; do
+            case "$_ric_arg" in
+                https://download.pytorch.org/whl*) _ric_arg=$_ric_torch_mirror${_ric_arg#https://download.pytorch.org/whl} ;;
+            esac
+            set -- "$@" "$_ric_arg"
+        done
+        shift "$_ric_n"
+    fi
     # For --default-index, clear inherited uv index vars so a uv.toml cannot outrank the CLI pin.
     case " $* " in
         *" --default-index "*) set -- env -u UV_DEFAULT_INDEX -u UV_INDEX_URL -u UV_INDEX -u UV_EXTRA_INDEX_URL -u UV_TORCH_BACKEND -u UV_FIND_LINKS -u UV_CONFIG_FILE UV_NO_CONFIG=1 "$@" ;;
     esac
+    # The raw output stays in _ric_log after a failure, for _mirror_retry_install to read.
+    _log=$(mktemp)
     if _is_verbose; then
         # Stream through the redactor; the rc file carries the exit code (no pipefail in sh).
         _rcf=$(mktemp)
@@ -230,19 +285,20 @@ run_install_cmd() {
                 _cmd_rc=$?
             fi
             printf '%s' "$_cmd_rc" > "$_rcf"
-        } | _uv_download_markers "" "$UNSLOTH_DL_MARKER_MIN_BYTES" | _redact_install_output
+        } | tee "$_log" | _uv_download_markers "" "$UNSLOTH_DL_MARKER_MIN_BYTES" | _redact_install_output
         _rc=$(cat "$_rcf" 2>/dev/null || echo 1)
         rm -f "$_rcf"
         _rc=${_rc:-1}
         if [ "$_rc" -eq 0 ] 2>/dev/null; then
+            rm -f "$_log"
             tauri_clear_install_error "$_label recovered"
             return 0
         fi
+        _ric_log=$_log
         tauri_stream_log stdout "ERROR_OUTPUT" "$_label failed (exit code $_rc)"
         step "error" "$_label failed (exit code $_rc)" "$C_ERR" >&2
         return "$_rc"
     fi
-    _log=$(mktemp)
     _rcf=$(mktemp)
     tauri_stream_log stderr "OUTPUT_CLEAR" "$_label"
     # rc file because the marker filter is a pipe, and plain sh reports only its last stage.
@@ -265,7 +321,7 @@ run_install_cmd() {
     step "error" "$_label failed (exit code $_rc)" "$C_ERR" >&2
     _redact_install_output "$_log" >&2
     tauri_stream_log stderr "ERROR_OUTPUT" "$_label failed (exit code $_rc)"
-    rm -f "$_log"
+    _ric_log=$_log
     return $_rc
 }
 
@@ -286,10 +342,12 @@ run_install_cmd_retry() {
     _ricr_attempt=1
     while :; do
         # AND-OR (not `if`) preserves the real failure code for the rollback path.
-        run_install_cmd "$@" && return 0
+        _run_install_cmd_once "$@" && return 0
         _ricr_rc=$?
         if [ "$_ricr_attempt" -ge "$_ricr_max" ]; then
-            return "$_ricr_rc"
+            # The mirror only after the default had every attempt, so a transient failure recovers there.
+            _mirror_retry_install "$_ricr_rc" "$@" && return 0
+            return $?
         fi
         substep "retrying \"$_ricr_label\" after transient failure (attempt $((_ricr_attempt + 1))/$_ricr_max, waiting ${_ricr_delay}s)..." "$C_WARN"
         sleep "$_ricr_delay" || true
@@ -3250,47 +3308,84 @@ _mirror_probe_all() {
     done
 }
 
-# Points host $1 at its mirror; $2 is how its default did (slow or blocked), $3 the default's and $4 the mirror's bytes/s.
-_mirror_use() {
+# Prints the VAR=URL pairs that point host $1 at its mirror, the mirror first, for how its default did ($2: slow or blocked).
+_mirror_vars() {
     case "$1" in
         pypi)
             # uv's unsafe-first-match fetches every index and fails outright when one is unreachable, so pypi.org stays as the second index only while it still answers.
             if [ "$_mf_uv" = true ] && [ "$2" = slow ]; then
-                export UV_INDEX="$_MIRROR_PYPI" UV_DEFAULT_INDEX="https://pypi.org/simple" UV_INDEX_STRATEGY="${UV_INDEX_STRATEGY:-unsafe-first-match}"
+                echo "UV_INDEX=$_MIRROR_PYPI UV_DEFAULT_INDEX=https://pypi.org/simple UV_INDEX_STRATEGY=${UV_INDEX_STRATEGY:-unsafe-first-match}"
             elif [ "$_mf_uv" = true ]; then
-                export UV_DEFAULT_INDEX="$_MIRROR_PYPI"
+                echo "UV_DEFAULT_INDEX=$_MIRROR_PYPI"
             fi
-            if [ "$_mf_pip" = true ]; then
-                export PIP_INDEX_URL="$_MIRROR_PYPI"
-                if [ "$2" = slow ]; then
-                    export PIP_EXTRA_INDEX_URL="https://pypi.org/simple"
-                fi
-            fi
-            _mu_from="PyPI"
-            _mu_to="$_MIRROR_PYPI" ;;
-        torch)
-            export UNSLOTH_PYTORCH_MIRROR="$_MIRROR_CERNET/pytorch/whl"
-            _mu_from="download.pytorch.org"
-            _mu_to="$UNSLOTH_PYTORCH_MIRROR" ;;
-        node)
-            export UNSLOTH_NODE_MIRROR="$_MIRROR_CERNET/nodejs-release"
-            _mu_from="nodejs.org"
-            _mu_to="$UNSLOTH_NODE_MIRROR" ;;
-        npm)
-            export UNSLOTH_NPM_REGISTRY="$_MIRROR_NPM"
-            _mu_from="registry.npmjs.org"
-            _mu_to="$UNSLOTH_NPM_REGISTRY" ;;
-        python)
-            export UV_PYTHON_INSTALL_MIRROR="$_MIRROR_PYTHON"
-            _mu_from="releases.astral.sh (Python builds)"
-            _mu_to="$UV_PYTHON_INSTALL_MIRROR" ;;
-        uvbin)
-            export UNSLOTH_UV_WHEEL_MIRROR="$_MIRROR_CERNET/pypi/web"
-            _mu_from="releases.astral.sh (uv)"
-            _mu_to="$UNSLOTH_UV_WHEEL_MIRROR" ;;
+            if [ "$_mf_pip" = true ] && [ "$2" = slow ]; then
+                echo "PIP_INDEX_URL=$_MIRROR_PYPI PIP_EXTRA_INDEX_URL=https://pypi.org/simple"
+            elif [ "$_mf_pip" = true ]; then
+                echo "PIP_INDEX_URL=$_MIRROR_PYPI"
+            fi ;;
+        torch) echo "UNSLOTH_PYTORCH_MIRROR=$_MIRROR_CERNET/pytorch/whl" ;;
+        node) echo "UNSLOTH_NODE_MIRROR=$_MIRROR_CERNET/nodejs-release" ;;
+        npm) echo "UNSLOTH_NPM_REGISTRY=$_MIRROR_NPM" ;;
+        python) echo "UV_PYTHON_INSTALL_MIRROR=$_MIRROR_PYTHON" ;;
+        uvbin) echo "UNSLOTH_UV_WHEEL_MIRROR=$_MIRROR_CERNET/pypi/web" ;;
     esac
-    step "mirror" "$_mu_from is $2 ($(($3 / 1024)) KB/s, mirror $(($4 / 1024)) KB/s); using $_mu_to" "$C_WARN"
-    _mf_used=true
+}
+
+_mirror_name() {
+    case "$1" in
+        pypi) echo "PyPI" ;;
+        torch) echo "download.pytorch.org" ;;
+        node) echo "nodejs.org" ;;
+        npm) echo "registry.npmjs.org" ;;
+        python) echo "releases.astral.sh (Python builds)" ;;
+        uvbin) echo "releases.astral.sh (uv)" ;;
+    esac
+}
+
+# Points host $1 at its mirror; $2 is how its default did (slow or blocked), $3 the default's and $4 the mirror's bytes/s.
+_mirror_use() {
+    _mu_to=""
+    for _mu_pair in $(_mirror_vars "$1" "$2"); do
+        export "$_mu_pair"
+        [ -n "$_mu_to" ] || _mu_to=${_mu_pair#*=}
+    done
+    step "mirror" "$(_mirror_name "$1") is $2 ($(($3 / 1024)) KB/s, mirror $(($4 / 1024)) KB/s); using $_mu_to" "$C_WARN"
+    _mf_switched="$_mf_switched $1"
+}
+
+# Takes host $1's mirror from _UNSLOTH_MIRROR_SPARE ("host|VAR=URL|..." entries for the hosts the probe left on their defaults) into _MT_PAIRS, so each host gets one mirror retry. Fails when there is none.
+_mirror_take() {
+    _MT_PAIRS=""
+    _mt_spare=""
+    for _mt_entry in ${_UNSLOTH_MIRROR_SPARE:-}; do
+        if [ "${_mt_entry%%|*}" = "$1" ]; then
+            _MT_PAIRS=$(printf '%s' "${_mt_entry#*|}" | tr '|' ' ')
+        else
+            _mt_spare="$_mt_spare $_mt_entry"
+        fi
+    done
+    [ -n "$_MT_PAIRS" ] || return 1
+    export _UNSLOTH_MIRROR_SPARE="${_mt_spare# }"
+    _mt_to=${_MT_PAIRS%% *}
+    step "mirror" "$(_mirror_name "$1") failed; retrying through ${_mt_to#*=}" "$C_WARN"
+}
+
+# Points host $1 at its mirror for the rest of the install.
+_mirror_switch() {
+    _mirror_take "$1" || return 1
+    for _ms_pair in $_MT_PAIRS; do export "$_ms_pair"; done
+}
+
+# Prints the host whose transport the install output in file $1 shows failing: a network error, and the host's default named, or, when the output names no URL at all (a download that stalled or dropped), host $2 that ran the command. A resolution or not-found failure prints nothing.
+_mirror_failed_host() {
+    grep -Eqi 'error sending request|timed out|network timeout|idle timeout|connection (reset|refused|closed|aborted)|network aborted|broken pipe|dns error|failed to lookup address|name resolution|nodename nor servname|network is unreachable|error decoding response body|end of file before message length|unexpected eof|tls handshake|sslerror|certificate verify failed|server error|service unavailable|bad gateway|gateway time-?out|too many requests|max retries exceeded|remotedisconnected|incompleteread|econnreset|etimedout|eidletimeout|eai_again|enotfound|econnrefused|socket hang up' "$1" 2>/dev/null || return 1
+    if grep -Eq 'download(-r2)?\.pytorch\.org' "$1"; then echo torch
+    elif grep -q 'python-build-standalone' "$1"; then echo python
+    elif grep -q 'registry\.npmjs\.org' "$1"; then echo npm
+    elif grep -Eq 'pypi\.org|pythonhosted\.org' "$1"; then echo pypi
+    elif [ -n "${2:-}" ] && ! grep -Eq 'https?://' "$1"; then echo "$2"
+    else return 1
+    fi
 }
 
 _mirror_fallback() {
@@ -3302,7 +3397,7 @@ _mirror_fallback() {
     export _UNSLOTH_MIRROR_PROBED=1
     _mf_uv=true
     _mf_pip=true
-    _mf_used=false
+    _mf_switched=""
     _mirror_configured uv && _mf_uv=false
     _mirror_configured pip && _mf_pip=false
     _mf_hosts=""
@@ -3352,11 +3447,21 @@ _mirror_fallback() {
                 2??) [ "$_mf_bps" -lt "$_MIRROR_MIN_BPS" ] && [ "$_mf_mbps" -gt "$_mf_bps" ] && _mirror_use "$_mf_host" "$_mf_how" "$_mf_bps" "$_mf_mbps" ;;
             esac
         done
-        if [ "$_mf_used" = true ]; then
+        if [ -n "$_mf_switched" ]; then
             substep "Set UNSLOTH_MIRROR_FALLBACK=0 to always use the default hosts."
         fi
     fi
     rm -rf "$_mf_dir"
+    _mf_spare=""
+    for _mf_host in $_mf_hosts; do
+        case " $_mf_switched " in *" $_mf_host "*) continue ;; esac
+        _mf_entry=""
+        for _mf_pair in $(_mirror_vars "$_mf_host" blocked); do
+            _mf_entry="$_mf_entry|$_mf_pair"
+        done
+        [ -z "$_mf_entry" ] || _mf_spare="$_mf_spare $_mf_host$_mf_entry"
+    done
+    export _UNSLOTH_MIRROR_SPARE="${_mf_spare# }"
 }
 # ── END mirror fallback ──
 
@@ -3639,6 +3744,7 @@ _uv_probe_exec() {
 }
 
 _uv_install_pinned() {
+    _UIP_UNFETCHED=false
     _uip_spec=$(_uv_pinned_asset) || return 1
     [ -n "$_uip_spec" ] || return 1
     _uip_asset=${_uip_spec%% *}
@@ -3684,9 +3790,12 @@ _uv_install_pinned() {
         _uip_bases="https://releases.astral.sh/github/uv/releases/download/$UV_PINNED_VERSION
 https://github.com/astral-sh/uv/releases/download/$UV_PINNED_VERSION"
     fi
+    # No source answered: the only failure the mirror can fix.
+    _UIP_UNFETCHED=true
     for _uip_base in $_uip_bases; do
         # 2>/dev/null: curl -sS prints its own errors and these attempts are speculative, so an unreachable mirror stays off the console when the install still succeeds.
         if ! download "$_uip_base/$_uip_asset" "$_uip_work/$_uip_asset" 2>/dev/null; then continue; fi
+        _UIP_UNFETCHED=false
         _uip_got=$(_uv_sha256 "$_uip_work/$_uip_asset")
         if [ "$_uip_got" != "$_uip_want" ]; then
             # Not tauri_log: [TAURI:WARN] is a marker install.sh has never emitted, and the app forwards unknown markers to its progress UI verbatim. Verbose only, since the next mirror or the fallback still runs.
@@ -3759,7 +3868,7 @@ if ! command -v uv >/dev/null 2>&1 || ! _uv_version_ok uv; then
     # download() exits the shell outright when neither curl nor wget is present, which an `if` cannot catch, so probe first: a minimal image with uv copied in but no downloader must keep the install it had before the floor moved.
     if command -v curl >/dev/null 2>&1 || command -v wget >/dev/null 2>&1; then
         # Pinned release first: fetch a digest-checked data file rather than download-run-delete a remote script. See tests/studio/test_installer_av_shapes.py (AV_SHAPES_RECORD)
-        if _uv_install_pinned; then
+        if _uv_install_pinned || { [ "$_UIP_UNFETCHED" = true ] && _mirror_switch uvbin && _uv_install_pinned; }; then
             :
         else
             # Unpinned hosts keep the path they have always had: a wrong triple breaks the install outright, which costs more than the fallback's score.

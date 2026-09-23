@@ -225,47 +225,84 @@ _mirror_probe_all() {
     done
 }
 
-# Points host $1 at its mirror; $2 is how its default did (slow or blocked), $3 the default's and $4 the mirror's bytes/s.
-_mirror_use() {
+# Prints the VAR=URL pairs that point host $1 at its mirror, the mirror first, for how its default did ($2: slow or blocked).
+_mirror_vars() {
     case "$1" in
         pypi)
             # uv's unsafe-first-match fetches every index and fails outright when one is unreachable, so pypi.org stays as the second index only while it still answers.
             if [ "$_mf_uv" = true ] && [ "$2" = slow ]; then
-                export UV_INDEX="$_MIRROR_PYPI" UV_DEFAULT_INDEX="https://pypi.org/simple" UV_INDEX_STRATEGY="${UV_INDEX_STRATEGY:-unsafe-first-match}"
+                echo "UV_INDEX=$_MIRROR_PYPI UV_DEFAULT_INDEX=https://pypi.org/simple UV_INDEX_STRATEGY=${UV_INDEX_STRATEGY:-unsafe-first-match}"
             elif [ "$_mf_uv" = true ]; then
-                export UV_DEFAULT_INDEX="$_MIRROR_PYPI"
+                echo "UV_DEFAULT_INDEX=$_MIRROR_PYPI"
             fi
-            if [ "$_mf_pip" = true ]; then
-                export PIP_INDEX_URL="$_MIRROR_PYPI"
-                if [ "$2" = slow ]; then
-                    export PIP_EXTRA_INDEX_URL="https://pypi.org/simple"
-                fi
-            fi
-            _mu_from="PyPI"
-            _mu_to="$_MIRROR_PYPI" ;;
-        torch)
-            export UNSLOTH_PYTORCH_MIRROR="$_MIRROR_CERNET/pytorch/whl"
-            _mu_from="download.pytorch.org"
-            _mu_to="$UNSLOTH_PYTORCH_MIRROR" ;;
-        node)
-            export UNSLOTH_NODE_MIRROR="$_MIRROR_CERNET/nodejs-release"
-            _mu_from="nodejs.org"
-            _mu_to="$UNSLOTH_NODE_MIRROR" ;;
-        npm)
-            export UNSLOTH_NPM_REGISTRY="$_MIRROR_NPM"
-            _mu_from="registry.npmjs.org"
-            _mu_to="$UNSLOTH_NPM_REGISTRY" ;;
-        python)
-            export UV_PYTHON_INSTALL_MIRROR="$_MIRROR_PYTHON"
-            _mu_from="releases.astral.sh (Python builds)"
-            _mu_to="$UV_PYTHON_INSTALL_MIRROR" ;;
-        uvbin)
-            export UNSLOTH_UV_WHEEL_MIRROR="$_MIRROR_CERNET/pypi/web"
-            _mu_from="releases.astral.sh (uv)"
-            _mu_to="$UNSLOTH_UV_WHEEL_MIRROR" ;;
+            if [ "$_mf_pip" = true ] && [ "$2" = slow ]; then
+                echo "PIP_INDEX_URL=$_MIRROR_PYPI PIP_EXTRA_INDEX_URL=https://pypi.org/simple"
+            elif [ "$_mf_pip" = true ]; then
+                echo "PIP_INDEX_URL=$_MIRROR_PYPI"
+            fi ;;
+        torch) echo "UNSLOTH_PYTORCH_MIRROR=$_MIRROR_CERNET/pytorch/whl" ;;
+        node) echo "UNSLOTH_NODE_MIRROR=$_MIRROR_CERNET/nodejs-release" ;;
+        npm) echo "UNSLOTH_NPM_REGISTRY=$_MIRROR_NPM" ;;
+        python) echo "UV_PYTHON_INSTALL_MIRROR=$_MIRROR_PYTHON" ;;
+        uvbin) echo "UNSLOTH_UV_WHEEL_MIRROR=$_MIRROR_CERNET/pypi/web" ;;
     esac
-    step "mirror" "$_mu_from is $2 ($(($3 / 1024)) KB/s, mirror $(($4 / 1024)) KB/s); using $_mu_to" "$C_WARN"
-    _mf_used=true
+}
+
+_mirror_name() {
+    case "$1" in
+        pypi) echo "PyPI" ;;
+        torch) echo "download.pytorch.org" ;;
+        node) echo "nodejs.org" ;;
+        npm) echo "registry.npmjs.org" ;;
+        python) echo "releases.astral.sh (Python builds)" ;;
+        uvbin) echo "releases.astral.sh (uv)" ;;
+    esac
+}
+
+# Points host $1 at its mirror; $2 is how its default did (slow or blocked), $3 the default's and $4 the mirror's bytes/s.
+_mirror_use() {
+    _mu_to=""
+    for _mu_pair in $(_mirror_vars "$1" "$2"); do
+        export "$_mu_pair"
+        [ -n "$_mu_to" ] || _mu_to=${_mu_pair#*=}
+    done
+    step "mirror" "$(_mirror_name "$1") is $2 ($(($3 / 1024)) KB/s, mirror $(($4 / 1024)) KB/s); using $_mu_to" "$C_WARN"
+    _mf_switched="$_mf_switched $1"
+}
+
+# Takes host $1's mirror from _UNSLOTH_MIRROR_SPARE ("host|VAR=URL|..." entries for the hosts the probe left on their defaults) into _MT_PAIRS, so each host gets one mirror retry. Fails when there is none.
+_mirror_take() {
+    _MT_PAIRS=""
+    _mt_spare=""
+    for _mt_entry in ${_UNSLOTH_MIRROR_SPARE:-}; do
+        if [ "${_mt_entry%%|*}" = "$1" ]; then
+            _MT_PAIRS=$(printf '%s' "${_mt_entry#*|}" | tr '|' ' ')
+        else
+            _mt_spare="$_mt_spare $_mt_entry"
+        fi
+    done
+    [ -n "$_MT_PAIRS" ] || return 1
+    export _UNSLOTH_MIRROR_SPARE="${_mt_spare# }"
+    _mt_to=${_MT_PAIRS%% *}
+    step "mirror" "$(_mirror_name "$1") failed; retrying through ${_mt_to#*=}" "$C_WARN"
+}
+
+# Points host $1 at its mirror for the rest of the install.
+_mirror_switch() {
+    _mirror_take "$1" || return 1
+    for _ms_pair in $_MT_PAIRS; do export "$_ms_pair"; done
+}
+
+# Prints the host whose transport the install output in file $1 shows failing: a network error, and the host's default named, or, when the output names no URL at all (a download that stalled or dropped), host $2 that ran the command. A resolution or not-found failure prints nothing.
+_mirror_failed_host() {
+    grep -Eqi 'error sending request|timed out|network timeout|idle timeout|connection (reset|refused|closed|aborted)|network aborted|broken pipe|dns error|failed to lookup address|name resolution|nodename nor servname|network is unreachable|error decoding response body|end of file before message length|unexpected eof|tls handshake|sslerror|certificate verify failed|server error|service unavailable|bad gateway|gateway time-?out|too many requests|max retries exceeded|remotedisconnected|incompleteread|econnreset|etimedout|eidletimeout|eai_again|enotfound|econnrefused|socket hang up' "$1" 2>/dev/null || return 1
+    if grep -Eq 'download(-r2)?\.pytorch\.org' "$1"; then echo torch
+    elif grep -q 'python-build-standalone' "$1"; then echo python
+    elif grep -q 'registry\.npmjs\.org' "$1"; then echo npm
+    elif grep -Eq 'pypi\.org|pythonhosted\.org' "$1"; then echo pypi
+    elif [ -n "${2:-}" ] && ! grep -Eq 'https?://' "$1"; then echo "$2"
+    else return 1
+    fi
 }
 
 _mirror_fallback() {
@@ -277,7 +314,7 @@ _mirror_fallback() {
     export _UNSLOTH_MIRROR_PROBED=1
     _mf_uv=true
     _mf_pip=true
-    _mf_used=false
+    _mf_switched=""
     _mirror_configured uv && _mf_uv=false
     _mirror_configured pip && _mf_pip=false
     _mf_hosts=""
@@ -327,11 +364,21 @@ _mirror_fallback() {
                 2??) [ "$_mf_bps" -lt "$_MIRROR_MIN_BPS" ] && [ "$_mf_mbps" -gt "$_mf_bps" ] && _mirror_use "$_mf_host" "$_mf_how" "$_mf_bps" "$_mf_mbps" ;;
             esac
         done
-        if [ "$_mf_used" = true ]; then
+        if [ -n "$_mf_switched" ]; then
             substep "Set UNSLOTH_MIRROR_FALLBACK=0 to always use the default hosts."
         fi
     fi
     rm -rf "$_mf_dir"
+    _mf_spare=""
+    for _mf_host in $_mf_hosts; do
+        case " $_mf_switched " in *" $_mf_host "*) continue ;; esac
+        _mf_entry=""
+        for _mf_pair in $(_mirror_vars "$_mf_host" blocked); do
+            _mf_entry="$_mf_entry|$_mf_pair"
+        done
+        [ -z "$_mf_entry" ] || _mf_spare="$_mf_spare $_mf_host$_mf_entry"
+    done
+    export _UNSLOTH_MIRROR_SPARE="${_mf_spare# }"
 }
 # ── END mirror fallback ──
 
@@ -353,9 +400,17 @@ fi
 # around the npm/bun installs; "" elsewhere so unrelated run_quiet calls don't capture.
 _CAPTURE_LOG=""
 
+# Reruns a failed `npm install` (step label $1) once through npmmirror when its captured output ($_CAPTURE_LOG) shows registry.npmjs.org's transport failing; later npm installs keep the mirror only when it works.
+_npm_mirror_retry() {
+    [ "$(_mirror_failed_host "${_CAPTURE_LOG:-}" npm)" = npm ] && _mirror_take npm || return 1
+    run_quiet_no_exit "$1" npm install --no-fund --no-audit --loglevel=error --registry "${_MT_PAIRS#*=}" || return
+    export "$_MT_PAIRS"
+    _NPM_REGISTRY_ARGS=(--registry "$UNSLOTH_NPM_REGISTRY")
+}
+
 # Print actionable guidance when a frontend/OXC npm/bun install fails and the registry
 # lock is the likely cause (corporate firewall/proxy). No-op once the user has opted in
-# via UNSLOTH_NPM_REGISTRY. We never switch registries automatically -- we only guide.
+# via UNSLOTH_NPM_REGISTRY. This only guides; the mirror fallback does any switching.
 # $1 = path to a captured install log (may be empty/missing).
 _suggest_npm_registry() {
     [ -n "${UNSLOTH_NPM_REGISTRY:-}" ] && return 0
@@ -1983,13 +2038,18 @@ elif [ "$NODE_SOURCE" = bundled ]; then
     fi
     _NODE_LOG="$(mktemp)"
     set +e
-    if _is_verbose; then
-        "$_NODE_PY" "$SCRIPT_DIR/install_node_prebuilt.py" --install-dir "$NODE_DIR" 2>&1 | tee "$_NODE_LOG"
-        _NODE_STATUS=${PIPESTATUS[0]}
-    else
-        "$_NODE_PY" "$SCRIPT_DIR/install_node_prebuilt.py" --install-dir "$NODE_DIR" >"$_NODE_LOG" 2>&1
-        _NODE_STATUS=$?
-    fi
+    for _node_try in default mirror; do
+        if _is_verbose; then
+            "$_NODE_PY" "$SCRIPT_DIR/install_node_prebuilt.py" --install-dir "$NODE_DIR" 2>&1 | tee -a "$_NODE_LOG"
+            _NODE_STATUS=${PIPESTATUS[0]}
+        else
+            "$_NODE_PY" "$SCRIPT_DIR/install_node_prebuilt.py" --install-dir "$NODE_DIR" >>"$_NODE_LOG" 2>&1
+            _NODE_STATUS=$?
+        fi
+        # A failed download gets one retry through the mirror; 3 is another install holding the lock, which no mirror fixes.
+        [ "$_NODE_STATUS" -ne 0 ] && [ "$_NODE_STATUS" -ne 3 ] && [ "$_node_try" = default ] || break
+        _mirror_switch node || break
+    done
     set -e
     if [ "$_NODE_STATUS" -eq 3 ]; then
         step "node" "install blocked by another active Unsloth install" "$C_ERR"
@@ -2130,6 +2190,9 @@ if [ "$_bun_install_ok" = false ]; then
     # the exact exit code. Mirrors the `|| BUILD_OK=false` idiom used below.
     _npm_install_rc=0
     run_quiet_no_exit "npm install" npm install --no-fund --no-audit --loglevel=error "${_NPM_REGISTRY_ARGS[@]+"${_NPM_REGISTRY_ARGS[@]}"}" || _npm_install_rc=$?
+    if [ "$_npm_install_rc" -ne 0 ] && _npm_mirror_retry "npm install"; then
+        _npm_install_rc=0
+    fi
     if [ "$_npm_install_rc" -ne 0 ]; then
         _suggest_npm_registry "$_FRONTEND_INSTALL_LOG"
         rm -f "$_FRONTEND_INSTALL_LOG"
@@ -2169,6 +2232,9 @@ if [ -d "$_OXC_DIR" ] && [ "${NODE_SOURCE:-}" != skip ] && command -v npm &>/dev
     # below is reachable; it also captures the exact exit code.
     _oxc_install_rc=0
     run_quiet_no_exit "npm install (oxc validator runtime)" npm install --no-fund --no-audit --loglevel=error "${_NPM_REGISTRY_ARGS[@]+"${_NPM_REGISTRY_ARGS[@]}"}" || _oxc_install_rc=$?
+    if [ "$_oxc_install_rc" -ne 0 ] && _npm_mirror_retry "npm install (oxc validator runtime)"; then
+        _oxc_install_rc=0
+    fi
     _CAPTURE_LOG=""
     if [ "$_oxc_install_rc" -ne 0 ]; then
         _suggest_npm_registry "$_OXC_INSTALL_LOG"
@@ -2509,6 +2575,7 @@ _SIUP_STAGE=""
 _SIUP_STAGE2=""
 
 _setup_install_uv_pinned() {
+    _SIUP_UNFETCHED=false
     _siup_spec=$(_setup_uv_pinned_asset) || return 1
     [ -n "$_siup_spec" ] || return 1
     _siup_asset=${_siup_spec%% *}
@@ -2555,9 +2622,12 @@ _setup_install_uv_pinned() {
         _siup_bases="https://releases.astral.sh/github/uv/releases/download/$_SETUP_UV_PINNED_VERSION
 https://github.com/astral-sh/uv/releases/download/$_SETUP_UV_PINNED_VERSION"
     fi
+    # No source answered: the only failure the mirror can fix.
+    _SIUP_UNFETCHED=true
     for _siup_base in $_siup_bases; do
         _setup_http_get "$_siup_base/$_siup_asset" > "$_siup_work/$_siup_asset" 2>/dev/null || continue
         [ -s "$_siup_work/$_siup_asset" ] || continue
+        _SIUP_UNFETCHED=false
         [ "$(_setup_uv_sha256 "$_siup_work/$_siup_asset")" = "$_siup_want" ] || continue
         case "$_siup_asset" in
             *.whl) _setup_uv_unzip "$_siup_work/$_siup_asset" "$_siup_work" || continue ;;
@@ -2939,7 +3009,7 @@ elif {
         step "uv" "no installed uv at $_SETUP_UV_LOOKED; installing the pinned release"
     fi
     _SETUP_UV_PINNED_OK=false
-    if _setup_install_uv_pinned; then
+    if _setup_install_uv_pinned || { [ "$_SIUP_UNFETCHED" = true ] && _mirror_switch uvbin && _setup_install_uv_pinned; }; then
         _SETUP_UV_PINNED_OK=true
     elif _is_verbose; then
         _setup_http_get https://astral.sh/uv/install.sh | sh
