@@ -487,7 +487,7 @@ const ActivityRow = memo(function ActivityRow({
     >
       <div
         className={cn(
-          "relative pl-7 before:absolute before:left-[7px] before:top-6 before:h-[calc(100%-12px)] before:w-px before:bg-border last:before:hidden",
+          "relative pl-7 before:absolute before:left-[calc(7px*var(--ui-space-scale,1))] before:top-6 before:h-[calc(100%-12px)] before:w-px before:bg-border last:before:hidden",
           activity.kind === "step" && "before:bg-primary/20",
         )}
       >
@@ -497,7 +497,7 @@ const ActivityRow = memo(function ActivityRow({
         >
           <span
             className={cn(
-              "absolute -left-7 top-1/2 flex size-[15px] -translate-y-1/2 items-center justify-center rounded-full bg-background text-muted-foreground",
+              "absolute -left-7 top-1/2 flex size-[calc(15px*var(--ui-space-scale,1))] -translate-y-1/2 items-center justify-center rounded-full bg-background text-muted-foreground",
               activity.kind === "step" &&
                 activity.state !== "failed" &&
                 "bg-primary/10 text-primary",
@@ -904,7 +904,7 @@ export function ResearchActivityPanel({
       <header className="shrink-0 border-b border-border/70 px-4 py-3.5">
         <div className="flex items-start gap-3">
           <div className="flex size-9 shrink-0 items-center justify-center rounded-[13px] bg-primary/10 text-primary">
-            <HugeiconsIcon icon={Telescope02Icon} className="size-[18px]" />
+            <HugeiconsIcon icon={Telescope02Icon} className="size-[calc(18px*var(--ui-space-scale,1))]" />
           </div>
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-2">

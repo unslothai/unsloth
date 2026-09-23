@@ -161,7 +161,6 @@ def seed_chat_fork_tree(account) -> dict[str, str]:
         source_thread_id = FORK_THREAD_ID,
         branch_message_id = FORK_MESSAGE_ID,
         new_thread_id = FORKED_CHILD_THREAD_ID,
-        new_title = f"fork of {CHAT_SENTINEL}",
         created_at = 1001,
         id_factory = lambda: FORKED_CHILD_THREAD_ID + "-message",
     )

@@ -484,10 +484,6 @@ export function providerSupportsBuiltinCodeExecution(
       normalized.startsWith(prefix),
     );
   }
-  if (providerType === "openai_codex") {
-    return providerModelSupportsStudioTools(providerType, modelId) === true;
-  }
-
   if (providerType === "openai") {
     if (!isOpenAICloudBaseUrl(baseUrl)) return false;
     return OPENAI_CODE_EXECUTION_MODEL_PREFIXES.some((prefix) =>
