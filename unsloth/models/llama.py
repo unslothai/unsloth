@@ -2803,6 +2803,11 @@ class FastLlamaModel:
                     # on the config and pass the single config object through.
                     if max_position_embeddings is not None:
                         model_config.max_position_embeddings = max_position_embeddings
+                    # The RoPE extension above travels as a kwarg, which the model init would receive
+                    # next to config= and reject; it belongs on the config, as the num_labels branch does.
+                    _rope_scaling = kwargs.pop("rope_scaling", None)
+                    if _rope_scaling is not None:
+                        model_config.rope_scaling = _rope_scaling
                     model = AutoModelForCausalLM.from_pretrained(
                         model_name,
                         config = model_config,

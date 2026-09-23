@@ -31,6 +31,7 @@ static fp8 checkpoint: loaded as published it trains with fp8 base weights, and 
 algorithm are left untouched.
 """
 
+import fnmatch
 import inspect
 import weakref
 from typing import Optional
@@ -56,6 +57,19 @@ MODELOPT_FP8_KEY_MAPPING = {
 }
 
 _FP8_ALGOS = ("FP8", "FP8_PER_TENSOR")
+
+
+def _modelopt_pattern(name) -> str:
+    """One ModelOpt ``ignore`` / ``exclude_modules`` entry as a ``modules_to_not_convert`` pattern.
+
+    ModelOpt writes fnmatch globs (vLLM matches them with fnmatch), while transformers reads
+    ``modules_to_not_convert`` as regexes. Verbatim, ``backbone.layers.16*`` would also skip
+    layers 1 and 10-19, and ``*embed_tokens*`` does not compile. Globs are translated to an
+    anchored regex; plain names keep transformers' own prefix and suffix matching."""
+    name = str(name)
+    if any(ch in name for ch in "*?["):
+        return fnmatch.translate(name)
+    return name
 
 
 def _as_dict(quant) -> Optional[dict]:
@@ -152,7 +166,7 @@ def modelopt_fp8_plan(config) -> Optional[dict]:
     plan = {
         "quant_method": "fp8",
         "weight_block_size": None,
-        "modules_to_not_convert": list(ignore or []),
+        "modules_to_not_convert": [_modelopt_pattern(name) for name in (ignore or [])],
     }
     if activation_scheme is not None:
         plan["activation_scheme"] = activation_scheme

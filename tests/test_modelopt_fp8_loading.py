@@ -499,6 +499,18 @@ def test_rewrite_follows_who_loads_the_weights():
     assert "AUTO_QUANTIZATION_CONFIG_MAPPING[quant_method]" not in vision_source
 
 
+def test_config_branch_moves_rope_extension_onto_the_config():
+    # A ModelOpt load passes config=, so a context extension's rope_scaling kwarg would reach the
+    # model init and raise TypeError; it has to be set on the config instead.
+    import inspect
+    from unsloth.models import llama
+
+    source = inspect.getsource(llama.FastLlamaModel.from_pretrained)
+    branch = source.split("if user_config is not None or _modelopt_rewritten:", 1)[1]
+    branch = branch.split("AutoModelForCausalLM.from_pretrained(", 1)[0]
+    assert 'kwargs.pop("rope_scaling", None)' in branch
+
+
 def test_task_heads_stay_out_of_the_rewritten_plan_only_for_task_loads():
     from transformers import (
         AutoModelForCausalLM,
@@ -710,3 +722,24 @@ def test_a_reused_config_keeps_the_scale_renaming():
     kwargs = {}
     pop_modelopt_key_mapping(fresh, kwargs)
     assert kwargs == {}
+
+
+@needs_per_tensor_fp8
+def test_modelopt_ignore_globs_keep_fnmatch_meaning():
+    # ModelOpt ignore lists are fnmatch globs (Nemotron-3-Super: `backbone.layers.16*`); read as
+    # regexes they would also skip layers 1 and 10-19, and a leading `*` does not compile.
+    from transformers.quantizers.quantizers_utils import should_convert_module
+
+    quant = _sarvam_quant()
+    quant["ignore"] = ["lm_head", "backbone.layers.16*", "*embed_tokens*", "visual*"]
+    patterns = modelopt_fp8_plan(SimpleNamespace(quantization_config = quant))[
+        "modules_to_not_convert"
+    ]
+    assert patterns[0] == "lm_head"
+    assert should_convert_module("backbone.layers.1.mixer.in_proj", patterns)
+    assert should_convert_module("backbone.layers.10.mixer.in_proj", patterns)
+    assert not should_convert_module("backbone.layers.16.mixer.in_proj", patterns)
+    assert not should_convert_module("model.embed_tokens", patterns)
+    assert not should_convert_module("visual.blocks.0.attn.qkv", patterns)
+    assert not should_convert_module("lm_head", patterns)
+    assert should_convert_module("model.layers.0.self_attn.q_proj", patterns)
