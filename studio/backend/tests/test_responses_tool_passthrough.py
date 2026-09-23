@@ -3060,7 +3060,7 @@ class TestCodexStyleRequestShapes:
         assert len(req.input) == 3
         assert isinstance(req.input[1], ResponsesUnknownInputItem)
 
-    def test_emitted_reasoning_item_replay_is_dropped_for_local_chat(self):
+    def test_emitted_reasoning_item_replays_as_reasoning_content(self):
         payload = ResponsesRequest(
             input = [
                 {"role": "user", "content": "Hi"},
@@ -3078,7 +3078,90 @@ class TestCodexStyleRequestShapes:
         msgs = _normalise_responses_input(payload)
 
         assert [m.role for m in msgs] == ["user", "assistant", "user"]
-        assert all("plan" not in (m.content or "") for m in msgs if isinstance(m.content, str))
+        assert msgs[1].content == "33"
+        assert msgs[1].reasoning_content == "plan"
+
+    def test_codex_parallel_calls_replay_as_one_turn_with_reasoning(self):
+        payload = ResponsesRequest(
+            store = False,
+            input = [
+                {"type": "message", "role": "user", "content": "list files then read README"},
+                {
+                    "type": "reasoning",
+                    "id": "rs_1",
+                    "summary": [],
+                    "content": [{"type": "reasoning_text", "text": "PLAN: ls and cat"}],
+                    "encrypted_content": None,
+                },
+                {
+                    "type": "function_call",
+                    "call_id": "c1",
+                    "name": "shell",
+                    "arguments": '{"cmd":"ls"}',
+                },
+                {
+                    "type": "function_call",
+                    "call_id": "c2",
+                    "name": "shell",
+                    "arguments": '{"cmd":"cat"}',
+                },
+                {"type": "function_call_output", "call_id": "c1", "output": "README"},
+                {"type": "function_call_output", "call_id": "c2", "output": "hello"},
+            ],
+            tools = [{"type": "function", "name": "shell", "parameters": {"type": "object"}}],
+        )
+
+        msgs = _normalise_responses_input(payload)
+
+        assert [m.role for m in msgs] == ["user", "assistant", "tool", "tool"]
+        assert msgs[1].content is None
+        assert msgs[1].reasoning_content == "PLAN: ls and cat"
+        assert [c["id"] for c in msgs[1].tool_calls] == ["c1", "c2"]
+        body = _build_openai_passthrough_body(
+            _build_chat_request(payload, msgs, stream = True), backend_ctx = 4096
+        )
+        assert [m.get("reasoning_content") for m in body["messages"]] == [
+            None,
+            "PLAN: ls and cat",
+            None,
+            None,
+        ]
+
+    def test_each_turn_keeps_its_own_text_reasoning_and_calls(self):
+        payload = ResponsesRequest(
+            input = [
+                {"role": "user", "content": "fix it"},
+                {
+                    "type": "reasoning",
+                    "summary": [{"type": "summary_text", "text": "read first"}],
+                },
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": "Reading."}],
+                },
+                {"type": "function_call", "call_id": "c1", "name": "shell", "arguments": "{}"},
+                {"type": "function_call_output", "call_id": "c1", "output": "code"},
+                {"type": "reasoning", "summary": [], "encrypted_content": "opaque"},
+                {"type": "custom_tool_call", "call_id": "c2", "name": "apply_patch", "input": "p"},
+                {"type": "custom_tool_call_output", "call_id": "c2", "output": "Done!"},
+                {
+                    "type": "reasoning",
+                    "summary": [],
+                    "content": [{"type": "reasoning_text", "text": "ok"}],
+                },
+                {"role": "user", "content": "thanks"},
+            ],
+            tools = [_codex_apply_patch_tool()],
+        )
+
+        msgs = _normalise_responses_input(payload)
+
+        assert [m.role for m in msgs] == ["user", "assistant", "tool", "assistant", "tool", "user"]
+        assert (msgs[1].content, msgs[1].reasoning_content) == ("Reading.", "read first")
+        assert [c["id"] for c in msgs[1].tool_calls] == ["c1"]
+        assert (msgs[3].content, msgs[3].reasoning_content) == (None, None)
+        assert [c["id"] for c in msgs[3].tool_calls] == ["c2"]
 
     def test_unknown_content_part_type_accepted(self):
         """Unknown content-part types (e.g. future input_audio) validate as

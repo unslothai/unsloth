@@ -3116,8 +3116,8 @@ class ResponsesCustomToolCallOutputInputItem(BaseModel):
 class ResponsesUnknownInputItem(BaseModel):
     """Catch-all for unmodelled Responses input item types.
 
-    Covers ``reasoning`` items and future types. Dropped during normalisation
-    (GGUFs can't consume them), but kept in the union so unrelated turns don't 422.
+    Covers ``reasoning`` items and future types. Normalisation keeps only reasoning
+    text; the rest is dropped, but kept in the union so unrelated turns don't 422.
     """
 
     type: str

@@ -31294,8 +31294,9 @@ def _normalise_responses_input(payload: ResponsesRequest) -> list[ChatMessage]:
 
     - ``ResponsesInputMessage`` -- regular chat messages (text or multimodal).
     - ``ResponsesFunctionCallInputItem`` -- a prior assistant tool call
-      replayed on a follow-up turn. Becomes an assistant message carrying a
-      Chat Completions ``tool_calls`` entry keyed by ``call_id``.
+      replayed on a follow-up turn. Becomes a Chat Completions ``tool_calls``
+      entry keyed by ``call_id``; each contiguous run of reasoning, assistant
+      message and call items folds into one assistant message.
     - ``ResponsesFunctionCallOutputInputItem`` -- a tool result the client is
       returning. Becomes a ``role="tool"`` message with ``tool_call_id`` set to
       the originating ``call_id`` so llama-server can reconcile call with result.
@@ -31336,23 +31337,42 @@ def _normalise_responses_input(payload: ResponsesRequest) -> list[ChatMessage]:
         if isinstance(item, ResponsesCustomToolCallInputItem) and item.name in custom_tool_names
     }
 
-    for item in payload.input:
-        if isinstance(item, ResponsesFunctionCallInputItem):
+    reasoning: list[str] = []
+    text: list[str] = []
+    tool_calls: list[dict] = []
+
+    def _flush_assistant_turn() -> None:
+        if text or tool_calls:
             messages.append(
                 ChatMessage(
                     role = "assistant",
-                    content = None,
-                    tool_calls = [
-                        {
-                            "id": item.call_id,
-                            "type": "function",
-                            "function": {
-                                "name": item.name,
-                                "arguments": item.arguments,
-                            },
-                        }
-                    ],
+                    content = "\n\n".join(text) or None,
+                    reasoning_content = "\n\n".join(reasoning) or None,
+                    tool_calls = list(tool_calls) or None,
                 )
+            )
+        reasoning.clear()
+        text.clear()
+        tool_calls.clear()
+
+    for item in payload.input:
+        if not (
+            isinstance(item, (ResponsesFunctionCallInputItem, ResponsesCustomToolCallInputItem))
+            or getattr(item, "role", None) == "assistant"
+            or getattr(item, "type", None) == "reasoning"
+        ):
+            _flush_assistant_turn()
+
+        if isinstance(item, ResponsesFunctionCallInputItem):
+            tool_calls.append(
+                {
+                    "id": item.call_id,
+                    "type": "function",
+                    "function": {
+                        "name": item.name,
+                        "arguments": item.arguments,
+                    },
+                }
             )
             continue
 
@@ -31372,21 +31392,15 @@ def _normalise_responses_input(payload: ResponsesRequest) -> list[ChatMessage]:
         if isinstance(item, ResponsesCustomToolCallInputItem):
             if item.call_id not in custom_tool_call_ids:
                 continue
-            messages.append(
-                ChatMessage(
-                    role = "assistant",
-                    content = None,
-                    tool_calls = [
-                        {
-                            "id": item.call_id,
-                            "type": "function",
-                            "function": {
-                                "name": item.name,
-                                "arguments": json.dumps({"input": item.input}, ensure_ascii = False),
-                            },
-                        }
-                    ],
-                )
+            tool_calls.append(
+                {
+                    "id": item.call_id,
+                    "type": "function",
+                    "function": {
+                        "name": item.name,
+                        "arguments": json.dumps({"input": item.input}, ensure_ascii = False),
+                    },
+                }
             )
             continue
 
@@ -31403,10 +31417,12 @@ def _normalise_responses_input(payload: ResponsesRequest) -> list[ChatMessage]:
             continue
 
         if isinstance(item, ResponsesUnknownInputItem):
-            # Reasoning items and other unmodelled top-level Responses item
-            # types are silently dropped -- llama-server-backed GGUFs can't
-            # consume them; lenient validation lets them in so unrelated turns
-            # don't 422.
+            if item.type == "reasoning":
+                replayed = _coerce_responses_reasoning_text(
+                    getattr(item, "content", None)
+                ) or _coerce_responses_reasoning_text(getattr(item, "summary", None))
+                if replayed.strip():
+                    reasoning.append(replayed)
             continue
 
         # ResponsesInputMessage. Before the role branches: each returns via `continue`, so a
@@ -31420,18 +31436,18 @@ def _normalise_responses_input(payload: ResponsesRequest) -> list[ChatMessage]:
                 system_parts.append(hoisted)
             continue
 
-        if isinstance(item.content, str):
-            messages.append(ChatMessage(role = item.role, content = item.content))
-            continue
-
         # Assistant-replay turns come back as content = [output_text, ...].
         # Chat Completions' assistant role expects a plain string, not a
         # multimodal array, so flatten output_text (and any stray input_text /
         # unknown text) to a single string.
         if item.role == "assistant":
-            text = _responses_message_text(item.content)
-            if text:
-                messages.append(ChatMessage(role = "assistant", content = text))
+            replayed = _responses_message_text(item.content)
+            if replayed:
+                text.append(replayed)
+            continue
+
+        if isinstance(item.content, str):
+            messages.append(ChatMessage(role = item.role, content = item.content))
             continue
 
         # User (and any other remaining roles). Attachments were refused above, so a part
@@ -31457,6 +31473,7 @@ def _normalise_responses_input(payload: ResponsesRequest) -> list[ChatMessage]:
             else:
                 messages.append(ChatMessage(role = item.role, content = parts))
 
+    _flush_assistant_turn()
     return _with_system(messages)
 
 
