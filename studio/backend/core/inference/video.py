@@ -113,7 +113,9 @@ from .diffusion_transformer_quant import (
     NATIVE_QUANT_SCHEMES,
     normalize_transformer_quant,
     quantize_transformer,
+    mark_source_precision,
     select_transformer_quant_scheme,
+    stored_denoiser_precision,
     transformer_is_quantised,
 )
 from .diffusion import _memory_request_forces_offload
@@ -4347,6 +4349,23 @@ class VideoBackend:
             kind == "pipeline"
             and normalize_transformer_quant(transformer_quant) is not None
             and (dense_transformer_supported(target) or native_scheme is not None)
+            and (source_precision := stored_denoiser_precision(_base_local_dir or repo_id))
+            is not None
+        ):
+            # from_pretrained widened a narrow fp8 / int8 checkpoint to bf16; quantising it again compounds a loss
+            # already taken. Same guard as the image loader, read off the shard headers.
+            for view in views:
+                mark_source_precision(view, source_precision)
+            transformer_quant_decline = (
+                f"its published weights are {source_precision} and were widened to bf16 on load, so "
+                "quantising them again would compound that loss"
+            )
+            transformer_quant_decline_status = RESOLVED_UNSUPPORTED
+            logger.info("video.transformer_quant: skipped (%s)", transformer_quant_decline)
+        elif (
+            kind == "pipeline"
+            and normalize_transformer_quant(transformer_quant) is not None
+            and (dense_transformer_supported(target) or native_scheme is not None)
         ):
             engaged = []
             for view in views:
@@ -4592,7 +4611,7 @@ class VideoBackend:
                         speed_mode,
                         effective_speed,
                         "quantized transformer requires compile"
-                        if transformer_quant_engaged is not None
+                        if transformer_quant_engaged is not None and native_scheme is None
                         else "clip denoises amortise the one-time compile within a single run"
                         if speed_mode is None
                         else "requested",

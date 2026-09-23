@@ -11751,6 +11751,8 @@ def test_an_explicit_scheme_on_amd_runs_weight_only(fake_runtime, tmp_path, monk
     assert resolved["value"] == scheme
     assert resolved["source"] == "explicit" and resolved["status"] == "applied"
     assert "weight-only" in resolved["reason"] and "bf16 compute" in resolved["reason"]
+    # Weight-only stays eager, so status must not claim the compile a torchao scheme needs.
+    assert "requires compile" not in status["resolved"]["speed_mode"]["reason"]
     backend.unload()
 
 

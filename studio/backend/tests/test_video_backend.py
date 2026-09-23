@@ -9664,6 +9664,42 @@ def test_an_explicit_video_scheme_on_amd_runs_weight_only_without_forcing_compil
     assert calls and set(calls) == {scheme}
     assert status["transformer_quant"] == scheme
     assert status["speed_mode"] == "off"
+    assert "requires compile" not in status["resolved"]["speed_mode"]["reason"]
+    backend.unload()
+
+
+@pytest.mark.parametrize("fallback", ["0", "1"])
+def test_a_video_checkpoint_stored_narrow_is_not_quantised_again(
+    fake_runtime, monkeypatch, fallback
+):
+    """from_pretrained widens an fp8 checkpoint to bf16; quantising that again compounds the loss, so the
+    video loader declines it as the image loader does, and never calls the quantiser."""
+    import core.inference.video as video_mod
+    from core.inference import diffusion_transformer_quant as tq
+
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_ALLOW_PRECISION_FALLBACK", fallback)
+    monkeypatch.setattr(video_mod, "dense_transformer_supported", lambda target: False)
+    monkeypatch.setattr(video_mod, "native_quant_host", lambda target: True)
+    monkeypatch.setattr(tq, "dense_transformer_supported", lambda target: False)
+    monkeypatch.setattr(tq, "native_quant_host", lambda target: True)
+    monkeypatch.setattr(video_mod, "stored_denoiser_precision", lambda local_dir: "fp8")
+
+    def _quantize(view, target, **kw):
+        raise AssertionError("a narrow-stored DiT must not be quantised again")
+
+    monkeypatch.setattr(video_mod, "quantize_transformer", _quantize)
+    backend = VideoBackend()
+    if fallback == "0":
+        with pytest.raises(RuntimeError, match = "widened to bf16"):
+            backend.load_pipeline(
+                "Wan-AI/Wan2.2-TI2V-5B-Diffusers", model_kind = "pipeline", transformer_quant = "int8"
+            )
+        return
+    status = backend.load_pipeline(
+        "Wan-AI/Wan2.2-TI2V-5B-Diffusers", model_kind = "pipeline", transformer_quant = "int8"
+    )
+    resolved = status["resolved"]["transformer_quant"]
+    assert resolved["status"] == "unsupported" and "widened to bf16" in resolved["reason"]
     backend.unload()
 
 
