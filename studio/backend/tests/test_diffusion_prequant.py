@@ -779,6 +779,36 @@ def test_load_require_bf16_nvfp4_false_ok(monkeypatch, tmp_path):
     assert _load(monkeypatch, tmp_path, ckpt, scheme = "nvfp4") is not None
 
 
+def test_an_nvfp4_checkpoint_is_prewarmed_by_the_shared_loader(monkeypatch, tmp_path):
+    # Video loads reach this loader without the image loader's own prewarm, so the loader tunes the M = 1 shapes.
+    from core.inference import diffusion_nvfp4_linear as nl
+
+    seen: list = []
+    monkeypatch.setattr(
+        nl, "nvfp4_prewarm", lambda module, shapes, **_k: seen.append(tuple(shapes)) or 0
+    )
+    ckpt = _good_ckpt(scheme = "nvfp4")
+    ckpt["metadata"]["require_bf16"] = False
+    assert _load(monkeypatch, tmp_path, ckpt, scheme = "nvfp4") is not None
+    assert seen == [(1,)]
+
+    seen.clear()
+    assert _load(monkeypatch, tmp_path, _good_ckpt(scheme = "fp8"), scheme = "fp8") is not None
+    assert seen == []
+
+
+def test_a_failed_prewarm_keeps_the_loaded_checkpoint(monkeypatch, tmp_path):
+    from core.inference import diffusion_nvfp4_linear as nl
+
+    def _boom(*_a, **_k):
+        raise RuntimeError("autotune failed")
+
+    monkeypatch.setattr(nl, "nvfp4_prewarm", _boom)
+    ckpt = _good_ckpt(scheme = "nvfp4")
+    ckpt["metadata"]["require_bf16"] = False
+    assert _load(monkeypatch, tmp_path, ckpt, scheme = "nvfp4") is not None
+
+
 def test_load_require_bf16_nvfp4_true_is_none(monkeypatch, tmp_path):
     # An nvfp4 checkpoint claiming the bf16 gate quantised a different layer set, so it is rejected.
     ckpt = _good_ckpt(scheme = "nvfp4")

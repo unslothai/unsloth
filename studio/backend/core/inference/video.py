@@ -2151,12 +2151,15 @@ class VideoBackend:
                 restore_owner_account(VIDEO)
                 restore_resident_metadata(VIDEO)
             # Free the debris of a failed construction: nothing was committed, so nothing else releases the VRAM.
-            # NVFP4 first: its cache holds views of the denoiser that clear_gpu_cache() cannot free.
-            try:
-                from .diffusion_nvfp4_linear import reset_nvfp4_state
-                reset_nvfp4_state()
-            except Exception:  # noqa: BLE001 -- cleanup is best-effort
-                pass
+            # NVFP4 first: its caches hold VIEWS of the denoiser, which clear_gpu_cache() cannot free. Only once no
+            # resident model is left: a replacement that failed before teardown keeps the old state, whose CUDA graph
+            # still records kernels against the barrier and dispatch tensors this reset would release.
+            if self._state is None:
+                try:
+                    from .diffusion_nvfp4_linear import reset_nvfp4_state
+                    reset_nvfp4_state()
+                except Exception:  # noqa: BLE001 -- cleanup is best-effort
+                    pass
             try:
                 clear_gpu_cache()
             except Exception:  # noqa: BLE001 -- cleanup is best-effort
