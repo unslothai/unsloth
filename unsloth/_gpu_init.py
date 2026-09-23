@@ -447,11 +447,7 @@ elif DEVICE_TYPE == "npu":
     # No arm left the name unbound, so consumers fell back to their own False.
     SUPPORTS_BFLOAT16 = torch.npu.is_bf16_supported()
 
-# RDNA1 (gfx101x) and Triton's AMD buffer ops do not mix: the kernels compile, launch and
-# silently write nothing (see arch_lacks_buffer_ops). Triton reads the knob lazily, when it
-# compiles a kernel, and Inductor's cache does not key on it, so the knob and separate cache
-# directories have to be in place before the first compile; this is the earliest point that
-# knows which GPUs are visible (see apply_gfx101x_triton_workaround).
+# gfx101x: Triton buffer-op kernels silently write nothing; must be set before the first compile.
 if DEVICE_TYPE == "hip" and any(arch_lacks_buffer_ops(arch) for arch in hip_visible_archs()):
     apply_gfx101x_triton_workaround()
 

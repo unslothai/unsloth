@@ -2664,8 +2664,7 @@ patch_torch_compile(
     O3 = UNSLOTH_COMPILE_MAXIMUM,
     ignore_errors = UNSLOTH_COMPILE_IGNORE_ERRORS,
 )
-# patch_torch_compile pops TORCHINDUCTOR_CACHE_DIR, which drops the separate Inductor cache
-# _gpu_init chose for gfx101x; without it buffer-ops kernels are reused (#11614).
+# patch_torch_compile popped the gfx101x Inductor cache dir chosen in _gpu_init.
 if gfx101x_triton_workaround_applied():
     apply_gfx101x_triton_workaround()
 
