@@ -19,6 +19,8 @@ keeps PEFT's dense parameters, so saving, loading and merging are unchanged, and
 changes the forward: group g uses rows `g * out_per_group : (g + 1) * out_per_group` of `lora_B`.
 """
 
+import functools
+
 import torch
 
 __all__ = [
@@ -50,15 +52,10 @@ def _grouped_lora_layer():
     class GroupedLinearLoRA(LoraLinear):
         """PEFT's dense LoRA layer with a block-diagonal LoRA forward."""
 
+        _unsloth_grouped_lora = True
+
         def merge(self, *args, **kwargs):
-            # PEFT adds B @ A to the stored weight; an FP8GroupedLinear's weight is fp8 read
-            # with an unchanged weight_scale_inv, so that merge is wrong or raises.
-            weight = getattr(self.get_base_layer(), "weight", None)
-            if weight is not None and weight.dtype.itemsize == 1 and weight.is_floating_point():
-                raise NotImplementedError(
-                    "Unsloth: cannot merge LoRA into an fp8 grouped linear in place. Load the "
-                    "model in 16-bit to merge, or save the adapter on its own."
-                )
+            _refuse_fp8_grouped_merge([self])
             return super().merge(*args, **kwargs)
 
         def forward(self, x, *args, **kwargs):
@@ -104,6 +101,45 @@ def _grouped_lora_layer():
             return result.to(result_dtype)
 
     return GroupedLinearLoRA
+
+
+def _refuse_fp8_grouped_merge(modules):
+    """PEFT adds B @ A to the stored weight; an FP8GroupedLinear's weight is fp8 read with an
+    unchanged weight_scale_inv, so that merge is wrong or raises."""
+    for module in modules:
+        if not getattr(module, "_unsloth_grouped_lora", False):
+            continue
+        weight = getattr(module.get_base_layer(), "weight", None)
+        if weight is not None and weight.dtype.itemsize == 1 and weight.is_floating_point():
+            raise NotImplementedError(
+                "Unsloth: cannot merge LoRA into an fp8 grouped linear in place. Load the "
+                "model in 16-bit to merge, or save the adapter on its own."
+            )
+
+
+def _preflight_peft_merges():
+    """Refuse before PEFT merges anything: it merges layer by layer, so a refusal from the
+    grouped layer itself would leave the earlier layers already merged."""
+    try:
+        from peft.tuners.tuners_utils import BaseTuner
+    except Exception:
+        return
+    for name in ("_unload_and_optionally_merge", "merge_adapter"):
+        original = BaseTuner.__dict__.get(name)
+        if original is None or getattr(original, "_unsloth_fp8_grouped_preflight", False):
+            continue
+
+        def make(original, name):
+            def wrapped(self, *args, **kwargs):
+                merging = name == "merge_adapter" or kwargs.get("merge", args[0] if args else True)
+                if merging:
+                    _refuse_fp8_grouped_merge(self.model.modules())
+                return original(self, *args, **kwargs)
+
+            wrapped._unsloth_fp8_grouped_preflight = True
+            return functools.wraps(original)(wrapped)
+
+        setattr(BaseTuner, name, make(original, name))
 
 
 def _targets_module(lora_config, name):
@@ -152,6 +188,7 @@ def register_grouped_linear_lora(lora_config, model):
             "train. Use plain LoRA."
         )
     layer = _grouped_lora_layer()
+    _preflight_peft_merges()
     lora_config._register_custom_module({cls: layer for cls in classes})
     return classes
 

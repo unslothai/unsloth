@@ -81,18 +81,42 @@ def test_grouped_lora_trains_and_matches_the_merged_weight():
 
 
 def test_merge_into_an_fp8_grouped_weight_is_refused():
-    """FP8GroupedLinear keeps an fp8 weight plus weight_scale_inv; B @ A cannot be added in place."""
+    """FP8GroupedLinear keeps an fp8 weight plus weight_scale_inv; B @ A cannot be added in place.
+    PEFT merges layer by layer, so the dense layer ahead of it must not be merged either."""
     if not hasattr(torch, "float8_e4m3fn"):
         pytest.skip("torch without float8")
-    model = _peft_model(register = True)
+    from peft import LoraConfig, get_peft_model
+    from unsloth.models.grouped_linear_lora import register_grouped_linear_lora
+
+    class DenseFirst(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.q_proj = torch.nn.Linear(16, 16, bias = False)  # merged first by PEFT
+            self.o_a_proj = GroupedLinear(16, 4 * 8, 4)
+
+        def forward(self, x):
+            return self.o_a_proj(self.q_proj(x))
+
+    torch.manual_seed(0)
+    config = LoraConfig(
+        r = 4, lora_alpha = 8, target_modules = ["q_proj", "o_a_proj"], init_lora_weights = False
+    )
+    block = DenseFirst()
+    register_grouped_linear_lora(config, block)
+    model = get_peft_model(block, config)
     base = model.base_model.model.o_a_proj.get_base_layer()
     with torch.no_grad():
         base.weight = torch.nn.Parameter(base.weight.to(torch.float8_e4m3fn), requires_grad = False)
     before = base.weight.clone()
-    with pytest.raises(NotImplementedError, match = "fp8 grouped linear"):
-        model.merge_and_unload()
-    assert torch.equal(base.weight.view(torch.uint8), before.view(torch.uint8))
-    assert not model.base_model.model.o_a_proj.merged
+    dense = model.base_model.model.q_proj
+    dense_before = dense.get_base_layer().weight.clone()
+    for merge in (model.merge_and_unload, model.merge_adapter):
+        with pytest.raises(NotImplementedError, match = "fp8 grouped linear"):
+            merge()
+        assert torch.equal(base.weight.view(torch.uint8), before.view(torch.uint8))
+        assert not model.base_model.model.o_a_proj.merged
+        assert model.base_model.model.q_proj is dense and not dense.merged
+        assert torch.equal(dense.get_base_layer().weight, dense_before)
 
 
 def test_grouped_lora_equals_the_diagonal_of_the_dense_delta():
