@@ -124,8 +124,10 @@ from .diffusion_speed import (
     SPEED_MAX,
     SPEED_OFF,
     apply_speed_optims,
+    auto_dynamic_active,
     compile_eligible,
     compiled_shapes_are_static,
+    dynamo_graph_count,
     normalize_speed_mode,
     resolve_speed_mode,
     restore_backend_flags,
@@ -7417,6 +7419,7 @@ class DiffusionBackend:
                 images: list[Any] = []
                 per_image_seeds: list[int] = []
                 chunk_shapes: list[int] = []
+                graphs_before = dynamo_graph_count()
                 pending = list(chunks)
                 while pending:
                     chunk = pending.pop(0)
@@ -7507,6 +7510,10 @@ class DiffusionBackend:
                             (reg_width, reg_height, int(chunk_batch)),
                             static = static_shapes,
                         )
+                    if auto_dynamic_active(state.pipe) and dynamo_graph_count() > graphs_before:
+                        # Automatic dynamic recompiles on the first new text length at an already-registered
+                        # (width, height, batch): persist those graphs too, or every fresh process pays them again.
+                        compile_cache.mark_recompiled(state.compile_cache_ctx)
                     compile_cache.save_async(state.compile_cache_ctx, logger = logger)
                 except Exception:  # noqa: BLE001 - cache persistence is best-effort
                     pass

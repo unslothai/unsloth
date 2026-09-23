@@ -369,6 +369,16 @@ def test_speed_max_enables_tf32_and_fused_qkv(monkeypatch):
     # length does not recompile every time); CUDA-graph modes are avoided.
     assert pipe.compile_kwargs["mode"] == "max-autotune-no-cudagraphs"
     assert pipe.compile_kwargs["dynamic"] is None
+    assert ds_mod.auto_dynamic_active(pipe) is True
+
+
+def test_default_tier_does_not_mark_automatic_dynamic(monkeypatch):
+    _stub_torch(monkeypatch)
+    pipe = _Pipe(with_compile = True)
+    apply_speed_optims(pipe, _target(), is_gguf = False, family = _family(), speed_mode = SPEED_DEFAULT)
+    assert pipe.compile_kwargs["dynamic"] is True
+    assert ds_mod.auto_dynamic_active(pipe) is False
+    assert isinstance(ds_mod.dynamo_graph_count(), int)
 
 
 # ── U-Net whole-module compile fallback (SDXL) ─────────────────────────────────

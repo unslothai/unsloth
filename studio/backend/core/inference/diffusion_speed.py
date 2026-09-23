@@ -392,6 +392,21 @@ def compiled_shapes_are_static(pipe: Any, speed_mode: Optional[str]) -> bool:
     return mode == SPEED_DEFAULT and _denoiser_unet(pipe) is not None
 
 
+def auto_dynamic_active(pipe: Any) -> bool:
+    """Whether any denoiser DiT compiled with automatic dynamic (the max tier)."""
+    return any(getattr(t, "_unsloth_auto_dynamic", False) for t in _denoiser_dits(pipe))
+
+
+def dynamo_graph_count() -> int:
+    """Graphs dynamo has compiled in this process (0 when unavailable); a delta across a render means it compiled."""
+    try:
+        from torch._dynamo.utils import counters
+
+        return int(counters["stats"]["unique_graphs"])
+    except Exception:  # noqa: BLE001
+        return 0
+
+
 def _denoiser_dits(pipe: Any) -> list:
     """Every DiT the denoise loop runs: the primary ``transformer`` plus a second expert some
     families carry (Ideogram's ``unconditional_transformer``, an MoE ``transformer_2``). Speed /
@@ -468,6 +483,8 @@ def _compile_repeated_blocks(
     # Compile every denoiser DiT (dual-DiT families run both); a per-DiT failure degrades only that one to eager.
     engaged = False
     for transformer in dits:
+        # Read by auto_dynamic_active: the generalising recompile on a new text length must reach the bundle.
+        transformer._unsloth_auto_dynamic = kwargs["dynamic"] is None
         try:
             transformer.compile_repeated_blocks(**kwargs)
             engaged = True
