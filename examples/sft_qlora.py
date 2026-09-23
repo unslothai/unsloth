@@ -32,7 +32,7 @@ SEED = 42
 TARGET_MODULES = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
 
 QUESTIONS = ["What is 2+2?", "Capital of France?", "Is the sky blue?", "Hello"]
-ANSWERS   = ["It is 4.", "Paris.", "Yes, it is blue.", "Hello, how can I help you?"]
+ANSWERS = ["It is 4.", "Paris.", "Yes, it is blue.", "Hello, how can I help you?"]
 
 
 def main() -> None:
@@ -44,20 +44,20 @@ def main() -> None:
         return
 
     model, tokenizer = FastLanguageModel.from_pretrained(
-        model_name=MODEL,
-        max_seq_length=MAX_SEQ_LENGTH,
-        load_in_4bit=True,  # QLoRA via bitsandbytes
+        model_name = MODEL,
+        max_seq_length = MAX_SEQ_LENGTH,
+        load_in_4bit = True,  # QLoRA via bitsandbytes
     )
     device = model.device
     print(f"[INFO] Loaded {MODEL} on {device} in 4-bit (QLoRA)")
 
     model = FastLanguageModel.get_peft_model(
         model,
-        r=LORA_RANK,
-        target_modules=TARGET_MODULES,
-        lora_alpha=LORA_RANK,
-        use_gradient_checkpointing=False,
-        random_state=SEED,
+        r = LORA_RANK,
+        target_modules = TARGET_MODULES,
+        lora_alpha = LORA_RANK,
+        use_gradient_checkpointing = False,
+        random_state = SEED,
     )
 
     dataset = Dataset.from_dict(
@@ -65,7 +65,7 @@ def main() -> None:
             "text": [
                 tokenizer.apply_chat_template(
                     [{"role": "user", "content": q}, {"role": "assistant", "content": a}],
-                    tokenize=False,
+                    tokenize = False,
                 )
                 for q, a in zip(QUESTIONS, ANSWERS)
             ]
@@ -73,19 +73,19 @@ def main() -> None:
     )
 
     trainer = SFTTrainer(
-        model=model,
-        processing_class=tokenizer,
-        train_dataset=dataset,
-        args=SFTConfig(
-            max_length=None,
-            dataset_text_field="text",
-            per_device_train_batch_size=2,
-            max_steps=MAX_STEPS,
-            learning_rate=2e-4,
-            logging_steps=1,
-            seed=SEED,
-            save_strategy="no",
-            report_to="none",
+        model = model,
+        processing_class = tokenizer,
+        train_dataset = dataset,
+        args = SFTConfig(
+            max_length = None,
+            dataset_text_field = "text",
+            per_device_train_batch_size = 2,
+            max_steps = MAX_STEPS,
+            learning_rate = 2e-4,
+            logging_steps = 1,
+            seed = SEED,
+            save_strategy = "no",
+            report_to = "none",
         ),
     )
 
@@ -101,12 +101,12 @@ def main() -> None:
         if not condition:
             reasons.append(reason)
 
-    check(all(math.isfinite(loss) for loss in losses),
-          f"loss is not finite: {losses}")
-    check(len(grad_norms) == len(steps),
-          "some steps logged no grad_norm")
-    check(all(0.0 < g < MAX_GRAD_NORM for g in grad_norms),
-          f"grad_norm outside (0, {MAX_GRAD_NORM:.0e}): {grad_norms}")
+    check(all(math.isfinite(loss) for loss in losses), f"loss is not finite: {losses}")
+    check(len(grad_norms) == len(steps), "some steps logged no grad_norm")
+    check(
+        all(0.0 < g < MAX_GRAD_NORM for g in grad_norms),
+        f"grad_norm outside (0, {MAX_GRAD_NORM:.0e}): {grad_norms}",
+    )
 
     # Merge the 4-bit adapter back to a 16-bit model and confirm the merged weights exist.
     with tempfile.TemporaryDirectory(prefix = "qlora_merged_") as out_dir:
@@ -121,8 +121,10 @@ def main() -> None:
         for reason in reasons:
             print(f"    - {reason}")
     else:
-        print(f"[PASS] QLoRA + merge to 16-bit on {device} ({len(steps)} steps, "
-              f"loss {losses[0]:.4f} -> {losses[-1]:.4f}, merged to 16-bit)")
+        print(
+            f"[PASS] QLoRA + merge to 16-bit on {device} ({len(steps)} steps, "
+            f"loss {losses[0]:.4f} -> {losses[-1]:.4f}, merged to 16-bit)"
+        )
 
 
 if __name__ == "__main__":
