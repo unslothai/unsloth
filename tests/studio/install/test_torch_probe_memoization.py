@@ -279,9 +279,9 @@ class TestMemoization:
 
         The two that exist route through _build_pip_cmd / _build_uv_cmd, which is what
         makes a function an installer rather than a probe. A function whose every such
-        command carries `--target` writes into that directory and not the environment, so
-        it cannot change which torch is installed: #11635's _prefetch_diffusers_main
-        builds into a scratch target only to warm uv's cache.
+        command targets a directory it just made with `tempfile.mkdtemp` writes there and
+        not into the environment, so it cannot change which torch is installed: #11635's
+        _prefetch_diffusers_main builds into one only to warm uv's cache.
         """
         tree = ast.parse(Path(stack_mod.__file__).read_text(encoding = "utf-8"))
         installers = {}
@@ -313,18 +313,35 @@ class TestMemoization:
     @pytest.mark.parametrize(
         "source, scratch",
         [
-            ('def f(d):\n    args = ("--no-deps", "--target", d)\n    _build_uv_cmd(args)', True),
-            ('def f(d):\n    args = ("--target", d)\n    _build_uv_cmd((*args, "x"))', True),
-            ('def f(d):\n    _build_pip_cmd(("--target", d, "x"))', True),
-            ('def f(d):\n    args = ("--no-deps",)\n    _build_uv_cmd(args)', False),
             (
-                'def f(d):\n    args = ("--target", d)\n    _build_uv_cmd(args)\n    _build_uv_cmd(("x",))',
+                'def f():\n    s = Path(tempfile.mkdtemp())\n    args = ("--no-deps", "--target", str(s))\n'
+                "    _build_uv_cmd(args)",
+                True,
+            ),
+            (
+                'def f():\n    s = tempfile.mkdtemp()\n    args = ("--target", s)\n    _build_uv_cmd((*args, "x"))',
+                True,
+            ),
+            (
+                'def f():\n    s = tempfile.mkdtemp()\n    _build_pip_cmd(("--target", s, "x"))',
+                True,
+            ),
+            # --target into a directory this function did not just make is an install like any other.
+            ('def f(d):\n    args = ("--target", d)\n    _build_uv_cmd(args)', False),
+            (
+                'def f():\n    _build_uv_cmd(("--target", str(site.getsitepackages()[0]), "x"))',
+                False,
+            ),
+            ('def f():\n    args = ("--no-deps",)\n    _build_uv_cmd(args)', False),
+            (
+                'def f():\n    s = tempfile.mkdtemp()\n    args = ("--target", s)\n    _build_uv_cmd(args)\n'
+                '    _build_uv_cmd(("x",))',
                 False,
             ),
             ("def f(args):\n    _build_uv_cmd(args)", False),
         ],
     )
-    def test_only_a_command_built_with_target_counts_as_scratch(self, source, scratch):
+    def test_only_a_command_built_into_a_fresh_temp_dir_counts_as_scratch(self, source, scratch):
         func = ast.parse(source).body[0]
         calls = [
             sub
@@ -344,15 +361,33 @@ class TestMemoization:
 
 
 def _writes_only_a_target(func: ast.FunctionDef, call: ast.Call) -> bool:
-    """Whether this `_build_*_cmd(args)` call's arguments carry `--target`, read from the
-    tuple passed in or a tuple the function assigned to the name passed in."""
-    tuples = {
-        target.id: node.value
-        for node in ast.walk(func)
-        if isinstance(node, ast.Assign) and isinstance(node.value, ast.Tuple)
-        for target in node.targets
-        if isinstance(target, ast.Name)
-    }
+    """Whether this `_build_*_cmd(args)` call installs into a scratch directory: its arguments,
+    read from the tuple passed in or a tuple the function assigned to the name passed in, carry
+    `--target` followed by a directory this function made with `tempfile.mkdtemp`. `--target`
+    alone proves nothing, since it can name site-packages as easily as a scratch directory."""
+    tuples = {}
+    scratch = set()
+    for node in ast.walk(func):
+        if not isinstance(node, ast.Assign):
+            continue
+        for target in node.targets:
+            if not isinstance(target, ast.Name):
+                continue
+            if isinstance(node.value, ast.Tuple):
+                tuples[target.id] = node.value
+            if any(
+                isinstance(sub, ast.Call)
+                and isinstance(sub.func, ast.Attribute)
+                and sub.func.attr == "mkdtemp"
+                for sub in ast.walk(node.value)
+            ):
+                scratch.add(target.id)
+
+    def is_scratch(node) -> bool:
+        # `s` or `str(s)`, where `s` came from mkdtemp.
+        if isinstance(node, ast.Call) and len(node.args) == 1 and not node.keywords:
+            node = node.args[0]
+        return isinstance(node, ast.Name) and node.id in scratch
 
     def carries(node) -> bool:
         if isinstance(node, ast.Name) and node.id in tuples:
@@ -360,9 +395,16 @@ def _writes_only_a_target(func: ast.FunctionDef, call: ast.Call) -> bool:
         if isinstance(node, ast.Starred):
             return carries(node.value)
         if isinstance(node, ast.Tuple):
+            items = node.elts
             return any(
-                (isinstance(item, ast.Constant) and item.value == "--target") or carries(item)
-                for item in node.elts
+                (
+                    isinstance(item, ast.Constant)
+                    and item.value == "--target"
+                    and index + 1 < len(items)
+                    and is_scratch(items[index + 1])
+                )
+                or carries(item)
+                for index, item in enumerate(items)
             )
         return False
 
