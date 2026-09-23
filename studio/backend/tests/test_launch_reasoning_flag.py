@@ -249,8 +249,10 @@ def _fake_torch(*, rocm: bool, device_count: int) -> types.ModuleType:
     return torch
 
 
-def _argv_for(tmp_path, monkeypatch, *, os_label, vendor, modern, template):
-    """The argv the real ``load_model`` builds on one host, for one vintage."""
+def _launched(
+    tmp_path, monkeypatch, *, os_label, vendor, modern, template, model_identifier = "test"
+):
+    """The backend and argv the real ``load_model`` builds on one host, for one vintage."""
     platform, is_wsl = OSES[os_label]
     monkeypatch.setattr(llama_cpp.sys, "platform", platform, raising = False)
     monkeypatch.setattr(llama_cpp, "_is_wsl", lambda: is_wsl, raising = False)
@@ -269,10 +271,15 @@ def _argv_for(tmp_path, monkeypatch, *, os_label, vendor, modern, template):
     captured = _launch(
         backend,
         gguf,
+        model_identifier = model_identifier,
         n_ctx = 4096,
         chat_template_override = template,
     )
-    return captured["cmd"]
+    return backend, captured["cmd"]
+
+
+def _argv_for(tmp_path, monkeypatch, **kwargs):
+    return _launched(tmp_path, monkeypatch, **kwargs)[1]
 
 
 def _reasoning_slice(cmd: list[str]) -> list[str]:
@@ -348,6 +355,100 @@ class TestTheRealLaunchOnEveryHost:
         assert "--reasoning" not in cmd
         assert _reasoning_slice(cmd)[0] == "--chat-template-kwargs"
         assert "reasoning_effort" in _reasoning_slice(cmd)[1]
+
+
+class TestAnInheritedReasoningModeIsHonoured:
+    """`unsloth start --reasoning on|off` reaches Studio only as LLAMA_ARG_REASONING.
+
+    The launch always emits its own default, and llama.cpp lets argv beat the env, so
+    the env value has to become that default for the argv and the backend to agree.
+    """
+
+    @pytest.mark.parametrize("modern", [True, False], ids = ["flag", "kwargs"])
+    @pytest.mark.parametrize(
+        "model_identifier,value,expected",
+        [
+            ("unsloth/Qwen3.6-35B-A3B-GGUF", "off", False),
+            ("unsloth/Qwen3.6-35B-A3B-GGUF", "disabled", False),
+            ("unsloth/Qwen3.5-9B-GGUF", "on", True),
+            ("unsloth/Qwen3.5-9B-GGUF", "1", True),
+            ("test", "false", False),
+        ],
+    )
+    def test_on_or_off_overrides_the_default(
+        self, tmp_path, monkeypatch, modern, model_identifier, value, expected
+    ):
+        monkeypatch.setenv("LLAMA_ARG_REASONING", value)
+        backend, cmd = _launched(
+            tmp_path,
+            monkeypatch,
+            os_label = "linux",
+            vendor = "nvidia",
+            modern = modern,
+            template = THINKING_TEMPLATE,
+            model_identifier = model_identifier,
+        )
+        if modern:
+            assert _reasoning_slice(cmd)[:2] == ["--reasoning", "on" if expected else "off"]
+        else:
+            kwargs = json.loads(_reasoning_slice(cmd)[1])
+            assert kwargs["enable_thinking"] is expected
+        assert backend.reasoning_default is expected
+
+    @pytest.mark.parametrize("modern", [True, False], ids = ["flag", "kwargs"])
+    @pytest.mark.parametrize("value", [None, "auto", "-1", "", "yes", "OFF"])
+    @pytest.mark.parametrize(
+        "model_identifier,expected",
+        [("unsloth/Qwen3.6-35B-A3B-GGUF", True), ("unsloth/Qwen3.5-9B-GGUF", False)],
+    )
+    def test_auto_unset_or_unknown_keeps_the_model_default(
+        self, tmp_path, monkeypatch, modern, value, model_identifier, expected
+    ):
+        """llama.cpp matches these values exactly, so neither does anything else here."""
+        if value is None:
+            monkeypatch.delenv("LLAMA_ARG_REASONING", raising = False)
+        else:
+            monkeypatch.setenv("LLAMA_ARG_REASONING", value)
+        backend, cmd = _launched(
+            tmp_path,
+            monkeypatch,
+            os_label = "linux",
+            vendor = "nvidia",
+            modern = modern,
+            template = THINKING_TEMPLATE,
+            model_identifier = model_identifier,
+        )
+        thinking = "true" if expected else "false"
+        if modern:
+            assert _reasoning_slice(cmd) == [
+                "--reasoning",
+                "on" if expected else "off",
+                "--chat-template-kwargs",
+                '{"preserve_thinking": false}',
+            ]
+        else:
+            assert _reasoning_slice(cmd) == [
+                "--chat-template-kwargs",
+                f'{{"enable_thinking": {thinking}, "preserve_thinking": false}}',
+            ]
+        assert backend.reasoning_default is expected
+
+    @pytest.mark.parametrize("value,effort", [("on", "high"), ("off", "low")])
+    def test_an_effort_ladder_maps_on_and_off_like_the_chat_toggle(
+        self, tmp_path, monkeypatch, value, effort
+    ):
+        monkeypatch.setenv("LLAMA_ARG_REASONING", value)
+        backend, cmd = _launched(
+            tmp_path,
+            monkeypatch,
+            os_label = "linux",
+            vendor = "nvidia",
+            modern = True,
+            template = EFFORT_TEMPLATE,
+        )
+        assert "--reasoning" not in cmd
+        assert json.loads(_reasoning_slice(cmd)[1]) == {"reasoning_effort": effort}
+        assert backend.reasoning_default is (value == "on")
 
 
 class TestInheritedExtrasTreatBothSpellingsAlike:

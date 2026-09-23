@@ -4459,6 +4459,15 @@ def _swa_full_from_args_or_env(
     return value in _LLAMA_ARG_TRUE_VALUES
 
 
+def _reasoning_from_env(env: Optional[Mapping[str, str]] = None) -> Optional[bool]:
+    value = (os.environ if env is None else env).get("LLAMA_ARG_REASONING")
+    if value in _LLAMA_ARG_TRUE_VALUES:
+        return True
+    if value in _LLAMA_ARG_FALSE_VALUES:
+        return False
+    return None
+
+
 def _env_asks_for_the_native_context(env: Optional[Mapping[str, str]] = None) -> bool:
     """Whether an inherited LLAMA_ARG_CTX_SIZE is 0.
 
@@ -6388,8 +6397,8 @@ def _build_launch_reasoning_args(
     llama.cpp stops writing that kwarg, or stops letting it override, this becomes a
     behaviour change rather than a substitution.
 
-    An exported LLAMA_ARG_REASONING is still overridden by the command line, exactly as
-    the kwargs channel overrides it on main; honouring it is #8521.
+    An exported LLAMA_ARG_REASONING on/off is folded into ``reasoning_kwargs`` by the
+    launch, so the command line repeats it instead of overriding it.
     """
     remaining = dict(reasoning_kwargs)
     args: list[str] = []
@@ -27096,6 +27105,9 @@ class LlamaCppBackend:
                             # <= 9, not < 9: 9B is the top of the Small tier, so it is off too.
                             if size_b <= 9:
                                 thinking_default = False
+                    _env_reasoning = _reasoning_from_env(env)
+                    if _env_reasoning is not None:
+                        thinking_default = _env_reasoning
                     self._reasoning_default = thinking_default
                     reasoning_kw = self._reasoning_kwargs(thinking_default)
                     # preserve_thinking is independent of the thinking gate.
