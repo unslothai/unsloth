@@ -166,6 +166,8 @@ export const ptBR = {
       noChatsYet: "Nenhum chat ainda",
       // Shown under an empty project folder in the sidebar.
       noChats: "Nenhum chat",
+      // Shown in the Projects section when every project is pinned, so it has no rows.
+      allProjectsPinned: "Todos os projetos fixados",
       showMore: "Mostrar mais",
       showLess: "Mostrar menos",
       settings: "Configurações",
@@ -221,13 +223,6 @@ export const ptBR = {
       sortPinnedChats: "Ordenar conversas fixadas",
       moveUp: "Mover para cima",
       moveDown: "Mover para baixo",
-    },
-    drag: {
-      reorder: "Reordenar",
-      pin: "Fixar",
-      unpin: "Desafixar",
-      moveTo: "Mover para {name}",
-      moveToRecents: "Mover para Recentes",
     },
     dialog: {
       deleteChat: {
@@ -1453,6 +1448,13 @@ export const ptBR = {
             hfDatasets: "Cache de conjuntos de dados do Hugging Face",
             hfHub: "Cache de modelos do Hugging Face",
           },
+        },
+        lowDisk: {
+          title: "O espaço em disco está acabando",
+          criticalTitle: "O espaço em disco está criticamente baixo",
+          description:
+            "{free} livres de {total}. Limpar os caches pode liberar espaço.",
+          action: "Ver caches",
         },
         futureDownloads: "Apenas novos downloads",
         environmentManaged: "Gerenciado pela variável de ambiente {variable}.",

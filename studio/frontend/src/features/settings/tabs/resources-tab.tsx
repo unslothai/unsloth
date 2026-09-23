@@ -32,12 +32,13 @@ import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import { useT } from "@/i18n";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   type HuggingFaceCacheSettings,
   loadHuggingFaceCacheSettings,
   updateHuggingFaceCacheSettings,
 } from "../api/hugging-face-cache";
+import { useSettingsDialogStore } from "../stores/settings-dialog-store";
 import { CacheStorageRows } from "../components/cache-storage-rows";
 import { LlamaBackendSection } from "../components/llama-backend-section";
 import { ModelMemorySection } from "../components/model-memory-section";
@@ -252,6 +253,12 @@ export function ResourcesTab() {
   const systemInfo = useSystemInfo({
     pollMs: liveUpdates ? POLL_MS : undefined,
   });
+  const storageSectionRef = useRef<HTMLElement | null>(null);
+  const scrollTarget = useSettingsDialogStore((s) => s.scrollTarget);
+  const consumeScrollTarget = useSettingsDialogStore(
+    (s) => s.consumeScrollTarget,
+  );
+  const openDialog = useSettingsDialogStore((s) => s.openDialog);
   const [hfCache, setHfCache] = useState<HuggingFaceCacheSettings | null>(null);
   const [hfCacheLoaded, setHfCacheLoaded] = useState(false);
   const [cacheBrowserOpen, setCacheBrowserOpen] = useState(false);
@@ -287,6 +294,19 @@ export function ResourcesTab() {
       cancelled = true;
     };
   }, []);
+
+  useEffect(() => {
+    if (scrollTarget !== "resources-caches") return;
+    const frame = window.requestAnimationFrame(() => {
+      storageSectionRef.current?.scrollIntoView({
+        block: "start",
+        behavior: "smooth",
+      });
+      consumeScrollTarget("resources-caches");
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [consumeScrollTarget, scrollTarget]);
+
 
   const metrics = useMemo(() => {
     const devices = displayedGpu?.devices ?? [];
@@ -798,7 +818,10 @@ export function ResourcesTab() {
 
       <ModelMemorySection />
 
-      <SettingsSection title={t("settings.resources.storage.title")}>
+      <SettingsSection
+        ref={storageSectionRef}
+        title={t("settings.resources.storage.title")}
+      >
         <InfoRow
           label={t("settings.resources.storage.systemDisk")}
           value={t("settings.resources.storage.diskUsage", {

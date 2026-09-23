@@ -612,6 +612,27 @@ class TestWorkflow:
         assert "continue-on-error" not in smoke
         assert "importlib.import_module" in smoke["run"]
 
+    def test_the_smoke_venv_takes_its_dependencies_from_the_wheel_metadata(self, workflow):
+        """A hand-kept dependency list failed the run twice (einops, then huggingface_hub).
+        The venv installs what the wheel's own METADATA declares, minus torch and the two
+        sibling packages, under a constraints file so torch can never be swapped."""
+        smoke = next(
+            step
+            for step in workflow["jobs"]["build"]["steps"]
+            if step.get("name", "").startswith("Smoke test")
+        )
+        run = smoke["run"]
+        assert "Requires-Dist" in run
+        assert '"torch", "flash-attn"' in run and '"mamba-ssm"' in run and '"causal-conv1d"' in run
+        assert "--constraint" in run
+        assert "pip freeze | grep -E '^(torch|triton)=='" in run
+        # The wheel itself still goes in without dependency resolution.
+        assert "--no-deps" in run.split("importlib.import_module")[0]
+        lines = run.splitlines()
+        start = next(i for i, line in enumerate(lines) if line.endswith("<<'PY'"))
+        end = next(i for i, line in enumerate(lines) if line == "PY")
+        compile("\n".join(lines[start + 1 : end]), "<smoke>", "exec")
+
     def test_the_build_runs_on_the_older_ubuntu(self, workflow):
         """The wheels are tagged linux_x86_64, which pip installs without a glibc check, so the
         runner's glibc is the real compatibility floor."""

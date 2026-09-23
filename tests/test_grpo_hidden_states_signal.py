@@ -316,6 +316,8 @@ def _run_padded_loop(*, returns_hidden_states, signal):
         "chunked_hidden_states_selective_log_softmax": _ZOO_HIDDEN,
         "chunked_selective_log_softmax": _ZOO_RAW,
         "device_synchronize": lambda *a, **k: None,
+        # The generated trainer gets this from rl.py's preamble, so the block resolves it here too.
+        "DEVICE_TYPE_TORCH": "cuda",
         "_get_inference_mode_context_manager": lambda _model: contextlib.nullcontext(),
         "model": model,
         "unwrapped_model": model,

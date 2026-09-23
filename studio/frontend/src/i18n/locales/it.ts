@@ -131,6 +131,8 @@ export const it = {
       noChatsYet: "Ancora nessuna chat",
       // Shown under an empty project folder in the sidebar.
       noChats: "Nessuna chat",
+      // Shown in the Projects section when every project is pinned, so it has no rows.
+      allProjectsPinned: "Tutti i progetti fissati",
       showMore: "Mostra altro",
       showLess: "Mostra meno",
       settings: "Impostazioni",
@@ -186,13 +188,6 @@ export const it = {
       sortPinnedChats: "Ordina le chat fissate",
       moveUp: "Sposta su",
       moveDown: "Sposta giù",
-    },
-    drag: {
-      reorder: "Riordina",
-      pin: "Fissa",
-      unpin: "Sblocca",
-      moveTo: "Sposta in {name}",
-      moveToRecents: "Sposta in Recenti",
     },
     dialog: {
       deleteChat: {
@@ -1448,6 +1443,13 @@ export const it = {
             hfDatasets: "Cache dei set di dati Hugging Face",
             hfHub: "Cache dei modelli Hugging Face",
           },
+        },
+        lowDisk: {
+          title: "Lo spazio su disco sta per esaurirsi",
+          criticalTitle: "Lo spazio su disco è quasi esaurito",
+          description:
+            "{free} liberi su {total}. Svuotare le cache può liberare spazio.",
+          action: "Controlla le cache",
         },
       },
       environment: {

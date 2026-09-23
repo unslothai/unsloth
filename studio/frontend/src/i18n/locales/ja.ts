@@ -166,6 +166,8 @@ export const ja = {
       noChatsYet: "チャットがまだありません",
       // Shown under an empty project folder in the sidebar.
       noChats: "チャットなし",
+      // Shown in the Projects section when every project is pinned, so it has no rows.
+      allProjectsPinned: "すべてのプロジェクトをピン留め済み",
       showMore: "もっと見る",
       showLess: "表示を減らす",
       settings: "設定",
@@ -221,13 +223,6 @@ export const ja = {
       sortPinnedChats: "ピン留めチャットを並べ替え",
       moveUp: "上へ移動",
       moveDown: "下へ移動",
-    },
-    drag: {
-      reorder: "並べ替え",
-      pin: "ピン留め",
-      unpin: "ピン留めを解除",
-      moveTo: "{name} に移動",
-      moveToRecents: "最近に移動",
     },
     dialog: {
       deleteChat: {
@@ -1422,6 +1417,13 @@ export const ja = {
             hfDatasets: "Hugging Faceデータセットキャッシュ",
             hfHub: "Hugging Faceモデルキャッシュ",
           },
+        },
+        lowDisk: {
+          title: "ディスクの空き容量が少なくなっています",
+          criticalTitle: "ディスクの空き容量が非常に少なくなっています",
+          description:
+            "{total}中{free}が空きです。キャッシュを削除すると空き容量を増やせます。",
+          action: "キャッシュを確認",
         },
         futureDownloads: "新規ダウンロードのみ",
         environmentManaged: "環境変数 {variable} で管理されています。",

@@ -8,7 +8,9 @@
 import { normalizeDenseQuantSchemes } from "../../../../lib/dense-quant-schemes.ts";
 import {
   type GgufFitClass,
+  type GgufVariantSizes,
   classifyGgufFit as classifyGgufFitForDevice,
+  ggufVariantFitSizeBytes,
 } from "../../../../lib/gguf-fit.ts";
 import {
   type HostClass,
@@ -176,6 +178,24 @@ export const IMAGE_CATALOG: CatalogGroup[] = [
     description: "Text-to-image",
     scope: "image",
     artifacts: [gguf("unsloth/Z-Image-GGUF")],
+  },
+  {
+    canonicalId: "unsloth/Qwen-Image-2.1",
+    displayName: "Qwen-Image 2.1",
+    // One pipeline for text-to-image and editing (`unified_edit`); the Images page follows the engine's status.
+    description: "Text-to-image and image editing",
+    scope: "image",
+    // Same reason as the 2512 row below: the int8 half of the prequant repo is reached through
+    // prequant_variant_repos and has no artifact row, so alias it to keep a pasted id finding it.
+    aliases: ["unsloth/Qwen-Image-2.1-FP8"],
+    artifacts: [
+      bf16Pipeline("Qwen/Qwen-Image-2.1", 33, {
+        totalParams: 7115124736,
+        prequantRepo: "unsloth/Qwen-Image-2.1-FP8",
+        prequantSizeGb: { fp8: 7.12, int8: 7.26 },
+      }),
+      gguf("unsloth/Qwen-Image-2.1-GGUF"),
+    ],
   },
   {
     canonicalId: "unsloth/Qwen-Image-2512",
@@ -1106,6 +1126,66 @@ export function ggufFitRuns(fit: GgufFitClass): boolean {
   return fit !== "oom";
 }
 
+/** Whether a verdict loads with room to spare. `fits` clears the VRAM budget and `ram` the RAM
+ *  one, both of which already hold a reserve back; `marginal` and `partial` run at the edge. */
+export function ggufFitIsComfortable(fit: GgufFitClass): boolean {
+  return fit === "fits" || fit === "ram";
+}
+
+/** What to recommend on a device whose budget is known. With a repo default (`preferred`, the
+ *  backend's pick: UD-Q4_K_XL, else Q4_K_M, else Q4_K_S), that default wherever it loads, and
+ *  the largest smaller quant that does when it cannot. Spare memory is not a reason to star F16:
+ *  on a large card that recommended a 13 GiB F16 over a 3.9 GiB Q4_K_M. Without one, the largest
+ *  quant that runs with room to spare, else the largest that runs at all, else the smallest.
+ *
+ *  Null when no variant carries a size, since then there is nothing to weigh against the device
+ *  and the caller's repo default is the better guess. */
+export function recommendedQuantForDevice<T extends GgufVariantSizes>(
+  variants: readonly T[],
+  fitOf: (sizeBytes: number) => GgufFitClass,
+  preferred: T | null = null,
+): T | null {
+  // Ranked by the weights, since that is the quality on offer and the size the row shows. Judged on
+  // the download footprint, which also covers the companion GGUFs the loader charges for: a vision
+  // projector, or a drafter `auto` promotes to. On `size_bytes` alone this starred quants that go
+  // OOM once the mmproj lands beside them.
+  const fitOfVariant = (variant: T) => fitOf(ggufVariantFitSizeBytes(variant));
+  // A listing with no size metadata reports zero (gguf_variants.py: an OSError stat-ing a local
+  // file, or a manifest an older backend cannot read). Zero prices as the bare context allowance,
+  // so it reads comfortable on any device and would outrank a real quant that only runs at the
+  // edge. Unknown is not comfortable, so it does not compete.
+  const sized = variants.filter((variant) => ggufVariantFitSizeBytes(variant) > 0);
+  if (sized.length === 0) return null;
+  const bySizeDesc = [...sized].sort(
+    (left, right) => right.size_bytes - left.size_bytes,
+  );
+  // Nothing runs, so the pick is whatever is closest to running: the smallest
+  // FOOTPRINT, not the smallest checkpoint. Companions are chosen per
+  // checkpoint (FLUX.2-klein sizes its text encoder that way), so a lighter
+  // quant can drag a heavier dependency along and end up furthest from fitting.
+  // Ties keep the larger checkpoint, since bySizeDesc is ranked by quality.
+  const smallestFootprint = bySizeDesc.reduce((best, variant) =>
+    ggufVariantFitSizeBytes(variant) < ggufVariantFitSizeBytes(best)
+      ? variant
+      : best,
+  );
+  // Step down from the default when it cannot load, never up past it.
+  const candidates =
+    preferred && variants.includes(preferred)
+      ? ggufVariantFitSizeBytes(preferred) <= 0 ||
+        fitOfVariant(preferred) !== "oom"
+        ? [preferred]
+        : bySizeDesc.filter(
+            (variant) => variant.size_bytes < preferred.size_bytes,
+          )
+      : bySizeDesc;
+  return (
+    candidates.find((variant) => ggufFitIsComfortable(fitOfVariant(variant))) ??
+    candidates.find((variant) => fitOfVariant(variant) !== "oom") ??
+    smallestFootprint
+  );
+}
+
 export interface QuantVariant {
   quant: string;
   filename: string;
@@ -1249,34 +1329,56 @@ export function pickDefaultArtifact(
   )[0];
 }
 
-/** Whether ONE curated artifact loads on this device, by the rule `pickDefaultArtifact` routes with,
- *  since a row click loads that exact artifact. System RAM is not part of a discrete-GPU budget: a
- *  pipeline goes wholly on the card unless the catalog states a measured offload tier or the loader
- *  falls back to CPU, which only transcription does. A unified-memory host reports RAM and no GPU,
- *  and there the RAM is the card. Undefined where nothing can be judged. */
+/** Fit verdict and badge estimate for one curated artifact; undefined if unknown.
+ *  Uses GPU memory, or RAM for unified-memory hosts and transcription fallback.
+ *  Measured offload tiers return the catalog size without an allowance. */
+export function curatedArtifactFit(
+  repoId: string,
+  catalog: CatalogGroup[],
+  budget: DeviceBudget,
+): {
+  fits: boolean;
+  sizeGb?: number;
+  allowanceGb?: number;
+  /** Memory the allowance is 70% of, and which device it is. */
+  deviceGb?: number;
+  device?: "GPU" | "RAM";
+} | undefined {
+  const hit = artifactForRepoId(repoId, catalog);
+  if (!hit || hit.artifact.format === "gguf") return undefined;
+  const { group, artifact } = hit;
+  if (budget.gpuGb <= 0 && budget.systemRamGb <= 0) return undefined;
+  if (artifact.offloadFitTiers?.length) {
+    return {
+      fits: fitsArtifactBudget(group, artifact, budget),
+      sizeGb: artifact.approxSizeGb,
+    };
+  }
+  // Transcription retries a failed device load on CPU (stt_sidecar.py), so RAM is a real budget
+  // there, but the WHOLE model lands on one device: the larger of the two, not their sum. An
+  // image, video or TTS load rejects CPU offload.
+  const onRam =
+    group.task === "stt" ? budget.systemRamGb > budget.gpuGb : budget.gpuGb <= 0;
+  const deviceGb = onRam ? budget.systemRamGb : budget.gpuGb;
+  const allowanceGb = deviceGb * 0.7;
+  const sizeGb = residentSizeGb(group, artifact, budget, allowanceGb);
+  if (sizeGb === undefined) return undefined;
+  return {
+    fits: sizeGb <= allowanceGb,
+    sizeGb,
+    allowanceGb,
+    deviceGb,
+    device: onRam ? "RAM" : "GPU",
+  };
+}
+
+/** `curatedArtifactFit`'s verdict alone. */
 export function curatedArtifactFitsDevice(
   repoId: string,
   catalog: CatalogGroup[],
   budget: DeviceBudget,
 ): boolean | undefined {
-  const hit = artifactForRepoId(repoId, catalog);
-  if (!hit || hit.artifact.format === "gguf") return undefined;
-  const { group, artifact } = hit;
-  if (budget.gpuGb <= 0 && budget.systemRamGb <= 0) return undefined;
-  if (artifact.offloadFitTiers?.length) return fitsArtifactBudget(group, artifact, budget);
-  // Transcription retries a failed device load on CPU (stt_sidecar.py), so RAM is a real budget
-  // there, but the WHOLE model lands on one device: the larger of the two, not their sum. An
-  // image, video or TTS load rejects CPU offload.
-  const deviceGb =
-    group.task === "stt"
-      ? Math.max(budget.gpuGb, budget.systemRamGb)
-      : budget.gpuGb > 0
-        ? budget.gpuGb
-        : budget.systemRamGb;
-  const allowanceGb = deviceGb * 0.7;
-  const sizeGb = residentSizeGb(group, artifact, budget, allowanceGb);
-  if (sizeGb === undefined) return undefined;
-  return sizeGb <= allowanceGb;
+  return curatedArtifactFit(repoId, catalog, budget)?.fits;
 }
 
 /** Whether the "fit on device" toggle keeps a group, including measured offload tiers when an

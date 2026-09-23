@@ -166,6 +166,8 @@ export const ru = {
       noChatsYet: "Пока нет чатов",
       // Shown under an empty project folder in the sidebar.
       noChats: "Нет чатов",
+      // Shown in the Projects section when every project is pinned, so it has no rows.
+      allProjectsPinned: "Все проекты закреплены",
       showMore: "Показать больше",
       showLess: "Показать меньше",
       settings: "Настройки",
@@ -221,13 +223,6 @@ export const ru = {
       sortPinnedChats: "Сортировать закреплённые чаты",
       moveUp: "Переместить вверх",
       moveDown: "Переместить вниз",
-    },
-    drag: {
-      reorder: "Переставить",
-      pin: "Закрепить",
-      unpin: "Открепить",
-      moveTo: "Переместить в {name}",
-      moveToRecents: "Переместить в Недавние",
     },
     dialog: {
       deleteChat: {
@@ -1449,6 +1444,13 @@ export const ru = {
             hfDatasets: "Кеш наборов данных Hugging Face",
             hfHub: "Кеш моделей Hugging Face",
           },
+        },
+        lowDisk: {
+          title: "Заканчивается место на диске",
+          criticalTitle: "Критически мало места на диске",
+          description:
+            "Свободно {free} из {total}. Очистка кешей может освободить место.",
+          action: "Посмотреть кеши",
         },
         futureDownloads: "Только новые загрузки",
         environmentManaged: "Управляется переменной окружения {variable}.",
