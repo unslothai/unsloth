@@ -997,3 +997,22 @@ def test_a_partly_merged_bitsandbytes_route_model_saves_and_reloads(tmp_path):
         got = reloaded(input_ids = ids).logits
     # Unsloth's fused kernels in memory vs plain transformers on reload.
     torch.testing.assert_close(got, want, atol = 2e-2, rtol = 2e-2)
+
+
+def test_merge_and_unmerge_under_an_accelerate_hook():
+    """A dispatched model wraps each module's forward and keeps the original as `_old_forward`;
+    the class swaps of a merge and unmerge must carry it along, or the merged forward still runs
+    the packed one on a module whose packed bytes were set aside."""
+    pytest.importorskip("accelerate")
+    from accelerate.hooks import AlignDevicesHook, add_hook_to_module
+
+    packed_model, dense_model = _lora_pair(scale_range = (118, 134))
+    add_hook_to_module(packed_model.base_model.model[0].base_layer, AlignDevicesHook(io_same_device = True))
+    x = torch.randn(3, 64, generator = torch.Generator().manual_seed(0)).to(torch.bfloat16)
+    with torch.no_grad():
+        with_lora = packed_model(x)
+        packed_model.merge_adapter()
+        dense_model.merge_adapter()
+        assert torch.equal(packed_model(x), dense_model(x))
+        packed_model.unmerge_adapter()
+        assert torch.equal(packed_model(x), with_lora)

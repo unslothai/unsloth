@@ -33,6 +33,7 @@ delta; unmerging puts the packed bytes back.
 
 import functools
 import os
+import types
 from typing import Optional
 
 import torch
@@ -494,12 +495,21 @@ def install_compressed_tensors_keep_packed() -> bool:
 _PACKED_STATE = "_unsloth_mxfp4_packed_state"
 
 
+def _swap_class(module, cls):
+    # accelerate keeps the forward it wrapped as `_old_forward`; it must follow the class.
+    old = module.__dict__.get("_old_forward")
+    hooked = old is not None and getattr(old, "__func__", None) is type(module).forward
+    module.__class__ = cls
+    if hooked:
+        module._old_forward = types.MethodType(cls.forward, module)
+
+
 def _densify(module):
     weight = module.dequantize_weight()
     packed = module._parameters.pop("weight_packed")
     scale = module._parameters.pop("weight_scale")
     module.__dict__[_PACKED_STATE] = (packed, scale, module.compute_dtype)
-    module.__class__ = nn.Linear
+    _swap_class(module, nn.Linear)
     module.weight = nn.Parameter(weight, requires_grad = False)
 
 
@@ -508,7 +518,7 @@ def _restore_packed(module):
     # The dense weight followed any move or cast since the merge; so do the packed bytes.
     device, dtype = module.weight.device, module.weight.dtype
     del module._parameters["weight"]
-    module.__class__ = Mxfp4PackedLinear
+    _swap_class(module, Mxfp4PackedLinear)
     module.compute_dtype = dtype
     for name, param in (("weight_packed", packed), ("weight_scale", scale)):
         if param.device != device:
