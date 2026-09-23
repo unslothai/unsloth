@@ -125,11 +125,11 @@ from .diffusion_speed import (
     SPEED_OFF,
     apply_speed_optims,
     compile_eligible,
-    compile_fallback_error,
     compiled_shapes_are_static,
     normalize_speed_mode,
     resolve_speed_mode,
     restore_backend_flags,
+    settle_compile_fallback,
     snapshot_backend_flags,
 )
 from .diffusion_attention import (
@@ -7488,14 +7488,7 @@ class DiffusionBackend:
                     steps_done[0] += steps
                 # A guarded block that fell back to eager (compile failed at its first forward) no longer runs compiled:
                 # report it, so status, LoRA gating and the compile-cache shape registry stop treating it as compiled.
-                fallback = compile_fallback_error(state.pipe)
-                if fallback and "compiled" in (state.speed_optims or ()):
-                    object.__setattr__(
-                        state,
-                        "speed_optims",
-                        tuple(o for o in state.speed_optims if o != "compiled") + ("compile_fallback_eager",),
-                    )
-                    logger.warning("diffusion: regional compile fell back to eager: %s", fallback)
+                settle_compile_fallback(state, state.pipe, logger)
                 # Keep progress ACTIVE through the post-denoise work: the route persists the image after this returns,
                 # so a mount probe reading idle would refresh the gallery too early. Persist the warm compile bundle;
                 # a STATIC compile makes new artifacts per (w,h,batch), so register this shape. The write itself is

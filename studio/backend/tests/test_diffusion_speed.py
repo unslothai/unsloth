@@ -1198,6 +1198,46 @@ def test_compiled_block_that_works_is_untouched(monkeypatch):
     assert ds_mod.compile_fallback_error(types.SimpleNamespace(transformer = dit)) is None
 
 
+def test_settle_fallback_keeps_compiled_while_another_dit_still_compiles(monkeypatch):
+    # Dual-DiT loads fall back per DiT. While the second expert still runs compiled, status keeps "compiled" (the LoRA
+    # gate and the compile-cache shape registry read it) and only gains the fallback marker; once both fell back,
+    # "compiled" goes.
+    _stub_torch_compile_errors(monkeypatch)
+
+    def broken(x):
+        raise _BackendCompilerFailed("CantSplit")
+
+    first = _Dit([_Block(broken)])
+    second_block = _Block(broken)
+    second_block_ok = _Block(lambda x: x * 2)
+    second = _Dit([second_block_ok])
+    ds_mod.guard_compiled_blocks(first)
+    ds_mod.guard_compiled_blocks(second)
+    pipe = types.SimpleNamespace(transformer = first, transformer_2 = second)
+    state = types.SimpleNamespace(speed_optims = ("compiled", "cuda_graph"))
+    first.blocks[0](1)
+    assert "CantSplit" in ds_mod.settle_compile_fallback(state, pipe)
+    assert state.speed_optims == ("compiled", "cuda_graph", "compile_fallback_eager")
+    ds_mod.settle_compile_fallback(state, pipe)  # idempotent
+    assert state.speed_optims == ("compiled", "cuda_graph", "compile_fallback_eager")
+
+    third = _Dit([second_block])
+    ds_mod.guard_compiled_blocks(third)
+    pipe.transformer_2 = third
+    third.blocks[0](1)
+    ds_mod.settle_compile_fallback(state, pipe)
+    assert state.speed_optims == ("cuda_graph", "compile_fallback_eager")
+
+
+def test_settle_fallback_is_a_noop_without_a_failure(monkeypatch):
+    _stub_torch_compile_errors(monkeypatch)
+    dit = _Dit([_Block(lambda x: x)])
+    ds_mod.guard_compiled_blocks(dit)
+    state = types.SimpleNamespace(speed_optims = ("compiled",))
+    assert ds_mod.settle_compile_fallback(state, types.SimpleNamespace(transformer = dit)) is None
+    assert state.speed_optims == ("compiled",)
+
+
 @pytest.mark.parametrize("kind", ["runtime", "oom"])
 def test_non_compile_errors_are_not_swallowed(monkeypatch, kind):
     # Only a failure while BUILDING the graph is safe to retry eagerly. A kernel error, and an OOM even when inductor

@@ -92,6 +92,7 @@ from .diffusion_speed import (
     apply_speed_optims,
     resolve_speed_mode,
     restore_backend_flags,
+    settle_compile_fallback,
     snapshot_backend_flags,
 )
 from .diffusion_auto_policy import (
@@ -6286,6 +6287,9 @@ class VideoBackend:
                 # The pipeline returned, so every step ran whatever the last event said. This is
                 # also the only place a latent-only render (no decoder entered) can complete.
                 _finish_denoise()
+                # A guarded compiled block that failed to build at its first forward now runs eager; the status must
+                # not keep reporting it compiled (a forced-compile quantised load runs ~30x slower eager).
+                settle_compile_fallback(state, pipe, logger)
                 self._gen.update(phase = "export", eta_seconds = None)
                 if fam.modular_workflow:
                     video_frames = output["videos"][0]

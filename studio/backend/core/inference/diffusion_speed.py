@@ -613,6 +613,38 @@ def guard_compiled_blocks(transformer: Any, logger: Any = None) -> int:
     return count
 
 
+def compiled_dits_active(pipe: Any) -> bool:
+    """True while at least one guarded DiT still runs its compiled blocks (dual-DiT pipelines fall back per DiT)."""
+    for transformer in _denoiser_dits(pipe):
+        guard = getattr(transformer, "_unsloth_compile_guard", None)
+        if guard is not None and not guard.error:
+            return True
+    return False
+
+
+def settle_compile_fallback(state: Any, pipe: Any, logger: Any = None) -> Optional[str]:
+    """After a render, fold a runtime compile fallback into ``state.speed_optims`` (image and video backends share it).
+
+    Adds ``compile_fallback_eager`` once, and drops ``compiled`` only when NO guarded DiT still runs compiled, so a
+    dual-DiT load whose second expert still compiles keeps the LoRA gate and the compile-cache shape registry. Returns
+    the recorded failure, or None when nothing fell back."""
+    fallback = compile_fallback_error(pipe)
+    if not fallback:
+        return None
+    optims = tuple(getattr(state, "speed_optims", None) or ())
+    updated = list(optims)
+    if "compile_fallback_eager" not in updated:
+        updated.append("compile_fallback_eager")
+        if logger is not None:
+            logger.warning("diffusion.speed: regional compile fell back to eager: %s", fallback)
+    if "compiled" in updated and not compiled_dits_active(pipe):
+        updated.remove("compiled")
+    if tuple(updated) != optims:
+        # The load states are frozen dataclasses; the status must still reflect what actually runs.
+        object.__setattr__(state, "speed_optims", tuple(updated))
+    return fallback
+
+
 def compile_fallback_error(pipe: Any) -> Optional[str]:
     """The compile failure a guarded DiT fell back from, or None while every compiled DiT still runs compiled."""
     for transformer in _denoiser_dits(pipe):
