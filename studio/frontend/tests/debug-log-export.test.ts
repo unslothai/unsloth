@@ -143,6 +143,9 @@ function makeWorld(options: {
       toasts.push({ kind: "error", title, options: opts }),
   };
 
+  const passthrough = (props: { children?: React.ReactNode }) =>
+    React.createElement(React.Fragment, null, props.children);
+
   const { DebuggingTab } = loadWithStubs<typeof DebuggingTabModule>(TAB_URL, {
     react: React,
     "react/jsx-runtime": jsxRuntime,
@@ -161,14 +164,38 @@ function makeWorld(options: {
         );
       },
     },
+    // pass-through wrappers: the markup around the buttons is not under test
+    "@/components/ui/input-group": {
+      InputGroup: passthrough,
+      InputGroupAddon: passthrough,
+      InputGroupInput: () => null,
+    },
+    "@/components/ui/select": {
+      Select: passthrough,
+      SelectContent: passthrough,
+      SelectGroup: passthrough,
+      SelectItem: passthrough,
+      SelectLabel: passthrough,
+      SelectTrigger: passthrough,
+      SelectValue: () => null,
+    },
+    "@/components/ui/tooltip": {
+      Tooltip: passthrough,
+      TooltipContent: () => null,
+      TooltipTrigger: passthrough,
+    },
     "@/features/hub/hooks/use-copy-feedback": {
       useCopyFeedback: () => ({ copied: false, copy: async () => {} }),
     },
+    "@/features/hub": { formatBytes: (bytes: number) => `${bytes} B` },
     "@/i18n": { useT: () => t },
     "@/lib/api-base": apiStubs["@/lib/api-base"],
     "@/lib/strip-ansi": { stripAnsi: (value: string) => value },
     "@/lib/toast": { toast },
-    "@hugeicons/core-free-icons": { Tick02Icon: {} },
+    "@/lib/utils": {
+      cn: (...parts: unknown[]) => parts.filter(Boolean).join(" "),
+    },
+    "@hugeicons/core-free-icons": new Proxy({}, { get: () => ({}) }),
     "@hugeicons/react": { HugeiconsIcon: () => null },
     "../api/debug-logs": api,
     "../components/settings-row": {

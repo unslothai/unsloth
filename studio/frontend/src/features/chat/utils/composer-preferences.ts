@@ -46,6 +46,14 @@ export function composerFollowUpBehavior(
   return preference === "queue" ? "steer" : "queue";
 }
 
+/** Intent that lands a submit on `behavior` from either preference. */
+export function followUpSubmitIntent(
+  preference: ComposerFollowUpBehavior,
+  behavior: ComposerFollowUpBehavior,
+): ComposerSubmitIntent {
+  return preference === behavior ? "default" : "opposite";
+}
+
 export function composerShortcutLabels(
   shortcut: ComposerSendShortcut,
   mac: boolean,

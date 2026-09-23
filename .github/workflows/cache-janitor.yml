@@ -307,6 +307,28 @@ jobs:
                 pre=$(printf '%s' "$key" | sed -E 's/-[0-9a-f]{40}$//'); fkeep=1 ;;
               v0-rust-*)
                 pre=$(printf '%s' "$key" | sed -E 's/-[0-9a-f]{8,}$//') ;;
+              pip-v2-notebooks-colab-*)
+                # One generation, not `keep`. This family replays a 697-pin Colab
+                # freeze and measures 6.97 GB per generation, so two copies of one
+                # job's downloads held 13.95 GB, 30% of the repo's whole 50 GiB
+                # budget (2026-09-18, with the repo at 92% full and evicting).
+                # Every other pip family averages 0.5 GB.
+                #
+                # The general argument for keep=2 is that the previous generation
+                # still answers an exact-key restore. It does here too, but only
+                # for an exact revert of colab_pip_freeze.gpu.txt or of
+                # notebooks-ci.yml, which is rarer than the eviction pressure the
+                # second copy causes on every other family. Same trade as the
+                # CodeQL rule above: keep is a budget dial, and this family spends
+                # more of it than the hit it buys is worth.
+                #
+                # The glob is deliberately a prefix and not the exact job name:
+                # it has to keep matching `notebooks-colab-cpu`, and any further
+                # suffix, because retiring the prefix is how that job collects a
+                # trim at all (see the comment on its `name` in notebooks-ci.yml).
+                # Each retired prefix is then its own family here, so keep=1
+                # drains it to one entry and the 7-day idle timer takes the last.
+                pre=$(printf '%s' "$key" | sed -E 's/-[0-9a-f]{64}$//'); fkeep=1 ;;
               pip-v2-*|uv-*|fe-dist-*)
                 # Strip only the trailing dependency hash. Everything before it --
                 # the job name for pip-v2, the OS for uv and fe-dist -- stays in the

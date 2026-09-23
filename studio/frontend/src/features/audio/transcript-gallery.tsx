@@ -25,6 +25,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { downloadTranscript } from "./transcript-download";
+import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import { archiveTranscript, deleteTranscript, listTranscripts } from "./api";
@@ -237,9 +238,10 @@ export function TranscriptGallery({
                 </DropdownMenuItem>
                 <DropdownMenuItem
                   onClick={() =>
-                    void navigator.clipboard.writeText(record.text).then(
-                      () => toast.success("Transcript copied"),
-                      () => toast.error("Could not copy transcript."),
+                    void copyToClipboard(record.text).then((ok) =>
+                      ok
+                        ? toast.success("Transcript copied")
+                        : toast.error("Could not copy transcript."),
                     )
                   }
                 >

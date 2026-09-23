@@ -143,10 +143,11 @@ def test_tied_model_disables_offload_instead_of_raising():
         assert resolve(_tied_model(), True) is False
 
 
-def test_opaque_model_leaves_request_alone():
-    # Cannot inspect it, so do not guess, and do not crash.
+def test_opaque_model_disables_offload():
+    # Used to return the request unchanged, which is the one answer that crashes: the caller
+    # acts on True by calling get_input_embeddings() unguarded, the same call that raised here.
     with _as_platform("posix"):
-        assert resolve(_Opaque(), True) is True
+        assert resolve(_Opaque(), True) is False
 
 
 def test_wsl_and_windows_disable_offload():

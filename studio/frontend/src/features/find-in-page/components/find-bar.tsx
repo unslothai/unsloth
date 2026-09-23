@@ -39,7 +39,7 @@ function rewindToStart(event: { currentTarget: HTMLInputElement }): void {
 }
 
 /** The wash reads on both the light and dark find-bar surfaces. */
-const FIND_BUTTON_CLASS = "size-8 hover:bg-black/[0.06] dark:hover:bg-white/10";
+const FIND_BUTTON_CLASS = "size-8 hover:bg-[rgb(0_0_0_/_calc(0.06*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))]";
 
 /** Coalesce a typing burst before the DOM search/highlight work runs. */
 export const FIND_QUERY_SETTLE_MS = 100;
@@ -187,7 +187,6 @@ export default function FindBar({
   }, [focusToken, restoreSelection]);
 
   const searching = query.length > 0;
-  const empty = !queryPending && searching && count === 0;
   // A pending query has no count of its own yet, so the settled one's zero must not disable the
   // walk: `stepWhenSettled` queues the press and runs it once the count arrives.
   const canStep = searching && (count > 0 || queryPending);
@@ -226,10 +225,9 @@ export default function FindBar({
         spellCheck={false}
         autoComplete="off"
         autoCorrect="off"
-        className={cn(
-          "min-w-0 flex-1 bg-transparent text-ui-15 outline-none placeholder:text-muted-foreground",
-          empty && "text-destructive",
-        )}
+        // The query keeps its colour with no matches: the 0/0 counter beside it
+        // already says so, and recolouring the text reads as a typing error.
+        className="min-w-0 flex-1 bg-transparent text-ui-15 outline-none placeholder:text-muted-foreground"
       />
       <span
         aria-live="polite"

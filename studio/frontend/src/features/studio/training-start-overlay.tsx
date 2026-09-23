@@ -25,7 +25,8 @@ import {
   type DownloadProgressResponse,
 } from "@/features/chat/api/chat-api";
 import { useTransferStats } from "@/features/chat/hooks/use-transfer-stats";
-import { formatEta, formatRate } from "@/features/chat/utils/format-transfer";
+import { formatEta } from "@/features/chat/utils/format-transfer";
+import { formatBytes, formatRate } from "@/features/hub";
 import { useHfTokenStore } from "@/features/hub/stores/hf-token-store";
 import {
   EMPTY_DOWNLOAD_STATE,
@@ -56,14 +57,6 @@ const HF_REPO_REGEX = /^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/;
 // replay on every return mid-run. Module-level so it survives remounts.
 const animatedJobs = new Set<string>();
 
-function formatBytes(n: number): string {
-  if (n <= 0) return "0 B";
-  if (n < 1024) return `${n} B`;
-  if (n < 1024 ** 2) return `${(n / 1024).toFixed(1)} KB`;
-  if (n < 1024 ** 3) return `${(n / 1024 ** 2).toFixed(1)} MB`;
-  return `${(n / 1024 ** 3).toFixed(2)} GB`;
-}
-
 function formatCachePath(path: string): string {
   return path
     .replace(/^\/(?:home|Users)\/[^/]+/, "~")
@@ -83,7 +76,9 @@ function useHfDownloadProgress(
 ): DownloadState {
   const phase = useTrainingRuntimeStore((s) => s.phase);
   const isStarting = useTrainingRuntimeStore((s) => s.isStarting);
-  const [state, setState] = useState<DownloadState>(EMPTY_DOWNLOAD_STATE);
+  const [state, setState] = useState<DownloadState & { repoId?: string }>(
+    EMPTY_DOWNLOAD_STATE,
+  );
 
   const shouldPoll =
     isStarting ||
@@ -121,7 +116,7 @@ function useHfDownloadProgress(
         applied = generation;
         const next = downloadStateFromProgress(prog, latest);
         latest = next;
-        setState(next);
+        setState({ ...next, repoId });
         // only a verified snapshot stops the tick; a settled row can still be waiting on files.
         if (next.completeOnDisk) {
           finished = true;
@@ -144,7 +139,8 @@ function useHfDownloadProgress(
     };
   }, [repoId, shouldPoll, fetcher]);
 
-  return state;
+  // Never show the old repo's Ready state while the resolved repo starts polling.
+  return state.repoId === repoId ? state : EMPTY_DOWNLOAD_STATE;
 }
 
 function useModelDownloadProgress(
@@ -198,7 +194,7 @@ function ResourceRow({
 }: ResourceRowProps): ReactElement | null {
   const t = useT();
   // Rolling-window rate + ETA from the cumulative-byte series the poll hook
-  // produces, so we show "5.2 / 20.7 GB • 85.3 MB/s • 3m 12s left", not just the pair.
+  // produces, so we show "5.2 GB / 21 GB • 85 MB/s • 3m 12s left", not just the pair.
   const stats = useTransferStats(state.downloadedBytes, state.totalBytes);
 
   if (!resourceRowHasContent(state, preparation)) return null;
@@ -306,6 +302,9 @@ export function TrainingStartOverlay({
   const phase = useTrainingRuntimeStore((s) => s.phase);
   const jobId = useTrainingRuntimeStore((s) => s.jobId);
   const startModelName = useTrainingRuntimeStore((s) => s.startModelName);
+  const modelDownloadRepoId = useTrainingRuntimeStore(
+    (s) => s.modelDownloadRepoId,
+  );
   const startDatasetName = useTrainingRuntimeStore((s) => s.startDatasetName);
   const startHfToken = useTrainingRuntimeStore((s) => s.startHfToken);
   const startFromResume = useTrainingRuntimeStore((s) => s.startFromResume);
@@ -322,11 +321,13 @@ export function TrainingStartOverlay({
   const hfDatasetName = datasetSource === "huggingface" ? dataset : null;
   const hasStartResources = startModelName !== null;
   const useConfiguredResources = !isStarting && !hasStartResources;
-  const modelName = hasStartResources
-    ? startModelName
-    : useConfiguredResources
-      ? configuredModel
-      : null;
+  const modelName =
+    modelDownloadRepoId ??
+    (hasStartResources
+      ? startModelName
+      : useConfiguredResources
+        ? configuredModel
+        : null);
   const datasetName = hasStartResources
     ? startDatasetName
     : useConfiguredResources
