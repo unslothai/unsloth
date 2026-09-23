@@ -25,7 +25,10 @@ from typing import Any, Optional
 TC_OFF = "off"
 TC_AUTO = "auto"
 TC_FBCACHE = "fbcache"
-TC_MODES = (TC_FBCACHE,)
+# Skips denoiser calls on a schedule fixed before the generation (diffusion_step_skip.py). Explicit opt-in only: the
+# auto policy below never picks it.
+TC_STATIC = "static"
+TC_MODES = (TC_FBCACHE, TC_STATIC)
 
 # FBCache residual thresholds: higher skips more steps (faster, lower quality). Quantised transformers shift the
 # residual distribution, so they need a higher threshold.
@@ -35,6 +38,14 @@ QUANT_FBCACHE_THRESHOLD = 0.12
 # Auto step-count bar: FBCache's win scales with step count, so auto engages only at 20+ steps ("dev" schedules
 # qualify, distilled turbo never does).
 FBCACHE_MIN_STEPS = 20
+
+
+def cache_breaks_graph(mode: Optional[str]) -> bool:
+    """Whether an ENGAGED cache mode decides inside the denoiser forward, which is what costs the
+    compile its fullgraph and runs the CUDA graph eager. FBCache does (a data-dependent skip
+    between the first block and the rest); static decides outside the forward from a fixed
+    schedule, so it keeps both exactly as uncached."""
+    return bool(mode) and mode != TC_STATIC
 
 
 def normalize_transformer_cache(value: Optional[str]) -> Optional[str]:
@@ -348,6 +359,10 @@ def apply_step_cache(
     mode = normalize_transformer_cache(mode)
     if mode is None or mode == TC_AUTO:
         # AUTO is resolved by the loader before this; treat a stray auto as off.
+        return None
+    if mode == TC_STATIC:
+        # Installed by diffusion_step_skip on the image backend; any other caller runs uncached.
+        _warn(logger, mode, RuntimeError("static step skip is not supported on this backend"))
         return None
     transformer = getattr(pipe, "transformer", None)
     if transformer is None:
