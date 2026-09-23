@@ -2045,7 +2045,11 @@ def upsert_chat_thread(thread: dict) -> dict:
                 anthropic_code_exec_container_id = excluded.anthropic_code_exec_container_id,
                 forked_from_thread_id = excluded.forked_from_thread_id,
                 forked_from_message_id = excluded.forked_from_message_id,
-                fork_boundary_message_id = excluded.fork_boundary_message_id,
+                -- The backend owns this anchor and moves it itself when the row it names is
+                -- pruned, so an absent one is a writer rebuilding the record, not a clear.
+                fork_boundary_message_id = COALESCE(
+                    excluded.fork_boundary_message_id, chat_threads.fork_boundary_message_id
+                ),
                 -- The base only describes the title it was generated with, so a rename drops it.
                 -- Under the same title an absent one keeps the stored base, since a writer that
                 -- rebuilds the record without this field is not renaming anything.
@@ -3965,6 +3969,11 @@ class ChatForkActiveGenerationError(RuntimeError):
 
 _FORK_TITLE_SUFFIX = re.compile(r"^(?P<base>.*?)\s*\((?P<n>\d+)\)\s*$", re.DOTALL)
 
+# Roles the thread paints a row for. Mirrors threadMessageKind in
+# components/assistant-ui/thread-message-slot.ts, which is pinned from the other side by
+# thread-message-slot.test.ts. Only used to place the fork divider, which rides a row.
+_RENDERED_MESSAGE_ROLES = frozenset({"user", "assistant"})
+
 
 def _title_family(conn: sqlite3.Connection, base: str) -> list[tuple[str, str]]:
     """Every chat named `base` or `base (n)`, as (id, title)."""
@@ -4087,8 +4096,15 @@ def fork_chat_thread(
         base = fork_base_of(src)
         title = _next_fork_title(conn, base)
         # Anchor for the "Continued from chat" divider. Not derivable later: copies keep the
-        # source's timestamps and take fresh ids.
-        boundary_message_id = id_map[ancestry[-1]["id"]]
+        # source's timestamps and take fresh ids. The last message that PAINTS one, not simply
+        # the last copied: an imported chat can end on a system message, which renders as no row
+        # at all (threadMessageKind), and the divider rides the row it anchors to. Picking it in
+        # the frontend instead would mean reading the whole message list in every row, which is
+        # what the thread's render budget forbids. None when nothing inherited is visible.
+        boundary_row = next(
+            (row for row in reversed(ancestry) if row["role"] in _RENDERED_MESSAGE_ROLES), None
+        )
+        boundary_message_id = id_map[boundary_row["id"]] if boundary_row is not None else None
         conn.execute(
             """
             INSERT INTO chat_threads

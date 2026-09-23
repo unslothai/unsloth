@@ -1550,6 +1550,55 @@ def test_fork_records_the_last_inherited_message(tmp_path, monkeypatch):
     assert studio_db.get_chat_thread("fork-1")["forkBoundaryMessageId"] == boundary
 
 
+def test_the_boundary_skips_a_trailing_message_that_paints_no_row(tmp_path, monkeypatch):
+    """An imported chat can end on a system message, which the thread renders as nothing.
+    Anchoring there would hang the divider off a row that never mounts."""
+    _reset_studio_db(tmp_path, monkeypatch)
+    studio_db.upsert_chat_thread({**_thread("src"), "title": "Imported"})
+    studio_db.sync_chat_messages(
+        "src",
+        [
+            _stored_message(id = "m1", parentId = None, createdAt = 1),
+            _stored_message(id = "m2", parentId = "m1", role = "assistant", createdAt = 2),
+            _stored_message(id = "m3", parentId = "m2", role = "system", createdAt = 3),
+        ],
+    )
+
+    forked = _fork("src", "fork-1", 99)
+    copied = {m["id"]: m for m in studio_db.list_chat_messages("fork-1")}
+
+    # The system message is still inherited, it just does not close the history.
+    assert [m["role"] for m in copied.values()] == ["user", "assistant", "system"]
+    assert copied[forked["forkBoundaryMessageId"]]["role"] == "assistant"
+
+
+def test_a_fork_with_nothing_visible_to_inherit_has_no_boundary(tmp_path, monkeypatch):
+    _reset_studio_db(tmp_path, monkeypatch)
+    studio_db.upsert_chat_thread({**_thread("src"), "title": "Prompt only"})
+    studio_db.sync_chat_messages(
+        "src", [_stored_message(id = "m1", parentId = None, role = "system", createdAt = 1)]
+    )
+
+    # Nothing the reader can see, so no inherited history to close and no divider.
+    assert _fork("src", "fork-1", 99)["forkBoundaryMessageId"] is None
+
+
+def test_a_whole_record_save_without_the_boundary_keeps_it(tmp_path, monkeypatch):
+    """The backend owns the anchor and moves it itself, so an absent one is not a clear."""
+    _reset_studio_db(tmp_path, monkeypatch)
+    studio_db.upsert_chat_thread({**_thread("src"), "title": "Notes"})
+    studio_db.sync_chat_messages("src", [_msg("m1", None, 1)])
+    boundary = _fork("src", "fork-1", 99)["forkBoundaryMessageId"]
+    assert boundary is not None
+
+    stored = studio_db.get_chat_thread("fork-1")
+    studio_db.upsert_chat_thread(
+        {k: v for k, v in stored.items() if k != "forkBoundaryMessageId"}
+    )
+
+    assert studio_db.get_chat_thread("fork-1")["forkBoundaryMessageId"] == boundary
+
+
 def test_plain_thread_has_no_fork_boundary(tmp_path, monkeypatch):
     _reset_studio_db(tmp_path, monkeypatch)
     studio_db.upsert_chat_thread(_thread("plain"))
