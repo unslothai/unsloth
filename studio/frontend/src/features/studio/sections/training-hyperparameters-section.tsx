@@ -141,7 +141,7 @@ export function TrainingHyperparametersSection({
               value={tab}
               options={tabs}
               ariaLabel={t("studio.params.trainingHyperparameters")}
-              className="w-full max-w-[calc(520px*var(--ui-space-scale,1))] [&>button]:px-6"
+              className="w-full max-w-[calc(520px*var(--ui-space-scale,1))] [&>button]:px-6 max-sm:[&>button]:px-2.5"
             />
           </div>
 

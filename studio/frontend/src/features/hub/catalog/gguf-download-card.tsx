@@ -1024,7 +1024,7 @@ export function GgufDownloadCard({
                   The group sizes to its content (it still shrinks when the row
                   is tight) so the chevron follows the tags instead of stranding
                   itself at the far edge of a full-width trigger. */}
-              <span className="flex min-w-0 items-center gap-2 overflow-hidden text-ui-12 text-muted-foreground">
+              <span className="flex min-w-0 items-center gap-2 overflow-hidden text-ui-12 text-muted-foreground max-[360px]:gap-1">
                 {selected ? (
                   <QuantBadge
                     quant={selectedLabel ?? selected.quant}
@@ -1037,7 +1037,13 @@ export function GgufDownloadCard({
                   </span>
                 )}
                 {selected?.downloaded && (
-                  <DotTag tone="success" label="On device" />
+                  // Dot only on phones.
+                  <DotTag
+                    tone="success"
+                    label="On device"
+                    className="max-sm:border-0 max-sm:px-0"
+                    labelClassName="max-sm:sr-only"
+                  />
                 )}
                 {selected && !selected.downloaded && selected.partial && (
                   <Tooltip>
@@ -1058,7 +1064,8 @@ export function GgufDownloadCard({
                     </TooltipContent>
                   </Tooltip>
                 )}
-                <DotTag tone="gguf" label="GGUF" />
+                {/* Size beats format tag on phones. */}
+                <DotTag tone="gguf" label="GGUF" className="max-sm:hidden" />
                 {selected &&
                   selectedDownloadSizeLabel &&
                   !selected.downloaded && (

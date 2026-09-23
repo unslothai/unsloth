@@ -62,6 +62,22 @@
     --hub-readme-measure: 1400px;
   }
 
+  /* Wrap long tokens in readmes on small screens instead of clipping. */
+  @media (max-width: 1023px) {
+    .hub-readme-prose :is(p, li, td, th, code) {
+      overflow-wrap: break-word;
+    }
+  }
+
+  /* Wider column on 4K / ultrawide. */
+  @media (min-width: 2560px) {
+    .hub-page {
+      --hub-measure: clamp(1100px, 90%, 2200px);
+      --hub-measure-compact: clamp(860px, 90%, 1440px);
+      --hub-readme-measure: 1600px;
+    }
+  }
+
   /* Filled-control surface — Hub search, Hub filter triggers, picker
 	   search bars. Borderless soft fill matching the .hub-tab-toggle pills:
 	     - Resting: 5% bg, no border
