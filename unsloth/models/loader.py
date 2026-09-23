@@ -227,39 +227,53 @@ def _config_uses_remote_code(config):
         # A custom tokenizer, processor or feature extractor is not code the compiler traces.
         return any(str(k).startswith(("AutoModel", "AutoConfig")) for k in auto_map)
 
-    if _remote(config):
-        return True
     # The three usual names are not the whole set. transformers keys its own composite
     # configs off `sub_configs` (present since 4.x), and Qwen-Omni calls its children
     # thinker_config / talker_config / token2wav_config, Nemotron-3-Nano-Omni llm_config
-    # and sound_config. A sub-config carrying a model `auto_map` under a name not listed
-    # here would read as native and put the compiler back on code it cannot trace, which
-    # is the one direction this predicate must never get wrong.
-    subs = ["text_config", "vision_config", "audio_config"]
-    for sub in getattr(type(config), "sub_configs", None) or ():
-        if sub not in subs:
-            subs.append(sub)
-    if isinstance(config, dict):
-        # A dict config carries its children as plain dicts under arbitrary keys, and
-        # nests them (omnivinci puts audio_config two levels down), so walk them all.
-        pending = [config]
-        seen = set()
-        while pending:
-            current = pending.pop()
-            if id(current) in seen:
-                continue
-            seen.add(id(current))
-            for value in current.values():
-                if isinstance(value, dict):
-                    if _remote(value):
-                        return True
-                    pending.append(value)
-    for sub in subs:
-        cfg = getattr(config, sub, None)
-        if cfg is None and isinstance(config, dict):
-            cfg = config.get(sub)
-        if cfg is not None and _remote(cfg):
+    # and sound_config. Children nest (omnivinci puts audio_config two levels down, and an
+    # object-shaped llm_config can carry its own audio_config), so walk every level: a
+    # sub-config carrying a model `auto_map` read as native would put the compiler back on
+    # code it cannot trace, which is the one direction this predicate must never get wrong.
+    try:
+        from transformers import PretrainedConfig as _config_class
+    except Exception:
+        _config_class = ()
+
+    def _is_config(value):
+        return isinstance(value, dict) or (bool(_config_class) and isinstance(value, _config_class))
+
+    def _children(node):
+        if isinstance(node, dict):
+            return [value for value in node.values() if isinstance(value, dict)]
+        names = ["text_config", "vision_config", "audio_config"]
+        for sub in getattr(type(node), "sub_configs", None) or ():
+            if sub not in names:
+                names.append(sub)
+        # A declared sub-config can be any config-like object; a callable (a Mock) is not one.
+        children = [
+            child
+            for child in (getattr(node, name, None) for name in names)
+            if child is not None and (_is_config(child) or not callable(child))
+        ]
+        # Undeclared children only when they really are configs.
+        try:
+            children.extend(value for value in vars(node).values() if _is_config(value))
+        except TypeError:
+            pass
+        return children
+
+    pending = [(config, 0)]
+    seen = set()
+    while pending:
+        current, depth = pending.pop()
+        if id(current) in seen:
+            continue
+        seen.add(id(current))
+        if _remote(current):
             return True
+        # Configs nest a few levels at most; the bound only guards pathological objects.
+        if depth < 8:
+            pending.extend((child, depth + 1) for child in _children(current))
     return False
 
 

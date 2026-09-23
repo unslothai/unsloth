@@ -197,3 +197,40 @@ def test_compiler_call_site_gates_the_flag_on_the_config():
         f"{gated.count(False)} of {len(gated)} compiler call sites pass trust_remote_code "
         "straight through instead of gating it on _config_uses_remote_code(model_config)"
     )
+
+
+def test_nested_object_sub_configs_are_walked():
+    """A native root whose declared child is itself composite: the remote grandchild counts."""
+    from transformers import PretrainedConfig
+
+    f = _helper()
+
+    class LlmConfig(PretrainedConfig):
+        model_type = "llm_test"
+        sub_configs = {"audio_config": PretrainedConfig}
+
+    class RootConfig(PretrainedConfig):
+        model_type = "root_test"
+        sub_configs = {"llm_config": LlmConfig}
+
+    class RemoteAudioConfig(PretrainedConfig):
+        model_type = "remote_audio_test"
+
+    RemoteAudioConfig.__module__ = "transformers_modules.some_repo.configuration_x"
+
+    root = RootConfig()
+    root.llm_config = LlmConfig()
+    root.llm_config.audio_config = PretrainedConfig()
+    assert f(root) is False
+    root.llm_config.audio_config = RemoteAudioConfig()
+    assert f(root) is True
+    root.llm_config.audio_config = PretrainedConfig(auto_map = {"AutoModel": "modeling_x.XModel"})
+    assert f(root) is True
+
+
+def test_a_mock_config_does_not_recurse_forever():
+    from unittest.mock import MagicMock
+
+    f = _helper()
+    config = SimpleNamespace(auto_map = None, text_config = MagicMock(auto_map = None))
+    assert f(config) is False
