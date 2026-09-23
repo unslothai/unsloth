@@ -686,33 +686,35 @@
 /* Off the default, each token mixes toward --contrast-target (foreground
    above 50, background below). Curves live in applyCustomizationToDocument.
    Ink mixes toward pure black or white instead when raising, so text gets
-   crisper rather than the surfaces going grey. */
+   crisper rather than the surfaces going grey. Palette surfaces, fills and
+   lines take --contrast-panel-target when set, so a custom foreground of the
+   other polarity cannot wash them into themselves. */
 html[data-contrast-adjust] {
-	--card: color-mix(in oklab, var(--card-base), var(--contrast-target) var(--contrast-surface-mix));
+	--card: color-mix(in oklab, var(--card-base), var(--contrast-panel-target, var(--contrast-target)) var(--contrast-surface-mix));
 	/* Same curve as its rows, so the step between them survives the slider. */
-	--sidebar: color-mix(in oklab, var(--sidebar-base), var(--contrast-target) var(--contrast-surface-mix));
-	--popover: color-mix(in oklab, var(--popover-base), var(--contrast-target) var(--contrast-surface-mix));
+	--sidebar: color-mix(in oklab, var(--sidebar-base), var(--contrast-panel-target, var(--contrast-target)) var(--contrast-surface-mix));
+	--popover: color-mix(in oklab, var(--popover-base), var(--contrast-panel-target, var(--contrast-target)) var(--contrast-surface-mix));
 	/* Chips and secondary buttons: between the planes and the lit rows. */
-	--secondary: color-mix(in oklab, var(--secondary-base), var(--contrast-target) var(--contrast-fill-mix, var(--contrast-surface-mix)));
-	--muted: color-mix(in oklab, var(--muted-base), var(--contrast-target) var(--contrast-fill-mix, var(--contrast-surface-mix)));
+	--secondary: color-mix(in oklab, var(--secondary-base), var(--contrast-panel-target, var(--contrast-target)) var(--contrast-fill-mix, var(--contrast-surface-mix)));
+	--muted: color-mix(in oklab, var(--muted-base), var(--contrast-panel-target, var(--contrast-target)) var(--contrast-fill-mix, var(--contrast-surface-mix)));
 	/* Hover and selection fills: shorter than the surfaces when lowering, so a
 	   lit row never sinks below its background; longest when raising, so the
 	   step to the lit row grows with the slider. */
-	--accent: color-mix(in oklab, var(--accent-base), var(--contrast-target) var(--contrast-state-mix, var(--contrast-surface-mix)));
-	--nav-surface-hover: color-mix(in oklab, var(--nav-surface-hover-base), var(--contrast-target) var(--contrast-state-mix, var(--contrast-surface-mix)));
-	--panel-surface-hover: color-mix(in oklab, var(--panel-surface-hover-base), var(--contrast-target) var(--contrast-state-mix, var(--contrast-surface-mix)));
-	--panel-input-surface: color-mix(in oklab, var(--panel-input-surface-base), var(--contrast-target) var(--contrast-surface-mix));
+	--accent: color-mix(in oklab, var(--accent-base), var(--contrast-panel-target, var(--contrast-target)) var(--contrast-state-mix, var(--contrast-surface-mix)));
+	--nav-surface-hover: color-mix(in oklab, var(--nav-surface-hover-base), var(--contrast-panel-target, var(--contrast-target)) var(--contrast-state-mix, var(--contrast-surface-mix)));
+	--panel-surface-hover: color-mix(in oklab, var(--panel-surface-hover-base), var(--contrast-panel-target, var(--contrast-target)) var(--contrast-state-mix, var(--contrast-surface-mix)));
+	--panel-input-surface: color-mix(in oklab, var(--panel-input-surface-base), var(--contrast-panel-target, var(--contrast-target)) var(--contrast-surface-mix));
 	/* Same curve as its resting twin, or the hover inverts at high contrast. */
-	--panel-input-surface-hover: color-mix(in oklab, var(--panel-input-surface-hover-base), var(--contrast-target) var(--contrast-surface-mix));
+	--panel-input-surface-hover: color-mix(in oklab, var(--panel-input-surface-hover-base), var(--contrast-panel-target, var(--contrast-target)) var(--contrast-surface-mix));
 	/* Sidebar and model picker rows, and the chat control hovers. */
-	--sidebar-accent: color-mix(in oklab, var(--sidebar-accent-base), var(--contrast-target) var(--contrast-state-mix, var(--contrast-surface-mix)));
-	--chat-icon-bg-hover: color-mix(in oklab, var(--chat-icon-bg-hover-base), var(--contrast-target) var(--contrast-state-mix, var(--contrast-surface-mix)));
-	--tabs-line-indicator: color-mix(in oklab, var(--tabs-line-indicator-base), var(--contrast-target) var(--contrast-surface-mix));
-	--border: color-mix(in oklab, var(--border-base), var(--contrast-target) var(--contrast-line-mix));
+	--sidebar-accent: color-mix(in oklab, var(--sidebar-accent-base), var(--contrast-panel-target, var(--contrast-target)) var(--contrast-state-mix, var(--contrast-surface-mix)));
+	--chat-icon-bg-hover: color-mix(in oklab, var(--chat-icon-bg-hover-base), var(--contrast-panel-target, var(--contrast-target)) var(--contrast-state-mix, var(--contrast-surface-mix)));
+	--tabs-line-indicator: color-mix(in oklab, var(--tabs-line-indicator-base), var(--contrast-panel-target, var(--contrast-target)) var(--contrast-surface-mix));
+	--border: color-mix(in oklab, var(--border-base), var(--contrast-panel-target, var(--contrast-target)) var(--contrast-line-mix));
 	/* Control outlines and switch tracks stop short of the hairlines: an
 	   affordance still has to be findable at the bottom of the range. */
-	--input: color-mix(in oklab, var(--input-base), var(--contrast-target) var(--contrast-control-mix));
-	--sidebar-border: color-mix(in oklab, var(--sidebar-border-base), var(--contrast-target) var(--contrast-line-mix));
+	--input: color-mix(in oklab, var(--input-base), var(--contrast-panel-target, var(--contrast-target)) var(--contrast-control-mix));
+	--sidebar-border: color-mix(in oklab, var(--sidebar-border-base), var(--contrast-panel-target, var(--contrast-target)) var(--contrast-line-mix));
 	/* Ink. The 0% fallback is the identity for older reload snapshots. Palette
 	   surfaces keep their colours under a custom page, so their ink takes its
 	   own target. */
@@ -1495,8 +1497,8 @@ html[data-chat-font] .aui-root {
 	/* A scoped base has to redo the derivation: the :root one is already
 	   substituted, so otherwise the slider stops at these panels. */
 	html[data-contrast-adjust]:not(.dark) .diffusion-surface {
-		--border: color-mix(in oklab, var(--border-base), var(--contrast-target) var(--contrast-line-mix));
-		--input: color-mix(in oklab, var(--input-base), var(--contrast-target) var(--contrast-control-mix));
+		--border: color-mix(in oklab, var(--border-base), var(--contrast-panel-target, var(--contrast-target)) var(--contrast-line-mix));
+		--input: color-mix(in oklab, var(--input-base), var(--contrast-panel-target, var(--contrast-target)) var(--contrast-control-mix));
 	}
 
 	/* Settings columns on Images and Video: content dissolves at whichever edge it runs
@@ -4113,7 +4115,7 @@ body.sidebar-row-dragging * {
 .dark .find-bar-surface {
 	/* #2c2c2c, on the same curve as --card: the bar has to stay above the
 	   cards it floats over at every contrast, not just the default. */
-	background-color: color-mix(in oklab, #2c2c2c, var(--contrast-target, transparent) var(--contrast-surface-mix, 0%));
+	background-color: color-mix(in oklab, #2c2c2c, var(--contrast-panel-target, var(--contrast-target, transparent)) var(--contrast-surface-mix, 0%));
 	box-shadow: 0 4px 20px 6px var(--background);
 }
 

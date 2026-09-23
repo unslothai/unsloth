@@ -298,6 +298,8 @@ export const CONTRAST_INK_MIX_VAR = "--contrast-ink-mix";
 export const CONTRAST_INK_TARGET_VAR = "--contrast-ink-target";
 /** Ink on palette surfaces (cards, menus, sidebar), which custom colors keep. */
 export const CONTRAST_PANEL_INK_TARGET_VAR = "--contrast-panel-ink-target";
+/** Surfaces, fills and lines on those palette surfaces. */
+export const CONTRAST_PANEL_TARGET_VAR = "--contrast-panel-target";
 /** Multipliers for the hand-written washes that stand in for those tokens. */
 export const CONTRAST_WASH_GAIN_VAR = "--contrast-wash-gain";
 export const CONTRAST_EDGE_GAIN_VAR = "--contrast-edge-gain";
@@ -997,6 +999,12 @@ export function applyCustomizationToDocument(
     // Primary ink heads for pure black/white raising, and into the page
     // lowering, stopping well short so body copy stays readable at 0.
     const palettePole = resolved === "light" ? "#000000" : "#ffffff";
+    // Palette surfaces keep their colours under a custom foreground, so they
+    // raise toward the palette pole. Unset, they share --contrast-target.
+    setVar(
+      CONTRAST_PANEL_TARGET_VAR,
+      raising && colors.foreground ? palettePole : null,
+    );
     setVar(
       CONTRAST_INK_TARGET_VAR,
       raising
@@ -1028,6 +1036,7 @@ export function applyCustomizationToDocument(
     setVar(CONTRAST_TEXT_MIX_VAR, null);
     setVar(CONTRAST_INK_TARGET_VAR, null);
     setVar(CONTRAST_PANEL_INK_TARGET_VAR, null);
+    setVar(CONTRAST_PANEL_TARGET_VAR, null);
     setVar(CONTRAST_INK_MIX_VAR, null);
     setVar(CONTRAST_WASH_GAIN_VAR, null);
     setVar(CONTRAST_EDGE_GAIN_VAR, null);

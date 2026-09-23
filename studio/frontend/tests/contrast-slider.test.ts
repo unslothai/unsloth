@@ -51,6 +51,8 @@ const STATE_TOKENS = [
   "chat-icon-bg-hover",
 ];
 const LINE_TOKENS = ["border", "input", "sidebar-border"];
+/** Where palette fills and lines head, so a custom foreground cannot steer them. */
+const PANEL_TARGET = "var(--contrast-panel-target, var(--contrast-target))";
 const FILL_TOKENS = [...SURFACE_TOKENS, ...CHIP_TOKENS, ...STATE_TOKENS];
 /** Body copy and labels: head for pure black/white raising, into the page lowering. */
 const INK_TOKENS = [
@@ -117,7 +119,7 @@ test("off the default, fills and lines each take their own curve", () => {
   for (const token of SURFACE_TOKENS) {
     assert.ok(
       adjusted.includes(
-        `--${token}: color-mix(in oklab, var(--${token}-base), var(--contrast-target) var(--contrast-surface-mix));`,
+        `--${token}: color-mix(in oklab, var(--${token}-base), ${PANEL_TARGET} var(--contrast-surface-mix));`,
       ),
       `--${token} is not on the surface curve`,
     );
@@ -125,7 +127,7 @@ test("off the default, fills and lines each take their own curve", () => {
   for (const token of CHIP_TOKENS) {
     assert.ok(
       adjusted.includes(
-        `--${token}: color-mix(in oklab, var(--${token}-base), var(--contrast-target) var(--contrast-fill-mix, var(--contrast-surface-mix)));`,
+        `--${token}: color-mix(in oklab, var(--${token}-base), ${PANEL_TARGET} var(--contrast-fill-mix, var(--contrast-surface-mix)));`,
       ),
       `--${token} is not on the fill curve`,
     );
@@ -134,21 +136,21 @@ test("off the default, fills and lines each take their own curve", () => {
   for (const token of STATE_TOKENS) {
     assert.ok(
       adjusted.includes(
-        `--${token}: color-mix(in oklab, var(--${token}-base), var(--contrast-target) var(--contrast-state-mix, var(--contrast-surface-mix)));`,
+        `--${token}: color-mix(in oklab, var(--${token}-base), ${PANEL_TARGET} var(--contrast-state-mix, var(--contrast-surface-mix)));`,
       ),
       `--${token} is not on the state curve`,
     );
   }
   assert.ok(
-    adjusted.includes("--border: color-mix(in oklab, var(--border-base), var(--contrast-target) var(--contrast-line-mix));"),
+    adjusted.includes(`--border: color-mix(in oklab, var(--border-base), ${PANEL_TARGET} var(--contrast-line-mix));`),
   );
   assert.ok(
-    adjusted.includes("--sidebar-border: color-mix(in oklab, var(--sidebar-border-base), var(--contrast-target) var(--contrast-line-mix));"),
+    adjusted.includes(`--sidebar-border: color-mix(in oklab, var(--sidebar-border-base), ${PANEL_TARGET} var(--contrast-line-mix));`),
   );
   // A control outline nobody can find is not low contrast, it is broken, so
   // --input stops short of the hairlines.
   assert.ok(
-    adjusted.includes("--input: color-mix(in oklab, var(--input-base), var(--contrast-target) var(--contrast-control-mix));"),
+    adjusted.includes(`--input: color-mix(in oklab, var(--input-base), ${PANEL_TARGET} var(--contrast-control-mix));`),
   );
 });
 
@@ -267,6 +269,28 @@ test("raising pushes ink its own way, never toward its surface", () => {
   );
   assert.doesNotMatch(STORE, /\.background \?\? PALETTE_SURFACES\[resolved\]\.background;\s*const page/);
   assert.ok(SNAPSHOT.includes('"--contrast-panel-ink-target"'));
+});
+
+test("raising lifts palette fills away from their surfaces under any foreground", () => {
+  // A white custom foreground on a dark custom page in light mode sent the
+  // white sidebar's lit row toward white: its step fell from 1.18:1 to 1.16:1.
+  assert.match(
+    STORE,
+    /CONTRAST_PANEL_TARGET_VAR,\s*raising && colors\.foreground \? palettePole : null/,
+  );
+  assert.match(STORE, /setVar\(CONTRAST_PANEL_TARGET_VAR, null\);/);
+  assert.ok(SNAPSHOT.includes('"--contrast-panel-target"'));
+  // The dark find bar stands in for --card, so it follows the same target.
+  assert.ok(
+    CSS.includes(
+      "background-color: color-mix(in oklab, #2c2c2c, var(--contrast-panel-target, var(--contrast-target, transparent)) var(--contrast-surface-mix, 0%));",
+    ),
+  );
+  assert.equal(
+    (CSS.match(/--(?:border|input): color-mix\(in oklab, var\(--(?:border|input)-base\), var\(--contrast-panel-target, var\(--contrast-target\)\)/g) ?? []).length,
+    4,
+    "a scoped line re-derivation lost the panel target",
+  );
 });
 
 test("the sidebar section labels follow the slider", () => {
