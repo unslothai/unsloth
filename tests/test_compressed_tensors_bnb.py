@@ -50,11 +50,11 @@ try:
 except Exception:
     HAS_CT = False
 
-try:
-    from transformers.core_model_loading import WeightConverter  # noqa: F401
-    HAS_CONVERTERS = True
-except Exception:
-    HAS_CONVERTERS = False
+# The re-quantization hooks the quantizer's `update_weight_conversions` (transformers 5.8+);
+# 5.0 to 5.7 have the converter loader without that hook, and the module stays inert there.
+from unsloth.models.compressed_tensors_bnb import _transformers_supports_weight_converters
+
+HAS_CONVERTERS = _transformers_supports_weight_converters()
 
 
 def _w4a16(**overrides):
