@@ -183,6 +183,20 @@ def test_a_timed_out_repair_stops_the_installers_children_and_records_it(monkeyp
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason = "POSIX process tree")
+def test_a_peer_that_started_during_a_slow_prefetch_stops_startup(monkeypatch, tmp_path):
+    """The prefetch holds no lock, so a pass can begin under it; importing then mixes versions."""
+    pid_file, started = _slow_installer(monkeypatch, tmp_path, timeout_s = 2)
+    recorded = []
+    monkeypatch.setattr(dr, "_record_failure", lambda: recorded.append(True))
+    monkeypatch.setattr(dr, "_peer_holds_pass", lambda: True)
+    with pytest.raises(dr.PeerInstallInProgress, match = "Start Unsloth Studio again"):
+        dr._run_repair(lambda _line: None)
+    assert started == ["--prefetch-diffusers-main"]
+    assert recorded == [], "the peer's manifest is not ours to mark"
+    _assert_child_stopped(pid_file)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason = "POSIX process tree")
 def test_our_own_install_stopped_at_the_deadline_stops_startup(monkeypatch, tmp_path):
     """Stopped mid-install, packages may be half replaced: never import them, never record."""
     pid_file, started = _slow_installer(monkeypatch, tmp_path, timeout_s = 2)

@@ -220,6 +220,10 @@ def _run_repair(echo: Callable[[str], None], prefetch: bool = True) -> bool:
             logger.warning("diffusers self-heal could not start the installer: %s", exc)
             return False
         if code is None:
+            # The prefetch takes no lock, so a peer may have started replacing packages meanwhile.
+            if _peer_holds_pass():
+                logger.warning("diffusers self-heal timed out while a peer's dependency pass ran")
+                raise PeerInstallInProgress(PEER_INSTALL_MESSAGE)
             _record_failure()
             echo(
                 f"  - the pinned Diffusers build took over {_REPAIR_TIMEOUT_S}s to download and "
