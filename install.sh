@@ -1631,6 +1631,8 @@ fi
 # A package host that is blocked, or too slow to serve a small index page within the probe budget, is swapped for a public mirror that passes the same probe. Hosts that the user has already redirected are left alone, the choice reaches every child through the env vars uv, pip, npm and the Unsloth helpers already read, and UNSLOTH_MIRROR_FALLBACK=0 turns it off.
 _MIRROR_CERNET="https://mirrors.cernet.edu.cn"
 _MIRROR_PYPI="$_MIRROR_CERNET/pypi/web/simple"
+# GitHub-release mirrors keep only the newest Python builds, while a pinned uv asks for the builds it shipped with; npmmirror keeps every release.
+_MIRROR_PYTHON="https://registry.npmmirror.com/-/binary/python-build-standalone"
 
 # Prints ok, slow (answered but missed the budget) or blocked.
 _mirror_probe() {
@@ -1652,19 +1654,29 @@ _mirror_url() {
         node:mirror) echo "$_MIRROR_CERNET/nodejs-release/index.tab" ;;
         npm:default) echo "https://registry.npmjs.org/npm/latest" ;;
         npm:mirror) echo "https://registry.npmmirror.com/npm/latest" ;;
+        # Any published release will do: the probe only checks that the host answers.
+        python:default) echo "https://releases.astral.sh/github/python-build-standalone/releases/download/20260728/SHA256SUMS" ;;
+        python:mirror) echo "$_MIRROR_PYTHON/20260728/" ;;
     esac
 }
 
-# True when the user already chose an index for uv ($1 = uv) or pip ($1 = pip), by env var or config file.
-_mirror_index_configured() {
-    if [ "$1" = uv ]; then
-        [ -n "${UV_DEFAULT_INDEX:-}${UV_INDEX_URL:-}${UV_INDEX:-}${UV_EXTRA_INDEX_URL:-}" ] && return 0
-        _mic_key='\[\[index\]\]|(pip\.)?(index|index-url|default-index|extra-index-url|no-index)[[:space:]]*='
-        set -- "${UV_CONFIG_FILE:-}" "${XDG_CONFIG_HOME:-$HOME/.config}/uv/uv.toml" /etc/xdg/uv/uv.toml /etc/uv/uv.toml
-    else
-        [ -n "${PIP_INDEX_URL:-}${PIP_EXTRA_INDEX_URL:-}${PIP_NO_INDEX:-}" ] && return 0
-        _mic_key='(index[-_]url|extra[-_]index[-_]url|no[-_]index)[[:space:]]*[=:]'
+# True when the user already chose a source for uv's index ($1 = uv), uv's Python downloads ($1 = python) or pip's index ($1 = pip), by env var or config file.
+_mirror_configured() {
+    case "$1" in
+        uv)
+            [ -n "${UV_DEFAULT_INDEX:-}${UV_INDEX_URL:-}${UV_INDEX:-}${UV_EXTRA_INDEX_URL:-}" ] && return 0
+            _mic_key='\[\[index\]\]|(pip\.)?(index|index-url|default-index|extra-index-url|no-index)[[:space:]]*=' ;;
+        python)
+            [ -n "${UV_PYTHON_INSTALL_MIRROR:-}" ] && return 0
+            _mic_key='python-install-mirror[[:space:]]*=' ;;
+        pip)
+            [ -n "${PIP_INDEX_URL:-}${PIP_EXTRA_INDEX_URL:-}${PIP_NO_INDEX:-}" ] && return 0
+            _mic_key='(index[-_]url|extra[-_]index[-_]url|no[-_]index)[[:space:]]*[=:]' ;;
+    esac
+    if [ "$1" = pip ]; then
         set -- "${PIP_CONFIG_FILE:-}" "${XDG_CONFIG_HOME:-$HOME/.config}/pip/pip.conf" "$HOME/.pip/pip.conf" "$HOME/Library/Application Support/pip/pip.conf" /etc/xdg/pip/pip.conf /etc/pip.conf
+    else
+        set -- "${UV_CONFIG_FILE:-}" "${XDG_CONFIG_HOME:-$HOME/.config}/uv/uv.toml" /etc/xdg/uv/uv.toml /etc/uv/uv.toml
     fi
     for _mic_file in "$@"; do
         if [ -f "$_mic_file" ] && grep -Eq "^[[:space:]]*($_mic_key)" "$_mic_file" 2>/dev/null; then
@@ -1719,6 +1731,10 @@ _mirror_use() {
             export UNSLOTH_NPM_REGISTRY="https://registry.npmmirror.com"
             _mu_from="registry.npmjs.org"
             _mu_to="$UNSLOTH_NPM_REGISTRY" ;;
+        python)
+            export UV_PYTHON_INSTALL_MIRROR="$_MIRROR_PYTHON"
+            _mu_from="releases.astral.sh (Python builds)"
+            _mu_to="$UV_PYTHON_INSTALL_MIRROR" ;;
     esac
     step "mirror" "$_mu_from is $2; using $_mu_to" "$C_WARN"
     _mf_used=true
@@ -1734,8 +1750,8 @@ _mirror_fallback() {
     _mf_uv=true
     _mf_pip=true
     _mf_used=false
-    _mirror_index_configured uv && _mf_uv=false
-    _mirror_index_configured pip && _mf_pip=false
+    _mirror_configured uv && _mf_uv=false
+    _mirror_configured pip && _mf_pip=false
     _mf_hosts=""
     if [ "$_mf_uv" = true ] || [ "$_mf_pip" = true ]; then
         _mf_hosts="pypi"
@@ -1743,6 +1759,7 @@ _mirror_fallback() {
     [ -n "${UNSLOTH_PYTORCH_MIRROR:-}${UNSLOTH_TORCH_INDEX_URL:-}" ] || _mf_hosts="$_mf_hosts torch"
     [ -n "${UNSLOTH_NODE_MIRROR:-}" ] || _mf_hosts="$_mf_hosts node"
     [ -n "${UNSLOTH_NPM_REGISTRY:-}" ] || _mf_hosts="$_mf_hosts npm"
+    _mirror_configured python || _mf_hosts="$_mf_hosts python"
     [ -n "$_mf_hosts" ] || return 0
     _mf_dir=$(mktemp -d 2>/dev/null) || return 0
     # shellcheck disable=SC2086

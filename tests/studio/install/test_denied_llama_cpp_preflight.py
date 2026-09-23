@@ -37,7 +37,7 @@ SHARED_FUNCTIONS = (
     "Get-MasterRootOverride",
     "Get-ManagedLlamaCppDir",
     "Invoke-ManagedLlamaCppPreflight",
-    "Test-MirrorIndexConfigured",
+    "Test-MirrorConfigured",
     "Invoke-MirrorProbe",
     "Invoke-MirrorFallback",
 )

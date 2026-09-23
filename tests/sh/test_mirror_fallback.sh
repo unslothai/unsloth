@@ -28,7 +28,7 @@ cat > "$_WORK/bin/curl" <<'EOF'
 for _a in "$@"; do _url="$_a"; done
 echo "$_url" >> "$MOCK_LOG"
 case "$_url" in https://mirrors.cernet.edu.cn/*|https://registry.npmmirror.com/*) _m=_MIRROR ;; *) _m= ;; esac
-case "$_url" in *pypi*) _h=PYPI ;; *pytorch*) _h=TORCH ;; *node*) _h=NODE ;; *) _h=NPM ;; esac
+case "$_url" in *python-build*) _h=PYTHON ;; *pypi*) _h=PYPI ;; *pytorch*) _h=TORCH ;; *node*) _h=NODE ;; *) _h=NPM ;; esac
 eval "_r=\${MOCK_$_h$_m:-ok}"
 case " $* " in *" -sL "*) ;; *) [ -z "$_m" ] || { printf 302; exit 0; } ;; esac
 case "$_r" in
@@ -39,7 +39,7 @@ esac
 EOF
 chmod +x "$_WORK/bin/curl"
 
-_VARS="UV_DEFAULT_INDEX UV_INDEX UV_INDEX_STRATEGY PIP_INDEX_URL PIP_EXTRA_INDEX_URL UNSLOTH_PYTORCH_MIRROR UNSLOTH_NODE_MIRROR UNSLOTH_NPM_REGISTRY"
+_VARS="UV_DEFAULT_INDEX UV_INDEX UV_INDEX_STRATEGY PIP_INDEX_URL PIP_EXTRA_INDEX_URL UNSLOTH_PYTORCH_MIRROR UNSLOTH_NODE_MIRROR UNSLOTH_NPM_REGISTRY UV_PYTHON_INSTALL_MIRROR"
 
 # _run <shell> [VAR=value ...]: prints "VAR=value" for every exported var in $_VARS, then the step lines.
 _run() {
@@ -104,6 +104,15 @@ for SH in dash bash; do
     rm -rf "$_WORK/home/.pip"
     out=$(_run "$SH" MOCK_PYPI=blocked UV_DEFAULT_INDEX=https://a.example/simple PIP_INDEX_URL=https://a.example/simple)
     assert_eq "[$SH] both tools configured: pypi.org never probed" "" "$(grep -F pypi "$_WORK/curl.log" || true)"
+    out=$(_run "$SH" MOCK_PYTHON=slow)
+    assert_contains "[$SH] slow Python builds: uv downloads them from npmmirror" "$out" "UV_PYTHON_INSTALL_MIRROR=https://registry.npmmirror.com/-/binary/python-build-standalone"
+    assert_not_contains "[$SH] slow Python builds: indexes untouched" "$out" "UV_DEFAULT_INDEX"
+    printf 'python-install-mirror = "https://corp.example/pbs"\n' > "$_WORK/home/uv.toml"
+    out=$(_run "$SH" MOCK_PYTHON=blocked MOCK_PYPI=blocked UV_CONFIG_FILE="$_WORK/home/uv.toml")
+    assert_not_contains "[$SH] uv.toml python-install-mirror is kept" "$out" "UV_PYTHON_INSTALL_MIRROR"
+    assert_contains "[$SH] uv.toml python-install-mirror leaves the index fallback on" "$out" "UV_DEFAULT_INDEX=$M/pypi/web/simple"
+    out=$(_run "$SH" MOCK_PYTHON=blocked UV_PYTHON_INSTALL_MIRROR=https://corp.example/pbs)
+    assert_eq "[$SH] a user Python mirror skips the probe" "" "$(grep -F python-build "$_WORK/curl.log" || true)"
     out=$(_run "$SH" MOCK_TORCH=blocked UNSLOTH_TORCH_INDEX_URL=https://corp.example/whl/cu128)
     assert_not_contains "[$SH] a pinned torch index is not overridden" "$out" "UNSLOTH_PYTORCH_MIRROR"
     out=$(_run "$SH" MOCK_NPM=blocked UNSLOTH_NPM_REGISTRY=https://corp.example/npm/)

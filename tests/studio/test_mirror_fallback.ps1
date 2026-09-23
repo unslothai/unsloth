@@ -7,7 +7,7 @@ $installPath = (Resolve-Path ([System.IO.Path]::Combine($PSScriptRoot, "..", "..
 $tokens = $null; $errors = $null
 $ast = [System.Management.Automation.Language.Parser]::ParseFile($installPath, [ref]$tokens, [ref]$errors)
 if ($errors) { throw "install.ps1 has parse errors" }
-foreach ($name in 'Test-MirrorIndexConfigured', 'Invoke-MirrorProbe', 'Invoke-MirrorFallback') {
+foreach ($name in 'Test-MirrorConfigured', 'Invoke-MirrorProbe', 'Invoke-MirrorFallback') {
     $fn = $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $name }, $true)
     Invoke-Expression $fn[0].Extent.Text
 }
@@ -47,7 +47,7 @@ try {
 } finally { $proc.Kill() }
 
 $names = '_UNSLOTH_MIRROR_PROBED', 'UNSLOTH_MIRROR_FALLBACK', 'UV_INDEX', 'UV_DEFAULT_INDEX', 'UV_INDEX_URL', 'UV_INDEX_STRATEGY', 'PIP_INDEX_URL',
-    'PIP_EXTRA_INDEX_URL', 'UNSLOTH_PYTORCH_MIRROR', 'UNSLOTH_NODE_MIRROR', 'UNSLOTH_NPM_REGISTRY', 'UV_CONFIG_FILE', 'PIP_CONFIG_FILE'
+    'PIP_EXTRA_INDEX_URL', 'UNSLOTH_PYTORCH_MIRROR', 'UNSLOTH_NODE_MIRROR', 'UNSLOTH_NPM_REGISTRY', 'UV_PYTHON_INSTALL_MIRROR', 'UV_CONFIG_FILE', 'PIP_CONFIG_FILE'
 $saved = @{}; foreach ($n in $names + 'APPDATA', 'USERPROFILE', 'ProgramData') { $saved[$n] = [Environment]::GetEnvironmentVariable($n) }
 $home_ = Join-Path ([System.IO.Path]::GetTempPath()) ("unsloth-mirror-" + [guid]::NewGuid())
 $pipIni = Join-Path $home_ 'AppData/pip/pip.ini'
@@ -86,6 +86,11 @@ try {
         Set-Content -Path (Join-Path $env:APPDATA 'uv/uv.toml') -Value $toml
         Run @{ 'pypi.org' = 'blocked' }; Check "uv.toml $($toml.Split("`n")[0]): only pip falls back" (-not $env:UV_DEFAULT_INDEX -and $env:PIP_INDEX_URL)
     }
+    $pbs = 'https://registry.npmmirror.com/-/binary/python-build-standalone'
+    Run @{ 'releases.astral.sh' = 'slow' }; Check "slow Python builds: uv downloads them from npmmirror" ($env:UV_PYTHON_INSTALL_MIRROR -eq $pbs -and $script:lines -contains "STEP releases.astral.sh (Python builds) is slow; using $pbs" -and -not $env:UV_DEFAULT_INDEX)
+    Run @{ 'releases.astral.sh' = 'blocked' } @{ UV_PYTHON_INSTALL_MIRROR = 'https://corp.example/pbs' }; Check "a user Python mirror is kept and not probed" ($env:UV_PYTHON_INSTALL_MIRROR -eq 'https://corp.example/pbs' -and -not ($script:probed -like '*python-build*'))
+    Set-Content -Path (Join-Path $env:APPDATA 'uv/uv.toml') -Value "python-install-mirror = 'https://corp.example/pbs'"
+    Run @{ 'releases.astral.sh' = 'blocked'; 'pypi.org' = 'blocked' }; Check "uv.toml python-install-mirror: kept, index still falls back" (-not $env:UV_PYTHON_INSTALL_MIRROR -and $env:UV_DEFAULT_INDEX)
     Remove-Item -LiteralPath (Join-Path $env:APPDATA 'uv/uv.toml')
     Set-Content -Path $pipIni -Value "[global]`nindex-url = https://corp.example/simple"
     Run @{ 'pypi.org' = 'blocked' }; Check "pip.ini index: only uv falls back" (-not $env:PIP_INDEX_URL -and $env:UV_DEFAULT_INDEX)

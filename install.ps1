@@ -4285,11 +4285,15 @@ exit 1
     # A package host that is blocked, or too slow to serve a small index page within the probe
     # budget, is swapped for a public mirror that passes the same probe. Mirrors _mirror_fallback
     # in install.sh; UNSLOTH_MIRROR_FALLBACK=0 turns it off.
-    function Test-MirrorIndexConfigured {
-        param([ValidateSet('uv', 'pip')][string]$Tool)
+    function Test-MirrorConfigured {
+        param([ValidateSet('uv', 'python', 'pip')][string]$Tool)
         if ($Tool -eq 'uv') {
             if ("$env:UV_DEFAULT_INDEX$env:UV_INDEX_URL$env:UV_INDEX$env:UV_EXTRA_INDEX_URL") { return $true }
             $pattern = '^\s*(\[\[index\]\]|(pip\.)?(index|index-url|default-index|extra-index-url|no-index)\s*=)'
+            $files = @($env:UV_CONFIG_FILE, "$env:APPDATA\uv\uv.toml", "$env:ProgramData\uv\uv.toml")
+        } elseif ($Tool -eq 'python') {
+            if ($env:UV_PYTHON_INSTALL_MIRROR) { return $true }
+            $pattern = '^\s*python-install-mirror\s*='
             $files = @($env:UV_CONFIG_FILE, "$env:APPDATA\uv\uv.toml", "$env:ProgramData\uv\uv.toml")
         } else {
             if ("$env:PIP_INDEX_URL$env:PIP_EXTRA_INDEX_URL$env:PIP_NO_INDEX") { return $true }
@@ -4360,8 +4364,8 @@ exit 1
         $env:_UNSLOTH_MIRROR_PROBED = '1'
         $cernet = 'https://mirrors.cernet.edu.cn'
         $pypiMirror = "$cernet/pypi/web/simple"
-        $useUv = -not (Test-MirrorIndexConfigured -Tool uv)
-        $usePip = -not (Test-MirrorIndexConfigured -Tool pip)
+        $useUv = -not (Test-MirrorConfigured -Tool uv)
+        $usePip = -not (Test-MirrorConfigured -Tool pip)
         # Host -> default probe URL, mirror probe URL, mirror value.
         $hosts = [ordered]@{}
         if ($useUv -or $usePip) { $hosts['pypi.org'] = @('https://pypi.org/simple/pip/', "$pypiMirror/pip/", $pypiMirror) }
@@ -4371,6 +4375,12 @@ exit 1
         if (-not $env:UNSLOTH_NODE_MIRROR) { $hosts['nodejs.org'] = @('https://nodejs.org/dist/index.tab', "$cernet/nodejs-release/index.tab", "$cernet/nodejs-release") }
         if (-not $env:UNSLOTH_NPM_REGISTRY) {
             $hosts['registry.npmjs.org'] = @('https://registry.npmjs.org/npm/latest', 'https://registry.npmmirror.com/npm/latest', 'https://registry.npmmirror.com')
+        }
+        # GitHub-release mirrors keep only the newest Python builds, while a pinned uv asks for the builds it shipped with; npmmirror keeps every release.
+        if (-not (Test-MirrorConfigured -Tool python)) {
+            $pbs = 'https://registry.npmmirror.com/-/binary/python-build-standalone'
+            # Any published release will do: the probe only checks that the host answers.
+            $hosts['releases.astral.sh (Python builds)'] = @('https://releases.astral.sh/github/python-build-standalone/releases/download/20260728/SHA256SUMS', "$pbs/20260728/", $pbs)
         }
         if ($hosts.Count -eq 0) { return }
         $default = Invoke-MirrorProbe -Urls @($hosts.Keys | ForEach-Object { $hosts[$_][0] })
@@ -4400,6 +4410,7 @@ exit 1
                 'download.pytorch.org' { $env:UNSLOTH_PYTORCH_MIRROR = $to }
                 'nodejs.org' { $env:UNSLOTH_NODE_MIRROR = $to }
                 'registry.npmjs.org' { $env:UNSLOTH_NPM_REGISTRY = $to }
+                'releases.astral.sh (Python builds)' { $env:UV_PYTHON_INSTALL_MIRROR = $to }
             }
             step "mirror" "$name is $how; using $to" "Yellow"
             $used = $true
@@ -7169,7 +7180,7 @@ exit 0
         $env:UV_HTTP_TIMEOUT = "180"
     }
 
-    foreach ($_mirrorEnvName in @('_UNSLOTH_MIRROR_PROBED', 'UV_INDEX', 'UV_DEFAULT_INDEX', 'UV_INDEX_STRATEGY', 'PIP_INDEX_URL', 'PIP_EXTRA_INDEX_URL', 'UNSLOTH_PYTORCH_MIRROR', 'UNSLOTH_NODE_MIRROR', 'UNSLOTH_NPM_REGISTRY')) {
+    foreach ($_mirrorEnvName in @('_UNSLOTH_MIRROR_PROBED', 'UV_INDEX', 'UV_DEFAULT_INDEX', 'UV_INDEX_STRATEGY', 'PIP_INDEX_URL', 'PIP_EXTRA_INDEX_URL', 'UNSLOTH_PYTORCH_MIRROR', 'UNSLOTH_NODE_MIRROR', 'UNSLOTH_NPM_REGISTRY', 'UV_PYTHON_INSTALL_MIRROR')) {
         $script:MirrorEnvSaved[$_mirrorEnvName] = [Environment]::GetEnvironmentVariable($_mirrorEnvName)
     }
     Invoke-MirrorFallback
