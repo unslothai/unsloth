@@ -267,47 +267,50 @@ _OMNI_AUTO_CLASS_NAMES = (
 )
 
 
-def _read_safetensors_keys(path):
-    from safetensors import safe_open
-    with safe_open(path, framework = "pt") as handle:
-        return list(handle.keys())
+def _adapter_file_keys(path):
+    if path.endswith(".safetensors"):
+        from safetensors import safe_open
+
+        with safe_open(path, framework = "pt") as handle:
+            return list(handle.keys())
+    return list(torch.load(path, map_location = "meta", weights_only = True).keys())
 
 
 def _adapter_weight_keys(
-    adapter_name,
-    token = None,
-    revision = None,
-    local_files_only = False,
-    cache_dir = None,
+    adapter_name, token = None, revision = None, local_files_only = False, cache_dir = None
 ):
-    """Tensor names of a saved adapter without loading its weights, or None."""
+    """Tensor names of a saved adapter without materialising its weights, or None.
+
+    PEFT fetches the same file right after, so resolving it here (cache first, offline
+    honoured) costs no extra download.
+    """
+    filenames = ("adapter_model.safetensors", "adapter_model.bin")
     try:
         local = os.path.expanduser(adapter_name)
         if os.path.isdir(local):
-            path = os.path.join(local, "adapter_model.safetensors")
-            if os.path.exists(path):
-                return _read_safetensors_keys(path)
-            path = os.path.join(local, "adapter_model.bin")
-            if os.path.exists(path):
-                return list(torch.load(path, map_location = "meta", weights_only = True).keys())
+            for filename in filenames:
+                path = os.path.join(local, filename)
+                if os.path.exists(path):
+                    return _adapter_file_keys(path)
             return None
-        from huggingface_hub import HfApi, try_to_load_from_cache
+        from huggingface_hub import hf_hub_download
 
-        # A cached adapter answers offline too.
-        cached = try_to_load_from_cache(
-            adapter_name, "adapter_model.safetensors", cache_dir = cache_dir, revision = revision
-        )
-        if isinstance(cached, str) and os.path.exists(cached):
-            return _read_safetensors_keys(cached)
-        if local_files_only:
-            return None
-        # get_safetensors_metadata only looks for model.safetensors; PEFT writes adapter_model.safetensors.
-        metadata = HfApi().parse_safetensors_file_metadata(
-            adapter_name, "adapter_model.safetensors", revision = revision, token = token
-        )
-        return list(metadata.tensors)
+        for filename in filenames:
+            try:
+                path = hf_hub_download(
+                    adapter_name,
+                    filename,
+                    revision = revision,
+                    token = token,
+                    cache_dir = cache_dir,
+                    local_files_only = local_files_only,
+                )
+            except Exception:
+                continue
+            return _adapter_file_keys(path)
     except Exception:
-        return None
+        pass
+    return None
 
 
 def _composition_children(model_config):
@@ -1981,23 +1984,29 @@ class FastModel(FastBaseModel):
             and not text_only
             and auto_model is None
             and _resolve_omni_auto_model(model_config) is not None
-            and _adapter_targets_text_core(
-                peft_config,
-                _adapter_weight_keys(
-                    old_model_name,
-                    token = token,
-                    revision = adapter_revision,
-                    local_files_only = local_files_only,
-                    cache_dir = kwargs.get("cache_dir"),
-                ),
-                _composition_children(model_config),
-            )
         ):
-            print(
-                "Unsloth: this adapter was trained on the thinker alone (`text_only = True`), "
-                "so its base is loaded the same way."
+            _adapter_keys = _adapter_weight_keys(
+                old_model_name,
+                token = token,
+                revision = adapter_revision,
+                local_files_only = local_files_only,
+                cache_dir = kwargs.get("cache_dir"),
             )
-            text_only = True
+            if _adapter_targets_text_core(
+                peft_config, _adapter_keys, _composition_children(model_config)
+            ):
+                print(
+                    "Unsloth: this adapter was trained on the thinker alone (`text_only = True`), "
+                    "so its base is loaded the same way."
+                )
+                text_only = True
+            elif not _adapter_keys and not isinstance(
+                getattr(peft_config, "target_modules", None), str
+            ):
+                print(
+                    "Unsloth: could not read this adapter's weight names, so the full model is "
+                    "loaded. If it was trained with `text_only = True`, pass `text_only = True` here too."
+                )
         load_text_only = text_only and auto_model is None
         text_only_decoder = False
         if load_text_only:

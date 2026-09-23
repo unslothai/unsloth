@@ -440,31 +440,31 @@ def test_saved_weight_keys_decide_over_the_target_regex():
     assert _adapter_targets_text_core(regex, wrapper_keys) is False
 
 
-def test_hub_adapter_keys_come_from_adapter_model_safetensors(monkeypatch):
-    # get_safetensors_metadata only looks for model.safetensors, which an adapter repo lacks.
+@pytest.mark.parametrize("saved_as", ["adapter_model.safetensors", "adapter_model.bin"])
+def test_hub_adapter_keys_are_read_from_the_saved_file(monkeypatch, tmp_path, saved_as):
+    # Resolved through hf_hub_download (cache first, offline honoured) in either format.
     huggingface_hub = pytest.importorskip("huggingface_hub")
+    safetensors_torch = pytest.importorskip("safetensors.torch")
     from unsloth.models.loader import _adapter_weight_keys
 
-    asked = {}
+    key = "base_model.model.model.layers.0.self_attn.q_proj.lora_A.weight"
+    path = tmp_path / saved_as
+    if saved_as.endswith(".safetensors"):
+        safetensors_torch.save_file({key: torch.ones(2, 2)}, str(path))
+    else:
+        torch.save({key: torch.ones(2, 2)}, path)
+    asked = []
 
-    def fake(self, repo_id, filename, **kwargs):
-        asked.update(repo_id = repo_id, filename = filename, **kwargs)
-        return type(
-            "Metadata",
-            (),
-            {"tensors": {"base_model.model.model.layers.0.q_proj.lora_A.weight": None}},
-        )()
+    def fake_download(repo_id, filename, **kwargs):
+        asked.append((repo_id, filename, kwargs.get("local_files_only"), kwargs.get("revision")))
+        if filename != saved_as:
+            raise FileNotFoundError(filename)
+        return str(path)
 
-    monkeypatch.setattr(huggingface_hub.HfApi, "parse_safetensors_file_metadata", fake)
-    keys = _adapter_weight_keys("someone/omni-adapter", token = "t", revision = "r")
-    assert asked == {
-        "repo_id": "someone/omni-adapter",
-        "filename": "adapter_model.safetensors",
-        "revision": "r",
-        "token": "t",
-    }
-    assert keys == ["base_model.model.model.layers.0.q_proj.lora_A.weight"]
-    assert _adapter_weight_keys("someone/omni-adapter", local_files_only = True) is None
+    monkeypatch.setattr(huggingface_hub, "hf_hub_download", fake_download)
+    assert _adapter_weight_keys("someone/omni-adapter", revision = "r", local_files_only = True) == [key]
+    assert asked[0] == ("someone/omni-adapter", "adapter_model.safetensors", True, "r")
+    assert asked[-1][1] == saved_as
 
 
 def test_local_bin_adapter_keys_are_read_without_weights(tmp_path):
@@ -491,20 +491,3 @@ def test_an_audio_only_wrapper_adapter_stays_on_the_wrapper():
     assert _adapter_targets_text_core(config, thinker_only, children) is True
     regex = type("Config", (), {"target_modules": r"(?:.*?(?:talker).*?(?:q_proj))"})()
     assert _adapter_targets_text_core(regex, None, children) is False
-
-
-def test_offline_reads_a_cached_hub_adapter(monkeypatch, tmp_path):
-    huggingface_hub = pytest.importorskip("huggingface_hub")
-    safetensors_torch = pytest.importorskip("safetensors.torch")
-    from unsloth.models.loader import _adapter_weight_keys
-
-    key = "base_model.model.model.layers.0.self_attn.q_proj.lora_A.weight"
-    cached = tmp_path / "adapter_model.safetensors"
-    safetensors_torch.save_file({key: torch.ones(2, 2)}, str(cached))
-    monkeypatch.setattr(huggingface_hub, "try_to_load_from_cache", lambda *a, **k: str(cached))
-
-    def no_network(*args, **kwargs):
-        raise AssertionError("offline must not reach the Hub")
-
-    monkeypatch.setattr(huggingface_hub.HfApi, "parse_safetensors_file_metadata", no_network)
-    assert _adapter_weight_keys("someone/omni-adapter", local_files_only = True) == [key]
