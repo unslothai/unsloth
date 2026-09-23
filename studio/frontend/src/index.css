@@ -707,9 +707,10 @@ html[data-contrast-adjust] {
 	--panel-input-surface: color-mix(in oklab, var(--panel-input-surface-base), var(--contrast-panel-target, var(--contrast-target)) var(--contrast-surface-mix));
 	/* Same curve as its resting twin, or the hover inverts at high contrast. */
 	--panel-input-surface-hover: color-mix(in oklab, var(--panel-input-surface-hover-base), var(--contrast-panel-target, var(--contrast-target)) var(--contrast-surface-mix));
-	/* Sidebar and model picker rows, and the chat control hovers. */
+	/* Sidebar and model picker rows, and the chat control hovers. Those sit
+	   on the page, so they take the page target like the chat icons. */
 	--sidebar-accent: color-mix(in oklab, var(--sidebar-accent-base), var(--contrast-panel-target, var(--contrast-target)) var(--contrast-state-mix, var(--contrast-surface-mix)));
-	--chat-icon-bg-hover: color-mix(in oklab, var(--chat-icon-bg-hover-base), var(--contrast-panel-target, var(--contrast-target)) var(--contrast-state-mix, var(--contrast-surface-mix)));
+	--chat-icon-bg-hover: color-mix(in oklab, var(--chat-icon-bg-hover-base), var(--contrast-target) var(--contrast-state-mix, var(--contrast-surface-mix)));
 	--tabs-line-indicator: color-mix(in oklab, var(--tabs-line-indicator-base), var(--contrast-panel-target, var(--contrast-target)) var(--contrast-surface-mix));
 	--border: color-mix(in oklab, var(--border-base), var(--contrast-target) var(--contrast-line-mix));
 	/* Control outlines and switch tracks stop short of the hairlines: an
@@ -761,7 +762,7 @@ html[data-contrast-adjust] :is(.bg-card, .bg-popover, .bg-sidebar, .hub-download
 	--border: color-mix(in oklab, var(--border-base), var(--contrast-panel-target, var(--contrast-target)) var(--contrast-line-mix));
 	--input: color-mix(in oklab, var(--input-base), var(--contrast-panel-target, var(--contrast-target)) var(--contrast-control-mix));
 }
-html[data-contrast-adjust] :is(.bg-card, .bg-popover, .bg-sidebar, .hub-download-fab, .hub-download-panel, .menu-soft-surface-up, .menu-soft-surface) .bg-background {
+html[data-contrast-adjust] :is(.bg-card, .bg-popover, .bg-sidebar, .hub-download-fab, .hub-download-panel, .menu-soft-surface-up, .menu-soft-surface) .bg-background:not(.dark [class*="dark:bg-"]:not([class*="dark:bg-background"])) {
 	--muted-foreground: color-mix(
 		in oklab,
 		var(--panel-surface-fg-muted),
@@ -771,8 +772,9 @@ html[data-contrast-adjust] :is(.bg-card, .bg-popover, .bg-sidebar, .hub-download
 	--input: color-mix(in oklab, var(--input-base), var(--contrast-target) var(--contrast-control-mix));
 }
 /* Surfaces the stylesheet paints as cards in dark only. Their page panes
-   (the Settings content pane) return to the page, unless a card in dark. */
-html[data-contrast-adjust].dark :is(.dialog-soft-surface, .settings-surface, .chat-composer-surface, .unsloth-composer-surface, .unsloth-plus-menu, [data-sonner-toast]) .bg-background:not([class*="dark:bg-card"]) {
+   (the Settings content pane) return to the page. A bg-background that
+   repaints itself in dark (dark:bg-*) is not the page there, in either rule. */
+html[data-contrast-adjust].dark :is(.dialog-soft-surface, .settings-surface, .chat-composer-surface, .unsloth-composer-surface, .unsloth-plus-menu, [data-sonner-toast]) .bg-background:not([class*="dark:bg-"]:not([class*="dark:bg-background"])) {
 	--muted-foreground: color-mix(
 		in oklab,
 		var(--panel-surface-fg-muted),
@@ -781,9 +783,10 @@ html[data-contrast-adjust].dark :is(.dialog-soft-surface, .settings-surface, .ch
 	--border: color-mix(in oklab, var(--border-base), var(--contrast-target) var(--contrast-line-mix));
 	--input: color-mix(in oklab, var(--input-base), var(--contrast-target) var(--contrast-control-mix));
 }
-/* Near-opaque card spellings are cards too; dark-only ones only in dark.
+/* Card spellings from half opacity up are cards too: their ink is palette
+   ink, so it has to head the palette's way. Dark-only ones only in dark.
    After the resets, so a page pane that is a card in dark takes this. */
-html[data-contrast-adjust] :is(.bg-card\/85, .bg-card\/90, .bg-card\/95, .bg-card\/96),
+html[data-contrast-adjust] :is(.bg-card\/50, .bg-card\/55, .bg-card\/60, .bg-card\/65, .bg-card\/70, .bg-card\/85, .bg-card\/90, .bg-card\/95, .bg-card\/96),
 html[data-contrast-adjust].dark :is(.dark\:bg-card, .dark\:bg-card\/85, .dark\:bg-card\/90, .dialog-soft-surface, .settings-surface, .chat-composer-surface, .unsloth-composer-surface, .unsloth-plus-menu, [data-sonner-toast]) {
 	--muted-foreground: color-mix(
 		in oklab,

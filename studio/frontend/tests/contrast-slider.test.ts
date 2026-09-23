@@ -134,9 +134,11 @@ test("off the default, fills and lines each take their own curve", () => {
   }
   // A hover nobody can find is the same failure as an outline nobody can find.
   for (const token of STATE_TOKENS) {
+    // Chat control hovers sit on the page, like the chat icons.
+    const target = token === "chat-icon-bg-hover" ? "var(--contrast-target)" : PANEL_TARGET;
     assert.ok(
       adjusted.includes(
-        `--${token}: color-mix(in oklab, var(--${token}-base), ${PANEL_TARGET} var(--contrast-state-mix, var(--contrast-surface-mix)));`,
+        `--${token}: color-mix(in oklab, var(--${token}-base), ${target} var(--contrast-state-mix, var(--contrast-surface-mix)));`,
       ),
       `--${token} is not on the state curve`,
     );
@@ -519,7 +521,7 @@ test("muted text on a palette surface heads away from that surface", () => {
   );
   // A page-coloured pane inside one is the page again.
   const pane = CSS.match(
-    /html\[data-contrast-adjust\] :is\(\.bg-card, \.bg-popover, \.bg-sidebar[^)]*\) \.bg-background \{([^}]*)\}/,
+    /html\[data-contrast-adjust\] :is\(\.bg-card, \.bg-popover, \.bg-sidebar[^)]*\) \.bg-background:not\([^{]*\) \{([^}]*)\}/,
   );
   assert.ok(pane, "page panes inside palette surfaces keep the panel target");
   assert.match(pane[1] ?? "", /var\(--contrast-target\) var\(--contrast-text-mix\)/);
@@ -540,7 +542,7 @@ test("every near-opaque card spelling takes the panel muted text", () => {
     for (const [spelling, isDark, alpha] of readSrc(file).matchAll(
       /(?<![\w:-])(dark:)?bg-card(?:\/(\d+))?(?![\w/-])/g,
     )) {
-      if (alpha === undefined ? !isDark : Number(alpha) < 85) continue;
+      if (alpha === undefined ? !isDark : Number(alpha) < 50) continue;
       assert.ok(
         (isDark ? dark : light).includes(`.${spelling}`),
         `${file} paints ${spelling} outside the panel scope`,
@@ -588,7 +590,7 @@ test("surfaces the stylesheet paints take the panel muted text too", () => {
   // (the Settings content pane) sent back unless a card in dark as well.
   const dark = [".settings-surface", ".chat-composer-surface", ".unsloth-composer-surface", ".unsloth-plus-menu", ".dialog-soft-surface"];
   const reset = CSS.match(
-    /html\[data-contrast-adjust\]\.dark :is\(([^)]*)\) \.bg-background:not\(\[class\*="dark:bg-card"\]\) \{([^}]*)\}/,
+    /html\[data-contrast-adjust\]\.dark :is\(([^)]*)\) \.bg-background:not\(\[class\*="dark:bg-"\]:not\(\[class\*="dark:bg-background"\]\)\) \{([^}]*)\}/,
   );
   assert.ok(reset, "dark card surfaces keep their page panes on the panel target");
   assert.match(reset[2] ?? "", /var\(--contrast-target\) var\(--contrast-text-mix\)/);
@@ -599,4 +601,18 @@ test("surfaces the stylesheet paints take the panel muted text too", () => {
   }
   // The card rule comes after both resets, so a pane that is a card in dark wins.
   assert.ok(CSS.indexOf(cards?.[0] ?? "@") > CSS.indexOf(reset[0]));
+});
+
+test("a pane that repaints itself in dark is not reset to the page there", () => {
+  // The Settings search keeps bg-background but paints a white wash over the
+  // sidebar in dark; reset to the page, its placeholder fell to 1.7:1 at 100.
+  assert.ok(
+    CSS.includes(
+      '.menu-soft-surface-up, .menu-soft-surface) .bg-background:not(.dark [class*="dark:bg-"]:not([class*="dark:bg-background"])) {',
+    ),
+  );
+  assert.match(
+    readSrc("features/settings/settings-dialog.tsx"),
+    /bg-background[^"]*dark:bg-\[rgb\(255_255_255/,
+  );
 });
