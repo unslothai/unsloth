@@ -2988,19 +2988,24 @@ def test_a_producer_that_declares_its_key_inline_is_readable():
     # its job. A bare id let a readable namesake in another job -- or another file --
     # answer for an unreadable one.
     here = ("wf.yml", "build")
-    producers = {("wf.yml", "build", "probe"): True}
+    producers = {("wf.yml", "build", "probe"): {"key"}}
     assert lint._delegation_is_read(
         "${{ steps.probe.outputs.key }}", producers, here
     ) is True
     assert lint._delegation_is_read(
-        "${{ steps.probe.outputs.key }}", {("wf.yml", "build", "probe"): False}, here
+        "${{ steps.probe.outputs.key }}", {("wf.yml", "build", "probe"): set()}, here
+    ) is False
+    # Per OUTPUT, not per step: a step may write several, and recovering one says
+    # nothing about the others.
+    assert lint._delegation_is_read(
+        "${{ steps.probe.outputs.danger }}", producers, here
     ) is False
     # The SAME id in a different job is a different step and vouches for nothing.
     assert lint._delegation_is_read(
-        "${{ steps.probe.outputs.key }}", {("wf.yml", "other", "probe"): True}, here
+        "${{ steps.probe.outputs.key }}", {("wf.yml", "other", "probe"): {"key"}}, here
     ) is False
     assert lint._delegation_is_read(
-        "${{ steps.probe.outputs.key }}", {("z.yml", "build", "probe"): True}, here
+        "${{ steps.probe.outputs.key }}", {("z.yml", "build", "probe"): {"key"}}, here
     ) is False
     # A step this check never saw is not evidence of anything.
     assert lint._delegation_is_read(
@@ -3314,4 +3319,236 @@ def test_a_wrapper_forwarding_its_own_input_is_resolved(tmp_path):
     assert proc.returncode == 1, (
         f"`prefix-safe` is exactly what the wrapper produces:\n{proc.stdout}\n"
         f"{proc.stderr}"
+    )
+
+
+def test_one_readable_output_does_not_certify_another_from_the_same_step(tmp_path):
+    """Readability belongs to an OUTPUT, not to the step that writes several.
+
+    A step emitting a recognisable `key=safe-key` alongside a `danger=` written by a
+    `printf` form that recovers nothing was marked readable as a whole, and the cache
+    consuming `outputs.danger` was dismissed on the strength of the output it does not
+    use.
+    """
+    wf = tmp_path / ".github" / "workflows"
+    wf.mkdir(parents = True)
+    (wf / "pr-build.yml").write_text(
+        "name: pr-build\n"
+        "on:\n  pull_request:\n"
+        "jobs:\n  build:\n    runs-on: ubuntu-latest\n"
+        "    steps:\n"
+        "      - id: make\n"
+        "        run: |\n"
+        "          echo 'key=safe-key' >> \"$GITHUB_OUTPUT\"\n"
+        "          printf 'danger=%s\\n' \"shared-$GITHUB_SHA\" >> \"$GITHUB_OUTPUT\"\n"
+        "      - uses: actions/cache/save@v4\n"
+        "        with:\n          path: wheels\n"
+        "          key: ${{ steps.make.outputs.danger }}\n"
+    )
+    (wf / "release-desktop.yml").write_text(
+        _publish_with_restore_keys("shared-pub", "            shared-\n")
+    )
+    proc = _run(wf)
+    assert proc.returncode == 1, (
+        f"the cache uses `danger`, which was written by the form this check cannot "
+        f"read:\n{proc.stdout}\n{proc.stderr}"
+    )
+
+
+def test_an_unrelated_assignment_does_not_certify_the_output(tmp_path):
+    """A recognisable assignment elsewhere in the body is not evidence about the output.
+
+    `safe_key="safe-${RANDOM}"` followed by an unreadable `printf` writing the real key
+    left only `safe-` recovered, and the delegated cache key was skipped even though
+    nothing about it had been understood.
+    """
+    wf = tmp_path / ".github" / "workflows"
+    wf.mkdir(parents = True)
+    (wf / "pr-build.yml").write_text(
+        "name: pr-build\n"
+        "on:\n  pull_request:\n"
+        "jobs:\n  build:\n    runs-on: ubuntu-latest\n"
+        "    steps:\n"
+        "      - id: make\n"
+        "        run: |\n"
+        '          safe_key="safe-${RANDOM}"\n'
+        "          printf 'key=%s\\n' \"shared-$GITHUB_SHA\" >> \"$GITHUB_OUTPUT\"\n"
+        "      - uses: actions/cache/save@v4\n"
+        "        with:\n          path: wheels\n"
+        "          key: ${{ steps.make.outputs.key }}\n"
+    )
+    (wf / "release-desktop.yml").write_text(
+        _publish_with_restore_keys("shared-pub", "            shared-\n")
+    )
+    proc = _run(wf)
+    assert proc.returncode == 1, (
+        f"the only line writing an output is the printf:\n{proc.stdout}\n{proc.stderr}"
+    )
+
+
+def test_two_publish_jobs_sharing_a_raw_key_keep_their_own_scopes(tmp_path):
+    """`(path, key)` is not unique, and the first job's scope was kept for both.
+
+    So a second publish job whose producer could not be read was judged against the
+    first job's readable one, and a PR cache matching the unread producer passed.
+    """
+    wf = tmp_path / ".github" / "workflows"
+    wf.mkdir(parents = True)
+    (wf / "pr-build.yml").write_text(
+        "name: pr-build\n"
+        "on:\n  pull_request:\n"
+        "jobs:\n  build:\n    runs-on: ubuntu-latest\n"
+        "    steps:\n"
+        "      - uses: actions/cache@v4\n"
+        "        with:\n          path: wheels\n          key: shared-key\n"
+    )
+    (wf / "release-desktop.yml").write_text(
+        "name: release-desktop\n"
+        "on:\n  workflow_dispatch:\n"
+        "jobs:\n"
+        "  first:\n    runs-on: ubuntu-latest\n"
+        "    steps:\n"
+        "      - id: make\n"
+        "        run: echo 'key=unrelated-v1' >> \"$GITHUB_OUTPUT\"\n"
+        "      - uses: actions/cache/restore@v4\n"
+        "        with:\n          path: wheels\n"
+        "          key: ${{ steps.make.outputs.key }}\n"
+        "  second:\n    runs-on: ubuntu-latest\n"
+        "    steps:\n"
+        "      - id: make\n"
+        "        run: printf 'key=%s\\n' \"shared-$GITHUB_SHA\" >> \"$GITHUB_OUTPUT\"\n"
+        "      - uses: actions/cache/restore@v4\n"
+        "        with:\n          path: wheels\n"
+        "          key: ${{ steps.make.outputs.key }}\n"
+    )
+    proc = _run(wf)
+    assert proc.returncode == 1, (
+        f"the second job's producer could not be read, and the first job's readable "
+        f"namesake says nothing about it:\n{proc.stdout}\n{proc.stderr}"
+    )
+
+
+def test_a_key_passed_to_a_non_cache_action_is_not_a_cache_namespace(tmp_path):
+    """Not every field named `key` declares a cache.
+
+    A composite passing `with: {key: release-key}` to an unrelated action registered
+    that value as a namespace pull requests write, so a publish workflow genuinely
+    caching `release-key` was rejected though the PR path never touches a cache.
+    """
+    root = tmp_path / ".github"
+    wf = root / "workflows"
+    action = root / "actions" / "signer"
+    wf.mkdir(parents = True)
+    action.mkdir(parents = True)
+    (action / "action.yml").write_text(
+        "name: signer\n"
+        "runs:\n  using: composite\n  steps:\n"
+        "    - uses: some/signing-action@v1\n"
+        "      with:\n        key: release-key\n"
+    )
+    (wf / "pr-build.yml").write_text(
+        "name: pr-build\n"
+        "on:\n  pull_request:\n"
+        "jobs:\n  build:\n    runs-on: ubuntu-latest\n"
+        "    steps:\n"
+        "      - uses: ./.github/actions/signer\n"
+    )
+    (wf / "release-desktop.yml").write_text(
+        "name: release-desktop\n"
+        "on:\n  workflow_dispatch:\n"
+        "jobs:\n  publish:\n    runs-on: ubuntu-latest\n"
+        "    steps:\n"
+        "      - uses: actions/cache/restore@v4\n"
+        "        with:\n          path: wheels\n          key: release-key\n"
+    )
+    proc = _run(wf)
+    assert proc.returncode == 0, (
+        f"the pull request path caches nothing; `key` there is a signing key:\n"
+        f"{proc.stdout}\n{proc.stderr}"
+    )
+
+
+def test_a_call_site_reached_through_a_checkout_prefix_is_matched(tmp_path):
+    """Reachability strips the runtime prefix; the call-site comparison did not.
+
+    So literal inputs passed through `./repo/.github/actions/x` were never recovered and
+    the key stayed undecidable, rejecting an unrelated publish key.
+    """
+    root = tmp_path / ".github"
+    wf = root / "workflows"
+    action = root / "actions" / "prefixed-cache"
+    wf.mkdir(parents = True)
+    action.mkdir(parents = True)
+    (action / "action.yml").write_text(
+        "name: prefixed cache\n"
+        "inputs:\n  name:\n    description: n\n"
+        "runs:\n  using: composite\n  steps:\n"
+        "    - uses: actions/cache@v4\n"
+        "      with:\n        path: wheels\n        key: prefix-${{ inputs.name }}\n"
+    )
+    (wf / "pr-build.yml").write_text(
+        "name: pr-build\n"
+        "on:\n  pull_request:\n"
+        "jobs:\n  build:\n    runs-on: ubuntu-latest\n"
+        "    steps:\n"
+        "      - uses: ./repo/.github/actions/prefixed-cache\n"
+        "        with:\n          name: safe\n"
+    )
+    (wf / "release-desktop.yml").write_text(
+        "name: release-desktop\n"
+        "on:\n  workflow_dispatch:\n"
+        "jobs:\n  publish:\n    runs-on: ubuntu-latest\n"
+        "    steps:\n"
+        "      - uses: actions/cache/restore@v4\n"
+        "        with:\n          path: wheels\n          key: prefix-other\n"
+    )
+    proc = _run(wf)
+    assert proc.returncode == 0, (
+        f"the prefixed call site passes `name: safe`, so the only PR key is "
+        f"`prefix-safe`:\n{proc.stdout}\n{proc.stderr}"
+    )
+
+
+def test_a_publish_restore_prefix_is_expanded_with_its_own_inputs(tmp_path):
+    """A publish fallback carrying an input reduces to a head far broader than it is.
+
+    `restore-keys: prefix-${{ inputs.name }}-` called with `name: publish` falls back to
+    `prefix-publish-` at run time, and reducing it to `prefix-` collided with every PR
+    key under that head.
+    """
+    root = tmp_path / ".github"
+    wf = root / "workflows"
+    action = root / "actions" / "pub-restore"
+    wf.mkdir(parents = True)
+    action.mkdir(parents = True)
+    (action / "action.yml").write_text(
+        "name: pub restore\n"
+        "inputs:\n  name:\n    description: n\n"
+        "runs:\n  using: composite\n  steps:\n"
+        "    - uses: actions/cache/restore@v4\n"
+        "      with:\n        path: wheels\n"
+        "        key: prefix-${{ inputs.name }}-exact\n"
+        "        restore-keys: |\n"
+        "          prefix-${{ inputs.name }}-\n"
+    )
+    (wf / "pr-build.yml").write_text(
+        "name: pr-build\n"
+        "on:\n  pull_request:\n"
+        "jobs:\n  build:\n    runs-on: ubuntu-latest\n"
+        "    steps:\n"
+        "      - uses: actions/cache@v4\n"
+        "        with:\n          path: wheels\n          key: prefix-pr-exact\n"
+    )
+    (wf / "release-desktop.yml").write_text(
+        "name: release-desktop\n"
+        "on:\n  workflow_dispatch:\n"
+        "jobs:\n  publish:\n    runs-on: ubuntu-latest\n"
+        "    steps:\n"
+        "      - uses: ./.github/actions/pub-restore\n"
+        "        with:\n          name: publish\n"
+    )
+    proc = _run(wf)
+    assert proc.returncode == 0, (
+        f"the runtime fallback is `prefix-publish-`, which cannot reach "
+        f"`prefix-pr-exact`:\n{proc.stdout}\n{proc.stderr}"
     )

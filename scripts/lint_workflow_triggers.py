@@ -171,6 +171,13 @@ def _call_sites(path: Path, target: str) -> list[dict]:
         # other. A bare name is still accepted, which is what the predicate self-tests
         # and the shell-head narrowing pass.
         full = ref[2:].rstrip("/") if ref.startswith("./") else ref.rstrip("/")
+        # `./repo/.github/actions/cache` names the same action as
+        # `./.github/actions/cache`; reachability already strips that runtime prefix and
+        # this comparison did not, so literal inputs passed through the prefixed form
+        # were never recovered and the key stayed undecidable.
+        segments = full.split("/")
+        if ".github" in segments[1:]:
+            full = "/".join(segments[segments.index(".github"):])
         if "/" in target:
             if full != target and PurePosixPath(full).parent.as_posix() != target:
                 continue
@@ -193,12 +200,93 @@ def _call_sites(path: Path, target: str) -> list[dict]:
 
 
 _STEP_OUTPUT = re.compile(
-    r"\$\{\{\s*steps\.([A-Za-z_][\w-]*)\.outputs\.[A-Za-z_][\w-]*\s*\}\}"
+    r"\$\{\{\s*steps\.([A-Za-z_][\w-]*)\.outputs\.([A-Za-z_][\w-]*)\s*\}\}"
 )
+
+# Which outputs an `actions/cache` step publishes from the `key:` it was given.
+_CACHE_STEP_OUTPUTS = frozenset({"cache-primary-key", "cache-matched-key", "key"})
+
+
+def _recovered_outputs(text: str) -> set:
+    """The output NAMES a shell body writes with a value this check can recover.
+
+    Per output, not per step. A step may write several, and recording one boolean for
+    the whole step let a recognisable `key=safe-key` certify a `danger=` written by a
+    `printf` form that recovers nothing -- the cache consumed `outputs.danger`, the
+    delegated key was dismissed, and a publish fallback passed.
+
+    A value counts as recovered when it is literal, or when it begins with a literal
+    head before its first expansion. `printf 'key=%s\n' "$X"` gives the value `%s`,
+    which is neither, so that output stays unrecovered and the key that uses it stays
+    undecided.
+    """
+    # Shell variables assigned a value with a literal head, so an output built from one
+    # is still recoverable. `prefix="pip-v2-${name}-..."` followed by
+    # `echo "key=${prefix}${hash}"` is how this repository's own producer works, and
+    # reading the output line alone saw only `${prefix}` and recovered nothing.
+    assigned: dict = {}
+    for line in text.splitlines():
+        stripped = line.split("#", 1)[0].strip()
+        for name, value in re.findall(
+            r"^([A-Za-z_]\w*)=[\"']?([^\"'\n]*)", stripped
+        ):
+            head = value.split("$", 1)[0]
+            if head and "%" not in head:
+                assigned[name] = head
+
+    def _head(value: str) -> str:
+        """The literal text this value starts with, after one pass of substitution."""
+        expanded = re.sub(
+            r"\$\{?([A-Za-z_]\w*)\}?",
+            lambda m: assigned.get(m.group(1), "$"),
+            value,
+        )
+        return expanded.split("$", 1)[0]
+
+    found: set = set()
+    for line in text.splitlines():
+        stripped = line.split("#", 1)[0]
+        if "GITHUB_OUTPUT" not in stripped:
+            continue
+        for name, value in re.findall(
+            r"\b([A-Za-z_][\w-]*)=([^\s'\"]*)", stripped
+        ):
+            if not value or "%" in value:
+                continue
+            # Literal, or beginning with a literal head once known shell variables are
+            # substituted. `printf 'key=%s\n'` gives the value `%s`, which is neither.
+            if _head(value):
+                found.add(name)
+    return found
+
+
 
 
 _CACHE_KEY_OUTPUTS = ("cache-primary-key", "cache-matched-key", "key")
 
+
+
+
+def _cache_withs(node):
+    """The `with:` mappings of steps that actually cache, or call a local action.
+
+    Every mapping field named `key` used to count, so a composite passing
+    `with: {key: release-key}` to an unrelated action registered that value as a cache
+    namespace a pull request writes -- and a publish workflow genuinely caching
+    `release-key` was rejected though the PR path never touches a cache. A local `./`
+    call still counts, because the action it names may cache internally and the value
+    is being forwarded to it.
+    """
+    for mapping in _mappings(node):
+        uses = str(mapping.get("uses") or "").strip()
+        if not uses:
+            continue
+        with_ = mapping.get("with")
+        if not isinstance(with_, dict):
+            continue
+        action = uses.split("@")[0].casefold()
+        if action.startswith("actions/cache") or uses.startswith("./"):
+            yield with_
 
 
 def _scoped_cache_keys(path: Path) -> list:
@@ -216,7 +304,7 @@ def _scoped_cache_keys(path: Path) -> list:
     jobs = doc.get("jobs") if isinstance(doc, dict) else None
     if isinstance(jobs, dict):
         for job_id, job in jobs.items():
-            for mapping in _mappings(job):
+            for mapping in _cache_withs(job):
                 key = mapping.get("key")
                 if key is not None and not isinstance(key, (dict, list)):
                     # Stringified, as `_extract_cache_keys` already does. Accepting only
@@ -225,7 +313,7 @@ def _scoped_cache_keys(path: Path) -> list:
                     # as collision-free.
                     out.append((str(job_id), str(key)))
         return out
-    for mapping in _mappings(doc):
+    for mapping in _cache_withs(doc):
         key = mapping.get("key")
         if key is not None and not isinstance(key, (dict, list)):
             out.append(("", str(key)))
@@ -279,13 +367,11 @@ def _producer_steps(path: Path) -> dict:
             # may take an unrelated `key` input while emitting its own `outputs.key` from
             # a command this check cannot read, and the delegated key was then dismissed
             # with nothing recovered.
-            out[ident] = True
+            out[ident] = set(_CACHE_STEP_OUTPUTS)
             continue
         body = mapping.get("run")
         if isinstance(body, str):
-            out[ident] = bool(
-                _shell_built_key_prefixes(body) or _shell_output_keys(body)
-            )
+            out[ident] = _recovered_outputs(body)
             continue
         # A step may produce its output by CALLING a local action rather than by running
         # a shell body -- which is how this repository's own pip-cache-restore works, and
@@ -315,43 +401,43 @@ def _producer_steps(path: Path) -> dict:
             # `steps.restore.outputs.cache-primary-key`, whose value is the `key:` the
             # action declares. Requiring a SHELL-built key declared that producer
             # unreadable and failed the live tree on a correct configuration.
-            out[ident] = _local_action_publishes_a_key(candidate, text)
+            out[ident] = _local_action_outputs(candidate, text)
             break
     return out
 
 
 
-def _local_action_publishes_a_key(action: Path, text: str) -> bool:
-    """Does this local action hand out a key whose value this check can see?
+def _local_action_outputs(action: Path, text: str) -> set:
+    """The output names this local action hands out with a value this check can see.
 
     Its declared `outputs.<name>.value` is what a caller receives. When that value is a
-    step output, the step behind it has to be readable; when the action has no declared
-    outputs at all, the question does not arise and the shell is the only evidence.
-    Accepting any action that merely mentions a cache key let one emitting its
-    `outputs.key` through an unreadable command vouch for itself.
+    step output, the step behind it has to have recovered THAT output; when it is not
+    delegated, the action's own shell is the evidence. Answering with one boolean for
+    the action let a readable output certify an unreadable neighbour.
     """
     doc = _parse(action)
     outputs = doc.get("outputs") if isinstance(doc, dict) else None
     inner = _producer_steps(action)
-    inner_by_id = {ident[2]: ok for ident, ok in inner.items()}
+    inner_by_id: dict = {}
+    for ident, names in inner.items():
+        inner_by_id.setdefault(ident[2], set()).update(names)
     if isinstance(outputs, dict):
+        recovered: set = set()
         for name, spec in outputs.items():
-            if str(name) not in _CACHE_KEY_OUTPUTS:
-                continue
             value = spec.get("value") if isinstance(spec, dict) else None
             match = _STEP_OUTPUT.search(str(value or ""))
             if match is None:
                 # Not delegated to a step: the value is literal or an expression this
                 # check reads no further into, so the shell is the evidence.
-                return bool(
-                    _shell_built_key_prefixes(text) or _shell_output_keys(text)
-                )
-            return bool(inner_by_id.get(match.group(1)))
-    return bool(
-        _extract_cache_keys(action)
-        or _shell_built_key_prefixes(text)
-        or _shell_output_keys(text)
-    )
+                if _recovered_outputs(text) or _extract_cache_keys(action):
+                    recovered.add(str(name))
+                continue
+            if match.group(2) in inner_by_id.get(match.group(1), set()):
+                recovered.add(str(name))
+        return recovered
+    return set(_CACHE_STEP_OUTPUTS) if (
+        _extract_cache_keys(action) or _recovered_outputs(text)
+    ) else set()
 
 
 def _delegation_is_read(expression: str, producers: dict, scope = None) -> bool:
@@ -363,14 +449,14 @@ def _delegation_is_read(expression: str, producers: dict, scope = None) -> bool:
     match = _STEP_OUTPUT.search(expression or "")
     if match is None:
         return False
-    step_id = match.group(1)
+    step_id, output = match.group(1), match.group(2)
     if scope is not None:
-        return bool(producers.get((scope[0], scope[1], step_id)))
-    # Without a scope, EVERY step of that id has to be readable. A single unreadable
-    # namesake anywhere is enough to make the answer no, which is the conservative
+        return output in producers.get((scope[0], scope[1], step_id), set())
+    # Without a scope, EVERY step of that id must have recovered that output. A single
+    # namesake that did not is enough to make the answer no, which is the conservative
     # reading and the one that stops a readable namesake vouching for it.
-    seen = [ok for ident, ok in producers.items() if ident[2] == step_id]
-    return bool(seen) and all(seen)
+    seen = [names for ident, names in producers.items() if ident[2] == step_id]
+    return bool(seen) and all(output in names for names in seen)
 
 
 def _resolved_inputs(caller_paths: list, target: str, _depth: int = 0) -> dict:
@@ -1327,10 +1413,15 @@ def main() -> int:
     # therefore had that key dismissed as delegated with nothing recovered to compare,
     # while a pull request writing the literal `shared-key` passed.
     publish_shell: set = set()
-    pub_scopes: dict = {}
+    # (path, key) is not unique: two jobs may declare the same raw expression, and
+    # `setdefault` kept only the first one's scope for both, so a second job whose
+    # producer could not be read was judged against the first job's readable one.
+    pub_scope_list: dict = {}
     for pth in publish_callers + publish_reachable:
         for jid, key in _scoped_cache_keys(pth):
-            pub_scopes.setdefault((pth.as_posix(), key), (pth.as_posix(), jid))
+            pub_scope_list.setdefault((pth.as_posix(), key), []).append(
+                (pth.as_posix(), jid)
+            )
         text = pth.read_text(ENC)
         publish_shell.update(_shell_built_key_prefixes(text))
         publish_shell.update(_shell_output_keys(text))
@@ -1400,7 +1491,20 @@ def main() -> int:
         # An empty namespace leaves it undecidable, which is what it is.
         pub_ns = publish_by_target.get(pub_path, {})
         for raw in pub_keys:
-            pub_scope = pub_scopes.get((pub_path.as_posix(), raw))
+            # Every job that declares this key, not just the first. A key is only
+            # settled when EVERY scope declaring it could be read; one unreadable
+            # producer is enough to leave it undecided.
+            scopes = pub_scope_list.get((pub_path.as_posix(), raw)) or [None]
+            pub_scope = next(
+                (
+                    sc
+                    for sc in scopes
+                    if sc is None
+                    or not _DELEGATED_KEY.fullmatch(raw.strip())
+                    or not _delegation_is_read(raw.strip(), publish_producers, sc)
+                ),
+                scopes[0],
+            )
             literals, complete = _expand_key(
                 raw, pub_ns, publish_producers, pub_scope
             )
@@ -1558,7 +1662,18 @@ def main() -> int:
 
     for pub_path, prefixes in publish_restore_prefixes:
         for prefix in prefixes:
-            pub_heads = _prefix_candidates(prefix)
+            # Expanded with the declaring target's own inputs first, exactly as its
+            # exact keys are. Reducing `prefix-${{ inputs.name }}-` without them gave
+            # the broad head `prefix-`, which collides with everything under it, so a
+            # composite called with `name: publish` was reported against unrelated PR
+            # keys whose runtime fallback it could never reach.
+            prefix_ns = publish_by_target.get(pub_path, {})
+            expanded_prefixes, _ok = _expand_key(prefix, prefix_ns)
+            pub_heads = [
+                head
+                for candidate in expanded_prefixes
+                for head in _prefix_candidates(candidate)
+            ]
             if not pub_heads:
                 findings.append(
                     f"{pub_path.name}: restore-keys entry {prefix!r} begins with an "

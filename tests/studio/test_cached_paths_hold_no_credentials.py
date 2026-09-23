@@ -806,6 +806,13 @@ def _inside(inner: str, outer: str, files = None) -> bool:
     `_inside("hf-cache", "hf-cache/**")` is false and the whole upload looked unrelated to
     the credential home it contains.
     """
+    # Identical expressions first, before anything is stripped. With
+    # `HF_HOME: ${{ matrix.path }}` and `path: ${{ matrix.path }}`, the two are the same
+    # directory at run time whatever the matrix chooses -- and `_normalise` erased both
+    # to the empty string, which `_inside` refuses, so a login beside that cache was
+    # accepted. Two spellings of one unknown are still one unknown.
+    if "${{" in inner and inner.strip() == outer.strip():
+        return True
     if any(ch in outer for ch in "*?["):
         # Decided by matching the credential's own path against the pattern, which is
         # both stricter and more honest than widening the pattern to its fixed prefix.
@@ -2297,3 +2304,30 @@ def test_a_default_credential_file_persisted_exactly_is_caught():
     assert not _default_home_hits("~/.cargo/registry", set())
     # An override still exempts it, so the narrowing from earlier rounds is intact.
     assert not _default_home_hits("~/.cargo/credentials.toml", {"CARGO_HOME"})
+
+
+def test_two_identical_unresolved_expressions_are_the_same_directory():
+    """`HF_HOME: ${{ matrix.path }}` and `path: ${{ matrix.path }}` are one directory.
+
+    Whatever the matrix chooses, the cache and the credential home are the same place.
+    Stripping expressions before comparing reduced both to the empty string, which
+    `_inside` refuses, so a login beside that cache was accepted. Two spellings of one
+    unknown are still one unknown.
+    """
+    assert _inside("${{ matrix.path }}", "${{ matrix.path }}") is True
+    # Two DIFFERENT unknowns stay unknown rather than being assumed equal.
+    assert _inside("${{ matrix.path }}", "${{ matrix.other }}") is False
+
+    job = {
+        "env": {"HF_HOME": "${{ matrix.path }}"},
+        "steps": [
+            {"run": "hf auth login --token x"},
+            {
+                "uses": "actions/cache/save@v4",
+                "with": {"path": "${{ matrix.path }}", "key": "k"},
+            },
+        ],
+    }
+    assert _login_offenders({}, job), (
+        "the cached path is the credential home, by construction"
+    )
