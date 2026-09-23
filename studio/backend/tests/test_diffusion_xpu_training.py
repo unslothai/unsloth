@@ -263,8 +263,8 @@ def test_an_unprobeable_xpu_is_left_to_the_child_not_refused_up_front(host):
 
     host(cuda = False, xpu = _fake_xpu(is_available = lambda: True, is_bf16_supported = _unprobeable))
     assert xpu_native_bf16_probe() is None
-    assert bf16_unsupported_reason("krea-2") is None   # route proceeds
-    assert native_bf16_supported_xpu() is False        # child still refuses, on the device itself
+    assert bf16_unsupported_reason("krea-2") is None  # route proceeds
+    assert native_bf16_supported_xpu() is False  # child still refuses, on the device itself
 
 
 def test_an_xpu_run_captures_and_restores_its_own_noise_generator(host, monkeypatch):
@@ -307,7 +307,9 @@ def test_a_checkpoint_cannot_silently_resume_across_accelerator_backends(host, t
         "sampler": {"pos": 0},
         "files": {k: f"{k}.pt" for k in ("adapter", "optimizer", "scheduler", "rng")},
     }
-    written_here = capture_rng_state({"loop": random.Random(1), "variant": random.Random(2)})["json"]
+    written_here = capture_rng_state({"loop": random.Random(1), "variant": random.Random(2)})[
+        "json"
+    ]
     assert written_here["accelerator"] in ("cuda", "xpu", "cpu")
 
     # Same host: accepted.

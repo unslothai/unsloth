@@ -189,6 +189,17 @@ if _IS_MLX:
     except Exception:
         pass
     try:
+        # Same reason: remote code reaches transformers' get_class_in_module on this platform
+        # too, and the wrap is what restores the image helpers transformers 5 stopped
+        # re-exporting. Costs nothing until a checkpoint's own modeling file is loaded.
+        from .import_fixes import (
+            fix_transformers5_image_processing_reexports as _fix_image_reexports,
+        )
+        _fix_image_reexports()
+        del _fix_image_reexports
+    except Exception:
+        pass
+    try:
         import unsloth_zoo
     except ImportError as _e:
         raise ImportError(

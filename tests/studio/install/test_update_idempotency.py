@@ -63,6 +63,7 @@ claim this branch makes; a diff reported against `run1-settle` is not that claim
 
 from __future__ import annotations
 
+import collections
 import hashlib
 import json
 import os
@@ -181,6 +182,25 @@ DIST_RECORDS = (
     "    except (OSError, TypeError):\n"
     "        out.append([(d.metadata['Name'] or '').lower(), d.version, None, None])\n"
     "print(json.dumps(sorted(out)))"
+)
+
+
+# The digest the installer stamps into the manifest as known_unmet_index, computed the same way:
+# its own installed_dependency_index(), hashed as _installed_index_digest hashes it. The record is
+# only evidence about the installed set it was written against, which is how the installer reads it.
+INSTALLER_DIR = pathlib.Path(__file__).resolve().parents[3] / "studio"
+INDEX_DIGEST = (
+    "import hashlib, sys\n"
+    f"sys.path.insert(0, {str(INSTALLER_DIR)!r})\n"
+    "import install_manifest\n"
+    "index = install_manifest.installed_dependency_index()\n"
+    "if index is None:\n"
+    "    print('')\n"
+    "else:\n"
+    "    digest = hashlib.sha256()\n"
+    "    for name in sorted(index):\n"
+    "        digest.update(f'{name}=={index[name][0]}\\n'.encode('utf-8'))\n"
+    "    print(digest.hexdigest())\n"
 )
 
 
@@ -583,6 +603,14 @@ def snapshot(venv_python: pathlib.Path) -> dict:
         for name, version, mtime, size in json.loads(records.stdout or "[]")
     ]
 
+    index_digest = subprocess.run(
+        [str(venv_python), "-I", "-c", INDEX_DIGEST],
+        capture_output = True,
+        text = True,
+        timeout = 300,
+    )
+    state["installed_index_digest"] = (index_digest.stdout or "").strip() or None
+
     manifest_path = venv / "unsloth_install_manifest.json"
     manifest = None
     if manifest_path.is_file():
@@ -925,6 +953,56 @@ def test_the_manifest_records_the_evidence_the_next_run_needs(install, settled):
     assert manifest.get("installer_python_tag"), manifest.keys()
 
 
+def _known_unmet_names(state: dict) -> set[str]:
+    """Distributions the manifest records as unmet in some audited step's closure.
+
+    closure_unmet_requirements reports a missing distribution by name and a version outside its
+    specifier as "name version"; a "<...>" entry means the audit could not run and names nothing.
+    Only a record whose known_unmet_index matches the installed set it is read against counts.
+    """
+    manifest = state.get("manifest") or {}
+    # Stale evidence names nothing: a record written against a different installed set says
+    # nothing about this one, and trusting it would let a later step's change hide under it.
+    digest = state.get("installed_index_digest")
+    if not digest or manifest.get("known_unmet_index") != digest:
+        return set()
+    record = manifest.get("known_unmet") or {}
+    names: set[str] = set()
+    for entries in record.values() if isinstance(record, dict) else ():
+        for entry in entries or ():
+            text = str(entry).strip()
+            if text and not text.startswith("<"):
+                names.add(_dist_name(text.split()[0]))
+    return names
+
+
+def _dist_name(name: str) -> str:
+    return re.sub(r"[-_.]+", "-", name).lower()
+
+
+def _assert_same_distributions(before: dict, after: dict, message: str) -> None:
+    """Every distribution installed on both sides, and every version equal, except one that BOTH
+    manifests record as known_unmet.
+
+    Such a distribution is caught between two pins no version meets (click: sqlfluff<4 wants
+    <=8.3.0, huggingface-hub 1.23+ wants >=8.4.2), so which side it lands on is decided by the last
+    step that resolved it, not by whether a skip was equivalent. A full pass reinstalls Diffusers
+    main from a direct reference after the data-designer deps, re-resolving hub's closure, and a
+    pass that skips that step leaves the data-designer answer. Nothing else is set aside.
+    """
+    torn = _known_unmet_names(before) & _known_unmet_names(after)
+    # Per name, with multiplicity: a set collapses a second metadata record for an exempted name
+    # (a pip backup, a duplicate dist-info), and the version filter below would then hide it.
+    before_names = collections.Counter(_dist_name(n) for n, _ in before["distributions"])
+    after_names = collections.Counter(_dist_name(n) for n, _ in after["distributions"])
+    assert (
+        before_names == after_names
+    ), f"{message}: a distribution record was added or removed: {(before_names - after_names) + (after_names - before_names)}"
+    assert [d for d in after["distributions"] if _dist_name(d[0]) not in torn] == [
+        d for d in before["distributions"] if _dist_name(d[0]) not in torn
+    ], f"{message} (known_unmet on both sides, not compared: {sorted(torn)})"
+
+
 def test_full_deps_forces_every_step_and_still_changes_nothing(install, settled):
     """The escape hatch. It must do the work -- no "(satisfied, skipped)" anywhere --
     and arrive at the same venv, which is what makes the skips safe."""
@@ -943,9 +1021,11 @@ def test_full_deps_forces_every_step_and_still_changes_nothing(install, settled)
         "UNSLOTH_STUDIO_FULL_DEPS still skipped a step:\n" + run.log[-8000:]
     )
     after = snapshot(install)
-    assert after["distributions"] == before["distributions"], (
+    _assert_same_distributions(
+        before,
+        after,
         "doing every step produced a different venv from skipping the settled ones, so "
-        "at least one skip was not equivalent to the work it replaced"
+        "at least one skip was not equivalent to the work it replaced",
     )
 
 
@@ -973,7 +1053,7 @@ def _assert_install_working(
     *before*."""
     after = snapshot(install)
     if same_distributions:
-        assert after["distributions"] == before["distributions"]
+        _assert_same_distributions(before, after, "the install's packages changed")
     else:
         core = lambda dists: sorted(d for d in dists if d[0] in LOCAL_CORE)  # noqa: E731
         assert core(after["distributions"]) == core(before["distributions"])
