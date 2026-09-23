@@ -725,6 +725,18 @@ async function retryFailedThreadRecord(
   return (await getChatThread(threadId)) ?? undefined;
 }
 
+/** Hand the "Continued from chat" divider where it sits, from a thread just read. */
+function publishForkBoundary(thread: ThreadRecord): void {
+  setForkBoundary(
+    thread.id,
+    thread.forkBoundaryMessageId,
+    // A deleted source cannot be opened, so the divider drops its link rather than its text.
+    thread.forkedFromThreadId && !isChatThreadDeleted(thread.forkedFromThreadId)
+      ? thread.forkedFromThreadId
+      : null,
+  );
+}
+
 export async function listStoredChatMessages(
   threadId: string,
 ): Promise<MessageRecord[]> {
@@ -743,17 +755,7 @@ export async function listStoredChatMessages(
       throw error;
     }),
   ]);
-  if (backendThread) {
-    setForkBoundary(
-      threadId,
-      backendThread.forkBoundaryMessageId,
-      // A deleted source cannot be opened, so the divider drops its link rather than its text.
-      backendThread.forkedFromThreadId &&
-        !isChatThreadDeleted(backendThread.forkedFromThreadId)
-        ? backendThread.forkedFromThreadId
-        : null,
-    );
-  }
+  if (backendThread) publishForkBoundary(backendThread);
   if (backendMessages && (backendThread || backendMessages.length > 0)) {
     const merged = mergeMessages(backendMessages, legacyMessages, {
       includeLegacyOnly:
@@ -1063,6 +1065,11 @@ export async function syncStoredChatMessages(
   // actual deletion: an ordinary sync runs constantly and would undo the whole cache.
   if (options.pruneMissing || (options.deletedMessageIds?.length ?? 0) > 0) {
     clearServerOwnedChatMessages();
+    // Deleting the message the divider sits under moves it, in the same transaction that prunes.
+    // Nothing else reads the thread again, so without this the divider stays gone until the chat
+    // is reopened. Only on a delete, which is rare and already the user waiting on a round trip.
+    const thread = await getChatThread(threadId).catch(() => undefined);
+    if (thread) publishForkBoundary(thread);
   }
   return synced;
 }

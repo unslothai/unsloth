@@ -180,6 +180,7 @@ class ChatThread(BaseModel):
     forkedFromThreadId: Optional[str] = None
     forkedFromMessageId: Optional[str] = None
     forkBoundaryMessageId: Optional[str] = None
+    forkTitleBase: Optional[str] = None
     settings: Optional[ChatThreadSettings] = None
 
     @field_serializer("settings")

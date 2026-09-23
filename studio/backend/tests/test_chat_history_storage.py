@@ -1379,29 +1379,22 @@ def test_repeated_identical_sends_in_flat_thread_persist_separately(tmp_path, mo
 
 
 @pytest.mark.parametrize(
-    "title,base",
+    "stored,title,base",
     [
-        ("Chat", "Chat"),
-        ("Chat (2)", "Chat"),
-        ("Chat (2) (3)", "Chat (2)"),  # only the last suffix is a number we own
-        ("Chat(4)", "Chat"),
-        ("Chat (0)", "Chat"),
-        ("Weird (x)", "Weird (x)"),  # not a number, so part of the name
-        ("(2)", "(2)"),  # nothing left over, so the title stands
-        ("  Spaced  ", "Spaced"),
+        ("Chat", "Chat (2)", "Chat"),  # generated, so the stored base wins
+        ("Chat (2)", "Chat (2) (3)", "Chat (2)"),  # a base may hold a number of its own
+        (None, "Chat", "Chat"),
+        (None, "Budget (2026)", "Budget (2026)"),  # the user's number, kept whole
+        (None, "Release (2)", "Release (2)"),
+        (None, "(2)", "(2)"),
+        (None, "  Spaced  ", "Spaced"),
+        ("", "Chat (2)", "Chat (2)"),  # blank is no base at all
+        ("  ", "Chat (2)", "Chat (2)"),
     ],
 )
-def test_fork_title_base(title, base):
-    assert studio_db.fork_title_base(title) == base
-
-
-@pytest.mark.parametrize(
-    "title",
-    ["Budget (2026)", "Release (2)", "Chat (2) (3)", "(2)", "Plain"],
-)
-def test_an_ordinary_chat_keeps_its_own_number(title):
-    """Only a fork's "(n)" is ours to replace; on any other chat it is the user's."""
-    assert studio_db.fork_title_base(title, source_is_fork = False) == title
+def test_fork_base_of(stored, title, base):
+    """Without a stored base the whole title is one, so only a generated "(n)" is replaced."""
+    assert studio_db.fork_base_of({"fork_title_base": stored, "title": title}) == base
 
 
 def _fork(source: str, new_id: str, at: int):
@@ -1439,15 +1432,65 @@ def test_a_renamed_fork_keeps_the_name_the_user_gave_it(tmp_path, monkeypatch):
 
 
 def test_a_generated_suffix_is_still_replaced(tmp_path, monkeypatch):
-    """The family the number names is really there, so it is ours to take."""
+    """A real fork carries the base it was built from, so its "(n)" is ours to take."""
     _reset_studio_db(tmp_path, monkeypatch)
     studio_db.upsert_chat_thread({**_thread("orig"), "title": "Notes"})
-    studio_db.upsert_chat_thread(
-        {**_thread("f"), "title": "Notes (1)", "forkedFromThreadId": "orig"}
-    )
-    studio_db.sync_chat_messages("f", [_msg("m1", None, 1)])
+    studio_db.sync_chat_messages("orig", [_msg("m1", None, 1)])
 
-    assert _fork("f", "f2", 10)["title"] == "Notes (2)"
+    assert _fork("orig", "f", 10)["title"] == "Notes (1)"
+    assert _fork("f", "f2", 11)["title"] == "Notes (2)"
+
+
+def test_a_fork_numbers_from_its_base_after_the_source_is_gone(tmp_path, monkeypatch):
+    """The stored base is the whole signal, so nothing about the source can take it away."""
+    _reset_studio_db(tmp_path, monkeypatch)
+    studio_db.upsert_chat_thread({**_thread("orig"), "title": "Notes"})
+    studio_db.sync_chat_messages("orig", [_msg("m1", None, 1)])
+    assert _fork("orig", "f", 10)["title"] == "Notes (1)"
+
+    studio_db.delete_chat_threads(["orig"])  # "Notes (1)" is now the only one left
+
+    assert _fork("f", "f2", 11)["title"] == "Notes (2)"
+
+
+def test_a_fork_numbers_from_its_base_after_the_source_is_renamed(tmp_path, monkeypatch):
+    _reset_studio_db(tmp_path, monkeypatch)
+    studio_db.upsert_chat_thread({**_thread("orig"), "title": "Notes"})
+    studio_db.sync_chat_messages("orig", [_msg("m1", None, 1)])
+    assert _fork("orig", "f", 10)["title"] == "Notes (1)"
+
+    studio_db.update_chat_thread("orig", {"title": "Journal"})
+
+    # The fork keeps its own family rather than following a name it never had.
+    assert _fork("f", "f2", 11)["title"] == "Notes (2)"
+
+
+def test_renaming_a_fork_ends_the_generated_name(tmp_path, monkeypatch):
+    _reset_studio_db(tmp_path, monkeypatch)
+    studio_db.upsert_chat_thread({**_thread("orig"), "title": "Notes"})
+    studio_db.sync_chat_messages("orig", [_msg("m1", None, 1)])
+    _fork("orig", "f", 10)
+
+    studio_db.update_chat_thread("f", {"title": "Report (2026)"})
+    assert studio_db.get_chat_thread("f")["forkTitleBase"] is None
+
+    # The year is the user's now, so the whole name is the base.
+    assert _fork("f", "f2", 11)["title"] == "Report (2026) (1)"
+
+
+def test_a_rename_through_upsert_also_ends_it(tmp_path, monkeypatch):
+    """Whole-record writers rebuild the row without the base; only a new title drops it."""
+    _reset_studio_db(tmp_path, monkeypatch)
+    studio_db.upsert_chat_thread({**_thread("orig"), "title": "Notes"})
+    studio_db.sync_chat_messages("orig", [_msg("m1", None, 1)])
+    _fork("orig", "f", 10)
+
+    # Same title, no base in the payload: the stored one survives.
+    studio_db.upsert_chat_thread({**_thread("f"), "title": "Notes (1)", "archived": True})
+    assert studio_db.get_chat_thread("f")["forkTitleBase"] == "Notes"
+
+    studio_db.upsert_chat_thread({**_thread("f"), "title": "Report (2026)"})
+    assert studio_db.get_chat_thread("f")["forkTitleBase"] is None
 
 
 def test_fork_titles_number_from_the_original_name(tmp_path, monkeypatch):

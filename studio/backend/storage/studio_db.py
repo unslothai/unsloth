@@ -20,7 +20,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
-from typing import Any, Callable, Iterable, Optional
+from typing import Any, Callable, Iterable, Mapping, Optional
 
 
 from utils.account_context import is_owner_context
@@ -424,6 +424,7 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
             forked_from_thread_id TEXT,
             forked_from_message_id TEXT,
             fork_boundary_message_id TEXT,
+            fork_title_base TEXT,
             settings_json TEXT,
             FOREIGN KEY(project_id) REFERENCES chat_projects(id) ON DELETE CASCADE
         )
@@ -457,6 +458,10 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     # Null on forks taken before this column: those threads simply show no divider.
     if "fork_boundary_message_id" not in chat_thread_cols:
         conn.execute("ALTER TABLE chat_threads ADD COLUMN fork_boundary_message_id TEXT")
+    # The name a fork numbers from, written when it is made and cleared when it is renamed.
+    # Null on every earlier row, which then numbers from its whole title.
+    if "fork_title_base" not in chat_thread_cols:
+        conn.execute("ALTER TABLE chat_threads ADD COLUMN fork_title_base TEXT")
     if "updated_at" not in chat_thread_cols:
         conn.execute("ALTER TABLE chat_threads ADD COLUMN updated_at INTEGER")
         # Floor at created_at: forked threads copy older ancestor messages, so the fork's creation time wins.
@@ -1958,6 +1963,7 @@ def _chat_thread_from_row(row: sqlite3.Row, include_settings: bool = True) -> di
         "forkedFromThreadId": data.get("forked_from_thread_id"),
         "forkedFromMessageId": data.get("forked_from_message_id"),
         "forkBoundaryMessageId": data.get("fork_boundary_message_id"),
+        "forkTitleBase": data.get("fork_title_base"),
     }
     if include_settings:
         thread["settings"] = _json_loads(data.get("settings_json"), None)
@@ -2019,8 +2025,8 @@ def upsert_chat_thread(thread: dict) -> dict:
         conn.execute(
             """
             INSERT INTO chat_threads
-                (id, title, model_type, model_id, model_gguf_variant, pair_id, project_id, archived, created_at, updated_at, openai_code_exec_container_id, anthropic_code_exec_container_id, forked_from_thread_id, forked_from_message_id, fork_boundary_message_id, settings_json)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (id, title, model_type, model_id, model_gguf_variant, pair_id, project_id, archived, created_at, updated_at, openai_code_exec_container_id, anthropic_code_exec_container_id, forked_from_thread_id, forked_from_message_id, fork_boundary_message_id, fork_title_base, settings_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 title = excluded.title,
                 model_type = excluded.model_type,
@@ -2040,6 +2046,14 @@ def upsert_chat_thread(thread: dict) -> dict:
                 forked_from_thread_id = excluded.forked_from_thread_id,
                 forked_from_message_id = excluded.forked_from_message_id,
                 fork_boundary_message_id = excluded.fork_boundary_message_id,
+                -- The base only describes the title it was generated with, so a rename drops it.
+                -- Under the same title an absent one keeps the stored base, since a writer that
+                -- rebuilds the record without this field is not renaming anything.
+                fork_title_base = CASE
+                    WHEN excluded.title = chat_threads.title
+                    THEN COALESCE(excluded.fork_title_base, chat_threads.fork_title_base)
+                    ELSE excluded.fork_title_base
+                END,
                 -- an absent snapshot keeps the stored one: most writers rebuild the record without it.
                 settings_json = COALESCE(excluded.settings_json, chat_threads.settings_json)
             """,
@@ -2059,6 +2073,7 @@ def upsert_chat_thread(thread: dict) -> dict:
                 thread.get("forkedFromThreadId"),
                 thread.get("forkedFromMessageId"),
                 thread.get("forkBoundaryMessageId"),
+                thread.get("forkTitleBase"),
                 json.dumps(thread["settings"]) if thread.get("settings") is not None else None,
             ),
         )
@@ -2133,6 +2148,10 @@ def update_chat_thread(
         if key in patch:
             assignments.append(f"{column} = ?")
             values.append(value)
+    # A rename ends the generated name, so the base it numbered from goes with it. Auto-titling
+    # lands here too, and it is a rename like any other.
+    if "title" in patch:
+        assignments.append("fork_title_base = NULL")
     if not assignments and settings_write is None:
         return get_chat_thread(id)
 
@@ -3958,34 +3977,17 @@ def _title_family(conn: sqlite3.Connection, base: str) -> list[tuple[str, str]]:
     ]
 
 
-def fork_title_base(title: str, source_is_fork: bool = True) -> str:
-    """The name a fork numbers from, ignoring whether the number is really ours.
+def fork_base_of(src: Mapping) -> str:
+    """The name a fork of `src` numbers from.
 
-    `_fork_base` is what the fork path uses; this is the shape of the rule and the
-    seam the tests pin. Only a fork's own "(n)" is ever replaced, so forking
-    "Chat (2)" gives "Chat (3)" while "Budget (2026)" gives "Budget (2026) (1)".
+    A generated title carries the base it was built from, so "Notes (1)" gives "Notes"
+    however its family fares later: the source can be deleted or renamed and the next
+    fork is still "Notes (2)". Anything else numbers from its whole title, which is what
+    keeps a chat the user named "Budget (2026)" out of the suffix rule. The base is
+    cleared on rename, so a fork renamed to "Report (2026)" lands there too.
     """
-    if not source_is_fork:
-        return title.strip() or title
-    match = _FORK_TITLE_SUFFIX.match(title)
-    base = match.group("base").strip() if match else title.strip()
-    # A title that is only a number keeps it: "(2)" numbers from "(2)", not from "".
-    return base or title.strip()
-
-
-def _fork_base(conn: sqlite3.Connection, src: sqlite3.Row) -> str:
-    """The base for a fork of `src`, taken from the row inside the write lock.
-
-    A "(n)" is only ours when the family it names is really there: the chat this was
-    forked from, or another fork of it. That is what tells a generated "Notes (1)"
-    from a fork the user renamed to "Budget (2026)", which keeps its whole name.
-    """
-    title = (src["title"] or "").strip()
-    stripped = fork_title_base(title, source_is_fork = src["forked_from_thread_id"] is not None)
-    if stripped == title:
-        return title
-    family = [tid for tid, _ in _title_family(conn, stripped) if tid != src["id"]]
-    return stripped if family else title
+    stored = (src["fork_title_base"] or "").strip()
+    return stored or (src["title"] or "").strip()
 
 
 def _next_fork_title(conn: sqlite3.Connection, base: str) -> str:
@@ -4082,7 +4084,8 @@ def fork_chat_thread(
         src_dict = dict(src)
         # Named from the row this transaction read, under the write lock: a title taken
         # before it could be renamed by another tab, and the number could already be gone.
-        title = _next_fork_title(conn, _fork_base(conn, src))
+        base = fork_base_of(src)
+        title = _next_fork_title(conn, base)
         # Anchor for the "Continued from chat" divider. Not derivable later: copies keep the
         # source's timestamps and take fresh ids.
         boundary_message_id = id_map[ancestry[-1]["id"]]
@@ -4091,8 +4094,9 @@ def fork_chat_thread(
             INSERT INTO chat_threads
                 (id, title, model_type, model_id, model_gguf_variant, pair_id, project_id, archived, created_at,
                  openai_code_exec_container_id, anthropic_code_exec_container_id,
-                 forked_from_thread_id, forked_from_message_id, fork_boundary_message_id, settings_json)
-            VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, NULL, NULL, ?, ?, ?, ?)
+                 forked_from_thread_id, forked_from_message_id, fork_boundary_message_id,
+                 fork_title_base, settings_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, NULL, NULL, ?, ?, ?, ?, ?)
             """,
             (
                 new_thread_id,
@@ -4106,6 +4110,7 @@ def fork_chat_thread(
                 source_thread_id,
                 branch_message_id,
                 boundary_message_id,
+                base,
                 src_dict.get("settings_json"),
             ),
         )

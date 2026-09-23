@@ -218,6 +218,9 @@ export function studioBackupToConversations(
     const forkBoundaryMessageId = messageIds.get(
       str(thread.forkBoundaryMessageId) ?? "",
     );
+    // A name, not an id, so it restores as it stands. Without it the restored fork numbers
+    // its own forks from its whole title, giving "Notes (1) (1)".
+    const forkTitleBase = str(thread.forkTitleBase);
     const projectId = str(thread.projectId);
     const pairId = str(thread.pairId);
     const modelId = str(thread.modelId);
@@ -247,6 +250,7 @@ export function studioBackupToConversations(
             }
           : {}),
         ...(forkBoundaryMessageId ? { forkBoundaryMessageId } : {}),
+        ...(forkTitleBase ? { forkTitleBase } : {}),
         ...(isDict(thread.settings) &&
         Object.keys(restorableSettings(thread.settings)).length > 0
           ? {
