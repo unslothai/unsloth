@@ -17166,9 +17166,14 @@ def _check_signal_escape_patterns(code: str):
         contains parentheses, so it cannot collide with one."""
         return f"{function_name}()"
 
+    # The clients that read the proxy environment variables; sockets and urllib3 do not.
+    _ENV_PROXY_CLIENTS = ("requests.", "httpx.", "urllib.request.", "aiohttp.")
     _ENV_PROXY_VARIABLES = frozenset(
         {"http_proxy", "https_proxy", "all_proxy", "ws_proxy", "wss_proxy", "ftp_proxy"}
     )
+
+    # Stands for a value this screen cannot read, so a check against it fails closed.
+    _UNREADABLE = ast.Name(id = "<unreadable>", ctx = ast.Load())
 
     def _is_no_proxy(key) -> bool:
         """A proxy mapping's `no_proxy` entry lists hosts to bypass, not a server to connect to."""
@@ -17291,6 +17296,8 @@ def _check_signal_escape_patterns(code: str):
             self.proxy_owners: "dict[str, set[tuple[str, str]]]" = {}
             # Class id -> its family: the classes in this file joined through their base names.
             self.class_family: "dict[int, str]" = {}
+            # Class name -> its family, so `API()` makes an `<API>` instance.
+            self.class_names: "dict[str, str]" = {}
             # Method id -> (first parameter, class family); `self_names` is the stack in effect.
             self.method_self: "dict[int, tuple[str, str]]" = {}
             if network_possible:
@@ -17309,6 +17316,7 @@ def _check_signal_escape_patterns(code: str):
                 for c in classes:
                     family = f"<{find(c.name)}>"
                     self.class_family[id(c)] = family
+                    self.class_names[c.name] = family
                     for fn in c.body:
                         if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)) and not any(
                             (getattr(d, "id", None) or getattr(d, "attr", None)) == "staticmethod"
@@ -17345,6 +17353,8 @@ def _check_signal_escape_patterns(code: str):
             # Values stored in the standard proxy environment variables, and the names `os` and
             # `os.environ` are bound to (`import os as o`, `from os import environ`).
             self.env_proxies: "list[ast.AST]" = []
+            # Name -> the dict literals assigned to it, for `os.environ.update(config)`.
+            self.dict_literals: "dict[str, list[ast.Dict]]" = {}
             self.os_names: "set[str]" = {"os"}
             self.environ_names: "set[str]" = set()
             for imp in nodes:
@@ -17479,7 +17489,21 @@ def _check_signal_escape_patterns(code: str):
             family = self.class_family.get(self.scope_stack[-1])
             if family is not None:
                 roots.append(f"{family}.{name}")
-            return roots
+            # An instance of a local class, `api = API()`, reads that class's attributes.
+            for root in list(roots):
+                roots += [f for f in self.instance_aliases.get(root, ()) if f.startswith("<")]
+            return list(dict.fromkeys(roots))
+
+        def _path_variants(self, expr) -> "list[str]":
+            """Every key a name or attribute chain can read, per `_roots`."""
+            parts: list[str] = []
+            cur = expr
+            while isinstance(cur, ast.Attribute):
+                parts.insert(0, cur.attr)
+                cur = cur.value
+            if not isinstance(cur, ast.Name):
+                return []
+            return [".".join([root] + parts) for root in self._roots(cur.id)]
 
         def _instances_named_by(self, value, at) -> "set[str]":
             """Every client class a value can hold: a constructor call, or a copy of a path that
@@ -17493,16 +17517,13 @@ def _check_signal_escape_patterns(code: str):
                     for callee in self._local_callees(alt.func):
                         # A local factory: `make()` or `f.make()` holds whatever `make` returns.
                         found.update(self.instance_aliases.get(_returns_of(callee), ()))
-                    continue
-                path = self._receiver_path(alt)
-                if path is None:
+                    if isinstance(alt.func, ast.Name) and alt.func.id in self.class_names:
+                        found.add(self.class_names[alt.func.id])  # `API()` is an `<API>`
                     continue
                 if isinstance(alt, ast.Name) and self._is_shadowed(alt.id, at):
                     continue
-                found.update(self.instance_aliases.get(path, ()))
-                if isinstance(alt, ast.Name):
-                    for root in self._roots(alt.id)[1:]:
-                        found.update(self.instance_aliases.get(root, ()))
+                for path in self._path_variants(alt):
+                    found.update(self.instance_aliases.get(path, ()))
             return found
 
         def _shadowing_names(self, node) -> "list[str]":
@@ -17827,7 +17848,9 @@ def _check_signal_escape_patterns(code: str):
                 self.module_aliases.setdefault(target.id, set()).update(modules)
             if functions:
                 self.func_aliases.setdefault(target.id, set()).update(functions)
-            if modules or functions or instances:
+            # A local class family is not a network alias, so `client = L()` still shadows
+            # `import requests as client`.
+            if modules or functions or any(not c.startswith("<") for c in instances):
                 self._register_alias(target.id, node)
                 return True
             return False
@@ -17871,6 +17894,38 @@ def _check_signal_escape_patterns(code: str):
             self.pending_proxies.append(
                 (target, value, mutated, tuple(self.scope_stack), tuple(self.self_names))
             )
+
+        def _record_env_mapping(self, mapping) -> None:
+            """The entries of a mapping merged into the environment: a dict literal, a name bound
+            to one, `dict(...)` keywords or a list of pairs. Anything else may set a proxy
+            variable this screen cannot see, so it is recorded as unreadable."""
+            if isinstance(mapping, ast.Dict):
+                for k, v in zip(mapping.keys, mapping.values):
+                    if k is None:
+                        self.env_proxies.append(_UNREADABLE)
+                    else:
+                        self._record_env_proxy(k, v)
+            elif isinstance(mapping, ast.Name) and mapping.id in self.dict_literals:
+                for literal in self.dict_literals[mapping.id]:
+                    self._record_env_mapping(literal)
+            elif (
+                isinstance(mapping, ast.Call)
+                and isinstance(mapping.func, ast.Name)
+                and mapping.func.id == "dict"
+                and not mapping.args
+            ):
+                for kw in mapping.keywords:
+                    if kw.arg is None:
+                        self.env_proxies.append(_UNREADABLE)
+                    else:
+                        self._record_env_proxy(ast.Constant(value = kw.arg), kw.value)
+            elif isinstance(mapping, (ast.List, ast.Tuple)) and all(
+                isinstance(e, ast.Tuple) and len(e.elts) == 2 for e in mapping.elts
+            ):
+                for e in mapping.elts:
+                    self._record_env_proxy(e.elts[0], e.elts[1])
+            else:
+                self.env_proxies.append(_UNREADABLE)
 
         def _is_environ(self, node) -> bool:
             if isinstance(node, ast.Name):
@@ -17930,6 +17985,8 @@ def _check_signal_escape_patterns(code: str):
                 self._record_proxy(target, value)
                 self._link(target, value)
                 self._record_flow(target, value, at, node)
+                if isinstance(target, ast.Name) and isinstance(value, ast.Dict):
+                    self.dict_literals.setdefault(target.id, []).append(value)
                 if isinstance(target, ast.Name):
                     for alt in _alternatives(value):
                         if isinstance(alt, ast.Name) and alt.id != target.id:
@@ -18126,9 +18183,7 @@ def _check_signal_escape_patterns(code: str):
                         self._record_env_proxy(node.args[0], node.args[1])
                     elif func.attr == "update":
                         for arg in node.args:
-                            if isinstance(arg, ast.Dict):
-                                for k, v in zip(arg.keys, arg.values):
-                                    self._record_env_proxy(k, v)
+                            self._record_env_mapping(arg)
                         for kw in node.keywords:
                             self._record_env_proxy(ast.Constant(value = kw.arg), kw.value)
                 elif isinstance(func, ast.Attribute) and func.attr in (
@@ -18295,13 +18350,16 @@ def _check_signal_escape_patterns(code: str):
                 # Proxies passed to this call or set in the environment, and proxies or a base URL
                 # configured on its client.
                 proxies = [kw.value for kw in node.keywords or [] if kw.arg in _PROXY_KEYWORDS]
-                proxies += self.env_proxies
+                if any(c.startswith(_ENV_PROXY_CLIENTS) for c in recognised):
+                    proxies += self.env_proxies
                 if "urllib.request.ProxyHandler" in recognised and node.args:
                     proxies.append(node.args[0])  # `ProxyHandler({"https": ...})`
                 if isinstance(node.func, ast.Attribute):
-                    receiver = self._receiver_path(node.func.value)
                     owners = {c.rpartition(".")[0] for c in recognised}
-                    for path in self._linked_paths(receiver) if receiver else ():
+                    linked = set()
+                    for receiver in self._path_variants(node.func.value):
+                        linked |= self._linked_paths(receiver)
+                    for path in linked:
                         proxies.extend(
                             value
                             for attr, value in self.receiver_destinations.get(path, ())

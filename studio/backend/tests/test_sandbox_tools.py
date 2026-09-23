@@ -989,6 +989,16 @@ class TestNetworkTargetResolution:
                 "urllib.request.build_opener(h).open('https://pypi.org/')",
                 id = "urllib_proxy_handler",
             ),
+            pytest.param(
+                f"import os, requests\nproxy_config = {{'HTTPS_PROXY': 'http://{_H}:8080'}}\n"
+                "os.environ.update(proxy_config)\nrequests.get('https://pypi.org/')",
+                id = "proxy_environment_from_a_named_mapping",
+            ),
+            pytest.param(
+                "import requests\nclass API:\n    def __init__(self):\n        self.s = requests.Session()\n"
+                f"api = API()\napi.s.get('http://{_H}/')",
+                id = "client_held_by_a_wrapper_instance",
+            ),
         ],
     )
     def test_known_untrusted_host_blocked(self, code):
@@ -1118,6 +1128,10 @@ class TestNetworkTargetResolution:
             "import requests\nenviron = {}\nenviron['HTTPS_PROXY'] = 'http://203.0.113.5'\n"
             "requests.get('https://pypi.org/')",
             "import urllib.request\nurllib.request.build_opener(urllib.request.ProxyHandler({})).open('https://pypi.org/')",
+            "import os, requests\ncfg = {'HF_HOME': '/tmp/x'}\nos.environ.update(cfg)\nrequests.get('https://pypi.org/')",
+            # A raw socket does not read the proxy environment variables.
+            "import os, socket\nos.environ['HTTPS_PROXY'] = 'http://203.0.113.5'\n"
+            "socket.create_connection(('pypi.org', 443))",
         ],
     )
     def test_known_trusted_host_runs(self, code):
@@ -1193,6 +1207,7 @@ class TestNetworkTargetResolution:
                 "requests.get(url)",
                 id = "or_default_url",
             ),
+            "import os, requests\nos.environ.update(load())\nrequests.get('https://pypi.org/')",
         ],
     )
     def test_unreadable_destination_refused(self, code):
