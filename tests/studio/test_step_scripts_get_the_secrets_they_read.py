@@ -149,14 +149,16 @@ def _secret_backed_names() -> frozenset[str]:
 SECRET_BACKED = _secret_backed_names()
 
 
-def _supplies_a_secret(value) -> bool:
+def _supplies_a_secret(value, key: str | None = None) -> bool:
     """An env entry counts only when its value draws on a `secrets.*` expression: an empty
     string, a `vars.*` lookup or a misspelled expression is present and still hands the
-    script nothing. `github.token` is the run's own token and counts, as GH_TOKEN mappings use it."""
+    script nothing. `github.token` is the run's own token, and counts only for a key pinned to
+    GITHUB_TOKEN: handed to DOCKER_API_KEY it is a real token for the wrong service."""
+    token_ok = key is not None and _SECRET_FOR.get(key) == "GITHUB_TOKEN"
     return isinstance(value, str) and any(
         _SECRET.search(expression)
         or _INDEXED.search(expression)
-        or re.search(r"\bgithub\.token\b", expression)
+        or (token_ok and re.search(r"\bgithub\.token\b", expression))
         for expression in _EXPRESSION.findall(value)
     )
 
@@ -173,7 +175,7 @@ def _unmapped(path: Path) -> list[str]:
                 continue
             env = {**workflow_env, **job_env, **(step.get("env") or {})}
             for name in sorted(SECRET_BACKED):
-                if _reads(script, name) and not _supplies_a_secret(env.get(name)):
+                if _reads(script, name) and not _supplies_a_secret(env.get(name), name):
                     label = step.get("name") or f"step {index}"
                     why = (
                         "without mapping it" if name not in env else f"but maps it to {env[name]!r}"
@@ -258,7 +260,9 @@ def test_an_entry_that_supplies_no_secret_does_not_count():
     assert not _supplies_a_secret("${{ vars.DOCKER_API_KEY }}")
     assert not _supplies_a_secret("${{ secret.DOCKER_API_KEY }}")
     assert not _supplies_a_secret("secrets.DOCKER_API_KEY")
-    assert _supplies_a_secret("${{ github.token }}")
+    assert _supplies_a_secret("${{ github.token }}", "GH_TOKEN")
+    assert not _supplies_a_secret("${{ github.token }}", "DOCKER_API_KEY")
+    assert not _supplies_a_secret("${{ github.token }}")
 
 
 def _static_matrix_values(job: dict, field: str):
@@ -277,6 +281,10 @@ def _static_matrix_values(job: dict, field: str):
 
 def _check_mapping(key, value, job, name, wrong):
     if not isinstance(value, str):
+        # YAML reads `false` or `1` as a non-string; for a known secret key that is still a
+        # value that supplies nothing, and a `uses:` step has no script for _unmapped to read.
+        if key in _SECRET_FOR or key in _INDEXED_FOR:
+            wrong.append(f"{name}: {key} is mapped to {value!r}, which supplies no secret")
         return
     expressions = _EXPRESSION.findall(value)
     drawn = {n for e in expressions for n in _SECRET.findall(e)}
@@ -287,7 +295,7 @@ def _check_mapping(key, value, job, name, wrong):
         # only invokes (mlx-ci.yml's smoke runner reads HF_TOKEN) is out of _unmapped's sight.
         known = key in _SECRET_FOR or key in _INDEXED_FOR
         deliberate = value == "" and (name, key) in _DELIBERATELY_BLANK
-        if known and not deliberate and not _supplies_a_secret(value):
+        if known and not deliberate and not _supplies_a_secret(value, key):
             wrong.append(f"{name}: {key} is mapped to {value!r}, which supplies no secret")
         return
     if drawn:
@@ -401,3 +409,17 @@ def test_a_known_key_mapped_to_a_non_secret_is_caught():
     # An unknown key with a plain value is not a secret mapping at all.
     plain = {"jobs": {"j": {"steps": [{"env": {"NIGHTLY_KEEP_DAYS": "60"}, "run": "true"}]}}}
     assert _misdrawn(plain, "w") == []
+
+
+def test_the_run_token_and_non_string_values_do_not_pass_for_other_keys():
+    def doc(value):
+        return {"jobs": {"j": {"steps": [{"uses": "x/y@v1", "env": {"DOCKER_API_KEY": value}}]}}}
+
+    assert _misdrawn(doc("${{ github.token }}"), "w") == [
+        "w: DOCKER_API_KEY is mapped to '${{ github.token }}', which supplies no secret"
+    ]
+    assert _misdrawn(doc(False), "w") == [
+        "w: DOCKER_API_KEY is mapped to False, which supplies no secret"
+    ]
+    gh = {"jobs": {"j": {"steps": [{"env": {"GH_TOKEN": "${{ github.token }}"}, "run": "true"}]}}}
+    assert _misdrawn(gh, "w") == []
