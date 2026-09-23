@@ -206,6 +206,28 @@ def test_loss_support_is_decided_per_instance(healthy_first):
         assert (loss == 42.0) is (model is healthy), (model.config.own_loss, loss)
 
 
+def test_a_subclass_override_of_a_repaired_accessor_is_repaired_too(model):
+    from unsloth.models.remote_code_shims import apply_remote_code_shims
+
+    apply_remote_code_shims(model)  # repairs Inner.get_input_embeddings
+
+    class SubInner(Inner):
+        def get_input_embeddings(self, input_ids):
+            return self.embed_tokens(input_ids) * 2
+
+    class SubOuter(Outer):
+        def __init__(self, config):
+            super().__init__(config)
+            self.model = SubInner(config)
+
+    SubOuter.__module__ = SubInner.__module__ = "transformers_modules.tiny_remote.modeling_tiny"
+    sub = SubOuter(TinyConfig())
+    apply_remote_code_shims(sub)
+    assert sub.model.get_input_embeddings() is sub.model.embed_tokens
+    ids = torch.randint(0, 32, (1, 4))
+    assert torch.equal(sub.model.get_input_embeddings(ids), sub.model.embed_tokens(ids) * 2)
+
+
 def test_transformers_own_classes_are_not_touched():
     from unsloth.models.remote_code_shims import (
         apply_remote_code_shims,

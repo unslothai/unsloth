@@ -92,7 +92,7 @@ def find_embedding_module(module):
 
 def _repair_accessor(cls):
     original = cls.__dict__.get("get_input_embeddings")
-    if original is None or getattr(cls, "_unsloth_original_get_input_embeddings", None) is not None:
+    if original is None or "_unsloth_original_get_input_embeddings" in cls.__dict__:
         return False
 
     @functools.wraps(original)
@@ -135,10 +135,7 @@ def _repair_output_accessor(cls):
     resizes, ties or repairs the vocabulary then dereferences None.
     """
     original = cls.__dict__.get("get_output_embeddings")
-    if (
-        original is None
-        or getattr(cls, "_unsloth_original_get_output_embeddings", None) is not None
-    ):
+    if original is None or "_unsloth_original_get_output_embeddings" in cls.__dict__:
         return False
 
     @functools.wraps(original)
