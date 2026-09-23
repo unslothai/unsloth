@@ -5420,7 +5420,6 @@ def _torch_kernel_arch_tokens() -> list[str]:
     """The gfx targets the installed torch carries kernels for, or [] when torch cannot say."""
     try:
         import torch
-
         return sorted(
             {
                 str(arch).split(":")[0].strip().lower()
