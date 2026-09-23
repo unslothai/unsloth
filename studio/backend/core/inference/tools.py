@@ -17483,6 +17483,8 @@ def _check_signal_escape_patterns(code: str):
                     target = ast.Name(id = param, ctx = ast.Store())
                     # Linked so a proxy the helper sets on its parameter is the caller's proxy.
                     self._link(target, arg)
+                    if self._is_environ(arg):
+                        self.environ_names.add(param)  # `configure(os.environ)`
                     if isinstance(arg, ast.Attribute) and arg.attr in _DESTINATION_ATTRS:
                         owner = self._receiver_path(arg.value)
                         if owner is not None:
@@ -17498,6 +17500,13 @@ def _check_signal_escape_patterns(code: str):
             for target, value, mutated, scopes, selves in self.pending_proxies:
                 self.scope_stack, self.self_names = list(scopes), list(selves)
                 self._apply_proxy(target, value, mutated)
+            # A name found to be the environment only through a call was written before that
+            # was known; its logged stores are environment writes too.
+            for name in self.environ_names:
+                for key, value in self.dict_entries.get(name, ()):
+                    self._record_env_proxy(key, value)
+                if name in self.dict_mutated:
+                    self.env_proxies.append(_UNREADABLE)
             self._index_flows()
             queue = list(range(len(self.flows)))
             while queue:

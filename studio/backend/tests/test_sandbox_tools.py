@@ -1074,6 +1074,11 @@ class TestNetworkTargetResolution:
                 f"        return super().get('http://{_H}/')",
                 id = "inherited_method_through_super",
             ),
+            pytest.param(
+                f"import os, requests\ndef configure(env):\n    env['HTTPS_PROXY'] = 'http://{_H}:8080'\n"
+                "configure(os.environ)\nrequests.get('https://pypi.org/')",
+                id = "proxy_environment_written_by_a_helper",
+            ),
         ],
     )
     def test_known_untrusted_host_blocked(self, code):
@@ -1213,6 +1218,8 @@ class TestNetworkTargetResolution:
             "aiohttp.ClientSession().get('https://pypi.org/')",
             "import os, requests\nkey = 'HF_HOME'\nos.environ[key] = '/tmp'\nrequests.get('https://pypi.org/')",
             "class D(dict):\n    def fetch(self):\n        return super().get('http://203.0.113.5/')",
+            "import requests\ndef configure(env):\n    env['HTTPS_PROXY'] = 'http://203.0.113.5'\n"
+            "configure({})\nrequests.get('https://pypi.org/')",
         ],
     )
     def test_known_trusted_host_runs(self, code):
