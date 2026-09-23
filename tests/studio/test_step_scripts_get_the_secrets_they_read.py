@@ -109,6 +109,11 @@ _SECRET_FOR = {
 _INDEXED_FOR = {
     "KAGGLE_API_TOKEN": ("matrix.secret_name", {"KAGGLE_API_TOKEN", "KAGGLE_API_TOKEN_2"}),
 }
+# Known secret keys a step empties on purpose. The Tauri smoke build blanks the signing key so
+# tauri never signs a debug build; that is a statement, not a lost mapping.
+_DELIBERATELY_BLANK = {
+    ("studio-tauri-smoke.yml", "TAURI_SIGNING_PRIVATE_KEY"),
+}
 _INDEXED = re.compile(r"secrets\[\s*([^\]]+?)\s*\]")
 
 
@@ -277,6 +282,13 @@ def _check_mapping(key, value, job, name, wrong):
     drawn = {n for e in expressions for n in _SECRET.findall(e)}
     indexed = [x for e in expressions for x in _INDEXED.findall(e)]
     if not drawn and not indexed:
+        # A key this table knows is a secret must still get one: `${{ vars.HF_TOKEN }}` or a
+        # plain string is a valid expression that hands the step nothing, and a script the step
+        # only invokes (mlx-ci.yml's smoke runner reads HF_TOKEN) is out of _unmapped's sight.
+        known = key in _SECRET_FOR or key in _INDEXED_FOR
+        deliberate = value == "" and (name, key) in _DELIBERATELY_BLANK
+        if known and not deliberate and not _supplies_a_secret(value):
+            wrong.append(f"{name}: {key} is mapped to {value!r}, which supplies no secret")
         return
     if drawn:
         if key not in _SECRET_FOR:
@@ -375,3 +387,17 @@ def test_an_indexed_lookup_is_checked():
         "['KAGGLE_API_TOKEN', 'KAGGLE_API_TOKEN_2']"
     ]
     assert _supplies_a_secret("${{ secrets[matrix.secret_name] }}")
+
+
+def test_a_known_key_mapped_to_a_non_secret_is_caught():
+    def doc(value):
+        return {"jobs": {"j": {"steps": [{"env": {"HF_TOKEN": value}, "run": "python smoke.py"}]}}}
+
+    assert _misdrawn(doc("${{ secrets.HF_TOKEN }}"), "w") == []
+    assert _misdrawn(doc("${{ vars.HF_TOKEN }}"), "w") == [
+        "w: HF_TOKEN is mapped to '${{ vars.HF_TOKEN }}', which supplies no secret"
+    ]
+    assert _misdrawn(doc(""), "w") == ["w: HF_TOKEN is mapped to '', which supplies no secret"]
+    # An unknown key with a plain value is not a secret mapping at all.
+    plain = {"jobs": {"j": {"steps": [{"env": {"NIGHTLY_KEEP_DAYS": "60"}, "run": "true"}]}}}
+    assert _misdrawn(plain, "w") == []
