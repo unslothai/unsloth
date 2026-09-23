@@ -16,6 +16,7 @@ stacked ``FP8Experts``, which breaks remote-code MoE models whose experts are an
 ``nn.ModuleList`` of Linears (sarvam: ``FP8Experts has no attribute `0```).
 """
 
+import inspect
 import json
 import os
 import re
@@ -506,13 +507,14 @@ def test_both_loaders_hand_the_planner_the_rewritten_plan():
     from unsloth.models import llama, vision
 
     llama_source = inspect.getsource(llama.FastLlamaModel.from_pretrained)
-    assert "modelopt_planner_quantization_config(model_config)" in llama_source
+    assert (
+        "rewritten_quantization_config = modelopt_planner_quantization_config(model_config)"
+        in llama_source
+    )
     vision_source = inspect.getsource(vision.FastBaseModel.from_pretrained)
     # A 16-bit load dequantizes the fp8 weights, so the planner must size them at bf16.
-    assert (
-        "modelopt_planner_quantization_config(auto_config, dequantize = load_in_16bit)"
-        in vision_source
-    )
+    assert "rewritten_quantization_config = modelopt_planner_quantization_config(" in vision_source
+    assert "auto_config, dequantize = load_in_16bit" in vision_source
 
 
 @needs_per_tensor_fp8
@@ -524,7 +526,7 @@ def test_the_planner_sizes_a_modelopt_checkpoint_from_the_rewritten_plan(tmp_pat
     from unsloth.models.modelopt_fp8 import modelopt_planner_quantization_config
 
     planner = pytest.importorskip("unsloth_zoo.device_map_planner")
-    if not hasattr(planner, "_quantization_method_is_known"):
+    if "rewritten_quantization_config" not in inspect.getsource(planner.build_meta_model):
         pytest.skip("this unsloth_zoo planner cannot size a rewritten quantization method")
     config = LlamaConfig(
         hidden_size = 64,
@@ -540,7 +542,8 @@ def test_the_planner_sizes_a_modelopt_checkpoint_from_the_rewritten_plan(tmp_pat
     plan = arm_modelopt_fp8_loading(loaded, verbose = False)
     fp8 = modelopt_planner_quantization_config(loaded)
     assert fp8 == plan and fp8 is not loaded.quantization_config
-    kwargs = planner_quantization_kwargs(quantization_config = fp8)
+    kwargs = planner_quantization_kwargs(rewritten_quantization_config = fp8)
+    assert kwargs["rewritten_quantization_config"] is fp8 and "quantization_config" not in kwargs
     model, hf_quantizer, _ = planner.build_meta_model(str(tmp_path), **kwargs)
     assert type(hf_quantizer).__name__ == "FineGrainedFP8HfQuantizer"
     assert type(model.model.layers[0].self_attn.q_proj).__name__ != "Linear"
@@ -549,6 +552,6 @@ def test_the_planner_sizes_a_modelopt_checkpoint_from_the_rewritten_plan(tmp_pat
     # A 16-bit load dequantizes: the planner then sees bf16 Linear layers, not fp8 ones.
     bf16 = modelopt_planner_quantization_config(loaded, dequantize = True)
     assert bf16["dequantize"] is True and "dequantize" not in loaded.quantization_config
-    kwargs = planner_quantization_kwargs(quantization_config = bf16)
+    kwargs = planner_quantization_kwargs(rewritten_quantization_config = bf16)
     model, _, _ = planner.build_meta_model(str(tmp_path), **kwargs)
     assert type(model.model.layers[0].self_attn.q_proj).__name__ == "Linear"

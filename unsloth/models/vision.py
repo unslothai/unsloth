@@ -1563,14 +1563,14 @@ class FastBaseModel:
             **planner_quantization_kwargs(
                 load_in_4bit = load_in_4bit,
                 load_in_8bit = load_in_8bit,
+                quantization_config = user_quantization_config,
                 # The planner rebuilds the repo's ModelOpt block, which transformers cannot size;
                 # hand it the fp8 form the load uses.
-                quantization_config = user_quantization_config
-                or (
-                    modelopt_planner_quantization_config(auto_config, dequantize = load_in_16bit)
-                    if _modelopt_rewritten
-                    else None
-                ),
+                rewritten_quantization_config = modelopt_planner_quantization_config(
+                    auto_config, dequantize = load_in_16bit
+                )
+                if _modelopt_rewritten
+                else None,
                 extra_skip_modules = ["out_proj"]
                 if any(mt == "nemotron_h" for mt in (model_types or []))
                 else None,

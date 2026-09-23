@@ -2681,14 +2681,12 @@ class FastLlamaModel:
             **planner_quantization_kwargs(
                 load_in_4bit = load_in_4bit,
                 load_in_8bit = load_in_8bit,
-                quantization_config = kwargs.get("quantization_config", None)
+                quantization_config = kwargs.get("quantization_config", None),
                 # The planner rebuilds the repo's ModelOpt block, which transformers cannot size;
                 # hand it the fp8 form the load uses.
-                or (
-                    modelopt_planner_quantization_config(model_config)
-                    if _modelopt_rewritten
-                    else None
-                ),
+                rewritten_quantization_config = modelopt_planner_quantization_config(model_config)
+                if _modelopt_rewritten
+                else None,
                 # The same extra the bnb config below adds.
                 extra_skip_modules = ["out_proj"] if IS_FALCON_H1 else None,
             ),

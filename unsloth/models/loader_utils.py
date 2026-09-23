@@ -235,11 +235,19 @@ def planner_quantization_kwargs(
     load_in_8bit = False,
     quantization_config = None,
     extra_skip_modules = None,
+    rewritten_quantization_config = None,
 ):
     """The quantization the planner must size for, as the load will really apply it. The config or the flags, never both, since transformers refuses both and loader.py clears the flags whenever it forwards a config; bare flags would describe a full-precision load and raise `DeviceMapInfeasible` on one that would have fit. The skip list travels with the flags: SKIP_QUANTIZATION_MODULES stays in compute dtype as `modules_to_not_convert`, and sizing it at 4bit understates the head device by GiBs on a large-vocab VLM. A pre-quantized checkpoint carries its own list in config.json."""
+    # A checkpoint block Unsloth rewrote on the loaded config (ModelOpt FP8 into fp8) replaces the
+    # serialized one the planner would read; a planner without the option cannot size it anyway.
+    rewritten = (
+        {}
+        if rewritten_quantization_config is None
+        else {"rewritten_quantization_config": rewritten_quantization_config}
+    )
     if quantization_config is not None:
-        return {"quantization_config": quantization_config}
-    kwargs = {"load_in_4bit": load_in_4bit, "load_in_8bit": load_in_8bit}
+        return {"quantization_config": quantization_config, **rewritten}
+    kwargs = {"load_in_4bit": load_in_4bit, "load_in_8bit": load_in_8bit, **rewritten}
     if load_in_4bit or load_in_8bit:
         try:
             from unsloth_zoo.peft_utils import SKIP_QUANTIZATION_MODULES
