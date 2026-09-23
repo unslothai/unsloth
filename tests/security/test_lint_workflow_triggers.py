@@ -3145,3 +3145,173 @@ def test_a_top_level_publish_input_is_not_resolved_by_a_child_targets_value(tmp_
         f"the dispatch input can be given `shared-key`, and the unrelated action's "
         f"`safe-key` says nothing about it:\n{proc.stdout}\n{proc.stderr}"
     )
+
+
+def test_an_action_used_from_a_checkout_subdirectory_is_reachable(tmp_path):
+    """`./unsloth/.github/actions/x` is the same action, through a runtime layout.
+
+    A job that checks this repository out into a subdirectory writes the reference that
+    way, and probing it as written found nothing in the source tree, so the action was
+    never added to the reachable set: the keys it declares sat outside both comparisons.
+    `notebooks-ci.yml` and `version-compat-ci.yml` both use this form.
+    """
+    root = tmp_path / ".github"
+    wf = root / "workflows"
+    action = root / "actions" / "nested-cache"
+    wf.mkdir(parents = True)
+    action.mkdir(parents = True)
+    (action / "action.yml").write_text(
+        "name: nested cache\n"
+        "runs:\n  using: composite\n  steps:\n"
+        "    - uses: actions/cache@v4\n"
+        "      with:\n        path: wheels\n        key: shared-inner\n"
+    )
+    (wf / "pr-build.yml").write_text(
+        "name: pr-build\n"
+        "on:\n  pull_request:\n"
+        "jobs:\n  build:\n    runs-on: ubuntu-latest\n"
+        "    steps:\n"
+        # checked out under `unsloth/`, so the reference carries that prefix
+        "      - uses: ./unsloth/.github/actions/nested-cache\n"
+    )
+    (wf / "release-desktop.yml").write_text(
+        "name: release-desktop\n"
+        "on:\n  workflow_dispatch:\n"
+        "jobs:\n  publish:\n    runs-on: ubuntu-latest\n"
+        "    steps:\n"
+        "      - uses: actions/cache/restore@v4\n"
+        "        with:\n          path: wheels\n          key: shared-inner\n"
+    )
+    proc = _run(wf)
+    assert proc.returncode == 1, (
+        f"the prefixed reference names the same action, whose key the publish workflow "
+        f"restores exactly:\n{proc.stdout}\n{proc.stderr}"
+    )
+
+
+def test_a_commented_out_output_does_not_certify_a_producer(tmp_path):
+    """A commented line executes nothing, so it is not evidence about the step.
+
+    Reading one as a recovered output let an otherwise unreadable producer certify
+    itself: a `# echo 'key=safe-key'` above a real `printf` marked the step readable,
+    its delegated key was dismissed, and a publish `restore-keys: shared-` passed.
+    """
+    wf = tmp_path / ".github" / "workflows"
+    wf.mkdir(parents = True)
+    (wf / "pr-build.yml").write_text(
+        "name: pr-build\n"
+        "on:\n  pull_request:\n"
+        "jobs:\n  build:\n    runs-on: ubuntu-latest\n"
+        "    steps:\n"
+        "      - id: make\n"
+        "        run: |\n"
+        "          # echo 'key=safe-key' >> \"$GITHUB_OUTPUT\"\n"
+        "          printf 'key=%s\\n' \"shared-$GITHUB_SHA\" >> \"$GITHUB_OUTPUT\"\n"
+        "      - uses: actions/cache/save@v4\n"
+        "        with:\n          path: wheels\n"
+        "          key: ${{ steps.make.outputs.key }}\n"
+    )
+    (wf / "release-desktop.yml").write_text(
+        _publish_with_restore_keys("shared-pub", "            shared-\n")
+    )
+    proc = _run(wf)
+    assert proc.returncode == 1, (
+        f"the only line that runs is the printf, which this check cannot read:\n"
+        f"{proc.stdout}\n{proc.stderr}"
+    )
+
+
+def test_an_unquoted_scalar_key_is_compared(tmp_path):
+    """`key: 123` is an int to YAML and a cache key to Actions.
+
+    The scoped pass accepted only `str`, so it dropped the key entirely and two
+    workflows sharing it were reported as collision-free.
+    """
+    wf = tmp_path / ".github" / "workflows"
+    wf.mkdir(parents = True)
+    (wf / "pr-build.yml").write_text(
+        "name: pr-build\n"
+        "on:\n  pull_request:\n"
+        "jobs:\n  build:\n    runs-on: ubuntu-latest\n"
+        "    steps:\n"
+        "      - uses: actions/cache@v4\n"
+        "        with:\n          path: wheels\n          key: 123\n"
+    )
+    (wf / "release-desktop.yml").write_text(
+        "name: release-desktop\n"
+        "on:\n  workflow_dispatch:\n"
+        "jobs:\n  publish:\n    runs-on: ubuntu-latest\n"
+        "    steps:\n"
+        "      - uses: actions/cache/restore@v4\n"
+        "        with:\n          path: wheels\n          key: 123\n"
+    )
+    proc = _run(wf)
+    assert proc.returncode == 1, (
+        f"both workflows use the same key:\n{proc.stdout}\n{proc.stderr}"
+    )
+
+
+def test_a_wrapper_forwarding_its_own_input_is_resolved(tmp_path):
+    """A forwarded `${{ inputs.name }}` is whatever the WRAPPER's callers pass.
+
+    Classifying it as dynamic left a nested composite undecidable, so an unrelated
+    publish key was rejected though every top-level caller supplies a literal. A guard
+    that fails a valid arrangement is one that gets switched off.
+    """
+    root = tmp_path / ".github"
+    wf = root / "workflows"
+    inner = root / "actions" / "inner-cache"
+    wrapper = root / "actions" / "wrapper"
+    wf.mkdir(parents = True)
+    inner.mkdir(parents = True)
+    wrapper.mkdir(parents = True)
+    (inner / "action.yml").write_text(
+        "name: inner cache\n"
+        "inputs:\n  name:\n    description: n\n"
+        "runs:\n  using: composite\n  steps:\n"
+        "    - uses: actions/cache@v4\n"
+        "      with:\n        path: wheels\n        key: prefix-${{ inputs.name }}\n"
+    )
+    (wrapper / "action.yml").write_text(
+        "name: wrapper\n"
+        "inputs:\n  name:\n    description: n\n"
+        "runs:\n  using: composite\n  steps:\n"
+        "    - uses: ./.github/actions/inner-cache\n"
+        "      with:\n        name: ${{ inputs.name }}\n"
+    )
+    (wf / "pr-build.yml").write_text(
+        "name: pr-build\n"
+        "on:\n  pull_request:\n"
+        "jobs:\n  build:\n    runs-on: ubuntu-latest\n"
+        "    steps:\n"
+        "      - uses: ./.github/actions/wrapper\n"
+        "        with:\n          name: safe\n"
+    )
+    (wf / "release-desktop.yml").write_text(
+        "name: release-desktop\n"
+        "on:\n  workflow_dispatch:\n"
+        "jobs:\n  publish:\n    runs-on: ubuntu-latest\n"
+        "    steps:\n"
+        "      - uses: actions/cache/restore@v4\n"
+        "        with:\n          path: wheels\n          key: prefix-other\n"
+    )
+    proc = _run(wf)
+    assert proc.returncode == 0, (
+        f"every caller passes `name: safe`, so the only PR key is `prefix-safe`:\n"
+        f"{proc.stdout}\n{proc.stderr}"
+    )
+
+    # And the resolution keeps its teeth: the value really reaching the cache collides.
+    (wf / "release-desktop.yml").write_text(
+        "name: release-desktop\n"
+        "on:\n  workflow_dispatch:\n"
+        "jobs:\n  publish:\n    runs-on: ubuntu-latest\n"
+        "    steps:\n"
+        "      - uses: actions/cache/restore@v4\n"
+        "        with:\n          path: wheels\n          key: prefix-safe\n"
+    )
+    proc = _run(wf)
+    assert proc.returncode == 1, (
+        f"`prefix-safe` is exactly what the wrapper produces:\n{proc.stdout}\n"
+        f"{proc.stderr}"
+    )

@@ -218,13 +218,17 @@ def _scoped_cache_keys(path: Path) -> list:
         for job_id, job in jobs.items():
             for mapping in _mappings(job):
                 key = mapping.get("key")
-                if isinstance(key, str):
-                    out.append((str(job_id), key))
+                if key is not None and not isinstance(key, (dict, list)):
+                    # Stringified, as `_extract_cache_keys` already does. Accepting only
+                    # `str` dropped an unquoted scalar such as `key: 123`, which YAML
+                    # parses as an int, so two workflows sharing that key were reported
+                    # as collision-free.
+                    out.append((str(job_id), str(key)))
         return out
     for mapping in _mappings(doc):
         key = mapping.get("key")
-        if isinstance(key, str):
-            out.append(("", key))
+        if key is not None and not isinstance(key, (dict, list)):
+            out.append(("", str(key)))
     return out
 
 
@@ -290,33 +294,18 @@ def _producer_steps(path: Path) -> dict:
         uses = mapping.get("uses")
         if not isinstance(uses, str) or not uses.strip().startswith("./"):
             continue
-        ref = uses.strip()[2:]
-        # A job that checks this repository out into a subdirectory writes
-        # `./unsloth/.github/actions/x`, which names the same action through a layout
-        # that only exists at run time. Trying the reference as written and then from
-        # the first `.github` component finds it either way; without the second form
-        # those jobs' producers read as unresolvable and failed the live tree.
-        targets = [Path(ref)]
-        parts = ref.split("/")
-        if ".github" in parts[1:]:
-            targets.append(Path("/".join(parts[parts.index(".github"):])))
         # The repository root, found by walking up to `.github` rather than counting
         # levels. A workflow sits at `.github/workflows/x.yml` and an action at
         # `.github/actions/<name>/action.yml`, one level deeper, so a fixed three-up
-        # landed inside `.github` for every action -- no candidate resolved, and every
-        # producer declared by a composite read as unresolvable.
+        # landed inside `.github` for every action.
         root = path.parent
         for parent in path.parents:
             if parent.name == ".github":
                 root = parent.parent
                 break
         candidates = []
-        for target in targets:
-            candidates += [
-                root / target / "action.yml",
-                root / target / "action.yaml",
-                root / target,
-            ]
+        for target in _local_ref_candidates(uses, root):
+            candidates += [target / "action.yml", target / "action.yaml", target]
         for candidate in candidates:
             if not candidate.is_file():
                 continue
@@ -384,7 +373,7 @@ def _delegation_is_read(expression: str, producers: dict, scope = None) -> bool:
     return bool(seen) and all(seen)
 
 
-def _resolved_inputs(caller_paths: list, target: str) -> dict:
+def _resolved_inputs(caller_paths: list, target: str, _depth: int = 0) -> dict:
     """{input: (literal values, every call site resolved)} over all callers of `target`.
 
     Callers are read from every PR-reachable document, workflows AND composites, not
@@ -420,6 +409,9 @@ def _resolved_inputs(caller_paths: list, target: str) -> dict:
     # first with no `name` and then with `name: safe` reported ({'safe'}, True), so the
     # namespace narrowed to `safe` and the real default namespace was left undefended.
     names = {str(name) for site, _scope in sites for name in site}
+    # {input name: {(wrapper's own input, wrapper scope)}} -- values a wrapper forwards
+    # from its own inputs, resolvable against that wrapper's call sites.
+    forwarded_inputs: dict = {}
     for name in names:
         literals: set = set()
         delegated: set = set()
@@ -440,9 +432,43 @@ def _resolved_inputs(caller_paths: list, target: str) -> dict:
                 # from the expression the call site wrote.
                 delegated.add((literal, site_scope))
             else:
+                forwarded = _INPUT_KEY.fullmatch(literal)
+                if forwarded is not None and site_scope is not None:
+                    # A WRAPPER forwarding its own input: `with: {name: ${{ inputs.name }}}`
+                    # inside another composite. The value is whatever that wrapper's own
+                    # callers pass, so it is resolvable one level up rather than unknown,
+                    # and counting it as dynamic left a nested composite undecidable and
+                    # rejected an unrelated publish key -- a false failure on a valid
+                    # arrangement.
+                    #
+                    # Recorded for the caller to resolve rather than followed here, which
+                    # would mean recursing while already inside the resolution it needs.
+                    forwarded_inputs.setdefault(name, set()).add(
+                        (forwarded.group(1), site_scope)
+                    )
+                    continue
                 # An explicit value this check cannot expand, such as
                 # `${{ matrix.cache_key }}`. No default can settle it, because the caller
                 # overrode the default with something unknown.
+                dynamic += 1
+        for wrapper_input, wrapper_scope in forwarded_inputs.get(name, ()):
+            # Resolved against the WRAPPER'S OWN callers, which is the whole point: the
+            # forwarded value is whatever they pass it. Resolving the wrapper file
+            # against itself looked for call sites inside the wrapper and found none.
+            #
+            # One level up, and one level only. A wrapper forwarding a wrapper is rare
+            # enough that the extra depth is not worth the recursion, and `_depth` makes
+            # the fallback the conservative one -- the value stays unresolved.
+            outer = (
+                {}
+                if _depth
+                else _resolved_inputs(
+                    caller_paths, _target_name(Path(wrapper_scope[0])), _depth + 1
+                )
+            ).get(wrapper_input)
+            if outer and outer[1] and outer[0]:
+                literals |= outer[0]
+            else:
                 dynamic += 1
         values[name] = (
             literals, dynamic == 0 and omitted == 0, omitted, dynamic, delegated,
@@ -533,9 +559,14 @@ def _shell_output_keys(text: str) -> list:
     """
     out = []
     for line in text.splitlines():
-        if "GITHUB_OUTPUT" not in line:
+        # A commented-out line executes nothing, and reading one as a recovered output
+        # let an otherwise unreadable producer certify itself: a `# echo 'key=safe-key'`
+        # above a real `printf 'key=%s\n' "shared-$GITHUB_SHA"` marked the step readable,
+        # its delegated key was dismissed, and a publish `restore-keys: shared-` passed.
+        stripped = line.split("#", 1)[0]
+        if "GITHUB_OUTPUT" not in stripped:
             continue
-        for value in re.findall(r"\bkey=([A-Za-z0-9][A-Za-z0-9._-]*)", line):
+        for value in re.findall(r"\bkey=([A-Za-z0-9][A-Za-z0-9._-]*)", stripped):
             if "$" not in value and value not in out:
                 out.append(value)
     return out
@@ -827,6 +858,30 @@ def _declared_defaults(path: Path) -> dict:
                 out[str(name)] = str(spec["default"])
     return out
 
+
+def _local_ref_candidates(ref: str, root: Path) -> list:
+    """Every source-tree path a `./...` reference could name.
+
+    A job that checks this repository out into a subdirectory writes
+    `./unsloth/.github/actions/x`, which is the same action reached through a layout
+    that exists only at run time. Probing the reference as written found nothing in the
+    source tree, so those actions were never added to the reachable set and never
+    flattened: the keys they declare stayed outside both comparisons, and a login inside
+    one was invisible. `notebooks-ci.yml` and `version-compat-ci.yml` both use this form.
+
+    Tried as written first, then from the embedded `.github` component.
+    """
+    ref = ref.strip()
+    if ref.startswith("./"):
+        ref = ref[2:]
+    ref = ref.rstrip("/")
+    out = [root / ref]
+    parts = ref.split("/")
+    if ".github" in parts[1:]:
+        out.append(root / "/".join(parts[parts.index(".github"):]))
+    return out
+
+
 def _pr_reachable_action_dirs(workflows_dir: Path, pr_paths: list) -> set:
     """Composite actions a PR-triggered workflow actually uses.
 
@@ -851,17 +906,22 @@ def _pr_reachable_action_dirs(workflows_dir: Path, pr_paths: list) -> set:
             continue
         seen.add(pth)
         for ref in _local_uses(pth):
-            cand = root.parent / ref[2:]
-            # A local reusable workflow reference names the .yml file itself rather than a
-            # directory containing an action.yml, so it has to be followed on its own.
-            if cand.is_file() and cand.suffix in (".yml", ".yaml"):
-                dirs.add(cand)
-                queue.append(cand)
-                continue
-            for action in (cand / "action.yml", cand / "action.yaml"):
-                if action.is_file():
-                    dirs.add(action)
-                    queue.append(action)
+            for cand in _local_ref_candidates(ref, root.parent):
+                # A local reusable workflow reference names the .yml file itself rather
+                # than a directory containing an action.yml, so it has to be followed on
+                # its own.
+                if cand.is_file() and cand.suffix in (".yml", ".yaml"):
+                    dirs.add(cand)
+                    queue.append(cand)
+                    break
+                found = False
+                for action in (cand / "action.yml", cand / "action.yaml"):
+                    if action.is_file():
+                        dirs.add(action)
+                        queue.append(action)
+                        found = True
+                if found:
+                    break
     return dirs
 
 
