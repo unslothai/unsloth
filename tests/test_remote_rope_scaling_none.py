@@ -12,7 +12,7 @@ import pytest
 import torch
 import transformers
 
-import unsloth  # noqa: F401
+import unsloth
 from transformers.modeling_rope_utils import ROPE_INIT_FUNCTIONS
 
 # On 4.x the None rope_scaling is native and the shim is a no-op.
@@ -153,7 +153,25 @@ def test_remote_scaling_dict_does_not_repeat_the_base_its_config_keeps():
     assert config.rope_parameters["rope_theta"] == 1_000_000  # still where transformers 5 reads it
 
 
+@pytest.mark.skipif(
+    getattr(unsloth, "_IS_MLX", False), reason = "the MLX path leaves it to unsloth_zoo.mlx.loader"
+)
 def test_is_torch_fx_available_imports_as_in_4x():
     # Ling / BailingMoe, DeepSeek-V3 and Kimi-K2 remote code import it at module level.
     from transformers.utils.import_utils import is_torch_available, is_torch_fx_available
     assert is_torch_fx_available() == is_torch_available()
+
+
+def test_rope_scaling_none_also_runs_on_the_mlx_branch():
+    # Apple Silicon never reaches _gpu_init, and remote configs are built there too.
+    import ast
+    from pathlib import Path
+
+    source = Path(unsloth.__file__).read_text(encoding = "utf-8")
+    branch = next(
+        node
+        for node in ast.parse(source).body
+        if isinstance(node, ast.If) and ast.unparse(node.test) == "_IS_MLX"
+    )
+    body = ast.unparse(ast.Module(body = branch.body, type_ignores = []))
+    assert "fix_transformers_remote_rope_scaling_none" in body
