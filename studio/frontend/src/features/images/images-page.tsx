@@ -4163,13 +4163,13 @@ export function ImagesPage({
       <div className="pointer-events-none relative z-40 grid h-[calc(48px*var(--ui-space-scale,1))] shrink-0 grid-cols-[minmax(0,408px)_minmax(13rem,1fr)]">
         <div
           className={cn(
-            // Centered over the settings column; symmetric padding keeps it true.
-            "pointer-events-none flex h-full min-w-0 items-start justify-center overflow-hidden @[50rem]:border-r @[50rem]:border-border/60",
+            // Centered over the settings column. A left obstruction keeps its inset on that side only.
+            "pointer-events-none flex h-full min-w-0 items-start justify-center overflow-hidden pr-[var(--studio-media-header-left-inset,1.5rem)] @[50rem]:border-r @[50rem]:border-border/60",
             isMobile
-              ? "px-12"
+              ? "pl-12"
               : !pinned && isTauri
-                ? "px-[var(--studio-collapsed-chat-controls-inset,0.75rem)]"
-                : "px-[var(--studio-media-header-left-inset,1.5rem)]",
+                ? "pl-[var(--studio-collapsed-chat-controls-inset,0.75rem)]"
+                : "pl-[var(--studio-media-header-left-inset,1.5rem)]",
           )}
         >
           <div className="pointer-events-auto flex min-w-0 max-w-full items-center gap-2 overflow-hidden pt-[var(--studio-chat-header-padding-top,11px)]">
