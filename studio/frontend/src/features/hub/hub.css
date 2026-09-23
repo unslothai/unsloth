@@ -716,9 +716,14 @@
   }
 
   /* 6.5%, in line with .hub-chip. At 4.5% the track sat 9 levels off the page
-     and the unselected half of the control had nothing to stand on. */
+     and the unselected half of the control had nothing to stand on. Set as a
+     variable so the nearest surface picks the track (see below). */
+  html.dark {
+    --hub-tab-track: color-mix(in srgb, var(--foreground) calc(6.5% * var(--contrast-wash-gain, 1)), transparent);
+  }
+
   html.dark .hub-tab-toggle {
-    background-color: color-mix(in srgb, var(--foreground) calc(6.5% * var(--contrast-wash-gain, 1)), transparent);
+    background-color: var(--hub-tab-track);
     border: 0;
     box-shadow: none;
   }
@@ -730,10 +735,17 @@
      instead of lifting it off the panel, stopping under it at #232323. No
      wash gain here: that guard keeps lit washes from fading out, and this one
      darkens. */
-  html.dark .menu-soft-surface .hub-tab-toggle,
-  html.dark .menu-soft-surface-up .hub-tab-toggle,
-  html.dark [data-slot="dialog-content"] .hub-tab-toggle {
-    background-color: color-mix(in srgb, var(--background) 27%, transparent);
+  html.dark :is(.menu-soft-surface, .menu-soft-surface-up, [data-slot="dialog-content"]),
+  html.dark :is(.menu-soft-surface, .menu-soft-surface-up, [data-slot="dialog-content"]) .bg-background[class*="dark:bg-"] {
+    --hub-tab-track: color-mix(in srgb, var(--background) 27%, transparent);
+  }
+
+  /* A page-coloured pane inside a panel (the Settings content pane) is the
+     page again. Sunk there, the track matched the pane and vanished. A card
+     that repaints its bg-background in dark is raised again, so it stays
+     sunk (above). */
+  html.dark :is(.menu-soft-surface, .menu-soft-surface-up, [data-slot="dialog-content"]) .bg-background:not([class*="dark:bg-"]) {
+    --hub-tab-track: color-mix(in srgb, var(--foreground) calc(6.5% * var(--contrast-wash-gain, 1)), transparent);
   }
 
   html:not(.dark) .hub-tab-toggle-pill {

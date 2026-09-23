@@ -1667,6 +1667,9 @@ class TestHealthWaitMeasuresStalls:
         monkeypatch.setattr(httpx, "get", probe)
         try:
             ok = b._wait_for_health(timeout = timeout, interval = 0.02)
+            # Taken before the teardown, which is not part of the wait: killing and reaping the
+            # worker on a loaded runner is what pushed a correct wait past a tight bound.
+            elapsed = time.monotonic() - started
         finally:
             import psutil
 
@@ -1674,7 +1677,7 @@ class TestHealthWaitMeasuresStalls:
                 descendant.kill()
             b._process.kill()
             b._process.wait()
-        return b, ok, time.monotonic() - started
+        return b, ok, elapsed
 
     def test_a_load_that_keeps_working_outlives_the_timeout(self, monkeypatch):
         b, ok, elapsed = self._wait_on_child(monkeypatch, [self._WORKER, "3.0"], healthy_after = 2.5)
@@ -1754,7 +1757,12 @@ class TestHealthWaitMeasuresStalls:
         )
         b, ok, elapsed = self._wait_on_child(monkeypatch, [self._WORKER, "0.0"], timeout = 1.5)
         assert ok is False
-        assert elapsed < 1.95
+        # Measured correctly, the wait ends one timeout after it began, about 1.5s. Measured
+        # from the unreadable samples instead, the 20 ms reads as progress when the tenth
+        # sample lands, and samples are at least 0.1s apart, so the deadline moves to no
+        # earlier than 0.9 + 1.5 = 2.4s. The bound sits below that floor rather than halfway,
+        # which left a correct wait 0.45s of headroom and a loaded runner used it up.
+        assert elapsed < 2.3
 
     def test_resident_memory_regained_after_eviction_is_not_progress(self):
         peak = (10.0, 500 << 20, 0, 0)

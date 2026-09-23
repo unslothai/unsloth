@@ -450,11 +450,13 @@ class TestTheUserFacingDocsCoverWsl:
             assert needle in text, needle
 
     def test_the_readme_no_longer_says_native_linux_only(self):
+        # The README keeps one line for AMD and sends the reader to the Hub page, whose WSL
+        # flags the test above pins. What it must not do is bring back the claim that sent
+        # Windows users away, or lose the link that replaces the detail.
         text = open(_README, encoding = "utf-8").read()
         assert "needs native Linux" not in text
-        assert "/dev/dxg" in text and "docker/run.sh --rocm" in text
-        assert "UNSLOTH_IMAGE=unsloth-rocm:latest" in text
-        assert "RDNA3 cards have no bridge path yet" in text
+        assert "native Linux only" not in text
+        assert "https://hub.docker.com/r/unsloth/unsloth-rocm" in text
 
 
 # ── entrypoint-rocm.sh ───────────────────────────────────────────────────────

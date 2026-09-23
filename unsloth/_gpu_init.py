@@ -245,6 +245,7 @@ from .device_type import arch_lacks_bf16, hip_visible_archs
 
 from .import_fixes import (
     fix_transformers5_bare_annotation_configs,
+    fix_transformers5_image_processing_reexports,
     fix_transformers_composite_prefix_renaming,
     fix_transformers_fully_masked_rows,
     fix_transformers_rope_scaling_drops_theta,
@@ -311,6 +312,10 @@ fix_transformers_rope_scaling_drops_theta()
 # Remote code written for 4.x: a missing ROPE_INIT_FUNCTIONS['default'] and plain RoPE as rope_scaling None.
 fix_transformers_rope_init_default()
 fix_transformers_remote_rope_scaling_none()
+# Probe-gated and lazy: only wraps get_class_in_module, so the siglip image
+# modules are imported and patched when a checkpoint's own modeling file runs,
+# not on every `import unsloth`.
+fix_transformers5_image_processing_reexports()
 fix_xformers_performance_issue()
 # Must run AFTER fix_xformers_performance_issue (it rewrites xformers' cutlass.py on disk) and
 # BEFORE models/_utils.py imports xformers.ops.

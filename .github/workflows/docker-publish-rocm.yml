@@ -491,6 +491,8 @@ jobs:
       - uses: actions/checkout@v7
 
       - name: Sync docker/DOCKERHUB-ROCM.md to the Docker Hub page
+        env:
+          DOCKER_API_KEY: ${{ secrets.DOCKER_API_KEY }}
         run: |
           README=docker/DOCKERHUB-ROCM.md
           test -s "$README"
