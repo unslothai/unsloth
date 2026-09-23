@@ -207,6 +207,25 @@ def test_modelscope_dataset_metadata_is_hidden_from_datasets(hub):
     assert hub.head("/datasets/org/ds/resolve/main/data.jsonl").status_code == 302
 
 
+def test_an_aliased_repo_is_served_under_its_hugging_face_id(hub, monkeypatch):
+    assert upstream.upstream_id("model", "minimaxai/minimax-music3") == "MiniMax/MiniMax-Music3"
+    monkeypatch.setattr(
+        upstream,
+        "_ALIAS_INDEX",
+        {"model": {"hf/tiny": "Qwen/Tiny"}, "dataset": {"hf/ds": "org/ds"}},
+    )
+    body = hub.get("/api/models/HF/Tiny").json()
+    assert (body["id"], body["sha"], len(body["siblings"])) == ("HF/Tiny", SHA, 3)
+    location = hub.head("/HF/Tiny/resolve/main/config.json").headers["location"]
+    assert location == f"https://www.modelscope.cn/models/Qwen/Tiny/resolve/{SHA}/config.json"
+    assert hub.get("/HF/Tiny").headers["location"] == "https://www.modelscope.cn/models/Qwen/Tiny"
+    assert [e["path"] for e in hub.get("/api/datasets/hf/ds/tree/main").json()] == ["data.jsonl"]
+    assert (
+        hub.get("/datasets/hf/ds").headers["location"]
+        == "https://www.modelscope.cn/datasets/org/ds"
+    )
+
+
 def test_writes_bad_ids_and_upstream_failures(hub):
     assert hub.post("/api/repos/create", json = {}).status_code == 403
     assert hub.get("/api/models/a/b..c").status_code == 400

@@ -273,11 +273,11 @@ def build_router(*, browser: bool) -> APIRouter:
 
     @router.get("/datasets/{owner}/{name}")
     async def dataset_page(owner: str, name: str) -> Response:
-        return RedirectResponse(f"{ms.MODELSCOPE}/datasets/{_repo(owner, name)}")
+        return RedirectResponse(ms.page_url("dataset", _repo(owner, name)))
 
     @router.get("/{owner}/{name}")
     async def model_page(owner: str, name: str) -> Response:
-        return RedirectResponse(f"{ms.MODELSCOPE}/models/{_repo(owner, name)}")
+        return RedirectResponse(ms.page_url("model", _repo(owner, name)))
 
     @router.api_route("/{rest:path}", methods = ["POST", "PUT", "PATCH", "DELETE"])
     async def refuse_writes(rest: str) -> Response:

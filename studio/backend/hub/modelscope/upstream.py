@@ -24,6 +24,41 @@ _HIDDEN_DATASET_FILES = {"dataset_infos.json"}
 _TREE_PAGE = 500
 _TREE_MAX_PAGES = 200
 
+# Hugging Face ids that ModelScope hosts under another organisation, answered under the
+# Hugging Face id. Only organisation copies whose files all match (LFS sha256, else size).
+_ALIASES = {
+    "model": {
+        "unslothai/Qwen3-ASR-0.6B-GGUF": "ggml-org/Qwen3-ASR-0.6B-GGUF",
+        "unslothai/Qwen3-ASR-1.7B-GGUF": "ggml-org/Qwen3-ASR-1.7B-GGUF",
+        "MiniMaxAI/MiniMax-H3": "MiniMax/MiniMax-H3",
+        "MiniMaxAI/MiniMax-Music3": "MiniMax/MiniMax-Music3",
+        "OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5": "openmoss/MOSS-TTS-Local-Transformer-v1.5",
+        "OpenMOSS-Team/MOSS-TTS-Nano-100M": "openmoss/MOSS-TTS-Nano-100M",
+        "OpenMOSS-Team/MOSS-Audio-Tokenizer-v2": "openmoss/MOSS-Audio-Tokenizer-v2",
+        "OpenMOSS-Team/MOSS-Audio-Tokenizer-Nano": "openmoss/MOSS-Audio-Tokenizer-Nano",
+        "Shakker-Labs/FLUX.1-dev-ControlNet-Union-Pro": "AI-ModelScope/FLUX.1-dev-ControlNet-Union-Pro",
+    },
+    "dataset": {
+        "openai/gsm8k": "AI-ModelScope/gsm8k",
+        "unsloth/alpaca-cleaned": "AI-ModelScope/alpaca-cleaned",
+        "garage-bAInd/Open-Platypus": "swift/Open-Platypus",
+        "AI4Math/MathVista": "evalscope/MathVista",
+        "AI4Math/MathVerse": "evalscope/MathVerse",
+        "ylecun/mnist": "modelscope/mnist",
+        "MrDragonFox/Elise": "AI-ModelScope/Elise",
+        "tatsu-lab/alpaca": "OmniData/alpaca",
+        "philschmid/guanaco-sharegpt-style": "OmniData/guanaco-sharegpt-style",
+    },
+}
+_ALIAS_INDEX = {
+    kind: {repo.casefold(): target for repo, target in table.items()}
+    for kind, table in _ALIASES.items()
+}
+
+
+def upstream_id(kind: str, repo: str) -> str:
+    return _ALIAS_INDEX[kind].get(repo.casefold(), repo)
+
 
 class UpstreamError(Exception):
     """ModelScope could not answer. Never read as absence."""
@@ -151,7 +186,7 @@ async def _refs(kind: str, repo: str) -> dict[str, str]:
     # The REST API names no commit for a branch; git does.
     prefix = "/datasets" if kind == "dataset" else ""
     response = await _get(
-        f"{prefix}/{repo}.git/info/refs",
+        f"{prefix}/{upstream_id(kind, repo)}.git/info/refs",
         params = {"service": "git-upload-pack"},
         # Anything that does not present as git is answered 421.
         headers = {"User-Agent": "git/2.45.0"},
@@ -185,9 +220,10 @@ async def resolve_revision(kind: str, repo: str, revision: str) -> str:
 
 
 async def _file_entries(kind: str, repo: str, sha: str) -> list[dict]:
+    source = upstream_id(kind, repo)
     if kind == "model":
         data = await _json(
-            f"/api/v1/models/{repo}/repo/files", {"Revision": sha, "Recursive": "true"}
+            f"/api/v1/models/{source}/repo/files", {"Revision": sha, "Recursive": "true"}
         )
         if data is None:
             raise repo_missing(repo)
@@ -195,7 +231,7 @@ async def _file_entries(kind: str, repo: str, sha: str) -> list[dict]:
     entries: list[dict] = []
     for page in range(1, _TREE_MAX_PAGES + 1):
         data = await _json(
-            f"/api/v1/datasets/{repo}/repo/tree",
+            f"/api/v1/datasets/{source}/repo/tree",
             {
                 "Revision": sha,
                 "Root": "/",
@@ -234,7 +270,7 @@ async def files(kind: str, repo: str, sha: str) -> dict[str, dict]:
 
 @_cached(300)
 async def detail(kind: str, repo: str) -> Optional[dict]:
-    data = await _json(f"/openapi/v1/{kind}s/{repo}")
+    data = await _json(f"/openapi/v1/{kind}s/{upstream_id(kind, repo)}")
     return (data or {}).get("data") or None
 
 
@@ -260,9 +296,13 @@ async def reachable() -> bool:
     return response.status_code < 500
 
 
+def page_url(kind: str, repo: str) -> str:
+    return f"{MODELSCOPE}/{kind}s/{upstream_id(kind, repo)}"
+
+
 def file_url(kind: str, repo: str, sha: str, path: str) -> str:
     from urllib.parse import quote
-    return f"{MODELSCOPE}/{kind}s/{repo}/resolve/{sha}/{quote(path)}"
+    return f"{page_url(kind, repo)}/resolve/{sha}/{quote(path)}"
 
 
 def branch_url(kind: str, repo: str, revision: str, path: str) -> str:
