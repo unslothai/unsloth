@@ -753,3 +753,23 @@ def test_stats_of_the_last_generation_survive_the_post_render_reset():
     assert live["calls"] == 25 and live["skipped"] > 0
     ss.reset_static_step_skip(pipe, None)
     assert ss.static_skip_stats(pipe)["stats"] == live
+
+
+def test_status_route_carries_the_last_generation_skip_counts():
+    import inspect
+
+    from core.inference import diffusion
+    from models.inference import DiffusionStatusResponse
+
+    pipe = _installed()
+    _run(pipe, 25)
+    ss.reset_static_step_skip(pipe, None)  # the post-render reset
+    stats = ss.static_skip_stats(pipe)
+    assert stats["stats"]["skipped"] > 0
+    body = DiffusionStatusResponse(
+        loaded = True, transformer_cache = "static", transformer_cache_stats = stats
+    )
+    assert body.model_dump()["transformer_cache_stats"]["stats"] == stats["stats"]
+    assert DiffusionStatusResponse().transformer_cache_stats is None
+    src = inspect.getsource(diffusion.DiffusionBackend.status)
+    assert '"transformer_cache_stats": static_skip_stats(state.pipe)' in src
