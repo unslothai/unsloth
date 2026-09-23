@@ -192,6 +192,10 @@ type ActiveModelLoadRun = {
    *  resident must carry the variant itself or it would restore the wrong artifact. */
   rollbackVariant: string | null;
   rollbackConfig?: PerModelConfig;
+  /** The outgoing model's load identity must survive clearCheckpoint() for compensation. */
+  rollbackLoadId: string | null;
+  rollbackNativePathToken: string | null;
+  rollbackNativePathExpiresAtMs: number | null;
   /** Set once the preliminary unload has removed the model that was resident before
    *  this load. A cancellation before this run POSTs its own /load leaves the backend
    *  with nothing, so the store's checkpoint must be reconciled, not preserved. */
@@ -304,6 +308,10 @@ type PendingReplacementRollback = {
   /** The outgoing model's GGUF variant at the moment of cancellation, for the same reason as
    *  the unloaded flag: clearCheckpoint() has already dropped it from the store. */
   variant?: string | null;
+  /** Access identity needed to reload the outgoing resident after clearCheckpoint drops it. */
+  loadId?: string | null;
+  nativePathToken?: string | null;
+  nativePathExpiresAtMs?: number | null;
 };
 
 // Cancellation can finish after a newer selection intent has already started, so the
@@ -1176,6 +1184,24 @@ export function useChatModelRuntime() {
       // error cleanup must not restore its previous config over settings the new
       // caller has already applied.
       const loadIntentId = ++modelSelectionIntentEpoch;
+      const isLocal = isLocalModelPath(modelId);
+      let hfToken = useChatRuntimeStore.getState().hfToken || null;
+      // Credential prompts must complete before cancelling a pending run: a decline must not
+      // strand the resident that run already unloaded while preparing its own Hub load.
+      const mayReachHub =
+        !isLocal && !isOllamaModelId(modelId) && nativePathToken == null;
+      if (mayReachHub) {
+        const preparedToken = await prepareHfTokenForUse(hfToken);
+        if (!preparedToken.proceed) {
+          if (modelSelectionIntentEpoch === loadIntentId) {
+            toast.error("Model load cancelled.");
+          }
+          return;
+        }
+        hfToken = preparedToken.token;
+      }
+      if (modelSelectionIntentEpoch !== loadIntentId) return;
+
       if (pendingReplacementRollback?.config) {
         previousConfigForReplacement = pendingReplacementRollback.config;
       }
@@ -1192,10 +1218,13 @@ export function useChatModelRuntime() {
           // The run really removed the resident with its own /unload, so the replacement must be
           // prepared to restore it. A POSTed /load does not undo that: the resident this rolls back
           // to is gone either way, and the cancellation reconciliation only clears the store
-          // checkpoint for the pre-POST case. The variant travels with it because clearCheckpoint()
-          // drops activeGgufVariant before the replacement reads it.
+          // checkpoint for the pre-POST case. The variant and access identity travel with it because
+          // clearCheckpoint() drops them from the store before the replacement reads them.
           residentUnloaded: cancelledRun.residentModelUnloaded,
           variant: cancelledRun.rollbackVariant ?? null,
+          loadId: cancelledRun.rollbackLoadId,
+          nativePathToken: cancelledRun.rollbackNativePathToken,
+          nativePathExpiresAtMs: cancelledRun.rollbackNativePathExpiresAtMs,
         };
       };
 
@@ -1608,7 +1637,6 @@ export function useChatModelRuntime() {
         : undefined;
       const previousIsLora =
         previousModel?.isLora ?? (previousLora?.exportType === "lora");
-      const isLocal = isLocalModelPath(modelId);
       const isCachedLora = isLora && isLocal;
       let loadingDescription = [
         currentCheckpoint ? "Switching models." : null,
@@ -1658,6 +1686,16 @@ export function useChatModelRuntime() {
         // Carried on the run, not read from the store later: clearCheckpoint() drops the store's
         // activeGgufVariant before a replacement can derive the prior model's variant.
         rollbackVariant: previousVariant,
+        // Captured before clearCheckpoint can erase the working model's access identity.
+        rollbackLoadId: inheritedPendingRollback
+          ? inheritedPendingRollback.loadId ?? null
+          : currentRollbackState.activeLoadId ?? null,
+        rollbackNativePathToken: inheritedPendingRollback
+          ? inheritedPendingRollback.nativePathToken ?? null
+          : currentRollbackState.activeNativePathToken ?? null,
+        rollbackNativePathExpiresAtMs: inheritedPendingRollback
+          ? inheritedPendingRollback.nativePathExpiresAtMs ?? null
+          : currentRollbackState.activeNativePathExpiresAtMs ?? null,
         // An inherited rollback target whose model the cancelled run already unloaded: the backend
         // has nothing resident, so a failure below must restore it rather than find it still there.
         residentModelUnloaded: inheritedPendingRollback?.residentUnloaded === true,
@@ -1671,7 +1709,6 @@ export function useChatModelRuntime() {
       // The winning intent reserved the slot, so the inherited rollback target is
       // no longer pending.
       pendingReplacementRollback = null;
-      let hfToken = useChatRuntimeStore.getState().hfToken || null;
       const postLoadRefresh = { needed: false };
       let progressModelIds = [modelId];
       let mlxLoadProgress = false;
@@ -1679,22 +1716,6 @@ export function useChatModelRuntime() {
       let cpuFallbackReason: CpuFallbackReason | null = null;
       let mmprojFallbackReason: MmprojFallbackReason | null = null;
       try {
-        // Hoisted out of performLoad's GGUF branch for the progress pollers, but kept off loads that never
-        // reach the Hub: it validates over the network and can block on a dialog, and a stale Settings
-        // token must not gate a local or cached-LoRA load. An Ollama row's id is an opaque
-        // `ollama-manifest:` reference rather than a path, so isLocalModelPath does not recognise it.
-        const mayReachHub =
-          !isLocal && !isOllamaModelId(modelId) && nativePathToken == null;
-        if (mayReachHub) {
-          const preparedToken = await prepareHfTokenForUse(hfToken);
-          if (!preparedToken.proceed) {
-            // Lands in the outer catch (banner only); no load toast exists yet.
-            toast.error("Model load cancelled.");
-            throw new Error("Model load cancelled.");
-          }
-          hfToken = preparedToken.token;
-        }
-
         async function performLoad(): Promise<void> {
           if (abortCtrl.signal.aborted) throw new Error("Cancelled");
           // The cancelled run may already have unloaded the model this load rolls back to, and its
@@ -1781,9 +1802,15 @@ export function useChatModelRuntime() {
           );
           const maxSeqLength =
             pinnedMaxSeqLength ?? stateBeforeUnload.params.maxSeqLength;
-          const previousActiveNativePathToken =
-            stateBeforeUnload.activeNativePathToken;
-          const previousActiveLoadId = stateBeforeUnload.activeLoadId;
+          const previousActiveNativePathToken = inheritedPendingRollback
+            ? inheritedPendingRollback.nativePathToken ?? null
+            : stateBeforeUnload.activeNativePathToken;
+          const previousActiveLoadId = inheritedPendingRollback
+            ? inheritedPendingRollback.loadId ?? null
+            : stateBeforeUnload.activeLoadId;
+          const previousActiveNativePathExpiresAtMs = inheritedPendingRollback
+            ? inheritedPendingRollback.nativePathExpiresAtMs ?? null
+            : stateBeforeUnload.activeNativePathExpiresAtMs;
           const previousIsGguf =
             previousModel?.isGguf === true
             || previousVariant != null
@@ -1822,8 +1849,6 @@ export function useChatModelRuntime() {
           // would shadow it and undo the preparation for every load below.
           const previousModelRequiresTrustRemoteCode =
             stateBeforeUnload.modelRequiresTrustRemoteCode;
-          const previousActiveNativePathExpiresAtMs =
-            stateBeforeUnload.activeNativePathExpiresAtMs;
           // Snapshot the load settings at click time, before the awaits below. When the picker staged a
           // config payload, prefer it over the store: React may not have flushed NumericValueInput's
           // blur commit yet. Per-model, since a template is written against one model's tokens.

@@ -621,3 +621,43 @@ test("an external pick cancels the local load it replaces", () => {
   assert.match(external, /discardExternalReplacement\(externalIntentId\);/);
   assert.match(page, /isModelSelectionIntentCurrent,/);
 });
+
+
+test("Hub credential cancellation cannot strand an inherited unloaded resident", () => {
+  const runtime = read(RUNTIME);
+  const selection = section(
+    runtime,
+    "const loadIntentId = ++modelSelectionIntentEpoch;",
+    "if (!stopped) {",
+  );
+  const prepare = selection.indexOf("await prepareHfTokenForUse(");
+  const cancel = selection.indexOf("const stopped = await cancelLoadRun(activeRun, true);");
+  assert.notEqual(prepare, -1, "Hub credentials are prepared before replacing a run");
+  assert.notEqual(cancel, -1, "the replacement still cancels the prior run");
+  assert.ok(prepare < cancel, "a declined credential prompt must leave the current run untouched");
+  assert.match(selection, /if \(!preparedToken\.proceed\) \{[\s\S]*?return;/);
+});
+
+test("inherited rollback preserves the resident's pin and native-path lease", () => {
+  const runtime = read(RUNTIME);
+  const inherit = section(
+    runtime,
+    "const inheritCancelledRunRollback = (",
+    "// A different pick supersedes the load in flight.",
+  );
+  assert.match(inherit, /loadId: cancelledRun\.rollbackLoadId,/);
+  assert.match(inherit, /nativePathToken: cancelledRun\.rollbackNativePathToken,/);
+  assert.match(inherit, /nativePathExpiresAtMs: cancelledRun\.rollbackNativePathExpiresAtMs,/);
+  const registration = section(
+    runtime,
+    "const loadRun: ActiveModelLoadRun = {",
+    "activeLoadRunRef.current = loadRun;",
+  );
+  assert.match(registration, /rollbackLoadId:/);
+  assert.match(registration, /rollbackNativePathToken:/);
+  assert.match(registration, /rollbackNativePathExpiresAtMs:/);
+  const payload = section(runtime, "const previousActiveNativePathToken =", "const previousIsGguf =");
+  assert.match(payload, /inheritedPendingRollback\s*\?\s*inheritedPendingRollback\.nativePathToken/);
+  assert.match(payload, /inheritedPendingRollback\s*\?\s*inheritedPendingRollback\.loadId/);
+  assert.match(payload, /inheritedPendingRollback\s*\?\s*inheritedPendingRollback\.nativePathExpiresAtMs/);
+});
