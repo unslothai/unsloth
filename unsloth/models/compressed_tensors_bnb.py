@@ -431,13 +431,18 @@ def _scheme_for_module(ct_config, name: str, module: Optional[torch.nn.Module]):
                     return group
     except Exception:
         pass
+    # compressed-tensors precedence: an exact module path, then a regex, then a class name.
+    for group in groups:
+        if name in group.targets:
+            return group
+    for group in groups:
+        for target in group.targets:
+            if target.startswith("re:") and re.match(target[3:], name):
+                return group
     class_name = type(module).__name__ if module is not None else "Linear"
     for group in groups:
         for target in group.targets:
-            if target.startswith("re:"):
-                if re.match(target[3:], name):
-                    return group
-            elif target == class_name or target == "Linear":
+            if target == class_name or target == "Linear":
                 return group
     return groups[0]
 

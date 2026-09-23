@@ -962,6 +962,23 @@ def test_both_loaders_treat_an_explicit_bnb_4bit_config_as_the_4bit_request():
     assert getattr(config, UNSLOTH_COMPRESSED_TENSORS_ATTR, None) is not None
 
 
+def test_exact_module_targets_win_over_a_class_target():
+    # compressed-tensors lists some groups by exact module path; the expert converters resolve
+    # the scheme without a module object, so the path has to be compared first.
+    from types import SimpleNamespace
+    from unsloth.models.compressed_tensors_bnb import _layer_expert_scheme, _scheme_for_module
+
+    dense = SimpleNamespace(targets = ["Linear"])
+    exact = SimpleNamespace(targets = [f"model.layers.1.mlp.experts.{e}.gate_proj" for e in range(4)])
+    ct = SimpleNamespace(config_groups = {"dense": dense, "experts": exact})
+    assert _scheme_for_module(ct, "model.layers.1.mlp.experts.2.gate_proj", None) is exact
+    assert _scheme_for_module(ct, "model.layers.0.self_attn.q_proj", None) is dense
+    key = "mlp.experts.*.gate_proj.weight_packed$"
+    assert (
+        _layer_expert_scheme(ct, "model.layers.1.mlp.experts.gate_up_proj", key, 4, None) is exact
+    )
+
+
 def test_expert_scheme_is_resolved_per_layer():
     # One converter serves every layer, so a checkpoint that quantizes layer 1's experts and
     # layer 5's experts under different groups must get each layer's own scheme.
