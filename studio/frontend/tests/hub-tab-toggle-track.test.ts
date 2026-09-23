@@ -10,42 +10,66 @@ import { readSrc } from "./helpers/kit.ts";
 // from the selected pill is a property of the surface, not of the control. On
 // the page the wash lands 21 levels below --accent; on an elevated panel the
 // same wash lands 7 below and the two halves stop reading apart. These pin the
-// panel case darkening instead, and the pill's hover on borrowed-pill buttons.
+// panel case darkening instead, a page-coloured pane inside a panel getting the
+// page track back, and the pill's hover on borrowed-pill buttons.
 
 const HUB_CSS = readSrc("features/hub/hub.css");
 const PICKERS = readSrc(
   "features/model-picker/components/model-selector/pickers.tsx",
 );
 
-const MENU_TRACK =
-  /html\.dark \.menu-soft-surface \.hub-tab-toggle,[\s\S]*?\{([^}]*)\}/;
+const PANELS =
+  ':is(.menu-soft-surface, .menu-soft-surface-up, [data-slot="dialog-content"])';
+const esc = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+const PAGE_TRACK = /html\.dark \{([^}]*--hub-tab-track[^}]*)\}/;
+const PANEL_TRACK = new RegExp(`html\\.dark ${esc(PANELS)} \\{([^}]*)\\}`);
+const PANE_TRACK = new RegExp(
+  `html\\.dark ${esc(PANELS)} \\.bg-background \\{([^}]*)\\}`,
+);
+
+test("the track reads its colour from the nearest surface", () => {
+  const rule = HUB_CSS.match(/html\.dark \.hub-tab-toggle \{([^}]*)\}/);
+  assert.ok(rule);
+  assert.match(rule[1] ?? "", /background-color: var\(--hub-tab-track\)/);
+});
 
 test("a track on an elevated panel sinks toward the page, not off the panel", () => {
-  const rule = HUB_CSS.match(MENU_TRACK);
-  assert.ok(rule, "menu-scoped .hub-tab-toggle rule is missing");
+  const rule = HUB_CSS.match(PANEL_TRACK);
+  assert.ok(rule, "panel-scoped track is missing");
   // Mixing --foreground here is what put the track 7 levels off the pill.
-  assert.match(rule[1] ?? "", /var\(--background\)/);
+  assert.match(rule[1] ?? "", /--hub-tab-track: [^;]*var\(--background\)/);
   assert.doesNotMatch(rule[1] ?? "", /var\(--foreground\)/);
 });
 
-test("the panel track overrides the page one rather than racing it", () => {
-  const base = HUB_CSS.indexOf("html.dark .hub-tab-toggle {");
-  const scoped = HUB_CSS.search(MENU_TRACK);
-  assert.ok(base >= 0 && scoped >= 0);
-  // Higher specificity already wins; source order keeps it obvious.
-  assert.ok(scoped > base, "the scoped rule must follow the page one");
-});
-
 test("the page track is left on its own wash", () => {
-  const base = HUB_CSS.match(/html\.dark \.hub-tab-toggle \{([^}]*)\}/);
+  const base = HUB_CSS.match(PAGE_TRACK);
   assert.ok(base);
-  assert.match(base[1] ?? "", /var\(--foreground\)/);
+  assert.match(base[1] ?? "", /var\(--foreground\) calc\(6\.5%/);
 });
 
 test("the panel track stops just under the panel rather than far below it", () => {
-  const rule = HUB_CSS.match(MENU_TRACK);
   // 27% of #181818 over #272727 is #232323.
-  assert.match(rule?.[1] ?? "", /var\(--background\) 27%/);
+  assert.match(
+    HUB_CSS.match(PANEL_TRACK)?.[1] ?? "",
+    /var\(--background\) 27%/,
+  );
+});
+
+test("a page-coloured pane inside a panel gets the page track back", () => {
+  // The Settings content pane is bg-background inside the dialog. Sunk toward
+  // the page there, the track matched the pane and the control lost its track.
+  const pane = HUB_CSS.match(PANE_TRACK);
+  assert.ok(pane, "page-coloured panes inside panels still sink the track");
+  const page = HUB_CSS.match(PAGE_TRACK);
+  assert.equal(
+    pane[1]?.trim(),
+    page?.[1]?.trim(),
+    "pane and page tracks differ",
+  );
+  // Later in the file, so it beats the panel rule on a tie.
+  assert.ok(HUB_CSS.search(PANE_TRACK) > HUB_CSS.search(PANEL_TRACK));
+  const settings = readSrc("features/settings/settings-dialog.tsx");
+  assert.match(settings, /<main className="[^"]*\bbg-background\b/);
 });
 
 test("a selected segment shows no hover, being the tab you are already on", () => {
