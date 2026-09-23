@@ -1015,16 +1015,25 @@ def _max_widths(source: str) -> set[str]:
 
 
 _SCALED_PX = re.compile(r"calc\((\d+(?:\.\d+)?px)\*var\(--ui-space-scale,1\)\)")
+# The notes width as written: `_max_widths` reads a bare 448px identically, so the scale is pinned raw.
+_NOTES_WIDTH_SCALED = "max-w-[calc(448px*var(--ui-space-scale,1))]"
 
 
 @pytest.mark.parametrize("banner", [WEB_BANNER, TAURI_BANNER])
 def test_update_popups_share_the_notes_width(banner):
     """Every update popup uses the same width for its notes and action rows."""
-    assert "448px" in _max_widths(banner.read_text(encoding = "utf-8"))
+    source = banner.read_text(encoding = "utf-8")
+    assert "448px" in _max_widths(source)
+    assert (
+        _NOTES_WIDTH_SCALED in source and "max-w-[448px]" not in source
+    ), "the notes width stopped scaling"
     provider = (FRONTEND / "app/provider.tsx").read_text(encoding = "utf-8")
     assert "400px" not in _max_widths(provider), "stack must not cap overlay width"
     llama = (FRONTEND / "components/llama-update-banner.tsx").read_text(encoding = "utf-8")
     assert "448px" in _max_widths(llama)
+    assert (
+        _NOTES_WIDTH_SCALED in llama and "max-w-[448px]" not in llama
+    ), "the notes width stopped scaling"
     assert "400px" not in _max_widths(llama)
 
 
