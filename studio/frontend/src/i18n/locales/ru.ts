@@ -918,6 +918,8 @@ export const ru = {
         showWhisperUpdates: "Уведомления об обновлениях whisper.cpp",
         showWhisperUpdatesDescription:
           "Уведомлять о доступности новой сборки whisper.cpp для моделей распознавания речи. Отключите, если вы не расшифровываете аудио.",
+        showUnslothUpdates: "Автоматическая проверка обновлений",
+        showUnslothUpdatesDescription: "Автоматически проверять наличие новых версий приложения и backend Unsloth. Ручная проверка остаётся доступной в разделе «О программе».",
       },
       startup: {
         sectionTitle: "Автозапуск",

@@ -921,6 +921,8 @@ export const ptBR = {
         showWhisperUpdates: "Notificações de atualização do whisper.cpp",
         showWhisperUpdatesDescription:
           "Notifica quando uma versão mais recente do whisper.cpp está disponível para modelos de fala para texto. Desative se você nunca transcreve áudio.",
+        showUnslothUpdates: "Verificações automáticas de atualizações",
+        showUnslothUpdatesDescription: "Verificar automaticamente se há versões mais recentes do aplicativo e do backend do Unsloth. As verificações manuais continuam disponíveis em Sobre.",
       },
       startup: {
         sectionTitle: "Inicialização",

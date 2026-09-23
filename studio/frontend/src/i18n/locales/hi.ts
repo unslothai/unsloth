@@ -916,6 +916,8 @@ export const hi = {
         showWhisperUpdates: "whisper.cpp अपडेट सूचनाएं",
         showWhisperUpdatesDescription:
           "स्पीच-टू-टेक्स्ट मॉडल के लिए जब कोई नया whisper.cpp बिल्ड उपलब्ध हो तो सूचित करें। यदि आप ऑडियो ट्रांसक्राइब नहीं करते हैं तो बंद कर दें।",
+        showUnslothUpdates: "स्वतः अपडेट जाँच",
+        showUnslothUpdatesDescription: "Unsloth ऐप और बैकएंड के नए वर्शन की स्वतः जाँच करें। मैन्युअल जाँच 'अबाउट' में उपलब्ध रहेगी।",
       },
       startup: {
         sectionTitle: "स्टार्टअप",

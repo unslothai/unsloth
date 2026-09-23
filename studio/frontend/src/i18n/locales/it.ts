@@ -905,6 +905,8 @@ export const it = {
         showWhisperUpdates: "Notifiche di aggiornamento di whisper.cpp",
         showWhisperUpdatesDescription:
           "Avvisa quando è disponibile una build più recente di whisper.cpp per i modelli di trascrizione vocale. Disattiva le notifiche se non trascrivi mai l'audio.",
+        showUnslothUpdates: "Controlli automatici degli aggiornamenti",
+        showUnslothUpdatesDescription: "Controlla automaticamente se esistono versioni più recenti dell'app e del backend Unsloth. I controlli manuali restano disponibili in Informazioni.",
       },
       startup: {
         sectionTitle: "Avvio",

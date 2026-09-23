@@ -894,6 +894,8 @@ export const zhCN = {
         showWhisperUpdates: "whisper.cpp 更新通知",
         showWhisperUpdatesDescription:
           "当有可用于语音识别模型的新版 whisper.cpp 构建时通知你。如果不需要转写音频，可以关闭此项。",
+        showUnslothUpdates: "自动检查更新",
+        showUnslothUpdatesDescription: "自动检查是否有更新的 Unsloth 应用和后端版本。仍可在“关于”中手动检查。",
       },
       startup: {
         sectionTitle: "启动",
