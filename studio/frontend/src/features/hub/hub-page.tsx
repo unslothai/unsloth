@@ -103,7 +103,7 @@ import {
   type ModelTypeFilter,
   matchesModelType,
 } from "./lib/model-type-filter";
-import { resolveOwnerProviderLogo } from "./lib/provider-logos";
+import { passesFeedIconlessGate } from "./lib/feed-visibility";
 import { subscribeResidentStatusRefresh } from "./lib/resident-status-refresh";
 import {
   type RefreshSupersession,
@@ -140,9 +140,6 @@ const ALL_MODELS_VIEW_STORAGE_KEY = "unsloth.hub.allModelsView";
 const INVENTORY_SORT_STORAGE_KEY = "unsloth.hub.inventorySort";
 const OWNER_SCOPE_STORAGE_KEY = "unsloth.hub.ownerScope";
 const RUN_CONFIG_REFRESH_TIMEOUT_MS = 5_000;
-
-// Iconless models (no provider logo, e.g. Ornith, Inkling) show once they clear this many likes.
-const MIN_ICONLESS_MODEL_LIKES = 30;
 
 async function waitForRunConfigRefresh(
   refresh: Promise<void>,
@@ -938,21 +935,17 @@ export function ModelsPage() {
 
   const filteredDiscoverRows = useMemo(() => {
     if (isDatasetMode) return discoverRows;
-    // Why (#9456): the iconless likes gate exists to keep the general feed
-    // clean, but an owner-scoped channel ("Latest Unsloth Models") is curated
-    // content — its owner's newest models routinely sit under the threshold and
-    // match no provider stem, so the gate emptied the whole channel.
-    const channelOwner = activeChannel?.owner?.toLowerCase() ?? null
+    // The feed's list is liveListChannel ("Latest Unsloth Models"); activeChannel is always null here.
+    const listOwner = liveListChannel?.owner ?? null;
     return discoverRows.filter(
       (row) =>
         !isHiddenModelId(row.id) &&
         !isConfiguredHiddenModelId(hiddenEmbeddingModelIds, row.id) &&
-        // Feed shows logo'd models, plus iconless ones above the likes threshold;
-        // a channel's own owner is always shown.
         (!isFeedMode ||
-          (channelOwner !== null && row.owner.toLowerCase() === channelOwner) ||
-          resolveOwnerProviderLogo(row.owner, row.repo) !== null ||
-          (row.result.likes ?? 0) >= MIN_ICONLESS_MODEL_LIKES) &&
+          passesFeedIconlessGate(
+            { owner: row.owner, repo: row.repo, likes: row.result.likes },
+            listOwner,
+          )) &&
         matchesFormat(
           detectResultFormat(row.result),
           effectiveDiscoverFormat,
@@ -970,6 +963,7 @@ export function ModelsPage() {
     hiddenEmbeddingModelIds,
     isDatasetMode,
     isFeedMode,
+    liveListChannel,
     effectiveDiscoverFormat,
     deferredCapabilityFilter,
     activeChannel,
