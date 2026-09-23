@@ -155,8 +155,14 @@ def _is_openai_family_cloud(base_url: Optional[str]) -> bool:
 
 
 def _chat_completions_max_tokens_field(provider_type: str, base_url: str) -> str:
-    """Wire key for the output token budget on ``/v1/chat/completions``."""
-    if provider_type == "openai" or _is_openai_family_cloud(base_url):
+    """Wire key for the output token budget on ``/v1/chat/completions``.
+
+    Custom and self-hosted providers always start with ``max_tokens``; gateways that
+    require ``max_completion_tokens`` (#10787) are handled by the one-shot retry path.
+    ``base_url`` is reserved for callers that already thread it through helpers.
+    """
+    del base_url
+    if provider_type == "openai":
         return "max_completion_tokens"
     return "max_tokens"
 

@@ -26,9 +26,8 @@ from core.inference.external_provider import (
     ("provider_type", "base_url", "expected"),
     [
         ("openai", "https://api.openai.com/v1", "max_completion_tokens"),
-        ("custom", "https://my-resource.openai.azure.com/openai/v1", "max_completion_tokens"),
-        # KI:connect (#10787): public custom host, not Azure — first request uses max_tokens;
-        # upstream 400 triggers one retry with max_completion_tokens (wire test below).
+        # Azure/custom gateways: first wire attempt uses max_tokens; retry on 400 (#10787).
+        ("custom", "https://my-resource.openai.azure.com/openai/v1", "max_tokens"),
         ("custom", "https://chat.kiconnect.nrw/api/v1", "max_tokens"),
         ("custom", "https://my-vllm-server.com/v1", "max_tokens"),
         ("custom", "http://127.0.0.1:8080/v1", "max_tokens"),
