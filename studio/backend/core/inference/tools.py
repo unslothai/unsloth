@@ -17189,6 +17189,11 @@ def _check_signal_escape_patterns(code: str):
         {"http_proxy", "https_proxy", "all_proxy", "ws_proxy", "wss_proxy", "ftp_proxy"}
     )
 
+    _ROUTE_KEYWORDS = {
+        "paramiko.": ("sock",),
+        "fabric.": ("gateway",),
+        "asyncssh.": ("tunnel", "proxy_command"),
+    }
     # Stands for a value this screen cannot read, so a check against it fails closed.
     _UNREADABLE = ast.Name(id = "<unreadable>", ctx = ast.Load())
 
@@ -18495,26 +18500,19 @@ def _check_signal_escape_patterns(code: str):
                         isinstance(found, ast.Constant) and found.value is None
                     ):
                         destinations.append((found, True, kind))
-                # paramiko's `sock=` (a `ProxyCommand` or a socket from elsewhere) decides where the
-                # SSH session really goes, so it is unreadable.
-                if any(c.startswith("paramiko.") for c in recognised):
-                    for kw in node.keywords or []:
-                        if kw.arg == "sock" and not (
-                            isinstance(kw.value, ast.Constant) and kw.value.value is None
-                        ):
-                            destinations.append((_UNREADABLE, True, "host"))
-                # asyncssh routes through `tunnel` (a host) or `proxy_command` (any command, so
-                # unreadable) before it reaches `host`.
-                if any(c.startswith("asyncssh.") for c in recognised):
-                    for kw in node.keywords or []:
-                        if kw.arg == "tunnel" and not (
-                            isinstance(kw.value, ast.Constant) and kw.value.value is None
-                        ):
-                            destinations.append((kw.value, True, "host"))
-                        elif kw.arg == "proxy_command" and not (
-                            isinstance(kw.value, ast.Constant) and kw.value.value is None
-                        ):
-                            destinations.append((_UNREADABLE, True, "host"))
+                # A routing keyword decides where an SSH session really goes: a `ProxyCommand` or
+                # socket (`sock=`), a Fabric `gateway=` or an asyncssh `proxy_command=` runs or
+                # reuses something this screen cannot read, so it fails closed; an asyncssh
+                # `tunnel=` string is a host.
+                for kw in node.keywords or []:
+                    if isinstance(kw.value, ast.Constant) and kw.value.value is None:
+                        continue
+                    for prefix, routes in _ROUTE_KEYWORDS.items():
+                        if kw.arg in routes and any(c.startswith(prefix) for c in recognised):
+                            if kw.arg == "tunnel":
+                                destinations.append((kw.value, True, "host"))
+                            else:
+                                destinations.append((_UNREADABLE, True, "host"))
                 # Proxies passed to this call or set in the environment, and proxies or a base URL
                 # configured on its client.
                 proxies = [kw.value for kw in node.keywords or [] if kw.arg in _PROXY_KEYWORDS]

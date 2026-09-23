@@ -1326,6 +1326,7 @@ class TestNetworkTargetResolution:
             "import os, requests\nfor k, v in cfg.items():\n    os.environ[k] = v\nrequests.get('https://pypi.org/')",
             "import asyncssh\nasyncssh.connect('pypi.org', proxy_command='nc 203.0.113.5 22')",
             "import paramiko\nparamiko.SSHClient().connect('pypi.org', sock=paramiko.ProxyCommand('nc 203.0.113.5 22'))",
+            "from fabric import Connection\nConnection('pypi.org', gateway='ssh -W %h:%p 203.0.113.5').run('id')",
         ],
     )
     def test_unreadable_destination_refused(self, code):
