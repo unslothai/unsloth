@@ -41,12 +41,18 @@ import {
   buildCanvasFixPrompt,
   canvasErrors,
   canvasStack,
+  canvasStackFull,
   emptyCanvasConsole,
   parseCanvasReport,
 } from "./canvas-console";
 import { hashArtifactCode } from "./types";
 
 const HTML_FRAME_DEFAULT_HEIGHT = 400;
+// The console drawer's own height, dragged by its top edge. Down, it collapses onto its
+// own header and stops; up, the canvas keeps this much so it never becomes a sliver.
+const CONSOLE_DEFAULT_HEIGHT = 220;
+const CONSOLE_CANVAS_MIN = 160;
+const CONSOLE_STEP = 32;
 const HTML_FRAME_MAX_HEIGHT = 900;
 const BLOCKED_HOSTS_SHOWN = 3;
 // Entries are per URL, not per host, so a page pulling a whole CDN directory counts each file.
@@ -127,6 +133,7 @@ export function ArtifactHtmlFrame({
   fill = false,
   actionFocusTargetRef,
   consoleOpen = false,
+  reloadNonce = 0,
   onConsoleOpenChange,
   onOutputCountChange,
   onFixWithModel,
@@ -137,6 +144,9 @@ export function ArtifactHtmlFrame({
   fill?: boolean;
   actionFocusTargetRef?: RefObject<HTMLElement | null>;
   consoleOpen?: boolean;
+  // Bumped to run the page again: it changes the frame's src, so the reload goes
+  // through the same parent-initiated load as the first one.
+  reloadNonce?: number;
   onConsoleOpenChange?: (open: boolean) => void;
   onOutputCountChange?: (counts: { errors: number; total: number }) => void;
   // The overlay closes itself here so the composer it just filled is reachable.
@@ -180,24 +190,91 @@ export function ArtifactHtmlFrame({
   const [errorsDismissedCode, setErrorsDismissedCode] = useState<
     string | null
   >(null);
-  const [errorsOnly, setErrorsOnly] = useState(false);
+  const [fullTraces, setFullTraces] = useState(false);
+  const [consoleHeight, setConsoleHeight] = useState(CONSOLE_DEFAULT_HEIGHT);
+  const rootRef = useRef<HTMLDivElement>(null);
+  // Pointer capture, so the drag survives the pointer crossing into the iframe, which
+  // would otherwise swallow the moves.
+  const dragFrom = useRef<{ y: number; height: number } | null>(null);
+  // Measured rather than guessed: the collapsed drawer is exactly its own header.
+  const consoleHeaderRef = useRef<HTMLDivElement>(null);
+  const clampConsole = (height: number) => {
+    const floor = consoleHeaderRef.current?.offsetHeight ?? 34;
+    const room = (rootRef.current?.clientHeight ?? 0) - CONSOLE_CANVAS_MIN;
+    return Math.max(floor, Math.min(height, Math.max(floor, room)));
+  };
+  const onDragStart = (event: React.PointerEvent<HTMLDivElement>) => {
+    dragFrom.current = { y: event.clientY, height: consoleHeight };
+    event.currentTarget.setPointerCapture(event.pointerId);
+    event.preventDefault();
+  };
+  const onDragMove = (event: React.PointerEvent<HTMLDivElement>) => {
+    const from = dragFrom.current;
+    if (!from) return;
+    setConsoleHeight(clampConsole(from.height + (from.y - event.clientY)));
+  };
+  const onDragEnd = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (!dragFrom.current) return;
+    dragFrom.current = null;
+    event.currentTarget.releasePointerCapture(event.pointerId);
+  };
+  // A page can post up to the shell's ceiling in one burst, and with a rolling
+  // window every one of those would re-render the list. One flush per frame instead.
+  const pendingEntries = useRef<CanvasConsoleEntry[]>([]);
+  const flushHandle = useRef<number | null>(null);
+  const queueEntry = useCallback(
+    (entry: CanvasConsoleEntry) => {
+      pendingEntries.current.push(entry);
+      if (flushHandle.current !== null) return;
+      flushHandle.current = window.requestAnimationFrame(() => {
+        flushHandle.current = null;
+        const batch = pendingEntries.current;
+        pendingEntries.current = [];
+        setOutput((current) =>
+          batch.reduce(
+            (state, queued) => appendCanvasEntry(state, code, queued),
+            current,
+          ),
+        );
+      });
+    },
+    [code],
+  );
+  useEffect(
+    () => () => {
+      if (flushHandle.current !== null) {
+        window.cancelAnimationFrame(flushHandle.current);
+      }
+    },
+    [],
+  );
   useEffect(() => {
     onOutputCountChange?.({
       errors: errors.length,
       total: outputForCanvas.entries.length,
     });
   }, [errors.length, outputForCanvas.entries.length, onOutputCountChange]);
+  const reloadedOnce = useRef(false);
+  useEffect(() => {
+    if (!reloadedOnce.current) {
+      reloadedOnce.current = true;
+      return;
+    }
+    setOutput(emptyCanvasConsole(code));
+    setErrorsDismissedCode(null);
+  }, [reloadNonce, code]);
   const artifactHtml = useMemo(() => buildArtifactSrcDoc(code), [code]);
   // Identifies this load to the frame, which stamps its blocked reports with it.
   const codeVersion = useMemo(() => hashArtifactCode(code), [code]);
   const src = useMemo(() => {
     const query = new URLSearchParams({ v: codeVersion });
+    if (reloadNonce > 0) query.set("r", String(reloadNonce));
     // Never put the auth token in the URL: in-frame code can read location.href.
     if (networkAllowed) {
       query.set("allow_network", "1");
     }
     return apiUrl(`/api/inference/artifact-preview-frame?${query.toString()}`);
-  }, [networkAllowed, codeVersion]);
+  }, [networkAllowed, codeVersion, reloadNonce]);
   // Feed only parent-initiated loads, so a self-navigated frame can't self-upgrade.
   const pendingPostRef = useRef(false);
   useEffect(() => {
@@ -250,7 +327,7 @@ export function ArtifactHtmlFrame({
         if (event.data.v !== codeVersion) return;
         const entry = parseCanvasReport(event.data);
         if (!entry) return;
-        setOutput((current) => appendCanvasEntry(current, code, entry));
+        queueEntry(entry);
         return;
       }
       if (typeof event.data?.chatArtifactHeight !== "number") return;
@@ -265,7 +342,7 @@ export function ArtifactHtmlFrame({
     return () => window.removeEventListener("message", handler);
     // `code`/`codeVersion` are listed so the handler always closes over the canvas on screen,
     // rather than relying on postArtifactHtml changing.
-  }, [postArtifactHtml, code, codeVersion]);
+  }, [postArtifactHtml, code, codeVersion, queueEntry]);
 
   const showBlockedBanner =
     !networkAllowed && !dismissedForCanvas && blockedForCanvas.uris.length > 0;
@@ -316,12 +393,12 @@ export function ArtifactHtmlFrame({
         ?.focus();
     }, 0);
   };
-  const shownEntries = errorsOnly
-    ? outputForCanvas.entries.filter((entry) => entry.level === "error")
-    : outputForCanvas.entries;
+  const stackOf = (entry: CanvasConsoleEntry) =>
+    fullTraces ? canvasStackFull(entry) : canvasStack(entry);
 
   return (
     <div
+      ref={rootRef}
       className={cn("relative", fill ? "h-full" : undefined)}
     >
       <iframe
@@ -452,17 +529,14 @@ export function ArtifactHtmlFrame({
                     <Button
                       size="sm"
                       variant="outline"
-                      onClick={() => onConsoleOpenChange(true)}
+                      onClick={() => onConsoleOpenChange(!consoleOpen)}
                     >
-                      {t("settings.chat.artifacts.errorConsoleAction")}
+                      {t(
+                        consoleOpen
+                          ? "settings.chat.artifacts.errorConsoleHideAction"
+                          : "settings.chat.artifacts.errorConsoleAction",
+                      )}
                     </Button>
-                  ) : null}
-                  {errors.length > 1 ? (
-                    <span className="text-xs text-muted-foreground">
-                      {t("settings.chat.artifacts.errorMore", {
-                        count: errors.length - 1,
-                      })}
-                    </span>
                   ) : null}
                 </div>
               </AlertDescription>
@@ -474,30 +548,67 @@ export function ArtifactHtmlFrame({
         <section
           aria-label={t("settings.chat.artifacts.consoleTitle")}
           dir={locale === "ar" ? "rtl" : "ltr"}
-          className="absolute inset-x-0 bottom-0 flex max-h-[45%] min-h-[120px] flex-col border-t border-border bg-background/95 text-xs backdrop-blur"
+          style={{
+            height: consoleHeight,
+            maxHeight: `calc(100% - ${CONSOLE_CANVAS_MIN}px)`,
+            minHeight: 0,
+          }}
+          className="absolute inset-x-0 bottom-0 flex flex-col border-t border-border bg-background/95 text-xs backdrop-blur"
         >
-          <div className="flex shrink-0 items-center gap-2 border-b border-border/70 px-2 py-1">
+          <div
+            role="separator"
+            aria-orientation="horizontal"
+            aria-label={t("settings.chat.artifacts.consoleResize")}
+            tabIndex={0}
+            onPointerDown={onDragStart}
+            onPointerMove={onDragMove}
+            onPointerUp={onDragEnd}
+            onPointerCancel={onDragEnd}
+            onDoubleClick={() =>
+              setConsoleHeight((height) =>
+                height <= clampConsole(0) + 4
+                  ? clampConsole(CONSOLE_DEFAULT_HEIGHT)
+                  : clampConsole(0),
+              )
+            }
+            onKeyDown={(event) => {
+              if (event.key !== "ArrowUp" && event.key !== "ArrowDown") return;
+              event.preventDefault();
+              setConsoleHeight((height) =>
+                clampConsole(
+                  height + (event.key === "ArrowUp" ? CONSOLE_STEP : -CONSOLE_STEP),
+                ),
+              );
+            }}
+            className="group absolute inset-x-0 -top-1.5 z-10 h-3 cursor-ns-resize touch-none focus-visible:outline-none"
+          >
+            <div className="mx-auto mt-1 h-1 w-10 rounded-full bg-border transition-colors group-hover:bg-muted-foreground/70 group-focus-visible:bg-ring" />
+          </div>
+          <div
+            ref={consoleHeaderRef}
+            className="flex shrink-0 items-center gap-2 border-b border-border/70 px-2.5 py-1.5"
+          >
             <span className="text-xs text-muted-foreground">
               {t(
-                errorsOnly
-                  ? errors.length === 1
-                    ? "settings.chat.artifacts.consoleErrorCount"
-                    : "settings.chat.artifacts.consoleErrorCountPlural"
-                  : shownEntries.length === 1
-                    ? "settings.chat.artifacts.consoleMessageCount"
-                    : "settings.chat.artifacts.consoleMessageCountPlural",
-                { count: shownEntries.length },
+                outputForCanvas.entries.length === 1
+                  ? "settings.chat.artifacts.consoleMessageCount"
+                  : "settings.chat.artifacts.consoleMessageCountPlural",
+                { count: outputForCanvas.entries.length },
               )}
             </span>
+            <span className="flex-1" />
             <Button
               size="sm"
-              variant={errorsOnly ? "secondary" : "ghost"}
-              aria-pressed={errorsOnly}
-              onClick={() => setErrorsOnly((value) => !value)}
+              variant="ghost"
+              aria-pressed={fullTraces}
+              className={cn(
+                "text-xs font-normal",
+                fullTraces ? "text-foreground" : "text-muted-foreground",
+              )}
+              onClick={() => setFullTraces((value) => !value)}
             >
-              {t("settings.chat.artifacts.consoleErrorsOnly")}
+              {t("settings.chat.artifacts.consoleFullTraces")}
             </Button>
-            <span className="flex-1" />
             <Button
               size="icon-sm"
               variant="ghost"
@@ -515,44 +626,48 @@ export function ArtifactHtmlFrame({
               <XIcon />
             </Button>
           </div>
-          <ol className="min-h-0 flex-1 overflow-auto font-mono">
-            {shownEntries.length === 0 ? (
-              <li className="px-2 py-1.5 text-muted-foreground">
-                {t("settings.chat.artifacts.consoleEmpty")}
-              </li>
-            ) : (
-              shownEntries.map((entry, index) => (
-                <li
-                  key={index}
-                  className={cn(
-                    "whitespace-pre-wrap break-words border-b border-border/40 px-2 py-1",
-                    entry.level === "error" && "text-destructive",
-                    entry.level === "warn" &&
-                      "text-amber-600 dark:text-amber-400",
-                  )}
-                >
-                  {entry.kind === "console" && entry.level !== "log" ? (
-                    <span className="mr-1.5 uppercase text-muted-foreground">
-                      {entry.level}
-                    </span>
-                  ) : null}
-                  {entry.text}
-                  {locationLabel(entry) ? ` (${locationLabel(entry)})` : ""}
-                  {canvasStack(entry) ? (
-                    <span className="block text-muted-foreground">
-                      {canvasStack(entry)}
-                    </span>
-                  ) : null}
-                </li>
-              ))
-            )}
+          <ol className="min-h-0 flex-1 overflow-auto pb-2 font-mono">
             {outputForCanvas.capped ? (
-              <li className="px-2 py-1.5 text-muted-foreground">
+              <li className="border-b border-border/40 px-2.5 py-2 text-muted-foreground">
                 {t("settings.chat.artifacts.consoleCapped", {
                   count: CANVAS_CONSOLE_ENTRIES_TRACKED,
                 })}
               </li>
             ) : null}
+            {outputForCanvas.entries.length === 0 ? (
+              <li className="px-2.5 py-2 text-muted-foreground">
+                {t("settings.chat.artifacts.consoleEmpty")}
+              </li>
+            ) : (
+              outputForCanvas.entries.map((entry, index) => (
+                <li
+                  key={index}
+                  className={cn(
+                    "border-b border-border/40 px-2.5 py-2 leading-relaxed",
+                    entry.level === "error" && "text-destructive",
+                    entry.level === "warn" &&
+                      "text-amber-600 dark:text-amber-400",
+                  )}
+                >
+                  <p className="whitespace-pre-wrap break-words">
+                    {entry.kind === "console" && entry.level !== "log" ? (
+                      <span className="mr-1.5 uppercase text-muted-foreground">
+                        {entry.level}
+                      </span>
+                    ) : null}
+                    {entry.text}
+                    {locationLabel(entry) ? ` (${locationLabel(entry)})` : ""}
+                  </p>
+                  {stackOf(entry) ? (
+                    // Frames scroll rather than wrap: a wrapped URL breaks the
+                    // one-frame-per-line shape that makes a stack readable.
+                    <pre className="mt-2 overflow-x-auto border-l border-border pl-2.5 leading-relaxed text-muted-foreground">
+                      {stackOf(entry)}
+                    </pre>
+                  ) : null}
+                </li>
+              ))
+            )}
           </ol>
         </section>
       ) : null}

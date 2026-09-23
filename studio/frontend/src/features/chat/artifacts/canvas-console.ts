@@ -91,17 +91,18 @@ export function parseCanvasReport(data: unknown): CanvasConsoleEntry | null {
   return null;
 }
 
-// Past the cap the same object comes back, so React can bail out of the render.
+// A rolling window: when a canvas dies partway through, the lines just before it
+// died are the ones worth reading, so the oldest go rather than the newest.
 export function appendCanvasEntry(
   current: CanvasConsoleState,
   code: string,
   entry: CanvasConsoleEntry,
 ): CanvasConsoleState {
   const mine = current.code === code ? current : emptyCanvasConsole(code);
-  if (mine.entries.length >= CANVAS_CONSOLE_ENTRIES_TRACKED) {
-    return mine.capped ? mine : { ...mine, capped: true };
-  }
-  return { code, entries: [...mine.entries, entry], capped: false };
+  const kept = [...mine.entries, entry];
+  const over = kept.length - CANVAS_CONSOLE_ENTRIES_TRACKED;
+  if (over > 0) return { code, entries: kept.slice(over), capped: true };
+  return { code, entries: kept, capped: mine.capped };
 }
 
 export function canvasErrors(
@@ -126,6 +127,11 @@ export function canvasStack(entry: CanvasConsoleEntry): string {
     .filter((line) => !line.includes(WRAPPER_FRAME))
     .join("\n")
     .trimEnd();
+}
+
+/** The stack as the canvas reported it, wrapper frames and all. */
+export function canvasStackFull(entry: CanvasConsoleEntry): string {
+  return entry.stack.trimEnd();
 }
 
 export function describeCanvasLocation(entry: CanvasConsoleEntry): string {

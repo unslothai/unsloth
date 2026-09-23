@@ -16,7 +16,7 @@ import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { downloadFile, isDownloadCancelled } from "@/lib/native-files";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
-import { EyeIcon, TerminalIcon, XIcon } from "lucide-react";
+import { EyeIcon, RotateCwIcon, TerminalIcon, XIcon } from "lucide-react";
 import {
   Copy01Icon,
   Download01Icon,
@@ -115,8 +115,10 @@ export function ArtifactSurface({
   const [copied, setCopied] = useState(false);
   const t = useT();
   const [consoleOpen, setConsoleOpen] = useState(false);
+  const [reloadNonce, setReloadNonce] = useState(0);
   const [outputCounts, setOutputCounts] = useState({ errors: 0, total: 0 });
   const consoleLabel = t("settings.chat.artifacts.consoleTitle");
+  const reloadLabel = t("settings.chat.artifacts.reloadCanvas");
   const copyResetRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const surfaceRef = useRef<HTMLElement>(null);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
@@ -279,6 +281,23 @@ export function ArtifactSurface({
           <button
             type="button"
             disabled={isLoadingArtifact}
+            aria-label={reloadLabel}
+            title={reloadLabel}
+            onClick={() => {
+              // The source view has no frame to reload, so show it first.
+              if (effectiveViewMode !== "preview") setViewMode("preview");
+              setReloadNonce((nonce) => nonce + 1);
+            }}
+            className={cn(
+              "flex size-8 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted/40 hover:text-foreground",
+              isLoadingArtifact && "cursor-not-allowed opacity-50",
+            )}
+          >
+            <RotateCwIcon className="size-4" />
+          </button>
+          <button
+            type="button"
+            disabled={isLoadingArtifact}
             aria-pressed={consoleOpen && effectiveViewMode === "preview"}
             aria-label={consoleLabel}
             title={consoleLabel}
@@ -396,12 +415,13 @@ export function ArtifactSurface({
               variant === "overlay" ? closeButtonRef : undefined
             }
             consoleOpen={consoleOpen}
+            reloadNonce={reloadNonce}
             onConsoleOpenChange={setConsoleOpen}
             onOutputCountChange={setOutputCounts}
             onFixWithModel={variant === "overlay" ? onClose : undefined}
           />
         ) : (
-          <div className="h-full overflow-auto text-xs leading-relaxed [&_[data-streamdown=code-block]]:!my-0 [&_[data-streamdown=code-block]]:!gap-0 [&_[data-streamdown=code-block]]:!rounded-none [&_[data-streamdown=code-block]]:!border-0 [&_[data-streamdown=code-block]]:!bg-transparent [&_[data-streamdown=code-block]]:!p-0 [&_[data-streamdown=code-block-body]]:!border-0 [&_[data-streamdown=code-block-body]]:!bg-transparent [&_[data-streamdown=code-block-body]]:!p-0 [&_pre]:!m-0 [&_pre]:!bg-transparent [&_pre]:!p-0 [&_pre]:text-xs [&_pre]:leading-relaxed [&_code]:text-xs">
+          <div className="h-full overflow-auto px-3.5 pb-5 pt-3 text-xs leading-relaxed [&_[data-streamdown=code-block]]:!my-0 [&_[data-streamdown=code-block]]:!gap-0 [&_[data-streamdown=code-block]]:!rounded-none [&_[data-streamdown=code-block]]:!border-0 [&_[data-streamdown=code-block]]:!bg-transparent [&_[data-streamdown=code-block]]:!p-0 [&_[data-streamdown=code-block-body]]:!border-0 [&_[data-streamdown=code-block-body]]:!bg-transparent [&_[data-streamdown=code-block-body]]:!p-0 [&_pre]:!m-0 [&_pre]:!bg-transparent [&_pre]:!p-0 [&_pre]:text-xs [&_pre]:leading-relaxed [&_code]:text-xs">
             <Streamdown
               // Only computed when the source view is actually on screen.
               key={buildArtifactSourceKey(artifact)}

@@ -13,6 +13,7 @@ import {
   buildCanvasFixPrompt,
   canvasErrors,
   canvasStack,
+  canvasStackFull,
   emptyCanvasConsole,
   parseCanvasReport,
 } from "../src/features/chat/artifacts/canvas-console.ts";
@@ -99,19 +100,26 @@ test("entries start over when the canvas code changes", () => {
   );
 });
 
-test("past the cap the state is marked once, then returned unchanged", () => {
-  const entry = parseCanvasReport(thrown("spam"))!;
+test("past the cap the oldest entries go, not the newest", () => {
   let state = emptyCanvasConsole("a");
-  for (let i = 0; i < CANVAS_CONSOLE_ENTRIES_TRACKED; i += 1) {
-    state = appendCanvasEntry(state, "a", entry);
+  for (let i = 0; i < CANVAS_CONSOLE_ENTRIES_TRACKED + 5; i += 1) {
+    state = appendCanvasEntry(state, "a", parseCanvasReport(thrown(`line ${i}`))!);
   }
   assert.equal(state.entries.length, CANVAS_CONSOLE_ENTRIES_TRACKED);
-  assert.equal(state.capped, false);
-  const capped = appendCanvasEntry(state, "a", entry);
-  assert.equal(capped.capped, true);
-  assert.equal(capped.entries.length, CANVAS_CONSOLE_ENTRIES_TRACKED);
-  // Same object back, so a page looping on console.log cannot re-render the parent.
-  assert.equal(appendCanvasEntry(capped, "a", entry), capped);
+  assert.equal(state.capped, true);
+  // A canvas that dies partway is read from its last lines, so those are the ones kept.
+  assert.equal(state.entries[0].text, "line 5");
+  assert.equal(
+    state.entries.at(-1)?.text,
+    `line ${CANVAS_CONSOLE_ENTRIES_TRACKED + 4}`,
+  );
+});
+
+test("a burst of reports costs one render, not one per report", () => {
+  // The window rolls now, so without this every report past the cap would
+  // re-render the whole list.
+  assert.match(frameSource, /requestAnimationFrame/);
+  assert.match(frameSource, /pendingEntries\.current\.push\(entry\)/);
 });
 
 test("only throws and rejections count as errors", () => {
@@ -191,6 +199,33 @@ test("the stack drops the repeated message line and Studio's own frames", () => 
     ].join("\n"),
   })!;
   assert.equal(canvasStack(entry), "    at <anonymous>:2:48");
+});
+
+test("the full trace keeps the frames the trimmed one drops", () => {
+  const entry = parseCanvasReport({
+    type: "unsloth:artifact-error",
+    message: "Uncaught TypeError: Cannot read properties of null",
+    stack: [
+      "TypeError: Cannot read properties of null",
+      "    at <anonymous>:2:48",
+      "    at render (http://127.0.0.1:8888/api/inference/artifact-preview-frame?v=87a2oc:129:20)",
+    ].join("\n"),
+  })!;
+  assert.match(canvasStackFull(entry), /at render \(http/);
+  assert.doesNotMatch(canvasStack(entry), /at render \(http/);
+  // The header toggle picks between them, so neither is thrown away.
+  assert.match(frameSource, /fullTraces \? canvasStackFull\(entry\) : canvasStack\(entry\)/);
+});
+
+test("the banner's console button toggles rather than only opening", () => {
+  // "Open console" did nothing once the drawer was already open, which reads as broken.
+  assert.match(frameSource, /onConsoleOpenChange\(!consoleOpen\)/);
+  assert.match(frameSource, /errorConsoleHideAction/);
+});
+
+test("the console has the one toggle and no errors-only filter", () => {
+  assert.match(frameSource, /aria-pressed=\{fullTraces\}/);
+  assert.doesNotMatch(frameSource, /errorsOnly/);
 });
 
 test("a stack with nothing but the message, or no stack at all, renders as nothing", () => {
