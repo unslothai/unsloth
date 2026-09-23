@@ -1226,7 +1226,7 @@ export function ImagesPage({
   const imageModels = useImageModels(hostClass, denseQuantSchemes);
   const [quant, setQuant] = useState<string | null>(galleryCache.quant);
   const [prompt, setPrompt] = useState(
-    "A rally car speeding across vast desert dunes, throwing a dramatic trail of sand behind it. Low-angle action photograph, crisp vehicle details, motion blur in the foreground, harsh afternoon light, realistic textures.",
+    "Cinematic wide shot of a whimsical Alice in Wonderland tea party in an overgrown Victorian garden. Exactly three figures at a long white lace-draped table: a tall eccentric gentleman in an oversized emerald velvet top hat pouring tea from a silver pot mid-motion; a young woman in a pale blue Victorian dress seated left, holding a porcelain teacup with both hands, looking up and laughing; an older woman in deep burgundy seated right in profile, reaching for a tiered cake stand. Detailed embroidered fabrics, realistic skin texture, natural expressions. The table holds mismatched porcelain, antique silverware, towering pastel cakes, and wildflowers. Giant red-capped mushrooms rise behind the table, with ancient trees overhead and golden sunlight streaming through leaves. Shot on 85mm, f/2.8, focus on the gentleman, soft background falloff. Photorealistic, saturated storybook color, warm amber and deep green palette.",
   );
   const [negativePrompt, setNegativePrompt] = useState("");
   const [negativeOpen, setNegativeOpen] = useState(false);
@@ -5081,7 +5081,7 @@ export function ImagesPage({
                 variant="outline"
                 onClick={handleCancelGenerate}
               >
-                <Spinner variant="ring" className="mr-2 size-4" />
+                <Spinner className="mr-2 size-4" />
                 {genDone != null && count > 1 ? `Stop (${genDone}/${count})` : "Stop"}
               </Button>
             ) : (
@@ -5154,7 +5154,7 @@ export function ImagesPage({
             ) : selected ? (
               // The selected record's blob is still loading; spin in place.
               <div className="flex flex-col items-center gap-3 text-muted-foreground">
-                <Spinner variant="ring" className="size-8" />
+                <Spinner className="size-8" />
                 <p className="text-sm">Loading…</p>
               </div>
             ) : busy === "generating" ? null : (
@@ -5177,9 +5177,8 @@ export function ImagesPage({
                   selectedSrc ? "inset-x-0 bottom-4" : "inset-0 items-center",
                 )}
               >
-                <div className="w-72 max-w-full rounded-xl bg-background/85 p-3 shadow-lg backdrop-blur dark:bg-card/95">
+                <div className="w-72 max-w-full rounded-xl bg-background/85 p-3 shadow-lg ring-1 ring-border backdrop-blur">
                   <ModelLoadDescription
-                    variant="floating"
                     // Drop the chat min-height: this floating card has no layout to stabilise.
                     className="min-h-0"
                     title={
@@ -5210,8 +5209,8 @@ export function ImagesPage({
               {/* In-progress generation: a placeholder tile at the front so past images stay browsable while
                   the new one renders. */}
               {busy === "generating" && (
-                <div className="flex size-16 shrink-0 animate-pulse items-center justify-center rounded-lg bg-muted/50">
-                  <Spinner variant="ring" className="size-6 text-muted-foreground" />
+                <div className="flex size-16 shrink-0 animate-pulse items-center justify-center rounded-lg bg-muted/50 ring-2 ring-primary/30">
+                  <Spinner className="size-5 text-muted-foreground" />
                 </div>
               )}
               {/* The tile is a wrapper, not a button: the actions menu must be the select button's SIBLING,

@@ -91,7 +91,9 @@ class _Handler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:  # noqa: N802
         body = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)))
-        self.server.recorded.append({"body": body, "auth": self.headers.get("Authorization")})
+        self.server.recorded.append(
+            {"body": body, "auth": self.headers.get("Authorization"), "path": self.path}
+        )
         prompt = json.dumps(body.get("messages"))
         data = _script(prompt).encode()
         self.send_response(200)
@@ -219,6 +221,30 @@ def test_the_body_fastflowlm_receives(flm):
     assert "min_p" not in body
     # The sampler values FastFlowLM would otherwise inherit from the previous chat.
     assert {"top_p", "top_k", "repetition_penalty", "temperature"} <= set(body)
+
+
+@pytest.mark.parametrize("stream", [True, False])
+def test_custom_responses_selection_cannot_redirect_managed_npu(flm, stream):
+    recorded = flm(reasoning = True)
+    status, response = _call(
+        stream = stream,
+        provider_type = "custom",
+        provider_api_type = "responses",
+        provider_base_url = "http://127.0.0.1:1/v1",
+        external_model = "wrong-model",
+    )
+    assert status == 200
+    sent = recorded[-1]
+    assert sent["path"] == "/v1/chat/completions"
+    assert sent["auth"] == "Bearer secret-key"
+    assert sent["body"]["model"] == "qwen3-0.6b-FLM"
+    assert sent["body"]["stream"] is True
+    assert sent["body"]["think"] is True
+    assert "input" not in sent["body"]
+    if stream:
+        assert response[-1] == "data: [DONE]"
+    else:
+        assert response["choices"][0]["message"]["content"] == "one two seven eight"
 
 
 def test_thinking_off_and_non_reasoning_models(flm):

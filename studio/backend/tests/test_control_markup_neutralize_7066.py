@@ -2401,7 +2401,7 @@ def test_self_hosted_openai_compatible_providers_are_swept():
         _REPO_ROOT / "studio" / "backend" / "core" / "inference" / "external_provider.py"
     ).read_text(encoding = "utf-8")
     # The sweep has to sit before the body is built, so both messages and tools are covered.
-    sweep = source.index("_TEMPLATE_APPLYING_PROVIDERS:\n")
+    sweep = source.index("_TEMPLATE_APPLYING_PROVIDERS and not managed_custom_responses:\n")
     body = source.index('body: dict[str, Any] = {\n            "model": model,')
     assert sweep < body
     for call in (
