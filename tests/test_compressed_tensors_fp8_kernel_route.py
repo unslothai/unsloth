@@ -206,7 +206,7 @@ def test_a_model_mixing_fp8_and_other_schemes_is_not_partly_routed():
 @pytest.mark.parametrize(
     "shape", [(2048, 2048), (256, 2048), (11008, 2048), (2048, 11008), (100, 300), (33, 7)]
 )
-@pytest.mark.parametrize("rows", [(1,), (4,), (2, 1)])
+@pytest.mark.parametrize("rows", [(1,), (1, 1), (1, 1, 1)])
 def test_decode_gemv_matches_the_dequantized_matmul(shape, rows):
     from unsloth.kernels.fp8 import can_use_fp8_rowwise_gemv, fp8_rowwise_gemv
 
@@ -222,7 +222,7 @@ def test_decode_gemv_matches_the_dequantized_matmul(shape, rows):
     y_ref = X.float() @ ref.t()
     assert y.shape == (*rows, shape[0]) and y.dtype == X.dtype
     assert float((y.float() - y_ref).norm() / y_ref.norm()) < 0.01
-    assert torch.equal(y, y_again)  # fixed-order split-K reduction
+    assert torch.equal(y, y_again)
 
 
 def test_decode_gemv_refuses_what_it_cannot_compute():
@@ -235,7 +235,7 @@ def test_decode_gemv_refuses_what_it_cannot_compute():
         # A 128x128 block grid for this weight has 16 * 128 == 2048 == N elements.
         assert not can_use_fp8_rowwise_gemv(X, W, torch.ones(16, 128, device = "cuda"))
         assert not can_use_fp8_rowwise_gemv(
-            torch.randn(5, 16384, device = "cuda", dtype = torch.bfloat16), W, s
+            torch.randn(2, 16384, device = "cuda", dtype = torch.bfloat16), W, s
         )
         assert not can_use_fp8_rowwise_gemv(X.float(), W, s)
         assert not can_use_fp8_rowwise_gemv(X[:, :2048], W.t(), s)

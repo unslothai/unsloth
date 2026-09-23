@@ -395,50 +395,35 @@ def _fp8_rowwise_gemv_kernel(
     y_ptr,
     N,
     K,
-    K_PER_SPLIT,
-    stride_xm,
     stride_wn,
-    stride_ys,
-    stride_ym,
     BLOCK_N: tl.constexpr,
     BLOCK_K: tl.constexpr,
 ):
     offs_n = tl.program_id(0) * BLOCK_N + tl.arange(0, BLOCK_N)
-    split = tl.program_id(1)
-    m = tl.program_id(2)
-    k_start = split * K_PER_SPLIT
-    acc = tl.zeros((BLOCK_N,), dtype = tl.float32)
-    for k0 in range(k_start, k_start + K_PER_SPLIT, BLOCK_K):
+    # Accumulate the whole (BLOCK_N, BLOCK_K) tile and reduce once: one launch, no split-K partials.
+    acc = tl.zeros((BLOCK_N, BLOCK_K), dtype = tl.float32)
+    for k0 in range(0, K, BLOCK_K):
         offs_k = k0 + tl.arange(0, BLOCK_K)
-        x = tl.load(x_ptr + m * stride_xm + offs_k, mask = offs_k < K, other = 0.0).to(tl.float32)
+        x = tl.load(x_ptr + offs_k, mask = offs_k < K, other = 0.0).to(tl.float32)
         w = tl.load(
             w_ptr + offs_n[:, None] * stride_wn + offs_k[None, :],
             mask = (offs_n[:, None] < N) & (offs_k[None, :] < K),
             other = 0.0,
         ).to(tl.float32)
-        acc += tl.sum(w * x[None, :], axis = 1)
+        acc += w * x[None, :]
     s = tl.load(s_ptr + offs_n, mask = offs_n < N, other = 0.0).to(tl.float32)
-    tl.store(y_ptr + split * stride_ys + m * stride_ym + offs_n, acc * s, mask = offs_n < N)
-
-
-@functools.lru_cache(maxsize = None)
-def _multiprocessor_count(device):
-    return torch.cuda.get_device_properties(device).multi_processor_count
-
-
-_FP8_GEMV_MAX_ROWS = 4
-_FP8_GEMV_BLOCK_N = 32
-_FP8_GEMV_BLOCK_K = 256
+    y = tl.sum(acc, axis = 1) * s
+    tl.store(y_ptr + offs_n, y.to(y_ptr.dtype.element_ty), mask = offs_n < N)
 
 
 def can_use_fp8_rowwise_gemv(X, weight, weight_scale):
-    """Decode-sized input on a contiguous per-row scaled e4m3 weight this GPU's triton can read."""
+    """A single decode token on a contiguous per-row scaled e4m3 weight this GPU's triton can read."""
     if not (X.is_cuda and weight.is_cuda and X.dtype in (torch.bfloat16, torch.float16)):
         return False
     if weight.dtype != torch.float8_e4m3fn or weight.dim() != 2 or not weight.is_contiguous():
         return False
-    rows = X.numel() // max(X.shape[-1], 1)
-    if rows == 0 or rows > _FP8_GEMV_MAX_ROWS or X.shape[-1] != weight.shape[1]:
+    # One row only: every extra row re-reads the weight, and a bf16 matmul wins from four rows on.
+    if X.numel() != X.shape[-1] or X.shape[-1] != weight.shape[1]:
         return False
     # Exactly one scale per output row: a block grid can have N elements by coincidence.
     if (
@@ -453,42 +438,20 @@ def can_use_fp8_rowwise_gemv(X, weight, weight_scale):
 
 
 def fp8_rowwise_gemv(X, weight, weight_scale):
-    """X @ (weight * weight_scale).T for a few rows, reading the FP8 weight once and never building the
-    16-bit copy: at decode the dequant-then-matmul path moves three times the bytes. Split-K fills the
-    GPU on narrow layers; partial sums are reduced in a fixed order, so the result is deterministic."""
-    out_shape = (*X.shape[:-1], weight.shape[0])
-    X2 = X.reshape(-1, X.shape[-1])
-    if not X2.is_contiguous():
-        X2 = X2.contiguous()
-    M, K = X2.shape
-    N = weight.shape[0]
-    n_blocks = triton.cdiv(N, _FP8_GEMV_BLOCK_N)
-    k_blocks = triton.cdiv(K, _FP8_GEMV_BLOCK_K)
-    splits = max(1, min(k_blocks, triton.cdiv(2 * _multiprocessor_count(X.device), n_blocks * M)))
-    k_per_split = triton.cdiv(k_blocks, splits) * _FP8_GEMV_BLOCK_K
-    splits = triton.cdiv(K, k_per_split)
-    partial = torch.empty(splits, M, N, device = X.device, dtype = torch.float32)
-    scale = weight_scale.reshape(-1)
-    if not scale.is_contiguous():
-        scale = scale.contiguous()
+    """X @ (weight * weight_scale).T for one token, reading the FP8 weight once instead of building its
+    16-bit copy, which moves three times the bytes at decode. One launch; the result is deterministic."""
+    N, K = weight.shape
+    out = torch.empty((*X.shape[:-1], N), device = X.device, dtype = X.dtype)
+    if not X.is_contiguous():
+        X = X.contiguous()
+    scale = weight_scale if weight_scale.is_contiguous() else weight_scale.contiguous()
+    # Narrow layers need BLOCK_N = 1 to fill the GPU; wide ones (MLP, vocab) amortise the x loads.
+    block_n = 1 if N <= 4096 else (4 if N <= 32768 else 8)
     with _fp8_triton_device_context(X):
-        _fp8_rowwise_gemv_kernel[(n_blocks, splits, M)](
-            X2,
-            weight,
-            scale,
-            partial,
-            N,
-            K,
-            k_per_split,
-            X2.stride(0),
-            weight.stride(0),
-            partial.stride(0),
-            partial.stride(1),
-            BLOCK_N = _FP8_GEMV_BLOCK_N,
-            BLOCK_K = _FP8_GEMV_BLOCK_K,
+        _fp8_rowwise_gemv_kernel[(triton.cdiv(N, block_n),)](
+            X, weight, scale, out, N, K, weight.stride(0), BLOCK_N = block_n, BLOCK_K = 512, num_warps = 2
         )
-    out = partial[0] if splits == 1 else partial.sum(0)
-    return out.to(X.dtype).view(out_shape)
+    return out
 
 
 # Expanding the scale over the whole weight needs two m*n float32 temporaries, ~6x the triton
