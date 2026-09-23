@@ -1105,6 +1105,7 @@ class ToolLoopController:
         *,
         tools: Sequence[Mapping[str, Any]] | None,
         auto_heal_tool_calls: bool = True,
+        deduplicate_tool_calls: bool = True,
         one_shot_tools: frozenset[str] = _ONE_SHOT_TOOLS,
         duplicate_noop_limit: int = 2,
     ) -> None:
@@ -1114,6 +1115,7 @@ class ToolLoopController:
             name for name in (_tool_name_from_schema(tool) for tool in self._tools) if name
         }
         self._auto_heal_tool_calls = auto_heal_tool_calls
+        self._deduplicate_tool_calls = deduplicate_tool_calls
         self._one_shot_tools = one_shot_tools
         self._completed_one_shot_tools: set[str] = set()
         self._successful_keys: set[str] = set()
@@ -1185,7 +1187,7 @@ class ToolLoopController:
         elif self._restrict_to_allowed and tool_name not in self._allowed_tool_names:
             action = "disabled"
             noop = _noop_result("disabled", tool_name)
-        elif key in self._successful_keys:
+        elif self._deduplicate_tool_calls and key in self._successful_keys:
             action = "duplicate"
             noop = _noop_result("duplicate", tool_name)
 

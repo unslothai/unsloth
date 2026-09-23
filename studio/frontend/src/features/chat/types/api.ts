@@ -659,6 +659,7 @@ export interface OpenAIChatCompletionsRequest {
   /** Run the selected tools here rather than as the provider's hosted builtins. */
   run_tools_locally?: boolean;
   nudge_tool_calls?: boolean;
+  deduplicate_tool_calls?: boolean;
   /** Local GGUF overflow policy. Rolling mode preserves the transcript but omits oldest turns. */
   context_overflow?: "error" | "truncate_middle" | "truncate_oldest";
   /** Override UNSLOTH_CONTEXT_POLICY for this local GGUF request. */
