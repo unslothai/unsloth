@@ -4409,7 +4409,8 @@ class VideoBackend:
         device = target.device
         # An NVFP4 load wants FlashInfer, else its backend falls back to torchao. Outside every lock, like the
         # diffusion loader's pre-install hop; never raises, and select_nvfp4_backend still decides.
-        if "nvfp4" in (
+        # The video dense quant path is pipeline-only, so a GGUF or single-file load never installs.
+        if kind == "pipeline" and "nvfp4" in (
             normalize_transformer_quant(transformer_quant),
             _video_auto_denoiser_planned,
         ):

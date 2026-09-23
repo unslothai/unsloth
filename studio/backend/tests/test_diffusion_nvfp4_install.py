@@ -540,3 +540,16 @@ def test_image_loader_binds_the_reason_only_after_the_resident_model_is_unloaded
     assert "owner" not in call
     unload_at = src.index("self._unload_locked()", ensure_at)
     assert src.index("record_install_reason(self", ensure_at) > unload_at
+
+
+def test_install_gates_skip_kinds_the_dense_quant_path_cannot_reach():
+    import inspect
+
+    from core.inference import diffusion, video
+
+    img = inspect.getsource(diffusion.DiffusionBackend)
+    gate = img[: img.index("ensure_flashinfer_for_nvfp4(")].rsplit("if ", 1)[-1]
+    assert gate.startswith("dense_quant_supported_kind(kind)")
+    vid = inspect.getsource(video.VideoBackend)
+    gate = vid[: vid.index("ensure_flashinfer_for_nvfp4(")].rsplit("if ", 1)[-1]
+    assert gate.startswith('kind == "pipeline"')

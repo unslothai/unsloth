@@ -4320,7 +4320,11 @@ class DiffusionBackend:
             pass
         # Same hop for FlashInfer when this load asked for NVFP4: without it the flashinfer backend falls back to
         # torchao. Never raises; the backend is still chosen by select_nvfp4_backend under the locks.
-        if TQ_NVFP4 in (normalize_transformer_quant(transformer_quant), _pipeline_prequant_planned):
+        # Only for kinds the dense quant path can reach: a single-file load keeps its stored precision.
+        if dense_quant_supported_kind(kind) and TQ_NVFP4 in (
+            normalize_transformer_quant(transformer_quant),
+            _pipeline_prequant_planned,
+        ):
             from .diffusion_nvfp4_install import ensure_flashinfer_for_nvfp4
 
             # No owner yet: a cancel before the swap below must leave the resident model's reason alone.
