@@ -425,7 +425,7 @@ function reconcileProgressAndSpeed(
   });
   if (
     rt.floorHold &&
-    floorHoldEnded(rt.floorHold, downloadedBytes, Date.now())
+    floorHoldEnded(rt.floorHold, expected, downloadedBytes, Date.now())
   ) {
     rt.floorHold = null;
   }
@@ -524,7 +524,7 @@ async function tick(key: string): Promise<void> {
     }
     if (runChange === "attempt") {
       rt.floorHold = {
-        bytes: job.downloadedBytes,
+        remainingBytes: job.expectedBytes - job.downloadedBytes,
         until: Date.now() + ATTEMPT_FLOOR_HOLD_MS,
       };
     }

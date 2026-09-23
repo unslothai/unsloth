@@ -151,11 +151,14 @@ export function resolveProgressUpdate(
   };
 }
 
-// The killed partial only grows until the retry worker purges it, so a byte count below the one at the attempt change is the new attempt's.
+// The killed partial only grows until the retry worker purges it, so more bytes left than at the attempt change means the new attempt is on screen.
 export function floorHoldEnded(
   hold: FloorHold,
+  expectedBytes: number,
   downloadedBytes: number,
   now: number,
 ): boolean {
-  return downloadedBytes < hold.bytes || now >= hold.until;
+  return (
+    expectedBytes - downloadedBytes > hold.remainingBytes || now >= hold.until
+  );
 }
