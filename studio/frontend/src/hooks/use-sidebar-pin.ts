@@ -6,19 +6,24 @@ import { useCallback, useSyncExternalStore } from "react";
 const PINNED_KEY = "sidebar_pinned";
 const WIDE_QUERY = "(min-width: 1024px)";
 
-function loadPinned(): boolean {
-  if (typeof window === "undefined") return true;
+function readStored(): boolean | null {
   try {
     const raw = window.localStorage.getItem(PINNED_KEY);
-    // Default to unpinned below lg.
-    if (raw === null) return window.matchMedia(WIDE_QUERY).matches;
-    return raw === "true";
+    return raw === null ? null : raw === "true";
   } catch {
-    return true;
+    return null;
   }
 }
 
+function loadPinned(): boolean {
+  if (typeof window === "undefined") return true;
+  // Default to unpinned below lg, also when storage is unavailable.
+  return readStored() ?? window.matchMedia(WIDE_QUERY).matches;
+}
+
 let pinnedValue = loadPinned();
+// Set once the user toggles, so a width change never overrides it.
+let chosen = false;
 const listeners = new Set<() => void>();
 
 function subscribe(cb: () => void) {
@@ -32,9 +37,10 @@ function subscribe(cb: () => void) {
       cb();
     }
   };
-  // Re-derive the width default across lg. A stored choice still wins.
+  // Re-derive the width default across lg unless the user has chosen.
   const wide = window.matchMedia(WIDE_QUERY);
   const onWidth = () => {
+    if (chosen) return;
     pinnedValue = loadPinned();
     cb();
   };
@@ -48,6 +54,7 @@ function subscribe(cb: () => void) {
 }
 
 function setPinnedGlobal(next: boolean) {
+  chosen = true;
   pinnedValue = next;
   try {
     window.localStorage.setItem(PINNED_KEY, String(next));
