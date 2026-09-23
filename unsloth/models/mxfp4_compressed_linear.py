@@ -31,6 +31,7 @@ MXFP4 Linear. A PEFT merge turns it into a dense ``nn.Linear`` holding the exact
 delta; unmerging puts the packed bytes back.
 """
 
+import functools
 import os
 from typing import Optional
 
@@ -47,6 +48,7 @@ __all__ = [
     "stack_packed_expert_linears",
     "install_compressed_tensors_keep_packed",
     "patch_peft_merge_for_mxfp4_packed_linears",
+    "patch_peft_inits_for_mxfp4_packed_linears",
 ]
 
 MXFP4_KEEP_PACKED_ENV = "UNSLOTH_MXFP4_KEEP_PACKED"
@@ -547,4 +549,37 @@ def patch_peft_merge_for_mxfp4_packed_linears() -> bool:
     return True
 
 
+# PEFT initialisers that rewrite the base weight (PiSSA, OLoRA, CorDA, LoftQ, LoRA-GA) subtract
+# the initial adapter from `weight.data`. On a packed base that is a throwaway decode, so the
+# adapter would keep its value on an unchanged base: the model would silently change.
+_BASE_WEIGHT_INITS = ("pissa_init", "olora_init", "corda_init", "loftq_init", "lora_ga_init")
+
+
+def _refuse_on_packed_base(original):
+    @functools.wraps(original)
+    def init(self, *args, **kwargs):
+        if isinstance(self.get_base_layer(), Mxfp4PackedLinear):
+            raise NotImplementedError(
+                f"Unsloth: `{original.__name__}` rewrites the base weight, which stays packed in "
+                "MXFP4 here and cannot be written. Use the default LoRA initialisation."
+            )
+        return original(self, *args, **kwargs)
+
+    init._unsloth_mxfp4_patched = True
+    return init
+
+
+def patch_peft_inits_for_mxfp4_packed_linears() -> bool:
+    try:
+        from peft.tuners.lora.layer import LoraLayer
+    except Exception:
+        return False
+    for name in _BASE_WEIGHT_INITS:
+        original = getattr(LoraLayer, name, None)
+        if original is not None and not getattr(original, "_unsloth_mxfp4_patched", False):
+            setattr(LoraLayer, name, _refuse_on_packed_base(original))
+    return True
+
+
 patch_peft_merge_for_mxfp4_packed_linears()
+patch_peft_inits_for_mxfp4_packed_linears()

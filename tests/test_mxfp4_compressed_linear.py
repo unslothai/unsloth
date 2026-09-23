@@ -934,3 +934,18 @@ def test_adoption_declines_when_another_compressed_format_needs_the_hook():
     x = torch.randn(3, 64, dtype = torch.bfloat16)
     with torch.no_grad():
         assert torch.equal(model(x), reference(x))
+
+
+@pytest.mark.parametrize("init", ["pissa", "olora"])
+def test_initialisers_that_rewrite_the_base_weight_refuse_a_packed_base(init):
+    """PiSSA / OLoRA (and CorDA, LoftQ, LoRA-GA) subtract their initial adapter from the base
+    weight. On a packed base that write lands in a throwaway decode while the adapter keeps its
+    value, which silently changes the model: refuse instead."""
+    peft = pytest.importorskip("peft")
+    holder = nn.Sequential(_filled(32, 64))
+    with pytest.raises(NotImplementedError, match = "packed in MXFP4"):
+        peft.get_peft_model(holder, peft.LoraConfig(r = 4, target_modules = ["0"], init_lora_weights = init))
+    # The default initialisation, and the same initialiser on a dense base, are untouched.
+    peft.get_peft_model(nn.Sequential(_filled(32, 64)), peft.LoraConfig(r = 4, target_modules = ["0"]))
+    dense = nn.Sequential(nn.Linear(64, 32, bias = False))
+    peft.get_peft_model(dense, peft.LoraConfig(r = 4, target_modules = ["0"], init_lora_weights = init))
