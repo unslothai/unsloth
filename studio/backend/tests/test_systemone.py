@@ -728,6 +728,35 @@ def test_runtime_reason_names_what_the_install_lacks(monkeypatch):
     assert expected in _REAL_UNAVAILABLE_REASON()
 
 
+def test_settings_only_report_a_failure_of_the_selected_model(client, monkeypatch):
+    def fail(checkpoint):
+        raise OSError("connection reset")
+
+    assert _post(client).status_code == 200
+    monkeypatch.setattr(laya_runtime, "_load_checkpoint", fail)
+    assert _post(client, model = "laya-english").status_code == 503
+    body = client.get("/api/settings/systemone").json()
+    assert body["error"] is None and body["loaded_model"] == "laya-multilingual"
+    laya_runtime.unload()
+    assert _post(client).status_code == 503
+    assert "connection reset" in client.get("/api/settings/systemone").json()["error"]
+
+
+def test_route_module_imports_without_pep604_aliases():
+    import ast
+    import inspect
+
+    tree = ast.parse(inspect.getsource(systemone))
+    runtime_unions = [
+        node
+        for stmt in tree.body
+        if isinstance(stmt, ast.Assign)
+        for node in ast.walk(stmt.value)
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitOr)
+    ]
+    assert runtime_unions == []
+
+
 def test_oversized_question_text_is_refused_before_the_model(client, runtime):
     questions = {"q": {"type": "noul", "instructions": "x" * systemone.MAX_QUESTION_CHARS}}
     response = _post(client, questions = questions)

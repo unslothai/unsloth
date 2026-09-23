@@ -1339,10 +1339,15 @@ def _systemone_response() -> SystemOneSettingsResponse:
         # Covers an installation turned on before the package existed; a no-op once it is installed.
         laya_runtime.install_in_background()
     runtime = laya_runtime.status()
+    model = catalog.default_checkpoint().name
+    error = runtime["error"]
+    if runtime["error_model"] not in (None, model):
+        # A client named another checkpoint and its load failed; the selected model is unaffected.
+        error = None
     return SystemOneSettingsResponse(
         enabled = enabled,
         enabled_locked = systemone_settings.enabled_locked(),
-        model = catalog.default_checkpoint().name,
+        model = model,
         model_locked = systemone_settings.model_locked(),
         device = systemone_settings.get_device(),
         device_locked = systemone_settings.device_locked(),
@@ -1357,7 +1362,7 @@ def _systemone_response() -> SystemOneSettingsResponse:
         loaded_device = runtime["device"],
         loading_model = runtime["loading_model"],
         installing = runtime["installing"],
-        error = runtime["error"],
+        error = error,
     )
 
 

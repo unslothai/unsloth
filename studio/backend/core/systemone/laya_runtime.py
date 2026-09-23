@@ -445,6 +445,7 @@ def status() -> dict[str, Any]:
             "error": _failure[1]
             if _failure
             else (_install_failure[0] if _install_failure else None),
+            "error_model": _failure[0].name if _failure else None,
         }
 
 

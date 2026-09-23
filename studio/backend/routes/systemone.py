@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import json
 import math
-from typing import Any
+from typing import Any, Optional, Union
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import JSONResponse
@@ -28,15 +28,16 @@ _TYPES = ("noul", "choice", "score")
 
 router = APIRouter()
 
-JSONContent = str | dict[str, Any] | list[Any]
+# typing.Union, not `|`: this alias is evaluated at import, and Studio still starts on Python 3.9.
+JSONContent = Union[str, dict[str, Any], list[Any]]
 
 
 class QuestionIn(BaseModel):
     model_config = ConfigDict(extra = "forbid")
 
     type: str
-    instructions: JSONContent | None = None
-    criteria: JSONContent | None = None
+    instructions: Optional[JSONContent] = None
+    criteria: Optional[JSONContent] = None
 
 
 class SystemOneRequest(BaseModel):
