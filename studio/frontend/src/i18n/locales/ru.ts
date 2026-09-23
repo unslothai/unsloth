@@ -1986,6 +1986,7 @@ export const ru = {
       expires: "Срок действия: {value}",
       actionsFor: "Действия для {name}",
       copyPrefix: "Копировать префикс",
+      copyFailed: "Не удалось скопировать",
       revokeToken: "Отозвать токен",
       revokeTitle: 'Отозвать токен доступа «{name}»?',
       revokeDescription:

@@ -2008,6 +2008,7 @@ export const es = {
       expires: "Caduca {value}",
       actionsFor: "Acciones para {name}",
       copyPrefix: "Copiar prefijo",
+      copyFailed: "No se pudo copiar",
       revokeToken: "Revocar token",
       revokeTitle: '¿Revocar el token de acceso "{name}"?',
       revokeDescription:
