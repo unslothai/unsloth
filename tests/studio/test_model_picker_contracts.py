@@ -658,8 +658,8 @@ def test_gguf_vision_capability_is_threaded_through_deferred_chat_load():
     the pinned-quant row must forward its validated verdict, and the collapsed
     sole-quant row must not drop the mmproj answer it already read."""
     picker = _read("features/model-picker/components/model-selector/pickers.tsx")
-    assert 'const variantVisionHint = hasVision === false ? false : undefined;' in picker
-    assert 'hasVision: normalizeGgufVisionCapability(res?.has_vision),' in picker
+    assert "const variantVisionHint = hasVision === false ? false : undefined;" in picker
+    assert "hasVision: normalizeGgufVisionCapability(res?.has_vision)," in picker
     assert picker.count("isVision: variantVisionHint") >= 2
     assert "variantVisionHint," in picker
     assert "visionByRepo: ReadonlyMap<string, boolean>" in picker
