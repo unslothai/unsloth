@@ -747,3 +747,19 @@ test("reselecting the resident external model invalidates a pending local prefli
     "same-model external picks must invalidate a preflight even before loading flags appear",
   );
 });
+
+
+test("status adoption consumes the inherited rollback after hydrating the resident model", () => {
+  const runtime = read(RUNTIME);
+  const adoption = section(
+    runtime,
+    "if (confirmedStatus && adoptable(confirmedStatus)) {",
+    "// Hold the lifecycle lease through confirmation",
+  );
+  const hydrated = adoption.indexOf("syncModelCapabilities(modelId, confirmedStatus);");
+  const cleared = adoption.indexOf("pendingReplacementRollback = null;");
+  const completed = adoption.indexOf("void refreshContextUsage({ afterModelLoad: true });");
+  assert.notEqual(hydrated, -1, "the resident status must be applied before consuming rollback");
+  assert.notEqual(cleared, -1, "status adoption must consume the inherited rollback marker");
+  assert.ok(hydrated < cleared && cleared < completed);
+});

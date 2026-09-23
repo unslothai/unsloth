@@ -1520,6 +1520,10 @@ export function useChatModelRuntime() {
             }
             // setCheckpoint above blanked the bar, this path returns before the post-load recount, and a
             // mounted thread does not rerun its history loader, so the bar would stay empty.
+            // Adopting the already-resident model completes this replacement without creating a load run.
+            // Consume the inherited rollback so a later selection snapshots this model's current state.
+            pendingReplacementRollback = null;
+
             void refreshContextUsage({ afterModelLoad: true });
             return;
           }
