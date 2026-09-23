@@ -44,13 +44,22 @@ def _strings(node):
 
 
 def _reads(script: str, name: str) -> bool:
-    """Whether a run script reads NAME from its environment, in shell or in inline Python."""
+    """Whether a run script reads NAME from its environment, in shell or in inline Python.
+
+    Includes bash indirect expansion over a list of names, the shape release-desktop.yml's
+    notarization check uses: `for required in APPLE_ID ...; do [ -z "${!required:-}" ]`.
+    """
     n = re.escape(name)
-    return bool(
+    if (
         re.search(rf"os\.environ\[\s*['\"]{n}['\"]\s*\]", script)
         or re.search(rf"os\.(?:environ\.get|getenv)\(\s*['\"]{n}['\"]", script)
         or re.search(rf"\$\{{?{n}(?![A-Za-z0-9_])", script)
-    )
+    ):
+        return True
+    for var, words in re.findall(r"\bfor\s+(\w+)\s+in\s+([^;\n]+)", script):
+        if name in words.split() and re.search(rf"\$\{{!{var}(?![A-Za-z0-9_])", script):
+            return True
+    return False
 
 
 def _env_blocks(doc: dict):
@@ -126,6 +135,9 @@ def test_the_reader_sees_every_spelling_the_workflows_use():
     assert _reads('os.getenv("K")', "K")
     assert _reads('curl -H "Bearer $K"', "K")
     assert _reads('echo "${K}"', "K")
+    assert _reads('for v in J K L; do [ -z "${!v:-}" ] && exit 1; done', "K")
+    # A plain loop over the names, with no indirect read, reads none of them.
+    assert not _reads("for v in J K L; do echo $v; done", "K")
     # A longer name that starts with K is not K, and an expression is not an env read.
     assert not _reads('echo "$K_OTHER"', "K")
     assert not _reads("echo ${{ secrets.K }}", "K")
