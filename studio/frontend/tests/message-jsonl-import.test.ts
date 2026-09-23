@@ -127,6 +127,8 @@ test("each turn keeps its own tool result when a chat file reuses call ids", () 
     '{"role":"assistant","content":null,"tool_calls":[{"id":"tool_call_0","type":"function","function":{"name":"get_time","arguments":"{}"}}]}';
   const [conversation] = parseImportText(
     [
+      '{"role":"user","content":"stopped"}',
+      call,
       '{"role":"user","content":"first"}',
       call,
       '{"role":"tool","tool_call_id":"tool_call_0","name":"get_time","content":"RESULT_A"}',
@@ -139,7 +141,7 @@ test("each turn keeps its own tool result when a chat file reuses call ids", () 
     "conversation-messages.jsonl",
   );
 
-  assert.deepEqual(toolCallResults(conversation), ["RESULT_A", "RESULT_B"]);
+  assert.deepEqual(toolCallResults(conversation), ["undefined", "RESULT_A", "RESULT_B"]);
 });
 
 test("parallel calls sharing an id in one turn take their results in call order", () => {
