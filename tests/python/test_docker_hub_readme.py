@@ -24,6 +24,9 @@ WORKFLOW = REPO_ROOT / ".github" / "workflows" / "docker-publish.yml"
 HUB_README = REPO_ROOT / "docker" / "DOCKERHUB.md"
 REPO_README = REPO_ROOT / "README.md"
 
+# The stand-in for DOCKER_API_KEY, named so an assertion can look for it.
+DEFAULT_SECRET = "not-a-secret"
+
 
 def test_the_hub_readme_describes_the_shipped_images():
     text = HUB_README.read_text(encoding = "utf-8")
@@ -69,9 +72,19 @@ def test_the_hub_readme_explains_the_studio_volume():
     # the helper is described as setting the flags of the quick start, which now
     # includes the volume: run.sh must mount it (test_docker_cpu_fallback.py checks)
     assert "including the `unsloth-studio` volume" in text
-    repo = REPO_README.read_text(encoding = "utf-8")
-    assert "-v unsloth-studio:/opt/unsloth-studio" in repo
-    assert ".unsloth-studio-legacy/" in repo
+    # The repository README keeps the quick start and hands the details to the Hub page and the
+    # Docker docs, which is where the migration story above lives. It must still mount the volume
+    # and still point at both, or a reader of the short version has no way to the long one.
+    # Read from the section that runs the image: the one-line Docker teaser higher up carries the
+    # same two links, so a check over the whole file would pass with them gone from here.
+    running = [
+        s for s in _docker_sections(REPO_README.read_text(encoding = "utf-8")) if "docker run" in s
+    ]
+    assert len(running) == 1, "expected exactly one README Docker section with a docker run"
+    quick_start = running[0]
+    assert "-v unsloth-studio:/opt/unsloth-studio" in quick_start
+    assert "https://hub.docker.com/r/unsloth/unsloth)" in quick_start
+    assert "https://unsloth.ai/docs/get-started/install/docker" in quick_start
 
 
 def _docker_sections(text: str) -> list[str]:
@@ -145,7 +158,7 @@ def _run_sync(
     *,
     live_after_patch: str,
     token: str = "tok",
-    secret: str = "not-a-secret",
+    secret: str = DEFAULT_SECRET,
 ):
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
@@ -157,9 +170,13 @@ def _run_sync(
     (bin_dir / "curl").write_text(
         "#!/usr/bin/env bash\n"
         f"printf '%s\\n' \"$*\" >> {log}\n"
-        # The auth body is handed over on stdin now, not in argv, so a stub that records
-        # only `$*` cannot see the request it is answering.
-        f'case "$*" in *@-*) printf \'stdin: %s\\n\' "$(cat)" >> {log} ;; esac\n'
+        # The request body does not always travel in argv. #11511 moved the token
+        # request onto stdin (`--data-binary @-`) so the org secret stops showing up
+        # in the process list, and a stub that logs only "$*" then records a call
+        # whose payload is simply absent: every assertion about what was SENT passes
+        # vacuously or fails for the wrong reason. Read it where it actually is, and
+        # only when the arguments say there is one, since `cat` with no stdin hangs.
+        f"case \"$*\" in *'--data-binary @-'*) cat >> {log} ;; esac\n"
         'case "$*" in\n'
         f'  *auth/token*) printf \'{{"access_token": "{token}"}}\' ;;\n'
         "  *-X\\ PATCH*) out=''; while [ $# -gt 0 ]; do [ \"$1\" = -o ] && out=$2; shift; done; : > \"$out\"; printf '200' ;;\n"
@@ -170,21 +187,33 @@ def _run_sync(
     (bin_dir / "curl").chmod(0o755)
     (tmp_path / "docker").mkdir()
     shutil.copy(HUB_README, tmp_path / "docker" / "DOCKERHUB.md")
-    script = step["run"].replace("${{ env.REGISTRY_USERNAME }}", "unsloth")
-    assert "${{" not in script, (
-        "the body must carry no expression at all: an interpolated secret lands in argv, "
-        "where any process on the runner can read it out of /proc/<pid>/cmdline"
+    script = (
+        step["run"]
+        .replace("${{ secrets.DOCKER_API_KEY }}", secret)
+        .replace("${{ env.REGISTRY_USERNAME }}", "unsloth")
     )
+    assert "${{" not in script, "unexpanded expression in the sync step"
     env = dict(os.environ)
     env["PATH"] = f"{bin_dir}{os.pathsep}" + env["PATH"]
     env["REGISTRY_USERNAME"] = "unsloth"
     env["IMAGE_NAME"] = "unsloth/unsloth"
-    # The step's own env:, which is how the key reaches it now that the body does not
-    # name it. A harness that skips this hands the script an environment the runner would
-    # never build, and the token exchange then posts an empty secret.
+    # Whatever the step declares in its own `env:`, bound here too. The secret used to
+    # be written inline in the run body, where substituting the expression was enough;
+    # #11511 moved it to `env: DOCKER_API_KEY` and read it with `os.environ`, so a
+    # harness that only rewrites the body hands the script an environment it cannot
+    # run in. That does not fail loudly: the body builder raises, the pipeline keeps
+    # the exit status of its last command, and the request goes out empty.
+    # Only the secret this step is supposed to read is expanded. Standing in for any
+    # `secrets.*` would make the harness agree with a workflow that names the wrong
+    # one: `${{ secrets.TYPO }}` would still produce a valid payload here, while
+    # Actions would hand the real step an empty value. Anything else is left for the
+    # assertion below to reject by name.
     for name, value in (step.get("env") or {}).items():
-        env[str(name)] = re.sub(r"\$\{\{[^}]*\}\}", secret, str(value))
-    assert "DOCKER_API_KEY" in env, "the step has to receive the key through env:"
+        env[name] = re.sub(r"\$\{\{\s*secrets\.DOCKER_API_KEY\s*\}\}", secret, str(value))
+        assert "${{" not in env[name], (
+            f"the step's env {name} reads {value!r}, which is not the secret this "
+            f"harness knows how to supply"
+        )
     res = subprocess.run(
         ["bash", "-e", "-c", script],
         capture_output = True,
@@ -202,6 +231,12 @@ def test_the_sync_patches_the_readme_and_confirms_it(sync_job: dict, tmp_path: P
     assert res.returncode == 0, res.stdout + res.stderr
     assert "-X PATCH https://hub.docker.com/v2/namespaces/unsloth/repositories/unsloth" in log
     assert "Authorization: Bearer tok" in log
+    # The body, wherever curl was handed it. Asserted as a non-empty payload first:
+    # an empty request logs no identifier either, so the bare `in log` check below
+    # cannot tell "authenticated as someone else" from "sent nothing at all".
+    assert (
+        f'"secret": "{DEFAULT_SECRET}"' in log
+    ), "the token request carried no body, so this proves nothing about who it authenticates as"
     assert '"identifier": "unsloth"' in log, "the organization token authenticates as the org"
 
 

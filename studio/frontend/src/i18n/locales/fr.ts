@@ -167,6 +167,8 @@ export const fr = {
       noChatsYet: "Aucune discussion pour le moment",
       // Shown under an empty project folder in the sidebar.
       noChats: "Aucune discussion",
+      // Shown in the Projects section when every project is pinned, so it has no rows.
+      allProjectsPinned: "Tous les projets sont epingles",
       showMore: "Afficher plus",
       showLess: "Afficher moins",
       settings: "Paramètres",
@@ -222,13 +224,6 @@ export const fr = {
       sortPinnedChats: "Trier les discussions épinglées",
       moveUp: "Monter",
       moveDown: "Descendre",
-    },
-    drag: {
-      reorder: "Réordonner",
-      pin: "Épingler",
-      unpin: "Désépingler",
-      moveTo: "Déplacer vers {name}",
-      moveToRecents: "Déplacer vers Récents",
     },
     dialog: {
       deleteChat: {
@@ -1470,6 +1465,13 @@ export const fr = {
             hfHub: "Cache des modèles Hugging Face",
           },
         },
+        lowDisk: {
+          title: "L'espace disque est presque épuisé",
+          criticalTitle: "L'espace disque est critique",
+          description:
+            "{free} libres sur {total}. Vider les caches peut libérer de l'espace.",
+          action: "Voir les caches",
+        },
         futureDownloads: "Nouveaux téléchargements uniquement",
         environmentManaged: "Géré par la variable d'environnement {variable}.",
         locationFree: "Espace libre : {free}",
@@ -2016,6 +2018,7 @@ export const fr = {
       expires: "Expire {value}",
       actionsFor: "Actions pour {name}",
       copyPrefix: "Copier le préfixe",
+      copyFailed: "Impossible de copier",
       revokeToken: "Révoquer le jeton",
       revokeTitle: "Révoquer le jeton d’accès « {name} » ?",
       revokeDescription:

@@ -162,6 +162,8 @@ export const zhCN = {
       noChatsYet: "暂无对话",
       // Shown under an empty project folder in the sidebar.
       noChats: "无对话",
+      // Shown in the Projects section when every project is pinned, so it has no rows.
+      allProjectsPinned: "所有项目均已置顶",
       showMore: "显示更多",
       showLess: "显示更少",
       settings: "设置",
@@ -217,13 +219,6 @@ export const zhCN = {
       sortPinnedChats: "对置顶对话排序",
       moveUp: "上移",
       moveDown: "下移",
-    },
-    drag: {
-      reorder: "重新排序",
-      pin: "固定",
-      unpin: "取消固定",
-      moveTo: "移动到 {name}",
-      moveToRecents: "移动到最近",
     },
     dialog: {
       deleteChat: {
@@ -1411,6 +1406,12 @@ export const zhCN = {
             hfHub: "Hugging Face 模型缓存",
           },
         },
+        lowDisk: {
+          title: "磁盘空间不足",
+          criticalTitle: "磁盘空间严重不足",
+          description: "{total}中剩余{free}。清理缓存可以释放空间。",
+          action: "查看缓存",
+        },
         futureDownloads: "仅对新下载生效",
         environmentManaged: "由环境变量 {variable} 管理。",
         locationFree: "{free} 可用",
@@ -1922,6 +1923,7 @@ export const zhCN = {
       expires: "过期时间：{value}",
       actionsFor: "{name} 的操作",
       copyPrefix: "复制前缀",
+      copyFailed: "无法复制",
       revokeToken: "撤销 token",
       revokeTitle: "撤销访问 token“{name}”？",
       revokeDescription:
