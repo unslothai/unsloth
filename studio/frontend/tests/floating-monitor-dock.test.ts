@@ -561,7 +561,7 @@ test("a drag that ends without a reconcile still records the position", () => {
   const finish = source.slice(source.indexOf("function finishDrag"));
   assert.match(
     finish,
-    /if \(left !== baseLeft\) \{\s*chosenLeftRef\.current = narrowedRef\.current \? null : left;/,
+    /if \(left !== baseLeft\) \{\s*hasDraggedLeftRef\.current = true;\s*chosenLeftRef\.current = narrowedRef\.current \? null : left;/,
   );
 });
 
@@ -572,9 +572,9 @@ test("vertical or clamped docked movement does not commit a horizontal placement
   );
   const finish = source.slice(source.indexOf("function finishDrag"));
   assert.match(
-    update,
-    /if \(left !== previousLeft\) \{\s*hasDraggedLeftRef\.current = true;/,
-    "only an effective horizontal move should un-anchor the monitor",
+    finish,
+    /if \(left !== baseLeft\) \{\s*hasDraggedLeftRef\.current = true;\s*chosenLeftRef\.current = narrowedRef\.current \? null : left;/,
+    "only a released horizontal displacement should un-anchor the monitor",
   );
   assert.match(
     update,
@@ -583,7 +583,7 @@ test("vertical or clamped docked movement does not commit a horizontal placement
   );
   assert.match(
     finish,
-    /if \(left !== baseLeft\) \{\s*chosenLeftRef\.current = narrowedRef\.current \? null : left;/,
+    /if \(left !== baseLeft\) \{\s*hasDraggedLeftRef\.current = true;\s*chosenLeftRef\.current = narrowedRef\.current \? null : left;/,
     "a docked vertical or clamped drag must not create a saved X coordinate",
   );
   assert.match(
@@ -607,7 +607,7 @@ test("a docked drag returning to its starting X preserves the saved full-width X
   assert.doesNotMatch(update, /chosenLeftRef\.current = null/);
   assert.match(
     finish,
-    /if \(left !== baseLeft\) \{\s*chosenLeftRef\.current = narrowedRef\.current \? null : left;/,
+    /if \(left !== baseLeft\) \{\s*hasDraggedLeftRef\.current = true;\s*chosenLeftRef\.current = narrowedRef\.current \? null : left;/,
   );
 });
 
@@ -635,9 +635,10 @@ test("docked pointer move out and back restores the full-width X on release", ()
     "cancelAnimationFrame", "paintDrag", "setLayout", "clamp",
     `${handlers}\nreturn { updateDrag, finishDrag };`,
   );
+  const hasDraggedLeftRef = { current: false };
   const { updateDrag, finishDrag } = makeHandlers(
     dragSessionRef, chosenLeftRef, narrowedRef, dragFrameRef, monitorRef,
-    { current: false }, { current: false }, () => 1, () => {}, () => {},
+    hasDraggedLeftRef, { current: false }, () => 1, () => {}, () => {},
     () => {}, (value: number, min: number, max: number) =>
       Math.max(min, Math.min(max, value)),
   ) as { updateDrag: (event: { pointerId: number; clientX: number; clientY: number }) => void;
@@ -645,8 +646,10 @@ test("docked pointer move out and back restores the full-width X on release", ()
   };
   updateDrag({ pointerId: 1, clientX: 150, clientY: 100 });
   updateDrag({ pointerId: 1, clientX: 100, clientY: 100 });
+  assert.equal(chosenLeftRef.current, 310);
   finishDrag({ pointerId: 1 });
   assert.equal(chosenLeftRef.current, 310);
+  assert.equal(hasDraggedLeftRef.current, false);
   assert.equal(monitorRef.current.style.left, "180px");
 
   // Releasing away from the start while docked replaces the old full-width X.
@@ -658,10 +661,24 @@ test("docked pointer move out and back restores the full-width X on release", ()
   updateDrag({ pointerId: 2, clientX: 150, clientY: 100 });
   finishDrag({ pointerId: 2 });
   assert.equal(chosenLeftRef.current, null);
+  assert.equal(hasDraggedLeftRef.current, true);
+
+  // A first-ever docked drag returning to its starting X must remain anchored.
+  chosenLeftRef.current = null;
+  hasDraggedLeftRef.current = false;
+  dragSessionRef.current = {
+    pointerId: 3, startX: 100, startY: 100, left: 180, top: 40,
+    baseLeft: 180, maxLeft: 300, maxTop: 200,
+    constraintsWidth: 600, constraintsHeight: 400,
+  };
+  updateDrag({ pointerId: 3, clientX: 150, clientY: 100 });
+  updateDrag({ pointerId: 3, clientX: 100, clientY: 100 });
+  finishDrag({ pointerId: 3 });
+  assert.equal(hasDraggedLeftRef.current, false);
+  assert.equal(chosenLeftRef.current, null);
 });
+
 test("a press without movement keeps the saved position", () => {
-  // The pointer-down used to clear the saved spot, so a grip press that never
-  // moved discarded it and the undock restore had nothing to put back.
   const start = source.slice(source.indexOf("function startDrag"));
   assert.doesNotMatch(
     start.slice(0, start.indexOf("function paintDrag")),
@@ -670,7 +687,7 @@ test("a press without movement keeps the saved position", () => {
   const finish = source.slice(source.indexOf("function finishDrag"));
   assert.match(
     finish,
-    /if \(left !== baseLeft\) \{\s*chosenLeftRef\.current = narrowedRef\.current \? null : left;/,
+    /if \(left !== baseLeft\) \{\s*hasDraggedLeftRef\.current = true;\s*chosenLeftRef\.current = narrowedRef\.current \? null : left;/,
   );
 });
 

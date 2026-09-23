@@ -389,9 +389,8 @@ function useMonitorLayout(
       return;
     }
 
-    // Only effective axis changes choose a placement; a press alone or motion
-    // clamped at an edge must not un-anchor the monitor on that axis.
-    const previousLeft = session.left;
+    // Horizontal placement is chosen on release. An intermediate move that
+    // returns to its starting X must leave an anchored monitor anchored.
     const previousTop = session.top;
     const left = clamp(
       session.left + event.clientX - session.startX,
@@ -403,9 +402,6 @@ function useMonitorLayout(
       0,
       session.maxTop,
     );
-    if (left !== previousLeft) {
-      hasDraggedLeftRef.current = true;
-    }
     if (top !== previousTop) {
       hasDraggedTopRef.current = true;
     }
@@ -433,6 +429,7 @@ function useMonitorLayout(
     // Only the released horizontal position is a new choice. Returning to the
     // starting X keeps the saved full-width position even after intermediate moves.
     if (left !== baseLeft) {
+      hasDraggedLeftRef.current = true;
       chosenLeftRef.current = narrowedRef.current ? null : left;
     }
     // Written to the node as well as to state, in this order, so handing the
