@@ -363,7 +363,6 @@ def test_probes_loader_when_ldconfig_cache_query_fails(monkeypatch):
     assert runtime_libs._loader_already_provides_runtime("13")
 
 
-
 def test_uses_the_dynamic_loader_cache_without_ldconfig(monkeypatch):
     sonames = ("libcudart.so.13", "libcublas.so.13")
     native_abis = runtime_libs._NATIVE_LOADER_ABIS.get(
