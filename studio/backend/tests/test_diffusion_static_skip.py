@@ -255,7 +255,12 @@ def test_per_token_timestep_extrapolates_from_its_max():
         def __init__(self):
             self.calls = 0
 
-        def forward(self, hidden_states = None, timestep = None, return_dict = True):
+        def forward(
+            self,
+            hidden_states = None,
+            timestep = None,
+            return_dict = True,
+        ):
             self.calls += 1
             return (torch.full((1, 4), float(timestep.max())),)
 
@@ -772,7 +777,10 @@ def test_image_and_video_load_requests_accept_static():
         == "static"
     )
     # The video backend wires it too (test_video_static_skip); an unknown mode is still refused.
-    assert VideoLoadRequest(model_path = "org/model", transformer_cache = "static").transformer_cache == "static"
+    assert (
+        VideoLoadRequest(model_path = "org/model", transformer_cache = "static").transformer_cache
+        == "static"
+    )
     with pytest.raises(ValidationError):
         VideoLoadRequest(model_path = "org/model", transformer_cache = "magic")
 

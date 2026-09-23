@@ -4475,7 +4475,9 @@ class VideoBackend:
             else:
                 cache_engaged = install_static_step_skip(pipe, logger = logger)
                 if cache_engaged is None:
-                    static_decline = "static step skip is unavailable for this pipeline; it runs uncached"
+                    static_decline = (
+                        "static step skip is unavailable for this pipeline; it runs uncached"
+                    )
         else:
             for view in views:
                 engaged = apply_step_cache(

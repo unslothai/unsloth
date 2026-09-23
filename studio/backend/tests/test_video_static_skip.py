@@ -70,7 +70,11 @@ class _LoopDiT(_FakeWanDiT):
         yield
 
     def forward(
-        self, hidden_states = None, timestep = None, encoder_hidden_states = None, return_dict = True
+        self,
+        hidden_states = None,
+        timestep = None,
+        encoder_hidden_states = None,
+        return_dict = True,
     ):
         self.computed += 1
         return (_Tensorish(self.computed),)
@@ -123,7 +127,13 @@ class _LoopHV15Pipe(_FakeHV15Pipe):
         self.transformer = _LoopDiT()
         self.components["transformer"] = self.transformer
 
-    def __call__(self, *, num_inference_steps = None, num_frames = None, **kwargs):
+    def __call__(
+        self,
+        *,
+        num_inference_steps = None,
+        num_frames = None,
+        **kwargs,
+    ):
         self.last_kwargs = {"num_inference_steps": num_inference_steps, **kwargs}
         for _ in range(int(num_inference_steps)):
             for name in ("pred_cond", "pred_uncond"):
@@ -255,7 +265,9 @@ def test_two_expert_moe_declines_static_with_a_reason(loop_runtime, monkeypatch)
     backend.unload()
 
 
-def test_joint_audio_video_family_declines_static_with_a_reason(fake_runtime, tmp_path, monkeypatch):
+def test_joint_audio_video_family_declines_static_with_a_reason(
+    fake_runtime, tmp_path, monkeypatch
+):
     import core.inference.video as video_mod
 
     monkeypatch.setattr(
@@ -327,7 +339,8 @@ def test_generate_arms_with_the_step_callback_and_disarms_after(loop_runtime, mo
     monkeypatch.setattr(
         video_mod,
         "reset_static_step_skip",
-        lambda p, steps, **k: armed.append((steps, k.get("step_signal"))) or real_reset(p, steps, **k),
+        lambda p, steps, **k: armed.append((steps, k.get("step_signal")))
+        or real_reset(p, steps, **k),
     )
     monkeypatch.setattr(video_mod, "mark_step_end", lambda p: marks.append(p) or real_mark(p))
     resets = []
@@ -365,7 +378,8 @@ def test_hv15_counts_branches_by_context_without_a_step_callback(loop_runtime, m
     monkeypatch.setattr(
         video_mod,
         "reset_static_step_skip",
-        lambda p, steps, **k: armed.append((steps, k.get("step_signal"))) or real_reset(p, steps, **k),
+        lambda p, steps, **k: armed.append((steps, k.get("step_signal")))
+        or real_reset(p, steps, **k),
     )
     backend = VideoBackend()
     status = backend.load_pipeline(HV15, model_kind = "pipeline", transformer_cache = "static")
@@ -430,11 +444,16 @@ def test_video_api_accepts_static_and_reports_its_stats():
 
     from models.inference import VideoLoadRequest, VideoStatusResponse
 
-    assert VideoLoadRequest(model_path = "org/model", transformer_cache = "static").transformer_cache == "static"
+    assert (
+        VideoLoadRequest(model_path = "org/model", transformer_cache = "static").transformer_cache
+        == "static"
+    )
     with pytest.raises(ValidationError):
         VideoLoadRequest(model_path = "org/model", transformer_cache = "magic")
     stats = {"mode": "taylor1", "every": 2, "stats": {"calls": 100, "computed": 66, "skipped": 34}}
-    status = VideoStatusResponse(loaded = True, transformer_cache = "static", transformer_cache_stats = stats)
+    status = VideoStatusResponse(
+        loaded = True, transformer_cache = "static", transformer_cache_stats = stats
+    )
     assert status.transformer_cache_stats == stats
     assert VideoStatusResponse(loaded = False).transformer_cache_stats is None
 
