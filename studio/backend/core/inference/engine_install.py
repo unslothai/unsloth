@@ -3,6 +3,11 @@
 
 """Opt-in serving environments. No engine packages are imported into Studio.
 
+When Studio's own PyTorch and CUDA libraries are the ones an engine is locked to,
+its environment runs on Studio's interpreter and holds only the packages Studio
+lacks or pins differently; Studio's site-packages follow its own on sys.path.
+Otherwise it is a complete isolated environment.
+
 Installation is serialized across Studio processes. Environments are built at
 their final paths (venv scripts contain absolute paths); only the active marker
 is replaced. Runtime leases prevent removing an environment another Studio uses.
@@ -14,8 +19,11 @@ import hashlib
 import json
 import os
 import platform
+import re
 import shutil
 import subprocess
+import sys
+import sysconfig
 import tempfile
 import threading
 import time
@@ -26,8 +34,19 @@ from pathlib import Path
 
 PROFILES = {
     "vllm": {"version": "0.20.0", "module": "vllm", "cuda": "cu130", "driver": 580},
-    "sglang": {"version": "0.5.12", "module": "sglang", "cuda": "cu130", "driver": 580},
+    "sglang": {
+        "version": "0.5.12",
+        "module": "sglang",
+        "cuda": "cu130",
+        "driver": 580,
+        # Excluded from the lock: outlines-core 0.1.26 has no Python 3.13 wheel, and
+        # SGLang imports outlines only for --grammar-backend outlines, which Studio never selects.
+        "omit": ("outlines", "outlines-core"),
+    },
 }
+# The Python version the locks are compiled for.
+PYTHON = (3, 13)
+_BASE_PTH = "zz_unsloth_studio_base.pth"
 _REQUIREMENTS = Path(__file__).resolve().parents[2] / "requirements" / "engines"
 _jobs: dict[str, dict] = {}
 _cancels: dict[str, threading.Event] = {}
@@ -52,6 +71,137 @@ def requirements(engine: str) -> Path:
 
 def profile_digest(engine: str) -> str:
     return hashlib.sha256(requirements(engine).read_bytes()).hexdigest()
+
+
+def _normalize(name: str) -> str:
+    return re.sub(r"[-_.]+", "-", name).lower()
+
+
+def _pins(engine: str) -> dict[str, tuple[str, str]]:
+    """{name: (version, requirement line with its hashes)} from a uv-compiled lock."""
+    entries: dict[str, tuple[str, str]] = {}
+    name = None
+    for line in requirements(engine).read_text(encoding = "utf-8").splitlines(keepends = True):
+        match = re.match(r"([A-Za-z0-9][A-Za-z0-9_.\-]*)==([^\s;\\]+)", line)
+        if match:
+            name = _normalize(match.group(1))
+            entries[name] = (match.group(2), line)
+        elif name and line.startswith("    --hash="):
+            entries[name] = (entries[name][0], entries[name][1] + line)
+        else:
+            name = None
+    return entries
+
+
+def _studio_site() -> list[str]:
+    paths = sysconfig.get_paths()
+    return sorted({paths["purelib"], paths["platlib"]})
+
+
+def _studio_packages() -> dict[str, str]:
+    """Distributions in Studio's own site-packages, excluding sidecars on sys.path."""
+    import importlib.metadata as metadata
+    return {
+        _normalize(dist.metadata["Name"]): dist.version
+        for dist in metadata.distributions(path = _studio_site())
+    }
+
+
+def _torch_runtime() -> set[str]:
+    """Studio's torch and the native CUDA packages it loads, which one process can hold once."""
+    import importlib.metadata as metadata
+    from packaging.requirements import Requirement
+
+    names, pending = {"torch"}, [("torch", ())]
+    while pending:
+        name, extras = pending.pop()
+        dists = list(metadata.distributions(name = name, path = _studio_site()))
+        for raw in dists[0].requires or [] if dists else []:
+            requirement = Requirement(raw)
+            child = _normalize(requirement.name)
+            if (
+                child not in names
+                and child.startswith(("nvidia-", "cuda-toolkit", "triton"))
+                and (
+                    requirement.marker is None
+                    or any(requirement.marker.evaluate({"extra": e}) for e in ("", *extras))
+                )
+            ):
+                names.add(child)
+                pending.append((child, tuple(requirement.extras)))
+    return names
+
+
+def install_plan(engine: str) -> dict:
+    """Split the lock into packages Studio already provides and the ones to install."""
+    lock = _pins(engine)
+    studio = _studio_packages()
+    shared = (
+        sys.implementation.name == "cpython"
+        and sys.version_info[:2] == PYTHON
+        and "torch" in studio
+        and all(studio.get(name) == lock.get(name, (None,))[0] for name in _torch_runtime())
+    )
+    provided = {
+        name: version
+        for name, (version, _) in lock.items()
+        if shared and studio.get(name) == version
+    }
+    return {
+        "shared": shared,
+        "provided": provided,
+        "requirements": "".join(line for name, (_, line) in lock.items() if name not in provided),
+    }
+
+
+def stale(info: dict) -> bool:
+    """True when Studio no longer provides what a shared engine environment was checked with."""
+    if not info.get("shared"):
+        return False
+    if info.get("python") != platform.python_version():
+        return True
+    studio = _studio_packages()
+    return any(studio.get(name) != version for name, version in info.get("provided", {}).items())
+
+
+# Run by the engine's own interpreter, so it sees exactly what the engine imports across
+# both layers: every locked package at its locked version, with its requirements met.
+_CHECK = r"""
+import importlib.metadata as metadata, re, sys
+from packaging.requirements import Requirement
+
+def normalize(name):
+    return re.sub(r"[-_.]+", "-", name).lower()
+
+omitted = set(sys.argv[2].split(",")) - {""}
+problems = []
+for line in open(sys.argv[1], encoding = "utf-8"):
+    match = re.match(r"([A-Za-z0-9][A-Za-z0-9_.\-]*)==([^\s;\\]+)", line)
+    if not match:
+        continue
+    name, version = match.groups()
+    try:
+        found = metadata.version(name)
+    except metadata.PackageNotFoundError:
+        found = None
+    if found != version:
+        problems.append(f"{name}=={version} is required, found {found}")
+        continue
+    for raw in metadata.requires(name) or []:
+        requirement = Requirement(raw)
+        if normalize(requirement.name) in omitted or (
+            requirement.marker and not requirement.marker.evaluate({"extra": ""})
+        ):
+            continue
+        try:
+            have = metadata.version(requirement.name)
+        except metadata.PackageNotFoundError:
+            have = None
+        if have is None or not requirement.specifier.contains(have, prereleases = True):
+            problems.append(f"{name} requires {requirement}, found {have}")
+if problems:
+    sys.exit("\n".join(problems))
+"""
 
 
 def support_reason(engine: str = "vllm", gpu_id: int | None = None) -> str | None:
@@ -152,6 +302,7 @@ def status(engine: str) -> dict:
                 }
         except (RuntimeError, ImportError):
             pass
+    outdated = bool(info and stale(info))
     in_use = False
     if info and job.get("state") != "running":
         try:
@@ -167,9 +318,15 @@ def status(engine: str) -> dict:
         "installed_version": info.get("version") if info else None,
         "installed": info is not None,
         "in_use": in_use,
-        "current": bool(info and info.get("profile_digest") == profile_digest(engine)),
-        "restored": bool(info and info.get("restored")),
-        "can_rollback": bool(info and info.get("previous")),
+        # A shared environment whose Studio packages changed needs a repair either way.
+        "current": bool(
+            info and info.get("profile_digest") == profile_digest(engine) and not outdated
+        ),
+        "restored": bool(info and info.get("restored") and not outdated),
+        "shared": bool(info and info.get("shared")),
+        "can_rollback": bool(
+            info and isinstance(info.get("previous"), dict) and not stale(info["previous"])
+        ),
         "unsupported_reason": support_reason(engine),
         "download_bytes": None,
         "additional_disk_bytes": None,
@@ -362,9 +519,22 @@ def _install(
             root.mkdir(parents = True, exist_ok = True)
             digest = profile_digest(engine)
             destination = root / ("env-" + uuid.uuid4().hex)
-            _update(engine, phase = "creating", message = "Preparing an isolated Python environment")
-            _run(engine, [uv, "venv", "--python", "3.12", str(destination)], cancel)
+            plan = install_plan(engine)
+            _update(
+                engine,
+                phase = "creating",
+                message = "Preparing an engine environment on Studio's PyTorch"
+                if plan["shared"]
+                else "Preparing an isolated Python environment",
+            )
+            # Studio's interpreter when it is the one the lock targets; uv's otherwise.
+            interpreter = (
+                sys.executable if sys.version_info[:2] == PYTHON else "{}.{}".format(*PYTHON)
+            )
+            _run(engine, [uv, "venv", "--python", interpreter, str(destination)], cancel)
             python = str(destination / "bin" / "python")
+            packages = destination / "engine-requirements.txt"
+            packages.write_text(plan["requirements"], encoding = "utf-8")
             _update(
                 engine, phase = "installing", message = "Downloading and installing engine packages"
             )
@@ -383,19 +553,38 @@ def _install(
                     ":all:",
                     "--index-url",
                     "https://pypi.org/simple",
-                    str(requirements(engine)),
+                    str(packages),
                 ],
                 cancel,
             )
+            if plan["shared"]:
+                # Appended after the engine's own site-packages, so its pins win.
+                site = destination / "lib" / "python{}.{}".format(*PYTHON) / "site-packages"
+                (site / _BASE_PTH).write_text(
+                    "".join(f"import site; site.addsitedir({path!r})\n" for path in _studio_site()),
+                    encoding = "utf-8",
+                )
             _update(engine, phase = "checking", message = "Checking the installed engine")
-            _run(engine, [uv, "pip", "check", "--python", python], cancel)
             _run(
                 engine,
                 [
                     python,
                     "-I",
                     "-c",
-                    f"import {profile(engine)['module']}; import torch; import bitsandbytes; import torchao; assert torch.__version__.split('+')[0] == '2.11.0'; assert torch.version.cuda == '13.0'",
+                    _CHECK,
+                    str(requirements(engine)),
+                    ",".join(profile(engine).get("omit", ())),
+                ],
+                cancel,
+            )
+            torch_version = _pins(engine)["torch"][0]
+            _run(
+                engine,
+                [
+                    python,
+                    "-I",
+                    "-c",
+                    f"import {profile(engine)['module']}; import torch; import bitsandbytes; import torchao; assert torch.__version__.split('+')[0] == {torch_version!r}; assert torch.version.cuda == '13.0'",
                 ],
                 cancel,
             )
@@ -418,6 +607,10 @@ def _install(
                     "directory": destination.name,
                     "version": profile(engine)["version"],
                     "profile_digest": digest,
+                    "shared": plan["shared"],
+                    "python": platform.python_version(),
+                    "provided": plan["provided"],
+                    "studio_prefix": sys.prefix,
                     "previous_directory": prior["directory"] if prior else None,
                     "previous": {
                         k: v
@@ -515,6 +708,10 @@ def rollback(engine: str) -> dict:
         if path.is_symlink() or not (path / "bin" / "python").is_file():
             raise RuntimeError(
                 "The previous engine installation is unavailable. Repair the engine instead."
+            )
+        if stale(previous):
+            raise RuntimeError(
+                "The previous engine installation was built on packages Studio no longer has. Repair the engine instead."
             )
         _atomic_json(
             root / "active.json",

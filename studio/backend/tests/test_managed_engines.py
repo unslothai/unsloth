@@ -20,6 +20,8 @@ def isolated(monkeypatch, tmp_path):
     monkeypatch.setattr(install, "support_reason", lambda engine = "vllm": None)
     monkeypatch.setattr(install, "_jobs", {})
     monkeypatch.setattr(install, "_cancels", {})
+    # Studio without torch: engines get a complete isolated environment.
+    monkeypatch.setattr(install, "_studio_packages", lambda: {})
     return tmp_path
 
 
@@ -70,12 +72,131 @@ def test_activation_only_after_check_and_keeps_previous(isolated, monkeypatch):
     assert result["directory"] != "env-prior"
     assert result["previous_directory"] == "env-prior"
     assert any("--require-hashes" in argv for argv in calls)
-    assert any("check" in argv for argv in calls)
+    assert any(install._CHECK in argv for argv in calls)
     assert install.status("vllm")["job"]["state"] == "success"
     install.rollback("vllm")
     assert install.installed("vllm")["directory"] == "env-prior"
     install.rollback("vllm")
     assert install.installed("vllm")["directory"] == result["directory"]
+
+
+def fake_venv(engine, argv, cancel):
+    if argv[1] == "venv":
+        destination = Path(argv[-1])
+        (destination / "bin").mkdir(parents = True)
+        (destination / "bin" / "python").touch()
+        (destination / "lib" / "python3.13" / "site-packages").mkdir(parents = True)
+
+
+def studio_with_engine_torch(monkeypatch, engine, **changes):
+    pins = {name: version for name, (version, _) in install._pins(engine).items()}
+    runtime = {"torch", "triton", "nvidia-cublas", "nvidia-nccl-cu13"}
+    packages = {name: pins[name] for name in (*runtime, "numpy", "fastapi")}
+    packages.update(changes)
+    monkeypatch.setattr(install, "_studio_packages", lambda: dict(packages))
+    monkeypatch.setattr(install, "_torch_runtime", lambda: runtime)
+    monkeypatch.setattr(install.sys, "version_info", (3, 13, 0))
+    monkeypatch.setattr(install.sys.implementation, "name", "cpython")
+    monkeypatch.setattr(install.platform, "python_version", lambda: "3.13.0")
+    return packages
+
+
+@pytest.mark.parametrize("engine", ["vllm", "sglang"])
+def test_shared_environment_installs_only_what_studio_lacks(isolated, monkeypatch, engine):
+    studio = studio_with_engine_torch(monkeypatch, engine, fastapi = "0.0.1")
+    monkeypatch.setattr(install.shutil, "which", lambda _: "/uv")
+    monkeypatch.setattr(install, "_run", fake_venv)
+    install._install(engine, threading.Event())
+    info = install.installed(engine)
+    assert info["shared"] is True
+    # Only packages at the locked version are shared; a different fastapi is installed.
+    assert info["provided"] == {
+        name: version for name, version in studio.items() if name != "fastapi"
+    }
+    packages = (Path(info["path"]) / "engine-requirements.txt").read_text()
+    assert not any(
+        line.startswith(("torch==", "triton==", "numpy==")) for line in packages.splitlines()
+    )
+    assert any(line.startswith((engine + "==", "fastapi==")) for line in packages.splitlines())
+    pth = Path(info["path"]) / "lib" / "python3.13" / "site-packages" / install._BASE_PTH
+    assert "site.addsitedir(" in pth.read_text()
+    assert install.status(engine)["current"] is True
+
+    # A Studio update that changes a provided package invalidates the environment.
+    studio["numpy"] = "0.0.1"
+    status = install.status(engine)
+    assert status["installed"] is True and status["current"] is False
+    from core.inference import managed_engine
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(managed_engine, "support_reason", lambda *args: None)
+    request = SimpleNamespace(gpu_ids = [0], gguf_variant = None, model_path = "m")
+    with pytest.raises(ValueError, match = "Repair it"):
+        managed_engine.validate_load(engine, request)
+
+
+def test_changed_studio_torch_uses_an_isolated_environment(isolated, monkeypatch):
+    studio_with_engine_torch(monkeypatch, "vllm", torch = "2.99.0")
+    monkeypatch.setattr(install.shutil, "which", lambda _: "/uv")
+    calls = []
+
+    def run(engine, argv, cancel):
+        calls.append(argv)
+        fake_venv(engine, argv, cancel)
+
+    monkeypatch.setattr(install, "_run", run)
+    install._install("vllm", threading.Event())
+    info = install.installed("vllm")
+    assert info["shared"] is False and info["provided"] == {}
+    packages = (Path(info["path"]) / "engine-requirements.txt").read_text()
+    assert packages == "".join(line for _, line in install._pins("vllm").values())
+    assert not (
+        Path(info["path"]) / "lib" / "python3.13" / "site-packages" / install._BASE_PTH
+    ).exists()
+    assert install.status("vllm")["current"] is True
+
+
+def test_rollback_refuses_a_shared_environment_studio_no_longer_matches(isolated, monkeypatch):
+    studio = studio_with_engine_torch(monkeypatch, "vllm")
+    monkeypatch.setattr(install.shutil, "which", lambda _: "/uv")
+    monkeypatch.setattr(install, "_run", fake_venv)
+    install._install("vllm", threading.Event())
+    install._install("vllm", threading.Event())
+    assert install.status("vllm")["can_rollback"] is True
+    studio["numpy"] = "0.0.1"
+    assert install.status("vllm")["can_rollback"] is False
+    with pytest.raises(RuntimeError, match = "no longer has"):
+        install.rollback("vllm")
+
+
+def test_engine_check_sees_every_locked_version_and_requirement(tmp_path):
+    import os
+    import subprocess
+    import sys
+
+    site = tmp_path / "site"
+    (site / "demo-1.0.dist-info").mkdir(parents = True)
+    (site / "demo-1.0.dist-info" / "METADATA").write_text(
+        "Metadata-Version: 2.1\nName: demo\nVersion: 1.0\nRequires-Dist: absent-dependency>=1\n"
+    )
+    lock = tmp_path / "lock.txt"
+    env = {**os.environ, "PYTHONPATH": str(site)}
+
+    def check(pins, omitted = ""):
+        lock.write_text(pins)
+        return subprocess.run(
+            [sys.executable, "-c", install._CHECK, str(lock), omitted],
+            capture_output = True,
+            text = True,
+            env = env,
+        )
+
+    assert (
+        check("demo==2.0 \\\n    --hash=sha256:00\n").stderr.strip()
+        == "demo==2.0 is required, found 1.0"
+    )
+    assert "demo requires absent-dependency>=1, found None" in check("demo==1.0\n").stderr
+    assert check("demo==1.0\n", "absent-dependency").returncode == 0
 
 
 def test_cancel_before_activation_keeps_previous(isolated, monkeypatch):

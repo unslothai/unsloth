@@ -1,0 +1,4 @@
+# outlines-core 0.1.26 has no Python 3.13 wheel. SGLang imports outlines only for
+# --grammar-backend outlines, which Studio never selects.
+outlines
+outlines-core

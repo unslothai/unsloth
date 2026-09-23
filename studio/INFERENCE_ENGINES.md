@@ -107,12 +107,29 @@ bytes to the engine, fetching remote URLs itself with the same limits as other b
 
 ## Environment and cache design
 
-Each engine has a complete isolated Python 3.12 environment under the Studio
-home's `engines` directory. Studio never imports engine packages into its own
-Python process. Compiler caches, including Triton, are scoped to each engine profile, model,
+Engines run in their own processes from environments under the Studio home's
+`engines` directory. Studio never imports engine packages into its own Python
+process. Compiler caches, including Triton, are scoped to each engine profile, model,
 precision, context and GPU selection to avoid reusing incompatible kernels.
-The committed requirements profiles lock versions and wheel hashes.
+The committed requirements profiles lock versions and wheel hashes for Python 3.13.
 Both profiles use PyTorch 2.11.0 with CUDA 13.0 and Transformers 5.6.0.
+
+The engines cannot share Studio's site-packages: they pin Transformers and other
+packages at versions Studio does not use, and they conflict with each other. They
+can share its interpreter, PyTorch and CUDA libraries. When Studio runs Python 3.13
+and its torch, together with the Triton and NVIDIA packages torch loads, is exactly
+the version an engine is locked to, the engine environment uses Studio's
+interpreter and holds only the locked packages Studio lacks or has at another
+version. A `.pth` file adds Studio's site-packages after the engine's own, so the
+engine's pins win and multiprocessing workers see the same packages. A default
+Linux install with driver 580 or newer gets this torch build. Otherwise, for
+example with another torch version or CUDA build, the engine gets a complete
+isolated environment from the same lock.
+
+A shared environment records the Studio packages it was checked against. If a
+Studio update changes any of them, or the Python version, the engine reports an
+available update, refuses to load until it is repaired, and cannot be rolled back
+to an environment built on the old packages. Repair reuses cached downloads.
 
 Installation uses the shared uv cache, honoring `UV_CACHE_DIR` when configured.
 Otherwise it reuses the installer's recorded cache path, with Studio's own cache
@@ -126,6 +143,9 @@ savings are promised. Model downloads use Studio's configured Hugging Face cache
 An exclusive file lock protects installation and removal across Studio processes.
 Running engines hold shared leases. A staged environment must pass dependency,
 CUDA import and server entry-point checks before an atomic active marker changes.
+The dependency check runs in the engine's interpreter, so it covers both layers of a
+shared environment: every locked package must resolve to its locked version, with
+its requirements met.
 Failed or cancelled installations preserve the prior marker. A successful repair
 keeps one previous environment for restoration. Explicitly restoring an older
 profile allows model loading while still offering the pinned update. That choice
@@ -149,7 +169,8 @@ translation catalog, with explicit English fallback for untranslated locales.
 
 SGLang uses Triton attention and PyTorch sampling in this profile so its default
 FlashInfer JIT path does not require a matching system CUDA toolkit. Runtime
-executables such as Ninja are resolved from the engine environment first.
+executables such as Ninja are resolved from the engine environment first, then from
+Studio's environment for a shared engine.
 For tensor parallelism, SGLang probes GPU peer access and falls back to its
 standard collective when peer access is unavailable. Its equal-free-memory
 guard is disabled for these managed groups: Studio checks every GPU, and SGLang
@@ -158,15 +179,22 @@ cards with different memory capacities without treating their VRAM as a pool.
 
 ## Maintaining profiles
 
-Run from the repository root using uv:
+Run from the repository root using uv. Seed each output file with `uv pip freeze`
+from a default Studio install first: uv prefers versions already in the output file,
+which keeps each engine's own layer small.
 
 ```sh
-uv pip compile studio/backend/requirements/engines/vllm-linux-cu130.in --python-version 3.12 --python-platform x86_64-manylinux_2_34 --index-url https://pypi.org/simple --refresh --generate-hashes --upgrade -o studio/backend/requirements/engines/vllm-linux-cu130.txt
-uv pip compile studio/backend/requirements/engines/sglang-linux-cu130.in --python-version 3.12 --python-platform x86_64-manylinux_2_34 --index-url https://pypi.org/simple --refresh --generate-hashes --upgrade -o studio/backend/requirements/engines/sglang-linux-cu130.txt
+uv pip compile studio/backend/requirements/engines/vllm-linux-cu130.in --python-version 3.13 --python-platform x86_64-manylinux_2_34 --index-url https://pypi.org/simple --refresh --generate-hashes -o studio/backend/requirements/engines/vllm-linux-cu130.txt
+uv pip compile studio/backend/requirements/engines/sglang-linux-cu130.in --python-version 3.13 --python-platform x86_64-manylinux_2_34 --index-url https://pypi.org/simple --refresh --generate-hashes --excludes studio/backend/requirements/engines/sglang-linux-cu130.excludes -o studio/backend/requirements/engines/sglang-linux-cu130.txt
 ```
 
-Update `PROFILES` in `engine_install.py` and the CUDA import check when changing
-the runtime baseline. SGLang's requirements explicitly pin its required Flash
+Keep the torch, torchvision, torchaudio and CUDA pins equal to Studio's default
+install, or no installation can share them. SGLang's excludes file drops `outlines`,
+whose `outlines-core` pin has no Python 3.13 wheel; SGLang only imports it for
+`--grammar-backend outlines`.
+
+Update `PROFILES` and `PYTHON` in `engine_install.py` when changing the runtime
+baseline. SGLang's requirements explicitly pin its required Flash
 Attention beta and a Transformers-compatible `kernels` release. Do not enable
 prereleases globally. Regeneration must refresh hashes when changing indexes.
 

@@ -18,7 +18,14 @@ from pathlib import Path
 
 import httpx
 
-from .engine_install import engine_lease, installed, profile, profile_digest, support_reason
+from .engine_install import (
+    engine_lease,
+    installed,
+    profile,
+    profile_digest,
+    stale,
+    support_reason,
+)
 
 
 from .engine_adapters import (
@@ -41,6 +48,10 @@ def validate_load(engine: str, request) -> None:
     info = installed(engine)
     if not info:
         raise ValueError(f"Install {engine} in Settings > System > Inference engines first.")
+    if stale(info):
+        raise ValueError(
+            f"Studio's packages changed since {engine} was installed. Repair it in Settings > System > Inference engines."
+        )
     # The picker's rule too: an outdated profile loads only after an explicit restore.
     if info.get("profile_digest") != profile_digest(engine) and not info.get("restored"):
         raise ValueError(f"Update {engine} in Settings > System > Inference engines first.")
@@ -261,8 +272,13 @@ class ManagedEngine:
                 child_env.pop("VIRTUAL_ENV", None)
                 child_env.pop("LD_PRELOAD", None)
                 child_env.pop("LD_LIBRARY_PATH", None)
-                child_env["PATH"] = (
-                    info["path"] + "/bin" + os.pathsep + child_env.get("PATH", os.defpath)
+                # A shared environment also runs console scripts of the packages Studio provides.
+                child_env["PATH"] = os.pathsep.join(
+                    [
+                        info["path"] + "/bin",
+                        *([info["studio_prefix"] + "/bin"] if info.get("shared") else []),
+                        child_env.get("PATH", os.defpath),
+                    ]
                 )
                 child_env["CUDA_VISIBLE_DEVICES"] = ",".join(str(i) for i in (gpu_ids or [0]))
                 child_env["PYTHONNOUSERSITE"] = "1"
