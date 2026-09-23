@@ -155,7 +155,11 @@ def _loader_already_provides_runtime(major: str) -> bool:
     """
     sonames = (f"libcudart.so.{major}", f"libcublas.so.{major}")
     cached = _ld_cache_entries()
-    if cached is None and not _ldconfig_executable_available() and _loader_resolves_sonames(sonames):
+    if (
+        cached is None
+        and not _ldconfig_executable_available()
+        and _loader_resolves_sonames(sonames)
+    ):
         return True
     native_abis = _NATIVE_LOADER_ABIS.get(platform.machine().lower(), frozenset())
     for soname in sonames:

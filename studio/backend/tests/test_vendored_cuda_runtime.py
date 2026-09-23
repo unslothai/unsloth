@@ -326,9 +326,12 @@ def test_an_unreadable_cache_still_rescues_from_the_default_dirs(tmp_path, monke
 
     assert vendored_cuda_runtime_dirs({"runtime_line": "cuda13"}, roots = _roots(tmp_path)) == []
 
+
 def test_uses_the_dynamic_loader_cache_without_ldconfig(monkeypatch):
     sonames = ("libcudart.so.13", "libcublas.so.13")
-    native_abis = runtime_libs._NATIVE_LOADER_ABIS.get(runtime_libs.platform.machine().lower(), frozenset())
+    native_abis = runtime_libs._NATIVE_LOADER_ABIS.get(
+        runtime_libs.platform.machine().lower(), frozenset()
+    )
     cached = _REAL_LD_CACHE_ENTRIES()
     cache_paths = {
         soname: next(
@@ -375,7 +378,9 @@ def test_uses_the_dynamic_loader_cache_without_ldconfig(monkeypatch):
     monkeypatch.setattr(
         runtime_libs.os.path,
         "exists",
-        lambda path: False if path in {"/sbin/ldconfig", "/usr/sbin/ldconfig"} else original_exists(path),
+        lambda path: False
+        if path in {"/sbin/ldconfig", "/usr/sbin/ldconfig"}
+        else original_exists(path),
     )
     monkeypatch.setattr(runtime_libs, "_LOADER_DEFAULT_LIB_DIRS", ())
 
