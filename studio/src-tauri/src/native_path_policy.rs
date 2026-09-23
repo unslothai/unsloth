@@ -50,6 +50,88 @@ pub fn classify_native_model_path(path: &Path) -> Result<ClassifiedPath, String>
 pub const ATTACHMENT_EXTS: &[&str] = &["pdf", "txt", "md", "markdown", "docx", "html", "htm"];
 /// OpenDocument files the chat composer parses directly rather than indexing as RAG sources.
 pub const OPEN_DOCUMENT_ATTACHMENT_EXTS: &[&str] = &["ods", "odt"];
+/// Office Open XML files the chat composer parses directly; keep in sync with `open-document-accept.ts`.
+pub const OFFICE_OPEN_XML_ATTACHMENT_EXTS: &[&str] =
+    &["xlsx", "xlsm", "xltx", "xltm", "pptx", "pptm", "ppsx"];
+/// Rich text files the chat composer parses directly; keep in sync with `open-document-accept.ts`.
+pub const RTF_ATTACHMENT_EXTS: &[&str] = &["rtf"];
+/// iWork files the chat composer parses directly; keep in sync with `open-document-accept.ts`.
+pub const IWORK_ATTACHMENT_EXTS: &[&str] = &["pages", "numbers", "key"];
+/// Files only the python tool reads; keep in sync with `open-document-accept.ts`.
+pub const TOOL_ONLY_ATTACHMENT_EXTS: &[&str] = &[
+    "parquet",
+    "feather",
+    "arrow",
+    "orc",
+    "dta",
+    "sas7bdat",
+    "xpt",
+    "mat",
+    "npy",
+    "npz",
+    "safetensors",
+    "sqlite",
+    "sqlite3",
+    "db",
+    "gpkg",
+    "mbtiles",
+    "duckdb",
+    "zip",
+    "jar",
+    "whl",
+    "apk",
+    "tar",
+    "gz",
+    "tgz",
+    "bz2",
+    "tbz2",
+    "tbz",
+    "xz",
+    "txz",
+    "lzma",
+    "epub",
+    "mobi",
+    "fb2",
+    "cbz",
+    "xps",
+    "oxps",
+    "docm",
+    "dotx",
+    "dotm",
+    "potx",
+    "potm",
+    "ppsm",
+    "odp",
+    "odg",
+    "vsdx",
+    "stl",
+    "3mf",
+    "ply",
+    "glb",
+    "kmz",
+    "ttf",
+    "otf",
+    "ttc",
+    "woff",
+    "psd",
+    "ico",
+    "icns",
+    "cur",
+    "tga",
+    "dds",
+    "pcx",
+    "ppm",
+    "pgm",
+    "pbm",
+    "pnm",
+    "qoi",
+    "jp2",
+    "j2k",
+    "xbm",
+    "xpm",
+    "sgi",
+    "fits",
+];
 pub const TRAINING_DATASET_EXTS: &[&str] = &["csv", "json", "jsonl", "parquet"];
 
 /// Keep in sync with `text-attachment-accept.ts`. RAG types are absent so a
@@ -571,8 +653,24 @@ pub fn is_audio_only_3gp(raw: &[u8]) -> bool {
     has_audio && !has_video
 }
 
+/// Whether a path's extension is one that TypeScript shares with MPEG transport streams.
+pub fn has_transport_stream_extension(path: &Path) -> bool {
+    has_extension(path, "ts") || has_extension(path, "mts")
+}
+
+/// A camcorder `.mts` or broadcast `.ts` stream, not TypeScript: the 0x47 sync byte opens every
+/// 188-byte packet, or every 192 bytes behind the 4-byte timestamp M2TS adds.
+pub fn is_mpeg_transport_stream(path: &Path, bytes: &[u8]) -> bool {
+    has_transport_stream_extension(path)
+        && [(0, 188), (4, 192)].iter().any(|&(start, packet)| {
+            (0..3).all(|index| bytes.get(start + index * packet) == Some(&0x47))
+        })
+}
+
 /// Vision chat image attachments; keep in sync with `drop-paths.ts` `CHAT_IMAGE_DROP_ACCEPT`.
-pub const IMAGE_ATTACHMENT_EXTS: &[&str] = &["jpg", "jpeg", "png", "webp", "gif"];
+pub const IMAGE_ATTACHMENT_EXTS: &[&str] = &[
+    "jpg", "jpeg", "png", "webp", "gif", "heic", "heif", "avif", "bmp", "tif", "tiff",
+];
 
 /// Chat audio attachments; keep in sync with `audio-attachment-adapter.ts` `accept`.
 pub const AUDIO_ATTACHMENT_EXTS: &[&str] = &[
@@ -584,13 +682,17 @@ pub const AUDIO_ATTACHMENT_EXTS: &[&str] = &[
 /// `CHAT_VIDEO_DROP_ACCEPT`. llama-server decodes with ffmpeg, so this is what
 /// ffmpeg reads, not what the webview can play.
 pub const VIDEO_ATTACHMENT_EXTS: &[&str] = &[
-    "mp4", "m4v", "mov", "webm", "mkv", "avi", "mpg", "mpeg", "wmv", "flv", "3gp", "ogv",
+    "mp4", "m4v", "mov", "webm", "mkv", "avi", "mpg", "mpeg", "wmv", "flv", "3gp", "ogv", "m2ts",
 ];
 
 fn accepted_attachment_exts() -> impl Iterator<Item = &'static &'static str> {
     ATTACHMENT_EXTS
         .iter()
         .chain(OPEN_DOCUMENT_ATTACHMENT_EXTS.iter())
+        .chain(OFFICE_OPEN_XML_ATTACHMENT_EXTS.iter())
+        .chain(RTF_ATTACHMENT_EXTS.iter())
+        .chain(IWORK_ATTACHMENT_EXTS.iter())
+        .chain(TOOL_ONLY_ATTACHMENT_EXTS.iter())
         .chain(TEXT_ATTACHMENT_EXTS.iter())
         .chain(IMAGE_ATTACHMENT_EXTS.iter())
         .chain(AUDIO_ATTACHMENT_EXTS.iter())

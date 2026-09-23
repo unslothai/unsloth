@@ -99,6 +99,8 @@ def _send_path_slice() -> str:
     )
     return (
         "export function buildSendPathOutbound(messages: any, isExternalRequest: boolean) {\n"
+        # No turn here has the python tool, so the send path skips the sandbox copies.
+        "  const supportsStudioToolsForThisTurn = false, studioLocalCodeTools: string[] = [];\n"
         + body
         + "  return outboundMessages;\n}\n"
     )

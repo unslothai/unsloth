@@ -1,9 +1,18 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { CHAT_IMAGE_EXTENSIONS } from "../chat/image-normalize.ts";
 import {
+  OFFICE_OPEN_XML_ATTACHMENT_EXTENSIONS,
+  isOfficeOpenXmlAttachmentName,
   OPEN_DOCUMENT_ATTACHMENT_EXTENSIONS,
   isOpenDocumentAttachmentName,
+  IWORK_ATTACHMENT_EXTENSIONS,
+  isIworkAttachmentName,
+  RTF_ATTACHMENT_EXTENSIONS,
+  isRtfAttachmentName,
+  TOOL_ONLY_ATTACHMENT_EXTENSIONS,
+  isToolOnlyAttachmentName,
 } from "../chat/open-document-accept.ts";
 import {
   TEXT_ATTACHMENT_EXTENSIONS,
@@ -22,7 +31,14 @@ const TEXT_EXTS = TEXT_ATTACHMENT_EXTENSIONS.map((ext) =>
 
 /** Dropped paths with an inline adapter but no RAG parser. */
 export function isComposerAttachmentName(path: string): boolean {
-  return isOpenDocumentAttachmentName(path) || isTextDropName(path);
+  return (
+    isOpenDocumentAttachmentName(path) ||
+    isOfficeOpenXmlAttachmentName(path) ||
+    isRtfAttachmentName(path) ||
+    isIworkAttachmentName(path) ||
+    isToolOnlyAttachmentName(path) ||
+    isTextDropName(path)
+  );
 }
 
 function isTextDropName(path: string): boolean {
@@ -35,8 +51,7 @@ function isTextDropName(path: string): boolean {
   return dot > 0 && TEXT_EXTS.includes(name.slice(dot));
 }
 
-/** Vision chat attachments; keep in sync with `shared-composer` `IMAGE_ACCEPT`. */
-export const CHAT_IMAGE_DROP_ACCEPT = ".jpg,.jpeg,.png,.webp,.gif";
+export const CHAT_IMAGE_DROP_ACCEPT = CHAT_IMAGE_EXTENSIONS;
 
 const IMAGE_EXTS = CHAT_IMAGE_DROP_ACCEPT.split(",").map((ext) =>
   ext.trim().toLowerCase(),
@@ -54,14 +69,14 @@ const AUDIO_EXTS = CHAT_AUDIO_DROP_ACCEPT.split(",").map((ext) =>
  * `VIDEO_ATTACHMENT_EXTS`. llama-server decodes with ffmpeg, so this is what
  * ffmpeg reads, not what the webview can play. */
 export const CHAT_VIDEO_DROP_ACCEPT =
-  ".mp4,.m4v,.mov,.webm,.mkv,.avi,.mpg,.mpeg,.wmv,.flv,.3gp,.ogv";
+  ".mp4,.m4v,.mov,.webm,.mkv,.avi,.mpg,.mpeg,.wmv,.flv,.3gp,.ogv,.m2ts";
 
 const VIDEO_EXTS = CHAT_VIDEO_DROP_ACCEPT.split(",").map((ext) =>
   ext.trim().toLowerCase(),
 );
 
 /** What the window actually takes, for the rejection toast and the overlay. */
-export const SUPPORTED_DROP_HINT = `Supported files: ${RAG_UPLOAD_ACCEPT}, ${OPEN_DOCUMENT_ATTACHMENT_EXTENSIONS}, source and text files, ${CHAT_IMAGE_DROP_ACCEPT}, one of ${CHAT_AUDIO_DROP_ACCEPT}, one of ${CHAT_VIDEO_DROP_ACCEPT}, or a single .gguf model.`;
+export const SUPPORTED_DROP_HINT = `Supported files: ${RAG_UPLOAD_ACCEPT}, ${OPEN_DOCUMENT_ATTACHMENT_EXTENSIONS}, ${OFFICE_OPEN_XML_ATTACHMENT_EXTENSIONS}, ${RTF_ATTACHMENT_EXTENSIONS}, ${IWORK_ATTACHMENT_EXTENSIONS}, source and text files, ${TOOL_ONLY_ATTACHMENT_EXTENSIONS} with Code on, ${CHAT_IMAGE_DROP_ACCEPT}, one of ${CHAT_AUDIO_DROP_ACCEPT}, one of ${CHAT_VIDEO_DROP_ACCEPT}, or a single .gguf model.`;
 
 /** Last path segment of a native path, for display and extension checks. */
 export function nativeFileName(path: string): string {
@@ -102,8 +117,7 @@ export function classifyDropPaths(paths: string[]): NativeDropClass {
   const docs = paths.filter(
     (path) =>
       DOC_EXTS.some((ext) => hasExt(path, ext)) ||
-      isOpenDocumentAttachmentName(path) ||
-      isTextDropName(path),
+      isComposerAttachmentName(path),
   );
   const images = paths.filter((path) =>
     IMAGE_EXTS.some((ext) => hasExt(path, ext)),

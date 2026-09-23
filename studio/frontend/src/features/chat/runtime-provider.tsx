@@ -66,6 +66,19 @@ import {
 } from "./attachment-content";
 import { AudioAttachmentAdapter } from "./audio-attachment-adapter";
 import {
+  type UploadedAttachmentFile,
+  storedAttachmentFile,
+  toolOnlyAttachmentContent,
+  uploadAttachmentFile,
+} from "./stored-attachment";
+import {
+  TOOL_ONLY_ATTACHMENT_EXTENSIONS,
+  OFFICE_OPEN_XML_ATTACHMENT_ACCEPT,
+  IWORK_ATTACHMENT_ACCEPT,
+  RTF_ATTACHMENT_ACCEPT,
+  OPEN_DOCUMENT_ATTACHMENT_ACCEPT,
+} from "./open-document-accept";
+import {
   isBinaryPropertyList,
   isBinaryTrackerModule,
   MAX_TEXT_ATTACHMENT_BYTES,
@@ -79,15 +92,26 @@ import {
   loadConnectionsEnabled,
   loadExternalProviders,
   parseExternalModelId,
+  providerModelSupportsStudioTools,
   providerModelSupportsVision,
 } from "./external-providers";
+import { selectCodeToolNames } from "./api/code-tool-placement";
 import { chatModelLoaded } from "./lib/chat-model-loaded";
 import {
-  type OpenDocumentAttachmentContent,
-  readActiveOpenDocumentAttachmentContent,
+  readOfficeOpenXmlAttachmentContent,
   readOpenDocumentAttachmentContent,
 } from "./open-document";
-import { OPEN_DOCUMENT_ATTACHMENT_ACCEPT } from "./open-document-accept";
+import {
+  providerHostsCodeExecution,
+  providerSupportsBuiltinCodeExecution,
+} from "./provider-capabilities";
+import { readIworkAttachmentContent } from "./iwork";
+import { readRtfAttachmentContent } from "./rtf";
+import {
+  CHAT_IMAGE_ACCEPT,
+  convertedImageType,
+  normalizeChatImage,
+} from "./image-normalize";
 import {
   awaitThreadScopedSettingsWrite,
   beginThreadScopedPairing,
@@ -231,8 +255,8 @@ class PreStreamAwareAttachmentAdapter implements AttachmentAdapter {
 
   add(state: { file: File }) {
     // A composite picks its adapter synchronously from the name and MIME type, and both say "video"
-    // for an audio-only 3GP recording, so settle that from the container's own tracks first, as the
-    // native readers do. Every other file goes straight through, keeping the delegate's own return.
+    // for an audio-only 3GP recording or a TypeScript .ts, so settle that from the file's own bytes
+    // first, as the native readers do. Every other file goes straight through.
     if (!needsAttachmentTrackInspection(state.file)) {
       return this.delegate.add(state);
     }
@@ -245,9 +269,7 @@ class PreStreamAwareAttachmentAdapter implements AttachmentAdapter {
     const file = await classifiedAttachmentFile(state.file);
     const added = await this.delegate.add({ ...state, file });
     if (Symbol.asyncIterator in added) {
-      // Only the audio and video adapters claim a 3GP and both resolve to one
-      // attachment, so this drains a generator to its last value rather than
-      // forwarding the progress an adapter here does not report.
+      // These adapters each resolve to one attachment, so drain the generator to its last value.
       let last: PendingAttachment | undefined;
       for await (const value of added) last = value;
       if (!last) throw new Error("The attachment adapter yielded nothing.");
@@ -277,83 +299,167 @@ class PreStreamAwareAttachmentAdapter implements AttachmentAdapter {
   }
 }
 
-class VisionImageAdapter implements AttachmentAdapter {
-  accept = "image/jpeg,image/png,image/webp,image/gif";
+/** Documents only: images, audio and video are never copied to the sandbox. */
+class StoredFileAttachmentAdapter implements AttachmentAdapter {
+  private readonly delegate: AttachmentAdapter;
 
-  async add({ file }: { file: File }): Promise<PendingAttachment> {
-    const state = useChatRuntimeStore.getState();
-    const checkpoint = state.params.checkpoint;
-    const activeModel = state.models.find((m) => m.id === checkpoint);
-    const externalSelection = parseExternalModelId(checkpoint);
-    const isExternalModel = externalSelection !== null;
-    const modelLoaded = chatModelLoaded({
+  constructor(delegate: AttachmentAdapter) {
+    this.delegate = delegate;
+  }
+
+  get accept(): string {
+    return this.delegate.accept;
+  }
+
+  add(state: { file: File }) {
+    return this.delegate.add(state);
+  }
+
+  remove(attachment: Attachment): Promise<void> {
+    return this.delegate.remove(attachment);
+  }
+
+  async send(attachment: PendingAttachment): Promise<CompleteAttachment> {
+    const [complete, upload] = await Promise.all([
+      this.delegate.send(attachment),
+      uploadAttachmentFile(attachment.file),
+    ]);
+    const storedFile = upload && storedAttachmentFile(upload);
+    // Persisted with the message, so later turns can hand the file to the tool again.
+    return storedFile
+      ? ({ ...complete, storedFile } as CompleteAttachment)
+      : complete;
+  }
+}
+
+/** Why the chat model cannot be sent an image, or null when it can. */
+function imageInputUnavailableReason(): string | null {
+  const state = useChatRuntimeStore.getState();
+  const checkpoint = state.params.checkpoint;
+  const externalSelection = parseExternalModelId(checkpoint);
+  const isExternalModel = externalSelection !== null;
+  let externalSupportsVision: boolean | null = null;
+  let externalModelLabel: string | null = null;
+  if (externalSelection !== null) {
+    const providers = loadConnectionsEnabled() ? loadExternalProviders() : [];
+    const provider = providers.find(
+      (p) => p.id === externalSelection.providerId,
+    );
+    externalSupportsVision = providerModelSupportsVision(
+      provider?.providerType,
+      externalSelection.modelId,
+    );
+    externalModelLabel = externalSelection.modelId;
+  }
+  return getImageInputUnavailableReason({
+    activeModel: state.models.find((m) => m.id === checkpoint),
+    isExternalModel,
+    externalSupportsVision,
+    externalModelLabel,
+    loadedIsMultimodal: state.loadedIsMultimodal,
+    modelLoaded: chatModelLoaded({
       checkpoint,
       modelLoading: state.modelLoading,
       isExternalModel,
       residentCheckpoint: state.residentCheckpoint,
-    });
-    let externalSupportsVision: boolean | null = null;
-    let externalModelLabel: string | null = null;
-    if (externalSelection !== null) {
-      const providers = loadConnectionsEnabled() ? loadExternalProviders() : [];
-      const provider = providers.find(
-        (p) => p.id === externalSelection.providerId,
-      );
-      externalSupportsVision = providerModelSupportsVision(
-        provider?.providerType,
-        externalSelection.modelId,
-      );
-      externalModelLabel = externalSelection.modelId;
-    }
-    const unavailableReason = getImageInputUnavailableReason({
-      activeModel,
-      isExternalModel,
-      externalSupportsVision,
-      externalModelLabel,
-      loadedIsMultimodal: state.loadedIsMultimodal,
-      modelLoaded,
-      loadError: state.lastModelLoadError,
-      visionDisabledByUser: state.loadedVisionDisabledByUser,
-      mmprojFallbackReason: state.mmprojFallbackReason,
-    });
+    }),
+    loadError: state.lastModelLoadError,
+    visionDisabledByUser: state.loadedVisionDisabledByUser,
+    mmprojFallbackReason: state.mmprojFallbackReason,
+  });
+}
+
+class VisionImageAdapter implements AttachmentAdapter {
+  accept = CHAT_IMAGE_ACCEPT;
+  // Held from the running placeholder until send or remove; null when conversion failed.
+  private readonly converted = new Map<string, Promise<File | null>>();
+
+  async *add({
+    file: picked,
+  }: {
+    file: File;
+  }): AsyncGenerator<PendingAttachment, void> {
+    const unavailableReason = imageInputUnavailableReason();
     if (unavailableReason) {
       toast.error(unavailableReason);
       throw new Error(unavailableReason);
     }
 
     const maxSize = 20 * 1024 * 1024;
-    if (file.size > maxSize) {
+    if (picked.size > maxSize) {
       throw new Error("Image size exceeds 20MB limit");
     }
-
-    return {
+    const attachment = {
       id: crypto.randomUUID(),
       type: "image",
-      name: file.name,
-      contentType: file.type,
-      file,
+      name: picked.name,
+      contentType: picked.type,
+      file: picked,
       status: { type: "requires-action", reason: "composer-send" },
+    } satisfies PendingAttachment;
+    if (convertedImageType(picked) === null) {
+      yield attachment;
+      return;
+    }
+    // Shown as running while it converts, which holds the composer's send.
+    yield {
+      ...attachment,
+      status: { type: "running", reason: "uploading", progress: 0 },
     };
+    const conversion = normalizeChatImage(picked);
+    this.converted.set(
+      attachment.id,
+      conversion.catch(() => null),
+    );
+    let file: File;
+    try {
+      file = await conversion;
+    } catch (error) {
+      if (!this.converted.has(attachment.id)) {
+        return;
+      }
+      toast.error(error instanceof Error ? error.message : String(error));
+      throw error;
+    }
+    // Removed while converting: yielding again would put it back.
+    if (!this.converted.has(attachment.id)) {
+      return;
+    }
+    yield { ...attachment, name: file.name, contentType: file.type, file };
   }
 
   async send(attachment: PendingAttachment): Promise<CompleteAttachment> {
+    const conversion = this.converted.get(attachment.id);
+    this.converted.delete(attachment.id);
+    const file = conversion ? await conversion : attachment.file;
+    if (!file) {
+      // Its conversion failed and said so; the unconverted file is not one a backend takes.
+      return {
+        id: attachment.id,
+        type: "image",
+        name: attachment.name,
+        contentType: attachment.contentType,
+        content: [],
+        status: { type: "complete" },
+      };
+    }
     return {
       id: attachment.id,
       type: "image",
-      name: attachment.name,
-      contentType: attachment.contentType,
+      name: file.name,
+      contentType: file.type,
       content: [
         {
           type: "image",
-          image: await this.fileToBase64DataURL(attachment.file),
+          image: await this.fileToBase64DataURL(file),
         },
       ],
       status: { type: "complete" },
     };
   }
 
-  async remove(): Promise<void> {
-    return Promise.resolve();
+  async remove(attachment: { id: string }): Promise<void> {
+    this.converted.delete(attachment.id);
   }
 
   private async fileToBase64DataURL(file: File): Promise<string> {
@@ -568,15 +674,39 @@ class DocxAttachmentAdapter implements AttachmentAdapter {
   }
 }
 
-class OpenDocumentAttachmentAdapter implements AttachmentAdapter {
+type PackagedDocumentContent = { label: string; text: string };
+
+/** Read in the composer, so a file that cannot be read is marked there and not at send. */
+abstract class PackagedDocumentAttachmentAdapter implements AttachmentAdapter {
   private readonly active = new Set<string>();
   private readonly sending = new Set<string>();
   private readonly content = new Map<
     string,
-    Promise<OpenDocumentAttachmentContent | null>
+    Promise<PackagedDocumentContent | null>
   >();
 
-  accept = OPEN_DOCUMENT_ATTACHMENT_ACCEPT;
+  abstract accept: string;
+
+  protected abstract read(
+    file: File,
+    filename: string,
+    contentType: string,
+  ): Promise<PackagedDocumentContent>;
+
+  private async readWhileActive(
+    id: string,
+    file: File,
+  ): Promise<PackagedDocumentContent | null> {
+    try {
+      const content = await this.read(file, file.name, file.type);
+      return this.active.has(id) ? content : null;
+    } catch (error) {
+      if (!this.active.has(id)) {
+        return null;
+      }
+      throw error;
+    }
+  }
 
   async *add({
     file,
@@ -593,12 +723,7 @@ class OpenDocumentAttachmentAdapter implements AttachmentAdapter {
     } satisfies PendingAttachment;
 
     yield attachment;
-    const content = readActiveOpenDocumentAttachmentContent(
-      file,
-      file.name,
-      file.type,
-      () => this.active.has(id),
-    );
+    const content = this.readWhileActive(id, file);
     this.content.set(id, content);
 
     try {
@@ -625,7 +750,7 @@ class OpenDocumentAttachmentAdapter implements AttachmentAdapter {
     try {
       const content =
         (await this.content.get(attachment.id)) ??
-        (await readOpenDocumentAttachmentContent(
+        (await this.read(
           attachment.file,
           attachment.name,
           attachment.contentType ?? "",
@@ -654,6 +779,155 @@ class OpenDocumentAttachmentAdapter implements AttachmentAdapter {
     this.sending.delete(attachment.id);
     this.content.delete(attachment.id);
     return Promise.resolve();
+  }
+}
+
+class OpenDocumentAttachmentAdapter extends PackagedDocumentAttachmentAdapter {
+  accept = OPEN_DOCUMENT_ATTACHMENT_ACCEPT;
+
+  protected read(file: File, filename: string, contentType: string) {
+    return readOpenDocumentAttachmentContent(file, filename, contentType);
+  }
+}
+
+class OfficeOpenXmlAttachmentAdapter extends PackagedDocumentAttachmentAdapter {
+  accept = OFFICE_OPEN_XML_ATTACHMENT_ACCEPT;
+
+  protected read(file: File, filename: string) {
+    return readOfficeOpenXmlAttachmentContent(file, filename);
+  }
+}
+
+class RtfAttachmentAdapter extends PackagedDocumentAttachmentAdapter {
+  accept = RTF_ATTACHMENT_ACCEPT;
+
+  protected read(file: File, filename: string) {
+    return readRtfAttachmentContent(file, filename);
+  }
+}
+
+class IworkAttachmentAdapter extends PackagedDocumentAttachmentAdapter {
+  accept = IWORK_ATTACHMENT_ACCEPT;
+
+  protected read(file: File, filename: string) {
+    return readIworkAttachmentContent(file, filename);
+  }
+}
+
+const MAX_TOOL_ONLY_ATTACHMENT_BYTES = 200 * 1024 * 1024;
+
+// Code on a provider that hosts execution runs no python tool here, so nothing could open it.
+function pythonToolRunsInStudio(): boolean {
+  const { params, supportsTools, codeToolsEnabled } =
+    useChatRuntimeStore.getState();
+  const external = parseExternalModelId(params.checkpoint);
+  if (!external) return supportsTools && codeToolsEnabled;
+  const provider = (
+    loadConnectionsEnabled() ? loadExternalProviders() : []
+  ).find((p) => p.id === external.providerId);
+  if (
+    !provider ||
+    providerModelSupportsStudioTools(
+      provider.providerType,
+      external.modelId,
+    ) !== true
+  ) {
+    return false;
+  }
+  return selectCodeToolNames({
+    codeToolsEnabled,
+    hostedCodeExecutionForThisTurn: providerSupportsBuiltinCodeExecution(
+      provider.providerType,
+      external.modelId,
+      provider.baseUrl,
+    ),
+    providerHostsCodeExecution: providerHostsCodeExecution(
+      provider.providerType,
+    ),
+  }).local.includes("python");
+}
+
+/** Formats the browser cannot read, which reach the model only through the python tool. */
+class ToolOnlyAttachmentAdapter implements AttachmentAdapter {
+  accept = TOOL_ONLY_ATTACHMENT_EXTENSIONS;
+  private readonly uploads = new Map<
+    string,
+    Promise<UploadedAttachmentFile | null>
+  >();
+
+  async *add({
+    file,
+  }: {
+    file: File;
+  }): AsyncGenerator<PendingAttachment, void> {
+    const refusal = !pythonToolRunsInStudio()
+      ? `Turn on Code with a model that runs the python tool to attach ${file.name}.`
+      : file.size > MAX_TOOL_ONLY_ATTACHMENT_BYTES
+        ? `File is too large: ${file.name}`
+        : null;
+    if (refusal) {
+      toast.error(refusal);
+      throw new Error(refusal);
+    }
+    const attachment = {
+      id: crypto.randomUUID(),
+      type: "document",
+      name: file.name,
+      contentType: file.type,
+      file,
+      status: { type: "running", reason: "uploading", progress: 0 },
+    } satisfies PendingAttachment;
+    yield attachment;
+    const upload = uploadAttachmentFile(file);
+    this.uploads.set(attachment.id, upload);
+    const storedFile = await upload;
+    // Removed while uploading: yielding again would put it back.
+    if (this.uploads.get(attachment.id) !== upload) return;
+    if (!storedFile) {
+      this.uploads.delete(attachment.id);
+      toast.error(`Could not upload ${file.name}`);
+      yield { ...attachment, status: { type: "incomplete", reason: "error" } };
+      return;
+    }
+    yield {
+      ...attachment,
+      status: { type: "requires-action", reason: "composer-send" },
+    };
+  }
+
+  async send(attachment: PendingAttachment): Promise<CompleteAttachment> {
+    // An incomplete chip is still sent: its failed upload is tried once more here.
+    const upload =
+      (await this.uploads.get(attachment.id)) ??
+      (await uploadAttachmentFile(attachment.file));
+    this.uploads.delete(attachment.id);
+    const storedFile = upload && storedAttachmentFile(upload);
+    const complete: CompleteAttachment = {
+      id: attachment.id,
+      type: "document",
+      name: attachment.name,
+      contentType: attachment.contentType,
+      content: upload
+        ? toolOnlyAttachmentContent(
+            attachment.name,
+            upload.preview,
+            !imageInputUnavailableReason(),
+          )
+        : [
+            {
+              type: "text",
+              text: `[${attachment.name} could not be uploaded, so it cannot be read]`,
+            },
+          ],
+      status: { type: "complete" },
+    };
+    return storedFile
+      ? ({ ...complete, storedFile } as CompleteAttachment)
+      : complete;
+  }
+
+  async remove(attachment: { id: string }): Promise<void> {
+    this.uploads.delete(attachment.id);
   }
 }
 
@@ -2323,11 +2597,17 @@ function useStudioRuntimeAdapters(
           // Before the document adapters: a composite takes the first match, and .mkv/.mov must not fall
           // through to them.
           new VideoAttachmentAdapter(),
-          new TextAttachmentAdapter(),
-          new HtmlAttachmentAdapter(),
-          new PDFAttachmentAdapter(),
-          new DocxAttachmentAdapter(),
-          new OpenDocumentAttachmentAdapter(),
+          ...[
+            new TextAttachmentAdapter(),
+            new HtmlAttachmentAdapter(),
+            new PDFAttachmentAdapter(),
+            new DocxAttachmentAdapter(),
+            new OpenDocumentAttachmentAdapter(),
+            new OfficeOpenXmlAttachmentAdapter(),
+            new RtfAttachmentAdapter(),
+            new IworkAttachmentAdapter(),
+          ].map((adapter) => new StoredFileAttachmentAdapter(adapter)),
+          new ToolOnlyAttachmentAdapter(),
         ]),
         () => {
           const state = aui.threadListItem().getState();

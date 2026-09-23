@@ -140,6 +140,23 @@ def _ensure_project_workspace(root_path: str) -> str:
     return str(root_resolved)
 
 
+def chat_attachment_blob_is_referenced(blob_id: str) -> bool:
+    """Whether any stored message's attachments name this stored-file id (a sha256 hex digest, which
+    ordinary text never contains by accident). An unreadable database answers True."""
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT 1 FROM chat_messages WHERE attachments_json LIKE ? LIMIT 1",
+            (f"%{blob_id}%",),
+        ).fetchone()
+        return row is not None
+    except sqlite3.Error:
+        logger.warning("Could not check references for chat attachment %s; keeping it", blob_id)
+        return True
+    finally:
+        conn.close()
+
+
 def sandbox_is_referenced_elsewhere(
     session_id: str, exclude_thread_id: "str | None" = None
 ) -> bool:

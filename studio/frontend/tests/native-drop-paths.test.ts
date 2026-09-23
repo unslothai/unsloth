@@ -5,9 +5,19 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  OFFICE_OPEN_XML_ATTACHMENT_EXTENSIONS,
+  RTF_ATTACHMENT_EXTENSIONS,
+  IWORK_ATTACHMENT_EXTENSIONS,
+  TOOL_ONLY_ATTACHMENT_EXTENSIONS,
   OPEN_DOCUMENT_ATTACHMENT_ACCEPT,
   OPEN_DOCUMENT_ATTACHMENT_EXTENSIONS,
 } from "../src/features/chat/open-document-accept.ts";
+import {
+  CHAT_IMAGE_MIMES,
+  CHAT_IMAGE_ACCEPT,
+  convertedImageType,
+  isChatImageFile,
+} from "../src/features/chat/image-normalize.ts";
 import {
   TEXT_ATTACHMENT_ACCEPT,
   TEXT_ATTACHMENT_BASENAMES,
@@ -17,13 +27,6 @@ import {
   MAX_TEXT_ATTACHMENT_BYTES,
   decodeTextAttachmentBytes,
   isTextAttachmentName,
-} from "../src/features/chat/text-attachment-accept.ts";
-import {
-  AUDIO_ATTACHMENT_ACCEPT,
-  AUDIO_PICKER_ACCEPT,
-  isAudioAttachmentFile,
-} from "../src/lib/audio-utils.ts";
-import {
   isBinaryOfficeTemplate,
   isBinaryVobSubSubtitle,
   isCompiledFortranModule,
@@ -32,6 +35,12 @@ import {
   readTextAttachmentOnce,
   UndecodableTextError,
 } from "../src/features/chat/text-attachment-accept.ts";
+import {
+  AUDIO_ATTACHMENT_ACCEPT,
+  AUDIO_PICKER_ACCEPT,
+  isAudioAttachmentFile,
+  AUDIO_ACCEPT,
+} from "../src/lib/audio-utils.ts";
 import {
   dequeueNativeAttachments,
   enqueueNativeAttachments,
@@ -47,7 +56,6 @@ import {
 import type { NativeIntent } from "../src/features/native-intents/types.ts";
 import { RAG_UPLOAD_ACCEPT } from "../src/features/rag/types/rag.ts";
 import { MAX_REFERENCE_BYTES } from "../src/features/video/reference-budget.ts";
-import { AUDIO_ACCEPT } from "../src/lib/audio-utils.ts";
 import {
   VIDEO_ACCEPT,
   classifiedAttachmentFile,
@@ -94,10 +102,20 @@ const MIME_MATCH_BODY_RE =
   /fn attachment_mime_type[\s\S]*?match ext\.as_str\(\) \{([\s\S]*?)\n {4}\}/;
 const MIME_ARM_EXTENSION_RE =
   /^\s*((?:"[^"]+"\s*\|?\s*)+)=>\s*Some\("image\//gm;
-const COMPOSER_IMAGE_ACCEPT_RE = /const IMAGE_ACCEPT\s*=\s*"([^"]+)"/;
+const COMPOSER_IMAGE_ACCEPT_RE = /accept=\{CHAT_IMAGE_ACCEPT\}/;
+const IMAGE_DRAIN_CONVERTS_PER_FILE_RE =
+  /const drainPendingImages[\s\S]*?try \{[^}]*?file = await normalizeChatImage\(\s*await nativeAttachmentIntentToFile\(intent\),?\s*\);\s*\} catch \(error\) \{\s*\/\/[^\n]*\n[^\n]*\n\s*readFailures \+= 1;\s*lastReadError = error;\s*continue;/;
 const VISION_ADAPTER_ACCEPT_RE =
-  /class VisionImageAdapter[^{]*\{\s*accept\s*=\s*"([^"]+)"/s;
+  /class VisionImageAdapter[^{]*\{\s*accept = CHAT_IMAGE_ACCEPT;/;
 const OPEN_DOCUMENT_EXTENSION_RE = /\.ods/;
+const OFFICE_OPEN_XML_ADAPTER_RE =
+  /class OfficeOpenXmlAttachmentAdapter[^{]*\{[\s\S]*?accept = OFFICE_OPEN_XML_ATTACHMENT_ACCEPT;\s*protected read\(file: File, filename: string\) \{\s*return readOfficeOpenXmlAttachmentContent\(file, filename\);[\s\S]*?new CompositeAttachmentAdapter\(\[[\s\S]*?new OfficeOpenXmlAttachmentAdapter\(\),/;
+const RTF_ADAPTER_RE =
+  /class RtfAttachmentAdapter[^{]*\{[\s\S]*?accept = RTF_ATTACHMENT_ACCEPT;\s*protected read\(file: File, filename: string\) \{\s*return readRtfAttachmentContent\(file, filename\);[\s\S]*?new CompositeAttachmentAdapter\(\[[\s\S]*?new RtfAttachmentAdapter\(\),/;
+const IWORK_ADAPTER_RE =
+  /class IworkAttachmentAdapter[^{]*\{[\s\S]*?accept = IWORK_ATTACHMENT_ACCEPT;\s*protected read\(file: File, filename: string\) \{\s*return readIworkAttachmentContent\(file, filename\);[\s\S]*?new CompositeAttachmentAdapter\(\[[\s\S]*?new IworkAttachmentAdapter\(\),/;
+const TOOL_ONLY_ADAPTER_RE =
+  /function pythonToolRunsInStudio\(\)[\s\S]*?if \(!external\) return supportsTools && codeToolsEnabled;[\s\S]*?\}\)\.local\.includes\("python"\);[\s\S]*?class ToolOnlyAttachmentAdapter[^{]*\{\s*accept = TOOL_ONLY_ATTACHMENT_EXTENSIONS;[\s\S]*?!pythonToolRunsInStudio\(\)[\s\S]*?\?\?\s*\(await uploadAttachmentFile\(attachment\.file\)\);[\s\S]*?return storedFile\s*\?\s*\(\{ \.\.\.complete, storedFile \}[\s\S]*?\.map\(\(adapter\) => new StoredFileAttachmentAdapter\(adapter\)\),\s*new ToolOnlyAttachmentAdapter\(\),\s*\]\)/;
 const OPEN_DOCUMENT_ADAPTER_ACCEPT_RE =
   /class OpenDocumentAttachmentAdapter[^{]*\{[\s\S]*?accept = OPEN_DOCUMENT_ATTACHMENT_ACCEPT;/;
 const OPEN_DOCUMENT_DROP_TO_COMPOSER_RE =
@@ -181,6 +199,44 @@ test("OpenDocument picker types are accepted by native drops", () => {
   assert.deepEqual(rust, frontend);
 });
 
+for (const [format, extensions, adapter, rustList] of [
+  [
+    "Office Open XML",
+    OFFICE_OPEN_XML_ATTACHMENT_EXTENSIONS,
+    OFFICE_OPEN_XML_ADAPTER_RE,
+    "OFFICE_OPEN_XML_ATTACHMENT_EXTS",
+  ],
+  ["RTF", RTF_ATTACHMENT_EXTENSIONS, RTF_ADAPTER_RE, "RTF_ATTACHMENT_EXTS"],
+  [
+    "iWork",
+    IWORK_ATTACHMENT_EXTENSIONS,
+    IWORK_ADAPTER_RE,
+    "IWORK_ATTACHMENT_EXTS",
+  ],
+  [
+    "Tool-only",
+    TOOL_ONLY_ATTACHMENT_EXTENSIONS,
+    TOOL_ONLY_ADAPTER_RE,
+    "TOOL_ONLY_ATTACHMENT_EXTS",
+  ],
+] as const) {
+  test(`${format} drops route to the composer and match the native allowlist`, () => {
+    for (const extension of extensions.split(",")) {
+      const path = `/docs/Book${extension.toUpperCase()}`;
+      assert.equal(classifyDropPaths([path]).kind, "docs", path);
+      assert.ok(isComposerAttachmentName(path), path);
+      assert.ok(SUPPORTED_DROP_HINT.includes(extension));
+    }
+    assert.match(RUNTIME_PROVIDER, adapter);
+    const rust = [
+      ...(readText("../../src-tauri/src/native_path_policy.rs")
+        .match(new RegExp(`${rustList}[^=]*=\\s*&\\[([^\\]]+)\\]`))?.[1]
+        .matchAll(RUST_EXTENSION_RE) ?? []),
+    ].map((match) => `.${match[1]}`);
+    assert.deepEqual(rust.sort(), extensions.split(",").sort());
+  });
+}
+
 test("images route to chat vision attachments, one or many", () => {
   const dropped = classifyDropPaths([
     "/photos/cat.PNG",
@@ -211,10 +267,10 @@ test("a mixed or unsupported drop is rejected", () => {
     "unsupported",
   );
   assert.equal(
-    classifyDropPaths(["/docs/a.pdf", "/docs/b.zip"]).kind,
+    classifyDropPaths(["/docs/a.pdf", "/docs/b.dmg"]).kind,
     "unsupported",
   );
-  assert.equal(classifyDropPaths(["/docs/notes.zip"]).kind, "unsupported");
+  assert.equal(classifyDropPaths(["/docs/notes.dmg"]).kind, "unsupported");
 });
 
 test("an empty payload is not a drop target", () => {
@@ -321,11 +377,8 @@ test("every MIME type Rust stamps is one the vision adapter claims", () => {
     ),
   ].sort();
 
-  const accepted = RUNTIME_PROVIDER
-    .match(VISION_ADAPTER_ACCEPT_RE)?.[1]
-    .split(",")
-    .map((type) => type.trim())
-    .sort();
+  assert.match(RUNTIME_PROVIDER, VISION_ADAPTER_ACCEPT_RE);
+  const accepted = [...CHAT_IMAGE_MIMES].sort();
 
   assert.ok(
     stamped.length > 0,
@@ -359,20 +412,36 @@ test("every accepted image extension has a Rust MIME arm", () => {
   assert.deepEqual(mapped, accepted);
 });
 
-// The one constant drop-paths.ts names in its own "keep in sync" comment.
-test("the drop image list matches the composer's file picker", () => {
-  const picker = SHARED_COMPOSER
-    .match(COMPOSER_IMAGE_ACCEPT_RE)?.[1]
-    .split(",")
-    .map((type) => type.trim().replace("image/", ""))
-    .sort();
+// Conversion is async: a send before it finishes would go out without the image.
+test("no composer sends while an image is being converted", () => {
+  assert.match(
+    SHARED_COMPOSER,
+    /setConvertingImages\(\(count\) => count \+ 1\);\s*try \{\s*image = await normalizeChatImage\(file\);[\s\S]*?\} finally \{\s*setConvertingImages\(\(count\) => count - 1\);/,
+  );
+  assert.match(SHARED_COMPOSER, /const canSend =[^;]*convertingImages === 0/);
+  // Removed while converting stays removed, and a failed conversion never sends the source file.
+  assert.match(
+    RUNTIME_PROVIDER,
+    /class VisionImageAdapter[\s\S]*?if \(!this\.converted\.has\(attachment\.id\)\) \{\s*return;\s*\}\s*toast\.error[\s\S]*?if \(!this\.converted\.has\(attachment\.id\)\) \{\s*return;\s*\}\s*yield \{ \.\.\.attachment, name: file\.name/,
+  );
+  assert.match(
+    RUNTIME_PROVIDER,
+    /class VisionImageAdapter[\s\S]*?this\.converted\.set\(\s*attachment\.id,\s*conversion\.catch\(\(\) => null\),?\s*\);[\s\S]*?const file = conversion \? await conversion : attachment\.file;\s*if \(!file\) \{[\s\S]*?content: \[\],[\s\S]*?async remove\(attachment: \{ id: string \}\): Promise<void> \{\s*this\.converted\.delete\(attachment\.id\);/,
+  );
+});
+
+// A file the webview cannot convert must fail alone: a throw stops the whole batch.
+test("dropped images are converted as part of their per-file read", () => {
+  assert.match(THREAD, IMAGE_DRAIN_CONVERTS_PER_FILE_RE);
+});
+
+test("every dropped image extension is a type the composers accept", () => {
+  assert.match(SHARED_COMPOSER, COMPOSER_IMAGE_ACCEPT_RE);
   const dropped = CHAT_IMAGE_DROP_ACCEPT.split(",")
     .map((ext) => ext.trim().toLowerCase().replace(".", ""))
-    .map((ext) => (ext === "jpg" ? "jpeg" : ext))
-    .sort();
-
-  assert.ok(picker, "IMAGE_ACCEPT not found in shared-composer.tsx");
-  assert.deepEqual([...new Set(dropped)], picker);
+    .map((ext) => ({ jpg: "jpeg", tif: "tiff" })[ext] ?? ext)
+    .map((ext) => `image/${ext}`);
+  assert.deepEqual([...new Set(dropped)].sort(), [...CHAT_IMAGE_MIMES].sort());
 });
 
 // A remount means the instance that queued the batch cannot hand it over.
@@ -583,8 +652,27 @@ test("every video MIME Rust stamps is one the video adapter claims", () => {
 
   assert.ok(stamped.length > 0, "Rust stamps no video MIME types");
   for (const mime of stamped) {
+    // Claimed through .m2ts only: browsers give TypeScript .ts files this MIME too.
+    if (mime === "video/mp2t") continue;
     assert.ok(claimed.has(mime), `the video adapter does not claim ${mime}`);
   }
+});
+
+// The video adapter is registered before the text one, so claiming this MIME would take .ts sources.
+test("an .m2ts clip is a video under the MIME browsers give it", async () => {
+  const { fileMatchesAccept } = (await import(
+    new URL(
+      "../node_modules/@assistant-ui/core/dist/adapters/attachment.js",
+      import.meta.url,
+    ).href
+  )) as {
+    fileMatchesAccept: (
+      file: { name: string; type: string },
+      accept: string,
+    ) => boolean;
+  };
+  const as = (name: string) => ({ name, type: "video/mp2t" });
+  assert.ok(fileMatchesAccept(as("clip.M2TS"), VIDEO_ACCEPT));
 });
 
 test("the rejection hint names video too", () => {
@@ -1485,7 +1573,7 @@ test("a dotfile is not mistaken for a source file", () => {
 });
 
 test("an unreadable type is still refused", () => {
-  assert.equal(classifyDropPaths(["/docs/archive.zip"]).kind, "unsupported");
+  assert.equal(classifyDropPaths(["/docs/disk.dmg"]).kind, "unsupported");
   assert.equal(classifyDropPaths(["/bin/tool.exe"]).kind, "unsupported");
 });
 
@@ -1615,6 +1703,51 @@ test("the restamped recording routes to the audio adapter", async () => {
 
   const classified = await classifiedAttachmentFile(recording);
   assert.equal(fileMatchesAccept(classified, AUDIO_ATTACHMENT_ACCEPT), true);
+});
+
+test("a transport stream named .ts or .mts routes to video, TypeScript to text", async () => {
+  const { fileMatchesAccept } = (await import(
+    new URL(
+      "../node_modules/@assistant-ui/core/dist/adapters/attachment.js",
+      import.meta.url,
+    ).href
+  )) as { fileMatchesAccept: (file: File, accept: string) => boolean };
+  const stream = (packet: number, start: number) => {
+    const bytes = new Uint8Array(packet * 4);
+    for (let offset = start; offset < bytes.length; offset += packet) {
+      bytes[offset] = 0x47;
+    }
+    return bytes;
+  };
+  for (const file of [
+    new File([stream(192, 4)], "camcorder.MTS", { type: "" }),
+    new File([stream(188, 0)], "broadcast.ts", { type: "video/mp2t" }),
+  ]) {
+    const classified = await classifiedAttachmentFile(file);
+    assert.equal(classified.type, "video/mp2t", file.name);
+    assert.ok(fileMatchesAccept(classified, VIDEO_ACCEPT), file.name);
+  }
+  // Opens with the sync byte's "G", so one matching packet start is not enough.
+  const typescript = new File(
+    ["GENERATED\n" + "export const value = 1;\n".repeat(40)],
+    "index.ts",
+    { type: "video/mp2t" },
+  );
+  const classified = await classifiedAttachmentFile(typescript);
+  assert.equal(classified.type, "text/plain");
+  assert.equal(fileMatchesAccept(classified, VIDEO_ACCEPT), false);
+  const { REFERENCE_DROP_ACCEPT, referenceFileRejection } = await import(
+    "../src/features/video/reference-budget.ts"
+  );
+  assert.ok(REFERENCE_DROP_ACCEPT.video.split(",").includes(".mts"));
+  const clip = await classifiedAttachmentFile(
+    new File([stream(192, 4)], "camcorder.mts", { type: "" }),
+  );
+  assert.equal(referenceFileRejection("video", clip), null);
+  assert.equal(
+    referenceFileRejection("video", classified),
+    "Please choose a video file",
+  );
 });
 
 test("a file dialog offers 3GP recordings, and routing still does not", () => {
@@ -2127,7 +2260,7 @@ test("a 3GP is inspected however large the surface taking it allows", async () =
   const source = readSrc("lib/video-utils.ts");
   assert.match(
     source,
-    /export function needsAttachmentTrackInspection[^)]*\)[^{]*\{\s*return \/\\\.3gp\$\/i\.test\(file\.name\);\s*\}/,
+    /export function needsAttachmentTrackInspection[^)]*\)[^{]*\{\s*return \/\\\.\(3gp\|m\?ts\)\$\/i\.test\(file\.name\);\s*\}/,
   );
 });
 
@@ -2472,4 +2605,32 @@ test("escapes in a header entry resolve before the charset is read", async () =>
     '"Content-Type: text/plain; charset=utf-8\\nContent-Transfer-Encoding: 8bit\\n"\n\n' +
     'msgid "c"\nmsgstr "café"\n';
   assert.match(await readTextAttachment(new File([po], "m.po")), /café/);
+});
+
+test("formats the backends cannot take are converted, the rest sent as is", () => {
+  for (const [name, type, converted] of [
+    ["photo.HEIC", "image/heic", "image/jpeg"],
+    ["photo.heic", "", "image/jpeg"],
+    ["photo.heif", "application/octet-stream", "image/jpeg"],
+    ["scan.tif", "image/tiff", "image/png"],
+    ["icon.bmp", "", "image/png"],
+    ["pic.avif", "image/avif", "image/png"],
+    ["pic.png", "image/png", null],
+  ] as const) {
+    assert.ok(isChatImageFile({ name, type }), name);
+    assert.equal(convertedImageType({ name, type }), converted, name);
+  }
+  for (const extension of [
+    ".heic",
+    ".heif",
+    ".avif",
+    ".bmp",
+    ".tif",
+    ".tiff",
+  ]) {
+    assert.ok(CHAT_IMAGE_ACCEPT.split(",").includes(extension), extension);
+  }
+  // A format sent as is needs its MIME type: the data URL carries it.
+  assert.ok(!isChatImageFile({ name: "pic.png", type: "" }));
+  assert.ok(!isChatImageFile({ name: "x.constructor", type: "" }));
 });

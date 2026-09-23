@@ -3129,6 +3129,79 @@ def test_an_interrupted_move_is_not_read_as_a_collision(tmp_path, monkeypatch):
     assert (root / "__LOCALID_part111" / "second.csv").is_file(), "the retry never happened"
 
 
+@pytest.mark.parametrize("dir_fd_writes", [True, False])
+def test_attachments_are_copied_into_the_sandbox_once(tmp_path, monkeypatch, dir_fd_writes):
+    import io
+
+    tools = _shared_setup_1(monkeypatch, tmp_path)
+    monkeypatch.setattr(tools, "_DIR_FD_WRITES", tools._DIR_FD_WRITES and dir_fd_writes)
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+    from storage.chat_attachment_store import store_attachment
+
+    sheet, _ = store_attachment(io.BytesIO(b"a,b\n"))
+    deck, _ = store_attachment(io.BytesIO(b"slides"))
+    session = "__LOCALID_attach1"
+    tools.materialize_sandbox_attachments(
+        session, [(sheet, "data.csv"), (deck, "../deck.pptx"), ("0" * 64, "gone.csv")]
+    )
+    long_name = "季度" * 45 + ".xlsx"
+    tools.materialize_sandbox_attachments(session, [(sheet, long_name)])
+    workdir = Path(tools.get_sandbox_workdir(session))
+    copy = workdir / tools.sandbox_attachment_path(sheet, "data.csv")
+    assert copy.read_bytes() == b"a,b\n"
+    assert tools.sandbox_attachment_path(deck, "../deck.pptx").endswith(f"{deck[:12]}/_deck.pptx")
+    assert (workdir / tools.sandbox_attachment_path(deck, "../deck.pptx")).read_bytes() == b"slides"
+    long_copy = workdir / tools.sandbox_attachment_path(sheet, long_name)
+    assert long_copy.read_bytes() == b"a,b\n" and long_copy.suffix == ".xlsx"
+    assert 70 < len(long_copy.name.encode()) <= 80
+    assert tools.session_sandbox_has_files(session) is False
+    copy.write_bytes(b"edited")
+    tools.materialize_sandbox_attachments(session, [(sheet, "data.csv")])
+    assert copy.read_bytes() == b"edited"
+    assert tools.session_sandbox_has_files(session) is True
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    other = "__LOCALID_attach2"
+    linked = Path(tools.get_sandbox_workdir(other)) / tools._ATTACHMENTS_DIR
+    linked.symlink_to(outside, target_is_directory = True)
+    tools.materialize_sandbox_attachments(other, [(sheet, "data.csv")])
+    assert list(outside.iterdir()) == []
+
+
+def test_attachments_are_copied_only_for_the_python_tool(monkeypatch):
+    import asyncio
+    import inspect
+    from types import SimpleNamespace
+
+    from core.inference import tools
+    from routes import inference
+
+    calls = []
+    monkeypatch.setattr(tools, "materialize_sandbox_attachments", lambda *args: calls.append(args))
+    item = SimpleNamespace(id = "a" * 64, name = "data.csv")
+    for enable_tools, enabled_tools, attachments in (
+        (True, None, [item]),
+        (True, ["python"], [item]),
+        (True, ["web_search"], [item]),
+        (False, None, [item]),
+        (True, None, None),
+    ):
+        payload = SimpleNamespace(
+            enable_tools = enable_tools,
+            enabled_tools = enabled_tools,
+            sandbox_attachments = attachments,
+            session_id = "s",
+        )
+        asyncio.run(inference._materialize_sandbox_attachments(payload))
+    assert calls == [("s", [("a" * 64, "data.csv")])] * 2
+    # Once, before the request splits between local backends and external providers.
+    source = inspect.getsource(inference.produce_openai_chat_completions)
+    assert source.count("await _materialize_sandbox_attachments(payload)") == 1
+    assert source.index("_materialize_sandbox_attachments") < source.index(
+        "_proxy_to_external_provider"
+    )
+
+
 def test_a_delete_without_the_switch_says_what_it_kept(tmp_path, monkeypatch):
     """Surfaces other than the sidebar never offer the choice, and after the
     delete the folder is unreachable, so the route reports it."""

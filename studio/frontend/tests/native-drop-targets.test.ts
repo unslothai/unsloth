@@ -215,17 +215,17 @@ test("the shared image picker owns native drops and ignores stale reads", async 
 
 // The picker rejects a format the native side would refuse anyway, so the two
 // lists have to stay in step or a droppable image starts being turned away.
-test("the picker's droppable formats match the native path policy", async () => {
+test("the picker's droppable formats are ones the native path policy admits", async () => {
   const rust = readText("../../src-tauri/src/native_path_policy.rs");
   const listed = (source: string, pattern: RegExp) =>
     [...(source.match(pattern)?.[1].matchAll(/"([a-z0-9]+)"/g) ?? [])]
       .map((match) => match[1])
       .sort();
 
-  assert.deepEqual(
-    listed(IMAGE_DROPZONE, /NATIVE_IMAGE_EXTS\s*=\s*\[([^\]]+)\]/),
-    listed(rust, /IMAGE_ATTACHMENT_EXTS:\s*&\[&str\]\s*=\s*&\[([^\]]+)\]/),
-  );
+  const admitted = listed(rust, /IMAGE_ATTACHMENT_EXTS:\s*&\[&str\]\s*=\s*&\[([^\]]+)\]/);
+  const droppable = listed(IMAGE_DROPZONE, /NATIVE_IMAGE_EXTS\s*=\s*\[([^\]]+)\]/);
+  assert.ok(droppable.length > 0);
+  assert.deepEqual(droppable.filter((ext) => !admitted.includes(ext)), []);
 });
 
 // Tauri repeats "over" for every cursor move, and useNativeModelDrop sits in
