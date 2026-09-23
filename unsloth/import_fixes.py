@@ -1654,6 +1654,203 @@ def fix_transformers_fully_masked_rows():
         logger.info(f"Unsloth: Failed patching sdpa_mask ({e})")
 
 
+_CHUNKED_MASK_PATCH_FLAG = "_unsloth_patched_chunked_block_sequence_ids"
+_BLOCK_SEQUENCE_IDS = "block_sequence_ids"
+
+
+def _names_parameter(function, name):
+    """Does `function` name `name` as a parameter? `**kwargs` alone does not count.
+
+    Strict on purpose: unsloth_zoo's mask wrapper (`temporary_patches/misc.py`) is a bare
+    `(*args, **kwargs)` closure, so counting VAR_KEYWORD would report every wrapped build,
+    5.4 included, as one whose generate path passes the kwarg.
+    """
+    try:
+        return name in inspect.signature(function).parameters
+    except Exception:
+        return False
+
+
+def _accepts_keyword(function, name):
+    """Can `function` be called with `name=`, by name or through `**kwargs`?"""
+    try:
+        parameters = inspect.signature(function).parameters
+    except Exception:
+        return True  # Unknown: claim yes, so the fix stays out of the way.
+    if name in parameters:
+        return True
+    return any(p.kind is inspect.Parameter.VAR_KEYWORD for p in parameters.values())
+
+
+def _masks_pass_block_sequence_ids(masking_utils):
+    """Does this transformers hand `block_sequence_ids` to every per-layer mask function?
+
+    5.17 added it to `create_masks_for_generate`'s shared `mask_kwargs` (and to
+    `create_causal_mask` / `create_sliding_window_causal_mask`, next to `blockwise_overlay`);
+    5.4 and 4.57.6 have none of it. Several markers, because unsloth_zoo replaces
+    `create_masks_for_generate` and `create_causal_mask` with signature-less wrappers and
+    keeps only the latter's original reachable.
+    """
+    if callable(getattr(masking_utils, "blockwise_overlay", None)):
+        return True
+    for name in (
+        "create_masks_for_generate",
+        "_unsloth_original_create_causal_mask",
+        "create_causal_mask",
+    ):
+        function = getattr(masking_utils, name, None)
+        if function is not None and _names_parameter(function, _BLOCK_SEQUENCE_IDS):
+            return True
+    return False
+
+
+def _chunked_mask_rejects_block_sequence_ids(masking_utils = None):
+    """Would `create_masks_for_generate` raise TypeError on a chunked-attention model?
+
+    True only when the generate path passes `block_sequence_ids` AND the ORIGINAL
+    `create_chunked_causal_mask` cannot take it. Unwraps our own wrapper first, so a second
+    call answers for upstream rather than for the installed patch.
+    """
+    if masking_utils is None:
+        try:
+            from transformers import masking_utils
+        except Exception:
+            return False
+    function = getattr(masking_utils, "create_chunked_causal_mask", None)
+    if function is None:
+        return False
+    if getattr(function, _CHUNKED_MASK_PATCH_FLAG, False):
+        function = getattr(function, "__wrapped__", function)
+    if _accepts_keyword(function, _BLOCK_SEQUENCE_IDS):
+        return False
+    return _masks_pass_block_sequence_ids(masking_utils)
+
+
+def _bounded_blockwise_overlay(block_sequence_ids):
+    """`masking_utils.blockwise_overlay`, safe for indices past the end of the ids.
+
+    Upstream pads the ids with -1 up to `kv_length + kv_offset` before building its overlay,
+    and those lengths are only known inside the mask function. Treating an out-of-range
+    query or key index as group -1 is the same answer without them.
+    """
+    import torch
+
+    length = block_sequence_ids.shape[-1]
+    device = block_sequence_ids.device
+
+    def group_of(batch_idx, index):
+        index = torch.as_tensor(index, device = device)
+        inside = index < length
+        return torch.where(
+            inside,
+            block_sequence_ids[batch_idx, index.clamp(max = length - 1)],
+            -1,
+        )
+
+    def inner_mask(batch_idx, head_idx, q_idx, kv_idx):
+        q_group = group_of(batch_idx, q_idx)
+        kv_group = group_of(batch_idx, kv_idx)
+        return (q_group == kv_group) & (q_group >= 0)
+
+    return inner_mask
+
+
+def _swap_function_references(masking_utils, original, replacement):
+    """Point every live reference to `original` at `replacement`.
+
+    The mapping is read by `create_masks_for_generate` at call time, so mutating it in place
+    covers generate whichever order this and unsloth_zoo's mask wrapper install in. Nested
+    dicts (`hybrid`) and `functools.partial` entries are rebuilt; module globals are read
+    through `vars()` so a transformers `_LazyModule` is never asked to import anything.
+    """
+    swap = lambda value: replacement if value is original else value
+    mapping = getattr(masking_utils, "LAYER_PATTERN_TO_MASK_FUNCTION_MAPPING", None)
+    if isinstance(mapping, dict):
+        for key, value in list(mapping.items()):
+            if isinstance(value, dict):
+                for inner_key, inner_value in list(value.items()):
+                    if inner_value is original:
+                        value[inner_key] = replacement
+            elif isinstance(value, functools.partial) and value.func is original:
+                mapping[key] = functools.partial(replacement, *value.args, **value.keywords)
+            else:
+                mapping[key] = swap(value)
+    masking_utils.create_chunked_causal_mask = replacement
+    for name, module in list(sys.modules.items()):
+        if module is None or module is masking_utils:
+            continue
+        if not (name.startswith("transformers.") or "unsloth_compiled" in name):
+            continue
+        try:
+            namespace = vars(module)
+        except TypeError:
+            continue
+        if namespace.get("create_chunked_causal_mask") is original:
+            namespace["create_chunked_causal_mask"] = replacement
+
+
+def fix_transformers_chunked_mask_block_sequence_ids():
+    """Let a chunked-attention model (Llama-4) generate with a static cache on transformers 5.17.
+
+    5.17's `masking_utils.create_masks_for_generate` puts `block_sequence_ids` in the kwargs it
+    hands to EVERY function in `LAYER_PATTERN_TO_MASK_FUNCTION_MAPPING`, but only
+    `create_causal_mask` and `create_sliding_window_causal_mask` learned the parameter.
+    `create_chunked_causal_mask` did not, so any model with `chunked_attention` layers raises
+    `TypeError: create_chunked_causal_mask() got an unexpected keyword argument
+    'block_sequence_ids'` the moment generate prepares masks up front -- which it does for a
+    static or hybrid-chunked cache, and unsloth's fast generate always uses a static cache.
+    Still unfixed on transformers main as of 2026-09.
+
+    The wrapper accepts the kwarg. `None` (every chunked model today: no media block
+    overlays) is dropped, so the call is byte-identical to upstream. A real tensor is NOT
+    dropped, since that would silently turn bidirectional media blocks causal; it is folded
+    into `or_mask_function` as the same overlay `create_causal_mask` applies, so the result
+    matches the full-attention path's semantics (the one ordering difference: upstream ORs the
+    overlay after `and_mask_function`, here it is ORed before it). Like any
+    `or_mask_function`, that needs torch>=2.6 and raises the upstream ValueError otherwise.
+
+    Probe-gated, idempotent (the mark lives on the live binding), silent on failure, and a
+    no-op where the function already takes the kwarg or the generate path never passes it
+    (4.57.6, 5.4).
+    """
+    try:
+        from transformers import masking_utils
+    except Exception as e:
+        logger.info(f"Unsloth: Skipping the chunked mask fix ({e})")
+        return
+    try:
+        current = getattr(masking_utils, "create_chunked_causal_mask", None)
+        if current is None or getattr(current, _CHUNKED_MASK_PATCH_FLAG, False):
+            return
+        if not _chunked_mask_rejects_block_sequence_ids(masking_utils):
+            return
+        original = current
+        signature = inspect.signature(original)
+
+        @functools.wraps(original)
+        def create_chunked_causal_mask(*args, **kwargs):
+            block_sequence_ids = kwargs.pop(_BLOCK_SEQUENCE_IDS, None)
+            if block_sequence_ids is None:
+                return original(*args, **kwargs)
+            arguments = signature.bind_partial(*args, **kwargs).arguments
+            overlay = _bounded_blockwise_overlay(block_sequence_ids)
+            or_mask_function = arguments.get("or_mask_function")
+            if or_mask_function is not None:
+                overlay = masking_utils.or_masks(or_mask_function, overlay)
+            arguments["or_mask_function"] = overlay
+            return original(**arguments)
+
+        create_chunked_causal_mask.__wrapped__ = original
+        setattr(create_chunked_causal_mask, _CHUNKED_MASK_PATCH_FLAG, True)
+        _swap_function_references(masking_utils, original, create_chunked_causal_mask)
+        logger.info(
+            "Unsloth: Patching transformers `create_chunked_causal_mask` to accept "
+            "`block_sequence_ids`, so chunked-attention models can generate with a static cache"
+        )
+    except Exception as e:
+        logger.info(f"Unsloth: Failed patching create_chunked_causal_mask ({e})")
+
+
 _COMPOSITE_PREFIX_RENAMING_FLAG = "_unsloth_patched_composite_prefix_renaming"
 
 # unsloth_zoo marks its own copy of this repair with this. Spelled as a literal rather than

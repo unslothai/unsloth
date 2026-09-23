@@ -253,6 +253,7 @@ from .import_fixes import (
     fix_transformers5_image_processing_reexports,
     fix_transformers_composite_prefix_renaming,
     fix_transformers_fully_masked_rows,
+    fix_transformers_chunked_mask_block_sequence_ids,
     fix_transformers_rope_scaling_drops_theta,
     fix_transformers_remote_rope_scaling_none,
     fix_transformers_is_torch_fx_available,
@@ -297,6 +298,11 @@ fix_transformers5_bare_annotation_configs()
 # nothing. Ordered here, before anything imports a model, so a plain transformers.generate in the
 # same process is covered too (#9708).
 fix_transformers_fully_masked_rows()
+# Probe-gated: no-ops unless this transformers hands `block_sequence_ids` to a
+# `create_chunked_causal_mask` that cannot take it (5.17), which breaks static-cache generate on
+# every chunked-attention model (Llama-4). Mutates the live mask mapping, so it holds whether
+# unsloth_zoo's create_masks_for_generate wrapper installs before or after it.
+fix_transformers_chunked_mask_block_sequence_ids()
 # Probe-gated: no-ops unless this transformers merges a submodule's own prefix renaming into a
 # composite model's conversion mapping. Ordered here, before anything loads a checkpoint, so a
 # plain transformers.from_pretrained in the same process keeps its bitsandbytes quant_state too.
