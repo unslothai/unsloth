@@ -17159,6 +17159,13 @@ def _check_signal_escape_patterns(code: str):
         contains parentheses, so it cannot collide with one."""
         return f"{function_name}()"
 
+    _ENV_PROXY_VARIABLES = frozenset(
+        {"http_proxy", "https_proxy", "all_proxy", "ws_proxy", "wss_proxy", "ftp_proxy"}
+    )
+
+    def _is_os_module(node) -> bool:
+        return isinstance(node, ast.Name) and node.id == "os"
+
     def _is_no_proxy(key) -> bool:
         """A proxy mapping's `no_proxy` entry lists hosts to bypass, not a server to connect to."""
         return isinstance(key, ast.Constant) and key.value == "no_proxy"
@@ -17329,6 +17336,10 @@ def _check_signal_escape_patterns(code: str):
             self.flows: "list[tuple]" = []
             self.flows_from: "dict[str, list[int]]" = {}
             self.pending_calls: "list[tuple]" = []
+            # Proxy and base-URL stores, applied once call arguments are bound.
+            self.pending_proxies: "list[tuple]" = []
+            # Values stored in the standard proxy environment variables.
+            self.env_proxies: "list[ast.AST]" = []
 
         def _instance_key(self, target) -> "str | None":
             """Where `_register` stores a client bound to `target`."""
@@ -17405,6 +17416,10 @@ def _check_signal_escape_patterns(code: str):
                     target = ast.Name(id = param, ctx = ast.Store())
                     # Linked so a proxy the helper sets on its parameter is the caller's proxy.
                     self._link(target, arg)
+                    if isinstance(arg, ast.Attribute) and arg.attr in _DESTINATION_ATTRS:
+                        owner = self._receiver_path(arg.value)
+                        if owner is not None:
+                            self.proxy_owners.setdefault(param, set()).add((owner, arg.attr))
                     self._record_flow(target, arg, at, fn)
 
         def resolve_flows(self) -> None:
@@ -17413,6 +17428,9 @@ def _check_signal_escape_patterns(code: str):
             for call, scopes, selves in self.pending_calls:
                 self.scope_stack, self.self_names = list(scopes), list(selves)
                 self._bind_call_arguments(call)
+            for target, value, mutated, scopes, selves in self.pending_proxies:
+                self.scope_stack, self.self_names = list(scopes), list(selves)
+                self._apply_proxy(target, value, mutated)
             self._index_flows()
             queue = list(range(len(self.flows)))
             while queue:
@@ -17829,6 +17847,26 @@ def _check_signal_escape_patterns(code: str):
             value,
             mutated = False,
         ) -> None:
+            """Queue a possible proxy or base-URL store. It is applied after call arguments are
+            bound, so `configure(s.proxies)` mutating its parameter still reaches `s`."""
+            if isinstance(target, ast.Subscript) and _is_os_environ(target.value):
+                self._record_env_proxy(target.slice, value)
+                return
+            self.pending_proxies.append(
+                (target, value, mutated, tuple(self.scope_stack), tuple(self.self_names))
+            )
+
+        def _record_env_proxy(self, key, value) -> None:
+            """`os.environ["HTTPS_PROXY"] = ...` routes every client that trusts the environment,
+            which requests, httpx and urllib do by default."""
+            if (
+                isinstance(key, ast.Constant)
+                and isinstance(key.value, str)
+                and key.value.lower() in _ENV_PROXY_VARIABLES
+            ):
+                self.env_proxies.append(value)
+
+        def _apply_proxy(self, target, value, mutated) -> None:
             """`s.proxies = {...}`, `s.proxies["https"] = ...`, `c.base_url = ...`, and the same
             mutation through `p = s.proxies`, configure where the client connects."""
             if isinstance(target, ast.Subscript):
@@ -18049,7 +18087,21 @@ def _check_signal_escape_patterns(code: str):
                 # Bound after the gathering pass, once every callable alias is known.
                 self.pending_calls.append((node, tuple(self.scope_stack), tuple(self.self_names)))
                 func = node.func
-                if isinstance(func, ast.Attribute) and func.attr in (
+                if isinstance(func, ast.Attribute) and (
+                    _is_os_environ(func.value)
+                    or (func.attr == "putenv" and _is_os_module(func.value))
+                ):
+                    # `os.environ.update(HTTPS_PROXY = ...)`, `setdefault` and `os.putenv`.
+                    if func.attr in ("setdefault", "putenv", "__setitem__") and len(node.args) >= 2:
+                        self._record_env_proxy(node.args[0], node.args[1])
+                    elif func.attr == "update":
+                        for arg in node.args:
+                            if isinstance(arg, ast.Dict):
+                                for k, v in zip(arg.keys, arg.values):
+                                    self._record_env_proxy(k, v)
+                        for kw in node.keywords:
+                            self._record_env_proxy(ast.Constant(value = kw.arg), kw.value)
+                elif isinstance(func, ast.Attribute) and func.attr in (
                     "update",
                     "setdefault",
                     "__setitem__",
@@ -18210,8 +18262,10 @@ def _check_signal_escape_patterns(code: str):
                         isinstance(found, ast.Constant) and found.value is None
                     ):
                         destinations.append((found, True, kind))
-                # Proxies passed to this call, and proxies or a base URL configured on its client.
+                # Proxies passed to this call or set in the environment, and proxies or a base URL
+                # configured on its client.
                 proxies = [kw.value for kw in node.keywords or [] if kw.arg in _PROXY_KEYWORDS]
+                proxies += self.env_proxies
                 if isinstance(node.func, ast.Attribute):
                     receiver = self._receiver_path(node.func.value)
                     owners = {c.rpartition(".")[0] for c in recognised}

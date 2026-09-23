@@ -954,6 +954,21 @@ class TestNetworkTargetResolution:
                 f"import socket\ns = socket.socket()\ns.sendmsg([b'x'], [], 0, ('{_H}', 53))",
                 id = "datagram_sendmsg",
             ),
+            pytest.param(
+                f"import requests\ndef configure(p):\n    p['https'] = 'http://{_H}:8080'\n"
+                "s = requests.Session()\nconfigure(s.proxies)\ns.get('https://pypi.org/')",
+                id = "proxy_mapping_passed_to_a_helper",
+            ),
+            pytest.param(
+                f"import os, requests\nos.environ['HTTPS_PROXY'] = 'http://{_H}:8080'\n"
+                "requests.get('https://pypi.org/')",
+                id = "proxy_environment_variable",
+            ),
+            pytest.param(
+                f"import os, httpx\nos.environ.update(HTTPS_PROXY='http://{_H}:8080')\n"
+                "httpx.get('https://pypi.org/')",
+                id = "proxy_environment_update",
+            ),
         ],
     )
     def test_known_untrusted_host_blocked(self, code):
@@ -1078,6 +1093,8 @@ class TestNetworkTargetResolution:
             "import httpx\nhttpx.Client(base_url='https://pypi.org').get('/simple/')",
             "import urllib3\nurllib3.PoolManager().connection_from_host('pypi.org', 443, 'https')",
             "import socket\ns = socket.socket()\ns.connect(('pypi.org', 443))\ns.sendall(b'x')",
+            "import os, requests\nos.environ['NO_PROXY'] = 'localhost'\nrequests.get('https://pypi.org/')",
+            "import os, requests\nos.environ['HF_HOME'] = '/tmp/x'\nrequests.get('https://pypi.org/')",
         ],
     )
     def test_known_trusted_host_runs(self, code):
