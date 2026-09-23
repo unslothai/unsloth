@@ -136,7 +136,11 @@ def modelopt_fp8_plan(config) -> Optional[dict]:
             return None
         elif not all(_activations_map_onto_fp8(x) for x in inputs):
             return None
-        elif any(x.get("dynamic", False) for x in inputs):
+        elif len({bool(x.get("dynamic", False)) for x in inputs}) > 1:
+            # Neither do mixed static and dynamic groups: one scheme would either drop the
+            # calibrated input scales or invent scales the dynamic groups do not have.
+            return None
+        elif inputs[0].get("dynamic", False):
             activation_scheme = "dynamic"
     ignore = quant.get("ignore")
     if ignore is None:
@@ -251,9 +255,14 @@ def keep_task_heads_unquantized(config, *model_classes) -> bool:
     The ModelOpt ignore list only names checkpoint modules, so a fresh `score` would be
     converted to FP8Linear and its random init fails on an fp8 weight. Applied only when
     one of ``model_classes`` (the auto or resolved class the load builds) is a task class,
-    so a causal LM keeps its plan unchanged. Returns True when the plan was extended."""
+    so a causal LM keeps its plan unchanged, and only when the checkpoint is not itself a task
+    checkpoint whose head is on disk. Returns True when the plan was extended."""
     names = [getattr(cls, "__name__", "") for cls in model_classes if cls is not None]
     if not any(name.endswith(_TASK_CLASS_SUFFIXES) for name in names):
+        return False
+    # A task checkpoint already ships its head, quantized unless the ignore list names it.
+    architectures = getattr(config, "architectures", None) or []
+    if any(str(name).endswith(_TASK_CLASS_SUFFIXES) for name in architectures):
         return False
     quant = getattr(config, "quantization_config", None)
     if not isinstance(quant, dict) or quant.get("quant_method") != "fp8":

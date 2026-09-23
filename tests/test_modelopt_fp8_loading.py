@@ -643,3 +643,43 @@ def test_dynamic_token_and_tensor_activations_map_onto_per_token_fp8():
         )
         plan = modelopt_fp8_plan(SimpleNamespace(quantization_config = quant))
         assert plan is not None and plan["activation_scheme"] == "dynamic", strategy
+
+
+def test_mixed_static_and_dynamic_activation_groups_are_declined():
+    # One scheme for the whole model would drop the static groups' calibrated input scales.
+    static = {"num_bits": 8, "type": "float", "dynamic": False}
+    dynamic = {"num_bits": 8, "type": "float", "dynamic": True, "strategy": "token"}
+    weights = {"num_bits": 8, "type": "float"}
+    quant = _sarvam_quant(
+        config_groups = {
+            "a": {"weights": dict(weights), "input_activations": static},
+            "b": {"weights": dict(weights), "input_activations": dynamic},
+        }
+    )
+    assert modelopt_fp8_plan(SimpleNamespace(quantization_config = quant)) is None
+    for inputs, scheme in ((static, "static"), (dynamic, "dynamic")):
+        quant = _sarvam_quant(
+            config_groups = {
+                "a": {"weights": dict(weights), "input_activations": dict(inputs)},
+                "b": {"weights": dict(weights), "input_activations": dict(inputs)},
+            }
+        )
+        plan = modelopt_fp8_plan(SimpleNamespace(quantization_config = quant))
+        assert plan is not None and plan["activation_scheme"] == scheme
+
+
+def test_a_task_checkpoint_keeps_its_quantized_head():
+    # Its head is on disk as fp8 with scales; excluding it would load fp8 bytes into a Linear.
+    from transformers import AutoModelForSequenceClassification
+
+    from unsloth.models.modelopt_fp8 import keep_task_heads_unquantized
+
+    config = SimpleNamespace(
+        architectures = ["LlamaForSequenceClassification"],
+        quantization_config = {"quant_method": "fp8", "modules_to_not_convert": ["lm_head"]},
+    )
+    assert not keep_task_heads_unquantized(config, AutoModelForSequenceClassification)
+    assert config.quantization_config["modules_to_not_convert"] == ["lm_head"]
+    config.architectures = ["LlamaForCausalLM"]
+    assert keep_task_heads_unquantized(config, AutoModelForSequenceClassification)
+    assert "score" in config.quantization_config["modules_to_not_convert"]
