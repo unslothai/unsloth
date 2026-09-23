@@ -9519,6 +9519,9 @@ def _compressed_tensors_ste_forward_quantize(original):
     @functools.wraps(original)
     def forward_quantize(*args, **kwargs):
         out = original(*args, **kwargs)
+        # Inference runs under no_grad / inference_mode: return before any other check.
+        if not torch.is_grad_enabled():
+            return out
         value = args[1] if len(args) > 1 else kwargs.get("value")
         base_name = args[2] if len(args) > 2 else kwargs.get("base_name")
         if (
@@ -9528,7 +9531,6 @@ def _compressed_tensors_ste_forward_quantize(original):
             and value.requires_grad
             and not out.requires_grad
             and out.shape == value.shape
-            and torch.is_grad_enabled()
         ):
             return value + (out.to(value.dtype) - value).detach()
         return out
