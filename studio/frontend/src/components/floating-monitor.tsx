@@ -62,8 +62,6 @@ interface DragSession {
   maxTop: number;
   constraintsWidth: number;
   constraintsHeight: number;
-  /** Set by the first move; a press that never moves is not a placement. */
-  moved: boolean;
   /** The committed left/top the drag's transform offsets from. */
   baseLeft: number;
   baseTop: number;
@@ -130,7 +128,8 @@ function useMonitorLayout(
   const contentRef = useRef<HTMLDivElement>(null);
   const dragSessionRef = useRef<DragSession | null>(null);
   const dragFrameRef = useRef(0);
-  const hasDraggedRef = useRef(false);
+  const hasDraggedLeftRef = useRef(false);
+  const hasDraggedTopRef = useRef(false);
   const preferredWidthRef = useRef<number | null>(null);
   const preferredHeightRef = useRef<number | null>(null);
   const surfaceWidthRef = useRef(0);
@@ -207,13 +206,13 @@ function useMonitorLayout(
       const restoreTo = restoreLeftRef.current;
       const left =
         restoreTo === null
-          ? place(hasDraggedRef.current, currentLeft, maxLeft)
+          ? place(hasDraggedLeftRef.current, currentLeft, maxLeft)
           : clamp(restoreTo, 0, maxLeft);
       restoreLeftRef.current = null;
-      if (!narrowedRef.current && hasDraggedRef.current) {
+      if (!narrowedRef.current && hasDraggedLeftRef.current) {
         chosenLeftRef.current = left;
       }
-      const top = place(hasDraggedRef.current, currentTop, maxTop);
+      const top = place(hasDraggedTopRef.current, currentTop, maxTop);
 
       const session = dragSessionRef.current;
       if (session) {
@@ -359,7 +358,6 @@ function useMonitorLayout(
       startY: event.clientY,
       left,
       top,
-      moved: false,
       maxLeft: Math.max(0, constraintsBox.width - monitorBox.width),
       maxTop: Math.max(0, constraintsBox.height - monitorBox.height),
       constraintsWidth: constraintsBox.width,
@@ -390,13 +388,11 @@ function useMonitorLayout(
     if (!session || session.pointerId !== event.pointerId) {
       return;
     }
-    // Only real pointer movement is a placement choice; a press alone is not.
-    if (event.clientX !== session.startX || event.clientY !== session.startY) {
-      session.moved = true;
-      hasDraggedRef.current = true;
-    }
 
+    // Only effective axis changes choose a placement; a press alone or motion
+    // clamped at an edge must not un-anchor the monitor on that axis.
     const previousLeft = session.left;
+    const previousTop = session.top;
     const left = clamp(
       session.left + event.clientX - session.startX,
       0,
@@ -407,8 +403,14 @@ function useMonitorLayout(
       0,
       session.maxTop,
     );
-    // Vertical motion and horizontal movement clamped at an edge do not choose
-    // a new X position; preserve the saved full-width placement for undocking.
+    if (left !== previousLeft) {
+      hasDraggedLeftRef.current = true;
+    }
+    if (top !== previousTop) {
+      hasDraggedTopRef.current = true;
+    }
+    // A horizontal move while docked replaces any saved full-width X; vertical
+    // motion or a move clamped at the edge preserves it for undocking.
     if (narrowedRef.current && left !== previousLeft) {
       chosenLeftRef.current = null;
     }
@@ -431,12 +433,12 @@ function useMonitorLayout(
       cancelAnimationFrame(dragFrameRef.current);
       dragFrameRef.current = 0;
     }
-    const { left, top, constraintsWidth, constraintsHeight, moved } = session;
+    const { left, top, baseLeft, constraintsWidth, constraintsHeight } =
+      session;
     dragSessionRef.current = null;
-    // A position-only change does not fire the observer, and the next reconcile
-    // may already be narrowed. A press without a move is not a placement, so it
-    // must leave the saved position alone for the undock restore to replay.
-    if (moved && !narrowedRef.current) {
+    // Save X only after an effective horizontal move at full width. Vertical
+    // movement and dock-clamped horizontal attempts leave the edge anchor intact.
+    if (left !== baseLeft && !narrowedRef.current) {
       chosenLeftRef.current = left;
     }
     // Written to the node as well as to state, in this order, so handing the

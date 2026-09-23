@@ -296,9 +296,8 @@ test("a stored 248-560px panel width reaches the monitor's constraint", async ()
     },
   };
   try {
-    const { clampChatSettingsWidth } = await import(
-      "../src/hooks/use-chat-settings-width.ts"
-    );
+    const { clampChatSettingsWidth } =
+      await import("../src/hooks/use-chat-settings-width.ts");
     for (const width of SETTINGS_WIDTHS) {
       const settingsWidth = clampChatSettingsWidth(width);
       assert.equal(
@@ -495,7 +494,7 @@ test("undocking restores where the user dragged the monitor", () => {
   // while docked, which is a newer choice.
   assert.match(
     source,
-    /if \(!narrowedRef\.current && hasDraggedRef\.current\) \{/,
+    /if \(!narrowedRef\.current && hasDraggedLeftRef\.current\) \{/,
   );
   assert.match(source, /restoreLeftRef\.current = chosenLeftRef\.current/);
   assert.match(
@@ -536,7 +535,38 @@ test("a drag that ends without a reconcile still records the position", () => {
   const finish = source.slice(source.indexOf("function finishDrag"));
   assert.match(
     finish,
-    /if \(moved && !narrowedRef\.current\) \{\s*chosenLeftRef\.current = left;/,
+    /if \(left !== baseLeft && !narrowedRef\.current\) \{\s*chosenLeftRef\.current = left;/,
+  );
+});
+
+test("vertical or clamped docked movement does not commit a horizontal placement", () => {
+  const update = source.slice(
+    source.indexOf("function updateDrag"),
+    source.indexOf("function finishDrag"),
+  );
+  const finish = source.slice(source.indexOf("function finishDrag"));
+  assert.match(
+    update,
+    /if \(left !== previousLeft\) \{\s*hasDraggedLeftRef\.current = true;/,
+    "only an effective horizontal move should un-anchor the monitor",
+  );
+  assert.match(
+    update,
+    /if \(top !== previousTop\) \{\s*hasDraggedTopRef\.current = true;/,
+    "vertical placement should be tracked independently",
+  );
+  assert.match(
+    finish,
+    /if \(left !== baseLeft && !narrowedRef\.current\) \{\s*chosenLeftRef\.current = left;/,
+    "a docked vertical or clamped drag must not create a saved X coordinate",
+  );
+  assert.match(
+    source,
+    /place\(hasDraggedLeftRef\.current, currentLeft, maxLeft\)/,
+  );
+  assert.match(
+    source,
+    /place\(hasDraggedTopRef\.current, currentTop, maxTop\)/,
   );
 });
 
@@ -559,14 +589,10 @@ test("a press without movement keeps the saved position", () => {
     start.slice(0, start.indexOf("function paintDrag")),
     /chosenLeftRef\.current = null/,
   );
-  const update = source.slice(
-    source.indexOf("function updateDrag"),
-    source.indexOf("function finishDrag"),
-  );
-  assert.match(update, /session\.moved = true;/);
+  const finish = source.slice(source.indexOf("function finishDrag"));
   assert.match(
-    source,
-    /const \{ left, top, constraintsWidth, constraintsHeight, moved \} = session;/,
+    finish,
+    /if \(left !== baseLeft && !narrowedRef\.current\) \{\s*chosenLeftRef\.current = left;/,
   );
 });
 
@@ -583,7 +609,10 @@ test("a suppressed monitor publishes no obstacle to the API monitor", () => {
     source,
     /if \(hidden\) \{\s*useMonitorFrameStore\.getState\(\)\.clearFrame\(publisher\);/,
   );
-  assert.match(source, /if \(!hiddenRef\.current\) \{\s*useMonitorFrameStore\.getState\(\)\.setFrame/);
+  assert.match(
+    source,
+    /if \(!hiddenRef\.current\) \{\s*useMonitorFrameStore\.getState\(\)\.setFrame/,
+  );
 });
 
 test("the frame comes back when suppression ends", () => {
@@ -594,7 +623,10 @@ test("the frame comes back when suppression ends", () => {
     /\}, \[layout, constraintsElement, publisher, hidden\]\);/,
     "ending suppression must republish the withheld box",
   );
-  assert.match(source, /if \(hidden \|\| !monitor\)|if \(!hiddenRef\.current\) \{/);
+  assert.match(
+    source,
+    /if \(hidden \|\| !monitor\)|if \(!hiddenRef\.current\) \{/,
+  );
 });
 
 test("the panel observer is reattached across the responsive swap", () => {
@@ -606,7 +638,10 @@ test("the panel observer is reattached across the responsive swap", () => {
 test("docking reserves the width the monitor actually renders", () => {
   assert.match(source, /monitorWidth,/);
   assert.match(source, /onRenderedWidth=\{setMonitorWidth\}/);
-  assert.match(source, /const measure = \(\) => onRenderedWidth\(monitor\.offsetWidth\)/);
+  assert.match(
+    source,
+    /const measure = \(\) => onRenderedWidth\(monitor\.offsetWidth\)/,
+  );
   // A hand-resized monitor is wider than the constant, so the constant alone
   // cannot decide whether there is room to dock.
   const wide = {
@@ -659,7 +694,6 @@ test("docking capacity scales both the left edge and handle clearances", () => {
     true,
   );
 });
-
 
 test("the sidebar observer survives the responsive swap", () => {
   // Sidebar swaps its desktop element for a sheet and back, so the lookup has to
