@@ -15,14 +15,21 @@ const {
   clampReasoningEffortToLevels,
   getExternalMaxOutputTokens,
   getExternalReasoningCapabilities,
+  providerHostsCodeExecution,
   providerSupportsBuiltinCodeExecution,
 
   providerSupportsBuiltinWebSearch,
   providerSupportsFastMode,
 } = await import("../src/features/chat/provider-capabilities.ts");
 
-const { providerModelSupportsVision, setProviderModelCapabilities } = await import(
-  "../src/features/chat/external-providers.ts"
+const {
+  providerModelSupportsStudioTools,
+  providerModelSupportsVision,
+  setProviderModelCapabilities,
+} = await import("../src/features/chat/external-providers.ts");
+
+const { codeToolCanRun, selectCodeToolNames } = await import(
+  "../src/features/chat/api/code-tool-placement.ts"
 );
 
 // Every capability table is prefix-based, so an un-widened prefix silently drops a
@@ -294,7 +301,29 @@ test("ChatGPT subscription models expose Unsloth-owned search and local code too
     assert.equal(caps.reasoningStyle, "reasoning_effort", model);
     assert.equal(getExternalMaxOutputTokens("openai_codex", model), 128000, model);
     assert.equal(providerSupportsBuiltinWebSearch("openai_codex", model), true, model);
-    assert.equal(providerSupportsBuiltinCodeExecution("openai_codex", model), false, model);
+    const hostedCodeExecutionForThisTurn = providerSupportsBuiltinCodeExecution(
+      "openai_codex",
+      model,
+    );
+    const sandbox = providerHostsCodeExecution("openai_codex");
+    assert.deepEqual(
+      selectCodeToolNames({
+        codeToolsEnabled: true,
+        hostedCodeExecutionForThisTurn,
+        providerHostsCodeExecution: sandbox,
+      }),
+      { local: ["python", "terminal", "edit_file"], hosted: [] },
+      model,
+    );
+    assert.equal(
+      codeToolCanRun({
+        hostedCodeExecutionForThisTurn,
+        providerHostsCodeExecution: sandbox,
+        supportsStudioTools: providerModelSupportsStudioTools("openai_codex", model) === true,
+      }),
+      true,
+      model,
+    );
   }
 });
 
