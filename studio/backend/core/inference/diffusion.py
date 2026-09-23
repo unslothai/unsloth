@@ -17,6 +17,14 @@ in the arbiter the routes call, not here.
 
 from __future__ import annotations
 
+from core._torchao_stub import (
+    install_torchao_windows_rocm_stub,
+    install_xformers_windows_rocm_stub,
+)
+
+install_xformers_windows_rocm_stub()
+install_torchao_windows_rocm_stub()
+
 from contextlib import contextmanager
 import functools
 import inspect
