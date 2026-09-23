@@ -19,6 +19,9 @@ on:
       # The install step in this workflow is `uses:` on that composite action,
       # so an edit to the action changes what this workflow actually runs.
       - '.github/actions/install-unsloth-local/action.yml'
+      # Reached through install-unsloth-local, which uses the dist and uv cache pairs.
+      - '.github/actions/uv-cache-restore/action.yml'
+      - '.github/actions/uv-cache-save/action.yml'
       # The dist cache moved out of install-unsloth-local so the Windows jobs could
       # share one definition of its key; a change to it still has to re-run the jobs
       # that depend on it.
@@ -38,6 +41,9 @@ on:
       # install_python_stack.py imports this; interrupted-install-ci.yml already
       # lists it for the same reason.
       - 'studio/install_manifest.py'
+      # Imported by BOTH files above, and it decides whether a CUDA build is a candidate
+      # at all, so editing it changes what this matrix installs on a Mac too.
+      - 'studio/nvidia_probe.py'
   push:
     branches: [main]
     # Same list as the PR filter. Without it this workflow ran on EVERY commit to
@@ -55,6 +61,9 @@ on:
       # The install step in this workflow is `uses:` on that composite action,
       # so an edit to the action changes what this workflow actually runs.
       - '.github/actions/install-unsloth-local/action.yml'
+      # Reached through install-unsloth-local, which uses the dist and uv cache pairs.
+      - '.github/actions/uv-cache-restore/action.yml'
+      - '.github/actions/uv-cache-save/action.yml'
       # The dist cache moved out of install-unsloth-local so the Windows jobs could
       # share one definition of its key; a change to it still has to re-run the jobs
       # that depend on it.
@@ -74,6 +83,9 @@ on:
       # install_python_stack.py imports this; interrupted-install-ci.yml already
       # lists it for the same reason.
       - 'studio/install_manifest.py'
+      # Imported by BOTH files above, and it decides whether a CUDA build is a candidate
+      # at all, so editing it changes what this matrix installs on a Mac too.
+      - 'studio/nvidia_probe.py'
   workflow_dispatch:
 
 concurrency:

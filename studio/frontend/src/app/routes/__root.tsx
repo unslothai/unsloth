@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { useAppShellReadySignal } from "@/components/app-readiness";
 import { AppSidebar } from "@/components/app-sidebar";
 import { Navbar } from "@/components/navbar";
+import { SidebarEdgeTrigger } from "@/components/sidebar-edge-trigger";
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
 import { fetchDeviceType, usePlatformStore } from "@/config/env";
 import { videoNavHint } from "@/config/hardware-verdict";
@@ -28,12 +30,14 @@ import { backfillModelOverrides } from "@/features/model-picker/api/migrate-mode
 import { usePersonalizationSync } from "@/features/profile";
 import { RemoteCodeConsentDialog } from "@/features/security";
 import {
-  SettingsDialog,
+  SettingsDialogMount,
   useSettingsDialogStore,
   useShortcut,
 } from "@/features/settings";
+import { useLowDiskNotice } from "@/features/settings/hooks/use-low-disk-notice";
 import { useTrainingUnloadGuard } from "@/features/training";
 import { TransformersUpgradeDialog } from "@/features/transformers-upgrade";
+import { useIsMobileShell } from "@/hooks/use-mobile";
 import { useSidebarPin } from "@/hooks/use-sidebar-pin";
 import { type TranslationKey, useT } from "@/i18n";
 import {
@@ -80,20 +84,24 @@ function RouteFallback() {
 // Retires the retained reload shell (public/reload-snapshot.js). It rides
 // inside the route's own Suspense boundary, so a lazy page that is still
 // resolving keeps the shell up instead of uncovering RouteFallback.
-function signalReloadSnapshotReady() {
-  window.dispatchEvent(new Event("unsloth:app-shell-ready"));
+function InitialReadyPage({
+  children,
+}: {
+  children: (signalReady: () => void) => ReactNode;
+}) {
+  return children(useAppShellReadySignal());
 }
 
 function ReloadSnapshotReady() {
+  const signalReady = useAppShellReadySignal();
   useLayoutEffect(() => {
-    signalReloadSnapshotReady();
-  }, []);
+    signalReady();
+  }, [signalReady]);
   return null;
 }
 
-// reload-snapshot.js runs outside React during pageswap. Mirror the in-memory
-// privacy state onto the document so Temporary Chat is never serialized even
-// briefly into sessionStorage.
+// reload-snapshot.js runs outside React during pageswap. Mirror the in-memory privacy state onto
+// the document so Temporary Chat is never serialized even briefly into sessionStorage.
 function ReloadSnapshotPrivacy() {
   const incognito = useChatRuntimeStore((state) => state.incognito);
 
@@ -148,6 +156,15 @@ function PersonalizationSyncMount() {
   return null;
 }
 
+// A full disk is not a training problem, so the warning cannot live on the
+// training route: it belongs to whichever route the user happens to be on when
+// space runs out. Mounted here it subscribes once for the session, and stays
+// subscribed across navigation, instead of coming and going with /studio.
+function LowDiskNoticeMount() {
+  useLowDiskNotice();
+  return null;
+}
+
 // The chat settings are the installation's, and the Models page and the model
 // picker read them too, so hydration cannot wait for ChatPage to mount.
 function ChatSettingsHydrationMount() {
@@ -162,12 +179,23 @@ function ChatSettingsHydrationMount() {
 }
 
 
-function CredentialBootstrapGate({ children }: { children: ReactNode }) {
+function CredentialBootstrapGate({
+  active,
+  children,
+}: {
+  active: boolean;
+  children: ReactNode;
+}) {
   const [ready, setReady] = useState(false);
   const runRevision = useRef(0);
 
   useEffect(() => {
-    let active = true;
+    if (!active) {
+      runRevision.current += 1;
+      setReady(false);
+      return;
+    }
+    let mounted = true;
     const reconcile = () => {
       const revision = ++runRevision.current;
       if (!hasAuthToken()) {
@@ -177,7 +205,7 @@ function CredentialBootstrapGate({ children }: { children: ReactNode }) {
       setReady(false);
       void bootstrapPersistedCredentials().finally(() => {
         if (
-          active &&
+          mounted &&
           revision === runRevision.current &&
           hasAuthToken()
         ) {
@@ -190,13 +218,18 @@ function CredentialBootstrapGate({ children }: { children: ReactNode }) {
     window.addEventListener(AUTH_SESSION_STORED_EVENT, reconcile);
     reconcile();
     return () => {
-      active = false;
+      mounted = false;
       runRevision.current += 1;
       window.removeEventListener(AUTH_SESSION_CLEARED_EVENT, reconcile);
       window.removeEventListener(AUTH_SESSION_STORED_EVENT, reconcile);
     };
-  }, []);
-  return ready ? children : <RouteFallback />;
+  }, [active]);
+  return (
+    <>
+      <SettingsDialogMount active={active && ready} />
+      {active && !ready ? <RouteFallback /> : children}
+    </>
+  );
 }
 
 const CHAT_ONLY_ALLOWED = new Set([
@@ -288,9 +321,8 @@ function RootLayout() {
     (s) => s.isChatOnly() && !s.capabilitiesUnknown(),
   );
   const chatOnlyReason = usePlatformStore((s) => s.chatOnlyReason);
-  // Video is the other row the sidebar grays out, on the two verdicts its
-  // pipelines cannot run on at all. Same hint the row reads, so the two cannot
-  // disagree about which hosts they are.
+  // Video is the other row the sidebar grays out, on the two verdicts its pipelines cannot run on
+  // at all. Same hint the row reads, so the two cannot disagree about which hosts they are.
   const videoDisabled =
     videoNavHint(chatOnlyMeasured, chatOnlyReason) !== undefined;
   // Exact match: a prefix would treat /chatty as chat, hiding its not-found UI.
@@ -320,12 +352,11 @@ function RootLayout() {
     }),
     [rawThread, rawCompare, rawNew, rawProject],
   );
-  // Freeze the last /chat search and latch "mounted" via render-phase setState
-  // (React's "adjust state during render" pattern), avoiding effects/refs.
-  // Empty until /chat is visited: location.search is the raw URL's, not the
-  // matched route's, so seeding it would let another route's ?project= stand
-  // in for a chat the user has never opened. The adjustment below fills it on
-  // the first /chat render, so landing straight on /chat loses nothing.
+  // Freeze the last /chat search and latch "mounted" via render-phase setState (React's "adjust
+  // state during render" pattern), avoiding effects/refs. Empty until /chat is visited:
+  // location.search is the raw URL's, not the matched route's, so seeding it would let another
+  // route's ?project= stand in for a chat the user has never opened. The adjustment below fills it
+  // on the first /chat render, so landing straight on /chat loses nothing.
   const [frozenChatSearch, setFrozenChatSearch] = useState<ChatSearch>({});
   const [chatMounted, setChatMounted] = useState(isChatRoute);
   if (isChatRoute && frozenChatSearch !== liveChatSearch) {
@@ -365,6 +396,13 @@ function RootLayout() {
   // Chat, Images, Video and Audio each render their own full-height shell, so all four want the chat-style layout: no outer pt-14 inset, no outer
   // scroll. Keying off isChatRoute alone pushed the picker down and clipped the gallery. Container padding/overflow only; keep-alive stays per route.
   const isChatLike = isChatRoute || isImagesRoute || isVideoRoute || isAudioRoute;
+  // Reserves the navbar the shell actually rendered. Read off the same hook
+  // Navbar uses, not the `md` breakpoint: a narrowed desktop window keeps the
+  // desktop navbar, and a CSS rule would reserve the mobile one's 56px and
+  // leave --studio-titlebar-height at 0 for the pages sized off it.
+  const nonChatTopInset = useIsMobileShell()
+    ? "pt-14"
+    : "pt-[var(--studio-non-chat-content-top-inset,var(--studio-content-top-inset,0px))] [--studio-titlebar-height:var(--studio-non-chat-content-top-inset,var(--studio-content-top-inset,0px))]";
 
   useTrainingUnloadGuard();
   // Global export driver: streams worker logs and tracks status from any route
@@ -428,13 +466,12 @@ function RootLayout() {
   }) => {
     clearNewChatDraft(); // fresh chat starts empty, no bleed from the last one
     const chatRuntime = useChatRuntimeStore.getState();
-    // The project on screen, which on Chat is the runtime's. The page keeps
-    // that in step with the route, the inferred ones included: a thread or a
-    // compare pair opened without ?project= still belongs to its project, and
-    // the page's own New chat button starts the next chat there. Reading the
-    // search param instead would leave that project without being asked to.
-    // Off Chat the page is hidden rather than unmounted, so its project is one
-    // the user cannot see and a new chat belongs to none.
+    // The project on screen, which on Chat is the runtime's. The page keeps that in step with the
+    // route, the inferred ones included: a thread or a compare pair opened without ?project= still
+    // belongs to its project, and the page's own New chat button starts the next chat there.
+    // Reading the search param instead would leave that project without being asked to. Off Chat
+    // the page is hidden rather than unmounted, so its project is one the user cannot see and a new
+    // chat belongs to none.
     const openProjectId = isChatRoute ? chatRuntime.activeProjectId : null;
     const projectId = options?.standalone ? null : openProjectId;
     chatRuntime.setActiveThreadId(null);
@@ -476,11 +513,10 @@ function RootLayout() {
   useShortcut("switchToHub", goTo("/hub"), {
     enabled: routeShortcutEnabled,
   });
-  // Train is the one workspace the chat-only guard turns away, so its chord is
-  // the one that has to ask first: firing it on a host without the hardware
-  // would bounce off /studio and land the user on /chat, away from whatever
-  // they had open. The sidebar disables the row on the same measured check,
-  // and only once measured, since the guess is what the row waits out too.
+  // Train is the one workspace the chat-only guard turns away, so its chord is the one that has to
+  // ask first: firing it on a host without the hardware would bounce off /studio and land the user
+  // on /chat, away from whatever they had open. The sidebar disables the row on the same measured
+  // check, and only once measured, since the guess is what the row waits out too.
   useShortcut("switchToTrain", goTo("/studio"), {
     enabled: routeShortcutEnabled && !chatOnlyMeasured,
   });
@@ -522,7 +558,7 @@ function RootLayout() {
       <PersonalizationSyncMount />
       <ReloadSnapshotPrivacy />
       {!isAuthFlowRoute && <ChatSettingsHydrationMount />}
-      {!isAuthFlowRoute && <SettingsDialog />}
+      {!isAuthFlowRoute && <LowDiskNoticeMount />}
       {/* Opens itself when API traffic arrives; hides on the full monitor page. */}
       {!isAuthFlowRoute && <ApiMonitorOverlay />}
       <HfTokenWarningDialog />
@@ -544,13 +580,14 @@ function RootLayout() {
           className="!min-h-0 h-[calc(100dvh-var(--studio-titlebar-height,0px))] overflow-hidden"
         >
           <AppSidebar />
+          <SidebarEdgeTrigger />
           <SidebarInset
             className={isChatLike ? "overflow-hidden" : "overflow-y-auto"}
           >
             <Navbar />
             <div
               {...{ [FIND_SCOPE_ATTRIBUTE]: "" }}
-              className={`relative flex min-h-0 min-w-0 flex-1 basis-0 flex-col ${isChatLike ? "overflow-hidden" : "overflow-visible"} ${isChatLike ? "" : "pt-14 md:pt-[var(--studio-non-chat-content-top-inset,var(--studio-content-top-inset,0px))] md:[--studio-titlebar-height:var(--studio-non-chat-content-top-inset,var(--studio-content-top-inset,0px))]"}`}
+              className={`relative flex min-h-0 min-w-0 flex-1 basis-0 flex-col ${isChatLike ? "overflow-hidden" : "overflow-visible"} ${isChatLike ? "" : nonChatTopInset}`}
             >
               {/* The find bar floats over this region and searches it: the workspace on screen,
                   without the sidebar, the navbar, or the off-route workspaces parked here under
@@ -583,10 +620,11 @@ function RootLayout() {
                   inert={!isImagesRoute || undefined}
                 >
                   <Suspense fallback={<RouteFallback />}>
-                    <ImagesPage
-                      active={isImagesRoute}
-                      onInitialReady={signalReloadSnapshotReady}
-                    />
+                    <InitialReadyPage>
+                      {(signalReady) => (
+                        <ImagesPage active={isImagesRoute} onInitialReady={signalReady} />
+                      )}
+                    </InitialReadyPage>
                   </Suspense>
                 </div>
               )}
@@ -601,10 +639,11 @@ function RootLayout() {
                   inert={!isVideoRoute || undefined}
                 >
                   <Suspense fallback={<RouteFallback />}>
-                    <VideoPage
-                      active={isVideoRoute}
-                      onInitialReady={signalReloadSnapshotReady}
-                    />
+                    <InitialReadyPage>
+                      {(signalReady) => (
+                        <VideoPage active={isVideoRoute} onInitialReady={signalReady} />
+                      )}
+                    </InitialReadyPage>
                   </Suspense>
                 </div>
               )}
@@ -619,10 +658,11 @@ function RootLayout() {
                   inert={!isAudioRoute || undefined}
                 >
                   <Suspense fallback={<RouteFallback />}>
-                    <AudioPage
-                      active={isAudioRoute}
-                      onInitialReady={signalReloadSnapshotReady}
-                    />
+                    <InitialReadyPage>
+                      {(signalReady) => (
+                        <AudioPage active={isAudioRoute} onInitialReady={signalReady} />
+                      )}
+                    </InitialReadyPage>
                   </Suspense>
                 </div>
               )}
@@ -656,11 +696,9 @@ function RootLayout() {
 
   return (
     <AppProvider>
-      {!isAuthFlowRoute ? (
-        <CredentialBootstrapGate>{content}</CredentialBootstrapGate>
-      ) : (
-        content
-      )}
+      <CredentialBootstrapGate active={!isAuthFlowRoute}>
+        {content}
+      </CredentialBootstrapGate>
     </AppProvider>
   );
 }

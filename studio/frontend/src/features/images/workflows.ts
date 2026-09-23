@@ -26,8 +26,7 @@ export type WorkflowId =
 export const WORKFLOW_TABS: Array<{
   id: WorkflowId;
   label: string;
-  /** Page heading, when the sidebar's short label would read oddly on its own.
-   *  Falls back to `label`. */
+  /** Page heading, when the sidebar's short label would read oddly on its own. Falls back to `label`. */
   heading?: string;
   requires: string | null;
   icon: IconSvgElement;
@@ -42,6 +41,13 @@ export const WORKFLOW_TABS: Array<{
     // Not the pencil: that is the sidebar's New chat icon.
     icon: SparklesIcon,
     hint: "Generate a new image from a prompt",
+  },
+  {
+    id: "edit",
+    label: "Edit",
+    icon: Edit03Icon,
+    requires: "edit",
+    hint: "Change an image with an instruction",
   },
   {
     id: "transform",
@@ -77,12 +83,5 @@ export const WORKFLOW_TABS: Array<{
     icon: ImageUpload01Icon,
     requires: "reference",
     hint: "Generate guided by a reference image",
-  },
-  {
-    id: "edit",
-    label: "Edit",
-    icon: Edit03Icon,
-    requires: "edit",
-    hint: "Change an image with an instruction",
   },
 ];

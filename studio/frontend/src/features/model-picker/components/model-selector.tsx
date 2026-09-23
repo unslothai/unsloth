@@ -9,16 +9,17 @@ import {
   PopoverTrigger,
 } from "@/components/ui/popover";
 import { TooltipProvider } from "@/components/ui/tooltip";
-import { isCustomProviderType } from "@/features/chat";
+import { ApiProviderLogo } from "@/features/chat/api-provider-logo";
 
 import type { HfTaskFilter } from "@/features/hub/hooks/use-hub-model-search";
+// eslint-disable-next-line no-restricted-imports -- The settings barrel imports this feature back.
+import { useSettingsDialogStore } from "@/features/settings/stores/settings-dialog-store";
 import { useT } from "@/i18n";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { cn } from "@/lib/utils";
 import {
   CheckmarkCircle02Icon,
   CloudIcon,
-  DashboardSquare01Icon,
   Download01Icon,
   RemoveCircleIcon,
   StarIcon,
@@ -34,7 +35,14 @@ import {
   useState,
 } from "react";
 import {
-  isOllamaLinkPath,
+  type ModelConfigHandoffRequest,
+  modelConfigTarget,
+  modelConfigTargetIsResident,
+  modelConfigTargetMatchesSelection,
+} from "../model-config/model-config-handoff";
+import { modelConfigInstanceKey } from "../model-config/config-signature";
+import {
+  ggufVariantsMatch,
   modelDisplayName,
 } from "../model-config/model-identity";
 import {
@@ -62,65 +70,6 @@ import type {
   ModelSelectorChangeMeta,
 } from "./model-selector/types";
 
-const PROVIDER_LOGO_EXT: Record<string, "svg" | "png" | "jpg"> = {
-  openai: "svg",
-  mistral: "svg",
-  gemini: "svg",
-  anthropic: "svg",
-  deepseek: "svg",
-  huggingface: "svg",
-  kimi: "jpg",
-  qwen: "png",
-  openrouter: "svg",
-  vllm: "svg",
-  ollama: "svg",
-  llama_cpp: "svg",
-};
-
-function providerLogoSrc(providerType: string | undefined): string | undefined {
-  if (!providerType) return undefined;
-  const ext = PROVIDER_LOGO_EXT[providerType];
-  if (!ext) return undefined;
-  return `${import.meta.env.BASE_URL}provider-logos/${providerType}.${ext}`;
-}
-
-function ExternalProviderLogo({
-  providerType,
-  className,
-  title,
-}: {
-  providerType: string | undefined;
-  className?: string;
-  title?: string;
-}) {
-  const src = providerLogoSrc(providerType);
-  if (!src && isCustomProviderType(providerType)) {
-    return (
-      <span title={title} aria-hidden={true} className="inline-flex shrink-0">
-        <HugeiconsIcon
-          icon={DashboardSquare01Icon}
-          className={cn("shrink-0", className)}
-        />
-      </span>
-    );
-  }
-
-  if (!src) return null;
-  return (
-    <img
-      src={src}
-      alt=""
-      title={title}
-      aria-hidden={true}
-      className={cn(
-        "shrink-0 object-contain",
-        providerType === "openai" && "dark:invert",
-        className,
-      )}
-    />
-  );
-}
-
 export type {
   DeletedModelRef,
   ExternalModelOption,
@@ -132,32 +81,29 @@ export type { ExternalConnectionRef } from "./model-selector/missing-external-mo
 
 interface ModelSelectorProps {
   models: ModelOption[];
-  /** Models a task-specific runtime confirms are locally loadable even when
-   * their specialized cache layout is absent from the generic Hub inventory. */
+  /** Models a task-specific runtime confirms are locally loadable even when their specialized
+   *  cache layout is absent from the generic Hub inventory. */
   additionalOnDeviceModels?: ModelOption[];
   /** Task-owned runtime residency when it is separate from Chat's main slot. */
   loadedModelIdOverride?: string;
   loraModels?: LoraModelOption[];
   externalModels?: ExternalModelOption[];
-  /**
-   * The connections behind `externalModels`, carrying each one's cached catalogue.
-   * `externalModels` lists only the models the user ticked, so it cannot tell a model the
-   * user turned off from one the provider withdrew; the catalogue can.
-   */
+  /** The connections behind `externalModels`, carrying each one's cached catalogue.
+   *  `externalModels` lists only the models the user ticked, so it cannot tell a model the user
+   *  turned off from one the provider withdrew; the catalogue can. */
   externalConnections?: ExternalConnectionRef[];
   value?: string;
   defaultValue?: string;
-  /**
-   * Whether the selection is actually resident. Omitted means "a selection is
-   * a load", which is what every caller assumed until an image or video load
-   * started evicting the chat model out from under this tick.
-   */
+  /** Whether the selection is actually resident. Omitted means "a selection is a load", which
+   *  every caller assumed until an image or video load started evicting the chat model. */
   loaded?: boolean;
   activeGgufVariant?: string | null;
   activeModelConfig?: PerModelConfig | null;
   activeLoadedContextLength?: number | null;
   selectedConfig?: PerModelConfig | null;
   selectedGgufVariant?: string | null;
+  configRequest?: ModelConfigHandoffRequest | null;
+  onConfigRequestAdopted?: (requestId: string) => void;
   onValueChange?: (value: string, meta: ModelSelectorChangeMeta) => void;
   /** Optional task-specific resolver for companion assets a GGUF row alone cannot describe. */
   resolveDownloadFootprint?: ModelDownloadFootprintResolver;
@@ -178,12 +124,14 @@ interface ModelSelectorProps {
   showCloudIndicator?: boolean;
   /** Restrict the Hub tab to a pipeline task (e.g. text-to-image). */
   task?: HfTaskFilter;
-  /** Canonical model groups (Images / Video pages): collapses a model's artifact repos into one row with a format second level and device-aware routing. Undefined (chat) changes nothing. */
+  /** Canonical model groups (Images / Video pages): collapses a model's artifact repos into one
+   *  row with a format second level and device-aware routing. Undefined (chat) changes nothing. */
   catalog?: CatalogGroup[];
-  /** Also list community (non-unsloth) models for `task`. Opt-in: only pages
-   *  whose runtime loads arbitrary publishers. */
+  /** Also list community (non-unsloth) models for `task`. Opt-in: only pages whose runtime loads
+   *  arbitrary publishers. */
   communityModelPolicy?: CommunityModelPolicy;
-  /** Trigger text when nothing is loaded. Defaults to "Select model"; task pages name what they pick so it reads as separate from the chat model. */
+  /** Trigger text when nothing is loaded. Defaults to "Select model"; task pages name what they
+   *  pick so it reads as separate from the chat model. */
   placeholder?: string;
 }
 
@@ -220,11 +168,11 @@ function ModelSelectorTrigger({
           "unsloth-model-selector-trigger group/trigger flex min-w-0 items-center gap-2 transition-colors",
           // Suppress the pill's hover background while the eject hit area is hovered.
           variant === "outline" &&
-            "rounded-full border border-border/60 hover:bg-accent has-[[data-eject-hit]:hover]:!bg-transparent",
+            "rounded-full border border-border hover:bg-accent has-[[data-eject-hit]:hover]:!bg-transparent",
           variant === "ghost" &&
             "rounded-full hover:bg-accent has-[[data-eject-hit]:hover]:!bg-transparent",
           variant === "muted" &&
-            "rounded-full bg-muted hover:bg-muted/80 has-[[data-eject-hit]:hover]:!bg-muted",
+            "rounded-full bg-muted hover:bg-muted has-[[data-eject-hit]:hover]:!bg-muted",
           // More left padding than right; the chevron is pulled close to the label so the trigger reads
           // balanced around the text. Height stays pinned to --studio-chat-control-height.
           size === "sm" && "h-8 pl-3 pr-1.5 text-xs",
@@ -236,8 +184,8 @@ function ModelSelectorTrigger({
         {isLoaded &&
           (onEject ? (
             // Loaded status doubles as a mouse eject shortcut (checkmark at rest, eject on hover). A plain
-            // span keeps it out of the trigger button's content model; keyboard/SR users eject via the
-            // "Eject model" button. stopPropagation stops the popover toggling, and on touch (no hover)
+            // span keeps it out of the trigger button's content model; keyboard and SR users eject via
+            // the "Eject model" button. stopPropagation stops the popover toggling, and on touch
             // pointer-events-none disables it so taps open the picker instead.
             <span
               aria-hidden={true}
@@ -249,7 +197,7 @@ function ModelSelectorTrigger({
                 onEject();
               }}
               // Hit area larger than the icon, with a hover circle; negative margin keeps the icon in place.
-              className="-m-1 flex size-5 shrink-0 cursor-pointer items-center justify-center rounded-full transition-colors hover:bg-black/10 dark:hover:bg-white/10 [@media(hover:none)]:pointer-events-none"
+              className="-m-1 flex size-5 shrink-0 cursor-pointer items-center justify-center rounded-full transition-colors hover:bg-[rgb(0_0_0_/_calc(0.1*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))] [@media(hover:none)]:pointer-events-none"
             >
               <HugeiconsIcon
                 icon={CheckmarkCircle02Icon}
@@ -270,10 +218,11 @@ function ModelSelectorTrigger({
             {currentModel.icon}
           </span>
         ) : null}
-        <span className="flex min-w-0 flex-1 items-baseline">
+        {/* A box-centred Hellix label sits above the icon's centre; drop it 0.05em to centre the caps. */}
+        <span className="relative top-[0.05em] flex min-w-0 flex-1 items-baseline">
           <span
             className={cn(
-              "min-w-0 flex flex-1 items-baseline truncate font-heading text-ui-16 font-medium leading-tight text-black dark:text-white",
+              "min-w-0 flex flex-1 items-baseline truncate font-heading text-ui-16 font-medium leading-tight text-black dark:text-foreground",
               triggerLabelClassName,
             )}
           >
@@ -282,7 +231,7 @@ function ModelSelectorTrigger({
               <HugeiconsIcon
                 icon={CloudIcon}
                 strokeWidth={1.75}
-                className="relative top-[0.15625rem] ml-1.5 mr-[0.36rem] size-3.5 shrink-0 text-muted-foreground"
+                className="relative top-[0.15625rem] ml-1.5 mr-[calc(0.36rem*var(--ui-space-scale,1))] size-3.5 shrink-0 text-muted-foreground"
               />
             ) : null}
           </span>
@@ -361,16 +310,20 @@ function ModelSelectorContent({
   loraModels,
   externalModels,
   value,
+  loaded,
   activeGgufVariant,
   activeModelConfig,
   activeLoadedContextLength,
   selectedConfig,
   selectedGgufVariant,
+  configRequest,
+  onConfigRequestAdopted,
   onSelect,
   resolveDownloadFootprint,
   onEject,
   onFoldersChange,
   onBrowseHub,
+  onConfigureConnection,
   onModelsChange,
   deleteDisabled,
   className,
@@ -386,16 +339,20 @@ function ModelSelectorContent({
   loraModels: LoraModelOption[];
   externalModels: ExternalModelOption[];
   value?: string;
+  loaded?: boolean;
   activeGgufVariant?: string | null;
   activeModelConfig?: PerModelConfig | null;
   activeLoadedContextLength?: number | null;
   selectedConfig?: PerModelConfig | null;
   selectedGgufVariant?: string | null;
+  configRequest?: ModelConfigHandoffRequest | null;
+  onConfigRequestAdopted?: (requestId: string) => void;
   onSelect: (id: string, meta: ModelSelectorChangeMeta) => void;
   resolveDownloadFootprint?: ModelDownloadFootprintResolver;
   onEject?: () => void;
   onFoldersChange?: () => void;
   onBrowseHub?: () => void;
+  onConfigureConnection?: (providerId: string) => void;
   onModelsChange?: (deletedModel?: DeletedModelRef) => void;
   deleteDisabled?: boolean;
   className?: string;
@@ -448,9 +405,12 @@ function ModelSelectorContent({
   const [configTarget, setConfigTarget] = useState<ModelPickTarget | null>(
     null,
   );
+  const [adoptedConfigRequestId, setAdoptedConfigRequestId] = useState<
+    string | null
+  >(null);
 
-  // The picker remounts on each open but this section state does not, so
-  // re-derive the default section on the open edge.
+  // The picker remounts on each open but this section state does not, so re-derive the default
+  // section on the open edge.
   const wasOpen = useRef(open);
   useEffect(() => {
     if (open && !wasOpen.current) {
@@ -507,20 +467,51 @@ function ModelSelectorContent({
     }
   }
 
-  const visibleConfigTarget = open ? configTarget : null;
   const openConfigPage = (id: string, meta: ModelSelectorChangeMeta) => {
-    const leaf = id.includes("/") ? id.slice(id.lastIndexOf("/") + 1) : id;
-    const isGguf = meta.isGguf ?? Boolean(meta.ggufVariant);
-    setConfigTarget({
-      id,
-      displayName: meta.ggufVariant ? `${leaf} · ${meta.ggufVariant}` : leaf,
-      ggufVariant: meta.ggufVariant ?? null,
-      isGguf,
-      // Ollama's models sit under a link dir the resolver skips, so mirroring their settings would advertise an impossible load.
-      apiLoadable: isGguf && !isOllamaLinkPath(id),
-      meta,
-    });
+    setConfigTarget(modelConfigTarget(id, meta));
   };
+  const requestedConfigTarget = useMemo(
+    () =>
+      open && configRequest
+        ? modelConfigTarget(
+            configRequest.id,
+            configRequest.meta,
+            configRequest.displayName,
+          )
+        : null,
+    [configRequest, open],
+  );
+  const visibleConfigTarget = open
+    ? (requestedConfigTarget ?? configTarget)
+    : null;
+  const visibleConfigMatchesSelection =
+    visibleConfigTarget !== null &&
+    modelConfigTargetMatchesSelection(visibleConfigTarget, value);
+  const visibleConfigIsResident =
+    visibleConfigTarget !== null &&
+    modelConfigTargetIsResident({
+      target: visibleConfigTarget,
+      selectedId: value,
+      activeGgufVariant,
+      loaded,
+    });
+  const visibleLoadedConfig = visibleConfigIsResident
+    ? (activeModelConfig ?? null)
+    : null;
+  if (
+    configRequest &&
+    requestedConfigTarget &&
+    adoptedConfigRequestId !== configRequest.requestId
+  ) {
+    setAdoptedConfigRequestId(configRequest.requestId);
+    setConfigTarget(requestedConfigTarget);
+  }
+  useEffect(() => {
+    if (!configRequest || adoptedConfigRequestId !== configRequest.requestId) {
+      return;
+    }
+    onConfigRequestAdopted?.(configRequest.requestId);
+  }, [adoptedConfigRequestId, configRequest, onConfigRequestAdopted]);
   const handlePick = (id: string, meta: ModelSelectorChangeMeta) => {
     if (meta.source === "external") {
       onSelect(id, meta);
@@ -537,6 +528,11 @@ function ModelSelectorContent({
     <PopoverContent
       align="start"
       alignOffset={10}
+      aria-label={
+        visibleConfigTarget
+          ? `Run settings for ${visibleConfigTarget.displayName}`
+          : undefined
+      }
       data-tour={dataTour}
       onKeyDown={handlePickerEntryKeyDown}
       className={cn(
@@ -550,8 +546,8 @@ function ModelSelectorContent({
             "max-h-[var(--radix-popover-content-available-height)] w-[min(468px,calc(100vw-1rem))] overflow-hidden p-0"
           : cn(
               "pt-4 pb-0 pl-4",
-              // Sized so the left-packed row keeps uniform gaps and the last dropdown's right gap matches the
-              // pill's left gap. Widths track the controls they hold so the single-line row does not wrap.
+              // Sized so the left-packed row keeps uniform gaps and the last dropdown's right gap matches
+              // the pill's left gap. Widths track the controls they hold so the row does not wrap.
               hasExternal
                 ? "w-[min(var(--picker-panel-w-external),calc(100vw-1rem))] pr-4"
                 : "w-[min(var(--picker-panel-w),calc(100vw-1rem))] pr-2",
@@ -571,38 +567,39 @@ function ModelSelectorContent({
         {visibleConfigTarget ? (
           <div className="min-h-0 w-full overflow-y-auto px-4 pt-4 pb-4">
             <ModelConfigPage
-            key={`${visibleConfigTarget.id}::${visibleConfigTarget.ggufVariant ?? ""}`}
-            target={visibleConfigTarget}
-            onBack={() => setConfigTarget(null)}
-            onRun={(config, isDiffusion) =>
-              onSelect(visibleConfigTarget.id, {
-                ...visibleConfigTarget.meta,
-                config,
-                isDiffusion,
-                forceReload: true,
-              })
-            }
-            loadedConfig={
-              value === visibleConfigTarget.id &&
-              (activeGgufVariant ?? null) ===
-                (visibleConfigTarget.ggufVariant ?? null)
-                ? (activeModelConfig ?? null)
-                : null
-            }
-            loadedContextLength={
-              value === visibleConfigTarget.id &&
-              (activeGgufVariant ?? null) ===
-                (visibleConfigTarget.ggufVariant ?? null)
-                ? (activeLoadedContextLength ?? null)
-                : null
-            }
-            initialConfig={
-              value === visibleConfigTarget.id &&
-              (selectedGgufVariant ?? null) ===
-                (visibleConfigTarget.ggufVariant ?? null)
-                ? (selectedConfig ?? null)
-                : null
-            }
+              key={modelConfigInstanceKey(
+                visibleConfigTarget.configId ?? visibleConfigTarget.id,
+                visibleConfigTarget.ggufVariant,
+                visibleLoadedConfig,
+              )}
+              target={visibleConfigTarget}
+              onBack={() => setConfigTarget(null)}
+              onRun={(config, isDiffusion) =>
+                onSelect(
+                  visibleConfigTarget.configId ?? visibleConfigTarget.id,
+                  {
+                    ...visibleConfigTarget.meta,
+                    config,
+                    isDiffusion,
+                    forceReload: true,
+                  },
+                )
+              }
+              loadedConfig={visibleLoadedConfig}
+              loadedContextLength={
+                visibleConfigIsResident
+                  ? (activeLoadedContextLength ?? null)
+                  : null
+              }
+              initialConfig={
+                visibleConfigMatchesSelection &&
+                ggufVariantsMatch(
+                  selectedGgufVariant,
+                  visibleConfigTarget.ggufVariant,
+                )
+                  ? (selectedConfig ?? null)
+                  : null
+              }
             />
           </div>
         ) : (
@@ -618,6 +615,7 @@ function ModelSelectorContent({
               resolveDownloadFootprint={resolveDownloadFootprint}
               onFoldersChange={onFoldersChange}
               onBrowseHub={onBrowseHub}
+              onConfigureConnection={onConfigureConnection}
               onModelsChange={onModelsChange}
               onConfigure={openConfigPage}
               deleteDisabled={deleteDisabled}
@@ -630,7 +628,7 @@ function ModelSelectorContent({
                 <PillTabs
                   // Wider tabs than the shared default. The panel reserves
                   // --picker-tab-pad a pill, so keep the two in step.
-                  className="[&_[role=tab]]:px-[calc(0.75rem_+_var(--picker-tab-pad)/2)]"
+                  className="[&_[role=tab]]:px-[calc(0.75rem*var(--ui-space-scale,1)_+_var(--picker-tab-pad)/2)]"
                   ariaLabel={t("picker.hubSectionAriaLabel")}
                   tabs={hubSectionTabs}
                   value={effectiveHubSection}
@@ -664,6 +662,8 @@ export function ModelSelector({
   activeLoadedContextLength,
   selectedConfig,
   selectedGgufVariant,
+  configRequest,
+  onConfigRequestAdopted,
   onValueChange,
   resolveDownloadFootprint,
   onEject,
@@ -694,8 +694,8 @@ export function ModelSelector({
   const [uncontrolled, setUncontrolled] = useState(defaultValue ?? "");
 
   const selected = value ?? uncontrolled;
-  // A selection is only a load when the caller has not said otherwise: the chat
-  // model can be evicted by an image or video load while the pick survives.
+  // A selection is only a load when the caller has not said otherwise: the chat model can be
+  // evicted by an image or video load while the pick survives.
   const isLoaded = selected !== "" && (loaded ?? true);
 
   const optionById = useMemo(() => {
@@ -733,7 +733,7 @@ export function ModelSelector({
         ...externalModel,
         description: externalModel.providerName,
         icon: (
-          <ExternalProviderLogo
+          <ApiProviderLogo
             providerType={externalModel.providerType}
             className="size-4"
             title={externalModel.providerName}
@@ -747,18 +747,16 @@ export function ModelSelector({
   const currentModel = useMemo(() => {
     if (!selected) return undefined;
     const found = optionById.get(selected);
-    // A pick whose connection no longer offers it takes its option away and leaves the
-    // id in the checkpoint, and the generic fallback below cannot shorten an
-    // `external::` id. Name the model the user picked, and say why it is unusable: it
-    // cannot be loaded, so a tidy name on its own would hide the failure until the next
-    // send (#8405). The connections carry the cached catalogue, which is what separates a
-    // model the user unticked from one the provider withdrew.
+    // A pick whose connection no longer offers it takes its option away and leaves the id in the
+    // checkpoint, and the generic fallback cannot shorten an `external::` id. Name the model the
+    // user picked and say why it is unusable, or a tidy name would hide the failure until the
+    // next send (#8405). The connections carry the cached catalogue, which separates a model the
+    // user unticked from one the provider withdrew.
     const missingExternal = found
       ? null
       : missingExternalModel(selected, externalModels, externalConnections);
-    // No catalog entry (yet, or ever); a cached GGUF's checkpoint is a snapshot path.
-    // The leaf, not the namespaced public id (#7966), matches the catalog row that
-    // later replaces this one.
+    // No catalog entry (yet, or ever); a cached GGUF's checkpoint is a snapshot path. The leaf,
+    // not the namespaced public id (#7966), matches the catalog row that later replaces this one.
     const fallbackName = missingExternal?.modelName ?? modelDisplayName(selected);
     if (activeGgufVariant) {
       const desc = `GGUF · ${activeGgufVariant}`;
@@ -810,6 +808,13 @@ export function ModelSelector({
     void navigate({ to: "/hub", search: { tab: "discover" } });
   }
 
+  // A Connected group's gear. What is configurable about a remote model lives on its connection,
+  // so open that form rather than ModelConfigPage's local load settings.
+  function handleConfigureConnection(providerId: string) {
+    setOpen(false);
+    useSettingsDialogStore.getState().openConnectionSettings(providerId);
+  }
+
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <ModelSelectorTrigger
@@ -832,20 +837,24 @@ export function ModelSelector({
         loraModels={loraModels}
         externalModels={externalModels}
         value={selected}
+        loaded={loaded}
         activeGgufVariant={activeGgufVariant}
         activeModelConfig={activeModelConfig}
         activeLoadedContextLength={activeLoadedContextLength}
         selectedConfig={selectedConfig}
         selectedGgufVariant={selectedGgufVariant}
+        configRequest={configRequest}
+        onConfigRequestAdopted={onConfigRequestAdopted}
         onSelect={handleSelect}
         resolveDownloadFootprint={resolveDownloadFootprint}
         onEject={onEject ? handleEject : undefined}
         onFoldersChange={onFoldersChange}
-        // A curated task picker (Images / Video) is self-contained, so it omits this.
-        // A community-enabled one (Audio) already lists past unsloth, so it keeps it.
+        // A curated task picker (Images / Video) is self-contained, so it omits this. A
+        // community-enabled one (Audio) already lists past unsloth, so it keeps it.
         onBrowseHub={
           task && communityModelPolicy === "none" ? undefined : handleBrowseHub
         }
+        onConfigureConnection={handleConfigureConnection}
         onModelsChange={onModelsChange}
         deleteDisabled={deleteDisabled}
         className={contentClassName}

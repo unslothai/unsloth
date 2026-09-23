@@ -112,9 +112,8 @@ def test_history_grounding_is_still_checked(script):
     with pytest.raises(AssertionError, match = "history reached the model"):
         script.check("nohistory", ["1 is 2", good2, "c", "d"], ["1 is 2", good2, "c", "d"])
 
-    # The gap #10009 found: 'paris' in the JOINED transcript proves nothing, because
-    # turn 3 supplies it on its own. Checked per turn, a server that answers turn 3 and
-    # then loses the history still fails.
+    # The gap #10009 found:
+    # The gap #10009 found: 'paris' in the JOINED transcript proves nothing, because turn 3 supplies it on its own.
     lost_after_3 = ["1 is 2", "b", "paris", "Okay, I'm ready."]
     with pytest.raises(AssertionError, match = "history reached the model"):
         script.check("joined-is-not-enough", lost_after_3, list(lost_after_3))
@@ -187,7 +186,6 @@ def test_the_replay_retry_cannot_pass_a_truly_nondeterministic_server(script, mo
     # Bounded: two runners per attempt, and it must not have looped past ATTEMPTS.
     assert calls["n"] == 2 * script.ATTEMPTS, calls["n"]
 
-    # And a single flip, followed by agreement, passes.
     calls["n"] = 0
 
     def flips_once():

@@ -32,7 +32,7 @@
 /unsloth/save.py @danielhanchen
 /unsloth/tokenizer_utils.py @danielhanchen
 /unsloth/chat_templates.py @danielhanchen
-/unsloth/ollama_template_mappers.py @danielhanchen @oobabooga
+/unsloth/ollama_template_mappers.py @danielhanchen
 /unsloth/models/loader.py @danielhanchen
 /unsloth/models/llama.py @danielhanchen
 /unsloth/models/vision.py @danielhanchen
@@ -40,37 +40,37 @@
 /unsloth/models/rl_replacements.py @danielhanchen
 /unsloth/models/rl_config_compat.py @danielhanchen
 /unsloth/models/mapper.py @danielhanchen
-/unsloth/models/sentence_transformer.py @Etherll @danielhanchen
+/unsloth/models/sentence_transformer.py @danielhanchen
 
 # Diffusion / image model training lives in the core library.
-/unsloth/models/diffusion.py @danielhanchen @oobabooga
+/unsloth/models/diffusion.py @danielhanchen
 
 # Device + install probing: AMD/ROCm and Windows behaviour is decided here.
-/unsloth/device_type.py @danielhanchen @LeoBorcherding
-/unsloth/_gpu_init.py @danielhanchen @LeoBorcherding
-/unsloth/_auto_install.py @danielhanchen @oobabooga
+/unsloth/device_type.py @danielhanchen
+/unsloth/_gpu_init.py @danielhanchen
+/unsloth/_auto_install.py @danielhanchen
 /unsloth/import_fixes.py @danielhanchen
 
 
 # ---------------------------------------------------------------------------
 # CLI: `unsloth start`, `unsloth studio`, MCP subagents, local inference
 # ---------------------------------------------------------------------------
-/unsloth_cli/ @NilayYadav @danielhanchen
-/unsloth_cli/commands/start.py @NilayYadav @Imagineer99
-/unsloth_cli/commands/studio.py @oobabooga @NilayYadav
-/unsloth_cli/commands/inference.py @oobabooga @Lyxot
-/unsloth_cli/commands/chat.py @NilayYadav @oobabooga
+/unsloth_cli/ @danielhanchen
+/unsloth_cli/commands/start.py @danielhanchen
+/unsloth_cli/commands/studio.py @danielhanchen
+/unsloth_cli/commands/inference.py @danielhanchen
+/unsloth_cli/commands/chat.py @danielhanchen
 /unsloth_cli/commands/train.py @danielhanchen
-/unsloth_cli/commands/export.py @danielhanchen @oobabooga
-/unsloth_cli/_inference.py @oobabooga @Lyxot
-/unsloth_cli/_studio_deps.py @oobabooga
-/unsloth_cli/_studio_stage.py @oobabooga @NilayYadav
-/unsloth_cli/_studio_runtime_gate.py @oobabooga @LeoBorcherding
-/unsloth_cli/claude_subagent_mcp.py @NilayYadav
-/unsloth_cli/codex_subagent_mcp.py @NilayYadav
-/unsloth_cli/pi_subagent.ts @NilayYadav @oobabooga
-/unsloth_cli/_model_catalog.py @NilayYadav
-/cli.py @NilayYadav @danielhanchen
+/unsloth_cli/commands/export.py @danielhanchen
+/unsloth_cli/_inference.py @danielhanchen
+/unsloth_cli/_studio_deps.py @danielhanchen
+/unsloth_cli/_studio_stage.py @danielhanchen
+/unsloth_cli/_studio_runtime_gate.py @danielhanchen
+/unsloth_cli/claude_subagent_mcp.py @danielhanchen
+/unsloth_cli/codex_subagent_mcp.py @danielhanchen
+/unsloth_cli/pi_subagent.ts @danielhanchen
+/unsloth_cli/_model_catalog.py @danielhanchen
+/cli.py @danielhanchen
 /unsloth-cli.py @danielhanchen
 
 
@@ -78,112 +78,112 @@
 # Studio backend
 # ---------------------------------------------------------------------------
 /studio/backend/ @danielhanchen
-/studio/backend/main.py @NilayYadav @danielhanchen
-/studio/backend/run.py @NilayYadav @oobabooga
-/studio/backend/mcp_server.py @NilayYadav
-/studio/backend/cloudflare_tunnel.py @NilayYadav
-/studio/backend/colab.py @LeoBorcherding
-/studio/backend/startup_banner.py @Imagineer99
-/studio/backend/auth/ @NilayYadav @danielhanchen
-/studio/backend/hub/ @Imagineer99 @oobabooga
-/studio/backend/picker/ @Imagineer99
+/studio/backend/main.py @danielhanchen
+/studio/backend/run.py @danielhanchen
+/studio/backend/mcp_server.py @danielhanchen
+/studio/backend/cloudflare_tunnel.py @danielhanchen
+/studio/backend/colab.py @danielhanchen
+/studio/backend/startup_banner.py @danielhanchen
+/studio/backend/auth/ @danielhanchen
+/studio/backend/hub/ @danielhanchen
+/studio/backend/picker/ @danielhanchen
 /studio/backend/loggers/ @danielhanchen
-/studio/backend/models/ @danielhanchen @oobabooga
-/studio/backend/plugins/ @wasimysaid @danielhanchen
+/studio/backend/models/ @danielhanchen
+/studio/backend/plugins/ @danielhanchen
 /studio/backend/state/ @danielhanchen
-/studio/backend/storage/ @Imagineer99 @danielhanchen
-/studio/backend/vendor/ @oobabooga
-/studio/backend/assets/ @danielhanchen @oobabooga
-/studio/backend/requirements/ @oobabooga @danielhanchen
+/studio/backend/storage/ @danielhanchen
+/studio/backend/vendor/ @danielhanchen
+/studio/backend/assets/ @danielhanchen
+/studio/backend/requirements/ @danielhanchen
 
 # Backend API surface. Every route is part of the public API.
-/studio/backend/routes/ @NilayYadav @danielhanchen
-/studio/backend/routes/inference.py @oobabooga @danielhanchen
-/studio/backend/routes/llama.py @oobabooga
-/studio/backend/routes/models.py @Imagineer99 @oobabooga
-/studio/backend/routes/datasets.py @danielhanchen @oobabooga
+/studio/backend/routes/ @danielhanchen
+/studio/backend/routes/inference.py @danielhanchen
+/studio/backend/routes/llama.py @danielhanchen
+/studio/backend/routes/models.py @danielhanchen
+/studio/backend/routes/datasets.py @danielhanchen
 /studio/backend/routes/training.py @danielhanchen
-/studio/backend/routes/training_history.py @Imagineer99
-/studio/backend/routes/training_vram.py @oobabooga @danielhanchen
-/studio/backend/routes/export.py @danielhanchen @oobabooga
-/studio/backend/routes/data_recipe/ @wasimysaid
-/studio/backend/routes/chat_history.py @Imagineer99
-/studio/backend/routes/settings.py @Imagineer99
-/studio/backend/routes/rag.py @alkinun
-/studio/backend/routes/research_runs.py @alkinun
-/studio/backend/routes/mcp_servers.py @NilayYadav
-/studio/backend/routes/providers.py @NilayYadav
-/studio/backend/routes/provider_credentials.py @NilayYadav
-/studio/backend/routes/video.py @oobabooga @danielhanchen
-/studio/backend/routes/preview.py @Imagineer99
-/studio/backend/routes/profile_stats.py @Imagineer99
-/studio/backend/routes/auth.py @NilayYadav @danielhanchen
+/studio/backend/routes/training_history.py @danielhanchen
+/studio/backend/routes/training_vram.py @danielhanchen
+/studio/backend/routes/export.py @danielhanchen
+/studio/backend/routes/data_recipe/ @danielhanchen
+/studio/backend/routes/chat_history.py @danielhanchen
+/studio/backend/routes/settings.py @danielhanchen
+/studio/backend/routes/rag.py @danielhanchen
+/studio/backend/routes/research_runs.py @danielhanchen
+/studio/backend/routes/mcp_servers.py @danielhanchen
+/studio/backend/routes/providers.py @danielhanchen
+/studio/backend/routes/provider_credentials.py @danielhanchen
+/studio/backend/routes/video.py @danielhanchen
+/studio/backend/routes/preview.py @danielhanchen
+/studio/backend/routes/profile_stats.py @danielhanchen
+/studio/backend/routes/auth.py @danielhanchen
 
 # Inference engines: loading, compiling and serving models.
 /studio/backend/core/ @danielhanchen
-/studio/backend/core/inference/ @oobabooga @danielhanchen
-/studio/backend/core/inference/llama_cpp.py @oobabooga
-/studio/backend/core/inference/sd_cpp_*.py @oobabooga
-/studio/backend/core/inference/diffusion*.py @oobabooga @danielhanchen
-/studio/backend/core/inference/image_gallery.py @oobabooga @Etherll
-/studio/backend/core/inference/search_images.py @Etherll @alkinun
-/studio/backend/core/inference/video*.py @oobabooga @danielhanchen
-/studio/backend/core/inference/audio_*.py @Etherll
-/studio/backend/core/inference/native_audio.py @Etherll
-/studio/backend/core/inference/mlx_inference.py @Lyxot
-/studio/backend/core/inference/context_window.py @LeoBorcherding @oobabooga
+/studio/backend/core/inference/ @danielhanchen
+/studio/backend/core/inference/llama_cpp.py @danielhanchen
+/studio/backend/core/inference/sd_cpp_*.py @danielhanchen
+/studio/backend/core/inference/diffusion*.py @danielhanchen
+/studio/backend/core/inference/image_gallery.py @danielhanchen
+/studio/backend/core/inference/search_images.py @danielhanchen
+/studio/backend/core/inference/video*.py @danielhanchen
+/studio/backend/core/inference/audio_*.py @danielhanchen
+/studio/backend/core/inference/native_audio.py @danielhanchen
+/studio/backend/core/inference/mlx_inference.py @danielhanchen
+/studio/backend/core/inference/context_window.py @danielhanchen
 
 # Training pipeline.
 /studio/backend/core/training/ @danielhanchen
-/studio/backend/core/training/diffusion_*.py @danielhanchen @oobabooga
-/studio/backend/core/export/ @danielhanchen @oobabooga
-/studio/backend/core/data_recipe/ @wasimysaid
+/studio/backend/core/training/diffusion_*.py @danielhanchen
+/studio/backend/core/export/ @danielhanchen
+/studio/backend/core/data_recipe/ @danielhanchen
 
 # Deep Research and RAG.
-/studio/backend/core/rag/ @alkinun
-/studio/backend/core/research/ @alkinun
-/studio/backend/core/research_runs.py @alkinun
-/studio/backend/core/tool_healing.py @alkinun @NilayYadav
-/studio/backend/core/youtube_transcript.py @alkinun
+/studio/backend/core/rag/ @danielhanchen
+/studio/backend/core/research/ @danielhanchen
+/studio/backend/core/research_runs.py @danielhanchen
+/studio/backend/core/tool_healing.py @danielhanchen
+/studio/backend/core/youtube_transcript.py @danielhanchen
 
 # Backend utils.
 /studio/backend/utils/ @danielhanchen
-/studio/backend/utils/datasets/ @danielhanchen @oobabooga
-/studio/backend/utils/models/ @Imagineer99 @oobabooga
-/studio/backend/utils/inference/ @oobabooga
-/studio/backend/utils/paths/ @wasimysaid @danielhanchen
-/studio/backend/utils/prebuilt/ @oobabooga
-/studio/backend/utils/security/ @oobabooga @danielhanchen
-/studio/backend/utils/hardware/ @LeoBorcherding @danielhanchen
-/studio/backend/utils/hardware/amd.py @LeoBorcherding
-/studio/backend/utils/llama_cpp_update.py @oobabooga
-/studio/backend/utils/llama_cpp_freshness.py @oobabooga
-/studio/backend/utils/whisper_cpp_update.py @oobabooga @Etherll
-/studio/backend/utils/audio_tokens.py @Etherll
-/studio/backend/utils/mlx_repair.py @Lyxot
-/studio/backend/utils/host_policy.py @NilayYadav
-/studio/backend/utils/lan_access_settings.py @NilayYadav @Etherll
-/studio/backend/utils/remote_access_settings.py @NilayYadav
-/studio/backend/utils/keyless_api_access.py @NilayYadav @Etherll
-/studio/backend/utils/node_runtime.py @NilayYadav
-/studio/backend/utils/api_errors.py @NilayYadav
-/studio/backend/utils/openai_auto_switch_settings.py @NilayYadav @oobabooga
-/studio/backend/utils/transformers_version.py @danielhanchen @oobabooga
+/studio/backend/utils/datasets/ @danielhanchen
+/studio/backend/utils/models/ @danielhanchen
+/studio/backend/utils/inference/ @danielhanchen
+/studio/backend/utils/paths/ @danielhanchen
+/studio/backend/utils/prebuilt/ @danielhanchen
+/studio/backend/utils/security/ @danielhanchen
+/studio/backend/utils/hardware/ @danielhanchen
+/studio/backend/utils/hardware/amd.py @danielhanchen
+/studio/backend/utils/llama_cpp_update.py @danielhanchen
+/studio/backend/utils/llama_cpp_freshness.py @danielhanchen
+/studio/backend/utils/whisper_cpp_update.py @danielhanchen
+/studio/backend/utils/audio_tokens.py @danielhanchen
+/studio/backend/utils/mlx_repair.py @danielhanchen
+/studio/backend/utils/host_policy.py @danielhanchen
+/studio/backend/utils/lan_access_settings.py @danielhanchen
+/studio/backend/utils/remote_access_settings.py @danielhanchen
+/studio/backend/utils/keyless_api_access.py @danielhanchen
+/studio/backend/utils/node_runtime.py @danielhanchen
+/studio/backend/utils/api_errors.py @danielhanchen
+/studio/backend/utils/openai_auto_switch_settings.py @danielhanchen
+/studio/backend/utils/transformers_version.py @danielhanchen
 /studio/backend/utils/transformers_latest.py @danielhanchen
-/studio/backend/utils/wheel_utils.py @oobabooga @danielhanchen
+/studio/backend/utils/wheel_utils.py @danielhanchen
 /studio/backend/utils/hf_xet_fallback.py @danielhanchen
 /studio/backend/utils/hf_cache_settings.py @danielhanchen
-/studio/backend/utils/hidden_models.py @Etherll
-/studio/backend/utils/upload_limits.py @NilayYadav
+/studio/backend/utils/hidden_models.py @danielhanchen
+/studio/backend/utils/upload_limits.py @danielhanchen
 /studio/backend/utils/studio_version.py @danielhanchen
-/studio/backend/utils/update_status.py @wasimysaid @oobabooga
-/studio/backend/utils/native_path_leases.py @wasimysaid
-/studio/backend/utils/process_lifetime.py @wasimysaid @danielhanchen
-/studio/backend/utils/subprocess_compat.py @wasimysaid @danielhanchen
-/studio/backend/utils/torch_warmup.py @oobabooga
-/studio/backend/utils/cpu_threads.py @oobabooga @danielhanchen
-/studio/backend/utils/cache_cleanup.py @danielhanchen @oobabooga
-/studio/backend/utils/ssm_runtime.py @oobabooga @danielhanchen
+/studio/backend/utils/update_status.py @danielhanchen
+/studio/backend/utils/native_path_leases.py @danielhanchen
+/studio/backend/utils/process_lifetime.py @danielhanchen
+/studio/backend/utils/subprocess_compat.py @danielhanchen
+/studio/backend/utils/torch_warmup.py @danielhanchen
+/studio/backend/utils/cpu_threads.py @danielhanchen
+/studio/backend/utils/cache_cleanup.py @danielhanchen
+/studio/backend/utils/ssm_runtime.py @danielhanchen
 /studio/backend/utils/training_runs.py @danielhanchen
 
 /studio/backend/tests/ @danielhanchen
@@ -192,104 +192,104 @@
 # ---------------------------------------------------------------------------
 # Studio frontend: everything the user actually sees
 # ---------------------------------------------------------------------------
-/studio/frontend/ @Imagineer99
-/studio/frontend/public/ @Imagineer99 @shimmyshimmer
-/studio/frontend/src/app/ @Imagineer99
-/studio/frontend/src/components/ @Imagineer99
-/studio/frontend/src/components/ui/ @Imagineer99
-/studio/frontend/src/components/assistant-ui/ @Imagineer99
-/studio/frontend/src/components/tauri/ @wasimysaid
-/studio/frontend/src/components/update/ @wasimysaid @oobabooga
-/studio/frontend/src/hooks/ @Imagineer99
-/studio/frontend/src/lib/ @Imagineer99
-/studio/frontend/src/stores/ @Imagineer99
-/studio/frontend/src/types/ @Imagineer99
-/studio/frontend/src/utils/ @Imagineer99
-/studio/frontend/src/config/ @Imagineer99
-/studio/frontend/src/i18n/ @shimmyshimmer @Imagineer99
+/studio/frontend/ @danielhanchen
+/studio/frontend/public/ @danielhanchen
+/studio/frontend/src/app/ @danielhanchen
+/studio/frontend/src/components/ @danielhanchen
+/studio/frontend/src/components/ui/ @danielhanchen
+/studio/frontend/src/components/assistant-ui/ @danielhanchen
+/studio/frontend/src/components/tauri/ @danielhanchen
+/studio/frontend/src/components/update/ @danielhanchen
+/studio/frontend/src/hooks/ @danielhanchen
+/studio/frontend/src/lib/ @danielhanchen
+/studio/frontend/src/stores/ @danielhanchen
+/studio/frontend/src/types/ @danielhanchen
+/studio/frontend/src/utils/ @danielhanchen
+/studio/frontend/src/config/ @danielhanchen
+/studio/frontend/src/i18n/ @danielhanchen
 
-/studio/frontend/src/features/ @Imagineer99
-/studio/frontend/src/features/chat/ @Imagineer99
-/studio/frontend/src/features/settings/ @Imagineer99 @shimmyshimmer
-/studio/frontend/src/features/hub/ @Imagineer99 @shimmyshimmer
-/studio/frontend/src/features/model-picker/ @Imagineer99 @shimmyshimmer
-/studio/frontend/src/features/training/ @danielhanchen @Imagineer99
-/studio/frontend/src/features/images/ @oobabooga @Etherll
-/studio/frontend/src/features/video/ @oobabooga
-/studio/frontend/src/features/audio/ @Etherll
-/studio/frontend/src/features/rag/ @alkinun
-/studio/frontend/src/features/export/ @Imagineer99 @danielhanchen
-/studio/frontend/src/features/recipe-studio/ @wasimysaid
-/studio/frontend/src/features/data-recipes/ @wasimysaid
-/studio/frontend/src/features/native-intents/ @wasimysaid @LeoBorcherding
-/studio/frontend/src/features/deep-links/ @wasimysaid
-/studio/frontend/src/features/api-monitor/ @NilayYadav
-/studio/frontend/src/features/credentials/ @NilayYadav
-/studio/frontend/src/features/auth/ @NilayYadav @wasimysaid
-/studio/frontend/src/features/hf-auth/ @Imagineer99
-/studio/frontend/src/features/security/ @NilayYadav @danielhanchen
-/studio/frontend/src/features/generation-presets/ @oobabooga
-/studio/frontend/src/features/loaded-models/ @oobabooga @Imagineer99
+/studio/frontend/src/features/ @danielhanchen
+/studio/frontend/src/features/chat/ @danielhanchen
+/studio/frontend/src/features/settings/ @danielhanchen
+/studio/frontend/src/features/hub/ @danielhanchen
+/studio/frontend/src/features/model-picker/ @danielhanchen
+/studio/frontend/src/features/training/ @danielhanchen
+/studio/frontend/src/features/images/ @danielhanchen
+/studio/frontend/src/features/video/ @danielhanchen
+/studio/frontend/src/features/audio/ @danielhanchen
+/studio/frontend/src/features/rag/ @danielhanchen
+/studio/frontend/src/features/export/ @danielhanchen
+/studio/frontend/src/features/recipe-studio/ @danielhanchen
+/studio/frontend/src/features/data-recipes/ @danielhanchen
+/studio/frontend/src/features/native-intents/ @danielhanchen
+/studio/frontend/src/features/deep-links/ @danielhanchen
+/studio/frontend/src/features/api-monitor/ @danielhanchen
+/studio/frontend/src/features/credentials/ @danielhanchen
+/studio/frontend/src/features/auth/ @danielhanchen
+/studio/frontend/src/features/hf-auth/ @danielhanchen
+/studio/frontend/src/features/security/ @danielhanchen
+/studio/frontend/src/features/generation-presets/ @danielhanchen
+/studio/frontend/src/features/loaded-models/ @danielhanchen
 /studio/frontend/src/features/transformers-upgrade/ @danielhanchen
-/studio/frontend/src/features/chat/lib/mlx-runtime-state.ts @Lyxot
-/studio/frontend/src/features/studio/sections/use-mlx-training-config-policy.ts @Lyxot
+/studio/frontend/src/features/chat/lib/mlx-runtime-state.ts @danielhanchen
+/studio/frontend/src/features/studio/sections/use-mlx-training-config-policy.ts @danielhanchen
 
 
 # ---------------------------------------------------------------------------
 # Desktop app (Tauri)
 # ---------------------------------------------------------------------------
-/studio/src-tauri/ @wasimysaid
-/studio/src-tauri/src/ @wasimysaid
-/studio/src-tauri/capabilities/ @wasimysaid @danielhanchen
-/studio/src-tauri/tauri.macos.conf.json @Lyxot @wasimysaid
-/studio/src-tauri/Entitlements.plist @Lyxot @wasimysaid
-/studio/src-tauri/Info.plist @Lyxot @wasimysaid
-/studio/src-tauri/dmg/ @Lyxot @wasimysaid
-/studio/src-tauri/tauri.windows.conf.json @LeoBorcherding @wasimysaid
-/studio/src-tauri/windows/ @LeoBorcherding @wasimysaid
-/studio/src-tauri/src/windows_job.rs @LeoBorcherding @wasimysaid
-/studio/src-tauri/linux/ @wasimysaid @oobabooga
-/studio/src-tauri/tauri.linux.conf.json @wasimysaid @oobabooga
-/studio/src-tauri/src/linux_webkit.rs @wasimysaid @oobabooga
-/studio/src-tauri/src/x11_threads.rs @wasimysaid @oobabooga
+/studio/src-tauri/ @danielhanchen
+/studio/src-tauri/src/ @danielhanchen
+/studio/src-tauri/capabilities/ @danielhanchen
+/studio/src-tauri/tauri.macos.conf.json @danielhanchen
+/studio/src-tauri/Entitlements.plist @danielhanchen
+/studio/src-tauri/Info.plist @danielhanchen
+/studio/src-tauri/dmg/ @danielhanchen
+/studio/src-tauri/tauri.windows.conf.json @danielhanchen
+/studio/src-tauri/windows/ @danielhanchen
+/studio/src-tauri/src/windows_job.rs @danielhanchen
+/studio/src-tauri/linux/ @danielhanchen
+/studio/src-tauri/tauri.linux.conf.json @danielhanchen
+/studio/src-tauri/src/linux_webkit.rs @danielhanchen
+/studio/src-tauri/src/x11_threads.rs @danielhanchen
 
 
 # ---------------------------------------------------------------------------
 # Packaging, installation and compilation
 # ---------------------------------------------------------------------------
-/build.sh @oobabooga @danielhanchen
+/build.sh @danielhanchen
 /pyproject.toml @danielhanchen
-/install.sh @oobabooga @LeoBorcherding
-/install.ps1 @LeoBorcherding @Etherll
-/studio/setup.sh @oobabooga @LeoBorcherding
-/studio/setup.ps1 @LeoBorcherding @Etherll
-/studio/setup.bat @LeoBorcherding @Etherll
-/studio/install_manifest.py @oobabooga
-/studio/install_python_stack.py @oobabooga @LeoBorcherding
-/studio/install_llama_prebuilt.py @oobabooga
-/studio/install_node_prebuilt.py @oobabooga
-/studio/install_sd_cpp_prebuilt.py @oobabooga
-/studio/install_whisper_prebuilt.py @oobabooga @Etherll
-/studio/prebuilt_core.py @oobabooga
-/studio/Unsloth_Studio_Colab.ipynb @LeoBorcherding
+/install.sh @danielhanchen
+/install.ps1 @danielhanchen
+/studio/setup.sh @danielhanchen
+/studio/setup.ps1 @danielhanchen
+/studio/setup.bat @danielhanchen
+/studio/install_manifest.py @danielhanchen
+/studio/install_python_stack.py @danielhanchen
+/studio/install_llama_prebuilt.py @danielhanchen
+/studio/install_node_prebuilt.py @danielhanchen
+/studio/install_sd_cpp_prebuilt.py @danielhanchen
+/studio/install_whisper_prebuilt.py @danielhanchen
+/studio/prebuilt_core.py @danielhanchen
+/studio/Unsloth_Studio_Colab.ipynb @danielhanchen
 
 
 # ---------------------------------------------------------------------------
 # Scripts
 # ---------------------------------------------------------------------------
 /scripts/ @danielhanchen
-/scripts/uninstall.ps1 @LeoBorcherding @Etherll
-/scripts/install_rocm_wsl_strixhalo.sh @LeoBorcherding
-/scripts/install_gemma4_mlx.sh @Lyxot
-/scripts/install_qwen3_6_mlx.sh @Lyxot
-/scripts/make_dmg_background.py @Lyxot @wasimysaid
-/scripts/build_whisper_cpp.sh @oobabooga @Etherll
-/scripts/sd_cpp_smoke.py @oobabooga
-/scripts/diffusion_bench.py @danielhanchen @oobabooga
-/scripts/diffusion_quality.py @danielhanchen @oobabooga
-/scripts/video_quality.py @oobabooga
-/scripts/image_speedmem_bench.py @oobabooga @danielhanchen
-/scripts/fbcache_flux_probe.py @oobabooga @danielhanchen
+/scripts/uninstall.ps1 @danielhanchen
+/scripts/install_rocm_wsl_strixhalo.sh @danielhanchen
+/scripts/install_gemma4_mlx.sh @danielhanchen
+/scripts/install_qwen3_6_mlx.sh @danielhanchen
+/scripts/make_dmg_background.py @danielhanchen
+/scripts/build_whisper_cpp.sh @danielhanchen
+/scripts/sd_cpp_smoke.py @danielhanchen
+/scripts/diffusion_bench.py @danielhanchen
+/scripts/diffusion_quality.py @danielhanchen
+/scripts/video_quality.py @danielhanchen
+/scripts/image_speedmem_bench.py @danielhanchen
+/scripts/fbcache_flux_probe.py @danielhanchen
 /scripts/notebook_to_python.py @danielhanchen
 /scripts/notebook_validator.py @danielhanchen
 
@@ -298,9 +298,9 @@
 # Tests
 # ---------------------------------------------------------------------------
 /tests/ @danielhanchen
-/tests/studio/ @danielhanchen @Imagineer99
-/tests/studio_setup_ps1/ @LeoBorcherding @Etherll
-/tests/sh/ @oobabooga @danielhanchen
+/tests/studio/ @danielhanchen
+/tests/studio_setup_ps1/ @danielhanchen
+/tests/sh/ @danielhanchen
 
 
 # ---------------------------------------------------------------------------
@@ -313,23 +313,23 @@
 /.github/scripts/ @danielhanchen
 /.github/CODEOWNERS @danielhanchen
 
-# Platform-specific CI still needs its platform owner alongside @danielhanchen.
-/.github/workflows/mlx-ci.yml @danielhanchen @Lyxot
-/.github/workflows/studio-mac-*.yml @danielhanchen @Lyxot
-/.github/workflows/studio-windows-*.yml @danielhanchen @LeoBorcherding
-/.github/workflows/windows-application-control-ci.yml @danielhanchen @LeoBorcherding
-/.github/workflows/studio-tauri-smoke.yml @danielhanchen @wasimysaid
-/.github/workflows/release-desktop.yml @danielhanchen @wasimysaid
-/.github/workflows/publish-desktop-updater.yml @danielhanchen @wasimysaid
-/.github/workflows/desktop-app-clean-machine-ci.yml @danielhanchen @wasimysaid
-/.github/workflows/clean-machine-install-ci.yml @danielhanchen @oobabooga
-/.github/workflows/interrupted-install-ci.yml @danielhanchen @oobabooga
-/.github/workflows/studio-inference-smoke.yml @danielhanchen @oobabooga
-/.github/workflows/studio-ui-smoke.yml @danielhanchen @Imagineer99
-/.github/workflows/studio-frontend-ci.yml @danielhanchen @Imagineer99
-/.github/workflows/studio-api-smoke.yml @danielhanchen @NilayYadav
-/.github/scripts/virgin-windows-*.ps1 @danielhanchen @LeoBorcherding
-/.github/scripts/assert-bundle-signed.ps1 @danielhanchen @wasimysaid
+# Platform-specific CI still needs its platform owner alongside @danielhanchen
+/.github/workflows/mlx-ci.yml @danielhanchen
+/.github/workflows/studio-mac-*.yml @danielhanchen
+/.github/workflows/studio-windows-*.yml @danielhanchen
+/.github/workflows/windows-application-control-ci.yml @danielhanchen
+/.github/workflows/studio-tauri-smoke.yml @danielhanchen
+/.github/workflows/release-desktop.yml @danielhanchen
+/.github/workflows/publish-desktop-updater.yml @danielhanchen
+/.github/workflows/desktop-app-clean-machine-ci.yml @danielhanchen
+/.github/workflows/clean-machine-install-ci.yml @danielhanchen
+/.github/workflows/interrupted-install-ci.yml @danielhanchen
+/.github/workflows/studio-inference-smoke.yml @danielhanchen
+/.github/workflows/studio-ui-smoke.yml @danielhanchen
+/.github/workflows/studio-frontend-ci.yml @danielhanchen
+/.github/workflows/studio-api-smoke.yml @danielhanchen
+/.github/scripts/virgin-windows-*.ps1 @danielhanchen
+/.github/scripts/assert-bundle-signed.ps1 @danielhanchen
 
 # Snapshot data for the notebook linter / Colab oracle. Drift in these
 # files changes the pin floor for every Unsloth notebook, so refreshes

@@ -2,11 +2,10 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 // Harness for the find bar: a vite entry with no backend, driving the real bar, the real index and
-// the real CSS Custom Highlight API against a real browser.
-//
-// The node suite reaches everything pure. What a highlight looks like painted, whether the walk
-// scrolls only when a match is off screen, whether an `inert` panel stays out of the count, and
-// what a streaming reply costs an open bar are only answerable here.
+// the real CSS Custom Highlight API against a real browser. The node suite reaches everything pure.
+// What a highlight looks like painted, whether the walk scrolls only when a match is off screen,
+// whether an `inert` panel stays out of the count, and what a streaming reply costs an open bar are
+// only answerable here.
 
 /* eslint-disable no-restricted-imports -- a harness entry point, not app code. */
 import {
@@ -20,7 +19,6 @@ import {
   type FindElementLike,
   buildTextIndex,
 } from "@/features/find-in-page/lib/find-text-index.ts";
-import { useFindInPageStore } from "@/features/find-in-page/stores/find-in-page-store.ts";
 /* eslint-enable no-restricted-imports */
 import "@/index.css";
 import { StrictMode, useCallback, useEffect, useRef, useState } from "react";
@@ -30,7 +28,8 @@ declare global {
   interface Window {
     // Optional: the app typechecks this entry, only the harness page installs it.
     __findSmoke?: {
-      store: typeof useFindInPageStore;
+      /** Observable controller state, without coupling the harness to its private implementation. */
+      state: () => { open: boolean; focused: boolean };
       /** What the counter is showing, read straight out of the bar. */
       counter: () => string | null;
       /** Scroll offset of the conversation, so a test can see the walk move it. */
@@ -209,7 +208,15 @@ function Harness() {
 
   useEffect(() => {
     window.__findSmoke = {
-      store: useFindInPageStore,
+      state: () => {
+        const input = document.querySelector<HTMLInputElement>(
+          '[role="search"] input',
+        );
+        return {
+          open: input !== null,
+          focused: document.activeElement === input,
+        };
+      },
       counter: () =>
         document.querySelector('[role="search"] [aria-live="polite"]')
           ?.textContent ?? null,

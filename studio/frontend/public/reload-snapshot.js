@@ -18,11 +18,19 @@
   var overlay = null;
   var retainedSnapshot = null;
   var removalTimer = null;
-  // Appearance is inline custom properties on <html> plus these gate
-  // attributes, written by theme-boot.js (mode and palette) and
-  // applyCustomizationToDocument in
-  // src/features/settings/stores/appearance-custom-store.ts (the rest).
-  // Uncarried, the copy paints in stock colors until React restyles it.
+  var accountStorageKey = "unsloth.browser-account.v1";
+  function readAccountMarker() {
+    try {
+      return localStorage.getItem(accountStorageKey);
+    } catch (error) {
+      return null;
+    }
+  }
+  var initialAccountMarker = readAccountMarker();
+  // Appearance is inline custom properties on <html> plus these gate attributes, written by
+  // theme-boot.js (mode and palette) and applyCustomizationToDocument in
+  // src/features/settings/stores/appearance-custom-store.ts (the rest). Uncarried, the copy paints
+  // in stock colors until React restyles it.
   var appearanceAttributes = [
     "data-chat-font",
     "data-code-font-size",
@@ -37,8 +45,14 @@
   var appearanceVariables = [
     "--background",
     "--chart-1",
-    "--contrast-mix",
+    "--contrast-control-mix",
+    "--contrast-edge-gain",
+    "--contrast-line-mix",
+    "--contrast-state-mix",
+    "--contrast-surface-mix",
     "--contrast-target",
+    "--contrast-text-mix",
+    "--contrast-wash-gain",
     "--control-accent",
     "--control-accent-foreground",
     "--custom-chat-font",
@@ -110,10 +124,9 @@
     return styles;
   }
 
-  // Design tokens the app defines through `:root` do not reach a shadow tree:
-  // `:root` matches only a document's root element, and Tailwind's `:host`
-  // block redeclares some of them on the host. Freeze the computed set and put
-  // it on the copy's own root instead.
+  // Design tokens the app defines through `:root` do not reach a shadow tree: `:root` matches only
+  // a document's root element, and Tailwind's `:host` block redeclares some of them on the host.
+  // Freeze the computed set and put it on the copy's own root instead.
   function readTokens() {
     var style = getComputedStyle(document.documentElement);
     var tokens = {};
@@ -660,6 +673,7 @@
 
   function saveSnapshot() {
     if (
+      readAccountMarker() !== initialAccountMarker ||
       document.documentElement.hasAttribute("data-reload-snapshot-private")
     ) {
       clearStoredSnapshot();
@@ -701,10 +715,9 @@
           continue;
         }
         var style = getComputedStyle(original);
-        // Two shapes with empty rectangles that are nonetheless visible: a
-        // `display: contents` wrapper generates no box however much its
-        // children fill, and a closed select still paints its selected
-        // option's label. Judging either by its rectangle drops what it shows.
+        // Two shapes with empty rectangles that are nonetheless visible: a `display: contents`
+        // wrapper generates no box however much its children fill, and a closed select still paints
+        // its selected option's label. Judging either by its rectangle drops what it shows.
         var paintsThroughSelect =
           (original.tagName === "OPTION" ||
             original.tagName === "OPTGROUP") &&
@@ -843,12 +856,11 @@
       saveSnapshot();
     }
   });
-  // Firefox, WebKitGTK and Safari before 18.2 do not expose pageswap, but
-  // still deliver pagehide on reload. Do not register both: Chromium fires
-  // pagehide after pageswap and a second full-DOM capture during unload is
-  // both expensive and lower fidelity. pagehide cannot tell a reload from any
-  // other unload, so on those engines a snapshot is also written when the user
-  // navigates away; the restore side discards it (navigationType below).
+  // Firefox, WebKitGTK and Safari before 18.2 do not expose pageswap, but still deliver pagehide on
+  // reload. Do not register both: Chromium fires pagehide after pageswap and a second full-DOM
+  // capture during unload is both expensive and lower fidelity. pagehide cannot tell a reload from
+  // any other unload, so on those engines a snapshot is also written when the user navigates away;
+  // the restore side discards it (navigationType below).
   if (!("onpageswap" in window)) {
     window.addEventListener("pagehide", function (event) {
       if (!event.persisted) saveSnapshot();

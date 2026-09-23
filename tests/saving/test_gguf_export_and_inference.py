@@ -26,9 +26,9 @@ import torch
 
 from unsloth import FastLanguageModel
 
-# Downloads two checkpoints, merges them and shells out to llama.cpp. The skipif
-# already keeps it off a GPU-less runner; `gpu` is what keeps it out of a default
-# `pytest tests/` on a machine that HAS a GPU. CI runs it under `-m gpu`.
+# Downloads two checkpoints, merges them and shells out to llama.cpp. The skipif already keeps it off a GPU-less
+# runner; `gpu` is what keeps it out of a default `pytest tests/` on a machine that HAS a GPU. CI runs it under
+# `-m gpu`.
 pytestmark = [
     pytest.mark.gpu,
     pytest.mark.skipif(
@@ -153,8 +153,8 @@ def exported_gguf(tmp_path_factory):
         processing_class = tokenizer,
         train_dataset = dataset,
         args = SFTConfig(
-            # max_length is left unset: newer TRL enables padding-free training (without packing)
-            # by default, where SFTConfig(max_length=...) raises because length is not enforced.
+            # max_length is left unset: newer TRL enables padding-free training (without packing) by default,
+            # where SFTConfig(max_length=...) raises because length is not enforced.
             max_length = None,
             dataset_text_field = "text",
             per_device_train_batch_size = 4,
@@ -172,7 +172,6 @@ def exported_gguf(tmp_path_factory):
 
     model.save_pretrained_gguf(out_dir, tokenizer, quantization_method = "q8_0")
 
-    # Output lands in a sibling "<dir>_gguf" directory.
     ggufs = sorted(
         set(
             glob.glob(os.path.join(out_dir, "**", "*.gguf"), recursive = True)
@@ -209,8 +208,8 @@ def test_gguf_llama_cli_inference_reflects_finetune(exported_gguf):
 
     text = _run_llama_capped(cli, gguf, exported_gguf["prompt"])
     assert text.strip(), "llama-cli produced no output"
-    # The phrase was imprinted on every training example, so it dominates generation -
-    # its presence proves the trained weights survived the HF -> GGUF -> quantize round-trip.
+    # The phrase was imprinted on every training example, so it dominates generation - its presence proves the trained
+    # weights survived the HF -> GGUF -> quantize round-trip.
     assert PHRASE in text, f"trained phrase not found in GGUF inference output:\n{text[:500]}"
 
 

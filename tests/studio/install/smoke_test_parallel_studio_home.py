@@ -79,8 +79,8 @@ def _launch_backend(
     log_path.parent.mkdir(parents = True, exist_ok = True)
     env = os.environ.copy()
     env["HOME"] = str(fake_home)
-    # Pin UNSLOTH_STUDIO_HOME and clear the alias so the child can't inherit a
-    # Unsloth root from the caller's shell and resolve to the wrong install.
+    # Pin UNSLOTH_STUDIO_HOME and clear the alias so the child can't inherit a Unsloth root from the caller's shell and
+    # resolve to the wrong install.
     env["UNSLOTH_STUDIO_HOME"] = str(studio_home)
     env.pop("STUDIO_HOME", None)
     # Popen dups stdout into the child, so closing the parent's handle here is safe.

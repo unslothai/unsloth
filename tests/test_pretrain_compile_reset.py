@@ -40,10 +40,9 @@ class _Trainer:
 
 
 def test_reset_helper_is_importable_and_exported():
-    # Regression: the helper used to live only inside rl.py's RLTrainer_replacement template
-    # string (exec'd into a generated trainer module), so importing it from a real module raised
-    # ImportError and every non-RL consumer (SFT trainer.py, the plain-Trainer loop, the RL
-    # template's own delegation) silently no-op'd. Pin it as an exported module-level symbol.
+    # Regression: the helper used to live only inside rl.py's RLTrainer_replacement template string (exec'd into a
+    # generated trainer module), so importing it from a real module raised ImportError and every non-RL consumer (SFT
+    # trainer.py, the plain-Trainer loop, the RL template's own delegation) silently no-op'd.
     from unsloth.models import _utils
     assert callable(_utils._unsloth_reset_stray_compile_cache)
     assert "_unsloth_reset_stray_compile_cache" in _utils.__all__
@@ -54,18 +53,18 @@ def test_fresh_install_starts_unseen():
     _unsloth_install_pretrain_detector(m)
     marker = m._unsloth_pretrain_marker
     assert marker["seen"] is False
-    assert "hook" in marker  # a live hook is registered
+    assert "hook" in marker
 
 
 def test_reinstall_with_live_hook_preserves_seen():
-    # Re-entering get_peft_model/patch_peft_model after a grad-enabled probe must NOT wipe the
-    # recorded poisoning, or train() skips the reset and the NaN/flat-loss bug returns.
+    # Re-entering get_peft_model/patch_peft_model after a grad-enabled probe must NOT wipe the recorded poisoning, or
+    # train() skips the reset and the NaN/flat-loss bug returns.
     m = torch.nn.Linear(2, 2)
     _unsloth_install_pretrain_detector(m)
     hook = m._unsloth_pretrain_marker["hook"]
-    m._unsloth_pretrain_marker["seen"] = True  # a probe the live hook recorded
+    m._unsloth_pretrain_marker["seen"] = True
 
-    _unsloth_install_pretrain_detector(m)  # idempotent re-install
+    _unsloth_install_pretrain_detector(m)
     marker = m._unsloth_pretrain_marker
     assert marker["seen"] is True  # evidence kept
     assert marker["hook"] is hook  # same hook, not double-registered
@@ -78,8 +77,8 @@ def test_reinstall_after_teardown_resets_and_reregisters():
     marker["seen"] = True
     marker.pop("hook").remove()  # simulate teardown (what the reset does)
 
-    _unsloth_install_pretrain_detector(m)  # no live hook -> fresh registration
-    assert marker["seen"] is False  # reset for the new session
+    _unsloth_install_pretrain_detector(m)
+    assert marker["seen"] is False
     assert "hook" in marker
 
 
@@ -94,12 +93,11 @@ def test_grad_enabled_forward_marks_seen_no_grad_does_not():
 
 
 def test_reset_clears_seen_and_warns_when_a_stray_forward_was_seen(monkeypatch):
-    # Pin compile on: the reset only warns/resets when UNSLOTH_COMPILE_DISABLE != "1", which a
-    # GPU-free CI env may set, so force it here to make the warn assertion deterministic.
+    # Pin compile on: the reset only warns/resets when UNSLOTH_COMPILE_DISABLE != "1", which a GPU-free CI env may set.
     monkeypatch.setenv("UNSLOTH_COMPILE_DISABLE", "0")
     m = torch.nn.Linear(2, 2)
     _unsloth_install_pretrain_detector(m)
-    m._unsloth_pretrain_marker["seen"] = True  # a stray pre-train forward
+    m._unsloth_pretrain_marker["seen"] = True
     trainer = _Trainer()
     trainer.model = m
 
@@ -108,17 +106,15 @@ def test_reset_clears_seen_and_warns_when_a_stray_forward_was_seen(monkeypatch):
         _unsloth_reset_stray_compile_cache(trainer)
 
     assert any("manual forward/backward" in str(w.message) for w in caught)
-    assert "hook" not in m._unsloth_pretrain_marker  # hook torn down
+    assert "hook" not in m._unsloth_pretrain_marker
     assert m._unsloth_pretrain_marker["seen"] is False  # evidence consumed
 
 
 def test_reset_tears_down_hook_even_when_not_seen(monkeypatch):
-    # The clean path still removes the one-shot hook so it adds no per-step cost, but must not
-    # warn or reset Dynamo (nothing was poisoned). Pin compile on so the absent warning proves
-    # seen==False is the reason, not a disabled-compile short circuit.
+    # The clean path still removes the one-shot hook so it adds no per-step cost, but must not warn or reset Dynamo.
     monkeypatch.setenv("UNSLOTH_COMPILE_DISABLE", "0")
     m = torch.nn.Linear(2, 2)
-    _unsloth_install_pretrain_detector(m)  # seen stays False
+    _unsloth_install_pretrain_detector(m)
     trainer = _Trainer()
     trainer.model = m
 

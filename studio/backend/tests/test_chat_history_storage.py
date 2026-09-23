@@ -25,7 +25,7 @@ def _reset_studio_db(
         "UNSLOTH_STUDIO_PROJECTS_HOME",
         str(projects_home if projects_home is not None else tmp_path / "Projects"),
     )
-    monkeypatch.setattr(studio_db, "_schema_ready", False)
+    monkeypatch.setattr(studio_db, "_schema_ready", set())
 
 
 @pytest.fixture
@@ -67,14 +67,12 @@ def _message(
     content: str,
     thread_id: str = "thread-1",
 ) -> dict:
-    return {
-        "id": message_id,
-        "threadId": thread_id,
-        "parentId": None,
-        "role": "user",
-        "content": [{"type": "text", "text": content}],
-        "createdAt": created_at,
-    }
+    return _stored_message(
+        id = message_id,
+        threadId = thread_id,
+        text = content,
+        createdAt = created_at,
+    )
 
 
 def _project(project_id: str = "project-1") -> dict:
@@ -85,6 +83,27 @@ def _project(project_id: str = "project-1") -> dict:
         "archived": False,
         "createdAt": 1_700_000_000_000,
         "updatedAt": 1_700_000_000_000,
+    }
+
+
+def _stored_message(
+    *,
+    id,
+    threadId = "src",
+    parentId = None,
+    role = "user",
+    type = "text",
+    text = "Hello",
+    createdAt = 9,
+):
+    """One stored chat message row, with per-test overrides."""
+    return {
+        "id": id,
+        "threadId": threadId,
+        "parentId": parentId,
+        "role": role,
+        "content": [{"type": type, "text": text}],
+        "createdAt": createdAt,
     }
 
 
@@ -768,14 +787,7 @@ def test_legacy_imports_ignores_empty(tmp_path, monkeypatch):
 
 
 def _msg(mid: str, parent: str | None, t: int) -> dict:
-    return {
-        "id": mid,
-        "threadId": "src",
-        "parentId": parent,
-        "role": "user",
-        "content": [{"type": "text", "text": mid}],
-        "createdAt": t,
-    }
+    return _stored_message(id = mid, parentId = parent, text = mid, createdAt = t)
 
 
 def test_fork_chat_thread_copies_ancestry_with_fresh_ids(tmp_path, monkeypatch):
@@ -831,6 +843,29 @@ def test_fork_chat_thread_copies_ancestry_with_fresh_ids(tmp_path, monkeypatch):
     assert copied[2]["parentId"] == copied[1]["id"]
     # All new ids regenerated.
     assert {m["id"] for m in copied}.isdisjoint({"m1", "m2", "m3"})
+
+
+@pytest.mark.parametrize("linked_tip", [False, True])
+@pytest.mark.parametrize("branch_message_id", [None, "m2"])
+def test_fork_preserves_legacy_ancestry(tmp_path, monkeypatch, linked_tip, branch_message_id):
+    _reset_studio_db(tmp_path, monkeypatch)
+    studio_db.upsert_chat_thread(_thread("src"))
+    studio_db.sync_chat_messages(
+        "src",
+        [_msg("m1", None, 1), _msg("m2", None, 2), _msg("m3", "m2" if linked_tip else None, 3)],
+    )
+    studio_db.fork_chat_thread(
+        source_thread_id = "src",
+        branch_message_id = branch_message_id,
+        new_thread_id = "fork-1",
+        new_title = "fork",
+        created_at = 4,
+        id_factory = iter(("copy-1", "copy-2", "copy-3")).__next__,
+    )
+    copied = studio_db.list_chat_messages("fork-1")
+    expected = ["m1", "m2", "m3"] if branch_message_id is None else ["m1", "m2"]
+    assert [row["content"][0]["text"] for row in copied] == expected
+    assert [row["parentId"] for row in copied] == [None, *[row["id"] for row in copied[:-1]]]
 
 
 def test_fork_chat_thread_preserves_project_id(tmp_path, monkeypatch):
@@ -1182,14 +1217,7 @@ def test_a_research_prompt_already_at_the_root_is_unaffected(tmp_path, monkeypat
 
 def test_an_unrelated_sibling_can_still_be_deleted(tmp_path, monkeypatch):
     _, messages = _research_thread(tmp_path, monkeypatch)
-    sibling = {
-        "id": "sibling",
-        "threadId": "src",
-        "parentId": "a0",
-        "role": "user",
-        "content": [{"type": "text", "text": "sibling"}],
-        "createdAt": 9,
-    }
+    sibling = _stored_message(id = "sibling", parentId = "a0", text = "sibling")
     studio_db.sync_chat_messages("src", [*messages, sibling])
 
     synced = studio_db.sync_chat_messages("src", messages, prune_missing = True)
@@ -1201,22 +1229,18 @@ def test_a_plain_message_whose_parent_is_pruned_is_never_guarded(tmp_path, monke
     # Only protected ids reach the guard at all; an ordinary relink must stay untouched by any of
     # this, including when its own parent is the pruned node.
     _, messages = _research_thread(tmp_path, monkeypatch)
-    plain_parent = {
-        "id": "plain-parent",
-        "threadId": "src",
-        "parentId": "report",
-        "role": "user",
-        "content": [{"type": "text", "text": "plain-parent"}],
-        "createdAt": 8,
-    }
-    plain_child = {
-        "id": "plain-child",
-        "threadId": "src",
-        "parentId": "plain-parent",
-        "role": "assistant",
-        "content": [{"type": "text", "text": "plain-child"}],
-        "createdAt": 9,
-    }
+    plain_parent = _stored_message(
+        id = "plain-parent",
+        parentId = "report",
+        text = "plain-parent",
+        createdAt = 8,
+    )
+    plain_child = _stored_message(
+        id = "plain-child",
+        parentId = "plain-parent",
+        role = "assistant",
+        text = "plain-child",
+    )
     studio_db.sync_chat_messages("src", [*messages, plain_parent, plain_child])
 
     relinked = {**plain_child, "parentId": "report"}
@@ -1350,22 +1374,8 @@ def test_repeated_identical_sends_in_flat_thread_persist_separately(tmp_path, mo
     studio_db.upsert_chat_thread(_thread("thread-1"))
 
     payload = [
-        {
-            "id": "u1",
-            "threadId": "thread-1",
-            "parentId": None,
-            "role": "user",
-            "content": [{"type": "text", "text": "Hello"}],
-            "createdAt": 1000,
-        },
-        {
-            "id": "u2",
-            "threadId": "thread-1",
-            "parentId": None,
-            "role": "user",
-            "content": [{"type": "text", "text": "Hello"}],
-            "createdAt": 2000,
-        },
+        _stored_message(id = "u1", threadId = "thread-1", createdAt = 1000),
+        _stored_message(id = "u2", threadId = "thread-1", createdAt = 2000),
     ]
     messages = studio_db.sync_chat_messages("thread-1", payload)
     assert len(messages) == 2

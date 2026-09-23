@@ -192,16 +192,14 @@ def test_the_real_torchao_018_import_line_is_unblocked(monkeypatch):
     import torch.nn.functional as F
     import unsloth.import_fixes as IF
 
-    # conftest.py imports unsloth, so on an affected environment the
-    # placeholders are already on F. Drop them, or the "before" half cannot
-    # raise, this test skips itself, and the guard test after it fails.
+    # conftest.py imports unsloth, so on an affected environment the placeholders are already on F. Drop them, or
+    # the "before" half cannot raise, this test skips itself, and the guard test after it fails.
     for n in _TORCHAO_TORCH_SYMBOLS:
         if getattr(getattr(F, n, None), "__unsloth_placeholder__", False):
             delattr(F, n)
 
-    # Gate on the two symbols the line below imports: `any` over the whole
-    # tuple is always true (scaled_dot_product_attention always exists), which
-    # made this test skip on every machine.
+    # Gate on the two symbols the line below imports: `any` over the whole tuple is always true
+    # (scaled_dot_product_attention always exists), which made this test skip on every machine.
     if all(hasattr(F, n) for n in ("ScalingType", "SwizzleType")):
         pytest.skip("this torch already provides ScalingType/SwizzleType")
 

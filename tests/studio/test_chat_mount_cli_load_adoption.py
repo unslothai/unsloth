@@ -173,6 +173,10 @@ export const toast = {
   error: (title: string, options?: any) => EVENTS.push({ kind: "toast.error", title, options }),
 };
 
+// No desktop update runs here, so every failure must report.
+export const isBackendDownForDesktopUpdate = () => false;
+export const isSilencedDesktopUpdateFailure = () => false;
+
 // The two ponyfills server-model-wait.ts imports. Its own per-read cap is 30s, which no test
 // should wait out, so the timeout here is short and the real constant is asserted separately.
 export const TEST_POLL_TIMEOUT_MS = 1200;
@@ -256,8 +260,8 @@ def _build_harness(run_dir: Path) -> None:
     assert "async function waitForServerModel(" in poll
     sync = _between(
         source,
-        "// Prevent older concurrent status reads",
-        "/**\n * Reconcile the UI after the SERVER unloaded",
+        "let syncGeneration = 0;",
+        "export async function resyncInferenceStatusAfterServerModelChange(",
     )
     assert "async function syncInferenceStatusToStore(" in sync
     # The sequencing IS the bug, so refresh runs for real rather than being re-typed here.

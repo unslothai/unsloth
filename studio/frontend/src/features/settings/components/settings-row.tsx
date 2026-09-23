@@ -39,9 +39,8 @@ export function SettingsRow({
     <div
       data-settings-label={label}
       className={cn(
-        // Controls are fixed-width and shrink-0, so an unwrapped row starves the
-        // label. justify-end right-aligns a wrapped control without breaking
-        // items-stretch for flex-col callers.
+        // Controls are fixed-width and shrink-0, so an unwrapped row starves the label. justify-end
+        // right-aligns a wrapped control without breaking items-stretch for flex-col callers.
         "flex flex-wrap justify-end gap-x-6 gap-y-2 py-3",
         alignTop ? "items-start" : "items-center",
         destructive && "border-t border-border/60 mt-2 pt-4",
@@ -80,9 +79,13 @@ export function SettingsRow({
                     aria-label={hint}
                     className="flex shrink-0 items-center rounded text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                   >
+                    {/* Sized off the token, not size-3.5: the label beside it is
+                        scaled by the UI font size preference, and a fixed 14px
+                        glyph drifts out of proportion with it. Same curve the
+                        app's other small glyphs follow. */}
                     <HugeiconsIcon
                       icon={InformationCircleIcon}
-                      className="size-3.5"
+                      className="size-[var(--ui-icon-size-sm)]"
                     />
                   </button>
                 </TooltipTrigger>
@@ -104,7 +107,7 @@ export function SettingsRow({
           className={cn(
             "flex max-w-full shrink-0",
             // Line the control up with the first description line, not the label.
-            alignTop ? "items-start pt-[21px]" : "items-center",
+            alignTop ? "items-start pt-[calc(21px*var(--ui-space-scale,1))]" : "items-center",
           )}
         >
           {children}

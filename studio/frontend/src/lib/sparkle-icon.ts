@@ -3,13 +3,11 @@
 
 import type { IconSvgElement } from "@hugeicons/react";
 
-// Hugeicons "Sparkle" (stroke-rounded): one four-point star, not the two-star
-// "Sparkles". https://hugeicons.com/icon/sparkle
-//
-// Local because @hugeicons/core-free-icons 4.1.1 predates it, and pulling a
-// newer icon set in would move every other glyph in the app for one shape. The
-// path is the published stroke-rounded outline with its fixed #141B34 stroke
-// swapped for currentColor, the same as the other icons in lib/.
+// Hugeicons "Sparkle" (stroke-rounded): one four-point star, not the two-star "Sparkles".
+// https://hugeicons.com/icon/sparkle Local because @hugeicons/core-free-icons 4.1.1 predates it,
+// and pulling a newer icon set in would move every other glyph in the app for one shape. The path
+// is the published stroke-rounded outline with its fixed #141B34 stroke swapped for currentColor,
+// the same as the other icons in lib/.
 export const SparkleIcon: IconSvgElement = [
   [
     "path",

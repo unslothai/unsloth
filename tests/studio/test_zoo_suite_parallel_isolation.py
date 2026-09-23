@@ -1,6 +1,23 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
-"""Guard the parallel zoo run and the serial reruns for tests that cannot share workers."""
+"""Guard the parallel zoo run, the serial reruns for tests that cannot share workers,
+and the split that moved all of them into their own job.
+
+The zoo suite used to run inside the `consolidated` cell, serially, for 418s of that
+cell's 17.2 minutes. It now runs in `consolidated-zoo`, a second matrix job over the
+same three (transformers, TRL) combos. Two things that were previously true by
+construction have to be asserted now that there are two jobs:
+
+  - the suite still runs under all three pins, and still runs at all. A matrix that
+    loses a combo, or a job whose steps drift away from the zoo ones, reduces coverage
+    without failing anything.
+  - the two jobs still install the same environment. The install lives in
+    .github/actions/core-cpu-setup so there is one copy of it, but the four steps above
+    that action (checkout, setup-python, the pip cache restore) and the job-level `env`
+    and `runs-on` are per-job and can drift silently. A zoo job on a different
+    transformers than the cell it was split out of would still be green, and would be
+    testing something nobody asked for.
+"""
 
 from __future__ import annotations
 
@@ -8,10 +25,18 @@ import re
 from pathlib import Path
 
 import pytest
+import yaml
 
 WORKFLOW = (
     Path(__file__).resolve().parents[2] / ".github" / "workflows" / "consolidated-tests-ci.yml"
 )
+ACTION = (
+    Path(__file__).resolve().parents[2] / ".github" / "actions" / "core-cpu-setup" / "action.yml"
+)
+
+# The two halves of Core. Both run the same matrix; only their test steps differ.
+CORE_JOBS = ("consolidated", "consolidated-zoo")
+SETUP_ACTION = "./.github/actions/core-cpu-setup"
 
 # (ignored path, why it cannot share a worker with the rest of the suite)
 ISOLATED = [
@@ -32,7 +57,7 @@ ISOLATED = [
 
 ZOO_MARKER = "--dist loadfile tests/"
 
-# Deselected because it needs a GPU. It rides whichever command owns its file.
+# Deselected because it needs a GPU.
 MLX_DESELECT = (
     "tests/test_mlx_finetune_last_n_layers.py::"
     "test_get_peft_model_passes_finetune_last_n_layers_through"
@@ -185,6 +210,149 @@ def test_an_empty_mlx_group_stops_the_step_instead_of_collecting_everything() ->
         "nothing checks that the mlx group glob matched anything, so an empty glob "
         "silently turns this step into a serial run of the entire suite"
     )
+
+
+def _doc() -> dict:
+    return yaml.safe_load(WORKFLOW.read_text(encoding = "utf-8"))
+
+
+def _job(jid: str) -> dict:
+    jobs = _doc()["jobs"]
+    assert jid in jobs, f"{jid} is gone from the workflow; the split it guards is undone"
+    return jobs[jid]
+
+
+def _job_commands(jid: str) -> list[str]:
+    """Every `python -m pytest ...` invocation inside one job, continuations resolved."""
+    found = []
+    for step in _job(jid)["steps"]:
+        joined = re.sub(r"\\\s*\n\s*", " ", str(step.get("run", "")))
+        found += [
+            " ".join(line.split())
+            for line in joined.splitlines()
+            if "python -m pytest" in line and not line.lstrip().startswith("#")
+        ]
+    return found
+
+
+def _preamble(jid: str) -> list[dict]:
+    """The steps up to and including the shared setup action, which every job repeats."""
+    out: list[dict] = []
+    for step in _job(jid)["steps"]:
+        out.append(step)
+        if str(step.get("uses", "")) == SETUP_ACTION:
+            return out
+    raise AssertionError(
+        f"{jid} never calls {SETUP_ACTION}, so it no longer installs the environment "
+        f"the other half of Core installs"
+    )
+
+
+def test_the_zoo_suite_runs_beside_core_and_not_inside_it() -> None:
+    """The point of the split. Back inside `consolidated` it is 7.6 min of serial wait."""
+    inside = [c for c in _job_commands("consolidated") if ZOO_MARKER in c]
+    assert not inside, (
+        f"the zoo suite is running inside the `consolidated` cell again ({inside}), so "
+        f"every pull request waits through it before the rest of Core can finish"
+    )
+    beside = [c for c in _job_commands("consolidated-zoo") if ZOO_MARKER in c]
+    assert (
+        len(beside) == 1
+    ), f"expected the parallel zoo run in the `consolidated-zoo` job, found {len(beside)}"
+
+
+def test_the_zoo_job_runs_every_zoo_step_that_left_the_cell() -> None:
+    """Two steps moved. A move that drops one is a silent deletion of its tests."""
+    zoo = " \n".join(_job_commands("consolidated-zoo"))
+    assert "_zoo_apply_fused_lm_head_shim.py" in zoo, (
+        "unsloth_zoo.compiler.test_apply_fused_lm_head moved out of the consolidated "
+        "cell but is not run by the zoo job either, so it runs nowhere"
+    )
+    for path, _ in ISOLATED:
+        assert path in zoo, (
+            f"{path}'s serial rerun is not in the zoo job. It is ignored by the parallel "
+            f"run, so wherever its rerun went, it has to have gone with it"
+        )
+
+
+@pytest.mark.parametrize("jid", CORE_JOBS)
+def test_both_halves_of_core_run_the_same_three_combos(jid: str) -> None:
+    """Coverage is '3 pins x the same suite'. A matrix that drifts quietly ends that."""
+    expected = _doc()["jobs"]["consolidated"]["strategy"]["matrix"]["combo"]
+    assert [c["id"] for c in expected] == [
+        "t4576-trl0latest",
+        "tlatest5-trl1latest",
+        "pyproject",
+    ], "the Core combo ids changed; update this guard deliberately, not by accident"
+    assert _job(jid)["strategy"]["matrix"]["combo"] == expected, (
+        f"{jid}'s matrix no longer matches `consolidated`'s. GitHub Actions has no way to "
+        f"share a matrix between jobs, so these are two copies, and a copy that drifts "
+        f"means the two halves of Core are testing different (transformers, TRL) pins "
+        f"while still reporting as one gate"
+    )
+
+
+def test_both_halves_of_core_share_one_install_preamble() -> None:
+    """The install has one definition; the four steps around it are still per-job.
+
+    Checkout, setup-python and the pip cache restore are duplicated by necessity, and a
+    difference in any of them (a different interpreter, a cache scoped to other files)
+    makes the zoo job test a stack the cell it was split from never runs.
+    """
+    a, b = (_preamble(jid) for jid in CORE_JOBS)
+    assert len(a) == len(b), (
+        f"the two Core jobs run {len(a)} and {len(b)} preamble steps. They install the "
+        f"same environment, so their preambles have to be the same steps in the same order"
+    )
+    for left, right in zip(a, b):
+        # The pip cache `name` is the one field that MUST differ: a shared name is a
+        # shared key, and only the first job to finish on main would ever save.
+        # tests/studio/test_pip_cache_naming.py owns that rule.
+        left, right = dict(left), dict(right)
+        if "pip-cache-restore" in str(left.get("uses", "")):
+            left["with"] = {k: v for k, v in left["with"].items() if k != "name"}
+            right["with"] = {k: v for k, v in right["with"].items() if k != "name"}
+        assert left == right, (
+            f"the Core preambles have drifted at step "
+            f"{left.get('name') or left.get('uses')!r}:\n  consolidated:      {left}\n"
+            f"  consolidated-zoo:  {right}"
+        )
+
+
+def test_both_halves_of_core_share_one_environment_and_one_runner() -> None:
+    """`env` and `runs-on` are job-level and cannot be factored into the action.
+
+    `runs-on` is included on purpose. The label is not cosmetic here: measured on this
+    repo, `ubuntu-latest` queues behind the org's backlog for a median 44.9 min while any
+    other Ubuntu label walks past in minutes, so two halves of one gate on two different
+    labels would make the split buy nothing.
+    """
+    a, b = (_job(jid) for jid in CORE_JOBS)
+    assert a["env"] == b["env"], (
+        f"the two Core jobs no longer share a job-level env:\n  only in consolidated: "
+        f"{ {k: v for k, v in a['env'].items() if b['env'].get(k) != v} }\n"
+        f"  only in consolidated-zoo: "
+        f"{ {k: v for k, v in b['env'].items() if a['env'].get(k) != v} }"
+    )
+    assert a["runs-on"] == b["runs-on"], (
+        f"the two halves of Core run on different labels ({a['runs-on']} vs "
+        f"{b['runs-on']}), so one of them queues behind a backlog the other skips"
+    )
+
+
+def test_the_shared_preamble_is_not_also_inlined() -> None:
+    """A caller that re-adds an install step is how one definition becomes two."""
+    body = "\n".join(str(step.get("run", "")) for jid in CORE_JOBS for step in _job(jid)["steps"])
+    for marker in ("pip install -e .", "download.pytorch.org/whl/cpu", "git clone"):
+        assert marker not in body, (
+            f"{marker!r} is inlined in a Core job again. The install lives in "
+            f"{SETUP_ACTION} so both halves cannot drift apart; a second copy is the "
+            f"drift, and it is silent until the two jobs disagree about a version"
+        )
+    action = yaml.safe_load(ACTION.read_text(encoding = "utf-8"))
+    run = "\n".join(str(step.get("run", "")) for step in action["runs"]["steps"])
+    for marker in ("pip install -e .", "download.pytorch.org/whl/cpu", "git clone"):
+        assert marker in run, f"{SETUP_ACTION} no longer does {marker!r}"
 
 
 def test_a_skipped_isolated_file_is_named_in_the_log() -> None:

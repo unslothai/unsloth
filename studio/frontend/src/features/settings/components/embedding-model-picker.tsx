@@ -113,9 +113,8 @@ export function EmbeddingModelPicker({
     if (selected && !rows.some((row) => row.id === selected)) {
       rows.push({ id: selected, sizeBytes: null });
     }
-    // The configured default the same way: the empty search is scoped to
-    // `unsloth`, so a private, other-owner or local default had no row, and the
-    // old "Reset to default" button is gone.
+    // The configured default the same way: the empty search is scoped to `unsloth`, so a private,
+    // other-owner or local default had no row, and the old "Reset to default" button is gone.
     const fallback = defaultModel?.trim();
     if (fallback && !rows.some((row) => row.id === fallback)) {
       rows.push({ id: fallback, sizeBytes: null });
@@ -146,7 +145,7 @@ export function EmbeddingModelPicker({
           data-testid="embedding-model-trigger"
           aria-label={t("settings.general.rag.embeddingModel")}
           disabled={disabled || busy}
-          className={`border-border bg-background hover:bg-accent/50 dark:border-transparent dark:bg-white/[0.06] dark:hover:bg-white/10 focus-visible:border-ring flex h-8 w-full cursor-pointer items-center justify-between gap-1.5 rounded-full border px-3.5 font-mono text-ui-11 outline-none transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${className ?? ""}`}
+          className={`border-border bg-background hover:bg-accent/50 dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))] focus-visible:border-ring flex h-8 w-full cursor-pointer items-center justify-between gap-1.5 rounded-full border px-3.5 font-mono text-ui-11 outline-none transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${className ?? ""}`}
         >
           <span className="truncate">{value}</span>
           {busy ? (

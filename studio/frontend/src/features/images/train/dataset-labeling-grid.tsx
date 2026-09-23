@@ -37,8 +37,9 @@ import {
   setDiffusionDatasetCaption,
 } from "../api";
 
-// One tile: an auth-fetched thumbnail (object URL, revoked on unmount) plus a caption Textarea saved on blur.
-// Uncaptioned tiles get a highlighted ring so a user labeling a small set sees what still needs a caption.
+// One tile: an auth-fetched thumbnail (object URL, revoked on unmount) plus a caption Textarea
+// saved on blur. Uncaptioned tiles get a highlighted ring so a user labeling a small set sees
+// what still needs a caption.
 function LabelTile({
   dataset,
   record,
@@ -63,7 +64,8 @@ function LabelTile({
     let url: string | null = null;
     let cancelled = false;
     fetchGalleryObjectUrl(diffusionDatasetImageUrl(dataset, record.filename, 256))
-      // The fetch returns the blob's size alongside the URL for the gallery's byte budget; a dataset thumbnail only needs the URL.
+      // The fetch returns the blob's size alongside the URL for the gallery's byte budget; a dataset
+      // thumbnail only needs the URL.
       .then(({ url: u }) => {
         if (cancelled) {
           URL.revokeObjectURL(u);
@@ -114,7 +116,7 @@ function LabelTile({
 
   return (
     // Named group: a bare one would also match the scroller and reveal every tile's Remove.
-    <div className="group/tile flex flex-col overflow-hidden rounded-[10px] border border-border transition-colors hover:border-foreground/20">
+    <div className="group/tile flex flex-col overflow-hidden rounded-[10px] border border-border transition-colors hover:border-[color-mix(in_oklab,var(--foreground)_calc(20%*var(--contrast-edge-gain,1)),transparent)]">
       <div className="relative aspect-square w-full overflow-hidden bg-muted">
         {thumb ? (
           <img src={thumb} alt={record.filename} className="size-full object-cover" />
@@ -151,7 +153,7 @@ function LabelTile({
           rows={2}
           spellCheck={false}
           placeholder="Describe this image..."
-          className="min-h-[2.75rem] rounded-sm px-2 py-1.5 text-ui-11! leading-snug md:text-ui-11!"
+          className="min-h-[calc(2.75rem*var(--ui-space-scale,1))] rounded-sm px-2 py-1.5 text-ui-11! leading-snug md:text-ui-11!"
           aria-label={`Caption for ${record.filename}`}
         />
         {/* No leading-none: truncate's overflow would crop the descenders. */}
@@ -175,7 +177,8 @@ function LabelTile({
   );
 }
 
-// A responsive grid over a dataset folder's images with per-image caption editing. Fetches the list on open and whenever `refreshKey` changes.
+// A responsive grid over a dataset folder's images with per-image caption editing. Fetches the
+// list on open and whenever `refreshKey` changes.
 export function DatasetLabelingGrid({
   dataset,
   refreshKey = 0,
@@ -285,7 +288,8 @@ export function DatasetLabelingGrid({
         )}
       </div>
       {/* Two columns at any width: the column is fixed, so viewport breakpoints do not apply. */}
-      {/* auto-rows-min: past max-h the height is definite and auto rows split it, flattening every tile until its thumbnail collapses. */}
+      {/* auto-rows-min: past max-h the height is definite and auto rows split it, flattening every
+          tile until its thumbnail collapses. */}
       <div className="hover-scrollbar grid max-h-[420px] auto-rows-min grid-cols-2 gap-2.5 overflow-y-auto pb-0.5 pr-1">
         {pageRecords.map((r) => (
           <LabelTile
