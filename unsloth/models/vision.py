@@ -1713,6 +1713,12 @@ class FastBaseModel:
                     quantizer = AUTO_QUANTIZATION_CONFIG_MAPPING["bitsandbytes_4bit"]
                 else:
                     quantizer = AUTO_QUANTIZATION_CONFIG_MAPPING.get(quant_method)
+                # Only vLLM may take a method transformers cannot load (a ModelOpt format the
+                # fp8 rewrite declines); in process it would load raw quantized tensors unscaled.
+                if quantizer is None and not (fast_inference and is_vLLM_available()):
+                    raise KeyError(
+                        f"Unsloth: transformers cannot load this `{quant_method}` checkpoint in process."
+                    )
                 quantizer_kwargs = {}
                 # A method transformers has no quantizer for (ModelOpt left as is because vLLM
                 # reads it natively) is not converted here.

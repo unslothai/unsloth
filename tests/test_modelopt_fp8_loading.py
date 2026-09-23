@@ -499,6 +499,29 @@ def test_rewrite_follows_who_loads_the_weights():
     assert "AUTO_QUANTIZATION_CONFIG_MAPPING[quant_method]" not in vision_source
 
 
+@pytest.mark.skipif(not has_real_cuda(), reason = "FastModel loads need an accelerator")
+def test_a_declined_modelopt_format_still_refuses_to_load_in_process(tmp_path):
+    """NVFP4 is not rewritten; without vLLM owning the load, transformers would skip the
+    quantization and load the packed tensors unscaled."""
+    from transformers import LlamaConfig, LlamaForCausalLM
+    from unsloth import FastModel
+
+    config = LlamaConfig(
+        hidden_size = 64,
+        intermediate_size = 128,
+        num_hidden_layers = 1,
+        num_attention_heads = 4,
+        num_key_value_heads = 2,
+        vocab_size = 128,
+    )
+    LlamaForCausalLM(config).save_pretrained(tmp_path)
+    raw = json.loads((tmp_path / "config.json").read_text())
+    raw["quantization_config"] = {"quant_method": "modelopt", "quant_algo": "NVFP4"}
+    (tmp_path / "config.json").write_text(json.dumps(raw))
+    with pytest.raises(KeyError, match = "cannot load this `modelopt` checkpoint"):
+        FastModel.from_pretrained(str(tmp_path), load_in_4bit = False, load_in_16bit = True)
+
+
 def test_config_branch_moves_rope_extension_onto_the_config():
     # A ModelOpt load passes config=, so a context extension's rope_scaling kwarg would reach the
     # model init and raise TypeError; it has to be set on the config instead.
