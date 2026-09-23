@@ -4322,7 +4322,7 @@ class DiffusionBackend:
         # torchao. Never raises; the backend is still chosen by select_nvfp4_backend under the locks.
         if TQ_NVFP4 in (normalize_transformer_quant(transformer_quant), _pipeline_prequant_planned):
             from .diffusion_nvfp4_install import ensure_flashinfer_for_nvfp4
-            ensure_flashinfer_for_nvfp4(device, logger = logger)
+            ensure_flashinfer_for_nvfp4(device, logger = logger, local_files_only = local_files_only, owner = self)
 
         with self._lock:
             self._raise_if_load_cancelled(_load_token)
@@ -7866,7 +7866,7 @@ class DiffusionBackend:
             "speed_optims": list(state.speed_optims),
             "text_encoder_quant": state.text_encoder_quant,
             "transformer_quant": state.transformer_quant,
-            **_nvfp4_backend_fields(_transformer_quant_backend(state)),
+            **_nvfp4_backend_fields(_transformer_quant_backend(state), owner = self),
             "attention_backend": state.attention_backend,
             "transformer_cache": state.transformer_cache,
             "resolved": state.resolved,

@@ -479,3 +479,25 @@ def test_status_callback_sees_the_install_and_its_outcome(env):
     assert ok
     assert seen[0].startswith("installing flashinfer-python 0.6.6") and "cu130" in seen[0]
     assert seen[-1] == "installed flashinfer 0.6.6 for NVFP4"
+
+
+def test_local_only_load_never_installs(env):
+    ok, reason = inst.ensure_flashinfer_for_nvfp4(0, run = env.run, local_files_only = True)
+    assert not ok and "local-only" in reason
+    assert env.installs() == []
+
+
+def test_status_reason_is_bound_to_the_backend_that_loaded():
+    # An image model left on torchao by a refused install keeps its reason after a video load succeeds.
+    class _Backend:
+        pass
+
+    image, video = _Backend(), _Backend()
+    inst.reset_install_state()
+    inst._REASONS[image] = "offline: flashinfer is not downloaded"
+    inst._REASONS[video] = None
+    assert inst.nvfp4_backend_fields("torchao", owner = image)["transformer_quant_backend_reason"] == (
+        "offline: flashinfer is not downloaded"
+    )
+    assert inst.nvfp4_backend_fields("flashinfer", owner = image)["transformer_quant_backend_reason"] is None
+    inst.reset_install_state()

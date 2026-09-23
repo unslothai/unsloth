@@ -22,6 +22,7 @@ import importlib
 import os
 import shutil
 import subprocess
+import weakref
 import sys
 import tempfile
 import threading
@@ -52,8 +53,11 @@ _INSTALL_LOCK = threading.Lock()
 # (ok, reason) of the one install this process attempted. Policy refusals (opt-out, offline, no
 # network) are NOT recorded here, so a later load on a changed environment can still install.
 _OUTCOME: Optional[tuple[bool, str]] = None
-# The last reason any call gave for flashinfer being unavailable, for the status routes.
+# The last reason any call gave for flashinfer being unavailable.
 _LAST_REASON: Optional[str] = None
+# The same, per backend object (image vs video), so a status route reports the reason for ITS loaded model and not
+# whatever another backend's later load saw.
+_REASONS: "weakref.WeakKeyDictionary[Any, Optional[str]]" = weakref.WeakKeyDictionary()
 
 StatusCb = Optional[Callable[[str], None]]
 
@@ -82,12 +86,14 @@ def _cached_preflight_failure() -> Optional[str]:
     return None
 
 
-def nvfp4_backend_fields(backend: Optional[str]) -> dict:
+def nvfp4_backend_fields(backend: Optional[str], owner: Any = None) -> dict:
     """The two status keys for a loaded NVFP4 denoiser: the backend it runs and, when that is torchao,
-    why flashinfer is not serving it (the install refusal or failure, else a failed preflight)."""
+    why flashinfer is not serving it (the install refusal or failure, else a failed preflight). ``owner``
+    is the backend object whose load asked; without it the process-wide last reason is used."""
     reason = None
     if backend == "torchao":
-        reason = _LAST_REASON or _cached_preflight_failure()
+        own = _REASONS.get(owner) if owner is not None else _LAST_REASON
+        reason = own or _cached_preflight_failure()
     return {"transformer_quant_backend": backend, "transformer_quant_backend_reason": reason}
 
 
@@ -97,6 +103,7 @@ def reset_install_state() -> None:
     with _INSTALL_LOCK:
         _OUTCOME = None
         _LAST_REASON = None
+        _REASONS.clear()
 
 
 def _emit(
@@ -502,6 +509,27 @@ def ensure_flashinfer_for_nvfp4(
     logger: Any = None,
     status_cb: StatusCb = None,
     run: Callable[..., Any] = subprocess.run,
+    local_files_only: bool = False,
+    owner: Any = None,
+) -> tuple[bool, str]:
+    """See ``_ensure``. ``owner`` (the loading backend object) keys the reason its status route reports;
+    ``local_files_only`` loads download nothing, so they never install."""
+    ok, reason = _ensure(device, logger = logger, status_cb = status_cb, run = run, local_files_only = local_files_only)
+    if owner is not None:
+        try:
+            _REASONS[owner] = None if ok else reason
+        except TypeError:  # not weak-referenceable: fall back to the process-wide reason
+            pass
+    return ok, reason
+
+
+def _ensure(
+    device: Any = None,
+    *,
+    logger: Any = None,
+    status_cb: StatusCb = None,
+    run: Callable[..., Any] = subprocess.run,
+    local_files_only: bool = False,
 ) -> tuple[bool, str]:
     """Make ``import flashinfer`` work for an NVFP4 load on ``device``, installing it if allowed.
 
@@ -527,6 +555,8 @@ def ensure_flashinfer_for_nvfp4(
                 logger,
                 status_cb,
             )
+        if local_files_only:
+            return _finish(False, "local-only load: flashinfer is not downloaded", logger, status_cb)
         if install_env() == "0":
             return _finish(
                 False,
