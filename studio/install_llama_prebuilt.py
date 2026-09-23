@@ -6404,17 +6404,21 @@ def build_validation_sandbox_plan(
                 sandbox_kind = "linux_bwrap",
                 reason = "No Linux sandbox adapter was available; skip ldd probe",
             )
+        # No usable bwrap (absent, or user namespaces restricted as on Ubuntu >= 23.10).
+        # Studio launches this same binary unsandboxed once installed, so skipping
+        # its smoke test buys no isolation and loses the check that routes a broken
+        # GPU bundle to a source build. Validate directly under the scrubbed env.
         return _ValidationLaunchPlan(
             command = command,
-            env = launcher_env,
-            action = _VALIDATION_LAUNCH_SKIP,
+            env = env,
+            action = _VALIDATION_LAUNCH_RUN,
             purpose = purpose,
-            sandbox_kind = "linux_bwrap",
-            reason = "No Linux sandbox adapter was available; skip downloaded-binary validation",
+            sandbox_kind = "linux_direct_validation",
+            reason = "No usable Linux sandbox; running validation directly",
             payload_command = command,
             payload_env = env,
-            network_policy = None,
-            server_probe_mode = None,
+            network_policy = _VALIDATION_NETWORK_POLICY_DIRECT,
+            server_probe_mode = _VALIDATION_SERVER_PROBE_MODE_HOST,
         )
 
     if _host_is_macos(host):
@@ -6550,6 +6554,101 @@ def _ldd_output_is_static_binary(output: str) -> bool:
     return "not a dynamic executable" in output.lower()
 
 
+_GLIBC_RTLD_NAMES = {
+    "x86_64": "ld-linux-x86-64.so.2",
+    "amd64": "ld-linux-x86-64.so.2",
+    "aarch64": "ld-linux-aarch64.so.1",
+    "arm64": "ld-linux-aarch64.so.1",
+}
+_GLIBC_RTLD_DIRS = ("/lib64", "/lib", "/usr/lib64", "/usr/lib")
+
+
+def _system_rtld_path(ldd_path: str) -> str | None:
+    # The host's own glibc loader for this machine, found the way ldd finds it
+    # (its RTLDLIST) plus the standard locations. None off glibc or on other arches.
+    name = _GLIBC_RTLD_NAMES.get(platform.machine().lower())
+    if name is None:
+        return None
+    candidates: list[str] = []
+    try:
+        with open(ldd_path, "r", encoding = "utf-8", errors = "replace") as handle:
+            match = re.search(r'^RTLDLIST="?([^"\n]*)"?', handle.read(65536), re.MULTILINE)
+        if match:
+            candidates.extend(match.group(1).split())
+    except OSError:
+        pass
+    candidates.extend(os.path.join(directory, name) for directory in _GLIBC_RTLD_DIRS)
+    for candidate in candidates:
+        if os.path.basename(candidate) == name and os.path.isfile(candidate):
+            if os.access(candidate, os.X_OK):
+                return candidate
+    return None
+
+
+def _run_rtld_list_ldd_probe(
+    binary_path: Path, *, ldd_path: str, env: dict[str, str], reason: str
+) -> LinuxLibraryProbeResult:
+    """Dependency listing without a sandbox, never handing control to the binary.
+
+    ``ldd`` executes a binary whose interpreter the system loader does not own, so
+    it is unsafe to run unsandboxed on a download. This does what ``ldd`` does for
+    a binary the system loader owns: ``--verify`` classifies the file, then the
+    loader itself traces the dependency graph and exits before relocation or any
+    initialiser runs, never honouring the binary's own interpreter. Loader
+    variables that would relocate (``LD_WARN``), preload or audit are dropped;
+    only ``LD_LIBRARY_PATH`` is kept to resolve the bundle. A probe that cannot
+    answer is reported as skipped, as a failing ``ldd`` was ignored before.
+    """
+    rtld = _system_rtld_path(ldd_path)
+    if rtld is None:
+        return LinuxLibraryProbeResult(
+            status = _LINUX_LDD_PROBE_SKIPPED,
+            missing = [],
+            reason = f"{reason}; no system loader for list mode",
+        )
+    probe_env = {
+        key: value
+        for key, value in env.items()
+        if not key.startswith("LD_") or key == "LD_LIBRARY_PATH"
+    }
+    try:
+        verify = run_capture([rtld, "--verify", str(binary_path)], timeout = 20, env = probe_env)
+        # glibc: 0 = dynamic and this loader's, 2 = dynamic with another
+        # interpreter (still listable here), anything else = not a dynamic ELF.
+        if verify.returncode not in (0, 2):
+            return LinuxLibraryProbeResult(
+                status = _LINUX_LDD_PROBE_OK,
+                missing = [],
+                reason = "not a dynamic executable",
+            )
+        result = run_capture(
+            [rtld, str(binary_path)],
+            timeout = 20,
+            env = {**probe_env, "LD_TRACE_LOADED_OBJECTS": "1"},
+        )
+    except Exception as exc:
+        return LinuxLibraryProbeResult(
+            status = _LINUX_LDD_PROBE_SKIPPED,
+            missing = [],
+            reason = f"{reason}; loader list probe failed: {exc}",
+        )
+    output = (result.stdout or "") + (result.stderr or "")
+    missing = _parse_ldd_missing_libraries(output)
+    if missing or result.returncode == 0:
+        return LinuxLibraryProbeResult(
+            status = _LINUX_LDD_PROBE_OK,
+            missing = missing,
+            reason = "system loader list mode",
+            output = output,
+        )
+    return LinuxLibraryProbeResult(
+        status = _LINUX_LDD_PROBE_SKIPPED,
+        missing = [],
+        reason = f"{reason}; loader list probe exited {result.returncode}",
+        output = output,
+    )
+
+
 def _run_validation_ldd_probe(binary_path: Path, *, env: dict[str, str]) -> LinuxLibraryProbeResult:
     ldd_path = shutil.which("ldd")
     if ldd_path is None:
@@ -6565,17 +6664,15 @@ def _run_validation_ldd_probe(binary_path: Path, *, env: dict[str, str]) -> Linu
         purpose = _VALIDATION_PURPOSE_LDD,
         env = env,
     )
-    if plan.is_skipped:
-        return LinuxLibraryProbeResult(
-            status = _LINUX_LDD_PROBE_SKIPPED,
-            missing = [],
-            reason = "ldd probe was skipped by validation policy",
-        )
-    if plan.is_fallback:
-        return LinuxLibraryProbeResult(
-            status = _LINUX_LDD_PROBE_SKIPPED,
-            missing = [],
-            reason = plan.reason or "ldd probe did not run",
+    if plan.is_skipped or plan.is_fallback:
+        # No usable sandbox. Skipping outright would stop detecting missing
+        # libraries on every host without a working bwrap, so list them through
+        # the system loader, which never runs the downloaded binary's code.
+        return _run_rtld_list_ldd_probe(
+            binary_path,
+            ldd_path = ldd_path,
+            env = env,
+            reason = plan.reason or "ldd probe was skipped by validation policy",
         )
     try:
         result = _run_validation_capture(plan, timeout = 20)

@@ -75,6 +75,14 @@ def _bwrap_usable_by_default(monkeypatch):
     # A mocked-present bwrap represents a working sandbox; the real usability probe
     # (which would exec bwrap) is out of scope here and covered by its own test.
     monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "_bwrap_can_sandbox", lambda _p: True)
+    # Tests that want a sandbox mock bwrap's path themselves; hide the host's own so a
+    # restricted-userns bwrap on the test machine is never launched as "usable".
+    real_resolve = INSTALL_LLAMA_PREBUILT._resolve_command_path
+    monkeypatch.setattr(
+        INSTALL_LLAMA_PREBUILT,
+        "_resolve_command_path",
+        lambda command: None if command == "bwrap" else real_resolve(command),
+    )
 
 
 def write_metadata(
@@ -7539,26 +7547,46 @@ def test_build_validation_sandbox_plan_linux_without_bwrap_skips_ldd_probe(monke
     assert "skip ldd probe" in plan.reason
 
 
-def test_build_validation_sandbox_plan_linux_without_bwrap_skips_validation(monkeypatch):
+@pytest.mark.parametrize("bwrap_state", ["absent", "unusable"])
+@pytest.mark.parametrize(
+    "purpose",
+    [
+        INSTALL_LLAMA_PREBUILT._VALIDATION_PURPOSE_QUANTIZE,
+        INSTALL_LLAMA_PREBUILT._VALIDATION_PURPOSE_SERVER,
+    ],
+)
+def test_build_validation_sandbox_plan_linux_without_usable_bwrap_validates_directly(
+    monkeypatch, bwrap_state, purpose
+):
+    # Studio runs the installed binary unsandboxed anyway, so a host without a usable
+    # sandbox keeps main's direct smoke test instead of silently skipping it.
     monkeypatch.setattr(
         INSTALL_LLAMA_PREBUILT,
         "_resolve_command_path",
-        lambda command: None if command == "bwrap" else "/usr/bin/bwrap",
+        lambda command: (
+            None if command == "bwrap" and bwrap_state == "absent" else "/usr/bin/" + command
+        ),
     )
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "_bwrap_can_sandbox", lambda _p: False)
+    command = ["/opt/llama/llama-server", "-m", "probe.gguf", "--port", "8123"]
+    env = {"LD_LIBRARY_PATH": "/opt/llama", "PATH": "/usr/bin"}
     plan = build_validation_sandbox_plan(
-        ["llama-quantize", "in", "out"],
-        binary_path = Path("/tmp/bin"),
-        install_dir = Path("/tmp/install"),
+        command,
+        binary_path = Path("/opt/llama/llama-server"),
+        install_dir = Path("/opt/llama"),
         host = linux_host(),
-        purpose = INSTALL_LLAMA_PREBUILT._VALIDATION_PURPOSE_QUANTIZE,
+        purpose = purpose,
         runtime_line = None,
-        env = {},
+        env = env,
+        enable_gpu_layers = True,
+        gpu_backend = "cuda",
     )
-    assert plan.is_skipped
-    assert plan.reason is not None
-    assert "skip downloaded-binary validation" in plan.reason
-    assert plan.network_policy is None
-    assert plan.server_probe_mode is None
+    assert plan.is_runnable
+    assert plan.command == command
+    assert plan.env == env
+    assert plan.sandbox_kind == "linux_direct_validation"
+    assert plan.server_probe_mode == INSTALL_LLAMA_PREBUILT._VALIDATION_SERVER_PROBE_MODE_HOST
+    assert plan.network_policy == INSTALL_LLAMA_PREBUILT._VALIDATION_NETWORK_POLICY_DIRECT
 
 
 def test_build_validation_sandbox_plan_linux_unusable_bwrap_skips_ldd(monkeypatch):
@@ -8421,17 +8449,21 @@ def test_build_validation_sandbox_plan_windows_is_unsupported(monkeypatch):
     assert "running validation directly" in (plan.reason or "").lower()
 
 
-def test_linux_missing_libraries_skips_ldd_without_sandbox_adapter(monkeypatch, tmp_path):
+def test_linux_missing_libraries_uses_system_loader_without_sandbox_adapter(
+    monkeypatch, tmp_path
+):
     binary_path = tmp_path / "server"
     binary_path.write_text("")
+    rtld = "/lib64/ld-linux-x86-64.so.2"
     monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "_host_is_linux", lambda host = None: True)
     monkeypatch.setattr(
         INSTALL_LLAMA_PREBUILT,
         "_resolve_command_path",
         lambda command: None if command == "bwrap" else "/usr/bin/bwrap",
     )
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "_system_rtld_path", lambda _ldd: rtld)
 
-    captured: dict[str, bool] = {"run": False}
+    calls: list[tuple[list[str], dict[str, str]]] = []
 
     def fake_run_capture(
         command,
@@ -8440,13 +8472,51 @@ def test_linux_missing_libraries_skips_ldd_without_sandbox_adapter(monkeypatch, 
         env = None,
         check = False,
     ):
-        captured["run"] = True
-        return subprocess.CompletedProcess(command, 0, stdout = "")
+        calls.append((list(command), dict(env or {})))
+        if "--verify" in command:
+            return subprocess.CompletedProcess(command, 0, stdout = "", stderr = "")
+        return subprocess.CompletedProcess(
+            command, 0, stdout = "libbad => not found\nlibgood => /tmp/libgood\n", stderr = ""
+        )
 
     monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "run_capture", fake_run_capture)
-    missing = linux_missing_libraries(binary_path, env = {"LD_LIBRARY_PATH": ""})
-    assert missing == []
-    assert captured["run"] is False
+    env = {"LD_LIBRARY_PATH": "/opt/lib", "LD_PRELOAD": "/evil.so", "LD_WARN": "1"}
+    assert linux_missing_libraries(binary_path, env = env) == ["libbad"]
+    assert [command for command, _env in calls] == [
+        [rtld, "--verify", str(binary_path)],
+        [rtld, str(binary_path)],
+    ]
+    trace_env = calls[1][1]
+    assert trace_env["LD_TRACE_LOADED_OBJECTS"] == "1"
+    assert trace_env["LD_LIBRARY_PATH"] == "/opt/lib"
+    assert "LD_PRELOAD" not in trace_env and "LD_WARN" not in trace_env
+    assert all("ldd" not in Path(part).name for command, _env in calls for part in command)
+
+
+def test_run_validation_ldd_probe_treats_non_dynamic_file_as_clean_without_sandbox(
+    monkeypatch, tmp_path
+):
+    binary_path = tmp_path / "server"
+    binary_path.write_text("")
+    monkeypatch.setattr(
+        INSTALL_LLAMA_PREBUILT,
+        "_resolve_command_path",
+        lambda command: None if command == "bwrap" else "/usr/bin/bwrap",
+    )
+    monkeypatch.setattr(
+        INSTALL_LLAMA_PREBUILT, "_system_rtld_path", lambda _ldd: "/lib64/ld-linux-x86-64.so.2"
+    )
+    calls: list[list[str]] = []
+
+    def fake_run_capture(command, *, timeout, env = None, check = False):
+        calls.append(list(command))
+        return subprocess.CompletedProcess(command, 1, stdout = "", stderr = "")
+
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "run_capture", fake_run_capture)
+    result = run_validation_ldd_probe(binary_path, env = {})
+    assert result.status == LINUX_LDD_PROBE_OK
+    assert result.missing == []
+    assert len(calls) == 1 and "--verify" in calls[0]
 
 
 def test_run_validation_ldd_probe_reports_skipped_status_without_sandbox_adapter(
@@ -8460,6 +8530,7 @@ def test_run_validation_ldd_probe_reports_skipped_status_without_sandbox_adapter
         "_resolve_command_path",
         lambda command: None if command == "bwrap" else "/usr/bin/bwrap",
     )
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "_system_rtld_path", lambda _ldd: None)
     result = run_validation_ldd_probe(binary_path, env = {"LD_LIBRARY_PATH": ""})
     assert result.status == LINUX_LDD_PROBE_SKIPPED
     assert result.missing == []
