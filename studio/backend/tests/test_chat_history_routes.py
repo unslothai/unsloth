@@ -1530,9 +1530,7 @@ def test_fork_route_numbers_the_title_and_reports_the_boundary(tmp_path, monkeyp
     for i in range(2):
         response = chat_history.fork_thread(
             thread_id = "src",
-            payload = chat_history.ChatForkRequest(
-                newThreadId = f"fork-{i}", createdAt = 10 + i
-            ),
+            payload = chat_history.ChatForkRequest(newThreadId = f"fork-{i}", createdAt = 10 + i),
             current_subject = "test-user",
         )
         titles.append(response.thread.title)

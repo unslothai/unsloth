@@ -1523,9 +1523,7 @@ def test_fork_title_ignores_other_names_and_archived_state(tmp_path, monkeypatch
     # A different chat whose name merely starts with the base must not consume a number.
     studio_db.upsert_chat_thread({**_thread("other"), "title": "Notes extra (1)"})
     # An archived chat still holds its number, so restoring it cannot collide.
-    studio_db.upsert_chat_thread(
-        {**_thread("old"), "title": "Notes (1)", "archived": True}
-    )
+    studio_db.upsert_chat_thread({**_thread("old"), "title": "Notes (1)", "archived": True})
 
     assert _fork("src", "f-new", 30)["title"] == "Notes (2)"
 
@@ -1591,6 +1589,5 @@ def test_pruning_an_earlier_message_leaves_the_boundary_alone(tmp_path, monkeypa
     studio_db.sync_chat_messages("f", copied[1:], prune_missing = True)
 
     assert (
-        studio_db.get_chat_thread("f")["forkBoundaryMessageId"]
-        == forked["forkBoundaryMessageId"]
+        studio_db.get_chat_thread("f")["forkBoundaryMessageId"] == forked["forkBoundaryMessageId"]
     )
