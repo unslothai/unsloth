@@ -267,11 +267,15 @@ _OMNI_AUTO_CLASS_NAMES = (
 )
 
 
+def _read_safetensors_keys(path):
+    from safetensors import safe_open
+
+    with safe_open(path, framework = "pt") as handle:
+        return list(handle.keys())
+
+
 def _adapter_weight_keys(
-    adapter_name,
-    token = None,
-    revision = None,
-    local_files_only = False,
+    adapter_name, token = None, revision = None, local_files_only = False, cache_dir = None
 ):
     """Tensor names of a saved adapter without loading its weights, or None."""
     try:
@@ -279,18 +283,22 @@ def _adapter_weight_keys(
         if os.path.isdir(local):
             path = os.path.join(local, "adapter_model.safetensors")
             if os.path.exists(path):
-                from safetensors import safe_open
-                with safe_open(path, framework = "pt") as handle:
-                    return list(handle.keys())
+                return _read_safetensors_keys(path)
             path = os.path.join(local, "adapter_model.bin")
             if os.path.exists(path):
                 return list(torch.load(path, map_location = "meta", weights_only = True).keys())
             return None
+        from huggingface_hub import HfApi, try_to_load_from_cache
+
+        # A cached adapter answers offline too.
+        cached = try_to_load_from_cache(
+            adapter_name, "adapter_model.safetensors", cache_dir = cache_dir, revision = revision
+        )
+        if isinstance(cached, str) and os.path.exists(cached):
+            return _read_safetensors_keys(cached)
         if local_files_only:
             return None
         # get_safetensors_metadata only looks for model.safetensors; PEFT writes adapter_model.safetensors.
-        from huggingface_hub import HfApi
-
         metadata = HfApi().parse_safetensors_file_metadata(
             adapter_name, "adapter_model.safetensors", revision = revision, token = token
         )
@@ -299,18 +307,34 @@ def _adapter_weight_keys(
         return None
 
 
-def _adapter_targets_text_core(peft_config, weight_keys = None):
+def _composition_children(model_config):
+    """Top-level module names of a composition (Qwen3-Omni: thinker, talker, code2wav)."""
+    names = [
+        name[: -len("_config")]
+        for name in (getattr(model_config, "sub_configs", None) or {})
+        if name.endswith("_config")
+    ]
+    return tuple(names) or ("thinker",)
+
+
+def _adapter_targets_text_core(peft_config, weight_keys = None, wrapper_children = ("thinker",)):
     """True when an adapter was trained on an extracted thinker (`text_only = True`).
 
-    Its weights are keyed `model.layers...` and a kept Qwen3-Omni wrapper's
-    `thinker.model.layers...`, so the saved keys decide. Without them, fall back to
-    Unsloth's saved regex: a kept wrapper's names `thinker.model`, a thinker's never does.
+    A thinker's own weights are keyed `model.layers...`; anything trained on the kept
+    wrapper (the thinker, or only the talker / code2wav) is keyed under one of the
+    wrapper's children, so the saved keys decide. Without them, fall back to Unsloth's
+    saved regex, which names the wrapper's children when the wrapper was trained.
     A plain list of leaf names matches either layout, so it cannot decide on its own.
     """
+    children = set(wrapper_children)
     if weight_keys:
-        return not any("thinker." in key for key in weight_keys)
+        roots = {
+            (key[len("base_model.model.") :] if key.startswith("base_model.model.") else key).split(".", 1)[0]
+            for key in weight_keys
+        }
+        return not (roots & children)
     targets = getattr(peft_config, "target_modules", None)
-    return isinstance(targets, str) and "thinker" not in targets
+    return isinstance(targets, str) and not any(child in targets for child in children)
 
 
 def _resolve_omni_auto_model(model_config):
@@ -1955,7 +1979,9 @@ class FastModel(FastBaseModel):
                     token = token,
                     revision = adapter_revision,
                     local_files_only = local_files_only,
+                    cache_dir = kwargs.get("cache_dir"),
                 ),
+                _composition_children(model_config),
             )
         ):
             print(

@@ -474,3 +474,37 @@ def test_local_bin_adapter_keys_are_read_without_weights(tmp_path):
     torch.save({key: torch.ones(2, 2)}, tmp_path / "adapter_model.bin")
     assert _adapter_weight_keys(str(tmp_path)) == [key]
     assert _adapter_weight_keys(str(tmp_path / "missing")) is None
+
+
+def test_an_audio_only_wrapper_adapter_stays_on_the_wrapper():
+    # Trained on the kept wrapper's talker only: no thinker. key, but still wrapper-rooted.
+    from unsloth.models.loader import _adapter_targets_text_core, _composition_children
+
+    children = _composition_children(_tiny_config())
+    assert set(children) == {"thinker", "talker", "code2wav"}
+    config = type("Config", (), {"target_modules": {"q_proj"}})()
+    talker = ["base_model.model.talker.model.layers.0.self_attn.q_proj.lora_A.weight"]
+    code2wav = ["base_model.model.code2wav.decoder.0.conv.lora_A.weight"]
+    thinker_only = ["base_model.model.model.layers.0.self_attn.q_proj.lora_A.weight"]
+    assert _adapter_targets_text_core(config, talker, children) is False
+    assert _adapter_targets_text_core(config, code2wav, children) is False
+    assert _adapter_targets_text_core(config, thinker_only, children) is True
+    regex = type("Config", (), {"target_modules": r"(?:.*?(?:talker).*?(?:q_proj))"})()
+    assert _adapter_targets_text_core(regex, None, children) is False
+
+
+def test_offline_reads_a_cached_hub_adapter(monkeypatch, tmp_path):
+    huggingface_hub = pytest.importorskip("huggingface_hub")
+    safetensors_torch = pytest.importorskip("safetensors.torch")
+    from unsloth.models.loader import _adapter_weight_keys
+
+    key = "base_model.model.model.layers.0.self_attn.q_proj.lora_A.weight"
+    cached = tmp_path / "adapter_model.safetensors"
+    safetensors_torch.save_file({key: torch.ones(2, 2)}, str(cached))
+    monkeypatch.setattr(huggingface_hub, "try_to_load_from_cache", lambda *a, **k: str(cached))
+
+    def no_network(*args, **kwargs):
+        raise AssertionError("offline must not reach the Hub")
+
+    monkeypatch.setattr(huggingface_hub.HfApi, "parse_safetensors_file_metadata", no_network)
+    assert _adapter_weight_keys("someone/omni-adapter", local_files_only = True) == [key]
