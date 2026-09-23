@@ -4322,6 +4322,7 @@ class DiffusionBackend:
         # torchao. Never raises; the backend is still chosen by select_nvfp4_backend under the locks.
         if TQ_NVFP4 in (normalize_transformer_quant(transformer_quant), _pipeline_prequant_planned):
             from .diffusion_nvfp4_install import ensure_flashinfer_for_nvfp4
+
             # No owner yet: a cancel before the swap below must leave the resident model's reason alone.
             _nvfp4_install_outcome = ensure_flashinfer_for_nvfp4(
                 device, logger = logger, local_files_only = local_files_only

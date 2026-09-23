@@ -95,7 +95,6 @@ def _cuda_index(device: Any) -> Optional[int]:
         return device
     try:
         import torch
-
         dev = torch.device(device) if device is not None else None
     except Exception:  # noqa: BLE001
         return None
@@ -109,7 +108,12 @@ def _cuda_index(device: Any) -> Optional[int]:
         return None
 
 
-def record_install_reason(owner: Any, ok: bool, reason: Optional[str], device: Any = None) -> None:
+def record_install_reason(
+    owner: Any,
+    ok: bool,
+    reason: Optional[str],
+    device: Any = None,
+) -> None:
     """Bind an ensure outcome to ``owner`` (the loading backend) and the device it loaded on. Call it
     once the load has replaced the resident model, so a cancelled attempt cannot relabel it."""
     if owner is None:

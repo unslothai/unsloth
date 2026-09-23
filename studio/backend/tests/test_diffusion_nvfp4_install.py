@@ -517,12 +517,14 @@ def test_status_preflight_reason_is_the_loaded_device_only(monkeypatch):
     monkeypatch.setitem(ops._PREFLIGHT, 1, {"ok": False, "reason": "sm_120 unsupported"})
     inst.record_install_reason(image, True, "already installed", 0)
     inst.record_install_reason(video, True, "already installed", "cuda:1")
-    assert inst.nvfp4_backend_fields("torchao", owner = image)[
-        "transformer_quant_backend_reason"
-    ] == "flashinfer preflight failed: JIT build failed"
-    assert inst.nvfp4_backend_fields("torchao", owner = video)[
-        "transformer_quant_backend_reason"
-    ] == "flashinfer preflight failed: sm_120 unsupported"
+    assert (
+        inst.nvfp4_backend_fields("torchao", owner = image)["transformer_quant_backend_reason"]
+        == "flashinfer preflight failed: JIT build failed"
+    )
+    assert (
+        inst.nvfp4_backend_fields("torchao", owner = video)["transformer_quant_backend_reason"]
+        == "flashinfer preflight failed: sm_120 unsupported"
+    )
     inst.reset_install_state()
 
 
