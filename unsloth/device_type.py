@@ -231,47 +231,74 @@ def arch_lacks_buffer_ops(gcn_arch):
     return str(gcn_arch or "").split(":", 1)[0].strip().lower().startswith("gfx101")
 
 
+_GFX101X_TRITON_WORKAROUND_APPLIED = False
+
+
+def gfx101x_triton_workaround_applied():
+    """True once apply_gfx101x_triton_workaround turned buffer ops off in this process."""
+    return _GFX101X_TRITON_WORKAROUND_APPLIED
+
+
 def apply_gfx101x_triton_workaround(environ = None, triton_home = None):
     """Turn Triton's AMD buffer ops off for gfx101x, and keep the compile cache apart.
 
-    Triton reads AMDGCN_USE_BUFFER_OPS when it compiles a kernel but does not fold it into
-    the kernel cache key, so a kernel built with buffer ops on is reused verbatim when they
-    are off. On an RX 5700 XT that turned a clean run into `loss -inf` then `nan` the moment
-    an earlier process had populated ~/.triton/cache with buffer-op kernels; the same run
-    with an empty cache directory trained normally. Redirecting the cache to a sibling
-    directory whenever this workaround is active keeps the two builds from ever mixing.
+    Triton reads AMDGCN_USE_BUFFER_OPS lazily, when it compiles a kernel, so setting it after
+    `import triton` is fine. Current Triton (3.7, triton-windows 3.8) keys its own kernel
+    cache on the knob, but Inductor's FX graph cache bundles the compiled Triton kernels
+    under TORCHINDUCTOR_CACHE_DIR (default <tmp>/torchinductor_<user>) without it. On an
+    RX 5700 XT a run with buffer ops off went `-inf` then `nan` once a buffer-ops-on run had
+    filled those caches; the same run with empty caches trained normally. Both caches get a
+    sibling directory while buffer ops are off, so the two builds never mix; the Triton one
+    also covers older Triton builds that do not key on the knob.
 
-    torch.compile goes through the same hole one level up: Inductor stores the Triton
-    kernels it generates under its own TORCHINDUCTOR_CACHE_DIR (default
-    <tmp>/torchinductor_<user>) and keys them without the knob either. gemma-3-270m on the
-    same card went nan on every step with buffer ops off once a buffer-ops-on run had filled
-    that directory, so it gets a sibling directory too.
-
-    All setdefault: a user who set any of the variables on purpose keeps their value.
-    Returns True when the buffer-ops knob was set here, False when it was already set."""
-    import os
-
+    A user who already exported AMDGCN_USE_BUFFER_OPS=0 (the manual workaround) needs the
+    separate caches just as much, so any value Triton reads as off gets them. A value Triton
+    reads as on is an explicit opt-in and is left alone together with the caches. Every
+    variable is setdefault: a value the user set on purpose is kept.
+    Returns True when buffer ops end up off, False when the user turned them on."""
+    global _GFX101X_TRITON_WORKAROUND_APPLIED
+    is_process_env = environ is None
     environ = os.environ if environ is None else environ
-    if environ.get("AMDGCN_USE_BUFFER_OPS") is not None:
+    current = environ.get("AMDGCN_USE_BUFFER_OPS")
+    # Triton's getenv_bool: only these spellings mean on, anything else is off.
+    if current is not None and current.strip().lower() in ("1", "true", "on", "yes", "y"):
         return False
-    environ["AMDGCN_USE_BUFFER_OPS"] = "0"
+    environ.setdefault("AMDGCN_USE_BUFFER_OPS", "0")
     if "TRITON_CACHE_DIR" not in environ:
-        home = (
-            triton_home
-            or environ.get("TRITON_HOME")
-            or os.path.join(os.path.expanduser("~"), ".triton")
-        )
-        environ["TRITON_CACHE_DIR"] = os.path.join(home, "cache-no-buffer-ops")
-    if "TORCHINDUCTOR_CACHE_DIR" not in environ:
-        import getpass
-        import re
-        import tempfile
-
-        user = re.sub(r'[\/:*?"<>|]', "_", getpass.getuser())
-        environ["TORCHINDUCTOR_CACHE_DIR"] = os.path.join(
-            tempfile.gettempdir(), f"torchinductor_{user}_no_buffer_ops"
-        )
+        # Triton's own layout: <TRITON_HOME or ~>/.triton/cache
+        home = triton_home or environ.get("TRITON_HOME") or os.path.expanduser("~")
+        environ["TRITON_CACHE_DIR"] = os.path.join(home, ".triton", "cache-no-buffer-ops")
+    default_inductor = _default_inductor_cache_dir()
+    inductor = environ.get("TORCHINDUCTOR_CACHE_DIR")
+    # `import torch._dynamo` calls Inductor's cache_dir(), which writes the default path into
+    # os.environ, so by the time this runs the variable is usually set without the user
+    # having chosen anything. The default directory is the shared one, so it moves too.
+    if inductor is None or os.path.abspath(inductor) == os.path.abspath(default_inductor):
+        environ["TORCHINDUCTOR_CACHE_DIR"] = default_inductor + "_no_buffer_ops"
+    if is_process_env:
+        _GFX101X_TRITON_WORKAROUND_APPLIED = True
     return True
+
+
+def _default_inductor_cache_dir():
+    """Inductor's default cache directory, <tmp>/torchinductor_<user>."""
+    try:
+        from torch._inductor.runtime.cache_dir_utils import default_cache_dir
+        return default_cache_dir()
+    except Exception:
+        pass
+    import getpass
+    import tempfile
+
+    # Same fallback as torch: getuser raises in a container whose uid has no passwd entry,
+    # and this runs at `import unsloth`.
+    try:
+        user = getpass.getuser()
+    except (KeyError, ModuleNotFoundError, OSError):
+        getuid = getattr(os, "getuid", None)
+        user = f"uid_{getuid()}" if callable(getuid) else "unknown_user"
+    user = re.sub(r'[\\/:*?"<>|]', "_", user)
+    return os.path.join(tempfile.gettempdir(), "torchinductor_" + user)
 
 
 def hip_visible_archs():

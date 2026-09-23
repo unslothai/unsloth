@@ -448,10 +448,10 @@ elif DEVICE_TYPE == "npu":
     SUPPORTS_BFLOAT16 = torch.npu.is_bf16_supported()
 
 # RDNA1 (gfx101x) and Triton's AMD buffer ops do not mix: the kernels compile, launch and
-# silently write nothing (see arch_lacks_buffer_ops). Triton reads the knob when it compiles
-# a kernel and does not key its cache on it, so both the knob and a separate cache directory
-# have to be in place before the first compile; here, ahead of the `import triton` below, is
-# the earliest point that knows which GPUs are visible (see apply_gfx101x_triton_workaround).
+# silently write nothing (see arch_lacks_buffer_ops). Triton reads the knob lazily, when it
+# compiles a kernel, and Inductor's cache does not key on it, so the knob and separate cache
+# directories have to be in place before the first compile; this is the earliest point that
+# knows which GPUs are visible (see apply_gfx101x_triton_workaround).
 if DEVICE_TYPE == "hip" and any(arch_lacks_buffer_ops(arch) for arch in hip_visible_archs()):
     apply_gfx101x_triton_workaround()
 
