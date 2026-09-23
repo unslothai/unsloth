@@ -368,22 +368,121 @@ def _to_laya(question: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
-def _state_truncated(agent, state, questions: dict[str, dict[str, Any]]) -> bool:
-    from laya.common import build_sequence, serialize_state
+# Tokens past a question's room are dropped, so a long state is tokenized in growing prefixes; the margin keeps the
+# kept tokens clear of the cut, where a prefix can tokenize differently from the whole text.
+_PREFIX_MARGIN = 64
+_HEAD_CACHE_SIZE = 1024
 
-    tok = agent.tok
+
+def _state_ids(tok, state, room: int) -> tuple[list[int], bool]:
+    from laya.common import serialize_state
+
+    text = serialize_state(state).replace(tok.mask_token, " ")
+    chars = max(4096, room * 16)
+    while chars < len(text):
+        ids = tok(text[:chars], add_special_tokens = False)["input_ids"]
+        if len(ids) > room + _PREFIX_MARGIN:
+            return ids[:room], True
+        chars *= 4
+    ids = tok(text, add_special_tokens = False)["input_ids"]
+    return ids[:room], len(ids) > room
+
+
+def _head(agent, question: dict[str, Any], max_len: int, head_max_len: int):
+    import json
+
+    from laya.common import build_sequence, render_options
+
+    # Cached on the agent, so it goes with the model on unload or a checkpoint switch.
+    cache = agent.__dict__.setdefault("_unsloth_heads", {})
+    key = json.dumps(question, ensure_ascii = False)
+    if key not in cache:
+        internal = agent._to_internal(question)
+        ids, markers = build_sequence(agent.tok, "", internal, max_len, head_max_len)
+        if len(markers) != len(render_options(internal)):
+            raise ValueError("question options exceed head_max_len=%d" % head_max_len)
+        if len(cache) >= _HEAD_CACHE_SIZE:
+            cache.clear()
+        cache[key] = (ids, markers, internal)
+    return cache[key]
+
+
+def _predict(agent, state, questions: dict[str, dict[str, Any]]) -> tuple[dict[str, Any], bool]:
+    # laya's Agent.predict with the state tokenized once instead of once per question.
+    import numpy as np
+    import torch
+    from laya.common import QTYPES, collate_items, confidence_from_probs, temp_bucket
+
     max_len = int(agent.cfg.get("max_len", 512))
     head_max_len = int(agent.cfg.get("head_max_len", 192))
-    state_len = len(
-        tok(serialize_state(state).replace(tok.mask_token, " "), add_special_tokens = False)[
-            "input_ids"
-        ]
-    )
-    for question in questions.values():
-        head, _ = build_sequence(tok, "", agent._to_internal(question), max_len, head_max_len)
-        if len(head) + state_len > max_len:
-            return True
-    return False
+    names = list(questions)
+    heads = []
+    for name in names:
+        try:
+            heads.append(_head(agent, questions[name], max_len, head_max_len))
+        except ValueError:
+            raise ValueError(
+                "question %r options exceed head_max_len=%d" % (name, head_max_len)
+            ) from None
+    room = max(0, max_len - min(len(ids) for ids, _, _ in heads))
+    state_ids, state_cut = _state_ids(agent.tok, state, room)
+    items, truncated = [], False
+    for ids, markers, internal in heads:
+        keep = max(0, max_len - len(ids))
+        truncated = truncated or state_cut or len(state_ids) > keep
+        items.append(
+            {
+                "ids": (ids[:-1] + state_ids[:keep] + ids[-1:])[:max_len],
+                "markers": markers,
+                "qtype": QTYPES[internal["t"]],
+            }
+        )
+    batch = collate_items([items], agent.tok.pad_token_id)
+    device = agent.device
+    with torch.inference_mode(), torch.autocast(
+        device_type = device.type, dtype = agent.dtype, enabled = device.type == "cuda"
+    ):
+        logits, _ = agent.model(
+            batch["input_ids"].to(device),
+            batch["attention_mask"].to(device),
+            batch["marker_pos"].to(device),
+            batch["marker_mask"].to(device),
+            batch["qtype"].to(device),
+        )
+    logits = logits.float().cpu().numpy()
+    answers = {}
+    for row, (name, (_, markers, internal)) in enumerate(zip(names, heads)):
+        k = len(markers)
+        qtype = QTYPES[internal["t"]]
+        scale = agent.temperature_by_options.get(temp_bucket(qtype, k), agent.temperature[qtype])
+        z = logits[row, :k] / scale
+        p = np.exp(z - z.max())
+        p = p / p.sum()
+        confidence = round(confidence_from_probs(p, k), 4)
+        if internal["t"] == "choice":
+            keys = list(internal["crit"])
+            answers[name] = {
+                "type": "choice",
+                "choice": keys[int(p.argmax())],
+                "probabilities": {key: round(float(v), 4) for key, v in zip(keys, p)},
+                "confidence": confidence,
+            }
+        elif internal["t"] == "score":
+            answers[name] = {
+                "type": "score",
+                "score": round(float((np.arange(k) * p).sum()), 4),
+                "legend": {str(i): c for i, c in enumerate(internal["crit"])},
+                "probabilities": {str(i): round(float(v), 4) for i, v in enumerate(p)},
+                "confidence": confidence,
+            }
+        else:
+            answers[name] = {
+                "type": "noul",
+                "noul": round(float(p[1]), 4),
+                "confidence": round(max(float(p[1]), 1.0 - float(p[1])), 4),
+            }
+    usage = {"input_tokens": int(batch["attention_mask"].sum()), "output_tokens": 0}
+    return {"answers": answers, "usage": usage}, truncated
 
 
 def _wire_answer(answer: dict[str, Any]) -> dict[str, Any]:
@@ -426,10 +525,9 @@ def _decide(checkpoint: Checkpoint, state, questions: dict[str, dict[str, Any]])
             )
         laya_questions = {name: _to_laya(q) for name, q in questions.items()}
         try:
-            result = agent.predict(state, laya_questions)
+            result, truncated = _predict(agent, state, laya_questions)
         except ValueError as exc:
             raise Unavailable(400, "invalid_request_error", str(exc)) from None
-        truncated = _state_truncated(agent, state, laya_questions)
     finally:
         _run_lock.release()
     return {

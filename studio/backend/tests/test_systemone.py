@@ -16,7 +16,7 @@ from routes import systemone
 from utils import systemone_settings
 
 _REAL_LOAD = laya_runtime._load_checkpoint
-_REAL_TRUNCATED = laya_runtime._state_truncated
+_REAL_PREDICT = laya_runtime._predict
 _REAL_OWNER_SETTING = systemone_settings._owner_setting
 _REAL_UNAVAILABLE_REASON = systemone_settings.runtime_unavailable_reason
 QUESTIONS = {
@@ -112,7 +112,9 @@ def runtime(monkeypatch):
         return FakeAgent(checkpoint.name), "cpu"
 
     monkeypatch.setattr(laya_runtime, "_load_checkpoint", load)
-    monkeypatch.setattr(laya_runtime, "_state_truncated", lambda *args: False)
+    monkeypatch.setattr(
+        laya_runtime, "_predict", lambda agent, state, qs: (agent.predict(state, qs), False)
+    )
     monkeypatch.setattr(systemone_settings, "runtime_unavailable_reason", lambda: None)
     monkeypatch.setattr(laya_runtime, "package_available", lambda: True)
     yield loads
@@ -230,7 +232,9 @@ def test_laya_refusal_becomes_a_bad_request(client, monkeypatch):
 
 
 def test_truncated_state_is_flagged(client, monkeypatch):
-    monkeypatch.setattr(laya_runtime, "_state_truncated", lambda *args: True)
+    monkeypatch.setattr(
+        laya_runtime, "_predict", lambda agent, state, qs: (agent.predict(state, qs), True)
+    )
     assert _post(client).headers["X-Unsloth-State-Truncated"] == "1"
 
 
@@ -798,7 +802,7 @@ def test_real_laya_answers_through_the_route(client, monkeypatch):
         pytest.skip("set SYSTEMONE_TEST_LAYA to a downloaded convaiinnovations/laya snapshot")
     pytest.importorskip("laya")
     monkeypatch.setattr(laya_runtime, "_load_checkpoint", _REAL_LOAD)
-    monkeypatch.setattr(laya_runtime, "_state_truncated", _REAL_TRUNCATED)
+    monkeypatch.setattr(laya_runtime, "_predict", _REAL_PREDICT)
     monkeypatch.setenv("UNSLOTH_SYSTEMONE_MODEL", path)
     monkeypatch.setenv("UNSLOTH_SYSTEMONE_SUBFOLDER", "multilingual")
     monkeypatch.setattr(laya_runtime, "LOAD_WAIT_S", 600.0)
@@ -811,3 +815,53 @@ def test_real_laya_answers_through_the_route(client, monkeypatch):
     assert 0.0 <= body["answers"]["tone"]["score"] <= 2.0
     assert "X-Unsloth-State-Truncated" not in response.headers
     assert _post(client, state = "word " * 3000).headers.get("X-Unsloth-State-Truncated") == "1"
+
+
+class WordTokenizer:
+    mask_token = "[MASK]"
+
+    def __init__(self):
+        self.calls = []
+
+    def __call__(self, text, add_special_tokens = False):
+        self.calls.append(len(text))
+        return {"input_ids": [len(word) for word in text.split()]}
+
+
+def test_long_state_is_tokenized_only_as_far_as_the_model_reads():
+    pytest.importorskip("laya")
+    tok = WordTokenizer()
+    ids, cut = laya_runtime._state_ids(tok, "word " * 100_000, 900)
+    assert (ids, cut) == ([4] * 900, True)
+    assert max(tok.calls) < 100_000
+
+
+@pytest.mark.parametrize("words, cut", [(900, False), (901, True), (5000, True)])
+def test_state_cut_matches_the_full_tokenization(words, cut):
+    pytest.importorskip("laya")
+    ids, was_cut = laya_runtime._state_ids(WordTokenizer(), "word " * words, 900)
+    assert (len(ids), was_cut) == (min(words, 900), cut)
+
+
+def test_fast_path_matches_laya_predict():
+    path = os.environ.get("SYSTEMONE_TEST_LAYA")
+    if not path:
+        pytest.skip("set SYSTEMONE_TEST_LAYA to a downloaded convaiinnovations/laya snapshot")
+    laya = pytest.importorskip("laya")
+    agent = laya.load(path, subfolder = "multilingual", device = "cpu")
+    questions = {name: laya_runtime._to_laya(q) for name, q in QUESTIONS.items()}
+    questions["zeta"] = {
+        "type": "choice",
+        "instructions": "Pick one",
+        "criteria": {"zeta": None, "alpha": "first", "mid": ""},
+    }
+    for state in ("I was charged twice.", {"turns": ["hi", "refund please"]}, "Über 请 word " * 20_000):
+        expected = agent.predict(state, questions)
+        result, truncated = _REAL_PREDICT(agent, state, questions)
+        assert result["usage"] == expected["usage"]
+        for name, answer in result["answers"].items():
+            want = {k: v for k, v in expected["answers"][name].items() if k != "action"}
+            assert answer == want
+            if "probabilities" in answer:
+                assert list(answer["probabilities"]) == list(want["probabilities"])
+        assert truncated == (len(state) > 200 if isinstance(state, str) else False)
