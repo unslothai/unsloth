@@ -9,21 +9,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Rebuild the non-persistent buffers of remote-code modules after a transformers 5 load.
-
-transformers 5 builds the model under the meta device, gives every non-persistent buffer
-fresh `torch.empty_like` storage and relies on the model's `_init_weights` to fill it.
-Remote code written against transformers 4.x computed those buffers in `__init__` (RoPE
-`inv_freq`, lightning-attention decay slopes, cos / sin caches) and its `_init_weights`
-only touches Linear and Embedding weights, so they come back holding whatever the
-allocator returned: zeros on a fresh card, which silently removes the rotary embedding
-and the attention decay, or garbage. The model still trains, just as a different model.
-
-Each such module is rebuilt once on the CPU with its parameters on the meta device, and
-its non-persistent buffers are copied into the loaded ones in place (so device placement
-and dispatch hooks are kept). Native transformers modules are left alone: their
-`_init_weights` already recomputes these buffers.
-"""
+"""transformers 5 gives non-persistent buffers `torch.empty_like` storage and leaves them to
+`_init_weights`; 4.x-era remote code computes them in `__init__` (RoPE inv_freq, decay slopes),
+so they load as garbage. Rebuild each such module on CPU with meta parameters and copy its
+buffers into the loaded ones in place, keeping device placement and dispatch hooks."""
 
 import inspect
 
@@ -62,8 +51,7 @@ def _constructor_kwargs(module):
             # Whatever went through *args / **kwargs cannot be recovered from the instance.
             return None
         if name == "config":
-            # A child of a composite model may have been built with a sub-config; only the
-            # config the module kept is known to be the one it was built with.
+            # A composite child may have been built with a sub-config: trust only a kept one.
             value = module.__dict__.get("config", None)
             if value is None:
                 return None
@@ -73,8 +61,7 @@ def _constructor_kwargs(module):
         elif name in module.__dict__:
             value = module.__dict__[name]
         else:
-            # An argument the module did not keep may have had a non-default value; guessing
-            # the default could rebuild plausible but wrong buffers, so skip the module.
+            # Guessing the default for an unkept argument could build plausible but wrong buffers.
             return None
         if value is inspect.Parameter.empty:
             return None
@@ -120,10 +107,8 @@ def _cache_key(module, kwargs, init_weights):
 
 
 def _written_by_init_weights(fresh, buffers, init_weights):
-    """Names of ``buffers`` the model's own ``_init_weights`` writes on ``fresh``, found by
-    running it on the rebuilt module with those buffers set to sentinels: NaN for floats,
-    and 0 then 1 for other dtypes, since a write cannot leave both in place. None when it
-    cannot be run, since then a live value it may have written cannot be told apart."""
+    """Buffers ``init_weights`` writes on ``fresh``, probed with sentinels (NaN for floats, 0
+    then 1 otherwise); None when it raises, since its live writes then cannot be told apart."""
     if init_weights is None or not buffers:
         return set()
     others = [name for name, buffer in buffers.items() if not buffer.is_floating_point()]
@@ -155,9 +140,8 @@ def _fresh_non_persistent_buffers(
     dtype,
     init_weights = None,
 ):
-    """Construct ``type(module)(**kwargs)`` on the CPU with parameters on meta and
-    return its non-persistent buffers, the attributes that alias them, and the buffers
-    the model's ``_init_weights`` fills itself (None when that cannot be determined)."""
+    """Rebuild ``module`` on CPU with meta parameters; return its non-persistent buffers,
+    the attributes aliasing them, and the ones ``init_weights`` fills itself."""
     from accelerate import init_empty_weights
 
     previous_dtype = torch.get_default_dtype()
