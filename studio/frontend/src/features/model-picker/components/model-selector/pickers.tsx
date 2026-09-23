@@ -895,8 +895,13 @@ function isRuntimeLoadedModel(
   activeGgufVariant: string | null | undefined,
   modelId: string,
   variantPolicy: "none" | "required" | "ignore",
+  upstreamId?: string,
 ): boolean {
-  if (!modelIdsMatchForPicker(loadedModelId, modelId)) return false;
+  if (
+    !modelIdsMatchForPicker(loadedModelId, modelId) &&
+    !modelIdsMatchForPicker(loadedModelId, upstreamId)
+  )
+    return false;
   if (variantPolicy === "ignore") return true;
   const hasActiveGgufVariant = !ggufVariantsMatchForPicker(
     activeGgufVariant,
@@ -3243,17 +3248,30 @@ export function HubModelPicker({
       ),
     [cachedGguf, cachedModels],
   );
-  // The id on disk for a row: itself, or the vendor repo its unsloth mirror copies.
+  // The vendor repo an unsloth mirror row copies. A cached vendor copy loads in its place, so
+  // the row also matches it as downloaded, selected and loaded.
+  const upstreamOf = useCallback(
+    (id: string) =>
+      catalog
+        ? artifactForRepoId(id, catalog)?.artifact.upstreamRepoId
+        : undefined,
+    [catalog],
+  );
+  const isValueRow = useCallback(
+    (id: string) =>
+      value === id || modelIdsMatchForPicker(value, upstreamOf(id)),
+    [value, upstreamOf],
+  );
+  // The id on disk for a row: itself, or its mirror's vendor repo.
   const cachedIdFor = useCallback(
     (id: string): string | null => {
       if (downloadedSet.has(id.toLowerCase())) return id;
-      const upstream =
-        catalog && artifactForRepoId(id, catalog)?.artifact.upstreamRepoId;
+      const upstream = upstreamOf(id);
       return upstream && downloadedSet.has(upstream.toLowerCase())
         ? upstream
         : null;
     },
-    [catalog, downloadedSet],
+    [upstreamOf, downloadedSet],
   );
 
   // The torn ones, kept apart so a Hub row can mark a partial rather than show it as complete
@@ -4688,7 +4706,7 @@ export function HubModelPicker({
         .filter(
           (id) =>
             !fitOnDeviceOnly ||
-            downloadedSet.has(id.toLowerCase()) ||
+            cachedIdFor(id) !== null ||
             searchRowFits({ id }),
         )
     );
@@ -4700,7 +4718,7 @@ export function HubModelPicker({
     formatFilter,
     isKnownGgufRepo,
     fitOnDeviceOnly,
-    downloadedSet,
+    cachedIdFor,
     searchRowFits,
   ]);
 
@@ -4718,7 +4736,7 @@ export function HubModelPicker({
         .filter(
           (r) =>
             !fitOnDeviceOnly ||
-            downloadedSet.has(r.id.toLowerCase()) ||
+            cachedIdFor(r.id) !== null ||
             searchRowFits(r),
         )
         .map((result) => result.id)
@@ -4746,7 +4764,7 @@ export function HubModelPicker({
       isTaskRuntimeSupported,
       formatFilter,
       fitOnDeviceOnly,
-      downloadedSet,
+      cachedIdFor,
       searchRowFits,
       isMac,
       curatedOfferable,
@@ -7198,16 +7216,17 @@ export function HubModelPicker({
                                 info?.meta ??
                                 (isG ? "GGUF" : extractParamLabel(id))
                               }
-                              selected={value === id}
+                              selected={isValueRow(id)}
                               loaded={isRuntimeLoadedModel(
                                 loadedModelId,
                                 activeGgufVariant,
                                 id,
                                 isG ? "required" : "none",
+                                upstreamOf(id),
                               )}
                               optionProps={hubModelList.getOptionProps(
                                 optionKey,
-                                value === id,
+                                isValueRow(id),
                               )}
                               onClick={() => {
                                 if (isG) {
@@ -7311,16 +7330,17 @@ export function HubModelPicker({
                                 ? (recommendedMeta.get(id)?.meta ?? "GGUF")
                                 : (vram?.detail ?? extractParamLabel(id))
                             }
-                            selected={value === id}
+                            selected={isValueRow(id)}
                             loaded={isRuntimeLoadedModel(
                               loadedModelId,
                               activeGgufVariant,
                               id,
                               isKnownGgufRepo(id) ? "required" : "none",
+                              upstreamOf(id),
                             )}
                             optionProps={hubModelList.getOptionProps(
                               optionKey,
-                              value === id,
+                              isValueRow(id),
                             )}
                             onClick={() => {
                               if (isKnownGgufRepo(id)) {
@@ -7439,16 +7459,17 @@ export function HubModelPicker({
                                       .filter(Boolean)
                                       .join(" · ")
                               }
-                              selected={value === id}
+                              selected={isValueRow(id)}
                               loaded={isRuntimeLoadedModel(
                                 loadedModelId,
                                 activeGgufVariant,
                                 id,
                                 isSearchGguf ? "required" : "none",
+                                upstreamOf(id),
                               )}
                               optionProps={hubModelList.getOptionProps(
                                 optionKey,
-                                value === id,
+                                isValueRow(id),
                               )}
                               onClick={() => {
                                 if (isSearchGguf) {
