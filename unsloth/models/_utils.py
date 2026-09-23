@@ -1208,6 +1208,10 @@ def _cast_text_only_prequantized_params(model, dtype):
     quantizer = getattr(model, "hf_quantizer", None)
     if quantizer is None or not getattr(quantizer, "pre_quantized", False):
         return 0
+    # The quantizer may override the request (AWQ bf16 -> fp16 on CUDA, FBGEMM FP8 -> bf16); from_pretrained records the result on config.dtype.
+    resolved = getattr(getattr(model, "config", None), "dtype", None)
+    if resolved in (torch.float16, torch.bfloat16, torch.float32):
+        dtype = resolved
     keep_fp32 = []
     get_dtype_plan = getattr(model, "_get_dtype_plan", None)
     if callable(get_dtype_plan):

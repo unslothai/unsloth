@@ -197,3 +197,23 @@ def test_vision_loader_casts_right_after_the_text_only_load():
     tail = "\n".join(src_lines[load_line:line])
     assert "_attach_bnb_multidevice_hooks(" not in tail
     assert 'embed_tokens.to("cpu")' not in tail
+
+
+@pytest.mark.parametrize(
+    "requested, resolved",
+    [(torch.bfloat16, torch.float16), (torch.float16, torch.bfloat16)],
+    ids = ["awq_bf16_to_fp16", "fbgemm_fp8_fp16_to_bf16"],
+)
+def test_quantizer_resolved_dtype_wins_over_the_request(requested, resolved):
+    # AWQ turns a bf16 request into fp16 on CUDA and FBGEMM FP8 forces bf16; from_pretrained
+    # stores the quantizer's choice on config.dtype and the repair must not undo it.
+    cast = _load_helper()
+    model = _TinyDecoder()
+    model.embed_tokens.to(torch.bfloat16 if resolved == torch.float16 else torch.float16)
+    model.lm_head.to(resolved)
+    model.config = types.SimpleNamespace(dtype = resolved)
+    cast(model, requested)
+    assert model.embed_tokens.weight.dtype == resolved
+    assert model.in_proj_qkv.weight.dtype == resolved
+    assert model.lm_head.weight.dtype == resolved
+    assert model.quantized.weight.dtype == torch.float16
