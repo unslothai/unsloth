@@ -132,7 +132,7 @@ function LabelTile({
               onClick={remove}
               disabled={deleting}
               aria-label="Remove image"
-              className="absolute right-1.5 top-1.5 flex size-6 items-center justify-center rounded-full bg-background/85 text-muted-foreground opacity-0 pointer-coarse:opacity-100 shadow-sm backdrop-blur-sm transition-opacity hover:bg-background hover:text-destructive focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring group-hover/tile:opacity-100"
+              className="absolute right-1.5 top-1.5 flex size-6 items-center justify-center rounded-full bg-background/85 text-muted-foreground opacity-0 any-pointer-coarse:opacity-100 shadow-sm backdrop-blur-sm transition-opacity hover:bg-background hover:text-destructive focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring group-hover/tile:opacity-100"
             >
               {deleting ? (
                 <Spinner className="size-3" />

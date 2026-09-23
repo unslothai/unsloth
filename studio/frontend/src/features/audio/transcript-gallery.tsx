@@ -221,7 +221,7 @@ export function TranscriptGallery({
                 <Button
                   variant="ghost"
                   size="icon"
-                  className="size-5 text-muted-foreground/60 opacity-0 group-hover:opacity-100 focus-visible:opacity-100 data-[state=open]:opacity-100 pointer-coarse:opacity-100"
+                  className="size-5 text-muted-foreground/60 opacity-0 group-hover:opacity-100 focus-visible:opacity-100 data-[state=open]:opacity-100 any-pointer-coarse:opacity-100"
                   aria-label="Transcript actions"
                 >
                   <HugeiconsIcon icon={MoreVerticalIcon} className="size-3.5" />

@@ -229,7 +229,7 @@ export function ProfilePersonalizationPanel() {
               size="lg"
               className="size-[calc(128px*var(--ui-space-scale,1))] text-[calc(3.2rem*var(--ui-font-scale,1))]"
             />
-            <span className="absolute inset-0 flex items-center justify-center rounded-full bg-black/45 opacity-0 pointer-coarse:opacity-100 transition-opacity group-hover:opacity-100">
+            <span className="absolute inset-0 flex items-center justify-center rounded-full bg-black/45 opacity-0 any-pointer-coarse:opacity-100 transition-opacity group-hover:opacity-100">
               <HugeiconsIcon
                 icon={Image01Icon}
                 className="size-8 text-white"

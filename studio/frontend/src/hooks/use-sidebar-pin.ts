@@ -38,7 +38,9 @@ function subscribe(cb: () => void) {
     if (e.key === PINNED_KEY || e.key === null) {
       // Another tab set or cleared it (Reset all local preferences), so follow what is stored.
       chosen = readStored() !== null;
-      pinnedValue = loadPinned();
+      // During a tour hold, stay open and apply it on release.
+      if (held) beforeHold = loadPinned();
+      else pinnedValue = loadPinned();
       cb();
     }
   };

@@ -286,7 +286,7 @@ function ClipRowMenu({
           aria-label={`Actions for ${clip.prompt || "clip"}`}
           // Hidden until the row is hovered or the menu is open, so a long list stays quiet; keyboard
           // focus reveals it too.
-          className="flex size-5 shrink-0 items-center justify-center rounded-md text-muted-foreground/60 opacity-0 pointer-coarse:opacity-100 transition-colors hover:bg-[rgb(0_0_0_/_calc(0.05*var(--contrast-wash-gain,1)))] hover:text-foreground focus-visible:opacity-100 group-hover:opacity-100 data-[state=open]:opacity-100 dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))]"
+          className="flex size-5 shrink-0 items-center justify-center rounded-md text-muted-foreground/60 opacity-0 any-pointer-coarse:opacity-100 transition-colors hover:bg-[rgb(0_0_0_/_calc(0.05*var(--contrast-wash-gain,1)))] hover:text-foreground focus-visible:opacity-100 group-hover:opacity-100 data-[state=open]:opacity-100 dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))]"
         >
           <HugeiconsIcon
             icon={MoreVerticalIcon}
