@@ -6093,11 +6093,12 @@ def test_delete_variant_keeps_shared_xet_blob_referenced_by_other_repo(monkeypat
     )
     payload = _share_variant_blob(tmp_path, repo_dir, "q4blob")
     other_dir = tmp_path / "models--Org--Other-GGUF"
-    _build_variant_cache_repo(
+    other_repo = _build_variant_cache_repo(
         other_dir,
         blob_specs = {"q4blob": b"x" * 200},
         snapshot_links = [("rev1", "model-Q4_K_M.gguf", "q4blob")],
     )
+    other_repo.repo_id = "Org/Other-GGUF"
     _share_variant_blob(tmp_path, other_dir, "q4blob")
     _shared_setup_13(monkeypatch, repo, tmp_path)
 
@@ -6108,9 +6109,20 @@ def test_delete_variant_keeps_shared_xet_blob_referenced_by_other_repo(monkeypat
     assert payload.exists()
     other = other_dir / "snapshots" / "rev1" / "model-Q4_K_M.gguf"
     assert other.is_symlink() and other.exists()
-    assert payload.with_name(f"{payload.name}.refs").read_text() == (
-        "models--Org--Other-GGUF/blobs/q4blob\n"
+    # huggingface_hub 1.32 cannot rewrite the manifest on Windows (it fsyncs a read-only handle), so a stale line for the removed link may stay; it names nothing on disk and is ignored.
+    manifest = payload.with_name(f"{payload.name}.refs")
+    live = [line for line in manifest.read_text().splitlines() if os.path.lexists(tmp_path / line)]
+    assert live == ["models--Org--Other-GGUF/blobs/q4blob"]
+
+    monkeypatch.setattr(
+        deletion.cache_inventory,
+        "all_hf_cache_scans",
+        lambda: [SimpleNamespace(repos = [other_repo])],
     )
+    deletion._delete_cached_model_blocking("Org/Other-GGUF", "Q4_K_M", None)
+
+    assert not payload.exists()
+    assert not manifest.exists()
 
 
 def test_reclaim_replaced_variant_sweeps_shared_xet_blob(monkeypatch, tmp_path):
