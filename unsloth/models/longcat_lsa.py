@@ -114,28 +114,37 @@ def _ngram_tracking_cache_class(cls):
     class NgramTrackingCache(cls):
         def reorder_cache(self, beam_idx, *args, **kwargs):
             out = super().reorder_cache(beam_idx, *args, **kwargs)
-            history = self._unsloth_ngram_history
-            self._unsloth_ngram_history = history.index_select(0, beam_idx.to(history.device))
+            history = getattr(self, "_unsloth_ngram_history", None)
+            if history is not None:
+                self._unsloth_ngram_history = history.index_select(0, beam_idx.to(history.device))
             return out
 
         def batch_select_indices(self, indices, *args, **kwargs):
             out = super().batch_select_indices(indices, *args, **kwargs)
-            history = self._unsloth_ngram_history
-            if torch.is_tensor(indices):
-                indices = indices.to(history.device)
-            self._unsloth_ngram_history = history[indices]
+            history = getattr(self, "_unsloth_ngram_history", None)
+            if history is not None:
+                if torch.is_tensor(indices):
+                    indices = indices.to(history.device)
+                self._unsloth_ngram_history = history[indices]
             return out
 
         def batch_repeat_interleave(self, repeats, *args, **kwargs):
             out = super().batch_repeat_interleave(repeats, *args, **kwargs)
-            self._unsloth_ngram_history = self._unsloth_ngram_history.repeat_interleave(
-                repeats, dim = 0
-            )
+            history = getattr(self, "_unsloth_ngram_history", None)
+            if history is not None:
+                self._unsloth_ngram_history = history.repeat_interleave(repeats, dim = 0)
+            return out
+
+        def reset(self, *args, **kwargs):
+            out = super().reset(*args, **kwargs)
+            self._unsloth_ngram_history = None
             return out
 
         def crop(self, *args, **kwargs):
             out = super().crop(*args, **kwargs)
-            self._unsloth_ngram_history = self._unsloth_ngram_history[..., : self.get_seq_length()]
+            history = getattr(self, "_unsloth_ngram_history", None)
+            if history is not None:
+                self._unsloth_ngram_history = history[..., : self.get_seq_length()]
             return out
 
     NgramTrackingCache.__name__ = cls.__name__
@@ -328,7 +337,13 @@ def _classes():
             use_cache = None,
             **kwargs,
         ):
-            if inputs_embeds is None and input_ids is not None:
+            if inputs_embeds is not None:
+                # The n-gram embedding is part of the network and is built from token ids.
+                raise ValueError(
+                    "Unsloth: LongCat-Flash-Lite-Sparse builds its input embeddings from token ids "
+                    "(word plus n-gram embeddings), so pass `input_ids`, not `inputs_embeds`."
+                )
+            if input_ids is not None:
                 topk = getattr(self.config, "index_topk", None)
                 cached = 0
                 if past_key_values is not None:

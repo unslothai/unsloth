@@ -478,6 +478,38 @@ def test_ngram_history_follows_beam_reorder_and_crop(tiny):
         torch.testing.assert_close(out.logits[:, -1], full[:, 10], atol = 1e-4, rtol = 1e-4)
 
 
+def test_cache_reset_clears_the_ngram_history(tiny):
+    # transformers reuses a static cache between generate calls after reset(); the previous
+    # prompt's tokens must not feed the next prompt's n-gram ids.
+    import transformers
+    from transformers.cache_utils import StaticCache
+
+    if int(transformers.__version__.split(".")[0]) < 5:
+        pytest.skip("transformers 4's StaticCache cannot hold MLA's differing key/value head dims")
+    path, cfg, sd = tiny
+    model = _load(path).eval()
+    first, second = _tokens(cfg, 1, 9, seed = 1), _tokens(cfg, 1, 9, seed = 2)
+    try:
+        cache = StaticCache(config = model.config, max_cache_len = 32)
+    except TypeError:
+        cache = StaticCache(config = model.config, max_batch_size = 1, max_cache_len = 32)
+    with torch.no_grad():
+        expected = model(input_ids = second).logits
+        model(input_ids = first, past_key_values = cache, use_cache = True)
+        cache.reset()
+        got = model(input_ids = second, past_key_values = cache, use_cache = True).logits
+    torch.testing.assert_close(got, expected, atol = 1e-4, rtol = 1e-4)
+
+
+def test_inputs_embeds_is_refused(tiny):
+    # The n-gram half of the input embedding needs the token ids.
+    path, cfg, sd = tiny
+    model = _load(path).eval()
+    ids = _tokens(cfg, 1, 9)
+    with pytest.raises(ValueError, match = "input_ids"):
+        model(inputs_embeds = model.model.embed_tokens(ids))
+
+
 def test_bf16_keeps_router_fp32_and_sglang_norm_eps(tiny):
     path, cfg, sd = tiny
     model = _load(path, dtype = torch.bfloat16)
