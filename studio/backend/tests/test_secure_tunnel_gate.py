@@ -24,6 +24,10 @@ from run import _cloudflare_tunnel_should_start as should_start  # noqa: E402
         # Non-secure wildcard binds tunnel only when --cloudflare is passed (True).
         (True, "0.0.0.0", False, False, False, True),
         (True, "::", False, False, False, True),
+        (True, "::0", False, False, False, True),
+        (True, "0:0:0:0:0:0:0:0", False, False, False, True),
+        (True, "0", False, False, False, True),
+        (True, "::ffff:0.0.0.0", False, False, False, True),
         (True, "127.0.0.1", False, False, False, False),
         (True, "localhost", False, False, False, False),
         # --secure tunnels a loopback bind too.
@@ -108,11 +112,40 @@ def test_final_bound_port_uses_uvicorn_listener_for_ephemeral_bind():
     assert all(
         resolved < source.index(consumer, resolved)
         for consumer in (
+            "app.state.server_request_host",
             "app.state.remote_access_port",
             "TAURI_PORT={port}",
-            "start_studio_tunnel(port",
+            "start_studio_tunnel(",
         )
     )
+    assert "origin_host = app.state.server_request_host" in source[resolved:]
+
+
+@pytest.mark.parametrize(
+    "address,expected",
+    [
+        (("0.0.0.0", 43123), "127.0.0.1"),
+        (("::", 43123, 0, 0), "::1"),
+        (("192.0.2.24", 43123), "192.0.2.24"),
+        (("fe80::1234", 43123, 0, 7), "fe80::1234%7"),
+    ],
+)
+def test_bound_request_host_uses_the_active_listener_address(address, expected):
+    from types import SimpleNamespace
+
+    import run
+
+    sock = SimpleNamespace(getsockname = lambda: address)
+    server = SimpleNamespace(servers = [SimpleNamespace(sockets = [sock])])
+    assert run._bound_request_host(server) == expected
+
+
+def test_bound_request_host_fails_closed_without_a_listener():
+    from types import SimpleNamespace
+
+    import run
+    with pytest.raises(RuntimeError, match = "did not expose its bound address"):
+        run._bound_request_host(SimpleNamespace(servers = []))
 
 
 def test_arg_parser_secure_polarity_and_not_secure_alias():
@@ -279,20 +312,29 @@ def test_api_only_cors_tracks_published_public_url():
         allow_methods = ["*"],
         allow_headers = ["*"],
     )
-    request = Headers(
-        {
-            "origin": "https://browser-client.example",
-            "access-control-request-method": "POST",
-            "access-control-request-headers": "authorization,content-type",
-        }
-    )
-    assert middleware.preflight_response(request).status_code == 400
-    state.cloudflare_url = "https://public.trycloudflare.com"
-    response = middleware.preflight_response(request)
+
+    def _preflight(origin):
+        return middleware.preflight_response(
+            Headers(
+                {
+                    "origin": origin,
+                    "access-control-request-method": "POST",
+                    "access-control-request-headers": "authorization,content-type",
+                }
+            )
+        )
+
+    published = "https://public.trycloudflare.com"
+    assert _preflight(published).status_code == 400
+    state.cloudflare_url = published
+    response = _preflight(published)
     assert response.status_code == 200
-    assert response.headers["access-control-allow-origin"] == "https://browser-client.example"
+    assert response.headers["access-control-allow-origin"] == published
+    # The tunnel is the one origin that needs admitting, not a switch that admits all of them:
+    # plain api-only stays locked to the Tauri app for everyone else.
+    assert _preflight("https://browser-client.example").status_code == 400
     state.cloudflare_url = None
-    assert middleware.preflight_response(request).status_code == 400
+    assert _preflight(published).status_code == 400
 
 
 def test_run_server_exports_secure_env_for_cors():
@@ -345,7 +387,7 @@ def test_cors_preflight_cache_window_is_short():
     response = middleware.preflight_response(
         Headers(
             {
-                "origin": "https://browser-client.example",
+                "origin": "https://x.trycloudflare.com",
                 "access-control-request-method": "POST",
                 "access-control-request-headers": "authorization",
             }

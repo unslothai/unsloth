@@ -86,8 +86,8 @@ def patched_sft(_cpu_only_torch):
     global torch  # the `import torch._dynamo` below would otherwise shadow it
     import unsloth  # noqa: F401
 
-    # Through the module's MonkeyPatch: `import unsloth` reinstalls the real
-    # torch.compile over the passthrough, and dynamo's kill switch is global too.
+    # Through the module's MonkeyPatch: `import unsloth` reinstalls the real torch.compile over the passthrough, and
+    # dynamo's kill switch is global too.
     _cpu_only_torch.setattr(torch, "compile", _eager_compile)
     try:
         import torch._dynamo
@@ -186,18 +186,175 @@ def test_default_sft_construction_does_not_trip_the_guard(tmp_path, trl_has_guar
 
 
 def test_explicit_max_length_resolves_the_same_on_every_trl(tmp_path, trl_has_guard):
-    """The swap only moves the already-resolved length across to `max_seq_length`;
-    it must never reinstate the raw user `max_length`."""
+    """An explicit limit below the model cap survives the padding-free handoff.
+
+    Every TRL must truncate to the user's limit, even when `max_length` is cleared.
+    """
     trainer = _build(tmp_path, max_length = _USER_MAX_LENGTH)
     args = trainer.args
 
     assert args.padding_free is True
-    assert args.max_seq_length == _MODEL_MAX_SEQ_LENGTH
+    assert args.max_seq_length == _USER_MAX_LENGTH
     if trl_has_guard:
         assert args.max_length is None
     else:
-        assert args.max_length == _MODEL_MAX_SEQ_LENGTH
-    assert _longest(trainer) == _MODEL_MAX_SEQ_LENGTH
+        assert args.max_length == _USER_MAX_LENGTH
+    assert _longest(trainer) == _USER_MAX_LENGTH
+
+
+def _trl_default_max_length():
+    import dataclasses
+    for field in dataclasses.fields(_pristine_sft_config_cls()):
+        if field.name == "max_length":
+            return field.default
+    return None
+
+
+# 1025 is the first cap above TRL's 1024 default; 2048 is from_pretrained's own default.
+@pytest.mark.parametrize("model_cap", [1025, 2048, 8192])
+def test_an_untouched_max_length_default_does_not_cap_the_model_context(
+    tmp_path, trl_has_guard, model_cap
+):
+    """Honouring a limit the caller never set is the same bug in the other direction.
+
+    `SFTConfig.max_length` defaults to 1024 on every TRL from 0.22 onwards, so a cap
+    keyed on "is this positive" reads every default config as a request for 1024.
+    `_MODEL_MAX_SEQ_LENGTH = 128` sits below that default, where `min(128, 1024)` is 128
+    either way, which is why the default-construction test above cannot see this.
+    """
+    from datasets import Dataset
+
+    default_max_length = _trl_default_max_length()
+    assert default_max_length is None or default_max_length > 0, (
+        "this TRL defaults max_length to something falsy, so the regression "
+        "cannot be reproduced here"
+    )
+
+    def _long_text(tok):
+        return Dataset.from_list([{"text": "The quick brown fox. " * 4000}] * 4)
+
+    trainer = _build(tmp_path, dataset = _long_text, model_max_seq_length = model_cap)
+    args = trainer.args
+
+    assert args.max_seq_length == model_cap
+    if trl_has_guard:
+        assert args.max_length is None
+    else:
+        assert args.max_length == model_cap
+    assert _longest(trainer) == model_cap, (
+        f"a {model_cap}-token context was truncated to {_longest(trainer)}; the "
+        "untouched config default was read as an explicit request"
+    )
+
+
+@pytest.mark.parametrize("path", ["cli", "clone"])
+def test_a_rebuilt_default_config_still_does_not_cap_the_model(tmp_path, trl_has_guard, path):
+    """The two ways an untouched config comes back carrying its RESOLVED default.
+
+    `HfArgumentParser` builds one argparse argument per `dataclasses.fields()` entry and
+    passes every value through, and `dataclasses.replace` re-inits from the current field
+    values, so on both paths a config nobody capped arrives holding `max_length = 1024`.
+    Reading omission from the value is what keeps these safe: a constructor-provenance
+    marker is set on the original object and forged by both of these.
+    """
+    import dataclasses
+
+    from datasets import Dataset
+    from trl import SFTConfig
+
+    default_max_length = _trl_default_max_length()
+    if default_max_length is None or default_max_length <= 0:
+        pytest.skip("this TRL has no positive max_length default, so there is nothing to confuse")
+
+    if path == "cli":
+        from transformers import HfArgumentParser
+        (cfg,) = HfArgumentParser((SFTConfig,)).parse_args_into_dataclasses(
+            ["--output_dir", str(tmp_path)]
+        )
+    else:
+        cfg = dataclasses.replace(SFTConfig(output_dir = str(tmp_path)), learning_rate = 1e-4)
+    assert cfg.max_length == default_max_length
+
+    model, tok = _load_plain(8192)
+    text = "The quick brown fox. " * 4000
+    for key, value in (
+        ("per_device_train_batch_size", 2),
+        ("max_steps", 1),
+        ("report_to", "none"),
+        ("save_strategy", "no"),
+        ("use_cpu", True),
+        ("dataset_text_field", "text"),
+        ("fp16", False),
+        ("bf16", False),
+        ("optim", "adamw_torch"),
+    ):
+        setattr(cfg, key, value)
+    from trl import SFTTrainer
+
+    trainer = SFTTrainer(
+        model = model,
+        processing_class = tok,
+        args = cfg,
+        train_dataset = Dataset.from_list([{"text": text}] * 4),
+    )
+    assert _longest(trainer) == 8192, (
+        f"a config rebuilt via {path} carried its resolved default back in and capped an "
+        "8192-token context at it"
+    )
+
+
+def test_an_explicit_max_length_equal_to_the_default_keeps_the_model_length(tmp_path):
+    """The one case this cannot decide, pinned so it is a known limit and not a surprise.
+
+    `SFTConfig(max_length = 1024)` is indistinguishable from an untouched config once the
+    value is all you have, and every marker that could tell them apart is forged by the
+    CLI and clone paths above. This resolves to the model's length, which is what the
+    merge base did too, so it is a gap this change does not close rather than one it opens.
+    """
+    from datasets import Dataset
+    from trl import SFTConfig
+
+    default_max_length = _trl_default_max_length()
+    if default_max_length is None or default_max_length <= 0:
+        pytest.skip("this TRL has no positive max_length default")
+
+    model, tok = _load_plain(8192)
+    cfg = SFTConfig(
+        output_dir = str(tmp_path),
+        per_device_train_batch_size = 2,
+        max_steps = 1,
+        report_to = "none",
+        save_strategy = "no",
+        use_cpu = True,
+        dataset_text_field = "text",
+        fp16 = False,
+        bf16 = False,
+        optim = "adamw_torch",
+        max_length = default_max_length,
+    )
+    from trl import SFTTrainer
+
+    trainer = SFTTrainer(
+        model = model,
+        processing_class = tok,
+        args = cfg,
+        train_dataset = Dataset.from_list([{"text": "The quick brown fox. " * 4000}] * 4),
+    )
+    assert _longest(trainer) == 8192
+
+
+def test_the_cap_reads_an_explicit_max_length_not_a_positive_one():
+    """The behavioural test above needs a TRL whose default is positive; this one does not."""
+    from unsloth.models import rl
+
+    source = inspect.getsource(rl)
+    assert "_unsloth_explicit_max_length" in source
+    assert "_unsloth_default_max_length" in source
+    # Not a bare truthiness test on the value, which every default passes.
+    assert (
+        "min(model.max_seq_length, args.max_length) "
+        "if (getattr(args, 'max_length', None) or 0) > 0" not in source
+    )
 
 
 def test_max_seq_length_still_beats_max_length(tmp_path, trl_has_guard):
@@ -275,9 +432,9 @@ def test_pretokenized_rows_are_truncated_so_the_cap_is_really_enforced(
     assert args.max_length is None, f"{name}: the cap should be consumed by the truncation"
     assert args.max_seq_length == _MODEL_MAX_SEQ_LENGTH, f"{name}: the cap must be recorded"
     assert args.padding_free is True, f"{name}: padding-free no longer needs dropping"
-    # Padding-free CONCATENATES the batch into one flat sequence, so the collated width is
-    # rows x cap, not the cap. Two rows at exactly 2 x 128 is the proof that neither row
-    # exceeded it; asserting 128 here would be asserting that padding-free was off.
+    # Padding-free CONCATENATES the batch into one flat sequence, so the collated width is rows x cap, not the cap. Two
+    # rows at exactly 2 x 128 is the proof that neither row exceeded it; asserting 128 here would be asserting that
+    # padding-free was off.
     assert _collated_width(trainer) == 2 * _MODEL_MAX_SEQ_LENGTH
 
 
@@ -305,10 +462,8 @@ def test_a_with_transform_dataset_keeps_its_cap(tmp_path, trl_has_guard):
             }
         )
 
-    # Dropping padding-free keeps `max_length` for TRL's collator, and that collator
-    # has never truncated on any TRL from 0.22.2 to main: truncation lives only in
-    # _prepare_dataset, which returns pre-tokenized rows untouched. So there is no
-    # enforcement path left here, and construction must fail rather than run uncapped.
+    # Dropping padding-free keeps `max_length` for TRL's collator, and that collator has never truncated on any TRL from
+    # 0.22.2 to main: truncation lives only in _prepare_dataset, which returns pre-tokenized rows untouched.
     with pytest.raises(ValueError, match = "cannot be enforced"):
         _build(tmp_path, dataset = _transformed)
 
@@ -327,7 +482,6 @@ def test_a_raw_eval_split_is_left_for_the_tokenizer(tmp_path, trl_has_guard):
     raw = Dataset.from_list([{"text": text}] * 4)
     trainer = _build(tmp_path, dataset = _tokenized_dataset, eval_dataset = {"validation": raw})
 
-    # The train split was tokenized and capped, so the cap is consumed.
     assert trainer.args.max_length is None
     split = trainer.eval_dataset["validation"]
     # The raw split is untouched: no truncation ran over it, so the tokenizer pass that
@@ -352,6 +506,7 @@ def test_a_torch_formatted_dataset_is_still_truncated(tmp_path, trl_has_guard):
         return ds
 
     trainer = _build(tmp_path, dataset = _formatted)
+    # The train split was tokenized and capped, so the cap is consumed.
     assert trainer.args.max_length is None
     assert _longest(trainer) == _MODEL_MAX_SEQ_LENGTH, "formatted rows were not truncated"
 
@@ -524,10 +679,9 @@ def _pristine_sft_config_cls():
     `max_seq_length` field no TRL from 0.22.2 to 1.9.2 declares. A caller who
     imported SFTConfig before `import unsloth` still passes the pristine class.
     """
-    # Go by the marker rather than the name: the generated subclass is renamed
-    # onto TRL's own name so that instances of it keep pickling, so `Unsloth`
-    # no longer appears in `__name__`. `__dict__` rather than `getattr`, so a
-    # user subclass of the generated class does not inherit its way past this.
+    # Go by the marker rather than the name: the generated subclass is renamed onto TRL's
+    # own name so that instances of it keep pickling, so `Unsloth` need not appear in
+    # `__name__` at all; the name check below only catches whatever kept the old name.
     from trl import SFTConfig
 
     cls = SFTConfig
@@ -669,9 +823,8 @@ def _late_overlength_dataset(tok):
     short = tok("hi")["input_ids"]
     long = tok("The quick brown fox. " * 200)["input_ids"]
     assert len(long) > _MODEL_MAX_SEQ_LENGTH
-    # Keyed off the row's own text, not its position: `with_transform` is handed
-    # whatever slice was asked for, so a batch index says nothing about which
-    # row of the dataset it is.
+    # Keyed off the row's own text, not its position: `with_transform` is handed whatever slice was asked for, so a
+    # batch index says nothing about which row of the dataset it is.
     base = Dataset.from_list([{"text": t} for t in ("s", "s", "s", "L")])
     return base.with_transform(
         lambda batch: {
@@ -938,11 +1091,10 @@ def test_rows_whose_mask_is_truncated_away_are_dropped(tmp_path, trl_has_guard):
     """Same rule the `labels` filter already applies, for the other two spellings."""
     if not trl_has_guard:
         pytest.skip("no guard in this TRL: the block under test is not generated at all")
-    # completion_only_loss explicitly, because the collator's mode is what decides
-    # whether this mask is supervision at all. TRL resolves a None from the TRAIN
-    # sample, and this split has no prompt/completion columns, so the effective mode
-    # would be False, the collator would ignore the mask, and filtering on it would
-    # be deleting rows that still carry full-sequence supervision.
+    # completion_only_loss explicitly, because the collator's mode is what decides whether this mask is supervision
+    # at all. TRL resolves a None from the TRAIN sample, and this split has no prompt/completion columns, so the
+    # effective mode would be False, the collator would ignore the mask, and filtering on it would be deleting rows
+    # that still carry full-sequence supervision.
     trainer = _build(tmp_path, dataset = _mask_supervised_dataset, completion_only_loss = True)
     assert len(trainer.train_dataset) == 2, "the rows that kept their completion were dropped too"
     for row in trainer.train_dataset:
@@ -1022,24 +1174,19 @@ def test_the_codegen_carries_the_third_round_fixes():
     assert "hasattr(_first, '__len__')" not in block
     assert "try:    len(_first)" in block
 
-    # Supervision is carried three ways and only `labels` was filtered. The two
-    # masks are gated the way TRL's collator gates them, which is not the same
-    # for both: `completion_mask` behind the RESOLVED `completion_only_loss`,
-    # `assistant_masks` on presence alone.
+    # Supervision is carried three ways and only `labels` was filtered.
     assert "'assistant_masks' in _unsloth_cols" in block
     assert "getattr(args, 'assistant_only_loss'" not in block
 
-    # A None `completion_only_loss` is resolved from the dataset the way TRL
-    # resolves it, not read as "on".
+    # A None `completion_only_loss` is resolved from the dataset the way TRL resolves it, not read as "on".
     assert "getattr(args, 'completion_only_loss', None) is not False" not in block
-    # Resolved from the TRAIN sample now, not this split's columns, because that is
-    # what the collator does and the two have to agree.
+    # Resolved from the TRAIN sample now, not this split's columns, because that is what the collator does and the two
+    # have to agree.
     assert "'prompt' in _unsloth_train_sample and 'completion' in _unsloth_train_sample" in block
 
-    # The masks apply onto the same labels one after another, so a row survives only
-    # where they all agree -- and `labels` is in that intersection, not a filter of its
-    # own: a row supervised at one position and masked in at another passes two separate
-    # filters and still goes out all -100.
+    # The masks apply onto the same labels one after another, so a row survives only where they all agree, and `labels`
+    # is in that intersection, not a filter of its own: a row supervised at one position and masked in at another
+    # passes two separate filters and still goes out all -100.
     assert (
         "_unsloth_supervision = (['labels'] if 'labels' in _unsloth_cols else []) + _unsloth_masks"
         in block
@@ -1210,8 +1357,8 @@ def test_a_none_completion_only_loss_does_not_filter_a_pretokenized_split():
     entirely. Reading `None` as "on" deleted rows that still had valid
     full-sequence supervision, and could empty the split outright."""
     block = _padding_free_codegen_block()
-    # Bounded by the next anchor rather than by a byte count: a comment added
-    # inside the block used to push the assertions out of a fixed window.
+    # Bounded by the next anchor rather than by a byte count: a comment added inside the block used to push the
+    # assertions out of a fixed window.
     i = block.index("_unsloth_completion_only")
     window = block[i : block.index("args._unsloth_completion_only_loss", i)]
     assert "is None" in window
@@ -1386,12 +1533,11 @@ def test_the_codegen_leaves_a_packed_eval_split_to_the_packer():
         "_unsloth_eval_packing = getattr(args, 'packing', False) if getattr(args, 'eval_packing', None) is None else getattr(args, 'eval_packing')"
         in block
     )
-    # And it drops the enforcement claim rather than the split: packing needs
-    # `max_length`, so clearing it would make TRL raise instead.
+    # And it drops the enforcement claim rather than the split: packing needs `max_length`,
+    # so clearing it would make TRL raise instead.
     # `or not _unsloth_known_mode`: a mode this cannot honour spares the split too.
     assert "if _unsloth_eval_packing or not _unsloth_known_mode:" in block
     assert "_unsloth_capped = False\\n" in block
-    # And the fallback scan must not then raise on the split it just spared.
     assert (
         "_unsloth_scan_eval = None if _unsloth_eval_packing else "
         "(eval_dataset if 'eval_dataset' in locals() else None)" in block
@@ -1409,6 +1555,7 @@ def test_the_codegen_does_not_raise_on_a_split_it_left_to_the_packer():
     `bfd_split` the overflow they exist to handle.
     """
     block = _padding_free_codegen_block()
+    # And the fallback scan must not then raise on the split it just spared.
     assert (
         "_unsloth_scan_eval = None if _unsloth_eval_packing else "
         "(eval_dataset if 'eval_dataset' in locals() else None)" in block
@@ -1477,10 +1624,9 @@ def test_eval_packing_on_a_late_split_follows_whether_trl_packs_it():
     """
     _, tok = _load_plain()
 
-    # A fresh split per case on purpose: a skipped cut MARKS the caller's own
-    # object as capped, which is what stops the paired `get_eval_dataloader`
-    # wrapper cutting it seconds later, so reusing one split across cases would
-    # measure that mark instead of the decision under test.
+    # A fresh split per case on purpose: a skipped cut MARKS the caller's own object as capped, which is what stops the
+    # paired `get_eval_dataloader` wrapper cutting it seconds later, so reusing one split across cases would measure
+    # that mark instead of the decision under test.
     def _late():
         split = _tokenized_dataset(tok)
         assert max(len(r) for r in split["input_ids"]) > _MODEL_MAX_SEQ_LENGTH
@@ -1499,8 +1645,8 @@ def test_eval_packing_on_a_late_split_follows_whether_trl_packs_it():
         stub.evaluate(eval_dataset = _late())
         return max(len(r) for r in seen["ds"]["input_ids"])
 
-    # Both sides of the change, deterministically, so this pins the wrapper's
-    # logic rather than whichever TRL happens to be installed.
+    # Both sides of the change, deterministically, so this pins the wrapper's logic rather than whichever TRL happens to
+    # be installed.
     for strategy in ("wrapped", "bfd_split"):
         assert _run(True, True, strategy) > _MODEL_MAX_SEQ_LENGTH, (
             f"{strategy}: the split was cut at the cap before TRL's packer "
@@ -1651,12 +1797,11 @@ def test_the_installed_trl_is_on_the_side_of_1_7_0_that_its_version_says():
     import trl
 
     late_hooks, prepares = _trl_sft_late_hooks()
-    # Whichever side of the change this TRL is on, `_prepare_dataset` is reached
-    # only from `__init__` and from `evaluate`. A third caller would be a third
-    # path for the late cap to audit.
+    # Whichever side of the change this TRL is on, `_prepare_dataset` is reached only from `__init__` and from
+    # `evaluate`. A third caller would be a third path for the late cap to audit.
     assert set(prepares) <= {"__init__", "evaluate"}, prepares
-    # `predict` and the two dataloader builders are the base Trainer's on every
-    # TRL, which is why only `evaluate` is ever given `packs_late`.
+    # `predict` and the two dataloader builders are the base Trainer's on every TRL, which is why only `evaluate` is
+    # ever given `packs_late`.
     assert not late_hooks - {"evaluate"}, late_hooks
     packs_late = "evaluate" in prepares
     assert packs_late == ("evaluate" in late_hooks), (prepares, late_hooks)
@@ -1974,8 +2119,8 @@ def test_a_short_and_fully_supervised_split_comes_back_untouched():
 
     cap = _MODEL_MAX_SEQ_LENGTH
     short = cap // 2
-    # Two shapes: one the filter runs over and keeps every row of, and one with
-    # no supervision column at all, where there is nothing to run.
+    # Two shapes: one the filter runs over and keeps every row of, and one with no supervision column at all, where
+    # there is nothing to run.
     supervised = Dataset.from_list(
         [{"input_ids": list(range(short)), "labels": list(range(short))}] * 2
     )
@@ -2854,6 +2999,7 @@ def test_the_transform_rule_is_read_by_both_schema_probes():
     assert (
         block.count("_unsloth_is_transformed(") >= 3
     ), "the rule is not defined once and read by both probes"
+    # Sliced to the next def, not a fixed window:
     start = block.index("def _unsloth_pretokenized")
     body = block[start : block.index("def _unsloth_cap_split", start)]
     assert body.index("_unsloth_is_transformed(_ds)") < body.index(
@@ -3339,7 +3485,6 @@ def test_a_nullable_value_does_not_break_the_construction_time_truncation():
     end = source.index('"        def _unsloth_truncate_rows(_batch):\\n"')
     lines = re.findall(r'^\s*"(.*?)\\n"\s*$', source[start:end], re.M)
     scope = {"_unsloth_slice": slice(None, 4)}
-    # Extracted from the generator and executed as written, like the cap scan.
     exec("\n".join(line[8:] for line in lines), scope)
     cut = scope["_unsloth_cut_value"]
     ids = list(range(10))
@@ -3510,6 +3655,7 @@ def test_the_rank_window_degrades_to_a_no_op():
     end = source.index('"        def _unsloth_cap_split(_ds):\\n"')
     lines = re.findall(r'^\s*"(.*?)\\n"\s*$', source[start:end], re.M)
     scope = {}
+    # Extracted from the generator and executed as written, like the cap scan.
     exec("\n".join(line[8:] for line in lines), scope)
     with scope["_unsloth_rank_first"]():
         pass  # must not raise, whatever accelerate is or is not here

@@ -23,7 +23,7 @@ import {
   ArrowReloadHorizontalIcon,
   Delete02Icon,
   Download01Icon,
-  Settings02Icon,
+  PlayIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
@@ -62,13 +62,14 @@ export function DownloadCard({
       <div className="hub-download-card">
         <div className="group/dl flex items-center">{children}</div>
         {progress && (
-          // Match the row's inner text bounds: the trigger and the action
-          // button both inset 12px, so the bar lines up with the quant label
-          // on the left and the percentage on the right.
+          // Match the row's inner text bounds: the trigger and the action button both inset 12px,
+          // so the bar lines up with the quant label on the left and the percentage on the right.
           <div className="px-3">
             <DownloadProgressBar
               progress={progress}
               bytesPerSec={job.bytesPerSec}
+              cancelling={job.cancelling}
+              etaSeconds={job.etaSeconds}
             />
           </div>
         )}
@@ -89,41 +90,41 @@ export function CardDivider() {
   return (
     <div
       aria-hidden="true"
-      className="ml-1 mr-0 h-5 w-px shrink-0 bg-foreground/[0.06] opacity-100 transition-opacity duration-150 group-hover/dl:opacity-0 dark:bg-white/[0.04]"
+      className="ml-1 mr-0 h-5 w-px shrink-0 bg-[color-mix(in_oklab,var(--foreground)_calc(6%*var(--contrast-wash-gain,1)),transparent)] opacity-100 transition-opacity duration-150 group-hover/dl:opacity-0 dark:bg-[rgb(255_255_255_/_calc(0.04*var(--contrast-wash-gain,1)))]"
     />
   );
 }
 
-export function CardSettingsButton({
+export function ModelRunActionButton({
   label,
   onClick,
+  loading = false,
 }: {
   label: string;
   onClick: () => void;
+  loading?: boolean;
 }) {
   return (
-    <Tooltip>
-      <TooltipTrigger asChild>
-        <button
-          type="button"
-          aria-label={label}
-          onClick={(e) => {
-            e.stopPropagation();
-            onClick();
-          }}
-          className="inline-flex size-7 shrink-0 cursor-pointer items-center justify-center rounded-full text-muted-foreground opacity-0 transition-[opacity,background-color,color] duration-150 hover:bg-foreground/[0.06] hover:text-foreground focus-visible:opacity-100 group-hover/dl:opacity-100 dark:hover:bg-white/[0.08]"
-        >
-          <HugeiconsIcon
-            icon={Settings02Icon}
-            strokeWidth={1.75}
-            className="size-4"
-          />
-        </button>
-      </TooltipTrigger>
-      <TooltipContent side="top" className="tooltip-compact">
-        {label}
-      </TooltipContent>
-    </Tooltip>
+    <button
+      type="button"
+      aria-label={loading ? `${label}. Opening configuration.` : label}
+      aria-busy={loading}
+      disabled={loading}
+      onClick={onClick}
+      className="hub-run-action-btn w-28"
+    >
+      {loading ? (
+        <>
+          <Spinner />
+          Opening…
+        </>
+      ) : (
+        <>
+          <HugeiconsIcon icon={PlayIcon} strokeWidth={1.75} />
+          Run
+        </>
+      )}
+    </button>
   );
 }
 

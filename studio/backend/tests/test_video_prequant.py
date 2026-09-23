@@ -20,6 +20,15 @@ from core.inference.diffusion_prequant import (
 from core.inference.video import VideoBackend
 
 
+def _shared_setup_1():
+    import torch
+
+    from core.inference import video as vid
+
+    fam = _h3_family()
+    return fam, torch, vid
+
+
 @pytest.fixture(autouse = True)
 def _assume_the_restricted_load_is_available(monkeypatch):
     """Policy/planning tests, not a check on whether this host's torchao imports.
@@ -27,7 +36,9 @@ def _assume_the_restricted_load_is_available(monkeypatch):
     Without this, a machine with no (or a skewed) torchao turns every hosted-prequant decision
     below into "keep the dense weights". The capability is covered in test_diffusion_prequant.py."""
     import core.inference.diffusion_prequant as _pq
-    monkeypatch.setattr(_pq, "restricted_prequant_load_supported", lambda scheme = None: True)
+    monkeypatch.setattr(
+        _pq, "restricted_prequant_load_supported", lambda scheme = None, filename = None: True
+    )
 
 
 from core.inference.video_families import (
@@ -114,14 +125,13 @@ def test_both_h3_schemes_resolve_to_one_repo():
 # ── repo-root naming ─────────────────────────────────────────────────────────────
 @pytest.mark.parametrize(
     "scheme, expected",
-    # int8 is the ConvRot-rotated denoiser, which the family names explicitly; fp8 keeps the
-    # derived <Model>-<SCHEME>.pt.
-    [("int8", "MiniMax-H3-INT8-ConvRot.pt"), ("fp8", "MiniMax-H3-FP8.pt")],
+    # int8 is the ConvRot-rotated denoiser, which the family names explicitly; fp8 leads with the
+    # derived safetensors spelling, with <Model>-<SCHEME>.pt behind it.
+    [("int8", "MiniMax-H3-INT8-ConvRot.pt"), ("fp8", "MiniMax-H3-FP8.safetensors")],
 )
 def test_h3_resolves_the_primary_name_at_the_repo_root(scheme, expected):
-    # The name the hosted repo actually publishes. It has to be the PRIMARY, not the fallback:
-    # cached_checkpoint_path deliberately credits only the primary, so landing on the fallback
-    # would report a cached checkpoint as "this would have to download" and hand the pick to GGUF.
+    # The name the hosted repo actually publishes has to come FIRST in the chain, because that is
+    # the order the downloader walks: a name behind it is only reached after the one ahead 404s.
     fam = detect_video_family("MiniMaxAI/MiniMax-H3")
     src = resolve_prequant_source(fam, scheme)
     assert src.filename == expected
@@ -130,14 +140,19 @@ def test_h3_resolves_the_primary_name_at_the_repo_root(scheme, expected):
 
 
 def test_h3_int8_keeps_the_plain_denoiser_as_its_fallback():
-    # The rotated artifact carries the v2 format tag, which a Studio predating the online rotation
+    # The rotated artifact carries the v2 format tag, which an Unsloth predating the online rotation
     # refuses. Naming it explicitly and demoting the derived name to the fallback is what stops
     # that refusal from reaching anyone: an older install still resolves MiniMax-H3-INT8.pt, and
     # this one takes the rotated file when the repo has it.
     fam = detect_video_family("MiniMaxAI/MiniMax-H3")
     src = resolve_prequant_source(fam, "int8")
-    assert src.fallback_filename == "MiniMax-H3-INT8.pt"
-    assert "/" not in src.fallback_filename and "\\" not in src.fallback_filename
+    # The declared rotated name leads; the derived chain follows, safetensors before the pickle.
+    assert src.fallback_filenames == (
+        "MiniMax-H3-INT8.safetensors",
+        "MiniMax-H3-INT8.pt",
+        "transformer_int8.pt",
+    )
+    assert all("/" not in n and "\\" not in n for n in src.candidate_filenames)
 
 
 def test_the_h3_primary_name_is_what_memory_planning_credits():
@@ -174,10 +189,13 @@ def test_the_names_are_built_from_the_repo_and_the_scheme():
     # One repo serves both schemes, so the -FP8 suffix on the repo must be stripped and REPLACED by
     # the requested scheme rather than carried through.
     fam = _fam(prequant_repos = (("int8", "unsloth/Test-FP8"), ("fp8", "unsloth/Test-FP8")))
-    assert resolve_prequant_source(fam, "int8").filename == "Test-INT8.pt"
-    assert resolve_prequant_source(fam, "fp8").filename == "Test-FP8.pt"
-    # The legacy per-scheme name stays available for repos that have not been renamed.
-    assert resolve_prequant_source(fam, "int8").fallback_filename == "transformer_int8.pt"
+    assert resolve_prequant_source(fam, "int8").filename == "Test-INT8.safetensors"
+    assert resolve_prequant_source(fam, "fp8").filename == "Test-FP8.safetensors"
+    # The pickle spellings stay available for repos that host no safetensors artifact.
+    assert resolve_prequant_source(fam, "int8").fallback_filenames == (
+        "Test-INT8.pt",
+        "transformer_int8.pt",
+    )
 
 
 # ── task-keyed artifacts: one repo, one scheme, two denoiser partitions ──────────
@@ -221,7 +239,12 @@ def test_a_task_specific_artifact_gets_no_filename_fallback():
     )
     assert resolve_prequant_source(fam, "int8", task = "ref2va").fallback_filename is None
     # The task-agnostic pick keeps its fallback, unchanged.
-    assert resolve_prequant_source(fam, "int8").fallback_filename == "Test-INT8.pt"
+    assert resolve_prequant_source(fam, "int8").candidate_filenames == (
+        "Test-INT8-ConvRot.pt",
+        "Test-INT8.safetensors",
+        "Test-INT8.pt",
+        "transformer_int8.pt",
+    )
 
 
 def test_a_scheme_without_a_task_row_resolves_exactly_what_it_did_before():
@@ -286,9 +309,9 @@ def test_h3_keyframe_and_text_only_resolve_exactly_what_they_resolved_before(tas
     fam = detect_video_family("MiniMaxAI/MiniMax-H3")
     int8 = resolve_prequant_source(fam, "int8", task = task)
     assert int8.filename == "MiniMax-H3-INT8-ConvRot.pt"
-    assert int8.fallback_filename == "MiniMax-H3-INT8.pt"
+    assert "MiniMax-H3-INT8.pt" in int8.fallback_filenames
     fp8 = resolve_prequant_source(fam, "fp8", task = task)
-    assert fp8.filename == "MiniMax-H3-FP8.pt"
+    assert fp8.filename == "MiniMax-H3-FP8.safetensors"
 
 
 def test_the_h3_partition_task_matches_the_reference_workflow_name():
@@ -861,11 +884,7 @@ def test_auto_takes_the_hosted_denoiser_even_on_a_card_with_room_to_spare(monkey
 
     What it costs is the picture (mean SSIM 0.49 against the released weights), which is a choice
     ``transformer_quant='none'`` reverses and which no amount of free VRAM changes."""
-    import torch
-
-    from core.inference import video as vid
-
-    fam = _h3_family()
+    fam, torch, vid = _shared_setup_1()
     monkeypatch.setattr(vid, "_h3_auto_precision_ok", lambda target = None: True, raising = False)
     # Comfortably more free memory than the released denoiser plus everything beside it.
     monkeypatch.setattr(vid, "_h3_free_device_bytes", lambda device: 500 * 1000**3)
@@ -888,11 +907,7 @@ def test_auto_takes_the_hosted_denoiser_when_the_released_one_cannot_stay_reside
     """The bug users hit. Below the fit line the released denoiser rides the CPU-offload rotation,
     and a module that moves cannot be compiled, so the regional compile goes with it: 194 s against
     23.7 s on the same 8-step job. Auto now takes the hosted checkpoint instead of the cliff."""
-    import torch
-
-    from core.inference import video as vid
-
-    fam = _h3_family()
+    fam, torch, vid = _shared_setup_1()
     monkeypatch.setattr(vid, "_h3_auto_precision_ok", lambda target = None: True, raising = False)
     # An 80 GB card: under the 113.5 GB the released denoiser plus its companions need, over the
     # 67.5 GB the hosted one needs, which is the band where the substitution buys anything.
@@ -918,11 +933,7 @@ def test_the_auto_fallback_is_declined_when_nothing_can_answer(monkeypatch):
 
     The partition gate is the same rule the explicit path applies: a task with no hosted checkpoint
     has no fallback, and serving the other partition's would generate the wrong thing."""
-    import torch
-
-    from core.inference import video as vid
-
-    fam = _h3_family()
+    fam, torch, vid = _shared_setup_1()
 
     def ask(**over):
         kw = dict(
@@ -967,11 +978,7 @@ def test_an_explicit_speed_off_keeps_the_released_denoiser(monkeypatch):
     The conventional loader rewrites an unset precision to "off" under speed off for exactly this
     reason; the modular workflow returns above that rewrite, so the fallback has to decline it
     itself or "off" stops meaning bit-exact on precisely the cards this fallback targets."""
-    import torch
-
-    from core.inference import video as vid
-
-    fam = _h3_family()
+    fam, torch, vid = _shared_setup_1()
     monkeypatch.setattr(vid, "_h3_auto_precision_ok", lambda target = None: True, raising = False)
     monkeypatch.setattr(vid, "_h3_free_device_bytes", lambda device: 80 * 1000**3)
 
@@ -1002,11 +1009,7 @@ def test_the_automatic_substitution_needs_the_exact_base_model(monkeypatch):
     someone/MiniMax-H3 would take MiniMaxAI/MiniMax-H3's denoiser and silently generate from
     someone else's weights -- for a user who never asked for a scheme at all. Same bar as the
     conditioner's index gate: exact identity, mirrors folded, nothing else."""
-    import torch
-
-    from core.inference import video as vid
-
-    fam = _h3_family()
+    fam, torch, vid = _shared_setup_1()
     monkeypatch.setattr(vid, "_h3_auto_precision_ok", lambda target = None: True, raising = False)
     monkeypatch.setattr(vid, "_h3_free_device_bytes", lambda device: 80 * 1000**3)
 
@@ -1036,11 +1039,7 @@ def test_the_fallback_is_declined_when_the_hosted_denoiser_cannot_be_pinned(monk
     rotation it replaces: the card renders today and would refuse every generation afterwards.
     Where the replacement does not fit either, the released denoiser in the rotation is the
     configuration that still runs, so auto keeps it."""
-    import torch
-
-    from core.inference import video as vid
-
-    fam = _h3_family()
+    fam, torch, vid = _shared_setup_1()
     monkeypatch.setattr(vid, "_h3_auto_precision_ok", lambda target = None: True, raising = False)
     monkeypatch.setattr(vid, "_h3_free_device_bytes", lambda device: 80 * 1000**3)
 
@@ -1073,11 +1072,7 @@ def test_the_fallback_is_resolved_before_the_download_is_planned(monkeypatch):
     import inspect
     import types
 
-    import torch
-
-    from core.inference import video as vid
-
-    fam = _h3_family()
+    fam, torch, vid = _shared_setup_1()
     backend = vid.VideoBackend.__new__(vid.VideoBackend)
 
     monkeypatch.setattr(vid, "_h3_auto_precision_ok", lambda target = None: True, raising = False)

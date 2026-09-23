@@ -314,7 +314,7 @@ def test_save_leaves_no_orphan_mp4_when_sidecar_publish_fails(monkeypatch):
 
 def _real_mp4_bytes(
     frames: int = 8,
-    size: int = 32,
+    size: int | tuple[int, int] = 32,
     rate: int = 8,
 ) -> bytes:
     # A real tiny MP4 for the transcode tests: flat-color frames in mpeg4 (bundled in every PyAV build, unlike libx264).
@@ -325,12 +325,13 @@ def _real_mp4_bytes(
     buf = io.BytesIO()
     with av.open(buf, "w", format = "mp4") as out:
         stream = out.add_stream("mpeg4", rate = rate)
-        stream.width = size
-        stream.height = size
+        width, height = size if isinstance(size, tuple) else (size, size)
+        stream.width = width
+        stream.height = height
         stream.pix_fmt = "yuv420p"
         for i in range(frames):
             frame = av.VideoFrame.from_ndarray(
-                np.full((size, size, 3), (i * 30) % 256, dtype = np.uint8), format = "rgb24"
+                np.full((height, width, 3), (i * 30) % 256, dtype = np.uint8), format = "rgb24"
             )
             for packet in stream.encode(frame):
                 out.mux(packet)
@@ -474,6 +475,41 @@ def test_transcode_gif_and_webm_produce_real_containers():
     assert webm is not None and webm[:4] == b"\x1a\x45\xdf\xa3"
 
 
+def test_thumbnail_produces_a_webp_from_the_video():
+    import io
+
+    Image = pytest.importorskip("PIL.Image")
+    record = gallery.save(_real_mp4_bytes(frames = 3, size = 64), _meta())
+    thumbnail = gallery.thumbnail(record["id"])
+
+    assert thumbnail is not None
+    assert thumbnail[:4] == b"RIFF" and thumbnail[8:12] == b"WEBP"
+    with Image.open(io.BytesIO(thumbnail)) as image:
+        assert image.format == "WEBP"
+        assert image.size == (64, 64)
+
+
+def test_thumbnail_scales_large_frames_to_gallery_width():
+    import io
+
+    Image = pytest.importorskip("PIL.Image")
+    record = gallery.save(_real_mp4_bytes(frames = 1, size = (320, 180)), _meta())
+
+    with Image.open(io.BytesIO(gallery.thumbnail(record["id"]))) as image:
+        assert image.size == (192, 108)
+
+    portrait = gallery.save(_real_mp4_bytes(frames = 1, size = (320, 568)), _meta())
+    with Image.open(io.BytesIO(gallery.thumbnail(portrait["id"]))) as image:
+        assert image.size == (192, 341)
+
+
+def test_thumbnail_rejects_unowned_and_invalid_videos():
+    assert gallery.thumbnail("does-not-exist") is None
+    record = gallery.save(_mp4(), _meta())
+    with pytest.raises(RuntimeError, match = "Thumbnail generation failed"):
+        gallery.thumbnail(record["id"])
+
+
 def test_transcode_unknown_id_and_bad_format():
     assert gallery.transcode("does-not-exist", "gif") is None
     record = gallery.save(_real_mp4_bytes(), _meta())
@@ -496,7 +532,7 @@ def test_transcode_to_file_writes_a_temp_file_the_caller_owns():
     assert gallery.transcode_to_file("does-not-exist", "webm") is None
 
 
-def test_transcode_to_file_leaves_no_temp_file_when_the_encode_fails(monkeypatch):
+def test_transcode_to_file_leaves_no_temp_file_when_the_encode_fails(monkeypatch, tmp_path):
     # A half-written export must not accumulate in the temp dir on a host with no VP9 encoder.
     import tempfile
 
@@ -504,15 +540,34 @@ def test_transcode_to_file_leaves_no_temp_file_when_the_encode_fails(monkeypatch
 
     record = gallery.save(_real_mp4_bytes(), _meta())
 
+    written: list[Path] = []
+
     def _boom(src, dest):
         dest.write_bytes(b"partial")
+        written.append(Path(dest))
         raise RuntimeError("WebM export failed (libvpx-vp9 unavailable?)")
 
     monkeypatch.setattr(vg, "_transcode_webm", _boom)
-    before = set(Path(tempfile.gettempdir()).glob("unsloth-export-*"))
+    # Export into a directory this test owns. Counting `unsloth-export-*` in the shared
+    # system temp dir reads state this test never pinned: a successful export running
+    # concurrently in another worker lands there too, and shows up here as a leak that
+    # nothing in this test produced. A failed export is always unlinked, so the stray
+    # file could only ever have come from somebody else.
+    exports = tmp_path / "exports"
+    exports.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(exports))
+
     with pytest.raises(RuntimeError):
         vg.transcode_to_file(record["id"], "webm")
-    assert set(Path(tempfile.gettempdir()).glob("unsloth-export-*")) == before
+
+    # The temp file has to have existed before its absence means anything: an export
+    # that raised before `mkstemp` would satisfy an empty directory just as well, and
+    # would prove nothing about the cleanup this test is named for.
+    assert written, "the export never created its temp file, so the check below is vacuous"
+    assert not written[0].exists(), f"{written[0].name} survived the failed encode"
+    assert (
+        list(exports.iterdir()) == []
+    ), f"the failed export left {[p.name for p in exports.iterdir()]} behind"
 
 
 def test_gif_export_bounds_frames_and_edge(monkeypatch):

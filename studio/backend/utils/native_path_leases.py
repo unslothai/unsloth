@@ -28,6 +28,8 @@ from pathlib import Path
 from typing import Any, Callable, Collection, Iterable, Iterator, Mapping
 
 LEASE_SECRET_ENV = "UNSLOTH_STUDIO_NATIVE_PATH_LEASE_SECRET"
+# Spelled out, not imported from utils/worker_stderr.py, to keep this module's import graph stdlib only.
+STDERR_MIRROR_KWARG = "unsloth_stderr_mirror_path"
 _MAX_NATIVE_PATH_REDACTIONS = 100
 _MAX_NATIVE_PATH_LABELS = 10_000
 _MIN_LEASE_SECRET_BYTES = 32
@@ -119,12 +121,28 @@ def run_without_native_path_secret(
 ) -> Any:
     """Run a multiprocessing child target without the native path lease secret."""
 
-    # Runs in the spawned child: bind it to the parent's death (Linux), since
-    # multiprocessing children cannot be given a preexec_fn by the parent. Shared
-    # entrypoint for the inference/export/training/data-recipe workers.
+    # First, before anything else can raise, so a child dying before its entrypoint is explainable (#7843).
+    _stderr_mirror_path = kwargs.pop(STDERR_MIRROR_KWARG, None)
+    if _stderr_mirror_path:
+        try:
+            from utils.worker_stderr import install_worker_stderr_mirror
+            install_worker_stderr_mirror(_stderr_mirror_path)
+        except Exception:
+            pass
+
+    # Runs in the spawned child to bind it to the parent's death, since multiprocessing children get no
+    # preexec_fn. Shared entrypoint for the inference/export/training/data-recipe workers. Two try
+    # blocks, because allow_child_processes is the newer name: on an older process_lifetime.py a
+    # combined import would lose the binding as well.
     try:
         from utils.process_lifetime import bind_current_process_to_parent_lifetime
         bind_current_process_to_parent_lifetime()
+    except Exception:
+        pass
+    try:
+        # Clear the worker's daemon policy so HF prefetch can spawn (#9094).
+        from utils.process_lifetime import allow_child_processes
+        allow_child_processes()
     except Exception:
         pass
 
@@ -136,6 +154,19 @@ def run_without_native_path_secret(
         function_name, environment, *args = args
         for key, value in environment.items():
             os.environ[key] = value
+
+    # Before the entrypoint module below, not after: a spawned child inherits no sys.modules, and
+    # every worker here imports transformers (fast-path hooks, version activation) long before it
+    # imports unsloth. A sentinel installed after that import leaves transformers saying
+    # sentencepiece is available while importing it fails, which sends tokenizer loads into the
+    # dummy-class path and its unguarded `import sentencepiece as spm`.
+    try:
+        from utils.sentencepiece_guard import disable_sentencepiece_on_windows
+        disable_sentencepiece_on_windows()
+    except Exception:
+        pass
+
+    if isinstance(target, str):
         target = getattr(importlib.import_module(target), function_name)
     return target(*args, **kwargs)
 

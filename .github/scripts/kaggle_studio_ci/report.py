@@ -1,24 +1,13 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Turn the Studio payload's report into a job summary and an exit code.
+"""Turn the Unsloth payload's report into a job summary and an exit code.
 
-Sibling of ``.github/scripts/kaggle_t4_ci/report.py``, which holds the same
-line and is reused wholesale for everything that is not rendering: the
-launcher's verdict vocabulary, the kernel-log flattening and the
-"infra is not a failure" policy all come from there and are imported, not
-copied. What is local is the rendering, because that file renders a training
-trace -- a loss table, a canary, a reference band -- and this payload
-produces a list of assertions about a server.
+Sibling of ``.github/scripts/kaggle_t4_ci/report.py``, which holds the same line and is reused wholesale for everything that is not rendering: the launcher's verdict vocabulary, the kernel-log flattening and the "infra is not a failure" policy are all imported, not copied. What is local is the rendering, because that file renders a training trace (a loss table, a canary, a reference band) and this payload produces a list of assertions about a server.
 
-The line itself is unchanged and is worth restating: **red means the payload
-ran on a GPU and disagreed with its assertions.** Kaggle being busy, out of
-quota, or unreachable teaches nothing about the code and must never colour a
-pull request.
+The line itself is unchanged: red means the payload ran on a GPU and disagreed with its assertions. Kaggle being busy, out of quota or unreachable teaches nothing about the code and must never colour a pull request.
 
-Exit codes:
-    0  passed, partially reported, or never ran
-    1  the payload ran and failed an assertion
+Exit codes: 0 passed, partially reported, or never ran; 1 the payload ran and failed an assertion.
 """
 
 from __future__ import annotations
@@ -33,12 +22,7 @@ _SHARED = Path(__file__).resolve().parents[1] / "kaggle_t4_ci" / "report.py"
 
 
 def _load_shared():
-    """The notebook leg's reporter, imported by path rather than duplicated.
-
-    Degrades instead of exploding: this file is owned elsewhere and is under
-    active change, and the only thing borrowed from it is a log-flattening
-    helper. Losing that costs a diagnostic section, not the verdict.
-    """
+    """The notebook leg's reporter, imported by path rather than duplicated. Degrades instead of exploding: this file is owned elsewhere and under active change, and the only thing borrowed is a log-flattening helper, so losing it costs a diagnostic section, not the verdict."""
     try:
         spec = importlib.util.spec_from_file_location("kaggle_t4_ci_report", _SHARED)
         if spec is None or spec.loader is None:
@@ -63,12 +47,10 @@ def _notice(level: str, title: str, message: str) -> None:
     print(f"::{level} title={title}::{flat}", flush = True)
 
 
-# Order the assertions are presented in, and the one-line reminder of what
-# each is actually worth. A reader who has never seen this job before should
-# not have to open the payload to know whether a tick means anything.
+# Order the assertions are presented in, and the one-line reminder of what each is actually worth: a reader who has never seen this job before should not have to open the payload to know whether a tick means anything.
 ASSERTION_BLURB = {
     "preflight": "a GPU is present and there is disk to use it",
-    "studio_ready": "Studio answered /api/health as healthy, hardware detection settled",
+    "studio_ready": "Unsloth answered /api/health as healthy, hardware detection settled",
     "authenticate": "the bootstrap credential worked",
     "gpu_inference": "the GGUF was on the GPU, not on a CPU fallback that returns text anyway",
     "tool_calling": "the model emitted a real tool call, not prose",
@@ -141,20 +123,43 @@ def render(report: dict) -> list[str]:
     return lines
 
 
+# The label this payload reports under. Duplicated in kaggle_t4_ci/report.py; see the note there for why it is not shared.
+STUDIO_LABEL = "studio-gpu"
+
+
+def own_verdict(kernel_verdict: str, kernel_reason: str, reports: list, expect: int):
+    """This reporter's verdict over ITS OWN payloads, not the kernel's.
+
+    The launcher writes one verdict for the whole kernel, and since --with-studio that kernel holds two unrelated experiments. Reading the kernel verdict here means a failing training leg prints "Studio GPU smoke: FAIL" above a section listing zero failures, and a failing Studio payload prints the same over four green legs: both are the misleading-red twin of the green tick that tested nothing, and both send someone to read the wrong payload. So the verdict is recomputed from the filtered reports, keeping the kernel reason only when the two agree.
+
+    `infra` is deliberately not synthesised: with nothing of ours back, the kernel-level reason (quota, concurrency cap, a throttled push) is the only account of why, and it applies to every payload equally.
+    """
+    if not reports:
+        return (kernel_verdict if kernel_verdict == "infra" else "partial"), kernel_reason
+    failing = [r for r in reports if not r.get("passed")]
+    if failing:
+        return "fail", f"{len(failing)} of {len(reports)} payload(s) failed their assertions"
+    if len(reports) < expect:
+        return "partial", f"only {len(reports)} of {expect} payload(s) reported back"
+    return "pass", f"all {len(reports)} payload(s) passed"
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--evidence", required = True)
+    # One, always: the payload's two notebooks are halves of one experiment and produce exactly one `studio-gpu` report between them. See the count note in kaggle_t4_ci/build_kernel.py's --all-kernels tail.
+    ap.add_argument("--expect", type = int, default = 1)
     args = ap.parse_args()
 
     evidence = Path(args.evidence)
     result_file = evidence / "launch_result.json"
     if not result_file.exists():
         _summary(
-            "### Studio GPU smoke\n\nNo launch result was written. The launcher did not "
+            "### Unsloth GPU smoke\n\nNo launch result was written. The launcher did not "
             "get far enough to record anything, so nothing is known about the code "
             "under test."
         )
-        _notice("warning", "Studio GPU smoke did not run", "no launch_result.json was produced")
+        _notice("warning", "Unsloth GPU smoke did not run", "no launch_result.json was produced")
         return 0
 
     result = json.loads(result_file.read_text(encoding = "utf-8"))
@@ -162,12 +167,16 @@ def main() -> int:
     reason = result.get("reason", "")
     reports = result.get("reports", [])
 
+    # This payload can share a kernel with the T4 notebook legs (see kaggle_t4_ci/build_kernel.py --with-studio), and every payload in that kernel reports through the same prefix. The legs are a different shape, a per-step metric trace rather than assertions, so rendering them here would produce Studio sections describing training runs. Each reporter owns its own labels.
+    reports = [r for r in reports if r.get("label") == STUDIO_LABEL]
+    verdict, reason = own_verdict(verdict, reason, reports, args.expect)
+
     header = {
-        "pass": "### Studio GPU smoke: PASS",
-        "fail": "### Studio GPU smoke: FAIL",
-        "partial": "### Studio GPU smoke: PARTIAL",
-        "infra": "### Studio GPU smoke: NOT RUN",
-    }.get(verdict, "### Studio GPU smoke")
+        "pass": "### Unsloth GPU smoke: PASS",
+        "fail": "### Unsloth GPU smoke: FAIL",
+        "partial": "### Unsloth GPU smoke: PARTIAL",
+        "infra": "### Unsloth GPU smoke: NOT RUN",
+    }.get(verdict, "### Unsloth GPU smoke")
 
     lines = [header, "", reason, ""]
     if result.get("slug"):
@@ -211,13 +220,13 @@ def main() -> int:
     _summary("\n".join(lines))
 
     if verdict == "fail":
-        _notice("error", "Studio GPU smoke failed", reason)
+        _notice("error", "Unsloth GPU smoke failed", reason)
         return 1
     if verdict == "partial":
-        _notice("warning", "Studio GPU smoke partially reported", reason)
+        _notice("warning", "Unsloth GPU smoke partially reported", reason)
         return 0
     if verdict == "infra":
-        _notice("warning", "Studio GPU smoke did not run", reason)
+        _notice("warning", "Unsloth GPU smoke did not run", reason)
         return 0
     return 0
 

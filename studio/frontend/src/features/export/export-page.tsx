@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { useAppShellReadySignal } from "@/components/app-readiness";
 import { SectionCard } from "@/components/section-card";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
@@ -163,6 +164,7 @@ function siblingGgufDirectory(sourcePath: string): string | null {
 }
 
 export function ExportPage() {
+  const signalReady = useAppShellReadySignal();
   const { hfToken, setHfToken } = useHfTokenStore(
     useShallow((s) => ({
       hfToken: s.token,
@@ -170,7 +172,6 @@ export function ExportPage() {
     })),
   );
 
-  // ---- API-driven checkpoint state ----
   const [models, setModels] = useState<ModelCheckpoints[]>(
     () => getCachedCheckpoints() ?? [],
   );
@@ -292,7 +293,6 @@ export function ExportPage() {
     steps: exportTourSteps,
   });
 
-  // ---- Fetch checkpoints on mount ----
   useEffect(() => {
     let cancelled = false;
     const hadCache = getCachedCheckpoints() !== null;
@@ -337,7 +337,6 @@ export function ExportPage() {
     setExportMethod("gguf");
   }, [preselectRun, models]);
 
-  // ---- Fetch local models for direct export ----
   useEffect(() => {
     let cancelled = false;
     const hadCache = getCachedLocalModels() !== null;
@@ -363,7 +362,19 @@ export function ExportPage() {
     };
   }, []);
 
-  // ---- Derived state ----
+  const reloadReadySent = useRef(false);
+  useEffect(() => {
+    if (
+      loadingCheckpoints ||
+      isLoadingLocalModels ||
+      reloadReadySent.current
+    ) {
+      return;
+    }
+    reloadReadySent.current = true;
+    signalReady();
+  }, [isLoadingLocalModels, loadingCheckpoints, signalReady]);
+
   const selectedModelData = useMemo(
     () =>
       selectedModelIdx != null
@@ -858,7 +869,6 @@ export function ExportPage() {
     return () => obs.disconnect();
   }, [showPanel]);
 
-  // ---- Render ----
   return (
     <div className="min-h-[calc(100dvh-var(--studio-titlebar-height,0px))] bg-background">
       <main className="mx-auto max-w-7xl px-5 py-8 sm:px-9">
@@ -1128,7 +1138,7 @@ export function ExportPage() {
                                       No models found
                                     </ComboboxEmpty>
                                   )}
-                                  <ComboboxList className="p-1 !max-h-none !overflow-visible">
+                                  <ComboboxList>
                                     {(id: string) => (
                                       <ComboboxItem
                                         key={id}
@@ -1241,7 +1251,7 @@ export function ExportPage() {
                                     No local models found
                                   </ComboboxEmpty>
                                 )}
-                                <ComboboxList className="p-1 !max-h-none !overflow-visible">
+                                <ComboboxList>
                                   {(id: string) => {
                                     const model = localMetaById.get(id);
                                     const source =
@@ -1287,7 +1297,7 @@ export function ExportPage() {
                         </div>
                       )}
 
-                      <div className="rounded-xl bg-foreground/[0.04] p-3">
+                      <div className="rounded-xl bg-[color-mix(in_oklab,var(--foreground)_calc(4%*var(--contrast-wash-gain,1)),transparent)] p-3">
                         <p className="text-ui-11 text-muted-foreground">
                           Direct model exports currently support GGUF only.
                         </p>
@@ -1296,7 +1306,7 @@ export function ExportPage() {
                   )}
 
                   {sourceMode === "checkpoint" && (
-                    <div className="rounded-xl bg-foreground/[0.04] p-3 flex flex-col gap-2">
+                    <div className="rounded-xl bg-[color-mix(in_oklab,var(--foreground)_calc(4%*var(--contrast-wash-gain,1)),transparent)] p-3 flex flex-col gap-2">
                       <span className="text-ui-11 font-medium text-muted-foreground uppercase tracking-wider">
                         Training Info
                       </span>
@@ -1344,7 +1354,7 @@ export function ExportPage() {
                         key={step}
                         className="flex items-start gap-2 text-xs text-muted-foreground"
                       >
-                        <span className="flex size-5 shrink-0 items-center justify-center rounded-full bg-foreground/10 text-ui-10 font-semibold">
+                        <span className="flex size-5 shrink-0 items-center justify-center rounded-full bg-[color-mix(in_oklab,var(--foreground)_calc(10%*var(--contrast-wash-gain,1)),transparent)] text-ui-10 font-semibold">
                           {i + 1}
                         </span>
                         {step}

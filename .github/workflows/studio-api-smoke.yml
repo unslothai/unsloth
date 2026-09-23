@@ -20,12 +20,30 @@ name: Unsloth API CI
 on:
   pull_request:
     paths:
-      - 'studio/**'
-      - 'unsloth/**'
+      # What the test boots: the FastAPI backend, the installer that lays it down and
+      # the CLI that launches it. Not studio/** plus unsloth/**, which fired the job for
+      # edits it cannot observe: the install is --no-torch, so nothing under unsloth/**
+      # is importable here, the frontend is built but never served (UNSLOTH_API_ONLY),
+      # and src-tauri never enters the picture.
+      - 'studio/backend/**'
+      - 'studio/setup.sh'
+      - 'studio/install_*.py'
+      # install_node_prebuilt.py trusts the archives pinned here (setup.sh:1243).
+      - 'studio/node_prebuilt_pins.json'
+      - 'studio/prebuilt_core.py'
+      - 'studio/install_manifest.py'
       - 'unsloth_cli/**'
       - 'install.sh'
       - 'pyproject.toml'
-      - 'tests/studio/**'
+      # Named, not globbed: the rest of tests/studio is Playwright drivers this
+      # workflow never runs.
+      - 'tests/studio/studio_api_smoke.py'
+      # Reached by the installer this workflow already triggers on, so a commit touching
+      # only one of these changes what the job runs while matching nothing else in the
+      # list. install.sh --local hands off to the checked-out studio/setup.sh
+      # (install.sh:7351), setup.sh runs nvidia_probe.py (setup.sh:266), and setup.ps1
+      # runs install_python_stack.py and install_llama_prebuilt.py (setup.ps1:8127, 8655).
+      - 'studio/nvidia_probe.py'
       - '.github/workflows/studio-api-smoke.yml'
       - '.github/scripts/retry-with-apt-lock.sh'
       # Every server boot in this workflow shells out to that script, so an edit
@@ -33,11 +51,40 @@ on:
       - '.github/scripts/boot-studio-api-only.sh'
       # Same for the /api/health wait that runs after a boot.
       - '.github/scripts/wait-for-health.sh'
+      # And for the GGUF download that primes HF_HOME.
+      - '.github/scripts/hf-download-with-retry.sh'
       # The install step in this workflow is `uses:` on that composite action,
       # so an edit to the action changes what this workflow actually runs.
       - '.github/actions/install-unsloth-local/action.yml'
+      # Reached through install-unsloth-local, which uses the dist and uv cache pairs.
+      - '.github/actions/frontend-dist-restore/action.yml'
+      - '.github/actions/frontend-dist-save/action.yml'
+      - '.github/actions/uv-cache-restore/action.yml'
+      - '.github/actions/uv-cache-save/action.yml'
   push:
     branches: [main]
+    paths:
+      - 'studio/backend/**'
+      - 'studio/setup.sh'
+      - 'studio/install_*.py'
+      - 'studio/node_prebuilt_pins.json'
+      - 'studio/prebuilt_core.py'
+      - 'studio/install_manifest.py'
+      - 'unsloth_cli/**'
+      - 'install.sh'
+      - 'pyproject.toml'
+      - 'tests/studio/studio_api_smoke.py'
+      - 'studio/nvidia_probe.py'
+      - '.github/workflows/studio-api-smoke.yml'
+      - '.github/scripts/retry-with-apt-lock.sh'
+      - '.github/scripts/boot-studio-api-only.sh'
+      - '.github/scripts/wait-for-health.sh'
+      - '.github/scripts/hf-download-with-retry.sh'
+      - '.github/actions/install-unsloth-local/action.yml'
+      - '.github/actions/frontend-dist-restore/action.yml'
+      - '.github/actions/frontend-dist-save/action.yml'
+      - '.github/actions/uv-cache-restore/action.yml'
+      - '.github/actions/uv-cache-save/action.yml'
   workflow_dispatch:
 
 concurrency:

@@ -344,6 +344,17 @@ class TestBinaryRevisionPathSpace:
         monkeypatch.setattr(sys, "platform", "darwin")
         return wrapper
 
+    def test_a_missing_baseline_does_not_rediscover_the_binary(self, monkeypatch):
+        backend = LlamaCppBackend.__new__(LlamaCppBackend)
+        backend._launch_binary_revision = ()
+
+        # *args/**kwargs, or a caller passing include_denied fails on the signature.
+        def _unexpected_discovery(*args, **kwargs):  # pragma: no cover - must never run
+            raise AssertionError("binary discovery ran without a revision to compare")
+
+        monkeypatch.setattr(backend, "_find_llama_server_binary", _unexpected_discovery)
+        assert backend._binary_changed_since_launch() is False
+
     def test_an_unchanged_managed_install_does_not_look_updated(self, monkeypatch, tmp_path):
         wrapper = self._managed_wrapper(monkeypatch, tmp_path)
         monkeypatch.setattr(

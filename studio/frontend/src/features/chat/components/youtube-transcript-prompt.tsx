@@ -68,10 +68,8 @@ async function detachFile(composer: Composer, file: File): Promise<void> {
   if (added) await composer.attachment({ id: added.id }).remove();
 }
 
-/**
- * Offer to turn a pasted YouTube link into a transcript attachment. Sits above the
- * composer surface, matching the prompt-queue stack, and closes once the user picks.
- */
+/** Offer to turn a pasted YouTube link into a transcript attachment. Sits above the composer
+ *  surface, matching the prompt-queue stack, and closes once the user picks. */
 export function YoutubeTranscriptPrompt({
   url,
   onClose,
@@ -83,8 +81,8 @@ export function YoutubeTranscriptPrompt({
   const [fetching, setFetching] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
 
-  // A link removed from the draft unmounts this mid-fetch; drop the in-flight
-  // request so the attachment does not land in a composer that moved on.
+  // A link removed from the draft unmounts this mid-fetch; drop the in-flight request so the
+  // attachment does not land in a composer that moved on.
   useEffect(() => () => abortRef.current?.abort(), []);
 
   const attach = useCallback(async () => {
@@ -106,8 +104,8 @@ export function YoutubeTranscriptPrompt({
       );
       if (controller.signal.aborted) return;
       await composer.addAttachment(file);
-      // A send lands while addAttachment is still pending, and abort cannot recall it,
-      // so drop the file rather than let it ride along on the next message.
+      // A send lands while addAttachment is still pending, and abort cannot recall it, so drop the file
+      // rather than let it ride along on the next message.
       if (controller.signal.aborted) {
         await detachFile(composer, file);
         return;
@@ -124,7 +122,7 @@ export function YoutubeTranscriptPrompt({
 
   return (
     <div
-      className="relative z-0 mx-7 mb-[-8px] rounded-t-[18px] rounded-b-none border border-border/45 bg-background/90 px-5 py-2 text-muted-foreground shadow-none backdrop-blur-md dark:bg-card/85"
+      className="relative z-0 mx-7 mb-[calc(-8px*var(--ui-space-scale,1))] rounded-t-[18px] rounded-b-none border border-border/45 bg-background/90 px-5 py-2 text-muted-foreground shadow-none backdrop-blur-md dark:bg-card/85"
       aria-label="Attach YouTube transcript"
     >
       <div className="grid h-10 grid-cols-[minmax(0,1fr)_auto] items-center gap-2.5">

@@ -346,16 +346,17 @@ jobs:
   linux:
     # See the macOS job: a fork PR's token cannot list drafts, so skip rather than fail.
     if: github.event.pull_request.head.repo.fork != true
-    name: desktop linux ${{ matrix.kind }}
-    runs-on: ubuntu-22.04
+    name: desktop linux ${{ matrix.kind }} ${{ matrix.arch }}
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 45
     continue-on-error: ${{ matrix.experimental }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          - {kind: deb, experimental: false}
-          - {kind: appimage, experimental: false}
+          - {kind: deb, arch: x64, os: ubuntu-22.04, asset: Ubuntu.deb, experimental: false}
+          - {kind: deb, arch: arm64, os: ubuntu-24.04-arm, asset: Ubuntu-ARM64.deb, experimental: false}
+          - {kind: appimage, arch: x64, os: ubuntu-22.04, asset: Linux.AppImage, experimental: false}
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -363,16 +364,13 @@ jobs:
           persist-credentials: false
 
       - name: Download the shipped bundle
+        id: download
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           mkdir -p dl logs
-          asset_suffix='.deb'
-          pat='*.deb'
-          if [ "${{ matrix.kind }}" = "appimage" ]; then
-            asset_suffix='.AppImage'
-            pat='*.AppImage'
-          fi
+          asset_suffix='${{ matrix.asset }}'
+          pat="*$asset_suffix"
           # See the macOS job. Loud on purpose: no matching bundle means nothing to prove.
           if [ -z "$REL_TAG" ]; then
             releases_json="$RUNNER_TEMP/desktop-releases.json"
@@ -381,8 +379,15 @@ jobs:
               echo "::error::could not list desktop releases in $REL_REPO"
               exit 1
             fi
-            if ! REL_TAG="$(python3 .github/scripts/resolve-desktop-release.py \
-              --repo "$REL_REPO" --asset-suffix "$asset_suffix" < "$releases_json")"; then
+            resolver_rc=0
+            REL_TAG="$(python3 .github/scripts/resolve-desktop-release.py \
+              --repo "$REL_REPO" --asset-suffix "$asset_suffix" < "$releases_json")" || resolver_rc=$?
+            if [ "$resolver_rc" -ne 0 ]; then
+              if [ "$resolver_rc" -eq 1 ] && [ "$asset_suffix" = 'Ubuntu-ARM64.deb' ]; then
+                echo "::notice::no ARM64 release is available; package checks skipped"
+                echo "unreleased=true" >> "$GITHUB_OUTPUT"
+                exit 0
+              fi
               echo "::error::no SemVer v... release with a $asset_suffix asset is visible in $REL_REPO"
               exit 1
             fi
@@ -399,13 +404,14 @@ jobs:
         # maintainer scripts, so installing first let them see the image's toolchain. That
         # install needs no masked tool -- clean-machine-env.sh moves aside only $TOOLS, and
         # the current bundle ships a postrm and no install-time script.
-        if: ${{ github.event_name != 'workflow_dispatch' || inputs.strip_toolchain }}
+        if: ${{ steps.download.outputs.unreleased != 'true' && (github.event_name != 'workflow_dispatch' || inputs.strip_toolchain) }}
         run: |
           bash .github/scripts/clean-machine-env.sh mask --remove
           set -a; . ./clean-machine.env; set +a
           bash .github/scripts/clean-machine-assert.sh absent
 
       - name: Install with NO dev tooling, only runtime libs
+        if: steps.download.outputs.unreleased != 'true'
         # The apt preamble below is bounded by the shared helper; the `.deb` install
         # after it deliberately is not, because whether that package resolves its own
         # dependencies is the question this job asks. A step budget bounds it anyway,
@@ -419,11 +425,54 @@ jobs:
             bash .github/scripts/retry-with-apt-lock.sh sudo sh -c \
             'apt-get install -y -qq --no-install-recommends xvfb || { apt-get update -qq && apt-get install -y -qq --no-install-recommends xvfb; }'
           if [ "${{ matrix.kind }}" = "deb" ]; then
-            sudo apt-get install -y ./dl/*.deb || {
-              echo "::error::the .deb does not declare its runtime dependencies correctly"
+            # Refresh the index before blaming the package. The image ships apt lists from
+            # whenever it was baked, so once Ubuntu rotates a point release the pool 404s the
+            # exact versions those lists name -- this job died on bubblewrap 0.6.1-1ubuntu0.1
+            # and gst-plugins-good 1.20.3-0ubuntu1.7 under a message accusing the .deb of a
+            # wrong dependency list. Same update-then-retry the xvfb line above already uses,
+            # and it weakens nothing: apt still has to resolve and install every declared
+            # dependency, so a .deb naming a package that does not exist still fails here.
+            apt_log="$RUNNER_TEMP/deb-install.log"
+            # Redirected, not piped into tee: this step runs under `bash -e` without
+            # pipefail, so `apt-get ... | tee` would report tee's status and swallow every
+            # failure this branch exists to catch.
+            if ! sudo apt-get install -y ./dl/*.deb > "$apt_log" 2>&1; then
+              cat "$apt_log"
+              sudo apt-get update -qq
+              if ! sudo apt-get install -y ./dl/*.deb > "$apt_log" 2>&1; then
+                cat "$apt_log"
+                # Name the failure that actually happened. A fetch error is the mirror's, and
+                # reporting it as a packaging defect sent two days of this job at the bundle.
+                if grep -qE "Failed to fetch|404  Not Found" "$apt_log"; then
+                  echo "::error::apt could not fetch a dependency from the mirror even after apt-get update; this is the runner's package mirror, not the .deb's dependency list"
+                else
+                  echo "::error::the .deb does not declare its runtime dependencies correctly"
+                fi
+                exit 1
+              fi
+            fi
+            cat "$apt_log"
+            BIN="$(dpkg -L "$(dpkg-deb -f dl/*.deb Package)" | grep -E '/usr/bin/' | head -1)"
+            # In-app .deb updates run the installed binary through a polkit action, so the
+            # package has to carry the action file. tauri ships it via bundle.linux.deb.files,
+            # a mapping nothing else validates: drop the entry and updates fall back to the
+            # release page silently, with no failing test anywhere.
+            POLICY=/usr/share/polkit-1/actions/ai.unsloth.studio.update.policy
+            if ! dpkg -L "$(dpkg-deb -f dl/*.deb Package)" | grep -qx "$POLICY"; then
+              echo "::error::the .deb no longer ships $POLICY, so in-app Debian updates cannot authenticate"
+              exit 1
+            fi
+            # auth_admin on all three implicit cases is what makes the update prompt, rather
+            # than either silently elevating or refusing outright.
+            if [ "$(stat -c '%U:%G %a' "$POLICY")" != "root:root 644" ]; then
+              echo "::error::$POLICY has the wrong owner or mode: $(stat -c '%U:%G %a' "$POLICY")"
+              exit 1
+            fi
+            grep -c 'auth_admin' "$POLICY" | grep -qx 3 || {
+              echo "::error::$POLICY no longer requires auth_admin for all three implicit cases"
               exit 1
             }
-            BIN="$(dpkg -L "$(dpkg-deb -f dl/*.deb Package)" | grep -E '/usr/bin/' | head -1)"
+            echo "polkit action shipped: $(stat -c '%U:%G %a %n' "$POLICY")"
           else
             sudo apt-get install -y -qq --no-install-recommends \
               libfuse2 libgles2 libgl1 libegl1 libgbm1 libwayland-client0 \
@@ -438,7 +487,7 @@ jobs:
       # that adds git, cmake or a compiler to that list puts one back in /usr/bin after the
       # strip. Re-run `absent` here, before the bundled installer.
       - name: Re-assert the toolchain is still absent after the package install
-        if: ${{ github.event_name != 'workflow_dispatch' || inputs.strip_toolchain }}
+        if: ${{ steps.download.outputs.unreleased != 'true' && (github.event_name != 'workflow_dispatch' || inputs.strip_toolchain) }}
         run: |
           set -a; . ./clean-machine.env; set +a
           bash .github/scripts/clean-machine-assert.sh absent
@@ -456,6 +505,7 @@ jobs:
           fi
 
       - name: Run the bundled installer, the path first launch takes
+        if: steps.download.outputs.unreleased != 'true'
         run: |
           set -a; [ -f ./clean-machine.env ] && . ./clean-machine.env; set +a
           set -o pipefail
@@ -494,6 +544,7 @@ jobs:
           "$PY" -c "import torch; print('torch', torch.__version__)"
 
       - name: Launch under Xvfb and prove it stays up
+        if: steps.download.outputs.unreleased != 'true'
         env:
           # Without this a fatal X11 error is completely invisible. GTK3 registers
           # gdk_x_io_error() as its XSetIOErrorHandler, and that handler reports with
@@ -532,7 +583,7 @@ jobs:
           fi
 
       - name: What did its own log say?
-        if: always()
+        if: always() && steps.download.outputs.unreleased != 'true'
         run: |
           for f in "$UNSLOTH_STUDIO_HOME/tauri.log" "$HOME/.unsloth/studio/tauri.log"; do
             [ -f "$f" ] || continue
@@ -582,7 +633,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
-          name: desktop-linux-${{ matrix.kind }}
+          name: desktop-linux-${{ matrix.kind }}-${{ matrix.arch }}
           path: logs/
           retention-days: 7
           if-no-files-found: warn
@@ -607,7 +658,7 @@ jobs:
           RETRY_ATTEMPT_TIMEOUT: '360'
         run: |
           bash .github/scripts/retry-with-apt-lock.sh sudo sh -c \
-            'apt-get install -y -qq libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev libxdo-dev libssl-dev patchelf xdg-utils gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-libav || { apt-get update -qq && apt-get install -y -qq libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev libxdo-dev libssl-dev patchelf xdg-utils gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-libav; }'
+            'apt-get install -y -qq libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev libxdo-dev libssl-dev patchelf xdg-utils fonts-noto-color-emoji gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-libav || { apt-get update -qq && apt-get install -y -qq libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev libxdo-dev libssl-dev patchelf xdg-utils fonts-noto-color-emoji gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-libav; }'
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
         with:
@@ -615,7 +666,7 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8  # stable @ 2026-03-27
 
-      - uses: swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
+      - uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
         with:
           save-if: false
           workspaces: 'studio/src-tauri -> target'
@@ -862,6 +913,13 @@ jobs:
           bash .github/scripts/retry-with-apt-lock.sh sudo sh -c \
             'apt-get install -y -qq --no-install-recommends python3 xvfb xauth webkit2gtk-driver libgles2 libgl1 libegl1 libgbm1 libwayland-client0 libharfbuzz0b libnghttp2-14 fontconfig libfribidi0 libasound2 libpulse0 || { apt-get update -qq && apt-get install -y -qq --no-install-recommends python3 xvfb xauth webkit2gtk-driver libgles2 libgl1 libegl1 libgbm1 libwayland-client0 libharfbuzz0b libnghttp2-14 fontconfig libfribidi0 libasound2 libpulse0; }'
           cargo install tauri-driver --version 2.0.6 --locked
+      - name: Fetch the digest-pinned COLRv1 regression font
+        run: |
+          set -euo pipefail
+          url='https://raw.githubusercontent.com/googlefonts/noto-emoji/8998f5dd683424a73e2314a8c1f1e359c19e8742/fonts/Noto-COLRv1.ttf'
+          output="$RUNNER_TEMP/Noto-COLRv1.ttf"
+          curl -fsSL --retry 3 --retry-all-errors "$url" -o "$output"
+          echo '0ae57fe58645638523ba35f388d93739d292539a9acb84df5700c81b1e1a28d2  '"$output" | sha256sum -c -
 
       - name: Download the AppImage built from this PR
         if: github.event_name == 'pull_request'
@@ -900,6 +958,8 @@ jobs:
         env:
           APPIMAGE_PATH: ${{ github.workspace }}/dl/Unsloth.AppImage
           APPIMAGE_E2E_ART_DIR: ${{ github.workspace }}/logs/appimage-model-download
+          APPIMAGE_COLRV1_FONT: ${{ runner.temp }}/Noto-COLRv1.ttf
+          APPIMAGE_COLRV1_FONT_SHA256: 0ae57fe58645638523ba35f388d93739d292539a9acb84df5700c81b1e1a28d2
         run: |
           set -euo pipefail
           appimage="$(find dl -maxdepth 1 -type f -name '*.AppImage' -print -quit)"
@@ -955,8 +1015,9 @@ jobs:
             echo "REL_TAG=$REL_TAG" >> "$GITHUB_ENV"
           fi
           # Extension, not fragment: see the macOS leg. '*setup.exe' was the Tauri NSIS
-          # default; the current asset is Unsloth-Desktop-<ver>-Windows.exe, and a release
-          # ships exactly one .exe.
+          # default. A release used to ship exactly one .exe; it now ships two, an x64
+          # Unsloth-Desktop-Windows.exe beside an arm64 Unsloth-Desktop-Windows-ARM64.exe,
+          # so the install step below picks by architecture instead of taking the first.
           gh release download "$REL_TAG" --repo "$REL_REPO" --pattern '*.exe' --dir dl
           ls -la dl
 
@@ -1075,7 +1136,25 @@ jobs:
       - name: Silent install
         shell: pwsh
         run: |
-          $exe = (Get-ChildItem dl/*.exe | Select-Object -First 1).FullName
+          # By architecture, not by position. A release ships an x64 installer beside an
+          # arm64 one, and `Select-Object -First 1` over the directory took the arm64 build
+          # on this x64 runner -- '-' sorts before '.', so Unsloth-Desktop-Windows-ARM64.exe
+          # precedes Unsloth-Desktop-Windows.exe. It installed without complaint and the app
+          # then refused to start with "This version of %1 is not compatible with the version
+          # of Windows you're running", reported as the app exiting early.
+          $all = @(Get-ChildItem dl/*.exe)
+          $arm = @($all | Where-Object { $_.Name -match '(?i)-arm64\.exe$' })
+          $wanted = if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') { $arm }
+                    else { @($all | Where-Object { $_.Name -notmatch '(?i)-arm64\.exe$' }) }
+          # Named, not silently narrowed: a release that stops shipping this runner's
+          # architecture, or starts shipping two of them, is a packaging change this job
+          # should report rather than guess its way through.
+          if ($wanted.Count -ne 1) {
+            Write-Host "::error::expected exactly one $env:PROCESSOR_ARCHITECTURE installer in the release, found $($wanted.Count) (assets: $($all.Name -join ', '))"
+            exit 1
+          }
+          $exe = $wanted[0].FullName
+          Write-Host "installer for $($env:PROCESSOR_ARCHITECTURE): $exe"
           # /S is the NSIS silent switch: a user double-clicks, but an installer that cannot
           # run unattended cannot be scripted or MDM-deployed either.
           $p = Start-Process -FilePath $exe -ArgumentList '/S' -Wait -PassThru

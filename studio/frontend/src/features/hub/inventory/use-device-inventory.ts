@@ -7,9 +7,9 @@ import {
   type CachedModelRepo,
   type LocalDatasetInfo,
   type LocalModelInfo,
+  fetchCachedGgufInventory,
+  fetchCachedModelsInventory,
   listCachedDatasets,
-  listCachedGguf,
-  listCachedModels,
   listLocalDatasets,
   listLocalModels,
 } from "./api";
@@ -47,6 +47,7 @@ export type DeviceInventorySourceState<Rows extends readonly unknown[]> = {
   error: string | null;
   key: string | null;
   refreshedAt: number | null;
+  refreshStartedAt: number | null;
   revalidatedAt: number | null;
 };
 
@@ -75,6 +76,11 @@ type UseDeviceInventoryResult<
   refreshIfOlderThan: (maxAgeMs: number) => Promise<void>;
 };
 
+type InventorySourceFetchResult<K extends DeviceInventorySource> = {
+  rows: DeviceInventoryRows[K];
+  scanConfirmed: boolean;
+};
+
 const TOKEN_SCOPED_SOURCES = new Set<DeviceInventorySource>([
   "cachedGguf",
   "cachedModels",
@@ -94,6 +100,7 @@ function emptySource<
     error: null,
     key: null,
     refreshedAt: null,
+    refreshStartedAt: null,
     revalidatedAt: null,
   };
 }
@@ -153,21 +160,41 @@ function logInventorySourceFailure(
 async function runSourceFetch<K extends DeviceInventorySource>(
   source: K,
   hfToken?: string | null,
-): Promise<DeviceInventoryRows[K]> {
+): Promise<InventorySourceFetchResult<K>> {
   switch (source) {
-    case "cachedGguf":
+    case "cachedGguf": {
       await ensureHiddenModelMatchers();
-      return (await listCachedGguf(hfToken)) as DeviceInventoryRows[K];
-    case "cachedModels":
+      const result = await fetchCachedGgufInventory(hfToken);
+      return {
+        rows: result.cached as DeviceInventoryRows[K],
+        scanConfirmed: result.scan_confirmed !== false,
+      };
+    }
+    case "cachedModels": {
       await ensureHiddenModelMatchers();
-      return (await listCachedModels(hfToken)) as DeviceInventoryRows[K];
+      const result = await fetchCachedModelsInventory(hfToken);
+      return {
+        rows: result.cached as DeviceInventoryRows[K],
+        scanConfirmed: result.scan_confirmed !== false,
+      };
+    }
     case "cachedDatasets":
-      return (await listCachedDatasets()) as DeviceInventoryRows[K];
-    case "localModels":
+      return {
+        rows: (await listCachedDatasets()) as DeviceInventoryRows[K],
+        scanConfirmed: true,
+      };
+    case "localModels": {
       await ensureHiddenModelMatchers();
-      return (await listLocalModels()).models as DeviceInventoryRows[K];
+      return {
+        rows: (await listLocalModels()).models as DeviceInventoryRows[K],
+        scanConfirmed: true,
+      };
+    }
     case "localDatasets":
-      return (await listLocalDatasets()).datasets as DeviceInventoryRows[K];
+      return {
+        rows: (await listLocalDatasets()).datasets as DeviceInventoryRows[K],
+        scanConfirmed: true,
+      };
     default:
       throw new Error("Unsupported inventory source");
   }
@@ -240,11 +267,13 @@ export function fetchInventorySource<K extends DeviceInventorySource>(
     error: null,
     key,
     refreshedAt: current.key === key ? current.refreshedAt : null,
+    refreshStartedAt: current.key === key ? current.refreshStartedAt : null,
     revalidatedAt: current.key === key ? current.revalidatedAt : null,
   });
 
+  const refreshStartedAt = Date.now();
   const request = runSourceFetch(source, options.hfToken)
-    .then((rows) => {
+    .then(({ rows, scanConfirmed }) => {
       if (useDeviceInventoryStore.getState()[source].key === key) {
         const refreshedAt = Date.now();
         updateSourceState(source, {
@@ -254,6 +283,7 @@ export function fetchInventorySource<K extends DeviceInventorySource>(
           error: null,
           key,
           refreshedAt,
+          refreshStartedAt: scanConfirmed ? refreshStartedAt : null,
           revalidatedAt: nextRevalidationStamp({
             force: Boolean(options.force),
             requestKey: key,

@@ -305,9 +305,8 @@ export const useExportRuntimeStore = create<ExportRuntimeStore>()((set, get) => 
           startedAt: state.startedAt ?? Date.now(),
         };
       }
-      // A recovered (not store-owned) run finished on the backend. Settle from
-      // the last-op record when present (accurate success/error/output path),
-      // else fall back to the optimistic guess.
+      // A recovered (not store-owned) run finished on the backend. Settle from the last-op record
+      // when present (accurate success/error/output path), else fall back to the optimistic guess.
       if (!status.is_export_active && state.isExporting && !state.ownsRun) {
         // A standalone load_checkpoint (or no recorded op) is not an export and
         // must never settle as a finished export. A completed export ends on its
@@ -495,6 +494,7 @@ export const useExportRuntimeStore = create<ExportRuntimeStore>()((set, get) => 
             // token when there is no hub-upload token (both are the same HF token).
             hf_token: params.token ?? params.loadToken ?? null,
             imatrix: params.useImatrix,
+            private: params.privateRepo,
           }),
         );
         if (outputPath) outputs.push({ label: "GGUF", path: outputPath });
