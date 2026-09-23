@@ -2120,6 +2120,10 @@ export function useChatModelRuntime() {
                   .consumeServerUnloadedChat()
                 && currentCheckpoint
               ) {
+                // The installer may unload the prior resident independently of the ordinary
+                // preliminary unload. Cancellation uses the run-level marker to clear its stale
+                // checkpoint and transfer the unloaded state to the replacement.
+                loadRun.residentModelUnloaded = true;
                 previousWasUnloaded = true;
               }
               if (!upgraded) {

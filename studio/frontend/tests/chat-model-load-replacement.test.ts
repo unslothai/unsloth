@@ -695,3 +695,18 @@ test("inherited rollback carries loaded launch settings into compensating reload
   assert.match(rollback, /rollbackState\.loadedSpeculativeType/);
   assert.match(rollback, /rollbackState\.loadedGpuLayers/);
 });
+
+test("a Transformers upgrade unload is recorded on the active run for cancellation reconciliation", () => {
+  const runtime = read(RUNTIME);
+  const upgrade = section(
+    runtime,
+    "if (validation.requires_transformers_upgrade) {",
+    "if (!upgraded) {",
+  );
+  const consumedUnload = upgrade.indexOf(".consumeServerUnloadedChat()");
+  const runMarker = upgrade.indexOf("loadRun.residentModelUnloaded = true;");
+  const priorFlag = upgrade.indexOf("previousWasUnloaded = true;");
+  assert.notEqual(consumedUnload, -1, "the upgrade installer reports when it unloaded the resident");
+  assert.notEqual(runMarker, -1, "cancellation reconciliation needs the run-level unloaded marker");
+  assert.ok(consumedUnload < runMarker && runMarker < priorFlag);
+});
