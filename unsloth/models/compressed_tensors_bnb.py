@@ -833,8 +833,12 @@ def install_compressed_tensors_bnb_quantizer() -> bool:
                     operations = [op_cls(ct_config, dtype, stacked = False)],
                 )
             )
-            updated.extend(self.get_weight_conversions())
-            return updated
+            # Hand the result up the MRO so a composed subclass's own hook still runs; the base
+            # implementation appends the quantizer's conversions.
+            parent = getattr(super(), "update_weight_conversions", None)
+            if parent is None:
+                return updated + list(self.get_weight_conversions())
+            return parent(updated)
 
     mapping = getattr(quantizers_auto, "AUTO_QUANTIZER_MAPPING", None)
     if mapping is None:

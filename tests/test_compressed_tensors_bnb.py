@@ -505,6 +505,65 @@ def test_the_planner_pass_does_not_consume_the_plan():
     assert not hasattr(config, UNSLOTH_COMPRESSED_TENSORS_ATTR)
 
 
+@pytest.mark.skipif(
+    not (HAS_CT and HAS_CONVERTERS), reason = "needs compressed-tensors and the transformers 5 loader"
+)
+def test_armed_conversions_still_run_a_composed_subclass_hook(monkeypatch):
+    """When another bitsandbytes 4-bit subclass is already registered, ours is layered on top of
+    it. An armed load used to build its converter list and return it directly, so the other
+    subclass's ``update_weight_conversions`` never ran."""
+    from accelerate import init_empty_weights
+    from transformers import LlamaConfig, LlamaForCausalLM
+    from transformers.quantizers import AutoHfQuantizer
+    from transformers.quantizers import auto as quantizers_auto
+
+    from unsloth.models import compressed_tensors_bnb
+    from transformers.quantizers.quantizer_bnb_4bit import Bnb4BitHfQuantizer
+    from transformers.utils.quantization_config import BitsAndBytesConfig
+
+    marker = object()
+
+    class MarkerBnb4BitHfQuantizer(Bnb4BitHfQuantizer):
+        def update_weight_conversions(self, weight_conversions):
+            return super().update_weight_conversions(weight_conversions) + [marker]
+
+    monkeypatch.setitem(
+        quantizers_auto.AUTO_QUANTIZER_MAPPING, "bitsandbytes_4bit", MarkerBnb4BitHfQuantizer
+    )
+    monkeypatch.setattr(compressed_tensors_bnb, "_installed", False)
+    assert install_compressed_tensors_bnb_quantizer()
+    composed = quantizers_auto.AUTO_QUANTIZER_MAPPING["bitsandbytes_4bit"]
+    assert issubclass(composed, MarkerBnb4BitHfQuantizer)
+
+    config = LlamaConfig(
+        hidden_size = 8,
+        num_hidden_layers = 1,
+        num_attention_heads = 2,
+        intermediate_size = 8,
+        vocab_size = 16,
+    )
+    config.quantization_config = _w4a16()
+    plan = arm_compressed_tensors_bnb_loading(config, verbose = False)
+    assert plan is not None
+    bnb = BitsAndBytesConfig(
+        load_in_4bit = True, bnb_4bit_compute_dtype = torch.bfloat16, bnb_4bit_quant_type = "nf4"
+    )
+    quantizer = AutoHfQuantizer.from_config(bnb, pre_quantized = False)
+    assert isinstance(quantizer, composed)
+    with init_empty_weights():
+        model = LlamaForCausalLM(config)
+    quantizer._process_model_before_weight_loading(
+        model, dtype = torch.bfloat16, device_map = None, checkpoint_files = []
+    )
+    assert quantizer._unsloth_ct_config is not None
+    conversions = quantizer.update_weight_conversions([])
+    assert marker in conversions
+    assert any(
+        getattr(c, "source_patterns", None) and "weight_packed$" in c.source_patterns
+        for c in conversions
+    ), [getattr(c, "source_patterns", None) for c in conversions]
+
+
 @pytest.mark.skipif(not HAS_CONVERTERS, reason = "needs the transformers 5 loader")
 def test_quantizer_registration_is_idempotent_and_a_subclass():
     from transformers.quantizers import auto as quantizers_auto
