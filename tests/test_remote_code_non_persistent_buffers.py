@@ -416,6 +416,58 @@ def test_remote_init_detection_is_scoped_to_the_class_it_names():
     torch.testing.assert_close(model.other.table, torch.full((2,), 4.0))
 
 
+def test_prose_in_remote_init_weights_does_not_count_as_initialisation():
+    helper = _load_helper()
+    if not helper._transformers_builds_on_meta():
+        pytest.skip("no-op on transformers 4.x")
+
+    class Rotary(nn.Module):
+        def __init__(self, base = 4.0):
+            super().__init__()
+            self.base = base
+            self.register_buffer("inv_freq", torch.full((2,), base), persistent = False)
+
+    class RemoteModel(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.rotary = Rotary()
+
+        def _init_weights(self, module):
+            """Rotary.inv_freq is built in the constructor, nothing to do here."""
+            # Rotary keeps inv_freq from __init__.
+            if isinstance(module, nn.Linear):
+                module.weight.data.normal_()
+
+    for cls in (Rotary, RemoteModel):
+        cls.__module__ = "transformers_modules.unsloth_test_remote_buffers"
+    model = RemoteModel()
+    model.rotary.inv_freq.zero_()
+    assert helper.restore_remote_code_non_persistent_buffers(model) == 1
+    torch.testing.assert_close(model.rotary.inv_freq, torch.full((2,), 4.0))
+
+
+def test_float64_loads_rebuild_under_float64():
+    helper = _load_helper()
+    if not helper._transformers_builds_on_meta():
+        pytest.skip("no-op on transformers 4.x")
+
+    class EpsOfDefaultDtype(nn.Module):
+        def __init__(self, device = None):
+            super().__init__()
+            eps = torch.finfo(torch.get_default_dtype()).eps
+            self.register_buffer("b", torch.full((2,), eps, dtype = torch.float64), persistent = False)
+
+    EpsOfDefaultDtype.__module__ = "transformers_modules.unsloth_test_remote_buffers"
+    model = nn.Module()
+    model.dtype = torch.float64
+    model.child = EpsOfDefaultDtype()
+    model.child.b.zero_()
+    assert helper.restore_remote_code_non_persistent_buffers(model) == 1
+    torch.testing.assert_close(
+        model.child.b, torch.full((2,), torch.finfo(torch.float64).eps, dtype = torch.float64)
+    )
+
+
 def test_loaders_restore_right_after_from_pretrained():
     for relative, calls in (("unsloth/models/vision.py", 1), ("unsloth/models/llama.py", 2)):
         with open(os.path.join(_ROOT, relative), encoding = "utf-8") as file:

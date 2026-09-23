@@ -25,8 +25,9 @@ and dispatch hooks are kept). Native transformers modules are left alone: their
 `_init_weights` already recomputes these buffers.
 """
 
+import ast
 import inspect
-import re
+import textwrap
 
 import torch
 
@@ -114,11 +115,36 @@ def _remote_init_weights_identifiers(model):
                 continue
             seen.add(cls)
             try:
-                source = inspect.getsource(init_weights)
-            except (OSError, TypeError):
+                tree = ast.parse(textwrap.dedent(inspect.getsource(init_weights)))
+            except (OSError, TypeError, SyntaxError):
                 continue
-            found.append(set(re.findall(r"[A-Za-z_][A-Za-z0-9_]*", source)))
+            found.append(_code_identifiers(tree))
     return found
+
+
+def _code_identifiers(tree):
+    """Names, attributes and string arguments the code uses; comments and the docstring are
+    not part of the tree walked, so prose that mentions a buffer does not count."""
+    docstrings = set()
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.body:
+            first = node.body[0]
+            if isinstance(first, ast.Expr) and isinstance(first.value, ast.Constant):
+                docstrings.add(id(first.value))
+    names = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name):
+            names.add(node.id)
+        elif isinstance(node, ast.Attribute):
+            names.add(node.attr)
+        elif (
+            isinstance(node, ast.Constant)
+            and isinstance(node.value, str)
+            and id(node) not in docstrings
+        ):
+            # getattr(module, "inv_freq") / register_buffer("inv_freq", ...)
+            names.add(node.value)
+    return names
 
 
 def _initialised_by_remote_code(module, buffer_name, init_identifiers):
@@ -140,7 +166,7 @@ def _fresh_non_persistent_buffers(module, kwargs, dtype):
     previous_dtype = torch.get_default_dtype()
     try:
         # transformers constructs under the load dtype as the default dtype.
-        if dtype in (torch.float16, torch.bfloat16, torch.float32):
+        if dtype in (torch.float16, torch.bfloat16, torch.float32, torch.float64):
             torch.set_default_dtype(dtype)
         with torch.device("cpu"), init_empty_weights(include_buffers = False):
             fresh = type(module)(**kwargs)
