@@ -21,7 +21,7 @@ from pathlib import Path
 
 from fastapi import HTTPException
 from fastapi.responses import JSONResponse
-from huggingface_hub import HfApi
+from huggingface_hub import HfApi, constants as hf_constants
 
 from auth import policy
 from core.inference.gpu_arbiter import GpuBusyForAnotherAccountError
@@ -450,9 +450,9 @@ def require_installation_owner() -> None:
 
 _PUBLIC_TTL = 300.0
 _PRIVATE_TTL = 30.0
-_public_repos: dict[tuple[str, str], tuple[float, bool]] = {}
+_public_repos: dict[tuple[str, str, str], tuple[float, bool]] = {}
 _public_lock = threading.Lock()
-_public_flights: dict[tuple[str, str], Future] = {}
+_public_flights: dict[tuple[str, str, str], Future] = {}
 _PROBE_FANOUT = 8
 
 
@@ -489,6 +489,22 @@ def _remember_public_verdict(name: str, public: bool) -> None:
         del verdicts[name]
     else:
         return
+    _write_public_verdicts(verdicts)
+
+
+def adopt_unnamed_public_proofs(endpoint: str) -> None:
+    """Name proofs recorded before proofs carried their endpoint after the one that recorded them."""
+    with _public_lock:
+        verdicts = _load_public_verdicts()
+        unnamed = [name for name in verdicts if "|" not in name]
+        if not unnamed:
+            return
+        for name in unnamed:
+            verdicts.setdefault(f"{endpoint.rstrip('/')}|{name}", verdicts.pop(name))
+        _write_public_verdicts(verdicts)
+
+
+def _write_public_verdicts(verdicts: dict[str, float]) -> None:
     path = _public_verdicts_path()
     try:
         path.parent.mkdir(parents = True, exist_ok = True)
@@ -499,10 +515,17 @@ def _remember_public_verdict(name: str, public: bool) -> None:
         pass
 
 
-def _hub_public_answer(repo_id: str, repo_type: str) -> bool | None:
+def _hub_public_answer(
+    repo_id: str,
+    repo_type: str,
+    *,
+    endpoint: str | None = None,
+) -> bool | None:
     """True when the Hub says public, False for private/gated/missing, None when unaskable."""
     try:
-        info = HfApi().repo_info(repo_id, repo_type = repo_type, token = False, timeout = 5.0)
+        info = HfApi(endpoint = endpoint).repo_info(
+            repo_id, repo_type = repo_type, token = False, timeout = 5.0
+        )
     except Exception as exc:  # noqa: BLE001 - classified below, never trusted as public
         status = getattr(getattr(exc, "response", None), "status_code", None)
         if status in _DEFINITIVE_HUB_STATUSES:
@@ -511,8 +534,13 @@ def _hub_public_answer(repo_id: str, repo_type: str) -> bool | None:
     return getattr(info, "private", None) is False and not getattr(info, "gated", False)
 
 
+def _public_key(repo_id: str, repo_type: str) -> tuple[str, str, str]:
+    # A repo public on one Hub may be private, or someone else's, on another.
+    return (hf_constants.ENDPOINT.rstrip("/"), repo_type, repo_id.lower())
+
+
 def _public_verdict(repo_id: str, repo_type: str) -> bool | None:
-    key = (repo_type, repo_id.lower())
+    key = _public_key(repo_id, repo_type)
     with _public_lock:
         cached = _public_repos.get(key)
     return cached[1] if cached is not None and cached[0] > time.monotonic() else None
@@ -520,8 +548,8 @@ def _public_verdict(repo_id: str, repo_type: str) -> bool | None:
 
 def repo_is_public(repo_id: str, repo_type: str = "model") -> bool:
     """Only an anonymous Hub answer proves a shared-cache repo public."""
-    key = (repo_type, repo_id.lower())
-    name = f"{repo_type}:{repo_id.lower()}"
+    key = _public_key(repo_id, repo_type)
+    name = f"{key[0]}|{repo_type}:{repo_id.lower()}"
     with _public_lock:
         cached = _public_repos.get(key)
         if cached is not None and cached[0] > time.monotonic():
@@ -533,7 +561,7 @@ def repo_is_public(repo_id: str, repo_type: str = "model") -> bool:
     if not leading:
         return flight.result()
     try:
-        answer = _hub_public_answer(repo_id, repo_type)
+        answer = _hub_public_answer(repo_id, repo_type, endpoint = key[0])
         with _public_lock:
             if answer is None:
                 public = name in _load_public_verdicts()
@@ -584,7 +612,8 @@ def _hub_probe_targets(references, repo_type: str, grants: set[str]) -> set[str]
         unknown = {
             repo_id: reference
             for repo_id, reference in candidates.items()
-            if (entry := _public_repos.get((repo_type, repo_id.lower()))) is None or entry[0] <= now
+            if (entry := _public_repos.get(_public_key(repo_id, repo_type))) is None
+            or entry[0] <= now
         }
     # A local path that happens to spell a repo id resolves against the cache, not the Hub.
     return {

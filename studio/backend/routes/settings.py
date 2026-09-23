@@ -79,6 +79,7 @@ from utils.download_transport_settings import (
     get_download_transport_mode,
     set_download_transport_mode,
 )
+from utils.hub_settings import HubSettings, get_hub_settings, set_hub_settings
 from picker.schemas import MAX_CHAT_TEMPLATE_BYTES, chat_template_byte_length
 from utils.reasoning_budget import validate_reasoning_budget_message
 from utils.coding_agents import CODING_AGENTS, detect_installed_coding_agents
@@ -636,6 +637,17 @@ class DownloadTransportResponse(BaseModel):
     xet_unavailable_reason: Optional[str] = None
     auto_resolves_to: str
     auto_reason: Optional[str] = None
+
+
+class HubSettingsPayload(BaseModel):
+    hf_endpoint: str = Field(max_length = 2048)
+    datasets_server_follows_endpoint: StrictBool
+
+
+class HubSettingsResponse(BaseModel):
+    # Empty means the official Hugging Face Hub.
+    hf_endpoint: str
+    datasets_server_follows_endpoint: bool
 
 
 class XetNoticeReservePayload(BaseModel):
@@ -1316,6 +1328,35 @@ def update_download_transport(
             log = logger,
         ) from exc
     return _download_transport_response(mode)
+
+
+def _hub_settings_response(settings: HubSettings) -> HubSettingsResponse:
+    return HubSettingsResponse(
+        hf_endpoint = settings.hf_endpoint,
+        datasets_server_follows_endpoint = settings.datasets_server_follows_endpoint,
+    )
+
+
+@_shared_settings_router.get("/hub", response_model = HubSettingsResponse)
+def get_hub(current_subject: str = Depends(get_current_subject)) -> HubSettingsResponse:
+    return _hub_settings_response(get_hub_settings())
+
+
+@_owner_settings_router.put("/hub", response_model = HubSettingsResponse)
+def update_hub(
+    payload: HubSettingsPayload, current_subject: str = Depends(get_current_subject)
+) -> HubSettingsResponse:
+    try:
+        settings = set_hub_settings(payload.hf_endpoint, payload.datasets_server_follows_endpoint)
+    except ValueError as exc:
+        raise log_and_http_error(
+            exc,
+            400,
+            safe_error_detail(exc, fallback = "Invalid Hugging Face endpoint."),
+            event = "settings.update_hub_failed",
+            log = logger,
+        ) from exc
+    return _hub_settings_response(settings)
 
 
 @_owner_settings_router.post("/xet-notice/reserve", response_model = XetNoticeResponse)

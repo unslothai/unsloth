@@ -37,8 +37,8 @@ _INFLIGHT_WAIT_SECONDS = 30.0
 _REMOTE_TIMEOUT_SECONDS = 10.0
 
 _attempts: dict[tuple[str, str], deque[float]] = {}
-_cache: dict[tuple[str, str], tuple[float, TokenValidationResult]] = {}
-_inflight: dict[tuple[str, str], threading.Event] = {}
+_cache: dict[tuple[str, str, str], tuple[float, TokenValidationResult]] = {}
+_inflight: dict[tuple[str, str, str], threading.Event] = {}
 _lock = threading.Lock()
 
 
@@ -62,7 +62,7 @@ def _prune_locked(now: float) -> None:
             del _cache[key]
 
 
-def _cached_locked(fingerprint: tuple[str, str], now: float) -> TokenValidationResult | None:
+def _cached_locked(fingerprint: tuple[str, str, str], now: float) -> TokenValidationResult | None:
     cached = _cache.get(fingerprint)
     if cached is None:
         return None
@@ -131,13 +131,12 @@ def _classify_response(response: object | None) -> TokenValidationResult:
     return TokenValidationResult(status = "unavailable")
 
 
-def _check_remote(token: str) -> TokenValidationResult:
-    api = HfApi()
+def _check_remote(token: str, *, endpoint: str) -> TokenValidationResult:
     try:
         # HfApi.whoami has no timeout parameter in the pinned Hub client.
         # Use its session and headers against the same whoami endpoint.
         response = get_session().get(
-            f"{api.endpoint}/api/whoami-v2",
+            f"{endpoint}/api/whoami-v2",
             headers = build_hf_headers(token = token),
             timeout = _REMOTE_TIMEOUT_SECONDS,
         )
@@ -153,7 +152,8 @@ def validate_hf_token(token: str, *, rate_key: str) -> TokenValidationResult:
     if not normalized:
         return TokenValidationResult(status = "invalid")
     account_id = current_account_id()
-    token_fingerprint = (account_id, _fingerprint(normalized))
+    # Per endpoint too: a token one Hub rejects may be another Hub's.
+    token_fingerprint = (account_id, _fingerprint(normalized), HfApi().endpoint.rstrip("/"))
     account_rate_key = (account_id, rate_key)
     owner_event: threading.Event | None = None
 
@@ -175,7 +175,7 @@ def validate_hf_token(token: str, *, rate_key: str) -> TokenValidationResult:
             if not waiting.wait(_INFLIGHT_WAIT_SECONDS):
                 return TokenValidationResult(status = "unavailable")
 
-        result = _check_remote(normalized)
+        result = _check_remote(normalized, endpoint = token_fingerprint[2])
         now = time.monotonic()
         ttl = (
             _CACHE_TTL_SECONDS

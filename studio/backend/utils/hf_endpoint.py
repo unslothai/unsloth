@@ -88,6 +88,23 @@ def _sanitize(candidate: str, default: str, var_name: str) -> str:
     """
     if not candidate:
         return default
+    canonical, reason = _check(candidate)
+    if canonical is not None:
+        return canonical
+    if candidate not in _rejected_warned:
+        _rejected_warned.add(candidate)
+        logger.warning(
+            "%s=%r %s; ignoring it and using %s instead.",
+            var_name,
+            candidate,
+            reason,
+            default,
+        )
+    return default
+
+
+def _check(candidate: str) -> tuple[str | None, str | None]:
+    """``(canonical, None)`` for a usable endpoint, else ``(None, reason)``."""
     if any(ch in _FORBIDDEN_CHARS for ch in candidate) or any(
         ord(ch) < 0x20 or ord(ch) == 0x7F for ch in candidate
     ):
@@ -122,17 +139,25 @@ def _sanitize(candidate: str, default: str, var_name: str) -> str:
             )
         else:
             # Folded: RFC 3986 3.1, and the frontend keys its cache on this string.
-            return _canonical(parts, parts.scheme + candidate[len(parts.scheme) :])
-    if candidate not in _rejected_warned:
-        _rejected_warned.add(candidate)
-        logger.warning(
-            "%s=%r %s; ignoring it and using %s instead.",
-            var_name,
-            candidate,
-            reason,
-            default,
-        )
-    return default
+            return _canonical(parts, parts.scheme + candidate[len(parts.scheme) :]), None
+    return None, reason
+
+
+def validate_hub_endpoint(raw: str) -> str:
+    """A user-entered endpoint in the form the env vars carry; ``""`` means the official Hub.
+
+    Same rules the environment values are held to, but a rejected value raises
+    ``ValueError`` with the reason instead of silently falling back.
+    """
+    value = raw.strip().rstrip("/")
+    if not value:
+        return ""
+    if "://" not in value:
+        value = "https://" + value
+    canonical, reason = _check(value)
+    if canonical is None:
+        raise ValueError(f"The endpoint {reason}.")
+    return canonical
 
 
 def is_private_host(hostname: str | None) -> bool:

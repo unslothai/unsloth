@@ -159,7 +159,11 @@ def hub(monkeypatch):
     }
 
     class _FakeApi:
-        def __init__(self, token = None):
+        def __init__(
+            self,
+            token = None,
+            **_k,
+        ):
             state["token"] = token
 
         def model_info(self, repo_id, **kwargs):

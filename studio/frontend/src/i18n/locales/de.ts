@@ -950,6 +950,19 @@ export const de = {
         saveError:
           "Die Autostart-Einstellung konnte nicht aktualisiert werden.",
       },
+      hub: {
+        sectionTitle: "Modell-Hub",
+        endpoint: "Hugging-Face-Endpunkt",
+        endpointDescription: "Von hier werden Modelle und Datensätze geladen. Leer lassen für huggingface.co oder einen Mirror wie https://hf-mirror.com eintragen.",
+        datasetsServer: "Auch für Datensatz-Vorschauen verwenden",
+        datasetsServerDescription: "Datensatz-Vorschauen (HF_DATASETS_SERVER) ebenfalls an diesen Endpunkt senden. Nur einschalten, wenn der Mirror sie bereitstellt.",
+        invalidEndpoint: "Gib eine http(s)-URL ohne Anmeldedaten oder Query ein. Reines http funktioniert nur für eine lokale Adresse.",
+        saveFailed: "Die Hub-Einstellungen konnten nicht gespeichert werden.",
+        loadFailed: "Die Hub-Einstellungen konnten nicht geladen werden.",
+        reloadNeeded: "Lade dieses Fenster neu, damit das Stöbern die neuen Hub-Einstellungen nutzt. Downloads nutzen sie bereits.",
+        reload: "Neu laden",
+        desktopBrowsing: "Downloads nutzen die neuen Hub-Einstellungen bereits. Um in der Desktop-App damit zu stöbern, setze HF_ENDPOINT und HF_DATASETS_SERVER in der Umgebung, bevor du Unsloth startest.",
+      },
       downloads: {
         sectionTitle: "Downloads",
         transport: "Download-Transport",

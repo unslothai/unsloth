@@ -191,8 +191,13 @@ def _hub_token(hf_token: Optional[str]):
     return hf_token or False
 
 
-def _servable_key(repo_id: str, hf_token: Optional[str]) -> str:
-    """Cache key, per credential.
+def _endpoint() -> str:
+    from huggingface_hub import constants
+    return constants.ENDPOINT.rstrip("/")
+
+
+def _servable_key(repo_id: str, hf_token: Optional[str], endpoint: str) -> str:
+    """Cache key, per credential and Hub.
 
     The Hub 404s a private repo the caller cannot see, so a tokenless verdict says
     nothing about a caller who has one. Digested, so no token is held here.
@@ -200,18 +205,24 @@ def _servable_key(repo_id: str, hf_token: Optional[str]) -> str:
     import hashlib
 
     seen_as = hashlib.sha256(hf_token.encode()).hexdigest()[:16] if hf_token else "anon"
-    return f"{repo_id.lower()}\n{seen_as}"
+    return f"{repo_id.lower()}\n{seen_as}\n{endpoint}"
 
 
-def _mark_not_servable(repo_id: str, hf_token: Optional[str]) -> None:
+def _mark_not_servable(repo_id: str, hf_token: Optional[str], endpoint: str) -> None:
     with _cache_lock:
         if len(_not_servable) >= _NOT_SERVABLE_MAX:
             _not_servable.clear()
-        _not_servable[_servable_key(repo_id, hf_token)] = time.monotonic() + _NOT_SERVABLE_TTL_S
+        _not_servable[_servable_key(repo_id, hf_token, endpoint)] = (
+            time.monotonic() + _NOT_SERVABLE_TTL_S
+        )
 
 
-def _is_not_servable(repo_id: str, hf_token: Optional[str]) -> bool:
-    key = _servable_key(repo_id, hf_token)
+def _is_not_servable(
+    repo_id: str,
+    hf_token: Optional[str],
+    endpoint: Optional[str] = None,
+) -> bool:
+    key = _servable_key(repo_id, hf_token, endpoint or _endpoint())
     with _cache_lock:
         expires = _not_servable.get(key)
         if expires is None:
@@ -495,12 +506,16 @@ async def _is_downloadable_model(repo_id: str, hf_token: Optional[str]) -> bool:
     apart from an ordinary foreign label. Any failure answers False: refusing
     would strand normal traffic for the length of the download.
     """
-    if _is_not_servable(repo_id, hf_token):
+    # One Hub for the whole lookup, so its answer is filed under the Hub that gave it.
+    endpoint = _endpoint()
+    if _is_not_servable(repo_id, hf_token, endpoint):
         return False
 
     def _probe():
         from huggingface_hub import HfApi
-        return HfApi(token = _hub_token(hf_token)).model_info(repo_id, timeout = _MODEL_INFO_TIMEOUT_S)
+        return HfApi(endpoint = endpoint, token = _hub_token(hf_token)).model_info(
+            repo_id, timeout = _MODEL_INFO_TIMEOUT_S
+        )
 
     try:
         info = await asyncio.to_thread(_probe)
@@ -511,7 +526,7 @@ async def _is_downloadable_model(repo_id: str, hf_token: Optional[str]) -> bool:
     # download.
     servable = bool(_gguf_variants(getattr(info, "siblings", None), repo_id))
     if not servable:
-        _mark_not_servable(repo_id, hf_token)
+        _mark_not_servable(repo_id, hf_token, endpoint)
     return servable
 
 
@@ -640,9 +655,11 @@ async def _admit_and_start(
 ) -> Optional[AutoDownloadRefusal]:
     from hub.utils.hf_errors import hf_error_status
 
+    endpoint = _endpoint()
+
     def _probe():
         from huggingface_hub import HfApi
-        return HfApi(token = _hub_token(hf_token)).model_info(
+        return HfApi(endpoint = endpoint, token = _hub_token(hf_token)).model_info(
             repo_id, files_metadata = True, timeout = _MODEL_INFO_TIMEOUT_S
         )
 
@@ -663,7 +680,7 @@ async def _admit_and_start(
         if status == 403:
             return _gated_refusal(repo_id)
         if status == 404:
-            _mark_not_servable(repo_id, hf_token)
+            _mark_not_servable(repo_id, hf_token, endpoint)
             if not looks_like_quant(wanted_variant):
                 return None
             return AutoDownloadRefusal(
@@ -692,7 +709,7 @@ async def _admit_and_start(
     variants = _gguf_variants(getattr(info, "siblings", None), repo_id)
     if not variants:
         _release(active)
-        _mark_not_servable(repo_id, hf_token)
+        _mark_not_servable(repo_id, hf_token, endpoint)
         if not looks_like_quant(wanted_variant):
             return None
         return AutoDownloadRefusal(

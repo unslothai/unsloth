@@ -921,6 +921,19 @@ export const it = {
         saveError:
           "Impossibile aggiornare l'impostazione di avvio all'accesso.",
       },
+      hub: {
+        sectionTitle: "Hub dei modelli",
+        endpoint: "Endpoint Hugging Face",
+        endpointDescription: "Da dove vengono scaricati modelli e dataset. Lascia vuoto per huggingface.co oppure inserisci un mirror come https://hf-mirror.com.",
+        datasetsServer: "Usalo anche per le anteprime dei dataset",
+        datasetsServerDescription: "Invia anche le anteprime dei dataset (HF_DATASETS_SERVER) a questo endpoint. Attivalo solo se il mirror le fornisce.",
+        invalidEndpoint: "Inserisci un URL http(s) senza credenziali né parametri. http semplice funziona solo con un indirizzo locale.",
+        saveFailed: "Impossibile salvare le impostazioni dell'hub.",
+        loadFailed: "Impossibile caricare le impostazioni dell'hub.",
+        reloadNeeded: "Ricarica questa finestra perché la navigazione usi le nuove impostazioni dell'Hub. I download le usano già.",
+        reload: "Ricarica",
+        desktopBrowsing: "I download usano già le nuove impostazioni dell'Hub. Per navigare con esse nell'app desktop, imposta HF_ENDPOINT e HF_DATASETS_SERVER nell'ambiente prima di avviare Unsloth.",
+      },
       downloads: {
         sectionTitle: "Download",
         transport: "Trasporto di download",

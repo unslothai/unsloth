@@ -251,11 +251,11 @@ if _STUDIO_ROOT_RESOLVED != _LEGACY_STUDIO_ROOT or _MASTER_ROOT is not None:
     mark_managed_llama_cpp_path(_MANAGED_LLAMA_CPP_PATH)
 
 # huggingface_hub reads HF_ENDPOINT itself, at import, unnormalised and unvalidated.
-# Rewrite it first, before anything imports the library.
-from utils.hf_endpoint import normalize_hf_endpoint_env as _normalize_hf_endpoint_env
+# Apply the saved endpoint and normalise it first, before anything imports the library.
+from utils.hub_settings import apply_hub_settings as _apply_hub_settings
 
-_normalize_hf_endpoint_env()
-del _normalize_hf_endpoint_env
+_apply_hub_settings()
+del _apply_hub_settings
 
 # The studio bundles unsloth_zoo; declare unsloth present (as `import unsloth` does) so its
 # lazy submodule imports and the DiffusionGemma runner don't trip the install guard.
@@ -746,6 +746,13 @@ async def lifespan(app: FastAPI):
         start_sandbox_recovery()
     except Exception:  # noqa: BLE001
         pass
+
+    try:
+        from hub.services.models.account_access import adopt_unnamed_public_proofs
+        from utils.hub_settings import operator_hf_endpoint
+        adopt_unnamed_public_proofs(operator_hf_endpoint())
+    except Exception:  # noqa: BLE001 -- unnamed proofs are then only ignored
+        _lifespan_log.warning("could not name recorded public-repo proofs", exc_info = True)
 
     # Remove stale .venv_overlay from old versions; switching now uses .venv_t5/.
     overlay_dir = Path(__file__).resolve().parent.parent.parent / ".venv_overlay"

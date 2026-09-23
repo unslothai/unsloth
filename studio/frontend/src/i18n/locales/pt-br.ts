@@ -938,6 +938,19 @@ export const ptBR = {
         saveError:
           "Não foi possível atualizar a configuração de inicialização no login.",
       },
+      hub: {
+        sectionTitle: "Hub de modelos",
+        endpoint: "Endpoint do Hugging Face",
+        endpointDescription: "De onde os modelos e conjuntos de dados são baixados. Deixe vazio para usar huggingface.co ou informe um espelho como https://hf-mirror.com.",
+        datasetsServer: "Usar também nas prévias de conjuntos de dados",
+        datasetsServerDescription: "Enviar também as prévias de conjuntos de dados (HF_DATASETS_SERVER) para este endpoint. Ative só se o espelho oferecer esse serviço.",
+        invalidEndpoint: "Informe uma URL http(s) sem credenciais nem parâmetros. http simples só funciona com um endereço local.",
+        saveFailed: "Não foi possível salvar as configurações do hub.",
+        loadFailed: "Não foi possível carregar as configurações do hub.",
+        reloadNeeded: "Recarregue esta janela para que a navegação use as novas configurações do Hub. Os downloads já as usam.",
+        reload: "Recarregar",
+        desktopBrowsing: "Os downloads já usam as novas configurações do Hub. Para navegar com elas no app de desktop, defina HF_ENDPOINT e HF_DATASETS_SERVER no ambiente antes de abrir o Unsloth.",
+      },
       downloads: {
         sectionTitle: "Downloads",
         transport: "Transporte de download",
