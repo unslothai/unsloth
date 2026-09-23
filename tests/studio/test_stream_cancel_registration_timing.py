@@ -318,8 +318,9 @@ def _registry_source():
 def _load_registry_module():
     mod = {"active_generations": _load_active_generations()}
     exec(
-        "import contextvars\nrouted_slot = contextvars.ContextVar(\"routed_slot\", default = None)\n"
-        "import threading, time\n_account_cancel_key = lambda key: key\n" + _registry_source(), mod
+        'import contextvars\nrouted_slot = contextvars.ContextVar("routed_slot", default = None)\n'
+        "import threading, time\n_account_cancel_key = lambda key: key\n" + _registry_source(),
+        mod,
     )
     return mod
 
