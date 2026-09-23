@@ -485,3 +485,15 @@ test("composite settings controls shrink inside their row", () => {
     ),
   );
 });
+
+test("a scaled sheet width stops at the viewport", () => {
+  // Sheets overlay phones too: at 200% an 18rem sheet is 576px on a 375px screen.
+  const sheet = /<SheetContent\b([^>]*)>/g;
+  for (const file of SOURCES.filter((f) => f.endsWith(".tsx"))) {
+    for (const [, props] of readSrc(file).matchAll(sheet)) {
+      for (const [width] of (props ?? "").matchAll(/(?<![\w:-])w-\[[^\]\s"]*ui-space-scale[^\]\s"]*\]/g)) {
+        assert.match(width, /^w-\[min\(.*,100vw\)\]$/, `${file} ${width} can pass the viewport`);
+      }
+    }
+  }
+});

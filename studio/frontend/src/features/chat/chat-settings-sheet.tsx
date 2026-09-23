@@ -1829,7 +1829,7 @@ export function ChatSettingsPanel({
   if (isMobile) {
     return (
       <Sheet open={open} onOpenChange={onOpenChange}>
-        <SheetContent side="right" className="w-[calc(18rem*var(--ui-space-scale,1))] p-0 font-heading">
+        <SheetContent side="right" className="w-[min(calc(18rem*var(--ui-space-scale,1)),100vw)] p-0 font-heading">
           <SheetHeader className="sr-only">
             <SheetTitle>Run settings</SheetTitle>
             <SheetDescription>Chat inference settings</SheetDescription>
