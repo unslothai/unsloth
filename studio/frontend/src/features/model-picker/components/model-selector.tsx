@@ -55,7 +55,10 @@ import {
   missingExternalModel,
 } from "./model-selector/missing-external-model";
 import type { CommunityModelPolicy } from "./model-selector/audio-picker-policy";
-import type { CatalogGroup } from "./model-selector/model-catalog";
+import {
+  artifactForRepoId,
+  type CatalogGroup,
+} from "./model-selector/model-catalog";
 import { HubModelPicker, hasDownloadedModels } from "./model-selector/pickers";
 import { PillTabs } from "./model-selector/pill-tabs";
 import { loraOptionLabel } from "./model-selector/row-meta";
@@ -746,7 +749,12 @@ export function ModelSelector({
 
   const currentModel = useMemo(() => {
     if (!selected) return undefined;
-    const found = optionById.get(selected);
+    // A cached vendor copy loads for its unsloth mirror; name it by the mirror's option.
+    const mirrorId =
+      catalog && artifactForRepoId(selected, catalog)?.artifact.repoId;
+    const found =
+      optionById.get(selected) ??
+      (mirrorId ? optionById.get(mirrorId) : undefined);
     // A pick whose connection no longer offers it takes its option away and leaves the id in the
     // checkpoint, and the generic fallback cannot shorten an `external::` id. Name the model the
     // user picked and say why it is unusable, or a tidy name would hide the failure until the
@@ -783,6 +791,7 @@ export function ModelSelector({
   }, [
     selected,
     optionById,
+    catalog,
     activeGgufVariant,
     externalModels,
     externalConnections,

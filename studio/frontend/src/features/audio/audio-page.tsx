@@ -2568,7 +2568,7 @@ export function AudioPage({
       {active && <GuidedTour {...tour.tourProps} />}
       {/* Keep the tabs centered over the preview at every width. The model rail holds at 408px when
           space permits and shrinks only to preserve the controls. */}
-      <div className="pointer-events-none relative z-40 grid h-[calc(48px*var(--ui-space-scale,1))] shrink-0 grid-cols-[minmax(0,408px)_minmax(13rem,1fr)]">
+      <div className="pointer-events-none relative z-40 grid h-[calc(48px*var(--ui-space-scale,1))] shrink-0 grid-cols-[minmax(0,calc(408px*var(--ui-space-scale,1)))_minmax(13rem,1fr)]">
         <div className="pointer-events-none flex h-full min-w-0 items-start overflow-hidden pl-[var(--studio-media-header-left-inset,1.5rem)] @[50rem]:border-r @[50rem]:border-border/60">
           {/* A long resident model name must yield to the mode pill instead of painting over it. */}
           <div className="pointer-events-auto flex min-w-0 max-w-full items-center gap-2 overflow-hidden pt-[var(--studio-chat-header-padding-top,11px)]">
@@ -2645,7 +2645,7 @@ export function AudioPage({
       <div className="flex min-h-0 w-full min-w-0 flex-1 flex-col overflow-y-auto overflow-x-hidden @[50rem]:flex-row @[50rem]:overflow-hidden">
         <div
           data-tour="audio-settings"
-          className="flex w-full shrink-0 flex-col border-b border-border/60 @[50rem]:w-[408px] @[50rem]:overflow-hidden @[50rem]:border-r @[50rem]:border-b-0"
+          className="flex w-full shrink-0 flex-col border-b border-border/60 @[50rem]:w-[min(calc(408px*var(--ui-space-scale,1)),calc(100%-13rem))] @[50rem]:overflow-hidden @[50rem]:border-r @[50rem]:border-b-0"
         >
           <div
             ref={attachSettingsScroll}
@@ -2663,7 +2663,7 @@ export function AudioPage({
               <h2 className="flex items-center gap-2 font-heading text-xl font-medium leading-none text-foreground">
                 <HugeiconsIcon
                   icon={mode === "speak" ? AudioWave01Icon : Mic01Icon}
-                  className="size-[18px] shrink-0"
+                  className="size-[calc(18px*var(--ui-space-scale,1))] shrink-0"
                 />
                 {mode === "speak" ? "Generate audio" : "Transcribe"}
               </h2>

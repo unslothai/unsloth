@@ -227,7 +227,7 @@ export function ProfilePersonalizationPanel() {
               name={previewName}
               imageUrl={shownAvatar}
               size="lg"
-              className="size-[128px] text-[calc(3.2rem*var(--ui-font-scale,1))]"
+              className="size-[calc(128px*var(--ui-space-scale,1))] text-[calc(3.2rem*var(--ui-font-scale,1))]"
             />
             <span className="absolute inset-0 flex items-center justify-center rounded-full bg-black/45 opacity-0 transition-opacity group-hover:opacity-100">
               <HugeiconsIcon
@@ -256,7 +256,7 @@ export function ProfilePersonalizationPanel() {
             <PopoverContent
               align="start"
               sideOffset={10}
-              className="w-[320px] gap-4 p-4"
+              className="w-[calc(320px*var(--ui-space-scale,1))] gap-4 p-4"
             >
               <div className="flex items-center justify-between gap-3">
                 <span className="text-ui-11 font-medium uppercase tracking-wide text-muted-foreground">

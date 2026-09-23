@@ -122,7 +122,7 @@ export function RecipeStudioHeader({
             {STATUS_MESSAGE_CLASS[saveTone]}
           </Badge>
           <span
-            className="hidden max-w-[12rem] truncate text-xs text-muted-foreground sm:inline"
+            className="hidden max-w-[calc(12rem*var(--ui-space-scale,1))] truncate text-xs text-muted-foreground sm:inline"
             title={savedAtLabel}
           >
             {savedAtLabel}

@@ -195,6 +195,11 @@ import {
   useChatRuntimeStore,
 } from "@/features/chat/stores/chat-runtime-store";
 import {
+  forkBoundaryAnchor,
+  setForkBoundaryAnchor,
+  useForkBoundaryStore,
+} from "@/features/chat/stores/fork-boundary-store";
+import {
   PROMPT_QUEUE_RUN_FAILED_EVENT,
   PROMPT_QUEUE_STOP_EVENT,
 } from "@/features/chat/utils/prompt-queue-events";
@@ -259,6 +264,7 @@ import {
 } from "@/features/chat/utils/composer-send-guard";
 import { deleteThreadMessage } from "@/features/chat/utils/delete-thread-message";
 import {
+  readBackendChatThread,
   getStoredChatThread,
   updateStoredChatThread,
 } from "@/features/chat/utils/chat-history-storage";
@@ -1759,16 +1765,125 @@ const RUN_SHRINK_WINDOW_MS = 1000;
 const ThreadMessage: FC = () => {
   const role = useAuiState(({ message }) => message.role);
   const isEditing = useAuiState(({ message }) => message.composer.isEditing);
+  let body: ReactNode = null;
   switch (threadMessageKind(role, isEditing)) {
     case "edit":
-      return <EditComposer />;
+      body = <EditComposer />;
+      break;
     case "user":
-      return <UserMessage />;
+      body = <UserMessage />;
+      break;
     case "assistant":
-      return <AssistantMessage />;
+      body = <AssistantMessage />;
+      break;
     default:
       return null;
   }
+  return (
+    <>
+      {body}
+      <ForkContinuationRule />
+    </>
+  );
+};
+
+/**
+ * Resolves the divider against the branch on screen, once for the thread.
+ *
+ * Which inherited message closes the history depends on the branch: editing an inherited turn
+ * starts a sibling and leaves the fork's anchor off screen with earlier inherited messages
+ * still above it. Selecting the message array in each ROW is what the delete render budget
+ * forbids, so it is selected here, in one component, and the rows read the id it publishes.
+ * The walk stops at the first message the fork did not inherit, so it costs the inherited
+ * count rather than the thread length.
+ */
+const useTrackForkBoundaryAnchor = (threadId: string | null): void => {
+  const inherited = useForkBoundaryStore((s) =>
+    threadId === null
+      ? undefined
+      : s.boundaryByThreadId[threadId]?.messageIds,
+  );
+  const anchor = useAuiState(({ thread }) =>
+    forkBoundaryAnchor(thread.messages, inherited),
+  );
+  useEffect(() => {
+    setForkBoundaryAnchor(threadId, anchor);
+  }, [threadId, anchor]);
+};
+
+// Closes the history a fork inherited. Rendered by the message it follows, since the row slot
+// is propless and the boundary arrives through the store.
+const ForkContinuationRule: FC = () => {
+  const threadId = useChatRuntimeStore((s) => s.activeThreadId);
+  const messageId = useAuiState(({ message }) => message.id);
+  // Two plain values rather than the record: both stay identical between renders, so a row
+  // subscribed to them does not re-render when an unrelated thread publishes.
+  const anchor = useForkBoundaryStore((s) =>
+    threadId === null ? undefined : s.anchorByThreadId[threadId],
+  );
+  const sourceThreadId = useForkBoundaryStore((s) =>
+    threadId === null
+      ? null
+      : (s.boundaryByThreadId[threadId]?.sourceThreadId ?? null),
+  );
+  const navigate = useNavigate();
+  if (anchor === undefined || anchor !== messageId) return null;
+  const label = (
+    <>
+      <GitBranchIcon strokeWidth={1.75} className="size-3.5" />
+      Continued from chat
+    </>
+  );
+  const labelClass =
+    "inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap leading-none";
+  return (
+    <div
+      data-slot="fork-continuation-rule"
+      // Same column as the messages it sits between: it is their sibling, not their child,
+      // so it takes the width constraint every message root applies to itself.
+      className="mx-auto mt-6 mb-2 flex w-full max-w-(--thread-content-max-width) items-center gap-3 text-muted-foreground text-sm"
+    >
+      <span aria-hidden={true} className="h-px flex-1 bg-border" />
+      {sourceThreadId ? (
+        <button
+          type="button"
+          data-slot="fork-continuation-link"
+          title="Open the chat this was forked from"
+          // Checked on the way out, not on render: the tombstone set is this tab's own, so a
+          // source deleted on another device still looks openable until something asks for it.
+          // Only a definite "no" stops the trip; an unreachable backend is not a deletion.
+          onClick={async () => {
+            const source = await readBackendChatThread(sourceThreadId);
+            if (source === null) {
+              toast.info("That chat has been deleted.");
+              return;
+            }
+            navigate({
+              to: "/chat",
+              // A paired source is one half of a comparison, and the fork button is offered
+              // inside those panes. Opening it as a single chat would show one model's side
+              // rather than the view it was forked from. Same shape the sidebar opens a pair
+              // with. An unreachable backend has no record to ask, so it falls through.
+              search: source?.pairId
+                ? { compare: source.pairId }
+                : { thread: sourceThreadId },
+              replace: false,
+            });
+          }}
+          className={cn(
+            labelClass,
+            "cursor-pointer rounded-sm underline decoration-transparent underline-offset-2 transition-colors hover:text-foreground hover:decoration-current focus-visible:outline-2 focus-visible:outline-ring focus-visible:outline-offset-2",
+          )}
+        >
+          {label}
+        </button>
+      ) : (
+        // The source is gone, so the text stays but leads nowhere.
+        <span className={labelClass}>{label}</span>
+      )}
+      <span aria-hidden={true} className="h-px flex-1 bg-border" />
+    </div>
+  );
 };
 
 // Hoisted, so ThreadPrimitive.Messages sees the same children function on every Thread render. An
@@ -1799,6 +1914,7 @@ export const Thread: FC<{
   const threadId = targetThreadId ?? activeThreadId ?? null;
   const aui = useAui();
   useThreadForkCounts();
+  useTrackForkBoundaryAnchor(threadId);
 
   // Measured height of the floating composer dock (null until measured).
   // Drives the bottom spacer and the scroll-to-bottom footer offset.
@@ -2080,7 +2196,7 @@ export const Thread: FC<{
                   hideComposer
                     ? "bottom-3"
                     : footerBottomPx == null
-                      ? "bottom-[150px]"
+                      ? "bottom-[calc(150px*var(--ui-space-scale,1))]"
                       : undefined,
                 )}
                 style={
@@ -2147,11 +2263,11 @@ const GeneratedImageViewportOverlay: FC<{
       />
       <section
         className={cn(
-          "pointer-events-none absolute inset-x-5 top-[48px] flex flex-col items-center",
+          "pointer-events-none absolute inset-x-5 top-[calc(48px*var(--ui-space-scale,1))] flex flex-col items-center",
           hideComposer
             ? "bottom-4"
             : bottomOffsetPx == null
-              ? "bottom-[150px]"
+              ? "bottom-[calc(150px*var(--ui-space-scale,1))]"
               : undefined,
         )}
         style={
@@ -2161,7 +2277,7 @@ const GeneratedImageViewportOverlay: FC<{
         }
         aria-label="Generated image preview"
       >
-        <div className="pointer-events-auto relative flex min-h-0 w-full max-w-[1100px] flex-1 flex-col items-center justify-center gap-3 rounded-3xl bg-muted/10 p-3 ring-1 ring-border/20">
+        <div className="pointer-events-auto relative flex min-h-0 w-full max-w-[calc(1100px*var(--ui-space-scale,1))] flex-1 flex-col items-center justify-center gap-3 rounded-3xl bg-muted/10 p-3 ring-1 ring-border/20">
           <div className="absolute inset-x-3 top-3 z-10 flex justify-end">
             <div className="flex shrink-0 items-center gap-1 rounded-full bg-background/70 p-1 ring-1 ring-border/20 backdrop-blur-sm">
               <Button
@@ -2275,7 +2391,7 @@ const ThreadComposerDock: FC<{
       className={cn(
         // Inset both sides, not just the right: the offset keeps the bottom
         // fade off the scrollbar, and a one-sided one also moves the centre.
-        "aui-thread-composer-dock pointer-events-none absolute bottom-0 left-0 right-0 md:left-[10px] md:right-[10px]",
+        "aui-thread-composer-dock pointer-events-none absolute bottom-0 left-0 right-0 md:left-[calc(10px*var(--ui-space-scale,1))] md:right-[calc(10px*var(--ui-space-scale,1))]",
         overlay ? "z-40" : "z-20",
       )}
     >
@@ -2286,7 +2402,7 @@ const ThreadComposerDock: FC<{
           "thread-bottom-fade absolute inset-x-0 bottom-0 bg-gradient-to-t from-background from-[calc(100%_-_28px)] to-[rgb(from_var(--background)_r_g_b/0)]",
           queueVisible
             ? "h-32 backdrop-blur-[1px] [mask-image:linear-gradient(to_top,black_0%,black_58%,transparent_100%)]"
-            : "top-[10px]",
+            : "top-[calc(10px*var(--ui-space-scale,1))]",
         )}
       />
       {/* Narrow panes spend the gutter on the composer instead; index.css
@@ -5611,7 +5727,7 @@ const BulbIcon: FC<{ className?: string }> = ({ className }) => (
 );
 
 // Same bulb in every state; greyed by the pill's muted color when off.
-const ThinkIcon: FC = () => <BulbIcon className="size-[15.5px]" />;
+const ThinkIcon: FC = () => <BulbIcon className="size-[calc(15.5px*var(--ui-space-scale,1))]" />;
 
 const ReasoningToggle: FC<{ side?: "top" | "bottom" }> = ({
   side = "bottom",
@@ -5725,7 +5841,7 @@ const ReasoningToggle: FC<{ side?: "top" | "bottom" }> = ({
         side={side}
         align="end"
         avoidCollisions={true}
-        className="unsloth-plus-menu unsloth-thinking-menu min-w-0 w-[176px]"
+        className="unsloth-plus-menu unsloth-thinking-menu min-w-0 w-[calc(176px*var(--ui-space-scale,1))]"
         trigger={(triggerRef) => (
           <button
             ref={triggerRef}
@@ -5746,7 +5862,7 @@ const ReasoningToggle: FC<{ side?: "top" | "bottom" }> = ({
                 {isEffort ? `Thinking · ${effortLabel}` : "Thinking"}
               </span>
             ) : null}
-            <ChevronDownIcon strokeWidth={1.5} className="unsloth-thinking-caret size-[15px]" />
+            <ChevronDownIcon strokeWidth={1.5} className="unsloth-thinking-caret size-[calc(15px*var(--ui-space-scale,1))]" />
           </button>
         )}
       >
@@ -5964,7 +6080,7 @@ const WebSearchToggle: FC = () => {
       aria-label={toolsEnabled ? "Disable web search" : "Enable web search"}
     >
       <PillGlyph>
-        <GlobeIcon className="size-[15px]" />
+        <GlobeIcon className="size-[calc(15px*var(--ui-space-scale,1))]" />
       </PillGlyph>
       <span>Search</span>
     </button>
@@ -6004,7 +6120,7 @@ const CodeToolsToggle: FC = () => {
       <PillGlyph>
         <HugeiconsIcon
           icon={CodeIcon}
-          className="size-[18.5px]"
+          className="size-[calc(18.5px*var(--ui-space-scale,1))]"
           strokeWidth={2}
         />
       </PillGlyph>
@@ -6071,7 +6187,7 @@ const ArtifactsToggle: FC = () => {
       <PillGlyph>
         <HugeiconsIcon
           icon={PencilRulerIcon}
-          className="size-[15.5px]"
+          className="size-[calc(15.5px*var(--ui-space-scale,1))]"
           strokeWidth={2}
         />
       </PillGlyph>
@@ -6419,7 +6535,7 @@ const ComposerToolsMenu: FC<{
         </DropdownMenuSubTrigger>
         <DropdownMenuSubContent
           collisionPadding={16}
-          className="unsloth-plus-menu w-[208px]"
+          className="unsloth-plus-menu w-[calc(208px*var(--ui-space-scale,1))]"
         >
           {recentPrompts.map((p) => (
             <DropdownMenuItem
@@ -6450,7 +6566,7 @@ const ComposerToolsMenu: FC<{
         </DropdownMenuSubTrigger>
         <DropdownMenuSubContent
           collisionPadding={16}
-          className="unsloth-plus-menu w-[208px]"
+          className="unsloth-plus-menu w-[calc(208px*var(--ui-space-scale,1))]"
         >
           <DropdownMenuItem
             onSelect={() => {
@@ -6524,7 +6640,7 @@ const ComposerToolsMenu: FC<{
           <HugeiconsIcon icon={Folder01Icon} strokeWidth={2} />
           Projects
         </DropdownMenuSubTrigger>
-        <DropdownMenuSubContent className="unsloth-plus-menu w-[232px]">
+        <DropdownMenuSubContent className="unsloth-plus-menu w-[calc(232px*var(--ui-space-scale,1))]">
           <DropdownMenuItem onSelect={() => setNewProjectOpen(true)}>
             <HugeiconsIcon icon={FolderAddIcon} strokeWidth={2} />
             New project
@@ -6585,7 +6701,7 @@ const ComposerToolsMenu: FC<{
           className="unsloth-composer-plus"
           data-tour="chat-plus-menu"
         >
-          <PlusIcon className="size-[22px] stroke-[1.75px]" />
+          <PlusIcon className="size-[calc(22px*var(--ui-space-scale,1))] stroke-[1.75px]" />
         </button>
       </DropdownMenuTrigger>
       <DropdownMenuContent
@@ -6593,7 +6709,7 @@ const ComposerToolsMenu: FC<{
         align="start"
         sideOffset={0}
         avoidCollisions={true}
-        className="unsloth-plus-menu w-[244px]"
+        className="unsloth-plus-menu w-[calc(244px*var(--ui-space-scale,1))]"
         // Don't refocus the + on close; restored focus showed a stray ring.
         onCloseAutoFocus={(event) => event.preventDefault()}
       >
@@ -6707,7 +6823,7 @@ const ComposerToolsMenu: FC<{
             <MoreHorizontalIcon className="size-4" />
             More
           </DropdownMenuSubTrigger>
-          <DropdownMenuSubContent className="unsloth-plus-menu w-[248px]">
+          <DropdownMenuSubContent className="unsloth-plus-menu w-[calc(248px*var(--ui-space-scale,1))]">
             {overflowPlusItems.map((id) => (
               <Fragment key={id}>{plusMenuNodes[id]}</Fragment>
             ))}
@@ -6900,9 +7016,9 @@ const ComposerRightControls: FC<{
             aria-label={t("promptQueue.sendLabel")}
           >
             {pendingSend ? (
-              <Spinner className="size-[18px]" />
+              <Spinner className="size-[calc(18px*var(--ui-space-scale,1))]" />
             ) : (
-              <ArrowUpIcon className="unsloth-send-icon aui-composer-send-icon size-[21px] stroke-2" />
+              <ArrowUpIcon className="unsloth-send-icon aui-composer-send-icon size-[calc(21px*var(--ui-space-scale,1))] stroke-2" />
             )}
           </TooltipIconButton>
         </ComposerPrimitive.Send>
@@ -6946,7 +7062,7 @@ const ComposerRightControls: FC<{
               className="aui-composer-send ml-1.5 size-9 rounded-full"
               aria-label={followUpLabel}
             >
-              <ArrowUpIcon className="unsloth-send-icon aui-composer-send-icon size-[21px] stroke-2" />
+              <ArrowUpIcon className="unsloth-send-icon aui-composer-send-icon size-[calc(21px*var(--ui-space-scale,1))] stroke-2" />
             </TooltipIconButton>
           )}
         </AuiIf>
@@ -6997,7 +7113,7 @@ const ComposerRightControls: FC<{
                 className="aui-composer-send size-9 rounded-full"
                 aria-label={followUpLabel}
               >
-                <ArrowUpIcon className="unsloth-send-icon aui-composer-send-icon size-[21px] stroke-2" />
+                <ArrowUpIcon className="unsloth-send-icon aui-composer-send-icon size-[calc(21px*var(--ui-space-scale,1))] stroke-2" />
               </TooltipIconButton>
             ) : null}
           </div>

@@ -31,6 +31,8 @@ export type LoadKind = "gguf" | "single_file" | "pipeline";
 export interface ModelArtifact {
   /** Exact artifact repo id (the pre-grouping id, stays loadable/searchable). */
   repoId: string;
+  /** Vendor repo this unsloth mirror copies byte for byte; its id (a cached copy) resolves here too. */
+  upstreamRepoId?: string;
   format: ArtifactFormat;
   loadKind: LoadKind;
   /** single_file loads name their exact checkpoint inside the repo. */
@@ -134,6 +136,17 @@ const bf16Pipeline = (
   ...extra,
 });
 
+// The unsloth mirror of a vendor bf16 pipeline, identical files, so it replaces the vendor row.
+const bf16Mirror = (
+  upstreamRepoId: string,
+  approxSizeGb?: number,
+  extra?: Partial<ModelArtifact>,
+): ModelArtifact =>
+  bf16Pipeline(`unsloth/${upstreamRepoId.split("/")[1]}`, approxSizeGb, {
+    upstreamRepoId,
+    ...extra,
+  });
+
 // A bf16 single-file DiT checkpoint: from_single_file against the family base repo for the VAE /
 // text encoder, like the fp8 single-file checkpoints.
 const bf16Single = (
@@ -163,7 +176,7 @@ export const IMAGE_CATALOG: CatalogGroup[] = [
     description: "Text-to-image",
     scope: "image",
     artifacts: [
-      bf16Pipeline("Tongyi-MAI/Z-Image-Turbo", 30, {
+      bf16Mirror("Tongyi-MAI/Z-Image-Turbo", 30, {
         totalParams: 6154908736,
         prequantRepo: "unsloth/Z-Image-Turbo-FP8",
         prequantSizeGb: { fp8: 5.86, int8: 5.86 },
@@ -206,7 +219,7 @@ export const IMAGE_CATALOG: CatalogGroup[] = [
     // artifact row here, so alias it to keep a pasted id finding it.
     aliases: ["unsloth/Qwen-Image-2512-FP8"],
     artifacts: [
-      bf16Pipeline("Qwen/Qwen-Image-2512", 54, {
+      bf16Mirror("Qwen/Qwen-Image-2512", 54, {
         totalParams: 20430401088,
         prequantRepo: "unsloth/Qwen-Image-2512-FP8",
         prequantSizeGb: { fp8: 19.06, int8: 25.4 },
@@ -223,7 +236,7 @@ export const IMAGE_CATALOG: CatalogGroup[] = [
     description: "Text-to-image",
     scope: "image",
     artifacts: [
-      bf16Pipeline("Qwen/Qwen-Image", 54, {
+      bf16Mirror("Qwen/Qwen-Image", 54, {
         totalParams: 20430401088,
         prequantRepo: "unsloth/Qwen-Image-FP8",
         prequantSizeGb: { fp8: 19.06, int8: 31.73 },
@@ -237,10 +250,7 @@ export const IMAGE_CATALOG: CatalogGroup[] = [
     description: "Text-to-image",
     scope: "image",
     artifacts: [
-      // Apache-2.0 but still gated on the Hub (gated: "auto", a contact-info form), so an anonymous
-      // download 401s exactly like dev. The licence and the gate are independent.
-      bf16Pipeline("black-forest-labs/FLUX.1-schnell", 32, {
-        gated: true,
+      bf16Mirror("black-forest-labs/FLUX.1-schnell", 32, {
         totalParams: 11891178560,
         prequantRepo: "unsloth/FLUX.1-schnell-FP8",
         prequantSizeGb: { fp8: 11.09, int8: 14.13 },
@@ -254,20 +264,19 @@ export const IMAGE_CATALOG: CatalogGroup[] = [
     description: "Text-to-image",
     scope: "image",
     artifacts: [
-      // FLUX.1-dev is gated (license acceptance + token), like FLUX.1-schnell above.
-      bf16Pipeline("black-forest-labs/FLUX.1-dev", 32, { gated: true, totalParams: 11901408320 }),
+      bf16Mirror("black-forest-labs/FLUX.1-dev", 32, { totalParams: 11901408320 }),
       gguf("unsloth/FLUX.1-dev-GGUF"),
     ],
   },
   {
     // Krea guidance-distilled FLUX.1-dev finetune: same arch/layout as dev, so it runs under the
-    // flux.1 family. The base repo is gated like dev; QuantStack publishes the open GGUF quants.
+    // flux.1 family. QuantStack publishes the open GGUF quants.
     canonicalId: "black-forest-labs/FLUX.1-Krea-dev",
     displayName: "FLUX.1 Krea dev",
     description: "Text-to-image",
     scope: "image",
     artifacts: [
-      bf16Pipeline("black-forest-labs/FLUX.1-Krea-dev", 32, { gated: true, totalParams: 11901408320 }),
+      bf16Mirror("black-forest-labs/FLUX.1-Krea-dev", 32, { totalParams: 11901408320 }),
       gguf("QuantStack/FLUX.1-Krea-dev-GGUF"),
     ],
   },
@@ -291,7 +300,7 @@ export const IMAGE_CATALOG: CatalogGroup[] = [
     description: "Image editing",
     scope: "image",
     artifacts: [
-      bf16Pipeline("Qwen/Qwen-Image-Edit-2511", 54, { totalParams: 20430401088 }),
+      bf16Mirror("Qwen/Qwen-Image-Edit-2511", 54, { totalParams: 20430401088 }),
       gguf("unsloth/Qwen-Image-Edit-2511-GGUF"),
     ],
   },
@@ -301,8 +310,7 @@ export const IMAGE_CATALOG: CatalogGroup[] = [
     description: "Image editing",
     scope: "image",
     artifacts: [
-      // FLUX.1-Kontext-dev is gated on the Hub (license acceptance + token).
-      bf16Pipeline("black-forest-labs/FLUX.1-Kontext-dev", 32, { gated: true, totalParams: 11901408320 }),
+      bf16Mirror("black-forest-labs/FLUX.1-Kontext-dev", 32, { totalParams: 11901408320 }),
       gguf("unsloth/FLUX.1-Kontext-dev-GGUF"),
     ],
   },
@@ -311,11 +319,8 @@ export const IMAGE_CATALOG: CatalogGroup[] = [
     displayName: "Krea 2 Turbo",
     description: "Text-to-image",
     scope: "image",
-    // Gated on the Hub, and the group's only artifact, so a bare click has nothing open to fall
-    // through to: the picker must show the gate rather than start a download that 401s.
     artifacts: [
-      bf16Pipeline("krea/Krea-2-Turbo", 18, {
-        gated: true,
+      bf16Mirror("krea/Krea-2-Turbo", 18, {
         totalParams: 12820073036,
         prequantRepo: "unsloth/Krea-2-Turbo-FP8",
         prequantSizeGb: { fp8: 11.95, int8: 12.19 },
@@ -329,7 +334,7 @@ export const IMAGE_CATALOG: CatalogGroup[] = [
     displayName: "Lumina Image 2.0",
     description: "Text-to-image",
     scope: "image",
-    artifacts: [bf16Pipeline("Alpha-VLLM/Lumina-Image-2.0", 11, { totalParams: 2609769152 })],
+    artifacts: [bf16Mirror("Alpha-VLLM/Lumina-Image-2.0", 11, { totalParams: 2609769152 })],
   },
   {
     // 17B dual-stream 2K-native DiT with a Qwen2.5-VL encoder; the mirror's guider components load
@@ -355,13 +360,13 @@ export const IMAGE_CATALOG: CatalogGroup[] = [
     description: "Text-to-image",
     scope: "image",
     artifacts: [
-      bf16Pipeline("HiDream-ai/HiDream-I1-Full", 63, { totalParams: 17105733184 }),
-      bf16Pipeline("HiDream-ai/HiDream-I1-Dev", 63, {
+      bf16Mirror("HiDream-ai/HiDream-I1-Full", 63, { totalParams: 17105733184 }),
+      bf16Mirror("HiDream-ai/HiDream-I1-Dev", 63, {
         label: "BF16 - Dev (distilled)",
         keywords: ["bf16", "dev", "distilled"],
         totalParams: 17105733184,
       }),
-      bf16Pipeline("HiDream-ai/HiDream-I1-Fast", 63, {
+      bf16Mirror("HiDream-ai/HiDream-I1-Fast", 63, {
         label: "BF16 - Fast (distilled)",
         keywords: ["bf16", "fast", "distilled"],
         totalParams: 17105733184,
@@ -389,7 +394,7 @@ export const IMAGE_CATALOG: CatalogGroup[] = [
     scope: "image",
     artifacts: [
       // SDXL uses a UNet rather than a transformer.
-      bf16Pipeline("stabilityai/sdxl-turbo", 8, {
+      bf16Mirror("stabilityai/sdxl-turbo", 8, {
         label: "Safetensors",
         totalParams: 2567463684,
         denseQuantable: false,
@@ -403,7 +408,7 @@ export const IMAGE_CATALOG: CatalogGroup[] = [
     scope: "image",
     artifacts: [
       // SDXL uses a UNet rather than a transformer.
-      bf16Pipeline("stabilityai/stable-diffusion-xl-base-1.0", 8, {
+      bf16Mirror("stabilityai/stable-diffusion-xl-base-1.0", 8, {
         label: "Safetensors",
         totalParams: 2567463684,
         denseQuantable: false,
@@ -784,9 +789,12 @@ function indexFor(catalog: CatalogGroup[]): CatalogIndex {
       byKey.set(canonicalKeyFor(alias), group);
     }
     for (const artifact of group.artifacts) {
-      byId.set(artifact.repoId.toLowerCase(), group);
-      byKey.set(canonicalKeyFor(artifact.repoId), group);
-      artifactById.set(artifact.repoId.toLowerCase(), artifact);
+      for (const id of [artifact.repoId, artifact.upstreamRepoId]) {
+        if (!id) continue;
+        byId.set(id.toLowerCase(), group);
+        byKey.set(canonicalKeyFor(id), group);
+        artifactById.set(id.toLowerCase(), artifact);
+      }
     }
   }
   const built = { byId, byKey, artifactById };

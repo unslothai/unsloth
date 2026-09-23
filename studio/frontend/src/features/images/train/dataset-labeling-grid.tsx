@@ -290,7 +290,7 @@ export function DatasetLabelingGrid({
       {/* Two columns at any width: the column is fixed, so viewport breakpoints do not apply. */}
       {/* auto-rows-min: past max-h the height is definite and auto rows split it, flattening every
           tile until its thumbnail collapses. */}
-      <div className="hover-scrollbar grid max-h-[420px] auto-rows-min grid-cols-2 gap-2.5 overflow-y-auto pb-0.5 pr-1">
+      <div className="hover-scrollbar grid max-h-[calc(420px*var(--ui-space-scale,1))] auto-rows-min grid-cols-2 gap-2.5 overflow-y-auto pb-0.5 pr-1">
         {pageRecords.map((r) => (
           <LabelTile
             key={r.filename}

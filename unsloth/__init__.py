@@ -200,6 +200,16 @@ if _IS_MLX:
     except Exception:
         pass
     try:
+        # Same reason: 4.x remote configs are built here too, and their validators read plain RoPE
+        # as rope_scaling None. is_torch_fx_available is left to unsloth_zoo.mlx.loader.
+        from .import_fixes import (
+            fix_transformers_remote_rope_scaling_none as _fix_remote_rope_scaling,
+        )
+        _fix_remote_rope_scaling()
+        del _fix_remote_rope_scaling
+    except Exception:
+        pass
+    try:
         import unsloth_zoo
     except ImportError as _e:
         raise ImportError(
