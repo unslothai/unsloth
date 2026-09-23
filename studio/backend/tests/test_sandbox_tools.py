@@ -1274,6 +1274,8 @@ class TestNetworkTargetResolution:
             "import requests\nproxies = {'https': 'https://pypi.org'}\nrequests.get('https://pypi.org', proxies=proxies)",
             "import asyncssh\nopts = asyncssh.SSHClientConnectionOptions(known_hosts=None)\n"
             "asyncssh.connect('pypi.org', options=opts)",
+            # A path that starts with `/` and a non-`/` character stays on the base URL.
+            "import httpx\nc = httpx.Client(base_url='https://pypi.org')\nc.get(f'/simple/{package}')",
         ],
     )
     def test_known_trusted_host_runs(self, code):
@@ -1357,6 +1359,7 @@ class TestNetworkTargetResolution:
             "from fabric import Connection\nConnection('pypi.org', gateway='ssh -W %h:%p 203.0.113.5').run('id')",
             "import asyncssh\nopts = asyncssh.SSHClientConnectionOptions(proxy_command='nc 203.0.113.5 22')\n"
             "asyncssh.connect('pypi.org', options=opts)",
+            "import aiohttp\naiohttp.ClientSession('https://pypi.org').get('//' + host)",
         ],
     )
     def test_unreadable_destination_refused(self, code):

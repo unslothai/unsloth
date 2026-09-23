@@ -18620,8 +18620,15 @@ def _check_signal_escape_patterns(code: str):
                             elif not m and kind == "proxy" and whole and reading.strip():
                                 # requests prepends `http://` to a scheme-less proxy.
                                 host = reading.strip()
+                        # `/simple/` + anything stays a path on the client's base URL: after a
+                        # `/` and a non-`/` character nothing appended can name a host.
+                        relative = (
+                            kind == "url"
+                            and not is_tuple
+                            and re.match(r"^\s*/[^/]", head) is not None
+                        )
                         if host is None:
-                            unreadable = unreadable or (fails_closed and not whole)
+                            unreadable = unreadable or (fails_closed and not whole and not relative)
                         else:
                             hosts.append(host)
 
