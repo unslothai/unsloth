@@ -3183,6 +3183,9 @@ export function ChatPage({
         return;
       }
       if (meta?.source === "external" || isExternalModelId(value)) {
+        // Any pending local preflight is stale now, even before it has published a loading run.
+        const externalIntentId = invalidatePendingModelSelection();
+        let externalCapabilityPatch: Partial<ReturnType<typeof useChatRuntimeStore.getState>> | null = null;
         // A local load still in flight has to be stopped by this external pick. Leaving it
         // running pins modelLoading true, which makes the composer treat even this external
         // checkpoint as unavailable, and the local run's completion would write the local
@@ -3190,7 +3193,6 @@ export function ChatPage({
         // the cancellation so a local run still parked in its preflight yields on wakeup
         // instead of adopting its status and starting anyway.
         if (modelOperationInProgress || loadingModel) {
-          const externalIntentId = invalidatePendingModelSelection();
           void cancelLoadingForReplacement(externalIntentId).then((stopped) => {
             // A newer pick already owns the store; this one must not write to it.
             if (!isModelSelectionIntentCurrent(externalIntentId)) return;
@@ -3207,6 +3209,11 @@ export function ChatPage({
             const live = useChatRuntimeStore.getState();
             if (live.params.checkpoint !== value) {
               live.setCheckpoint(value, null);
+            }
+            // Cancellation can finish after clearCheckpoint reset these fields. Reapply the
+            // complete external capability/tool state computed below, not just its checkpoint.
+            if (externalCapabilityPatch) {
+              useChatRuntimeStore.setState(externalCapabilityPatch);
             }
           });
         }
@@ -3311,7 +3318,7 @@ export function ChatPage({
             ? false
             : (storedToolsEnabled ?? searchOnByDefault)
           : false;
-        useChatRuntimeStore.setState({
+        externalCapabilityPatch = {
           activeGgufVariant: null,
           ...loadedContextFields(null),
           activeNativePathToken: null,
@@ -3350,7 +3357,8 @@ export function ChatPage({
             ? (storedWebFetchToolsEnabled ?? false)
             : false,
           ...(stillOnOpenRouterFree ? {} : { lastOpenRouterChosenModel: null }),
-        });
+        };
+        useChatRuntimeStore.setState(externalCapabilityPatch);
         return;
       }
       // Local model picked: drop any cached openrouter/free chosen model.

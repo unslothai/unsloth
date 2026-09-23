@@ -196,6 +196,8 @@ type ActiveModelLoadRun = {
   rollbackLoadId: string | null;
   rollbackNativePathToken: string | null;
   rollbackNativePathExpiresAtMs: number | null;
+  /** Launch settings from the outgoing resident, retained through checkpoint clearing. */
+  rollbackLoadedState: ReturnType<typeof useChatRuntimeStore.getState>;
   /** Set once the preliminary unload has removed the model that was resident before
    *  this load. A cancellation before this run POSTs its own /load leaves the backend
    *  with nothing, so the store's checkpoint must be reconciled, not preserved. */
@@ -312,6 +314,7 @@ type PendingReplacementRollback = {
   loadId?: string | null;
   nativePathToken?: string | null;
   nativePathExpiresAtMs?: number | null;
+  loadedState?: ReturnType<typeof useChatRuntimeStore.getState>;
 };
 
 // Cancellation can finish after a newer selection intent has already started, so the
@@ -320,8 +323,6 @@ let pendingReplacementRollback: PendingReplacementRollback | null = null;
 
 /** One bounded lease-wait step: a pick waiting for a preflight holder re-checks this often. */
 const PREFLIGHT_LEASE_RETRY_MS = 250;
-/** How long a pick waits for a preflight lease holder to yield before giving up. */
-const PREFLIGHT_LEASE_WAIT_MS = 30_000;
 function rememberApprovedRemoteCode(
   checkpoint: string,
   fingerprint: string | null,
@@ -1225,6 +1226,7 @@ export function useChatModelRuntime() {
           loadId: cancelledRun.rollbackLoadId,
           nativePathToken: cancelledRun.rollbackNativePathToken,
           nativePathExpiresAtMs: cancelledRun.rollbackNativePathExpiresAtMs,
+          loadedState: cancelledRun.rollbackLoadedState,
         };
       };
 
@@ -1512,7 +1514,6 @@ export function useChatModelRuntime() {
       // release the lease, then claim it: the user's latest pick must not be dropped by a lease
       // whose owner is still deciding.
       let lifecycleLease: ModelLifecycleLease | null = null;
-      const leaseWaitDeadline = Date.now() + PREFLIGHT_LEASE_WAIT_MS;
       while (lifecycleLease === null) {
         lifecycleLease = useChatRuntimeStore
           .getState()
@@ -1520,7 +1521,6 @@ export function useChatModelRuntime() {
         if (lifecycleLease !== null) break;
         // This pick was itself superseded while waiting; it must not load.
         if (modelSelectionIntentEpoch !== loadIntentId) return;
-        if (Date.now() >= leaseWaitDeadline) break;
         await new Promise<void>((resolve) => {
           let settled = false;
           const unsubscribe = useChatRuntimeStore.subscribe((state) => {
@@ -1696,6 +1696,7 @@ export function useChatModelRuntime() {
         rollbackNativePathExpiresAtMs: inheritedPendingRollback
           ? inheritedPendingRollback.nativePathExpiresAtMs ?? null
           : currentRollbackState.activeNativePathExpiresAtMs ?? null,
+        rollbackLoadedState: inheritedPendingRollback?.loadedState ?? currentRollbackState,
         // An inherited rollback target whose model the cancelled run already unloaded: the backend
         // has nothing resident, so a failure below must restore it rather than find it still there.
         residentModelUnloaded: inheritedPendingRollback?.residentUnloaded === true,
@@ -1790,6 +1791,7 @@ export function useChatModelRuntime() {
           const currentCheckpoint =
             useChatRuntimeStore.getState().params.checkpoint;
           const stateBeforeUnload = useChatRuntimeStore.getState();
+          const rollbackState = inheritedPendingRollback?.loadedState ?? stateBeforeUnload;
           const platform = usePlatformStore.getState();
           let trustRemoteCode = stateBeforeUnload.params.trustRemoteCode ?? false;
           let approvedRemoteCodeFingerprint: string | null = null;
@@ -1827,20 +1829,20 @@ export function useChatModelRuntime() {
             previousIsGguf,
             platform.deviceType,
             platform.chatOnlyReason,
-            stateBeforeUnload.loadedIsMlx,
+            rollbackState.loadedIsMlx,
           );
           // What the outgoing model loaded with, not the control's value: a pin typed
           // and never applied would change a window the failed switch never touched.
-          const previousPin = stateBeforeUnload.loadedCustomContextLength;
+          const previousPin = rollbackState.loadedCustomContextLength;
           // It reloads at the pin it loaded with, whichever backend served it; only
           // llama.cpp's placement rules override that, where they own sizing.
           const rollbackMaxSeqLength = previousIsGguf
             ? resolveFitMaxSeqLength(
                 previousIsGguf,
-                stateBeforeUnload.loadedGpuMemoryMode ?? "auto",
-                stateBeforeUnload.loadedGpuLayers ?? GPU_LAYERS_AUTO,
-                stateBeforeUnload.loadedCustomContextLength,
-                stateBeforeUnload.loadedContextLength ?? 0,
+                rollbackState.loadedGpuMemoryMode ?? "auto",
+                rollbackState.loadedGpuLayers ?? GPU_LAYERS_AUTO,
+                rollbackState.loadedCustomContextLength,
+                rollbackState.loadedContextLength ?? 0,
               )
             : (previousPin ??
               unpinnedLoadContext(false, previousIsMlx, previousMaxSeqLength));
@@ -2689,52 +2691,52 @@ export function useChatModelRuntime() {
                   approved_remote_code_fingerprint:
                     approvedRemoteCodeFingerprints.get(previousCheckpoint) ?? null,
                   chat_template_override:
-                    stateBeforeUnload.loadedChatTemplateOverride,
-                  cache_type_kv: stateBeforeUnload.loadedKvCacheDtype,
-                  mlx_kv_bits: stateBeforeUnload.loadedMlxKvBitsRequested,
+                    rollbackState.loadedChatTemplateOverride,
+                  cache_type_kv: rollbackState.loadedKvCacheDtype,
+                  mlx_kv_bits: rollbackState.loadedMlxKvBitsRequested,
                   speculative_type:
-                    stateBeforeUnload.loadedSpeculativeType,
+                    rollbackState.loadedSpeculativeType,
                   spec_draft_n_max:
-                    stateBeforeUnload.loadedSpecDraftNMax,
-                  n_parallel: stateBeforeUnload.loadedNParallel,
+                    rollbackState.loadedSpecDraftNMax,
+                  n_parallel: rollbackState.loadedNParallel,
                   reasoning_budget:
-                    stateBeforeUnload.loadedReasoningBudgetRequested ?? -1,
+                    rollbackState.loadedReasoningBudgetRequested ?? -1,
                   reasoning_budget_message:
-                    stateBeforeUnload.loadedReasoningBudgetMessageRequested ?? "",
+                    rollbackState.loadedReasoningBudgetMessageRequested ?? "",
                   // omit unset fields: a null counts as set and would strip the previous server's extras
-                  ...(stateBeforeUnload.loadedNBatch != null
-                    ? { n_batch: stateBeforeUnload.loadedNBatch }
+                  ...(rollbackState.loadedNBatch != null
+                    ? { n_batch: rollbackState.loadedNBatch }
                     : {}),
-                  ...(stateBeforeUnload.loadedNUbatch != null
-                    ? { n_ubatch: stateBeforeUnload.loadedNUbatch }
+                  ...(rollbackState.loadedNUbatch != null
+                    ? { n_ubatch: rollbackState.loadedNUbatch }
                     : {}),
                   ...serverTuningLoadPayload({
-                    loadMode: stateBeforeUnload.loadedLoadMode,
+                    loadMode: rollbackState.loadedLoadMode,
                     specDraftCacheDtype:
-                      stateBeforeUnload.loadedSpecDraftCacheDtype,
-                    ctxCheckpoints: stateBeforeUnload.loadedCtxCheckpoints,
-                    cacheRam: stateBeforeUnload.loadedCacheRam,
+                      rollbackState.loadedSpecDraftCacheDtype,
+                    ctxCheckpoints: rollbackState.loadedCtxCheckpoints,
+                    cacheRam: rollbackState.loadedCacheRam,
                   }),
                   // Explicit, unlike the batch pair above: the failed switch left the TARGET resident, so an
                   // omitted field here inherits across models, which the route refuses.
-                  ...(stateBeforeUnload.loadedLlamaExtraArgs != null
-                    ? { llama_extra_args: stateBeforeUnload.loadedLlamaExtraArgs }
+                  ...(rollbackState.loadedLlamaExtraArgs != null
+                    ? { llama_extra_args: rollbackState.loadedLlamaExtraArgs }
                     : {}),
                   // Restore the previous model in the split mode it was running, not the default layer split.
-                  tensor_parallel: stateBeforeUnload.loadedTensorParallel ?? false,
+                  tensor_parallel: rollbackState.loadedTensorParallel ?? false,
                   // What the PREVIOUS server was loaded with. Not the control field, which
                   // applyPerModelConfigToRuntime has already overwritten with the TARGET's setting, and not
                   // loadedVisionDisabledByUser, which is narrowed to models that can do images.
-                  disable_vision: stateBeforeUnload.loadedDisableVision ?? false,
+                  disable_vision: rollbackState.loadedDisableVision ?? false,
                   // Restore the previous model's GPU Memory placement, not backend defaults.
-                  gpu_memory_mode: stateBeforeUnload.loadedGpuMemoryMode ?? "auto",
-                  gpu_layers: stateBeforeUnload.loadedGpuLayers ?? GPU_LAYERS_AUTO,
+                  gpu_memory_mode: rollbackState.loadedGpuMemoryMode ?? "auto",
+                  gpu_layers: rollbackState.loadedGpuLayers ?? GPU_LAYERS_AUTO,
                   // A recovered Vulkan model needs its staged CPU-only runtime back after the failed target load
                   // unloaded the live server.
-                  cpu_fallback: stateBeforeUnload.loadedCpuFallback,
-                  n_cpu_moe: stateBeforeUnload.loadedNCpuMoe ?? 0,
-                  tensor_split: stateBeforeUnload.loadedSplitRatio ?? undefined,
-                  gpu_ids: stateBeforeUnload.loadedGpuIds ?? undefined,
+                  cpu_fallback: rollbackState.loadedCpuFallback,
+                  n_cpu_moe: rollbackState.loadedNCpuMoe ?? 0,
+                  tensor_split: rollbackState.loadedSplitRatio ?? undefined,
+                  gpu_ids: rollbackState.loadedGpuIds ?? undefined,
                   // The failed swap already unloaded the server those runs used.
                   force_cancel_active: true,
                 });
@@ -2752,11 +2754,11 @@ export function useChatModelRuntime() {
                     : null,
                   // Restore the editable speculative knobs to the rolled-back model's; the loaded baselines come
                   // from its reload echo.
-                  speculativeType: stateBeforeUnload.loadedSpeculativeType ?? null,
-                  specDraftNMax: stateBeforeUnload.loadedSpecDraftNMax ?? null,
+                  speculativeType: rollbackState.loadedSpeculativeType ?? null,
+                  specDraftNMax: rollbackState.loadedSpecDraftNMax ?? null,
                   // Control keeps its intent; only the baseline takes the echo.
                   nParallel: previousNParallel,
-                  loadedNParallel: stateBeforeUnload.loadedNParallel ?? null,
+                  loadedNParallel: rollbackState.loadedNParallel ?? null,
                   reasoningBudget: previousReasoningBudget,
                   loadedReasoningBudget:
                     rollbackResponse.reasoning_budget ?? -1,
@@ -2765,29 +2767,29 @@ export function useChatModelRuntime() {
                     rollbackResponse.reasoning_budget_message ?? "",
                   loadedReasoningBudgetRequested:
                     rollbackResponse.requested_reasoning_budget ??
-                    stateBeforeUnload.loadedReasoningBudgetRequested ??
+                    rollbackState.loadedReasoningBudgetRequested ??
                     -1,
                   loadedReasoningBudgetMessageRequested:
                     rollbackResponse.requested_reasoning_budget_message ??
-                    stateBeforeUnload.loadedReasoningBudgetMessageRequested ??
+                    rollbackState.loadedReasoningBudgetMessageRequested ??
                     "",
                   nBatch: previousNBatch,
-                  loadedNBatch: stateBeforeUnload.loadedNBatch ?? null,
+                  loadedNBatch: rollbackState.loadedNBatch ?? null,
                   nUbatch: previousNUbatch,
-                  loadedNUbatch: stateBeforeUnload.loadedNUbatch ?? null,
+                  loadedNUbatch: rollbackState.loadedNUbatch ?? null,
                   // Same split: the controls keep the outgoing model's intent and the baselines come from what
                   // that model was launched with.
                   loadMode: previousServerTuning.loadMode ?? null,
-                  loadedLoadMode: stateBeforeUnload.loadedLoadMode ?? null,
+                  loadedLoadMode: rollbackState.loadedLoadMode ?? null,
                   specDraftCacheDtype:
                     previousServerTuning.specDraftCacheDtype ?? null,
                   loadedSpecDraftCacheDtype:
-                    stateBeforeUnload.loadedSpecDraftCacheDtype ?? null,
+                    rollbackState.loadedSpecDraftCacheDtype ?? null,
                   ctxCheckpoints: previousServerTuning.ctxCheckpoints ?? null,
                   loadedCtxCheckpoints:
-                    stateBeforeUnload.loadedCtxCheckpoints ?? null,
+                    rollbackState.loadedCtxCheckpoints ?? null,
                   cacheRam: previousServerTuning.cacheRam ?? null,
-                  loadedCacheRam: stateBeforeUnload.loadedCacheRam ?? null,
+                  loadedCacheRam: rollbackState.loadedCacheRam ?? null,
                   loadedSpeculativeType: rollbackSpeculativeType,
                   loadedSpecDraftNMax:
                     rollbackResponse.spec_draft_n_max ?? null,
@@ -2797,7 +2799,7 @@ export function useChatModelRuntime() {
                   // nParallel above.
                   mlxKvBits: previousMlxKvBits,
                   loadedChatTemplateOverride:
-                    stateBeforeUnload.loadedChatTemplateOverride,
+                    rollbackState.loadedChatTemplateOverride,
                   ...loadedGpuMemoryFields(rollbackResponse),
                   tensorParallel: rollbackResponse.tensor_parallel ?? false,
                   loadedTensorParallel:
@@ -2806,13 +2808,13 @@ export function useChatModelRuntime() {
                     rollbackResponse.disable_vision ?? false,
                   // The rolled-back model's own loaded value, matching the request above field for field. Not
                   // stateBeforeUnload.disableVision, which holds the TARGET's value by now, and not the echo either.
-                  disableVision: stateBeforeUnload.loadedDisableVision ?? false,
+                  disableVision: rollbackState.loadedDisableVision ?? false,
                   loadedVisionDisabledByUser:
                     rollbackResponse.vision_disabled_by_user ?? false,
                   customContextLength:
-                    stateBeforeUnload.loadedCustomContextLength,
+                    rollbackState.loadedCustomContextLength,
                   loadedCustomContextLength:
-                    stateBeforeUnload.loadedCustomContextLength,
+                    rollbackState.loadedCustomContextLength,
                 });
                 await refresh();
               } catch {

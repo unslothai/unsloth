@@ -492,7 +492,7 @@ test("a pick parked on a preflight lease waits for the holder instead of being l
   const runtime = read(RUNTIME);
   // The holder owns the lease without having published a run or a picker entry, so a pick
   // arriving now used to read null from the gate and return -- and the holder then yielded as
-  // stale, so neither selection loaded. It has to wait, bounded, and re-check its own intent.
+  // stale, so neither selection loaded. The latest intent waits and re-checks until it can claim.
   const claim = section(
     runtime,
     "// Hold the lifecycle lease through confirmation and loading.",
@@ -504,13 +504,13 @@ test("a pick parked on a preflight lease waits for the holder instead of being l
     /if \(modelSelectionIntentEpoch !== loadIntentId\) return;/,
     "a superseded waiter must yield rather than load",
   );
-  assert.match(claim, /Date\.now\(\) >= leaseWaitDeadline/, "the wait must be bounded");
+  assert.doesNotMatch(claim, /leaseWaitDeadline|PREFLIGHT_LEASE_WAIT_MS|Date\.now\(\) >=/);
   assert.match(
     claim,
     /if \(settled \|\| state\.modelLoading\) return;/,
     "the wait must end when the holder releases the lease",
   );
-  // Giving up is still possible, but only after the bounded wait has actually elapsed.
+  // Once the lease is claimed, normal failure paths still restore the prior config.
   assert.match(runtime, /restorePreviousConfig\(\);\n\s*toast\.info\("A model is loading"/);
 });
 
@@ -660,4 +660,38 @@ test("inherited rollback preserves the resident's pin and native-path lease", ()
   assert.match(payload, /inheritedPendingRollback\s*\?\s*inheritedPendingRollback\.nativePathToken/);
   assert.match(payload, /inheritedPendingRollback\s*\?\s*inheritedPendingRollback\.loadId/);
   assert.match(payload, /inheritedPendingRollback\s*\?\s*inheritedPendingRollback\.nativePathExpiresAtMs/);
+});
+
+test("external picks invalidate every pending local preflight and restore full external capabilities", () => {
+  const page = read(CHAT_PAGE);
+  const external = section(
+    page,
+    'if (meta?.source === "external" || isExternalModelId(value)) {',
+    "const selectedExternal = parseExternalModelId(value);",
+  );
+  const invalidate = external.indexOf("invalidatePendingModelSelection()");
+  const conditionalCancel = external.indexOf("if (modelOperationInProgress || loadingModel)");
+  assert.notEqual(invalidate, -1);
+  assert.ok(invalidate < conditionalCancel, "invalidate even before a run/loading flag exists");
+  assert.match(page, /externalCapabilityPatch = \{/);
+  assert.match(page, /useChatRuntimeStore\.setState\(externalCapabilityPatch\);/);
+  assert.match(external, /if \(externalCapabilityPatch\) \{[\s\S]*?setState\(externalCapabilityPatch\)/);
+});
+
+test("latest model pick remains queued until the preflight lifecycle lease is released", () => {
+  const runtime = read(RUNTIME);
+  const wait = section(runtime, "// Hold the lifecycle lease through confirmation", "loadLifecycleLeaseRef.current = lifecycleLease;");
+  assert.match(wait, /while \(lifecycleLease === null\)/);
+  assert.match(wait, /PREFLIGHT_LEASE_RETRY_MS/);
+  assert.doesNotMatch(wait, /leaseWaitDeadline|PREFLIGHT_LEASE_WAIT_MS|Date\.now\(\) >=/);
+});
+
+test("inherited rollback carries loaded launch settings into compensating reload", () => {
+  const runtime = read(RUNTIME);
+  assert.match(runtime, /rollbackLoadedState: inheritedPendingRollback\?\.loadedState \?\? currentRollbackState/);
+  assert.match(runtime, /loadedState: cancelledRun\.rollbackLoadedState/);
+  const rollback = section(runtime, "const rollbackResponse = await loadModel({", "await refresh();");
+  assert.match(rollback, /rollbackState\.loadedGpuMemoryMode/);
+  assert.match(rollback, /rollbackState\.loadedSpeculativeType/);
+  assert.match(rollback, /rollbackState\.loadedGpuLayers/);
 });
