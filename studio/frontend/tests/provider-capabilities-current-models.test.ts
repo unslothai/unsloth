@@ -17,6 +17,7 @@ const {
   getExternalReasoningCapabilities,
   providerHostsCodeExecution,
   providerSupportsBuiltinCodeExecution,
+  providerSupportsBuiltinImageGeneration,
 
   providerSupportsBuiltinWebSearch,
   providerSupportsFastMode,
@@ -383,6 +384,19 @@ test("new Anthropic and OpenAI ids keep their max-output cap and code pill", () 
     providerSupportsBuiltinCodeExecution("openai", "gpt-5.6-sol", "https://api.openai.com/v1"),
     true,
   );
+});
+
+test("custom Responses exposes OpenAI hosted tools only on managed cloud hosts", () => {
+  const model = "gpt-5.5";
+  for (const [baseUrl, apiType, expected] of [
+    ["https://api.openai.com/v1", "responses", true],
+    ["https://team.openai.azure.com/openai/v1", "responses", true],
+    ["https://api.openai.com.attacker.example/v1", "responses", false],
+    ["https://api.openai.com/v1", "chat_completions", false],
+  ] as const) {
+    assert.equal(providerSupportsBuiltinCodeExecution("custom", model, baseUrl, apiType), expected);
+    assert.equal(providerSupportsBuiltinImageGeneration("custom", model, baseUrl, apiType), expected);
+  }
 });
 
 test("generic Custom connections use only their explicit max-output override", () => {
