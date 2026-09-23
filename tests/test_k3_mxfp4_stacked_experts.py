@@ -217,13 +217,13 @@ def _mxfp4_plan():
     }
 
 
-def _remote_module(name):
+def _remote_module(name, source = MODELING):
     import linecache
 
     mod = types.ModuleType(name)
     filename = f"<{name}>"
-    linecache.cache[filename] = (len(MODELING), None, MODELING.splitlines(True), filename)
-    exec(compile(MODELING, filename, "exec"), mod.__dict__)
+    linecache.cache[filename] = (len(source), None, source.splitlines(True), filename)
+    exec(compile(source, filename, "exec"), mod.__dict__)
     sys.modules[name] = mod
     for cls in (
         mod.SparseMoe,
@@ -277,8 +277,8 @@ def test_keep_packed_is_mxfp4_only_and_switchable(monkeypatch):
     assert not keep_mxfp4_experts_packed(_mxfp4_plan())
 
 
-def _tiny_model(name, layers = 2):
-    mod = _remote_module(name)
+def _tiny_model(name, layers = 2, source = MODELING):
+    mod = _remote_module(name, source)
     config = mod.TinyMoeConfig(num_hidden_layers = layers)
     with torch.device("meta"):
         model = mod.TinyMoeForCausalLM(config)
@@ -851,3 +851,39 @@ def test_nothing_stays_packed_without_the_zoo_full_save_support(monkeypatch):
     assert keep_mxfp4_experts_packed(_mxfp4_plan())
     monkeypatch.delattr(zoo_mxfp4, "_densified_module_names")
     assert not keep_mxfp4_experts_packed(_mxfp4_plan())
+
+
+# A training-capable remote MoE (DeepSeek-V2/V3 style): its own `if self.training:` branch loops
+# over the experts, so the remote MoE shim leaves it alone.
+TRAINING_MODELING = MODELING.replace(
+    """        if not self.training:
+            y = self.moe_infer(hidden_states, topk_idx, topk_weight)
+        else:
+            raise NotImplementedError("inference only")""",
+    """        if self.training:
+            flat = topk_idx.view(-1)
+            x = hidden_states.repeat_interleave(topk_idx.shape[1], dim=0)
+            y = torch.empty_like(x)
+            for i, expert in enumerate(self.experts):
+                y[flat == i] = expert(x[flat == i]).to(y.dtype)
+            y = (y.view(*topk_weight.shape, -1) * topk_weight.unsqueeze(-1)).sum(dim=1).to(y.dtype)
+        else:
+            y = self.moe_infer(hidden_states, topk_idx, topk_weight)""",
+).replace("        assert not self.training\n", "")
+
+
+def test_only_blocks_the_remote_moe_shim_dispatches_are_stacked():
+    """A stack runs only through the shim's dispatch: a block the shim leaves alone (its own
+    training branch, or expert parallel) would index or iterate the stack itself, which breaks
+    under an expert LoRA wrapper. Such experts stay packed one Linear each instead."""
+    from unsloth.models.compressed_tensors_bnb import plan_mxfp4_keep_packed
+
+    assert TRAINING_MODELING != MODELING
+    _, model = _tiny_model("transformers_modules.k3s_train_branch.modeling_tinymoe", source = TRAINING_MODELING)
+    assert not is_remote_deepseek_moe(model.layers[0].mlp)
+    plan = plan_mxfp4_keep_packed(model, _keys())
+    assert plan.blocks == [] and len(plan.linears) == 2 * E * 3
+    _, model = _tiny_model("transformers_modules.k3s_ep.modeling_tinymoe")
+    model.layers[1].mlp.ep_size = 2
+    plan = plan_mxfp4_keep_packed(model, _keys())
+    assert plan.blocks == [] and len(plan.linears) == 2 * E * 3

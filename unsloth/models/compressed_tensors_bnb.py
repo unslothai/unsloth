@@ -812,6 +812,8 @@ def _swappable_expert_blocks(model, prefixes) -> Optional[list]:
         from unsloth_zoo.mxfp4_stacked_experts import Mxfp4StackedExperts  # noqa: F401
     except Exception:
         return None
+    from .remote_moe_shims import is_remote_deepseek_moe
+
     plan = []
     for name, module in model.named_modules():
         experts = getattr(module, "experts", None)
@@ -820,8 +822,11 @@ def _swappable_expert_blocks(model, prefixes) -> Optional[list]:
         prefix = _prefix_for(name, prefixes)
         if prefix is None:
             continue
-        if prefixes[prefix] != len(experts) or not (
-            hasattr(module, "moe_infer") and hasattr(module, "gate")
+        # A stack runs only through the remote MoE shim's dispatch, so only blocks it takes.
+        if (
+            prefixes[prefix] != len(experts)
+            or getattr(module, "ep_size", 1) > 1
+            or not is_remote_deepseek_moe(module)
         ):
             return None
         dims = _plain_expert_shape(experts)
