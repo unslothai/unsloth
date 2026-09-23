@@ -898,3 +898,27 @@ def test_a_packed_linear_without_its_scale_is_not_kept_packed():
     extra = ("model.layers.0.proj.weight_packed", "model.layers.0.proj.weight_scale")
     assert plan_mxfp4_keep_packed(model, _keys(extra = extra)).linears == ["layers.0.proj"]
     assert plan_mxfp4_keep_packed(model, _keys(extra = extra[:1])) is None
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs a CUDA device")
+def test_compressed_tensors_route_stacking_stages_gate_up_then_down():
+    """Stacking a layer's adopted experts allocates the gate_up stack, moves w1 / w3 into it
+    (freeing them), and only then the down stack: the transient is the gate_up stack, not the
+    whole layer on top of its per-expert bytes."""
+    from unsloth.models.mxfp4_compressed_linear import stack_packed_expert_linears
+
+    mod, _ = _tiny_model("transformers_modules.k3s_ct_peak.modeling_tinymoe")
+    model = mod.TinyMoeForCausalLM(mod.TinyMoeConfig(num_hidden_layers = 1)).to(torch.bfloat16)
+    _packed_expert_linears(model)
+    model.cuda()
+    experts = model.layers[0].mlp.experts
+    size = lambda *ts: sum(t.numel() * t.element_size() for t in ts)  # noqa: E731
+    gate_up = size(*[getattr(e, w).weight_packed for e in experts for w in ("w1", "w3")])
+    gate_up += size(*[getattr(e, w).weight_scale for e in experts for w in ("w1", "w3")])
+    torch.cuda.synchronize()
+    torch.cuda.reset_peak_memory_stats()
+    start = torch.cuda.memory_allocated()
+    assert stack_packed_expert_linears(model, ["layers.0.mlp"]) == ["layers.0.mlp"]
+    torch.cuda.synchronize()
+    assert torch.cuda.max_memory_allocated() - start <= gate_up + 1024
+    assert torch.cuda.memory_allocated() <= start + 1024  # every per-expert byte moved, none kept

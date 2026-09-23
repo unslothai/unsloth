@@ -344,8 +344,9 @@ def stack_packed_expert_linears(
 ) -> list:
     """Turn the adopted per-expert ``Mxfp4PackedLinear`` w1 / w2 / w3 of each named remote-code
     MoE block into one unsloth_zoo ``Mxfp4StackedExperts``, as the bitsandbytes route does at
-    load. Each expert's bytes are copied into the preallocated stacks and released right away,
-    so the transient stays at about one MoE layer's packed experts."""
+    load. Each expert's bytes are copied into a preallocated stack and released right away,
+    gate_up (w1, w3) before the down stack is allocated, so the transient is one layer's
+    gate_up stack."""
     from .compressed_tensors_bnb import _new_stacked_experts, _plain_expert_shape
 
     stacked = []
@@ -365,26 +366,22 @@ def stack_packed_expert_linears(
         E, device = len(experts), experts[0].w1.weight_packed.device
         new = _new_stacked_experts(experts, dims, dtype or experts[0].w1.compute_dtype, "meta")
         empty = lambda *shape: torch.empty(shape, dtype = torch.uint8, device = device)  # noqa: E731
-        parts = {
-            "gate_up_blocks": empty(E, 2 * inter, hidden // 32, 16),
-            "gate_up_scales": empty(E, 2 * inter, hidden // 32),
-            "down_blocks": empty(E, hidden, inter // 32, 16),
-            "down_scales": empty(E, hidden, inter // 32),
-        }
-        with torch.no_grad():
-            for e, expert in enumerate(experts):
-                for proj, rows, target in (
-                    ("w1", slice(0, inter), "gate_up"),
-                    ("w3", slice(inter, 2 * inter), "gate_up"),
-                    ("w2", slice(None), "down"),
-                ):
-                    linear = getattr(expert, proj)
-                    blocks = parts[f"{target}_blocks"][e, rows]
-                    blocks.copy_(linear.weight_packed.view(blocks.shape))
-                    parts[f"{target}_scales"][e, rows].copy_(linear.weight_scale)
-                    del linear._parameters["weight_packed"], linear._parameters["weight_scale"]
-        for key, value in parts.items():
-            setattr(new, key, nn.Parameter(value, requires_grad = False))
+        for target, out_rows, in_features, projections in (
+            ("gate_up", 2 * inter, hidden, (("w1", slice(0, inter)), ("w3", slice(inter, 2 * inter)))),
+            ("down", hidden, inter, (("w2", slice(None)),)),
+        ):
+            stacked_blocks = empty(E, out_rows, in_features // 32, 16)
+            stacked_scales = empty(E, out_rows, in_features // 32)
+            with torch.no_grad():
+                for e, expert in enumerate(experts):
+                    for proj, rows in projections:
+                        linear = getattr(expert, proj)
+                        blocks = stacked_blocks[e, rows]
+                        blocks.copy_(linear.weight_packed.view(blocks.shape))
+                        stacked_scales[e, rows].copy_(linear.weight_scale)
+                        del linear._parameters["weight_packed"], linear._parameters["weight_scale"]
+            setattr(new, f"{target}_blocks", nn.Parameter(stacked_blocks, requires_grad = False))
+            setattr(new, f"{target}_scales", nn.Parameter(stacked_scales, requires_grad = False))
         block.experts = new.finalize()
         stacked.append(name)
     return stacked
