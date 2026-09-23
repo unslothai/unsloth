@@ -13,6 +13,11 @@ import os, importlib.util, platform, sys
 
 os.environ["UNSLOTH_IS_PRESENT"] = "1"
 
+# Opt into ROCm AOTriton kernels PyTorch still gates as experimental; it keeps its own hardware
+# checks and reads this lazily at the SDPA probe, so no torch import here. `setdefault` preserves
+# an explicit override, including "0".
+os.environ.setdefault("TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL", "1")
+
 # Before transformers, which reads sentencepiece availability during its own import. On Windows
 # the extension is never imported at all: a code integrity policy can refuse it by reputation,
 # and any probe to find out whether this machine will is itself the refusal the user sees. See
@@ -148,6 +153,18 @@ def _is_mlx_available():
 _IS_MLX = _is_mlx_available()
 
 if _IS_MLX:
+    # Same reason again, and first because it is what turns the bare AttributeError into a
+    # diagnosis: this branch imports transformers below, so an Apple Silicon host carrying the
+    # old-torch/new-transformers pair hits #8933 here exactly as a CUDA host does, and
+    # _gpu_init.py, the only other installation site, is never reached on this path. The
+    # triton shim check is deliberately NOT mirrored: it is a CUDA/ROCm/XPU driver shim and
+    # there is no triton on this platform to inspect.
+    try:
+        from .import_fixes import patch_torch_missing_attribute_error as _patch_torch_attr
+        _patch_torch_attr()
+        del _patch_torch_attr
+    except Exception:
+        pass
     # _gpu_init does this on the GPU path and the MLX path never reaches it, so torchao 0.18 + torch <
     # 2.10 dies on `ScalingType`.
     try:
@@ -169,6 +186,27 @@ if _IS_MLX:
         from .import_fixes import check_transformers_dependency_versions as _check_tf_deps
         _check_tf_deps()
         del _check_tf_deps
+    except Exception:
+        pass
+    try:
+        # Same reason: remote code reaches transformers' get_class_in_module on this platform
+        # too, and the wrap is what restores the image helpers transformers 5 stopped
+        # re-exporting. Costs nothing until a checkpoint's own modeling file is loaded.
+        from .import_fixes import (
+            fix_transformers5_image_processing_reexports as _fix_image_reexports,
+        )
+        _fix_image_reexports()
+        del _fix_image_reexports
+    except Exception:
+        pass
+    try:
+        # Same reason: 4.x remote configs are built here too, and their validators read plain RoPE
+        # as rope_scaling None. is_torch_fx_available is left to unsloth_zoo.mlx.loader.
+        from .import_fixes import (
+            fix_transformers_remote_rope_scaling_none as _fix_remote_rope_scaling,
+        )
+        _fix_remote_rope_scaling()
+        del _fix_remote_rope_scaling
     except Exception:
         pass
     try:
@@ -1552,9 +1590,10 @@ else:
     from ._gpu_init import __version__
 
     def get_gpu_memory_stats():
-        """Return CUDA/ROCm/XPU device stats, peak memory, and total memory in GiB."""
+        """Return CUDA/ROCm/XPU/NPU device stats, peak memory, and total memory in GiB."""
         try:
             import torch
+
             if hasattr(torch, "xpu") and torch.xpu.is_available():
                 props = torch.xpu.get_device_properties(0)
                 peak = (
@@ -1569,19 +1608,31 @@ else:
                 peak = torch.cuda.max_memory_reserved()
                 total = getattr(props, "total_memory", 0)
                 return props, _bytes_to_gb(peak), _bytes_to_gb(total) or 1.0
+            # Last, so no existing device changes branch. npu fell through to a fake 1 GiB.
+            if hasattr(torch, "npu") and torch.npu.is_available():
+                props = torch.npu.get_device_properties(0)
+                peak = (
+                    torch.npu.max_memory_reserved()
+                    if hasattr(torch.npu, "max_memory_reserved")
+                    else torch.npu.max_memory_allocated()
+                )
+                total = getattr(props, "total_memory", 0)
+                return props, _bytes_to_gb(peak), _bytes_to_gb(total) or 1.0
         except Exception:
             pass
         stats = _UnslothDeviceStats("Unknown GPU", 0)
         return stats, 0.0, 1.0
 
     def clear_gpu_memory():
-        """Clear cached GPU memory on CUDA, ROCm, or XPU when available."""
+        """Clear cached GPU memory on CUDA, ROCm, XPU, or NPU when available."""
         try:
             import torch
             if hasattr(torch, "xpu") and torch.xpu.is_available():
                 torch.xpu.empty_cache()
             elif hasattr(torch, "cuda") and torch.cuda.is_available():
                 torch.cuda.empty_cache()
+            elif hasattr(torch, "npu") and torch.npu.is_available():
+                torch.npu.empty_cache()
         except Exception:
             pass
 

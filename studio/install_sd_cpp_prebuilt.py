@@ -26,11 +26,24 @@ import zipfile
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Optional, Sequence
 
+# Same bootstrap as prebuilt_core.py: today only sd_cpp_backend.py prepares the path.
+if __package__:
+    from .backend.utils.auth_safe import auth_safe_open
+else:
+    _STUDIO_DIR = os.path.dirname(os.path.abspath(__file__))
+    if _STUDIO_DIR not in sys.path:
+        sys.path.insert(0, _STUDIO_DIR)
+    from backend.utils.auth_safe import auth_safe_open
+
 # Default source: the Unsloth mirror's CPU/Apple prebuilts (override with UNSLOTH_SD_CPP_REPO). GPU hosts run diffusers, so only CPU/Apple assets are needed.
 DEFAULT_REPO = "unslothai/stable-diffusion.cpp"
 UPSTREAM_FALLBACK_REPO = "leejet/stable-diffusion.cpp"
 # Pinned for reproducibility; UNSLOTH_SD_CPP_TAG overrides (empty tracks latest) and a missing tag falls back to latest. The -u<id> suffix is the mirror's patch set: an unpatched build aborts on the default --cfg-scale and on --vae-on-cpu, and quantizes MiniMax-H3's 1-D norms into an output uncorrelated with its own bf16 reference (leejet/stable-diffusion.cpp#1861, #1862, #1863).
-DEFAULT_TAG = "master-813-bfbef5b-u13b9d92"
+# The Qwen-Image-2.1 line: the tag STRING still resolves to the master-813 base, because that is the
+# newest upstream release our ancestry names, but this build is the mirror's current tree and carries
+# the architecture (upstream 137f7409bb, 2026-09-20). The u13b9d92 build this replaces is from
+# 2026-08-09 and cannot load it at all, so the native route for that family is only real from here.
+DEFAULT_TAG = "master-813-bfbef5b-u1d02858"
 
 REPO = DEFAULT_REPO
 
@@ -237,7 +250,7 @@ def _fetch_release(
         req = urllib.request.Request(url, headers = {"Accept": "application/vnd.github+json"})
         if token:
             req.add_header("Authorization", f"Bearer {token}")
-        with urllib.request.urlopen(req, timeout = timeout) as resp:  # noqa: S310 (fixed https host)
+        with auth_safe_open(req, timeout = timeout) as resp:
             return json.loads(resp.read().decode("utf-8"))
 
     base = f"https://api.github.com/repos/{repo}/releases"

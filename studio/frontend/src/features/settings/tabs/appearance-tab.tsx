@@ -8,11 +8,13 @@ import { useT } from "@/i18n";
 import {
   ActiveColorControl,
   ChatFontRow,
+  ChatWidthSelect,
   CodeFontRow,
   CodeFontSizeRow,
   ContrastSliderRow,
   FontSmoothingSwitch,
   HeadingFontRow,
+  InterfaceScaleRow,
   PointerCursorsSwitch,
   ReduceMotionSegmented,
   ResetCustomizationButton,
@@ -63,6 +65,71 @@ export function AppearanceTab() {
         </p>
       </header>
 
+      <SettingsSection title={t("settings.appearance.custom.preferencesTitle")}>
+        <SettingsRow label={t("settings.appearance.custom.uiFont.label")}>
+          <UiFontRow />
+        </SettingsRow>
+        <SettingsRow label={t("settings.appearance.custom.codeFont.label")}>
+          <CodeFontRow />
+        </SettingsRow>
+        <SettingsRow
+          label={t("settings.appearance.custom.interfaceScale.label")}
+          description={t(
+            "settings.appearance.custom.interfaceScale.description",
+          )}
+        >
+          <InterfaceScaleRow />
+        </SettingsRow>
+        <SettingsRow
+          label={t("settings.appearance.custom.chatWidth.label")}
+          description={t("settings.appearance.custom.chatWidth.description")}
+        >
+          <ChatWidthSelect />
+        </SettingsRow>
+        <SettingsRow
+          label={t("settings.appearance.custom.pointerCursors.label")}
+          description={t(
+            "settings.appearance.custom.pointerCursors.description",
+          )}
+        >
+          <PointerCursorsSwitch />
+        </SettingsRow>
+        <SettingsRow
+          label={t("settings.appearance.custom.reduceMotion.label")}
+          description={t("settings.appearance.custom.reduceMotion.description")}
+        >
+          <ReduceMotionSegmented />
+        </SettingsRow>
+        <SettingsRow
+          label={t("settings.appearance.custom.uiFontSize.label")}
+          description={t("settings.appearance.custom.uiFontSize.description")}
+        >
+          <UiFontSizeRow />
+        </SettingsRow>
+        <SettingsRow
+          label={t("settings.appearance.custom.codeFontSize.label")}
+          description={t("settings.appearance.custom.codeFontSize.description")}
+        >
+          <CodeFontSizeRow />
+        </SettingsRow>
+        <SettingsRow
+          label={t("settings.appearance.custom.fontSmoothing.label")}
+          description={t(
+            "settings.appearance.custom.fontSmoothing.description",
+          )}
+        >
+          <FontSmoothingSwitch />
+        </SettingsRow>
+        <SettingsRow
+          label={t("settings.appearance.layout.compactSidebar")}
+          description={t(
+            "settings.appearance.layout.compactSidebarDescription",
+          )}
+        >
+          <Switch checked={pinned} onCheckedChange={setPinned} />
+        </SettingsRow>
+      </SettingsSection>
+
       <SettingsSection title={t("settings.appearance.theme.title")}>
         <SettingsRow
           label={t("settings.appearance.theme.label")}
@@ -105,69 +172,15 @@ export function AppearanceTab() {
           />
         </SettingsRow>
         <SettingsGroupDivider />
-        <SettingsRow label={t("settings.appearance.custom.uiFont.label")}>
-          <UiFontRow />
-        </SettingsRow>
         <SettingsRow label={t("settings.appearance.custom.headingFont.label")}>
           <HeadingFontRow />
         </SettingsRow>
         <SettingsRow label={t("settings.appearance.custom.chatFont.label")}>
           <ChatFontRow />
         </SettingsRow>
-        <SettingsRow label={t("settings.appearance.custom.codeFont.label")}>
-          <CodeFontRow />
-        </SettingsRow>
         <SettingsGroupDivider />
-        <SettingsRow
-          label={t("settings.appearance.custom.contrast.label")}
-          description={t("settings.appearance.custom.contrast.description")}
-        >
+        <SettingsRow label={t("settings.appearance.custom.contrast.label")}>
           <ContrastSliderRow />
-        </SettingsRow>
-      </SettingsSection>
-
-      <SettingsSection title={t("settings.appearance.custom.preferencesTitle")}>
-        <SettingsRow
-          label={t("settings.appearance.custom.pointerCursors.label")}
-          description={t(
-            "settings.appearance.custom.pointerCursors.description",
-          )}
-        >
-          <PointerCursorsSwitch />
-        </SettingsRow>
-        <SettingsRow
-          label={t("settings.appearance.custom.reduceMotion.label")}
-          description={t("settings.appearance.custom.reduceMotion.description")}
-        >
-          <ReduceMotionSegmented />
-        </SettingsRow>
-        <SettingsRow
-          label={t("settings.appearance.custom.uiFontSize.label")}
-          description={t("settings.appearance.custom.uiFontSize.description")}
-        >
-          <UiFontSizeRow />
-        </SettingsRow>
-        <SettingsRow
-          label={t("settings.appearance.custom.codeFontSize.label")}
-          description={t("settings.appearance.custom.codeFontSize.description")}
-        >
-          <CodeFontSizeRow />
-        </SettingsRow>
-        <SettingsRow
-          label={t("settings.appearance.custom.fontSmoothing.label")}
-          description={t(
-            "settings.appearance.custom.fontSmoothing.description",
-          )}
-        >
-          <FontSmoothingSwitch />
-        </SettingsRow>
-        <SettingsRow
-          label={t("settings.appearance.layout.compactSidebar")}
-          description={t(
-            "settings.appearance.layout.compactSidebarDescription",
-          )}
-        >
-          <Switch checked={pinned} onCheckedChange={setPinned} />
         </SettingsRow>
       </SettingsSection>
 

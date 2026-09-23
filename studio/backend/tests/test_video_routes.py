@@ -22,7 +22,7 @@ from fastapi.testclient import TestClient
 import core.inference.gpu_arbiter as gpu_arbiter
 import core.inference.video as video_module
 import core.inference.video_gallery as gallery_module
-from auth.authentication import get_current_subject
+from auth.authentication import authenticated_via_api_key, get_current_subject
 from core.inference.video_families import (
     VIDEO_CANCELLED_MSG,
     VIDEO_GENERATION_BUSY_MSG,
@@ -293,6 +293,8 @@ def client(monkeypatch, tmp_path):
     app = FastAPI()
     app.include_router(video_router, prefix = "/api/inference")
     app.dependency_overrides[get_current_subject] = lambda: "test-user"
+    # A browser session: the status routes redact host paths for an API-key caller.
+    app.dependency_overrides[authenticated_via_api_key] = lambda: False
     return TestClient(app)
 
 
@@ -843,8 +845,15 @@ def test_status_passthrough(client, monkeypatch):
     )
     body = client.get("/api/inference/video/status").json()
     assert body["loaded"] is True and body["family"] == "ltx-2"
-    assert body["resolved"]["transformer_quant"] == resolved["transformer_quant"]
-    assert body["resolved"]["text_encoder_quant"] == resolved["text_encoder_quant"]
+    # ``artifact`` is additive on the response model: a record naming no hosted checkpoint is null.
+    assert body["resolved"]["transformer_quant"] == {
+        **resolved["transformer_quant"],
+        "artifact": None,
+    }
+    assert body["resolved"]["text_encoder_quant"] == {
+        **resolved["text_encoder_quant"],
+        "artifact": None,
+    }
     # Entries from an older backend (no requested/status) still parse, defaulted to "applied".
     assert body["resolved"]["speed_mode"]["requested"] is None
     assert body["resolved"]["speed_mode"]["status"] == "applied"

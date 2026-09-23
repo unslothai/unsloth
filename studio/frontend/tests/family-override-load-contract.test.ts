@@ -158,6 +158,6 @@ test("a pinned Hub pipeline keeps Hub planning separate from its physical load t
       text.includes("diffusionPipelineTargetIsOnDevice(pipelineTarget)"),
       file,
     );
-    assert.ok(text.includes("stage(entriesToStage)"), file);
+    assert.ok(/stage\((?:entriesToStage|entries)\)/.test(text), file);
   }
 });

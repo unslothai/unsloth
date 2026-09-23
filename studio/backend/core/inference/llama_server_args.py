@@ -10,9 +10,14 @@ https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md"""
 from __future__ import annotations
 
 import logging
+import math
 import os
+import re
+import struct
 import sys
-from typing import Any, Iterable, Mapping, Optional
+from typing import Any, Callable, Iterable, Mapping, Optional
+
+from utils.reasoning_budget import validate_reasoning_budget_message
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +35,15 @@ BATCH_MAX = 65536
 # ("no limit"); 0 disables the cache. Mirrored by CTX_CHECKPOINTS_MAX / CACHE_RAM_MAX in per-model-config.ts.
 CTX_CHECKPOINTS_MAX = 256
 CACHE_RAM_MAX_MIB = 1024 * 1024
+
+# llama.cpp allocates this default even when Studio emits no flag.
+LLAMA_CTX_CHECKPOINTS_DEFAULT = 32
+
+# Recurrent checkpoints live in host RAM and can be much larger than SWA snapshots.
+CTX_CHECKPOINT_HOST_BUDGET_FRACTION = 0.05
+CTX_CHECKPOINT_HOST_BUDGET_FLOOR_BYTES = 1024**3
+# Keep rollback available; zero forces a full prompt re-ingest after divergence.
+CTX_CHECKPOINTS_MIN_USEFUL = 2
 
 # Slot-count aliases in one place: the denial below, its #9510 hint and the single-sequence retry must cover the same
 # set, or a spelling one of them misses reaches llama-server unnoticed.
@@ -335,6 +349,9 @@ def validate_extra_args(args: Optional[Iterable[str]]) -> list[str]:
     parse_cache_override(out)
     parse_split_mode_override(out)
     parse_gpu_layers_override(out)
+    parse_tensor_split_override(out)
+    parse_reasoning_budget_override(out)
+    parse_reasoning_budget_message_override(out)
     return out
 
 
@@ -475,6 +492,9 @@ _CONTEXT_FLAGS: frozenset[str] = frozenset({"-c", "--ctx-size"})
 _CACHE_TYPE_K_FLAGS: frozenset[str] = frozenset({"-ctk", "--cache-type-k"})
 _CACHE_TYPE_V_FLAGS: frozenset[str] = frozenset({"-ctv", "--cache-type-v"})
 _CACHE_FLAGS: frozenset[str] = _CACHE_TYPE_K_FLAGS | _CACHE_TYPE_V_FLAGS
+_REASONING_BUDGET_FLAGS: frozenset[str] = frozenset({"--reasoning-budget"})
+_REASONING_BUDGET_MESSAGE_FLAGS: frozenset[str] = frozenset({"--reasoning-budget-message"})
+_REASONING_BUDGET_MAX = 2_147_483_647
 _SPEC_FLAGS: frozenset[str] = frozenset(
     {
         "--spec-default",
@@ -511,6 +531,10 @@ _TEMPLATE_FLAGS: frozenset[str] = frozenset(
         "--chat-template",
         "--chat-template-file",
         "--chat-template-kwargs",
+        # enable_thinking's new spelling (#7526); a template override recomputes the default,
+        # so both must strip. Takes a value, so NOT in _BOOLEAN_SHADOWING_FLAGS.
+        "--reasoning",
+        "-rea",
         "--jinja",
         "--no-jinja",
     }
@@ -662,9 +686,67 @@ def parse_ctx_checkpoints_override(args: Optional[Iterable[str]]) -> Optional[in
 
 
 def resolve_ctx_checkpoints(args: Optional[Iterable[str]], requested: Optional[int]) -> int:
-    """The checkpoint count the launch will actually run: extras beat the field."""
+    """Resolve explicit counts only, with extra arguments taking precedence."""
     override = parse_ctx_checkpoints_override(args)
     return int(override if override is not None else (requested or 0))
+
+
+def ctx_checkpoints_within_host_budget(
+    per_checkpoint_bytes: int,
+    n_parallel: int,
+    total_host_bytes: Optional[int],
+    *,
+    upstream_default: Optional[int] = None,
+) -> int:
+    """Fit checkpoints per slot within the host budget and this build's own default.
+
+    Unknown sizes keep the default. The minimum useful count may exceed the target budget
+    but never the default: this caps what the child would keep, it never raises it.
+    """
+    default = (
+        LLAMA_CTX_CHECKPOINTS_DEFAULT if upstream_default is None else max(0, int(upstream_default))
+    )
+    if per_checkpoint_bytes <= 0 or not total_host_bytes or total_host_bytes <= 0:
+        return default
+    budget = max(
+        CTX_CHECKPOINT_HOST_BUDGET_FLOOR_BYTES,
+        int(total_host_bytes * CTX_CHECKPOINT_HOST_BUDGET_FRACTION),
+    )
+    per_round = int(per_checkpoint_bytes) * max(1, int(n_parallel))
+    affordable = budget // per_round
+    if affordable >= default:
+        return default
+    return min(default, max(CTX_CHECKPOINTS_MIN_USEFUL, int(affordable)))
+
+
+def effective_ctx_checkpoints(
+    args: Optional[Iterable[str]],
+    requested: Optional[int],
+    *,
+    supports_flag: bool,
+    per_checkpoint_bytes: int = 0,
+    n_parallel: int = 1,
+    total_host_bytes: Optional[int] = None,
+    upstream_default: Optional[int] = None,
+    inherited: Optional[int] = None,
+) -> int:
+    """Resolve the child count: extras, field, an inherited env value, then the budget.
+
+    ``inherited`` is llama.cpp's own LLAMA_ARG_CTX_CHECKPOINTS, which it applies before
+    argv, so argv beats it and it beats the build default.
+    """
+    if not supports_flag:
+        return 0
+    override = resolve_ctx_checkpoints(args, requested)
+    if override:
+        return override
+    if parse_ctx_checkpoints_override(args) == 0 or requested == 0:
+        return 0
+    if inherited is not None:
+        return inherited
+    return ctx_checkpoints_within_host_budget(
+        per_checkpoint_bytes, n_parallel, total_host_bytes, upstream_default = upstream_default
+    )
 
 
 def resolve_requested_ctx(args: Optional[Iterable[str]], fallback_n_ctx: int) -> int:
@@ -697,7 +779,13 @@ def matches_explicit_ctx_override(args: Optional[Iterable[str]], n_ctx: Any) -> 
         return False
 
 
-def _last_flag_value(args: Optional[Iterable[str]], flags: frozenset[str]) -> Optional[str]:
+def _last_flag_value(
+    args: Optional[Iterable[str]],
+    flags: frozenset[str],
+    *,
+    preserve_raw: bool = False,
+    validate_value: Optional[Callable[[str], object]] = None,
+) -> Optional[str]:
     """Return the last-wins string value among ``flags`` in extras, or None. Handles both
     ``--flag=value`` and ``--flag value`` forms and raises if a matched flag has no (or an empty)
     value. Shared by the single-knob last-wins parsers (cache type, split mode)."""
@@ -723,10 +811,12 @@ def _last_flag_value(args: Optional[Iterable[str]], flags: frozenset[str]) -> Op
             raw_value = tokens[i + 1]
             i += 2
 
-        value = str(raw_value).strip()
-        if not value:
+        raw_value = str(raw_value)
+        if not raw_value.strip():
             raise ValueError(f"llama-server flag '{flag}' requires a non-empty value")
-        override = value
+        if validate_value is not None:
+            validate_value(raw_value)
+        override = raw_value if preserve_raw else raw_value.strip()
 
     return override
 
@@ -737,6 +827,80 @@ def parse_cache_override(args: Optional[Iterable[str]]) -> Optional[str]:
     last-wins value, treating key and value cache flags as the same setting because Unsloth's KV
     estimate has a single cache_type_kv knob."""
     return _last_flag_value(args, _CACHE_FLAGS)
+
+
+def _validate_reasoning_budget_value(raw_value: str) -> int:
+    try:
+        value = int(raw_value)
+    except ValueError as exc:
+        raise ValueError("llama-server --reasoning-budget requires an integer value") from exc
+    if value < -1:
+        raise ValueError("llama-server --reasoning-budget requires a value of at least -1")
+    if value > _REASONING_BUDGET_MAX:
+        raise ValueError(
+            f"llama-server --reasoning-budget requires a value of at most {_REASONING_BUDGET_MAX}"
+        )
+    return value
+
+
+def parse_reasoning_budget_override(args: Optional[Iterable[str]]) -> Optional[int]:
+    """Return the last user-supplied ``--reasoning-budget`` value."""
+    raw_value = _last_flag_value(
+        args, _REASONING_BUDGET_FLAGS, validate_value = _validate_reasoning_budget_value
+    )
+    return None if raw_value is None else int(raw_value)
+
+
+def parse_reasoning_budget_message_override(args: Optional[Iterable[str]]) -> Optional[str]:
+    """Return the last user-supplied ``--reasoning-budget-message`` value."""
+    value = _last_flag_value(
+        args,
+        _REASONING_BUDGET_MESSAGE_FLAGS,
+        preserve_raw = True,
+        validate_value = validate_reasoning_budget_message,
+    )
+    return value
+
+
+def resolve_reasoning_budget(args: Optional[Iterable[str]], fallback: int) -> int:
+    override = parse_reasoning_budget_override(args)
+    return override if override is not None else fallback
+
+
+def resolve_reasoning_budget_message(args: Optional[Iterable[str]], fallback: str) -> str:
+    override = parse_reasoning_budget_message_override(args)
+    return override if override is not None else fallback
+
+
+def resolve_reasoning_budget_with_env(
+    args: Optional[Iterable[str]],
+    fallback: int,
+    env: Optional[Mapping[str, str]] = None,
+) -> int:
+    """Resolve CLI/first-class intent, then inherit llama.cpp's env default."""
+    override = parse_reasoning_budget_override(args)
+    if override is not None:
+        return override
+    if fallback != -1:
+        return fallback
+    raw_value = (env if env is not None else os.environ).get("LLAMA_ARG_THINK_BUDGET")
+    if raw_value is None:
+        return fallback
+    return _validate_reasoning_budget_value(raw_value)
+
+
+def resolve_reasoning_budget_message_with_env(
+    args: Optional[Iterable[str]],
+    fallback: str,
+    env: Optional[Mapping[str, str]] = None,
+) -> str:
+    """Resolve CLI/first-class intent, then inherit llama.cpp's env default."""
+    override = parse_reasoning_budget_message_override(args)
+    if override is not None:
+        return override
+    if fallback:
+        return fallback
+    return (env if env is not None else os.environ).get("LLAMA_ARG_THINK_BUDGET_MESSAGE", "")
 
 
 def parse_gpu_layers_override(args: Optional[Iterable[str]]) -> Optional[int]:
@@ -754,6 +918,100 @@ def parse_gpu_layers_override(args: Optional[Iterable[str]]) -> Optional[int]:
     if value < -1:
         raise ValueError("llama-server GPU layers flag requires an integer value of at least -1")
     return value
+
+
+def _as_emitted(value: float) -> float:
+    """``value`` as the manual launcher will write it, which is ``f"{x:g}"``: six significant
+    digits, so the text the child parses is not always the number validated here."""
+    return float(f"{value:g}")
+
+
+def _as_float32(value: float) -> float:
+    """``value`` as llama.cpp would hold it: overflow becomes inf rather than raising.
+
+    ``struct.pack`` raises OverflowError where the C cast it stands in for saturates, so the
+    caller would have to guard every call site instead of just testing isfinite once.
+    """
+    try:
+        return struct.unpack("=f", struct.pack("=f", value))[0]
+    except OverflowError:
+        return math.copysign(math.inf, value)
+
+
+# Largest share llama.cpp's float array can hold; anything above is out_of_range to std::stof.
+_FLOAT32_MAX = struct.unpack("=f", struct.pack("=f", 3.4028234663852886e38))[0]
+
+# FLT_MIN. libstdc++ throws out_of_range on any SUBNORMAL result too, so the range has a floor as
+# well as a ceiling (measured: stof("1e-38") throws, stof("0") is fine). Rounding decides, not the
+# literal: 1.1754943508222874e-38 rounds UP to FLT_MIN and is accepted.
+_FLOAT32_MIN_NORMAL = struct.unpack("=f", struct.pack("=f", 1.1754943508222875e-38))[0]
+
+
+def parse_tensor_split_override(
+    args: Optional[Iterable[str]], *, reserialized: bool = False
+) -> Optional[list[float]]:
+    """Return the last user-supplied ``-ts`` / ``--tensor-split`` ratios from extras.
+
+    Manual GPU memory with ``gpu_layers >= 0`` strips ``--tensor-split`` because the first-class
+    ``tensor_split`` field owns it. Callers must promote the last-wins extras value into that
+    field first, or an asymmetric MoE split such as ``-ts 2.2,1`` is discarded and llama-server
+    falls back to a near-even layer count (#11330).
+
+    Delimiters match llama.cpp's ``[,/]+`` (``-ts 3/1`` is the same as ``-ts 3,1``). Degenerate
+    values raise so ``validate_extra_args`` can refuse them as a 400 rather than stripping them
+    silently.
+
+    Bounds are llama.cpp's, not Python's: ``std::stof`` (common/arg.cpp) throws
+    ``std::out_of_range`` above FLT_MAX and on any subnormal, and the shares are prefix-summed
+    into a float array (llama-model.cpp), so a value this parser would take as a finite double
+    can still abort the server at startup. Every share is rounded to float32 BEFORE it joins the
+    total, because that is the order llama.cpp adds them in.
+
+    ``reserialized`` is which text the child will parse. Manual mode promotes the ratio into the
+    first-class field and the launcher writes it back out with ``f"{x:g}"``, six significant
+    digits, so there the emitted string is judged. Everywhere else ``-ts`` is pass-through and
+    llama-server reads the user's own text, so judging a rounded version would refuse input that
+    runs: ``-ts 1.1754943508222874e-38,1`` is fine as typed and subnormal once re-serialized.
+    """
+    raw_value = _last_flag_value(args, _TENSOR_SPLIT_FLAGS)
+    if raw_value is None:
+        return None
+    try:
+        parts = [float(p) for p in re.split(r"[,/]+", raw_value) if p.strip()]
+    except ValueError as exc:
+        raise ValueError(
+            "llama-server --tensor-split requires a comma- or slash-separated list of numbers"
+        ) from exc
+    if not parts:
+        raise ValueError(
+            "llama-server --tensor-split requires a comma- or slash-separated list of numbers"
+        )
+    if any((not math.isfinite(v)) or v < 0 for v in parts):
+        raise ValueError("llama-server --tensor-split entries must be finite and non-negative")
+    if sum(parts) <= 0:
+        raise ValueError("llama-server --tensor-split must have a positive total")
+    running = 0.0
+    for part in parts:
+        # The share as the CHILD will hold it: its own text under pass-through, the launcher's
+        # six-digit rendering once manual mode re-serializes it.
+        share = _as_float32(_as_emitted(part) if reserialized else part)
+        if not math.isfinite(share):
+            raise ValueError(
+                "llama-server --tensor-split entries must fit in a 32-bit float "
+                f"(at most {_FLOAT32_MAX:g})"
+            )
+        if part != 0 and share < _FLOAT32_MIN_NORMAL:
+            raise ValueError(
+                "llama-server --tensor-split entries must be 0 or at least "
+                f"{_FLOAT32_MIN_NORMAL:g}: a smaller share is a subnormal float and "
+                "std::stof refuses it"
+            )
+        # llama.cpp prefix-sums the shares it parsed, in float32, so the total is accumulated
+        # the same way rather than in double and compared once.
+        running = _as_float32(running + share)
+        if not math.isfinite(running):
+            raise ValueError("llama-server --tensor-split adds up past the 32-bit float range")
+    return parts
 
 
 def check_batch_floor(args: Optional[Iterable[str]], n_parallel: int) -> None:
@@ -992,6 +1250,59 @@ def extra_args_disable_mmproj(args: Optional[Iterable[str]]) -> bool:
     return disabled
 
 
+def extra_args_image_max_tokens(
+    args: Optional[Iterable[str]], env: Optional[Mapping[str, str]] = None
+) -> Optional[int]:
+    """Return the effective positive ``--image-max-tokens`` value."""
+    found: Optional[int] = None
+    raw_env = (os.environ if env is None else env).get("LLAMA_ARG_IMAGE_MAX_TOKENS")
+    if raw_env:
+        try:
+            parsed_env = int(str(raw_env).strip())
+        except (TypeError, ValueError):
+            parsed_env = 0
+        if parsed_env > 0:
+            found = parsed_env
+    tokens = [str(a) for a in (args or ())]
+    for index, raw in enumerate(tokens):
+        if raw.startswith("--image-max-tokens="):
+            value = raw.partition("=")[2]
+        elif raw == "--image-max-tokens" and index + 1 < len(tokens):
+            value = tokens[index + 1]
+        else:
+            continue
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError):
+            continue
+        if parsed > 0:
+            found = parsed
+    return found
+
+
+def extra_args_mmproj_auto(
+    args: Optional[Iterable[str]], env: Optional[Mapping[str, str]] = None
+) -> bool:
+    """Return whether llama-server will discover an adjacent projector."""
+    source_env = os.environ if env is None else env
+    enabled = False
+    if source_env.get("LLAMA_ARG_NO_MMPROJ_AUTO") is not None:
+        enabled = False
+    else:
+        raw = source_env.get("LLAMA_ARG_MMPROJ_AUTO")
+        if raw is not None:
+            enabled = str(raw).strip().lower() in _ENV_TRUE_VALUES
+    if not args:
+        return enabled
+    for raw in args:
+        flag = _flag_name(str(raw))
+        if flag in _MMPROJ_ENABLE_FLAGS:
+            enabled = True
+        elif flag in _MMPROJ_DISABLE_FLAGS:
+            enabled = False
+    return enabled
+
+
 def strip_shadowing_flags(
     args: Iterable[str],
     *,
@@ -1003,6 +1314,8 @@ def strip_shadowing_flags(
     strip_tensor_split: bool = False,
     strip_offload: bool = False,
     strip_device: bool = False,
+    strip_reasoning_budget: bool = False,
+    strip_reasoning_budget_message: bool = False,
     strip_mlock: bool = False,
     strip_no_mmap: bool = False,
     strip_load_mode_aliases: bool = False,
@@ -1048,6 +1361,10 @@ def strip_shadowing_flags(
         shadowing |= _OFFLOAD_SHADOWING_FLAGS
     if strip_device:
         shadowing |= _DEVICE_FLAGS
+    if strip_reasoning_budget:
+        shadowing |= _REASONING_BUDGET_FLAGS
+    if strip_reasoning_budget_message:
+        shadowing |= _REASONING_BUDGET_MESSAGE_FLAGS
     if strip_mlock:
         shadowing |= _MLOCK_FLAGS
     if strip_no_mmap:

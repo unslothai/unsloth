@@ -100,6 +100,13 @@ EMPTY_SEARCH_RESULTS = (
 # ddgs signals an empty sweep by raising rather than returning [].
 _DDGS_EMPTY_SWEEP = "No results found"
 
+# Tier 2 is only asked when tier 1 found nothing. Naming is the only way ddgs reaches an engine, so
+# an engine in neither tier (yandex, bing, the mullvad_* mirrors) is never contacted.
+_SEARCH_ENGINE_TIERS = (
+    ("wikipedia", "brave", "duckduckgo", "mojeek", "startpage"),
+    ("grokipedia", "google", "yahoo"),
+)
+
 # Import at module level so the preexec_fn closure triggers no imports in the forked child (which can deadlock
 # multi-threaded servers).
 _libc = None
@@ -198,8 +205,36 @@ _BLOCKED_COMMANDS = (
 
 _SHELL_SEPARATORS = frozenset({";", "&&", "||", "|", "&", "\n", "(", ")", "`", "{", "}"})
 # Bash keywords starting a new command position. `if`/`while`/`until` are followed by a CONDITION the shell executes,
-# so a command right after them is at command position.
-_SHELL_KEYWORDS_AS_SEP = frozenset({"then", "do", "else", "elif", "if", "while", "until", "!"})
+# so a command right after them is at command position. `coproc` too: read as the command word it left `coproc rm
+# -rf x` scanning as arguments, and that really deletes.
+_SHELL_KEYWORDS_AS_SEP = frozenset(
+    {"then", "do", "else", "elif", "if", "while", "until", "!", "coproc"}
+)
+# Bash takes `coproc NAME ...` only before a COMPOUND command, which is what tells a name from a command: the same
+# position holds the command itself in `coproc rm -f x`. Only the WORD starters are listed: `{` and `(` are already
+# separators, so `coproc JOB { rm ...; }` resolves without reading JOB as a name, and listing them would only mean
+# trusting a lookahead that a quoted `'{'` can forge.
+_COPROC_COMPOUND_STARTERS = frozenset({"if", "while", "until", "for", "case", "select"})
+_COPROC_NAME_RE = re.compile(r"^[A-Za-z_]\w*$")
+
+
+def _is_coproc_name(tokens: "list[str]", index: int) -> bool:
+    """Whether `tokens[index]` is the NAME of a `coproc NAME compound-command`, not a command word.
+
+    Callers gate this on having just consumed the `coproc` KEYWORD, which the neighbouring tokens cannot decide:
+    `echo coproc JOB if rm -f x` prints three words while `time coproc JOB if rm -f x` really deletes. They then
+    READ the name like any other command word rather than skipping it, since shlex has already dropped the quotes
+    and a forged `'{'` would otherwise hide whatever stands there; only command position carries past it.
+    """
+    return (
+        index > 0
+        and tokens[index - 1] == "coproc"
+        and index + 1 < len(tokens)
+        and tokens[index + 1] in _COPROC_COMPOUND_STARTERS
+        and _COPROC_NAME_RE.match(tokens[index]) is not None
+    )
+
+
 # Wrappers whose next non-flag argument is the command Bash will exec.
 _COMMAND_PREFIXES = frozenset(
     {
@@ -407,11 +442,29 @@ _QUOTED_REDIRECT_MARK = "\x02"
 _EXPANSION_CHARS = frozenset("$`")
 _QUOTED_EXPANSION_MARK = "\x04"
 # The characters punctuation_chars glues into one token. A run like `|&` matches no _SHELL_SEPARATORS entry, so the
-# sed screen read past the end of the command. `{`/`}` are absent so find's `{}` stays an ordinary word.
-_OPERATOR_TOKEN_CHARS = frozenset(";&|()`")
+# sed screen read past the end of the command. `{`/`}` are absent so find's `{}` stays an ordinary word. A newline
+# only reaches a token stream that asked for it (_COMMAND_POSITION_PUNCTUATION), where `;\n` arrives glued.
+_OPERATOR_TOKEN_CHARS = frozenset(";&|()`\n")
+# The operators the blocklist walk needs split off into tokens of their own. The newline is there because bash starts
+# a new command at a line break, where shlex sees only whitespace.
+_COMMAND_POSITION_PUNCTUATION = ";&|()`\n"
 # One shell redirection as the lexer hands it over. The target may be glued on (`2>/dev/null`) or be the next token;
 # `&` splits off under punctuation_chars, so `2>&1` arrives as three.
 _REDIRECTION_RE = re.compile(r"^(?:\d+|&)?(?:<<<|<<-|<<|<>|>>|>\||<&|>&|<|>)")
+
+
+def _punctuation_lexer(text: str, punctuation: str) -> "shlex.shlex":
+    """A word lexer that hands back every one of ``punctuation`` as its own token.
+
+    shlex counts a newline as whitespace, so asking for it in punctuation_chars alone yields
+    nothing: it has to leave the whitespace set as well, or the separator bash sees at a line break
+    never appears in the token stream.
+    """
+    lexer = shlex.shlex(text, posix = True, punctuation_chars = punctuation)
+    lexer.whitespace_split = True
+    if "\n" in punctuation:
+        lexer.whitespace = lexer.whitespace.replace("\n", "")
+    return lexer
 
 
 def _looks_like_separator(token: str) -> bool:
@@ -998,9 +1051,7 @@ def _quoted_separator_indexes(text: str, tokens: "list[str]", punctuation: str) 
     if _QUOTED_SEPARATOR_MARK not in masked:
         return frozenset()  # every separator character was bare
     try:
-        lexer = shlex.shlex(masked, posix = True, punctuation_chars = punctuation)
-        lexer.whitespace_split = True
-        marked = list(lexer)
+        marked = list(_punctuation_lexer(masked, punctuation))
     except ValueError:
         return frozenset()
     if len(marked) != len(tokens):
@@ -1026,9 +1077,7 @@ def _masked_tokens(
         mark if char in chars and states[index] else char for index, char in enumerate(text)
     )
     try:
-        lexer = shlex.shlex(masked, posix = True, punctuation_chars = punctuation)
-        lexer.whitespace_split = True
-        marked = list(lexer)
+        marked = list(_punctuation_lexer(masked, punctuation))
     except ValueError:
         return None
     return marked if len(marked) == len(tokens) else None
@@ -1069,9 +1118,7 @@ def _unquoted_expansion_indexes(
         for index, char in enumerate(text)
     )
     try:
-        lexer = shlex.shlex(masked, posix = True, punctuation_chars = punctuation)
-        lexer.whitespace_split = True
-        marked = list(lexer)
+        marked = list(_punctuation_lexer(masked, punctuation))
     except ValueError:
         return frozenset()
     if len(marked) != len(tokens):
@@ -1097,9 +1144,7 @@ def _unquoted_glob_indexes(text: str, tokens: "list[str]", punctuation: str) -> 
         for index, char in enumerate(text)
     )
     try:
-        lexer = shlex.shlex(masked, posix = True, punctuation_chars = punctuation)
-        lexer.whitespace_split = True
-        marked = list(lexer)
+        marked = list(_punctuation_lexer(masked, punctuation))
     except ValueError:
         return frozenset()
     if len(marked) != len(tokens):
@@ -1186,6 +1231,7 @@ def _exec_scan_layout(
     at_command = True  # the next ordinary word is one the shell RUNS
     wrapper = ""  # a command prefix (env/timeout/sudo) awaiting that word
     skip_operand = False  # ...and its option's value stands in between
+    coproc_kw = False  # the word just consumed was the `coproc` KEYWORD, so a name may follow
     index = 0
     while index < len(tokens):
         token = tokens[index]
@@ -1196,6 +1242,8 @@ def _exec_scan_layout(
             continue
         here = index
         index += 1
+        after_coproc = coproc_kw
+        coproc_kw = False
         if _looks_like_separator(token) and here not in quoted:
             stops.add(here)
             forwarding = in_action = False
@@ -1231,6 +1279,7 @@ def _exec_scan_layout(
             in_action = True
             continue
         if at_command and token in _SHELL_KEYWORDS_AS_SEP:
+            coproc_kw = token == "coproc"
             continue  # `then find ...` / `do find ...`: still a command position
         if skip_operand:
             skip_operand = False  # a wrapper option's value (env -u NAME)
@@ -1243,14 +1292,15 @@ def _exec_scan_layout(
         if wrapper and token.lstrip("-").isdigit():
             continue  # `timeout 5 find ...`: the wrapper's own operand
         base = os.path.basename(token.strip(";&|()`{}")).lower()
-        if at_command and base in _COMMAND_PREFIXES:
+        coproc_name_here = after_coproc and _is_coproc_name(tokens, here)
+        if at_command and base in _COMMAND_PREFIXES and not coproc_name_here:
             wrapper = base
             continue
         if at_command and _forwards_exec_flags(base):
             # Only a find/fd the shell really RUNS forwards its exec flags. Any token spelled `fd`/`find` used to turn
             # one on, so `echo fd -x rm` came back with rm and was refused.
             forwarding = True
-        at_command = False
+        at_command = coproc_name_here
         wrapper = ""
     return frozenset(exec_flags), frozenset(stops), frozenset(redirects)
 
@@ -1306,6 +1356,221 @@ def _is_start_title(token: str) -> bool:
     )
 
 
+# `_BLOCKED_COMMANDS` is a never-mutated frozenset, so this alternation is a constant. Rebuilding it
+# per call cost an `re.escape` per blocked name: over a 2637 command corpus that was 567k calls and
+# 0.60s of 3.9s. None only if the set is empty.
+def _blocked_word_re(assignment_prefixes: bool):
+    """The command-position backstop, with and without the assignment-prefix step.
+
+    The backstop has no quoting model, so anything it steps over it steps over inside quotes too.
+    Skipping assignment prefixes is only needed when the lex raised and the token walk never
+    happened; running it when the walk succeeded refused `echo '; A=1 rm -rf x'`, which bash runs
+    as one `echo` (checked: the file survives). A quoted value may hold the rest of the line
+    (`p='1e rm -f victim'`), which is a binding the sed screen resolves, so those are deliberately
+    not stepped over either way.
+    """
+    if not _BLOCKED_COMMANDS:
+        return None
+    return re.compile(
+        # No `coproc` alternative here, deliberately: with no quoting or command-position context this pass refused
+        # `grep coproc rm file`. The token scan above knows where a command starts and handles the keyword.
+        r"(?:^|[;&|`\n(]\s*|[$]\(\s*|<\(\s*)"
+        + (r"(?:[A-Za-z_]\w*=[^\s'\"]*\s+)*" if assignment_prefixes else r"")
+        + r"(?:[\w./\\-]*/|[a-zA-Z]:[/\\][\w./\\-]*)?"
+        + r"("
+        + "|".join(re.escape(w) for w in sorted(_BLOCKED_COMMANDS))
+        + r")"
+        + r"(?:\.(?:exe|com|bat|cmd))?\b"
+    )
+
+
+# `_BLOCKED_COMMANDS` is a never-mutated frozenset, so both alternations are constants.
+_BLOCKED_WORD_RE = _blocked_word_re(False)
+_BLOCKED_WORD_RE_WITH_ASSIGNMENTS = _blocked_word_re(True)
+
+
+def _join_escaped_newlines(text: str) -> str:
+    """Remove a backslash-newline where the shell removes it, and only there.
+
+    The shell strips the pair before it reads a command, so the line break is not a boundary and
+    the words either side belong to one command: `echo hi \\<newline>A=1 rm -rf x` is one `echo`.
+    Inside SINGLE quotes it strips nothing, and that difference is load-bearing:
+    `sed -n '1e touch a\\<newline>rm -f victim' f` continues the executed payload onto the next
+    line, so joining there would drop a command that really runs. An escaped backslash consumes
+    both characters, which leaves a following newline standing, as the shell does. The pair is
+    removed rather than replaced, since it can fall inside a word: checked against the same
+    bash, `to\\<newline>uch f` runs `touch`.
+
+    Only a backslash-LF continues. Checked against bash 5.2.21: a backslash before CRLF escapes
+    the CARRIAGE RETURN, so the newline still starts a command and `echo hi \\<CRLF>rm -rf x`
+    really runs `rm`. Joining all three characters made that read as one `echo`.
+
+    A comment strips nothing either. Inside an unquoted `#` comment the backslash is comment
+    TEXT, so the newline still ends the comment and starts a command: `echo ok # comment
+    \\<newline>rm -rf ./build` really runs `rm`, and joining made it one comment that the
+    later lex then discarded whole. `#` opens a comment only at the start of a word, so
+    `ab#cd` is an ordinary word and `"a # b"` is quoted text; both were checked against the
+    same bash.
+
+    A `$(...)` substitution is parsed in a FRESH quoting context even inside double quotes, so
+    the state is pushed at `$(` and popped at the matching `)`. Checked against bash 5.2.21:
+    `echo "$(echo hi # c \\<newline>rm -f victim<newline>)"` really runs `rm`, because the `#`
+    opens a comment in there and the backslash is comment text; carrying the outer `in_double`
+    in made the pair look like a continuation and the `rm` vanished. The same probe confirms the
+    other half: single quotes work in there (`"$(echo 'a \\<newline>rm -f victim')"` strips
+    nothing and `rm` does NOT run), and a `)` inside them does not end the substitution.
+    Backticks are left alone, since the same probe shows `#` does not open a comment inside
+    `"`...`"`.
+    """
+    if "\\\n" not in text:
+        # Nothing to join, and every other branch below only copies the character it read, so the
+        # result is the input. One C-level scan instead of a Python loop over every character of
+        # the command: measured over a 200-line script that is most of the screening cost.
+        return text
+    out: list[str] = []
+    i, n = 0, len(text)
+    in_single = in_double = in_comment = False
+    # (in_single, in_double, in_comment) for each enclosing `$(`, innermost last, and how many
+    # ordinary `(` groupings are open inside the innermost one. A subshell's `)` must not restore
+    # the outer state: `"$( (echo hi); echo ok # comment \<newline>rm -f victim<newline>)"` runs
+    # `rm` under the same bash, and closing early put the rest of the substitution back in double
+    # quotes, where the `#` opened no comment and the pair was joined away.
+    substitutions: "list[tuple[bool, bool, bool]]" = []
+    group_depth = 0
+    group_depths: list[int] = []
+    # Whether the character just emitted closed a `$(`, which keeps the word open.
+    closed_substitution = False
+    # How many `case ... esac` are open, per substitution. A case PATTERN closes with an unbalanced
+    # `)`, so inside a `case` no `)` may end the substitution: `"$(case x in x) echo hi;; esac;
+    # echo ok # comment \<newline>rm -f victim<newline>)"` really runs `rm`, and reading the
+    # pattern's `)` as the substitution's close put the rest back in double quotes, where the `#`
+    # opened no comment and the pair was joined away. Staying inside is the conservative direction.
+    case_depth = 0
+    case_depths: list[int] = []
+    # How many `${...}` parameter expansions are open, per substitution. A `)` inside one is part
+    # of the expansion, not the substitution's terminator: bash runs the `rm` in
+    # `"$(x=${v%)}; echo ok # comment \<newline>rm -f victim<newline>)"`, and reading that `)` as
+    # the close put the rest back in double quotes, where the `#` opened no comment.
+    brace_depth = 0
+    brace_depths: list[int] = []
+    word = ""
+    # Whether the word being read starts a command. `esac` CLOSES a case only there: in
+    # `case esac in x) ...;; esac; ...` the first `esac` is the word being matched on, and
+    # counting it closed the case early, which then let the pattern's `)` end the substitution and
+    # lost an `rm` that bash really runs. Both halves lean the same way: `case` is counted wherever
+    # it appears and `esac` only in command position, so the walk errs towards staying INSIDE.
+    at_command_position = True
+    word_at_command_position = True
+    while i < n:
+        ch = text[i]
+        was_substitution_close, closed_substitution = closed_substitution, False
+        if not in_single and not in_double and not in_comment:
+            if ch.isalpha() or ch == "_":
+                if not word:
+                    word_at_command_position = at_command_position
+                word += ch
+            else:
+                if word == "case":
+                    case_depth += 1
+                elif word == "esac" and word_at_command_position and case_depth:
+                    case_depth -= 1
+                if word:
+                    at_command_position = False
+                    word = ""
+                if ch in ";&|\n(":
+                    at_command_position = True
+                elif not ch.isspace():
+                    at_command_position = False
+        if not in_single and not in_comment and ch == "$" and text[i + 1 : i + 2] == "{":
+            brace_depth += 1
+            out.append("${")
+            i += 2
+            continue
+        if ch == "}" and brace_depth and not in_single and not in_comment:
+            brace_depth -= 1
+            out.append(ch)
+            i += 1
+            continue
+        if not in_single and not in_comment and ch == "$" and text[i + 1 : i + 2] == "(":
+            substitutions.append((in_single, in_double, in_comment))
+            group_depths.append(group_depth)
+            case_depths.append(case_depth)
+            brace_depths.append(brace_depth)
+            group_depth = case_depth = brace_depth = 0
+            in_single = in_double = in_comment = False
+            out.append("$(")
+            i += 2
+            continue
+        if ch == "(" and not in_single and not in_double and not in_comment and not brace_depth:
+            group_depth += 1
+            out.append(ch)
+            i += 1
+            continue
+        if ch == ")" and not in_single and not in_double and not in_comment and not brace_depth:
+            if group_depth:
+                group_depth -= 1
+            elif case_depth:
+                pass  # a case PATTERN closes here, not the substitution
+            elif substitutions:
+                in_single, in_double, in_comment = substitutions.pop()
+                group_depth = group_depths.pop()
+                case_depth = case_depths.pop()
+                brace_depth = brace_depths.pop()
+                # A substitution's close stays INSIDE the surrounding word, unlike a subshell's or
+                # a control operator's, so a `#` right after it is ordinary text. Checked against
+                # bash 5.2.21: `echo $(printf x)#note \<newline>rm -rf victim` is one `echo` and
+                # the file survives, while reading the `)` as a word boundary opened a comment,
+                # kept the newline and reported `rm`.
+                out.append(ch)
+                i += 1
+                closed_substitution = True
+                continue
+            out.append(ch)
+            i += 1
+            continue
+        if in_comment:
+            if ch == "\n":
+                in_comment = False
+            out.append(ch)
+            i += 1
+            continue
+        if in_single:
+            if ch == "'":
+                in_single = False
+            out.append(ch)
+            i += 1
+            continue
+        if (
+            ch == "#"
+            and not in_double
+            and not was_substitution_close
+            and (not out or out[-1].isspace() or out[-1] in ";&|()")
+        ):
+            in_comment = True
+            out.append(ch)
+            i += 1
+            continue
+        if ch == "\\" and i + 1 < n:
+            nxt = text[i + 1]
+            if nxt == "\n":
+                # Removed, NOT replaced by a space: the pair can sit inside a word, and the
+                # shell closes it up. `r\\<newline>m -rf x` runs `rm`, so a space here split
+                # the command name and both the token walk and the backstop then missed it.
+                i += 2
+                continue
+            out.append(ch)
+            out.append(nxt)
+            i += 2
+            continue
+        if ch == "'" and not in_double:
+            in_single = True
+        elif ch == '"':
+            in_double = not in_double
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+
 def _find_blocked_commands(command: str) -> set[str]:
     """Detect blocked commands at shell command position only.
 
@@ -1320,28 +1585,41 @@ def _find_blocked_commands(command: str) -> set[str]:
     # position.
     command = _decode_ansi_c(command, keep_one_word = True)
 
+    # The shell removes a backslash-newline before it reads a command, so the line break is not a
+    # boundary there and the words on both sides belong to one command: `echo hi \<newline>A=1 rm
+    # -rf x` is one `echo`, while `env \<newline>FOO=bar rm -rf x` really runs `rm` and stays
+    # blocked because joining puts `rm` at command position behind `env`. Joining here rather than
+    # only before the regex keeps the token walk and the backstop reading the same text.
+    command = _join_escaped_newlines(command)
+
     # punctuation_chars splits separators into their own tokens, so command position is detected even in `echo done;
-    # rm -rf x`. Keyed to the shell that will actually run this, not to the OS: on a Windows host with bash the
-    # non-posix lexer never split on `;`, so `if true; then rm -rf x; fi` came back with nothing blocked.
+    # rm -rf x` and at a line break. Keyed to the shell that will actually run this, not to the OS: on a Windows host
+    # with bash the non-posix lexer never split on `;`, so `if true; then rm -rf x; fi` came back with nothing
+    # blocked.
     lexed_posix = _shell_is_posix()
     try:
         if not lexed_posix:
             tokens = shlex.split(command, posix = False)
         else:
-            lexer = shlex.shlex(command, posix = True, punctuation_chars = ";&|()`")
-            lexer.whitespace_split = True
-            tokens = list(lexer)
+            tokens = list(_punctuation_lexer(command, _COMMAND_POSITION_PUNCTUATION))
     except ValueError:
         tokens = command.split()
         lexed_posix = False
+        lex_raised = True
+    else:
+        lex_raised = False
     # Which separator tokens the shell only produced because the quoting was stripped. The non-posix (cmd) lexer KEEPS
     # the quote marks and the split() fallback has no quoting model, so both report nothing and reach the same
     # verdict.
     quoted_separators = (
-        _quoted_separator_indexes(command, tokens, ";&|()`") if lexed_posix else frozenset()
+        _quoted_separator_indexes(command, tokens, _COMMAND_POSITION_PUNCTUATION)
+        if lexed_posix
+        else frozenset()
     )
     quoted_redirects = (
-        _quoted_redirection_indexes(command, tokens, ";&|()`") if lexed_posix else frozenset()
+        _quoted_redirection_indexes(command, tokens, _COMMAND_POSITION_PUNCTUATION)
+        if lexed_posix
+        else frozenset()
     )
     exec_flag_indexes, invocation_stops, redirect_indexes = _exec_scan_layout(
         tokens, quoted_separators, quoted_redirects
@@ -1406,7 +1684,10 @@ def _find_blocked_commands(command: str) -> set[str]:
     sed_indexes: "list[int]" = []  # command-position sed words, for the `e` scan below
     sed_xargs: "dict[int, int]" = {}  # sed word -> the xargs that builds its argv
     xargs_index = -1  # an xargs awaiting the command it wraps
+    coproc_kw = False  # the word just consumed was the `coproc` KEYWORD, so a name may follow
     for token_index, token in enumerate(tokens):
+        after_coproc = coproc_kw
+        coproc_kw = False
         if skip_operand:
             # `exec -a NAME cmd` and `if exist FILE cmd` both put an operand where the command word would otherwise
             # be.
@@ -1428,6 +1709,7 @@ def _find_blocked_commands(command: str) -> set[str]:
         if (_looks_like_separator(token) and token_index not in quoted_separators) or (
             token in _SHELL_KEYWORDS_AS_SEP and expect_command
         ):
+            coproc_kw = expect_command and token == "coproc"
             expect_command = True
             prefix_pending = False
             prefix_command = ""
@@ -1458,6 +1740,7 @@ def _find_blocked_commands(command: str) -> set[str]:
         # Numeric wrapper arg: `timeout 1 cmd` / `nice -n 5 cmd`.
         if prefix_pending and token.lstrip("-").isdigit():
             continue
+        coproc_name_here = after_coproc and _is_coproc_name(tokens, token_index)
         base = _token_basename(token)
         if _is_sed_command(base):
             sed_indexes.append(token_index)
@@ -1469,13 +1752,13 @@ def _find_blocked_commands(command: str) -> set[str]:
             blocked |= _blocked_matching_glob(base)
         # Wrappers (env/time/xargs/sudo) consume one command; the next non-flag, non-numeric token is the real
         # command. sudo is also in _BLOCKED_COMMANDS.
-        if base in _COMMAND_PREFIXES:
+        if base in _COMMAND_PREFIXES and not coproc_name_here:
             if base == "xargs" and xargs_index < 0:
                 xargs_index = token_index
             prefix_pending = True
             prefix_command = base
             continue
-        expect_command = False
+        expect_command = coproc_name_here
         prefix_pending = False
         prefix_command = ""
         xargs_index = -1
@@ -1540,14 +1823,9 @@ def _find_blocked_commands(command: str) -> set[str]:
     # Regex catches blocked words at command boundaries shlex misses: inside $(rm -rf), <(rm), backtick chains, or
     # "foo;rm". Anchored to command-position delimiters, so it doesn't match in argument position.
     lowered = command.lower()
-    if _BLOCKED_COMMANDS:
-        words_alt = "|".join(re.escape(w) for w in sorted(_BLOCKED_COMMANDS))
-        pattern = (
-            rf"(?:^|[;&|`\n(]\s*|[$]\(\s*|<\(\s*)"
-            rf"(?:[\w./\\-]*/|[a-zA-Z]:[/\\][\w./\\-]*)?"
-            rf"({words_alt})(?:\.(?:exe|com|bat|cmd))?\b"
-        )
-        blocked.update(re.findall(pattern, lowered))
+    backstop = _BLOCKED_WORD_RE_WITH_ASSIGNMENTS if lex_raised else _BLOCKED_WORD_RE
+    if backstop is not None:
+        blocked.update(backstop.findall(lowered))
 
     # A substitution at command position synthesizes the executed word, so `$(ls /usr/bin | grep
     # "^reb")` never reaches the scan above; screen the body instead. A variable launders the same
@@ -1736,7 +2014,9 @@ def _find_blocked_commands(command: str) -> set[str]:
         # never blocked.
         if glob_indexes is None:
             glob_indexes = (
-                _unquoted_glob_indexes(command, tokens, ";&|()`") if lexed_posix else frozenset()
+                _unquoted_glob_indexes(command, tokens, _COMMAND_POSITION_PUNCTUATION)
+                if lexed_posix
+                else frozenset()
             )
         alternatives, scan_overflowed, _live = _sed_invocation(
             tokens, i, sed_limit, invocation_stops, redirect_indexes, glob_indexes
@@ -2009,6 +2289,9 @@ _AUTO_SENSITIVE_MCP_NOUN_RE = re.compile(
 # Split a camelCase boundary with an underscore (runCommand -> run_Command) so the term-boundary MCP regexes match
 # camelCase tool names too.
 _CAMEL_CASE_RE = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
+# The term-boundary regexes above recognise only `_` and `-`, but MCP names may separate terms with anything the
+# spec allows (catalog.get-catalog-entity). Fold the rest to `_` so a verb behind a dot is still its own term.
+_MCP_TERM_SEPARATOR_RE = re.compile(r"[^A-Za-z0-9_\-]+")
 # A name that reads (get_release, search_code) names its SUBJECT, not the action, so the impact and runtime-noun
 # patterns below must not fire on it, or the everyday read tools of every server would prompt.
 _AUTO_READ_MCP_VERB_RE = re.compile(
@@ -2642,6 +2925,2043 @@ _SENSITIVE_PATH_RE = re.compile(
     r"|\w[\w.-]*\.(?:pem|key)(?:$|[\s'\"])",
     re.IGNORECASE,
 )
+# $STUDIO_HOME/auth holds this install's credentials in the clear, and tool subprocesses run as the
+# backend's own OS user, so their 0600 modes are no boundary against them. Narrow on purpose: these
+# basenames and the auth directory itself, so an app's own auth/ package or auth.py stays ordinary.
+# A name ends where the shell ends a word, so the punctuation that separates commands, redirects and
+# subshells closes it too: without them `cat /tmp/.bootstrap_password; echo done` named the file and
+# matched nothing.
+_WORD_END = r"(?:$|[\s'\";&|)(<>`])"
+_STUDIO_CREDENTIAL_BASENAME_RE = re.compile(
+    # Dotted names nothing else spells, so they match bare too.
+    r"(?:^|[/\\\s'\"=])(?:\.cli_api_key_[^/\\\s'\";&|)(<>`]*|\.bootstrap_password|\.desktop_secret)"
+    + _WORD_END
+    # Path form only: the bare name is an ordinary identifier. auth.db is absent for the same reason,
+    # and Studio's copy is covered by the auth-directory patterns below.
+    + r"|[/\\]llama_api_key"
+    + _WORD_END
+    # `unsloth start` keeps the coding-agent keys here. Path form only: matching the bare name
+    # refused `print('agent_api_key.json')`.
+    + r"|[/\\]agent_api_key\.json"
+    + _WORD_END,
+    re.IGNORECASE,
+)
+_STUDIO_AUTH_DIR_RE = re.compile(
+    r"(?:^|[/\\\s'\"=])\.unsloth[/\\]studio[/\\]auth(?:[/\\]|" + _WORD_END + r")",
+    re.IGNORECASE,
+)
+
+# Only counted with a `cd` INTO the studio root, never a mere mention of it: `grep -rn auth
+# <studio root>/logs/studio.log` is ordinary work.
+_BARE_AUTH_SEGMENT_RE = re.compile(
+    r"(?:^|[/\\\s'\"=])auth(?:[/\\]|" + _WORD_END + r")", re.IGNORECASE
+)
+
+# Prefilter: a new pattern needs a hint here or it never runs.
+# Whether this host distinguishes `auth` from `Auth`. `os.path.normcase` is identity on POSIX other
+# than macOS, which is the same test the path comparisons elsewhere in this file rely on.
+_CASE_SENSITIVE_PATHS = os.path.normcase("A") == "A" and sys.platform != "darwin"
+
+
+_STUDIO_CREDENTIAL_HINTS = (
+    "auth",
+    ".cli_api_key",
+    ".bootstrap_password",
+    ".desktop_secret",
+    "llama_api_key",
+    "agent_api_key",
+)
+
+# Both survive into the tool subprocess environment, so `$STUDIO_HOME/auth` IS the path to the
+# shell, not a rewrite of it.
+_STUDIO_HOME_ENV_VARS = ("UNSLOTH_STUDIO_HOME", "STUDIO_HOME")
+
+
+def _same_directory(left: str, right: str) -> bool:
+    """Whether two spellings name the same directory.
+
+    normcase because Windows paths are case-insensitive, and realpath because `studio_root()`
+    resolves aliases: a `STUDIO_HOME` that is a symlink or junction to the configured root is the
+    root, and reading it as somewhere else drops every spelling of the variable from the guard.
+    """
+
+    def tidy(path: str) -> str:
+        return os.path.normcase(os.path.normpath(path))
+
+    if tidy(left) == tidy(right):
+        return True
+    try:
+        return tidy(os.path.realpath(left)) == tidy(os.path.realpath(right))
+    except OSError:
+        return False
+
+
+def _studio_home_variable_spellings(resolved: "str | None" = None) -> "list[str]":
+    """`$VAR`, `${VAR}`, `%VAR%` and `$env:VAR` for each studio-home variable (sh, cmd, PowerShell).
+
+    A variable that is SET to some other directory is skipped. `STUDIO_HOME` is a generic name, and
+    another application can own it; with the spelling registered unconditionally, a command naming
+    that application's directory was refused in every permission mode even though it never came near
+    this install. A variable that is unset stays registered: the child cannot expand it either, so
+    the spelling reaches nothing, and dropping it would only widen the guard for no gain.
+    """
+    out: "list[str]" = []
+    for var in _STUDIO_HOME_ENV_VARS:
+        value = os.environ.get(var)
+        if value and resolved:
+            try:
+                points_here = _same_directory(os.path.expanduser(value), resolved)
+            except Exception:  # noqa: BLE001 - an unreadable value must not break classification
+                points_here = True
+            if not points_here:
+                continue
+        out.extend((f"${var}", f"${{{var}}}", f"%{var}%", f"$env:{var}"))
+    return out
+
+
+_studio_auth_markers_cache: "tuple | None" = None
+
+
+def _studio_auth_dir_markers() -> tuple:
+    """``(plain spellings, variable spellings, "cd into the studio root" pattern)`` for this install.
+
+    Each spelling is a ``(marker, canonical marker)`` pair, both lowercased, so the per-call path
+    does no string building. The variable spellings (``$HOME/...``, ``$STUDIO_HOME/auth``, ``~/...``)
+    are kept apart because a text containing no ``$``, ``%`` or ``~`` cannot match one, and the
+    terminal classifier runs this once per candidate token of every command.
+
+    Resolved once per process: STUDIO_HOME is fixed at startup, and a custom UNSLOTH_STUDIO_HOME is
+    only covered by asking for the real root rather than assuming the default layout. A failure is
+    not cached, so a root that could not be resolved during startup import ordering does not leave
+    the guard half-blind for the process lifetime."""
+    global _studio_auth_markers_cache
+    if _studio_auth_markers_cache is not None:
+        return _studio_auth_markers_cache
+    try:
+        from utils.paths.storage_roots import auth_root
+        resolved = str(auth_root())
+    except Exception:  # noqa: BLE001 - an unresolvable root leaves the literal patterns above
+        return (), (), None
+    if not resolved:
+        return (), (), None
+    auth_markers = [resolved]
+    variable_markers: "list[str]" = []
+    root_markers = [os.path.dirname(resolved.rstrip("/\\"))]
+    home = os.path.expanduser("~")
+    # Boundary-aware: a plain startswith reads /home/u2 as under /home/u and mints a "~2/..." marker.
+    if home and (resolved == home or resolved.startswith(home.rstrip(os.sep) + os.sep)):
+        for target, base in ((variable_markers, resolved), (root_markers, root_markers[0])):
+            tail = base[len(home.rstrip(os.sep)) :]
+            target.extend(("~" + tail, "$HOME" + tail, "${HOME}" + tail))
+    # Minus any variable that is set to somewhere else.
+    for spelling in _studio_home_variable_spellings(os.path.dirname(resolved.rstrip("/\\"))):
+        root_markers.append(spelling)
+        variable_markers.extend((spelling + "/auth", spelling + "\\auth"))
+    roots = [m for m in root_markers if m and m not in ("/", "\\")]
+    # The root must END where it matched, or continue into `auth`. Without the boundary
+    # `cd <home>-backup && ls auth` and `cd <home>/models && grep auth README` were both refused.
+    # Only where a shell would RUN one: `echo 'cd <root>'; grep auth README` prints the text and
+    # searches a project, and matched unanchored it read as a move into the studio root.
+    cd_re = (
+        re.compile(
+            r"(?:^|[;&|({\n]\s*|\b(?:then|do|else|if|elif|while|until)\s+)(?:(?:builtin|command|exec)\s+)*"
+            r"(?:cd|pushd)\s+(?:/d\s+)?[\"']?(?:"
+            + "|".join(re.escape(m) for m in roots)
+            + r")(?:[\"']|\s|[;&|]|$|[/\\]auth(?![\w-]))",
+            re.IGNORECASE,
+        )
+        if roots
+        else None
+    )
+
+    def pairs(names: "list[str]") -> tuple:
+        out = []
+        for name in names:
+            if not name:
+                continue
+            lowered = name.lower()
+            # The ORIGINAL spelling travels with the folded ones: on a case-sensitive filesystem
+            # `<home>/Auth` is a different directory from `<home>/auth`, and folding alone refused
+            # an ordinary read under it.
+            out.append((lowered, _canonical_path_text(lowered), name))
+        return tuple(out)
+
+    _studio_auth_markers_cache = (pairs(auth_markers), pairs(variable_markers), cd_re)
+    return _studio_auth_markers_cache
+
+
+# Names neither the path nor the value: this string goes back to the model.
+_STUDIO_CREDENTIAL_BLOCKED = (
+    "Blocked for safety: Unsloth Studio's authentication directory holds this install's own "
+    "credentials and is not readable by tools."
+)
+
+
+def _canonical_path_text(text: str) -> str:
+    """Rewrite *text* into the one spelling the OS would resolve it to, lexically.
+
+    Separators are unified to "/", then `//` and `/./` collapse and `x/..` pairs cancel. The OS
+    opens `<home>/bin/../auth/auth.db` and `C:\\Studio\\.\\auth\\auth.db` as the protected database,
+    so without this the guard matched only the tidiest spelling of a path and every equivalent one
+    walked past it.
+
+    Lexical on purpose: no `realpath`, so no filesystem access and nothing to race. That makes it
+    wrong for a path whose parent is a symlink, which is the accepted limit here -- this is an extra
+    candidate spelling, never a replacement, so a match found in the raw text still counts.
+    """
+    unified = text.replace("\\", "/")
+    out: "list[str]" = []
+    for index, segment in enumerate(unified.split("/")):
+        # `a//b` is `a/b` to every OS; the first two positions keep a leading "/" and a UNC
+        # "//server/share" intact. Mixed separators (`C:\Studio\home//auth//auth.db`) need it here,
+        # since the other candidate collapses slashes in the RAW text only.
+        if segment == "" and index > 1:
+            continue
+        if segment == ".":
+            continue
+        if segment == ".." and out and out[-1] not in ("", ".."):
+            out.pop()
+            continue
+        out.append(segment)
+    return "/".join(out)
+
+
+_GLOB_META_RE = re.compile(r"[*?\[]")
+_BRACKET_CLASS_RE = re.compile(r"\[[^\]/\s]{1,64}\]")
+# A class holding exactly one character expands to that character and nothing else, so
+# `[a][u][t][h]` IS `auth`. Collapsing it to a wildcard threw the literal away, and a segment of
+# nothing but wildcards is deliberately not matched.
+_SINGLETON_CLASS_RE = re.compile(r"\[([^\]/\s!^-])\]")
+
+
+# A backslash before an ordinary word character is quoting, and the shell drops it: `c\d` is `cd`.
+# Restricted to word characters so a Windows separator (`auth\auth.db`) is left alone, which the
+# spelling walk handles separately.
+_ESCAPED_WORD_CHAR_RE = re.compile(r"\\(\w)")
+# The spellings of the home directory a shell expands before the command sees them. The bare `~` only
+# counts at the head of a path, so `file~` and `a~b` are left alone.
+_HOME_VARIABLE_RE = re.compile(r"\$\{HOME\}|\$HOME\b|%HOME%|(?<![\w~.])~(?=[/\\])", re.IGNORECASE)
+# The shell's spellings of the working directory. Bypass sets PWD to the tool workdir, so
+# `$PWD/../..` is the sandbox walked two levels up, exactly as `$HOME/../..` is.
+_CWD_VARIABLE_RE = re.compile(r"\$\{PWD\}|\$PWD\b|%CD%|\$env:PWD\b", re.IGNORECASE)
+
+
+def _glob_can_name_the_marker(lowered: str, marker: str) -> bool:
+    """True when *lowered*, read as a shell glob, can expand to *marker* or something under it.
+
+    `sqlite3 ../../a?th/auth.db` never spells the auth directory, but bash expands `a?th` to `auth`
+    before sqlite3 opens anything, so comparing the literal text alone let the database through.
+    Matched segment by segment, because a shell wildcard does not cross a separator while
+    `fnmatch`'s does.
+
+    A segment whose literal characters are all metacharacters is skipped: `ls <studio root>/*` names
+    the auth directory only in the sense that listing a parent does, and refusing it would break
+    ordinary work for no secret read.
+    """
+    candidate = lowered.split("/")
+    wanted = marker.split("/")
+    if len(candidate) < len(wanted):
+        return False
+    aligned = candidate[len(wanted) - 1]
+    if not _GLOB_META_RE.sub("", aligned).strip("]-"):
+        return False
+    return all(
+        fnmatch.fnmatchcase(want, have) for want, have in zip(wanted, candidate[: len(wanted)])
+    )
+
+
+# The files inside the auth directory, by basename alone. A command that names the studio ROOT and
+# one of these is enumerating for it, however it joins them.
+_CREDENTIAL_BASENAME_RE = re.compile(
+    r"(?<![\w.-])(?:auth\.db|\.desktop_secret|\.bootstrap_password|\.cli_api_key[\w.-]*"
+    r"|llama_api_key[\w.-]*|agent_api_key[\w.-]*)(?![\w-])",
+    re.IGNORECASE,
+)
+
+
+# An assignment to one of the studio home variables, anywhere in the command.
+_STUDIO_HOME_ASSIGN_RE = re.compile(
+    r"(?:^|[;&|(\s])(?:export\s+|set\s+)?(" + "|".join(_STUDIO_HOME_ENV_VARS) + r")\s*=",
+    re.IGNORECASE,
+)
+
+
+def _assignment_is_a_command_prefix(text: str, value_start: int) -> bool:
+    """True when a command follows the assignment's value on the same simple command.
+
+    `H=/tmp cat x` is a prefix assignment; `H=/tmp; cat x` is an assignment that stands alone. The
+    value ends at the first unquoted separator, so the quotes are tracked while scanning it.
+    """
+    index = value_start
+    quote = ""
+    while index < len(text):
+        char = text[index]
+        if quote:
+            if char == quote:
+                quote = ""
+        elif char in "\"'":
+            quote = char
+        elif char in " \t;&|\n":
+            break
+        index += 1
+    following = text[index:].lstrip(" \t")
+    return bool(following) and following[0] not in ";&|\n"
+
+
+def _assignment_is_inert(text: str, index: int) -> bool:
+    """Whether an assignment at *index* binds nothing for the commands that follow it.
+
+    Inside quotes it is DATA that the command merely prints, and inside `( ... )` or
+    `$( ... )` it binds only the SUBSHELL, so the outer commands still expand the
+    inherited value."""
+    quote = ""
+    escaped = False
+    depth = 0
+    for character in text[:index]:
+        if escaped:
+            escaped = False
+        elif character == "\\" and quote != "'":
+            # A backslash escapes the next character everywhere a single quote is not open, so
+            # `echo "x \" H=/tmp;"` never leaves the quoted region that `\"` only prints.
+            escaped = True
+        elif quote:
+            if character == quote:
+                quote = ""
+        elif character in "'\"":
+            quote = character
+        elif character == "(":
+            depth += 1
+        elif character == ")":
+            depth = max(depth - 1, 0)
+    return bool(quote) or depth > 0
+
+
+def _rebinds_the_studio_home_first(text: str) -> bool:
+    """True when *text* assigns a studio home variable BEFORE any use of it.
+
+    The shell assignment is what the child expands, whether or not the backend sets the same name,
+    so `UNSLOTH_STUDIO_HOME=/tmp/project; cat "$UNSLOTH_STUDIO_HOME/auth/config.json"` reads a
+    project file and not this install's directory. An assignment that comes AFTER a use rebinds
+    nothing for that use, and expanding it would hide a real read of the install's own auth
+    directory, so the ordering is what decides it.
+    """
+    lowered = text.lower()
+    assignments: "dict[str, int]" = {}
+    for match in _STUDIO_HOME_ASSIGN_RE.finditer(text):
+        # `echo " H=/tmp;"; cat "$H/auth/auth.db"` only PRINTS the assignment and
+        # `(H=/tmp); cat "$H/auth/auth.db"` binds only the subshell, so in both the later
+        # expansion still uses the inherited home and rewriting it hid a real credential read.
+        if _assignment_is_inert(text, match.end()):
+            continue
+        # A PREFIX assignment (`H=/tmp cmd "$H/auth/auth.db"`) does not govern the expansion of its
+        # own command's arguments: the shell expands the word list before the assignment takes
+        # effect, so that read still happens under the INHERITED home. Only an assignment that
+        # stands as a command of its own, terminated by a separator, rebinds what follows.
+        if (
+            _assignment_is_a_command_prefix(text, match.end())
+            and (os.environ.get(match.group(1).upper()) or "").strip()
+        ):
+            # Only when the variable is SET: that inherited value is what the expansion uses. With
+            # it unset the expansion is empty, which can name no directory of this install's, so the
+            # assigned value is still the closest reading of what the command means.
+            continue
+        # The LAST assignment of a name is the one the expansion applies, so that is the position
+        # the first use has to come after: `H=$H; cat "$H/auth/auth.db"; H=/tmp` reads the real
+        # database and then rebinds, and rewriting every use to `/tmp` erased the marker.
+        assignments[match.group(1).lower()] = match.end()
+    # EVERY assigned name has to be safe, not just one of them: the expansion that follows rewrites
+    # all of them from their last assignment, so one name that is only assigned (`STUDIO_HOME=/tmp;`)
+    # used to authorize rewriting another whose assignment comes AFTER its use, and
+    # `STUDIO_HOME=/tmp; cat "$UNSLOTH_STUDIO_HOME/auth/auth.db"; UNSLOTH_STUDIO_HOME=/tmp` read the
+    # real database under a rewritten path.
+    rebinds = False
+    for name, position in assignments.items():
+        uses = [
+            found
+            for found in (
+                lowered.find(f"${name}"),
+                lowered.find(f"${{{name}}}"),
+                lowered.find(f"%{name}%"),
+            )
+            if found != -1
+        ]
+        if uses and min(uses) < position:
+            return False
+        rebinds = True
+    return rebinds
+
+
+_studio_root_spellings_cache: "tuple | None" = None
+
+
+def _studio_root_spellings() -> "list[str]":
+    """Every lowered spelling of the Studio root: the literal path and its environment variables.
+
+    The variables come from `_studio_home_variable_spellings`, which drops one that is SET to some
+    other directory: `STUDIO_HOME` is a generic name another application can own, and registering it
+    unconditionally refused `find "$STUDIO_HOME" ...` against that application's tree.
+    """
+    global _studio_root_spellings_cache
+    markers = _studio_auth_dir_markers()[0]
+    if _studio_root_spellings_cache is not None and _studio_root_spellings_cache[0] is markers:
+        return _studio_root_spellings_cache[1]
+    root = _studio_home_for_guard()
+    if not root:
+        return []
+    # Both separator styles of the literal, because how the root is STORED must not decide whether
+    # the text naming it matches: a Windows root reaches source as `c:\\dir` and as `c:/dir`.
+    folded = _folded_word(root)
+    spellings = [root.lower()]
+    if os.sep == "\\":
+        spellings += [folded, folded.replace("/", "\\")]
+    spellings.extend(spelling.lower() for spelling in _studio_home_variable_spellings(root))
+    spellings = list(dict.fromkeys(spellings))
+    # Rebuilt for every command otherwise, and this runs on every one of them.
+    _studio_root_spellings_cache = (markers, spellings)
+    return spellings
+
+
+def _text_names_the_studio_root(text: str) -> bool:
+    """True when *text* names the Studio root directory, literally or by one of its variables."""
+    lowered = text.lower()
+    spellings = _studio_root_spellings()
+    if any(spelling in lowered for spelling in spellings):
+        return True
+    # The escaped spellings name the same directory: a shell escapes a space as `\\ `, and a python
+    # literal doubles every separator of a Windows path. Both need a backslash to exist at all, and
+    # rewriting the text is worth paying for only then.
+    if "\\" not in lowered:
+        return False
+    for unescaped in (lowered.replace("\\ ", " "), lowered.replace("\\\\", "\\")):
+        if unescaped != lowered and any(spelling in unescaped for spelling in spellings):
+            return True
+    return False
+
+
+def _quoted_words(text: str) -> "list[str]":
+    """Split on whitespace, honouring quotes but NOT backslash escapes.
+
+    `shlex.split(posix = True)` eats the separators of a Windows path, so
+    `find "C:\\Users\\me\\Unsloth Studio" ...` came back as one mangled word and matched no root.
+    """
+    lexer = shlex.shlex(text, posix = True)
+    lexer.whitespace_split = True
+    lexer.escape = ""
+    try:
+        return list(lexer)
+    except ValueError:  # unbalanced quotes: the raw words are the best available reading
+        return text.split()
+
+
+def _folded_word(word: str) -> str:
+    """A word reduced to the directory it names: `"<root>"/.` and `<root>//` are both `<root>`."""
+    # `cp -a /tmp/Studio\\ Home .` names a root WITH a space; the backslash is the shell's escape,
+    # not a separator, so it is removed before the separators are normalised.
+    folded = word.lower().replace("\\ ", " ").replace("\\", "/")
+    while folded.endswith(("/.", "/")):
+        folded = folded[:-2] if folded.endswith("/.") else folded[:-1]
+    return folded
+
+
+def _names_the_studio_root_itself(text: str) -> bool:
+    """True when one WORD of the command is the root itself, so the walk starts there.
+
+    Word by word, because the spelling appearing anywhere is not enough: the pattern in
+    `grep -rn 'cd <root>' src/` searches a project, and `<root>/projects/p/sandbox` is ordinary work
+    inside a project. Only a bare `<root>` (with any trailing separator) is the directory whose walk
+    reaches `auth/`.
+    """
+    # Folded the SAME way as the words, or a Windows root never matches: `_folded_word` turns
+    # `c:\\users\\...` into `c:/users/...`, while a merely right-stripped spelling keeps its
+    # backslashes.
+    spellings = [_folded_word(spelling) for spelling in _studio_root_spellings()]
+    if not spellings:
+        return False
+    words = _quoted_words(text)
+    if "\\ " in text:
+        # Escapes are disabled in the lexer so Windows paths survive, which splits
+        # `Studio\\ Home` in two. The escaped spelling is re-joined before folding.
+        words = words + [
+            word.replace("\x00", " ") for word in _quoted_words(text.replace("\\ ", "\x00"))
+        ]
+    return any(_folded_word(word) in spellings for word in words)
+
+
+# Commands that walk a whole tree and EMIT or COPY what is in it. A plain listing (`ls`, `tree`,
+# `find` with no action) is not one of these: it names files without reading them.
+# `7z a out.7z <dir>` recurses into the directory with no flag at all, so it belongs here rather
+# than with the ones that need `-r`.
+_STUDIO_WALK_COMMANDS = frozenset({"rsync", "tar", "cpio", "rg", "ag", "ack", "7z", "7za", "7zr"})
+_STUDIO_WALK_FLAG_COMMANDS = frozenset({"grep", "egrep", "fgrep", "cp", "scp", "zip"})
+# `find` reads nothing by itself; an ACTION (or a pipe into another command) is what does.
+_STUDIO_FIND_ACTIONS = frozenset({"-exec", "-execdir", "-ok", "-okdir", "-delete", "-fprint"})
+_STUDIO_WALK_SPLIT_RE = re.compile(r"[\s;&()<>]+")
+
+
+def _command_words(text: str) -> "list[str]":
+    """The word in COMMAND position of each pipeline segment, lowered and basenamed.
+
+    `echo tar "$STUDIO_HOME"` runs `echo`; `tar` is data it prints. Reading every non-option token
+    as an executable refused that. Assignments and the usual wrappers are stepped over so
+    `env -u X tar ...` still reports `tar`.
+    """
+    words: "list[str]" = []
+    for segment in _COMMAND_SEPARATOR_RE.split(text.lower()):
+        skip_next = False
+        for token in _quoted_words(segment):
+            if skip_next:
+                skip_next = False
+                continue
+            if token.startswith("-"):
+                # A wrapper option that takes a separate value swallows the token after it, which
+                # would otherwise read as the command (`env -u FOO tar ...`).
+                skip_next = token in _WRAPPER_VALUE_OPTIONS
+                continue
+            if "=" in token:  # a NAME=value assignment preceding the command
+                continue
+            base = os.path.basename(token.strip("\"'"))
+            if base in _WALK_TRANSPARENT_WRAPPERS or _WRAPPER_DURATION_RE.match(base):
+                continue
+            words.append(base)
+            break
+    return words
+
+
+# Separators that start a new command, so the word after one is in command position again.
+_COMMAND_SEPARATOR_RE = re.compile(r"[;&|()\n]+|&&|\|\|")
+_STUDIO_WALK_NAME_HINTS = frozenset(_STUDIO_WALK_COMMANDS | _STUDIO_WALK_FLAG_COMMANDS | {"find"})
+_WRAPPER_VALUE_OPTIONS = frozenset(
+    {"-u", "--unset", "-n", "-c", "-i", "-p", "-C", "--chdir", "-k", "--kill-after", "-s"}
+)
+# `timeout 5 tar ...`: a bare duration is the wrapper's own operand.
+_WRAPPER_DURATION_RE = re.compile(r"^\d+(?:\.\d+)?[smhd]?$")
+# Wrappers that run the command that FOLLOWS them, so the walker can still be behind one.
+_WALK_TRANSPARENT_WRAPPERS = frozenset(
+    {
+        "env",
+        "nice",
+        "ionice",
+        "nohup",
+        "time",
+        "timeout",
+        "sudo",
+        "command",
+        "builtin",
+        "exec",
+        "stdbuf",
+        "xargs",
+        "busybox",
+    }
+)
+
+
+def _walks_a_tree_reading_it(text: str) -> bool:
+    """True when the command recursively reads or copies a whole directory tree."""
+    lowered = text.lower()
+    # Splitting into command positions costs a lexer pass, so skip it when no walker is named at
+    # all: that is the case for almost every command that mentions the studio root.
+    if not any(name in lowered for name in _STUDIO_WALK_NAME_HINTS):
+        return False
+    names = set(_command_words(text))
+    if not names:
+        return False
+    if names & _STUDIO_WALK_COMMANDS:
+        return True
+    tokens = [token for token in _STUDIO_WALK_SPLIT_RE.split(text.lower()) if token]
+    if "find" in names and (any(token in _STUDIO_FIND_ACTIONS for token in tokens) or "|" in text):
+        return True
+    if names & _STUDIO_WALK_FLAG_COMMANDS:
+        for token in tokens:
+            if token in ("--recursive", "--archive"):
+                return True
+            if token.startswith("-") and not token.startswith("--") and set(token[1:]) & {"r", "a"}:
+                return True
+    return False
+
+
+_ABSOLUTE_MARKER_RE = re.compile(r"^(?:[/\\]|[a-z]:[/\\])")
+
+
+def _marker_is_absolute(marker: str) -> bool:
+    return bool(_ABSOLUTE_MARKER_RE.match(marker))
+
+
+def _marker_is_a_path_segment(lowered: str, marker: str) -> bool:
+    """True when ``marker`` appears in ``lowered`` as a whole path, not merely as a prefix.
+
+    ``<home>/auth`` must match ``<home>/auth/auth.db`` and a bare ``<home>/auth``, but not
+    ``<home>/authors/notes.txt`` or ``<home>/auth-backup``.
+    """
+    start = lowered.find(marker)
+    while start != -1:
+        end = start + len(marker)
+        ends_here = end == len(lowered) or lowered[end] in "/\\'\" \t\r\n;:&|)"
+        # The LEADING boundary matters too for an absolute marker: `/mnt/backup<home>/auth` embeds
+        # the configured path inside another directory and is not it, and checking only the end
+        # refused an ordinary read under a backup copy.
+        begins_here = (
+            start == 0
+            or not _marker_is_absolute(marker)
+            or lowered[start - 1] in "'\" \t\r\n;&|(=,"
+        )
+        if ends_here and begins_here:
+            return True
+        start = lowered.find(marker, start + 1)
+    return False
+
+
+def _glob_text_can_name_the_auth_dir(lowered: str) -> bool:
+    """True when *lowered*, read as a shell glob, can expand onto the auth directory or below it."""
+    auth_markers, variable_markers, _cd_re = _studio_auth_dir_markers()
+    markers = auth_markers + (variable_markers if ("$" in lowered or "%" in lowered) else ())
+    if not markers:
+        return False
+    candidates = {lowered, _canonical_path_text(lowered)}
+    return any(
+        _glob_can_name_the_marker(candidate, canonical_marker)
+        for _marker, canonical_marker, _original in markers
+        for candidate in candidates
+    )
+
+
+def _references_studio_credential(text: str) -> bool:
+    """True if *text* names Studio's auth directory or one of the credential files in it."""
+    if not text:
+        return False
+    lowered = text.lower()
+    # Once per candidate token of every command, so skip the regexes when nothing can match.
+    if not any(hint in lowered for hint in _STUDIO_CREDENTIAL_HINTS):
+        # A WILDCARD can name the directory without spelling it: `../../a?th/.b*` expands to
+        # `auth/.bootstrap_password` and carries no hint at all, so the prefilter was skipping the
+        # glob analysis that exists for exactly this. Only the marker comparison can match here, the
+        # literal patterns needing a hint by construction, so that is all this runs.
+        if not _GLOB_META_RE.search(lowered):
+            return False
+        return _glob_text_can_name_the_auth_dir(lowered)
+    # `<home>//auth/auth.db` and `<home>/./auth/auth.db` open the same file.
+    normalized = _REDUNDANT_SLASH_RE.sub("", text)
+    lowered_normalized = normalized.lower()
+    # A shell escapes a space in a home name; read as a separator it splits the directory in half.
+    unescaped = text.replace("\\ ", " ") if "\\ " in text else text
+    # A shell concatenates adjacent fragments, so no marker can span the quote in
+    # `"$STUDIO_HOME"/auth/auth.db`.
+    if '"' in unescaped or "'" in unescaped:
+        unescaped = unescaped.replace('"', "").replace("'", "")
+    canonical = _canonical_path_text(text)
+    lowered_canonical = canonical.lower()
+    canonical_candidates = {canonical}
+    if unescaped is not text:
+        canonical_candidates.add(_canonical_path_text(unescaped))
+    if any(
+        pattern.search(candidate)
+        for pattern in (_STUDIO_CREDENTIAL_BASENAME_RE, _STUDIO_AUTH_DIR_RE)
+        for candidate in ({text, normalized} | canonical_candidates)
+    ):
+        return True
+    auth_markers, variable_markers, cd_into_root_re = _studio_auth_dir_markers()
+    # No `$`, `%` or `~` means no variable spelling.
+    if variable_markers and ("$" in lowered or "%" in lowered or "~" in lowered):
+        auth_markers = auth_markers + variable_markers
+    if not auth_markers:
+        return False
+    # Segment-bounded, or `<home>/authors/notes.txt` and `<home>/auth-backup/` are refused too. The
+    # markers are canonicalised alongside the text; on Windows the raw ones carry backslashes.
+    lowered_raw = {lowered, lowered_normalized}
+    lowered_canonicals = {lowered_canonical} | {c.lower() for c in canonical_candidates}
+    if unescaped is not text:
+        lowered_raw.add(unescaped.lower())
+    matched = [
+        original
+        for marker, canonical_marker, original in auth_markers
+        if any(_marker_is_a_path_segment(candidate, marker) for candidate in lowered_raw)
+        or any(
+            _marker_is_a_path_segment(candidate, canonical_marker)
+            for candidate in lowered_canonicals
+        )
+    ]
+    if matched:
+        # On a case-sensitive filesystem the folded match is not enough on its own: `<home>/Auth` is
+        # a different directory from `<home>/auth`, and refusing a read under it is a false refusal.
+        # The check is only applied where the ORIGINAL marker is an ordinary literal path, so a
+        # variable or `~` spelling (which the shell expands, and whose case the shell decides) keeps
+        # the folded answer.
+        raw_candidates = {text, normalized, unescaped, canonical}
+        if _CASE_SENSITIVE_PATHS and not any(
+            original in candidate
+            for original in matched
+            if original[:1] not in ("$", "~", "%")
+            for candidate in raw_candidates
+        ):
+            literal = [o for o in matched if o[:1] not in ("$", "~", "%")]
+            if literal and len(literal) == len(matched):
+                return False
+        return True
+    # Once more as a glob, gated on a wildcard being there at all. Per path-shaped TOKEN, not on
+    # the whole text: the segments of `sqlite3 <home>/a?th/auth.db` start at `sqlite3 <home>`, so
+    # comparing from segment zero could never line up with an absolute marker.
+    if _GLOB_META_RE.search(lowered):
+        glob_tokens = {t for c in lowered_canonicals for t in _PATH_TOKEN_RE.findall(c)}
+        glob_tokens.update(lowered_canonicals)
+        if any(
+            _glob_can_name_the_marker(token, canonical_marker)
+            for _marker, canonical_marker, _original in auth_markers
+            for token in glob_tokens
+            if _GLOB_META_RE.search(token)
+        ):
+            return True
+    return bool(
+        cd_into_root_re is not None
+        and _BARE_AUTH_SEGMENT_RE.search(text)
+        and any(cd_into_root_re.search(candidate) for candidate in (text, unescaped))
+    )
+
+
+# Any run of text that could be a path argument, used to read one token at a time.
+_PATH_TOKEN_RE = re.compile(r"[^\s'\"()\[\]{},;|&<>]+")
+# Only traversal is worth resolving: a relative path without `..` stays inside the sandbox.
+_TRAVERSAL_TOKEN_RE = re.compile(r"[^\s'\"()\[\]{},;|&<>]*\.\.[^\s'\"()\[\]{},;|&<>]*")
+# Used only after a `cd`, where `auth/auth.db` stops meaning "inside the sandbox".
+_RELATIVE_PATH_TOKEN_RE = re.compile(r"[^\s'\"()\[\]{},;|&<>]*[/\\][^\s'\"()\[\]{},;|&<>]*")
+# `cd DIR`, `cd /d DIR` or `pushd DIR` at a command position; `pushd` moves the cwd as `cd` does.
+# Case-insensitive because the shell is `cmd /c` on a Windows host without a trusted bash.
+_CD_TARGET_RE = re.compile(
+    # `builtin cd ..` and `command cd ..` run the same builtin with the same argument, so a walk
+    # that only knows the bare name resolves everything after them against the wrong directory.
+    # `!` and `time` are reserved words, not commands, so they can precede the builtin directly:
+    # `! cd ../..` and `time cd ../..` both move the shell exactly as the bare form does.
+    r"(?:^\s*|[;&|({\n]\s*|\b(?:then|do|else|if|elif|while|until)\s+)"
+    # Bash allows assignment words before a special builtin, so `X=1 cd ../..` moves like a bare `cd`.
+    r"(?:(?:builtin|command|exec|nohup)\s+|time\s+(?:-p\s+)?|!\s*|[A-Za-z_]\w*=[^\s;&|()]*\s+)*"
+    r"(?:cd|pushd)\s+"
+    r"(?:(?:-[LPe@]+|--|/d)\s+)*([^\s;&|)]+)",
+    re.IGNORECASE,
+)
+# `cd`/`pushd` with a target, or one of the moves that RETURNS: `cd -` goes back to the previous
+# directory and `popd` pops the stack `pushd` built. Matched in one pass so the order is kept.
+_DIRECTORY_MOVE_RE = re.compile(
+    r"(?:^\s*|[;&|({\n]\s*|\b(?:then|do|else|if|elif|while|until)\s+)"
+    r"(?:(?:builtin|command|exec|nohup)\s+|time\s+(?:-p\s+)?|!\s*|[A-Za-z_]\w*=[^\s;&|()]*\s+)*"
+    r"(?:(?P<back>cd\s+-(?![\w/\\-])|popd\b)"
+    # A bare `cd` moves to HOME, which both sandbox envs set to the tool workdir, so the commands
+    # after it open from the sandbox again: `cd ../..; cd; cat auth/config.json` reads the
+    # project's own file and was refused as a read of the studio root.
+    r"|(?P<home>cd(?:\s+(?:-[LPe@]+|--))*\s*(?=[;&|)\n]|$))"
+    r"|(?:cd|pushd)\s+(?:(?:-[LPe@]+|--|/d)\s+)*(?P<target>[^\s;&|)]+))",
+    re.IGNORECASE,
+)
+
+
+# `&&` immediately after a move: the next command runs only if that move succeeded.
+_CHAINED_ON_SUCCESS_RE = re.compile(r"\s*&&")
+
+
+# Distinct directories, not `cd` commands: padding with repeats must not spend the budget.
+_MAX_TRACKED_CWDS = 64
+# Hard ceiling on the directories reported, well past any real command.
+_MAX_WALKED_CWDS = 2048
+
+
+# A symlink to the cwd, which the kernel resolves before any `..` that follows. `$$` and `$BASHPID`
+# expand to the shell's own PID, so they name the same one a literal number does.
+_PROC_CWD_RE = re.compile(r"/proc/(?:self|thread-self|\d+|\$\$|\$\{?BASHPID\}?|\$\{?PPID\}?)/cwd")
+
+
+def _unquoted_parens(text: str):
+    """Yield `(index, char)` for each bracket that is shell syntax, skipping quoted ones.
+
+    `echo '('; cd ../..; echo ')'` writes two brackets no shell ever opens, and counted as syntax
+    they ended a subshell that was never entered, dropping the `cd` that came between them.
+    """
+    quote = ""
+    escaped = False
+    # Quotes suspended by a `$(` inside them. A command substitution stays ACTIVE within double
+    # quotes, so `echo "$(cd ../..; pwd)"` opens a real subshell: skipping both of its brackets made
+    # the inner `cd` look like it lasted through the rest of the command. Single quotes suppress
+    # substitution entirely, so only a double quote is ever suspended here.
+    suspended: "list[str]" = []
+    for index, char in enumerate(text):
+        if escaped:
+            escaped = False
+            continue
+        if char == "\\" and quote != "'":
+            escaped = True
+            continue
+        if quote:
+            if quote == '"' and char == "(" and index and text[index - 1] == "$":
+                suspended.append(quote)
+                quote = ""
+                yield index, char
+                continue
+            if char == quote:
+                quote = ""
+            continue
+        if char in "'\"":
+            quote = char
+            continue
+        if char in "()":
+            yield index, char
+            if char == ")" and suspended:
+                quote = suspended.pop()
+
+
+def _subshell_end(text: str, start: int) -> int:
+    """Where the subshell containing *start* closes, or the end of *text* when it is not in one.
+
+    `(cd ../..; ls models); cat auth/config.json` runs the `cat` in the unchanged directory: a
+    subshell's `cd` dies with the subshell, so its move must not reach past the closing bracket.
+    """
+    depth = 0
+    for index, char in _unquoted_parens(text):
+        if index >= start:
+            break
+        depth = depth + 1 if char == "(" else max(0, depth - 1)
+    if not depth:
+        return len(text)
+    for index, char in _unquoted_parens(text):
+        if index < start:
+            continue
+        depth = depth + 1 if char == "(" else depth - 1
+        if char == ")" and not depth:
+            return index
+    return len(text)
+
+
+# `name() {`, `name () {` and `function name {`, the three spellings a shell accepts.
+_SHELL_FUNCTION_RE = re.compile(
+    r"(?:^|[;&|(){}\n]\s*)(?:function\s+([A-Za-z_][\w.:-]*)\s*(?:\(\s*\))?|([A-Za-z_][\w.:-]*)\s*\(\s*\))\s*\{",
+    re.MULTILINE,
+)
+# Bounds the scan on a command that is nothing but nested definitions.
+_MAX_TRACKED_FUNCTIONS = 64
+
+
+def _unquoted_braces(text: str):
+    """Yield `(index, char)` for each `{` or `}` that is shell syntax, skipping quoted ones."""
+    quote = ""
+    escaped = False
+    for index, char in enumerate(text):
+        if escaped:
+            escaped = False
+            continue
+        if char == "\\" and quote != "'":
+            escaped = True
+            continue
+        if quote:
+            if char == quote:
+                quote = ""
+            continue
+        if char in "'\"":
+            quote = char
+            continue
+        if char in "{}":
+            yield index, char
+
+
+def _uncalled_function_spans(text: str) -> "list[tuple[int, int]]":
+    """Spans of function bodies *text* defines but never invokes.
+
+    `helper() { cd ../..; }; cat auth/config.json` never runs the `helper`, so the `cd` in its body
+    moves nothing and the `cat` reads the project's own auth file from the unchanged sandbox.
+    Refusing that is a false positive, and it is the same rule the python walk already applies to an
+    uncalled def.
+    """
+    bodies: "list[tuple[str, int, int, int]]" = []
+    for match in _SHELL_FUNCTION_RE.finditer(text):
+        group = 1 if match.group(1) else 2
+        name = match.group(group)
+        named_at = match.start(group)
+        start = text.index("{", match.end() - 1)
+        depth = 0
+        end = len(text)
+        for index, char in _unquoted_braces(text):
+            if index < start:
+                continue
+            depth = depth + 1 if char == "{" else depth - 1
+            if not depth:
+                end = index
+                break
+        bodies.append((name, named_at, start, end))
+        if len(bodies) >= _MAX_TRACKED_FUNCTIONS:
+            break
+    spans: "list[tuple[int, int]]" = []
+    for name, named_at, start, end in bodies:
+        # Called is the assumption: the body is only inert when the name appears NOWHERE outside its
+        # own definition and its own body, which is the one case that needs no guess about control
+        # flow. A recursive call inside the body does not run it either, so the body is skipped too.
+        called = any(
+            call.start() != named_at and not (start <= call.start() <= end)
+            for call in re.finditer(r"(?<![\w.:-])" + re.escape(name) + r"(?![\w.:-])", text)
+        )
+        if not called:
+            spans.append((start, end))
+    return spans
+
+
+def _token_spellings(token: str) -> "list[str]":
+    """The paths *token* can be, once the shell has had its say.
+
+    A backslash is a separator on Windows and an escape on POSIX, so `au\\th/auth.db` is both
+    `au/th/auth.db` and `auth/auth.db` and the guard has to try each.
+    """
+    if "\\" not in token:
+        return [token]
+    return list(dict.fromkeys([token.replace("\\", "/"), token.replace("\\", "")]))
+
+
+def _path_tokens_containing(text: str, wanted: str):
+    """Whole path tokens of *text* holding any character of *wanted* (or the substring `..`).
+
+    One linear pass, then a substring test per token. The equivalent patterns put the interesting
+    characters in the MIDDLE, so their leading `[^...]*` backtracks over every position of a long
+    token that does not contain one: a fifth of a second for a single 8 KB token, and a command
+    carries many.
+    """
+    for match in _PATH_TOKEN_RE.finditer(text):
+        token = match.group(0)
+        if ".." in token if wanted == ".." else any(ch in token for ch in wanted):
+            yield match
+
+
+def _cwds_after_cd(workdir: str, text: str) -> "list[tuple[int, int, str]]":
+    """Every working directory *text* walks into via `cd`, as `(offset, limit, directory)` in order.
+
+    The offset is where that `cd` ends, because a relative path written BEFORE it opens from the
+    old directory: `cat auth/auth.db; cd ../..` reads inside the sandbox and is ordinary work.
+
+    `cd ../..` from the session sandbox lands on the Studio root, and the `auth/auth.db` that
+    follows is then the protected database under a name that matches nothing on its own.
+    """
+    # A set of possible directories, not one: a `cd` into a path that does not exist FAILS, and a
+    # shell carries on from where it was, so `cd missing; cd ../..; cat auth/auth.db` reaches the
+    # studio root from the sandbox. Assuming every `cd` succeeds resolved the rest against a
+    # directory the command was never in.
+    # Each state carries the position it stays valid until: the end of the text for an outer `cd`,
+    # the closing bracket for one inside a subshell. `(cd ../..; cd auth; sqlite3 auth.db)` needs
+    # the first move to reach the second `cd`, and dropping a subshell move outright resolved that
+    # second one from the outer sandbox and missed the database.
+    states: "list[tuple[str, int]]" = [(workdir, len(text))]
+    walked: "list[tuple[int, int, str]]" = []
+    seen: "set[tuple[str, int]]" = set()
+    inert = _uncalled_function_spans(text) if "(" in text or "function" in text else []
+    # Where each move came FROM. `cd -` and `popd` go back there, and reading them as no move at all
+    # kept the studio root live: `cd ../..; cd -; cat auth/config.json` is back in the sandbox
+    # reading the project's own file, and it was refused in every mode.
+    history: "list[list[tuple[str, int]]]" = []
+    for match in _DIRECTORY_MOVE_RE.finditer(text):
+        returning = match.group("back")
+        if returning:
+            if any(start <= match.start() <= end for start, end in inert):
+                continue
+            states = history.pop() if history else [(workdir, len(text))]
+            # The directories walked so far stop being where a later path opens from, so every span
+            # still open ends HERE. Without this the earlier move still covered the rest of the
+            # command and the return changed nothing.
+            walked = [(offset, min(limit, match.start()), cwd) for offset, limit, cwd in walked]
+            # Those spans are closed, so the SAME directory walked into again afterwards is a new
+            # span rather than a repeat: `cd ../..; cd -; cd ../..` reaches the root twice, and the
+            # dedup that stops padding from spending the budget hid the second one.
+            seen.clear()
+            # Where the return LANDS is where the commands after it open from, so those directories
+            # get spans of their own: `cd ../..; cd sandbox; cd -; cat auth/auth.db` is back at the
+            # studio root reading the real database, and restoring the state without re-opening its
+            # span left nothing covering the `cat`.
+            for cwd, until in states:
+                if cwd == workdir or until <= match.end() or (cwd, until) in seen:
+                    continue
+                seen.add((cwd, until))
+                walked.append((match.end(), until, cwd))
+            continue
+        if match.group("home"):
+            # A bare `cd` moves to HOME, which both sandbox envs set to the tool workdir. Unlike a
+            # `cd <path>` it cannot land anywhere else, so it RETURNS the way `cd -` does and the
+            # spans still open end here: `cd ../..; cd; cat auth/config.json` reads the project's
+            # own file. Only outside a subshell, where the move lasts to the end of the command; a
+            # bare `cd` inside `( ... )` leaves the outer directory alone.
+            if any(start <= match.start() <= end for start, end in inert):
+                continue
+            if _subshell_end(text, match.end()) != len(text):
+                continue
+            history.append(states)
+            states = [(workdir, len(text))]
+            walked = [(offset, min(limit, match.start()), cwd) for offset, limit, cwd in walked]
+            seen.clear()
+            continue
+        target = (match.group("target") or "").strip("'\"")
+        if not target or target.startswith("-"):
+            continue
+        # A `cd` in a function body that nothing invokes never runs.
+        if any(start <= match.start() <= end for start, end in inert):
+            continue
+        # A subshell that has already closed takes its moves with it.
+        states = [(cwd, until) for cwd, until in states if until >= match.start()] or [
+            (workdir, len(text))
+        ]
+        # A `cd` inside `( ... )` or `$( ... )` moves only that subshell, so its move stops there.
+        limit = _subshell_end(text, match.end())
+        moved: "list[str]" = []
+        for cwd, _until in states:
+            nxt = target if os.path.isabs(target) else os.path.normpath(os.path.join(cwd, target))
+            if nxt not in moved:
+                moved.append(nxt)
+            # Deduplicated: `cd .` x8 spent the budget before the real ones.
+            if (nxt, limit) not in seen:
+                seen.add((nxt, limit))
+                walked.append((match.end(), limit, nxt))
+        # Both outcomes stay live, capped so a long chain cannot grow the set without bound. The
+        # starting directory is kept FIRST: it is where the shell is when every `cd` fails, which is
+        # what a padded command relies on, and truncating the tail used to drop exactly that state.
+        # The cap bounds the STATES only, never the scan, or the padding hides the `cd ../..`.
+        ordered = (
+            [(workdir, len(text))]
+            + [(c, u) for c, u in states if c != workdir]
+            + [(m, limit) for m in moved]
+        )
+        # `cd x && cd ../..` only reaches the second move when the first SUCCEEDED, so the
+        # unmoved state is not live afterwards. Keeping it modelled a branch no shell can take, and
+        # `cd subdir && cd ../.. && cat auth/config.json` was refused as a read of the studio root
+        # when it reads the project's own file.
+        if _CHAINED_ON_SUCCESS_RE.match(text, match.end()):
+            ordered = [(m, limit) for m in moved]
+        history.append(states)
+        states = list(dict.fromkeys(ordered))[:_MAX_TRACKED_CWDS]
+        if len(walked) >= _MAX_WALKED_CWDS:
+            break
+    return walked
+
+
+def _references_studio_credential_here(
+    text: str,
+    workdir: "str | None",
+    _unescaped: bool = False,
+) -> bool:
+    """`_references_studio_credential`, plus the relative paths *text* would open from *workdir*.
+
+    The tool cwd is `<studio home>/sandbox/<session>`, a sibling of the auth directory, so
+    `open('../../auth/auth.db')` reads the protected database while naming neither the directory
+    nor a credential basename. Resolving only the `..` tokens keeps this to the one shape that can
+    leave the sandbox at all."""
+    # A command that BINDS one of these variables itself means its own directory by it, and the
+    # generic `STUDIO_HOME` is registered as this install's root even when the backend does not
+    # set it. Resolving the local binding first stops `STUDIO_HOME=/opt/app cat
+    # "$STUDIO_HOME/auth/config.json"` from being refused as a read of Studio's own auth directory.
+    if "=" in text and _rebinds_the_studio_home_first(text):
+        text = _expand_shell_assignments(text)
+    if _references_studio_credential(text):
+        return True
+    # Naming the studio ROOT and a credential BASENAME is enough, even with nothing joining them:
+    # `find "$UNSLOTH_STUDIO_HOME" -name auth.db -exec cat` hands the directory to a tool that
+    # walks it, and no single token of it is a path to the database.
+    if _CREDENTIAL_BASENAME_RE.search(text) and _text_names_the_studio_root(text):
+        return True
+    # A recursive read of the root itself emits `auth/auth.db` and `.bootstrap_password` without
+    # naming either: `find "$UNSLOTH_STUDIO_HOME" -type f -exec cat {} +`, `tar czf b.tgz "$STUDIO_HOME"`,
+    # `grep -r sk- "$STUDIO_HOME"`. Work INSIDE a project under the root is untouched.
+    if (
+        _text_names_the_studio_root(text)
+        and _walks_a_tree_reading_it(text)
+        and _names_the_studio_root_itself(text)
+    ):
+        return True
+    # `c\d ../..` runs the `cd` builtin: bash removes the backslash before a word is a command name
+    # at all, so the escaped spelling has to be folded away before the cwd walk reads it.
+    if "\\" in text and not _unescaped:
+        # One level only: `\\` repeated 550 times drops a backslash per pass, and recursing per pass
+        # was a RecursionError raised out of the guard rather than a decision.
+        unescaped = _ESCAPED_WORD_CHAR_RE.sub(r"\1", text)
+        if unescaped != text and _references_studio_credential_here(
+            unescaped, workdir, _unescaped = True
+        ):
+            return True
+    if "[" in text:
+        # A one-character class is deterministic: `[a][u][t][h]/auth.db` is the auth directory
+        # spelled out, and it has to be read as the literal BEFORE the wildcard collapse below
+        # discards it.
+        literal = _SINGLETON_CLASS_RE.sub(r"\1", text)
+        if literal != text and _references_studio_credential_here(literal, workdir):
+            return True
+    # `aut[h]` splits at the brackets, which also end a path token; `aut?` keeps it whole.
+    if "[" in text:
+        collapsed = _BRACKET_CLASS_RE.sub("?", text)
+        if collapsed != text and _references_studio_credential_here(collapsed, workdir):
+            return True
+    # The kernel resolves the symlink FIRST, then applies `..`; a lexical normpath reads
+    # `/proc/self/cwd/../../auth` as `/proc/self/auth` and misses.
+    if workdir and "/proc/" in text:
+        substituted = _PROC_CWD_RE.sub(lambda _m: workdir.rstrip("/"), text)
+        if substituted != text and _references_studio_credential(substituted):
+            return True
+    # Bypass repoints HOME at the tool workdir, so `$HOME/../..` is the auth directory's parent.
+    # Substituted, not replaced: the raw text still carries the real-home spellings.
+    if workdir and ("pwd" in text.lower() or "%cd%" in text.lower()):
+        here = _CWD_VARIABLE_RE.sub(lambda _m: workdir.rstrip("/\\"), text)
+        if here != text and _references_studio_credential_here(here, workdir):
+            return True
+    if workdir and ("home" in text.lower() or "~" in text):
+        homed = _HOME_VARIABLE_RE.sub(lambda _m: workdir.rstrip("/\\"), text)
+        # A workdir spelling `~` would substitute to another match, so recurse only once it is gone.
+        if homed != text and not _HOME_VARIABLE_RE.search(homed):
+            if _references_studio_credential_here(homed, workdir):
+                return True
+    # One level of indirection, `r=$STUDIO_HOME; sqlite3 "$r/auth/auth.db"`. Same substitution the
+    # sensitive-path scan uses, and it only ADDS detections.
+    if "$" in text:
+        expanded = _expand_shell_assignments(text)
+        # The WHOLE workdir-aware analysis, not only the literal scan: `d=../..; cd "$d"` moves the
+        # directory every later relative path opens from, and handing the unexpanded text to the cwd
+        # walk read `$d` as a directory name and never moved.
+        if expanded != text and _references_studio_credential_here(expanded, workdir):
+            return True
+    # A `cd` earlier in the command moves where every later relative path opens from.
+    if workdir and ("cd" in text.lower() or "pushd" in text.lower()):
+        for offset, limit, cwd in _cwds_after_cd(workdir, text):
+            # The directory itself: `cd ../..; cd auth; sqlite3 auth.db` writes no separator at
+            # all, so every token below reads as an ordinary filename. Only when something actually
+            # RUNS there, though: `(cd ../..; cd auth); cat config.json` enters the directory and
+            # leaves without reading anything, and the `cat` outside the subshell is back in the
+            # sandbox.
+            if _references_studio_credential(cwd) and text[offset:limit].strip(" \t\n;&|()"):
+                return True
+            for match in _path_tokens_containing(text, "/\\"):
+                # Only what comes AFTER that `cd`: a path written before it opens from the old
+                # directory, so resolving `cat auth/auth.db; cd ../..` against the root refused a
+                # read that never left the sandbox.
+                if match.start() < offset or match.start() >= limit:
+                    continue
+                token = match.group(0)
+                if os.path.isabs(token) or token.startswith("~"):
+                    continue
+                if any(
+                    _references_studio_credential(os.path.normpath(os.path.join(cwd, spelling)))
+                    for spelling in _token_spellings(token)
+                ):
+                    return True
+    if not workdir or ".." not in text:
+        return False
+    for token in (m.group(0) for m in _path_tokens_containing(text, "..")):
+        if "/" not in token and "\\" not in token:
+            continue
+        if any(
+            _references_studio_credential(os.path.normpath(os.path.join(workdir, spelling)))
+            for spelling in _token_spellings(token)
+        ):
+            return True
+    return False
+
+
+def _calls_in_uncalled_scopes(tree) -> "set[int]":
+    """Ids of calls sitting in a function or lambda body that nothing in *code* calls.
+
+    Deliberately narrow. A body whose name IS called anywhere in the snippet stays live, because the
+    move is then real and only the ordering is unknown, and the conservative reading is what a guard
+    wants. A branch is not a scope: `if cond: os.chdir(...)` may well run, so it keeps moving.
+
+    A CLASS body is not deferred at all: python executes it when the class statement runs, whether
+    or not anything instantiates the class, so `class C: os.chdir("../..")` moves the process. Only
+    the methods inside it are deferred, and those are function bodies reached in their own right.
+    """
+    called: "set[str]" = set()
+    # A lambda in the CALLED position runs immediately, and a lambda bound to a name runs when that
+    # name is called, so neither is inert.
+    invoked: "set[int]" = set()
+    lambda_names: "dict[str, int]" = {}
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Assign, ast.AnnAssign)):
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            if isinstance(node.value, ast.Lambda):
+                for target in targets:
+                    if isinstance(target, ast.Name):
+                        lambda_names[target.id] = id(node.value)
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        if isinstance(func, ast.Lambda):
+            invoked.add(id(func))
+        elif isinstance(func, ast.Name):
+            called.add(func.id)
+        elif isinstance(func, ast.Attribute):
+            called.add(func.attr)
+    invoked.update(node_id for name, node_id in lambda_names.items() if name in called)
+    inert: "set[int]" = set()
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            if node.name in called:
+                continue
+        elif isinstance(node, ast.Lambda) and id(node) in invoked:
+            # `(lambda: os.chdir("../.."))()` runs its body right there.
+            continue
+        elif not isinstance(node, ast.Lambda):
+            continue
+        # The BODY only. Default arguments, decorators and annotations are evaluated when the
+        # function is DEFINED, so `def f(x = os.chdir("../..")): pass` moves the process even
+        # though nothing ever calls `f`.
+        body = node.body if isinstance(node.body, list) else [node.body]
+        for statement in body:
+            for inner in ast.walk(statement):
+                if isinstance(inner, ast.Call):
+                    inert.add(id(inner))
+    return inert
+
+
+# A recursive copy or archive of the studio ROOT carries `auth/` with it, and the copy is then an
+# ordinary file nothing guards. Mirrors the terminal walk rule.
+_PY_TREE_COPY_CALLS = frozenset({"copytree", "make_archive", "copy_tree", "unpack_archive"})
+# A recursive WALK of the root reaches `auth/` the same way a copy of it does, and reading
+# what it yields prints the secrets without any of them being named.
+# Only the RECURSIVE ones: a shallow listing returns the root's own entry names and reads
+# nothing inside `auth`, which is what the terminal side allows for a plain root listing.
+_PY_TREE_WALK_CALLS = frozenset("walk rglob glob iglob".split())
+# `glob` is shallow unless its pattern descends.
+_PY_SHALLOW_UNLESS_RECURSIVE = frozenset({"glob", "iglob"})
+_PY_TREE_ROOT_CALLS = _PY_TREE_COPY_CALLS | _PY_TREE_WALK_CALLS
+# One C-speed scan for any of them, so ordinary code pays a single search rather than a
+# substring test per name.
+_PY_TREE_CALL_RE = re.compile("|".join(sorted(_PY_TREE_ROOT_CALLS)))
+
+
+def _python_copies_the_studio_root(tree) -> bool:
+    """True when a recursive copy, archive or walk call names the studio root as its SOURCE."""
+    root = _studio_home_for_guard()
+    if not root:
+        return False
+    folded_root = _folded_word(root)
+    # `root = os.environ["UNSLOTH_STUDIO_HOME"]; os.walk(root)` names the root through one binding,
+    # which arrives as a bare `Name` that neither the env test nor the fold can resolve.
+    aliases = {
+        target.id: node.value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Assign)
+        for target in node.targets
+        if isinstance(target, ast.Name)
+    }
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        name = getattr(node.func, "attr", None) or getattr(node.func, "id", None)
+        if name not in _PY_TREE_ROOT_CALLS:
+            continue
+        # `copytree(src, dst)` names its source first; `make_archive(base, format, root_dir,
+        # base_dir)` names it third. A walker names it first too, or as the RECEIVER it is called
+        # on: `Path(os.environ["UNSLOTH_STUDIO_HOME"]).rglob("*")`.
+        sources = list(node.args[2:4]) if name == "make_archive" else list(node.args[:1])
+        if name in _PY_SHALLOW_UNLESS_RECURSIVE and not any(
+            isinstance(a, ast.Constant) and isinstance(a.value, str) and "**" in a.value
+            for a in node.args
+        ):
+            continue
+        if name in _PY_TREE_WALK_CALLS:
+            receiver = getattr(node.func, "value", None)
+            sources.append(receiver)
+            # `Path(<root>)` WRAPS the name the walk starts from, so the wrapped name is the source.
+            sources.extend(getattr(receiver, "args", ())[:1])
+        sources.extend(
+            k.value
+            for k in node.keywords
+            if k.arg in ("src", "root_dir", "base_dir", "top", "path")
+        )
+        for argument in sources:
+            if isinstance(argument, ast.Name):
+                argument = aliases.get(argument.id)
+            # `copytree(Path(os.environ["UNSLOTH_STUDIO_HOME"]), ...)`: the constructor WRAPS the
+            # name of the source, and the fold reduces the call itself to a dynamic marker.
+            if isinstance(argument, ast.Call) and getattr(argument, "args", None):
+                argument = argument.args[0]
+            if isinstance(argument, ast.Name):
+                argument = aliases.get(argument.id)
+            if argument is None:
+                continue
+            if _names_the_studio_home_env(argument):
+                return True
+            folded = _folded_path(argument)
+            if isinstance(folded, str) and folded and _folded_word(folded) == folded_root:
+                return True
+    return False
+
+
+def _python_builds_a_credential_path(code: str, workdir: "str | None") -> bool:
+    """True when a path the CODE builds names the auth directory, however it is spelled.
+
+    `os.path.join("..", "..", "auth", "auth.db")` names the protected database in pieces, so the
+    text scan sees four ordinary strings and nothing that looks like a path. `_folded_path` is the
+    same fold the sensitive-path analyzer already applies to python; here its result is put through
+    the credential test, resolved against the cwd like any other relative path."""
+    lowered = code.lower()
+    # A recursive copy of the ROOT carries `auth/` without naming it, so it passes the hint filter
+    # below. Two substring tests gate the parse, which keeps this off the ordinary path.
+    # Three tests gate the parse, cheapest first: the root has to be NAMEABLE in the text at all,
+    # then a tree call has to appear, and only then do the real root tests run. Ordinary numeric or
+    # dataframe code stops at the first one, which is two substring scans.
+    if (
+        (
+            "studio_home" in lowered
+            or any(spelling in lowered for spelling in _studio_home_spellings_lowered())
+        )
+        and _PY_TREE_CALL_RE.search(lowered)
+        and (_text_names_the_studio_root(code) or _code_reads_the_studio_home(code))
+    ):
+        try:
+            if _python_copies_the_studio_root(ast.parse(code)):
+                return True
+        except (SyntaxError, RecursionError, MemoryError, ValueError):
+            pass
+    if not any(hint in lowered for hint in _STUDIO_CREDENTIAL_HINTS):
+        return False
+    try:
+        tree = ast.parse(code)
+    except (SyntaxError, RecursionError, MemoryError, ValueError):
+        # The executor reports a syntax error itself, and a snippet the PARSER cannot hold (10k
+        # chained operators) is not a decision this guard can make either. Both are "nothing to
+        # fold" rather than an exception raised out of the tool.
+        return False
+    # Source order, because `os.chdir('../..')` moves every path after it. String constants are
+    # included: `sqlite3.connect('auth/auth.db')` is no path constructor, so the argument is it.
+    nodes = sorted(
+        (
+            n
+            for n in ast.walk(tree)
+            if isinstance(n, (ast.Call, ast.BinOp, ast.JoinedStr))
+            or (isinstance(n, ast.Constant) and isinstance(n.value, str) and n.value)
+        ),
+        key = lambda n: (getattr(n, "lineno", 0), getattr(n, "col_offset", 0)),
+    )
+    # A list of possible directories, for the same reason the shell walk keeps one: a `chdir` into a
+    # path that does not exist raises, and code that catches it carries on from where it was.
+    chdir_modules = _chdir_modules(tree)
+    chdir_names = _chdir_names(tree, chdir_modules)
+    # A `chdir` inside a function body only moves anything if that function RUNS. An uncalled helper
+    # was moving the walk for the statements after it, so a snippet that defines one and then reads
+    # its own `auth/config.json` was refused although the process never left the sandbox.
+    inert_moves = _calls_in_uncalled_scopes(tree)
+    name_bases = _literal_name_bases(tree)
+    # `root = os.open("../..", os.O_RDONLY)` names a DIRECTORY, and `os.open("auth/auth.db", ...,
+    # dir_fd = root)` opens relative to it. The two calls look unrelated token by token: `../..`
+    # resolves to the studio root and goes nowhere, and `auth/auth.db` is checked against the
+    # sandbox, while the kernel joins them.
+    dir_fds = _literal_directory_descriptors(tree, workdir)
+    studio_env_names, foreign_env_names = _python_env_binding_names(tree)
+    process_aliases, process_functions = _process_module_aliases(tree)
+    cwds: "list[str | None]" = [workdir]
+    # `contextlib.chdir(p)` moves only while its `with` body runs and restores on exit, so its move
+    # is scoped to that body rather than carried forward. Treating it as permanent refused a later
+    # read of the project's OWN `auth/config.json` in every permission mode.
+    scoped_until = _scoped_chdir_bounds(tree)
+    restore: "list[tuple[int, list]]" = []
+    for node in nodes:
+        while restore and getattr(node, "lineno", 0) > restore[-1][0]:
+            cwds = restore.pop()[1]
+        if (
+            isinstance(node, ast.Call)
+            and _is_chdir_call(node, chdir_names, chdir_modules)
+            and id(node) not in inert_moves
+        ):
+            argument = _chdir_argument(node)
+            target = None if argument is None else _folded_path(argument)
+            targets: "list[str]" = []
+            # `os.fchdir(fd)` names its destination by a descriptor, so there is no path to fold and
+            # the move is real. The one destination that matters here is the studio root, so it is
+            # added to the live states: a later `auth/auth.db` is then resolved from there as well
+            # as from the sandbox, which is the fail-closed reading the unknown target calls for.
+            if isinstance(node.func, ast.Attribute) and node.func.attr == "fchdir":
+                root = _studio_home_for_guard()
+                if root:
+                    targets = [root]
+            # `os.chdir(os.environ["UNSLOTH_STUDIO_HOME"])` names the root without spelling it, and
+            # `_build_bypass_env` keeps that variable in the child, so the move is real. The fold
+            # has no value for a subscript, which left the walk sitting in the sandbox.
+            if not targets and _names_the_studio_home_env(argument):
+                root = _studio_home_for_guard()
+                if root:
+                    targets = [root]
+            if not targets and target and "\x00" not in target:
+                # `os.chdir(Path.cwd().parents[1])` is an ordinary move, and the fold writes the
+                # walk as one marker, so resolve it here rather than ignoring the move.
+                targets = (
+                    _parent_walk_targets(argument, target, cwds, name_bases)
+                    if "\x02" in target
+                    else [target]
+                )
+            if targets:
+                moved: "list[str | None]" = []
+                for one in targets:
+                    for cwd in cwds:
+                        nxt = (
+                            one
+                            if os.path.isabs(one) or not cwd
+                            else os.path.normpath(os.path.join(cwd, one))
+                        )
+                        if nxt not in moved:
+                            moved.append(nxt)
+                        if _references_studio_credential(nxt):
+                            return True
+                bound = scoped_until.get(id(node))
+                if bound is not None:
+                    restore.append((bound, cwds))
+                cwds = (moved + [c for c in cwds if c not in moved])[:_MAX_TRACKED_CWDS]
+            continue
+        if isinstance(node, ast.Call) and dir_fds and _call_opens_under_a_descriptor(node, dir_fds):
+            return True
+        if isinstance(node, ast.Call) and _call_runs_from_a_credential_directory(
+            node, cwds, name_bases, process_aliases, process_functions
+        ):
+            # `subprocess.run(["strings", "auth/auth.db"], cwd = "../..")` moves nothing in this
+            # process, but the child opens its arguments from the directory it is handed.
+            return True
+        folded = node.value if isinstance(node, ast.Constant) else _folded_path(node)
+        if not folded:
+            continue
+        if "\x02" in folded:
+            # `Path.cwd().parents[1] / "auth" / "auth.db"` folds the parent walk to a marker. The
+            # analyzer that reads that is skipped in bypass mode, so resolve it here, from the base
+            # and the level count in the expression rather than from the folded text.
+            if any(
+                _references_studio_credential(target)
+                for target in _parent_walk_targets(node, folded, cwds, name_bases)
+            ):
+                return True
+            continue
+        if "\x00" in folded:
+            # A dynamic piece is the sensitive-path analyzer's, unless the code reads a
+            # studio-home variable: bypass keeps that in the child env, so its value is known.
+            root = (
+                _studio_home_for_guard()
+                if _code_reads_the_studio_home(code)
+                and _expression_reads_the_studio_home(node, studio_env_names, foreign_env_names)
+                else None
+            )
+            if root and any(
+                _references_studio_credential_here(folded.replace("\x00", root), cwd)
+                for cwd in cwds
+            ):
+                return True
+            # `os.environ["PWD"] + "/../../auth/auth.db"` reads the cwd the same way, and bypass
+            # sets PWD to the tool workdir, so the dynamic piece is known here too.
+            if _code_reads_the_working_directory(code) and any(
+                cwd and _references_studio_credential_here(folded.replace("\x00", cwd), cwd)
+                for cwd in cwds
+            ):
+                return True
+            continue
+        for cwd in cwds:
+            # Against the cwd by then: after `os.chdir('../..')`, `auth/auth.db` is the database.
+            if cwd and not os.path.isabs(folded):
+                joined = os.path.normpath(os.path.join(cwd, folded.replace("\\", "/")))
+                if _references_studio_credential(joined):
+                    return True
+            if _references_studio_credential_here(folded, cwd):
+                return True
+    return False
+
+
+def _parent_chain(node) -> "tuple | None":
+    """``(base node, levels walked up)`` for a `.parent` / `.parents[n]` chain, else None."""
+    levels = 0
+    current = node
+    while True:
+        if isinstance(current, ast.Attribute) and current.attr == "parent":
+            levels += 1
+            current = current.value
+            continue
+        if (
+            isinstance(current, ast.Subscript)
+            and isinstance(current.value, ast.Attribute)
+            and current.value.attr == "parents"
+        ):
+            index = current.slice
+            if isinstance(index, ast.Constant) and isinstance(index.value, int):
+                levels += index.value + 1
+                current = current.value.value
+                continue
+            return None
+        break
+    return (current, levels) if levels else None
+
+
+def _is_cwd_call(node) -> bool:
+    """`Path.cwd()`, `os.getcwd()`, `Path.home()` and the bare spellings of each.
+
+    `home` counts because both subprocess environment builders set `HOME` to the session workdir, so
+    `Path.home()` returns the same directory `Path.cwd()` does and a parent walk off it lands in the
+    studio root just the same.
+    """
+    if not isinstance(node, ast.Call):
+        return False
+    func = node.func
+    name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", "")
+    return name in ("cwd", "getcwd", "home", "expanduser")
+
+
+def _literal_name_bases(tree) -> "dict[str, str]":
+    """Names bound once to a literal path, so `root = Path('/tmp/p')` is not read as the cwd.
+
+    A name assigned more than once, or bound to something this fold cannot read, is left out: the
+    caller then falls back to the working directory, which is where an unqualified name usually is.
+    """
+    bases: "dict[str, str]" = {}
+    rebound: "set[str]" = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Assign) or len(node.targets) != 1:
+            continue
+        target = node.targets[0]
+        if not isinstance(target, ast.Name):
+            continue
+        if target.id in bases or target.id in rebound:
+            rebound.add(target.id)
+            bases.pop(target.id, None)
+            continue
+        value = _folded_path(node.value)
+        if value and "\x00" not in value and "\x02" not in value:
+            bases[target.id] = value
+        else:
+            rebound.add(target.id)
+    return bases
+
+
+def _parent_walk_targets(
+    node,
+    folded: str,
+    cwds: "list",
+    name_bases: "dict | None" = None,
+) -> "list[str]":
+    """Where a `.parent` / `.parents[n]` expression can land, resolved rather than guessed.
+
+    The fold writes one marker for the whole walk, so the level count and the base come from the
+    expression itself: `Path('/tmp').parent / 'auth'` is `/auth`, not something under the sandbox.
+    """
+    tail = folded.rsplit("\x02", 1)[-1].lstrip("/\\")
+    left = node
+    while isinstance(left, ast.BinOp):
+        left = left.left
+    chain = _parent_chain(left)
+    if chain is None:
+        return []
+    base_node, levels = chain
+    bases: "list[str]" = []
+    named = (name_bases or {}).get(base_node.id) if isinstance(base_node, ast.Name) else None
+    if named:
+        bases = (
+            [named]
+            if os.path.isabs(named)
+            else [os.path.normpath(os.path.join(c, named)) for c in cwds if c]
+        )
+    elif _is_cwd_call(base_node) or isinstance(base_node, ast.Name):
+        bases = [c for c in cwds if c]
+    else:
+        folded_base = _folded_path(base_node)
+        if folded_base and "\x00" not in folded_base and "\x02" not in folded_base:
+            bases = (
+                [folded_base]
+                if os.path.isabs(folded_base)
+                else [os.path.normpath(os.path.join(c, folded_base)) for c in cwds if c]
+            )
+    out: "list[str]" = []
+    for base in bases:
+        for _ in range(min(levels, 64)):
+            parent = os.path.dirname(base.rstrip("/\\"))
+            if not parent or parent == base:
+                break
+            base = parent
+        out.append(os.path.normpath(os.path.join(base, tail)) if tail else base)
+    return out
+
+
+def _scoped_chdir_bounds(tree) -> dict:
+    """`id(call) -> last line of the with body`, for a chdir used as a context manager.
+
+    `with contextlib.chdir(p):` restores the directory on exit, so the move applies to the body and
+    nothing after it. A call that is not a `with` item is absent here and stays permanent, which is
+    what a bare `os.chdir(p)` does.
+    """
+    bounds: dict = {}
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.With, ast.AsyncWith)):
+            continue
+        end = getattr(node, "end_lineno", None)
+        if end is None:
+            continue
+        for item in node.items:
+            if isinstance(item.context_expr, ast.Call):
+                bounds[id(item.context_expr)] = end
+    return bounds
+
+
+# The APIs that start a child process and accept a `cwd`. Anything else carrying that keyword is an
+# ordinary function whose argument means whatever its author decided.
+_CHILD_PROCESS_RECEIVERS = {
+    "subprocess": frozenset(
+        {"run", "Popen", "call", "check_call", "check_output", "getoutput", "getstatusoutput"}
+    ),
+    "asyncio": frozenset({"create_subprocess_exec", "create_subprocess_shell"}),
+    "os": frozenset({"popen"}),
+}
+_CHILD_PROCESS_BARE_NAMES = frozenset(
+    {
+        "run",
+        "Popen",
+        "call",
+        "check_call",
+        "check_output",
+        "create_subprocess_exec",
+        "create_subprocess_shell",
+    }
+)
+
+
+def _process_module_aliases(tree) -> "tuple[dict, set]":
+    """`(module aliases, bare process-function names)` for the import forms that rename either one.
+
+    `import subprocess as sp` renames the module and `from subprocess import run as launch` renames
+    the function, and both leave the call spelled under a name the fixed tables do not hold.
+    """
+    aliases: dict = {}
+    # NOT pre-seeded with the generic names. `run`, `call` and `check_output` are ordinary function
+    # names, and treating a snippet's own `def run(...)` as a process launch refused ordinary code in
+    # every permission mode. Only a name an import actually binds from a process module counts.
+    bare: "set[str]" = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            root = (node.module or "").split(".")[0]
+            functions = _CHILD_PROCESS_RECEIVERS.get(root)
+            if not functions:
+                continue
+            for entry in node.names:
+                if entry.name in functions:
+                    bare.add(entry.asname or entry.name)
+            continue
+        if not isinstance(node, ast.Import):
+            continue
+        for entry in node.names:
+            root = entry.name.split(".")[0]
+            if root in _CHILD_PROCESS_RECEIVERS and entry.asname:
+                aliases[entry.asname] = root
+    return aliases, bare
+
+
+def _launches_a_child_process(
+    node: "ast.Call",
+    aliases: "dict | None" = None,
+    bare: "set | None" = None,
+) -> bool:
+    """True for a call that starts a process, by module attribute or by a bare imported name.
+
+    The receiver is resolved through the import aliases first. `import subprocess as sp` leaves the
+    call spelled `sp.run(...)`, and reading the receiver literally missed it, so a child handed a
+    `cwd` outside the sandbox went unchecked.
+    """
+    func = node.func
+    if isinstance(func, ast.Attribute):
+        receiver = func.value
+        name = receiver.id if isinstance(receiver, ast.Name) else getattr(receiver, "attr", "")
+        name = (aliases or {}).get(name, name)
+        return func.attr in _CHILD_PROCESS_RECEIVERS.get(name, frozenset())
+    return isinstance(func, ast.Name) and func.id in (
+        bare if bare is not None else _CHILD_PROCESS_BARE_NAMES
+    )
+
+
+def _literal_directory_descriptors(tree, workdir: "str | None") -> dict:
+    """Name -> the directory an `os.open` of a literal path bound to it names.
+
+    Only the shape that can reach the auth directory is resolved: a literal path, opened as a
+    descriptor, held in a plain name. Anything else leaves the name absent and the `dir_fd` below
+    unresolved, which is what it already was.
+    """
+    descriptors: dict = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.AnnAssign) and node.value is not None:
+            targets, value = [node.target], node.value
+        elif isinstance(node, ast.Assign):
+            targets, value = node.targets, node.value
+        else:
+            continue
+        if not isinstance(value, ast.Call) or not value.args:
+            continue
+        called = getattr(value.func, "attr", None) or getattr(value.func, "id", None)
+        if called != "open":
+            continue
+        folded = _folded_path(value.args[0])
+        if not folded or "\x00" in folded or "\x02" in folded:
+            continue
+        here = (
+            folded
+            if os.path.isabs(folded) or not workdir
+            else os.path.normpath(os.path.join(workdir, folded))
+        )
+        for target in targets:
+            if isinstance(target, ast.Name):
+                descriptors[target.id] = here
+    return descriptors
+
+
+def _call_opens_under_a_descriptor(node: "ast.Call", dir_fds: dict) -> bool:
+    """True when a call opens a credential path relative to a tracked directory descriptor."""
+    given = next((kw.value for kw in node.keywords if kw.arg == "dir_fd"), None)
+    if not isinstance(given, ast.Name):
+        return False
+    base = dir_fds.get(given.id)
+    if not base:
+        return False
+    for argument in node.args:
+        folded = _folded_path(argument)
+        if not folded or "\x00" in folded or "\x02" in folded or os.path.isabs(folded):
+            continue
+        if _references_studio_credential(
+            os.path.normpath(os.path.join(base, folded.replace("\\", "/")))
+        ):
+            return True
+    return False
+
+
+def _call_runs_from_a_credential_directory(
+    node: "ast.Call",
+    cwds: "list",
+    name_bases: "dict",
+    process_aliases: "dict | None" = None,
+    process_functions: "set | None" = None,
+) -> bool:
+    """True when a call hands a child process a directory that makes one of its paths a credential.
+
+    `subprocess.run([...], cwd = "../..")` leaves this process where it is, so the walk above never
+    moves, and each literal argument was tested against the sandbox instead of against the
+    directory the child actually runs from.
+
+    Restricted to the APIs that actually start a process. `cwd` is an ordinary keyword name, and
+    reading it as process semantics on any call refused ordinary code:
+    `describe("auth/config.json", cwd = "../..")` was blocked in every permission mode even though
+    the function may never touch that path.
+    """
+    if not _launches_a_child_process(node, process_aliases, process_functions):
+        return False
+    given = next((kw.value for kw in node.keywords if kw.arg == "cwd"), None)
+    if given is None:
+        return False
+    folded = _folded_path(given)
+    if (not folded or "\x00" in folded) and _names_the_studio_home_env(given):
+        # `cwd = os.environ["UNSLOTH_STUDIO_HOME"]` hands the child the studio root itself, and the
+        # fold has no value for the subscript. Same resolution the chdir walk uses.
+        root = _studio_home_for_guard()
+        folded = root or folded
+    if not folded or "\x00" in folded:
+        return False
+    targets = (
+        _parent_walk_targets(given, folded, cwds, name_bases) if "\x02" in folded else [folded]
+    )
+    directories: "list[str]" = []
+    for target in targets:
+        for cwd in cwds:
+            here = (
+                target
+                if os.path.isabs(target) or not cwd
+                else os.path.normpath(os.path.join(cwd, target))
+            )
+            if here not in directories:
+                directories.append(here)
+    if any(_references_studio_credential(here) for here in directories):
+        return True
+    for inner in ast.walk(node):
+        if isinstance(inner, ast.Constant) and isinstance(inner.value, str) and inner.value:
+            piece = inner.value
+        else:
+            piece = _folded_path(inner) if isinstance(inner, (ast.BinOp, ast.Call)) else ""
+        if not piece or "\x00" in piece or "\x02" in piece or os.path.isabs(piece):
+            continue
+        for here in directories:
+            if _references_studio_credential(
+                os.path.normpath(os.path.join(here, piece.replace("\\", "/")))
+            ):
+                return True
+    return False
+
+
+def _chdir_argument(node: "ast.Call"):
+    """The path a `chdir` call is given, positionally or as `path=`."""
+    if node.args:
+        return node.args[0]
+    for keyword in node.keywords:
+        if keyword.arg == "path":
+            return keyword.value
+    return None
+
+
+def _chdir_names(tree, modules: "set[str] | None" = None) -> "set[str]":
+    """Every name that refers to `os.chdir` in this snippet, including aliases.
+
+    `from os import chdir as move` and `move = os.chdir` are both ordinary python, and a walk that
+    only knows the literal name resolves everything after `move('../..')` against the wrong place.
+    An alias of somebody else's `chdir`, `move = ftp.chdir`, is not one of them.
+    """
+    modules = modules or {"os", "contextlib"}
+    # The BARE name only counts once an import binds it. A snippet's own `def chdir(path)` is an
+    # ordinary function, and treating a call to it as a move refused code that never leaves the
+    # sandbox. The qualified `os.chdir(...)` form does not go through this set.
+    names: "set[str]" = set()
+    defined_locally = any(
+        isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == "chdir"
+        for node in ast.walk(tree)
+    )
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module in ("os", "contextlib"):
+            for alias in node.names:
+                if alias.name == "chdir":
+                    names.add(alias.asname or alias.name)
+        elif isinstance(node, ast.Assign) and len(node.targets) == 1:
+            target, value = node.targets[0], node.value
+            if not isinstance(target, ast.Name):
+                continue
+            if (
+                isinstance(value, ast.Attribute)
+                and value.attr == "chdir"
+                and isinstance(value.value, ast.Name)
+                and value.value.id in modules
+            ) or (isinstance(value, ast.Name) and value.id in names):
+                names.add(target.id)
+    if defined_locally:
+        names.discard("chdir")
+    return names
+
+
+def _chdir_modules(tree) -> "set[str]":
+    """The names that stand for a module whose `chdir` moves THIS process.
+
+    `ftp.chdir('../..')` changes a remote directory and leaves the local one alone, so reading a
+    project's own `auth/config.json` afterwards was refused for a move that never happened.
+    """
+    # `posix` on POSIX and `nt` on Windows are the platform modules `os` itself is built on, so
+    # `posix.chdir` is the same primitive under a different name.
+    known = ("os", "contextlib", "posix", "nt")
+    modules = set(known)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name in known and alias.asname:
+                    modules.add(alias.asname)
+    return modules
+
+
+# The calls that change the process directory. `os.fchdir(fd)` moves to whatever the descriptor
+# names, which this scan cannot resolve: the move is real and its destination is unknown, so it is
+# tracked as an UNRESOLVED move rather than ignored.
+_CHDIR_METHODS = frozenset({"chdir", "fchdir"})
+
+
+def _is_chdir_call(
+    node: "ast.Call",
+    names: "set[str] | None" = None,
+    modules: "set[str] | None" = None,
+) -> bool:
+    """True for `os.chdir(...)`, a bare `chdir(...)`, and any alias bound from it.
+
+    `names` is the set of BARE names that refer to it, which is empty for a snippet that defines its
+    own `chdir` and never imports one. Empty is meaningful here, so it is distinguished from the
+    None the callers that do not compute it pass. The qualified `os.chdir(...)` form is unaffected:
+    the receiver is what identifies it there.
+    """
+    bare = {"chdir"} if names is None else names
+    func = node.func
+    if isinstance(func, ast.Attribute):
+        if func.attr not in _CHDIR_METHODS and func.attr not in bare:
+            return False
+        # Only a module that owns the process directory. An unknown receiver is not one.
+        return isinstance(func.value, ast.Name) and func.value.id in (
+            modules or {"os", "contextlib"}
+        )
+    return isinstance(func, ast.Name) and func.id in bare
+
+
+def _reads_an_environment_variable(node) -> bool:
+    """True for `os.environ[...]`, `os.environ.get(...)` and `os.getenv(...)`."""
+    if isinstance(node, ast.Subscript):
+        receiver = node.value
+        return (getattr(receiver, "attr", None) or getattr(receiver, "id", None)) == "environ"
+    if isinstance(node, ast.Call):
+        called = getattr(node.func, "attr", None) or getattr(node.func, "id", None)
+        if called == "getenv":
+            return True
+        receiver = getattr(node.func, "value", None)
+        return (
+            called == "get"
+            and (getattr(receiver, "attr", None) or getattr(receiver, "id", None)) == "environ"
+        )
+    return False
+
+
+def _python_env_binding_names(tree) -> "tuple[set, set]":
+    """`(names holding the studio home, names holding some OTHER environment variable)`.
+
+    A dynamic path piece is only the studio root when the expression that built it actually read
+    that variable. Attributing it to any snippet that mentions the variable ANYWHERE refused
+    `project = os.environ["PROJECT_HOME"]; open(project + "/auth/config.json")`, which names an
+    unrelated application's directory.
+    """
+    studio: "set[str]" = set()
+    foreign: "set[str]" = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.AnnAssign) and node.value is not None:
+            targets, value = [node.target], node.value
+        elif isinstance(node, ast.Assign):
+            targets, value = node.targets, node.value
+        else:
+            continue
+        if not _reads_an_environment_variable(value):
+            continue
+        for target in targets:
+            if isinstance(target, ast.Name):
+                (studio if _names_the_studio_home_env(value) else foreign).add(target.id)
+    return studio, foreign
+
+
+def _expression_reads_the_studio_home(node, studio_names, foreign_names) -> bool:
+    """Whether THIS expression's dynamic piece is the studio home.
+
+    Positive attribution both ways: the expression reads the variable itself or uses a name bound to
+    it, or every environment-backed name in it belongs to a different variable. Anything this cannot
+    attribute keeps the old whole-snippet answer, which is the fail-closed one.
+    """
+    names = {piece.id for piece in ast.walk(node) if isinstance(piece, ast.Name)}
+    if any(_names_the_studio_home_env(piece) for piece in ast.walk(node)):
+        return True
+    if names & set(studio_names):
+        return True
+    return not (names & set(foreign_names))
+
+
+def _variable_points_at_this_install(name: str) -> bool:
+    """Whether a studio-home variable's VALUE is this install's root.
+
+    `STUDIO_HOME` is a generic name another application can own, and bypass keeps that foreign value
+    in the child, so `open(os.environ["STUDIO_HOME"] + "/auth/config.json")` reads the other
+    application. Unset stays True: the child cannot expand it either, so nothing is granted.
+    """
+    value = (os.environ.get(name.upper()) or "").strip()
+    if not value:
+        return True
+    root = _studio_home_for_guard()
+    if not root:
+        return True
+    try:
+        return _same_directory(os.path.expanduser(value), root)
+    except Exception:  # noqa: BLE001 - an unreadable value must not break classification
+        return True
+
+
+def _names_the_studio_home_env(node) -> bool:
+    """True when *node* reads an environment variable that holds the studio home.
+
+    `os.environ["UNSLOTH_STUDIO_HOME"]`, the `.get` spelling and `os.getenv` all return the same
+    directory. Case-insensitive, because `os.environ` upper-cases every key it is handed on Windows.
+    """
+    if node is None:
+        return False
+    if isinstance(node, ast.Subscript):
+        receiver = node.value
+        named = getattr(receiver, "attr", None) or getattr(receiver, "id", None)
+        key = node.slice
+        return (
+            named == "environ"
+            and isinstance(key, ast.Constant)
+            and isinstance(key.value, str)
+            and key.value.upper() in _STUDIO_HOME_ENV_VARS
+            and _variable_points_at_this_install(key.value)
+        )
+    if isinstance(node, ast.Call) and node.args:
+        called = getattr(node.func, "attr", None) or getattr(node.func, "id", None)
+        first = node.args[0]
+        return (
+            called in ("get", "getenv")
+            and isinstance(first, ast.Constant)
+            and isinstance(first.value, str)
+            and first.value.upper() in _STUDIO_HOME_ENV_VARS
+            and _variable_points_at_this_install(first.value)
+        )
+    return False
+
+
+def _code_reads_the_studio_home(code: str) -> bool:
+    """True when *code* mentions one of the environment variables that name the studio home.
+
+    Case-insensitive: on Windows `os.environ` upper-cases every key it is given (`os._createenviron`
+    sets `encodekey = str.upper` for `nt`), so `os.environ["unsloth_studio_home"]` returns the same
+    value the upper-case spelling does. The variable markers the text scan uses are already compared
+    lowercased, so this brings the python fold into line with them."""
+    lowered = code.lower()
+    # A variable SET to another application's directory names that one, not this install's root.
+    return any(
+        var.lower() in lowered and _variable_points_at_this_install(var)
+        for var in _STUDIO_HOME_ENV_VARS
+    )
+
+
+def _code_reads_the_working_directory(code: str) -> bool:
+    """True when *code* asks for the working directory by any of its usual names."""
+    lowered = code.lower()
+    return '"pwd"' in lowered or "'pwd'" in lowered or "getcwd" in lowered or "cwd()" in lowered
+
+
+_studio_home_lowered_cache: "tuple | None" = None
+
+
+def _studio_home_spellings_lowered() -> "tuple[str, ...]":
+    """The root as source text can spell it, memoized on the marker table it comes from.
+
+    A per-call prefilter, so rebuilding the root for every python snippet showed up. Three forms,
+    because a Windows root reaches the text as `c:\\dir`, as `c:\\\\dir` inside a python literal and
+    as `c:/dir`; on posix all three are the same string.
+    """
+    global _studio_home_lowered_cache
+    markers = _studio_auth_dir_markers()[0]
+    if _studio_home_lowered_cache is None or _studio_home_lowered_cache[0] is not markers:
+        # Built from the FOLDED root, so the separators the root happens to be stored with do not
+        # decide the answer: only the ones the source text spells do.
+        base = _folded_word(_studio_home_for_guard() or "\x00")
+        _studio_home_lowered_cache = (
+            markers,
+            tuple({base, base.replace("/", "\\"), base.replace("/", "\\\\")}),
+        )
+    return _studio_home_lowered_cache[1]
+
+
+def _studio_home_for_guard() -> "str | None":
+    """This install's studio root, derived from the same resolution the markers use.
+
+    From the ORIGINAL spelling, not the folded one: a root with an uppercase character in it would
+    otherwise be reconstructed in lowercase, and on a case-sensitive host the marker check then
+    rejected its own synthesized path, letting a move to the real root through.
+    """
+    auth_markers, _variable_markers, _cd_re = _studio_auth_dir_markers()
+    if not auth_markers:
+        return None
+    return os.path.dirname(auth_markers[0][2].rstrip("/\\")) or None
+
+
+def _needs_a_workdir(text: str) -> bool:
+    """Whether resolving *text* needs the cwd at all.
+
+    Traversal needs it, and so does anything that MOVES the directory: `pushd <studio home>;
+    sqlite3 auth/auth.db` carries no `..`, and without the workdir the walk that would have caught
+    it never ran.
+    """
+    if ".." in text:
+        return True
+    lowered = text.lower()
+    return (
+        "cd" in lowered
+        or "pushd" in lowered
+        or "chdir" in lowered
+        # `os.path.dirname(os.path.dirname(os.getcwd()))` walks up without writing a `..`, and the
+        # python analyzer resolves `getcwd` itself -- but only if it is handed the workdir.
+        or "getcwd" in lowered
+        or "cwd" in lowered
+        # `Path.cwd().parents[1] / "auth"` walks up from the cwd without writing a `..`.
+        or "parent" in lowered
+    )
+
+
+def _tool_workdir_for_guard(session_id: "str | None") -> "str | None":
+    """The cwd the executor is about to use, or None if it cannot be resolved cheaply."""
+    try:
+        return _get_workdir(session_id)
+    except Exception:  # noqa: BLE001 - an unresolvable workdir leaves the textual match in place
+        return None
+
+
 # A shell redirection with no following space (cat <../../notes) keeps `..` adjacent to `<`/`>`, so those count as
 # leading delimiters here too.
 _PARENT_TRAVERSAL_RE = re.compile(r"(?:^|[\s/\\'\"=:<>])\.\.(?:[/\\]|$|[\s'\"])")
@@ -2754,6 +5074,55 @@ _SHELL_PARAM_OP_RE = re.compile(r"\$\{[A-Za-z_]\w*:?[-=+]([^{}]*)\}")
 # path fails closed rather than spending unbounded time. Ordinary commands are far below these bounds.
 _MAX_PATH_SCAN_CHARS = 2048
 _MAX_TERMINAL_SCAN_CHARS = 4096
+# A glob needs one of these to expand into anything but itself; used to skip the glob scans outright.
+_GLOB_META_RE = re.compile(r"[?*\[]")
+# Where the memoised node list is parked on a parsed tree (see _tree_nodes).
+_TREE_NODES_ATTR = "_unsloth_walk_nodes"
+
+
+@functools.lru_cache(maxsize = 2048)
+def _token_command_base(token: str) -> str:
+    """The command name a shell token would run: separators stripped, directory dropped, folded to
+    lower case.
+
+    Several scans recompute this for every token of every command, and the tokens repeat heavily
+    (`cat`, `-la`, `|`), so the result is memoised. Pure function of the token text.
+    """
+    return os.path.basename(token.strip(";&|()`{}")).lower()
+
+
+@functools.lru_cache(maxsize = 64)
+def _parse_python(code: str):
+    """``(tree, None)`` or ``(None, SyntaxError)`` for a snippet, parsed at most once.
+
+    Classifying one python tool call parses the same source two or three times over: the safety
+    check parses it, the classifier parses it again, and the ``python -c`` path parses it a third
+    time before delegating. The tree is only ever read, so one parse serves all of them. The cache
+    is bounded and keyed on the source text, so it cannot go stale.
+    """
+    try:
+        return ast.parse(code), None
+    except SyntaxError as exc:
+        return None, exc
+
+
+def _tree_nodes(tree) -> list:
+    """``list(ast.walk(tree))``, computed once per parsed tree.
+
+    The python classifiers each sweep the whole tree a dozen times looking for a different node
+    shape, and every ``ast.walk`` rebuilds the same traversal from scratch. The node list is
+    identical for all of them, so it is built once and parked on the tree itself: the classifiers
+    only read the AST, and each call parses its own tree, so nothing can go stale. Falls back to a
+    plain walk if the attribute cannot be set.
+    """
+    nodes = getattr(tree, _TREE_NODES_ATTR, None)
+    if nodes is None:
+        nodes = list(ast.walk(tree))
+        try:
+            setattr(tree, _TREE_NODES_ATTR, nodes)
+        except (AttributeError, TypeError):
+            pass
+    return nodes
 
 
 def _references_sensitive_path(text: str) -> bool:
@@ -2761,13 +5130,22 @@ def _references_sensitive_path(text: str) -> bool:
     via parent traversal."""
     if len(text) > _MAX_PATH_SCAN_CHARS:
         return True
+    if _PARENT_TRAVERSAL_RE.search(text) or _SENSITIVE_PATH_RE.search(text):
+        return True
+    # The redundant-slash and de-bracketed rewrites exist to defeat `cat /etc//passwd` and
+    # `cat /etc/pass[w]d`. Both are identity for an ordinary command, and re-scanning a string the
+    # pattern has already rejected cannot change the answer, so only a rewrite that actually
+    # changed the text is worth a second pass.
     norm = _REDUNDANT_SLASH_RE.sub("", text)
+    if norm != text and _SENSITIVE_PATH_RE.search(norm):
+        return True
     debracket = _GLOB_BRACKET_RE.sub(lambda m: m.group(1)[0], text)
+    # The three checks the conflicting revisions both spelled out here (parent traversal, and the
+    # pattern against the raw and slash-normalised text) already returned above, so only the
+    # credential test and the de-bracketed rewrite are left to decide.
     return bool(
-        _PARENT_TRAVERSAL_RE.search(text)
-        or _SENSITIVE_PATH_RE.search(text)
-        or _SENSITIVE_PATH_RE.search(norm)
-        or _SENSITIVE_PATH_RE.search(debracket)
+        _references_studio_credential(text)
+        or (debracket != text and _SENSITIVE_PATH_RE.search(debracket))
     )
 
 
@@ -2784,6 +5162,11 @@ def _pattern_matches_dir(pattern: str, target: str) -> bool:
 def _glob_token_sensitive(token: str) -> bool:
     """True if a single ? / * / [..] glob token could expand to a sensitive file or a file under a
     secret/credential directory. Shared by the terminal scan and the Python glob check."""
+    # Only a glob can expand into something else, and none of the rewrites below introduce a
+    # metacharacter that was not already in the raw token (the POSIX-class rewrite needs a '['
+    # itself), so a token without one cannot match whatever the rewrites do to it.
+    if not _GLOB_META_RE.search(token):
+        return False
     token = _REDIR_PREFIX_RE.sub("", _SHELL_QUOTE_RE.sub("", token))
     # A POSIX class ([[:lower:]]) matches one char, like `?`, but fnmatch treats it as a literal set; normalize so cat
     # /etc/pass[[:lower:]]d resolves.
@@ -2810,10 +5193,54 @@ def _glob_token_sensitive(token: str) -> bool:
 def _glob_hits_sensitive(command: str) -> bool:
     """True if any glob token in a command could expand to a sensitive file, so `cat /e??/passwd`
     asks even without a literal sensitive path."""
+    # Splitting and scanning every token is wasted on the overwhelmingly common command that
+    # contains no glob at all: each token would reach the same early return.
+    if not _GLOB_META_RE.search(command):
+        return False
     return any(
         _glob_token_sensitive(token)
         for token in command.replace(";", " ").replace("|", " ").split()
     )
+
+
+# A drive path is absolute only with a separator: `C:\x` is rooted, while `C:x` is relative to the drive's current
+# directory, so the separator is required rather than optional.
+_WIN_DRIVE_RE = re.compile(r"^[A-Za-z]:[\\/]")
+# The separator-less spelling, `D:notes.txt`, which is drive D's own current directory.
+_WIN_DRIVE_RELATIVE_JOIN_RE = re.compile(r"^[A-Za-z]:(?![\\/:])[^:\s]+$")
+
+
+def _posix_join(parts) -> str:
+    """Join folded path pieces the way ``os.path.join`` and ``Path(...)`` actually resolve them.
+
+    An absolute component DISCARDS everything before it: `os.path.join("/usr", "/media/x")` opens
+    `/media/x`, not `/usr/media/x`. Doing this at the join keeps the distinction from a doubled
+    separator inside one literal, which the OS simply collapses -- `/home/alice//usr/report.txt` is
+    `/home/alice/usr/report.txt` and has nothing to do with `/usr`. Inferring the join from `//`
+    after the fact could not tell those apart, and read `/usr` out of the literal.
+    """
+    out = ""
+    for part in parts:
+        if not out:
+            out = part
+        elif _WIN_DRIVE_RE.match(part) or _WIN_DRIVE_RELATIVE_JOIN_RE.match(part):
+            # Any drive-qualified operand discards the left, `C:\\Windows` joined with `D:notes.txt`
+            # being drive D's file and not a file under C. `ntpath.join` agrees; keeping the left
+            # placed a drive-D reference inside an allowed drive-C directory.
+            out = part
+        elif part[:2] == "\\\\":
+            # A UNC share is its own root: joining it onto a drive kept `C:` in front of `\\\\server`.
+            out = part
+        elif part[:1] in ("/", "\\"):
+            # A leading backslash is ROOTED on Windows, on the current drive: `C:\\Windows` joined
+            # with `\\Users\\alice` opens `C:\\Users\\alice`, so the drive survives and everything
+            # after it does not. Without this the fold kept the path under the read-silent
+            # `C:\\Windows`.
+            drive = _WIN_DRIVE_RE.match(out)
+            out = (out[:2] if drive else "") + part
+        else:
+            out = out.rstrip("/") + "/" + part
+    return out
 
 
 def _expand_shell_assignments(command: str) -> str:
@@ -3089,8 +5516,10 @@ def _folded_path(
             right = fold(node.right)
             left = "\x00" if left is None else left
             right = "\x00" if right is None else right
-            # Path('/etc') / 'passwd' joins with a separator; '+' concatenates.
-            return left + "/" + right if isinstance(node.op, ast.Div) else left + right
+            # Path('/etc') / 'passwd' joins with a separator; '+' concatenates. The `/` operator is
+            # a JOIN, so an absolute right side discards the left exactly as os.path.join does:
+            # Path("/usr") / "/media/x" opens /media/x.
+            return _posix_join((left, right)) if isinstance(node.op, ast.Div) else left + right
         if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Mod):
             # Old-style formatting: '%s/%s' % ('/etc', 'passwd') -> /etc/passwd.
             template = fold(node.left)
@@ -3121,11 +5550,14 @@ def _folded_path(
         if isinstance(node, ast.Call):
             func = node.func
             if isinstance(func, ast.Attribute) and func.attr == "joinpath":
-                # Path('/etc').joinpath('passwd') -> receiver and args are pieces.
+                # Path('/etc').joinpath('passwd') -> receiver and args are pieces. Joined with the
+                # same POSIX rule the `/` operator and os.path.join use: an absolute piece DISCARDS
+                # everything to its left, so `Path('/usr').joinpath('/media/x')` is `/media/x` and
+                # not a path under the read-silent `/usr`.
                 base = fold(func.value)
                 parts = [base if base is not None else "\x00"]
                 parts += [(fold(a) or "\x00") for a in node.args]
-                return "/".join(parts)
+                return _posix_join(parts)
             if isinstance(func, ast.Attribute) and func.attr in ("glob", "rglob", "iglob"):
                 # Path('/etc').glob('passw?') -> the receiver dir joined with the glob pattern; _glob_token_sensitive
                 # then tests /etc/passw?.
@@ -3168,19 +5600,22 @@ def _folded_path(
                     and isinstance(node.args[0], (ast.List, ast.Tuple))
                 ):
                     pieces = [(fold(e) or "\x00") for e in node.args[0].elts]
+                    # `str.join` CONCATENATES, whatever the separator: `"/".join(["/a", "/usr/b"])`
+                    # is `/a//usr/b`, not `/usr/b`. Only os.path.join and pathlib let a later
+                    # absolute piece discard the earlier ones.
                     return sep.join(pieces)
                 parts = [(fold(a) or "\x00") for a in node.args]
-                return "/".join(parts)
+                return _posix_join(parts)
             # A bare os.path.join alias (from os.path import join): join(*pieces).
             if isinstance(func, ast.Name) and func.id in join_names:
                 parts = [(fold(a) or "\x00") for a in node.args]
-                return "/".join(parts)
+                return _posix_join(parts)
             # A bare/qualified/aliased pathlib constructor (Path(...), P(...)).
             if (isinstance(func, ast.Attribute) and func.attr in ctors) or (
                 isinstance(func, ast.Name) and func.id in ctors
             ):
                 parts = [(fold(a) or "\x00") for a in node.args]
-                return "/".join(parts)
+                return _posix_join(parts)
             # '/etc/{}'.format('passwd') -> /etc/passwd (literal template + args).
             if isinstance(func, ast.Attribute) and func.attr == "format":
                 template = fold(func.value)
@@ -3243,10 +5678,14 @@ def _command_references_sensitive(command: str) -> bool:
     after undoing the shell expansions that would hide it: quotes/backslash escapes,
     brace/parameter/ANSI-C expansion and NAME=value prefixes."""
     stripped = _SHELL_QUOTE_RE.sub("", command).replace("\\", "")
-    candidates = []
+    # The three base forms and their four expansions collapse to the same string for an ordinary
+    # command (nothing to unquote, no $'..', no ${x:-y}, no braces, no NAME=value), so scanning the
+    # list verbatim runs the same superlinear pattern up to twelve times over identical text. A set
+    # keeps every distinct candidate and drops only exact repeats, so the answer is unchanged.
+    candidates = set()
     for c in (command, stripped, _decode_ansi_c(command)):
         c_param = _expand_param_defaults(c)
-        candidates.extend((c, c_param, _expand_braces(c_param), _expand_shell_assignments(c_param)))
+        candidates.update((c, c_param, _expand_braces(c_param), _expand_shell_assignments(c_param)))
     return any(_glob_hits_sensitive(c) or _references_sensitive_path(c) for c in candidates)
 
 
@@ -3285,13 +5724,21 @@ def _terminal_is_potentially_unsafe(command: str) -> bool:
         scan_tokens = tokens
     # find/fd group with (...) which resets command context, so a trailing -delete/-exec could slip past; scan every
     # token when find/fd appears.
-    if any(os.path.basename(t.strip(";&|()`{}")).lower() in ("find", "fd") for t in scan_tokens):
+    if any(_token_command_base(t) in ("find", "fd") for t in scan_tokens):
         if any(t.split("=", 1)[0] in _AUTO_UNSAFE_FIND_LIKE_FLAGS for t in scan_tokens):
             return True
     # A recursive reader rooted outside the sandbox reads host files, as do the always-recursive walkers (tree /home,
     # du /); ask. Bash expands ~/~user to a home dir after this decision, so a tilde root is a sandbox escape too.
+    # An absolute operand outside the silent roots reaches the user's own filesystem; the sandbox workdir only
+    # contains RELATIVE paths. Run unconditionally, matching _terminal_is_high_risk: gating this on a leading / or ~
+    # would skip every Windows spelling (C:\..., \\server\share) and every attached redirection, leaving the stricter
+    # classifier weaker than the looser one.
+    if _terminal_reaches_outside_sandbox(tokens, command) or (
+        scan_tokens is not tokens and _terminal_reaches_outside_sandbox(scan_tokens, command)
+    ):
+        return True
     if any(t.startswith("/") or t.startswith("~") for t in scan_tokens):
-        token_bases = [os.path.basename(t.strip(";&|()`{}")).lower() for t in tokens]
+        token_bases = [_token_command_base(t) for t in tokens]
         if any(b in _AUTO_RECURSIVE_SEARCH or b in _AUTO_RECURSIVE_LISTERS for b in token_bases):
             return True
         # ls only walks the whole subtree with -R/--recursive; a non-recursive ls /home lists one level and stays
@@ -3307,7 +5754,7 @@ def _terminal_is_potentially_unsafe(command: str) -> bool:
     current_command = ""
     positional_args = 0
     pending_flag_value = False
-    for token in tokens:
+    for _tok_idx, token in enumerate(tokens):
         # Runs of punctuation (";;", ";&") lex as one token; any token made purely of separator characters still
         # separates commands.
         if (
@@ -3405,10 +5852,13 @@ def _python_is_potentially_unsafe(code: str) -> bool:
     # confirmation first.
     if _check_code_safety(code) is not None:
         return True
-    try:
-        tree = ast.parse(code)
-    except SyntaxError:
+    tree, _parse_error = _parse_python(code)
+    if _parse_error is not None:
         return False  # runs into a normal traceback; nothing to guard
+    # An absolute read/write outside the silent roots leaves the session workdir, which only ever holds relative
+    # paths. Kept in step with the high-risk gate so the two classifiers agree on filesystem scope.
+    if _python_reaches_outside_sandbox(tree, code):
+        return True
     # Names bound to the builtin open (f = open; f, _ = (open, print)) so an aliased writer call is still checked
     # below. builtins_aliases tracks `import builtins [as b]` for builtins.exec/eval.
     open_aliases = {"open"}
@@ -3543,7 +5993,7 @@ def _python_is_potentially_unsafe(code: str) -> bool:
     # call is checked, so a later benign reassignment would otherwise mask the earlier sensitive value and
     # auto-approve. Count every binding target up front and poison multiply-bound names to the escape sentinel.
     assign_counts: "dict[str, int]" = {}
-    for node in ast.walk(tree):
+    for node in _tree_nodes(tree):
         binding_targets = []
         if isinstance(node, ast.Assign):
             binding_targets = node.targets
@@ -3554,7 +6004,7 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                 if isinstance(sub, ast.Name):
                     assign_counts[sub.id] = assign_counts.get(sub.id, 0) + 1
     multi_assigned_names = {name for name, count in assign_counts.items() if count > 1}
-    for node in ast.walk(tree):
+    for node in _tree_nodes(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
                 if alias.name == "builtins":
@@ -3814,7 +6264,7 @@ def _python_is_potentially_unsafe(code: str) -> bool:
     _module_names = set(_AUTO_UNSAFE_PY_LOAD_MODULES)  # receivers: yaml.load
     _bare_names = set(_AUTO_UNSAFE_YAML_LOADERS)  # loaders named on their own
     _imported_modules = set()  # only the module itself, for the return rule
-    for node in ast.walk(tree):
+    for node in _tree_nodes(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
                 _root = alias.name.split(".")[0]
@@ -3842,7 +6292,7 @@ def _python_is_potentially_unsafe(code: str) -> bool:
             node = node.value
         return isinstance(node, ast.Name) and node.id in _module_names
 
-    for node in ast.walk(tree):
+    for node in _tree_nodes(tree):
         if isinstance(node, ast.Attribute):
             if node.attr in _AUTO_UNSAFE_YAML_LOADERS:
                 return True
@@ -3859,7 +6309,7 @@ def _python_is_potentially_unsafe(code: str) -> bool:
             if isinstance(_out, ast.Name) and _out.id in _imported_modules:
                 return True
     try:
-        for node in ast.walk(tree):
+        for node in _tree_nodes(tree):
             if isinstance(node, ast.Import):
                 for alias in node.names:
                     if alias.name.split(".")[0] in _AUTO_UNSAFE_PY_MODULES:
@@ -4065,6 +6515,27 @@ _MCP_CREDENTIAL_KEY_RE = re.compile(
     r"client[-_]?secret|password|passwd|session[-_]?token)$",
     re.IGNORECASE,
 )
+
+
+def _mcp_arguments_reference_studio_credential(arguments) -> bool:
+    """True if an MCP call's arguments point at Studio's auth directory. An MCP server runs outside
+    the terminal sandbox, so a filesystem server would read the credential the local tools refuse.
+    Prose fields are skipped for the same reason they are below: an issue body that mentions the
+    filename is text to store, not a file to open."""
+
+    def walk(value, is_prose: bool = False) -> bool:
+        if isinstance(value, str):
+            return False if is_prose else _references_studio_credential(value)
+        if isinstance(value, dict):
+            return any(
+                walk(v, is_prose or (isinstance(k, str) and k.lower() in _MCP_PROSE_KEYS))
+                for k, v in value.items()
+            )
+        if isinstance(value, (list, tuple)):
+            return any(walk(v, is_prose) for v in value)
+        return False
+
+    return walk(arguments)
 
 
 def _mcp_arguments_reference_sensitive(arguments) -> bool:
@@ -4391,9 +6862,10 @@ def is_potentially_unsafe_tool_call(name: str, arguments: dict) -> bool:
     if name == "render_html":
         return _render_html_reaches_network(arguments)
     if name.startswith(MCP_TOOL_PREFIX):
-        tool_name = name.split("__", 2)[-1]
+        tool_name = _mcp_raw_tool_name(name)
         if tool_name in _BLENDER_CLI_SUMMARY_TOOLS:
             return True
+        tool_name = _MCP_TERM_SEPARATOR_RE.sub("_", tool_name)
         # A mutating verb anywhere (get_or_create_issue, read_and_delete)
         # overrides a read-only prefix.
         if _AUTO_UNSAFE_MCP_VERB_RE.search(tool_name):
@@ -5503,9 +7975,7 @@ def _inline_python_is_high_risk(code: str) -> bool:
     """Screen a `python -c` payload with the same analyzer the python tool uses, so an ordinary
     one-liner runs and a destructive one still asks. Source that does not parse fails closed:
     shell quoting may have mangled it, leaving nothing to screen."""
-    try:
-        ast.parse(code)
-    except SyntaxError:
+    if _parse_python(code)[1] is not None:
         return True
     return _python_is_high_risk(code)
 
@@ -5593,18 +8063,21 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
             tokens = list(lexer)
         except ValueError:
             return True
+        # The sandbox directory is a working directory, not a boundary, so an absolute operand outside the silent
+        # roots reads or rewrites the user's own files. Runs per expansion pass, so a path assembled from a variable
+        # is judged on its resolved form too.
+        if _terminal_reaches_outside_sandbox(tokens, text):
+            return True
         recursive = any(
             t in ("-R", "--recursive")
             or (t[:1] == "-" and t[:2] != "--" and "=" not in t and "R" in t[1:])
             for t in tokens
         )
-        find_like = any(
-            os.path.basename(t.strip(";&|()`{}")).lower() in ("find", "fd") for t in tokens
-        )
+        find_like = any(_token_command_base(t) in ("find", "fd") for t in tokens)
         # Shared out over the sed words present, so a lone sed reads its whole argument list and a line packed with
         # them stays linear (_sed_scan_limit).
         sed_scan_limit = _sed_scan_limit(
-            sum(1 for t in tokens if os.path.basename(t.strip(";&|()`{}")).lower() in _SED_COMMANDS)
+            sum(1 for t in tokens if _token_command_base(t) in _SED_COMMANDS)
         )
         # Built at most once per pass, and only when a sed program actually names a variable, so a line packed with
         # sed words stays linear.
@@ -5622,9 +8095,9 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
             return True
         # GNU tar runs --checkpoint-action=exec=CMD at each checkpoint, hiding a command (including hard-blocked ones)
         # inside an argument.
-        if any(
-            os.path.basename(t.strip(";&|()`{}")).lower() in _ARG_EXEC_FLAG_OWNERS for t in tokens
-        ) and any(t.split("=", 1)[0] in _HIGH_RISK_ARG_EXEC_FLAGS for t in tokens):
+        if any(_token_command_base(t) in _ARG_EXEC_FLAG_OWNERS for t in tokens) and any(
+            t.split("=", 1)[0] in _HIGH_RISK_ARG_EXEC_FLAGS for t in tokens
+        ):
             return True
         # An interpreter serving on the network exposes the session workdir; the sandbox keeps no network namespace.
         if _LISTENER_PY_MODULE_RE.search(text) or _LISTENER_BIN_AT_CMD_RE.search(text):
@@ -5648,12 +8121,19 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
         git_glob_pending = False  # a git global option (-C repo) precedes its value
         chdir_pending = False  # a cd/pushd precedes its target directory
         xargs_index = -1  # an xargs awaiting the command whose argv it builds
+        coproc_kw = False  # the word just consumed was the `coproc` KEYWORD, so a name may follow
         for _tok_idx, token in enumerate(tokens):
+            after_coproc = coproc_kw
+            coproc_kw = False
             if (
                 token in _SHELL_SEPARATORS
                 or (token in _SHELL_KEYWORDS_AS_SEP and expect_command)
+                # This walker carries a wrapper's command position in `prefix_pending`, not `expect_command`, so the
+                # clause above misses `time coproc rm -f x`, which bash runs and which really deletes.
+                or (token == "coproc" and prefix_pending)
                 or not set(token) - set(";&|()")
             ):
+                coproc_kw = (expect_command or prefix_pending) and token == "coproc"
                 expect_command = True
                 prefix_pending = False
                 xargs_index = -1
@@ -5936,10 +8416,17 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
             stem, ext = os.path.splitext(base)
             if ext in {".exe", ".com", ".bat", ".cmd"}:
                 base = stem
-            if (expect_command or prefix_pending) and (
-                base in _AUTO_SAFE_WRAPPERS
-                or base in _MULTICALL_BINARIES
-                or base in _PRIVILEGE_EXEC_WRAPPERS
+            coproc_name_here = after_coproc and _is_coproc_name(tokens, _tok_idx)
+            if (
+                (expect_command or prefix_pending)
+                # A coprocess NAME is not a wrapper, and spending the wrapper on the compound behind it demoted
+                # the real command: `coproc env if git clean -fd; then :; fi` deletes untracked files.
+                and not coproc_name_here
+                and (
+                    base in _AUTO_SAFE_WRAPPERS
+                    or base in _MULTICALL_BINARIES
+                    or base in _PRIVILEGE_EXEC_WRAPPERS
+                )
             ):
                 # A wrapper (env/timeout) or a multicall binary (busybox rm) precedes the real command; keep seeking
                 # it, but track it so its own flags (env -S / -C) are judged in the meantime.
@@ -6148,7 +8635,7 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
                     for cand in (raw, _expand_param_defaults(raw), _expand_shell_assignments(raw))
                 ):
                     return True
-            expect_command = False
+            expect_command = coproc_name_here
             prefix_pending = False
     return False
 
@@ -6164,14 +8651,17 @@ def _python_is_high_risk(code: str) -> bool:
     # refusal.
     if _check_code_safety(code) is not None:
         return True
-    try:
-        tree = ast.parse(code)
-    except SyntaxError:
+    tree, _parse_error = _parse_python(code)
+    if _parse_error is not None:
         # Unparsable code never runs, but scan the raw text anyway.
         return _references_sensitive_path(code)
+    # The session workdir confines RELATIVE paths only: an absolute path outside the silent roots reads or rewrites
+    # the user's own files, which is the same loss the terminal `rm` gate already asks about.
+    if _python_reaches_outside_sandbox(tree, code):
+        return True
     # A credential basename only names a file when it appears in a string, so match it there rather than across the
     # source: `credentials = {}` and `def load_credentials()` do no I/O and must not prompt.
-    for _node in ast.walk(tree):
+    for _node in _tree_nodes(tree):
         if (
             isinstance(_node, ast.Constant)
             and isinstance(_node.value, str)
@@ -6184,7 +8674,7 @@ def _python_is_high_risk(code: str) -> bool:
     # Modules whose handles end processes; tracked so an unrelated .kill() on a user-defined object is not mistaken
     # for one.
     psutil_names: "set[str]" = set()
-    for _node in ast.walk(tree):
+    for _node in _tree_nodes(tree):
         if isinstance(_node, ast.Import):
             for _a in _node.names:
                 if _a.name.split(".")[0] in _PY_PROCESS_MODULES:
@@ -6218,7 +8708,7 @@ def _python_is_high_risk(code: str) -> bool:
             and value.args[0].value in ("os", "posix", "nt")
         )
 
-    for node in ast.walk(tree):
+    for node in _tree_nodes(tree):
         if isinstance(node, ast.ImportFrom) and node.module in _PY_DESTRUCTIVE_FS_MODULES:
             for alias in node.names:
                 if alias.name in _PY_DESTRUCTIVE_FS_IMPORT_NAMES:
@@ -6285,7 +8775,7 @@ def _python_is_high_risk(code: str) -> bool:
 
     # `rm = getattr(os, "remove")` stores the lookup and calls it later, so the direct getattr(...)(...) shape never
     # sees it. Bind the name here instead.
-    for node in ast.walk(tree):
+    for node in _tree_nodes(tree):
         if not (
             isinstance(node, ast.Assign)
             and isinstance(node.value, ast.Call)
@@ -6308,7 +8798,7 @@ def _python_is_high_risk(code: str) -> bool:
     # `f = open(path, "r+")` then `f.truncate(0)` zeroes the file. Gated via the handle name, not the bare `.truncate`
     # attribute: pandas DataFrame.truncate() is common here and non-destructive.
     file_handles: "set[str]" = set()
-    for node in ast.walk(tree):
+    for node in _tree_nodes(tree):
         if (
             isinstance(node, ast.Assign)
             and isinstance(node.value, ast.Call)
@@ -6330,7 +8820,7 @@ def _python_is_high_risk(code: str) -> bool:
                 ):
                     file_handles.add(item.optional_vars.id)
     if file_handles:
-        for node in ast.walk(tree):
+        for node in _tree_nodes(tree):
             if (
                 isinstance(node, ast.Call)
                 and isinstance(node.func, ast.Attribute)
@@ -6341,7 +8831,7 @@ def _python_is_high_risk(code: str) -> bool:
                 return True
     # A bound reference (f = os.remove; f(x)) hides the call site behind a plain Name, so record the target name as a
     # destructive alias to catch f(...) below.
-    for node in ast.walk(tree):
+    for node in _tree_nodes(tree):
         if isinstance(node, ast.Assign) and isinstance(node.value, ast.Subscript):
             if _is_module_dict_lookup(node.value):
                 for tgt in node.targets:
@@ -6360,7 +8850,7 @@ def _python_is_high_risk(code: str) -> bool:
             # An annotated binding (f: object = os.remove) is the same alias.
             if _is_destructive_attr(node.value.attr, node.value.value):
                 destructive_fs_aliases.add(node.target.id)
-    for node in ast.walk(tree):
+    for node in _tree_nodes(tree):
         if not isinstance(node, ast.Call):
             continue
         func = node.func
@@ -6401,7 +8891,7 @@ def _python_is_high_risk(code: str) -> bool:
     # above, so fold the string-literal variables through _folded_path and re-check. An unresolved fragment folds to a
     # sentinel so a partial fold never false-positives.
     str_vars: "dict[str, str]" = {}
-    for node in ast.walk(tree):
+    for node in _tree_nodes(tree):
         if not (
             isinstance(node, ast.Assign)
             and len(node.targets) == 1
@@ -6418,14 +8908,14 @@ def _python_is_high_risk(code: str) -> bool:
             if folded and "\x00" not in folded and "\x02" not in folded:
                 str_vars[node.targets[0].id] = folded
 
-    for node in ast.walk(tree):
+    for node in _tree_nodes(tree):
         if isinstance(node, (ast.BinOp, ast.JoinedStr, ast.Call)):
             folded = _folded_path(node, str_vars)
             if folded and _folded_is_sensitive(folded):
                 return True
     # exec/eval/compile/__import__ of a non-literal runs whatever it builds at runtime, past the static checks above;
     # ask. A literal eval("1+1") is harmless and runs.
-    for node in ast.walk(tree):
+    for node in _tree_nodes(tree):
         if not isinstance(node, ast.Call):
             continue
         func = node.func
@@ -6488,12 +8978,12 @@ def is_high_risk_tool_call(name: str, arguments: dict) -> bool:
         # A static canvas is fine; only a networked canvas can egress.
         return _render_html_reaches_network(arguments)
     if name.startswith(MCP_TOOL_PREFIX):
-        tool_name = name.split("__", 2)[-1]
+        tool_name = _mcp_raw_tool_name(name)
         if tool_name in _BLENDER_CLI_SUMMARY_TOOLS:
             return True
-        # Split camelCase into `_`-delimited terms so the term-boundary regexes
-        # below match camelCase names too.
-        tool_name = _CAMEL_CASE_RE.sub("_", tool_name)
+        # Reduce every separator the name uses to `_`, camelCase boundaries included, so the
+        # term-boundary regexes below see one vocabulary.
+        tool_name = _CAMEL_CASE_RE.sub("_", _MCP_TERM_SEPARATOR_RE.sub("_", tool_name))
         # An execution tool runs arbitrary commands on the MCP server, outside the terminal sandbox; a credential noun
         # discloses secrets; a read/write pointed at a sensitive path is a sensitive access. All prompt, while
         # ordinary create/update/delete MCP calls run.
@@ -7993,28 +10483,46 @@ def _staged_move(source: str, target: str, name: str) -> None:
     the original still in place; the next launch would read that as a session the new root
     already has and strand the files. Filled under a name nothing resolves to, then renamed,
     which on one filesystem is atomic."""
+    global _legacy_sandbox_migrated
     staging = f"{target}{_STAGING_SUFFIX}{uuid.uuid4().hex[:8]}"
+    # Announced for exactly as long as neither end of the move is where a reader looks. Anything
+    # deciding there is nothing to migrate has to consult this first, or it decides it during the
+    # one moment the evidence is missing.
+    with _legacy_locks_guard:
+        _legacy_moves_in_flight.add(name)
     try:
-        shutil.move(source, staging)
-    except OSError:
-        # Half filled and ours, and the source is still where it was.
-        shutil.rmtree(staging, ignore_errors = True)
-        raise
-    # Marked here, not after the rename: across filesystems the move has already removed the legacy copy, so from this
-    # instant the staging tree is the only one there is and a kill before the marker would leave it unfindable.
-    _preserve_foreign_marker(staging, name)
-    _mark_sandbox(staging, name)
-    try:
-        os.rename(staging, target)
-    except OSError:
-        # The move already took the legacy copy, so this tree is the only one and deleting it would lose the files. It
-        # is marked, so _marked_sandbox_in finds it; put it back and let the next pass retry.
         try:
-            os.rename(staging, source)
+            shutil.move(source, staging)
         except OSError:
-            logger.warning("Sandbox %s left at %s: could not be moved in", name, staging)
-        raise
-    _mark_sandbox(target, name)
+            # Half filled and ours, and the source is still where it was.
+            shutil.rmtree(staging, ignore_errors = True)
+            raise
+        # Marked here, not after the rename: across filesystems the move has already removed the legacy copy, so from
+        # this instant the staging tree is the only one there is and a kill before the marker would leave it unfindable.
+        _preserve_foreign_marker(staging, name)
+        _mark_sandbox(staging, name)
+        try:
+            os.rename(staging, target)
+        except OSError:
+            # The move already took the legacy copy, so this tree is the only one and deleting it would lose the files.
+            # It is marked, so _marked_sandbox_in finds it; put it back and let the next pass retry.
+            try:
+                os.rename(staging, source)
+            except OSError:
+                logger.warning("Sandbox %s left at %s: could not be moved in", name, staging)
+            else:
+                # There is something to migrate again, so say so. A whole-tree pass that ran while this sat in staging
+                # saw an empty legacy root and can already have called the migration finished; left standing, that
+                # retires the very retry this rollback exists to allow and the chat keeps an empty sandbox until the
+                # process restarts.
+                _legacy_sandbox_migrated = False
+            raise
+        _mark_sandbox(target, name)
+    finally:
+        global _legacy_moves_done
+        with _legacy_locks_guard:
+            _legacy_moves_in_flight.discard(name)
+            _legacy_moves_done += 1
 
 
 # Bookkeeping only, never held across a move: starting the background pass and the sweep. Anything that copies a tree
@@ -8031,6 +10539,24 @@ def _legacy_lock_for(name: str) -> threading.Lock:
     """The lock covering this one session's move."""
     with _legacy_locks_guard:
         return _legacy_session_locks.setdefault(name, threading.Lock())
+
+
+# Sessions whose move is running right this instant, held by _staged_move across the whole of
+# it. Neither root shows the tree while that runs, so this is the only thing that separates
+# "the legacy copy is gone because it arrived" from "it is gone because it is in staging".
+_legacy_moves_in_flight: "set[str]" = set()
+# Every move that has finished, succeeded or rolled back. The set above only answers "right
+# now", which cannot see a move that both started and ended inside a whole-tree pass: by the
+# end it is empty again although the pass listed the legacy root mid-staging and, if that move
+# rolled back, the source is now sitting there unlisted.
+_legacy_moves_done = 0
+
+
+def _legacy_lock_peek(name: str) -> "threading.Lock | None":
+    """The lock covering this session's move, if one was ever started. Never creates the entry: a
+    name with nothing at the legacy root must not leave one behind."""
+    with _legacy_locks_guard:
+        return _legacy_session_locks.get(name)
 
 
 # Where every id the old code could not use as a directory name went. One bucket for all of them, which is what this
@@ -8070,12 +10596,38 @@ def _legacy_session_dir(session_id: str) -> "str | None":
 
 def _migrate_one_legacy_session(root: str, name: str) -> None:
     """Bring one session up from the legacy root, without waiting for the rest."""
-    if not is_owner_context() or _legacy_sandbox_migrated:
+    if not is_owner_context():
         return
-    source = os.path.join(_legacy_sandbox_root(), name)
-    if os.path.islink(source) or not os.path.isdir(source):
+    # The legacy root, not the done flag and not the session directory. _staged_move renames the
+    # tree aside into staging before renaming it into place, and through that window neither root
+    # holds it; a failing rename then rolls it back. Anything read on one side of that and used on
+    # the other describes an instant that has passed, and the caller leaves without files that are
+    # sitting at the legacy root again. The flag is no safer than the directory, since a pass can
+    # look during the same window, find the root empty, and call the migration finished over a
+    # move it never saw. The root is the stable question: removed once the migration is genuinely
+    # done, present for the whole of any move, and still there when one failed, which is exactly
+    # when this should try rather than skip.
+    legacy_root = _legacy_sandbox_root()
+    if not os.path.isdir(legacy_root):
         return
-    with _legacy_lock_for(name):
+    source = os.path.join(legacy_root, name)
+    if os.path.islink(source):
+        return
+    if os.path.isdir(source):
+        lock = _legacy_lock_for(name)
+    else:
+        # Staged away, or never there at all? Only a mover takes the tree, and it takes this lock
+        # before it does, so an entry is the durable trace of that. Durable is the point: entries
+        # are never removed, so unlike the in-flight set this reading cannot go stale between here
+        # and the wait below. No entry means no move ever began for this name, and none can begin
+        # without the source appearing, which only a rollback does, and only after a move. Looking
+        # without inserting is also what keeps the table bounded by the chats that had a legacy
+        # folder, rather than growing one entry per chat for as long as a failed migration leaves
+        # the root in place.
+        lock = _legacy_lock_peek(name)
+        if lock is None:
+            return
+    with lock:
         if not os.path.isdir(source):
             return  # the background pass got there first
         # Through the resolver, like the whole-tree pass: at a shared root the plain name can be the user's own, and
@@ -8118,21 +10670,27 @@ def _migrate_legacy_sandbox(root: str) -> None:
         if _legacy_sandbox_migrated:
             return
         # Only when nothing movable is left: a file locked on Windows is retryable, and one attempt strands it once
-        # the destination exists.
-        if _migrate_legacy_sandbox_locked(root):
-            _legacy_sandbox_migrated = True
+        # the destination exists. The flag is committed inside, in the same guarded moment as the check that earns
+        # it, so a rollback cannot be decided against and then overwritten by a verdict formed before it happened.
+        _migrate_legacy_sandbox_locked(root)
 
 
 def _migrate_legacy_sandbox_locked(root: str) -> bool:
     """True when the legacy root holds nothing that could still be moved. A collision is not a
     failure: the new root already has that session, and the legacy copy is deliberately left for
     the user to find."""
+    global _legacy_sandbox_migrated
     legacy = _legacy_sandbox_root()
     try:
+        # Read before the tree is looked at, so any move that runs from here on is counted.
+        with _legacy_locks_guard:
+            moves_before = _legacy_moves_done
         if os.path.realpath(legacy) == os.path.realpath(root) or not os.path.isdir(legacy):
+            _legacy_sandbox_migrated = True
             return True
         os.makedirs(root, exist_ok = True)
         moved = 0
+        own_moves = 0
         complete = True
         for name in os.listdir(legacy):
             source = os.path.join(legacy, name)
@@ -8151,6 +10709,7 @@ def _migrate_legacy_sandbox_locked(root: str) -> bool:
                 with _legacy_lock_for(name):
                     if not os.path.isdir(source) or os.path.exists(target):
                         continue  # a request path moved it while we waited
+                    own_moves += 1  # before the call: one that raises still advances the count
                     _staged_move(source, target, name)
                 moved += 1
             except OSError as error:
@@ -8160,6 +10719,19 @@ def _migrate_legacy_sandbox_locked(root: str) -> bool:
                 logger.warning("Could not move sandbox %s: %s", name, error)
         if moved:
             logger.info("Moved %d chat sandbox folder(s) from %s to %s", moved, legacy, root)
+        # Any move but this pass's own, overlapping any part of it. Such a session was in neither root while the
+        # listing above ran, so that listing is not evidence about it: it may have arrived, or rolled back and be
+        # sitting at the legacy root right now, unlisted. Counting rather than asking what is in flight is the point,
+        # since one that started and ended inside the pass leaves nothing in flight to find. The legacy root has to
+        # stay too, as that is where a rollback renames back into. Reporting unfinished is what brings the next pass.
+        with _legacy_locks_guard:
+            overlapped = (
+                bool(_legacy_moves_in_flight) or _legacy_moves_done - moves_before != own_moves
+            )
+            if not overlapped and complete:
+                _legacy_sandbox_migrated = True
+        if overlapped:
+            return False
         # Empty only: a leftover is a collision the user should still find.
         try:
             os.rmdir(legacy)
@@ -9306,6 +11878,10 @@ def _edit_file(
     disable_sandbox: bool = False,
 ) -> str:
     """Replace exact strings in a file. See the notes above."""
+    # The receipt echoes a window of the file back, so an edit is a read, and Bypass Permissions
+    # lifts the containment that would otherwise keep it out.
+    if _references_studio_credential(str(arguments.get("path") or "")):
+        return _STUDIO_CREDENTIAL_BLOCKED
     edits, error = _edit_file_parse_edits(arguments.get("edits"))
     if error:
         return error
@@ -9314,6 +11890,12 @@ def _edit_file(
     )
     if error:
         return error
+    # Again on the RESOLVED path: the sandbox is a sibling of the auth directory, so
+    # `../../auth/agents/...` only names it once the resolve has joined the two.
+    if _references_studio_credential(target) or _references_studio_credential(
+        os.path.realpath(target)
+    ):
+        return _STUDIO_CREDENTIAL_BLOCKED
     name = os.path.basename(target)
     # Decided before the no-op check below, not after: both strings empty is the documented way to create __init__.py
     # or .gitkeep, and read as identical, nothing to change it was refused, leaving no way to write a zero-byte file.
@@ -9960,9 +12542,13 @@ DEEP_RESEARCH_TOOL = {
 }
 
 
-# OpenAI's function.name regex; MCP names that violate it would 400 the whole request, so validate up front and skip
-# with a warning.
-_OPENAI_FN_NAME_RE = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
+# OpenAI's function.name regex; MCP names that violate it would 400 the whole request, so they ship under an alias.
+_OPENAI_FN_NAME_MAX = 64
+_OPENAI_FN_NAME_RE = re.compile(r"^[a-zA-Z0-9_-]{1,%d}$" % _OPENAI_FN_NAME_MAX)
+
+_MCP_ALIAS_DIGEST_LEN = 8
+# The "_" plus digest every alias ends with, which is the room its stem does not get.
+_MCP_ALIAS_SUFFIX_LEN = _MCP_ALIAS_DIGEST_LEN + 1
 
 
 def _mcp_tool_model_visible(tool: dict) -> bool:
@@ -9983,9 +12569,47 @@ def _mcp_tool_model_visible(tool: dict) -> bool:
     return True
 
 
+def _mcp_tool_names(server: dict, mcp_tools: list[dict]) -> dict[str, str]:
+    """Composed function name -> raw MCP name, for the tools this server ships to a model.
+
+    Names that already satisfy ``function.name`` are claimed first, so an alias minted for a dotted
+    or oversized one can never take a name another tool ships under.
+    """
+    server_key = "blender" if server.get("builtin_id") == "blender" else server["id"]
+    prefix = f"{MCP_TOOL_PREFIX}{server_key}__"
+    raw_names = [
+        tool["name"] for tool in mcp_tools if tool.get("name") and _mcp_tool_model_visible(tool)
+    ]
+    names: dict[str, str] = {}
+    for raw_name in raw_names:
+        if _OPENAI_FN_NAME_RE.fullmatch(prefix + raw_name):
+            names.setdefault(prefix + raw_name, raw_name)
+    stem_room = max(0, _OPENAI_FN_NAME_MAX - len(prefix) - _MCP_ALIAS_SUFFIX_LEN)
+    for raw_name in raw_names:
+        if _OPENAI_FN_NAME_RE.fullmatch(prefix + raw_name):
+            continue
+        encoded = raw_name.encode("utf-8", "surrogatepass")
+        digest = hashlib.sha256(encoded).hexdigest()[:_MCP_ALIAS_DIGEST_LEN]
+        stem = re.sub(r"[^a-zA-Z0-9_-]", "_", raw_name)[:stem_room]
+        alias = f"{prefix}{stem}_{digest}"
+        if _OPENAI_FN_NAME_RE.fullmatch(alias):
+            names.setdefault(alias, raw_name)
+    return names
+
+
+# Aliases already shown to a model. Kept apart from the tool cache so an in-flight call still resolves after an edit
+# evicts it.
+_MCP_TOOL_ALIASES: dict[str, str] = {}
+
+
+def _mcp_raw_tool_name(name: str) -> str:
+    return _MCP_TOOL_ALIASES.get(name) or name.split("__", 2)[-1]
+
+
 def _mcp_specs_for_server(server: dict, mcp_tools: list[dict]) -> list[dict]:
     """Convert an MCP server's tool list into OpenAI function specs."""
     display = server.get("display_name") or server["id"]
+    names_by_raw = {raw_name: name for name, raw_name in _mcp_tool_names(server, mcp_tools).items()}
     specs: list[dict] = []
     seen_names: set[str] = set()
     for tool in mcp_tools:
@@ -9996,30 +12620,34 @@ def _mcp_specs_for_server(server: dict, mcp_tools: list[dict]) -> list[dict]:
         if not _mcp_tool_model_visible(tool):
             logger.debug("Skipping app-only MCP tool '%s' on '%s'.", raw_name, display)
             continue
-        server_key = "blender" if server.get("builtin_id") == "blender" else server["id"]
-        name = f"{MCP_TOOL_PREFIX}{server_key}__{raw_name}"
-        # Bad chars or oversized names would 400 the whole request; skip + warn
-        # so the rest of the tools still ship.
-        if not _OPENAI_FN_NAME_RE.fullmatch(name):
+        name = names_by_raw.get(raw_name)
+        if name is None:
             logger.warning(
-                "Skipping MCP tool '%s' on '%s': composed name '%s' is not "
-                "valid OpenAI function.name (regex ^[a-zA-Z0-9_-]{1,64}$).",
+                "Skipping MCP tool '%s' on '%s': no free OpenAI function.name for it.",
                 raw_name,
                 display,
-                name,
             )
             continue
-        # Duplicate tool names would also 400 OpenAI; drop dupes.
+        # Duplicate names would 400 OpenAI; drop dupes.
         if name in seen_names:
             logger.warning("Skipping duplicate MCP tool '%s' on '%s'.", raw_name, display)
             continue
         seen_names.add(name)
+        description = tool.get("description") or ""
+        if name.split("__", 2)[2] != raw_name:
+            _MCP_TOOL_ALIASES[name] = raw_name
+            # The alias is the only name the model may emit, so the description is the one place
+            # it can learn the name the server's docs and the user call this tool by.
+            description = f"({raw_name}) {description}"
+        else:
+            # A name shipped as itself must not resolve through an alias it replaced.
+            _MCP_TOOL_ALIASES.pop(name, None)
         specs.append(
             {
                 "type": "function",
                 "function": {
                     "name": name,
-                    "description": f"[{display}] {tool.get('description') or ''}".strip(),
+                    "description": f"[{display}] {description}".strip(),
                     # mcp<2 dumps "inputSchema", 2.x "input_schema"; accept both.
                     "parameters": tool.get("inputSchema")
                     or tool.get("input_schema")
@@ -10283,10 +12911,14 @@ def execute_tool(
     if name == "render_html":
         return _fit_result_to_room(_render_html_result(arguments), name)
     if name.startswith(MCP_TOOL_PREFIX):
+        # An MCP server is not inside the terminal sandbox, so the local refusal has to hold here too.
+        if _mcp_arguments_reference_studio_credential(arguments):
+            return _STUDIO_CREDENTIAL_BLOCKED
         try:
-            _, server_id, tool_name = name.split("__", 2)
+            _, server_id, _ = name.split("__", 2)
         except ValueError:
             return f"Error: malformed MCP tool name '{name}'"
+        tool_name = _mcp_raw_tool_name(name)
         server = mcp_servers_db.get_server_for_tool(server_id)
         if not server:
             return f"Error: MCP server for tool '{tool_name}' not found"
@@ -11207,6 +13839,94 @@ _UNICODE_BOM_CODECS = (
 _MIN_SINGLE_BYTE_ASCII_RATIO = 3 / 4
 _ASCII_TEXT_BYTES = frozenset((*range(0x20, 0x7F), 0x09, 0x0A, 0x0D, 0x1B))
 
+_META_CHARSET_SCAN_BYTES = 2048
+# A comment or whole tag, quoted attribute values included, so markup inside them is never read as <meta>. As in the
+# browser prescan, an unterminated tag ends the scan.
+_HTML_TAG_RE = re.compile(
+    rb"<!--.*?(?:-->|\Z)|<([a-z][^\s/>]*)((?:[\s/](?:[^>\"']|\"[^\"]*\"|'[^']*')*)?)>|<[!/?][^>]*>|<[a-z!/?].*",
+    re.IGNORECASE | re.DOTALL,
+)
+_META_ATTR_RE = re.compile(rb"([^\s\"'/=>]+)(?:\s*=\s*(?:\"([^\"]*)\"|'([^']*)'|([^\s>]*)))?")
+_META_CONTENT_CHARSET_RE = re.compile(rb"charset\s*=\s*[\"']?\s*([^\s\"';]+)", re.IGNORECASE)
+_XML_ENCODING_RE = re.compile(rb"\s*<\?xml\b[^>]*?encoding\s*=\s*[\"']([\w.:-]+)", re.IGNORECASE)
+# WHATWG Encoding labels by the Python codec that matches the browser decoder. A meta declaration
+# of UTF-16 or x-user-defined means UTF-8 or windows-1252; "replacement" labels are left out.
+_WHATWG_CHARSET_LABELS = {
+    "utf-8": (
+        "unicode-1-1-utf-8 unicode11utf8 unicode20utf8 utf-8 utf8 x-unicode20utf8 unicodefffe "
+        "utf-16be csunicode iso-10646-ucs-2 ucs-2 unicode unicodefeff utf-16 utf-16le"
+    ),
+    "cp866": "866 cp866 csibm866 ibm866",
+    "iso8859-2": (
+        "csisolatin2 iso-8859-2 iso-ir-101 iso8859-2 iso88592 iso_8859-2 iso_8859-2:1987 l2 "
+        "latin2"
+    ),
+    "iso8859-3": (
+        "csisolatin3 iso-8859-3 iso-ir-109 iso8859-3 iso88593 iso_8859-3 iso_8859-3:1988 l3 "
+        "latin3"
+    ),
+    "iso8859-4": (
+        "csisolatin4 iso-8859-4 iso-ir-110 iso8859-4 iso88594 iso_8859-4 iso_8859-4:1988 l4 "
+        "latin4"
+    ),
+    "iso8859-5": (
+        "csisolatincyrillic cyrillic iso-8859-5 iso-ir-144 iso8859-5 iso88595 iso_8859-5 "
+        "iso_8859-5:1988"
+    ),
+    "iso8859-6": (
+        "arabic asmo-708 csiso88596e csiso88596i csisolatinarabic ecma-114 iso-8859-6 "
+        "iso-8859-6-e iso-8859-6-i iso-ir-127 iso8859-6 iso88596 iso_8859-6 iso_8859-6:1987"
+    ),
+    "iso8859-7": (
+        "csisolatingreek ecma-118 elot_928 greek greek8 iso-8859-7 iso-ir-126 iso8859-7 iso88597 "
+        "iso_8859-7 iso_8859-7:1987 sun_eu_greek"
+    ),
+    "iso8859-8": (
+        "csiso88598e csisolatinhebrew hebrew iso-8859-8 iso-8859-8-e iso-ir-138 iso8859-8 "
+        "iso88598 iso_8859-8 iso_8859-8:1988 visual csiso88598i iso-8859-8-i logical"
+    ),
+    "iso8859-10": "csisolatin6 iso-8859-10 iso-ir-157 iso8859-10 iso885910 l6 latin6",
+    "iso8859-13": "iso-8859-13 iso8859-13 iso885913",
+    "iso8859-14": "iso-8859-14 iso8859-14 iso885914",
+    "iso8859-15": "csisolatin9 iso-8859-15 iso8859-15 iso885915 iso_8859-15 l9",
+    "iso8859-16": "iso-8859-16",
+    "koi8-r": "cskoi8r koi koi8 koi8-r koi8_r",
+    "koi8-u": "koi8-ru koi8-u",
+    "mac-roman": "csmacintosh mac macintosh x-mac-roman",
+    "cp874": "dos-874 iso-8859-11 iso8859-11 iso885911 tis-620 windows-874",
+    "cp1250": "cp1250 windows-1250 x-cp1250",
+    "cp1251": "cp1251 windows-1251 x-cp1251",
+    "cp1252": (
+        "ansi_x3.4-1968 ascii cp1252 cp819 csisolatin1 ibm819 iso-8859-1 iso-ir-100 iso8859-1 "
+        "iso88591 iso_8859-1 iso_8859-1:1987 l1 latin1 us-ascii windows-1252 x-cp1252 "
+        "x-user-defined"
+    ),
+    "cp1253": "cp1253 windows-1253 x-cp1253",
+    "cp1254": (
+        "cp1254 csisolatin5 iso-8859-9 iso-ir-148 iso8859-9 iso88599 iso_8859-9 iso_8859-9:1989 "
+        "l5 latin5 windows-1254 x-cp1254"
+    ),
+    "cp1255": "cp1255 windows-1255 x-cp1255",
+    "cp1256": "cp1256 windows-1256 x-cp1256",
+    "cp1257": "cp1257 windows-1257 x-cp1257",
+    "cp1258": "cp1258 windows-1258 x-cp1258",
+    "mac-cyrillic": "x-mac-cyrillic x-mac-ukrainian",
+    "gb18030": (
+        "chinese csgb2312 csiso58gb231280 gb2312 gb_2312 gb_2312-80 gbk iso-ir-58 x-gbk gb18030"
+    ),
+    "big5hkscs": "big5 big5-hkscs cn-big5 csbig5 x-x-big5",
+    "euc_jp": "cseucpkdfmtjapanese euc-jp x-euc-jp",
+    "iso2022_jp": "csiso2022jp iso-2022-jp",
+    "cp932": "csshiftjis ms932 ms_kanji shift-jis shift_jis sjis windows-31j x-sjis",
+    "cp949": (
+        "cseuckr csksc56011987 euc-kr iso-ir-149 korean ks_c_5601-1987 ks_c_5601-1989 ksc5601 "
+        "ksc_5601 windows-949"
+    ),
+}
+_WHATWG_CHARSET_CODECS = {
+    label: codec for codec, labels in _WHATWG_CHARSET_LABELS.items() for label in labels.split()
+}
+
 
 def _looks_binary(text: str) -> bool:
     """Whether control or undecodable characters exceed the binary threshold."""
@@ -11239,6 +13959,39 @@ def _has_single_byte_text_evidence(data: bytes) -> bool:
         return True
     ascii_text_bytes = sum(byte in _ASCII_TEXT_BYTES for byte in data)
     return ascii_text_bytes / len(data) >= _MIN_SINGLE_BYTE_ASCII_RATIO
+
+
+def _whatwg_codec(label: bytes) -> str | None:
+    return _WHATWG_CHARSET_CODECS.get(label.strip(b"\t\n\f\r ").decode("latin-1").lower())
+
+
+def _sniff_meta_charset(head: bytes, content_type: str) -> str | None:
+    # Browsers prescan <meta> only in HTML (first usable one wins, XML prolog as fallback) and read
+    # only the prolog in XML. A headerless body is XML if it opens with a prolog, HTML if it looks it.
+    prolog = _XML_ENCODING_RE.match(head)
+    if content_type:
+        is_html = content_type == "text/html"
+        is_xml = content_type in ("text/xml", "application/xml") or content_type.endswith("+xml")
+    else:
+        is_xml = prolog is not None
+        is_html = not is_xml and _looks_like_html(head.decode("latin-1"))
+    if is_html:
+        for tag in _HTML_TAG_RE.finditer(head):
+            if (tag.group(1) or b"").lower() != b"meta":
+                continue
+            attrs = {}
+            for name, *values in _META_ATTR_RE.findall(tag.group(2)):
+                attrs.setdefault(name.lower(), b"".join(values))
+            label = attrs.get(b"charset")
+            if label is None and attrs.get(b"http-equiv", b"").strip().lower() == b"content-type":
+                match = _META_CONTENT_CHARSET_RE.search(attrs.get(b"content", b""))
+                label = match and match.group(1)
+            codec = label and _whatwg_codec(label)
+            if codec:
+                return codec
+    elif not is_xml:
+        return None
+    return prolog and _whatwg_codec(prolog.group(1))
 
 
 def _extract_pdf_text(data: bytes) -> str:
@@ -11664,6 +14417,9 @@ def _read_capped_body(resp, max_bytes, timeout, deadline, cancel_event):
     # Best-effort handle on the underlying socket so its timeout tightens as the deadline nears; absent on test
     # doubles, where the between-chunk budget check still bounds the read.
     sock = getattr(getattr(getattr(resp, "fp", None), "raw", None), "_sock", None)
+    # A buffered read(n) keeps receiving until n bytes arrive, so a drip never reaches the
+    # budget check; read1 returns after one receive.
+    read = getattr(resp, "read1", None) or resp.read
     chunks = []
     remaining = max_bytes
     while remaining > 0:
@@ -11679,7 +14435,7 @@ def _read_capped_body(resp, max_bytes, timeout, deadline, cancel_event):
                 sock.settimeout(_fetch_hop_timeout(timeout, deadline))
             except Exception:
                 pass
-        chunk = resp.read(min(65536, remaining))
+        chunk = read(min(65536, remaining))
         if not chunk:
             break
         chunks.append(chunk)
@@ -11982,14 +14738,19 @@ def _fetch_url_raw(
             (codec for bom, codec in _UNICODE_BOM_CODECS if raw_bytes.startswith(bom)),
             None,
         )
+        fallback_codec = (
+            bom_codec
+            or _sniff_meta_charset(raw_bytes[:_META_CHARSET_SCAN_BYTES], content_type)
+            or "utf-8"
+        )
         try:
-            raw_html = raw_bytes.decode(declared or bom_codec or "utf-8", errors = "replace")
+            raw_html = raw_bytes.decode(declared or fallback_codec, errors = "replace")
         except (LookupError, ValueError):
             # Survives lookup, fails the decode: base64/hex/zlib are not text codecs, "undefined" always raises, idna
             # rejects replace. The fallback cannot raise.
             declared = None
             declared_codec = None
-            raw_html = raw_bytes.decode(bom_codec or "utf-8", errors = "replace")
+            raw_html = raw_bytes.decode(fallback_codec, errors = "replace")
 
         # Catch mislabeled or unlabeled binary, including valid UTF-8 controls.
         if _looks_binary(raw_html):
@@ -12781,6 +15542,27 @@ def _search_failure_message(exc: BaseException, timeout: int) -> str:
     return f"Search failed: {exc}"
 
 
+def _resolve_engine_tiers(text_engines) -> list:
+    """``_SEARCH_ENGINE_TIERS`` reduced to the engines this ddgs actually has, in tier order.
+
+    Naming an engine the registry lacks is not an error: ddgs 9.8.0 raises ``KeyError`` on the first
+    unknown name and silently re-runs the request as ``auto``, the Yandex fan-out this exists to
+    prevent, and tier 1 trips it there because 9.8.0 ships no ``startpage``. An empty tier is dropped
+    for the same reason.
+    """
+    engines = text_engines or {}
+    resolved = []
+    for tier in _SEARCH_ENGINE_TIERS:
+        live = [
+            name
+            for name in tier
+            if engines.get(name) is not None and not getattr(engines.get(name), "disabled", False)
+        ]
+        if live:
+            resolved.append(",".join(live))
+    return resolved
+
+
 def _image_search_or_none(subjects: list, timeout, cancel_event, website_policy) -> "str | None":
     """``_image_search`` that reports a failure as None instead of raising. Every caller sits inside
     ``_web_search``'s own ``except``, which would turn a raise into Search failed: ... and throw
@@ -12829,9 +15611,8 @@ def _web_search(
     include_images: bool = False,
     image_queries = None,
 ) -> str:
-    """Search the web and return formatted results. ddgs fans the query out across its search
-    engines, so a single engine refusing is already covered. If ``url`` is provided, fetches that
-    page directly instead of searching. ``include_images`` adds image results registered
+    """Search the web through the approved engine tiers and return formatted results. If ``url`` is provided,
+    fetches that page directly instead of searching. ``include_images`` adds image results registered
     server-side and offered to the model as ``[[img:<id>]]`` tokens, with a frontend-only
     envelope appended: one picture per ``image_queries`` subject when the model named them, else
     a handful for the query. ``image_queries`` alone (no query) is a pure image lookup."""
@@ -12864,8 +15645,13 @@ def _web_search(
         return "Search cancelled."
     try:
         from ddgs import DDGS
+        from ddgs.engines import ENGINES
 
         from .web_access_policy import check_url_access, scope_search_query
+
+        engine_tiers = _resolve_engine_tiers(ENGINES.get("text", {}))
+        if not engine_tiers:
+            return "Search failed: no approved search engine is available."
 
         effective_query = scope_search_query(query, website_policy)
         # The policy filters below, so ask for a deeper pool when one actually restricts: a page whose top hits are
@@ -12875,8 +15661,30 @@ def _web_search(
             (website_policy or {}).get(key) for key in ("allowedDomains", "blockedDomains")
         )
         wanted = max_results * _POLICY_OVERFETCH if restricted else max_results
+        # ddgs applies `timeout` per client, as both the engine HTTP timeout and its fan-out wait, so
+        # a client per tier would restart the budget and a 7s web_search could block ~14s.
+        deadline = time.monotonic() + timeout if timeout else None
         client = DDGS(timeout = timeout)
-        results = client.text(effective_query, max_results = wanted)
+        # ddgs signals an empty sweep by RAISING, so a tier's exception means try the next tier; the
+        # last is re-raised for _search_failure_message to classify as a single-tier failure would be.
+        results, last_error = [], None
+        for backend in engine_tiers:
+            if cancel_event is not None and cancel_event.is_set():
+                return "Search cancelled."
+            if deadline is not None:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                client = DDGS(timeout = remaining)
+            try:
+                results = client.text(effective_query, max_results = wanted, backend = backend)
+            except Exception as exc:  # noqa: BLE001 - re-raised below when no tier produced anything
+                last_error = exc
+                continue
+            if results:
+                break
+        if not results and last_error is not None:
+            raise last_error
         if cancel_event is not None and cancel_event.is_set():
             return "Search cancelled."
         if not results:
@@ -13081,19 +15889,63 @@ def _web_search_images_suffix(client, query, wanted, cancel_event, website_polic
     return "\n\n---\n\n" + format_images_for_model(entries) + images_envelope(entries)
 
 
+# The first component of every network module and of every recognised prefix. `urllib.request`
+# and `urllib3` share `urllib`; `http.client` and `httpx` share `http`.
+_NETWORK_ROOT_NAMES = frozenset(
+    {"socket", "urllib", "urllib3", "http", "httpx", "requests", "aiohttp"}
+)
+
+
+def _network_candidates_possible(nodes) -> bool:
+    """Whether ANY call in this tree could resolve to a network function.
+
+    The alias maps, the literal-value map, the shadow bookkeeping and the second visitor pass all
+    exist to answer questions about a recognised egress call, and every route to one names a
+    network module: an import of it, an import from it, or the module written out at the call
+    site, which is a `Name` either way. A tree with none of those has no candidate to resolve, so
+    the screen can skip all of it and still reach the same verdict. Ordinary tool code -- pandas,
+    matplotlib, plain arithmetic -- takes that path.
+
+    Read off the node list the other classifiers already build and cache for this tree, so it
+    costs one pass over a list rather than a walk. Deliberately generous: a local variable that
+    happens to be called `socket` turns the full path back on, which costs time and never a
+    verdict.
+    """
+    for node in nodes:
+        if isinstance(node, ast.Name):
+            if node.id in _NETWORK_ROOT_NAMES:
+                return True
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name.partition(".")[0] in _NETWORK_ROOT_NAMES:
+                    return True
+        elif isinstance(node, ast.ImportFrom):
+            if (node.module or "").partition(".")[0] in _NETWORK_ROOT_NAMES:
+                return True
+    return False
+
+
 def _check_signal_escape_patterns(code: str):
     """Check for patterns that could escape signal-based timeouts. Returns (safe: bool, details:
     dict). Vendored from unsloth_zoo.rl_environments to avoid importing unsloth_zoo (needs GPU
     drivers; fails on Apple Silicon)."""
-    try:
-        tree = ast.parse(code)
-    except SyntaxError as e:
+    tree, _parse_error = _parse_python(code)
+    if _parse_error is not None:
+        e = _parse_error
         return False, {
             "error": f"SyntaxError: {e}",
             "signal_tampering": [],
             "exception_catching": [],
             "warnings": [],
         }
+
+    # Whether a recognised egress call is possible AT ALL in this source. Every route to one -- an
+    # import, an alias of an import, a star import, or the module written out at the call -- spells
+    # the module's own name, so a source with none of these substrings has no candidate to resolve
+    # and the alias machinery below has nothing to say about it. One pass over the text, against
+    # three walks of the tree and a second visitor pass.
+    # Whether a recognised egress call is possible AT ALL in this tree. Read below.
+    network_possible = _network_candidates_possible(_tree_nodes(tree))
 
     signal_tampering = []
     exception_catching = []
@@ -13431,8 +16283,9 @@ def _check_signal_escape_patterns(code: str):
     if visitor.imports_signal and not signal_tampering:
         warnings.append("Code imports 'signal' module - review manually for safety")
 
-    # Static host policy: block metadata hosts and any literal host outside the trusted allowlist; uploads blocked
-    # regardless of host. Dynamic hosts are caught by the bash blocklist.
+    # Static host policy: block metadata hosts and any host outside the trusted allowlist; uploads blocked regardless
+    # of host. A host this screen cannot read is treated as untrusted, since nothing downstream screens python-tool
+    # code again.
     network_calls: list[dict] = []
     sensitive_file_reads: list[dict] = []
     _NETWORK_FQ_PREFIXES = (
@@ -13462,6 +16315,58 @@ def _check_signal_escape_patterns(code: str):
         "httpx.AsyncClient",
         "aiohttp.ClientSession",
     )
+    # The modules an alias is resolved back to, so `import urllib.request as u` and `from urllib.request import
+    # urlopen` reach the prefixes above exactly as the spelled-out call does.
+    # The first component of every prefix above: one lookup rejects a callee that cannot be one.
+    _NETWORK_ROOTS = frozenset(p.partition(".")[0] for p in _NETWORK_FQ_PREFIXES)
+    _NETWORK_MODULES = frozenset(
+        {
+            "socket",
+            "urllib.request",
+            "urllib3",
+            "http.client",
+            "requests",
+            "httpx",
+            "aiohttp",
+        }
+    )
+    # Calls whose FIRST positional argument is the host or the URL. `socket.socket(AF_INET, ...)` and the
+    # session/client constructors take neither, so an unreadable first argument says nothing about them.
+    _NETWORK_URL_ARG0_FQ = frozenset(
+        {
+            "socket.create_connection",
+            "socket.getaddrinfo",
+            "urllib.request.urlopen",
+            "urllib.request.urlretrieve",
+            "requests.get",
+            "requests.post",
+            "requests.put",
+            "requests.delete",
+            "requests.patch",
+            "requests.head",
+            "http.client.HTTPConnection",
+            "http.client.HTTPSConnection",
+            "httpx.get",
+            "httpx.post",
+            "httpx.put",
+            "httpx.patch",
+            "httpx.delete",
+        }
+    )
+    # Where the destination sits in a recognised egress call: the positional index, then the keyword
+    # spellings that carry it instead. Reading only the first positional left the rule below
+    # sidesteppable by one word, `requests.get(url = "http://evil.example/")`, which is the spelling
+    # a caller reaches for the moment there is a `timeout =` next to it.
+    _NETWORK_DESTINATION_ARG = {
+        fq: (0, ("url", "fullurl", "host", "address")) for fq in _NETWORK_URL_ARG0_FQ
+    }
+    # `requests.request(method, url)` and its httpx twin carry the destination second.
+    _NETWORK_DESTINATION_ARG["requests.request"] = (1, ("url",))
+    _NETWORK_DESTINATION_ARG["httpx.request"] = (1, ("url",))
+    # `urllib3.request(method, url, ...)` is the same shape, and it matches the broad `urllib3.`
+    # prefix, so without an entry here the fallback read argument 0 (the method) and never looked
+    # at the destination. Signature checked against the installed urllib3 2.8.0.
+    _NETWORK_DESTINATION_ARG["urllib3.request"] = (1, ("url",))
     _UPLOAD_HTTP_METHODS = (
         "requests.post",
         "requests.put",
@@ -13688,7 +16593,7 @@ def _check_signal_escape_patterns(code: str):
     )
 
     def _module_has_hf_import(tree: ast.AST) -> bool:
-        for n in ast.walk(tree):
+        for n in _tree_nodes(tree):
             if isinstance(n, ast.Import):
                 for alias in n.names:
                     if alias.name.split(".", 1)[0] in _HF_IMPORT_MODULES:
@@ -13905,16 +16810,688 @@ def _check_signal_escape_patterns(code: str):
             return _HF_UPLOAD_PATH_VIOLATION
         return None
 
+    # Past this many candidate values for one expression, stop enumerating and treat the
+    # destination as unreadable: a screen that fans out without bound is a way to stall it.
+    _LITERAL_CANDIDATE_CAP = 8
+
+    def _stored_names(targets) -> "list[str]":
+        """Only the names a target actually binds.
+
+        Walking every `ast.Name` under the target also returns the BASE of an attribute or
+        subscript, which is read, not rebound: `r.debug = True` left `r` looking rebound and
+        dropped the `r -> requests` alias that the runtime still has, so the call after it went
+        unrecognised.
+        """
+        names: list[str] = []
+        stack = [t for t in targets if t is not None]
+        while stack:
+            node = stack.pop()
+            if isinstance(node, ast.Name):
+                names.append(node.id)
+            elif isinstance(node, (ast.Tuple, ast.List)):
+                stack.extend(node.elts)
+            elif isinstance(node, ast.Starred):
+                stack.append(node.value)
+            # ast.Attribute / ast.Subscript bind nothing: their base is loaded.
+        return names
+
+    # Checked against `type(node)` before the chain below, since this runs twice for every node in
+    # the tree and nearly all of them bind nothing: an exact-type lookup beats a dozen isinstance
+    # calls, and ast nodes are never subclassed here.
+    _BINDING_NODE_TYPES = frozenset(
+        {
+            ast.Assign,
+            ast.Delete,
+            ast.AnnAssign,
+            ast.AugAssign,
+            ast.NamedExpr,
+            ast.For,
+            ast.AsyncFor,
+            ast.comprehension,
+            ast.withitem,
+            ast.ExceptHandler,
+            ast.MatchAs,
+            ast.MatchStar,
+            ast.MatchMapping,
+            ast.FunctionDef,
+            ast.AsyncFunctionDef,
+            ast.ClassDef,
+            ast.Lambda,
+            ast.Import,
+            ast.ImportFrom,
+        }
+    )
+
+    # Their handlers rebind first and then register, so generic_visit must not sweep them again.
+    _REBOUND_BY_HANDLER = (ast.Import, ast.ImportFrom, ast.Assign)
+
+    # Statement kinds that really run when the module runs. A shadow REMOVES a way to recognise a
+    # call, so unlike everything else here it may only be believed when it cannot be skipped:
+    # `from requests import get as fetch` + `if False: fetch = print` + `fetch(...)` still calls
+    # `requests.get`, and popping the alias on that untaken branch hid the call completely. A
+    # binding inside an `if`, `try`, `for`, `while` or `with` is not one of these, so it leaves the
+    # alias in place and the call stays screened.
+    _UNCONDITIONAL_SHADOW_TYPES = frozenset(
+        {
+            ast.Assign,
+            ast.AnnAssign,
+            ast.AugAssign,
+            ast.Delete,
+            # An import shadows too, but never the names it binds to a network module itself:
+            # `import requests as client` then `import my_client as client` really calls
+            # `my_client.get`, and exempting every import left the stale candidate live. The two
+            # handlers register first and pass what they bound as `exempt`, so the import that
+            # registers an alias still cannot shadow the name it has just bound for every later
+            # line, which is what excluding them outright was working around.
+            ast.Import,
+            ast.ImportFrom,
+            ast.FunctionDef,
+            ast.AsyncFunctionDef,
+            ast.ClassDef,
+        }
+    )
+
+    def _binding_names(node) -> "list[str]":
+        """Every name a node binds, in whatever form: assignment, unpacking, walrus, import, def,
+        class, parameter, for target, `as` clause, del. One definition of "this name now means
+        something else", used both to invalidate module aliases and to collect literal values."""
+        if type(node) not in _BINDING_NODE_TYPES:
+            return []
+        if isinstance(node, (ast.Assign, ast.Delete)):
+            return _stored_names(node.targets)
+        if isinstance(node, (ast.AnnAssign, ast.AugAssign, ast.NamedExpr)):
+            return _stored_names([node.target])
+        if isinstance(node, (ast.For, ast.AsyncFor, ast.comprehension)):
+            return _stored_names([node.target])
+        if isinstance(node, ast.withitem):
+            return _stored_names([node.optional_vars])
+        if isinstance(node, ast.ExceptHandler):
+            return [node.name] if node.name else []
+        if isinstance(node, (ast.MatchAs, ast.MatchStar)):
+            return [node.name] if node.name else []
+        if isinstance(node, ast.MatchMapping):
+            return [node.rest] if node.rest else []
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)):
+            args = getattr(node, "args", None)
+            slots = (
+                []
+                if args is None
+                else list(args.posonlyargs)
+                + list(args.args)
+                + list(args.kwonlyargs)
+                + [args.vararg, args.kwarg]
+            )
+            bound = [a.arg for a in slots if a is not None]
+            return ([node.name] if getattr(node, "name", None) else []) + bound
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            return [
+                (alias.asname or alias.name.split(".")[0])
+                for alias in node.names
+                if (alias.asname or alias.name) != "*"
+            ]
+        return []
+
+    # What a name may be bound to and still be trusted to name `urllib.request.Request` or the
+    # module path leading to it.
+    _REQUEST_SAFE_BINDINGS = frozenset({"urllib", "urllib.request", "urllib.request.Request"})
+
+    def _scope_bodies(nodes, tree):
+        """`(scope id, statement list)` for the module and for every function, lambda and class body.
+
+        A shadow belongs to the scope whose body it sits directly in, so this is what says which
+        statements can shadow a name for which calls. The module is scope 0. A lambda has an
+        expression rather than a body, so it contributes no statements, only its parameters.
+        """
+        yield 0, getattr(tree, "body", [])
+        for node in nodes:
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                yield id(node), node.body
+
+    def _names_bound_to_something_else(nodes) -> "set[str]":
+        """Every name bound ANYWHERE in the tree, in ANY scope, to something that is not part of
+        `urllib.request.Request`, plus `"*"` when a star import could have supplied it.
+
+        Unwrapping `urlopen(Request(url))` READS PAST a call, which is the one place where adding
+        a candidate makes the screen weaker rather than stronger, so it cannot use the accumulating
+        alias maps: a nested `def Request(_): return "https://evil.example/x"` really does decide
+        what the call inside that function reaches. Scope is ignored in the strict direction here,
+        so a binding anywhere is enough to refuse the unwrap and leave the argument reading as a
+        call, which the fail-closed rule then refuses.
+        """
+        out: set[str] = set()
+        for node in nodes:
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    if alias.name not in _REQUEST_SAFE_BINDINGS:
+                        out.add(alias.asname or alias.name.split(".")[0])
+            elif isinstance(node, ast.ImportFrom):
+                module = node.module or ""
+                for alias in node.names:
+                    if alias.name == "*":
+                        if module != "urllib.request":
+                            out.add("*")
+                    elif f"{module}.{alias.name}" not in _REQUEST_SAFE_BINDINGS:
+                        out.add(alias.asname or alias.name)
+            elif isinstance(node, ast.Attribute) and node.attr == "Request":
+                # `urllib.request.Request = lambda _: "https://evil.example/x"` replaces the
+                # constructor without binding any NAME, so the name-level proof said nothing while
+                # the call returned the attacker's URL. A store to an attribute called `Request`
+                # anywhere refuses every unwrap.
+                if isinstance(node.ctx, (ast.Store, ast.Del)):
+                    out.add("*")
+            elif isinstance(node, ast.Call):
+                # `setattr(urllib.request, "Request", ...)` is the same mutation spelled as a call,
+                # and a computed attribute name could be `"Request"` too.
+                func = node.func
+                name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", "")
+                if name == "setattr" and len(node.args) >= 2:
+                    attr = node.args[1]
+                    if not isinstance(attr, ast.Constant) or attr.value == "Request":
+                        out.add("*")
+            else:
+                out.update(_binding_names(node))
+        return out
+
+    def _collect_literal_names(nodes) -> "dict[str, frozenset[str] | None]":
+        """Name -> every string literal it is bound to anywhere in the tree, or None once any
+        binding is something this screen cannot read. Order and scope are ignored on purpose: the
+        call site is then checked against EVERY value the name can hold, which stays sound without
+        reasoning about which branch ran or which loop iteration this is. Reading only the newest
+        binding would allow `if f: url = evil` / `else: url = allowed` / `get(url)`."""
+        values: "dict[str, set[str] | None]" = {}
+
+        def bind(name: str, literal: "str | None") -> None:
+            current = values[name] if name in values else set()
+            if current is None or literal is None:
+                values[name] = None
+                return
+            current.add(literal)
+            values[name] = None if len(current) > _LITERAL_CANDIDATE_CAP else current
+
+        for node in nodes:
+            literal_targets: list[str] = []
+            if isinstance(node, (ast.Assign, ast.AnnAssign, ast.NamedExpr)):
+                value = getattr(node, "value", None)
+                literal = value.value if isinstance(value, ast.Constant) else None
+                if isinstance(literal, str):
+                    targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+                    # `a, b = "..."` gives neither name the string, so only a bare Name counts.
+                    literal_targets = [t.id for t in targets if isinstance(t, ast.Name)]
+            for name in _binding_names(node):
+                bind(name, literal if name in literal_targets else None)
+        return {k: (None if v is None else frozenset(v)) for k, v in values.items()}
+
+    def _literal_str_prefixes(node, names) -> "list[tuple[str, bool]]":
+        """Every text a string expression is statically known to START with, one entry per value its
+        names can hold, each with whether that text is the whole value. The head is what decides the
+        destination: a URL's scheme and host sit in front of whatever a concatenation or an f-string
+        appends at runtime. `("", False)` means unreadable, so a caller can fail closed on it."""
+        if isinstance(node, ast.Constant):
+            return [(node.value, True)] if isinstance(node.value, str) else [("", False)]
+        if isinstance(node, ast.Name):
+            bound = names.get(node.id)
+            return [(v, True) for v in sorted(bound)] if bound else [("", False)]
+        if isinstance(node, ast.NamedExpr):
+            return _literal_str_prefixes(node.value, names)  # get(url := "...") passes the value on
+        if isinstance(node, ast.JoinedStr):
+            text = ""
+            for part in node.values:
+                if isinstance(part, ast.Constant) and isinstance(part.value, str):
+                    text += part.value
+                    continue
+                return [(text, False)]
+            return [(text, True)]
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+            out: "list[tuple[str, bool]]" = []
+            for left, left_whole in _literal_str_prefixes(node.left, names):
+                if not left_whole:
+                    out.append((left, False))
+                    continue
+                out.extend(
+                    (left + right, right_whole)
+                    for right, right_whole in _literal_str_prefixes(node.right, names)
+                )
+                if len(out) > _LITERAL_CANDIDATE_CAP:
+                    return [("", False)]
+            return out or [("", False)]
+        return [("", False)]
+
     class NetworkAndIoVisitor(ast.NodeVisitor):
-        def visit_Call(self, node):
+        def __init__(self):
+            # Alias -> the module it binds, and bare name -> the network function it binds. The shell-exec half of
+            # this analyzer already resolves both; without them `import urllib.request as u; u.urlopen(...)` matched
+            # no prefix and a hardcoded attacker host passed the screen untouched.
+            # Name -> every network module ever bound to it, because this map is not scope
+            # aware: a nested `def f(): import socket as r` would otherwise overwrite an outer
+            # `import requests as r`, and the module-level `r.get(...)` after it would carry
+            # only unrecognised candidates. Accumulating keeps resolution monotone, so a binding
+            # anywhere can add a way to recognise a call and never take one away.
+            self.module_aliases: dict[str, set[str]] = {}
+            # Name -> every network function ever bound to it, accumulated for the same reason:
+            # `from requests import get as fetch` followed by a nested, never-called
+            # `from socket import inet_aton as fetch` still calls `requests.get` at module level,
+            # and overwriting the entry resolved the call to the unrecognised socket function.
+            self.func_aliases: dict[str, set[str]] = {}
+            # Name -> every string literal it can hold, None when unreadable. `url =
+            # "https://huggingface.co/x"; requests.get(url)` is still a host this screen can read.
+            # All three are read ONLY to answer a question about a recognised egress call, so
+            # when the source cannot name a network module none of them can change a verdict and
+            # none are built. That is the difference between walking this tree three more times
+            # and not touching it at all, and ordinary tool code takes the second path.
+            nodes = _tree_nodes(tree) if network_possible else ()
+            self.literal_names = _collect_literal_names(nodes) if network_possible else {}
+            # Names bound anywhere, in any scope, to something other than `urllib.request.Request`
+            # or the module path to it. Read only by `_unwrapped_url_arg`: see the note there.
+            self.rebound_anywhere = (
+                _names_bound_to_something_else(nodes) if network_possible else frozenset()
+            )
+            # The module-level statements that really run, by identity: only those may shadow an
+            # imported name. See `_UNCONDITIONAL_SHADOW_TYPES`. This also subsumes the old depth
+            # check, since nothing inside a function, lambda or class body is one of these.
+            # Statement id -> the id of the scope whose body it sits directly in (0 for the
+            # module). A shadow belongs to ONE scope: a local `def fetch` shadows the calls after it
+            # inside its own body, and says nothing about a call at module level.
+            self.unconditional_shadows: "dict[int, int]" = {}
+            if network_possible:
+                for scope, body in _scope_bodies(nodes, tree):
+                    for stmt in body:
+                        if type(stmt) in _UNCONDITIONAL_SHADOW_TYPES:
+                            self.unconditional_shadows[id(stmt)] = scope
+                        elif isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.NamedExpr):
+                            # `(fetch := print)` written as a statement of its own certainly runs,
+                            # but the statement is an `Expr` and the binding is the `NamedExpr`
+                            # inside it, so keying on the statement alone never saw it and the
+                            # stale alias outlived the rebinding. Only this shape: a walrus buried
+                            # in a larger expression may not be evaluated at all.
+                            self.unconditional_shadows[id(stmt.value)] = scope
+            # The scope being visited, innermost last, plus each one's parameter bindings.
+            self.scope_stack: list[int] = [0]
+            # Network modules star-imported, and the names rebound since. `from requests import *`
+            # binds `get` under no name this file can enumerate, so the callee is resolved against
+            # the star modules instead; without it one character (`*` for `get`) turned the screen
+            # off, since a bare `get(...)` matched no network prefix.
+            self.star_modules: set[str] = set()
+            # Name -> the module-level lines that shadow it, and the lines where a network module
+            # was star-imported. A shadow only takes effect for calls that CANNOT run before it:
+            # dropping the alias for the whole tree let `fetch(url)` written ABOVE `fetch = print`
+            # go unrecognised, when that call really is `requests.get`.
+            self.shadow_lines: "dict[str, list[tuple[tuple[int, int], int]]]" = {}
+            self.star_lines: "list[tuple[int, int]]" = []
+            # Name -> the positions where a network alias was registered for it. A shadow only
+            # counts while no alias registration follows it: `r = object()` then `r = requests`
+            # really leaves `r` as the module, and a permanent shadow suppressed the candidate the
+            # second assignment had just added.
+            self.alias_lines: "dict[str, list[tuple[int, int]]]" = {}
+            # A module-level shadow says nothing about a call inside a body, which can be invoked
+            # at any point, including before the rebinding; a shadow in the body's OWN scope does
+            # apply to the calls after it. Both follow from matching the shadow's scope.
+            # Aliases are gathered in a first pass over the whole tree and only then are calls
+            # checked, because a function body runs AFTER the module finishes reading:
+            # `def send(): fetch(...)` written ABOVE `from requests import get as fetch` still
+            # calls `requests.get`, and resolving as the walk went meant `send` was analysed before
+            # the import existed and the call was not recognised at all. The registering handlers
+            # do nothing on the second pass, so the maps and `shadowed` keep their final,
+            # order-independent state while every call is checked against them.
+            self.collecting = True
+            # Whether any alias map can ever be non-empty. See `_NETWORK_SOURCE_HINTS`.
+            self.aliases_possible = network_possible
+
+        def _shadowing_names(self, node) -> "list[str]":
+            """The names a node binds IN THE ENCLOSING scope, which is the only scope that can
+            shadow an imported name. A def or class binds its own name there and its parameters
+            inside itself, so only the name counts."""
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                return [node.name]
+            if isinstance(node, ast.Lambda):
+                return []
+            return _binding_names(node)
+
+        def _rebind(
+            self,
+            node,
+            exempt = (),
+        ) -> None:
+            # Rebinding a name drops the alias it carried. `import socket as requests; import
+            # requests` runs the real `requests.get`, and a kept entry rewrote the call to
+            # `socket.get`, which matches no network prefix and so went unscreened.
+            if self.collecting and id(node) in self.unconditional_shadows:
+                scope = self.unconditional_shadows[id(node)]
+                # Position, not just the line: `from requests import get as fetch; fetch = print;
+                # fetch(url)` puts all three on line 1, and comparing lines alone made the
+                # rebinding invisible, so a harmless local call was refused as `requests.get`.
+                where = (getattr(node, "lineno", 0), getattr(node, "col_offset", 0))
+                for name in self._shadowing_names(node):
+                    if name in exempt:
+                        # A statement that REGISTERS an alias must not also shadow the name it just
+                        # bound: `s = r` after `import requests as r` carries the module to `s`,
+                        # and recording it as a shadow of `s` dropped that very candidate for
+                        # every later line.
+                        continue
+                    # The module set is deliberately NOT dropped: see __init__. A bare function
+                    # alias is shadowed, so a local `def get(...)` still shadows
+                    # `from requests import get` for the calls that follow it.
+                    self.shadow_lines.setdefault(name, []).append((where, scope))
+
+        def generic_visit(self, node):
+            """`ast.NodeVisitor.generic_visit`, inlined, plus the rebinding hook.
+
+            Wrapping it instead would spend a third Python frame per level of nesting and so cut
+            the nesting this screen survives by a third: measured, a 494-term `+` chain analysed
+            and a 329-term one raised RecursionError, where the limit is 494 either side now. The
+            handlers that record an alias do their own rebinding FIRST, so they are skipped here:
+            they call this after registering, and a second sweep would pop what they just set.
+            """
+            if self.unconditional_shadows and not isinstance(node, _REBOUND_BY_HANDLER):
+                self._rebind(node)
+            for _field, value in ast.iter_fields(node):
+                if isinstance(value, list):
+                    for item in value:
+                        if isinstance(item, ast.AST):
+                            self.visit(item)
+                elif isinstance(value, ast.AST):
+                    self.visit(value)
+
+        def _register_alias(self, name: str, node) -> None:
+            """Note where a network alias was bound to `name`, so a shadow older than this one no
+            longer applies. See `_is_shadowed`."""
+            self.alias_lines.setdefault(name, []).append(
+                (getattr(node, "lineno", 0), getattr(node, "col_offset", 0))
+            )
+
+        def _is_shadowed(
+            self,
+            name: str,
+            at,
+            after_star: bool = False,
+        ) -> bool:
+            """Whether a module-level rebinding of `name` has certainly happened by `at`.
+
+            Positions are `(lineno, col_offset)`, so a semicolon-separated
+            `from requests import get as fetch; fetch = print; fetch(url)` orders correctly where
+            comparing lines alone made the rebinding invisible.
+
+            A call inside a function, lambda or class body is never shadowed: the body can be
+            invoked at any point, including before the rebinding. At module level the rebinding
+            counts only for what comes AFTER it, and only while no alias registration comes between
+            the two: the last `import`, `from ... import` or module-carrying assignment before the
+            call supersedes every shadow older than it. For a star-imported name the star import is
+            that registration, since it rebinds every exported name.
+            """
+            registrations = self.star_lines if after_star else self.alias_lines.get(name, ())
+            floor = max((where for where in registrations if where < at), default = (0, -1))
+            here = self.scope_stack[-1]
+            return any(
+                scope == here and floor < where < at
+                for where, scope in self.shadow_lines.get(name, ())
+            )
+
+        def _star_imported_fq(self, name: str, at) -> "str | None":
+            if self._is_shadowed(name, at, after_star = True):
+                return None  # a local def or assignment of that name is not the module's function
+            for module in sorted(self.star_modules):
+                fq = f"{module}.{name}"
+                if any(fq.startswith(p) for p in _NETWORK_FQ_PREFIXES):
+                    return fq
+            return None
+
+        def _visit_scope(self, node):
+            self._rebind(node)
+            if self.collecting:
+                # A parameter is bound for the whole body, so it shadows every call in it. The
+                # def's own position is used, which is after the import in the ordinary spelling.
+                where = (getattr(node, "lineno", 0), getattr(node, "col_offset", 0))
+                for name in _binding_names(node):
+                    if name != getattr(node, "name", None):
+                        self.shadow_lines.setdefault(name, []).append((where, id(node)))
+            # Decorators, defaults, annotations and bases are evaluated in the ENCLOSING scope, at
+            # the moment the def is executed, BEFORE any parameter is bound. Visiting them inside
+            # the new scope let a parameter shadow a call the parameter cannot possibly reach:
+            # `from requests import get as fetch` then
+            # `def f(fetch = print, x = fetch("http://evil.example/x"))` really calls the imported
+            # `requests.get` while defining `f`, and the `fetch` parameter hid it. Only the body
+            # belongs to the new scope.
+            for field, value in ast.iter_fields(node):
+                if field == "body":
+                    continue
+                if isinstance(value, list):
+                    for item in value:
+                        if isinstance(item, ast.AST):
+                            self.visit(item)
+                elif isinstance(value, ast.AST):
+                    self.visit(value)
+            self.scope_stack.append(id(node))
+            try:
+                body = node.body
+                if isinstance(body, list):
+                    for item in body:
+                        if isinstance(item, ast.AST):
+                            self.visit(item)
+                elif isinstance(body, ast.AST):
+                    self.visit(body)
+            finally:
+                self.scope_stack.pop()
+
+        visit_FunctionDef = _visit_scope
+        visit_AsyncFunctionDef = _visit_scope
+        visit_ClassDef = _visit_scope
+        visit_Lambda = _visit_scope
+
+        def visit_Import(self, node):
+            if not self.collecting:
+                self.generic_visit(node)
+                return
+            registered: set[str] = set()
+            for alias in node.names:
+                if alias.asname and alias.name in _NETWORK_MODULES:
+                    self.module_aliases.setdefault(alias.asname, set()).add(alias.name)
+                    self._register_alias(alias.asname, node)
+                    registered.add(alias.asname)
+                elif not alias.asname and alias.name.partition(".")[0] in _NETWORK_ROOTS:
+                    # `import requests` needs no alias entry, since the name IS the module, but it
+                    # is still a binding of that name: without recording it, the import read as a
+                    # shadow of itself and a later `r = requests` was taken to copy something
+                    # already rebound. `import urllib.request` binds the root, `urllib`.
+                    self._register_alias(alias.name.partition(".")[0], node)
+                    registered.add(alias.name.partition(".")[0])
+            self._rebind(node, exempt = registered)
+            self.generic_visit(node)
+
+        def visit_ImportFrom(self, node):
+            if not self.collecting:
+                self.generic_visit(node)
+                return
+            registered: set[str] = set()
+            module = node.module or ""
+            for alias in node.names:
+                if alias.name == "*":
+                    if module in _NETWORK_MODULES:
+                        self.star_modules.add(module)
+                        self.star_lines.append(
+                            (getattr(node, "lineno", 0), getattr(node, "col_offset", 0))
+                        )
+                        # The import rebinds every name the module exports, so a binding that came
+                        # BEFORE it no longer shadows: `def get(url): ...` then
+                        # `from requests import *` really calls `requests.get`. Which names are
+                        # exported is not knowable here, and the ones that matter are exactly the
+                        # module's own functions, so all prior shadows are dropped. A binding after
+                        # the import still shadows: see `_is_shadowed`.
+                    continue
+                bound = alias.asname or alias.name
+                fq = f"{module}.{alias.name}"
+                if fq in _NETWORK_MODULES:
+                    # from urllib import request
+                    self.module_aliases.setdefault(bound, set()).add(fq)
+                    self._register_alias(bound, node)
+                    registered.add(bound)
+                elif module in _NETWORK_MODULES:
+                    # from urllib.request import urlopen
+                    self.func_aliases.setdefault(bound, set()).add(fq)
+                    self._register_alias(bound, node)
+                    registered.add(bound)
+            self._rebind(node, exempt = registered)
+            self.generic_visit(node)
+
+        def _modules_named_by(self, value, at) -> "set[str]":
+            """Every network module a value can name, following aliases, so `r = requests` keeps
+            `r.get(...)` screened instead of letting the assignment shed the module.
+
+            EVERY candidate is carried, not the first: `import requests as r` with a nested,
+            never-executed `import aiohttp as r` leaves `r` as `requests` at runtime, and
+            collapsing the set to one candidate resolved the later `s = r; s.get(...)` to the
+            unrecognised `aiohttp.get` and let a hostile host through.
+            """
             parts: list[str] = []
-            cur = node.func
+            cur = value
+            while isinstance(cur, ast.Attribute):
+                parts.insert(0, cur.attr)
+                cur = cur.value
+            if not isinstance(cur, ast.Name):
+                return set()
+            parts.insert(0, cur.id)
+            if self._is_shadowed(parts[0], at):
+                # The source of the copy was rebound before this line, so it no longer names the
+                # module: `import requests as r; r = object(); s = r` must not hand `s` a stale
+                # `requests`, or a later `s.get(...)` is refused for a call that cannot reach it.
+                return set()
+            heads = self.module_aliases.get(parts[0]) or {parts[0]}
+            found = {".".join(head.split(".") + parts[1:]) for head in heads}
+            # A package that merely CONTAINS a network module counts as well: `import
+            # urllib.request` binds `urllib`, so `u = urllib` then `u.request.urlopen(...)` is the
+            # same call written through the parent, and requiring the whole module here let it
+            # past.
+            return {
+                fq
+                for fq in found
+                if fq in _NETWORK_MODULES
+                or any(module.startswith(f"{fq}.") for module in _NETWORK_MODULES)
+            }
+
+        def _functions_named_by(self, value, at) -> "set[str]":
+            """Every network FUNCTION a value can name, the counterpart of `_modules_named_by`.
+
+            Without it an assignment shed the function the way it once shed the module:
+            `from requests import get as fetch` then `fetch = fetch`, or `g = fetch`, recorded the
+            target as shadowed and left the later call with no candidate at all.
+            """
+            if isinstance(value, ast.Name):
+                if self._is_shadowed(value.id, at):
+                    # Same stale-source rule as `_modules_named_by`: `fetch = print` before
+                    # `g = fetch` means `g` is `print`, not the imported `requests.get`.
+                    return set()
+                return set(self.func_aliases.get(value.id) or ())
+            if isinstance(value, ast.Attribute):
+                return {
+                    fq
+                    for fq in self._fq_candidates(value, at)
+                    if any(fq.startswith(prefix) for prefix in _NETWORK_FQ_PREFIXES)
+                }
+            return set()
+
+        def visit_Assign(self, node):
+            if not self.collecting:
+                self.generic_visit(node)
+                return
+            at = (getattr(node, "lineno", 0), getattr(node, "col_offset", 0))
+            carried = self._modules_named_by(node.value, at)
+            carried_functions = self._functions_named_by(node.value, at)
+            registered: set[str] = set()
+            for target in node.targets:
+                if not isinstance(target, ast.Name):
+                    continue
+                if carried:
+                    self.module_aliases.setdefault(target.id, set()).update(carried)
+                if carried_functions:
+                    self.func_aliases.setdefault(target.id, set()).update(carried_functions)
+                if carried or carried_functions:
+                    self._register_alias(target.id, node)
+                    registered.add(target.id)
+            self._rebind(node, exempt = registered)
+            self.generic_visit(node)
+
+        def _fq_candidates(
+            self,
+            func,
+            at = (0, 0),
+        ) -> "list[str]":
+            """Every fully qualified name a callee could be, written spelling first."""
+            parts: list[str] = []
+            cur = func
             while isinstance(cur, ast.Attribute):
                 parts.insert(0, cur.attr)
                 cur = cur.value
             if isinstance(cur, ast.Name):
                 parts.insert(0, cur.id)
-            fq = ".".join(parts) if parts else ""
+            written = ".".join(parts) if parts else ""
+            candidates = [written] if written else []
+            if not self.aliases_possible:
+                return candidates
+            if len(parts) > 1 and parts[0] in self.module_aliases:
+                # A module alias is filtered the same way a function alias is: after
+                # `import requests as client; client = LocalClient()`, `client.get(target)` is a
+                # local API, and offering `requests.get` as a candidate refused it as egress.
+                if not self._is_shadowed(parts[0], at):
+                    for module in sorted(self.module_aliases[parts[0]]):
+                        candidates.append(".".join(module.split(".") + parts[1:]))
+            elif len(parts) == 1 and parts[0] in self.func_aliases:
+                if not self._is_shadowed(parts[0], at):
+                    candidates.extend(sorted(self.func_aliases[parts[0]]))
+            elif len(parts) == 1 and self.star_modules:
+                starred = self._star_imported_fq(parts[0], at)
+                if starred:
+                    candidates.append(starred)
+            return candidates
+
+        def _unwrapped_url_arg(self, node: ast.AST) -> ast.AST:
+            """`urlopen(Request(url))` carries the destination one call further in, so read it
+            there, but only once the callee is PROVEN to be `urllib.request.Request`.
+
+            Trusting any callee spelled `Request` reads the wrong value: a local
+            `def Request(_): return "https://evil.example/x"` made the screen check the
+            allowlisted argument while the runtime call sent the request somewhere else. An
+            unproven callee is left wrapped, so it reads as a call rather than a literal and the
+            fail-closed rule refuses it.
+            """
+            if isinstance(node, ast.Call) and node.args:
+                if "urllib.request.Request" not in self._fq_candidates(node.func):
+                    return node
+                cur = node.func
+                while isinstance(cur, ast.Attribute):
+                    cur = cur.value
+                root = cur.id if isinstance(cur, ast.Name) else None
+                if root is None or root in self.rebound_anywhere or "*" in self.rebound_anywhere:
+                    return node
+                return node.args[0]
+            return node
+
+        def visit_Call(self, node):
+            if self.collecting:
+                self.generic_visit(node)
+                return
+            # Resolving an alias may only ADD a way to recognise this call, never take one away.
+            # The alias map is not scope aware on purpose, so an `import socket as requests` inside
+            # a function body or an untaken branch would otherwise rewrite a module-level
+            # `requests.get(...)` to `socket.get`, which matches no network prefix, and carry a
+            # hardcoded host past a screen that refuses it on `main`. Both spellings are checked and
+            # the recognised one decides; the cost of checking a name the code does not really call
+            # is a refusal of a call that would not have run anyway.
+            fq_candidates = self._fq_candidates(
+                node.func, (getattr(node, "lineno", 0), getattr(node, "col_offset", 0))
+            )
+            # The root check first: every prefix starts with one of seven module names, so one set
+            # lookup rejects the ordinary call (`math.sqrt`, `df.head`) that would otherwise be
+            # tested against all twenty-five prefixes. Measured over a 300-call script that was
+            # 22500 `startswith` per screening.
+            recognised = (
+                [
+                    c
+                    for c in fq_candidates
+                    if c.partition(".")[0] in _NETWORK_ROOTS
+                    and any(c.startswith(p) for p in _NETWORK_FQ_PREFIXES)
+                ]
+                if network_possible
+                else []
+            )
+            fq = recognised[0] if recognised else (fq_candidates[0] if fq_candidates else "")
 
             hf_upload_name = _method_call_hf_upload_name(node)
             if hf_upload_name is not None:
@@ -13959,9 +17536,13 @@ def _check_signal_escape_patterns(code: str):
                             }
                         )
 
-            if fq and any(fq.startswith(p) for p in _NETWORK_FQ_PREFIXES):
-                # 1) Upload-shape check (host-independent).
-                if _call_is_upload_shape(node, fq):
+            if recognised:
+                # 1) Upload-shape check (host-independent), against EVERY recognised candidate for
+                # the same reason the destination signature is: `from requests import post as
+                # fetch` with an uncalled `from requests import get as fetch` really calls
+                # `requests.post`, and checking only the sorted-first `requests.get` let a file
+                # upload to an allowlisted host through.
+                if any(_call_is_upload_shape(node, c) for c in recognised):
                     network_calls.append(
                         {
                             "type": "upload_blocked",
@@ -13970,42 +17551,112 @@ def _check_signal_escape_patterns(code: str):
                         }
                     )
 
-                # 2) Extract literal host (URL string or (host, port) tuple).
-                host_arg = None
-                url_arg = None
-                if node.args:
-                    a0 = node.args[0]
-                    if isinstance(a0, ast.Constant) and isinstance(a0.value, str):
-                        url_arg = a0.value
-                    elif isinstance(a0, ast.Tuple) and a0.elts:
-                        e0 = a0.elts[0]
-                        if isinstance(e0, ast.Constant) and isinstance(e0.value, str):
-                            host_arg = e0.value
-                if url_arg and host_arg is None:
-                    m = re.match(r"^\w+://([^/?#]+)", url_arg)
-                    if m:
-                        host_arg = m.group(1)
+                # 2) Extract the host (URL string or (host, port) tuple) from wherever this call
+                # carries it, once per value that argument can hold: a name reused for two
+                # destinations is read as both, so one allowlisted spelling never vouches for
+                # the other.
+                hosts: list[str] = []
+                unreadable = False
+                # EVERY recognised candidate is read with its OWN signature, because one bare name
+                # can accumulate candidates that carry the destination in different places.
+                # `from requests import request as fetch` with an uncalled
+                # `from requests import get as fetch` really calls `requests.request`, so the URL
+                # is argument 1; reading only the sorted-first `requests.get` signature looked at
+                # argument 0, found the complete non-URL `"GET"`, and never saw the hostile
+                # argument. Checking each in turn keeps resolution monotone here too: a candidate
+                # may add a host or a fail-closed reason, never remove one.
+                specs = [
+                    _NETWORK_DESTINATION_ARG[c] for c in recognised if c in _NETWORK_DESTINATION_ARG
+                ]
+                destinations: "list[tuple[ast.AST, bool]]" = []
+                for index, keywords in specs:
+                    if len(node.args) > index:
+                        found = node.args[index]
+                    else:
+                        found = next(
+                            (kw.value for kw in node.keywords or [] if kw.arg in keywords), None
+                        )
+                    if found is not None:
+                        destinations.append((found, True))
+                if specs:
+                    # A splat can carry the destination past both spellings, and its contents are
+                    # not here to read: `requests.get(**{"url": "http://evil.example/"})`.
+                    if any(isinstance(a, ast.Starred) for a in node.args or []) or any(
+                        kw.arg is None for kw in node.keywords or []
+                    ):
+                        unreadable = True
+                elif node.args:
+                    # Not a call whose destination this screen knows how to locate, so arg0 is read
+                    # for a literal host only and never made to fail closed.
+                    destinations.append((node.args[0], False))
+                for destination, fails_closed in destinations:
+                    a0 = self._unwrapped_url_arg(destination)
+                    is_tuple = isinstance(a0, ast.Tuple)
+                    read = None if is_tuple and not a0.elts else (a0.elts[0] if is_tuple else a0)
+                    candidates = (
+                        [("", False)]
+                        if read is None
+                        else _literal_str_prefixes(read, self.literal_names)
+                    )
+                    for head, whole in candidates:
+                        host = None
+                        if is_tuple:
+                            if whole and head:
+                                host = head
+                        else:
+                            # Leading whitespace is stripped by the client before the URL is
+                            # parsed, so it cannot be used to hide the host: checked against
+                            # requests 2.34.2, `" https://evil.example/x"` is prepared as
+                            # `https://evil.example/x` and really is fetched. Matching the raw
+                            # literal read that as no host at all and let it through. A value that
+                            # is still unparsable after stripping is left as no host, which is
+                            # right: the client raises `MissingSchema` on it rather than reaching
+                            # anything.
+                            reading = head.lstrip()
+                            m = re.match(r"^\w+://([^/?#]+)", reading)
+                            # The host ends at the first `/?#`, so a literal truncated past that point
+                            # still names it in full; one truncated inside it does not
+                            # (`"http://evil." + tld`).
+                            if m and (whole or reading[m.end(1) :]):
+                                host = m.group(1)
+                        if host is None:
+                            unreadable = unreadable or (fails_closed and not whole)
+                        else:
+                            hosts.append(host)
 
-                if host_arg:
-                    if _is_metadata_host(host_arg):
-                        network_calls.append(
-                            {
-                                "type": "metadata_host_blocked",
-                                "line": getattr(node, "lineno", -1),
-                                "description": "Blocked: cloud-metadata host",
-                            }
-                        )
-                    elif not _is_trusted_host(host_arg):
-                        network_calls.append(
-                            {
-                                "type": "untrusted_host_blocked",
-                                "line": getattr(node, "lineno", -1),
-                                "description": (
-                                    "Blocked: host not in sandbox allowlist; "
-                                    "use an allowed informational source"
-                                ),
-                            }
-                        )
+                # 3) A recognised egress call whose host cannot be read is untrusted, not absent.
+                # `urlopen("http://" + h)` reaches the attacker's host exactly as the spelled-out literal
+                # does, and no later screen sees python-tool code.
+                if unreadable and specs and (node.args or node.keywords):
+                    network_calls.append(
+                        {
+                            "type": "unreadable_host_blocked",
+                            "line": getattr(node, "lineno", -1),
+                            "description": (
+                                "Blocked: network destination is not a literal the sandbox "
+                                "can check; write the allowed host out in full"
+                            ),
+                        }
+                    )
+                if any(_is_metadata_host(h) for h in hosts):
+                    network_calls.append(
+                        {
+                            "type": "metadata_host_blocked",
+                            "line": getattr(node, "lineno", -1),
+                            "description": "Blocked: cloud-metadata host",
+                        }
+                    )
+                elif any(not _is_trusted_host(h) for h in hosts):
+                    network_calls.append(
+                        {
+                            "type": "untrusted_host_blocked",
+                            "line": getattr(node, "lineno", -1),
+                            "description": (
+                                "Blocked: host not in sandbox allowlist; "
+                                "use an allowed informational source"
+                            ),
+                        }
+                    )
 
             is_open_call = (
                 (isinstance(node.func, ast.Name) and node.func.id == "open")
@@ -14036,7 +17687,11 @@ def _check_signal_escape_patterns(code: str):
                         )
             self.generic_visit(node)
 
-    NetworkAndIoVisitor().visit(tree)
+    _network_visitor = NetworkAndIoVisitor()
+    if network_possible:
+        _network_visitor.visit(tree)  # pass 1: gather aliases, star imports and shadows
+    _network_visitor.collecting = False
+    _network_visitor.visit(tree)  # pass 2: check every call against the final maps
 
     is_safe = (
         len(signal_tampering) == 0
@@ -14487,7 +18142,9 @@ def _split_frontend_suffix(text: str, name: "str | None") -> "tuple[str, str]":
     from .tool_loop_controller import strip_result_for_model
 
     try:
-        body = strip_result_for_model(text, name)
+        # Unredacted: this subtracts the body to recover the envelope, so the strip has to remove a
+        # suffix and nothing else. The model-bound copy is masked in `model_message`.
+        body = strip_result_for_model(text, name, redact = False)
     except Exception:
         logger.debug("frontend suffix split failed", exc_info = True)
         return text, ""
@@ -15690,6 +19347,13 @@ def _python_exec(
     if not code or not code.strip():
         return "No code provided."
 
+    # Refused in every mode, as in _bash_exec. Relative too: the cwd is a sibling of the auth dir.
+    _guard_workdir = _tool_workdir_for_guard(session_id) if _needs_a_workdir(code) else None
+    if _references_studio_credential_here(code, _guard_workdir) or _python_builds_a_credential_path(
+        code, _guard_workdir
+    ):
+        return _STUDIO_CREDENTIAL_BLOCKED
+
     # Validate imports and code safety (skipped when the sandbox is disabled)
     if not disable_sandbox:
         error = _check_code_safety(code)
@@ -15859,6 +19523,13 @@ def _bash_exec(
     if not command or not command.strip():
         return "No command provided."
 
+    # Refused in every mode, unlike the blocklist below, which Bypass Permissions opts out of: this
+    # install's live bearer would be replayed to whatever provider is serving the turn.
+    if _references_studio_credential_here(
+        command, _tool_workdir_for_guard(session_id) if _needs_a_workdir(command) else None
+    ):
+        return _STUDIO_CREDENTIAL_BLOCKED
+
     # Block dangerous commands (skipped when the sandbox is disabled)
     if not disable_sandbox:
         blocked = _find_blocked_commands(command)
@@ -15984,3 +19655,14 @@ def _bash_exec(
                 os.unlink(os.path.join(workdir, _scratch_name))
             except OSError:
                 pass
+
+
+# The out-of-sandbox approval subsystem lives in its own module: the silent roots, the shared
+# `_path_needs_approval` predicate and the two operand scanners. Imported at the END because the two
+# modules reference each other, and bound by name here so the call sites below read unchanged.
+from . import tool_path_approval as _path_gate  # noqa: E402
+
+_path_gate._bind(globals())
+_PATH_FLAG_SPECS = _path_gate._PATH_FLAG_SPECS
+_python_reaches_outside_sandbox = _path_gate._python_reaches_outside_sandbox
+_terminal_reaches_outside_sandbox = _path_gate._terminal_reaches_outside_sandbox

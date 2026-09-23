@@ -40,6 +40,12 @@ on:
       - 'tests/studio/**'
       - '.github/scripts/run-studio-permission-browser.sh'
       - '.github/scripts/run-studio-indicator-browser.sh'
+      # Reached by the installer this workflow already triggers on, so a commit touching
+      # only one of these changes what the job runs while matching nothing else in the
+      # list. install.sh --local hands off to the checked-out studio/setup.sh
+      # (install.sh:7351), setup.sh runs nvidia_probe.py (setup.sh:266), and setup.ps1
+      # runs install_python_stack.py and install_llama_prebuilt.py (setup.ps1:8127, 8655).
+      - 'studio/nvidia_probe.py'
       - '.github/workflows/studio-ui-smoke.yml'
       # Every server boot in this workflow shells out to that script, so an edit
       # to it changes what this workflow actually runs.
@@ -61,6 +67,31 @@ on:
       - '.github/actions/uv-cache-save/action.yml'
   push:
     branches: [main]
+    paths:
+      - 'studio/backend/**'
+      - 'studio/frontend/**'
+      - 'studio/setup.sh'
+      - 'studio/install_*.py'
+      - 'studio/node_prebuilt_pins.json'
+      - 'studio/prebuilt_core.py'
+      - 'studio/install_manifest.py'
+      - 'unsloth_cli/**'
+      - 'install.sh'
+      - 'pyproject.toml'
+      - 'tests/studio/**'
+      - '.github/scripts/run-studio-permission-browser.sh'
+      - '.github/scripts/run-studio-indicator-browser.sh'
+      - 'studio/nvidia_probe.py'
+      - '.github/workflows/studio-ui-smoke.yml'
+      - '.github/scripts/boot-studio-api-only.sh'
+      - '.github/scripts/wait-for-health.sh'
+      - '.github/scripts/hf-download-with-retry.sh'
+      - '.github/scripts/retry-with-apt-lock.sh'
+      - '.github/actions/install-unsloth-local/action.yml'
+      - '.github/actions/frontend-dist-restore/action.yml'
+      - '.github/actions/frontend-dist-save/action.yml'
+      - '.github/actions/uv-cache-restore/action.yml'
+      - '.github/actions/uv-cache-save/action.yml'
   workflow_dispatch:
 
 concurrency:
@@ -448,6 +479,20 @@ jobs:
           path: ~/.cache/ms-playwright
           key: ms-playwright-${{ runner.os }}-${{ steps.pw.outputs.version }}-${{ matrix.engine_key }}-v2
 
+      - name: Drive MTP companion download visibility
+        if: matrix.shard == 'extra'
+        env:
+          PW_SIDE: AFTER
+          PW_ART_DIR: logs/playwright_mtp
+        run: |
+          # A restored dist does not include the dependencies for the Vite fixture.
+          if [ ! -x studio/frontend/node_modules/.bin/vite ]; then
+            npm ci --prefix studio/frontend
+          fi
+          python -m pip install 'pillow>=10,<13'
+          export PW_BACKEND_PYTHON="$HOME/.unsloth/studio/unsloth_studio/bin/python"
+          python tests/studio/playwright_mtp_download_visibility.py
+
       - name: Reset auth + boot Unsloth
         if: matrix.shard == 'chat'
         run: |
@@ -593,6 +638,18 @@ jobs:
           mkdir -p logs/playwright_fontscale
           python tests/studio/playwright_ui_font_scale.py
 
+      # Seeds its own thread, so it needs no model and no id from an earlier step. Not in
+      # the chat shard: that one ends by clicking Shutdown, and this sweeps 7 viewports.
+      - name: Chat width presets (Playwright)
+        if: matrix.shard == 'extra'
+        env:
+          BASE_URL: http://127.0.0.1:18894
+          STUDIO_NEW_PW: ${{ env.STUDIO_EXTRA_NEW_PW }}
+          PW_ART_DIR: logs/playwright_chat_width
+        run: |
+          mkdir -p logs/playwright_chat_width
+          python tests/studio/playwright_chat_width.py
+
       # The owner creates an account, its setup code is private, and switching accounts in one
       # browser clears account data; the account is deleted at the end, so the owner is back alone.
       - name: Multi-account switch flow (Playwright)
@@ -653,6 +710,7 @@ jobs:
         run: |
           mkdir -p logs/playwright_image_cancel_retry
           python tests/studio/playwright_image_download_cancel_retry.py
+          PW_DOWNLOAD_ONLY=1 PW_ART_DIR="$PW_ART_DIR/download-only" python tests/studio/playwright_image_download_cancel_retry.py
 
       # Same drive with the checkpoint absent, so the plan stages two entries instead of one and
       # the queue's ordering and cancellation are covered as well as the single-entry path.
@@ -666,6 +724,36 @@ jobs:
         run: |
           mkdir -p logs/playwright_image_cancel_retry_cold
           python tests/studio/playwright_image_download_cancel_retry.py
+          PW_DOWNLOAD_ONLY=1 PW_ART_DIR="$PW_ART_DIR/download-only" python tests/studio/playwright_image_download_cancel_retry.py
+
+      - name: Image download queue regression (Playwright)
+        if: matrix.shard == 'extra'
+        env:
+          BASE_URL: http://127.0.0.1:18894
+          PW_ART_DIR: logs/playwright_image_download_queue
+        run: |
+          PW_ART_DIR="$PW_ART_DIR/queue" python tests/studio/playwright_image_download_queue.py
+          PW_ART_DIR="$PW_ART_DIR/load" PW_LOAD_SECOND=1 python tests/studio/playwright_image_download_queue.py
+          PW_ART_DIR="$PW_ART_DIR/late-plan" PW_LOAD_SECOND=1 PW_HOLD_FIRST_PLAN=1 python tests/studio/playwright_image_download_queue.py
+          PW_ART_DIR="$PW_ART_DIR/late-filename" PW_RESOLVE_FIRST=1 python tests/studio/playwright_image_download_queue.py
+          PW_ART_DIR="$PW_ART_DIR/late-quant" PW_LOAD_SECOND=1 PW_HOLD_FIRST_PLAN=1 PW_DIFFERENT_QUANT=1 python tests/studio/playwright_image_download_queue.py
+
+      # The Text encoder precision control: what the select sends to the plan and to the load, that
+      # Default omits the field entirely, that a refresh race cannot leave a stale reading, and that
+      # the select follows the build the backend reports back, downgrade or decline included.
+      - name: Image text encoder precision regression (Playwright)
+        if: matrix.shard == 'extra'
+        env:
+          BASE_URL: http://127.0.0.1:18894
+          STUDIO_PW: ${{ env.STUDIO_EXTRA_NEW_PW }}
+          PW_ART_DIR: logs/playwright_image_text_encoder
+        run: |
+          mkdir -p logs/playwright_image_text_encoder
+          PW_ART_DIR="$PW_ART_DIR/applied" python tests/studio/playwright_image_text_encoder.py
+          PW_ART_DIR="$PW_ART_DIR/completion-first" PW_COMPLETION_FIRST=1 \
+            python tests/studio/playwright_image_text_encoder.py
+          PW_ART_DIR="$PW_ART_DIR/declined" PW_DECLINE=1 \
+            python tests/studio/playwright_image_text_encoder.py
 
       - name: Tool activity collapse regression (Playwright)
         if: matrix.shard == 'extra'
@@ -850,6 +938,7 @@ jobs:
             logs/install.log
             logs/server-logs/
             logs/playwright
+            logs/playwright_mtp
             logs/playwright-permissions-*
             logs/playwright_extra
             logs/playwright_mcp_arguments
@@ -859,6 +948,8 @@ jobs:
             logs/playwright_image_footprint
             logs/playwright_image_cancel_retry
             logs/playwright_image_cancel_retry_cold
+            logs/playwright_image_download_queue
+            logs/playwright_image_text_encoder
             logs/playwright_modelcfg
             logs/playwright_memory_estimate
             logs/playwright_ime

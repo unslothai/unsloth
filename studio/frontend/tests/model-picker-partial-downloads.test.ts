@@ -74,7 +74,7 @@ test("a partial is marked the way the Hub marks one", () => {
   const start = PICKERS.indexOf("function PartialBadge(");
   assert.ok(start > 0, "the picker has a partial mark");
   const badge = PICKERS.slice(start, PICKERS.indexOf("\n}", start));
-  assert.match(badge, /size-\[5px\] rounded-full bg-status-warning/);
+  assert.match(badge, /size-\[calc\(5px\*var\(--ui-space-scale,1\)\)\] rounded-full bg-status-warning/);
   assert.match(badge, /aria-label="Partial download"/);
   assert.ok(
     MODELS_TABLE.includes('aria-label="Partial download"') &&
@@ -432,8 +432,13 @@ test("a partial pick carries no load identity", () => {
   // snapshot told that page the weights were there and skipped the download.
   assert.equal(
     PICKERS.split("loadId: isPartial ? undefined : c.load_id,").length - 1,
-    3,
-    "every cached-row pick drops it when the snapshot is torn",
+    2,
+    "both multi-quant cached-row picks drop it when the snapshot is torn",
+  );
+  assert.equal(
+    PICKERS.split("loadId: isDownloaded ? c.load_id : undefined,").length - 1,
+    1,
+    "the sole-quant pick carries it only when that quant is complete",
   );
   // The GGUF variant select set this rule first; the two must not diverge.
   assert.ok(
@@ -514,9 +519,20 @@ test("a partial never reaches the complete-download lookup", () => {
     /\[\.\.\.cachedGguf, \.\.\.cachedModels\]\n\s*\.filter\(\(c\) => !c\.partial\)/,
     "both cached lists are filtered before the ids land in the set",
   );
-  // The search pick still reads that set, which is what makes the guard above load bearing.
-  assert.ok(
-    PICKERS.includes("isDownloaded: downloadedSet.has(id.toLowerCase()),"),
+  // The search pick still reads that set (through cachedIdFor), which is what makes the guard
+  // above load bearing.
+  assert.ok(PICKERS.includes("isDownloaded: cached !== null,"));
+  const lookup = PICKERS.slice(PICKERS.indexOf("const cachedIdFor = useCallback("));
+  assert.match(
+    lookup.slice(0, lookup.indexOf("[aliasesOf, downloadedSet]")),
+    /aliasesOf\(id\)\.find\(\(alias\) => downloadedSet\.has\(alias\.toLowerCase\(\)\)\)/,
+    "every alias is checked against the complete-download set",
+  );
+  const aliases = PICKERS.slice(PICKERS.indexOf("const aliasesOf = useCallback("));
+  assert.match(
+    aliases.slice(0, aliases.indexOf("[catalog]")),
+    /\[id, artifact\.repoId, artifact\.upstreamRepoId\]/,
+    "a row, its mirror and the vendor repo are all aliases",
   );
 });
 
@@ -525,9 +541,15 @@ test("Hub rows can still tell a partial apart from an absent model", () => {
   // never fetched, so the mark comes from its own set rather than from the on-disk one.
   assert.ok(PICKERS.includes("const partialSet = useMemo("));
   assert.equal(
-    PICKERS.split("partial={partialSet.has(id.toLowerCase())}").length - 1,
+    PICKERS.split("partial={isPartialRow(id)}").length - 1,
     3,
     "Recommended, its filtered twin, and the typed search list alike",
+  );
+  // The mark yields to a complete alias, which is what the click then loads.
+  const partialRow = PICKERS.slice(PICKERS.indexOf("const isPartialRow = useCallback("));
+  assert.match(
+    partialRow.slice(0, partialRow.indexOf("[cachedIdFor, partialSet]")),
+    /cachedIdFor\(id\) === null && partialSet\.has\(id\.toLowerCase\(\)\)/,
   );
   // The typed list is the one that was missed: it renders from searchRowIds, not from the
   // curated ids, so a partial reached by typing its name showed nothing at all.
@@ -535,7 +557,7 @@ test("Hub rows can still tell a partial apart from an absent model", () => {
   assert.ok(
     search
       .slice(0, search.indexOf("</ModelRow>") + 1 || 4000)
-      .includes("partial={partialSet.has(id.toLowerCase())}"),
+      .includes("partial={isPartialRow(id)}"),
     "the live search row marks one too",
   );
   // A partial must never take the green on-disk dot; ModelRow already yields one to the other.

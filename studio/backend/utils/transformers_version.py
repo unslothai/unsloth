@@ -117,31 +117,40 @@ def _hf_proxy_opener(url: str):
     import urllib.request
 
     try:
-        from utils.utils import hf_proxy_for_endpoint, hf_proxy_usable_by_urllib
+        from utils.utils import (
+            AuthSafeRedirectHandler,
+            hf_proxy_for_endpoint,
+            hf_proxy_usable_by_urllib,
+        )
 
         proxy = hf_proxy_for_endpoint(url)
         scheme = urllib.parse.urlparse(url).scheme or "https"
         if proxy:
             if not hf_proxy_usable_by_urllib(proxy):
                 return None
-            return urllib.request.build_opener(urllib.request.ProxyHandler({scheme: proxy}))
+            return urllib.request.build_opener(
+                urllib.request.ProxyHandler({scheme: proxy}), AuthSafeRedirectHandler()
+            )
         if any(urllib.request.getproxies().get(key) for key in (scheme, "all")):
             # The Hub client bypasses the proxy for this host; force a direct opener so
             # urllib's coarser NO_PROXY parsing cannot send the request through it anyway.
-            return urllib.request.build_opener(urllib.request.ProxyHandler({}))
+            return urllib.request.build_opener(
+                urllib.request.ProxyHandler({}), AuthSafeRedirectHandler()
+            )
     except Exception:
         pass
     return None
 
 
 def _hf_urlopen(req, timeout: int):
-    """``urlopen`` through the same proxy huggingface_hub would use for this request."""
-    import urllib.request
+    """``urlopen`` through the same proxy huggingface_hub would use for this request,
+    with redirects that cannot carry the Authorization header off-origin."""
+    from utils.utils import auth_safe_open
 
     opener = _hf_proxy_opener(req.full_url)
     if opener is not None:
         return opener.open(req, timeout = timeout)
-    return urllib.request.urlopen(req, timeout = timeout)
+    return auth_safe_open(req, timeout = timeout)
 
 
 def hf_endpoint_unreachable(
@@ -834,6 +843,7 @@ def _check_tokenizer_config_needs_v5(model_name: str, hf_token: str | None = Non
         return False
 
     # --- Fall back to fetching from HuggingFace ---
+    import urllib.error
     import urllib.request
 
     url = _hf_raw_url(model_name, "tokenizer_config.json")
@@ -854,6 +864,34 @@ def _check_tokenizer_config_needs_v5(model_name: str, hf_token: str | None = Non
             )
         _tokenizer_class_cache[cache_key] = result
         return result
+    except urllib.error.HTTPError as exc:
+        # 401/403/404 are legitimate misses: a gated repo read without a token is
+        # normal, not a mirror fault. Anything else means the endpoint answered but
+        # failed, the signature of a mirror that does not proxy /resolve/ paths.
+        if exc.code in (401, 403, 404):
+            logger.debug(
+                "tokenizer_config.json not readable for '%s' at %s: %s", model_name, url, exc
+            )
+        else:
+            logger.warning(
+                "HTTP %s fetching tokenizer_config.json for '%s' from %s; "
+                "if HF_ENDPOINT is set to a mirror, verify it proxies /resolve/ paths",
+                exc.code,
+                model_name,
+                url,
+            )
+        _tokenizer_class_cache[cache_key] = False
+        return False
+    except urllib.error.URLError as exc:
+        logger.warning(
+            "Connection error fetching tokenizer_config.json for '%s' from %s: %s; "
+            "if HF_ENDPOINT is set to a mirror, verify it is reachable",
+            model_name,
+            url,
+            exc,
+        )
+        _tokenizer_class_cache[cache_key] = False
+        return False
     except Exception as exc:
         logger.debug("Could not fetch tokenizer_config.json for '%s': %s", model_name, exc)
         _tokenizer_class_cache[cache_key] = False
@@ -978,7 +1016,16 @@ def _load_config_json(model_name: str, hf_token: str | None = None) -> dict | No
         if exc.code in (401, 403, 404):
             logger.debug("config.json access denied for '%s': %s", model_name, exc)
             return None
-        logger.debug("Could not fetch config.json for '%s': %s", model_name, exc)
+        # 5xx: debug here hides a broken mirror behind a later transformers crash.
+        logger.warning(
+            "HTTP %s fetching config.json for '%s' from %s; "
+            "if HF_ENDPOINT is set to a mirror, verify it proxies /resolve/ paths",
+            exc.code,
+            model_name,
+            url,
+        )
+        # Transient: serve the hub cache uncached so the next call retries the network,
+        # but never another caller's cached private metadata.
         return None if cache_denied else _config_json_from_hf_cache(model_name)
     except Exception as exc:
         logger.debug("Could not fetch config.json for '%s': %s", model_name, exc)

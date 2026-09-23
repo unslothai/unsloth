@@ -5,8 +5,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  DENSE_QUANT_KINDS,
   PRECISION_REFUSAL_TITLE,
   type ResolvedControl,
+  isDenseQuantKind,
   isPrecisionRefusal,
   isResolvedHonored,
   resolvedBadge,
@@ -321,4 +323,136 @@ test("a precision refusal is recognised so it can be shown as an actionable toas
   assert.equal(isPrecisionRefusal("text_encoder_quant='int8' could not be used: nope."), true);
   assert.equal(isPrecisionRefusal("A diffusion load is already in progress."), false);
   assert.equal(PRECISION_REFUSAL_TITLE, "Requested precision is not available");
+});
+
+// The supported kinds mirror the backend constant.
+test("the dense-quant kinds are the two the backend quantises", () => {
+  assert.deepEqual([...DENSE_QUANT_KINDS], ["gguf", "pipeline"]);
+  assert.equal(isDenseQuantKind("gguf"), true);
+  assert.equal(isDenseQuantKind("pipeline"), true);
+  assert.equal(isDenseQuantKind("single_file"), false);
+  assert.equal(isDenseQuantKind(" Pipeline "), true);
+  assert.equal(isDenseQuantKind(null), false);
+  assert.equal(isDenseQuantKind(undefined), false);
+  assert.equal(isDenseQuantKind(""), false);
+});
+
+const ENCODER_OPTIONS = ["auto", "fp8", "fp8_dynamic", "int8", "nvfp4"] as const;
+const toEncoderOption = (v: string) =>
+  ENCODER_OPTIONS.find((o) => o === v || (o === "auto" && (v === "none" || v === "off"))) ?? null;
+
+test("the text encoder select follows what the loaded build actually ran", () => {
+  // "off" (and "none", from an older backend) both mean dense, so both seed Default.
+  assert.equal(
+    resolvedSelectValue({ value: "off", source: "auto", reason: "" }, toEncoderOption),
+    "auto",
+  );
+  assert.equal(
+    resolvedSelectValue({ value: "none", source: "auto", reason: "" }, toEncoderOption),
+    "auto",
+  );
+  assert.equal(
+    resolvedSelectValue(
+      { value: "fp8_dynamic", requested: "fp8_dynamic", source: "explicit", status: "applied", reason: "" },
+      toEncoderOption,
+    ),
+    "fp8_dynamic",
+  );
+  // Downgraded: the select follows what engaged, not what was asked.
+  assert.equal(
+    resolvedSelectValue(
+      { value: "fp8", requested: "int8", source: "explicit", status: "fell_back", reason: "int8 needs resident weights" },
+      toEncoderOption,
+    ),
+    "fp8",
+  );
+  assert.equal(
+    resolvedSelectValue(
+      { value: "off", requested: "nvfp4", source: "explicit", status: "fell_back", reason: "no Blackwell GPU" },
+      toEncoderOption,
+    ),
+    "auto",
+  );
+});
+
+test("the reseed key moves when the text encoder build changes, and only then", () => {
+  const atLoad = {
+    transformer_quant: { value: "fp8", requested: "fp8", source: "explicit", status: "applied", reason: "" },
+    text_encoder_quant: { value: "fp8", requested: "fp8", source: "explicit", status: "applied", reason: "" },
+    memory_mode: { value: "balanced", source: "auto", reason: "" },
+    attention_backend: { value: "native", source: "auto", reason: "" },
+  } satisfies Record<string, ResolvedControl>;
+  const key = resolvedSeedKey(atLoad);
+
+  // Same build, new wording: keying on the whole serialized entry re-seeded here and lost the edit.
+  assert.equal(
+    resolvedSeedKey({
+      ...atLoad,
+      text_encoder_quant: { ...atLoad.text_encoder_quant, reason: "re-measured after the first image" },
+    }),
+    key,
+    "a reason rewrite must not re-seed",
+  );
+  assert.notEqual(
+    resolvedSeedKey({
+      ...atLoad,
+      text_encoder_quant: { value: "off", requested: "fp8", source: "explicit", status: "fell_back", reason: "declined" },
+    }),
+    key,
+    "a declined encoder must re-seed",
+  );
+  assert.notEqual(
+    resolvedSeedKey({
+      ...atLoad,
+      text_encoder_quant: { value: "int8", requested: "int8", source: "explicit", status: "applied", reason: "" },
+    }),
+    key,
+  );
+});
+
+// The text-encoder select's own option vocabulary, as images-page.tsx spells it. Kept in step
+// with that file: these two mappings are the only thing standing between "Dense pinned" and
+// "Default", which since the family-default change are no longer the same request.
+const TE_OPTIONS = ["auto", "none", "fp8", "fp8_dynamic", "int8", "nvfp4"] as const;
+const toTeOption = (v: string) =>
+  TE_OPTIONS.find((o) => o === v || (o === "none" && v === "off")) ?? null;
+
+test("an unset text-encoder request reseeds as Default even when a scheme engaged", () => {
+  // The case a naive fix breaks. Once a family default can pick fp8 for a request nobody made,
+  // mapping the ENGAGED value back would pin fp8 into the select, and the next load would send
+  // it explicitly. `source: "auto"` is what keeps this honest, so assert it end to end rather
+  // than trusting the early return to stay.
+  const autoFp8: ResolvedControl = {
+    value: "fp8",
+    requested: null,
+    source: "auto",
+    status: "applied",
+    reason: "selected automatically for qwen-image-2.1 (no text_encoder_quant requested)",
+  };
+  assert.equal(resolvedSelectValue(autoFp8, toTeOption), "auto");
+});
+
+test("a pinned dense text encoder reseeds as Dense, not Default", () => {
+  // The reported bug: "none"/"off" folded into "auto", so the select snapped back to Default
+  // after a dense load and the next reapply omitted the field, silently restoring the family's
+  // fp8 default and changing output.
+  const pinnedDense: ResolvedControl = {
+    value: "off",
+    requested: "none",
+    source: "explicit",
+    status: "applied",
+    reason: "dense bf16 text encoder(s) loaded",
+  };
+  assert.equal(resolvedSelectValue(pinnedDense, toTeOption), "none");
+
+  // A declined scheme ran dense too, and must read as what ACTUALLY ran, same as the
+  // transformer control.
+  const declined: ResolvedControl = {
+    value: "off",
+    requested: "nvfp4",
+    source: "explicit",
+    status: "unsupported",
+    reason: "nvfp4 needs Blackwell sm_100+",
+  };
+  assert.equal(resolvedSelectValue(declined, toTeOption), "none");
 });

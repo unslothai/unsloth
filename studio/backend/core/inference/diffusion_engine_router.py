@@ -35,9 +35,14 @@ from core.inference.diffusion_families import (
 )
 from core.inference.sd_cpp_backend import (
     _install_allowed,
+    _managed_tree_in_use,
     _server_binary_runnable,
     ensure_sd_cpp_binary,
     ensure_sd_server_binary,
+    note_unlaunchable_accelerator_build,
+    preferred_accelerator,
+    sd_cpp_binary_runs_family,
+    usable_or_recorded_failure,
 )
 from core.inference.sd_cpp_engine import (
     ENGINE_DIFFUSERS,
@@ -192,11 +197,24 @@ def begin_load_on(expected_engine: Any, start: Callable[[], Any]) -> Any:
         return start()
 
 
+def _selected_card(gpu_ordinal) -> Optional[str]:
+    """The card at an already RESOLVED ordinal, or ``None``, meaning every record applies. Never
+    re-derived from the id list: free-VRAM ranking can name a different card the second time."""
+    if gpu_ordinal is None:
+        return None
+    try:
+        from core.inference.sd_cpp_backend import selected_card_identity
+        return selected_card_identity(gpu_ordinal)
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def select_and_activate_engine(
     fam: DiffusionFamily,
     *,
     hf_token: Optional[str] = None,
     model_kind: Optional[str] = None,
+    gpu_ordinal: Optional[int] = None,
 ) -> Any:
     """Pick + activate the engine for loading ``fam`` on this host; return the engine.
 
@@ -224,29 +242,81 @@ def select_and_activate_engine(
 
     binary = None
     server_binary = None
+    incapable_build = False
     if policy_eligible and fam_ok:
+        # Once, so server and CLI cannot disagree.
+        selected_card = _selected_card(gpu_ordinal)
+        install_accelerator = preferred_accelerator(
+            _install_accelerator_for(backend), selected_card
+        )
         # Probe the resident sd-server FIRST (the backend prefers it): a server-only install must still route to
         # native and should not pay an sd-cli download. Install the accelerator-matched build so a forced-native GPU
         # load gets the GPU server.
-        server_binary = ensure_sd_server_binary(
-            allow_install = _install_allowed(),
-            accelerator = _install_accelerator_for(backend),
+        # Offline an ensure hands back the condemned ROCm build, so a substitute is refused; a
+        # DEFERRED upgrade keeps native for the teardown to land.
+        upgrade_is_deferred = _managed_tree_in_use() and _install_allowed()
+
+        def _accept(candidate):
+            if candidate and upgrade_is_deferred:
+                return candidate
+            return usable_or_recorded_failure(candidate, install_accelerator, selected_card)
+
+        server_binary = _accept(
+            ensure_sd_server_binary(
+                allow_install = _install_allowed(),
+                accelerator = install_accelerator,
+            )
         )
+        unlaunchable_server: Optional[str] = None
         if server_binary and not _server_binary_runnable(server_binary):
             logger.warning(
                 "sd-server at %s is present but not runnable; not using it", server_binary
             )
+            # Held for the single recorder below.
+            unlaunchable_server = server_binary
             server_binary = None
         # sd-cli is the one-shot fallback: always LOCATE an existing binary, but auto-INSTALL only when there is no
         # usable server. Probe runnability first, else a present but non-runnable binary passes as available and fails
         # inside the background load.
-        binary = ensure_sd_cpp_binary(
-            allow_install = _install_allowed() and server_binary is None,
-            accelerator = _install_accelerator_for(backend),
+        binary = _accept(
+            ensure_sd_cpp_binary(
+                allow_install = _install_allowed() and server_binary is None,
+                accelerator = install_accelerator,
+            )
         )
+        unlaunchable_cli: Optional[str] = None
         if binary and SdCppEngine(binary = binary).version() is None:
             logger.warning("sd-cli at %s is present but not runnable; not using it", binary)
+            unlaunchable_cli = binary
             binary = None
+        if binary is None and server_binary is None and (unlaunchable_cli or unlaunchable_server):
+            # One strike per bundle, only when NEITHER executable runs: one failing alone says
+            # nothing about the accelerator, and two strikes from one install event would divert.
+            # Here, not in the load, because a build the router rejects never reaches the load.
+            note_unlaunchable_accelerator_build(
+                unlaunchable_cli or unlaunchable_server, card = selected_card
+            )
+        # Runnable is not the same as capable. A build installed before this family's architecture
+        # existed upstream is reused untouched -- nothing upgrades a runnable build of the right
+        # accelerator -- and sd-cli only discovers it cannot read the model deep inside the load,
+        # which for the server means a failed load and for the one-shot path a backend that
+        # reported ready and dies on the first generation. Diffusers can run it, so drop the
+        # incapable binary here and let the fallback below say why.
+        for name, candidate in (("sd-server", server_binary), ("sd-cli", binary)):
+            if candidate and not sd_cpp_binary_runs_family(candidate, fam):
+                incapable_build = True
+                logger.warning(
+                    "%s at %s predates %s support; using diffusers. Reinstall the native engine "
+                    "(delete the managed stable-diffusion.cpp install, or point SD_CLI_PATH at a "
+                    "build from after upstream added it) to use it here",
+                    name,
+                    candidate,
+                    fam.name,
+                )
+                if name == "sd-server":
+                    server_binary = None
+                else:
+                    binary = None
 
     native_available = bool(binary or server_binary) and policy_eligible and fam_ok
     choice = select_diffusion_engine(
@@ -260,6 +330,8 @@ def select_and_activate_engine(
         reason = f"GPU backend '{backend}' uses diffusers"
     elif not fam_ok:
         reason = f"family '{fam.name}' has no native sd.cpp asset mapping"
+    elif incapable_build:
+        reason = f"the installed sd.cpp build predates '{fam.name}' support"
     elif not (binary or server_binary):
         reason = "native sd.cpp binary unavailable"
     else:
@@ -267,21 +339,52 @@ def select_and_activate_engine(
     return _activate(ENGINE_DIFFUSERS, reason)
 
 
-def native_binary_installed() -> bool:
+def native_binary_installed(
+    *, gpu_ordinal: Optional[int] = None, fam: Optional[DiffusionFamily] = None
+) -> bool:
     """Whether a RUNNABLE sd.cpp binary is already on disk, installing nothing to find out.
 
     Separated from the prediction because the two answers differ where it matters: prediction
     counts an absent binary as available whenever installing one is allowed, and a caller that
     must know whether selection could still fall back to diffusers needs the unassumed answer.
+
+    Filters exactly as selection does, card included, or the plan stages the wrong engine's files.
+    Given ``fam``, that includes selection's architecture gate: a build that cannot run this family
+    is not a native route for it, and a prediction that says otherwise stages sd-cli's companion
+    VAE and text encoder for a load that goes to diffusers. Without ``fam`` the question is the
+    older one, "is there a binary at all".
     """
-    server_binary = ensure_sd_server_binary(allow_install = False)
-    if server_binary and _server_binary_runnable(server_binary):
+    selected_card = _selected_card(gpu_ordinal)
+    install_accelerator = preferred_accelerator(
+        _install_accelerator_for(resolve_diffusion_device_target().backend), selected_card
+    )
+    server_binary = usable_or_recorded_failure(
+        ensure_sd_server_binary(allow_install = False, accelerator = install_accelerator),
+        install_accelerator,
+        selected_card,
+    )
+    if (
+        server_binary
+        and _server_binary_runnable(server_binary)
+        and (fam is None or sd_cpp_binary_runs_family(server_binary, fam))
+    ):
         return True
-    binary = ensure_sd_cpp_binary(allow_install = False)
+    binary = usable_or_recorded_failure(
+        ensure_sd_cpp_binary(allow_install = False, accelerator = install_accelerator),
+        install_accelerator,
+        selected_card,
+    )
+    if fam is not None and binary and not sd_cpp_binary_runs_family(binary, fam):
+        return False
     return bool(binary and SdCppEngine(binary = binary).version() is not None)
 
 
-def predict_engine(fam: DiffusionFamily, *, model_kind: Optional[str] = None) -> str:
+def predict_engine(
+    fam: DiffusionFamily,
+    *,
+    model_kind: Optional[str] = None,
+    gpu_ordinal: Optional[int] = None,
+) -> str:
     """The engine a load of ``fam`` would select on this host, WITHOUT any side effect.
 
     Same policy as ``select_and_activate_engine`` -- and it has to be, because the download plan
@@ -311,7 +414,14 @@ def predict_engine(fam: DiffusionFamily, *, model_kind: Optional[str] = None) ->
     if not (policy_eligible and family_sd_cpp_supported(fam)):
         return ENGINE_DIFFUSERS
 
-    native_available = native_binary_installed() or _install_allowed()
+    # A permitted install counts as available only where selection would actually perform one.
+    # ``ensure_*_binary`` keeps a runnable build of the right accelerator untouched, so a resident
+    # build that cannot run this family is never upgraded away, and predicting native for it would
+    # stage sd-cli's companions for a load the router sends to diffusers. With nothing resident the
+    # install happens and lands on the pinned prebuilt, which is current by definition.
+    native_available = native_binary_installed(gpu_ordinal = gpu_ordinal, fam = fam) or (
+        _install_allowed() and not native_binary_installed(gpu_ordinal = gpu_ordinal)
+    )
     return select_diffusion_engine(
         backend, native_available = native_available, prefer_native = prefer_native
     )

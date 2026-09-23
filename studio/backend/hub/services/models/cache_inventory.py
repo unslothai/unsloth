@@ -20,6 +20,7 @@ from hub.schemas.inventory import ModelFormat
 from hub.utils import inventory_scan as hf_cache_scan
 from hub.utils import download_manifest, download_registry
 from hub.utils.hf_cache_state import snapshot_selection_key
+from hub.utils.host_paths import scrub_paths
 from hub.utils.snapshot_filters import (
     snapshot_download_blob_hashes,
     snapshot_download_size,
@@ -134,6 +135,72 @@ def get_repo_snapshot_metadata_cached(
         while len(_repo_size_cache) > _REPO_SIZE_CACHE_MAX:
             _repo_size_cache.popitem(last = False)
     return total, blob_hashes
+
+
+_mlx_plan_cache: OrderedDict = OrderedDict()
+
+
+def _cached_mlx_siblings(repo_id):
+    from huggingface_hub.hf_api import RepoSibling
+
+    # The raw tree retains LFS SHA256s, not just Git pointer IDs.
+    from huggingface_hub._tree_cache import read_tree_cache
+    from hub.utils.hf_cache_state import preferred_repo_cache_dirs
+
+    for entry in preferred_repo_cache_dirs("model", repo_id):
+        snapshot = hf_cache_scan.default_ref_snapshot(entry)
+        tree = read_tree_cache(str(entry), snapshot.name) if snapshot is not None else None
+        if tree:
+            return [
+                RepoSibling(rfilename = path, size = item.size, blob_id = item.lfs_sha256 or item.blob_id)
+                for path, item in tree.items()
+            ]
+    return []
+
+
+def get_mlx_load_plan_cached(repo_id: str, hf_token: Optional[str] = None):
+    from hub.utils.snapshot_filters import blob_hashes_for_siblings, mlx_load_siblings
+    from huggingface_hub import HfApi
+
+    key = (repo_id, hf_cache_scan.token_fingerprint(hf_token))
+    with _repo_size_cache_lock:
+        cached = _mlx_plan_cache.get(key)
+        if cached is not None and time.monotonic() - cached[1] < _REPO_SIZE_POS_TTL:
+            _mlx_plan_cache.move_to_end(key)
+            return cached[0]
+    try:
+        siblings = (
+            HfApi(token = hf_token)
+            .model_info(
+                repo_id,
+                files_metadata = True,
+                timeout = _MODEL_METADATA_TIMEOUT_SECONDS,
+            )
+            .siblings
+        )
+    except Exception:
+        try:
+            siblings = _cached_mlx_siblings(repo_id)
+        except Exception:
+            siblings = []
+    siblings = mlx_load_siblings(siblings)
+    files = tuple(
+        download_manifest.ExpectedFile(
+            path = item.rfilename,
+            size = int(item.size or 0),
+            sha256 = getattr(getattr(item, "lfs", None), "sha256", None),
+        )
+        for item in siblings
+    )
+    plan = (sum(file.size for file in files), blob_hashes_for_siblings(siblings), files)
+    if not siblings and cached is not None:
+        plan = cached[0]
+    with _repo_size_cache_lock:
+        _mlx_plan_cache[key] = (plan, time.monotonic())
+        _mlx_plan_cache.move_to_end(key)
+        while len(_mlx_plan_cache) > _REPO_SIZE_CACHE_MAX:
+            _mlx_plan_cache.popitem(last = False)
+    return plan
 
 
 def all_hf_cache_scans():
@@ -513,7 +580,7 @@ def _scan_cached_gguf(
         )
     except Exception as e:
         # The index is built once for the whole scan and outside the per-repository try, so one undecodable cache directory name, hashed for the repo key, answered 500 with every valid row hidden.
-        logger.warning("Could not build shared cached-GGUF state index: %s", e)
+        logger.warning("Could not build shared cached-GGUF state index: %s", scrub_paths(e))
         variant_states = None
 
     seen_lower: dict[str, dict] = {}
@@ -625,7 +692,7 @@ def _scan_cached_gguf(
                     existing["last_modified"] = last_modified
             except Exception as e:
                 repo_label = getattr(repo_info, "repo_id", "<unknown>")
-                logger.warning(f"Skipping cached GGUF repo {repo_label}: {e}")
+                logger.warning("Skipping cached GGUF repo %s: %s", repo_label, scrub_paths(e))
                 continue
     return sorted(seen_lower.values(), key = lambda c: c["repo_id"])
 
@@ -976,7 +1043,7 @@ def _scan_cached_models(
             active_hub_cache = active_hub_cache,
         )
     except Exception as e:
-        logger.warning("Could not build shared cached-model state index: %s", e)
+        logger.warning("Could not build shared cached-model state index: %s", scrub_paths(e))
         variant_states = None
 
     seen_lower: dict[str, dict] = {}
@@ -1155,7 +1222,7 @@ def _scan_cached_models(
                     existing["last_modified"] = last_modified
             except Exception as e:
                 repo_label = getattr(repo_info, "repo_id", "<unknown>")
-                logger.warning(f"Skipping cached model repo {repo_label}: {e}")
+                logger.warning("Skipping cached model repo %s: %s", repo_label, scrub_paths(e))
                 continue
     cached = sorted(seen_lower.values(), key = lambda c: c["repo_id"])
     logger.info(

@@ -32,23 +32,15 @@ const DIST = resolve(HERE, "..", "dist");
  * machine.
  */
 export const BUDGET = {
-  // Measured 1,496.2 KB transfer / 5,207.2 KB raw at 17363f8a2. Raised for the audio placement control: same
-  // build both sides, merge base 1,560.9 KB transfer against branch 1,562.6 KB, so it crossed the old 1,562.5 KB
-  // ceiling by a tenth of a kilobyte.
-  //
-  // Raised again after a second squeeze. main measures 1,585.6 KB transfer and passed
-  // 1,645,000 by 20.9 KB, which is 1.3% and about six days at the 3.7 KB/day this file
-  // has drifted since 17363f8a2. That is the same margin the previous raise left, and it
-  // lasted six days before main went red again on a commit whose only frontend change was
-  // one English sentence rewritten shorter.
-  //
-  // Nothing became eager that should not be: across the whole window the eager chunk set
-  // gained no member, so there is nothing here to lazy-load. What runs out is headroom.
-  // 1,690,000 leaves 64.8 KB (4.1%), the proportion #8964 shipped with, which absorbed 17
-  // days. rawBytes stays put at 64.7 KB spare so both halves come up for one re-measure
-  // together instead of each dragging main red on its own.
-  transferBytes: 1_690_000,
-  rawBytes: 5_500_000,
+  // Measured, one machine and one build per side, so the pair is comparable to itself rather
+  // than to a runner's: 5,599.7 KB raw / 1,663.4 KB transfer at 0065fade6 once its two
+  // ineffective import() calls were made static, leaving 210.8 KB and 65.1 KB spare, the margin
+  // the previous raise chose. Both halves are re-measured TOGETHER, or each drags main red on
+  // its own. Since that raise the eager set gained one 303-byte chunk (#11607's
+  // thread-message-slot split) and otherwise grew inside chunks already eager: #11607's fork
+  // boundary and #11648's UI scale, so what ran out is headroom, not laziness.
+  transferBytes: 1_770_000,
+  rawBytes: 5_950_000,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
@@ -470,7 +462,9 @@ function main(): number {
       "Something is now imported statically that the first screen does not need. " +
         "Either load it on use (React.lazy, lazyRouteComponent, or a dynamic import " +
         "at the point of use), or raise BUDGET in this file in the same PR, with the " +
-        "measurement that justifies it.",
+        "measurement that justifies it. If the chunk count above went up, check the " +
+        "opposite first: a dynamic import of a module the startup set already carries " +
+        "loads nothing later, and splits that module's graph into extra startup chunks.",
     );
     return 1;
   }

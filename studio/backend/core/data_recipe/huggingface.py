@@ -6,6 +6,7 @@ from __future__ import annotations
 from core.training.account_jobs import account_hf_token
 import json
 from pathlib import Path
+import tempfile
 
 from utils.paths import recipe_datasets_root, resolve_dataset_path
 
@@ -48,6 +49,12 @@ def _resolve_recipe_artifact_path(artifact_path: str) -> Path:
     return resolved
 
 
+def _drop_seed_token(builder_config: dict) -> None:
+    # The hf and github_repo seed sources save their token in plain text.
+    seed_config = builder_config.get("data_designer", {}).get("seed_config") or {}
+    seed_config.get("source", {}).pop("token", None)
+
+
 def publish_recipe_dataset(
     *,
     artifact_path: str,
@@ -55,6 +62,7 @@ def publish_recipe_dataset(
     description: str,
     hf_token: str | None = None,
     private: bool = False,
+    link_endpoint: str | None = None,
 ) -> str:
     hf_token = account_hf_token(hf_token)
     dataset_path = _resolve_recipe_artifact_path(artifact_path)
@@ -94,6 +102,7 @@ def publish_recipe_dataset(
         if builder_config_path.exists():
             with builder_config_path.open(encoding = "utf-8") as fh:
                 builder_config = json.load(fh)
+            _drop_seed_token(builder_config)
 
         card = DataDesignerDatasetCard.from_metadata(
             metadata = metadata,
@@ -118,12 +127,22 @@ def publish_recipe_dataset(
             repo_id = repo_id,
             processors_folder = dataset_path / PROCESSORS_OUTPUTS_FOLDER_NAME,
         )
-        client._upload_config_files(
-            repo_id = repo_id,
-            metadata_path = metadata_path,
-            builder_config_path = builder_config_path,
-        )
+        with tempfile.TemporaryDirectory() as scrubbed_dir:
+            scrubbed_config_path = Path(scrubbed_dir) / SDG_CONFIG_FILENAME
+            if builder_config is not None:
+                with scrubbed_config_path.open("w", encoding = "utf-8") as fh:
+                    json.dump(builder_config, fh, indent = 2, ensure_ascii = False)
+            client._upload_config_files(
+                repo_id = repo_id,
+                metadata_path = metadata_path,
+                builder_config_path = scrubbed_config_path,
+            )
 
-        return f"https://huggingface.co/datasets/{repo_id}"
+        from utils.hf_endpoint import get_hf_endpoint
+
+        # The upload went to get_hf_endpoint(); this URL is for the browser, where
+        # a loopback mirror is not the same host. The caller passes what its client
+        # can reach.
+        return f"{link_endpoint or get_hf_endpoint()}/datasets/{repo_id}"
     except HuggingFaceHubClientUploadError as exc:
         raise RecipeDatasetPublishError(str(exc)) from exc

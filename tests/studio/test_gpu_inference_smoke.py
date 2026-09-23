@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import pytest
 from real_accelerator import (
-    has_real_accelerator,
+    has_real_cuda,
 )  # tests/_shared, on sys.path via tests/conftest.py
 
 torch = pytest.importorskip("torch")
@@ -30,7 +30,7 @@ MIN_NEW_TOKENS = 4
 MAX_NEW_TOKENS = 16
 
 
-@pytest.mark.skipif(not has_real_accelerator(), reason = "requires a CUDA GPU")
+@pytest.mark.skipif(not has_real_cuda(), reason = "requires a CUDA GPU")
 def test_gpu_generation_smoke():
     try:
         from transformers import AutoModelForCausalLM, AutoTokenizer

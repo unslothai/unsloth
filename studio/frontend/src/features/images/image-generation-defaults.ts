@@ -22,6 +22,11 @@ const MODEL_DEFAULTS: Array<{
   { match: "flux.2-klein-base", steps: 50, guidance: 4 },
   { match: "flux.2-klein", steps: 4, guidance: 1 },
   { match: "flux.2-dev", steps: 28, guidance: 4 },
+  // Qwen-Image-2.1 and its aliases, before the generic key.
+  { match: "qwen-image-2.1", steps: 40, guidance: 1 },
+  { match: "qwen-image-21", steps: 40, guidance: 1 },
+  { match: "qwen_image_21", steps: 40, guidance: 1 },
+  { match: "qwenimage21", steps: 40, guidance: 1 },
   { match: "qwen-image", steps: 20, guidance: 4 },
   { match: "z-image", steps: 20, guidance: 4 },
   { match: "ideogram", steps: 48, guidance: 7 },
@@ -80,4 +85,57 @@ export function residentDefaultsKey(
   return typeof family === "string" && family.trim()
     ? family.trim()
     : repoKey;
+}
+
+// The canvas every family is tuned for, and what an unrecognised model gets.
+export const DEFAULT_RESOLUTION = { width: 1024, height: 1024 } as const;
+
+// Families whose QUANTISED pipeline build defaults to a smaller canvas, with the schemes that
+// trigger it.
+//
+// Quantising the denoiser shrinks the weights and leaves the activations alone, so on a family
+// whose activations dominate, the canvas is what decides whether the load fits. Qwen-Image-2.1 at
+// 1024 measures about 26 GB against about 19 GB at 512, which is the difference between running
+// and not on a 24 GB card, and someone who picked a quantised build is telling us the card is the
+// constraint. Dense bf16 keeps 1024: it was never going to fit a small card either way, so
+// shrinking its canvas would cost quality and buy nothing.
+//
+// The GGUF route is deliberately absent. It streams the denoiser off disk, so its footprint does
+// not turn on this, and it keeps 1024.
+const QUANTISED_CANVAS: Array<{
+  match: string;
+  schemes: readonly string[];
+  width: number;
+  height: number;
+}> = [
+  {
+    match: "qwen-image-2.1",
+    schemes: ["fp8", "fp8_dynamic", "int8", "nvfp4"],
+    width: 512,
+    height: 512,
+  },
+];
+
+export function resolutionFor(
+  repoId: string,
+  build: { modelKind?: string | null; transformerQuant?: string | null },
+): { width: number; height: number } {
+  // A GGUF resident reports no family substring in repo_id, so callers pass base_repo; the kind is
+  // what actually excludes that route, not the id.
+  if ((build.modelKind ?? "").toLowerCase() === "gguf") {
+    return DEFAULT_RESOLUTION;
+  }
+  const scheme = (build.transformerQuant ?? "")
+    .toLowerCase()
+    .replace(/-/g, "_");
+  if (!scheme) {
+    return DEFAULT_RESOLUTION;
+  }
+  const id = repoId.toLowerCase();
+  const matched = QUANTISED_CANVAS.find(
+    (entry) => id.includes(entry.match) && entry.schemes.includes(scheme),
+  );
+  return matched
+    ? { width: matched.width, height: matched.height }
+    : DEFAULT_RESOLUTION;
 }

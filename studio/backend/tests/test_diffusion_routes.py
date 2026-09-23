@@ -12,6 +12,23 @@ from __future__ import annotations
 
 import types
 
+
+def _cuda_target():
+    """A compilable bf16 CUDA target, as ``_resolve_device_target`` returns on a real card.
+
+    The dtype is the real ``torch.bfloat16`` and ``supports_default_torch_compile`` is set, since the
+    precision preflight asks ``compile_eligible`` whether a quantised pipeline could compile at all:
+    a stub missing either reads as a card that cannot, and refuses loads a real one accepts.
+    """
+    import torch
+    return types.SimpleNamespace(
+        device = "cuda",
+        dtype = torch.bfloat16,
+        _cc = (10, 0),
+        supports_default_torch_compile = True,
+    )
+
+
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -19,7 +36,7 @@ from fastapi.testclient import TestClient
 import core.inference.diffusion as diffusion_module
 import core.inference.gpu_arbiter as gpu_arbiter
 import core.inference.image_gallery as gallery_module
-from auth.authentication import get_current_subject
+from auth.authentication import authenticated_via_api_key, get_current_subject
 import routes.inference as inference_routes
 from routes.inference import studio_router
 
@@ -258,6 +275,8 @@ def client(monkeypatch, tmp_path):
     app = FastAPI()
     app.include_router(studio_router, prefix = "/api/inference")
     app.dependency_overrides[get_current_subject] = lambda: "test-user"
+    # A browser session: the status routes redact host paths for an API-key caller.
+    app.dependency_overrides[authenticated_via_api_key] = lambda: False
     return TestClient(app)
 
 
@@ -825,6 +844,8 @@ def test_a_cpu_mispredicted_engine_is_still_preflighted(monkeypatch):
     app = FastAPI()
     app.include_router(studio_router, prefix = "/api/inference")
     app.dependency_overrides[get_current_subject] = lambda: "test-user"
+    # A browser session: the status routes redact host paths for an API-key caller.
+    app.dependency_overrides[authenticated_via_api_key] = lambda: False
     local = TestClient(app)
 
     resp = local.post(
@@ -897,6 +918,8 @@ def test_gated_pick_on_an_engine_switch_keeps_the_previous_model(monkeypatch, de
     app = FastAPI()
     app.include_router(studio_router, prefix = "/api/inference")
     app.dependency_overrides[get_current_subject] = lambda: "test-user"
+    # A browser session: the status routes redact host paths for an API-key caller.
+    app.dependency_overrides[authenticated_via_api_key] = lambda: False
     local = TestClient(app)
 
     resp = local.post(
@@ -1166,6 +1189,8 @@ def test_load_routes_to_sd_cpp_on_cpu(monkeypatch, tmp_path):
     app = FastAPI()
     app.include_router(studio_router, prefix = "/api/inference")
     app.dependency_overrides[get_current_subject] = lambda: "test-user"
+    # A browser session: the status routes redact host paths for an API-key caller.
+    app.dependency_overrides[authenticated_via_api_key] = lambda: False
     client = TestClient(app)
 
     resp = _post_load(client, model_path = "unsloth/Z-Image-Turbo-GGUF", gguf_filename = "z.gguf")
@@ -1370,10 +1395,35 @@ def test_status_passes_through_resolved(client, monkeypatch):
     # The cpu_offload value stays a real boolean (not coerced to a string).
     assert body["resolved"]["cpu_offload"]["value"] is False
     # A declined explicit precision keeps BOTH sides across the boundary: ask and outcome.
-    assert body["resolved"]["transformer_quant"] == resolved["transformer_quant"]
+    assert body["resolved"]["transformer_quant"] == {
+        **resolved["transformer_quant"],
+        "artifact": None,
+    }
     # Entries from an older backend (no requested/status) still parse, defaulted to "applied".
     assert body["resolved"]["speed_mode"]["requested"] is None
     assert body["resolved"]["speed_mode"]["status"] == "applied"
+
+
+def test_status_carries_the_prequant_artifact_through_the_route(client, monkeypatch):
+    # A seeded load records WHICH hosted file the precision came from; dropped at the boundary, the
+    # UI cannot tell a hosted checkpoint from a runtime quantise of the same scheme.
+    backend = diffusion_module.get_diffusion_backend()
+    resolved = {
+        "transformer_quant": {
+            "value": "fp8",
+            "source": "auto",
+            "reason": "seeded",
+            "artifact": "prequant:unsloth/Z-Image-Turbo-FP8/Z-Image-Turbo-FP8.pt",
+        }
+    }
+    monkeypatch.setattr(
+        backend, "status", lambda: {**_unloaded_status(), "loaded": True, "resolved": resolved}
+    )
+    body = client.get("/api/inference/images/status").json()
+    assert (
+        body["resolved"]["transformer_quant"]["artifact"]
+        == "prequant:unsloth/Z-Image-Turbo-FP8/Z-Image-Turbo-FP8.pt"
+    )
 
 
 def test_status_resolved_defaults_to_null(client):
@@ -1666,6 +1716,7 @@ def test_download_plan_forwards_the_load_time_controls(client, monkeypatch):
         transformer_quant = "int8",
         memory_mode = "low_vram",
         cpu_offload = True,
+        transformer_quant_fast_accum = False,
         loras = [{"id": "unsloth/some-lora", "weight": 0.8}],
     )
 
@@ -1675,6 +1726,9 @@ def test_download_plan_forwards_the_load_time_controls(client, monkeypatch):
     assert seen["transformer_quant"] == "int8"
     assert seen["memory_mode"] == "low_vram"
     assert seen["cpu_offload"] is True
+    # A forced accumulate the hosted checkpoint cannot bake declines the seed: dropped here, the plan
+    # stages an artifact the load refuses, then pulls the dense shards outside the staging.
+    assert seen["transformer_quant_fast_accum"] is False
     assert len(seen["loras"] or []) == 1
 
 
@@ -1713,7 +1767,10 @@ def test_download_plan_suppresses_only_the_verdict_while_training_runs(client, m
         assert "allow_device_probe" not in seen, training
 
 
-def test_download_plan_response_keeps_the_planners_checkpoint_marker(client, monkeypatch):
+@pytest.mark.parametrize("plan_failed", [False, True])
+def test_download_plan_response_keeps_the_planners_checkpoint_marker(
+    client, monkeypatch, plan_failed
+):
     # Through the ROUTE, not the planner: the response model is what the picker actually reads, and
     # a field the planner sets but the model does not declare is dropped silently on serialization.
     # That is exactly how the checkpoint marker was lost, leaving a mirrored pipeline mislabelled.
@@ -1741,6 +1798,7 @@ def test_download_plan_response_keeps_the_planners_checkpoint_marker(client, mon
                     "checkpoint": False,
                 },
             ],
+            "plan_failed": plan_failed,
             "total_bytes": 30,
             "required_bytes": 30,
             "checkpoint_bytes": 10,
@@ -1756,6 +1814,7 @@ def test_download_plan_response_keeps_the_planners_checkpoint_marker(client, mon
     )
 
     assert resp.status_code == 200
+    assert resp.json()["plan_failed"] is plan_failed
     assert [e["checkpoint"] for e in resp.json()["entries"]] == [True, False]
 
 
@@ -1785,6 +1844,7 @@ def test_download_plan_defaults_the_checkpoint_marker_for_an_older_planner(clien
     )
 
     assert resp.status_code == 200
+    assert resp.json()["plan_failed"] is False
     assert resp.json()["entries"][0]["checkpoint"] is False
 
 
@@ -2112,7 +2172,7 @@ def test_an_offloading_memory_request_refuses_an_explicit_precision(monkeypatch,
     monkeypatch.setattr(
         DiffusionBackend,
         "_resolve_device_target",
-        lambda self, fam: types.SimpleNamespace(device = "cuda", dtype = "bfloat16", _cc = (10, 0)),
+        lambda self, fam: _cuda_target(),
     )
     with pytest.raises(RuntimeError) as excinfo:
         backend.assert_precision_available(
@@ -2170,7 +2230,7 @@ def test_an_offloading_memory_request_refuses_a_torchao_text_encoder(monkeypatch
     monkeypatch.setattr(
         DiffusionBackend,
         "_resolve_device_target",
-        lambda self, fam: types.SimpleNamespace(device = "cuda", dtype = "bfloat16", _cc = (10, 0)),
+        lambda self, fam: _cuda_target(),
     )
     # Support and the torchao install are not what is under test here.
     monkeypatch.setattr(diffusion_module, "te_quant_supported", lambda target, m: True)
@@ -2196,7 +2256,7 @@ def test_layerwise_fp8_survives_an_offloading_memory_request(monkeypatch):
     monkeypatch.setattr(
         DiffusionBackend,
         "_resolve_device_target",
-        lambda self, fam: types.SimpleNamespace(device = "cuda", dtype = "bfloat16", _cc = (10, 0)),
+        lambda self, fam: _cuda_target(),
     )
     monkeypatch.setattr(diffusion_module, "te_quant_supported", lambda target, m: True)
     monkeypatch.setattr(diffusion_module, "torchao_quantize_importable", lambda: True)
@@ -2220,7 +2280,7 @@ def test_a_broken_torchao_refuses_a_torchao_text_encoder_before_the_download(mon
     monkeypatch.setattr(
         DiffusionBackend,
         "_resolve_device_target",
-        lambda self, fam: types.SimpleNamespace(device = "cuda", dtype = "bfloat16", _cc = (10, 0)),
+        lambda self, fam: _cuda_target(),
     )
     monkeypatch.setattr(diffusion_module, "te_quant_supported", lambda target, m: True)
     monkeypatch.setattr(diffusion_module, "torchao_quantize_importable", lambda: False)
@@ -2242,7 +2302,7 @@ def test_layerwise_fp8_does_not_need_torchao(monkeypatch):
     monkeypatch.setattr(
         DiffusionBackend,
         "_resolve_device_target",
-        lambda self, fam: types.SimpleNamespace(device = "cuda", dtype = "bfloat16", _cc = (10, 0)),
+        lambda self, fam: _cuda_target(),
     )
     monkeypatch.setattr(diffusion_module, "te_quant_supported", lambda target, m: True)
     monkeypatch.setattr(diffusion_module, "torchao_quantize_importable", lambda: False)
@@ -2409,3 +2469,241 @@ def test_download_plan_still_refuses_a_bad_gpu_while_training_holds_the_cards(cl
     resp = client.post("/api/inference/images/download-plan", json = {**body, "gpu_ids": [7]})
     assert resp.status_code == 400
     assert "visible to this process" in resp.json()["detail"]
+
+
+def test_a_pipeline_pick_may_pin_a_precision(monkeypatch):
+    from core.inference.diffusion import DiffusionBackend
+
+    backend = DiffusionBackend.__new__(DiffusionBackend)
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_resolve_device_target",
+        lambda self, fam: _cuda_target(),
+    )
+    monkeypatch.setattr(diffusion_module, "dense_transformer_supported", lambda target: True)
+    monkeypatch.setattr(diffusion_module, "select_transformer_quant_scheme", lambda *a, **k: "fp8")
+    backend.assert_precision_available(
+        types.SimpleNamespace(name = "z-image"),
+        model_kind = "pipeline",
+        transformer_quant = "fp8",
+    )
+
+
+def test_a_single_file_pick_still_cannot_pin_a_precision(monkeypatch):
+    from core.inference.diffusion import DiffusionBackend
+
+    backend = DiffusionBackend.__new__(DiffusionBackend)
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_resolve_device_target",
+        lambda self, fam: _cuda_target(),
+    )
+    monkeypatch.setattr(diffusion_module, "dense_transformer_supported", lambda target: True)
+    with pytest.raises(RuntimeError) as excinfo:
+        backend.assert_precision_available(
+            types.SimpleNamespace(name = "ltx-2.3"),
+            model_kind = "single_file",
+            transformer_quant = "fp8",
+        )
+    assert "transformer_quant='fp8' could not be used" in str(excinfo.value)
+    assert "single_file" in str(excinfo.value)
+    assert "GGUF and pipeline" in str(excinfo.value)
+
+
+def test_a_pipeline_pick_is_still_refused_on_a_device_that_cannot_quantise(monkeypatch):
+    from core.inference.diffusion import DiffusionBackend
+
+    backend = DiffusionBackend.__new__(DiffusionBackend)
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_resolve_device_target",
+        lambda self, fam: _cuda_target(),
+    )
+    monkeypatch.setattr(diffusion_module, "dense_transformer_supported", lambda target: False)
+    with pytest.raises(RuntimeError) as excinfo:
+        backend.assert_precision_available(
+            types.SimpleNamespace(name = "z-image"),
+            model_kind = "pipeline",
+            transformer_quant = "fp8",
+        )
+    assert "transformer_quant='fp8' could not be used" in str(excinfo.value)
+
+
+def test_a_unet_family_is_refused_before_the_eviction_and_the_download(monkeypatch):
+    """SDXL's family metadata already proves there is no transformer, so say so pre-eviction."""
+    from core.inference.diffusion import DiffusionBackend
+
+    backend = DiffusionBackend.__new__(DiffusionBackend)
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_resolve_device_target",
+        lambda self, fam: _cuda_target(),
+    )
+    monkeypatch.setattr(diffusion_module, "dense_transformer_supported", lambda target: True)
+    monkeypatch.setattr(
+        diffusion_module,
+        "select_transformer_quant_scheme",
+        lambda *a, **k: pytest.fail("the UNet refusal must not need a scheme probe"),
+    )
+    with pytest.raises(RuntimeError) as excinfo:
+        backend.assert_precision_available(
+            types.SimpleNamespace(name = "sdxl", denoiser_attr = "unet"),
+            model_kind = "pipeline",
+            transformer_quant = "fp8",
+        )
+    message = str(excinfo.value)
+    assert "transformer_quant='fp8' could not be used" in message
+    assert "unet" in message and "not a transformer" in message
+
+
+def test_a_transformer_family_still_reaches_the_scheme_check(monkeypatch):
+    """The new branch must not swallow the families that do have a transformer."""
+    from core.inference.diffusion import DiffusionBackend
+
+    backend = DiffusionBackend.__new__(DiffusionBackend)
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_resolve_device_target",
+        lambda self, fam: _cuda_target(),
+    )
+    monkeypatch.setattr(diffusion_module, "dense_transformer_supported", lambda target: True)
+    seen: list = []
+    monkeypatch.setattr(
+        diffusion_module,
+        "select_transformer_quant_scheme",
+        lambda *a, **k: (seen.append(a) or "fp8"),
+    )
+    # denoiser_attr defaults to "transformer" on every DiT family.
+    backend.assert_precision_available(
+        types.SimpleNamespace(name = "z-image"),
+        model_kind = "pipeline",
+        transformer_quant = "fp8",
+    )
+    assert seen
+
+
+def test_an_eager_pipeline_precision_is_refused_before_the_eviction(monkeypatch):
+    """Eager plus an explicit scheme is decidable from the request, so it must not cost a download."""
+    from core.inference.diffusion import DiffusionBackend
+
+    backend = DiffusionBackend.__new__(DiffusionBackend)
+    monkeypatch.setattr(
+        DiffusionBackend, "_resolve_device_target", lambda self, fam: _cuda_target()
+    )
+    monkeypatch.setattr(diffusion_module, "dense_transformer_supported", lambda target: True)
+    monkeypatch.setattr(
+        diffusion_module,
+        "select_transformer_quant_scheme",
+        lambda *a, **k: pytest.fail("the eager refusal must not need a scheme probe"),
+    )
+    with pytest.raises(RuntimeError) as excinfo:
+        backend.assert_precision_available(
+            types.SimpleNamespace(name = "z-image"),
+            model_kind = "pipeline",
+            transformer_quant = "fp8",
+            speed_mode = "eager",
+        )
+    assert "eager" in str(excinfo.value)
+
+
+def test_a_gguf_pick_still_accepts_an_eager_precision(monkeypatch):
+    """The compile guard is the pipeline path's; GGUF substitutes weights and is left as on main."""
+    from core.inference.diffusion import DiffusionBackend
+
+    backend = DiffusionBackend.__new__(DiffusionBackend)
+    monkeypatch.setattr(
+        DiffusionBackend, "_resolve_device_target", lambda self, fam: _cuda_target()
+    )
+    monkeypatch.setattr(diffusion_module, "dense_transformer_supported", lambda target: True)
+    monkeypatch.setattr(diffusion_module, "select_transformer_quant_scheme", lambda *a, **k: "fp8")
+    backend.assert_precision_available(
+        types.SimpleNamespace(name = "z-image"),
+        model_kind = "gguf",
+        transformer_quant = "fp8",
+        speed_mode = "eager",
+    )
+
+
+def test_a_process_that_cannot_compile_refuses_a_pipeline_precision_up_front(monkeypatch):
+    """A Windows install without Triton is knowable here too, so it refuses before the download."""
+    from core.inference.diffusion import DiffusionBackend
+
+    backend = DiffusionBackend.__new__(DiffusionBackend)
+    monkeypatch.setattr(
+        DiffusionBackend, "_resolve_device_target", lambda self, fam: _cuda_target()
+    )
+    monkeypatch.setattr(diffusion_module, "dense_transformer_supported", lambda target: True)
+    monkeypatch.setattr(diffusion_module, "compile_eligible", lambda target, **kw: False)
+    with pytest.raises(RuntimeError) as excinfo:
+        backend.assert_precision_available(
+            types.SimpleNamespace(name = "z-image"),
+            model_kind = "pipeline",
+            transformer_quant = "fp8",
+        )
+    assert "compile" in str(excinfo.value)
+
+
+def test_the_plan_route_refuses_an_unrecognised_model_before_planning(client):
+    """The route validates exactly as /images/load does, on purpose: an unloadable pick has to fail
+    HERE rather than after a multi-GB download. So an unrecognised repo never reaches the planner,
+    and Download only surfaces the reason instead of fetching a model nothing can open."""
+    resp = _post_download_plan(
+        client,
+        model_path = "someone/mixed-gguf-collection",
+        gguf_filename = "totally-unknown-thing-Q4_K_M.gguf",
+        model_kind = "gguf",
+    )
+
+    assert resp.status_code == 400, resp.text
+    assert "Could not infer a diffusion family" in resp.json()["detail"]
+
+
+def test_edit_without_a_size_lets_the_backend_match_image_1(client, monkeypatch):
+    """An edit that names no size must not be pinned to the schema's 1024 square: the route hands
+    the backend None so it sizes from Image 1 on the family grid. A named size passes through."""
+    _post_load(client, model_path = "x/z-image", gguf_filename = "q.gguf")
+    backend = diffusion_module.get_diffusion_backend()
+    seen = []
+    original = backend.generate
+
+    def _record(**kwargs):
+        seen.append(kwargs)
+        out = original(**kwargs)
+        out.update(workflow = "edit", reference_resolution = 512, localized_edit = "mask")
+        return out
+
+    monkeypatch.setattr(backend, "generate", _record)
+    layer = {"mode": "mask", "image": "QUJD"}
+    resp = _post_generate(
+        client,
+        prompt = "p",
+        workflow = "edit",
+        init_image = "QUJD",
+        reference_images = ["QUJD", "QUJD"],
+        reference_resolution = 512,
+        localized_edit = layer,
+    )
+    assert resp.status_code == 200
+    assert seen[-1]["width"] is None and seen[-1]["height"] is None
+    assert seen[-1]["workflow"] == "edit" and seen[-1]["reference_resolution"] == 512
+    assert seen[-1]["localized_edit"].mode == "mask"
+    record = resp.json()["images"][0]
+    # The engaged values are what the recipe keeps; the count stays images BEYOND the source.
+    assert record["reference_resolution"] == 512
+    assert record["localized_edit"] == "mask"
+    assert record["reference_image_count"] == 2
+    _post_generate(client, prompt = "p", workflow = "edit", init_image = "QUJD", width = 1024)
+    assert seen[-1]["width"] == 1024 and seen[-1]["height"] == 1024
+
+
+def test_generate_schema_bounds_for_unified_editing(client):
+    _post_load(client, model_path = "x/z-image", gguf_filename = "q.gguf")
+    nine = _post_generate(client, prompt = "p", init_image = "QUJD", reference_images = ["QUJD"] * 9)
+    assert nine.status_code == 200
+    ten = _post_generate(client, prompt = "p", init_image = "QUJD", reference_images = ["QUJD"] * 10)
+    assert ten.status_code == 422
+    assert _post_generate(client, prompt = "p", workflow = "inpaint").status_code == 422
+    assert _post_generate(client, prompt = "p", width = 2752, height = 1536).status_code == 200
+    assert _post_generate(client, prompt = "p", width = 2768).status_code == 422
+    bad_mode = _post_generate(client, prompt = "p", localized_edit = {"mode": "lasso", "image": "QUJD"})
+    assert bad_mode.status_code == 422

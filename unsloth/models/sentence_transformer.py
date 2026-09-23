@@ -23,6 +23,7 @@ from ._utils import (
     resolve_model_class,
     resolve_encoder_attention_implementation,
     maybe_prefetch_hf_snapshot,
+    _mark_full_finetuning,
 )
 import inspect
 import json
@@ -42,7 +43,27 @@ import re
 from transformers import AutoModel, AutoConfig
 import tempfile
 from huggingface_hub import HfApi, get_token
-from ..save import unsloth_save_pretrained_torchao, unsloth_save_pretrained_gguf
+# Deferred to first call: a module-scope bind out of `unsloth.save` closes an import cycle.
+# See the note in unsloth/models/vision.py and tests/test_cold_import_order.py.
+
+
+def unsloth_save_pretrained_torchao(*args, **kwargs):
+    """Hand off to ``unsloth.save.unsloth_save_pretrained_torchao``, imported on first call."""
+    from ..save import unsloth_save_pretrained_torchao as _impl
+    return _impl(*args, **kwargs)
+
+
+def unsloth_save_pretrained_gguf(*args, **kwargs):
+    """Hand off to ``unsloth.save.unsloth_save_pretrained_gguf``, imported on first call."""
+    from ..save import unsloth_save_pretrained_gguf as _impl
+    return _impl(*args, **kwargs)
+
+
+# How unsloth/save.py tells its own shims from functions someone else put here.
+unsloth_save_pretrained_torchao._unsloth_deferred_shim = True
+unsloth_save_pretrained_gguf._unsloth_deferred_shim = True
+
+
 import contextlib
 import shutil
 
@@ -53,7 +74,9 @@ _CREATE_TRANSFORMER_MODULE_LOCK = threading.RLock()
 def _normalize_save_method(save_method):
     """Fold "MERGED_16BIT" and "merged 16bit" onto "merged_16bit". unsloth_save_model (save.py) normalizes case and spaces before validating, so the same spelling has to mean the same thing here, else a keyword call that worked before starts raising."""
     if isinstance(save_method, str):
-        return save_method.lower().replace(" ", "_")
+        # Stripped BEFORE the spaces are folded, or " lora " becomes "_lora_" and the
+        # adapter guard below sends the request to the merge path instead.
+        return save_method.strip().lower().replace(" ", "_")
     return save_method
 
 
@@ -160,7 +183,6 @@ def _save_pretrained_gguf(
     temporary_location = "_unsloth_temporary_saved_buffers",
     maximum_memory_usage = 0.85,
     imatrix_file = None,
-    gguf_shard_size = None,
     **kwargs,
 ):
     """Saves the SentenceTransformer model to GGUF format by saving the inner transformer model, converting it, and placing the resulting GGUF files in the save directory."""
@@ -206,7 +228,6 @@ def _save_pretrained_gguf(
         # transformer_dir is the ST's own 0_Transformer module, not a throwaway: reclaiming it would hand back a folder that no longer loads as a SentenceTransformer, so a short disk fails loudly.
         merge_is_disposable = False,
         imatrix_file = imatrix_file,
-        gguf_shard_size = gguf_shard_size,
     )
 
     gguf_files = result.get("gguf_files", [])
@@ -288,7 +309,6 @@ def _push_to_hub_gguf(
     revision = None,
     tags = None,
     imatrix_file = None,
-    gguf_shard_size = None,
     **kwargs,
 ):
     """
@@ -334,7 +354,6 @@ def _push_to_hub_gguf(
         create_pr (bool): Whether to create a pull request instead of pushing directly.
         revision (str, optional): Branch/revision to push to.
         tags (list, optional): Additional tags for the repo.
-        gguf_shard_size (str, optional): Maximum final f32, f16 or bf16 GGUF shard size.
 
     Returns:
         str: The full repo ID on Hugging Face Hub.
@@ -381,7 +400,6 @@ def _push_to_hub_gguf(
             temporary_location = temporary_location,
             maximum_memory_usage = maximum_memory_usage,
             imatrix_file = imatrix_file,
-            gguf_shard_size = gguf_shard_size,
         )
 
         gguf_files = result.get("gguf_files", [])
@@ -1542,7 +1560,7 @@ class FastSentenceTransformer(FastModel):
             if isinstance(st_device, dict) or (
                 isinstance(st_device, str) and st_device in ["auto", "sequential"]
             ):
-                st_device = "cuda"
+                st_device = None
 
             model_kwargs = {"torch_dtype": dtype}
 
@@ -1605,6 +1623,7 @@ class FastSentenceTransformer(FastModel):
             )
 
             st_model._unsloth_fast_encoder = True
+            _mark_full_finetuning(st_model[0].auto_model, full_finetuning)
             st_model._compile_mode = compile_mode
             st_model._dtype = dtype
             st_model._load_in_4bit = load_in_4bit
@@ -1819,6 +1838,28 @@ class FastSentenceTransformer(FastModel):
                     f"for this SentenceTransformer: no modules.json was found, "
                     f"so Unsloth falls back to merge_and_unload, which can only "
                     f"produce 'merged_16bit'."
+                )
+            # Imported here rather than at module scope: a module-scope bind out of
+            # unsloth.save closes an import cycle, which is why the two shims above are
+            # deferred too. See tests/test_cold_import_order.py.
+            from ..save import _is_adapter_save_method
+
+            if _is_adapter_save_method(save_method):
+                # Refused because nothing here writes base weights: self.save_pretrained writes the
+                # sentence-transformers scaffolding and, for a PEFT auto_model, an adapter, and the
+                # lines below then delete that adapter and hand the transformer module to
+                # save_pretrained_merged, leaving modules.json and an adapter with no config.json
+                # and no weights, which SentenceTransformer cannot load. Before unsloth#11067
+                # "lora" matched no branch in merge_and_overwrite_lora and fell through to a 16bit
+                # merge, which happened to write something loadable; an error is the honest
+                # replacement. Save the adapter with self[0].auto_model.save_pretrained(...).
+                raise NotImplementedError(
+                    f"Unsloth: save_method = {save_method!r} is not supported for a "
+                    f"SentenceTransformer: `save_pretrained_merged` writes a loadable "
+                    f"SentenceTransformer, and an adapter-only save has no base weights "
+                    f"for one. Use `save_pretrained_merged(..., save_method = "
+                    f"'merged_16bit')` for a loadable model, or save the adapter on its "
+                    f"own with `model[0].auto_model.save_pretrained(save_directory)`."
                 )
             if save_method is not None:
                 kwargs.setdefault("save_method", save_method)

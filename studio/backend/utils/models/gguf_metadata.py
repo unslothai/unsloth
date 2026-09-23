@@ -60,6 +60,8 @@ _NAMED_TENSOR_CACHE: Dict[Tuple[_CacheKey, str], Optional[bool]] = {}
 
 # GGUF header dims for the staged UI in one cached pass (context_length, layer_count, moe_layer_count) so the staged sheet can size every slider before the model loads. None = unreadable / not a GGUF; the native ``{arch}.context_length`` the UI shows before a load is read from here via read_gguf_context_length.
 _DIMS_CACHE: Dict[_CacheKey, Optional[Dict[str, Optional[int]]]] = {}
+# Read on its own: the only caller wants just this number, on every settings change.
+_N_EMBD_CACHE: Dict[_CacheKey, Optional[int]] = {}
 
 
 # Cache the embedded speculative-head count separately for discovery, launch, and sizing.
@@ -176,6 +178,26 @@ def read_gguf_staged_dims(path: str) -> Optional[Dict[str, Optional[int]]]:
             except StopIteration:
                 break
         _DIMS_CACHE[key] = result
+    return result
+
+
+def read_gguf_embedding_length(path: str) -> Optional[int]:
+    """Return the cached ``{arch}.embedding_length`` value, if readable."""
+    key = _cache_key(path)
+    if key is None:
+        return None
+    with _CACHE_LOCK:
+        if key in _N_EMBD_CACHE:
+            return _N_EMBD_CACHE[key]
+    parsed = _parse_gguf_arch_uints(path, frozenset({"embedding_length"}))
+    result = (parsed or {}).get("embedding_length")
+    with _CACHE_LOCK:
+        while len(_N_EMBD_CACHE) >= _CACHE_MAX_ENTRIES:
+            try:
+                _N_EMBD_CACHE.pop(next(iter(_N_EMBD_CACHE)))
+            except StopIteration:
+                break
+        _N_EMBD_CACHE[key] = result
     return result
 
 
@@ -864,6 +886,13 @@ def read_mmproj_audio_capability(path: str) -> Optional[bool]:
 def read_mmproj_projector_type(path: str) -> Optional[str]:
     """``clip.projector_type`` from an mmproj GGUF, or None if absent or unreadable. The family name llama.cpp keys its per-projector image-token limits on (``qwen3vl_merger``, ``gemma3``, ``pixtral``, ...), so a caller sizing the KV an image will occupy can look the ceiling up instead of assuming one."""
     return _read_gguf_string(path, "clip.projector_type")
+
+
+def read_mmproj_vision_projector_type(path: str) -> Optional[str]:
+    """Return the image tower family, falling back to the single-tower key."""
+    return _read_gguf_string(path, "clip.vision.projector_type") or _read_gguf_string(
+        path, "clip.projector_type"
+    )
 
 
 def read_mmproj_vision_capability(path: str) -> Optional[bool]:

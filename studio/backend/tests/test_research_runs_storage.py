@@ -134,6 +134,32 @@ def _create(
     )
 
 
+@pytest.mark.parametrize("status", sorted(research_db.ALL_STATUSES))
+def test_row_fork_waits_for_research_to_settle(research_home, status):
+    from fastapi import HTTPException
+    from routes import chat_history
+    from state import active_generations
+
+    _create()
+    conn = studio_db.get_connection()
+    try:
+        conn.execute("UPDATE research_runs SET status=? WHERE id='run-1'", (status,))
+        conn.commit()
+    finally:
+        conn.close()
+    assert "thread-1" not in active_generations.active_thread_ids()
+    payload = chat_history.ChatForkRequest(newThreadId = "fork-1", createdAt = 20)
+    if status in research_db.ACTIVE_STATUSES:
+        with pytest.raises(HTTPException) as exc:
+            chat_history.fork_thread("thread-1", payload, current_subject = "alice")
+        assert exc.value.status_code == 409
+        assert studio_db.get_chat_thread("fork-1") is None
+    else:
+        response = chat_history.fork_thread("thread-1", payload, current_subject = "alice")
+        assert response.thread.forkedFromMessageId == "assistant-1"
+        assert len(response.messages) == 2
+
+
 def test_source_persistence_rejects_url_outside_run_allowlist(research_home):
     config = {
         "model": "local-model",
@@ -2873,7 +2899,8 @@ def test_terminal_sse_event_contains_report_and_complete_snapshot(research_home)
     ("cancelled", "expected_status", "text"),
     [
         (True, "cancelled", "Research cancelled."),
-        (False, "failed", "Research failed: mocked model failure"),
+        # Provider text reaches a Markdown surface here too, so it is quoted literally.
+        (False, "failed", "Research failed: `mocked model failure`"),
     ],
 )
 def test_worker_terminal_paths_create_one_fallback_without_frontend_message(
@@ -4351,3 +4378,95 @@ def test_an_attachment_only_turn_with_no_question_is_still_refused(research_home
         _create_via_route(message_id)
     assert excinfo.value.status_code == 400
     assert "non-empty text" in excinfo.value.detail
+
+
+def test_planner_opt_out_is_only_sent_where_the_model_has_one(research_home, monkeypatch):
+    from core import research_runs as worker
+
+    _create()
+    run = research_db.claim_next("worker-1")
+    payloads = []
+
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        async def aclose(self):
+            return None
+
+        async def aiter_lines(self):
+            yield 'data: {"choices":[{"delta":{"content":"{}"},"finish_reason":"stop"}]}'
+            yield "data: [DONE]"
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        def build_request(self, *args, **kwargs):
+            payloads.append(kwargs["json"])
+            return object()
+
+        async def send(self, request, *, stream):
+            return FakeResponse()
+
+    monkeypatch.setattr(worker.httpx, "AsyncClient", FakeClient)
+    monkeypatch.setattr(
+        worker.auth_storage, "create_api_key", lambda **kwargs: ("token", {"id": 1})
+    )
+    monkeypatch.setattr(worker.auth_storage, "revoke_internal_api_key", lambda key_id: None)
+    monkeypatch.setattr(
+        worker.db, "append_worker_event", lambda run_id, worker_id, event_type, data: 1
+    )
+    supervisor = worker.ResearchSupervisor(SimpleNamespace(state = SimpleNamespace(server_port = 1)))
+    external = {
+        "model": "m",
+        "providerId": "p1",
+        "providerType": "huggingface",
+        "externalModel": "m",
+    }
+
+    def planner_payload(**inference):
+        run["config"]["inferenceRequest"] = {**external, **inference}
+        payloads.clear()
+        asyncio.run(
+            supervisor._stream_completion(
+                run,
+                [{"role": "user", "content": "question"}],
+                report_progress = False,
+                phase = "planning",
+                enable_thinking = False,
+            )
+        )
+        return payloads[0]
+
+    # gpt-oss has no "none" effort, so the planner keeps the chat's effort instead.
+    no_off = planner_payload(
+        supportsReasoning = True, supportsReasoningOff = False, reasoningEffort = "high"
+    )
+    assert "enable_thinking" not in no_off and no_off["reasoning_effort"] == "high"
+    plain = planner_payload(
+        supportsReasoning = False, supportsReasoningOff = False, enableThinking = True
+    )
+    assert "enable_thinking" not in plain and "reasoning_effort" not in plain
+    with_off = planner_payload(
+        supportsReasoning = True, supportsReasoningOff = True, reasoningEffort = "high"
+    )
+    assert with_off["enable_thinking"] is False and with_off["reasoning_effort"] == "none"
+    # A run queued or retried from before these flags existed carries neither, so the gate has
+    # to treat unknown like non-reasoning: a resumed legacy run must not be the one request that
+    # sends a field the model may not take.
+    older_run = planner_payload(reasoningEffort = "high")
+    assert "enable_thinking" not in older_run and "reasoning_effort" not in older_run
+
+    # Mistral documents reasoning_effort for mistral-small-latest and mistral-medium-3-5 only, and the
+    # provider branch now writes it for every model, so the planner opt-out must not reach a
+    # non-reasoning model such as mistral-large-latest.
+    external["providerType"] = "mistral"
+    mistral = planner_payload(supportsReasoning = False, supportsReasoningOff = False)
+    assert "enable_thinking" not in mistral and "reasoning_effort" not in mistral

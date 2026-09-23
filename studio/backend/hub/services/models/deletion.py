@@ -9,8 +9,19 @@ from hub.services.models import account_access
 
 import asyncio
 import errno
+import inspect
 from pathlib import Path
 from typing import Optional
+
+try:
+    from huggingface_hub.utils._shared_blobs import shared_blob_target, sweep_shared_blob
+
+    # Private huggingface_hub API: a release that keeps the names but changes the arguments would raise TypeError mid-delete, after the snapshot links are gone, so fall back to the plain unlink instead.
+    inspect.signature(shared_blob_target).bind(Path(), Path())
+    inspect.signature(sweep_shared_blob).bind(Path(), cache_dir = Path())
+except (ImportError, TypeError, ValueError):
+    shared_blob_target = None
+    sweep_shared_blob = None
 
 from fastapi import HTTPException
 from loggers import get_logger
@@ -80,6 +91,25 @@ def _blob_hash_from_path(blob: Path) -> Optional[str]:
     if not name or name.endswith(INCOMPLETE_SUFFIX):
         return None
     return name
+
+
+def _unlink_variant_blob(blob: Path, cache_dir: Optional[Path]) -> int:
+    shared_target = None
+    if shared_blob_target is not None:
+        # huggingface_hub matches paths lexically, so try the cache root in the blob's own form first: a resolved root misses a symlinked cache or a Windows 8.3 short name and would leak the payload.
+        for root in dict.fromkeys(
+            r for r in (blob.parent.parent.parent, cache_dir) if r is not None
+        ):
+            shared_target = shared_blob_target(blob, root)
+            if shared_target is not None:
+                cache_dir = root
+                break
+    if shared_target is None:
+        freed = blob.stat().st_size
+        blob.unlink()
+        return freed
+    blob.unlink()
+    return sweep_shared_blob(shared_target, cache_dir = cache_dir)
 
 
 def _path_exists_or_symlink(path: Path) -> bool:
@@ -279,6 +309,9 @@ def _delete_gguf_variant_from_repos(
                     failures.append(f"{name}: {e}")
 
         ref_counts = _snapshot_blob_reference_counts(repo_dir)
+        cache_dir = root
+        if cache_dir is None and repo_dir is not None:
+            cache_dir = repo_dir.parent
         seen_blobs: set[Path] = set()
         for _snap, blob, name in [*matched, *companion_matches]:
             if blob is None:
@@ -297,8 +330,7 @@ def _delete_gguf_variant_from_repos(
                 continue
             try:
                 if blob.exists():
-                    deleted_bytes += blob.stat().st_size
-                    blob.unlink()
+                    deleted_bytes += _unlink_variant_blob(blob, cache_dir)
                     deleted_blobs += 1
             except OSError as e:
                 failures.append(f"{name}: {e}")
@@ -503,8 +535,7 @@ def reclaim_replaced_gguf_variant(
                 continue
             try:
                 if blob.exists():
-                    deleted_bytes += blob.stat().st_size
-                    blob.unlink()
+                    deleted_bytes += _unlink_variant_blob(blob, target_hub_cache)
                     deleted_blobs += 1
             except OSError as e:
                 failures.append(f"{name}: {e}")
@@ -649,6 +680,99 @@ def _diffusion_blocks_delete(repo_id: str) -> Optional[str]:
     for lid in getattr(engine, "loading_repo_ids", tuple)():
         if _loaded_id_matches_repo(str(lid), repo_id):
             return "An Images model load is using this repo; wait for it to finish"
+    # Cancelled but not yet unwound: deleting here yanks blobs from under a live Hub call.
+    for lid in getattr(engine, "draining_repo_ids", tuple)():
+        if _loaded_id_matches_repo(str(lid), repo_id):
+            return "An Images model load is still releasing this repo; wait for it to finish"
+    return None
+
+
+def any_model_load_blocks_cache_clear() -> Optional[str]:
+    """The refusal detail if ANY inference backend is holding a cached model, else None.
+
+    The guards above ask whether one repo is in use. Emptying the whole Hugging Face cache is
+    every repo at once, so there is no repo to match on and anything loaded or loading is enough.
+    sd.cpp in particular re-reads its companion VAE and text-encoder files for every generation,
+    so a clear can break a model that was loaded long before it.
+
+    Fail-open on ACQUIRE, like the guards above: a backend that cannot be reached is not holding
+    anything this process can see. A backend that IS reachable and raises while being asked is a
+    different matter, and the caller fails closed on it rather than unlink weights blindly.
+    """
+    try:
+        from routes.inference import get_llama_cpp_backend
+        backend = get_llama_cpp_backend()
+    except Exception as exc:  # noqa: BLE001 - unavailable is not "in use"
+        logger.debug(f"llama.cpp backend unavailable during the cache-clear guard: {exc}")
+    else:
+        if (backend.is_loaded or backend.is_active) and backend.model_identifier:
+            return "Unload the model before clearing the model cache"
+
+    # is_active above only covers a live llama-server process, which an HF-backed chat load does
+    # not have until its GGUF finished downloading: minutes, per chat_load_active's own docstring.
+    # Those files come down through hf_hub_download_with_xet_fallback rather than the download
+    # registry, so the reservation taken later in the purge does not cover them either.
+    try:
+        from core.inference.llama_cpp import chat_load_active
+        loading_chat = chat_load_active()
+    except Exception as exc:  # noqa: BLE001 - unavailable is not "in use", as above
+        logger.debug(f"Chat load state unavailable during the cache-clear guard: {exc}")
+    else:
+        if loading_chat:
+            return "A model load is using the cache; wait for it to finish"
+
+    try:
+        from core.inference.orchestrator import peek_inference_backend
+
+        # Peek, never construct: building one just to learn nothing is loaded imports torch.
+        engine = peek_inference_backend()
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(f"Inference backend unavailable during the cache-clear guard: {exc}")
+    else:
+        if engine is not None and engine.active_model_name:
+            return "Unload the model before clearing the model cache"
+
+    for label, load in (
+        ("Images", "core.inference.diffusion_engine_router:get_active_diffusion_engine"),
+        ("Video", "core.inference.video:get_video_backend"),
+    ):
+        module_name, _, attr = load.partition(":")
+        try:
+            module = __import__(module_name, fromlist = [attr])
+            held = getattr(module, attr)()
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(f"{label} backend unavailable during the cache-clear guard: {exc}")
+            continue
+        if held is None:
+            continue
+        if held.status().get("loaded"):
+            return "Unload the model before clearing the model cache"
+        if any(getattr(held, "loaded_repo_ids", tuple)()):
+            return "Unload the model before clearing the model cache"
+        if any(getattr(held, "loading_repo_ids", tuple)()):
+            return f"An {label} model load is using the cache; wait for it to finish"
+        # A cancelled load leaves loading_repo_ids() at once but keeps its repos in
+        # draining_repo_ids() while the worker thread reads on inside _prefetch_files,
+        # holding no lock. _diffusion_blocks_delete already refuses on that; emptying the
+        # whole cache is every repo at once, so it cannot ask less than the per-repo path.
+        if any(getattr(held, "draining_repo_ids", tuple)()):
+            return f"An {label} model load is still unwinding; wait for it to finish"
+
+    # Dictation is the fifth backend and the one none of the four above reports. Its sidecars are
+    # managed by stt_registry, and stt_sidecar resolves their checkpoints under the SAME hub cache
+    # this clear empties (_find_complete_cached_snapshot -> _repo_cache_dir -> hub_cache), so a
+    # resident Whisper / Parakeet worker re-reading its snapshot is exactly the case the docstring
+    # above says is enough on its own.
+    try:
+        from core.inference import stt_registry
+        dictation = stt_registry.resident()
+    except Exception as exc:  # noqa: BLE001 - unavailable is not "in use", as above
+        logger.debug(f"Dictation unavailable during the cache-clear guard: {exc}")
+    else:
+        if dictation.get("model"):
+            return "Unload the dictation model before clearing the model cache"
+        if dictation.get("loading"):
+            return "A dictation model load is using the cache; wait for it to finish"
     return None
 
 

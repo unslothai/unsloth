@@ -99,6 +99,19 @@ class DiffusionFamily:
     # True for families whose text-to-image pipeline ALSO accepts reference image(s) (FLUX.2 ``image``): no
     # ``strength``, size from width/height.
     reference: bool = False
+    # True when the text-to-image pipeline also follows edit instructions over ``image`` (Qwen-Image-2.1), at the
+    # requested size. Never inferred from ``reference``: a reference family is not necessarily trained to edit.
+    unified_edit: bool = False
+    # Condition images per call, INCLUDING the init image; overflow is refused, never sliced.
+    max_condition_images: int = 4
+    condition_image_mode: str = "RGB"
+    dimension_multiple: int = 16
+    max_output_side: int = 2048
+    max_output_pixels: int = 2048 * 2048
+    # Accepted condition-image preprocessing resolutions (square side, by area); empty = no such control.
+    reference_resolutions: tuple[int, ...] = field(default_factory = tuple)
+    # Activation-guard cost of one condition pixel relative to one output pixel.
+    condition_pixel_weight: float = 1.0
     # Extra lowercased substrings (besides ``name``) that map a repo id here.
     aliases: tuple[str, ...] = field(default_factory = tuple)
     # True for families whose activations overflow float16 (-> black image); the backend promotes a resolved float16
@@ -128,6 +141,12 @@ class DiffusionFamily:
     # Hosted PRE-CAST text-encoder checkpoints as (scheme, component, repo_id). Layerwise-fp8 only: the cast is
     # deterministic, so the artifact is bit-identical while skipping the dense TE download.
     te_prequant_repos: tuple[tuple[str, str, str], ...] = field(default_factory = tuple)
+    # The text-encoder scheme an UNSET request resolves to on this family, or None to keep the released bf16 encoder.
+    # Opt-in per family rather than implied by ``te_prequant_repos``, because hosting an artifact says the cast is
+    # reproducible, not that its conditioning is good enough to hand someone who asked for nothing. These encoders are
+    # different models (T5, CLIP, Qwen3-VL, Gemma) and fp8 tolerance does not transfer between them, so a family joins
+    # this list only once the fp8-vs-bf16 delta has been measured on it.
+    te_quant_auto: Optional[str] = None
     # Native (sd.cpp) single-file assets, used only on the no-GPU sd.cpp engine. The transformer GGUF is shared with
     # diffusers; sd-cli also needs a (repo_id, filename) VAE + text encoder(s), each with a trailing SdCppModelFiles
     # field name.
@@ -139,6 +158,19 @@ class DiffusionFamily:
     # sd-cli defaults.
     sd_cpp_sampling_method: Optional[str] = None
     sd_cpp_flow_shift: Optional[float] = None
+    # A literal this family's ARCHITECTURE puts in an sd.cpp build that can run it. Set it for a
+    # family whose support landed upstream after builds were already in the wild: the asset mapping
+    # above says what to hand sd-cli, not whether the sd-cli on this disk understands the model, and
+    # a binary installed before the support existed is reused as-is (nothing upgrades a runnable
+    # build of the right accelerator). Without a gate that is a load that reports ready and dies on
+    # the first generation, where falling back to diffusers is both possible and correct.
+    #
+    # Matched against the binary's BYTES rather than the install record's tag: every mirror release
+    # carries the upstream base in its tag name whatever tree was built, so the tag cannot answer
+    # this, and a custom SD_CLI_PATH build has no record at all.
+    sd_cpp_arch_marker: Optional[str] = None
+    # Literal an sd.cpp build carries once it can EDIT this family; the arch marker proves text-to-image only.
+    sd_cpp_edit_marker: Optional[str] = None
     # True when Unsloth can TRAIN a LoRA on this family; the training-start path refuses a non-trainable family up
     # front.
     trainable: bool = False
@@ -304,9 +336,18 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         pipeline_class = "QwenImagePipeline",
         transformer_class = "QwenImageTransformer2DModel",
         base_repo = "Qwen/Qwen-Image",
-        # int8 only: no fp8 DiT checkpoint is published for this family yet. fp8 is no longer denied for inference, so
-        # adding one here would now be live rather than dead.
-        prequant_repos = (("int8", "unsloth/Qwen-Image-FP8"),),
+        # Qwen-Image-FP8.pt was rebuilt with the activation scale floor (LPIPS 0.044 against the bf16
+        # render at 1024, seed 20260914), so an fp8 host seeds it instead of quantising bf16 in memory.
+        prequant_repos = (
+            ("int8", "unsloth/Qwen-Image-FP8"),
+            ("fp8", "unsloth/Qwen-Image-FP8"),
+        ),
+        # 2512 is a different checkpoint with its own baked artifacts; without these rows a 2512 pick
+        # plans the Qwen-Image artifact, refused by base_model_id once the shards are already dropped.
+        prequant_variant_repos = (
+            ("qwen/qwen-image-2512", "int8", "unsloth/Qwen-Image-2512-FP8"),
+            ("qwen/qwen-image-2512", "fp8", "unsloth/Qwen-Image-2512-FP8"),
+        ),
         # Pre-cast Qwen2.5-VL-7B (16.6 -> 8.8 GB). Always was independent of the DiT scheme rules.
         te_prequant_repos = (("fp8", "text_encoder", "unsloth/Qwen-Image-FP8"),),
         cfg_kwarg = "true_cfg_scale",
@@ -330,6 +371,106 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         # Qwen-Image's supported sd.cpp invocation (docs/qwen_image.md).
         sd_cpp_sampling_method = "euler",
         sd_cpp_flow_shift = 3.0,
+    ),
+    DiffusionFamily(
+        # Qwen-Image-2.1 is a different ARCHITECTURE, not a refreshed checkpoint, so it is its own
+        # family rather than a prequant_variant_repos row on qwen-image: 32 single-stream blocks
+        # against 60 dual-stream MMDiT ones, nine weights per block, no bias tensors anywhere, one
+        # global modulation projection, a Qwen3-VL text encoder and its own VAE class. Sharing the
+        # qwen-image entry would hand it that family's pipeline, transformer, VAE and exclusion
+        # rules, none of which fit.
+        name = "qwen-image-2.1",
+        pipeline_class = "QwenImage21Pipeline",
+        transformer_class = "QwenImage21Transformer2DModel",
+        base_repo = "Qwen/Qwen-Image-2.1",
+        prequant_repos = (
+            ("int8", "unsloth/Qwen-Image-2.1-FP8"),
+            ("fp8", "unsloth/Qwen-Image-2.1-FP8"),
+        ),
+        # The artifacts are safetensors, not the historical torch.save pickle, so the family has to
+        # NAME them: every derived fallback ends in .pt, and without these rows the loader would ask
+        # the Hub for a file that is not there and silently fall back to the dense bf16 download.
+        prequant_filenames = (
+            ("fp8", "Qwen-Image-2.1-FP8.safetensors"),
+            ("int8", "Qwen-Image-2.1-INT8.safetensors"),
+        ),
+        # Qwen3-VL 8B, pre-cast. Independent of the DiT scheme, as on every other family.
+        te_prequant_repos = (("fp8", "text_encoder", "unsloth/Qwen-Image-2.1-FP8"),),
+        # The encoder is the BIG component here, not the denoiser: Qwen3-VL-8B is 16.33 GiB dense against 6.76 GiB for
+        # the INT8 transformer, so a quantised denoiser alone still costs ~26 GB and the hosted pre-cast encoder is
+        # what makes the family fit a 24 GB card. Measured on this family at 1024/40 steps: 23.74 -> 16.16 GiB resident
+        # and 11.6 -> 1.5 s to load the encoder, with per-image render time unchanged.
+        te_quant_auto = "fp8",
+        cfg_kwarg = "true_cfg_scale",
+        # 2.1 is UNIFIED: one pipeline, and QwenImage21Pipeline.__call__ takes ``image`` as condition
+        # images alongside the prompt, so this is the FLUX.2 shape rather than the Qwen-Image-Edit
+        # one. Not ``edit``, which means the pipeline IS the edit pipeline and there is no plain
+        # text-to-image: here text-to-image is the default and the images are optional context. The
+        # encoder reads each one as vision context and the VAE turns it into latent tokens prepended
+        # to the noise, with no ``strength`` anywhere, which is exactly what the reference workflow
+        # passes. Without this flag diffusion.py refuses reference images for this family and the
+        # capability ships dark.
+        reference = True,
+        # Model card: ten inputs, alpha kept for the VAE, 32 px grid (16x VAE, 2x2 token groups), 2K presets up to
+        # 2400 x 1792. ``reference_resolutions`` maps to the pipeline's ``output_resolution``.
+        unified_edit = True,
+        max_condition_images = 10,
+        condition_image_mode = "RGBA",
+        dimension_multiple = 32,
+        max_output_side = 2752,
+        max_output_pixels = 2400 * 1792,
+        reference_resolutions = (512, 1024, 2048),
+        # Condition tokens are prefilled once into a KV cache, not denoised per step. Measured on an RTX 3090: about
+        # 2.5-2.7 GiB per 1024-square condition image against the estimator's 8 GiB per output megapixel.
+        condition_pixel_weight = 0.32,
+        aliases = ("qwen_image_21", "qwenimage21", "qwen-image-21"),
+        # Built by us from Qwen/Qwen-Image-2.1 itself: the same 238 tensors under upstream's own
+        # names, cast fp32 -> bf16 and written as one file, because sd-cli takes --vae as a single
+        # file rather than a diffusers subfolder. That is 0.63 GiB against upstream's 1.26 GiB of
+        # fp32, and a fixed-seed 1024 render through it is PIXEL-identical to one made with the
+        # fp32 original. No third-party repack is in the chain; the file is nonetheless
+        # value-identical to Comfy-Org's bf16 repack, all 238 tensors, so either works.
+        #
+        # It lives beside the pre-cast text encoder in the FP8 repo rather than in a companion repo
+        # of its own, and NOT in the GGUF repo: sd_cpp_companion_only_repo_ids() is companions
+        # minus loadable, and the GGUF repo appears in no family field, so pointing here at it
+        # would classify the repo that holds every denoiser as fetch-only and hide it from the
+        # catalog. The FP8 repo is in prequant_repos, so it is subtracted and stays loadable.
+        # FP8 and INT8 picks do not use this file at all; they take the VAE from the base repo
+        # through diffusers, as every prequant family does.
+        #
+        # 2.1 has its own VAE class, so the qwen-image or Wan 2.2 file decodes to noise here
+        # rather than failing.
+        sd_cpp_vae = ("unsloth/Qwen-Image-2.1-FP8", "vae/qwen_image_2.1_vae_bf16.safetensors"),
+        # Qwen3-VL 8B, not Qwen2.5-VL, and supplied through --llm rather than --qwen2vl: the
+        # qwen2vl flag carries Qwen2-VL's vision preprocessing, which this encoder does not want.
+        # UD-Q4_K_XL, the Dynamic 2.0 rung, rather than the uniform Q4_K_M: same 4-bit class and
+        # the same CPU RAM win the no-GPU route exists for (bf16 is 16.4 GB, this is 5.1 against
+        # 5.0), with the per-tensor precision the dynamic recipe assigns. Measured on this host
+        # against the 2.1-capable build, one prompt at 1024 with 20 steps and a shared seed:
+        # LPIPS 0.02894 / SSIM 0.95908 between the two, 36.5 s against 39.0 s, both coherent.
+        # The vision projector (--llm_vision) is what native editing needs; text-to-image never reads it (a fixed-seed
+        # render is byte-identical with and without it). Listed here so download, readiness and delete guards see it.
+        sd_cpp_text_encoders = (
+            (
+                "unsloth/Qwen3-VL-8B-Instruct-GGUF",
+                "Qwen3-VL-8B-Instruct-UD-Q4_K_XL.gguf",
+                "llm",
+            ),
+            ("unsloth/Qwen3-VL-8B-Instruct-GGUF", "mmproj-F16.gguf", "llm_vision"),
+        ),
+        sd_cpp_sampling_method = "euler",
+        # No flow shift on purpose. Qwen-Image pins 3.0, but upstream sd.cpp selects a
+        # resolution-dependent schedule for qwen_image_2_1 itself, and passing a fixed shift
+        # overrides that silently: the render still succeeds and is simply worse off-square.
+        #
+        # Support landed upstream on 2026-09-20, long after builds shipped, so the gate matters
+        # here more than anywhere: measured across six builds on this host, only the pinned
+        # release (both sd-cli and sd-server, CPU and CUDA) carries this literal, and the five
+        # older ones, including the previous pin, do not.
+        sd_cpp_arch_marker = "qwen_image_2_1",
+        # The edit path's no-projector refusal: in the pinned build, absent from the one before it.
+        sd_cpp_edit_marker = "Qwen Image 2.1 editing requires Qwen3-VL vision weights",
     ),
     DiffusionFamily(
         name = "z-image",
@@ -436,6 +577,10 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
             ("int8", "unsloth/HiDream-I1-Full-FP8"),
             ("fp8", "unsloth/HiDream-I1-Full-FP8"),
         ),
+        # Dev and Fast are distillations of Full, so the hosted Full checkpoint is baked from other
+        # weights and neither has its own artifact. Excluded rather than inherited: base_model_id
+        # refuses the Full artifact only after the plan has dropped their released shards.
+        prequant_excluded_bases = ("hidream-ai/hidream-i1-dev", "hidream-ai/hidream-i1-fast"),
         # Pre-cast Llama-3.1-8B TE4 (16.1 -> 8.1 GB). The generic TE pass only covers text_encoder.._3, so TE4 engages
         # via hidream_te4_kwargs.
         te_prequant_repos = (("fp8", "text_encoder_4", "unsloth/HiDream-I1-Full-FP8"),),
@@ -943,6 +1088,8 @@ def prefer_ungated_mirror(
 
     Declines to today's behaviour under ``UNSLOTH_DIFFUSION_NO_MIRROR``, for a local path, or when
     the upstream already satisfies the load from cache and switching would re-pull tens of GiB.
+    Under that opt-out a mirror id picked directly maps back to its upstream, cached or not: even
+    a cached mirror is listed on the Hub before it loads.
     ``files`` sharpens that last test to the names about to be fetched; without it any weight
     counts.
 
@@ -952,8 +1099,10 @@ def prefer_ungated_mirror(
     is unused, kept so callers need not care.
     """
     del hf_token  # noqa: F841 -- signature stability only
+    if os.environ.get("UNSLOTH_DIFFUSION_NO_MIRROR", "").strip():
+        return base if _is_local_path(base) else canonical_base(base)
     mirror = mirror_repo(base)
-    if not mirror or os.environ.get("UNSLOTH_DIFFUSION_NO_MIRROR", "").strip():
+    if not mirror:
         return base
     # a local path is never a Hub id: rewriting one sends loads the other sites resolve on disk to the Hub, skipping
     # the copy already downloaded
@@ -981,6 +1130,11 @@ _GENERATION_DEFAULTS: tuple[tuple[str, int, float], ...] = (
     ("flux.2-klein-base", 50, 4.0),
     ("flux.2-klein", 4, 1.0),
     ("flux.2-dev", 28, 4.0),  # full (non-distilled)
+    # Qwen-Image-2.1: 40 steps, no guidance. Before the generic qwen-image key.
+    ("qwen-image-2.1", 40, 1.0),
+    ("qwen-image-21", 40, 1.0),
+    ("qwen_image_21", 40, 1.0),
+    ("qwenimage21", 40, 1.0),
     ("qwen-image", 20, 4.0),
     ("z-image", 20, 4.0),
     # Lumina Image 2.0 card: 50 steps, guidance 4 (plus cfg_trunc_ratio 0.25, which the loader passes itself).
@@ -1115,6 +1269,10 @@ _PIPELINE_MIN_DIFFUSERS: dict[str, str] = {
     "LTX2Pipeline": "0.37.0",
     "Flux2KleinInpaintPipeline": "0.38.0",
     "Ideogram4Pipeline": "0.39.0",
+    # Qwen-Image-2.1 merged upstream on 2026-09-18, four weeks after 0.40.0 was cut, so 0.41.0 is
+    # the first release that can carry it. ``_version_tuple`` stops at the first non-numeric part,
+    # so a 0.41.0.dev0 build from main reads as (0, 41, 0) and satisfies this too.
+    "QwenImage21Pipeline": "0.41.0",
     "Krea2Pipeline": "0.39.0",
     # Older than the 0.35 baseline, but listed anyway: the packaging leaves an UNCONSTRAINED diffusers installable
     # below 3.10, so an already-present ancient one satisfies the pin, and quoting the 0.39 floor at a family that has
@@ -1484,6 +1642,61 @@ def local_pipeline_components_are_complete(
     return True
 
 
+# Minimums that name a release which does not EXIST yet. ``pip install -U 'diffusers>=0.41.0'`` has
+# no candidate today, so quoting it as the remedy sends someone to a command that cannot succeed.
+# Studio installs the pinned main build for exactly these classes (studio/backend/requirements/
+# diffusers-main.txt), so the remedy is to put that back, not to chase a release. Delete an entry
+# here the moment its version ships, which is the same moment diffusers-pin.txt moves to it.
+_UNRELEASED_MIN_DIFFUSERS = frozenset({"0.41.0"})
+
+
+_DIFFUSERS_MAIN_PIN = Path(__file__).resolve().parents[2] / "requirements" / "diffusers-main.txt"
+_DIFFUSERS_MAIN_COMMIT_RE = re.compile(
+    r"github\.com/(?P<repo>[^/\s]+/[^/@\s]+?)(?:\.git)?@(?P<commit>[0-9a-fA-F]{40})\b"
+)
+
+
+def _diffusers_main_archive_remedy() -> str:
+    """A remedy line a reader can actually run, naming the commit this build wants.
+
+    The old text said "re-run the installer, or pip install -r diffusers-main.txt". Both resolve
+    the same ``git+https`` requirement, so both fail for the one cause that produces this refusal
+    most often, a host with no working git, and the reader is sent round the loop that put them
+    here. The installer now falls back to the zip for that case, so re-running is once again real
+    advice, and the zip is quoted beside it because it is the fix that needs no git and no
+    installer run at all.
+
+    Read out of the pin file rather than hardcoded, so the commit in the message cannot drift from
+    the commit that is installed. An unreadable or unrecognised pin file degrades to advice that is
+    still true, just less specific, because a refusal that says nothing is worse than one that
+    cannot name the SHA.
+    """
+    generic = (
+        "Re-run the Unsloth installer (leaving UNSLOTH_DIFFUSERS_MAIN unset), which installs it "
+        "from a zip archive when git is missing."
+    )
+    try:
+        text = _DIFFUSERS_MAIN_PIN.read_text(encoding = "utf-8-sig")
+    except (OSError, ValueError):
+        return generic
+    for line in text.splitlines():
+        stripped = line.split("#", 1)[0].strip()
+        if not stripped:
+            continue
+        found = _DIFFUSERS_MAIN_COMMIT_RE.search(stripped)
+        if found is None:
+            continue
+        url = (
+            f"https://github.com/{found.group('repo')}/archive/"
+            f"{found.group('commit').lower()}.zip"
+        )
+        return (
+            f"{generic} To install it by hand with no git at all: "
+            f'pip install "diffusers @ {url}"'
+        )
+    return generic
+
+
 def _too_old_message(pipeline_class: str, family_name: str, installed: str) -> str:
     """The refusal text: what is missing, what is installed, and a remedy this interpreter can
     actually carry out."""
@@ -1492,6 +1705,15 @@ def _too_old_message(pipeline_class: str, family_name: str, installed: str) -> s
         return (
             f"'{family_name}' needs a newer diffusers ({pipeline_class}); this environment has "
             f"diffusers {installed}. Upgrade with: pip install -U diffusers."
+        )
+    if minimum in _UNRELEASED_MIN_DIFFUSERS:
+        remedy = _diffusers_main_archive_remedy()
+        return (
+            f"'{family_name}' needs diffusers >= {minimum} ({pipeline_class}), which has not been "
+            f"released yet; this environment has diffusers {installed}. Unsloth installs a pinned "
+            "build of diffusers main for this and that build is not here, which almost always "
+            "means the install had no working git (run: git --version) or could not reach "
+            f"github.com. {remedy}"
         )
     remedy = f"Upgrade with: pip install -U 'diffusers>={minimum}'."
     if needs_py310:
@@ -1554,6 +1776,21 @@ def assert_pipeline_class_available(
     escaped ``/images/download-plan``, which catches only (ValueError, FileNotFoundError), as a bare
     500 with the message lost.
     """
+    # Here rather than at the call sites, because this is where the import is. Every caller runs
+    # on a request thread that can be racing the background torch warm: image validation, video
+    # validation, and the training preflight via _assert_family_pipeline_available. `import
+    # diffusers` pulls torch._dynamo in by itself (diffusers.hooks evaluates
+    # @torch.compiler.disable() at class-body time), and so does the hasattr below, which is what
+    # actually imports the pipeline's submodule (#10350, #10963). Guarded around the IMPORT as
+    # well as the call: utils.torch_warmup reaches importlib._bootstrap._ModuleLockManager, a
+    # private CPython name, and a build lacking it must not turn this check into a failure.
+    try:
+        from loggers import get_logger
+        from utils.torch_warmup import close_dynamo_import_window
+        close_dynamo_import_window(get_logger(__name__))
+    except Exception:  # noqa: BLE001, S110 - optimisation only, and this module has no logger
+        pass
+
     try:
         import diffusers
         present = hasattr(diffusers, pipeline_class)
@@ -1731,7 +1968,11 @@ def family_gguf_loadable(fam: DiffusionFamily) -> bool:
 
 def family_sd_cpp_supported(fam: DiffusionFamily) -> bool:
     """True when the family has the single-file VAE + text-encoder mapping sd.cpp needs; without it
-    the no-GPU route falls back to diffusers."""
+    the no-GPU route falls back to diffusers.
+
+    Says nothing about the sd.cpp build on this disk. A family that also declares
+    ``sd_cpp_arch_marker`` needs ``sd_cpp_binary_runs_family`` on top of this before the native
+    route is really available."""
     return bool(fam.sd_cpp_vae and fam.sd_cpp_text_encoders)
 
 

@@ -6,12 +6,18 @@
 import re
 from pathlib import Path
 
+from tests.studio._js_source import gates_the_markup
+
 
 REPO = Path(__file__).resolve().parents[2]
 FRONTEND = REPO / "studio/frontend/src"
 THREAD = (FRONTEND / "components/assistant-ui/thread.tsx").read_text(encoding = "utf-8")
 APP_SIDEBAR = (FRONTEND / "components/app-sidebar.tsx").read_text(encoding = "utf-8")
 CHAT_ADAPTER = (FRONTEND / "features/chat/api/chat-adapter.ts").read_text(encoding = "utf-8")
+DURABLE_GATE = (FRONTEND / "features/chat/api/durable-gate.ts").read_text(encoding = "utf-8")
+CHAT_GENERATION_API = (FRONTEND / "features/chat/api/chat-generation-api.ts").read_text(
+    encoding = "utf-8"
+)
 MODEL_RUNTIME = (FRONTEND / "features/chat/hooks/use-chat-model-runtime.ts").read_text(
     encoding = "utf-8"
 )
@@ -182,7 +188,10 @@ def test_composer_only_queues_behind_the_current_chat():
     # share it. Assert the delegation here and the queueing there, rather than
     # expecting the call inline, so this stays a contract on behaviour instead
     # of on where the code happens to sit.
-    assert "queueComposerText(liveThreadIsRunning || livePreStreamRunActive)" in submit
+    assert re.search(
+        r"queueComposerText\(\s*liveThreadIsRunning \|\| livePreStreamRunActive,\s*behavior,?\s*\)",
+        submit,
+    )
 
     queue_composer_text = _between(
         THREAD,
@@ -201,7 +210,10 @@ def test_composer_only_queues_behind_the_current_chat():
     # Read out of the guard that actually dispatches, not out of the file: the
     # abort and cleanup branches beside it hold the same comparison, so a
     # whole-file search stays green while the dispatch alone regresses to `.has`.
-    dispatch_guard = _guard_for(THREAD, "startPromptQueue(items, target, waitForCurrentRun);")
+    dispatch_guard = _guard_for(
+        THREAD,
+        "startPromptQueue(\n              items,\n              target,\n              reservation.waitForCurrentRun,\n              reservation.behavior,\n            );",
+    )
     assert "promptQueueStartPendingRef.current.get(reservationKey) ===" in dispatch_guard
     assert "promptQueueStartPendingRef.current.has(" not in dispatch_guard
     # The other two are load-bearing as well. Abort without the identity check reports the successor's start as this
@@ -339,9 +351,9 @@ def test_a_send_parked_on_the_settings_gate_queues_if_a_run_started_meanwhile():
 
     # The gate on the queue branches, which is the fix itself: an active run governs the release, not the
     # Cmd/Ctrl+Enter intent.
-    running = code.index("if (waitForCurrentRun) {")
-    branch = code[running : code.index("if (forceQueue && !disableQueue) {")]
-    assert "queueComposerText(true);" in branch, (
+    running = code.index("if (waitForCurrentRun || queueAlreadyActive) {")
+    branch = code[running : code.index("clearStoredDraft();")]
+    assert "queueComposerText(waitForCurrentRun, behavior);" in branch, (
         "the release no longer queues behind the run that started while the "
         "send was parked, so the prompt goes back to being dropped silently"
     )
@@ -380,12 +392,11 @@ def test_a_send_parked_on_the_settings_gate_queues_if_a_run_started_meanwhile():
     # clears it from its own onStarted callback, so clearing it up front loses
     # the text whenever the queue does not start -- a null target, an
     # invalidated start -- and after the composer is replaced it is gone.
-    assert code.index("clearStoredDraft();") > code.index("if (forceQueue && !disableQueue) {"), (
+    assert code.index("clearStoredDraft();") > running, (
         "the stored draft is cleared before the queue and refusal paths, so a "
         "prompt that is neither queued nor sent cannot be recovered"
     )
-    # Unchanged: with nothing running the chord still queues, and an ordinary send still sends. A fix that stopped
-    # sending would strand that case.
+    # With nothing running, both shortcuts send normally.
     assert "sendReservedComposer();" in code
 
 
@@ -398,11 +409,11 @@ def test_queued_settings_are_thread_scoped_without_cross_chat_fallback():
     assert "await useChatRuntimeStore.getState().hydratePersistedSettings()" in target
     assert target.index(
         "await useChatRuntimeStore.getState().hydratePersistedSettings()"
-    ) < target.index("snapshotQueuedChatRunSettings(chatStateAtQueueStart)")
+    ) < target.index("snapshotQueuedChatRunSettings(")
     assert "!promptQueueTargetMountedRef.current" in target
     assert "const currentState = aui.threadListItem().getState()" in target
     assert "initialRunningThreadIds.includes(id)" in target
-    assert "snapshotQueuedChatRunSettings(chatStateAtQueueStart)" in target
+    assert re.search(r"snapshotQueuedChatRunSettings\(\s*chatStateAtQueueStart,", target)
     assert "registerQueuedChatRunSettings(" in target
     assert "params: { ...runSettingsAtQueueStart.params }" in target
     assert "runSettingsAtQueueStart.deepResearchEnabled = false" in target
@@ -510,7 +521,7 @@ def test_queued_settings_are_thread_scoped_without_cross_chat_fallback():
     assert "await resolveQueuedEmptyLocalModel(transitionSignal)" in CHAT_ADAPTER
     assert "await resolveQueuedEmptyLocalModel(abortSignal)" in CHAT_ADAPTER
     assert "persist: !options?.preserveVisibleSettings" in CHAT_ADAPTER
-    assert "beginModelLoading()" in CHAT_ADAPTER
+    assert 'beginModelLoading("loading")' in CHAT_ADAPTER
     assert "endModelLoading(lifecycleLease)" in CHAT_ADAPTER
     lifecycle = _between(
         CHAT_ADAPTER,
@@ -520,7 +531,7 @@ def test_queued_settings_are_thread_scoped_without_cross_chat_fallback():
     # The probe waits out an in-flight load rather than reading a status taken
     # mid-replacement, which names the outgoing model alongside the incoming one.
     probe = "await waitForSettledServerStatus({ abortSignal })"
-    assert lifecycle.index("beginModelLoading()") < lifecycle.index(probe)
+    assert lifecycle.index('beginModelLoading("loading")') < lifecycle.index(probe)
     assert lifecycle.index(probe) < lifecycle.index("await autoLoadSmallestModel(")
     assert "getInferenceStatus().catch(() => null)" not in lifecycle
     assert f"const settled = {probe};" in lifecycle
@@ -576,7 +587,7 @@ def test_queued_settings_are_thread_scoped_without_cross_chat_fallback():
     )
     assert "if (failedRun)" in queue_failure_handler
     assert "retainPendingPromptQueueItemsAfterFailure(failedRun)" in queue_failure_handler
-    assert "deletePromptQueueRun(failedRun);" in queue_failure_handler
+    assert "pausePromptQueueRun([threadId]);" in queue_failure_handler
     retained_failure = _between(
         THREAD,
         "function retainPendingPromptQueueItemsAfterFailure(run: PromptQueueRun)",
@@ -625,14 +636,25 @@ def test_queued_settings_are_thread_scoped_without_cross_chat_fallback():
         "const ejectModel = useCallback(",
     )
     assert (
-        select_model.index("beginModelLoading()")
+        select_model.index('beginModelLoading("preparing")')
         < select_model.index("await confirmStopRunningChatsIfNeeded(")
         < select_model.index("cancelPreStreamRunReservations(stopDecision.preStreamRunTokens)")
         < select_model.index("requestLocalPromptQueueStop(stopDecision.promptQueueThreadIds)")
     )
-    assert "beginModelLoading()" in eject
+    assert 'beginModelLoading("unloading")' in eject
     assert "endModelLoading(lifecycleLease)" in eject
-    assert "beginModelLoading()" in SHARED_COMPOSER
+    assert 'beginModelLoading("preparing")' in SHARED_COMPOSER
+    assert MODEL_RUNTIME.index(
+        "chatModelLifecycleGate.markLoading(lifecycleLease)"
+    ) > MODEL_RUNTIME.index("requestLocalPromptQueueStop();")
+    failure = MODEL_RUNTIME.split("notifyLocalPromptQueueLoadFailed(lifecycleLease);", 1)[1]
+    assert failure.index("if (abortCtrl.signal.aborted)") < failure.index(
+        "const rollbackResponse = await loadModel("
+    )
+    cancellation = MODEL_RUNTIME.split("const cancelLoading = useCallback(", 1)[1]
+    assert cancellation.index("notifyLocalPromptQueueLoadFailed(") < cancellation.index(
+        "loadAbortRef.current?.abort()"
+    )
     assert "endModelLoading(compareLifecycleLease)" in SHARED_COMPOSER
     assert SHARED_COMPOSER.count("releaseCompareModelLifecycle();") >= 3
     compare_upgrade = _between(
@@ -683,7 +705,7 @@ def test_queued_settings_are_thread_scoped_without_cross_chat_fallback():
     )
     assert "requestLocalPromptQueueStop" in eject
     assert (
-        eject.index("beginModelLoading()")
+        eject.index('beginModelLoading("unloading")')
         < eject.index("await confirmStopRunningChatsIfNeeded(")
         < eject.index("cancelPreStreamRunReservations(stopDecision.preStreamRunTokens)")
         < eject.index("requestLocalPromptQueueStop(stopDecision.promptQueueThreadIds)")
@@ -765,7 +787,7 @@ def test_queued_settings_are_thread_scoped_without_cross_chat_fallback():
         gpu_discovery_index,
     )
     assert (
-        send_flow.index("beginModelLoading()")
+        send_flow.index('beginModelLoading("preparing")')
         < confirm_index
         < first_draft_check
         < gpu_discovery_index
@@ -824,15 +846,58 @@ def test_queued_settings_are_thread_scoped_without_cross_chat_fallback():
     )
 
 
-def test_base64_media_turns_stay_on_the_legacy_stream():
+def test_a_media_turn_stays_legacy_and_its_attachments_stay_turn_scoped():
+    """A turn that carries media is still legacy; what changed is that it stops refusing its FOLLOW-UPS.
+
+    The gate used to read the raw base64 fields off post-prune HISTORY, so one screenshot anywhere in a thread
+    pushed every later text-only turn onto the cancel-on-disconnect stream - and that stale blob went out as a
+    top-level payload field too, so the backend 400'd "Media chat runs use the legacy streaming path" on turns that
+    never carried media at all. Both halves are pinned here: the gate is now `isDurableRunCandidate({...})` over
+    resolved values (its own truth table lives in tests/durable-gate.test.ts), and the payload's attachment channel
+    scans THIS turn's message alone.
+
+    Naming, because the two are easy to confuse: admitting a media turn ITSELF to a durable run is a separate
+    change living in #10406, and this branch does not make it. `turnCarriesMedia` still sends such a turn to the
+    legacy stream here, and routes/chat_generation_runs.py still refuses a populated `_MEDIA_FIELDS` payload.
+    """
+    # The adapter delegates; it does not spell the rule out here anymore.
+    assert "const generationCandidate = isDurableRunCandidate({" in CHAT_ADAPTER
     candidate = _between(
         CHAT_ADAPTER,
-        "const generationCandidate = Boolean(",
-        ");",
+        "const generationCandidate = isDurableRunCandidate({",
+        "});",
     )
-    assert "!imageBase64" in candidate
-    assert "!audioBase64" in candidate
-    assert "!videoBase64" in candidate
+    # What reaches the gate is the turn-scoped scan, never a raw blob pulled off history: if a base64 field shows up
+    # in the gate again, every text-only turn after one screenshot is back on the subscriber-owned stream and
+    # closing the tab kills it mid-turn.
+    assert "turnCarriesMedia: currentTurnCarriesMedia," in candidate
+    # The rule itself lives in the pure module, where a truth table can pin it case by case.
+    assert "input.turnCarriesMedia !== true" in DURABLE_GATE
+    for token in ("imageBase64", "audioBase64", "videoBase64"):
+        assert token not in candidate, (
+            f"the durability gate reads the thread-scoped {token} again, so every text-only turn following one "
+            "screenshot is back on the subscriber-owned stream and closing the tab kills it mid-generation. If "
+            "those follow-ups must be refused again, do it behind a backend toggle in "
+            "studio/backend/routes/chat_generation_runs.py, not in the frontend gate"
+        )
+    # The channel that made a text-only follow-up look like a media turn: scanned out of THIS turn's message.
+    assert "const currentTurnMessages = [generationUserMessage]" in CHAT_ADAPTER
+    for field, argument in (
+        ("image_base64", "findLatestUserImageBase64(currentTurnMessages)"),
+        (
+            "audio_base64",
+            "findLatestUserAudioBase64(\n              currentTurnMessages,",
+        ),
+        ("video_base64", "findLatestUserVideoBase64(currentTurnMessages)"),
+    ):
+        assert f"{field}: {argument}" in CHAT_ADAPTER, (
+            f"{field} must be scanned out of currentTurnMessages, not thread history: a stale blob from an "
+            "earlier turn makes the backend refuse every later turn"
+        )
+    # A media-policy rejection is one of the policy rejections that degrade silently to the legacy stream, rather
+    # than surfacing as "An error occurred" - which is what made the refusal survivable in the first place.
+    assert '"Media chat runs use the legacy streaming path"' in CHAT_GENERATION_API
+    assert "isLegacyFallbackChatGenerationAdmissionError" in CHAT_ADAPTER
 
 
 def test_continuations_stay_on_the_legacy_stream():
@@ -844,10 +909,12 @@ def test_continuations_stay_on_the_legacy_stream():
     """
     candidate = _between(
         CHAT_ADAPTER,
-        "const generationCandidate = Boolean(",
-        ");",
+        "const generationCandidate = isDurableRunCandidate({",
+        "});",
     )
-    assert "!continuation" in candidate
+    # The gate itself is a truth table in api/durable-gate.ts; what is pinned here is that the adapter still hands
+    # it this turn's continuation flag, so a Continue keeps the stream it needs.
+    assert "continuation," in candidate
 
 
 def test_compare_prompt_list_resets_when_preflight_never_starts_a_run():
@@ -1011,7 +1078,15 @@ def test_sidebar_exposes_queue_activity_for_each_thread():
     assert "const queueByThreadId = usePromptQueueUI((s) => s.byThreadId);" in APP_SIDEBAR
     assert "hasQueuedActivity" in APP_SIDEBAR
     assert "showWorkSpinner" in APP_SIDEBAR
-    assert "{showWorkSpinner && (" in APP_SIDEBAR
+    # That it gates mounted markup, not that it does so with `&&`. #11408 moved the spinner to
+    # the trailing column and wrote the gate as `{showWorkSpinner ? (`, which renders the same
+    # element under the same condition, and pinning the `&&` spelling failed a correct change.
+    # `showWorkSpinner` also picks class strings in this file, so a plain substring search would
+    # go on passing once the spinner itself stopped being rendered; this asks for the gate.
+    assert gates_the_markup(APP_SIDEBAR, "showWorkSpinner"), (
+        "app-sidebar.tsx no longer mounts anything under showWorkSpinner, so a working chat "
+        "row shows no spinner however much room it reserves for one"
+    )
     assert "hasUnreadActivity" in APP_SIDEBAR
     assert "clearChatNotifications(item)" in APP_SIDEBAR
 

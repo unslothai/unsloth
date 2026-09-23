@@ -28,6 +28,7 @@ import { useToolActivityOpen } from "./use-tool-activity-open";
 import { useDocumentPreviewStore } from "@/features/rag/components/preview-store";
 
 import { type Citation, parseCitations } from "./citation-utils";
+import { ScrollPane } from "./scroll-pane";
 
 export function CitationBadge({
   citation,
@@ -57,7 +58,7 @@ export function CitationBadge({
     <Badge
       variant="outline"
       size="sm"
-      className={`rounded-full inline-flex items-center gap-1.5 max-w-[15rem] ${
+      className={`rounded-full inline-flex items-center gap-1.5 max-w-[calc(15rem*var(--ui-space-scale,1))] ${
         clickable
           ? "cursor-pointer hover:bg-accent hover:text-accent-foreground transition-colors"
           : "cursor-default"
@@ -138,9 +139,12 @@ const KnowledgeBaseToolUIImpl: ToolCallMessagePartComponent = ({
             {docCount === 1 ? "" : "s"}. See Document Sources below.
           </div>
         ) : resultText ? (
-          <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-words rounded bg-muted/50 p-2 text-xs">
+          <ScrollPane
+            className="rounded bg-muted/50 p-2"
+            scrollerClassName="max-h-40 overflow-auto whitespace-pre-wrap break-words text-xs"
+          >
             {resultText}
-          </pre>
+          </ScrollPane>
         ) : (
           <div className="text-sm text-muted-foreground">No matching passages.</div>
         )}

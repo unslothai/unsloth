@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+import os
+
 import asyncio
 import json
 import re
@@ -19,7 +21,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from auth.authentication import get_current_subject
 from auth import policy
-from state import active_generations
+from state import active_generations, run_subscribers
 from utils.account_context import current_account, current_account_id, run_as
 from core.inference.llama_keepwarm import inference_lifecycle_gate
 from models.inference import ChatCompletionRequest
@@ -153,7 +155,12 @@ def _sanitize_request(payload: CreateChatGenerationRun) -> dict[str, Any]:
             detail = safe_validation_errors(exc.errors()),
         ) from exc
     # Without this an unservable part is queued at 202 and fails where the caller cannot see it.
-    from routes.inference import _messages_have_input_audio, _reject_unsupported_content_parts
+    from routes.inference import (
+        _messages_have_embedded_image,
+        _messages_have_input_audio,
+        _reject_unsupported_content_parts,
+        _request_has_video,
+    )
 
     _reject_unsupported_content_parts(request)
 
@@ -181,21 +188,39 @@ def _sanitize_request(payload: CreateChatGenerationRun) -> dict[str, Any]:
             detail = "Durable chat runs are available only for local inference",
         )
     # A media turn has no replayable transcript and its payload persists verbatim, so a base64 blob would live in
-    if any(
-        raw.get(field) not in (None, "") for field in _MEDIA_FIELDS
-    ) or _messages_have_input_audio(request.messages):
+    # request_json for the life of the thread. _MEDIA_FIELDS is field-shaped, so a video_url part
+    # needs _request_has_video, and an inline image part needs _messages_have_embedded_image:
+    # turn-scoping means a TEXT-only follow-up no longer sets top-level image_base64, yet the
+    # thread's earlier screenshot still rides along inside messages[].content, so the field-shaped
+    # check alone admits it and re-persists the blob on every follow-up.
+    if (
+        any(raw.get(field) not in (None, "") for field in _MEDIA_FIELDS)
+        or _messages_have_input_audio(request.messages)
+        or _messages_have_embedded_image(request.messages)
+        or _request_has_video(request)
+    ):
         raise HTTPException(
             status_code = 400,
             detail = "Media chat runs use the legacy streaming path",
         )
-    # Recovery currently rebuilds text and reasoning deltas, not server-side tool events. Keep any request whose
-    # effective policy can enter the local tool loop on the legacy subscriber-owned stream until those events are
-    # replayable.
+    # What UNSLOTH_STUDIO_DURABLE_TOOL_TURNS=0 hands back to the legacy stream beyond the raw `tools` key: the
+    # launcher's effective tool policy, and any checkpoint recall that can switch tools on mid-thread.
     from routes.inference import _checkpoint_recall_may_enable_tools, _effective_enable_tools
 
     request = request.model_copy(update = {"thread_id": payload.threadId})
 
-    if (
+    # Shipped ON (default ON so a restart alone activates it - env scoping proved unreliable across launchers):
+    # tool-enabled turns are durable because replay now re-tags persisted frames exactly as the live stream yields
+    # them; set UNSLOTH_STUDIO_DURABLE_TOOL_TURNS=0 to restore the original refusal.
+    _durable_tools = os.environ.get("UNSLOTH_STUDIO_DURABLE_TOOL_TURNS", "1").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+    # NOTE: the guard wraps the WHOLE or-chain. `A and B or C or D` parses as `(A and B) or C or D`, so a bare
+    # prefix only guarded raw["tools"]; the Studio UI sends `enable_tools: true` (term 2), which still raised with
+    # the flag ON - the flip was inert for exactly the turns it was added to unblock.
+    if not _durable_tools and (
         raw.get("tools")
         or request.enable_tools is True
         or bool(request.mcp_enabled)
@@ -351,6 +376,11 @@ async def chat_generation_events(
         # run_in_executor does not copy ContextVars, unlike asyncio.to_thread.
         wait_for_events = partial(run_as, current_account(), db.wait_for_events)
 
+    # One token per stream, so a closing tab clears only its OWN stamp. Two tabs on a run, or a
+    # reconnect overlapping the stream it replaces, otherwise delete each other's heartbeat.
+    follower = run_subscribers.new_follower_token()
+    follower_account = current_account_id() or ""
+
     async def stream():
         nonlocal cursor
         loop = asyncio.get_running_loop()
@@ -362,6 +392,10 @@ async def chat_generation_events(
         if opening["status"] in db.TERMINAL_STATUSES and cursor >= int(opening["lastEventSeq"]):
             return
         while True:
+            # A parked tool approval reads this before applying its ceiling, so the ceiling bounds
+            # an ABANDONED decision rather than a user still reading the card. Stamped before the
+            # wait so a follower attaching mid-park counts immediately. See state/run_subscribers.py.
+            run_subscribers.mark_subscriber_seen(run_id, follower, follower_account)
             events = await loop.run_in_executor(
                 _EVENT_WAIT_EXECUTOR,
                 wait_for_events,
@@ -397,8 +431,20 @@ async def chat_generation_events(
                 # still drops it and no client parsing it as an event is affected.
                 yield f": keep-alive {int(snapshot['updatedAt'])}\n\n"
 
+    async def stream_while_attended():
+        """``stream`` plus the bookend that says this follower has gone.
+
+        The stamp ages out on its own, so this only makes a cleanly closed tab stop counting as
+        attended now rather than ~45s from now.
+        """
+        try:
+            async for frame in stream():
+                yield frame
+        finally:
+            run_subscribers.subscriber_departed(run_id, follower, follower_account)
+
     return StreamingResponse(
-        stream(),
+        stream_while_attended(),
         media_type = "text/event-stream",
         headers = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )

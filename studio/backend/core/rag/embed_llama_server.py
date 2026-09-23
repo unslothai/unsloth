@@ -751,9 +751,16 @@ class LlamaServerBackend:
             # real server and the dylibs sit next to the target (#8566).
             env = _with_dyld_path(env, _binary_lib_dir(binary))
         elif use_gpu:
-            # Left as Path(binary).parent: resolving the entrypoint here would move the first LD_LIBRARY_PATH
-            # entry for every existing Linux GPU install whose llama-server is a symlink.
-            self._add_linux_cuda_libs(env, str(Path(binary).parent))
+            if sys.platform == "win32":
+                # Chat's DLL search path: without it a venv-hosted cudart is never found and the CUDA build runs on the CPU.
+                from core.inference.llama_cpp import _llama_lib_dir
+                path_dirs = LlamaCppBackend._build_windows_path_dirs(
+                    str(_llama_lib_dir(binary)), sys.prefix, os.environ.get("CUDA_PATH", "")
+                )
+                env["PATH"] = ";".join(path_dirs) + ";" + env.get("PATH", "")
+            else:
+                # Path(binary).parent, unresolved: resolving would move the first LD_LIBRARY_PATH entry of every symlinked install.
+                self._add_linux_cuda_libs(env, str(Path(binary).parent))
             _pinned = self._arch_gated_gpu_ids(binary)
             if _pinned:
                 from core.inference.llama_cpp import LlamaCppBackend
@@ -790,9 +797,12 @@ class LlamaServerBackend:
             return
         arch = platform.machine()
         lib_dirs = [binary_dir]
+        # glob.escape: a prefix with [brackets] is otherwise read as a pattern.
+        site = os.path.join(glob.escape(sys.prefix), "lib", "python*", "site-packages")
         for pattern in (
-            os.path.join(sys.prefix, "lib", "python*", "site-packages", "nvidia", "cu*", "lib"),
-            os.path.join(sys.prefix, "lib", "python*", "site-packages", "nvidia", "cudnn", "lib"),
+            os.path.join(site, "nvidia", "cu*", "lib"),
+            os.path.join(site, "nvidia", "cudnn", "lib"),
+            os.path.join(site, "torch", "lib"),
         ):
             lib_dirs.extend(d for d in glob.glob(pattern) if os.path.isdir(d))
         for cuda_lib in (
@@ -858,7 +868,7 @@ class LlamaServerBackend:
         # encode still resolving or downloading its model as the app quits would
         # otherwise Popen a server after terminate_all had taken its snapshot.
         if is_process_shutting_down():
-            raise RuntimeError("Studio is shutting down; not starting the embed server")
+            raise RuntimeError("Unsloth is shutting down; not starting the embed server")
         proc = subprocess.Popen(
             cmd,
             stdout = subprocess.PIPE,
@@ -881,7 +891,7 @@ class LlamaServerBackend:
         if is_process_shutting_down():
             logger.info("shutdown began during the spawn; killing the new embed server")
             self._kill_process()
-            raise RuntimeError("Studio is shutting down; not starting the embed server")
+            raise RuntimeError("Unsloth is shutting down; not starting the embed server")
         self._port = port
         self._stdout_thread = account_thread(
             target = self._drain_stdout,
