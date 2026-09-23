@@ -787,6 +787,7 @@ def test_classification_load_under_fast_inference_still_requantizes():
     assert "requantize_packed = not _vllm_will_load_weights(fast_inference, num_labels)" in source
 
 
+@pytest.mark.skipif(not HAS_CONVERTERS, reason = "needs the transformers 5 loader")
 def test_wrapped_many_to_many_op_still_passes_the_converter_type_check():
     """transformers' WeightConverter allows a many-to-many mapping only when `operations`
     holds an instance of its internal Ernie ops. The adapter that feeds such an op its
@@ -927,6 +928,38 @@ def test_both_loaders_gate_packed_requantization_on_the_callers_quantizer():
         for call in calls:
             flag = next(k.value for k in call.keywords if k.arg == "requantize_packed")
             assert "quantization_config_selects_bnb_4bit" in ast.unparse(flag), module.__name__
+
+
+@pytest.mark.skipif(not HAS_CONVERTERS, reason = "needs the transformers 5 loader")
+def test_both_loaders_treat_an_explicit_bnb_4bit_config_as_the_4bit_request():
+    # The public loader forwards load_in_4bit = False when a quantization_config is passed, so a
+    # BitsAndBytesConfig(load_in_4bit = True) must still arm the plan at both call sites.
+    import ast, inspect
+    from transformers import BitsAndBytesConfig
+    from unsloth.models import llama, vision
+    from unsloth.models.loader_utils import quantization_config_selects_bnb_4bit
+
+    for module in (llama, vision):
+        calls = [
+            node
+            for node in ast.walk(ast.parse(inspect.getsource(module)))
+            if isinstance(node, ast.Call)
+            and getattr(node.func, "id", None) == "check_and_disable_bitsandbytes_loading"
+        ]
+        for call in calls:
+            flag = next(k.value for k in call.keywords if k.arg == "load_in_4bit")
+            assert "_explicit_bnb_4bit" in ast.unparse(flag), module.__name__
+
+    explicit = BitsAndBytesConfig(load_in_4bit = True)
+    config = _Config(quantization_config = _w4a16())
+    check_and_disable_bitsandbytes_loading(
+        config,
+        load_in_4bit = False or quantization_config_selects_bnb_4bit(explicit),
+        load_in_8bit = False,
+        verbose = False,
+        requantize_packed = quantization_config_selects_bnb_4bit(explicit),
+    )
+    assert getattr(config, UNSLOTH_COMPRESSED_TENSORS_ATTR, None) is not None
 
 
 def test_expert_scheme_is_resolved_per_layer():

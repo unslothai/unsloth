@@ -2601,16 +2601,24 @@ class FastLlamaModel:
         load_in_8bit = kwargs.get("load_in_8bit", False)
 
         # Disable bitsandbytes loading if the model has non-bitsandbytes quantization.
-        load_in_4bit, load_in_8bit, _ckpt_quant_method = check_and_disable_bitsandbytes_loading(
+        # The loader forwards load_in_4bit = False when an explicit quantization_config owns the
+        # precision, so a bitsandbytes 4-bit config is the 4-bit request here.
+        _user_quantization_config = kwargs.get("quantization_config", None)
+        _explicit_bnb_4bit = _user_quantization_config is not None and (
+            quantization_config_selects_bnb_4bit(_user_quantization_config)
+        )
+        _checked_4bit, _checked_8bit, _ckpt_quant_method = check_and_disable_bitsandbytes_loading(
             model_config,
-            load_in_4bit = load_in_4bit,
+            load_in_4bit = load_in_4bit or _explicit_bnb_4bit,
             load_in_8bit = load_in_8bit,
             # vLLM reads a packed compressed-tensors checkpoint itself; only the transformers 4-bit load
             # re-quantizes it. A num_labels load stays in-process even with fast_inference.
             requantize_packed = not _vllm_will_load_weights(fast_inference, num_labels)
             # A caller's own quantizer must stay authoritative: only a bitsandbytes 4-bit one consumes the plan.
-            and quantization_config_selects_bnb_4bit(kwargs.get("quantization_config", None)),
+            and quantization_config_selects_bnb_4bit(_user_quantization_config),
         )
+        if _user_quantization_config is None:
+            load_in_4bit, load_in_8bit = _checked_4bit, _checked_8bit
         # Correct UNSLOTH_MODEL_NAME's bnb tokens now the effective bnb state is known (the per-load env
         # was built before remap/disable). gpt-oss only.
         sync_unsloth_model_name_bnb_flags(load_in_4bit, load_in_8bit)
