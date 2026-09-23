@@ -420,9 +420,7 @@ def _record_openai_url_citation(
         aliases.append(source_id)
     source_ids = payload.get("source_ids")
     if isinstance(source_ids, list):
-        aliases.extend(
-            alias for alias in source_ids if isinstance(alias, str) and alias
-        )
+        aliases.extend(alias for alias in source_ids if isinstance(alias, str) and alias)
 
     for citation in url_citations:
         if citation["url"] != url:
@@ -5393,9 +5391,7 @@ class ExternalProviderClient:
         }
         # Azure model ids are deployment names, which need not reveal a fixed-sampling model behind them.
         # Omit both controls for Azure; on direct OpenAI cloud, use the model family. Gateways still receive them.
-        is_azure_openai = _is_azure_openai_host(
-            (urlparse(self.base_url).hostname or "").lower()
-        )
+        is_azure_openai = _is_azure_openai_host((urlparse(self.base_url).hostname or "").lower())
         forward_custom_sampling = self.provider_type == "custom" and not (
             is_azure_openai or (is_openai_cloud and _openai_fixed_sampling_model(model))
         )

@@ -13,7 +13,12 @@ def test_legacy_rows_migrate_without_promoting_spoofed_hosts(tmp_path, monkeypat
     rows = [
         ("openai", "OpenAI", "https://api.openai.com/v1", "openai"),
         ("azure", "Custom", "https://team.services.ai.azure.com/openai/v1", "openai"),
-        ("spoof", "Custom", "https://team.services.ai.azure.com.attacker.example/openai/v1", "custom"),
+        (
+            "spoof",
+            "Custom",
+            "https://team.services.ai.azure.com.attacker.example/openai/v1",
+            "custom",
+        ),
         ("gateway", "Custom", "https://gateway.example/v1", "custom"),
         ("vllm", "vLLM", "http://localhost:8000/v1", "vllm"),
     ]

@@ -85,14 +85,16 @@ def test_selected_endpoint_and_payload(monkeypatch, provider_type, api_type, end
                     model = "gateway-model",
                     temperature = 0.23,
                     max_tokens = 128,
-                    tools = [{
-                        "type": "function",
-                        "function": {
-                            "name": "lookup",
-                            "parameters": {"type": "object", "properties": {}},
-                            "strict": True,
-                        },
-                    }],
+                    tools = [
+                        {
+                            "type": "function",
+                            "function": {
+                                "name": "lookup",
+                                "parameters": {"type": "object", "properties": {}},
+                                "strict": True,
+                            },
+                        }
+                    ],
                 )
             ]
 
@@ -115,10 +117,30 @@ def test_selected_endpoint_and_payload(monkeypatch, provider_type, api_type, end
 @pytest.mark.parametrize(
     "base_url,api_type,key,expected",
     [
-        ("https://team.openai.azure.com/openai/v1", "responses", "resource-key", {"api-key": "resource-key"}),
-        ("https://team.services.ai.azure.com/openai/v1", "responses", "resource-key", {"api-key": "resource-key"}),
-        ("https://team.openai.azure.com.attacker.example/openai/v1", "responses", "key", {"Authorization": "Bearer key"}),
-        ("https://team.openai.azure.com/openai/v1", "chat_completions", "key", {"Authorization": "Bearer key"}),
+        (
+            "https://team.openai.azure.com/openai/v1",
+            "responses",
+            "resource-key",
+            {"api-key": "resource-key"},
+        ),
+        (
+            "https://team.services.ai.azure.com/openai/v1",
+            "responses",
+            "resource-key",
+            {"api-key": "resource-key"},
+        ),
+        (
+            "https://team.openai.azure.com.attacker.example/openai/v1",
+            "responses",
+            "key",
+            {"Authorization": "Bearer key"},
+        ),
+        (
+            "https://team.openai.azure.com/openai/v1",
+            "chat_completions",
+            "key",
+            {"Authorization": "Bearer key"},
+        ),
     ],
 )
 def test_azure_auth_is_host_and_protocol_scoped(base_url, api_type, key, expected):
@@ -136,11 +158,16 @@ def test_non_stream_route_returns_json_or_upstream_error(monkeypatch, upstream_s
         assert json.loads(request.content)["stream"] is False
         if upstream_status != 200:
             return httpx.Response(429, json = {"error": {"message": "rate limited"}})
-        return httpx.Response(200, json = {
-            "id": "resp_route",
-            "status": "completed",
-            "output": [{"type": "message", "content": [{"type": "output_text", "text": "Hello"}]}],
-        })
+        return httpx.Response(
+            200,
+            json = {
+                "id": "resp_route",
+                "status": "completed",
+                "output": [
+                    {"type": "message", "content": [{"type": "output_text", "text": "Hello"}]}
+                ],
+            },
+        )
 
     async def run():
         async with httpx.AsyncClient(transport = httpx.MockTransport(handle)) as transport:
@@ -183,14 +210,26 @@ def test_non_stream_route_returns_json_or_upstream_error(monkeypatch, upstream_s
 def test_responses_follow_up_preserves_reasoning_metadata():
     from routes.inference import _build_external_messages
 
-    reasoning = {"openai_responses_reasoning": [{
-        "type": "reasoning", "id": "rs_1", "encrypted_content": "enc_blob",
-    }]}
+    reasoning = {
+        "openai_responses_reasoning": [
+            {
+                "type": "reasoning",
+                "id": "rs_1",
+                "encrypted_content": "enc_blob",
+            }
+        ]
+    }
     messages = [
         ChatMessage(
             role = "assistant",
             content = None,
-            tool_calls = [{"id": "call_1", "type": "function", "function": {"name": "lookup", "arguments": "{}"}}],
+            tool_calls = [
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "lookup", "arguments": "{}"},
+                }
+            ],
             extra_content = reasoning,
         ),
         ChatMessage(role = "tool", tool_call_id = "call_1", content = "result"),
