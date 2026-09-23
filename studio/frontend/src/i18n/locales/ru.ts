@@ -166,6 +166,8 @@ export const ru = {
       noChatsYet: "Пока нет чатов",
       // Shown under an empty project folder in the sidebar.
       noChats: "Нет чатов",
+      // Shown in the Projects section when every project is pinned, so it has no rows.
+      allProjectsPinned: "Все проекты закреплены",
       showMore: "Показать больше",
       showLess: "Показать меньше",
       settings: "Настройки",
@@ -1984,6 +1986,7 @@ export const ru = {
       expires: "Срок действия: {value}",
       actionsFor: "Действия для {name}",
       copyPrefix: "Копировать префикс",
+      copyFailed: "Не удалось скопировать",
       revokeToken: "Отозвать токен",
       revokeTitle: 'Отозвать токен доступа «{name}»?',
       revokeDescription:

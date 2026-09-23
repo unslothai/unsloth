@@ -525,7 +525,7 @@ test("a GGUF row takes the GGUF verdict, not the torch refusal", () => {
   );
   assert.equal(producers.length, 2, "curated rows only");
   for (const line of producers) {
-    assert.match(line, /curatedFits \? null : "exceeds"/);
+    assert.match(line, /curatedFit\.fits \? null : "exceeds"/);
   }
 });
 
