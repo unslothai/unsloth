@@ -73,13 +73,13 @@ import {
   Download01Icon,
   FlimSlateIcon,
   Image03Icon,
-  Message01Icon,
   Tick02Icon,
   Upload01Icon,
 } from "@hugeicons/core-free-icons";
 import {
   ChevronLeftIcon,
 } from "lucide-react";
+import { MessageCircleIcon } from "@/lib/hugeicons-derived";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate, useRouterState } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
@@ -307,7 +307,9 @@ export function DataTab({ searchEntry }: { searchEntry?: string }) {
     try {
       const { imported, failed } = await importConversationsFromSource(
         source,
-        null,
+        // This tab has no destination picker, so it chooses nothing and a backup keeps its
+        // own projects. The projects page does pick, and passes null for Recents.
+        undefined,
         {
           onProgress: ({ imported: done, bytesRead, totalBytes }) => {
             const percent = totalBytes
@@ -723,7 +725,7 @@ export function DataTab({ searchEntry }: { searchEntry?: string }) {
           </p>
           <div className="grid grid-cols-2 gap-2 lg:grid-cols-4">
             {([
-              ["archived", "archivedChats", "settings.data.archiveChatsLabel", Message01Icon],
+              ["archived", "archivedChats", "settings.data.archiveChatsLabel", MessageCircleIcon],
               [
                 "archived-images",
                 "archivedImages",

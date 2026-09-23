@@ -67,17 +67,17 @@ jobs:
       ARCH: ARM64
     steps:
       - name: Harden runner (audit)
-        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c  # v2.21.0
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1  # v2.21.1
         with:
           egress-policy: audit
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           repository: apache/arrow
           ref: ${{ inputs.arrow_tag }}
           path: arrow
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           repository: ${{ env.ARROW_WOA_REPO }}
           ref: ${{ env.ARROW_WOA_REF }}
@@ -129,7 +129,7 @@ jobs:
           Set-Content $bat -Value $b -Encoding ascii
           if (-not (Test-Path "$vs\VC\Auxiliary\Build\vcvarsarm64.bat")) { throw "no vcvarsarm64.bat under $vs" }
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python }}
           architecture: arm64
@@ -170,7 +170,7 @@ jobs:
           Select-String -Path $bat -Pattern '^set ARROW_' | ForEach-Object { $_.Line }
 
       - name: Cache vcpkg packages
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: C:\vcpkg\installed
           key: vcpkg-arm64-static-md-trimmed-${{ inputs.arrow_tag }}-${{ hashFiles('arrow/ci/vcpkg/vcpkg.json') }}
@@ -260,7 +260,7 @@ jobs:
           "@
           if ($LASTEXITCODE -ne 0) { exit 1 }
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: unsigned-pyarrow-cp${{ matrix.python }}
           path: arrow/python/repaired_wheels/*.whl
@@ -272,25 +272,25 @@ jobs:
     timeout-minutes: 30
     steps:
       - name: Harden runner (audit)
-        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c  # v2.21.0
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1  # v2.21.1
         with:
           egress-policy: audit
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           repository: asg017/sqlite-vec
           ref: ${{ inputs.sqlite_vec_tag }}
           path: sv
           fetch-depth: 0
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           path: tools
           sparse-checkout: |
             .github/scripts
           sparse-checkout-cone-mode: false
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.13'
           architecture: arm64
@@ -386,7 +386,7 @@ jobs:
           "@
           if ($LASTEXITCODE -ne 0) { exit 1 }
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: unsigned-sqlite-vec
           path: wheel/*.whl
@@ -407,13 +407,13 @@ jobs:
     environment: release-signing
     steps:
       - name: Harden runner (audit)
-        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c  # v2.21.0
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1  # v2.21.1
         with:
           egress-policy: audit
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           pattern: unsigned-*
           merge-multiple: true
@@ -564,7 +564,7 @@ jobs:
           Get-Content signed/index.txt
           Get-Content signed/SHA256SUMS
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: woa-wheelhouse-signed
           path: |
@@ -583,11 +583,11 @@ jobs:
       contents: write
     steps:
       - name: Harden runner (audit)
-        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c  # v2.21.0
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1  # v2.21.1
         with:
           egress-policy: audit
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: woa-wheelhouse-signed
           path: wheelhouse

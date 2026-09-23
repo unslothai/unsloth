@@ -14,8 +14,11 @@ from core.inference.diffusion_families import (
     default_generation_params,
     detect_family,
     excluded_model_reason,
+    family_sd_cpp_supported,
+    sd_cpp_companion_only_repo_ids,
     sd_cpp_text_encoders_for,
 )
+from core.inference.sd_cpp_args import text_encoder_flags_for_family
 from core.inference.diffusion_lora import _CURATED, list_loras
 
 
@@ -375,6 +378,70 @@ def test_hidream_prequant_wiring():
         assert family_prequant_repo(fam, scheme) == "unsloth/HiDream-I1-Full-FP8"
 
 
+def test_hidream_distilled_variants_have_no_hosted_prequant_to_inherit():
+    # Dev and Fast are distillations of Full, so the hosted Full checkpoint is baked from other
+    # weights. Inheriting it made a Dev / Fast pick plan the Full artifact, drop its own shards,
+    # download several GB and only then hit the base_model_id refusal.
+    from core.inference.diffusion_families import family_prequant_repo
+    for repo_id in ("HiDream-ai/HiDream-I1-Dev", "HiDream-ai/HiDream-I1-Fast"):
+        fam = detect_family(repo_id)
+        for scheme in ("int8", "fp8"):
+            assert family_prequant_repo(fam, scheme, base_repo = repo_id) is None
+            # However the id was typed, and through the mirror the loader actually fetches.
+            assert family_prequant_repo(fam, scheme, base_repo = f"  {repo_id.upper()} ") is None
+            assert (
+                family_prequant_repo(
+                    fam, scheme, base_repo = repo_id.replace("HiDream-ai", "unsloth")
+                )
+                is None
+            )
+
+
+def test_qwen_image_2512_routes_to_its_own_hosted_prequant():
+    # 2512 is a different checkpoint with its own baked artifacts. Falling back to the Qwen-Image ones
+    # made a 2512 pick plan an artifact base_model_id refuses, after its shards had been dropped.
+    from core.inference.diffusion_families import family_prequant_repo
+
+    fam = detect_family("Qwen/Qwen-Image-2512")
+    assert fam is not None and fam.name == "qwen-image"
+    for scheme in ("int8", "fp8"):
+        assert family_prequant_repo(fam, scheme) == "unsloth/Qwen-Image-FP8"
+        assert (
+            family_prequant_repo(fam, scheme, base_repo = "Qwen/Qwen-Image")
+            == "unsloth/Qwen-Image-FP8"
+        )
+        for base_repo in (
+            "Qwen/Qwen-Image-2512",
+            "unsloth/Qwen-Image-2512",
+            " QWEN/QWEN-IMAGE-2512 ",
+        ):
+            assert (
+                family_prequant_repo(fam, scheme, base_repo = base_repo)
+                == "unsloth/Qwen-Image-2512-FP8"
+            )
+
+
+def test_qwen_image_2512_prequant_filenames_match_its_repo():
+    # The names derive from the repo name, so the variant repo must be asked for <Model>-<SCHEME>
+    # in both containers. The .pt is what that repo actually serves today and is asserted to stay
+    # in the chain: preferring safetensors is only allowed to ADD a name in front of it, never to
+    # replace it, or every checkpoint already published would stop resolving.
+    from core.inference.diffusion_prequant import candidate_filenames_of, resolve_prequant_source
+    fam = detect_family("Qwen/Qwen-Image-2512")
+    for scheme, safetensors_name, pickle_name in (
+        ("int8", "Qwen-Image-2512-INT8.safetensors", "Qwen-Image-2512-INT8.pt"),
+        ("fp8", "Qwen-Image-2512-FP8.safetensors", "Qwen-Image-2512-FP8.pt"),
+    ):
+        source = resolve_prequant_source(fam, scheme, base_repo = "Qwen/Qwen-Image-2512")
+        assert source is not None
+        assert source.location == "unsloth/Qwen-Image-2512-FP8"
+        names = list(candidate_filenames_of(source))
+        assert names[0] == safetensors_name, names
+        assert pickle_name in names[1:], names
+        # And the legacy repo-agnostic spelling stays last, for a repo predating the model-named one.
+        assert names[-1] == f"transformer_{scheme}.pt", names
+
+
 def test_hidream_quant_schemes_not_denied_and_no_extra_excludes():
     # Measured on a B200: int8 and fp8 both engage and render cleanly, including 2-3 token prompts on int8. The routed
     # MoE expert Linears only see the concatenated image+text stream (M >> 16), so torch._int_mm's minimum never binds.
@@ -573,3 +640,188 @@ def test_flux2_gguf_base_mismatch_check_fails_open(tmp_path):
     assert_flux2_gguf_matches_base(
         detect_family("unsloth/FLUX.1-dev-GGUF"), "black-forest-labs/FLUX.2-klein-4B", empty
     )
+
+
+def test_qwen_image_21_is_reachable_end_to_end_not_just_detectable():
+    """A family whose base repo is not trusted is not a family at all.
+
+    Detection resolving is the easy half and was never the problem: the load is refused several
+    layers later, by a check that reads a different list, so the entry shipped looking complete and
+    every non-GGUF pick of it died with "restricted to unsloth/* repos". This asserts the whole
+    chain the picker actually walks, which is why it is one test rather than four.
+    """
+    from core.inference.diffusion_families import (
+        _PIPELINE_MIN_DIFFUSERS,
+        detect_family,
+        detect_family_by_pipeline_class,
+    )
+
+    fam = detect_family("Qwen/Qwen-Image-2.1")
+    assert fam is not None and fam.name == "qwen-image-2.1"
+    # Not swallowed by the generic family, and not swallowing it either.
+    assert detect_family("Qwen/Qwen-Image").name == "qwen-image"
+    assert detect_family("Qwen/Qwen-Image-2512").name == "qwen-image"
+    for alias in ("qwen_image_21", "qwenimage21", "qwen-image-21"):
+        assert detect_family("", override = alias) is fam, alias
+    # The class really is what the published model_index.json names.
+    assert detect_family_by_pipeline_class("QwenImage21Pipeline") is fam
+    assert fam.pipeline_class in _PIPELINE_MIN_DIFFUSERS
+
+    # The gate that made the entry inert. _is_trusted_diffusion_repo is asked of the base repo by
+    # validate_load_request BEFORE anything is built, so a family base missing from that list is
+    # unloadable however correct the rest of the entry is.
+    assert _is_trusted_diffusion_repo(fam.base_repo), (
+        f"{fam.base_repo} is the family's own base and is not in _TRUSTED_NON_GGUF_REPOS, so "
+        "every non-GGUF pick of this family is refused before the pipeline is built"
+    )
+
+
+def test_every_image_family_base_repo_is_loadable():
+    """The general form of the above, so the next family cannot ship inert the same way."""
+    from core.inference.diffusion_families import _FAMILIES
+
+    unreachable = [
+        f.name for f in _FAMILIES if f.base_repo and not _is_trusted_diffusion_repo(f.base_repo)
+    ]
+    assert (
+        not unreachable
+    ), f"these families declare a base repo that validate_load_request refuses: {unreachable}"
+
+
+def test_qwen_image_21_gguf_reaches_sd_cpp_with_its_own_vae_and_a_qwen3vl_encoder():
+    """The no-GPU route for unsloth/Qwen-Image-2.1-GGUF.
+
+    Every assertion here is a way the route was observed to fail quietly rather than loudly:
+    a family without both sd.cpp assets silently falls back to diffusers, the qwen-image VAE
+    decodes 2.1 latents to noise instead of erroring, and a fixed flow shift overrides the
+    resolution-dependent schedule upstream picks for this architecture.
+    """
+    fam = detect_family("unsloth/Qwen-Image-2.1-GGUF")
+    assert fam is not None and fam.name == "qwen-image-2.1"
+    assert family_sd_cpp_supported(fam)
+
+    assert fam.sd_cpp_vae == (
+        "unsloth/Qwen-Image-2.1-FP8",
+        "vae/qwen_image_2.1_vae_bf16.safetensors",
+    )
+    # Not the qwen-image VAE: a different class for a different latent space, which decodes to
+    # noise rather than raising if it is ever substituted here.
+    assert "2.1" in fam.sd_cpp_vae[1]
+
+    encoders = sd_cpp_text_encoders_for(fam, "unsloth/Qwen-Image-2.1-GGUF", None)
+    # The encoder, then the vision projector native editing reads through --llm_vision.
+    assert len(encoders) == 2
+    assert encoders[1] == ("unsloth/Qwen3-VL-8B-Instruct-GGUF", "mmproj-F16.gguf", "llm_vision")
+    repo, filename, kind = encoders[0]
+    assert repo == "unsloth/Qwen3-VL-8B-Instruct-GGUF"
+    # Which rung is the family's call, pinned by exact name in
+    # test_diffusion_compat_preflight.py::test_qwen_image_2_1_takes_the_dynamic_4bit_text_encoder.
+    # Restating it here broke when #11542 moved it to UD-Q4_K_XL. What this route needs is that
+    # the declared file is what reaches sd.cpp, and that it stays a 4-bit GGUF: the CPU RAM win
+    # is the reason the no-GPU route exists (bf16 is 16.4 GB).
+    assert filename == fam.sd_cpp_text_encoders[0][1]
+    assert filename.endswith(".gguf") and "Q4_K" in filename, filename
+    assert kind == "llm"
+    assert text_encoder_flags_for_family(fam.name) == ("--llm",)
+
+    assert fam.sd_cpp_sampling_method == "euler"
+    assert fam.sd_cpp_flow_shift is None
+
+    # The encoder repo is fetch-only and must not be offered as a loadable model. The VAE repo is
+    # the base itself, so it must NOT be classified that way.
+    companions = sd_cpp_companion_only_repo_ids()
+    assert "unsloth/qwen3-vl-8b-instruct-gguf" in companions
+    # The VAE ships inside a repo that is itself loadable, so it must NOT be classified fetch-only.
+    # Putting it in the GGUF repo instead WOULD be: that repo appears in no family field, so
+    # companions-minus-loadable would mark the home of every denoiser as a companion and hide it.
+    assert "unsloth/qwen-image-2.1-fp8" not in companions
+    assert "qwen/qwen-image-2.1" not in companions
+
+
+def test_the_pinned_prebuilt_is_one_that_can_load_qwen_image_21():
+    """The route is only real if the binary the installer pins understands the architecture.
+
+    The tag STRING cannot answer this: every mirror build resolves to the same master-813 base, so
+    the August build and the current one are indistinguishable by name. What is asserted here is the
+    pin itself, against the release verified to render this family (26.9s at 1024 on one B200,
+    Q4_K_M denoiser, bf16 VAE, Q4_K_M Qwen3-VL encoder). Bump both together or not at all.
+    """
+    import importlib.util
+    from pathlib import Path
+
+    script = Path(__file__).resolve().parents[2] / "install_sd_cpp_prebuilt.py"
+    spec = importlib.util.spec_from_file_location("install_sd_cpp_prebuilt_pin", script)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    assert module.DEFAULT_TAG == "master-813-bfbef5b-u1d02858", (
+        "the pinned prebuilt must be one built from a tree carrying Qwen-Image-2.1; "
+        f"{module.DEFAULT_TAG} is not"
+    )
+
+
+def test_a_minimum_that_has_not_shipped_does_not_prescribe_an_impossible_upgrade():
+    """``pip install -U 'diffusers>=0.41.0'`` has no candidate while 0.41.0 is unreleased, so the
+    refusal has to name the pinned main build Studio actually installs for this class.
+
+    And it has to name a remedy that WORKS for the cause that produces this refusal. Measured on a
+    host whose git exits non-zero: the install keeps diffusers 0.40.0, and the old text sent the
+    reader to `pip install -r diffusers-main.txt`, which resolves the same git+https requirement
+    and fails identically. The quoted zip URL needs no git, so it is the one line here that has to
+    stay true, hence the check that it names the commit the pin file actually carries."""
+    import pathlib
+    import re as _re
+
+    from core.inference.diffusion_families import (
+        _PIPELINE_MIN_DIFFUSERS,
+        _UNRELEASED_MIN_DIFFUSERS,
+        _too_old_message,
+    )
+
+    message = _too_old_message("QwenImage21Pipeline", "qwen-image-2.1", "0.40.0")
+    assert "pip install -U 'diffusers>=0.41.0'" not in message
+    assert "has not been released yet" in message
+    assert "git --version" in message, "the likely cause has to be checkable by the reader"
+
+    pin = pathlib.Path(__file__).resolve().parents[1] / "requirements" / "diffusers-main.txt"
+    commit = _re.search(r"@([0-9a-fA-F]{40})\b", pin.read_text(encoding = "utf-8"))
+    assert commit is not None, "the main pin must carry a full commit for the zip route to exist"
+    assert (
+        f"https://github.com/huggingface/diffusers/archive/{commit.group(1).lower()}.zip" in message
+    ), message
+
+    # A released minimum keeps the ordinary remedy.
+    released = _too_old_message("Krea2Pipeline", "krea-2", "0.38.0")
+    assert "pip install -U 'diffusers>=0.39.0'" in released
+
+    # Every unreleased entry must still be a minimum some class actually declares, so a stale one
+    # cannot sit here unnoticed after its release ships.
+    declared = set(_PIPELINE_MIN_DIFFUSERS.values())
+    assert _UNRELEASED_MIN_DIFFUSERS <= declared, sorted(_UNRELEASED_MIN_DIFFUSERS - declared)
+
+
+def test_qwen_image_21_takes_reference_images_but_is_not_an_edit_only_family():
+    """2.1 is unified, so it is the FLUX.2 shape and not the Qwen-Image-Edit one.
+
+    ``QwenImage21Pipeline.__call__`` takes ``image`` as optional condition images beside the prompt,
+    with no ``strength`` and the size from width/height, which is what the reference workflow passes.
+    ``edit`` would mean the pipeline IS the edit pipeline with no plain text-to-image, which is
+    Qwen-Image-Edit, a different model with a different pipeline class. Getting this wrong in either
+    direction is silent: False refuses reference images outright, True would demand an input image
+    for every generation.
+    """
+    from core.inference.diffusion_families import detect_family
+
+    fam = detect_family("Qwen/Qwen-Image-2.1")
+    assert fam is not None and fam.name == "qwen-image-2.1"
+    assert fam.reference is True
+    assert fam.edit is False
+    assert fam.pipeline_class == "QwenImage21Pipeline"
+    # It also has no separate img2img or inpaint pipeline upstream: the one class covers both jobs.
+    assert fam.img2img_pipeline_class is None
+    assert fam.inpaint_pipeline_class is None
+
+    # The edit family is a different model entirely, and must not have been merged into this one.
+    edit = detect_family("Qwen/Qwen-Image-Edit-2511")
+    assert edit is not None and edit.name == "qwen-image-edit" and edit.edit is True
+    assert edit.pipeline_class != fam.pipeline_class

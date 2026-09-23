@@ -26,6 +26,8 @@ function smokeModuleDelay(): Plugin {
 
 // https://vite.dev/config/
 export default defineConfig({
+  // Reasoning's highlighter loads only the grammar it needs in its module worker.
+  worker: { format: "es" },
   plugins: [react(), tailwindcss(), smokeModuleDelay()],
   // Keep an unrelated PostCSS config in an ancestor directory from leaking
   // into Unsloth installs. Tailwind is provided by its dedicated Vite plugin.

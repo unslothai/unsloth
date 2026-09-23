@@ -117,6 +117,8 @@ export function DesktopTitlebarNavigation({
   const stopTitlebarDrag = (event: MouseEvent<HTMLButtonElement>) => {
     event.stopPropagation();
   };
+  // Window chrome: the band around these is a fixed 34px, so they keep their
+  // size while the slot holding them scales.
   const buttonClass =
     "inline-flex size-[30px] shrink-0 items-center justify-center rounded-[10px] text-nav-icon-idle dark:text-nav-fg-muted transition-colors hover:bg-nav-surface-hover hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
 
@@ -149,6 +151,8 @@ export function DesktopTitlebarNavigation({
           />
         </button>
       ) : (
+        // Holds the slot the navbar's own trigger sits in, so it is the
+        // button's fixed size, not a scaled one.
         <div aria-hidden="true" className="size-[30px] shrink-0" />
       )}
       <button
@@ -214,8 +218,13 @@ export function WindowTitlebar({
       : "var(--studio-sidebar-collapsed-width,3rem)"
     : "0px";
 
+  // The buttons in this slot are fixed but their padding and gaps scale, so
+  // the slot grows with them and never shrinks under the three 30px buttons.
+  // The drag region starts where it ends.
   const titlebarNavigationWidth =
-    showSidebarSurface && !pinned ? "7rem" : sidebarWidth;
+    showSidebarSurface && !pinned
+      ? "max(7rem, calc(7rem * var(--ui-space-scale, 1)))"
+      : sidebarWidth;
   const contentBorderLeft = pinned ? `calc(${sidebarWidth} + 12px)` : "0px";
 
   const refreshMaximized = useCallback(async () => {

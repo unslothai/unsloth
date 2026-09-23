@@ -59,7 +59,7 @@ case "$STATE" in
         # replaces. Wait for the row, and read the file after it.
         while [[ ! -s "$FILE" ]] || ! unsloth-studio-run --initialized; do
             if (( $(date +%s) >= deadline )); then
-                STUDIO_LINE="the first-boot password did not appear in ${WAIT}s; check the studio log above"
+                STUDIO_LINE="the first-boot password did not appear in ${WAIT}s; check the Unsloth Studio log above"
                 break
             fi
             sleep 1
@@ -69,7 +69,7 @@ case "$STATE" in
             password="$(tr -d '\r\n' < "$FILE")"
             note=""
             if (( TIMEOUT > 0 )); then
-                note="   (change it on first sign-in: Studio stops after $(duration "$TIMEOUT") with the default password; UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT=0 disables)"
+                note="   (change it on first sign-in: Unsloth Studio stops after $(duration "$TIMEOUT") with the default password; UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT=0 disables)"
             fi
             STUDIO_LINE="username: unsloth   password: ${password}${note}"
         fi ;;
@@ -81,10 +81,10 @@ echo "Unsloth Studio login -> ${STUDIO_LINE}"
 studio_ok=""; jupyter_ok=""
 deadline=$(( $(date +%s) + READY_WAIT ))
 while :; do
-    if [[ -z "$studio_ok" ]] && curl -sf -o /dev/null --max-time 3 "http://127.0.0.1:${UNSLOTH_STUDIO_PORT:-8000}/api/health"; then
+    if [[ -z "$studio_ok" ]] && curl -sf -o /dev/null --max-time 3 --noproxy '*' "http://127.0.0.1:${UNSLOTH_STUDIO_PORT:-8000}/api/health"; then
         studio_ok=1
     fi
-    if [[ -z "$jupyter_ok" ]] && curl -sf -o /dev/null --max-time 3 "http://127.0.0.1:${JUPYTER_PORT}/login"; then
+    if [[ -z "$jupyter_ok" ]] && curl -sf -o /dev/null --max-time 3 --noproxy '*' "http://127.0.0.1:${JUPYTER_PORT}/login"; then
         jupyter_ok=1
     fi
     { [[ -n "$studio_ok" && -n "$jupyter_ok" ]] || (( $(date +%s) >= deadline )); } && break
@@ -113,7 +113,7 @@ fi
 rule="$(printf '=%.0s' $(seq 1 72))"
 printf '%s\n' "${_g}${rule}${_r}"
 printf '  %s\n' "${_g}${title}${_r}"
-printf '  Studio      %s   %s\n' "${_b}http://localhost:${UNSLOTH_STUDIO_PORT:-8000}${_r}" "${_y}${studio_text}${_r}"
+printf '  Unsloth     %s   %s\n' "${_b}http://localhost:${UNSLOTH_STUDIO_PORT:-8000}${_r}" "${_y}${studio_text}${_r}"
 printf '  JupyterLab  %s   %s\n' "${_b}http://localhost:${JUPYTER_PORT}${_r}" "${_y}${jupyter_text}${_r}"
 printf '  %s\n' "Ports are the container's: use the host side of your -p flags, or an SSH tunnel to a remote host."
 printf '%s\n' "${_g}${rule}${_r}"

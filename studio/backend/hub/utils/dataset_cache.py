@@ -278,7 +278,9 @@ def resolved_dataset_snapshot_file(snapshot: str | Path, source_path: str) -> Op
     except (OSError, RuntimeError, ValueError):
         return None
     if not resolved.is_file() or not (
-        resolved.is_relative_to(snapshot_path) or resolved.is_relative_to(repo_dir / "blobs")
+        resolved.is_relative_to(snapshot_path)
+        or resolved.is_relative_to(repo_dir / "blobs")
+        or resolved.is_relative_to(repo_dir.parent / "blobs")
     ):
         return None
     try:

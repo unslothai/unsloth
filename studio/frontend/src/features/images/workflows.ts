@@ -43,6 +43,13 @@ export const WORKFLOW_TABS: Array<{
     hint: "Generate a new image from a prompt",
   },
   {
+    id: "edit",
+    label: "Edit",
+    icon: Edit03Icon,
+    requires: "edit",
+    hint: "Change an image with an instruction",
+  },
+  {
     id: "transform",
     label: "Transform",
     icon: MagicWand01Icon,
@@ -76,12 +83,5 @@ export const WORKFLOW_TABS: Array<{
     icon: ImageUpload01Icon,
     requires: "reference",
     hint: "Generate guided by a reference image",
-  },
-  {
-    id: "edit",
-    label: "Edit",
-    icon: Edit03Icon,
-    requires: "edit",
-    hint: "Change an image with an instruction",
   },
 ];

@@ -5,7 +5,7 @@
 // the device. No React/DOM deps so they are easy to test.
 
 import { classifyGgufFit } from "../../../../lib/gguf-fit.ts";
-import { classifyMediaGgufFit } from "./model-catalog.ts";
+import { classifyMediaGgufFit, type curatedArtifactFit } from "./model-catalog.ts";
 
 const GGUF_SUFFIX_RE = /-GGUF(?:$|-)/i;
 // Mirrors the backend's _looks_like_mlx_repo: owner prefix, or a bounded mlx token in the leaf.
@@ -359,4 +359,40 @@ export function orderRecommendedRows<
     (r) => !curatedIds.has(r.id),
   );
   return [...curated, ...rest];
+}
+
+/** The allowance a curated row was judged against, the memory it is 70% of, and the unrounded size. */
+export type CuratedBudget = {
+  allowanceGb: number;
+  deviceGb: number;
+  device: "GPU" | "RAM";
+  sizeGb: number;
+};
+
+export function curatedBudget(
+  fit: NonNullable<ReturnType<typeof curatedArtifactFit>>,
+): CuratedBudget | undefined {
+  const { allowanceGb, deviceGb, device, sizeGb } = fit;
+  return allowanceGb != null && deviceGb != null && device && sizeGb != null
+    ? { allowanceGb, deviceGb, device, sizeGb }
+    : undefined;
+}
+
+/** Over-budget text for a curated row. When the whole-GB badge figure does not read above the
+ *  one-decimal budget (24 against 24.1), the size is rounded up and the budget down to a tenth, so
+ *  the shown size is always strictly above the shown budget. The epsilon keeps 16.7999... at 16.8. */
+export function curatedBudgetText(est: number, gpuGb: number, budget: CuratedBudget): string {
+  const shownBudget = Number(budget.allowanceGb.toFixed(1));
+  const wholeReadsOver = est > shownBudget;
+  const needGb = wholeReadsOver
+    ? `${est}`
+    : (Math.ceil(budget.sizeGb * 10 - 1e-9) / 10).toFixed(1);
+  const budgetGb = wholeReadsOver
+    ? shownBudget.toFixed(1)
+    : (Math.floor(budget.allowanceGb * 10 + 1e-9) / 10).toFixed(1);
+  const of =
+    budget.device === "RAM"
+      ? `${Number(budget.deviceGb.toFixed(2))}GB available RAM`
+      : `a ${gpuGb}GB GPU`;
+  return `Needs ~${needGb}GB for weights (budget: ~${budgetGb}GB, 70% of ${of})`;
 }

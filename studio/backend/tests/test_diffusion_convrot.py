@@ -319,9 +319,9 @@ def test_h3_int8_resolves_to_the_rotated_artifact_with_the_plain_one_behind_it()
     src = pq.resolve_prequant_source(fam, "int8")
     assert src.location == "unsloth/MiniMax-H3-FP8"
     assert src.filename == "MiniMax-H3-INT8-ConvRot.pt"
-    assert src.fallback_filename == "MiniMax-H3-INT8.pt"
+    assert "MiniMax-H3-INT8.pt" in src.fallback_filenames
     # fp8 is untouched: one artifact, the derived name.
-    assert pq.resolve_prequant_source(fam, "fp8").filename == "MiniMax-H3-FP8.pt"
+    assert pq.resolve_prequant_source(fam, "fp8").filename == "MiniMax-H3-FP8.safetensors"
 
 
 # ── end to end through the prequant loader ────────────────────────────────────────

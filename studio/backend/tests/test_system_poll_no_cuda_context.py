@@ -1241,8 +1241,14 @@ def test_linux_rocm_apu_uses_sysfs_to_confirm_equal_total_scope(
 
     assert result["devices"][0]["memory_total_gb"] == torch_total / (1024**3)
     assert result["devices"][0]["shared_memory"] is expected_shared
+    # When sysfs answered and torch does not exceed it, the host-backed part is a
+    # measured ZERO rather than unknown. It used to be omitted, and the tile renders
+    # an omitted figure as "all of it is host memory", which printed a 64 GiB
+    # carve-out as `0.00 GiB VRAM + 64.00 GiB shared` on a real gfx1151
+    # (unsloth#7449 defect 1). `shared_memory` still turns on only for a positive
+    # host-backed part, so nothing collapses that did not collapse before.
     assert result["devices"][0]["shared_memory_host_backed_gb"] == (
-        round((torch_total - sysfs_total) / (1024**3), 2) if expected_shared else None
+        round((torch_total - sysfs_total) / (1024**3), 2) if expected_shared else 0.0
     )
 
 
@@ -1743,3 +1749,121 @@ def test_gpu_summary_apu_counters_need_positively_identified_uma(monkeypatch):
 
     # Driver total kept, free still hipMemGetInfo's.
     assert summary == {"gpu_name": "Test GPU", "vram_total_gb": 100.0, "vram_free_gb": 98.0}
+
+
+# The measured gfx1151, end to end through the payload Settings > System reads.
+# Numbers are verbatim from the AMD CI Strix Halo runner against main:
+#   torch total_memory      68719476736  (64.00 GiB)
+#   sysfs mem_info_vram_total 68719476736  (64.00 GiB, a real BIOS carve-out)
+#   sysfs mem_info_gtt_total  33521315840  (31.22 GiB, host-backed, ON TOP)
+# and an 8 GiB torch allocation landed in vram_used, not in gtt_used, so the
+# driver's own accounting calls that 64 GiB dedicated.
+_MEASURED_STRIX_HALO_TOTAL_BYTES = 68719476736
+
+
+def test_the_measured_strix_halo_is_not_reported_as_having_no_vram(monkeypatch):
+    """unsloth#7449 defect 1, the Linux arm.
+
+    Settings > System renders an ABSENT `shared_memory_host_backed_gb` as "the whole
+    budget is host memory", so omitting the figure printed `0.00 GiB VRAM +
+    64.00 GiB shared` on a machine with a 64 GiB carve-out. The figure here is zero,
+    and zero has to be said out loud.
+    """
+    total = _MEASURED_STRIX_HALO_TOTAL_BYTES
+    mod = _apu_mod(gtt_total = total, carve_out = total)
+    for var in (
+        "HIP_VISIBLE_DEVICES",
+        "ROCR_VISIBLE_DEVICES",
+        "CUDA_VISIBLE_DEVICES",
+        "GPU_DEVICE_ORDINAL",
+    ):
+        monkeypatch.delenv(var, raising = False)
+    monkeypatch.setattr(hw, "IS_ROCM", True)
+    monkeypatch.setattr(hw.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(hw, "get_device", lambda: hw.DeviceType.CUDA)
+    monkeypatch.setattr(hw, "get_parent_visible_gpu_ids", lambda: [0])
+    monkeypatch.setattr(hw, "_torch_get_device_module", lambda: (mod, "cuda"))
+    monkeypatch.setattr(hw, "_rocm_kfd_gpu_pci_ids", lambda: {0: "0000:03:00.0"})
+    monkeypatch.setattr(
+        hw,
+        "_rocm_linux_sysfs_vram_by_pci_gb",
+        lambda: {"0000:03:00.0": (9.06, total / (1024**3))},
+    )
+
+    device = hw.get_backend_visible_gpu_info()["devices"][0]
+
+    assert device["memory_total_gb"] == 64.0
+    assert (
+        device["shared_memory_host_backed_gb"] == 0.0
+    ), "a readable sysfs total that torch does not exceed is a measured zero, not an unknown"
+    # Still a unified-memory part for every rule that cares; only the SPLIT is known.
+    assert device["unified_memory"] is True
+    # NOT flipped on: `shared_memory` also means "these rows are one pool", and a
+    # zero host-backed part is no reason to start collapsing devices.
+    assert device["shared_memory"] is False
+
+
+def test_an_unreadable_sysfs_total_still_leaves_the_split_unknown(monkeypatch):
+    """The other direction: WSL and anything else with no DRM sysfs must keep
+    answering None, because there a zero would be an assertion nobody measured."""
+    # _rocm_linux_sysfs_vram_by_index returns {} off Linux before reading anything, so
+    # without this the assertion below is answered by the platform gate rather than by
+    # the logic under test: red on macOS and Windows where it expects a figure, and
+    # green for the wrong reason where it expects {}.
+    monkeypatch.setattr(hw.platform, "system", lambda: "Linux")
+    devices = [{"index": 0, "total_gb": 100.0, "_rocm_known_unified": True}]
+    monkeypatch.setattr(hw, "_rocm_kfd_gpu_pci_ids", lambda: {0: "0000:03:00.0"})
+    monkeypatch.setattr(
+        hw, "_rocm_linux_sysfs_vram_by_pci_gb", lambda: {"0000:03:00.0": (0.0, 0.0)}
+    )
+    assert hw._rocm_linux_shared_pool_host_gb_by_index(devices) == {}
+
+
+def test_a_real_gtt_backed_excess_is_still_reported_as_host_backed(monkeypatch):
+    """The case #9314 and #11366 exist for must not regress: a torch total well
+    above the sysfs heap is a genuine host-backed window and keeps its figure."""
+    # _rocm_linux_sysfs_vram_by_index returns {} off Linux before reading anything, so
+    # without this the assertion below is answered by the platform gate rather than by
+    # the logic under test: red on macOS and Windows where it expects a figure, and
+    # green for the wrong reason where it expects {}.
+    monkeypatch.setattr(hw.platform, "system", lambda: "Linux")
+    devices = [{"index": 0, "total_gb": 100.0, "_rocm_known_unified": True}]
+    monkeypatch.setattr(hw, "_rocm_kfd_gpu_pci_ids", lambda: {0: "0000:03:00.0"})
+    monkeypatch.setattr(
+        hw, "_rocm_linux_sysfs_vram_by_pci_gb", lambda: {"0000:03:00.0": (1.0, 8.0)}
+    )
+    assert hw._rocm_linux_shared_pool_host_gb_by_index(devices) == {0: 92.0}
+
+
+def test_a_discrete_rocm_card_is_never_given_a_host_backed_figure(monkeypatch):
+    """Gated on `_rocm_known_unified`, so a dGPU keeps its discrete rendering."""
+    # _rocm_linux_sysfs_vram_by_index returns {} off Linux before reading anything, so
+    # without this the assertion below is answered by the platform gate rather than by
+    # the logic under test: red on macOS and Windows where it expects a figure, and
+    # green for the wrong reason where it expects {}.
+    monkeypatch.setattr(hw.platform, "system", lambda: "Linux")
+    devices = [{"index": 0, "total_gb": 24.0}]
+    monkeypatch.setattr(hw, "_rocm_kfd_gpu_pci_ids", lambda: {0: "0000:03:00.0"})
+    monkeypatch.setattr(
+        hw, "_rocm_linux_sysfs_vram_by_pci_gb", lambda: {"0000:03:00.0": (1.0, 24.0)}
+    )
+    assert hw._rocm_linux_shared_pool_host_gb_by_index(devices) == {}
+
+
+def test_a_partitioned_device_keeps_its_split_unknown(monkeypatch):
+    """sysfs reporting the whole card while torch reports one partition is a SCOPE
+    change, not a measurement of zero host-backed memory.
+
+    Publishing 0.0 there would call the whole partition dedicated and overstate
+    independent capacity, in the direction that admits a load.
+    `_rocm_system_wide_vram_by_index` already treats a mismatch over the same 10% as a
+    different scope in either direction.
+    """
+    monkeypatch.setattr(hw.platform, "system", lambda: "Linux")
+    devices = [{"index": 0, "total_gb": 24.0, "_rocm_known_unified": True}]
+    monkeypatch.setattr(hw, "_rocm_kfd_gpu_pci_ids", lambda: {0: "0000:03:00.0"})
+    # sysfs reports the whole 192 GiB card, torch reports a 24 GiB partition.
+    monkeypatch.setattr(
+        hw, "_rocm_linux_sysfs_vram_by_pci_gb", lambda: {"0000:03:00.0": (1.0, 192.0)}
+    )
+    assert hw._rocm_linux_shared_pool_host_gb_by_index(devices) == {}

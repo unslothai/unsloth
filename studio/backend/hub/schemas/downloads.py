@@ -156,6 +156,9 @@ class DownloadProgressResponse(BaseModel):
     expected_bytes: int
     progress: float
     cache_path: Optional[str] = None
+    # Opaque stand-in for ``cache_path``. A redacted reading is an empty string, never null,
+    # so the discriminator above survives.
+    cache_ref: Optional[str] = None
     cache_measured: bool = Field(
         True,
         description = (
