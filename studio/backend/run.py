@@ -784,7 +784,9 @@ def _addresses_collide(recorded: "str | None", host: str, port: int) -> bool:
 def _is_port_free(host: str, port: int) -> bool:
     """Check if a port is available for binding. For a ``0.0.0.0`` wildcard host, also check whether anything
     is listening on ``127.0.0.1`` (and ``::1`` when IPv6 exists): an SSH tunnel may hold loopback while the
-    wildcard bind succeeds, making Unsloth unreachable via ``localhost``."""
+    wildcard bind succeeds, making Unsloth unreachable via ``localhost``. For a loopback host, also check
+    that nothing already answers there: Windows lets that bind succeed next to another process's wildcard
+    listener."""
     import socket
 
     sockets = []
@@ -820,19 +822,33 @@ def _is_port_free(host: str, port: int) -> bool:
     # On a wildcard bind, verify localhost is not already claimed by another process (e.g. an SSH -L
     # tunnel); a successful connect means it is.
     if is_wildcard_host(host):
-        for loopback, family in [
-            ("127.0.0.1", socket.AF_INET),
-            ("::1", socket.AF_INET6),
-        ]:
-            try:
-                with socket.socket(family, socket.SOCK_STREAM) as s:
-                    s.settimeout(1)
-                    if s.connect_ex((loopback, port)) == 0:
-                        return False
-            except OSError:
-                continue
+        loopbacks = [("127.0.0.1", socket.AF_INET), ("::1", socket.AF_INET6)]
+    else:
+        # A loopback bind can succeed while another process listens on 0.0.0.0 with the same port
+        # (Windows allows it, and so does macOS with SO_REUSEADDR). Localhost traffic then comes to
+        # us instead of that process, so connect to see whether anyone is already answering.
+        loopbacks = []
+        for family, _, _, _, sockaddr in addr_info:
+            if _is_loopback_address(sockaddr[0]) and (sockaddr[0], family) not in loopbacks:
+                loopbacks.append((sockaddr[0], family))
+    for loopback, family in loopbacks:
+        try:
+            with socket.socket(family, socket.SOCK_STREAM) as s:
+                s.settimeout(1)
+                if s.connect_ex((loopback, port)) == 0:
+                    return False
+        except OSError:
+            continue
 
     return True
+
+
+def _is_loopback_address(address: str) -> bool:
+    import ipaddress
+    try:
+        return ipaddress.ip_address(address.split("%")[0]).is_loopback
+    except ValueError:
+        return False
 
 
 def _find_free_port(
