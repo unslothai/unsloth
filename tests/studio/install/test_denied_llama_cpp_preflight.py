@@ -38,7 +38,8 @@ SHARED_FUNCTIONS = (
     "Get-ManagedLlamaCppDir",
     "Invoke-ManagedLlamaCppPreflight",
     "Test-MirrorConfigured",
-    "Invoke-MirrorProbe",
+    "Start-MirrorProbe",
+    "Wait-MirrorProbe",
     "Invoke-MirrorFallback",
 )
 

@@ -890,18 +890,13 @@ function Invoke-ManagedLlamaCppPreflight {
     return "$reason Nothing was installed."
 }
 
-# A package host that is blocked, or too slow to serve a small index page within the probe
-# budget, is swapped for a public mirror that passes the same probe. Mirrors _mirror_fallback
-# in install.sh; UNSLOTH_MIRROR_FALLBACK=0 turns it off.
+# Swaps a default package host below 1 MiB/s on an artifact it serves, or whose index does not answer, for its mirror (CERNET,
+# or npmmirror for npm) when that is faster and its own index answers, as _mirror_fallback in install.sh does. UNSLOTH_MIRROR_FALLBACK=0 turns it off.
 function Test-MirrorConfigured {
-    param([ValidateSet('uv', 'python', 'pip')][string]$Tool)
+    param([ValidateSet('uv', 'pip')][string]$Tool)
     if ($Tool -eq 'uv') {
         if ("$env:UV_DEFAULT_INDEX$env:UV_INDEX_URL$env:UV_INDEX$env:UV_EXTRA_INDEX_URL") { return $true }
         $pattern = '^\s*(\[\[index\]\]|(pip\.)?(index|index-url|default-index|extra-index-url|no-index)\s*=)'
-        $files = @($env:UV_CONFIG_FILE, "$env:APPDATA\uv\uv.toml", "$env:ProgramData\uv\uv.toml")
-    } elseif ($Tool -eq 'python') {
-        if ($env:UV_PYTHON_INSTALL_MIRROR) { return $true }
-        $pattern = '^\s*python-install-mirror\s*='
         $files = @($env:UV_CONFIG_FILE, "$env:APPDATA\uv\uv.toml", "$env:ProgramData\uv\uv.toml")
     } else {
         if ("$env:PIP_INDEX_URL$env:PIP_EXTRA_INDEX_URL$env:PIP_NO_INDEX") { return $true }
@@ -917,94 +912,136 @@ function Test-MirrorConfigured {
     return $false
 }
 
-# Maps each URL to ok, slow (answered but missed the budget) or blocked, probing all at once.
-function Invoke-MirrorProbe {
-    param([string[]]$Urls, [int]$Seconds = 10)
-    $deadline = [DateTime]::UtcNow.AddSeconds($Seconds)
-    # Windows PowerShell 5.1 on an older .NET may pin TLS 1.0/1.1, which every probed host refuses. Pin 1.2
-    # for the probe rather than OR it in (Tls|Tls12 still fails the handshake), and leave SystemDefault (0) alone.
-    $savedProtocol = [System.Net.ServicePointManager]::SecurityProtocol
-    if ([int]$savedProtocol -ne 0) {
-        [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.SecurityProtocolType]::Tls12
+function Start-MirrorProbe {
+    param([string[]]$Urls, [double]$Seconds, [long]$LastByte)
+    $state = @{ Urls = $Urls; Seconds = $Seconds; LastByte = $LastByte; Clock = [System.Diagnostics.Stopwatch]::StartNew(); Requests = @{}; Heads = @{}; InTime = @{}; Bodies = @{}; Buffers = @{} }
+    $deadline = [System.Threading.Tasks.Task]::Delay([int]($Seconds * 1000))
+    foreach ($url in $Urls) {
+        $state.Requests[$url] = [System.Net.WebRequest]::Create($url)
+        # The CERNET mirrors answer 403 to a request without a User-Agent; a fresh connection keeps every probe cold, as curl's are.
+        $state.Requests[$url].UserAgent = 'unsloth-installer'
+        $state.Requests[$url].KeepAlive = $false
+        $state.Requests[$url].AddRange(0, $LastByte)
+        $state.Heads[$url] = $state.Requests[$url].GetResponseAsync()
+        # Settles on whichever finishes first, so an answer after the deadline stays late however long before it is waited on.
+        $state.InTime[$url] = [System.Threading.Tasks.Task]::WhenAny([System.Threading.Tasks.Task[]]@($state.Heads[$url], $deadline))
     }
-    $requests = @{}
-    $heads = @{}
-    $bodies = @{}
+    return $state
+}
+
+# Maps each URL to @(<http code, 0 when nothing answered>, <bytes/s>), giving up $Seconds after the start with the speed so far, as curl does.
+function Wait-MirrorProbe {
+    param($Probe)
     $results = @{}
+    $measure = { param($url) @([int]$Probe.Heads[$url].Result.StatusCode, [long]($Probe.Buffers[$url].Position / $Probe.Clock.Elapsed.TotalSeconds)) }
     try {
-        foreach ($url in $Urls) {
-            $requests[$url] = [System.Net.WebRequest]::Create($url)
-            # The CERNET mirrors answer 403 to a request without a User-Agent.
-            $requests[$url].UserAgent = 'unsloth-installer'
-            $heads[$url] = $requests[$url].GetResponseAsync()
-        }
-        do {
-            foreach ($url in $Urls) {
-                if ($results.ContainsKey($url) -or $bodies.ContainsKey($url) -or -not $heads[$url].IsCompleted) { continue }
-                # A 4xx/5xx faults the task, so a completed response is a success.
-                if ($heads[$url].Status -eq 'RanToCompletion') {
-                    $bodies[$url] = $heads[$url].Result.GetResponseStream().CopyToAsync([System.IO.Stream]::Null)
-                } else {
-                    $results[$url] = 'blocked'
+        while ($true) {
+            foreach ($url in $Probe.Urls) {
+                if ($results.ContainsKey($url) -or -not $Probe.InTime[$url].IsCompleted) { continue }
+                if (-not [object]::ReferenceEquals($Probe.InTime[$url].Result, $Probe.Heads[$url])) {
+                    $results[$url] = @(0, [long]0)
+                } elseif ($Probe.Heads[$url].Status -ne 'RanToCompletion') {
+                    # A 4xx/5xx faults the task with the response attached; no response means nothing answered.
+                    $failure = $Probe.Heads[$url].Exception.InnerException -as [System.Net.WebException]
+                    $results[$url] = @($(if ($failure -and $failure.Response) { [int]$failure.Response.StatusCode } else { 0 }), [long]0)
+                } elseif (-not $Probe.Bodies.ContainsKey($url)) {
+                    # Fixed size, one 64 KiB copy past the range: a middlebox that drops Range cannot make the probe buffer a whole wheel.
+                    $Probe.Buffers[$url] = [System.IO.MemoryStream]::new([byte[]]::new($Probe.LastByte + 65537))
+                    $Probe.Bodies[$url] = $Probe.Heads[$url].Result.GetResponseStream().CopyToAsync($Probe.Buffers[$url], 65536)
+                } elseif ($Probe.Bodies[$url].IsCompleted) {
+                    $results[$url] = & $measure $url
                 }
             }
-            $pending = @($Urls | Where-Object { -not $results.ContainsKey($_) -and -not ($bodies.ContainsKey($_) -and $bodies[$_].IsCompleted) })
-            if ($pending.Count -eq 0) { break }
-            Start-Sleep -Milliseconds 100
-        } while ([DateTime]::UtcNow -lt $deadline)
-        foreach ($url in $Urls) {
+            $pending = @($Probe.Urls | Where-Object { -not $results.ContainsKey($_) } | ForEach-Object { if ($Probe.Bodies.ContainsKey($_)) { $Probe.Bodies[$_] } else { $Probe.InTime[$_] } })
+            $left = [int](($Probe.Seconds - $Probe.Clock.Elapsed.TotalSeconds) * 1000)
+            if ($pending.Count -eq 0 -or $left -le 0) { break }
+            [void][System.Threading.Tasks.Task]::WaitAny([System.Threading.Tasks.Task[]]$pending, $left)
+        }
+        foreach ($url in $Probe.Urls) {
             if ($results.ContainsKey($url)) { continue }
-            $results[$url] = if (-not $bodies.ContainsKey($url)) { 'blocked' } elseif ($bodies[$url].Status -eq 'RanToCompletion') { 'ok' } else { 'slow' }
+            $results[$url] = if ($Probe.Buffers.ContainsKey($url)) { & $measure $url } else { @(0, [long]0) }
         }
     } finally {
-        foreach ($url in @($requests.Keys)) {
-            $requests[$url].Abort()
-            if ($heads[$url].Status -eq 'RanToCompletion') { $heads[$url].Result.Dispose() }
+        foreach ($url in @($Probe.Requests.Keys)) {
+            $Probe.Requests[$url].Abort()
+            if ($Probe.Heads[$url].Status -eq 'RanToCompletion') { $Probe.Heads[$url].Result.Dispose() }
         }
-        [System.Net.ServicePointManager]::SecurityProtocol = $savedProtocol
     }
     return $results
 }
 
-# Exports the mirror env vars for every default host that fails its probe while its mirror passes.
 function Invoke-MirrorFallback {
     if ("$env:UNSLOTH_MIRROR_FALLBACK".Trim() -match '^(0|false|no|off)$' -or $env:_UNSLOTH_MIRROR_PROBED) { return }
     $env:_UNSLOTH_MIRROR_PROBED = '1'
     $cernet = 'https://mirrors.cernet.edu.cn'
+    $npmMirror = 'https://registry.npmmirror.com'
     $pypiMirror = "$cernet/pypi/web/simple"
+    $minBps = 1MB
     $useUv = -not (Test-MirrorConfigured -Tool uv)
     $usePip = -not (Test-MirrorConfigured -Tool pip)
-    # Host -> default probe URL, mirror probe URL, mirror value.
+    # Artifacts the installs download. CERNET redirects each tree to a different university mirror, so each tree is timed.
+    $uvWheel = 'packages/72/d6/207945fe69903b9794e2ef3e42608c91a59972567343a6719078d99c71f7/uv-0.12.1-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl'
+    $torchWheel = 'whl/cpu/torch-2.9.1%2Bcpu-cp312-cp312-manylinux_2_28_x86_64.whl'
+    $nodeTarball = 'v24.18.0/node-v24.18.0-linux-x64.tar.gz'
+    $artifact = @{
+        'pypi' = "https://files.pythonhosted.org/$uvWheel"; 'cernet-pypi' = "$cernet/pypi/web/$uvWheel"
+        'torch' = "https://download-r2.pytorch.org/$torchWheel"; 'cernet-torch' = "$cernet/pytorch/$torchWheel"
+        'node' = "https://nodejs.org/dist/$nodeTarball"; 'cernet-node' = "$cernet/nodejs-release/$nodeTarball"
+        'npm' = 'https://registry.npmjs.org/typescript/-/typescript-5.9.3.tgz'; 'npmmirror' = "$npmMirror/typescript/-/typescript-5.9.3.tgz"
+        'astral' = 'https://releases.astral.sh/github/uv/releases/download/0.12.1/uv-x86_64-unknown-linux-gnu.tar.gz'
+    }
+    # Host -> default probe, mirror probe, mirror value, and for PyPI and torch the default's and mirror's index uv and pip resolve on.
     $hosts = [ordered]@{}
-    if ($useUv -or $usePip) { $hosts['pypi.org'] = @('https://pypi.org/simple/pip/', "$pypiMirror/pip/", $pypiMirror) }
+    if ($useUv -or $usePip) { $hosts['PyPI'] = @('pypi', 'cernet-pypi', $pypiMirror, 'https://pypi.org/simple/uv/', "$pypiMirror/uv/") }
     if (-not "$env:UNSLOTH_PYTORCH_MIRROR$env:UNSLOTH_TORCH_INDEX_URL") {
-        $hosts['download.pytorch.org'] = @('https://download.pytorch.org/whl/cpu/torchaudio/', "$cernet/pytorch/whl/cpu/torchaudio/", "$cernet/pytorch/whl")
+        $hosts['download.pytorch.org'] = @('torch', 'cernet-torch', "$cernet/pytorch/whl", 'https://download.pytorch.org/whl/cpu/torch/', "$cernet/pytorch/whl/cpu/torch/")
     }
-    if (-not $env:UNSLOTH_NODE_MIRROR) { $hosts['nodejs.org'] = @('https://nodejs.org/dist/index.tab', "$cernet/nodejs-release/index.tab", "$cernet/nodejs-release") }
-    if (-not $env:UNSLOTH_NPM_REGISTRY) {
-        $hosts['registry.npmjs.org'] = @('https://registry.npmjs.org/npm/latest', 'https://registry.npmmirror.com/npm/latest', 'https://registry.npmmirror.com')
-    }
-    # GitHub-release mirrors keep only the newest Python builds, while a pinned uv asks for the builds it shipped with; npmmirror keeps every release.
-    # Any published release will do for the two releases.astral.sh probes below: they only check that the host answers.
-    if (-not (Test-MirrorConfigured -Tool python)) {
-        $pbs = 'https://registry.npmmirror.com/-/binary/python-build-standalone'
-        $hosts['releases.astral.sh (Python builds)'] = @('https://releases.astral.sh/github/python-build-standalone/releases/download/20260728/SHA256SUMS', "$pbs/20260728/", $pbs)
-    }
+    if (-not $env:UNSLOTH_NODE_MIRROR) { $hosts['nodejs.org'] = @('node', 'cernet-node', "$cernet/nodejs-release", $null, $null) }
+    if (-not $env:UNSLOTH_NPM_REGISTRY) { $hosts['registry.npmjs.org'] = @('npm', 'npmmirror', $npmMirror, $null, $null) }
     if (-not "$env:UNSLOTH_UV_WHEEL_MIRROR$env:UV_DOWNLOAD_URL$env:INSTALLER_DOWNLOAD_URL$env:UV_INSTALLER_GHE_BASE_URL$env:UV_INSTALLER_GITHUB_BASE_URL") {
-        $hosts['releases.astral.sh (uv)'] = @('https://releases.astral.sh/github/uv/releases/download/0.12.1/sha256.sum', "$pypiMirror/uv/", "$cernet/pypi/web")
+        $hosts['releases.astral.sh (uv)'] = @('astral', 'cernet-pypi', "$cernet/pypi/web", $null, $null)
     }
     if ($hosts.Count -eq 0) { return }
-    $default = Invoke-MirrorProbe -Urls @($hosts.Keys | ForEach-Object { $hosts[$_][0] })
-    $failed = @($hosts.Keys | Where-Object { $default[$hosts[$_][0]] -ne 'ok' })
-    if ($failed.Count -eq 0) { return }
-    $mirror = Invoke-MirrorProbe -Urls @($failed | ForEach-Object { $hosts[$_][1] })
+    $answered = @{}
+    $codeOf = { param($index, $result) if ($index -and "$($answered[$index][0])" -notmatch '^2\d\d$') { 0 } else { $result[0] } }
+    # PS 5.1 may pin TLS 1.0/1.1 (every probed host refuses it; Tls|Tls12 still fails) and queues past 2 connections per host.
+    $savedProtocol = [System.Net.ServicePointManager]::SecurityProtocol
+    $savedLimit = [System.Net.ServicePointManager]::DefaultConnectionLimit
+    if ([int]$savedProtocol -ne 0) { [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.SecurityProtocolType]::Tls12 }
+    [System.Net.ServicePointManager]::DefaultConnectionLimit = [Math]::Max($savedLimit, 16)
+    try {
+        $defaults = @($hosts.Values | ForEach-Object { $_[0] } | Select-Object -Unique)
+        $indexes = Start-MirrorProbe -Urls @($hosts.Values | ForEach-Object { $_[3] } | Where-Object { $_ }) -Seconds 4 -LastByte 1023
+        $timed = @{}
+        # Defaults are timed one at a time, 1.5 s each, beside 1 KiB index checks; one below 1 MiB/s is re-timed in the race.
+        foreach ($name in $defaults) { $timed[$name] = (Wait-MirrorProbe (Start-MirrorProbe -Urls $artifact[$name] -Seconds 1.5 -LastByte 1048575))[$artifact[$name]] }
+        $answered = Wait-MirrorProbe $indexes
+        # A redirect that led nowhere counts as no answer; a default that answers an HTTP error is kept: that is a moved probe artifact, not a blocked host.
+        $slow = @($hosts.Keys | Where-Object {
+            $code = & $codeOf $hosts[$_][3] $timed[$hosts[$_][0]]
+            $code -eq 0 -or ($code -ge 300 -and $code -lt 400) -or ($code -ge 200 -and $code -lt 300 -and $timed[$hosts[$_][0]][1] -lt $minBps)
+        })
+        if ($slow.Count -eq 0) { return }
+        # The default runs again beside the mirror so both share the link the same way.
+        $sources = @($slow | ForEach-Object { $hosts[$_][1] } | Select-Object -Unique)
+        $indexes = Start-MirrorProbe -Urls @($slow | ForEach-Object { $hosts[$_][4] } | Where-Object { $_ }) -Seconds 4 -LastByte 1023
+        $race = Wait-MirrorProbe (Start-MirrorProbe -Urls @($slow | ForEach-Object { $artifact[$hosts[$_][0]] }; $sources | ForEach-Object { $artifact[$_] }) -Seconds 4 -LastByte 1048575)
+        $sourceIndexes = Wait-MirrorProbe $indexes
+        foreach ($url in $sourceIndexes.Keys) { $answered[$url] = $sourceIndexes[$url] }
+    } finally {
+        [System.Net.ServicePointManager]::SecurityProtocol = $savedProtocol
+        [System.Net.ServicePointManager]::DefaultConnectionLimit = $savedLimit
+    }
     $used = $false
-    foreach ($name in $failed) {
-        if ($mirror[$hosts[$name][1]] -ne 'ok') { continue }
-        $how = $default[$hosts[$name][0]]
+    foreach ($name in $slow) {
+        $default = $race[$artifact[$hosts[$name][0]]]
+        $mirror = $race[$artifact[$hosts[$name][1]]]
+        $how = if ("$(& $codeOf $hosts[$name][3] $default)" -match '^2\d\d$') { 'slow' } else { 'blocked' }
+        $defaultBps = if ($how -eq 'slow') { $default[1] } else { [long]0 }
+        if ("$(& $codeOf $hosts[$name][4] $mirror)" -notmatch '^2\d\d$' -or $defaultBps -ge $minBps -or $mirror[1] -le $defaultBps) { continue }
         $to = $hosts[$name][2]
         switch ($name) {
-            'pypi.org' {
+            'PyPI' {
                 # uv's unsafe-first-match fetches every index and fails outright when one is unreachable, so pypi.org stays as the second index only while it still answers.
                 if ($useUv -and $how -eq 'slow') {
                     $env:UV_INDEX = $to
@@ -1021,10 +1058,9 @@ function Invoke-MirrorFallback {
             'download.pytorch.org' { $env:UNSLOTH_PYTORCH_MIRROR = $to }
             'nodejs.org' { $env:UNSLOTH_NODE_MIRROR = $to }
             'registry.npmjs.org' { $env:UNSLOTH_NPM_REGISTRY = $to }
-            'releases.astral.sh (Python builds)' { $env:UV_PYTHON_INSTALL_MIRROR = $to }
             'releases.astral.sh (uv)' { $env:UNSLOTH_UV_WHEEL_MIRROR = $to }
         }
-        step "mirror" "$name is $how; using $to" "Yellow"
+        step "mirror" "$name is $how ($($defaultBps -shr 10) KB/s, mirror $($mirror[1] -shr 10) KB/s); using $to" "Yellow"
         $used = $true
     }
     if ($used) { substep "Set UNSLOTH_MIRROR_FALLBACK=0 to always use the default hosts." }
