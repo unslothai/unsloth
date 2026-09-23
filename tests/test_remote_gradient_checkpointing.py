@@ -163,3 +163,64 @@ def test_native_models_are_never_wrapped():
     model = NativeBackbone(PretrainedConfig(), layer_cls = NativeLayer)
     assert install_remote_gradient_checkpointing(model, verbose = False) == []
     assert not hasattr(NativeLayer.forward, "_unsloth_manual_checkpoint")
+
+
+class ResidualLayer(RemoteLayer):
+    """Kimi-K3's attention-residual layers: a second tensor that needs a gradient is carried
+    from layer to layer as a keyword."""
+
+    def forward(
+        self,
+        hidden_states,
+        attention_mask = None,
+        past_key_value = None,
+        block_residual = None,
+    ):
+        type(self).calls += 1
+        out = hidden_states + self.down(torch.relu(self.up(hidden_states + block_residual)))
+        return out, block_residual + out
+
+
+class ResidualBackbone(RemoteBackbone):
+    def forward(
+        self,
+        hidden_states,
+        past_key_values = None,
+    ):
+        block_residual = hidden_states * 0.5
+        for layer in self.layers:
+            hidden_states, block_residual = layer(
+                hidden_states,
+                attention_mask = None,
+                past_key_value = past_key_values,
+                block_residual = block_residual,
+            )
+        return hidden_states + block_residual
+
+
+for _cls in (ResidualLayer, ResidualBackbone):
+    _cls.__module__ = REMOTE
+
+
+@pytest.mark.parametrize("use_reentrant", [True, False])
+def test_a_keyword_tensor_carried_across_layers_is_recomputed_once(use_reentrant):
+    def build():
+        torch.manual_seed(0)
+        return ResidualBackbone(PretrainedConfig(), layer_cls = ResidualLayer)
+
+    reference = build()
+    install_remote_gradient_checkpointing(reference, verbose = False)
+    calls_off, grads_off = _step(reference)
+    assert calls_off == 3
+
+    model = build()
+    install_remote_gradient_checkpointing(model, verbose = False)
+    model.gradient_checkpointing_enable(
+        gradient_checkpointing_kwargs = {"use_reentrant": use_reentrant}
+    )
+    calls_on, grads_on = _step(model)
+    # Held by closure, block_residual tied each recompute to the earlier layers' graph: the
+    # reentrant backward then ran through it again (an error here, nested recomputes under
+    # Unsloth's offloaded checkpoint).
+    assert calls_on == 6
+    assert all(torch.allclose(a, b, atol = 1e-6) for a, b in zip(grads_off, grads_on))

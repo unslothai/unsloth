@@ -1468,14 +1468,26 @@ def _checkpointed_layer_forward(original):
         if not args and "hidden_states" in kwargs:
             # A reentrant checkpoint only tracks gradients through positional tensors.
             args = (kwargs.pop("hidden_states"),)
+        # Any other keyword tensor that needs a gradient (Kimi-K3's block_residual, carried from
+        # layer to layer) goes positional too: held by closure it stays tied to the previous
+        # layers' graph, so every recompute re-ran their backward inside its own.
+        grad_keys = [k for k, v in kwargs.items() if torch.is_tensor(v) and v.requires_grad]
+        n_args = len(args)
+        grad_values = tuple(kwargs.pop(k) for k in grad_keys)
+
+        def run(*inputs):
+            return original(
+                self, *inputs[:n_args], **kwargs, **dict(zip(grad_keys, inputs[n_args:]))
+            )
+
         # The function gradient_checkpointing_enable() installed, so Unsloth's offloaded
         # checkpoint and the caller's use_reentrant choice apply here too.
         checkpoint = getattr(holder, "_gradient_checkpointing_func", None)
         if checkpoint is None:
             return torch.utils.checkpoint.checkpoint(
-                functools.partial(original, self), *args, use_reentrant = False, **kwargs
+                run, *args, *grad_values, use_reentrant = False
             )
-        return checkpoint(functools.partial(original, self, **kwargs), *args)
+        return checkpoint(run, *args, *grad_values)
 
     forward._unsloth_manual_checkpoint = True
     return forward
