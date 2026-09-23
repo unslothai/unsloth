@@ -6281,15 +6281,17 @@ class VideoBackend:
                         except Exception:  # noqa: BLE001 -- cleanup is best-effort
                             pass
                     raise RuntimeError(VIDEO_CANCELLED_MSG) from None
+                finally:
+                    # A guarded compiled block that failed to build at its first forward now runs eager; the status
+                    # must not keep reporting it compiled (a forced-compile quantised load runs ~30x slower eager),
+                    # whether this render finished, was cancelled or failed.
+                    settle_compile_fallback(state, pipe, logger)
                 if cancel.is_set():
                     raise RuntimeError(VIDEO_CANCELLED_MSG)
 
                 # The pipeline returned, so every step ran whatever the last event said. This is
                 # also the only place a latent-only render (no decoder entered) can complete.
                 _finish_denoise()
-                # A guarded compiled block that failed to build at its first forward now runs eager; the status must
-                # not keep reporting it compiled (a forced-compile quantised load runs ~30x slower eager).
-                settle_compile_fallback(state, pipe, logger)
                 self._gen.update(phase = "export", eta_seconds = None)
                 if fam.modular_workflow:
                     video_frames = output["videos"][0]

@@ -7480,15 +7480,17 @@ class DiffusionBackend:
                             len(second_half),
                         )
                         continue
+                    finally:
+                        # A guarded block that fell back to eager (compile failed at its first forward) no longer runs
+                        # compiled: report it on every exit, cancel and error included, so status, LoRA gating and the
+                        # compile-cache shape registry stop treating it as compiled.
+                        settle_compile_fallback(state, state.pipe, logger)
                     if cancel.is_set():
                         raise RuntimeError(DIFFUSION_CANCELLED_MSG)
                     images.extend(out)
                     per_image_seeds.extend(s for _, s in chunk)
                     chunk_shapes.append(len(chunk))
                     steps_done[0] += steps
-                # A guarded block that fell back to eager (compile failed at its first forward) no longer runs compiled:
-                # report it, so status, LoRA gating and the compile-cache shape registry stop treating it as compiled.
-                settle_compile_fallback(state, state.pipe, logger)
                 # Keep progress ACTIVE through the post-denoise work: the route persists the image after this returns,
                 # so a mount probe reading idle would refresh the gallery too early. Persist the warm compile bundle;
                 # a STATIC compile makes new artifacts per (w,h,batch), so register this shape. The write itself is
