@@ -232,9 +232,11 @@ test("ink follows the slider", () => {
     );
   }
   for (const token of QUIET_INK_TOKENS) {
+    // Nav ink sits on palette surfaces; chat icons sit on the page.
+    const target = token.startsWith("nav-") ? PANEL_TARGET : "var(--contrast-target)";
     assert.ok(
       adjusted.includes(
-        `--${token}: color-mix(in oklab, var(--${token}-base), var(--contrast-target) var(--contrast-text-mix));`,
+        `--${token}: color-mix(in oklab, var(--${token}-base), ${target} var(--contrast-text-mix));`,
       ),
       `--${token} is not on the text curve`,
     );
@@ -262,10 +264,15 @@ test("raising pushes ink its own way, never toward its surface", () => {
     STORE,
     /const palettePole = resolved === "light" \? "#000000" : "#ffffff";/,
   );
-  // --foreground is also text on cards, so it follows its own colour.
+  // --foreground heads away from its page: #767676 on white is nearer white
+  // by luminance, and pushed there it fell from 4.5:1 to 1.5:1.
   assert.match(
     STORE,
-    /raising\s*\?\s*colors\.foreground\s*\?\s*inkPole\(colors\.foreground\)\s*:\s*palettePole/,
+    /raising\s*\?\s*colors\.foreground\s*\?\s*inkPole\(\s*colors\.foreground,\s*colors\.background \?\? paletteSurfaces\.background,?\s*\)\s*:\s*palettePole/,
+  );
+  assert.match(
+    STORE,
+    /hexLuminance\(ink\) <= hexLuminance\(page\) \? "#000000" : "#ffffff"/,
   );
   assert.doesNotMatch(STORE, /\.background \?\? PALETTE_SURFACES\[resolved\]\.background;\s*const page/);
   assert.ok(SNAPSHOT.includes('"--contrast-panel-ink-target"'));
@@ -299,7 +306,7 @@ test("the sidebar section labels follow the slider", () => {
   for (const grey of ["#80868b", "#9aa0a6"]) {
     assert.ok(
       CSS.includes(
-        `color: color-mix(in oklab, ${grey}, var(--contrast-target, transparent) var(--contrast-text-mix, 0%));`,
+        `color: color-mix(in oklab, ${grey}, var(--contrast-panel-target, var(--contrast-target, transparent)) var(--contrast-text-mix, 0%));`,
       ),
       `${grey} is not on the text curve`,
     );

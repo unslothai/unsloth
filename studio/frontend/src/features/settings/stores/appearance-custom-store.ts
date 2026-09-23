@@ -688,15 +688,11 @@ const PALETTE_SURFACES: Record<
 };
 
 /**
- * Black for dark ink, white for light. Raising pushes ink further its own way,
- * so it never flips against the surface it was made for. --foreground is also
- * text on cards, so a custom page colour must not decide it.
+ * Black for ink darker than its page, white for lighter. Raising pushes ink
+ * away from the surface it sits on, so a mid grey never heads into its page.
  */
-function inkPole(ink: string): string {
-  const luminance = hexLuminance(ink);
-  return contrastRatio(luminance, 0) <= contrastRatio(luminance, 1)
-    ? "#000000"
-    : "#ffffff";
+function inkPole(ink: string, page: string): string {
+  return hexLuminance(ink) <= hexLuminance(page) ? "#000000" : "#ffffff";
 }
 
 function minimumAccentTextContrast(
@@ -1009,7 +1005,10 @@ export function applyCustomizationToDocument(
       CONTRAST_INK_TARGET_VAR,
       raising
         ? colors.foreground
-          ? inkPole(colors.foreground)
+          ? inkPole(
+              colors.foreground,
+              colors.background ?? paletteSurfaces.background,
+            )
           : palettePole
         : "var(--background)",
     );

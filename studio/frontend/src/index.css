@@ -733,9 +733,10 @@ html[data-contrast-adjust] {
 		var(--panel-surface-fg-muted),
 		var(--contrast-target) var(--contrast-text-mix)
 	);
-	/* Quiet ink, on the --muted-foreground curve. */
-	--nav-fg-muted: color-mix(in oklab, var(--nav-fg-muted-base), var(--contrast-target) var(--contrast-text-mix));
-	--nav-icon-idle: color-mix(in oklab, var(--nav-icon-idle-base), var(--contrast-target) var(--contrast-text-mix));
+	/* Quiet ink, on the --muted-foreground curve. Nav ink sits on palette
+	   surfaces, so it takes their target; chat icons sit on the page. */
+	--nav-fg-muted: color-mix(in oklab, var(--nav-fg-muted-base), var(--contrast-panel-target, var(--contrast-target)) var(--contrast-text-mix));
+	--nav-icon-idle: color-mix(in oklab, var(--nav-icon-idle-base), var(--contrast-panel-target, var(--contrast-target)) var(--contrast-text-mix));
 	--chat-icon-fg: color-mix(in oklab, var(--chat-icon-fg-base), var(--contrast-target) var(--contrast-text-mix));
 	/* Slider fill and thumb read as marks on the panel, so they take the
 	   text curve rather than the surface one. */
@@ -1349,7 +1350,7 @@ html[data-chat-font] .aui-root {
 		/* Muted section-header gray, matching Gemini's "Notebooks"/"Recents".
 		   Lightened from #5f6368 so the label reads as a header, clearly
 		   lighter than the near-black nav items. Follows the contrast slider. */
-		color: color-mix(in oklab, #80868b, var(--contrast-target, transparent) var(--contrast-text-mix, 0%));
+		color: color-mix(in oklab, #80868b, var(--contrast-panel-target, var(--contrast-target, transparent)) var(--contrast-text-mix, 0%));
 		letter-spacing: 0;
 	}
 	/* These compound selectors must beat the base label's pr-3 declaration.
@@ -1367,7 +1368,7 @@ html[data-chat-font] .aui-root {
 	.dark .sidebar-sticky-label {
 		/* Muted gray, clearly dimmer than the near-white nav items (#ececee) so
 		   "Train"/"Recents" read as section headers — like Gemini's dark mode. */
-		color: color-mix(in oklab, #9aa0a6, var(--contrast-target, transparent) var(--contrast-text-mix, 0%));
+		color: color-mix(in oklab, #9aa0a6, var(--contrast-panel-target, var(--contrast-target, transparent)) var(--contrast-text-mix, 0%));
 		letter-spacing: 0;
 	}
 	/* Panel input fields. Light mode matches the settings fields: white
