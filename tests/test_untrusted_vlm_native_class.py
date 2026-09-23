@@ -31,7 +31,7 @@ def _write_tokenizer(path, vocab_size):
     ).save_pretrained(path)
 
 
-def _tiny_step3p7(path):
+def _tiny_step3p7(path, auto_map):
     from transformers.models.step3p7.configuration_step3p7 import Step3p7Config
 
     vocab = 64
@@ -60,7 +60,9 @@ def _tiny_step3p7(path):
     cfg = json.loads((path / "config.json").read_text(encoding = "utf-8"))
     # What the hub repo declares: its own class under AutoModelForCausalLM. The module is never
     # shipped here, so any attempt to build it fails loudly.
-    cfg["auto_map"] = {"AutoModelForCausalLM": "modeling_step3p7.Step3p7ForConditionalGeneration"}
+    cfg["auto_map"] = {
+        name: "modeling_step3p7.Step3p7ForConditionalGeneration" for name in auto_map
+    }
     (path / "config.json").write_text(json.dumps(cfg), encoding = "utf-8")
     _write_tokenizer(path, vocab)
     return path
@@ -82,11 +84,17 @@ def test_native_class_lookup():
 
 @pytest.mark.gpu
 @pytest.mark.skipif(not has_real_accelerator(), reason = "import unsloth needs an accelerator")
-def test_untrusted_load_builds_the_native_image_text_class(tmp_path):
+# Kimi-K2.5 also names its class under AutoModel; native AutoModel is the headless backbone.
+@pytest.mark.parametrize(
+    "auto_map",
+    [("AutoModelForCausalLM",), ("AutoModel", "AutoModelForCausalLM")],
+    ids = ["causal_lm_only", "auto_model_and_causal_lm"],
+)
+def test_untrusted_load_builds_the_native_image_text_class(tmp_path, auto_map):
     import unsloth  # noqa: F401
     from unsloth import FastModel
 
-    path = _tiny_step3p7(tmp_path / "tiny_step3p7")
+    path = _tiny_step3p7(tmp_path / "tiny_step3p7", auto_map)
     model, _ = FastModel.from_pretrained(
         str(path),
         max_seq_length = 64,
