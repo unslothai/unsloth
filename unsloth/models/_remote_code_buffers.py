@@ -26,6 +26,7 @@ and dispatch hooks are kept). Native transformers modules are left alone: their
 """
 
 import inspect
+import re
 
 import torch
 
@@ -85,8 +86,35 @@ def _cache_key(module, kwargs):
     parts = []
     for name in sorted(kwargs):
         value = kwargs[name]
-        parts.append((name, value if isinstance(value, _SCALAR_TYPES) else id(value)))
+        # Typed repr: True and 1, or 0.0 and -0.0, compare equal but may build different buffers.
+        if isinstance(value, _SCALAR_TYPES):
+            parts.append((name, type(value), repr(value)))
+        else:
+            parts.append((name, id(value)))
     return type(module), tuple(parts)
+
+
+def _names_the_model_initialises(model):
+    """Identifiers used by the remote code's own ``_init_weights``. A buffer it names is one
+    the remote code fills after construction, so the constructor's value is not the answer."""
+    names = set()
+    seen = set()
+    for module in model.modules():
+        for cls in type(module).__mro__:
+            init_weights = cls.__dict__.get("_init_weights")
+            if (
+                init_weights is None
+                or cls in seen
+                or not cls.__module__.startswith("transformers_modules")
+            ):
+                continue
+            seen.add(cls)
+            try:
+                source = inspect.getsource(init_weights)
+            except (OSError, TypeError):
+                continue
+            names.update(re.findall(r"[A-Za-z_][A-Za-z0-9_]*", source))
+    return names
 
 
 def _fresh_non_persistent_buffers(module, kwargs, dtype):
@@ -128,6 +156,7 @@ def restore_remote_code_non_persistent_buffers(model):
     dtype = getattr(model, "dtype", None)
     cache = {}
     restored = 0
+    initialised_by_remote_code = _names_the_model_initialises(model)
     for module in model.modules():
         own = getattr(module, "_non_persistent_buffers_set", None)
         if not own or not _is_remote_code_module(module):
@@ -145,6 +174,8 @@ def restore_remote_code_non_persistent_buffers(model):
             continue
         buffers, aliases = cache[key]
         for name, fresh in buffers.items():
+            if name in initialised_by_remote_code:
+                continue
             live = module._buffers.get(name, None)
             if live is None or live.is_meta or live.shape != fresh.shape:
                 continue

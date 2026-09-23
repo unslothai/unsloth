@@ -306,6 +306,57 @@ def test_dtype_is_recovered_from_the_instance_or_the_module_is_skipped():
     assert helper.restore_remote_code_non_persistent_buffers(module) == 0
 
 
+def test_equal_but_differently_typed_arguments_do_not_share_a_rebuild():
+    helper = _load_helper()
+    if not helper._transformers_builds_on_meta():
+        pytest.skip("no-op on transformers 4.x")
+
+    class TypeSensitive(nn.Module):
+        def __init__(self, flag = False):
+            super().__init__()
+            self.flag = flag
+            value = 2.0 if isinstance(flag, bool) else 3.0
+            self.register_buffer("b", torch.full((2,), value), persistent = False)
+
+    TypeSensitive.__module__ = "transformers_modules.unsloth_test_remote_buffers"
+    parent = nn.Module()
+    parent.first, parent.second = TypeSensitive(flag = True), TypeSensitive(flag = 1)
+    parent.first.b.zero_()
+    parent.second.b.zero_()
+    assert helper.restore_remote_code_non_persistent_buffers(parent) == 2
+    torch.testing.assert_close(parent.first.b, torch.full((2,), 2.0))
+    torch.testing.assert_close(parent.second.b, torch.full((2,), 3.0))
+
+
+def test_buffers_the_remote_init_weights_fills_are_left_alone():
+    # A remote model whose own _init_weights fills a placeholder buffer already has the right
+    # value; the constructor would only give the placeholder back.
+    helper = _load_helper()
+    if not helper._transformers_builds_on_meta():
+        pytest.skip("no-op on transformers 4.x")
+
+    class Placeholder(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.register_buffer("table", torch.zeros(2), persistent = False)
+
+    class RemoteModel(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.block = Placeholder()
+
+        def _init_weights(self, module):
+            if isinstance(module, Placeholder):
+                module.table.fill_(5.0)
+
+    for cls in (Placeholder, RemoteModel):
+        cls.__module__ = "transformers_modules.unsloth_test_remote_buffers"
+    model = RemoteModel()
+    model._init_weights(model.block)
+    assert helper.restore_remote_code_non_persistent_buffers(model) == 0
+    torch.testing.assert_close(model.block.table, torch.full((2,), 5.0))
+
+
 def test_loaders_restore_right_after_from_pretrained():
     for relative, calls in (("unsloth/models/vision.py", 1), ("unsloth/models/llama.py", 2)):
         with open(os.path.join(_ROOT, relative), encoding = "utf-8") as file:
