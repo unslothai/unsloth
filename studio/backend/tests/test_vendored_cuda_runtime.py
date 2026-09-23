@@ -201,7 +201,9 @@ def test_checks_loader_defaults_even_when_cache_is_readable(tmp_path, monkeypatc
     assert vendored_cuda_runtime_dirs({"runtime_line": "cuda13"}, roots = _roots(tmp_path)) == []
 
 
-@pytest.mark.skipif(os.geteuid() == 0, reason = "root can read mode-000 files despite missing permission bits")
+@pytest.mark.skipif(
+    os.geteuid() == 0, reason = "root can read mode-000 files despite missing permission bits"
+)
 def test_unreadable_loader_default_files_do_not_block_the_vendored_rescue(tmp_path, monkeypatch):
     runtime_dir = _make_runtime(tmp_path, "cuda_v13")
     default_dir = tmp_path / "loader-default"
@@ -215,7 +217,9 @@ def test_unreadable_loader_default_files_do_not_block_the_vendored_rescue(tmp_pa
         library.chmod(0)
 
     # Exercise actual filesystem permissions rather than mocking access checks.
-    assert all(library.is_file() and not os.access(library, os.R_OK) for library in system_libraries)
+    assert all(
+        library.is_file() and not os.access(library, os.R_OK) for library in system_libraries
+    )
     with pytest.raises(PermissionError):
         system_libraries[0].open("rb")
 
