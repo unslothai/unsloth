@@ -3176,13 +3176,22 @@ export function ChatPage({
       const currentVariant = store.activeGgufVariant;
       if (!value) return;
       setPendingHubAutoLoad(null);
+      const isExternalSelection =
+        meta?.source === "external" || isExternalModelId(value);
+      const isActiveModelLoad = modelOperationInProgress || loadingModel;
       const isSameLoadedModel =
         value === currentCheckpoint &&
         (meta?.ggufVariant ?? null) === (currentVariant ?? null);
       if (isSameLoadedModel && !meta?.forceReload) {
-        return;
+        if (!isExternalSelection) return;
+        // A repeated external pick is a no-op unless it supersedes a local load. With only a
+        // preflight in flight, invalidate it here even though no loading flag has been published.
+        if (!isActiveModelLoad) {
+          invalidatePendingModelSelection();
+          return;
+        }
       }
-      if (meta?.source === "external" || isExternalModelId(value)) {
+      if (isExternalSelection) {
         // Any pending local preflight is stale now, even before it has published a loading run.
         const externalIntentId = invalidatePendingModelSelection();
         let externalCapabilityPatch: Partial<ReturnType<typeof useChatRuntimeStore.getState>> | null = null;
@@ -3192,7 +3201,7 @@ export function ChatPage({
         // model's capability fields over the ones set below. The intent is invalidated before
         // the cancellation so a local run still parked in its preflight yields on wakeup
         // instead of adopting its status and starting anyway.
-        if (modelOperationInProgress || loadingModel) {
+        if (isActiveModelLoad) {
           void cancelLoadingForReplacement(externalIntentId).then((stopped) => {
             // A newer pick already owns the store; this one must not write to it.
             if (!isModelSelectionIntentCurrent(externalIntentId)) return;

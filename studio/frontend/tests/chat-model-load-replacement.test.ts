@@ -600,14 +600,14 @@ test("an external pick cancels the local load it replaces", () => {
   const page = read(CHAT_PAGE);
   const external = section(
     page,
-    'if (meta?.source === "external" || isExternalModelId(value)) {',
+    'if (isExternalSelection) {',
     'const selectedExternal = parseExternalModelId(value);',
   );
   // Without this the local run keeps modelLoading true -- the composer then treats even the
   // external checkpoint as unavailable -- and its completion overwrites the capability fields
   // this branch sets. The intent is invalidated BEFORE the cancellation so a run still parked in
   // its preflight yields on wakeup instead of adopting its status and starting anyway.
-  assert.match(external, /if \(modelOperationInProgress \|\| loadingModel\) \{/);
+  assert.match(external, /if \(isActiveModelLoad\) \{/);
   const invalidate = external.indexOf("invalidatePendingModelSelection()");
   const cancel = external.indexOf("cancelLoadingForReplacement(externalIntentId)");
   assert.notEqual(invalidate, -1, "expected the intent invalidation");
@@ -666,13 +666,14 @@ test("external picks invalidate every pending local preflight and restore full e
   const page = read(CHAT_PAGE);
   const external = section(
     page,
-    'if (meta?.source === "external" || isExternalModelId(value)) {',
+    'if (isExternalSelection) {',
     "const selectedExternal = parseExternalModelId(value);",
   );
   const invalidate = external.indexOf("invalidatePendingModelSelection()");
-  const conditionalCancel = external.indexOf("if (modelOperationInProgress || loadingModel)");
+  const conditionalCancel = external.indexOf("if (isActiveModelLoad)", invalidate);
   assert.notEqual(invalidate, -1);
   assert.ok(invalidate < conditionalCancel, "invalidate even before a run/loading flag exists");
+  assert.notEqual(invalidate, -1);
   assert.match(page, /externalCapabilityPatch = \{/);
   assert.match(page, /useChatRuntimeStore\.setState\(externalCapabilityPatch\);/);
   assert.match(external, /if \(externalCapabilityPatch\) \{[\s\S]*?setState\(externalCapabilityPatch\)/);
@@ -728,4 +729,21 @@ test("declined Hub credentials restore a failed superseded run's resident config
   assert.match(decline, /!activeRunBeforeCredentials\.residentModelUnloaded/);
   assert.match(decline, /current\.params\.checkpoint ===\s*activeRunBeforeCredentials\.rollbackCheckpoint/);
   assert.match(decline, /restoreRollbackConfigForClear\(activeRunBeforeCredentials\)/);
+});
+
+test("reselecting the resident external model invalidates a pending local preflight", () => {
+  const page = read(CHAT_PAGE);
+  const selection = section(
+    page,
+    "const isExternalSelection =",
+    "if (isExternalSelection) {",
+  );
+  assert.match(selection, /const isExternalSelection =/);
+  assert.match(selection, /if \(isSameLoadedModel && !meta\?\.forceReload\) \{/);
+  assert.match(selection, /if \(!isExternalSelection\) return;/);
+  assert.match(
+    selection,
+    /if \(!isActiveModelLoad\) \{\s*invalidatePendingModelSelection\(\);\s*return;/,
+    "same-model external picks must invalidate a preflight even before loading flags appear",
+  );
 });
