@@ -1079,6 +1079,10 @@ class TestNetworkTargetResolution:
                 "configure(os.environ)\nrequests.get('https://pypi.org/')",
                 id = "proxy_environment_written_by_a_helper",
             ),
+            pytest.param(
+                f"import asyncssh\nasyncssh.connect('pypi.org', tunnel='{_H}')",
+                id = "asyncssh_tunnel_host",
+            ),
         ],
     )
     def test_known_untrusted_host_blocked(self, code):
@@ -1220,6 +1224,8 @@ class TestNetworkTargetResolution:
             "class D(dict):\n    def fetch(self):\n        return super().get('http://203.0.113.5/')",
             "import requests\ndef configure(env):\n    env['HTTPS_PROXY'] = 'http://203.0.113.5'\n"
             "configure({})\nrequests.get('https://pypi.org/')",
+            "import os, httpx\nos.environ['HTTPS_PROXY'] = 'http://203.0.113.5'\n"
+            "httpx.get('https://pypi.org/', trust_env=False)",
         ],
     )
     def test_known_trusted_host_runs(self, code):
@@ -1298,6 +1304,7 @@ class TestNetworkTargetResolution:
             "import os, requests\nos.environ.update(load())\nrequests.get('https://pypi.org/')",
             # An environment key that cannot be read may name a proxy variable.
             "import os, requests\nfor k, v in cfg.items():\n    os.environ[k] = v\nrequests.get('https://pypi.org/')",
+            "import asyncssh\nasyncssh.connect('pypi.org', proxy_command='nc 203.0.113.5 22')",
         ],
     )
     def test_unreadable_destination_refused(self, code):

@@ -17168,16 +17168,17 @@ def _check_signal_escape_patterns(code: str):
 
     # The clients that read the proxy environment variables; sockets and urllib3 do not, and
     # aiohttp only when a session opts in with `trust_env`, which defaults to False.
-    _ENV_PROXY_CLIENTS = ("requests.", "httpx.", "urllib.request.")
+    _ENV_PROXY_CLIENTS = ("requests.", "urllib.request.")
 
     def _reads_proxy_environment(node: ast.Call, recognised) -> bool:
+        trust = next((kw.value for kw in node.keywords if kw.arg == "trust_env"), None)
+        disabled = isinstance(trust, ast.Constant) and trust.value is False
+        if any(c.startswith("httpx.") for c in recognised):
+            return not disabled  # `trust_env=False` turns the environment off for httpx
         if any(c.startswith(_ENV_PROXY_CLIENTS) for c in recognised):
             return True
         if any(c.startswith("aiohttp.") for c in recognised):
-            trust = next((kw.value for kw in node.keywords if kw.arg == "trust_env"), None)
-            return trust is not None and not (
-                isinstance(trust, ast.Constant) and trust.value is False
-            )
+            return trust is not None and not disabled
         return False
 
     _ENV_PROXY_VARIABLES = frozenset(
@@ -18469,6 +18470,18 @@ def _check_signal_escape_patterns(code: str):
                         isinstance(found, ast.Constant) and found.value is None
                     ):
                         destinations.append((found, True, kind))
+                # asyncssh routes through `tunnel` (a host) or `proxy_command` (any command, so
+                # unreadable) before it reaches `host`.
+                if any(c.startswith("asyncssh.") for c in recognised):
+                    for kw in node.keywords or []:
+                        if kw.arg == "tunnel" and not (
+                            isinstance(kw.value, ast.Constant) and kw.value.value is None
+                        ):
+                            destinations.append((kw.value, True, "host"))
+                        elif kw.arg == "proxy_command" and not (
+                            isinstance(kw.value, ast.Constant) and kw.value.value is None
+                        ):
+                            destinations.append((_UNREADABLE, True, "host"))
                 # Proxies passed to this call or set in the environment, and proxies or a base URL
                 # configured on its client.
                 proxies = [kw.value for kw in node.keywords or [] if kw.arg in _PROXY_KEYWORDS]
