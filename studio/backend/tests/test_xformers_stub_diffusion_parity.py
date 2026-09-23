@@ -368,14 +368,27 @@ def test_a_stub_reports_a_version_every_minimum_rejects(on_windows_rocm, install
     assert Version(version) < Version("0.0.1"), version
 
 
-def test_transformers_reads_the_torchao_stub_as_unavailable(on_windows_rocm):
+def test_transformers_reads_the_torchao_stub_as_unavailable(on_windows_rocm, monkeypatch):
     """transformers 5 probes torchao when asked; 4.x answered once at its own import, so it has no
     call-time answer to check here."""
     transformers = pytest.importorskip("transformers")
+    import importlib.metadata
+
     from packaging.version import Version
 
     if Version(transformers.__version__).major < 5:
         pytest.skip("transformers 4.x reads torchao once, at its own import")
+
+    # Windows ROCm has no torchao dist-info, so transformers falls back to the stub's __version__.
+    # A CI box with a real torchao installed would answer from its metadata and never see the stub.
+    real_version = importlib.metadata.version
+
+    def no_torchao_metadata(name):
+        if name.lower().startswith("torchao"):
+            raise importlib.metadata.PackageNotFoundError(name)
+        return real_version(name)
+
+    monkeypatch.setattr(importlib.metadata, "version", no_torchao_metadata)
     install_torchao_windows_rocm_stub()
     import_utils = pytest.importorskip("transformers.utils.import_utils")
     probe = import_utils.is_torchao_available
