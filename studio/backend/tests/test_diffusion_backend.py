@@ -12095,6 +12095,37 @@ def test_a_plan_that_settled_nvfp4_installs_without_asking_the_hub_again(fake_ru
     assert installs == [("cuda", False)]
 
 
+@pytest.mark.parametrize("reserved_gb, installs_expected", [(0, False), (60, True)])
+def test_a_settled_nvfp4_seed_the_live_memory_plan_would_drop_installs_no_flashinfer(
+    fake_runtime, monkeypatch, reserved_gb, installs_expected
+):
+    # The prefetch settles NVFP4 against total CAPACITY; under the locks the load re-plans against live free memory
+    # and drops the seed when it would offload, so FlashInfer would serve nothing. The install runs before that
+    # teardown, so it asks the same plan with this process's own allocation (freed by the teardown) credited back.
+    import core.inference.diffusion as diffusion_mod
+    from core.inference.diffusion_memory import DeviceMemory
+
+    installs, listed = _nvfp4_install_probe(
+        monkeypatch, refusal = RuntimeError("no request expected")
+    )
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_target_for_ordinal",
+        lambda self, fam, ordinal: types.SimpleNamespace(
+            device = "cuda", dtype = None, ordinal = 0, supports_model_cpu_offload = True
+        ),
+    )
+    monkeypatch.setattr(
+        diffusion_mod,
+        "snapshot_device_memory",
+        lambda target: DeviceMemory("cuda", "cuda", "discrete_vram", 2 * 1024, 80 * 1024),
+    )
+    sys.modules["torch"].cuda.memory_reserved = lambda: reserved_gb * 1024**3
+    _load_to_the_install_gate(transformer_quant = None, _pipeline_prequant_planned = "nvfp4")
+    assert listed == []
+    assert installs == ([("cuda", False)] if installs_expected else [])
+
+
 def test_an_nvfp4_lora_bake_installs_no_flashinfer(fake_runtime, monkeypatch):
     # A LoRA bake needs the dense transformer, so the prequant (the only FlashInfer path) is skipped.
     installs, listed = _nvfp4_install_probe(

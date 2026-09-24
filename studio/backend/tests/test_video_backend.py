@@ -10364,6 +10364,7 @@ def _video_install_probe(
     listing = None,
     refusal = None,
     cached = False,
+    free_mib = 180_000,
 ):
     """Record every FlashInfer install and Hub listing a video load makes, stopping right after the hop."""
     import core.inference.video as video_mod
@@ -10377,6 +10378,13 @@ def _video_install_probe(
     def _ensure(device, **kwargs):
         installs.append((device, kwargs.get("local_files_only")))
         return True, "installed flashinfer for NVFP4"
+
+    real_hop = VideoBackend._install_flashinfer_for_seed
+
+    def _hop(*args, **kwargs):
+        # The conventional install runs once the memory plan settled the seed; nothing past it is under test.
+        real_hop(*args, **kwargs)
+        raise _StopAfterInstallGate()
 
     class _Api:
         def __init__(self, *a, **k):
@@ -10393,9 +10401,6 @@ def _video_install_probe(
                 raise refusal
             return types.SimpleNamespace(siblings = [_Sibling(n) for n in (listing or [])])
 
-    def _stop(*a, **k):
-        raise _StopAfterInstallGate()
-
     def _modular(self, **kwargs):
         dispatched.append(kwargs.get("_nvfp4_install_outcome"))
         raise _StopAfterInstallGate()
@@ -10410,8 +10415,22 @@ def _video_install_probe(
         "_device_target",
         lambda self, ordinal = None: types.SimpleNamespace(device = "cuda", dtype = None, ordinal = 0),
     )
-    monkeypatch.setattr(video_mod, "settled_snapshot_device_memory", _stop)
+    from core.inference.diffusion_memory import DeviceMemory
+
+    # A card the seeded plan fits resident on, so the install gate sees the seed survive the live-memory plan.
+    monkeypatch.setattr(
+        video_mod,
+        "settled_snapshot_device_memory",
+        lambda target: DeviceMemory("cuda", "cuda", "discrete_vram", free_mib, 183_000),
+    )
+    # The fake runtime has no Blackwell to pick NVFP4 for an explicit request; the hosted-coverage checks still run.
+    monkeypatch.setattr(
+        video_mod,
+        "_video_auto_denoiser_scheme",
+        lambda fam, *, requested = None, **kw: "nvfp4" if requested == "nvfp4" else None,
+    )
     monkeypatch.setattr(VideoBackend, "_load_h3_modular_pipeline", _modular)
+    monkeypatch.setattr(VideoBackend, "_install_flashinfer_for_seed", staticmethod(_hop))
     return installs, listed, dispatched
 
 
@@ -10509,6 +10528,25 @@ def test_a_video_seed_the_plan_declined_installs_no_flashinfer(fake_runtime, mon
         listing = ["Wan2.2-T2V-A14B-NVFP4.pt", "Wan2.2-T2V-A14B-transformer_2-NVFP4.pt"],
     )
     _video_load_to_the_install_gate(_video_auto_denoiser_planned = DENOISER_SEED_DECLINED)
+    assert installs == []
+    assert listed == []
+
+
+def test_a_video_seed_the_live_memory_plan_drops_installs_no_flashinfer(fake_runtime, monkeypatch):
+    # The prefetch settled NVFP4 against CAPACITY, but live free memory is short (another tenant holds most of the
+    # card), so the load's plan offloads, drops the seed and builds the released bf16 denoiser. FlashInfer would
+    # serve nothing: the ~1.5 GB install must not run.
+    installs, listed, _ = _video_install_probe(
+        monkeypatch, refusal = RuntimeError("no request expected"), free_mib = 4_000
+    )
+    monkeypatch.setattr(
+        VideoBackend,
+        "_device_target",
+        lambda self, ordinal = None: types.SimpleNamespace(
+            device = "cuda", dtype = None, ordinal = 0, supports_model_cpu_offload = True
+        ),
+    )
+    _video_load_to_the_install_gate(transformer_quant = None, _video_auto_denoiser_planned = "nvfp4")
     assert installs == []
     assert listed == []
 

@@ -2878,6 +2878,24 @@ class VideoBackend:
             )
         return repo is not None
 
+    @staticmethod
+    def _install_flashinfer_for_seed(
+        wanted: bool,
+        seed_scheme: Optional[str],
+        device: Any,
+        *,
+        local_files_only: bool = False,
+    ) -> Optional[tuple[bool, str]]:
+        """The conventional load's FlashInfer install, asked once its live-memory plan has settled the seed. FlashInfer
+        serves only a seeded NVFP4 denoiser, so a seed the plan dropped (it would offload) installs nothing."""
+        if not wanted or seed_scheme != "nvfp4":
+            return None
+        from .diffusion_nvfp4_install import ensure_flashinfer_for_nvfp4
+
+        return ensure_flashinfer_for_nvfp4(
+            device, logger = logger, local_files_only = local_files_only
+        )
+
     def _nvfp4_denoiser_checkpoint_will_load(
         self,
         fam: Any,
@@ -4402,9 +4420,10 @@ class VideoBackend:
         # The video dense quant path is pipeline-only, so a GGUF or single-file load never installs.
         # Only when hosted pre-quantised denoisers will load: FlashInfer serves nothing else, and the on-the-fly build
         # is torchao, so a checkpoint this user cannot fetch must not buy the install. A plan that settled NVFP4
-        # already listed it on the Hub (or found it cached offline); otherwise ask. Covers the MiniMax-H3 modular
-        # dispatch below too, which is handed this outcome.
-        if (
+        # already listed it on the Hub (or found it cached offline); otherwise ask. The MiniMax-H3 modular dispatch
+        # below installs here and is handed the outcome; a conventional load installs once its live-memory plan has
+        # kept the NVFP4 seed, since a seed the prefetch settled against capacity can still be dropped there.
+        _nvfp4_install_wanted = (
             kind == "pipeline"
             # The NVFP4 switch: off, no install is attempted and the Hub is not asked below.
             and nvfp4_diffusion_enabled()
@@ -4425,16 +4444,10 @@ class VideoBackend:
                     planned = _video_auto_denoiser_planned,
                 )
             )
-        ):
-            from .diffusion_nvfp4_install import ensure_flashinfer_for_nvfp4
-
-            # No owner: a superseded load can return from here after a newer one committed, so the outcome is bound
-            # only at the commit below, past the token check.
-            _nvfp4_install_outcome = ensure_flashinfer_for_nvfp4(
-                device, logger = logger, local_files_only = local_files_only
-            )
-        else:
-            _nvfp4_install_outcome = None
+        )
+        # No owner: a superseded load can return from an install after a newer one committed, so the outcome is bound
+        # only at the commit below, past the token check.
+        _nvfp4_install_outcome: Optional[tuple[bool, str]] = None
         # Video DiTs are bf16-native; fp16 overflows, so a resolved fp16 promotes to float32.
         dtype = target.dtype
         if fam.fp16_incompatible and dtype is torch.float16:
@@ -4443,6 +4456,12 @@ class VideoBackend:
         dtype_scale = 2.0 if device != "cpu" and dtype is torch.float32 else 1.0
 
         if fam.modular_workflow:
+            if _nvfp4_install_wanted:
+                from .diffusion_nvfp4_install import ensure_flashinfer_for_nvfp4
+
+                _nvfp4_install_outcome = ensure_flashinfer_for_nvfp4(
+                    device, logger = logger, local_files_only = local_files_only
+                )
             return self._load_h3_modular_pipeline(
                 diffusers = diffusers,
                 torch = torch,
@@ -4704,6 +4723,11 @@ class VideoBackend:
                 denoiser_seed_scheme = None
                 denoiser_seed_gb = None
                 plan, bf16_plan, quant_replanned = _plan_for_te_scale(settled_te_scale, log = False)
+        # The memory plan is settled: install only for a seed it kept, before the seeded denoiser is built. Still
+        # past the teardown and outside every lock.
+        _nvfp4_install_outcome = self._install_flashinfer_for_seed(
+            _nvfp4_install_wanted, denoiser_seed_scheme, device, local_files_only = local_files_only
+        )
         denoiser_injected: dict[str, Any] = {}
         if denoiser_seed_scheme is not None:
             from .video_denoiser_prequant import denoiser_prequant_pipe_kwargs

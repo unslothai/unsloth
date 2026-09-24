@@ -481,14 +481,139 @@ def test_image_loader_installs_before_the_load_locks():
 
 def test_video_loader_installs_after_teardown_and_outside_the_locks():
     body = _load_pipeline_body(_INFERENCE_DIR / "video.py")
-    call = body.index("ensure_flashinfer_for_nvfp4(")
-    assert body.index("self._teardown_state_locked()") < call
-    # Dedented to the method body: not nested in any with-block.
-    line = body[body.rindex("\n", 0, call) + 1 : call]
-    assert line == " " * 12 + "_nvfp4_install_outcome = "
+    teardown = body.index("self._teardown_state_locked()")
+    # The MiniMax-H3 modular dispatch installs inline; a conventional load through the seed hop.
+    modular = body.index("ensure_flashinfer_for_nvfp4(")
+    conventional = body.index("self._install_flashinfer_for_seed(")
+    assert body.count("ensure_flashinfer_for_nvfp4(") == 1
+    for call, indent in ((modular, 16), (conventional, 8)):
+        assert teardown < call
+        # Only the modular branch's own `if` blocks above it: not nested in any with-block.
+        line = body[body.rindex("\n", 0, call) + 1 : call]
+        assert line == " " * indent + "_nvfp4_install_outcome = "
     assert _flat(
         '"nvfp4" in (normalize_transformer_quant(transformer_quant), _video_auto_denoiser_planned)'
     ) in _flat(body)
+
+
+def test_video_loader_installs_only_for_a_seed_the_live_memory_plan_kept():
+    # The prefetch settles the seed against CAPACITY; the load re-plans against live free memory and can drop it
+    # (it would offload). Installing before that re-plan bought ~1.5 GB of FlashInfer for a bf16 denoiser.
+    from core.inference.video import VideoBackend
+
+    body = _load_pipeline_body(_INFERENCE_DIR / "video.py")
+    conventional = body.index("self._install_flashinfer_for_seed(")
+    injection = body.index("denoiser_prequant_pipe_kwargs(")
+    # After every memory-plan decision that can drop the seed, before the seeded denoiser is built.
+    assert body.rindex("denoiser_seed_scheme = None", 0, injection) < conventional < injection
+    assert _flat("_nvfp4_install_wanted denoiser_seed_scheme device") in _flat(
+        body[conventional : body.index(")", conventional)]
+    )
+    modular = body.index("ensure_flashinfer_for_nvfp4(")
+    assert body.index("if fam.modular_workflow:") < modular < body.index("self._load_h3_modular_pipeline(")
+
+    calls = []
+    import core.inference.diffusion_nvfp4_install as inst_mod
+
+    original = inst_mod.ensure_flashinfer_for_nvfp4
+    inst_mod.ensure_flashinfer_for_nvfp4 = lambda device, **kw: calls.append(device) or (True, "ok")
+    try:
+        assert VideoBackend._install_flashinfer_for_seed(True, None, "cuda") is None
+        assert VideoBackend._install_flashinfer_for_seed(True, "int8", "cuda") is None
+        assert VideoBackend._install_flashinfer_for_seed(False, "nvfp4", "cuda") is None
+        assert calls == []
+        assert VideoBackend._install_flashinfer_for_seed(True, "nvfp4", "cuda") == (True, "ok")
+        assert calls == ["cuda"]
+    finally:
+        inst_mod.ensure_flashinfer_for_nvfp4 = original
+
+
+def test_image_loader_gates_the_install_on_the_seed_plan_it_will_rerun():
+    import inspect
+
+    from core.inference import diffusion
+
+    body = _load_pipeline_body(_INFERENCE_DIR / "diffusion.py")
+    call = body.index("ensure_flashinfer_for_nvfp4(")
+    assert "self._seed_plan_stays_resident(" in body[:call]
+    # The locked re-plan and the pre-install gate are one plan, so they cannot disagree on what the seed costs.
+    locked = body[body.index("with self._lock:") :]
+    assert "self._seeded_pipeline_plan(" in locked
+    helper = inspect.getsource(diffusion.DiffusionBackend._seed_plan_stays_resident)
+    assert "self._seeded_pipeline_plan(" in helper
+
+
+class _FakePlan:
+    def __init__(self, offload_policy):
+        self.offload_policy = offload_policy
+
+
+def _seed_gate(monkeypatch, *, free_mib, reserved_mib, need_mib, total_mib = 100_000):
+    from core.inference import diffusion
+    from core.inference.diffusion_memory import DeviceMemory
+
+    seen = []
+    monkeypatch.setattr(
+        diffusion,
+        "snapshot_device_memory",
+        lambda target: DeviceMemory("cuda", "cuda", "discrete_vram", free_mib, total_mib),
+    )
+    torch = types.ModuleType("torch")
+    torch.cuda = types.SimpleNamespace(memory_reserved = lambda: reserved_mib * 1024 * 1024)
+    monkeypatch.setitem(sys.modules, "torch", torch)
+    monkeypatch.setattr(
+        diffusion,
+        "estimate_dense_quant",
+        lambda fam, scheme, base_repo = None, prequant_available = False: types.SimpleNamespace(
+            steady_transformer_mib = need_mib, companions_mib = 0, text_encoders_mib = 0
+        ),
+    )
+
+    def _plan_memory(self, target, single_file_path, base, fam, memory_mode, cpu_offload, **kw):
+        seen.append(kw)
+        memory = kw["device_memory_override"]
+        return _FakePlan("none" if memory.free_mib >= need_mib else "model")
+
+    monkeypatch.setattr(diffusion.DiffusionBackend, "_plan_memory", _plan_memory)
+    backend = object.__new__(diffusion.DiffusionBackend)
+    ok = backend._seed_plan_stays_resident(
+        "nvfp4",
+        types.SimpleNamespace(device = "cuda"),
+        "org/base",
+        object(),
+        None,
+        False,
+        repo_id = "org/base",
+        base_local_dir = None,
+        fetch_base = None,
+    )
+    return ok, seen
+
+
+def test_seed_gate_refuses_when_live_memory_would_offload_the_seed(monkeypatch):
+    # Total capacity fits (the prefetch said NVFP4) but a foreign tenant leaves too little free: no install.
+    ok, seen = _seed_gate(monkeypatch, free_mib = 10_000, reserved_mib = 0, need_mib = 40_000)
+    assert ok is False
+    assert seen and seen[0]["transformer_resident_override_mib"] == 40_000
+
+
+def test_seed_gate_credits_what_the_teardown_frees(monkeypatch):
+    # The resident pipeline is this process's allocation and the teardown frees it before the loader's re-plan.
+    ok, _ = _seed_gate(monkeypatch, free_mib = 10_000, reserved_mib = 35_000, need_mib = 40_000)
+    assert ok is True
+
+
+def test_seed_gate_unanswerable_keeps_the_old_answer(monkeypatch):
+    from core.inference import diffusion
+
+    monkeypatch.setattr(
+        diffusion, "snapshot_device_memory", lambda target: (_ for _ in ()).throw(RuntimeError("probe"))
+    )
+    backend = object.__new__(diffusion.DiffusionBackend)
+    assert backend._seed_plan_stays_resident(
+        "nvfp4", types.SimpleNamespace(device = "cuda"), "b", object(), None, False,
+        repo_id = "b", base_local_dir = None, fetch_base = None,
+    ) is True
 
 
 def test_a_configured_mirror_skips_the_pypi_probe_but_not_the_jit_cache_one(env, monkeypatch):
@@ -721,8 +846,14 @@ def test_install_gates_skip_kinds_the_dense_quant_path_cannot_reach():
     gate = img[: img.index("ensure_flashinfer_for_nvfp4(")].rsplit("if ", 1)[-1]
     assert gate.lstrip("( \n").startswith("dense_quant_supported_kind(kind)")
     vid = inspect.getsource(video.VideoBackend)
-    gate = vid[: vid.index("ensure_flashinfer_for_nvfp4(")].rsplit("if ", 1)[-1]
+    gate = vid[vid.index("_nvfp4_install_wanted = (") + len("_nvfp4_install_wanted = (") :]
     assert gate.lstrip("( \n").startswith('kind == "pipeline"')
+    # Both video installs are behind that gate.
+    body = _load_pipeline_body(_INFERENCE_DIR / "video.py")
+    modular = body.index("ensure_flashinfer_for_nvfp4(")
+    assert "if _nvfp4_install_wanted:" in body[body.index("if fam.modular_workflow:") : modular]
+    hop = body[body.index("self._install_flashinfer_for_seed(") :]
+    assert hop[: hop.index(")")].split("(", 1)[1].split(",")[0].strip() == "_nvfp4_install_wanted"
 
 
 def test_jit_cache_step_drops_extra_index_sources_from_the_environment(env, monkeypatch):

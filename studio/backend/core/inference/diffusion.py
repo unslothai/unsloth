@@ -4466,6 +4466,25 @@ class DiffusionBackend:
                     loras = loras,
                 )
             )
+            # A seed the prefetch settled against total CAPACITY is re-planned under the locks against live free
+            # memory and dropped when it would offload, leaving FlashInfer nothing to serve. That re-plan runs after
+            # the teardown, which the install must precede, so ask the same plan here with the memory the teardown
+            # hands back credited as free.
+            and not (
+                kind == "pipeline"
+                and _pipeline_prequant_planned == TQ_NVFP4
+                and not self._seed_plan_stays_resident(
+                    TQ_NVFP4,
+                    target,
+                    base,
+                    fam,
+                    memory_mode,
+                    cpu_offload,
+                    repo_id = repo_id,
+                    base_local_dir = _base_local_dir,
+                    fetch_base = fetch_base,
+                )
+            )
         ):
             from .diffusion_nvfp4_install import ensure_flashinfer_for_nvfp4
 
@@ -4533,29 +4552,16 @@ class DiffusionBackend:
                     PIPELINE_SEED_DECLINED,
                 ):
                     pipeline_seed_scheme = _pipeline_prequant_planned
-                    seed_estimate = estimate_dense_quant(
-                        fam, pipeline_seed_scheme, base_repo = base, prequant_available = True
-                    )
-                    seeded_plan = (
-                        self._plan_memory(
-                            target,
-                            single_file_path,
-                            base,
-                            fam,
-                            memory_mode,
-                            cpu_offload,
-                            kind = kind,
-                            repo_id = repo_id,
-                            base_local_dir = _base_local_dir,
-                            fetch_base = fetch_base,
-                            transformer_resident_override_mib = (
-                                seed_estimate.steady_transformer_mib
-                            ),
-                            companion_override_mib = seed_estimate.companions_mib,
-                            text_encoder_override_mib = seed_estimate.text_encoders_mib,
-                        )
-                        if seed_estimate is not None
-                        else None
+                    seeded_plan = self._seeded_pipeline_plan(
+                        pipeline_seed_scheme,
+                        target,
+                        base,
+                        fam,
+                        memory_mode,
+                        cpu_offload,
+                        repo_id = repo_id,
+                        base_local_dir = _base_local_dir,
+                        fetch_base = fetch_base,
                     )
                     if seeded_plan is None or seeded_plan.offload_policy != OFFLOAD_NONE:
                         # Offload hooks use Module.to(), which torchao tensors reject, and live free
@@ -6435,6 +6441,66 @@ class DiffusionBackend:
             return int(companions) - encoders + int(encoders * scale)
         except Exception:  # noqa: BLE001 -- sizing aid only; the dense total still refuses safely
             return int(companions)
+
+    def _seeded_pipeline_plan(
+        self,
+        scheme: str,
+        target: Any,
+        base: str,
+        fam: Any,
+        memory_mode: Optional[str],
+        cpu_offload: bool,
+        *,
+        repo_id: str,
+        base_local_dir: Optional[str],
+        fetch_base: Optional[str],
+        device_memory_override: Optional[DeviceMemory] = None,
+    ):
+        """The full-pipeline memory plan priced on the pre-quantised ``scheme`` denoiser seeding it, or None when the
+        family table cannot size that artifact. The loader keeps the seed only when this plan stays resident."""
+        seed_estimate = estimate_dense_quant(fam, scheme, base_repo = base, prequant_available = True)
+        if seed_estimate is None:
+            return None
+        return self._plan_memory(
+            target,
+            None,
+            base,
+            fam,
+            memory_mode,
+            cpu_offload,
+            kind = "pipeline",
+            repo_id = repo_id,
+            base_local_dir = base_local_dir,
+            fetch_base = fetch_base,
+            transformer_resident_override_mib = seed_estimate.steady_transformer_mib,
+            companion_override_mib = seed_estimate.companions_mib,
+            text_encoder_override_mib = seed_estimate.text_encoders_mib,
+            device_memory_override = device_memory_override,
+        )
+
+    def _seed_plan_stays_resident(self, scheme: str, target: Any, *args: Any, **kwargs: Any) -> bool:
+        """Whether the seeded plan the loader will re-run after its teardown keeps ``scheme``, asked BEFORE that
+        teardown. Live free memory plus everything this process's allocator holds on the device stands in for the
+        post-teardown reading: the resident pipeline is freed then, and crediting the rest too can only err toward
+        keeping the seed (the old answer), never toward dropping one the loader would keep. Unanswerable keeps it."""
+        try:
+            memory = snapshot_device_memory(target)
+            if getattr(target, "device", None) == "cuda" and memory.free_mib is not None:
+                import torch
+
+                free = int(memory.free_mib) + int(torch.cuda.memory_reserved()) // (1024 * 1024)
+                if memory.total_mib is not None:
+                    free = min(free, int(memory.total_mib))
+                memory = DeviceMemory(
+                    memory.backend, memory.device, memory.memory_kind, free, memory.total_mib
+                )
+            plan = self._seeded_pipeline_plan(
+                scheme, target, *args, device_memory_override = memory, **kwargs
+            )
+        except Exception as exc:  # noqa: BLE001 - a gate on an optional install must not fail the load
+            logger.debug("diffusion.nvfp4_install: seed plan preview skipped: %r", exc)
+            return True
+        return plan is not None and plan.offload_policy == OFFLOAD_NONE
 
     def _resident_sized_plan(
         self,
