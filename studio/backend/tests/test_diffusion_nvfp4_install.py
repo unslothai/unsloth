@@ -675,3 +675,97 @@ def test_install_gates_skip_kinds_the_dense_quant_path_cannot_reach():
     vid = inspect.getsource(video.VideoBackend)
     gate = vid[: vid.index("ensure_flashinfer_for_nvfp4(")].rsplit("if ", 1)[-1]
     assert gate.startswith('kind == "pipeline"')
+
+
+def test_jit_cache_step_drops_extra_index_sources_from_the_environment(env, monkeypatch):
+    # An extra index outranks uv's --index-url; under first-index one listing flashinfer-jit-cache hides the pin.
+    extra = {
+        "UV_INDEX": "https://corp.example/simple",
+        "UV_EXTRA_INDEX_URL": "https://corp.example/extra",
+        "PIP_EXTRA_INDEX_URL": "https://corp.example/pip-extra",
+        "UV_FIND_LINKS": "https://corp.example/links",
+    }
+    for name, value in extra.items():
+        monkeypatch.setenv(name, value)
+    seen = []
+    real = env.run
+
+    def _run(cmd, **kwargs):
+        seen.append(([str(c) for c in cmd], kwargs.get("env")))
+        return real(cmd, **kwargs)
+
+    assert inst.ensure_flashinfer_for_nvfp4(0, run = _run)[0]
+    envs = {
+        "main" if any(c.startswith("flashinfer-python==") for c in cmd) else "jit": child
+        for cmd, child in seen
+        if "install" in cmd and "uninstall" not in cmd
+    }
+    for name, value in extra.items():
+        assert envs["main"].get(name) == value  # the user's mirrors still serve the main step
+        assert name not in envs["jit"]
+
+
+def _hold_env_lock(release_after):
+    filelock = pytest.importorskip("filelock")
+    other = filelock.FileLock(inst._env_lock_path(), thread_local = False)
+    held = threading.Event()
+
+    def _hold():
+        with other:
+            held.set()
+            time.sleep(release_after)
+
+    t = threading.Thread(target = _hold)
+    t.start()
+    held.wait(5)
+    return t
+
+
+def _track_imports(env, monkeypatch):
+    stamps = []
+    monkeypatch.setattr(
+        inst,
+        "_import_flashinfer",
+        lambda: stamps.append(time.monotonic())
+        or ((True, "0.6.6") if env.importable else (False, "ModuleNotFoundError: flashinfer")),
+    )
+    monkeypatch.delitem(sys.modules, "flashinfer", raising = False)
+    return stamps
+
+
+def test_an_in_flight_install_by_another_process_is_waited_for_before_importing(env, monkeypatch):
+    # Another process has installed flashinfer-python and is still downloading the jit-cache: importing now would
+    # fix flashinfer's cache directory without it for this process's whole life.
+    env.dists["flashinfer-python"] = "0.6.6"
+    env.importable = True
+    stamps = _track_imports(env, monkeypatch)
+    start = time.monotonic()
+    t = _hold_env_lock(0.5)
+    try:
+        ok, reason = _ensure(env)
+    finally:
+        t.join()
+    assert ok and "already installed" in reason
+    assert stamps and stamps[0] - start >= 0.45
+    assert env.commands == []
+
+
+@pytest.mark.parametrize(
+    "dists",
+    [
+        {"flashinfer-python": "0.5.3"},  # the user's own flashinfer
+        {"flashinfer-python": "0.6.6", "flashinfer-jit-cache": "0.6.6+cu130"},  # a finished install
+    ],
+)
+def test_a_settled_flashinfer_never_waits_on_the_lock(env, monkeypatch, dists):
+    env.dists.update(dists)
+    env.importable = True
+    stamps = _track_imports(env, monkeypatch)
+    start = time.monotonic()
+    t = _hold_env_lock(1.0)
+    try:
+        ok, _ = _ensure(env)
+    finally:
+        t.join()
+    assert ok and stamps[0] - start < 0.5
+    assert env.commands == []

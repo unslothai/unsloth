@@ -222,6 +222,25 @@ def _env_install_lock(timeout: float = ENV_LOCK_TIMEOUT_S):
         lock.release()
 
 
+def _await_inflight_install() -> None:
+    """Wait for another Studio process installing flashinfer into this environment, without touching it.
+
+    flashinfer resolves its jit-cache directory once, at import, so a process that imports it between the
+    flashinfer-python and the jit-cache steps of another process's install JIT-compiles for its whole life.
+    Only the pinned flashinfer-python without its jit-cache can be that window, so any other state (already
+    imported, absent, another version, cache present) returns without touching the lock."""
+    if "flashinfer" in sys.modules:
+        return
+    installed = _dist_version(FLASHINFER_PACKAGE)
+    if installed is None or installed.split("+", 1)[0] != FLASHINFER_VERSION:
+        return
+    if _dist_version(FLASHINFER_JIT_CACHE_PACKAGE) is not None:
+        return
+    # A timeout falls through to the import, as before this wait existed.
+    with _env_install_lock():
+        pass
+
+
 def _import_flashinfer() -> tuple[bool, str]:
     from .diffusion_nvfp4_ops import _flashinfer_available
     importlib.invalidate_caches()
@@ -413,7 +432,33 @@ def _write_constraints(pins: dict[str, str]) -> str:
         return path
 
 
-def _run(run: Callable[..., Any], cmd: list[str], timeout: int) -> tuple[bool, str]:
+# Index sources the installers read from the environment. The jit-cache step drops them: an extra index outranks
+# uv's --index-url, and under uv's first-index strategy one carrying any flashinfer-jit-cache hides the pinned index.
+_INDEX_SOURCE_ENVS = (
+    "UV_INDEX",
+    "UV_EXTRA_INDEX_URL",
+    "UV_FIND_LINKS",
+    "UV_INDEX_URL",
+    "UV_DEFAULT_INDEX",
+    "PIP_INDEX_URL",
+    "PIP_EXTRA_INDEX_URL",
+    "PIP_FIND_LINKS",
+)
+
+
+def _pinned_index_env() -> dict[str, str]:
+    env = _child_env()
+    for name in _INDEX_SOURCE_ENVS:
+        env.pop(name, None)
+    return env
+
+
+def _run(
+    run: Callable[..., Any],
+    cmd: list[str],
+    timeout: int,
+    env: Optional[dict[str, str]] = None,
+) -> tuple[bool, str]:
     try:
         result = run(
             cmd,
@@ -423,7 +468,7 @@ def _run(run: Callable[..., Any], cmd: list[str], timeout: int) -> tuple[bool, s
             encoding = "utf-8",
             errors = "replace",
             timeout = timeout,
-            env = _child_env(),
+            env = _child_env() if env is None else env,
         )
     except subprocess.TimeoutExpired:
         return False, f"timed out after {timeout}s"
@@ -537,28 +582,34 @@ def _install(
         steps = [
             # Constrained, not --no-deps: flashinfer cannot import without apache-tvm-ffi and friends,
             # and the constraints make every package already here immovable, torch included.
-            _installer_prefix(uv)
-            + [
-                "--only-binary",
-                ":all:",
-                "-c",
-                constraints,
-                f"{FLASHINFER_PACKAGE}=={FLASHINFER_VERSION}",
-            ],
-        ]
-        if tag is not None:
-            steps.append(
-                _installer_prefix(uv, FLASHINFER_JIT_CACHE_INDEX.format(tag = tag))
+            (
+                _installer_prefix(uv)
                 + [
                     "--only-binary",
                     ":all:",
-                    "--no-deps",
-                    f"{FLASHINFER_JIT_CACHE_PACKAGE}=={FLASHINFER_VERSION}",
-                ]
+                    "-c",
+                    constraints,
+                    f"{FLASHINFER_PACKAGE}=={FLASHINFER_VERSION}",
+                ],
+                None,
+            ),
+        ]
+        if tag is not None:
+            steps.append(
+                (
+                    _installer_prefix(uv, FLASHINFER_JIT_CACHE_INDEX.format(tag = tag))
+                    + [
+                        "--only-binary",
+                        ":all:",
+                        "--no-deps",
+                        f"{FLASHINFER_JIT_CACHE_PACKAGE}=={FLASHINFER_VERSION}",
+                    ],
+                    _pinned_index_env(),
+                )
             )
         failure = None
-        for cmd in steps:
-            ok, output = _run(run, cmd, _INSTALL_TIMEOUT_S)
+        for cmd, step_env in steps:
+            ok, output = _run(run, cmd, _INSTALL_TIMEOUT_S, step_env)
             if not ok:
                 failure = "the installer failed: " + " ".join(output.split())[-400:]
                 break
@@ -647,6 +698,7 @@ def _ensure(
 
         if nvfp4_backend_env() == BACKEND_TORCHAO:
             return _finish(False, "UNSLOTH_NVFP4_BACKEND=torchao", None, None)
+        _await_inflight_install()
         present, detail = _import_flashinfer()
         if present:
             return _finish(True, f"flashinfer {detail} already installed", None, None)
