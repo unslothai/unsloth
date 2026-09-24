@@ -263,10 +263,14 @@ class TestTheMarkerShortcutFinishesTheCleanup:
         monkeypatch.setenv("UNSLOTH_ROCM_TORCH_INSTALLED", "1")
         monkeypatch.setattr(stack_mod, "_TORCH_BACKEND", None)
         monkeypatch.setattr(stack_mod, "_explicit_unknown_family_torch_index_url", lambda: None)
-        monkeypatch.setattr(stack_mod, "_probe_torch_runtime", lambda: (True, True, version, "7.17.26374", None))
+        monkeypatch.setattr(
+            stack_mod, "_probe_torch_runtime", lambda: (True, True, version, "7.17.26374", None)
+        )
         monkeypatch.setattr(stack_mod, "_install_bnb_windows_rocm", lambda: True)
         calls = []
-        monkeypatch.setattr(stack_mod, "_drop_torchaudio_off_the_multiarch_tag", lambda: calls.append(1) or True)
+        monkeypatch.setattr(
+            stack_mod, "_drop_torchaudio_off_the_multiarch_tag", lambda: calls.append(1) or True
+        )
         stack_mod._ensure_rocm_torch()
         return calls
 
