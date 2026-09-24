@@ -2435,8 +2435,7 @@ def test_image_train_rail_matches_create_and_header():
     # length rather than riding RAIL_WIDTH, which Stays at Create's clamp.
     assert (
         "pl-10 max-sm:pl-5 "
-        "@[50rem]:w-[min(var(--media-rail-width,408px),calc(100%-13rem+--spacing(8)))]"
-        in layout
+        "@[50rem]:w-[min(var(--media-rail-width,408px),calc(100%-13rem+--spacing(8)))]" in layout
     )
     assert "@[50rem]:border-r @[50rem]:border-b-0" in layout
     assert "@container hover-scrollbar" in layout
