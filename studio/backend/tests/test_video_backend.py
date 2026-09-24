@@ -1832,9 +1832,12 @@ def test_video_speed_off_suppresses_auto_dtype_quant(fake_runtime, monkeypatch):
 
 
 def test_video_step_cache_auto_from_default_schedule(fake_runtime, tmp_path):
-    # Unset step cache is AUTO, from the model's default schedule: Wan's 50-step default engages FBCache, LTX's 8-step does not.
+    # Unset step cache is AUTO: on the max tier, from the model's default schedule (Wan's 50-step default engages
+    # FBCache, LTX's 8-step does not).
     backend = VideoBackend()
-    status = backend.load_pipeline("Wan-AI/Wan2.2-TI2V-5B-Diffusers", model_kind = "pipeline")
+    status = backend.load_pipeline(
+        "Wan-AI/Wan2.2-TI2V-5B-Diffusers", model_kind = "pipeline", speed_mode = "max"
+    )
     assert status["transformer_cache"] == "fbcache"
     assert status["resolved"]["transformer_cache"]["source"] == "auto"
     backend.unload()
@@ -1845,9 +1848,64 @@ def test_video_step_cache_auto_from_default_schedule(fake_runtime, tmp_path):
         gguf_filename = "ltx-2.3-22b-distilled-1.1-Q4_K_M.gguf",
         base_repo = "Lightricks/LTX-2",
         family_override = "ltx-2",
+        speed_mode = "max",
     )
     assert status2["transformer_cache"] is None
     assert status2["resolved"]["transformer_cache"]["source"] == "auto"
+    backend.unload()
+
+
+@pytest.mark.parametrize("speed_mode", [None, "default", "eager", "off"])
+def test_video_step_cache_auto_stays_off_below_max(fake_runtime, speed_mode):
+    # FBCache costs LPIPS ~0.08-0.11, so auto never engages it below max, not even on Wan's 50-step default, and the
+    # generation-time toggle is not armed (so compile keeps fullgraph).
+    backend = VideoBackend()
+    status = backend.load_pipeline(
+        "Wan-AI/Wan2.2-TI2V-5B-Diffusers", model_kind = "pipeline", speed_mode = speed_mode
+    )
+    assert status["transformer_cache"] is None
+    assert status["resolved"]["transformer_cache"]["source"] == "auto"
+    assert "max speed tier" in status["resolved"]["transformer_cache"]["reason"]
+    assert backend._state.cache_auto is False
+    backend.generate(prompt = "a sloth", steps = 30)
+    assert backend.status()["transformer_cache"] is None
+    backend.unload()
+
+
+def test_video_explicit_step_cache_is_honoured_on_the_default_tier(fake_runtime):
+    backend = VideoBackend()
+    status = backend.load_pipeline(
+        "Wan-AI/Wan2.2-TI2V-5B-Diffusers", model_kind = "pipeline", transformer_cache = "fbcache"
+    )
+    assert status["speed_mode"] == "default"
+    assert status["transformer_cache"] == "fbcache"
+    assert backend._state.cache_auto is False
+    backend.generate(prompt = "a sloth", steps = 8)
+    assert backend.status()["transformer_cache"] == "fbcache"
+    backend.unload()
+
+
+def test_video_auto_toggle_not_armed_when_the_dit_cannot_cache(fake_runtime, tmp_path, monkeypatch):
+    # LTX-2 / HunyuanVideo-1.5 blocks carry no first-block-cache metadata: arming the toggle there only dropped
+    # fullgraph and retried (and warned) every generation.
+    monkeypatch.setattr(
+        "core.inference.video.step_cache_supported", lambda pipe, logger = None: False
+    )
+    (tmp_path / "ltx-2.3-22b-distilled-1.1-Q4_K_M.gguf").write_bytes(b"w")
+    backend = VideoBackend()
+    status = backend.load_pipeline(
+        str(tmp_path),
+        gguf_filename = "ltx-2.3-22b-distilled-1.1-Q4_K_M.gguf",
+        base_repo = "Lightricks/LTX-2",
+        family_override = "ltx-2",
+        speed_mode = "max",
+    )
+    assert status["transformer_cache"] is None
+    assert backend._state.cache_auto is False
+    assert (
+        status["resolved"]["transformer_cache"]["reason"]
+        == "auto: model does not support step caching"
+    )
     backend.unload()
 
 
@@ -1885,7 +1943,9 @@ def test_video_status_response_carries_gguf_variant():
 def test_video_step_cache_auto_toggles_on_actual_steps(fake_runtime):
     # The AUTO decision follows each generation's ACTUAL step count; an explicit "off" never toggles.
     backend = VideoBackend()
-    backend.load_pipeline("Wan-AI/Wan2.2-TI2V-5B-Diffusers", model_kind = "pipeline")
+    backend.load_pipeline(
+        "Wan-AI/Wan2.2-TI2V-5B-Diffusers", model_kind = "pipeline", speed_mode = "max"
+    )
     assert backend.status()["transformer_cache"] == "fbcache"
     backend.generate(prompt = "a sloth", steps = 8)
     assert backend.status()["transformer_cache"] is None
@@ -1894,7 +1954,10 @@ def test_video_step_cache_auto_toggles_on_actual_steps(fake_runtime):
     backend.unload()
 
     backend.load_pipeline(
-        "Wan-AI/Wan2.2-TI2V-5B-Diffusers", model_kind = "pipeline", transformer_cache = "off"
+        "Wan-AI/Wan2.2-TI2V-5B-Diffusers",
+        model_kind = "pipeline",
+        transformer_cache = "off",
+        speed_mode = "max",
     )
     assert backend.status()["transformer_cache"] is None
     backend.generate(prompt = "a sloth", steps = 30)

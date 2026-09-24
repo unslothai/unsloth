@@ -11,10 +11,12 @@ diffusers ships it natively (``transformer.enable_cache(FirstBlockCacheConfig(..
 Measured on Flux.1-dev (28 steps, 1024px, B200): ~1.4x on top of torch.compile (2.83 -> 2.03 s)
 at LPIPS ~0.08 -- deep inside the speed-for-quality bar.
 
-OFF by default: the win scales with step count, so a few-step distilled model (Z-Image-Turbo
-~8 steps) has almost no headroom and caching is for many-step models (Flux / Qwen-Image). It
-composes with torch.compile only at ``fullgraph=False`` (the cache's compiler-disabled decision
-is a graph break), which the speed layer switches to automatically. Best-effort: an incompatible
+An explicit ``fbcache`` request is honoured on every speed tier. Unset / ``auto`` engages it only
+on the ``max`` speed tier and only on a 20+ step schedule (the win scales with step count, so a
+few-step distilled model has no headroom); LPIPS ~0.08-0.11 is too visible for the default, eager
+and off tiers, which run uncached. It composes with torch.compile only at ``fullgraph=False`` (the
+cache's compiler-disabled decision is a graph break), which the speed layer switches to
+automatically. Best-effort: an incompatible
 model is caught and the load proceeds uncached. torch / diffusers imported lazily.
 """
 
@@ -35,6 +37,23 @@ QUANT_FBCACHE_THRESHOLD = 0.12
 # Auto step-count bar: FBCache's win scales with step count, so auto engages only at 20+ steps ("dev" schedules
 # qualify, distilled turbo never does).
 FBCACHE_MIN_STEPS = 20
+
+# The only speed tier on which an unset / auto request engages FBCache. Equal to diffusion_speed.SPEED_MAX, spelled
+# out so this module stays free of imports.
+AUTO_STEP_CACHE_TIER = "max"
+
+
+def auto_step_cache_allowed(speed_mode: Optional[str]) -> bool:
+    """Whether an unset / auto cache request may engage FBCache on this EFFECTIVE speed tier."""
+    return speed_mode == AUTO_STEP_CACHE_TIER
+
+
+def resolve_auto_step_cache(speed_mode: Optional[str], default_steps: int) -> Optional[str]:
+    """The load-time mode for an auto request: FBCache on the max tier at ``FBCACHE_MIN_STEPS``+,
+    else None."""
+    if auto_step_cache_allowed(speed_mode) and int(default_steps) >= FBCACHE_MIN_STEPS:
+        return TC_FBCACHE
+    return None
 
 
 def normalize_transformer_cache(value: Optional[str]) -> Optional[str]:
@@ -299,6 +318,54 @@ def _pipeline_opens_cache_context(pipe: Any) -> bool:
         return False
     # Match the call `cache_context(` (the paren avoids a false positive on prose).
     return "cache_context(" in src
+
+
+def _transformer_blocks_registered(transformer: Any, logger: Any = None) -> bool:
+    """Whether every block class FBCache would hook has first-block-cache metadata. ``enable_cache``
+    raises "Model class ... not registered." otherwise (LTX-2, HunyuanVideo-1.5). True when the
+    registry cannot be read, so enable_cache stays the judge."""
+    try:
+        import torch
+        from diffusers.hooks._common import _ALL_TRANSFORMER_BLOCK_IDENTIFIERS
+        from diffusers.hooks._helpers import TransformerBlockRegistry
+    except Exception:  # noqa: BLE001 - no registry to ask
+        return True
+    named_children = getattr(transformer, "named_children", None)
+    if not callable(named_children):
+        return True
+    register_unregistered_transformer_blocks(logger)
+    blocks = [
+        getattr(block, "_orig_mod", block)
+        for name, child in named_children()
+        if name in _ALL_TRANSFORMER_BLOCK_IDENTIFIERS and isinstance(child, torch.nn.ModuleList)
+        for block in child
+    ]
+    # FBCache splits off a head and a tail block, so it needs two.
+    if len(blocks) < 2:
+        return False
+    try:
+        for cls in {type(block) for block in blocks}:
+            TransformerBlockRegistry.get(cls)
+    except Exception:  # noqa: BLE001 - unregistered, or the registry itself failed to load
+        return False
+    return True
+
+
+def step_cache_supported(pipe: Any, *, logger: Any = None) -> bool:
+    """Whether an AUTO request could engage FBCache on ``pipe``, checked without engaging it.
+
+    Mirrors apply_step_cache's refusals (no CacheMixin, no cache_context in the pipeline, prefix-KV
+    reuse, unregistered blocks). The loader uses it to decide whether the generation-time toggle is
+    live at all, since a live toggle drops compile fullgraph and retries the cache every generation."""
+    transformer = getattr(pipe, "transformer", None)
+    if transformer is None or not callable(getattr(transformer, "enable_cache", None)):
+        return False
+    if not _pipeline_opens_cache_context(pipe):
+        return False
+    # Auto never passes length_changes_ok, so a prefix-KV family is always refused.
+    if _reuses_prefix_kv(pipe, transformer):
+        return False
+    return _transformer_blocks_registered(transformer, logger)
 
 
 def install_fbcache_length_guard() -> bool:

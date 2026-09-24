@@ -11704,3 +11704,98 @@ def test_a_prequant_repo_missing_its_artifact_marks_the_plan_incomplete(monkeypa
         failures
     ), "a configured prequant that is not in its repo left the plan calling itself complete"
     assert "prequant artifact missing" in str(failures[0])
+
+
+def _record_step_cache(
+    monkeypatch,
+    *,
+    supported = True,
+    engages = True,
+):
+    """Stub the image loader's step-cache calls: record every engage / toggle and report the mode
+    engaged, so the auto policy is observable on the fake (transformer-less) pipe."""
+    calls = {"apply": [], "toggle": []}
+
+    def _apply(pipe, *, mode, **kwargs):
+        calls["apply"].append(mode)
+        return mode if (mode == "fbcache" and engages) else None
+
+    def _toggle(pipe, *, steps, **kwargs):
+        calls["toggle"].append(steps)
+        return "fbcache" if steps >= 20 else None
+
+    monkeypatch.setattr("core.inference.diffusion.apply_step_cache", _apply)
+    monkeypatch.setattr("core.inference.diffusion.maybe_toggle_step_cache", _toggle)
+    monkeypatch.setattr(
+        "core.inference.diffusion.step_cache_supported", lambda pipe, logger = None: supported
+    )
+    return calls
+
+
+@pytest.mark.parametrize("speed_mode", [None, "off", "eager", "default"])
+def test_image_step_cache_auto_stays_off_below_max(fake_runtime, tmp_path, monkeypatch, speed_mode):
+    # FBCache costs LPIPS ~0.08-0.11, so auto leaves it off on every tier but max, even on a 20-step default, and the
+    # toggle stays disarmed (compile keeps fullgraph, no per-generation retry).
+    calls = _record_step_cache(monkeypatch)
+    backend = _loaded_backend(tmp_path, family_override = "qwen-image", speed_mode = speed_mode)
+    status = backend.status()
+    assert calls["apply"] == [None]
+    assert status["transformer_cache"] is None
+    assert status["resolved"]["transformer_cache"]["source"] == "auto"
+    assert "max speed tier" in status["resolved"]["transformer_cache"]["reason"]
+    assert backend._state.cache_auto is False
+    backend.generate(prompt = "a sloth", steps = 30)
+    assert calls["toggle"] == []
+    assert backend.status()["transformer_cache"] is None
+
+
+def test_image_step_cache_auto_engages_on_max(fake_runtime, tmp_path, monkeypatch):
+    calls = _record_step_cache(monkeypatch)
+    backend = _loaded_backend(tmp_path, family_override = "qwen-image", speed_mode = "max")
+    assert calls["apply"] == ["fbcache"]
+    assert backend.status()["transformer_cache"] == "fbcache"
+    assert backend._state.cache_auto is True
+    backend.generate(prompt = "a sloth", steps = 8)
+    assert calls["toggle"] == [8]
+    assert backend.status()["transformer_cache"] is None
+
+
+def test_image_explicit_step_cache_is_honoured_on_the_default_tier(
+    fake_runtime, tmp_path, monkeypatch
+):
+    calls = _record_step_cache(monkeypatch)
+    backend = _loaded_backend(
+        tmp_path, family_override = "qwen-image", speed_mode = "default", transformer_cache = "fbcache"
+    )
+    assert calls["apply"] == ["fbcache"]
+    assert backend.status()["transformer_cache"] == "fbcache"
+    assert backend._state.cache_auto is False
+    backend.generate(prompt = "a sloth", steps = 8)
+    assert calls["toggle"] == []
+
+
+def test_image_auto_toggle_armed_only_where_the_cache_can_engage(
+    fake_runtime, tmp_path, monkeypatch
+):
+    # max + a 20-step default whose engage failed: the model cannot cache, so do not arm the toggle.
+    _record_step_cache(monkeypatch, engages = False)
+    backend = _loaded_backend(tmp_path, family_override = "qwen-image", speed_mode = "max")
+    assert backend._state.cache_auto is False
+    assert (
+        backend.status()["resolved"]["transformer_cache"]["reason"]
+        == "auto: model does not support step caching"
+    )
+    backend.unload()
+
+    # max + a few-step default: armed only when the probe says a later 20+ step render could engage.
+    turbo = dict(
+        gguf_filename = "z-image-turbo-Q4_K_M.gguf",
+        base_repo = "Tongyi-MAI/Z-Image-Turbo",
+        speed_mode = "max",
+    )
+    for supported in (False, True):
+        _record_step_cache(monkeypatch, supported = supported)
+        backend = _loaded_backend(tmp_path, **turbo)
+        assert backend.status()["transformer_cache"] is None
+        assert backend._state.cache_auto is supported
+        backend.unload()
