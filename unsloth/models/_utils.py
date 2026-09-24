@@ -1201,6 +1201,25 @@ def _apply_text_only_key_mapping(kwargs, parent_config, text_config):
     kwargs["key_mapping"] = {**mapping, **user_mapping} if user_mapping else mapping
 
 
+@functools.cache
+def _transformers_honors_legacy_flash_attn_2_flag():
+    # Remote code written for 4.x declares _supports_flash_attn_2. transformers 4.x dispatch
+    # honors it, but 5.x reads only _supports_flash_attn and raises "does not support Flash
+    # Attention 2 yet" at init (inclusionAI/Ling-2.6-flash). Probe the dispatch check itself.
+    from transformers import PreTrainedModel
+    if "_supports_flash_attn_2" in vars(PreTrainedModel):
+        return True
+    for name in ("_flash_attn_2_can_dispatch", "_flash_attn_can_dispatch"):
+        check = getattr(PreTrainedModel, name, None)
+        if check is None:
+            continue
+        try:
+            return "_supports_flash_attn_2" in inspect.getsource(check)
+        except Exception:
+            return True
+    return True
+
+
 def resolve_attention_implementation(
     model_class,
     config,
@@ -1217,8 +1236,11 @@ def resolve_attention_implementation(
     supports_flash_attention = (
         model_class is not None
         and (
-            getattr(model_class, "_supports_flash_attn_2", False)
-            or getattr(model_class, "_supports_flash_attn", False)
+            getattr(model_class, "_supports_flash_attn", False)
+            or (
+                getattr(model_class, "_supports_flash_attn_2", False)
+                and _transformers_honors_legacy_flash_attn_2_flag()
+            )
         )
         and not _is_flash_excluded(model_type)
     )
