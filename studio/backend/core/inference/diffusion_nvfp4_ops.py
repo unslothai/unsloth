@@ -98,9 +98,35 @@ def _mm_impl(xq: Any, wq: Any, x_sf: Any, w_sf: Any, alpha: Any, n: int, backend
         else:
             out = torch.empty(m, n, device = xq.device, dtype = torch.bfloat16)
             torch.zeros(1, device = xq.device, dtype = torch.bfloat16)
+        if _claim_first_call_tune(m, xq.shape[1] * 2, n):
+            # A shape nothing prewarmed (a video's token count, a graphed Z-Image's unified
+            # sequence) would otherwise run the fallback tactic for the life of the load.
+            try:
+                with flashinfer.autotune(True):
+                    return flashinfer.mm_fp4(
+                        xq, wq.T, x_sf, w_sf.T, alpha, torch.bfloat16, out = out, backend = backend
+                    )
+            except Exception:  # noqa: BLE001 - claimed, so it is not retried; run it untuned
+                pass
         return flashinfer.mm_fp4(
             xq, wq.T, x_sf, w_sf.T, alpha, torch.bfloat16, out = out, backend = backend
         )
+
+
+def _claim_first_call_tune(m: int, k: int, n: int) -> bool:
+    """True exactly once per ``(M, K, N)`` not yet autotuned, and only outside a CUDA graph
+    capture, where profiling is illegal (the warm-up before a capture is eager, so a graphed
+    shape tunes there). Shares ``nvfp4_prewarm``'s process-wide set, so a prewarmed shape is
+    never profiled twice."""
+    import torch
+
+    from .diffusion_nvfp4_linear import _TUNED_SHAPES
+
+    key = (int(m), int(k), int(n))
+    if key in _TUNED_SHAPES or torch.cuda.is_current_stream_capturing():
+        return False
+    _TUNED_SHAPES.add(key)
+    return True
 
 
 def _quantize_fake(x: Any, global_sf: Any):

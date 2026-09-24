@@ -1157,8 +1157,9 @@ def load_prequantized_transformer(
         except Exception:  # noqa: BLE001 - eval() is best-effort
             pass
         if scheme == "nvfp4":
-            # Here, not per caller, so a video load tunes the M = 1 shapes too; the tuned set is keyed per shape, so the
-            # image loader's own call is then a no-op. Its own try: a tuning failure must not discard a loaded checkpoint.
+            # Here, not per caller, so a video load tunes the M = 1 shapes too; the token-count shapes tune on their first
+            # eager GEMM. The tuned set is keyed per shape, so the image loader's own call is then a no-op. Its own try: a
+            # tuning failure must not discard a loaded checkpoint.
             try:
                 from .diffusion_nvfp4_linear import nvfp4_prewarm
                 nvfp4_prewarm(transformer, (1,), logger = logger)

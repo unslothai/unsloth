@@ -375,3 +375,67 @@ def test_a_successful_probe_is_cached(monkeypatch):
 )
 def test_only_allocation_failures_read_as_transient(exc, transient):
     assert ops._transient_preflight_failure(exc) is transient
+
+
+def test_an_unprewarmed_gemm_shape_autotunes_on_its_first_eager_call_only(monkeypatch):
+    """The loaders prewarm only M = 1, and a graph's warm-up only the M its top-level inputs imply,
+    so a video's token count or a Z-Image unified sequence reached ``mm_fp4`` outside
+    ``flashinfer.autotune(True)`` and ran the fallback tactic for the life of the load. Each new
+    ``(M, K, N)`` must tune on its first eager call, once, and never inside a capture."""
+    import contextlib
+    import sys
+    import types
+
+    torch = pytest.importorskip("torch")
+    from core.inference import diffusion_nvfp4_linear as nl
+
+    state = {"tuning": False, "capturing": False}
+    calls = []
+
+    @contextlib.contextmanager
+    def _autotune(flag = True):
+        state["tuning"] = flag
+        try:
+            yield
+        finally:
+            state["tuning"] = False
+
+    def _mm_fp4(
+        a,
+        b,
+        a_sf,
+        b_sf,
+        alpha,
+        dtype,
+        out = None,
+        backend = None,
+    ):
+        calls.append((a.shape[0], state["tuning"]))
+        return out
+
+    fake = types.ModuleType("flashinfer")
+    fake.autotune = _autotune
+    fake.mm_fp4 = _mm_fp4
+    monkeypatch.setitem(sys.modules, "flashinfer", fake)
+    monkeypatch.setattr(ops, "_device_guard", lambda t: contextlib.nullcontext())
+    monkeypatch.setattr(torch.cuda, "is_current_stream_capturing", lambda: state["capturing"])
+    nl.reset_tuned_shapes()
+    try:
+        wq = torch.zeros(64, 16, dtype = torch.uint8)  # N = 64, K = 32
+
+        def _mm(m):
+            xq = torch.zeros(m, 16, dtype = torch.uint8)
+            ops._mm_impl(xq, wq, None, wq, None, 64, "cutlass")
+
+        nl._TUNED_SHAPES.add((1, 32, 64))  # what the loader's M = 1 prewarm leaves behind
+        _mm(1)
+        _mm(4352)
+        _mm(4352)
+        state["capturing"] = True
+        _mm(8192)
+        assert calls == [(1, False), (4352, True), (4352, False), (8192, False)]
+        assert (4352, 32, 64) in nl._TUNED_SHAPES
+        # Seen under capture, so still untuned: the next eager call gets to tune it.
+        assert (8192, 32, 64) not in nl._TUNED_SHAPES
+    finally:
+        nl.reset_tuned_shapes()
