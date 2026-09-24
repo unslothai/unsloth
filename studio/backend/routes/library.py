@@ -200,9 +200,7 @@ def _reveal(path) -> None:
 
     # The UI hides Reveal on such a host; a direct call must not open a window nobody sees.
     if file_manager_kind() is None:
-        raise HTTPException(
-            status_code = 503, detail = "No file manager is available on this machine"
-        )
+        raise HTTPException(status_code = 503, detail = "No file manager is available on this machine")
     try:
         reveal_in_file_manager(path)
     except FileNotFoundError:

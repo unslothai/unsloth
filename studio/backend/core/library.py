@@ -172,7 +172,11 @@ def _swap_in(path: Path, data: bytes) -> None:
         raise
 
 
-def write_upload_text(upload_id: str, text: str, encoding: str = "utf-8") -> bool:
+def write_upload_text(
+    upload_id: str,
+    text: str,
+    encoding: str = "utf-8",
+) -> bool:
     """Write an edited note back in `encoding`. A BOM, if the note had one, is the text's first
     character, which each of these codecs writes as that encoding's own BOM."""
     path = upload_path(upload_id)
