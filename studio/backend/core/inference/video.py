@@ -4293,6 +4293,9 @@ class VideoBackend:
             and normalize_transformer_quant(transformer_quant) == TQ_AUTO
             and not quant_replanned
             and plan.offload_policy == "none"
+            # A "none" taken because the budget could not be measured proves no fit; keep the smaller int8 there.
+            and plan.estimates.get("safe_device_budget_mib") is not None
+            and plan.estimates.get("resident_required_mib") is not None
             and dense_transformer_supported(target)
         ):
             logger.info("video.transformer_quant: auto keeps the bf16 DiT (it fits resident)")

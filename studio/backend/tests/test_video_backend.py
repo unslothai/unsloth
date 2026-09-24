@@ -9731,3 +9731,26 @@ def test_video_auto_quant_on_a_host_without_dense_quant_reports_as_before(fake_r
     resolved = status["resolved"]["transformer_quant"]
     assert (resolved["value"], resolved["source"]) == ("off", "auto")
     assert resolved["reason"] == "not engaged (dense bf16 DiT loaded)"
+
+
+def test_video_auto_quant_still_engages_when_the_budget_is_unknown(fake_runtime, monkeypatch):
+    # The planner stays resident when it cannot measure the card; that proves no fit, so keep today's int8.
+    import dataclasses
+
+    import core.inference.video as video_mod
+
+    calls = _quant_spy(monkeypatch)
+    real = video_mod.plan_diffusion_memory
+    monkeypatch.setattr(
+        video_mod,
+        "plan_diffusion_memory",
+        lambda **kw: dataclasses.replace(
+            real(**kw),
+            offload_policy = "none",
+            estimates = {"safe_device_budget_mib": None, "resident_required_mib": None},
+        ),
+    )
+    VideoBackend().load_pipeline(
+        "Wan-AI/Wan2.2-TI2V-5B-Diffusers", model_kind = "pipeline", speed_mode = "default"
+    )
+    assert calls == ["auto"]
