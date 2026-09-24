@@ -14,6 +14,7 @@ import {
   type LibraryChatHandoff,
   useLibraryChatHandoffStore,
 } from "./chat-handoff-store";
+import { mediaFileName } from "./media-file-name";
 
 type Navigate = ReturnType<typeof useNavigate>;
 
@@ -45,16 +46,25 @@ export function startLibraryChat(
   void navigate({ to: "/chat", search: { new: nonce } });
 }
 
+// The composer's image and text limit.
+export const MAX_IMAGE_OR_TEXT_BYTES = 20 * 1024 * 1024;
+
 // The composer's own limits, checked first so a clip it would refuse never opens an empty chat.
 const MEDIA_LIMITS = {
-  image: { bytes: 20 * 1024 * 1024, extension: "png" },
-  video: { bytes: MAX_VIDEO_SIZE, extension: "mp4" },
+  image: { bytes: MAX_IMAGE_OR_TEXT_BYTES, extension: "png", type: "image/png" },
+  video: { bytes: MAX_VIDEO_SIZE, extension: "mp4", type: "video/mp4" },
 } as const;
+
+// Long enough that a small image never flashes a toast.
+const LOADING_TOAST_DELAY_MS = 400;
+
+// One hand-off at a time: a second click while a large clip downloads would open a second chat.
+let handoffInFlight = false;
 
 /**
  * Open a fresh chat with a generated image or clip attached, named after its prompt. `source` is
  * a URL to fetch, or a loader for a response a URL cannot give (WebKit will not refetch an object
- * URL it is displaying).
+ * URL it is displaying, and a signed link can die with a server restart).
  */
 export async function chatAboutMedia(
   navigate: Navigate,
@@ -62,11 +72,17 @@ export async function chatAboutMedia(
   prompt: string,
   kind: keyof typeof MEDIA_LIMITS,
 ): Promise<void> {
+  if (handoffInFlight) return;
+  handoffInFlight = true;
   const limit = MEDIA_LIMITS[kind];
   const tooLarge = () =>
     toast.error(`This ${kind} is too large to attach`, {
       description: `Chat attachments are limited to ${Math.round(limit.bytes / (1024 * 1024))} MB.`,
     });
+  let loadingToast: string | number | null = null;
+  const loadingTimer = setTimeout(() => {
+    loadingToast = toast.loading(`Attaching the ${kind}…`);
+  }, LOADING_TOAST_DELAY_MS);
   // A sign-out while the file downloads would hand it to the next account's chat.
   const epoch = getAuthSessionEpoch();
   try {
@@ -84,13 +100,18 @@ export async function chatAboutMedia(
       tooLarge();
       return;
     }
-    const base = prompt.replace(/[\\/:*?"<>|\s]+/g, " ").trim().slice(0, 60) || "Untitled";
+    // A missing or generic type would not be taken as an image or a clip by the composer.
+    const type = blob.type.startsWith(`${kind}/`) ? blob.type : limit.type;
     startLibraryChat(navigate, {
-      files: [new File([blob], `${base}.${limit.extension}`, { type: blob.type })],
+      files: [new File([blob], mediaFileName(prompt, limit.extension), { type })],
     });
   } catch (error) {
     toast.error("Could not open the file", {
       description: error instanceof Error ? error.message : String(error),
     });
+  } finally {
+    clearTimeout(loadingTimer);
+    if (loadingToast !== null) toast.dismiss(loadingToast);
+    handoffInFlight = false;
   }
 }

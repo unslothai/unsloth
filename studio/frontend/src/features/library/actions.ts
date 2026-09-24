@@ -16,15 +16,13 @@ import { toast } from "@/lib/toast";
 import { MAX_VIDEO_SIZE } from "@/lib/video-utils";
 import { type LibraryItem, libraryDownloadUrl, libraryItemFile } from "./api";
 import { fileKind } from "./file-kind";
-import { resetToNewChat, startLibraryChat } from "./start-chat";
+import { MAX_IMAGE_OR_TEXT_BYTES, resetToNewChat, startLibraryChat } from "./start-chat";
 
 type Navigate = ReturnType<typeof useNavigate>;
 
 // More than this and the composer turns into a wall of chips; the rest can be added by hand.
 export const MAX_CHAT_FILES = 10;
 
-// The composer's image and text limit.
-const MAX_IMAGE_OR_TEXT_BYTES = 20 * 1024 * 1024;
 // Its PDF, DOCX and OpenDocument limit, and the most any other adapter takes, so the ceiling for the rest.
 const MAX_DOCUMENT_BYTES = 50 * 1024 * 1024;
 

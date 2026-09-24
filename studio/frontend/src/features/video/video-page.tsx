@@ -201,6 +201,7 @@ import {
   loadVideoModel,
   unloadVideoModel,
 } from "./api";
+import { fetchWithFreshLink } from "./signed-link-fetch";
 import { videoThumbnailQueue, withThumbnailRetries } from "./thumbnail-request-queue";
 
 // Curated models come from the shared catalog, one group per model with a format second level,
@@ -4290,7 +4291,16 @@ function VideoGenerator({
                 primary: {
                   label: "Chat about this",
                   icon: MessageCircleIcon,
-                  onClick: () => void chatAboutMedia(navigateToChat, viewerSrc, viewerVideo.prompt, "video"),
+                  onClick: () =>
+                    void chatAboutMedia(
+                      navigateToChat,
+                      () =>
+                        fetchWithFreshLink(viewerSrc, () =>
+                          fetchGalleryVideoSignedUrl(viewerVideo.id),
+                        ),
+                      viewerVideo.prompt,
+                      "video",
+                    ),
                 },
                 onDownload: () => void handleQuickDownload(viewerVideo),
                 reveal: revealLabel
