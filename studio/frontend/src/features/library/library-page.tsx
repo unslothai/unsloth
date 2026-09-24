@@ -227,7 +227,7 @@ function LibraryView({ search }: { search: LibrarySearch }) {
 
   const [query, setQuery] = useState("");
   const [filters, setFilters] = useState<LibraryFilters>(EMPTY_FILTERS);
-  const [selection, setSelection] = useState<Set<string>>(new Set());
+  const [pickedKeys, setSelection] = useState<Set<string>>(new Set());
   const [nameDialog, setNameDialog] = useState<NameDialogState | null>(null);
   const [pendingDelete, setPendingDelete] = useState<LibraryTarget[] | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
@@ -239,7 +239,10 @@ function LibraryView({ search }: { search: LibrarySearch }) {
     if (visibility === "hidden" || (entry === "models" && !settings.showFineTunes)) return false;
     return visibility === "always" || !loaded || items.some(KIND_TABS[entry] ?? (() => true));
   };
-  const preferred = settings.startTab === "last" ? settings.lastTab : settings.startTab;
+  // Read once: changing Open on in settings must not move a Library that is already open.
+  const [preferred] = useState(() =>
+    settings.startTab === "last" ? settings.lastTab : settings.startTab,
+  );
   const tab: LibraryTab =
     search.show ??
     (tabVisible(preferred) ? preferred : (LIBRARY_TABS.find(tabVisible) ?? "all"));
@@ -247,6 +250,12 @@ function LibraryView({ search }: { search: LibrarySearch }) {
   const [sortOverride, setSortOverride] = useState<LibrarySortState | null>(
     search.sort ? sortState(search.sort) : null,
   );
+  // A new ?sort link (Settings > Library > Storage) replaces a column click made before it.
+  const [linkedSort, setLinkedSort] = useState(search.sort);
+  if (search.sort !== linkedSort) {
+    setLinkedSort(search.sort);
+    setSortOverride(search.sort ? sortState(search.sort) : null);
+  }
   const sort = sortOverride ?? sortState(settings.sort);
   const folderId = search.folder ?? null;
   const folderById = useMemo(() => new Map(folders.map((f) => [f.id, f])), [folders]);
@@ -306,6 +315,16 @@ function LibraryView({ search }: { search: LibrarySearch }) {
       // Folders have no size of their own.
       .sort(compareBySort(sort.key === "size" ? { key: "name", desc: false } : sort));
   }, [folders, folderId, tab, needle, filters, sort]);
+
+  // Only what is on screen counts: a search, filter or Content setting that hides a picked item
+  // drops it, so the bar never claims more than Delete or Move would act on.
+  const selection = useMemo(() => {
+    const shown = new Set([
+      ...visibleFolders.map((folder) => `folder:${folder.id}`),
+      ...visibleItems.map((item) => `item:${item.id}`),
+    ]);
+    return new Set([...pickedKeys].filter((key) => shown.has(key)));
+  }, [pickedKeys, visibleFolders, visibleItems]);
 
   const previewItem = search.item ? (items.find((item) => item.id === search.item) ?? null) : null;
 
@@ -481,12 +500,11 @@ function LibraryView({ search }: { search: LibrarySearch }) {
 
   const cardSelection = {
     selection,
-    toggle: (key: string) =>
-      setSelection((current) => {
-        const next = new Set(current);
-        if (!next.delete(key)) next.add(key);
-        return next;
-      }),
+    toggle: (key: string) => {
+      const next = new Set(selection);
+      if (!next.delete(key)) next.add(key);
+      setSelection(next);
+    },
   };
 
   const selectedTargets = (): LibraryTarget[] => {

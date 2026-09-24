@@ -239,6 +239,8 @@ def test_favorites_lists_only_favorite_ids(client):
 
 
 def test_fine_tuned_models_are_listed_but_not_deleted_here(client, monkeypatch):
+    import shutil
+
     from utils.paths.storage_roots import outputs_root
 
     monkeypatch.setattr(library, "_SOURCES", (library._model_items,))
@@ -256,9 +258,14 @@ def test_fine_tuned_models_are_listed_but_not_deleted_here(client, monkeypatch):
         response = client.post("/api/library/items/delete", json = {"id": item["id"]})
         assert response.status_code == 400
         assert run.is_dir()
-    finally:
-        import shutil
+        # Once the models route has deleted it, the Library forgets its favorite too.
+        client.patch("/api/library/items", json = {"id": item["id"], "favorite": True})
         shutil.rmtree(run)
+        response = client.post("/api/library/items/delete", json = {"id": item["id"]})
+        assert response.status_code == 200
+        assert client.get("/api/library/favorites").json() == {"ids": []}
+    finally:
+        shutil.rmtree(run, ignore_errors = True)
 
 
 # ── Desktop drops ────────────────────────────────────────────────

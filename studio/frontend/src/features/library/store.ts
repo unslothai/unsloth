@@ -86,16 +86,18 @@ export const useLibraryStore = create<LibraryState>((set, get) => {
     },
     removeItem: (id) => {
       const model = get().items.find((item) => item.id === id)?.model;
+      useLibraryFavoritesStore.getState().mark(id, false);
       return optimistic(
         (state) => ({ items: state.items.filter((item) => item.id !== id) }),
         // Fine-tunes go through the models route, which refuses while one is training or loaded.
+        // Clearing its favorite, name and folder after that is best effort.
         () =>
           model
             ? deleteFineTunedModel({
                 modelPath: model.path,
                 source: model.origin,
                 exportType: model.exportType,
-              })
+              }).then(() => deleteLibraryItem(id).catch(() => {}))
             : deleteLibraryItem(id),
       );
     },

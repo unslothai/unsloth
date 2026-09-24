@@ -470,8 +470,12 @@ def delete_item(item_id: str) -> bool:
             os.unlink(path)
             deleted = True
     elif kind == "model":
-        # Deleting a model has load and training guards of its own; the model picker owns that.
-        raise ValueError("Fine-tuned models are deleted from the model picker.")
+        # The models route deletes the files, with its own load and training guards. Once they are
+        # gone, this drops what the Library kept about the model.
+        _origin, _, path = ref.partition(":")
+        if not path or os.path.exists(path):
+            raise ValueError("Fine-tuned models are deleted from the model picker.")
+        deleted = True
     else:
         raise ValueError("Unknown library item")
     if deleted:
