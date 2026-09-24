@@ -179,9 +179,14 @@ def _retry_metadata_fetch(repo_id: str, fetch, *, label: str):
     raise RuntimeError(f"{label} unavailable for {repo_id}")
 
 
+# repo_id -> commit the metadata described. The worker is one download per process, so this only carries the commit from the plan lookup to the reuse step without widening the plan helpers' return types.
+_RESOLVED_COMMITS: dict[str, str] = {}
+
+
 def _model_info_with_retry(repo_id: str, hf_token: str | None):
     from huggingface_hub import model_info as hf_model_info
-    return _retry_metadata_fetch(
+
+    info = _retry_metadata_fetch(
         repo_id,
         lambda timeout: hf_model_info(
             repo_id,
@@ -191,6 +196,39 @@ def _model_info_with_retry(repo_id: str, hf_token: str | None):
         ),
         label = "Metadata",
     )
+    commit = getattr(info, "sha", None)
+    if isinstance(commit, str) and commit:
+        _RESOLVED_COMMITS[repo_id] = commit
+    return info
+
+
+def _reuse_unchanged_files(
+    repo_type: RepoType, repo_id: str, commit_hash, expected_files: list, hf_token: str | None
+) -> list:
+    """Link files this commit did not change in from an older snapshot, and return the expected files still to download.
+
+    Without symlinks (Windows without Developer Mode) huggingface_hub moves each blob into its snapshot, so a new commit, even a README-only one, finds no blob and downloads every file again. See :mod:`hub.utils.snapshot_reuse`. Needs the target commit and per-file digests from metadata, so an offline run reuses nothing and behaves as before."""
+    from hub.utils.snapshot_reuse import hub_remote_digests, reuse_unchanged_snapshot_files
+
+    if not expected_files or not commit_hash:
+        return list(expected_files)
+    result = reuse_unchanged_snapshot_files(
+        repo_type,
+        repo_id,
+        commit_hash,
+        expected_files,
+        remote_digests = hub_remote_digests(repo_type, repo_id, _hf_token_arg(hf_token)),
+        protected_blob_hashes = _protected_blob_hashes(),
+    )
+    if not result.reused:
+        return list(expected_files)
+    print(
+        f"Reused {len(result.reused)} unchanged file(s) ({result.reused_bytes / 1e9:.2f} GB) "
+        f"from an older snapshot of {repo_id} instead of downloading them again.",
+        file = sys.stderr,
+    )
+    reused = set(result.reused)
+    return [f for f in expected_files if getattr(f, "path", None) not in reused]
 
 
 def _dataset_info_with_retry(repo_id: str, hf_token: str | None):
@@ -541,7 +579,10 @@ def _download_snapshot(repo_id: str, hf_token: str | None, mode: str) -> None:
             f"before starting {mode} download.",
             file = sys.stderr,
         )
-    _preflight_disk_space("model", repo_id, expected_files)
+    to_download = _reuse_unchanged_files(
+        "model", repo_id, getattr(info, "sha", None), expected_files, hf_token
+    )
+    _preflight_disk_space("model", repo_id, to_download)
     snapshot_path = snapshot_download(
         repo_id = repo_id,
         token = _hf_token_arg(hf_token),
@@ -676,7 +717,14 @@ def _download_gguf_variant(repo_id: str, variant: str, hf_token: str | None, mod
             f"before starting {mode} download.",
             file = sys.stderr,
         )
-    _preflight_disk_space("model", repo_id, expected_files)
+    to_download = (
+        expected_files
+        if metadata_unavailable
+        else _reuse_unchanged_files(
+            "model", repo_id, _RESOLVED_COMMITS.get(repo_id), expected_files, hf_token
+        )
+    )
+    _preflight_disk_space("model", repo_id, to_download)
     snapshot_path = snapshot_download(
         repo_id = repo_id,
         token = _hf_token_arg(hf_token),
@@ -768,7 +816,10 @@ def _download_scoped_snapshot(
             f"before starting {mode} download.",
             file = sys.stderr,
         )
-    _preflight_disk_space("model", repo_id, expected_files)
+    to_download = _reuse_unchanged_files(
+        "model", repo_id, getattr(info, "sha", None), expected_files, hf_token
+    )
+    _preflight_disk_space("model", repo_id, to_download)
     snapshot_path = snapshot_download(
         repo_id = repo_id,
         token = _hf_token_arg(hf_token),
@@ -834,7 +885,8 @@ def _download_dataset(repo_id: str, hf_token: str | None, mode: str) -> None:
             f"before starting {mode} download.",
             file = sys.stderr,
         )
-    _preflight_disk_space("dataset", repo_id, expected_files)
+    to_download = _reuse_unchanged_files("dataset", repo_id, commit_hash, expected_files, hf_token)
+    _preflight_disk_space("dataset", repo_id, to_download)
     download_kwargs = {
         "repo_id": repo_id,
         "token": _hf_token_arg(hf_token),

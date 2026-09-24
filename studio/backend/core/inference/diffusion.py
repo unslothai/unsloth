@@ -3641,6 +3641,15 @@ class DiffusionBackend:
             if not missing:
                 return
 
+            # Still staged, since only the job links them into this revision, but not counted: the worker reuses an
+            # unchanged file from an older snapshot instead of downloading it (hub.utils.snapshot_reuse).
+            reusable = self._reusable_from_older_snapshot(
+                repo,
+                [n for n in missing if where.get(n) is None],
+                revision,
+                declared_sizes,
+                hf_token,
+            )
             if checkpoint:
                 missing_checkpoints.add(repo)
             for entry in entries:
@@ -3649,7 +3658,9 @@ class DiffusionBackend:
                 newly_missing = [n for n in missing if n not in entry["files"]]
                 added = [n for n in scope if n not in entry["files"]]
                 entry["files"].extend(added)
-                entry["bytes"] += int(sum(declared_sizes.get(n, 0) for n in newly_missing))
+                entry["bytes"] += int(
+                    sum(declared_sizes.get(n, 0) for n in newly_missing if n not in reusable)
+                )
                 entry["gguf_filename"] = scoped_gguf[repo]
                 entry["checkpoint"] = repo in missing_checkpoints
                 return
@@ -3660,7 +3671,9 @@ class DiffusionBackend:
                     # are cheap no-op hf_hub_download calls; only the genuinely missing subset contributes to
                     # bytes/preflight below.
                     "files": list(scope),
-                    "bytes": int(sum(declared_sizes.get(name, 0) for name in missing)),
+                    "bytes": int(
+                        sum(declared_sizes.get(name, 0) for name in missing if name not in reusable)
+                    ),
                     "gguf_filename": scoped_gguf[repo],
                     "checkpoint": repo in missing_checkpoints,
                 }
@@ -3780,6 +3793,36 @@ class DiffusionBackend:
         if live:
             return set()
         return wanted if _hits(roots[1]) == wanted else set()
+
+    @staticmethod
+    def _reusable_from_older_snapshot(
+        repo_id: str,
+        names: list[str],
+        revision: Optional[str],
+        declared_sizes: dict[str, int],
+        hf_token: Optional[str],
+    ) -> set[str]:
+        """Missing files an older snapshot in the live cache holds with the same content.
+
+        Without symlinks (Windows without Developer Mode) huggingface_hub keeps no blob to reuse, so
+        a README-only commit made every file of the new revision look missing and cost its full size.
+        The download worker now links such files in instead. Proof here comes from the Hub's digests
+        for both commits, or from a digest the worker cached earlier: the plan never hashes a
+        multi-GB file on the request path, and no network is used unless a same-size copy exists."""
+        if not revision or not names:
+            return set()
+        try:
+            from hub.utils.snapshot_reuse import hub_remote_digests, reusable_paths
+            return reusable_paths(
+                "model",
+                repo_id,
+                revision,
+                {name: int(declared_sizes.get(name) or 0) for name in names},
+                hub_cache = hub_cache_dir(),
+                remote_digests = hub_remote_digests("model", repo_id, hf_token or None),
+            )
+        except Exception:  # noqa: BLE001 -- counting the bytes is the conservative answer
+            return set()
 
     @staticmethod
     def _current_sha(repo_id: str, hf_token: Optional[str]) -> Optional[str]:
