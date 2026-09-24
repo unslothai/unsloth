@@ -2360,6 +2360,8 @@ export function AudioPage({
     try {
       // One queue for pins and moves: the server stamps pins in the order it runs them.
       await serializeById("audio-pin", () => setAudioClipFlags(id, { pinned }));
+      // An unpinned clip can belong below the loaded window, so resync it once writes settle.
+      if (!pinned && galleryCache.hasMore) orderWrites.current.deferred = true;
     } catch (error) {
       toast.error(
         error instanceof Error ? error.message : "Could not pin the clip.",

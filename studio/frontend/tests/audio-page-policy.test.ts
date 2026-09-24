@@ -389,6 +389,11 @@ test("a refresh that overlaps a pin or move is dropped and rerun after it", () =
     audioPageSource,
     /writes\.inFlight === 0 && writes\.deferred\) \{\s*writes\.deferred = false;\s*void refreshGallery\(/,
   );
+  // A successful unpin with more pages unloaded resyncs the window.
+  assert.match(
+    audioPageSource,
+    /setAudioClipFlags\(id, \{ pinned \}\)\);\s*\/\/[^\n]*\n\s*if \(!pinned && galleryCache\.hasMore\) orderWrites\.current\.deferred = true;/,
+  );
   for (const call of ["setAudioClipFlags(id, { pinned })", "moveAudioClip(id, afterId)"]) {
     const at = audioPageSource.indexOf(call);
     const before = audioPageSource.lastIndexOf("beginOrderWrite();", at);
