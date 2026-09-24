@@ -305,8 +305,6 @@ export function LibraryTab() {
 
       <StorageSection />
 
-      <LocationsSection />
-
       <SettingsSection title={t("settings.library.layoutSection")}>
         {choice("cardSize", "settings.library.cardSize", "settings.library.cardSizeDescription")}
         {choice("imageLayout", "settings.library.imageLayout", "settings.library.imageLayoutDescription")}
@@ -388,6 +386,8 @@ export function LibraryTab() {
           </Button>
         </SettingsRow>
       </SettingsSection>
+
+      <LocationsSection />
     </div>
   );
 }
