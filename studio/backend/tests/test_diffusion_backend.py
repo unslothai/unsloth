@@ -10681,6 +10681,38 @@ def test_generate_upscale_on_math_only_attention_still_refuses(fake_runtime, tmp
     assert "Allow oversized generations" in message
 
 
+class _UnslicedTilingVae(_TilingVae):
+    """Tiles at 1024 (AutoencoderKL) but its enable_slicing() leaves slicing off."""
+
+    tile_sample_min_height = 1024
+    tile_sample_min_width = 1024
+
+    def enable_slicing(self):
+        self.calls.append("enable_slicing")
+
+
+@pytest.mark.parametrize("vae_cls", [_TilingVae, _UnslicedTilingVae])
+def test_generate_windows_batch_prices_tiles_at_the_batch_without_slicing(
+    fake_runtime, tmp_path, monkeypatch, vae_cls
+):
+    # Without slicing every VAE tile carries the whole batch, so the one-image tile price that let
+    # this Windows batch through must be re-checked once slicing turns out not to engage.
+    from core.inference import diffusion as dmod
+
+    backend = _loaded_backend_on_a_16g_card(tmp_path, monkeypatch)
+    vae = vae_cls()
+    monkeypatch.setattr(_FakeImg2ImgPipe, "vae", vae, raising = False)
+    monkeypatch.setattr(dmod, "_quadratic_attention", lambda target, backend = None: False)
+    monkeypatch.setattr(dmod.sys, "platform", "win32")
+    kw = dict(prompt = "a sloth", steps = 4, init_image = _png_b64(1024), upscale = 2.0, seeds = [1, 2])
+    if vae_cls is _TilingVae:
+        assert len(backend.generate(**kw)["images"]) == 2
+    else:
+        with pytest.raises(ValueError, match = "2048x2048 at a batch of 2"):
+            backend.generate(**kw)
+    assert not vae.use_tiling and not vae.use_slicing
+
+
 class _BrokenTilingVae(_TilingVae):
     """A VAE that claims to tile but whose enable_tiling() raises."""
 

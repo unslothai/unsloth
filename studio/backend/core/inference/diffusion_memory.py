@@ -1323,6 +1323,20 @@ def vae_tile_side(vae: Any) -> Optional[int]:
     return max(64, min(4096, max(sides)))
 
 
+def vae_can_slice(vae: Any) -> bool:
+    """Whether ``vae`` decodes a batch one image at a time already, or offers ``enable_slicing``."""
+    if vae is None:
+        return False
+    return bool(getattr(vae, "use_slicing", False)) or callable(getattr(vae, "enable_slicing", None))
+
+
+def vae_is_sliced(vae: Any) -> bool:
+    """Whether slicing is on. A VAE without the ``use_slicing`` flag is taken at its word."""
+    if vae is None:
+        return False
+    return bool(getattr(vae, "use_slicing", callable(getattr(vae, "enable_slicing", None))))
+
+
 def engage_vae_tiling_for_call(pipe: Any, logger: Any = None) -> Optional[Callable[[], None]]:
     """Tile and slice ``pipe``'s VAE for one generation; returns the undo, or None if nothing changed.
 
@@ -1397,14 +1411,16 @@ def estimate_tiled_image_runtime_mib(
     family: Optional[str] = None,
     condition_pixels: int = 0,
     tile_side: Optional[int] = None,
+    vae_sliced: bool = False,
 ) -> int:
     """Per-call working memory for an image gen with the VAE TILED and SLICED, in MiB.
 
     The untiled estimate is dominated by the VAE: a full-frame decode grows with the pixel count and
     is several times the denoiser's own peak (measured at 2048x2048: Qwen-Image 16.5 GiB untiled
     against 0.3 GiB tiled, FLUX / Z-Image 9.5 against 2.4, SDXL's fp32 decode 19.0 against 4.8).
-    Tiled, the VAE only ever holds one tile of one image, so it is priced by the untiled estimator
-    at the tile's size. What still scales with the frame is the denoiser, priced per megapixel at
+    Tiled and sliced, the VAE only ever holds one tile of one image, so it is priced by the untiled
+    estimator at the tile's size. Without slicing (``vae_sliced`` False) every tile carries the
+    whole batch, so the tile is priced at ``batch_size``. What still scales with the frame is the denoiser, priced per megapixel at
     ``DENOISE_MIB_PER_MEGAPIXEL``, plus condition images at the untiled rate their
     ``condition_pixel_weight`` was calibrated against. The two phases do not overlap in time, so
     the peak is the larger of them.
@@ -1421,7 +1437,7 @@ def estimate_tiled_image_runtime_mib(
     vae = estimate_image_runtime_mib(
         width = min(w, side),
         height = min(h, side),
-        batch_size = 1,
+        batch_size = 1 if vae_sliced else batch,
         family = family,
     )
     denoise = batch * (
@@ -1485,6 +1501,7 @@ def image_activation_verdict(
     source_driven: bool = False,
     condition_pixels: int = 0,
     vae_tile_side: Optional[int] = None,
+    vae_sliced: bool = False,
     quadratic_attention: bool = False,
     allow_oversized: bool = False,
 ) -> ImageActivationVerdict:
@@ -1501,7 +1518,8 @@ def image_activation_verdict(
     intermediates a forward pass allocates have to be on the device while it runs. What CAN shrink
     is the VAE, which is most of the untiled figure: decoding tile by tile bounds it to one tile, the
     same fallback ComfyUI takes. ``vae_tile_side`` (None when the loaded VAE cannot tile) enables
-    that second look; ``quadratic_attention`` (the SDPA math fallback) disables it, because there the
+    that second look, priced per image only when ``vae_sliced`` says the VAE decodes the batch one
+    image at a time; ``quadratic_attention`` (the SDPA math fallback) disables it, because there the
     denoiser, not the VAE, is what grows.
 
     Refusing has to happen HERE rather than being left to torch. On Linux the overrun raises
@@ -1566,6 +1584,7 @@ def image_activation_verdict(
                 family = family,
                 condition_pixels = condition_pixels,
                 tile_side = vae_tile_side,
+                vae_sliced = vae_sliced,
             )
     except Exception:  # noqa: BLE001 -- a broken probe must never block a generation
         return ImageActivationVerdict(ACTIVATION_RUN)
@@ -1618,6 +1637,7 @@ def image_activation_shortfall_message(
     source_driven: bool = False,
     condition_pixels: int = 0,
     vae_tile_side: Optional[int] = None,
+    vae_sliced: bool = False,
     quadratic_attention: bool = False,
     allow_oversized: bool = False,
 ) -> Optional[str]:
@@ -1632,6 +1652,7 @@ def image_activation_shortfall_message(
         source_driven = source_driven,
         condition_pixels = condition_pixels,
         vae_tile_side = vae_tile_side,
+        vae_sliced = vae_sliced,
         quadratic_attention = quadratic_attention,
         allow_oversized = allow_oversized,
     ).message
@@ -1648,6 +1669,7 @@ def raise_on_image_activation_shortfall(
     source_driven: bool = False,
     condition_pixels: int = 0,
     vae_tile_side: Optional[int] = None,
+    vae_sliced: bool = False,
     quadratic_attention: bool = False,
     allow_oversized: bool = False,
     logger: Any = None,
@@ -1669,6 +1691,7 @@ def raise_on_image_activation_shortfall(
         source_driven = source_driven,
         condition_pixels = condition_pixels,
         vae_tile_side = vae_tile_side,
+        vae_sliced = vae_sliced,
         quadratic_attention = quadratic_attention,
         allow_oversized = allow_oversized,
     )

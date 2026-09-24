@@ -119,6 +119,8 @@ from .diffusion_memory import (
     snapshot_device_memory,
     unified_memory_shortfall_message,
     vae_tile_side,
+    vae_can_slice,
+    vae_is_sliced,
 )
 from .diffusion_torchao_patches import install_torchao_int_mm_patch
 from .diffusion_speed import (
@@ -7394,6 +7396,8 @@ class DiffusionBackend:
                         # is most of the untiled figure. Not under the SDPA math fallback, whose score matrix grows
                         # with the square of the token count however the VAE decodes.
                         vae_tile_side = vae_tile_side(getattr(pipe, "vae", None)),
+                        # Without slicing every tile carries the whole batch, so only a sliceable VAE is priced per image.
+                        vae_sliced = vae_can_slice(getattr(pipe, "vae", None)),
                         # The kernel the load engaged, not just what native SDPA could do on this device.
                         quadratic_attention = _quadratic_attention(
                             guard_target, getattr(state, "attention_backend", None)
@@ -7410,6 +7414,16 @@ class DiffusionBackend:
                             # refuse with the untiled reason instead (the finally undoes any slicing).
                             raise_on_image_activation_shortfall(
                                 **{**guard_kwargs, "vae_tile_side": None}
+                            )
+                        elif (
+                            guard_batch > 1
+                            and guard_kwargs["vae_sliced"]
+                            and not verdict.overridden
+                            and not vae_is_sliced(getattr(pipe, "vae", None))
+                        ):
+                            # Same for slicing: re-price the tiles at the whole batch.
+                            raise_on_image_activation_shortfall(
+                                **{**guard_kwargs, "vae_sliced": False}
                             )
                 except ValueError:
                     raise  # the refusal itself: the route turns this into a 400 with the reason

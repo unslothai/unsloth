@@ -241,6 +241,24 @@ def test_the_tiled_estimate_scales_with_batch_and_area():
     assert four > one
 
 
+def test_a_tiled_vae_without_slicing_is_priced_at_the_whole_batch():
+    # diffusers' tiled_decode keeps the batch dimension in every tile; only slicing decodes one
+    # image at a time, so a multi-image request on a VAE that cannot slice must not be priced as one.
+    sliced = estimate_tiled_image_runtime_mib(
+        width = 2048, height = 2048, batch_size = 2, family = _ZIMAGE_HINT, tile_side = 1024, vae_sliced = True
+    )
+    unsliced = estimate_tiled_image_runtime_mib(
+        width = 2048, height = 2048, batch_size = 2, family = _ZIMAGE_HINT, tile_side = 1024
+    )
+    one = estimate_image_runtime_mib(width = 1024, height = 1024, family = _ZIMAGE_HINT)
+    assert sliced == one
+    assert unsliced >= 2 * one
+    card = _card(16)
+    kw = dict(family = _ZIMAGE_HINT, batch_size = 2, vae_tile_side = 1024, source_driven = True)
+    assert _verdict(2048, 2048, card, vae_sliced = True, **kw).action == ACTIVATION_TILE
+    assert _verdict(2048, 2048, card, vae_sliced = False, **kw).action == ACTIVATION_REFUSE
+
+
 # -- the VAE helpers ----------------------------------------------------------------------------
 
 
@@ -336,3 +354,10 @@ def test_a_vae_whose_tiling_fails_reports_it_is_not_tiled():
     assert dm.engage_vae_tiling(pipe)[1] is True
     pipe.vae = _Vae()
     assert dm.engage_vae_tiling(pipe)[1] is True
+
+
+def test_vae_slicing_helpers():
+    assert dm.vae_can_slice(_Vae()) and not dm.vae_is_sliced(_Vae())
+    assert dm.vae_is_sliced(_Vae(use_slicing = True))
+    assert not dm.vae_can_slice(_NoTileVae()) and not dm.vae_is_sliced(_NoTileVae())
+    assert not dm.vae_can_slice(None) and not dm.vae_is_sliced(None)
