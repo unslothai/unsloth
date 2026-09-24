@@ -1924,6 +1924,7 @@ export const zhCN = {
       expires: "过期时间：{value}",
       actionsFor: "{name} 的操作",
       copyPrefix: "复制前缀",
+      copyFailed: "无法复制",
       revokeToken: "撤销 token",
       revokeTitle: "撤销访问 token“{name}”？",
       revokeDescription:

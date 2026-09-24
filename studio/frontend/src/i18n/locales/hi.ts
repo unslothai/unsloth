@@ -1980,6 +1980,7 @@ export const hi = {
       expires: "समाप्त होता है {value}",
       actionsFor: "{name} के लिए कार्रवाइयां",
       copyPrefix: "प्रीफ़िक्स कॉपी करें",
+      copyFailed: "कॉपी नहीं हो सका",
       revokeToken: "टोकन रद्द करें",
       revokeTitle: "क्या “{name}” एक्सेस टोकन रद्द करें?",
       revokeDescription:

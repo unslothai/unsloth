@@ -179,8 +179,10 @@ test("a new model pick cancels recalled generation and retires the staged load",
     pendingLoadEntries: { current: ["previous"] },
     stagedLoadDeferred: { current: true },
     stagedQuantRevert: { current: { prev: "Q8_0" } },
+    pickToast: { dismissed: 0, dismissAll() { this.dismissed += 1; } },
   };
   new Function(...Object.keys(scope), outputText)(...Object.values(scope));
+  assert.equal(scope.pickToast.dismissed, 1);
   assert.equal(scope.pendingRecalledGeneration.current, null);
   assert.equal(scope.pickSeq.current, 5);
   assert.equal(scope.pendingStagedLoad.current, null);

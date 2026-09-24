@@ -38,6 +38,7 @@ import type {
   GgufVariantDetail,
   LocalModelInfo,
 } from "@/features/chat";
+import type { ProviderApiType } from "@/features/chat/api/providers-api";
 import {
   DotTag,
   type HubOption,
@@ -52,7 +53,6 @@ import {
 } from "@/features/hub";
 import {
   type HfModelResult,
-  type HfSortKey,
   useHubModelSearch,
 } from "@/features/hub";
 import {
@@ -553,7 +553,7 @@ function CapabilityIcons({ caps }: { caps: ModelCapabilities }) {
           key={key}
           title={title}
           aria-label={title}
-          className="flex size-[18px] shrink-0 items-center justify-center rounded-md border border-border text-muted-foreground"
+          className="flex size-[calc(18px*var(--ui-space-scale,1))] shrink-0 items-center justify-center rounded-md border border-border text-muted-foreground"
         >
           <Glyph className="size-3" />
         </span>
@@ -609,11 +609,11 @@ function FormatTag({ tone, label }: { tone: FormatTone; label: string }) {
         {/* Hit area, so hovering the dot is not a pixel hunt. */}
         <span
           aria-label={label}
-          className="flex size-[14px] shrink-0 items-center justify-center"
+          className="flex size-[calc(14px*var(--ui-space-scale,1))] shrink-0 items-center justify-center"
         >
           <span
             aria-hidden="true"
-            className={cn("size-[5px] rounded-full", FORMAT_TONE_DOT[tone])}
+            className={cn("size-[calc(5px*var(--ui-space-scale,1))] rounded-full", FORMAT_TONE_DOT[tone])}
           />
         </span>
       </TooltipTrigger>
@@ -636,7 +636,7 @@ function DownloadedBadge() {
         >
           <span
             aria-hidden="true"
-            className="size-[5px] rounded-full bg-status-success"
+            className="size-[calc(5px*var(--ui-space-scale,1))] rounded-full bg-status-success"
           />
         </span>
       </TooltipTrigger>
@@ -661,7 +661,7 @@ function PartialBadge({ resumable }: { resumable?: boolean }) {
         >
           <span
             aria-hidden="true"
-            className="size-[5px] rounded-full bg-status-warning"
+            className="size-[calc(5px*var(--ui-space-scale,1))] rounded-full bg-status-warning"
           />
         </span>
       </TooltipTrigger>
@@ -786,7 +786,7 @@ function VramBadge({
             event.stopPropagation();
           }}
           className={cn(
-            "flex size-[18px] shrink-0 items-center justify-center",
+            "flex size-[calc(18px*var(--ui-space-scale,1))] shrink-0 items-center justify-center",
             verdict.tone,
             revealOnHover &&
               "opacity-0 transition-opacity group-hover/row:opacity-100 group-focus-visible/row:opacity-100",
@@ -896,8 +896,13 @@ function isRuntimeLoadedModel(
   activeGgufVariant: string | null | undefined,
   modelId: string,
   variantPolicy: "none" | "required" | "ignore",
+  aliasIds: readonly string[] = [],
 ): boolean {
-  if (!modelIdsMatchForPicker(loadedModelId, modelId)) return false;
+  if (
+    !modelIdsMatchForPicker(loadedModelId, modelId) &&
+    !aliasIds.some((id) => modelIdsMatchForPicker(loadedModelId, id))
+  )
+    return false;
   if (variantPolicy === "ignore") return true;
   const hasActiveGgufVariant = !ggufVariantsMatchForPicker(
     activeGgufVariant,
@@ -1225,7 +1230,7 @@ function ModelRow({
               tone="success"
               label="Loaded"
               className="ml-2 h-[calc(18px*var(--ui-space-scale,1))] shrink-0 gap-1 rounded-md px-1.5"
-              dotClassName="size-[5px]"
+              dotClassName="size-[calc(5px*var(--ui-space-scale,1))]"
             />
           )}
           {alignMeta !== "device" && quantChip ? (
@@ -1289,7 +1294,7 @@ function ModelRow({
                   tone="success"
                   label="Loaded"
                   className="h-[calc(18px*var(--ui-space-scale,1))] gap-1 rounded-md px-1.5"
-                  dotClassName="size-[5px]"
+                  dotClassName="size-[calc(5px*var(--ui-space-scale,1))]"
                 />
               )}
               {partial ? <PartialBadge resumable={partialResumable} /> : null}
@@ -1404,7 +1409,7 @@ function ModelRow({
             connection name stretch the box to 320px, most of it slack beside the model id. */}
         <TooltipContent
           side="right"
-          className="tooltip-compact max-w-[15rem] break-words"
+          className="tooltip-compact max-w-[calc(15rem*var(--ui-space-scale,1))] break-words"
         >
           {tooltipBody}
         </TooltipContent>
@@ -2514,12 +2519,10 @@ function canDeleteLoraModel(model: LoraModelOption): boolean {
 }
 
 
-// Recommended section sort: "recommended" = newly created unsloth GGUF/MLX that fit the
-// device; the rest are plain HF sort keys.
-type RecommendedSortKey = "recommended" | "trendingScore" | "lastModified";
+// Recommended section sort: plain HF sort keys.
+type RecommendedSortKey = "trendingScore" | "lastModified";
 
 const RECOMMENDED_SORT_OPTIONS: HubOption<RecommendedSortKey>[] = [
-  { value: "recommended", label: "Recommended" },
   { value: "trendingScore", label: "Trending" },
   { value: "lastModified", label: "Recent" },
 ];
@@ -2803,9 +2806,6 @@ export function HubModelPicker({
   // Recommended section: a live unsloth listing sorted by the dropdown, the same sort that drives search results.
   const [recommendedSort, setRecommendedSort] =
     useState<RecommendedSortKey>("trendingScore");
-  // "recommended" surfaces the most recently created Unsloth repos.
-  const recommendedSortBy: HfSortKey =
-    recommendedSort === "recommended" ? "createdAt" : recommendedSort;
   const {
     results,
     isLoading,
@@ -2815,7 +2815,7 @@ export function HubModelPicker({
     hasMore,
   } = useHubModelSearch(debouncedQuery, {
     ownerScope: "unsloth",
-    sortBy: recommendedSortBy,
+    sortBy: recommendedSort,
     sortDirection: "desc",
     pinUnslothFirst: true,
     keepUnsupportedTags: true,
@@ -2826,7 +2826,7 @@ export function HubModelPicker({
   });
   const recommendedSearch = useHubModelSearch("", {
     ownerScope: "unsloth",
-    sortBy: recommendedSortBy,
+    sortBy: recommendedSort,
     sortDirection: "desc",
     pinUnslothFirst: true,
     keepUnsupportedTags: true,
@@ -2848,7 +2848,7 @@ export function HubModelPicker({
   const communityQuerySearch = useHubModelSearch(debouncedQuery, {
     task,
     ownerScope: "all",
-    sortBy: recommendedSortBy,
+    sortBy: recommendedSort,
     sortDirection: "desc",
     pinUnslothFirst: false,
     accessToken,
@@ -2857,7 +2857,7 @@ export function HubModelPicker({
   const communityBrowse = useHubModelSearch("", {
     task,
     ownerScope: "all",
-    sortBy: recommendedSortBy,
+    sortBy: recommendedSort,
     sortDirection: "desc",
     pinUnslothFirst: false,
     accessToken,
@@ -3249,6 +3249,30 @@ export function HubModelPicker({
       ),
     [cachedGguf, cachedModels],
   );
+  // Ids for the same files: the row, its unsloth mirror and the vendor repo the mirror copies.
+  // A copy cached under one loads for the others, so rows match all of them.
+  const aliasesOf = useCallback(
+    (id: string): string[] => {
+      const artifact = catalog && artifactForRepoId(id, catalog)?.artifact;
+      return artifact?.upstreamRepoId
+        ? [id, artifact.repoId, artifact.upstreamRepoId]
+        : [id];
+    },
+    [catalog],
+  );
+  const isValueRow = useCallback(
+    (id: string) =>
+      value === id ||
+      aliasesOf(id).some((alias) => modelIdsMatchForPicker(value, alias)),
+    [value, aliasesOf],
+  );
+  // The id on disk for a row: itself, else a cached alias.
+  const cachedIdFor = useCallback(
+    (id: string): string | null =>
+      aliasesOf(id).find((alias) => downloadedSet.has(alias.toLowerCase())) ??
+      null,
+    [aliasesOf, downloadedSet],
+  );
 
   // The torn ones, kept apart so a Hub row can mark a partial rather than show it as complete
   // or as absent. Same split, and the same helper, the Hub page uses. One repo id can hold both a
@@ -3258,6 +3282,12 @@ export function HubModelPicker({
     () =>
       partialSetFromRows([...cachedGguf, ...cachedModels], (c) => c.repo_id),
     [cachedGguf, cachedModels],
+  );
+  // A complete alias loads instead, so the row is downloaded, not partial.
+  const isPartialRow = useCallback(
+    (id: string) =>
+      cachedIdFor(id) === null && partialSet.has(id.toLowerCase()),
+    [cachedIdFor, partialSet],
   );
 
   // Which of those continue byte for byte, so a Hub row's mark promises what the On Device row's
@@ -3483,8 +3513,8 @@ export function HubModelPicker({
     [catalogSeedRows],
   );
 
-  // Recommended suggests GGUF anywhere, plus MLX and safetensors on Mac; the "recommended" sort
-  // also drops models too big for the device. Downloaded models stay visible.
+  // Recommended suggests GGUF anywhere, plus MLX and safetensors on Mac; the "Fits on device"
+  // tick also drops models too big for the device. Downloaded models stay visible.
   const recommendedRows = useMemo(() => {
     const catalogSeedIds = new Set(
       catalogSeedRows.map((row) => row.id.toLowerCase()),
@@ -3515,15 +3545,14 @@ export function HubModelPicker({
     const keepCommunity = (r: HfModelResult) =>
       keepCommon(r) && isTaskRuntimeSupported(r);
     // Members are not filtered here (see recommendedIds): that dropped them from Hub search too.
-    // "recommended" always device-filters; the "Fits on device" tick extends it to other sorts.
-    const deviceFiltered = recommendedSort === "recommended" || fitOnDeviceOnly;
+    const deviceFiltered = fitOnDeviceOnly;
     const taskScoped = Boolean(task);
     const rowGpu = loadScopedGpu(gpu, taskScoped);
     const rowInferenceGpu = loadScopedGpu(inferenceGpu, taskScoped);
     const pipelineBudget = artifactBudget(rowGpu);
     const fits = (r: HfModelResult) =>
       // Downloaded models show regardless of fit.
-      downloadedSet.has(r.id.toLowerCase()) ||
+      cachedIdFor(r.id) !== null ||
       // The catalog's own verdict where it has one, so this list and the OOM badge cannot disagree:
       // hfModelFitsDevice counts RAM toward a load that never leaves the card.
       (catalogFit(r.id, pipelineBudget)?.fits ??
@@ -3542,11 +3571,24 @@ export function HubModelPicker({
       keep,
       deviceFiltered,
       fits,
+      // Curated families follow the dropdown's sort, not catalog order.
+      familyOf: catalog
+        ? (id) => groupForRepoId(id, catalog)?.canonicalId.toLowerCase()
+        : undefined,
+      pinnedFamilies: catalog
+        ?.filter((g) => g.pinToTop)
+        .map((g) => g.canonicalId.toLowerCase()),
     });
     if (!communityRecommendedEnabled) return unslothRows;
     // Appended below everything unsloth publishes, so scrolling past the unsloth uploads continues
     // into the wider Hub. Same keep/fits gates.
     const above = new Set(unslothRows.map((r) => r.id.toLowerCase()));
+    // A vendor repo whose unsloth mirror is listed above is the same files.
+    for (const r of unslothRows) {
+      const upstream =
+        catalog && artifactForRepoId(r.id, catalog)?.artifact.upstreamRepoId;
+      if (upstream) above.add(upstream.toLowerCase());
+    }
     const communityRows = communityBrowse.results
       .filter((r) => !r.id.toLowerCase().startsWith("unsloth/"))
       .filter((r) => isLoadableCommunityRepo(r.id))
@@ -3559,8 +3601,7 @@ export function HubModelPicker({
     diffusionLoad,
     recommendedSearch.results,
     catalogSeedRows,
-    downloadedSet,
-    recommendedSort,
+    cachedIdFor,
     fitOnDeviceOnly,
     formatFilter,
     isMac,
@@ -4391,6 +4432,13 @@ export function HubModelPicker({
       ),
     [externalProviders],
   );
+  const externalApiTypeById = useMemo(
+    () =>
+      new Map(
+        externalProviders.map((provider) => [provider.id, provider.apiType]),
+      ),
+    [externalProviders],
+  );
   // A connection's own output cap, which lowers the model's documented one. The bounds the
   // per-model editor offers have to be the ones every request is clamped to.
   const externalMaxOutputById = useMemo(
@@ -4441,12 +4489,14 @@ export function HubModelPicker({
   const [infoModel, setInfoModel] = useState<{
     model: ExternalModelOption;
     providerModelId: string;
+    apiType?: ProviderApiType;
     baseUrl: string | null;
     isReasoningProvider: boolean;
   } | null>(null);
   const [settingsModel, setSettingsModel] = useState<{
     model: ExternalModelOption;
     providerModelId: string;
+    apiType?: ProviderApiType;
     baseUrl: string | null;
     isReasoningProvider: boolean;
     connectionMaxOutputTokens: number | null;
@@ -4665,7 +4715,10 @@ export function HubModelPicker({
       // Seeds included: recommendedIds hides downloaded models, which the unfiltered Recommended
       // list still paints, so without them a curated pick vanishes from search once on disk.
       searchableRecommendedIds(catalogSeedIds, recommendedIds)
-        .filter((id) => normalizeForSearch(id).includes(q))
+        // A mirror row also answers to its vendor id.
+        .filter((id) =>
+          aliasesOf(id).some((alias) => normalizeForSearch(alias).includes(q)),
+        )
         .filter((id) =>
           matchesFormatFilter(id, isKnownGgufRepo(id), formatFilter),
         )
@@ -4674,7 +4727,7 @@ export function HubModelPicker({
         .filter(
           (id) =>
             !fitOnDeviceOnly ||
-            downloadedSet.has(id.toLowerCase()) ||
+            cachedIdFor(id) !== null ||
             searchRowFits({ id }),
         )
     );
@@ -4683,16 +4736,21 @@ export function HubModelPicker({
     debouncedQuery,
     catalogSeedIds,
     recommendedIds,
+    aliasesOf,
     formatFilter,
     isKnownGgufRepo,
     fitOnDeviceOnly,
-    downloadedSet,
+    cachedIdFor,
     searchRowFits,
   ]);
 
+  // Aliases included, so a vendor hit whose mirror row is listed is not shown twice.
   const recommendedSet = useMemo(
-    () => new Set(filteredRecommendedIds),
-    [filteredRecommendedIds],
+    () =>
+      new Set(
+        filteredRecommendedIds.flatMap(aliasesOf).map((id) => id.toLowerCase()),
+      ),
+    [filteredRecommendedIds, aliasesOf],
   );
 
   // One pipeline for both listings, so community rows clear the same gates; `owned` is the only difference.
@@ -4704,7 +4762,7 @@ export function HubModelPicker({
         .filter(
           (r) =>
             !fitOnDeviceOnly ||
-            downloadedSet.has(r.id.toLowerCase()) ||
+            cachedIdFor(r.id) !== null ||
             searchRowFits(r),
         )
         .map((result) => result.id)
@@ -4713,7 +4771,7 @@ export function HubModelPicker({
         // Search reaches the live Hub, so without this a query re-lands the exact curated row the seed
         // and Recommended filters just dropped, clickable and still refused at load.
         .filter(curatedOfferable)
-        .filter((id) => !recommendedSet.has(id))
+        .filter((id) => !recommendedSet.has(id.toLowerCase()))
         // Chat-only keeps runnable formats: GGUF anywhere, plus MLX/safetensors on Mac, matching the
         // empty Recommended view.
         .filter(
@@ -4732,7 +4790,7 @@ export function HubModelPicker({
       isTaskRuntimeSupported,
       formatFilter,
       fitOnDeviceOnly,
-      downloadedSet,
+      cachedIdFor,
       searchRowFits,
       isMac,
       curatedOfferable,
@@ -4796,6 +4854,7 @@ export function HubModelPicker({
         providerType: model.providerType,
         modelId: parseExternalModelId(model.id)?.modelId ?? model.name,
         baseUrl: externalBaseUrlById.get(model.providerId) ?? null,
+        apiType: externalApiTypeById.get(model.providerId),
       });
       return connectedModality === "vision"
         ? marks.vision
@@ -4810,6 +4869,7 @@ export function HubModelPicker({
     debouncedQuery,
     connectedModality,
     externalBaseUrlById,
+    externalApiTypeById,
     catalogVersion,
   ]);
 
@@ -5239,16 +5299,17 @@ export function HubModelPicker({
       if (isKnownGgufRepo(id)) {
         setExpandedGguf((prev) => (prev === id ? null : id));
       } else {
-        // Cached repos load now; uncached ones download via the Hub manager.
-        onSelect(id, {
+        // Cached repos load now (a cached vendor copy stands in for its mirror); others download.
+        const cached = cachedIdFor(id);
+        onSelect(cached ?? id, {
           source: "hub",
           isLora: false,
-          isDownloaded: downloadedSet.has(id.toLowerCase()),
+          isDownloaded: cached !== null,
           pipelineTag: pipelineTagById.get(id) ?? null,
         });
       }
     },
-    [onSelect, isKnownGgufRepo, downloadedSet, pipelineTagById],
+    [onSelect, isKnownGgufRepo, cachedIdFor, pipelineTagById],
   );
 
   // On Device owns the downloaded and custom-folder models; the Unsloth tab searches the HF
@@ -5405,6 +5466,7 @@ export function HubModelPicker({
       providerType: model.providerType,
       modelId: providerModelId,
       baseUrl,
+      apiType: externalApiTypeById.get(model.providerId),
     });
     return (
       <div
@@ -5509,6 +5571,7 @@ export function HubModelPicker({
               setSettingsModel({
                 model,
                 providerModelId,
+                apiType: externalApiTypeById.get(model.providerId),
                 baseUrl,
                 isReasoningProvider:
                   externalReasoningFlagById.get(model.providerId) === true,
@@ -5540,6 +5603,7 @@ export function HubModelPicker({
                   setInfoModel({
                     model,
                     providerModelId,
+                    apiType: externalApiTypeById.get(model.providerId),
                     baseUrl,
                     isReasoningProvider:
                       externalReasoningFlagById.get(model.providerId) === true,
@@ -6206,7 +6270,7 @@ export function HubModelPicker({
           className={cn(
             // The list sits within the menu padding so gaps match; scroll-py and symmetric px keep the
             // focus ring off the overflow clip edges during keyboard nav.
-            "model-list-scroll max-h-[335px] overflow-y-auto scroll-py-1.5 px-0.5 mr-1",
+            "model-list-scroll max-h-[calc(335px*var(--ui-space-scale,1))] overflow-y-auto scroll-py-1.5 px-0.5 mr-1",
             listScrolled && "is-scrolled",
             listMoreBelow && "is-bottom-faded",
           )}
@@ -7173,8 +7237,8 @@ export function HubModelPicker({
                               // A community row without its owner reads as an unsloth upload, and two
                               // publishers would collide.
                               hideOwner={isUnslothOwned(id)}
-                              downloaded={downloadedSet.has(id.toLowerCase())}
-                              partial={partialSet.has(id.toLowerCase())}
+                              downloaded={cachedIdFor(id) !== null}
+                              partial={isPartialRow(id)}
                               partialResumable={partialResumableSet.has(
                                 id.toLowerCase(),
                               )}
@@ -7183,16 +7247,17 @@ export function HubModelPicker({
                                 info?.meta ??
                                 (isG ? "GGUF" : extractParamLabel(id))
                               }
-                              selected={value === id}
+                              selected={isValueRow(id)}
                               loaded={isRuntimeLoadedModel(
                                 loadedModelId,
                                 activeGgufVariant,
                                 id,
                                 isG ? "required" : "none",
+                                aliasesOf(id),
                               )}
                               optionProps={hubModelList.getOptionProps(
                                 optionKey,
-                                value === id,
+                                isValueRow(id),
                               )}
                               onClick={() => {
                                 if (isG) {
@@ -7283,8 +7348,8 @@ export function HubModelPicker({
                             hubUrl={hubRepoUrl(id)}
                             alignMeta="hub"
                             showSize={hubRowsShowSize}
-                            downloaded={downloadedSet.has(id.toLowerCase())}
-                            partial={partialSet.has(id.toLowerCase())}
+                            downloaded={cachedIdFor(id) !== null}
+                            partial={isPartialRow(id)}
                             partialResumable={partialResumableSet.has(
                               id.toLowerCase(),
                             )}
@@ -7296,16 +7361,17 @@ export function HubModelPicker({
                                 ? (recommendedMeta.get(id)?.meta ?? "GGUF")
                                 : (vram?.detail ?? extractParamLabel(id))
                             }
-                            selected={value === id}
+                            selected={isValueRow(id)}
                             loaded={isRuntimeLoadedModel(
                               loadedModelId,
                               activeGgufVariant,
                               id,
                               isKnownGgufRepo(id) ? "required" : "none",
+                              aliasesOf(id),
                             )}
                             optionProps={hubModelList.getOptionProps(
                               optionKey,
-                              value === id,
+                              isValueRow(id),
                             )}
                             onClick={() => {
                               if (isKnownGgufRepo(id)) {
@@ -7408,7 +7474,7 @@ export function HubModelPicker({
                               // Typed results are Hub rows like any other, so a repo left
                               // half-downloaded is marked here too. Without it the row reads
                               // as never fetched while the click resumes a download.
-                              partial={partialSet.has(id.toLowerCase())}
+                              partial={isPartialRow(id)}
                               partialResumable={partialResumableSet.has(
                                 id.toLowerCase(),
                               )}
@@ -7424,16 +7490,17 @@ export function HubModelPicker({
                                       .filter(Boolean)
                                       .join(" · ")
                               }
-                              selected={value === id}
+                              selected={isValueRow(id)}
                               loaded={isRuntimeLoadedModel(
                                 loadedModelId,
                                 activeGgufVariant,
                                 id,
                                 isSearchGguf ? "required" : "none",
+                                aliasesOf(id),
                               )}
                               optionProps={hubModelList.getOptionProps(
                                 optionKey,
-                                value === id,
+                                isValueRow(id),
                               )}
                               onClick={() => {
                                 if (isSearchGguf) {
@@ -7543,6 +7610,7 @@ export function HubModelPicker({
           displayName={settingsModel.model.name}
           modelId={settingsModel.providerModelId}
           providerType={settingsModel.model.providerType}
+          apiType={settingsModel.apiType}
           baseUrl={settingsModel.baseUrl}
           isReasoningProvider={settingsModel.isReasoningProvider}
           connectionMaxOutputTokens={settingsModel.connectionMaxOutputTokens}
@@ -7558,6 +7626,7 @@ export function HubModelPicker({
           displayName={infoModel.model.name}
           providerName={infoModel.model.providerName}
           providerType={infoModel.model.providerType}
+          apiType={infoModel.apiType}
           baseUrl={infoModel.baseUrl}
           isReasoningProvider={infoModel.isReasoningProvider}
         />

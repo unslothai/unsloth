@@ -2019,6 +2019,7 @@ export const fr = {
       expires: "Expire {value}",
       actionsFor: "Actions pour {name}",
       copyPrefix: "Copier le préfixe",
+      copyFailed: "Impossible de copier",
       revokeToken: "Révoquer le jeton",
       revokeTitle: "Révoquer le jeton d’accès « {name} » ?",
       revokeDescription:

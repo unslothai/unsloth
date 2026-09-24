@@ -1984,6 +1984,7 @@ export const it = {
       expires: "Scadenza: {value}",
       actionsFor: "Azioni per {name}",
       copyPrefix: "Copia il prefisso",
+      copyFailed: "Impossibile copiare",
       revokeToken: "Revoca il token",
       revokeTitle: "Revocare il token di accesso «{name}»?",
       revokeDescription:

@@ -1967,6 +1967,7 @@ export const ko = {
       expires: "만료: {value}",
       actionsFor: "{name} 작업",
       copyPrefix: "접두사 복사",
+      copyFailed: "복사할 수 없습니다",
       revokeToken: "토큰 폐기",
       revokeTitle: '액세스 토큰 "{name}"을 폐기하시겠습니까?',
       revokeDescription:

@@ -1974,6 +1974,7 @@ export const ar = {
       expires: "الانتهاء: {value}",
       actionsFor: "إجراءات {name}",
       copyPrefix: "نسخ البادئة",
+      copyFailed: "تعذّر النسخ",
       revokeToken: "إلغاء التوكن",
       revokeTitle: 'إلغاء توكن الوصول "{name}"؟',
       revokeDescription:

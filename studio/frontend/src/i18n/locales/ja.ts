@@ -1945,6 +1945,7 @@ export const ja = {
       expires: "有効期限 {value}",
       actionsFor: "{name} のアクション",
       copyPrefix: "プレフィックスをコピー",
+      copyFailed: "コピーできませんでした",
       revokeToken: "トークンを失効",
       revokeTitle: 'アクセストークン "{name}" を失効させますか？',
       revokeDescription: "このトークンを使用しているアプリはすぐにアクセスできなくなります。この操作は取り消せません。",

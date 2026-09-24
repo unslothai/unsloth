@@ -33,13 +33,14 @@ const DIST = resolve(HERE, "..", "dist");
  */
 export const BUDGET = {
   // Measured, one machine and one build per side, so the pair is comparable to itself rather
-  // than to a runner's: 5,384.0 KB raw / 1,610.2 KB transfer at the merge base, leaving
-  // 211.7 KB and 64.6 KB spare. Both halves are re-measured TOGETHER, or each drags main red
-  // on its own; the previous four raises each bought a few kilobytes and were spent within
-  // days, charging the next PR for drift it did not cause. The eager set has not gained a
-  // member across any of it, so what runs out is headroom, not laziness.
-  transferBytes: 1_715_000,
-  rawBytes: 5_730_000,
+  // than to a runner's: 5,599.7 KB raw / 1,663.4 KB transfer at 0065fade6 once its two
+  // ineffective import() calls were made static, leaving 210.8 KB and 65.1 KB spare, the margin
+  // the previous raise chose. Both halves are re-measured TOGETHER, or each drags main red on
+  // its own. Since that raise the eager set gained one 303-byte chunk (#11607's
+  // thread-message-slot split) and otherwise grew inside chunks already eager: #11607's fork
+  // boundary and #11648's UI scale, so what ran out is headroom, not laziness.
+  transferBytes: 1_770_000,
+  rawBytes: 5_950_000,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
