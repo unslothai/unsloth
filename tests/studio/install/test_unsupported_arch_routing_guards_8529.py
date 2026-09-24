@@ -68,7 +68,7 @@ stack_mod = _load_stack_module()
 
 # The arch the messaging table owns on every platform. Nothing here may produce an index.
 _UNSUPPORTED_ARCHES = ["gfx803"]
-# RDNA 1 (unslothai/unsloth#11614): routed on Windows to AMD's multi-arch nightly index,
+# RDNA 1 (unslothai/unsloth#11614): routed on Windows to AMD's multi-arch index,
 # still unrouted on Linux. The Linux-side bans below keep covering it.
 _RDNA1_ARCHES = ["gfx1010", "gfx1011", "gfx1012"]
 _RDNA1_ARCH_INPUTS = (
@@ -153,11 +153,11 @@ class TestPythonIndexResolversAreAskedDirectly:
         assert arch not in stack_mod._GFX_TO_AMD_INDEX_ARCH
 
 
-_MULTIARCH_HOST = "nightly.repo.amd.com/rocm/whl-next"
+_MULTIARCH_HOST = "repo.amd.com/rocm/whl-multi-arch"
 
 
 class TestRdna1RoutesOnWindowsOnly:
-    """#11614: the RDNA 1 arches reach AMD's multi-arch nightly index, and only from
+    """#11614: the RDNA 1 arches reach AMD's multi-arch index, and only from
     the Windows resolver. They are deliberately NOT keys of the per-family map: that map
     is one URL leaf per family on repo.amd.com, and the multi-arch index selects the
     device through the `torch[device-gfxNNNN]` extra instead."""
@@ -186,14 +186,14 @@ class TestRdna1RoutesOnWindowsOnly:
         assert arch in stack_mod._WINDOWS_MULTIARCH_GFX
 
     def test_the_mirror_override_is_honoured(self, monkeypatch):
-        """Air-gapped hosts mirror the nightly like they mirror repo.amd.com."""
+        """Air-gapped hosts mirror the multi-arch index like they mirror repo.amd.com/rocm/whl."""
         monkeypatch.setenv(
-            "UNSLOTH_ROCM_WINDOWS_MULTIARCH_MIRROR", "https://mirror.example/whl-next"
+            "UNSLOTH_ROCM_WINDOWS_MULTIARCH_MIRROR", "https://mirror.example/whl-multi-arch"
         )
         monkeypatch.setattr(
-            stack_mod, "_ROCM_WINDOWS_MULTIARCH_INDEX_BASE", "https://mirror.example/whl-next"
+            stack_mod, "_ROCM_WINDOWS_MULTIARCH_INDEX_BASE", "https://mirror.example/whl-multi-arch"
         )
-        assert stack_mod._windows_rocm_index_url("gfx1010") == "https://mirror.example/whl-next"
+        assert stack_mod._windows_rocm_index_url("gfx1010") == "https://mirror.example/whl-multi-arch"
 
 
 # ── install.sh's case table, executed under sh ───────────────────────────────

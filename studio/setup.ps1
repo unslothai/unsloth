@@ -3440,17 +3440,19 @@ $archFamilyMap = @{
     "gfx1030" = "gfx103X-all"
     "gfx90a"  = "gfx90a";      "gfx908"  = "gfx908"       # MI200/MI100
 }
-# RDNA 1 (gfx1010 / gfx1011 / gfx1012) has no repo.amd.com family. AMD's multi-arch
-# nightly index carries per-card kernel packs for it instead (unslothai#11614): one URL
-# for every device, the card picked by the torch[device-gfxNNNN] extra; pinned to one
-# tag because a nightly moves; torchvision on the same tag; no torchaudio published for
-# it. In sync with _WINDOWS_MULTIARCH_GFX / _ROCM_MULTIARCH_* in
-# studio/install_python_stack.py (test_rdna1_multiarch_windows_route_11614.py).
+# RDNA 1 (gfx1010 / gfx1011 / gfx1012) has no repo.amd.com/rocm/whl family. AMD's
+# multi-arch index (repo.amd.com/rocm/whl-multi-arch) carries per-card kernel packs for it
+# instead (unslothai#11614): one URL for every device, the card picked by the
+# torch[device-gfxNNNN] extra; pinned to one release tag, the newest inside the <2.12.0
+# window (the index also serves 2.12.0); torchvision and torchaudio on the same tag. In
+# sync with _WINDOWS_MULTIARCH_GFX / _ROCM_MULTIARCH_* in studio/install_python_stack.py
+# (test_rdna1_multiarch_windows_route_11614.py).
 $multiArchGfx = @("gfx1010", "gfx1011", "gfx1012")
-$MultiArchIndexBase = if ($env:UNSLOTH_ROCM_WINDOWS_MULTIARCH_MIRROR) { $env:UNSLOTH_ROCM_WINDOWS_MULTIARCH_MIRROR.TrimEnd('/') } else { "https://nightly.repo.amd.com/rocm/whl-next" }
-$MultiArchTag = "rocm10.2.0a20260922"
-$MultiArchTorchVersion = "2.12.0"
-$MultiArchTorchvisionVersion = "0.27.0"
+$MultiArchIndexBase = if ($env:UNSLOTH_ROCM_WINDOWS_MULTIARCH_MIRROR) { $env:UNSLOTH_ROCM_WINDOWS_MULTIARCH_MIRROR.TrimEnd('/') } else { "https://repo.amd.com/rocm/whl-multi-arch" }
+$MultiArchTag = "rocm7.14.1"
+$MultiArchTorchVersion = "2.11.0"
+$MultiArchTorchvisionVersion = "0.26.0"
+$MultiArchTorchaudioVersion = "2.11.0"
 
 
 # True when any of the three masks is set. Mirrors _visible_devices_pinned(): ANY value
@@ -3786,9 +3788,9 @@ if (-not $HasNvidiaSmi) {
                 @{ P = "RX 6950|RX 6900|RX 6850|RX 6800|RX 6750|RX 6700|PRO W6800|PRO W6900"; A = "gfx1030" }  # RDNA 2 (Navi 21) -- gfx103X family
                 @{ P = "RX 6650|RX 6600|PRO W6600|PRO W6650";                  A = "gfx1032" }  # RDNA 2 (Navi 23) -- gfx103X family
                 @{ P = "RX 6550|RX 6500|RX 6450|RX 6400|RX 6300|PRO W6400|PRO W6500|PRO W6300";  A = "gfx1034" }  # RDNA 2 (Navi 24) -- gfx103X family
-                @{ P = "Radeon Pro V520|Radeon Pro 5600M"; A = "gfx1011" }  # RDNA 1 (Navi 12) -- multi-arch nightly
-                @{ P = "RX 5700|RX 5600|Radeon Pro 5600 XT|Radeon Pro 5700|Radeon Pro W5700"; A = "gfx1010" }  # RDNA 1 (Navi 10) -- multi-arch nightly
-                @{ P = "RX 5500|RX 5300|Radeon Pro W5500|Radeon Pro W5300"; A = "gfx1012" }  # RDNA 1 (Navi 14) -- multi-arch nightly
+                @{ P = "Radeon Pro V520|Radeon Pro 5600M"; A = "gfx1011" }  # RDNA 1 (Navi 12) -- multi-arch index
+                @{ P = "RX 5700|RX 5600|Radeon Pro 5600 XT|Radeon Pro 5700|Radeon Pro W5700"; A = "gfx1010" }  # RDNA 1 (Navi 10) -- multi-arch index
+                @{ P = "RX 5500|RX 5300|Radeon Pro W5500|Radeon Pro W5300"; A = "gfx1012" }  # RDNA 1 (Navi 14) -- multi-arch index
             )
             function Get-GfxArchFromGpuName {
                 param([AllowNull()][string]$Name, [object[]]$Table)
@@ -7627,17 +7629,17 @@ if (-not $TorchIndexPinned -and ($HasROCm -or $ROCmGfxArch) -and $CuTag -eq "cpu
     $ROCmAudioSpec  = if ($ROCmGfxArch -and $torchaudioFloorMap.ContainsKey($ROCmGfxArch))   { $torchaudioFloorMap[$ROCmGfxArch]   } else { "torchaudio" }
     $script:ROCmMultiArch = [bool]($ROCmGfxArch -and $multiArchGfx -contains $ROCmGfxArch)
     if ($script:ROCmMultiArch) {
-        # RDNA 1: the multi-arch nightly, pinned. No family leaf, no torchaudio.
+        # RDNA 1: AMD's multi-arch index, one exact release tag for the trio. No family leaf.
         $ROCmIndexUrl   = "$MultiArchIndexBase/"
         $ROCmTorchSpec  = "torch[device-$ROCmGfxArch]==$MultiArchTorchVersion+$MultiArchTag"
         $ROCmVisionSpec = "torchvision==$MultiArchTorchvisionVersion+$MultiArchTag"
-        $ROCmAudioSpec  = $null
-        substep "$ROCmGfxArch is RDNA 1 -- AMD multi-arch nightly index, pinned to $MultiArchTorchVersion+$MultiArchTag ; torchaudio comes from PyPI with the dependencies" "Cyan"
+        $ROCmAudioSpec  = "torchaudio==$MultiArchTorchaudioVersion+$MultiArchTag"
+        substep "$ROCmGfxArch is RDNA 1 -- AMD multi-arch index, pinned to $MultiArchTorchVersion+$MultiArchTag (torch, torchvision, torchaudio)" "Cyan"
     } elseif ($archFamily) {
         $ROCmIndexUrl = "$amdIndexBase/$archFamily/"
     } elseif ($ROCmGfxArch) {
         substep "[WARN] AMD GPU ($ROCmGfxArch) not in supported arch list -- falling back to CPU-only PyTorch" "Yellow"
-        substep "       Supported: gfx1200/1201 (RDNA 4), gfx1150/1151/1152 (RDNA 3.5), gfx1100-1103 (RDNA 3), gfx1030-1036 (RDNA 2), gfx1010-1012 (RDNA 1, AMD multi-arch nightly), gfx90a, gfx908" "Yellow"
+        substep "       Supported: gfx1200/1201 (RDNA 4), gfx1150/1151/1152 (RDNA 3.5), gfx1100-1103 (RDNA 3), gfx1030-1036 (RDNA 2), gfx1010-1012 (RDNA 1, AMD multi-arch index), gfx90a, gfx908" "Yellow"
     } else {
         substep "[WARN] AMD GPU detected (HIP SDK present) but GPU arch could not be read -- falling back to CPU-only PyTorch" "Yellow"
         substep "       Arch detection requires hipinfo to report gcnArchName. Re-install the HIP SDK if this is unexpected." "Yellow"
@@ -7787,14 +7789,14 @@ $ROCmCpuFallback = $false
 if ($ROCmIndexUrl) {
     substep "installing PyTorch (AMD ROCm, $ROCmGfxArch)..."
     if ($script:ROCmMultiArch) {
-        substep "  pinned $ROCmTorchSpec $ROCmVisionSpec (AMD multi-arch nightly; no torchaudio on that index)" "Cyan"
+        substep "  pinned $ROCmTorchSpec $ROCmVisionSpec $ROCmAudioSpec (AMD multi-arch index, one release tag)" "Cyan"
     } elseif ($ROCmTorchSpec -ne "torch") {
         substep "  enforcing $ROCmTorchSpec $ROCmVisionSpec $ROCmAudioSpec (known _grouped_mm bug in older wheels)" "Cyan"
     }
     # Release preservation: keep UNSLOTH_KEPT_TORCH unless it conflicts with a >=2.11 floor.
     $_rocmKeptActive = $false
     $_rocmOrigTorch = $ROCmTorchSpec; $_rocmOrigVision = $ROCmVisionSpec; $_rocmOrigAudio = $ROCmAudioSpec
-    # The multi-arch pin is the only build on that index: nothing to keep.
+    # The multi-arch route is an exact pin: nothing to keep.
     if (-not $script:ROCmMultiArch -and $env:UNSLOTH_KEPT_TORCH -match '^\d+\.\d+(\.\d+)?$') {
         $_keptMinor = [int](($env:UNSLOTH_KEPT_TORCH -split '\.')[1])
         if (-not ($ROCmTorchSpec -match 'torch>=2\.11' -and $_keptMinor -lt 11)) {

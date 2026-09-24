@@ -20,7 +20,7 @@ prove it cannot reach a non-AMD one.
 
 CPU fallback was the correct outcome on RDNA 1 when this file was written, and the
 tests asserted it. Since unslothai/unsloth#11614 that is no longer true on Windows:
-AMD's multi-arch nightly index carries gfx1010 / gfx1011 / gfx1012 kernel packs, and
+AMD's multi-arch index carries gfx1010 / gfx1011 / gfx1012 kernel packs, and
 the Windows installers (install.ps1, setup.ps1, install_python_stack.py) route RDNA 1
 there (see _WINDOWS_MULTIARCH_GFX). So on the Windows copies RDNA 1 now lives in the
 SUPPORTED name table, and the "detected but not covered" wording is exercised with the

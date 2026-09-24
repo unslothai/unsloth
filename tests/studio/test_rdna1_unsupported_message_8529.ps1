@@ -6,7 +6,7 @@
 # (Navi 10, gfx1010). AMD's Windows torch indexes are gfx103X/110X/1150/1151/120X only,
 # so CPU torch was correct; the bug was telling them to install the HIP SDK or set
 # UNSLOTH_ROCM_GFX_ARCH. Since unslothai#11614 the Windows installers route RDNA 1 to AMD's
-# multi-arch nightly index, so RDNA 1 lives in the supported table and Polaris (gfx803)
+# multi-arch index, so RDNA 1 lives in the supported table and Polaris (gfx803)
 # is what the unsupported wording is exercised with.
 #
 # The Python suite evaluates the table with Python's `re`; this runs it under the .NET
@@ -125,7 +125,7 @@ foreach ($file in @("install.ps1", "studio/setup.ps1")) {
         }
         return $null
     }
-    # #11614: RDNA 1 routes on Windows through the multi-arch nightly, so the supported
+    # #11614: RDNA 1 routes on Windows through the multi-arch index, so the supported
     # table owns it now.
     Check "RX 5700 XT -> gfx1010 (supported)"      ((Resolve-Supported "AMD Radeon RX 5700 XT") -eq 'gfx1010')
     Check "RX 5600 XT -> gfx1010 (supported)"      ((Resolve-Supported "AMD Radeon RX 5600 XT") -eq 'gfx1010')
@@ -414,7 +414,7 @@ Invoke-Expression (Get-AssignmentSource $installPath '$unsupportedNameArchTable'
 # block's own `$ROCmUnsupportedGfxArch = $row.A` land in that function's scope, so every
 # "claims nothing" case would pass without the guard existing at all.
 $guardCases = @(
-    # Since unslothai#11614 the RX 5700 XT ROUTES on Windows (multi-arch nightly), so the
+    # Since unslothai#11614 the RX 5700 XT ROUTES on Windows (multi-arch index), so the
     # uncovered card these cases are built on is Polaris (#8458's RX 580, gfx803). RDNA 1 now
     # plays the covered-peer part where a covered peer is needed.
     # The reporter's host: one uncovered card, nothing else. The verdict must still be reached.
