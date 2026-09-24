@@ -18,8 +18,25 @@ from starlette.concurrency import iterate_in_threadpool
 from auth import policy
 from auth.authentication import get_current_subject
 from core.inference.npu_backend import NpuError, get_npu_backend
+from hub.services.models import account_access
 
 router = APIRouter()
+
+# What a managed account sees: NPU models are the owner's alone, so no NPU and none of its state.
+_MANAGED_ACCOUNT_STATUS = {
+    "supported": False,
+    "hardware": {"present": False, "supported": False},
+    "runtime_installed": False,
+    "runtime_running": False,
+    "state": "idle",
+    "ready": False,
+    "error": None,
+    "validation": None,
+    "help_url": None,
+    "loaded_model": None,
+    "context_length": None,
+    "loading_model": None,
+}
 
 
 async def _require_installation_owner(current_subject: str = Depends(get_current_subject)) -> None:
@@ -29,6 +46,8 @@ async def _require_installation_owner(current_subject: str = Depends(get_current
 @router.get("/status")
 async def npu_status(current_subject: str = Depends(get_current_subject)):
     """Whether this machine has a supported NPU, and the runtime's state. Never starts anything."""
+    if account_access.managed_account():
+        return dict(_MANAGED_ACCOUNT_STATUS)
     return await asyncio.to_thread(get_npu_backend().status)
 
 

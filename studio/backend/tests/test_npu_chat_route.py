@@ -568,3 +568,23 @@ def test_an_owner_npu_model_is_hidden_from_managed_accounts(monkeypatch):
         )
     assert info.value.status_code == 404
     assert npu.unloads == 0
+
+
+def test_npu_status_hides_the_owner_runtime_from_managed_accounts(tmp_path, monkeypatch):
+    from routes import npu as npu_routes
+    from utils.account_context import AccountContext, arun_as
+
+    backend = nb.LemonadeNpuBackend(root = tmp_path)
+    monkeypatch.setattr(
+        nb, "detect_amd_npu", lambda: {"present": True, "supported": True, "family": "XDNA2"}
+    )
+    real = backend.status()
+    real["loaded_model"] = "lemonade:qwen3-0.6b-FLM"
+    monkeypatch.setattr(backend, "status", lambda: real)
+    monkeypatch.setattr(npu_routes, "get_npu_backend", lambda: backend)
+
+    assert asyncio.run(npu_routes.npu_status("owner")) == real
+    hidden = asyncio.run(arun_as(AccountContext("b" * 32, "bob"), npu_routes.npu_status("bob")))
+    assert hidden["supported"] is False and hidden["loaded_model"] is None
+    # Same shape as the real status, so a client reads it the same way.
+    assert hidden.keys() == real.keys()
