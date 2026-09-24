@@ -328,6 +328,11 @@ def is_path_within(path, root, *, allow_root: bool = False, pathmod = os.path) -
     return common == base and (allow_root or candidate != base)
 
 
+def same_path(left, right, *, pathmod = os.path) -> bool:
+    """Whether two resolved paths are one, compared as ``is_path_within`` compares them."""
+    return _comparable_path(left, pathmod) == _comparable_path(right, pathmod)
+
+
 def _wsl_reveal_in_explorer(path: Path, is_file: bool) -> bool:
     import subprocess
     if not _IS_WSL:
