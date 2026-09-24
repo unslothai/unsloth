@@ -51,7 +51,6 @@ def test_transformers_before_5_4_honors_the_legacy_flag():
     assert _load()() is True
 
 
-
 def test_class_level_legacy_attribute_means_honored():
     class Old:
         _supports_flash_attn_2 = False
