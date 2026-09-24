@@ -212,14 +212,15 @@ def _wrap_cpu_offload_hook(hook: Any, module: Any) -> None:
         for name, p in mod.named_parameters():
             kept = host.get(name)
             seen = version.get(name)
-            # Same Parameter object and no write since onload: a replaced parameter under the same name can
-            # also sit at version 0, so the counter alone does not prove the host copy is still its weight.
+            # Same Parameter object, same device storage and no write since onload: a replaced parameter under the
+            # same name can also sit at version 0, and `p.data = ...` swaps storage without moving the counter.
             if (
                 kept is None
                 or p.device.type == "cpu"
                 or seen is None
                 or seen[0] is not p
                 or seen[1] != p._version
+                or seen[2] != p.data_ptr()
             ):
                 continue
             try:
@@ -251,7 +252,7 @@ def _wrap_cpu_offload_hook(hook: Any, module: Any) -> None:
             # Recorded once per onload: a later in-place write moves the counter past it.
             for name, p in mod.named_parameters():
                 if name in host and owner.get(name) is p and p.device.type != "cpu":
-                    version[name] = (p, p._version)
+                    version[name] = (p, p._version, p.data_ptr())
         return out
 
     try:

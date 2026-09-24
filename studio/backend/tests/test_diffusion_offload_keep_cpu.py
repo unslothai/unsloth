@@ -194,3 +194,18 @@ def test_a_parameter_replaced_while_offloaded_is_not_restored_to_the_old_weight(
     pipe.transformer._hf_hook.init_hook(pipe.transformer)
     assert pipe.transformer.weight.device.type == "cpu"
     assert torch.equal(pipe.transformer.weight.detach(), torch.full((8, 8), 5.0))
+
+
+@cuda
+def test_a_weight_reassigned_through_data_on_the_device_is_copied_back():
+    # `p.data = t` swaps the storage without moving the autograd version counter.
+    pipe = _pipe("cuda", "transformer")
+    pipe.enable_model_cpu_offload()
+    dm.keep_cpu_weights_on_offload(pipe)
+    pipe.transformer(torch.ones(1, 8))
+    version = pipe.transformer.weight._version
+    pipe.transformer.weight.data = torch.full((8, 8), 7.0, device = "cuda")
+    assert pipe.transformer.weight._version == version
+    pipe.transformer._hf_hook.init_hook(pipe.transformer)
+    assert pipe.transformer.weight.device.type == "cpu"
+    assert torch.equal(pipe.transformer.weight.detach(), torch.full((8, 8), 7.0))
