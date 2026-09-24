@@ -3,6 +3,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
+  ArrowExpand01Icon,
   Cancel01Icon,
   Delete02Icon,
   Download01Icon,
@@ -17,12 +18,14 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { AdvancedDisclosure } from "@/components/advanced-disclosure";
 import { GalleryItemMenu, GalleryPinBadge } from "@/components/gallery-item-menu";
 import { MediaRailResizeHandle } from "@/components/media-rail-resize-handle";
+import { MediaViewer } from "@/components/media-viewer";
+import { MessageCircleIcon } from "@/lib/hugeicons-derived";
 import { MEDIA_RAIL_ROOT_ATTR, useMediaRailWidth } from "@/hooks/use-media-rail-width";
 import { StripDropLine } from "@/components/gallery-strip-reorder";
 import { useStripReorder } from "@/hooks/use-strip-reorder";
 import { ImageDropzone } from "@/components/image-dropzone";
 import { MediaPageLink } from "@/components/media-page-link";
-import { useLibraryFavorites } from "@/features/library";
+import { chatAboutMedia, useLibraryFavorites } from "@/features/library";
 import { GuidedTour, useGuidedTourController } from "@/features/tour";
 import { videoTourSteps } from "./tour";
 import { useSettingsDialogStore } from "@/features/settings/stores/settings-dialog-store";
@@ -1148,6 +1151,24 @@ function VideoGenerator({
     [videos, selectedId],
   );
   const selectedSrc = selected ? srcById[selected.id] : undefined;
+  // The same full-window viewer the Library opens, picking the clip up where the inline player was.
+  const [viewer, setViewer] = useState<{ start: number; muted: boolean } | null>(null);
+  const viewerVideoRef = useRef<HTMLVideoElement | null>(null);
+  const navigateToChat = useNavigate();
+  const openViewer = () => {
+    if (!selected || !selectedSrc) return;
+    setViewer({
+      start: previewRef.current?.currentTime ?? 0,
+      muted: previewRef.current?.muted ?? true,
+    });
+    // After the click's own play toggle, so the clip only plays in the viewer.
+    requestAnimationFrame(() => previewRef.current?.pause());
+  };
+  const closeViewer = () => {
+    const time = viewerVideoRef.current?.currentTime;
+    if (previewRef.current && time !== undefined) previewRef.current.currentTime = time;
+    setViewer(null);
+  };
 
   // The resolution presets + temporal lattice for the loaded family, or the fallbacks before anything is loaded.
   const resolutionPresets = useMemo<Array<[number, number]>>(() => {
@@ -4220,8 +4241,48 @@ function VideoGenerator({
                     }
                   }}
                   onError={() => remintSrc(selected)}
-                  className="max-h-full max-w-full object-contain shadow-sm"
+                  onClick={(event) => {
+                    // The bottom strip is the native controls; leave it to scrub and play.
+                    if (event.nativeEvent.offsetY < event.currentTarget.clientHeight - 56) openViewer();
+                  }}
+                  className="max-h-full max-w-full cursor-zoom-in object-contain shadow-sm"
                 />
+                <MediaViewer
+                  open={viewer !== null}
+                  onOpenChange={(open) => !open && closeViewer()}
+                  title={selected.prompt || "Untitled video"}
+                  meta={`Generated · ${selected.width} × ${selected.height} · ${Math.round(selected.duration_s)}s`}
+                  media={true}
+                  noun="video"
+                  actions={{
+                    primary: {
+                      label: "Chat about this",
+                      icon: MessageCircleIcon,
+                      onClick: () => void chatAboutMedia(navigateToChat, selectedSrc, selected.prompt, "mp4"),
+                    },
+                    onDownload: () => void handleQuickDownload(selected),
+                    favorite: isFavorite(`video:${selected.id}`),
+                    onToggleFavorite: () => toggleFavorite(`video:${selected.id}`),
+                    onAddToProject: (projectId) => addGalleryVideoToProject(selected.id, projectId),
+                    onDelete: () => {
+                      setViewer(null);
+                      void handleDelete(selected.id);
+                    },
+                  }}
+                >
+                  <video
+                    ref={viewerVideoRef}
+                    src={selectedSrc}
+                    controls
+                    autoPlay
+                    playsInline
+                    muted={viewer?.muted ?? true}
+                    onLoadedMetadata={(event) => {
+                      if (viewer?.start) event.currentTarget.currentTime = viewer.start;
+                    }}
+                    className="size-full object-contain"
+                  />
+                </MediaViewer>
                 {selected.has_audio && (
                   <div className="absolute left-4 top-4 flex items-center gap-1 rounded-lg bg-background/80 px-2 py-1 text-ui-11 font-medium shadow-lg ring-1 ring-border backdrop-blur">
                     <HugeiconsIcon icon={VolumeHighIcon} className="size-3.5" />
@@ -4230,6 +4291,15 @@ function VideoGenerator({
                 )}
                 {/* Actions grouped in one glass toolbar so they stay legible over any clip. */}
                 <div className="absolute bottom-4 right-4 flex items-center gap-0.5 rounded-xl bg-background/80 p-1 shadow-lg ring-1 ring-border backdrop-blur">
+                  <Button
+                    size="icon-sm"
+                    variant="ghost"
+                    aria-label="Open video"
+                    title="Open video"
+                    onClick={openViewer}
+                  >
+                    <HugeiconsIcon icon={ArrowExpand01Icon} className="size-4" />
+                  </Button>
                   <RecipePopover video={selected} onRestore={restoreSettings} active={active} />
                   <DropdownMenu>
                     <DropdownMenuTrigger asChild={true}>

@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import type { useNavigate } from "@tanstack/react-router";
-import { clearNewChatDraft, listLoras, useChatRuntimeStore } from "@/features/chat";
+import { listLoras } from "@/features/chat";
 import {
   clearModelConfigHandoff,
   createModelConfigHandoffRequestId,
@@ -14,10 +14,7 @@ import { toast } from "@/lib/toast";
 import { MAX_VIDEO_SIZE } from "@/lib/video-utils";
 import { type LibraryItem, libraryItemFile } from "./api";
 import { fileKind } from "./file-kind";
-import {
-  type LibraryChatHandoff,
-  useLibraryChatHandoffStore,
-} from "./chat-handoff-store";
+import { resetToNewChat, startLibraryChat } from "./start-chat";
 
 type Navigate = ReturnType<typeof useNavigate>;
 
@@ -57,34 +54,6 @@ export async function downloadLibraryItem(item: LibraryItem): Promise<void> {
       description: errorMessage(error),
     });
   }
-}
-
-// crypto.randomUUID only exists in secure contexts, and Studio is also served over plain http to
-// the LAN.
-function createNonce(): string {
-  if (typeof globalThis.crypto?.randomUUID === "function") {
-    return globalThis.crypto.randomUUID();
-  }
-  return `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
-}
-
-function resetToNewChat(): void {
-  clearNewChatDraft();
-  const runtime = useChatRuntimeStore.getState();
-  runtime.setActiveThreadId(null);
-  runtime.setActiveProjectId(null);
-  runtime.setIncognito(false);
-}
-
-/** Open a fresh chat with these files attached in the composer. */
-function startLibraryChat(
-  navigate: Navigate,
-  handoff: LibraryChatHandoff,
-): void {
-  const nonce = createNonce();
-  resetToNewChat();
-  useLibraryChatHandoffStore.getState().offer(`single:${nonce}`, handoff);
-  void navigate({ to: "/chat", search: { new: nonce } });
 }
 
 export async function chatAboutItems(

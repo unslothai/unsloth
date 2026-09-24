@@ -4,6 +4,7 @@
 import { readImageModel, rememberImageModel, matchesRememberedModel, type RememberedImageModel } from "./image-model-recall";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
+  ArrowExpand01Icon,
   ArrowLeftRightIcon,
   ArrowUpDownIcon,
   ArrowReloadHorizontalIcon,
@@ -16,7 +17,8 @@ import {
   SparklesIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
-import { TestTubeOutlineIcon } from "@/lib/hugeicons-derived";
+import { MessageCircleIcon, TestTubeOutlineIcon } from "@/lib/hugeicons-derived";
+import { MediaViewer } from "@/components/media-viewer";
 
 import { ImageDropzone } from "@/components/image-dropzone";
 import { GuidedTour, useGuidedTourController } from "@/features/tour";
@@ -80,7 +82,7 @@ import { MEDIA_RAIL_ROOT_ATTR, useMediaRailWidth } from "@/hooks/use-media-rail-
 import { StripDropLine } from "@/components/gallery-strip-reorder";
 import { useStripReorder } from "@/hooks/use-strip-reorder";
 import { MediaPageLink } from "@/components/media-page-link";
-import { useLibraryFavorites } from "@/features/library";
+import { chatAboutMedia, useLibraryFavorites } from "@/features/library";
 import { useSettingsDialogStore } from "@/features/settings/stores/settings-dialog-store";
 import {
   type NewRecordProbeBaseline,
@@ -1721,6 +1723,10 @@ export function ImagesPage({
     [images, selectedId],
   );
   const selectedSrc = selected ? srcById[selected.id] : undefined;
+  // The same full-window viewer the Library opens.
+  const [viewerOpen, setViewerOpen] = useState(false);
+  const openViewer = () => selected && selectedSrc && setViewerOpen(true);
+  const navigateToChat = useNavigate();
 
   // Fetch (once) the object URL for a record's PNG; cached across remounts.
   const ensureSrc = useCallback(async (image: GalleryImage) => {
@@ -5193,11 +5199,55 @@ export function ImagesPage({
                   src={selectedSrc}
                   alt={selected.prompt}
                   style={TRANSPARENCY_CHECKER}
-                  className="max-h-full max-w-full object-contain shadow-sm"
+                  role="button"
+                  tabIndex={0}
+                  aria-label="Open image"
+                  onClick={openViewer}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" || event.key === " ") {
+                      event.preventDefault();
+                      openViewer();
+                    }
+                  }}
+                  className="max-h-full max-w-full cursor-zoom-in object-contain shadow-sm"
                 />
+                <MediaViewer
+                  open={viewerOpen}
+                  onOpenChange={setViewerOpen}
+                  title={selected.prompt || "Untitled image"}
+                  meta={`Generated · ${selected.width} × ${selected.height}`}
+                  media={true}
+                  noun="image"
+                  actions={{
+                    primary: {
+                      label: "Chat about this",
+                      icon: MessageCircleIcon,
+                      onClick: () => void chatAboutMedia(navigateToChat, selectedSrc, selected.prompt, "png"),
+                    },
+                    onDownload: () => void handleQuickDownload(selected),
+                    favorite: isFavorite(`image:${selected.id}`),
+                    onToggleFavorite: () => toggleFavorite(`image:${selected.id}`),
+                    onAddToProject: (projectId) => addGalleryImageToProject(selected.id, projectId),
+                    onDelete: () => {
+                      setViewerOpen(false);
+                      void handleDelete(selected.id);
+                    },
+                  }}
+                >
+                  <img src={selectedSrc} alt={selected.prompt} className="size-full object-contain" />
+                </MediaViewer>
                 {/* Actions grouped in one glass toolbar so they stay legible over any image. Size and seed
                     live in the Recipe popover. */}
                 <div className="absolute bottom-4 right-4 flex items-center gap-0.5 rounded-xl bg-background/80 p-1 shadow-lg ring-1 ring-border backdrop-blur">
+                  <Button
+                    size="icon-sm"
+                    variant="ghost"
+                    aria-label="Open image"
+                    title="Open image"
+                    onClick={openViewer}
+                  >
+                    <HugeiconsIcon icon={ArrowExpand01Icon} className="size-4" />
+                  </Button>
                   <RecipePopover image={selected} onRestore={restoreSettings} active={active} />
                   <DropdownMenu>
                     <DropdownMenuTrigger asChild={true}>
