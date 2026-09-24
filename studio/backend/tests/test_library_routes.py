@@ -222,7 +222,9 @@ def test_generated_video_is_listed_and_deleted(client, monkeypatch):
 
     forgotten = []
     monkeypatch.setattr(video_routes, "_forget_terminal_video", forgotten.append)
-    monkeypatch.setattr(video_routes, "_forget_openai_job", lambda ref: forgotten.append(ref) or True)
+    monkeypatch.setattr(
+        video_routes, "_forget_openai_job", lambda ref: forgotten.append(ref) or True
+    )
     item_id = f"video:{record['id']}"
     item = _items(client)[0][item_id]
     assert (item["name"], item["contentType"]) == ("A calm sea.mp4", "video/mp4")
