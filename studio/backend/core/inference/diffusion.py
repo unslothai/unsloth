@@ -39,10 +39,6 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Callable, Optional, Sequence
 
-from core._torchao_stub import (
-    install_torchao_windows_rocm_stub,
-    install_xformers_windows_rocm_stub,
-)
 from loggers import get_logger
 from utils.account_context import account_thread, current_account_id
 from utils.hardware import clear_gpu_cache
