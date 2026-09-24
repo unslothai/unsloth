@@ -2717,6 +2717,37 @@ def test_an_unreachable_prequant_does_not_suppress_the_dense_shards(monkeypatch)
     ], "the probe must ask as the user, else a granted token reads as refused"
 
 
+def test_an_unreachable_prequant_is_carried_into_the_load(monkeypatch):
+    """begin_load hands these kwargs to load_pipeline, so the load sizes the scheme as the dense build
+    it will fall back to rather than as a checkpoint that will never arrive."""
+    from huggingface_hub import errors as hub_errors
+
+    def _refuse(repo_id):
+        raise _refused(hub_errors.RepositoryNotFoundError, 401)
+
+    backend, _tokens = _prefetch_backend(monkeypatch, cached = False, model_info = _refuse)
+    kwargs = dict(_NVFP4_PREFETCH_KWARGS)
+    assert backend._dense_quant_prefetch_needed(_fam(), kwargs) is True
+    assert kwargs["_prequant_unreachable"] == ("nvfp4",)
+    # Asked again (download_plan and begin_load both probe), the scheme is recorded once.
+    backend._dense_quant_prefetch_needed(_fam(), kwargs)
+    assert kwargs["_prequant_unreachable"] == ("nvfp4",)
+
+
+def test_a_readable_prequant_is_not_marked_unreachable(monkeypatch):
+    import types
+
+    def _listing(repo_id):
+        return types.SimpleNamespace(
+            siblings = [types.SimpleNamespace(rfilename = "Z-Image-Turbo-NVFP4.pt", size = 4096)]
+        )
+
+    backend, _tokens = _prefetch_backend(monkeypatch, cached = False, model_info = _listing)
+    kwargs = dict(_NVFP4_PREFETCH_KWARGS)
+    assert backend._dense_quant_prefetch_needed(_fam(), kwargs) is False
+    assert "_prequant_unreachable" not in kwargs
+
+
 def test_a_readable_prequant_still_drops_the_dense_shards(monkeypatch):
     """Positive control: a repo that lists the checkpoint keeps the small download."""
     import types

@@ -5039,6 +5039,126 @@ def test_dense_quant_prequant_proceeds_but_forbids_dense_fallback(
     assert attempted == [False]  # ...fast path still attempted, dense fallback forbidden
 
 
+@pytest.mark.parametrize(
+    "unreachable,expected_mib,expected_fallback",
+    [
+        # The prefetch found the hosted checkpoint refused: size the dense bf16 build it falls back to, and keep that
+        # fallback open (the plan staged the shards for exactly this).
+        (("fp8",), 28_561, True),
+        # Positive control: a reachable checkpoint keeps the prequant-sized budget and forbids the dense fallback.
+        ((), 22_930, False),
+    ],
+)
+def test_dense_quant_replan_sizes_an_unreachable_prequant_as_dense(
+    fake_runtime,
+    tmp_path,
+    monkeypatch,
+    allow_precision_fallback,
+    unreachable,
+    expected_mib,
+    expected_fallback,
+):
+    import dataclasses
+
+    from core.inference import diffusion as dmod
+
+    backend = DiffusionBackend()
+    _force_cuda_target(backend, monkeypatch)
+    monkeypatch.setattr(dmod, "dense_transformer_supported", lambda target: True)
+    monkeypatch.setattr(
+        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None, **_kw: "fp8"
+    )
+
+    def _candidate(*, force_dense = False, **_kw):
+        if force_dense:
+            return types.SimpleNamespace(
+                transient_transformer_mib = 28_561, companions_mib = 1, prequant = False, scheme = "fp8"
+            )
+        # The family table names a hosted checkpoint whether or not this user can read it.
+        return types.SimpleNamespace(
+            transient_transformer_mib = 22_930, companions_mib = 1, prequant = True, scheme = "fp8"
+        )
+
+    monkeypatch.setattr(dmod, "resolve_dense_quant_candidate", _candidate)
+    sized: list = []
+    orig_plan = DiffusionBackend._plan_memory
+
+    def spy_plan(
+        self,
+        *a,
+        transformer_resident_override_mib = None,
+        **k,
+    ):
+        real = orig_plan(
+            self, *a, transformer_resident_override_mib = transformer_resident_override_mib, **k
+        )
+        if transformer_resident_override_mib is None:
+            # GGUF plan offloads, so the candidate replan decides the fast path.
+            return dataclasses.replace(real, offload_policy = "model")
+        sized.append(transformer_resident_override_mib)
+        return dataclasses.replace(real, offload_policy = "none")
+
+    monkeypatch.setattr(DiffusionBackend, "_plan_memory", spy_plan)
+    attempted = []
+
+    def fake_dense_load(self, *a, **k):
+        attempted.append(k.get("allow_dense_fallback"))
+        raise RuntimeError("test: stop after reaching the fast path")
+
+    monkeypatch.setattr(DiffusionBackend, "_load_dense_quant_pipeline", fake_dense_load)
+    (tmp_path / "m.gguf").write_bytes(b"x")
+    _load_m(backend, tmp_path, transformer_quant = "fp8", _prequant_unreachable = unreachable)
+    assert sized == [expected_mib]
+    assert attempted == [expected_fallback]
+
+
+def test_dense_quant_unreachable_prequant_does_not_skip_the_dense_decline(
+    fake_runtime, tmp_path, monkeypatch, allow_precision_fallback
+):
+    # GGUF plan resident, dense bf16 does not fit. A reachable prequant still proceeds with the dense fallback forbidden
+    # (test above); one this user cannot fetch is no prequant, so the explicit scheme declines with the dense reason
+    # instead of downloading a checkpoint that answers 401.
+    from core.inference import diffusion as dmod
+
+    backend = DiffusionBackend()
+    _force_cuda_target(backend, monkeypatch)
+    monkeypatch.setattr(dmod, "dense_transformer_supported", lambda target: True)
+    monkeypatch.setattr(
+        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None, **_kw: "fp8"
+    )
+    monkeypatch.setattr(dmod, "usable_prequant_source", lambda fam, scheme, **kw: "prequant/path")
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_dense_transformer_resident_bytes",
+        staticmethod(lambda base, staged_dir = None: 999 * 1024**3),
+    )
+    orig_plan = DiffusionBackend._plan_memory
+
+    def spy_plan(
+        self,
+        *a,
+        transformer_resident_override_mib = None,
+        **k,
+    ):
+        if transformer_resident_override_mib is not None and self is backend:
+            return types.SimpleNamespace(offload_policy = "model")
+        return orig_plan(self, *a, **k)
+
+    monkeypatch.setattr(DiffusionBackend, "_plan_memory", spy_plan)
+    attempted = []
+
+    def fake_dense_load(self, *a, **k):
+        attempted.append(k.get("allow_dense_fallback"))
+        return None, None
+
+    monkeypatch.setattr(DiffusionBackend, "_load_dense_quant_pipeline", fake_dense_load)
+    (tmp_path / "m.gguf").write_bytes(b"x")
+    status = _load_m(backend, tmp_path, transformer_quant = "fp8", _prequant_unreachable = ("fp8",))
+    assert attempted == []
+    assert status["transformer_quant"] is None
+    assert _FakeTransformer.last["path"]  # the GGUF build loaded
+
+
 def test_dense_quant_replan_retries_once_on_transient_free_undercount(
     fake_runtime, tmp_path, monkeypatch, allow_precision_fallback
 ):
