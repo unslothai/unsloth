@@ -366,8 +366,15 @@ jobs:
           [ "${{ matrix.mode }}" = "mask" ] && checks="$checks absent nodylibtool"
           [ "${{ matrix.mode }}" = "trace" ] && checks="$checks notools dylibpatch"
           # With a working git the default install clones its pinned git+ requirements, so
-          # `notools` lets git fetch exactly those remotes and nothing else.
-          UNSLOTH_ALLOW_GIT_FROM='studio/backend/requirements/diffusers-main.txt' \
+          # `notools` lets git fetch exactly those remotes and nothing else. An overlay-free
+          # leg installs the released wheel, whose pin can differ from this checkout's, so the
+          # installed package's own copy is allowed too.
+          allow_git_from='studio/backend/requirements/diffusers-main.txt'
+          for installed in "$UNSLOTH_STUDIO_HOME"/unsloth_studio/lib/python*/site-packages/studio/backend/requirements/diffusers-main.txt; do
+            if [ -f "$installed" ]; then allow_git_from="$allow_git_from $installed"; fi
+          done
+          echo "git+ allowance read from: $allow_git_from"
+          UNSLOTH_ALLOW_GIT_FROM="$allow_git_from" \
           UNSLOTH_CLEAN_ALLOW_WORKING='${{ matrix.allow_working }}' \
             bash .github/scripts/clean-machine-assert.sh $checks
 
