@@ -1347,9 +1347,11 @@ def _get_remote_composite_text_only(
         # every weight as missing (random). Keep the full-model load there.
         return None
     try:
-        text_config = _get_text_only_config(model_config, model_name)
+        text_config = model_config.get_text_config()
     except Exception:
         text_config = None
+    if text_config is None:
+        text_config = getattr(model_config, "text_config", None)
     if text_config is None or text_config is model_config:
         # InternVL / Nemotron-Nano-VL keep the decoder config as llm_config without the text_config alias get_text_config() looks for.
         text_config = None
@@ -1360,11 +1362,11 @@ def _get_remote_composite_text_only(
                 break
         if text_config is None:
             return None
-        qc = getattr(model_config, "quantization_config", None)
-        if qc is not None and getattr(text_config, "quantization_config", None) is None:
-            text_config = copy.copy(text_config)
-            text_config.quantization_config = _remap_text_only_skip_modules(qc)
     text_config = copy.copy(text_config)
+    qc = getattr(model_config, "quantization_config", None)
+    if qc is not None and getattr(text_config, "quantization_config", None) is None:
+        # Carried with the parent's own skip names; they are rebased on the text model once, below, from the found prefix.
+        text_config.quantization_config = qc
     if getattr(text_config, "_commit_hash", None) is None:
         # A nested config carries no commit; the load runs the parent repo's code and weights, so pin to the parent's.
         text_config._commit_hash = getattr(model_config, "_commit_hash", None)

@@ -613,3 +613,30 @@ def test_sequence_valued_auto_map_entry(tmp_path):
     parent = _load_parent_config(repo)
     assert isinstance(parent.auto_map["AutoTokenizer"], list)
     assert ns["_get_remote_composite_text_only"](parent, str(repo), trust_remote_code = True)
+
+
+@needs_tf5
+@pytest.mark.parametrize(
+    "prefix", ["language_model.", "model.language_model.", "language_model.model."]
+)
+@pytest.mark.parametrize("alias", [True, False])
+def test_skip_modules_rebased_once_for_nested_prefixes(tmp_path, prefix, alias):
+    # The parent's names are stripped of the found prefix exactly once; the Gemma-layout remap
+    # (language_model.model. -> model.) must not run first and leave model.lm_head / model.model.*.
+    ns = _ns()
+    repo, _ = _write_repo(tmp_path, prefix = prefix, alias = alias, name = "nested")
+    parent = _load_parent_config(repo)
+    parent.quantization_config = {
+        "llm_int8_skip_modules": [prefix + "lm_head", prefix + "model.layers.0.mlp", "vision_model"]
+    }
+    text_config, mapping = ns["_get_remote_composite_text_only"](
+        parent, str(repo), trust_remote_code = True
+    )
+    assert mapping == {"^" + re.escape(prefix): ""}
+    skip = text_config.quantization_config["llm_int8_skip_modules"]
+    assert skip[:2] == ["lm_head", "model.layers.0.mlp"]
+    # Every rebased name is a real module of the standalone text model.
+    model = transformers.LlamaForCausalLM(text_config)
+    modules = dict(model.named_modules())
+    assert all(name in modules for name in skip[:2])
+    assert parent.quantization_config["llm_int8_skip_modules"][0] == prefix + "lm_head"
