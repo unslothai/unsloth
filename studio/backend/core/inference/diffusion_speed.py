@@ -728,6 +728,12 @@ def _compile_vae_decode(pipe: Any, logger: Any) -> bool:
 def _enable_cudnn_benchmark(logger: Any) -> bool:
     try:
         import torch
+
+        from core._torchao_stub import _module_is_rocm
+
+        # On ROCm this is MIOpen's exhaustive search: a first VAE decode tuned for 10 to 23 minutes and crashed a gfx1030.
+        if _module_is_rocm(torch):
+            return False
         torch.backends.cudnn.benchmark = True
         return True
     except Exception as exc:  # noqa: BLE001 - optimisation only
