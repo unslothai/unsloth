@@ -222,6 +222,63 @@ def test_fused_encoder_fp16_casts_weights_and_returns_the_input_dtype():
     assert vae.quant_conv.weight.dtype is torch.float32
 
 
+@pytest.mark.parametrize("device", DEVICES)
+@pytest.mark.parametrize("frames", [1, 9])
+def test_the_condition_encode_recipe_runs_through_the_fp16_encoder(frames, device):
+    # the keyframe / ref2va path: float32 pixels into vae.encode, whose _encode_clip applies the float32 quant_conv
+    # to the encoder's output outside any autocast, so the encoder must hand back float32
+    from core.inference.video_minimax_h3 import trim_h3_video_vae
+
+    vae = _tiny_vae().to(device)
+    vae.register_to_config(latents_mean = [0.0] * 8, latents_std = [1.0] * 8)
+    trim_h3_video_vae(vae, workflow = "fl2va")
+    ref = copy.deepcopy(vae)
+    assert H._install_encoder(vae, fp16 = True)
+    pixels = torch.randint(0, 256, (1, 3, frames, 32, 48), dtype = torch.uint8, device = device)
+    with torch.no_grad():
+        try:
+            from diffusers.modular_pipelines.minimax_h3.encoders import encode_vae_condition
+        except ImportError:
+            x = pixels.float() / 127.5 - 1.0
+            got, want = (m.encode(x).latent_dist.mean for m in (vae, ref))
+        else:
+            args = (pixels, (0.485, 0.456, 0.406), (0.229, 0.224, 0.225))
+            got, want = encode_vae_condition(vae, *args), encode_vae_condition(ref, *args)
+    assert not getattr(vae.encoder, "_unsloth_fast_failed", False)
+    assert vae.quant_conv.weight.dtype is torch.float32
+    assert got.dtype is torch.float32 and got.shape == want.shape
+    assert ((got - want).norm() / want.norm()) < 1e-2
+
+
+@needs_cuda
+def test_the_decoder_residual_stream_stays_float32_under_the_decode_autocast(monkeypatch):
+    # the decode runs under float16 autocast over pre-cast float16 Linears; the stock blocks keep the residual in
+    # float32 (the float32 register tokens promote the cat, the float32 scales promote each update), so must we
+    from core.inference.video_minimax_h3 import trim_h3_video_vae
+
+    vae = _tiny_vae().cuda()
+    trim_h3_video_vae(vae, workflow = "fl2va")
+    ref = copy.deepcopy(vae)
+    assert H._install_decoder(vae)
+    seen = []
+    stack = H._fast_block_stack
+
+    def spy(decoder, hidden_states, *args):
+        seen.append(hidden_states.dtype)
+        out = stack(decoder, hidden_states, *args)
+        seen.append(out.dtype)
+        return out
+
+    monkeypatch.setattr(H, "_fast_block_stack", spy)
+    z = torch.randn(1, 8, 3, 4, 5, device = "cuda")
+    with torch.no_grad(), torch.autocast("cuda", dtype = torch.float16):
+        got, want = vae.decoder(z), ref.decoder(z)
+    assert not getattr(vae.decoder, "_unsloth_fast_failed", False)
+    assert seen == [torch.float32, torch.float32]
+    assert got.dtype == want.dtype
+    torch.testing.assert_close(got.float(), want.float(), rtol = 2e-3, atol = 2e-3)
+
+
 def test_norm_silu_pad_reference_matches_diffusers_ops():
     from torch.nn import functional as F
 

@@ -67,7 +67,7 @@ _TILE_BATCH_MAX = 4
 # One tile's decoder activations measured ~150 MB at float16 (the 4-tile batch peaked 0.06 GiB over one tile at a
 # time, the 8-tile batch 0.61 GiB); 256 MiB per tile keeps headroom in the free-memory check.
 _TILE_BATCH_BYTES_PER_TILE = 256 * 2**20
-# ConvRot group for the int8 decoder, the same 256 Comfy's int8 H3 VAE file declares.
+# ConvRot group for the int8 decoder: 256 input channels share one rotation.
 H3_VAE_INT8_ROT_GROUP = 256
 # Blocks the opt-in int8 decoder leaves in float16. Quantising only blocks 0-8 measured 56 dB, only 27-35 73 dB: the
 # early blocks' error propagates through the rest, so the first half stays float (62 dB for the whole decode).
@@ -543,11 +543,16 @@ def norm_silu_pad_reference(
         x = F.silu(y).view(b, t, c, h, w).permute(0, 2, 1, 3, 4).to(x.dtype)
     elif in_bias is not None:
         x = (x.float() + _bias_view(in_bias).float()).to(x.dtype)
+    return _pad_reference(x, pad, front).contiguous(memory_format = torch.channels_last_3d)
+
+
+def _pad_reference(x: Any, pad: tuple, front: int) -> Any:
+    """Reflect ``(left, right, top, bottom)`` spatially, then ``front`` causal zero frames."""
+    import torch.nn.functional as F
+
     if any(pad):
         x = F.pad(x, (*pad, 0, 0), mode = "reflect")
-    if front:
-        x = F.pad(x, (0, 0, 0, 0, front, 0))
-    return x.contiguous(memory_format = torch.channels_last_3d)
+    return F.pad(x, (0, 0, 0, 0, front, 0)) if front else x
 
 
 def _fusable(x: Any, pad: tuple, norm: Any) -> bool:
@@ -738,10 +743,7 @@ def _causal_conv(
             # conv_in's 3 RGB channels: channels-last buys nothing and cuDNN would convert it back
             if x_bias is not None:
                 x = x + _bias_view(x_bias).to(x.dtype)
-            if any(pad):
-                x = F.pad(x, (*pad, 0, 0), mode = "reflect")
-            if front:
-                x = F.pad(x, (0, 0, 0, 0, front, 0))
+            x = _pad_reference(x, pad, front)
     elif x_bias is not None:
         # a 1x1x1 conv without padding is linear in its input, so the pending bias folds through the weight exactly
         folded = weight.reshape(weight.shape[0], -1).float() @ x_bias.float()
