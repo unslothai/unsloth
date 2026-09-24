@@ -365,9 +365,33 @@ def test_speed_max_enables_tf32_and_fused_qkv(monkeypatch):
     )
     assert applied["tf32"] is True and torch.backends.cuda.matmul.allow_tf32 is True
     assert applied["fused_qkv"] is True and pipe.fused is True
-    # max opts into autotuned kernels (static shapes); CUDA-graph modes are avoided.
+    # max opts into autotuned kernels with automatic dynamic (static until a dimension changes, so a new prompt
+    # length does not recompile every time); CUDA-graph modes are avoided.
     assert pipe.compile_kwargs["mode"] == "max-autotune-no-cudagraphs"
-    assert pipe.compile_kwargs["dynamic"] is False
+    assert pipe.compile_kwargs["dynamic"] is None
+    assert ds_mod.auto_dynamic_active(pipe) is True
+
+
+def test_default_tier_does_not_mark_automatic_dynamic(monkeypatch):
+    _stub_torch(monkeypatch)
+    pipe = _Pipe(with_compile = True)
+    apply_speed_optims(pipe, _target(), is_gguf = False, family = _family(), speed_mode = SPEED_DEFAULT)
+    assert pipe.compile_kwargs["dynamic"] is True
+    assert ds_mod.auto_dynamic_active(pipe) is False
+    assert isinstance(ds_mod.dynamo_graph_count(), int)
+
+
+def test_max_tier_auto_dynamic_dit_shapes_are_not_tracked_as_static(monkeypatch):
+    # A generalised DiT reuses one graph for unseen shapes; only the graph-count delta dirties its bundle.
+    _stub_torch(monkeypatch)
+    pipe = _Pipe(with_compile = True)
+    apply_speed_optims(pipe, _target(), is_gguf = False, family = _family(), speed_mode = SPEED_MAX)
+    assert ds_mod.auto_dynamic_active(pipe) is True
+    assert ds_mod.compiled_shapes_are_static(pipe, SPEED_MAX) is False
+    # A max-tier pipe whose DiT did not compile auto-dynamic keeps per-shape tracking.
+    plain = _Pipe(with_compile = True)
+    assert ds_mod.compiled_shapes_are_static(plain, SPEED_MAX) is True
+    assert ds_mod.compiled_shapes_are_static(plain, SPEED_DEFAULT) is False
 
 
 # ── U-Net whole-module compile fallback (SDXL) ─────────────────────────────────
@@ -1362,13 +1386,16 @@ def test_compile_dynamic_is_the_value_the_cache_fingerprint_keys_on():
     assert ds_mod.compile_dynamic(None, True) is True
 
 
-def test_max_tier_keeps_static_compile_for_torchao_dit(monkeypatch):
+def test_max_tier_compiles_torchao_dit_with_automatic_dynamic(monkeypatch):
+    # max compiles every DiT with automatic dynamic, so a torchao DiT never gets dynamic=True (CantSplit) there either.
     _stub_torch(monkeypatch)
     _stub_gguf_accel(monkeypatch)
     pipe = _Pipe(with_compile = True)
     pipe.transformer.parameters = lambda: iter([_TorchaoWeight()])
     apply_speed_optims(pipe, _target(), is_gguf = False, family = _family(), speed_mode = SPEED_MAX)
-    assert pipe.compile_kwargs["dynamic"] is False
+    assert pipe.compile_kwargs["dynamic"] is None
+    assert ds_mod.auto_dynamic_active(pipe) is True
+    assert ds_mod.compiled_shapes_are_static(pipe, SPEED_MAX) is False
 
 
 def test_auto_dynamic_active_follows_the_torchao_marker():

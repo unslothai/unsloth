@@ -179,7 +179,7 @@ def _compile_hooked_block_inners(transformer: Any, logger: Any = None) -> int:
                     continue  # not a plain bound method; arming would miss the block
                 # fullgraph=False / dynamic=True: a cache is active (its decision graph-breaks) and this matches the
                 # default tier. Dynamo caches per code object, so re-arming after a toggle is ~free.
-                # Automatic dynamic when the speed layer chose it (torchao weights): see _compile_repeated_blocks.
+                # Automatic dynamic when the speed layer chose it (max tier or torchao weights), as the blocks do.
                 dynamic = None if getattr(transformer, "_unsloth_auto_dynamic", False) else True
                 compiled = torch.compile(orig, fullgraph = False, dynamic = dynamic)
                 # Same runtime fallback as the block's own compile: a lowering failure on the first computed step

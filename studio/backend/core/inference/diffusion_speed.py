@@ -382,12 +382,15 @@ def _denoiser_unet(pipe: Any) -> Any:
 def compiled_shapes_are_static(pipe: Any, speed_mode: Optional[str]) -> bool:
     """Whether this load's compiled artifacts are per-(width, height, batch).
 
-    ``max`` compiles regional blocks dynamic=False and U-Net whole-module is always static;
+    ``max`` compiles regional DiT blocks with automatic dynamic (static until a dimension changes, then one
+    generalised graph; tracked by graph count, not shape) and U-Net whole-module is always static;
     ``default`` DiT compiles dynamic=True (one artifact across shapes). The compile-cache layer
     keys on this to re-save its bundle when a session hits an uncovered shape."""
     mode = normalize_speed_mode(speed_mode)
     if mode == SPEED_MAX:
-        return True
+        # An auto-dynamic DiT generalises a dimension once and then reuses that graph for unseen values, so a new
+        # (width, height, batch) is not a new artifact; the Dynamo graph-count delta marks the renders that compiled.
+        return _denoiser_unet(pipe) is not None or not auto_dynamic_active(pipe)
     if mode != SPEED_DEFAULT:
         return False
     # A torchao-quantised DiT compiles with automatic dynamic: its first shapes get their own artifacts.
@@ -424,12 +427,14 @@ def _compile_repeated_blocks(
     if not dits and unet is None:
         return False
     # default: dynamic=True, fast cold start, no recompile on resolution change. max: max-autotune-no-cudagraphs +
-    # dynamic=False, a few % more for a longer compile and a recompile per resolution. Inductor's own cudagraph modes
-    # fail on the regional block -- "accessing tensor output of CUDAGraphs that has been overwritten" -- so the tier
-    # stays on -no-cudagraphs and the capture is taken one level up, at the denoiser module.
+    # automatic dynamic (None): the first shape compiles static and autotuned, and a dimension that then changes is
+    # generalised once. dynamic=False recompiled on every new prompt length for DiTs whose blocks see the text tokens
+    # (Qwen-Image-2.1: 4-6s on about half of new prompts). Inductor's own cudagraph modes fail on the regional block --
+    # "accessing tensor output of CUDAGraphs that has been overwritten" -- so the tier stays on -no-cudagraphs and the
+    # capture is taken one level up, at the denoiser module.
     kwargs: dict[str, Any] = {
         "fullgraph": not (cache_active or offload_active),
-        "dynamic": not max_autotune,
+        "dynamic": None if max_autotune else True,
     }
     if max_autotune:
         kwargs["mode"] = "max-autotune-no-cudagraphs"
@@ -472,8 +477,8 @@ def _compile_repeated_blocks(
     for transformer in dits:
         dit_kwargs = dict(kwargs)
         dit_kwargs["dynamic"] = compile_dynamic(transformer, kwargs["dynamic"])
-        if dit_kwargs["dynamic"] is None:
-            transformer._unsloth_auto_dynamic = True
+        # Read by auto_dynamic_active: the generalising recompile on a new text length must reach the bundle.
+        transformer._unsloth_auto_dynamic = dit_kwargs["dynamic"] is None
         try:
             transformer.compile_repeated_blocks(**dit_kwargs)
             engaged = True
@@ -682,7 +687,7 @@ def settle_compile_fallback(
 
 
 def auto_dynamic_active(pipe: Any) -> bool:
-    """Whether any denoiser DiT compiled with automatic dynamic (torchao weights on the default tier)."""
+    """Whether any denoiser DiT compiled with automatic dynamic (the max tier, or torchao weights on the default)."""
     return any(getattr(t, "_unsloth_auto_dynamic", False) for t in _guarded_dits(pipe))
 
 
