@@ -9721,3 +9721,13 @@ def test_the_boundary_marker_waits_out_a_busy_capture_lock(fake_runtime, monkeyp
     assert marks["calls"] == 1
     assert marks["ok"] is True
     assert at_decode.get("phase") == "decode"
+
+
+def test_video_auto_quant_on_a_host_without_dense_quant_reports_as_before(fake_runtime):
+    # No dense int8/fp8 on this host at all, so there is no resident-vs-quant decision to report.
+    status = VideoBackend().load_pipeline(
+        "Wan-AI/Wan2.2-TI2V-5B-Diffusers", model_kind = "pipeline", speed_mode = "default"
+    )
+    resolved = status["resolved"]["transformer_quant"]
+    assert (resolved["value"], resolved["source"]) == ("off", "auto")
+    assert resolved["reason"] == "not engaged (dense bf16 DiT loaded)"
