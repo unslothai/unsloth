@@ -1214,18 +1214,29 @@ const MarkdownTextSourceImpl = ({
   messageId,
   sourceText,
   streaming,
-}: MarkdownTextSourceProps) => (
-  <MarkdownTextRenderer
-    isStreaming={streaming}
-    messageHasRenderableRenderHtmlTool={messageHasRenderableRenderHtmlTool}
-    messageId={messageId}
-    messageTextKey="[]"
-    precedingText=""
-    searchImagesKey=""
-    statusType={streaming ? "running" : "complete"}
-    text={sourceText}
-  />
-);
+}: MarkdownTextSourceProps) => {
+  // The virtualized reasoning transcript bypasses the message-part adapter, but it
+  // still paints assistant text. Coalesce here too, so a burst from upstream cannot
+  // bypass the same frame budget the ordinary Markdown path uses.
+  const displayText = useCoalescedStreamingText(
+    sourceText,
+    streaming,
+    messageId,
+  );
+
+  return (
+    <MarkdownTextRenderer
+      isStreaming={streaming}
+      messageHasRenderableRenderHtmlTool={messageHasRenderableRenderHtmlTool}
+      messageId={messageId}
+      messageTextKey="[]"
+      precedingText=""
+      searchImagesKey=""
+      statusType={streaming ? "running" : "complete"}
+      text={displayText}
+    />
+  );
+};
 
 export const MarkdownText = withSmoothContextProvider(MarkdownTextImpl);
 // Reasoning fragments render at message-group scope, where assistant-ui deliberately
