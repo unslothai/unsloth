@@ -9064,6 +9064,14 @@ def _resident_id_is_namespaced() -> bool:
     return any("/" in (public_model_id(c) or "") for c in candidates if c)
 
 
+def _resident_npu_model():
+    """The NPU model serving chat, or None. It answers to its own names only."""
+    from core.inference.npu_backend import peek_npu_backend
+
+    npu = peek_npu_backend()
+    return npu.loaded_model if npu is not None else None
+
+
 def _loaded_satisfies(requested: str) -> bool:
     """Whether what is serving right now actually answers to *requested*.
 
@@ -9072,6 +9080,9 @@ def _loaded_satisfies(requested: str) -> bool:
     """
     from core.inference.openai_auto_download import looks_like_quant, split_model_ref
 
+    npu_model = _resident_npu_model()
+    if npu_model is not None:
+        return requested in (npu_model.model_path, npu_model.id)
     base, variant = split_model_ref(requested)
     llama_backend = get_llama_cpp_backend()
     if getattr(llama_backend, "is_loaded", False):
@@ -9124,6 +9135,9 @@ def _loaded_identity_satisfies(requested: str) -> bool:
     """
     from core.inference.openai_auto_download import split_model_ref
 
+    npu_model = _resident_npu_model()
+    if npu_model is not None:
+        return requested in (npu_model.model_path, npu_model.id)
     base, _ = split_model_ref(requested)
     llama_backend = get_llama_cpp_backend()
     if getattr(llama_backend, "is_loaded", False):
@@ -9420,6 +9434,24 @@ async def _reject_unservable_model(
         warm_index_soon,
     )
     from utils.openai_auto_switch_settings import get_openai_auto_switch_enabled
+    from core.inference.npu_backend import is_npu_model_path
+
+    if is_npu_model_path(requested_model) and not await asyncio.to_thread(
+        _loaded_satisfies, requested_model
+    ):
+        # Another NPU model: nothing else serves that name, and no request switch loads one.
+        message = f"The NPU model '{requested_model}' is not loaded. Load it in Unsloth Studio."
+        path = getattr(getattr(fastapi_request, "url", None), "path", None)
+        raise HTTPException(
+            status_code = 404,
+            detail = (
+                error_body_for_path(
+                    path, message, status = 404, code = "model_not_found", param = "model"
+                )
+                if isinstance(path, str)
+                else message
+            ),
+        )
 
     still_indexing = False
     try:
@@ -9428,6 +9460,7 @@ async def _reject_unservable_model(
         if not (
             get_llama_cpp_backend().is_loaded
             or getattr(await asyncio.to_thread(get_inference_backend), "active_model_name", None)
+            or _resident_npu_model() is not None
         ):
             return
         # Refresh in the background and read the index as-is: scanning here would stall the
@@ -24546,6 +24579,9 @@ async def _npu_chat_completions(payload, request: Request, current_subject: str)
             ),
         )
 
+    # As for the other local backends: per-model recommendations and operator pins fill what the
+    # caller left unset, since the managed proxy sends every sampling field.
+    _fill_recommended_sampling_openai(payload, upstream.model)
     _normalize_chat_reasoning_controls(payload)
     if not upstream.supports_reasoning:
         payload.enable_thinking = False

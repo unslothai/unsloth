@@ -886,3 +886,50 @@ def test_a_reply_cut_short_is_recorded_failed(flm, stream):
     # Failed before [DONE] could mark it completed.
     assert api_monitor._entries[0].status == "error"
     assert "before finishing" in api_monitor._entries[0].error
+
+
+def test_operator_sampling_pins_reach_fastflowlm(flm, monkeypatch):
+    monkeypatch.setenv("UNSLOTH_SAMPLING_TOP_K", "7")
+    recorded = flm()
+    _call(stream = False)
+    assert recorded[-1]["body"]["top_k"] == 7
+
+
+def _npu_resident(monkeypatch):
+    model = nb.NpuModel(
+        id = "qwen3-0.6b-FLM",
+        checkpoint = "qwen3:0.6b",
+        size_gb = 0.66,
+        downloaded = True,
+        labels = ("chat",),
+        max_context_length = 40960,
+    )
+
+    class _Npu:
+        loaded_model = model
+
+    monkeypatch.setattr(nb, "peek_npu_backend", lambda: _Npu())
+    return model
+
+
+def test_the_npu_resident_answers_to_its_own_names_only(monkeypatch):
+    from routes import inference as routes
+
+    model = _npu_resident(monkeypatch)
+    for name in (model.model_path, model.id):
+        assert routes._loaded_satisfies(name)
+        assert routes._loaded_identity_satisfies(name)
+    for name in ("lemonade:gemma3-4b-FLM", "unsloth/Qwen3-0.6B-GGUF"):
+        assert not routes._loaded_satisfies(name)
+        assert not routes._loaded_identity_satisfies(name)
+
+
+def test_a_request_naming_another_npu_model_is_refused(monkeypatch):
+    from routes import inference as routes
+
+    model = _npu_resident(monkeypatch)
+    # The resident one is served.
+    asyncio.run(routes._reject_unservable_model(model.model_path, None))
+    with pytest.raises(HTTPException) as caught:
+        asyncio.run(routes._reject_unservable_model("lemonade:gemma3-4b-FLM", None))
+    assert caught.value.status_code == 404
