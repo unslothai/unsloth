@@ -3397,6 +3397,9 @@ from models.inference import (
     DiffusionInferenceInfoResponse,
     DiffusionLoadProgressResponse,
     GalleryFlagsPatch,
+    GalleryMoveRequest,
+    GalleryProjectRequest,
+    GalleryProjectResponse,
     GalleryImage,
     GalleryListResponse,
     ImageGenerationRequest,
@@ -3415,6 +3418,7 @@ from models.inference import (
     ChatCountTokensRequest,
     ChatCompletionChunk,
     ChatCompletion,
+    ToolApprovalStatusRequest,
     ToolConfirmRequest,
     ChatMessage,
     ChunkChoice,
@@ -3588,7 +3592,7 @@ def _request_used_api_key(request: Any) -> bool:
         return False
 
 
-from state.tool_approvals import resolve_tool_decision
+from state.tool_approvals import resolve_tool_decision, tool_decision_is_pending
 
 from core.inference.model_ids import display_model_name, model_id_matches, public_model_id
 from core.inference.api_monitor import api_monitor
@@ -3638,7 +3642,7 @@ from core.inference.providers import (
     provider_runs_local_tools,
     validate_provider_base_url,
 )
-from core.inference.external_provider import ExternalProviderClient
+from core.inference.external_provider import ExternalProviderClient, _is_openai_family_cloud
 from core.inference.external_tool_transport import OAICompatTransport
 from core.inference.sse_control_frames import (
     is_ui_control_sse_line,
@@ -7661,6 +7665,16 @@ def _public_model_identifier(requested: str, resolved: str) -> str:
     return requested if is_ollama_manifest_ref(requested) else resolved
 
 
+def _canonical_model_identity(model_id: Optional[str]) -> str:
+    """Case-folded *model_id*, reading an HF cache snapshot path as its ``org/name`` repo id.
+    Other local paths stay distinct: two files sharing a stem are two models."""
+    from core.inference.model_ids import hf_cache_repo_id
+
+    if not model_id:
+        return ""
+    return (hf_cache_repo_id(model_id) or str(model_id)).lower()
+
+
 def _as_ollama_manifest_request(request):
     """*request* with a materialized Ollama ``.gguf`` link rewritten to the tag that produced it."""
     from hub.services.models.ollama import ollama_manifest_ref_for_path, ollama_model_ref_files
@@ -10685,6 +10699,9 @@ def _effective_load_in_4bit(config: ModelConfig, requested: bool) -> bool:
     except Exception as e:
         logger.warning(f"Could not read adapter_config.json: {e}")
         return load_in_4bit
+    trained_in_4bit = adapter_cfg.get("unsloth_load_in_4bit")
+    if isinstance(trained_in_4bit, bool):
+        return trained_in_4bit
     training_method = adapter_cfg.get("unsloth_training_method")
     if training_method == "lora":
         return False
@@ -14777,7 +14794,11 @@ def _resolve_inherited_extra_args(
     resolved_variant = (config.gguf_variant or "").lower()
     request_variant = (request.gguf_variant or "").lower()
     stored_variant = (source[1] or "").lower() if source else ""
-    same_model = bool(source and source[0] and source[0].lower() == model_identifier.lower())
+    # A picker load records the snapshot path, an API auto-switch loads the repo id.
+    stored_identity = _canonical_model_identity(source[0]) if source else ""
+    same_model = bool(
+        stored_identity and stored_identity == _canonical_model_identity(model_identifier)
+    )
     if request.gguf_variant:
         variant_mismatch = request_variant != stored_variant
     else:
@@ -18599,6 +18620,22 @@ async def confirm_tool_call(
     return {"resolved": True}
 
 
+@studio_router.post("/tool-approval-status")
+async def tool_approval_status(
+    request: ToolApprovalStatusRequest, current_subject: str = Depends(get_current_subject)
+):
+    """Whether a parked approval is still waiting on a human.
+
+    A reopened tab restores Approve/Deny from a saved card that has no result and an approval id.
+    That shape is identical whether the call is still parked or the user already answered it and
+    the tool is mid-flight, since the result only arrives with tool_end. Without this the tab
+    re-arms the answered one and every press 404s.
+
+    POST rather than GET so the id travels in the body instead of a URL that lands in logs.
+    """
+    return {"pending": tool_decision_is_pending(request.approval_id, request.session_id)}
+
+
 @studio_router.get("/monitor")
 async def get_api_monitor(current_subject: str = Depends(get_current_subject)):
     """Return recent OpenAI-compatible API activity for Unsloth."""
@@ -21837,6 +21874,30 @@ def _messages_have_input_audio(messages) -> bool:
     )
 
 
+def _messages_have_embedded_image(messages) -> bool:
+    """True when any message carries an image as an inline base64 data URL.
+
+    Deliberately narrower than "has an image". A remote image_url is a short string and costs
+    nothing to persist, so it has no business forcing a turn off the durable path; an inline
+    data URL is the whole blob, and durable runs persist their request verbatim, so admitting
+    one writes it into request_json again on every follow-up turn for the life of the thread.
+    That is the exact cost the media guard exists to prevent, and it is reachable without any
+    top-level image field once the gate is turn-scoped: the history image still rides along
+    inside messages[].content.
+    """
+    for msg in messages:
+        content = getattr(msg, "content", None)
+        if not isinstance(content, list):
+            continue
+        for part in content:
+            if getattr(part, "type", None) != "image_url":
+                continue
+            url = getattr(getattr(part, "image_url", None), "url", None)
+            if isinstance(url, str) and url.startswith("data:"):
+                return True
+    return False
+
+
 def _normalise_chat_content_parts(payload) -> None:
     """Lift the request's ``input_audio`` part onto ``audio_base64``, in place.
 
@@ -22517,6 +22578,7 @@ def _build_external_messages(
     supports_vision: bool,
     provider_type: Optional[str] = None,
     base_url: Optional[str] = None,
+    api_type: Optional[str] = None,
     promoted_out: "Optional[list]" = None,
     promote_mcp_images: "Optional[bool]" = None,
 ) -> list[dict]:
@@ -22531,23 +22593,26 @@ def _build_external_messages(
       that flag, or a stricter MCP answer would also strip what the caller
       attached.
     - `input_document`: preserved ONLY when the provider's stream helper has
-      explicit translation logic (Anthropic + OpenAI today, see
-      ``_INPUT_DOCUMENT_PROVIDERS``). Stripped for every other provider so the
-      unknown type doesn't reach generic /chat/completions and 400.
-    - `reasoning`: OpenAI-only Responses reasoning item paired with a prior
-      tool output. Forwarded ONLY when provider_type=="openai" so follow-up
-      image edits can replay the required reasoning item.
-    - `image_generation_call`: OpenAI-only Responses image reference. Forwarded
-      ONLY when provider_type=="openai" so follow-up image edits can reference
-      prior generated images.
+      explicit translation logic (Anthropic, OpenAI, and custom Responses).
+      Stripped for every other provider so the unknown type doesn't reach
+      generic /chat/completions and 400.
+    - `reasoning`: Responses reasoning item paired with a prior tool output.
+      Forwarded for OpenAI and custom Responses so follow-up image edits can
+      replay the required reasoning item.
+    - `image_generation_call`: Responses image reference. Forwarded for OpenAI
+      and custom Responses so follow-up image edits can reference prior images.
     - `compaction`: Anthropic-only synthetic part (round-trips server-side
       compaction state). Forwarded ONLY when provider_type=="anthropic";
       stripped elsewhere so the unknown part doesn't reach generic
       /chat/completions and 400 (DeepSeek, Mistral, Gemini, Kimi, OpenRouter).
     """
-    document_provider = provider_type in _INPUT_DOCUMENT_PROVIDERS
+    document_provider = provider_type in _INPUT_DOCUMENT_PROVIDERS or (
+        provider_type == "custom" and api_type == "responses"
+    )
     anthropic = provider_type == "anthropic"
-    openai = provider_type == "openai"
+    responses_native_parts = provider_type == "openai" or (
+        provider_type == "custom" and api_type == "responses"
+    )
     # `extra_content` carries the assistant's text-part `thoughtSignature`
     # round-trip on Gemini's native streamGenerateContent endpoint. Custom
     # Gemini OpenAI-compat gateways (LiteLLM etc.) route through
@@ -22562,6 +22627,9 @@ def _build_external_messages(
         except Exception:
             _native_gemini = False
     emit_extra_content = _native_gemini or provider_type == "openai_codex"
+    emit_message_extra_content = emit_extra_content or (
+        provider_type == "custom" and api_type == "responses"
+    )
 
     _SERVER_BUILTIN_TOOL_NAMES = frozenset(
         {"web_search", "web_fetch", "code_execution", "image_generation"}
@@ -22697,7 +22765,7 @@ def _build_external_messages(
                     out["tool_call_id"] = msg.tool_call_id
                 if msg.name:
                     out["name"] = msg.name
-            if emit_extra_content and msg.role == "assistant" and msg.extra_content:
+            if emit_message_extra_content and msg.role == "assistant" and msg.extra_content:
                 out["extra_content"] = msg.extra_content
             result.append(out)
             continue
@@ -22715,7 +22783,7 @@ def _build_external_messages(
                 "content": "",
                 "tool_calls": _filtered_tcs,
             }
-            if emit_extra_content and msg.extra_content:
+            if emit_message_extra_content and msg.extra_content:
                 _assistant_only["extra_content"] = msg.extra_content
             result.append(_assistant_only)
             continue
@@ -22733,7 +22801,7 @@ def _build_external_messages(
                             }
                         )
                     elif (
-                        openai
+                        responses_native_parts
                         and msg.role == "assistant"
                         and (_rp := _openai_responses_part(part)) is not None
                     ):
@@ -22778,7 +22846,7 @@ def _build_external_messages(
                         entry["tool_call_id"] = msg.tool_call_id
                     if msg.name:
                         entry["name"] = msg.name
-                if emit_extra_content and msg.role == "assistant" and msg.extra_content:
+                if emit_message_extra_content and msg.role == "assistant" and msg.extra_content:
                     entry["extra_content"] = msg.extra_content
                 result.append(entry)
             else:
@@ -22791,7 +22859,7 @@ def _build_external_messages(
                     if p.type == "text":
                         preserved.append({"type": "text", "text": p.text})
                     elif (
-                        openai
+                        responses_native_parts
                         and msg.role == "assistant"
                         and (_rp := _openai_responses_part(p)) is not None
                     ):
@@ -22824,7 +22892,7 @@ def _build_external_messages(
                         entry["tool_call_id"] = msg.tool_call_id
                     if msg.name:
                         entry["name"] = msg.name
-                if emit_extra_content and msg.role == "assistant" and msg.extra_content:
+                if emit_message_extra_content and msg.role == "assistant" and msg.extra_content:
                     entry["extra_content"] = msg.extra_content
                 result.append(entry)
     originals = {
@@ -22906,20 +22974,60 @@ async def _build_external_messages_async(messages, supports_vision, **kwargs) ->
     return _build_external_messages(messages, supports_vision, **kwargs)
 
 
+def _safe_retry_after_header(value: Any) -> Optional[str]:
+    """Return an RFC-compatible Retry-After value safe for an HTTP header.
+
+    The field permits either decimal delay-seconds or an HTTP date. Reject
+    control bytes, non-ASCII text, oversized values, malformed dates, and
+    non-GMT dates before copying provider-controlled data into a response
+    header.
+    """
+    if not isinstance(value, str):
+        return None
+    if (
+        len(value) > 128
+        or not value.isascii()
+        or any(ord(char) < 0x20 or ord(char) > 0x7E for char in value)
+    ):
+        return None
+    candidate = value.strip()
+    if not candidate:
+        return None
+    if candidate.isdecimal():
+        return candidate
+
+    from datetime import timedelta
+    from email.utils import parsedate_to_datetime
+
+    try:
+        parsed = parsedate_to_datetime(candidate)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if (
+        parsed is None
+        or parsed.tzinfo is None
+        or parsed.utcoffset() != timedelta(0)
+        or not candidate.endswith(" GMT")
+    ):
+        return None
+    return candidate
+
+
 async def _proxy_to_external_provider(
     payload: ChatCompletionRequest,
     request: Request,
     current_subject: Optional[str] = None,
-) -> StreamingResponse:
+) -> Response:
     """
     Proxy a chat completion request to an external LLM provider.
 
-    Resolves provider config (DB or registry), decrypts the API key, and
-    streams the response back in OpenAI SSE format.
+    Resolves provider config (DB or registry), decrypts the API key, and returns
+    either one Chat Completion JSON object or an OpenAI-compatible SSE stream.
     """
     # Resolve provider type and base URL
     provider_type = payload.provider_type
     base_url = payload.provider_base_url
+    api_type = payload.provider_api_type
     saved_provider_snapshot: Optional[dict] = None
 
     if payload.provider_id and not payload.encrypted_api_key:
@@ -22940,6 +23048,7 @@ async def _proxy_to_external_provider(
         saved_provider_snapshot = config
         provider_type = config["provider_type"]
         base_url = config["base_url"]
+        api_type = config.get("api_type", "chat_completions")
 
     if not provider_type:
         raise HTTPException(
@@ -23480,7 +23589,7 @@ async def _proxy_to_external_provider(
     if saved_provider_snapshot is not None:
         async with provider_config_guard(payload.provider_id):
             current = await asyncio.to_thread(providers_db.get_provider, payload.provider_id)
-            routing_fields = ("provider_type", "base_url", "is_enabled")
+            routing_fields = ("provider_type", "base_url", "api_type", "is_enabled")
             if current is None or any(
                 current.get(field) != saved_provider_snapshot.get(field) for field in routing_fields
             ):
@@ -23536,6 +23645,7 @@ async def _proxy_to_external_provider(
         _supports_vision,
         provider_type = provider_type,
         base_url = base_url,
+        api_type = api_type,
         promoted_out = _external_promoted_parts,
         promote_mcp_images = _external_takes_mcp_images(
             provider_type, _supports_vision, model, _pinfo
@@ -23557,6 +23667,10 @@ async def _proxy_to_external_provider(
         provider_type = provider_type,
         base_url = base_url,
         api_key = api_key,
+        api_type = api_type,
+    )
+    _non_stream_custom_responses = (
+        provider_type == "custom" and api_type == "responses" and payload.stream is False
     )
 
     # Schema defaults are non-None (20, 0.01, 1.0) for the local path, so only
@@ -23621,7 +23735,13 @@ async def _proxy_to_external_provider(
 
     async def _stream():
         _provider_kwargs = dict(
-            temperature = payload.temperature,
+            temperature = (
+                None
+                if provider_type == "custom"
+                and api_type == "responses"
+                and "temperature" not in payload.model_fields_set
+                else payload.temperature
+            ),
             top_p = _top_p_explicit,
             # Honor max_completion_tokens when max_tokens is absent, so a
             # provider-routed request capped only by the newer field still gets
@@ -23650,7 +23770,18 @@ async def _proxy_to_external_provider(
             # Hosted-only tools still ride along: Images and Fetch have their own
             # toggles and no local stand-in, so dropping them would turn a lit
             # pill into a tool the model never sees.
-            loop_hosted_tools = hosted_only_tools(provider_type, payload.enabled_tools)
+            # A custom Responses connection to OpenAI or Azure uses the same
+            # hosted tool envelope as the native OpenAI provider. Keep the
+            # endpoint check aligned with the Responses translator so an
+            # arbitrary compatible gateway is not offered cloud-only tools.
+            hosted_provider_type = (
+                "openai"
+                if provider_type == "custom"
+                and api_type == "responses"
+                and _is_openai_family_cloud(base_url)
+                else provider_type
+            )
+            loop_hosted_tools = hosted_only_tools(hosted_provider_type, payload.enabled_tools)
             gen = stream_with_studio_tools(
                 OAICompatTransport(
                     client,
@@ -23724,6 +23855,9 @@ async def _proxy_to_external_provider(
                         )
                     except Exception:
                         pass
+                if _non_stream_custom_responses:
+                    yield line
+                    continue
                 if monitor_event == "error":
                     stream_failed = True
                 # The monitor has read it by now. Providers are asked for usage on the
@@ -23749,6 +23883,8 @@ async def _proxy_to_external_provider(
                 # trusting it would append a second [DONE] after the provider's.
                 if _is_openai_sse_done(line):
                     sent_done = True
+            if _non_stream_custom_responses:
+                return
             # The loop can end without opening the turn a withheld call promised, and the
             # reason removed with that call was this stream's last one. Before [DONE], where
             # the GGUF passthrough places its own synthetic finish.
@@ -23766,6 +23902,11 @@ async def _proxy_to_external_provider(
         except Exception as exc:
             logger.error("external_provider.stream_error", error = str(exc))
             api_monitor.fail(monitor_id, _friendly_error(exc))
+            if _non_stream_custom_responses:
+                yield json.dumps(
+                    {"error": {"message": _friendly_error(exc), "type": "server_error"}}
+                )
+                return
             # Surface the failure: a bare EOF (e.g. after a read timeout) is treated
             # by the chat client as success, saving a partial answer with no error.
             yield (
@@ -23804,6 +23945,50 @@ async def _proxy_to_external_provider(
                     yield chunk
 
         return _wrapped()
+
+    if _non_stream_custom_responses:
+        body = "".join([chunk async for chunk in _stream()])
+        try:
+            content = json.loads(body)
+        except json.JSONDecodeError:
+            logger.error("external_provider.non_stream_invalid_json")
+            api_monitor.fail(
+                monitor_id,
+                "External provider returned an invalid non-streaming response.",
+            )
+            return JSONResponse(
+                status_code = 502,
+                content = openai_error_body(
+                    "External provider returned an invalid non-streaming response.",
+                    status = 502,
+                ),
+            )
+        error_message = (
+            _monitor_openai_error_message(content) if isinstance(content, dict) else None
+        )
+        retry_after_header = None
+        if error_message:
+            api_monitor.fail(monitor_id, error_message)
+            error = content.get("error") if isinstance(content, dict) else None
+            raw_status = error.get("code") if isinstance(error, dict) else None
+            retry_after_header = _safe_retry_after_header(
+                error.get("retry_after") if isinstance(error, dict) else None
+            )
+            try:
+                upstream_status = int(raw_status)
+            except (TypeError, ValueError):
+                upstream_status = 0
+            status_code = upstream_status if 400 <= upstream_status <= 599 else 502
+        else:
+            api_monitor.finish(monitor_id)
+            status_code = 200
+        return JSONResponse(
+            status_code = status_code,
+            content = content,
+            headers = (
+                {"Retry-After": retry_after_header} if retry_after_header is not None else None
+            ),
+        )
 
     return StreamingResponse(
         _tracked_stream(),
@@ -39231,9 +39416,20 @@ async def generate_diffusion_image(
         load_identity,
     )
 
+    from core.inference.diffusion_conditioning import LocalizedEdit
+
     backend = get_active_diffusion_engine()
     if account_access.managed_account():
         await asyncio.to_thread(account_access.require_media_adapters, request)
+    # An edit that names no size matches Image 1 in the backend instead of the schema's 1024 square default.
+    size_omitted = request.workflow == "edit" and not (
+        {"width", "height"} & request.model_fields_set
+    )
+    localized_edit = (
+        LocalizedEdit(mode = request.localized_edit.mode, image = request.localized_edit.image)
+        if request.localized_edit is not None
+        else None
+    )
     result = None
     for attempt in range(2):
         expected_load = None
@@ -39255,8 +39451,8 @@ async def generate_diffusion_image(
                     expected_load = expected_load,
                     prompt = request.prompt,
                     negative_prompt = request.negative_prompt,
-                    width = request.width,
-                    height = request.height,
+                    width = None if size_omitted else request.width,
+                    height = None if size_omitted else request.height,
                     steps = request.steps,
                     guidance = request.guidance,
                     seed = request.seed,
@@ -39268,6 +39464,9 @@ async def generate_diffusion_image(
                     strength = request.strength,
                     upscale = request.upscale,
                     reference_images = request.reference_images,
+                    workflow = request.workflow,
+                    reference_resolution = request.reference_resolution,
+                    localized_edit = localized_edit,
                     loras = [(l.id, l.weight) for l in request.loras] if request.loras else None,
                     controlnet = (
                         (
@@ -39370,6 +39569,9 @@ async def generate_diffusion_image(
                             else None
                         ),
                         "reference_image_count": len(request.reference_images or []) or None,
+                        # From the engine, not the request: an omitted resolution resolves to the family default.
+                        "reference_resolution": result.get("reference_resolution"),
+                        "localized_edit": result.get("localized_edit"),
                         "created_at": created_at,
                     },
                 )
@@ -39483,6 +39685,51 @@ async def get_search_image_thumbnail(
             "Content-Disposition": f'inline; filename="{image_id}.jpg"',
         },
     )
+
+
+@studio_router.post("/images/gallery/{image_id}/move", response_model = GalleryImage)
+async def move_gallery_image(
+    image_id: str,
+    body: GalleryMoveRequest,
+    current_subject: str = Depends(get_current_subject),
+):
+    """Move one image to just after ``after_id``. Dropping among pins pins it, elsewhere unpins it."""
+    from core.inference import image_gallery
+
+    try:
+        record = await asyncio.to_thread(image_gallery.move, image_id, body.after_id)
+    except KeyError:
+        # The neighbour left the shelf; the client resyncs.
+        raise HTTPException(status_code = 409, detail = "The gallery changed; try the move again.")
+    except OSError as exc:
+        logger.warning("image_gallery.move_failed: %s", exc)
+        raise HTTPException(status_code = 500, detail = "Could not save the new order.")
+    if record is None:
+        raise HTTPException(status_code = 404, detail = "Image not found.")
+    return GalleryImage(**record)
+
+
+@studio_router.post("/images/gallery/{image_id}/project", response_model = GalleryProjectResponse)
+async def add_gallery_image_to_project(
+    image_id: str,
+    body: GalleryProjectRequest,
+    current_subject: str = Depends(get_current_subject),
+):
+    """Copy one image into a chat project's folder."""
+    from core.inference import image_gallery
+    from core.inference.gallery_projects import ProjectNotFound, copy_into_project
+
+    path = await asyncio.to_thread(image_gallery.owned_image_path, image_id)
+    if path is None:
+        raise HTTPException(status_code = 404, detail = "Image not found.")
+    try:
+        result = await asyncio.to_thread(copy_into_project, path, body.project_id, "images")
+    except ProjectNotFound:
+        raise HTTPException(status_code = 404, detail = "Project not found.")
+    except OSError as exc:
+        logger.warning("image_gallery.add_to_project_failed: %s", exc)
+        raise HTTPException(status_code = 500, detail = "Could not copy the image into the project.")
+    return GalleryProjectResponse(**result)
 
 
 @studio_router.patch("/images/gallery/{image_id}", response_model = GalleryImage)

@@ -841,7 +841,8 @@ def test_mac_chat_header_controls_share_the_titlebar_row():
         assert padding is not None and padding > 0, (name, values)
         assert header is not None and control is not None, (name, values)
         assert padding + control <= header, (name, padding, control, header)
-    assert "pt-[var(--studio-content-top-inset,0px)] md:flex-row" in source
+    # #11660 moved the chat split from md to lg, so tablets stack.
+    assert "pt-[var(--studio-content-top-inset,0px)] lg:flex-row" in source
     assert "absolute top-[var(--studio-content-top-inset,0px)]" in source
 
 
@@ -1052,6 +1053,17 @@ def _at_default_scale(source: str) -> str:
     resolved = _MIXED_TOKEN.sub(lambda m: _resolve_mix(resolved, m), resolved)
     resolved = _WHITE_ALPHA.sub(lambda m: _resolve_white_alpha(resolved, m), resolved)
     return _SCALED_AMOUNT.sub(lambda m: _resolve_amount(resolved, m), resolved)
+
+
+# The Create rail on Images and Audio at the default UI scale, as `_ui_source` reads it. Since
+# #11760 the width is the page's resizable --media-rail-width, falling back to the former 408px.
+RAIL_WIDTH = "@[50rem]:w-[min(var(--media-rail-width,408px),calc(100%-13rem))]"
+# The same class as written: `_ui_source` reads a bare 408px identically, so the scale is pinned raw.
+RAIL_WIDTH_SCALED = (
+    "@[50rem]:w-[min(var(--media-rail-width,calc(408px*var(--ui-space-scale,1))),calc(100%-13rem))]"
+)
+# The header's first column tracks the same variable, so the header divider stays on the rail's.
+HEADER_COLUMNS = "grid-cols-[minmax(0,var(--media-rail-width,408px))_minmax(13rem,1fr)]"
 
 
 def _ui_source(path) -> str:
@@ -2359,16 +2371,20 @@ def test_image_page_structural_panes_share_the_container_breakpoint():
 
     assert "@container" in shell
     assert "@[50rem]:flex-row @[50rem]:overflow-hidden" in section
-    assert "@[50rem]:w-[408px]" in section
+    # 408px at the default scale, clamped since #11648 so the canvas keeps the 13rem its header column
+    # reserves (`minmax(13rem,1fr)`) when the scaled rail would otherwise eat it.
+    assert RAIL_WIDTH in section
+    assert RAIL_WIDTH_SCALED in IMAGES_PAGE.read_text(encoding = "utf-8"), "the rail stopped scaling"
     assert "md:flex-row" not in section
     # pb-6, not the old pb-20: the action is an in-flow footer now, so the rail no longer
     # reserves 80px for an overlay to sit in. The crossfade into that footer is the
     # -action mask, which is why the two are asserted together -- the small padding is
     # only correct while the fade is there to dissolve the last control into the footer.
     assert "panel-scroll-fade-action" in section
-    assert "gap-4 px-10 pt-9 pb-6 @[50rem]:overflow-y-auto" in section
+    # max-sm:px-5 since #11660: a phone gives the controls the 40px the gutter took.
+    assert "gap-4 px-10 max-sm:px-5 pt-9 pb-6 @[50rem]:overflow-y-auto" in section
     assert "p-6 px-10 @[50rem]:pt-[60px]" in section
-    assert "border-t border-foreground/10 px-10 py-3" in section
+    assert "border-t border-foreground/10 px-10 max-sm:px-5 py-3" in section
 
 
 def test_audio_page_matches_the_image_rail_header_and_action_footer():
@@ -2379,7 +2395,7 @@ def test_audio_page_matches_the_image_rail_header_and_action_footer():
     header = header_opening + after.split("Below 50rem", 1)[0]
     layout = source.split("Below 50rem", 1)[1]
 
-    assert "grid-cols-[minmax(0,408px)_minmax(13rem,1fr)]" in header_opening
+    assert HEADER_COLUMNS in header_opening
     assert "pointer-events-none" in header_opening
     assert "relative" in header_opening
     assert "z-40" in header_opening
@@ -2396,9 +2412,10 @@ def test_audio_page_matches_the_image_rail_header_and_action_footer():
     assert "absolute" not in header.split("<PillTabs", 1)[0]
 
     assert "@[50rem]:flex-row @[50rem]:overflow-hidden" in layout
-    assert "@[50rem]:w-[408px]" in layout
+    assert RAIL_WIDTH in layout
+    assert RAIL_WIDTH_SCALED in AUDIO_PAGE.read_text(encoding = "utf-8"), "the rail stopped scaling"
     assert "@[50rem]:border-r @[50rem]:border-b-0" in layout
-    assert "gap-4 px-10 pt-9 pb-6 @[50rem]:overflow-y-auto" in layout
+    assert "gap-4 px-10 max-sm:px-5 pt-9 pb-6 @[50rem]:overflow-y-auto" in layout
     assert 'mode === "speak"' in layout
     assert '"panel-scroll-fade-action"' in layout
     assert '"panel-scroll-fade"' in layout
@@ -2413,7 +2430,8 @@ def test_image_train_rail_matches_create_and_header():
     layout = source.split("overflow-x-hidden: an unset overflow-x", 1)[1]
 
     assert "@[50rem]:flex-row @[50rem]:overflow-hidden" in layout
-    assert "pl-10 @[50rem]:w-[408px]" in layout
+    # The Create rail's width and clamp, so switching Create and Train keeps the divider still.
+    assert "pl-10 max-sm:pl-5 " + RAIL_WIDTH in layout
     assert "@[50rem]:border-r @[50rem]:border-b-0" in layout
     assert "@container hover-scrollbar" in layout
     assert "@[50rem]:pt-[42px]" in layout
@@ -2481,7 +2499,7 @@ def test_images_header_tracks_preview_and_preserves_titlebar_controls():
     )
 
     assert "const { isMobile, pinned } = useSidebar();" in source
-    assert "grid-cols-[minmax(0,408px)_minmax(13rem,1fr)]" in opening
+    assert HEADER_COLUMNS in opening
     assert "@[50rem]:border-r" in header
     assert "isMobile" in header and "pl-12" in header
     assert "!pinned && isTauri" in header
@@ -2536,7 +2554,8 @@ _LENGTHS_THAT_MUST_KEEP_THE_SCALE = (
     # The sidebar row: its height, the gap it sets when pinned, and the indent a project row
     # takes. These are hand-set one-off lengths, which is exactly the spacing that used to
     # stay put while the labels grew, so the row clips its own text at a larger setting.
-    (APP_SIDEBAR, "", "h", "30px", 5),
+    # Six rows: #11589 added the drop-cue row, scaled like the rest.
+    (APP_SIDEBAR, "", "h", "30px", 6),
     (APP_SIDEBAR, "", "gap", "8.5px", 6),
     (APP_SIDEBAR, "", "pl", "39px", 2),
     # The 34px pill controls in the media headers, in all three spellings the pages use. The
@@ -2672,3 +2691,20 @@ def test_the_lengths_these_contracts_measure_still_follow_the_ui_scale():
         assert not re.search(
             _CLASS_STARTS + re.escape(f"{variant}{utility}-[{length}]") + _CLASS_ENDS, source
         ), f"{path.name} has a bare {named}, which stays put while its text grows"
+
+
+def test_the_media_rail_fallback_is_the_width_hook_fallback():
+    """The 408px inside var(--media-rail-width,408px) is only what paints before the page sets the
+    variable; the hook's own fallback is what a first visit stores. They have to agree, or the
+    divider jumps on first paint. Each page that reads the variable also has to set it on the
+    element marked as the rail root, or every rail silently sits at the fallback."""
+    hook = (FRONTEND / "hooks/use-media-rail-width.ts").read_text(encoding = "utf-8")
+    for kind, page in (("images", IMAGES_PAGE), ("audio", AUDIO_PAGE)):
+        block = hook.split(f"  {kind}: createPanelWidthStore(", 1)[1].split("}),", 1)[0]
+        assert re.search(r"fallback: 408,", block), (kind, block)
+        source = page.read_text(encoding = "utf-8")
+        assert f'useMediaRailWidth("{kind}")' in source, page
+        # The attribute and the style that sets the variable sit on the same element.
+        root = source.split('{...{ [MEDIA_RAIL_ROOT_ATTR]: "" }}', 1)
+        assert len(root) == 2, page
+        assert "style={railRootStyle}" in root[1].split(">", 1)[0], page

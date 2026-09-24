@@ -7,6 +7,7 @@ import {
   watchCacheMissDownload,
 } from "../lib/cache-miss-download";
 import { mlxRuntimeStateFrom } from "../lib/mlx-runtime-state";
+import { shouldRestorePreviousModel } from "../lib/restore-previous-model";
 import {
   type ServerTuningValues,
   clearedServerTuningState,
@@ -2182,7 +2183,13 @@ export function useChatModelRuntime() {
             notifyLocalPromptQueueLoadFailed(lifecycleLease);
             // Cancellation already handles unloading.
             if (abortCtrl.signal.aborted) throw error;
-            if (previousWasUnloaded && previousCheckpoint) {
+            // A load that got no answer may still be running (a page reload mid-load, for one): putting the
+            // previous model back would replace it. Only an answered failure is safe to roll back.
+            if (
+              previousWasUnloaded &&
+              previousCheckpoint &&
+              shouldRestorePreviousModel(error)
+            ) {
               let rollbackNativePathLease: string | undefined;
               if (previousActiveNativePathToken) {
                 try {
