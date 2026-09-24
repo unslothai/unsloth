@@ -57,6 +57,21 @@ export function libraryFileName(item: {
   return `${stem}${suffix}`;
 }
 
+/** The names, with a " (2)", " (3)"... before the extension of any already taken (ignoring case,
+ *  as Windows and macOS do), so a folder of downloads keeps every file. */
+export function uniqueFileNames(names: string[]): string[] {
+  const taken = new Set<string>();
+  return names.map((name) => {
+    const dot = name.lastIndexOf(".");
+    const stem = dot > 0 ? name.slice(0, dot) : name;
+    const suffix = dot > 0 ? name.slice(dot) : "";
+    let candidate = name;
+    for (let n = 2; taken.has(candidate.toLowerCase()); n++) candidate = `${stem} (${n})${suffix}`;
+    taken.add(candidate.toLowerCase());
+    return candidate;
+  });
+}
+
 // Types for what the composer and the browser read by type; the rest go by extension.
 const EXTENSION_TYPES: Record<string, string> = {
   png: "image/png",

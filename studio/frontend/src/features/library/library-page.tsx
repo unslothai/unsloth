@@ -42,6 +42,7 @@ import {
   chatAboutItems,
   chatWithModel,
   downloadLibraryItem,
+  downloadLibraryItems,
 } from "./actions";
 import type { LibraryFolder, LibraryItem, LibraryUploadBatch } from "./api";
 import { fileKind, isFileItem, isModelItem } from "./file-kind";
@@ -770,11 +771,10 @@ function LibraryView({ search }: { search: LibrarySearch }) {
     else void chatAboutItems(navigate, selectedFiles());
     setSelection(new Set());
   };
-  const bulkDownload = async () => {
+  const bulkDownload = () => {
     const files = selectedFiles();
     setSelection(new Set());
-    // One at a time, so each save dialog or download finishes before the next starts.
-    for (const file of files) await downloadLibraryItem(file);
+    void downloadLibraryItems(files);
   };
   const bulkMove = (destination: string | null) => {
     void moveAll(selectedTargets(), destination);
@@ -858,7 +858,7 @@ function LibraryView({ search }: { search: LibrarySearch }) {
             <button
               type="button"
               disabled={selectedFiles().length === 0}
-              onClick={() => void bulkDownload()}
+              onClick={bulkDownload}
               // Dark mode: borderless, filled like the model picker's search field.
               className="flex h-9 items-center gap-2 rounded-full border border-border px-4 text-sm font-medium outline-none transition-colors hover:bg-sidebar-accent focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50 dark:border-transparent dark:bg-accent/60 dark:hover:bg-accent"
             >

@@ -12,6 +12,7 @@ import {
   embeddedBlobType,
   libraryFileName,
   libraryFileType,
+  uniqueFileNames,
 } from "../src/features/library/file-name.ts";
 
 test("a rename that dropped the extension gets the file's own back", () => {
@@ -70,4 +71,15 @@ test("nothing embedded directly is typed as a scriptable document", () => {
   assert.equal(embeddedBlobType("image", "image/png"), "image/png");
   assert.equal(embeddedBlobType("video", "video/mp4"), "video/mp4");
   assert.equal(embeddedBlobType("audio", "video/mp4"), "application/octet-stream");
+});
+
+test("names in one download are made unique, ignoring case", () => {
+  assert.deepEqual(uniqueFileNames(["a.txt", "A.txt", "a.txt", "b", "b", "a (2).txt"]), [
+    "a.txt",
+    "A (2).txt",
+    "a (3).txt",
+    "b",
+    "b (2)",
+    "a (2) (2).txt",
+  ]);
 });

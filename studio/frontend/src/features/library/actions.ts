@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import type { useNavigate } from "@tanstack/react-router";
+import { zipSync } from "fflate";
 import { getAuthSessionEpoch } from "@/features/auth";
 import { clearNewChatDraft, listLoras, useChatRuntimeStore } from "@/features/chat";
 import {
@@ -16,7 +17,7 @@ import { toast } from "@/lib/toast";
 import { MAX_VIDEO_SIZE } from "@/lib/video-utils";
 import { type LibraryItem, libraryDownloadUrl, libraryItemFile } from "./api";
 import { fileKind } from "./file-kind";
-import { libraryFileName } from "./file-name";
+import { libraryFileName, uniqueFileNames } from "./file-name";
 import {
   type LibraryChatHandoff,
   useLibraryChatHandoffStore,
@@ -70,6 +71,52 @@ export async function downloadLibraryItem(item: LibraryItem): Promise<void> {
     toast.error(`Could not download ${item.name}`, {
       description: errorMessage(error),
     });
+  }
+}
+
+// A browser download bundle is built in memory, so it stays well short of what a tab can hold.
+const MAX_ZIP_BYTES = 256 * 1024 * 1024;
+
+/**
+ * Several files at once. The desktop app saves each through its own dialog. A browser gets one
+ * zip: separate downloads started one by one after each fetch look to Chrome like a page spamming
+ * downloads, which it holds behind a prompt, or blocks silently once that was dismissed. Past what
+ * a zip can hold in memory they go one by one, and the user is told what the browser may ask.
+ */
+export async function downloadLibraryItems(items: LibraryItem[]): Promise<void> {
+  if (items.length <= 1 || isTauri) {
+    for (const item of items) await downloadLibraryItem(item);
+    return;
+  }
+  const knownBytes = items.reduce((sum, item) => sum + (item.sizeBytes ?? 0), 0);
+  if (knownBytes > MAX_ZIP_BYTES) {
+    toast(`Downloading ${items.length} files`, {
+      description: "If your browser asks, allow this site to download multiple files.",
+    });
+    for (const item of items) await downloadLibraryItem(item);
+    return;
+  }
+  const epoch = getAuthSessionEpoch();
+  const progress = toast.loading(`Preparing ${items.length} files…`);
+  try {
+    const files: File[] = [];
+    for (const item of items) {
+      files.push(await libraryItemFile(item));
+      // Signed out meanwhile: the files belong to the account that left.
+      if (getAuthSessionEpoch() !== epoch) return;
+    }
+    const names = uniqueFileNames(files.map((file) => file.name));
+    const entries: Record<string, Uint8Array> = {};
+    for (const [index, file] of files.entries()) {
+      entries[names[index]!] = new Uint8Array(await file.arrayBuffer());
+    }
+    // Stored, not deflated: most of a Library is media that is compressed already.
+    const archive = zipSync(entries, { level: 0 });
+    await downloadFile(new Blob([archive], { type: "application/zip" }), "Library files.zip");
+  } catch (error) {
+    toast.error("Could not download the files", { description: errorMessage(error) });
+  } finally {
+    toast.dismiss(progress);
   }
 }
 
