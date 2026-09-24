@@ -9,7 +9,8 @@ for MiniMax-H3's 32B Qwen3-VL conditioner is most of a render's prompt cost.
 
 On by default (``UNSLOTH_DIFFUSION_PROMPT_CACHE=0`` turns it off), bounded by bytes
 (``UNSLOTH_DIFFUSION_PROMPT_CACHE_MB``, default 256, scaled down on small hosts), least recently
-used first out. The cache lives on the pipeline object, so an unload or a reload starts empty;
+used first out. Entries live in host memory, so the cache never takes VRAM from a render. The
+cache lives on the pipeline object, so an unload or a reload starts empty;
 ``release`` frees it eagerly on teardown.
 
 Keying: every bound argument of the encode call except placement (``device``) and RNG
@@ -179,28 +180,17 @@ class PromptCache:
 
 
 def _store_copy(t: Any) -> Any:
-    """The stored copy of an encoder output tensor: on its own device when that device has room,
-    else host memory (pinned when a CUDA runtime is present, so the copy back overlaps). Remembers
-    the source device, which is where a hit lands unless the caller names one."""
+    """The stored copy of an encoder output tensor, always in host memory so the cache never holds VRAM a render
+    could need (pinned when the source is on CUDA, so the copy back is asynchronous). Remembers the source device,
+    which is where a hit lands unless the caller names one."""
     t = t.detach()
     device = t.device
-    stored = None
+    stored = t.to("cpu", copy = True)
     if device.type == "cuda":
         try:
-            free, _total = _torch().cuda.mem_get_info(device)
-            if free > 2 * 1024**3:
-                stored = t.clone()
-        except Exception:  # noqa: BLE001 - fall through to host storage
+            stored = stored.pin_memory()
+        except Exception:  # noqa: BLE001 - pinning is optional
             pass
-        if stored is None:
-            try:
-                stored = t.to("cpu", copy = True).pin_memory()
-            except Exception:  # noqa: BLE001 - pinning is optional
-                stored = t.to("cpu", copy = True)
-    elif device.type == "cpu":
-        stored = t.clone()
-    else:
-        stored = t.to("cpu", copy = True)
     stored._unsloth_src_device = device
     return stored
 
