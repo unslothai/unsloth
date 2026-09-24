@@ -223,32 +223,35 @@ function ModelSelectorTrigger({
         ) : null}
         {/* A box-centred Hellix label sits above the icon's centre; drop it 0.05em to centre the caps. */}
         <span className="relative top-[0.05em] flex min-w-0 flex-1 items-baseline">
-          {/* Name and quant stay whole; only the description truncates. */}
-          <span
-            className={cn(
-              "flex max-w-full shrink-0 items-baseline truncate whitespace-nowrap font-heading text-ui-16 font-medium leading-tight text-black dark:text-foreground",
-              triggerLabelClassName,
-            )}
-          >
-            {currentModel?.name ?? placeholder}
-            {showCloudIndicator ? (
-              <HugeiconsIcon
-                icon={CloudIcon}
-                strokeWidth={1.75}
-                className="relative top-[0.15625rem] ml-1.5 mr-[calc(0.36rem*var(--ui-space-scale,1))] size-3.5 shrink-0 text-muted-foreground"
-              />
-            ) : null}
-          </span>
-          {currentModel?.description && (
+          {/* Name and quant stay whole; only the description truncates. The suffix sits outside this
+              group, so even an over-long name leaves room for it. */}
+          <span className="flex min-w-0 items-baseline">
             <span
               className={cn(
-                "min-w-0 truncate text-xs leading-none text-muted-foreground",
-                showCloudIndicator ? "" : "ml-2",
+                "flex max-w-full shrink-0 items-baseline whitespace-nowrap font-heading text-ui-16 font-medium leading-tight text-black dark:text-foreground",
+                triggerLabelClassName,
               )}
             >
-              {currentModel.description}
+              <span className="min-w-0 truncate">{currentModel?.name ?? placeholder}</span>
+              {showCloudIndicator ? (
+                <HugeiconsIcon
+                  icon={CloudIcon}
+                  strokeWidth={1.75}
+                  className="relative top-[0.15625rem] ml-1.5 mr-[calc(0.36rem*var(--ui-space-scale,1))] size-3.5 shrink-0 text-muted-foreground"
+                />
+              ) : null}
             </span>
-          )}
+            {currentModel?.description && (
+              <span
+                className={cn(
+                  "min-w-0 truncate text-xs leading-none text-muted-foreground",
+                  showCloudIndicator ? "" : "ml-2",
+                )}
+              >
+                {currentModel.description}
+              </span>
+            )}
+          </span>
           {currentModel?.descriptionSuffix && (
             <span
               className={cn(
