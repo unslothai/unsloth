@@ -800,3 +800,54 @@ def test_a_projects_own_files_are_listed(client, monkeypatch, tmp_path):
     conn.close()
     assert not library._studio_project_root(str(own), library._project_workspaces())
     assert "sandbox:project-p-lib:files/notes.txt" not in _items(client)[0]
+
+
+def test_types_come_from_a_fixed_extension_map(client, monkeypatch):
+    import mimetypes
+
+    # Whatever the OS registry says: Windows apps remap types, and mimetypes calls .ts a video.
+    monkeypatch.setattr(mimetypes, "guess_type", lambda *_a, **_k: ("video/mp2t", None))
+    for name in ("app.ts", "view.tsx", "mod.mts"):
+        assert library._guess_type(name) == "text/typescript", name
+    assert library._guess_type("photo.JPG") == "image/jpeg"
+    assert library._guess_type("mystery.xyz") == "application/octet-stream"
+
+
+def test_an_upload_is_typed_by_its_extension_not_the_client(client):
+    [page, pdf, odd, blob] = _upload(
+        client,
+        ("notes.txt", b"<script>1</script>", "text/html"),
+        ("report.pdf", b"%PDF-1.7", "text/html"),
+        ("track.xyz", b"x", "audio/x, text/html"),
+        ("data.bin2", b"x", "application/xhtml+xml"),
+    )
+    items, _ = _items(client)
+    assert items[page]["contentType"] == "text/plain"
+    assert items[pdf]["contentType"] == "application/pdf"
+    # A list of types, or a type a browser would run, is not stored for an unknown extension.
+    assert items[odd]["contentType"] == "application/octet-stream"
+    assert items[blob]["contentType"] == "application/octet-stream"
+
+
+def test_only_an_exact_media_type_is_served_inline(client, monkeypatch):
+    from storage import library_db
+
+    [clip] = _upload(client, ("clip.xyz", b"x", "application/octet-stream"))
+    upload_id = clip.split(":", 1)[1]
+    url = f"/api/library/uploads/{upload_id}/file"
+    conn = library_db.get_connection()
+    for stored, inline in (
+        ("audio/x, text/html", False),
+        ("audio/mpeg", True),
+        ("image/png; charset=binary", True),
+        ("image/svg+xml", False),
+    ):
+        conn.execute("UPDATE library_uploads SET content_type = ? WHERE id = ?", (stored, upload_id))
+        conn.commit()
+        response = client.get(url)
+        assert response.headers["x-content-type-options"] == "nosniff", stored
+        disposition = response.headers.get("content-disposition", "")
+        assert ("attachment" not in disposition) is inline, stored
+        if not inline:
+            assert response.headers["content-type"] == "application/octet-stream"
+    conn.close()

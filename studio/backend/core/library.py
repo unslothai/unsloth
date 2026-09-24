@@ -20,6 +20,7 @@ and layers its overlay (name, favorite, folder) on top.
 
 from __future__ import annotations
 
+import functools
 import os
 import re
 import threading
@@ -123,8 +124,6 @@ def open_native_upload(lease: str):
     Returns (name, content type, binary handle). The webview never names a path itself: the app
     signs the one the OS handed it, and the grant is re-checked here before a byte is read.
     """
-    import mimetypes
-
     from utils.native_path_leases import verify_native_path_lease
 
     grant = verify_native_path_lease(
@@ -136,8 +135,7 @@ def open_native_upload(lease: str):
     # Refuses a path outside the acting account's workspace for a non-owner account.
     account_path(str(grant.canonical_path))
     name = grant.canonical_path.name
-    content_type = mimetypes.guess_type(name)[0] or "application/octet-stream"
-    return name, content_type, open(grant.canonical_path, "rb")
+    return name, _guess_type(name), open(grant.canonical_path, "rb")
 
 
 # Deleting an upload and rewriting a note each check its row, then change the file and the row.
@@ -474,9 +472,126 @@ def _sandbox_items() -> list[dict]:
     return items
 
 
+# By extension and the same on every OS: mimetypes reads the Windows registry, where any installed
+# app can remap a type, and it names `.ts` an MPEG transport stream. The sandbox route's raster
+# types are merged in, so the two agree on every image.
+_CONTENT_TYPES = {
+    ".svg": "image/svg+xml",
+    ".tif": "image/tiff",
+    ".tiff": "image/tiff",
+    ".ico": "image/x-icon",
+    ".heic": "image/heic",
+    ".heif": "image/heif",
+    ".mp3": "audio/mpeg",
+    ".wav": "audio/wav",
+    ".ogg": "audio/ogg",
+    ".oga": "audio/ogg",
+    ".opus": "audio/ogg",
+    ".flac": "audio/flac",
+    ".m4a": "audio/mp4",
+    ".aac": "audio/aac",
+    ".weba": "audio/webm",
+    ".mp4": "video/mp4",
+    ".m4v": "video/mp4",
+    ".mov": "video/quicktime",
+    ".webm": "video/webm",
+    ".mkv": "video/x-matroska",
+    ".avi": "video/x-msvideo",
+    ".ogv": "video/ogg",
+    ".pdf": "application/pdf",
+    ".txt": "text/plain",
+    ".log": "text/plain",
+    ".md": "text/markdown",
+    ".markdown": "text/markdown",
+    ".csv": "text/csv",
+    ".tsv": "text/tab-separated-values",
+    ".json": "application/json",
+    ".jsonl": "application/jsonl",
+    ".xml": "application/xml",
+    ".yaml": "text/yaml",
+    ".yml": "text/yaml",
+    ".toml": "text/plain",
+    ".ini": "text/plain",
+    ".html": "text/html",
+    ".htm": "text/html",
+    ".css": "text/css",
+    ".js": "text/javascript",
+    ".mjs": "text/javascript",
+    ".cjs": "text/javascript",
+    ".jsx": "text/javascript",
+    ".ts": "text/typescript",
+    ".tsx": "text/typescript",
+    ".mts": "text/typescript",
+    ".cts": "text/typescript",
+    ".py": "text/x-python",
+    ".ipynb": "application/x-ipynb+json",
+    ".sh": "text/x-shellscript",
+    ".sql": "text/plain",
+    ".rtf": "application/rtf",
+    ".doc": "application/msword",
+    ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ".xls": "application/vnd.ms-excel",
+    ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    ".ppt": "application/vnd.ms-powerpoint",
+    ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    ".odt": "application/vnd.oasis.opendocument.text",
+    ".ods": "application/vnd.oasis.opendocument.spreadsheet",
+    ".odp": "application/vnd.oasis.opendocument.presentation",
+    ".epub": "application/epub+zip",
+    ".zip": "application/zip",
+    ".gz": "application/gzip",
+    ".tar": "application/x-tar",
+    ".parquet": "application/vnd.apache.parquet",
+    ".safetensors": "application/octet-stream",
+    ".gguf": "application/octet-stream",
+}
+
+_MEDIA_TYPE_RE = re.compile(r"[a-z0-9][a-z0-9!#$&^_.+-]*/[a-z0-9][a-z0-9!#$&^_.+-]*")
+
+# Types a browser runs or renders as a document of its own. A client that declares one for a file
+# whose extension says otherwise does not get it stored.
+_ACTIVE_TYPES = frozenset(
+    {
+        "text/html",
+        "application/xhtml+xml",
+        "image/svg+xml",
+        "application/pdf",
+        "text/xml",
+        "application/xml",
+        "text/javascript",
+        "application/javascript",
+        "application/x-shockwave-flash",
+    }
+)
+
+
+@functools.lru_cache(maxsize = None)
+def content_types() -> dict[str, str]:
+    from routes.inference import _SANDBOX_MEDIA_TYPES
+    return {**_CONTENT_TYPES, **_SANDBOX_MEDIA_TYPES}
+
+
+def media_type(value: object) -> Optional[str]:
+    """The one media type ``value`` names, lower case and without parameters; None when it names
+    none, or several (``audio/x, text/html``)."""
+    essence = str(value or "").split(";", 1)[0].strip().lower()
+    return essence if _MEDIA_TYPE_RE.fullmatch(essence) else None
+
+
 def _guess_type(name: str) -> str:
-    import mimetypes
-    return mimetypes.guess_type(name)[0] or "application/octet-stream"
+    return content_types().get(os.path.splitext(name)[1].lower(), "application/octet-stream")
+
+
+def upload_content_type(name: str, declared: Optional[str]) -> str:
+    """What an upload is stored as: its extension's type when the map knows it, else the type the
+    client declared, as long as it is one type and nothing a browser would run."""
+    known = content_types().get(os.path.splitext(name)[1].lower())
+    if known:
+        return known
+    declared_type = media_type(declared)
+    if declared_type is None or declared_type in _ACTIVE_TYPES:
+        return "application/octet-stream"
+    return declared_type
 
 
 # ── Public API ───────────────────────────────────────────────────

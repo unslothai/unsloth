@@ -28,17 +28,21 @@ router = APIRouter()
 
 _MAX_UPLOAD_BYTES = LIBRARY_UPLOAD_MAX_BYTES
 _CHUNK_BYTES = 1024 * 1024
-# Raster images render inline; anything else (svg and html included) downloads as opaque bytes, as
-# the sandbox route does, so a crafted upload cannot run script on the app origin.
-_INLINE_PREFIXES = (
-    "image/png",
-    "image/jpeg",
-    "image/gif",
-    "image/webp",
-    "image/avif",
-    "audio/",
-    "video/",
-)
+# Raster images, audio and video render inline; anything else (svg and html included) downloads as
+# opaque bytes, as the sandbox route does, so a crafted upload cannot run script on the app origin.
+# Exact types, never a prefix: a stored "audio/x, text/html" is not audio.
+_INLINE_IMAGE_TYPES = frozenset({"image/png", "image/jpeg", "image/gif", "image/webp", "image/avif"})
+_NOSNIFF = {"X-Content-Type-Options": "nosniff"}
+
+
+def _inline_type(content_type: str) -> Optional[str]:
+    value = library.media_type(content_type)
+    if value in _INLINE_IMAGE_TYPES:
+        return value
+    playable = {
+        known for known in library.content_types().values() if known.startswith(("audio/", "video/"))
+    }
+    return value if value in playable else None
 
 
 class ItemPatch(BaseModel):
@@ -194,7 +198,7 @@ def get_item_thumbnail(
     return Response(
         content = data,
         media_type = "image/webp",
-        headers = {"Cache-Control": "private, max-age=31536000, immutable"},
+        headers = {"Cache-Control": "private, max-age=31536000, immutable", **_NOSNIFF},
     )
 
 
@@ -295,7 +299,7 @@ async def upload_files(
                 await run_in_threadpool(
                     library.save_upload,
                     name,
-                    upload.content_type or "application/octet-stream",
+                    library.upload_content_type(name, upload.content_type),
                     _chunks(upload.file, name),
                 )
             )
@@ -322,14 +326,14 @@ def get_upload_file(upload_id: str, current_subject: str = Depends(get_current_s
     path = library.upload_path(upload_id)
     if record is None or path is None or not path.is_file():
         raise HTTPException(status_code = 404, detail = "File not found")
-    content_type = record["contentType"].lower()
-    if content_type.startswith(_INLINE_PREFIXES):
-        return FileResponse(path, media_type = content_type)
+    content_type = _inline_type(record["contentType"])
+    if content_type:
+        return FileResponse(path, media_type = content_type, headers = _NOSNIFF)
     return FileResponse(
         path,
         media_type = "application/octet-stream",
         filename = record["name"],
-        headers = {"X-Content-Type-Options": "nosniff"},
+        headers = _NOSNIFF,
     )
 
 
