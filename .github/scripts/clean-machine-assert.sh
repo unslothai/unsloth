@@ -57,14 +57,6 @@ _git_line_remotes() {
     | sed 's/\.git$//'
 }
 
-# The commits those requirement files pin (git+URL@<40 hex>), one per line.
-_allowed_git_pins() {
-  for _req in ${UNSLOTH_ALLOW_GIT_FROM:-}; do
-    [ -f "$_req" ] || continue
-    sed -n 's/^[^#]*git+[a-z][a-z0-9+.-]*:\/\/[^@#[:space:]]*@\([0-9a-f]\{40\}\).*/\1/p' "$_req"
-  done | sort -u
-}
-
 # Every `submodule update` with these arguments ran inside one of uv's checkouts, read from
 # the working directories the git wrapper records beside the trace. It fetches what that
 # checkout's .gitmodules names, which is the pinned requirement's own content only there.
@@ -82,6 +74,18 @@ _ran_in_uv_checkout() { # the traced argument string
   [ "$_seen" = true ]
 }
 
+# Every run of these arguments was in a uv checkout named after a prefix of $2.
+_in_checkout_of() { # the traced argument string, a full commit
+  _ran_in_uv_checkout "$1" || return 1
+  while IFS=$'\t' read -r _cwd _args; do
+    [ "$_args" = "$1" ] || continue
+    _short=${_cwd##*/}
+    [ ${#_short} -ge 7 ] || return 1
+    case "$_short" in *[!0-9a-f]*) return 1 ;; esac
+    case "$2" in "$_short"*) ;; *) return 1 ;; esac
+  done < "$TRACE.git-cwd"
+}
+
 # A git line naming no remote is allowed only in the exact shapes uv's git source uses to
 # check out a pinned commit from its own cache: nothing that can reach the network (a bare
 # `fetch origin` reads its URL from config) and nothing outside $UV_CACHE_DIR.
@@ -92,8 +96,14 @@ _is_uv_git_cache_op() { # the traced argument string
     init|rev-parse|"rev-parse "*) return 0 ;;
     "submodule update --recursive --init") _ran_in_uv_checkout "$1"; return ;;
     "reset --hard "*)
+      # The commit comes from the INSTALLED package, which on an overlay-free leg is the
+      # released wheel and can pin an older commit than this checkout's file. uv names each
+      # checkout directory after the short commit, so it has to run in one whose name the
+      # commit starts with.
       _commit=${1#reset --hard }
-      [ -n "$_commit" ] && printf '%s\n' "$(_allowed_git_pins)" | grep -qxF -- "$_commit"
+      case "$_commit" in *[!0-9a-f]*|"") return 1 ;; esac
+      [ ${#_commit} -eq 40 ] || return 1
+      _in_checkout_of "$1" "$_commit"
       return ;;
     "clone --local "*)
       [ -n "${UV_CACHE_DIR:-}" ] || return 1

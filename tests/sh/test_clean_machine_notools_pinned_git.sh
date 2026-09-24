@@ -74,6 +74,16 @@ expect_rc "uv cloning the pinned Diffusers build passes" 0 "$PIN" "$UV_CLONE"
 expect_rc "the same trace fails with no allowance, as before" 1 "" "$UV_CLONE"
 expect_rc "an allowance file that does not exist allows nothing" 1 "$ROOT/missing.txt" "$UV_CLONE"
 expect_rc "the installer's git --version probe alone passes" 0 "$PIN" "git\t--version\n"
+# An overlay-free leg installs the released wheel, which can pin an older commit than this
+# checkout's file; uv's checkout is named after the commit it installs.
+OLDER=1111111111111111111111111111111111111111
+FETCH="git\tfetch --tags --force --update-head-ok $REMOTE +HEAD:refs/remotes/origin/HEAD\n"
+expect_rc "a released package pinning another commit passes in its own checkout" 0 "$PIN" \
+    "${FETCH}git\treset --hard $OLDER\n" "$CACHE/checkouts/76e25d04238765dd/${OLDER:0:9}"
+expect_rc "a reset outside uv's checkouts fails" 1 "$PIN" \
+    "${FETCH}git\treset --hard $OLDER\n" "/home/someone/${OLDER:0:9}"
+expect_rc "a short or abbreviated reset target fails" 1 "$PIN" \
+    "${FETCH}git\treset --hard ${OLDER:0:9}\n" "$CACHE/checkouts/76e25d04238765dd/${OLDER:0:9}"
 expect_rc "a remote with the .git suffix dropped still matches" 0 "$PIN" \
     "git\tfetch ${REMOTE%.git} +HEAD:refs/remotes/origin/HEAD\n"
 
