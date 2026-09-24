@@ -190,9 +190,37 @@ def _split_output(out: Any) -> tuple:
     return None, None
 
 
-def _timestep_of(kwargs: dict) -> Any:
+_TIMESTEP_NAMES = ("timestep", "timesteps", "t")
+
+
+def _timestep_slot(signature: Any) -> tuple:
+    """(name, positional index or None) of the forward's timestep parameter, ("timestep", None) when
+    unknown. Z-Image calls ``transformer(x, t, cap_feats)`` positionally; FLUX / Qwen pass ``timestep=``."""
+    try:
+        params = list(signature.parameters.values())
+    except Exception:  # noqa: BLE001
+        return "timestep", None
+    names = {p.name: i for i, p in enumerate(params)}
+    for name in _TIMESTEP_NAMES:
+        if name in names:
+            index = names[name]
+            positional = all(
+                p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD) for p in params[: index + 1]
+            )
+            return name, index if positional else None
+    return "timestep", None
+
+
+def _timestep_of(
+    args: tuple,
+    kwargs: dict,
+    slot: tuple = ("timestep", None),
+) -> Any:
     """The call's timestep as a one-element float32 tensor on its own device (no host sync)."""
-    t = kwargs.get("timestep")
+    name, index = slot
+    t = kwargs.get(name)
+    if t is None and index is not None and index < len(args):
+        t = args[index]
     try:
         if _is_tensor(t):
             return t.detach().reshape(-1)[:1].to(dtype = _torch().float32).clone()
@@ -251,9 +279,11 @@ class StaticStepSkip:
             update_wrapper(self, cls_forward)
         except Exception:  # noqa: BLE001
             pass
+        self._t_slot = ("timestep", None)
         try:
             # Pipelines filter kwargs by inspect.signature(transformer.forward); keep the real one visible.
             self.__signature__ = inspect.signature(cls_forward)
+            self._t_slot = _timestep_slot(self.__signature__)
         except Exception:  # noqa: BLE001
             pass
         self.module = module
@@ -351,7 +381,7 @@ class StaticStepSkip:
             and history[-1].sig == sig
         ):
             try:
-                out = self._skipped(history, kwargs)
+                out = self._skipped(history, args, kwargs)
             except Exception as exc:  # noqa: BLE001 - a skip that cannot be built computes instead
                 out = None
                 if self.logger is not None:
@@ -362,10 +392,10 @@ class StaticStepSkip:
         out = self._forward(args, kwargs)
         self.stats["computed"] += 1
         if step < self.last_skip:
-            self._remember(key, sig, kwargs, out)
+            self._remember(key, sig, args, kwargs, out)
         return out
 
-    def _remember(self, key: Any, sig: tuple, kwargs: dict, out: Any) -> None:
+    def _remember(self, key: Any, sig: tuple, args: tuple, kwargs: dict, out: Any) -> None:
         value, rebuild = _split_output(out)
         if value is None:
             # Not reproducible, so this branch computes until an output that is comes back.
@@ -380,18 +410,20 @@ class StaticStepSkip:
                 )
             return
         # Cloned: the pipeline may keep or modify the tensor it was handed.
-        stored = _Stored(sig, _timestep_of(kwargs), value.detach().clone(), rebuild)
+        stored = _Stored(
+            sig, _timestep_of(args, kwargs, self._t_slot), value.detach().clone(), rebuild
+        )
         keep = 2 if self.mode == MODE_TAYLOR1 else 1
         history = self.history.setdefault(key, [])
         history.append(stored)
         del history[:-keep]
 
-    def _skipped(self, history: list, kwargs: dict) -> Any:
+    def _skipped(self, history: list, args: tuple, kwargs: dict) -> Any:
         last = history[-1]
         value = None
         if self.mode == MODE_TAYLOR1 and len(history) >= 2:
             prev = history[-2]
-            t = _timestep_of(kwargs)
+            t = _timestep_of(args, kwargs, self._t_slot)
             # Only same-shape outputs combine: a prefix-KV step 0 is longer than every later step.
             if (
                 prev.sig == last.sig
