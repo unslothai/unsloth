@@ -50,7 +50,6 @@ from .utils import (
     QUANT_STATE,
     fast_linear_forward,
     matmul_lora,
-    has_mxfp4_base,
 )
 
 from .flex_attention import (
