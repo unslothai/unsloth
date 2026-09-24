@@ -44,6 +44,7 @@ def test_transformers_5_does_not_honor_the_legacy_flag():
 def test_class_level_legacy_attribute_means_honored():
     class Old:
         _supports_flash_attn_2 = False
+
     with mock.patch.object(transformers, "PreTrainedModel", Old):
         assert _load()() is True
 
@@ -51,8 +52,10 @@ def test_class_level_legacy_attribute_means_honored():
 def test_dispatch_that_reads_the_legacy_flag_means_honored():
     class Mid:
         _supports_flash_attn = False
+
         def _flash_attn_2_can_dispatch(self):
             return self._supports_flash_attn or getattr(self, "_supports_flash_attn_2", False)
+
     with mock.patch.object(transformers, "PreTrainedModel", Mid):
         assert _load()() is True
 
@@ -60,8 +63,10 @@ def test_dispatch_that_reads_the_legacy_flag_means_honored():
 def test_dispatch_that_ignores_the_legacy_flag_means_not_honored():
     class New:
         _supports_flash_attn = False
+
         def _flash_attn_can_dispatch(self):
             return self._supports_flash_attn
+
     with mock.patch.object(transformers, "PreTrainedModel", New):
         assert _load()() is False
 
@@ -69,5 +74,6 @@ def test_dispatch_that_ignores_the_legacy_flag_means_not_honored():
 def test_unknown_layout_keeps_previous_behavior():
     class Unknown:
         pass
+
     with mock.patch.object(transformers, "PreTrainedModel", Unknown):
         assert _load()() is True

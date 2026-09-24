@@ -1207,6 +1207,7 @@ def _transformers_honors_legacy_flash_attn_2_flag():
     # honors it, but 5.x reads only _supports_flash_attn and raises "does not support Flash
     # Attention 2 yet" at init (inclusionAI/Ling-2.6-flash). Probe the dispatch check itself.
     from transformers import PreTrainedModel
+
     if "_supports_flash_attn_2" in vars(PreTrainedModel):
         return True
     for name in ("_flash_attn_2_can_dispatch", "_flash_attn_can_dispatch"):
