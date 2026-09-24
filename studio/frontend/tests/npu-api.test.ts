@@ -91,29 +91,6 @@ test("enable surfaces the backend's reason", async () => {
   await assert.rejects(c.api.enableNpu(), /locked-memory limit/);
 });
 
-test("a runtime left running after a failed setup is not ready", () => {
-  const { api } = client(() => new Response(null));
-  const base = {
-    supported: true,
-    hardware: { present: true, supported: true },
-    runtime_installed: true,
-    error: null,
-    validation: null,
-    help_url: null,
-    loaded_model: null,
-    context_length: null,
-    loading_model: null,
-  };
-  const ready = (state: string, runtimeRunning: boolean) =>
-    api.isNpuRuntimeReady({ ...base, state, runtime_running: runtimeRunning });
-  assert.equal(ready("failed", true), false);
-  assert.equal(ready("validating", true), false);
-  assert.equal(ready("idle", false), false);
-  assert.equal(ready("ready", true), true);
-  // Started by a catalog request after a restart.
-  assert.equal(ready("idle", true), true);
-});
-
 test("NPU rows: downloaded ones on device, all of them to browse, by query", () => {
   const { api } = client(() => new Response(null));
   const model = (id: string, downloaded: boolean) => ({

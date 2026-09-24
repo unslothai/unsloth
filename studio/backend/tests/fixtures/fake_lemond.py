@@ -147,7 +147,8 @@ def main() -> None:
                 flm = cache / "bin" / "flm" / "npu" / "flm"
                 flm.parent.mkdir(parents = True, exist_ok = True)
                 report = os.environ.get("FAKE_FLM_VALIDATE", '{"ready": true}')
-                flm.write_text(f"#!/bin/sh\necho '{report}'\n", encoding = "utf-8")
+                pause = os.environ.get("FAKE_FLM_VALIDATE_SECONDS", "0")
+                flm.write_text(f"#!/bin/sh\nsleep {pause}\necho '{report}'\n", encoding = "utf-8")
                 flm.chmod(0o755)
                 self._send(200, {"status": "success", "recipe": "flm", "backend": "npu"})
             elif self.path == "/v1/pull":

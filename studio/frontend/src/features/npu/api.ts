@@ -32,20 +32,14 @@ export interface NpuStatus {
   runtime_installed: boolean;
   runtime_running: boolean;
   state: string;
+  /** Validated now, or by an earlier Enable of this install. */
+  ready: boolean;
   error: string | null;
   validation: NpuValidation | null;
   help_url: string | null;
   loaded_model: string | null;
   context_length: number | null;
   loading_model: string | null;
-}
-
-/** Failed setup can leave the runtime running. An idle runtime may be started by a catalog request. */
-export function isNpuRuntimeReady(status: NpuStatus): boolean {
-  return (
-    status.state === "ready" ||
-    (status.state === "idle" && status.runtime_running)
-  );
 }
 
 export interface NpuModel {

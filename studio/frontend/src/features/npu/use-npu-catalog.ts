@@ -10,7 +10,6 @@ import {
   downloadNpuModel,
   enableNpu,
   getNpuStatus,
-  isNpuRuntimeReady,
   listNpuModels,
 } from "./api";
 
@@ -44,8 +43,8 @@ export function useNpuCatalog(
   const [downloads, setDownloads] = useState<Record<string, number | null>>({});
   const status = source?.status;
   const onStatusChange = source?.onStatusChange;
-  const installed = status?.runtime_installed === true;
-  const failed = status?.state === "failed";
+  // Listing starts lemond, so wait for a validated runtime.
+  const ready = status?.ready === true;
 
   const refresh = useCallback(async () => {
     try {
@@ -57,7 +56,7 @@ export function useNpuCatalog(
   }, []);
 
   useEffect(() => {
-    if (!installed || failed) return;
+    if (!ready) return;
     let live = true;
     listNpuModels().then(
       (next) => {
@@ -74,7 +73,7 @@ export function useNpuCatalog(
     return () => {
       live = false;
     };
-  }, [installed, failed]);
+  }, [ready]);
 
   const enable = useCallback(async () => {
     if (!onStatusChange) return;
@@ -134,7 +133,7 @@ export function useNpuCatalog(
   if (!status) return null;
   return {
     status,
-    ready: isNpuRuntimeReady(status),
+    ready: status.ready,
     models,
     listError,
     enabling,

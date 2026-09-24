@@ -2834,6 +2834,8 @@ export function useChatModelRuntime() {
         useChatRuntimeStore.getState().setLoadingModelPick(pickOf(loadInfo));
         setLoadProgress({ percent: null, label: null, phase: "starting" });
         toastId = toast.loading(`Loading ${displayName} on the NPU`);
+        // Stop loading dismisses it through cancelLoading.
+        loadToastIdRef.current = toastId;
         const previous = useChatRuntimeStore.getState();
         const previousCheckpoint = previous.params.checkpoint;
         const previousGgufVariant = previous.activeGgufVariant;

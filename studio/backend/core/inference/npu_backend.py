@@ -22,6 +22,7 @@ from typing import Any, Iterator, Optional
 from core.inference.lemonade_server import LemonadeServer, LemonadeUnavailable
 from utils.hardware.npu import detect_amd_npu
 from utils.native_path_leases import child_env_without_native_path_secret
+from utils.process_lifetime import terminate_pid
 from utils.subprocess_compat import windows_hidden_subprocess_kwargs
 
 logger = logging.getLogger(__name__)
@@ -29,6 +30,8 @@ logger = logging.getLogger(__name__)
 MODEL_PREFIX = "lemonade:"
 PROVIDER_TYPE = "lemonade"
 DEFAULT_CONTEXT_LENGTH = 8192
+# Names the lemond install whose NPU passed `flm validate`, so a restart needs no new Enable.
+_VALIDATED_MARKER = "npu_validated.json"
 
 # Model modes Unsloth's chat cannot serve: embeddings and transcription have no chat endpoint,
 # and a single-turn ("flash") model answers only the first message of a conversation.
@@ -162,6 +165,12 @@ def _error_message(response) -> str:
     return json.dumps(body)[:500]
 
 
+def _kill_tree(process: subprocess.Popen) -> None:
+    # A child's own children keep its pipes open, so killing the leader alone leaves
+    # communicate() waiting on them.
+    terminate_pid(process.pid, timeout = 5.0, owner_verified = True)
+
+
 def _positive_int(value: Any) -> Optional[int]:
     try:
         number = int(value)
@@ -178,6 +187,9 @@ class LemonadeNpuBackend:
         self._loaded: Optional[_Loaded] = None
         self._loading: Optional[str] = None
         self._load_cancelled = threading.Event()
+        # Set by shutdown() to interrupt enable()'s install download and validator.
+        self._closing = threading.Event()
+        self._validate_process: Optional[subprocess.Popen] = None
         self._hardware: Optional[dict[str, Any]] = None
         self._validation: Optional[dict[str, Any]] = None
         self._state = "idle"
@@ -225,9 +237,21 @@ class LemonadeNpuBackend:
     def loading_model(self) -> Optional[str]:
         return self._loading
 
+    def _validated_install(self) -> Optional[str]:
+        try:
+            marker = json.loads((self.root / _VALIDATED_MARKER).read_text(encoding = "utf-8"))
+        except (OSError, ValueError):
+            return None
+        return marker.get("lemond") if isinstance(marker, dict) else None
+
     def status(self) -> dict[str, Any]:
         hardware = self.hardware()
-        installed = self._installed_lemond() is not None
+        binary = self._installed_lemond()
+        installed = binary is not None
+        # A restart resets the state to idle; the marker says this install already validated.
+        ready = self._state == "ready" or (
+            self._state == "idle" and installed and self._validated_install() == str(binary)
+        )
         running = self._server is not None and self._server.is_alive()
         loaded = self.loaded_model
         platform_key = "linux" if sys.platform.startswith("linux") else sys.platform
@@ -237,6 +261,7 @@ class LemonadeNpuBackend:
             "runtime_installed": installed,
             "runtime_running": running,
             "state": self._state,
+            "ready": ready,
             "error": self._error,
             "validation": self._validation,
             "help_url": DRIVER_HELP_URL.get(platform_key),
@@ -289,9 +314,10 @@ class LemonadeNpuBackend:
         self._require_supported()
         with self._lock:
             self._error = None
+            (self.root / _VALIDATED_MARKER).unlink(missing_ok = True)
             try:
                 self._state = "installing"
-                _installer_module().install(self.root)
+                binary = _installer_module().install(self.root, cancel = self._closing)
                 self._state = "starting"
                 server = self._ensure_running()
                 self._state = "installing_flm"
@@ -309,6 +335,10 @@ class LemonadeNpuBackend:
                     raise NpuError(
                         " ".join(self._validation.get("problems") or ["NPU validation failed."])
                     )
+                marker = self.root / _VALIDATED_MARKER
+                tmp = marker.with_suffix(".json.tmp")
+                tmp.write_text(json.dumps({"lemond": str(binary)}) + "\n", encoding = "utf-8")
+                tmp.replace(marker)
                 self._state = "ready"
             except NpuError as exc:
                 self._state = "failed"
@@ -327,25 +357,40 @@ class LemonadeNpuBackend:
         env = child_env_without_native_path_secret()
         env["FLM_MODEL_PATH"] = str(self.root / "flm")
         env["FLM_DISABLE_UPDATE_CHECK"] = "1"
+        if self._closing.is_set():
+            return {"ready": False, "problems": ["Unsloth is shutting down."]}
         try:
-            completed = subprocess.run(
+            # Popen, not run: shutdown() kills it instead of waiting out the timeout.
+            process = subprocess.Popen(
                 [str(binary), "validate", "--json"],
-                capture_output = True,
+                stdout = subprocess.PIPE,
+                stderr = subprocess.PIPE,
+                stdin = subprocess.DEVNULL,
                 text = True,
                 encoding = "utf-8",
                 errors = "replace",
-                timeout = 120,
                 env = env,
                 **windows_hidden_subprocess_kwargs(),
             )
-        except (OSError, subprocess.TimeoutExpired) as exc:
+        except OSError as exc:
             return {"ready": False, "problems": [f"flm validate could not run: {exc}"]}
+        self._validate_process = process
+        if self._closing.is_set():
+            _kill_tree(process)
         try:
-            report = json.loads(completed.stdout)
+            stdout, _stderr = process.communicate(timeout = 120)
+        except subprocess.TimeoutExpired as exc:
+            _kill_tree(process)
+            process.communicate()
+            return {"ready": False, "problems": [f"flm validate could not run: {exc}"]}
+        finally:
+            self._validate_process = None
+        try:
+            report = json.loads(stdout)
         except ValueError:
             return {
                 "ready": False,
-                "problems": [f"flm validate returned no report: {completed.stdout[-300:].strip()}"],
+                "problems": [f"flm validate returned no report: {stdout[-300:].strip()}"],
             }
         problems = [message for key, message in _VALIDATE_PROBLEMS if report.get(key) is False]
         ready = bool(report.get("ready"))
@@ -354,12 +399,16 @@ class LemonadeNpuBackend:
         return {"ready": ready, "problems": problems, "report": report}
 
     def shutdown(self) -> None:
-        # load() and enable() hold the lock across lemond requests of up to 900 s; stopping lemond
-        # first ends them. start() refuses to respawn it once the process is shutting down.
+        # load() and enable() hold the lock across downloads, lemond requests and the validator;
+        # interrupt each before taking it. start() refuses a respawn once the process shuts down.
+        self._closing.set()
         self.cancel_load()
         server = self._server
         if server is not None:
             server.stop()
+        process = self._validate_process
+        if process is not None:
+            _kill_tree(process)
         with self._lock:
             self._loaded = None
             if self._server is not None:
@@ -367,6 +416,7 @@ class LemonadeNpuBackend:
                 self._server = None
             if self._state not in ("failed",):
                 self._state = "idle"
+            self._closing.clear()
 
     # -- catalog ---------------------------------------------------------------------------
 

@@ -48,7 +48,11 @@ class _Installer:
     def installed_lemond(self, root):
         return self.binary
 
-    def install(self, root):
+    def install(
+        self,
+        root,
+        cancel = None,
+    ):
         self.installs += 1
         return self.binary
 
@@ -230,11 +234,24 @@ def test_a_slow_load_can_be_stopped(npu, monkeypatch, stop):
     assert npu.loading_model is None
 
 
-def test_shutdown_does_not_wait_for_enable(npu, monkeypatch):
+@pytest.mark.parametrize("phase", ["download", "installing_flm", "validating"])
+def test_shutdown_does_not_wait_for_enable(npu, monkeypatch, phase):
     import threading
     import time
 
-    monkeypatch.setenv("FAKE_LEMOND_INSTALL_SECONDS", "60")
+    if phase == "download":
+        original = npu.installer.install
+
+        def _slow_download(root, cancel = None):
+            # install_lemonade_prebuilt checks the event between chunks.
+            assert cancel is not None and cancel.wait(60)
+            raise RuntimeError("Lemonade download cancelled.")
+
+        npu.installer.install = _slow_download
+    elif phase == "installing_flm":
+        monkeypatch.setenv("FAKE_LEMOND_INSTALL_SECONDS", "60")
+    else:
+        monkeypatch.setenv("FAKE_FLM_VALIDATE_SECONDS", "60")
     errors: list[BaseException] = []
 
     def _enable():
@@ -245,8 +262,11 @@ def test_shutdown_does_not_wait_for_enable(npu, monkeypatch):
 
     thread = threading.Thread(target = _enable)
     thread.start()
+    target = "installing" if phase == "download" else phase
     deadline = time.monotonic() + 15
-    while not any(r["path"] == "/v1/install" for r in _requests(npu)):
+    while npu.status()["state"] != target or (
+        phase == "validating" and npu._validate_process is None
+    ):
         assert time.monotonic() < deadline
         time.sleep(0.05)
     started = time.monotonic()
@@ -256,6 +276,25 @@ def test_shutdown_does_not_wait_for_enable(npu, monkeypatch):
     assert not thread.is_alive()
     assert len(errors) == 1 and isinstance(errors[0], nb.NpuError)
     assert npu.status()["runtime_running"] is False
+    assert npu.status()["ready"] is False
+    if phase == "download":
+        npu.installer.install = original
+
+
+def test_readiness_survives_a_restart_only_after_validation(npu, monkeypatch):
+    npu.enable()
+    assert npu.status()["ready"] is True
+    npu.shutdown()
+    restarted = nb.LemonadeNpuBackend(root = npu.root)
+    assert restarted.status()["state"] == "idle"
+    assert restarted.status()["ready"] is True
+
+    monkeypatch.setenv("FAKE_FLM_VALIDATE", '{"ready": false, "memlock_ok": false}')
+    with pytest.raises(nb.NpuError):
+        restarted.enable()
+    restarted.shutdown()
+    # A failed validation is not forgotten by the next start.
+    assert nb.LemonadeNpuBackend(root = npu.root).status()["ready"] is False
 
 
 def test_a_restarted_runtime_reports_nothing_loaded(npu):

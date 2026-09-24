@@ -183,8 +183,9 @@ class LemonadeServer:
             )
             self._drain_thread.start()
             if not self._wait_ready(timeout):
-                tail = self.log_tail()
+                # After the kill, which joins the drain thread, so the tail has the last lines.
                 self._kill_locked()
+                tail = self.log_tail()
                 raise LemonadeUnavailable(f"Lemonade did not start. Last output:\n{tail}")
 
     def _drain(self, proc: subprocess.Popen) -> None:
