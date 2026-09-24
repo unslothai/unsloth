@@ -295,7 +295,10 @@ def test_rollback_leaves_packages_another_installer_added_meanwhile(env):
     assert not ok and "rolled back" in reason
     for name in _ADDED_BY_INSTALL:
         assert name not in env.dists
-    assert env.dists.get("requests") == "2.32.3" and env.dists.get("rich") == "14.0.0", (reason, env.commands)
+    assert env.dists.get("requests") == "2.32.3" and env.dists.get("rich") == "14.0.0", (
+        reason,
+        env.commands,
+    )
     uninstall = next(c for c in env.commands if "uninstall" in c)
     assert "requests" not in uninstall and "rich" not in uninstall
 
@@ -303,7 +306,9 @@ def test_rollback_leaves_packages_another_installer_added_meanwhile(env):
 def test_reported_installs_reads_uv_and_pip_output():
     uv_out = "Resolved 5 packages\nInstalled 2 packages in 9ms\n + Apache_TVM_FFI==0.1.9\n + flashinfer-python==0.6.6\n ~ numpy==2.3.5"
     assert inst._reported_installs(uv_out) == {"apache-tvm-ffi", "flashinfer-python"}
-    pip_out = "Collecting x\nSuccessfully installed apache-tvm-ffi-0.1.9 flashinfer-jit-cache-0.6.6+cu130"
+    pip_out = (
+        "Collecting x\nSuccessfully installed apache-tvm-ffi-0.1.9 flashinfer-jit-cache-0.6.6+cu130"
+    )
     assert inst._reported_installs(pip_out) == {"apache-tvm-ffi", "flashinfer-jit-cache"}
     assert inst._reported_installs("ERROR: no matching distribution") == set()
 
@@ -313,7 +318,11 @@ def test_rollback_without_installer_output_follows_the_flashinfer_dependency_tre
     import importlib.metadata as md
 
     requires = {
-        "flashinfer-python": ["apache-tvm-ffi>=0.1", "nvidia-cutlass-dsl; python_version >= '3'", "pytest; extra == 'test'"],
+        "flashinfer-python": [
+            "apache-tvm-ffi>=0.1",
+            "nvidia-cutlass-dsl; python_version >= '3'",
+            "pytest; extra == 'test'",
+        ],
         "apache-tvm-ffi": [],
         "nvidia-cutlass-dsl": [],
     }
