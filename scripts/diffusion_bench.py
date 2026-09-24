@@ -598,6 +598,9 @@ def _build_parser() -> argparse.ArgumentParser:
 
 def main(argv: Optional[list[str]] = None) -> int:
     args = _build_parser().parse_args(argv)
+    if "nvfp4" in (args.transformer_quant, args.text_encoder_quant):
+        # A developer tool: an explicit NVFP4 bench runs whatever the Studio NVFP4 switch says.
+        os.environ["UNSLOTH_NVFP4_DIFFUSION"] = "1"
     if isinstance(args.gguf, str):
         args.gguf = args.gguf.strip() or None
     if bool(args.write_baseline) == bool(args.compare):

@@ -14,6 +14,7 @@ the enabled path is still reachable end to end.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import types
 
 import pytest
@@ -112,18 +113,27 @@ def _blackwell(monkeypatch, *, supported = ("int8", "fp8", "nvfp4", "mxfp8")):
     return types.SimpleNamespace(device = "cuda", dtype = None)
 
 
+def _auto(target, family):
+    """``auto`` on ``family`` as a load asks it, with a hosted checkpoint for every scheme where
+    the selector requires one for nvfp4, so only the switch stands between auto and nvfp4."""
+    kwargs = {}
+    if "has_prequant" in inspect.signature(tq.select_transformer_quant_scheme).parameters:
+        kwargs["has_prequant"] = lambda scheme: True
+    return tq.select_transformer_quant_scheme(target, "auto", family = family, **kwargs)
+
+
 def test_auto_never_offers_nvfp4(monkeypatch):
     target = _blackwell(monkeypatch)
     fam = "wan2.2-t2v-a14b"
     assert tq.TQ_NVFP4 not in tq._auto_scheme_order(fam, "cuda", (10, 0))
     assert tq.TQ_NVFP4 not in tq.auto_scheme_candidates(target, fam)
     assert tq.TQ_NVFP4 not in tq.auto_scheme_candidates_cached(target, fam)
-    assert tq.select_transformer_quant_scheme(target, "auto", family = fam) == tq.TQ_INT8
+    assert _auto(target, fam) == tq.TQ_INT8
 
 
 def test_a_host_that_only_runs_nvfp4_has_nothing_automatic(monkeypatch):
     target = _blackwell(monkeypatch, supported = ("nvfp4",))
-    assert tq.select_transformer_quant_scheme(target, "auto", family = "wan2.2-t2v-a14b") is None
+    assert _auto(target, "wan2.2-t2v-a14b") is None
     probed = []
     monkeypatch.setattr(tq, "_smoke_probe", lambda scheme, *a, **k: probed.append(scheme) or True)
     assert tq._scheme_supported(tq.TQ_NVFP4, "cuda") is False
@@ -434,7 +444,7 @@ def test_enabled_the_nvfp4_path_is_reachable_end_to_end(monkeypatch):
 
     # auto: a prefer row that leads with nvfp4 is honoured again.
     target = _blackwell(monkeypatch)
-    assert tq.select_transformer_quant_scheme(target, "auto", family = "wan2.2-t2v-a14b") == "nvfp4"
+    assert _auto(target, "wan2.2-t2v-a14b") == "nvfp4"
     # explicit: accepted, validated and selected like any other scheme.
     assert tq.normalize_transformer_quant("nvfp4") == "nvfp4"
     assert tq.select_transformer_quant_scheme(target, "nvfp4", family = "z-image") == "nvfp4"
