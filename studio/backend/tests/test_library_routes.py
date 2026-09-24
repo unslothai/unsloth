@@ -531,7 +531,9 @@ def test_an_oversized_desktop_drop_is_refused_before_copying(client, monkeypatch
     big.write_bytes(b"x" * 10)
     monkeypatch.setattr(library_routes, "_MAX_UPLOAD_BYTES", 4)
     monkeypatch.setattr(
-        library, "open_native_upload", lambda lease: ("big.bin", "application/octet-stream", open(big, "rb"))
+        library,
+        "open_native_upload",
+        lambda lease: ("big.bin", "application/octet-stream", open(big, "rb")),
     )
 
     def copied(*_args):
