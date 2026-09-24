@@ -162,6 +162,30 @@ expect_rc "a compiler next to the allowed clone still fails" 1 "$PIN" \
 expect_rc "brew next to the allowed clone still fails" 1 "$PIN" \
     "${UV_CLONE}brew\tinstall cmake\n"
 
+echo "=== the trace wrapper's working-directory record ==="
+# Trace mode only writes wrappers, so it runs as-is on Linux. The git wrapper must record
+# where it ran, and a fresh trace must start that record empty, or a rerun judges the new
+# install by an older one's rows.
+ENV_SH="$REPO_ROOT/.github/scripts/clean-machine-env.sh"
+if command -v git >/dev/null 2>&1; then
+    CM="$ROOT/cm"
+    CLEAN_MACHINE_DIR="$CM" CLEAN_ENV_FILE="$ROOT/cm.env" bash "$ENV_SH" trace > "$ROOT/cm1.log" 2>&1
+    mkdir -p "$ROOT/elsewhere"
+    ( cd "$ROOT/elsewhere" && "$CM/bin/git" --version > /dev/null )
+    _record=$(cat "$CM/tool-invocations.log.git-cwd" 2>/dev/null || true)
+    if [ "$_record" = "$(cd "$ROOT/elsewhere" && pwd)	--version" ]; then
+        echo "  PASS: the git wrapper records its working directory"; PASS=$((PASS + 1))
+    else
+        echo "  FAIL: the git wrapper records its working directory (got: $_record)"; FAIL=$((FAIL + 1))
+    fi
+    CLEAN_MACHINE_DIR="$CM" CLEAN_ENV_FILE="$ROOT/cm.env" bash "$ENV_SH" trace > "$ROOT/cm2.log" 2>&1
+    if [ ! -s "$CM/tool-invocations.log.git-cwd" ]; then
+        echo "  PASS: a new trace starts the record empty"; PASS=$((PASS + 1))
+    else
+        echo "  FAIL: a new trace starts the record empty"; FAIL=$((FAIL + 1))
+    fi
+fi
+
 echo ""
 echo "Passed: $PASS, Failed: $FAIL"
 [ "$FAIL" -eq 0 ]

@@ -42,6 +42,8 @@ BIN="$WORK/bin"
 RESTORE="$WORK/restore.sh"
 mkdir -p "$BIN"
 : > "$TRACE"
+# The git wrapper appends where each git ran; a rerun must not inherit an older install's rows.
+: > "$TRACE.git-cwd"
 : > "$ENV_FILE"
 printf '#!/usr/bin/env bash\n# Undo clean-machine-env.sh --remove. Safe to run twice.\nset -uo pipefail\n' > "$RESTORE"
 chmod +x "$RESTORE"
