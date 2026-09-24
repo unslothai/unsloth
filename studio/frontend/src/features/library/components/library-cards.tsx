@@ -16,7 +16,7 @@ import {
 import { formatCardTime, pluralize } from "../format";
 import { useColumnCount, useLibraryThumbnail, useSeen } from "../hooks";
 import { useLibraryActions } from "../actions-context";
-import { OVERLAY_CONTROL, RAISED_SURFACE } from "../surface";
+import { GLASS_CONTROL, OVERLAY_CONTROL, RAISED_SURFACE } from "../surface";
 import { CardSelectionContext } from "./card-selection";
 import { LibraryActionsMenu } from "./library-actions";
 
@@ -89,6 +89,7 @@ function CardFrame({
   children,
   className,
   label,
+  glass = false,
 }: {
   selectKey: string;
   onOpen: () => void;
@@ -96,6 +97,8 @@ function CardFrame({
   children: ReactNode;
   className?: string;
   label: string;
+  /** Over a picture: frosted controls, since the picture can match any solid fill. */
+  glass?: boolean;
 }) {
   const select = useContext(CardSelectionContext);
   const selected = select?.selection.has(selectKey) ?? false;
@@ -127,6 +130,7 @@ function CardFrame({
             // Level with the date line, as ChatGPT's sits. Same fill as the ⋯ button.
             OVERLAY_CONTROL,
             "absolute bottom-4 right-4 size-5 rounded-full border-0 opacity-0 transition-opacity group-hover/library-card:opacity-100 focus-visible:opacity-100 data-checked:bg-white data-checked:text-foreground dark:data-checked:bg-neutral-200 dark:data-checked:text-neutral-900 [&_svg]:size-3.5",
+            glass && GLASS_CONTROL,
             selected && "opacity-100",
           )}
         />
@@ -146,7 +150,14 @@ export function ItemCard({ item, showTime = true }: { item: LibraryItem; showTim
         selectKey={`item:${item.id}`}
         label={item.name}
         onOpen={() => actions.openItem(item)}
-        menu={menu}
+        menu={
+          <LibraryActionsMenu
+            target={{ kind: "item", item }}
+            variant="overlay"
+            className={GLASS_CONTROL}
+          />
+        }
+        glass
         className={cn("bg-muted", CARD_SHADOW)}
       >
         <ImageThumb item={item} />
