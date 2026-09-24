@@ -5,6 +5,7 @@ import { authFetch, getAuthSessionEpoch, getAuthToken } from "@/features/auth";
 import { apiUrl } from "@/lib/api-base";
 import { readFastApiError } from "@/lib/format-fastapi-error";
 import { libraryFileName, libraryFileType } from "./file-name";
+import { type DecodedNote, decodeNote } from "./note-text";
 
 export type LibrarySource = "uploaded" | "generated";
 
@@ -287,34 +288,41 @@ export async function fetchLibraryThumbnail(item: LibraryItem): Promise<Blob> {
   return response.blob();
 }
 
-/** Up to `maxBytes` of the item decoded as text; the rest of the body is never read. */
-export async function fetchLibraryTextPrefix(
+/** Up to `maxBytes` of the item, decoded as its BOM (or UTF-8) says; the rest is never read. */
+export async function fetchLibraryText(
   item: LibraryItem,
   maxBytes: number,
-): Promise<{ text: string; truncated: boolean }> {
+): Promise<DecodedNote & { truncated: boolean }> {
   const response = await ensureOk(await authFetch(item.fileUrl));
   const reader = response.body?.getReader();
   if (!reader) {
     const bytes = new Uint8Array(await response.arrayBuffer());
-    return {
-      text: new TextDecoder().decode(bytes.subarray(0, maxBytes)),
-      truncated: bytes.length > maxBytes,
-    };
+    const truncated = bytes.length > maxBytes;
+    return { ...decodeNote(bytes.subarray(0, maxBytes), truncated), truncated };
   }
-  const decoder = new TextDecoder();
-  let text = "";
+  const chunks: Uint8Array[] = [];
   let read = 0;
+  let truncated = false;
   for (;;) {
     const { done, value } = await reader.read();
-    if (done) return { text: text + decoder.decode(), truncated: false };
+    if (done) break;
     if (read + value.length > maxBytes) {
-      text += decoder.decode(value.subarray(0, maxBytes - read), { stream: true });
+      chunks.push(value.subarray(0, maxBytes - read));
+      read = maxBytes;
+      truncated = true;
       void reader.cancel();
-      return { text: text + decoder.decode(), truncated: true };
+      break;
     }
+    chunks.push(value);
     read += value.length;
-    text += decoder.decode(value, { stream: true });
   }
+  const bytes = new Uint8Array(read);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.length;
+  }
+  return { ...decodeNote(bytes, truncated), truncated };
 }
 
 /**
