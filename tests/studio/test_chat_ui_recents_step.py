@@ -161,7 +161,13 @@ def _load_helper(timeout_ms: int | None = None):
 @pytest.fixture(scope = "module")
 def browser():
     sync_api = pytest.importorskip("playwright.sync_api")
-    with sync_api.sync_playwright() as p:
+    # Without Playwright, test_heavy_thread_measurement_integrity.py leaves a stand-in
+    # playwright.sync_api in sys.modules whose every name raises RuntimeError. Same answer.
+    try:
+        manager = sync_api.sync_playwright()
+    except RuntimeError as exc:
+        pytest.skip(f"playwright unavailable: {exc}")
+    with manager as p:
         try:
             b = p.chromium.launch()
         except Exception as exc:  # no browser build installed here
