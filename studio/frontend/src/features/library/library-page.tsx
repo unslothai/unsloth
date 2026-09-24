@@ -61,10 +61,10 @@ import { FolderGrid, ItemCard, Masonry } from "./components/library-cards";
 import { ConfirmDeleteDialog, NameDialog } from "./components/library-dialogs";
 import { LibraryList } from "./components/library-list";
 import { LibraryPreview } from "./components/library-preview";
+import { LibraryHeader } from "./components/library-header";
 import { LibraryToolbar, type NewAction } from "./components/library-toolbar";
 import { EMPTY_FILTERS, type LibraryFilters, filtersActive, matchesFilters } from "./filters";
 import { LIBRARY_TABS, type LibrarySearch, type LibraryTab } from "./search";
-import { RAISED_SURFACE } from "./surface";
 import { useLibraryStore } from "./store";
 import {
   compareBySort,
@@ -144,34 +144,6 @@ function targetName(target: LibraryTarget): string {
 }
 
 
-function Tabs({
-  tabs,
-  active,
-  onChange,
-}: {
-  tabs: readonly LibraryTab[];
-  active: LibraryTab;
-  onChange: (tab: LibraryTab) => void;
-}) {
-  return (
-    <nav className="mt-6 flex flex-wrap gap-1" aria-label="Library sections">
-      {tabs.map((tab) => (
-        <button
-          key={tab}
-          type="button"
-          aria-current={tab === active ? "page" : undefined}
-          onClick={() => onChange(tab)}
-          className={cn(
-            "rounded-full px-3.5 py-1.5 text-[15px] text-foreground/80 transition-colors hover:text-foreground",
-            tab === active && cn(RAISED_SURFACE, "font-medium text-foreground"),
-          )}
-        >
-          {TAB_LABELS[tab]}
-        </button>
-      ))}
-    </nav>
-  );
-}
 
 function EmptyState({
   icon,
@@ -824,7 +796,7 @@ function LibraryView({ search }: { search: LibrarySearch }) {
       <main
         ref={dropRef}
         {...dragHandlers}
-        className="relative mx-auto w-full max-w-[calc(1560px*var(--ui-space-scale,1))] px-6 pb-24 font-heading sm:px-10"
+        className="relative mx-auto w-full max-w-[calc(1560px*var(--ui-space-scale,1))] px-6 pb-24 pt-8 font-heading sm:px-10"
       >
         <input
           ref={fileInput}
@@ -836,28 +808,34 @@ function LibraryView({ search }: { search: LibrarySearch }) {
             event.target.value = "";
           }}
         />
-        {/* Stays at the top while the grid scrolls under it, like a page header. */}
-        <div className="sticky top-0 z-20 -mx-6 bg-background px-6 pb-2 pt-8 sm:-mx-10 sm:px-10">
-          <LibraryToolbar
-            title={title}
-            filters={filters}
-            onFiltersChange={setFilters}
-            filterMode={!folderId && tab === "folders" ? "none" : kindFilter ? "source" : "all"}
-            view={view}
-            onViewChange={setView}
-            search={query}
-            onSearchChange={setQuery}
-            searchPlaceholder={folderId ? "Search folder" : "Search library"}
-            onNew={handleNew}
-            onSettings={() => openSettings("library")}
-          />
-          {/* Inset past the title so list checkboxes, which hang left of the rows, have room. */}
-          {!folderId && (
-            <div className="pl-3">
-              <Tabs tabs={shownTabs} active={tab} onChange={(next) => go({ show: next })} />
-            </div>
-          )}
-        </div>
+        <LibraryHeader
+          title={title}
+          controls={
+            <LibraryToolbar
+              filters={filters}
+              onFiltersChange={setFilters}
+              filterMode={!folderId && tab === "folders" ? "none" : kindFilter ? "source" : "all"}
+              view={view}
+              onViewChange={setView}
+              search={query}
+              onSearchChange={setQuery}
+              searchPlaceholder={folderId ? "Search folder" : "Search library"}
+              onNew={handleNew}
+              onSettings={() => openSettings("library")}
+            />
+          }
+          tabs={
+            folderId
+              ? null
+              : {
+                  items: shownTabs.map((key) => ({ key, label: TAB_LABELS[key] })),
+                  active: tab,
+                  onChange: (next) => go({ show: next as LibraryTab }),
+                }
+          }
+          // Inset past the title so list checkboxes, which hang left of the rows, have room.
+          tabsClassName="pl-3"
+        />
         <div className="pl-3">{renderBody()}</div>
 
         {dragging && (
