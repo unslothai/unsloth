@@ -1019,6 +1019,33 @@ def test_drain_bounds_runaway_output_without_newlines(monkeypatch):
     assert lines == 0
 
 
+def test_drain_head_memory_tracks_chars_not_line_count(monkeypatch):
+    import subprocess as _sp
+    import tracemalloc
+
+    from core.inference import tools as _tools_mod
+
+    monkeypatch.setattr(_tools_mod, "_SPILL_MAX_BYTES", 1_000_000)
+    monkeypatch.setattr(_tools_mod, "_DRAIN_TAIL_CHARS", 500)
+    proc = _sp.Popen(
+        [sys.executable, "-c", "import sys\nfor _ in range(600000): sys.stdout.write('x\\n')"],
+        stdout = _sp.PIPE,
+        stderr = _sp.STDOUT,
+        text = True,
+    )
+    tracemalloc.start()
+    try:
+        output, timed_out, (chars, lines) = _tools_mod._drain_process_output(proc, 60, None)
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert not timed_out
+    assert len(output) + chars == 1_200_000
+    assert output.count("\n") + lines == 600_000
+    # ~500k head lines: one str each is ~30 MB, coalesced it is a few copies of the 1 MB head.
+    assert peak < 8 * 1024 * 1024, f"drain peaked at {peak / 2**20:.1f} MiB for a 1 MB head"
+
+
 def test_runaway_output_reports_true_size_and_keeps_trailing_hint(monkeypatch):
     from core.inference import tools as _tools_mod
 

@@ -18973,7 +18973,7 @@ def _drain_process_output(
     """
     chunks: list[str] = []
     tail: "deque[str]" = deque()
-    kept = tail_chars = omitted_chars = omitted_lines = 0
+    kept = joined = tail_chars = omitted_chars = omitted_lines = 0
 
     # Captured before waiting so a stdout-holding grandchild can still be killed after the leader is reaped (getpgid
     # then fails). Callers pass it in from right after Popen; fall back to capturing here for direct callers.
@@ -18981,13 +18981,17 @@ def _drain_process_output(
         pgid = _capture_process_group(proc)
 
     def _reader() -> None:
-        nonlocal kept, tail_chars, omitted_chars, omitted_lines
+        nonlocal kept, joined, tail_chars, omitted_chars, omitted_lines
         try:
             # Sized reads: a newline-free stream would otherwise arrive as one unbounded "line".
             for line in iter(lambda: proc.stdout.readline(_DRAIN_TAIL_CHARS), ""):
                 if kept <= _SPILL_MAX_BYTES:
                     chunks.append(line)
                     kept += len(line)
+                    # A str per line costs ~50 bytes, so a flood of tiny lines would dwarf the cap unless coalesced.
+                    if len(chunks) - joined >= 1024:
+                        chunks[joined:] = ["".join(chunks[joined:])]
+                        joined += 1
                 else:
                     tail.append(line)
                     tail_chars += len(line)
