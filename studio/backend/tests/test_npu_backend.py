@@ -183,8 +183,10 @@ def test_unload_then_delete(npu):
     assert {m.id: m.downloaded for m in npu.catalog()}["qwen3-0.6b-FLM"] is False
 
 
-def test_a_rejected_unload_stops_lemond(npu, monkeypatch):
-    monkeypatch.setenv("FAKE_LEMOND_UNLOAD_FAILS", "1")
+@pytest.mark.parametrize("failure", ["1", "200"])
+def test_a_rejected_unload_stops_lemond(npu, monkeypatch, failure):
+    # "200": lemond's HTTP 200 answer with an error body.
+    monkeypatch.setenv("FAKE_LEMOND_UNLOAD_FAILS", failure)
     # Survives the restart, as the files on disk would.
     monkeypatch.setenv("FAKE_LEMOND_DOWNLOADED", '["qwen3-0.6b-FLM"]')
     npu.enable()
@@ -319,6 +321,30 @@ def test_a_load_refused_before_touching_the_npu_keeps_the_resident(npu):
     with pytest.raises(nb.NpuError, match = "not downloaded"):
         npu.load("gemma3-4b-FLM")
     assert npu.loaded_model.id == "qwen3-0.6b-FLM"
+
+
+def test_a_cancel_during_the_final_health_check_wins(npu, monkeypatch):
+    # The cancel stops lemond; the download must outlive the restart, as files on disk do.
+    monkeypatch.setenv("FAKE_LEMOND_DOWNLOADED", '["qwen3-0.6b-FLM"]')
+    npu.enable()
+    resident_context = npu._resident_context
+
+    def _cancelled_meanwhile(server, model_id):
+        ctx = resident_context(server, model_id)
+        # Stop loading lands after the health report, before the load records the model.
+        assert npu.cancel_load(model_id) is True
+        return ctx
+
+    npu._resident_context = _cancelled_meanwhile
+    with pytest.raises(nb.NpuLoadCancelled):
+        npu.load("qwen3-0.6b-FLM")
+    assert npu._loaded is None
+    assert npu.loading_model is None
+    del npu._resident_context
+    npu.load("qwen3-0.6b-FLM")
+    # Once the model is recorded there is nothing left to cancel.
+    assert npu.cancel_load("qwen3-0.6b-FLM") is False
+    assert npu.is_loaded
 
 
 def test_a_restarted_runtime_reports_nothing_loaded(npu):

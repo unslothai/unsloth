@@ -165,6 +165,17 @@ def _error_message(response) -> str:
     return json.dumps(body)[:500]
 
 
+def _failed(response) -> bool:
+    """Whether lemond refused, including its 200 answers that carry an error body."""
+    if response.status_code != 200:
+        return True
+    try:
+        body = response.json()
+    except ValueError:
+        return False
+    return isinstance(body, dict) and ("error" in body or body.get("status") == "error")
+
+
 def _kill_tree(process: subprocess.Popen) -> None:
     # A child's own children keep its pipes open, so killing the leader alone leaves
     # communicate() waiting on them.
@@ -187,6 +198,8 @@ class LemonadeNpuBackend:
         self._loaded: Optional[_Loaded] = None
         self._loading: Optional[str] = None
         self._load_cancelled = threading.Event()
+        # Makes cancel_load and a load's commit exclusive, so a cancel either wins or finds nothing.
+        self._commit_lock = threading.Lock()
         # Set by shutdown() to interrupt enable()'s install download and validator.
         self._closing = threading.Event()
         self._validate_process: Optional[subprocess.Popen] = None
@@ -327,7 +340,7 @@ class LemonadeNpuBackend:
                     json_body = {"recipe": "flm", "backend": "npu", "stream": False},
                     timeout = 900.0,
                 )
-                if response.status_code != 200 or "error" in (response.json() or {}):
+                if _failed(response):
                     raise NpuError(f"Installing FastFlowLM failed: {_error_message(response)}")
                 self._state = "validating"
                 self._validation = self._validate()
@@ -534,15 +547,18 @@ class LemonadeNpuBackend:
                     timeout = 900.0,
                 )
                 self._raise_if_load_cancelled(model_id)
-                if response.status_code != 200 or response.json().get("status") == "error":
+                if _failed(response):
                     raise NpuError(f"Loading {model.id} failed: {_error_message(response)}")
                 resident_ctx = self._resident_context(server, model.id)
                 if resident_ctx is None:
                     raise NpuError(f"Lemonade did not report {model.id} as loaded on the NPU.")
-                self._loaded = _Loaded(model = model, context_length = resident_ctx)
+                with self._commit_lock:
+                    self._raise_if_load_cancelled(model_id)
+                    self._loaded = _Loaded(model = model, context_length = resident_ctx)
+                    self._loading = None
+                    loaded = True
                 self._state = "ready"
                 self._error = None
-                loaded = True
                 return model
             except LemonadeUnavailable as exc:
                 # cancel_load stops lemond under the in-flight request.
@@ -560,10 +576,11 @@ class LemonadeNpuBackend:
 
     def cancel_load(self, model_id: Optional[str] = None) -> bool:
         """Stop an in-flight load by stopping lemond. Does not take the lock the load holds."""
-        loading = self._loading
-        if loading is None or (model_id is not None and loading != model_id):
-            return False
-        self._load_cancelled.set()
+        with self._commit_lock:
+            loading = self._loading
+            if loading is None or (model_id is not None and loading != model_id):
+                return False
+            self._load_cancelled.set()
         server = self._server
         if server is not None:
             server.stop()
@@ -601,7 +618,7 @@ class LemonadeNpuBackend:
                         json_body = {"model_name": loaded.model.id},
                         timeout = 60.0,
                     )
-                    failure = None if response.status_code == 200 else _error_message(response)
+                    failure = _error_message(response) if _failed(response) else None
                 except LemonadeUnavailable as exc:
                     failure = str(exc)
                 if failure is not None:

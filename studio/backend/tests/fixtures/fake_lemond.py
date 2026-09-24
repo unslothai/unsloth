@@ -177,8 +177,12 @@ def main() -> None:
                 loaded[name] = {"ctx_size": body.get("ctx_size"), "flm_args": ""}
                 self._send(200, {"status": "success", "model_name": name, "recipe": "flm"})
             elif self.path == "/v1/unload":
-                if os.environ.get("FAKE_LEMOND_UNLOAD_FAILS") == "1":
+                failure = os.environ.get("FAKE_LEMOND_UNLOAD_FAILS")
+                if failure == "1":
                     self._send(500, {"error": {"message": "unload failed"}})
+                    return
+                if failure == "200":
+                    self._send(200, {"status": "error", "message": "unload failed"})
                     return
                 if name:
                     loaded.pop(name, None)
