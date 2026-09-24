@@ -65,12 +65,44 @@ def test_a_sandbox_outside_the_project_root_is_refused(tmp_path, media, monkeypa
     assert not (elsewhere / "images").exists()
 
 
-def test_a_failed_copy_leaves_no_partial_file(project, media, monkeypatch):
-    def boom(src, dst):
-        open(dst, "wb").write(b"half")
+@pytest.fixture(params = [True, False], ids = ["dir_fd", "by_path"])
+def copy_mode(request, monkeypatch):
+    if request.param and not gp._USE_DIR_FD:
+        pytest.skip("no dir_fd support on this platform")
+    monkeypatch.setattr(gp, "_USE_DIR_FD", request.param)
+    return request.param
+
+
+def test_a_failed_copy_leaves_no_partial_file(project, media, copy_mode, monkeypatch):
+    def boom(*args, **kwargs):
         raise OSError("disk full")
 
+    monkeypatch.setattr(gp.shutil, "copyfileobj", boom)
     monkeypatch.setattr(gp.shutil, "copyfile", boom)
     with pytest.raises(OSError):
         gp.copy_into_project(media, "p1", "images")
     assert list((project / "sandbox" / "images").iterdir()) == []
+
+
+def test_a_symlinked_media_folder_is_refused(project, media, tmp_path, copy_mode):
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (project / "sandbox" / "images").symlink_to(outside, target_is_directory = True)
+    with pytest.raises(OSError):
+        gp.copy_into_project(media, "p1", "images")
+    assert list(outside.iterdir()) == []
+
+
+def test_concurrent_adds_of_one_item_all_succeed(project, media, copy_mode):
+    from concurrent.futures import ThreadPoolExecutor
+
+    with ThreadPoolExecutor(8) as pool:
+        results = list(pool.map(lambda _: gp.copy_into_project(media, "p1", "images"), range(8)))
+    assert all(r["path"].endswith("abc123.png") for r in results)
+    folder = project / "sandbox" / "images"
+    assert [p.name for p in folder.iterdir()] == ["abc123.png"]
+    assert (folder / "abc123.png").read_bytes() == media.read_bytes()
+
+
+def test_temp_names_are_unique_per_call():
+    assert gp._tmp_name("a.png") != gp._tmp_name("a.png")
