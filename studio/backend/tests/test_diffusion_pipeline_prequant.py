@@ -950,9 +950,21 @@ def test_the_rebuilt_fp8_artifacts_are_listed_for_both_schemes(family, repo):
 
 # A family whose denoiser class declares no `_repeated_blocks` (Lumina-2, HiDream-I1) cannot be regionally compiled,
 # so an AUTO quant would run eager torchao. Auto keeps the released weights unless they would offload.
-def _uncompilable(monkeypatch):
+_MEASURED = {"safe_device_budget_mib": 170_000, "resident_required_mib": 60_000}
+
+
+def _uncompilable(monkeypatch, *, measured = True):
+    """A family that cannot compile, on a card whose plans carry a measured budget unless told otherwise."""
     monkeypatch.setattr(dmod, "family_compiles_regionally", lambda _fam: False)
     monkeypatch.setattr(dmod, "family_bf16_components_gb", lambda *_a, **_k: (90.0, 10.0, 0.2))
+    inner = DiffusionBackend._plan_memory
+
+    def _plan(self, *a, **k):
+        plan = inner(self, *a, **k)
+        plan.estimates = dict(_MEASURED) if measured else {}
+        return plan
+
+    monkeypatch.setattr(DiffusionBackend, "_plan_memory", _plan)
 
 
 def _offload_when_bf16_sized(monkeypatch, bf16_policy):
@@ -970,22 +982,30 @@ def _offload_when_bf16_sized(monkeypatch, bf16_policy):
 
 def test_an_uncompilable_family_keeps_the_released_weights_that_fit(monkeypatch):
     backend = _settle_backend(monkeypatch)
-    _uncompilable(monkeypatch)
     _offload_when_bf16_sized(monkeypatch, "none")
+    _uncompilable(monkeypatch)
     assert _settle(backend) is None
+
+
+def test_an_uncompilable_family_still_seeds_when_the_budget_is_unmeasured(monkeypatch):
+    """A resident plan taken without a budget proves no fit, so the smaller artifact is still seeded."""
+    backend = _settle_backend(monkeypatch)
+    _offload_when_bf16_sized(monkeypatch, "none")
+    _uncompilable(monkeypatch, measured = False)
+    assert _settle(backend) == "fp8"
 
 
 def test_an_uncompilable_family_still_seeds_when_the_released_weights_would_offload(monkeypatch):
     backend = _settle_backend(monkeypatch)
-    _uncompilable(monkeypatch)
     _offload_when_bf16_sized(monkeypatch, "sequential")
+    _uncompilable(monkeypatch)
     assert _settle(backend) == "fp8"
 
 
 def test_an_uncompilable_family_still_seeds_an_explicit_scheme(monkeypatch):
     backend = _settle_backend(monkeypatch)
-    _uncompilable(monkeypatch)
     _offload_when_bf16_sized(monkeypatch, "none")
+    _uncompilable(monkeypatch)
     assert _settle(backend, transformer_quant = "fp8") == "fp8"
 
 
@@ -1048,3 +1068,13 @@ def test_an_uncompilable_family_on_a_host_without_dense_quant_reports_as_before(
 
     assert spy.quantised == []
     assert "regionally compiled" not in status["resolved"]["transformer_quant"]["reason"]
+
+
+def test_an_uncompilable_family_quantises_auto_when_the_budget_is_unmeasured(
+    fake_runtime, monkeypatch
+):
+    backend, spy = _load_backend(monkeypatch)
+    _uncompilable(monkeypatch, measured = False)
+    _load(backend, _pipeline_prequant_planned = None, _pipeline_prequant_skipped = ())
+
+    assert spy.quantised == ["auto"]

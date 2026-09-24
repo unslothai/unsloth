@@ -1488,12 +1488,23 @@ def _pipeline_quant_uncompilable_reason(
     return None
 
 
-def _auto_quant_eager_reason(fam: Any, *, offloads: bool) -> Optional[str]:
+def _plan_proves_resident(plan: Any) -> bool:
+    """A resident plan with a measured budget and requirement. The planner also stays resident when it cannot
+    read the card, which proves no fit."""
+    estimates = getattr(plan, "estimates", None) or {}
+    return (
+        getattr(plan, "offload_policy", None) == OFFLOAD_NONE
+        and estimates.get("safe_device_budget_mib") is not None
+        and estimates.get("resident_required_mib") is not None
+    )
+
+
+def _auto_quant_eager_reason(fam: Any, plan: Any) -> Optional[str]:
     """Why an AUTO precision keeps the checkpoint's own weights for a family whose denoiser cannot be
     regionally compiled, or None. The quantised transformer would run eager, several times slower than
     bf16 (Lumina-2 on B200: 22.6 vs 3.1 s per 50-step 1024px image), so auto quantises such a family
-    only when the unquantised plan would offload and the quant is what keeps it resident."""
-    if offloads or family_compiles_regionally(fam):
+    only when the unquantised plan does not provably fit resident."""
+    if not _plan_proves_resident(plan) or family_compiles_regionally(fam):
         return None
     return (
         f"'{getattr(fam, 'name', None)}' cannot be regionally compiled (its transformer declares no "
@@ -3006,12 +3017,7 @@ class DiffusionBackend:
                         text_encoder_override_mib = int(table[1] * mib_per_gb),
                         device_memory_override = replace(bf16_memory, free_mib = bf16_memory.total_mib),
                     )
-                    if (
-                        _auto_quant_eager_reason(
-                            fam, offloads = bf16_plan.offload_policy != OFFLOAD_NONE
-                        )
-                        is not None
-                    ):
+                    if _auto_quant_eager_reason(fam, bf16_plan) is not None:
                         return None
                 scheme = select_transformer_quant_scheme(
                     target, mode, family = getattr(fam, "name", None)
@@ -4464,12 +4470,7 @@ class DiffusionBackend:
                     and pipeline_seed_scheme is None
                     and dense_quant_supported_kind(kind)
                     and dense_transformer_supported(target)
-                    and (
-                        eager_reason := _auto_quant_eager_reason(
-                            fam, offloads = plan.offload_policy != OFFLOAD_NONE
-                        )
-                    )
-                    is not None
+                    and (eager_reason := _auto_quant_eager_reason(fam, plan)) is not None
                 ):
                     logger.info(
                         "diffusion.transformer_quant: auto keeps %s (%s)", kind, eager_reason
