@@ -474,6 +474,64 @@ def test_a_class_whose_payload_slots_all_read_none_is_not_fingerprinted():
     assert fingerprint["count"] == 0
 
 
+class Int8Tensor:
+    """torchao 0.18's int8 weight, as far as the fingerprint is concerned."""
+
+    def __init__(self, qdata):
+        self.qdata = _Bytes(qdata)
+        self.scale = _Bytes(b"scale")
+        self.zero_point = None
+        self.act_quant_scale = None
+        self.act_quant_zero_point = None
+        self.act_pre_scale = None
+
+
+def test_torchao_018_int8_weights_are_fingerprinted():
+    # torchao >= 0.18 int8 yields Int8Tensor; unlisted, every weight was skipped and the
+    # artifact's fingerprint verified nothing.
+    from core.inference.diffusion_prequant import packed_weight_fingerprint
+
+    fqn = "blocks.0.attn1.to_q.weight"
+    good = packed_weight_fingerprint({fqn: Int8Tensor(b"q0")})
+    assert good["count"] == 1 and good["skipped"] == []
+    flipped = packed_weight_fingerprint({fqn: Int8Tensor(b"q1")})
+    assert flipped["modules"][fqn] != good["modules"][fqn]
+
+
+def test_real_torchao_int8_round_trip_fingerprint_catches_corruption():
+    torch = pytest.importorskip("torch")
+    pytest.importorskip("torchao")
+    import io
+
+    from torchao.quantization import quantize_
+
+    from core.inference.diffusion_prequant import (
+        _verify_packed_fingerprint,
+        packed_weight_fingerprint,
+    )
+    from core.inference.diffusion_transformer_quant import _make_quant_config
+
+    torch.manual_seed(0)
+    model = torch.nn.Sequential(torch.nn.Linear(64, 64, bias = False)).to(torch.bfloat16)
+    quantize_(model, _make_quant_config("int8"))
+    fingerprint = packed_weight_fingerprint(model.state_dict())
+    assert fingerprint["count"] == 1, fingerprint
+    assert fingerprint["skipped"] == []
+
+    buf = io.BytesIO()
+    torch.save(model.state_dict(), buf)
+    buf.seek(0)
+    reloaded = torch.load(buf, weights_only = False)
+    assert _verify_packed_fingerprint(reloaded, {"fingerprint": fingerprint})
+
+    weight = reloaded["0.weight"]
+    inner = getattr(weight, "qdata", None)
+    if inner is None:  # torchao <= 0.17: the AffineQuantizedTensor chain
+        inner = weight.original_weight_tensor.tensor_impl.int_data
+    inner.view(-1)[0] ^= 1
+    assert not _verify_packed_fingerprint(reloaded, {"fingerprint": fingerprint})
+
+
 def test_sample_mode_hashes_only_the_weights_it_compares(monkeypatch, tmp_path):
     from core.inference.diffusion_prequant import FINGERPRINT_MODE_ENV, _fingerprint_sampled
 

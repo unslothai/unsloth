@@ -1314,13 +1314,19 @@ def _planned_quant_scheme(
         requested,
         family = getattr(fam, "name", None),
         base_repo = base_repo,
-        has_prequant = lambda candidate: (
-            fam is not None
-            and usable_prequant_source(
-                fam, candidate, path_override = prequant_path, base_repo = base_repo
-            )
-            is not None
-        ),
+        has_prequant = _prequant_probe(fam, base_repo = base_repo, prequant_path = prequant_path),
+    )
+
+
+def _prequant_probe(
+    fam: Optional[DiffusionFamily], *, base_repo: Optional[str], prequant_path: Optional[str]
+) -> Callable[[str], bool]:
+    """``has_prequant`` for the AUTO planners: whether ``candidate`` has a checkpoint the loader
+    would open for this base (or the operator's override)."""
+    return lambda candidate: (
+        fam is not None
+        and usable_prequant_source(fam, candidate, path_override = prequant_path, base_repo = base_repo)
+        is not None
     )
 
 
@@ -3002,8 +3008,14 @@ class DiffusionBackend:
                     is not None
                 ):
                     return None
-                scheme = select_transformer_quant_scheme(
-                    target, mode, family = getattr(fam, "name", None)
+                # The load's own resolution: without the base and the checkpoint probe, AUTO drops every
+                # prequant-only rung (a gated nvfp4 head) and the plan seeds a scheme the load does not pick.
+                scheme = _planned_quant_scheme(
+                    fam,
+                    target,
+                    mode,
+                    base_repo = base,
+                    prequant_path = transformer_prequant_path,
                 )
                 if scheme is None or scheme == TQ_AUTO:
                     return None
@@ -3014,7 +3026,18 @@ class DiffusionBackend:
                 if auto:
                     try:
                         from .diffusion_transformer_quant import auto_scheme_candidates
-                        below = list(auto_scheme_candidates(target, getattr(fam, "name", None)))
+                        below = list(
+                            auto_scheme_candidates(
+                                target,
+                                getattr(fam, "name", None),
+                                base_repo = base,
+                                has_prequant = _prequant_probe(
+                                    fam,
+                                    base_repo = base,
+                                    prequant_path = transformer_prequant_path,
+                                ),
+                            )
+                        )
                         if scheme in below:
                             rungs.extend(below[below.index(scheme) + 1 :])
                     except Exception:  # noqa: BLE001 -- no lower rungs is just "no retry"
