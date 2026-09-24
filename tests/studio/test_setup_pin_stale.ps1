@@ -41,7 +41,8 @@ Write-Host "Test-RocmGfx211Leaf (the 2.11 gfx allowlist)"
 Check "gfx1151 -> true"        (Test-RocmGfx211Leaf "gfx1151")
 Check "gfx1150 -> true"        (Test-RocmGfx211Leaf "gfx1150")
 Check "gfx120x-all -> true"    (Test-RocmGfx211Leaf "gfx120x-all")
-Check "gfx110x-all -> false"   (-not (Test-RocmGfx211Leaf "gfx110x-all"))
+Check "gfx103x-all -> true"    (Test-RocmGfx211Leaf "gfx103x-all")
+Check "gfx110x-all -> true"    (Test-RocmGfx211Leaf "gfx110x-all")
 Check "gfx90a -> false"        (-not (Test-RocmGfx211Leaf "gfx90a"))
 Check "gfx908 -> false"        (-not (Test-RocmGfx211Leaf "gfx908"))
 
@@ -77,14 +78,19 @@ Check "gfx1150 pin + 2.11.0+rocm7.13.0 -> not stale"   (-not (IsStale "gfx1150" 
 Check "gfx120x-all pin + 2.11.0+rocm7.13.0 -> not stale" (-not (IsStale "gfx120x-all" "2.11.0+rocm7.13.0"))
 Check "gfx1151 pin + 2.11.0+rocm7.2 (generic) -> stale" (IsStale "gfx1151" "2.11.0+rocm7.2")
 Check "gfx1151 pin + 2.10.0+rocm6.4 -> stale"           (IsStale "gfx1151" "2.10.0+rocm6.4")
-# Non-2.11 gfx pin (gfx110X-all/gfx90a/gfx908): a valid <2.11 wheel is NOT stale.
-Check "gfx110x-all pin + 2.10.0+rocm6.4 -> not stale"  (-not (IsStale "gfx110x-all" "2.10.0+rocm6.4"))
+# Non-2.11 gfx pin (gfx90a/gfx908): a valid <2.11 wheel is NOT stale.
 Check "gfx90a pin + 2.10.0+rocm6.3 -> not stale"       (-not (IsStale "gfx90a" "2.10.0+rocm6.3"))
 Check "gfx908 pin + 2.10.0+rocm7.0 -> not stale"       (-not (IsStale "gfx908" "2.10.0+rocm7.0"))
-Check "gfx110x-all pin + 2.11.0+rocm7.2 -> stale"      (IsStale "gfx110x-all" "2.11.0+rocm7.2")
+Check "gfx90a pin + 2.11.0+rocm7.2 -> stale"           (IsStale "gfx90a" "2.11.0+rocm7.2")
+# gfx103X-all / gfx110X-all joined the 2.11 allowlist (unslothai/unsloth#11814): a 2.10
+# per-arch build is the _grouped_mm crash and IS stale; the 2.11 per-arch build is not.
+Check "gfx103x-all pin + 2.10.0+rocm7.13.0 -> stale"     (IsStale "gfx103x-all" "2.10.0+rocm7.13.0")
+Check "gfx110x-all pin + 2.10.0+rocm6.4 -> stale"        (IsStale "gfx110x-all" "2.10.0+rocm6.4")
+Check "gfx103x-all pin + 2.11.0+rocm7.13.0 -> not stale" (-not (IsStale "gfx103x-all" "2.11.0+rocm7.13.0"))
+Check "gfx110x-all pin + 2.11.0+rocm7.13.0 -> not stale" (-not (IsStale "gfx110x-all" "2.11.0+rocm7.13.0"))
 # Non-2.11 gfx pin over an untagged wheel: never satisfies the pin -> stale, so the
 # explicit ROCm index is applied even when torch is already <2.11.
-Check "gfx110x-all pin + 2.10.0 (untagged) -> stale"   (IsStale "gfx110x-all" "2.10.0")
+Check "gfx908 pin + 2.10.0 (untagged) -> stale"        (IsStale "gfx908" "2.10.0")
 Check "gfx90a pin + 2.10.0 (untagged) -> stale"        (IsStale "gfx90a" "2.10.0")
 # Capital gfx120X-all is lowercased by Get-TorchIndexLeaf before this helper, so the
 # 2.11-allowlist branch fires and a generic/untagged wheel is stale.
