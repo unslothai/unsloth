@@ -207,10 +207,12 @@ export function LibraryPreview({
 
   async function save(): Promise<boolean> {
     if (!item || draft === null) return true;
+    const sent = draft;
     setSaving(true);
     try {
-      await writeLibraryText(item.id, draft);
-      setDraft(null);
+      await writeLibraryText(item.id, sent);
+      // Typing during the save made a newer draft; keep it.
+      setEdit((current) => (current?.itemId === item.id && current.text === sent ? null : current));
       onSaved();
       return true;
     } catch (error) {
@@ -285,7 +287,11 @@ export function LibraryPreview({
               favorite: item.favorite,
               onToggleFavorite: () => onToggleFavorite(item),
               onAddToProject: canAddToProject(item)
-                ? (projectId) => addLibraryItemToProject(item.id, projectId)
+                ? async (projectId) => {
+                    // The project gets the text on screen, not the last saved copy.
+                    if (!(await save())) throw new Error("Save the note first.");
+                    return addLibraryItemToProject(item.id, projectId);
+                  }
                 : undefined,
               onDelete: isFileItem(item) ? () => onDelete(item) : undefined,
             }
