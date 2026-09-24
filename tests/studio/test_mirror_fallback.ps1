@@ -151,6 +151,10 @@ try {
     Run @{ pypi = 'blocked' }; Check "pip.ini index: only uv falls back" (-not $env:PIP_INDEX_URL -and $env:UV_DEFAULT_INDEX)
     Set-Content -Path $pipIni -Value "[global]`ntimeout = 60"
     Run @{ pypi = 'blocked' }; Check "pip.ini without an index still falls back" ($env:PIP_INDEX_URL -eq $pypiMirror)
+    $VenvDir = Join-Path $home_ 'venv'; New-Item -ItemType Directory -Force -Path $VenvDir | Out-Null
+    Set-Content -Path (Join-Path $VenvDir 'pip.ini') -Value "[global]`nindex-url = https://corp.example/simple"
+    Run @{ pypi = 'blocked' }; Check "the Studio venv's pip.ini index: only uv falls back" (-not $env:PIP_INDEX_URL -and $env:UV_DEFAULT_INDEX)
+    Remove-Variable VenvDir
     Run @{ torch = 'blocked' } @{ UNSLOTH_TORCH_INDEX_URL = 'https://corp.example/whl/cu128' }; Check "a pinned torch index is not overridden" (-not $env:UNSLOTH_PYTORCH_MIRROR)
     Run @{ npm = 'blocked' } @{ UNSLOTH_NPM_REGISTRY = 'https://corp.example/npm/' }; Check "a user npm registry is kept and not probed" ($env:UNSLOTH_NPM_REGISTRY -eq 'https://corp.example/npm/' -and -not ($script:probed -like '*npm*'))
     Run @{ pypi = 'blocked' } @{ UNSLOTH_MIRROR_FALLBACK = 'Off' }; Check "UNSLOTH_MIRROR_FALLBACK=Off probes nothing" ($script:probed.Count -eq 0)

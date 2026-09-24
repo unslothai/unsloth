@@ -153,6 +153,12 @@ for SH in dash bash; do
     out=$(_run "$SH" MOCK_PYPI=blocked)
     assert_contains "[$SH] pip.conf without an index still falls back" "$out" "PIP_INDEX_URL=$M/pypi/web/simple"
     rm -rf "$_WORK/home/.pip"
+    mkdir -p "$_WORK/venv"
+    printf '[global]\nindex-url = https://corp.example/simple\n' > "$_WORK/venv/pip.conf"
+    out=$(_run "$SH" MOCK_PYPI=blocked VENV_DIR="$_WORK/venv")
+    assert_not_contains "[$SH] the Studio venv's pip.conf index: pip untouched" "$out" "PIP_INDEX_URL"
+    assert_contains "[$SH] the Studio venv's pip.conf index: uv still falls back" "$out" "UV_DEFAULT_INDEX=$M/pypi/web/simple"
+    rm -rf "$_WORK/venv"
     out=$(_run "$SH" MOCK_PYPI=blocked UV_DEFAULT_INDEX=https://a.example/simple PIP_INDEX_URL=https://a.example/simple)
     assert_eq "[$SH] both tools configured: PyPI never probed" "" "$(grep -E 'files.pythonhosted|pypi.org' "$_WORK/curl.log" || true)"
     out=$(_run "$SH" MOCK_ASTRAL=slow)
