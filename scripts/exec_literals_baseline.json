@@ -10,6 +10,20 @@
   ],
   "entries": [
     {
+      "file": "studio/backend/core/inference/diffusion_capture_safe.py",
+      "sink": "compile",
+      "digest": "05c1d218ea0c8e6d",
+      "count": 1,
+      "reason": "Rebuilds the installed diffusers HunyuanImage forward from its own inspect.getsource with one fixed block swapped; the source is the imported library's code, not user or network input."
+    },
+    {
+      "file": "studio/backend/core/inference/diffusion_capture_safe.py",
+      "sink": "exec",
+      "digest": "4b6b3a49b588c0a6",
+      "count": 1,
+      "reason": "Rebuilds the installed diffusers HunyuanImage forward from its own inspect.getsource with one fixed block swapped; the source is the imported library's code, not user or network input."
+    },
+    {
       "file": "unsloth/models/_utils.py",
       "sink": "eval",
       "digest": "6f65bd10ad34f535",
