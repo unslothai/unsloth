@@ -273,7 +273,9 @@ async def upload_files(
             name, content_type, handle = library.open_native_upload(lease)
         except ValueError as exc:
             # A bad or expired grant, or a path outside this account's workspace.
-            raise HTTPException(status_code = 400, detail = "This item has no file to download") from exc
+            raise HTTPException(
+                status_code = 400, detail = "This item has no file to download"
+            ) from exc
         except OSError as exc:
             raise HTTPException(status_code = 400, detail = "Dropped file could not be read.") from exc
         with handle:

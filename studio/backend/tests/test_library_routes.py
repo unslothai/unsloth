@@ -446,8 +446,14 @@ def test_items_download_as_attachments(client, monkeypatch):
     assert response.headers["content-type"] == "application/octet-stream"
     assert response.headers["content-disposition"].startswith("attachment")
     assert client.head("/api/library/items/download", params = {"id": upload}).status_code == 200
-    assert client.get("/api/library/items/download", params = {"id": "upload:" + "0" * 32}).status_code == 404
-    assert client.get("/api/library/items/download", params = {"id": "attachment:m:a"}).status_code == 400
+    assert (
+        client.get("/api/library/items/download", params = {"id": "upload:" + "0" * 32}).status_code
+        == 404
+    )
+    assert (
+        client.get("/api/library/items/download", params = {"id": "attachment:m:a"}).status_code
+        == 400
+    )
 
 
 def test_a_failed_upload_record_leaves_no_file(client, monkeypatch):
