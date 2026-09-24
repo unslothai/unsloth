@@ -116,6 +116,7 @@ def test_custom_datatype_load_does_not_disable_flash_attention():
     from unsloth.models import _utils
 
     class SupportsFlashAndSdpa:
+        _supports_flash_attn = True
         _supports_flash_attn_2 = True
         _supports_flex_attn = False
         _supports_sdpa = True

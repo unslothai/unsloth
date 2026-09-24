@@ -8,12 +8,14 @@ from unsloth.models import _utils
 
 
 class SupportsFlexAndSdpa:
+    _supports_flash_attn = True
     _supports_flash_attn_2 = True
     _supports_flex_attn = True
     _supports_sdpa = True
 
 
 class SupportsFlashAndSdpa:
+    _supports_flash_attn = True
     _supports_flash_attn_2 = True
     _supports_flex_attn = False
     _supports_sdpa = True
@@ -218,3 +220,24 @@ def test_config_disable_reason_still_honors_a_config_seeded_eager(monkeypatch):
     )
 
     assert impl == "eager"
+
+
+class LegacyFlashFlagOnly:
+    # 4.x-era remote code (inclusionAI/Ling-2.6-flash) declares only the old flag name.
+    _supports_flash_attn_2 = True
+    _supports_flex_attn = False
+    _supports_sdpa = True
+
+
+def test_legacy_flash_flag_follows_what_transformers_dispatch_reads(monkeypatch):
+    monkeypatch.setattr(_utils, "HAS_FLASH_ATTENTION", True)
+    impl = _utils.resolve_attention_implementation(
+        LegacyFlashFlagOnly,
+        _config("bailing_hybrid"),
+        supports_sdpa = True,
+        dtype = torch.bfloat16,
+    )
+    if _utils._transformers_honors_legacy_flash_attn_2_flag():
+        assert impl == "flash_attention_2"
+    else:
+        assert impl == "sdpa"
