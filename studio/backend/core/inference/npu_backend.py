@@ -197,8 +197,7 @@ def _failed(response) -> bool:
 
 
 def _kill_tree(process: subprocess.Popen) -> None:
-    # A child's own children keep its pipes open, so killing the leader alone leaves
-    # communicate() waiting on them.
+    # The whole tree: a child's children hold the pipes communicate() waits on.
     terminate_pid(process.pid, timeout = 5.0, owner_verified = True)
 
 
@@ -228,8 +227,6 @@ class LemonadeNpuBackend:
         self._state = "idle"
         self._error: Optional[str] = None
 
-    # -- paths ---------------------------------------------------------------------------
-
     @property
     def root(self) -> Path:
         return self._root if self._root is not None else _npu_root()
@@ -246,8 +243,6 @@ class LemonadeNpuBackend:
         base = self.root / "cache" / "bin" / "flm" / "npu"
         candidates = sorted(base.rglob(name)) if base.is_dir() else []
         return candidates[0] if candidates else None
-
-    # -- status --------------------------------------------------------------------------
 
     def hardware(self) -> dict[str, Any]:
         if self._hardware is None:
@@ -269,7 +264,7 @@ class LemonadeNpuBackend:
         return resident.context_length if resident is not None else None
 
     def resident(self) -> Optional[NpuResident]:
-        """The loaded model, or None. Readers use this one snapshot: unload clears it concurrently."""
+        """The loaded model, or None: one snapshot, since unload clears it concurrently."""
         loaded, server = self._loaded, self._server
         if loaded is None or server is None:
             return None
@@ -320,8 +315,6 @@ class LemonadeNpuBackend:
             "context_length": resident.context_length if resident else None,
             "loading_model": self._loading,
         }
-
-    # -- lifecycle -------------------------------------------------------------------------
 
     def _server_for(self, binary: Path) -> LemonadeServer:
         return LemonadeServer(
@@ -411,8 +404,7 @@ class LemonadeNpuBackend:
         if self._closing.is_set():
             return {"ready": False, "problems": ["Unsloth is shutting down."]}
         try:
-            # Popen, not run: shutdown() kills it instead of waiting out the timeout. Spawned like
-            # lemond, so it also dies with a crashed Studio and is swept by the next start.
+            # On the lifetime thread: shutdown() kills it, and it dies with a crashed Studio.
             process = spawn_on_lifetime_thread(
                 lambda: subprocess.Popen(
                     [str(binary), "validate", "--json"],
@@ -458,8 +450,7 @@ class LemonadeNpuBackend:
         return {"ready": ready, "problems": problems, "report": report}
 
     def shutdown(self) -> None:
-        # load() and enable() hold the lock across downloads, lemond requests and the validator;
-        # interrupt each before taking it. start() refuses a respawn once the process shuts down.
+        # Interrupt the downloads, requests and validator load() and enable() hold the lock across.
         self._closing.set()
         self.cancel_load()
         server = self._server
@@ -476,8 +467,6 @@ class LemonadeNpuBackend:
             if self._state not in ("failed",):
                 self._state = "idle"
             self._closing.clear()
-
-    # -- catalog ---------------------------------------------------------------------------
 
     def catalog(self) -> list[NpuModel]:
         server = self._ensure_running()
@@ -571,8 +560,6 @@ class LemonadeNpuBackend:
             response = server.request("POST", "/v1/delete", json_body = {"model_name": model_id})
             if _failed(response):
                 raise NpuError(f"Deleting {model_id} failed: {_error_message(response)}")
-
-    # -- load ------------------------------------------------------------------------------
 
     def load(
         self,

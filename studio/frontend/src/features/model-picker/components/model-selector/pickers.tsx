@@ -6204,8 +6204,7 @@ export function HubModelPicker({
     );
   };
 
-  // A FastFlowLM model: the row loads it once downloaded, and on the Recommended list a click on
-  // one not yet downloaded fetches it first, as a Hub row's click does.
+  // A click on a model not yet downloaded fetches it first, as a Hub row's does.
   const renderNpuRow = (model: NpuModel, onDevice: boolean) => {
     if (!npuCatalog) return null;
     const optionKey = makeModelOptionKey(
@@ -6280,8 +6279,7 @@ export function HubModelPicker({
     );
   };
 
-  // The NPU group on Recommended: setup and the whole catalog, folded unless asked for. The NPU
-  // filter or a search opens it, since then it is what the list is about.
+  // Folded unless the NPU filter or a search makes it what the list is about.
   const npuBrowseForcedOpen = formatFilter === "npu" || showHfSection;
   const npuBrowseFolded = !npuBrowseForcedOpen && npuBrowseCollapsed;
   const showNpuBrowse =

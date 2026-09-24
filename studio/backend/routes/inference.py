@@ -18564,8 +18564,7 @@ async def _unload_model_impl(request: UnloadRequest, current_subject: str):
                 # Only the named model: another tab may have replaced it since.
                 npu_model = npu.loaded_model if npu is not None else None
                 if npu_model is not None and npu_model.id == requested_id:
-                    # Same order as the llama-server eject below: stop the chats, let them
-                    # unwind, then take the model away.
+                    # Same order as the llama-server eject below.
                     _raise_or_cancel_active_generations(
                         force = request.force_cancel_active, action = "Unloading the model"
                     )
@@ -24579,8 +24578,7 @@ async def _npu_chat_completions(payload, request: Request, current_subject: str)
             ),
         )
 
-    # As for the other local backends: per-model recommendations and operator pins fill what the
-    # caller left unset, since the managed proxy sends every sampling field.
+    # As for the other local backends; the managed proxy sends every sampling field.
     _fill_recommended_sampling_openai(payload, upstream.model)
     _normalize_chat_reasoning_controls(payload)
     if not upstream.supports_reasoning:
@@ -34646,8 +34644,7 @@ async def chat_count_tokens(
 
     _npu = peek_npu_backend()
     if _npu is not None and _npu.is_loaded:
-        # FastFlowLM exposes no tokenizer endpoint, and no other tokenizer here is its
-        # model's. Each reply's usage still reports the real prompt size.
+        # FastFlowLM has no tokenizer endpoint; each reply's usage still reports the prompt size.
         raise HTTPException(
             status_code = 503,
             detail = "Token counting is not available for NPU models.",

@@ -1363,8 +1363,7 @@ class ExternalProviderClient:
     ):
         self.provider_type = provider_type
         self.api_type = api_type if provider_type == "custom" else "chat_completions"
-        # Validate all caller-controlled destinations. Studio-owned loopback runtimes bypass
-        # provider URL restrictions so managed accounts can use the local model.
+        # Validate caller-controlled destinations; Studio's own loopback runtime is exempt.
         from core.inference.providers import validate_provider_base_url
 
         self.base_url = (
