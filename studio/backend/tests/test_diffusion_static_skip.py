@@ -297,6 +297,30 @@ def test_real_diffusers_output_class_is_rebuilt():
     assert torch.equal(rebuilt.sample, torch.zeros(1))
 
 
+class _ListDiT(_DiT):
+    """Z-Image's container: ``(list[Tensor],)``, one noise prediction per image."""
+
+    def forward(self, hidden_states, timestep = None, kv_cache_mode = None, return_dict = True):
+        out = super().forward(hidden_states, timestep, kv_cache_mode, return_dict = False)[0]
+        return (list(out.unbind(0)),)
+
+
+def test_z_image_list_outputs_are_skipped_and_rebuilt():
+    value, rebuild = ss._split_output(([torch.ones(4, 2), torch.zeros(4, 2)],))
+    assert value.shape == (2, 4, 2)
+    rebuilt = rebuild(value * 2)
+    assert type(rebuilt) is tuple and type(rebuilt[0]) is list and len(rebuilt[0]) == 2
+    assert torch.equal(rebuilt[0][0], torch.full((4, 2), 2.0))
+    # Mixed shapes cannot be stacked, so those calls compute.
+    assert ss._split_output(([torch.ones(4, 2), torch.ones(3, 2)],)) == (None, None)
+    assert ss._call_signature(([torch.ones(1, 4), torch.ones(1, 4)],), {})[0] == ((1, 4), (1, 4))
+
+    pipe = _installed(_ListDiT())
+    outs = _run(pipe, 25)["cond"]
+    assert ss.static_skip_stats(pipe)["stats"]["skipped"] == 9
+    assert all(type(o) is tuple and type(o[0]) is list for o in outs)
+
+
 def test_multi_value_outputs_are_never_skipped():
     # FLUX.2 klein KV's (noise, kv_cache): nothing a skip could reproduce.
     pipe = _installed(_DiT(container = "pair"))

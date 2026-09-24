@@ -137,17 +137,32 @@ def _call_signature(args: tuple, kwargs: dict) -> tuple:
     (an ``extract`` call fills the cache and returns a longer sequence) and the container asked
     for. A skip only reuses an output whose signature matches the current call."""
     hidden = kwargs.get("hidden_states", args[0] if args else None)
-    shape = tuple(hidden.shape) if _is_tensor(hidden) else None
+    if _is_tensor(hidden):
+        shape = tuple(hidden.shape)
+    elif isinstance(hidden, (list, tuple)) and hidden and all(_is_tensor(h) for h in hidden):
+        # Z-Image passes one latent per image.
+        shape = tuple(tuple(h.shape) for h in hidden)
+    else:
+        shape = None
     mode = kwargs.get("kv_cache_mode")
     if not isinstance(mode, (str, type(None))):
         mode = repr(mode)
     return (shape, mode, kwargs.get("return_dict", True) is False)
 
 
+def _same_shape_tensors(items: list) -> bool:
+    return (
+        bool(items)
+        and all(_is_tensor(t) for t in items)
+        and len({(tuple(t.shape), t.dtype, t.device) for t in items}) == 1
+    )
+
+
 def _split_output(out: Any) -> tuple:
     """(noise prediction, rebuild) for a container a skip can reproduce, else (None, None).
 
-    A bare tensor, a 1-tuple of one, or a diffusers output dataclass holding one tensor field
+    A bare tensor, a 1-tuple of one, a 1-tuple of a list of same-shape tensors (Z-Image, one per
+    image; stacked here and split back), or a diffusers output dataclass holding one tensor field
     (``Transformer2DModelOutput(sample=...)``), rebuilt through its own class. Anything else,
     e.g. FLUX.2 klein KV's ``(noise, kv_cache)`` extract step, is not reusable."""
     if _is_tensor(out):
@@ -155,6 +170,8 @@ def _split_output(out: Any) -> tuple:
     if type(out) is tuple:
         if len(out) == 1 and _is_tensor(out[0]):
             return out[0], lambda v: (v,)
+        if len(out) == 1 and type(out[0]) is list and _same_shape_tensors(out[0]):
+            return _torch().stack(out[0]), lambda v: (list(v.unbind(0)),)
         return None, None
     keys = getattr(out, "keys", None)
     if callable(keys) and callable(getattr(out, "to_tuple", None)):
