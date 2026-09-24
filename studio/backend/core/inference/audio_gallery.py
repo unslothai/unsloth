@@ -265,6 +265,11 @@ def _mtime(path: Path) -> float:
 GalleryCursor = tuple[float, float, str]
 
 
+def pin_rank(audio_id: str) -> float:
+    """The clip's current pin rank (-inf if unpinned), for a cursor sent without one."""
+    return gallery_flags.pin_rank(gallery_flags.read(gallery_dir()), audio_id)
+
+
 def _sort_key(flags: dict[str, dict[str, Any]], path: Path) -> GalleryCursor:
     return (
         gallery_flags.pin_rank(flags, path.stem),

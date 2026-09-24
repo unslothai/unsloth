@@ -676,3 +676,23 @@ def test_project_route_copies_the_wav(monkeypatch, tmp_path):
     dest = root / "sandbox" / "audio" / f"{record['id']}.wav"
     assert result.path == str(dest) and result.already is False
     assert dest.read_bytes() == _wav()
+
+
+def test_list_route_resolves_a_cursor_sent_without_its_pin_rank():
+    # Older clients send only before_mtime and before_id.
+    from routes.inference import list_gallery_audio
+
+    clips = [_save_with_mtime(f"p{i}", float(i)) for i in range(1, 5)]
+    for clip in clips[:3]:
+        gallery.set_flags(clip["id"], pinned = True)
+    page1 = asyncio.run(list_gallery_audio(limit = 2, current_subject = "tester"))
+    page2 = asyncio.run(
+        list_gallery_audio(
+            limit = 2,
+            before_mtime = page1.next_before_mtime,
+            before_id = page1.next_before_id,
+            current_subject = "tester",
+        )
+    )
+    ids = [c.id for c in page1.audio] + [c.id for c in page2.audio]
+    assert sorted(ids) == sorted(c["id"] for c in clips)
