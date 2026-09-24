@@ -51,7 +51,13 @@ class _Request:
         return False
 
 
-def _install(monkeypatch, *, supports_tool_passthrough = False):
+def _install(
+    monkeypatch,
+    *,
+    supports_tool_passthrough = False,
+    answer = _ANSWER,
+    **overrides,
+):
     calls = []
     upstream = []
 
@@ -76,6 +82,8 @@ def _install(monkeypatch, *, supports_tool_passthrough = False):
         effective_parallel_slots = 1,
         base_url = "http://llama.structured.test",
     )
+    for key, value in overrides.items():
+        setattr(backend, key, value)
     monkeypatch.setattr(inf_mod, "get_llama_cpp_backend", lambda: backend)
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -83,7 +91,7 @@ def _install(monkeypatch, *, supports_tool_passthrough = False):
         upstream.append(body)
         if body.get("stream"):
             chunks = [
-                {"choices": [{"delta": {"content": _ANSWER}}]},
+                {"choices": [{"delta": {"content": answer}}]},
                 {"choices": [{"delta": {}, "finish_reason": "stop"}]},
             ]
             content = "".join(f"data: {json.dumps(c)}\n\n" for c in chunks) + "data: [DONE]\n\n"
@@ -95,7 +103,7 @@ def _install(monkeypatch, *, supports_tool_passthrough = False):
             json = {
                 "choices": [
                     {
-                        "message": {"role": "assistant", "content": _ANSWER},
+                        "message": {"role": "assistant", "content": answer},
                         "finish_reason": "stop",
                     }
                 ],
@@ -224,3 +232,59 @@ def test_request_without_format_stays_on_the_plain_path(monkeypatch):
     assert status == 200
     assert [path for path, _kwargs in calls] == ["plain"]
     assert upstream == []
+
+
+_PNG_1PX = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+
+
+@pytest.mark.parametrize(
+    "overrides, content",
+    [
+        ({"supports_tools": False}, "Name a scientist."),
+        (
+            {"is_vision": True},
+            [
+                {
+                    "type": "image",
+                    "source": {"type": "base64", "media_type": "image/png", "data": _PNG_1PX},
+                },
+                {"type": "text", "text": "Name a scientist."},
+            ],
+        ),
+    ],
+    ids = ["toolless-backend", "top-level-image"],
+)
+def test_format_kept_when_requested_server_tools_cannot_run(monkeypatch, overrides, content):
+    calls, upstream = _install(monkeypatch, **overrides)
+
+    status, _body = _run(
+        _payload(
+            enable_tools = True,
+            permission_mode = "off",
+            messages = [{"role": "user", "content": content}],
+            output_config = {"format": {"type": "json_schema", "schema": _SCHEMA}},
+        )
+    )
+
+    assert status == 200
+    assert calls == []
+    [sent] = upstream
+    assert sent["response_format"] == _EXPECTED
+
+
+@pytest.mark.parametrize("stream", [False, True])
+def test_tool_markup_inside_json_is_returned_verbatim(monkeypatch, stream):
+    answer = json.dumps({"a": "<function=f>", "b": 2, "c": "</function>"})
+    _install(monkeypatch, answer = answer)
+
+    status, body = _run(
+        _payload(
+            stream = stream, output_config = {"format": {"type": "json_schema", "schema": _SCHEMA}}
+        )
+    )
+
+    assert status == 200
+    if stream:
+        assert json.dumps(answer)[1:-1] in body
+    else:
+        assert json.loads(body)["content"][0]["text"] == answer

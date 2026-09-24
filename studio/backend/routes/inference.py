@@ -34516,13 +34516,6 @@ async def anthropic_messages(
     _selects_server_tools = _anthropic_selects_server_tools(
         payload, requested_studio_tools, _has_client_tool
     )
-    response_format = _anthropic_response_format(payload)
-    if response_format is not None and (
-        _selects_server_tools
-        or (_has_client_tool and anthropic_tool_choice_to_openai(payload.tool_choice) != "none")
-    ):
-        logger.warning("Ignoring Anthropic output format: callable tools cannot run under a schema")
-        response_format = None
     _server_tools_requested_pre = _selects_server_tools and not _anthropic_top_level_image
     if _server_tools_requested_pre:
         from core.inference.tools import ALL_TOOLS as _ALL_TOOLS_PRE
@@ -34704,6 +34697,15 @@ async def anthropic_messages(
     _guard_anthropic_client_tool_catalog(
         openai_client_tools, openai_tool_choice, server_tools, llama_backend
     )
+
+    # Decided on the final routing: a tool request that cannot run tools (image, tool-less
+    # template) still gets its schema.
+    response_format = _anthropic_response_format(payload)
+    if response_format is not None and (
+        server_tools or (client_tools and openai_tool_choice != "none")
+    ):
+        logger.warning("Ignoring Anthropic output format: callable tools cannot run under a schema")
+        response_format = None
 
     # Studio composes the prompt on every branch but the client-tool passthrough, which forwards
     # the caller's own request verbatim (mirrors the GGUF passthrough gate in /chat/completions).
@@ -36797,7 +36799,7 @@ async def _anthropic_passthrough_non_streaming(
                 # or no-client-tool requests. The protected helper preserves <think> rehearsal and
                 # balanced [TOOL_CALLS] prose, gated on the declared tools so an inactive
                 # NAME[ARGS]{...} example is kept.
-                if not healing_active:
+                if not healing_active and response_format is None:
                     text = _strip_tool_xml_for_display(
                         text,
                         auto_heal_tool_calls = True,
