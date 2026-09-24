@@ -108,6 +108,25 @@ def test_apply_is_a_no_op_off_cuda(monkeypatch):
     assert H.apply_h3_vae_speedups(None, speed_mode = "max") == ()
 
 
+@pytest.mark.skipif(CUDA, reason = "checks the real gate on a host without an NVIDIA GPU")
+@pytest.mark.parametrize("tier", ["eager", "default", "max"])
+def test_without_cuda_the_real_gate_leaves_the_stock_vae_untouched(tier):
+    # no monkeypatching: this is what a Mac, a CPU-only box or a ROCm build gets
+    vae = _tiny_vae()
+    encoder_forward, decoder_forward, decode = (
+        vae.encoder.forward,
+        vae.decoder.forward,
+        vae.decode,
+    )
+    weights = {k: v.clone() for k, v in vae.state_dict().items()}
+    assert H.plan_h3_vae_levers(tier, workflow = "fl2va")
+    assert H.apply_h3_vae_speedups(vae, speed_mode = tier, workflow = "fl2va") == ()
+    assert vae.encoder.forward == encoder_forward and vae.decoder.forward == decoder_forward
+    assert vae.decode == decode
+    for k, v in vae.state_dict().items():
+        assert v.dtype == weights[k].dtype and torch.equal(v, weights[k]), k
+
+
 def test_decode_scope_pins_and_restores_fp16_accumulation():
     matmul = torch.backends.cuda.matmul
     if not hasattr(matmul, "allow_fp16_accumulation"):
