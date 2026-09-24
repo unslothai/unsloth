@@ -39,7 +39,7 @@ import {
   downloadLibraryItem,
 } from "./actions";
 import type { LibraryFolder, LibraryItem, LibraryUploadBatch } from "./api";
-import { fileKind, hasImagePreview, isFileItem, isModelItem } from "./file-kind";
+import { fileKind, hasImagePreview, isDeletable, isFileItem, isModelItem } from "./file-kind";
 import {
   type LibraryActions,
   LibraryActionsProvider,
@@ -52,10 +52,14 @@ import { LibraryPreview } from "./components/library-preview";
 import { LibraryToolbar, type NewAction } from "./components/library-toolbar";
 import { EMPTY_FILTERS, type LibraryFilters, filtersActive, matchesFilters } from "./filters";
 import { LIBRARY_TABS, type LibrarySearch, type LibraryTab } from "./search";
-import { useLibraryStore, useLibraryViewStore } from "./store";
+import { useLibraryStore } from "./store";
 import {
   compareBySort,
+  nextSort,
+  sortState,
+  useLibraryViewStore,
   includedBySettings,
+  type LibrarySortState,
   useLibrarySettingsStore,
 } from "./settings-store";
 
@@ -108,6 +112,7 @@ const DELETE_NOTES: Record<string, string> = {
   video: "It is also removed from your Video gallery.",
   audio: "It is also removed from your Audio gallery.",
   sandbox: "It is also removed from the chat that created it.",
+  model: "This permanently deletes the model from disk.",
 };
 
 type NameDialogState =
@@ -229,6 +234,11 @@ function LibraryView({ search }: { search: LibrarySearch }) {
   const fileInput = useRef<HTMLInputElement>(null);
 
   const tab: LibraryTab = search.show ?? settings.startTab;
+  // A column click (or a ?sort link) wins over the Sort setting until the view changes.
+  const [sortOverride, setSortOverride] = useState<LibrarySortState | null>(
+    search.sort ? sortState(search.sort) : null,
+  );
+  const sort = sortOverride ?? sortState(settings.sort);
   const folderId = search.folder ?? null;
   const folderById = useMemo(() => new Map(folders.map((f) => [f.id, f])), [folders]);
   const currentFolder = folderId ? (folderById.get(folderId) ?? null) : null;
@@ -274,12 +284,12 @@ function LibraryView({ search }: { search: LibrarySearch }) {
     pool = pool.filter(
       (item) => nameMatches(item.name, needle) && matchesFilters(item, filters, !kindFilter),
     );
-    // Suggested is the most recent slice of everything, whatever the sort.
+    // Suggested is the most recent slice of everything, then sorted like any other view.
     if (tab === "suggested" && !folderId && !needle && !filtersActive(filters)) {
-      return pool.slice(0, settings.suggestedLimit);
+      pool = pool.slice(0, settings.suggestedLimit);
     }
-    return settings.sort === "recent" ? pool : [...pool].sort(compareBySort(settings.sort));
-  }, [items, folderId, tab, needle, filters, kindFilter, settings.suggestedLimit, settings.sort]);
+    return [...pool].sort(compareBySort(sort));
+  }, [items, folderId, tab, needle, filters, kindFilter, settings.suggestedLimit, sort]);
 
   const visibleFolders = useMemo(() => {
     const showsFolders = folderId || tab === "folders" || tab === "all";
@@ -287,8 +297,9 @@ function LibraryView({ search }: { search: LibrarySearch }) {
     return folders
       .filter((folder) => folder.parentId === folderId)
       .filter((folder) => nameMatches(folder.name, needle))
-      .sort(compareBySort(settings.sort === "size" ? "recent" : settings.sort));
-  }, [folders, folderId, tab, needle, filters, settings.sort]);
+      // Folders have no size of their own.
+      .sort(compareBySort(sort.key === "size" ? { key: "name", desc: false } : sort));
+  }, [folders, folderId, tab, needle, filters, sort]);
 
   const previewItem = search.item ? (items.find((item) => item.id === search.item) ?? null) : null;
 
@@ -647,6 +658,8 @@ function LibraryView({ search }: { search: LibrarySearch }) {
             counts={counts}
             selection={selection}
             onSelectionChange={setSelection}
+            sort={sort}
+            onSortChange={(key) => setSortOverride(nextSort(sort, key))}
           />
         </div>
       );
@@ -664,9 +677,8 @@ function LibraryView({ search }: { search: LibrarySearch }) {
       : { title: "New folder", submitLabel: "Create", initialValue: "" };
 
   const selectedCount = selection.size;
-  // Models are deleted from the model picker, so a mixed selection deletes only its files.
   const deletableSelection = () =>
-    selectedTargets().filter((t) => t.kind === "folder" || isFileItem(t.item));
+    selectedTargets().filter((t) => t.kind === "folder" || isDeletable(t.item));
   const deleteText = pendingDelete ? deleteCopy(pendingDelete) : null;
 
   return (

@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { create } from "zustand";
-import { persist } from "zustand/middleware";
+import { deleteFineTunedModel } from "@/features/chat";
 import {
   type LibraryFolder,
   type LibraryItem,
@@ -82,11 +82,21 @@ export const useLibraryStore = create<LibraryState>((set, get) => {
         () => updateLibraryItem(id, patch),
       );
     },
-    removeItem: (id) =>
-      optimistic(
+    removeItem: (id) => {
+      const model = get().items.find((item) => item.id === id)?.model;
+      return optimistic(
         (state) => ({ items: state.items.filter((item) => item.id !== id) }),
-        () => deleteLibraryItem(id),
-      ),
+        // Fine-tunes go through the models route, which refuses while one is training or loaded.
+        () =>
+          model
+            ? deleteFineTunedModel({
+                modelPath: model.path,
+                source: model.origin,
+                exportType: model.exportType,
+              })
+            : deleteLibraryItem(id),
+      );
+    },
     upload: async (batch, folderId) => {
       const ids = await uploadLibraryFiles(batch, folderId);
       await get().refresh();
@@ -129,20 +139,3 @@ export const useLibraryStore = create<LibraryState>((set, get) => {
       ),
   };
 });
-
-export type LibraryView = "grid" | "list";
-
-export const LIBRARY_VIEW_STORAGE_KEY = "unsloth_library_view";
-
-export const useLibraryViewStore = create<{
-  view: LibraryView;
-  setView: (view: LibraryView) => void;
-}>()(
-  persist(
-    (set) => ({
-      view: "grid",
-      setView: (view) => set({ view }),
-    }),
-    { name: LIBRARY_VIEW_STORAGE_KEY },
-  ),
-);

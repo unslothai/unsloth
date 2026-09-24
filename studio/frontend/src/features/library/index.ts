@@ -8,6 +8,7 @@ export { validateLibrarySearch, type LibrarySearch, type LibraryTab } from "./se
 export {
   DEFAULT_LIBRARY_SETTINGS,
   LIBRARY_SETTINGS_STORAGE_KEY,
+  LIBRARY_VIEW_STORAGE_KEY,
   SUGGESTED_LIMITS,
   type LibraryCardSize,
   type LibraryImageLayout,
@@ -16,5 +17,12 @@ export {
   type LibrarySort,
   type LibraryStartTab,
   useLibrarySettingsStore,
+  useLibraryViewStore,
 } from "./settings-store";
-export { LIBRARY_VIEW_STORAGE_KEY } from "./store";
+export {
+  type LibraryStorage,
+  type StorageCategory,
+  type StorageUsage,
+  useLibraryStorage,
+} from "./storage";
+export { formatSize } from "./format";

@@ -5,6 +5,7 @@ import { create } from "zustand";
 import { persist } from "zustand/middleware";
 
 export const LIBRARY_SETTINGS_STORAGE_KEY = "unsloth_library_settings";
+export const LIBRARY_VIEW_STORAGE_KEY = "unsloth_library_view";
 
 export type LibraryCardSize = "small" | "medium" | "large";
 export type LibraryImageLayout = "masonry" | "square";
@@ -51,6 +52,21 @@ export const CARD_COLUMNS: Record<LibraryCardSize, { minWidth: number; max: numb
   large: { minWidth: 240, max: 4 },
 };
 
+export type LibraryView = "grid" | "list";
+
+export const useLibraryViewStore = create<{
+  view: LibraryView;
+  setView: (view: LibraryView) => void;
+}>()(
+  persist(
+    (set) => ({
+      view: "grid",
+      setView: (view) => set({ view }),
+    }),
+    { name: LIBRARY_VIEW_STORAGE_KEY },
+  ),
+);
+
 interface LibrarySettingsState extends LibrarySettings {
   set: (patch: Partial<LibrarySettings>) => void;
   reset: () => void;
@@ -82,17 +98,39 @@ export function includedBySettings(itemId: string, settings: LibrarySettings): b
   return !key || Boolean(settings[key]);
 }
 
+/** A list column and direction; the Sort setting is one of these. */
+export type LibrarySortKey = "name" | "modified" | "size";
+export interface LibrarySortState {
+  key: LibrarySortKey;
+  desc: boolean;
+}
+
+export const LIBRARY_SORTS: readonly LibrarySort[] = ["recent", "oldest", "name", "size"];
+
+const SORT_STATES: Record<LibrarySort, LibrarySortState> = {
+  recent: { key: "modified", desc: true },
+  oldest: { key: "modified", desc: false },
+  name: { key: "name", desc: false },
+  size: { key: "size", desc: true },
+};
+
+export function sortState(sort: LibrarySort): LibrarySortState {
+  return SORT_STATES[sort];
+}
+
+/** Clicking a column flips it, or starts a new one in its natural direction. */
+export function nextSort(current: LibrarySortState, key: LibrarySortKey): LibrarySortState {
+  return current.key === key ? { key, desc: !current.desc } : { key, desc: key !== "name" };
+}
+
 type Sortable = { name: string; updatedAt: number; sizeBytes?: number | null };
 
-export function compareBySort(sort: LibrarySort): (a: Sortable, b: Sortable) => number {
-  switch (sort) {
-    case "oldest":
-      return (a, b) => a.updatedAt - b.updatedAt;
-    case "name":
-      return (a, b) => a.name.localeCompare(b.name, undefined, { numeric: true });
-    case "size":
-      return (a, b) => (b.sizeBytes ?? 0) - (a.sizeBytes ?? 0);
-    default:
-      return (a, b) => b.updatedAt - a.updatedAt;
-  }
+export function compareBySort({ key, desc }: LibrarySortState): (a: Sortable, b: Sortable) => number {
+  const ascending =
+    key === "name"
+      ? (a: Sortable, b: Sortable) => a.name.localeCompare(b.name, undefined, { numeric: true })
+      : key === "size"
+        ? (a: Sortable, b: Sortable) => (a.sizeBytes ?? -1) - (b.sizeBytes ?? -1)
+        : (a: Sortable, b: Sortable) => a.updatedAt - b.updatedAt;
+  return desc ? (a, b) => ascending(b, a) : ascending;
 }

@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { LIBRARY_SORTS, type LibrarySort } from "./settings-store";
+
 // Kept apart from the page so the route can validate its URL without loading the page chunk.
 export const LIBRARY_TABS = [
   "suggested",
@@ -21,6 +23,8 @@ export interface LibrarySearch {
   folder?: string;
   /** Preview this item on top of whatever is showing. */
   item?: string;
+  /** Start sorted this way, e.g. by size from Settings > Library > Storage. */
+  sort?: LibrarySort;
 }
 
 export function validateLibrarySearch(search: Record<string, unknown>): LibrarySearch {
@@ -29,5 +33,6 @@ export function validateLibrarySearch(search: Record<string, unknown>): LibraryS
     ...(show ? { show } : {}),
     ...(typeof search.folder === "string" ? { folder: search.folder } : {}),
     ...(typeof search.item === "string" ? { item: search.item } : {}),
+    ...(LIBRARY_SORTS.includes(search.sort as LibrarySort) ? { sort: search.sort as LibrarySort } : {}),
   };
 }

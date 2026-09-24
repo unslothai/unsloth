@@ -92,9 +92,14 @@ export function isModelItem(item: LibraryItem): boolean {
   return item.model != null;
 }
 
-/** Only files have bytes to download or delete here; a model is managed from the model picker. */
+/** Only files download; a model is a directory. */
 export function isFileItem(item: LibraryItem): boolean {
   return !isModelItem(item);
+}
+
+/** GGUF exports are deleted one quant at a time, from the model picker. */
+export function isDeletable(item: LibraryItem): boolean {
+  return item.model?.exportType !== "gguf";
 }
 
 const MODEL_LABELS: Record<string, string> = {

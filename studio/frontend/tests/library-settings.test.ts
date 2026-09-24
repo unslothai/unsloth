@@ -8,6 +8,8 @@ import {
   DEFAULT_LIBRARY_SETTINGS,
   compareBySort,
   includedBySettings,
+  nextSort,
+  sortState,
 } from "../src/features/library/settings-store.ts";
 
 test("hidden sources drop out, Library uploads always stay", () => {
@@ -25,10 +27,17 @@ test("sort orders by recency, name and size", () => {
     { name: "b 9", updatedAt: 3, sizeBytes: null },
     { name: "a", updatedAt: 1, sizeBytes: 50 },
   ];
-  const names = (sort: Parameters<typeof compareBySort>[0]) =>
-    [...items].sort(compareBySort(sort)).map((item) => item.name);
+  const names = (sort: Parameters<typeof sortState>[0]) =>
+    [...items].sort(compareBySort(sortState(sort))).map((item) => item.name);
   assert.deepEqual(names("recent"), ["b 9", "b 10", "a"]);
   assert.deepEqual(names("oldest"), ["a", "b 10", "b 9"]);
   assert.deepEqual(names("name"), ["a", "b 9", "b 10"]);
   assert.deepEqual(names("size"), ["a", "b 10", "b 9"]);
+});
+
+test("a column click flips its direction or starts a new column naturally", () => {
+  const bySize = sortState("size");
+  assert.deepEqual(nextSort(bySize, "size"), { key: "size", desc: false });
+  assert.deepEqual(nextSort(bySize, "name"), { key: "name", desc: false });
+  assert.deepEqual(nextSort(bySize, "modified"), { key: "modified", desc: true });
 });

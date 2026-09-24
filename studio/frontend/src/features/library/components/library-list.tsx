@@ -9,7 +9,9 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import type { ReactNode } from "react";
 import type { LibraryFolder, LibraryItem } from "../api";
 import { modelLabel } from "../file-kind";
-import { formatRelativeTime, pluralize } from "../format";
+import { formatCardTime, formatSize, pluralize } from "../format";
+import type { LibrarySortKey, LibrarySortState } from "../settings-store";
+import { ArrowDownIcon, ArrowUpIcon } from "lucide-react";
 import { type LibraryTarget, useLibraryActions } from "../actions-context";
 import { LibraryActionsMenu } from "./library-actions";
 import { ItemTile } from "./library-cards";
@@ -20,6 +22,41 @@ function targetKey(target: LibraryTarget): string {
 
 // Row content lines up with the tab labels (px-4); the checkbox hangs in the margin to its left.
 const ROW_INSET = "pl-4 pr-3";
+
+const MODIFIED_COLUMN = "w-36 shrink-0";
+const SIZE_COLUMN = "w-24 shrink-0";
+
+function SortHeader({
+  column,
+  label,
+  sort,
+  onSortChange,
+  className,
+}: {
+  column: LibrarySortKey;
+  label: string;
+  sort: LibrarySortState;
+  onSortChange: (key: LibrarySortKey) => void;
+  className?: string;
+}) {
+  const active = sort.key === column;
+  const Arrow = sort.desc ? ArrowDownIcon : ArrowUpIcon;
+  return (
+    <button
+      type="button"
+      onClick={() => onSortChange(column)}
+      aria-sort={active ? (sort.desc ? "descending" : "ascending") : undefined}
+      className={cn(
+        "flex items-center gap-1 text-left transition-colors hover:text-foreground",
+        active && "text-foreground",
+        className,
+      )}
+    >
+      {label}
+      {active && <Arrow className="size-3.5" strokeWidth={2} />}
+    </button>
+  );
+}
 
 /** The checkbox in the page margin: shown on hover, or on every row once anything is selected. */
 function GutterCheckbox({
@@ -61,7 +98,8 @@ function Row({
   onOpen,
   tile,
   name,
-  activity,
+  modified,
+  size,
 }: {
   target: LibraryTarget;
   selected: boolean;
@@ -70,7 +108,8 @@ function Row({
   onOpen: () => void;
   tile: ReactNode;
   name: ReactNode;
-  activity: string;
+  modified: number;
+  size: number | null;
 }) {
   return (
     <div
@@ -94,8 +133,11 @@ function Row({
       >
         {tile}
         <span className="flex min-w-0 items-center gap-2 text-[14px] text-foreground">{name}</span>
-        <span className="ml-auto hidden w-44 shrink-0 text-[13px] text-muted-foreground sm:block">
-          {activity}
+        <span className={cn(MODIFIED_COLUMN, "ml-auto hidden text-[13px] text-muted-foreground sm:block")}>
+          {formatCardTime(modified)}
+        </span>
+        <span className={cn(SIZE_COLUMN, "hidden text-[13px] text-muted-foreground sm:block")}>
+          {formatSize(size)}
         </span>
       </button>
       <LibraryActionsMenu target={target} variant="row" />
@@ -109,12 +151,16 @@ export function LibraryList({
   counts,
   selection,
   onSelectionChange,
+  sort,
+  onSortChange,
 }: {
   folders: LibraryFolder[];
   items: LibraryItem[];
   counts: Map<string, number>;
   selection: Set<string>;
   onSelectionChange: (next: Set<string>) => void;
+  sort: LibrarySortState;
+  onSortChange: (key: LibrarySortKey) => void;
 }) {
   const actions = useLibraryActions();
   const targets: LibraryTarget[] = [
@@ -148,8 +194,23 @@ export function LibraryList({
           }
           label="Select all"
         />
-        <span className="flex-1">Name</span>
-        <span className="hidden w-44 shrink-0 sm:block">Last activity</span>
+        <span className="flex-1">
+          <SortHeader column="name" label="Name" sort={sort} onSortChange={onSortChange} />
+        </span>
+        <SortHeader
+          column="modified"
+          label="Modified"
+          sort={sort}
+          onSortChange={onSortChange}
+          className={cn(MODIFIED_COLUMN, "hidden sm:flex")}
+        />
+        <SortHeader
+          column="size"
+          label="Size"
+          sort={sort}
+          onSortChange={onSortChange}
+          className={cn(SIZE_COLUMN, "hidden sm:flex")}
+        />
         <span className="w-8 shrink-0" />
       </div>
       <div className="mt-1 flex flex-col">
@@ -174,7 +235,8 @@ export function LibraryList({
                 </span>
               </>
             }
-            activity={`Modified ${formatRelativeTime(folder.updatedAt)}`}
+            modified={folder.updatedAt}
+            size={null}
           />
         ))}
         {items.map((item) => (
@@ -202,7 +264,8 @@ export function LibraryList({
                 )}
               </>
             }
-            activity={`Modified ${formatRelativeTime(item.updatedAt)}`}
+            modified={item.updatedAt}
+            size={item.sizeBytes}
           />
         ))}
       </div>

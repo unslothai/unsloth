@@ -25,7 +25,7 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { MessageCircleIcon, StarPointedIcon } from "@/lib/hugeicons-derived";
 import { useMemo, useState } from "react";
 import type { LibraryFolder } from "../api";
-import { isFileItem, isModelItem } from "../file-kind";
+import { isDeletable, isFileItem, isModelItem } from "../file-kind";
 import { type LibraryTarget, useLibraryActions } from "../actions-context";
 
 // Sized and weighted as the sidebar's chat and project menus draw theirs.
@@ -81,7 +81,6 @@ export function LibraryActionsMenu({
   );
   const inFolder = currentFolderId(target);
   const item = target.kind === "item" ? target.item : null;
-  const isFile = !item || isFileItem(item);
 
   return (
     <DropdownMenu open={open} onOpenChange={setOpen}>
@@ -121,7 +120,7 @@ export function LibraryActionsMenu({
             {item.favorite ? "Remove from Favorites" : "Add to Favorites"}
           </DropdownMenuItem>
         )}
-        {item && isFile && (
+        {item && isFileItem(item) && (
           <DropdownMenuItem onSelect={() => actions.download(item)}>
             <HugeiconsIcon icon={Download01Icon} strokeWidth={1.75} className={ICON} />
             Download
@@ -161,7 +160,7 @@ export function LibraryActionsMenu({
             ))}
           </DropdownMenuSubContent>
         </DropdownMenuSub>
-        {isFile && (
+        {(!item || isDeletable(item)) && (
           <DropdownMenuItem variant="destructive" onSelect={() => actions.remove(target)}>
             <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} className={ICON} />
             {target.kind === "folder" ? "Delete folder" : "Delete"}
