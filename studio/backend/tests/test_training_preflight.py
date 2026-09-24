@@ -161,6 +161,11 @@ class _SizedDataset:
         self.info = SimpleNamespace(splits = {name: object() for name in splits})
         self.shuffle_seeds = []
 
+    def __getitem__(self, index):
+        if not 0 <= index < len(self):
+            raise IndexError(index)
+        return {"text": "A valid training example."}
+
     def __len__(self):
         return self.size
 
