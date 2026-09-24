@@ -11759,10 +11759,9 @@ def test_plan_memory_prices_the_hosted_precast_text_encoder(monkeypatch, tmp_pat
     assert after.estimates["model_dense_mib"] == 3150
 
 
-def test_plan_memory_replaces_scanned_dense_encoder_shards_with_the_precast_size(
-    monkeypatch, tmp_path
-):
-    # Dense encoder shards left in the base cache are not what a pre-cast load opens: swap, never add.
+def test_plan_memory_prices_cached_dense_shards_over_a_cached_precast(monkeypatch, tmp_path):
+    # Swap, never add, but never below dense shards on disk either: a cached checkpoint can still fail to load (bad
+    # metadata, missing class, incompatible state dict) and assembly then opens those shards.
     snapshot = _base_snapshot_with_sizes(
         tmp_path,
         monkeypatch,
@@ -11789,9 +11788,52 @@ def test_plan_memory_replaces_scanned_dense_encoder_shards_with_the_precast_size
         base_local_dir = str(snapshot),
         text_encoder_quant = "fp8",
     )
-    assert plan.estimates["text_encoder_dense_mib"] == 2600
-    assert plan.estimates["companion_dense_mib"] == 2650
-    assert plan.estimates["model_dense_mib"] == 2950
+    assert plan.estimates["text_encoder_dense_mib"] == 4000
+    assert plan.estimates["companion_dense_mib"] == 4050
+    assert plan.estimates["model_dense_mib"] == 4350
+
+
+def test_cached_dense_shards_keep_the_24g_denoiser_resident(monkeypatch, tmp_path):
+    # Qwen-Image-2.1 Q8_0 on a 24 GB card with the dense Qwen3-VL shards left in the cache as well as the fp8
+    # checkpoint: pricing the dense encoder must not cost the resident-denoiser tier, which only streams encoders.
+    from core.inference import diffusion as dmod
+    from core.inference.diffusion_memory import OFFLOAD_GROUP, DeviceMemory
+
+    snapshot = _base_snapshot_with_sizes(
+        tmp_path,
+        monkeypatch,
+        {
+            "text_encoder/model.safetensors": 16689,
+            "vae/diffusion_pytorch_model.safetensors": 1288,
+        },
+    )
+    monkeypatch.setattr(
+        dmod,
+        "settled_snapshot_device_memory",
+        lambda t: DeviceMemory("cuda", "cuda", "discrete_vram", 23000, 24576),
+    )
+    monkeypatch.setattr(dmod, "estimate_image_runtime_mib", lambda **kw: 8192)
+    target = types.SimpleNamespace(device = "cuda", backend = "cuda", supports_model_cpu_offload = True)
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_precast_text_encoder_mib",
+        staticmethod(lambda *a, **k: (8959, ("text_encoder",), True)),
+    )
+    plan = DiffusionBackend()._plan_memory(
+        target,
+        None,
+        "bfl/base",
+        types.SimpleNamespace(name = "qwen-image"),
+        None,
+        False,
+        kind = "gguf",
+        transformer_resident_override_mib = 7650,
+        base_local_dir = str(snapshot),
+        text_encoder_quant = "fp8",
+    )
+    assert plan.estimates["text_encoder_dense_mib"] == 16689
+    assert plan.offload_policy == OFFLOAD_GROUP
+    assert plan.stream_transformer is False and plan.stream_text_encoders is True
 
 
 def _flux_like_plan(tmp_path, monkeypatch, precast):
@@ -11824,9 +11866,9 @@ def _flux_like_plan(tmp_path, monkeypatch, precast):
 
 
 def test_plan_memory_swaps_only_the_encoder_the_precast_checkpoint_replaces(monkeypatch, tmp_path):
-    plan = _flux_like_plan(tmp_path, monkeypatch, (2600, ("text_encoder_2",), True))
-    assert plan.estimates["text_encoder_dense_mib"] == 235 + 2600
-    assert plan.estimates["companion_dense_mib"] == 50 + 235 + 2600
+    plan = _flux_like_plan(tmp_path, monkeypatch, (4200, ("text_encoder_2",), True))
+    assert plan.estimates["text_encoder_dense_mib"] == 235 + 4200
+    assert plan.estimates["companion_dense_mib"] == 50 + 235 + 4200
 
 
 def test_plan_memory_never_prices_an_uncached_precast_below_the_dense_shards(monkeypatch, tmp_path):

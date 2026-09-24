@@ -6578,7 +6578,7 @@ class DiffusionBackend:
                 fam, base, target, text_encoder_quant, base_local_dir
             )
             if precast:
-                precast_mib, precast_components, precast_exact = precast
+                precast_mib, precast_components, _exact = precast
                 # Only the encoder folders the checkpoint replaces leave the budget (FLUX.1 keeps its dense CLIP-L).
                 covered = frozenset(precast_components)
                 scanned_te = int(
@@ -6592,9 +6592,10 @@ class DiffusionBackend:
                         base_local_dir,
                     )
                 ) // (1024 * 1024)
-                if not precast_exact:
-                    # Not cached yet, so the load may still open the dense shards it scanned: never price below them.
-                    precast_mib = max(int(precast_mib), scanned_te)
+                # Never below the dense shards scanned: load_prequant_text_encoder returns None on a bad or
+                # incompatible checkpoint (cached or not) and assembly then opens those shards instead. The prefetch
+                # skips covered shards, so this is 0 unless a dense load left them behind.
+                precast_mib = max(int(precast_mib), scanned_te)
                 text_encoder_mib = max(0, int(text_encoder_mib or 0) - scanned_te) + int(
                     precast_mib
                 )
