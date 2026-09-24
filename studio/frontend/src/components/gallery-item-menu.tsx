@@ -11,7 +11,7 @@ import {
   PinOffIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useEffect, useState } from "react";
+import { type ReactNode, useEffect, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -27,13 +27,14 @@ import { cn } from "@/lib/utils";
 import { useProjectSubmenu } from "./project-submenu";
 
 /**
- * Actions for one gallery item, shared by the Images and Video pages. Matches a chat row's menu.
+ * Actions for one gallery item, shared by the Images, Video and Audio pages. Matches a chat row's menu.
  *
  * "toolbar" sits in the glass toolbar over the preview; "overlay" is the badge that appears on a
- * filmstrip tile on hover. A tile is itself a <button>, so the overlay must be rendered as its
- * SIBLING, never a child -- nested buttons are invalid and break keyboard activation.
+ * filmstrip tile on hover; "row" is the quiet trigger at the end of a list row. A tile is itself a
+ * <button>, so the menu must be rendered as its SIBLING, never a child -- nested buttons are invalid
+ * and break keyboard activation.
  */
-export type GalleryItemMenuVariant = "toolbar" | "overlay";
+export type GalleryItemMenuVariant = "toolbar" | "overlay" | "row";
 
 export function GalleryItemMenu({
   pinned,
@@ -45,6 +46,7 @@ export function GalleryItemMenu({
   onDelete,
   onDownload,
   onAddToProject,
+  leadingItems,
   variant = "toolbar",
   noun,
   active = true,
@@ -62,6 +64,8 @@ export function GalleryItemMenu({
   onDownload?: () => void;
   /** Copies the item into a project's folder. */
   onAddToProject?: (projectId: string) => Promise<{ already: boolean }>;
+  /** Page-specific items shown first, above a separator. */
+  leadingItems?: ReactNode;
   variant?: GalleryItemMenuVariant;
   /** Used in the aria-label and messages, e.g. "image" or "video". */
   noun: string;
@@ -82,23 +86,28 @@ export function GalleryItemMenu({
   }, [active, closeProject]);
 
   const overlay = variant === "overlay";
+  const row = variant === "row";
   const menu = (
     <DropdownMenu open={active && open} onOpenChange={(o) => setOpen(active && o)}>
       <DropdownMenuTrigger asChild={true}>
         <Button
-          size={overlay ? "icon-xs" : "icon-sm"}
+          size={overlay || row ? "icon-xs" : "icon-sm"}
           variant="ghost"
           aria-label={`More actions for this ${noun}`}
           className={cn(
-            // Circular hover.
-            "rounded-full",
-            // Reads over any thumbnail. Open matches hover instead of ghost's darker open state.
+            // Circular hover, no border: focus returning on close would draw one. Keyboard focus tints instead.
+            "rounded-full border-0 focus-visible:bg-muted dark:focus-visible:bg-muted/50",
+            // Reads over any thumbnail, whatever its colours. Open matches hover instead of ghost's darker open state.
             overlay &&
-              "bg-background/80 text-foreground shadow-sm ring-1 ring-border backdrop-blur hover:bg-background focus-visible:border-transparent aria-expanded:bg-background",
+              "bg-background/80 text-foreground shadow-sm backdrop-blur hover:bg-background focus-visible:bg-background aria-expanded:bg-background dark:focus-visible:bg-background",
+            row && "text-muted-foreground hover:text-foreground",
             className,
           )}
         >
-          <HugeiconsIcon icon={MoreVerticalIcon} className={overlay ? "size-3.5" : "size-4"} />
+          <HugeiconsIcon
+            icon={MoreVerticalIcon}
+            className={overlay || row ? "size-3.5" : "size-4"}
+          />
         </Button>
       </DropdownMenuTrigger>
       {/* Same styling as a chat row's menu. */}
@@ -106,6 +115,12 @@ export function GalleryItemMenu({
         align="end"
         className="unsloth-plus-menu sidebar-row-menu menu-flat-destructive w-52"
       >
+        {leadingItems ? (
+          <>
+            {leadingItems}
+            <DropdownMenuSeparator />
+          </>
+        ) : null}
         <DropdownMenuItem onClick={onTogglePin}>
           <HugeiconsIcon icon={pinned ? PinOffIcon : PinIcon} strokeWidth={1.75} className="size-icon" />
           {pinned ? "Unpin" : "Pin"}
@@ -142,7 +157,7 @@ export function GalleryItemMenu({
 
   const newProjectDialog = project.dialog;
 
-  if (!overlay) {
+  if (!overlay && !row) {
     return (
       <>
         {menu}

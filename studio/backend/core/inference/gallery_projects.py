@@ -3,7 +3,7 @@
 
 """Copy a gallery image or clip into a chat project's folder.
 
-Files land in ``<project root>/sandbox/{images,videos}``, where the project's chats run their
+Files land in ``<project root>/sandbox/{images,videos,audio}``, where the project's chats run their
 tools. It is a copy, so the gallery keeps its item.
 """
 

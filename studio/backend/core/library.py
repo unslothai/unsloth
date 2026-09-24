@@ -60,6 +60,7 @@ def _item(
     thread_title: Optional[str] = None,
     text_only: bool = False,
     model: Optional[dict] = None,
+    archived: bool = False,
 ) -> dict:
     return {
         "id": item_id,
@@ -75,6 +76,8 @@ def _item(
         # Chat uploads of documents keep only their extracted text, so that is what downloads.
         "textOnly": text_only,
         "model": model,
+        # Off its gallery page's active shelf, so that page cannot open it.
+        "archived": archived,
     }
 
 
@@ -103,10 +106,11 @@ def save_upload(name: str, content_type: str, chunks) -> dict:
                 size += len(chunk)
                 handle.write(chunk)
         os.replace(tmp_path, final_path)
+        return library_db.insert_upload(upload_id, name, content_type, size)
     except BaseException:
         tmp_path.unlink(missing_ok = True)
+        final_path.unlink(missing_ok = True)
         raise
-    return library_db.insert_upload(upload_id, name, content_type, size)
 
 
 def open_native_upload(lease: str):
@@ -215,16 +219,19 @@ def _file_size(path: Optional[Path]) -> Optional[int]:
         return None
 
 
-def _both_shelves(list_records) -> list[dict]:
-    """Active and archived records: archiving tidies a gallery page, the file is still Studio's."""
-    return list_records() + list_records(archived = True)
+def _both_shelves(list_records) -> list[tuple[dict, bool]]:
+    """(record, archived) for both shelves: archiving tidies a gallery page, the file is still
+    Studio's."""
+    return [(record, False) for record in list_records()] + [
+        (record, True) for record in list_records(archived = True)
+    ]
 
 
 def _image_items() -> list[dict]:
     from core.inference import image_gallery
 
     items = []
-    for record in _both_shelves(image_gallery.list_images):
+    for record, archived in _both_shelves(image_gallery.list_images):
         items.append(
             _item(
                 f"image:{record['id']}",
@@ -234,6 +241,7 @@ def _image_items() -> list[dict]:
                 size_bytes = _file_size(image_gallery.image_path(record["id"])),
                 created_at = _to_ms(record.get("created_at")),
                 file_url = record["url"],
+                archived = archived,
             )
         )
     return items
@@ -253,8 +261,9 @@ def _video_items() -> list[dict]:
             size_bytes = _file_size(video_gallery.video_path(record["id"])),
             created_at = _to_ms(record.get("created_at")),
             file_url = record["url"],
+            archived = archived,
         )
-        for record in _both_shelves(video_gallery.list_videos)
+        for record, archived in _both_shelves(video_gallery.list_videos)
     ]
 
 
@@ -272,8 +281,9 @@ def _audio_items() -> list[dict]:
             size_bytes = _file_size(audio_gallery.audio_path(record["id"])),
             created_at = _to_ms(record.get("created_at")),
             file_url = record["url"],
+            archived = archived,
         )
-        for record in _both_shelves(audio_gallery.list_audio)
+        for record, archived in _both_shelves(audio_gallery.list_audio)
     ]
 
 
@@ -590,15 +600,33 @@ def locations() -> list[dict]:
     ]
 
 
+def _delete_upload(upload_id: str, path: Path) -> bool:
+    """Set the file aside before dropping its row, so a failure at either step leaves both."""
+    staged = path.with_name(f".{upload_id}.deleting")
+    try:
+        os.replace(path, staged)
+    except FileNotFoundError:
+        return library_db.delete_upload(upload_id)
+    try:
+        deleted = library_db.delete_upload(upload_id)
+    except BaseException:
+        os.replace(staged, path)
+        raise
+    if deleted:
+        staged.unlink(missing_ok = True)
+    else:
+        os.replace(staged, path)
+    return deleted
+
+
 def delete_item(item_id: str) -> bool:
     """Delete an item from its source. Returns False when the source no longer has it."""
     kind, _, ref = item_id.partition(":")
     deleted = False
     if kind == "upload":
         path = upload_path(ref)
-        if path is not None and library_db.delete_upload(ref):
-            path.unlink(missing_ok = True)
-            deleted = True
+        if path is not None:
+            deleted = _delete_upload(ref, path)
     elif kind == "attachment":
         from storage.studio_db import delete_chat_attachment
         message_id, _, attachment_id = ref.partition(":")

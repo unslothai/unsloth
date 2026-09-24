@@ -47,10 +47,14 @@ const MEDIA_LIMITS = {
   video: { bytes: MAX_VIDEO_SIZE, extension: "mp4" },
 } as const;
 
-/** Open a fresh chat with a generated image or clip attached, named after its prompt. */
+/**
+ * Open a fresh chat with a generated image or clip attached, named after its prompt. `source` is
+ * a URL to fetch, or a loader for bytes a URL cannot give back (WebKit will not refetch an object
+ * URL it is displaying).
+ */
 export async function chatAboutMedia(
   navigate: Navigate,
-  src: string,
+  source: string | (() => Promise<Blob>),
   prompt: string,
   kind: keyof typeof MEDIA_LIMITS,
 ): Promise<void> {
@@ -60,15 +64,20 @@ export async function chatAboutMedia(
       description: `Chat attachments are limited to ${Math.round(limit.bytes / (1024 * 1024))} MB.`,
     });
   try {
-    const response = await fetch(src);
-    if (!response.ok) throw new Error(`Could not read the ${kind} (${response.status}).`);
-    // Before reading the body, so an oversized clip is never buffered.
-    if (Number(response.headers.get("content-length")) > limit.bytes) {
-      void response.body?.cancel();
-      tooLarge();
-      return;
+    let blob: Blob;
+    if (typeof source === "string") {
+      const response = await fetch(source);
+      if (!response.ok) throw new Error(`Could not read the ${kind} (${response.status}).`);
+      // Before reading the body, so an oversized clip is never buffered.
+      if (Number(response.headers.get("content-length")) > limit.bytes) {
+        void response.body?.cancel();
+        tooLarge();
+        return;
+      }
+      blob = await response.blob();
+    } else {
+      blob = await source();
     }
-    const blob = await response.blob();
     if (blob.size > limit.bytes) {
       tooLarge();
       return;

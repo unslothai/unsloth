@@ -34,6 +34,7 @@ class _FakeExternalClient:
 
     def __init__(self, **kwargs):
         _FakeExternalClient.last = {"ctor": kwargs}
+        self.provider_type = kwargs.get("provider_type")
 
     def stream_chat_completion(self, **kwargs):
         async def gen():

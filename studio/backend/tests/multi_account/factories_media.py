@@ -110,6 +110,16 @@ def seed_audio(account) -> dict[str, str]:
     return {"audio_id": record["id"]}
 
 
+@seeder("media-audio-project")
+def seed_audio_and_project(account, actor: str = "right") -> dict[str, str]:
+    params = seed_audio(account)
+    _seed_media_project(account)
+    caller = _calling_account(actor)
+    if caller is not None:
+        _seed_media_project(caller)
+    return params
+
+
 @seeder("media-transcript")
 def seed_transcript(account) -> dict[str, str]:
     from core.inference import transcript_gallery
@@ -285,6 +295,12 @@ FACTORIES = {
         "media-audio", {"archived": True}, fragment = SENTINEL
     ),
     "routes.inference:DELETE:/audio/gallery/{audio_id}": Factory("media-audio"),
+    "routes.inference:POST:/audio/gallery/{audio_id}/move": Factory(
+        "media-audio", {"after_id": None}, fragment = SENTINEL
+    ),
+    "routes.inference:POST:/audio/gallery/{audio_id}/project": Factory(
+        "media-audio-project", {"project_id": MEDIA_PROJECT_ID}, fragment = "sandbox"
+    ),
     "routes.inference:PATCH:/audio/transcripts/{transcript_id}": Factory(
         "media-transcript", {"archived": True}, fragment = SENTINEL
     ),

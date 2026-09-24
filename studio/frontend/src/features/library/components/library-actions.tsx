@@ -28,6 +28,7 @@ import type { LibraryFolder } from "../api";
 import { isFileItem, isModelItem } from "../file-kind";
 import { type LibraryTarget, useLibraryActions } from "../actions-context";
 import { canReveal, revealInFolder, useRevealLabel } from "../reveal";
+import { OVERLAY_CONTROL } from "../surface";
 
 // Sized and weighted as the sidebar's chat and project menus draw theirs.
 const ICON = "size-icon";
@@ -96,7 +97,10 @@ export function LibraryActionsMenu({
           className={cn(
             "flex shrink-0 items-center justify-center rounded-full outline-none transition-opacity focus-visible:opacity-100 data-open:opacity-100",
             variant === "overlay"
-              ? "size-8 bg-white text-muted-foreground opacity-0 shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] hover:text-foreground group-hover/library-card:opacity-100 dark:bg-neutral-700 dark:text-white dark:shadow-none dark:hover:bg-neutral-600"
+              ? cn(
+                  OVERLAY_CONTROL,
+                  "size-8 text-muted-foreground opacity-0 hover:text-foreground group-hover/library-card:opacity-100 dark:text-white dark:hover:bg-neutral-600",
+                )
               : "size-8 text-muted-foreground opacity-0 hover:bg-accent hover:text-foreground group-hover/library-row:opacity-100",
             className,
           )}
