@@ -111,7 +111,8 @@ def _convrot_sign_bits(size: int) -> Any:
     # a base-4 digit is 3 when both of its bits are set: keep the low bit of each such pair
     threes = both & (both >> 1) & 0x5555555555555555
     parity = torch.zeros_like(threes)
-    while bool(threes.any()):
+    # i ^ j < 4**k has k base-4 digits; a fixed Python count keeps this traceable under fullgraph
+    for _ in range((size.bit_length() - 1) // 2):
         parity ^= threes & 1
         threes = threes >> 2
     return parity.bool()

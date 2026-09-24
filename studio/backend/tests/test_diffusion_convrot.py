@@ -494,3 +494,23 @@ def test_every_rotated_projection_shares_one_class():
     _install_rotation(third, 128)
     assert (first.convrot_groupsize, third.convrot_groupsize) == (256, 128)
     assert torch.is_tensor(first.weight)
+
+
+def test_rotated_forward_traces_fullgraph_on_a_cold_cache(monkeypatch):
+    """The denoiser compiles its blocks with fullgraph=True; a rotated projection whose first
+    forward builds the Hadamard must not hit a data-dependent branch there."""
+    import torch
+    from torch import nn
+
+    import core.inference.diffusion_convrot as dc
+
+    torch._dynamo.reset()
+    monkeypatch.setattr(dc, "_HADAMARD_CACHE", {})
+    linear = nn.Linear(256, 8, bias = False)
+    dc._install_rotation(linear, 64)
+    x = torch.randn(3, 256)
+    expected = linear(x)
+    dc._HADAMARD_CACHE.clear()
+    compiled = torch.compile(linear, fullgraph = True, backend = "eager")
+    assert torch.equal(compiled(x), expected)
+    torch._dynamo.reset()
