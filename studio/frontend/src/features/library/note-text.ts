@@ -19,13 +19,14 @@ export interface DecodedNote {
   text: string;
   format: NoteFormat;
   /** Why the file opens read-only, or null when it can be edited and saved back as it was. */
-  readOnlyReason: string | null;
+  readOnlyReason: NoteReadOnlyReason | null;
 }
 
-// Saves go back as UTF-8, so only a UTF-8 file comes back unchanged.
-const UTF16_READ_ONLY = "This file is UTF-16 text, so it opens read-only here.";
-const NOT_UTF8_READ_ONLY =
-  "This file is not UTF-8 text, so it opens read-only here. Some characters may not show correctly.";
+/** Saves go back as UTF-8, so only a UTF-8 file comes back unchanged. The preview words these. */
+export type NoteReadOnlyReason = "utf16" | "notUtf8";
+
+const UTF16_READ_ONLY: NoteReadOnlyReason = "utf16";
+const NOT_UTF8_READ_ONLY: NoteReadOnlyReason = "notUtf8";
 
 function detectEncoding(bytes: Uint8Array): { encoding: NoteEncoding; bom: boolean } {
   if (bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf) {
@@ -52,7 +53,7 @@ function detectEol(text: string): "\n" | "\r\n" {
 export function decodeNote(bytes: Uint8Array, truncated = false): DecodedNote {
   const { encoding, bom } = detectEncoding(bytes);
   let raw: string;
-  let readOnlyReason: string | null = encoding === "utf-8" ? null : UTF16_READ_ONLY;
+  let readOnlyReason: NoteReadOnlyReason | null = encoding === "utf-8" ? null : UTF16_READ_ONLY;
   try {
     // The decoder drops the BOM itself.
     raw = new TextDecoder(encoding, { fatal: true }).decode(bytes, { stream: truncated });

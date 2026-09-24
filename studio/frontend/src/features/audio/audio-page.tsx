@@ -11,13 +11,13 @@ import {
   Copy01Icon,
   Delete02Icon,
   Download01Icon,
-  LibrariesIcon,
   Mic01Icon,
   SparklesIcon,
   StopIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { MediaPageLink } from "@/components/media-page-link";
+import { LibraryPageLink } from "@/components/media-page-link";
+import { translate } from "@/i18n";
 import {
   type ReactNode,
   useCallback,
@@ -1816,7 +1816,11 @@ export function AudioPage({
     }).then((found) => {
       if (lookup !== routedLookup.current) return;
       if (found) selectClip(routedItem);
-      else toast("Could not find this clip", { description: "It may be archived or deleted." });
+      else {
+        toast(translate("library.toast.clipNotFound"), {
+          description: translate("library.toast.notFoundDescription"),
+        });
+      }
     });
   }, [routedItem, navigateSelf, refreshGallery, loadMore, selectClip]);
 
@@ -2741,11 +2745,8 @@ export function AudioPage({
           </div>
           <div className="pointer-events-none col-start-3 flex min-w-0 items-start justify-end pr-2 pt-[var(--studio-chat-header-padding-top,11px)]">
             <div className="pointer-events-auto flex min-w-0 items-center gap-2">
-              <MediaPageLink
-                to="/library"
-                libraryTab="audio"
-                label="Library"
-                icon={LibrariesIcon}
+              <LibraryPageLink
+                tab="audio"
                 labelClassName="hidden @[50rem]:inline"
                 arrowClassName="hidden @[50rem]:block"
               />

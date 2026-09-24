@@ -34,17 +34,17 @@ test("other hosts do not", () => {
   }
 });
 
-test("the label follows the server's file manager", () => {
-  assert.equal(revealLabelFor("finder", "mac"), "Reveal in Finder");
-  assert.equal(revealLabelFor("explorer", "windows"), "Show in Explorer");
+test("the label key follows the server's file manager", () => {
+  assert.equal(revealLabelFor("finder", "mac"), "library.reveal.finder");
+  assert.equal(revealLabelFor("explorer", "windows"), "library.reveal.explorer");
   // WSL reports linux, but reveals in the Windows host's Explorer.
-  assert.equal(revealLabelFor("explorer", "linux"), "Show in Explorer");
-  assert.equal(revealLabelFor("files", "linux"), "Show in Folder");
+  assert.equal(revealLabelFor("explorer", "linux"), "library.reveal.explorer");
+  assert.equal(revealLabelFor("files", "linux"), "library.reveal.files");
   assert.equal(revealLabelFor(null, "linux"), null);
 });
 
 test("an older server that reports no file manager is named by its platform", () => {
-  assert.equal(revealLabelFor(undefined, "mac"), "Reveal in Finder");
-  assert.equal(revealLabelFor(undefined, "windows"), "Show in Explorer");
-  assert.equal(revealLabelFor(undefined, "linux"), "Show in Folder");
+  assert.equal(revealLabelFor(undefined, "mac"), "library.reveal.finder");
+  assert.equal(revealLabelFor(undefined, "windows"), "library.reveal.explorer");
+  assert.equal(revealLabelFor(undefined, "linux"), "library.reveal.files");
 });

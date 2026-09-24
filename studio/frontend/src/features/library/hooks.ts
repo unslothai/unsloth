@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { translate } from "@/i18n";
 import { type RefObject, useEffect, useState } from "react";
 import {
   type LibraryItem,
@@ -31,7 +32,7 @@ async function previewSource(item: LibraryItem, body: EmbeddedBody): Promise<Pre
     }
   }
   if (item.sizeBytes !== null && item.sizeBytes > MAX_BUFFERED_PREVIEW_BYTES) {
-    throw new Error("This file is too large to preview here. Download it to open it.");
+    throw new Error(translate("library.preview.tooLargeToPreview"));
   }
   const blob = await fetchLibraryBlob(item, embeddedBlobType(body, item.contentType));
   return { url: URL.createObjectURL(blob), revoke: true };

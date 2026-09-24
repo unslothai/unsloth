@@ -10,6 +10,7 @@ import {
   createModelConfigHandoffRequestId,
   requestModelConfigHandoff,
 } from "@/features/model-picker";
+import { translate } from "@/i18n";
 import { MAX_AUDIO_SIZE } from "@/lib/audio-utils";
 import { isTauri } from "@/lib/api-base";
 import { downloadFile, downloadUrlStreaming, isDownloadCancelled } from "@/lib/native-files";
@@ -68,7 +69,7 @@ export async function downloadLibraryItem(item: LibraryItem): Promise<void> {
     await downloadFile(file, file.name, file.type);
   } catch (error) {
     if (isDownloadCancelled(error)) return;
-    toast.error(`Could not download ${item.name}`, {
+    toast.error(translate("library.toast.downloadFailed", { name: item.name }), {
       description: errorMessage(error),
     });
   }
@@ -90,14 +91,14 @@ export async function downloadLibraryItems(items: LibraryItem[]): Promise<void> 
   }
   const knownBytes = items.reduce((sum, item) => sum + (item.sizeBytes ?? 0), 0);
   if (knownBytes > MAX_ZIP_BYTES) {
-    toast(`Downloading ${items.length} files`, {
-      description: "If your browser asks, allow this site to download multiple files.",
+    toast(translate("library.toast.downloadingMany", { count: items.length }), {
+      description: translate("library.toast.downloadingManyDescription"),
     });
     for (const item of items) await downloadLibraryItem(item);
     return;
   }
   const epoch = getAuthSessionEpoch();
-  const progress = toast.loading(`Preparing ${items.length} files…`);
+  const progress = toast.loading(translate("library.toast.preparingMany", { count: items.length }));
   try {
     const files: File[] = [];
     for (const item of items) {
@@ -112,9 +113,12 @@ export async function downloadLibraryItems(items: LibraryItem[]): Promise<void> 
     }
     // Stored, not deflated: most of a Library is media that is compressed already.
     const archive = zipSync(entries, { level: 0 });
-    await downloadFile(new Blob([archive], { type: "application/zip" }), "Library files.zip");
+    await downloadFile(
+      new Blob([archive], { type: "application/zip" }),
+      `${translate("library.toast.zipFileName")}.zip`,
+    );
   } catch (error) {
-    toast.error("Could not download the files", { description: errorMessage(error) });
+    toast.error(translate("library.toast.downloadManyFailed"), { description: errorMessage(error) });
   } finally {
     toast.dismiss(progress);
   }
@@ -153,8 +157,8 @@ export async function chatAboutItems(
   items: LibraryItem[],
 ): Promise<void> {
   if (items.length === 0) {
-    toast("Nothing to chat about yet", {
-      description: "This folder has no files.",
+    toast(translate("library.toast.nothingToChat"), {
+      description: translate("library.toast.emptyFolder"),
     });
     return;
   }
@@ -162,7 +166,9 @@ export async function chatAboutItems(
   const tooLarge = items.length - fitting.length;
   if (fitting.length === 0) {
     toast.error(
-      items.length === 1 ? `${items[0].name} is too large to attach` : "These files are too large to attach",
+      items.length === 1
+        ? translate("library.toast.tooLargeOne", { name: items[0].name })
+        : translate("library.toast.tooLargeMany"),
     );
     return;
   }
@@ -178,10 +184,13 @@ export async function chatAboutItems(
     }
     const leftOut = fitting.length - chosen.length;
     if (tooLarge > 0 || leftOut > 0) {
-      toast(`Attached ${chosen.length} ${chosen.length === 1 ? "file" : "files"}`, {
+      const attached =
+        chosen.length === 1 ? "library.toast.attachedOne" : "library.toast.attachedMany";
+      toast(translate(attached, { count: chosen.length }), {
         description: [
-          tooLarge > 0 && `${tooLarge} too large to attach.`,
-          leftOut > 0 && `${leftOut} more past the ${MAX_CHAT_FILES} file limit.`,
+          tooLarge > 0 && translate("library.toast.skippedTooLarge", { count: tooLarge }),
+          leftOut > 0 &&
+            translate("library.toast.skippedOverLimit", { count: leftOut, limit: MAX_CHAT_FILES }),
         ]
           .filter(Boolean)
           .join(" "),
@@ -189,7 +198,7 @@ export async function chatAboutItems(
     }
     startLibraryChat(navigate, { files });
   } catch (error) {
-    toast.error("Could not open the files", { description: errorMessage(error) });
+    toast.error(translate("library.toast.openFilesFailed"), { description: errorMessage(error) });
   }
 }
 
@@ -208,8 +217,8 @@ export async function chatWithModel(
     .catch(() => undefined);
   if (getAuthSessionEpoch() !== epoch) return;
   if (scanned?.audio_type) {
-    toast(`${item.name} is a speech model`, {
-      description: "Pick it from the model menu on the Audio page.",
+    toast(translate("library.toast.speechModel", { name: item.name }), {
+      description: translate("library.toast.speechModelDescription"),
     });
     void navigate({ to: "/audio" });
     return;

@@ -18,6 +18,7 @@ import {
   useNativeFileDrop,
 } from "@/features/native-intents";
 import { useSettingsDialogStore } from "@/features/settings";
+import { type TranslationKey, useT } from "@/i18n";
 import { cn } from "@/lib/utils";
 import { toast } from "@/lib/toast";
 import {
@@ -62,15 +63,15 @@ import { EMPTY_FILTERS, type LibraryFilters, filtersActive, matchesFilters } fro
 import { LIBRARY_TABS, type LibrarySearch, type LibraryTab } from "./search";
 import { useLibraryStore, useLibraryViewStore } from "./store";
 
-const TAB_LABELS: Record<LibraryTab, string> = {
-  suggested: "Suggested",
-  favorites: "Favorites",
-  folders: "Folders",
-  images: "Images",
-  videos: "Videos",
-  audio: "Audio",
-  models: "Fine-tunes",
-  all: "All",
+const TAB_LABELS: Record<LibraryTab, TranslationKey> = {
+  suggested: "library.tabs.suggested",
+  favorites: "library.tabs.favorites",
+  folders: "library.tabs.folders",
+  images: "library.tabs.images",
+  videos: "library.tabs.videos",
+  audio: "library.tabs.audio",
+  models: "library.tabs.models",
+  all: "library.tabs.all",
 };
 
 const EMPTY_ICONS: Record<LibraryTab, typeof Folder01Icon> = {
@@ -84,15 +85,15 @@ const EMPTY_ICONS: Record<LibraryTab, typeof Folder01Icon> = {
   all: Upload01Icon,
 };
 
-const EMPTY_COPY: Record<LibraryTab, [title: string, description: string]> = {
-  suggested: ["Your library is empty", "Files you upload or create in chats show up here."],
-  favorites: ["No favorites yet", "Add files to your favorites to find them here quickly."],
-  folders: ["Create your first folder", "Create folders to organize items in your library."],
-  images: ["No images yet", "Images you upload or generate show up here."],
-  videos: ["No videos yet", "Videos you upload or generate show up here."],
-  audio: ["No audio yet", "Speech you generate on the Audio page shows up here."],
-  models: ["No fine-tuned models yet", "Models you train or export in Unsloth show up here."],
-  all: ["Your library is empty", "Files you upload or create in chats show up here."],
+const EMPTY_COPY: Record<LibraryTab, [title: TranslationKey, description: TranslationKey]> = {
+  suggested: ["library.empty.suggestedTitle", "library.empty.suggestedDescription"],
+  favorites: ["library.empty.favoritesTitle", "library.empty.favoritesDescription"],
+  folders: ["library.empty.foldersTitle", "library.empty.foldersDescription"],
+  images: ["library.empty.imagesTitle", "library.empty.imagesDescription"],
+  videos: ["library.empty.videosTitle", "library.empty.videosDescription"],
+  audio: ["library.empty.audioTitle", "library.empty.audioDescription"],
+  models: ["library.empty.modelsTitle", "library.empty.modelsDescription"],
+  all: ["library.empty.suggestedTitle", "library.empty.suggestedDescription"],
 };
 
 /** What each single-kind tab holds. Only the Source filter means anything on these. */
@@ -107,13 +108,13 @@ const KIND_TABS: Partial<Record<LibraryTab, (item: LibraryItem) => boolean>> = {
 // Suggested is the recent slice of everything, not a second copy of All.
 const SUGGESTED_LIMIT = 40;
 
-const DELETE_NOTES: Record<string, string> = {
-  upload: "This permanently deletes the file.",
-  attachment: "It is also removed from the chat it was attached to.",
-  image: "It is also removed from your Images gallery.",
-  video: "It is also removed from your Video gallery.",
-  audio: "It is also removed from your Audio gallery.",
-  sandbox: "It is also removed from the chat that created it.",
+const DELETE_NOTES: Record<string, TranslationKey> = {
+  upload: "library.dialog.deleteUpload",
+  attachment: "library.dialog.deleteAttachment",
+  image: "library.dialog.deleteImage",
+  video: "library.dialog.deleteVideo",
+  audio: "library.dialog.deleteAudio",
+  sandbox: "library.dialog.deleteSandbox",
 };
 
 type NameDialogState =
@@ -185,6 +186,7 @@ export function LibraryPage() {
 }
 
 function LibraryView({ search }: { search: LibrarySearch }) {
+  const t = useT();
   const navigate = useNavigate();
   const { items, folders, status, error, refresh, patchItem, removeItem, upload, addFolder, patchFolder, removeFolder } =
     useLibraryStore();
@@ -309,7 +311,7 @@ function LibraryView({ search }: { search: LibrarySearch }) {
     void refresh().then(() => {
       if (cancelled) return;
       if (useLibraryStore.getState().items.some((item) => item.id === missingItem)) return;
-      toast("That file is no longer in the Library");
+      toast(t("library.toast.missingItem"));
       void navigate({
         to: "/library",
         search: (prev) => ({ ...prev, item: undefined }),
@@ -319,7 +321,7 @@ function LibraryView({ search }: { search: LibrarySearch }) {
     return () => {
       cancelled = true;
     };
-  }, [missingItem, refresh, navigate]);
+  }, [missingItem, refresh, navigate, t]);
 
   // ── Actions ────────────────────────────────────────────────────
 
@@ -349,7 +351,9 @@ function LibraryView({ search }: { search: LibrarySearch }) {
 
   // One toast for the batch, however many moved.
   const moveAll = async (targets: LibraryTarget[], destination: string | null) => {
-    const label = destination ? (folderById.get(destination)?.name ?? "folder") : "Library";
+    const folder = destination
+      ? (folderById.get(destination)?.name ?? t("library.toast.folderFallback"))
+      : null;
     const results = await Promise.allSettled(
       targets.map((target) =>
         target.kind === "item"
@@ -358,8 +362,14 @@ function LibraryView({ search }: { search: LibrarySearch }) {
       ),
     );
     const failed = results.find((result) => result.status === "rejected");
-    if (failed) fail("Could not move")(failed.reason);
-    else toast.success(`Moved to ${label}`);
+    if (failed) fail(t("library.toast.moveFailed"))(failed.reason);
+    else {
+      toast.success(
+        folder === null
+          ? t("library.toast.movedToLibrary")
+          : t("library.toast.movedToFolder", { folder }),
+      );
+    }
   };
   const moveTo = (target: LibraryTarget, destination: string | null) =>
     moveAll([target], destination);
@@ -373,7 +383,7 @@ function LibraryView({ search }: { search: LibrarySearch }) {
         ? chatAbout(target.item)
         : void chatAboutItems(navigate, filesInFolder(target.folder.id)),
     toggleFavorite: (item) =>
-      void patchItem(item.id, { favorite: !item.favorite }).catch(fail("Could not update favorites")),
+      void patchItem(item.id, { favorite: !item.favorite }).catch(fail(t("library.toast.favoritesFailed"))),
     download: (item) => void downloadLibraryItem(item),
     rename: (target) => setNameDialog({ mode: "rename", target }),
     moveTo: (target, destination) => void moveTo(target, destination),
@@ -384,12 +394,19 @@ function LibraryView({ search }: { search: LibrarySearch }) {
 
   async function uploadBatch(batch: LibraryUploadBatch, count: number, label: string) {
     if (count === 0) return;
-    const id = toast.loading(`Uploading ${count === 1 ? label : `${count} files`}…`);
+    const id = toast.loading(
+      count === 1
+        ? t("library.toast.uploadingOne", { name: label })
+        : t("library.toast.uploadingMany", { count }),
+    );
     try {
       await upload(batch, folderId);
-      toast.success(count === 1 ? "File uploaded" : `${count} files uploaded`, { id });
+      toast.success(
+        count === 1 ? t("library.toast.uploadedOne") : t("library.toast.uploadedMany", { count }),
+        { id },
+      );
     } catch (err) {
-      toast.error("Upload failed", {
+      toast.error(t("library.toast.uploadFailed"), {
         id,
         description: err instanceof Error ? err.message : String(err),
       });
@@ -412,7 +429,7 @@ function LibraryView({ search }: { search: LibrarySearch }) {
         leases[0]?.displayLabel ?? "",
       );
     } catch (err) {
-      fail("Could not read the dropped files")(err);
+      fail(t("library.toast.readDropsFailed"))(err);
     }
   }
 
@@ -424,11 +441,13 @@ function LibraryView({ search }: { search: LibrarySearch }) {
 
   async function createNote() {
     try {
-      const note = new File([""], "Untitled note.md", { type: "text/markdown" });
+      const note = new File([""], `${t("library.create.untitledNote")}.md`, {
+        type: "text/markdown",
+      });
       const [id] = await upload({ files: [note] }, folderId);
       if (id) openPreview(id);
     } catch (err) {
-      fail("Could not create the note")(err);
+      fail(t("library.toast.createNoteFailed"))(err);
     }
   }
 
@@ -472,7 +491,13 @@ function LibraryView({ search }: { search: LibrarySearch }) {
       const folder = await addFolder(name, nameDialog.parentId);
       if (nameDialog.thenMove) await moveTo(nameDialog.thenMove, folder.id);
     } catch (err) {
-      fail(nameDialog.mode === "rename" ? "Could not rename" : "Could not create the folder")(err);
+      fail(
+        t(
+          nameDialog.mode === "rename"
+            ? "library.toast.renameFailed"
+            : "library.toast.createFolderFailed",
+        ),
+      )(err);
       throw err;
     }
   }
@@ -488,7 +513,7 @@ function LibraryView({ search }: { search: LibrarySearch }) {
       ),
     );
     const failed = results.find((result) => result.status === "rejected");
-    if (failed) fail("Some items could not be deleted")(failed.reason);
+    if (failed) fail(t("library.toast.deleteFailed"))(failed.reason);
     // A folder being viewed that was just deleted leaves nothing to show.
     if (folderId && targets.some((t) => t.kind === "folder" && t.folder.id === folderId)) {
       go({ folder: currentFolder?.parentId ?? undefined, show: "folders" }, true);
@@ -498,23 +523,24 @@ function LibraryView({ search }: { search: LibrarySearch }) {
   const deleteCopy = (targets: LibraryTarget[]) => {
     if (targets.length > 1) {
       return {
-        title: `Delete ${targets.length} items?`,
-        description:
-          "Files are deleted from where they live. Anything inside a deleted folder moves up a level.",
+        title: t("library.dialog.deleteManyTitle", { count: targets.length }),
+        description: t("library.dialog.deleteManyDescription"),
       };
     }
     const target = targets[0]!;
     if (target.kind === "folder") {
       const parent = target.folder.parentId ? folderById.get(target.folder.parentId) : null;
       return {
-        title: `Delete "${target.folder.name}"?`,
-        description: `Everything inside moves to ${parent ? `"${parent.name}"` : "your Library"}. No files are deleted.`,
+        title: t("library.dialog.deleteTitle", { name: target.folder.name }),
+        description: parent
+          ? t("library.dialog.deleteFolderIntoParent", { folder: parent.name })
+          : t("library.dialog.deleteFolderIntoLibrary"),
       };
     }
     const source = target.item.id.split(":", 1)[0]!;
     return {
-      title: `Delete "${target.item.name}"?`,
-      description: DELETE_NOTES[source] ?? "This permanently deletes the file.",
+      title: t("library.dialog.deleteTitle", { name: target.item.name }),
+      description: t(DELETE_NOTES[source] ?? "library.dialog.deleteUpload"),
     };
   };
 
@@ -554,13 +580,13 @@ function LibraryView({ search }: { search: LibrarySearch }) {
   }
 
   const title = folderId ? (
-    <nav className="flex min-w-0 items-center gap-2 text-ui-25 font-semibold tracking-[-0.028em]" aria-label="Breadcrumb">
+    <nav className="flex min-w-0 items-center gap-2 text-ui-25 font-semibold tracking-[-0.028em]" aria-label={t("library.breadcrumb")}>
       <button
         type="button"
         onClick={() => go({ show: "folders" })}
         className="shrink-0 text-muted-foreground transition-colors hover:text-foreground"
       >
-        Library
+        {t("shell.navigation.library")}
       </button>
       {breadcrumb.map((folder, index) => (
         <span key={folder.id} className="flex min-w-0 items-center gap-2">
@@ -581,7 +607,7 @@ function LibraryView({ search }: { search: LibrarySearch }) {
     </nav>
   ) : (
     <h1 className="text-ui-25 font-semibold leading-[1.04] tracking-[-0.028em] text-foreground">
-      Library
+      {t("shell.navigation.library")}
     </h1>
   );
 
@@ -589,7 +615,7 @@ function LibraryView({ search }: { search: LibrarySearch }) {
 
   const uploadButton = (
     <Button variant="muted" className="rounded-full px-5" onClick={() => fileInput.current?.click()}>
-      Upload files
+      {t("library.empty.uploadFiles")}
     </Button>
   );
 
@@ -612,7 +638,7 @@ function LibraryView({ search }: { search: LibrarySearch }) {
         <>
           {visibleFolders.length > 0 && (
             <>
-              {tab === "all" && !folderId && <SectionHeading>Folders</SectionHeading>}
+              {tab === "all" && !folderId && <SectionHeading>{t("library.sections.folders")}</SectionHeading>}
               <div className={cn(!(tab === "all" && !folderId) && "mt-6")}>
                 <FolderGrid folders={visibleFolders} counts={counts} />
               </div>
@@ -621,7 +647,7 @@ function LibraryView({ search }: { search: LibrarySearch }) {
           {visibleItems.length > 0 && (
             <>
               {tab === "all" && !folderId ? (
-                <SectionHeading>Items</SectionHeading>
+                <SectionHeading>{t("library.sections.items")}</SectionHeading>
               ) : (
                 <div className="mt-6" />
               )}
@@ -652,25 +678,25 @@ function LibraryView({ search }: { search: LibrarySearch }) {
             className="rounded-full px-5"
             onClick={() => setNameDialog({ mode: "create", parentId: null })}
           >
-            Create folder
+            {t("library.empty.createFolder")}
           </Button>
         );
       case "videos":
         return (
           <Button variant="muted" className="rounded-full px-5" onClick={() => void navigate({ to: "/video" })}>
-            Generate a video
+            {t("library.empty.generateVideo")}
           </Button>
         );
       case "audio":
         return (
           <Button variant="muted" className="rounded-full px-5" onClick={() => void navigate({ to: "/audio" })}>
-            Generate audio
+            {t("library.empty.generateAudio")}
           </Button>
         );
       case "models":
         return (
           <Button variant="muted" className="rounded-full px-5" onClick={() => void navigate({ to: "/studio" })}>
-            Train a model
+            {t("library.empty.trainModel")}
           </Button>
         );
       default:
@@ -684,9 +710,13 @@ function LibraryView({ search }: { search: LibrarySearch }) {
       return (
         <EmptyState
           icon={Folder01Icon}
-          title="Could not load your Library"
-          description={error ?? "Something went wrong."}
-          action={<Button variant="muted" className="rounded-full" onClick={() => void refresh()}>Try again</Button>}
+          title={t("library.empty.loadErrorTitle")}
+          description={error ?? t("library.empty.loadErrorFallback")}
+          action={
+            <Button variant="muted" className="rounded-full" onClick={() => void refresh()}>
+              {t("library.empty.tryAgain")}
+            </Button>
+          }
         />
       );
     }
@@ -696,8 +726,8 @@ function LibraryView({ search }: { search: LibrarySearch }) {
       return (
         <EmptyState
           icon={Folder01Icon}
-          title="No matches"
-          description="Try a different search or clear the filters."
+          title={t("library.empty.noMatchesTitle")}
+          description={t("library.empty.noMatchesDescription")}
         />
       );
     }
@@ -706,7 +736,7 @@ function LibraryView({ search }: { search: LibrarySearch }) {
         <div className="mt-6 flex min-h-[calc(420px*var(--ui-space-scale,1))] flex-col items-center justify-center gap-5 rounded-xl border border-dashed border-border bg-muted/50">
           <HugeiconsIcon icon={Upload01Icon} strokeWidth={1.5} className="size-8" />
           {uploadButton}
-          <p className="text-sm text-muted-foreground">or drop files here</p>
+          <p className="text-sm text-muted-foreground">{t("library.empty.dropHere")}</p>
         </div>
       );
     }
@@ -715,8 +745,8 @@ function LibraryView({ search }: { search: LibrarySearch }) {
       return (
         <EmptyState
           icon={EMPTY_ICONS[tab]}
-          title={emptyTitle}
-          description={emptyDescription}
+          title={t(emptyTitle)}
+          description={t(emptyDescription)}
           action={emptyAction()}
         />
       );
@@ -740,11 +770,19 @@ function LibraryView({ search }: { search: LibrarySearch }) {
   const nameDialogProps =
     nameDialog?.mode === "rename"
       ? {
-          title: nameDialog.target.kind === "folder" ? "Rename folder" : "Rename file",
-          submitLabel: "Rename",
+          title: t(
+            nameDialog.target.kind === "folder"
+              ? "library.dialog.renameFolder"
+              : "library.dialog.renameFile",
+          ),
+          submitLabel: t("common.rename"),
           initialValue: targetName(nameDialog.target),
         }
-      : { title: "New folder", submitLabel: "Create", initialValue: "" };
+      : {
+          title: t("library.dialog.newFolder"),
+          submitLabel: t("library.dialog.create"),
+          initialValue: "",
+        };
 
   const selectedCount = selection.size;
   // Selected files and the files in selected folders, each once.
@@ -813,7 +851,7 @@ function LibraryView({ search }: { search: LibrarySearch }) {
               onViewChange={setView}
               search={query}
               onSearchChange={setQuery}
-              searchPlaceholder={folderId ? "Search folder" : "Search library"}
+              searchPlaceholder={t(folderId ? "library.searchFolder" : "library.searchLibrary")}
               onNew={handleNew}
               onSettings={() => openSettings("data")}
             />
@@ -822,7 +860,7 @@ function LibraryView({ search }: { search: LibrarySearch }) {
             folderId
               ? null
               : {
-                  items: shownTabs.map((key) => ({ key, label: TAB_LABELS[key] })),
+                  items: shownTabs.map((key) => ({ key, label: t(TAB_LABELS[key]) })),
                   active: tab,
                   onChange: (next) => go({ show: next as LibraryTab }),
                 }
@@ -835,7 +873,9 @@ function LibraryView({ search }: { search: LibrarySearch }) {
             <div className="flex flex-col items-center gap-3 rounded-xl border-2 border-dashed border-muted-foreground px-16 py-12">
               <HugeiconsIcon icon={Upload01Icon} strokeWidth={1.5} className="size-8" />
               <p className="font-medium text-lg">
-                Drop to upload{currentFolder ? ` to "${currentFolder.name}"` : ""}
+                {currentFolder
+                  ? t("library.dropToUploadInto", { folder: currentFolder.name })
+                  : t("library.dropToUpload")}
               </p>
             </div>
           </div>
@@ -845,7 +885,9 @@ function LibraryView({ search }: { search: LibrarySearch }) {
           // The side menu's color with the dropdowns' shadow: the composer's in light mode, the page
           // color in dark.
           <div className="fixed bottom-8 left-1/2 z-30 flex -translate-x-1/2 items-center gap-2 rounded-full bg-sidebar py-2 pl-6 pr-2 text-sidebar-foreground shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:shadow-[0_8px_28px_-6px_var(--background)]">
-            <span className="mr-4 whitespace-nowrap text-sm font-medium">{selectedCount} selected</span>
+            <span className="mr-4 whitespace-nowrap text-sm font-medium">
+              {t("shell.selection.countSelected", { count: selectedCount })}
+            </span>
             <button
               type="button"
               disabled={selectedModel() === null && selectedFiles().length === 0}
@@ -853,7 +895,7 @@ function LibraryView({ search }: { search: LibrarySearch }) {
               className="flex h-9 items-center gap-2 rounded-full bg-foreground px-4 text-sm font-medium text-background outline-none transition-opacity hover:opacity-85 focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
             >
               <HugeiconsIcon icon={PencilEdit02Icon} strokeWidth={1.75} className="size-4" />
-              Start chat
+              {t("library.selection.startChat")}
             </button>
             <button
               type="button"
@@ -863,7 +905,7 @@ function LibraryView({ search }: { search: LibrarySearch }) {
               className="flex h-9 items-center gap-2 rounded-full border border-border px-4 text-sm font-medium outline-none transition-colors hover:bg-sidebar-accent focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50 dark:border-transparent dark:bg-accent/60 dark:hover:bg-accent"
             >
               <HugeiconsIcon icon={Download01Icon} strokeWidth={1.75} className="size-4" />
-              Download
+              {t("library.selection.download")}
             </button>
             <button
               type="button"
@@ -872,13 +914,13 @@ function LibraryView({ search }: { search: LibrarySearch }) {
               className="flex h-9 items-center gap-2 rounded-full border border-red-500/70 px-4 text-sm font-medium text-red-600 outline-none transition-colors hover:bg-red-500/15 focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50 dark:text-red-400"
             >
               <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} className="size-4" />
-              Delete
+              {t("common.delete")}
             </button>
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
                 <button
                   type="button"
-                  aria-label="More actions"
+                  aria-label={t("library.selection.moreActions")}
                   className="flex size-9 items-center justify-center rounded-full outline-none transition-colors hover:bg-sidebar-accent focus-visible:ring-2 focus-visible:ring-ring data-[state=open]:bg-sidebar-accent"
                 >
                   <HugeiconsIcon icon={MoreHorizontalIcon} strokeWidth={1.75} className="size-5" />
@@ -888,12 +930,12 @@ function LibraryView({ search }: { search: LibrarySearch }) {
                 <DropdownMenuSub>
                   <DropdownMenuSubTrigger className="gap-2.5">
                     <HugeiconsIcon icon={FolderExportIcon} strokeWidth={1.75} className="size-icon" />
-                    Move
+                    {t("library.selection.move")}
                   </DropdownMenuSubTrigger>
                   <DropdownMenuSubContent className="max-h-[min(--spacing(80),var(--radix-dropdown-menu-content-available-height))] w-56">
                     <DropdownMenuItem onSelect={() => bulkMove(null)}>
                       <HugeiconsIcon icon={Folder01Icon} strokeWidth={1.75} className="size-icon" />
-                      Library (no folder)
+                      {t("library.menu.noFolder")}
                     </DropdownMenuItem>
                     {bulkDestinations().map((folder) => (
                       <DropdownMenuItem key={folder.id} onSelect={() => bulkMove(folder.id)}>
@@ -907,7 +949,7 @@ function LibraryView({ search }: { search: LibrarySearch }) {
             </DropdownMenu>
             <button
               type="button"
-              aria-label="Clear selection"
+              aria-label={t("library.selection.clear")}
               onClick={() => setSelection(new Set())}
               className="flex size-9 items-center justify-center rounded-full outline-none transition-colors hover:bg-sidebar-accent focus-visible:ring-2 focus-visible:ring-ring"
             >
@@ -927,7 +969,7 @@ function LibraryView({ search }: { search: LibrarySearch }) {
         open={pendingDelete !== null}
         title={deleteText?.title ?? ""}
         description={deleteText?.description ?? ""}
-        confirmLabel="Delete"
+        confirmLabel={t("common.delete")}
         onConfirm={() => pendingDelete && void confirmDelete(pendingDelete)}
         onOpenChange={(open) => !open && setPendingDelete(null)}
       />

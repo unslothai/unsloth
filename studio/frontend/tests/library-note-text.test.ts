@@ -52,7 +52,7 @@ test("UTF-16LE with a BOM decodes, and opens read-only", () => {
   const note = decodeNote(utf16le("Write-Host 'hi'\r\n"));
   assert.equal(note.text, "Write-Host 'hi'\n");
   assert.equal(note.format.encoding, "utf-16le");
-  assert.notEqual(note.readOnlyReason, null);
+  assert.equal(note.readOnlyReason, "utf16");
 });
 
 test("UTF-16BE with a BOM decodes", () => {
@@ -64,7 +64,7 @@ test("UTF-16BE with a BOM decodes", () => {
 test("a legacy code page is shown read-only rather than saved as mojibake", () => {
   // "café" in windows-1252.
   const note = decodeNote(new Uint8Array([0x63, 0x61, 0x66, 0xe9]));
-  assert.notEqual(note.readOnlyReason, null);
+  assert.equal(note.readOnlyReason, "notUtf8");
   assert.ok(note.text.startsWith("caf"));
 });
 

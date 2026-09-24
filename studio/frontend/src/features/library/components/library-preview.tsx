@@ -8,6 +8,7 @@ import { MediaViewer, ScaleMenu } from "@/components/media-viewer";
 import { Spinner } from "@/components/ui/spinner";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { ArtifactHtmlFrame } from "@/features/chat";
+import { type TranslationKey, useLocale, useT } from "@/i18n";
 import { isTauri } from "@/lib/api-base";
 import { MessageCircleIcon } from "@/lib/hugeicons-derived";
 import { toast } from "@/lib/toast";
@@ -27,12 +28,12 @@ import {
   hasImagePreview,
   isFileItem,
   isTextPreviewable,
-  modelLabel,
+  modelLabelKey,
 } from "../file-kind";
-import { formatCardTime, formatSize } from "../format";
+import { formatCardTime, formatPercent, formatSize } from "../format";
 import type { EmbeddedBody } from "../file-name";
 import { useLibraryPreviewUrl } from "../hooks";
-import { type NoteFormat, encodeNote } from "../note-text";
+import { type NoteFormat, type NoteReadOnlyReason, encodeNote } from "../note-text";
 import { canReveal, revealInFolder, useRevealLabel } from "../reveal";
 import { KindIcon } from "./library-cards";
 import { UnsavedChangesDialog } from "./library-dialogs";
@@ -64,12 +65,16 @@ function generatedOn(item: LibraryItem) {
   if (item.archived) return null;
   const [kind, ...rest] = item.id.split(":");
   const id = rest.join(":");
-  if (kind === "image") return { label: "View in Images", to: "/images", search: { item: id } } as const;
-  if (kind === "video") return { label: "View in Video", to: "/video", search: { item: id } } as const;
+  if (kind === "image") {
+    return { label: "library.preview.viewInImages", to: "/images", search: { item: id } } as const;
+  }
+  if (kind === "video") {
+    return { label: "library.preview.viewInVideo", to: "/video", search: { item: id } } as const;
+  }
   if (kind === "audio") {
     // Generated clips list in Speak mode.
     return {
-      label: "View in Audio",
+      label: "library.preview.viewInAudio",
       to: "/audio",
       search: { task: "text-to-speech", item: id },
     } as const;
@@ -93,7 +98,7 @@ interface LoadedText {
   text?: string;
   truncated?: boolean;
   format?: NoteFormat;
-  readOnlyReason?: string | null;
+  readOnlyReason?: NoteReadOnlyReason | null;
   error?: string;
 }
 
@@ -137,12 +142,20 @@ function useItemText(item: LibraryItem | null, enabled: boolean) {
 
 type ItemText = ReturnType<typeof useItemText>;
 
+const READ_ONLY_REASONS: Record<NoteReadOnlyReason, TranslationKey> = {
+  utf16: "library.preview.readOnlyUtf16",
+  notUtf8: "library.preview.readOnlyNotUtf8",
+};
+
 function ModelDetails({ item }: { item: LibraryItem }) {
+  const t = useT();
+  const locale = useLocale();
+  const unknown = t("library.preview.unknown");
   const rows: [string, string][] = [
-    ["Type", modelLabel(item)],
-    ["Base model", item.model?.baseModel ?? "Unknown"],
-    ["Size", formatSize(item.sizeBytes) || "Unknown"],
-    ["Location", item.model?.path ?? ""],
+    [t("library.preview.type"), t(modelLabelKey(item) ?? "library.modelKind.model")],
+    [t("library.preview.baseModel"), item.model?.baseModel ?? unknown],
+    [t("library.preview.size"), formatSize(item.sizeBytes, locale, t) || unknown],
+    [t("library.preview.location"), item.model?.path ?? ""],
   ];
   return (
     <div className="m-auto flex w-full max-w-xl flex-col items-center gap-8">
@@ -182,13 +195,14 @@ function NoPreview({
   message: string;
   onDownload?: () => void;
 }) {
+  const t = useT();
   return (
     <div className="m-auto flex max-w-md flex-col items-center gap-3 text-center text-muted-foreground">
       <KindIcon item={item} className="size-16" />
       <p className="text-sm">{message}</p>
       {onDownload && (
         <Button variant="muted" size="sm" className="rounded-full px-4" onClick={onDownload}>
-          Download
+          {t("library.menu.download")}
         </Button>
       )}
     </div>
@@ -252,6 +266,7 @@ function PreviewBody({
   onMediaError: () => void;
   onDownload?: () => void;
 }) {
+  const t = useT();
   const body = bodyFor(item);
   const embedded: EmbeddedBody | null =
     !mediaFailed && (body === "image" || body === "pdf" || body === "audio" || body === "video")
@@ -264,7 +279,7 @@ function PreviewBody({
     return (
       <NoPreview
         item={item}
-        message="This file can't be previewed here. Download it to open it."
+        message={t("library.preview.cannotPreview")}
         onDownload={onDownload}
       />
     );
@@ -333,7 +348,7 @@ function PreviewBody({
             value={draft ?? text!}
             onChange={(event) => onDraftChange(event.target.value)}
             spellCheck={false}
-            placeholder="Start writing…"
+            placeholder={t("library.preview.startWriting")}
             className="size-full resize-none bg-transparent font-mono text-sm leading-relaxed outline-none"
           />
         );
@@ -341,7 +356,9 @@ function PreviewBody({
       // A note the editor would write back wrongly says why it cannot be edited.
       return isEditable(item) && readOnlyReason ? (
         <div className="flex size-full min-h-0 flex-col gap-3">
-          <p className="text-[13px] text-muted-foreground">{readOnlyReason}</p>
+          <p className="text-[13px] text-muted-foreground">
+            {t(READ_ONLY_REASONS[readOnlyReason])}
+          </p>
           <TextPrefix text={truncated ? `${text!}\n\n…` : text!} className="min-h-0 flex-1" />
         </div>
       ) : (
@@ -349,7 +366,11 @@ function PreviewBody({
       );
     default:
       return (
-        <NoPreview item={item} message="No preview for this file type." onDownload={onDownload} />
+        <NoPreview
+          item={item}
+          message={t("library.preview.noPreview")}
+          onDownload={onDownload}
+        />
       );
   }
 }
@@ -373,6 +394,8 @@ export function LibraryPreview({
   onDelete: (item: LibraryItem) => void;
   onSaved: () => void;
 }) {
+  const t = useT();
+  const locale = useLocale();
   const body = item ? bodyFor(item) : "none";
   const itemText = useItemText(item, body === "text" || body === "web");
   // Tagged with its item, so a draft never follows the preview to another file.
@@ -447,7 +470,7 @@ export function LibraryPreview({
 
   async function save(): Promise<boolean> {
     const error = await trySave();
-    if (error !== null) toast.error("Could not save", { description: error });
+    if (error !== null) toast.error(t("library.toast.saveFailed"), { description: error });
     return error === null;
   }
 
@@ -477,9 +500,12 @@ export function LibraryPreview({
 
   const meta = item
     ? [
-        item.model ? modelLabel(item) : item.source === "generated" ? "Generated" : "Uploaded",
-        formatSize(item.sizeBytes),
-        formatCardTime(item.updatedAt),
+        t(
+          modelLabelKey(item) ??
+            (item.source === "generated" ? "library.toolbar.generated" : "library.toolbar.uploaded"),
+        ),
+        formatSize(item.sizeBytes, locale, t),
+        formatCardTime(item.updatedAt, locale),
       ].filter(Boolean)
     : [];
   // A file the browser cannot decode gets no scale menu or zoom stage.
@@ -505,28 +531,36 @@ export function LibraryPreview({
         <>
           {body === "web" && item && !showCode && (
             <ScaleMenu
-              label={`${Math.round(pageScale * 100)}%`}
+              label={formatPercent(pageScale, locale)}
               value={String(pageScale)}
               options={PAGE_SCALES.map((scale) => ({
                 value: String(scale),
-                label: `${Math.round(scale * 100)}%`,
+                label: formatPercent(scale, locale),
               }))}
               onChange={(value) => setZoom({ itemId: item.id, scale: Number(value) })}
             />
           )}
           {body === "web" && item && (
             <div className="mr-1 flex items-center gap-1">
-              <ViewButton label="Code" active={showCode} onClick={() => setCodeFor(item.id)}>
+              <ViewButton
+                label={t("library.preview.code")}
+                active={showCode}
+                onClick={() => setCodeFor(item.id)}
+              >
                 <CodeToggleIcon className="size-4.5" />
               </ViewButton>
-              <ViewButton label="Preview" active={!showCode} onClick={() => setCodeFor(null)}>
+              <ViewButton
+                label={t("library.preview.preview")}
+                active={!showCode}
+                onClick={() => setCodeFor(null)}
+              >
                 <HugeiconsIcon icon={PlayIcon} strokeWidth={1.75} className="size-5" />
               </ViewButton>
             </div>
           )}
           {unsaved && (
             <Button variant="dark" size="sm" className="mr-1" disabled={saving} onClick={() => void save()}>
-              Save
+              {t("common.save")}
             </Button>
           )}
         </>
@@ -535,7 +569,7 @@ export function LibraryPreview({
         item
           ? {
               primary: {
-                label: item.model ? "Chat with this model" : "Chat about this",
+                label: t(item.model ? "library.menu.chatWithModel" : "library.menu.chatAboutThis"),
                 icon: MessageCircleIcon,
                 disabled: saving,
                 onClick: () => void saveThen(() => onChat(item)),
@@ -543,12 +577,12 @@ export function LibraryPreview({
               onDownload: isFileItem(item) ? () => void saveThen(() => onDownload(item)) : undefined,
               viewOriginal: item.threadId
                 ? {
-                    label: "View original chat",
+                    label: t("library.preview.viewOriginalChat"),
                     onClick: () => void saveThen(() => onOpenThread(item.threadId!)),
                   }
                 : origin
                   ? {
-                      label: origin.label,
+                      label: t(origin.label),
                       onClick: () => void navigate({ to: origin.to, search: origin.search }),
                     }
                   : undefined,
@@ -565,7 +599,7 @@ export function LibraryPreview({
               onAddToProject: canAddToProject(item)
                 ? async (projectId) => {
                     // The project gets the text on screen, not the last saved copy.
-                    if (!(await save())) throw new Error("Save the note first.");
+                    if (!(await save())) throw new Error(t("library.toast.saveNoteFirst"));
                     return addLibraryItemToProject(item.id, projectId);
                   }
                 : undefined,

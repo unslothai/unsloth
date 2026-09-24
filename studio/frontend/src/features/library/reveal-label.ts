@@ -5,12 +5,14 @@
 
 type FileManager = "finder" | "explorer" | "files" | null;
 
-// Each platform's own wording for the command.
+// Each platform's own wording for the command, as message keys: the caller translates them.
 const LABELS = {
-  finder: "Reveal in Finder",
-  explorer: "Show in Explorer",
-  files: "Show in Folder",
+  finder: "library.reveal.finder",
+  explorer: "library.reveal.explorer",
+  files: "library.reveal.files",
 } as const;
+
+export type RevealLabelKey = (typeof LABELS)[keyof typeof LABELS];
 
 /**
  * Hosts that are this machine, however the URL spells it: localhost and its subdomains, all of
@@ -26,14 +28,14 @@ export function isLoopbackHost(hostname: string): boolean {
 }
 
 /**
- * The Reveal command's label for the server's host, or null where it would open nothing anyone
- * here sees. `fileManager` is what the server reports; an older server reports nothing, and its
+ * The message key of the Reveal command's label for the server's host, or null where it would open
+ * nothing anyone here sees. `fileManager` is what the server reports; an older server reports nothing, and its
  * platform decides.
  */
 export function revealLabelFor(
   fileManager: FileManager | undefined,
   deviceType: string,
-): string | null {
+): RevealLabelKey | null {
   if (fileManager === null) return null;
   if (fileManager) return LABELS[fileManager];
   if (deviceType === "mac") return LABELS.finder;

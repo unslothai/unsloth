@@ -4,6 +4,7 @@
 import { usePlatformStore } from "@/config/env";
 import { useIsAccountOwner } from "@/features/auth";
 import { isTauri } from "@/lib/api-base";
+import { translate, useT } from "@/i18n";
 import { toast } from "@/lib/toast";
 import { type LibraryItem, revealLibraryItem } from "./api";
 import { isLoopbackHost, revealLabelFor } from "./reveal-label";
@@ -16,12 +17,14 @@ import { isLoopbackHost, revealLabelFor } from "./reveal-label";
  * names it.
  */
 export function useRevealLabel(): string | null {
+  const t = useT();
   const owner = useIsAccountOwner();
   const deviceType = usePlatformStore((s) => s.deviceType);
   const fileManager = usePlatformStore((s) => s.fileManager);
   const local = isTauri || isLoopbackHost(window.location.hostname);
   if (!owner || !local) return null;
-  return revealLabelFor(fileManager, deviceType);
+  const key = revealLabelFor(fileManager, deviceType);
+  return key && t(key);
 }
 
 /** Chat attachments live inside their messages, so there is no file to show. */
@@ -31,7 +34,7 @@ export function canReveal(item: LibraryItem): boolean {
 
 export function revealInFolder(id: string): void {
   revealLibraryItem(id).catch((error: unknown) =>
-    toast.error("Could not open the file manager", {
+    toast.error(translate("library.toast.revealFailed"), {
       description: error instanceof Error ? error.message : String(error),
     }),
   );

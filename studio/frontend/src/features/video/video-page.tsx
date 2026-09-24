@@ -9,7 +9,6 @@ import {
   FlimSlateIcon,
   ImageCropIcon,
   InformationCircleIcon,
-  LibrariesIcon,
   VolumeHighIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -21,7 +20,8 @@ import { MEDIA_RAIL_ROOT_ATTR, useMediaRailWidth } from "@/hooks/use-media-rail-
 import { StripDropLine } from "@/components/gallery-strip-reorder";
 import { useStripReorder } from "@/hooks/use-strip-reorder";
 import { ImageDropzone } from "@/components/image-dropzone";
-import { MediaPageLink } from "@/components/media-page-link";
+import { LibraryPageLink } from "@/components/media-page-link";
+import { translate } from "@/i18n";
 import { useLibraryFavorites } from "@/features/library";
 import { GuidedTour, useGuidedTourController } from "@/features/tour";
 import { videoTourSteps } from "./tour";
@@ -2962,7 +2962,9 @@ function VideoGenerator({
       if (found) {
         setSelectedId(routedItem);
       } else {
-        toast("Could not find this clip", { description: "It may be archived or deleted." });
+        toast(translate("library.toast.clipNotFound"), {
+          description: translate("library.toast.notFoundDescription"),
+        });
       }
     });
   }, [routedItem, navigateSelf, loadGallery, loadMore]);
@@ -3665,11 +3667,8 @@ function VideoGenerator({
         </div>
         <div className="pointer-events-auto flex shrink-0 items-center gap-2">
           {/* A separate page, so it sits outside this page's controls. */}
-          <MediaPageLink
-            to="/library"
-            libraryTab="videos"
-            label="Library"
-            icon={LibrariesIcon}
+          <LibraryPageLink
+            tab="videos"
             labelClassName="@max-[30rem]:hidden"
             arrowClassName="@max-[30rem]:hidden"
           />
