@@ -9,7 +9,12 @@ from routes import benchmarks as benchmarks_routes
 from storage import benchmark_runs_db as db
 
 
-def _result(variant, rep, tps, warmup = False):
+def _result(
+    variant,
+    rep,
+    tps,
+    warmup = False,
+):
     return {
         "variant": variant,
         "rep": rep,
@@ -38,11 +43,20 @@ def _run(run_id = "run-1", results = None):
         "ggufVariant": "Q4_K_M",
         "kv": "q8_0",
         "context": 32768,
-        "config": {"sweep": "draft", "variants": [{"label": "Speculation off", "load": {}}], "repetitions": 3},
+        "config": {
+            "sweep": "draft",
+            "variants": [{"label": "Speculation off", "load": {}}],
+            "repetitions": 3,
+        },
         "meta": {"gpu": "AMD Radeon AI PRO R9700", "backend": "vulkan"},
         "base": [{"field": "cache_type_kv", "label": "KV Cache Dtype", "value": "q8_0"}],
         "outcomes": [{"label": "Speculation off", "state": "done"}],
-        "results": results if results is not None else [_result("Speculation off", 0, 10.0, warmup = True), _result("Speculation off", 1, 30.1)],
+        "results": results
+        if results is not None
+        else [
+            _result("Speculation off", 0, 10.0, warmup = True),
+            _result("Speculation off", 1, 30.1),
+        ],
         "createdAt": 1_700_000_000_000,
         "finishedAt": None,
     }
@@ -69,7 +83,15 @@ def test_round_trip_keeps_every_measurement_column():
 
 def test_saving_again_replaces_results_instead_of_appending():
     db.upsert_run(_run())
-    db.upsert_run(_run(results = [_result("Speculation off", 0, 29.7), _result("Speculation off", 1, 30.0), _result("Speculation off", 2, 30.3)]))
+    db.upsert_run(
+        _run(
+            results = [
+                _result("Speculation off", 0, 29.7),
+                _result("Speculation off", 1, 30.0),
+                _result("Speculation off", 2, 30.3),
+            ]
+        )
+    )
     run = db.get_run("run-1")
     assert [r["tps"] for r in run["results"]] == [29.7, 30.0, 30.3]
 
@@ -87,12 +109,16 @@ def test_list_is_newest_first_without_results_and_counts_measured_runs_only():
 
 
 def test_list_carries_each_rows_measured_mean():
-    db.upsert_run(_run(results = [
-        _result("Speculation off", 0, 5.0, warmup = True),
-        _result("Speculation off", 1, 30.0),
-        _result("Speculation off", 2, 32.0),
-        _result("MTP 3", 1, 42.0),
-    ]))
+    db.upsert_run(
+        _run(
+            results = [
+                _result("Speculation off", 0, 5.0, warmup = True),
+                _result("Speculation off", 1, 30.0),
+                _result("Speculation off", 2, 32.0),
+                _result("MTP 3", 1, 42.0),
+            ]
+        )
+    )
     [run] = db.list_runs()
     assert run["resultCount"] == 3
     # The warm-up's 5.0 stays out of the mean.
