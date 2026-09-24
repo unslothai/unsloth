@@ -18,10 +18,14 @@ import { formatCardTime, pluralize } from "../format";
 import { useColumnCount, useLibraryThumbnail, useSeen } from "../hooks";
 import { useLibraryActions } from "../actions-context";
 import { CARD_COLUMNS, useLibrarySettingsStore } from "../settings-store";
+import { RAISED_SURFACE } from "../surface";
 import { CardSelectionContext } from "./card-selection";
 import { LibraryActionsMenu } from "./library-actions";
 
-const CARD_SURFACE = "bg-muted/70 dark:bg-card";
+const CARD_SURFACE = cn(
+  RAISED_SURFACE,
+  "hover:shadow-[0_4px_14px_-4px_rgba(0,0,0,0.22)] dark:hover:bg-accent/60 dark:hover:shadow-none",
+);
 
 /** The item's type icon, tinted per kind. */
 export function KindIcon({ item, className }: { item: LibraryItem; className?: string }) {
@@ -143,7 +147,7 @@ export function ItemCard({ item }: { item: LibraryItem }) {
         label={item.name}
         onOpen={() => actions.openItem(item)}
         menu={menu}
-        className="relative border border-border/60 bg-muted"
+        className="relative bg-muted shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:shadow-none"
       >
         <ImageThumb item={item} square={square} />
         {/* On hover, so the grid stays a wall of pictures. */}
@@ -161,7 +165,7 @@ export function ItemCard({ item }: { item: LibraryItem }) {
       label={item.name}
       onOpen={() => actions.openItem(item)}
       menu={menu}
-      className={cn(CARD_SURFACE, "hover:bg-muted dark:hover:bg-accent/60")}
+      className={CARD_SURFACE}
     >
       <div className="flex aspect-square flex-col p-4">
         <p className="line-clamp-2 break-all pr-7 font-medium text-[14px] leading-snug text-foreground">
@@ -193,7 +197,7 @@ export function FolderCard({
         label={folder.name}
         onOpen={() => actions.openFolder(folder.id)}
         menu={<LibraryActionsMenu target={{ kind: "folder", folder }} variant="overlay" />}
-        className={cn(CARD_SURFACE, "hover:bg-muted dark:hover:bg-accent/60")}
+        className={CARD_SURFACE}
       >
         <div className="flex aspect-square items-center justify-center">
           <HugeiconsIcon icon={Folder01Icon} strokeWidth={1.5} className="size-10" />
