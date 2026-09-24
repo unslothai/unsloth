@@ -1322,7 +1322,12 @@ def _resolve_text_causal_lm_class(
     if class_ref is not None:
         if not trust_remote_code:
             return None
+        if "--" in str(class_ref):
+            # Code from another repository, named only in a nested config that remote-code scanners
+            # (which read the top-level auto_map) never see: keep the full-composite load instead of importing it.
+            return None
         from transformers.dynamic_module_utils import get_class_from_dynamic_module
+
         return get_class_from_dynamic_module(
             class_ref,
             model_name,

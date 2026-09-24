@@ -821,3 +821,48 @@ def test_probes_read_the_commit_the_config_was_resolved_at(tmp_path, monkeypatch
     )
     assert plan is not None
     assert plan[0]._commit_hash == sha
+
+
+@needs_tf5
+def test_nested_cross_repo_code_is_never_imported(tmp_path, monkeypatch):
+    # owner/repo--module.Class in llm_config.auto_map points at another repository's code.
+    import transformers.dynamic_module_utils as dmu
+
+    ns = _ns()
+    repo, _ = _write_repo(
+        tmp_path, name = "cross_repo", text_auto_map = "other-org/other-repo--modeling_x.TinyTextLM"
+    )
+    parent = _load_parent_config(repo)
+
+    imported = []
+
+    def _record(class_ref, *args, **kwargs):
+        imported.append(class_ref)
+        raise OSError("not fetched in this test")
+
+    monkeypatch.setattr(dmu, "get_class_from_dynamic_module", _record)
+    assert ns["_get_remote_composite_text_only"](parent, str(repo), trust_remote_code = True) is None
+    assert imported == []
+
+
+@needs_tf5
+def test_nested_own_repo_code_still_takes_the_plan(tmp_path):
+    ns = _ns()
+    repo, weights = _write_repo(
+        tmp_path, name = "own_repo_code", text_auto_map = "modeling_tiny_omni.TinyTextLM"
+    )
+    parent = _load_parent_config(repo)
+    text_config, mapping = ns["_get_remote_composite_text_only"](
+        parent, str(repo), trust_remote_code = True
+    )
+    model, info = transformers.AutoModelForCausalLM.from_pretrained(
+        repo,
+        config = text_config,
+        key_mapping = mapping,
+        trust_remote_code = True,
+        dtype = torch.float32,
+        local_files_only = True,
+        output_loading_info = True,
+    )
+    assert type(model).__name__ == "TinyTextLM"
+    assert not info["missing_keys"]
