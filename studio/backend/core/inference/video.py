@@ -84,6 +84,7 @@ from .diffusion_memory import (
     settled_snapshot_device_memory,
 )
 from .diffusion_torchao_patches import install_torchao_int_mm_patch
+from . import diffusion_render_thread as render_thread
 from .diffusion_speed import (
     SPEED_DEFAULT,
     SPEED_EAGER,
@@ -6270,7 +6271,7 @@ class VideoBackend:
                     self._reset_step_cache(pipe)
                 try:
                     with torch.inference_mode(), progress_ctx(), sigma_ctx:
-                        output = pipe(**kwargs)
+                        output = render_thread.run("video", lambda: pipe(**kwargs))
                 except _VideoGenerationCancelled:
                     # Unwinding by exception skips maybe_free_model_hooks(); under offload the onloaded modules would
                     # stay on the GPU.
