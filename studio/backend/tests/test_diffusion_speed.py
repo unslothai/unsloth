@@ -1701,7 +1701,9 @@ def test_vae_decode_non_compile_errors_are_not_swallowed(monkeypatch, kind):
     with pytest.raises((RuntimeError, _BackendCompilerFailed)):
         vae.decode(1)
     assert vae.eager_calls == 0
-    assert "decode" in vae.__dict__  # still compiled: a kernel error or OOM is not a reason to drop the compile
+    assert (
+        "decode" in vae.__dict__
+    )  # still compiled: a kernel error or OOM is not a reason to drop the compile
 
 
 class _TorchaoWeight:

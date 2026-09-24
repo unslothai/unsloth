@@ -816,7 +816,9 @@ def _guard_compiled_decode(vae: Any, compiled: Any, eager: Any, logger: Any) -> 
             except Exception as exc:  # noqa: BLE001 - reraised unless a compile-time failure
                 if not is_compile_failure(exc):
                     raise
-                error = f"{type(exc).__name__}: {str(exc).splitlines()[0] if str(exc) else ''}"[:300]
+                error = f"{type(exc).__name__}: {str(exc).splitlines()[0] if str(exc) else ''}"[
+                    :300
+                ]
                 failed.append(error)
                 try:
                     vae._unsloth_compile_decode_error = error
@@ -828,7 +830,8 @@ def _guard_compiled_decode(vae: Any, compiled: Any, eager: Any, logger: Any) -> 
                     pass
                 if logger is not None:
                     logger.warning(
-                        "diffusion.speed: torch.compile failed on the VAE decode (%s); decoding eager", error
+                        "diffusion.speed: torch.compile failed on the VAE decode (%s); decoding eager",
+                        error,
                     )
                 # The handled exception pins inductor's frames (and the traced fake tensors) through the retry.
                 exc.__traceback__ = None
