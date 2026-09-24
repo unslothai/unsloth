@@ -7129,6 +7129,73 @@ def test_pipeline_load_uses_predownloaded_dir(fake_runtime, tmp_path):
     backend.unload()
 
 
+def test_unload_mid_render_releases_the_pipeline(fake_runtime, monkeypatch):
+    # Regression: the cancelled render's traceback pinned generate()'s frame (state, pipe) past the slot
+    # release, so the unload's cache clear ran while the weights were still referenced and ~7 GiB of VRAM
+    # stayed reserved. The pipeline must be gone, and the cache cleared after that, while the caller still
+    # holds the exception.
+    import threading
+    import weakref
+
+    backend = DiffusionBackend()
+    at_step0 = threading.Event()
+    resume = threading.Event()
+
+    class _SteppingPipe:
+        def __init__(self) -> None:
+            self._interrupt = False
+
+        def __call__(self, *, callback_on_step_end = None, num_inference_steps = 8, **kwargs):
+            for i in range(num_inference_steps):
+                if self._interrupt:
+                    break
+                if callback_on_step_end is not None:
+                    callback_on_step_end(self, i, 0.0, {})
+                if i == 0:
+                    at_step0.set()
+                    resume.wait(5)
+            return types.SimpleNamespace(images = [_FakeImage()])
+
+    pipe = _SteppingPipe()
+    pipe_ref = weakref.ref(pipe)
+    backend._state = _LoadState(
+        pipe = pipe,
+        family = detect_family("unsloth/Z-Image-GGUF"),
+        repo_id = "r",
+        base_repo = "b",
+        device = "cpu",
+        dtype = "float32",
+        cpu_offload = False,
+    )
+    del pipe
+    cleared_with_pipe_gone = []
+    monkeypatch.setattr(
+        "core.inference.diffusion.clear_gpu_cache",
+        lambda: cleared_with_pipe_gone.append(pipe_ref() is None),
+    )
+
+    out: dict = {}
+
+    def _run():
+        try:
+            out["res"] = backend.generate(prompt = "p", steps = 8)
+        except Exception as exc:  # noqa: BLE001
+            out["exc"] = exc
+
+    t = threading.Thread(target = _run)
+    t.start()
+    assert at_step0.wait(5)
+    u = threading.Thread(target = backend.unload)
+    u.start()
+    assert backend._active_generate_cancel.wait(5)
+    resume.set()
+    t.join(5)
+    u.join(5)
+    assert "cancelled" in str(out["exc"]).lower()
+    assert pipe_ref() is None, "the cancelled render's traceback still pins the pipeline"
+    assert True in cleared_with_pipe_gone
+
+
 def test_unload_waits_for_in_flight_denoise_before_teardown():
     # Regression: unload() must wait for a running denoise to exit before _unload_locked() tears down process-wide state it depends on.
     import threading

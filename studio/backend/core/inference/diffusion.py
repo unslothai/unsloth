@@ -1031,6 +1031,44 @@ def _account_owned_load(method):
     return wrapped
 
 
+def _clear_exception_frames(exc: BaseException) -> None:
+    seen = set()
+    while exc is not None and id(exc) not in seen:
+        seen.add(id(exc))
+        # Skips frames still executing (this wrapper's own); clears the finished ones below it.
+        traceback.clear_frames(exc.__traceback__)
+        exc = exc.__cause__ or exc.__context__
+
+
+def _release_render_on_unload(method):
+    """Return the pipeline's VRAM when an unload (or replacing load) lands mid-render.
+
+    A cancelled generate() raises out of _generation_slot, and the traceback keeps its frame, and with
+    it ``state`` and ``pipe``, alive after the slot is released. The unload waiting on that slot then
+    tears down while the pipeline is still referenced, so its clear_gpu_cache() frees nothing and the
+    weights end up reserved in the CUDA caching allocator once the exception is dropped, several GiB
+    until the next load. Clear those frames here and empty the cache after the last reference is gone.
+    """
+
+    @functools.wraps(method)
+    def wrapped(self, *args, **kwargs):
+        token = self._load_token
+        try:
+            return method(self, *args, **kwargs)
+        except BaseException as exc:
+            _clear_exception_frames(exc)
+            raise
+        finally:
+            if self._load_token != token:
+                try:
+                    clear_gpu_cache()
+                except Exception as exc:
+                    # Never mask the render's own outcome; the teardown reports a sticky fault anyway.
+                    logger.debug("diffusion.generate: cache release after unload failed: %s", exc)
+
+    return wrapped
+
+
 @dataclass
 class _GenState:
     """An in-flight generation, updated per denoising step for the progress bar."""
@@ -6963,6 +7001,7 @@ class DiffusionBackend:
             attention_engaged or "native",
         )
 
+    @_release_render_on_unload
     def generate(
         self,
         *,
