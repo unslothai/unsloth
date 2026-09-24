@@ -290,6 +290,10 @@ def convert_nvfp4_backend(
             return 0
     for name, replacement in replacements:
         _replace_child(transformer, name, replacement)
+    # A controller per model: image and video render side by side, each on its own schedule.
+    from .diffusion_nvfp4_protect import attach_own_controller
+
+    attach_own_controller(transformer)
     converted = len(replacements)
     _log(logger, "info", f"[nvfp4] flashinfer backend: {converted} linears converted")
     return converted

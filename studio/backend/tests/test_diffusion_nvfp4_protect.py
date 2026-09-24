@@ -351,6 +351,36 @@ def test_attach_controller_reaches_every_nvfp4_layer():
     assert [name for name, _ in pr.protect_layers(tree)] == ["0", "2"]
 
 
+def test_an_image_and_a_video_render_in_flight_keep_their_own_schedules(monkeypatch):
+    """Image and video run side by side, so each model gets its own controller: one render's steps
+    and exit must not move or clear the other's."""
+    torch = pytest.importorskip("torch")
+    import torch.nn as nn
+
+    monkeypatch.setenv(pr.PROTECT_STEPS_ENV, "0")
+    pr.reset_protect_controller()
+    try:
+        image, video = _FakePipe(), _FakePipe()
+        image.transformer = nn.Sequential(_cpu_layer(torch))
+        video.transformer = nn.Sequential(_cpu_layer(torch))
+        a = pr.attach_own_controller(image.transformer)
+        b = pr.attach_own_controller(video.transformer)
+        assert a is not b and a.armed and b.armed
+        assert pr.pipeline_controllers(image) == [a]
+        assert pr.module_controller(video.transformer) is b
+        # Moved off the process controller, so it no longer counts them.
+        assert pr.protect_controller().capable_layers() == 0
+        with pr.protect_generation(video, 10):
+            assert b.protected
+            with pr.protect_generation(image, 10):
+                image.run(3, lambda: None)
+                assert a.index == 3 and not a.protected
+            assert b.index == 0 and b.protected and b.total == 10
+    finally:
+        monkeypatch.delenv(pr.PROTECT_STEPS_ENV, raising = False)
+        pr.reset_protect_controller()
+
+
 @pytest.mark.parametrize("out_features,in_features", REAL_SHAPES)
 def test_the_dequantiser_matches_torchao_bit_for_bit(out_features, in_features):
     """The protected step has to read the SAME weight the unprotected step's GEMM reads."""
