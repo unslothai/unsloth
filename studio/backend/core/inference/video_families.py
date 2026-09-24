@@ -100,8 +100,7 @@ class VideoFamily:
     # parameters), so 0.55 x 66.3 GB over-states it by 16 GB and a hard refusal turns away a load that fits. Measured
     # from Hub file metadata (2026-08-09): MiniMax-H3-FP8.pt 20,260,192,855 bytes, MiniMax-H3-INT8.pt 20,253,894,865.
     prequant_resident_gb: Optional[float] = None
-    # The same measurement PER SCHEME as (scheme, resident_gb), for a family hosting several schemes
-    # at different sizes. No row here falls back to prequant_resident_gb, then _QUANT_STEADY_FACTOR.
+    # Per-scheme (scheme, resident_gb); else prequant_resident_gb, then _QUANT_STEADY_FACTOR.
     prequant_resident_gb_by_scheme: tuple[tuple[str, float], ...] = field(default_factory = tuple)
     # Per-variant overrides as (base_repo, scheme, repo_id), keyed on the LOWERCASED upstream base id. A pre-quantized
     # checkpoint is baked from ONE base's weights and the loader refuses it for any other base, so a variant that ships
@@ -288,8 +287,7 @@ _FAMILIES: tuple[VideoFamily, ...] = (
             ("nvfp4", "Wan2.2-T2V-A14B-NVFP4.pt"),
             ("nvfp4", "transformer_2", "Wan2.2-T2V-A14B-transformer_2-NVFP4.pt"),
         ),
-        # BOTH experts, like bf16_components_gb[0] below: the plan subtracts one denoiser term and
-        # this family builds two.
+        # BOTH experts: the plan subtracts one denoiser term and this family builds two.
         prequant_resident_gb_by_scheme = (("nvfp4", 16.2),),
         aliases = ("wan2.2-14b", "wan-t2v", "wan2.2-t2v", "wan-t2v-a14b", "wan-a14b"),
         has_audio = False,
@@ -349,8 +347,7 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         pipeline_class = "HunyuanVideo15Pipeline",
         transformer_class = "HunyuanVideo15Transformer3DModel",
         base_repo = "hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-720p_t2v",
-        # RTN with baked activation scales, not GPTQ: the 720p transformer is a separately trained
-        # checkpoint, so the 480p corrections do not apply to it.
+        # RTN, not GPTQ: the 720p transformer is separately trained; 480p corrections do not apply.
         prequant_repos = (("nvfp4", "unsloth/HunyuanVideo-1.5-NVFP4"),),
         prequant_filenames = (("nvfp4", "HunyuanVideo-1.5-Diffusers-720p_t2v-NVFP4.pt"),),
         prequant_resident_gb_by_scheme = (("nvfp4", 4.8),),

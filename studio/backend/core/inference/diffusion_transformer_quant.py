@@ -197,8 +197,7 @@ def apply_small_m_padding(
     return wrapped
 
 
-# Zero-row guard per family: torchao's NVFP4 activation path reduces over the WHOLE input and raises
-# on numel() == 0, which HunyuanVideo-1.5's attention trim reaches on every default t2v render.
+# nvfp4 raises on an empty activation; HunyuanVideo-1.5's attention trim hits it every t2v render.
 _HUNYUAN15_NVFP4_ZERO_ROW_TOKENS = ("image_embedder", "context_embedder_2")
 _NVFP4_FAMILY_ZERO_ROW_NAME_TOKENS: dict[str, tuple[str, ...]] = {
     "hunyuanvideo-1.5": _HUNYUAN15_NVFP4_ZERO_ROW_TOKENS,
@@ -207,9 +206,7 @@ _NVFP4_FAMILY_ZERO_ROW_NAME_TOKENS: dict[str, tuple[str, ...]] = {
 
 
 def zero_row_tokens_for_scheme(scheme: str, family: Optional[str] = None) -> tuple[str, ...]:
-    """Name tokens whose quantized Linears need the empty-activation guard, per family. nvfp4 only:
-    fp8 and mxfp8 reduce per row along dim=-1, well defined for zero rows, and int8 has
-    ``PadToMinM``."""
+    """Tokens needing the empty-activation guard; nvfp4 only (fp8 / mxfp8 reduce per row)."""
     if scheme != TQ_NVFP4:
         return ()
     return _NVFP4_FAMILY_ZERO_ROW_NAME_TOKENS.get(str(family or "").strip().lower(), ())
@@ -222,12 +219,7 @@ def apply_zero_row_guard(
     *,
     logger: Any = None,
 ) -> tuple[str, ...]:
-    """Wrap this family's zero-row-reachable quantized Linears; returns the fqns wrapped, empty
-    for a family with no list.
-
-    Call AFTER the weights are quantized and in place, beside ``apply_small_m_padding``, which
-    reparents the Linears too. Not best-effort: a raise here means a transformer that is quantized
-    but crashes on the first t2v render."""
+    """Wrap this family's zero-row-reachable quantized Linears after quantize; not best-effort."""
     tokens = zero_row_tokens_for_scheme(scheme, family)
     if not tokens:
         return ()
@@ -259,8 +251,6 @@ def exclude_tokens_for_scheme(scheme: str, family: Optional[str] = None) -> tupl
     return ()
 
 
-# GEMM tiling floor per scheme, the divisor every quantized Linear's in/out features must meet.
-# Public so the runtime filter, the offline builder and the checkpoint validator read one number.
 _SCHEME_DIVISIBLE: dict[str, int] = {TQ_FP8: 16, TQ_NVFP4: 16, TQ_MXFP8: 32}
 
 
