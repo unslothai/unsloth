@@ -193,3 +193,16 @@ test("the panel and the request read the same capability flags", () => {
     ),
   );
 });
+
+// The proxy drops the usage chunk for a caller that did not opt in, which hid the usage bar.
+test("the external body opts into the stream usage chunk", () => {
+  const optIn = externalBodyLiteral().properties.find(
+    (property) =>
+      ts.isPropertyAssignment(property) &&
+      property.name.getText() === "stream_options",
+  );
+  assert.ok(optIn && ts.isPropertyAssignment(optIn), "stream_options missing");
+  assert.deepEqual(new Function(`return (${optIn.initializer.getText()});`)(), {
+    include_usage: true,
+  });
+});

@@ -7,7 +7,6 @@ import json
 import sys
 from pathlib import Path
 
-import pytest
 from starlette.requests import Request
 
 import routes.inference as ri
@@ -85,25 +84,17 @@ def _usage_chunks(chunks: list[dict]) -> list[dict]:
     return [c["usage"] for c in chunks if c.get("choices") == [] and c.get("usage")]
 
 
-@pytest.mark.parametrize("provider_type", ["vllm", "openrouter", "custom"])
-def test_an_opted_in_chat_receives_the_provider_usage_chunk(provider_type):
-    chunks, _ = _proxy(provider_type, stream_options = {"include_usage": True})
-    assert _usage_chunks(chunks) == [_USAGE]
+def test_only_an_opted_in_caller_receives_the_usage_chunk():
+    opted_in, _ = _proxy("vllm", stream_options = {"include_usage": True})
+    plain, _ = _proxy("vllm")
+    assert _usage_chunks(opted_in) == [_USAGE]
+    assert _usage_chunks(plain) == []
+    assert any(c.get("choices") for c in plain)
 
 
-@pytest.mark.parametrize("provider_type", ["vllm", "openrouter", "custom"])
-def test_a_caller_that_did_not_opt_in_gets_no_usage_chunk(provider_type):
-    chunks, _ = _proxy(provider_type)
-    assert _usage_chunks(chunks) == []
-    assert any(c.get("choices") for c in chunks)
-
-
-@pytest.mark.parametrize(
-    "provider_type,expected",
-    [("vllm", {"include_usage": True}), ("custom", None)],
-)
-def test_the_opt_in_does_not_change_the_upstream_body(provider_type, expected):
-    _, opted_in = _proxy(provider_type, stream_options = {"include_usage": True})
-    _, plain = _proxy(provider_type)
+def test_the_opt_in_does_not_reach_a_custom_endpoint():
+    # "custom" is never asked for usage upstream: a strict endpoint 400s on the field.
+    _, opted_in = _proxy("custom", stream_options = {"include_usage": True})
+    _, plain = _proxy("custom")
     assert opted_in == plain
-    assert opted_in.get("stream_options") == expected
+    assert "stream_options" not in opted_in

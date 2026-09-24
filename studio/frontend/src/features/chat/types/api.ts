@@ -681,8 +681,8 @@ export interface OpenAIChatCompletionsRequest {
   /** Anthropic fast-mode toggle. Opus 4.6 / 4.7 only; dropped silently elsewhere. */
   fast_mode?: boolean | null;
   /** Opt into the OpenAI-standard trailing usage chunk on streams. The backend only emits it when
-   *  `include_usage` is set; the local chat UI sends it so the context-usage bar and tok/s
-   *  readout populate. */
+   *  `include_usage` is set; the chat UI sends it for local and connected-provider models so the
+   *  context-usage bar and tok/s readout populate. */
   stream_options?: { include_usage?: boolean } | null;
 }
 
