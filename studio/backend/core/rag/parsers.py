@@ -461,10 +461,15 @@ def _docx_unwrap_table_controls(body) -> None:
             continue
         content = wrapper.find(_W + "sdtContent") if wrapper.tag == _W + "sdt" else wrapper
         keep = (_W + "tr", _W + "tc", _W + "sdt", _W + "customXml")
+        placeholder = not _docx_content(wrapper)
         idx = parent.index(wrapper)
         for i, child in enumerate(
             [c for c in (content if content is not None else ()) if c.tag in keep]
         ):
+            if placeholder:  # keep the cells so columns line up, drop the prompt text
+                for tc in child.iter(_W + "tc"):
+                    for el in [e for e in tc if e.tag != _W + "tcPr"]:
+                        tc.remove(el)
             parent.insert(idx + i, child)
         parent.remove(wrapper)
 
