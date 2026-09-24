@@ -23,21 +23,22 @@ export const MAX_CHAT_FILES = 10;
 
 // The composer's image and text limit.
 const MAX_IMAGE_OR_TEXT_BYTES = 20 * 1024 * 1024;
+// Its PDF, DOCX and OpenDocument limit, and the most any other adapter takes, so the ceiling for the rest.
+const MAX_DOCUMENT_BYTES = 50 * 1024 * 1024;
 
-/** What the composer would accept, or null where it sets no limit. Checked before any download. */
-function chatSizeLimit(item: LibraryItem): number | null {
+/** The most the composer would accept for this item. Checked before any download. */
+function chatSizeLimit(item: LibraryItem): number {
   const kind = fileKind(item);
   if (kind === "audio") return MAX_AUDIO_SIZE;
   if (kind === "video") return MAX_VIDEO_SIZE;
   if (kind === "image" || kind === "code" || kind === "web" || item.textOnly) {
     return MAX_IMAGE_OR_TEXT_BYTES;
   }
-  return item.contentType.startsWith("text/") ? MAX_IMAGE_OR_TEXT_BYTES : null;
+  return item.contentType.startsWith("text/") ? MAX_IMAGE_OR_TEXT_BYTES : MAX_DOCUMENT_BYTES;
 }
 
 function fitsInChat(item: LibraryItem): boolean {
-  const limit = chatSizeLimit(item);
-  return limit === null || item.sizeBytes === null || item.sizeBytes <= limit;
+  return item.sizeBytes === null || item.sizeBytes <= chatSizeLimit(item);
 }
 
 function errorMessage(error: unknown): string {
