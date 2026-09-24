@@ -2497,3 +2497,30 @@ def test_without_hip_luids_the_igpu_stays_unknown(win_rocm, monkeypatch):
     devices, aggregate = hw._rocm_windows_per_device_vram([0, 1])
     assert devices[1]["used_gb"] is None
     assert aggregate is None
+
+
+def test_the_system_tab_gets_both_rows_and_the_total(win_rocm, monkeypatch):
+    """What the page reads: every row known, so the frontend sums them instead of
+    falling back to an aggregate that used to be None."""
+    _igpu_beside_dgpu(monkeypatch)
+
+    devices = hw.get_visible_gpu_utilization()["devices"]
+    assert [(d["index"], d["vram_used_gb"], d["vram_total_gb"]) for d in devices] == [
+        (0, pytest.approx(4.28, abs = 0.01), 16.0),
+        (1, pytest.approx(1.5, abs = 0.01), 76.8),
+    ]
+
+
+def test_an_igpu_enumerated_first_is_still_paired_by_luid(win_rocm, monkeypatch):
+    _igpu_beside_dgpu(monkeypatch)
+    monkeypatch.setitem(
+        sys.modules, "torch", _fake_torch(list(reversed(RX6800_IGPU)), free_equals_total = True)
+    )
+    monkeypatch.setattr(
+        hw, "_rocm_windows_hip_adapter_ids", _hip_ids((IGPU_LUID, 0), (DGPU_LUID, 0))
+    )
+
+    devices, aggregate = hw._rocm_windows_per_device_vram([0, 1])
+    assert devices[0]["used_gb"] == pytest.approx(1.5, abs = 0.01)
+    assert devices[1]["used_gb"] == pytest.approx(4.28, abs = 0.01)
+    assert aggregate == pytest.approx(5.78, abs = 0.01)
