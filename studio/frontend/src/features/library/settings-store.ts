@@ -3,6 +3,7 @@
 
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
+import type { LibraryTab } from "./search";
 
 export const LIBRARY_SETTINGS_STORAGE_KEY = "unsloth_library_settings";
 export const LIBRARY_VIEW_STORAGE_KEY = "unsloth_library_view";
@@ -10,8 +11,9 @@ export const LIBRARY_VIEW_STORAGE_KEY = "unsloth_library_view";
 export type LibraryCardSize = "small" | "medium" | "large";
 export type LibraryImageLayout = "masonry" | "square";
 export type LibrarySort = "recent" | "oldest" | "name" | "size";
-export type LibraryStartTab = "suggested" | "favorites" | "folders" | "all";
-export type LibraryMediaTabs = "auto" | "always";
+export type LibraryStartTab = "last" | "suggested" | "favorites" | "folders" | "all";
+/** "auto" shows a tab once it has something in it. */
+export type LibraryTabVisibility = "always" | "auto" | "hidden";
 
 export interface LibrarySettings {
   cardSize: LibraryCardSize;
@@ -19,7 +21,9 @@ export interface LibrarySettings {
   showCardDates: boolean;
   sort: LibrarySort;
   startTab: LibraryStartTab;
-  mediaTabs: LibraryMediaTabs;
+  /** Where "Last visited" reopens. */
+  lastTab: LibraryTab;
+  tabs: Record<LibraryTab, LibraryTabVisibility>;
   suggestedLimit: number;
   showChatAttachments: boolean;
   showChatToolFiles: boolean;
@@ -34,7 +38,17 @@ export const DEFAULT_LIBRARY_SETTINGS: LibrarySettings = {
   showCardDates: true,
   sort: "recent",
   startTab: "suggested",
-  mediaTabs: "auto",
+  lastTab: "suggested",
+  tabs: {
+    suggested: "always",
+    favorites: "always",
+    folders: "always",
+    images: "auto",
+    videos: "auto",
+    audio: "auto",
+    models: "always",
+    all: "always",
+  },
   suggestedLimit: 40,
   showChatAttachments: true,
   showChatToolFiles: true,
@@ -72,6 +86,17 @@ interface LibrarySettingsState extends LibrarySettings {
   reset: () => void;
 }
 
+/** v1 had one mediaTabs switch for Images, Videos and Audio together. */
+export function migrateLibrarySettings(persisted: unknown, version: number): Record<string, unknown> {
+  const state = { ...(persisted as Record<string, unknown>) };
+  if (version < 2) {
+    const media = state.mediaTabs === "always" ? "always" : "auto";
+    state.tabs = { ...DEFAULT_LIBRARY_SETTINGS.tabs, images: media, videos: media, audio: media };
+    delete state.mediaTabs;
+  }
+  return state;
+}
+
 export const useLibrarySettingsStore = create<LibrarySettingsState>()(
   persist(
     (set) => ({
@@ -79,7 +104,12 @@ export const useLibrarySettingsStore = create<LibrarySettingsState>()(
       set: (patch) => set(patch),
       reset: () => set(DEFAULT_LIBRARY_SETTINGS),
     }),
-    { name: LIBRARY_SETTINGS_STORAGE_KEY, version: 1 },
+    {
+      name: LIBRARY_SETTINGS_STORAGE_KEY,
+      version: 2,
+      migrate: (persisted, version) =>
+        migrateLibrarySettings(persisted, version) as unknown as LibrarySettingsState,
+    },
   ),
 );
 

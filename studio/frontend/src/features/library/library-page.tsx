@@ -128,9 +128,6 @@ function targetName(target: LibraryTarget): string {
 }
 
 
-// Media tabs appear once there is something to show in them, so a fresh Library stays uncluttered.
-const MEDIA_TABS = new Set<LibraryTab>(["images", "videos", "audio"]);
-
 function Tabs({
   tabs,
   active,
@@ -233,7 +230,17 @@ function LibraryView({ search }: { search: LibrarySearch }) {
   const [pendingDelete, setPendingDelete] = useState<LibraryTarget[] | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
 
-  const tab: LibraryTab = search.show ?? settings.startTab;
+  const loaded = status === "ready";
+  // "auto" tabs count as shown until the listing lands, so a start tab is not swapped mid-load.
+  const tabVisible = (entry: LibraryTab) => {
+    const visibility = settings.tabs[entry] ?? "always";
+    if (visibility === "hidden" || (entry === "models" && !settings.showFineTunes)) return false;
+    return visibility === "always" || !loaded || items.some(KIND_TABS[entry] ?? (() => true));
+  };
+  const preferred = settings.startTab === "last" ? settings.lastTab : settings.startTab;
+  const tab: LibraryTab =
+    search.show ??
+    (tabVisible(preferred) ? preferred : (LIBRARY_TABS.find(tabVisible) ?? "all"));
   // A column click (or a ?sort link) wins over the Sort setting until the view changes.
   const [sortOverride, setSortOverride] = useState<LibrarySortState | null>(
     search.sort ? sortState(search.sort) : null,
@@ -264,17 +271,13 @@ function LibraryView({ search }: { search: LibrarySearch }) {
   const imagesTab = tab === "images" && !folderId;
   const kindFilter = folderId ? undefined : KIND_TABS[tab];
 
-  // The open tab always shows, so a link straight to an empty one still lands somewhere.
-  const shownTabs = useMemo(
-    () =>
-      LIBRARY_TABS.filter((entry) => {
-        if (entry === tab) return true;
-        if (entry === "models") return settings.showFineTunes;
-        if (!MEDIA_TABS.has(entry) || settings.mediaTabs === "always") return true;
-        return items.some(KIND_TABS[entry]!);
-      }),
-    [items, tab, settings.showFineTunes, settings.mediaTabs],
-  );
+  // The open tab always shows, so a link straight to a hidden or empty one still lands somewhere.
+  const shownTabs = LIBRARY_TABS.filter((entry) => entry === tab || tabVisible(entry));
+
+  const setLibrarySettings = settings.set;
+  useEffect(() => {
+    if (!folderId) setLibrarySettings({ lastTab: tab });
+  }, [tab, folderId, setLibrarySettings]);
   const visibleItems = useMemo(() => {
     let pool = items;
     if (folderId) pool = pool.filter((item) => item.folderId === folderId);

@@ -8,6 +8,7 @@ import {
   DEFAULT_LIBRARY_SETTINGS,
   compareBySort,
   includedBySettings,
+  migrateLibrarySettings,
   nextSort,
   sortState,
 } from "../src/features/library/settings-store.ts";
@@ -40,4 +41,16 @@ test("a column click flips its direction or starts a new column naturally", () =
   assert.deepEqual(nextSort(bySize, "size"), { key: "size", desc: false });
   assert.deepEqual(nextSort(bySize, "name"), { key: "name", desc: false });
   assert.deepEqual(nextSort(bySize, "modified"), { key: "modified", desc: true });
+});
+
+test("the v1 media switch becomes one setting per tab", () => {
+  const migrated = migrateLibrarySettings({ mediaTabs: "always", sort: "name" }, 1);
+  assert.equal(migrated.mediaTabs, undefined);
+  assert.equal(migrated.sort, "name");
+  assert.deepEqual(migrated.tabs, {
+    ...DEFAULT_LIBRARY_SETTINGS.tabs,
+    images: "always",
+    videos: "always",
+    audio: "always",
+  });
 });

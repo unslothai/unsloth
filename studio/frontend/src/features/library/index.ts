@@ -4,7 +4,12 @@
 // Light exports only: the page itself is lazy-loaded by its route.
 export { useLibraryChatHandoffStore } from "./chat-handoff-store";
 export { useLibraryFavorites } from "./favorites-store";
-export { validateLibrarySearch, type LibrarySearch, type LibraryTab } from "./search";
+export {
+  LIBRARY_TABS,
+  validateLibrarySearch,
+  type LibrarySearch,
+  type LibraryTab,
+} from "./search";
 export {
   DEFAULT_LIBRARY_SETTINGS,
   LIBRARY_SETTINGS_STORAGE_KEY,
@@ -12,7 +17,7 @@ export {
   SUGGESTED_LIMITS,
   type LibraryCardSize,
   type LibraryImageLayout,
-  type LibraryMediaTabs,
+  type LibraryTabVisibility,
   type LibrarySettings,
   type LibrarySort,
   type LibraryStartTab,

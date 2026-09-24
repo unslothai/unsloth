@@ -135,7 +135,7 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.library.startTab",
     "settings.library.sort",
     "settings.library.suggestedLimit",
-    "settings.library.mediaTabs",
+    "settings.library.tabsSection",
     "settings.library.contentSection",
     "settings.library.showChatAttachments",
     "settings.library.showChatToolFiles",

@@ -12,7 +12,10 @@ import {
 import { Switch } from "@/components/ui/switch";
 import { Spinner } from "@/components/ui/spinner";
 import {
+  LIBRARY_TABS,
   type LibrarySettings,
+  type LibraryTab as LibraryTabId,
+  type LibraryTabVisibility,
   type StorageCategory,
   SUGGESTED_LIMITS,
   formatSize,
@@ -38,7 +41,7 @@ type ToggleKey = {
   [K in keyof LibrarySettings]: LibrarySettings[K] extends boolean ? K : never;
 }[keyof LibrarySettings];
 
-const CHOICES: { [K in ChoiceKey]: [LibrarySettings[K], TranslationKey][] } = {
+const CHOICES: { [K in Exclude<ChoiceKey, "lastTab">]: [LibrarySettings[K], TranslationKey][] } = {
   cardSize: [
     ["small", "settings.library.small"],
     ["medium", "settings.library.medium"],
@@ -49,6 +52,7 @@ const CHOICES: { [K in ChoiceKey]: [LibrarySettings[K], TranslationKey][] } = {
     ["square", "settings.library.square"],
   ],
   startTab: [
+    ["last", "settings.library.lastVisited"],
     ["suggested", "settings.library.suggested"],
     ["favorites", "settings.library.favorites"],
     ["folders", "settings.library.folders"],
@@ -60,11 +64,27 @@ const CHOICES: { [K in ChoiceKey]: [LibrarySettings[K], TranslationKey][] } = {
     ["name", "settings.library.name"],
     ["size", "settings.library.size"],
   ],
-  mediaTabs: [
-    ["auto", "settings.library.mediaTabsAuto"],
-    ["always", "settings.library.mediaTabsAlways"],
-  ],
 };
+
+const TAB_LABELS: Record<LibraryTabId, TranslationKey> = {
+  suggested: "settings.library.suggested",
+  favorites: "settings.library.favorites",
+  folders: "settings.library.folders",
+  images: "settings.library.categoryImages",
+  videos: "settings.library.categoryVideos",
+  audio: "settings.library.categoryAudio",
+  models: "settings.library.categoryFineTunes",
+  all: "settings.library.all",
+};
+
+// These tabs can wait until they have something in them; the rest are simply on or off.
+const CONTENT_TABS = new Set<LibraryTabId>(["images", "videos", "audio", "models"]);
+
+const TAB_VISIBILITY: [LibraryTabVisibility, TranslationKey][] = [
+  ["auto", "settings.library.tabAuto"],
+  ["always", "settings.library.tabAlways"],
+  ["hidden", "settings.library.tabHidden"],
+];
 
 function ChoiceSelect({
   label,
@@ -198,7 +218,7 @@ export function LibraryTab() {
   const t = useT();
   const settings = useLibrarySettingsStore();
 
-  const choice = <K extends ChoiceKey>(key: K, labelKey: TranslationKey, descriptionKey: TranslationKey) => (
+  const choice = <K extends keyof typeof CHOICES>(key: K, labelKey: TranslationKey, descriptionKey: TranslationKey) => (
     <SettingsRow label={t(labelKey)} description={t(descriptionKey)}>
       <ChoiceSelect
         label={t(labelKey)}
@@ -247,7 +267,36 @@ export function LibraryTab() {
             onChange={(value) => settings.set({ suggestedLimit: Number(value) })}
           />
         </SettingsRow>
-        {choice("mediaTabs", "settings.library.mediaTabs", "settings.library.mediaTabsDescription")}
+      </SettingsSection>
+
+      <SettingsSection
+        title={t("settings.library.tabsSection")}
+        description={t("settings.library.tabsDescription")}
+      >
+        {LIBRARY_TABS.map((tab) => {
+          const label = t(TAB_LABELS[tab]);
+          const visibility = settings.tabs[tab] ?? "always";
+          const setVisibility = (next: LibraryTabVisibility) =>
+            settings.set({ tabs: { ...settings.tabs, [tab]: next } });
+          return (
+            <SettingsRow key={tab} label={label}>
+              {CONTENT_TABS.has(tab) ? (
+                <ChoiceSelect
+                  label={label}
+                  value={visibility}
+                  options={TAB_VISIBILITY.map(([option, text]) => [option, t(text)])}
+                  onChange={(value) => setVisibility(value as LibraryTabVisibility)}
+                />
+              ) : (
+                <Switch
+                  aria-label={label}
+                  checked={visibility !== "hidden"}
+                  onCheckedChange={(checked) => setVisibility(checked ? "always" : "hidden")}
+                />
+              )}
+            </SettingsRow>
+          );
+        })}
       </SettingsSection>
 
       <SettingsSection
