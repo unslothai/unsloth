@@ -114,6 +114,133 @@ def _resolve_host_memory_reclaimer() -> Optional[Callable[[], None]]:
     return reclaim
 
 
+OFFLOAD_KEEP_CPU_ENV = "UNSLOTH_DIFFUSION_OFFLOAD_KEEP_CPU"
+_KEEP_ATTR = "_unsloth_offload_keep_cpu"
+
+
+def keep_cpu_weights_on_offload(pipe: Any, logger: Any = None) -> int:
+    """Offload whole modules without copying their weights back from the device.
+
+    accelerate's ``CpuOffload`` hook offloads with ``module.to("cpu")``: every weight is copied
+    device-to-host into freshly allocated pageable memory, although it did not change. That copy is
+    most of a whole-model offload render (Z-Image-Turbo 1024px on a B200: 15.8 of 25 s; device-to-host
+    into new pages ran at 1 GiB/s). Instead each parameter keeps the host tensor it had before it
+    was onloaded, and the offload points it back there. Lossless: the kept tensor holds the same
+    bytes, and a parameter whose version counter moved on the device (an in-place write) is copied
+    the normal way. Only plain tensors are kept; quantised tensor subclasses keep the stock path.
+
+    diffusers re-runs ``enable_model_cpu_offload`` after every call (``maybe_free_model_hooks``)
+    and so builds new hooks each time, so the pipeline's method is wrapped to wrap them too, and
+    the kept tensors live on each module. Returns how many hooks are wrapped now."""
+    if (os.environ.get(OFFLOAD_KEEP_CPU_ENV) or "").strip().lower() in ("0", "off", "false", "no"):
+        return 0
+    try:
+        from accelerate.hooks import CpuOffload
+    except Exception:  # noqa: BLE001 - no accelerate, no offload hooks to wrap
+        return 0
+    enable = getattr(pipe, "enable_model_cpu_offload", None)
+    if callable(enable) and not getattr(enable, _KEEP_ATTR, False):
+
+        def _enable(*args: Any, **kwargs: Any) -> Any:
+            out = enable(*args, **kwargs)
+            _wrap_cpu_offload_hooks(pipe, CpuOffload, logger)
+            return out
+
+        setattr(_enable, _KEEP_ATTR, True)
+        try:
+            pipe.enable_model_cpu_offload = _enable
+        except Exception:  # noqa: BLE001 - a pipeline refusing the attribute keeps the stock hooks
+            return 0
+    return _wrap_cpu_offload_hooks(pipe, CpuOffload, logger)
+
+
+def _keepable(param: Any) -> bool:
+    import torch
+    return type(param.data) is torch.Tensor
+
+
+def _wrap_cpu_offload_hooks(
+    pipe: Any,
+    hook_cls: type,
+    logger: Any = None,
+) -> int:
+    wrapped = 0
+    components = getattr(pipe, "components", None) or {}
+    for module in components.values():
+        hook = getattr(module, "_hf_hook", None)
+        if not isinstance(hook, hook_cls) or getattr(hook, _KEEP_ATTR, False):
+            continue
+        try:
+            _wrap_cpu_offload_hook(hook, module)
+            wrapped += 1
+        except Exception as exc:  # noqa: BLE001 - that module keeps the stock copy
+            if logger is not None:
+                logger.debug(
+                    "diffusion.memory: keep-cpu offload not applied to %s: %s",
+                    type(module).__name__,
+                    exc,
+                )
+    return wrapped
+
+
+def _wrap_cpu_offload_hook(hook: Any, module: Any) -> None:
+    # Keyed by name: a move can hand a module new Parameter objects (e.g. to a device whose tensors are not
+    # shallow-copy compatible with the host's), and a stale key must miss rather than alias another weight.
+    state = module.__dict__.get(_KEEP_ATTR)
+    if state is None:
+        state = {"host": {}, "version": {}}
+        module.__dict__[_KEEP_ATTR] = state
+    host, version = state["host"], state["version"]
+    # The new hook's attach already ran the stock init_hook, so whatever is on the host now is current.
+    host.clear()
+    for name, p in module.named_parameters():
+        if p.device.type == "cpu" and _keepable(p):
+            host[name] = p.data
+    version.clear()
+    init_hook, pre_forward = hook.init_hook, hook.pre_forward
+
+    def _init_hook(mod: Any) -> Any:
+        for name, p in mod.named_parameters():
+            kept = host.get(name)
+            if kept is None or p.device.type == "cpu" or version.get(name) != p._version:
+                continue
+            try:
+                p.data = kept
+            except Exception:  # noqa: BLE001 - incompatible tensor types: the stock copy below handles it
+                pass
+        # Buffers, and anything not kept, go through the stock copy.
+        out = init_hook(mod)
+        host.clear()
+        for name, p in mod.named_parameters():
+            if p.device.type == "cpu" and _keepable(p):
+                host[name] = p.data
+        version.clear()
+        return out
+
+    def _pre_forward(mod: Any, *args: Any, **kwargs: Any) -> Any:
+        onload = not version
+        out = pre_forward(mod, *args, **kwargs)
+        if onload:
+            # Recorded once per onload: a later in-place write moves the counter past it.
+            for name, p in mod.named_parameters():
+                if name in host and p.device.type != "cpu":
+                    version[name] = p._version
+        return out
+
+    try:
+        import torch
+
+        # Same as accelerate's own pre_forward: a compiled forward must not trace the hook.
+        _init_hook, _pre_forward = (
+            torch.compiler.disable(_init_hook),
+            torch.compiler.disable(_pre_forward),
+        )
+    except Exception:  # noqa: BLE001 - older torch: the hook runs outside any compiled region anyway
+        pass
+    hook.init_hook, hook.pre_forward = _init_hook, _pre_forward
+    setattr(hook, _KEEP_ATTR, True)
+
+
 def reclaim_offload_host_memory(offload_policy: str, logger: Any = None) -> bool:
     """Return unused allocator pages after whole-model CPU offload, without touching live
     tensors, Python GC, or device caches. Unsupported allocators and failures are non-fatal."""
@@ -1022,12 +1149,14 @@ def apply_memory_plan(
         # case where the decode spike can OOM, so turn tiling on now.
         nonlocal tiling_engaged
         pipe.enable_model_cpu_offload(device = placement)
+        keep_cpu_weights_on_offload(pipe, logger)
         if not tiling_engaged:
             tiling_engaged = _enable_vae_saver(pipe, "enable_vae_tiling", "enable_tiling", logger)
 
     policy = plan.offload_policy
     if policy == OFFLOAD_MODEL:
         pipe.enable_model_cpu_offload(device = placement)
+        keep_cpu_weights_on_offload(pipe, logger)
     elif policy == OFFLOAD_GROUP:
         # getattr, not attribute access: manually built / duck-typed plans predate this field.
         if not _apply_group_offload(
