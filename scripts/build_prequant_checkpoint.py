@@ -154,9 +154,10 @@ def main(argv = None) -> int:
     p.add_argument(
         "--convrot-groupsize",
         type = int,
-        default = 0,
+        default = None,
         help = "bake a ConvRot block-Hadamard activation rotation at this group size (a power of "
-        "4; 0 = off). Every quantized Linear whose in_features the group divides has its "
+        "4; 0 = off; unset = the family's runtime ConvRot spec, which rotates only the Linears it "
+        "names, so the artifact matches the runtime quantize path). Every quantized Linear whose in_features the group divides has its "
         "weight rotated before quantize_ so the quantizer sees a flatter distribution; the "
         "exact fqn list is recorded in the checkpoint and the loader rotates the "
         "activations of that list and nothing else. Writes the v2 format tag.",
@@ -190,6 +191,8 @@ def main(argv = None) -> int:
         _REQUIRE_BF16_SCHEMES,
         _make_quant_config,
         _resolve_fast_accum,
+        convrot_fqns,
+        convrot_spec_for_scheme,
         exclude_tokens_for_scheme,
         make_filter_fn,
     )
@@ -203,6 +206,13 @@ def main(argv = None) -> int:
     if fam is None:
         print(f"error: unknown family '{args.family}'", flush = True)
         return 2
+    # Unset follows the runtime path's family spec, so offline == runtime; an explicit group rotates every rotatable
+    # quantized Linear, and 0 builds plain.
+    convrot_suffixes: tuple = ()
+    if args.convrot_groupsize is None:
+        convrot_group, convrot_suffixes = convrot_spec_for_scheme(scheme, fam.name)
+    else:
+        convrot_group = int(args.convrot_groupsize)
     # What the artifact RECORDS as its base, which is not always what this build READ. Weights staged into a local
     # directory keep that directory's name, and the loader's ``_same_base_model`` compares final path segments: a
     # checkpoint built from ./temp/qwen_image_21 records a base whose tail is "qwen_image_21", the load asks for
@@ -264,7 +274,7 @@ def main(argv = None) -> int:
             upload_dest = upload_destination(
                 fam,
                 scheme,
-                rotated = bool(args.convrot_groupsize),
+                rotated = bool(convrot_group),
                 safetensors = is_safetensors_out,
                 override = args.upload_filename,
                 upload_repo = args.upload_repo,
@@ -296,15 +306,17 @@ def main(argv = None) -> int:
     # ConvRot, BEFORE quantize_: rotating the weights is only worth anything if the quantizer then sees the rotated
     # distribution. The fqn list is recorded, never re-derived at load time.
     rotation: dict = {}
-    if args.convrot_groupsize:
+    if convrot_group:
         from core.inference.diffusion_convrot import (
             rotatable_fqns,
             rotate_linears_,
             rotation_metadata,
         )
 
-        group = int(args.convrot_groupsize)
+        group = int(convrot_group)
         rotatable, not_divisible = rotatable_fqns(transformer, filter_fn, group)
+        if convrot_suffixes:
+            rotatable = convrot_fqns(transformer, filter_fn, group, convrot_suffixes)
         refusal = convrot_refusal(group, rotatable, not_divisible)
         if refusal:
             print(f"error: {refusal}", flush = True)

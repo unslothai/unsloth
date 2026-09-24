@@ -196,6 +196,61 @@ def apply_small_m_padding(
     return wrapped
 
 
+# Int8 PER-FAMILY ConvRot (diffusion_convrot) for the runtime quantize path and the offline builder: the block
+# Hadamard group, and the fqn suffixes whose input gets rotated. Qwen-Image-2.1 at 1024x1024 / 40 steps, 24 prompts
+# paired against bf16 on B200: plain int8 LPIPS 0.065 (PSNR 27.9); q/k/v + img_mlp.out rotated 0.032 (PSNR 32.0);
+# every Linear rotated 0.033 (PSNR 33.5) but ~7% slower, since each rotated input costs an extra pass. img_mlp.out's
+# SiLU-gated input carries most of the outliers (one-step denoiser error 6.6e-4 of 8.6e-4 plain). Not an exclusion,
+# so a plain artifact still validates and keeps loading as it did.
+_INT8_FAMILY_CONVROT: dict[str, tuple[int, tuple[str, ...]]] = {
+    "qwen-image-2.1": (256, ("attn.to_q", "attn.to_k", "attn.to_v", "img_mlp.out")),
+}
+
+
+def convrot_spec_for_scheme(scheme: str, family: Optional[str] = None) -> tuple[int, tuple[str, ...]]:
+    """``(group, fqn_suffixes)`` the int8 quantize path rotates, ``(0, ())`` for none."""
+    if scheme != TQ_INT8:
+        return 0, ()
+    return _INT8_FAMILY_CONVROT.get(str(family or "").strip().lower(), (0, ()))
+
+
+def convrot_fqns(transformer: Any, filter_fn: Any, group: int, suffixes: tuple[str, ...]) -> tuple[str, ...]:
+    """The Linears ``filter_fn`` will quantize whose fqn ends in one of ``suffixes`` and whose input width
+    ``group`` divides."""
+    from .diffusion_convrot import rotatable_fqns
+
+    rotatable, _ = rotatable_fqns(transformer, filter_fn, group)
+    return tuple(f for f in rotatable if any(f == s or f.endswith("." + s) for s in suffixes))
+
+
+def apply_runtime_convrot(
+    transformer: Any, scheme: str, family: Optional[str], filter_fn: Any, *, target: Any = None, logger: Any = None
+) -> tuple[str, ...]:
+    """Rotate this family's ConvRot Linears BEFORE quantize_. A failure after this leaves an exact dense model
+    (rotated weights with the online rotation installed), so the caller's fallback stays correct."""
+    group, suffixes = convrot_spec_for_scheme(scheme, family)
+    if not group:
+        return ()
+    from .diffusion_convrot import CONVROT_ATTR, CONVROT_KIND, rotate_linears_, warm_rotation_cache
+
+    rotated = rotate_linears_(transformer, convrot_fqns(transformer, filter_fn, group, suffixes), group)
+    if rotated:
+        # the device the forward will run on, which is not where the weights sit when a load quantizes on CPU first
+        weight = transformer.get_submodule(rotated[0]).weight
+        device, dtype = getattr(target, "device", None), getattr(target, "dtype", None)
+        try:
+            warm_rotation_cache(transformer, device or weight.device, dtype if dtype is not None and not isinstance(dtype, str) else weight.dtype)
+        except Exception:  # noqa: BLE001 - only saves one recompile
+            pass
+    try:
+        setattr(transformer, CONVROT_ATTR, {"kind": CONVROT_KIND, "group": group, "linears": len(rotated)})
+    except Exception:  # noqa: BLE001 - diagnostic marker only
+        pass
+    if logger is not None:
+        logger.info("diffusion.transformer_quant: ConvRot group %d on %d %s linears (%s)", group, len(rotated), scheme, family)
+    return rotated
+
+
 def exclude_tokens_for_scheme(scheme: str, family: Optional[str] = None) -> tuple[str, ...]:
     """Name tokens to exclude from quantisation for ``scheme`` (optionally family-specific). int8
     (M>16) skips the M=1 modulation / conditioning-embedder projections
@@ -1365,15 +1420,17 @@ def quantize_transformer(
         # GEMM tiling floors per scheme: scaled_mm needs 16-aligned dims, MX block scaling 32. int8's _int_mm has no
         # such floor and keeps the historical filter.
         divisible = {TQ_FP8: 16, TQ_NVFP4: 16, TQ_MXFP8: 32}.get(scheme, 0)
+        filter_fn = make_filter_fn(
+            min_features,
+            exclude_name_tokens = exclude,
+            require_bf16 = scheme in _REQUIRE_BF16_SCHEMES,
+            require_divisible = divisible,
+        )
+        apply_runtime_convrot(transformer, scheme, family, filter_fn, target = target, logger = logger)
         quantize_(
             transformer,
             _make_quant_config(scheme, fast_accum = fast_accum),
-            filter_fn = make_filter_fn(
-                min_features,
-                exclude_name_tokens = exclude,
-                require_bf16 = scheme in _REQUIRE_BF16_SCHEMES,
-                require_divisible = divisible,
-            ),
+            filter_fn = filter_fn,
         )
         # Pad this family's small-M linears now that the weights are quantized and in place. Not best-effort: a raise
         # here means the transformer is quantized but not safely compilable, so it falls into the except below and the

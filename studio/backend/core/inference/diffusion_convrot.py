@@ -213,6 +213,24 @@ def _install_rotation(module: Any, group_size: int) -> None:
     module.__class__ = convrot_linear_class()
 
 
+def warm_rotation_cache(transformer: Any, device: Any, dtype: Any) -> int:
+    """Build the Hadamard every rotated Linear of ``transformer`` will ask for at ``(device, dtype)``.
+
+    The forward reads ``_HADAMARD_CACHE``, so dynamo guards on whether the key is present: a first
+    compile that had to BUILD the matrix records "absent", and the second call recompiles the block
+    once the entry exists. Filling the cache before the first forward removes that recompile.
+    Returns the number of distinct groups warmed."""
+    import torch
+
+    device = torch.device(device)
+    if device.type == "cuda" and device.index is None and torch.cuda.is_available():
+        device = torch.device("cuda", torch.cuda.current_device())
+    groups = {int(m.convrot_groupsize) for m in transformer.modules() if is_rotated_linear(m)}
+    for group in groups:
+        build_convrot_hadamard(group, device = device, dtype = dtype)
+    return len(groups)
+
+
 def declares_rotation(metadata: Any) -> bool:
     """True when ``metadata`` claims its weights were rotated offline.
 
