@@ -7221,7 +7221,13 @@ def test_replacing_load_mid_render_releases_the_pipeline(fake_runtime, monkeypat
         def __init__(self) -> None:
             self._interrupt = False
 
-        def __call__(self, *, callback_on_step_end = None, num_inference_steps = 8, **kwargs):
+        def __call__(
+            self,
+            *,
+            callback_on_step_end = None,
+            num_inference_steps = 8,
+            **kwargs,
+        ):
             for i in range(num_inference_steps):
                 if self._interrupt:
                     break
