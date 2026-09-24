@@ -89,31 +89,60 @@ _is_uv_git_cache_op() { # the traced argument string
   return 1
 }
 
-# A git line that names a remote: every remote allowed, no `-c` except the
-# `remote.origin.url=` uv passes to `submodule update`, and the subcommand one that only
-# reads from it (uv's `fetch` and `submodule update`, or `ls-remote`). `push` does not.
+# Whether $1 is one of the allowed remotes in $2, ignoring a trailing .git.
+_is_allowed_git_remote() {
+  [ -n "$1" ] && printf '%s\n' "$2" | grep -qxF -- "${1%.git}"
+}
+
+# A git line that names a remote must be one of the two argv shapes uv's git source emits,
+# parsed as git would read them rather than by URL-looking substrings (an option VALUE such
+# as --server-option=URL is not the repository):
+#   fetch [--tags|--force|--update-head-ok|--no-tags|--quiet|--depth=N]... URL REFSPEC...
+#   -c remote.origin.url=URL submodule update [--init|--recursive]...
+# The repository must be an allowed remote and every refspec a `src:refs/...` mapping, so no
+# other option (--all, --upload-pack, a second -c) and no other subcommand (push) passes.
 _is_allowed_remote_git_line() { # the traced argument string, the allowed remotes
-  _named=false
-  while IFS= read -r _remote; do
-    [ -n "$_remote" ] || continue
-    _named=true
-    printf '%s\n' "$2" | grep -qxF -- "$_remote" || return 1
-  done <<< "$(_git_line_remotes "$1")"
-  [ "$_named" = true ] || return 1
+  _allowed=$2
   set -f
   set -- $1
   set +f
-  while [ "${1:-}" = "-c" ]; do
-    case "${2:-}" in remote.origin.url=*) shift 2 ;; *) return 1 ;; esac
-  done
-  case "${1:-} ${2:-}" in
-    "fetch "*|"ls-remote "*|"submodule update") ;;
-    *) return 1 ;;
+  _origin=""
+  if [ "${1:-}" = "-c" ]; then
+    case "${2:-}" in remote.origin.url=*) _origin=${2#remote.origin.url=}; shift 2 ;; *) return 1 ;; esac
+  fi
+  case "${1:-}" in
+    fetch)
+      [ -z "$_origin" ] || return 1
+      shift
+      _repo=""
+      for _word in "$@"; do
+        if [ -z "$_repo" ]; then
+          case "$_word" in
+            --tags|--force|--update-head-ok|--no-tags|--quiet) continue ;;
+            --depth=[0-9]*) case "${_word#--depth=}" in *[!0-9]*) return 1 ;; esac; continue ;;
+            -*) return 1 ;;
+          esac
+          _repo=$_word
+          continue
+        fi
+        case "$_word" in
+          -*|*://*|*@*:*) return 1 ;;
+          ?*:refs/*) ;;
+          *) return 1 ;;
+        esac
+      done
+      _is_allowed_git_remote "$_repo" "$_allowed"
+      return ;;
+    submodule)
+      _is_allowed_git_remote "$_origin" "$_allowed" || return 1
+      [ "${2:-}" = "update" ] || return 1
+      shift 2
+      for _word in "$@"; do
+        case "$_word" in --init|--recursive) ;; *) return 1 ;; esac
+      done
+      return 0 ;;
   esac
-  for _word in "$@"; do
-    [ "$_word" = "-c" ] && return 1
-  done
-  return 0
+  return 1
 }
 
 _is_uv_libpython_self_id_patch() { # argc, operation, source, destination, extra
@@ -238,9 +267,10 @@ for check in "$@"; do
         # A default install with a working git fetches its pinned git+ requirements with it
         # (the Diffusers main build: a clone records a ref, the archive fallback does not).
         # That is git, but only for those remotes, so it is allowed structurally: a git line
-        # that names a remote may name only the requirement files' remotes, and one naming
-        # none must be one of uv's own cache operations (_is_uv_git_cache_op), counted only
-        # when some line did fetch an allowed remote. `--version` is the installer's probe.
+        # that names a remote must be uv's fetch or submodule shape against one of the
+        # requirement files' remotes (_is_allowed_remote_git_line), and one naming none must
+        # be one of uv's own cache operations (_is_uv_git_cache_op), counted only when some
+        # line did fetch an allowed remote. `--version` is the installer's probe.
         # Any other remote, any other remoteless git, or git that fetched nothing allowed is
         # still a hit.
         allowed_remotes=$(_allowed_git_remotes)
@@ -248,12 +278,10 @@ for check in "$@"; do
         if [ -n "$allowed_remotes" ]; then
           while IFS=$'\t' read -r tool rest; do
             [ "$tool" = "git" ] || continue
-            while IFS= read -r remote; do
-              [ -n "$remote" ] || continue
-              if printf '%s\n' "$allowed_remotes" | grep -qxF -- "$remote"; then
-                git_fetched_allowed=true
-              fi
-            done <<< "$(_git_line_remotes "$rest")"
+            case "$rest" in fetch\ *) ;; *) continue ;; esac
+            if _is_allowed_remote_git_line "$rest" "$allowed_remotes"; then
+              git_fetched_allowed=true
+            fi
           done < "$TRACE"
         fi
         hits=""

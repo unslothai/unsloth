@@ -98,6 +98,18 @@ expect_rc "cloning the allowed remote outside uv's fetch fails" 1 "$PIN" \
     "${UV_CLONE}git\tclone $REMOTE /tmp/out\n"
 expect_rc "a -c after the subcommand fails too" 1 "$PIN" \
     "${UV_CLONE}git\tfetch -c core.sshCommand=evil $REMOTE\n"
+expect_rc "a remote URL as an option value is not the repository" 1 "$PIN" \
+    "${UV_CLONE}git\tfetch --all --server-option=$REMOTE\n"
+expect_rc "an option value alone does not count as the allowed fetch" 1 "$PIN" \
+    "git\tfetch --all --server-option=$REMOTE\ngit\tinit\n"
+expect_rc "an unknown fetch option before the repository fails" 1 "$PIN" \
+    "${UV_CLONE}git\tfetch --upload-pack=evil $REMOTE +HEAD:refs/remotes/origin/HEAD\n"
+expect_rc "an option after the repository fails" 1 "$PIN" \
+    "${UV_CLONE}git\tfetch $REMOTE --upload-pack=evil\n"
+expect_rc "a second repository in the refspec slot fails" 1 "$PIN" \
+    "${UV_CLONE}git\tfetch $REMOTE https://github.com/someone/else.git\n"
+expect_rc "submodule update with any other option fails" 1 "$PIN" \
+    "${UV_CLONE}git\t-c remote.origin.url=$REMOTE submodule update --remote\n"
 expect_rc "a compiler next to the allowed clone still fails" 1 "$PIN" \
     "${UV_CLONE}clang\t-c foo.c\n"
 expect_rc "brew next to the allowed clone still fails" 1 "$PIN" \
