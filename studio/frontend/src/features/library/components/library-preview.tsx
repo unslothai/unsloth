@@ -434,7 +434,11 @@ export function LibraryPreview({
                   : undefined,
               reveal:
                 revealLabel && canReveal(item)
-                  ? { label: revealLabel, onClick: () => revealInFolder(item.id) }
+                  ? {
+                      label: revealLabel,
+                      // The file on disk should hold the text on screen.
+                      onClick: () => void saveThen(() => revealInFolder(item.id)),
+                    }
                   : undefined,
               favorite: item.favorite,
               onToggleFavorite: () => onToggleFavorite(item),
