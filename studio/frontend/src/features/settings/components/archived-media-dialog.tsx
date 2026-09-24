@@ -29,6 +29,8 @@ import {
 import { LibraryRow, LibraryToolbar } from "./data-library-controls";
 import { Spinner } from "@/components/ui/spinner";
 import {
+  type AudioGalleryCursor,
+  audioGalleryCursor,
   deleteAudioClip,
   listAudioGallery,
   setAudioClipFlags,
@@ -76,15 +78,10 @@ interface ArchivedRow {
   url: string;
 }
 
-interface AudioCursor {
-  mtime: number;
-  id: string;
-}
-
 interface ArchivedPage {
   rows: ArchivedRow[];
   hasMore: boolean;
-  nextAudioCursor: AudioCursor | null;
+  nextAudioCursor: AudioGalleryCursor | null;
 }
 
 /**
@@ -103,7 +100,7 @@ export function ArchivedMediaView({ kind }: { kind: ArchivedMediaKind }) {
   // written with every list change rather than during render, so it is current the moment a drop
   // lands instead of one render later.
   const rowsRef = useRef<ArchivedRow[]>([]);
-  const audioCursor = useRef<AudioCursor | null>(null);
+  const audioCursor = useRef<AudioGalleryCursor | null>(null);
   const mutations = useRef(0);
   // Restores and deletes in flight. The counter above is an EDGE, so a page starting after it moves
   // and landing before the row is dropped sees it hold still. A page applies only while this is zero.
@@ -162,7 +159,7 @@ export function ArchivedMediaView({ kind }: { kind: ArchivedMediaKind }) {
   const loadPage = useCallback(
     async (
       offset: number,
-      before: AudioCursor | null = null,
+      before: AudioGalleryCursor | null = null,
       pageSize = ARCHIVED_PAGE_SIZE,
     ): Promise<ArchivedPage> => {
       if (isImages) {
@@ -188,10 +185,7 @@ export function ArchivedMediaView({ kind }: { kind: ArchivedMediaKind }) {
             url: a.url,
           })),
           hasMore: page.has_more,
-          nextAudioCursor:
-            page.next_before_mtime !== null && page.next_before_id !== null
-              ? { mtime: page.next_before_mtime, id: page.next_before_id }
-              : null,
+          nextAudioCursor: audioGalleryCursor(page),
         };
       }
       const page = await getVideoGallery(offset, pageSize, true);

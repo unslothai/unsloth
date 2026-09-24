@@ -124,11 +124,15 @@ from .diffusion_speed import (
     SPEED_MAX,
     SPEED_OFF,
     apply_speed_optims,
+    auto_dynamic_active,
+    compile_dynamic,
     compile_eligible,
     compiled_shapes_are_static,
+    dynamo_graph_count,
     normalize_speed_mode,
     resolve_speed_mode,
     restore_backend_flags,
+    settle_compile_fallback,
     snapshot_backend_flags,
 )
 from .diffusion_attention import (
@@ -955,8 +959,7 @@ class _LoadState:
     attention_backend: Optional[str] = None
     # Caller original attention request, so deferred engagement re-runs the same selection.
     attention_request: Optional[str] = None
-    # Step cache engaged ("fbcache" | "static") or None. Opt-in, for many-step models. Only fbcache breaks the graph
-    # (cache_breaks_graph); static keeps compile fullgraph and the CUDA graph as uncached.
+    # Step cache engaged ("fbcache" | "static") or None. Opt-in; only fbcache breaks the graph.
     transformer_cache: Optional[str] = None
     # AUTO: generate() toggles FBCache across FBCACHE_MIN_STEPS; an explicit request never toggles
     cache_auto: bool = False
@@ -5511,8 +5514,7 @@ class DiffusionBackend:
                         )
                         cache_request = TC_FBCACHE if default_steps >= FBCACHE_MIN_STEPS else None
                     if cache_request == TC_STATIC:
-                        # Explicit only (auto never resolves here): a schedule fixed per generation, decided outside the
-                        # forward, so the compile and CUDA graph below are set up exactly as uncached.
+                        # Explicit only: auto never resolves to static.
                         cache_engaged = install_static_step_skip(pipe, logger = logger)
                     else:
                         cache_engaged = apply_step_cache(
@@ -5521,9 +5523,11 @@ class DiffusionBackend:
                             threshold = transformer_cache_threshold,
                             # GGUF transformers are quantized too, so the cache needs the higher threshold.
                             quant_active = cache_quant_active,
+                            # Prefix-KV families (Qwen-Image-2.1) cache only when asked: at 40 steps the default
+                            # threshold skips about half the steps, too lossy for an automatic default.
+                            length_changes_ok = not cache_auto,
                             logger = logger,
                         )
-                    # What the compile and CUDA-graph decisions below see: static counts as uncached.
                     cache_graph_break = cache_breaks_graph(cache_engaged)
                     self._raise_if_load_cancelled(_load_token)
                     # An auto decision can flip at generation time, but only on a cache-capable transformer
@@ -5543,6 +5547,8 @@ class DiffusionBackend:
                                 f"auto: {default_steps}-step default schedule is below "
                                 f"{FBCACHE_MIN_STEPS}; re-checked per generation"
                             )
+                    elif cache_request is not None and not cache_engaged:
+                        cache_reason = "requested, but this model does not support step caching; running uncached"
                     else:
                         cache_reason = "requested"
                     # The dense fast path sets gguf_filename, but its transformer is dense.
@@ -5579,7 +5585,13 @@ class DiffusionBackend:
                                 "fullgraph": not cache_graph_break
                                 and not cache_may_toggle
                                 and plan.offload_policy == OFFLOAD_NONE,
-                                "dynamic": effective_speed != SPEED_MAX,
+                                # max compiles DiTs with automatic dynamic (None), as does the default tier for
+                                # torchao weights. Key on the value apply_speed_optims resolves, so a bundle from a
+                                # static or explicit-dynamic build is not reused for an automatic-dynamic one.
+                                "dynamic": compile_dynamic(
+                                    getattr(pipe, "transformer", None),
+                                    None if effective_speed == SPEED_MAX else True,
+                                ),
                                 "mode": "max-autotune-no-cudagraphs"
                                 if effective_speed == SPEED_MAX
                                 else "default",
@@ -5842,7 +5854,7 @@ class DiffusionBackend:
                         compile_cache.restore(compile_ctx, logger = logger)
                         gguf_compile.uninstall_all()  # idempotent
                         cuda_graph.uninstall_all(getattr(pipe, "_unsloth_cuda_graphs", ()) or ())
-                        uninstall_static_step_skip(pipe)  # idempotent
+                        uninstall_static_step_skip(pipe)
                         if eager_patched:
                             uninstall_patches()
                             uninstall_arch_patches()
@@ -6925,7 +6937,7 @@ class DiffusionBackend:
                     "fullgraph": not cache_breaks_graph(state.transformer_cache)
                     and not state.cache_auto
                     and state.offload_policy == OFFLOAD_NONE,
-                    "dynamic": True,
+                    "dynamic": compile_dynamic(getattr(state.pipe, "transformer", None), True),
                     "mode": "default",
                 },
                 logger = logger,
@@ -7022,8 +7034,7 @@ class DiffusionBackend:
                 # Publish an active (step 0) state before the slow pre-denoise setup so a reload mount probe does not
                 # read idle.
                 self._gen = _GenState(total_steps = steps)
-            # The pipe a static step-skip schedule was armed on, dropped in the finally so a failed or cancelled
-            # generation does not keep its reused outputs alive.
+            # Reset in the finally, so a failed or cancelled generation frees its reused outputs.
             static_skip_pipe = None
             try:
                 self._state_device_target(state)
@@ -7391,7 +7402,6 @@ class DiffusionBackend:
 
                 def _on_step(pipe, step_index, timestep, callback_kwargs):
                     if static_skip:
-                        # The step boundary the static schedule counts on (one per denoise step, whatever the CFG).
                         mark_step_end(state.pipe)
                     # Monotonic: a wall-clock adjustment (NTP) mid-denoise would skew the ETA.
                     now = time.monotonic()
@@ -7408,8 +7418,7 @@ class DiffusionBackend:
                 if "callback_on_step_end" in call_params:
                     kwargs["callback_on_step_end"] = _on_step
 
-                # The EFFECTIVE denoise steps: img2img at strength < 1 denoises a fraction of `steps`. The AUTO cache
-                # decision keys on it (FBCache stays off short trajectories), and so does the static schedule.
+                # EFFECTIVE steps (img2img at strength < 1 runs fewer): the AUTO cache and the static schedule key on it.
                 denoise_steps = steps
                 if state.cache_auto or static_skip:
                     strength_applied = effective_request_strength(
@@ -7444,91 +7453,103 @@ class DiffusionBackend:
                 images: list[Any] = []
                 per_image_seeds: list[int] = []
                 chunk_shapes: list[int] = []
-                pending = list(chunks)
-                while pending:
-                    chunk = pending.pop(0)
-                    chunk_kwargs = dict(kwargs)
-                    shared = uniform_prompt(chunk)
-                    generators = [
-                        torch.Generator(device = state.device).manual_seed(s) for _, s in chunk
-                    ]
-                    if len(jobs) == 1:
-                        chunk_kwargs["prompt"] = shared
-                        chunk_kwargs["generator"] = generators[0]
-                        chunk_kwargs["num_images_per_prompt"] = 1
-                    elif shared is not None:
-                        chunk_kwargs["prompt"] = shared
-                        chunk_kwargs["generator"] = generators
-                        chunk_kwargs["num_images_per_prompt"] = len(chunk)
-                    else:
-                        # Distinct prompts: one image per prompt in a single forward. The negative prompt must be
-                        # broadcast to match, else the pipeline asserts or fails in the txt/img concat.
-                        chunk_kwargs["prompt"] = [p for p, _ in chunk]
-                        chunk_kwargs["generator"] = generators
-                        chunk_kwargs["num_images_per_prompt"] = 1
-                        if isinstance(chunk_kwargs.get("negative_prompt"), str):
-                            chunk_kwargs["negative_prompt"] = [
-                                chunk_kwargs["negative_prompt"]
-                            ] * len(chunk)
-                    # A step cache keys residuals on the cond/uncond context, which a graph key
-                    # cannot see. Per chunk because an AUTO decision is re-taken per generation. The static skip decides
-                    # outside the graphed forward, so it keeps the graph.
-                    if state.cuda_graphs:
-                        cuda_graph.set_bypass(
-                            state.cuda_graphs, cache_breaks_graph(state.transformer_cache)
-                        )
-                    if static_skip:
-                        # A fresh schedule per forward (a chunk, an OOM retry), counted on the pipeline's step callback
-                        # when it has one.
-                        reset_static_step_skip(
-                            state.pipe,
-                            denoise_steps,
-                            step_signal = "callback_on_step_end" in chunk_kwargs,
-                            # Counts add up over the chunks (and OOM retries) of this one generation.
-                            keep_stats = static_chunks_run > 0,
-                        )
-                        static_chunks_run += 1
-                        static_skip_pipe = state.pipe
-                    elif state.transformer_cache:
-                        # Start every forward from a clean step cache: diffusers only resets FBCache after a SUCCESSFUL
-                        # __call__, so a raised call leaves a residual the next forward trips over.
-                        self._reset_step_cache(state.pipe)
+                graphs_before = dynamo_graph_count()
+                try:
+                    pending = list(chunks)
+                    while pending:
+                        chunk = pending.pop(0)
+                        chunk_kwargs = dict(kwargs)
+                        shared = uniform_prompt(chunk)
+                        generators = [
+                            torch.Generator(device = state.device).manual_seed(s) for _, s in chunk
+                        ]
+                        if len(jobs) == 1:
+                            chunk_kwargs["prompt"] = shared
+                            chunk_kwargs["generator"] = generators[0]
+                            chunk_kwargs["num_images_per_prompt"] = 1
+                        elif shared is not None:
+                            chunk_kwargs["prompt"] = shared
+                            chunk_kwargs["generator"] = generators
+                            chunk_kwargs["num_images_per_prompt"] = len(chunk)
+                        else:
+                            # Distinct prompts: one image per prompt in a single forward. The negative prompt must be
+                            # broadcast to match, else the pipeline asserts or fails in the txt/img concat.
+                            chunk_kwargs["prompt"] = [p for p, _ in chunk]
+                            chunk_kwargs["generator"] = generators
+                            chunk_kwargs["num_images_per_prompt"] = 1
+                            if isinstance(chunk_kwargs.get("negative_prompt"), str):
+                                chunk_kwargs["negative_prompt"] = [
+                                    chunk_kwargs["negative_prompt"]
+                                ] * len(chunk)
+                        # A step cache keys residuals on the cond/uncond context, which a graph key
+                        # cannot see. Per chunk because an AUTO decision is re-taken per generation.
+                        if state.cuda_graphs:
+                            cuda_graph.set_bypass(
+                                state.cuda_graphs, cache_breaks_graph(state.transformer_cache)
+                            )
+                        if static_skip:
+                            reset_static_step_skip(
+                                state.pipe,
+                                denoise_steps,
+                                step_signal = "callback_on_step_end" in chunk_kwargs,
+                                keep_stats = static_chunks_run > 0,
+                            )
+                            static_chunks_run += 1
+                            static_skip_pipe = state.pipe
+                        elif state.transformer_cache:
+                            # Start every forward from a clean step cache: diffusers only resets FBCache after a SUCCESSFUL
+                            # __call__, so a raised call leaves a residual the next forward trips over.
+                            self._reset_step_cache(state.pipe)
+                        try:
+                            # inference_mode is faster than no_grad and numerically identical here.
+                            with torch.inference_mode():
+                                out = pipe(**chunk_kwargs).images
+                        except Exception as exc:  # noqa: BLE001 - reraised unless a splittable OOM
+                            oom = is_oom_error(exc)
+                            if oom:
+                                # Drop the graphs on ANY OOM, before the split decision: they are shaped for the failed
+                                # attempt and empty_cache() cannot reclaim them (live statics and outputs, and a graph
+                                # pool is segregated from the ordinary allocator), so the halved retry below and the
+                                # user's next smaller request would both run a step's worth of VRAM short. The shape
+                                # that finally renders re-captures on its first step.
+                                cuda_graph.reset_all(state.cuda_graphs)
+                            if len(chunk) < 2 or not oom:
+                                raise
+                            # OOM backoff: halve the failed chunk and retry; per-image seeds keep every retry
+                            # reproducible.
+                            empty_cache = getattr(getattr(torch, "cuda", None), "empty_cache", None)
+                            if callable(empty_cache):
+                                empty_cache()
+                            first_half, second_half = split_chunk(chunk)
+                            pending[:0] = [first_half, second_half]
+                            gen.total_steps += steps  # one extra chunk to run
+                            logger.warning(
+                                "diffusion.generate: batch of %d hit OOM; retrying as %d + %d",
+                                len(chunk),
+                                len(first_half),
+                                len(second_half),
+                            )
+                            continue
+                        finally:
+                            # A guarded block that fell back to eager (compile failed at its first forward) no longer
+                            # runs compiled: report it on every exit, cancel and error included, so status, LoRA gating
+                            # and the compile-cache shape registry stop treating it as compiled.
+                            settle_compile_fallback(state, state.pipe, logger)
+                        if cancel.is_set():
+                            raise RuntimeError(DIFFUSION_CANCELLED_MSG)
+                        images.extend(out)
+                        per_image_seeds.extend(s for _, s in chunk)
+                        chunk_shapes.append(len(chunk))
+                        steps_done[0] += steps
+                except BaseException:
+                    # A cancelled or failed render may already have generalised a graph that the next render reuses
+                    # without compiling, so the success path below would never see the count grow: dirty it now.
                     try:
-                        # inference_mode is faster than no_grad and numerically identical here.
-                        with torch.inference_mode():
-                            out = pipe(**chunk_kwargs).images
-                    except Exception as exc:  # noqa: BLE001 - reraised unless a splittable OOM
-                        oom = is_oom_error(exc)
-                        if oom:
-                            # Drop the graphs on ANY OOM, before the split decision: they are shaped for the failed
-                            # attempt and empty_cache() cannot reclaim them (live statics and outputs, and a graph
-                            # pool is segregated from the ordinary allocator), so the halved retry below and the
-                            # user's next smaller request would both run a step's worth of VRAM short. The shape
-                            # that finally renders re-captures on its first step.
-                            cuda_graph.reset_all(state.cuda_graphs)
-                        if len(chunk) < 2 or not oom:
-                            raise
-                        # OOM backoff: halve the failed chunk and retry; per-image seeds keep every retry
-                        # reproducible.
-                        empty_cache = getattr(getattr(torch, "cuda", None), "empty_cache", None)
-                        if callable(empty_cache):
-                            empty_cache()
-                        first_half, second_half = split_chunk(chunk)
-                        pending[:0] = [first_half, second_half]
-                        gen.total_steps += steps  # one extra chunk to run
-                        logger.warning(
-                            "diffusion.generate: batch of %d hit OOM; retrying as %d + %d",
-                            len(chunk),
-                            len(first_half),
-                            len(second_half),
-                        )
-                        continue
-                    if cancel.is_set():
-                        raise RuntimeError(DIFFUSION_CANCELLED_MSG)
-                    images.extend(out)
-                    per_image_seeds.extend(s for _, s in chunk)
-                    chunk_shapes.append(len(chunk))
-                    steps_done[0] += steps
+                        if auto_dynamic_active(state.pipe) and dynamo_graph_count() > graphs_before:
+                            compile_cache.mark_recompiled(state.compile_cache_ctx)
+                    except Exception:  # noqa: BLE001 - bookkeeping must not mask the render's own error
+                        pass
+                    raise
                 if static_skip:
                     logger.debug("diffusion.step_skip: %s", static_skip_stats(state.pipe))
                 # Keep progress ACTIVE through the post-denoise work: the route persists the image after this returns,
@@ -7551,6 +7572,10 @@ class DiffusionBackend:
                             (reg_width, reg_height, int(chunk_batch)),
                             static = static_shapes,
                         )
+                    if auto_dynamic_active(state.pipe) and dynamo_graph_count() > graphs_before:
+                        # Automatic dynamic recompiles on the first new text length at an already-registered
+                        # (width, height, batch): persist those graphs too, or every fresh process pays them again.
+                        compile_cache.mark_recompiled(state.compile_cache_ctx)
                     compile_cache.save_async(state.compile_cache_ctx, logger = logger)
                 except Exception:  # noqa: BLE001 - cache persistence is best-effort
                     pass
@@ -7598,7 +7623,6 @@ class DiffusionBackend:
                 }
             finally:
                 if static_skip_pipe is not None:
-                    # Drop the reused outputs on every exit; the next generation arms its own schedule.
                     try:
                         reset_static_step_skip(static_skip_pipe, None)
                     except Exception as exc:  # noqa: BLE001

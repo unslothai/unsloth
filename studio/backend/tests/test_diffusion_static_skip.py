@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Hermetic CPU tests for the static step skip (``transformer_cache="static"``).
-
-The layer's own behaviour runs on real CPU torch (schedule, CFG branch counting, reuse and
-taylor1, output containers). The CUDA-graph composition reuses the stub torch from
-``test_diffusion_cuda_graph`` so GraphedForward captures and replays without a GPU, and the
-backend wiring reuses the ``fake_runtime`` fixture from ``test_diffusion_backend``.
-"""
+"""Hermetic CPU tests for the static step skip (``transformer_cache="static"``)."""
 
 from __future__ import annotations
 
@@ -29,7 +23,6 @@ from .test_diffusion_backend import (  # noqa: F401 - fake_runtime is a fixture
 from .test_diffusion_cuda_graph import _build_stub_torch, _FakeTensor
 
 
-# ── schedule ───────────────────────────────────────────────────────────────────────
 def test_schedule_matches_the_measured_prototype_at_25_steps():
     plan = ss.static_schedule(25)
     assert len(plan) == 25
@@ -55,7 +48,6 @@ def test_schedule_every_below_two_is_off():
 
 
 def test_settings_defaults_and_env_overrides():
-    # taylor1 is the default: on Qwen-Image-2.1 at 25 steps it scored LPIPS 0.008 against reuse's 0.017 at the same skips.
     assert ss.static_skip_settings({}) == {
         "mode": "taylor1",
         "head": 0.2,
@@ -73,13 +65,10 @@ def test_settings_defaults_and_env_overrides():
     assert ss.static_skip_settings(bad) == ss.static_skip_settings({})
 
 
-# ── the layer on real CPU torch ─────────────────────────────────────────────────────
 torch = pytest.importorskip("torch")
 
 
 class _Out(dict):
-    """A diffusers-style output class: a mapping with ``to_tuple`` and keyword construction."""
-
     def __init__(self, sample = None):
         super().__init__(sample = sample)
 
@@ -92,8 +81,6 @@ class _Out(dict):
 
 
 class _DiT:
-    """Class ``forward`` + class ``cache_context``, the two things the layer reads."""
-
     def __init__(
         self,
         *,
@@ -141,7 +128,6 @@ def _run(
     kv = False,
     return_dict = False,
 ):
-    """A denoise loop: one transformer call per context per step, then the step callback."""
     dit = pipe.transformer
     ss.reset_static_step_skip(pipe, steps, step_signal = signal)
     outs: dict = {c: [] for c in contexts}
@@ -175,7 +161,6 @@ def test_install_is_outermost_and_never_sets_the_step_cache_marker():
     assert isinstance(dit.__dict__["forward"], ss.StaticStepSkip)
     assert dit.forward is dit.__dict__["forward"]
     assert getattr(dit, "_unsloth_step_cache", None) is None
-    # The real signature stays visible (pipelines filter kwargs by it).
     import inspect
 
     assert list(inspect.signature(dit.forward).parameters) == [
@@ -190,7 +175,6 @@ def test_cfg_contexts_are_counted_per_branch():
     pipe = _installed()
     outs = _run(pipe, 25, contexts = ("cond", "uncond"), signal = False)
     dit = pipe.transformer
-    # 16 computed steps per branch, 9 skipped.
     assert len(dit.calls) == 32
     stats = ss.static_skip_stats(pipe)["stats"]
     assert stats == {"calls": 50, "computed": 32, "skipped": 18}
@@ -221,7 +205,6 @@ def test_reset_per_generation_restarts_the_schedule():
     _run(pipe, 25)
     _run(pipe, 25)
     assert len(pipe.transformer.calls) == 32
-    # A short second generation computes everything, and so does an unarmed (None) reset.
     _run(pipe, 8)
     assert len(pipe.transformer.calls) == 40
     ss.reset_static_step_skip(pipe, None)
@@ -282,7 +265,6 @@ def test_per_token_timestep_extrapolates_from_its_max():
 
 
 def test_prefix_kv_extract_step_is_never_reused():
-    # Step 0 extracts the prefix KV and returns the longer sequence; later steps return target rows only.
     for mode in ("reuse", "taylor1"):
         pipe = _installed(_DiT(prefix = 3), mode = mode, head = 0.0)
         outs = _run(pipe, 12, kv = True)["cond"]
@@ -332,8 +314,6 @@ def test_real_diffusers_output_class_is_rebuilt():
 
 
 class _ListDiT(_DiT):
-    """Z-Image's container: ``(list[Tensor],)``, one noise prediction per image."""
-
     def forward(
         self,
         hidden_states,
@@ -351,7 +331,6 @@ def test_z_image_list_outputs_are_skipped_and_rebuilt():
     rebuilt = rebuild(value * 2)
     assert type(rebuilt) is tuple and type(rebuilt[0]) is list and len(rebuilt[0]) == 2
     assert torch.equal(rebuilt[0][0], torch.full((4, 2), 2.0))
-    # Mixed shapes cannot be stacked, so those calls compute.
     assert ss._split_output(([torch.ones(4, 2), torch.ones(3, 2)],)) == (None, None)
     assert ss._call_signature(([torch.ones(1, 4), torch.ones(1, 4)],), {})[0] == ((1, 4), (1, 4))
 
@@ -390,8 +369,6 @@ def test_z_image_list_in_output_dataclass_is_skipped_and_rebuilt():
 
 
 class _PositionalDiT(_DiT):
-    """Z-Image's call convention: ``transformer(x, t, cap_feats, return_dict=False)``."""
-
     def forward(
         self,
         x,
@@ -441,8 +418,7 @@ def test_uninstall_restores_forward_and_cache_context():
     assert "forward" not in dit.__dict__
     assert "cache_context" not in dit.__dict__
     assert "_unsloth_static_skip" not in dit.__dict__
-    assert ss.uninstall_static_step_skip(pipe) is False  # idempotent
-    # Reinstall works and skips again.
+    assert ss.uninstall_static_step_skip(pipe) is False
     _installed(dit)
     _run(pipe, 25)
     assert len(dit.calls) == 16
@@ -465,7 +441,6 @@ def test_uninstall_restores_a_prior_instance_forward():
 
 
 def test_uninstall_under_a_later_wrapper_disarms_in_place():
-    # An offload hook wrapped the layer after it: its slot is not ours, so the layer goes passthrough.
     dit = _DiT()
     pipe = _installed(dit)
     layer = dit.__dict__["forward"]
@@ -491,7 +466,6 @@ def test_reinstall_is_idempotent():
     assert layer.inner is None
 
 
-# ── composition with the CUDA graph (stub torch) ──────────────────────────────────────
 class _GraphDiT:
     def __init__(self):
         self.calls = 0
@@ -572,12 +546,10 @@ def test_layer_uninstall_hands_the_slot_back_to_the_graph(stub_torch):
     handles = cg.install_cuda_graphs(pipe)
     ss.uninstall_static_step_skip(pipe)
     assert dit.__dict__["forward"] is handles[0]
-    # A re-enable (the speed re-apply path) keeps it there; uninstall_all clears it.
     handles[0].enable()
     assert dit.__dict__["forward"] is handles[0]
     cg.uninstall_all(handles)
     assert "forward" not in dit.__dict__
-    # Reinstalling the layer over a fresh graph composes again.
     ss.install_static_step_skip(pipe, settings = ss.static_skip_settings({}))
     handles = cg.install_cuda_graphs(pipe)
     assert dit.__dict__["forward"].inner is handles[0]
@@ -595,7 +567,6 @@ def test_graph_disable_and_reenable_under_the_layer(stub_torch):
     assert dit.__dict__["forward"] is layer and layer.inner is handle
 
 
-# ── policy and graph decisions ──────────────────────────────────────────────────────
 def test_normalize_accepts_static_and_auto_stays_distinct():
     assert dcache.normalize_transformer_cache("static") == dcache.TC_STATIC
     assert dcache.normalize_transformer_cache(" Static ") == dcache.TC_STATIC
@@ -609,7 +580,6 @@ def test_only_fbcache_breaks_the_graph():
 
 
 def test_apply_step_cache_refuses_static():
-    # Only the image loader installs static; video and any stray caller run uncached.
     dit = _DiT()
     assert dcache.apply_step_cache(_pipe(dit), mode = "static") is None
     assert "forward" not in dit.__dict__
@@ -708,10 +678,7 @@ def test_auto_load_never_installs_static(fake_runtime, tmp_path, monkeypatch, re
     backend.unload()
 
 
-# ── generate wiring ─────────────────────────────────────────────────────────────────
 class _Tensorish:
-    """Enough of a tensor for the layer under the fake runtime's stub torch."""
-
     def __init__(self, value):
         self.value = value
         self.shape = (1, 4)
@@ -742,8 +709,6 @@ class _LoopDiT:
 
 
 class _LoopPipe(_FakePipe):
-    """A fake pipeline whose __call__ runs a CFG denoise loop over its transformer."""
-
     def __init__(self):
         super().__init__()
         self.transformer = _LoopDiT()
@@ -801,14 +766,11 @@ def test_generate_runs_the_schedule_and_keeps_the_graph(fake_runtime, tmp_path, 
         type(backend), "_reset_step_cache", staticmethod(lambda p: resets.append(p))
     )
     backend.generate(prompt = "a sloth", steps = 25)
-    # 16 computed per branch; the graph is not bypassed and no FBCache reset ran.
     assert pipe.transformer.calls == 32
     assert bypass == [False]
     assert resets == []
-    # A second generation re-arms the schedule.
     backend.generate(prompt = "a sloth", steps = 25)
     assert pipe.transformer.calls == 64
-    # Under the bar everything computes.
     backend.generate(prompt = "a sloth", steps = 9)
     assert pipe.transformer.calls == 82
     backend.unload()
@@ -831,7 +793,7 @@ def test_generate_arms_the_schedule_with_the_effective_steps(fake_runtime, tmp_p
     monkeypatch.setattr(dmod, "effective_request_strength", lambda *a, **k: 0.5)
     backend.generate(prompt = "a sloth", steps = 25)
     assert armed[0] == (12, True)
-    assert armed[-1] == (None, None)  # history dropped after the generation
+    assert armed[-1] == (None, None)
     backend.unload()
 
 
@@ -854,7 +816,6 @@ def test_generate_fbcache_still_bypasses_and_resets(fake_runtime, tmp_path, monk
     backend.unload()
 
 
-# ── API ─────────────────────────────────────────────────────────────────────────────
 def test_image_and_video_load_requests_accept_static():
     from pydantic import ValidationError
 
@@ -890,7 +851,7 @@ def test_status_route_carries_the_last_generation_skip_counts():
 
     pipe = _installed()
     _run(pipe, 25)
-    ss.reset_static_step_skip(pipe, None)  # the post-render reset
+    ss.reset_static_step_skip(pipe, None)
     stats = ss.static_skip_stats(pipe)
     assert stats["stats"]["skipped"] > 0
     body = DiffusionStatusResponse(
@@ -914,7 +875,6 @@ def test_stats_add_up_over_the_chunks_of_one_generation():
     skip.reset = real_reset
     ss.reset_static_step_skip(pipe, None)
     assert ss.static_skip_stats(pipe)["stats"] == {k: 2 * v for k, v in one.items()}
-    # A new generation starts from zero.
     _run(pipe, 25)
     assert ss.static_skip_stats(pipe)["stats"] == one
 
@@ -942,7 +902,6 @@ def test_generate_drops_static_state_on_every_exit():
         if isinstance(node, ast.Try)
         for stmt in node.finalbody
     ]
-    # The reset lives in a finally, so a failed or cancelled render frees its history clones too.
     assert any("reset_static_step_skip(static_skip_pipe, None)" in f for f in finals)
 
 
@@ -951,7 +910,6 @@ def test_a_short_generation_reports_its_own_uncached_counts():
     _run(pipe, 25)
     ss.reset_static_step_skip(pipe, None)
     assert ss.static_skip_stats(pipe)["stats"]["skipped"] == 9
-    # Below the minimum the schedule is empty: every call computes, and status says so instead of the last run.
     _run(pipe, 8)
     ss.reset_static_step_skip(pipe, None)
     assert ss.static_skip_stats(pipe)["stats"] == {"calls": 8, "computed": 8, "skipped": 0}

@@ -4348,7 +4348,7 @@ export function HubModelPicker({
         matchesFormatFilter(model.id, model.isGguf === true, formatFilter) &&
         (!needle ||
           normalizeForSearch(
-            `${model.id} ${model.name} ${model.description ?? ""}`,
+            `${model.id} ${model.name} ${model.description ?? ""} ${model.descriptionSuffix ?? ""}`,
           ).includes(needle))
       );
     });

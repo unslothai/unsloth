@@ -202,8 +202,7 @@ def _warn(logger: Any, what: str, exc: Any) -> None:
 
 
 def _outer_layer(module: Any) -> Any:
-    """The outer forward layer in ``module``'s instance slot, or None. Such a layer carries
-    ``_unsloth_outer_forward`` and calls its ``inner`` (None = the class forward)."""
+    """The ``_unsloth_outer_forward`` layer in ``module``'s forward slot (its ``inner`` None = class forward)."""
     try:
         slot = module.__dict__.get("forward")
     except Exception:  # noqa: BLE001 - no instance dict, nothing layered
@@ -232,8 +231,16 @@ class GraphedForward:
         logger: Any = None,
     ) -> None:
         self.module = module
-        # The CLASS forward: the eager callable, whatever is already in the instance slot.
-        self.orig = type(module).forward.__get__(module)
+        # The CLASS forward: the eager callable, whatever is already in the instance slot. A class
+        # whose stock forward syncs the host gets its capture-safe rewrite (bit-identical) instead.
+        safe = None
+        try:
+            from .diffusion_capture_safe import resolve as _capture_safe  # noqa: PLC0415
+            safe, _ = _capture_safe(type(module))
+        except Exception:  # noqa: BLE001 - the stock forward is still a correct eager callable
+            safe = None
+        self.capture_safe = safe is not None
+        self.orig = (safe if safe is not None else type(module).forward).__get__(module)
         try:
             update_wrapper(self, self.orig)
         except Exception:  # noqa: BLE001
@@ -267,9 +274,7 @@ class GraphedForward:
 
     def install(self) -> "GraphedForward":
         """Write ``forward`` into the instance ``__dict__``; ``__setattr__`` would inspect it.
-
-        An outer layer already in the slot (the static step skip) stays outermost: the graph goes
-        under it, so the layer decides which steps reach the graph at all."""
+        An outer layer (the static step skip) stays outermost, deciding which steps reach the graph."""
         outer = _outer_layer(self.module)
         if outer is not None:
             outer.inner = self
@@ -280,7 +285,6 @@ class GraphedForward:
     def uninstall(self) -> "GraphedForward":
         outer = _outer_layer(self.module)
         if outer is not None:
-            # Unlink from under the outer layer, which then calls the class forward as before.
             if outer.inner is self:
                 outer.inner = None
             return self
@@ -551,6 +555,17 @@ def graph_eligible(
 
     if not bool(getattr(family, "supports_cuda_graph", family_default)):
         return False, "family opts out"
+
+    # A denoiser whose forward syncs the host would only invalidate its capture and run eager; decline
+    # up front with the reason when its capture-safe rewrite did not apply.
+    try:
+        from .diffusion_capture_safe import resolve as _capture_safe  # noqa: PLC0415
+        for module in _denoiser_dits(pipe):
+            _, why = _capture_safe(type(module))
+            if why:
+                return False, why
+    except Exception as exc:  # noqa: BLE001 - the capture itself still poisons safely
+        _warn(logger, "capture-safe probe", exc)
 
     return True, "eligible"
 
