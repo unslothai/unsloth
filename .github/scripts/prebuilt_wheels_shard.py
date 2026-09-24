@@ -1,3 +1,7 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
 """Compile one shard of a torch extension's objects into ccache, then stop before linking.
 
 Run `prebuilt_wheels_shard.py SHARD SHARDS` from the package's source directory.
