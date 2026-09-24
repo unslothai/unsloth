@@ -3054,7 +3054,6 @@ def _forget_library_entry(item_id: str) -> None:
     model saved to the same path. The model is already gone, so a failure here only logs."""
     try:
         from storage import library_db
-
         library_db.delete_entry(item_id)
     except Exception as e:
         logger.warning("Could not clear the Library entry for %s: %s", item_id, e)

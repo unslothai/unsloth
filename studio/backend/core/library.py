@@ -724,7 +724,6 @@ def _refuse_denied(resolved: Path) -> None:
         contains_sensitive_path_component,
         is_denied_system_path,
     )
-
     if is_denied_system_path(str(resolved)) or contains_sensitive_path_component(str(resolved)):
         raise ValueError("System, credential and config folders cannot hold these files.")
 
