@@ -23,8 +23,7 @@ def _round1(value: float) -> float:
 
 
 def _family_base_repos() -> dict[str, str]:
-    """Family name -> its DEFAULT base repo, the only base a per-family estimate can price. A
-    variant load prices itself through ``estimate_dense_quant``."""
+    """Family name -> DEFAULT base repo; a variant load prices itself via ``estimate_dense_quant``."""
     return {fam.name.strip().lower(): fam.base_repo for fam in _FAMILIES}
 
 
@@ -40,7 +39,6 @@ def family_inference_infos() -> list[dict[str, Any]]:
     for name, (transformer_gb, text_encoders_gb, vae_gb) in _FAMILY_BF16_GB.items():
         companions_gb = text_encoders_gb + vae_gb
         estimated = {"bf16": _round1(transformer_gb + companions_gb)}
-        # A policy artifact is mostly fp8 by weight, so the whole-model 0.33 would under-advertise the footprint by gigabytes.
         policy_factor = policy_steady_factor(name, bases.get(name.strip().lower()))
         for scheme, factor in _QUANT_STEADY_FACTOR.items():
             if scheme == "nvfp4" and policy_factor is not None:

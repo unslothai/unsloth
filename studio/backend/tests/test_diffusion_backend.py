@@ -11238,8 +11238,7 @@ def test_generation_in_flight_never_builds_a_backend(fake_runtime, monkeypatch):
 
 
 def test_the_download_plan_resolves_the_same_nvfp4_rung_the_load_does(monkeypatch):
-    # A gated auto rung is offered only for the base its record covers, so a planning selector that drops the base or the hosted-checkpoint probe answers a different scheme.
-    # _uncached_prequant_repo keeps an auto GGUF pick from fetching a second denoiser inline, past the plan's staging.
+    # A planner that drops the base or the checkpoint probe answers a different scheme than the load.
     from types import SimpleNamespace
 
     import core.inference.diffusion as dmod
@@ -11253,14 +11252,12 @@ def test_the_download_plan_resolves_the_same_nvfp4_rung_the_load_does(monkeypatc
     monkeypatch.setattr(tq, "dense_transformer_supported", lambda target: True)
     monkeypatch.setattr(tq, "_capability", lambda: (10, 0))
     monkeypatch.setattr(tq, "_is_consumer_gpu", lambda device = None: False)
-    # int8 and fp8 lead the flux row, so auto reaches nvfp4 only when both probes fail.
     monkeypatch.setattr(
         tq,
         "_scheme_supported",
         lambda scheme, device, unproven_ok = False: scheme not in ("int8", "fp8"),
     )
     monkeypatch.setattr(dmod, "prequant_checkpoint_cached", lambda source, **kw: False)
-    # The gate record was measured on flashinfer, so the head stands only where that backend serves.
     monkeypatch.setattr(ops, "select_nvfp4_backend", lambda device = None: "flashinfer")
 
     target = SimpleNamespace(device = "cuda", dtype = None)

@@ -1380,8 +1380,6 @@ def test_the_conventional_auto_scheme_needs_an_artifact_for_every_expert(monkeyp
 
 
 def test_auto_is_handed_the_probe_that_lets_it_reach_a_prequant_only_scheme(monkeypatch):
-    """nvfp4 is in the selector's ``require_prequant`` set, so AUTO offers it only where a hosted
-    checkpoint provably covers THIS load."""
     assert _video_auto(monkeypatch, scheme = "nvfp4") == "nvfp4"
     probe = _video_auto.calls[-1]["has_prequant"]
     assert probe("nvfp4") is True
@@ -1404,7 +1402,6 @@ def test_an_install_that_cannot_open_a_checkpoint_keeps_the_dense_denoiser(monke
 
 
 def test_the_conventional_coverage_probe_reads_every_component():
-    """The conventional coverage probe reads every component."""
     from core.inference.video import VideoBackend
 
     fam = _moe_fam()
@@ -1426,8 +1423,7 @@ def _a14b_auto(
     fam = None,
     allowed = None,
 ):
-    """``_video_auto_denoiser_scheme`` for the SHIPPED Wan2.2-T2V-A14B family, with the real
-    selector, preference table and coverage resolver."""
+    """Real selector, preference table and coverage resolver for the shipped A14B family."""
     import types
 
     import core.inference.diffusion_nvfp4_ops as ops
@@ -1465,7 +1461,6 @@ def _a14b_auto(
 
 
 def test_the_a14b_auto_plan_seeds_nvfp4_where_flashinfer_serves_the_device(monkeypatch):
-    """Measured on a B200 (2026-09-08): 1.115x fp8, 26.18 GiB steady vs 38.59, LPIPS 0.356 vs 0.431."""
     seeded, chosen = _a14b_auto(monkeypatch, backend = "flashinfer")
     assert seeded == "nvfp4"
     assert chosen == "nvfp4"
@@ -1478,8 +1473,7 @@ def test_the_a14b_auto_plan_stays_on_the_ladder_on_the_torchao_backend(monkeypat
 
 
 def test_the_a14b_auto_plan_stays_on_the_ladder_with_only_one_expert_hosted(monkeypatch):
-    """A dual-expert MoE with one artifact is uncovered, not partly covered: seeding one expert
-    leaves the other dense-quantised by a path nobody measured."""
+    """One expert hosted is uncovered, not partly covered."""
     import dataclasses
 
     from core.inference.video_families import detect_video_family
@@ -1534,8 +1528,8 @@ def _planned_denoiser_request(monkeypatch, fam, **load_kwargs):
 
 def test_a_conventional_plan_drops_no_shard_the_load_will_not_seed(monkeypatch):
     """speed_mode="off" declines the conventional seed for an EXPLICIT scheme too, so the plan may
-    not drop the dense shards on the raw request: the load would top them up inline, outside
-    progress, cancel and the disk preflight."""
+    not drop the dense shards on the raw request: the load would top them up inline, outside its
+    progress, cancel and disk preflight."""
     from core.inference.video_families import detect_video_family
 
     wan = detect_video_family("Wan-AI/Wan2.2-TI2V-5B-Diffusers")
@@ -1544,7 +1538,8 @@ def test_a_conventional_plan_drops_no_shard_the_load_will_not_seed(monkeypatch):
         _planned_denoiser_request(monkeypatch, wan, transformer_quant = "nvfp4", speed_mode = "off")
         is None
     )
-    # The modular workflow honours an explicit scheme at any speed mode, so it still asks about the raw request.
+    # The modular workflow honours an explicit scheme whatever the speed mode, so it still asks
+    # about the raw request.
     h3 = detect_video_family("MiniMaxAI/MiniMax-H3")
     assert h3 is not None and h3.modular_workflow
     assert (
@@ -1556,10 +1551,10 @@ def test_a_conventional_plan_drops_no_shard_the_load_will_not_seed(monkeypatch):
 
 
 def test_a_seed_the_plan_declined_is_pinned_into_the_load(monkeypatch):
-    """The plan decides the seed while the PREVIOUS pipeline is still resident, so it sees less free
-    memory than the load will. A bare None lets the load re-take the question on the roomier card,
-    seed anyway, and fetch the artifact inline on top of the dense shards the plan paid to keep, so
-    the decline travels as its own value."""
+    """The plan decides the seed while the PREVIOUS pipeline is resident, so it reads less free
+    memory than the load will after teardown. A bare None would let the load re-take the question
+    on the roomier card and fetch the artifact inline on top of the dense shards the plan just paid
+    to keep, so the decline travels as its own value."""
     from core.inference import video as vid
     from core.inference.video_families import detect_video_family
 
@@ -1598,8 +1593,8 @@ def test_a_seed_the_plan_declined_is_pinned_into_the_load(monkeypatch):
 
 def test_the_seeded_denoiser_repo_is_claimed_against_a_concurrent_delete(monkeypatch):
     """The plan that verifies a hosted denoiser also drops the dense DiT shards, so the checkpoint's
-    repo has to join the in-flight claim: it is neither repo_id nor base_repo, and a delete
-    admitted mid-fetch leaves the load with neither artifact."""
+    repo has to join the in-flight claim: it is neither repo_id nor base_repo, and a delete admitted
+    while the seed is fetching leaves the load with neither artifact."""
     from core.inference import video as vid
     from core.inference.video_families import detect_video_family
 
@@ -1614,7 +1609,8 @@ def test_the_seeded_denoiser_repo_is_claimed_against_a_concurrent_delete(monkeyp
     monkeypatch.setattr(backend, "_video_planned_auto_denoiser_scheme", lambda *a, **k: "nvfp4")
     monkeypatch.setattr(backend, "_denoiser_prequant_verified", lambda *a, **k: True)
     monkeypatch.setattr(backend, "_run_load_h3_native", lambda **kwargs: None)
-    # Sampled from inside the build, where the seed opens the checkpoint: a later claim cannot revoke a delete the guard already admitted.
+    # Sampled from inside the build, where the seed opens the checkpoint: a claim published after
+    # that point cannot revoke a delete the guard already admitted.
     claimed: list = []
     monkeypatch.setattr(
         backend, "load_pipeline", lambda **kwargs: claimed.extend(backend.loading_repo_ids())
@@ -1644,9 +1640,9 @@ def test_both_experts_of_an_moe_resolve_to_one_claimed_repo():
 
 def test_the_seeded_denoiser_artifact_is_fetched_under_the_load_cancel_event(monkeypatch):
     """Dropping the dense DiT shards makes the artifact the one file this load cannot come up
-    without, at 2.8 to 16.1 GB. Left to the injection it arrives through a plain ``hf_hub_download``
-    holding no cancel event, so nothing can interrupt it; prefetched beside the conditioner it is
-    cancellable and resumable like every other load download."""
+    without, and it is 2.8 to 16.1 GB. Left to the injection it arrives through a plain
+    ``hf_hub_download`` holding no cancel event, so an unload or a superseding load cannot
+    interrupt it. Prefetched beside the conditioner it is cancellable and resumable."""
     import threading
 
     from core.inference import video as vid

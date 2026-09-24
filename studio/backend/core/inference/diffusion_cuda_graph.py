@@ -197,8 +197,7 @@ def _drop_pool_if_unused() -> None:
 
 
 def _nvfp4_flashinfer_linears(module: Any) -> list:
-    """``(fqn, layer)`` for every FlashInfer NVFP4 Linear under ``module``. Lazy import, so a build
-    without the backend does not lose CUDA graphs over it."""
+    """Lazy import, so a build without the backend does not lose CUDA graphs over it."""
     try:
         from .diffusion_nvfp4_linear import is_nvfp4_flashinfer_linear
     except Exception:  # noqa: BLE001 - no backend module, no NVFP4 layers to find
@@ -214,9 +213,7 @@ def _nvfp4_flashinfer_linears(module: Any) -> list:
 
 
 def _protect_keyed(module: Any) -> bool:
-    """Does this module need the per-step precision branch in its graph key? Only when the lever is
-    armed AND the module holds NVFP4 layers, so an fp8 load elsewhere in the process does not
-    double its graph count for a branch it cannot take."""
+    """Only when the lever is armed AND this module holds NVFP4 layers, so fp8 keeps its graph count."""
     try:
         from .diffusion_nvfp4_protect import module_controller
         if not module_controller(module).armed:
@@ -227,23 +224,17 @@ def _protect_keyed(module: Any) -> bool:
 
 
 def protect_graph_key(controller: Any = None) -> tuple:
-    """The branch in flight as a key suffix. Imported lazily; ``()`` when the lever is off."""
     from .diffusion_nvfp4_protect import protect_graph_key as _key
     return _key(controller = controller)
 
 
 def _unbaked_nvfp4_layers(layers: list) -> list:
-    """The fqns among ``layers`` whose activation global scale is not baked. A scale still being
-    learned is recorded rather than executed under capture, so every replay runs what the capture
-    saw. Fail closed: no answer counts as unbaked."""
+    """A scale still being learned would be frozen by capture. Fail closed: no answer is unbaked."""
     return [name for name, layer in layers if not getattr(layer, "activation_scales_baked", False)]
 
 
 def _prewarm_token_counts(live: list) -> tuple:
-    """Candidate GEMM row counts (M) for this call, smallest first, read off the warm-up's own
-    shapes since the resolution is unknowable at load time. Generous rather than exact (an unused M
-    is inert) but bounded, so a family with many inputs cannot turn a capture into a profiling
-    session."""
+    """Candidate GEMM row counts (M), read off the warm-up's shapes; generous but bounded."""
     counts = {1}
     for tensor in live:
         try:
@@ -307,7 +298,6 @@ class GraphedForward:
         self.capture_error: Optional[dict] = None
         self.cache: dict = {}
         self.cap_hit = False
-        # Resolved on the first call, not here: the walk is O(modules) and must not run per call.
         self.protect_keyed: Optional[bool] = None
         self.protect_ctl: Any = None
         self.stats = {
@@ -432,11 +422,9 @@ class GraphedForward:
                 self.protect_keyed = _protect_keyed(self.module)
                 if self.protect_keyed:
                     from .diffusion_nvfp4_protect import module_controller
-
-                    # Resolved once: the key is built every call, and the walk is over the whole tree.
                     self.protect_ctl = module_controller(self.module)
                 if self.protect_keyed:
-                    # Arming the lever splits every input shape into two calls, so the cap has to double or half of them run eager.
+                    # Each input shape now has two branches, so double the cap.
                     self.max_graphs *= 2
                     if self.logger is not None:
                         self.logger.info(
@@ -446,7 +434,7 @@ class GraphedForward:
                             self.max_graphs,
                         )
             if self.protect_keyed:
-                # One graph per branch: a W4A4 graph replayed at a W4A16 step would report the lever as measured while it never fired.
+                # One graph per branch: a W4A4 replay at a W4A16 step means the lever never fired.
                 key = key + protect_graph_key(self.protect_ctl)
             entry = self.cache.get(key)
         except Exception:  # noqa: BLE001 - an unhashable tree is simply not capturable
@@ -543,7 +531,7 @@ class GraphedForward:
         static_args, static_kwargs = _rebuild(entry.in_spec, entry.static)
 
         if nvfp4_layers:
-            # Before the warm-up, so before capture: recorded candidate launches would bake in the default tactic.
+            # Before the warm-up: a captured tuning launch would bake in the default tactic.
             from .diffusion_nvfp4_linear import nvfp4_prewarm
             nvfp4_prewarm(self.module, _prewarm_token_counts(live), logger = self.logger)
 

@@ -1,7 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Tests for the NVFP4 per-step precision lever (W4A16 at protected denoising steps)."""
 
 from __future__ import annotations
 
@@ -22,7 +21,7 @@ class _CapableLayer:
 
 
 def _capable(ctl):
-    """Register one, which is what lets a controller arm. Keep the result alive: the registry is weak."""
+    """Keep the result alive: the registry is weak."""
     layer = _CapableLayer()
     ctl.register_layer(layer)
     return layer
@@ -168,14 +167,12 @@ class _FakeScheduler:
 
 
 class _FakePipe:
-    """A denoise loop the shape every diffusers pipeline has: forward, then scheduler.step."""
-
     def __init__(self) -> None:
         self.scheduler = _FakeScheduler()
 
     def run(self, steps: int, observe) -> None:
         for _ in range(steps):
-            observe()  # the transformer forward for this step
+            observe()
             self.scheduler.step()
 
 
@@ -192,7 +189,6 @@ def test_the_scheduler_wrapper_gives_the_forward_the_right_step_index():
 
 
 def test_the_wrapper_is_removed_and_the_controller_reset_afterwards():
-    """Removed by DELETING the instance attribute it added, not by assigning the method back."""
     ctl = pr.NVFP4StepController("0")
     layer = _capable(ctl)
     pipe = _FakePipe()
@@ -217,7 +213,6 @@ def test_the_wrapper_is_removed_when_the_denoise_loop_raises():
 
 
 def test_an_unarmed_controller_wraps_nothing_at_all():
-    """Default OFF has to be free: no wrapper on the scheduler at all."""
     ctl = pr.NVFP4StepController("")
     pipe = _FakePipe()
     with pr.protect_generation(pipe, 50, controller = ctl):
@@ -245,7 +240,6 @@ def test_a_pipeline_with_no_scheduler_protects_nothing():
 
 
 def test_a_second_wrapper_over_the_first_still_counts_once():
-    """The gate harness and the video backend both wrap ``scheduler.step`` for progress."""
     ctl = pr.NVFP4StepController("0,-1")
     layer = _capable(ctl)
     pipe = _FakePipe()
@@ -352,8 +346,6 @@ def test_attach_controller_reaches_every_nvfp4_layer():
 
 
 def test_an_image_and_a_video_render_in_flight_keep_their_own_schedules(monkeypatch):
-    """Image and video run side by side, so each model gets its own controller: one render's steps
-    and exit must not move or clear the other's."""
     torch = pytest.importorskip("torch")
     import torch.nn as nn
 
@@ -368,7 +360,6 @@ def test_an_image_and_a_video_render_in_flight_keep_their_own_schedules(monkeypa
         assert a is not b and a.armed and b.armed
         assert pr.pipeline_controllers(image) == [a]
         assert pr.module_controller(video.transformer) is b
-        # Moved off the process controller, so it no longer counts them.
         assert pr.protect_controller().capable_layers() == 0
         with pr.protect_generation(video, 10):
             assert b.protected
@@ -383,7 +374,6 @@ def test_an_image_and_a_video_render_in_flight_keep_their_own_schedules(monkeypa
 
 @pytest.mark.parametrize("out_features,in_features", REAL_SHAPES)
 def test_the_dequantiser_matches_torchao_bit_for_bit(out_features, in_features):
-    """The protected step has to read the SAME weight the unprotected step's GEMM reads."""
     torch = _cuda_or_skip()
     from torchao.prototype.mx_formats.nvfp4_tensor import NVFP4Tensor
 
@@ -419,7 +409,6 @@ def test_the_dequantiser_matches_torchao_bit_for_bit(out_features, in_features):
 
 
 def test_the_dequantiser_matches_flashinfers_own_packing():
-    """The other producer of these bytes."""
     torch = _cuda_or_skip()
     import flashinfer
 
@@ -492,7 +481,6 @@ def test_a_protected_forward_is_the_dense_bf16_gemm(m):
 
 
 def test_the_protected_branch_leaves_no_resident_weight_behind():
-    """The whole claim of this lever: the dense weight is transient."""
     torch = _cuda_or_skip()
 
     with torch.cuda.device(0):
@@ -506,7 +494,7 @@ def test_the_protected_branch_leaves_no_resident_weight_behind():
         resident = lambda: sum(b.numel() * b.element_size() for b in converted.buffers())
         before_bytes = resident()
         with torch.inference_mode():
-            converted(x)  # unprotected
+            converted(x)
         torch.cuda.synchronize()
         baseline = torch.cuda.memory_allocated()
         ctl.advance()
@@ -522,7 +510,6 @@ def test_the_protected_branch_leaves_no_resident_weight_behind():
 
 
 def test_the_switch_costs_two_compiled_variants_over_a_fifty_step_render():
-    """Under torch.compile the branch is a host bool, so Dynamo compiles one variant per VALUE."""
     torch = _cuda_or_skip()
     import torch._dynamo as dynamo
 
@@ -548,7 +535,6 @@ def test_the_switch_costs_two_compiled_variants_over_a_fifty_step_render():
 
 
 def test_a_captured_block_gets_one_graph_per_branch(monkeypatch):
-    """A graph recorded at a W4A4 step must never replay at a W4A16 one."""
     torch = _cuda_or_skip()
     import torch.nn as nn
     from core.inference import diffusion_cuda_graph as cg
@@ -599,8 +585,7 @@ def test_a_captured_block_gets_one_graph_per_branch(monkeypatch):
 
 
 def test_an_armed_controller_with_no_protect_capable_layer_refuses_and_says_so():
-    """Only ``NVFP4FlashInferLinear`` reads the controller, so a torchao load runs W4A4 at every
-    step and arming there would count protected steps nothing ran."""
+    """A torchao load runs W4A4 at every step, so arming there would count steps nothing ran."""
 
     class _Logger:
         def __init__(self):

@@ -410,11 +410,11 @@ def _denoiser_dits(pipe: Any) -> list:
     return dits
 
 
-# Repeated blocks MEASURED to raise inductor's CantSplit under dynamic = True: merging the text and image streams gives two dynamic symbols and Mod never cancels an Add over an Add. ``dynamic = False`` is the only escape (mark_static is overridden, ``dynamic = None`` crashes on the second shape).
-# Stream merging is necessary but NOT sufficient, so nothing joins this set on code reading alone.
+# Blocks MEASURED to raise inductor's CantSplit under dynamic = True (merged text+image streams);
+# ``dynamic = False`` is the only escape. Merging is necessary, not sufficient: measure before adding.
 _STREAM_MERGING_BLOCKS: frozenset[str] = frozenset({"FluxSingleTransformerBlock"})
 
-# The same cat matched on source. OFF by default since it over-flags: an escape hatch for a new family that crashes before its class is named above.
+# Source match for the same cat; OFF by default since it over-flags.
 _STREAM_MERGE_DETECT_ENV = "UNSLOTH_STATIC_STREAM_MERGE_DETECT"
 _STREAM_MERGE_SOURCE = re.compile(
     r"torch\.cat\(\s*\[\s*(?:encoder_hidden_states\s*,\s*hidden_states"
@@ -424,8 +424,7 @@ _STREAM_MERGE_SOURCE = re.compile(
 
 @lru_cache(maxsize = None)
 def _class_merges_streams(cls: type, broad: bool = False) -> bool:
-    """Whether one repeated-block CLASS is known to need a static compile. ``broad`` is an argument,
-    not an env read in the body, so the memo cannot outlive it."""
+    """``broad`` is an argument, not an env read in the body, so the memo cannot outlive it."""
     if cls.__name__ in _STREAM_MERGING_BLOCKS:
         return True
     if not broad:
@@ -439,8 +438,6 @@ def _class_merges_streams(cls: type, broad: bool = False) -> bool:
 
 
 def _dits_merge_streams(dits: list) -> bool:
-    """Whether ANY denoiser DiT's repeated blocks merge the streams, forcing a static regional
-    compile. One check per distinct block class, not per instance."""
     broad = os.environ.get(_STREAM_MERGE_DETECT_ENV) == "1"
     seen: set[type] = set()
     for transformer in dits:
@@ -479,7 +476,6 @@ def _compile_repeated_blocks(
     # dynamic=False, a few % more for a longer compile and a recompile per resolution. Inductor's own cudagraph modes
     # fail on the regional block -- "accessing tensor output of CUDAGraphs that has been overwritten" -- so the tier
     # stays on -no-cudagraphs and the capture is taken one level up, at the denoiser module.
-    # The one exception to "default is dynamic": see _STREAM_MERGING_BLOCKS.
     static_shapes = max_autotune or _dits_merge_streams(dits)
     if static_shapes and not max_autotune and logger is not None:
         logger.info(

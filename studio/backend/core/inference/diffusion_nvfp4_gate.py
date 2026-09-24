@@ -1,11 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The checked-in record of which NVFP4 checkpoints actually passed the accuracy gate.
-
-A per-layer policy makes render quality a property of ONE artifact, not of the scheme, so the
-ladder asks about a specific family, base and policy. Verdicts are re-derived, never trusted as
-stored, so retuning a policy invalidates them. Torch-free: the smoke-probe child reads it too.
+"""The checked-in record of which NVFP4 checkpoints passed the accuracy gate, per family, base and
+policy. Verdicts are re-derived, never trusted as stored. Torch-free: the smoke-probe child reads it.
 """
 
 from __future__ import annotations
@@ -14,12 +11,10 @@ import json
 from pathlib import Path
 from typing import Any, Optional
 
-# The SHAPE of the entries, versioned independently of any policy.
 GATE_RECORD_VERSION = 1
 
 GATE_RECORD_PATH = Path(__file__).with_name("nvfp4_gate_record.json")
 
-# Kept here rather than in the writing script so reader and writer cannot disagree.
 RECORD_KEY_FIELDS = ("family", "base_repo", "policy_id", "policy_version", "checkpoint_sha256")
 RECORD_FIELDS = RECORD_KEY_FIELDS + (
     "repo_id",
@@ -41,12 +36,11 @@ RECORD_FIELDS = RECORD_KEY_FIELDS + (
     "results_path",
 )
 
-# Keyed on the stat, so a rewritten record file is picked up without a process restart.
+# Keyed on the stat, so a rewritten file is picked up without a restart.
 _CACHE: dict[tuple, tuple] = {}
 
 
 def _canonical(value: Any) -> str:
-    """A base repo id in the form the tables hold: mirror mapped to upstream, lowercased."""
     try:
         from .diffusion_families import canonical_base
         return canonical_base(str(value or "").strip()).strip().lower()
@@ -55,7 +49,7 @@ def _canonical(value: Any) -> str:
 
 
 def load_gate_records(path: Any = None) -> tuple:
-    """Every record in the gate file, or ``()``. Never raises: an unreadable file is no evidence."""
+    """Never raises: an unreadable file is no evidence."""
     target = Path(path) if path is not None else GATE_RECORD_PATH
     try:
         stat = target.stat()
@@ -82,10 +76,7 @@ def nvfp4_gate_records(
     *,
     path: Any = None,
 ) -> tuple:
-    """Every gate record for ``(family, base_repo)`` in file order, optionally pinned to
-    ``policy_id``. Record identity carries the checkpoint digest, so one policy can hold several
-    rows. Without a base there are none: inheriting a sibling base's verdict is the failure this
-    file exists to prevent."""
+    """Without a base there are none: a sibling base's verdict must never be inherited."""
     fam = str(family or "").strip().lower()
     base = _canonical(base_repo)
     if not fam or not base:
@@ -110,8 +101,7 @@ def nvfp4_gate_record(
     *,
     path: Any = None,
 ) -> Optional[dict]:
-    """The first gate record for ``(family, base_repo)``, or None. Whether nvfp4 is allowed is
-    ``_passing_record``'s question: it reads them all."""
+    """The first record only; whether nvfp4 is allowed is ``_passing_record``'s question."""
     matched = nvfp4_gate_records(family, base_repo, policy_id, path = path)
     return matched[0] if matched else None
 
@@ -122,8 +112,7 @@ def _passing_records(
     *,
     path: Any = None,
 ) -> tuple:
-    """Every PASS for this family and base at the policy this commit resolves, in file order. Empty
-    means "nothing measured this model"; one checkpoint's failure must not mask a later pass."""
+    """Every PASS at the resolved policy: one checkpoint's failure must not mask a later pass."""
     try:
         from .diffusion_nvfp4_policy import resolve_policy
         policy = resolve_policy(family, base_repo)
@@ -150,7 +139,6 @@ def _passing_record(
     *,
     path: Any = None,
 ) -> Optional[dict]:
-    """The first passing record for this family and base at the resolved policy, or None."""
     passing = _passing_records(family, base_repo, path = path)
     return passing[0] if passing else None
 
@@ -161,7 +149,6 @@ def nvfp4_gate_passed(
     *,
     path: Any = None,
 ) -> bool:
-    """Whether a reviewed record PASSES for this family and base at the resolved policy."""
     return _passing_record(family, base_repo, path = path) is not None
 
 
@@ -171,9 +158,7 @@ def nvfp4_gate_backends(
     *,
     path: Any = None,
 ) -> tuple:
-    """Every NVFP4 backend a passing record was measured on, lowercased, deduplicated, in file
-    order. A verdict covers one numerical path and one policy can hold artifacts gated on either,
-    so the ladder asks whether this device's backend is among them, not whether it is the first."""
+    """Every backend a passing record was measured on: one policy can hold artifacts on either."""
     backends: list[str] = []
     for record in _passing_records(family, base_repo, path = path):
         backend = str(record.get("backend") or "").strip().lower()
@@ -188,6 +173,6 @@ def nvfp4_gate_backend(
     *,
     path: Any = None,
 ) -> Optional[str]:
-    """The first passing record's backend, lowercased, or None. Coverage wants ``nvfp4_gate_backends``."""
+    """The first passing record's backend. Coverage wants ``nvfp4_gate_backends``."""
     backends = nvfp4_gate_backends(family, base_repo, path = path)
     return backends[0] if backends else None

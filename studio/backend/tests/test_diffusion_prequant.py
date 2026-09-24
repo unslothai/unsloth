@@ -346,8 +346,7 @@ class _Bytes:
 
 
 class Float8Tensor:
-    """A quantized fp8 weight as far as this module cares: the class NAME keys the fingerprint's
-    payload table and the activation-floor check that tells fp8 from the 4-bit weights beside it."""
+    """The class NAME is what the fingerprint and the activation-floor check key on."""
 
     def __init__(
         self,
@@ -360,7 +359,7 @@ class Float8Tensor:
 
 
 class NVFP4Tensor:
-    """The other half of a per-layer policy checkpoint: 4-bit weights sitting in the same state dict."""
+    """The 4-bit half of a per-layer policy checkpoint."""
 
     def __init__(self, qdata = b""):
         self.qdata = _Bytes(qdata)
@@ -461,7 +460,8 @@ class _CountedBytes(_Bytes):
 
 
 def test_a_class_whose_payload_slots_all_read_none_is_not_fingerprinted():
-    # A torchao release that keeps the class name but renames every payload attribute must read as uncovered, not as the md5 of an empty stream (one digest for every weight).
+    # A torchao release keeping the class name but renaming every payload attribute must read as
+    # uncovered, not as the md5 of an empty stream (the same digest for every weight).
     from core.inference.diffusion_prequant import packed_weight_fingerprint
 
     renamed = Float8Tensor(b"q0")
@@ -837,7 +837,6 @@ def test_load_require_bf16_nvfp4_false_ok(monkeypatch, tmp_path):
 
 
 def test_an_nvfp4_checkpoint_is_prewarmed_by_the_shared_loader(monkeypatch, tmp_path):
-    # Video loads reach this loader without the image loader's own prewarm, so the loader tunes the M = 1 shapes.
     from core.inference import diffusion_nvfp4_linear as nl
 
     seen: list = []
@@ -2202,7 +2201,6 @@ def _policy_meta(
     family = "z-image",
     **overrides,
 ):
-    """A checkpoint metadata dict declaring the z-image policy, with fields overridable."""
     from core.inference.diffusion_nvfp4_policy import (
         NVFP4_POLICY_KEY,
         ZIMAGE_F8MOD_TOQ34,
@@ -2282,7 +2280,7 @@ def test_a_policy_checkpoint_is_validated_end_to_end():
 
 
 def test_the_fp8_invariants_cover_the_fp8_half_of_a_policy_checkpoint():
-    # A policy artifact is declared nvfp4 but is mostly Float8Tensor, so the per-row granularity and activation floor decide whether ITS fp8 layers render or go black. Gating both on scheme == fp8 skipped them all.
+    # A policy artifact is declared nvfp4 but mostly Float8Tensor; gating on scheme == fp8 skipped it.
     logger = _Recorder()
     ckpt = {
         "format": pq.PREQUANT_FORMAT_POLICY,
@@ -2335,8 +2333,9 @@ def test_the_checkpoint_is_released_before_the_device_copy(monkeypatch, tmp_path
     """The CPU checkpoint must be unreferenced by the time ``.to(device)`` allocates.
 
     ``assign = True`` gives the module the checkpoint's own tensors, so ckpt/state_dict hold only a
-    second reference. On unified memory (DGX Spark) host and device copy are the same physical
-    memory, so keeping it across the move doubles the transient peak.
+    second reference. On a unified-memory host (DGX Spark) host and device copies are the same
+    physical memory, so keeping it across the move doubles the transient peak the artifact-sized
+    admission check was told to expect.
     """
     import weakref
 

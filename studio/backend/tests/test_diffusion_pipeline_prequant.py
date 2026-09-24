@@ -424,9 +424,7 @@ def test_a_walk_with_no_resident_rung_declines(monkeypatch):
 
 
 def test_auto_planning_passes_the_base_and_prequant_probe(monkeypatch):
-    """AUTO offers a prequant-only rung (a gated nvfp4 head) only when told the base and handed a
-    checkpoint probe. Planning without them drops nvfp4, so the plan must ask like the load does,
-    both for the winner and for the rungs below it."""
+    """Without the base and a checkpoint probe AUTO drops nvfp4, so the plan must ask like the load."""
     from core.inference import diffusion_transformer_quant as tq
 
     backend = _settle_backend(monkeypatch)

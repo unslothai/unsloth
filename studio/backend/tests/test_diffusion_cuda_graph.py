@@ -860,7 +860,6 @@ class _NVFP4DiT(_FakeDiT):
 
 @pytest.fixture
 def record_prewarm(monkeypatch):
-    """Record every ``nvfp4_prewarm`` call the graph layer makes, without importing flashinfer."""
     from core.inference import diffusion_nvfp4_linear as nl
 
     calls: list = []
