@@ -55,6 +55,14 @@ _allowed_git_remotes() {
   done | sed 's/\.git$//' | sort -u
 }
 
+# The commits those requirement files pin (the 40-hex revision after the last @).
+_allowed_git_pins() {
+  for _req in ${UNSLOTH_ALLOW_GIT_FROM:-}; do
+    [ -f "$_req" ] || continue
+    sed -n 's/^[^#]*git+[a-z][a-z0-9+.-]*:\/\/[^#[:space:]]*@\([0-9a-f]\{40\}\)\([#[:space:]].*\)\{0,1\}$/\1/p' "$_req"
+  done | sort -u
+}
+
 # Every remote a traced git command line names: URLs, including `-c remote.origin.url=URL`.
 _git_line_remotes() {
   printf '%s\n' "$1" | grep -oE '[a-z][a-z0-9+.-]*://[^[:space:]]+|[[:alnum:]_.-]+@[[:alnum:].-]+:[^[:space:]]+' \
@@ -105,13 +113,13 @@ _is_uv_git_cache_op() { # the traced argument string
     init|rev-parse|"rev-parse "*) _ran_under "$1" "$_cache/" ; return ;;
     "submodule update --recursive --init") _ran_in_uv_checkout "$1"; return ;;
     "reset --hard "*)
-      # The commit comes from the INSTALLED package, which on an overlay-free leg is the
-      # released wheel and can pin an older commit than this checkout's file. uv names each
-      # checkout directory after the short commit, so it has to run in one whose name the
-      # commit starts with.
+      # The commit the requirement files pin (the workflow passes the INSTALLED package's,
+      # which on an overlay-free leg can trail this checkout's), run in the uv checkout
+      # named after it.
       _commit=${1#reset --hard }
       case "$_commit" in *[!0-9a-f]*|"") return 1 ;; esac
       [ ${#_commit} -eq 40 ] || return 1
+      printf '%s\n' "$(_allowed_git_pins)" | grep -qxF -- "$_commit" || return 1
       _in_checkout_of "$1" "$_commit"
       return ;;
     "clone --local "*)

@@ -78,11 +78,15 @@ expect_rc "the installer's git --version probe alone passes" 0 "$PIN" "git\t--ve
 # checkout's file; uv's checkout is named after the commit it installs.
 OLDER=1111111111111111111111111111111111111111
 FETCH="git\tfetch --tags --force --update-head-ok $REMOTE +HEAD:refs/remotes/origin/HEAD\n"
-expect_rc "a released package pinning another commit passes in its own checkout" 0 "$PIN" \
+OLDER_PIN="$ROOT/older-diffusers-main.txt"
+printf 'diffusers @ git+%s@%s\n' "$REMOTE" "$OLDER" > "$OLDER_PIN"
+expect_rc "a released package pinning another commit passes in its own checkout" 0 "$OLDER_PIN" \
     "${FETCH}git\treset --hard $OLDER\n" "$CACHE/checkouts/76e25d04238765dd/${OLDER:0:9}"
-expect_rc "a reset outside uv's checkouts fails" 1 "$PIN" \
+expect_rc "a reset to a commit the passed file does not pin fails, even in its checkout" 1 "$PIN" \
+    "${FETCH}git\treset --hard $OLDER\n" "$CACHE/checkouts/76e25d04238765dd/${OLDER:0:9}"
+expect_rc "a reset outside uv's checkouts fails" 1 "$OLDER_PIN" \
     "${FETCH}git\treset --hard $OLDER\n" "/home/someone/${OLDER:0:9}"
-expect_rc "a short or abbreviated reset target fails" 1 "$PIN" \
+expect_rc "a short or abbreviated reset target fails" 1 "$OLDER_PIN" \
     "${FETCH}git\treset --hard ${OLDER:0:9}\n" "$CACHE/checkouts/76e25d04238765dd/${OLDER:0:9}"
 expect_rc "git init outside uv's cache fails" 1 "$PIN" \
     "${FETCH}git\tinit\n" /Users/runner/work/unsloth/unsloth
