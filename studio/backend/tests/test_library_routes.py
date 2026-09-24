@@ -108,6 +108,7 @@ def test_a_folder_cannot_move_into_its_own_subtree(client):
     ).json()
     response = client.patch(f"/api/library/folders/{outer['id']}", json = {"parentId": inner["id"]})
     assert response.status_code == 400
+    assert response.json()["detail"] == "A folder cannot be moved into itself"
     response = client.patch(f"/api/library/folders/{outer['id']}", json = {"parentId": outer["id"]})
     assert response.status_code == 400
 
@@ -448,6 +449,22 @@ def test_items_download_as_attachments(client, monkeypatch):
     assert client.head("/api/library/items/download", params = {"id": upload}).status_code == 200
     assert client.get("/api/library/items/download", params = {"id": "upload:" + "0" * 32}).status_code == 404
     assert client.get("/api/library/items/download", params = {"id": "attachment:m:a"}).status_code == 400
+
+
+def test_an_oversized_desktop_drop_is_refused_before_copying(client, monkeypatch, tmp_path):
+    big = tmp_path / "big.bin"
+    big.write_bytes(b"x" * 10)
+    monkeypatch.setattr(library_routes, "_MAX_UPLOAD_BYTES", 4)
+    monkeypatch.setattr(
+        library, "open_native_upload", lambda lease: ("big.bin", "application/octet-stream", open(big, "rb"))
+    )
+
+    def copied(*_args):
+        raise AssertionError("copied an oversized drop")
+
+    monkeypatch.setattr(library, "save_upload", copied)
+    response = client.post("/api/library/uploads", data = {"nativePathLeases": ["lease"]})
+    assert response.status_code == 413
 
 
 def test_a_failed_upload_record_leaves_no_file(client, monkeypatch):
