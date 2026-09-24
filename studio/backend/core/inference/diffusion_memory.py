@@ -204,10 +204,15 @@ class MemoryPlan:
     # Defaulted so every existing construction is unchanged; set only where that is what makes group offload fit at
     # all (see plan_diffusion_memory).
     stream_text_encoders: bool = False
+    # Under group offload, stream the TRANSFORMER block by block. False only on the tier that keeps the denoiser
+    # resident and streams just the text encoders (they run once, before step 0), which is what a card that holds the
+    # denoiser but not the denoiser plus the encoder wants: every step at resident speed, one encoder pass per call.
+    stream_transformer: bool = True
 
     @property
     def engages_offload(self) -> bool:
         return self.offload_policy != OFFLOAD_NONE
+
 
     def as_public_dict(self) -> dict[str, Any]:
         return {
@@ -219,6 +224,7 @@ class MemoryPlan:
             "estimates": dict(self.estimates),
             "reasons": list(self.reasons),
             "stream_text_encoders": self.stream_text_encoders,
+            "stream_transformer": self.stream_transformer,
         }
 
 
@@ -781,8 +787,24 @@ def plan_diffusion_memory(
         if companion_dense_mib is not None and text_encoder_dense_mib is not None
         else None
     )
+    # A THIRD floor, for keeping the TRANSFORMER resident and streaming only the text encoders: everything but the
+    # encoders stays on the device. The encoders run once, before step 0, so this pays one host-to-device pass of the
+    # encoder per call and runs every denoise step at resident speed, where either group tier above streams the
+    # transformer again on EVERY step. It is the placement ComfyUI arrives at on the same card (encode, drop the
+    # encoder, keep the denoiser). Same both-terms-known rule as above.
+    resident_transformer_floor = (
+        _sum_required(
+            max(0, int(model_dense_mib) - int(text_encoder_dense_mib)),
+            runtime_headroom_mib,
+            base_overhead_mib,
+        )
+        if model_dense_mib is not None and text_encoder_dense_mib is not None
+        and int(text_encoder_dense_mib) > 0
+        else None
+    )
     reasons: list[str] = []
     stream_text_encoders = False
+    stream_transformer = True
     estimates: dict[str, Optional[int]] = {
         "safe_device_budget_mib": budget,
         "model_dense_mib": model_dense_mib,
@@ -793,6 +815,7 @@ def plan_diffusion_memory(
         "resident_required_mib": required,
         "group_floor_mib": group_floor,
         "group_floor_streamed_te_mib": group_floor_streamed_te,
+        "resident_transformer_floor_mib": resident_transformer_floor,
     }
 
     def _group_fits() -> bool:
@@ -806,19 +829,32 @@ def plan_diffusion_memory(
             and group_floor_streamed_te <= budget
         )
 
+    def _resident_transformer_fits() -> bool:
+        return (
+            resident_transformer_floor is not None
+            and budget is not None
+            and resident_transformer_floor <= budget
+        )
+
     # The best tier available when the weights do not fit resident, in speed order: plain group (companions resident)
     # beats group with streamed encoders (one extra host-to-device pass per CALL) beats whole-module offload (every
     # component paged per STEP -- the 48-minute case).
-    def _offload_tier() -> tuple[str, bool]:
+    def _offload_tier() -> tuple[str, bool, bool]:
+        if _resident_transformer_fits():
+            return OFFLOAD_GROUP, True, False
         if _group_fits():
-            return OFFLOAD_GROUP, False
+            return OFFLOAD_GROUP, False, True
         if _group_fits_streamed_te():
-            return OFFLOAD_GROUP, True
-        return OFFLOAD_MODEL, False
+            return OFFLOAD_GROUP, True, True
+        return OFFLOAD_MODEL, False, True
 
     _STREAMED_TE_REASON = (
         "companions exceed budget, but they fit with the text encoders streamed too "
         "(they run once, before step 0); streaming them beats paging every component per step"
+    )
+    _RESIDENT_TRANSFORMER_REASON = (
+        "the transformer fits resident once the text encoders are streamed (they run once, "
+        "before step 0); every denoise step runs at resident speed"
     )
 
     if not can_offload or device_memory.is_unified:
@@ -832,10 +868,12 @@ def plan_diffusion_memory(
     elif mode == MEMORY_MODE_FAST:
         policy = OFFLOAD_NONE
         if budget is not None and required is not None and required > budget:
-            # Doesn't fit resident: streamed transformer is the fastest offload.
-            policy, stream_text_encoders = _offload_tier()
+            # Doesn't fit resident: a resident transformer with streamed encoders, else a streamed transformer.
+            policy, stream_text_encoders, stream_transformer = _offload_tier()
             reasons.append("fast requested but weights do not fit resident; offloading")
-            if stream_text_encoders:
+            if not stream_transformer:
+                reasons.append(_RESIDENT_TRANSFORMER_REASON)
+            elif stream_text_encoders:
                 reasons.append(_STREAMED_TE_REASON)
         else:
             reasons.append("fast requested; weights resident on device")
@@ -851,6 +889,11 @@ def plan_diffusion_memory(
     elif required <= int(budget * 0.85):
         policy = OFFLOAD_NONE
         reasons.append("weights fit resident with headroom")
+    elif _resident_transformer_fits():
+        policy = OFFLOAD_GROUP
+        stream_text_encoders = True
+        stream_transformer = False
+        reasons.append(_RESIDENT_TRANSFORMER_REASON)
     elif _group_fits():
         policy = OFFLOAD_GROUP
         reasons.append("tight fit; stream the transformer, companions resident")
@@ -896,6 +939,7 @@ def plan_diffusion_memory(
         reasons = tuple(reasons),
         # only ever meaningful under group offload; every other tier already places the encoders
         stream_text_encoders = stream_text_encoders and policy == OFFLOAD_GROUP,
+        stream_transformer = stream_transformer or policy != OFFLOAD_GROUP,
     )
 
 
@@ -1030,12 +1074,13 @@ def apply_memory_plan(
         pipe.enable_model_cpu_offload(device = placement)
     elif policy == OFFLOAD_GROUP:
         # getattr, not attribute access: manually built / duck-typed plans predate this field.
-        if not _apply_group_offload(
-            pipe,
-            placement,
-            logger,
-            stream_text_encoders = bool(getattr(plan, "stream_text_encoders", False)),
-        ):
+        group_kwargs: dict[str, Any] = {
+            "stream_text_encoders": bool(getattr(plan, "stream_text_encoders", False))
+        }
+        # Only named when it departs from the default, so the long-standing streamed-transformer call is unchanged.
+        if not bool(getattr(plan, "stream_transformer", True)):
+            group_kwargs["stream_transformer"] = False
+        if not _apply_group_offload(pipe, placement, logger, **group_kwargs):
             _fallback_to_model_offload()
             policy = OFFLOAD_MODEL
     elif policy == OFFLOAD_STREAMING:
@@ -1112,15 +1157,23 @@ def _apply_group_offload(
     logger: Any,
     *,
     stream_text_encoders: bool = False,
+    stream_transformer: bool = True,
 ) -> bool:
     """Stream the transformer a few blocks at a time via diffusers group offloading, keeping the
     smaller components resident. Returns False (caller falls back to whole-module) on any failure.
 
     ``stream_text_encoders`` extends the streamed set to every ``text_encoder*`` module. Off by
     default: keeping them resident is faster when there is room. The planner turns it on only
-    where it is the difference between group offload and whole-module offload."""
+    where it is the difference between group offload and whole-module offload.
+
+    ``stream_transformer=False`` (only ever with ``stream_text_encoders``) keeps every DiT resident
+    and streams the encoders alone: the tier for a card that holds the denoiser but not the
+    denoiser plus its encoder."""
     transformer = getattr(pipe, "transformer", None)
     if transformer is None:
+        return False
+    if not stream_transformer and not stream_text_encoders:
+        # Nothing would stream: that is resident placement, which this function does not do.
         return False
     installed = 0
     try:
@@ -1131,11 +1184,13 @@ def _apply_group_offload(
 
         # A dual-DiT pipeline (Ideogram 4) carries a second denoiser as large as the first, so stream every DiT and keep
         # only smaller companions resident.
-        streamed: dict[str, Any] = {"transformer": transformer}
-        for extra in ("transformer_2", "unconditional_transformer"):
-            module = getattr(pipe, extra, None)
-            if isinstance(module, torch.nn.Module):
-                streamed[extra] = module
+        streamed: dict[str, Any] = {}
+        if stream_transformer:
+            streamed["transformer"] = transformer
+            for extra in ("transformer_2", "unconditional_transformer"):
+                module = getattr(pipe, extra, None)
+                if isinstance(module, torch.nn.Module):
+                    streamed[extra] = module
         # The text encoders are streamed SEPARATELY from the DiTs, and tolerantly (see the apply loop below). Kept in
         # their own dict so the resident placement loop still skips them.
         streamed_encoders: dict[str, Any] = {}
@@ -1206,6 +1261,11 @@ def _apply_group_offload(
                 installed += 1
                 _pin_vision_embedding_device(module)
             except Exception as exc:  # noqa: BLE001 -- degrade this encoder, never fail the load
+                if not stream_transformer and installed == 0:
+                    # The resident-transformer tier exists only because the encoder does NOT fit beside the
+                    # transformer, so keeping it resident is the OOM this tier was chosen to avoid. With no hook
+                    # installed yet, whole-module offload is still reachable: hand the load to it.
+                    raise
                 if logger is not None:
                     logger.warning(
                         "diffusion.memory: group offload unavailable for %s (%s); "
