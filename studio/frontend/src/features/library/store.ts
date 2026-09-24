@@ -45,16 +45,27 @@ let refreshGeneration = 0;
 
 // Edits apply locally first so menus feel instant, and roll back to the server's view on failure.
 export const useLibraryStore = create<LibraryState>((set, get) => {
+  // A failure rolls back once every edit in flight has settled: a snapshot taken sooner would
+  // predate a newer edit and wipe it from the screen.
+  let inFlight = 0;
+  let rollBack = false;
   async function optimistic(
     apply: (state: LibraryState) => Partial<LibraryState>,
     request: () => Promise<void>,
   ): Promise<void> {
     set(apply(get()));
+    inFlight += 1;
     try {
       await request();
     } catch (error) {
-      await get().refresh();
+      rollBack = true;
       throw error;
+    } finally {
+      inFlight -= 1;
+      if (inFlight === 0 && rollBack) {
+        rollBack = false;
+        await get().refresh();
+      }
     }
   }
 
