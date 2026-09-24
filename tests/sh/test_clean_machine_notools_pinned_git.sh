@@ -6,9 +6,9 @@
 # A default install with a working git clones the pinned Diffusers main build through uv, so the
 # trace records git. `notools` rejected every git line, and the leg went red on the first
 # installer PR after the build became the default. The allowance is structural: each git line
-# may name only a remote from the requirement files in UNSLOTH_ALLOW_GIT_FROM, and remoteless
-# lines count only when an allowed remote was fetched. The first trace below is the one that
-# leg recorded.
+# may name only a remote from the requirement files in UNSLOTH_ALLOW_GIT_FROM, and a remoteless
+# line must be one of uv's own cache operations, counted only when an allowed remote was
+# fetched. The first trace below is the one that leg recorded.
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -24,7 +24,7 @@ expect_rc() {
     _label="$1"; _expected="$2"; _allow="$3"; _trace_content="$4"
     printf '%b' "$_trace_content" > "$ROOT/trace.log"
     set +e
-    UNSLOTH_ALLOW_GIT_FROM="$_allow" UNSLOTH_TOOL_TRACE="$ROOT/trace.log" \
+    UV_CACHE_DIR="$UV_CACHE" UNSLOTH_ALLOW_GIT_FROM="$_allow" UNSLOTH_TOOL_TRACE="$ROOT/trace.log" \
         INSTALL_LOG="$ROOT/install.log" bash "$ASSERT_SH" notools \
         > "$ROOT/out.log" 2>&1
     _actual=$?
@@ -43,7 +43,8 @@ expect_rc() {
 REMOTE=$(sed -n 's/^[^#]*git+\(https:\/\/[^@]*\)@.*/\1/p' "$PIN")
 SHA=$(sed -n 's/^[^#]*git+https:\/\/[^@]*@\([0-9a-f]*\).*/\1/p' "$PIN")
 [ -n "$REMOTE" ] && [ -n "$SHA" ] || { echo "no git+ pin in $PIN"; exit 1; }
-CACHE=/Users/runner/work/unsloth/unsloth/.clean-machine/uv-cache/git-v0
+UV_CACHE=/Users/runner/work/unsloth/unsloth/.clean-machine/uv-cache
+CACHE=$UV_CACHE/git-v0
 
 # The macOS trace / file leg's record, with the pin read from the file it came from.
 UV_CLONE="git\t--version
@@ -79,6 +80,18 @@ expect_rc "a lookalike host that only starts with the pin fails" 1 "$PIN" \
     "git\tfetch ${REMOTE%.git}-fork.git +HEAD:refs/remotes/origin/HEAD\n"
 expect_rc "remoteless git with no allowed fetch fails" 1 "$PIN" \
     "git\tinit\ngit\trev-parse HEAD\n"
+expect_rc "a remoteless fetch beside the allowed one fails (its URL is in config)" 1 "$PIN" \
+    "${UV_CLONE}git\tfetch origin\n"
+expect_rc "a local clone outside uv's cache fails" 1 "$PIN" \
+    "${UV_CLONE}git\tclone /tmp/unrelated /tmp/out\n"
+expect_rc "a local clone that climbs out of uv's cache fails" 1 "$PIN" \
+    "${UV_CLONE}git\tclone --local $CACHE/db/x/../../../x $CACHE/checkouts/x/y\n"
+expect_rc "a reset to a commit nothing pins fails" 1 "$PIN" \
+    "${UV_CLONE}git\treset --hard 0000000000000000000000000000000000000000\n"
+expect_rc "any other remoteless subcommand fails" 1 "$PIN" \
+    "${UV_CLONE}git\tpull\n"
+expect_rc "an allowed remote with an extra -c option fails" 1 "$PIN" \
+    "${UV_CLONE}git\t-c core.sshCommand=evil fetch $REMOTE\n"
 expect_rc "a compiler next to the allowed clone still fails" 1 "$PIN" \
     "${UV_CLONE}clang\t-c foo.c\n"
 expect_rc "brew next to the allowed clone still fails" 1 "$PIN" \

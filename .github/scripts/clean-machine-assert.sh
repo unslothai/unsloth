@@ -57,6 +57,60 @@ _git_line_remotes() {
     | sed 's/\.git$//'
 }
 
+# The commits those requirement files pin (git+URL@<40 hex>), one per line.
+_allowed_git_pins() {
+  for _req in ${UNSLOTH_ALLOW_GIT_FROM:-}; do
+    [ -f "$_req" ] || continue
+    sed -n 's/^[^#]*git+[a-z][a-z0-9+.-]*:\/\/[^@#[:space:]]*@\([0-9a-f]\{40\}\).*/\1/p' "$_req"
+  done | sort -u
+}
+
+# A git line naming no remote is allowed only in the exact shapes uv's git source uses to
+# check out a pinned commit from its own cache: nothing that can reach the network (a bare
+# `fetch origin` reads its URL from config) and nothing outside $UV_CACHE_DIR.
+_is_uv_git_cache_op() { # the traced argument string
+  _cache="${UV_CACHE_DIR%/}/git-v0"
+  case "$1" in
+    # rev-parse only reads; uv resolves the pin with it in several spellings.
+    init|rev-parse|"rev-parse "*|"submodule update --recursive --init") return 0 ;;
+    "reset --hard "*)
+      _commit=${1#reset --hard }
+      [ -n "$_commit" ] && printf '%s\n' "$(_allowed_git_pins)" | grep -qxF -- "$_commit"
+      return ;;
+    "clone --local "*)
+      [ -n "${UV_CACHE_DIR:-}" ] || return 1
+      set -f; set -- $1; set +f
+      [ $# -eq 4 ] || return 1
+      case "$3" in "$_cache"/db/*) ;; *) return 1 ;; esac
+      case "$4" in "$_cache"/checkouts/*) ;; *) return 1 ;; esac
+      case "$3$4" in *..*) return 1 ;; esac
+      return 0 ;;
+  esac
+  return 1
+}
+
+# A git line that names a remote: every remote allowed, and no `-c` except the
+# `remote.origin.url=` uv passes to `submodule update`.
+_is_allowed_remote_git_line() { # the traced argument string, the allowed remotes
+  _named=false
+  while IFS= read -r _remote; do
+    [ -n "$_remote" ] || continue
+    _named=true
+    printf '%s\n' "$2" | grep -qxF -- "$_remote" || return 1
+  done <<< "$(_git_line_remotes "$1")"
+  [ "$_named" = true ] || return 1
+  _prev=""
+  set -f
+  for _word in $1; do
+    if [ "$_prev" = "-c" ]; then
+      case "$_word" in remote.origin.url=*) ;; *) set +f; return 1 ;; esac
+    fi
+    _prev=$_word
+  done
+  set +f
+  return 0
+}
+
 _is_uv_libpython_self_id_patch() { # argc, operation, source, destination, extra
   [ "$1" = "3" ] && [ "$2" = "-id" ] && [ -n "$3" ] && [ "$3" = "$4" ] \
     && [ -z "$5" ] || return 1
@@ -178,11 +232,12 @@ for check in "$@"; do
         allow="${UNSLOTH_ALLOW_TOOLS:-}"
         # A default install with a working git fetches its pinned git+ requirements with it
         # (the Diffusers main build: a clone records a ref, the archive fallback does not).
-        # That is git, but only for those remotes, so it is allowed structurally: each git
-        # line may name only the requirement files' remotes, and a line naming none (uv's
-        # `rev-parse`, `reset`, `clone --local` inside its own cache) counts only when some
-        # line of the trace did fetch an allowed remote. `--version` is the installer's own
-        # probe. Any other remote, or git that fetched nothing allowed, is still a hit.
+        # That is git, but only for those remotes, so it is allowed structurally: a git line
+        # that names a remote may name only the requirement files' remotes, and one naming
+        # none must be one of uv's own cache operations (_is_uv_git_cache_op), counted only
+        # when some line did fetch an allowed remote. `--version` is the installer's probe.
+        # Any other remote, any other remoteless git, or git that fetched nothing allowed is
+        # still a hit.
         allowed_remotes=$(_allowed_git_remotes)
         git_fetched_allowed=false
         if [ -n "$allowed_remotes" ]; then
@@ -221,12 +276,9 @@ for check in "$@"; do
             if [ "$git_rest" = "--version" ]; then
               continue
             fi
-            git_ok=true
-            while IFS= read -r remote; do
-              [ -n "$remote" ] || continue
-              printf '%s\n' "$allowed_remotes" | grep -qxF -- "$remote" || git_ok=false
-            done <<< "$(_git_line_remotes "$git_rest")"
-            if [ "$git_ok" = true ] && [ "$git_fetched_allowed" = true ]; then
+            if [ -n "$(_git_line_remotes "$git_rest")" ]; then
+              _is_allowed_remote_git_line "$git_rest" "$allowed_remotes" && continue
+            elif [ "$git_fetched_allowed" = true ] && _is_uv_git_cache_op "$git_rest"; then
               continue
             fi
           fi
