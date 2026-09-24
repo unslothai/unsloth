@@ -9623,3 +9623,19 @@ def test_the_boundary_marker_waits_out_a_busy_capture_lock(fake_runtime, monkeyp
     assert marks["calls"] == 1
     assert marks["ok"] is True
     assert at_decode.get("phase") == "decode"
+
+
+def test_generate_runs_the_video_pipeline_through_the_render_thread(fake_runtime, tmp_path, monkeypatch):
+    from core.inference import video as video_mod
+
+    names = []
+
+    def run(name, fn):
+        names.append(name)
+        return fn()
+
+    monkeypatch.setattr(video_mod.render_thread, "run", run)
+    backend = _load_ltx23_from_dir(tmp_path)
+    backend.generate(prompt = "a sloth")
+    assert names == ["video"]
+    assert backend._state.pipe.last_kwargs["num_inference_steps"] == 8
