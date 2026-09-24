@@ -54,6 +54,11 @@ import { LibraryToolbar, type NewAction } from "./components/library-toolbar";
 import { EMPTY_FILTERS, type LibraryFilters, filtersActive, matchesFilters } from "./filters";
 import { LIBRARY_TABS, type LibrarySearch, type LibraryTab } from "./search";
 import { useLibraryStore, useLibraryViewStore } from "./store";
+import {
+  compareBySort,
+  includedBySettings,
+  useLibrarySettingsStore,
+} from "./settings-store";
 
 const TAB_LABELS: Record<LibraryTab, string> = {
   suggested: "Suggested",
@@ -96,8 +101,6 @@ const KIND_TABS: Partial<Record<LibraryTab, (item: LibraryItem) => boolean>> = {
   models: isModelItem,
 };
 
-// Suggested is the recent slice of everything, not a second copy of All.
-const SUGGESTED_LIMIT = 40;
 
 const NEW_CHAT_PROMPTS: Partial<Record<NewAction, string>> = {
   document: "Write a document about ",
@@ -213,8 +216,14 @@ export function LibraryPage() {
 
 function LibraryView({ search }: { search: LibrarySearch }) {
   const navigate = useNavigate();
-  const { items, folders, status, error, refresh, patchItem, removeItem, upload, addFolder, patchFolder, removeFolder } =
+  const { items: allItems, folders, status, error, refresh, patchItem, removeItem, upload, addFolder, patchFolder, removeFolder } =
     useLibraryStore();
+  const settings = useLibrarySettingsStore();
+  // Sources switched off in settings are left out everywhere, folder counts included.
+  const items = useMemo(
+    () => allItems.filter((item) => includedBySettings(item.id, settings)),
+    [allItems, settings],
+  );
   const view = useLibraryViewStore((s) => s.view);
   const setView = useLibraryViewStore((s) => s.setView);
   const openSettings = useSettingsDialogStore((s) => s.openDialog);
@@ -226,7 +235,7 @@ function LibraryView({ search }: { search: LibrarySearch }) {
   const [pendingDelete, setPendingDelete] = useState<LibraryTarget[] | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
 
-  const tab: LibraryTab = search.show ?? "suggested";
+  const tab: LibraryTab = search.show ?? settings.startTab;
   const folderId = search.folder ?? null;
   const folderById = useMemo(() => new Map(folders.map((f) => [f.id, f])), [folders]);
   const currentFolder = folderId ? (folderById.get(folderId) ?? null) : null;
@@ -255,11 +264,13 @@ function LibraryView({ search }: { search: LibrarySearch }) {
   // The open tab always shows, so a link straight to an empty one still lands somewhere.
   const shownTabs = useMemo(
     () =>
-      LIBRARY_TABS.filter(
-        (entry) =>
-          !MEDIA_TABS.has(entry) || entry === tab || items.some(KIND_TABS[entry]!),
-      ),
-    [items, tab],
+      LIBRARY_TABS.filter((entry) => {
+        if (entry === tab) return true;
+        if (entry === "models") return settings.showFineTunes;
+        if (!MEDIA_TABS.has(entry) || settings.mediaTabs === "always") return true;
+        return items.some(KIND_TABS[entry]!);
+      }),
+    [items, tab, settings.showFineTunes, settings.mediaTabs],
   );
   const visibleItems = useMemo(() => {
     let pool = items;
@@ -270,10 +281,12 @@ function LibraryView({ search }: { search: LibrarySearch }) {
     pool = pool.filter(
       (item) => nameMatches(item.name, needle) && matchesFilters(item, filters, !kindFilter),
     );
-    return tab === "suggested" && !folderId && !needle && !filtersActive(filters)
-      ? pool.slice(0, SUGGESTED_LIMIT)
-      : pool;
-  }, [items, folderId, tab, needle, filters, kindFilter]);
+    // Suggested is the most recent slice of everything, whatever the sort.
+    if (tab === "suggested" && !folderId && !needle && !filtersActive(filters)) {
+      return pool.slice(0, settings.suggestedLimit);
+    }
+    return settings.sort === "recent" ? pool : [...pool].sort(compareBySort(settings.sort));
+  }, [items, folderId, tab, needle, filters, kindFilter, settings.suggestedLimit, settings.sort]);
 
   const visibleFolders = useMemo(() => {
     const showsFolders = folderId || tab === "folders" || tab === "all";
@@ -281,8 +294,8 @@ function LibraryView({ search }: { search: LibrarySearch }) {
     return folders
       .filter((folder) => folder.parentId === folderId)
       .filter((folder) => nameMatches(folder.name, needle))
-      .sort((a, b) => b.updatedAt - a.updatedAt);
-  }, [folders, folderId, tab, needle, filters]);
+      .sort(compareBySort(settings.sort === "size" ? "recent" : settings.sort));
+  }, [folders, folderId, tab, needle, filters, settings.sort]);
 
   const previewItem = search.item ? (items.find((item) => item.id === search.item) ?? null) : null;
 
@@ -324,7 +337,7 @@ function LibraryView({ search }: { search: LibrarySearch }) {
     moveTo: (target, destination) => void moveTo(target, destination),
     moveToNewFolder: (target) =>
       setNameDialog({ mode: "create", parentId: folderId, thenMove: target }),
-    remove: (target) => setPendingDelete([target]),
+    remove: (target) => requestDelete([target]),
   };
 
   async function uploadBatch(batch: LibraryUploadBatch, count: number, label: string) {
@@ -415,6 +428,9 @@ function LibraryView({ search }: { search: LibrarySearch }) {
       throw err;
     }
   }
+
+  const requestDelete = (targets: LibraryTarget[]) =>
+    settings.confirmDelete ? setPendingDelete(targets) : void confirmDelete(targets);
 
   async function confirmDelete(targets: LibraryTarget[]) {
     setPendingDelete(null);
@@ -693,7 +709,7 @@ function LibraryView({ search }: { search: LibrarySearch }) {
           onSearchChange={setQuery}
           searchPlaceholder={folderId ? "Search folder" : "Search library"}
           onNew={handleNew}
-          onSettings={() => openSettings("data")}
+          onSettings={() => openSettings("library")}
         />
         {!folderId && <Tabs tabs={shownTabs} active={tab} onChange={(next) => go({ show: next })} />}
         {renderBody()}
@@ -750,7 +766,7 @@ function LibraryView({ search }: { search: LibrarySearch }) {
               size="sm"
               className="rounded-full text-destructive hover:text-destructive"
               disabled={deletableSelection().length === 0}
-              onClick={() => setPendingDelete(deletableSelection())}
+              onClick={() => requestDelete(deletableSelection())}
             >
               <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} className="size-4" />
               Delete

@@ -132,6 +132,8 @@ export const useLibraryStore = create<LibraryState>((set, get) => {
 
 export type LibraryView = "grid" | "list";
 
+export const LIBRARY_VIEW_STORAGE_KEY = "unsloth_library_view";
+
 export const useLibraryViewStore = create<{
   view: LibraryView;
   setView: (view: LibraryView) => void;
@@ -141,6 +143,6 @@ export const useLibraryViewStore = create<{
       view: "grid",
       setView: (view) => set({ view }),
     }),
-    { name: "unsloth_library_view" },
+    { name: LIBRARY_VIEW_STORAGE_KEY },
   ),
 );

@@ -127,6 +127,23 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.chat.groups.menu.title",
   ],
   // Chat data management moved to the Data tab; keep these rows findable there.
+  library: [
+    "settings.library.defaultView",
+    "settings.library.cardSize",
+    "settings.library.imageLayout",
+    "settings.library.showCardDates",
+    "settings.library.startTab",
+    "settings.library.sort",
+    "settings.library.suggestedLimit",
+    "settings.library.mediaTabs",
+    "settings.library.contentSection",
+    "settings.library.showChatAttachments",
+    "settings.library.showChatToolFiles",
+    "settings.library.showGeneratedMedia",
+    "settings.library.showFineTunes",
+    "settings.library.confirmDelete",
+    "settings.library.reset",
+  ],
   data: [
     "settings.data.fineTuneExport",
     "settings.data.archivedChats",

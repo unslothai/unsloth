@@ -4,7 +4,7 @@
 import { cn } from "@/lib/utils";
 import { Folder01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { type ReactNode, useRef, useState } from "react";
+import { type ReactNode, type RefObject, useRef, useState } from "react";
 import type { LibraryFolder, LibraryItem } from "../api";
 import {
   KIND_ICONS,
@@ -16,6 +16,7 @@ import {
 import { formatCardTime, pluralize } from "../format";
 import { useColumnCount, useLibraryObjectUrl, useSeen } from "../hooks";
 import { useLibraryActions } from "../actions-context";
+import { CARD_COLUMNS, useLibrarySettingsStore } from "../settings-store";
 import { LibraryActionsMenu } from "./library-actions";
 
 const CARD_SURFACE = "bg-muted/70 dark:bg-card";
@@ -32,13 +33,21 @@ export function KindIcon({ item, className }: { item: LibraryItem; className?: s
   );
 }
 
-/** A lazily loaded image, sized by its own aspect ratio once it arrives. */
-function ImageThumb({ item, className }: { item: LibraryItem; className?: string }) {
+/** A lazily loaded image, sized by its own aspect ratio once it arrives, or cropped square. */
+function ImageThumb({
+  item,
+  className,
+  square = false,
+}: {
+  item: LibraryItem;
+  className?: string;
+  square?: boolean;
+}) {
   const holder = useRef<HTMLDivElement>(null);
   const url = useLibraryObjectUrl(item, useSeen(holder));
   const [loaded, setLoaded] = useState(false);
   return (
-    <div ref={holder} className={cn("relative overflow-hidden", className)}>
+    <div ref={holder} className={cn("relative overflow-hidden", square && "aspect-square", className)}>
       {!loaded && <div className="aspect-square w-full animate-pulse bg-muted" />}
       {url && (
         <img
@@ -46,7 +55,11 @@ function ImageThumb({ item, className }: { item: LibraryItem; className?: string
           alt={item.name}
           draggable={false}
           onLoad={() => setLoaded(true)}
-          className={cn("block w-full", loaded ? "h-auto" : "absolute inset-0 opacity-0")}
+          className={cn(
+            "block w-full",
+            square && "absolute inset-0 h-full object-cover",
+            loaded ? !square && "h-auto" : "absolute inset-0 opacity-0",
+          )}
         />
       )}
     </div>
@@ -84,8 +97,10 @@ function CardFrame({
   );
 }
 
-export function ItemCard({ item, showTime = true }: { item: LibraryItem; showTime?: boolean }) {
+export function ItemCard({ item }: { item: LibraryItem }) {
   const actions = useLibraryActions();
+  const showTime = useLibrarySettingsStore((s) => s.showCardDates);
+  const square = useLibrarySettingsStore((s) => s.imageLayout === "square");
   const menu = <LibraryActionsMenu target={{ kind: "item", item }} variant="overlay" />;
 
   if (hasImagePreview(item)) {
@@ -96,7 +111,7 @@ export function ItemCard({ item, showTime = true }: { item: LibraryItem; showTim
         menu={menu}
         className="border border-border/60 bg-muted"
       >
-        <ImageThumb item={item} />
+        <ImageThumb item={item} square={square} />
       </CardFrame>
     );
   }
@@ -114,11 +129,9 @@ export function ItemCard({ item, showTime = true }: { item: LibraryItem; showTim
         <div className="flex flex-1 items-center justify-center">
           <KindIcon item={item} className="size-10" />
         </div>
-        {showTime && (
-          <p className="truncate text-[13px] text-muted-foreground">
-            {[modelLabel(item), formatCardTime(item.updatedAt)].filter(Boolean).join(" · ")}
-          </p>
-        )}
+        <p className="truncate text-[13px] text-muted-foreground">
+          {[modelLabel(item), showTime && formatCardTime(item.updatedAt)].filter(Boolean).join(" · ")}
+        </p>
       </div>
     </CardFrame>
   );
@@ -156,6 +169,11 @@ export function FolderCard({
   );
 }
 
+function useCardColumns(container: RefObject<HTMLDivElement | null>): number {
+  const { minWidth, max } = CARD_COLUMNS[useLibrarySettingsStore((s) => s.cardSize)];
+  return useColumnCount(container, minWidth, max);
+}
+
 /** Staggered columns: images keep their shape, so cards fill row by row into the shortest-looking
  *  column. Round-robin keeps newest-first reading order without measuring anything. */
 export function Masonry<T>({
@@ -168,7 +186,7 @@ export function Masonry<T>({
   render: (item: T) => ReactNode;
 }) {
   const container = useRef<HTMLDivElement>(null);
-  const columns = useColumnCount(container);
+  const columns = useCardColumns(container);
   const buckets: T[][] = Array.from({ length: columns }, () => []);
   items.forEach((item, index) => buckets[index % columns]!.push(item));
   return (
@@ -194,7 +212,7 @@ export function FolderGrid({
   counts: Map<string, number>;
 }) {
   const container = useRef<HTMLDivElement>(null);
-  const columns = useColumnCount(container);
+  const columns = useCardColumns(container);
   return (
     <div
       ref={container}

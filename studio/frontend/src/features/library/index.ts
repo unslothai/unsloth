@@ -5,3 +5,16 @@
 export { useLibraryChatHandoffStore } from "./chat-handoff-store";
 export { useLibraryFavorites } from "./favorites-store";
 export { validateLibrarySearch, type LibrarySearch, type LibraryTab } from "./search";
+export {
+  DEFAULT_LIBRARY_SETTINGS,
+  LIBRARY_SETTINGS_STORAGE_KEY,
+  SUGGESTED_LIMITS,
+  type LibraryCardSize,
+  type LibraryImageLayout,
+  type LibraryMediaTabs,
+  type LibrarySettings,
+  type LibrarySort,
+  type LibraryStartTab,
+  useLibrarySettingsStore,
+} from "./settings-store";
+export { LIBRARY_VIEW_STORAGE_KEY, type LibraryView, useLibraryViewStore } from "./store";
