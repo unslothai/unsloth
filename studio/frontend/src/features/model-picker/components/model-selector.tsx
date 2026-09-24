@@ -11,6 +11,7 @@ import {
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { ApiProviderLogo } from "@/features/chat/api-provider-logo";
 
+import type { CapabilityKey } from "@/features/hub";
 import type { HfTaskFilter } from "@/features/hub/hooks/use-hub-model-search";
 // eslint-disable-next-line no-restricted-imports -- The settings barrel imports this feature back.
 import { useSettingsDialogStore } from "@/features/settings/stores/settings-dialog-store";
@@ -133,6 +134,8 @@ interface ModelSelectorProps {
   /** Also list community (non-unsloth) models for `task`. Opt-in: only pages whose runtime loads
    *  arbitrary publishers. */
   communityModelPolicy?: CommunityModelPolicy;
+  /** Hub filter the Search Hub button opens with. Also shows Search Hub on curated task pickers. */
+  hubCapability?: CapabilityKey;
   /** Trigger text when nothing is loaded. Defaults to "Select model"; task pages name what they
    *  pick so it reads as separate from the chat model. */
   placeholder?: string;
@@ -686,6 +689,7 @@ export function ModelSelector({
   task,
   catalog,
   communityModelPolicy = "none",
+  hubCapability,
   placeholder,
   loaded,
 }: ModelSelectorProps) {
@@ -814,7 +818,10 @@ export function ModelSelector({
 
   function handleBrowseHub() {
     setOpen(false);
-    void navigate({ to: "/hub", search: { tab: "discover" } });
+    void navigate({
+      to: "/hub",
+      search: { tab: "discover", capability: hubCapability },
+    });
   }
 
   // A Connected group's gear. What is configurable about a remote model lives on its connection,
@@ -858,10 +865,11 @@ export function ModelSelector({
         resolveDownloadFootprint={resolveDownloadFootprint}
         onEject={onEject ? handleEject : undefined}
         onFoldersChange={onFoldersChange}
-        // A curated task picker (Images / Video) is self-contained, so it omits this. A
-        // community-enabled one (Audio) already lists past unsloth, so it keeps it.
+        // Curated task pickers show it only with a Hub filter; community-enabled ones always do.
         onBrowseHub={
-          task && communityModelPolicy === "none" ? undefined : handleBrowseHub
+          task && communityModelPolicy === "none" && !hubCapability
+            ? undefined
+            : handleBrowseHub
         }
         onConfigureConnection={handleConfigureConnection}
         onModelsChange={onModelsChange}

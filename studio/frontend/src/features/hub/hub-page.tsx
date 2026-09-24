@@ -745,6 +745,28 @@ export function ModelsPage() {
     });
   }, [navigate, setModelsTab]);
 
+  // A capability link opens the sorted Discover list with that filter on (the feed ignores it).
+  // The param is consumed so later filter changes stick and a repeat link re-applies.
+  const urlCapability = hubSearch.capability ?? null;
+  useEffect(() => {
+    if (!urlCapability) return;
+    setResourceType("models");
+    setQuery("");
+    setDiscoverFormat("all");
+    setCapabilityFilter(urlCapability);
+    setSortBrowseActive(true);
+    void navigate({
+      to: "/hub",
+      search: (prev) => ({
+        ...prev,
+        capability: undefined,
+        section: undefined,
+        model: undefined,
+      }),
+      replace: true,
+    });
+  }, [urlCapability, navigate]);
+
   const handleSortChange = useCallback(
     (next: HfSortKey) => {
       setSortBy(next);

@@ -3504,6 +3504,7 @@ function VideoGenerator({
             className="!h-[calc(34px*var(--ui-space-scale,1))]"
             task={VIDEO_GEN_TASKS}
             catalog={VIDEO_CATALOG}
+            hubCapability="diffusion"
             placeholder="Select video model"
             open={active && selectorOpen}
             onOpenChange={(o) => setSelectorOpen(active && o)}

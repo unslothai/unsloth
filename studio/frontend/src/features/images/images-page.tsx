@@ -4234,6 +4234,7 @@ export function ImagesPage({
                 triggerLabelClassName="text-ui-14 @[68rem]:text-ui-16"
                 task={IMAGE_GEN_TASKS}
                 catalog={IMAGE_CATALOG}
+                hubCapability="diffusion"
                 placeholder="Select image model"
                 open={active && selectorOpen}
                 onOpenChange={(o) => setSelectorOpen(active && o)}
