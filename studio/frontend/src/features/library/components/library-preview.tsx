@@ -277,7 +277,7 @@ export function LibraryPreview({
                 disabled: saving,
                 onClick: () => void saveThen(() => onChat(item)),
               },
-              onDownload: isFileItem(item) ? () => onDownload(item) : undefined,
+              onDownload: isFileItem(item) ? () => void saveThen(() => onDownload(item)) : undefined,
               onViewChat: item.threadId
                 ? () => void saveThen(() => onOpenThread(item.threadId!))
                 : undefined,
