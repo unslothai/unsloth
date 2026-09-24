@@ -53,7 +53,7 @@ function ImageThumb({ item, className }: { item: LibraryItem; className?: string
   if (failed) {
     return (
       <div className={cn("flex aspect-square items-center justify-center", className)}>
-        <KindIcon item={item} className="h-auto w-1/4 max-w-10" />
+        <KindIcon item={item} className="h-auto w-1/4 max-w-9" />
       </div>
     );
   }
@@ -161,13 +161,11 @@ export function ItemCard({ item, showTime = true }: { item: LibraryItem; showTim
           {item.name}
         </p>
         <div className="flex flex-1 items-center justify-center">
-          <KindIcon item={item} className="size-10" />
+          <KindIcon item={item} className="size-9" />
         </div>
-        {showTime && (
-          <p className="truncate pr-6 text-[12.5px] text-muted-foreground">
-            {formatCardTime(item.updatedAt)}
-          </p>
-        )}
+        <p className="truncate pr-6 text-[12.5px] text-muted-foreground">
+          {showTime && formatCardTime(item.updatedAt)}
+        </p>
       </div>
     </CardFrame>
   );
@@ -191,7 +189,7 @@ export function FolderCard({
         className={CARD_SURFACE}
       >
         <div className="flex aspect-square items-center justify-center">
-          <HugeiconsIcon icon={Folder01Icon} strokeWidth={1.5} className="size-10" />
+          <HugeiconsIcon icon={Folder01Icon} strokeWidth={1.5} className="size-9" />
         </div>
       </CardFrame>
       <button
