@@ -764,15 +764,40 @@ def test_an_in_flight_install_by_another_process_is_waited_for_before_importing(
     assert env.commands == []
 
 
-@pytest.mark.parametrize(
-    "dists",
-    [
-        {"flashinfer-python": "0.5.3"},  # the user's own flashinfer
-        {"flashinfer-python": "0.6.6", "flashinfer-jit-cache": "0.6.6+cu130"},  # a finished install
-    ],
-)
-def test_a_settled_flashinfer_never_waits_on_the_lock(env, monkeypatch, dists):
-    env.dists.update(dists)
+def test_a_complete_install_still_holding_the_lock_is_waited_for_in_case_it_rolls_back(
+    env, monkeypatch
+):
+    # Both distributions are on disk, but the other process is still in its drift checks and import verify: it
+    # rolls back here, so importing before it releases the lock would load a flashinfer that is then uninstalled.
+    env.dists.update({"flashinfer-python": "0.6.6", "flashinfer-jit-cache": "0.6.6+cu130"})
+    env.importable = True
+    stamps = _track_imports(env, monkeypatch)
+    filelock = pytest.importorskip("filelock")
+    other = filelock.FileLock(inst._env_lock_path(), thread_local = False)
+    held, rolled_back = threading.Event(), []
+
+    def _hold():
+        with other:
+            held.set()
+            time.sleep(0.5)
+            env.dists.pop("flashinfer-python")
+            env.dists.pop("flashinfer-jit-cache")
+            env.importable = False
+            rolled_back.append(time.monotonic())
+
+    t = threading.Thread(target = _hold)
+    t.start()
+    held.wait(5)
+    try:
+        ok, reason = _ensure(env)
+    finally:
+        t.join()
+    assert rolled_back and stamps and stamps[0] >= rolled_back[0]
+    assert "already installed" not in reason
+
+
+def test_a_user_flashinfer_never_waits_on_the_lock(env, monkeypatch):
+    env.dists["flashinfer-python"] = "0.5.3"
     env.importable = True
     stamps = _track_imports(env, monkeypatch)
     start = time.monotonic()

@@ -230,15 +230,13 @@ def _await_inflight_install() -> bool:
 
     flashinfer resolves its jit-cache directory once, at import, so a process that imports it between the
     flashinfer-python and the jit-cache steps of another process's install JIT-compiles for its whole life.
-    Only the pinned flashinfer-python without its jit-cache can be that window, so any other state (already
-    imported, absent, another version, cache present) returns without touching the lock. False when the
-    other install outlived the wait, so importing now would still miss the cache."""
+    The pinned flashinfer-python can be that window, or, with its jit-cache present, an install still in its drift
+    checks that may roll back, so only other states (already imported, absent, another version) skip the lock.
+    False when the other install outlived the wait, so importing now would still miss the cache."""
     if "flashinfer" in sys.modules:
         return True
     installed = _dist_version(FLASHINFER_PACKAGE)
     if installed is None or installed.split("+", 1)[0] != FLASHINFER_VERSION:
-        return True
-    if _dist_version(FLASHINFER_JIT_CACHE_PACKAGE) is not None:
         return True
     with _env_install_lock() as held:
         return held
