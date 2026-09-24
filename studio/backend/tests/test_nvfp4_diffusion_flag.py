@@ -477,3 +477,154 @@ def test_enabled_the_routes_let_nvfp4_through_the_switch(monkeypatch):
     _refuse_disabled_nvfp4_request(
         types.SimpleNamespace(transformer_quant = "nvfp4", text_encoder_quant = "nvfp4")
     )
+
+
+# ---------------------------------------------------------------------------------------------
+# An NVFP4 checkpoint loaded directly as the model
+
+
+def _prequant_dir(root, name, scheme):
+    """A directory holding one tiny safetensors pre-quant artifact that records ``scheme``."""
+    import json
+
+    import torch
+    from safetensors.torch import save_file
+
+    from core.inference.diffusion_prequant import PREQUANT_FORMAT
+    from core.inference.prequant_safetensors import UNSLOTH_FORMAT_KEY, UNSLOTH_METADATA_KEY
+
+    folder = root / name
+    folder.mkdir()
+    save_file(
+        {"w": torch.zeros(2)},
+        str(folder / "model.safetensors"),
+        metadata = {
+            UNSLOTH_FORMAT_KEY: PREQUANT_FORMAT,
+            UNSLOTH_METADATA_KEY: json.dumps({"scheme": scheme}),
+        },
+    )
+    return folder
+
+
+def _checkpoint_route_calls(image_path, video_path, monkeypatch):
+    from models.inference import DiffusionLoadRequest, VideoLoadRequest
+    from routes import inference as image_routes
+    from routes import video as video_routes
+
+    monkeypatch.setattr(image_routes.account_access, "managed_account", lambda: False)
+    monkeypatch.setattr(video_routes.account_access, "managed_account", lambda: False)
+    monkeypatch.setattr(image_routes.account_access, "require_idle_other_accounts", lambda: None)
+    monkeypatch.setattr(video_routes.account_access, "require_idle_other_accounts", lambda: None)
+    image = DiffusionLoadRequest(model_path = image_path)
+    video = VideoLoadRequest(model_path = video_path)
+    return [
+        lambda: image_routes.diffusion_download_plan(image, current_subject = "u"),
+        lambda: image_routes.load_diffusion_model_gated(image, "u"),
+        lambda: video_routes.video_download_plan(video, current_subject = "u"),
+        lambda: video_routes.load_video_model_gated(video, "u"),
+    ]
+
+
+HOSTED_NVFP4 = [
+    "unsloth/Z-Image-Turbo-NVFP4",
+    "unsloth/FLUX.1-schnell-NVFP4",
+    "unsloth/Qwen-Image-2512-NVFP4",
+    "unsloth/Wan2.2-TI2V-5B-NVFP4",
+    "unsloth/Wan2.2-T2V-A14B-NVFP4",
+    "unsloth/HunyuanVideo-1.5-NVFP4",
+]
+
+
+@pytest.mark.parametrize("repo", HOSTED_NVFP4)
+def test_a_hosted_nvfp4_repo_as_the_model_is_refused(repo):
+    with pytest.raises(ValueError, match = DISABLED):
+        flag.refuse_disabled_nvfp4_checkpoint(repo)
+
+
+def test_every_family_registered_nvfp4_repo_is_recognised_by_the_table():
+    from core.inference.diffusion_prequant import hosted_nvfp4_repo_ids
+    from core.inference.video_families import _FAMILIES
+
+    registered = {
+        repo.lower() for fam in _FAMILIES for scheme, repo in fam.prequant_repos if scheme == "nvfp4"
+    }
+    assert registered and registered <= hosted_nvfp4_repo_ids()
+
+
+def test_a_cached_repo_is_judged_by_its_metadata_not_its_name(tmp_path, monkeypatch):
+    from core.inference import diffusion_prequant as dpq
+
+    snap = _prequant_dir(tmp_path, "snap", "nvfp4")
+    monkeypatch.setattr(dpq, "_cached_snapshot_dirs", lambda repo: [str(snap)])
+    assert dpq.declares_nvfp4_checkpoint("someone/renamed-checkpoint") is True
+    with pytest.raises(ValueError, match = DISABLED):
+        flag.refuse_disabled_nvfp4_checkpoint("someone/renamed-checkpoint")
+
+
+def test_a_local_dir_whose_metadata_declares_nvfp4_is_refused(tmp_path):
+    # No NVFP4 in the name: the recorded scheme is the evidence.
+    folder = _prequant_dir(tmp_path, "my-checkpoint", "nvfp4")
+    with pytest.raises(ValueError, match = DISABLED):
+        flag.refuse_disabled_nvfp4_checkpoint(str(folder))
+    with pytest.raises(ValueError, match = DISABLED):
+        flag.refuse_disabled_nvfp4_checkpoint(str(folder / "model.safetensors"))
+
+
+def test_the_routes_400_an_nvfp4_checkpoint_as_the_model(tmp_path, monkeypatch):
+    from fastapi import HTTPException
+
+    folder = _prequant_dir(tmp_path, "local-z-image", "nvfp4")
+    for image_path, video_path in (
+        ("unsloth/Z-Image-Turbo-NVFP4", "unsloth/Wan2.2-TI2V-5B-NVFP4"),
+        (str(folder), str(folder)),
+    ):
+        for call in _checkpoint_route_calls(image_path, video_path, monkeypatch):
+            with pytest.raises(HTTPException) as exc:
+                _run(call())
+            assert exc.value.status_code == 400
+            assert DISABLED in exc.value.detail
+            assert "NVFP4 checkpoint" in exc.value.detail
+            assert str(tmp_path) not in exc.value.detail
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "Tongyi-MAI/Z-Image-Turbo",
+        "unsloth/Z-Image-Turbo-FP8",
+        "Wan-AI/Wan2.2-TI2V-5B-Diffusers",
+        "unsloth/Qwen-Image-2512-GGUF",
+        "",
+        None,
+    ],
+)
+def test_non_nvfp4_models_are_not_refused(path):
+    flag.refuse_disabled_nvfp4_checkpoint(path)
+
+
+def test_a_local_dir_with_another_scheme_is_not_refused(tmp_path):
+    folder = _prequant_dir(tmp_path, "my-fp8-checkpoint", "fp8")
+    flag.refuse_disabled_nvfp4_checkpoint(str(folder))
+    plain = tmp_path / "plain-pipeline"
+    plain.mkdir()
+    (plain / "model_index.json").write_text("{}")
+    flag.refuse_disabled_nvfp4_checkpoint(str(plain))
+
+
+def test_enabled_an_nvfp4_checkpoint_as_the_model_proceeds(tmp_path, monkeypatch):
+    _enable(monkeypatch)
+    folder = _prequant_dir(tmp_path, "my-checkpoint", "nvfp4")
+    for path in (*HOSTED_NVFP4, str(folder)):
+        flag.refuse_disabled_nvfp4_checkpoint(path)
+
+    reached = []
+
+    def _stop(*args, **kwargs):
+        reached.append(True)
+        raise RuntimeError("reached the backend")
+
+    monkeypatch.setattr("core.inference.diffusion.get_diffusion_backend", _stop)
+    calls = _checkpoint_route_calls("unsloth/Z-Image-Turbo-NVFP4", str(folder), monkeypatch)
+    with pytest.raises(RuntimeError, match = "reached the backend"):
+        _run(calls[0]())
+    assert reached == [True]
