@@ -105,6 +105,7 @@ from .diffusion_auto_policy import (
     precision_fallback_allowed,
     precision_refusal_message,
 )
+from .diffusion_nvfp4_flag import nvfp4_diffusion_enabled
 from .diffusion_nvfp4_install import nvfp4_backend_fields as _nvfp4_backend_fields
 from .diffusion_transformer_quant import (
     TQ_AUTO,
@@ -2893,6 +2894,8 @@ class VideoBackend:
         either way, so no hosted checkpoint, a repo the Hub refuses (private, gated, unpublished) or a
         conventional load whose plan declined the seed must not buy the multi-GB install. A cached
         checkpoint counts; offline asks the cache only. Unanswerable answers no."""
+        if not nvfp4_diffusion_enabled():
+            return False
         try:
             modular = bool(getattr(fam, "modular_workflow", None))
             if planned == DENOISER_SEED_DECLINED and not modular:
@@ -4403,6 +4406,8 @@ class VideoBackend:
         # dispatch below too, which is handed this outcome.
         if (
             kind == "pipeline"
+            # The NVFP4 switch: off, no install is attempted and the Hub is not asked below.
+            and nvfp4_diffusion_enabled()
             and "nvfp4"
             in (
                 normalize_transformer_quant(transformer_quant),

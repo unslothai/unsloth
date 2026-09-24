@@ -10475,6 +10475,20 @@ def test_a_reachable_nvfp4_video_checkpoint_still_installs_flashinfer(fake_runti
     assert installs == [("cuda", False)]
 
 
+def test_with_the_nvfp4_switch_off_a_reachable_video_checkpoint_installs_nothing(
+    fake_runtime, monkeypatch
+):
+    # This module runs with UNSLOTH_NVFP4_DIFFUSION=1 (conftest); unset it for the shipped default.
+    monkeypatch.delenv("UNSLOTH_NVFP4_DIFFUSION", raising = False)
+    installs, listed, _ = _video_install_probe(
+        monkeypatch,
+        listing = ["Wan2.2-T2V-A14B-NVFP4.pt", "Wan2.2-T2V-A14B-transformer_2-NVFP4.pt"],
+    )
+    _video_load_to_the_install_gate(transformer_quant = None, _video_auto_denoiser_planned = "nvfp4")
+    assert installs == []
+    assert listed == [], "no Hub request to a *-NVFP4 repo while the switch is off"
+
+
 def test_a_video_plan_that_settled_nvfp4_installs_without_asking_the_hub_again(
     fake_runtime, monkeypatch
 ):

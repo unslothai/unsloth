@@ -202,6 +202,7 @@ from .diffusion_auto_policy import (
     resident_bytes_from_declared,
     resolve_dense_quant_candidate,
 )
+from .diffusion_nvfp4_flag import nvfp4_diffusion_enabled
 from .diffusion_nvfp4_install import nvfp4_backend_fields as _nvfp4_backend_fields
 from .diffusion_transformer_quant import (
     TQ_AUTO,
@@ -3331,6 +3332,8 @@ class DiffusionBackend:
         checkpoint, a repo the Hub refuses (private, gated, unpublished) or a LoRA bake, which skips
         the prequant, must not buy the multi-GB install. A local override counts; a cached checkpoint
         counts; offline asks the cache only. Unanswerable answers no: the load still runs on torchao."""
+        if not nvfp4_diffusion_enabled():
+            return False
         try:
             if _has_active_lora(loras):
                 return False
@@ -4445,6 +4448,8 @@ class DiffusionBackend:
         # listed the checkpoint on the Hub (or found it cached offline); otherwise ask.
         if (
             dense_quant_supported_kind(kind)
+            # The NVFP4 switch: off, no install is attempted and the Hub is not asked below.
+            and nvfp4_diffusion_enabled()
             and TQ_NVFP4
             in (
                 normalize_transformer_quant(transformer_quant),

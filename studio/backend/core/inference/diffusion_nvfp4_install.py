@@ -143,7 +143,9 @@ def nvfp4_backend_fields(backend: Optional[str], owner: Any = None) -> dict:
     why flashinfer is not serving it (the install refusal or failure, else a failed preflight). ``owner``
     is the backend object whose load asked; without it the process-wide last reason is used."""
     reason = None
-    if backend == "torchao":
+    from .diffusion_nvfp4_flag import nvfp4_diffusion_enabled
+
+    if backend == "torchao" and nvfp4_diffusion_enabled():
         if owner is not None and owner in _REASONS:
             own, index = _REASONS[owner]
             reason = own or _cached_preflight_failure(index)
@@ -977,7 +979,14 @@ def ensure_flashinfer_for_nvfp4(
 ) -> tuple[bool, str]:
     """See ``_ensure``. ``owner`` (the loading backend object) keys the reason its status route reports,
     recorded at once; a loader that can still be cancelled with a model resident passes no owner and
-    calls ``record_install_reason`` after the swap. ``local_files_only`` loads never install."""
+    calls ``record_install_reason`` after the swap. ``local_files_only`` loads never install.
+
+    With the NVFP4 switch (``UNSLOTH_NVFP4_DIFFUSION``) off this returns at once: no import of
+    flashinfer, no lock, no subprocess, no network, and no reason recorded for the status route."""
+    from .diffusion_nvfp4_flag import nvfp4_diffusion_enabled
+
+    if not nvfp4_diffusion_enabled():
+        return False, "NVFP4 is disabled in this build"
     ok, reason = _ensure(
         device, logger = logger, status_cb = status_cb, run = run, local_files_only = local_files_only
     )

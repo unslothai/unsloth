@@ -12063,6 +12063,28 @@ def test_a_reachable_nvfp4_checkpoint_still_installs_flashinfer(fake_runtime, mo
     assert installs == [("cuda", False)]
 
 
+def test_with_the_nvfp4_switch_off_a_reachable_checkpoint_installs_nothing(fake_runtime, monkeypatch):
+    # This module runs with UNSLOTH_NVFP4_DIFFUSION=1 (conftest); unset it for the shipped default. A plan
+    # that settled nvfp4 is the path that reaches the gate without an explicit request, which the switch
+    # refuses before the load (test_nvfp4_diffusion_flag.py).
+    monkeypatch.delenv("UNSLOTH_NVFP4_DIFFUSION", raising = False)
+    installs, listed = _nvfp4_install_probe(
+        monkeypatch, listing = [_FakeSibling("Z-Image-Turbo-NVFP4.safetensors", 6 * GB)]
+    )
+    _load_to_the_install_gate(transformer_quant = None, _pipeline_prequant_planned = "nvfp4")
+    assert installs == []
+    assert listed == [], "no Hub request to a *-NVFP4 repo while the switch is off"
+    with pytest.raises(ValueError, match = "NVFP4 is disabled in this build"):
+        DiffusionBackend().load_pipeline(
+            "Tongyi-MAI/Z-Image-Turbo",
+            model_kind = "pipeline",
+            family_override = "z-image",
+            transformer_quant = "nvfp4",
+            _fetch_base = "Tongyi-MAI/Z-Image-Turbo",
+        )
+    assert installs == [] and listed == []
+
+
 def test_a_plan_that_settled_nvfp4_installs_without_asking_the_hub_again(fake_runtime, monkeypatch):
     # The download plan only pins NVFP4 after listing the checkpoint (or finding it cached offline).
     installs, listed = _nvfp4_install_probe(
