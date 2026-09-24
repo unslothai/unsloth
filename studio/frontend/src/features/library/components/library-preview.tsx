@@ -427,7 +427,7 @@ export function LibraryPreview({
       // Typing during a save makes a newer draft; send that too before anything moves on.
       let sent = draft;
       for (;;) {
-        await writeLibraryText(item.id, encodeNote(sent, format));
+        await writeLibraryText(item.id, encodeNote(sent, format), format.encoding);
         const latest = latestEdit.current;
         if (latest?.itemId !== item.id || latest.text === sent) break;
         sent = latest.text;

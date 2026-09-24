@@ -142,6 +142,23 @@ def test_deleting_a_folder_moves_its_contents_up(client):
     }
 
 
+def test_a_utf16_note_is_saved_back_as_utf16(client):
+    # Windows PowerShell 5 writes UTF-16LE with a BOM and CRLF endings.
+    [note] = _upload(client, ("log.txt", "\ufeffold\r\n".encode("utf-16le"), "text/plain"))
+    upload_id = note.removeprefix("upload:")
+    response = client.put(
+        f"/api/library/uploads/{upload_id}/text",
+        json = {"text": "\ufeffnew\r\n", "encoding": "utf-16le"},
+    )
+    assert response.status_code == 200
+    items, _ = _items(client)
+    assert client.get(items[note]["fileUrl"]).content == b"\xff\xfen\x00e\x00w\x00\r\x00\n\x00"
+    response = client.put(
+        f"/api/library/uploads/{upload_id}/text", json = {"text": "x", "encoding": "latin-1"}
+    )
+    assert response.status_code == 422
+
+
 def test_notes_are_editable_and_deletable(client):
     [note] = _upload(client, ("note.md", b"", "text/markdown"))
     upload_id = note.removeprefix("upload:")

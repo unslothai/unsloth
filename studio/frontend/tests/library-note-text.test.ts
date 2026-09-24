@@ -48,10 +48,18 @@ test("a UTF-8 BOM is kept on save", () => {
   assert.equal(encodeNote("hi!", note.format), "\uFEFFhi!");
 });
 
-test("UTF-16LE with a BOM decodes, and opens read-only", () => {
+test("UTF-16LE with a BOM decodes, stays editable, and saves back with its BOM and CRLF", () => {
   const note = decodeNote(utf16le("Write-Host 'hi'\r\n"));
   assert.equal(note.text, "Write-Host 'hi'\n");
   assert.equal(note.format.encoding, "utf-16le");
+  assert.equal(note.readOnlyReason, null);
+  // The server encodes this in the note's encoding, turning the leading U+FEFF into FF FE.
+  assert.equal(encodeNote("Write-Host 'bye'\n", note.format), "\uFEFFWrite-Host 'bye'\r\n");
+});
+
+test("UTF-16 that does not decode cleanly opens read-only", () => {
+  // A BOM, then a lone high surrogate.
+  const note = decodeNote(new Uint8Array([0xff, 0xfe, 0x00, 0xd8]));
   assert.notEqual(note.readOnlyReason, null);
 });
 

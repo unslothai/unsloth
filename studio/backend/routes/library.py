@@ -6,7 +6,7 @@ models and sandbox files, plus folders, favorites and renames. See ``core.librar
 
 import os
 import re
-from typing import Optional
+from typing import Literal, Optional
 from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
@@ -83,6 +83,8 @@ class FolderPatch(BaseModel):
 
 class TextContent(BaseModel):
     text: str = Field(max_length = 5_000_000)
+    # The note's own encoding, so a UTF-16 file (Windows PowerShell, Notepad "Unicode") stays one.
+    encoding: Literal["utf-8", "utf-16le", "utf-16be"] = "utf-8"
 
 
 @router.get("")
@@ -453,7 +455,9 @@ def put_upload_text(
     current_subject: str = Depends(get_current_subject),
 ) -> dict:
     try:
-        written = library.write_upload_text(upload_id, body.text)
+        written = library.write_upload_text(upload_id, body.text, body.encoding)
+    except UnicodeEncodeError:
+        raise HTTPException(status_code = 400, detail = "The note has characters it cannot hold.")
     except OSError as exc:
         raise _file_error(exc, "library.note_save_failed", "Could not save the note.") from exc
     if not written:

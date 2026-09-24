@@ -5,7 +5,7 @@ import { authFetch, getAuthSessionEpoch, getAuthToken } from "@/features/auth";
 import { apiUrl } from "@/lib/api-base";
 import { readFastApiError } from "@/lib/format-fastapi-error";
 import { libraryFileName, libraryFileType } from "./file-name";
-import { type DecodedNote, decodeNote } from "./note-text";
+import { type DecodedNote, type NoteEncoding, decodeNote } from "./note-text";
 
 export type LibrarySource = "uploaded" | "generated";
 
@@ -216,12 +216,13 @@ export async function uploadLibraryFiles(
 export async function writeLibraryText(
   itemId: string,
   text: string,
+  encoding: NoteEncoding = "utf-8",
 ): Promise<void> {
   const uploadId = itemId.replace(/^upload:/, "");
   await ensureOk(
     await sendWrite(
       `/api/library/uploads/${encodeURIComponent(uploadId)}/text`,
-      jsonInit("PUT", { text }),
+      jsonInit("PUT", { text, encoding }),
     ),
   );
 }
