@@ -281,23 +281,12 @@ def is_unquantized_full_model_dir(path: str | Path) -> bool:
     return isinstance(config, dict) and "quantization_config" not in config
 
 
-def hub_model_config(repo_id: str, hf_token: HfTokenArg) -> Optional[dict]:
-    """config.json for a Hub repo id, or None when it cannot be resolved.
-
-    The worker loads remote checkpoints too, so a Hub id that never touches the local
-    filesystem would otherwise keep the 4-bit default and re-introduce the very export
-    this function exists to prevent. Only config.json is fetched -- a few KB against the
-    gigabytes the load is about to pull anyway, and cached by huggingface_hub after the
-    first call.
-
-    Every failure (offline, gated without a token, no such repo, no network) returns
-    None, which the caller reads as "unknown" and leaves on the historical default.
-    """
+def _hub_model_config(repo_id: str, hf_token: HfTokenArg) -> Optional[dict]:
+    """config.json of a Hub model repo; None for an adapter repo or on any lookup failure."""
     try:
         from huggingface_hub import file_exists, hf_hub_download
 
-        # An adapter repo carries a base config.json as well, so this has to be asked
-        # first or a remote LoRA reads as a full model.
+        # An adapter repo carries a base config.json too, so a remote LoRA would read as a full model.
         if file_exists(repo_id, "adapter_config.json", token = hf_token):
             return None
         path = hf_hub_download(repo_id, "config.json", token = hf_token)
@@ -307,18 +296,16 @@ def hub_model_config(repo_id: str, hf_token: HfTokenArg) -> Optional[dict]:
 
 
 def is_unquantized_full_finetune(checkpoint_path: str, hf_token: HfTokenArg = None) -> bool:
-    """Whether this checkpoint is a full model that is not already quantized.
+    """Whether a local or Hub checkpoint is an unquantized full model.
 
-    Only ever used to turn 4-bit OFF, so every uncertain answer here is False and
-    behaves exactly as the code did before.
-    """
+    False when unsure, so the caller keeps the 4-bit load that used to fit."""
     try:
         is_local = Path(checkpoint_path).exists()
     except OSError:
         return False
     if is_local:
         return is_unquantized_full_model_dir(checkpoint_path)
-    config = hub_model_config(checkpoint_path, hf_token)
+    config = _hub_model_config(checkpoint_path, hf_token)
     return isinstance(config, dict) and "quantization_config" not in config
 
 

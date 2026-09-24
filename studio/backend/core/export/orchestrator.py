@@ -483,6 +483,7 @@ class ExportOrchestrator:
         Always spawns a fresh subprocess to ensure a clean Python interpreter.
         ``base_model`` pins an already authorized adapter base; the worker then ignores the
         adapter config, which its owner can rewrite after the check.
+        ``load_in_4bit = None`` picks 16-bit for an unquantized full fine-tune, else 4-bit.
         """
         validate_job_paths({"checkpoint_path": checkpoint_path})
         if load_in_4bit is None:

@@ -31,7 +31,6 @@ from auth.authentication import allow_ambient_hf_token, get_current_subject
 from hub.services.models import account_access
 from hub.utils.hf_tokens import HfTokenArg, hf_token_arg
 
-from utils.models.checkpoints import is_unquantized_full_finetune
 from utils.utils import safe_error_detail
 
 try:
@@ -130,17 +129,8 @@ async def load_checkpoint(
     try:
         await _ensure_export_supported()
         export_hf_token = _resolve_export_hf_token(request.hf_token, allow_ambient = allow_ambient)
-        load_in_4bit = request.load_in_4bit
-        # Off-loop: a Hub id makes this reach the network, and the SSE log stream is
-        # served from this same event loop.
-        if "load_in_4bit" not in request.model_fields_set and await asyncio.to_thread(
-            is_unquantized_full_finetune, request.checkpoint_path, export_hf_token
-        ):
-            load_in_4bit = False
-            logger.info(
-                f"Full fine-tune checkpoint {request.checkpoint_path} has no quantization_config - "
-                "loading in 16-bit for export"
-            )
+        # Unset lets the backend pick 16-bit for a full fine-tune.
+        load_in_4bit = request.load_in_4bit if "load_in_4bit" in request.model_fields_set else None
         backend = get_export_backend()
         # Run in a worker thread (spawns and waits on a subprocess, can take
         # minutes) so the event loop stays free to serve the live log SSE stream.

@@ -67,7 +67,8 @@ def export(
     load_in_4bit: Optional[bool] = typer.Option(
         None,
         "--load-in-4bit/--no-load-in-4bit",
-        help = "Default: 16-bit for unquantized full fine-tunes (not merged-4bit), else 4-bit.",
+        help = "Load the checkpoint in 4-bit. Default: 16-bit for an unquantized full model "
+        "(except with merged-4bit), 4-bit otherwise.",
     ),
 ):
     """Export a checkpoint to various formats (merged, GGUF, LoRA adapter)."""

@@ -31,9 +31,7 @@ from unsloth_cli.commands import export as export_command
         "merged_4bit_explicit_16bit",
     ],
 )
-def test_export_leaves_load_in_4bit_to_the_backend_unless_set(
-    monkeypatch, tmp_path, flags, expected
-):
+def test_export_load_in_4bit_default_per_format(monkeypatch, tmp_path, flags, expected):
     calls = {}
 
     class ExportBackend:
