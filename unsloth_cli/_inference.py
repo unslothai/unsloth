@@ -938,7 +938,10 @@ class HttpChatBackend:
         if not loaded:
             return None
         loaded = str(loaded)
-        if os.path.exists(model):
+        if model == status.get("model_identifier"):
+            # The exact string the server loaded, however the resolver normalizes it.
+            same = True
+        elif os.path.exists(model):
             # Filesystem-aware, as the server's _same_loaded_identifier compares local paths.
             same = os.path.normcase(model) == os.path.normcase(loaded)
         else:

@@ -1415,6 +1415,7 @@ _RESIDENT_Q8 = {
             None,
         ),
         ("Qwen3-0.6B-GGUF", _RESIDENT_Q8, "Q8_0"),
+        ("C:\\Models\\Foo", {**_RESIDENT_Q8, "model_identifier": "C:\\Models\\Foo"}, "Q8_0"),
         ("unsloth/Qwen3-0.6B-GGUF", {**_RESIDENT_Q8, "model_identifier": None}, "Q8_0"),
         ("unsloth/Qwen3-0.6B-GGUF", {**_RESIDENT_Q8, "is_gguf": False}, None),
         ("unsloth/Qwen3-0.6B-GGUF", None, None),
