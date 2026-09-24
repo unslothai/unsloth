@@ -33,7 +33,6 @@ import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
 import {
   type ReactElement,
   type ReactNode,
-  useEffect,
   useMemo,
   useState,
 } from "react";
@@ -52,6 +51,7 @@ import {
 } from "../lib/bench-math";
 import { type BenchKind, useBenchmarksStore } from "../stores/benchmarks-store";
 import { useFamilyColors } from "./family-colors";
+import { useFitToViewport } from "./use-fit-to-viewport";
 
 /** The Hub toolbar pill: icon, bold value, quiet label. */
 export function StatPill({
@@ -363,48 +363,6 @@ export function BenchModelPicker({
   );
 }
 
-const FIT_GAP = 24;
-
-/** Caps an element's height to what's left of its scroll area below its top, so the setup
- * card ends above the window's edge and Compare scrolls instead. */
-function useFitToViewport(): [
-  (el: HTMLElement | null) => void,
-  number | null,
-] {
-  const [el, setEl] = useState<HTMLElement | null>(null);
-  const [height, setHeight] = useState<number | null>(null);
-  useEffect(() => {
-    if (!el) return;
-    let scroller: HTMLElement | null = el.parentElement;
-    while (scroller) {
-      const oy = getComputedStyle(scroller).overflowY;
-      if (oy === "auto" || oy === "scroll") break;
-      scroller = scroller.parentElement;
-    }
-    let frame = 0;
-    const measure = () => {
-      cancelAnimationFrame(frame);
-      frame = requestAnimationFrame(() => {
-        const bottom = scroller
-          ? scroller.getBoundingClientRect().bottom
-          : window.innerHeight;
-        const top = Math.max(el.getBoundingClientRect().top, 0);
-        setHeight(Math.max(320, Math.floor(bottom - top - FIT_GAP)));
-      });
-    };
-    measure();
-    const target: HTMLElement | Window = scroller ?? window;
-    target.addEventListener("scroll", measure, { passive: true });
-    window.addEventListener("resize", measure);
-    return () => {
-      cancelAnimationFrame(frame);
-      target.removeEventListener("scroll", measure);
-      window.removeEventListener("resize", measure);
-    };
-  }, [el]);
-  return [setEl, height];
-}
-
 export function SetupPanel({
   maxContext,
   shape,
@@ -452,7 +410,7 @@ export function SetupPanel({
       ref={fitRef}
       disabled={locked}
       style={{ maxHeight: fitHeight ?? undefined }}
-      className="corner-squircle flex min-w-0 flex-col gap-6 rounded-3xl bg-card px-5 pb-5 pt-4 ring-1 [&>*]:shrink-0 ring-[color-mix(in_oklab,var(--foreground)_calc(10%*var(--contrast-edge-gain,1)),transparent)] disabled:opacity-60"
+      className="corner-squircle flex min-w-0 flex-col gap-6 rounded-3xl bg-card px-5 pb-5 pt-4 ring-1 ease-out [&>*]:shrink-0 motion-safe:transition-[max-height] motion-safe:duration-300 ring-[color-mix(in_oklab,var(--foreground)_calc(10%*var(--contrast-edge-gain,1)),transparent)] disabled:opacity-60"
     >
       <span className="text-ui-11 font-medium tracking-nav text-muted-foreground">
         Setup

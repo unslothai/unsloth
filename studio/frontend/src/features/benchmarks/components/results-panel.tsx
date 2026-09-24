@@ -65,6 +65,7 @@ import {
 import { BenchChart, type ChartKind, type PendingRow } from "./bench-chart";
 import { svgToPng, svgToString } from "./chart-export";
 import { useFamilyColors } from "./family-colors";
+import { useFitToViewport } from "./use-fit-to-viewport";
 
 function Tile({
   label,
@@ -313,6 +314,7 @@ export function RunResults({
 }): ReactElement {
   const [view, setView] = useState<ChartKind | "table">("bars");
   const [expanded, setExpanded] = useState(false);
+  const [fitRef, fitHeight] = useFitToViewport(360);
   const exportRef = useRef<SVGSVGElement | null>(null);
   const spareRef = useRef<SVGSVGElement | null>(null);
   const rows = useMemo(
@@ -507,8 +509,16 @@ export function RunResults({
         />
       </div>
 
-      <section className={cn(CARD, "flex flex-col gap-3 p-3 sm:p-4")}>
-        <div className="flex flex-wrap items-center gap-3 px-1">
+      {/* Fits the window and scrolls inside; grows as the page scrolls it up. */}
+      <section
+        ref={fitRef}
+        style={{ maxHeight: fitHeight ?? undefined }}
+        className={cn(
+          CARD,
+          "flex min-h-0 flex-col gap-3 p-3 ease-out sm:p-4 motion-safe:transition-[max-height] motion-safe:duration-300",
+        )}
+      >
+        <div className="flex shrink-0 flex-wrap items-center gap-3 px-1">
           <Tabs
             value={shownView}
             onValueChange={(v) => setView(v as ChartKind | "table")}
@@ -623,54 +633,56 @@ export function RunResults({
           )}
         </div>
 
-        {isTable ? (
-          <ResultsTable
-            rows={rows}
-            vram={Object.fromEntries(
-              run.outcomes.flatMap((o) =>
-                typeof o.served?.vram_used_gb === "number"
-                  ? [[o.label, o.served.vram_used_gb]]
-                  : [],
-              ),
-            )}
-          />
-        ) : (
-          <div className="overflow-hidden rounded-xl">
-            <BenchChart
-              kind={chartKind}
-              rows={chartKind === "bars" ? top : rows}
-              series={series}
-              depth={depth}
-              title={title}
-              subtitle={headline(rows)}
-              footer={footer}
-              pending={chartKind === "bars" ? pending : []}
-              svgRef={folded ? spareRef : exportRef}
+        <div className="-mr-1.5 flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto pr-1.5 [scrollbar-width:thin]">
+          {isTable ? (
+            <ResultsTable
+              rows={rows}
+              vram={Object.fromEntries(
+                run.outcomes.flatMap((o) =>
+                  typeof o.served?.vram_used_gb === "number"
+                    ? [[o.label, o.served.vram_used_gb]]
+                    : [],
+                ),
+              )}
             />
-          </div>
-        )}
-        {!isTable &&
-          !live &&
-          chartKind === "bars" &&
-          rows.length > TOP_ROWS + 1 && (
-            <button
-              type="button"
-              onClick={() => setExpanded((v) => !v)}
-              className="mx-auto flex items-center gap-1.5 rounded-full px-3 py-1 text-ui-12 text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground"
-            >
-              <HugeiconsIcon
-                icon={ArrowDown01Icon}
-                strokeWidth={1.75}
-                className={cn(
-                  "size-3.5 transition-transform",
-                  expanded && "rotate-180",
-                )}
+          ) : (
+            <div className="overflow-hidden rounded-xl">
+              <BenchChart
+                kind={chartKind}
+                rows={chartKind === "bars" ? top : rows}
+                series={series}
+                depth={depth}
+                title={title}
+                subtitle={headline(rows)}
+                footer={footer}
+                pending={chartKind === "bars" ? pending : []}
+                svgRef={folded ? spareRef : exportRef}
               />
-              {expanded
-                ? `Show the top ${TOP_ROWS}`
-                : `Show all ${rows.length} settings (${hidden} more)`}
-            </button>
+            </div>
           )}
+          {!isTable &&
+            !live &&
+            chartKind === "bars" &&
+            rows.length > TOP_ROWS + 1 && (
+              <button
+                type="button"
+                onClick={() => setExpanded((v) => !v)}
+                className="mx-auto flex items-center gap-1.5 rounded-full px-3 py-1 text-ui-12 text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground"
+              >
+                <HugeiconsIcon
+                  icon={ArrowDown01Icon}
+                  strokeWidth={1.75}
+                  className={cn(
+                    "size-3.5 transition-transform",
+                    expanded && "rotate-180",
+                  )}
+                />
+                {expanded
+                  ? `Show the top ${TOP_ROWS}`
+                  : `Show all ${rows.length} settings (${hidden} more)`}
+              </button>
+            )}
+        </div>
         {/* Exports always carry every row, whatever the screen is folded to. */}
         {folded && (
           <div className="hidden" aria-hidden={true}>

@@ -20,7 +20,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { formatRelativeTime, useLocale } from "@/i18n";
+import { useLocale } from "@/i18n";
 import { cn } from "@/lib/utils";
 import { Delete02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -36,6 +36,7 @@ import {
   ranToEnd,
 } from "../lib/bench-math";
 import { useBenchmarksStore } from "../stores/benchmarks-store";
+import { ago } from "../lib/ago";
 import { useFamilyColors } from "./family-colors";
 
 const ALL = "\u0000all";
@@ -76,15 +77,6 @@ function scoreRun(run: BenchRunSummary): {
   const speedup =
     best && base && best !== base && base.tps > 0 ? best.tps / base.tps : null;
   return { rows, best, base, speedup };
-}
-
-function ago(ms: number, locale: ReturnType<typeof useLocale>): string {
-  const mins = Math.floor((Date.now() - ms) / 60000);
-  if (mins < 1) return "just now";
-  if (mins < 60) return formatRelativeTime(locale, -mins, "minute");
-  const hrs = Math.floor(mins / 60);
-  if (hrs < 24) return formatRelativeTime(locale, -hrs, "hour");
-  return formatRelativeTime(locale, -Math.floor(hrs / 24), "day");
 }
 
 /** Every row as a bar, fastest left, the baseline muted: the chart's shape at a glance. */

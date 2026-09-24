@@ -32,7 +32,14 @@ import {
   StatPill,
 } from "./components/setup-panel";
 import { TuneVerdictCard } from "./components/tune-section";
-import type { ModelShape } from "./lib/bench-math";
+import { useLocale } from "@/i18n";
+import { ago } from "./lib/ago";
+import {
+  type BenchRun,
+  type ModelShape,
+  SWEEP_TITLE,
+  modelShort,
+} from "./lib/bench-math";
 import { useBenchmarksStore } from "./stores/benchmarks-store";
 
 function useLoadedModel(paused: boolean): InferenceStatusResponse | null {
@@ -78,7 +85,9 @@ function useLlamaBackend(): Backend {
         setB({
           name: name ? (BACKEND_NAME[name.toLowerCase()] ?? name) : null,
           tag:
-            typeof llama?.installed_tag === "string" ? llama.installed_tag : null,
+            typeof llama?.installed_tag === "string"
+              ? llama.installed_tag
+              : null,
         });
       })
       .catch(() => undefined);
@@ -96,10 +105,14 @@ function MachinePills({ polling }: { polling: boolean }): ReactElement {
   // llama.cpp's device list, which differs from torch's when it runs on Vulkan.
   const gpu = sys.inference_gpu?.available ? sys.inference_gpu : sys.gpu;
   const display = gpuMemoryDisplay(gpu);
-  const devices = display.sharedOnly ? display.sharedDevices : display.usageDevices;
+  const devices = display.sharedOnly
+    ? display.sharedDevices
+    : display.usageDevices;
   const names = devices.map((d) => d.name ?? "GPU");
   const vramTotal = gpuMemoryTotalsGb(devices).total;
-  const vramUsed = display.sharedOnly ? null : resolveGpuVramUsedGb(display.usageGpu);
+  const vramUsed = display.sharedOnly
+    ? null
+    : resolveGpuVramUsedGb(display.usageGpu);
   const ramTotal = sys.memory.total_gb;
   const ramUsed = Math.max(0, ramTotal - sys.memory.available_gb);
   const threads = sys.cpu.logical_count;
@@ -160,6 +173,48 @@ function MachinePills({ polling }: { polling: boolean }): ReactElement {
   );
 }
 
+/** One quiet line over a finished run: which run this is, and whether the setup has moved on. */
+function ShownRunNote({
+  run,
+  latest,
+  changed,
+  onLatest,
+}: {
+  run: BenchRun;
+  latest: boolean;
+  changed: string | null;
+  onLatest: (() => void) | null;
+}): ReactElement {
+  const locale = useLocale();
+  return (
+    <div className="flex min-h-7 flex-wrap items-center gap-x-2 gap-y-1 px-1 text-ui-12 text-muted-foreground duration-300 animate-in fade-in-0">
+      <span
+        className="size-1.5 shrink-0 rounded-full bg-muted-foreground/50"
+        aria-hidden={true}
+      />
+      <span>
+        {latest ? "Your last run" : "A saved run"},{" "}
+        <span title={new Date(run.createdAt).toLocaleString()}>
+          {ago(run.createdAt, locale)}
+        </span>
+      </span>
+      {changed && (
+        <span className="min-w-0 truncate text-muted-foreground/80">
+          · Run to measure {changed}
+        </span>
+      )}
+      {onLatest && (
+        <button
+          type="button"
+          onClick={onLatest}
+          className="ml-auto rounded-full px-2.5 py-0.5 transition-colors hover:bg-muted/60 hover:text-foreground"
+        >
+          Back to the latest
+        </button>
+      )}
+    </div>
+  );
+}
 
 type BenchTab = "benchmark" | "history";
 
@@ -228,7 +283,10 @@ function useModelShape(
   model: string | null,
   variant: string | null,
 ): ModelShape | null {
-  const [picked, setPicked] = useState<{ key: string; shape: ModelShape } | null>(null);
+  const [picked, setPicked] = useState<{
+    key: string;
+    shape: ModelShape;
+  } | null>(null);
   const key = model ? `${model}\u0000${variant ?? ""}` : null;
   useEffect(() => {
     if (!model || !key) return;
@@ -236,7 +294,10 @@ function useModelShape(
     void fetchGgufStagedMetadata({ model_path: model, gguf_variant: variant })
       .then((m) => {
         if (!cancelled)
-          setPicked({ key, shape: { layers: m.layerCount, moeLayers: m.moeLayerCount } });
+          setPicked({
+            key,
+            shape: { layers: m.layerCount, moeLayers: m.moeLayerCount },
+          });
       })
       .catch(() => undefined);
     return () => {
@@ -292,6 +353,17 @@ export function BenchmarksPage(): ReactElement {
     if (shownId && !loaded[shownId]) void selectRun(shownId);
   }, [shownId, loaded, selectRun]);
   const shown = live ? live.run : shownId ? (loaded[shownId] ?? null) : null;
+  const latestId = runs[0]?.id ?? null;
+  // What Run would measure now, named when it isn't what the chart shows.
+  const nextModel = modelShort(config.tuneModel ?? status?.active_model ?? "");
+  const changed =
+    !shown || live
+      ? null
+      : config.sweep !== shown.config.sweep
+        ? `${SWEEP_TITLE[config.sweep]}${nextModel ? ` on ${nextModel}` : ""}`
+        : nextModel && nextModel !== modelShort(shown.model)
+          ? nextModel
+          : null;
 
   const preview = (
     <RunPreviewCard
@@ -357,7 +429,22 @@ export function BenchmarksPage(): ReactElement {
                 </div>
                 <div className="flex min-w-0 flex-col gap-4 @3xl/bench:col-start-2 @3xl/bench:row-start-1">
                   {shown ? (
-                    <>
+                    <div
+                      key={shown.id}
+                      className="flex flex-col gap-4 duration-300 animate-in fade-in-0"
+                    >
+                      {!live && (
+                        <ShownRunNote
+                          run={shown}
+                          latest={shown.id === latestId}
+                          changed={changed}
+                          onLatest={
+                            latestId && shown.id !== latestId
+                              ? () => void selectRun(latestId)
+                              : null
+                          }
+                        />
+                      )}
                       {shown.config.sweep === "tune" && (
                         <TuneVerdictCard run={shown} />
                       )}
@@ -368,7 +455,7 @@ export function BenchmarksPage(): ReactElement {
                         progress={live?.progress}
                         onStop={cancel}
                       />
-                    </>
+                    </div>
                   ) : shownId ? (
                     <div className="corner-squircle flex items-center justify-center rounded-3xl bg-card px-6 py-16 text-ui-13 text-muted-foreground ring-1 ring-border/60">
                       Loading the run…
