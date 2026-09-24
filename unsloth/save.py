@@ -4643,6 +4643,7 @@ This model was finetuned and converted to GGUF format using [Unsloth](https://gi
 
         destination = getattr(commit, "pr_url", None)
         if destination is None:
+            from urllib.parse import quote
             destination = f"https://huggingface.co/{full_repo_id}"
             if create_pr:
                 destination += "/discussions"
@@ -4650,7 +4651,7 @@ This model was finetuned and converted to GGUF format using [Unsloth](https://gi
                 destination += (
                     f"/discussions/{revision.rsplit('/', 1)[-1]}"
                     if revision.startswith("refs/pr/")
-                    else f"/tree/{revision}"
+                    else f"/tree/{quote(revision, safe = '')}"
                 )
         print(f"Unsloth: Successfully uploaded GGUF to {destination}")
 

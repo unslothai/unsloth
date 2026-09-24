@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
+
 import os
 from types import SimpleNamespace
 
@@ -92,3 +95,12 @@ def test_new_revision_is_created_before_the_commit(push):
 @pytest.mark.parametrize("kwargs", [{}, {"create_pr": True}, {"revision": "refs/pr/3"}])
 def test_no_branch_is_created_without_a_new_revision(push, kwargs):
     assert "create_branch" not in [name for name, _ in push(**kwargs)]
+
+
+@pytest.mark.parametrize(
+    "revision, expected",
+    [("exp/q4", "/tree/exp%2Fq4"), ("v2", "/tree/v2"), ("refs/pr/3", "/discussions/3")],
+)
+def test_printed_destination_encodes_the_branch(push, capsys, revision, expected):
+    push(revision = revision)
+    assert f"https://huggingface.co/u/my-model{expected}\n" in capsys.readouterr().out
