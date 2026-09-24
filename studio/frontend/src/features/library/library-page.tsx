@@ -660,6 +660,7 @@ function LibraryView({ search }: { search: LibrarySearch }) {
             onSelectionChange={setSelection}
             sort={sort}
             onSortChange={(key) => setSortOverride(nextSort(sort, key))}
+            activity={tab === "suggested" && !folderId}
           />
         </div>
       );

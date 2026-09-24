@@ -1,21 +1,37 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-/** A clock time today, a short date before that. */
+const DAY_MS = 86_400_000;
+
+/** A clock time today, then "Yesterday", then the weekday for the past week, then a short date. */
 export function formatCardTime(ts: number): string {
   const then = new Date(ts);
   const now = new Date();
-  if (then.toDateString() === now.toDateString()) {
-    return then.toLocaleTimeString(undefined, {
-      hour: "numeric",
-      minute: "2-digit",
-    });
+  const days = Math.round(
+    (new Date(now.toDateString()).getTime() - new Date(then.toDateString()).getTime()) / DAY_MS,
+  );
+  if (days <= 0) {
+    return then.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
   }
+  if (days === 1) return "Yesterday";
+  if (days < 7) return then.toLocaleDateString(undefined, { weekday: "long" });
   return then.toLocaleDateString(undefined, {
     month: "short",
     day: "numeric",
     year: then.getFullYear() === now.getFullYear() ? undefined : "numeric",
   });
+}
+
+/** How long ago, down to the minute, for Suggested's Last activity. */
+export function formatRelativeTime(ts: number): string {
+  const minutes = Math.floor((Date.now() - ts) / 60_000);
+  if (minutes < 1) return "just now";
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  if (days < 7) return `${days}d ago`;
+  return formatCardTime(ts);
 }
 
 export function formatSize(bytes: number | null): string | null {

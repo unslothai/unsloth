@@ -9,7 +9,7 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import type { ReactNode } from "react";
 import type { LibraryFolder, LibraryItem } from "../api";
 import { modelLabel } from "../file-kind";
-import { formatCardTime, formatSize, pluralize } from "../format";
+import { formatCardTime, formatRelativeTime, formatSize, pluralize } from "../format";
 import type { LibrarySortKey, LibrarySortState } from "../settings-store";
 import { ArrowDownIcon, ArrowUpIcon } from "lucide-react";
 import { type LibraryTarget, useLibraryActions } from "../actions-context";
@@ -21,10 +21,12 @@ function targetKey(target: LibraryTarget): string {
 }
 
 // Row content lines up with the tab labels (px-4); the checkbox hangs in the margin to its left.
-const ROW_INSET = "pl-4 pr-3";
+const ROW_INSET = "pl-4 pr-6";
 
-const MODIFIED_COLUMN = "w-36 shrink-0";
-const SIZE_COLUMN = "w-24 shrink-0";
+const CELL = "hidden text-[13px] text-muted-foreground sm:block";
+const ACTIVITY_COLUMN = "w-48 shrink-0";
+const MODIFIED_COLUMN = "w-40 shrink-0";
+const SIZE_COLUMN = "w-28 shrink-0";
 
 function SortHeader({
   column,
@@ -100,6 +102,7 @@ function Row({
   name,
   modified,
   size,
+  activity,
 }: {
   target: LibraryTarget;
   selected: boolean;
@@ -110,6 +113,8 @@ function Row({
   name: ReactNode;
   modified: number;
   size: number | null;
+  /** Suggested shows one relative Last activity column instead of Modified and Size. */
+  activity: boolean;
 }) {
   return (
     <div
@@ -133,12 +138,16 @@ function Row({
       >
         {tile}
         <span className="flex min-w-0 items-center gap-2 text-[14px] text-foreground">{name}</span>
-        <span className={cn(MODIFIED_COLUMN, "ml-auto hidden text-[13px] text-muted-foreground sm:block")}>
-          {formatCardTime(modified)}
-        </span>
-        <span className={cn(SIZE_COLUMN, "hidden text-[13px] text-muted-foreground sm:block")}>
-          {formatSize(size)}
-        </span>
+        {activity ? (
+          <span className={cn(ACTIVITY_COLUMN, CELL, "ml-auto")}>
+            Modified {formatRelativeTime(modified)}
+          </span>
+        ) : (
+          <>
+            <span className={cn(MODIFIED_COLUMN, CELL, "ml-auto")}>{formatCardTime(modified)}</span>
+            <span className={cn(SIZE_COLUMN, CELL)}>{formatSize(size)}</span>
+          </>
+        )}
       </button>
       <LibraryActionsMenu target={target} variant="row" />
     </div>
@@ -153,6 +162,7 @@ export function LibraryList({
   onSelectionChange,
   sort,
   onSortChange,
+  activity,
 }: {
   folders: LibraryFolder[];
   items: LibraryItem[];
@@ -161,6 +171,7 @@ export function LibraryList({
   onSelectionChange: (next: Set<string>) => void;
   sort: LibrarySortState;
   onSortChange: (key: LibrarySortKey) => void;
+  activity: boolean;
 }) {
   const actions = useLibraryActions();
   const targets: LibraryTarget[] = [
@@ -197,20 +208,32 @@ export function LibraryList({
         <span className="flex-1">
           <SortHeader column="name" label="Name" sort={sort} onSortChange={onSortChange} />
         </span>
-        <SortHeader
-          column="modified"
-          label="Modified"
-          sort={sort}
-          onSortChange={onSortChange}
-          className={cn(MODIFIED_COLUMN, "hidden sm:flex")}
-        />
-        <SortHeader
-          column="size"
-          label="Size"
-          sort={sort}
-          onSortChange={onSortChange}
-          className={cn(SIZE_COLUMN, "hidden sm:flex")}
-        />
+        {activity ? (
+          <SortHeader
+            column="modified"
+            label="Last activity"
+            sort={sort}
+            onSortChange={onSortChange}
+            className={cn(ACTIVITY_COLUMN, "hidden sm:flex")}
+          />
+        ) : (
+          <>
+            <SortHeader
+              column="modified"
+              label="Modified"
+              sort={sort}
+              onSortChange={onSortChange}
+              className={cn(MODIFIED_COLUMN, "hidden sm:flex")}
+            />
+            <SortHeader
+              column="size"
+              label="Size"
+              sort={sort}
+              onSortChange={onSortChange}
+              className={cn(SIZE_COLUMN, "hidden sm:flex")}
+            />
+          </>
+        )}
         <span className="w-8 shrink-0" />
       </div>
       <div className="mt-1 flex flex-col">
@@ -237,6 +260,7 @@ export function LibraryList({
             }
             modified={folder.updatedAt}
             size={null}
+            activity={activity}
           />
         ))}
         {items.map((item) => (
@@ -266,6 +290,7 @@ export function LibraryList({
             }
             modified={item.updatedAt}
             size={item.sizeBytes}
+            activity={activity}
           />
         ))}
       </div>
