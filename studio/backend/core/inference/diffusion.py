@@ -4478,7 +4478,8 @@ class DiffusionBackend:
                         getattr(fam, "name", None),
                         transformer_quant_pinned,
                         base_repo = base,
-                        prequant_missing = normalize_transformer_quant(transformer_quant_pinned) == TQ_NVFP4
+                        prequant_missing = normalize_transformer_quant(transformer_quant_pinned)
+                        == TQ_NVFP4
                         and usable_prequant_source(
                             fam,
                             TQ_NVFP4,
