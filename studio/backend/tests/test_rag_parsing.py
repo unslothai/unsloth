@@ -413,6 +413,22 @@ def test_docx_reads_text_box_once_after_its_paragraph(tmp_path):
     assert text == "Host line\nCallout"
 
 
+def test_docx_drops_text_box_inside_tracked_deletion_or_move(tmp_path):
+    def box(text):
+        shape = f"<w:txbxContent><w:p>{_r(text)}</w:p></w:txbxContent>"
+        return f"<w:r><w:pict><v:shape><v:textbox>{shape}</v:textbox></v:shape></w:pict></w:r>"
+
+    text = _docx_from_xml(
+        tmp_path,
+        "<w:p>"
+        + _r("Kept")
+        + f'<w:del w:id="1" w:author="a">{box("Deleted box")}</w:del>'
+        + f'<w:moveFrom w:id="2" w:author="a">{box("Moved-away box")}</w:moveFrom>'
+        + "</w:p>",
+    )
+    assert text == "Kept"
+
+
 def test_docx_reads_ruby_base_without_its_guide(tmp_path):
     text = _docx_from_xml(
         tmp_path,

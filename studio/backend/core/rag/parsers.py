@@ -439,8 +439,9 @@ def _docx_blocks(element, parent):
         if child.tag == _W + "p":
             yield Paragraph(child, parent)
             for box in child.iter(_W + "txbxContent"):
-                # A nested box is read with the box around it; a fallback copy repeats the real one.
-                if not _docx_inside(box, child, (_W + "txbxContent", _MC_FALLBACK)):
+                # A nested box is read with the box around it, a fallback copy repeats the
+                # real one, and a box in a tracked deletion or moved-away text goes like its runs.
+                if not _docx_inside(box, child, _DOCX_SKIP_RUNS_UNDER):
                     yield from _docx_blocks(box, parent)
         elif child.tag == _W + "tbl":
             yield Table(child, parent)
