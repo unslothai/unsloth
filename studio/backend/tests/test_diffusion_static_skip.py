@@ -847,3 +847,14 @@ def test_generate_drops_static_state_on_every_exit():
     ]
     # The reset lives in a finally, so a failed or cancelled render frees its history clones too.
     assert any("reset_static_step_skip(static_skip_pipe, None)" in f for f in finals)
+
+
+def test_a_short_generation_reports_its_own_uncached_counts():
+    pipe = _installed()
+    _run(pipe, 25)
+    ss.reset_static_step_skip(pipe, None)
+    assert ss.static_skip_stats(pipe)["stats"]["skipped"] == 9
+    # Below the minimum the schedule is empty: every call computes, and status says so instead of the last run.
+    _run(pipe, 8)
+    ss.reset_static_step_skip(pipe, None)
+    assert ss.static_skip_stats(pipe)["stats"] == {"calls": 8, "computed": 8, "skipped": 0}
