@@ -1391,7 +1391,17 @@ def test_auto_is_handed_the_probe_that_lets_it_reach_a_prequant_only_scheme(monk
 def test_speed_off_and_the_modular_workflow_are_never_seeded_here(monkeypatch):
     assert _video_auto(monkeypatch, scheme = "nvfp4", speed_mode = "off") is None
     assert _video_auto(monkeypatch, scheme = "nvfp4", speed_mode = " OFF ") is None
+    assert _video_auto(monkeypatch, scheme = "nvfp4", speed_mode = "off", requested = None) is None
     assert _video_auto(monkeypatch, scheme = "nvfp4", fam = _moe_fam(modular_workflow = "fl2va")) is None
+
+
+def test_an_explicit_scheme_keeps_its_seed_under_speed_off(monkeypatch):
+    """The loader honors an explicit scheme under Speed="off" (and upgrades the speed), so the plan
+    must not drop the hosted checkpoint and stage the dense denoiser for a runtime quantize."""
+    assert _video_auto(monkeypatch, scheme = "nvfp4", speed_mode = "off", requested = "nvfp4") == "nvfp4"
+    # The loader's own rewrite of an auto request ("off") never selects a scheme.
+    from core.inference.diffusion_transformer_quant import select_transformer_quant_scheme
+    assert select_transformer_quant_scheme(object(), "off") is None
 
 
 def test_an_install_that_cannot_open_a_checkpoint_keeps_the_dense_denoiser(monkeypatch):

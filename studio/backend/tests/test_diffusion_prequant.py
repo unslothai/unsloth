@@ -2748,6 +2748,28 @@ def test_a_readable_prequant_is_not_marked_unreachable(monkeypatch):
     assert "_prequant_unreachable" not in kwargs
 
 
+def test_local_only_treats_an_uncached_prequant_as_unreachable(monkeypatch):
+    """local_files_only forbids the loader from fetching the checkpoint, so a Hub listing that
+    names it must not keep the load sizing a packed artifact that will never arrive."""
+    import types
+
+    def _listing(repo_id):
+        return types.SimpleNamespace(
+            siblings = [types.SimpleNamespace(rfilename = "Z-Image-Turbo-NVFP4.pt", size = 4096)]
+        )
+
+    backend, tokens = _prefetch_backend(monkeypatch, cached = False, model_info = _listing)
+    kwargs = {**_NVFP4_PREFETCH_KWARGS, "local_files_only": True}
+    assert backend._dense_quant_prefetch_needed(_fam(), kwargs) is True
+    assert kwargs["_prequant_unreachable"] == ("nvfp4",)
+    assert tokens == [], "local-only mode must not ask the Hub"
+    # A cached checkpoint still counts as reachable offline.
+    backend, _tokens = _prefetch_backend(monkeypatch, cached = True, model_info = _listing)
+    kwargs = {**_NVFP4_PREFETCH_KWARGS, "local_files_only": True}
+    assert backend._dense_quant_prefetch_needed(_fam(), kwargs) is False
+    assert "_prequant_unreachable" not in kwargs
+
+
 def test_a_readable_prequant_still_drops_the_dense_shards(monkeypatch):
     """Positive control: a repo that lists the checkpoint keeps the small download."""
     import types
