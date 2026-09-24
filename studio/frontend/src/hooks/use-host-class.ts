@@ -30,6 +30,12 @@ export function useNvfp4Diffusion(): boolean {
   return useGpuInfo().nvfp4Diffusion;
 }
 
+/** Whether `/api/system` has answered yet, i.e. whether a false `useNvfp4Diffusion()` is the
+ *  backend's word rather than the not-yet-loaded default. */
+export function useNvfp4DiffusionKnown(): boolean {
+  return useGpuInfo().budgetKnown;
+}
+
 /** The dense quant schemes this host can run, best first. */
 export function useDenseQuantSchemes(): readonly string[] {
   return useGpuInfo().denseQuantSchemes;
