@@ -151,6 +151,11 @@ test("a downloaded replacement pick falls through to selectModel", () => {
     "the mid-load guard may only return for the duplicate click and the handoff",
   );
   assert.match(guard, /The duplicate click is the only pick this guard refuses/);
+  assert.equal(
+    guard.includes("Another model is already loading"),
+    false,
+    "the mid-load rejection toast must be gone from the picker",
+  );
   assert.match(page, /await selectModel\(\{/);
   // The guard must end without a trailing bail-out: the old unconditional return
   // used to sit right before its closing brace and swallowed every replacement pick.
@@ -285,22 +290,6 @@ test("cacheRam stays in the load tuning snapshot", () => {
   );
 });
 
-test("the picker no longer refuses a different model mid-load", () => {
-  const page = read(CHAT_PAGE);
-  const guard = section(
-    page,
-    "if (store.modelLoading) {",
-    "if (wantManagerStaging) {\n        setPendingHubAutoLoad(",
-  );
-  assert.equal(
-    guard.includes("Another model is already loading"),
-    false,
-    "the mid-load rejection toast must be gone from the picker",
-  );
-  // Only the same-pick duplicate click and the download-manager handoff return early.
-  assert.match(guard, /This model is already loading/);
-  assert.match(guard, /return;/);
-});
 
 
 test("a pick arriving mid-cancel waits for the run that still holds the slot", () => {
