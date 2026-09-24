@@ -160,18 +160,24 @@ async def upload_files(
             return library.save_upload(name, content_type, _chunks(handle, name))
 
     records = []
-    for upload in files or []:
-        name = _base_name(upload.filename)
-        records.append(
-            await run_in_threadpool(
-                library.save_upload,
-                name,
-                upload.content_type or "application/octet-stream",
-                _chunks(upload.file, name),
+    try:
+        for upload in files or []:
+            name = _base_name(upload.filename)
+            records.append(
+                await run_in_threadpool(
+                    library.save_upload,
+                    name,
+                    upload.content_type or "application/octet-stream",
+                    _chunks(upload.file, name),
+                )
             )
-        )
-    for lease in nativePathLeases or []:
-        records.append(await run_in_threadpool(_save_native, lease))
+        for lease in nativePathLeases or []:
+            records.append(await run_in_threadpool(_save_native, lease))
+    except BaseException:
+        # All or nothing, so a retry never duplicates the files that did make it.
+        for record in records:
+            await run_in_threadpool(library.delete_item, f"upload:{record['id']}")
+        raise
 
     ids = [f"upload:{record['id']}" for record in records]
     if folderId:

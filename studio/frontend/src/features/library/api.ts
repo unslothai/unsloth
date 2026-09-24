@@ -70,13 +70,26 @@ export async function getLibraryFavorites(): Promise<string[]> {
   return ((await response.json()) as { ids: string[] }).ids;
 }
 
-export async function updateLibraryItem(
+// Edits to one item go out in order, so a quick second toggle never lands before the first.
+const itemQueues = new Map<string, Promise<void>>();
+
+export function updateLibraryItem(
   id: string,
   patch: { name?: string; favorite?: boolean; folderId?: string | null },
 ): Promise<void> {
-  await ensureOk(
-    await authFetch("/api/library/items", jsonInit("PATCH", { id, ...patch })),
-  );
+  const request = (itemQueues.get(id) ?? Promise.resolve())
+    .catch(() => {})
+    .then(async () => {
+      await ensureOk(
+        await authFetch("/api/library/items", jsonInit("PATCH", { id, ...patch })),
+      );
+    });
+  itemQueues.set(id, request);
+  const settle = () => {
+    if (itemQueues.get(id) === request) itemQueues.delete(id);
+  };
+  request.then(settle, settle);
+  return request;
 }
 
 export async function deleteLibraryItem(id: string): Promise<void> {
@@ -155,6 +168,36 @@ export async function fetchLibraryBlob(item: LibraryItem): Promise<Blob> {
   const blob = await response.blob();
   const type = item.textOnly ? "text/plain" : item.contentType;
   return blob.type === type ? blob : new Blob([blob], { type });
+}
+
+/** Up to `maxBytes` of the item decoded as text; the rest of the body is never read. */
+export async function fetchLibraryTextPrefix(
+  item: LibraryItem,
+  maxBytes: number,
+): Promise<{ text: string; truncated: boolean }> {
+  const response = await ensureOk(await authFetch(item.fileUrl));
+  const reader = response.body?.getReader();
+  if (!reader) {
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    return {
+      text: new TextDecoder().decode(bytes.subarray(0, maxBytes)),
+      truncated: bytes.length > maxBytes,
+    };
+  }
+  const decoder = new TextDecoder();
+  let text = "";
+  let read = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) return { text: text + decoder.decode(), truncated: false };
+    if (read + value.length > maxBytes) {
+      text += decoder.decode(value.subarray(0, maxBytes - read), { stream: true });
+      void reader.cancel();
+      return { text: text + decoder.decode(), truncated: true };
+    }
+    read += value.length;
+    text += decoder.decode(value, { stream: true });
+  }
 }
 
 /** What Download and "Chat about this" hand over. Text-only chat uploads say so in the name. */

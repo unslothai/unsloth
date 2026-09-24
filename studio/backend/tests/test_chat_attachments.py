@@ -462,6 +462,29 @@ def test_audio_attachment_file_serves_bytes(tmp_path, monkeypatch):
     assert response.media_type == "audio/wav"
 
 
+def test_video_attachment_file_serves_bytes(tmp_path, monkeypatch):
+    clip = b"\0\0\0\x18ftypmp42"
+    attachment = {
+        "id": "att-video",
+        "type": "file",
+        "name": "clip.mp4",
+        "contentType": "video/mp4",
+        "content": [
+            {
+                "type": "file",
+                "filename": "clip.mp4",
+                "data": base64.b64encode(clip).decode("ascii"),
+                "mimeType": "video/mp4",
+            }
+        ],
+        "status": {"type": "complete"},
+    }
+    _seed(tmp_path, monkeypatch, [attachment])
+    response = chat_history.get_attachment_file("msg-1", "att-video", current_subject = "unsloth")
+    assert response.body == clip
+    assert response.media_type == "video/mp4"
+
+
 def test_audio_attachment_media_type_from_format(tmp_path, monkeypatch):
     attachment = _audio_attachment()
     attachment["contentType"] = None

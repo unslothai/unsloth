@@ -169,7 +169,7 @@ def _attachment_items() -> list[dict]:
     for attachment in list_chat_attachments():
         content_type = attachment.get("contentType") or ""
         has_bytes = attachment.get("type") == "image" or content_type.startswith(
-            ("image/", "audio/")
+            ("image/", "audio/", "video/")
         )
         message_id, attachment_id = attachment["messageId"], attachment["id"]
         items.append(
@@ -449,7 +449,14 @@ def delete_item(item_id: str) -> bool:
         deleted = image_gallery.delete(ref)
     elif kind == "video":
         from core.inference import video_gallery
+        from routes.video import _forget_openai_job, _forget_terminal_video
+
         deleted = video_gallery.delete(ref)
+        if deleted:
+            # Same cleanup as the Video page, so the clip does not come back as a ghost card.
+            _forget_terminal_video(ref)
+            if not _forget_openai_job(ref):
+                logger.warning("library.delete_video_job_failed: %s", ref)
     elif kind == "audio":
         from core.inference import audio_gallery
         deleted = audio_gallery.delete(ref)

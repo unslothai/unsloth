@@ -11,7 +11,7 @@ import { toast } from "@/lib/toast";
 import { Download01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useState } from "react";
-import { type LibraryItem, fetchLibraryBlob, writeLibraryText } from "../api";
+import { type LibraryItem, fetchLibraryTextPrefix, writeLibraryText } from "../api";
 import {
   fileKind,
   hasImagePreview,
@@ -23,8 +23,8 @@ import { formatCardTime, formatSize } from "../format";
 import { useLibraryObjectUrl } from "../hooks";
 import { KindIcon } from "./library-cards";
 
-// Past this the preview shows a prefix; the full file is a download away.
-const MAX_TEXT_PREVIEW_CHARS = 400_000;
+// Past this the preview shows a read-only prefix; the full file is a download away.
+const MAX_TEXT_PREVIEW_BYTES = 1024 * 1024;
 
 type Body = "image" | "web" | "text" | "pdf" | "audio" | "video" | "model" | "none";
 
@@ -49,17 +49,20 @@ function isEditable(item: LibraryItem): boolean {
 /** The item's text, or null while it loads. Keyed by version so a stale result never shows. */
 function useItemText(item: LibraryItem, enabled: boolean) {
   const key = `${item.id}@${item.updatedAt}`;
-  const [state, setState] = useState<{ key: string; text?: string; error?: string } | null>(null);
+  const [state, setState] = useState<{
+    key: string;
+    text?: string;
+    truncated?: boolean;
+    error?: string;
+  } | null>(null);
   useEffect(() => {
     if (!enabled) return;
     let cancelled = false;
-    fetchLibraryBlob(item)
-      .then((blob) => blob.text())
-      .then(
-        (text) => !cancelled && setState({ key, text }),
-        (err: unknown) =>
-          !cancelled && setState({ key, error: err instanceof Error ? err.message : String(err) }),
-      );
+    fetchLibraryTextPrefix(item, MAX_TEXT_PREVIEW_BYTES).then(
+      ({ text, truncated }) => !cancelled && setState({ key, text, truncated }),
+      (err: unknown) =>
+        !cancelled && setState({ key, error: err instanceof Error ? err.message : String(err) }),
+    );
     return () => {
       cancelled = true;
     };
@@ -67,7 +70,11 @@ function useItemText(item: LibraryItem, enabled: boolean) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [key, enabled]);
   const current = state?.key === key ? state : null;
-  return { text: current?.text ?? null, error: current?.error ?? null };
+  return {
+    text: current?.text ?? null,
+    truncated: current?.truncated ?? false,
+    error: current?.error ?? null,
+  };
 }
 
 function ModelDetails({ item }: { item: LibraryItem }) {
@@ -92,6 +99,14 @@ function ModelDetails({ item }: { item: LibraryItem }) {
   );
 }
 
+function TextPrefix({ text }: { text: string }) {
+  return (
+    <pre className="size-full overflow-auto whitespace-pre-wrap break-words font-mono text-sm leading-relaxed">
+      {text}
+    </pre>
+  );
+}
+
 function PreviewBody({
   item,
   draft,
@@ -104,7 +119,7 @@ function PreviewBody({
   const body = bodyFor(item);
   const needsUrl = body === "image" || body === "pdf" || body === "audio" || body === "video";
   const url = useLibraryObjectUrl(item, needsUrl);
-  const { text, error } = useItemText(item, body === "text" || body === "web");
+  const { text, truncated, error } = useItemText(item, body === "text" || body === "web");
 
   if (error) {
     return <p className="m-auto text-sm text-muted-foreground">{error}</p>;
@@ -124,6 +139,7 @@ function PreviewBody({
     case "video":
       return <video src={url!} controls className="m-auto max-h-full max-w-full rounded-xl" />;
     case "web":
+      if (truncated) return <TextPrefix text={`${text!}\n\n…`} />;
       // The chat canvas frame: served by the backend under its own CSP, so it renders the same in
       // the browser and the desktop app, and honors the canvas network-access setting.
       return (
@@ -132,7 +148,7 @@ function PreviewBody({
         </div>
       );
     case "text":
-      return isEditable(item) ? (
+      return isEditable(item) && !truncated ? (
         <textarea
           value={draft ?? text!}
           onChange={(event) => onDraftChange(event.target.value)}
@@ -141,11 +157,7 @@ function PreviewBody({
           className="size-full resize-none bg-transparent font-mono text-sm leading-relaxed outline-none"
         />
       ) : (
-        <pre className="size-full overflow-auto whitespace-pre-wrap break-words font-mono text-sm leading-relaxed">
-          {text!.length > MAX_TEXT_PREVIEW_CHARS
-            ? `${text!.slice(0, MAX_TEXT_PREVIEW_CHARS)}\n\n…`
-            : text}
-        </pre>
+        <TextPrefix text={truncated ? `${text!}\n\n…` : text!} />
       );
     default:
       return (
@@ -197,6 +209,11 @@ export function LibraryPreview({
     }
   }
 
+  // Leaving the preview any other way saves first too.
+  async function saveThen(action: () => void) {
+    if (await save()) action();
+  }
+
   // Closing a note saves it, so an edit is never lost to a stray Escape.
   async function handleOpenChange(open: boolean) {
     if (!open && !(await save())) return;
@@ -234,7 +251,7 @@ export function LibraryPreview({
                       {" · "}
                       <button
                         type="button"
-                        onClick={() => onOpenThread(item.threadId!)}
+                        onClick={() => void saveThen(() => onOpenThread(item.threadId!))}
                         className="underline-offset-2 hover:text-foreground hover:underline"
                       >
                         {item.threadTitle}
@@ -248,7 +265,7 @@ export function LibraryPreview({
                   Save
                 </Button>
               )}
-              <Button variant="ghost" size="sm" onClick={() => onChat(item)}>
+              <Button variant="ghost" size="sm" disabled={saving} onClick={() => void saveThen(() => onChat(item))}>
                 <HugeiconsIcon icon={MessageCircleIcon} strokeWidth={1.75} className="size-4" />
                 {item.model ? "Chat with this model" : "Chat about this"}
               </Button>

@@ -14,6 +14,8 @@ interface FavoritesState {
   setFavorite: (id: string, favorite: boolean) => Promise<void>;
 }
 
+const latestAttempt = new Map<string, number>();
+
 /** Library favorites by item id, for pages (Images, Video) that mark them without loading the
  *  whole Library. */
 export const useLibraryFavoritesStore = create<FavoritesState>((set, get) => ({
@@ -32,11 +34,16 @@ export const useLibraryFavoritesStore = create<FavoritesState>((set, get) => ({
     set({ ids });
   },
   setFavorite: async (id, favorite) => {
+    const attempt = (latestAttempt.get(id) ?? 0) + 1;
+    latestAttempt.set(id, attempt);
     get().mark(id, favorite);
     try {
       await updateLibraryItem(id, { favorite });
+      if (latestAttempt.get(id) !== attempt) return;
       toast.success(favorite ? "Added to Favorites" : "Removed from Favorites");
     } catch (error) {
+      // A newer toggle owns the star now.
+      if (latestAttempt.get(id) !== attempt) return;
       get().mark(id, !favorite);
       toast.error("Could not update favorites", {
         description: error instanceof Error ? error.message : String(error),
