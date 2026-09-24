@@ -1729,8 +1729,13 @@ export function ImagesPage({
   );
   const selectedSrc = selected ? srcById[selected.id] : undefined;
   // The same full-window viewer the Library opens.
-  const [viewerOpen, setViewerOpen] = useState(false);
-  const openViewer = () => selected && selectedSrc && setViewerOpen(true);
+  // Bound to the image that opened it: a batch still finishing moves the selection, not the viewer.
+  const [viewerId, setViewerId] = useState<string | null>(null);
+  const viewerImage = viewerId ? (images.find((image) => image.id === viewerId) ?? null) : null;
+  const viewerSrc = viewerImage ? srcById[viewerImage.id] : undefined;
+  // Leaving the page closes it: the dialog portals to the body, past the hidden page.
+  if (viewerId && (!active || !viewerImage)) setViewerId(null);
+  const openViewer = () => selected && selectedSrc && setViewerId(selected.id);
   const navigateToChat = useNavigate();
   const revealLabel = useRevealLabel();
 
@@ -5198,6 +5203,36 @@ export function ImagesPage({
           data-tour="images-preview"
           className="relative flex min-h-[60dvh] min-w-0 flex-1 flex-col overflow-hidden @[50rem]:min-h-0"
         >
+          {viewerImage && viewerSrc && (
+            <MediaViewer
+              open={true}
+              onOpenChange={(open) => !open && setViewerId(null)}
+              title={viewerImage.prompt || "Untitled image"}
+              meta={`Generated · ${viewerImage.width} × ${viewerImage.height}`}
+              media={true}
+              noun="image"
+              actions={{
+                primary: {
+                  label: "Chat about this",
+                  icon: MessageCircleIcon,
+                  onClick: () => void chatAboutMedia(navigateToChat, viewerSrc, viewerImage.prompt, "image"),
+                },
+                onDownload: () => void handleQuickDownload(viewerImage),
+                reveal: revealLabel
+                  ? { label: revealLabel, onClick: () => revealInFolder(`image:${viewerImage.id}`) }
+                  : undefined,
+                favorite: isFavorite(`image:${viewerImage.id}`),
+                onToggleFavorite: () => toggleFavorite(`image:${viewerImage.id}`),
+                onAddToProject: (projectId) => addGalleryImageToProject(viewerImage.id, projectId),
+                onDelete: () => {
+                  setViewerId(null);
+                  void handleDelete(viewerImage.id);
+                },
+              }}
+            >
+              <img src={viewerSrc} alt={viewerImage.prompt} className="size-full object-contain" />
+            </MediaViewer>
+          )}
           <div className="hover-scrollbar relative flex flex-1 items-center justify-center overflow-auto p-6 px-10 @[50rem]:pt-[calc(60px*var(--ui-space-scale,1))]">
             {selected && selectedSrc ? (
               <>
@@ -5217,34 +5252,6 @@ export function ImagesPage({
                   }}
                   className="max-h-full max-w-full cursor-zoom-in object-contain shadow-sm"
                 />
-                <MediaViewer
-                  open={viewerOpen}
-                  onOpenChange={setViewerOpen}
-                  title={selected.prompt || "Untitled image"}
-                  meta={`Generated · ${selected.width} × ${selected.height}`}
-                  media={true}
-                  noun="image"
-                  actions={{
-                    primary: {
-                      label: "Chat about this",
-                      icon: MessageCircleIcon,
-                      onClick: () => void chatAboutMedia(navigateToChat, selectedSrc, selected.prompt, "png"),
-                    },
-                    onDownload: () => void handleQuickDownload(selected),
-                    reveal: revealLabel
-                      ? { label: revealLabel, onClick: () => revealInFolder(`image:${selected.id}`) }
-                      : undefined,
-                    favorite: isFavorite(`image:${selected.id}`),
-                    onToggleFavorite: () => toggleFavorite(`image:${selected.id}`),
-                    onAddToProject: (projectId) => addGalleryImageToProject(selected.id, projectId),
-                    onDelete: () => {
-                      setViewerOpen(false);
-                      void handleDelete(selected.id);
-                    },
-                  }}
-                >
-                  <img src={selectedSrc} alt={selected.prompt} className="size-full object-contain" />
-                </MediaViewer>
                 {/* Actions grouped in one glass toolbar so they stay legible over any image. Size and seed
                     live in the Recipe popover. */}
                 <div className="absolute bottom-4 right-4 flex items-center gap-0.5 rounded-xl bg-background/80 p-1 shadow-lg ring-1 ring-border backdrop-blur">

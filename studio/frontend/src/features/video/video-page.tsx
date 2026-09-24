@@ -1157,13 +1157,19 @@ function VideoGenerator({
   );
   const selectedSrc = selected ? srcById[selected.id] : undefined;
   // The same full-window viewer the Library opens, picking the clip up where the inline player was.
-  const [viewer, setViewer] = useState<{ start: number; muted: boolean } | null>(null);
+  // Bound to the clip that opened it: a generation finishing moves the selection, not the viewer.
+  const [viewer, setViewer] = useState<{ id: string; start: number; muted: boolean } | null>(null);
   const viewerVideoRef = useRef<HTMLVideoElement | null>(null);
   const navigateToChat = useNavigate();
   const revealLabel = useRevealLabel();
+  const viewerVideo = viewer ? (videos.find((video) => video.id === viewer.id) ?? null) : null;
+  const viewerSrc = viewerVideo ? srcById[viewerVideo.id] : undefined;
+  // Leaving the page closes it: the dialog portals to the body, past the hidden page, and would play on.
+  if (viewer && (!active || !viewerVideo)) setViewer(null);
   const openViewer = () => {
     if (!selected || !selectedSrc) return;
     setViewer({
+      id: selected.id,
       start: previewRef.current?.currentTime ?? 0,
       muted: previewRef.current?.muted ?? true,
     });
@@ -1172,7 +1178,9 @@ function VideoGenerator({
   };
   const closeViewer = () => {
     const time = viewerVideoRef.current?.currentTime;
-    if (previewRef.current && time !== undefined) previewRef.current.currentTime = time;
+    if (previewRef.current && time !== undefined && viewer?.id === selected?.id) {
+      previewRef.current.currentTime = time;
+    }
     setViewer(null);
   };
 
@@ -4223,6 +4231,49 @@ function VideoGenerator({
           data-tour="video-preview"
           className="relative flex min-h-[60dvh] min-w-0 flex-1 flex-col overflow-hidden pl-2 lg:min-h-0"
         >
+          {viewer && viewerVideo && viewerSrc && (
+            <MediaViewer
+              open={true}
+              onOpenChange={(open) => !open && closeViewer()}
+              title={viewerVideo.prompt || "Untitled video"}
+              meta={`Generated · ${viewerVideo.width} × ${viewerVideo.height} · ${Math.round(viewerVideo.duration_s)}s`}
+              media={true}
+              noun="video"
+              actions={{
+                primary: {
+                  label: "Chat about this",
+                  icon: MessageCircleIcon,
+                  onClick: () => void chatAboutMedia(navigateToChat, viewerSrc, viewerVideo.prompt, "video"),
+                },
+                onDownload: () => void handleQuickDownload(viewerVideo),
+                reveal: revealLabel
+                  ? { label: revealLabel, onClick: () => revealInFolder(`video:${viewerVideo.id}`) }
+                  : undefined,
+                favorite: isFavorite(`video:${viewerVideo.id}`),
+                onToggleFavorite: () => toggleFavorite(`video:${viewerVideo.id}`),
+                onAddToProject: (projectId) => addGalleryVideoToProject(viewerVideo.id, projectId),
+                onDelete: () => {
+                  setViewer(null);
+                  void handleDelete(viewerVideo.id);
+                },
+              }}
+            >
+              <video
+                ref={viewerVideoRef}
+                src={viewerSrc}
+                controls
+                autoPlay
+                playsInline
+                muted={viewer.muted}
+                onLoadedMetadata={(event) => {
+                  if (viewer.start) event.currentTarget.currentTime = viewer.start;
+                }}
+                // An expired or restart-invalidated link gets a fresh one, as the inline player does.
+                onError={() => remintSrc(viewerVideo)}
+                className="size-full object-contain"
+              />
+            </MediaViewer>
+          )}
           <div className="hover-scrollbar relative flex flex-1 items-center justify-center overflow-auto p-6">
             {selected && selectedSrc ? (
               <>
@@ -4253,45 +4304,6 @@ function VideoGenerator({
                   }}
                   className="max-h-full max-w-full cursor-zoom-in object-contain shadow-sm"
                 />
-                <MediaViewer
-                  open={viewer !== null}
-                  onOpenChange={(open) => !open && closeViewer()}
-                  title={selected.prompt || "Untitled video"}
-                  meta={`Generated · ${selected.width} × ${selected.height} · ${Math.round(selected.duration_s)}s`}
-                  media={true}
-                  noun="video"
-                  actions={{
-                    primary: {
-                      label: "Chat about this",
-                      icon: MessageCircleIcon,
-                      onClick: () => void chatAboutMedia(navigateToChat, selectedSrc, selected.prompt, "mp4"),
-                    },
-                    onDownload: () => void handleQuickDownload(selected),
-                    reveal: revealLabel
-                      ? { label: revealLabel, onClick: () => revealInFolder(`video:${selected.id}`) }
-                      : undefined,
-                    favorite: isFavorite(`video:${selected.id}`),
-                    onToggleFavorite: () => toggleFavorite(`video:${selected.id}`),
-                    onAddToProject: (projectId) => addGalleryVideoToProject(selected.id, projectId),
-                    onDelete: () => {
-                      setViewer(null);
-                      void handleDelete(selected.id);
-                    },
-                  }}
-                >
-                  <video
-                    ref={viewerVideoRef}
-                    src={selectedSrc}
-                    controls
-                    autoPlay
-                    playsInline
-                    muted={viewer?.muted ?? true}
-                    onLoadedMetadata={(event) => {
-                      if (viewer?.start) event.currentTarget.currentTime = viewer.start;
-                    }}
-                    className="size-full object-contain"
-                  />
-                </MediaViewer>
                 {selected.has_audio && (
                   <div className="absolute left-4 top-4 flex items-center gap-1 rounded-lg bg-background/80 px-2 py-1 text-ui-11 font-medium shadow-lg ring-1 ring-border backdrop-blur">
                     <HugeiconsIcon icon={VolumeHighIcon} className="size-3.5" />
