@@ -9623,3 +9623,22 @@ def test_the_boundary_marker_waits_out_a_busy_capture_lock(fake_runtime, monkeyp
     assert marks["calls"] == 1
     assert marks["ok"] is True
     assert at_decode.get("phase") == "decode"
+
+
+def test_teardown_drains_pinned_host_memory_after_the_pipeline_is_gone(
+    fake_runtime, tmp_path, monkeypatch
+):
+    # See the image backend's twin: the pinned offload chunks are only free once the state is dropped.
+    from core.inference import video as video_mod
+
+    backend = VideoBackend()
+    _load_gguf(backend, tmp_path)
+    calls: list = []
+    monkeypatch.setattr(
+        video_mod, "clear_gpu_cache", lambda: calls.append(("clear", backend._state))
+    )
+    monkeypatch.setattr(
+        video_mod, "release_pinned_host_memory", lambda: calls.append(("host", backend._state))
+    )
+    backend.unload()
+    assert calls == [("clear", None), ("host", None)]

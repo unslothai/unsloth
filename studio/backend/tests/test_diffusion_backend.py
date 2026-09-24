@@ -11704,3 +11704,24 @@ def test_a_prequant_repo_missing_its_artifact_marks_the_plan_incomplete(monkeypa
         failures
     ), "a configured prequant that is not in its repo left the plan calling itself complete"
     assert "prequant artifact missing" in str(failures[0])
+
+
+def test_unload_drains_pinned_host_memory_after_the_pipeline_is_gone(
+    fake_runtime, tmp_path, monkeypatch
+):
+    # The post-generate reclaim runs while the pipeline still holds its pinned offload chunks; only after unload
+    # drops it are they free, and torch keeps them page-locked in its host cache until emptied.
+    from core.inference import diffusion as diffusion_module
+
+    backend = _loaded_backend(tmp_path)
+    calls: list = []
+    monkeypatch.setattr(
+        diffusion_module, "clear_gpu_cache", lambda: calls.append(("clear", backend._state))
+    )
+    monkeypatch.setattr(
+        diffusion_module,
+        "release_pinned_host_memory",
+        lambda: calls.append(("host", backend._state)),
+    )
+    backend.unload()
+    assert calls == [("clear", None), ("host", None)]
