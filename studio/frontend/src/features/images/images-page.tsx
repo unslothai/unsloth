@@ -2025,12 +2025,17 @@ export function ImagesPage({
       const next = moveGalleryItem(galleryCache.images, id, afterId);
       if (next === galleryCache.images) return;
       const guessedPinned = Boolean(next.find((i) => i.id === id)?.pinned);
+      // Takes a pin token too: a pin clicked after this drop must not be undone by its response.
+      const attempt = (pinSeq.current += 1);
+      pinAttempt.current.set(id, attempt);
       stripEpoch.current += 1;
       galleryCache.images = next;
       setImages(next);
       try {
         // Shares the pin queue, since both rewrite the order.
         const record = await serializeById("image-pin", () => moveGalleryImage(id, afterId));
+        if (pinAttempt.current.get(id) !== attempt) return;
+        pinAttempt.current.delete(id);
         setImages((prev) => {
           const patched = prev.map((i) =>
             i.id === id ? { ...i, pinned: record.pinned, order_at: record.order_at } : i,
