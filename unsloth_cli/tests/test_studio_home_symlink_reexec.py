@@ -85,6 +85,20 @@ def test_missing_paths_do_not_raise(tmp_path, monkeypatch):
     assert not studio_mod._running_in_studio_venv(tmp_path / "also_gone" / "unsloth_studio")
 
 
+
+def test_symlink_loop_does_not_raise(tmp_path, monkeypatch):
+    # Path.resolve() raises RuntimeError on a symlink loop before Python 3.13.
+    studio_mod = _studio()
+
+    def _loop(self, *a, **k):
+        raise RuntimeError(f"Symlink loop from {self!r}")
+
+    monkeypatch.setattr(Path, "resolve", _loop)
+    monkeypatch.setattr(sys, "prefix", str(tmp_path / "outer"))
+    assert not studio_mod._running_in_studio_venv(tmp_path / "unsloth_studio")
+    monkeypatch.setattr(sys, "prefix", str(tmp_path / "unsloth_studio"))
+    assert studio_mod._running_in_studio_venv(tmp_path / "unsloth_studio")
+
 class _Execd(SystemExit):
     def __init__(self):
         super().__init__(0)

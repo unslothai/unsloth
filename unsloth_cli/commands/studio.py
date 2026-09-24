@@ -453,7 +453,8 @@ def _studio_venv_python() -> Optional[Path]:
 def _resolved_or_self(path: Path) -> Path:
     try:
         return path.resolve()
-    except (OSError, ValueError):
+    except (OSError, RuntimeError, ValueError):
+        # RuntimeError: a symlink loop before Python 3.13
         return path
 
 
@@ -472,7 +473,8 @@ def _running_in_studio_venv(venv_dir: Path) -> bool:
         (prefix, venv_dir),
         (_resolved_or_self(prefix), _resolved_or_self(venv_dir)),
     ):
-        a_s, b_s = os.path.normcase(str(a)), os.path.normcase(str(b)).rstrip("\\/")
+        a_s = os.path.normcase(str(a))
+        b_s = os.path.normcase(str(b)).rstrip(os.sep + (os.altsep or ""))
         if a_s == b_s or a_s.startswith(b_s + os.sep):
             return True
     try:
