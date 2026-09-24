@@ -235,3 +235,39 @@ def test_refuses_the_delete_while_a_diffusion_training_run_is_active(client, mon
     stub.get_diffusion_training_service = lambda: types.SimpleNamespace(is_active = lambda: False)
     assert _delete(c, target).status_code == 200
     assert not target.exists()
+
+
+def test_deleting_a_gguf_variant_drops_its_library_entry(tmp_path, monkeypatch):
+    """A GGUF export is listed by one of its files; deleting that variant ends its entry, and the
+    other variants keep theirs."""
+    exports = tmp_path / "exports"
+    run = exports / "my-export"
+    run.mkdir(parents = True)
+    q4, q8 = run / "model-Q4_K_M.gguf", run / "model-Q8_0.gguf"
+    q4.write_bytes(b"x")
+    q8.write_bytes(b"x")
+    monkeypatch.setattr(models_module, "exports_root", lambda: exports)
+    monkeypatch.setattr(models_module, "get_inference_backend", lambda: _NoChat())
+    monkeypatch.setattr(models_module, "_active_diffusion_backend", lambda: None)
+    monkeypatch.setattr(models_module, "_active_video_backend", lambda: None)
+    entries = {f"model:exported:{q4}": {}, f"model:exported:{q8}": {}, "upload:abc": {}}
+    monkeypatch.setattr(library_db, "list_entries", lambda: entries)
+    forgotten: list[str] = []
+    monkeypatch.setattr(library_db, "delete_entry", forgotten.append)
+
+    app = FastAPI()
+    app.include_router(models_router, prefix = "/api/models")
+    app.dependency_overrides[get_current_subject] = lambda: "test-user"
+    response = TestClient(app).request(
+        "DELETE",
+        "/api/models/delete-finetuned",
+        json = {
+            "model_path": str(q4),
+            "source": "exported",
+            "export_type": "gguf",
+            "gguf_variant": "Q4_K_M",
+        },
+    )
+    assert response.status_code == 200, response.text
+    assert not q4.exists() and q8.exists()
+    assert forgotten == [f"model:exported:{q4}"]
