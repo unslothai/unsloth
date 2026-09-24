@@ -95,7 +95,7 @@ function CardFrame({
           onCheckedChange={() => select.toggle(selectKey)}
           aria-label={`Select ${label}`}
           className={cn(
-            "absolute left-2 top-2 bg-background/90 opacity-0 transition-opacity group-hover/library-card:opacity-100 focus-visible:opacity-100",
+            "absolute bottom-2 right-2 bg-background/90 opacity-0 transition-opacity group-hover/library-card:opacity-100 focus-visible:opacity-100",
             (selecting || selected) && "opacity-100",
           )}
         />
@@ -138,7 +138,7 @@ export function ItemCard({ item, showTime = true }: { item: LibraryItem; showTim
           <KindIcon item={item} className="size-10" />
         </div>
         {showTime && (
-          <p className="truncate text-[13px] text-muted-foreground">
+          <p className="truncate pr-6 text-[13px] text-muted-foreground">
             {[modelLabel(item), formatCardTime(item.updatedAt)].filter(Boolean).join(" · ")}
           </p>
         )}
