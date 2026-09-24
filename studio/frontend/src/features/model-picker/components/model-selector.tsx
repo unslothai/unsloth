@@ -247,7 +247,7 @@ function ModelSelectorTrigger({
             {currentModel?.description && (
               <span
                 className={cn(
-                  "min-w-0 truncate text-xs leading-none text-muted-foreground",
+                  "min-w-0 truncate text-xs leading-tight text-muted-foreground",
                   showCloudIndicator ? "" : "ml-2",
                 )}
               >

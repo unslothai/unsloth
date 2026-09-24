@@ -4295,7 +4295,7 @@ class GalleryImage(BaseModel):
     archived: bool = Field(False, description = "Moved to the archived shelf, hidden from the strip")
     order_at: Optional[float] = Field(
         None,
-        description = "Manual sort key (epoch-second scale) once dragged; unset sorts by creation",
+        description = "Unpinned sort key (epoch-second scale): the manual key once dragged, else the file mtime",
     )
 
 
@@ -5154,7 +5154,7 @@ class GalleryVideo(BaseModel):
     archived: bool = Field(False, description = "Moved to the archived shelf, hidden from the strip")
     order_at: Optional[float] = Field(
         None,
-        description = "Manual sort key (epoch-second scale) once dragged; unset sorts by creation",
+        description = "Unpinned sort key (epoch-second scale): the manual key once dragged, else the file mtime",
     )
 
 
