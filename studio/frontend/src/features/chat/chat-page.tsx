@@ -351,15 +351,21 @@ const SingleContent = memo(function SingleContent({
 }): ReactElement {
   const openArtifact = useChatArtifactsStore((state) => state.openArtifact);
   const activeThreadId = useChatRuntimeStore((state) => state.activeThreadId);
+  const isMobile = useIsMobile();
+  const chatActive = useChatActive();
   // A canvas's Fix button leaves its text here rather than typing it itself, because the
   // fullscreen overlay renders outside this provider and has no composer to reach. This
   // runs inside it, so it does the typing. Still never sends: the user reads it first.
   const aui = useAui();
+  // Compare mode keeps this view mounted and hidden behind its own panes, and its composer
+  // with it. Typing into that one would drop the text into a box nobody can see, so the
+  // backgrounded copy leaves the prompt for whoever is on screen: SharedComposer takes it
+  // in compare, this effect once the view is foreground again.
   const pendingFixPrompt = useChatArtifactsStore(
     (state) => state.pendingFixPrompt,
   );
   useEffect(() => {
-    if (!pendingFixPrompt) return;
+    if (!pendingFixPrompt || !chatActive) return;
     useChatArtifactsStore.getState().clearFixPrompt();
     const composer = aui.composer();
     const current = composer.getState().text;
@@ -375,9 +381,7 @@ const SingleContent = memo(function SingleContent({
         .querySelector<HTMLTextAreaElement>(COMPOSER_INPUT_SELECTOR)
         ?.focus();
     }, 0);
-  }, [pendingFixPrompt, aui]);
-  const isMobile = useIsMobile();
-  const chatActive = useChatActive();
+  }, [pendingFixPrompt, aui, chatActive]);
   const openResearchRunId = useResearchRunStore((state) => state.openRunId);
   const closeResearchPanel = useResearchRunStore((state) => state.closePanel);
   useEffect(() => {

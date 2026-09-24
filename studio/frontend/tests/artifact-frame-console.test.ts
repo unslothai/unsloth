@@ -250,6 +250,30 @@ test("the Fix button stages text in the composer and never sends it", () => {
   assert.match(pageSource, /composer\.setText\(/);
 });
 
+test("the staged prompt goes to the composer on screen, in either mode", () => {
+  // Compare mode keeps the single-chat view mounted and hidden behind its panes, so the
+  // consumer there has to stand down or the text lands in a box nobody can see. Compare's
+  // own composer keeps its draft in local state, out of reach of the chat runtime, so it
+  // takes the prompt itself.
+  const pageSource = readFileSync(
+    fileURLToPath(new URL("../src/features/chat/chat-page.tsx", import.meta.url)),
+    "utf8",
+  );
+  assert.match(pageSource, /if \(!pendingFixPrompt \|\| !chatActive\) return;/);
+  const composerSource = readFileSync(
+    fileURLToPath(
+      new URL("../src/features/chat/shared-composer.tsx", import.meta.url),
+    ),
+    "utf8",
+  );
+  assert.match(composerSource, /state\.pendingFixPrompt/);
+  assert.match(composerSource, /clearFixPrompt\(\)/);
+  // Exactly one consumer runs for a given prompt, so it cannot be typed twice.
+  for (const source of [pageSource, composerSource]) {
+    assert.equal(source.split("clearFixPrompt()").length - 1, 1);
+  }
+});
+
 test("the frame reaches no composer of its own", () => {
   // The fullscreen overlay renders outside the chat runtime provider, and that runtime's
   // default client throws from every field it is asked for, so a frame that typed into the
