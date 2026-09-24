@@ -221,6 +221,7 @@ import {
   GENERATE_ANYWAY_LABEL,
   MEMORY_REFUSAL_TITLE,
   shouldOfferGenerateAnyway,
+  shouldRunQueuedOversizedRetry,
 } from "./lib/memory-refusal";
 import { useNavigate, useSearch } from "@tanstack/react-router";
 import { useStagedDownload, type StagedDownloadEntry } from "@/features/hub/download-manager";
@@ -1396,7 +1397,9 @@ export function ImagesPage({
     "unsloth_images_allow_oversized",
   );
   const oversizedOnce = useRef(false);
-  const retryGenerate = useRef<(() => Promise<void>) | null>(null);
+  // "Generate anyway" is clickable while the refused run is still cleaning up (busy stays set until
+  // its awaited status refresh), so the click is queued and run once busy is released.
+  const [oversizedRetryQueued, setOversizedRetryQueued] = useState(false);
   // Advanced (load-time) options; "auto"/"off"/"none" map to the backend defaults. Changing one
   // while loaded shows "Reapply".
   const [modelSelectionAction, setModelSelectionAction] = useState<"load" | "download">("load");
@@ -4126,12 +4129,7 @@ export function ImagesPage({
           duration: 20_000,
           action: {
             label: GENERATE_ANYWAY_LABEL,
-            onClick: () => {
-              oversizedOnce.current = true;
-              void (retryGenerate.current?.() ?? Promise.resolve()).finally(() => {
-                oversizedOnce.current = false;
-              });
-            },
+            onClick: () => setOversizedRetryQueued(true),
           },
         });
       } else if (report) toast.error(msg);
@@ -4233,8 +4231,13 @@ export function ImagesPage({
     workflow,
   ]);
   useEffect(() => {
-    retryGenerate.current = handleGenerateWithRecall;
-  }, [handleGenerateWithRecall]);
+    if (!shouldRunQueuedOversizedRetry({ queued: oversizedRetryQueued, busy })) return;
+    setOversizedRetryQueued(false);
+    oversizedOnce.current = true;
+    void handleGenerateWithRecall().finally(() => {
+      oversizedOnce.current = false;
+    });
+  }, [oversizedRetryQueued, busy, handleGenerateWithRecall]);
 
   useEffect(() => {
     const pending = pendingRecalledGeneration.current;

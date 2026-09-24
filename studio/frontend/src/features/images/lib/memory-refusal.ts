@@ -55,3 +55,13 @@ export function allowOversizedField(
 ): true | undefined {
   return persistedSetting || oneShot ? true : undefined;
 }
+
+/** Whether a queued "Generate anyway" should start now. The toast appears while the refused run is
+ *  still in its cleanup (busy is released only after an awaited status refresh), and a retry started
+ *  then is dropped by the generate guard, so the click waits until nothing is busy. */
+export function shouldRunQueuedOversizedRetry(input: {
+  queued: boolean;
+  busy: unknown;
+}): boolean {
+  return input.queued && input.busy === null;
+}

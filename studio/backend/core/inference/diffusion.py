@@ -102,7 +102,7 @@ from .diffusion_memory import (
     OFFLOAD_NONE,
     OFFLOAD_STREAMING,
     apply_memory_plan,
-    engage_vae_tiling_for_call,
+    engage_vae_tiling,
     estimate_gguf_resident_mib,
     estimate_image_runtime_mib,
     estimate_safetensors_dense_mib,
@@ -1433,10 +1433,16 @@ def _dense_candidate_is_prequant(
         return False
 
 
-def _quadratic_attention(target: Any) -> bool:
+def _quadratic_attention(target: Any, engaged_backend: Optional[str] = None) -> bool:
     """Whether attention on ``target`` can only run on the SDPA math backend, whose memory grows
     with the square of the token count. False when the probe cannot answer: the activation guard
-    then keeps its tiled look, the same way it fails open on every other unknown."""
+    then keeps its tiled look, the same way it fails open on every other unknown.
+
+    ``engaged_backend`` is the dispatcher backend the load engaged (``_LoadState.attention_backend``).
+    Every one of those (cuDNN, flash, SageAttention, xFormers, AITER) is a fused kernel that either
+    runs sub-quadratically or raises, so the SDPA probe only speaks for a pipe left at native."""
+    if engaged_backend is not None and str(engaged_backend) != "native":
+        return False
     try:
         return bool(sdpa_math_only(target))
     except Exception:  # noqa: BLE001 - a broken probe must never block a generation
@@ -7358,7 +7364,7 @@ class DiffusionBackend:
                     )
                     guard_batch = _activation_guard_batch(chunks)
                     guard_target = self._state_device_target(state)
-                    verdict = raise_on_image_activation_shortfall(
+                    guard_kwargs = dict(
                         # NOT the settled snapshot the load uses: that one calls empty_cache(), which is right once
                         # per load but wrong on a per-generation path, since it releases every cached block and the
                         # next forward re-cudaMallocs all of its activations. This variant credits the same
@@ -7388,12 +7394,23 @@ class DiffusionBackend:
                         # is most of the untiled figure. Not under the SDPA math fallback, whose score matrix grows
                         # with the square of the token count however the VAE decodes.
                         vae_tile_side = vae_tile_side(getattr(pipe, "vae", None)),
-                        quadratic_attention = _quadratic_attention(guard_target),
+                        # The kernel the load engaged, not just what native SDPA could do on this device.
+                        quadratic_attention = _quadratic_attention(
+                            guard_target, getattr(state, "attention_backend", None)
+                        ),
                         allow_oversized = allow_oversized,
                         logger = logger,
                     )
+                    verdict = raise_on_image_activation_shortfall(**guard_kwargs)
                     if verdict.action == ACTIVATION_TILE:
-                        restore_vae = engage_vae_tiling_for_call(pipe, logger = logger)
+                        restore_vae, vae_tiled = engage_vae_tiling(pipe, logger = logger)
+                        if not vae_tiled and not verdict.overridden:
+                            # This size only passed because the decode would be tiled. The saver is best-effort,
+                            # so it can fail and leave the full-frame decode the guard just priced as too big:
+                            # refuse with the untiled reason instead (the finally undoes any slicing).
+                            raise_on_image_activation_shortfall(
+                                **{**guard_kwargs, "vae_tile_side": None}
+                            )
                 except ValueError:
                     raise  # the refusal itself: the route turns this into a 400 with the reason
                 except Exception as exc:  # noqa: BLE001 - fail OPEN on a broken probe

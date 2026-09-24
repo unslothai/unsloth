@@ -10601,7 +10601,7 @@ def _upscale_with_tiling_vae(backend, monkeypatch, **kw):
     vae = _TilingVae()
     monkeypatch.setattr(_FakeImg2ImgPipe, "vae", vae, raising = False)
     # The fixture target is CPU; answer the attention probe as a fused-kernel GPU would.
-    monkeypatch.setattr(dmod, "_quadratic_attention", lambda target: False)
+    monkeypatch.setattr(dmod, "_quadratic_attention", lambda target, backend = None: False)
     seen = {}
     real_call = _FakeImg2ImgPipe.__call__
 
@@ -10643,7 +10643,7 @@ def test_generate_upscale_that_fits_is_not_tiled(fake_runtime, tmp_path, monkeyp
 
     vae = _TilingVae()
     monkeypatch.setattr(_FakeImg2ImgPipe, "vae", vae, raising = False)
-    monkeypatch.setattr(dmod, "_quadratic_attention", lambda target: False)
+    monkeypatch.setattr(dmod, "_quadratic_attention", lambda target, backend = None: False)
     backend.generate(prompt = "a sloth", steps = 4, seed = 1, init_image = _png_b64(512), upscale = 2.0)
     assert vae.calls == []
 
@@ -10656,7 +10656,7 @@ def test_generate_upscale_restores_the_vae_when_the_render_fails(
 
     vae = _TilingVae()
     monkeypatch.setattr(_FakeImg2ImgPipe, "vae", vae, raising = False)
-    monkeypatch.setattr(dmod, "_quadratic_attention", lambda target: False)
+    monkeypatch.setattr(dmod, "_quadratic_attention", lambda target, backend = None: False)
 
     def _boom(self, **kwargs):
         raise RuntimeError("decode failed")
@@ -10673,12 +10673,89 @@ def test_generate_upscale_on_math_only_attention_still_refuses(fake_runtime, tmp
 
     backend = _loaded_backend_on_a_16g_card(tmp_path, monkeypatch)
     monkeypatch.setattr(_FakeImg2ImgPipe, "vae", _TilingVae(), raising = False)
-    monkeypatch.setattr(dmod, "_quadratic_attention", lambda target: True)
+    monkeypatch.setattr(dmod, "_quadratic_attention", lambda target, backend = None: True)
     with pytest.raises(ValueError) as excinfo:
         backend.generate(prompt = "a sloth", steps = 4, seed = 1, init_image = _png_b64(1024), upscale = 2.0)
     message = str(excinfo.value)
     assert "Upload a smaller source image" in message
     assert "Allow oversized generations" in message
+
+
+class _BrokenTilingVae(_TilingVae):
+    """A VAE that claims to tile but whose enable_tiling() raises."""
+
+    def enable_tiling(self):
+        self.calls.append("enable_tiling")
+        raise RuntimeError("tiling unsupported")
+
+
+def test_generate_upscale_refuses_when_the_vae_tiling_does_not_engage(
+    fake_runtime, tmp_path, monkeypatch
+):
+    # The size only passed because the decode would be tiled; if tiling cannot be turned on, the
+    # full-frame decode the guard priced as too big must not run.
+    from core.inference import diffusion as dmod
+
+    backend = _loaded_backend_on_a_16g_card(tmp_path, monkeypatch)
+    vae = _BrokenTilingVae()
+    monkeypatch.setattr(_FakeImg2ImgPipe, "vae", vae, raising = False)
+    monkeypatch.setattr(dmod, "_quadratic_attention", lambda target, backend = None: False)
+    calls = []
+    real_call = _FakeImg2ImgPipe.__call__
+
+    def _spy(self, **kwargs):
+        calls.append(kwargs)
+        return real_call(self, **kwargs)
+
+    monkeypatch.setattr(_FakeImg2ImgPipe, "__call__", _spy)
+    with pytest.raises(ValueError) as excinfo:
+        backend.generate(prompt = "a sloth", steps = 4, seed = 1, init_image = _png_b64(1024), upscale = 2.0)
+    assert "2048x2048" in str(excinfo.value)
+    assert "even with tiled VAE decoding" not in str(excinfo.value)
+    assert calls == []
+    # The slicing it did engage is put back.
+    assert not vae.use_slicing and not vae.use_tiling
+    # The caller's own override still runs it.
+    out = backend.generate(
+        prompt = "a sloth",
+        steps = 4,
+        seed = 1,
+        init_image = _png_b64(1024),
+        upscale = 2.0,
+        allow_oversized = True,
+    )
+    assert len(out["images"]) == 1
+
+
+def test_quadratic_attention_follows_the_engaged_backend(monkeypatch):
+    # A math-only SDPA device (#8225, ROCm gfx1200) that engaged AITER at load does not run the
+    # quadratic kernel, so the tiled look applies; left at native it does not.
+    from core.inference import diffusion as dmod
+
+    monkeypatch.setattr(dmod, "sdpa_math_only", lambda target: True)
+    assert dmod._quadratic_attention(object()) is True
+    assert dmod._quadratic_attention(object(), None) is True
+    assert dmod._quadratic_attention(object(), "native") is True
+    for engaged in ("aiter", "sage", "xformers", "_native_cudnn", "flash"):
+        assert dmod._quadratic_attention(object(), engaged) is False
+
+
+def test_generate_upscale_with_an_engaged_backend_on_a_math_only_device_runs_tiled(
+    fake_runtime, tmp_path, monkeypatch
+):
+    from core.inference import diffusion as dmod
+
+    backend = _loaded_backend_on_a_16g_card(tmp_path, monkeypatch)
+    monkeypatch.setattr(dmod, "sdpa_math_only", lambda target: True)
+    vae = _TilingVae()
+    monkeypatch.setattr(_FakeImg2ImgPipe, "vae", vae, raising = False)
+    # Left at native, the math fallback keeps the refusal.
+    with pytest.raises(ValueError, match = "2048x2048"):
+        backend.generate(prompt = "a sloth", steps = 4, seed = 1, init_image = _png_b64(1024), upscale = 2.0)
+    object.__setattr__(backend._state, "attention_backend", "aiter")
+    out = backend.generate(prompt = "a sloth", steps = 4, seed = 1, init_image = _png_b64(1024), upscale = 2.0)
+    assert len(out["images"]) == 1
+    assert vae.calls[:2] == ["enable_tiling", "enable_slicing"]
 
 
 def test_generate_allow_oversized_runs_a_refused_request(fake_runtime, tmp_path, monkeypatch):

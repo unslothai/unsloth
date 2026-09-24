@@ -16,6 +16,7 @@ import {
   MEMORY_REFUSAL_KIND,
   MemoryEstimateRefusalError,
   shouldOfferGenerateAnyway,
+  shouldRunQueuedOversizedRetry,
 } from "../src/features/images/lib/memory-refusal.ts";
 import { readSrc, readText } from "./helpers/kit.ts";
 
@@ -67,4 +68,19 @@ test("the page wires the setting, the request field and the toast action", () =>
   const api = readSrc("features/images/api.ts");
   assert.match(api, /allow_oversized\?: boolean;/);
   assert.match(api, /throw new MemoryEstimateRefusalError\(/);
+});
+
+test("Generate anyway clicked during the refused run's cleanup waits for busy to clear", () => {
+  // The toast is up before the finally block releases busy; a retry started then hits the busy
+  // guard and would silently do nothing.
+  assert.equal(shouldRunQueuedOversizedRetry({ queued: true, busy: "generating" }), false);
+  assert.equal(shouldRunQueuedOversizedRetry({ queued: true, busy: null }), true);
+  assert.equal(shouldRunQueuedOversizedRetry({ queued: false, busy: null }), false);
+  const page = readSrc("features/images/images-page.tsx");
+  // The click only queues; the retry starts from an effect that re-runs when busy changes.
+  assert.match(page, /onClick: \(\) => setOversizedRetryQueued\(true\)/);
+  assert.match(
+    page,
+    /shouldRunQueuedOversizedRetry\(\{ queued: oversizedRetryQueued, busy \}\)[\s\S]*?\}, \[oversizedRetryQueued, busy, handleGenerateWithRecall\]\);/,
+  );
 });

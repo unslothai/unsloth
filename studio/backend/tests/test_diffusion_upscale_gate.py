@@ -154,6 +154,16 @@ def test_allow_oversized_turns_a_refusal_into_a_tiled_attempt():
     assert v.action == ACTIVATION_RUN and v.overridden
 
 
+def test_an_override_under_quadratic_attention_still_tiles_the_vae():
+    # The tiled estimate is not trusted under the SDPA math fallback, so it cannot lift the refusal,
+    # but the attempt the caller asked for should still decode tile by tile.
+    v = _verdict(
+        2048, 2048, _card(16), vae_tile_side = 256, quadratic_attention = True, allow_oversized = True
+    )
+    assert v.action == ACTIVATION_TILE and v.overridden
+    assert v.tiled_needed_mib is None
+
+
 def test_the_env_var_still_overrides_for_server_installs(monkeypatch):
     monkeypatch.setenv(OVERSIZED_GENERATE_ENV, "1")
     v = _verdict(2048, 2048, _card(16), vae_tile_side = None)
@@ -299,3 +309,30 @@ def test_a_vae_the_load_already_tiled_is_left_tiled():
     pipe.vae = vae
     assert dm.engage_vae_tiling_for_call(pipe) is None
     assert vae.use_tiling and vae.calls == []
+
+
+def test_a_vae_whose_tiling_fails_reports_it_is_not_tiled():
+    # enable_tiling() is best-effort; the caller must learn it failed, not just get a slicing undo.
+    class _BrokenTilingVae(_Vae):
+        def enable_tiling(self):
+            raise RuntimeError("no tiling on this build")
+
+    vae = _BrokenTilingVae()
+
+    class _Pipe:
+        pass
+
+    pipe = _Pipe()
+    pipe.vae = vae
+    restore, tiled = dm.engage_vae_tiling(pipe)
+    assert tiled is False
+    assert vae.use_slicing and not vae.use_tiling
+    restore()
+    assert not vae.use_slicing
+    # Already tiled at load, or tiled now: both count.
+    vae = _Vae()
+    vae.use_tiling = True
+    pipe.vae = vae
+    assert dm.engage_vae_tiling(pipe)[1] is True
+    pipe.vae = _Vae()
+    assert dm.engage_vae_tiling(pipe)[1] is True

@@ -1329,9 +1329,21 @@ def engage_vae_tiling_for_call(pipe: Any, logger: Any = None) -> Optional[Callab
     Workflow pipes are built with ``from_pipe`` and share the loaded VAE module, so this reaches
     the VAE every pipe decodes with. Undone after the call so a normal-sized generation afterwards
     decodes exactly as it did before (a single tile is bit-identical, several are blended)."""
+    return engage_vae_tiling(pipe, logger = logger)[0]
+
+
+def engage_vae_tiling(
+    pipe: Any, logger: Any = None
+) -> tuple[Optional[Callable[[], None]], bool]:
+    """``engage_vae_tiling_for_call`` plus whether spatial tiling is actually on afterwards.
+
+    The savers are best-effort, so a VAE whose ``enable_tiling()`` raises still comes back with an
+    undo for slicing alone. A caller that is only running this size BECAUSE it will be tiled has to
+    know that, or it goes ahead with the full-frame decode it was told would not fit."""
     vae = getattr(pipe, "vae", None)
     if vae is None:
-        return None
+        return None, False
+    tiled = bool(getattr(vae, "use_tiling", False))
     undo: list[str] = []
     for flag, enable, disable in (
         ("use_tiling", "enable_tiling", "disable_tiling"),
@@ -1349,8 +1361,11 @@ def engage_vae_tiling_for_call(pipe: Any, logger: Any = None) -> Optional[Callab
                 logger.warning("diffusion.memory: %s() failed: %s", enable, exc)
             continue
         undo.append(disable)
+        if enable == "enable_tiling":
+            # A VAE without the flag is taken at its word; one with it has to show it.
+            tiled = bool(getattr(vae, flag, True))
     if not undo:
-        return None
+        return None, tiled
 
     def _restore() -> None:
         for method in undo:
@@ -1363,7 +1378,7 @@ def engage_vae_tiling_for_call(pipe: Any, logger: Any = None) -> Optional[Callab
                 if logger is not None:
                     logger.warning("diffusion.memory: %s() failed: %s", method, exc)
 
-    return _restore
+    return _restore, tiled
 
 
 def _family_activation_multiplier(family: Optional[str]) -> float:
@@ -1569,8 +1584,12 @@ def image_activation_verdict(
     if tiled is not None and (int(tiled) + overhead <= int(budget) or tiled <= planned):
         return ImageActivationVerdict(ACTIVATION_TILE, **numbers)
     if override:
+        # Tiled whenever the VAE can tile, including under quadratic attention: the tiled ESTIMATE is not trusted
+        # there, but tiling still lowers the decode peak of the attempt the caller asked for.
         return ImageActivationVerdict(
-            ACTIVATION_TILE if tiled is not None else ACTIVATION_RUN, overridden = True, **numbers
+            ACTIVATION_TILE if vae_tile_side is not None else ACTIVATION_RUN,
+            overridden = True,
+            **numbers,
         )
     w = max(64, int(width or DEFAULT_IMAGE_WIDTH))
     h = max(64, int(height or DEFAULT_IMAGE_HEIGHT))
