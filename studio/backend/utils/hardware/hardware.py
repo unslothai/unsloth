@@ -3424,6 +3424,22 @@ def _rocm_windows_unified_used_bytes(
     return dedicated_used + shared_used
 
 
+def _rocm_windows_unified_used_bytes_for_luid(
+    luid: int, dedicated: list[tuple[str, float]], total_bytes: float
+) -> Optional[float]:
+    """Dedicated + Shared for one adapter named by its LUID, clamped to ``total_bytes``: the multi-GPU form of _rocm_windows_unified_used_bytes, which has no key and so needs the APU to be the only busy adapter. None when the Shared query fails, for the reason given there."""
+    shared = _rocm_windows_perf_counter_vram_by_adapter("Shared Usage")
+    if shared is None:
+        return None
+    used = 0.0
+    for instance, value in (*dedicated, *shared):
+        if _parse_adapter_luid(instance) == luid:
+            if value < 0.0:
+                return None
+            used += value
+    return max(0.0, min(used, total_bytes))
+
+
 def _rocm_windows_per_device_vram(
     device_indices: list[int], adapters: Optional[list[tuple[str, float]]] = None
 ) -> tuple[list[Dict[str, Any]], Optional[float]]:
@@ -3534,12 +3550,23 @@ def _rocm_windows_per_device_vram(
         assigned = [
             (unified_used if scoped else used) for scoped, used in zip(pool_scoped, assigned)
         ]
+        if only is None:
+            # Beside another GPU the helper above cannot tell whose counter is whose, but HIP's LUID can (#8942).
+            for position, luid in enumerate(whole_adapter):
+                meta = dev_meta[position]
+                if pool_scoped[position] and meta["positively_unified"] and luid is not None:
+                    assigned[position] = _rocm_windows_unified_used_bytes_for_luid(
+                        luid, adapters, float(meta["total_bytes"])
+                    )
         # The aggregate is the visible set's exact total, so it survives only when every pool-scoped member got a figure.
-        aggregate_gb = (
-            round(unified_used / (1024**3), 2)
-            if unified_used is not None and len(dev_meta) == 1
-            else None
-        )
+        if only is not None:
+            aggregate_gb = round(unified_used / (1024**3), 2) if unified_used is not None else None
+        else:
+            aggregate_gb = (
+                round(sum(assigned) / (1024**3), 2)
+                if all(used is not None for used in assigned)
+                else None
+            )
 
     devices: list[Dict[str, Any]] = []
     for meta, used_bytes, luid in zip(dev_meta, assigned, whole_adapter):

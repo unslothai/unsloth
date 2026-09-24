@@ -2425,3 +2425,75 @@ def test_the_luid_is_internal_and_never_reaches_a_payload(win_rocm, monkeypatch)
     for payload in (hw.get_gpu_utilization(), hw.get_visible_gpu_utilization()):
         assert not carries_luid(payload)
         assert 0x15369 not in [v for v in payload.values() if isinstance(v, int)]
+
+
+# ----------------------------------------------------------------------------- #
+# A unified iGPU beside a discrete card (#8942)
+# ----------------------------------------------------------------------------- #
+RX6800_IGPU = [
+    ("AMD Radeon RX 6800", 16 * GB, "gfx1030"),
+    ("AMD Radeon(TM) Graphics", int(76.8 * GB), "gfx1036"),
+]
+DGPU_LUID, IGPU_LUID = 0xD1E2, 0x1532A
+
+
+def _igpu_beside_dgpu(monkeypatch, *, shared = "default"):
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch(RX6800_IGPU, free_equals_total = True))
+    monkeypatch.setattr(
+        hw, "_rocm_props_are_positively_unified", lambda props: props.gcnArchName == "gfx1036"
+    )
+    dedicated = [
+        (f"luid_0x00000000_0x{DGPU_LUID:08x}_phys_0", 4.28 * GB),
+        (f"luid_0x00000000_0x{IGPU_LUID:08x}_phys_0", 0.3 * GB),
+        ("luid_0x00000000_0x00017034_phys_0", 0.0),  # placeholder
+    ]
+    if shared == "default":
+        shared = [
+            (f"luid_0x00000000_0x{DGPU_LUID:08x}_phys_0", 0.1 * GB),
+            (f"luid_0x00000000_0x{IGPU_LUID:08x}_phys_0", 1.2 * GB),
+        ]
+    counters = {"Dedicated Usage": dedicated, "Shared Usage": shared}
+    monkeypatch.setattr(
+        hw,
+        "_rocm_windows_perf_counter_vram_by_adapter",
+        lambda counter = "Dedicated Usage": counters[counter],
+    )
+    monkeypatch.setattr(
+        hw, "_rocm_windows_hip_adapter_ids", _hip_ids((DGPU_LUID, 0), (IGPU_LUID, 0))
+    )
+
+
+def test_an_igpu_beside_a_discrete_card_reports_its_own_used(win_rocm, monkeypatch):
+    """RX 6800 plus a Ryzen iGPU whose total is the 76.8 GiB driver pool. The
+    Dedicated + Shared sum used to be computed only for a lone device, so the
+    iGPU read Unknown and took the System tab's whole VRAM tile with it. HIP's
+    LUID names the iGPU's own counters, so the discrete card cannot lend it bytes."""
+    _igpu_beside_dgpu(monkeypatch)
+
+    devices, aggregate = hw._rocm_windows_per_device_vram([0, 1])
+    assert devices[0]["used_gb"] == pytest.approx(4.28, abs = 0.01)  # Dedicated only
+    assert devices[1]["used_gb"] == pytest.approx(1.5, abs = 0.01)  # 0.3 + 1.2
+    assert devices[1]["total_gb"] == 76.8
+    assert aggregate == pytest.approx(5.78, abs = 0.01)
+
+
+def test_a_failed_shared_query_leaves_the_igpu_unknown(win_rocm, monkeypatch):
+    """Past the carve-out the overflow lives in Shared, so a failed query is not
+    zero shared usage. The discrete card's reading does not depend on it."""
+    _igpu_beside_dgpu(monkeypatch, shared = None)
+
+    devices, aggregate = hw._rocm_windows_per_device_vram([0, 1])
+    assert devices[0]["used_gb"] == pytest.approx(4.28, abs = 0.01)
+    assert devices[1]["used_gb"] is None
+    assert aggregate is None
+
+
+def test_without_hip_luids_the_igpu_stays_unknown(win_rocm, monkeypatch):
+    """No identity, no sum: _rocm_windows_unified_used_bytes picks the lone busy
+    adapter, which on this host is the discrete card."""
+    _igpu_beside_dgpu(monkeypatch)
+    monkeypatch.setattr(hw, "_rocm_windows_hip_adapter_ids", lambda ordinals, names: None)
+
+    devices, aggregate = hw._rocm_windows_per_device_vram([0, 1])
+    assert devices[1]["used_gb"] is None
+    assert aggregate is None
