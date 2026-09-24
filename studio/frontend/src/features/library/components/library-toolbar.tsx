@@ -38,8 +38,9 @@ import { EMPTY_FILTERS, type LibraryFilters, filtersActive } from "../filters";
 import type { LibraryView } from "../store";
 
 const ICON = "size-icon";
+// The active view is raised like the new-chat composer.
 const ROUND_BUTTON =
-  "flex size-9 shrink-0 items-center justify-center rounded-full text-foreground outline-none transition-colors hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring data-[active=true]:bg-muted data-open:bg-muted";
+  "flex size-9 shrink-0 items-center justify-center rounded-full text-foreground outline-none transition-colors hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring data-[active=true]:bg-white data-[active=true]:shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:data-[active=true]:bg-card dark:data-[active=true]:shadow-none data-open:bg-muted";
 
 const SOURCE_OPTIONS: { value: LibrarySource; label: string; icon: IconSvgElement }[] = [
   { value: "uploaded", label: "Uploaded", icon: Upload01Icon },
@@ -237,18 +238,19 @@ export function LibraryToolbar({
         >
           <HugeiconsIcon icon={LeftToRightListBulletIcon} strokeWidth={1.75} className="size-5" />
         </button>
-        <label className="relative ml-2 flex h-9 w-[min(26rem,40vw)] min-w-40 items-center rounded-full border border-border px-4 focus-within:border-ring">
+        {/* Outlined on light; a lighter fill than the page on dark, where an outline reads as a hole. */}
+        <label className="relative ml-2 flex h-9 w-[min(26rem,40vw)] min-w-40 items-center rounded-full border border-border px-4 focus-within:border-ring dark:border-transparent dark:bg-card dark:focus-within:border-ring">
           <HugeiconsIcon
             icon={Search01Icon}
             strokeWidth={1.75}
-            className="size-[calc(18px*var(--ui-space-scale,1))] shrink-0 text-muted-foreground"
+            className="size-[calc(18px*var(--ui-space-scale,1))] shrink-0 text-muted-foreground dark:text-foreground/70"
           />
           <input
             type="search"
             value={search}
             onChange={(event) => onSearchChange(event.target.value)}
             placeholder={searchPlaceholder}
-            className="ml-2.5 min-w-0 flex-1 bg-transparent text-[14px] outline-none placeholder:text-muted-foreground [&::-webkit-search-cancel-button]:hidden"
+            className="ml-2.5 min-w-0 flex-1 bg-transparent text-[14px] outline-none placeholder:text-muted-foreground dark:placeholder:text-foreground/55 [&::-webkit-search-cancel-button]:hidden"
           />
         </label>
         <NewMenu onSelect={onNew} />
