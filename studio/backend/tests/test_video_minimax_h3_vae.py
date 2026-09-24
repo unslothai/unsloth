@@ -765,6 +765,26 @@ def test_the_fast_path_asks_the_windows_triton_toolchain(monkeypatch, platform, 
         H._triton_jit_toolchain_ok.cache_clear()
 
 
+@pytest.mark.parametrize("device", DEVICES)
+@pytest.mark.parametrize("stock_fallback", [False, True])
+def test_the_fp16_encoder_survives_diffusers_casting_the_pixels(device, stock_fallback):
+    # diffusers 0.40.0's encode() casts the pixels to get_parameter_dtype(encoder), float16 once the encoder is cast,
+    # and hands the encoder output to a float32 quant_conv
+    from diffusers.models.modeling_utils import get_parameter_dtype
+
+    vae = _tiny_vae().to(device)
+    ref_vae = copy.deepcopy(vae)
+    assert H._install_encoder(vae, fp16 = True)
+    assert get_parameter_dtype(vae.encoder) is torch.float16
+    vae.encoder._unsloth_fast_failed = stock_fallback
+    x = torch.randn(1, 3, 9, 16, 16, device = device)
+    with torch.no_grad():
+        got = vae.encode(x.to(get_parameter_dtype(vae.encoder)), return_dict = False)[0].mean
+        ref = ref_vae.encode(x, return_dict = False)[0].mean
+    assert got.dtype is torch.float32 and vae.quant_conv.weight.dtype is torch.float32
+    assert (got - ref).norm() / ref.norm() < 2e-2
+
+
 # ── shared fp16-accumulation owner, atomic int8 install ───────────────────────────────────────────────────────────
 
 

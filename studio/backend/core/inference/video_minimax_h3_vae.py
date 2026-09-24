@@ -766,7 +766,7 @@ def _fast_encoder_forward(self: Any, hidden_states: Any) -> Any:
 
 def _fast_encoder_body(self: Any, hidden_states: Any) -> Any:
     dtype = getattr(self, "_unsloth_compute_dtype", None) or hidden_states.dtype
-    out_dtype = hidden_states.dtype
+    out_dtype = getattr(self, "_unsloth_out_dtype", None) or hidden_states.dtype
     h, hb = _causal_conv(self.conv_in, hidden_states.to(dtype))
     for down_block in self.down_blocks:
         for resnet in down_block.resnets:
@@ -800,6 +800,7 @@ def _install_encoder(vae: Any, *, fp16: bool) -> bool:
     if modes - {"reflect"}:
         return False
     convs = [m for m in encoder.modules() if isinstance(m, torch.nn.Conv3d)]
+    stock_dtype = encoder.conv_in.weight.dtype
     with torch.no_grad():
         # every new tensor first, then assign: a failure part way (an OOM on a resident VAE) must leave the stock
         # encoder exactly as it was, not half float16
@@ -816,6 +817,9 @@ def _install_encoder(vae: Any, *, fp16: bool) -> bool:
             if b is not None:
                 module.bias.data = b
     encoder._unsloth_compute_dtype = torch.float16 if fp16 else None
+    # Diffusers' encode casts the pixels to the encoder's parameter dtype, float16 once cast here, while quant_conv
+    # stays in the stock dtype: hand back what the stock encoder would have
+    encoder._unsloth_out_dtype = stock_dtype if fp16 else None
     encoder._unsloth_stock_forward = encoder.forward
     encoder.forward = types.MethodType(
         _guarded(_fast_encoder_forward, _stock_encoder_forward, "encoder"), encoder
@@ -830,10 +834,11 @@ def _stock_encoder_forward(self: Any, hidden_states: Any) -> Any:
 
     if getattr(self, "_unsloth_compute_dtype", None) is not torch.float16:
         return self._unsloth_stock_forward(hidden_states)
+    out_dtype = getattr(self, "_unsloth_out_dtype", None) or hidden_states.dtype
     if hidden_states.is_cuda:
         with torch.autocast("cuda", dtype = torch.float16):
-            return self._unsloth_stock_forward(hidden_states).to(hidden_states.dtype)
-    return self._unsloth_stock_forward(hidden_states.to(torch.float16)).to(hidden_states.dtype)
+            return self._unsloth_stock_forward(hidden_states).to(out_dtype)
+    return self._unsloth_stock_forward(hidden_states.to(torch.float16)).to(out_dtype)
 
 
 # ── decoder ────────────────────────────────────────────────────────────────────────────────────────────────────────
