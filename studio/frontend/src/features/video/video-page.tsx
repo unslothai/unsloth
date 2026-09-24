@@ -16,6 +16,8 @@ import { HugeiconsIcon } from "@hugeicons/react";
 
 import { AdvancedDisclosure } from "@/components/advanced-disclosure";
 import { GalleryItemMenu, GalleryPinBadge } from "@/components/gallery-item-menu";
+import { MediaRailResizeHandle } from "@/components/media-rail-resize-handle";
+import { MEDIA_RAIL_ROOT_ATTR, useMediaRailWidth } from "@/hooks/use-media-rail-width";
 import { StripDropLine } from "@/components/gallery-strip-reorder";
 import { useStripReorder } from "@/hooks/use-strip-reorder";
 import { ImageDropzone } from "@/components/image-dropzone";
@@ -1023,6 +1025,7 @@ function VideoGenerator({
   } = useScrollFades();
   // Records come from the backend (durable); playback links and poster object URLs are cached separately.
   const [videos, setVideos] = useState<GalleryVideo[]>(() => galleryCache.videos);
+  const { rootStyle: railRootStyle } = useMediaRailWidth("video");
   const [hasMore, setHasMore] = useState(() => galleryCache.hasMore);
   const [selectedId, setSelectedId] = useState<string | null>(() => galleryCache.selectedId);
   const [clearConfirmOpen, setClearConfirmOpen] = useState(false);
@@ -3473,7 +3476,11 @@ function VideoGenerator({
   return (
     // The chat-style layout gives this page no outer top inset, so clear the custom titlebar here as chat does.
     // 34px on win/linux, 0 under macOS's native one.
-    <div className="diffusion-surface flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden pt-[var(--studio-content-top-inset,0px)]">
+    <div
+      {...{ [MEDIA_RAIL_ROOT_ATTR]: "" }}
+      style={railRootStyle}
+      className="diffusion-surface flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden pt-[var(--studio-content-top-inset,0px)]"
+    >
       {/* Portals to body, and this page stays mounted off-route, so gate it like the composer. */}
       {active && <GuidedTour {...tour.tourProps} />}
       <AlertDialog
@@ -3631,8 +3638,9 @@ function VideoGenerator({
         {/* Widened by the pl-8 so the controls keep their old width. */}
         <div
           data-tour="video-settings"
-          className="flex w-full shrink-0 flex-col border-b border-border/60 pl-8 max-sm:pl-5 lg:w-[min(calc(400px*var(--ui-space-scale,1)),calc(100%-13rem))] lg:overflow-hidden lg:border-r lg:border-b-0"
+          className="relative flex w-full shrink-0 flex-col border-b border-border/60 pl-8 max-sm:pl-5 lg:w-[min(var(--media-rail-width,calc(400px*var(--ui-space-scale,1))),calc(100%-13rem))] lg:overflow-hidden lg:border-r lg:border-b-0"
         >
+          <MediaRailResizeHandle kind="video" className="hidden lg:contents" />
           {/* pl-0.5 keeps focus rings off the scroll container's edge. */}
           <div
             ref={attachSettingsScroll}
