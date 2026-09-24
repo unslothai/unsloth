@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { authFetch, getAuthToken } from "@/features/auth";
+import { authFetch, getAuthSessionEpoch, getAuthToken } from "@/features/auth";
 import { apiUrl } from "@/lib/api-base";
 import { readFastApiError } from "@/lib/format-fastapi-error";
 
@@ -92,9 +92,12 @@ export function updateLibraryItem(
   id: string,
   patch: { name?: string; favorite?: boolean; folderId?: string | null },
 ): Promise<void> {
+  const epoch = getAuthSessionEpoch();
   const request = (itemQueues.get(id) ?? Promise.resolve())
     .catch(() => {})
     .then(async () => {
+      // Queued behind an edit that outlived a sign-out: it belongs to the account that left.
+      if (getAuthSessionEpoch() !== epoch) throw new Error("Signed out before the change was saved.");
       await ensureOk(
         await authFetch("/api/library/items", jsonInit("PATCH", { id, ...patch })),
       );
@@ -205,8 +208,11 @@ export async function uploadLibraryFiles(
   // Desktop drops are grants, not bytes: they ride with the first request.
   if (requests.length === 0) requests.push(new FormData());
   for (const lease of leases) requests[0]!.append("nativePathLeases", lease);
+  const epoch = getAuthSessionEpoch();
   const ids: string[] = [];
   for (const form of requests) {
+    // A sign-out between requests ends the batch: the next token would be another account's.
+    if (getAuthSessionEpoch() !== epoch) throw new Error("Signed out before the upload finished.");
     if (folderId) form.append("folderId", folderId);
     const response = await ensureOk(
       await authFetch("/api/library/uploads", { method: "POST", body: form }),
