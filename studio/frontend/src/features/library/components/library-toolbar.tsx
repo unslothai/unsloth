@@ -197,8 +197,7 @@ export function LibraryToolbar({
   onFiltersChange: (next: LibraryFilters) => void;
   /** Folders has nothing to filter; Images only filters by source. */
   filterMode: "none" | "source" | "all";
-  /** null hides the grid/list toggle (Images is always a grid). */
-  view: LibraryView | null;
+  view: LibraryView;
   onViewChange: (view: LibraryView) => void;
   search: string;
   onSearchChange: (value: string) => void;
@@ -217,35 +216,27 @@ export function LibraryToolbar({
             showTypes={filterMode === "all"}
           />
         )}
-        {filterMode !== "none" && view && (
+        {filterMode !== "none" && (
           <span className="mx-1.5 h-6 w-px shrink-0 bg-border" aria-hidden="true" />
         )}
-        {view && (
-          <>
-            <button
-              type="button"
-              aria-label="Grid view"
-              data-active={view === "grid"}
-              onClick={() => onViewChange("grid")}
-              className={ROUND_BUTTON}
-            >
-              <HugeiconsIcon icon={GridViewIcon} strokeWidth={1.75} className="size-5" />
-            </button>
-            <button
-              type="button"
-              aria-label="List view"
-              data-active={view === "list"}
-              onClick={() => onViewChange("list")}
-              className={ROUND_BUTTON}
-            >
-              <HugeiconsIcon
-                icon={LeftToRightListBulletIcon}
-                strokeWidth={1.75}
-                className="size-5"
-              />
-            </button>
-          </>
-        )}
+        <button
+          type="button"
+          aria-label="Grid view"
+          data-active={view === "grid"}
+          onClick={() => onViewChange("grid")}
+          className={ROUND_BUTTON}
+        >
+          <HugeiconsIcon icon={GridViewIcon} strokeWidth={1.75} className="size-5" />
+        </button>
+        <button
+          type="button"
+          aria-label="List view"
+          data-active={view === "list"}
+          onClick={() => onViewChange("list")}
+          className={ROUND_BUTTON}
+        >
+          <HugeiconsIcon icon={LeftToRightListBulletIcon} strokeWidth={1.75} className="size-5" />
+        </button>
         <label className="relative ml-2 flex h-9 w-[min(26rem,40vw)] min-w-40 items-center rounded-full border border-border px-4 focus-within:border-ring">
           <HugeiconsIcon
             icon={Search01Icon}

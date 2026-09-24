@@ -269,7 +269,6 @@ function LibraryView({ search }: { search: LibrarySearch }) {
 
   const needle = query.trim().toLowerCase();
 
-  const imagesTab = tab === "images" && !folderId;
   const kindFilter = folderId ? undefined : KIND_TABS[tab];
 
   // The open tab always shows, so a link straight to a hidden or empty one still lands somewhere.
@@ -658,7 +657,7 @@ function LibraryView({ search }: { search: LibrarySearch }) {
         />
       );
     }
-    if (view === "list" && !imagesTab) {
+    if (view === "list") {
       return (
         <div className="mt-6">
           <LibraryList
@@ -713,7 +712,7 @@ function LibraryView({ search }: { search: LibrarySearch }) {
           filters={filters}
           onFiltersChange={setFilters}
           filterMode={!folderId && tab === "folders" ? "none" : kindFilter ? "source" : "all"}
-          view={imagesTab ? null : view}
+          view={view}
           onViewChange={setView}
           search={query}
           onSearchChange={setQuery}
