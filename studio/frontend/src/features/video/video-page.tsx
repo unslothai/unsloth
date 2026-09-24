@@ -2955,6 +2955,7 @@ function VideoGenerator({
       hasMore: () => galleryCache.hasMore,
       refresh: loadGallery,
       loadMore,
+      busy: () => loadingMore.current,
       cancelled: () => lookup !== routedLookup.current,
     }).then((found) => {
       if (lookup !== routedLookup.current) return;
