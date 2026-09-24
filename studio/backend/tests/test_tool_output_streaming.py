@@ -996,6 +996,29 @@ def test_drain_retains_bounded_head_and_tail_of_runaway_output(monkeypatch):
     assert output.count("\n") + lines == 5000
 
 
+def test_drain_bounds_runaway_output_without_newlines(monkeypatch):
+    import subprocess as _sp
+
+    from core.inference import tools as _tools_mod
+
+    monkeypatch.setattr(_tools_mod, "_SPILL_MAX_BYTES", 1000)
+    monkeypatch.setattr(_tools_mod, "_DRAIN_TAIL_CHARS", 500)
+    proc = _sp.Popen(
+        [sys.executable, "-c", "import sys; sys.stdout.write('x' * 50000)"],
+        stdout = _sp.PIPE,
+        stderr = _sp.STDOUT,
+        text = True,
+    )
+    streamed = []
+    output, timed_out, (chars, lines) = _tools_mod._drain_process_output(proc, 30, streamed.append)
+    assert not timed_out
+    assert "".join(streamed) == "x" * 50000
+    assert len(output) <= 1500 + 500
+    assert output == "x" * len(output)
+    assert len(output) + chars == 50000
+    assert lines == 0
+
+
 def test_runaway_output_reports_true_size_and_keeps_trailing_hint(monkeypatch):
     from core.inference import tools as _tools_mod
 

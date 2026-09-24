@@ -18983,7 +18983,8 @@ def _drain_process_output(
     def _reader() -> None:
         nonlocal kept, tail_chars, omitted_chars, omitted_lines
         try:
-            for line in iter(proc.stdout.readline, ""):
+            # Sized reads: a newline-free stream would otherwise arrive as one unbounded "line".
+            for line in iter(lambda: proc.stdout.readline(_DRAIN_TAIL_CHARS), ""):
                 if kept <= _SPILL_MAX_BYTES:
                     chunks.append(line)
                     kept += len(line)
