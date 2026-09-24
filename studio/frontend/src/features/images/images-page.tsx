@@ -12,7 +12,7 @@ import {
   Image03Icon,
   ImageAdd02Icon,
   InformationCircleIcon,
-  LibraryIcon,
+  LibrariesIcon,
   SparklesIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
@@ -4364,7 +4364,7 @@ export function ImagesPage({
                 to="/library"
                 libraryTab="images"
                 label="Library"
-                icon={LibraryIcon}
+                icon={LibrariesIcon}
                 labelClassName="hidden @[50rem]:inline"
                 arrowClassName="hidden @[50rem]:block"
               />

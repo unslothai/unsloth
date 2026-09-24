@@ -9,7 +9,7 @@ import {
   FlimSlateIcon,
   ImageCropIcon,
   InformationCircleIcon,
-  LibraryIcon,
+  LibrariesIcon,
   VolumeHighIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -3631,7 +3631,7 @@ function VideoGenerator({
             to="/library"
             libraryTab="videos"
             label="Library"
-            icon={LibraryIcon}
+            icon={LibrariesIcon}
             labelClassName="@max-[30rem]:hidden"
             arrowClassName="@max-[30rem]:hidden"
           />
