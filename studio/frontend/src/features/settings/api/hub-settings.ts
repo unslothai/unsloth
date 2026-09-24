@@ -3,6 +3,7 @@
 
 import { fetchDeviceType } from "@/config/env";
 import { authFetch } from "@/features/auth";
+import { markRemoteNetworkOnline } from "@/features/hub/lib/network";
 import { readFastApiError } from "@/lib/format-fastapi-error";
 import type { HubSource } from "@/lib/hf-endpoint";
 
@@ -42,6 +43,13 @@ export async function loadHubSettings(): Promise<HubSettings> {
   return fromApi(await res.json());
 }
 
+async function followSavedEndpoints(): Promise<void> {
+  // The browser's Hub calls follow the endpoints /api/health reports.
+  await fetchDeviceType({ force: true }).catch(() => undefined);
+  // Backoffs were recorded against the old endpoints; the relay and ModelScope share one origin.
+  markRemoteNetworkOnline();
+}
+
 export class InvalidHubEndpointError extends Error {}
 
 /** Owner only. The catalog follows as soon as this resolves. */
@@ -55,7 +63,7 @@ export async function updateHubSource(source: HubSource): Promise<HubSettings> {
     throw new Error(await readFastApiError(res, "Failed to switch the model source"));
   }
   const saved = fromApi(await res.json());
-  await fetchDeviceType({ force: true }).catch(() => undefined);
+  await followSavedEndpoints();
   return saved;
 }
 
@@ -84,7 +92,6 @@ export async function updateHubSettings(
       : new Error(message);
   }
   const saved = fromApi(await res.json());
-  // The browser's Hub calls follow the endpoints /api/health reports.
-  await fetchDeviceType({ force: true }).catch(() => undefined);
+  await followSavedEndpoints();
   return saved;
 }

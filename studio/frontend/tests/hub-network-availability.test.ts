@@ -8,7 +8,7 @@ import test from "node:test";
 // network.ts resolves the Hub origin through "@/lib/hf-endpoint", the way vite
 // resolves the alias. Bare node does not, so the import has to go through the
 // resolver, which in turn means a dynamic import after register().
-register("./bundler-resolver.mjs", import.meta.url);
+register("./store-stub-resolver.mjs", import.meta.url);
 const {
   classifyFetchFailure,
   clearRemoteBackoff,
@@ -24,6 +24,8 @@ const {
   sanitizeHubErrorMessage,
 } = await import("../src/features/hub/lib/network.ts");
 const { resetHfEndpoints, setHfEndpoints } = await import("../src/lib/hf-endpoint.ts");
+const { updateHubSource } = await import("../src/features/settings/api/hub-settings.ts");
+const { setAuthFetchHandler } = await import("./helpers/store-stubs/auth.ts");
 
 import { readSrcAsync } from "./helpers/kit.ts";
 
@@ -267,10 +269,22 @@ test("a relay that cannot reach its endpoint counts as the endpoint unreachable"
   try {
     await assert.rejects(fetchWithTimeout(`${relay}/api/models`, {}, 1_000));
     assert.equal(getLastHubFailure("http://127.0.0.1:8888")?.kind, "network-opaque");
+    setAuthFetchHandler(() =>
+      Response.json({
+        hf_endpoint: "",
+        datasets_server_follows_endpoint: false,
+        source: "modelscope",
+        active_source: "modelscope",
+      }),
+    );
+    // "Use ModelScope" answers from the same backend origin the relay failed on.
+    await updateHubSource("modelscope");
+    assert.equal(isRemoteNetworkOffline("http://127.0.0.1:8888"), false);
     upstream = true;
     assert.equal((await fetchWithTimeout(`${relay}/api/models`, {}, 1_000)).status, 502);
   } finally {
     globalThis.fetch = original;
+    setAuthFetchHandler(null);
     resetHfEndpoints();
   }
 });
