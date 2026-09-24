@@ -220,7 +220,7 @@ function PreviewBody({
           <CodeSourceView
             code={truncated ? `${text!}\n…` : text!}
             language="html"
-            className="rounded-xl border border-border/60"
+            className="rounded-xl"
           />
         );
       }

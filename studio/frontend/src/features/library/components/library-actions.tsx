@@ -95,7 +95,7 @@ export function LibraryActionsMenu({
           className={cn(
             "flex shrink-0 items-center justify-center rounded-full outline-none transition-opacity focus-visible:opacity-100 data-open:opacity-100",
             variant === "overlay"
-              ? "size-8 bg-black/45 text-white opacity-0 backdrop-blur-md hover:bg-black/60 group-hover/library-card:opacity-100"
+              ? "size-8 bg-black/45 text-white opacity-0 backdrop-blur-md hover:bg-black/60 group-hover/library-card:opacity-100 dark:bg-neutral-700 dark:hover:bg-neutral-600"
               : "size-8 text-muted-foreground opacity-0 hover:bg-accent hover:text-foreground group-hover/library-row:opacity-100",
             className,
           )}

@@ -124,7 +124,7 @@ function CardFrame({
           onCheckedChange={() => select.toggle(selectKey)}
           aria-label={`Select ${label}`}
           className={cn(
-            "absolute bottom-2.5 right-2.5 size-6 rounded-full border-border bg-background opacity-0 shadow-sm transition-opacity group-hover/library-card:opacity-100 focus-visible:opacity-100 data-checked:border-border data-checked:bg-background data-checked:text-foreground dark:bg-background dark:data-checked:bg-background [&_svg]:size-4",
+            "absolute bottom-2.5 right-2.5 size-6 rounded-full border-0 bg-background opacity-0 shadow-sm transition-opacity group-hover/library-card:opacity-100 focus-visible:opacity-100 data-checked:bg-background data-checked:text-foreground dark:bg-neutral-700 dark:data-checked:bg-neutral-200 dark:data-checked:text-neutral-900 [&_svg]:size-4",
             selected && "opacity-100",
           )}
         />
