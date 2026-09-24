@@ -10753,7 +10753,9 @@ def test_generate_upscale_with_an_engaged_backend_on_a_math_only_device_runs_til
     with pytest.raises(ValueError, match = "2048x2048"):
         backend.generate(prompt = "a sloth", steps = 4, seed = 1, init_image = _png_b64(1024), upscale = 2.0)
     object.__setattr__(backend._state, "attention_backend", "aiter")
-    out = backend.generate(prompt = "a sloth", steps = 4, seed = 1, init_image = _png_b64(1024), upscale = 2.0)
+    out = backend.generate(
+        prompt = "a sloth", steps = 4, seed = 1, init_image = _png_b64(1024), upscale = 2.0
+    )
     assert len(out["images"]) == 1
     assert vae.calls[:2] == ["enable_tiling", "enable_slicing"]
 

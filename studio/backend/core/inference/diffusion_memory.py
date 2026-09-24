@@ -1332,9 +1332,7 @@ def engage_vae_tiling_for_call(pipe: Any, logger: Any = None) -> Optional[Callab
     return engage_vae_tiling(pipe, logger = logger)[0]
 
 
-def engage_vae_tiling(
-    pipe: Any, logger: Any = None
-) -> tuple[Optional[Callable[[], None]], bool]:
+def engage_vae_tiling(pipe: Any, logger: Any = None) -> tuple[Optional[Callable[[], None]], bool]:
     """``engage_vae_tiling_for_call`` plus whether spatial tiling is actually on afterwards.
 
     The savers are best-effort, so a VAE whose ``enable_tiling()`` raises still comes back with an
