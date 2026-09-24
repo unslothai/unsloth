@@ -218,11 +218,18 @@ def test_generated_video_is_listed_and_deleted(client, monkeypatch):
     record = video_gallery.save(
         b"\0\0\0\x18ftypmp42", {**meta, "prompt": "A calm sea", "created_at": 1_700_000_000}
     )
+    import routes.video as video_routes
+
+    forgotten = []
+    monkeypatch.setattr(video_routes, "_forget_terminal_video", forgotten.append)
+    monkeypatch.setattr(video_routes, "_forget_openai_job", lambda ref: forgotten.append(ref) or True)
     item_id = f"video:{record['id']}"
     item = _items(client)[0][item_id]
     assert (item["name"], item["contentType"]) == ("A calm sea.mp4", "video/mp4")
     assert client.post("/api/library/items/delete", json = {"id": item_id}).status_code == 200
     assert video_gallery.video_path(record["id"]) is None
+    # Same cleanup as the Video page, so no ghost card comes back.
+    assert forgotten == [record["id"], record["id"]]
 
 
 def test_favorites_lists_only_favorite_ids(client):
@@ -302,6 +309,21 @@ def test_a_desktop_drop_needs_a_valid_grant(client, lease_secret, tmp_path):
     response = client.post("/api/library/uploads", data = {"nativePathLeases": [forged]})
     assert response.status_code == 400
     assert _items(client)[0] == {}
+
+
+def test_a_failed_batch_keeps_none_of_its_files(client, lease_secret, tmp_path):
+    from .test_rag_native_drop_upload import _sign
+
+    dropped = tmp_path / "notes.txt"
+    dropped.write_text("hi")
+    response = client.post(
+        "/api/library/uploads",
+        files = [("files", ("kept.md", b"# hi", "text/markdown"))],
+        data = {"nativePathLeases": [_sign(dropped, secret = b"x" * 32)]},
+    )
+    assert response.status_code == 400
+    assert _items(client)[0] == {}
+    assert [path for path in library.uploads_dir().iterdir()] == []
 
 
 def test_an_empty_upload_is_refused(client):

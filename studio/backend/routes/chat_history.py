@@ -8,6 +8,7 @@ handlers explicitly send their database transaction through Starlette's threadpo
 """
 
 import asyncio
+import re
 import sqlite3
 from typing import Annotated, Any, Literal, Optional, Union
 
@@ -970,7 +971,7 @@ def get_attachment_file(
     attachment_id: str,
     current_subject: str = Depends(get_current_subject),
 ):
-    """Serve one attachment's stored content: image or audio bytes, or
+    """Serve one attachment's stored content: image, audio or video bytes, or
     extracted text."""
     import urllib.parse
 
@@ -1018,6 +1019,16 @@ def get_attachment_file(
                     )
                 )
                 return Response(content = data, media_type = media_type)
+        # Video parts: the video adapter stores {type: "file", data, mimeType} with raw base64.
+        file_data = part.get("data")
+        mime_type = str(part.get("mimeType") or attachment_content_type or "").lower()
+        if (
+            part.get("type") == "file"
+            and isinstance(file_data, str)
+            and file_data
+            and re.fullmatch(r"video/[a-z0-9.+-]+", mime_type)
+        ):
+            return Response(content = _decode_attachment_base64(file_data), media_type = mime_type)
         text = part.get("text")
         if isinstance(text, str) and text:
             texts.append(text)

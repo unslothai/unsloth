@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { Checkbox } from "@/components/ui/checkbox";
 import { cn } from "@/lib/utils";
 import { Folder01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { type ReactNode, type RefObject, useRef, useState } from "react";
+import { type ReactNode, type RefObject, useContext, useRef, useState } from "react";
 import type { LibraryFolder, LibraryItem } from "../api";
 import {
   KIND_ICONS,
@@ -17,6 +18,7 @@ import { formatCardTime, pluralize } from "../format";
 import { useColumnCount, useLibraryObjectUrl, useSeen } from "../hooks";
 import { useLibraryActions } from "../actions-context";
 import { CARD_COLUMNS, useLibrarySettingsStore } from "../settings-store";
+import { CardSelectionContext } from "./card-selection";
 import { LibraryActionsMenu } from "./library-actions";
 
 const CARD_SURFACE = "bg-muted/70 dark:bg-card";
@@ -67,31 +69,50 @@ function ImageThumb({
 }
 
 function CardFrame({
+  selectKey,
   onOpen,
   menu,
   children,
   className,
   label,
 }: {
+  selectKey: string;
   onOpen: () => void;
   menu: ReactNode;
   children: ReactNode;
   className?: string;
   label: string;
 }) {
+  const select = useContext(CardSelectionContext);
+  const selected = select?.selection.has(selectKey) ?? false;
+  // Once anything is selected, a click adds to the selection instead of opening.
+  const selecting = (select?.selection.size ?? 0) > 0;
   return (
     <div className="group/library-card relative">
       <button
         type="button"
         aria-label={label}
-        onClick={onOpen}
+        aria-pressed={select ? selected : undefined}
+        onClick={select && selecting ? () => select.toggle(selectKey) : onOpen}
         className={cn(
           "block w-full overflow-hidden rounded-xl text-left outline-none ring-offset-2 ring-offset-background transition focus-visible:ring-2 focus-visible:ring-ring",
+          selected && "ring-2 ring-foreground",
           className,
         )}
       >
         {children}
       </button>
+      {select && (
+        <Checkbox
+          checked={selected}
+          onCheckedChange={() => select.toggle(selectKey)}
+          aria-label={`Select ${label}`}
+          className={cn(
+            "absolute left-2 top-2 bg-background/90 opacity-0 transition-opacity group-hover/library-card:opacity-100 focus-visible:opacity-100",
+            (selecting || selected) && "opacity-100",
+          )}
+        />
+      )}
       <div className="absolute right-2 top-2">{menu}</div>
     </div>
   );
@@ -106,6 +127,7 @@ export function ItemCard({ item }: { item: LibraryItem }) {
   if (hasImagePreview(item)) {
     return (
       <CardFrame
+        selectKey={`item:${item.id}`}
         label={item.name}
         onOpen={() => actions.openItem(item)}
         menu={menu}
@@ -117,6 +139,7 @@ export function ItemCard({ item }: { item: LibraryItem }) {
   }
   return (
     <CardFrame
+      selectKey={`item:${item.id}`}
       label={item.name}
       onOpen={() => actions.openItem(item)}
       menu={menu}
@@ -148,6 +171,7 @@ export function FolderCard({
   return (
     <div>
       <CardFrame
+        selectKey={`folder:${folder.id}`}
         label={folder.name}
         onOpen={() => actions.openFolder(folder.id)}
         menu={<LibraryActionsMenu target={{ kind: "folder", folder }} variant="overlay" />}

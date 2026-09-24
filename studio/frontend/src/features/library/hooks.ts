@@ -3,6 +3,7 @@
 
 import { type RefObject, useEffect, useState } from "react";
 import { type LibraryItem, fetchLibraryBlob } from "./api";
+import { hasImagePreview } from "./file-kind";
 
 // Thumbnails are auth-fetched blobs, so the browser cache cannot hold them. Keep the most recent
 // ones as object URLs; a revisit of the page then paints instantly instead of refetching.
@@ -25,24 +26,35 @@ function objectUrlFor(item: LibraryItem): Promise<string> {
   return url;
 }
 
-/** Object URL for an item's bytes once `enabled`; null until then or on failure. */
+/**
+ * Object URL for an item's bytes once `enabled`; null until then or on failure. Only images share
+ * the cache: a preview of a large clip or PDF is released as soon as it closes.
+ */
 export function useLibraryObjectUrl(
   item: LibraryItem,
   enabled: boolean,
 ): string | null {
-  const [url, setUrl] = useState<string | null>(null);
+  const key = `${item.id}@${item.updatedAt}`;
+  const [state, setState] = useState<{ key: string; url: string | null } | null>(null);
   useEffect(() => {
     if (!enabled) return;
     let cancelled = false;
-    objectUrlFor(item).then(
-      (next) => !cancelled && setUrl(next),
-      () => !cancelled && setUrl(null),
+    const cached = hasImagePreview(item);
+    const next = cached
+      ? objectUrlFor(item)
+      : fetchLibraryBlob(item).then((blob) => URL.createObjectURL(blob));
+    next.then(
+      (url) => !cancelled && setState({ key, url }),
+      () => !cancelled && setState({ key, url: null }),
     );
     return () => {
       cancelled = true;
+      if (!cached) void next.then((url) => URL.revokeObjectURL(url), () => {});
     };
-  }, [item, enabled]);
-  return url;
+    // `key` carries the item's identity and version; the object itself changes on every refresh.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [key, enabled]);
+  return enabled && state?.key === key ? state.url : null;
 }
 
 /** True once the element has come within a screen of the viewport; never flips back. */

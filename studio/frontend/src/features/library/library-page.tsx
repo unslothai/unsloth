@@ -45,6 +45,7 @@ import {
   LibraryActionsProvider,
   type LibraryTarget,
 } from "./actions-context";
+import { CardSelectionContext } from "./components/card-selection";
 import { FolderGrid, ItemCard, Masonry } from "./components/library-cards";
 import { ConfirmDeleteDialog, NameDialog } from "./components/library-dialogs";
 import { LibraryList } from "./components/library-list";
@@ -478,6 +479,16 @@ function LibraryView({ search }: { search: LibrarySearch }) {
     };
   };
 
+  const cardSelection = {
+    selection,
+    toggle: (key: string) =>
+      setSelection((current) => {
+        const next = new Set(current);
+        if (!next.delete(key)) next.add(key);
+        return next;
+      }),
+  };
+
   const selectedTargets = (): LibraryTarget[] => {
     const out: LibraryTarget[] = [];
     for (const folder of visibleFolders)
@@ -536,6 +547,12 @@ function LibraryView({ search }: { search: LibrarySearch }) {
   );
 
   function renderGrid() {
+    return (
+      <CardSelectionContext.Provider value={cardSelection}>{renderCards()}</CardSelectionContext.Provider>
+    );
+  }
+
+  function renderCards() {
     const itemsGrid = visibleItems.length > 0 && (
       <Masonry
         items={visibleItems}
