@@ -444,6 +444,7 @@ def _ensure_attention_backend_installed(backend: str, logger: Any = None) -> Opt
     """
     import importlib.util
     import os
+    import sys
 
     spec = _INSTALLABLE_BACKENDS.get(backend)
     if spec is None:
@@ -453,6 +454,19 @@ def _ensure_attention_backend_installed(backend: str, logger: Any = None) -> Opt
     gate = os.environ.get(_ATTENTION_INSTALL_ENV, "auto").strip().lower()
     if gate in ("0", "false", "no", "off"):
         return None
+    # Hidden packages remain unavailable until restart. Skip the download without
+    # recording an install attempt.
+    if module in sys.modules and sys.modules[module] is None:
+        reason = f"{module} is disabled in this process because it requires a different torch"
+        if logger is not None:
+            logger.warning(
+                "diffusion.attention: not installing %s for backend=%s: %s; restart Studio "
+                "once the installer has removed it. Using the default backend",
+                package,
+                backend,
+                reason,
+            )
+        return reason
     # Refusing is a POLICY decision, not a failed attempt, so it is checked before the _INSTALL_ATTEMPTED memo below and
     # records nothing: a later request on a fixed environment must still be able to install. Scoped to kernels; the sage
     # / flash-attn / xformers wheels do not import huggingface_hub at module scope.
@@ -507,7 +521,6 @@ def _ensure_attention_backend_installed(backend: str, logger: Any = None) -> Opt
         return None
     _INSTALL_ATTEMPTED.add(package)
     import subprocess
-    import sys
 
     if logger is not None:
         logger.info(

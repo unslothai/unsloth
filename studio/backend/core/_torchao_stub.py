@@ -11,7 +11,8 @@ Worker subprocesses call install_torchao_windows_rocm_stub() before importing
 transformers / unsloth_zoo.
 
 xformers hits the same absent backend and takes diffusers with it, so the diffusion paths
-install both stubs before importing diffusers.
+install both stubs before importing diffusers. They also hide an xformers built for a newer
+torch than the venv has, which fails the same import on any platform.
 """
 
 from __future__ import annotations
@@ -231,3 +232,32 @@ def install_xformers_windows_rocm_stub() -> None:
         for _xf_name in ("xformers", "xformers.ops"):
             if _xf_name not in sys.modules:
                 sys.modules[_xf_name] = _make_mod_stub(_xf_name)
+
+
+def hide_xformers_built_for_another_torch() -> None:
+    """Hide incompatible xFormers before diffusers imports it (#11545).
+
+    A None entry makes discovery and imports treat it as absent, enabling SDPA.
+    A stub would falsely advertise usable attention to unsloth. The entry lasts
+    until restart; the on-demand installer skips it while hidden.
+    """
+    if "xformers" in sys.modules:
+        return
+    try:
+        if importlib.util.find_spec("xformers") is None:
+            return
+        from utils.wheel_utils import xformers_torch_requirement_unmet
+        mismatch = xformers_torch_requirement_unmet()
+    except Exception:  # noqa: BLE001 -- a check that cannot answer leaves xformers alone
+        return
+    if mismatch is None:
+        return
+    sys.modules["xformers"] = None
+    xformers_version, requirement, torch_version = mismatch
+    print(
+        f"Unsloth: xformers {xformers_version} requires torch{requirement} but torch "
+        f"{torch_version} is installed, so it cannot be imported. Using PyTorch attention "
+        "instead.",
+        file = sys.stderr,
+        flush = True,
+    )
