@@ -511,7 +511,7 @@ class LemonadeNpuBackend:
                 raise NpuError("Unload the model before deleting it.")
             server = self._ensure_running()
             response = server.request("POST", "/v1/delete", json_body = {"model_name": model_id})
-            if response.status_code != 200:
+            if _failed(response):
                 raise NpuError(f"Deleting {model_id} failed: {_error_message(response)}")
 
     # -- load ------------------------------------------------------------------------------

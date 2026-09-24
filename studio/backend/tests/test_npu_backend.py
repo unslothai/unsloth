@@ -347,6 +347,15 @@ def test_a_cancel_during_the_final_health_check_wins(npu, monkeypatch):
     assert npu.is_loaded
 
 
+def test_a_refused_delete_is_reported(npu, monkeypatch):
+    monkeypatch.setenv("FAKE_LEMOND_DELETE_FAILS", "1")
+    npu.enable()
+    list(npu.download("qwen3-0.6b-FLM"))
+    with pytest.raises(nb.NpuError, match = "file in use"):
+        npu.delete("qwen3-0.6b-FLM")
+    assert {m.id: m.downloaded for m in npu.catalog()}["qwen3-0.6b-FLM"] is True
+
+
 def test_a_restarted_runtime_reports_nothing_loaded(npu):
     npu.enable()
     list(npu.download("qwen3-0.6b-FLM"))

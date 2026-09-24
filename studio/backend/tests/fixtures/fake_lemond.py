@@ -190,6 +190,9 @@ def main() -> None:
                     loaded.clear()
                 self._send(200, {"status": "success"})
             elif self.path == "/v1/delete":
+                if os.environ.get("FAKE_LEMOND_DELETE_FAILS") == "1":
+                    self._send(200, {"status": "error", "message": "file in use"})
+                    return
                 downloaded.discard(name)
                 self._send(200, {"status": "success", "message": f"Deleted model: {name}"})
             else:
