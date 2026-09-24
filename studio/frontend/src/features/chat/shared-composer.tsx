@@ -92,6 +92,7 @@ import {
 import {
   AttachmentIcon,
   Bookmark02Icon,
+  Cancel01Icon,
   CodeIcon,
   Download01Icon,
   FileDatabaseIcon,
@@ -699,6 +700,8 @@ export function SharedComposer({
   const setMcpEnabledForChat = useChatRuntimeStore(
     (s) => s.setMcpEnabledForChat,
   );
+  const allToolsOff = useChatRuntimeStore((s) => s.allToolsOff);
+  const setAllToolsOff = useChatRuntimeStore((s) => s.setAllToolsOff);
   const { projects } = useChatProjects();
   const recentProjects = [...projects]
     .sort((a, b) => b.updatedAt - a.updatedAt)
@@ -2497,6 +2500,22 @@ export function SharedComposer({
                 />
                 Code
                 {codeToolsEnabled && !codeDisabled ? (
+                  <HugeiconsIcon
+                    icon={Tick02Icon}
+                    strokeWidth={2}
+                    className="ml-auto"
+                  />
+                ) : null}
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                className={
+                  allToolsOff ? "text-primary font-medium" : undefined
+                }
+                onSelect={() => setAllToolsOff(!allToolsOff)}
+              >
+                <HugeiconsIcon icon={Cancel01Icon} strokeWidth={2} />
+                Disable tools
+                {allToolsOff ? (
                   <HugeiconsIcon
                     icon={Tick02Icon}
                     strokeWidth={2}
