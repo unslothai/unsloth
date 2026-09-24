@@ -2440,46 +2440,29 @@ def test_image_train_rail_matches_create_and_header():
         layout,
     )
     assert rail, "the Train rail no longer uses the Create rail's width variable and clamp"
-    # The scroller's right padding where the rail layout applies, read from EVERY right-padding
-    # utility on it (pr-, px-, p-, with any variant): the base and max-sm: values are overridden or
-    # inactive there, and exactly one sm: value is what the clamp adds back. Any other variant (md:,
-    # lg:, a container query) could be active at @[50rem] and move the divider, so it fails here
-    # rather than being skipped over.
     classes = re.search(r'className="([^"]*overflow-y-auto overflow-x-hidden[^"]*)"', layout)
     assert classes, "the Train scroller moved; the rail clamp depends on its padding"
-    padding: dict[str, list[str]] = {}
-    forced: list[str] = []
-    for token in classes.group(1).split():
-        # The variant ends at the last colon outside brackets; `@[50rem]:` and
-        # `[padding-right:40px]` both carry a colon of their own.
-        depth, cut = 0, -1
-        for i, ch in enumerate(token):
-            depth += {"[": 1, "]": -1}.get(ch, 0)
-            if ch == ":" and depth == 0:
-                cut = i
-        variant, utility = token[: max(cut, 0)], token[cut + 1 :]
-        bare = utility.strip("!")
-        if bare.startswith("[") and "padding" in bare:
-            # An arbitrary padding property says nothing the clamp can read.
-            forced.append(token)
-        elif re.fullmatch(r"(?:p|px|pr|pe)-.+", bare):
-            # `!` either side is Tailwind v4's !important, which beats every other value here.
-            if bare != utility:
-                forced.append(token)
-            padding.setdefault(variant, []).append(bare)
-    assert not forced, f"the Train scroller overrides its right padding outside the steps: {forced}"
-    unaccounted = sorted(v for v in padding if v not in ("", "max-sm", "sm"))
-    assert not unaccounted, (
-        f"the Train scroller sets right padding under {unaccounted}, which the rail clamp does not "
-        f"add back: {classes.group(1)}"
-    )
-    at_rail = padding.get("sm", [])
+    # The scroller's right padding where the rail layout applies. A closed list rather than a
+    # Tailwind parser: every class that can move the right edge (p-, px-, pr-, pe-, or arbitrary
+    # padding, under any variant, !important or a typed value) must be a plain pr- step below the
+    # rail breakpoint or the one sm: step the clamp adds back. Anything else (md:, a container
+    # query, an override) could be active at @[50rem] and move the divider, so it fails here.
+    touches = [
+        t
+        for t in classes.group(1).split()
+        if re.search(r"(?:^|[:!(\[])(?:p|px|pr|pe)-", t) or "padding" in t
+    ]
+    below = [t for t in touches if re.fullmatch(r"(?:max-sm:)?pr-\d+(?:\.\d+)?", t)]
+    at_rail = [t for t in touches if re.fullmatch(r"sm:pr-\d+(?:\.\d+)?", t)]
+    other = [t for t in touches if t not in below and t not in at_rail]
+    assert (
+        not other
+    ), f"the Train scroller sets right padding the rail clamp does not add back: {other}"
     assert len(at_rail) == 1, f"expected one sm: right padding on the Train scroller, got {at_rail}"
-    scroller = re.fullmatch(r"pr-(\d+(?:\.\d+)?)", at_rail[0])
-    assert scroller, f"the Train scroller's sm: padding is not a pr- step: {at_rail[0]}"
-    assert rail.group(1) == scroller.group(1), (
-        f"the Train rail adds back --spacing({rail.group(1)}) but its scroller pads sm:pr-"
-        f"{scroller.group(1)}, so the divider no longer lines up with Create's"
+    step = at_rail[0].removeprefix("sm:pr-")
+    assert rail.group(1) == step, (
+        f"the Train rail adds back --spacing({rail.group(1)}) but its scroller pads "
+        f"{at_rail[0]}, so the divider no longer lines up with Create's"
     )
     assert "@[50rem]:border-r @[50rem]:border-b-0" in layout
     assert "@container hover-scrollbar" in layout
