@@ -992,16 +992,40 @@ function Invoke-MirrorFallback {
     }
     # Host -> default probe, mirror probe, mirror value, and for PyPI and torch the default's and mirror's index uv and pip resolve on.
     $hosts = [ordered]@{}
-    if ($useUv -or $usePip) { $hosts['PyPI'] = @('pypi', 'cernet-pypi', $pypiMirror, 'https://pypi.org/simple/uv/', "$pypiMirror/uv/") }
+    if ($useUv -or $usePip) { $hosts['pypi'] = @('pypi', 'cernet-pypi', $pypiMirror, 'https://pypi.org/simple/uv/', "$pypiMirror/uv/") }
     if (-not "$env:UNSLOTH_PYTORCH_MIRROR$env:UNSLOTH_TORCH_INDEX_URL") {
-        $hosts['download.pytorch.org'] = @('torch', 'cernet-torch', "$cernet/pytorch/whl", 'https://download.pytorch.org/whl/cpu/torch/', "$cernet/pytorch/whl/cpu/torch/")
+        $hosts['torch'] = @('torch', 'cernet-torch', "$cernet/pytorch/whl", 'https://download.pytorch.org/whl/cpu/torch/', "$cernet/pytorch/whl/cpu/torch/")
     }
-    if (-not $env:UNSLOTH_NODE_MIRROR) { $hosts['nodejs.org'] = @('node', 'cernet-node', "$cernet/nodejs-release", $null, $null) }
-    if (-not $env:UNSLOTH_NPM_REGISTRY) { $hosts['registry.npmjs.org'] = @('npm', 'npmmirror', $npmMirror, $null, $null) }
+    if (-not $env:UNSLOTH_NODE_MIRROR) { $hosts['node'] = @('node', 'cernet-node', "$cernet/nodejs-release", $null, $null) }
+    if (-not $env:UNSLOTH_NPM_REGISTRY) { $hosts['npm'] = @('npm', 'npmmirror', $npmMirror, $null, $null) }
     if (-not "$env:UNSLOTH_UV_WHEEL_MIRROR$env:UV_DOWNLOAD_URL$env:INSTALLER_DOWNLOAD_URL$env:UV_INSTALLER_GHE_BASE_URL$env:UV_INSTALLER_GITHUB_BASE_URL") {
-        $hosts['releases.astral.sh (uv)'] = @('astral', 'cernet-pypi', "$cernet/pypi/web", $null, $null)
+        $hosts['uvbin'] = @('astral', 'cernet-pypi', "$cernet/pypi/web", $null, $null)
     }
     if ($hosts.Count -eq 0) { return }
+    # VAR=URL pairs pointing a host at its mirror, the mirror first, for how its default did (slow or blocked).
+    $varsOf = {
+        param($name, $how)
+        $to = $hosts[$name][2]
+        switch ($name) {
+            'pypi' {
+                # uv's unsafe-first-match fetches every index and fails outright when one is unreachable, so pypi.org stays as the second index only while it still answers.
+                if ($useUv -and $how -eq 'slow') {
+                    "UV_INDEX=$to"; 'UV_DEFAULT_INDEX=https://pypi.org/simple'
+                    "UV_INDEX_STRATEGY=$(if ($env:UV_INDEX_STRATEGY) { $env:UV_INDEX_STRATEGY } else { 'unsafe-first-match' })"
+                } elseif ($useUv) {
+                    "UV_DEFAULT_INDEX=$to"
+                }
+                if ($usePip) { "PIP_INDEX_URL=$to" }
+                if ($usePip -and $how -eq 'slow') { 'PIP_EXTRA_INDEX_URL=https://pypi.org/simple' }
+            }
+            'torch' { "UNSLOTH_PYTORCH_MIRROR=$to" }
+            'node' { "UNSLOTH_NODE_MIRROR=$to" }
+            'npm' { "UNSLOTH_NPM_REGISTRY=$to" }
+            'uvbin' { "UNSLOTH_UV_WHEEL_MIRROR=$to" }
+        }
+    }
+    # Each host left on its default keeps its mirror as a spare, for one retry of a step whose download from it fails (Pop-MirrorSpare).
+    $env:_UNSLOTH_MIRROR_SPARE = @($hosts.Keys | ForEach-Object { (@($_) + @(& $varsOf $_ 'blocked')) -join '|' }) -join ' '
     $answered = @{}
     $codeOf = { param($index, $result) if ($index -and "$($answered[$index][0])" -notmatch '^2\d\d$') { 0 } else { $result[0] } }
     # PS 5.1 may pin TLS 1.0/1.1 (every probed host refuses it; Tls|Tls12 still fails) and queues past 2 connections per host.
@@ -1039,31 +1063,51 @@ function Invoke-MirrorFallback {
         $how = if ("$(& $codeOf $hosts[$name][3] $default)" -match '^2\d\d$') { 'slow' } else { 'blocked' }
         $defaultBps = if ($how -eq 'slow') { $default[1] } else { [long]0 }
         if ("$(& $codeOf $hosts[$name][4] $mirror)" -notmatch '^2\d\d$' -or $defaultBps -ge $minBps -or $mirror[1] -le $defaultBps) { continue }
-        $to = $hosts[$name][2]
-        switch ($name) {
-            'PyPI' {
-                # uv's unsafe-first-match fetches every index and fails outright when one is unreachable, so pypi.org stays as the second index only while it still answers.
-                if ($useUv -and $how -eq 'slow') {
-                    $env:UV_INDEX = $to
-                    $env:UV_DEFAULT_INDEX = 'https://pypi.org/simple'
-                    if (-not $env:UV_INDEX_STRATEGY) { $env:UV_INDEX_STRATEGY = 'unsafe-first-match' }
-                } elseif ($useUv) {
-                    $env:UV_DEFAULT_INDEX = $to
-                }
-                if ($usePip) {
-                    $env:PIP_INDEX_URL = $to
-                    if ($how -eq 'slow') { $env:PIP_EXTRA_INDEX_URL = 'https://pypi.org/simple' }
-                }
-            }
-            'download.pytorch.org' { $env:UNSLOTH_PYTORCH_MIRROR = $to }
-            'nodejs.org' { $env:UNSLOTH_NODE_MIRROR = $to }
-            'registry.npmjs.org' { $env:UNSLOTH_NPM_REGISTRY = $to }
-            'releases.astral.sh (uv)' { $env:UNSLOTH_UV_WHEEL_MIRROR = $to }
-        }
-        step "mirror" "$name is $how ($($defaultBps -shr 10) KB/s, mirror $($mirror[1] -shr 10) KB/s); using $to" "Yellow"
+        Set-MirrorEnv @(& $varsOf $name $how)
+        $env:_UNSLOTH_MIRROR_SPARE = @(-split $env:_UNSLOTH_MIRROR_SPARE | Where-Object { $_ -notlike "$name|*" }) -join ' '
+        step "mirror" "$(Get-MirrorName $name) is $how ($($defaultBps -shr 10) KB/s, mirror $($mirror[1] -shr 10) KB/s); using $($hosts[$name][2])" "Yellow"
         $used = $true
     }
     if ($used) { substep "Set UNSLOTH_MIRROR_FALLBACK=0 to always use the default hosts." }
+}
+
+function Get-MirrorName {
+    param([string]$Name)
+    @{ pypi = 'PyPI'; torch = 'download.pytorch.org'; node = 'nodejs.org'; npm = 'registry.npmjs.org'; uvbin = 'releases.astral.sh (uv)' }[$Name]
+}
+
+function Set-MirrorEnv {
+    param([string[]]$Pairs)
+    foreach ($pair in $Pairs) { Set-Item "Env:$($pair.Split('=', 2)[0])" $pair.Split('=', 2)[1] }
+}
+
+# Takes host $Name's VAR=URL pairs out of _UNSLOTH_MIRROR_SPARE, so each host gets one mirror retry; nothing when it has no spare.
+function Pop-MirrorSpare {
+    param([string]$Name)
+    $entry = @(-split $env:_UNSLOTH_MIRROR_SPARE | Where-Object { $_ -like "$Name|*" })
+    if (-not $entry) { return }
+    $env:_UNSLOTH_MIRROR_SPARE = @(-split $env:_UNSLOTH_MIRROR_SPARE | Where-Object { $_ -notlike "$Name|*" }) -join ' '
+    $pairs = @($entry[0].Split('|') | Select-Object -Skip 1)
+    step "mirror" "$(Get-MirrorName $Name) failed; retrying through $($pairs[0].Split('=', 2)[1])" "Yellow"
+    return $pairs
+}
+
+# Points host $Name at its spare mirror for the rest of the install, whether or not the step then succeeds: for downloads with no expected failures.
+function Use-MirrorSpare {
+    param([string]$Name)
+    $pairs = @(Pop-MirrorSpare $Name)
+    Set-MirrorEnv $pairs
+    return $pairs.Count -gt 0
+}
+
+# The host whose transport the output shows failing: a network error, and the host's default named, or, when the output names no URL at all (a download that stalled or dropped), $Ran, the host that ran the command. A resolution or not-found failure names none.
+function Get-MirrorFailedHost {
+    param([string]$Output, [string]$Ran)
+    if ($Output -notmatch 'error sending request|timed out|network timeout|idle timeout|connection (reset|refused|closed|aborted)|network aborted|broken pipe|dns error|failed to lookup address|name resolution|nodename nor servname|network is unreachable|error decoding response body|end of file before message length|unexpected eof|tls handshake|sslerror|certificate verify failed|server error|service unavailable|bad gateway|gateway time-?out|too many requests|max retries exceeded|remotedisconnected|incompleteread|econnreset|etimedout|eidletimeout|eai_again|enotfound|econnrefused|socket hang up') { return }
+    if ($Output -match 'download(-r2)?\.pytorch\.org') { 'torch' }
+    elseif ($Output -match 'registry\.npmjs\.org') { 'npm' }
+    elseif ($Output -match 'pypi\.org|pythonhosted\.org') { 'pypi' }
+    elseif ($Ran -and $Output -notmatch 'https?://') { $Ran }
 }
 
 # Stop every install path consistently when its destination is unreadable.
@@ -2676,9 +2720,12 @@ function Invoke-SetupCommand {
         $global:LASTEXITCODE = 0
         if ($script:UnslothVerbose -and -not $AlwaysQuiet) {
             # PS 5.1 turns stderr records into $? = $false even on exit 0; redact per record.
-            & $Command 2>&1 | ForEach-Object { Redact-InstallOutput "$_" } | Out-Host
+            $lines = @()
+            & $Command 2>&1 | ForEach-Object { "$_" } | Tee-Object -Variable lines | ForEach-Object { Redact-InstallOutput $_ } | Out-Host
+            $script:SetupCommandOutput = $lines -join "`n"
         } else {
             $output = & $Command 2>&1 | Out-String
+            $script:SetupCommandOutput = $output
             if ($LASTEXITCODE -ne 0) {
                 Write-StudioLine (Redact-InstallOutput $output) -ForegroundColor Red
             }
@@ -2788,6 +2835,18 @@ function substep {
         }
         Write-Host ("  {0,-15}{1}" -f "", $Message) -ForegroundColor $fc
     }
+}
+
+# Reruns a failed npm install once through the npm mirror when registry.npmjs.org's transport failed, keeping the mirror for the rest of setup when it works.
+function Invoke-NpmMirrorRetry {
+    if ((Get-MirrorFailedHost -Output $script:SetupCommandOutput -Ran npm) -ne 'npm') { return $false }
+    $pairs = @(Pop-MirrorSpare npm)
+    if (-not $pairs) { return $false }
+    $registry = $pairs[0].Split('=', 2)[1]
+    if ((Invoke-SetupCommand { npm install --registry $registry }) -ne 0) { return $false }
+    Set-MirrorEnv $pairs
+    $script:NpmRegistryArgs = @('--registry', $registry)
+    return $true
 }
 
 function Show-NpmRegistryHint {
@@ -5102,6 +5161,11 @@ if ($NeedNodeForSetup) {
         $NodeInstallPython = if ($ValidatedSetupPython) { $ValidatedSetupPython } else { "python" }
         $nodeOut = & $NodeInstallPython "$PSScriptRoot\install_node_prebuilt.py" --install-dir $NodeDir 2>&1 | Out-String
         $nodeExit = $LASTEXITCODE
+        # A failed download gets one retry through the mirror; 3 is another install holding the lock and 4 an unwritable directory, which no mirror fixes.
+        if ($nodeExit -notin 0, 3, 4 -and (Use-MirrorSpare node)) {
+            $nodeOut += & $NodeInstallPython "$PSScriptRoot\install_node_prebuilt.py" --install-dir $NodeDir 2>&1 | Out-String
+            $nodeExit = $LASTEXITCODE
+        }
         if ($nodeExit -eq 3) {
             Write-StudioLine $nodeOut -ForegroundColor DarkGray
             step "node" "install blocked by another active Unsloth install" "Red"
@@ -5225,6 +5289,7 @@ if ($NeedFrontendBuild -and -not $IsPipInstall) {
     }
     if (-not $UseBun) {
         $npmExit = Invoke-SetupCommand { npm install @NpmRegistryArgs }
+        if ($npmExit -ne 0 -and (Invoke-NpmMirrorRetry)) { $npmExit = 0 }
         if ($npmExit -ne 0) {
             Pop-Location
             $ErrorActionPreference = $prevEAP_npm
@@ -5268,6 +5333,7 @@ if ((Test-Path $OxcValidatorDir) -and $NodeSource -ne "skip" -and (Get-Command n
     $ErrorActionPreference = "Continue"
     Push-Location $OxcValidatorDir
     $oxcInstallExit = Invoke-SetupCommand { npm install @NpmRegistryArgs }
+    if ($oxcInstallExit -ne 0 -and (Invoke-NpmMirrorRetry)) { $oxcInstallExit = 0 }
     if ($oxcInstallExit -ne 0) {
         Pop-Location
         $ErrorActionPreference = $prevEAP_oxc
@@ -6914,6 +6980,7 @@ function Get-UvInstallDir {
 }
 
 function Install-UvFromPinnedRelease {
+    $script:UvPinnedUnfetched = $false
     $arch = Get-UvHostArch
     if (-not $UvPinnedAssets.ContainsKey($arch)) {
         Write-Output "No uv build is published for this architecture ($arch)."
@@ -6961,6 +7028,8 @@ function Install-UvFromPinnedRelease {
         # Digest per mirror, as install.ps1 does: a proxy answering 200 with its own body is a
         # successful download by every measure Invoke-WebRequest has.
         $downloaded = $false
+        # No source answered: only then can the uv mirror help.
+        $script:UvPinnedUnfetched = $true
         foreach ($base in $uvBase) {
             Write-Output "downloading uv $UvPinnedVersion ($arch) from $base..."
             try {
@@ -6969,6 +7038,7 @@ function Install-UvFromPinnedRelease {
                 Write-Output "uv download failed: $($_.Exception.Message)"
                 continue
             }
+            $script:UvPinnedUnfetched = $false
             $actual = ""
             try { $actual = (Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash } catch {}
             if ($actual -eq $wanted) {
@@ -7168,6 +7238,9 @@ if (Get-Command uv -ErrorAction SilentlyContinue) {
     try {
         $script:UvPinnedInstalled = $false
         Invoke-SetupCommand { Install-UvFromPinnedRelease } | Out-Null
+        if (-not $script:UvPinnedInstalled -and $script:UvPinnedUnfetched -and (Use-MirrorSpare uvbin)) {
+            Invoke-SetupCommand { Install-UvFromPinnedRelease } | Out-Null
+        }
         # The merge base ran astral's installer here, so a failed pinned install needs somewhere
         # to go: with no fallback the setup drops to pip for torch, bitsandbytes and Triton, which
         # is a different resolver rather than a different download. winget, not the remote script,

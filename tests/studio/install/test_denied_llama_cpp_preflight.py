@@ -41,6 +41,11 @@ SHARED_FUNCTIONS = (
     "Start-MirrorProbe",
     "Wait-MirrorProbe",
     "Invoke-MirrorFallback",
+    "Get-MirrorName",
+    "Set-MirrorEnv",
+    "Pop-MirrorSpare",
+    "Use-MirrorSpare",
+    "Get-MirrorFailedHost",
 )
 
 
