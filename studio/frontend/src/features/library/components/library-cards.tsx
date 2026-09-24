@@ -106,8 +106,8 @@ function ImageThumb({
         />
       )}
       {loaded && fileKind(item) === "video" && (
-        // A white play mark on glass in both modes; only light mode's glass needs an edge.
-        <span className="pointer-events-none absolute inset-0 m-auto flex aspect-square w-1/4 max-w-10 items-center justify-center rounded-full bg-white/30 text-white ring-1 ring-white/50 backdrop-blur-md dark:bg-black/40 dark:ring-0">
+        // A white play mark on glass in both modes.
+        <span className="pointer-events-none absolute inset-0 m-auto flex aspect-square w-1/4 max-w-10 items-center justify-center rounded-full bg-white/30 text-white backdrop-blur-md dark:bg-black/40">
           <HugeiconsIcon icon={PlayIcon} strokeWidth={2} className="size-1/2 [&_path]:fill-current" />
         </span>
       )}
