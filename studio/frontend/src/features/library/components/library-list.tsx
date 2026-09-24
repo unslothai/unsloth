@@ -81,7 +81,8 @@ function GutterCheckbox({
         onCheckedChange={onCheckedChange}
         aria-label={label}
         className={cn(
-          "rounded-full opacity-0 transition-opacity focus-visible:opacity-100",
+          // A shade darker than the input border in light mode, which vanished on white.
+          "rounded-full border-neutral-300 opacity-0 transition-opacity focus-visible:opacity-100 dark:border-input",
           group === "row"
             ? "group-hover/library-row:opacity-100"
             : "group-hover/library-head:opacity-100",
@@ -121,9 +122,9 @@ function Row({
   return (
     <div
       className={cn(
-        "group/library-row relative flex items-center gap-4 rounded-[14px] transition-colors hover:bg-muted/60",
+        "group/library-row relative flex items-center gap-4 rounded-[14px] transition-colors hover:bg-muted dark:hover:bg-muted/60",
         ROW_INSET,
-        selected && "bg-muted/60",
+        selected && "bg-muted dark:bg-muted/60",
       )}
     >
       <GutterCheckbox

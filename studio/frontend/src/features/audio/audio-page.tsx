@@ -1804,6 +1804,7 @@ export function AudioPage({
       hasMore: () => galleryCache.hasMore,
       refresh: () => refreshGallery(undefined, galleryCache.clips.length),
       loadMore,
+      busy: () => loadingMoreRef.current,
       cancelled: () => lookup !== routedLookup.current,
     }).then((found) => {
       if (lookup !== routedLookup.current) return;
