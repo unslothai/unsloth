@@ -3,7 +3,7 @@
 
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
-import { AUTH_SESSION_CLEARED_EVENT } from "@/features/auth";
+import { AUTH_SESSION_CLEARED_EVENT, getAuthSessionEpoch } from "@/features/auth";
 import { type GalleryKind, notifyGalleryChanged } from "@/lib/gallery-flags";
 import {
   type LibraryFolder,
@@ -147,7 +147,10 @@ export const useLibraryStore = create<LibraryState>((set, get) => {
       }
     },
     addFolder: async (name, parentId) => {
+      const epoch = getAuthSessionEpoch();
       const folder = await createLibraryFolder(name, parentId);
+      // Signed out meanwhile: it belongs to the account that left, not the one here now.
+      if (getAuthSessionEpoch() !== epoch) throw new Error("Signed out before the folder was made.");
       // A refresh started before it landed would drop it; the count sends that one back for more.
       edits += 1;
       set((state) => ({
