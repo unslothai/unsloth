@@ -423,5 +423,5 @@ def test_trusted_load_records_the_commit_its_repo_code_ran_at():
     i_trust = vision.index("model._unsloth_trust_remote_code = trust_remote_code")
     i_stamp = vision.index("model._unsloth_trust_remote_code_commit = (")
     assert i_trust < i_stamp
-    stamp = vision[i_stamp:vision.index("\n        )\n", i_stamp)]
+    stamp = vision[i_stamp : vision.index("\n        )\n", i_stamp)]
     assert "if trust_remote_code" in stamp and '"_commit_hash"' in stamp
