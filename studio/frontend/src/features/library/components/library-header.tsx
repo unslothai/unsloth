@@ -207,7 +207,7 @@ export function LibraryHeader({
     <>
       {/* No height of its own: the controls hang from it over the title row, then stick level with
           the tabs, whose row is as tall as they are plus its padding. */}
-      <div className="pointer-events-none sticky top-3 z-30 flex h-0 justify-end">
+      <div className="pointer-events-none sticky top-4 z-30 flex h-0 justify-end">
         <div ref={controlsRef} className="pointer-events-auto">
           {controls}
         </div>
@@ -220,7 +220,7 @@ export function LibraryHeader({
       </div>
       <div
         ref={rowRef}
-        className="sticky top-0 z-20 -mx-6 mt-3 bg-background px-6 py-3 sm:-mx-10 sm:px-10"
+        className="sticky top-0 z-20 -mx-6 mt-2 bg-background px-6 py-4 sm:-mx-10 sm:px-10"
       >
         {tabs ? (
           <div className={tabsClassName}>
@@ -234,11 +234,12 @@ export function LibraryHeader({
         ) : (
           <div className="h-9" />
         )}
-        {/* Once stuck, what scrolls under the row fades out below it instead of cutting off. */}
+        {/* Once stuck, what scrolls under the row fades out below it instead of cutting off: short
+            and light, since whole cards pass under it rather than lines of text. */}
         <div
           aria-hidden
           className={cn(
-            "pointer-events-none absolute inset-x-0 top-full h-6 bg-gradient-to-b from-background to-transparent transition-opacity",
+            "pointer-events-none absolute inset-x-0 top-full h-3 bg-gradient-to-b from-background/70 to-transparent transition-opacity",
             covered ? "opacity-100" : "opacity-0",
           )}
         />
