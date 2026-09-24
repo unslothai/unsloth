@@ -1332,10 +1332,14 @@ def _get_remote_composite_text_only(
     token = None,
     revision = None,
     local_files_only = False,
+    fast_inference = False,
 ):
     # Text-only load plan for a repo-code composite (Nemotron-Omni: llm_config + vision/sound) whose text sub-model is a whole causal LM stored under one prefix.
     # Returns (text_config, key_mapping) or None; None keeps the previous full-model load.
     if not trust_remote_code or not _is_remote_code_config(model_config):
+        return None
+    if fast_inference:
+        # vLLM loads the repo's own composite config and weights by name, with no prefix rewrite for a standalone text config.
         return None
     if Version(transformers_version) < Version("5.0.0"):
         # transformers 4.x decides base-vs-task prefix handling from the UNMAPPED checkpoint keys, so key_mapping

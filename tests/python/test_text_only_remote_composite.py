@@ -567,3 +567,36 @@ def test_loader_checks_the_adapter_before_taking_the_text_only_branch():
     assert i_plan < i_gate < i_take
     gate = loader[loader.rindex("if (", 0, i_gate) : i_take]
     assert "and is_peft" in gate and "old_model_name" in gate and "remote_text_only = None" in gate
+
+
+# ---------------------------------------------------------------- fast_inference (vLLM)
+
+
+@needs_tf5
+def test_fast_inference_keeps_the_full_model_path(tmp_path):
+    # vLLM reads the composite's own config.json and weights by repo name; a standalone text config with a
+    # prefix key_mapping has no meaning there, so the plan declines and the old VLM gate decides.
+    ns = _ns()
+    repo, _ = _write_repo(tmp_path, name = "vllm")
+    parent = _load_parent_config(repo)
+    assert ns["_get_remote_composite_text_only"](parent, str(repo), trust_remote_code = True)
+    assert (
+        ns["_get_remote_composite_text_only"](
+            parent, str(repo), trust_remote_code = True, fast_inference = True
+        )
+        is None
+    )
+
+
+def test_loader_and_vision_forward_fast_inference_to_the_plan():
+    for path in (LOADER_PATH, VISION_PATH):
+        src = path.read_text(encoding = "utf-8")
+        i = src.index("_get_remote_composite_text_only(\n")
+        depth, j = 0, i
+        while True:
+            depth += {"(": 1, ")": -1}.get(src[j], 0)
+            if src[j] == ")" and depth == 0:
+                break
+            j += 1
+        call = src[i : j + 1]
+        assert "fast_inference = fast_inference," in call, path.name

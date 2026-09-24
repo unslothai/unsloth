@@ -1314,6 +1314,7 @@ class FastBaseModel:
                     token = token,
                     revision = _revision,
                     local_files_only = local_files_only,
+                    fast_inference = fast_inference,
                 )
                 if remote_text_only is not None:
                     auto_config, _text_key_mapping = remote_text_only

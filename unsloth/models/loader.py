@@ -1921,6 +1921,7 @@ class FastModel(FastBaseModel):
                         token = token,
                         revision = base_revision if not is_peft else None,
                         local_files_only = local_files_only,
+                        fast_inference = fast_inference,
                     )
                 if (
                     remote_text_only is not None
