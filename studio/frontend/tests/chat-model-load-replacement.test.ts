@@ -135,7 +135,9 @@ const contracts: Contract[] = [
     match: [["runtime", /residentUnloaded\?: boolean;/],
       ["inherit", /residentUnloaded: cancelledRun\.residentModelUnloaded,/], ["registration", /residentModelUnloaded: inheritedPendingRollback\?\.residentUnloaded === true,/],
       ["loadGate", /let previousWasUnloaded =\n\s*inheritedPendingRollback\?\.residentUnloaded === true;/],
-      ["runtime", /if \(previousWasUnloaded && previousCheckpoint\) \{/]] },
+      // The rollback is gated on the inherited unloaded state; further guards (#11729's
+      // answered-failure check) may follow, and the formatter may wrap the condition.
+      ["runtime", /if \(\s*previousWasUnloaded &&\s*previousCheckpoint\s*(?:&&|\))/]] },
   { name: "a failed cancellation clears the rollback the replacement would inherit",
     match: [["loop", /pendingReplacementRollback = null;/], ["loop", /if \(throwOnError\) throw new Error\(message\);/]],
     order: [["loop", "pendingReplacementRollback = null;", "if (throwOnError) throw new Error(message);"]] },
