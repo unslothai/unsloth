@@ -22,6 +22,10 @@ const DRAG_SLOP_PX = 4;
 
 type Size = { width: number; height: number };
 
+function translate({ x, y }: { x: number; y: number }): string {
+  return `translate3d(${x}px, ${y}px, 0)`;
+}
+
 function clamp(value: number, limit: number): number {
   return Math.max(-limit, Math.min(limit, value));
 }
@@ -40,6 +44,7 @@ export function MediaZoomStage({
   children: ReactNode;
 }) {
   const stageRef = useRef<HTMLDivElement>(null);
+  const layerRef = useRef<HTMLDivElement>(null);
   const [stage, setStage] = useState<Size | null>(null);
   const [natural, setNatural] = useState<(Size & { src: string }) | null>(null);
   const [offset, setOffset] = useState({ x: 0, y: 0 });
@@ -50,6 +55,9 @@ export function MediaZoomStage({
     ox: number;
     oy: number;
     moved: boolean;
+    /** Where the drag has reached; written to the layer each frame, committed on release. */
+    next: { x: number; y: number };
+    frame: number;
   } | null>(null);
   const dragged = useRef(false);
   const [grabbing, setGrabbing] = useState(false);
@@ -127,6 +135,8 @@ export function MediaZoomStage({
       ox: pan.x,
       oy: pan.y,
       moved: false,
+      next: pan,
+      frame: 0,
     };
   }
 
@@ -141,17 +151,27 @@ export function MediaZoomStage({
       setGrabbing(true);
       event.currentTarget.setPointerCapture(event.pointerId);
     }
-    setOffset({
+    // Straight to the layer once a frame: a render per pointer event lagged behind the cursor.
+    current.next = {
       x: clamp(current.ox + dx, slack.x),
       y: clamp(current.oy + dy, slack.y),
+    };
+    if (current.frame) return;
+    current.frame = requestAnimationFrame(() => {
+      current.frame = 0;
+      const layer = layerRef.current;
+      if (layer) layer.style.transform = translate(current.next);
     });
   }
 
   function onPointerEnd(event: ReactPointerEvent<HTMLDivElement>) {
-    if (drag.current?.id !== event.pointerId) return;
-    dragged.current = drag.current.moved;
+    const current = drag.current;
+    if (current?.id !== event.pointerId) return;
+    cancelAnimationFrame(current.frame);
+    dragged.current = current.moved;
     drag.current = null;
     setGrabbing(false);
+    if (current.moved) setOffset(current.next);
   }
 
   return (
@@ -178,14 +198,16 @@ export function MediaZoomStage({
       )}
     >
       <div
-        className="absolute flex"
+        ref={layerRef}
+        className="absolute flex will-change-transform"
         style={
           box && stage
             ? {
                 width: box.width,
                 height: box.height,
-                left: (stage.width - box.width) / 2 + pan.x,
-                top: (stage.height - box.height) / 2 + pan.y,
+                left: (stage.width - box.width) / 2,
+                top: (stage.height - box.height) / 2,
+                transform: translate(pan),
               }
             : { inset: 0 }
         }
