@@ -12,7 +12,7 @@ torch = pytest.importorskip("torch")
 from core.inference import diffusion_dynamic_text as dt  # noqa: E402
 
 pytestmark = pytest.mark.skipif(
-    not dt.supported(), reason = "torch lacks compiler.config.dynamic_sources"
+    not dt.supported(), reason = "torch lacks a re-read compiler.config.dynamic_sources (2.8+)"
 )
 
 
@@ -211,3 +211,17 @@ def test_qwen_image_hook_paths_match_on_regex_torch():
             assert not is_dynamic(name), name
     finally:
         cfg.dynamic_sources = before
+
+
+def test_torch_that_reads_the_allowlist_once_is_not_armed(monkeypatch):
+    # torch 2.7 caches its first read of dynamic_sources for the process: scoping it to one forward would be ignored
+    # or leak the list into every later compile, so that torch keeps today's behaviour.
+    from torch._dynamo.variables import builder
+
+    monkeypatch.delattr(builder, "is_dynamic_source")
+    model = QwenImage21Transformer2DModel()
+    assert not dt.supported()
+    assert not dt.install(model)
+    assert dt.fingerprint(model, None) is None
+    model(torch.zeros(1))
+    assert model.seen == _cfg().dynamic_sources

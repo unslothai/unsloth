@@ -13,16 +13,17 @@ compile already produces the generalised graphs and no later prompt length recom
 tracks the prompt are named, which keeps the torchao CantSplit that a blanket ``dynamic=True`` hits out of reach.
 
 The allowlist is process-global, so it is set only around the owning transformer's forward (hooks, restored even when
-the forward raises). A torch without the knob keeps today's behaviour.
+the forward raises). That needs torch 2.8+, which re-reads the allowlist whenever it changes; 2.7 reads it once per
+process, so a scoped setting would either be ignored or leak into every later compile. Older torch keeps today's
+behaviour.
 """
 
 from __future__ import annotations
 
 from typing import Any, Optional
 
-# Source names of QwenImage21TransformerBlock.forward inputs whose size follows the prompt token count. torch 2.7
-# matches names exactly; 2.8+ also accepts regexes (re.match), which cover the extra segments of an edit prompt. The
-# first segment start is always 0 and stays static: a symbol for it is what trips the torchao CantSplit (the target
+# Source names of QwenImage21TransformerBlock.forward inputs whose size follows the prompt token count. Exact names
+# plus regexes (re.match), which cover the extra segments of an edit prompt. The first segment start is always 0 and stays static: a symbol for it is what trips the torchao CantSplit (the target
 # rows become ``s0 - s_start``).
 _QWEN_IMAGE_21_SOURCES: tuple[str, ...] = (
     "L['hidden_states']",
@@ -40,7 +41,7 @@ _QWEN_IMAGE_21_SOURCES: tuple[str, ...] = (
 
 # QwenImageTransformerBlock.forward (Qwen-Image, 2512, Edit): the text stream and its RoPE half. A step cache
 # (FBCache, on by default for this family) calls the blocks through diffusers hooks, where the same inputs arrive as
-# ``L['kwargs'][...]`` or, after a graph break, ``___stack0[1][...]``; the suffix patterns cover those (torch 2.8+).
+# ``L['kwargs'][...]`` or, after a graph break, ``___stack0[1][...]``; the suffix patterns cover those.
 _QWEN_IMAGE_SOURCES: tuple[str, ...] = (
     "L['encoder_hidden_states']",
     "L['encoder_hidden_states_mask']",
@@ -60,17 +61,22 @@ _FAMILY_SOURCES: dict[str, tuple[str, ...]] = {
 def _compiler_config() -> Any:
     try:
         import torch.compiler.config as cfg  # noqa: PLC0415
+        from torch._dynamo.variables import builder  # noqa: PLC0415
     except Exception:  # noqa: BLE001 - torch < 2.7 or no torch
         return None
     try:
         getattr(cfg, "dynamic_sources")
     except Exception:  # noqa: BLE001 - knob absent on this build
         return None
+    # 2.8+ (with is_dynamic_source) re-reads the allowlist when it changes and matches regexes; 2.7 caches its first
+    # read for the life of the process, which the per-forward scoping below cannot work with.
+    if not callable(getattr(builder, "is_dynamic_source", None)):
+        return None
     return cfg
 
 
 def supported() -> bool:
-    """Whether this torch honours ``torch.compiler.config.dynamic_sources``."""
+    """Whether this torch honours a per-forward ``torch.compiler.config.dynamic_sources`` (2.8+)."""
     return _compiler_config() is not None
 
 
