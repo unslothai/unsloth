@@ -188,14 +188,23 @@ def _wrap_cpu_offload_hook(hook: Any, module: Any) -> None:
     # shallow-copy compatible with the host's), and a stale key must miss rather than alias another weight.
     state = module.__dict__.get(_KEEP_ATTR)
     if state is None:
-        state = {"host": {}, "version": {}}
+        state = {"host": {}, "owner": {}, "version": {}}
         module.__dict__[_KEEP_ATTR] = state
-    host, version = state["host"], state["version"]
+    state.setdefault("owner", {})
+    host, owner, version = state["host"], state["owner"], state["version"]
+
+    def _capture(mod: Any) -> None:
+        # Each host tensor is tied to the Parameter it came from: one replaced while offloaded (e.g. a LoRA
+        # adapter reloaded under the same name) must not inherit it.
+        host.clear()
+        owner.clear()
+        for name, p in mod.named_parameters():
+            if p.device.type == "cpu" and _keepable(p):
+                host[name] = p.data
+                owner[name] = p
+
     # The new hook's attach already ran the stock init_hook, so whatever is on the host now is current.
-    host.clear()
-    for name, p in module.named_parameters():
-        if p.device.type == "cpu" and _keepable(p):
-            host[name] = p.data
+    _capture(module)
     version.clear()
     init_hook, pre_forward = hook.init_hook, hook.pre_forward
 
@@ -219,20 +228,29 @@ def _wrap_cpu_offload_hook(hook: Any, module: Any) -> None:
                 pass
         # Buffers, and anything not kept, go through the stock copy.
         out = init_hook(mod)
-        host.clear()
-        for name, p in mod.named_parameters():
-            if p.device.type == "cpu" and _keepable(p):
-                host[name] = p.data
+        _capture(mod)
         version.clear()
         return out
 
     def _pre_forward(mod: Any, *args: Any, **kwargs: Any) -> Any:
         onload = not version
+        if onload:
+            # Still on the host: forget any entry whose parameter was replaced, or re-pointed at other data,
+            # since the last offload, so the offload after this render takes the stock copy for it.
+            for name, p in mod.named_parameters():
+                kept = host.get(name)
+                if kept is not None and (
+                    owner.get(name) is not p
+                    or p.device.type != "cpu"
+                    or p.data.data_ptr() != kept.data_ptr()
+                ):
+                    host.pop(name, None)
+                    owner.pop(name, None)
         out = pre_forward(mod, *args, **kwargs)
         if onload:
             # Recorded once per onload: a later in-place write moves the counter past it.
             for name, p in mod.named_parameters():
-                if name in host and p.device.type != "cpu":
+                if name in host and owner.get(name) is p and p.device.type != "cpu":
                     version[name] = (p, p._version)
         return out
 

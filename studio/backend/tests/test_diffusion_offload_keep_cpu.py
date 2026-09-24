@@ -170,3 +170,27 @@ def test_a_parameter_replaced_on_the_device_is_copied_back():
     pipe.transformer._hf_hook.init_hook(pipe.transformer)
     assert pipe.transformer.weight.device.type == "cpu"
     assert torch.equal(pipe.transformer.weight.detach(), torch.full((8, 8), 3.0))
+
+
+@cuda
+@pytest.mark.parametrize("how", ["parameter", "data"])
+def test_a_parameter_replaced_while_offloaded_is_not_restored_to_the_old_weight(how):
+    # e.g. a LoRA adapter unloaded and reloaded under the same name between two renders
+    pipe = _pipe("cuda", "transformer")
+    pipe.enable_model_cpu_offload()
+    dm.keep_cpu_weights_on_offload(pipe)
+    pipe.transformer(torch.ones(1, 8))
+    pipe.transformer._hf_hook.init_hook(pipe.transformer)
+    assert pipe.transformer.weight.device.type == "cpu"
+    fresh = torch.full((8, 8), 5.0)
+    if how == "parameter":
+        pipe.transformer.weight = torch.nn.Parameter(fresh)
+    else:
+        pipe.transformer.weight.data = fresh
+    out = pipe.transformer(torch.ones(1, 8))
+    assert torch.allclose(
+        out.cpu(), torch.full((1, 8), 40.0) + pipe.transformer.bias.detach().cpu()
+    )
+    pipe.transformer._hf_hook.init_hook(pipe.transformer)
+    assert pipe.transformer.weight.device.type == "cpu"
+    assert torch.equal(pipe.transformer.weight.detach(), torch.full((8, 8), 5.0))
