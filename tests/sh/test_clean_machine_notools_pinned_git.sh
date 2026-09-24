@@ -96,14 +96,14 @@ expect_rc "an ssh requirement keeps its user in the allowed remote" 0 "$SSH_PIN"
     "git\tfetch --force ssh://git@github.com/org/repo.git +HEAD:refs/remotes/origin/HEAD\n"
 expect_rc "an ssh requirement does not allow its bare scheme and user" 1 "$SSH_PIN" \
     "git\tfetch --force ssh://git +HEAD:refs/remotes/origin/HEAD\n"
-# The workflow passes this checkout's file and the installed package's copy; either remote
-# is allowed, so a released wheel pinning another repository still passes.
+# The workflow passes the installed package's copy, which can pin another repository than
+# this checkout; only the file passed counts.
 INSTALLED_PIN="$ROOT/installed-diffusers-main.txt"
 printf 'diffusers @ git+https://github.com/example/diffusers-fork.git@%s\n' "$SHA" > "$INSTALLED_PIN"
-expect_rc "the installed package's remote is allowed beside this checkout's" 0 "$PIN $INSTALLED_PIN" \
+expect_rc "the installed package's remote is allowed" 0 "$INSTALLED_PIN" \
     "git\tfetch --force https://github.com/example/diffusers-fork.git +HEAD:refs/remotes/origin/HEAD\n"
-expect_rc "without the installed copy that remote is still a hit" 1 "$PIN" \
-    "git\tfetch --force https://github.com/example/diffusers-fork.git +HEAD:refs/remotes/origin/HEAD\n"
+expect_rc "this checkout's remote is then a hit" 1 "$INSTALLED_PIN" \
+    "git\tfetch --force $REMOTE +HEAD:refs/remotes/origin/HEAD\n"
 expect_rc "a remote with the .git suffix dropped still matches" 0 "$PIN" \
     "git\tfetch ${REMOTE%.git} +HEAD:refs/remotes/origin/HEAD\n"
 
