@@ -485,6 +485,27 @@ def test_int8_linear_kernel_path_matches_the_torch_path():
 
 
 @needs_cuda
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16, torch.float32])
+def test_int8_quant_rows_kernel_matches_the_torch_codes(dtype):
+    g = torch.Generator(device = "cuda").manual_seed(0)
+    rows, n = 4 * 1797, 2048
+    x = torch.randn(rows, n, device = "cuda", generator = g)
+    x = (x * (torch.rand(n, device = "cuda", generator = g) * 4 + 0.1)).to(dtype)
+    # exact halves: absmax 127 gives s = 1, where half-to-even and half-away-from-zero disagree
+    x[0, :6] = torch.tensor([127.0, 2.5, -3.5, 0.5, -0.5, 126.5], dtype = dtype)
+    x[0, 6:] = 0
+    xf = x.float()
+    ref_s = xf.abs().amax(dim = 1).clamp(min = 1e-12) / 127.0
+    ref_q = (xf / ref_s[:, None]).round().clamp(-127, 127).to(torch.int8)
+    q = torch.empty(rows, n, dtype = torch.int8, device = "cuda")
+    s = torch.empty(rows, dtype = torch.float32, device = "cuda")
+    H._kernels().quant_rows[(rows,)](x, q, s, n, BLOCK_N = n, num_warps = 8)
+    assert torch.equal(s, ref_s)
+    assert int((q != ref_q).sum()) == 0
+    assert q[0, :6].tolist() == [127, 2, -4, 0, 0, 126]
+
+
+@needs_cuda
 @pytest.mark.parametrize("res_layout", ["channels_last", "contiguous"])
 def test_add_residual_kernel(res_layout):
     torch.manual_seed(0)
