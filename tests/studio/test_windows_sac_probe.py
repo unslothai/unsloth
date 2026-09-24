@@ -621,8 +621,7 @@ def test_studio_logs_reach_the_evidence_only_through_the_backend_redactor(tmp_pa
     assert "Copy-Item -LiteralPath $studioLogs" not in ps1 and "Redact-Secrets" not in ps1
     assert (
         "redact_logs.py" in ps1
-        and "$python = Resolve-StudioPythonFor $dir"
-        in ps1[ps1.index("function Invoke-Collect") :]
+        and "$python = Resolve-StudioPythonFor $dir" in ps1[ps1.index("function Invoke-Collect") :]
     )
     assert "no managed interpreter to run the redactor" in ps1
     # The helper, driven against this checkout's backend on the canonical cases.
@@ -1462,7 +1461,9 @@ def test_a_failed_dismount_is_reclaimed_by_the_next_revert():
     reached Mount-Efi, and stamped the rollback complete with S: still up."""
     ps1 = (PROBE_DIR / "sac-probe.ps1").read_text(encoding = "utf-8")
     assert "function Clear-EfiOwnership {" in ps1
-    reclaim = ps1[ps1.index("function Clear-EfiOwnership") : ps1.index("function Test-PolicyActive")]
+    reclaim = ps1[
+        ps1.index("function Clear-EfiOwnership") : ps1.index("function Test-PolicyActive")
+    ]
     # Reclaims only; a revert must never mount the partition itself.
     assert "mountvol.exe" not in reclaim
     assert "Dismount-Efi $true" in reclaim
@@ -1488,7 +1489,9 @@ def test_a_recorded_tree_revert_refuses_to_touch_is_a_rollback_failure():
     assert "if (-not (Test-Path -LiteralPath $path)) { continue }" in revert
     # ... and "this run did not install Studio" is false when trees were refused.
     assert "if ($trees.Count -eq 0 -and $rejected.Count -eq 0) {" in revert
-    assert revert.index("$aclFailures = $rejected.Count") < revert.index("foreach ($tree in $trees)")
+    assert revert.index("$aclFailures = $rejected.Count") < revert.index(
+        "foreach ($tree in $trees)"
+    )
 
 
 def test_an_allow_needs_live_enforcement_and_a_control_on_the_boot_that_measured():
@@ -1502,7 +1505,9 @@ def test_an_allow_needs_live_enforcement_and_a_control_on_the_boot_that_measured
     assert "$sacNow = Get-SacState" in collect
     assert "$sacMode = [string]$sacNow.Mode" in collect
     assert "$sacAtPrepare = [string]$b.Sac.Mode" in collect
-    assert collect.index("$sacNow = Get-SacState") < collect.index("$sacMode = [string]$sacNow.Mode")
+    assert collect.index("$sacNow = Get-SacState") < collect.index(
+        "$sacMode = [string]$sacNow.Mode"
+    )
     # Enforcement in the registry is an intent; the refusal is the observation.
     assert "} elseif ($true -ne $b.SacControlFired) {" in collect
     allow = collect.index("so this window is a real allow")
@@ -1513,7 +1518,9 @@ def test_an_allow_needs_live_enforcement_and_a_control_on_the_boot_that_measured
 
     ps1_head = ps1[: ps1.index("function Invoke-Run")]
     assert "SacControlFired         = $null" in ps1_head
-    prepare = ps1[ps1.index("function Invoke-Prepare") : ps1.index("function Get-SignatureInventory")]
+    prepare = ps1[
+        ps1.index("function Invoke-Prepare") : ps1.index("function Get-SignatureInventory")
+    ]
     assert "$sacBefore = Get-SacState" in prepare
     assert "$sacFired = Test-AuditPolicyEvaluating" in prepare
     # Before the window opens, or the control's own 3077 lands in the evidence.
@@ -1532,7 +1539,9 @@ def test_the_readme_pins_the_runtime_before_the_window_opens():
     installing the pinned release afterwards put loads from two releases in one
     window, over the one managed directory collect scopes events by."""
     body = (PROBE_DIR / "README.md").read_text(encoding = "utf-8")
-    pin = body[body.index("To pin a specific runtime for a cell") : body.index("## Reading the output")]
+    pin = body[
+        body.index("To pin a specific runtime for a cell") : body.index("## Reading the output")
+    ]
     assert "before `prepare`" in pin
     assert "-Stage prepare -Label custom-b10715-sac-on" in pin
     # The pinned prepare comes first in the block the operator copies.
@@ -1567,12 +1576,16 @@ def test_the_sac_positive_control_counts_only_an_enforced_refusal():
     some other audit policy and says nothing about enforcement."""
     ps1 = (PROBE_DIR / "sac-probe.ps1").read_text(encoding = "utf-8")
     assert "function Test-AuditPolicyEvaluating([int[]] $AcceptIds = @(3076, 3077)) {" in ps1
-    fn = ps1[ps1.index("function Test-AuditPolicyEvaluating") : ps1.index("function Invoke-Prepare")]
+    fn = ps1[
+        ps1.index("function Test-AuditPolicyEvaluating") : ps1.index("function Invoke-Prepare")
+    ]
     assert "$AcceptIds -contains $_.Id" in fn
     assert "$_.Id -eq 3076 -or $_.Id -eq 3077" not in fn
     # Both Smart App Control call sites pin 3077; the audit-policy ones do not.
     assert ps1.count("Test-AuditPolicyEvaluating -AcceptIds @(3077)") == 2
-    prepare = ps1[ps1.index("function Invoke-Prepare") : ps1.index("function Get-SignatureInventory")]
+    prepare = ps1[
+        ps1.index("function Invoke-Prepare") : ps1.index("function Get-SignatureInventory")
+    ]
     assert "$controlFired = Test-AuditPolicyEvaluating\n" in prepare
     assert "$sacFired = Test-AuditPolicyEvaluating -AcceptIds @(3077)" in prepare
     run = ps1[ps1.index("function Invoke-Run") : ps1.index("function Invoke-Collect")]
@@ -1651,7 +1664,9 @@ def test_collect_scopes_the_venv_run_measured_not_the_one_this_shell_resolves():
     # Written from the value the inventory actually used.
     assert run.index("$venvDir = Resolve-VenvDir") < run.index("'venv-selection.txt'")
     # A reopened window must not inherit the previous one's answer.
-    prepare = ps1[ps1.index("function Invoke-Prepare") : ps1.index("function Get-SignatureInventory")]
+    prepare = ps1[
+        ps1.index("function Invoke-Prepare") : ps1.index("function Get-SignatureInventory")
+    ]
     stale = prepare[prepare.index("foreach ($stale in @(") :]
     assert "'venv-selection.txt'" in stale[: stale.index(")) {")]
 
@@ -1706,8 +1721,12 @@ def test_the_streamed_turns_opt_into_the_tool_control_frames(monkeypatch):
             return False
 
         def __iter__(self):
-            return iter([b'data: {"type": "tool_end", "tool_name": "web_search", "result": "x"}\n',
-                         b"data: [DONE]\n"])
+            return iter(
+                [
+                    b'data: {"type": "tool_end", "tool_name": "web_search", "result": "x"}\n',
+                    b"data: [DONE]\n",
+                ]
+            )
 
     def fake_urlopen(req, timeout = None):
         seen.update(req.headers)
@@ -1730,7 +1749,9 @@ def test_collect_reads_the_studio_logs_of_the_install_run_measured():
     ps1 = (PROBE_DIR / "sac-probe.ps1").read_text(encoding = "utf-8")
     assert "function Resolve-StudioHomeFor([string] $dir) {" in ps1
     assert "function Resolve-StudioPythonFor([string] $dir) {" in ps1
-    helpers = ps1[ps1.index("function Resolve-StudioHomeFor") : ps1.index("function Test-StudioResponding")]
+    helpers = ps1[
+        ps1.index("function Resolve-StudioHomeFor") : ps1.index("function Test-StudioResponding")
+    ]
     # Both derive from the venv run recorded, and both still fall back to the
     # live search for an evidence directory that predates venv-selection.txt.
     assert helpers.count("Resolve-VenvDir $dir") == 2
@@ -1753,15 +1774,21 @@ def test_run_refuses_an_event_window_older_than_its_own_baseline():
     assert "$runStartPath = Join-Path $dir 'window-start.txt'" in run
     assert "$runStart -and $runPrepared -and $runStart -lt $runPrepared" in run
     # Before anything is measured, and after the spent-baseline guard.
-    assert run.index("$runStartPath = Join-Path") < run.index("Write-Section 'Venv signature inventory'")
-    assert run.index("if ($runBaseline.RevertCompletedAt) {") < run.index("$runStartPath = Join-Path")
+    assert run.index("$runStartPath = Join-Path") < run.index(
+        "Write-Section 'Venv signature inventory'"
+    )
+    assert run.index("if ($runBaseline.RevertCompletedAt) {") < run.index(
+        "$runStartPath = Join-Path"
+    )
     # collect must NOT gain the same guard: an operator who never collected the
     # previous cycle can still collect it after a prepare failed.
     collect = ps1[ps1.index("function Invoke-Collect") : ps1.index("function Invoke-Revert")]
     assert "$runPrepared" not in collect
     # And the window still opens last, after the positive control, so the
     # control's own event stays outside the window it measures.
-    prepare = ps1[ps1.index("function Invoke-Prepare") : ps1.index("function Get-SignatureInventory")]
+    prepare = ps1[
+        ps1.index("function Invoke-Prepare") : ps1.index("function Get-SignatureInventory")
+    ]
     assert prepare.rindex("Test-AuditPolicyEvaluating") < prepare.index("'window-start.txt'")
 
 
@@ -1774,7 +1801,7 @@ def test_the_unattended_tool_turns_never_wait_on_an_approval_nobody_reads():
     scenario = (PROBE_DIR / "studio_scenario.py").read_text(encoding = "utf-8")
     assert 'payload["permission_mode"] = "off"' in scenario
     # Only on the tool turns, and beside the selection they gate.
-    tools = scenario[scenario.index("    if tools:") : scenario.index("        text = \"\"")]
+    tools = scenario[scenario.index("    if tools:") : scenario.index('        text = ""')]
     assert 'payload["permission_mode"] = "off"' in tools
     assert 'payload["permission_mode"] = "full"' not in scenario
     # The sandbox stays on: neither of the two ways to drop it is set.
