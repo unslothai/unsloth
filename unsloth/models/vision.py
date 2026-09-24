@@ -1779,6 +1779,7 @@ class FastBaseModel:
                     subfolder = kwargs.get("subfolder"),
                     cache_dir = kwargs.get("cache_dir"),
                     variant = kwargs.get("variant"),
+                    dtype = torch_dtype,
                 )
                 if hasattr(model, "generate"):
                     model.fast_generate = make_fast_generate_wrapper(model.generate)

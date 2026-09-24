@@ -1288,6 +1288,35 @@ def _match_fp8_module(module_by_name, base):
     return None
 
 
+_FP8_DEQUANT_DTYPES = (torch.bfloat16, torch.float16, torch.float32)
+
+
+def _has_fp8_scale_attr(module):
+    """True when the module carries its own fp8 scale (FP8Linear, FbgemmFp8Linear), so its forward applies it."""
+    return any(
+        isinstance(getattr(module, name, None), torch.Tensor)
+        for name in ("weight_scale_inv", "weight_scale")
+    )
+
+
+def _fp8_dequant_target_dtype(model, dtype = None):
+    """The 16/32-bit dtype a plain module holding raw fp8 values is dequantized into: the requested load dtype,
+    else the config dtype, else the input embedding dtype, else bfloat16."""
+    candidates = [dtype]
+    config = getattr(model, "config", None)
+    candidates += [getattr(config, "dtype", None), getattr(config, "torch_dtype", None)]
+    try:
+        candidates.append(model.get_input_embeddings().weight.dtype)
+    except Exception:
+        pass
+    for candidate in candidates:
+        if isinstance(candidate, str):
+            candidate = getattr(torch, candidate.replace("torch.", ""), None)
+        if candidate in _FP8_DEQUANT_DTYPES:
+            return candidate
+    return torch.bfloat16
+
+
 def _restore_dropped_fp8_scales(
     model,
     model_name,
@@ -1298,8 +1327,9 @@ def _restore_dropped_fp8_scales(
     subfolder = None,
     cache_dir = None,
     variant = None,
+    dtype = None,
 ):
-    """Re-apply block-fp8 `weight_scale_inv` tensors that transformers dropped on load. On some block-scale fp8 checkpoints (e.g. Qwen3.6-27B-FP8, issue #6200) transformers fails to convert a Linear such as `mlp.gate_proj` to an fp8 module, loading the raw quantized values into a plain bf16 weight and discarding its `weight_scale_inv` as an unexpected key, so the weight is used un-scaled and the model is garbage. For every checkpoint scale whose live weight is not fp8, dequantize the orphaned weight in place; correctly converted modules keep an fp8 weight and are skipped, so a healthy checkpoint is a no-op. Returns (restored, skipped)."""
+    """Re-apply block-fp8 `weight_scale_inv` tensors that transformers dropped on load. On some block-scale fp8 checkpoints (e.g. Qwen3.6-27B-FP8, issue #6200) transformers fails to convert a Linear such as `mlp.gate_proj` to an fp8 module, loading the raw quantized values into a plain bf16 weight and discarding its `weight_scale_inv` as an unexpected key, so the weight is used un-scaled and the model is garbage. For every checkpoint scale whose live weight is not fp8, dequantize the orphaned weight in place; correctly converted modules keep an fp8 weight and are skipped, so a healthy checkpoint is a no-op. A renamed key (text_only strips `language_model.`) keeps its checkpoint dtype on a pre-quantized transformers 5 load, so the same unconverted Linear can instead hold the raw fp8 values with no scale attribute; it is dequantized into `dtype` (the load's compute dtype), matching what the unrenamed load produces. Returns (restored, skipped)."""
     try:
         block = _fp8_block_size_from_config(model)
         if block is None or not _FP8_DTYPES:
@@ -1339,7 +1369,8 @@ def _restore_dropped_fp8_scales(
                 # Disk-offloaded layer: the weight lives on meta until forward, so it cannot be scaled in place here. Count and warn rather than silently leave it unscaled.
                 offloaded += 1
                 continue
-            if weight.dtype in _FP8_DTYPES:
+            orphan_fp8 = weight.dtype in _FP8_DTYPES and not _has_fp8_scale_attr(module)
+            if weight.dtype in _FP8_DTYPES and not orphan_fp8:
                 # Correctly converted fp8 module: the fp8 path already handles the scale.
                 skipped += 1
                 continue
@@ -1373,6 +1404,11 @@ def _restore_dropped_fp8_scales(
                     continue
                 scale = scale.to(weight.device)
                 with torch.no_grad():
+                    if orphan_fp8:
+                        # Raw fp8 values in a plain module: widen to the compute dtype first (exact for
+                        # e4m3 / e5m2 into bf16 / fp16 / fp32), then scale exactly like the path above.
+                        module.weight.data = weight.to(_fp8_dequant_target_dtype(model, dtype))
+                        weight = module.weight
                     if out_features % bs0 == 0 and in_features % bs1 == 0:
                         # Memory-frugal path: multiply block views in place against the broadcast fp32 scale, avoiding a full expanded scale and fp32 copy that could OOM.
                         module.weight.data.view(out_blocks, bs0, in_blocks, bs1).mul_(
