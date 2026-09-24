@@ -334,6 +334,16 @@ def sf_matrix_shape(rows: int, cols: int) -> tuple[int, int]:
 
 def nvfp4_preflight(device: Any = None, *, refresh: bool = False) -> dict:
     """A tiny guarded quantise + GEMM, memoised per device: only a JIT build proves FlashInfer runs."""
+    from .diffusion_nvfp4_flag import nvfp4_diffusion_enabled
+
+    if not nvfp4_diffusion_enabled():
+        # Not memoised: turning the switch on must not inherit a verdict nobody measured.
+        return {
+            "ok": False,
+            "reason": "NVFP4 is disabled in this build",
+            "capability": None,
+            "name": "",
+        }
     import torch
 
     if not getattr(torch, "cuda", None) or not torch.cuda.is_available():
@@ -459,6 +469,11 @@ def _device_capability(device: Any = None) -> Optional[tuple]:
 
 
 def _resolve_backend(device: Any = None) -> tuple[str, str]:
+    from .diffusion_nvfp4_flag import NVFP4_DIFFUSION_ENV, nvfp4_diffusion_enabled
+
+    if not nvfp4_diffusion_enabled():
+        # The NVFP4 switch is off: never import flashinfer or run its preflight on NVFP4's behalf.
+        return BACKEND_TORCHAO, f"NVFP4 is disabled in this build ({NVFP4_DIFFUSION_ENV} unset)"
     requested = nvfp4_backend_env()
     if requested == BACKEND_TORCHAO:
         return BACKEND_TORCHAO, f"{NVFP4_BACKEND_ENV}=torchao"

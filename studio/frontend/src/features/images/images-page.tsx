@@ -76,7 +76,8 @@ import {
   curatedArtifactTakesDenseQuant,
   loadSpecFor,
 } from "@/features/model-picker/components/model-selector/model-catalog";
-import { useDenseQuantSchemes, useHostClass } from "@/hooks/use-host-class";
+import { useDenseQuantSchemes, useHostClass, useNvfp4Diffusion } from "@/hooks/use-host-class";
+import { withNvfp4Option } from "@/lib/nvfp4-options";
 import type {
   ModelOption,
   ModelSelectorChangeMeta,
@@ -1244,6 +1245,8 @@ export function ImagesPage({
   const { isMobile, pinned } = useSidebar();
   const hostClass = useHostClass();
   const denseQuantSchemes = useDenseQuantSchemes();
+  // The backend's NVFP4 switch: off, the Precision and Text encoder selects do not list NVFP4.
+  const nvfp4Diffusion = useNvfp4Diffusion();
   const imageModels = useImageModels(hostClass, denseQuantSchemes);
   const { rootStyle: railRootStyle } = useMediaRailWidth("images");
   const [quant, setQuant] = useState<string | null>(galleryCache.quant);
@@ -4295,12 +4298,15 @@ export function ImagesPage({
             // The explicit low-precision schemes need the dense tensor-core path, which a Mac or
             // CPU-only host cannot run, so the picker does not list what the loader would refuse.
             ...(hostOffersDensePrecision(hostClass)
-              ? ([
-                  ["fp8", "FP8"],
-                  ["int8", "INT8"],
-                  ["nvfp4", "NVFP4 (Blackwell)"],
-                  ["mxfp8", "MXFP8 (Blackwell)"],
-                ] as [string, string][])
+              ? withNvfp4Option(
+                  [
+                    ["fp8", "FP8"],
+                    ["int8", "INT8"],
+                    ["nvfp4", "NVFP4 (Blackwell)"],
+                    ["mxfp8", "MXFP8 (Blackwell)"],
+                  ] as [string, string][],
+                  nvfp4Diffusion,
+                )
               : []),
           ]}
         />
@@ -4320,16 +4326,19 @@ export function ImagesPage({
         badge={<ResolvedBadge status={status} controlKey="text_encoder_quant" />}
         value={textEncoderQuant}
         onValueChange={(v) => setTextEncoderQuant(v as typeof textEncoderQuant)}
-        options={[
-          ["auto", "Default"],
-          // The opt-out. Reachable only since a family default can pick a scheme on its own: with
-          // "Default" meaning bf16 everywhere, omitting the field WAS the dense request.
-          ["none", "Dense (bf16)"],
-          ["fp8", "FP8 (storage)"],
-          ["fp8_dynamic", "FP8 (compute)"],
-          ["int8", "INT8"],
-          ["nvfp4", "NVFP4 (Blackwell)"],
-        ]}
+        options={withNvfp4Option(
+          [
+            ["auto", "Default"],
+            // The opt-out. Reachable only since a family default can pick a scheme on its own: with
+            // "Default" meaning bf16 everywhere, omitting the field WAS the dense request.
+            ["none", "Dense (bf16)"],
+            ["fp8", "FP8 (storage)"],
+            ["fp8_dynamic", "FP8 (compute)"],
+            ["int8", "INT8"],
+            ["nvfp4", "NVFP4 (Blackwell)"],
+          ] as [string, string][],
+          nvfp4Diffusion,
+        )}
       />
       <AdvancedSelect
         label="Attention"

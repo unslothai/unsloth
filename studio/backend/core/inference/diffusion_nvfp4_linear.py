@@ -284,6 +284,10 @@ def nvfp4_prewarm(
     logger: Any = None,
 ) -> int:
     """Must run before any capture, which would bake in ``mm_fp4``'s default tactic."""
+    from .diffusion_nvfp4_flag import nvfp4_diffusion_enabled
+
+    if not nvfp4_diffusion_enabled():
+        return 0
     import torch
 
     try:

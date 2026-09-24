@@ -38,6 +38,8 @@ from functools import lru_cache
 
 from core._torchao_stub import is_stubbed, torch_is_rocm
 
+from .diffusion_nvfp4_flag import nvfp4_blocked, nvfp4_disabled_message
+
 TE_QUANT_FP8 = "fp8"
 TE_QUANT_NVFP4 = "nvfp4"
 TE_QUANT_INT8 = "int8"
@@ -79,6 +81,9 @@ def normalize_te_quant(value: Optional[str]) -> Optional[str]:
         raise ValueError(
             f"Unsupported text_encoder_quant '{value}'. Use one of: {', '.join(TE_QUANT_MODES)}."
         )
+    # The NVFP4 switch (diffusion_nvfp4_flag) refuses the encoder scheme too, never swaps it.
+    if nvfp4_blocked(normalized):
+        raise ValueError(nvfp4_disabled_message("text_encoder_quant"))
     return normalized
 
 
@@ -110,7 +115,8 @@ def resolve_te_quant_request(
     """
     if not te_quant_is_auto(value):
         return normalize_te_quant(value), False
-    if auto_scheme is None:
+    if auto_scheme is None or nvfp4_blocked(auto_scheme):
+        # A family default of nvfp4 while the NVFP4 switch is off is simply no default: nobody asked for it.
         return None, False
     # Validate the family's own field rather than trusting it: a typo here would otherwise reach
     # quantize_text_encoders as an unknown mode on every default load of that family.
@@ -165,6 +171,8 @@ def te_quant_supported(target: Any, mode: str) -> bool:
     each backend needs -- fp8 dtype (fp8), fp8 GEMM sm_89+ (fp8_dynamic), int8 sm_80+ (int8),
     Blackwell sm_100+ (nvfp4)."""
     if getattr(target, "device", None) != "cuda":
+        return False
+    if nvfp4_blocked(mode):
         return False
     # Torchao modes cannot use the Windows stub or ROCm's non-SM capability values. Plain fp8 is only a dtype cast and
     # remains supported.
