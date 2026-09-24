@@ -105,6 +105,7 @@ import { isTauri } from "@/lib/api-base";
 import { BlobUrlCache } from "@/lib/blob-url-cache";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { subscribeGalleryChanged } from "@/lib/gallery-flags";
+import { readLastPrompt, saveLastPrompt } from "@/lib/last-prompt";
 import { subscribeModelLifecycle } from "@/lib/model-lifecycle-events";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
@@ -367,7 +368,8 @@ export function AudioPage({
   const generationPresentation = audioGenerationPresentation(generationPhase);
 
   const [status, setStatus] = useState<InferenceStatusResponse | null>(null);
-  const [prompt, setPrompt] = useState("");
+  // Starts from the last text generated with.
+  const [prompt, setPrompt] = useState(() => readLastPrompt("audio", ""));
   const [audioInstructions, setAudioInstructions] = useState("");
   const [audioLanguage, setAudioLanguage] = useState("");
   const [temperature, setTemperature] = useState(0.6);
@@ -1983,6 +1985,7 @@ export function AudioPage({
       return;
     }
     const language = audioLanguage.trim();
+    saveLastPrompt("audio", prompt);
     const controller = new AbortController();
     generateAbort.current = controller;
     updateGenerationPhase("generating");
@@ -3215,7 +3218,11 @@ export function AudioPage({
                       >
                         <button
                           type="button"
-                          onClick={() => selectClip(clip.id)}
+                          onClick={() => {
+                            selectClip(clip.id);
+                            // Show the text this clip was made with.
+                            setPrompt(clip.prompt);
+                          }}
                           aria-current={
                             clip.id === selectedId ? "true" : undefined
                           }

@@ -2,7 +2,15 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { readImageModel, rememberImageModel, matchesRememberedModel, type RememberedImageModel } from "./image-model-recall";
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import {
+  type ReactNode,
+  type SetStateAction,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import {
   ArrowLeftRightIcon,
   ArrowUpDownIcon,
@@ -98,9 +106,10 @@ import {
   sortGalleryItems,
   subscribeGalleryChanged,
 } from "@/lib/gallery-flags";
+import { readLastPrompt, saveLastPrompt } from "@/lib/last-prompt";
 import { usePersistedToggle } from "@/hooks/use-persisted-toggle";
 import { useImageWorkflowStore } from "./stores/image-workflow-store";
-import { WORKFLOW_TABS, type WorkflowId } from "./workflows";
+import { WORKFLOW_EXAMPLE_PROMPTS, WORKFLOW_TABS, type WorkflowId } from "./workflows";
 import { ParamSlider } from "@/features/chat";
 import { ModelLoadDescription } from "@/features/chat/components/model-load-status";
 import {
@@ -1238,8 +1247,26 @@ export function ImagesPage({
   const imageModels = useImageModels(hostClass, denseQuantSchemes);
   const { rootStyle: railRootStyle } = useMediaRailWidth("images");
   const [quant, setQuant] = useState<string | null>(galleryCache.quant);
-  const [prompt, setPrompt] = useState(
-    "Cinematic wide shot of a whimsical Alice in Wonderland tea party in an overgrown Victorian garden. Exactly three figures at a long white lace-draped table: a tall eccentric gentleman in an oversized emerald velvet top hat pouring tea from a silver pot mid-motion; a young woman in a pale blue Victorian dress seated left, holding a porcelain teacup with both hands, looking up and laughing; an older woman in deep burgundy seated right in profile, reaching for a tiered cake stand. Detailed embroidered fabrics, realistic skin texture, natural expressions. The table holds mismatched porcelain, antique silverware, towering pastel cakes, and wildflowers. Giant red-capped mushrooms rise behind the table, with ancient trees overhead and golden sunlight streaming through leaves. Shot on 85mm, f/2.8, focus on the gentleman, soft background falloff. Photorealistic, saturated storybook color, warm amber and deep green palette.",
+  // One prompt per workflow: each starts from its example, then the last one generated with.
+  const [prompts, setPrompts] = useState<Record<WorkflowId, string>>(() =>
+    Object.fromEntries(
+      WORKFLOW_TABS.map(({ id }) => [
+        id,
+        readLastPrompt(`images:${id}`, WORKFLOW_EXAMPLE_PROMPTS[id]),
+      ]),
+    ) as Record<WorkflowId, string>,
+  );
+  const setPromptFor = useCallback((id: WorkflowId, next: SetStateAction<string>) => {
+    setPrompts((prev) => ({
+      ...prev,
+      [id]: typeof next === "function" ? next(prev[id]) : next,
+    }));
+  }, []);
+  // Writes the active workflow's prompt, read at call time so a stale closure cannot write another's.
+  const setPrompt = useCallback(
+    (next: SetStateAction<string>) =>
+      setPromptFor(useImageWorkflowStore.getState().workflow, next),
+    [setPromptFor],
   );
   const [negativePrompt, setNegativePrompt] = useState("");
   const [negativeOpen, setNegativeOpen] = useState(false);
@@ -1289,6 +1316,7 @@ export function ImagesPage({
   // Active workflow tab: create = text-to-image, transform = img2img, inpaint = mask-guided
   // redraw. Workflow and page mode live in a store so the sidebar submenu can drive them.
   const workflow = useImageWorkflowStore((s) => s.workflow);
+  const prompt = prompts[workflow];
   const setWorkflow = useImageWorkflowStore((s) => s.setWorkflow);
   const supported = useImageWorkflowStore((s) => s.supported);
   const setSupported = useImageWorkflowStore((s) => s.setSupported);
@@ -2115,7 +2143,6 @@ export function ImagesPage({
   );
 
   const restoreSettings = useCallback((image: GalleryImage) => {
-    setPrompt(image.prompt);
     // Negative prompt only applies when guidance>0; do not restore a hidden value.
     const restoredNegative = image.guidance > 0 ? (image.negative_prompt ?? "") : "";
     setNegativePrompt(restoredNegative);
@@ -2156,6 +2183,7 @@ export function ImagesPage({
     const reopened: WorkflowId =
       image.workflow === "edit" ? "edit" : image.workflow === "reference" ? "reference" : "create";
     setWorkflow(reopened);
+    setPromptFor(reopened, image.prompt);
     setInitImage(null);
     setMaskImage(null);
     setReferenceImages(
@@ -2185,7 +2213,7 @@ export function ImagesPage({
     } else {
       toast.success("Settings restored to inputs", rescaled);
     }
-  }, [setWorkflow, sizeLimits]);
+  }, [setPromptFor, setWorkflow, sizeLimits]);
 
   // A locked ratio keeps the paired dimension in step; "custom" frees both, Flip swaps W/H. ratioHW is h/w for [a,b].
   const ratioHW = (a: number, b: number) => (portrait ? a / b : b / a);
@@ -3676,6 +3704,7 @@ export function ImagesPage({
       toast.error("Prompt is empty");
       return;
     }
+    saveLastPrompt(`images:${workflow}`, prompt);
     const isTransform = workflow === "transform";
     const isInpaint = workflow === "inpaint";
     const isExtend = workflow === "extend";
@@ -5318,7 +5347,11 @@ export function ImagesPage({
                   )}
                   <button
                     type="button"
-                    onClick={() => setSelectedId(image.id)}
+                    onClick={() => {
+                      setSelectedId(image.id);
+                      // Show the prompt this image was made with.
+                      setPrompt(image.prompt);
+                    }}
                     className="relative size-full overflow-hidden rounded-[10px] bg-muted/40 outline-none ring-1 ring-transparent transition-shadow hover:ring-border focus-visible:ring-2 focus-visible:ring-ring"
                   >
                     {srcById[image.id] ? (
