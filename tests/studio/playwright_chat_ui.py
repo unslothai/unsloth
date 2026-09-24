@@ -449,14 +449,24 @@ def login_via_api(pw):
 RECENTS_LOAD_TIMEOUT_MS = 20_000
 
 
-def open_recent_thread_with_our_prompts(page, sent_prompts, shoot):
+def open_recent_thread_with_our_prompts(
+    page,
+    sent_prompts,
+    shoot,
+    our_thread_id = "",
+):
     """Click this run's chat in Recents and prove it opens with the turns it sent.
 
     The entry is chosen by title, since a chat's title is its first prompt: the most recent row
     is not necessarily ours. Then the check waits for the thread to render rather than reading
     once: turns only appear once the history loader has finished.
 
-    A row whose title is one of our prompts is ours, so it must show our turns or the step fails.
+    *our_thread_id*, read while this run's chat was open, is the identity when known: the prompts
+    are fixed, so on a reused Studio home an earlier run's chat can carry the same title and turns.
+    That row is opened and must show our turns.
+
+    Without it, a row whose title is one of our prompts is ours, so it must show our turns or the
+    step fails.
     When no title matches (auto-titling renames a chat), the rows are tried in listed order until
     one opens with our turns: a row that loads someone else's turns, or none, is not ours, and
     the next is tried. Only a click error or a row that is not ours moves on; the step fails if
@@ -474,6 +484,14 @@ def open_recent_thread_with_our_prompts(page, sent_prompts, shoot):
     if not ours:
         info(f"WARN no Recents title matches a prompt we sent; titles={titles[:5]!r}")
     order = ours + [i for i in range(len(titles)) if i not in ours]
+    if our_thread_id:
+        ids = [threads.nth(i).get_attribute("data-thread-id") or "" for i in range(len(titles))]
+        if our_thread_id not in ids:
+            soft_fail(
+                f"this run's chat {our_thread_id!r} is not among the first {len(ids)} Recents rows"
+            )
+            return
+        ours = order = [ids.index(our_thread_id)]
 
     def shown_user_turns():
         return (
@@ -1612,6 +1630,19 @@ with sync_playwright() as p:
         before_count = len(page.locator('[data-role="assistant"]').all())
         send_and_wait(p_, before_count + 1)
     shoot("06-after-extra-turns")
+    # This run's chat by id, read while it is open, so the Recents step reopens THIS chat and not
+    # one an earlier run left with the same fixed prompts.
+    our_thread_id = (
+        robust_evaluate(
+            page,
+            """() => new URLSearchParams(location.search).get("thread")
+                || document.querySelector('[data-testid="recent-thread"][data-active="true"]')
+                    ?.getAttribute("data-thread-id")
+                || ''""",
+        )
+        or ""
+    )
+    info(f"this run's chat: {our_thread_id or 'no thread id on the page'}")
 
     # ─────────────────────────────────────────────────────
     # 7. Composer toggle buttons. Each aria-label flips between
@@ -2081,6 +2112,7 @@ with sync_playwright() as p:
         page,
         ["Reply with exactly: rapid-first", "Reply with exactly: rapid-second", *prompts, *extra],
         shoot,
+        our_thread_id = our_thread_id,
     )
     page.goto(f"{BASE}/chat")
     composer = page.locator('textarea[aria-label="Message input"]')

@@ -312,3 +312,57 @@ def test_our_turns_left_on_screen_do_not_pass_a_different_chat(browser) -> None:
         assert "thread=t-ours" in page.url
     finally:
         ctx.close()
+
+
+def test_this_runs_chat_is_opened_by_id_over_an_earlier_runs_same_titled_chat(browser) -> None:
+    """The prompts are fixed, so a reused Studio home can hold an earlier run's chat with the
+    same title and turns. Given this run's id, that one is not taken for ours."""
+    helper, _ = _load_helper(timeout_ms = 3000)
+    earlier = {**OURS, "id": "t-earlier", "loadMs": 50}
+    ctx, page = _open(browser, [earlier, {**OURS, "title": "Rapid replies", "loadMs": 200}])
+    try:
+        helper(page, SENT, lambda name: None, our_thread_id = "t-ours")
+        assert "thread=t-ours" in page.url
+    finally:
+        ctx.close()
+
+
+def test_a_known_id_missing_from_recents_fails(browser) -> None:
+    helper, _ = _load_helper(timeout_ms = 1000)
+    ctx, page = _open(browser, [{**OURS, "loadMs": 50}])
+    try:
+        with pytest.raises(AssertionError, match = "is not among the first"):
+            helper(page, SENT, lambda name: None, our_thread_id = "t-gone")
+    finally:
+        ctx.close()
+
+
+def _capture_js() -> str:
+    found = [
+        n.value
+        for n in ast.walk(TREE)
+        if isinstance(n, ast.Constant)
+        and isinstance(n.value, str)
+        and '[data-testid="recent-thread"][data-active="true"]' in n.value
+    ]
+    assert len(found) == 1, "the driver no longer captures this run's chat id"
+    return found[0]
+
+
+def test_the_driver_reads_this_runs_chat_id_from_the_url_or_the_active_row(browser) -> None:
+    """The capture runs in the real driver only, so evaluate its exact source here."""
+    js = _capture_js()
+    rows = (
+        '<button data-testid="recent-thread" data-active="false" data-thread-id="t-a"></button>'
+        '<button data-testid="recent-thread" data-active="true" data-thread-id="t-b"></button>'
+    )
+    ctx = browser.new_context()
+    ctx.route(f"{ORIGIN}/**", lambda route: route.fulfill(content_type = "text/html", body = rows))
+    page = ctx.new_page()
+    try:
+        page.goto(f"{ORIGIN}/chat")
+        assert page.evaluate(js) == "t-b"
+        page.goto(f"{ORIGIN}/chat?thread=t-url")
+        assert page.evaluate(js) == "t-url"
+    finally:
+        ctx.close()
