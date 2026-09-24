@@ -11,13 +11,10 @@ import {
 } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 // eslint-disable-next-line no-restricted-imports -- the settings barrel imports this feature back
-import { COMPOSER_INPUT_SELECTOR } from "@/features/settings/hooks/use-shortcut";
-// eslint-disable-next-line no-restricted-imports -- the settings barrel imports this feature back
 import { useSettingsDialogStore } from "@/features/settings/stores/settings-dialog-store";
 import { useLocale, useT } from "@/i18n";
 import { apiUrl } from "@/lib/api-base";
 import { cn } from "@/lib/utils";
-import { useAui } from "@assistant-ui/react";
 import {
   ShieldAlertIcon,
   Trash2Icon,
@@ -45,6 +42,7 @@ import {
   emptyCanvasConsole,
   parseCanvasReport,
 } from "./canvas-console";
+import { useChatArtifactsStore } from "./store";
 import { hashArtifactCode } from "./types";
 
 const HTML_FRAME_DEFAULT_HEIGHT = 400;
@@ -154,7 +152,9 @@ export function ArtifactHtmlFrame({
 }) {
   const t = useT();
   const locale = useLocale();
-  const aui = useAui();
+  const stageFixPrompt = useChatArtifactsStore(
+    (state) => state.stageFixPrompt,
+  );
   const iframeRef = useRef<HTMLIFrameElement>(null);
   // Every canvas honors this, fence or tool. Off by default; the standing half of the gate,
   // alongside the per-canvas grant below.
@@ -254,23 +254,36 @@ export function ArtifactHtmlFrame({
       total: outputForCanvas.entries.length,
     });
   }, [errors.length, outputForCanvas.entries.length, onOutputCountChange]);
-  const reloadedOnce = useRef(false);
+  // Anything already batched belongs to the load that queued it. The stamp check below
+  // cannot catch those, since they passed it while that load was still current, so a new
+  // load drops the queue and the frame it was waiting on.
+  const dropPendingEntries = useCallback(() => {
+    if (flushHandle.current !== null) {
+      window.cancelAnimationFrame(flushHandle.current);
+      flushHandle.current = null;
+    }
+    pendingEntries.current = [];
+  }, []);
+  const artifactHtml = useMemo(() => buildArtifactSrcDoc(code), [code]);
+  // Identifies this load to the frame, which stamps every report with it, and keys the
+  // reset below. Everything that reruns the document belongs in it: the code, the reload
+  // counter (the same code run again is a different load) and the network policy (granting
+  // access renavigates the frame). Leave one out and that load neither clears the console
+  // nor invalidates the reports still in flight from the run it replaced.
+  const codeVersion = useMemo(() => hashArtifactCode(code), [code]);
+  const loadVersion = `${codeVersion}${reloadNonce > 0 ? `.${reloadNonce}` : ""}${
+    networkAllowed ? ".net" : ""
+  }`;
+  const loadedOnce = useRef(false);
   useEffect(() => {
-    if (!reloadedOnce.current) {
-      reloadedOnce.current = true;
+    if (!loadedOnce.current) {
+      loadedOnce.current = true;
       return;
     }
+    dropPendingEntries();
     setOutput(emptyCanvasConsole(code));
     setErrorsDismissedCode(null);
-  }, [reloadNonce, code]);
-  const artifactHtml = useMemo(() => buildArtifactSrcDoc(code), [code]);
-  // Identifies this load to the frame, which stamps every report with it. The reload
-  // counter is part of it: running the same code again is a different load, and a report
-  // still in flight from the outgoing run would otherwise pass the check below and land
-  // on the console the reload just cleared.
-  const codeVersion = useMemo(() => hashArtifactCode(code), [code]);
-  const loadVersion =
-    reloadNonce > 0 ? `${codeVersion}.${reloadNonce}` : codeVersion;
+  }, [loadVersion, code, dropPendingEntries]);
   const src = useMemo(() => {
     const query = new URLSearchParams({ v: loadVersion });
     // Never put the auth token in the URL: in-frame code can read location.href.
@@ -379,23 +392,12 @@ export function ArtifactHtmlFrame({
         })
       : t("settings.chat.artifacts.errorLine", { line: entry.line });
   };
-  // Staged, never sent: the text is whatever the page posted, and the user
-  // reads it before it reaches the model. A draft already in the box is kept.
+  // Staged, never sent: the text is whatever the page posted, and the user reads it before
+  // it reaches the model. The staging is left to the thread rather than done here, because
+  // the fullscreen overlay renders outside the chat runtime and has no composer to reach.
   const fixWithModel = () => {
-    const composer = aui.composer();
-    const current = composer.getState().text;
-    const prompt = buildCanvasFixPrompt(title, errors);
-    composer.setText(
-      current.trim().length > 0 ? `${current}\n\n${prompt}` : prompt,
-    );
+    stageFixPrompt(buildCanvasFixPrompt(title, errors));
     onFixWithModel?.();
-    // The overlay hands focus back to its opener as it unmounts, so the
-    // composer takes focus after that, not before.
-    window.setTimeout(() => {
-      document
-        .querySelector<HTMLTextAreaElement>(COMPOSER_INPUT_SELECTOR)
-        ?.focus();
-    }, 0);
   };
   const stackOf = (entry: CanvasConsoleEntry) =>
     fullTraces ? canvasStackFull(entry) : canvasStack(entry);
@@ -617,7 +619,11 @@ export function ArtifactHtmlFrame({
               size="icon-sm"
               variant="ghost"
               aria-label={t("settings.chat.artifacts.consoleClear")}
-              onClick={() => setOutput(emptyCanvasConsole(code))}
+              onClick={() => {
+                // Same race as a reload: a batched report would land after the clear.
+                dropPendingEntries();
+                setOutput(emptyCanvasConsole(code));
+              }}
             >
               <Trash2Icon />
             </Button>

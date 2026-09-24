@@ -36,6 +36,13 @@ type ChatArtifactsState = {
   // The open surface switched views from its own header. Written back so the card that
   // opened it can still tell "already on screen" from "switch to the other one".
   setArtifactView: (view: ArtifactViewMode) => void;
+  // Text the canvas's Fix button wants in the composer, waiting for a component that has a
+  // composer to reach. The fullscreen overlay renders outside the chat runtime, so it
+  // cannot stage the text itself; it leaves it here and the thread picks it up. Never sent,
+  // only typed in: the user reads it and presses send.
+  pendingFixPrompt: string | null;
+  stageFixPrompt: (prompt: string) => void;
+  clearFixPrompt: () => void;
   updateArtifact: (artifact: ChatArtifact) => void;
   closeArtifactSurface: () => void;
   clearArtifactsForThread: (threadId: string | null | undefined) => void;
@@ -61,6 +68,9 @@ export const useChatArtifactsStore = create<ChatArtifactsState>((set) => ({
       requestedView: options?.view ?? "preview",
     })),
   setArtifactView: (view) => set({ requestedView: view }),
+  pendingFixPrompt: null,
+  stageFixPrompt: (prompt) => set({ pendingFixPrompt: prompt }),
+  clearFixPrompt: () => set({ pendingFixPrompt: null }),
   updateArtifact: (artifact) =>
     set((state) =>
       state.artifactsById[artifact.id]
@@ -110,6 +120,7 @@ export const useChatArtifactsStore = create<ChatArtifactsState>((set) => ({
       artifactsById: {},
       selectedArtifactId: null,
       surface: "panel",
+      pendingFixPrompt: null,
     }),
 }));
 

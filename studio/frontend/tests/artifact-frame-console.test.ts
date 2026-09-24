@@ -174,18 +174,43 @@ test("the frame checks the load stamp before it keeps an error or console report
   assert.ok(typeAt > 0 && guardAt > typeAt && guardAt < parseAt);
 });
 
-test("the stamp counts a reload as a new load, not the same code again", () => {
-  // Run again clears the console, so a report from the outgoing run arriving a moment
-  // later has to be dropped. The code hash is identical across a reload, so the stamp
-  // the frame echoes carries the reload counter too.
-  assert.match(
-    frameSource,
-    /reloadNonce > 0 \? `\$\{codeVersion\}\.\$\{reloadNonce\}` : codeVersion/,
+test("every input that reruns the document is part of the load stamp", () => {
+  // A new load clears the console, so a report from the outgoing run arriving a moment
+  // later has to be dropped. Two of the three inputs leave the code hash untouched: Run
+  // again reruns identical code, and granting network access renavigates the frame.
+  const stamp = frameSource.slice(
+    frameSource.indexOf("const loadVersion ="),
+    frameSource.indexOf("const src = useMemo"),
   );
+  assert.match(stamp, /codeVersion/);
+  assert.match(stamp, /reloadNonce/);
+  assert.match(stamp, /networkAllowed/);
   assert.match(frameSource, /new URLSearchParams\(\{ v: loadVersion \}\)/);
   // One identity, so the src the frame reads its stamp from cannot disagree with the
   // check here. The separate cache-busting param it replaced could.
   assert.doesNotMatch(frameSource, /query\.set\("r",/);
+});
+
+test("a new load drops reports already batched for the next frame", () => {
+  // Those passed the stamp check while their load was still current, so the check cannot
+  // catch them: without this, Run again clicked between a report and its flush would
+  // repopulate the console it had just cleared. The manual Clear has the same race.
+  assert.match(frameSource, /const dropPendingEntries = useCallback/);
+  const reset = frameSource.slice(
+    frameSource.indexOf("const loadedOnce = useRef"),
+    frameSource.indexOf("const src = useMemo") + 4000,
+  );
+  const dropAt = reset.indexOf("dropPendingEntries();");
+  const clearAt = reset.indexOf("setOutput(emptyCanvasConsole(code));");
+  assert.ok(dropAt > 0 && dropAt < clearAt, "the reset keeps the batched queue");
+  // Keyed on the whole load, not just the reload counter and the code.
+  assert.match(frameSource, /\}, \[loadVersion, code, dropPendingEntries\]\);/);
+  // And the trash button, which clears without a reload.
+  const clearButton = frameSource.indexOf("artifacts.consoleClear");
+  assert.ok(
+    frameSource.indexOf("dropPendingEntries();", clearButton) <
+      frameSource.indexOf("setOutput(emptyCanvasConsole(code));", clearButton),
+  );
 });
 
 test("the source view hides the frame instead of unmounting it", () => {
@@ -216,9 +241,32 @@ test("the source view hides the frame instead of unmounting it", () => {
 test("the Fix button stages text in the composer and never sends it", () => {
   // The error text is whatever the page posted. Staging it lets the user read it
   // before it reaches the model; sending would let a canvas speak for them.
-  assert.match(frameSource, /aui\.composer\(\)/);
-  assert.match(frameSource, /composer\.setText\(/);
+  assert.match(frameSource, /stageFixPrompt\(buildCanvasFixPrompt\(title, errors\)\)/);
   assert.doesNotMatch(frameSource, /\.send\(/);
+  const pageSource = readFileSync(
+    fileURLToPath(new URL("../src/features/chat/chat-page.tsx", import.meta.url)),
+    "utf8",
+  );
+  assert.match(pageSource, /composer\.setText\(/);
+});
+
+test("the frame reaches no composer of its own", () => {
+  // The fullscreen overlay renders outside the chat runtime provider, and that runtime's
+  // default client throws from every field it is asked for, so a frame that typed into the
+  // composer itself worked in the panel and threw on the same click in fullscreen. The
+  // thread does the typing now, wherever the frame happens to be mounted.
+  assert.doesNotMatch(frameSource, /useAui/);
+  assert.doesNotMatch(frameSource, /COMPOSER_INPUT_SELECTOR/);
+  const pageSource = readFileSync(
+    fileURLToPath(new URL("../src/features/chat/chat-page.tsx", import.meta.url)),
+    "utf8",
+  );
+  // Inside the provider: SingleContent is rendered under ChatRuntimeProvider, the overlay
+  // is not, which is the whole reason the staging moved.
+  const consumer = pageSource.indexOf("const pendingFixPrompt");
+  const single = pageSource.indexOf("const SingleContent = memo");
+  const overlay = pageSource.indexOf('variant="overlay"');
+  assert.ok(single < consumer && consumer < overlay);
 });
 
 test("the stack drops the repeated message line and Studio's own frames", () => {
