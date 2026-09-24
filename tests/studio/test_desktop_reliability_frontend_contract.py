@@ -2440,13 +2440,27 @@ def test_image_train_rail_matches_create_and_header():
         layout,
     )
     assert rail, "the Train rail no longer uses the Create rail's width variable and clamp"
-    # A whole class token: `sm:pr-8` exactly, not the tail of `max-sm:pr-8` (inactive where the
-    # 50rem rail layout applies) and not the `8` of `sm:pr-8.5`.
-    scroller = re.search(
-        r'className="[^"]*overflow-y-auto overflow-x-hidden[^"]*?(?<![\w:-])sm:pr-(\d+(?:\.\d+)?)(?=[\s"])',
-        layout,
+    # The scroller's right padding where the rail layout applies, read from EVERY right-padding
+    # utility on it (pr-, px-, p-, with any variant): the base and max-sm: values are overridden or
+    # inactive there, and exactly one sm: value is what the clamp adds back. Any other variant (md:,
+    # lg:, a container query) could be active at @[50rem] and move the divider, so it fails here
+    # rather than being skipped over.
+    classes = re.search(r'className="([^"]*overflow-y-auto overflow-x-hidden[^"]*)"', layout)
+    assert classes, "the Train scroller moved; the rail clamp depends on its padding"
+    padding: dict[str, list[str]] = {}
+    for token in classes.group(1).split():
+        variant, _, utility = token.rpartition(":")
+        if re.fullmatch(r"(?:p|px|pr)-.+", utility):
+            padding.setdefault(variant, []).append(utility)
+    unaccounted = sorted(v for v in padding if v not in ("", "max-sm", "sm"))
+    assert not unaccounted, (
+        f"the Train scroller sets right padding under {unaccounted}, which the rail clamp does not "
+        f"add back: {classes.group(1)}"
     )
-    assert scroller, "the Train scroller's right padding moved; the rail clamp depends on it"
+    at_rail = padding.get("sm", [])
+    assert len(at_rail) == 1, f"expected one sm: right padding on the Train scroller, got {at_rail}"
+    scroller = re.fullmatch(r"pr-(\d+(?:\.\d+)?)", at_rail[0])
+    assert scroller, f"the Train scroller's sm: padding is not a pr- step: {at_rail[0]}"
     assert rail.group(1) == scroller.group(1), (
         f"the Train rail adds back --spacing({rail.group(1)}) but its scroller pads sm:pr-"
         f"{scroller.group(1)}, so the divider no longer lines up with Create's"
