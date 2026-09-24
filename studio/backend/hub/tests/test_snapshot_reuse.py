@@ -262,6 +262,33 @@ def test_a_copy_cut_short_by_a_cancel_is_removed_by_the_next_reuse(tmp_path):
     assert sorted(p.name for p in target.iterdir()) == ["model.safetensors"]
 
 
+def test_a_retry_does_not_preflight_files_an_earlier_attempt_already_placed(tmp_path, monkeypatch):
+    # The first attempt linked the encoder in and was cancelled before the rest arrived. The retry
+    # finds nothing left to reuse, but snapshot_download still skips the placed file, so the disk
+    # preflight must not ask for its size again (there is no blob to discount it by).
+    from huggingface_hub import constants
+
+    from hub.workers import hf_download
+
+    data, missing = _blob(24, 8192), _blob(25, 4096)
+    repo_dir = _copy_layout(tmp_path, {"model.safetensors": data})
+    target = repo_dir / "snapshots" / NEW
+    target.mkdir(parents = True)
+    os.link(repo_dir / "snapshots" / OLD / "model.safetensors", target / "model.safetensors")
+    monkeypatch.setattr(constants, "HF_HUB_CACHE", str(tmp_path / "hub"))
+    monkeypatch.setattr(hf_download, "_protected_blob_hashes", lambda: frozenset())
+    expected = [
+        ExpectedFile("model.safetensors", len(data), _sha256(data)),
+        ExpectedFile("vae/vae.safetensors", len(missing), _sha256(missing)),
+    ]
+
+    left = hf_download._reuse_unchanged_files("model", REPO, NEW, expected, None)
+
+    assert [f.path for f in left] == ["vae/vae.safetensors"]
+    # Offline (no commit) keeps the whole manifest, as before.
+    assert hf_download._reuse_unchanged_files("model", REPO, None, expected, None) == expected
+
+
 def test_size_mismatch_is_rejected_without_reading_the_file(tmp_path, monkeypatch):
     _copy_layout(tmp_path, {"model.safetensors": _blob(10, 1000)})
     monkeypatch.setattr(

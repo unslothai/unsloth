@@ -412,6 +412,28 @@ def reuse_unchanged_snapshot_files(
         return ReuseResult()
 
 
+def paths_in_snapshot(
+    repo_type: str,
+    repo_id: str,
+    commit_hash: Optional[str],
+    paths: Iterable[str],
+    *,
+    hub_cache: Optional[str | Path] = None,
+) -> set[str]:
+    """Paths already present in ``snapshots/<commit_hash>/``, which ``hf_hub_download`` skips (a
+    dangling link is not present)."""
+    try:
+        from hub.utils.download_manifest import expected_path_is_safe, normalized_commit_hash
+
+        commit = normalized_commit_hash(commit_hash)
+        if not commit:
+            return set()
+        root = repo_cache_dir(repo_type, repo_id, hub_cache) / "snapshots" / commit
+        return {p for p in paths if expected_path_is_safe(p) and os.path.exists(root / p)}
+    except Exception:  # noqa: BLE001 - counting a present file again only makes the preflight stricter
+        return set()
+
+
 def hub_remote_digests(repo_type: str, repo_id: str, token) -> RemoteDigests:
     """A ``RemoteDigests`` backed by ``HfApi.get_paths_info`` (one request per commit)."""
 

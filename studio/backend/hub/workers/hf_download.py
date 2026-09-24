@@ -208,7 +208,7 @@ def _reuse_unchanged_files(
     """Link files this commit did not change in from an older snapshot, and return the expected files still to download.
 
     Without symlinks (Windows without Developer Mode) huggingface_hub moves each blob into its snapshot, so a new commit, even a README-only one, finds no blob and downloads every file again. See :mod:`hub.utils.snapshot_reuse`. Needs the target commit and per-file digests from metadata, so an offline run reuses nothing and behaves as before."""
-    from hub.utils.snapshot_reuse import reuse_unchanged_snapshot_files
+    from hub.utils.snapshot_reuse import paths_in_snapshot, reuse_unchanged_snapshot_files
 
     if not expected_files or not commit_hash:
         return list(expected_files)
@@ -222,15 +222,18 @@ def _reuse_unchanged_files(
         # file is hashed on every reuse for the same reason.
         protected_blob_hashes = _protected_blob_hashes(),
     )
-    if not result.reused:
-        return list(expected_files)
-    print(
-        f"Reused {len(result.reused)} unchanged file(s) ({result.reused_bytes / 1e9:.2f} GB) "
-        f"from an older snapshot of {repo_id} instead of downloading them again.",
-        file = sys.stderr,
+    if result.reused:
+        print(
+            f"Reused {len(result.reused)} unchanged file(s) ({result.reused_bytes / 1e9:.2f} GB) "
+            f"from an older snapshot of {repo_id} instead of downloading them again.",
+            file = sys.stderr,
+        )
+    # Files an earlier, cancelled attempt already placed in this revision are skipped by
+    # snapshot_download too, and without symlinks they have no blob the preflight could discount.
+    present = paths_in_snapshot(
+        repo_type, repo_id, commit_hash, [getattr(f, "path", None) for f in expected_files]
     )
-    reused = set(result.reused)
-    return [f for f in expected_files if getattr(f, "path", None) not in reused]
+    return [f for f in expected_files if getattr(f, "path", None) not in present]
 
 
 def _dataset_info_with_retry(repo_id: str, hf_token: str | None):
