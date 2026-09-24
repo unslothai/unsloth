@@ -29,7 +29,7 @@ function GutterCheckbox({
   onCheckedChange,
   label,
 }: {
-  checked: boolean | "indeterminate";
+  checked: boolean;
   visible: boolean;
   group: "row" | "head";
   onCheckedChange: () => void;
@@ -133,24 +133,28 @@ export function LibraryList({
 
   return (
     <div>
-      <div
-        className={cn(
-          "group/library-head relative flex items-center gap-4 border-b border-border/60 pb-2 text-[13px] text-muted-foreground",
-          ROW_INSET,
-        )}
-      >
-        <GutterCheckbox
-          checked={allSelected ? true : selecting ? "indeterminate" : false}
-          visible={selecting}
-          group="head"
-          onCheckedChange={() =>
-            onSelectionChange(allSelected ? new Set() : new Set(targets.map(targetKey)))
-          }
-          label="Select all"
-        />
-        <span className="flex-1">Name</span>
-        <span className="hidden w-44 shrink-0 sm:block">Last activity</span>
-        <span className="w-8 shrink-0" />
+      {/* The padding sits outside the row, so the checkbox centers on the column titles. */}
+      <div className="border-b border-border/60 pb-2">
+        <div
+          className={cn(
+            "group/library-head relative flex items-center gap-4 text-[13px] text-muted-foreground",
+            ROW_INSET,
+          )}
+        >
+          {/* Ticked only once everything is: a partial tick read as every row being selected. */}
+          <GutterCheckbox
+            checked={allSelected}
+            visible={selecting}
+            group="head"
+            onCheckedChange={() =>
+              onSelectionChange(allSelected ? new Set() : new Set(targets.map(targetKey)))
+            }
+            label="Select all"
+          />
+          <span className="flex-1">Name</span>
+          <span className="hidden w-44 shrink-0 sm:block">Last activity</span>
+          <span className="w-8 shrink-0" />
+        </div>
       </div>
       <div className="mt-1 flex flex-col">
         {folders.map((folder) => (
