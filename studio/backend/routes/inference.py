@@ -1771,6 +1771,7 @@ _OPENAI_LLAMA_ADMISSION_POLL_S = 0.25
 # cancel() (#7617), so teardown abandons the task rather than hold the response, and
 # the process-wide slot, open forever.
 _TEARDOWN_TASK_STOP_TIMEOUT_S = 5.0
+_TEARDOWN_TASK_RECANCEL_S = 0.01
 # Idle window before a local tool-loop stream emits an SSE keepalive comment
 # (e.g. prompt prefill between tool iterations). A second layer atop the
 # tool_stream_exec heartbeats, keeping proxies (Cloudflare drops idle at ~100s).
@@ -5003,11 +5004,19 @@ async def _await_cancel_or_disconnect_then_close_client(
 async def _stop_local_disconnect_cancel_watcher(
     watcher, timeout_s: float = _TEARDOWN_TASK_STOP_TIMEOUT_S
 ) -> None:
-    # Bounded: this runs in the stream's finally, so awaiting the watcher outright would let a
-    # wedged poll loop hold the response open forever. asyncio.wait neither cancels nor re-raises,
-    # and an abandoned watcher owns no resources.
-    watcher.cancel()
-    done, _pending = await asyncio.wait({watcher}, timeout = timeout_s)
+    # Request.is_disconnected() can swallow cancel() (#7617). Retry so successful
+    # passthroughs don't wait out the teardown timeout before their first byte (#11809).
+    # Keep the wait bounded in case the watcher never exits.
+    deadline = time.monotonic() + timeout_s
+    done = set()
+    while not done:
+        watcher.cancel()
+        remaining_s = deadline - time.monotonic()
+        if remaining_s <= 0:
+            break
+        done, _pending = await asyncio.wait(
+            {watcher}, timeout = min(remaining_s, _TEARDOWN_TASK_RECANCEL_S)
+        )
     if not done:
         # _wait_preheader_cancel has no exception handler, so a raise after we stop
         # waiting would surface as "Task exception was never retrieved".
