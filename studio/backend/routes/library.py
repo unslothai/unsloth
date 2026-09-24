@@ -32,7 +32,9 @@ _CHUNK_BYTES = 1024 * 1024
 # Raster images, audio and video render inline; anything else (svg and html included) downloads as
 # opaque bytes, as the sandbox route does, so a crafted upload cannot run script on the app origin.
 # Exact types, never a prefix: a stored "audio/x, text/html" is not audio.
-_INLINE_IMAGE_TYPES = frozenset({"image/png", "image/jpeg", "image/gif", "image/webp", "image/avif"})
+_INLINE_IMAGE_TYPES = frozenset(
+    {"image/png", "image/jpeg", "image/gif", "image/webp", "image/avif"}
+)
 _NOSNIFF = {"X-Content-Type-Options": "nosniff"}
 
 
@@ -41,7 +43,9 @@ def _inline_type(content_type: str) -> Optional[str]:
     if value in _INLINE_IMAGE_TYPES:
         return value
     playable = {
-        known for known in library.content_types().values() if known.startswith(("audio/", "video/"))
+        known
+        for known in library.content_types().values()
+        if known.startswith(("audio/", "video/"))
     }
     return value if value in playable else None
 
@@ -411,7 +415,6 @@ async def upload_files(
 
 def _release_leases(leases: list[str]) -> None:
     from utils.native_path_leases import release_native_path_lease
-
     for lease in leases:
         try:
             release_native_path_lease(lease)

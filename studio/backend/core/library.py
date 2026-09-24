@@ -287,8 +287,8 @@ def _attachment_items() -> list[dict]:
 # ── Generated images ─────────────────────────────────────────────
 
 
-# `_prompt_name` clears the characters Windows refuses in a file name, and whitespace too, as a
-# prompt's line breaks make no name.
+# What Windows refuses in a file name, the class gallery_projects refuses a copy's name by.
+# `_prompt_name` clears whitespace too, as a prompt's line breaks make no name.
 _UNSAFE_NAME_RE = re.compile(f"[{UNSAFE_NAME_CHARS}]+")
 
 
@@ -549,11 +549,13 @@ def _open_sandbox_file(ref: str) -> tuple[BinaryIO, str]:
         raise LookupError(ref) from None
     try:
         info = os.fstat(fd)
-        again = _sandbox_path(ref)
-        checked = os.stat(again, follow_symlinks = False)
-        if not stat.S_ISREG(info.st_mode) or (checked.st_dev, checked.st_ino) != (
-            info.st_dev,
-            info.st_ino,
+        # The descriptor is what gets read, so it is what the checks have to be about: the path
+        # still resolves to itself, and to this same file.
+        checked = os.stat(path, follow_symlinks = False)
+        if (
+            not stat.S_ISREG(info.st_mode)
+            or not same_path(os.path.realpath(path), path)
+            or (checked.st_dev, checked.st_ino) != (info.st_dev, info.st_ino)
         ):
             raise LookupError(ref)
     except OSError:
@@ -787,7 +789,11 @@ def _model_stamp() -> tuple:
     return tuple(sorted(stamp, key = repr))
 
 
-def _remembered(name: str, ttl: float, stamp = None):
+def _remembered(
+    name: str,
+    ttl: float,
+    stamp = None,
+):
     """The source ``name``, its answer reused for ``ttl`` seconds while ``stamp()`` agrees. By
     name, so a test that swaps the source swaps what is remembered."""
 
@@ -931,8 +937,12 @@ def open_item(item_id: str) -> ItemFile:
         if record is None or path is None:
             raise LookupError(item_id)
         # Stored under its id alone, so the name the user gave it is the one it downloads as.
-        name = safe_file_name(record["name"])
-        return ItemFile(_open_owned(path, item_id), name, "files", _project_name(record["name"], item_id))
+        return ItemFile(
+            _open_owned(path, item_id),
+            safe_file_name(record["name"]),
+            "files",
+            _project_name(record["name"], item_id),
+        )
     if kind in ("image", "video", "audio"):
         path, folder = _gallery_path(kind, ref)
         if path is None:
@@ -1154,7 +1164,10 @@ def thumbnail(item_id: str) -> bytes:
         if kind == "upload":
             record = library_db.get_upload(ref) or {}
             # The file's own extension first: the type a client declared is only a fallback.
-            types = (_guess_type(str(record.get("name") or "")), str(record.get("contentType") or ""))
+            types = (
+                _guess_type(str(record.get("name") or "")),
+                str(record.get("contentType") or ""),
+            )
         elif kind == "sandbox":
             types = (_guess_type(item.name),)
         else:
@@ -1181,7 +1194,6 @@ def item_exists(item_id: str) -> bool:
     try:
         if kind == "attachment":
             from storage.studio_db import get_chat_attachment
-
             message_id, _, attachment_id = ref.partition(":")
             return get_chat_attachment(message_id, attachment_id) is not None
         local_path(item_id)

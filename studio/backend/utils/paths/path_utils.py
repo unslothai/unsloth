@@ -315,7 +315,13 @@ def _comparable_path(path, pathmod) -> str:
     return pathmod.normcase(pathmod.normpath(text))
 
 
-def is_path_within(path, root, *, allow_root: bool = False, pathmod = os.path) -> bool:
+def is_path_within(
+    path,
+    root,
+    *,
+    allow_root: bool = False,
+    pathmod = os.path,
+) -> bool:
     """Whether resolved *path* sits inside resolved *root*.
 
     commonpath rather than a prefix test: a drive root already ends in a separator, and ``C:\\a``
@@ -328,7 +334,12 @@ def is_path_within(path, root, *, allow_root: bool = False, pathmod = os.path) -
     return common == base and (allow_root or candidate != base)
 
 
-def same_path(left, right, *, pathmod = os.path) -> bool:
+def same_path(
+    left,
+    right,
+    *,
+    pathmod = os.path,
+) -> bool:
     """Whether two resolved paths are one, compared as ``is_path_within`` compares them."""
     return _comparable_path(left, pathmod) == _comparable_path(right, pathmod)
 

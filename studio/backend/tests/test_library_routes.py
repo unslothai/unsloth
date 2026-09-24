@@ -284,7 +284,9 @@ def test_leftovers_of_a_crash_are_swept_from_the_uploads_folder(client):
     import os
     import time
 
-    [kept, interrupted] = _upload(client, ("k.txt", b"k", "text/plain"), ("i.txt", b"i", "text/plain"))
+    [kept, interrupted] = _upload(
+        client, ("k.txt", b"k", "text/plain"), ("i.txt", b"i", "text/plain")
+    )
     directory = library.uploads_dir()
     interrupted_id = interrupted.split(":", 1)[1]
     # A delete that stopped after setting its file aside: the row still lists it.
@@ -815,7 +817,6 @@ def test_containment_ignores_the_windows_long_path_prefix(path, root, inside):
     import ntpath
 
     from utils.paths.path_utils import is_path_within
-
     assert is_path_within(path, root, pathmod = ntpath) is inside
 
 
@@ -889,7 +890,9 @@ def test_only_an_exact_media_type_is_served_inline(client, monkeypatch):
         ("image/png; charset=binary", True),
         ("image/svg+xml", False),
     ):
-        conn.execute("UPDATE library_uploads SET content_type = ? WHERE id = ?", (stored, upload_id))
+        conn.execute(
+            "UPDATE library_uploads SET content_type = ? WHERE id = ?", (stored, upload_id)
+        )
         conn.commit()
         response = client.get(url)
         assert response.headers["x-content-type-options"] == "nosniff", stored
@@ -1082,7 +1085,11 @@ def test_thumbnails_are_cached_by_version_and_decoded_a_few_at_a_time(client, mo
     assert len(calls) == 2
 
 
-def _sandbox_chat(monkeypatch, name = "report.txt", body = b"x"):
+def _sandbox_chat(
+    monkeypatch,
+    name = "report.txt",
+    body = b"x",
+):
     import os
 
     from core.inference.tools import resolve_sandbox_workdir
