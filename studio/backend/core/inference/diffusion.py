@@ -4129,15 +4129,16 @@ class DiffusionBackend:
         target: Any,
         text_encoder_quant: Optional[str],
         staged_dir: Optional[str] = None,
-    ) -> Optional[int]:
-        """Resident MiB of the PRE-CAST text encoder(s) this pick loads from a hosted checkpoint,
-        or None when it loads none (or the size cannot be known).
+    ) -> Optional[tuple[int, tuple[str, ...], bool]]:
+        """``(MiB, components, exact)`` for the PRE-CAST text encoder(s) this pick loads from a
+        hosted checkpoint, or None when it loads none (or the size cannot be known).
 
         Same resolver as the injection (``te_prequant_sources_for_base``), so the plan prices the
-        encoder the load actually opens. The cached file size is exact: the pre-cast state dict is
-        stored at its load precision. A checkpoint not cached yet is priced from the family table's
-        dense encoder at ``TE_PREQUANT_BUDGET_SCALE``, the same over-estimate the unified-memory
-        refusal uses. Never raises: sizing only."""
+        encoder the load actually opens; ``components`` names which ``text_encoder*`` folders it
+        replaces (FLUX.1 pre-casts only its T5, not CLIP-L). The cached file size is exact: the
+        pre-cast state dict is stored at its load precision. A checkpoint not cached yet is priced
+        from the family table's dense encoder at ``TE_PREQUANT_BUDGET_SCALE`` and reported
+        ``exact=False``, since the load can still fall back to the dense encoder. Never raises."""
         try:
             from .diffusion_te_prequant import (
                 TE_PREQUANT_BUDGET_SCALE,
@@ -4188,7 +4189,9 @@ class DiffusionBackend:
                 # The table's encoder term covers every encoder; price the uncached share of it.
                 share = uncached / max(1, len(sources))
                 total += int(table[1] * (1000.0**3) * TE_PREQUANT_BUDGET_SCALE * share)
-            return max(1, total // (1024 * 1024)) if total > 0 else None
+            if total <= 0:
+                return None
+            return max(1, total // (1024 * 1024)), tuple(sources), uncached == 0
         except Exception:  # noqa: BLE001 -- sizing aid only; the scanned terms stand
             return None
 
@@ -6573,12 +6576,31 @@ class DiffusionBackend:
             # lives in its own repo (Qwen-Image-2.1's fp8 Qwen3-VL sits in unsloth/Qwen-Image-2.1-FP8), so the
             # base-repo walk reads it as nothing, or reads dense shards the load will never open. Swap the scanned
             # encoder share for the checkpoint's size in every term that carries it.
-            precast_mib = self._precast_text_encoder_mib(
+            precast = self._precast_text_encoder_mib(
                 fam, base, target, text_encoder_quant, base_local_dir
             )
-            if precast_mib:
-                scanned_te = int(text_encoder_mib or 0)
-                text_encoder_mib = int(precast_mib)
+            if precast:
+                precast_mib, precast_components, precast_exact = precast
+                # Only the encoder folders the checkpoint replaces leave the budget (FLUX.1 keeps its dense CLIP-L).
+                covered = frozenset(precast_components)
+                scanned_te = (
+                    int(
+                        self._union_over_cached_revs(
+                            fetch_base or base,
+                            lambda d: {
+                                rel: size
+                                for rel, size in self._local_dir_text_encoder_sizes(d).items()
+                                if rel.split("/", 1)[0] in covered
+                            },
+                            base_local_dir,
+                        )
+                    )
+                    // (1024 * 1024)
+                )
+                if not precast_exact:
+                    # Not cached yet, so the load may still open the dense shards it scanned: never price below them.
+                    precast_mib = max(int(precast_mib), scanned_te)
+                text_encoder_mib = max(0, int(text_encoder_mib or 0) - scanned_te) + int(precast_mib)
                 companion_mib = max(0, int(companion_mib or 0) - scanned_te) + int(precast_mib)
                 if model_dense_mib is not None:
                     model_dense_mib = max(0, int(model_dense_mib) - scanned_te) + int(precast_mib)

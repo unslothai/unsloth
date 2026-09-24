@@ -11724,7 +11724,7 @@ def test_plan_memory_prices_the_hosted_precast_text_encoder(monkeypatch, tmp_pat
 
     def _precast(fam, base, tgt, text_encoder_quant, staged_dir = None):
         seen["quant"] = text_encoder_quant
-        return 2800 if text_encoder_quant == "fp8" else None
+        return (2800, ("text_encoder",), True) if text_encoder_quant == "fp8" else None
 
     monkeypatch.setattr(DiffusionBackend, "_precast_text_encoder_mib", staticmethod(_precast))
 
@@ -11765,7 +11765,9 @@ def test_plan_memory_replaces_scanned_dense_encoder_shards_with_the_precast_size
     )
     target = _small_card(monkeypatch)
     monkeypatch.setattr(
-        DiffusionBackend, "_precast_text_encoder_mib", staticmethod(lambda *a, **k: 2600)
+        DiffusionBackend,
+        "_precast_text_encoder_mib",
+        staticmethod(lambda *a, **k: (2600, ("text_encoder",), True)),
     )
     plan = DiffusionBackend()._plan_memory(
         target,
@@ -11782,6 +11784,47 @@ def test_plan_memory_replaces_scanned_dense_encoder_shards_with_the_precast_size
     assert plan.estimates["text_encoder_dense_mib"] == 2600
     assert plan.estimates["companion_dense_mib"] == 2650
     assert plan.estimates["model_dense_mib"] == 2950
+
+
+def _flux_like_plan(tmp_path, monkeypatch, precast):
+    # CLIP-L (235) stays dense; only the T5 folder is replaced by the pre-cast checkpoint.
+    snapshot = _base_snapshot_with_sizes(
+        tmp_path,
+        monkeypatch,
+        {
+            "text_encoder/model.safetensors": 235,
+            "text_encoder_2/model.safetensors": 4000,
+            "vae/diffusion_pytorch_model.safetensors": 50,
+        },
+    )
+    target = _small_card(monkeypatch)
+    monkeypatch.setattr(
+        DiffusionBackend, "_precast_text_encoder_mib", staticmethod(lambda *a, **k: precast)
+    )
+    return DiffusionBackend()._plan_memory(
+        target,
+        None,
+        "bfl/base",
+        types.SimpleNamespace(name = "flux.1"),
+        None,
+        False,
+        kind = "gguf",
+        transformer_resident_override_mib = 300,
+        base_local_dir = str(snapshot),
+        text_encoder_quant = "fp8",
+    )
+
+
+def test_plan_memory_swaps_only_the_encoder_the_precast_checkpoint_replaces(monkeypatch, tmp_path):
+    plan = _flux_like_plan(tmp_path, monkeypatch, (2600, ("text_encoder_2",), True))
+    assert plan.estimates["text_encoder_dense_mib"] == 235 + 2600
+    assert plan.estimates["companion_dense_mib"] == 50 + 235 + 2600
+
+
+def test_plan_memory_never_prices_an_uncached_precast_below_the_dense_shards(monkeypatch, tmp_path):
+    # Not cached yet: the load can still fall back to the dense T5 it scanned, so keep the larger figure.
+    plan = _flux_like_plan(tmp_path, monkeypatch, (2600, ("text_encoder_2",), False))
+    assert plan.estimates["text_encoder_dense_mib"] == 235 + 4000
 
 
 def test_plan_memory_leaves_a_callers_companion_override_alone(monkeypatch, tmp_path):
@@ -11838,7 +11881,11 @@ def test_precast_text_encoder_mib_reads_the_cached_checkpoint(monkeypatch, tmp_p
     assert fam is not None and fam.name == "qwen-image-2.1"
     _q21_precast_cache(tmp_path, monkeypatch, mib = 8959)
     target = _bf16_cuda_target()
-    assert DiffusionBackend._precast_text_encoder_mib(fam, "Qwen/Qwen-Image-2.1", target, "fp8") == 8959
+    assert DiffusionBackend._precast_text_encoder_mib(fam, "Qwen/Qwen-Image-2.1", target, "fp8") == (
+        8959,
+        ("text_encoder",),
+        True,
+    )
     # Not a pre-cast pick: nothing to price.
     assert DiffusionBackend._precast_text_encoder_mib(fam, "Qwen/Qwen-Image-2.1", target, None) is None
     assert DiffusionBackend._precast_text_encoder_mib(fam, "Qwen/Qwen-Image-2.1", target, "none") is None
@@ -11853,6 +11900,7 @@ def test_precast_text_encoder_mib_prices_an_uncached_checkpoint_from_the_family_
     got = DiffusionBackend._precast_text_encoder_mib(
         fam, "Qwen/Qwen-Image-2.1", _bf16_cuda_target(), "fp8"
     )
-    # The family table's 17.5 GB dense encoder at the pre-cast budget scale: an over-estimate of the 8.75 GiB file.
-    assert got == int(17.5 * 1000**3 * TE_PREQUANT_BUDGET_SCALE) // (1024 * 1024)
-    assert got > 8959
+    # The family table's 17.5 GB dense encoder at the pre-cast budget scale: an over-estimate of the 8.75 GiB file,
+    # flagged inexact so the planner never prices it below dense shards the load could still open.
+    assert got == (int(17.5 * 1000**3 * TE_PREQUANT_BUDGET_SCALE) // (1024 * 1024), ("text_encoder",), False)
+    assert got[0] > 8959

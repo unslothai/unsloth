@@ -1159,7 +1159,11 @@ _PIN_RESERVE_FRACTION = 0.15
 
 
 def _module_host_mib(module: Any) -> int:
-    """Bytes of ``module``'s parameters and buffers, in MiB, each tensor counted once."""
+    """Pinned host MiB ``module``'s parameters and buffers would take, each tensor counted once.
+
+    Priced per tensor at the next power of two: diffusers pins every tensor separately, and torch's
+    pinned host allocator rounds each allocation up to a power of two, so the exact byte count
+    under-states what pinning costs by up to 2x."""
     try:
         seen: set[int] = set()
         total = 0
@@ -1168,7 +1172,9 @@ def _module_host_mib(module: Any) -> int:
             if id(tensor) in seen:
                 continue
             seen.add(id(tensor))
-            total += int(tensor.numel()) * int(tensor.element_size())
+            nbytes = int(tensor.numel()) * int(tensor.element_size())
+            if nbytes > 0:
+                total += 1 << (nbytes - 1).bit_length()
         return total // (1024 * 1024)
     except Exception:  # noqa: BLE001 - an unsizeable module is priced as nothing to pin
         return 0
@@ -1329,6 +1335,7 @@ def _apply_group_offload(
         ekwargs["offload_type"] = "leaf_level"
         if "low_cpu_mem_usage" in gkwargs:
             ekwargs["low_cpu_mem_usage"] = not pin_streamed[1]
+        transformer_demoted = False
         for name, module in streamed_encoders.items():
             try:
                 apply_group_offloading(module, **ekwargs)
@@ -1340,6 +1347,26 @@ def _apply_group_offload(
                     # transformer, so keeping it resident is the OOM this tier was chosen to avoid. With no hook
                     # installed yet, whole-module offload is still reachable: hand the load to it.
                     raise
+                if not stream_transformer and not transformer_demoted:
+                    # Hooks exist on an earlier encoder, so whole-module offload is gone. Stream the transformer
+                    # after all (the streamed-encoder group tier, with this encoder degraded to resident as there)
+                    # BEFORE placing the encoder, so the two are never resident together. Unpinned: this path was
+                    # never sized for pinning.
+                    for dit_name in ("transformer", "transformer_2", "unconditional_transformer"):
+                        dit = getattr(pipe, dit_name, None)
+                        if isinstance(dit, torch.nn.Module):
+                            dkwargs = dict(gkwargs)
+                            if "low_cpu_mem_usage" in _params and use_stream:
+                                dkwargs["low_cpu_mem_usage"] = True
+                            apply_group_offloading(dit, **dkwargs)
+                            installed += 1
+                    transformer_demoted = True
+                    if logger is not None:
+                        logger.warning(
+                            "diffusion.memory: %s refused group offload on the resident-transformer tier; "
+                            "streaming the transformer instead",
+                            name,
+                        )
                 if logger is not None:
                     logger.warning(
                         "diffusion.memory: group offload unavailable for %s (%s); "

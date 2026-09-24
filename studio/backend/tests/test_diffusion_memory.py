@@ -2320,3 +2320,59 @@ def test_the_pin_budget_leaves_the_reserve_free(monkeypatch):
     assert mem._pin_budget_mib() == 0
     monkeypatch.setattr(mem, "_system_memory_mib", lambda: (None, None))
     assert mem._pin_budget_mib() is None
+
+
+def test_a_late_encoder_refusal_streams_the_transformer_before_placing_the_encoder(monkeypatch):
+    # The first encoder hooked, so whole-module offload is gone; the second refuses. Keeping it resident beside a
+    # resident transformer is the OOM the tier was picked to avoid, so the transformer streams after all, and it
+    # gets its hooks BEFORE the refusing encoder is placed.
+    import core.inference.diffusion_memory as mem
+
+    order: list[str] = []
+
+    def _apply(module, **kw):
+        if getattr(module, "name", "") == "text_encoder_2":
+            raise ValueError("no leaves to stream")
+        order.append("hook:" + module.name)
+
+    pipe, _unused, transformer, te, te2, vae = _stream_te_pipe(monkeypatch)
+    _swap_group_offloading(monkeypatch, _apply)
+    original_to = type(te2).to
+
+    def _to(self, device):
+        if self is te2:
+            order.append("place:text_encoder_2")
+        return original_to(self, device)
+
+    monkeypatch.setattr(type(te2), "to", _to)
+    assert (
+        mem._apply_group_offload(
+            pipe, "cuda", logger = None, stream_text_encoders = True, stream_transformer = False
+        )
+        is True
+    )
+    assert order == ["hook:text_encoder", "hook:transformer", "place:text_encoder_2"]
+
+
+def test_pinned_host_pricing_rounds_each_tensor_to_a_power_of_two(monkeypatch):
+    import core.inference.diffusion_memory as mem
+
+    class _T:
+        def __init__(self, nbytes):
+            self._n = nbytes
+
+        def numel(self):
+            return self._n
+
+        def element_size(self):
+            return 1
+
+    class _M:
+        def parameters(self, recurse = True):
+            return [_T(3 * 1024 * 1024), _T(5 * 1024 * 1024)]
+
+        def buffers(self, recurse = True):
+            return [_T(1024 * 1024)]
+
+    # 3 -> 4, 5 -> 8, 1 -> 1 MiB.
+    assert mem._module_host_mib(_M()) == 13
