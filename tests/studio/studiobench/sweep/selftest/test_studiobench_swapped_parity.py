@@ -305,6 +305,28 @@ def test_a_forward_repetition_in_two_shards_is_excused_whole():
     assert U.swapped_between_arms(results, 2) == frozenset({0, 1, 2})
 
 
+def test_a_repetition_recorded_in_both_directions_is_never_excused():
+    """rep0 carried by two shards that disagree (A->B and B->A), rep1 A->B, rep2 B->A: rep0 cannot
+    say which side it saw, so only rep1 and rep2 pair, and rep0 stays as a difference."""
+    results = [
+        ("delete_message", "a", "r100K rep0", {"verdict": P.DIFFER, "outcomes": ("A", "B")}),
+        ("delete_message", "b", "r100K rep0", {"verdict": P.DIFFER, "outcomes": ("B", "A")}),
+        ("delete_message", "s", "r100K rep1", {"verdict": P.DIFFER, "outcomes": ("A", "B")}),
+        ("delete_message", "s", "r100K rep2", {"verdict": P.DIFFER, "outcomes": ("B", "A")}),
+    ]
+    assert U.swapped_between_arms(results, 2) == frozenset({2, 3})
+
+
+def test_a_repetition_takes_part_in_one_swap_at_most():
+    results = [
+        ("delete_message", "s", "r100K rep0", {"verdict": P.DIFFER, "outcomes": ("A", "B")}),
+        ("delete_message", "s", "r100K rep1", {"verdict": P.DIFFER, "outcomes": ("B", "A")}),
+        ("delete_message", "s", "r100K rep2", {"verdict": P.DIFFER, "outcomes": ("A", "B")}),
+    ]
+    swapped = U.swapped_between_arms(results, 2)
+    assert len({results[i][2] for i in swapped}) == 2
+
+
 def test_two_reversals_against_two_forwards_are_all_swaps():
     results = [
         ("delete_message", "s", f"r100K rep{n}", {"verdict": P.DIFFER, "outcomes": outcomes})

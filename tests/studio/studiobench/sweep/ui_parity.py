@@ -1676,29 +1676,36 @@ def swapped_between_arms(results: list[tuple], min_reps: int) -> frozenset[int]:
         if base is None or treat is None or base == treat:
             continue
         groups[(action, rung_of_cell(cell))].append((i, cell, base, treat))
-    # ONE-TO-ONE, BY OBSERVATION. An observation is (repetition, direction), as `corroborated`
-    # counts them: the same repetition recorded in several shards is one observation, all of whose
-    # rows are excused together or not at all. Each reversed observation then excuses exactly one
-    # observation in the other direction, so three repetitions of (R1, R2) against one (R2, R1),
-    # however many shards carry it, leave two (R1, R2) repetitions for `corroborated` to count.
+    # ONE-TO-ONE, BY REPETITION. `corroborated` counts a repetition (cell) once, so a repetition is
+    # the unit here too: all its rows are excused together or not at all, and it takes part in at
+    # most one swap. A repetition recorded with BOTH directions of the same pair (two shards that
+    # disagree) is ambiguous and is never excused, since it cannot say which side it saw. Each
+    # reversed repetition then excuses exactly one repetition in the other direction, so three
+    # repetitions of (R1, R2) against one (R2, R1) leave two (R1, R2) for `corroborated` to count.
     out: set[int] = set()
     for group in groups.values():
-        observations: dict[tuple[str, str, str], list[int]] = collections.defaultdict(list)
+        by_cell: dict[str, dict[tuple[str, str], list[int]]] = collections.defaultdict(
+            lambda: collections.defaultdict(list)
+        )
         for i, cell, base, treat in group:
-            observations[(cell, base, treat)].append(i)
-        used: set[tuple[str, str, str]] = set()
-        for key in sorted(observations):
-            if key in used:
+            by_cell[cell][(base, treat)].append(i)
+        # One direction per repetition and pair; a repetition holding both is set aside whole.
+        seen: dict[str, tuple[str, str]] = {}
+        for cell, directions in by_cell.items():
+            if len(directions) == 1:
+                seen[cell] = next(iter(directions))
+        used: set[str] = set()
+        for cell in sorted(seen):
+            if cell in used:
                 continue
-            cell, base, treat = key
-            for other in sorted(observations):
-                if other in used or other == key:
-                    continue
-                if other[0] != cell and (other[1], other[2]) == (treat, base):
-                    used.update((key, other))
+            base, treat = seen[cell]
+            for other in sorted(seen):
+                if other not in used and other != cell and seen[other] == (treat, base):
+                    used.update((cell, other))
                     break
-        for key in used:
-            out.update(observations[key])
+        for cell in used:
+            for rows in by_cell[cell].values():
+                out.update(rows)
     return frozenset(out)
 
 
