@@ -23204,6 +23204,19 @@ def _safe_retry_after_header(value: Any) -> Optional[str]:
     return candidate
 
 
+def _sse_line_finishes(line: str) -> bool:
+    """Whether an OpenAI stream line carries a choice's finish_reason."""
+    raw = line[len("data:") :].strip() if line.startswith("data:") else line
+    try:
+        chunk = json.loads(raw)
+    except ValueError:
+        return False
+    return isinstance(chunk, dict) and any(
+        isinstance(choice, dict) and choice.get("finish_reason")
+        for choice in chunk.get("choices") or ()
+    )
+
+
 async def _stop_on_cancel(agen, cancel_event: threading.Event):
     """Yield from ``agen`` until ``cancel_event`` is set, even while it waits for a frame.
 
@@ -24091,10 +24104,31 @@ async def _proxy_to_external_provider(
             # Stopping the read stops FastFlowLM, which a model swap is waiting on.
             gen = _stop_on_cancel(gen, cancel_event)
         disconnect_task = asyncio.create_task(_watch_disconnect()) if run_studio_tool_loop else None
+        # A managed runtime that drops a reply still closes with [DONE]; it is cut short, not done.
+        managed_finished = False
+
+        def _managed_cut_short() -> bool:
+            return (
+                managed is not None
+                and not stream_failed
+                and not managed_finished
+                and not cancel_event.is_set()
+            )
+
+        def _fail_cut_short() -> str:
+            api_monitor.fail(monitor_id, _NPU_CUT_SHORT_ERROR["message"])
+            return "data: " + json.dumps({"error": dict(_NPU_CUT_SHORT_ERROR)}) + "\n\n"
+
         try:
             sent_done = False
             stream_failed = False
             async for line in gen:
+                if _is_openai_sse_done(line) and _managed_cut_short():
+                    # Before [DONE] reaches the monitor, which would record the reply completed.
+                    yield _fail_cut_short()
+                    stream_failed = True
+                if managed is not None and not managed_finished:
+                    managed_finished = _sse_line_finishes(line)
                 monitor_event = _monitor_openai_sse_line(monitor_id, line)
                 if monitor_event is None:
                     try:
@@ -24142,6 +24176,9 @@ async def _proxy_to_external_provider(
             if _owed is not None and not stream_failed:
                 _monitor_openai_sse_line(monitor_id, _owed)
                 yield f"{_owed}\n\n"
+            if not sent_done and _managed_cut_short():
+                yield _fail_cut_short()
+                stream_failed = True
             if managed is not None and cancel_event.is_set() and not sent_done:
                 # A stop (Stop button or a model swap), not a truncation: finish the reply.
                 yield (
@@ -24346,10 +24383,6 @@ class _NpuStreamRelay:
                 self.content += self._pending
                 out.append(self._chunk({"content": self._pending}, None))
                 self._pending = ""
-            if self.finish_reason is None and self.error is None:
-                # The proxy closes a stream lemond dropped with [DONE]; without a finish it is partial.
-                self.error = dict(_NPU_CUT_SHORT_ERROR)
-                out.append("data: " + json.dumps({"error": self.error}))
             out.append(line)
             return out
         try:

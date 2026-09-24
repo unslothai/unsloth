@@ -871,3 +871,16 @@ def test_a_second_download_request_follows_the_running_pull(monkeypatch):
     release.set()
     assert [event["event"] for event in second.follow()] == ["complete"]
     assert started == ["gemma3-4b-FLM"]
+
+
+@pytest.mark.parametrize("stream", [True, False])
+def test_a_reply_cut_short_is_recorded_failed(flm, stream):
+    from core.inference.api_monitor import api_monitor
+
+    if not api_monitor.enabled:
+        pytest.skip("API monitor disabled")
+    flm()
+    _call(stream = stream, messages = [{"role": "user", "content": "CUT"}])
+    # Failed before [DONE] could mark it completed.
+    assert api_monitor._entries[0].status == "error"
+    assert "before finishing" in api_monitor._entries[0].error
