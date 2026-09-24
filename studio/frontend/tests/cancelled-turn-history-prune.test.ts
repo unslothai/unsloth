@@ -142,6 +142,6 @@ test("the send and token-count paths prune through the same helper", () => {
   );
   assert.match(
     adapter,
-    /const survivingMessages = pruneOutboundHistory\(\s*messages,\s*!isExternalRequest,\s*\);/,
+    /const survivingMessages = pruneOutboundHistory\(\s*messages,\s*replayReasoning\);/,
   );
 });
