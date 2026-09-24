@@ -5,7 +5,8 @@ import { cn } from "@/lib/utils";
 
 /** A partial whose download is still running. Distinct from the static amber partial dot, which
  * means stopped: the two read the same otherwise, and a live transfer looked paused. */
-export const DOWNLOADING_DOT_CLASS = "bg-primary motion-safe:animate-pulse";
+export const DOWNLOADING_DOT_CLASS =
+  "bg-sky-500 dark:bg-sky-400 motion-safe:animate-pulse";
 
 type DotTagTone =
   | "success"
