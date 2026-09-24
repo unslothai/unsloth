@@ -21,9 +21,11 @@ import { RAISED_SURFACE } from "../surface";
 import { CardSelectionContext } from "./card-selection";
 import { LibraryActionsMenu } from "./library-actions";
 
+// On hover the card goes flat grey, as ChatGPT's do. Keyed to the card group, so moving onto its
+// menu button keeps it.
 const CARD_SURFACE = cn(
   RAISED_SURFACE,
-  "hover:shadow-[0_4px_14px_-4px_rgba(0,0,0,0.22)] dark:hover:bg-accent/60 dark:hover:shadow-none",
+  "group-hover/library-card:bg-neutral-100 group-hover/library-card:shadow-none dark:group-hover/library-card:bg-accent/60",
 );
 
 /** The item's type icon, tinted per kind. */
