@@ -1669,6 +1669,25 @@ def test_vae_decode_compile_failure_at_first_decode_falls_back_to_eager(monkeypa
     assert "LoweringException" in vae._unsloth_compile_decode_error
 
 
+def test_vae_decode_fallback_is_settled_into_status_and_not_recompiled(monkeypatch):
+    # A VAE decode that fell back must stop reporting compiled_vae_decode, and a later pass (dual-DiT loads run
+    # apply_speed_optims twice) must not treat the stale marker as a live compile.
+    calls = _stub_lazy_compile(monkeypatch, lambda: _BackendCompilerFailed("LoweringException"))
+    vae = _Vae()
+    pipe = types.SimpleNamespace(vae = vae)
+    state = types.SimpleNamespace(speed_optims = ("compiled", "compiled_vae_decode"))
+    assert ds_mod.settle_compile_fallback(state, pipe) is None
+    assert ds_mod._compile_vae_decode(pipe, None) is True
+    assert vae.decode(1) == 2
+    assert vae._unsloth_compiled_decode is False
+    assert "LoweringException" in ds_mod.settle_compile_fallback(state, pipe)
+    assert state.speed_optims == ("compiled", "compile_fallback_eager")
+    assert ds_mod._compile_vae_decode(pipe, None) is False
+    assert "decode" not in vae.__dict__
+    assert vae.decode(5) == 6
+    assert calls["compiled"] == 1
+
+
 def test_vae_decode_compile_fallback_restores_an_instance_decode(monkeypatch):
     _stub_torch_compile_errors(monkeypatch)
     original = lambda z: z * 3  # noqa: E731 - an instance attribute, as on the SimpleNamespace fakes

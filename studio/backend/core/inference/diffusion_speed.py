@@ -723,9 +723,11 @@ def settle_compile_fallback(
     """After a render, fold a runtime compile fallback into ``state.speed_optims`` (image and video backends share it).
 
     Adds ``compile_fallback_eager`` once, and drops ``compiled`` only when NO guarded DiT still runs compiled, so a
-    dual-DiT load whose second expert still compiles keeps the LoRA gate and the compile-cache shape registry. Returns
-    the recorded failure, or None when nothing fell back."""
-    fallback = compile_fallback_error(pipe)
+    dual-DiT load whose second expert still compiles keeps the LoRA gate and the compile-cache shape registry. A VAE
+    decode that fell back drops ``compiled_vae_decode``. Returns the recorded failure, or None when nothing fell back."""
+    dit_error = compile_fallback_error(pipe)
+    vae_error = getattr(getattr(pipe, "vae", None), "_unsloth_compile_decode_error", None)
+    fallback = dit_error or vae_error
     if not fallback:
         return None
     optims = tuple(getattr(state, "speed_optims", None) or ())
@@ -734,8 +736,10 @@ def settle_compile_fallback(
         updated.append("compile_fallback_eager")
         if logger is not None:
             logger.warning("diffusion.speed: regional compile fell back to eager: %s", fallback)
-    if "compiled" in updated and not compiled_dits_active(pipe):
+    if dit_error and "compiled" in updated and not compiled_dits_active(pipe):
         updated.remove("compiled")
+    if vae_error and "compiled_vae_decode" in updated:
+        updated.remove("compiled_vae_decode")
     if tuple(updated) != optims:
         # The load states are frozen dataclasses; the status must still reflect what actually runs.
         object.__setattr__(state, "speed_optims", tuple(updated))
@@ -822,6 +826,7 @@ def _guard_compiled_decode(vae: Any, compiled: Any, eager: Any, logger: Any) -> 
                 failed.append(error)
                 try:
                     vae._unsloth_compile_decode_error = error
+                    vae._unsloth_compiled_decode = False
                     if had_own:
                         vae.decode = eager
                     else:
@@ -853,6 +858,9 @@ def _compile_vae_decode(
     # A dual-DiT family calls apply_speed_optims twice over the same pipe.
     if getattr(vae, "_unsloth_compiled_decode", False):
         return True
+    # Its decode already failed to compile on this load; retrying would hit the same lowering.
+    if getattr(vae, "_unsloth_compile_decode_error", None):
+        return False
     try:
         import torch
 
