@@ -68,7 +68,7 @@ function GutterCheckbox({
   onCheckedChange,
   label,
 }: {
-  checked: boolean | "indeterminate";
+  checked: boolean;
   visible: boolean;
   group: "row" | "head";
   onCheckedChange: () => void;
@@ -194,51 +194,55 @@ export function LibraryList({
 
   return (
     <div>
-      <div
-        className={cn(
-          "group/library-head relative flex items-center gap-4 pb-2 text-[13px] text-muted-foreground",
-          ROW_INSET,
-        )}
-      >
-        <GutterCheckbox
-          checked={allSelected ? true : selecting ? "indeterminate" : false}
-          visible={selecting}
-          group="head"
-          onCheckedChange={() =>
-            onSelectionChange(allSelected ? new Set() : new Set(targets.map(targetKey)))
-          }
-          label="Select all"
-        />
-        <span className="flex-1">
-          <SortHeader column="name" label="Name" sort={sort} onSortChange={onSortChange} />
-        </span>
-        {activity ? (
-          <SortHeader
-            column="modified"
-            label="Last activity"
-            sort={sort}
-            onSortChange={onSortChange}
-            className={cn(ACTIVITY_COLUMN, "hidden sm:flex")}
+      {/* The padding sits outside the row, so the checkbox centers on the column titles. */}
+      <div className="pb-2">
+        <div
+          className={cn(
+            "group/library-head relative flex items-center gap-4 text-[13px] text-muted-foreground",
+            ROW_INSET,
+          )}
+        >
+          {/* Ticked only once everything is: a partial tick read as every row being selected. */}
+          <GutterCheckbox
+            checked={allSelected}
+            visible={selecting}
+            group="head"
+            onCheckedChange={() =>
+              onSelectionChange(allSelected ? new Set() : new Set(targets.map(targetKey)))
+            }
+            label="Select all"
           />
-        ) : (
-          <>
+          <span className="flex-1">
+            <SortHeader column="name" label="Name" sort={sort} onSortChange={onSortChange} />
+          </span>
+          {activity ? (
             <SortHeader
               column="modified"
-              label="Modified"
+              label="Last activity"
               sort={sort}
               onSortChange={onSortChange}
-              className={cn(MODIFIED_COLUMN, "hidden sm:flex")}
+              className={cn(ACTIVITY_COLUMN, "hidden sm:flex")}
             />
-            <SortHeader
-              column="size"
-              label="Size"
-              sort={sort}
-              onSortChange={onSortChange}
-              className={cn(SIZE_COLUMN, "hidden sm:flex")}
-            />
-          </>
-        )}
-        <span className="w-8 shrink-0" />
+          ) : (
+            <>
+              <SortHeader
+                column="modified"
+                label="Modified"
+                sort={sort}
+                onSortChange={onSortChange}
+                className={cn(MODIFIED_COLUMN, "hidden sm:flex")}
+              />
+              <SortHeader
+                column="size"
+                label="Size"
+                sort={sort}
+                onSortChange={onSortChange}
+                className={cn(SIZE_COLUMN, "hidden sm:flex")}
+              />
+            </>
+          )}
+          <span className="w-8 shrink-0" />
+        </div>
       </div>
       <div className="mt-1 flex flex-col">
         {folders.map((folder) => (

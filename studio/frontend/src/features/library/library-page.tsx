@@ -861,13 +861,14 @@ function LibraryView({ search }: { search: LibrarySearch }) {
         )}
 
         {selectedCount > 0 && (
-          <div className="fixed bottom-8 left-1/2 z-30 flex -translate-x-1/2 items-center gap-2 rounded-full bg-neutral-900 py-2 pl-6 pr-2 text-white shadow-xl">
+          // The side menu's color, with the composer's shadow in light mode.
+          <div className="fixed bottom-8 left-1/2 z-30 flex -translate-x-1/2 items-center gap-2 rounded-full bg-sidebar py-2 pl-6 pr-2 text-sidebar-foreground shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:shadow-none">
             <span className="mr-4 whitespace-nowrap text-sm font-medium">{selectedCount} selected</span>
             <button
               type="button"
               disabled={selectedModel() === null && selectedFiles().length === 0}
               onClick={bulkChat}
-              className="flex h-9 items-center gap-2 rounded-full bg-white px-4 text-sm font-medium text-neutral-900 outline-none transition-colors hover:bg-neutral-200 focus-visible:ring-2 focus-visible:ring-white/60 disabled:opacity-50"
+              className="flex h-9 items-center gap-2 rounded-full bg-foreground px-4 text-sm font-medium text-background outline-none transition-opacity hover:opacity-85 focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
             >
               <HugeiconsIcon icon={PencilEdit02Icon} strokeWidth={1.75} className="size-4" />
               Start chat
@@ -876,7 +877,7 @@ function LibraryView({ search }: { search: LibrarySearch }) {
               type="button"
               disabled={selectedFiles().length === 0}
               onClick={() => void bulkDownload()}
-              className="flex h-9 items-center gap-2 rounded-full border border-neutral-700 px-4 text-sm font-medium outline-none transition-colors hover:bg-neutral-800 focus-visible:ring-2 focus-visible:ring-white/60 disabled:opacity-50"
+              className="flex h-9 items-center gap-2 rounded-full border border-border px-4 text-sm font-medium outline-none transition-colors hover:bg-sidebar-accent focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
             >
               <HugeiconsIcon icon={Download01Icon} strokeWidth={1.75} className="size-4" />
               Download
@@ -885,7 +886,7 @@ function LibraryView({ search }: { search: LibrarySearch }) {
               type="button"
               disabled={deletableSelection().length === 0}
               onClick={() => requestDelete(deletableSelection())}
-              className="flex h-9 items-center gap-2 rounded-full border border-red-500/70 px-4 text-sm font-medium text-red-400 outline-none transition-colors hover:bg-red-500/15 focus-visible:ring-2 focus-visible:ring-white/60 disabled:opacity-50"
+              className="flex h-9 items-center gap-2 rounded-full border border-red-500/70 px-4 text-sm font-medium text-red-600 outline-none transition-colors hover:bg-red-500/15 focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50 dark:text-red-400"
             >
               <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} className="size-4" />
               Delete
@@ -895,7 +896,7 @@ function LibraryView({ search }: { search: LibrarySearch }) {
                 <button
                   type="button"
                   aria-label="More actions"
-                  className="flex size-9 items-center justify-center rounded-full bg-neutral-800 outline-none transition-colors hover:bg-neutral-700 focus-visible:ring-2 focus-visible:ring-white/60"
+                  className="flex size-9 items-center justify-center rounded-full bg-sidebar-accent outline-none transition-colors hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring"
                 >
                   <HugeiconsIcon icon={MoreHorizontalIcon} strokeWidth={1.75} className="size-5" />
                 </button>
@@ -925,7 +926,7 @@ function LibraryView({ search }: { search: LibrarySearch }) {
               type="button"
               aria-label="Clear selection"
               onClick={() => setSelection(new Set())}
-              className="flex size-9 items-center justify-center rounded-full outline-none transition-colors hover:bg-neutral-800 focus-visible:ring-2 focus-visible:ring-white/60"
+              className="flex size-9 items-center justify-center rounded-full outline-none transition-colors hover:bg-sidebar-accent focus-visible:ring-2 focus-visible:ring-ring"
             >
               <HugeiconsIcon icon={Cancel01Icon} strokeWidth={1.75} className="size-5" />
             </button>
