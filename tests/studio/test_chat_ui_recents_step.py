@@ -331,7 +331,7 @@ def test_a_known_id_missing_from_recents_fails(browser) -> None:
     helper, _ = _load_helper(timeout_ms = 1000)
     ctx, page = _open(browser, [{**OURS, "loadMs": 50}])
     try:
-        with pytest.raises(AssertionError, match = "is not among the first"):
+        with pytest.raises(AssertionError, match = "is not in the sidebar"):
             helper(page, SENT, lambda name: None, our_thread_id = "t-gone")
     finally:
         ctx.close()
@@ -364,5 +364,20 @@ def test_the_driver_reads_this_runs_chat_id_from_the_url_or_the_active_row(brows
         assert page.evaluate(js) == "t-b"
         page.goto(f"{ORIGIN}/chat?thread=t-url")
         assert page.evaluate(js) == "t-url"
+    finally:
+        ctx.close()
+
+
+def test_a_known_id_is_found_past_the_first_rows(browser) -> None:
+    """Pinned and project chats share the row testid, so ours can sit well down the sidebar."""
+    helper, _ = _load_helper(timeout_ms = 3000)
+    pinned = [
+        {"id": f"t-pin{k}", "title": f"Pinned {k}", "turns": [["user", f"pinned {k}"]], "loadMs": 0}
+        for k in range(25)
+    ]
+    ctx, page = _open(browser, [*pinned, {**OURS, "title": "Rapid replies", "loadMs": 100}])
+    try:
+        helper(page, SENT, lambda name: None, our_thread_id = "t-ours")
+        assert "thread=t-ours" in page.url
     finally:
         ctx.close()

@@ -483,15 +483,17 @@ def open_recent_thread_with_our_prompts(
     ours = [i for i, t in enumerate(titles) if " ".join(t.lower().split()) in wanted]
     if not ours:
         info(f"WARN no Recents title matches a prompt we sent; titles={titles[:5]!r}")
-    order = ours + [i for i in range(len(titles)) if i not in ours]
+    # (row, label, strict): a strict row is known to be ours, so it must show our turns.
+    candidates = [(threads.nth(i), titles[i], i in ours) for i in ours] + [
+        (threads.nth(i), titles[i], False) for i in range(len(titles)) if i not in ours
+    ]
     if our_thread_id:
-        ids = [threads.nth(i).get_attribute("data-thread-id") or "" for i in range(len(titles))]
-        if our_thread_id not in ids:
-            soft_fail(
-                f"this run's chat {our_thread_id!r} is not among the first {len(ids)} Recents rows"
-            )
+        # By id, over every row: pinned and project chats share the testid and can sit ahead.
+        row = page.locator(f'[data-testid="recent-thread"][data-thread-id="{our_thread_id}"]').first
+        if row.count() == 0:
+            soft_fail(f"this run's chat {our_thread_id!r} is not in the sidebar")
             return
-        ours = order = [ids.index(our_thread_id)]
+        candidates = [(row, (row.text_content() or "").strip(), True)]
 
     def shown_user_turns():
         return (
@@ -539,10 +541,9 @@ def open_recent_thread_with_our_prompts(
     deadline = time.monotonic() + 60
     clicked = 0
     thread_id = ""
-    for i in order[:5]:
+    for i, (entry, title, strict) in enumerate(candidates[:5]):
         if time.monotonic() > deadline:
             break
-        entry = threads.nth(i)
         before = shown_user_turns()
         before_thread = robust_evaluate(
             page, "() => new URLSearchParams(location.search).get('thread') || ''"
@@ -555,7 +556,7 @@ def open_recent_thread_with_our_prompts(
             info(f"recent-thread click {i} failed: {_click_err!s}")
             continue
         clicked += 1
-        info(f"OK clicked recent entry: {titles[i][:60]!r}")
+        info(f"OK clicked recent entry: {title[:60]!r}")
         started = time.monotonic()
         verdict = landed(thread_id, before, before_thread)
         if verdict == "ours":
@@ -565,8 +566,8 @@ def open_recent_thread_with_our_prompts(
                 f"({(time.monotonic() - started) * 1000:.0f} ms after the click)"
             )
             return
-        if i in ours:
-            break  # titled with our prompt, so it is ours: it must show our turns
+        if strict:
+            break  # known to be ours, by id or by title: it must show our turns
         info(f"recent entry {i} is not this run's chat ({verdict or 'no turns'}); trying the next")
     if not clicked:
         soft_fail(f"no Recents entry was clickable within 60s deadline (n_threads={n_threads})")
