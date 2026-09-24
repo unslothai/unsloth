@@ -54,7 +54,10 @@ def _serve(monkeypatch, pages: dict[str, bytes]) -> list[str]:
             req,
             timeout = None,
         ):
-            url = f"{req.get_header('Host')}{urlsplit(req.full_url).path}"
+            parts = urlsplit(req.full_url)
+            url = f"{req.get_header('Host')}{parts.path}" + (
+                f"?{parts.query}" if parts.query else ""
+            )
             requested.append(url)
             return _Resp(pages[url])
 
@@ -79,6 +82,23 @@ def test_relative_meta_refresh_is_followed(monkeypatch):
 
 
 @pytest.mark.parametrize(
+    "location, query",
+    [
+        ("/p?a=1&section=2&region=eu", "a=1&section=2&region=eu"),
+        ("/p?a=1&amp;copy=2", "a=1&copy=2"),
+        ("/p?a=1&#38;b=2", "a=1&b=2"),
+    ],
+)
+def test_refresh_url_character_references_decode_like_a_browser(monkeypatch, location, query):
+    requested = _serve(
+        monkeypatch,
+        {"example.com/page": _stub(f"0; url={location}"), f"example.com/p?{query}": REAL},
+    )
+    assert "REAL_PAGE_MARKER" in tools._fetch_page_text("https://example.com/page", timeout = 5)
+    assert requested == ["example.com/page", f"example.com/p?{query}"]
+
+
+@pytest.mark.parametrize(
     "content",
     [
         "30",
@@ -93,6 +113,36 @@ def test_reload_or_non_redirect_refresh_returns_the_page(monkeypatch, content):
     out = tools._fetch_page_text("https://example.com/page", timeout = 5)
     assert "STUB_MARKER" in out
     assert requested == ["example.com/page"]
+
+
+@pytest.mark.parametrize(
+    "wrapper",
+    [
+        "<script>if (!ok) document.write('{meta}');</script>",
+        "<template>{meta}</template>",
+        "<textarea>{meta}</textarea>",
+        "<style>/* {meta} */</style>",
+    ],
+)
+def test_meta_refresh_inside_inert_markup_is_ignored(monkeypatch, wrapper):
+    meta = '<meta http-equiv="refresh" content="0; url=/elsewhere">'
+    body = f"<html><head>{wrapper.format(meta = meta)}</head><body><p>STUB_MARKER</p></body></html>"
+    requested = _serve(monkeypatch, {"example.com/page": body.encode()})
+    assert "STUB_MARKER" in tools._fetch_page_text("https://example.com/page", timeout = 5)
+    assert requested == ["example.com/page"]
+
+
+def test_meta_refresh_resolves_against_a_preceding_base_href(monkeypatch):
+    body = (
+        b'<head><base href="/docs/"><meta http-equiv="refresh" content="0; url=next.html"></head>'
+    )
+    requested = _serve(
+        monkeypatch, {"example.com/a/b/stub.html": body, "example.com/docs/next.html": REAL}
+    )
+    assert "REAL_PAGE_MARKER" in tools._fetch_page_text(
+        "https://example.com/a/b/stub.html", timeout = 5
+    )
+    assert requested == ["example.com/a/b/stub.html", "example.com/docs/next.html"]
 
 
 def test_noscript_meta_refresh_is_ignored(monkeypatch):

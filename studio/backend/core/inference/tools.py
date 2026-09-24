@@ -13846,6 +13846,12 @@ _META_REFRESH_CONTENT_RE = re.compile(
     r"\s*(\d+|(?=\.))(?:\.[\d.]*)?(?:(?=[\s;,])\s*[;,]?\s*(?:url\s*=\s*)?(.*))?\Z",
     re.ASCII | re.IGNORECASE | re.DOTALL,
 )
+# Browsers leave an unterminated named reference in an attribute alone, so "&section=" stays literal instead of "§ion=".
+_ATTR_CHAR_REF_RE = re.compile(r"&(?:#[0-9]+;?|#[xX][0-9a-fA-F]+;?|[A-Za-z][A-Za-z0-9]*;)")
+# Their contents are raw text or inert, so a <meta> or <base> inside one never takes effect in a browser.
+_META_REFRESH_INERT_TAGS = frozenset(
+    (b"noscript", b"script", b"style", b"template", b"textarea", b"title", b"xmp")
+)
 # A comment or whole tag, quoted attribute values included, so markup inside them is never read as <meta>. As in the
 # browser prescan, an unterminated tag ends the scan.
 _HTML_TAG_RE = re.compile(
@@ -14000,25 +14006,41 @@ def _sniff_meta_charset(head: bytes, content_type: str) -> str | None:
     return prolog and _whatwg_codec(prolog.group(1))
 
 
-def _meta_refresh_target(body: bytes, base_url: str) -> str | None:
+def _meta_refresh_target(body: bytes, page_url: str) -> str | None:
     from html import unescape
     from urllib.parse import urldefrag, urljoin, urlparse
 
-    in_noscript = False
+    def attr_text(value: bytes) -> str:
+        return _ATTR_CHAR_REF_RE.sub(
+            lambda ref: unescape(ref.group(0)), value.decode("utf-8", "replace")
+        )
+
+    base_url, seen_base, inert = page_url, False, None
     for tag in _HTML_TAG_RE.finditer(body[:_META_REFRESH_SCAN_BYTES]):
         name = (tag.group(1) or b"").lower()
-        if name == b"noscript":
-            in_noscript = True
-        elif tag.group(0)[:10].lower() == b"</noscript":
-            in_noscript = False
-        elif name == b"meta" and not in_noscript:
+        if inert is not None:
+            if tag.group(0)[: len(inert) + 2].lower() == b"</" + inert:
+                inert = None
+        elif name in _META_REFRESH_INERT_TAGS:
+            inert = name
+        elif name in (b"base", b"meta"):
             attrs = {}
             for attr, *values in _META_ATTR_RE.findall(tag.group(2)):
                 attrs.setdefault(attr.lower(), b"".join(values))
+            if name == b"base":
+                # Only the first <base href> counts, and only for a refresh that comes after it.
+                if b"href" in attrs and not seen_base:
+                    seen_base = True
+                    try:
+                        href = urljoin(page_url, attr_text(attrs[b"href"]).strip())
+                        if urlparse(href).scheme in ("http", "https"):
+                            base_url = href
+                    except ValueError:
+                        pass
+                continue
             if attrs.get(b"http-equiv", b"").strip().lower() != b"refresh":
                 continue
-            content = unescape(attrs.get(b"content", b"").decode("utf-8", "replace"))
-            match = _META_REFRESH_CONTENT_RE.match(content)
+            match = _META_REFRESH_CONTENT_RE.match(attr_text(attrs.get(b"content", b"")))
             if match is None:
                 continue
             location = (match.group(2) or "").strip()
@@ -14031,7 +14053,7 @@ def _meta_refresh_target(body: bytes, base_url: str) -> str | None:
                 scheme = urlparse(target).scheme
             except ValueError:
                 return None
-            if scheme not in ("http", "https") or urldefrag(target)[0] == urldefrag(base_url)[0]:
+            if scheme not in ("http", "https") or urldefrag(target)[0] == urldefrag(page_url)[0]:
                 return None
             return target
     return None
