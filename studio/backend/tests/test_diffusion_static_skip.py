@@ -231,8 +231,7 @@ def test_taylor1_extrapolates_in_timestep():
 
 
 def test_per_token_timestep_extrapolates_from_its_max():
-    """Wan2.2 TI2V ``expand_timesteps`` passes ``mask * t`` per token: 0 on a conditioned first
-    frame. Keyed on the first element, taylor1 saw a zero step and silently reused."""
+    """Wan2.2 TI2V passes ``mask * t`` per token; keyed on the first element (0), taylor1 silently reused."""
 
     class _TokenDiT:
         def __init__(self):
@@ -255,10 +254,9 @@ def test_per_token_timestep_extrapolates_from_its_max():
     outs = []
     for i in range(steps):
         timestep = torch.full((1, 8), 1.0 - i / steps)
-        timestep[0, 0] = 0.0  # the conditioned first-frame token
+        timestep[0, 0] = 0.0
         outs.append(pipe.transformer.forward(timestep = timestep, return_dict = False))
     assert pipe.transformer.calls == 16
-    # The fake output equals t, so first-order extrapolation in t is exact on every skipped step.
     for i, compute in enumerate(ss.static_schedule(steps)):
         if not compute:
             assert torch.allclose(outs[i][0], torch.full((1, 4), 1.0 - i / steps), atol = 1e-6)
@@ -825,7 +823,6 @@ def test_image_and_video_load_requests_accept_static():
         DiffusionLoadRequest(model_path = "org/model", transformer_cache = "static").transformer_cache
         == "static"
     )
-    # The video backend wires it too (test_video_static_skip); an unknown mode is still refused.
     assert (
         VideoLoadRequest(model_path = "org/model", transformer_cache = "static").transformer_cache
         == "static"

@@ -828,8 +828,7 @@ class _VideoLoadState:
     speed_optims: tuple = ()
     backend_flags: Optional[dict] = None
     attention_backend: Optional[str] = None
-    # Step cache engaged ("fbcache" | "static") or None. Only fbcache breaks the graph (cache_breaks_graph); static keeps
-    # the compile fullgraph and the CUDA-graph eligibility of an uncached load.
+    # Only fbcache breaks the graph (cache_breaks_graph); static keeps fullgraph and CUDA-graph eligibility.
     transformer_cache: Optional[str] = None
     # AUTO on a cache-capable DiT: generate() toggles FBCache across FBCACHE_MIN_STEPS; an explicit request is never
     # toggled.
@@ -1268,8 +1267,6 @@ def _denoiser_view(pipe: Any, component: str) -> Any:
 
 
 def _is_static_cache_request(value: Optional[str]) -> bool:
-    """Whether a raw transformer_cache request asks for the static step skip. Never raises: an
-    invalid value is rejected by the load path that validates it, not here."""
     try:
         return normalize_transformer_cache(value) == TC_STATIC
     except ValueError:
@@ -4024,7 +4021,6 @@ class VideoBackend:
                 _base_local_dir = _base_local_dir,
                 # Settled before the pull when the pull acted on it; None when it did not.
                 _h3_auto_denoiser_planned = _h3_auto_denoiser_planned,
-                # Only so a static ask is reported as unsupported; the modular workflow runs uncached.
                 transformer_cache = transformer_cache,
             )
 
@@ -4470,10 +4466,7 @@ class VideoBackend:
         cache_engaged = None
         static_decline: Optional[str] = None
         if cache_request == TC_STATIC:
-            # Explicit only (auto never resolves to it): a schedule fixed per generation and decided outside the
-            # forward, so the compile and CUDA-graph decisions below see an uncached load. One denoiser only: a
-            # dual-expert MoE hands part of the trajectory to transformer_2, which the per-branch history would not
-            # see, so it runs uncached with the reason on the resolved record.
+            # One denoiser only: a dual-expert MoE hands part of the trajectory to transformer_2, unseen by the history.
             if len(views) > 1 or getattr(pipe, "transformer_2", None) is not None:
                 static_decline = (
                     "static step skip needs a single denoiser; this family runs two experts "
@@ -4481,8 +4474,7 @@ class VideoBackend:
                 )
                 logger.warning("video.step_skip: %s", static_decline)
             elif getattr(fam, "has_audio", False):
-                # LTX-2 returns (video, audio) predictions per call, which a skip does not reproduce: engaged, it would
-                # report static while every call still computed.
+                # Engaged on LTX-2's joint (video, audio) denoiser it would report static while every call computed.
                 static_decline = (
                     "static step skip reuses one noise prediction per call; this family's denoiser "
                     "returns joint video and audio predictions, so it runs uncached"
@@ -4507,7 +4499,6 @@ class VideoBackend:
                 )
                 if view is pipe:
                     cache_engaged = engaged
-        # What the compile and CUDA-graph decisions below see: static counts as uncached.
         cache_graph_break = cache_breaks_graph(cache_engaged)
         # The auto decision can flip at generation time, but only on a cache-capable DiT.
         cache_may_toggle = cache_auto and callable(
@@ -4565,7 +4556,7 @@ class VideoBackend:
                 family = fam,
                 speed_mode = effective_speed,
                 # An auto cache that could still engage also drops fullgraph (FBCache under a fullgraph-compiled DiT
-                # crashes). The static skip decides outside the forward, so it keeps fullgraph and the graph.
+                # crashes)
                 cache_active = cache_graph_break or cache_may_toggle,
                 offload_active = plan.offload_policy != "none",
                 cuda_graph_default = False,
@@ -4627,7 +4618,6 @@ class VideoBackend:
                         None if cache_auto else transformer_cache,
                         cache_engaged or "off",
                         cache_reason,
-                        # A declined static ask stays visible as such instead of reading as an honored "off".
                         RESOLVED_UNSUPPORTED if static_decline else None,
                     ),
                     "transformer_quant": (
@@ -5356,8 +5346,6 @@ class VideoBackend:
                     attention_engaged or "native",
                     "cuDNN fused attention on NVIDIA when a speed profile is active",
                 ),
-                # No step cache here. Only a static ask is echoed back, so it reads as declined rather than honored;
-                # every other ask keeps its existing record.
                 "transformer_cache": (
                     (
                         transformer_cache,
@@ -6352,8 +6340,7 @@ class VideoBackend:
                                 + f" {FBCACHE_MIN_STEPS}"
                             )
                 if static_skip:
-                    # A fresh schedule per clip. Counted on the step callback when the pipeline has one; a pipeline
-                    # without (HunyuanVideo-1.5) is counted per CFG branch from its cache_context names.
+                    # Without a step callback (HunyuanVideo-1.5) steps count per CFG branch from cache_context names.
                     reset_static_step_skip(pipe, steps, step_signal = has_step_callback)
                 elif state.transformer_cache:
                     self._reset_step_cache(pipe)
@@ -6377,8 +6364,6 @@ class VideoBackend:
                     settle_compile_fallback(state, pipe, logger)
                     if static_skip:
                         logger.debug("video.step_skip: %s", static_skip_stats(pipe))
-                        # Drop the outputs kept for reuse (one latent per CFG branch), raised or not; the next clip
-                        # arms its own schedule, and status keeps this clip's counts.
                         reset_static_step_skip(pipe, None)
                 if cancel.is_set():
                     raise RuntimeError(VIDEO_CANCELLED_MSG)
@@ -6946,7 +6931,6 @@ class VideoBackend:
             diffusion_cuda_graph.uninstall_all(
                 getattr(getattr(state, "pipe", None), "_unsloth_cuda_graphs", ()) or ()
             )
-            # Idempotent, and a no-op for any load that never engaged the static skip.
             uninstall_static_step_skip(getattr(state, "pipe", None))
             del state
             clear_gpu_cache()
@@ -7048,7 +7032,6 @@ class VideoBackend:
             "speed_optims": list(state.speed_optims),
             "attention_backend": state.attention_backend,
             "transformer_cache": state.transformer_cache,
-            # The static schedule and its counts for the clip in flight, else the last one; null otherwise.
             "transformer_cache_stats": (
                 static_skip_stats(state.pipe) if state.transformer_cache == TC_STATIC else None
             ),

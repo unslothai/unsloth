@@ -189,9 +189,7 @@ def _timestep_of(
 ) -> Any:
     """The call's timestep as a one-element float32 tensor on its own device (no host sync).
 
-    The max, not the first element: a per-token timestep (Wan2.2 TI2V ``expand_timesteps``, LTX)
-    is ``mask * t`` with 0 on conditioned tokens, so the first element can be 0 at every step and
-    would turn taylor1 into a silent reuse. On a per-sample timestep the max is the step's t."""
+    The max: a per-token ``mask * t`` (Wan2.2 TI2V, LTX) is 0 on conditioned tokens; taylor1 would silently reuse."""
     name, index = slot
     t = kwargs.get(name)
     if t is None and index is not None and index < len(args):
@@ -291,9 +289,7 @@ class StaticStepSkip:
         if keep_stats:
             return self
         if self.stats["calls"] or self.counting:
-            # The generation that just ended, kept for the status route once the per-call reset clears it. Arming a
-            # new one clears it too: until its first call, or if it fails before one, status reports zeros, not the
-            # previous generation's counts.
+            # Kept for status past the per-call reset; arming a new generation clears it (no stale counts).
             self.last_stats = dict(self.stats)
         self.stats = {"calls": 0, "computed": 0, "skipped": 0}
         return self

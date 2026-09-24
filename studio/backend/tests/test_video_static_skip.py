@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Hermetic CPU tests for the static step skip on the VIDEO backend (``transformer_cache="static"``).
-
-The layer itself is covered by ``test_diffusion_static_skip``; these pin the video wiring. They run
-on the faked torch/diffusers runtime of ``test_video_backend`` (no GPU, offline), with Wan and
-HunyuanVideo-1.5 fakes whose ``__call__`` runs a real CFG denoise loop over their transformer, so
-the schedule, the per-branch counting and the step callback are exercised end to end.
-"""
+"""Video wiring of the static step skip, on test_video_backend's fake runtime with fakes that run a real CFG loop."""
 
 from __future__ import annotations
 
@@ -36,15 +30,12 @@ WAN_5B = "Wan-AI/Wan2.2-TI2V-5B-Diffusers"
 WAN_A14B = "Wan-AI/Wan2.2-T2V-A14B-Diffusers"
 HV15 = "hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-480p_t2v"
 
-# 50 steps: head round(10) = 10 and tail round(5) = 5 compute, the middle 35 compute every other
-# step, so 17 steps per CFG branch are skipped.
+# Head 10 and tail 5 compute, the middle 35 alternate: 17 skips per CFG branch.
 STEPS = 50
 SKIPPED_PER_BRANCH = 17
 
 
 class _Tensorish:
-    """Enough of a tensor for the layer under the fake runtime's stub torch."""
-
     def __init__(self, value):
         self.value = value
         self.shape = (1, 4)
@@ -57,9 +48,6 @@ class _Tensorish:
 
 
 class _LoopDiT(_FakeWanDiT):
-    """A Wan-style denoiser with a class ``forward`` (what the layer wraps) and a class
-    ``cache_context`` that records the branch names the pipeline opens."""
-
     def __init__(self) -> None:
         super().__init__()
         self.computed = 0
@@ -121,8 +109,6 @@ class _LoopWanPipe(_FakeWanPipeSingle):
 
 
 class _LoopHV15Pipe(_FakeHV15Pipe):
-    """HunyuanVideo-1.5: no step callback, CFG branches named by its guider's cache contexts."""
-
     def __init__(self) -> None:
         super().__init__()
         self.transformer = _LoopDiT()
@@ -148,7 +134,6 @@ class _LoopHV15Pipe(_FakeHV15Pipe):
 
 @pytest.fixture
 def loop_runtime(fake_runtime, monkeypatch):
-    """The fake runtime with loop-running Wan / HV15 pipelines and a stub torch.is_tensor."""
     diffusers = sys.modules["diffusers"]
     made: dict = {}
 
@@ -189,7 +174,6 @@ def _record_speed(monkeypatch):
     return seen
 
 
-# ── load ────────────────────────────────────────────────────────────────────────────
 @pytest.mark.parametrize("request_cache", ["off", "static"])
 def test_static_load_keeps_the_uncached_speed_decisions(loop_runtime, monkeypatch, request_cache):
     seen = _record_speed(monkeypatch)
@@ -197,7 +181,6 @@ def test_static_load_keeps_the_uncached_speed_decisions(loop_runtime, monkeypatc
     status = backend.load_pipeline(
         WAN_5B, model_kind = "pipeline", speed_mode = "default", transformer_cache = request_cache
     )
-    # Static decides outside the forward: the compile keeps fullgraph and the graph arm sees no cache.
     assert [kw["cache_active"] for kw in seen] == [False]
     assert status["speed_optims"] == ["compiled"]
     pipe = loop_runtime["pipe"]
@@ -259,7 +242,6 @@ def test_two_expert_moe_declines_static_with_a_reason(loop_runtime, monkeypatch)
     assert entry["requested"] == "static" and entry["value"] == "off"
     assert entry["status"] == "unsupported"
     assert "transformer_2" in entry["reason"]
-    # Uncached on both experts, and the speed layers see an uncached load.
     pipe = loop_runtime["pipe"]
     assert pipe.transformer.cache_config is None and pipe.transformer_2.cache_config is None
     assert all(kw["cache_active"] is False for kw in seen)
@@ -300,7 +282,6 @@ def test_a_transformer_without_forward_runs_uncached_with_a_reason(fake_runtime)
     backend.unload()
 
 
-# ── generate ────────────────────────────────────────────────────────────────────────
 def _static_backend(loop_runtime):
     backend = VideoBackend()
     backend.load_pipeline(WAN_5B, model_kind = "pipeline", transformer_cache = "static")
@@ -313,17 +294,14 @@ def test_generate_skips_the_scheduled_steps_per_cfg_branch(loop_runtime):
     computed = 2 * (STEPS - SKIPPED_PER_BRANCH)
     assert pipe.transformer.computed == computed
     stats = backend.status()["transformer_cache_stats"]
-    assert stats["planned_skips"] == 0  # disarmed after the clip...
-    # ...but the clip's own counts survive the post-render reset.
+    assert stats["planned_skips"] == 0
     assert stats["stats"] == {
         "calls": 2 * STEPS,
         "computed": computed,
         "skipped": 2 * SKIPPED_PER_BRANCH,
     }
-    # A second clip re-arms the schedule.
     backend.generate(prompt = "a sloth", steps = STEPS)
     assert pipe.transformer.computed == 2 * computed
-    # Under the bar every step computes.
     backend.generate(prompt = "a sloth", steps = 8)
     assert pipe.transformer.computed == 2 * computed + 16
     backend.unload()
@@ -351,7 +329,6 @@ def test_generate_arms_with_the_step_callback_and_disarms_after(loop_runtime, mo
     backend.generate(prompt = "a sloth", steps = STEPS)
     assert armed == [(STEPS, True), (None, None)]
     assert len(marks) == STEPS and all(p is pipe for p in marks)
-    # The FBCache reset is not what a static clip runs.
     assert resets == []
     backend.unload()
 
@@ -363,7 +340,6 @@ def test_a_failed_clip_drops_the_kept_outputs(loop_runtime):
     with pytest.raises(RuntimeError, match = "denoise failed"):
         backend.generate(prompt = "a sloth", steps = STEPS)
     assert layer.history == {} and layer.plan == ()
-    # The next clip runs a full schedule from a clean slate.
     pipe.raise_at = None
     before = pipe.transformer.computed
     backend.generate(prompt = "a sloth", steps = STEPS)
@@ -389,7 +365,6 @@ def test_a_new_clip_does_not_report_the_previous_clips_counts(loop_runtime, monk
 
     monkeypatch.setattr(video_mod, "reset_static_step_skip", _reset)
     zeros = {"calls": 0, "computed": 0, "skipped": 0}
-    # A clip that fails before its first transformer call leaves no stale counts behind.
     pipe.raise_at = 0
     with pytest.raises(RuntimeError, match = "denoise failed"):
         backend.generate(prompt = "a sloth", steps = STEPS)
@@ -421,7 +396,6 @@ def test_hv15_counts_branches_by_context_without_a_step_callback(loop_runtime, m
     backend.unload()
 
 
-# ── modular workflow ────────────────────────────────────────────────────────────────
 def _load_h3(backend, transformer_cache):
     from core.inference.video import _detect_load_family
 
@@ -466,7 +440,6 @@ def test_modular_workflow_keeps_its_record_for_every_other_ask(fake_runtime, req
     backend.unload()
 
 
-# ── API ─────────────────────────────────────────────────────────────────────────────
 def test_video_api_accepts_static_and_reports_its_stats():
     from pydantic import ValidationError
 
