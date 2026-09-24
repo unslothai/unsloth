@@ -751,7 +751,6 @@ def _location_resolvers() -> dict:
 def _location_path(key: str, resolve) -> Path:
     """Where `key` lives, also while its chosen folder is unavailable."""
     from utils.paths.relocations import LocationUnavailable, chosen
-
     try:
         return resolve()
     except LocationUnavailable:

@@ -3054,7 +3054,6 @@ def _forget_gone_library_entries(source: str, folder: Path) -> None:
     listed by one of its files, so deleting that variant ends the entry."""
     try:
         from storage import library_db
-
         prefix = f"model:{source}:"
         for item_id in library_db.list_entries():
             path = item_id[len(prefix) :] if item_id.startswith(prefix) else ""
