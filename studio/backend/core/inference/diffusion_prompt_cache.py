@@ -64,10 +64,20 @@ def budget_bytes() -> int:
 
 
 def _host_ram_bytes() -> int:
+    """Physical RAM, capped by an enforcing cgroup limit (pinned entries are charged to it)."""
     try:
-        return int(os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES"))
+        total = int(os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES"))
     except (AttributeError, ValueError, OSError):
-        return 0
+        total = 0
+    try:
+        from .diffusion_memory import _cgroup_memory_limit_mib
+        limit_mib = _cgroup_memory_limit_mib()
+    except Exception:  # noqa: BLE001 - no readable limit is the same answer as none
+        limit_mib = None
+    if limit_mib:
+        limit = int(limit_mib) * 1024 * 1024
+        total = min(total, limit) if total else limit
+    return total
 
 
 def _torch():

@@ -6625,6 +6625,17 @@ class DiffusionBackend:
             pipe = self._from_pipe_no_recast(
                 state.pipe, getattr(diffusers, pipe_cls_name), controlnet = cn_model
             )
+            # from_pipe copies components, not the base pipe's wrapped encode_prompt.
+            prompt_cache.install(
+                pipe,
+                identity = {
+                    "family": fam.name,
+                    "repo": str(getattr(state, "repo_id", "")),
+                    "workflow": pipe_cls_name,
+                },
+                lora_owner = state.pipe,
+                logger = logger,
+            )
             with self._lock:
                 # Same race as the model cache: an unload may have cleared _cn_pipes while from_pipe ran.
                 if cancel.is_set() or self._state is not state:
@@ -7761,7 +7772,7 @@ class DiffusionBackend:
         # Before clear_gpu_cache(), or the graph pool stays reserved for the life of the process.
         cuda_graph.uninstall_all(state.cuda_graphs)
         prompt_cache.release(state.pipe)
-        for aux in self._aux_pipes.values():
+        for aux in (*self._aux_pipes.values(), *self._cn_pipes.values()):
             prompt_cache.release(aux)
         gguf_compile.uninstall_all()
         if state.eager_patched:

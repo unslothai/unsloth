@@ -10,7 +10,8 @@ import sys
 import types
 
 import pytest
-import torch
+
+torch = pytest.importorskip("torch")
 
 from core.inference import diffusion_cond_cache as cond_cache
 from core.inference import diffusion_prompt_cache as prompt_cache
@@ -321,3 +322,53 @@ def test_load_installs_the_prompt_cache_and_unload_releases_it(fake_runtime, tmp
     assert calls["install"] == [pipe]
     backend.unload()
     assert pipe in calls["release"]
+
+
+def test_budget_respects_a_cgroup_memory_limit(monkeypatch):
+    # Pinned entries are charged to memory.max, so a 2 GiB container gets RAM/64 of the limit, not of the host.
+    from core.inference import diffusion_memory
+
+    monkeypatch.delenv(prompt_cache._ENV_BUDGET_MB, raising = False)
+    monkeypatch.setattr(diffusion_memory, "_cgroup_memory_limit_mib", lambda: 2048)
+    assert prompt_cache.budget_bytes() == 32 * 1024 * 1024
+    monkeypatch.setenv(prompt_cache._ENV_BUDGET_MB, "100")
+    assert prompt_cache.budget_bytes() == 100 * 1024 * 1024
+    monkeypatch.delenv(prompt_cache._ENV_BUDGET_MB)
+    monkeypatch.setattr(diffusion_memory, "_cgroup_memory_limit_mib", lambda: None)
+    host = prompt_cache._host_ram_bytes()
+    assert prompt_cache.budget_bytes() == min(256 * 1024 * 1024, max(16 * 1024 * 1024, host // 64))
+
+
+def test_controlnet_pipe_gets_the_prompt_cache(monkeypatch):
+    import threading
+
+    from core.inference import diffusion_controlnet as dc
+    from core.inference.diffusion import DiffusionBackend
+
+    from . import test_diffusion_controlnet as tcn
+
+    calls = []
+
+    class _EncodingCNPipe(tcn._FakeCNPipe):
+        def encode_prompt(
+            self,
+            prompt,
+            device = None,
+        ):
+            calls.append(prompt)
+            return torch.ones(1, 3, 4)
+
+    fake = tcn._fake_diffusers()
+    fake.FluxControlNetPipeline = _EncodingCNPipe
+    monkeypatch.setitem(sys.modules, "diffusers", fake)
+    tcn._allow_cn_security(monkeypatch)
+    backend = DiffusionBackend()
+    state = tcn._state()
+    backend._state = state
+    pipe = backend._controlnet_pipe(
+        state, dc.ResolvedControlNet("flux-union-pro", "repo/id", is_local = False), threading.Event()
+    )
+    assert prompt_cache.cache_for(pipe) is not None
+    first = pipe.encode_prompt("a sloth", device = "cpu")
+    again = pipe.encode_prompt("a sloth", device = "cpu")
+    assert calls == ["a sloth"] and torch.equal(first, again)
