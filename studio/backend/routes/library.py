@@ -27,7 +27,15 @@ _MAX_UPLOAD_BYTES = 512 * 1024 * 1024
 _CHUNK_BYTES = 1024 * 1024
 # Raster images render inline; anything else (svg and html included) downloads as opaque bytes, as
 # the sandbox route does, so a crafted upload cannot run script on the app origin.
-_INLINE_PREFIXES = ("image/png", "image/jpeg", "image/gif", "image/webp", "image/avif", "audio/", "video/")
+_INLINE_PREFIXES = (
+    "image/png",
+    "image/jpeg",
+    "image/gif",
+    "image/webp",
+    "image/avif",
+    "audio/",
+    "video/",
+)
 
 
 class ItemPatch(BaseModel):
@@ -65,7 +73,11 @@ async def get_library(current_subject: str = Depends(get_current_subject)) -> di
 @router.get("/favorites")
 def get_favorites(current_subject: str = Depends(get_current_subject)) -> dict:
     """Favorite item ids alone, for pages that mark favorites without listing every source."""
-    return {"ids": [item_id for item_id, entry in library_db.list_entries().items() if entry["favorite"]]}
+    return {
+        "ids": [
+            item_id for item_id, entry in library_db.list_entries().items() if entry["favorite"]
+        ]
+    }
 
 
 # ── Items ────────────────────────────────────────────────────────
@@ -187,7 +199,9 @@ def get_upload_file(upload_id: str, current_subject: str = Depends(get_current_s
 
 @router.put("/uploads/{upload_id}/text")
 def put_upload_text(
-    upload_id: str, body: TextContent, current_subject: str = Depends(get_current_subject)
+    upload_id: str,
+    body: TextContent,
+    current_subject: str = Depends(get_current_subject),
 ) -> dict:
     if not library.write_upload_text(upload_id, body.text):
         raise HTTPException(status_code = 404, detail = "File not found")
@@ -207,7 +221,9 @@ def create_folder(body: FolderCreate, current_subject: str = Depends(get_current
 
 @router.patch("/folders/{folder_id}")
 def patch_folder(
-    folder_id: str, body: FolderPatch, current_subject: str = Depends(get_current_subject)
+    folder_id: str,
+    body: FolderPatch,
+    current_subject: str = Depends(get_current_subject),
 ) -> dict:
     try:
         folder = library_db.update_folder(
