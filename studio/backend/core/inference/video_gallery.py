@@ -167,13 +167,15 @@ def _record(
     flags: Optional[dict[str, dict[str, Any]]] = None,
 ) -> dict[str, Any]:
     # flags are library state, not recipe: they come from the .flags.json store, never the sidecar
+    if flags is None:
+        flags = gallery_flags.read(gallery_dir())
     return {
         **meta,
         "id": video_id,
         "url": f"/api/inference/video/gallery/{video_id}/file",
-        **gallery_flags.flags_for(
-            flags if flags is not None else gallery_flags.read(gallery_dir()), video_id
-        ),
+        **gallery_flags.flags_for(flags, video_id),
+        # Lets the client keep a dragged item in place when it re-sorts.
+        "order_at": gallery_flags.order_at(flags, video_id),
     }
 
 
@@ -479,7 +481,7 @@ def list_videos(
     archived: bool = False,
 ) -> list[dict[str, Any]]:
     """A window of videos for infinite scroll: pinned first (most recently pinned leading), then
-    newest-first by MP4 mtime.
+    newest-first by MP4 mtime (or the manual key once dragged).
 
     mtime is a cheap stat ~= generation order; only the window's sidecars are read. limit=None
     returns everything from ``offset`` on. A file without its pair is skipped.
@@ -499,7 +501,13 @@ def list_videos(
     # Shelf split and pin sort run on file stems, BEFORE any sidecar is read, so they cost one dict lookup per file
     # and leave the early break below intact.
     paths = [p for p in paths if gallery_flags.is_archived(flags, p.stem) == archived]
-    paths.sort(key = lambda p: (gallery_flags.pin_rank(flags, p.stem), _mtime(p)), reverse = True)
+    paths.sort(
+        key = lambda p: (
+            gallery_flags.pin_rank(flags, p.stem),
+            gallery_flags.order_rank(flags, p.stem, _mtime(p)),
+        ),
+        reverse = True,
+    )
     # Page over READABLE records, not raw files: filtering an orphan MP4 out of an already-sliced window would drop
     # valid videos and make has_more wrong.
     want = None if limit is None else offset + limit
@@ -532,6 +540,40 @@ def set_flags(
         if owned_video_path(video_id) is None:
             return None
         gallery_flags.set_flags_locked(gallery_dir(), video_id, pinned = pinned, archived = archived)
+        meta = _read_meta(_sidecar_path(video_id))
+    if meta is None:  # raced a delete between the guard and the read
+        return None
+    return _record(video_id, meta)
+
+
+def move(video_id: str, after_id: Optional[str]) -> Optional[dict[str, Any]]:
+    """Move an active video to just after ``after_id`` (None = front) and return its record.
+
+    None if the id is not an owned, active video. Raises KeyError if ``after_id`` is not on the shelf."""
+    with gallery_flags.exclusive(gallery_dir()):
+        if owned_video_path(video_id) is None:
+            return None
+        flags = gallery_flags.read(gallery_dir())
+        if gallery_flags.is_archived(flags, video_id):
+            return None
+        # Full shelf in listing order, so neighbours past the client's loaded window are known.
+        try:
+            paths = [
+                p
+                for p in gallery_dir().glob("*.mp4")
+                if not gallery_flags.is_archived(flags, p.stem)
+            ]
+        except OSError:
+            paths = []
+        keyed = [(p.stem, _mtime(p)) for p in paths]
+        keyed.sort(
+            key = lambda pair: (
+                gallery_flags.pin_rank(flags, pair[0]),
+                gallery_flags.order_rank(flags, pair[0], pair[1]),
+            ),
+            reverse = True,
+        )
+        gallery_flags.place_locked(gallery_dir(), video_id, keyed, after_id = after_id)
         meta = _read_meta(_sidecar_path(video_id))
     if meta is None:  # raced a delete between the guard and the read
         return None
