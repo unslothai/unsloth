@@ -16,6 +16,7 @@ What this file pins down about that route:
 * the PowerShell installers carry the same three arches and the same tag, so a bump in one
   place cannot leave the other installing a different build.
 """
+
 import importlib.util
 import re
 import sys
@@ -31,7 +32,9 @@ _HARDWARE_PY = PACKAGE_ROOT / "studio" / "backend" / "utils" / "hardware" / "har
 
 
 def _load_stack_module():
-    spec = importlib.util.spec_from_file_location("studio_install_python_stack_rdna1_route", _STACK_PY)
+    spec = importlib.util.spec_from_file_location(
+        "studio_install_python_stack_rdna1_route", _STACK_PY
+    )
     assert spec is not None and spec.loader is not None
     mod = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = mod
@@ -51,7 +54,9 @@ class TestPackageSpecs:
         torch_spec, vision_spec, audio_spec = stack_mod._windows_rocm_torch_pkg_specs(arch)
         bare = arch.lower().split(":")[0]
         tag = stack_mod._ROCM_MULTIARCH_TAG
-        assert torch_spec == f"torch[device-{bare}]=={stack_mod._ROCM_MULTIARCH_TORCH_VERSION}+{tag}"
+        assert (
+            torch_spec == f"torch[device-{bare}]=={stack_mod._ROCM_MULTIARCH_TORCH_VERSION}+{tag}"
+        )
         assert vision_spec == f"torchvision=={stack_mod._ROCM_MULTIARCH_TORCHVISION_VERSION}+{tag}"
         assert audio_spec == "", "no torchaudio is published for the multi-arch tag"
 
@@ -59,24 +64,42 @@ class TestPackageSpecs:
         assert re.fullmatch(r"rocm\d+\.\d+\.\d+a\d{8}", stack_mod._ROCM_MULTIARCH_TAG)
 
     def test_other_arches_keep_their_specs(self):
-        assert stack_mod._windows_rocm_torch_pkg_specs("gfx1201") == stack_mod._WINDOWS_ROCM_TORCH_PKG_SPECS["gfx1201"]
-        assert stack_mod._windows_rocm_torch_pkg_specs("gfx1034") == ("torch", "torchvision", "torchaudio")
-        assert stack_mod._windows_rocm_torch_pkg_specs(None) == ("torch", "torchvision", "torchaudio")
+        assert (
+            stack_mod._windows_rocm_torch_pkg_specs("gfx1201")
+            == stack_mod._WINDOWS_ROCM_TORCH_PKG_SPECS["gfx1201"]
+        )
+        assert stack_mod._windows_rocm_torch_pkg_specs("gfx1034") == (
+            "torch",
+            "torchvision",
+            "torchaudio",
+        )
+        assert stack_mod._windows_rocm_torch_pkg_specs(None) == (
+            "torch",
+            "torchvision",
+            "torchaudio",
+        )
 
 
 class TestIndexResolution:
     @pytest.mark.parametrize("arch", _SPELLINGS)
     def test_rdna1_resolves_to_the_multiarch_index(self, arch, monkeypatch):
         monkeypatch.delenv("UNSLOTH_ROCM_WINDOWS_MULTIARCH_MIRROR", raising = False)
-        assert stack_mod._windows_rocm_index_url(arch) == stack_mod._ROCM_WINDOWS_MULTIARCH_INDEX_BASE
+        assert (
+            stack_mod._windows_rocm_index_url(arch) == stack_mod._ROCM_WINDOWS_MULTIARCH_INDEX_BASE
+        )
 
     def test_the_default_base_is_amds_nightly(self):
-        assert stack_mod._ROCM_WINDOWS_MULTIARCH_INDEX_BASE.startswith("https://nightly.repo.amd.com/rocm/whl-next")
+        assert stack_mod._ROCM_WINDOWS_MULTIARCH_INDEX_BASE.startswith(
+            "https://nightly.repo.amd.com/rocm/whl-next"
+        )
 
     def test_rdna2_still_resolves_to_its_family(self, monkeypatch):
         monkeypatch.delenv("UNSLOTH_ROCM_WINDOWS_MIRROR", raising = False)
         monkeypatch.setattr(stack_mod, "_ROCM_WINDOWS_INDEX_BASE", "https://repo.amd.com/rocm/whl")
-        assert stack_mod._windows_rocm_index_url("gfx1034") == "https://repo.amd.com/rocm/whl/gfx103X-all/"
+        assert (
+            stack_mod._windows_rocm_index_url("gfx1034")
+            == "https://repo.amd.com/rocm/whl/gfx103X-all/"
+        )
 
     def test_polaris_still_resolves_to_nothing(self):
         assert stack_mod._windows_rocm_index_url("gfx803") is None
@@ -105,7 +128,9 @@ class TestNameTables:
         assert stack_mod._gfx_arch_from_gpu_name(name) == expected
         assert stack_mod._unsupported_gfx_arch_from_gpu_name(name) is None
 
-    @pytest.mark.parametrize("name", ["AMD Radeon RX 570", "AMD Radeon RX 580", "AMD Radeon RX 550"])
+    @pytest.mark.parametrize(
+        "name", ["AMD Radeon RX 570", "AMD Radeon RX 580", "AMD Radeon RX 550"]
+    )
     def test_polaris_is_not_swallowed_by_the_rdna1_rows(self, name):
         assert stack_mod._gfx_arch_from_gpu_name(name) is None
 
@@ -123,7 +148,9 @@ class TestNameTables:
                 if depth == 0:
                     break
             i += 1
-        return re.findall(r'@\{\s*P\s*=\s*"([^"]+)"\s*;\s*A\s*=\s*"(gfx[0-9a-z]+)"\s*\}', src[start : i + 1])
+        return re.findall(
+            r'@\{\s*P\s*=\s*"([^"]+)"\s*;\s*A\s*=\s*"(gfx[0-9a-z]+)"\s*\}', src[start : i + 1]
+        )
 
     @pytest.mark.parametrize("path", [_INSTALL_PS1, _SETUP_PS1], ids = lambda p: p.name)
     @pytest.mark.parametrize("name,expected", _RDNA1_NAMES)
@@ -132,7 +159,9 @@ class TestNameTables:
         unsupported = self._ps_rows(path, "$unsupportedNameArchTable = @(")
         hit = next((a for p, a in supported if re.search(p, name, re.IGNORECASE)), None)
         assert hit == expected, f"{path.name}: {name!r} -> {hit!r}"
-        assert not any(re.search(p, name, re.IGNORECASE) for p, _ in unsupported), f"{path.name} still calls {name!r} unsupported"
+        assert not any(
+            re.search(p, name, re.IGNORECASE) for p, _ in unsupported
+        ), f"{path.name} still calls {name!r} unsupported"
 
     @pytest.mark.parametrize("name,expected", _RDNA1_NAMES)
     def test_backend_table_agrees(self, name, expected):
@@ -141,7 +170,9 @@ class TestNameTables:
         tree = ast.parse(_HARDWARE_PY.read_text(encoding = "utf-8"))
         rows = None
         for node in tree.body:
-            targets = [node.target] if isinstance(node, ast.AnnAssign) else getattr(node, "targets", [])
+            targets = (
+                [node.target] if isinstance(node, ast.AnnAssign) else getattr(node, "targets", [])
+            )
             if any(getattr(t, "id", "") == "_GPU_NAME_GFX_TABLE" for t in targets):
                 rows = ast.literal_eval(node.value)
         assert rows, "_GPU_NAME_GFX_TABLE not found"
@@ -161,7 +192,9 @@ class TestPowerShellMirrorsThePin:
         block = block[: block.index(")") + 1]
         archs = set(re.findall(r'"(gfx[0-9a-z]+)"', block))
         assert archs == set(stack_mod._WINDOWS_MULTIARCH_GFX), f"{path.name}: {archs}"
-        assert f'"{stack_mod._ROCM_MULTIARCH_TAG}"' in src, f"{path.name}: tag differs from install_python_stack.py"
+        assert (
+            f'"{stack_mod._ROCM_MULTIARCH_TAG}"' in src
+        ), f"{path.name}: tag differs from install_python_stack.py"
         assert f'"{stack_mod._ROCM_MULTIARCH_TORCH_VERSION}"' in src
         assert f'"{stack_mod._ROCM_MULTIARCH_TORCHVISION_VERSION}"' in src
         assert "nightly.repo.amd.com/rocm/whl-next" in src
@@ -174,27 +207,45 @@ class TestStaleTorchaudioIsDropped:
 
     def test_a_torchaudio_from_another_torch_is_removed(self, monkeypatch):
         removed = []
-        monkeypatch.setattr(stack_mod, "_distribution_version_string", lambda name: "2.11.0+rocm7.13.0")
-        monkeypatch.setattr(stack_mod, "_uninstall_distribution", lambda name: removed.append(name) or True)
+        monkeypatch.setattr(
+            stack_mod, "_distribution_version_string", lambda name: "2.11.0+rocm7.13.0"
+        )
+        monkeypatch.setattr(
+            stack_mod, "_uninstall_distribution", lambda name: removed.append(name) or True
+        )
         assert stack_mod._drop_torchaudio_off_the_multiarch_tag() is True
         assert removed == ["torchaudio"]
 
     def test_a_cpu_torchaudio_is_removed_too(self, monkeypatch):
         removed = []
         monkeypatch.setattr(stack_mod, "_distribution_version_string", lambda name: "2.11.0+cpu")
-        monkeypatch.setattr(stack_mod, "_uninstall_distribution", lambda name: removed.append(name) or True)
+        monkeypatch.setattr(
+            stack_mod, "_uninstall_distribution", lambda name: removed.append(name) or True
+        )
         assert stack_mod._drop_torchaudio_off_the_multiarch_tag() is True
         assert removed == ["torchaudio"]
 
     def test_nothing_installed_is_nothing_to_do(self, monkeypatch):
         monkeypatch.setattr(stack_mod, "_distribution_version_string", lambda name: None)
-        monkeypatch.setattr(stack_mod, "_uninstall_distribution", lambda name: (_ for _ in ()).throw(AssertionError("must not run")))
+        monkeypatch.setattr(
+            stack_mod,
+            "_uninstall_distribution",
+            lambda name: (_ for _ in ()).throw(AssertionError("must not run")),
+        )
         assert stack_mod._drop_torchaudio_off_the_multiarch_tag() is True
 
     def test_a_torchaudio_on_the_pinned_tag_stays(self, monkeypatch):
         """Should AMD start publishing one for the tag, it is the right build and stays."""
-        monkeypatch.setattr(stack_mod, "_distribution_version_string", lambda name: f"2.12.0+{stack_mod._ROCM_MULTIARCH_TAG}")
-        monkeypatch.setattr(stack_mod, "_uninstall_distribution", lambda name: (_ for _ in ()).throw(AssertionError("must not run")))
+        monkeypatch.setattr(
+            stack_mod,
+            "_distribution_version_string",
+            lambda name: f"2.12.0+{stack_mod._ROCM_MULTIARCH_TAG}",
+        )
+        monkeypatch.setattr(
+            stack_mod,
+            "_uninstall_distribution",
+            lambda name: (_ for _ in ()).throw(AssertionError("must not run")),
+        )
         assert stack_mod._drop_torchaudio_off_the_multiarch_tag() is True
 
     def test_a_failed_removal_is_reported_not_hidden(self, monkeypatch):

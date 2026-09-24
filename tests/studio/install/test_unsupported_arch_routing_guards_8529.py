@@ -71,7 +71,9 @@ _UNSUPPORTED_ARCHES = ["gfx803"]
 # RDNA 1 (unslothai/unsloth#11614): routed on Windows to AMD's multi-arch nightly index,
 # still unrouted on Linux. The Linux-side bans below keep covering it.
 _RDNA1_ARCHES = ["gfx1010", "gfx1011", "gfx1012"]
-_RDNA1_ARCH_INPUTS = _RDNA1_ARCHES + [a.upper() for a in _RDNA1_ARCHES] + [f"{a}:xnack-" for a in _RDNA1_ARCHES]
+_RDNA1_ARCH_INPUTS = (
+    _RDNA1_ARCHES + [a.upper() for a in _RDNA1_ARCHES] + [f"{a}:xnack-" for a in _RDNA1_ARCHES]
+)
 
 # The same arches as the installers may actually receive them.
 # UNSLOTH_ROCM_GFX_ARCH is user-typed (so any case), and a gcnArchName copied out of hipinfo/rocminfo carries the target
@@ -185,8 +187,12 @@ class TestRdna1RoutesOnWindowsOnly:
 
     def test_the_mirror_override_is_honoured(self, monkeypatch):
         """Air-gapped hosts mirror the nightly like they mirror repo.amd.com."""
-        monkeypatch.setenv("UNSLOTH_ROCM_WINDOWS_MULTIARCH_MIRROR", "https://mirror.example/whl-next")
-        monkeypatch.setattr(stack_mod, "_ROCM_WINDOWS_MULTIARCH_INDEX_BASE", "https://mirror.example/whl-next")
+        monkeypatch.setenv(
+            "UNSLOTH_ROCM_WINDOWS_MULTIARCH_MIRROR", "https://mirror.example/whl-next"
+        )
+        monkeypatch.setattr(
+            stack_mod, "_ROCM_WINDOWS_MULTIARCH_INDEX_BASE", "https://mirror.example/whl-next"
+        )
         assert stack_mod._windows_rocm_index_url("gfx1010") == "https://mirror.example/whl-next"
 
 

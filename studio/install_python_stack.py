@@ -368,7 +368,9 @@ def _windows_rocm_torch_pkg_specs(gfx_arch: "str | None") -> tuple[str, str, str
     for RDNA 1, the per-arch ABI pin where one exists, bare names otherwise."""
     if _is_windows_multiarch_gfx(gfx_arch):
         return _windows_multiarch_torch_pkg_specs(gfx_arch)
-    return _WINDOWS_ROCM_TORCH_PKG_SPECS.get(_bare_gfx(gfx_arch), ("torch", "torchvision", "torchaudio"))
+    return _WINDOWS_ROCM_TORCH_PKG_SPECS.get(
+        _bare_gfx(gfx_arch), ("torch", "torchvision", "torchaudio")
+    )
 
 
 # Bound companion versions for ABI compatibility while retaining older per-arch mirror builds.
@@ -5841,7 +5843,9 @@ def _ensure_rocm_torch() -> None:
         # A multi-arch venv must not keep a torchaudio linked against the torch it replaced
         # (or, on `studio update`, one a CPU pass left behind); see the helper.
         if _is_windows_multiarch_gfx(gfx_arch) and not _drop_torchaudio_off_the_multiarch_tag():
-            _safe_print("   Warning: could not remove the stale torchaudio; audio imports may fail until it is removed")
+            _safe_print(
+                "   Warning: could not remove the stale torchaudio; audio imports may fail until it is removed"
+            )
         # Flag ROCm torch installed so later phases keep it; a BNB failure must not roll it back.
         _rocm_windows_torch_installed = True
         # Always install AMD Windows bitsandbytes, even when torch was already a

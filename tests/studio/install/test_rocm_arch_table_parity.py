@@ -514,7 +514,9 @@ class TestGpuNameArchParity:
         for where, rows in _name_tables().items():
             for arch in {arch for _, arch in rows}:
                 if arch in multiarch and not where.startswith(linux_copies):
-                    assert stack_mod._windows_rocm_index_url(arch) is not None, f"{where}: {arch} has no Windows route"
+                    assert (
+                        stack_mod._windows_rocm_index_url(arch) is not None
+                    ), f"{where}: {arch} has no Windows route"
                     continue
                 assert arch in families, f"{where}: {arch} has no entry in _GFX_TO_AMD_INDEX_ARCH"
 
