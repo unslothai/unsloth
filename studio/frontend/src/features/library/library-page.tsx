@@ -463,6 +463,14 @@ function LibraryView({ search }: { search: LibrarySearch }) {
     return out;
   };
 
+  // A selected folder can't move into itself or anything under it.
+  const bulkDestinations = () =>
+    folders.filter((folder) => {
+      for (let at: LibraryFolder | undefined = folder; at; at = at.parentId ? folderById.get(at.parentId) : undefined)
+        if (selection.has(`folder:${at.id}`)) return false;
+      return true;
+    });
+
   // ── Header ─────────────────────────────────────────────────────
 
   const breadcrumb: LibraryFolder[] = [];
@@ -734,20 +742,18 @@ function LibraryView({ search }: { search: LibrarySearch }) {
                   <HugeiconsIcon icon={Folder01Icon} strokeWidth={1.75} className="size-icon" />
                   Library (no folder)
                 </DropdownMenuItem>
-                {folders
-                  .filter((folder) => !selection.has(`folder:${folder.id}`))
-                  .map((folder) => (
-                    <DropdownMenuItem
-                      key={folder.id}
-                      onSelect={() => {
-                        void Promise.all(selectedTargets().map((t) => moveTo(t, folder.id)));
-                        setSelection(new Set());
-                      }}
-                    >
-                      <HugeiconsIcon icon={Folder01Icon} strokeWidth={1.75} className="size-icon" />
-                      <span className="truncate">{folder.name}</span>
-                    </DropdownMenuItem>
-                  ))}
+                {bulkDestinations().map((folder) => (
+                  <DropdownMenuItem
+                    key={folder.id}
+                    onSelect={() => {
+                      void Promise.all(selectedTargets().map((t) => moveTo(t, folder.id)));
+                      setSelection(new Set());
+                    }}
+                  >
+                    <HugeiconsIcon icon={Folder01Icon} strokeWidth={1.75} className="size-icon" />
+                    <span className="truncate">{folder.name}</span>
+                  </DropdownMenuItem>
+                ))}
               </DropdownMenuContent>
             </DropdownMenu>
             <Button

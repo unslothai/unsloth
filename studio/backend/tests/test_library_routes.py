@@ -419,8 +419,13 @@ def test_archived_gallery_items_stay_in_the_library(client, monkeypatch):
     from core.inference import video_gallery
 
     monkeypatch.setattr(library, "_SOURCES", (library._video_items,))
-    meta = {k: 1 for k in ("width", "height", "num_frames", "fps", "duration_s", "steps", "guidance", "seed")}
-    record = video_gallery.save(b"\0\0\0\x18ftypmp42", {**meta, "prompt": "Archived", "created_at": 1})
+    meta = {
+        k: 1
+        for k in ("width", "height", "num_frames", "fps", "duration_s", "steps", "guidance", "seed")
+    }
+    record = video_gallery.save(
+        b"\0\0\0\x18ftypmp42", {**meta, "prompt": "Archived", "created_at": 1}
+    )
     video_gallery.set_flags(record["id"], archived = True)
     assert f"video:{record['id']}" in _items(client)[0]
 
