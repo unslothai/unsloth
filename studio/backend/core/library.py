@@ -781,15 +781,57 @@ def _prepare_target(target: Path, key: str) -> Path:
     return target
 
 
+def _remove(path: Path) -> None:
+    if path.is_dir() and not path.is_symlink():
+        shutil.rmtree(path)
+    else:
+        path.unlink(missing_ok = True)
+
+
+# Patched in tests to force the copy path.
+_rename = os.rename
+
+
+def _move_entry(entry: Path, dest: Path, moved: list[tuple[Path, Path]]) -> None:
+    """Move one entry, noted in `moved` once `dest` holds all of it. Across drives it is copied
+    whole before the original goes: a failed copy is cleared away and the original stays, and a
+    failed removal leaves the complete copy noted, so the rollback takes it back."""
+    try:
+        _rename(entry, dest)
+    except OSError:
+        pass
+    else:
+        moved.append((entry, dest))
+        return
+    try:
+        if entry.is_dir() and not entry.is_symlink():
+            shutil.copytree(entry, dest, symlinks = True)
+        else:
+            shutil.copy2(entry, dest, follow_symlinks = False)
+    except BaseException:
+        try:
+            _remove(dest)
+        except OSError:
+            logger.error("library.move_cleanup_failed: %s", dest, exc_info = True)
+        raise
+    moved.append((entry, dest))
+    _remove(entry)
+
+
+def _move_back(source: Path, dest: Path) -> None:
+    """Undo one move. What a failed removal left of the original goes first: the copy is whole."""
+    if source.exists() or source.is_symlink():
+        _remove(source)
+    shutil.move(str(dest), str(source))
+
+
 def _move_entries(source: Path, target: Path, moved: list[tuple[Path, Path]]) -> None:
     """Move everything in `source` into `target`, across drives too, noting each move in `moved`
     as it lands so a failure part way can be undone."""
     for entry in list(source.iterdir()):
         if entry.name in _OS_CLUTTER:
             continue
-        dest = target / entry.name
-        shutil.move(str(entry), str(dest))
-        moved.append((entry, dest))
+        _move_entry(entry, target / entry.name, moved)
 
 
 def _refuse_overlap(target: Path, resolvers) -> None:
@@ -840,7 +882,7 @@ def move_location(key: str, path: Optional[str]) -> None:
         except OSError as exc:
             for source, dest in reversed(moved):
                 try:
-                    shutil.move(str(dest), str(source))
+                    _move_back(source, dest)
                 except OSError:
                     logger.error("library.move_rollback_failed: %s", dest, exc_info = True)
             set_chosen(key, previous)

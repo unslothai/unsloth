@@ -872,6 +872,7 @@ def test_only_the_installation_owner_can_move(client, tmp_path, monkeypatch):
 
 
 def test_a_failed_move_puts_everything_back(client, tmp_path, monkeypatch):
+    import errno
     import shutil
 
     from core.inference import image_gallery
@@ -879,20 +880,65 @@ def test_a_failed_move_puts_everything_back(client, tmp_path, monkeypatch):
     old = image_gallery.gallery_dir()
     for name in ("a.png", "b.png", "c.png"):
         (old / name).write_bytes(name.encode())
-    real_move = shutil.move
+    (old / "d").mkdir()
+    (old / "d" / "e.png").write_bytes(b"e")
+
+    # Another drive: nothing renames, so every entry is copied, and the second copy runs out of
+    # space part way, leaving half a file behind it.
+    def cross_device(_src, _dst):
+        raise OSError(errno.EXDEV, "Invalid cross-device link")
+
+    real_copy = shutil.copy2
     calls = []
 
-    def flaky_move(src, dst):
+    def filling_copy(src, dst, **kwargs):
         calls.append(src)
         if len(calls) == 2:
+            Path(dst).write_bytes(b"par")
             raise OSError(28, "No space left on device")
-        return real_move(src, dst)
+        return real_copy(src, dst, **kwargs)
 
-    monkeypatch.setattr(library.shutil, "move", flaky_move)
-    response = _move(client, "images", str(tmp_path / "small-disk"))
+    monkeypatch.setattr(library, "_rename", cross_device)
+    monkeypatch.setattr(library.shutil, "copy2", filling_copy)
+    target = tmp_path / "small-disk"
+    response = _move(client, "images", str(target))
     assert response.status_code == 500
     assert "No space left" in response.json()["detail"]
-    monkeypatch.setattr(library.shutil, "move", real_move)
-    assert sorted(p.name for p in old.iterdir()) == ["a.png", "b.png", "c.png"]
+    monkeypatch.setattr(library.shutil, "copy2", real_copy)
+    assert sorted(p.name for p in old.iterdir()) == ["a.png", "b.png", "c.png", "d"]
+    assert (old / "a.png").read_bytes() == b"a.png"
+    assert not any(target.iterdir())
     assert image_gallery.gallery_dir() == old
     assert _location(client, "images")["custom"] is False
+
+
+def test_a_failed_removal_after_a_whole_copy_is_taken_back(client, tmp_path, monkeypatch):
+    import errno
+
+    from core.inference import image_gallery
+
+    old = image_gallery.gallery_dir()
+    (old / "d").mkdir()
+    (old / "d" / "keep.png").write_bytes(b"keep")
+    (old / "d" / "lost.png").write_bytes(b"lost")
+
+    def cross_device(_src, _dst):
+        raise OSError(errno.EXDEV, "Invalid cross-device link")
+
+    real_remove = library._remove
+    failed = []
+
+    def partial_remove(path):
+        # The original loses one file, then the removal fails, once.
+        if path == old / "d" and not failed:
+            failed.append(path)
+            (path / "lost.png").unlink()
+            raise OSError(13, "Permission denied")
+        real_remove(path)
+
+    monkeypatch.setattr(library, "_rename", cross_device)
+    monkeypatch.setattr(library, "_remove", partial_remove)
+    assert _move(client, "images", str(tmp_path / "other-disk")).status_code == 500
+    monkeypatch.setattr(library, "_remove", real_remove)
+    assert sorted(p.name for p in (old / "d").iterdir()) == ["keep.png", "lost.png"]
+    assert image_gallery.gallery_dir() == old
