@@ -45,6 +45,14 @@ def test_adding_the_same_item_twice_reports_it_is_already_there(project, media):
     assert sorted(p.name for p in (project / "sandbox" / "images").iterdir()) == ["abc123.png"]
 
 
+def test_an_edited_project_copy_is_kept(project, media, copy_mode):
+    gp.copy_into_project(media, "p1", "images")
+    dest = project / "sandbox" / "images" / "abc123.png"
+    dest.write_bytes(b"edited in the project, a different size")
+    assert gp.copy_into_project(media, "p1", "images")["already"] is True
+    assert dest.read_bytes() == b"edited in the project, a different size"
+
+
 def test_an_unknown_project_is_refused(project, media):
     with pytest.raises(gp.ProjectNotFound):
         gp.copy_into_project(media, "gone", "images")
@@ -106,3 +114,22 @@ def test_concurrent_adds_of_one_item_all_succeed(project, media, copy_mode):
 
 def test_temp_names_are_unique_per_call():
     assert gp._tmp_name("a.png") != gp._tmp_name("a.png")
+
+
+def test_a_folder_swapped_mid_copy_is_refused_without_dir_fd(project, media, tmp_path, monkeypatch):
+    monkeypatch.setattr(gp, "_USE_DIR_FD", False)
+    folder = project / "sandbox" / "images"
+    folder.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    real_copyfile = gp.shutil.copyfile
+
+    def swap_then_copy(src, dst):
+        folder.rename(project / "sandbox" / "images-old")
+        folder.symlink_to(outside, target_is_directory = True)
+        return real_copyfile(src, dst)
+
+    monkeypatch.setattr(gp.shutil, "copyfile", swap_then_copy)
+    with pytest.raises(PermissionError):
+        gp.copy_into_project(media, "p1", "images")
+    assert list(outside.iterdir()) == []

@@ -41,7 +41,7 @@ export interface FlaggableItem {
   id: string;
   pinned?: boolean;
   archived?: boolean;
-  /** Manual sort key in epoch seconds, set once dragged; replaces created_at in the sort. */
+  /** The server's unpinned sort key in epoch seconds (drag key, else file mtime). */
   order_at?: number | null;
   created_at: number | string;
 }
