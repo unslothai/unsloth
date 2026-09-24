@@ -179,7 +179,6 @@ class HarmonyTextStreamer:
         self._emitted_think_close: bool = False
         self._analysis_emitted: int = 0
         self._final_emitted: int = 0
-        self._raw: str = ""
 
     def put(self, value):
         import torch
@@ -201,13 +200,14 @@ class HarmonyTextStreamer:
 
         gen_ids = self._token_ids[self._prompt_len :]
         raw = self.tokenizer.decode(gen_ids, skip_special_tokens = False)
-        self._process_incremental(raw)
+        # A trailing U+FFFD may be a character whose bytes are still arriving; end() emits it.
+        self._process_incremental(raw.rstrip("\ufffd"))
 
     def end(self):
         gen_ids = self._token_ids[self._prompt_len :]
         if gen_ids:
-            self._raw = self.tokenizer.decode(gen_ids, skip_special_tokens = False)
-        self._process_incremental(self._raw, final = True)
+            raw = self.tokenizer.decode(gen_ids, skip_special_tokens = False)
+            self._process_incremental(raw)
 
         if self._emitted_think_open and not self._emitted_think_close:
             self._queue.put("</think>")
@@ -232,13 +232,8 @@ class HarmonyTextStreamer:
                 raise StopIteration
             return val
 
-    def _process_incremental(
-        self,
-        raw: str,
-        final: bool = False,
-    ) -> None:
+    def _process_incremental(self, raw: str) -> None:
         """Parse harmony channels and emit per-channel deltas (tracked by length, not whole-text diff)."""
-        self._raw = raw
         has_channel_token = "<|channel|>" in raw
         matches = list(self._HARMONY_RE.finditer(raw))
 
@@ -251,9 +246,6 @@ class HarmonyTextStreamer:
         for m in matches:
             channel = m.group(1).lower()
             content = m.group(2)
-            if not final:
-                # A trailing U+FFFD may be a character whose bytes are still arriving.
-                content = content.rstrip("\ufffd")
 
             if channel == "analysis":
                 if not self._emitted_think_open:

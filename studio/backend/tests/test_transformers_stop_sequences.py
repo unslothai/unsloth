@@ -411,7 +411,7 @@ def test_harmony_stream_waits_for_split_multibyte_characters(stop):
     torch = pytest.importorskip("torch")
     body = "饺子 🦥"
     split = [bytes([b]) for b in body.encode()]
-    parts = [b"<|channel|>analysis<|message|>", *split]
+    parts = [b"<|channel|>analysis<|message|>", *split, b"\xf0"]
     parts += [b"<|end|><|start|>assistant<|channel|>final<|message|>", *split, b"\xf0", b"\x9f"]
 
     class Tokenizer(_Tokenizer):
@@ -426,4 +426,4 @@ def test_harmony_stream_waits_for_split_multibyte_characters(stop):
     for token in Tokenizer.pieces:
         streamer.put(torch.tensor([token]))
     streamer.end()
-    assert "".join(streamer) == f"<think>{body}</think>{body}\ufffd"
+    assert "".join(streamer) == f"<think>{body}\ufffd</think>{body}\ufffd"
