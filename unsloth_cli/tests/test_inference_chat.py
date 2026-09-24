@@ -1412,8 +1412,10 @@ _RESIDENT_Q8 = {
         (
             "Qwen3-0.6B-GGUF",
             {**_RESIDENT_Q8, "active_model": "Qwen3-0.6B-GGUF", "model_identifier": None},
-            "Q8_0",
+            None,
         ),
+        ("Qwen3-0.6B-GGUF", _RESIDENT_Q8, "Q8_0"),
+        ("unsloth/Qwen3-0.6B-GGUF", {**_RESIDENT_Q8, "model_identifier": None}, "Q8_0"),
         ("unsloth/Qwen3-0.6B-GGUF", {**_RESIDENT_Q8, "is_gguf": False}, None),
         ("unsloth/Qwen3-0.6B-GGUF", None, None),
     ],

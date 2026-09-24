@@ -938,9 +938,13 @@ class HttpChatBackend:
         if not loaded:
             return None
         loaded = str(loaded)
-        if model == loaded or (not os.path.exists(model) and model.casefold() == loaded.casefold()):
-            return status.get("gguf_variant")
-        return None
+        if os.path.exists(model):
+            same = model == loaded
+        else:
+            # The server loads an ownerless id as unsloth/<id> (ModelConfig.from_identifier).
+            requested = model if "/" in model else f"unsloth/{model}"
+            same = requested.casefold() == loaded.casefold()
+        return status.get("gguf_variant") if same else None
 
     def stream(
         self,
