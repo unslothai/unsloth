@@ -652,6 +652,33 @@ def test_variant_expander_refreshes_after_delete():
     assert del_confirm, "delete onConfirm must bump refreshKey after a successful delete"
 
 
+def test_gguf_vision_capability_is_threaded_through_deferred_chat_load():
+    """Variant metadata is more authoritative than the parent catalog row for GGUF
+    vision support. Both the direct pick and the settings action must carry the hint,
+    the pinned-quant row must forward its validated verdict, and the collapsed
+    sole-quant row must not drop the mmproj answer it already read."""
+    picker = _read("features/model-picker/components/model-selector/pickers.tsx")
+    assert "const variantVisionHint = hasVision === false ? false : undefined;" in picker
+    assert "hasVision: normalizeGgufVisionCapability(res?.has_vision)," in picker
+    assert picker.count("isVision: variantVisionHint") >= 2
+    assert "variantVisionHint," in picker
+    assert "visionByRepo: ReadonlyMap<string, boolean>" in picker
+    assert "pinnedQuantValidation.visionByRepo.get(entry.repoId) === false" in picker
+    assert picker.count("isVision: pinnedVisionHint") >= 2
+    assert "isVision: sole.hasVision === false ? false : undefined," in picker
+    assert "cachedRepo?.has_vision === false" not in picker
+
+    types = _read("features/model-picker/components/model-selector/types.ts")
+    runtime = _read("features/chat/hooks/use-chat-model-runtime.ts")
+    page = _read("features/chat/chat-page.tsx")
+    assert "isVision?: boolean;" in types
+    assert "isVision?: boolean;" in runtime
+    assert "isVision: meta?.isVision" in page
+    assert "isKnownTextOnlySelection(" in page
+    assert "selection,\n                contextKey:" in page
+    assert "{ ...pending.selection, isDownloaded: true }" in page
+
+
 def test_local_picker_rows_require_chat_capability():
     """Local inventory rows can be classified non-chat (canChat false, e.g."""
     src = _read("features/model-picker/inventory/use-chat-picker-inventory.ts")
