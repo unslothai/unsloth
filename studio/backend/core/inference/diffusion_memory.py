@@ -1151,6 +1151,70 @@ def _pin_vision_embedding_device(module: Any) -> int:
     return patched
 
 
+# Host RAM left free after pinning streamed weights: the same floor the whole-module pin path uses. Env override
+# ``UNSLOTH_DIFFUSION_GROUP_OFFLOAD_PIN``: ``0`` never pins the streamed-encoder tiers, ``1`` always does.
+GROUP_OFFLOAD_PIN_ENV = "UNSLOTH_DIFFUSION_GROUP_OFFLOAD_PIN"
+_PIN_RESERVE_MIN_MIB = 4096
+_PIN_RESERVE_FRACTION = 0.15
+
+
+def _module_host_mib(module: Any) -> int:
+    """Bytes of ``module``'s parameters and buffers, in MiB, each tensor counted once."""
+    try:
+        seen: set[int] = set()
+        total = 0
+        tensors = list(module.parameters(recurse = True)) + list(module.buffers(recurse = True))
+        for tensor in tensors:
+            if id(tensor) in seen:
+                continue
+            seen.add(id(tensor))
+            total += int(tensor.numel()) * int(tensor.element_size())
+        return total // (1024 * 1024)
+    except Exception:  # noqa: BLE001 - an unsizeable module is priced as nothing to pin
+        return 0
+
+
+def _pin_budget_mib() -> Optional[int]:
+    """Host RAM that may be pinned while leaving ``max(4 GiB, 15%)`` of it for everything else, or
+    None when host memory cannot be read."""
+    total, _available = _system_memory_mib()
+    available = _available_system_memory_mib()
+    if total is None or available is None:
+        return None
+    reserve = max(_PIN_RESERVE_MIN_MIB, int(int(total) * _PIN_RESERVE_FRACTION))
+    return max(0, int(available) - reserve)
+
+
+def _streamed_pin_plan(transformer_mib: int, encoder_mib: int, logger: Any = None) -> tuple[bool, bool]:
+    """Whether to pin the streamed transformer(s) and the streamed encoders, in that priority."""
+    forced = str(os.environ.get(GROUP_OFFLOAD_PIN_ENV, "")).strip().lower()
+    if forced in ("0", "off", "false", "no"):
+        return False, False
+    if forced in ("1", "on", "true", "yes"):
+        return True, True
+    budget = _pin_budget_mib()
+    if budget is None or budget <= 0:
+        pin_transformer = pin_encoders = False
+    else:
+        pin_transformer = transformer_mib <= budget
+        pinned = transformer_mib if pin_transformer else 0
+        pin_encoders = pinned + encoder_mib <= budget
+    if logger is not None:
+        try:
+            logger.info(
+                "diffusion.memory: streamed-encoder tier pins transformer=%s (%d MiB) encoders=%s (%d MiB) "
+                "against %s MiB of pinnable host RAM",
+                pin_transformer,
+                transformer_mib,
+                pin_encoders,
+                encoder_mib,
+                budget,
+            )
+        except Exception:  # noqa: BLE001
+            pass
+    return pin_transformer, pin_encoders
+
+
 def _apply_group_offload(
     pipe: Any,
     device: str,
@@ -1221,16 +1285,24 @@ def _apply_group_offload(
                 gkwargs["non_blocking"] = True
             if "record_stream" in _params:
                 gkwargs["record_stream"] = True
+        # Pin decisions for the streamed-encoder tiers, applied below: (transformer pinned, encoders pinned).
+        pin_streamed = (True, True)
         if stream_text_encoders and "low_cpu_mem_usage" in _params:
             # The streamed path PINS every offloaded parameter in host RAM when a copy stream is in use (diffusers
             # group_offloading `_init_cpu_param_dict`), which is a fine trade when group offload was already the plan.
-            # It is not a fine trade here: this tier is only ever reached as a rescue from whole-module offload, which
-            # pins nothing, on a card small enough that the companions did not fit. Those hosts are not reliably
-            # RAM-rich either, and silently converting a device-memory shortfall into ten-plus GB of unswappable host
-            # RAM is how #8188's machine got into trouble in the first place. low_cpu_mem_usage trades a slower
-            # host-to-device copy for not pinning; the encoders this tier streams run ONCE per call, so that copy is
-            # paid once, not per step.
-            gkwargs["low_cpu_mem_usage"] = True
+            # These tiers are reached on cards too small for the companions, and those hosts are not reliably RAM-rich:
+            # silently converting a device-memory shortfall into ten-plus GB of unswappable host RAM is how #8188's
+            # machine got into trouble. So pin only what host RAM covers with max(4 GiB, 15%) left over, transformer
+            # first (its copy is paid every STEP), then the encoders (paid once per call). What is not pinned uses
+            # low_cpu_mem_usage, which re-pins every tensor on every onload: on Qwen-Image-2.1 GGUF Q8_0 on a 16 GB
+            # card that took a 25-step image from 8.5 s pinned to 25.1 s, and the resident-transformer tier's encoder
+            # pass from 0.39 s to 2.37 s.
+            pin_streamed = _streamed_pin_plan(
+                sum(_module_host_mib(m) for m in streamed.values()),
+                sum(_module_host_mib(m) for m in streamed_encoders.values()),
+                logger,
+            )
+            gkwargs["low_cpu_mem_usage"] = not pin_streamed[0]
         # Place the smaller components resident BEFORE attaching the transformer group-offload hooks: a companion .to()
         # OOM then returns False with no hooks installed, and diffusers rejects enable_model_cpu_offload once group
         # hooks exist.
@@ -1255,6 +1327,8 @@ def _apply_group_offload(
         # plan said leaf and the application said block. num_blocks_per_group goes with it: leaf level has no blocks.
         ekwargs = {k: v for k, v in gkwargs.items() if k != "num_blocks_per_group"}
         ekwargs["offload_type"] = "leaf_level"
+        if "low_cpu_mem_usage" in gkwargs:
+            ekwargs["low_cpu_mem_usage"] = not pin_streamed[1]
         for name, module in streamed_encoders.items():
             try:
                 apply_group_offloading(module, **ekwargs)
