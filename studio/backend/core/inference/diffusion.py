@@ -7470,7 +7470,9 @@ class DiffusionBackend:
                         try:
                             # inference_mode is faster than no_grad and numerically identical here.
                             with torch.inference_mode():
-                                out = render_thread.run("diffusion", lambda: pipe(**chunk_kwargs).images)
+                                out = render_thread.run(
+                                    "diffusion", lambda: pipe(**chunk_kwargs).images
+                                )
                         except Exception as exc:  # noqa: BLE001 - reraised unless a splittable OOM
                             oom = is_oom_error(exc)
                             if oom:

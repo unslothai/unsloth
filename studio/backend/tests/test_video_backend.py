@@ -9625,7 +9625,9 @@ def test_the_boundary_marker_waits_out_a_busy_capture_lock(fake_runtime, monkeyp
     assert at_decode.get("phase") == "decode"
 
 
-def test_generate_runs_the_video_pipeline_through_the_render_thread(fake_runtime, tmp_path, monkeypatch):
+def test_generate_runs_the_video_pipeline_through_the_render_thread(
+    fake_runtime, tmp_path, monkeypatch
+):
     from core.inference import video as video_mod
 
     names = []
