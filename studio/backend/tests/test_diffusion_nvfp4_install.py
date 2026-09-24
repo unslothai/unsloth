@@ -287,6 +287,17 @@ def test_offline_refuses_with_a_reason_and_is_not_memoised(env, monkeypatch):
     assert _ensure(env)[0]
 
 
+def test_uv_offline_refuses_before_any_index_probe(env, monkeypatch):
+    probes: list = []
+    monkeypatch.setattr(inst, "_reachable", lambda url: probes.append(url) or True)
+    monkeypatch.setenv("UV_OFFLINE", "1")
+    ok, reason = _ensure(env)
+    assert not ok and "offline" in reason
+    assert probes == [] and env.commands == []
+    monkeypatch.delenv("UV_OFFLINE")
+    assert _ensure(env)[0]
+
+
 def test_unreachable_index_refuses_without_running_the_installer(env, monkeypatch):
     monkeypatch.setattr(inst, "_reachable", lambda url: False)
     ok, reason = _ensure(env)

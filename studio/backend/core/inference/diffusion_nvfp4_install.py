@@ -616,7 +616,13 @@ def _ensure(
             return _finish(cached[0], cached[1], None, None)
         from utils.utils import hf_env_offline
 
-        if hf_env_offline():
+        # UV_OFFLINE too: the install probes PyPI and the flashinfer index before uv ever runs.
+        if hf_env_offline() or os.environ.get("UV_OFFLINE", "").strip().lower() in (
+            "1",
+            "true",
+            "yes",
+            "on",
+        ):
             return _finish(
                 False,
                 "flashinfer is not installed and Unsloth is in offline mode",
