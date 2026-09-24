@@ -12063,7 +12063,9 @@ def test_a_reachable_nvfp4_checkpoint_still_installs_flashinfer(fake_runtime, mo
     assert installs == [("cuda", False)]
 
 
-def test_with_the_nvfp4_switch_off_a_reachable_checkpoint_installs_nothing(fake_runtime, monkeypatch):
+def test_with_the_nvfp4_switch_off_a_reachable_checkpoint_installs_nothing(
+    fake_runtime, monkeypatch
+):
     # This module runs with UNSLOTH_NVFP4_DIFFUSION=1 (conftest); unset it for the shipped default. A plan
     # that settled nvfp4 is the path that reaches the gate without an explicit request, which the switch
     # refuses before the load (test_nvfp4_diffusion_flag.py).

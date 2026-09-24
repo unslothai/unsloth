@@ -611,12 +611,18 @@ def test_the_loaders_never_ask_whether_an_nvfp4_checkpoint_will_load(monkeypatch
     monkeypatch.setattr(
         "huggingface_hub.HfApi", lambda *a, **k: types.SimpleNamespace(model_info = asked.append)
     )
-    assert DiffusionBackend._nvfp4_checkpoint_will_load(
-        object(), None, "Tongyi-MAI/Z-Image-Turbo", None, None
-    ) is False
-    assert VideoBackend._nvfp4_denoiser_checkpoint_will_load(
-        object(), _wan_a14b(), _WAN_T2V, None, None
-    ) is False
+    assert (
+        DiffusionBackend._nvfp4_checkpoint_will_load(
+            object(), None, "Tongyi-MAI/Z-Image-Turbo", None, None
+        )
+        is False
+    )
+    assert (
+        VideoBackend._nvfp4_denoiser_checkpoint_will_load(
+            object(), _wan_a14b(), _WAN_T2V, None, None
+        )
+        is False
+    )
     assert asked == []
 
 
