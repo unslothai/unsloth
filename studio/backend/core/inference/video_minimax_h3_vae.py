@@ -73,6 +73,9 @@ H3_VAE_INT8_ROT_GROUP = 256
 # Blocks the opt-in int8 decoder leaves in float16. Quantising only blocks 0-8 measured 56 dB, only 27-35 73 dB: the
 # early blocks' error propagates through the rest, so the first half stays float (62 dB for the whole decode).
 H3_VAE_INT8_FLOAT_BLOCKS = 18
+# Oldest Triton the kernels are verified on. Triton 3.2 compiles them but computes wrong GroupNorm statistics for a
+# channels-last input (the encoder's layout), silently, so older releases keep the stock path.
+H3_VAE_MIN_TRITON = (3, 3)
 
 _SPEED_OFF = "off"
 _SPEED_EAGER = "eager"
@@ -1290,6 +1293,20 @@ def _install_decode_scope(vae: Any, *, fp16_accum: bool) -> bool:
 # ── entry point ────────────────────────────────────────────────────────────────────────────────────────────────────
 
 
+@lru_cache(maxsize = 4)
+def _triton_version_ok(version: Optional[str] = None) -> bool:
+    if version is None:
+        try:
+            import triton
+            version = str(triton.__version__)
+        except Exception:  # noqa: BLE001
+            return False
+    import re
+
+    match = re.match(r"(\d+)\.(\d+)", version)
+    return bool(match) and (int(match.group(1)), int(match.group(2))) >= H3_VAE_MIN_TRITON
+
+
 @lru_cache(maxsize = 1)
 def _triton_jit_toolchain_ok() -> bool:
     """On Windows, Triton's JIT needs the MSVC CRT headers; ask the same probe the compile gate asks. Elsewhere,
@@ -1316,7 +1333,7 @@ def cuda_fast_path_available(vae: Any = None) -> bool:
                 return False
         except Exception:  # noqa: BLE001
             return False
-    return _kernels() is not None and _triton_jit_toolchain_ok()
+    return _triton_version_ok() and _kernels() is not None and _triton_jit_toolchain_ok()
 
 
 def apply_h3_vae_speedups(

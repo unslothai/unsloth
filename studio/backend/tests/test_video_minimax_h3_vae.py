@@ -21,7 +21,8 @@ from core.inference import video_minimax_h3_vae as H
 
 CUDA = torch.cuda.is_available() and not getattr(torch.version, "hip", None)
 needs_cuda = pytest.mark.skipif(
-    not CUDA or H._kernels() is None, reason = "needs an NVIDIA GPU with Triton"
+    not CUDA or H._kernels() is None or not H._triton_version_ok(),
+    reason = "needs an NVIDIA GPU with a Triton the kernels are verified on",
 )
 
 
@@ -738,6 +739,7 @@ def test_apply_holds_fp16_accumulation_off_outside_the_plan(monkeypatch):
 def test_the_fast_path_is_for_the_h3_vae_class_only(monkeypatch):
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
     monkeypatch.setattr(H, "_kernels", lambda: object())
+    monkeypatch.setattr(H, "_triton_version_ok", lambda: True)
     monkeypatch.setattr(H, "_triton_jit_toolchain_ok", lambda: True)
 
     class AutoencoderKLWan:
@@ -771,6 +773,7 @@ def test_the_fast_path_asks_the_windows_triton_toolchain(monkeypatch, platform, 
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
     monkeypatch.setattr(torch.version, "hip", None, raising = False)
     monkeypatch.setattr(H, "_kernels", lambda: object())
+    monkeypatch.setattr(H, "_triton_version_ok", lambda: True)
     monkeypatch.setattr(H.sys, "platform", platform)
     monkeypatch.setattr(msvc, "crt_headers_reachable", probe)
     H._triton_jit_toolchain_ok.cache_clear()
@@ -847,6 +850,32 @@ def test_kernel_annotations_resolve_against_the_module_globals():
         for arg, ann in fn.__annotations__.items():
             if isinstance(ann, str):
                 eval(ann, fn.__globals__)  # noqa: S307 - a Triton annotation such as "tl.constexpr"
+
+
+@pytest.mark.parametrize(
+    "version, ok",
+    [
+        ("3.2.0", False),  # compiles, but wrong GroupNorm statistics for a channels-last input
+        ("3.1.0", False),
+        ("3.3.1", True),
+        ("3.6.0", True),
+        ("3.8.0.post28", True),  # triton-windows
+        ("3.2.0+git35c6c7c6", False),
+        ("not a version", False),
+    ],
+)
+def test_the_fast_path_needs_a_verified_triton(monkeypatch, version, ok):
+    assert H._triton_version_ok(version) is ok
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.version, "hip", None, raising = False)
+    monkeypatch.setattr(H, "_kernels", lambda: object())
+    monkeypatch.setattr(H, "_triton_jit_toolchain_ok", lambda: True)
+    monkeypatch.setattr(H, "_triton_version_ok", lambda: ok)
+
+    class AutoencoderKLMiniMaxH3:
+        pass
+
+    assert H.cuda_fast_path_available(AutoencoderKLMiniMaxH3()) is ok
 
 
 # ── shared fp16-accumulation owner, atomic int8 install ───────────────────────────────────────────────────────────
