@@ -1059,7 +1059,9 @@ def _release_render_on_unload(method):
             _clear_exception_frames(exc)
             raise
         finally:
-            if self._load_token != token:
+            # A replacing load whose begin_load bumped the token before this render began cancels it
+            # without moving the token again, so a pending or running teardown counts too.
+            if self._load_token != token or self._teardown_waiters or self._transition_owns_slot:
                 try:
                     clear_gpu_cache()
                 except Exception as exc:

@@ -7202,6 +7202,102 @@ def test_unload_mid_render_releases_the_pipeline(fake_runtime, monkeypatch):
     assert True in cleared_with_pipe_gone
 
 
+def test_replacing_load_mid_render_releases_the_pipeline(fake_runtime, monkeypatch):
+    # begin_load bumps the token before its prefetch, so a render started then keeps that token while
+    # load_pipeline cancels it and tears down. Forced order: the teardown's cache clear runs while the
+    # render's traceback still pins the pipe, so the render must clear again after dropping it.
+    import threading
+    import weakref
+
+    from core.inference import diffusion as diffusion_mod
+
+    backend = DiffusionBackend()
+    at_step0 = threading.Event()
+    resume = threading.Event()
+    teardown_cleared = threading.Event()
+    render_done = threading.Event()
+
+    class _SteppingPipe:
+        def __init__(self) -> None:
+            self._interrupt = False
+
+        def __call__(self, *, callback_on_step_end = None, num_inference_steps = 8, **kwargs):
+            for i in range(num_inference_steps):
+                if self._interrupt:
+                    break
+                if callback_on_step_end is not None:
+                    callback_on_step_end(self, i, 0.0, {})
+                if i == 0:
+                    at_step0.set()
+                    resume.wait(5)
+            return types.SimpleNamespace(images = [_FakeImage()])
+
+    pipe = _SteppingPipe()
+    pipe_ref = weakref.ref(pipe)
+    backend._state = _LoadState(
+        pipe = pipe,
+        family = detect_family("unsloth/Z-Image-GGUF"),
+        repo_id = "r",
+        base_repo = "b",
+        device = "cpu",
+        dtype = "float32",
+        cpu_offload = False,
+    )
+    del pipe
+    cleared_with_pipe_gone = []
+
+    def _clear():
+        cleared_with_pipe_gone.append(pipe_ref() is None)
+        teardown_cleared.set()
+
+    monkeypatch.setattr("core.inference.diffusion.clear_gpu_cache", _clear)
+    real_clear_frames = diffusion_mod._clear_exception_frames
+
+    def _late_clear_frames(exc):
+        teardown_cleared.wait(5)
+        real_clear_frames(exc)
+
+    monkeypatch.setattr(diffusion_mod, "_clear_exception_frames", _late_clear_frames)
+    # begin_load's bump, before the render starts.
+    backend._load_token += 1
+    out: dict = {}
+
+    def _run():
+        try:
+            out["res"] = backend.generate(prompt = "p", steps = 8)
+        except Exception as exc:  # noqa: BLE001
+            out["exc"] = exc
+        render_done.set()
+
+    def _replacing_load():
+        # load_pipeline's teardown, then the new load holding the slot.
+        with backend._lock:
+            with backend._generation_cancel_lock:
+                backend._active_generate_cancel.set()
+            backend._reserve_teardown_locked()
+        with backend._model_transition_slot():
+            with backend._lock:
+                try:
+                    backend._unload_locked()
+                finally:
+                    backend._release_teardown_locked()
+            render_done.wait(5)
+
+    t = threading.Thread(target = _run)
+    t.start()
+    assert at_step0.wait(5)
+    ld = threading.Thread(target = _replacing_load)
+    ld.start()
+    assert backend._active_generate_cancel.wait(5)
+    resume.set()
+    t.join(5)
+    ld.join(5)
+    assert "cancelled" in str(out["exc"]).lower()
+    assert pipe_ref() is None
+    assert cleared_with_pipe_gone[0] is False, "the forced order did not happen"
+    assert True in cleared_with_pipe_gone
+
+
 def test_unload_waits_for_in_flight_denoise_before_teardown():
     # Regression: unload() must wait for a running denoise to exit before _unload_locked() tears down process-wide state it depends on.
     import threading
