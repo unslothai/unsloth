@@ -92,6 +92,12 @@ expect_rc "any other remoteless subcommand fails" 1 "$PIN" \
     "${UV_CLONE}git\tpull\n"
 expect_rc "an allowed remote with an extra -c option fails" 1 "$PIN" \
     "${UV_CLONE}git\t-c core.sshCommand=evil fetch $REMOTE\n"
+expect_rc "pushing to the allowed remote fails" 1 "$PIN" \
+    "${UV_CLONE}git\tpush $REMOTE HEAD:refs/heads/oops\n"
+expect_rc "cloning the allowed remote outside uv's fetch fails" 1 "$PIN" \
+    "${UV_CLONE}git\tclone $REMOTE /tmp/out\n"
+expect_rc "a -c after the subcommand fails too" 1 "$PIN" \
+    "${UV_CLONE}git\tfetch -c core.sshCommand=evil $REMOTE\n"
 expect_rc "a compiler next to the allowed clone still fails" 1 "$PIN" \
     "${UV_CLONE}clang\t-c foo.c\n"
 expect_rc "brew next to the allowed clone still fails" 1 "$PIN" \

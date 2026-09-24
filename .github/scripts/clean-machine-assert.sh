@@ -89,8 +89,9 @@ _is_uv_git_cache_op() { # the traced argument string
   return 1
 }
 
-# A git line that names a remote: every remote allowed, and no `-c` except the
-# `remote.origin.url=` uv passes to `submodule update`.
+# A git line that names a remote: every remote allowed, no `-c` except the
+# `remote.origin.url=` uv passes to `submodule update`, and the subcommand one that only
+# reads from it (uv's `fetch` and `submodule update`, or `ls-remote`). `push` does not.
 _is_allowed_remote_git_line() { # the traced argument string, the allowed remotes
   _named=false
   while IFS= read -r _remote; do
@@ -99,15 +100,19 @@ _is_allowed_remote_git_line() { # the traced argument string, the allowed remote
     printf '%s\n' "$2" | grep -qxF -- "$_remote" || return 1
   done <<< "$(_git_line_remotes "$1")"
   [ "$_named" = true ] || return 1
-  _prev=""
   set -f
-  for _word in $1; do
-    if [ "$_prev" = "-c" ]; then
-      case "$_word" in remote.origin.url=*) ;; *) set +f; return 1 ;; esac
-    fi
-    _prev=$_word
-  done
+  set -- $1
   set +f
+  while [ "${1:-}" = "-c" ]; do
+    case "${2:-}" in remote.origin.url=*) shift 2 ;; *) return 1 ;; esac
+  done
+  case "${1:-} ${2:-}" in
+    "fetch "*|"ls-remote "*|"submodule update") ;;
+    *) return 1 ;;
+  esac
+  for _word in "$@"; do
+    [ "$_word" = "-c" ] && return 1
+  done
   return 0
 }
 
