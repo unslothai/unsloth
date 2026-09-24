@@ -5194,7 +5194,8 @@ export function ImagesPage({
                 />
                 {/* Actions grouped in one glass toolbar so they stay legible over any image. Size and seed
                     live in the Recipe popover. */}
-                <div className="absolute bottom-4 right-4 flex items-center gap-0.5 rounded-xl bg-background/80 p-1 shadow-lg ring-1 ring-border backdrop-blur">
+                {/* No button borders: focus returning from a menu would draw one. Keyboard focus tints instead. */}
+                <div className="absolute bottom-4 right-4 flex items-center gap-0.5 rounded-xl bg-background/80 p-1 shadow-lg ring-1 ring-border backdrop-blur [&_[data-slot=button]]:border-0 [&_[data-slot=button]:focus-visible]:bg-muted">
                   <RecipePopover image={selected} onRestore={restoreSettings} active={active} />
                   <DropdownMenu>
                     <DropdownMenuTrigger asChild={true}>

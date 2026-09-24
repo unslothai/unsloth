@@ -108,11 +108,11 @@ export function GalleryItemMenu({
           variant="ghost"
           aria-label={`More actions for this ${noun}`}
           className={cn(
-            // Circular hover.
-            "rounded-full",
+            // Circular hover, no border: focus returning on close would draw one. Keyboard focus tints instead.
+            "rounded-full border-0 focus-visible:bg-muted dark:focus-visible:bg-muted/50",
             // Reads over any thumbnail, whatever its colours.
             overlay &&
-              "bg-background/80 text-foreground shadow-sm ring-1 ring-border backdrop-blur hover:bg-background",
+              "bg-background/80 text-foreground shadow-sm backdrop-blur hover:bg-background focus-visible:bg-background dark:focus-visible:bg-background",
             row && "text-muted-foreground hover:text-foreground",
             className,
           )}
