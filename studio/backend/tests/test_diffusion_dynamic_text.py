@@ -11,7 +11,9 @@ torch = pytest.importorskip("torch")
 
 from core.inference import diffusion_dynamic_text as dt  # noqa: E402
 
-pytestmark = pytest.mark.skipif(not dt.supported(), reason = "torch lacks compiler.config.dynamic_sources")
+pytestmark = pytest.mark.skipif(
+    not dt.supported(), reason = "torch lacks compiler.config.dynamic_sources"
+)
 
 
 def _cfg():
@@ -45,7 +47,12 @@ def test_allowlist_is_set_only_inside_forward():
     m = QwenImage21Transformer2DModel()
     assert dt.install(m) is True
     m(torch.zeros(1))
-    for name in ("L['hidden_states']", "L['layer_cache'].k", "L['segments'][0][1]", "L['cache_write_slice'].stop"):
+    for name in (
+        "L['hidden_states']",
+        "L['layer_cache'].k",
+        "L['segments'][0][1]",
+        "L['cache_write_slice'].stop",
+    ):
         assert name in m.seen.split(",")
     assert cfg.dynamic_sources == before
 
@@ -107,7 +114,12 @@ def test_first_segment_start_stays_static():
     try:
         cfg.dynamic_sources = ",".join(dt.sources_for(QwenImage21Transformer2DModel()))
         assert not is_dynamic("L['segments'][0][0]")
-        for name in ("L['segments'][0][1]", "L['segments'][2][0]", "L['segments'][2][1]", "L['layer_cache'].v"):
+        for name in (
+            "L['segments'][0][1]",
+            "L['segments'][2][0]",
+            "L['segments'][2][1]",
+            "L['layer_cache'].v",
+        ):
             assert is_dynamic(name), name
         for name in ("L['modulation']", "L['hidden_states_2']", "L['layer_cache'].kv"):
             assert not is_dynamic(name), name
@@ -119,15 +131,32 @@ def test_compile_cache_key_changes_only_for_armed_family():
     from core.inference import diffusion_compile_cache as cc
 
     kwargs = {"fullgraph": True, "dynamic": None, "mode": "max-autotune-no-cudagraphs"}
-    other = cc.model_fingerprint(family = "x", transformer = OtherTransformer(), dtype = "bf16", quant = None,
-                                 attention_backend = None, compile_kwargs = kwargs)
+    other = cc.model_fingerprint(
+        family = "x",
+        transformer = OtherTransformer(),
+        dtype = "bf16",
+        quant = None,
+        attention_backend = None,
+        compile_kwargs = kwargs,
+    )
     assert "dynamic_text" not in other
-    q21 = cc.model_fingerprint(family = "qwen-image-2.1", transformer = QwenImage21Transformer2DModel(),
-                               dtype = "bf16", quant = None, attention_backend = None, compile_kwargs = kwargs)
+    q21 = cc.model_fingerprint(
+        family = "qwen-image-2.1",
+        transformer = QwenImage21Transformer2DModel(),
+        dtype = "bf16",
+        quant = None,
+        attention_backend = None,
+        compile_kwargs = kwargs,
+    )
     assert q21["dynamic_text"]
-    q21_default = cc.model_fingerprint(family = "qwen-image-2.1", transformer = QwenImage21Transformer2DModel(),
-                                       dtype = "bf16", quant = None, attention_backend = None,
-                                       compile_kwargs = {**kwargs, "dynamic": True})
+    q21_default = cc.model_fingerprint(
+        family = "qwen-image-2.1",
+        transformer = QwenImage21Transformer2DModel(),
+        dtype = "bf16",
+        quant = None,
+        attention_backend = None,
+        compile_kwargs = {**kwargs, "dynamic": True},
+    )
     assert "dynamic_text" not in q21_default
 
 
@@ -146,7 +175,11 @@ def test_qwen_image_text_stream_is_armed():
     assert dt.install(m) is True
     m(torch.zeros(1))
     seen = m.seen.split(",")
-    for name in ("L['encoder_hidden_states']", "L['encoder_hidden_states_mask']", "L['image_rotary_emb'][1]"):
+    for name in (
+        "L['encoder_hidden_states']",
+        "L['encoder_hidden_states_mask']",
+        "L['image_rotary_emb'][1]",
+    ):
         assert name in seen
     assert "L['hidden_states']" not in seen
 
@@ -162,11 +195,19 @@ def test_qwen_image_hook_paths_match_on_regex_torch():
     before = cfg.dynamic_sources
     try:
         cfg.dynamic_sources = ",".join(dt.sources_for(QwenImageTransformer2DModel()))
-        for name in ("L['kwargs']['encoder_hidden_states']", "___stack0[1]['encoder_hidden_states']",
-                     "L['kwargs']['encoder_hidden_states_mask']", "L['kwargs']['image_rotary_emb'][1]"):
+        for name in (
+            "L['kwargs']['encoder_hidden_states']",
+            "___stack0[1]['encoder_hidden_states']",
+            "L['kwargs']['encoder_hidden_states_mask']",
+            "L['kwargs']['image_rotary_emb'][1]",
+        ):
             assert is_dynamic(name), name
-        for name in ("L['hidden_states']", "L['kwargs']['hidden_states']", "L['kwargs']['image_rotary_emb'][0]",
-                     "L['temb']"):
+        for name in (
+            "L['hidden_states']",
+            "L['kwargs']['hidden_states']",
+            "L['kwargs']['image_rotary_emb'][0]",
+            "L['temb']",
+        ):
             assert not is_dynamic(name), name
     finally:
         cfg.dynamic_sources = before
