@@ -637,6 +637,16 @@ def test_every_family_registered_nvfp4_repo_is_recognised_by_the_table():
     assert registered and registered <= hosted_nvfp4_repo_ids()
 
 
+def test_the_image_family_nvfp4_repos_are_recognised_by_the_table():
+    from core.inference.diffusion_prequant import hosted_nvfp4_repo_ids
+
+    ids = hosted_nvfp4_repo_ids()
+    # A (scheme, repo) row and a (base, scheme, repo) variant row.
+    assert "unsloth/z-image-turbo-nvfp4" in ids
+    assert "unsloth/flux.1-schnell-nvfp4" in ids
+    assert not any("fp8" in repo and "nvfp4" not in repo for repo in ids)
+
+
 def test_a_cached_repo_is_judged_by_its_metadata_not_its_name(tmp_path, monkeypatch):
     from core.inference import diffusion_prequant as dpq
 
