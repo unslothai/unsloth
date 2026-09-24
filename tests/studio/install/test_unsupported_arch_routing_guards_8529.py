@@ -193,7 +193,9 @@ class TestRdna1RoutesOnWindowsOnly:
         monkeypatch.setattr(
             stack_mod, "_ROCM_WINDOWS_MULTIARCH_INDEX_BASE", "https://mirror.example/whl-multi-arch"
         )
-        assert stack_mod._windows_rocm_index_url("gfx1010") == "https://mirror.example/whl-multi-arch"
+        assert (
+            stack_mod._windows_rocm_index_url("gfx1010") == "https://mirror.example/whl-multi-arch"
+        )
 
 
 # ── install.sh's case table, executed under sh ───────────────────────────────

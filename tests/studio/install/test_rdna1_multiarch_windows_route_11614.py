@@ -71,7 +71,9 @@ class TestPackageSpecs:
         also serves 2.12.0, so the pin must stay the newest release under that ceiling."""
         major, minor, _ = (int(x) for x in stack_mod._ROCM_MULTIARCH_TORCH_VERSION.split("."))
         assert (major, minor) < (2, 12)
-        assert stack_mod._ROCM_MULTIARCH_TORCHAUDIO_VERSION == stack_mod._ROCM_MULTIARCH_TORCH_VERSION
+        assert (
+            stack_mod._ROCM_MULTIARCH_TORCHAUDIO_VERSION == stack_mod._ROCM_MULTIARCH_TORCH_VERSION
+        )
 
     def test_other_arches_keep_their_specs(self):
         assert (
@@ -99,7 +101,10 @@ class TestIndexResolution:
         )
 
     def test_the_default_base_is_amds_stable_multiarch_index(self):
-        assert stack_mod._ROCM_WINDOWS_MULTIARCH_INDEX_BASE == "https://repo.amd.com/rocm/whl-multi-arch"
+        assert (
+            stack_mod._ROCM_WINDOWS_MULTIARCH_INDEX_BASE
+            == "https://repo.amd.com/rocm/whl-multi-arch"
+        )
 
     def test_rdna2_still_resolves_to_its_family(self, monkeypatch):
         monkeypatch.delenv("UNSLOTH_ROCM_WINDOWS_MIRROR", raising = False)
@@ -205,6 +210,8 @@ class TestPowerShellMirrorsThePin:
         ), f"{path.name}: tag differs from install_python_stack.py"
         assert f'"{stack_mod._ROCM_MULTIARCH_TORCH_VERSION}"' in src
         assert f'"{stack_mod._ROCM_MULTIARCH_TORCHVISION_VERSION}"' in src
-        assert f'$MultiArchTorchaudioVersion = "{stack_mod._ROCM_MULTIARCH_TORCHAUDIO_VERSION}"' in src
+        assert (
+            f'$MultiArchTorchaudioVersion = "{stack_mod._ROCM_MULTIARCH_TORCHAUDIO_VERSION}"' in src
+        )
         assert "https://repo.amd.com/rocm/whl-multi-arch" in src
         assert "nightly.repo.amd.com" not in src, f"{path.name} still names the nightly index"
