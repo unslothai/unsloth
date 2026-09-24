@@ -260,9 +260,48 @@ def test_a_video_whose_job_cannot_be_dropped_stays_to_delete_again(client, monke
 
 
 def test_favorites_lists_only_favorite_ids(client):
-    client.patch("/api/library/items", json = {"id": "image:abc", "favorite": True})
-    client.patch("/api/library/items", json = {"id": "image:def", "favorite": False})
-    assert client.get("/api/library/favorites").json() == {"ids": ["image:abc"]}
+    [starred, plain] = _upload(client, ("a.txt", b"a", "text/plain"), ("b.txt", b"b", "text/plain"))
+    client.patch("/api/library/items", json = {"id": starred, "favorite": True})
+    client.patch("/api/library/items", json = {"id": plain, "favorite": False})
+    # Deleted by its gallery, not the Library: the star stays in the overlay but is not listed.
+    client.patch("/api/library/items", json = {"id": "image:gone", "favorite": True})
+    assert client.get("/api/library/favorites").json() == {"ids": [starred]}
+
+
+def test_deleting_an_item_drops_its_overlay_row(client):
+    from storage import library_db
+
+    [note] = _upload(client, ("n.txt", b"n", "text/plain"))
+    client.patch("/api/library/items", json = {"id": note, "favorite": True})
+    client.patch("/api/library/items", json = {"id": "image:gone", "favorite": True})
+    assert client.post("/api/library/items/delete", json = {"id": note}).status_code == 200
+    # Already gone from its source: the delete still clears what the Library kept about it.
+    assert client.post("/api/library/items/delete", json = {"id": "image:gone"}).status_code == 404
+    assert library_db.list_entries() == {}
+
+
+def test_leftovers_of_a_crash_are_swept_from_the_uploads_folder(client):
+    import os
+    import time
+
+    [kept, interrupted] = _upload(client, ("k.txt", b"k", "text/plain"), ("i.txt", b"i", "text/plain"))
+    directory = library.uploads_dir()
+    interrupted_id = interrupted.split(":", 1)[1]
+    # A delete that stopped after setting its file aside: the row still lists it.
+    os.replace(directory / interrupted_id, directory / f".{interrupted_id}.deleting")
+    stale = [directory / ".0123.tmp", directory / f".{'a' * 32}.deleting"]
+    fresh = directory / ".4567.tmp"
+    for path in (*stale, fresh):
+        path.write_bytes(b"x")
+    old = time.time() - 2 * library._LEFTOVER_AGE_SECONDS
+    for path in (*stale, directory / f".{interrupted_id}.deleting"):
+        os.utime(path, (old, old))
+    library._swept_at.clear()
+    items = _items(client)[0]
+    assert {kept, interrupted} <= set(items)
+    names = {path.name for path in directory.iterdir()}
+    assert names == {kept.split(":", 1)[1], interrupted_id, fresh.name}
+    assert client.get(items[interrupted]["fileUrl"]).content == b"i"
 
 
 def test_fine_tuned_models_are_listed_but_not_deleted_here(client, monkeypatch):
@@ -1187,3 +1226,18 @@ def test_a_new_fine_tune_changes_the_model_stamp(client):
         assert library._model_stamp() != before
     finally:
         shutil.rmtree(run)
+
+
+def test_the_schema_is_checked_once_per_database(client, monkeypatch, tmp_path):
+    from storage import library_db
+
+    # A home reached through a link: the unresolved path is not the key the schema was saved as.
+    (tmp_path / "real").mkdir()
+    (tmp_path / "link").symlink_to(tmp_path / "real", target_is_directory = True)
+    monkeypatch.setattr(library_db, "studio_db_path", lambda: tmp_path / "link" / "studio.db")
+    library_db.get_connection().close()
+    runs = []
+    monkeypatch.setattr(library_db, "_ensure_schema", lambda conn: runs.append(conn))
+    for _ in range(3):
+        library_db.get_connection().close()
+    assert runs == []

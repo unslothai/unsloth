@@ -192,7 +192,52 @@ def write_upload_text(upload_id: str, text: str) -> bool:
     return True
 
 
+# A crash can leave a staged upload, note or delete behind; nothing that old is still being written.
+_LEFTOVER_AGE_SECONDS = 3600
+_swept_at: dict[str, float] = {}
+
+
+def _sweep_leftovers() -> None:
+    """Clear what a crash left in the uploads folder, at most once an hour per account. A delete
+    that stopped between setting its file aside and dropping the row put the file back instead:
+    the row still lists it."""
+    directory = uploads_dir()
+    now = time.time()
+    if now - _swept_at.get(str(directory), 0) < _LEFTOVER_AGE_SECONDS:
+        return
+    _swept_at[str(directory)] = now
+    # Deletes and note saves stage under this lock, so none of theirs is mid-way here.
+    with _upload_lock:
+        with os.scandir(directory) as entries:
+            leftovers = [
+                entry
+                for entry in entries
+                if entry.name.startswith(".") and entry.name.endswith((".tmp", ".deleting"))
+            ]
+        for entry in leftovers:
+            try:
+                info = entry.stat(follow_symlinks = False)
+                if not stat.S_ISREG(info.st_mode) or now - info.st_mtime < _LEFTOVER_AGE_SECONDS:
+                    continue
+                upload_id = entry.name[1 : -len(".deleting")]
+                if (
+                    entry.name.endswith(".deleting")
+                    and _UPLOAD_ID_RE.match(upload_id)
+                    and library_db.get_upload(upload_id) is not None
+                    and not (directory / upload_id).exists()
+                ):
+                    os.replace(entry.path, directory / upload_id)
+                else:
+                    os.unlink(entry.path)
+            except OSError:
+                logger.debug("library.leftover_sweep_failed: %s", entry.name, exc_info = True)
+
+
 def _upload_items() -> list[dict]:
+    try:
+        _sweep_leftovers()
+    except OSError:
+        logger.debug("library.leftover_sweep_failed", exc_info = True)
     items = []
     for upload in library_db.list_uploads():
         item = _item(
@@ -1129,6 +1174,22 @@ def thumbnail(item_id: str) -> bytes:
             raise LookupError(item_id) from None
 
 
+def item_exists(item_id: str) -> bool:
+    """Whether the source still has the item, without listing the source. Errors other than its
+    absence propagate, so a store that cannot be read is never taken for an empty one."""
+    kind, _, ref = item_id.partition(":")
+    try:
+        if kind == "attachment":
+            from storage.studio_db import get_chat_attachment
+
+            message_id, _, attachment_id = ref.partition(":")
+            return get_chat_attachment(message_id, attachment_id) is not None
+        local_path(item_id)
+    except (LookupError, ValueError):
+        return False
+    return True
+
+
 def locations() -> list[dict]:
     """Where each kind of Library file lives, for Settings > Library."""
     from core.inference import audio_gallery, image_gallery, video_gallery
@@ -1214,6 +1275,7 @@ def delete_item(item_id: str) -> bool:
     else:
         raise ValueError("Unknown library item")
     invalidate_listing()
-    if deleted:
-        library_db.delete_entry(item_id)
+    # Gone either way, so its name, star and folder go too, or they would sit in the overlay and
+    # be counted among the favorites for good.
+    library_db.delete_entry(item_id)
     return deleted

@@ -89,12 +89,24 @@ async def get_library(current_subject: str = Depends(get_current_subject)) -> di
 
 @router.get("/favorites")
 def get_favorites(current_subject: str = Depends(get_current_subject)) -> dict:
-    """Favorite item ids alone, for pages that mark favorites without listing every source."""
+    """Favorite item ids alone, for pages that mark favorites without listing every source. Only
+    those the source still has: a gallery or chat can delete one without the Library."""
     return {
         "ids": [
-            item_id for item_id, entry in library_db.list_entries().items() if entry["favorite"]
+            item_id
+            for item_id, entry in library_db.list_entries().items()
+            if entry["favorite"] and _still_there(item_id)
         ]
     }
+
+
+def _still_there(item_id: str) -> bool:
+    try:
+        return library.item_exists(item_id)
+    except Exception:
+        # A store that cannot be read right now keeps its stars rather than dropping them.
+        logger.debug("library.favorite_check_failed: %s", item_id, exc_info = True)
+        return True
 
 
 # ── Items ────────────────────────────────────────────────────────
