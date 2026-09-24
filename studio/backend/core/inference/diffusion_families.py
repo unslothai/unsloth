@@ -849,6 +849,7 @@ _GATED_MIRROR_PAIRS: tuple[tuple[str, str], ...] = (
 # credentials, so a complete local snapshot must keep being used rather than re-pulled from the mirror.
 _UNGATED_MIRROR_PAIRS: tuple[tuple[str, str], ...] = (
     ("Qwen/Qwen-Image-2512", "unsloth/Qwen-Image-2512"),
+    ("Qwen/Qwen-Image-2.1", "unsloth/Qwen-Image-2.1"),
     ("Qwen/Qwen-Image", "unsloth/Qwen-Image"),
     ("Qwen/Qwen-Image-Edit-2511", "unsloth/Qwen-Image-Edit-2511"),
     ("black-forest-labs/FLUX.2-klein-4B", "unsloth/FLUX.2-klein-4B"),
@@ -1088,6 +1089,8 @@ def prefer_ungated_mirror(
 
     Declines to today's behaviour under ``UNSLOTH_DIFFUSION_NO_MIRROR``, for a local path, or when
     the upstream already satisfies the load from cache and switching would re-pull tens of GiB.
+    Under that opt-out a mirror id picked directly maps back to its upstream, cached or not: even
+    a cached mirror is listed on the Hub before it loads.
     ``files`` sharpens that last test to the names about to be fetched; without it any weight
     counts.
 
@@ -1097,8 +1100,10 @@ def prefer_ungated_mirror(
     is unused, kept so callers need not care.
     """
     del hf_token  # noqa: F841 -- signature stability only
+    if os.environ.get("UNSLOTH_DIFFUSION_NO_MIRROR", "").strip():
+        return base if _is_local_path(base) else canonical_base(base)
     mirror = mirror_repo(base)
-    if not mirror or os.environ.get("UNSLOTH_DIFFUSION_NO_MIRROR", "").strip():
+    if not mirror:
         return base
     # a local path is never a Hub id: rewriting one sends loads the other sites resolve on disk to the Hub, skipping
     # the copy already downloaded
@@ -1376,17 +1381,6 @@ def _too_old_message(pipeline_class: str, family_name: str, installed: str) -> s
             f"diffusers {installed}. Upgrade with: pip install -U diffusers."
         )
     if minimum in _UNRELEASED_MIN_DIFFUSERS:
-        try:
-            from utils.diffusers_repair import diffusers_repair_installed
-            installed_since = diffusers_repair_installed()
-        except Exception:  # noqa: BLE001 - no self-heal module is no repair
-            installed_since = False
-        if installed_since:
-            return (
-                f"'{family_name}' needs diffusers >= {minimum} ({pipeline_class}). Unsloth has just "
-                f"installed it, but this session already loaded diffusers {installed}. Restart "
-                "Unsloth Studio to use it."
-            )
         remedy = _diffusers_main_archive_remedy()
         return (
             f"'{family_name}' needs diffusers >= {minimum} ({pipeline_class}), which has not been "
@@ -1470,16 +1464,6 @@ def assert_pipeline_class_available(
         close_dynamo_import_window(get_logger(__name__))
     except Exception:  # noqa: BLE001, S110 - optimisation only, and this module has no logger
         pass
-
-    if "diffusers" not in sys.modules:
-        try:
-            from utils.diffusers_repair import IN_FLIGHT_MESSAGE, diffusers_repair_in_flight
-            repairing = diffusers_repair_in_flight()
-        except Exception:  # noqa: BLE001 - no self-heal module is no repair
-            repairing = False
-        # Importing now would read files the install is replacing, and pin the release for the session.
-        if repairing:
-            raise ValueError(IN_FLIGHT_MESSAGE)
 
     try:
         import diffusers

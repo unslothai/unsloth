@@ -343,8 +343,10 @@ export function orderRecommendedRows<
    *  listing's sort. `results` must be one sorted listing of unsloth/* repos, since a family ranks
    *  by its index there. */
   familyOf?: (id: string) => string | undefined;
+  /** Family keys (as returned by `familyOf`) that lead the list in this order, whatever the sort. */
+  pinnedFamilies?: readonly string[];
 }): T[] {
-  const { seeds, results, keep, deviceFiltered, fits, familyOf } = opts;
+  const { seeds, results, keep, deviceFiltered, fits, familyOf, pinnedFamilies = [] } = opts;
   const seedById = new Map(seeds.map((s) => [s.id, s]));
   const rows = results.filter(keep).map((row) => {
     const curatedSizeBytes = seedById.get(row.id)?.curatedSizeBytes;
@@ -382,11 +384,23 @@ export function orderRecommendedRows<
     const key = keyOf(r);
     if (!firstSeen.has(key)) firstSeen.set(key, i);
   });
+  const pinIndex = new Map(pinnedFamilies.map((key, i) => [key, i]));
   const sortKey = (r: T, i: number) => {
     const key = keyOf(r);
+    // A pinned family leads as a whole, ahead of first-party rows that trend higher.
+    const pin = pinIndex.get(key);
+    if (pin != null) {
+      return [pin, 0, 0, firstSeen.get(key) ?? i, i];
+    }
     const ours = firstParty(r.id);
     const unranked = ours && !listable.has(key) ? -1 : Infinity;
-    return [ours ? 0 : 1, rank.get(key) ?? unranked, firstSeen.get(key) ?? i, i];
+    return [
+      Number.POSITIVE_INFINITY,
+      ours ? 0 : 1,
+      rank.get(key) ?? unranked,
+      firstSeen.get(key) ?? i,
+      i,
+    ];
   };
   return ordered
     .map((row, i) => ({ row, key: sortKey(row, i) }))

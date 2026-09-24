@@ -2440,6 +2440,7 @@ class ChatCompletionRequest(BaseModel):
         None,
         description = "[x-unsloth] Saved provider config ID. Its stored key is used when encrypted_api_key is omitted.",
     )
+    provider_api_type: Literal["chat_completions", "responses"] = "chat_completions"
     provider_type: Optional[str] = Field(
         None,
         description = "[x-unsloth] Provider type (e.g. 'openai', 'mistral'). Used if provider_id is not set.",
@@ -2512,7 +2513,7 @@ class ChatCompletionRequest(BaseModel):
             "header. The upstream floor is 50k; `_stream_anthropic` clamps "
             "lower values up.\n"
             "  - OpenAI cloud (api.openai.com) and Azure OpenAI Foundry "
-            "(*.openai.azure.com): attaches "
+            "(*.openai.azure.com, *.services.ai.azure.com): attaches "
             "`context_management:[{type:'compaction', compact_threshold:N}]` "
             "to /v1/responses. Effective floor is around 200k (OpenAI's "
             "canonical example); values below it surface "

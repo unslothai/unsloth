@@ -26,10 +26,11 @@ import {
   curatedBudgetText,
 } from "../src/features/model-picker/components/model-selector/recommended-fit.ts";
 
-const Z_TURBO = "Tongyi-MAI/Z-Image-Turbo";
-const QWEN_IMAGE = "Qwen/Qwen-Image";
-const QWEN_2512 = "Qwen/Qwen-Image-2512";
-const QWEN_21 = "Qwen/Qwen-Image-2.1";
+// The bf16 rows are the unsloth mirrors of the vendor repos.
+const Z_TURBO = "unsloth/Z-Image-Turbo";
+const QWEN_IMAGE = "unsloth/Qwen-Image";
+const QWEN_2512 = "unsloth/Qwen-Image-2512";
+const QWEN_21 = "unsloth/Qwen-Image-2.1";
 const H3 = "MiniMaxAI/MiniMax-H3";
 const notDownloaded = () => false;
 
