@@ -98,6 +98,12 @@ function TabStrip({
   function onPointerMove(event: ReactPointerEvent<HTMLDivElement>) {
     const current = drag.current;
     if (!current || current.id !== event.pointerId) return;
+    // Released off the strip before a drag captured the pointer: the strip never saw the release,
+    // and a hover must not scroll it.
+    if ((event.buttons & 1) === 0) {
+      drag.current = null;
+      return;
+    }
     const dx = event.clientX - current.x;
     if (!current.moved) {
       if (Math.abs(dx) < DRAG_SLOP_PX) return;
@@ -129,6 +135,7 @@ function TabStrip({
       onPointerMove={onPointerMove}
       onPointerUp={onPointerEnd}
       onPointerCancel={onPointerEnd}
+      onLostPointerCapture={onPointerEnd}
       onClickCapture={onClickCapture}
       // The padding keeps the active tab's shadow clear of the scroller's clipping.
       className="-m-1 overflow-x-auto p-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
