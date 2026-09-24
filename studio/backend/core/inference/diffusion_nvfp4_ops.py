@@ -481,7 +481,9 @@ def _resolve_backend(device: Any = None) -> tuple[str, str]:
 
     if not nvfp4_diffusion_enabled():
         # The NVFP4 switch is off: never import flashinfer or run its preflight on NVFP4's behalf.
-        return BACKEND_TORCHAO, f"NVFP4 is disabled in this build ({NVFP4_DIFFUSION_ENV} unset)"
+        return BACKEND_TORCHAO, (
+            f"NVFP4 is disabled in this build (set {NVFP4_DIFFUSION_ENV}=1 to enable it)"
+        )
     requested = nvfp4_backend_env()
     if requested == BACKEND_TORCHAO:
         return BACKEND_TORCHAO, f"{NVFP4_BACKEND_ENV}=torchao"
