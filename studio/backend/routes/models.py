@@ -3049,6 +3049,17 @@ def _active_video_backend():
         return None
 
 
+def _forget_library_entry(item_id: str) -> None:
+    """Drop the Library's name, folder and star for a deleted model, so they never land on a new
+    model saved to the same path. The model is already gone, so a failure here only logs."""
+    try:
+        from storage import library_db
+
+        library_db.delete_entry(item_id)
+    except Exception as e:
+        logger.warning("Could not clear the Library entry for %s: %s", item_id, e)
+
+
 def _prune_empty_parents(start: Path, stop_at: Path) -> None:
     """Remove empty ancestors of ``start`` up to (not including) ``stop_at``, so the enclosing run dir
     does not linger as an empty entry in scan results."""
@@ -3409,6 +3420,7 @@ async def delete_finetuned_model(
             )
 
         _prune_empty_parents(target_path, allowed_root)
+        _forget_library_entry(f"model:{source}:{model_path}")
 
         await _invalidate_local_scans()
         logger.info("Deleted fine-tuned model at %s", target_path)

@@ -133,8 +133,8 @@ export const useLibraryStore = create<LibraryState>((set, get) => {
       useLibraryFavoritesStore.getState().mark(id, false);
       return optimistic(
         (state) => ({ items: state.items.filter((item) => item.id !== id) }),
-        // Fine-tunes go through the models route, which refuses while one is training or loaded.
-        // Clearing its favorite, name and folder after that is best effort.
+        // Fine-tunes go through the models route, which refuses while one is training or loaded,
+        // and drops the Library's name, folder and star with the files.
         async () => {
           if (model) {
             await deleteFineTunedModel({
@@ -142,7 +142,6 @@ export const useLibraryStore = create<LibraryState>((set, get) => {
               source: model.origin,
               exportType: model.exportType,
             });
-            await deleteLibraryItem(id).catch(() => {});
             return;
           }
           await deleteLibraryItem(id);

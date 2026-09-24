@@ -21,6 +21,7 @@ from fastapi.testclient import TestClient
 import routes.models as models_module
 from auth.authentication import get_current_subject
 from routes.models import router as models_router
+from storage import library_db
 
 
 class _Backend:
@@ -49,6 +50,14 @@ class _Backend:
 
     def loading_repo_ids(self):
         return self._loading
+
+
+@pytest.fixture(autouse = True)
+def forgotten(monkeypatch):
+    """Library entries the route dropped."""
+    ids: list[str] = []
+    monkeypatch.setattr(library_db, "delete_entry", ids.append)
+    return ids
 
 
 @pytest.fixture()
@@ -160,6 +169,30 @@ def test_a_chat_only_install_can_still_delete(client, monkeypatch):
 
     assert _delete(c, target).status_code == 200
     assert not target.exists()
+
+
+def test_a_delete_drops_the_library_entry(client, forgotten, monkeypatch):
+    """The Library keys a model's name, folder and star by path; left behind, they would land on
+    the next model saved there."""
+    c, outputs = client
+    target = _model_dir(outputs)
+    monkeypatch.setattr(models_module, "_active_diffusion_backend", lambda: None)
+    monkeypatch.setattr(models_module, "_active_video_backend", lambda: None)
+
+    assert _delete(c, target).status_code == 200
+    assert forgotten == [f"model:training:{target}"]
+
+
+def test_a_refused_delete_keeps_the_library_entry(client, forgotten, monkeypatch):
+    c, outputs = client
+    target = _model_dir(outputs)
+    monkeypatch.setattr(
+        models_module, "_active_diffusion_backend", lambda: _Backend(loaded = str(target))
+    )
+    monkeypatch.setattr(models_module, "_active_video_backend", lambda: None)
+
+    assert _delete(c, target).status_code == 400
+    assert forgotten == []
 
 
 def test_an_unreadable_engine_state_fails_closed(client, monkeypatch):
