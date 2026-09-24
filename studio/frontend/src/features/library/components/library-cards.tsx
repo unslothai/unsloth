@@ -16,7 +16,7 @@ import {
 import { formatCardTime, pluralize } from "../format";
 import { useColumnCount, useLibraryThumbnail, useSeen } from "../hooks";
 import { useLibraryActions } from "../actions-context";
-import { GLASS_CONTROL, OVERLAY_CONTROL, RAISED_SURFACE } from "../surface";
+import { GLASS_CONTROL, GLASS_SURFACE, OVERLAY_CONTROL, RAISED_SURFACE } from "../surface";
 import { CardSelectionContext } from "./card-selection";
 import { LibraryActionsMenu } from "./library-actions";
 
@@ -74,7 +74,12 @@ function ImageThumb({ item, className }: { item: LibraryItem; className?: string
         />
       )}
       {loaded && fileKind(item) === "video" && (
-        <span className="pointer-events-none absolute inset-0 m-auto flex aspect-square w-1/4 max-w-10 items-center justify-center rounded-full bg-black/45 text-white backdrop-blur-sm">
+        <span
+          className={cn(
+            GLASS_SURFACE,
+            "pointer-events-none absolute inset-0 m-auto flex aspect-square w-1/4 max-w-10 items-center justify-center rounded-full",
+          )}
+        >
           <HugeiconsIcon icon={PlayIcon} strokeWidth={2} className="size-1/2 [&_path]:fill-current" />
         </span>
       )}
