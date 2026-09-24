@@ -624,6 +624,145 @@ def _register_config_pickle_fallback(displaced_config, patched_config):
         )
 
 
+def _accelerator_indices(device_map):
+    """The accelerator devices a dispatched ``hf_device_map`` places modules on. ``cpu``, ``disk`` and ``meta`` are offload targets, not devices a module executes on; accelerate writes the rest as an int, a bare index string, a device string or a ``torch.device``."""
+    indices = set()
+    for value in device_map.values():
+        if isinstance(value, bool):
+            continue
+        if isinstance(value, int):
+            indices.add(value)
+            continue
+        text = str(value)
+        if text.isdigit():
+            indices.add(int(text))
+            continue
+        if text in ("cpu", "disk", "meta"):
+            continue
+        try:
+            device = torch.device(text)
+        except Exception:
+            continue
+        if device.type in ("cpu", "meta"):
+            continue
+        indices.add(0 if device.index is None else device.index)
+    return indices
+
+
+def _keep_in_fp32_names(model, target_dtype):
+    """Module names the model's own classes pin to float32: ``_keep_in_fp32_modules_strict`` always, ``_keep_in_fp32_modules`` under float16 only, as ``from_pretrained`` loads them."""
+    names = set()
+    for module in model.modules():
+        for attr, applies in (
+            ("_keep_in_fp32_modules_strict", True),
+            ("_keep_in_fp32_modules", target_dtype == torch.float16),
+        ):
+            keep = getattr(module, attr, None) if applies else None
+            if isinstance(keep, str):
+                keep = (keep,)
+            if isinstance(keep, (list, tuple, set, frozenset)):
+                names.update(k for k in keep if isinstance(k, str) and k)
+    return names
+
+
+def _model_spans_devices(model):
+    """True for a model split over several devices (``device_map`` split or offload), which must never be moved onto one card. Decided from where the model really is, not from ``trainer.is_model_parallel``: Transformers also sets that for a model wholly on one card other than ``args.device``, and its full-eval cast moved such a model."""
+    for module in model.modules():
+        device_map = getattr(module, "hf_device_map", None)
+        if not isinstance(device_map, dict):
+            continue
+        accelerators = _accelerator_indices(device_map)
+        offloaded = any(str(v) in ("cpu", "disk", "meta") for v in device_map.values())
+        if len(accelerators) > 1 or (accelerators and offloaded):
+            return True
+    devices = {t.device for t in model.parameters()}
+    devices.update(t.device for t in model.buffers())
+    return len(devices) > 1
+
+
+def _full_eval_autocasts(trainer):
+    """Whether the eval forward runs under fp16 / bf16 autocast, which ``Accelerator.prepare_model`` installs from the mixed precision setting, in and out of ``train()`` alike."""
+    accelerator = getattr(trainer, "accelerator", None)
+    if accelerator is not None and hasattr(accelerator, "native_amp"):
+        # native_amp is what prepare_model keys the autocast wrapper on; it stays False for fp16
+        # on CPU, where accelerate installs no autocast at all.
+        handler = getattr(accelerator, "autocast_handler", None)
+        return (
+            bool(accelerator.native_amp)
+            and getattr(accelerator, "mixed_precision", None) in ("fp16", "bf16")
+            and getattr(handler, "enabled", True) is not False
+        )
+    args = getattr(trainer, "args", None)
+    return bool(getattr(args, "fp16", False) or getattr(args, "bf16", False))
+
+
+def _cast_frozen_for_full_eval(trainer, model, target_dtype, device):
+    """The part of Transformers' full-eval cast that is worth keeping. Transformers runs ``model.to(dtype = half, device = args.device)`` on the WHOLE model before a standalone eval and never casts back: the fp32 LoRA / full-finetuning master weights stay half for the next ``train()`` (fp16: GradScaler raises "Attempting to unscale FP16 gradients"; bf16: trains on bf16 masters), float buffers such as RoPE ``inv_freq`` stay half, and a ``device_map``-split model is collapsed onto one card. Here only FROZEN float32/float64 parameters are cast, in place: that is the memory saving full eval exists for, and frozen weights are never updated, so nothing is lost for training. Trainable parameters, ``_keep_in_fp32_modules`` parameters and buffers are not touched, so there is nothing to hold or put back, and the eval runs exactly as the evals inside ``train()`` do. Nothing is cast unless the forward runs under autocast, since a half frozen weight next to a float32 trainable one needs it. A split model keeps its placement; anything else is moved to ``args.device`` as Transformers did, since ``Trainer.__init__`` skips placing the model whenever full eval is on."""
+    if _full_eval_autocasts(trainer):
+        keep = _keep_in_fp32_names(model, target_dtype)
+        with torch.no_grad():
+            for name, param in model.named_parameters():
+                if param.requires_grad or param.dtype not in (torch.float32, torch.float64):
+                    continue
+                if keep and any(f".{k}." in f".{name}." for k in keep):
+                    continue
+                param.data = param.data.to(dtype = target_dtype)
+    if device is not None and not _model_spans_devices(model):
+        device = torch.device(device)
+        if device.type == "cuda" and device.index is None and torch.cuda.is_available():
+            device = torch.device("cuda", torch.cuda.current_device())
+        if any(t.device != device for t in model.parameters()):
+            model.to(device = device)
+
+
+def _wrap_full_eval_keeps_trainable_dtype(trainer_cls):
+    """Make a standalone ``evaluate()`` / ``predict()`` under ``fp16_full_eval`` or ``bf16_full_eval`` leave the training state alone. Unsloth defaults those flags to the training precision, and Transformers' ``evaluation_loop`` (and the legacy ``prediction_loop``) casts the whole model when ``not self.is_in_train`` without casting back, although the flags are documented to "only apply during evaluation". The wrapper casts only what ``_cast_frozen_for_full_eval`` allows and hides both flags from Transformers for the call so it does not cast the rest; the flags come back in a ``finally``, so an exception or KeyboardInterrupt anywhere in the call cannot leave them hidden, and no trainable tensor is ever changed that would need restoring. Evaluations inside ``train()`` are passed straight through: Transformers never casts there."""
+    for loop_name in ("evaluation_loop", "prediction_loop"):
+        original = getattr(trainer_cls, loop_name, None)
+        if original is None or getattr(original, "_unsloth_full_eval_wrapped", False):
+            continue
+
+        def _make(original, loop_name):
+            def wrapped(self, *args, **kwargs):
+                train_args = getattr(self, "args", None)
+                fp16_full_eval = getattr(train_args, "fp16_full_eval", False)
+                bf16_full_eval = getattr(train_args, "bf16_full_eval", False)
+                model = getattr(self, "model", None)
+                if (
+                    getattr(self, "is_in_train", False)
+                    or not (fp16_full_eval or bf16_full_eval)
+                    or not isinstance(model, torch.nn.Module)
+                    # Sharded parameters are Transformers' and the engine's to cast.
+                    or getattr(self, "is_deepspeed_enabled", False)
+                    or getattr(self, "is_fsdp_enabled", False)
+                ):
+                    return original(self, *args, **kwargs)
+                target_dtype = torch.float16 if fp16_full_eval else torch.bfloat16
+                try:
+                    _cast_frozen_for_full_eval(
+                        self, model, target_dtype, getattr(train_args, "device", None)
+                    )
+                except Exception as e:
+                    # Only frozen weights can have been cast, so evaluating as they are is safe.
+                    logger.info(f"Unsloth: Full eval runs without casting the frozen weights: {e}")
+                try:
+                    train_args.fp16_full_eval = False
+                    train_args.bf16_full_eval = False
+                    return original(self, *args, **kwargs)
+                finally:
+                    train_args.fp16_full_eval = fp16_full_eval
+                    train_args.bf16_full_eval = bf16_full_eval
+
+            wrapped.__name__ = getattr(original, "__name__", loop_name)
+            wrapped.__qualname__ = getattr(original, "__qualname__", loop_name)
+            wrapped.__doc__ = getattr(original, "__doc__", None)
+            wrapped.__wrapped__ = original
+            wrapped._unsloth_full_eval_wrapped = True
+            return wrapped
+
+        setattr(trainer_cls, loop_name, _make(original, loop_name))
+
+
 def _wrap_grpo_generate_and_score(trainer_cls):
     if not hasattr(trainer_cls, "_generate_and_score_completions"):
         return
@@ -2098,6 +2237,8 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
             "    args.fp16_full_eval = args.fp16\n"
         )
         extra_args += eval_changes
+        # A standalone evaluate() under these flags casts the whole model in Transformers and never
+        # casts back; _wrap_full_eval_keeps_trainable_dtype limits it to the frozen weights.
 
     if "model" in call_args:
         logits_check = (
@@ -3178,6 +3319,11 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
             _wrap_sft_evaluate_cap(getattr(created_module, f"Unsloth{RLTrainer_name}"))
         except Exception as e:
             logger.info(f"Unsloth: Could not wrap evaluate for {RLTrainer_name}: {e}")
+
+    try:
+        _wrap_full_eval_keeps_trainable_dtype(getattr(created_module, f"Unsloth{RLTrainer_name}"))
+    except Exception as e:
+        logger.info(f"Unsloth: Could not wrap the full-eval cast for {RLTrainer_name}: {e}")
 
     if trainer_file == "grpo_trainer":
         try:
