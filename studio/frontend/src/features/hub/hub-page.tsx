@@ -755,6 +755,8 @@ export function ModelsPage() {
     setDiscoverFormat("all");
     setCapabilityFilter(urlCapability);
     setSortBrowseActive(true);
+    // The media pages run curated Unsloth uploads, so start there.
+    setOwnerScope("unsloth");
     void navigate({
       to: "/hub",
       // Discover models, whatever tab or kind the link carried.
@@ -768,7 +770,7 @@ export function ModelsPage() {
       }),
       replace: true,
     });
-  }, [urlCapability, navigate]);
+  }, [urlCapability, navigate, setOwnerScope]);
 
   const handleSortChange = useCallback(
     (next: HfSortKey) => {
