@@ -2622,9 +2622,15 @@ def run(
 
     if not in_studio_venv:
         # Application Control blocks the generated unsloth.exe on some machines but not the signed python.exe beside it.
-        launch_head = (
-            _managed_cli_argv(studio_python) if sys.platform == "win32" else [str(studio_bin)]
-        )
+        if sys.platform == "win32":
+            launch_head = _managed_cli_argv(studio_python)
+        elif _resolved_or_self(studio_venv_dir) != studio_venv_dir:
+            # The console script's shebang holds the resolved path, so an older child CLI (plain
+            # prefix check, no re-exec marker) would re-exec forever. Via the linked interpreter
+            # its sys.prefix keeps the link and both old and new children see the venv.
+            launch_head = [str(studio_python), "-c", _WINDOWS_CLI_ENTRYPOINT]
+        else:
+            launch_head = [str(studio_bin)]
         args = [
             *launch_head,
             "studio",
@@ -2693,7 +2699,7 @@ def run(
                     rc = proc.wait()
                 raise typer.Exit(rc)
             else:
-                os.execvp(str(studio_bin), args)
+                os.execvp(args[0], args)
         finally:
             os.environ.pop(_START_API_KEY_MARKER_ENV, None)
             os.environ.pop(_STUDIO_REEXEC_ENV, None)

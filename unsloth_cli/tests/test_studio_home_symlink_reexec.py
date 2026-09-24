@@ -95,13 +95,16 @@ def _run_app(
     *,
     prefix,
     guard_env = None,
+    studio_home = None,
 ):
     """Drive run() up to its re-exec with a fake venv that the prefix is NOT inside."""
     import typer
 
     studio_mod = _studio()
     monkeypatch.setattr(sys, "prefix", prefix)
-    fake_venv = Path("/fake/studio/venv/unsloth_studio")
+    if studio_home is not None:
+        monkeypatch.setattr(studio_mod, "STUDIO_HOME", studio_home)
+    fake_venv = (studio_home or Path("/fake/studio/venv")) / "unsloth_studio"
     fake_python = fake_venv / "bin" / "python"
     fake_bin = fake_python.parent / "unsloth"
     monkeypatch.setattr(studio_mod, "_studio_venv_python", lambda: fake_python)
@@ -149,3 +152,28 @@ def test_marked_child_outside_the_venv_stops_instead_of_looping(monkeypatch):
     assert result.exit_code == 1
     assert "not re-launching again" in result.output
     assert studio_mod._STUDIO_REEXEC_ENV not in os.environ
+
+
+_posix_exec_only = pytest.mark.skipif(os.name == "nt", reason = "POSIX exec branch")
+
+
+@_posix_exec_only
+def test_unlinked_venv_still_execs_the_console_script(monkeypatch):
+    _, result, execs = _run_app(monkeypatch, prefix = "/nonexistent/outer/venv")
+    assert len(execs) == 1, result.output
+    assert execs[0][0][0] == "/fake/studio/venv/unsloth_studio/bin/unsloth"
+
+
+@_posix_exec_only
+def test_symlinked_venv_execs_through_the_linked_interpreter(tmp_path, monkeypatch):
+    # An older CLI in the venv has neither the marker nor the resolved check: through the
+    # console script its sys.prefix is the resolved path and it re-execs forever.
+    studio_mod = _studio()
+    real, link = _symlinked_venv(tmp_path)
+    _, result, execs = _run_app(
+        monkeypatch, prefix = "/nonexistent/outer/venv", studio_home = link.parent
+    )
+    assert len(execs) == 1, result.output
+    argv = execs[0][0]
+    assert argv[:3] == [str(link / "bin" / "python"), "-c", studio_mod._WINDOWS_CLI_ENTRYPOINT]
+    assert argv[3:5] == ["studio", "run"]
