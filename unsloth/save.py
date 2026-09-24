@@ -4528,7 +4528,8 @@ def unsloth_push_to_hub_gguf(
     print("Unsloth: Uploading GGUF to Huggingface Hub...")
 
     try:
-        from huggingface_hub import HfApi
+        from huggingface_hub import CommitOperationAdd, HfApi
+        from huggingface_hub.errors import HfHubHTTPError
 
         api = HfApi(token = token)
 
@@ -4544,7 +4545,16 @@ def unsloth_push_to_hub_gguf(
             private = private,
             exist_ok = True,
         )
+        if revision is not None and not revision.startswith("refs/pr/"):
+            try:
+                api.create_branch(
+                    repo_id = full_repo_id, repo_type = "model", branch = revision, exist_ok = True
+                )
+            except HfHubHTTPError as error:
+                if not create_pr or error.response.status_code != 403:
+                    raise
 
+        operations = []
         for file_location in all_file_locations:
             original_name = os.path.basename(file_location)
             if cleanup_temp and "unsloth_gguf_" in original_name:
@@ -4554,43 +4564,19 @@ def unsloth_push_to_hub_gguf(
                 proper_name = f"{model_name}.{quant_suffix}"
             else:
                 proper_name = original_name.replace(os.path.basename(save_directory), model_name)
-
-            print(f"Uploading {proper_name}...")
-
-            api.upload_file(
-                path_or_fileobj = file_location,
-                path_in_repo = proper_name,
-                repo_id = full_repo_id,
-                repo_type = "model",
-                commit_message = commit_message,
-                commit_description = commit_description,
-                create_pr = create_pr,
-                revision = revision,
+            operations.append(
+                CommitOperationAdd(path_in_repo = proper_name, path_or_fileobj = file_location)
             )
 
         config_path = os.path.join(actual_save_directory, "config.json")
         if os.path.exists(config_path):
-            print("Uploading config.json...")
-            api.upload_file(
-                path_or_fileobj = config_path,
-                path_in_repo = "config.json",
-                repo_id = full_repo_id,
-                repo_type = "model",
-                commit_message = f"{commit_message} - config",
-                create_pr = create_pr,
-                revision = revision,
+            operations.append(
+                CommitOperationAdd(path_in_repo = "config.json", path_or_fileobj = config_path)
             )
 
         if modelfile_location and os.path.exists(modelfile_location):
-            print("Uploading Ollama Modelfile...")
-            api.upload_file(
-                path_or_fileobj = modelfile_location,
-                path_in_repo = "Modelfile",
-                repo_id = full_repo_id,
-                repo_type = "model",
-                commit_message = f"{commit_message} - Ollama Modelfile",
-                create_pr = create_pr,
-                revision = revision,
+            operations.append(
+                CommitOperationAdd(path_in_repo = "Modelfile", path_or_fileobj = modelfile_location)
             )
 
         readme_content = f"""---
@@ -4611,16 +4597,8 @@ This model was finetuned and converted to GGUF format using [Unsloth](https://gi
 
 ## Available Model files:
 """
-        for file in all_file_locations:
-            original_name = os.path.basename(file)
-            if cleanup_temp and "unsloth_gguf_" in original_name:
-                quant_suffix = (
-                    original_name.split(".", 1)[1] if "." in original_name else original_name
-                )
-                proper_name = f"{model_name}.{quant_suffix}"
-            else:
-                proper_name = original_name.replace(os.path.basename(save_directory), model_name)
-            readme_content += f"- `{proper_name}`\n"
+        for operation in operations[: len(all_file_locations)]:
+            readme_content += f"- `{operation.path_in_repo}`\n"
 
         if is_vlm and modelfile_location:
             readme_content += "\n## ⚠️ Ollama Note for Vision Models\n"
@@ -4649,17 +4627,32 @@ This model was finetuned and converted to GGUF format using [Unsloth](https://gi
         with open(readme_path, "w", encoding = "utf-8") as f:
             f.write(readme_content)
 
-        api.upload_file(
-            path_or_fileobj = readme_path,
-            path_in_repo = "README.md",
+        operations.append(CommitOperationAdd(path_in_repo = "README.md", path_or_fileobj = readme_path))
+
+        commit = api.create_commit(
             repo_id = full_repo_id,
             repo_type = "model",
-            commit_message = "Add README",
+            operations = operations,
+            commit_message = (
+                commit_message if commit_message is not None else "Trained with Unsloth"
+            ),
+            commit_description = commit_description,
             create_pr = create_pr,
             revision = revision,
         )
 
-        print(f"Unsloth: Successfully uploaded GGUF to https://huggingface.co/{full_repo_id}")
+        destination = getattr(commit, "pr_url", None)
+        if destination is None:
+            destination = f"https://huggingface.co/{full_repo_id}"
+            if create_pr:
+                destination += "/discussions"
+            elif revision is not None:
+                destination += (
+                    f"/discussions/{revision.rsplit('/', 1)[-1]}"
+                    if revision.startswith("refs/pr/")
+                    else f"/tree/{revision}"
+                )
+        print(f"Unsloth: Successfully uploaded GGUF to {destination}")
 
         if tags is None:
             tags = []
