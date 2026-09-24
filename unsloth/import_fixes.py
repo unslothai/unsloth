@@ -746,7 +746,11 @@ def _legacy_config_fields(cls):
 
     table = {}
     owner = next(
-        (k for k in getattr(cls, "__mro__", ()) if isinstance(k.__dict__.get("__validators__"), dict)),
+        (
+            k
+            for k in getattr(cls, "__mro__", ())
+            if isinstance(k.__dict__.get("__validators__"), dict)
+        ),
         None,
     )
     try:
