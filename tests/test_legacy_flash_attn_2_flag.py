@@ -1,6 +1,7 @@
 """Remote code that declares only the 4.x _supports_flash_attn_2 flag gets Flash Attention
-only when the installed transformers still honors that flag at dispatch. transformers 5.x
-reads _supports_flash_attn alone and raises at init (inclusionAI/Ling-2.6-flash)."""
+only when the installed transformers still honors that flag at dispatch. From 5.4.0 the
+dispatch reads _supports_flash_attn alone and raises at init (inclusionAI/Ling-2.6-flash);
+4.x through 5.3 still read the old flag."""
 
 import ast
 import functools
@@ -36,9 +37,19 @@ def test_probe_agrees_with_installed_transformers():
     assert _load()() == _probe_matches_dispatch()
 
 
-@pytest.mark.skipif(int(transformers.__version__.split(".")[0]) < 5, reason = "5.x only")
-def test_transformers_5_does_not_honor_the_legacy_flag():
+def _version():
+    return tuple(int(x) for x in transformers.__version__.split(".")[:2] if x.isdigit())
+
+
+@pytest.mark.skipif(_version() < (5, 4), reason = "the dispatch reads the old flag before 5.4.0")
+def test_transformers_5_4_does_not_honor_the_legacy_flag():
     assert _load()() is False
+
+
+@pytest.mark.skipif(_version() >= (5, 4), reason = "5.4.0 stopped reading the old flag")
+def test_transformers_before_5_4_honors_the_legacy_flag():
+    assert _load()() is True
+
 
 
 def test_class_level_legacy_attribute_means_honored():
