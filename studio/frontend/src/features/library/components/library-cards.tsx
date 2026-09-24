@@ -12,7 +12,6 @@ import {
   KIND_ICON_CLASS,
   fileKind,
   hasThumbnail,
-  modelLabel,
 } from "../file-kind";
 import { formatCardTime, pluralize } from "../format";
 import { useColumnCount, useLibraryThumbnail, useSeen } from "../hooks";
@@ -121,7 +120,8 @@ function CardFrame({
           onCheckedChange={() => select.toggle(selectKey)}
           aria-label={`Select ${label}`}
           className={cn(
-            "absolute bottom-2.5 right-2.5 size-6 rounded-full border-0 bg-background opacity-0 shadow-sm transition-opacity group-hover/library-card:opacity-100 focus-visible:opacity-100 data-checked:bg-background data-checked:text-foreground dark:bg-neutral-700 dark:data-checked:bg-neutral-200 dark:data-checked:text-neutral-900 [&_svg]:size-4",
+            // Level with the date line, as ChatGPT's sits.
+            "absolute bottom-4.5 right-4 size-5 rounded-full border-0 bg-background opacity-0 shadow-sm transition-opacity group-hover/library-card:opacity-100 focus-visible:opacity-100 data-checked:bg-background data-checked:text-foreground dark:bg-neutral-700 dark:data-checked:bg-neutral-200 dark:data-checked:text-neutral-900 [&_svg]:size-3.5",
             selected && "opacity-100",
           )}
         />
@@ -156,7 +156,7 @@ export function ItemCard({ item, showTime = true }: { item: LibraryItem; showTim
       menu={menu}
       className={CARD_SURFACE}
     >
-      <div className="flex aspect-square flex-col p-5">
+      <div className="flex aspect-square flex-col px-5 pb-4 pt-5">
         <p className="line-clamp-2 break-all pr-7 font-medium text-[14px] leading-snug text-foreground">
           {item.name}
         </p>
@@ -165,7 +165,7 @@ export function ItemCard({ item, showTime = true }: { item: LibraryItem; showTim
         </div>
         {showTime && (
           <p className="truncate pr-6 text-[13px] text-muted-foreground">
-            {[modelLabel(item), formatCardTime(item.updatedAt)].filter(Boolean).join(" · ")}
+            {formatCardTime(item.updatedAt)}
           </p>
         )}
       </div>
