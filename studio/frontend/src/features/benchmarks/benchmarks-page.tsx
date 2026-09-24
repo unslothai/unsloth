@@ -134,7 +134,7 @@ function History({ shownId }: { shownId: string | null }): ReactElement | null {
       </DropdownMenuTrigger>
       <DropdownMenuContent
         align="end"
-        className="max-h-[60vh] w-80 overflow-y-auto"
+        className="max-h-[min(60vh,var(--radix-dropdown-menu-content-available-height))] w-80 overflow-y-auto"
       >
         <DropdownMenuLabel className="text-ui-11 text-muted-foreground">
           Saved runs
@@ -221,7 +221,7 @@ export function BenchmarksPage(): ReactElement {
 
   return (
     <div className="flex h-full min-h-0 flex-col bg-background">
-      <div className="mx-auto flex w-full max-w-[1180px] flex-col gap-6 px-5 pb-20 pt-8 sm:px-9 sm:pt-10">
+      <div className="mx-auto flex w-full max-w-[calc(1180px*var(--ui-space-scale,1))] flex-col gap-6 px-5 pb-20 pt-8 sm:px-9 sm:pt-10">
         <header className="font-heading flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
           <div className="flex flex-col gap-0.5">
             <h1 className="page-title-halo text-ui-30 font-semibold leading-[1.04] tracking-[-0.028em] text-foreground sm:text-ui-34">
@@ -285,7 +285,7 @@ export function BenchmarksPage(): ReactElement {
         <div
           className={cn(
             "grid grid-cols-1 items-start gap-6",
-            setupOpen && "lg:grid-cols-[300px_minmax(0,1fr)]",
+            setupOpen && "lg:grid-cols-[calc(300px*var(--ui-space-scale,1))_minmax(0,1fr)]",
           )}
         >
           {setupOpen && (
