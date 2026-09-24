@@ -357,9 +357,15 @@ def test_speed_default_cudnn_benchmark_only_on_cuda(monkeypatch):
     assert applied["cudnn_benchmark"] is False  # not CUDA -> no autotune flip
 
 
-def test_speed_default_skips_cudnn_benchmark_on_rocm(monkeypatch):
+@pytest.mark.parametrize(
+    "hip, version",
+    [("7.13.0", "2.11.0+rocm7.13.0"), (None, "2.9.1+rocmsdk20251116")],
+    ids = ["version_hip", "rocm_tag_only"],
+)
+def test_speed_default_skips_cudnn_benchmark_on_rocm(monkeypatch, hip, version):
     torch = _stub_torch(monkeypatch)
-    torch.version = types.SimpleNamespace(hip = "7.13.0")
+    torch.version = types.SimpleNamespace(hip = hip)
+    torch.__version__ = version
     pipe = _Pipe(with_compile = True)
     applied = apply_speed_optims(
         pipe, _target(), is_gguf = True, family = _family(), speed_mode = SPEED_DEFAULT
