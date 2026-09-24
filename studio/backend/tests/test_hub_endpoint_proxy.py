@@ -100,4 +100,8 @@ def test_without_a_session_nothing_reaches_the_endpoint(proxy):
         assert (refused.status_code, "x-hub-upstream" in refused.headers) == (401, False)
     bad = ("%2e%2e", "a%5Cb", "a%2F..%2Fb")
     assert {client.get(f"{HUB}/org/{b}/admin").status_code for b in bad} == {400}
+    state["upstream"] = "http://10.0.0.5:8080"
+    lan = endpoint_proxy.relay_path(endpoint_proxy.HUB_PREFIX, state["upstream"], "")
+    hidden = client.get(f"{lan}/org/m/resolve/main/a.png")
+    assert (hidden.status_code, "location" in hidden.headers) == (401, False)
     assert seen == []

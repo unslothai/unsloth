@@ -26,6 +26,8 @@ from fastapi.responses import JSONResponse, RedirectResponse, StreamingResponse
 from starlette.background import BackgroundTask
 
 from hub.browser_session import signed_in
+from utils.client_ip import client_ip
+from utils.hf_endpoint import endpoint_is_reachable_by
 
 HUB_PREFIX = "/api/hub/proxy"
 DATASETS_SERVER_PREFIX = "/api/hub/datasets-server-proxy"
@@ -127,6 +129,8 @@ def build_router(prefix: str, upstream: Callable[[], str], *, anonymous_pages: b
                 "authorization" in request.headers
                 or not anonymous_pages
                 or segments[1:2] == ["api"]
+                # The redirect names the endpoint, which /api/health withholds from such a client.
+                or not endpoint_is_reachable_by(endpoint, client_ip(request))
             ):
                 return _refuse(401, "Sign in again to browse the Hub.")
             return RedirectResponse(target, status_code = 302)
