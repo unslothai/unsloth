@@ -954,6 +954,38 @@ def test_a_jit_cache_of_the_running_cuda_is_kept(env):
     assert ok, reason
 
 
+@pytest.mark.parametrize("policy", ["local_files_only", "opt_out"])
+def test_a_load_that_declined_installs_does_not_wait_on_another_install(env, monkeypatch, policy):
+    # Another process has flashinfer-python on disk and is still downloading the jit-cache. A local-only load, or a
+    # host with installs turned off, used to sit on the lock for up to ENV_LOCK_TIMEOUT_S before its own checks ran.
+    env.dists["flashinfer-python"] = "0.6.6"
+    env.importable = True
+    stamps = _track_imports(env, monkeypatch)
+    kwargs = {}
+    if policy == "local_files_only":
+        kwargs["local_files_only"] = True
+    else:
+        monkeypatch.setenv(inst.FLASHINFER_INSTALL_ENV, "0")
+    t = _hold_env_lock(2.0)
+    start = time.monotonic()
+    try:
+        ok, reason = inst.ensure_flashinfer_for_nvfp4(0, run = env.run, **kwargs)
+        elapsed = time.monotonic() - start
+    finally:
+        t.join()
+    assert elapsed < 1.0
+    assert not ok and "another process is still installing" in reason
+    assert stamps == []  # never imported mid-transaction
+    assert env.commands == []
+
+
+def test_a_load_that_declined_installs_still_imports_a_finished_install(env, monkeypatch):
+    env.dists.update({"flashinfer-python": "0.6.6", "flashinfer-jit-cache": "0.6.6+cu130"})
+    env.importable = True
+    ok, reason = inst.ensure_flashinfer_for_nvfp4(0, run = env.run, local_files_only = True)
+    assert ok and "already installed" in reason
+
+
 def _pip_config(env, lines):
     """``env.run`` that also answers ``pip config list`` with ``lines``, as pip prints them."""
     calls = []

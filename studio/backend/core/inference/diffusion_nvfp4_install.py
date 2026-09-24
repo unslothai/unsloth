@@ -228,20 +228,21 @@ def _env_install_lock(timeout: float = ENV_LOCK_TIMEOUT_S):
         lock.release()
 
 
-def _await_inflight_install() -> bool:
+def _await_inflight_install(wait: bool = True) -> bool:
     """Wait for another Studio process installing flashinfer into this environment, without touching it.
 
     flashinfer resolves its jit-cache directory once, at import, so a process that imports it between the
     flashinfer-python and the jit-cache steps of another process's install JIT-compiles for its whole life.
     The pinned flashinfer-python can be that window, or, with its jit-cache present, an install still in its drift
     checks that may roll back, so only other states (already imported, absent, another version) skip the lock.
-    False when the other install outlived the wait, so importing now would still miss the cache."""
+    False when the other install outlived the wait, so importing now would still miss the cache. ``wait=False`` makes
+    one attempt, for a load that has declined any install and so should not sit behind someone else's download."""
     if "flashinfer" in sys.modules:
         return True
     installed = _dist_version(FLASHINFER_PACKAGE)
     if installed is None or installed.split("+", 1)[0] != FLASHINFER_VERSION:
         return True
-    with _env_install_lock() as held:
+    with (_env_install_lock() if wait else _env_install_lock(0)) as held:
         return held
 
 
@@ -1031,11 +1032,21 @@ def _ensure(
 
         if nvfp4_backend_env() == BACKEND_TORCHAO:
             return _finish(False, "UNSLOTH_NVFP4_BACKEND=torchao", None, None)
-        if not _await_inflight_install():
+        # A load that may not install is not held up to ENV_LOCK_TIMEOUT_S behind another process's download: it
+        # checks the lock once and, if the install is still running, stays off flashinfer (never importing it midway).
+        declined = (
+            "local-only load"
+            if local_files_only
+            else f"{FLASHINFER_INSTALL_ENV}=0"
+            if install_env() == "0"
+            else None
+        )
+        if not _await_inflight_install(wait = declined is None):
             # Not memoised: a later load imports once that install has finished.
             return _finish(
                 False,
-                "flashinfer not ready: another process is still installing it into this environment",
+                "flashinfer not ready: another process is still installing it into this environment"
+                + (f" ({declined}: not waiting for it)" if declined else ""),
                 logger,
                 status_cb,
             )
