@@ -327,6 +327,34 @@ def test_z_image_list_outputs_are_skipped_and_rebuilt():
     assert all(type(o) is tuple and type(o[0]) is list for o in outs)
 
 
+def test_z_image_list_in_output_dataclass_is_skipped_and_rebuilt():
+    # ZImageImg2ImgPipeline / ZImageInpaintPipeline call the transformer without return_dict=False.
+    outputs = pytest.importorskip("diffusers.models.modeling_outputs")
+    out_cls = outputs.Transformer2DModelOutput
+    value, rebuild = ss._split_output(out_cls(sample = [torch.ones(4, 2), torch.zeros(4, 2)]))
+    assert value.shape == (2, 4, 2)
+    rebuilt = rebuild(value * 2)
+    assert type(rebuilt) is out_cls and type(rebuilt.sample) is list and len(rebuilt.sample) == 2
+    assert torch.equal(rebuilt.sample[0], torch.full((4, 2), 2.0))
+    assert ss._split_output(out_cls(sample = [torch.ones(4, 2), torch.ones(3, 2)])) == (None, None)
+
+    class _ListOutDiT(_DiT):
+        def forward(
+            self,
+            hidden_states,
+            timestep = None,
+            kv_cache_mode = None,
+            return_dict = True,
+        ):
+            out = super().forward(hidden_states, timestep, kv_cache_mode, return_dict = False)[0]
+            return out_cls(sample = list(out.unbind(0)))
+
+    pipe = _installed(_ListOutDiT())
+    outs = _run(pipe, 25)["cond"]
+    assert ss.static_skip_stats(pipe)["stats"]["skipped"] == 9
+    assert all(type(o) is out_cls and type(o.sample) is list for o in outs)
+
+
 class _PositionalDiT(_DiT):
     """Z-Image's call convention: ``transformer(x, t, cap_feats, return_dict=False)``."""
 

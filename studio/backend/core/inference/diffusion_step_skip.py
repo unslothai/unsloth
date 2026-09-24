@@ -162,8 +162,8 @@ def _split_output(out: Any) -> tuple:
     """(noise prediction, rebuild) for a container a skip can reproduce, else (None, None).
 
     A bare tensor, a 1-tuple of one, a 1-tuple of a list of same-shape tensors (Z-Image, one per
-    image; stacked here and split back), or a diffusers output dataclass holding one tensor field
-    (``Transformer2DModelOutput(sample=...)``), rebuilt through its own class. Anything else,
+    image; stacked here and split back), or a diffusers output dataclass holding one tensor (or such a
+    list) field (``Transformer2DModelOutput(sample=...)``), rebuilt through its own class. Anything else,
     e.g. FLUX.2 klein KV's ``(noise, kv_cache)`` extract step, is not reusable."""
     if _is_tensor(out):
         return out, lambda v: v
@@ -183,10 +183,13 @@ def _split_output(out: Any) -> tuple:
             value = out[name]
         except Exception:  # noqa: BLE001 - not the mapping it looked like
             return None, None
-        if not _is_tensor(value):
-            return None, None
         cls = type(out)
-        return value, lambda v: cls(**{name: v})
+        if _is_tensor(value):
+            return value, lambda v: cls(**{name: v})
+        # Z-Image img2img / inpaint omit return_dict=False: Transformer2DModelOutput(sample=list).
+        if type(value) is list and _same_shape_tensors(value):
+            return _torch().stack(value), lambda v: cls(**{name: list(v.unbind(0))})
+        return None, None
     return None, None
 
 
