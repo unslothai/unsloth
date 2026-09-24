@@ -1651,8 +1651,11 @@ app.include_router(hub_inventory_router, prefix = "/api/hub", tags = ["hub"])
 app.include_router(hub_datasets_router, prefix = "/api/hub/datasets", tags = ["hub"])
 app.include_router(picker_templates_router, prefix = "/api/picker", tags = ["picker"])
 app.include_router(hub_token_router, prefix = "/api/hub", tags = ["hub"])
+# A Hub API emulation for the page's Hub client, not part of this server's own API.
 app.include_router(
-    _build_modelscope_router(browser = True), prefix = _MODELSCOPE_BROWSER_PREFIX, tags = ["hub"]
+    _build_modelscope_router(browser = True),
+    prefix = _MODELSCOPE_BROWSER_PREFIX,
+    include_in_schema = False,
 )
 for _prefix, _upstream, _pages in (
     (_hub_endpoint_proxy.HUB_PREFIX, browser_hf_endpoint, True),
