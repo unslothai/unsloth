@@ -5,4 +5,5 @@
 export { useLibraryChatHandoffStore } from "./chat-handoff-store";
 export { useLibraryFavorites } from "./favorites-store";
 export { chatAboutMedia } from "./start-chat";
+export { revealInFolder, useRevealLabel } from "./reveal";
 export { validateLibrarySearch, type LibrarySearch, type LibraryTab } from "./search";

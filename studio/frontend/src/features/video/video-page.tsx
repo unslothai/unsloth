@@ -25,7 +25,12 @@ import { StripDropLine } from "@/components/gallery-strip-reorder";
 import { useStripReorder } from "@/hooks/use-strip-reorder";
 import { ImageDropzone } from "@/components/image-dropzone";
 import { MediaPageLink } from "@/components/media-page-link";
-import { chatAboutMedia, useLibraryFavorites } from "@/features/library";
+import {
+  chatAboutMedia,
+  revealInFolder,
+  useLibraryFavorites,
+  useRevealLabel,
+} from "@/features/library";
 import { GuidedTour, useGuidedTourController } from "@/features/tour";
 import { videoTourSteps } from "./tour";
 import { useSettingsDialogStore } from "@/features/settings/stores/settings-dialog-store";
@@ -1155,6 +1160,7 @@ function VideoGenerator({
   const [viewer, setViewer] = useState<{ start: number; muted: boolean } | null>(null);
   const viewerVideoRef = useRef<HTMLVideoElement | null>(null);
   const navigateToChat = useNavigate();
+  const revealLabel = useRevealLabel();
   const openViewer = () => {
     if (!selected || !selectedSrc) return;
     setViewer({
@@ -4261,6 +4267,9 @@ function VideoGenerator({
                       onClick: () => void chatAboutMedia(navigateToChat, selectedSrc, selected.prompt, "mp4"),
                     },
                     onDownload: () => void handleQuickDownload(selected),
+                    reveal: revealLabel
+                      ? { label: revealLabel, onClick: () => revealInFolder(`video:${selected.id}`) }
+                      : undefined,
                     favorite: isFavorite(`video:${selected.id}`),
                     onToggleFavorite: () => toggleFavorite(`video:${selected.id}`),
                     onAddToProject: (projectId) => addGalleryVideoToProject(selected.id, projectId),

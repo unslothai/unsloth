@@ -82,7 +82,12 @@ import { MEDIA_RAIL_ROOT_ATTR, useMediaRailWidth } from "@/hooks/use-media-rail-
 import { StripDropLine } from "@/components/gallery-strip-reorder";
 import { useStripReorder } from "@/hooks/use-strip-reorder";
 import { MediaPageLink } from "@/components/media-page-link";
-import { chatAboutMedia, useLibraryFavorites } from "@/features/library";
+import {
+  chatAboutMedia,
+  revealInFolder,
+  useLibraryFavorites,
+  useRevealLabel,
+} from "@/features/library";
 import { useSettingsDialogStore } from "@/features/settings/stores/settings-dialog-store";
 import {
   type NewRecordProbeBaseline,
@@ -1727,6 +1732,7 @@ export function ImagesPage({
   const [viewerOpen, setViewerOpen] = useState(false);
   const openViewer = () => selected && selectedSrc && setViewerOpen(true);
   const navigateToChat = useNavigate();
+  const revealLabel = useRevealLabel();
 
   // Fetch (once) the object URL for a record's PNG; cached across remounts.
   const ensureSrc = useCallback(async (image: GalleryImage) => {
@@ -5225,6 +5231,9 @@ export function ImagesPage({
                       onClick: () => void chatAboutMedia(navigateToChat, selectedSrc, selected.prompt, "png"),
                     },
                     onDownload: () => void handleQuickDownload(selected),
+                    reveal: revealLabel
+                      ? { label: revealLabel, onClick: () => revealInFolder(`image:${selected.id}`) }
+                      : undefined,
                     favorite: isFavorite(`image:${selected.id}`),
                     onToggleFavorite: () => toggleFavorite(`image:${selected.id}`),
                     onAddToProject: (projectId) => addGalleryImageToProject(selected.id, projectId),
