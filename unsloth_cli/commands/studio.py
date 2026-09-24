@@ -227,6 +227,9 @@ DESKTOP_SECRET_HASH_KEY = "desktop_secret_hash"
 DESKTOP_SECRET_CREATED_AT_KEY = "desktop_secret_created_at"
 PBKDF2_ITERATIONS = 100_000
 _START_API_KEY_MARKER_ENV = "_UNSLOTH_START_API_KEY_MARKER"
+# Set only for the child of run()'s re-exec into the studio venv. A child that sees it but is
+# still outside the venv must stop: re-exec'ing again would loop with no output.
+_STUDIO_REEXEC_ENV = "_UNSLOTH_STUDIO_REEXEC"
 _CLOUDFLARE_INTENT_ENV = "_UNSLOTH_CLOUDFLARE_INTENT"
 
 
@@ -447,6 +450,37 @@ def _studio_venv_python() -> Optional[Path]:
     return p if p.is_file() else None
 
 
+def _resolved_or_self(path: Path) -> Path:
+    try:
+        return path.resolve()
+    except (OSError, ValueError):
+        return path
+
+
+def _running_in_studio_venv(venv_dir: Path) -> bool:
+    """Whether this interpreter runs from the studio venv at *venv_dir* (or a dir inside it).
+
+    Compares whole path components, both as given and resolved. The venv's console scripts
+    carry the venv's real path in their shebang, so a child re-exec'd through a symlinked
+    STUDIO_HOME / unsloth_studio reports the resolved sys.prefix while venv_dir keeps the
+    link; a plain string prefix check never matched there and run() re-exec'd itself forever.
+    Components also keep a sibling like unsloth_studio2 from counting as the venv, and
+    normcase / samefile cover case-insensitive filesystems.
+    """
+    prefix = Path(sys.prefix)
+    for a, b in (
+        (prefix, venv_dir),
+        (_resolved_or_self(prefix), _resolved_or_self(venv_dir)),
+    ):
+        a_s, b_s = os.path.normcase(str(a)), os.path.normcase(str(b)).rstrip("\\/")
+        if a_s == b_s or a_s.startswith(b_s + os.sep):
+            return True
+    try:
+        return os.path.samefile(prefix, venv_dir)
+    except (OSError, ValueError):
+        return False
+
+
 def _managed_cli_site_packages_layout(python: Path) -> bool:
     """On-disk hint that the venv still carries the CLI. Weaker than the import probe: an empty
     unsloth_cli/ or an orphaned dist-info passes here."""
@@ -584,7 +618,7 @@ def _clear_hsa_override_contradicting_install(venv_dir: Path) -> Optional[str]:
 def _clear_hsa_override_before_launch(silent: bool = False) -> Optional[str]:
     """Run the #7331 spoof clear for whichever entry point is about to launch. Idempotent."""
     _venv = STUDIO_HOME / "unsloth_studio"
-    _root = Path(sys.prefix) if sys.prefix.startswith(str(_venv)) else _venv
+    _root = Path(sys.prefix) if _running_in_studio_venv(_venv) else _venv
     _arch = _clear_hsa_override_contradicting_install(_root)
     # Published whether or not anything was cleared here: on a desktop launch the GUI
     # environment never carried the override, so the clear above is a no-op and the
@@ -1906,7 +1940,7 @@ def studio_default(
 
     # Resolve the child launcher BEFORE the gate: a headless gate strips the seeded password, so aborting afterwards leaves no way to log in.
     studio_venv_dir = STUDIO_HOME / "unsloth_studio"
-    in_studio_venv = sys.prefix.startswith(str(studio_venv_dir))
+    in_studio_venv = _running_in_studio_venv(studio_venv_dir)
     # Before the env reaches a child: an override contradicting single-arch wheels fails every kernel launch, and install.sh's unset cannot reach here (#7331).
     _clear_hsa_override_before_launch(silent = silent)
     studio_python = run_py = None
@@ -2528,7 +2562,17 @@ def run(
     )
 
     studio_venv_dir = STUDIO_HOME / "unsloth_studio"
-    in_studio_venv = sys.prefix.startswith(str(studio_venv_dir))
+    in_studio_venv = _running_in_studio_venv(studio_venv_dir)
+    # Consumed here so it never reaches the server's own descendants.
+    reexeced = os.environ.pop(_STUDIO_REEXEC_ENV, None) == "1"
+    if reexeced and not in_studio_venv:
+        typer.echo(
+            f"Error: re-launched through {studio_venv_dir} but still running from "
+            f"{sys.prefix}, so not re-launching again. Check that UNSLOTH_STUDIO_HOME "
+            "points at the Studio install, or re-run: unsloth studio setup",
+            err = True,
+        )
+        raise typer.Exit(1)
     studio_bin = None
     resolved_frontend = frontend
     if not in_studio_venv:
@@ -2635,6 +2679,7 @@ def run(
 
         if start_api_key_marker:
             os.environ[_START_API_KEY_MARKER_ENV] = "1"
+        os.environ[_STUDIO_REEXEC_ENV] = "1"
         try:
             if sys.platform == "win32":
                 with _studio_runtime_launch_guard(inherited = runtime_gate_handoff) as gate_held:
@@ -2651,6 +2696,7 @@ def run(
                 os.execvp(str(studio_bin), args)
         finally:
             os.environ.pop(_START_API_KEY_MARKER_ENV, None)
+            os.environ.pop(_STUDIO_REEXEC_ENV, None)
 
     with _studio_deps.studio_backend_imports("unsloth studio"):
         run_mod = _load_run_module()
