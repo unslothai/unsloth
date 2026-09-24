@@ -21,7 +21,6 @@ import { useSettingsDialogStore } from "@/features/settings";
 import { cn } from "@/lib/utils";
 import { toast } from "@/lib/toast";
 import {
-  AiBrain01Icon,
   AudioWave01Icon,
   Cancel01Icon,
   FlimSlateIcon,
@@ -35,7 +34,7 @@ import {
   Upload01Icon,
 } from "@hugeicons/core-free-icons";
 import { ChevronRightStandardIcon } from "@/lib/chevron-icons";
-import { StarPointedIcon } from "@/lib/hugeicons-derived";
+import { StarPointedIcon, TestTubeOutlineIcon } from "@/lib/hugeicons-derived";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate, useSearch } from "@tanstack/react-router";
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -96,7 +95,7 @@ const EMPTY_ICONS: Record<LibraryTab, typeof Folder01Icon> = {
   images: Image02Icon,
   videos: FlimSlateIcon,
   audio: AudioWave01Icon,
-  models: AiBrain01Icon,
+  models: TestTubeOutlineIcon,
   all: Upload01Icon,
 };
 

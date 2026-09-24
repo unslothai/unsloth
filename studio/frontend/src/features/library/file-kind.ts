@@ -2,7 +2,6 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import {
-  AiBrain01Icon,
   AudioWave01Icon,
   File02Icon,
   FlimSlateIcon,
@@ -12,7 +11,7 @@ import {
   Presentation01Icon,
   SourceCodeIcon,
 } from "@hugeicons/core-free-icons";
-import { SheetIcon } from "@/lib/hugeicons-derived";
+import { SheetIcon, TestTubeOutlineIcon } from "@/lib/hugeicons-derived";
 import type { IconSvgElement } from "@hugeicons/react";
 import type { LibraryItem } from "./api";
 
@@ -162,7 +161,7 @@ export const KIND_ICONS: Record<LibraryFileKind, IconSvgElement> = {
   code: SourceCodeIcon,
   audio: AudioWave01Icon,
   video: FlimSlateIcon,
-  model: AiBrain01Icon,
+  model: TestTubeOutlineIcon,
 };
 
 /** Tints for a few recognizable kinds; the rest use the foreground color. */
