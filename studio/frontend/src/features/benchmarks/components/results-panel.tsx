@@ -55,6 +55,7 @@ import {
   footerLines,
   headline,
   highlights,
+  inSentence,
   modelShort,
   rampingRows,
   runSeries,
@@ -130,7 +131,7 @@ function ResultsTable({
     <div className="overflow-x-auto rounded-xl">
       <table className="w-full text-ui-12">
         <thead>
-          <tr className="text-left text-ui-10 uppercase tracking-wider text-muted-foreground [&>th]:px-4 [&>th]:py-2.5 [&>th]:font-medium">
+          <tr className="text-left text-ui-10 uppercase tracking-wider text-muted-foreground [&>th]:px-3 [&>th]:py-2.5 [&>th]:font-medium">
             <th>Setting</th>
             <th className="text-right">Throughput</th>
             <th className="text-right">Range</th>
@@ -145,7 +146,7 @@ function ResultsTable({
           {rows.map((r) => (
             <tr
               key={r.label}
-              className="border-t border-border/40 tabular-nums [&>td]:px-4 [&>td]:py-2"
+              className="border-t border-border/40 tabular-nums [&>td]:whitespace-nowrap [&>td]:px-3 [&>td]:py-2"
             >
               <td className="flex items-center gap-2 text-foreground">
                 <span
@@ -480,7 +481,7 @@ export function RunResults({
         />
         <Tile
           label={
-            hl.baseline ? `vs ${hl.baseline.label.toLowerCase()}` : "Speed-up"
+            hl.baseline ? `vs ${inSentence(hl.baseline.label)}` : "Speed-up"
           }
           value={
             hl.speedup
@@ -488,9 +489,11 @@ export function RunResults({
               : "—"
           }
           detail={
-            hl.baseline
-              ? `baseline ${fmtRate(hl.baseline.mean)}`
-              : "Star a row to compare against it"
+            !hl.baseline
+              ? "Star a row to compare against it"
+              : hl.speedup !== null && hl.speedup < 1
+                ? `nothing beat it · baseline ${fmtRate(hl.baseline.mean)}`
+                : `baseline ${fmtRate(hl.baseline.mean)}`
           }
         />
         <Tile

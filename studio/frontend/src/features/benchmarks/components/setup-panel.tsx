@@ -109,6 +109,46 @@ function Field({
   );
 }
 
+/** A number box that clamps when you leave it, not on every keystroke, so clearing it to
+ * type a new value doesn't snap to the minimum. */
+function CountInput({
+  value,
+  min,
+  max,
+  step,
+  onCommit,
+}: {
+  value: number;
+  min: number;
+  max: number;
+  step: number;
+  onCommit: (n: number) => void;
+}): ReactElement {
+  const [draft, setDraft] = useState<string | null>(null);
+  const commit = () => {
+    if (draft === null) return;
+    const n = Number(draft);
+    if (draft.trim() !== "" && Number.isFinite(n))
+      onCommit(Math.min(max, Math.max(min, Math.round(n))));
+    setDraft(null);
+  };
+  return (
+    <Input
+      type="number"
+      value={draft ?? value}
+      min={min}
+      max={max}
+      step={step}
+      onChange={(e) => setDraft(e.target.value)}
+      onBlur={commit}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") commit();
+      }}
+      className="text-center font-mono tabular-nums"
+    />
+  );
+}
+
 /** Filled for on, a ring for off. The colour is the family's, so it doubles as the legend. */
 function Dot({
   color,
@@ -486,7 +526,11 @@ export function SetupPanel({
               const rows = g.rows.map((v) => (
                 <VariantRow
                   key={v.label}
-                  label={shortLabel(v.label, g.family)}
+                  label={
+                    g.rows.length === 1 || groups.length === 1
+                      ? v.label
+                      : shortLabel(v.label, g.family)
+                  }
                   title={v.label}
                   color={colors[g.family]}
                   active={!disabled.includes(v.label)}
@@ -499,7 +543,8 @@ export function SetupPanel({
                   }
                 />
               ));
-              if (g.rows.length === 1) return rows;
+              // One family (an offload or KV sweep) is just a list; a lone row keeps its full name.
+              if (g.rows.length === 1 || groups.length === 1) return rows;
               const activeHere = g.rows.filter(
                 (v) => !disabled.includes(v.label),
               ).length;
@@ -611,20 +656,12 @@ export function SetupPanel({
                 <span className="text-ui-11 text-muted-foreground">
                   {label}
                 </span>
-                <Input
-                  type="number"
+                <CountInput
                   value={config[key]}
                   min={min}
                   max={max}
                   step={step}
-                  onChange={(e) => {
-                    const n = Number(e.target.value);
-                    if (Number.isFinite(n))
-                      setConfig({
-                        [key]: Math.min(max, Math.max(min, Math.round(n))),
-                      });
-                  }}
-                  className="text-center font-mono tabular-nums"
+                  onCommit={(n) => setConfig({ [key]: n })}
                 />
               </label>
             ))}

@@ -17,6 +17,7 @@ import {
   familyOf,
   footerLines,
   headline,
+  highlights,
   ngramArgs,
   offloadDemand,
   offloadVariants,
@@ -313,4 +314,16 @@ test("a value every row shares prints as pinned, not varied", () => {
   );
   assert.match(line, /Context Length 8192 \(pinned\)/);
   assert.match(line, /MoE on CPU varied/);
+});
+
+test("the fastest tile names the baseline when nothing beats it, and the ratio drops below 1", () => {
+  const [auto, gpu12] = offloadVariants({ layers: 48, moeLayers: 0 });
+  const rows = aggregate(
+    [result(auto.label, 0, 112), result(gpu12.label, 0, 4.7)],
+    [auto, gpu12],
+    auto.label,
+  );
+  const hl = highlights(rows);
+  assert.equal(hl.best?.label, "Studio auto");
+  assert.ok(hl.speedup !== null && hl.speedup < 0.05);
 });

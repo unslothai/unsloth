@@ -802,10 +802,10 @@ export function headline(rows: AggRow[]): string | undefined {
   const best = others[0];
   if (!base) return `${best.label} is fastest at ${fmtRate(best.mean)}.`;
   if (best.mean <= base.mean)
-    return `Nothing beats ${base.label.toLowerCase()} on this model.`;
+    return `Nothing beats ${inSentence(base.label)} on this model.`;
   const beat = others.filter((r) => r.mean > base.mean).length;
   const x = best.mean / base.mean;
-  return `${best.label} runs ${x.toFixed(x >= 10 ? 0 : 1)}× ${base.label.toLowerCase()}. ${beat} of ${others.length} settings beat it.`;
+  return `${best.label} runs ${x.toFixed(x >= 10 ? 0 : 1)}× ${inSentence(base.label)}. ${beat} of ${others.length} settings beat it.`;
 }
 
 export interface Highlights {
@@ -818,10 +818,15 @@ export interface Highlights {
 export function highlights(rows: AggRow[]): Highlights {
   const baseline = rows.find((r) => r.isBaseline) ?? null;
   const others = rows.filter((r) => !r.isBaseline);
-  const best = others[0] ?? baseline;
+  // The fastest row overall, which can be the baseline (an offload sweep's Studio fit).
+  const best =
+    baseline && (!others[0] || baseline.mean >= others[0].mean)
+      ? baseline
+      : (others[0] ?? null);
+  // The best challenger against the baseline, below 1 when nothing beat it.
   const speedup =
-    best && baseline && baseline.mean > 0 && best !== baseline
-      ? best.mean / baseline.mean
+    others[0] && baseline && baseline.mean > 0
+      ? others[0].mean / baseline.mean
       : null;
   const withAccept = others.filter((r) => r.acceptRate !== null);
   const bestAccept = withAccept.length
@@ -994,13 +999,33 @@ const BACKEND_NAME: Record<string, string> = {
   sycl: "SYCL",
 };
 
+/** The context rows ran at: a sweep's pinned value, "varied", or what chat had loaded. */
+export function ctxNote(run: Pick<BenchRun, "config" | "context">): string {
+  if (variedFields(run.config.variants).has("max_seq_length")) return "ctx varied";
+  const pinned = pinnedFields(run.config.variants).get("max_seq_length");
+  if (pinned) return `ctx ${fmtTokens(Number(pinned))}`;
+  return run.context ? `ctx ${fmtTokens(run.context)}` : "";
+}
+
+/** Every queued row ran to an end (measured, skipped or failed); false when a Stop cut it short. */
+export function ranToEnd(run: Pick<BenchRun, "outcomes">): boolean {
+  return run.outcomes.every(
+    (o) => o.state === "done" || o.state === "skipped" || o.state === "error",
+  );
+}
+
+/** A row's name mid-sentence: "1.9× speculation off", but "1.2× Studio auto". */
+export function inSentence(label: string): string {
+  return label.startsWith("Speculation ") ? label.toLowerCase() : label;
+}
+
 /** What ran, where and on which build: the chart's footer and the export's provenance. */
 export function footerLines(run: BenchRun): string[] {
   const c = run.config;
   const what = [
     `${modelShort(run.model)}${run.ggufVariant ? ` ${run.ggufVariant}` : ""}`,
     run.kv ? `KV ${run.kv}` : "",
-    run.context ? `ctx ${fmtTokens(run.context)}` : "",
+    ctxNote(run),
     `${c.repetitions} measured run${c.repetitions === 1 ? "" : "s"} per setting${c.warmup ? ` (+${c.warmup} warm-up)` : ""}`,
     `${c.maxTokens} max tokens`,
     c.rotatePrompts ? "prompts rotated" : "one prompt repeated",

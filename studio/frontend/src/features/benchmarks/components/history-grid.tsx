@@ -30,7 +30,10 @@ import {
   type Family,
   SWEEP_TITLE,
   familyOf,
+  ctxNote,
+  inSentence,
   modelShort,
+  ranToEnd,
 } from "../lib/bench-math";
 import { useBenchmarksStore } from "../stores/benchmarks-store";
 import { useFamilyColors } from "./family-colors";
@@ -201,7 +204,7 @@ export function HistoryGrid({
           const running = live?.run.id === run.id;
           const state = running
             ? "running"
-            : run.finishedAt
+            : run.finishedAt && ranToEnd(run)
               ? "done"
               : "partial";
           const rowsTotal = run.config.variants.length;
@@ -253,7 +256,7 @@ export function HistoryGrid({
                   <span className="block truncate text-xs text-muted-foreground/80">
                     {[
                       run.kv && `KV ${run.kv}`,
-                      run.context && `ctx ${run.context.toLocaleString()}`,
+                      ctxNote(run),
                       run.meta.gpu,
                     ]
                       .filter(Boolean)
@@ -277,7 +280,7 @@ export function HistoryGrid({
                   <span className="flex flex-wrap gap-x-3 tabular-nums">
                     {speedup !== null && base && (
                       <span>
-                        {speedup.toFixed(2)}× {base.label.toLowerCase()}
+                        {speedup.toFixed(2)}× {inSentence(base.label)}
                       </span>
                     )}
                     <span>
