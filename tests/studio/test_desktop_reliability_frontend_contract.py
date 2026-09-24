@@ -2445,6 +2445,13 @@ def test_image_train_rail_matches_create_and_header():
     assert rail, "the Train rail no longer uses the Create rail's width variable and clamp"
     classes = re.search(r'className="([^"]*overflow-y-auto overflow-x-hidden[^"]*)"', layout)
     assert classes, "the Train scroller moved; the rail clamp depends on its padding"
+    # The class list is all that sets the scroller's padding: an inline style, a spread or any
+    # other attribute on the tag could set padding the list below never sees, so none is allowed.
+    opening = layout[layout.rfind("<", 0, classes.start()) : classes.start()]
+    assert re.fullmatch(r"<div\s+", opening) and re.match(r"\s*>", layout[classes.end() :]), (
+        "the Train scroller's opening tag carries more than its className, which could override "
+        "the right padding the rail clamp adds back"
+    )
     # The scroller's right padding where the rail layout applies. A closed list rather than a
     # Tailwind parser: every class that can move the right edge (p-, px-, pr-, pe-, or arbitrary
     # padding, under any variant, !important or a typed value) must be a plain pr- step below the
