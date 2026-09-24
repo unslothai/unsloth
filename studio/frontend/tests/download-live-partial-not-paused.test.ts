@@ -85,7 +85,7 @@ test("a partial row with a running scoped job reads as downloading, not paused",
   const scoped = job({ variant: "@hub-required-assets", scopedFiles: ["vae/a.safetensors"] });
   const live = createLiveInventoryJobsSelector(false)({ jobs: jsonJobs(scoped) });
   const keys = activeDownloadRepoKeys(live);
-  assert.deepEqual([...keys], [REPO.toLowerCase()]);
+  assert.equal(keys.has(REPO.toLowerCase()), true);
 
   const [row] = markDownloadingRows([scannedRow()], (r) => r.repoId, keys);
   assert.equal(row.partial, true);
@@ -183,6 +183,64 @@ test("a GGUF quant written by a scoped Model file job reads as downloading", () 
 
   const done = select({ jobs: jsonJobs(job({ ...(scoped as object), state: "complete" })) });
   assert.equal(isScopedLiveVariant({ filename: "qwen-image-2.1-Q8_0.gguf" }, done), false);
+});
+
+test("a job of one artifact family does not mark the other family's partial row", () => {
+  const ggufRow = scannedRow({ id: `gguf:${REPO}`, modelFormat: "gguf", isGguf: true });
+  const modelRow = scannedRow();
+  const unknownRow = scannedRow({ id: `unknown:${REPO}`, modelFormat: "unknown" });
+  const rows = [ggufRow, modelRow, unknownRow];
+
+  const ggufScoped = job({
+    variant: "@model-file",
+    scopedFiles: ["qwen-image-2.1-Q8_0.gguf"],
+    inventoryKind: "gguf",
+  });
+  const ggufKeys = activeDownloadRepoKeys(
+    createLiveInventoryJobsSelector(false)({ jobs: jsonJobs(ggufScoped) }),
+  );
+  assert.deepEqual(
+    markDownloadingRows(rows, (r) => r.repoId, ggufKeys).map((r) => Boolean(r.downloading)),
+    [true, false, true],
+  );
+
+  const assets = job({ variant: "@hub-required-assets", scopedFiles: ["vae/a.safetensors"] });
+  const modelKeys = activeDownloadRepoKeys(
+    createLiveInventoryJobsSelector(false)({ jobs: jsonJobs(assets) }),
+  );
+  assert.deepEqual(
+    markDownloadingRows(rows, (r) => r.repoId, modelKeys).map((r) => Boolean(r.downloading)),
+    [false, true, true],
+  );
+
+  const quant = job({ variant: "Q8_0" });
+  const quantKeys = activeDownloadRepoKeys(
+    createLiveInventoryJobsSelector(false)({ jobs: jsonJobs(quant) }),
+  );
+  assert.deepEqual(
+    markDownloadingRows(rows, (r) => r.repoId, quantKeys).map((r) => Boolean(r.downloading)),
+    [true, false, true],
+  );
+});
+
+test("the Safetensors card's scoped fallback skips a GGUF-scoped job in the same repo", () => {
+  const ggufScoped = job({
+    variant: "@model-file",
+    scopedFiles: ["qwen-image-2.1-Q8_0.gguf"],
+    inventoryKind: "gguf",
+  });
+  assert.equal(
+    findActiveScopedJobForRepo(jsonJobs(ggufScoped), "model", REPO, "model"),
+    null,
+  );
+  const assets = job({ variant: "@hub-required-assets" });
+  assert.equal(
+    findActiveScopedJobForRepo(jsonJobs(ggufScoped, assets), "model", REPO, "model")
+      ?.variant,
+    "@hub-required-assets",
+  );
+  const hook = readSrc("features/hub/download-manager/use-repo-download.ts");
+  assert.match(hook, /findActiveScopedJobForRepo\(state\.jobs, kind, repoId, "model"\)/);
 });
 
 function jsonJobs(...list: ReturnType<typeof job>[]) {

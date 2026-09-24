@@ -61,7 +61,9 @@ export interface RepoDownloadConfig {
   autoAdopt?: boolean;
   /** With `activeVariant: null`, report a running scoped job in this repo as this surface's own
    * download when the snapshot key has none. Such a job (an image model's "Required assets", a
-   * staged checkpoint) writes into this repo's cache, so the repo is downloading, not paused. */
+   * staged checkpoint) writes into this repo's cache, so the repo is downloading, not paused.
+   * Only non-GGUF scoped jobs count: this is the snapshot surface, and a GGUF file job belongs to
+   * the GGUF card, whose progress and stop control it must not take over. */
   includeScopedJobs?: boolean;
 }
 
@@ -114,7 +116,7 @@ export function useRepoDownload(config: RepoDownloadConfig): DownloadJob {
       const active =
         selectActiveJob(state, kind, repoId, activeVariant) ??
         (includeScopedJobs && activeVariant === null
-          ? findActiveScopedJobForRepo(state.jobs, kind, repoId)
+          ? findActiveScopedJobForRepo(state.jobs, kind, repoId, "model")
           : null);
       const repoActive = selectActiveJob(state, kind, repoId);
       return {

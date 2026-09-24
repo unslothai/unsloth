@@ -422,6 +422,8 @@ export function findActiveScopedJobForRepo(
   jobs: Record<string, ManagedDownload>,
   kind: DownloadKind,
   repoId: string,
+  /** Only jobs of this artifact family; a GGUF-scoped job is not a snapshot surface's download. */
+  inventoryKind?: "model" | "gguf",
 ): ManagedDownload | null {
   let selected: ManagedDownload | null = null;
   const repoIdentity = normalizeRepoIdentity(repoId);
@@ -429,6 +431,12 @@ export function findActiveScopedJobForRepo(
     if (job.kind !== kind || normalizeRepoIdentity(job.repoId) !== repoIdentity)
       continue;
     if (!job.variant?.startsWith("@")) continue;
+    if (
+      inventoryKind &&
+      downloadInventoryHintKind(job.kind, job.variant, job.inventoryKind) !==
+        inventoryKind
+    )
+      continue;
     if (!ACTIVE_STATES.has(job.state)) continue;
     if (isPreferredRepoActiveJob(job, selected)) {
       selected = job;
