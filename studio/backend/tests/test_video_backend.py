@@ -9350,8 +9350,9 @@ def test_the_download_plan_stages_both_experts_artifacts(monkeypatch):
     )
 
 
-def test_a_speed_off_plan_stages_the_dense_experts_the_load_will_open(monkeypatch):
-    """speed_mode="off" declines even an EXPLICIT scheme, so the plan stages the dense shards."""
+def test_an_explicit_scheme_under_speed_off_stages_the_hosted_experts(monkeypatch):
+    """An EXPLICIT scheme under speed_mode="off" is still quantized, so the plan keeps its seed and
+    stages the hosted checkpoint rather than the ~56 GB of dense experts."""
     import core.inference.video_denoiser_prequant as dq
 
     _plan_api(
@@ -9396,9 +9397,9 @@ def test_a_speed_off_plan_stages_the_dense_experts_the_load_will_open(monkeypatc
     )
 
     staged = {f for e in plan["entries"] for f in e["files"]}
-    assert "transformer/diffusion_pytorch_model.safetensors" in staged
-    assert "transformer_2/diffusion_pytorch_model.safetensors" in staged
-    assert not any(f.endswith(".pt") for f in staged)
+    assert "transformer/diffusion_pytorch_model.safetensors" not in staged
+    assert "transformer_2/diffusion_pytorch_model.safetensors" not in staged
+    assert {"Wan2.2-T2V-A14B-NVFP4.pt", "Wan2.2-T2V-A14B-transformer_2-NVFP4.pt"} <= staged
 
 
 def _cuda_plan_target(monkeypatch, video_mod, *, free_gib):
