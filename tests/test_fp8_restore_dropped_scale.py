@@ -485,3 +485,98 @@ def test_load_call_sites_pass_dtype():
         assert len(calls) == want, (mod.__name__, len(calls))
         for call in calls:
             assert "dtype" in {kw.arg for kw in call.keywords}, mod.__name__
+
+
+def _offload(
+    model,
+    module_name,
+    disk_dir = None,
+):
+    """Offload one submodule through accelerate exactly like a sequential device map does: its weight
+    becomes a meta placeholder and forward materializes it from the model-wide weights map."""
+    from accelerate.hooks import AlignDevicesHook, add_hook_to_module
+    from accelerate.utils import OffloadedWeightsLoader, PrefixedDataset, offload_state_dict
+
+    module = dict(model.named_modules())[module_name]
+    state = {f"{module_name}.{k}": v.detach().clone() for k, v in module.state_dict().items()}
+    if disk_dir is None:
+        store = OffloadedWeightsLoader(state_dict = state)
+    else:
+        offload_state_dict(disk_dir, state)
+        store = OffloadedWeightsLoader(save_folder = disk_dir)
+    hook = AlignDevicesHook(
+        execution_device = "cpu",
+        offload = True,
+        weights_map = PrefixedDataset(store, f"{module_name}."),
+    )
+    add_hook_to_module(module, hook)
+    assert module.weight.device.type == "meta"
+    return store
+
+
+def _offloaded_case(raw, placeholder_dtype):
+    raw_fp8 = raw.to(_FP8)
+    scale = torch.rand(2, 2, dtype = torch.float32) + 0.1
+    model = nn.Module()
+    model.config = _fp8_config((2, 2))
+    model.anchor = _fp8_anchor()
+    model.model = nn.Module()
+    if placeholder_dtype == _FP8:
+        model.model.gate_proj = _fp8_linear(4, 4, raw_fp8.clone())
+    else:
+        model.model.gate_proj = _bf16_linear(4, 4, raw_fp8.to(torch.bfloat16))
+    return model, raw_fp8, scale
+
+
+def test_offloaded_orphans_are_restored_through_weights_map():
+    """An offloaded orphan (cpu or disk; raw fp8 from a text_only load, or raw bf16 from an unrenamed load)
+    used to be skipped: the text_only forward then raised on the fp8 weight and the unrenamed one ran
+    unscaled. The tensor accelerate materializes from is now dequantized, and the forward matches."""
+    if _FP8 is None:
+        return
+    import pytest
+
+    pytest.importorskip("accelerate")
+    torch.manual_seed(0)
+    raw = torch.randn(4, 4) * 100
+    for placeholder_dtype in (_FP8, torch.bfloat16):
+        for disk in (False, True):
+            model, raw_fp8, scale = _offloaded_case(raw, placeholder_dtype)
+            with tempfile.TemporaryDirectory() as d, tempfile.TemporaryDirectory() as off:
+                _offload(model, "model.gate_proj", off if disk else None)
+                _write_checkpoint(d, {"model.language_model.gate_proj.weight_scale_inv": scale})
+                restored, skipped = _restore_dropped_fp8_scales(
+                    model, d, local_files_only = True, dtype = torch.bfloat16
+                )
+                assert (restored, skipped) == (1, 0), (placeholder_dtype, disk)
+                gate = model.model.gate_proj
+                assert gate.weight.device.type == "meta" and gate.weight.dtype == torch.bfloat16
+                expected = (raw_fp8.to(torch.float32) * _expand(scale, (2, 2), (4, 4))).to(
+                    torch.bfloat16
+                )
+                x = torch.randn(3, 4, dtype = torch.bfloat16)
+                out = gate(x)
+                assert torch.equal(out, torch.nn.functional.linear(x, expected)), (
+                    placeholder_dtype,
+                    disk,
+                )
+
+
+def test_offloaded_fp8_module_with_scale_is_skipped_not_counted_offloaded():
+    """A converted fp8 module that is offloaded still carries its scale placeholder: skipped, store untouched."""
+    if _FP8 is None:
+        return
+    import pytest
+
+    pytest.importorskip("accelerate")
+    raw_fp8 = torch.randn(4, 4).to(_FP8)
+    model = nn.Module()
+    model.config = _fp8_config((2, 2))
+    model.up_proj = _fp8_linear(4, 4, raw_fp8.clone())
+    model.up_proj.weight_scale_inv = nn.Parameter(torch.ones(2, 2), requires_grad = False)
+    store = _offload(model, "up_proj")
+    with tempfile.TemporaryDirectory() as d:
+        _write_checkpoint(d, {"up_proj.weight_scale_inv": torch.rand(2, 2)})
+        assert _restore_dropped_fp8_scales(model, d, local_files_only = True) == (0, 1)
+    assert store["up_proj.weight"].dtype == _FP8
+    assert torch.equal(store["up_proj.weight"].float(), raw_fp8.float())
