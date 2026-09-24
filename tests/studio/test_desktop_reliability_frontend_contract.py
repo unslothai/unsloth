@@ -2434,9 +2434,12 @@ def test_image_train_rail_matches_create_and_header():
     # Train rail sits inside a scroller with right padding, so its 100% is that padding narrower
     # than Create's and the clamp adds exactly that padding back (#11765). Read both numbers rather
     # than pin either: the divider only lines up while they are the same spacing step.
+    # A spacing step as Tailwind v4 spells it: a multiple of 0.25 written canonically. `8.0` or
+    # `08` still render inside --spacing() but emit no pr- rule, so the two would stop agreeing.
+    step = r"(?:0|[1-9]\d*)(?:\.(?:25|5|75))?"
     rail = re.search(
         r"pl-10 max-sm:pl-5 @\[50rem\]:w-\[min\(var\(--media-rail-width,408px\),"
-        r"calc\(100%-13rem\+--spacing\((\d+(?:\.\d+)?)\)\)\)\]",
+        rf"calc\(100%-13rem\+--spacing\(({step})\)\)\)\]",
         layout,
     )
     assert rail, "the Train rail no longer uses the Create rail's width variable and clamp"
@@ -2452,15 +2455,14 @@ def test_image_train_rail_matches_create_and_header():
         for t in classes.group(1).split()
         if re.search(r"(?:^|[:!(\[])(?:p|px|pr|pe)-", t) or "padding" in t
     ]
-    below = [t for t in touches if re.fullmatch(r"(?:max-sm:)?pr-\d+(?:\.\d+)?", t)]
-    at_rail = [t for t in touches if re.fullmatch(r"sm:pr-\d+(?:\.\d+)?", t)]
+    below = [t for t in touches if re.fullmatch(rf"(?:max-sm:)?pr-{step}", t)]
+    at_rail = [t for t in touches if re.fullmatch(rf"sm:pr-{step}", t)]
     other = [t for t in touches if t not in below and t not in at_rail]
     assert (
         not other
     ), f"the Train scroller sets right padding the rail clamp does not add back: {other}"
     assert len(at_rail) == 1, f"expected one sm: right padding on the Train scroller, got {at_rail}"
-    step = at_rail[0].removeprefix("sm:pr-")
-    assert rail.group(1) == step, (
+    assert rail.group(1) == at_rail[0].removeprefix("sm:pr-"), (
         f"the Train rail adds back --spacing({rail.group(1)}) but its scroller pads "
         f"{at_rail[0]}, so the divider no longer lines up with Create's"
     )
