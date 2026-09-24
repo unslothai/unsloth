@@ -29,6 +29,7 @@ import tempfile
 from types import SimpleNamespace
 
 import pytest
+from real_accelerator import has_real_cuda  # tests/_shared, on sys.path via tests/conftest.py
 import torch
 
 # Import unsloth first to set UNSLOTH_IS_PRESENT env var.
@@ -697,7 +698,7 @@ def _tokenizer_free_load(path, root):
             shutil.copy(os.path.join(tok_dir, f), os.path.join(path, f))
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs a CUDA device")
+@pytest.mark.skipif(not has_real_cuda(), reason = "needs a CUDA device")
 @pytest.mark.skipif(
     not (HAS_CT and HAS_CONVERTERS), reason = "needs compressed-tensors and the transformers 5 loader"
 )
@@ -728,7 +729,7 @@ def test_packed_checkpoint_loads_as_linear4bit_bit_identical_to_disk_route(varia
     assert "compressed" not in str(model_a.config.quantization_config).lower()
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs a CUDA device")
+@pytest.mark.skipif(not has_real_cuda(), reason = "needs a CUDA device")
 @pytest.mark.skipif(
     not (HAS_CT and HAS_CONVERTERS), reason = "needs compressed-tensors and the transformers 5 loader"
 )
