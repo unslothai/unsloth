@@ -5,10 +5,12 @@ import asyncio
 import json
 import threading
 import time
+from datetime import date, datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
+from starlette.requests import Request
 
 from core.inference import llama_keepwarm
 from core.inference.chat_generation_runs import (
@@ -22,6 +24,7 @@ from routes import inference
 from state import active_generations
 from storage import chat_generation_runs_db as runs_db
 from storage import studio_db
+from utils.current_date_prompt_settings import _request_local_date
 
 
 @pytest.fixture
@@ -72,7 +75,8 @@ def _create_payload(content = "Hello"):
 
 def _route_request(supervisor):
     return SimpleNamespace(
-        app = SimpleNamespace(state = SimpleNamespace(chat_generation_supervisor = supervisor))
+        app = SimpleNamespace(state = SimpleNamespace(chat_generation_supervisor = supervisor)),
+        headers = {},
     )
 
 
@@ -195,6 +199,44 @@ async def test_background_producer_persists_chunks_and_completes(durable_run, mo
     assert [
         event["payload"] for event in runs_db.list_events("run-1") if event["type"] == "chunk"
     ] == chunks
+
+
+@pytest.mark.asyncio
+async def test_producer_dates_the_prompt_in_the_browser_timezone(monkeypatch):
+    studio_db.upsert_chat_thread(
+        {"id": "thread-1", "title": "Chat", "modelType": "base", "modelId": "local", "createdAt": 1}
+    )
+    studio_db.upsert_chat_message(
+        {"id": "user-1", "threadId": "thread-1", "role": "user", "content": [], "createdAt": 2}
+    )
+    browser = Request(
+        {
+            "type": "http",
+            "method": "POST",
+            "path": "/api/inference/chat-runs",
+            "query_string": b"",
+            "headers": [
+                (b"x-unsloth-timezone", b"Pacific/Kiritimati"),
+                (b"x-unsloth-timezone-offset-minutes", b"-840"),
+            ],
+            "app": SimpleNamespace(state = SimpleNamespace()),
+        }
+    )
+    await run_routes.create_chat_generation_run(_create_payload(), browser, "alice")
+    instant = datetime(2026, 9, 24, 10, 5, tzinfo = timezone.utc)
+    observed = []
+
+    async def body():
+        yield "data: [DONE]\n\n"
+
+    async def fake(payload, request, _subject, *, cancel_on_disconnect):
+        observed.append((sorted(payload.model_extra), _request_local_date(request, instant)))
+        return SimpleNamespace(status_code = 200, body_iterator = body())
+
+    monkeypatch.setattr(inference, "produce_openai_chat_completions", fake)
+    supervisor = ChatGenerationSupervisor(SimpleNamespace(state = SimpleNamespace()))
+    await supervisor._produce("run-1")
+    assert observed == [(["generation_run_id"], date(2026, 9, 25))]
 
 
 @pytest.mark.asyncio
