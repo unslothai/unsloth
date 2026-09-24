@@ -104,7 +104,8 @@ class _FakeEnv:
                         self.torch_version = version
                 self.importable = not self.install_moves
             elif any(a.startswith("flashinfer-jit-cache==") for a in cmd):
-                self.dists["flashinfer-jit-cache"] = "0.6.6+cu130"
+                spec = next(a for a in cmd if a.startswith("flashinfer-jit-cache=="))
+                self.dists["flashinfer-jit-cache"] = spec.split("==", 1)[1]
             else:
                 # A rollback restore: name==old --no-deps.
                 for spec in cmd:
@@ -131,8 +132,18 @@ def _clean(monkeypatch, tmp_path):
     monkeypatch.setattr(inst, "_env_lock_path", lambda: str(tmp_path / "install.lock"))
     monkeypatch.delenv(inst.FLASHINFER_INSTALL_ENV, raising = False)
     monkeypatch.delenv(ops.NVFP4_BACKEND_ENV, raising = False)
-    for name in (*inst._CUSTOM_INDEX_ENVS, "UV_INDEX", "UV_EXTRA_INDEX_URL"):
+    for name in (
+        *inst._CUSTOM_INDEX_ENVS,
+        "UV_INDEX",
+        "UV_EXTRA_INDEX_URL",
+        "UV_OFFLINE",
+        "UV_CONFIG_FILE",
+        "ALL_PROXY",
+        "all_proxy",
+    ):
         monkeypatch.delenv(name, raising = False)
+    # The host's own uv.toml and pip.conf never leak in: the fake run answers no `pip config list`.
+    monkeypatch.setenv("UV_NO_CONFIG", "1")
     inst.reset_install_state()
     yield
     inst.reset_install_state()
@@ -174,8 +185,11 @@ def test_installs_pinned_flashinfer_and_matching_jit_cache_when_missing(env):
     main, jit = installs
     assert "flashinfer-python==0.6.6" in main and "--only-binary" in main
     assert "--no-deps" not in main  # tvm-ffi and friends are real import deps
-    assert "flashinfer-jit-cache==0.6.6" in jit and "--no-deps" in jit
+    # The full local version: `==0.6.6` would be satisfied by a cache built for another CUDA.
+    assert "flashinfer-jit-cache==0.6.6+cu130" in jit and "--no-deps" in jit
     assert jit[jit.index("--index-url") + 1] == "https://flashinfer.ai/whl/cu130"
+    assert jit[jit.index("--index") + 1] == "https://flashinfer.ai/whl/cu130"
+    assert env.dists["flashinfer-jit-cache"] == "0.6.6+cu130"
     # Every distribution already present is pinned exactly, torch/triton/nvidia included.
     pins = env.constraints_seen[0].splitlines()
     for name, version in _BASE_DISTS.items():
@@ -800,3 +814,227 @@ def test_a_uv_index_skips_the_pypi_probe_only_when_uv_installs(env, monkeypatch,
     assert _ensure(env)[0]
     # uv ranks these above its default index; pip does not read them, so its fallback still needs pypi.org.
     assert (inst._PYPI_PROBE_URL in probed) == (uv is None)
+
+
+@pytest.mark.parametrize(
+    "cuda, cache, nvcc",
+    [
+        ("13.0", "0.6.6+cu128", False),  # left over from a cu128 torch
+        ("13.0", "0.6.6", False),  # no local tag: the CUDA it was built for cannot be told
+        ("14.0", "0.6.6+cu130", True),  # no published build fits, yet a cache is present
+    ],
+)
+def test_a_jit_cache_built_for_another_cuda_refuses(env, monkeypatch, cuda, cache, nvcc):
+    # flashinfer only checks the public version and `==0.6.6` accepts any local tag, so the installer would keep it.
+    env.cuda = cuda
+    env.dists["flashinfer-jit-cache"] = cache
+    monkeypatch.setattr(inst, "_nvcc_available", lambda: nvcc)
+    ok, reason = _ensure(env)
+    assert not ok and f"flashinfer-jit-cache {cache}" in reason and "does not match CUDA" in reason
+    assert env.installs() == []
+
+
+def test_a_jit_cache_of_the_running_cuda_is_kept(env):
+    env.dists["flashinfer-jit-cache"] = "0.6.6+cu130"
+    ok, reason = _ensure(env)
+    assert ok, reason
+
+
+def _pip_config(env, lines):
+    """``env.run`` that also answers ``pip config list`` with ``lines``, as pip prints them."""
+    calls = []
+
+    def _run(cmd, **kwargs):
+        cmd = [str(c) for c in cmd]
+        if cmd[1:] == ["-m", "pip", "config", "list"]:
+            calls.append(cmd)
+            return _Result(0, "".join(f"{line}\n" for line in lines))
+        return env.run(cmd, **kwargs)
+
+    _run.calls = calls
+    return _run
+
+
+def test_a_pip_conf_mirror_skips_the_pypi_probe_for_the_pip_fallback(env, monkeypatch):
+    probed = []
+    monkeypatch.setattr(inst, "_reachable", lambda url: probed.append(url) or True)
+    monkeypatch.setattr(inst, "_uv_executable", lambda: None)
+    run = _pip_config(env, ["global.index-url='https://corp.example/simple'"])
+    ok, reason = inst.ensure_flashinfer_for_nvfp4(0, run = run)
+    assert ok, reason
+    assert probed == ["https://flashinfer.ai/whl/cu130/flashinfer-jit-cache/"]
+
+
+def test_a_pip_conf_mirror_is_not_overridden_by_a_uv_one(env, monkeypatch):
+    monkeypatch.setattr(inst, "_uv_executable", lambda: None)
+    monkeypatch.setenv("UV_INDEX_URL", "https://uv-mirror.example/simple")
+    run = _pip_config(env, ["install.index-url='https://corp.example/simple'"])
+    assert inst.ensure_flashinfer_for_nvfp4(0, run = run)[0]
+    main = env.installs()[0]
+    assert "--index-url" not in main  # pip reads its own pip.conf mirror
+
+
+def test_pip_config_is_only_read_when_pip_installs(env):
+    run = _pip_config(env, [":env:.no-index='1'"])
+    assert inst.ensure_flashinfer_for_nvfp4(0, run = run)[0]
+    assert (
+        run.calls == []
+    )  # uv ignores pip's settings, and the installed path never pays for the subprocess
+
+
+@pytest.mark.parametrize(
+    "line, needle",
+    [
+        (":env:.no-index='1'", "no-index"),
+        ("global.no-index='true'", "no-index"),
+        (":env:.no-deps='yes'", "no-deps"),
+        ("install.target='/opt/elsewhere'", "target directory"),
+        (":env:.prefix='/opt/elsewhere'", "prefix"),
+        ("install.root='/chroot'", "another root"),
+    ],
+)
+def test_pip_settings_it_cannot_honor_refuse_before_installing(env, monkeypatch, line, needle):
+    probed = []
+    monkeypatch.setattr(inst, "_reachable", lambda url: probed.append(url) or True)
+    monkeypatch.setattr(inst, "_uv_executable", lambda: None)
+    ok, reason = inst.ensure_flashinfer_for_nvfp4(0, run = _pip_config(env, [line]))
+    assert not ok and needle in reason
+    assert env.installs() == [] and probed == []
+    # Not memoised: once the setting is gone, the same process installs.
+    assert inst.ensure_flashinfer_for_nvfp4(0, run = _pip_config(env, []))[0]
+
+
+def test_pip_require_virtualenv_refuses_only_outside_a_venv(env, monkeypatch):
+    monkeypatch.setattr(inst, "_uv_executable", lambda: None)
+    run = _pip_config(env, [":env:.require-virtualenv='1'"])
+    monkeypatch.setattr(sys, "base_prefix", sys.prefix)
+    ok, reason = inst.ensure_flashinfer_for_nvfp4(0, run = run)
+    assert not ok and "virtualenv" in reason and env.installs() == []
+    monkeypatch.setattr(sys, "base_prefix", sys.prefix + "-base")
+    assert inst.ensure_flashinfer_for_nvfp4(0, run = run)[0]
+
+
+def _uv_toml(monkeypatch, tmp_path, text):
+    path = tmp_path / "uv.toml"
+    path.write_text(text, encoding = "utf-8")
+    monkeypatch.setenv("UV_CONFIG_FILE", str(path))
+    return path
+
+
+@pytest.mark.parametrize(
+    "text, needle",
+    [
+        ("offline = true\n", "offline"),
+        ("no-index = true\n", "no-index"),
+        ("[pip]\nno-index = true\n", "no-index"),
+        ("[pip]\nno-deps = true\n", "no-deps"),
+        ('[pip]\ntarget = "/opt/elsewhere"\n', "target directory"),
+        ('[pip]\nprefix = "/opt/elsewhere"\n', "prefix"),
+    ],
+)
+def test_uv_config_settings_it_cannot_honor_refuse_before_installing(
+    env, monkeypatch, tmp_path, text, needle
+):
+    probed = []
+    monkeypatch.setattr(inst, "_reachable", lambda url: probed.append(url) or True)
+    _uv_toml(monkeypatch, tmp_path, text)
+    ok, reason = _ensure(env)
+    assert not ok and needle in reason
+    assert env.installs() == [] and probed == []
+    monkeypatch.delenv("UV_CONFIG_FILE")
+    assert _ensure(env)[0]
+
+
+def test_uv_offline_env_false_overrides_a_config_offline(env, monkeypatch, tmp_path):
+    _uv_toml(monkeypatch, tmp_path, "offline = true\n")
+    monkeypatch.setenv("UV_OFFLINE", "0")
+    assert _ensure(env)[0]
+
+
+def test_pip_section_overrides_the_top_level_in_uv_config(env, monkeypatch, tmp_path):
+    _uv_toml(monkeypatch, tmp_path, "no-index = true\n[pip]\nno-index = false\n")
+    assert _ensure(env)[0]
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        'index-url = "https://corp.example/simple"\n',
+        '[[index]]\nurl = "https://corp.example/simple"\n',
+        '[pip]\nextra-index-url = ["https://corp.example/simple"]\n',
+        "this is not toml = = \n",  # unreadable here: the installer decides, not pypi.org
+    ],
+)
+def test_a_uv_config_mirror_skips_the_pypi_probe(env, monkeypatch, tmp_path, text):
+    probed = []
+    monkeypatch.setattr(inst, "_reachable", lambda url: probed.append(url) or True)
+    _uv_toml(monkeypatch, tmp_path, text)
+    assert _ensure(env)[0]
+    assert probed == ["https://flashinfer.ai/whl/cu130/flashinfer-jit-cache/"]
+
+
+def test_uv_config_discovery_finds_the_project_file_and_honors_no_config(
+    env, monkeypatch, tmp_path
+):
+    project = tmp_path / "proj" / "sub"
+    project.mkdir(parents = True)
+    (tmp_path / "proj" / "pyproject.toml").write_text(
+        '[project]\nname = "x"\n[tool.uv]\nindex-url = "https://corp.example/simple"\n',
+        encoding = "utf-8",
+    )
+    # A pyproject.toml without [tool.uv] does not stop the search, as in uv.
+    (project / "pyproject.toml").write_text('[project]\nname = "y"\n', encoding = "utf-8")
+    monkeypatch.chdir(project)
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    monkeypatch.setenv("XDG_CONFIG_DIRS", str(tmp_path / "xdg-sys"))
+    monkeypatch.delenv("UV_NO_CONFIG")
+    config = inst._installer_config("uv", env.run)
+    assert config["mirror"] and config["own_index"]
+    # uv's own default index wins over a pip-only mirror, as its env settings already do.
+    monkeypatch.setenv("PIP_INDEX_URL", "https://pip-mirror.example/simple")
+    assert "--index-url" not in inst._installer_prefix("uv", own_index = config["own_index"])
+    monkeypatch.setenv("UV_NO_CONFIG", "1")
+    assert not inst._installer_config("uv", env.run)["own_index"]
+    # A user-level uv.toml is read too.
+    monkeypatch.delenv("UV_NO_CONFIG")
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "xdg" / "uv").mkdir(parents = True)
+    (tmp_path / "xdg" / "uv" / "uv.toml").write_text("offline = true\n", encoding = "utf-8")
+    assert "offline" in inst._installer_config("uv", env.run)["refusal"]
+
+
+@pytest.mark.parametrize("uv", ["uv", None])
+def test_a_proxy_the_probe_cannot_use_skips_the_probes(env, monkeypatch, uv):
+    monkeypatch.setattr(inst, "_reachable", lambda url: False)
+    monkeypatch.setattr(inst, "_uv_executable", lambda: uv)
+    monkeypatch.setenv("ALL_PROXY", "socks5h://proxy.example:1080")
+    assert inst.ensure_flashinfer_for_nvfp4(0, run = _pip_config(env, []))[0]
+
+
+def test_pips_own_proxy_setting_skips_the_probes(env, monkeypatch):
+    monkeypatch.setattr(inst, "_reachable", lambda url: False)
+    monkeypatch.setattr(inst, "_uv_executable", lambda: None)
+    run = _pip_config(env, ["global.proxy='http://proxy.example:3128'"])
+    assert inst.ensure_flashinfer_for_nvfp4(0, run = run)[0]
+
+
+def test_reachability_counts_a_tls_failure_as_a_route(monkeypatch):
+    import ssl
+    import urllib.error
+    import urllib.request
+
+    def _raise(exc):
+        def _urlopen(*args, **kwargs):
+            raise exc
+
+        return _urlopen
+
+    cases = [
+        (urllib.error.URLError(ssl.SSLCertVerificationError(1, "self-signed certificate")), True),
+        (urllib.error.URLError(OSError(101, "Network is unreachable")), False),
+        (urllib.error.HTTPError("https://x", 404, "Not Found", {}, None), False),
+        (TimeoutError("timed out"), False),
+    ]
+    for exc, expected in cases:
+        monkeypatch.setattr(urllib.request, "urlopen", _raise(exc))
+        assert inst._reachable("https://pypi.org/simple/flashinfer-python/") is expected

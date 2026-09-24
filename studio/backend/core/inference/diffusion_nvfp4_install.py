@@ -18,6 +18,7 @@ only ADD packages; the result is then verified in a fresh interpreter and rolled
 
 from __future__ import annotations
 
+import ast
 import contextlib
 import importlib
 import os
@@ -331,6 +332,21 @@ def jit_cache_tag(cuda_version: Optional[str]) -> Optional[str]:
     return f"cu{major}{minor}"
 
 
+def _jit_cache_version(tag: Optional[str]) -> Optional[str]:
+    """The exact ``flashinfer-jit-cache`` version for a ``cuXYZ`` tag, local segment included."""
+    return None if tag is None else f"{FLASHINFER_VERSION}+{tag}"
+
+
+def _same_version(a: Optional[str], b: Optional[str]) -> bool:
+    if a is None or b is None:
+        return False
+    try:
+        from packaging.version import Version
+        return Version(a) == Version(b)
+    except Exception:  # noqa: BLE001
+        return a.strip().lower() == b.strip().lower()
+
+
 def _nvcc_available() -> bool:
     """What flashinfer's JIT would find: CUDA_HOME first, then PATH, then the default toolkit."""
     for root in (os.environ.get("CUDA_HOME"), os.environ.get("CUDA_PATH")):
@@ -340,9 +356,19 @@ def _nvcc_available() -> bool:
 
 
 def _reachable(url: str) -> bool:
+    """A HEAD answered. A failed TLS handshake still proves a route: the installer's own trust settings (pip's
+    ``cert``, uv's native TLS, trusted hosts) decide that, not this probe's."""
+    import ssl
+    import urllib.error
+    import urllib.request
+
     try:
-        from utils.wheel_utils import url_exists
-        return bool(url_exists(url))
+        with urllib.request.urlopen(urllib.request.Request(url, method = "HEAD"), timeout = 10):
+            return True
+    except urllib.error.HTTPError:
+        return False
+    except urllib.error.URLError as exc:
+        return isinstance(exc.reason, ssl.SSLError)
     except Exception:  # noqa: BLE001 - an unanswerable probe means no network
         return False
 
@@ -375,9 +401,241 @@ def _child_env() -> dict[str, str]:
         return env
 
 
-def _installer_prefix(uv: Optional[str], index_url: Optional[str] = None) -> list[str]:
+_TRUE = ("1", "y", "yes", "t", "true", "on")
+_FALSE = ("0", "n", "no", "f", "false", "off")
+
+
+def _flag(value: Any) -> Optional[bool]:
+    """A pip / uv boolean setting; None when unset or unreadable."""
+    if isinstance(value, bool):
+        return value
+    text = str(value if value is not None else "").strip().lower()
+    return True if text in _TRUE else False if text in _FALSE else None
+
+
+def _pip_settings(run: Callable[..., Any]) -> dict[str, str]:
+    """pip's effective ``install`` options as pip resolves them: environment over ``[install]`` over ``[global]``,
+    across PIP_CONFIG_FILE and the site, user and global pip.conf. Empty when pip cannot answer."""
+    try:
+        result = run(
+            [sys.executable, "-m", "pip", "config", "list"],
+            stdout = subprocess.PIPE,
+            stderr = subprocess.DEVNULL,
+            text = True,
+            encoding = "utf-8",
+            errors = "replace",
+            timeout = 60,
+            env = _child_env(),
+        )
+    except Exception:  # noqa: BLE001
+        return {}
+    if getattr(result, "returncode", 1) != 0:
+        return {}
+    layers: dict[str, dict[str, str]] = {"global": {}, "install": {}, ":env:": {}}
+    for line in str(getattr(result, "stdout", "") or "").splitlines():
+        key, sep, raw = line.partition("=")
+        section, dot, name = key.strip().partition(".")
+        if not sep or not dot or section not in layers:
+            continue
+        try:
+            value = ast.literal_eval(raw.strip())
+        except Exception:  # noqa: BLE001
+            value = raw.strip()
+        layers[section][name.strip().lower().replace("_", "-")] = str(value)
+    merged: dict[str, str] = {}
+    for section in ("global", "install", ":env:"):
+        merged.update(layers[section])
+    return merged
+
+
+class _Unreadable(Exception):
+    pass
+
+
+def _uv_config_tables() -> Optional[list[tuple[dict, dict]]]:
+    """``(top level, [pip])`` of each uv configuration file ``uv pip install`` reads, highest priority first:
+    UV_CONFIG_FILE alone (it wins over UV_NO_CONFIG, as in uv), else the nearest project ``uv.toml`` or
+    ``pyproject.toml`` with a ``[tool.uv]`` table, then the user and the system ``uv.toml``. None when one exists
+    that cannot be parsed here."""
+    explicit = (os.environ.get("UV_CONFIG_FILE") or "").strip()
+    if not explicit and _flag(os.environ.get("UV_NO_CONFIG")):
+        return []
+    try:
+        import tomllib
+    except ImportError:
+        try:
+            import tomli as tomllib  # type: ignore[no-redef]
+        except ImportError:
+            tomllib = None
+
+    def _load(path: str, pyproject: bool = False) -> Optional[dict]:
+        if not os.path.isfile(path):
+            return None
+        if tomllib is None:
+            raise _Unreadable(path)
+        try:
+            with open(path, "rb") as fh:
+                data = tomllib.load(fh)
+        except Exception as exc:  # noqa: BLE001
+            raise _Unreadable(path) from exc
+        if pyproject:
+            data = (data.get("tool") or {}).get("uv")
+        return data if isinstance(data, dict) else None
+
+    found: list[Optional[dict]] = []
+    try:
+        if explicit:
+            found.append(_load(explicit))
+        else:
+            try:
+                directory = os.getcwd()
+            except OSError:
+                directory = ""
+            while directory:
+                if os.path.isfile(os.path.join(directory, "uv.toml")):
+                    found.append(_load(os.path.join(directory, "uv.toml")))
+                    break
+                # A pyproject.toml without [tool.uv] does not stop the search, as in uv.
+                project = _load(os.path.join(directory, "pyproject.toml"), pyproject = True)
+                if project is not None:
+                    found.append(project)
+                    break
+                parent = os.path.dirname(directory)
+                directory = "" if parent == directory else parent
+            home = os.environ.get("XDG_CONFIG_HOME") or ""
+            if not os.path.isabs(home):
+                home = os.path.join(os.path.expanduser("~"), ".config")
+            found.append(_load(os.path.join(home, "uv", "uv.toml")))
+            system = "/etc/uv/uv.toml"
+            for root in (os.environ.get("XDG_CONFIG_DIRS") or "/etc/xdg").split(":"):
+                if not root:
+                    break
+                if os.path.isfile(os.path.join(root, "uv", "uv.toml")):
+                    system = os.path.join(root, "uv", "uv.toml")
+                    break
+            found.append(_load(system))
+    except _Unreadable:
+        return None
+    tables = []
+    for data in found:
+        if data is not None:
+            pip = data.get("pip")
+            tables.append((data, pip if isinstance(pip, dict) else {}))
+    return tables
+
+
+# Index sources in uv or pip settings: any of them may serve flashinfer-python instead of pypi.org.
+_CONFIG_INDEX_KEYS = ("index", "index-url", "extra-index-url", "find-links")
+
+
+def _installer_config(uv: Optional[str], run: Callable[..., Any]) -> dict[str, Any]:
+    """What the installer that will run is configured to do beyond this module's own flags, from its environment AND
+    its configuration files. ``refusal`` names a setting this install cannot honor (checked before anything is
+    touched); ``mirror`` means pypi.org may not be its index; ``own_index`` that it has a default index of its own;
+    ``unprobed`` that it reaches the network through a proxy the reachability probe would not use."""
+    # Deliberately not handled here: a PIP_CONSTRAINT / UV_CONSTRAINT that conflicts fails the resolve before anything
+    # moves; a UV_OVERRIDE that moves a pinned package is caught by the drift check and rolled back; UV_PYTHON,
+    # UV_PROJECT_ENVIRONMENT and VIRTUAL_ENV lose to the explicit --python.
+    config: dict[str, Any] = {
+        "refusal": None,
+        "mirror": False,
+        "own_index": False,
+        "unprobed": False,
+    }
+    if os.environ.get("ALL_PROXY", os.environ.get("all_proxy")) and not (
+        os.environ.get("HTTPS_PROXY") or os.environ.get("https_proxy")
+    ):
+        # uv and pip route through ALL_PROXY; urllib ignores it.
+        config["unprobed"] = True
+    if uv:
+        config["mirror"] = any(os.environ.get(v) for v in _CUSTOM_INDEX_ENVS + _UV_INDEX_ENVS)
+        tables = _uv_config_tables()
+        if tables is None:
+            # A config file this interpreter cannot read may name a mirror; the installer decides, not pypi.org.
+            config["mirror"] = True
+            return config
+
+        def _first(key: str) -> Any:
+            # [pip] overrides the top level for uv pip; files are already in priority order.
+            for section in (1, 0):
+                for table in tables:
+                    if key in table[section]:
+                        return table[section][key]
+            return None
+
+        def _default(entry: Any) -> bool:
+            return isinstance(entry, dict) and bool(entry.get("default"))
+
+        for top, pip in tables:
+            for table in (top, pip):
+                if any(table.get(k) for k in _CONFIG_INDEX_KEYS):
+                    config["mirror"] = True
+                entries = table.get("index")
+                if table.get("index-url") or (
+                    isinstance(entries, list) and any(_default(i) for i in entries)
+                ):
+                    config["own_index"] = True
+        offline = _flag(os.environ.get("UV_OFFLINE"))
+        checks = (
+            (_flag(_first("offline")) if offline is None else offline, "uv is configured offline"),
+            (_flag(_first("no-index")), "uv is configured with no-index"),
+            (
+                _flag(_first("no-deps")),
+                "uv is configured with no-deps, and flashinfer needs its dependencies",
+            ),
+            (
+                _first("target"),
+                "uv is configured to install into a target directory, not this environment",
+            ),
+            (_first("prefix"), "uv is configured to install into a prefix, not this environment"),
+        )
+        config["refusal"] = next((why for hit, why in checks if hit), None)
+        return config
+
+    settings = _pip_settings(run)
+    config["mirror"] = any(os.environ.get(v) for v in _CUSTOM_INDEX_ENVS) or bool(
+        settings.get("index-url")
+    )
+    config["own_index"] = bool(settings.get("index-url"))
+    if settings.get("proxy"):
+        config["unprobed"] = True
+    in_venv = sys.prefix != getattr(sys, "base_prefix", sys.prefix)
+    checks = (
+        (_flag(settings.get("no-index")), "pip is configured with no-index"),
+        (
+            _flag(settings.get("no-deps")),
+            "pip is configured with no-deps, and flashinfer needs its dependencies",
+        ),
+        (
+            settings.get("target"),
+            "pip is configured to install into a target directory, not this environment",
+        ),
+        (
+            settings.get("prefix"),
+            "pip is configured to install into a prefix, not this environment",
+        ),
+        (
+            settings.get("root"),
+            "pip is configured to install under another root, not this environment",
+        ),
+        (
+            _flag(settings.get("require-virtualenv")) and not in_venv,
+            "pip requires a virtualenv and this interpreter is not in one",
+        ),
+    )
+    config["refusal"] = next((why for hit, why in checks if hit), None)
+    return config
+
+
+def _installer_prefix(
+    uv: Optional[str],
+    index_url: Optional[str] = None,
+    *,
+    own_index: bool = False,
+) -> list[str]:
     """The install command up to its packages. ``index_url`` is the one index this step must use; it
-    replaces the mirror rather than joining it, since uv refuses a repeated ``--index-url``."""
+    replaces the mirror rather than joining it, since uv refuses a repeated ``--index-url``. ``own_index``: the
+    installer's configuration files already name its default index, so no other installer's mirror is handed over."""
     if uv:
         cmd = [uv, "pip", "install", "--python", sys.executable]
         # uv reads only its own index settings; a pip-only mirror would otherwise be skipped for pypi.org, which the
@@ -386,6 +644,7 @@ def _installer_prefix(uv: Optional[str], index_url: Optional[str] = None) -> lis
         if (
             index_url is None
             and pip_index
+            and not own_index
             and not (os.environ.get("UV_INDEX_URL") or os.environ.get("UV_DEFAULT_INDEX"))
         ):
             cmd += ["--index-url", pip_index]
@@ -395,10 +654,20 @@ def _installer_prefix(uv: Optional[str], index_url: Optional[str] = None) -> lis
         uv_index = (
             os.environ.get("UV_DEFAULT_INDEX") or os.environ.get("UV_INDEX_URL") or ""
         ).strip()
-        if index_url is None and uv_index and not (os.environ.get("PIP_INDEX_URL") or "").strip():
+        if (
+            index_url is None
+            and uv_index
+            and not own_index
+            and not (os.environ.get("PIP_INDEX_URL") or "").strip()
+        ):
             cmd += ["--index-url", uv_index]
     if index_url is not None:
         cmd += ["--index-url", index_url]
+        if uv:
+            # A uv.toml [[index]] or extra-index-url outranks --index-url, and under uv's first-index strategy one
+            # listing flashinfer-jit-cache at all (pypi.org does, with no files) hides the pinned index. --index ranks
+            # above every configured index.
+            cmd += ["--index", index_url]
     return cmd
 
 
@@ -503,7 +772,11 @@ def _drift(before: dict[str, str], after: dict[str, str]) -> dict[str, tuple[str
 
 
 def _rollback(
-    run: Callable[..., Any], uv: Optional[str], before: dict[str, str], logger: Any
+    run: Callable[..., Any],
+    uv: Optional[str],
+    before: dict[str, str],
+    logger: Any,
+    own_index: bool = False,
 ) -> str:
     """Remove what the install added and put back anything it moved. Returns a one-line summary."""
     after = installed_distributions()
@@ -524,7 +797,11 @@ def _rollback(
     if moved:
         # --no-deps: restore exactly these, and nothing a resolver would pull back in.
         specs = [f"{name}=={old}" for name, (old, _new) in sorted(moved.items())]
-        ok, output = _run(run, _installer_prefix(uv) + ["--no-deps", *specs], _INSTALL_TIMEOUT_S)
+        ok, output = _run(
+            run,
+            _installer_prefix(uv, own_index = own_index) + ["--no-deps", *specs],
+            _INSTALL_TIMEOUT_S,
+        )
         notes.append(("restored " if ok else "could not restore ") + ", ".join(specs))
         if not ok and logger is not None:
             logger.warning("nvfp4.flashinfer: rollback restore failed: %s", output[-500:])
@@ -559,15 +836,32 @@ def _install(
                 f"flashinfer-python {FLASHINFER_VERSION} would refuse to import beside it",
                 True,
             )
-    # A configured mirror is the installer's to reach (and may carry credentials a HEAD cannot send), so pypi.org is
-    # only probed when it is the index the installer will use. The jit-cache index is fixed, so it always is.
+    # flashinfer only checks the public version, and `==0.6.6` is satisfied by any local tag, so a cache left from
+    # another torch CUDA build would be kept and serve kernels built for the wrong CUDA. Not ours to replace either.
+    cache = _dist_version(FLASHINFER_JIT_CACHE_PACKAGE)
+    if cache is not None and not _same_version(cache, _jit_cache_version(tag)):
+        return (
+            False,
+            f"flashinfer not installed: {FLASHINFER_JIT_CACHE_PACKAGE} {cache} is already installed and "
+            f"does not match CUDA {torch_before.get('cuda_version')}"
+            + (f" (expected {_jit_cache_version(tag)})" if tag else ""),
+            True,
+        )
     uv = _uv_executable()
-    mirrors = _CUSTOM_INDEX_ENVS + (_UV_INDEX_ENVS if uv else ())
-    probes = [] if any(os.environ.get(v) for v in mirrors) else [_PYPI_PROBE_URL]
+    config = _installer_config(uv, run)
+    if config["refusal"]:
+        # Configuration, not a failure: not memoised, so a later load after it changes can still install.
+        return False, f"flashinfer not installed: {config['refusal']}", False
+    # A configured mirror is the installer's to reach (and may carry credentials a HEAD cannot send), so pypi.org is
+    # only probed when it is the index the installer will use. The jit-cache index is fixed, so it always is, unless
+    # the installer goes through a proxy the probe would not.
+    probes = [] if config["mirror"] else [_PYPI_PROBE_URL]
     if tag is not None:
         probes.append(
             FLASHINFER_JIT_CACHE_INDEX.format(tag = tag) + f"/{FLASHINFER_JIT_CACHE_PACKAGE}/"
         )
+    if config["unprobed"]:
+        probes = []
     for url in probes:
         if not _reachable(url):
             return False, f"flashinfer not installed: {url} is not reachable", False
@@ -586,7 +880,7 @@ def _install(
             # Constrained, not --no-deps: flashinfer cannot import without apache-tvm-ffi and friends,
             # and the constraints make every package already here immovable, torch included.
             (
-                _installer_prefix(uv)
+                _installer_prefix(uv, own_index = config["own_index"])
                 + [
                     "--only-binary",
                     ":all:",
@@ -605,7 +899,8 @@ def _install(
                         "--only-binary",
                         ":all:",
                         "--no-deps",
-                        f"{FLASHINFER_JIT_CACHE_PACKAGE}=={FLASHINFER_VERSION}",
+                        # The full local version: `==0.6.6` would accept a cache built for another CUDA.
+                        f"{FLASHINFER_JIT_CACHE_PACKAGE}=={_jit_cache_version(tag)}",
                     ],
                     _pinned_index_env(),
                 )
@@ -646,7 +941,7 @@ def _install(
                 failure = detail
 
     if failure is not None:
-        rolled = _rollback(run, uv, before, logger)
+        rolled = _rollback(run, uv, before, logger, config["own_index"])
         return False, f"flashinfer install rolled back ({rolled}): {failure}", True
 
     # The dispatch fast path memoises "flashinfer missing"; forget it now that it is not.
