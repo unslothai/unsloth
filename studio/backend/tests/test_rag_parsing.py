@@ -408,3 +408,47 @@ def test_docx_keeps_rows_and_cells_wrapped_in_content_controls(tmp_path):
     text = "\n".join(pg.text for pg in parsers.parse(str(path)))
     assert "Name | CELL-WRAPPED" in text
     assert "ROW-A | ROW-B" in text
+
+
+def test_docx_skips_placeholder_text_and_keeps_field_and_bidi_runs(tmp_path):
+    # An unfilled content control stores Word's prompt with w:showingPlcHdr; it is not the field's value.
+    document, docx, parsers = _shared_setup_1()
+    from docx.oxml import parse_xml
+    from docx.oxml.ns import nsdecls
+
+    ns = nsdecls("w")
+
+    def sdt(props, inner):
+        return parse_xml(
+            f"<w:sdt {ns}><w:sdtPr>{props}</w:sdtPr><w:sdtContent>{inner}</w:sdtContent></w:sdt>"
+        )
+
+    body = document.element.body
+    body.insert(
+        len(body) - 1,
+        sdt("<w:showingPlcHdr/>", "<w:p><w:r><w:t>BLOCK-PROMPT</w:t></w:r></w:p>"),
+    )
+    p = document.add_paragraph("Name: ")._p
+    p.append(sdt("<w:showingPlcHdr/>", "<w:r><w:t>Click or tap here to enter text.</w:t></w:r>"))
+    p = document.add_paragraph("Client: ")._p
+    p.append(sdt('<w:showingPlcHdr w:val="0"/>', "<w:r><w:t>ACME</w:t></w:r>"))
+    p = document.add_paragraph("Ref ")._p
+    p.append(
+        parse_xml(
+            f'<w:fldSimple {ns} w:instr=" MERGEFIELD Name "><w:r><w:t>FIELD</w:t></w:r></w:fldSimple>'
+        )
+    )
+    p.append(parse_xml(f'<w:dir {ns} w:val="rtl"><w:r><w:t> RTL</w:t></w:r></w:dir>'))
+    table = document.add_table(rows = 1, cols = 2)
+    table.cell(0, 0).text = "Owner"
+    table.cell(0, 1)._tc.append(
+        sdt("<w:showingPlcHdr/>", "<w:p><w:r><w:t>CELL-PROMPT</w:t></w:r></w:p>")
+    )
+    path = tmp_path / "placeholders.docx"
+    document.save(str(path))
+
+    text = "\n".join(pg.text for pg in parsers.parse(str(path)))
+    assert "PROMPT" not in text and "Click or tap" not in text
+    assert "Client: ACME" in text
+    assert "Ref FIELD RTL" in text
+    assert "Owner | " in text

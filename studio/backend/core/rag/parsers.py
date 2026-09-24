@@ -413,15 +413,35 @@ def render_pdf_pages(
 _W = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
 # Elements whose children are visible content; tracked deletions (w:del, w:moveFrom) are left out.
 _DOCX_WRAPPERS = {
-    _W + t for t in ("sdt", "sdtContent", "customXml", "smartTag", "hyperlink", "ins", "moveTo")
+    _W + t
+    for t in (
+        "sdt",
+        "sdtContent",
+        "customXml",
+        "smartTag",
+        "hyperlink",
+        "ins",
+        "moveTo",
+        "fldSimple",
+        "dir",
+        "bdo",
+    )
 }
+
+
+def _docx_content(el) -> bool:
+    # A content control showing its prompt ("Click or tap here to enter text.") has no value yet.
+    flag = el.find(_W + "sdtPr/" + _W + "showingPlcHdr") if el.tag == _W + "sdt" else None
+    return el.tag in _DOCX_WRAPPERS and (
+        flag is None or flag.get(_W + "val", "true") in ("0", "false", "off")
+    )
 
 
 def _docx_blocks(el):
     for child in el:
         if child.tag in (_W + "p", _W + "tbl"):
             yield child
-        elif child.tag in _DOCX_WRAPPERS:
+        elif _docx_content(child):
             yield from _docx_blocks(child)
 
 
@@ -429,7 +449,7 @@ def _docx_text(el) -> str:
     return "".join(
         child.text if child.tag == _W + "r" else _docx_text(child)
         for child in el
-        if child.tag == _W + "r" or child.tag in _DOCX_WRAPPERS
+        if child.tag == _W + "r" or _docx_content(child)
     )
 
 
