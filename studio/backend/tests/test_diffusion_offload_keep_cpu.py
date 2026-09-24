@@ -160,7 +160,6 @@ def test_weights_are_pinned_on_first_onload_into_shared_chunks(monkeypatch):
         assert torch.equal(_render(pipe, x), ref)
     for module in pipe.components.values():
         assert all(p.is_pinned() for p in module.parameters())
-        # Packed: weight and bias of one module live in the same page-locked block.
         assert (
             module.weight.untyped_storage().data_ptr() == module.bias.untyped_storage().data_ptr()
         )

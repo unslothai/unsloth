@@ -9628,7 +9628,6 @@ def test_the_boundary_marker_waits_out_a_busy_capture_lock(fake_runtime, monkeyp
 def test_teardown_drains_pinned_host_memory_after_the_pipeline_is_gone(
     fake_runtime, tmp_path, monkeypatch
 ):
-    # See the image backend's twin: the pinned offload chunks are only free once the state is dropped.
     from core.inference import video as video_mod
 
     backend = VideoBackend()

@@ -6851,8 +6851,7 @@ class VideoBackend:
             try:
                 clear_gpu_cache()
             finally:
-                # After the pipe is gone: its pinned offload chunks sit in torch's host allocator cache until emptied, and
-                # a sticky CUDA fault raising out of clear_gpu_cache() must not leave them page-locked.
+                # Pinned chunks are only free once the pipe is gone; finally, so a sticky CUDA fault still unlocks them.
                 release_pinned_host_memory()
 
     def unload(self, *, expected_account: Optional[str] = None) -> dict[str, Any]:

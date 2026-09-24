@@ -175,11 +175,9 @@ def _wrap_cpu_offload_hooks(
 
 
 OFFLOAD_PIN_ENV = "UNSLOTH_DIFFUSION_OFFLOAD_PIN"
-# Page-locked chunk size. The host allocator rounds every block up to a power of two, so weights are packed into
-# power-of-two chunks rather than pinned one by one (per tensor that wasted about 60% on FLUX).
+# The host allocator rounds every block up to a power of two, so weights share chunks instead of one pin each.
 _PIN_CHUNK_BYTES = 1 << 30
 _PIN_ALIGN = 256
-# Host RAM left free after pinning, so page-locked weights never squeeze the rest of the machine.
 _PIN_RESERVE_MIN_BYTES = 4 << 30
 _PIN_RESERVE_FRACTION = 0.15
 
@@ -198,13 +196,10 @@ def _pow2_ceil(n: int) -> int:
 
 
 def release_pinned_host_memory() -> None:
-    """Return page-locked offload chunks freed by an unload. The post-generate reclaim runs while the pipeline
-    still holds them, so the unload / teardown paths call this once the pipeline references are gone."""
     _host_empty_cache()
 
 
 def _host_empty_cache() -> None:
-    """Return freed page-locked blocks held by torch's host allocator cache. Best effort."""
     try:
         import torch
         empty = getattr(torch._C, "_host_emptyCache", None)
@@ -219,12 +214,7 @@ def _pin_host_weights(
     host: dict,
     logger: Any = None,
 ) -> int:
-    """Move ``module``'s kept host weights into page-locked chunks; returns the bytes pinned.
-
-    A host-to-device copy from pageable memory runs at a fraction of the pinned rate (6.6 vs 52
-    GiB/s on the B200 box), and the onload is what whole-model offload pays every render once the
-    offload copy is gone. Only where host RAM allows (``auto``): pinned pages cannot be reclaimed.
-    Contiguous plain tensors only, so a channels_last weight keeps its layout."""
+    """Pack kept host weights into page-locked chunks; returns bytes pinned. Contiguous only, so channels_last survives."""
     import torch
 
     mode = _pin_mode()
@@ -242,15 +232,13 @@ def _pin_host_weights(
     sizes = [-(-p.data.nbytes // _PIN_ALIGN) * _PIN_ALIGN for _, p in params]
     if not sizes or sum(sizes) == 0:
         return 0
-    # Lay the chunks out first, so the RAM gate sees what is really allocated (chunk tails and the
-    # power-of-two rounding of the last one), not only the sum of the weights.
+    # Lay out chunks first so the RAM gate counts chunk tails and last-chunk rounding, not just weight bytes.
     chunk = max(_PIN_CHUNK_BYTES, _pow2_ceil(max(sizes)))
     chunks: list = []
     slots: list = []
     off, left = 0, sum(sizes)
     for size in sizes:
         if not chunks or off + size > chunks[-1]:
-            # The last chunk only as large as what is left (rounded as the allocator will anyway).
             chunks.append(chunk if left >= chunk else _pow2_ceil(left))
             off = 0
         slots.append((len(chunks) - 1, off))
@@ -283,7 +271,6 @@ def _pin_host_weights(
             view.copy_(p.data)
             placed.append((name, p, view))
     except Exception as exc:  # noqa: BLE001 - e.g. a WSL pinned-memory cap: keep the pageable weights
-        # Hand the partial chunks back, or they stay page-locked in the host allocator's cache.
         bufs.clear()
         placed.clear()
         view = None
@@ -421,8 +408,6 @@ def reclaim_offload_host_memory(offload_policy: str, logger: Any = None) -> bool
                     pass
             return False
         reclaim()
-        # Pinned host blocks freed since the last call (an unloaded model's page-locked weights) are cached by
-        # torch's host allocator until emptied.
         _host_empty_cache()
         return True
     except Exception as exc:  # noqa: BLE001
