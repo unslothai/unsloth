@@ -131,7 +131,10 @@ def _copy_by_path(source: Path, sandbox: str, folder: str, name: str) -> bool:
 
 
 def copy_into_project(
-    source: Path, project_id: str, folder: str, name: str | None = None
+    source: Path,
+    project_id: str,
+    folder: str,
+    name: str | None = None,
 ) -> dict[str, object]:
     """Copy ``source`` into the project's ``folder`` and return ``{"path", "already"}``.
 
