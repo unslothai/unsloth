@@ -2,14 +2,15 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { Checkbox } from "@/components/ui/checkbox";
+import { useLocale, useT } from "@/i18n";
 import { cn } from "@/lib/utils";
 import { Folder01Icon } from "@hugeicons/core-free-icons";
 import { StarPointedIcon } from "@/lib/hugeicons-derived";
 import { HugeiconsIcon } from "@hugeicons/react";
 import type { ReactNode } from "react";
 import type { LibraryFolder, LibraryItem } from "../api";
-import { modelLabel } from "../file-kind";
-import { formatRelativeTime, pluralize } from "../format";
+import { modelLabelKey } from "../file-kind";
+import { formatActivityTime, formatItemCount } from "../format";
 import { type LibraryTarget, useLibraryActions } from "../actions-context";
 import { LibraryActionsMenu } from "./library-actions";
 import { ItemTile } from "./library-cards";
@@ -73,6 +74,7 @@ function Row({
   name: ReactNode;
   activity: string;
 }) {
+  const t = useT();
   return (
     <div
       className={cn(
@@ -86,7 +88,9 @@ function Row({
         visible={selecting}
         group="row"
         onCheckedChange={() => onSelectedChange(!selected)}
-        label={`Select ${target.kind === "item" ? target.item.name : target.folder.name}`}
+        label={t("library.selectItem", {
+          name: target.kind === "item" ? target.item.name : target.folder.name,
+        })}
       />
       <button
         type="button"
@@ -117,7 +121,11 @@ export function LibraryList({
   selection: Set<string>;
   onSelectionChange: (next: Set<string>) => void;
 }) {
+  const t = useT();
+  const locale = useLocale();
   const actions = useLibraryActions();
+  const modified = (ts: number) =>
+    t("library.list.modified", { time: formatActivityTime(ts, locale, t) });
   const targets: LibraryTarget[] = [
     ...folders.map((folder) => ({ kind: "folder" as const, folder })),
     ...items.map((item) => ({ kind: "item" as const, item })),
@@ -150,10 +158,10 @@ export function LibraryList({
             onCheckedChange={() =>
               onSelectionChange(allSelected ? new Set() : new Set(targets.map(targetKey)))
             }
-            label="Select all"
+            label={t("library.list.selectAll")}
           />
-          <span className="flex-1">Name</span>
-          <span className="hidden w-44 shrink-0 sm:block">Last activity</span>
+          <span className="flex-1">{t("library.list.name")}</span>
+          <span className="hidden w-44 shrink-0 sm:block">{t("library.list.lastActivity")}</span>
           <span className="w-8 shrink-0" />
         </div>
       </div>
@@ -175,11 +183,11 @@ export function LibraryList({
               <>
                 <span className="truncate">{folder.name}</span>
                 <span className="shrink-0 text-muted-foreground text-sm">
-                  {pluralize(counts.get(folder.id) ?? 0, "item")}
+                  {formatItemCount(counts.get(folder.id) ?? 0, t)}
                 </span>
               </>
             }
-            activity={`Modified ${formatRelativeTime(folder.updatedAt)}`}
+            activity={modified(folder.updatedAt)}
           />
         ))}
         {items.map((item) => (
@@ -195,19 +203,21 @@ export function LibraryList({
               <>
                 <span className="truncate">{item.name}</span>
                 {item.model && (
-                  <span className="shrink-0 text-muted-foreground text-sm">{modelLabel(item)}</span>
+                  <span className="shrink-0 text-muted-foreground text-sm">
+                    {t(modelLabelKey(item)!)}
+                  </span>
                 )}
                 {item.favorite && (
                   <HugeiconsIcon
                     icon={StarPointedIcon}
-                    aria-label="Favorite"
+                    aria-label={t("library.list.favorite")}
                     strokeWidth={1.75}
                     className="size-3.5 shrink-0 text-muted-foreground [&_path]:fill-current"
                   />
                 )}
               </>
             }
-            activity={`Modified ${formatRelativeTime(item.updatedAt)}`}
+            activity={modified(item.updatedAt)}
           />
         ))}
       </div>

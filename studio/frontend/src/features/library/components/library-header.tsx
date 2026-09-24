@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { useT } from "@/i18n";
 import { cn } from "@/lib/utils";
 import {
   type MouseEvent as ReactMouseEvent,
@@ -44,6 +45,7 @@ function TabStrip({
   /** Room kept free on the right for the controls laid over the row. */
   reserve: number;
 }) {
+  const t = useT();
   const scrollerRef = useRef<HTMLDivElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const [edges, setEdges] = useState({ left: false, right: false });
@@ -141,7 +143,7 @@ function TabStrip({
       className="-m-1 overflow-x-auto p-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
       style={{ marginRight: reserve || undefined, maskImage: mask, WebkitMaskImage: mask }}
     >
-      <nav ref={listRef} className="flex w-max gap-1" aria-label="Library sections">
+      <nav ref={listRef} className="flex w-max gap-1" aria-label={t("library.tabs.ariaLabel")}>
         {tabs.map((tab) => (
           <button
             key={tab.key}

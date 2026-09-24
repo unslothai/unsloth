@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { authFetch, getAuthSessionEpoch, getAuthToken } from "@/features/auth";
+import { type TranslationKey, translate } from "@/i18n";
 import { apiUrl } from "@/lib/api-base";
 import { readFastApiError } from "@/lib/format-fastapi-error";
 import { libraryFileName, libraryFileType } from "./file-name";
@@ -82,16 +83,16 @@ export async function getLibraryFavorites(): Promise<string[]> {
 const itemQueues = new Map<string, Promise<void>>();
 
 /** Throws once the session that `epoch` came from has ended. */
-function sameSession(epoch: number, message: string): () => void {
+function sameSession(epoch: number, message: TranslationKey): () => void {
   return () => {
-    if (getAuthSessionEpoch() !== epoch) throw new Error(message);
+    if (getAuthSessionEpoch() !== epoch) throw new Error(translate(message));
   };
 }
 
 /** A write: a retry never goes out under an account other than the one that sent it. */
 function sendWrite(input: string, init: RequestInit): Promise<Response> {
   return authFetch(input, init, {
-    beforeRetry: sameSession(getAuthSessionEpoch(), "Signed out before the change was saved."),
+    beforeRetry: sameSession(getAuthSessionEpoch(), "library.toast.signedOutBeforeSave"),
   });
 }
 
@@ -104,7 +105,7 @@ export function updateLibraryItem(
     .catch(() => {})
     .then(async () => {
       // Queued behind an edit that outlived a sign-out: it belongs to the account that left.
-      const check = sameSession(epoch, "Signed out before the change was saved.");
+      const check = sameSession(epoch, "library.toast.signedOutBeforeSave");
       check();
       await ensureOk(
         await authFetch("/api/library/items", jsonInit("PATCH", { id, ...patch }), {
@@ -187,7 +188,7 @@ export async function uploadLibraryFiles(
   const files = batch.files ?? [];
   // Refused here with its name, before anything is sent, rather than as a bare 413.
   const tooLarge = files.find((file) => file.size > MAX_LIBRARY_UPLOAD_BYTES);
-  if (tooLarge) throw new Error(`${tooLarge.name} is larger than 512 MB.`);
+  if (tooLarge) throw new Error(translate("library.toast.uploadTooLarge", { name: tooLarge.name }));
   const leases = batch.nativePathLeases ?? [];
   const requests: FormData[] = uploadGroups(files).map((group) => {
     const form = new FormData();
@@ -199,7 +200,7 @@ export async function uploadLibraryFiles(
   for (const lease of leases) requests[0]!.append("nativePathLeases", lease);
   // A sign-out mid-batch ends it, before the next request or a retry: the token would be another
   // account's.
-  const check = sameSession(getAuthSessionEpoch(), "Signed out before the upload finished.");
+  const check = sameSession(getAuthSessionEpoch(), "library.toast.signedOutBeforeUpload");
   const ids: string[] = [];
   for (const form of requests) {
     check();
@@ -276,7 +277,7 @@ export async function fetchLibraryVideoUrl(item: LibraryItem): Promise<string> {
     await authFetch(`/api/inference/video/gallery/${encodeURIComponent(id)}/signed-url`),
   );
   const { url } = (await response.json()) as { url?: string };
-  if (!url) throw new Error("The server returned no video link.");
+  if (!url) throw new Error(translate("library.toast.noVideoLink"));
   // Absolute, since the element fetches it without authFetch, and under Tauri a relative path
   // resolves against the webview.
   return apiUrl(url);

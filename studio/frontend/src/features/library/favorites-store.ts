@@ -4,6 +4,7 @@
 import { useEffect } from "react";
 import { create } from "zustand";
 import { AUTH_SESSION_CLEARED_EVENT } from "@/features/auth";
+import { translate } from "@/i18n";
 import { toast } from "@/lib/toast";
 import { getLibraryFavorites, updateLibraryItem } from "./api";
 
@@ -99,14 +100,16 @@ export const useLibraryFavoritesStore = create<FavoritesState>((set, get) => {
         settle();
         if (latestAttempt.get(id) !== attempt) return;
         toast.success(
-          favorite ? "Added to Favorites" : "Removed from Favorites",
+          translate(
+            favorite ? "library.toast.addedToFavorites" : "library.toast.removedFromFavorites",
+          ),
         );
       } catch (error) {
         settle();
         // A newer toggle owns the star now.
         if (latestAttempt.get(id) !== attempt) return;
         apply(id, !favorite);
-        toast.error("Could not update favorites", {
+        toast.error(translate("library.toast.favoritesFailed"), {
           description: error instanceof Error ? error.message : String(error),
         });
       }

@@ -60,7 +60,7 @@ test("UTF-16LE with a BOM decodes, stays editable, and saves back with its BOM a
 test("UTF-16 that does not decode cleanly opens read-only", () => {
   // A BOM, then a lone high surrogate.
   const note = decodeNote(new Uint8Array([0xff, 0xfe, 0x00, 0xd8]));
-  assert.notEqual(note.readOnlyReason, null);
+  assert.equal(note.readOnlyReason, "utf16");
 });
 
 test("UTF-16BE with a BOM decodes", () => {
@@ -72,7 +72,7 @@ test("UTF-16BE with a BOM decodes", () => {
 test("a legacy code page is shown read-only rather than saved as mojibake", () => {
   // "café" in windows-1252.
   const note = decodeNote(new Uint8Array([0x63, 0x61, 0x66, 0xe9]));
-  assert.notEqual(note.readOnlyReason, null);
+  assert.equal(note.readOnlyReason, "notUtf8");
   assert.ok(note.text.startsWith("caf"));
 });
 
