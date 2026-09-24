@@ -143,6 +143,7 @@ from .diffusion_attention import (
 )
 from . import diffusion_compile_cache as compile_cache
 from . import diffusion_cond_cache as cond_cache
+from . import diffusion_prompt_cache as prompt_cache
 from . import diffusion_gguf_compile as gguf_compile
 from . import diffusion_cuda_graph as cuda_graph
 from .diffusion_batched import (
@@ -5666,6 +5667,18 @@ class DiffusionBackend:
                         te_quant = te_quant,
                         logger = logger,
                     )
+                    # In-memory sibling, outermost so a repeat never reaches the disk cache or the encoders.
+                    prompt_cache.install(
+                        pipe,
+                        identity = {
+                            "family": fam.name,
+                            "repo": str(repo_id),
+                            "base": str(base or repo_id),
+                            "dtype": str(dtype),
+                            "te_quant": str(te_quant),
+                        },
+                        logger = logger,
+                    )
 
                     # Apply the planned placement; apply_memory_plan returns what ACTUALLY engaged so status stays
                     # honest.
@@ -6528,6 +6541,16 @@ class DiffusionBackend:
         import diffusers
 
         pipe = self._from_pipe_no_recast(state.pipe, getattr(diffusers, class_name))
+        prompt_cache.install(
+            pipe,
+            identity = {
+                "family": state.family.name,
+                "repo": str(state.repo_id),
+                "workflow": class_name,
+            },
+            lora_owner = state.pipe,
+            logger = logger,
+        )
         # Publish to the shared aux cache only if THIS load is still current: from_pipe runs without _lock, so an
         # unload can null _state and caching would hand out stale modules.
         with self._lock:
@@ -7737,6 +7760,9 @@ class DiffusionBackend:
         compile_cache.restore(state.compile_cache_ctx, logger = logger)
         # Before clear_gpu_cache(), or the graph pool stays reserved for the life of the process.
         cuda_graph.uninstall_all(state.cuda_graphs)
+        prompt_cache.release(state.pipe)
+        for aux in self._aux_pipes.values():
+            prompt_cache.release(aux)
         gguf_compile.uninstall_all()
         if state.eager_patched:
             # Lazy import to keep diffusion.py torch-free to import.
