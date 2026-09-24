@@ -306,8 +306,7 @@ def _assert_video_precision_for_target(
         elif not dense_transformer_supported(target):
             reason = dense_transformer_unsupported_reason(target)
         elif forces_offload and pinned in NATIVE_OFFLOAD_SCHEMES and native_offload_host(target):
-            # NVIDIA: an explicit int8 the request puts under offload runs torchao-free W8A8 (torch._int_mm) on plain
-            # buffers the offload hooks can move. forces_offload is already False for the modular workflow.
+            # NVIDIA int8 under offload: torchao-free W8A8. forces_offload is already False for the modular workflow.
             if (
                 native_quant_scheme(target, pinned, family = getattr(fam, "name", None), offload = True)
                 is None
@@ -4315,9 +4314,7 @@ class VideoBackend:
         # Why the quant did not engage, in the caller's terms; threaded into `resolved`.
         transformer_quant_decline: Optional[str] = None
         transformer_quant_decline_status = RESOLVED_FELL_BACK
-        # An explicit int8 / fp8 on AMD or the Windows torchao stub, run weight-only without torchao, or an explicit
-        # int8 on NVIDIA whose plan offloads the DiT (W8A8 on buffers the hooks can move). The plan is final here,
-        # quant re-plan included, so a resident NVIDIA plan keeps torchao and the paths below are unchanged there.
+        # The plan is final here (quant re-plan included), so a resident NVIDIA plan keeps torchao.
         video_offload = plan.offload_policy != "none"
         native_scheme = (
             native_quant_scheme(
@@ -4326,7 +4323,6 @@ class VideoBackend:
             if kind == "pipeline"
             else None
         )
-        # Only a native route passes these, so the torchao call is exactly what it was.
         native_kwargs = (
             {
                 "offload": video_offload,

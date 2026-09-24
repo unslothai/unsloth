@@ -664,14 +664,12 @@ def native_quant_host(target: Any) -> bool:
         return False
 
 
-# The explicit schemes the NVIDIA offload route runs natively. int8 only: W8A8 through torch._int_mm measured faster
-# than bf16 under offload at torchao-level quality, while a weight-only fp8 under offload is unmeasured.
+# int8 only: W8A8 is validated under offload on NVIDIA; a native fp8 there is not.
 NATIVE_OFFLOAD_SCHEMES = (TQ_INT8,)
 
 
 def native_offload_host(target: Any) -> bool:
-    """Whether ``target`` is an NVIDIA bf16 GPU (so sm_80+, where ``torch._int_mm`` runs) with the torchao path
-    open. There the native layers serve only what torchao cannot: a transformer the memory plan offloads."""
+    """NVIDIA bf16 GPU (so sm_80+, where ``torch._int_mm`` runs) with the torchao path open."""
     if getattr(target, "device", None) != "cuda":
         return False
     if torch_is_rocm() or is_stubbed("torchao"):
@@ -692,10 +690,7 @@ def native_quant_scheme(
 ) -> Optional[str]:
     """The torchao-free scheme an EXPLICIT ``requested`` runs as, or None to leave it to torchao.
 
-    On a ``native_quant_host`` (ROCm, the Windows-ROCm stub) that is int8 / fp8 whatever the placement. On an
-    NVIDIA ``native_offload_host`` it is int8 only, and only when ``offload`` says the memory plan puts the
-    transformer under offload hooks, which move modules with ``Module.to()`` and so reject torchao tensors; a
-    resident NVIDIA load keeps torchao. ``auto`` never lands here.
+    ROCm / stub: int8 or fp8 anywhere. NVIDIA: int8 only under ``offload`` (hooks' ``Module.to()`` rejects torchao).
 
     Separate from ``select_transformer_quant_scheme`` on purpose: that selector also feeds the hosted
     prequant planners, and a hosted checkpoint is a torchao serialisation these paths cannot use. The
@@ -713,11 +708,7 @@ def native_quant_scheme(
 
 
 def native_int8_act(target: Any) -> bool:
-    """Whether a native int8 pass on ``target`` runs W8A8 (``torch._int_mm``) rather than weight-only.
-
-    AMD and the Windows stub keep it opt-in (``UNSLOTH_NATIVE_INT8_ACT=1``): gfx1151 has no measurement for
-    it yet. The NVIDIA offload route runs it by default, measured faster than bf16 there, and
-    ``UNSLOTH_NATIVE_INT8_ACT=0`` drops it to weight-only int8, which the offload hooks move just the same."""
+    """W8A8 for a native int8: opt-in on AMD (unmeasured on gfx1151), default on the NVIDIA offload route."""
     if native_quant_host(target):
         return int8_act_requested()
     return not int8_act_disabled()
@@ -1433,9 +1424,7 @@ def quantize_transformer(
     Returns the scheme engaged, or None when disabled / unsupported / failed (caller loads GGUF).
     Best-effort: never raises for an unsupported environment (failure leaves it dense).
     ``fast_accum`` (fp8 only) overrides the per-GPU-class accumulate choice: None auto-detects,
-    True/False force it. On a ``native_quant_host`` an explicit int8 / fp8 runs without torchao, and so does an
-    explicit int8 on NVIDIA when ``offload`` says the plan offloads the transformer (``native_quant_scheme``).
-    ``act_int8`` picks W8A8 for that native int8; None takes the host default (``native_int8_act``)."""
+    True/False force it. ``offload`` / ``act_int8`` steer the torchao-free path; None is ``native_int8_act``."""
     native = native_quant_scheme(target, mode, family = family, offload = offload)
     if native is not None:
         if act_int8 is None:
@@ -1491,8 +1480,7 @@ def quantize_transformer(
 def _quantize_native(
     pipe: Any, scheme: str, *, family: Optional[str], min_features: int, act_int8: bool, logger: Any
 ) -> Optional[str]:
-    """The torchao-free branch of ``quantize_transformer``: the same layer filter, weight-only or (int8 with
-    ``act_int8``) W8A8."""
+    """The torchao-free branch of ``quantize_transformer``: the same layer filter."""
     transformer = getattr(pipe, "transformer", None)
     if transformer is None:
         return None

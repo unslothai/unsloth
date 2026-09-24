@@ -11785,17 +11785,12 @@ def test_an_explicit_scheme_on_nvidia_keeps_the_torchao_path_and_its_wording(
     backend.unload()
 
 
-# ---- NVIDIA: an explicit int8 under offload runs torchao-free W8A8 -------------------------------------
-
-
 def _stub_nvidia_offload_host(
     backend,
     monkeypatch,
     *,
     engages = "int8",
 ):
-    """An NVIDIA bf16 host with the torchao path open. Records every quantise call's kwargs, and every
-    status-reason lookup, so a test can tell the native route from the torchao one."""
     from core.inference import diffusion as dmod
     from core.inference import diffusion_transformer_quant as tq
 
@@ -11896,7 +11891,6 @@ def test_an_explicit_int8_resident_on_nvidia_keeps_torchao(fake_runtime, tmp_pat
         _base_local_dir = str(tmp_path),
     )
     assert status["offload_policy"] == "none"
-    # The torchao call is the one it always was: no native kwargs at all.
     assert len(calls) == 1 and "offload" not in calls[0] and "act_int8" not in calls[0]
     assert status["transformer_quant"] == "int8"
     assert reasons == []
@@ -11921,8 +11915,7 @@ def test_auto_under_offload_on_nvidia_never_goes_native(fake_runtime, tmp_path, 
 def test_a_resident_nvidia_int8_that_cannot_compile_still_declines(
     fake_runtime, tmp_path, monkeypatch, allow_precision_fallback
 ):
-    """The offload candidate skips the compile check until the plan is known; a resident plan means torchao, which
-    still needs its compile, so the decline is the one it always was."""
+    """The offload candidate skipped the compile check; a resident plan means torchao, which still needs it."""
     from core.inference import diffusion as dmod
 
     backend = DiffusionBackend()

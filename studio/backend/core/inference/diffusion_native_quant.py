@@ -13,10 +13,6 @@ Measured on gfx1151 (Qwen-Image-2.1, 1024px, 20 steps): int8 weight-only ran at 
 transformer at 6.64 GiB instead of 13.25. Weights and scales are plain buffers, so unlike torchao tensors
 they survive the ``Module.to()`` calls the offload hooks make.
 
-That last property is why NVIDIA reaches here too, for one case: an explicit int8 whose memory plan offloads
-the transformer, which torchao cannot serve. There it runs W8A8 (``torch._int_mm``, ConvRot g256): on a B200,
-Qwen-Image-2.1 1024px under group offload ran 0.174 s/step against bf16's 0.31, LPIPS 0.031 vs bf16.
-
 Imports torch lazily, like the rest of the quant modules, so the module loads on a torch-free host.
 """
 
@@ -28,30 +24,25 @@ from typing import Any, Callable, Optional
 NATIVE_INT8 = "int8"
 NATIVE_FP8 = "fp8"
 _QMAX = {NATIVE_INT8: 127.0, NATIVE_FP8: 448.0}
-# Opt-in W8A8 for int8: quantise each activation row to int8 and run torch._int_mm on the stored int8 weight
-# instead of dequantising the weight. "1" enables it; anything else keeps weight-only.
+# int8 W8A8 switch: "1" opts AMD in, "0" opts the NVIDIA offload route out (``native_int8_act``).
 NATIVE_INT8_ACT_ENV = "UNSLOTH_NATIVE_INT8_ACT"
-# W8A8 rotates each layer's input by a block Hadamard first (ConvRot, see ``diffusion_convrot``): DiT activations
-# carry a few outlier channels that pin the per-row int8 scale, and the rotation spreads them. "0" turns it off.
+# ConvRot Hadamard spreads the DiT outlier channels that pin the per-row int8 scale; "0" turns it off.
 NATIVE_INT8_ROT_ENV = "UNSLOTH_NATIVE_INT8_ROT"
 # torch._int_mm wants M > 16 and K, N multiples of 8; smaller or odd shapes keep the weight-only path.
 _INT_MM_MIN_ROWS = 17
 
 
 def int8_act_requested() -> bool:
-    """``UNSLOTH_NATIVE_INT8_ACT=1``: the opt-in AMD reads."""
     import os
     return os.environ.get(NATIVE_INT8_ACT_ENV, "").strip() == "1"
 
 
 def int8_act_disabled() -> bool:
-    """``UNSLOTH_NATIVE_INT8_ACT=0``: the kill switch the NVIDIA offload route reads, where W8A8 is the default."""
     import os
     return os.environ.get(NATIVE_INT8_ACT_ENV, "").strip() == "0"
 
 
 def int8_rotation_group() -> int:
-    """The ConvRot group W8A8 layers rotate by, or 0 when ``UNSLOTH_NATIVE_INT8_ROT=0``."""
     import os
 
     if os.environ.get(NATIVE_INT8_ROT_ENV, "").strip() == "0":
@@ -86,7 +77,6 @@ def native_linear_class():
             self.scheme = scheme
             self.compute_dtype = linear.weight.dtype
             self.act_int8 = bool(act_int8) and scheme == NATIVE_INT8
-            # Only W8A8 rotates: weight-only never quantises the activation, so there is nothing to spread.
             self.rot_group = (
                 int(rot_group)
                 if self.act_int8 and rot_group and self.in_features % int(rot_group) == 0
@@ -118,7 +108,6 @@ def native_linear_class():
             self.bias = linear.bias
 
         def _stored_weight(self, dtype: Any) -> Any:
-            """The weight as stored: in the rotated basis when ``rot_group`` is set."""
             wq = (
                 self.weight_q.view(torch.float8_e4m3fn)
                 if self.scheme == NATIVE_FP8
@@ -158,9 +147,7 @@ def native_linear_class():
             )
 
         def _forward_int_mm(self, x: Any) -> Any:
-            """W8A8: per-row symmetric int8 activations x the stored int8 weight, int32 accumulate, one rescale."""
-            # Written for eager as much as for compile (Windows ROCm has no Triton): every op below is one pass,
-            # with the float32 upcasts folded into mixed-dtype ops instead of separate .float() copies.
+            # Must stay fast in eager (Windows ROCm has no Triton): upcasts ride mixed-dtype ops, no .float() copies.
             x2 = x.reshape(-1, self.in_features)
             x_scale = torch.linalg.vector_norm(
                 x2, ord = float("inf"), dim = 1, keepdim = True, dtype = torch.float32
@@ -219,9 +206,6 @@ def apply_native_weight_quant(
 ) -> int:
     """Swap every Linear ``filter_fn`` keeps for a native weight-only twin; returns layers swapped.
 
-    ``act_int8`` (int8 only) runs W8A8 instead of dequantising the weight. The caller decides it, since the
-    default differs by route (opt-in on AMD, on by default for the NVIDIA offload route).
-
     One layer at a time, like torchao's ``quantize_``, so the build peak is the dense model plus one
     layer rather than 1.5x it; on unified memory that peak is what the OS kills for. A failure part-way
     leaves a partial conversion, which ``is_native_quantised`` reports so the loader refuses it the
@@ -257,8 +241,6 @@ def _first_native_linear(module: Any) -> Any:
 
 
 def native_quant_signature(module: Any) -> Optional[str]:
-    """What the native pass built, as a short label (``int8-w8a8-rot256``, ``fp8-wo``), or None when
-    ``module`` holds no native layer. Read off the layers, so it reports what ran, not what was asked."""
     layer = _first_native_linear(module)
     if layer is None:
         return None
@@ -269,7 +251,6 @@ def native_quant_signature(module: Any) -> Optional[str]:
 
 
 def native_quant_reason(module: Any, scheme: str) -> str:
-    """The status line for a native pass: W8A8 names its kernel and rotation, weight-only says it saves memory."""
     layer = _first_native_linear(module)
     if layer is not None and getattr(layer, "act_int8", False):
         rot = int(getattr(layer, "rot_group", 0) or 0)

@@ -4,9 +4,7 @@
 """Torchao-free int8 / fp8 on AMD and the Windows-ROCm torchao stub, and int8 W8A8 on NVIDIA under offload.
 
 ROCm is simulated by patching ``torch_is_rocm`` / ``is_stubbed`` on the quant module, so the suite
-runs on any host. On NVIDIA the native branch is taken only for an explicit int8 whose plan offloads the
-transformer; every other NVIDIA / MPS / XPU / CPU case asserts it stays inert, which is what keeps those
-paths unchanged.
+runs on any host. NVIDIA goes native only for an explicit int8 under offload; every other case stays inert.
 """
 
 from __future__ import annotations
@@ -120,7 +118,6 @@ def test_nvidia_and_other_hosts_are_never_native_without_offload(nvidia, device)
         assert tq.native_quant_scheme(_target(device = device), scheme, offload = False) is None
 
 
-# The NVIDIA truth table: (scheme, offload) -> native scheme. Only an explicit int8 under offload goes native.
 _NVIDIA_TABLE = [
     ("int8", True, "int8"),
     ("INT8", True, "int8"),
@@ -157,7 +154,6 @@ def test_the_offload_route_needs_a_bf16_cuda_target(nvidia, target):
 
 
 def test_amd_hosts_are_not_the_nvidia_offload_host(rocm):
-    # AMD keeps its own route (int8 and fp8, any placement); the offload flag changes nothing there.
     assert not tq.native_offload_host(_target())
     for scheme in ("int8", "fp8"):
         assert tq.native_quant_scheme(_target(), scheme, offload = True) == scheme
@@ -187,7 +183,6 @@ def test_nvidia_offload_route_respects_the_family_deny_list(nvidia, monkeypatch)
     ],
 )
 def test_w8a8_default_differs_by_route(monkeypatch, env, expect_amd, expect_nvidia):
-    """AMD: opt-in (``=1``). NVIDIA offload: on unless the ``=0`` kill switch."""
     if env is None:
         monkeypatch.delenv(nq.NATIVE_INT8_ACT_ENV, raising = False)
     else:
@@ -565,7 +560,6 @@ def test_quantize_transformer_on_nvidia_under_offload_runs_w8a8_convrot(nvidia, 
     assert any("W8A8 torch._int_mm ConvRot g256" in line for line in logs)
     assert nq.native_quant_signature(model) == "int8-w8a8-rot256"
     assert nq.native_quant_reason(model, "int8").startswith("W8A8")
-    # A CPU input takes the per-call weight-only fallback, in the same rotated basis.
     with torch.no_grad():
         out = model(x).float()
     assert ((out - ref).norm() / ref.norm()).item() < 0.05
@@ -837,16 +831,12 @@ def test_video_gate_refuses_native_on_gguf_loads(rocm, monkeypatch):
         _video_gate(monkeypatch, _video_family("wan2.2-ti2v-5b"), "int8", model_kind = "gguf")
 
 
-# ---- NVIDIA preflight: int8 under a named offload is admitted, fp8 is not ------------------------------------
-
-
 def _torchao_gate_answers(
     monkeypatch,
     module,
     *,
     supported = True,
 ):
-    """The torchao half of the gate, stubbed so no smoke probe runs: every scheme usable, compile available."""
     monkeypatch.setattr(module, "dense_transformer_supported", lambda target: supported)
     monkeypatch.setattr(module, "select_transformer_quant_scheme", lambda target, mode, **k: mode)
     if hasattr(module, "_pipeline_quant_uncompilable_reason"):

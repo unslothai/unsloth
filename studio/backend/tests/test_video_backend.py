@@ -2036,9 +2036,7 @@ def test_wan_a14b_dense_quant_applies_to_both_dits(fake_runtime, monkeypatch):
 
 def test_dense_quant_skipped_under_offload(fake_runtime, monkeypatch):
     # Offload hooks move modules with Module.to(), which torchao tensors reject, so any offload
-    # policy must SKIP a torchao quant. With the legacy escape hatch set the load still succeeds dense
-    # and the record explains why; the strict default refuses instead (see the test below). fp8, because
-    # an NVIDIA int8 under offload now runs torchao-free instead (see the native tests at the end).
+    # policy must SKIP a torchao quant (escape hatch: dense plus a record). fp8: NVIDIA int8 goes native.
     import core.inference.video as video_mod
     from core.inference import diffusion_transformer_quant as tq
 
@@ -2109,8 +2107,7 @@ def test_the_video_load_places_on_the_selected_card_not_a_bare_device(fake_runti
 
 
 def test_explicit_dense_quant_refuses_under_offload(fake_runtime, monkeypatch):
-    # Strict default (no escape hatch): an explicit fp8 the offload plan cannot honor stops the
-    # load, rather than denoising at bf16 while the Precision dropdown still reads FP8.
+    # Strict default: an explicit fp8 the offload plan cannot honor refuses rather than silently run bf16.
     import dataclasses
 
     import core.inference.video as video_mod
@@ -9752,8 +9749,6 @@ def test_a_clean_video_decline_under_the_fallback_still_loads_dense(fake_runtime
 
 
 def _stub_nvidia_video_offload(monkeypatch, *, offload = True):
-    """An NVIDIA bf16 host with the torchao path open, whose plan offloads the DiT (or not). Records every
-    quantise call's kwargs, one per expert."""
     import dataclasses
 
     import core.inference.video as video_mod
@@ -9797,8 +9792,6 @@ def _stub_nvidia_video_offload(monkeypatch, *, offload = True):
 def test_an_explicit_int8_under_offload_on_nvidia_runs_native_on_both_experts(
     fake_runtime, monkeypatch
 ):
-    """Dual-DiT Wan2.2-A14B: both experts take the torchao-free W8A8 route with the same kernel choice, instead of
-    the whole quant being skipped for the offload."""
     calls = _stub_nvidia_video_offload(monkeypatch)
     backend = VideoBackend()
     status = backend.load_pipeline(
@@ -9832,7 +9825,6 @@ def test_a_resident_video_int8_on_nvidia_keeps_torchao(fake_runtime, monkeypatch
         "Wan-AI/Wan2.2-TI2V-5B-Diffusers", model_kind = "pipeline", transformer_quant = "int8"
     )
     assert status["offload_policy"] == "none"
-    # The torchao call is the one it always was: no native kwargs at all.
     assert calls and all("offload" not in c and "act_int8" not in c for c in calls)
     assert "W8A8" not in status["resolved"]["transformer_quant"]["reason"]
     backend.unload()

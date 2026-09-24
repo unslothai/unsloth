@@ -1783,9 +1783,7 @@ class DiffusionBackend:
                 and _memory_request_forces_offload(memory_mode, cpu_offload)
                 and native_offload_host(target)
             ):
-                # NVIDIA: an explicit int8 the request puts under offload runs torchao-free W8A8 (torch._int_mm) on
-                # plain buffers the offload hooks can move, instead of the torchao tensors they cannot. No compile to
-                # require either: the int8 GEMM is the kernel, not a graph inductor has to fuse.
+                # NVIDIA int8 under offload: torchao-free W8A8 on buffers the hooks can move; torch._int_mm needs no compile.
                 if (
                     native_quant_scheme(
                         target, pinned, family = getattr(fam, "name", None), offload = True
@@ -4451,9 +4449,7 @@ class DiffusionBackend:
                     if kind == "pipeline"
                     else None
                 )
-                # NVIDIA: an explicit int8 that runs torchao-free W8A8 IF the memory plan offloads the transformer,
-                # which torchao tensors cannot survive. Only a candidate here; the quant step below takes it once the
-                # plan is final, and a resident plan keeps the torchao path.
+                # Only a candidate: the quant step takes it if the final plan offloads; a resident plan keeps torchao.
                 native_offload_scheme = (
                     native_quant_scheme(
                         target,
@@ -4464,7 +4460,6 @@ class DiffusionBackend:
                     if kind == "pipeline" and native_scheme is None
                     else None
                 )
-                # A request that names its offload is decided now: the torchao selector below has no say over it.
                 native_offload_forced = native_offload_scheme is not None and (
                     _memory_request_forces_offload(memory_mode, cpu_offload)
                 )
@@ -5365,8 +5360,6 @@ class DiffusionBackend:
                         if source_precision is not None:
                             for _attr, denoiser in denoiser_modules(pipe):
                                 mark_source_precision(denoiser, source_precision)
-                        # Weight-only runs bf16 arithmetic, so it has no compile to require. The NVIDIA offload
-                        # candidate defers the question until the plan settles which path runs (below).
                         pipeline_quant_blocker = (
                             None
                             if native_scheme is not None or native_offload_scheme is not None
@@ -5423,8 +5416,6 @@ class DiffusionBackend:
                                 and native_scheme is None
                                 and native_offload_scheme is not None
                             ):
-                                # The plan still offloads, so torchao cannot serve this int8. The native layers can:
-                                # plain int8 buffers the hooks move, W8A8 through torch._int_mm.
                                 native_scheme = native_offload_scheme
                                 logger.info(
                                     "diffusion.transformer_quant: %s runs torchao-free under the plan's '%s' "
@@ -5445,8 +5436,7 @@ class DiffusionBackend:
                                     "that. Pin a resident memory mode to combine the two"
                                 )
                             elif native_scheme is None and pipeline_quant_uncompilable is not None:
-                                # The offload candidate skipped the compile check above, but the plan is resident, so
-                                # torchao runs after all and needs its compile: the same decline as without it.
+                                # Resident plan: torchao runs after all and still needs the compile check skipped above.
                                 logger.info(
                                     "diffusion.transformer_quant: skipped (%s)",
                                     pipeline_quant_uncompilable,
@@ -5476,9 +5466,6 @@ class DiffusionBackend:
                                     )
                                 # Convert every denoiser so multi-branch pipelines use one precision.
                                 denoisers = denoiser_modules(pipe)
-                                # Chosen here, once, so every denoiser gets the same kernel: opt-in on AMD, on by
-                                # default for the NVIDIA offload route. Only a native route passes them, so the torchao
-                                # call is exactly what it was.
                                 native_kwargs = (
                                     {
                                         "offload": plan.offload_policy != OFFLOAD_NONE,
@@ -5815,7 +5802,6 @@ class DiffusionBackend:
                                     )
                                 )
                                 if transformer_quant_engaged is None
-                                # Native: read off the built layers, so W8A8 and weight-only each say what ran.
                                 else native_quant_reason(
                                     getattr(pipe, "transformer", None), transformer_quant_engaged
                                 )
