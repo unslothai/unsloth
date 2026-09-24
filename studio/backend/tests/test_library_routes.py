@@ -519,3 +519,49 @@ def test_a_batch_whose_folder_vanishes_keeps_nothing(client, monkeypatch):
     )
     assert response.status_code == 404
     assert _items(client)[0] == {}
+
+
+def _clip(width = 64, height = 48) -> bytes:
+    import io
+
+    av = pytest.importorskip("av")
+    np = pytest.importorskip("numpy")
+    buf = io.BytesIO()
+    with av.open(buf, mode = "w", format = "mp4") as out:
+        stream = out.add_stream("libx264", rate = 4)
+        stream.width, stream.height = width, height
+        stream.pix_fmt = "yuv420p"
+        for index in range(4):
+            frame = av.VideoFrame.from_ndarray(
+                np.full((height, width, 3), index * 40, dtype = np.uint8), format = "rgb24"
+            )
+            for packet in stream.encode(frame):
+                out.mux(packet)
+        for packet in stream.encode():
+            out.mux(packet)
+    return buf.getvalue()
+
+
+def test_video_upload_thumbnail_is_its_first_frame(client):
+    from PIL import Image
+    import io
+
+    [clip] = _upload(client, ("clip.mp4", _clip(), "video/mp4"))
+    response = client.get("/api/library/items/thumbnail", params = {"id": clip})
+    assert response.status_code == 200, response.text
+    assert response.headers["content-type"] == "image/webp"
+    assert Image.open(io.BytesIO(response.content)).size == (64, 48)
+
+
+def test_thumbnail_is_only_for_videos(client):
+    [note] = _upload(client, ("note.md", b"# hi", "text/markdown"))
+    for item_id in (note, "upload:" + "0" * 32, "model:training:/tmp/x", "image:missing"):
+        response = client.get("/api/library/items/thumbnail", params = {"id": item_id})
+        assert response.status_code == 404, item_id
+
+
+def test_undecodable_video_has_no_thumbnail(client):
+    pytest.importorskip("av")
+    [clip] = _upload(client, ("broken.mp4", b"not a video", "video/mp4"))
+    response = client.get("/api/library/items/thumbnail", params = {"id": clip})
+    assert response.status_code == 501

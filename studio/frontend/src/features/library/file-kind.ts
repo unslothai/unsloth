@@ -137,6 +137,11 @@ export function hasImagePreview(item: LibraryItem): boolean {
   );
 }
 
+/** Cards show a picture for raster images, and for videos their first frame. */
+export function hasThumbnail(item: LibraryItem): boolean {
+  return hasImagePreview(item) || (!item.textOnly && fileKind(item) === "video");
+}
+
 export const TYPE_FILTER_KINDS: Record<LibraryTypeFilter, LibraryFileKind[]> = {
   images: ["image"],
   videos: ["video"],
