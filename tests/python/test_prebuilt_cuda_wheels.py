@@ -538,8 +538,8 @@ class TestWorkflow:
         inputs = triggers(workflow)["workflow_dispatch"]["inputs"]
         assert inputs["publish"]["default"] is False
         assert inputs["gpu_smoke"]["default"] is False
-        assert workflow["jobs"]["publish"]["if"] == "inputs.publish"
-        assert workflow["jobs"]["gpu-smoke"]["if"] == "inputs.gpu_smoke"
+        assert "inputs.publish &&" in workflow["jobs"]["publish"]["if"]
+        assert "inputs.gpu_smoke &&" in workflow["jobs"]["gpu-smoke"]["if"]
 
     def test_only_publish_can_write_contents(self, workflow):
         assert workflow["permissions"] == {"contents": "read"}
@@ -739,6 +739,26 @@ class TestWarmWiring:
         assert "warm" in build["needs"]
         assert "!cancelled()" in build["if"]
         assert warm["strategy"]["matrix"] == "${{ fromJSON(needs.plan.outputs.warm_matrix) }}"
+
+    def test_a_skipped_warm_does_not_skip_what_follows_the_build(self, workflow):
+        """Without a status function, a job's `if` requires every ancestor to succeed, so a
+        dispatch without flash-attn (warm skipped) would silently skip signing and publishing."""
+        jobs = workflow["jobs"]
+
+        def needs(name):
+            value = jobs[name].get("needs", [])
+            return [value] if isinstance(value, str) else value
+
+        def ancestors(name):
+            return {a for n in needs(name) for a in {n} | ancestors(n)}
+
+        downstream = [name for name in jobs if "warm" in ancestors(name)]
+        assert set(downstream) == {"build", "gpu-smoke", "sign", "publish"}
+        for name in downstream:
+            assert "!cancelled()" in jobs[name]["if"], name
+            for parent in needs(name):
+                if parent not in ("plan", "warm"):
+                    assert f"needs.{parent}.result == 'success'" in jobs[name]["if"], name
 
     def test_the_build_downloads_the_names_warm_uploads(self, workflow):
         def step(job, name):

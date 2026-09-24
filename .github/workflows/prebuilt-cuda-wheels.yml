@@ -291,6 +291,8 @@ jobs:
           # ccache compresses its own entries.
           compression-level: 0
           retention-days: 1
+          # A re-run attempt uploads under the same name, which fails without this.
+          overwrite: true
 
       # Save partial progress after failures. Immutable caches need a key per run attempt.
       - name: Save this slice's ccache for later runs
@@ -574,7 +576,8 @@ jobs:
   gpu-smoke:
     name: GPU forward pass
     needs: [plan, build]
-    if: inputs.gpu_smoke
+    # A skipped warm (no flash-attn) would otherwise skip every job downstream of build.
+    if: ${{ !cancelled() && inputs.gpu_smoke && needs.build.result == 'success' }}
     runs-on: [self-hosted, gpu]
     timeout-minutes: 90
     permissions:
@@ -615,6 +618,7 @@ jobs:
   sign:
     name: Sign and attest
     needs: [plan, build]
+    if: ${{ !cancelled() && needs.build.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
     # Named for the same reason release-desktop.yml and woa-wheelhouse.yml name it: it is what
@@ -727,7 +731,7 @@ jobs:
   publish:
     name: Publish the release
     needs: sign
-    if: inputs.publish
+    if: ${{ !cancelled() && inputs.publish && needs.sign.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
