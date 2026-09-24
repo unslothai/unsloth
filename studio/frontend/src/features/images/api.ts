@@ -257,7 +257,7 @@ export interface GalleryImage {
   // Library state, not recipe: stored beside the PNG, absent on records written before this existed.
   pinned?: boolean;
   archived?: boolean;
-  /** Manual sort key once dragged; unset sorts by created_at. */
+  /** The server's unpinned sort key: the drag key, else the file mtime. */
   order_at?: number | null;
 }
 
