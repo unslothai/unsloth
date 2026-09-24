@@ -45,9 +45,19 @@ def seed_image(account) -> dict[str, str]:
     return {"image_id": record["id"]}
 
 
-# The chat project a gallery item is copied into. Seeded in the same account as the item, so
-# only that account can name both; every other account misses on the item first.
+# The chat project a gallery item is copied into. Seeded in the item's account AND in the calling
+# account, so the caller always has a project by that id and the only thing that can refuse it is
+# the item lookup. With the project only beside the item, a route that found another account's item
+# would still 404 on the missing project, and the matrix could not tell that from isolation.
 MEDIA_PROJECT_ID = "media-project"
+
+
+def _calling_account(actor: str):
+    """The account the matrix sends this actor's request as, when it has one of its own."""
+    from auth import storage
+    from utils.account_context import OWNER
+
+    return {"owner": OWNER, "wrong": storage.get_account("bob")}.get(actor)
 
 
 def _seed_media_project(account) -> None:
@@ -61,9 +71,12 @@ def _seed_media_project(account) -> None:
 
 
 @seeder("media-image-project")
-def seed_image_and_project(account) -> dict[str, str]:
+def seed_image_and_project(account, actor: str = "right") -> dict[str, str]:
     params = seed_image(account)
     _seed_media_project(account)
+    caller = _calling_account(actor)
+    if caller is not None:
+        _seed_media_project(caller)
     return params
 
 
@@ -158,9 +171,12 @@ def seed_video(account) -> dict[str, str]:
 
 
 @seeder("media-video-project")
-def seed_video_and_project(account) -> dict[str, str]:
+def seed_video_and_project(account, actor: str = "right") -> dict[str, str]:
     params = seed_video(account)
     _seed_media_project(account)
+    caller = _calling_account(actor)
+    if caller is not None:
+        _seed_media_project(caller)
     return params
 
 
