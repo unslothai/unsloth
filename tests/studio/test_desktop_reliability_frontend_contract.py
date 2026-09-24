@@ -2436,12 +2436,15 @@ def test_image_train_rail_matches_create_and_header():
     # than pin either: the divider only lines up while they are the same spacing step.
     rail = re.search(
         r"pl-10 max-sm:pl-5 @\[50rem\]:w-\[min\(var\(--media-rail-width,408px\),"
-        r"calc\(100%-13rem\+--spacing\((\d+)\)\)\)\]",
+        r"calc\(100%-13rem\+--spacing\(([\d.]+)\)\)\)\]",
         layout,
     )
     assert rail, "the Train rail no longer uses the Create rail's width variable and clamp"
+    # A whole class token: `sm:pr-8` exactly, not the tail of `max-sm:pr-8` (inactive where the
+    # 50rem rail layout applies) and not the `8` of `sm:pr-8.5`.
     scroller = re.search(
-        r'className="[^"]*overflow-y-auto overflow-x-hidden[^"]*\bsm:pr-(\d+)\b', layout
+        r'className="[^"]*overflow-y-auto overflow-x-hidden[^"]*?(?<![\w:-])sm:pr-([\d.]+)(?=[\s"])',
+        layout,
     )
     assert scroller, "the Train scroller's right padding moved; the rail clamp depends on it"
     assert rail.group(1) == scroller.group(1), (
