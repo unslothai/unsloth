@@ -253,6 +253,11 @@ _mirror_retry_install() {
     fi
 }
 
+# Copies stdin to file $1 for the mirror retry to read; a minimal image without tee only loses that retry.
+_ric_tee() {
+    if command -v tee >/dev/null 2>&1; then tee "$1"; else cat; fi
+}
+
 _run_install_cmd_once() {
     _label="$1"
     shift
@@ -286,7 +291,7 @@ _run_install_cmd_once() {
                 _cmd_rc=$?
             fi
             printf '%s' "$_cmd_rc" > "$_rcf"
-        } | tee "$_log" | _uv_download_markers "" "$UNSLOTH_DL_MARKER_MIN_BYTES" | _redact_install_output
+        } | _ric_tee "$_log" | _uv_download_markers "" "$UNSLOTH_DL_MARKER_MIN_BYTES" | _redact_install_output
         _rc=$(cat "$_rcf" 2>/dev/null || echo 1)
         rm -f "$_rcf"
         _rc=${_rc:-1}

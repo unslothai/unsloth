@@ -79,6 +79,7 @@ _STUBS = """
 _is_verbose() { [ -n "${VERBOSE_MODE:-}" ]; }
 step() { :; }; substep() { :; }; tauri_stream_log() { :; }; tauri_clear_install_error() { :; }
 _redact_install_output() { cat "$@"; }
+_mirror_retry_install() { return "$1"; }
 """
 
 
@@ -95,6 +96,8 @@ def _sh_harness(child: str) -> str:
 {_STUBS}
 {_extract_default()}
 {_extract("_uv_download_markers")}
+{_extract("_ric_tee")}
+{_extract("_run_install_cmd_once")}
 {_extract("run_install_cmd")}
 run_install_cmd "install PyTorch" sh -c '{child}'
 printf 'RC=%s\\n' "$?"

@@ -15,7 +15,7 @@ _FUNC_FILE=$(mktemp)
 {
     sed -n '/^run_install_cmd()/,/^}/p' "$INSTALL_SH"
     sed -n '/^run_install_cmd_retry()/,/^}/p' "$INSTALL_SH"
-    for _f in _run_install_cmd_once _mirror_retry_install _mirror_failed_host; do sed -n "/^$_f()/,/^}/p" "$INSTALL_SH"; done
+    for _f in _ric_tee _run_install_cmd_once _mirror_retry_install _mirror_failed_host; do sed -n "/^$_f()/,/^}/p" "$INSTALL_SH"; done
     sed -n '/^tauri_log()/,/^}/p' "$INSTALL_SH"
     sed -n '/^tauri_stream_log()/,/^}/p' "$INSTALL_SH"
     sed -n '/^tauri_clear_install_error()/,/^}/p' "$INSTALL_SH"

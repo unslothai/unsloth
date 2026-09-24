@@ -210,7 +210,7 @@ assert_eq "failed host: the default each transport failure names; unsynced for a
 assert_eq "failed host: a stalled download names no URL, so the host that ran it; none when another URL is named" "torch none none" "$({ _failed_host "$_fail_uv_stall" torch; _failed_host "$_fail_uv_stall"; _failed_host "$_fail_git" pypi; } | paste -sd' ' -)"
 
 # run_install_cmd(_retry) around the real _run_install_cmd_once; the stub uv logs each run and fails as FAIL says, without a mirror index.
-{ cat "$_WORK/block.sh"; for _f in run_install_cmd _mirror_retry_install _run_install_cmd_once run_install_cmd_retry; do sed -n "/^$_f() {/,/^}/p" "$INSTALL_SH"; done; } > "$_WORK/retry.sh"
+{ cat "$_WORK/block.sh"; for _f in run_install_cmd _mirror_retry_install _ric_tee _run_install_cmd_once run_install_cmd_retry; do sed -n "/^$_f() {/,/^}/p" "$INSTALL_SH"; done; } > "$_WORK/retry.sh"
 mkdir -p "$_WORK/uvbin"
 cat > "$_WORK/uvbin/uv" <<'EOF'
 #!/bin/sh

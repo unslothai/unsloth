@@ -123,7 +123,7 @@ _STREAM=$(mktemp)
     printf 'PYTHON_SKIP="3.13.8"; SKIP_TORCH=false\n'
     printf 'step() { :; }\ntauri_log() { :; }\n'
     for _f in _is_verbose tauri_stream_log tauri_clear_install_error _redact_install_output \
-              _uv_download_markers run_install_cmd _run_install_cmd_once _mirror_retry_install _mirror_failed_host \
+              _uv_download_markers run_install_cmd _ric_tee _run_install_cmd_once _mirror_retry_install _mirror_failed_host \
               _macos_has_selected_install_name_tool \
               _run_uv_venv _python_skip_applies _python_request _uv_venv_requested; do
         sed -n "/^$_f()/,/^}/p" "$INSTALL_SH"
