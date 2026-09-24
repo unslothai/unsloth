@@ -230,12 +230,12 @@ export function LibraryHeader({
         ) : (
           <div className="h-9" />
         )}
-        {/* Once stuck, what scrolls under the row fades out below it instead of cutting off: short
-            and light, since whole cards pass under it rather than lines of text. */}
+        {/* Once stuck, what scrolls under the row fades out below it instead of cutting off: the
+            chat page's fade under its header. */}
         <div
           aria-hidden
           className={cn(
-            "pointer-events-none absolute inset-x-0 top-full h-3 bg-gradient-to-b from-background/70 to-transparent transition-opacity",
+            "pointer-events-none absolute inset-x-0 top-full h-6 bg-gradient-to-b from-background to-transparent transition-opacity",
             covered ? "opacity-100" : "opacity-0",
           )}
         />
