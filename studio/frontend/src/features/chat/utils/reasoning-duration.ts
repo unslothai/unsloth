@@ -83,18 +83,47 @@ export function resolveReasoningGroupDuration(
   return asDuration(custom?.reasoningDuration);
 }
 
+/** `seed` is what a reader that arrives mid-run already holds: the durations the tab that started
+ *  the run measured for the groups that closed before this one attached, and therefore how many
+ *  groups already exist. A replay cannot re-measure those -- the frames before its cursor were never
+ *  folded -- so it inherits them, and a group that opens after it attaches takes the NEXT index
+ *  instead of overwriting a finished group's slot.
+ *
+ *  How many groups exist is NOT the same as which of them are FINISHED. Consecutive closed reasoning
+ *  blocks coalesce into one rendered group, so a tab that shut mid-thought leaves a number for a group this
+ *  reader watches GROW, and `lastGroupTextLength` -- how much of that last group the closing tab had already
+ *  read -- is the only thing that tells "the reader folded more of the same thought" from "the answer started
+ *  streaming". Without it the last seeded group has no `startedAt` to resume from, its stale pre-close number
+ *  is all anyone will ever know about it, and a server summary arriving afterwards has no target either. */
 export function createReasoningDurationTracker(
   now: () => number = Date.now,
+  seed?: { durations?: readonly number[]; lastGroupTextLength?: number },
 ) {
-  let durations: number[] = [];
+  let durations: number[] = (seed?.durations ?? []).map(
+    (duration) => asDuration(duration) ?? 0,
+  );
   // First time each group index became visible. A group can be closed and reopened -- several
   // complete <think>...</think> blocks in a row are coalesced into one rendered group -- so the
   // duration is always measured from the first sighting, not the last.
   const startedAt: number[] = [];
   let activeIndex: number | null = null;
-  let groupCount = 0;
+  // Seeded from what the closing tab already measured, so a replay counts the groups it inherited and
+  // opens the NEXT one; the ones it never saw a frame of keep the value they arrived with.
+  let groupCount = durations.length;
+  // What each group cost where the tab before this one stopped measuring. This reader's own window starts at
+  // the first frame IT folded, so the two windows sit end to end and the group's total is their sum -- which is
+  // why measuring a resumed group adds to this instead of writing over it.
+  const inherited = [...durations];
   // Reasoning text seen so far per group, used to decide whether a closed group is still growing and should reopen.
   const reasoningLength: number[] = [];
+  // The seeded group that may still have been open when the other tab shut. Only the LAST one can be: anything
+  // before it is separated from the running text by a part of another kind, so nothing more can ever join it.
+  const seenByClosingTab = seed?.lastGroupTextLength;
+  const resumableIndex =
+    seenByClosingTab === undefined ? -1 : durations.length - 1;
+  if (resumableIndex >= 0 && seenByClosingTab !== undefined) {
+    reasoningLength[resumableIndex] = seenByClosingTab;
+  }
   // The group a server summary would land on. The backend emits one summary at the end of each
   // visible reasoning pass, before the next can begin, so "the group that started most recently"
   // is the correct target. A FIFO queue mis-assigns as soon as one group has no summary.
@@ -118,7 +147,9 @@ export function createReasoningDurationTracker(
     if (from === undefined) {
       return;
     }
-    setDuration(index, Math.max(0, Math.round((finishedAt - from) / 1000)));
+    // An inherited group keeps what the closing tab measured; only the part THIS reader watched is new.
+    const measured = Math.max(0, Math.round((finishedAt - from) / 1000));
+    setDuration(index, (inherited[index] ?? 0) + measured);
   };
   const finishGroupAt = (finishedAt: number) => {
     if (activeIndex === null) {
@@ -167,11 +198,21 @@ export function createReasoningDurationTracker(
         return;
       }
       reasoningLength[index] = currentReasoningLength;
-      if (activeIndex === index || startedAt[index] === undefined) {
+      if (activeIndex === index) {
         return;
+      }
+      if (startedAt[index] === undefined) {
+        // A group that arrived with the seed has no first sighting here. It resumes from the frame this tab
+        // actually saw it grow on, and keeps counting on top of the value it arrived with.
+        if (index !== resumableIndex) {
+          return;
+        }
+        startedAt[index] = now();
       }
       finishGroupAt(now());
       activeIndex = index;
+      // A summary arriving now describes THIS group, seeded number or no: it is the pass running now.
+      serverSummaryTargetIndex = index;
     },
     finishGroup() {
       finishGroupAt(now());

@@ -88,11 +88,6 @@ const legacyCases: [string, Record<string, unknown>, string][] = [
     "the diffusion path has no durable run to join",
   ],
   [
-    "THIS turn carrying an attachment",
-    { turnCarriesMedia: true },
-    "a media turn stays subscriber-owned; a text follow-up to an earlier screenshot must NOT (see the next case)",
-  ],
-  [
     "a continuation",
     { continuation: true },
     "the seeded partial is autosaved before the request starts, and admission 409s a placeholder that already has content",
@@ -129,10 +124,11 @@ for (const [name, override, why] of legacyCases) {
   });
 }
 
-test("the gate reads the turn's own media, never the thread's history", () => {
-  // The regression this pins: the scan that fills `turnCarriesMedia` walked post-prune HISTORY, so one screenshot
-  // from an earlier turn refused every later text-only turn AND sent it to the legacy stream. A turn whose OWN
-  // message carries no media is a candidate even when the thread above it is full of it - which is what the adapter
-  // passes here (currentTurnMessages), pinned by tests/studio/test_multi_chat_prompt_queue_contract.py.
-  assert.equal(isDurableRunCandidate({ ...durableTurn, turnCarriesMedia: false }), true);
+test("a media turn is a durable candidate now; the toggle owns the refusal, not this gate", () => {
+  // Media left the gate entirely: replay re-tags persisted frames exactly as the live stream yielded them, so a
+  // screenshot ride through a closed tab is faithful. The refusal survives only in the backend, where its 400
+  // degrades silently through isLegacyFallbackChatGenerationAdmissionError - and it reads THIS turn's payload, never
+  // the thread's history, which is the regression this file's older version used to pin here.
+  assert.equal(isDurableRunCandidate({ ...durableTurn, turnCarriesMedia: true }), true);
 });
+

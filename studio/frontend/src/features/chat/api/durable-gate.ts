@@ -41,8 +41,9 @@ export type DurableRunCandidate = {
   modelIsAudio?: boolean;
   /** A diffusion model is loaded: that path has no durable run to join. */
   loadedIsDiffusion?: boolean;
-  /** THIS turn carries an attachment (image/audio/video), scanned out of the current turn's message alone.
-   * A media turn stays on the subscriber-owned stream; a text follow-up to an earlier screenshot does not. */
+  /** No longer a gate term: media turns are durable by default, and UNSLOTH_STUDIO_DURABLE_MEDIA_TURNS=0 refuses
+   * them in the backend (routes/chat_generation_runs.py), where the 400 degrades silently through
+   * isLegacyFallbackChatGenerationAdmissionError. Kept so a caller passing it still type-checks. */
   turnCarriesMedia?: boolean;
   /** Continue: the seeded partial is autosaved before the request starts, and admission 409s a placeholder that
    * already has content - which is not one of the errors that falls back, so the turn would just fail. The adapter
@@ -70,8 +71,6 @@ export function isDurableRunCandidate(input: DurableRunCandidate): boolean {
     !input.externalProvider &&
       input.modelIsAudio !== true &&
       input.loadedIsDiffusion !== true &&
-      // Turn-scoped, not thread-scoped: a stale blob from an earlier turn must not refuse this one.
-      input.turnCarriesMedia !== true &&
       !input.continuation &&
       input.threadId &&
       !input.incognito &&

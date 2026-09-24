@@ -17,7 +17,6 @@ const {
   generationIsSettled,
   generationNeedsRecovery,
   loadGenerationOverlaySnapshot,
-  recoveredReasoningSummaryMetadata,
   recoveredGenerationFinalMetadata,
   generationRecoveryMetadata,
   shouldPreserveGenerationMetadata,
@@ -67,18 +66,8 @@ test("first-token recovery ignores role and control chunks", () => {
   );
 });
 
-test("reload recovery preserves server reasoning durations", () => {
-  const metadata = recoveredReasoningSummaryMetadata(
-    {
-      reasoningDuration: 1,
-      reasoningDurations: [1],
-    },
-    3200,
-  );
-  assert.equal(metadata.reasoningDuration, 3);
-  assert.deepEqual(metadata.reasoningDurations, [1, 3]);
-  assert.equal(recoveredReasoningSummaryMetadata(metadata, -1), metadata);
-});
+// What a reopened card shows for a thought is pinned in chat-generation-replay-durations.test.ts: the
+// durations are measured on the run's own frame timestamps now, not appended to the metadata here.
 
 test("stored assistant status remains truthful after reload", () => {
   const interrupted = { custom: { incomplete: { reason: "interrupted" } } };

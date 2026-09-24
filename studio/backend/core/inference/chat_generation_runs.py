@@ -737,9 +737,12 @@ class ChatGenerationSupervisor:
                     )
                     return
 
+                from routes.chat_generation_runs import _rehydrate_media_fields
                 from routes.inference import produce_openai_chat_completions
 
-                payload = ChatCompletionRequest.model_validate(run["requestPayload"])
+                raw_payload = dict(run["requestPayload"])
+                _rehydrate_media_fields(raw_payload)
+                payload = ChatCompletionRequest.model_validate(raw_payload)
                 # Switching, idle reload and auto-download all happen in the call below, and llama.cpp's first-token
                 # budget only starts after it. One touch afterwards cannot cover a preparation longer than the lease
                 # itself.

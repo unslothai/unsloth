@@ -63,7 +63,8 @@ _EXTERNAL_ROUTING_FIELDS = {
     "encrypted_api_key",
     "provider_base_url",
 }
-# Attachments the composer sends inline. Durable replay has no representation for them.
+# Attachments the composer sends inline. They persist verbatim in request_json (a second copy beside the
+# thread's own copy of the message); the toggle below decides whether such turns are durable at all.
 _MEDIA_FIELDS = {
     "image_base64",
     "audio_base64",
@@ -73,6 +74,48 @@ _SQLITE_MAX_INTEGER = 9_223_372_036_854_775_807
 _ENVELOPE_MAX_DEPTH = 64
 _ENVELOPE_MAX_NODES = 20_000
 _ENVELOPE_MAX_JSON_CHARS = 1_000_000
+
+
+def _rehydrate_media_fields(payload: dict[str, Any]) -> None:
+    """Restore top-level media fields from messages[].content before model validation.
+
+    _sanitize_request strips the redundant top-level echo to avoid storing the blob twice
+    in request_json. The data URI is still in the message content array; this extracts it
+    back so the inference path sees the same shape as a live request.
+    """
+    messages = payload.get("messages")
+    if not isinstance(messages, list):
+        return
+    # Walk user messages in reverse: the newest attachment is the one the turn uses.
+    for msg in reversed(messages):
+        if not isinstance(msg, dict) or msg.get("role") != "user":
+            continue
+        content = msg.get("content")
+        if not isinstance(content, list):
+            continue
+        for part in content:
+            if not isinstance(part, dict):
+                continue
+            ptype = part.get("type")
+            if ptype == "image_url" and not payload.get("image_base64"):
+                url = (part.get("image_url") or {}).get("url", "")
+                if url.startswith("data:image/"):
+                    # data:image/png;base64,<b64> -> <b64>
+                    comma = url.find(",")
+                    if comma != -1:
+                        payload["image_base64"] = url[comma + 1 :]
+            elif ptype == "input_audio" and not payload.get("audio_base64"):
+                data = (part.get("input_audio") or {}).get("data", "")
+                if data:
+                    payload["audio_base64"] = data
+            elif ptype == "video_url" and not payload.get("video_base64"):
+                url = (part.get("video_url") or {}).get("url", "")
+                if url.startswith("data:video/"):
+                    comma = url.find(",")
+                    if comma != -1:
+                        payload["video_base64"] = url[comma + 1 :]
+        # Only the newest user message with media counts; stop after the first hit.
+        break
 
 
 class CreateChatGenerationRun(BaseModel):
@@ -187,18 +230,16 @@ def _sanitize_request(payload: CreateChatGenerationRun) -> dict[str, Any]:
             status_code = 400,
             detail = "Durable chat runs are available only for local inference",
         )
-    # A media turn has no replayable transcript and its payload persists verbatim, so a base64 blob would live in
-    # request_json for the life of the thread. _MEDIA_FIELDS is field-shaped, so a video_url part
-    # needs _request_has_video, and an inline image part needs _messages_have_embedded_image:
-    # turn-scoping means a TEXT-only follow-up no longer sets top-level image_base64, yet the
-    # thread's earlier screenshot still rides along inside messages[].content, so the field-shaped
-    # check alone admits it and re-persists the blob on every follow-up.
-    if (
-        any(raw.get(field) not in (None, "") for field in _MEDIA_FIELDS)
-        or _messages_have_input_audio(request.messages)
-        or _messages_have_embedded_image(request.messages)
-        or _request_has_video(request)
-    ):
+    # Media turns are durable now that replay is faithful: persisted frames replay re-tagged exactly as the live
+    # stream yields them, and once generation starts the client contributes nothing. The residual cost is only the
+    # blob itself - the attachment persists verbatim in request_json beside the thread's own copy of the message.
+    # UNSLOTH_STUDIO_DURABLE_MEDIA_TURNS=0 restores the original refusal; the frontend degrades that 400 silently.
+    _durable_media = os.environ.get("UNSLOTH_STUDIO_DURABLE_MEDIA_TURNS", "1").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+    if not _durable_media and any(raw.get(field) not in (None, "") for field in _MEDIA_FIELDS):
         raise HTTPException(
             status_code = 400,
             detail = "Media chat runs use the legacy streaming path",
@@ -235,6 +276,11 @@ def _sanitize_request(payload: CreateChatGenerationRun) -> dict[str, Any]:
         raise HTTPException(status_code = 400, detail = "Durable chat runs require n=1")
     sanitized = request.model_dump(mode = "json", exclude_none = True)
     for field in _EXTERNAL_ROUTING_FIELDS:
+        sanitized.pop(field, None)
+    # The top-level media echo is redundant with the data URI already in messages[].content.
+    # Storing it here would triple the blob (thread copy + request_json messages + this echo).
+    # Rehydrated from the content array at replay time (_rehydrate_media_fields).
+    for field in _MEDIA_FIELDS:
         sanitized.pop(field, None)
     sanitized["stream"] = True
     sanitized["thread_id"] = payload.threadId
