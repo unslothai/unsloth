@@ -475,12 +475,27 @@ def open_recent_thread_with_our_prompts(page, sent_prompts, shoot):
         info(f"WARN no Recents title matches a prompt we sent; titles={titles[:5]!r}")
     order = ours + [i for i in range(len(titles)) if i not in ours]
 
-    def landed(thread_id):
+    def shown_user_turns():
+        return (
+            robust_evaluate(
+                page,
+                """() => Array.from(document.querySelectorAll('[data-role="user"]'))
+                .map((el) => (el.innerText || "").toLowerCase().split(/\\s+/).join(" "))""",
+            )
+            or []
+        )
+
+    def landed(thread_id, before, before_thread):
         """ "ours" once the thread shows one of our prompts, "other" once it has loaded user
-        turns and none is ours, None if neither within the timeout."""
+        turns and none is ours, None if neither within the timeout.
+
+        *before* is what the page showed before the click. The chat keeps one runtime while the
+        next thread loads, so the previous thread's turns stay on screen after the URL changes:
+        turns identical to *before* are not this thread's yet, whether or not they are ours, unless
+        the row clicked is the thread that was already open (*before_thread*)."""
         try:
             handle = page.wait_for_function(
-                """([threadId, wanted]) => {
+                """([threadId, wanted, before, beforeThread]) => {
                     const params = new URLSearchParams(location.search);
                     if (threadId && params.get("thread") !== threadId
                             && params.get("compare") !== threadId) {
@@ -488,12 +503,15 @@ def open_recent_thread_with_our_prompts(page, sent_prompts, shoot):
                     }
                     const users = Array.from(document.querySelectorAll('[data-role="user"]'))
                         .map((el) => (el.innerText || "").toLowerCase().split(/\\s+/).join(" "));
+                    const stale = users.length > 0 && threadId !== beforeThread
+                        && JSON.stringify(users) === JSON.stringify(before);
+                    if (stale) return false;
                     if (users.some((text) => wanted.some((prompt) => text.includes(prompt)))) {
                         return "ours";
                     }
                     return users.length ? "other" : false;
                 }""",
-                arg = [thread_id, wanted],
+                arg = [thread_id, wanted, before, before_thread],
                 timeout = RECENTS_LOAD_TIMEOUT_MS,
             )
             return handle.json_value()
@@ -507,6 +525,10 @@ def open_recent_thread_with_our_prompts(page, sent_prompts, shoot):
         if time.monotonic() > deadline:
             break
         entry = threads.nth(i)
+        before = shown_user_turns()
+        before_thread = robust_evaluate(
+            page, "() => new URLSearchParams(location.search).get('thread') || ''"
+        )
         try:
             thread_id = entry.get_attribute("data-thread-id") or ""
             entry.scroll_into_view_if_needed()
@@ -517,7 +539,7 @@ def open_recent_thread_with_our_prompts(page, sent_prompts, shoot):
         clicked += 1
         info(f"OK clicked recent entry: {titles[i][:60]!r}")
         started = time.monotonic()
-        verdict = landed(thread_id)
+        verdict = landed(thread_id, before, before_thread)
         if verdict == "ours":
             shoot("15d-recent-clicked")
             info(

@@ -98,6 +98,8 @@ PAGE = """<!doctype html><html><body>
 <nav id="recents"></nav><main id="thread"></main>
 <script>
 const threads = %(threads)s;
+// Studio keeps one runtime while the next thread loads, so the previous turns stay on screen.
+const keepStale = %(keep_stale)s;
 const nav = document.getElementById("recents");
 for (const t of threads) {
   const b = document.createElement("button");
@@ -108,9 +110,10 @@ for (const t of threads) {
   b.onclick = () => {
     history.pushState(null, "", "/chat?thread=" + t.id);
     const main = document.getElementById("thread");
-    main.innerHTML = "";
+    if (!keepStale) main.innerHTML = "";
     // The history loader: nothing renders until its requests have all come back.
     setTimeout(() => {
+      main.innerHTML = "";
       for (const [role, text] of t.turns) {
         const d = document.createElement("div");
         d.dataset.role = role;
@@ -167,11 +170,15 @@ def browser():
         b.close()
 
 
-def _open(browser, threads):
+def _open(
+    browser,
+    threads,
+    keep_stale = False,
+):
     import json
 
     ctx = browser.new_context()
-    html = PAGE % {"threads": json.dumps(threads)}
+    html = PAGE % {"threads": json.dumps(threads), "keep_stale": json.dumps(keep_stale)}
     ctx.route(f"{ORIGIN}/**", lambda route: route.fulfill(content_type = "text/html", body = html))
     page = ctx.new_page()
     page.goto(f"{ORIGIN}/chat")
@@ -260,5 +267,48 @@ def test_a_chat_titled_with_our_prompt_must_show_our_turns(browser) -> None:
         with pytest.raises(AssertionError, match = "doesn't contain any of our sent prompts"):
             helper(page, SENT, lambda name: None)
         assert "thread=t-wrong" in page.url
+    finally:
+        ctx.close()
+
+
+def test_the_previous_chats_turns_left_on_screen_are_not_read_as_the_next_one(browser) -> None:
+    """The URL changes at once but the previous thread's turns stay until the next one loads, so
+    a candidate must not be judged "someone else's" from what the last candidate left behind."""
+    helper, _ = _load_helper(timeout_ms = 3000)
+    other = {
+        "id": "t-other",
+        "title": "Weather chat",
+        "turns": [["user", "What's the weather?"]],
+        "loadMs": 50,
+    }
+    ctx, page = _open(
+        browser, [other, {**OURS, "title": "Rapid replies", "loadMs": 800}], keep_stale = True
+    )
+    try:
+        helper(page, SENT, lambda name: None)
+        assert "thread=t-ours" in page.url
+    finally:
+        ctx.close()
+
+
+def test_our_turns_left_on_screen_do_not_pass_a_different_chat(browser) -> None:
+    """The mirror case: the page shows our thread, a different chat is clicked, and our turns
+    are still on screen while it loads. That is not our chat, and the next row must be ours."""
+    helper, _ = _load_helper(timeout_ms = 3000)
+    other = {
+        "id": "t-other",
+        "title": "Weather chat",
+        "turns": [["user", "What's the weather?"]],
+        "loadMs": 800,
+    }
+    ctx, page = _open(
+        browser, [other, {**OURS, "title": "Rapid replies", "loadMs": 50}], keep_stale = True
+    )
+    try:
+        # Our thread is already on screen before the step runs.
+        page.locator('[data-thread-id="t-ours"]').click()
+        page.wait_for_selector('[data-role="user"]')
+        helper(page, SENT, lambda name: None)
+        assert "thread=t-ours" in page.url
     finally:
         ctx.close()
