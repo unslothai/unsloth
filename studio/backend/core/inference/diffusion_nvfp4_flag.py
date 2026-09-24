@@ -98,3 +98,25 @@ def refuse_disabled_nvfp4(
         raise ValueError(nvfp4_disabled_message("transformer_quant"))
     if is_nvfp4(text_encoder_quant):
         raise ValueError(nvfp4_disabled_message("text_encoder_quant"))
+
+
+def nvfp4_checkpoint_disabled_message() -> str:
+    """The refusal a load or plan of an NVFP4 checkpoint gets while the switch is off."""
+    return (
+        "model_path could not be used: it is an NVFP4 checkpoint and NVFP4 is disabled in this "
+        f"build. Pick another model, or set {NVFP4_DIFFUSION_ENV}=1 on the Studio backend to "
+        "enable it."
+    )
+
+
+def refuse_disabled_nvfp4_checkpoint(*model_paths: Optional[str]) -> None:
+    """Raise ``ValueError`` (the routes' 400) when a model path is an NVFP4 checkpoint while the
+    switch is off: a hosted ``*-NVFP4`` repo, or any repo or local path whose pre-quant metadata
+    declares ``nvfp4``. Loaded directly as the model it bypasses every scheme gate above."""
+    if nvfp4_diffusion_enabled():
+        return
+    from .diffusion_prequant import declares_nvfp4_checkpoint
+
+    for path in model_paths:
+        if path and declares_nvfp4_checkpoint(path):
+            raise ValueError(nvfp4_checkpoint_disabled_message())
