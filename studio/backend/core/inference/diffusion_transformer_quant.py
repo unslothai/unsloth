@@ -197,13 +197,15 @@ def apply_small_m_padding(
 
 
 # Int8 PER-FAMILY ConvRot (diffusion_convrot) for the runtime quantize path and the offline builder: the block
-# Hadamard group, and the fqn suffixes whose input gets rotated. Qwen-Image-2.1 at 1024x1024 / 40 steps, 24 prompts
-# paired against bf16 on B200: plain int8 LPIPS 0.065 (PSNR 27.9); q/k/v + img_mlp.out rotated 0.032 (PSNR 32.0);
-# every Linear rotated 0.033 (PSNR 33.5) but ~7% slower, since each rotated input costs an extra pass. img_mlp.out's
-# SiLU-gated input carries most of the outliers (one-step denoiser error 6.6e-4 of 8.6e-4 plain). Not an exclusion,
-# so a plain artifact still validates and keeps loading as it did.
+# Hadamard group, and the fqn suffixes whose input gets rotated. Qwen-Image-2.1 in Studio, 1024x1024 / 40 steps, 48
+# prompt-seed pairs against the bf16 transformer: plain int8 LPIPS 0.054, every block Linear rotated 0.031; rotating
+# only q/k/v + img_mlp.out is 0.044 (worse, paired). B200 compiled step: bf16 60.7 ms, plain 46.5, rotated 53.0.
+# Not an exclusion, so a plain artifact still validates and keeps loading as it did.
 _INT8_FAMILY_CONVROT: dict[str, tuple[int, tuple[str, ...]]] = {
-    "qwen-image-2.1": (256, ("attn.to_q", "attn.to_k", "attn.to_v", "img_mlp.out")),
+    "qwen-image-2.1": (
+        256,
+        ("attn.to_q", "attn.to_k", "attn.to_v", "attn.to_out.0", "img_mlp.gate_layer", "img_mlp.proj", "img_mlp.out"),
+    ),
 }
 
 
@@ -237,7 +239,8 @@ def apply_runtime_convrot(
     if rotated:
         # the device the forward will run on, which is not where the weights sit when a load quantizes on CPU first
         weight = transformer.get_submodule(rotated[0]).weight
-        device, dtype = getattr(target, "device", None), getattr(target, "dtype", None)
+        device = getattr(target, "torch_device", None) or getattr(target, "device", None)
+        dtype = getattr(target, "dtype", None)
         try:
             warm_rotation_cache(transformer, device or weight.device, dtype if dtype is not None and not isinstance(dtype, str) else weight.dtype)
         except Exception:  # noqa: BLE001 - only saves one recompile

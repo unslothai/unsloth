@@ -43,10 +43,11 @@ class _Block(nn.Module):
         super().__init__()
         self.attn = _Attn(dim)
         self.img_mlp = _Mlp(dim)
+        self.extra = nn.Linear(dim, dim, bias = False)  # quantized, but not in the family's rotation spec
 
     def forward(self, x):
         x = x + self.attn(x)
-        return x + self.img_mlp(x)
+        return self.extra(x + self.img_mlp(x))
 
 
 class _Tiny(nn.Module):
@@ -64,7 +65,11 @@ class _Tiny(nn.Module):
         return h, self.small(h)
 
 
-_ROTATED = {f"transformer_blocks.{i}.{n}" for i in range(2) for n in ("attn.to_q", "attn.to_k", "attn.to_v", "img_mlp.out")}
+_ROTATED = {
+    f"transformer_blocks.{i}.{n}"
+    for i in range(2)
+    for n in ("attn.to_q", "attn.to_k", "attn.to_v", "attn.to_out.0", "img_mlp.gate_layer", "img_mlp.out")
+}
 
 
 def _filter(family):
@@ -73,7 +78,9 @@ def _filter(family):
 
 def test_convrot_spec_only_for_int8_on_declared_families():
     group, suffixes = tq.convrot_spec_for_scheme(tq.TQ_INT8, "qwen-image-2.1")
-    assert group == 256 and set(suffixes) == {"attn.to_q", "attn.to_k", "attn.to_v", "img_mlp.out"}
+    assert group == 256 and set(suffixes) == {
+        "attn.to_q", "attn.to_k", "attn.to_v", "attn.to_out.0", "img_mlp.gate_layer", "img_mlp.proj", "img_mlp.out"
+    }
     assert tq.convrot_spec_for_scheme(tq.TQ_INT8, " Qwen-Image-2.1 ")[0] == 256
     for scheme in (tq.TQ_FP8, tq.TQ_NVFP4, tq.TQ_MXFP8):
         assert tq.convrot_spec_for_scheme(scheme, "qwen-image-2.1") == (0, ())
@@ -108,9 +115,8 @@ def test_runtime_convrot_rotates_the_quantized_set_and_keeps_the_model_exact():
     assert not is_rotated_linear(model.txt_in)  # family exclusion
     assert not is_rotated_linear(model.small)  # below min_features
     assert not is_rotated_linear(model.odd)  # 640 not divisible by 256
-    for blk in model.transformer_blocks:  # quantized, but not in the rotation spec
-        assert not is_rotated_linear(blk.attn.to_out[0]) and not is_rotated_linear(blk.img_mlp.gate_layer)
-    assert getattr(model, CONVROT_ATTR)["linears"] == 8
+    assert not any(is_rotated_linear(blk.extra) for blk in model.transformer_blocks)
+    assert getattr(model, CONVROT_ATTR)["linears"] == 12
     for a, b in zip(ref, got):
         torch.testing.assert_close(a, b, rtol = 1e-4, atol = 1e-4)
 
@@ -137,7 +143,7 @@ def _stub_torchao(monkeypatch, seen):
     monkeypatch.setattr(tq, "_make_quant_config", lambda scheme, fast_accum = None: f"{scheme}-cfg")
 
 
-@pytest.mark.parametrize("family, expect_rotated", [("qwen-image-2.1", 8), ("qwen-image", 0), (None, 0)])
+@pytest.mark.parametrize("family, expect_rotated", [("qwen-image-2.1", 12), ("qwen-image", 0), (None, 0)])
 def test_quantize_transformer_rotates_before_quantize(monkeypatch, family, expect_rotated):
     seen = []
     _stub_torchao(monkeypatch, seen)
@@ -163,7 +169,8 @@ def test_runtime_convrot_warms_the_hadamard_for_the_target_device():
 
     cr._HADAMARD_CACHE.clear()
     model = _Tiny()
-    target = types.SimpleNamespace(device = "cpu", dtype = torch.bfloat16)
+    # the indexed torch_device wins over the bare "cuda" a DiffusionDeviceTarget keeps in .device
+    target = types.SimpleNamespace(device = "cuda", torch_device = "cpu", dtype = torch.bfloat16)
     tq.apply_runtime_convrot(model, tq.TQ_INT8, "qwen-image-2.1", _filter("qwen-image-2.1"), target = target)
     assert (256, "cpu", torch.bfloat16) in cr._HADAMARD_CACHE
 
