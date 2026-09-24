@@ -51,8 +51,10 @@ zoo_stacked = pytest.importorskip("unsloth_zoo.mxfp4_stacked_experts")
 Mxfp4StackedExperts = zoo_stacked.Mxfp4StackedExperts
 
 try:
-    import compressed_tensors  # noqa: F401
-    HAS_CT = True
+    from compressed_tensors.config import CompressionFormat
+
+    # Releases before MXFP4 (0.12.x, which vllm 0.11.2 pins) reject its config outright.
+    HAS_CT = any(f.value == "mxfp4-pack-quantized" for f in CompressionFormat)
 except Exception:
     HAS_CT = False
 

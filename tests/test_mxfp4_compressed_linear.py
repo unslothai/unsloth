@@ -45,8 +45,10 @@ from unsloth.models.mxfp4_compressed_linear import (
 )
 
 try:
-    import compressed_tensors  # noqa: F401
-    HAS_CT = True
+    from compressed_tensors.config import CompressionFormat
+
+    # Releases before MXFP4 (0.12.x, which vllm 0.11.2 pins) reject its config outright.
+    HAS_CT = any(f.value == "mxfp4-pack-quantized" for f in CompressionFormat)
 except Exception:
     HAS_CT = False
 
