@@ -55,6 +55,7 @@ def budget_bytes() -> int:
         mb = float(raw) if raw else float(_DEFAULT_BUDGET_MB)
     except ValueError:
         mb = float(_DEFAULT_BUDGET_MB)
+        raw = ""  # a malformed override is treated as unset, so the automatic cap still applies
     budget = int(max(0.0, mb) * 1024 * 1024)
     if not raw:
         total = _host_ram_bytes()

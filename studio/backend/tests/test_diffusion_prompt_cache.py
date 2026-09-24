@@ -334,6 +334,8 @@ def test_budget_respects_a_cgroup_memory_limit(monkeypatch):
     assert prompt_cache.budget_bytes() == 32 * 1024 * 1024
     monkeypatch.setenv(prompt_cache._ENV_BUDGET_MB, "100")
     assert prompt_cache.budget_bytes() == 100 * 1024 * 1024
+    monkeypatch.setenv(prompt_cache._ENV_BUDGET_MB, "lots")  # malformed: default, still capped
+    assert prompt_cache.budget_bytes() == 32 * 1024 * 1024
     monkeypatch.delenv(prompt_cache._ENV_BUDGET_MB)
     monkeypatch.setattr(diffusion_memory, "_cgroup_memory_limit_mib", lambda: None)
     host = prompt_cache._host_ram_bytes()  # 0 where sysconf is missing (Windows): no cap
