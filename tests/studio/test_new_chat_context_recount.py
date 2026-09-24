@@ -35,10 +35,11 @@ REFRESH = source_path("studio/frontend/src/features/chat/utils/refresh-context-u
 PROVIDER = source_path("studio/frontend/src/features/chat/runtime-provider.tsx")
 STORE = source_path("studio/frontend/src/features/chat/stores/chat-runtime-store.ts")
 RUNTIME = source_path("studio/frontend/src/features/chat/hooks/use-chat-model-runtime.ts")
+MESSAGE_ORDER = source_path("studio/frontend/src/features/chat/utils/message-order.ts")
 
 TEMP = WORKDIR / "temp" / "new_chat_context_recount"
 
-SOURCES = (REFRESH, PROVIDER, STORE, RUNTIME)
+SOURCES = (REFRESH, PROVIDER, STORE, RUNTIME, MESSAGE_ORDER)
 
 # Every name the emulator can supply to a sliced dependency array.
 BOUND_NAMES = {
@@ -58,10 +59,30 @@ BOUND_NAMES = {
 
 
 def _refresh_module_body() -> str:
-    """Everything in refresh-context-usage.ts after its import block, verbatim."""
+    """Everything in refresh-context-usage.ts after its import block, verbatim.
+
+    The marker is one import, not the last one: anything sorting after
+    "./chat-history-storage" follows it. Those lines are dropped rather than replayed,
+    because the harness supplies those modules itself and an `import` inside harness.ts
+    would resolve against the temp directory, where they do not exist.
+    """
     text = read(REFRESH)
     marker = 'from "./chat-history-storage";'
-    return text[text.index(marker) + len(marker) :]
+    rest = text[text.index(marker) + len(marker) :]
+    lines = rest.split("\n")
+    while lines and (not lines[0].strip() or lines[0].startswith("import ")):
+        lines.pop(0)
+    return "\n" + "\n".join(lines)
+
+
+def _message_order_body() -> str:
+    """message-order.ts verbatim: it takes no imports of its own.
+
+    refresh-context-usage.ts used to carry its own copy of `orderBySelectedBranch`, so
+    the replayed body defined it. Now that it imports the shared one, the harness has to
+    supply it or the recount prices the wrong branch.
+    """
+    return read(MESSAGE_ORDER)
 
 
 def _component_effects(start: str, end: str) -> list[tuple[list[str], str]]:
@@ -85,7 +106,7 @@ def _new_chat_effects() -> list[tuple[list[str], str]]:
 def _thread_recount_effects() -> list[tuple[list[str], str]]:
     return _component_effects(
         "function ThreadContextUsageRecount(",
-        "\n// Exposes the current thread's cancelRun()",
+        "\nfunction CancelRegistrar(",
     )
 
 
@@ -95,7 +116,7 @@ def _store_reducers() -> str:
     checkpoint = slice_between(
         text,
         "setCheckpoint: (modelId, ggufVariant, options) =>",
-        "  // Re-apply the incoming thread's own usage",
+        "  setActiveThreadId: (activeThreadId) =>",
     )
     active = slice_between(
         text, "setActiveThreadId: (activeThreadId) =>", "applyThreadScopedSettings:"
@@ -127,7 +148,7 @@ def _resident_fast_path() -> str:
     return slice_between(
         read(RUNTIME),
         "          const confirmedStatus = await getInferenceStatus().catch(() => null);",
-        "      // Block queue materialization before taking the cancellation snapshot.",
+        "      const lifecycleLease = useChatRuntimeStore",
     )
 
 
@@ -135,8 +156,8 @@ def _history_usage_restore() -> str:
     """The history loader's saved-usage restore and its recount call, verbatim."""
     return slice_between(
         read(PROVIDER),
-        "        // Window check applies only when a local GGUF window is known; external",
-        "        // If any message has a stored parentId, reconstruct the tree so",
+        "        const localLimit = store.loadedIsGguf ? store.loadedContextLength : null;",
+        "        const hasParentIds = msgs.some((m) => m.parentId != null);",
     )
 
 
@@ -565,7 +586,7 @@ def _harness_source() -> str:
     )
     resident = HARNESS_RESIDENT.replace("__FAST_PATH__", _resident_fast_path())
     history = HARNESS_HISTORY.replace("__RESTORE__", _history_usage_restore())
-    return prelude + _refresh_module_body() + render + resident + history
+    return prelude + _message_order_body() + _refresh_module_body() + render + resident + history
 
 
 def _run(script: str) -> dict:
@@ -1070,7 +1091,6 @@ def test_a_loaded_model_reprices_the_open_thread(world_setup, expected_sent, cou
     [
         # Sent mid-count then stopped before any usage, so the snapshot guard cannot see the turn.
         pytest.param(True, None, id = "a_turn_arrives_mid_count"),
-        # Control: the branch the count priced is still the one on screen.
         pytest.param(False, 62, id = "branch_unchanged"),
     ],
 )
@@ -1134,11 +1154,11 @@ def test_a_turn_sent_while_counting_drops_the_count(send_a_turn, expected_total)
 @pytest.mark.parametrize(
     ("running", "grew", "expected_total"),
     [
-        # A run that BEGINS after the count was issued. The entry gate cannot catch this one: it
-        # ran when the thread was idle, so only the publish guard is left to drop the total.
+        # A run that BEGINS after the count was issued. The entry gate cannot catch this one: it ran when the thread was
+        # idle, so only the publish guard is left to drop the total.
         (True, True, None),
-        # Stopped before the count returned, so runningByThreadId is already false and the
-        # usage snapshot is still equal: only the content makes the branch look different.
+        # Stopped before the count returned, so runningByThreadId is already false and the usage snapshot is still
+        # equal: only the content makes the branch look different.
         (False, True, None),
         (False, False, 62),
     ],
@@ -1913,7 +1933,6 @@ def test_an_output_only_audio_gguf_is_never_recounted(model_flags, expected_coun
     [
         # Decoding on the local llama-server: the count would share the process with generation.
         ('{ "thread-a": true }', 0),
-        # A different thread, still the same llama-server.
         ('{ "thread-b": true }', 0),
         # Control: an idle server is what the count is for.
         ("{}", 1),
@@ -1964,7 +1983,7 @@ def test_the_count_is_retried_once_the_run_finishes():
     recount = slice_between(
         src,
         "function ThreadContextUsageRecount(",
-        "\n// Exposes the current thread's cancelRun()",
+        "\nfunction CancelRegistrar(",
     )
     assert "runningByThreadId" in recount, "the effect must observe decoding"
     deps = re.search(r"\}, \[([^\]]*)\]\);", recount, re.S)

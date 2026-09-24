@@ -365,3 +365,85 @@ def test_a_zero_byte_projector_does_not_shadow_a_whole_one(tmp_path: Path):
     whole = _touch(tmp_path / "mmproj-Q8_0.gguf")
 
     assert detect_mmproj_file(str(weight)) == str(whole.resolve())
+
+
+def test_trusted_companion_snapshot_finds_nested_projector(tmp_path: Path):
+    weights = tmp_path / "weights"
+    sibling = tmp_path / "companion"
+    weights.mkdir()
+    (sibling / "vision").mkdir(parents = True)
+    weight = _touch(weights / "Model-Q4_K_M.gguf")
+    projector = _touch(sibling / "vision" / "mmproj-Model-F16.gguf")
+    assert detect_mmproj_file(str(weight), search_root = str(sibling)) is None
+    assert detect_mmproj_file(
+        str(weight), search_root = str(sibling), allow_disjoint_search_root = True
+    ) == str(projector.resolve())
+
+
+def test_a_containing_trusted_root_does_not_recurse_into_a_sibling_quant(tmp_path: Path):
+    """#10599's widening must not reach the quant next door.
+
+    ``allow_disjoint_search_root`` used to set ``recursive_root`` for every root, including
+    the one holding the weights, which is the case the incremental walk at the top of
+    detect_mmproj_file exists to confine. Every other quant subdirectory of the snapshot
+    became a candidate, and since none of them shares a prefix with the weight stem they
+    all tie at zero, so the shorter-stem rule handed UD-Q4_K_XL the IQ1_S projector.
+    """
+    snapshot = tmp_path / "snapshots" / "rev"
+    weight = _touch(snapshot / "UD-Q4_K_XL" / "Qwen3-VL-235B-UD-Q4_K_XL.gguf")
+    mine = _touch(snapshot / "UD-Q4_K_XL" / "mmproj-UD-Q4_K_XL.gguf")
+    _touch(snapshot / "UD-IQ1_S" / "Qwen3-VL-235B-UD-IQ1_S.gguf")
+    _touch(snapshot / "UD-IQ1_S" / "mmproj-UD-IQ1_S.gguf")
+
+    assert detect_mmproj_file(
+        str(weight), search_root = str(snapshot), allow_disjoint_search_root = True
+    ) == str(mine.resolve())
+
+
+def test_a_containing_trusted_root_keeps_its_own_root_level_projector(tmp_path: Path):
+    """The same guard, where the only correct projector sits at the snapshot root.
+
+    The ancestor walk still has to reach it, and a foreign quant's projector must not win
+    on a longer shared prefix just because the recursion made it a candidate.
+    """
+    snapshot = tmp_path / "snapshots" / "rev"
+    weight = _touch(snapshot / "UD-Q4_K_XL" / "vision-model-UD-Q4_K_XL.gguf")
+    root_level = _touch(snapshot / "mmproj-F16.gguf")
+    _touch(snapshot / "UD-IQ1_S" / "mmproj-vision-model-UD-Q4_K_XL-F16.gguf")
+
+    assert detect_mmproj_file(
+        str(weight), search_root = str(snapshot), allow_disjoint_search_root = True
+    ) == str(root_level.resolve())
+
+
+def test_finds_the_projector_hermes_stages_under_assets(tmp_path: Path):
+    """Hermes keeps a download's mmproj in models/assets/ so its router never lists it as a
+    model; the weight sits one level up. A sibling-only walk loads Qwen3.8-27B text-only."""
+    model = _touch(tmp_path / "Qwen3.8-27B-UD-Q4_K_M.gguf")
+    mmproj = _touch(tmp_path / "assets" / "mmproj-Qwen3.8-27B-BF16.gguf")
+    assert detect_mmproj_file(str(model)) == str(mmproj.resolve())
+
+
+def test_assets_holding_several_projectors_still_pairs_by_family(tmp_path: Path):
+    """One assets/ dir serves every Hermes download, so it fills with projectors for
+    different families. The family gate must keep picking the right one."""
+    model = _touch(tmp_path / "gemma-4-26B-A4B-it-UD-Q4_K_M.gguf")
+    _touch(tmp_path / "assets" / "mmproj-Qwen3.8-27B-BF16.gguf")
+    gemma = _touch(tmp_path / "assets" / "mmproj-gemma-4-26B-A4B-it-BF16.gguf")
+    assert detect_mmproj_file(str(model)) == str(gemma.resolve())
+
+
+def test_assets_holding_two_same_family_projectors_pairs_by_name(tmp_path: Path):
+    """Two Qwen downloads share one assets/ dir. Without header metadata both projectors
+    survive the family gate, so the name tie-break has to read past the mmproj- marker;
+    comparing raw stems ties at zero and the shorter name (the wrong model) won."""
+    model = _touch(tmp_path / "Qwen3.6-35B-A3B-UD-Q4_K_M.gguf")
+    _touch(tmp_path / "assets" / "mmproj-Qwen3.8-27B-BF16.gguf")
+    mine = _touch(tmp_path / "assets" / "mmproj-Qwen3.6-35B-A3B-BF16.gguf")
+    assert detect_mmproj_file(str(model)) == str(mine.resolve())
+
+
+def test_a_draft_model_under_assets_is_not_mistaken_for_a_projector(tmp_path: Path):
+    model = _touch(tmp_path / "Qwen3.8-27B-UD-Q4_K_M.gguf")
+    _touch(tmp_path / "assets" / "Qwen3.8-0.8B-draft-Q4_K_M.gguf")
+    assert detect_mmproj_file(str(model)) is None

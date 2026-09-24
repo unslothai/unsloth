@@ -6,6 +6,8 @@ export {
   downloadManager,
   finishExternalJob,
   jobKeyOf,
+  pendingDrafterPresentation,
+  type StagedDownloadProgress,
   startExternalJob,
   subscribeJobListeners,
   type TransportMode,
@@ -23,6 +25,7 @@ export {
   useHubModelSearch,
 } from "./hooks/use-hub-model-search";
 export { useHubInfiniteScroll } from "./hooks/use-hub-infinite-scroll";
+export type { CapabilityKey } from "./lib/model-capabilities";
 export { useLatestRef } from "./hooks/use-latest-ref";
 export { useOnlineStatus } from "./hooks/use-online-status";
 export {
@@ -78,7 +81,6 @@ export {
   localSourceLabel,
   normalizeCapabilities,
   normalizeModelFormat,
-  normalizeRuntime,
   normalizeTimestamp,
   partialSetFromRows,
   removeScanFolder,
@@ -105,6 +107,7 @@ export { hubTokenHeader } from "./lib/hub-token-header";
 export {
   ggufVariantsMatch,
   isOllamaLinkPath,
+  isOllamaModelId,
   normalizeGgufVariantIdentity,
   normalizeModelIdentity,
   publicModelId,
@@ -112,6 +115,7 @@ export {
 } from "./lib/model-identity";
 export {
   formatBytes,
+  formatRate,
   formatRelativeShort,
   ownerOf,
   repoOf,

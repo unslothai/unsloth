@@ -287,9 +287,7 @@ def test_clear_history_reaps_search_thumbnails_with_a_body(monkeypatch):
     monkeypatch.setattr(chat_history, "_remove_sandboxes", remove_sandboxes)
     monkeypatch.setattr(chat_history, "_cancel_active_generations", lambda _ids: None)
     monkeypatch.setattr(chat_history, "_cancel_research_runs", lambda _request, _ids: None)
-    monkeypatch.setattr(
-        chat_history, "_remove_conversation_archives", lambda _ids, cutoff = None: None
-    )
+    monkeypatch.setattr(chat_history, "_remove_thread_rag_data", lambda _ids, cutoff = None: None)
     request = SimpleNamespace(app = SimpleNamespace(state = SimpleNamespace()))
 
     asyncio.run(
@@ -405,6 +403,40 @@ def test_chat_settings_payload_rejects_junk_per_model_params():
     with pytest.raises(ValidationError):
         chat_history.ChatSettingsPayload.model_validate(
             {"inferenceParamsByModel": {"openai:gpt-x": {"notAParam": 1}}}
+        )
+
+
+def test_conditional_chat_settings_payload_validates_both_sides():
+    payload = chat_history.ConditionalChatSettingsPayload.model_validate(
+        {
+            "expected": {"inferenceParams": {"presencePenalty": 0.0}},
+            "expectedAbsent": ["reasoningEnabled"],
+            "expectedAbsentPaths": [["inferenceParams", "topK"]],
+            "patch": {"inferenceParams": {"presencePenalty": 1.5}},
+        }
+    )
+
+    assert payload.expected.inferenceParams.presencePenalty == 0.0
+    assert payload.expectedAbsent == ["reasoningEnabled"]
+    assert payload.expectedAbsentPaths == [["inferenceParams", "topK"]]
+    assert payload.patch.inferenceParams.presencePenalty == 1.5
+
+    with pytest.raises(ValidationError):
+        chat_history.ConditionalChatSettingsPayload.model_validate(
+            {
+                "expected": {},
+                "expectedAbsent": ["unknownSetting"],
+                "patch": {},
+            }
+        )
+
+    with pytest.raises(ValidationError):
+        chat_history.ConditionalChatSettingsPayload.model_validate(
+            {
+                "expected": {},
+                "expectedAbsentPaths": [["unknownSetting", "topK"]],
+                "patch": {},
+            }
         )
 
 
@@ -698,6 +730,118 @@ def test_fork_thread_404_when_branch_message_missing(monkeypatch):
     assert exc.value.status_code == 404
 
 
+@pytest.mark.parametrize("same_timestamp", [False, True])
+def test_fork_thread_resolves_the_tip_when_no_message_is_given(same_timestamp):
+    from storage import studio_db
+
+    studio_db.upsert_chat_thread(
+        {"id": "src", "title": "T", "modelType": "base", "modelId": "local", "createdAt": 1}
+    )
+    for message_id, parent_id, role, created_at in (
+        ("root", None, "user", 1),
+        ("z-user", "root", "user", 2),
+        ("a-reply", "z-user", "assistant", 2 if same_timestamp else 3),
+    ):
+        message = _message(message_id, "src").model_dump()
+        message.update({"createdAt": created_at, "parentId": parent_id, "role": role})
+        studio_db.upsert_chat_message(message)
+    response = chat_history.fork_thread(
+        thread_id = "src",
+        payload = chat_history.ChatForkRequest(newThreadId = "new", createdAt = 4),
+        current_subject = "test-user",
+    )
+    assert response.thread.forkedFromMessageId == "a-reply"
+    assert len(response.messages) == 3
+    assert any(message.role == "assistant" for message in response.messages)
+
+
+def test_fork_thread_404_when_the_thread_has_no_messages():
+    from storage import studio_db
+
+    studio_db.upsert_chat_thread(
+        {"id": "src", "title": "T", "modelType": "base", "modelId": "local", "createdAt": 1}
+    )
+    with pytest.raises(HTTPException) as exc:
+        chat_history.fork_thread(
+            thread_id = "src",
+            payload = chat_history.ChatForkRequest(newThreadId = "new", createdAt = 1),
+            current_subject = "test-user",
+        )
+    assert exc.value.status_code == 404
+    assert studio_db.get_chat_thread("new") is None
+
+
+def test_fork_thread_refuses_before_it_resolves_the_tip(monkeypatch):
+    """The generation check runs first, or the tip would be read while it is still moving."""
+    import threading
+
+    from state import active_generations
+
+    monkeypatch.setattr(chat_history, "get_chat_thread", lambda _id: {"id": _id, "title": "T"})
+
+    def _never(_t):
+        raise AssertionError("the tip was read before the generation check")
+
+    monkeypatch.setattr(chat_history, "list_chat_messages", _never)
+    with active_generations.ActiveGeneration(threading.Event(), thread_id = "src"):
+        with pytest.raises(HTTPException) as exc:
+            chat_history.fork_thread(
+                thread_id = "src",
+                payload = chat_history.ChatForkRequest(newThreadId = "new", createdAt = 1),
+                current_subject = "test-user",
+            )
+    assert exc.value.status_code == 409
+
+
+def test_fork_thread_409_while_the_chat_is_generating(monkeypatch):
+    """A fork taken mid-generation ends at a prompt with no answer, or a half-written reply.
+
+    The client checks too, but another tab can start a generation between its snapshot and
+    this request, so the refusal has to live inside the request that forks.
+    """
+    import threading
+
+    from state import active_generations
+
+    monkeypatch.setattr(chat_history, "get_chat_thread", lambda _id: {"id": _id, "title": "T"})
+    with active_generations.ActiveGeneration(threading.Event(), thread_id = "src"):
+        with pytest.raises(HTTPException) as exc:
+            chat_history.fork_thread(
+                thread_id = "src",
+                payload = chat_history.ChatForkRequest(
+                    messageId = "m1",
+                    newThreadId = "new",
+                    createdAt = 1,
+                ),
+                current_subject = "test-user",
+            )
+    assert exc.value.status_code == 409
+    assert "still generating" in str(exc.value.detail)
+
+
+def test_fork_thread_allows_a_fork_of_another_generating_chat(monkeypatch):
+    """Only the chat being forked is refused; a different one generating is no reason to."""
+    import threading
+
+    from state import active_generations
+
+    monkeypatch.setattr(chat_history, "get_chat_thread", lambda _id: {"id": _id, "title": "T"})
+    monkeypatch.setattr(chat_history, "get_chat_message", lambda _t, _m: None)
+    with active_generations.ActiveGeneration(threading.Event(), thread_id = "other"):
+        with pytest.raises(HTTPException) as exc:
+            chat_history.fork_thread(
+                thread_id = "src",
+                payload = chat_history.ChatForkRequest(
+                    messageId = "missing",
+                    newThreadId = "new",
+                    createdAt = 1,
+                ),
+                current_subject = "test-user",
+            )
+    # Past the generation gate, refused later for the missing branch message.
+    assert exc.value.status_code == 404
+
+
 def test_fork_thread_happy_path(monkeypatch):
     source = {
         "id": "src",
@@ -715,7 +859,7 @@ def test_fork_thread_happy_path(monkeypatch):
     forked = {
         **source,
         "id": "new",
-        "title": "fork · Original",
+        "title": "Original (1)",
         "createdAt": 2,
         "forkedFromThreadId": "src",
         "forkedFromMessageId": "m1",
@@ -757,7 +901,7 @@ def test_fork_thread_happy_path(monkeypatch):
         current_subject = "test-user",
     )
     assert response.thread.id == "new"
-    assert response.thread.title == "fork · Original"
+    assert response.thread.title == "Original (1)"
     assert response.thread.forkedFromThreadId == "src"
     assert response.thread.forkedFromMessageId == "m1"
     assert len(response.messages) == 1
@@ -796,7 +940,7 @@ def test_fork_thread_warns_when_parent_had_container(monkeypatch):
         lambda **_: {
             **source,
             "id": "new",
-            "title": "fork · T",
+            "title": "T (1)",
             "forkedFromThreadId": "src",
             "forkedFromMessageId": "m1",
             "openaiCodeExecContainerId": None,
@@ -863,7 +1007,7 @@ def test_a_clear_does_not_reap_an_image_registered_while_it_was_running(tmp_path
 
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
     monkeypatch.setenv("UNSLOTH_STUDIO_PROJECTS_HOME", str(tmp_path / "Projects"))
-    monkeypatch.setattr(studio_db, "_schema_ready", False)
+    monkeypatch.setattr(studio_db, "_schema_ready", set())
     monkeypatch.setattr(search_images, "_registry", {})
     monkeypatch.setattr(search_images, "_cleared_unservable", set())
     monkeypatch.setattr(search_images, "_cache_dir", lambda: tmp_path / "thumbs")
@@ -905,9 +1049,7 @@ def test_a_clear_does_not_reap_an_image_registered_while_it_was_running(tmp_path
     monkeypatch.setattr(chat_history, "_remove_sandboxes", remove_sandboxes)
     monkeypatch.setattr(chat_history, "_cancel_active_generations", lambda _ids: None)
     monkeypatch.setattr(chat_history, "_cancel_research_runs", lambda _request, _ids: None)
-    monkeypatch.setattr(
-        chat_history, "_remove_conversation_archives", lambda _ids, cutoff = None: None
-    )
+    monkeypatch.setattr(chat_history, "_remove_thread_rag_data", lambda _ids, cutoff = None: None)
     request = SimpleNamespace(app = SimpleNamespace(state = SimpleNamespace()))
 
     studio_db.upsert_chat_thread(_clear_thread_row("before-clear"))
@@ -944,7 +1086,7 @@ def test_replayed_clear_keeps_the_thumbnails_of_a_chat_it_did_not_delete(tmp_pat
 
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
     monkeypatch.setenv("UNSLOTH_STUDIO_PROJECTS_HOME", str(tmp_path / "Projects"))
-    monkeypatch.setattr(studio_db, "_schema_ready", False)
+    monkeypatch.setattr(studio_db, "_schema_ready", set())
 
     reaped: list[str] = []
     monkeypatch.setattr(search_images, "clear_cache", lambda only_ids = None: reaped.append("reaped"))
@@ -955,9 +1097,7 @@ def test_replayed_clear_keeps_the_thumbnails_of_a_chat_it_did_not_delete(tmp_pat
     monkeypatch.setattr(chat_history, "_remove_sandboxes", remove_sandboxes)
     monkeypatch.setattr(chat_history, "_cancel_active_generations", lambda _ids: None)
     monkeypatch.setattr(chat_history, "_cancel_research_runs", lambda _request, _ids: None)
-    monkeypatch.setattr(
-        chat_history, "_remove_conversation_archives", lambda _ids, cutoff = None: None
-    )
+    monkeypatch.setattr(chat_history, "_remove_thread_rag_data", lambda _ids, cutoff = None: None)
     request = SimpleNamespace(app = SimpleNamespace(state = SimpleNamespace()))
 
     def clear():
@@ -1000,7 +1140,7 @@ def test_the_replay_bit_comes_from_the_clear_transaction(monkeypatch, tmp_path):
 
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
     monkeypatch.setenv("UNSLOTH_STUDIO_PROJECTS_HOME", str(tmp_path / "Projects"))
-    monkeypatch.setattr(studio_db, "_schema_ready", False)
+    monkeypatch.setattr(studio_db, "_schema_ready", set())
 
     reaps: list[str] = []
     reap_lock = threading.Lock()
@@ -1017,9 +1157,7 @@ def test_the_replay_bit_comes_from_the_clear_transaction(monkeypatch, tmp_path):
     monkeypatch.setattr(chat_history, "_remove_sandboxes", remove_sandboxes)
     monkeypatch.setattr(chat_history, "_cancel_active_generations", lambda _ids: None)
     monkeypatch.setattr(chat_history, "_cancel_research_runs", lambda _request, _ids: None)
-    monkeypatch.setattr(
-        chat_history, "_remove_conversation_archives", lambda _ids, cutoff = None: None
-    )
+    monkeypatch.setattr(chat_history, "_remove_thread_rag_data", lambda _ids, cutoff = None: None)
     request = SimpleNamespace(app = SimpleNamespace(state = SimpleNamespace()))
 
     studio_db.upsert_chat_thread(_clear_thread_row("before-clear"))
@@ -1093,7 +1231,7 @@ def test_a_chat_created_in_the_gap_after_the_clear_keeps_its_images(monkeypatch,
 
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
     monkeypatch.setenv("UNSLOTH_STUDIO_PROJECTS_HOME", str(tmp_path / "Projects"))
-    monkeypatch.setattr(studio_db, "_schema_ready", False)
+    monkeypatch.setattr(studio_db, "_schema_ready", set())
     monkeypatch.setattr(search_images, "_registry", {})
     monkeypatch.setattr(search_images, "_cache_dir", lambda: tmp_path / "thumbs")
     (tmp_path / "thumbs").mkdir(parents = True, exist_ok = True)
@@ -1107,9 +1245,7 @@ def test_a_chat_created_in_the_gap_after_the_clear_keeps_its_images(monkeypatch,
     monkeypatch.setattr(chat_history, "_remove_sandboxes", remove_sandboxes)
     monkeypatch.setattr(chat_history, "_cancel_active_generations", lambda _ids: None)
     monkeypatch.setattr(chat_history, "_cancel_research_runs", lambda _request, _ids: None)
-    monkeypatch.setattr(
-        chat_history, "_remove_conversation_archives", lambda _ids, cutoff = None: None
-    )
+    monkeypatch.setattr(chat_history, "_remove_thread_rag_data", lambda _ids, cutoff = None: None)
 
     # The other tab's image, registered in the gap. Straight into the registry: this is about
     # WHEN the id becomes visible to the snapshot, not about how it got there.
@@ -1159,12 +1295,15 @@ def test_the_clear_and_its_image_snapshot_share_one_threadpool_hop():
     source = inspect.getsource(chat_history.clear_history)
     assert source.count("run_in_threadpool(_clear_rows)") == 1
     assert (
-        "run_in_threadpool(snapshot_and_fence_registrations)" not in source
+        "run_in_threadpool(_snapshot_chat_images)" not in source
     ), "a second hop for the snapshot reopens the gap the first one closed"
     body = source.split("def _clear_rows(", 1)[1].split("\n    # The clear reports", 1)[0]
     assert (
-        "snapshot_and_fence_registrations()" in body
+        "_snapshot_chat_images()" in body
     ), "the snapshot belongs inside the clear's hop, and it carries the registration fence"
+    assert "snapshot_and_fence_registrations()" in inspect.getsource(
+        chat_history._snapshot_chat_images
+    )
 
 
 def test_a_replay_finishes_a_reap_the_original_clear_died_before_running(monkeypatch, tmp_path):
@@ -1185,7 +1324,7 @@ def test_a_replay_finishes_a_reap_the_original_clear_died_before_running(monkeyp
 
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
     monkeypatch.setenv("UNSLOTH_STUDIO_PROJECTS_HOME", str(tmp_path / "Projects"))
-    monkeypatch.setattr(studio_db, "_schema_ready", False)
+    monkeypatch.setattr(studio_db, "_schema_ready", set())
     monkeypatch.setattr(search_images, "_registry", {})
     monkeypatch.setattr(search_images, "_cache_dir", lambda: tmp_path / "thumbs")
     (tmp_path / "thumbs").mkdir(parents = True, exist_ok = True)
@@ -1213,9 +1352,7 @@ def test_a_replay_finishes_a_reap_the_original_clear_died_before_running(monkeyp
     monkeypatch.setattr(chat_history, "_remove_sandboxes", remove_sandboxes)
     monkeypatch.setattr(chat_history, "_cancel_active_generations", lambda _ids: None)
     monkeypatch.setattr(chat_history, "_cancel_research_runs", lambda _request, _ids: None)
-    monkeypatch.setattr(
-        chat_history, "_remove_conversation_archives", lambda _ids, cutoff = None: None
-    )
+    monkeypatch.setattr(chat_history, "_remove_thread_rag_data", lambda _ids, cutoff = None: None)
     request = SimpleNamespace(app = SimpleNamespace(state = SimpleNamespace()))
 
     def clear():
@@ -1263,7 +1400,7 @@ def test_a_plain_replay_with_nothing_outstanding_still_reaps_nothing(monkeypatch
 
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
     monkeypatch.setenv("UNSLOTH_STUDIO_PROJECTS_HOME", str(tmp_path / "Projects"))
-    monkeypatch.setattr(studio_db, "_schema_ready", False)
+    monkeypatch.setattr(studio_db, "_schema_ready", set())
     monkeypatch.setattr(search_images, "_registry", {})
     monkeypatch.setattr(search_images, "_cache_dir", lambda: tmp_path / "thumbs")
     (tmp_path / "thumbs").mkdir(parents = True, exist_ok = True)
@@ -1277,9 +1414,7 @@ def test_a_plain_replay_with_nothing_outstanding_still_reaps_nothing(monkeypatch
     monkeypatch.setattr(chat_history, "_remove_sandboxes", remove_sandboxes)
     monkeypatch.setattr(chat_history, "_cancel_active_generations", lambda _ids: None)
     monkeypatch.setattr(chat_history, "_cancel_research_runs", lambda _request, _ids: None)
-    monkeypatch.setattr(
-        chat_history, "_remove_conversation_archives", lambda _ids, cutoff = None: None
-    )
+    monkeypatch.setattr(chat_history, "_remove_thread_rag_data", lambda _ids, cutoff = None: None)
     request = SimpleNamespace(app = SimpleNamespace(state = SimpleNamespace()))
 
     def clear():
@@ -1341,3 +1476,114 @@ def test_the_two_conflicts_are_distinguishable_on_the_wire(monkeypatch, error, k
 
     assert exc_info.value.status_code == 409
     assert _conflict_kind(exc_info) == kind
+
+
+def test_compare_and_set_rejects_a_non_finite_number_renderably(monkeypatch):
+    # json.loads accepts a bare NaN, so it reaches validation; echoing it back
+    # would then hit Starlette's allow_nan = False and turn a refused request
+    # into a 500 during rendering.
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    app = FastAPI()
+    app.include_router(chat_history.router, prefix = "/api/chat")
+    app.dependency_overrides[chat_history.get_current_subject] = lambda: "admin"
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/chat/settings/compare-and-set",
+        content = '{"expected": {"inferenceParams": {"temperature": NaN}}, "patch": {}}',
+        headers = {"Content-Type": "application/json"},
+    )
+
+    assert response.status_code == 400
+    assert "NaN" not in response.text
+
+
+def test_fork_route_numbers_the_title_and_reports_the_boundary(tmp_path, monkeypatch):
+    """The whole path, real storage: the name loses the prefix and the divider gets its anchor."""
+    from storage import studio_db
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
+    monkeypatch.setenv("UNSLOTH_STUDIO_PROJECTS_HOME", str(tmp_path / "Projects"))
+    monkeypatch.setattr(studio_db, "_schema_ready", set())
+
+    studio_db.upsert_chat_thread(
+        {"id": "src", "title": "Research notes", "modelType": "base", "createdAt": 1}
+    )
+    studio_db.sync_chat_messages(
+        "src",
+        [
+            {
+                "id": f"m{i}",
+                "threadId": "src",
+                "parentId": None if i == 1 else f"m{i - 1}",
+                "role": "user",
+                "content": [{"type": "text", "text": f"m{i}"}],
+                "createdAt": i,
+            }
+            for i in (1, 2)
+        ],
+    )
+
+    titles = []
+    for i in range(2):
+        response = chat_history.fork_thread(
+            thread_id = "src",
+            payload = chat_history.ChatForkRequest(newThreadId = f"fork-{i}", createdAt = 10 + i),
+            current_subject = "test-user",
+        )
+        titles.append(response.thread.title)
+
+    assert titles == ["Research notes (1)", "Research notes (2)"]
+    assert not any(t.startswith("fork") for t in titles)
+
+    forked = chat_history.fork_thread(
+        thread_id = "src",
+        payload = chat_history.ChatForkRequest(newThreadId = "fork-x", createdAt = 20),
+        current_subject = "test-user",
+    )
+    assert forked.thread.title == "Research notes (3)"
+    # The anchor is this fork's own last inherited message, so the divider lands under it.
+    assert forked.thread.forkBoundaryMessageId == forked.messages[-1].id
+    assert forked.thread.forkBoundaryMessageId not in {"m1", "m2"}
+
+
+def test_fork_title_comes_from_the_row_not_the_route_s_earlier_read(tmp_path, monkeypatch):
+    """A rename landing between the route's read and the write lock must not name the fork."""
+    from storage import studio_db
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
+    monkeypatch.setenv("UNSLOTH_STUDIO_PROJECTS_HOME", str(tmp_path / "Projects"))
+    monkeypatch.setattr(studio_db, "_schema_ready", set())
+
+    studio_db.upsert_chat_thread(
+        {"id": "src", "title": "Renamed", "modelType": "base", "createdAt": 1}
+    )
+    studio_db.sync_chat_messages(
+        "src",
+        [
+            {
+                "id": "m1",
+                "threadId": "src",
+                "parentId": None,
+                "role": "user",
+                "content": [{"type": "text", "text": "hi"}],
+                "createdAt": 1,
+            }
+        ],
+    )
+    # What the route saw before the lock: the name as it was, now stale.
+    monkeypatch.setattr(
+        chat_history,
+        "get_chat_thread",
+        lambda _id: {"id": "src", "title": "Stale name", "modelType": "base", "createdAt": 1},
+    )
+
+    response = chat_history.fork_thread(
+        thread_id = "src",
+        payload = chat_history.ChatForkRequest(newThreadId = "fork-1", createdAt = 2),
+        current_subject = "test-user",
+    )
+    assert response.thread.title == "Renamed (1)"
+    assert "Stale" not in response.thread.title

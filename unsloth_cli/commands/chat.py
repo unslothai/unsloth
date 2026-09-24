@@ -20,6 +20,7 @@ from unsloth_cli._inference import (
     raise_on_streamed_error,
     render_columns,
     resolve_model_config,
+    server_load_opts,
     stream_markdown,
     visible_text,
 )
@@ -31,10 +32,8 @@ _HELP = (
 
 
 def _you_prompt(colors: bool) -> str:
-    # The prompt must go through input(), not a separate print — readline
-    # redraws erase anything they didn't draw, eating the label. GNU readline
-    # wants colors wrapped in \001/\002; libedit (macOS) prints those
-    # literally, so it gets raw ANSI.
+    # Must go through input(): readline redraws erase text they did not draw. GNU readline wants
+    # \001/\002 around colors; libedit (macOS) prints those literally.
     try:
         import readline
     except ImportError:
@@ -66,7 +65,6 @@ def _compare_blocked_reason(model_config) -> Optional[str]:
 def _get_base_load_in_4bit(model_config) -> bool:
     """Determine load_in_4bit for base model based on tuned adapter precision."""
     if not model_config.is_lora or not model_config.path:
-        # Fallback to default if not a LoRA or no path
         return True
 
     try:
@@ -80,25 +78,28 @@ def _get_base_load_in_4bit(model_config) -> bool:
         with open(adapter_cfg_path, encoding = "utf-8") as f:
             adapter_cfg = json.load(f)
 
+        trained_in_4bit = adapter_cfg.get("unsloth_load_in_4bit")
+        if isinstance(trained_in_4bit, bool):
+            return trained_in_4bit
         training_method = adapter_cfg.get("unsloth_training_method")
         if training_method == "lora":
             return False
-        elif training_method == "qlora":
+        if training_method == "qlora":
             return True
-        elif not training_method:
-            # Fallback: check base model name for -bnb-4bit suffix
-            if model_config.base_model and "-bnb-4bit" not in model_config.base_model.lower():
-                return False
-            return True
+        if (
+            not training_method
+            and model_config.base_model
+            and "-bnb-4bit" not in model_config.base_model.lower()
+        ):
+            return False
         return True
     except Exception:
         return True
 
 
 def _compare_needs_second_model() -> bool:
-    # MLX can't toggle the adapter off, so compare loads the base separately.
-    # detect_hardware() would print into the chat (and import torch), so
-    # probe its MLX condition quietly: Apple Silicon with mlx installed.
+    # MLX cannot toggle the adapter off, so compare loads the base separately; probe MLX quietly since
+    # detect_hardware() prints into the chat and imports torch.
     try:
         from studio.backend.utils.hardware import hardware as hw
 
@@ -163,22 +164,47 @@ def _pick_model(console) -> str:
 
 
 def chat(
+    ctx: typer.Context,
     model: Optional[str] = typer.Argument(
         None, help = "HF model id or local path. Omit to pick one of your local models."
     ),
     hf_token: Optional[str] = typer.Option(
         None, "--hf-token", envvar = "HF_TOKEN", help = "Hugging Face token if needed."
     ),
-    temperature: float = typer.Option(0.7, "--temperature"),
-    top_p: float = typer.Option(0.9, "--top-p"),
-    top_k: int = typer.Option(40, "--top-k"),
-    max_new_tokens: int = typer.Option(512, "--max-new-tokens"),
-    repetition_penalty: float = typer.Option(1.1, "--repetition-penalty"),
+    temperature: Optional[float] = typer.Option(
+        None, "--temperature", help = "Unset uses the model's recommended value."
+    ),
+    top_p: Optional[float] = typer.Option(
+        None, "--top-p", help = "Unset uses the model's recommended value."
+    ),
+    top_k: Optional[int] = typer.Option(
+        None, "--top-k", help = "Unset uses the model's recommended value."
+    ),
+    max_new_tokens: Optional[int] = typer.Option(
+        None,
+        "--max-new-tokens",
+        help = "Cap on generated tokens. Unset lets a reply use whatever the "
+        "model's context window leaves free after the conversation.",
+    ),
+    repetition_penalty: Optional[float] = typer.Option(
+        None, "--repetition-penalty", help = "Unset leaves it off (1.0)."
+    ),
     system_prompt: str = typer.Option(
         "", "--system-prompt", help = "Optional system prompt for the conversation."
     ),
-    max_seq_length: int = typer.Option(4096, "--max-seq-length"),
-    load_in_4bit: bool = typer.Option(True, "--load-in-4bit/--no-load-in-4bit"),
+    max_seq_length: int = typer.Option(
+        0,
+        "--max-seq-length",
+        help = "Context length in tokens. 0 takes the checkpoint's trained window on GGUF "
+        "and MLX, and 2048 on the transformers backend. A value that differs from a "
+        "running Unsloth server's reloads the model.",
+    ),
+    load_in_4bit: bool = typer.Option(
+        True,
+        "--load-in-4bit/--no-load-in-4bit",
+        help = "Load the model in 4-bit. Left unset, a running Unsloth server that already "
+        "has this model loaded keeps its precision.",
+    ),
     tensor_parallel: bool = typer.Option(
         False,
         "--tensor-parallel/--no-tensor-parallel",
@@ -287,7 +313,9 @@ def chat(
 
     # Prefer a running Unsloth server: instant starts, model shared with the UI.
     chat_backend = (
-        None if (no_server or is_mlx_distributed) else connect_studio_server(model, **load_opts)
+        None
+        if (no_server or is_mlx_distributed)
+        else connect_studio_server(model, **server_load_opts(ctx, load_opts))
     )
     server_mode = chat_backend is not None
     if server_mode and should_print:
@@ -303,9 +331,7 @@ def chat(
     compare_mode = compare
     messages = []
 
-    # Compare's base column: server mode keeps the tuned model remote and
-    # loads the base locally; local MLX (no adapter toggle) does the same;
-    # local CUDA just toggles the adapter on the one loaded model.
+    # Compare's base column: server mode and local MLX load the base separately; local CUDA just toggles the adapter.
     dual_compare = compare_blocked is None and (server_mode or _compare_needs_second_model())
     base_backend = None
 
@@ -328,8 +354,7 @@ def chat(
                 markup = False,
             )
         try:
-            # Use the same precision as the tuned model for fair comparison
-            base_load_opts = dict(load_opts)  # Copy original options
+            base_load_opts = dict(load_opts)
             base_load_opts["load_in_4bit"] = _get_base_load_in_4bit(model_config)
             base_backend = load_chat_backend(base_id, fresh_backend = True, **base_load_opts)
         except Exception as exc:
@@ -446,7 +471,6 @@ def chat(
                         render_columns(
                             "base", base_text, f"{name} (tuned)", tuned_text, console = console
                         )
-                    # History continues as the tuned model; base is just the reference.
                     answer = tuned_text
                 else:
                     if should_print:
@@ -467,6 +491,17 @@ def chat(
                 if is_mlx_distributed:
                     raise typer.Exit(code = 1)
                 continue
+
+            if should_print and getattr(chat_backend, "reply_hit_token_limit", False):
+                hint = (
+                    "raise or omit --max-new-tokens"
+                    if max_new_tokens is not None
+                    else "/reset to clear the history, or reload with a larger --max-seq-length"
+                )
+                console.print(
+                    f"(reply stopped at the token limit — {hint})",
+                    style = "bright_black",
+                )
 
             messages.append(
                 {"role": "assistant", "content": visible_text(answer, show_thinking = False)}

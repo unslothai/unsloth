@@ -66,34 +66,30 @@ class StreamCostInstrument(_PageInstrument):
         self._overhead_ms = 0.0
 
     def start_cell(self, cell: Cell) -> None:
-        # PER CELL, like every other instrument that declares overhead (heap.py, tracing.py,
-        # coverage.py all zero theirs here). One instrument instance serves the whole session, so
-        # an accumulator carried across cells reports cell k's overhead as the sum of cells 1..k.
-        # The rung ladder is run in ascending order, so that sum climbs with the rung and
-        # `overhead_growth_with_length` -- the gate whose entire job is to catch an instrument
-        # whose cost tracks the treatment -- would read manufactured growth off a flat instrument.
+        # PER CELL, like every other instrument that declares overhead. One instrument instance serves the
+        # whole session, so an accumulator carried across cells reports cell k's overhead as the sum of
+        # cells 1..k; the rung ladder runs ascending, so `overhead_growth_with_length`, the gate whose job
+        # is to catch an instrument whose cost tracks the treatment, would read manufactured growth off a
+        # flat instrument.
         super().start_cell(cell)
         self._overhead_ms = 0.0
         self._chars_open = None
 
     def open(self, window: Window) -> None:
-        # Drain first, so the window starts from zero even if the previous close did not run
-        # (an instrument that raised is disabled for the rest of the cell, and the accumulator
-        # would otherwise carry that cell's remaining traffic into this window).
+        # Drain first, so the window starts from zero even if the previous close did not run (an
+        # instrument that raised is disabled for the rest of the cell, and the accumulator would carry
+        # that cell's remaining traffic into this window).
         self._eval("() => window.__sb.streamcost && window.__sb.streamcost.reset()")
-        # O(1), off the wire. This used to be a `querySelectorAll` over the whole document at
-        # both ends of every window; see the long note in streamcost.js for why that had to go.
+        # O(1), off the wire. This used to be a `querySelectorAll` over the whole document at both ends of
+        # every window; see the note in streamcost.js.
         self._chars_open = self._eval(
             "() => window.__sb.streamcost && window.__sb.streamcost.replyChars()"
         )
-        # THE DENOMINATOR'S INTEGRITY, SAMPLED AT BOTH ENDS. A frame that cannot be parsed --
-        # unrelated `TextDecoder` traffic appended while `pending` holds a split SSE frame, say --
-        # increments a diagnostic and leaves `wireChars` short by an amount nobody can recover.
-        # Counting the failures was not enough on its own: nothing consulted the count, so the
-        # affected `reply_chars_delta` was still accepted as a denominator and every cost-per-
-        # character derived from it came out inflated by an unknown factor. A delta spanning a new
-        # failure, or ending with an unterminated frame still buffered, is now marked unscoreable
-        # at the window that contains it.
+        # THE DENOMINATOR'S INTEGRITY, SAMPLED AT BOTH ENDS. A frame that cannot be parsed increments a
+        # diagnostic and leaves `wireChars` short by an unrecoverable amount. Counting failures was not
+        # enough: nothing consulted the count, so the affected `reply_chars_delta` was still accepted and
+        # every cost-per-character came out inflated. A delta spanning a new failure, or ending with an
+        # unterminated frame still buffered, is now marked unscoreable.
         self._integrity_open = (
             self._eval("() => window.__sb.streamcost && window.__sb.streamcost.wireIntegrity()")
             or {}
@@ -109,26 +105,22 @@ class StreamCostInstrument(_PageInstrument):
                 "unavailable": self.unavailable or "the page did not answer",
                 "stream_cost_attempted": False,
             }
-        # No `force` argument any more. The old DOM read was skipped on windows long past the
-        # stream because it was expensive; this one is a counter read, so it is taken on every
-        # window unconditionally and the "the open-read was skipped, so the pair is half-taken"
-        # case cannot arise.
+        # No `force` argument any more. The old DOM read was skipped on windows long past the stream
+        # because it was expensive; this is a counter read, taken unconditionally, so the half-taken pair
+        # cannot arise.
         chars_close = self._eval("() => window.__sb.streamcost.replyChars()")
         out["stream_cost_attempted"] = True
         out["reply_chars_open"] = self._chars_open
         out["reply_chars_close"] = chars_close
-        # WHERE THE DENOMINATOR CAME FROM, in the payload rather than in this file. A reader
-        # comparing a run recorded before this change with one recorded after is comparing two
-        # different quantities -- the growth of the last mounted message against the characters
-        # delivered to the page -- and nothing else in the row would tell them so.
+        # WHERE THE DENOMINATOR CAME FROM, in the payload rather than in this file: a reader comparing
+        # runs recorded before and after this change is comparing the growth of the last mounted message
+        # against the characters delivered to the page.
         out["reply_chars_source"] = "sse_wire"
-        # ABOUT THE DECODER THAT WAS PENDING AT THE OPEN, named rather than assumed. The refusal
-        # below pairs a buffer with a flush, and the two were read at different scopes: the buffer
-        # belonged to one decoder, the flush counter was page-wide. Since `send_turn` follows
-        # `stop_generation` in every shipped schedule, an abort's orphaned half frame was routinely
-        # paired with a carried flush produced by the NEW response's own split, refusing a window
-        # that had delivered every one of its characters. Naming the open's decoder makes the pair
-        # a statement about one response.
+        # ABOUT THE DECODER THAT WAS PENDING AT THE OPEN, named rather than assumed. The refusal below
+        # pairs a buffer with a flush, and the two were read at different scopes: the buffer belonged to
+        # one decoder, the flush counter was page-wide. Since `send_turn` follows `stop_generation` in
+        # every shipped schedule, an abort's orphaned half frame was routinely paired with a carried
+        # flush from the NEW response's split, refusing a window that had delivered every character.
         integrity = (
             self._eval(
                 "(id) => window.__sb.streamcost.wireIntegrity(id)",
@@ -138,25 +130,19 @@ class StreamCostInstrument(_PageInstrument):
         )
         failures = (integrity.get("failures") or 0) - (self._integrity_open.get("failures") or 0)
         residual = integrity.get("pending_chars") or 0
-        # AND THE OTHER END OF THE SAME SPLIT. `pending` is not cleared by `reset()` -- it cannot
-        # be, it holds half a frame -- so a frame the socket cut across a window boundary is still
-        # buffered when the NEXT window opens. Its suffix arrives inside that window, the parser
-        # adds the WHOLE frame's characters there and empties the buffer, and the close reading
-        # then sees no failures and no residual and calls the window scoreable. Part of its
-        # denominator was delivered before it opened. The window that closed on the split is
-        # already refused by `residual`; this refuses its partner, and the two together are what
-        # make `reply_chars_delta` mean "characters delivered IN this window" rather than
-        # "characters counted in this window".
-        #
-        # AND IT IS THE FLUSH, NOT THE BUFFER, THAT MAKES THE DELTA WRONG. `open()` samples the
-        # integrity before the action has created the response it is about to measure, so the
-        # buffer it sees can belong to a response that is already over: `stop_generation` exists to
-        # cut a socket mid-frame and `send_turn` follows it in every shipped schedule. That half
-        # frame is never completed and never counted anywhere, so it takes nothing out of this
-        # window's delta -- refusing on its presence alone threw away the one stream-cost reading
-        # the send_turn window has. `carried_flushes` counts the completions of frames that were
-        # already buffered when the decode began, so the pair "a buffer was pending at the open"
-        # and "a carried frame was counted inside the window" is what the refusal now needs.
+        # AND THE OTHER END OF THE SAME SPLIT. `pending` is not cleared by `reset()` (it holds half a
+        # frame) so a frame cut across a window boundary is still buffered when the NEXT window opens;
+        # its suffix arrives inside that window, the parser adds the WHOLE frame's characters there, and
+        # the close sees no failures and calls the window scoreable although part of its denominator was
+        # delivered before it opened. The window that closed on the split is already refused by
+        # `residual`; this refuses its partner, and together they make `reply_chars_delta` mean
+        # 'delivered IN this window'.
+        # AND IT IS THE FLUSH, NOT THE BUFFER, THAT MAKES THE DELTA WRONG. `open()` samples integrity
+        # before the action has created the response, so the buffer it sees can belong to a response
+        # that is already over: `stop_generation` cuts a socket mid-frame and `send_turn` follows it.
+        # That half frame is never completed or counted, so refusing on its presence alone threw away
+        # the one stream-cost reading the send_turn window has. `carried_flushes` counts completions of
+        # frames already buffered when the decode began, so the refusal needs both halves of the pair.
         pending_at_open = self._integrity_open.get("pending_chars") or 0
         carried = (integrity.get("carried_flushes") or 0) - (
             self._integrity_open.get("carried_flushes") or 0
@@ -192,13 +178,10 @@ class StreamCostInstrument(_PageInstrument):
                 "than the idle gap when the window opened"
             )
         elif chars_close < self._chars_open:
-            # NOW UNREACHABLE, AND KEPT ANYWAY. The wire counter is cumulative and monotonic, so
-            # it cannot go backwards; if it ever does, the instrument has been reset underneath
-            # itself and the delta is meaningless. Under the old DOM reading this branch fired
-            # legitimately and often: `send_turn` starts a new assistant message and
-            # `thread_reopen` rebuilds the thread, so the LAST message was routinely shorter at
-            # the close of a window than at its open, and those windows lost their denominator
-            # for a reason that had nothing to do with streaming.
+            # NOW UNREACHABLE, AND KEPT ANYWAY: the wire counter is cumulative and monotonic, so going
+            # backwards means the instrument was reset underneath itself and the delta is meaningless. Under
+            # the old DOM reading this fired legitimately and often, because `send_turn` starts a new
+            # assistant message and `thread_reopen` rebuilds the thread.
             out["reply_chars_delta"] = None
             out["reply_chars_delta_reason"] = (
                 f"the wire character counter went backwards, from {self._chars_open} to "
@@ -211,18 +194,13 @@ class StreamCostInstrument(_PageInstrument):
 
         self._overhead_ms += float(out.get("overhead_ms") or 0.0)
 
-        # THE CLOSE-SIDE SCAN IS NOT FREE AND WAS NOT COUNTED. `read()` snapshots `overhead_ms`
-        # into its result and then calls `reset()`, so the `replyChars()` above -- which at close
-        # is FORCED whenever the window carried traffic, and is the `querySelectorAll` that is
-        # O(the whole DOM) rather than O(the reply) -- accumulated into a page-side total that
-        # nothing ever read: the next `open()` begins by resetting it. Exactly half of every
-        # window's boundary scans were therefore missing from the one number whose job is to make
-        # the level 0 claim checkable from the payload rather than from a docstring, and the half
-        # that was missing is the rung-dependent half. Drained here, after the scan, rather than
-        # by reordering the pair: the close read needs `force`, and `force` is
-        # `streaming_observed`, which only `read()` can answer. Nothing else is lost by the second
-        # drain -- every other accumulator it clears was already snapshotted above, and `open()`
-        # clears them again before the next window.
+        # THE CLOSE-SIDE SCAN IS NOT FREE AND WAS NOT COUNTED. `read()` snapshots `overhead_ms` and then
+        # calls `reset()`, so the `replyChars()` above (forced at close whenever the window carried
+        # traffic, and O(the whole DOM)) accumulated into a page-side total nothing ever read, since the
+        # next `open()` resets it. Half of every window's boundary scans were missing from the one number
+        # that makes the level 0 claim checkable, and the missing half is the rung-dependent one. Drained
+        # here rather than by reordering the pair, because the close read needs `force`, which only
+        # `read()` can answer.
         tail = self._eval("() => window.__sb.streamcost.read(0)")
         close_scan_ms = float(tail.get("overhead_ms") or 0.0) if isinstance(tail, dict) else 0.0
         self._overhead_ms += close_scan_ms
@@ -233,16 +211,12 @@ class StreamCostInstrument(_PageInstrument):
         return out
 
     def end_cell(self, cell: Cell) -> Optional[dict]:
-        # Declared even though level 0 is not obliged to: the whole argument for calling this
-        # level 0 is that its cost does not grow with the rung, and a claim like that should be
-        # checkable from the payload rather than from this docstring.
-        #
-        # THE ONE DOM READ, and it happens HERE, which is after the last window of the cell has
-        # closed and before the next cell's first one opens. Its cost is charged to no window and
-        # therefore to no arm. It exists because the wire count and the DOM count answer different
-        # questions -- what the app was sent, and what it rendered -- and their disagreement is
-        # the cheapest available check that a windowed arm is dropping text rather than merely
-        # not mounting it.
+        # Declared even though level 0 is not obliged to: the whole argument for calling this level 0 is
+        # that its cost does not grow with the rung, and that should be checkable from the payload.
+        # THE ONE DOM READ, after the cell's last window closed and before the next cell's first opens, so
+        # its cost is charged to no window and no arm. It exists because the wire count and the DOM count
+        # answer different questions, what the app was sent and what it rendered, and their disagreement
+        # is the cheapest check that a windowed arm is dropping text rather than merely not mounting it.
         wire = self._eval("() => window.__sb.streamcost.wireStats()") or {}
         dom_chars = self._eval("() => window.__sb.streamcost.replyCharsDom(true)")
         return {

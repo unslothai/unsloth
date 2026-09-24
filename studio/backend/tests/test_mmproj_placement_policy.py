@@ -28,6 +28,7 @@ from core.inference.llama_cpp import (
     _AUTO_OFFLOAD_CTX,
     _resolved_mmproj_offload,
 )
+import utils.models.gguf_metadata as _meta
 from models.inference import InferenceStatusResponse, LoadResponse
 from routes.inference import (
     _estimate_gguf_required_gb,
@@ -57,6 +58,23 @@ def _write_gguf(path: Path) -> Path:
     return path
 
 
+def _write_drafter_gguf(path: Path, *, with_token_embd: bool = True) -> Path:
+    import numpy as np
+    from gguf import GGUFWriter
+
+    writer = GGUFWriter(str(path), "qwen35")
+    names = ["output.weight", "blk.64.nextn.eh_proj.weight"]
+    if with_token_embd:
+        names += ["token_embd.weight", "output_norm.weight"]
+    for name in names:
+        writer.add_tensor(name, np.zeros((2, 2), dtype = np.float32))
+    writer.write_header_to_file()
+    writer.write_kv_data_to_file()
+    writer.write_tensors_to_file()
+    writer.close()
+    return path
+
+
 def _backend(
     tmp_path: Path,
     *,
@@ -75,7 +93,7 @@ def _backend(
     backend = LlamaCppBackend()
     gguf = _write_gguf(tmp_path / "model.gguf")
     mmproj = _write_gguf(tmp_path / "mmproj-F16.gguf")
-    drafter = _write_gguf(tmp_path / "mtp.gguf")
+    drafter = _write_drafter_gguf(tmp_path / "mtp.gguf")
 
     def read_metadata(_path):
         backend._context_length = native_ctx
@@ -453,8 +471,6 @@ def test_the_vision_switch_does_not_take_audio_only_projectors_away(
     off there and must leave it alone. A projector serving both modalities is
     still suppressed, because llama.cpp cannot load one modality without the
     other, and the switch is the user asking for the VRAM back."""
-    import utils.models.gguf_metadata as _meta
-
     backend, gguf = _backend(tmp_path, memory = [(0, 7_600, 8_192)])
     with patch.object(_meta, "mmproj_capabilities", lambda _p: (has_audio, accepts_image)):
         cmd = _launch(backend, gguf, disable_vision = True)["cmd"]
@@ -539,8 +555,6 @@ def test_a_remembered_mmproj_auto_does_not_survive_the_vision_switch(tmp_path):
 def test_an_audio_only_projector_is_not_taken_away_by_the_auto_override(tmp_path):
     """The override exists to stop a projector coming back. An audio-only one is kept
     on purpose, so --no-mmproj-auto must not follow it out the door."""
-    import utils.models.gguf_metadata as _meta
-
     backend, gguf = _backend(tmp_path, memory = [(0, 7_600, 8_192)])
     with patch.object(_meta, "mmproj_capabilities", lambda _p: (True, False)):
         cmd = _launch(backend, gguf, disable_vision = True, extra_args = ["--mmproj-auto"])["cmd"]
@@ -553,8 +567,6 @@ def test_an_audio_only_projector_does_not_blame_the_switch_for_images(tmp_path):
     """vision_disabled_by_user drives the composer's "you turned it off" message, so
     on a model with no image encoder it would promise a capability that turning the
     switch back on cannot deliver."""
-    import utils.models.gguf_metadata as _meta
-
     backend, gguf = _backend(tmp_path, memory = [(0, 7_600, 8_192)])
     with patch.object(_meta, "mmproj_capabilities", lambda _p: (True, False)):
         _launch(backend, gguf, disable_vision = True)
@@ -569,8 +581,6 @@ def test_the_training_guard_still_charges_an_audio_only_projector(tmp_path):
     let the guard admit a chat load the running training job cannot afford, which
     is the direction that costs someone else's job rather than merely annoying
     this user."""
-    import utils.models.gguf_metadata as _meta
-
     model = tmp_path / "model.gguf"
     model.write_bytes(b"\x00" * (4 * MIB))
     mmproj = tmp_path / "mmproj-F16.gguf"
@@ -769,8 +779,6 @@ def test_the_vision_switch_does_not_record_an_inherited_audio_encoder(tmp_path, 
     cannot load half of it, so switching vision off takes the audio with it."""
     backend, gguf = _ambient_mmproj(tmp_path, monkeypatch)
 
-    import utils.models.gguf_metadata as _meta
-
     with patch.object(_meta, "mmproj_capabilities", lambda _p: (True, True)):
         result = _launch(backend, gguf, disable_vision = True)
 
@@ -786,8 +794,6 @@ def test_the_vision_switch_keeps_an_inherited_audio_only_encoder(tmp_path, monke
     the loss was silent on both sides.
     """
     backend, gguf = _ambient_mmproj(tmp_path, monkeypatch)
-
-    import utils.models.gguf_metadata as _meta
 
     with patch.object(_meta, "mmproj_capabilities", lambda _p: (True, False)):
         result = _launch(backend, gguf, disable_vision = True)
@@ -806,8 +812,6 @@ def test_an_inherited_projector_that_reads_images_still_goes(tmp_path, monkeypat
     """The asymmetry is deliberate: only a readable audio-only declaration is kept.
     An image-capable one is exactly what the switch is for."""
     backend, gguf = _ambient_mmproj(tmp_path, monkeypatch)
-
-    import utils.models.gguf_metadata as _meta
 
     with patch.object(_meta, "mmproj_capabilities", lambda _p: (False, True)):
         result = _launch(backend, gguf, disable_vision = True)
@@ -1027,7 +1031,7 @@ _CC_PER_TOKEN = 1536  # 6 MiB at 4096, the rate the bundled estimator produces
 def _split_rate_backend(tmp_path, *, memory, **kwargs):
     backend, gguf = _backend(tmp_path, memory = memory, **kwargs)
     backend._compute_buffer_ctx_bytes = (
-        lambda n_ctx, n_ubatch = None, cache_type_kv = None, *, layer_split = False: (
+        lambda n_ctx, n_ubatch = None, cache_type_kv = None, *, layer_split = False, **_kw: (
             n_ctx * _CC_PER_TOKEN * (LlamaCppBackend._CTX_COMPUTE_SPLIT_MULT if layer_split else 1)
         )
     )
@@ -1321,8 +1325,6 @@ def test_the_guard_charges_a_projector_only_the_environment_names(tmp_path, monk
     bare = _estimate_gguf_required_gb(config, disable_vision = True)
     monkeypatch.setenv("LLAMA_ARG_MMPROJ", str(ambient))
 
-    import utils.models.gguf_metadata as _meta
-
     with patch.object(_meta, "mmproj_capabilities", lambda _p: (True, False)):
         charged = _estimate_gguf_required_gb(config, disable_vision = True)
     # An image-capable one is scrubbed out of the child, so it must stay uncharged.
@@ -1367,8 +1369,6 @@ def test_a_suppressed_image_projector_hands_the_budget_to_the_inherited_one(tmp_
     configured.write_bytes(b"\x00" * (1 * MIB))
     ambient = tmp_path / "ambient-mmproj.gguf"
     ambient.write_bytes(b"\x00" * (2 * MIB))
-
-    import utils.models.gguf_metadata as _meta
 
     def _caps(path):
         # Configured: images, so the switch drops it. Inherited: audio only, so it stays.
@@ -1465,8 +1465,6 @@ def test_a_virtualised_metal_device_does_not_keep_the_inherited_projector(tmp_pa
     backend, gguf = _backend(tmp_path, memory = [])
     backend._resolve_launch_mmproj_path = lambda **_kw: None
 
-    import utils.models.gguf_metadata as _meta
-
     with patch.object(_meta, "mmproj_capabilities", lambda _p: (True, False)):
         result = _launch(backend, gguf, disable_vision = True, extra_args = ["--mmproj-auto"])
 
@@ -1485,8 +1483,6 @@ def test_dropping_an_inherited_image_projector_points_at_the_switch(tmp_path, mo
     monkeypatch.setenv("LLAMA_ARG_MMPROJ", str(ambient))
     backend, gguf = _backend(tmp_path, memory = [(0, 7_600, 8_192)])
     backend._resolve_launch_mmproj_path = lambda **_kw: None
-
-    import utils.models.gguf_metadata as _meta
 
     with patch.object(_meta, "mmproj_capabilities", lambda _p: (False, True)):
         _launch(backend, gguf, disable_vision = True)
@@ -1620,3 +1616,18 @@ def test_a_gpu_drafter_holds_the_deferred_pin_back(tmp_path):
 
     assert "--mmproj" in cmd
     assert "--no-mmproj-offload" not in cmd
+
+
+def test_an_unloadable_drafter_is_not_charged_before_it_is_dropped(tmp_path):
+    """Judged after the fit, the drafter's 2 GiB would push model + drafter + projector
+    past this 10550 MiB budget and pin the projector for a file that is dropped anyway."""
+    backend, gguf = _drafter_backend(tmp_path, [(0, 12_470, 24_000)])
+    _write_drafter_gguf(tmp_path / "mtp.gguf", with_token_embd = False)
+    # The harness resolver re-supplies the drafter whatever the load decided.
+    del backend._resolve_launch_mtp_path
+
+    cmd = _launch_with_drafter(backend, gguf, tmp_path)
+
+    assert "--model-draft" not in cmd
+    assert "--no-mmproj-offload" not in cmd
+    assert backend.mtp_draft_suppressed_path == str(tmp_path / "mtp.gguf")

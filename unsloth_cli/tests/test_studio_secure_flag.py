@@ -73,15 +73,13 @@ def _install_run_reexec_capture(monkeypatch):
     captured = []
     monkeypatch.setattr(sys, "prefix", "/nonexistent/outer/venv")
     fake_venv = Path("/fake/studio/venv/unsloth_studio")
-    host_is_windows = studio_mod.platform.system() == "Windows"
-    fake_python = fake_venv / ("Scripts/python.exe" if host_is_windows else "bin/python")
-    monkeypatch.setattr(studio_mod, "_studio_venv_python", lambda: fake_python)
+    monkeypatch.setattr(studio_mod, "_studio_venv_python", lambda: fake_venv / "bin" / "python")
     # A built frontend dist is present so the public-launch UI check passes
     # deterministically (independent of whether the repo dist was built).
     monkeypatch.setattr(
         studio_mod, "_find_frontend_dist", lambda: Path("/fake/studio/frontend/dist")
     )
-    fake_bin = fake_python.parent / ("unsloth.exe" if host_is_windows else "unsloth")
+    fake_bin = fake_venv / "bin" / "unsloth"
     real_is_file = Path.is_file
     monkeypatch.setattr(
         Path,
@@ -95,13 +93,6 @@ def _install_run_reexec_capture(monkeypatch):
         "resolve_tool_policy",
         lambda host, flag, yes, silent: False if flag is None else bool(flag),
     )
-    # This suite asserts what reaches the re-exec'd child's argv. The pre-exposure
-    # password gate is not part of that: on a headless launch it now rotates the
-    # admin password against the real STUDIO_HOME (which this helper does not
-    # isolate) and fails closed under CliRunner's non-tty streams. Neutralise it
-    # here; it has a dedicated suite in test_studio_password_prompt.py.
-    monkeypatch.setattr(studio_mod, "_enforce_password_change_before_exposure", lambda **_kw: None)
-
     monkeypatch.setattr(sys, "platform", "linux")
 
     def fake_execvp(file, argv):
@@ -139,13 +130,6 @@ def _invoke_studio_default(monkeypatch, args):
     monkeypatch.setattr(
         studio_mod, "_find_frontend_dist", lambda: Path("/fake/studio/frontend/dist")
     )
-    # This suite asserts what reaches the re-exec'd child's argv. The pre-exposure
-    # password gate is not part of that: on a headless launch it now rotates the
-    # admin password against the real STUDIO_HOME (which this helper does not
-    # isolate) and fails closed under CliRunner's non-tty streams. Neutralise it
-    # here; it has a dedicated suite in test_studio_password_prompt.py.
-    monkeypatch.setattr(studio_mod, "_enforce_password_change_before_exposure", lambda **_kw: None)
-
     monkeypatch.setattr(sys, "platform", "linux")
 
     def fake_execvp(file, argv):
@@ -353,15 +337,13 @@ def test_run_secure_resolves_tools_against_loopback(monkeypatch):
     studio_mod = _studio()
     monkeypatch.setattr(sys, "prefix", "/nonexistent/outer/venv")
     fake_venv = Path("/fake/studio/venv/unsloth_studio")
-    host_is_windows = studio_mod.platform.system() == "Windows"
-    fake_python = fake_venv / ("Scripts/python.exe" if host_is_windows else "bin/python")
-    monkeypatch.setattr(studio_mod, "_studio_venv_python", lambda: fake_python)
+    monkeypatch.setattr(studio_mod, "_studio_venv_python", lambda: fake_venv / "bin" / "python")
     # A built frontend dist is present so the public-launch UI check passes
     # deterministically (independent of whether the repo dist was built).
     monkeypatch.setattr(
         studio_mod, "_find_frontend_dist", lambda: Path("/fake/studio/frontend/dist")
     )
-    fake_bin = fake_python.parent / ("unsloth.exe" if host_is_windows else "unsloth")
+    fake_bin = fake_venv / "bin" / "unsloth"
     real_is_file = Path.is_file
     monkeypatch.setattr(
         Path,
@@ -369,9 +351,6 @@ def test_run_secure_resolves_tools_against_loopback(monkeypatch):
         lambda self: True if str(self) == str(fake_bin) else real_is_file(self),
     )
     monkeypatch.setattr(sys, "platform", "linux")
-    # Same reason as _install_run_reexec_capture: this asserts which host the tool
-    # policy is resolved against, not the pre-exposure password gate.
-    monkeypatch.setattr(studio_mod, "_enforce_password_change_before_exposure", lambda **_kw: None)
 
     from unsloth_cli import _tool_policy as _tp_mod
 

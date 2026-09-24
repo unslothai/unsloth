@@ -30,13 +30,69 @@ def _source_path(relative_path: str) -> Path:
 
 
 ADAPTER = _source_path("studio/frontend/src/features/chat/api/chat-adapter.ts")
+# Inlined for real, not stubbed: waitForSettledServerStatus raises this gate so an ordinary
+# refresh cannot publish a mid-replacement status as the pick underneath it.
+WAIT_GATE = _source_path("studio/frontend/src/features/chat/lib/server-model-wait.ts")
+
+
+def _wait_gate_source() -> str:
+    """The gate module with its two ponyfill imports dropped; PONYFILLS supplies those."""
+    gate = "\n".join(
+        line
+        for line in WAIT_GATE.read_text(encoding = "utf-8").splitlines()
+        if not line.startswith(
+            (
+                "import ",
+                "  disposableTimeoutSignal,",
+                "  pollSignal,",
+                "  type PollSignal,",
+                '} from "@/features/hub',
+            )
+        )
+    ).replace(": PollSignal", "")
+    assert "export function beginServerModelWait(" in gate
+    return gate
+
+
+# Short so no scenario waits out the real 30s cap; the shipped value is asserted in
+# tests/studio/test_chat_mount_cli_load_adoption.py.
+PONYFILLS = """
+export function disposableTimeoutSignal(_ms: number) {
+  const controller = new AbortController();
+  const timer = setTimeout(
+    () => controller.abort(new DOMException("The operation timed out.", "TimeoutError")),
+    1200,
+  );
+  return { signal: controller.signal, dispose: () => clearTimeout(timer) };
+}
+export function pollSignal(parent: AbortSignal, ms: number) {
+  const timeout = disposableTimeoutSignal(ms);
+  const controller = new AbortController();
+  const abort = (reason: unknown) => {
+    if (!controller.signal.aborted) controller.abort(reason);
+  };
+  const onParent = () => abort(parent.reason);
+  const onTimeout = () => abort(timeout.signal.reason);
+  parent.addEventListener("abort", onParent, { once: true });
+  timeout.signal.addEventListener("abort", onTimeout, { once: true });
+  if (parent.aborted) onParent();
+  return {
+    signal: controller.signal,
+    dispose: () => {
+      parent.removeEventListener("abort", onParent);
+      timeout.signal.removeEventListener("abort", onTimeout);
+      timeout.dispose();
+    },
+  };
+}
+"""
 TEMP = WORKDIR / "temp" / "chat_autoload_failure_gate"
 DEFAULT_MODEL = "unsloth/gemma-4-E2B-it-GGUF"
 GEMMA_REPO = "unsloth/gemma-4-26B-A4B-it-qat-GGUF"
 LOCAL_GGUF_PATH = "/home/john-doe/models/qwen3-1.7b-instruct-q4_k_m.gguf"
 
-# Stubs for everything autoLoadSmallestModel imports; each scenario supplies the cache inventory
-# and how /validate and /load answer per model_path.
+# Stubs for everything autoLoadSmallestModel imports;
+# each scenario supplies the cache inventory and how /validate and /load answer per model_path.
 PREAMBLE = """
 type LastLocalModelKind = "gguf" | "model";
 type GgufVariantDetail = {
@@ -165,9 +221,30 @@ const GPU_LAYERS_AUTO = -1;
 // The sliced region now includes the queue-specific empty-model resolver and
 // visible-state snapshot helpers, so their imported contracts must exist even
 // though these scenarios call autoLoadSmallestModel directly.
+let STATUS_CALLS = 0;
 async function getInferenceStatus() {
-  return { active_model: null };
+  const call = STATUS_CALLS++;
+  if (call < (SCENARIO.statusFailures ?? 0)) {
+    throw new Error("status unavailable");
+  }
+  const loading = SCENARIO.serverLoading ?? [];
+  const clearsAfter = SCENARIO.serverLoadingClearsAfter ?? null;
+  const settled = clearsAfter !== null && call >= clearsAfter;
+  // A replacement keeps the outgoing model resident and reported until the
+  // incoming one lands, so status names both at once.
+  const resident = SCENARIO.serverResident ?? null;
+  const active = settled ? (loading[0] ?? resident) : resident;
+  return {
+    active_model: active,
+    model_identifier: active,
+    loading: settled ? [] : loading,
+  };
 }
+// Defined above the sliced region in chat-adapter.ts, so the slice would call a
+// name the harness lacks. Reached only when the lease is already held, which no
+// scenario here does.
+async function waitForModelReady(_signal?: any) {}
+const window: any = { location: { href: "http://localhost/chat" } };
 function isExternalModelId(value: unknown) {
   return typeof value === "string" && value.startsWith("external::");
 }
@@ -236,16 +313,29 @@ function retainedContextPin(args: any) {
 function makeStore(): any {
   const state: any = {
     hfToken: null,
-    params: { maxSeqLength: 4096, checkpoint: "" },
+    // The visible selection the queued resolver reads; external means the turn
+    // has to resolve a local model of its own.
+    params: { maxSeqLength: 4096, checkpoint: SCENARIO?.visibleCheckpoint ?? "" },
     activeGgufVariant: null,
     activePresetSource: null,
     gpuMemoryMode: "auto",
     selectedGpuIds: null,
     models: [],
+    modelLoading: false,
+    activeThreadEpoch: 0,
+    queuedSettingsEpoch: 0,
+    contextUsage: null,
+    contextUsageByThreadId: {},
     setCheckpoint: () => {},
     setModelRequiresTrustRemoteCode: () => {},
     setParams: (p: any) => { state.params = p; },
     setModels: (m: any[]) => { state.models = m; },
+    beginModelLoading: () => {
+      if (state.modelLoading) return null;
+      state.modelLoading = true;
+      return { id: 1 };
+    },
+    endModelLoading: () => { state.modelLoading = false; },
   };
   return state;
 }
@@ -381,7 +471,13 @@ function mmprojFallbackMessage(reason: string) {
   return `mmproj fallback: ${reason}`;
 }
 
-async function tryAdoptServerActiveModel() { return false; }
+async function tryAdoptServerActiveModel(options: any) {
+  // Record adoption without reproducing store hydration.
+  const id = options?.status?.active_model;
+  if (!id) return false;
+  EVENTS.push({ kind: "adoptServerModel", id });
+  return true;
+}
 function resolveSpeculativeSettingsForLoad() {
   return { speculativeType: null, specDraftNMax: 0 };
 }
@@ -663,6 +759,7 @@ SCENARIO_HELPERS = """
       size_bytes: 1_100_000_000,
       capabilities: { can_chat: true, requires_variant: false },
     };
+    const EXTERNAL = "external::openai/gpt-5";
     // A safetensors repo, which MLX serves on a Mac and transformers everywhere else.
     const QWEN = {
       repo_id: "unsloth/Qwen3.5-4B",
@@ -691,6 +788,11 @@ SCENARIO_HELPERS = """
       platformFetched: true,
       variants: {},
       lastLoaded: null,
+      serverLoading: [],
+      serverResident: null,
+      statusFailures: 0,
+      serverLoadingClearsAfter: null,
+      visibleCheckpoint: "",
       validate: VALIDATE_OK,
       load: LOADED,
       download: () => "complete",
@@ -745,15 +847,14 @@ def _build_harness(run_dir: Path):
     # #7699 did by adding a syncModelCapabilities call here.
     imported = set()
     source = "\n".join(lines)
-    # Default and namespace forms bind a name too, and it is the same
-    # ReferenceError when the harness lacks it. chat-adapter.ts has none today,
-    # so this is for the first one somebody adds.
+    # Default and namespace forms bind a name too, and it is the same ReferenceError when the harness lacks it.
+    # chat-adapter.ts has none today, so this is for the first one somebody adds.
     for match in re.finditer(
         r"^import\s+(?:\*\s+as\s+)?([A-Za-z_$][\w$]*)\s*(?:,|from)", source, re.M
     ):
         imported.add(match.group(1))
-    # The optional prefix is the mixed form, `import def, { named } from`, whose
-    # braces a `^import\s+\{` anchor would skip entirely.
+    # The optional prefix is the mixed form, `import def, { named } from`, whose braces a `^import\s+\{` anchor
+    # would skip entirely.
     for match in re.finditer(
         r"^import\s+(?:[A-Za-z_$][\w$]*\s*,\s*)?\{([^}]*)\}\s+from", source, re.M
     ):
@@ -766,13 +867,12 @@ def _build_harness(run_dir: Path):
             name = spec.split(" as ")[-1].strip()
             if name:
                 imported.add(name)
-    # Any mention, not just a call. useChatRuntimeStore, toast and GPU_LAYERS_AUTO
-    # are all used in this region without a following paren, and each would be the
-    # same ReferenceError; they pass today only because the preamble happens to
-    # define them. Comments are stripped first so a name discussed in prose does
-    # not count as a use.
+    # Any mention, not just a call. useChatRuntimeStore, toast and GPU_LAYERS_AUTO are all used in this region without a
+    # following paren, and each would be the same ReferenceError; they pass today only because the preamble happens to
+    # define them. Comments are stripped first so a name discussed in prose does not count as a use.
     code = re.sub(r"/\*.*?\*/", "", body, flags = re.S)
     code = re.sub(r"//[^\n]*", "", code)
+    preamble = PREAMBLE + PONYFILLS + _wait_gate_source()
     missing = sorted(
         name
         for name in imported
@@ -780,7 +880,7 @@ def _build_harness(run_dir: Path):
         and not re.search(
             rf"^(?:export\s+)?(?:async\s+)?"
             rf"(?:function\s+|const\s+|let\s+|var\s+|class\s+){re.escape(name)}\b",
-            PREAMBLE,
+            preamble,
             re.M,
         )
     )
@@ -791,36 +891,53 @@ def _build_harness(run_dir: Path):
     )
     (run_dir / "harness.ts").write_text(
         "// @ts-nocheck\n"
-        + PREAMBLE
+        + preamble
         + "\n"
         + body
-        + "\nexport { autoLoadSmallestModel };\nexport function storeState() { return STORE; }\n",
+        + "\nexport { autoLoadSmallestModel, resolveQueuedEmptyLocalModel };\n"
+        + "export function storeState() { return STORE; }\n",
         encoding = "utf-8",
     )
 
 
-def _run(scenario_expr: str) -> dict:
+def _run(
+    scenario_expr: str,
+    prelude: str = "",
+    *,
+    queued: bool = False,
+) -> dict:
     _require_node()
     # Its own directory per invocation: a shared file lets one runner read another's rewrite.
     TEMP.mkdir(parents = True, exist_ok = True)
     run_dir = Path(tempfile.mkdtemp(prefix = "run", dir = TEMP))
     _build_harness(run_dir)
+    # The real send path always supplies an abort signal, so every scenario
+    # exercises the signal plumbing whichever entry point it enters through.
+    entry = (
+        "resolveQueuedEmptyLocalModel(signal)"
+        if queued
+        else "autoLoadSmallestModel({ abortSignal: signal })"
+    )
     script = (
         textwrap.dedent(
             """
         // @ts-nocheck
-        import { autoLoadSmallestModel, setScenario, EVENTS, storeState } from "./harness.ts";
+        import {
+          autoLoadSmallestModel,
+          resolveQueuedEmptyLocalModel,
+          setScenario,
+          EVENTS,
+          storeState,
+        } from "./harness.ts";
         """
         )
         + SCENARIO_HELPERS
+        + textwrap.dedent(prelude)
         + textwrap.dedent(
             f"""
         setScenario({scenario_expr});
-        // The real send path always supplies one, so the signal plumbing is
-        // exercised by every scenario.
-        const result = await autoLoadSmallestModel({{
-          abortSignal: new AbortController().signal,
-        }});
+        const signal = new AbortController().signal;
+        const result = await {entry};
         const s = storeState();
         console.log(JSON.stringify({{
           result,
@@ -842,8 +959,8 @@ def _run(scenario_expr: str) -> dict:
         cwd = str(run_dir),
         capture_output = True,
         text = True,
-        # Explicit: text alone decodes with the Windows ANSI code page, which
-        # mangles the non-ASCII toast copy node emits as UTF-8.
+        # Explicit: text alone decodes with the Windows ANSI code page, which mangles the non-ASCII toast copy node
+        # emits as UTF-8.
         encoding = "utf-8",
         timeout = 60,
         env = dict(os.environ, NODE_NO_WARNINGS = "1"),
@@ -1069,9 +1186,10 @@ def test_a_rejected_validation_still_lets_a_later_cached_model_load():
     assert _toasts(out, "toast.error") == []
 
 
+# #7374: a model already on disk must be found before anything is fetched
+
+
 # --- #7374: a model already on disk must be found before anything is fetched ---
-
-
 def test_an_indexed_local_gguf_loads_instead_of_downloading_the_default():
     """The reported bug. The user has a GGUF in their models dir, but the cascade
     only read the two managed-cache lists, so Send fetched a model instead."""
@@ -1144,7 +1262,6 @@ def test_a_local_row_the_picker_would_hide_is_never_auto_loaded():
     )
     out = _run(f"scenario({{ localModels: [{hidden}] }})")
 
-    # Nothing loadable on device, so the default download is the correct answer.
     assert _loaded_paths(out) == [DEFAULT_MODEL]
     assert _downloads_started(out) == [DEFAULT_MODEL]
 
@@ -1160,9 +1277,6 @@ def test_the_remembered_local_model_is_tried_before_a_smaller_one():
     assert _loaded_paths(out) == [LOCAL_GGUF_PATH]
 
 
-# --- the default download is a managed, cancellable job ---
-
-
 def test_the_default_model_is_fetched_through_the_download_manager():
     """Not inline inside /api/inference/load: the manager owns the transfer, so
     it gets a panel entry, progress, and a Cancel that stops it."""
@@ -1172,6 +1286,7 @@ def test_the_default_model_is_fetched_through_the_download_manager():
     # The bytes land before the load is attempted.
     kinds = [event["kind"] for event in out["events"]]
     assert kinds.index("download.start") < kinds.index("loadModel")
+    # Nothing loadable on device, so the default download is the correct answer.
     assert _loaded_paths(out) == [DEFAULT_MODEL]
 
 
@@ -1234,9 +1349,6 @@ def test_a_mac_chat_only_install_still_auto_loads_a_local_mlx_model():
     )
     out = _run(f"scenario({{ chatOnly: true, deviceType: 'mac', localModels: [{mlx}] }})")
     assert _loaded_paths(out) == ["/models/mlx"]
-
-
-# --- review fixes on the on-device cascade ---
 
 
 def test_an_image_generation_row_is_never_auto_loaded_for_chat():
@@ -1584,7 +1696,6 @@ def test_a_cached_adapter_repo_is_never_auto_loaded():
     )
 
     assert "org/lora" not in _loaded_paths(out)
-    # Nothing loadable on device, so the default download is the correct answer.
     assert _loaded_paths(out) == [DEFAULT_MODEL]
 
 
@@ -1620,6 +1731,7 @@ def test_an_hf_cache_row_stays_excluded_when_both_lookups_answer():
     out = _run(f"scenario({{ localModels: [{row}] }})")
 
     assert LOCAL_GGUF_PATH not in _loaded_paths(out)
+    # Nothing loadable on device, so the default download is the correct answer.
     assert _loaded_paths(out) == [DEFAULT_MODEL]
 
 
@@ -1681,6 +1793,131 @@ def test_an_unclassified_local_row_is_never_auto_loaded(fmt):
 
     assert "/models/x" not in _loaded_paths(out)
     assert _loaded_paths(out) == [DEFAULT_MODEL]
+
+
+_EXPIRE_CLI_LOAD_WAIT = """
+const realNow = Date.now.bind(Date);
+let nowCalls = 0;
+Date.now = () => realNow() + (nowCalls++ === 0 ? 0 : 600_001);
+"""
+
+
+def test_send_retries_status_then_waits_for_and_adopts_the_cli_model():
+    """Send retries status, waits for the CLI load, and adopts its model."""
+    out = _run(
+        "scenario({ statusFailures: 1, serverLoading: ['org/slow-model-GGUF'],"
+        " serverLoadingClearsAfter: 2,"
+        " ggufRepos: [GEMMA], variants: { [GEMMA.repo_id]: GEMMA_VARIANTS } })"
+    )
+
+    adopted = [e["id"] for e in out["events"] if e["kind"] == "adoptServerModel"]
+    assert adopted == ["org/slow-model-GGUF"]
+    assert _loaded_paths(out) == []
+    assert _downloads_started(out) == []
+    assert out["result"]["loaded"] is True
+    # Announced once, not once per poll.
+    assert [t["msg"] for t in _toasts(out, "toast.info")] == [
+        "Waiting for model to finish loading…"
+    ]
+
+
+def test_a_load_still_in_flight_at_the_cap_refuses_instead_of_auto_loading():
+    """The wait cap must not release auto-load over a running CLI load."""
+    out = _run(
+        "scenario({ serverLoading: ['org/slow-model-GGUF'],"
+        " ggufRepos: [GEMMA], variants: { [GEMMA.repo_id]: GEMMA_VARIANTS } })",
+        prelude = _EXPIRE_CLI_LOAD_WAIT,
+    )
+
+    assert _loaded_paths(out) == []
+    assert _downloads_started(out) == []
+    assert out["result"]["loaded"] is False
+    assert out["result"]["loadFailureReported"] is True
+    assert [t["msg"] for t in _toasts(out, "toast.error")] == ["A model is still loading"]
+
+
+def test_an_idle_server_still_auto_loads():
+    """An idle server still reaches automatic loading."""
+    out = _run("scenario({ ggufRepos: [GEMMA], variants: { [GEMMA.repo_id]: GEMMA_VARIANTS } })")
+
+    assert _loaded_paths(out) == [GEMMA_REPO]
+    assert out["result"]["loaded"] is True
+    assert _toasts(out, "toast.info") == []
+
+
+def test_a_status_endpoint_that_never_answers_refuses_rather_than_guessing():
+    """An unavailable status endpoint must not be treated as idle."""
+    out = _run(
+        "scenario({ statusFailures: 99, ggufRepos: [GEMMA],"
+        " variants: { [GEMMA.repo_id]: GEMMA_VARIANTS } })"
+    )
+
+    assert _loaded_paths(out) == []
+    assert out["result"]["loaded"] is False
+    assert out["result"]["loadFailureReported"] is True
+    assert [t["msg"] for t in _toasts(out, "toast.error")] == ["Could not reach the model server"]
+
+
+# A queued turn whose thread carries no model resolves one of its own, and the visible
+# tab may be on a provider model meanwhile. That resolver reads /status directly, so it
+# needs the same in-flight-load gate the sweep above has.
+
+
+def test_a_queued_turn_binds_the_incoming_model_not_the_one_being_replaced():
+    """During a replacement the status names the resident model and the incoming one at
+    once, and only the incoming one is what this turn will actually run against."""
+    out = _run(
+        "scenario({ visibleCheckpoint: EXTERNAL, serverResident: 'org/outgoing-GGUF',"
+        " serverLoading: ['org/slow-model-GGUF'], serverLoadingClearsAfter: 2,"
+        " ggufRepos: [GEMMA], variants: { [GEMMA.repo_id]: GEMMA_VARIANTS } })",
+        queued = True,
+    )
+
+    assert out["result"]["loaded"] is True
+    assert out["result"]["modelRuntime"]["checkpoint"] == "org/slow-model-GGUF"
+    assert _loaded_paths(out) == []
+    assert _downloads_started(out) == []
+
+
+def test_a_queued_turn_refuses_rather_than_auto_loading_over_a_cli_load():
+    """The wait cap must not release the queued sweep over a running CLI load either."""
+    out = _run(
+        "scenario({ visibleCheckpoint: EXTERNAL, serverLoading: ['org/slow-model-GGUF'],"
+        " ggufRepos: [GEMMA], variants: { [GEMMA.repo_id]: GEMMA_VARIANTS } })",
+        prelude = _EXPIRE_CLI_LOAD_WAIT,
+        queued = True,
+    )
+
+    assert _loaded_paths(out) == []
+    assert _downloads_started(out) == []
+    assert out["result"]["loaded"] is False
+    assert out["result"]["loadFailureReported"] is True
+    assert out["result"]["modelRuntime"] is None
+    assert [t["msg"] for t in _toasts(out, "toast.error")] == ["A model is still loading"]
+
+
+def test_a_queued_turn_still_binds_a_resident_model_on_an_idle_server():
+    out = _run(
+        "scenario({ visibleCheckpoint: EXTERNAL, serverResident: 'org/resident-GGUF',"
+        " ggufRepos: [GEMMA], variants: { [GEMMA.repo_id]: GEMMA_VARIANTS } })",
+        queued = True,
+    )
+
+    assert out["result"]["loaded"] is True
+    assert out["result"]["modelRuntime"]["checkpoint"] == "org/resident-GGUF"
+    assert _loaded_paths(out) == []
+    assert _toasts(out, "toast.info") == []
+
+
+def test_a_queued_turn_on_an_empty_idle_server_still_auto_loads():
+    out = _run(
+        "scenario({ visibleCheckpoint: EXTERNAL, ggufRepos: [GEMMA],"
+        " variants: { [GEMMA.repo_id]: GEMMA_VARIANTS } })",
+        queued = True,
+    )
+
+    assert _loaded_paths(out) == [GEMMA_REPO]
+    assert out["result"]["loaded"] is True
 
 
 def test_an_unpinned_mlx_candidate_is_loaded_at_the_window_the_backend_resolved():

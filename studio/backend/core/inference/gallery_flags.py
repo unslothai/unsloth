@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Pin / archive flags for the image and video galleries.
+"""Pin / archive / manual-order flags for the image and video galleries.
 
 Library state, NOT part of a generation recipe: a PNG's text chunk and a clip's sidecar
 describe how the media was made, while "I pinned this" describes how the user files it. So
@@ -11,6 +11,9 @@ record missing from the store simply has no flags.
 One store per gallery directory, keyed by the same id the gallery uses (the file stem):
 
     {"version": 1, "items": {"<id>": {"pinned_at": 1712345678.0, "archived": true}}}
+
+A dragged item also stores ``order_at``, a sort key on the mtime scale used in place of its mtime.
+Only moved items get one, and new media still lands first.
 
 The filename is skipped by the galleries' ``*.png`` / ``*.mp4`` globs, so a store sitting in
 the directory is invisible to listing. Every read fails safe: a corrupt, hand-edited or
@@ -34,8 +37,8 @@ logger = get_logger(__name__)
 
 _SCHEMA_VERSION = 1
 _STORE_NAME = ".flags.json"
-# Marks a store written over one whose ITEMS MAP was illegible: the old flags could not be carried
-# forward, so the new file is no proof that nothing is archived. See ``_carry_taint``.
+# Marks a store written over one whose ITEMS MAP was illegible: the old flags could not be carried forward, so the new
+# file is no proof that nothing is archived. See ``_carry_taint``.
 _TAINT_KEY = "unreadable"
 _lock = threading.RLock()
 
@@ -70,6 +73,8 @@ def _valid_entry(entry: Any) -> bool:
         return False
     if "pinned_at" in entry and _pinned_at(entry) is None:
         return False
+    if "order_at" in entry and _finite(entry.get("order_at")) is None:
+        return False
     return True
 
 
@@ -91,6 +96,8 @@ def _sanitize_entry(entry: Any) -> Optional[dict[str, Any]]:
         clean["archived"] = True
     if "pinned_at" in clean and _pinned_at(clean) is None:
         clean.pop("pinned_at")
+    if "order_at" in clean and _finite(clean.get("order_at")) is None:
+        clean.pop("order_at")
     return clean or None
 
 
@@ -100,8 +107,8 @@ def _load(directory: Path) -> tuple[dict[str, Any], bool]:
     try:
         with open(_store_path(directory), encoding = "utf-8-sig") as f:
             data = json.load(f)
-        # Validate the shape, not just the version: a hand-edited ``items`` that is not a dict
-        # (e.g. ``[]``) would otherwise crash every lookup instead of failing safe.
+        # Validate the shape, not just the version: a hand-edited ``items`` that is not a dict (e.g. ``[]``) would
+        # otherwise crash every lookup instead of failing safe.
         if (
             isinstance(data, dict)
             and data.get("version") == _SCHEMA_VERSION
@@ -110,11 +117,10 @@ def _load(directory: Path) -> tuple[dict[str, Any], bool]:
             # Written over an illegible store, so what it does NOT say is not evidence.
             if data.get(_TAINT_KEY):
                 return data, False
-            # Every ENTRY has to be readable too, not just the container. A malformed value is
-            # dropped by the readers below, which reads as "this id is not archived" -- enough for
-            # clear() to delete an archived file. So one bad entry costs the store its trust, but
-            # the surviving entries are still returned: listing should keep the flags it can read,
-            # and only destructive callers need to refuse.
+            # Every ENTRY has to be readable too, not just the container. A malformed value is dropped by the readers
+            # below, which reads as "this id is not archived" -- enough for clear() to delete an archived file. So one
+            # bad entry costs the store its trust, but the surviving entries are still returned: listing should keep
+            # the flags it can read, and only destructive callers need to refuse.
             if all(_valid_entry(v) for v in data["items"].values()):
                 return data, True
             logger.warning(
@@ -126,7 +132,7 @@ def _load(directory: Path) -> tuple[dict[str, Any], bool]:
         )
         return _empty(), False
     except FileNotFoundError:
-        return _empty(), True  # no store yet is a legitimate "nothing is flagged"
+        return _empty(), True
     except Exception as exc:
         logger.warning("gallery_flags.read_failed: %s", exc)
         return _empty(), False
@@ -192,10 +198,7 @@ def _file_lock(directory: Path):
             pass  # locking unavailable; the thread lock still applies
         yield locked
     finally:
-        # Release only what was taken, and never let the release be the thing that fails the call.
-        # A filesystem that cannot lock usually cannot unlock either, and by this point the body
-        # has already written the flags or deleted the media, so raising here reports a failure for
-        # work that landed.
+        # never let the release fail the call: a filesystem that cannot lock usually cannot unlock
         try:
             if locked:
                 with contextlib.suppress(Exception):
@@ -266,30 +269,31 @@ def read_trusted(directory: Path) -> dict[str, dict[str, Any]]:
     return {k: v for k, v in items.items() if isinstance(v, dict)}
 
 
-def _pinned_at(entry: dict[str, Any]) -> Optional[float]:
-    """The entry's pin time as a usable float, or None when it is absent or unusable.
+def _finite(value: Any) -> Optional[float]:
+    """A stored number as a finite float, or None when absent or unusable.
 
-    JSON integers are unbounded, so a hand-edited ``pinned_at`` of a few hundred digits overflows
-    ``float()``. That is read at listing time, from a store whose whole contract is to degrade to
-    "no flags" rather than raise, so an unconvertible value must read as unpinned instead of
-    turning every gallery request into a 500. NaN / infinity are refused for the same reason: they
-    would poison the sort rather than fail it."""
-    value = entry.get("pinned_at")
+    Read at listing time, so a huge JSON int, NaN or infinity must read as unset rather than raise
+    or poison the sort."""
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
     try:
-        pinned_at = float(value)
+        number = float(value)
     except (OverflowError, ValueError):
         return None
-    return pinned_at if math.isfinite(pinned_at) else None
+    return number if math.isfinite(number) else None
+
+
+def _pinned_at(entry: dict[str, Any]) -> Optional[float]:
+    """The entry's pin time as a usable float, or None when it is absent or unusable."""
+    return _finite(entry.get("pinned_at"))
 
 
 def flags_for(items: dict[str, dict[str, Any]], item_id: str) -> dict[str, Any]:
     """The public record fields for one id, from an already-read ``items`` map."""
     entry = _entry(items, item_id)
     return {
-        # Reported through the same conversion the sort uses, so a value the ordering cannot use
-        # never shows as a pin the user then cannot explain.
+        # Reported through the same conversion the sort uses, so a value the ordering cannot use never shows as a pin
+        # the user then cannot explain.
         "pinned": _pinned_at(entry) is not None,
         "archived": bool(entry.get("archived")),
     }
@@ -299,6 +303,17 @@ def pin_rank(items: dict[str, dict[str, Any]], item_id: str) -> float:
     """Sort key for the pinned group: most recently pinned first. Unpinned sorts last."""
     pinned_at = _pinned_at(_entry(items, item_id))
     return pinned_at if pinned_at is not None else float("-inf")
+
+
+def order_at(items: dict[str, dict[str, Any]], item_id: str) -> Optional[float]:
+    """The id's manual sort key, or None if it was never dragged."""
+    return _finite(_entry(items, item_id).get("order_at"))
+
+
+def order_rank(items: dict[str, dict[str, Any]], item_id: str, mtime: float) -> float:
+    """Unpinned sort key (newest first): ``order_at`` if dragged, else mtime."""
+    manual = order_at(items, item_id)
+    return manual if manual is not None else mtime
 
 
 def is_archived(items: dict[str, dict[str, Any]], item_id: str) -> bool:
@@ -322,6 +337,18 @@ def set_flags(
         return set_flags_locked(directory, item_id, pinned = pinned, archived = archived)
 
 
+def _load_repaired(directory: Path) -> dict[str, Any]:
+    """The store ready for a rewrite, with unreadable entries dropped."""
+    data = _carry_taint(*_load(directory))
+    items: dict[str, Any] = {}
+    for key, value in data.get("items", {}).items():
+        clean = _sanitize_entry(value)
+        if clean is not None:
+            items[key] = clean
+    data["items"] = items
+    return data
+
+
 def set_flags_locked(
     directory: Path,
     item_id: str,
@@ -333,34 +360,27 @@ def set_flags_locked(
     write land as one step. Separate for the same per-descriptor lock reason as ``forget_locked``."""
     import time
 
-    # A write REPAIRS the store rather than preserving what made it untrusted. Merging the bad
-    # entry straight back would leave every later clear() refused until someone fixed the file by
-    # hand, and refusing here instead would leave the user unable to pin anything at all. Dropping
-    # only the unreadable entries keeps the flags that still mean something.
-    data = _carry_taint(*_load(directory))
-    items: dict[str, Any] = {}
-    for key, value in data.get("items", {}).items():
-        clean = _sanitize_entry(value)
-        if clean is not None:
-            items[key] = clean
-    data["items"] = items
+    # A write REPAIRS the store rather than preserving what made it untrusted. Merging the bad entry straight back
+    # would leave every later clear() refused until someone fixed the file by hand, and refusing here instead would
+    # leave the user unable to pin anything at all. Dropping only the unreadable entries keeps the flags that still
+    # mean something.
+    data = _load_repaired(directory)
+    items = data["items"]
     entry = dict(_entry(items, item_id))
     if pinned is not None:
         if pinned:
-            # Strictly ahead of every stamp stored, not just the wall clock: Windows advances
-            # time.time() in ~16 ms steps, so two pins a click apart landed on the same value and
-            # "most recently pinned leads" stopped holding for exactly the case the client
-            # serializes its PATCHes to preserve.
+            # Strictly ahead of every stamp stored, not just the wall clock: Windows advances time.time() in ~16 ms
+            # steps, so two pins a click apart landed on the same value and "most recently pinned leads" stopped
+            # holding for exactly the case the client serializes its PATCHes to preserve.
             latest = max(
                 (_pinned_at(v) for v in items.values() if _pinned_at(v) is not None),
                 default = float("-inf"),
             )
             now = time.time()
             nudged = math.nextafter(latest, math.inf) if latest != float("-inf") else now
-            # A store holding the largest finite float nudges to infinity, which json writes and
-            # _pinned_at then refuses, so the pin just reported would read back unset AND take the
-            # store's trust with it. Tie instead: those two fall back to mtime, which costs an
-            # ordering rather than the store.
+            # A store holding the largest finite float nudges to infinity, which json writes and _pinned_at then
+            # refuses, so the pin just reported would read back unset AND take the store's trust with it. Tie instead:
+            # those two fall back to mtime, which costs an ordering rather than the store.
             entry["pinned_at"] = (
                 now if now > latest else (nudged if math.isfinite(nudged) else latest)
             )
@@ -396,10 +416,81 @@ def forget_locked(directory: Path, item_ids) -> None:
     data = _load(directory)[0]
     items = data.get("items", {})
     if not any(i in items for i in ids):
-        return  # nothing stored for these ids: skip the write entirely
+        return
     for item_id in ids:
         items.pop(item_id, None)
     try:
         _save(directory, data)
     except Exception as exc:  # noqa: BLE001 -- the media is already gone; a stale row is harmless
         logger.warning("gallery_flags.prune_failed: %s", exc)
+
+
+def _between(high: Optional[float], low: Optional[float], *, top: float) -> Optional[float]:
+    """A key between ``high`` and ``low`` (descending), or None if both are None.
+
+    ``top`` is used at the head of the group, so new media created later still sorts first."""
+    if high is not None and low is not None:
+        mid = (high + low) / 2
+        # Out of float precision: tie with the upper neighbour.
+        return mid if low < mid < high else high
+    if high is not None:
+        return high - 1.0
+    if low is not None:
+        return top if top > low else math.nextafter(low, math.inf)
+    return None
+
+
+def place_locked(
+    directory: Path, item_id: str, ordered: list[tuple[str, float]], *, after_id: Optional[str]
+) -> dict[str, Any]:
+    """Move one id to just after ``after_id`` (None = front) and return its flags.
+
+    ``ordered`` is the shelf as listed, as ``(id, mtime)`` pairs. Only the moved item is rewritten,
+    with a key between its neighbours: ``pinned_at`` among pins, ``order_at`` otherwise. Dropping
+    between pins pins it, between unpinned items unpins it, and on the boundary keeps its state.
+    Call inside ``exclusive()``. Raises KeyError if ``after_id`` is not on the shelf."""
+    import time
+
+    data = _load_repaired(directory)
+    items = data["items"]
+    ids = [(i, m) for i, m in ordered if i != item_id]
+    position = 0
+    if after_id is not None:
+        position = next((n + 1 for n, (i, _) in enumerate(ids) if i == after_id), -1)
+        if position < 0:
+            raise KeyError(after_id)
+    above = ids[position - 1] if position > 0 else None
+    below = ids[position] if position < len(ids) else None
+
+    def is_pinned(pair):
+        return _pinned_at(_entry(items, pair[0])) is not None
+
+    entry = dict(_entry(items, item_id))
+    was_pinned = _pinned_at(entry) is not None
+    if above is not None and below is not None:
+        pinned = is_pinned(above) if is_pinned(above) == is_pinned(below) else was_pinned
+    elif above is not None or below is not None:
+        pinned = is_pinned(above or below)
+    else:
+        pinned = was_pinned
+
+    now = time.time()
+    if pinned:
+        high = _pinned_at(_entry(items, above[0])) if above and is_pinned(above) else None
+        low = _pinned_at(_entry(items, below[0])) if below and is_pinned(below) else None
+        entry["pinned_at"] = _between(high, low, top = now) if (high, low) != (None, None) else now
+    else:
+        entry.pop("pinned_at", None)
+        high = order_rank(items, above[0], above[1]) if above and not is_pinned(above) else None
+        low = order_rank(items, below[0], below[1]) if below and not is_pinned(below) else None
+        key = _between(high, low, top = now)
+        if key is None:
+            entry.pop("order_at", None)
+        else:
+            entry["order_at"] = key
+    if entry:
+        items[item_id] = entry
+    else:
+        items.pop(item_id, None)
+    _save(directory, data)
+    return {"pinned": entry.get("pinned_at") is not None, "archived": bool(entry.get("archived"))}

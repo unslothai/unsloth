@@ -2,11 +2,11 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 import {
   installLocalStorageFake,
+  readSrcAsync,
   registerBundlerResolver,
 } from "./helpers/kit.ts";
 
@@ -195,10 +195,7 @@ test("a toggle in another tab lands even with no panel mounted to hear it", () =
 });
 
 test("the reset in Settings > General clears it", async () => {
-  const source = await readFile(
-    new URL("../src/features/settings/tabs/general-tab.tsx", import.meta.url),
-    "utf8",
-  );
+  const source = await readSrcAsync("features/settings/tabs/general-tab.tsx");
   const start = source.indexOf("const PREFS_KEYS");
   const keys = source.slice(start, source.indexOf("];", start));
   assert.ok(

@@ -601,16 +601,11 @@ def test_the_status_route_reports_what_a_self_sizing_load_asked_for():
         encoding = "utf-8"
     )
     assert "requested_context_length = llama_backend.requested_n_ctx" in route_src
-    # 0 is "size it yourself"; None is "records no request", and the UI tells them apart.
-    # Either spelling of the recorded request, since the route stamps one and the MLX
-    # mirror carries the other, but always through the non-negative reader.
-    assert (
-        "requested_context_length = _nonnegative_int_or_none(\n"
-        '                model_info.get("requested_context_length")\n'
-        '                if model_info.get("requested_context_length") is not None\n'
-        '                else model_info.get("max_seq_length_requested")\n'
-        "            )," in route_src
-    )
+    # The non-GGUF branch is covered by behaviour instead, in
+    # test_non_gguf_reload_settings.py::TestNonGgufStatusReportsWhatTheLoadAskedFor: 0 is
+    # "size it yourself", None is "records no request", and the MLX mirror wins over the
+    # stamped spelling. Pinning that call's exact layout here only duplicated it, and the
+    # duplicate is what went stale when the reader gained the mirror.
     # The parent cannot recompute the group once the worker holds the model: it mirrors all.
     src = (Path(__file__).resolve().parents[1] / "core/inference/worker.py").read_text("utf-8")
     assert '"native_context_length",\n                "max_context_length",' in src

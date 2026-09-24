@@ -60,28 +60,22 @@ FAILED = "failed"
 OK = "ok"
 NOT_BUILT = "not_built"
 
-# A function whose counts are all this small carries almost no information and
-# collides with everything. Excluded from matching, and the exclusion is
-# reported so the coverage of the bridge is visible.
+# A function whose counts are all this small carries almost no information and collides with
+# everything. Excluded from matching, and the exclusion is reported so the bridge's coverage is
+# visible.
 MIN_INFORMATIVE_COUNT = 2
 
-# Above this share of resolved mappings being name-identical (`push` -> `push`),
-# the two arms are almost certainly the same build. Some identity is EXPECTED
-# and healthy: React's release minifier leaves scheduler entry points such as
-# `push`, `peek` and `performWorkUntilDeadline` alone, and `keepNames` preserves
-# others, so a genuine bridge measured on a real React 19.2.4 pair came in at
-# roughly 0.1. A same-build pair comes in at exactly 1.0, so the two regimes are
-# not close and this threshold is not delicate.
+# Above this share of resolved mappings being name-identical (`push` -> `push`), the two arms are
+# almost certainly the same build. Some identity is EXPECTED: React's release minifier leaves
+# scheduler entry points alone and `keepNames` preserves others, so a genuine bridge on a real
+# React 19.2.4 pair came in at roughly 0.1 against exactly 1.0 for a same-build pair.
+# Untouched: `push`, `peek` and `performWorkUntilDeadline`.
 MAX_IDENTITY_MAPPING_FRACTION = 0.5
 
-# NOTE FOR THE NEXT PERSON, because this is the obvious idea and it DOES NOT
-# WORK. You cannot detect "is this the development build?" by looking at how
-# long the function names are. Measured on the real pair: the development bundle
-# had a median react-dom function-name length of 19 with 97.6% of names at four
-# characters or more, and the PRODUCTION bundle had a median of 19 with 95.4%.
-# React's own minifier renames only part of react-dom, `keepNames` preserves the
-# rest, and V8 reports an inferred name for much of what is left. Name shape
-# tells you nothing. The checks below are structural instead.
+# NOTE FOR THE NEXT PERSON: you cannot detect 'is this the development build?' from function-name
+# length. Measured on the real pair, the development bundle had a median react-dom name length of
+# 19 with 97.6% of names four characters or more, and the PRODUCTION bundle a median of 19 with
+# 95.4%. The checks below are structural instead.
 
 
 @dataclass(frozen = True)
@@ -123,8 +117,8 @@ class Bridge:
     ambiguous_prod: list[str] = field(default_factory = list)
     ambiguous_dev: list[str] = field(default_factory = list)
     unmatched_prod: int = 0
-    # Resolved functions whose dev name equals their prod name. Expected to be
-    # small and non-zero; near 100% means both arms were the same build.
+    # Resolved functions whose dev name equals their prod name. Expected to be small and non-zero;
+    # near 100% means both arms were the same build.
     identity_mappings: int = 0
     anchors_checked: int = 0
     anchor_failures: list[str] = field(default_factory = list)
@@ -132,9 +126,8 @@ class Bridge:
 
     @staticmethod
     def prod_key(url: str, start_offset: int, end_offset: int) -> str:
-        # The URL is reduced to its basename because an Unsloth install serves the
-        # same bundle from a hashed path that changes per install, while the
-        # offsets inside the bundle do not.
+        # The URL is reduced to its basename because an Unsloth install serves the same bundle from a
+        # hashed path that changes per install, while the offsets inside it do not.
         return f"{os.path.basename(url)}:{start_offset}:{end_offset}"
 
     def resolve(self, url: str, start_offset: int, end_offset: int) -> str | None:
@@ -408,16 +401,12 @@ def build_bridge(
         )
         return bridge
 
+    # The two arms must actually be two different builds. THE FAILURE THIS CLOSES: if both arms are
+    # pointed at the same server, every count vector matches trivially, EVERY ANCHOR PASSES because
+    # an anchor genuinely does map to itself, and the bridge reports `ok` with a mapping of `Zk` to
+    # `Zk`. The anchor check cannot catch it: anchors test invariance and same-build is perfectly
+    # invariant.
     # ---- the two arms must actually be two different builds -----------------
-    #
-    # THE FAILURE THIS CLOSES. If both arms are pointed at the same server (a
-    # port collision, a reused base URL, a dev server that quietly served the
-    # production dist), every count vector matches trivially, EVERY ANCHOR
-    # PASSES because an anchor genuinely does map to itself, and the bridge
-    # reports `ok` with a mapping of `Zk` to `Zk`. That is a clean-looking run
-    # that proves nothing, and it would put "bridged" next to a minified name.
-    # The anchor check cannot catch it; it is the one thing anchors are blind
-    # to, because anchors test invariance and same-build is perfectly invariant.
     dev_all_keys = {v.key for v in dev_all if v.informative}
     prod_all_keys = {v.key for v in prod_all if v.informative}
     if dev_all_keys and dev_all_keys == prod_all_keys:
@@ -461,10 +450,8 @@ def build_bridge(
         )
         return bridge
 
-    # Second guard on the same failure, for the case where the two arms differ
-    # in offsets but are still the same code (a rebuild of one tree, say). If
-    # nearly every resolved name maps to itself, no minification was undone and
-    # the bridge is not doing anything.
+    # Second guard on the same failure, for arms that differ in offsets but are still the same code:
+    # if nearly every resolved name maps to itself, no minification was undone.
     fraction = identical_names / matched
     if fraction > MAX_IDENTITY_MAPPING_FRACTION:
         bridge.status = FAILED

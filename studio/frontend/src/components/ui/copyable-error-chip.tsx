@@ -27,8 +27,7 @@ export function CopyableErrorChip({
   const [copied, setCopied] = useState(false);
   const resetTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Clear any pending reset on unmount to avoid a setState on an
-  // unmounted component.
+  // Clear any pending reset on unmount to avoid a setState on an unmounted component.
   useEffect(() => () => {
     if (resetTimer.current) clearTimeout(resetTimer.current);
   }, []);
@@ -53,7 +52,7 @@ export function CopyableErrorChip({
         <button
           type="button"
           className={cn(
-            "flex max-w-[28rem] min-w-0 cursor-pointer items-center rounded-md text-left text-xs text-destructive transition-colors hover:bg-destructive/10 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+            "flex max-w-[calc(28rem*var(--ui-space-scale,1))] min-w-0 cursor-pointer items-center rounded-md text-left text-xs text-destructive transition-colors hover:bg-destructive/10 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
             className,
           )}
         >

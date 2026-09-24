@@ -18,12 +18,9 @@ from __future__ import annotations
 
 from typing import Optional
 
-# ``general.architecture`` values naming a speech or neural-codec checkpoint that no Unsloth
-# runtime can decode: llama.cpp has no CSM decoder (still an unmerged upstream PR) and no
-# media backend reads one either. Published CSM GGUFs do not agree on a spelling, so all four
-# on the Hub today are listed: ggml-org "llama-csm", cartesia "csm", cstr "csm-tts", and a
-# bundle's Mimi vocoder half "mimi". Named once so the chat gate, the listing classifier and
-# the media preflight cannot drift apart.
+# ``general.architecture`` values no Unsloth runtime can decode (llama.cpp has no CSM decoder).
+# Published CSM GGUFs disagree on spelling, so all four on the Hub are listed. Named once so the
+# chat gate, the listing classifier and the media preflight cannot drift apart.
 SPEECH_GGUF_ARCHS = frozenset({"llama-csm", "csm", "csm-tts", "mimi"})
 
 # The Mimi vocoder in ggml-org/sesame-csm-1b-GGUF puts a whole SENTENCE in general.architecture

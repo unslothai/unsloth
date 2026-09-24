@@ -2,19 +2,17 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
 import test from "node:test";
 import { DEFAULT_CUSTOMIZATION } from "../src/features/settings/stores/appearance-custom-store.ts";
+
+import { readSrcAsync, readText } from "./helpers/kit.ts";
 
 // A record predating sidebarNav is served the backend's own defaults, so a drift there
 // hands the user a layout this side never shipped. settings.py says the two must match;
 // the backend's parity test compares against a hand-copied list, which cannot catch a
 // frontend-only change. Read the real constant instead.
 test("the backend sidebar nav defaults match the frontend", async () => {
-  const source = await readFile(
-    new URL("../../backend/routes/settings.py", import.meta.url),
-    "utf8",
-  );
+  const source = readText("../../backend/routes/settings.py");
   const block = /SIDEBAR_NAV_ITEM_DEFAULTS = \{([\s\S]*?)^\}/m.exec(source);
   assert.ok(block, "could not find SIDEBAR_NAV_ITEM_DEFAULTS in settings.py");
   const backend = [...block[1].matchAll(/"([a-z]+)":\s*(True|False)/g)].map((m) => ({
@@ -25,15 +23,38 @@ test("the backend sidebar nav defaults match the frontend", async () => {
   assert.deepEqual(backend, DEFAULT_CUSTOMIZATION.sidebarNav);
 });
 
+// PersonalizationCustomization ignores unknown keys, so a field this side sends and that one
+// never declared is dropped on every save and rebuilt from defaults on the next load, quietly
+// undoing whatever the user set.
+test("the backend stores every customization field the frontend sends", () => {
+  const source = readText("../../backend/routes/settings.py");
+  const model = /class PersonalizationCustomization\(BaseModel\):([\s\S]*?)\nclass /.exec(
+    source,
+  );
+  assert.ok(model, "could not find PersonalizationCustomization in settings.py");
+  const fields = new Set(
+    [...model[1].matchAll(/^ {4}(\w+):/gm)]
+      .map((m) => m[1])
+      .filter((name) => name !== "model_config"),
+  );
+  for (const key of Object.keys(DEFAULT_CUSTOMIZATION)) {
+    assert.ok(fields.has(key), `the backend drops "${key}" on every save`);
+  }
+  // And this one defaults to None rather than a list: the client tells a record written before
+  // the field apart from one whose user chose an empty list, and a filled-in default would
+  // reapply a rule the user had already overruled.
+  assert.match(
+    model[1],
+    /sidebarNavAuto: Optional\[list\[SidebarNavItemId\]\] = Field\(\n\s*None,/,
+  );
+});
+
 // The two capability-gated rows. They are the ones that can render disabled without the user
 // having done anything, so they are also the ones a rename would silently un-gate: navRows is
 // keyed by SidebarNavItemId, so a dropped `pending` there just stops spinning, it does not
 // fail to compile.
 test("Train and Video are still the capability-gated rows", async () => {
-  const source = await readFile(
-    new URL("../src/components/app-sidebar.tsx", import.meta.url),
-    "utf8",
-  );
+  const source = await readSrcAsync("components/app-sidebar.tsx");
   const rows = /const navRows: Record<SidebarNavItemId, NavRowDef> = \{([\s\S]*?)\n  \};/.exec(
     source,
   );
@@ -47,10 +68,7 @@ test("Train and Video are still the capability-gated rows", async () => {
     bodies.set(key[1], rows[1].slice(start, end));
   });
   // Every id the backend knows about has a row, or the personalization round-trip renders a gap.
-  const backend = await readFile(
-    new URL("../../backend/routes/settings.py", import.meta.url),
-    "utf8",
-  );
+  const backend = readText("../../backend/routes/settings.py");
   const block = /SIDEBAR_NAV_ITEM_DEFAULTS = \{([\s\S]*?)^\}/m.exec(backend);
   assert.ok(block, "could not find SIDEBAR_NAV_ITEM_DEFAULTS in settings.py");
   for (const [, id] of block[1].matchAll(/"([a-z]+)":/g)) {

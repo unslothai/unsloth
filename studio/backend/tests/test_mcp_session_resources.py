@@ -133,9 +133,9 @@ def test_repeated_open_close_does_not_accumulate_threads(tiny):
     for i in range(12):
         call_tool_sync(HTTP_URL, None, "t", {}, scope = f"chat-{i}")
         close_mcp_sessions()
-    assert _settle(lambda: _session_threads() <= before), (
-        f"leaked threads after 12 cycles: {_session_threads()} vs {before}"
-    )
+    assert _settle(
+        lambda: _session_threads() <= before
+    ), f"leaked threads after 12 cycles: {_session_threads()} vs {before}"
 
 
 def test_repeated_open_close_does_not_accumulate_descriptors(tiny):

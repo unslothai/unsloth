@@ -61,9 +61,9 @@ def test_the_hooks_are_off_unless_asked_for(main_src: str, monkeypatch):
 
     assert os.environ.get("SBENCH_EXTRA_INIT_SCRIPT") is None
     assert os.environ.get("SBENCH_PAGE_CONSOLE") is None
-    # Both call sites are guarded by a plain truthiness check on the variable, so an unset
-    # variable cannot reach `add_init_script` or `page.on`. Pinned as source, because the failure
-    # this guards is a refactor that hoists either call out of its `if`.
+    # Both call sites are guarded by a plain truthiness check on the variable, so an unset variable
+    # cannot reach `add_init_script` or `page.on`. Pinned as source, because the failure this guards
+    # is a refactor that hoists either call out of its `if`.
     for guarded in ("if extra_init:", "if console_prefix:"):
         assert guarded in main_src, f"{guarded!r} is gone; the hook may no longer be opt-in"
 
@@ -83,11 +83,10 @@ def test_the_probe_path_is_validated_before_anything_is_started(main_src: str):
     assert "except (OSError, UnicodeDecodeError) as exc:" in main_src
     # Read once, used later. A second read at launch time would reintroduce the window.
     assert main_src.count("Path(extra_init).read_text") == 1
-    # AND ahead of the archive, which is the other thing a refusal must not arrive after. Reusing
-    # an --out without --resume moves the payload aside, so reading the probe after that call let a
-    # path typo take payload.jsonl off its standard path while running no benchmark at all. The
-    # behaviour is pinned in runtime/selftest/test_studiobench_run_acquisition.py; the order is
-    # pinned here because that is what makes it true.
+    # AND ahead of the archive, the other thing a refusal must not arrive after: reusing an --out
+    # without --resume moves the payload aside, so reading the probe after that call let a path typo
+    # take payload.jsonl off its standard path while running no benchmark at all. The behaviour is
+    # pinned in runtime/selftest/test_studiobench_run_acquisition.py; the order is pinned here.
     assert read_at < main_src.index("prepare_payload(")
 
 
@@ -136,9 +135,9 @@ def test_a_probe_run_records_the_gate_that_makes_it_unscorable(main_src: str):
     """
 
     assert '"probe_init_script": extra_init or None' in main_src
-    # Matched without pinning the indent. `run()` puts side acquisition under a cleanup guard, so
-    # everything from the acquisition loop to the end of setup sits one level deeper than it did,
-    # and the gate moving with it is not the thing this test is here to notice.
+    # Matched without pinning the indent: `run()` puts side acquisition under a cleanup guard, so
+    # everything from the acquisition loop to the end of setup sits one level deeper, and the gate
+    # moving with it is not what this test notices.
     assert re.search(r"rec\.gate\(\s*\n\s*\"probe_free\",", main_src)
 
 
@@ -152,8 +151,8 @@ def test_roots_are_adopted_at_insertion_not_on_the_sample_tick(probe_src: str):
 
     assert "MutationObserver" in probe_src
     assert "adoptAdded" in probe_src
-    # The DOCUMENT, not documentElement. An init script can run before the parser has created
-    # the root element, and `observe(null, ...)` throws into the catch that hides it.
+    # The DOCUMENT, not documentElement: an init script can run before the parser has created the
+    # root element, and `observe(null, ...)` throws into the catch that hides it.
     assert "observe(doc, {" in probe_src
     # Added nodes only. A document-wide re-scan per mutation would make the probe the load.
     assert "addedNodes" in probe_src
@@ -171,8 +170,8 @@ def test_the_fallback_and_padding_buckets_cannot_both_count_one_root(probe_src: 
     assert "ROLE_PX" in probe_src
     assert "out.fallbackBite += 1;" in probe_src
     assert 'targetHeight(px, "padding")' in probe_src
-    # getBoundingClientRect() is the border box, so BOTH targets carry the root's own padding.
-    # Comparing against the bare declared length pinned fallbackBite at zero whatever happened.
+    # getBoundingClientRect() is the border box, so BOTH targets carry the root's own padding;
+    # comparing against the bare declared length pinned fallbackBite at zero whatever happened.
     assert 'targetHeight(px, "fallback")' in probe_src
     assert 'return (which === "fallback" ? px.fallback : 0) + px.padding;' in probe_src
 
@@ -254,8 +253,8 @@ def test_the_probe_source_is_the_first_thing_in_its_script():
         "semantics than the file it was read from"
     )
     assert "window.__sbExtraInitScript" in scripts[0]
-    # Appended after an explicit statement boundary, so neither ASI nor an unterminated
-    # expression can join it to the probe's last line.
+    # Appended after an explicit statement boundary, so neither ASI nor an unterminated expression can
+    # join it to the probe's last line.
     assert (
         scripts[0][len(source) :]
         .lstrip("\n")
@@ -379,8 +378,8 @@ def test_the_event_counter_is_the_one_potency_rests_on(probe_src: str):
 
     assert "contentvisibilityautostatechange" in probe_src
     assert "ev_skip" in probe_src
-    # The geometry route is a documented false negative and must stay documented rather than
-    # quietly removed: someone will reimplement it otherwise.
+    # The geometry route is a documented false negative and must stay documented rather than quietly
+    # removed: someone will reimplement it otherwise.
     assert "KNOWN FALSE NEGATIVE" in probe_src
 
 
@@ -398,9 +397,9 @@ def _node_parses(source: str):
     if node is None:
         pytest.skip("no node on PATH; this assertion needs a real JS parser, not a regex")
     with tempfile.TemporaryDirectory() as tmp:
-        # `--check` reads a FILE, so the IIFE is written out rather than passed with `-e`: an
-        # argument would have to survive the shell, and the point of this helper is that nothing
-        # between the producer and the parser is allowed to edit the bytes.
+        # `--check` reads a FILE, so the IIFE is written out rather than passed with `-e`: an argument
+        # would have to survive the shell, and the point of this helper is that nothing between the
+        # producer and the parser is allowed to edit the bytes.
         script = Path(tmp) / "init_script.js"
         script.write_text("(() => {\n" + source + "\n})();", encoding = "utf-8")
         done = subprocess.run([node, "--check", str(script)], capture_output = True, text = True)

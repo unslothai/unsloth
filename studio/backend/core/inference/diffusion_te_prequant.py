@@ -25,6 +25,7 @@ None and the caller falls back to the dense download + cast. Inert with nothing 
 
 from __future__ import annotations
 
+import sys
 from dataclasses import dataclass
 from typing import Any, Iterable, Optional
 
@@ -41,31 +42,19 @@ TE_PREQUANT_FORMAT = "unsloth_prequant_text_encoder_state_dict_v1"
 # The one scheme hosted in v1 (see module docstring).
 TE_PREQUANT_SCHEMES = ("fp8",)
 
-# Components the pipeline-assembly injection covers (text_encoder_4 is family-assembled separately, see diffusion_hidream.py).
+# Components the pipeline-assembly injection covers (text_encoder_4 is family-assembled separately, see
+# diffusion_hidream.py).
 TE_PREQUANT_COMPONENTS = ("text_encoder", "text_encoder_2", "text_encoder_3")
 
-# Fraction of a bf16 text encoder a PRE-CAST fp8 checkpoint occupies, for memory budgeting.
-#
-# fp8 storage is one byte per parameter against bf16's two, so the floor is 0.5, but the cast
-# deliberately keeps modules dense: nn.Embedding tables, the norms in
-# DEFAULT_SKIP_MODULES_PATTERN, the encoder's own _keep_in_fp32_modules (T5's ``wo``) and an
-# lm_head tied to the input embedding. Measured from Hub file metadata over every published
-# artifact (2026-08-07), as hosted checkpoint bytes over the bf16-EQUIVALENT dense bytes of the
-# same component (an fp32-stored encoder is halved first, since the pipeline loads it bf16):
-#
-#   FLUX.2-dev       text_encoder    Mistral-24B    24,683,130,873 / 48,022,800,560 = 0.514
-#   HiDream-I1-Full  text_encoder_4  Llama-3.1-8B    8,555,963,320 / 16,060,556,376 = 0.533
-#   Qwen-Image       text_encoder    Qwen2.5-VL-7B   8,839,210,073 / 16,584,414,544 = 0.533
-#   LTX-2            text_encoder    Gemma3-12B     13,205,302,695 / 24,374,720,836 = 0.542
-#   Krea-2-Turbo     text_encoder    Qwen3-4B        4,831,262,424 /  8,875,715,136 = 0.544
-#   Z-Image-Turbo    text_encoder    Qwen3-4B        4,411,751,967 /  8,044,982,000 = 0.548
-#   Lumina-Image-2.0 text_encoder    Gemma2-2B       3,204,501,909 /  5,228,699,608 = 0.613
-#   FLUX.1-schnell   text_encoder_2  T5-XXL          5,900,818,800 /  9,524,648,584 = 0.620
-#
-# The small encoders sit highest: their embedding tables are a large share of the parameters and
-# stay dense. 0.65 is the observed maximum rounded up, so this OVER-states every measured
-# encoder rather than under-stating any. It is a memory budget, and an under-estimate is the
-# expensive direction: it lets an oversized load through to the OS killer.
+# Fraction of a bf16 text encoder a PRE-CAST fp8 checkpoint occupies, for memory budgeting. fp8 storage is one byte
+# per parameter against bf16's two, so the floor is 0.5, but the cast deliberately keeps modules dense: nn.Embedding
+# tables, the norms in DEFAULT_SKIP_MODULES_PATTERN, the encoder's own _keep_in_fp32_modules (T5's ``wo``) and an
+# lm_head tied to the input embedding. Measured from Hub file metadata over every published artifact (2026-08-07) as
+# hosted checkpoint bytes over the bf16-EQUIVALENT dense bytes of the same component, the ratios run 0.514 (FLUX.2-dev
+# Mistral-24B) to 0.620 (FLUX.1-schnell T5-XXL); the small encoders sit highest, because their embedding tables are a
+# large share of the parameters and stay dense. 0.65 is the observed maximum rounded up, so this OVER-states every
+# measured encoder rather than under-stating any: an under-estimate is the expensive direction, since it lets an
+# oversized load through to the OS killer.
 TE_PREQUANT_BUDGET_SCALE = 0.65
 
 
@@ -97,11 +86,13 @@ def te_prequant_budget_scale(
     return TE_PREQUANT_BUDGET_SCALE if sources else 1.0
 
 
-# Bases whose text-encoder weights are VERIFIED byte-identical (every shard LFS sha256 compared on 2026-07-18), so one hosted artifact serves them all. The validator accepts a base_model_id from the same group; anything else keeps the strict refusal.
+# Bases whose text-encoder weights are VERIFIED byte-identical (every shard LFS sha256 compared on 2026-07-18), so one
+# hosted artifact serves them all. The validator accepts a base_model_id from the same group; anything else keeps the
+# strict refusal.
 _TE_EQUIVALENT_BASES: tuple[frozenset[str], ...] = (
-    # Qwen2.5-VL-7B text encoder: 4 shards, 16,584,414,544 bytes, identical sha256 set. Qwen-Image-2512
-    # republishes the same four shards (re-verified 2026-08-25); refusing it here would pull 16.6 GB
-    # of dense encoder the load never opens.
+    # Qwen2.5-VL-7B text encoder: 4 shards, 16,584,414,544 bytes, identical sha256 set. Qwen-Image-2512 republishes
+    # the same four shards (re-verified 2026-08-25); refusing it here would pull 16.6 GB of dense encoder the load
+    # never opens.
     frozenset(
         {
             "qwen/qwen-image",
@@ -109,15 +100,13 @@ _TE_EQUIVALENT_BASES: tuple[frozenset[str], ...] = (
             "hunyuanvideo-community/hunyuanimage-2.1-diffusers",
         }
     ),
-    # Qwen3-4B text encoder: 1 shard, 8,875,715,136 bytes, identical sha256 across the Krea-2 pair
-    # (compared 2026-08-25); only their transformers differ, as with Z-Image.
+    # Qwen3-4B: identical sha256 across the Krea-2 pair (compared 2026-08-25)
     frozenset(
         {
             "krea/krea-2-turbo",
             "krea/krea-2-raw",
         }
     ),
-    # T5-XXL (text_encoder_2): 2 shards, 9,524,648,584 bytes, identical sha256 across every FLUX.1 release; HiDream-I1 ships the same bytes as text_encoder_3 (cross-component mapping is not wired yet).
     frozenset(
         {
             "black-forest-labs/flux.1-schnell",
@@ -126,7 +115,8 @@ _TE_EQUIVALENT_BASES: tuple[frozenset[str], ...] = (
             "hidream-ai/hidream-i1-full",
         }
     ),
-    # Qwen3-4B text encoder: 3 shards, 8,044,982,000 bytes, identical sha256 set across the distilled Z-Image-Turbo and the undistilled base (only their transformers differ).
+    # T5-XXL (text_encoder_2): 2 shards, 9,524,648,584 bytes, identical sha256 across every FLUX.1 release; HiDream-I1
+    # ships the same bytes as text_encoder_3 (cross-component mapping is not wired yet).
     frozenset(
         {
             "tongyi-mai/z-image-turbo",
@@ -142,8 +132,8 @@ def te_base_equivalent(ckpt_base: str, base: str) -> bool:
     equivalence group above."""
     if _same_base_model(ckpt_base, base):
         return True
-    # The groups hold UPSTREAM ids: an unnormalised mirror id is a different string, so it would be
-    # refused and the pre-cast encoder dropped for a dense pull.
+    # The groups hold UPSTREAM ids: an unnormalised mirror id is a different string, so it would be refused and the
+    # pre-cast encoder dropped for a dense pull.
     from .diffusion_families import canonical_base
 
     a, b = canonical_base(ckpt_base).lower(), canonical_base(base).lower()
@@ -158,18 +148,79 @@ class TePrequantSource:
     kind: str
     location: str
     filename: Optional[str] = None
+    # Names to try after ``filename``, in order, when the repo does not carry it. Only the "repo"
+    # kind uses this: a local path either exists or it does not.
+    fallback_filenames: tuple = ()
 
 
-def te_prequant_repo_filename(repo_id: str, component: str, scheme: str) -> str:
-    """The checkpoint filename for ``(component, scheme)`` in ``repo_id``: hosted repos are
-    named <Model>-FP8 (or -INT8 / -quantized) and carry <Model>-<component>-<SCHEME>.pt
-    files, e.g. unsloth/LTX-2-FP8 -> LTX-2-text_encoder-FP8.pt."""
+def te_prequant_repo_stem(repo_id: str, component: str, scheme: str) -> str:
+    """The extensionless checkpoint name for ``(component, scheme)`` in ``repo_id``: hosted repos
+    are named <Model>-FP8 (or -INT8 / -quantized) and carry <Model>-<component>-<SCHEME> files,
+    e.g. unsloth/LTX-2-FP8 -> LTX-2-text_encoder-FP8."""
     model = repo_id.rsplit("/", 1)[-1]
     for suffix in ("-fp8", "-int8", "-quantized"):
         if model.lower().endswith(suffix):
             model = model[: -len(suffix)]
             break
-    return f"{model}-{component}-{scheme.upper()}.pt"
+    return f"{model}-{component}-{scheme.upper()}"
+
+
+def te_prequant_repo_filenames(repo_id: str, component: str, scheme: str) -> tuple:
+    """Candidate filenames for ``(component, scheme)``, safetensors first.
+
+    Both extensions are live. The reader handles either, but the NAME has to be asked for, and a
+    single hardcoded extension is why a hosted safetensors encoder was unreachable: the resolver
+    requested ``.pt``, the Hub returned 404 and the loader fell back to the dense encoder without
+    saying anything, which costs a user the whole point of the artifact (17.5 GB instead of 9.4 GB
+    on Qwen-Image-2.1). Preference order rather than a registry entry, so a repo that swaps its
+    encoder to safetensors is picked up with no code change, and every repo still hosting a
+    ``.pt`` (Qwen-Image, LTX-2 and the rest) keeps resolving exactly as before.
+    """
+    # Imported here, not at module scope: prequant_safetensors pulls torchao in, and this module is
+    # imported during pipeline assembly on hosts that may not have it.
+    from .prequant_safetensors import SAFETENSORS_SUFFIX
+
+    stem = te_prequant_repo_stem(repo_id, component, scheme)
+    return (f"{stem}{SAFETENSORS_SUFFIX}", f"{stem}.pt")
+
+
+def te_prequant_repo_filename(repo_id: str, component: str, scheme: str) -> str:
+    """The preferred checkpoint filename for ``(component, scheme)`` in ``repo_id``."""
+    return te_prequant_repo_filenames(repo_id, component, scheme)[0]
+
+
+def te_candidate_filenames(source: Any) -> tuple:
+    """``source``'s names, best first, for anything SHAPED like a source.
+
+    One accessor so the download PLAN and the resolver cannot disagree about which artifact a
+    source means. They did: the resolver learned the chain while every consumer kept matching
+    ``filename`` alone, so the moment the preferred name became a safetensors spelling no repo
+    hosting a ``.pt`` was recognised by the plan, its dense encoder went back into the pull, and
+    the loader fetched the ``.pt`` on top of it. Planners also pass lightweight stand-ins, so this
+    reads defensively rather than touching the dataclass.
+    """
+    names = (
+        getattr(source, "filename", None),
+        *(getattr(source, "fallback_filenames", None) or ()),
+    )
+    return tuple(n for n in names if n)
+
+
+def te_candidate_is_readable(name: Optional[str]) -> bool:
+    """Whether this install can open a pre-cast encoder artifact called ``name``.
+
+    NOT the transformer's ``restricted_prequant_load_supported``: this state dict is plain
+    tensors, read under a bare ``weights_only`` load with no constructor allowlist, so a ``.pt``
+    is always readable and asking the DiT's question would refuse one on every install whose
+    torchao lacks some DiT scheme's constructors. Only the safetensors container has a
+    requirement, and a plan that drops the dense encoder for an artifact this install cannot open
+    leaves the load with neither.
+    """
+    if not name:
+        return False
+    from .prequant_safetensors import is_safetensors_checkpoint, safetensors_prequant_supported
+
+    return safetensors_prequant_supported() if is_safetensors_checkpoint(name) else True
 
 
 def family_te_prequant_repo(fam: Any, scheme: str, component: str) -> Optional[str]:
@@ -181,7 +232,7 @@ def family_te_prequant_repo(fam: Any, scheme: str, component: str) -> Optional[s
     for entry in getattr(fam, "te_prequant_repos", ()) or ():
         try:
             entry_scheme, entry_component, repo_id = entry
-        except Exception:  # noqa: BLE001 — a malformed entry must not break the load
+        except Exception:  # noqa: BLE001 - a malformed entry must not break the load
             continue
         if entry_scheme == scheme and entry_component == component:
             return repo_id
@@ -206,10 +257,12 @@ def resolve_te_prequant_source(
         return TePrequantSource(kind = "path", location = override, filename = None)
     repo_id = family_te_prequant_repo(fam, scheme, component)
     if repo_id:
+        names = te_prequant_repo_filenames(repo_id, component, scheme)
         return TePrequantSource(
             kind = "repo",
             location = repo_id,
-            filename = te_prequant_repo_filename(repo_id, component, scheme),
+            filename = names[0],
+            fallback_filenames = names[1:],
         )
     return None
 
@@ -244,7 +297,8 @@ def te_prequant_sources(
         if mode != TE_QUANT_FP8:
             return {}
         family = getattr(fam, "name", None)
-        # The per-family TE deny table ships on the video branch precision module (the image branch has no denials), so resolve it lazily and one module serves both.
+        # The per-family TE deny table ships on the video branch precision module (the image branch has no denials), so
+        # resolve it lazily and one module serves both.
         denied = getattr(precision, "_te_family_denied", None)
         if callable(denied) and denied(family, mode):
             return {}
@@ -294,7 +348,9 @@ def te_prequant_sources_for_base(
     return compatible
 
 
-# Weight files a dense encoder folder holds. Everything else (config.json, the shard index, tokenizer JSON) is kept when the pre-cast checkpoint replaces the weights: the pre-cast loader still meta-inits from the base repo component config.
+# Weight files a dense encoder folder holds. Everything else (config.json, the shard index, tokenizer JSON) is kept
+# when the pre-cast checkpoint replaces the weights: the pre-cast loader still meta-inits from the base repo component
+# config.
 _TE_WEIGHT_SUFFIXES = (".safetensors", ".bin", ".pth", ".pt", ".msgpack", ".h5")
 
 
@@ -359,8 +415,17 @@ def load_prequant_text_encoder(
 
         import torch
 
-        # The layerwise-fp8 state dict is plain tensors, so weights_only=True suffices and no pickle code runs even for a local path. A future torchao-subclass scheme needs a format bump AND the DiT module's allowlist.
-        ckpt = torch.load(path, weights_only = True, map_location = "cpu")
+        from .prequant_safetensors import is_safetensors_checkpoint, load_prequant_safetensors
+
+        # The layerwise-fp8 state dict is plain tensors, so weights_only=True suffices and no pickle code runs even for
+        # a local path. A future torchao-subclass scheme needs a format bump AND the DiT module's allowlist.
+        # A ``.safetensors`` artifact is read through the shared reader instead, which returns the same dict shape, so
+        # ``_validate_checkpoint`` and everything after it are unchanged. Dispatch is on the extension the resolver
+        # asked the Hub for, never on sniffing the bytes.
+        if is_safetensors_checkpoint(path):
+            ckpt = load_prequant_safetensors(path)
+        else:
+            ckpt = torch.load(path, weights_only = True, map_location = "cpu")
         if not _validate_checkpoint(ckpt, scheme, component, base, logger):
             return None
         state_dict = ckpt["state_dict"]
@@ -385,7 +450,9 @@ def load_prequant_text_encoder(
         if subfolder:
             config_kwargs["subfolder"] = subfolder
         config = transformers.AutoConfig.from_pretrained(base, **config_kwargs)
-        # Krea-2 ships transformers-5.x configs whose rope lives under rope_parameters; the runtime component loader remaps it for a 4.x runtime, and the meta-init here must match or the rebuilt encoder forwards with a broken rope.
+        # Krea-2 ships transformers-5.x configs whose rope lives under rope_parameters; the runtime component loader
+        # remaps it for a 4.x runtime, and the meta-init here must match or the rebuilt encoder forwards with a broken
+        # rope.
         from .diffusion_krea2 import remap_rope_parameters
 
         remap_rope_parameters(getattr(config, "text_config", config))
@@ -395,19 +462,23 @@ def load_prequant_text_encoder(
 
         with init_empty_weights():
             encoder = encoder_cls(config)
-        # assign=True swaps in the loaded tensors rather than copying into meta; strict=True since the saved dict is the full state dict of the same class.
         encoder.load_state_dict(state_dict, strict = True, assign = True)
         if _has_meta_tensors(encoder):
-            # Non-persistent buffers (built in __init__, absent from the state dict) stay on meta. Rebuild on CPU so they hold real values, then re-assign the cast weights.
+            # Non-persistent buffers (built in __init__, absent from the state dict) stay on meta. Rebuild on CPU so
+            # they hold real values, then re-assign the cast weights.
             encoder = encoder_cls(config)
             encoder.load_state_dict(state_dict, strict = True, assign = True)
-        # assign=True swaps in SEPARATE tensors for tied weights (the saved dict carries a copy per key), untying e.g. Qwen3's lm_head from embed_tokens and defeating _cast_fp8's tied-projection skip. Re-tie to the builder-identical structure; a no-op when untied.
+        # assign=True swaps in SEPARATE tensors for tied weights (the saved dict carries a copy per key), untying e.g.
+        # Qwen3's lm_head from embed_tokens and defeating _cast_fp8's tied-projection skip. Re-tie to the
+        # builder-identical structure; a no-op when untied.
         tie = getattr(encoder, "tie_weights", None)
         if callable(tie):
             tie()
         encoder.eval()
 
-        # Install the SAME upcast hooks the runtime cast applies. The weight cast inside is idempotent, so this only arms the per-layer upcast; without it the fp8 storage weights would meet bf16 activations at the first forward.
+        # Install the SAME upcast hooks the runtime cast applies. The weight cast inside is idempotent, so this only
+        # arms the per-layer upcast; without it the fp8 storage weights would meet bf16 activations at the first
+        # forward.
         from .diffusion_precision import _cast_fp8
 
         class _Target:
@@ -424,7 +495,7 @@ def load_prequant_text_encoder(
                 source.kind,
             )
         return encoder
-    except Exception as exc:  # noqa: BLE001 — fall back to the dense download + cast
+    except Exception as exc:  # noqa: BLE001 - fall back to the dense download + cast
         _warn(logger, f"{scheme}:{component}:{source.kind}", exc)
         return None
 
@@ -475,7 +546,7 @@ def te_prequant_pipe_kwargs(
             if encoder is not None:
                 injected[component] = encoder
         return injected
-    except Exception as exc:  # noqa: BLE001 — injection is an optimisation, never a blocker
+    except Exception as exc:  # noqa: BLE001 - injection is an optimisation, never a blocker
         _warn(logger, "pipe_kwargs", exc)
         return {}
 
@@ -494,13 +565,46 @@ def _resolve_checkpoint_path(
         return expanded if os.path.isfile(expanded) else None
     if source.kind == "repo":
         from huggingface_hub import hf_hub_download
-        return hf_hub_download(
-            repo_id = source.location,
-            filename = source.filename,
-            token = hf_token,
-            cache_dir = cache_dir,
-            local_files_only = local_files_only,
+        from huggingface_hub.errors import EntryNotFoundError, LocalEntryNotFoundError
+
+        # Which exception means "this NAME is absent" depends on the mode, and the two are not
+        # interchangeable. huggingface_hub documents LocalEntryNotFoundError as "not on the disk
+        # when network is disabled OR UNAVAILABLE (connection issue). The entry may exist on the
+        # Hub", and it SUBCLASSES EntryNotFoundError, so catching the base online would swallow an
+        # unreachable Hub, spend a second full attempt on the next name, and report that one's
+        # error instead of the connection failure that actually happened. Online, only a real 404
+        # advances; offline, a cache miss is the only verdict there is.
+        miss = (
+            (EntryNotFoundError, LocalEntryNotFoundError)
+            if local_files_only
+            else (EntryNotFoundError,)
         )
+        names = [n for n in te_candidate_filenames(source) if te_candidate_is_readable(n)]
+        last: Optional[Exception] = None
+        for name in names:
+            try:
+                return hf_hub_download(
+                    repo_id = source.location,
+                    filename = name,
+                    token = hf_token,
+                    cache_dir = cache_dir,
+                    local_files_only = local_files_only,
+                )
+            except LocalEntryNotFoundError:
+                # Online this is the Hub being unreachable, not a missing name: re-raise as itself
+                # rather than blaming the next candidate for it.
+                if not local_files_only:
+                    raise
+                last = sys.exc_info()[1]
+                continue
+            except miss as exc:
+                # This name is not in this repo. Try the next extension rather than giving up:
+                # only "no candidate exists" is a real miss, and anything else (auth, a corrupt
+                # cache) must still surface as itself.
+                last = exc
+                continue
+        if last is not None:
+            raise last
     return None
 
 
@@ -529,7 +633,8 @@ def _validate_checkpoint(ckpt: Any, scheme: str, component: str, base: str, logg
         return False
     ckpt_base = meta.get("base_model_id")
     if base:
-        # Keys matching a different base can load strict=True and encode prompts with the wrong weights. The builder always records base_model_id, so refuse one that omits it.
+        # Keys matching a different base can load strict=True and encode prompts with the wrong weights. The builder
+        # always records base_model_id, so refuse one that omits it.
         if not ckpt_base:
             _warn(
                 logger,
@@ -566,13 +671,15 @@ def te_prequant_hub_files(
         except Exception as exc:  # noqa: BLE001 -- unavailable pre-cast means the dense encoder
             _warn(logger, f"hub_files:{source.location}", exc)
             continue
-        files = [
-            (s.rfilename, int(getattr(s, "size", 0) or 0))
-            for s in (info.siblings or [])
-            if s.rfilename == source.filename
-        ]
-        if files:
-            found[component] = files
+        sizes = {s.rfilename: int(getattr(s, "size", 0) or 0) for s in (info.siblings or [])}
+        # The first candidate the repo HOLDS and this install can OPEN, in the resolver's own
+        # order, so the bytes counted here are the bytes that will actually be fetched. Matching
+        # the primary name alone reported every .pt repo as having no pre-cast encoder at all the
+        # moment safetensors became the preferred spelling.
+        for name in te_candidate_filenames(source):
+            if name in sizes and te_candidate_is_readable(name):
+                found[component] = [(name, sizes[name])]
+                break
     return found
 
 

@@ -22,7 +22,7 @@ Adding a case here widens the proof for free; the driver iterates this dict.
 
 from __future__ import annotations
 
-#: A 1x1 transparent GIF, left unclosed so a caller appends its own `alt="..."` attribute.
+# : A 1x1 transparent GIF, left unclosed so a caller appends its own `alt="..."` attribute.
 IMG = '<img src="data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==" '
 
 CONSTRUCTS = {

@@ -30,8 +30,8 @@ ART.mkdir(parents = True, exist_ok = True)
 
 TIMEOUT_MS = int(os.environ.get("STUDIO_UI_TIMEOUT_MS", "30000"))
 
-# The installation-wide slots the per-chat edits below must not touch. The legacy confirm toggle
-# is here on purpose: loadPermissionMode falls back to it, so writing it would leak globally.
+# The installation-wide slots the per-chat edits below must not touch. The legacy confirm toggle is here on purpose:
+# loadPermissionMode falls back to it, so writing it would leak globally.
 GLOBAL_KEYS = (
     "unsloth_chat_tools_enabled",
     "unsloth_chat_code_tools_enabled",
@@ -302,6 +302,85 @@ def read_globals(page):
     )
 
 
+def check_reasoning_transcript(page, token):
+    step("saved reasoning scrolls continuously with bounded content and full-source copy")
+    source = "\n\n".join(
+        f"Step {index:04d}. Compare this observation with the preceding reasoning "
+        "and keep the complete trace available for inspection."
+        for index in range(400)
+    )
+    thread_id = seed_thread(page, token, "Continuous reasoning transcript")
+    messages = api(page, f"/api/chat/threads/{thread_id}/messages", token = token)["messages"]
+    messages.append(
+        {
+            "id": str(uuid.uuid4()),
+            "threadId": thread_id,
+            "parentId": messages[0]["id"],
+            "role": "assistant",
+            "content": [
+                {"type": "reasoning", "text": source},
+                {"type": "text", "text": "The final answer stays separate."},
+            ],
+            "createdAt": int(time.time() * 1000),
+        }
+    )
+    api(
+        page,
+        f"/api/chat/threads/{thread_id}/messages",
+        method = "PUT",
+        token = token,
+        body = {"messages": messages},
+    )
+    open_thread(page, thread_id)
+    # By slot, not by label. This clicked `name = "Thought for 0 seconds"` until #11373
+    # reworded the trigger to "Worked for ...", and a driver that names the copy fails the
+    # whole leg on a wording change while the button it wants is right there. The slot is
+    # what the component guarantees; the wording is product copy and moves.
+    trigger = page.locator('[data-slot="reasoning-trigger"]').first
+    if trigger.get_attribute("data-state") == "open":
+        trigger.click()
+        expect(page.locator('[data-slot="reasoning-transcript"]')).to_have_count(0)
+    trigger.click()
+    body = page.locator('[data-slot="reasoning-text"]')
+    transcript = page.locator('[data-slot="reasoning-transcript"]')
+    expect(transcript).to_be_visible()
+    expect(page.locator('[data-slot="reasoning-page-navigation"]')).to_have_count(0)
+    expect(body).to_contain_text("Step 0000.")
+    assert len(body.inner_text()) < 20000, "saved reasoning mounted the entire trace"
+
+    page.context.grant_permissions(["clipboard-read", "clipboard-write"])
+    page.get_by_role("button", name = "Copy reasoning", exact = True).click()
+    expect(page.get_by_role("button", name = "Copied", exact = True)).to_be_visible()
+    assert page.evaluate("navigator.clipboard.readText()") == source
+
+    viewport = page.locator(".aui-thread-viewport")
+    box = viewport.bounding_box()
+    page.mouse.move(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
+    # One wheel is not the end of a virtualized transcript. It stops at the bottom of the height
+    # ESTIMATED for the passages not yet mounted, and measuring the ones it mounts grows the
+    # transcript under it: measured against this build, the first wheel stopped at scrollTop 8468
+    # of 15637 and the second reached the end. On CI the retries then waited on a window that
+    # nothing was going to move. A reader keeps scrolling; so does this, bounded.
+    for _ in range(12):
+        page.mouse.wheel(0, 100000)
+        page.wait_for_timeout(250)
+        if "Step 0399." in body.inner_text():
+            break
+    expect(body).to_contain_text("Step 0399.")
+    assert len(body.inner_text()) < 20000, "scrolling mounted the entire trace"
+    expect(page.get_by_text("The final answer stays separate.", exact = True)).to_be_visible()
+    expect(body).not_to_contain_text("The final answer stays separate.")
+
+    trigger.click()
+    expect(transcript).to_have_count(0)
+    page.wait_for_timeout(300)
+    header_top = trigger.bounding_box()["y"]
+    trigger.click()
+    expect(body).to_contain_text("Step 0000.")
+    page.wait_for_timeout(300)
+    assert abs(trigger.bounding_box()["y"] - header_top) < 3, "reopening moved the header"
+
+
 def main():
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch(args = ["--no-sandbox", "--disable-dev-shm-usage"])
@@ -333,11 +412,8 @@ def main():
             fail(f"toggling back never reached the defaults: {disabled_globals!r}")
 
         step("pin the installation default every later step compares against")
-        # The install is shared, not fresh: the UI workflow boots this server on the same
-        # Unsloth home the chat-ui and cross-browser permission tests have already used, and
-        # those leave a permission level behind in the mirrored settings. Every assertion
-        # below names a literal level, so the default is set here rather than assumed.
-        # No chat is open, so this writes the installation default itself.
+        # The install is shared, not fresh: earlier UI tests run on the same Unsloth home and
+        # leave a permission level behind, so the default is set here rather than assumed.
         choose_permission(page, "Approve for me")
         print(
             f"[thread-settings]   defaults now {read_globals(page)!r}",
@@ -345,9 +421,9 @@ def main():
         )
 
         step("seed two saved chats")
-        # Both id shapes are real: chats started in the app keep their `__LOCALID_` id as the
-        # row's primary key, imported and older rows do not. Seeding only uuids is what let
-        # this run miss the prefix being read as "no row yet".
+        # Both id shapes are real: chats started in the app keep their `__LOCALID_` id as the row's primary key,
+        # imported and older rows do not. Seeding only uuids is what let this run miss the prefix being read as
+        # "no row yet".
         thread_a = seed_thread(page, token, "Chat A", app_created_thread_id())
         thread_b = seed_thread(page, token, "Chat B")
         print(f"[thread-settings]   A={thread_a} B={thread_b}", flush = True)
@@ -398,8 +474,8 @@ def main():
         expect_pills(page, "B after switching back", False, True, "Run automatically")
 
         step("and a sidebar switch, with no reload, does the same")
-        # The reload-free path is the one users take, and the only one where the store still
-        # holds the outgoing chat's values when the incoming snapshot is applied.
+        # The reload-free path is the one users take, and the only one where the store still holds the outgoing chat's
+        # values when the incoming snapshot is applied.
         open_thread_in_page(page, "Chat A")
         expect_pills(page, "A after an in-page switch", True, False, "Ask for approval")
         open_thread_in_page(page, "Chat B")
@@ -407,8 +483,8 @@ def main():
         shoot(page, "03-in-page-switch")
 
         step("leaving a chat for a new one restores the installation defaults in place")
-        # No reload here either, so the defaults have to come from the captured copy rather
-        # than from the store being rebuilt out of localStorage.
+        # No reload here either, so the defaults have to come from the captured copy rather than from the store being
+        # rebuilt out of localStorage.
         new_chat_in_page(page)
         expect_pills(page, "new chat after an in-page switch", False, False, "Approve for me")
 
@@ -460,6 +536,8 @@ def main():
         for thread in listing.get("threads", []):
             if thread.get("settings") is not None:
                 fail(f"thread listing carries a settings snapshot: {thread['id']}")
+
+        check_reasoning_transcript(page, token)
 
         if page_errors:
             fail(f"page errors during the run: {page_errors[:3]!r}")

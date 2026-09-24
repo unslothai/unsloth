@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import type { DownloadJob } from "../download-manager";
+import type { DownloadJob, DownloadPresentation } from "../download-manager";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { DownloadStopMode } from "./download-cancel-indicator";
 
@@ -42,9 +42,8 @@ export function downloadStopMode(
   cancelTransport?: string | null,
   partialsResumable = false,
 ): DownloadStopMode {
-  // The cancel marker wins where there is one: a Xet run that fell back to
-  // HTTP still cancels into a restart-only partial, so Pause would promise a
-  // resume the marker does not allow.
+  // The cancel marker wins where there is one: a Xet run that fell back to HTTP still cancels into
+  // a restart-only partial, so Pause would promise a resume the marker does not allow.
   const transport = cancelTransport ?? activeTransport ?? partialTransport;
   // Capability, not a row verdict: the partial being written right now is this
   // machine's own, so the installed writer decides whether stopping keeps it.
@@ -72,6 +71,7 @@ export function useDownloadCardState({
   job,
   variant,
   expectedBytes,
+  presentation,
   downloading,
   cancelling = job.cancelling,
   disabled,
@@ -83,6 +83,7 @@ export function useDownloadCardState({
   job: DownloadJob;
   variant: string | null;
   expectedBytes: number;
+  presentation?: DownloadPresentation;
   downloading: boolean;
   cancelling?: boolean;
   disabled: boolean;
@@ -118,15 +119,18 @@ export function useDownloadCardState({
       return;
     }
     setStarting(true);
-    void job.requestStartDownload(variant, expectedBytes).finally(() => {
-      if (mountedRef.current) setStarting(false);
-    });
+    void job
+      .requestStartDownload(variant, expectedBytes, presentation)
+      .finally(() => {
+        if (mountedRef.current) setStarting(false);
+      });
   }, [
     cancelling,
     disabled,
     downloading,
     expectedBytes,
     job,
+    presentation,
     starting,
     variant,
   ]);

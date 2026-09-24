@@ -148,8 +148,8 @@ def _build_trainer(
     )
     env.setdefault("UNSLOTH_FORCE_FLOAT32", "0")
     if mark_forced_float32:
-        # What from_pretrained stamps on the model. `forced_float32` sets it apart
-        # from the env, which is what an earlier load leaves behind.
+        # What from_pretrained stamps on the model.
+        # `forced_float32` sets it apart from the env, which is what an earlier load leaves behind.
         model._unsloth_forced_float32 = (
             (env["UNSLOTH_FORCE_FLOAT32"] == "1") if forced_float32 is None else forced_float32
         )
@@ -209,6 +209,8 @@ def _generate(trainer, env, has_bf16):
         "nullcontext": nullcontext,
         "self": trainer,
         "seen": [],
+        # The generated trainer gets this from rl.py's preamble, so the header resolves it there too.
+        "DEVICE_TYPE_TORCH": "cuda",
     }
     helpers = _autocast_helper_source()
     if helpers:
@@ -329,7 +331,11 @@ def test_an_unstamped_model_still_takes_the_environments_finetuning_mode():
 
 
 def test_the_loaders_stamp_the_full_finetuning_answer_on_the_model():
-    for rel in ("unsloth/models/loader.py", "unsloth/models/vision.py"):
+    for rel in (
+        "unsloth/models/loader.py",
+        "unsloth/models/vision.py",
+        "unsloth/models/sentence_transformer.py",
+    ):
         src = (REPO_ROOT / rel).read_text(encoding = "utf-8")
         assert "_mark_full_finetuning(" in src, rel
 

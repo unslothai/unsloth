@@ -22,11 +22,13 @@ ignore appears without a step that runs the same path, or the other way round.
 """
 
 import ast
+import fnmatch
 import importlib.util
 import re
 from pathlib import Path
 
 import pytest
+import yaml
 
 WORKFLOW = Path(__file__).resolve().parents[2] / ".github" / "workflows" / "studio-backend-ci.yml"
 
@@ -40,38 +42,130 @@ ISOLATED = [
 ]
 
 
-def _pytest_commands(text: str) -> list[str]:
-    """Every `python -m pytest ...` invocation in the workflow, line joins resolved.
+def _jobs() -> dict:
+    return yaml.safe_load(WORKFLOW.read_text(encoding = "utf-8"))["jobs"]
 
-    Read off the raw text rather than the parsed YAML: a `run:` block is one
-    scalar and the interesting structure is inside it, so parsing buys nothing and
-    would make this depend on the job/step layout instead of the commands.
+
+def _selections(job_name: str) -> list[str]:
+    """The `selection` of each matrix entry of one job, whitespace-normalised.
+
+    Not every entry has one: the `pytest` job's 3.11 floor-spot-check leg names three
+    files directly and is not a shard of anything, so it carries no selection.
     """
-    joined = re.sub(r"\\\s*\n\s*", " ", text)
-    return [
-        line.strip()
-        for line in joined.splitlines()
-        if "python -m pytest" in line and not line.lstrip().startswith("#")
-    ]
+    job = _jobs()[job_name]
+    include = job.get("strategy", {}).get("matrix", {}).get("include", [])
+    return [" ".join(entry["selection"].split()) for entry in include if "selection" in entry]
 
 
-# Two different trees are run in parallel now, and the isolation below belongs to exactly
-# one of them. The repo-root job runs `tests/` from the checkout; the matrix job runs the
-# backend's own suite with `working-directory: studio/backend`, so `tests/studio/...` is
-# not a path that exists for it and demanding those ignores would be nonsense.
+def _commands_in(job_name: str) -> list[str]:
+    """Every `python -m pytest ...` invocation of one job, line joins and matrix resolved.
+
+    Read off the raw text of each `run:` scalar rather than off more parsed YAML: a
+    `run:` block is one scalar and the interesting structure is inside it, so parsing
+    further buys nothing and would make this depend on step layout instead of commands.
+
+    The one thing that cannot be read off the text is `${{ matrix.selection }}`, because
+    the paths live in the matrix rather than in the command. BOTH parallel jobs are
+    sharded now and both write their step that way, so the substitution has to know whose
+    matrix to read: expanding a command with the other job's selections would build runs
+    that are not in the workflow and ask the isolation questions below of those instead.
+    Hence per job, which is also how the caller knows the owner without guessing from a
+    flag that happens to appear in one of them.
+    """
+    job = _jobs()[job_name]
+    selections = _selections(job_name)
+    commands = []
+    for step in job.get("steps", []):
+        joined = re.sub(r"\\\s*\n\s*", " ", str(step.get("run", "")))
+        for line in joined.splitlines():
+            line = line.strip()
+            if "python -m pytest" not in line or line.startswith("#"):
+                continue
+            if "${{ matrix.selection }}" in line:
+                commands.extend(
+                    line.replace("${{ matrix.selection }}", selection) for selection in selections
+                )
+            else:
+                commands.append(line)
+    return commands
+
+
+def _pytest_commands() -> list[str]:
+    """Every pytest invocation in the workflow, across every job."""
+    return [command for job_name in _jobs() for command in _commands_in(job_name)]
+
+
+def _collects(command: str, path: str) -> bool:
+    """Whether a pytest command would collect `path`, by its roots and its ignore flags.
+
+    An isolated path used to be kept out of the parallel run by naming it in an --ignore.
+    A shard that does not name its directory at all keeps it out just as effectively, so
+    the question the guard asks is whether the run reaches the path, not how.
+
+    --ignore-glob is read as well as --ignore, because the backend shards are told apart
+    by nothing else: all three root at `tests/` and differ only in which glob they
+    exclude. Treating those flags as noise would have every backend shard appear to
+    collect every backend file, and "not collected by any parallel run" would then be
+    unfalsifiable for the whole suite.
+    """
+    tokens = command.split()
+    roots, ignores, globs = [], [], []
+    index = 0
+    while index < len(tokens):
+        token = tokens[index]
+        if token.startswith("--ignore-glob="):
+            globs.append(token.split("=", 1)[1].strip("'\""))
+        elif token.startswith("--ignore="):
+            ignores.append(token.split("=", 1)[1].rstrip("/"))
+        elif token == "--deselect":
+            index += 1
+        elif token.startswith("tests/") or token == "tests":
+            roots.append(token.rstrip("/"))
+        index += 1
+
+    def under(prefix, candidate):
+        return candidate == prefix or candidate.startswith(prefix + "/")
+
+    if any(under(ignore, path) for ignore in ignores):
+        return False
+    if any(_ignore_glob_hits(pattern, path) for pattern in globs):
+        return False
+    return any(under(root, path) for root in roots)
+
+
+def _ignore_glob_hits(pattern: str, path: str) -> bool:
+    """pytest's own --ignore-glob rule, for a repo-relative path.
+
+    pytest matches with `_pytest.pathlib.fnmatch_ex`, which fnmatches the ABSOLUTE path
+    against the pattern with `*/` prepended when the pattern contains a separator and is
+    relative. fnmatch's `*` crosses `/`, so the prefix is free and matching the suffix of
+    the relative path is the same question. Verified against pytest itself rather than
+    assumed: `--ignore-glob=tests/test_[a-h]*.py` does exclude tests/test_a.py and does
+    NOT exclude tests/sub/test_a.py, which is the property the shards below rely on.
+    """
+    return fnmatch.fnmatch(path, pattern) or fnmatch.fnmatch(path, f"*/{pattern}")
+
+
+# Two different trees are run in parallel now, and the isolation below belongs to exactly one of them. The repo-root
+# job runs `tests/` from the checkout; the matrix job runs the backend's own suite with
+# `working-directory: studio/backend`, so `tests/studio/...` is not a path that exists for it.
+# Told apart by the selection they carry. This used to be one flag, `--ignore=tests/qlora`, which only the repo-root
+# run had; the repo-root run is three shards now and only one of them carries that flag, so the test is membership of
+# the matrix instead. The backend matrix run is not in it.
 #
-# Told apart by what they ignore, because that is the thing both the ignores and this
-# scan are about: only the repo-root run excludes directories that live at the repo root.
-REPO_ROOT_MARKER = "--ignore=tests/qlora"
+# Both sides are membership now. The backend run used to be told apart by one of its --ignore flags, which stopped
+# identifying it once it was sharded the same way and its flags moved onto a shared step. Reading each side out of its
+# own job's matrix is the same question asked the same way twice, and it cannot start matching the other job by
+# accident the way a shared flag can; the shape test below asserts the two sets stay disjoint.
 
 
-def _over_the_repo_root(command: str) -> bool:
-    return REPO_ROOT_MARKER in command
+def _over_the_repo_tests(command: str) -> bool:
+    return any(selection in command for selection in _selections("repo-cpu-tests"))
 
 
-# The same pairing, for the backend matrix run. Ignoring a file from the parallel run and
-# running it again serially is two edits held together by nothing, and dropping the second
-# is silent: the job stays green while the tests stop running.
+# The same pairing, for the backend matrix run. Ignoring a file from the parallel run and running it again serially is
+# two edits held together by nothing, and dropping the second is silent: the job stays green while the tests stop
+# running.
 BACKEND_ISOLATED = [
     ("tests/test_streaming_stripper.py", "times itself against a reference in the same process"),
     ("tests/test_llama_cpp_wait_for_vram_settle.py", "asserts elapsed < 0.05"),
@@ -83,77 +177,90 @@ BACKEND_ISOLATED = [
     ),
     ("tests/test_web_fetch_extraction.py", "compares parse time at two input sizes"),
     ("tests/test_tool_call_parser_strict.py", "compares parse time at two nesting depths"),
+    ("tests/test_pr5624_regressions.py", "R1 parser's 1s bound exceeded under CPU contention"),
     # Found by staging rather than by the scan, and the scan cannot find it: see below.
-    ("tests/test_tunnel_safe_long_post.py", "work sleeps 0.2s past a 0.05s keepalive timer"),
+    (
+        "tests/test_tunnel_safe_long_post.py",
+        ":101 requires len(chunks) > 2, which one 100ms stall falsifies",
+    ),
     ("tests/test_scan_loras_off_event_loop.py", "counts heartbeats during a 0.3s sleep"),
     ("tests/test_anthropic_messages.py", "counts SSE keepalives emitted during a 0.24s stall"),
-    ("tests/test_profile_stats.py", "counts event-loop ticks during a 0.5s blocking call"),
+    # The tick count is not the tight part of this file: it has 5x margin. :400 is,
+    # `assert elapsed < 0.2` around a join that already costs 0.03s on an idle box.
+    ("tests/test_profile_stats.py", ":400 asserts elapsed < 0.2 around a 0.03s join"),
+    # Was ignored by the parallel run and rerun serially and named in NEITHER direction
+    # here, so the file was the one thing this guard cannot see: deleting it from the
+    # serial step would have left it running nowhere with the job green. It qualifies
+    # twice over. Timing-tight at :1101 `assert started.is_set()` under a patched
+    # _SWITCH_BUDGET_S = 0.3, against a cold path the file itself records at 1.98s -- and
+    # like test_tunnel_safe_long_post, the assertion is on a RESULT rather than on a
+    # duration, so the scan below cannot reach it. State-mutating as well: it writes
+    # keepwarm globals directly at :2628-2630. It has already failed this way once on
+    # 3.13 while 3.10 passed the same commit.
+    (
+        "tests/test_media_auto_switch.py",
+        ":1101 asserts started.is_set() under a patched 0.3s budget on a 1.98s cold path, "
+        "and writes keepwarm globals at :2628-2630",
+    ),
 ]
 
-# What the scan above does NOT cover, recorded because the gap is structural rather than a
-# missing case. It finds assertions that COMPARE clock-derived values. A test can depend on
-# timing without any clock in it at all: test_tunnel_safe_long_post patches the keepalive
-# threshold to 0.05s and makes the work sleep 0.2s, then asserts on the RESULT -- that the
-# response starts with padding -- so whether it passes turns on which of two timers fired
-# first, and nothing in the expression is a duration. It failed exactly that way on a
-# staging 3.13 leg that had been green.
+# What the scan above does NOT cover, recorded because the gap is structural rather than a missing case. It finds
+# assertions that COMPARE clock-derived values. A test can depend on timing without any clock in it at all:
+# test_tunnel_safe_long_post patches the keepalive threshold to 0.05s and makes the work sleep 0.2s, then asserts on
+# the RESULT -- that the response starts with padding -- so whether it passes turns on which of two timers fired
+# first, and nothing in the expression is a duration. It failed exactly that way on a staging 3.13 leg that had been
+# green.
 #
-# test_scan_loras_off_event_loop is the same shape from the other direction: it counts how
-# many times a heartbeat coroutine ticked during a 0.3s sleep and requires at least three.
-# Descheduling the worker costs ticks without the scan being wrong, and the assertion
-# compares a COUNT, so again there is no duration to find.
+# test_scan_loras_off_event_loop is the same shape from the other direction: it counts how many times a heartbeat
+# coroutine ticked during a 0.3s sleep and requires at least three. Descheduling the worker costs ticks without the
+# scan being wrong, and the assertion compares a COUNT, so again there is no duration to find.
 #
-# Ten backend files pair a sub-second sleep with a small threshold constant. Four times the
-# threshold was not enough margin for the one that failed, so the ratio is not a usable
-# rule, and flagging all ten would serialise a large part of the suite on a guess.
+# Ten backend files pair a sub-second sleep with a small threshold constant. Four times the threshold was not enough
+# margin for the one that failed, so the ratio is not a usable rule, and flagging all ten would serialise a large part
+# of the suite on a guess.
 #
-# So this class is found by reading rather than by scanning. The first arrived from a
-# staging failure, the second from review, and the third from reading the other eight
-# candidates once the shape was clear: test_anthropic_messages counts SSE keepalives
-# emitted during a 0.24s stall, which loses keepalives to a descheduled worker exactly as
-# the heartbeat test loses ticks.
+# So this class is found by reading rather than by scanning. The first arrived from a staging failure, the second from
+# review, and the third from reading the other eight candidates once the shape was clear: test_anthropic_messages
+# counts SSE keepalives emitted during a 0.24s stall, which loses keepalives to a descheduled worker exactly as the
+# heartbeat test loses ticks.
 #
-# That same pass turned up one false positive worth naming, because the grep that finds
-# these is crude: test_diffusion_backend asserts len(staged) > 1 near a 0.2s sleep, but
-# `staged` is a list comprehension over cached filenames and has no timing in it at all.
-# It also costs 152s, so isolating it on the strength of a pattern match would have been
-# expensive as well as wrong. Read the assertion before adding a file here.
+# That same pass turned up one false positive worth naming, because the grep that finds these is crude:
+# test_diffusion_backend asserts len(staged) > 1 near a 0.2s sleep, but `staged` is a list comprehension over cached
+# filenames and has no timing in it at all. It also costs 152s, so isolating it on the strength of a pattern match
+# would have been expensive as well as wrong. Read the assertion before adding a file here.
 
-# Below this, an elapsed-time bound is inside the range of a single scheduler quantum, so
-# under four workers on four vCPUs it measures the scheduler as much as the code. Above it
-# there is enough headroom to survive being descheduled. Twenty-two backend files assert
-# some elapsed bound and serialising all of them would give back most of what -n 4 buys,
-# so the line is drawn where the measurement stops being about the code.
-BACKEND_MARKER = "--ignore=tests/test_studio_api.py"
+# Below this, an elapsed-time bound is inside the range of a single scheduler quantum, so under four workers on four
+# vCPUs it measures the scheduler as much as the code. Above it there is enough headroom to survive being descheduled.
+# Twenty-two backend files assert some elapsed bound and serialising all of them would give back most of what -n 4
+# buys, so the line is drawn where the measurement stops being about the code.
+TIGHT_BOUND_S = 0.1
 
 
 def _over_the_backend(command: str) -> bool:
-    return BACKEND_MARKER in command
+    return any(selection in command for selection in _selections("pytest"))
 
-
-TIGHT_BOUND_S = 0.1
 
 BACKEND_TESTS = Path(__file__).resolve().parents[2] / "studio" / "backend" / "tests"
 _CLOCKS = ("monotonic", "perf_counter", "process_time", "time")
 
 
-# Sites the scan finds and a human has read. The scan looks for a comparison between two
-# clock-derived quantities, which is the right net to cast, but not every such comparison
-# is a performance claim. None of these can be broken by descheduling:
+# Sites the scan finds and a human has read. The scan looks for a comparison between two clock-derived quantities,
+# which is the right net to cast, but not every such comparison is a performance claim. None of these can be broken
+# by descheduling:
 #
-#   a SANDWICH, `before <= recorded <= after`, asserts a stamp was taken between two
-#   reads. Widening the gap cannot falsify it.
-#   a POLL DEADLINE, `time.monotonic() < limit` inside a wait-for-condition loop, is the
-#   pattern that replaces a guessed sleep. Its 5s budget is a timeout, not a measurement.
+#   a SANDWICH, `before <= recorded <= after`, asserts a stamp was taken between two reads. Widening the gap cannot
+#   falsify it.
+#   a POLL DEADLINE, `time.monotonic() < limit` inside a wait-for-condition loop, is the pattern that replaces a
+#   guessed sleep. Its 5s budget is a timeout, not a measurement.
 #   a SENTINEL, `stamp < 0.0`, compares against a magic value rather than a duration.
 #
-# Keyed on the enclosing function rather than a line number, so an edit above it does not
-# silently move the exemption onto something else.
+# Keyed on the enclosing function rather than a line number, so an edit above it does not silently move the exemption
+# onto something else.
 BENIGN_TIMING = {
     ("test_media_auto_switch.py", "_until"),
     ("test_openai_auto_switch.py", "test_any_finished_download_drops_the_resolver_cache"),
-    # A 600-second expiry checked against the wall clock. Reading both sides of that gap
-    # late by whole seconds still leaves it true, and it only reaches this scan at all
+    # A 600-second expiry checked against the wall clock.
+    # Reading both sides of that gap late by whole seconds still leaves it true, and it only reaches this scan at all
     # because the widened operand walk now reads `x > time.time()` as a bound.
     (
         "test_openai_codex_subscription.py",
@@ -203,9 +310,8 @@ def _timing_helpers(tree: ast.AST) -> set:
         for node in functions:
             if node.name in helpers:
                 continue
-            # With the helpers found so far, not without them: `value = base()` inside
-            # a wrapper only counts as timed once `base` is known, and the pass that
-            # learns `base` is not the pass that reads the wrapper.
+            # With the helpers found so far, not without them: `value = base()` inside a wrapper only counts as
+            # timed once `base` is known, and the pass that learns `base` is not the pass that reads the wrapper.
             local = _timed_names(node, helpers)
             for inner in ast.walk(node):
                 if not isinstance(inner, ast.Return) or inner.value is None:
@@ -264,6 +370,9 @@ def _is_timed(node: ast.AST, names: set, helpers: set) -> bool:
     return False
 
 
+_FRAGILE_CACHE: dict = {}
+
+
 def _fragile_timing_asserts(path: Path) -> list:
     """Assertions whose outcome depends on how the process was scheduled.
 
@@ -276,10 +385,24 @@ def _fragile_timing_asserts(path: Path) -> list:
 
     Read with ast, not a regex: grepping `< 0.05` matches a float tolerance, and grepping
     `elapsed` matches whatever a variable happens to be called.
+
+    Memoised on (resolved path, file text). Two tests below scan all 924 backend test
+    files and the dict comprehension in one of them calls this twice per path, so the
+    same parse-and-walk ran roughly three times over: 19.0s + 20.6s of the file's 37.8s.
+    The read is deliberately still done every call and the text is part of the key, so a
+    file rewritten mid-session is rescanned rather than served a stale verdict; only the
+    parse and the walks are shared. The stored list is copied out, so no caller can
+    mutate another's result, and the tree never leaves this function.
     """
+    source = path.read_text(encoding = "utf-8", errors = "replace")
+    key = (str(path.resolve()), source)
+    cached = _FRAGILE_CACHE.get(key)
+    if cached is not None:
+        return list(cached)
     try:
-        tree = ast.parse(path.read_text(encoding = "utf-8", errors = "replace"))
+        tree = ast.parse(source)
     except SyntaxError:
+        _FRAGILE_CACHE[key] = []
         return []
     # Helpers first: a name can hold a duration only because a helper returned one.
     helpers = _timing_helpers(tree)
@@ -299,10 +422,10 @@ def _fragile_timing_asserts(path: Path) -> list:
         for cmp_node in ast.walk(node.test):
             if not isinstance(cmp_node, ast.Compare):
                 continue
-            # Every adjacent pair, not just the one starting at cmp_node.left. A chained
-            # `0.3 <= elapsed < 2.0` is a single Compare whose first operand is a literal,
-            # so requiring the leftmost operand to be timed skipped the `elapsed < 2.0`
-            # link and let the file stay in the -n 4 run with the guard still green.
+            # Every adjacent pair, not just the one starting at cmp_node.left.
+            # A chained `0.3 <= elapsed < 2.0` is a single Compare whose first operand is a literal, so requiring the
+            # leftmost operand to be timed skipped the `elapsed < 2.0` link and let the file stay in the -n 4 run with
+            # the guard still green.
             # test_llama_cpp_wait_for_vram_settle.py already writes bounds that way.
             operands = [cmp_node.left, *cmp_node.comparators]
             for index, op in enumerate(cmp_node.ops):
@@ -319,16 +442,17 @@ def _fragile_timing_asserts(path: Path) -> list:
                 elif isinstance(upper, ast.Constant) and isinstance(upper.value, (int, float)):
                     if upper.value <= TIGHT_BOUND_S:
                         found.append(f"{path.name}:{node.lineno} duration < {upper.value}")
-    return found
+    _FRAGILE_CACHE[key] = found
+    return list(found)
 
 
 @pytest.mark.parametrize("path, reason", ISOLATED, ids = [p for p, _ in ISOLATED])
 def test_an_isolated_path_is_ignored_by_every_parallel_pytest_run(path, reason):
-    for command in _pytest_commands(WORKFLOW.read_text(encoding = "utf-8")):
-        if " -n " not in f" {command} " or not _over_the_repo_root(command):
+    for command in _pytest_commands():
+        if " -n " not in f" {command} " or not _over_the_repo_tests(command):
             continue
-        assert f"--ignore={path}" in command, (
-            f"{path} ({reason}) is not ignored by a parallel pytest run in "
+        assert not _collects(command, path), (
+            f"{path} ({reason}) is collected by a parallel pytest run in "
             f"{WORKFLOW.name}, so it shares four workers on the runner's four vCPUs: {command}"
         )
 
@@ -338,7 +462,7 @@ def test_an_isolated_path_still_runs_in_a_serial_step(path, reason):
     """Ignoring it is half the change. Without this, the tests silently stop running."""
     serial = [
         command
-        for command in _pytest_commands(WORKFLOW.read_text(encoding = "utf-8"))
+        for command in _pytest_commands()
         if " -n " not in f" {command} "
         and re.search(rf"(?<![\w/]){re.escape(path)}(?![\w/])", command)
     ]
@@ -350,22 +474,45 @@ def test_an_isolated_path_still_runs_in_a_serial_step(path, reason):
 
 def test_the_command_scan_sees_the_parallel_run_and_the_serial_steps():
     """Pin the parser: a scan that matched nothing would pass both tests above."""
-    commands = _pytest_commands(WORKFLOW.read_text(encoding = "utf-8"))
+    commands = _pytest_commands()
     parallel = [command for command in commands if " -n " in f" {command} "]
-    assert len(parallel) == 2, (
-        f"expected two parallel pytest runs, the backend matrix and repo-cpu-tests, got "
-        f"{parallel}. If a job stopped running in parallel, say so here rather than "
-        f"letting this scan quietly cover one run."
+    assert len(parallel) == 6, (
+        f"expected six parallel pytest runs, three shards of the backend matrix and three "
+        f"of repo-cpu-tests, got {parallel}. If a job stopped running in parallel, or a "
+        f"shard was added or removed, say so here rather than letting this scan quietly "
+        f"cover fewer runs."
     )
-    root = [command for command in parallel if _over_the_repo_root(command)]
-    assert len(root) == 1, (
-        f"expected exactly one parallel run over the repo root, got {root}. The isolation "
-        f"checks above apply to that one, and a scan that matched none of them would pass "
-        f"on nothing."
+    root = [command for command in parallel if _over_the_repo_tests(command)]
+    assert len(root) == 3, (
+        f"expected the three repo-root shards, got {root}. The isolation checks above apply "
+        f"to those, and a scan that matched none of them would pass on nothing."
     )
-    # The line joins have to be resolved, or the parallel command reads as `pytest tests/ -q`
-    # with none of its --ignore flags and the first test above passes on nothing.
-    assert "--ignore=" in root[0]
+    backend = [command for command in parallel if _over_the_backend(command)]
+    assert len(backend) == 3, (
+        f"expected the three backend shards, got {backend}. Same reason: the backend "
+        f"isolation checks apply to those."
+    )
+    # The two jobs are told apart by whose matrix a command's paths came out of, so the sets have to be disjoint or
+    # each job's isolation rules would be applied to the other's runs -- which is how tests/studio/... would come to be
+    # asked of a run whose working directory is studio/backend.
+    assert not set(root) & set(
+        backend
+    ), f"a command reads as belonging to both jobs: {set(root) & set(backend)}"
+    assert len(parallel) == len(root) + len(backend), (
+        f"a parallel run belongs to neither job's matrix, so nothing below checks it: "
+        f"{[command for command in parallel if command not in root + backend]}"
+    )
+    # The line joins and the matrix substitution both have to be resolved, or a shard command reads as
+    # `pytest ${{ matrix.selection }} -q` with no paths at all and the first test above passes on nothing.
+    assert all("${{" not in command for command in root + backend)
+    assert any("--ignore=" in command for command in root)
+    assert {command for command in root} == set(root), "a shard selection appears twice"
+    assert len(set(backend)) == 3, "a backend shard selection appears twice"
+    # Non-vacuous for the backend side too: the shards between them must reach the backend suite.
+    assert any(_collects(command, "tests/test_account_contract.py") for command in backend)
+    # Non-vacuous the other way too: the shards between them must reach the repo's test root, or "not collected by any
+    # parallel run" would be true of every path in the repo.
+    assert any(_collects(command, "tests/test_model_registry.py") for command in root)
     assert len(commands) > 1, "no serial pytest steps found; the ignore checks cannot fail"
 
 
@@ -377,16 +524,13 @@ def test_the_backend_matrix_still_runs_in_parallel():
     depends on the order it runs in. Asserted here because dropping the flag would show up
     only as CI slowly getting slower again, which nothing reports.
     """
-    backend = [
-        command
-        for command in _pytest_commands(WORKFLOW.read_text(encoding = "utf-8"))
-        if "--ignore=tests/test_studio_api.py" in command
-    ]
+    backend = [command for command in _pytest_commands() if _over_the_backend(command)]
     assert backend, "the backend matrix pytest step is gone or was renamed past this scan"
-    assert " -n " in f" {backend[0]} ", (
-        f"the backend matrix leg is running serially again, which costs about 17 minutes "
-        f"per leg on every pull request and every push to main: {backend[0]}"
-    )
+    for command in backend:
+        assert " -n " in f" {command} ", (
+            f"a backend matrix shard is running serially again, which costs about 17 "
+            f"minutes on every pull request and every push to main: {command}"
+        )
 
 
 @pytest.mark.parametrize("path, reason", BACKEND_ISOLATED, ids = [p for p, _ in BACKEND_ISOLATED])
@@ -399,14 +543,17 @@ def test_a_backend_isolated_path_is_ignored_by_the_parallel_run(path, reason):
     """
     parallel = [
         command
-        for command in _pytest_commands(WORKFLOW.read_text(encoding = "utf-8"))
+        for command in _pytest_commands()
         if " -n " in f" {command} " and _over_the_backend(command)
     ]
     assert parallel, "the backend parallel run is gone or was renamed past this scan"
-    assert f"--ignore={path}" in parallel[0], (
-        f"{path} ({reason}) is back in the backend parallel run, where its measurements "
-        f"compare a descheduled worker against an undescheduled one: {parallel[0]}"
-    )
+    # Asked of EVERY shard, as "does this run reach the path" rather than "does it spell
+    # this --ignore", so a shard that quietly grew its own root still has to get past it.
+    for command in parallel:
+        assert not _collects(command, path), (
+            f"{path} ({reason}) is back in a backend parallel run, where its measurements "
+            f"compare a descheduled worker against an undescheduled one: {command}"
+        )
 
 
 @pytest.mark.parametrize("path, reason", BACKEND_ISOLATED, ids = [p for p, _ in BACKEND_ISOLATED])
@@ -414,7 +561,7 @@ def test_a_backend_isolated_path_still_runs_serially(path, reason):
     """Ignoring it is half the change; without this it runs nowhere and the job is green."""
     serial = [
         command
-        for command in _pytest_commands(WORKFLOW.read_text(encoding = "utf-8"))
+        for command in _pytest_commands()
         if " -n " not in f" {command} "
         and re.search(rf"(?<![\w/]){re.escape(path)}(?![\w/])", command)
     ]
@@ -427,9 +574,8 @@ def test_a_backend_isolated_path_still_runs_serially(path, reason):
 def test_every_tight_elapsed_bound_is_isolated():
     """The rule, applied by scanning rather than by memory.
 
-    Two of the entries above were found by review rather than by CI: they passed on
-    staging and would have flaked later. A new test asserting a 20ms bound would do the
-    same. This finds them, so adding one forces the isolation instead of buying a flake.
+    Two entries above were found by review, not CI: they passed on staging and would have
+    flaked later. This finds them, so adding one forces the isolation instead of a flake.
     """
     isolated = {path for path, _ in BACKEND_ISOLATED}
     stray = {}
@@ -455,7 +601,7 @@ def test_every_tight_elapsed_bound_is_isolated():
     )
 
 
-def test_the_scan_finds_all_three_shapes():
+def test_the_scan_finds_all_three_shapes(tmp_path):
     """A scan that matched nothing would pass the test above on an empty set.
 
     One of each form the suite actually uses, because each needed its own handling and
@@ -463,53 +609,80 @@ def test_the_scan_finds_all_three_shapes():
       elapsed < 0.05                        a name assigned from a difference
       time.monotonic() - started < 0.2      the difference written inline
       _elapsed(big) < 8 * _elapsed(small)   a helper that returns a difference
-    """
-    found = {
-        path.name: _fragile_timing_asserts(path)
-        for path in sorted(BACKEND_TESTS.glob("*.py"))
-        if _fragile_timing_asserts(path)
-    }
-    assert "test_llama_cpp_wait_for_vram_settle.py" in found, found  # named
-    assert "test_tool_xml_strip.py" in found, found  # named
-    assert "test_diffusion_checkpoint_resume.py" in found, found  # helper, relative
 
-    # The inline form, which the suite currently uses only at 0.2s, above the threshold.
-    # Recognised rather than isolated, so tightening that bound would trip the guard.
-    inline = ast.parse(
+    Written out here rather than named as three real files. Naming them made this test a
+    second, invisible reason those files had to keep their fragile bounds: rewriting
+    `test_llama_cpp_wait_for_vram_settle.py` to assert on the naps the helper asks for
+    instead of on how long they took -- which is the outcome the scan exists to push
+    people toward -- failed HERE, in a file about CI topology, with a message about a
+    sample. The scan's own coverage should not depend on the suite still containing the
+    thing it is trying to remove.
+    """
+    shapes = {
+        "assigned name": (
+            "import time\n"
+            "def test_x():\n"
+            "    started = time.monotonic()\n"
+            "    work()\n"
+            "    elapsed = time.monotonic() - started\n"
+            "    assert elapsed < 0.05\n"
+        ),
+        "inline difference": (
+            "import time\n"
+            "def test_x():\n"
+            "    started = time.monotonic()\n"
+            "    work()\n"
+            "    assert time.monotonic() - started < 0.05\n"
+        ),
+        "helper, relative": (
+            "import time\n"
+            "def _elapsed(fn):\n"
+            "    started = time.perf_counter()\n"
+            "    fn()\n"
+            "    return time.perf_counter() - started\n"
+            "def test_x():\n"
+            "    assert _elapsed(big) < 8 * _elapsed(small)\n"
+        ),
+    }
+    for label, source in shapes.items():
+        sample = tmp_path / f"test_{label.replace(' ', '_').replace(',', '')}.py"
+        sample.write_text(source, encoding = "utf-8")
+        assert _fragile_timing_asserts(sample), (
+            f"the scan does not recognise the {label} shape, so a test written that way "
+            "could carry a 50ms bound into the -n 4 run unnoticed"
+        )
+
+    # And quiet on a bound with headroom, or every anti-hang ceiling goes serial for nothing.
+    roomy = tmp_path / "test_roomy.py"
+    roomy.write_text(
         "import time\n"
-        "def t():\n"
-        "    started = 0\n"
-        "    assert time.monotonic() - started < 0.05\n"
+        "def test_x():\n"
+        "    started = time.monotonic()\n"
+        "    work()\n"
+        "    elapsed = time.monotonic() - started\n"
+        "    assert elapsed < 30.0\n",
+        encoding = "utf-8",
     )
-    names, helpers = _timed_names(inline), _timing_helpers(inline)
-    node = [n for n in ast.walk(inline) if isinstance(n, ast.Assert)][0]
-    compare = node.test
-    assert _is_timed(compare.left, names, helpers), (
-        "an inline clock difference is not recognised as a duration, so a test written "
-        "that way could assert a 20ms bound and run under -n 4 unnoticed"
-    )
+    assert not _fragile_timing_asserts(roomy), _fragile_timing_asserts(roomy)
+
+    # Deliberately nothing about the live suite: the synthetic files cover every shape, and
+    # asserting the suite still has some would turn cleaning the last one into a failure.
 
 
 def test_an_isolated_file_never_shadows_an_installed_library_with_a_stub():
     """A stub may stand in for a MISSING library, never for an installed one.
 
-    `sys.modules.setdefault("httpx", stub)` reads as deferring to the real library and
-    does not: sys.modules holds what has been IMPORTED, not what is installed, so in a
-    process where nothing has touched httpx yet the stub wins and shadows it for the rest
-    of the session. These stubs carry no Response, starlette.testclient reads
-    httpx.Response at import, and every module collected afterwards that reaches
-    fastapi.testclient or routes.inference dies on it.
+    `sys.modules.setdefault("httpx", stub)` reads as deferring to the real library and does
+    not: sys.modules holds what has been IMPORTED, not what is installed, so where nothing
+    has touched httpx yet the stub wins for the rest of the session. These stubs carry no
+    Response, starlette.testclient reads httpx.Response at import, and every module after it
+    reaching fastapi.testclient or routes.inference dies on it. In a 26,000-test run
+    something always imports httpx first, so this stayed invisible while the suite was one
+    process; the serial step collects ten files, and the 3.10 leg failed collection on two.
 
-    In a 26,000-test run something always imports httpx first, so this was invisible for
-    as long as the suite ran as one process. The serial step collects ten files and
-    nothing else, and the 3.10 leg failed collection on two of them the first time it
-    ran.
-
-    Scoped to the isolated files on purpose. Roughly fifty other backend modules stub
-    structlog the same way, and they are load-bearing in a run that also imports the real
-    one; rewriting them is a separate change with its own risk, and the full parallel run
-    is not the process where a small file list makes the shadowing decisive. What has to
-    hold here is that anything moved OUT of that run stands on its own.
+    Scoped to the isolated files on purpose: ~fifty other backend modules stub structlog the
+    same way and are load-bearing in a run that also imports the real one. What has to hold
+    here is that anything moved OUT of the parallel run stands on its own.
     """
     offenders = {}
     for name, _reason in BACKEND_ISOLATED:

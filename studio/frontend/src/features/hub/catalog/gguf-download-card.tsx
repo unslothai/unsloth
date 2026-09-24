@@ -23,10 +23,10 @@ import {
 import { usePlatformStore } from "@/config/env";
 import { getCachedModelPath, revealCachedModel } from "@/features/chat";
 import { pinKey, usePinnedModelsStore } from "@/features/model-picker";
+import { useVramBudgetFraction } from "@/hooks/use-vram-budget-fraction";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
-import { type GgufFitClass, classifyGgufFit } from "@/lib/gguf-fit";
-import { useVramBudgetFraction } from "@/hooks/use-vram-budget-fraction";
+import { type GgufFitClass, classifyGgufVariantFit } from "@/lib/gguf-fit";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import {
@@ -39,8 +39,6 @@ import {
   MoreVerticalIcon,
   PinIcon,
   PinOffIcon,
-  PlayIcon,
-  RemoveCircleIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
@@ -53,6 +51,7 @@ import {
 } from "react";
 import {
   downloadManager,
+  pendingDrafterPresentation,
   useDownloadManagerStore,
   useHttpPartialsResumable,
   useRepoDownload,
@@ -69,11 +68,11 @@ import {
   ggufVariantTransferLabel,
   sortDownloadableGgufVariants,
 } from "../lib/gguf-variant-sort";
-import { HUB_GGUF_RUN_ACTIONS_VISIBLE } from "../lib/hub-feature-flags";
 import {
   ggufVariantsMatch,
   normalizeGgufVariantIdentity,
 } from "../lib/model-identity";
+import type { HubModelRunSelection } from "../lib/model-run-selection";
 import { useHfTokenStore } from "../stores/hf-token-store";
 import { DotTag } from "./dot-tag";
 import { DownloadStopIndicator } from "./download-cancel-indicator";
@@ -81,6 +80,7 @@ import {
   CardDivider,
   DeleteConfirmDialog,
   DownloadCard,
+  ModelRunActionButton,
   UpdateConfirmDialog,
 } from "./download-card";
 import {
@@ -144,22 +144,18 @@ const FIT_BADGE: Record<GgufFitClass, FitBadgeMeta> = {
 const CHIP_BASE =
   "inline-flex h-5 shrink-0 items-center justify-center whitespace-nowrap rounded-full border px-2 text-ui-11p5 font-medium tabular-nums leading-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]";
 const CHIP_DEFAULT =
-  "border-foreground/15 bg-muted text-foreground/85 dark:border-border/60 dark:bg-white/[0.04] dark:text-foreground/85";
-const CHIP_ACTIVE =
-  "border-control-accent/40 bg-control-accent/10 text-control-accent";
+  "border-[color-mix(in_oklab,var(--foreground)_calc(15%*var(--contrast-edge-gain,1)),transparent)] bg-muted text-foreground/85 dark:border-border/60 dark:bg-[rgb(255_255_255_/_calc(0.04*var(--contrast-wash-gain,1)))] dark:text-foreground/85";
 
 function QuantBadge({
   quant,
   fit,
   showFit = true,
-  active = false,
   variant = "trigger",
   tooltipMode = "eager",
 }: {
   quant: string;
   fit: GgufFitClass;
   showFit?: boolean;
-  active?: boolean;
   variant?: "trigger" | "menu";
   tooltipMode?: "eager" | "lazy" | "none";
 }) {
@@ -179,7 +175,7 @@ function QuantBadge({
           // `shrink` overrides CHIP_BASE's shrink-0 so a long file-path quant
           // label can shrink and truncate instead of overflowing the row.
           "min-w-0 max-w-full shrink gap-1.5 cursor-help",
-          active ? CHIP_ACTIVE : CHIP_DEFAULT,
+          CHIP_DEFAULT,
         )}
       >
         {showFit && (
@@ -194,14 +190,9 @@ function QuantBadge({
     ) : (
       // Trigger quant label is the row's primary identity and is short
       // (e.g. "Q4_K_M"); keep it `shrink-0` + `whitespace-nowrap` so it never
-      // collapses to "q…" when the Update/Run actions crowd the row. The info
+      // collapses to "q…" when trailing actions crowd the row. The info
       // group's `overflow-hidden` sacrifices the trailing status tags instead.
-      <span
-        className={cn(
-          "inline-flex shrink-0 cursor-help items-center gap-1.5 whitespace-nowrap text-ui-12p5 font-medium tracking-tight tabular-nums",
-          active ? "text-control-accent" : "text-foreground",
-        )}
-      >
+      <span className="inline-flex shrink-0 cursor-help items-center gap-1.5 whitespace-nowrap text-ui-12p5 font-medium tracking-tight tabular-nums text-foreground">
         {showFit && (
           <HugeiconsIcon
             icon={InformationCircleIcon}
@@ -269,16 +260,16 @@ function createGgufVariantMenuItems(
     key: normalizeGgufVariantIdentity(variant.quant),
     quant: variant.quant,
     label: ggufVariantDisplayLabel(variant),
-    fit: classifyGgufFit(variant.size_bytes, resources),
+    fit: classifyGgufVariantFit(variant, resources),
     downloaded: Boolean(variant.downloaded),
     partial: Boolean(variant.partial),
     downloadSizeLabel: ggufVariantTransferLabel(variant),
   }));
 }
 
-// Shared options menu: used on every variant row, the run bar, and the
-// single-model (non-GGUF) run bar. Omit `quant` for a repo-level model. The
-// identifier uses llama.cpp's repo:quant syntax so it pastes into `-hf`.
+// Shared options menu for downloaded variant rows and the selected-variant
+// action strip. Omit `quant` for a repo-level model. The identifier uses
+// llama.cpp's repo:quant syntax so it pastes into `-hf`.
 export function QuantOptionsMenu({
   repoId,
   quant,
@@ -296,7 +287,7 @@ export function QuantOptionsMenu({
   downloaded: boolean;
   canDelete: boolean;
   onDelete: (quant?: string) => void;
-  // Hidden in the run bar; pinning belongs to the On Device list.
+  // Hidden in the selected-variant action strip; pinning belongs to On Device.
   showPin?: boolean;
   buttonClassName?: string;
   iconClassName?: string;
@@ -449,7 +440,7 @@ const GgufVariantMenuRow = memo(function GgufVariantMenuRow({
   repoId,
   item,
   selected,
-  loaded,
+  mutationBlocked,
   liveActive,
   showFitInfo,
   onSelect,
@@ -458,7 +449,7 @@ const GgufVariantMenuRow = memo(function GgufVariantMenuRow({
   repoId: string;
   item: GgufVariantMenuItem;
   selected: boolean;
-  loaded: boolean;
+  mutationBlocked: boolean;
   liveActive: boolean;
   showFitInfo: boolean;
   onSelect: (quant: string) => void;
@@ -477,7 +468,8 @@ const GgufVariantMenuRow = memo(function GgufVariantMenuRow({
     },
     [selectVariant],
   );
-  const canDelete = (item.downloaded || item.partial) && !loaded && !liveActive;
+  const canDelete =
+    (item.downloaded || item.partial) && !mutationBlocked && !liveActive;
 
   return (
     <div
@@ -489,11 +481,17 @@ const GgufVariantMenuRow = memo(function GgufVariantMenuRow({
       className={cn(
         "group relative mx-2 flex cursor-pointer items-center gap-2 rounded-[12px] px-2.5 py-2 text-left transition-colors",
         selected
-          ? "bg-foreground/[0.07] dark:bg-foreground/[0.12]"
-          : "hover:bg-foreground/[0.05] dark:hover:bg-foreground/[0.06]",
+          ? // Dark: --accent, the app's one selection colour. The 12% wash it
+            // carried matched --accent at the default but was scaled by the
+            // wash gain, so it fell away from the token across the slider.
+            "bg-[color-mix(in_oklab,var(--foreground)_calc(7%*var(--contrast-wash-gain,1)),transparent)] dark:bg-accent"
+          : // Dark hover is --accent held back, so it stays under the selected
+            // row at every contrast. As its own wash it closed to within a few
+            // levels of the selection at the top of the slider.
+            "hover:bg-[color-mix(in_oklab,var(--foreground)_calc(5%*var(--contrast-wash-gain,1)),transparent)] dark:hover:bg-[color-mix(in_srgb,var(--accent)_55%,transparent)]",
       )}
     >
-      {/* Status (On device / Loaded / Partial) sits beside the quant on the
+      {/* Status (On device / Partial) sits beside the quant on the
           left so the model's identity reads as one unit; only the size pins
           right. No per-row "GGUF" tag: every row here is a GGUF quant and the
           trigger already labels it, so repeating it only stole the room the
@@ -503,13 +501,10 @@ const GgufVariantMenuRow = memo(function GgufVariantMenuRow({
           quant={item.label}
           fit={item.fit}
           showFit={showFitInfo}
-          active={loaded}
           variant="menu"
           tooltipMode="lazy"
         />
-        {item.downloaded && (
-          <DotTag tone="success" label={loaded ? "Loaded" : "On device"} />
-        )}
+        {item.downloaded && <DotTag tone="success" label="On device" />}
         {!item.downloaded && item.partial && (
           <Tooltip>
             <TooltipTrigger asChild={true}>
@@ -567,8 +562,8 @@ export function GgufDownloadCard({
   cachePath,
   preferLocalCache = false,
   isPartial = false,
-  onLoad,
-  onEject,
+  onRun,
+  runPending = false,
   onChange,
   showMemoryBar = true,
   mediaRuntime = false,
@@ -587,10 +582,8 @@ export function GgufDownloadCard({
   cachePath?: string | null;
   preferLocalCache?: boolean;
   isPartial?: boolean;
-  onLoad: (opts: { ggufVariant?: string; expectedBytes?: number }) => void;
-  /** Accepted for API parity; the run bar ejects instead of opening chat. */
-  onUseInChat?: () => void;
-  onEject?: () => void;
+  onRun?: (selection: HubModelRunSelection) => void;
+  runPending?: boolean;
   onChange?: () => void;
   /** False for diffusion / audio / video GGUFs. They load through a different
    *  planner onto a single torch device rather than the aggregate inference
@@ -768,33 +761,24 @@ export function GgufDownloadCard({
   const selectedLiveState = selectedQuant
     ? liveVariantStates.get(normalizeGgufVariantIdentity(selectedQuant))
     : undefined;
+  const selectedPresentation = pendingDrafterPresentation(selected);
   const selectedLiveActive = activeDownloadState(selectedLiveState?.state);
   const downloadingThisVariant =
     progress !== null && ggufVariantsMatch(progress.variant, selectedQuant);
   const ctaDisabled = isLoadingThisModel || !selected;
   const selectedIsActive =
     isActive && activeQuant && ggufVariantsMatch(selected?.quant, activeQuant);
-  const isGgufRunCta =
-    !!selected?.downloaded &&
-    !cancelling &&
-    !downloadingThisVariant &&
-    !isLoadingThisModel &&
-    !selectedIsActive;
   // No verdict beats a wrong one: a media repo's fit is the diffusion planner's question, and
   // this card only knows how to answer llama.cpp's. The picker still badges those rows.
   const showFitInfo = !mediaRuntime && (Boolean(gpuGb) || Boolean(systemRamGb));
-  const selectedFit = useMemo(
-    () =>
-      selected
-        ? classifyGgufFit(selected.size_bytes, {
-            gpuGb,
-            gpuCount,
-            systemRamGb,
-            budgetFraction,
-          })
-        : null,
-    [gpuGb, gpuCount, selected?.size_bytes, systemRamGb, budgetFraction],
-  );
+  const selectedFit = selected
+    ? classifyGgufVariantFit(selected, {
+        gpuGb,
+        gpuCount,
+        systemRamGb,
+        budgetFraction,
+      })
+    : null;
   const selectedDownloadSizeLabel = selected
     ? ggufVariantTransferLabel(selected)
     : null;
@@ -827,13 +811,14 @@ export function GgufDownloadCard({
     job,
     variant: selectedQuant,
     expectedBytes: selected?.download_size_bytes ?? selected?.size_bytes ?? 0,
+    presentation: selectedPresentation,
     downloading: downloadingThisVariant,
     cancelling,
     disabled: cancelling
       ? true
       : downloadingThisVariant
         ? false
-        : ctaDisabled && !selectedIsActive,
+        : ctaDisabled,
     isPartial: Boolean(selected?.partial),
     partialTransport: selected?.partial_transport ?? null,
     partialResumable: selected?.partial_resumable === true,
@@ -877,13 +862,12 @@ export function GgufDownloadCard({
   const updateTargetLabel = updateTargetVariant
     ? ggufVariantDisplayLabel(updateTargetVariant)
     : updateTarget;
-  // Confirm → close the dialog and run the re-download as a MANAGED download, so
-  // it surfaces in the "Downloading N items" panel with correct manifest-based
-  // progress and a working Cancel — the same UX as any other download — instead
-  // of a bespoke modal/toast. The worker re-resolves `main` and pulls only the
-  // changed blobs, so the cached version stays intact (and runnable) until the
-  // new revision lands. Completion refreshes the variant list, whose metadata
-  // carries the "Update available" cue.
+  // Confirm → close the dialog and run the re-download as a MANAGED download, so it surfaces in the
+  // "Downloading N items" panel with correct manifest-based progress and a working Cancel — the
+  // same UX as any other download — instead of a bespoke modal/toast. The worker re-resolves `main`
+  // and pulls only the changed blobs, so the cached version stays intact (and runnable) until the
+  // new revision lands. Completion refreshes the variant list, whose metadata carries the "Update
+  // available" cue.
   const handleConfirmUpdate = useCallback(() => {
     if (!updateTarget) return;
     const variant = updateTarget;
@@ -891,16 +875,41 @@ export function GgufDownloadCard({
       updateTargetVariant?.download_size_bytes ??
       updateTargetVariant?.size_bytes ??
       0;
+    const presentation = pendingDrafterPresentation(updateTargetVariant);
     setUpdateTarget(null);
     void downloadManager.requestStart({
       kind: "model",
       repoId,
       variant,
       expectedBytes,
+      ...(presentation ? { presentation } : {}),
     });
   }, [updateTarget, updateTargetVariant, repoId]);
   const variantListUnavailable = !sortedVariants || sortedVariants.length === 0;
   const showVariantLoadingState = loading && variantListUnavailable;
+  const showUpdateAction =
+    selected?.downloaded === true &&
+    online &&
+    updateAvailable &&
+    !selectedIsActive &&
+    !isLoadingThisModel &&
+    !runPending &&
+    !cancelling &&
+    !downloadAction.starting &&
+    !downloadingThisVariant;
+  const showDownloadAction =
+    !selected?.downloaded ||
+    downloadingThisVariant ||
+    cancelling ||
+    downloadAction.starting;
+  const showRunAction =
+    Boolean(onRun) &&
+    selected?.downloaded === true &&
+    selected.partial !== true &&
+    !downloadingThisVariant &&
+    !cancelling &&
+    !downloadAction.starting &&
+    !isLoadingThisModel;
 
   // Keep showing download progress while the variant list is unavailable, so a
   // remount never hides an in-flight download behind the variant status card.
@@ -994,28 +1003,33 @@ export function GgufDownloadCard({
           </>
         }
       >
-        <Popover open={open} onOpenChange={setOpen}>
+        <Popover
+          open={runPending ? false : open}
+          onOpenChange={(nextOpen) => {
+            if (!runPending) setOpen(nextOpen);
+          }}
+        >
           <PopoverTrigger asChild={true}>
             <button
               type="button"
+              disabled={runPending}
               onClick={(e) => {
                 e.preventDefault();
                 setOpen((o) => !o);
               }}
-              className="hub-menu-trigger flex h-9 min-w-0 flex-1 cursor-pointer items-center gap-2 rounded-full px-3 text-left transition-colors hover:bg-foreground/[0.04] data-[state=open]:bg-foreground/[0.06] dark:hover:bg-white/[0.04] dark:data-[state=open]:bg-white/[0.06]"
+              className="hub-menu-trigger flex h-9 min-w-0 flex-1 cursor-pointer items-center gap-2 rounded-full px-3 text-left transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_calc(4%*var(--contrast-wash-gain,1)),transparent)] data-[state=open]:bg-[color-mix(in_oklab,var(--foreground)_calc(6%*var(--contrast-wash-gain,1)),transparent)] disabled:cursor-wait disabled:opacity-60 disabled:hover:bg-transparent dark:hover:bg-[color-mix(in_srgb,var(--accent)_55%,transparent)] dark:data-[state=open]:bg-accent dark:disabled:hover:bg-transparent"
             >
               {/* Quant label + status tags travel together as one left-aligned
                   group so the fit-info icon never floats orphaned from its tags.
                   The group sizes to its content (it still shrinks when the row
                   is tight) so the chevron follows the tags instead of stranding
                   itself at the far edge of a full-width trigger. */}
-              <span className="flex min-w-0 items-center gap-2 overflow-hidden text-ui-12 text-muted-foreground">
+              <span className="flex min-w-0 items-center gap-2 overflow-hidden text-ui-12 text-muted-foreground max-[360px]:gap-1">
                 {selected ? (
                   <QuantBadge
                     quant={selectedLabel ?? selected.quant}
                     fit={selectedFit ?? "oom"}
                     showFit={showFitInfo}
-                    active={Boolean(selectedIsActive)}
                   />
                 ) : (
                   <span className="text-ui-12p5 text-muted-foreground">
@@ -1023,9 +1037,12 @@ export function GgufDownloadCard({
                   </span>
                 )}
                 {selected?.downloaded && (
+                  // Dot only on phones.
                   <DotTag
                     tone="success"
-                    label={selectedIsActive ? "Loaded" : "On device"}
+                    label="On device"
+                    className="max-sm:border-0 max-sm:px-0"
+                    labelClassName="max-sm:sr-only"
                   />
                 )}
                 {selected && !selected.downloaded && selected.partial && (
@@ -1047,7 +1064,8 @@ export function GgufDownloadCard({
                     </TooltipContent>
                   </Tooltip>
                 )}
-                <DotTag tone="gguf" label="GGUF" />
+                {/* Size beats format tag on phones. */}
+                <DotTag tone="gguf" label="GGUF" className="max-sm:hidden" />
                 {selected &&
                   selectedDownloadSizeLabel &&
                   !selected.downloaded && (
@@ -1067,9 +1085,9 @@ export function GgufDownloadCard({
             side="bottom"
             sideOffset={8}
             avoidCollisions={false}
-            className="hub-menu-instant menu-soft-surface w-[var(--radix-popover-trigger-width)] min-w-[300px] gap-0 overflow-hidden p-0 py-2 ring-0"
+            className="hub-menu-instant menu-soft-surface w-[var(--radix-popover-trigger-width)] min-w-[min(calc(300px*var(--ui-space-scale,1)),calc(100vw-32px))] gap-0 overflow-hidden p-0 py-2 ring-0"
           >
-            <div className="max-h-[344px] overflow-y-auto [scrollbar-width:thin]">
+            <div className="max-h-[calc(344px*var(--ui-space-scale,1))] overflow-y-auto [scrollbar-width:thin]">
               {variantMenuItems.map((item) => {
                 const liveState = liveVariantStates.get(item.key);
                 const liveActive = activeDownloadState(liveState?.state);
@@ -1079,7 +1097,11 @@ export function GgufDownloadCard({
                     repoId={repoId}
                     item={item}
                     selected={item.key === selectedVariantKey}
-                    loaded={isActive && item.key === activeVariantKey}
+                    mutationBlocked={
+                      runPending ||
+                      isLoadingThisModel ||
+                      (isActive && item.key === activeVariantKey)
+                    }
                     liveActive={liveActive}
                     showFitInfo={showFitInfo}
                     onSelect={handleSelectVariant}
@@ -1091,7 +1113,6 @@ export function GgufDownloadCard({
           </PopoverContent>
         </Popover>
 
-        {/* TODO: inference settings gear hidden for now, work on it in a future PR. */}
         {/* Options only resolve managed HF-cache repos, so skip local paths;
             they also only apply to quants actually on disk. */}
         {selected &&
@@ -1106,7 +1127,8 @@ export function GgufDownloadCard({
                 Boolean(selected.downloaded || selected.partial) &&
                 !selectedIsActive &&
                 !downloadingThisVariant &&
-                !isLoadingThisModel
+                !isLoadingThisModel &&
+                !runPending
               }
               onDelete={(q) => q && handleDeleteVariant(q)}
               showPin={false}
@@ -1115,109 +1137,86 @@ export function GgufDownloadCard({
             />
           )}
 
-        {!isGgufRunCta && <CardDivider />}
+        {(showUpdateAction || showDownloadAction || showRunAction) && (
+          <CardDivider />
+        )}
 
-        {selected?.downloaded &&
-          online &&
-          updateAvailable &&
-          !selectedIsActive &&
-          !downloadingThisVariant && (
-            <button
-              type="button"
-              onClick={() => selected && setUpdateTarget(selected.quant)}
-              aria-label={`Update ${repoId}`}
-              className="hub-action-btn ml-1 text-amber-700 dark:text-amber-300"
-            >
-              <HugeiconsIcon
-                icon={ArrowReloadHorizontalIcon}
-                strokeWidth={1.75}
-              />
-              Update
-            </button>
-          )}
+        {showUpdateAction && (
+          <button
+            type="button"
+            onClick={() => selected && setUpdateTarget(selected.quant)}
+            aria-label={`Update ${repoId}`}
+            className="hub-action-btn ml-1 text-amber-700 dark:text-amber-300"
+          >
+            <HugeiconsIcon
+              icon={ArrowReloadHorizontalIcon}
+              strokeWidth={1.75}
+            />
+            Update
+          </button>
+        )}
 
-        <button
-          type="button"
-          disabled={downloadAction.disabled}
-          onClick={() => {
-            if (downloadingThisVariant) {
-              downloadAction.onClick();
-              return;
-            }
-            if (selectedIsActive) {
-              onEject?.();
-              return;
-            }
-            if (!selected) return;
-            if (selected.downloaded) {
-              onLoad({
+        {showDownloadAction && (
+          <button
+            type="button"
+            disabled={downloadAction.disabled}
+            onClick={downloadAction.onClick}
+            aria-label={downloadAction.ariaLabel}
+            className={cn(
+              "hub-action-btn w-24",
+              ctaDisabled &&
+                !downloadingThisVariant &&
+                !cancelling &&
+                "opacity-70",
+              (cancelling || downloadAction.starting) && "opacity-70",
+              downloadingThisVariant &&
+                !cancelling &&
+                "hover:bg-rose-500/10 hover:text-rose-600 dark:hover:text-rose-400",
+            )}
+          >
+            {cancelling ? (
+              <span className="inline-flex items-center gap-2 text-muted-foreground">
+                <Spinner />
+                Cancelling…
+              </span>
+            ) : downloadingThisVariant ? (
+              <span className="inline-flex items-center gap-2">
+                <DownloadStopIndicator mode={downloadAction.stopMode} />
+                {downloadAction.progressPercent != null
+                  ? `${downloadAction.progressPercent}%`
+                  : null}
+              </span>
+            ) : downloadAction.starting ? (
+              <span className="inline-flex items-center gap-2">
+                <Spinner />
+                Starting…
+              </span>
+            ) : (
+              <>
+                <HugeiconsIcon icon={Download01Icon} strokeWidth={1.75} />
+                {downloadAction.downloadLabel}
+              </>
+            )}
+          </button>
+        )}
+
+        {showRunAction && onRun && selected && (
+          <ModelRunActionButton
+            label={`Configure and run ${repoId} ${selectedLabel ?? selected.quant}`}
+            loading={runPending}
+            onClick={() =>
+              onRun({
                 ggufVariant: selected.quant,
-                expectedBytes: selected.size_bytes,
-              });
-            } else {
-              downloadAction.onClick();
+                ggufFilename: selected.filename,
+                expectedBytes:
+                  selected.download_size_bytes &&
+                  selected.download_size_bytes > 0
+                    ? selected.download_size_bytes
+                    : selected.size_bytes,
+              })
             }
-          }}
-          aria-label={downloadAction.ariaLabel}
-          className={cn(
-            isGgufRunCta ? "hub-run-action-btn w-24" : "hub-action-btn w-24",
-            isGgufRunCta && "ml-2",
-            ctaDisabled &&
-              !selectedIsActive &&
-              !downloadingThisVariant &&
-              !cancelling &&
-              "opacity-70",
-            (cancelling || downloadAction.starting) && "opacity-70",
-            downloadingThisVariant &&
-              !cancelling &&
-              "hover:bg-rose-500/10 hover:text-rose-600 dark:hover:text-rose-400",
-            !HUB_GGUF_RUN_ACTIONS_VISIBLE &&
-              !downloadingThisVariant &&
-              !cancelling &&
-              !isLoadingThisModel &&
-              (selectedIsActive || selected?.downloaded) &&
-              "hidden",
-          )}
-        >
-          {cancelling ? (
-            <span className="inline-flex items-center gap-2 text-muted-foreground">
-              <Spinner />
-              Cancelling…
-            </span>
-          ) : downloadingThisVariant ? (
-            <span className="inline-flex items-center gap-2">
-              <DownloadStopIndicator mode={downloadAction.stopMode} />
-              {downloadAction.progressPercent != null
-                ? `${downloadAction.progressPercent}%`
-                : null}
-            </span>
-          ) : downloadAction.starting ? (
-            <span className="inline-flex items-center gap-2">
-              <Spinner />
-              Starting…
-            </span>
-          ) : isLoadingThisModel ? (
-            <span className="inline-flex items-center gap-2">
-              <Spinner />
-              Loading…
-            </span>
-          ) : selectedIsActive ? (
-            <>
-              <HugeiconsIcon icon={RemoveCircleIcon} strokeWidth={1.75} />
-              Eject
-            </>
-          ) : selected?.downloaded ? (
-            <>
-              <HugeiconsIcon icon={PlayIcon} strokeWidth={1.75} />
-              Run
-            </>
-          ) : (
-            <>
-              <HugeiconsIcon icon={Download01Icon} strokeWidth={1.75} />
-              {downloadAction.downloadLabel}
-            </>
-          )}
-        </button>
+          />
+        )}
       </DownloadCard>
       {/* Only a quant actually on disk gets charted: an undownloaded one has no
           weights to measure, and the fit badge already tiers those. */}

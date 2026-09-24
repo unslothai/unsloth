@@ -32,7 +32,6 @@ from typing import Any
 
 from .diffusion_patch_backend import apply_patch, revert_patch
 
-# --- kill-switch -------------------------------------------------------------------
 
 _ENV_COMPILE_DEQUANT = "UNSLOTH_DIFFUSION_GGUF_COMPILE_DEQUANT"
 _DISABLED = {"0", "off", "false", "no"}
@@ -48,13 +47,10 @@ def _gguf_utils():
     try:
         from diffusers.quantizers.gguf import utils as gguf_utils  # noqa: PLC0415
         return gguf_utils
-    except Exception:  # noqa: BLE001 — old/!GGUF diffusers -> accelerator is a no-op
+    except Exception:  # noqa: BLE001 - old/!GGUF diffusers -> accelerator is a no-op
         return None
 
 
-# --- compiled dequant --------------------------------------------------------------
-
-# True while the compiled wrapper is installed (the patch backend stashes the original).
 _compiled_dequant_installed = False
 _DEQUANT_ATTR = "dequantize_gguf_tensor"
 
@@ -78,12 +74,13 @@ def install_compiled_dequant(logger: Any = None) -> bool:
         import torch  # noqa: PLC0415
 
         compiled = torch.compile(gguf_utils.dequantize_gguf_tensor, dynamic = True)
-        # force=True: the compiled callable's fingerprint differs from the original, which can_safely_patch would correctly reject.
+        # force=True: the compiled callable's fingerprint differs from the original, which can_safely_patch would
+        # correctly reject.
         if apply_patch(gguf_utils, _DEQUANT_ATTR, compiled, force = True):
             _compiled_dequant_installed = True
             return True
         return False
-    except Exception as exc:  # noqa: BLE001 — optimisation only
+    except Exception as exc:  # noqa: BLE001 - optimisation only
         _warn(logger, "install_compiled_dequant", exc)
         _compiled_dequant_installed = False
         return False
@@ -98,9 +95,6 @@ def uninstall_compiled_dequant() -> None:
     if gguf_utils is not None:
         revert_patch(gguf_utils, _DEQUANT_ATTR)
     _compiled_dequant_installed = False
-
-
-# --- convenience -------------------------------------------------------------------
 
 
 def uninstall_all() -> None:
