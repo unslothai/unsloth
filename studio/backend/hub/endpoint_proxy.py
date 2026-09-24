@@ -116,7 +116,8 @@ def build_router(prefix: str, upstream: Callable[[], str], *, anonymous_pages: b
             return _refuse(409, "The Hub endpoint changed. Reload to browse it.")
         rest = f"/{rest}"
         segments = [unquote(segment) for segment in rest.split("/")]
-        if any(segment in (".", "..") or "\\" in segment for segment in segments):
+        # Re-split: an encoded slash can hide a dot segment from this check but not from the endpoint.
+        if any(part in (".", "..") or "\\" in part for s in segments for part in s.split("/")):
             return _refuse(400, "Invalid path.")
         query = request.scope.get("query_string", b"").decode("latin-1")
         target = f"{endpoint}{rest}{'?' + query if query else ''}"

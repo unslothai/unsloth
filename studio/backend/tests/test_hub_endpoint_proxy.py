@@ -98,7 +98,6 @@ def test_without_a_session_nothing_reaches_the_endpoint(proxy):
     ):
         refused = client.get(path, headers = headers)
         assert (refused.status_code, "x-hub-upstream" in refused.headers) == (401, False)
-    assert {client.get(f"{HUB}/org/{bad}/admin").status_code for bad in ("%2e%2e", "a%5Cb")} == {
-        400
-    }
+    bad = ("%2e%2e", "a%5Cb", "a%2F..%2Fb")
+    assert {client.get(f"{HUB}/org/{b}/admin").status_code for b in bad} == {400}
     assert seen == []
