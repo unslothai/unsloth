@@ -14,7 +14,11 @@ companion GPUs, and a --device remap keeps the main model on its original cards.
 import core.inference.llama_cpp as llama_cpp
 
 
-def _widen(pin_ids, extra_args, cmd=None):
+def _widen(
+    pin_ids,
+    extra_args,
+    cmd = None,
+):
     cmd = list(cmd or [])
     widened, note = llama_cpp._widen_pin_ids_for_companion_devices(cmd, pin_ids, extra_args)
     return cmd, widened, note
@@ -31,7 +35,7 @@ def test_a_hidden_companion_device_widens_the_mask():
     assert note
 
 
-def test_the_remap_matches_the_visible_order(pin_ids=None):
+def test_the_remap_matches_the_visible_order(pin_ids = None):
     """With an inherited non-ascending main order, CUDA<n> means n in the WIDENED set."""
     cmd, pin, note = _widen([1, 0], ["--mmproj-device", "CUDA2"])
     # main cards [1, 0] sit at indices 0 and 1 of [1, 0, 2].

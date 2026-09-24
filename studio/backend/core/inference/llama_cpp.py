@@ -5983,9 +5983,7 @@ _CUDA_DEVICE_TOKEN_RE = re.compile(r"CUDA(\d+)$", re.IGNORECASE)
 
 
 def _widen_pin_ids_for_companion_devices(
-    cmd: List[str],
-    pin_ids: list[int],
-    extra_args: Optional[Iterable[str]],
+    cmd: List[str], pin_ids: list[int], extra_args: Optional[Iterable[str]]
 ) -> tuple[list[int], str]:
     """Grow a pinned CUDA mask to cover the GPUs the user's extra args name (#11810).
 
