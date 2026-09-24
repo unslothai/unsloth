@@ -214,17 +214,14 @@ def _fix_gemma4_base_bos_token(tokenizer, config = None):
     return tokenizer
 
 
-# transformers v5 rebuilds LlamaTokenizer (and other classes with a custom __init__) from tokenizer.json's
-# vocab/merges only, then installs its own SentencePiece Metaspace pre_tokenizer/decoder. A byte-level BPE
-# checkpoint that declares "LlamaTokenizerFast" (Mistral-Large-3, Step-3.7-Flash, DeepSeek R1 distills) then
-# drops every space and all non-Latin text. Upstream: huggingface/transformers#45488, #48206.
+# transformers v5 gives byte-level BPE repos declaring LlamaTokenizerFast a Metaspace pre_tokenizer/decoder,
+# dropping every space (e.g. Mistral-Large-3). Upstream: huggingface/transformers#45488, #48206.
 _BACKEND_ROUNDTRIP_PROBE = "Hello world, this is a test."
 _BACKEND_IDS_PROBE = "Hello world! def f(x): return x**2  # code\n你好 éè Αβγ 12345.678"
 
 
 def _backend_roundtrip(backend, text):
-    """(round_trips, ids) of a raw tokenizers.Tokenizer, or (None, None) if it cannot be probed.
-    A single leading space counts as a round trip: ByteLevel(add_prefix_space = True) adds it by design."""
+    # One leading space still counts: ByteLevel(add_prefix_space = True) adds it by design.
     try:
         ids = backend.encode(text, add_special_tokens = False).ids
         return backend.decode(ids, skip_special_tokens = False) in (text, " " + text), ids
@@ -237,7 +234,6 @@ def _resolve_tokenizer_json(
     cache_dir = None,
     revision = None,
 ):
-    """Local path of the tokenizer.json the tokenizer was loaded from, without touching the network."""
     name = getattr(tokenizer, "name_or_path", None)
     if not isinstance(name, str) or not name:
         return None
@@ -268,7 +264,6 @@ def _repair_one_tokenizer_backend(
     backend = getattr(tokenizer, "_tokenizer", None)
     if backend is None or not hasattr(backend, "pre_tokenizer"):
         return False
-    # Cheap gate: a tokenizer that already round-trips is never touched.
     ok, _ = _backend_roundtrip(backend, _BACKEND_ROUNDTRIP_PROBE)
     if ok is not False:
         return False
@@ -294,7 +289,7 @@ def _repair_one_tokenizer_backend(
     _, ref_ids = _backend_roundtrip(reference, _BACKEND_IDS_PROBE)
     saved = (backend.model, backend.normalizer, backend.pre_tokenizer, backend.decoder)
     try:
-        # Keep the loaded post_processor, padding, truncation and added tokens (bos/eos/pad, specials).
+        # Keep the loaded post_processor, padding, truncation and added tokens.
         backend.model = reference.model
         backend.normalizer = reference.normalizer
         backend.pre_tokenizer = reference.pre_tokenizer
@@ -317,8 +312,6 @@ def _repair_tokenizer_backend_from_json(
     cache_dir = None,
     revision = None,
 ):
-    """Restore tokenizer.json's model/normalizer/pre_tokenizer/decoder when the loaded backend fails a
-    plain-ASCII encode/decode round trip but tokenizer.json itself round-trips. No-op otherwise."""
     if tokenizer is None or os.environ.get("UNSLOTH_DISABLE_TOKENIZER_JSON_REPAIR", "0") == "1":
         return tokenizer
     for obj in _tokenizer_objects(tokenizer):

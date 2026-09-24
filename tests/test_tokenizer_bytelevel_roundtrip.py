@@ -1,11 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""transformers v5 rebuilds a tokenizer declared as LlamaTokenizerFast from tokenizer.json's vocab and
-merges only, then installs Llama's SentencePiece Metaspace pre_tokenizer and decoder. For a byte-level BPE
-vocab (Mistral-Large-3, Step-3.7-Flash) that drops every space. The Unsloth load path must rebuild the
-backend from tokenizer.json, and must leave tokenizers that already round-trip untouched."""
-
 import json
 
 import pytest
@@ -107,7 +102,6 @@ def test_load_correct_tokenizer_round_trips_byte_level_llama(byte_level_llama_di
     assert tok.decode(ids) == PROBE
     assert ids == _reference_ids(byte_level_llama_dir)
     assert tok.decode(_ids(tok, "Hello world")) == "Hello world"
-    # Special tokens, bos/eos/pad and padding side survive the rebuild.
     assert (tok.bos_token, tok.eos_token, tok.pad_token) == ("<s>", "</s>", "<pad>")
     assert tok.padding_side == "right"
     assert tok.convert_tokens_to_ids(["<s>", "</s>", "<pad>"]) == [1, 2, 3]
@@ -119,11 +113,9 @@ def test_load_correct_tokenizer_round_trips_byte_level_llama(byte_level_llama_di
 
 
 def test_fast_model_post_load_fix_round_trips_byte_level_llama(byte_level_llama_dir):
-    # FastModel loads with AutoTokenizer / AutoProcessor, then calls _apply_post_load_tokenizer_fixes.
     tok = AutoTokenizer.from_pretrained(byte_level_llama_dir, padding_side = "left")
     post_processor = json.loads(tok.backend_tokenizer.to_str())["post_processor"]
     tok = tu._apply_post_load_tokenizer_fixes(tok, fix_tokenizer = False)
-    # The loaded post_processor (bos/eos insertion) is kept, only the text pipeline is restored.
     assert json.loads(tok.backend_tokenizer.to_str())["post_processor"] == post_processor
     assert tok.decode(_ids(tok)) == PROBE
     assert _ids(tok) == _reference_ids(byte_level_llama_dir)
@@ -148,13 +140,10 @@ def test_correct_tokenizer_is_untouched(tmp_path, builder, tokenizer_class):
     assert fixed.backend_tokenizer.to_str() == before
     assert _ids(fixed) == before_ids
     assert fixed.decode(before_ids) == PROBE
-    # Full loader too: ids unchanged against a plain AutoTokenizer load.
     assert _ids(tu.load_correct_tokenizer(path)) == before_ids
 
 
 def test_prefix_space_byte_level_llama_is_repaired(tmp_path):
-    # ByteLevel(add_prefix_space = True) decodes the probe with one leading space by design; that
-    # reference is valid, so the space-dropping rebuilt backend must still be replaced.
     path = _write_dir(
         tmp_path / "prefix", _byte_level_tokenizer(add_prefix_space = True), "LlamaTokenizerFast"
     )
@@ -178,7 +167,6 @@ def test_prefix_space_byte_level_generic_is_untouched(tmp_path):
 
 
 def test_tokenizer_json_that_does_not_round_trip_is_left_alone(tmp_path):
-    # A lowercasing normalizer never round-trips "Hello"; with nothing better to restore, stay a no-op.
     tok = _byte_level_tokenizer()
     tok.normalizer = normalizers.Lowercase()
     path = _write_dir(tmp_path / "lower", tok, "PreTrainedTokenizerFast")
