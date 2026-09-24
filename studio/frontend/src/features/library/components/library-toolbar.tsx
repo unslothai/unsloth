@@ -31,7 +31,6 @@ import { SheetIcon, TestTubeOutlineIcon } from "@/lib/hugeicons-derived";
 import { cn } from "@/lib/utils";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
 import { ChevronDownIcon } from "lucide-react";
-import type { ReactNode } from "react";
 import type { LibrarySource } from "../api";
 import type { LibraryTypeFilter } from "../file-kind";
 import { EMPTY_FILTERS, type LibraryFilters, filtersActive } from "../filters";
@@ -186,8 +185,8 @@ function NewMenu({ onSelect }: { onSelect: (action: NewAction) => void }) {
   );
 }
 
+/** The page's controls: filters, view, search, New and settings. The header places them. */
 export function LibraryToolbar({
-  title,
   filters,
   onFiltersChange,
   filterMode,
@@ -199,7 +198,6 @@ export function LibraryToolbar({
   onNew,
   onSettings,
 }: {
-  title: ReactNode;
   filters: LibraryFilters;
   onFiltersChange: (next: LibraryFilters) => void;
   /** Folders has nothing to filter; Images only filters by source. */
@@ -213,8 +211,6 @@ export function LibraryToolbar({
   onSettings: () => void;
 }) {
   return (
-    <header className="flex flex-wrap items-center gap-x-6 gap-y-4">
-      <div className="min-w-0 flex-1">{title}</div>
       <div className="flex min-w-0 items-center gap-2">
         {filterMode !== "none" && (
           <FilterMenu
@@ -269,6 +265,5 @@ export function LibraryToolbar({
           <HugeiconsIcon icon={Settings02Icon} strokeWidth={1.75} className="size-5" />
         </button>
       </div>
-    </header>
   );
 }
