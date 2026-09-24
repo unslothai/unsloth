@@ -125,12 +125,14 @@ from .diffusion_speed import (
     SPEED_OFF,
     apply_speed_optims,
     auto_dynamic_active,
+    compile_dynamic,
     compile_eligible,
     compiled_shapes_are_static,
     dynamo_graph_count,
     normalize_speed_mode,
     resolve_speed_mode,
     restore_backend_flags,
+    settle_compile_fallback,
     snapshot_backend_flags,
 )
 from .diffusion_attention import (
@@ -5508,6 +5510,9 @@ class DiffusionBackend:
                         threshold = transformer_cache_threshold,
                         # GGUF transformers are quantized too, so the cache needs the higher threshold.
                         quant_active = cache_quant_active,
+                        # Prefix-KV families (Qwen-Image-2.1) cache only when asked: at 40 steps the default
+                        # threshold skips about half the steps, too lossy for an automatic default.
+                        length_changes_ok = not cache_auto,
                         logger = logger,
                     )
                     self._raise_if_load_cancelled(_load_token)
@@ -5528,6 +5533,8 @@ class DiffusionBackend:
                                 f"auto: {default_steps}-step default schedule is below "
                                 f"{FBCACHE_MIN_STEPS}; re-checked per generation"
                             )
+                    elif cache_request is not None and not cache_engaged:
+                        cache_reason = "requested, but this model does not support step caching; running uncached"
                     else:
                         cache_reason = "requested"
                     # The dense fast path sets gguf_filename, but its transformer is dense.
@@ -5564,9 +5571,13 @@ class DiffusionBackend:
                                 "fullgraph": cache_engaged is None
                                 and not cache_may_toggle
                                 and plan.offload_policy == OFFLOAD_NONE,
-                                # max compiles DiTs with automatic dynamic (None); keyed apart from the old static
-                                # bundles.
-                                "dynamic": None if effective_speed == SPEED_MAX else True,
+                                # max compiles DiTs with automatic dynamic (None), as does the default tier for
+                                # torchao weights. Key on the value apply_speed_optims resolves, so a bundle from a
+                                # static or explicit-dynamic build is not reused for an automatic-dynamic one.
+                                "dynamic": compile_dynamic(
+                                    getattr(pipe, "transformer", None),
+                                    None if effective_speed == SPEED_MAX else True,
+                                ),
                                 "mode": "max-autotune-no-cudagraphs"
                                 if effective_speed == SPEED_MAX
                                 else "default",
@@ -6911,7 +6922,7 @@ class DiffusionBackend:
                     "fullgraph": state.transformer_cache is None
                     and not state.cache_auto
                     and state.offload_policy == OFFLOAD_NONE,
-                    "dynamic": True,
+                    "dynamic": compile_dynamic(getattr(state.pipe, "transformer", None), True),
                     "mode": "default",
                 },
                 logger = logger,
@@ -7485,6 +7496,11 @@ class DiffusionBackend:
                                 len(second_half),
                             )
                             continue
+                        finally:
+                            # A guarded block that fell back to eager (compile failed at its first forward) no longer
+                            # runs compiled: report it on every exit, cancel and error included, so status, LoRA gating
+                            # and the compile-cache shape registry stop treating it as compiled.
+                            settle_compile_fallback(state, state.pipe, logger)
                         if cancel.is_set():
                             raise RuntimeError(DIFFUSION_CANCELLED_MSG)
                         images.extend(out)

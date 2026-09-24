@@ -1055,10 +1055,15 @@ def _at_default_scale(source: str) -> str:
     return _SCALED_AMOUNT.sub(lambda m: _resolve_amount(resolved, m), resolved)
 
 
-# The Create rail on Images and Audio at the default UI scale, as `_ui_source` reads it.
-RAIL_WIDTH = "@[50rem]:w-[min(408px,calc(100%-13rem))]"
+# The Create rail on Images and Audio at the default UI scale, as `_ui_source` reads it. Since
+# #11760 the width is the page's resizable --media-rail-width, falling back to the former 408px.
+RAIL_WIDTH = "@[50rem]:w-[min(var(--media-rail-width,408px),calc(100%-13rem))]"
 # The same class as written: `_ui_source` reads a bare 408px identically, so the scale is pinned raw.
-RAIL_WIDTH_SCALED = "@[50rem]:w-[min(calc(408px*var(--ui-space-scale,1)),calc(100%-13rem))]"
+RAIL_WIDTH_SCALED = (
+    "@[50rem]:w-[min(var(--media-rail-width,calc(408px*var(--ui-space-scale,1))),calc(100%-13rem))]"
+)
+# The header's first column tracks the same variable, so the header divider stays on the rail's.
+HEADER_COLUMNS = "grid-cols-[minmax(0,var(--media-rail-width,408px))_minmax(13rem,1fr)]"
 
 
 def _ui_source(path) -> str:
@@ -2390,7 +2395,7 @@ def test_audio_page_matches_the_image_rail_header_and_action_footer():
     header = header_opening + after.split("Below 50rem", 1)[0]
     layout = source.split("Below 50rem", 1)[1]
 
-    assert "grid-cols-[minmax(0,408px)_minmax(13rem,1fr)]" in header_opening
+    assert HEADER_COLUMNS in header_opening
     assert "pointer-events-none" in header_opening
     assert "relative" in header_opening
     assert "z-40" in header_opening
@@ -2425,7 +2430,8 @@ def test_image_train_rail_matches_create_and_header():
     layout = source.split("overflow-x-hidden: an unset overflow-x", 1)[1]
 
     assert "@[50rem]:flex-row @[50rem]:overflow-hidden" in layout
-    assert "pl-10 max-sm:pl-5 @[50rem]:w-[408px]" in layout
+    # The Create rail's width and clamp, so switching Create and Train keeps the divider still.
+    assert "pl-10 max-sm:pl-5 " + RAIL_WIDTH in layout
     assert "@[50rem]:border-r @[50rem]:border-b-0" in layout
     assert "@container hover-scrollbar" in layout
     assert "@[50rem]:pt-[42px]" in layout
@@ -2493,7 +2499,7 @@ def test_images_header_tracks_preview_and_preserves_titlebar_controls():
     )
 
     assert "const { isMobile, pinned } = useSidebar();" in source
-    assert "grid-cols-[minmax(0,408px)_minmax(13rem,1fr)]" in opening
+    assert HEADER_COLUMNS in opening
     assert "@[50rem]:border-r" in header
     assert "isMobile" in header and "pl-12" in header
     assert "!pinned && isTauri" in header
@@ -2685,3 +2691,20 @@ def test_the_lengths_these_contracts_measure_still_follow_the_ui_scale():
         assert not re.search(
             _CLASS_STARTS + re.escape(f"{variant}{utility}-[{length}]") + _CLASS_ENDS, source
         ), f"{path.name} has a bare {named}, which stays put while its text grows"
+
+
+def test_the_media_rail_fallback_is_the_width_hook_fallback():
+    """The 408px inside var(--media-rail-width,408px) is only what paints before the page sets the
+    variable; the hook's own fallback is what a first visit stores. They have to agree, or the
+    divider jumps on first paint. Each page that reads the variable also has to set it on the
+    element marked as the rail root, or every rail silently sits at the fallback."""
+    hook = (FRONTEND / "hooks/use-media-rail-width.ts").read_text(encoding = "utf-8")
+    for kind, page in (("images", IMAGES_PAGE), ("audio", AUDIO_PAGE)):
+        block = hook.split(f"  {kind}: createPanelWidthStore(", 1)[1].split("}),", 1)[0]
+        assert re.search(r"fallback: 408,", block), (kind, block)
+        source = page.read_text(encoding = "utf-8")
+        assert f'useMediaRailWidth("{kind}")' in source, page
+        # The attribute and the style that sets the variable sit on the same element.
+        root = source.split('{...{ [MEDIA_RAIL_ROOT_ATTR]: "" }}', 1)
+        assert len(root) == 2, page
+        assert "style={railRootStyle}" in root[1].split(">", 1)[0], page
