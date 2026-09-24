@@ -495,7 +495,9 @@ def local_path(item_id: str) -> Path:
     _origin, _, path = ref.partition(":")
     resolved = os.path.realpath(path) if path else ""
     roots = [os.path.realpath(root) for root in (outputs_root(), exports_root())]
-    if not any(resolved.startswith(root + os.sep) for root in roots) or not os.path.exists(resolved):
+    if not any(resolved.startswith(root + os.sep) for root in roots) or not os.path.exists(
+        resolved
+    ):
         raise LookupError(item_id)
     return Path(resolved)
 

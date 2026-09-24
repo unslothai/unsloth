@@ -151,7 +151,6 @@ async def add_item_to_project(
 
 def _reveal(path) -> None:
     from utils.paths.path_utils import reveal_in_file_manager
-
     try:
         reveal_in_file_manager(path)
     except FileNotFoundError:
