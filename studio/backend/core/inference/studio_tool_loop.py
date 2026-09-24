@@ -1568,8 +1568,6 @@ async def stream_with_studio_tools(
                             else stalled_hosted
                         ),
                     }
-                    if turn.reasoning:
-                        stalled_message["reasoning_content"] = "".join(turn.reasoning)
                     if turn.reasoning_extra:
                         # Gemini 3 stows the text part's thoughtSignature here and its translator pins it back on from
                         # this field alone, so a turn replayed without it is rejected.

@@ -24,8 +24,7 @@ function visit(node: ts.Node): void {
 }
 visit(tree);
 assert.ok(replayExpression && payloadExpression);
-// Evaluate the real send-path expressions, not a copied policy. The same replay flag
-// must reach both pruning and serialization so reasoning-only turns survive.
+// Evaluates the real send-path expressions rather than a copied policy.
 const evaluate = new Function("providerSupportsPreserveThinking", "externalProvider", "runtime", "isExternalRequest",
   `return { replay: ${replayExpression}, fields: ${payloadExpression} };`) as
   (supports: typeof providerSupportsPreserveThinking, provider: {providerType: string}, runtime: {preserveThinking: boolean}, external: boolean) =>

@@ -97,8 +97,7 @@ def _send_path_slice() -> str:
     )
     return (
         "export function buildSendPathOutbound(messages: any, isExternalRequest: boolean) {\n"
-        # Provider selection is covered by external-preserve-thinking.test.ts. These cases
-        # exercise the existing local and non-preserving external history policies.
+        # The provider-dependent flag is covered by external-preserve-thinking.test.ts.
         + "  const replayReasoning = !isExternalRequest;\n"
         + body
         + "  return outboundMessages;\n}\n"

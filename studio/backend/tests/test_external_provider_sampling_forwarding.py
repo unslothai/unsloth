@@ -175,6 +175,11 @@ def test_llama_preserve_thinking_template_option(value):
         assert body["chat_template_kwargs"] == {"preserve_thinking": value}
 
 
+def test_llama_preserve_thinking_keeps_enable_thinking():
+    body = _capture_body("llama_cpp", preserve_thinking = True, enable_thinking = False)
+    assert body["chat_template_kwargs"] == {"preserve_thinking": True, "enable_thinking": False}
+
+
 @pytest.mark.parametrize("provider", ["custom", "vllm", "ollama", "openrouter"])
 def test_preserve_thinking_does_not_leak_to_other_providers(provider):
     body = _capture_body(provider, preserve_thinking = True)

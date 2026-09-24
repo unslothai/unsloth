@@ -29,6 +29,23 @@ def test_llama_history_keeps_reasoning_and_tool_calls(content, vision, with_tool
         assert result[0]["tool_calls"][0]["function"]["name"] == "lookup"
 
 
+@pytest.mark.parametrize("content", ["", None, []])
+@pytest.mark.parametrize("vision", [True, False])
+def test_llama_reasoning_survives_dropped_server_tool_cards(content, vision):
+    card = {
+        "id": "srv_1",
+        "type": "function",
+        "function": {"name": "web_search", "arguments": '{"_server_tool": true}'},
+    }
+    message = ChatMessage(
+        role = "assistant", content = content, reasoning_content = "prior thought", tool_calls = [card]
+    )
+    result = _build_external_messages([message], vision, provider_type = "llama_cpp")
+    assert len(result) == 1
+    assert result[0]["reasoning_content"] == "prior thought"
+    assert "tool_calls" not in result[0]
+
+
 @pytest.mark.parametrize(
     "provider", ["custom", "openai", "vllm", "ollama", "anthropic", "openrouter"]
 )

@@ -1388,8 +1388,7 @@ export function reasoningFieldsAfterCatalogRefresh(
   };
 }
 
-/** llama.cpp accepts this template option; other OpenAI-compatible APIs may reject it.
- * The selected model's template must itself support preserve_thinking. */
+/** Sent as a llama-server template kwarg, so the model's template must still read it. */
 export function providerSupportsPreserveThinking(
   providerType: string | null | undefined,
 ): boolean {
