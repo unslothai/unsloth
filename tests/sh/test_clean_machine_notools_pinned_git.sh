@@ -84,6 +84,18 @@ expect_rc "a reset outside uv's checkouts fails" 1 "$PIN" \
     "${FETCH}git\treset --hard $OLDER\n" "/home/someone/${OLDER:0:9}"
 expect_rc "a short or abbreviated reset target fails" 1 "$PIN" \
     "${FETCH}git\treset --hard ${OLDER:0:9}\n" "$CACHE/checkouts/76e25d04238765dd/${OLDER:0:9}"
+expect_rc "git init outside uv's cache fails" 1 "$PIN" \
+    "${FETCH}git\tinit\n" /Users/runner/work/unsloth/unsloth
+expect_rc "rev-parse outside uv's cache fails" 1 "$PIN" \
+    "${FETCH}git\trev-parse HEAD\n" /Users/runner/work/unsloth/unsloth
+expect_rc "git init in uv's database passes" 0 "$PIN" \
+    "${FETCH}git\tinit\n" "$CACHE/db/76e25d04238765dd"
+SSH_PIN="$ROOT/ssh-pin.txt"
+printf 'pkg @ git+ssh://git@github.com/org/repo.git@%s\n' "$SHA" > "$SSH_PIN"
+expect_rc "an ssh requirement keeps its user in the allowed remote" 0 "$SSH_PIN" \
+    "git\tfetch --force ssh://git@github.com/org/repo.git +HEAD:refs/remotes/origin/HEAD\n"
+expect_rc "an ssh requirement does not allow its bare scheme and user" 1 "$SSH_PIN" \
+    "git\tfetch --force ssh://git +HEAD:refs/remotes/origin/HEAD\n"
 expect_rc "a remote with the .git suffix dropped still matches" 0 "$PIN" \
     "git\tfetch ${REMOTE%.git} +HEAD:refs/remotes/origin/HEAD\n"
 

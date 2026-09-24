@@ -47,7 +47,11 @@ _decode_trace_arg() { # encoded, destination variable
 _allowed_git_remotes() {
   for _req in ${UNSLOTH_ALLOW_GIT_FROM:-}; do
     [ -f "$_req" ] || { echo "::error::UNSLOTH_ALLOW_GIT_FROM names a missing file: $_req" >&2; continue; }
-    sed -n 's/^[^#]*git+\([a-z][a-z0-9+.-]*:\/\/[^@#[:space:]]*\).*/\1/p' "$_req"
+    # The revision is what follows the LAST @, so ssh://git@host/repo.git@SHA keeps its user.
+    sed -n \
+      -e 's/^[^#]*git+\([a-z][a-z0-9+.-]*:\/\/[^#[:space:]]*\)@[^@\/#[:space:]]*\([#[:space:]].*\)\{0,1\}$/\1/p' \
+      -e 't' \
+      -e 's/^[^#]*git+\([a-z][a-z0-9+.-]*:\/\/[^#[:space:]]*\).*/\1/p' "$_req"
   done | sed 's/\.git$//' | sort -u
 }
 
@@ -62,13 +66,17 @@ _git_line_remotes() {
 # checkout's .gitmodules names, which is the pinned requirement's own content only there.
 # No record, or any run elsewhere, is a no.
 _ran_in_uv_checkout() { # the traced argument string
+  _ran_under "$1" "${UV_CACHE_DIR%/}/git-v0/checkouts/"
+}
+
+# Every run of these arguments (at least one) had its working directory under $2.
+_ran_under() { # the traced argument string, a directory prefix ending in /
   [ -n "${UV_CACHE_DIR:-}" ] && [ -f "$TRACE.git-cwd" ] || return 1
-  _checkouts="${UV_CACHE_DIR%/}/git-v0/checkouts/"
   _seen=false
   while IFS=$'\t' read -r _cwd _args; do
     [ "$_args" = "$1" ] || continue
     _seen=true
-    case "$_cwd" in "$_checkouts"?*) ;; *) return 1 ;; esac
+    case "$_cwd" in "$2"?*) ;; *) return 1 ;; esac
     case "$_cwd" in *..*) return 1 ;; esac
   done < "$TRACE.git-cwd"
   [ "$_seen" = true ]
@@ -92,8 +100,9 @@ _in_checkout_of() { # the traced argument string, a full commit
 _is_uv_git_cache_op() { # the traced argument string
   _cache="${UV_CACHE_DIR%/}/git-v0"
   case "$1" in
-    # rev-parse only reads; uv resolves the pin with it in several spellings.
-    init|rev-parse|"rev-parse "*) return 0 ;;
+    # uv initialises its database and resolves the pin in its own cache; the same commands
+    # anywhere else (the project directory, say) are not uv's.
+    init|rev-parse|"rev-parse "*) _ran_under "$1" "$_cache/" ; return ;;
     "submodule update --recursive --init") _ran_in_uv_checkout "$1"; return ;;
     "reset --hard "*)
       # The commit comes from the INSTALLED package, which on an overlay-free leg is the
