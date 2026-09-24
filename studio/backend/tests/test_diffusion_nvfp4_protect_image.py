@@ -1,7 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The NVFP4 per-step precision lever on the IMAGE backend."""
 
 from __future__ import annotations
 
@@ -49,7 +48,6 @@ def test_generate_arms_the_lever_with_the_effective_step_count():
 
 
 def test_the_effective_step_count_is_computed_outside_the_auto_cache_branch():
-    """It used to be local to ``if state.cache_auto``."""
     generate = _generate_body()
     assignments = [
         node
@@ -66,7 +64,6 @@ def test_the_effective_step_count_is_computed_outside_the_auto_cache_branch():
 
 
 def test_the_lever_wraps_the_chunk_render_itself():
-    """The context is entered around ``pipe(**chunk_kwargs)``: one denoise loop per chunk."""
     generate = _generate_body()
     wrapped = []
     for node in ast.walk(generate):
@@ -105,15 +102,13 @@ class _CapableLayer:
 
 
 def _capable(ctl):
-    """Register one, which is what lets a controller arm. Keep the result alive: the registry is weak."""
+    """Keep the result alive: the registry is weak."""
     layer = _CapableLayer()
     ctl.register_layer(layer)
     return layer
 
 
 class _CachingPipe:
-    """A denoise loop with an FBCache-shaped skip: the blocks are skipped, the LOOP is not."""
-
     def __init__(self, skip_steps) -> None:
         self.scheduler = _CachedScheduler()
         self.skip = set(skip_steps)
@@ -129,18 +124,17 @@ def test_a_cached_step_is_simply_not_protected():
     """The index still counts scheduler steps, so the lever protects the steps that are COMPUTED."""
     ctl = pr.NVFP4StepController("0,4,-1")
     layer = _capable(ctl)
-    pipe = _CachingPipe(skip_steps = {4})  # step 4 is protected AND cached away
+    pipe = _CachingPipe(skip_steps = {4})
     seen: list = []
     with pr.protect_generation(pipe, 9, controller = ctl):
         pipe.run(9, lambda: seen.append((ctl.index, ctl.protected)))
     assert pipe.scheduler.calls == 9
     assert [index for index, _ in seen] == [0, 1, 2, 3, 5, 6, 7, 8]
     assert [index for index, protected in seen if protected] == [0, 8]
-    assert ctl.protected_steps_seen == 3  # the controller still counts step 4 as protected
+    assert ctl.protected_steps_seen == 3
 
 
 def test_the_cache_marker_and_the_lever_do_not_fight():
-    """``GraphedForward`` bypasses itself while a step cache is engaged, and bypass wins."""
     torch = pytest.importorskip("torch")
     from core.inference import diffusion_cuda_graph as cg
 
@@ -193,7 +187,7 @@ def test_suspend_protect_disarms_every_controller_it_reaches_and_restores_it():
         types.SimpleNamespace(protect = a),
         types.SimpleNamespace(protect = b),
         types.SimpleNamespace(protect = shared),
-        types.SimpleNamespace(protect = shared),  # deduped by identity
+        types.SimpleNamespace(protect = shared),
         types.SimpleNamespace(protect = None),
         types.SimpleNamespace(),
     ]
@@ -211,11 +205,9 @@ def test_suspend_protect_restores_after_a_raise():
 
 
 def test_prewarm_tunes_the_fp4_kernel_even_on_a_protected_step(monkeypatch):
-    """A prewarm that fires at a protected step must still tune the FP4 kernel."""
     torch = pytest.importorskip("torch")
     from core.inference import diffusion_nvfp4_linear as nl
 
-    # The prewarm bails without flashinfer; the tuning loop itself is stubbed below.
     monkeypatch.setitem(sys.modules, "flashinfer", types.ModuleType("flashinfer"))
     layer = nl.nvfp4_linear_class()(
         64,
@@ -249,8 +241,6 @@ def test_prewarm_tunes_the_fp4_kernel_even_on_a_protected_step(monkeypatch):
 
 
 class _BlockHolding:
-    """A denoiser-shaped module that HOLDS an NVFP4 layer without calling it."""
-
     def __new__(cls, inner):
         import torch.nn as nn
         class _Impl(nn.Module):
@@ -286,7 +276,6 @@ def _cpu_nvfp4_tree(torch):
 
 
 def test_arming_the_lever_doubles_the_graph_cap_once(monkeypatch):
-    """Every input shape becomes two calls, so the same shapes need twice the graphs."""
     torch = pytest.importorskip("torch")
     from core.inference import diffusion_cuda_graph as cg
 
@@ -384,7 +373,6 @@ def test_a_graphed_dit_captures_one_tuned_graph_per_branch_and_replays_both(monk
                 },
             }
             assert nl.convert_nvfp4_backend(dit, metadata, "flashinfer") == 2
-            # The converted model reads its own controller, not the process one.
             ctl = pr.module_controller(dit)
             assert ctl is not pr.protect_controller() and ctl.armed
 
@@ -403,7 +391,7 @@ def test_a_graphed_dit_captures_one_tuned_graph_per_branch_and_replays_both(monk
 
             module = DiT(dit).eval()
             eager = {}
-            ctl.begin(9)  # step 0: protected
+            ctl.begin(9)
             with torch.inference_mode():
                 eager[True] = module(hidden_states = x, return_dict = False)[0].clone()
                 for _ in range(8):
@@ -416,7 +404,6 @@ def test_a_graphed_dit_captures_one_tuned_graph_per_branch_and_replays_both(monk
             handle = cg.GraphedForward(module, max_graphs = 4).install().enable()
 
             def settled() -> tuple:
-                """Reserved and allocated with the cache released, so the deltas are graph bytes."""
                 torch.cuda.synchronize()
                 torch.cuda.empty_cache()
                 return torch.cuda.memory_reserved(), torch.cuda.memory_allocated()
@@ -424,7 +411,7 @@ def test_a_graphed_dit_captures_one_tuned_graph_per_branch_and_replays_both(monk
             base_reserved, base_alloc = settled()
             torch.cuda.reset_peak_memory_stats()
 
-            ctl.begin(9)  # protected again: first capture
+            ctl.begin(9)
             with torch.inference_mode():
                 first = module(hidden_states = x, return_dict = False)[0].clone()
             after_one, _ = settled()

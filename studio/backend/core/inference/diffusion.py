@@ -1319,8 +1319,6 @@ def _planned_quant_scheme(
 def _prequant_probe(
     fam: Optional[DiffusionFamily], *, base_repo: Optional[str], prequant_path: Optional[str]
 ) -> Callable[[str], bool]:
-    """``has_prequant`` for the AUTO planners: whether ``candidate`` has a checkpoint the loader
-    would open for this base (or the operator's override)."""
     return lambda candidate: (
         fam is not None
         and usable_prequant_source(fam, candidate, path_override = prequant_path, base_repo = base_repo)
@@ -2125,7 +2123,6 @@ class DiffusionBackend:
                 target,
                 getattr(fam, "name", None),
                 base_repo = base_repo,
-                # Same probe as the retry below, so both see the same rungs.
                 has_prequant = lambda candidate: usable_prequant_source(
                     fam, candidate, path_override = path_override, base_repo = base_repo
                 )
@@ -3006,8 +3003,6 @@ class DiffusionBackend:
                     is not None
                 ):
                     return None
-                # The load's own resolution: without the base and the checkpoint probe, AUTO drops every
-                # prequant-only rung (a gated nvfp4 head) and the plan seeds a scheme the load does not pick.
                 scheme = _planned_quant_scheme(
                     fam,
                     target,
@@ -4493,8 +4488,7 @@ class DiffusionBackend:
                     )
                     is None
                 ):
-                    # An explicit scheme is never swapped for another. Say which "no" this is: a gate deny, a
-                    # missing pre-quantized checkpoint, a torchao fault or the GPU.
+                    # An explicit scheme is never swapped for another.
                     transformer_quant_decline = explain_unusable_scheme(
                         getattr(fam, "name", None),
                         transformer_quant_pinned,
@@ -5489,7 +5483,6 @@ class DiffusionBackend:
                                         target,
                                         mode = transformer_quant,
                                         family = getattr(fam, "name", None),
-                                        # Same policy lookup as the transformer-only path.
                                         base_repo = base,
                                         fast_accum = transformer_quant_fast_accum,
                                         logger = logger,
@@ -6004,7 +5997,6 @@ class DiffusionBackend:
         check_cancelled()
         fetch_base = fetch_base or prefer_ungated_mirror(base, hf_token)
         # 1. Pre-quantized checkpoint, when one is configured for the resolved scheme.
-        # usable_, not resolve_: the same call every planning site makes, so plan and load agree.
         scheme = _planned_quant_scheme(
             fam, target, mode, base_repo = base, prequant_path = prequant_path
         )
@@ -7495,7 +7487,7 @@ class DiffusionBackend:
                 if "callback_on_step_end" in call_params:
                     kwargs["callback_on_step_end"] = _on_step
 
-                # EFFECTIVE denoise steps: img2img at strength < 1 denoises a fraction of `steps`, and a negative protect index must land on a step the loop reaches.
+                # EFFECTIVE steps: img2img at strength < 1 denoises a fraction of `steps`.
                 strength_applied = effective_request_strength(
                     strength,
                     init_pil is not None,
@@ -7563,7 +7555,7 @@ class DiffusionBackend:
                     # __call__, so a raised call leaves a residual the next forward trips over.
                     if state.transformer_cache:
                         self._reset_step_cache(state.pipe)
-                    # Armed per CHUNK, not per generate: a split batch restarts at step 0. Counts scheduler.step, which a step cache does not skip.
+                    # Per CHUNK: a split batch restarts at step 0.
                     protect_ctx = protect_generation(pipe, denoise_steps, logger = logger)
                     try:
                         # inference_mode is faster than no_grad and numerically identical here.
@@ -7819,7 +7811,6 @@ class DiffusionBackend:
         # Before clear_gpu_cache(), or the graph pool stays reserved for the life of the process.
         cuda_graph.uninstall_all(state.cuda_graphs)
         gguf_compile.uninstall_all()
-        # The PDL barrier belongs to this model's allocator state, never to the next capture.
         try:
             from .diffusion_nvfp4_linear import reset_nvfp4_state
             reset_nvfp4_state()

@@ -13,12 +13,10 @@ import json
 from pathlib import Path
 from typing import Any, Optional
 
-# The SHAPE of the entries, versioned independently of any policy.
 GATE_RECORD_VERSION = 1
 
 GATE_RECORD_PATH = Path(__file__).with_name("nvfp4_gate_record.json")
 
-# Kept here rather than in the writing script so reader and writer cannot disagree.
 RECORD_KEY_FIELDS = ("family", "base_repo", "policy_id", "policy_version", "checkpoint_sha256")
 RECORD_FIELDS = RECORD_KEY_FIELDS + (
     "repo_id",
@@ -40,12 +38,11 @@ RECORD_FIELDS = RECORD_KEY_FIELDS + (
     "results_path",
 )
 
-# Keyed on the stat, so a rewritten record file is picked up without a process restart.
+# Keyed on the stat, so a rewritten file is picked up without a restart.
 _CACHE: dict[tuple, tuple] = {}
 
 
 def _canonical(value: Any) -> str:
-    """A base repo id in the form the tables hold: mirror mapped to upstream, lowercased."""
     try:
         from .diffusion_families import canonical_base
         return canonical_base(str(value or "").strip()).strip().lower()
@@ -54,7 +51,7 @@ def _canonical(value: Any) -> str:
 
 
 def load_gate_records(path: Any = None) -> tuple:
-    """Every record in the gate file, or ``()``. Never raises: an unreadable file is no evidence."""
+    """Never raises: an unreadable file is no evidence."""
     target = Path(path) if path is not None else GATE_RECORD_PATH
     try:
         stat = target.stat()
@@ -144,7 +141,6 @@ def _passing_record(
     *,
     path: Any = None,
 ) -> Optional[dict]:
-    """The first passing record for this family and base at the resolved policy, or None."""
     passing = _passing_records(family, base_repo, path = path)
     return passing[0] if passing else None
 
@@ -155,7 +151,6 @@ def nvfp4_gate_passed(
     *,
     path: Any = None,
 ) -> bool:
-    """Whether a reviewed record PASSES for this family and base at the resolved policy."""
     return _passing_record(family, base_repo, path = path) is not None
 
 
@@ -180,6 +175,6 @@ def nvfp4_gate_backend(
     *,
     path: Any = None,
 ) -> Optional[str]:
-    """The first passing record's backend, lowercased, or None. Coverage wants ``nvfp4_gate_backends``."""
+    """The first passing record's backend. Coverage wants ``nvfp4_gate_backends``."""
     backends = nvfp4_gate_backends(family, base_repo, path = path)
     return backends[0] if backends else None

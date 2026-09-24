@@ -1,7 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Tests for the NVFP4 flashinfer ops module (``diffusion_nvfp4_ops.py``)."""
 
 from __future__ import annotations
 
@@ -426,10 +425,6 @@ def test_only_allocation_failures_read_as_transient(exc, transient):
 
 
 def test_an_unprewarmed_gemm_shape_autotunes_on_its_first_eager_call_only(monkeypatch):
-    """The loaders prewarm only M = 1, and a graph's warm-up only the M its top-level inputs imply,
-    so a video's token count or a Z-Image unified sequence reached ``mm_fp4`` outside
-    ``flashinfer.autotune(True)`` and ran the fallback tactic for the life of the load. Each new
-    ``(M, K, N)`` must tune on its first eager call, once, and never inside a capture."""
     import contextlib
     import sys
     import types
@@ -467,8 +462,7 @@ def test_an_unprewarmed_gemm_shape_autotunes_on_its_first_eager_call_only(monkey
     monkeypatch.setitem(sys.modules, "flashinfer", fake)
     monkeypatch.setattr(ops, "_device_guard", lambda t: contextlib.nullcontext())
     monkeypatch.setattr(ops, "_fire_barrier", lambda device: None)
-    # The cached dispatch plan snapshots FlashInfer's tactic on its first build, so the tune has
-    # to come first; with no plan available every call reaches mm_fp4 and is observable here.
+    # With no dispatch plan every call reaches mm_fp4 and is observable here.
     from core.inference import diffusion_nvfp4_dispatch as dispatch
 
     monkeypatch.setattr(dispatch, "enabled", lambda device: False)
@@ -496,8 +490,7 @@ def test_an_unprewarmed_gemm_shape_autotunes_on_its_first_eager_call_only(monkey
 
 
 def test_the_first_call_tune_runs_before_the_cached_dispatch_plan_is_built(monkeypatch):
-    """``gemm_plan`` snapshots FlashInfer's tactic for a key on its first build and never asks
-    again, so a plan built before the tune would pin the fallback tactic for good."""
+    """``gemm_plan`` snapshots the tactic on its first build, so a plan before the tune pins the fallback."""
     import contextlib
     import sys
     import types

@@ -1,7 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Tests for the per-layer NVFP4 image policies (``diffusion_nvfp4_policy.py``)."""
 
 from __future__ import annotations
 
@@ -147,8 +146,6 @@ def _qwen_rows() -> list:
 
 
 class _Tree:
-    """A DiT as far as everything under test looks at one: a flat ``named_modules`` walk."""
-
     def __init__(self, rows) -> None:
         self.linears = {
             fqn: nn.Linear(in_features, out_features, device = "meta", dtype = torch.bfloat16)
@@ -173,9 +170,7 @@ def _qwen() -> _Tree:
 
 
 def test_the_synthetic_trees_reproduce_the_census_they_came_from():
-    """The trees are the fixture everything else rests on, so their totals are asserted first."""
     from core.inference.diffusion_transformer_quant import make_filter_fn
-
     admitted = make_filter_fn(512, ("lora_",), require_bf16 = True, require_divisible = 16)
     for tree, total, admits in ((_zimage(), 276, 239), (_flux(), 502, 499), (_qwen(), 846, 843)):
         assert len(tree.linears) == total
@@ -343,8 +338,6 @@ def test_the_timestep_embedder_mlp_stays_dense_under_every_image_policy():
 
 
 class _FakeQuantized:
-    """Stands in for a torchao weight subclass: only its class NAME is ever read."""
-
     def __init__(self, name: str) -> None:
         self.__class__ = type(name, (_FakeQuantized,), {})
 
@@ -355,7 +348,6 @@ def _stub_quantize(
     skip = (),
     produced = None,
 ):
-    """Record every ``quantize_`` pass and swap the selected weights for the class it produces."""
     calls: list = []
     classes = produced or {"cfg:nvfp4": "NVFP4Tensor", "cfg:fp8": "Float8Tensor"}
 

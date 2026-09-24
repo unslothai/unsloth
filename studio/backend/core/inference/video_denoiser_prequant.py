@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Seed a CONVENTIONAL video pipeline with hosted pre-quantized denoiser(s).
+"""Seed a conventional video pipeline with hosted pre-quantized denoisers, all-or-nothing.
 
 The dual-expert MoE's second denoiser is addressed through the ``task`` slot of
 ``prequant_filenames``, which deliberately gets no filename fallback: falling back would load
@@ -37,7 +37,7 @@ def denoiser_prequant_sources(
         for component in denoiser_components(fam):
             task = None if component == "transformer" else component
             if task is not None and not video_family_prequant_task_specific(fam, wanted, task):
-                # Without a row of its own, ``task`` resolves the first expert's file, which loads cleanly and denoises the second half of the schedule with the wrong weights.
+                # Without its own row, ``task`` resolves expert 1's file: loads fine, wrong weights.
                 return None
             sources[component] = resolve_prequant_source(
                 fam,
@@ -103,7 +103,7 @@ def denoiser_prequant_pipe_kwargs(
                 hf_token = hf_token,
                 scheme = scheme,
                 min_features = DEFAULT_MIN_LINEAR_FEATURES,
-                # Which expert this is, on both sides: the two are indistinguishable once loaded, so the stamp turns a mis-addressed artifact into a refusal rather than a wrong picture.
+                # Stamp which expert this is: once loaded the two are indistinguishable.
                 config_subfolder = component,
                 component = component,
                 cache_dir = cache_dir,
@@ -111,7 +111,7 @@ def denoiser_prequant_pipe_kwargs(
                 logger = logger,
             )
             if module is None:
-                # ALL or none: a seeded half beside an unmeasured dense-quantised half. Drop what loaded so the host memory goes back before the dense build starts.
+                # ALL or none; drop what loaded so host memory is freed before the dense build.
                 seeded.clear()
                 gc.collect()
                 if logger is not None:
@@ -124,7 +124,7 @@ def denoiser_prequant_pipe_kwargs(
                     )
                 return {}
             seeded[component] = module
-            # The pickle is ~7 GB per A14B expert, so collect now and the two never coexist.
+            # Never let two experts coexist in host memory.
             gc.collect()
         if logger is not None:
             logger.info(

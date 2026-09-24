@@ -208,14 +208,13 @@ class ZeroRowSafeLinear(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         if x.numel() == 0:
-            # A broadcast over zero elements, kept so the result matches F.linear's, dtype and all.
+            # The bias add broadcasts over zero elements, kept so the result matches F.linear's.
             out = x.new_zeros((*x.shape[:-1], self.inner.out_features))
             bias = getattr(self.inner, "bias", None)
             return out if bias is None else out + bias
         return self.inner(x)
 
     def __getattr__(self, name: str) -> Any:
-        # Same passthrough as PadToMinM: callers reach THROUGH a Linear for weight / bias / features.
         try:
             return super().__getattr__(name)
         except AttributeError:
@@ -227,7 +226,7 @@ class ZeroRowSafeLinear(nn.Module):
             return getattr(inner, name)
 
     def state_dict(self, *args: Any, **kwargs: Any) -> Any:  # type: ignore[override]
-        """Emit the inner Linear's tensors under the WRAPPER's prefix so the checkpoint stays loadable by an unwrapped tree."""
+        """Emit the inner Linear's tensors under the wrapper's prefix, loadable unwrapped."""
         destination = kwargs.pop("destination", args[0] if args else None)
         prefix = kwargs.pop("prefix", args[1] if len(args) > 1 else "")
         keep_vars = kwargs.pop("keep_vars", args[2] if len(args) > 2 else False)
@@ -266,7 +265,6 @@ def wrap_zero_row_linears(model: nn.Module, fqns: Iterable[str]) -> tuple[str, .
             parent = model.get_submodule(parent_name) if parent_name else model
             module = getattr(parent, leaf)
         except AttributeError:
-            # a family token matching nothing on this variant is not an error
             continue
         if not is_quantized_linear(module):
             continue

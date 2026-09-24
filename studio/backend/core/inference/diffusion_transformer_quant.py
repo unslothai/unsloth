@@ -197,7 +197,7 @@ def apply_small_m_padding(
     return wrapped
 
 
-# Zero-row guard per family: torchao's NVFP4 activation path raises on numel() == 0, which HunyuanVideo-1.5's attention trim reaches on every default t2v render.
+# nvfp4 raises on an empty activation; HunyuanVideo-1.5's attention trim hits it every t2v render.
 _HUNYUAN15_NVFP4_ZERO_ROW_TOKENS = ("image_embedder", "context_embedder_2")
 _NVFP4_FAMILY_ZERO_ROW_NAME_TOKENS: dict[str, tuple[str, ...]] = {
     "hunyuanvideo-1.5": _HUNYUAN15_NVFP4_ZERO_ROW_TOKENS,
@@ -251,7 +251,6 @@ def exclude_tokens_for_scheme(scheme: str, family: Optional[str] = None) -> tupl
     return ()
 
 
-# GEMM tiling floor per scheme, the divisor every quantized Linear's features must meet. Public so the runtime filter, the offline builder and the validator read one number.
 _SCHEME_DIVISIBLE: dict[str, int] = {TQ_FP8: 16, TQ_NVFP4: 16, TQ_MXFP8: 32}
 
 
@@ -267,7 +266,7 @@ _AUTO_LADDER: tuple[tuple[tuple[int, int], tuple[str, ...]], ...] = (
     (
         (10, 0),
         (TQ_INT8, TQ_FP8, TQ_MXFP8),
-    ),  # Blackwell sm_100+ (nvfp4 via _FAMILY_AUTO_PREFER only)
+    ),  # Blackwell sm_100+
     ((8, 9), (TQ_INT8, TQ_FP8)),  # Ada sm_89 / Hopper sm_90
     ((8, 0), (TQ_INT8,)),  # Ampere sm_80 / sm_86
 )
@@ -301,7 +300,7 @@ class _AutoPrefer:
     backend: Optional[str] = None
 
 
-# Keys are lowercased family names, so the 480p and 720p HunyuanVideo-1.5 tiers are separate rows. The three image rows are gated and inert as shipped, with nvfp4 below int8 and fp8 (memory lever, not speed).
+# Image rows are gated (inert until a record lands); nvfp4 below int8/fp8 is a memory lever.
 _FAMILY_AUTO_PREFER: dict[str, _AutoPrefer] = {
     "z-image": _AutoPrefer(
         floor = (10, 0), schemes = (TQ_INT8, TQ_FP8, TQ_NVFP4, TQ_MXFP8), gated = True
@@ -333,9 +332,7 @@ _FAMILY_TRAIN_SCHEME_DENY: dict[str, frozenset[str]] = {
 
 
 def _nvfp4_gate_passed(family, base_repo) -> bool:
-    """Whether a reviewed gate record covers ``(family, base_repo)`` at the in-tree policy. Imported
-    INSIDE the function: the stdlib-only smoke-probe child imports this module whole. Any failure
-    answers False, which KEEPS the deny."""
+    """Lazy import: the stdlib-only smoke-probe child imports this module whole."""
     try:
         from .diffusion_nvfp4_gate import nvfp4_gate_passed
         return bool(nvfp4_gate_passed(family, base_repo))
@@ -429,7 +426,6 @@ def explain_unusable_scheme(
             "renders black frames or fails the quality bar on this DiT), whatever the GPU"
         )
     if prequant_missing:
-        # NVFP4 only loads from a pre-quantized checkpoint; a model without one is not a GPU limit.
         return (
             f"'{scheme}' needs a pre-quantized checkpoint for family '{family}' and none is "
             "available for this model (no hosted repo for this base and no transformer_prequant_path)"
@@ -931,7 +927,6 @@ def _auto_scheme_order(
     head: tuple[str, ...] = ()
     if prefer is not None and cap >= prefer.floor:
         if prefer.consumer_ok or not _is_consumer_gpu(device):
-            # Without a record the row is untested, and a record on one NVFP4 backend says nothing about the other.
             if not prefer.gated or (
                 _nvfp4_gate_passed(family, base_repo)
                 and _nvfp4_gate_backend_ok(family, base_repo, device)

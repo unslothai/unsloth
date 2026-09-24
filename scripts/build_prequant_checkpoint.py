@@ -130,12 +130,7 @@ def upload_destination(
 
 
 def quant_filter_settings(scheme: str, family: Optional[str]) -> dict:
-    """The filter inputs the runtime ``quantize_`` uses for ``scheme``, as recorded metadata.
-
-    One dict feeds both ``make_filter_fn`` and the checkpoint metadata, so the build cannot skip a
-    Linear the runtime would quantize (or the reverse) and the loader can verify what was used.
-    ``require_divisible`` is the GEMM tiling floor: without it a ragged Linear is baked into a
-    quantized GEMM the runtime leaves dense and can fail on its first forward."""
+    """Runtime ``quantize_`` filter inputs for ``scheme``; one dict feeds filter and metadata."""
     from core.inference.diffusion_transformer_quant import (
         _REQUIRE_BF16_SCHEMES,
         divisible_for_scheme,
@@ -297,8 +292,6 @@ def main(argv = None) -> int:
         args.base, subfolder = "transformer", torch_dtype = torch.bfloat16, token = args.hf_token
     ).to("cuda")
     print(f"  quantising in place ({scheme}) ...", flush = True)
-    # Mirror the runtime filter: int8 skips the M=1 modulation projections (torch._int_mm needs M>16) plus
-    # per-family ones; fp8 / mxfp8 skip non-bf16 Linears; fp8 / nvfp4 / mxfp8 skip ragged ones.
     filter_settings = quant_filter_settings(scheme, fam.name)
     exclude_name_tokens = tuple(filter_settings["exclude_name_tokens"])
     require_bf16 = filter_settings["require_bf16"]

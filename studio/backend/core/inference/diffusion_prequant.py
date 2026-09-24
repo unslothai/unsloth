@@ -45,7 +45,8 @@ PREQUANT_FORMAT = "unsloth_prequant_transformer_state_dict_v1"
 # hand-edited tag nor a builder that forgot one half can produce something that loads.
 PREQUANT_FORMAT_ROTATED = "unsloth_prequant_transformer_state_dict_v2"
 
-# v3 is v1 plus a PER-LAYER PRECISION POLICY: NVFP4 and fp8 weights side by side. Its own tag, or an older build reads it as a whole-model nvfp4 artifact and renders unmeasured precisions. Biconditional: v3 MUST declare a policy, v1/v2 must NOT.
+# v1 plus a PER-LAYER POLICY (nvfp4 + fp8). Own tag, or an older build reads it as whole-model
+# nvfp4. Biconditional: v3 MUST declare a policy, v1/v2 must NOT.
 PREQUANT_FORMAT_POLICY = "unsloth_prequant_transformer_state_dict_v3"
 
 PREQUANT_FORMATS = (PREQUANT_FORMAT, PREQUANT_FORMAT_ROTATED, PREQUANT_FORMAT_POLICY)
@@ -174,7 +175,7 @@ _SCHEME_REQUIRED_GLOBALS: dict = {
             "torchao.quantization.quantize_.common.kernel_preference.KernelPreference",
         }
     ),
-    # The UNION with fp8: a v3 policy checkpoint holds Float8Tensor weights too, and the nvfp4 names alone would trip on them as an UnpicklingError mid-load.
+    # Includes fp8's names: a v3 policy checkpoint holds Float8Tensor weights too.
     "nvfp4": frozenset(
         {
             "torchao.prototype.mx_formats.nvfp4_tensor.NVFP4Tensor",
@@ -434,10 +435,7 @@ def prequant_repo_filename(
     *,
     component: Optional[str] = None,
 ) -> str:
-    """The checkpoint filename for ``scheme`` in ``repo_id``: unsloth/Z-Image-Turbo-FP8 ships
-    Z-Image-Turbo-FP8.pt. A non-default ``component`` (the denoiser subfolder it was baked from,
-    for a family shipping several) lands as <Model>-<component>-<SCHEME><suffix>, so the plain name
-    every hosted repo already uses does not move.
+    """Filename for ``scheme`` in ``repo_id``; a non-default ``component`` inserts -<component>-.
 
     ``suffix`` picks the container. It defaults to ``.pt`` so every existing caller keeps naming the
     artifact it already names; ``derived_prequant_filenames`` is what puts the safetensors spelling
@@ -616,12 +614,10 @@ def read_prequant_metadata(path: str) -> dict:
 
 FINGERPRINT_ALGO = "md5-packed-v1"
 
-# The attributes carrying a torchao weight's QUANTIZED BYTES, in a fixed order, off torchao 0.17's ``tensor_data_names`` and keyed by class NAME (re-exported under several paths). An unlisted class is not hashed: a tripwire must read "not covered", never "equal".
+# Payload attrs per torchao class NAME, hash order; unlisted reads "not covered", never "equal".
 _FINGERPRINT_PAYLOAD: dict = {
     "NVFP4Tensor": ("qdata", "scale", "per_tensor_scale"),
     "Float8Tensor": ("qdata", "scale"),
-    # torchao 0.18+ int8 (0.17 and older produce the AffineQuantizedTensor chain below). The
-    # optional slots read None on a dynamic-activation bake and are skipped.
     "Int8Tensor": (
         "qdata",
         "scale",
@@ -658,7 +654,7 @@ def _hash_packed_payload(tensor: Any, digest: Any, torch: Any) -> bool:
     for name in names:
         value = getattr(tensor, name, None)
         if value is None:
-            continue  # an optional slot this build did not bake
+            continue
         digest.update(name.encode("utf-8"))
         if type(value).__name__ in _FINGERPRINT_PAYLOAD:
             if not _hash_packed_payload(value, digest, torch):
@@ -711,7 +707,6 @@ def packed_weight_fingerprint(state_dict: Any, *, select: Any = None) -> dict:
 
 FINGERPRINT_MODE_ENV = "UNSLOTH_PREQUANT_FINGERPRINT"
 FINGERPRINT_MODES = ("full", "sample", "off")
-# One fqn in eight under ``sample``: single-weight corruption is missed seven times in eight, hence not the default.
 FINGERPRINT_SAMPLE_RATE = 8
 
 
@@ -751,7 +746,6 @@ def _verify_packed_fingerprint(
             )
         return True
     try:
-        # Sample mode hashes only the fqns it compares; that is what makes it cheap.
         actual = (
             packed_weight_fingerprint(
                 state_dict,
@@ -1045,7 +1039,7 @@ def load_prequantized_transformer(
         ):
             return None
         state_dict = ckpt["state_dict"]
-        # The only check reading what the artifact HOLDS, not what it says: post-build corruption passes all the others.
+        # The only check reading what the artifact HOLDS: corruption after build passes the rest.
         if not _verify_packed_fingerprint(state_dict, ckpt.get("metadata") or {}, logger = logger):
             return None
         _pin_kernel_preference(state_dict, logger)
@@ -1099,7 +1093,7 @@ def load_prequantized_transformer(
             convert_nvfp4_backend(
                 transformer, metadata, select_nvfp4_backend(device), logger = logger
             )
-        # assign=True handed the module the checkpoint's tensors: a second reference keeps every CPU copy alive across to(device), doubling the peak on unified memory.
+        # assign=True shares the tensors: a live reference doubles the peak on unified memory.
         del state_dict
         del ckpt
 
@@ -1111,7 +1105,6 @@ def load_prequantized_transformer(
         from .diffusion_transformer_quant import apply_small_m_padding, apply_zero_row_guard
 
         apply_small_m_padding(transformer, scheme, metadata.get("family"), logger = logger)
-        # The other end of the range: an attention trim can hand a quantized Linear an EMPTY activation, which torchao's activation scale cannot reduce over.
         apply_zero_row_guard(transformer, scheme, metadata.get("family"), logger = logger)
         # from_config starts in TRAIN mode while the dense/GGUF paths use from_pretrained (eval()'d). Match it so
         # train/eval-sensitive layers cannot make prequant inference diverge.
@@ -1120,9 +1113,7 @@ def load_prequantized_transformer(
         except Exception:  # noqa: BLE001 - eval() is best-effort
             pass
         if scheme == "nvfp4":
-            # Here, not per caller, so a video load tunes the M = 1 shapes too; the token-count shapes tune on their first
-            # eager GEMM. The tuned set is keyed per shape, so the image loader's own call is then a no-op. Its own try: a
-            # tuning failure must not discard a loaded checkpoint.
+            # Here so video loads tune M = 1 too. Own try: a tuning failure must not lose the load.
             try:
                 from .diffusion_nvfp4_linear import nvfp4_prewarm
                 nvfp4_prewarm(transformer, (1,), logger = logger)
@@ -1339,7 +1330,7 @@ def _load_transformer_config(
     raise last  # type: ignore[misc]
 
 
-# By NAME: the class is re-exported under several paths, and importing torchao here would pull it into a check that runs before the load.
+# By NAME: re-exported under several paths, and this check must not import torchao.
 _FLOAT8_TENSOR_CLASS = "Float8Tensor"
 
 
@@ -1619,7 +1610,6 @@ def _validate_checkpoint(
                 ),
             )
             return False
-    # The GEMM tiling floor the filter was built with. A checkpoint baked before the builder passed it carries ragged linears the runtime leaves dense: same scheme, different admitted set. Absent is accepted.
     ckpt_divisible = meta.get("require_divisible")
     if ckpt_divisible is not None:
         from .diffusion_transformer_quant import divisible_for_scheme

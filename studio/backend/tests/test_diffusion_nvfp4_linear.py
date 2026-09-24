@@ -1,7 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Tests for the FlashInfer NVFP4 Linear and the torchao -> flashinfer conversion."""
 
 from __future__ import annotations
 
@@ -42,7 +41,6 @@ def _torchao_linear(
     bias: bool = True,
     seed: int = 0,
 ):
-    """A torchao-quantized ``nn.Linear``, the way a hosted NVFP4 checkpoint arrives."""
     import torch.nn as nn
     from torchao.prototype.mx_formats import NVFP4DynamicActivationNVFP4WeightConfig
     from torchao.quantization import quantize_
@@ -61,7 +59,6 @@ def _rel(a, b) -> float:
 
 @pytest.mark.parametrize("out_features,in_features", REAL_SHAPES)
 def test_torchao_and_flashinfer_pack_the_same_payload(out_features, in_features):
-    """torchao's ``qdata``/``scale`` ARE FlashInfer's ``wq``/``w_sf``, so this is no requantization."""
     torch = _cuda_or_skip()
     import flashinfer
     from torchao.prototype.mx_formats.nvfp4_tensor import NVFP4Tensor
@@ -126,7 +123,6 @@ def test_converted_layer_keeps_the_leading_dimensions_and_the_bias():
 
 @pytest.mark.parametrize("out_features,in_features", [(18432, 3072), (15360, 256)])
 def test_m1_gemm_is_finite_on_both_backends(out_features, in_features, capsys):
-    """The image policies quantize modulation projections that run at M = 1."""
     torch = _cuda_or_skip()
     import time
 
@@ -263,9 +259,9 @@ def test_convert_nvfp4_backend_moves_a_real_quantized_tree_and_prewarms_it():
     assert _rel(after, before) < FORWARD_REL_BOUND
 
     nl.reset_tuned_shapes()
-    assert nl.nvfp4_prewarm(tree, (512,)) == 1  # one distinct (M, K, N) across both layers
+    assert nl.nvfp4_prewarm(tree, (512,)) == 1
     assert tree[0]._tuned is True and tree[2]._tuned is True
-    assert nl.nvfp4_prewarm(tree, (512,)) == 0  # the shape cache is process wide
+    assert nl.nvfp4_prewarm(tree, (512,)) == 0
     with torch.inference_mode():
         tuned = tree(x)
     assert bool(torch.isfinite(tuned).all())
@@ -273,8 +269,6 @@ def test_convert_nvfp4_backend_moves_a_real_quantized_tree_and_prewarms_it():
 
 
 class _FakeNVFP4Tensor:
-    """Duck-typed like torchao's tensor subclass for the walk, without needing a GPU to build one."""
-
     __name__ = "NVFP4Tensor"
 
     def __init__(self):
@@ -320,8 +314,6 @@ def test_the_walk_finds_the_quantized_linears_and_leaves_the_plain_one_alone():
 
 
 class _RecordingLogger:
-    """Just enough logger to read back the refusal, with no logging plugin in the way."""
-
     def __init__(self):
         self.lines: list[str] = []
 
@@ -359,7 +351,7 @@ def test_conversion_refuses_when_one_layer_has_no_scale():
 
 
 def test_a_layer_that_fails_half_way_leaves_the_whole_tree_on_torchao(monkeypatch):
-    # The loader ignores the return value, so a raise after the first swap left a mixed tree logged as torchao while the badge read flashinfer off the converted layers.
+    # A raise after the first swap used to leave a mixed tree the loader logged as torchao.
     torch = pytest.importorskip("torch")
     import torch.nn as nn
 
@@ -455,7 +447,7 @@ def test_prewarm_without_flashinfer_is_a_no_op(monkeypatch):
 
 
 def test_a_whole_model_artifact_converts_without_a_policy_block():
-    """PR 1's video artifacts quantise EVERY admitted linear and declare no policy at all."""
+    """Video artifacts quantise EVERY admitted linear and declare no policy."""
     torch = _cuda_or_skip()
     import torch.nn as nn
     from torchao.prototype.mx_formats import NVFP4DynamicActivationNVFP4WeightConfig
@@ -487,7 +479,6 @@ def test_a_whole_model_artifact_converts_without_a_policy_block():
 
 
 def test_a_whole_model_artifact_that_baked_nothing_says_the_flag_is_set():
-    """A build whose bake produced no scales reads differently from one that never asked."""
     pytest.importorskip("torch")
 
     logger = _RecordingLogger()
@@ -515,7 +506,7 @@ def test_an_fp32_layer_runs_and_answers_in_fp32():
     converted = nl.nvfp4_linear_from_torchao(layer, float(ops.global_scale(x)))
     with torch.inference_mode():
         after = converted(x)
-    assert after.dtype == torch.float32  # nn.Linear's contract: the caller's dtype back
+    assert after.dtype == torch.float32
     assert bool(torch.isfinite(after).all())
     assert _rel(after.float(), before.float()) < FORWARD_REL_BOUND
     with torch.inference_mode():

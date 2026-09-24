@@ -61,9 +61,7 @@ def _zero_buffer_enabled() -> bool:
 
 
 def _device_index(device: Any) -> int:
-    """The integer index of ``device``, resolving a bare ``cuda`` to the current one."""
     import torch
-
     index = getattr(device, "index", None)
     return torch.cuda.current_device() if index is None else int(index)
 
@@ -104,12 +102,10 @@ def reset_barriers() -> None:
 
 
 def global_scale(t: Any):
-    """The NVFP4 global scale of a tensor: ``6 * 448 / amax``, as a 1-element fp32 tensor."""
     return (FP4_MAX * FP8_MAX / t.float().abs().amax().clamp(min = 1e-8)).reshape(1).to(t.device)
 
 
 def _quantize_impl(x: Any, global_sf: Any):
-    """2D bf16 in, ``(packed e2m1x2, swizzled block scales)`` out."""
     import flashinfer
 
     from . import diffusion_nvfp4_dispatch as dispatch
@@ -139,8 +135,8 @@ def _mm_impl(xq: Any, wq: Any, x_sf: Any, w_sf: Any, alpha: Any, n: int, backend
             _fire_barrier(xq.device)
         if _claim_first_call_tune(m, xq.shape[1] * 2, n):
             # A shape nothing prewarmed (a video's token count, a graphed Z-Image's unified
-            # sequence) would otherwise run the fallback tactic for the life of the load. Before the
-            # dispatch plan, which caches whatever tactic FlashInfer holds on its first build.
+            # sequence) would otherwise run the fallback tactic for the life of the load.
+            # Before the dispatch plan, which caches whatever tactic FlashInfer holds on its first build.
             try:
                 with flashinfer.autotune(True):
                     return flashinfer.mm_fp4(
@@ -194,7 +190,7 @@ def _quantize_fake(x: Any, global_sf: Any):
 
     m, k = x.shape
     cols = k // 16
-    # The leading dim is NOT m whenever the padding is non-trivial. Reproduce that, not m.
+    # The leading dim is NOT m whenever the padding is non-trivial.
     total = _swizzled_sf_numel(m, cols, 128)
     return (
         x.new_empty((m, k // 2), dtype = torch.uint8),
@@ -272,11 +268,10 @@ def swizzle_sf(sf_lin: Any, m: int, k: int):
     return v.permute(0, 3, 2, 1, 4).reshape(-1).contiguous()
 
 
-# The signed table is indexed by the raw nibble (``sign << 3 | magnitude``).
+# Indexed by the raw nibble (``sign << 3 | magnitude``).
 _E2M1_MAGNITUDES = (0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0)
 _E2M1_LUT = _E2M1_MAGNITUDES + tuple(-v for v in _E2M1_MAGNITUDES)
 
-# Deliberately NOT a registered buffer: one copy per layer is the kind of byte that must not exist.
 _LUT_CACHE: dict = {}
 
 
@@ -293,7 +288,6 @@ def e2m1_lut(device: Any):
 
 
 def reset_lut_cache() -> None:
-    """Forget the per-device decode tables. For tests and for a device set that changed."""
     _LUT_CACHE.clear()
 
 
@@ -375,7 +369,6 @@ def nvfp4_preflight(device: Any = None, *, refresh: bool = False) -> dict:
         rec["ok"] = finite
         rec["reason"] = "ok" if finite else "mm_fp4 produced a non-finite result"
         if finite:
-            # One-shot bit-identity check unlocking the cached dispatch, off the request path.
             from . import diffusion_nvfp4_dispatch as dispatch
 
             fast_ok, fast_reason = dispatch.verify(dev)
@@ -384,7 +377,7 @@ def nvfp4_preflight(device: Any = None, *, refresh: bool = False) -> dict:
     except Exception as exc:  # noqa: BLE001 - every failure mode here means "use torchao"
         rec["reason"] = f"{type(exc).__name__}: {str(exc)[:200]}"
         if _transient_preflight_failure(exc):
-            # Not memoised: the probe runs during AUTO planning while the model the arbiter is about to evict still owns the card, so an allocation failure says "not now", not "not here".
+            # Not memoised: a model about to be evicted may own the card, so OOM means "not now".
             return dict(rec)
 
     with _PREFLIGHT_LOCK:
@@ -393,10 +386,8 @@ def nvfp4_preflight(device: Any = None, *, refresh: bool = False) -> dict:
 
 
 def _preflight_probe(dev: Any) -> bool:
-    """The guarded probe: True when ``mm_fp4`` ran and produced a finite result."""
     import flashinfer
     import torch
-
     with torch.cuda.device(dev):
         x = torch.randn(128, 256, device = dev, dtype = torch.bfloat16) * 0.05
         w = torch.randn(128, 256, device = dev, dtype = torch.bfloat16) * 0.02
@@ -419,7 +410,7 @@ def _preflight_probe(dev: Any) -> bool:
 
 
 def _transient_preflight_failure(exc: BaseException) -> bool:
-    """Allocation failures only; an import or JIT failure is a property of the host and stays cached."""
+    """Allocation failures only; an import or JIT failure stays cached."""
     if isinstance(exc, MemoryError):
         return True
     try:
@@ -433,20 +424,17 @@ def _transient_preflight_failure(exc: BaseException) -> bool:
 
 
 def reset_preflight_cache() -> None:
-    """Forget every memoised preflight. For tests and for a device set that changed under us."""
     with _PREFLIGHT_LOCK:
         _PREFLIGHT.clear()
     _WARNED.clear()
 
 
 def nvfp4_backend_env() -> str:
-    """The requested backend, normalised. An unrecognised value reads as ``auto``."""
     raw = os.environ.get(NVFP4_BACKEND_ENV, "").strip().lower()
     return raw if raw in NVFP4_BACKENDS else "auto"
 
 
 def _flashinfer_available() -> tuple[bool, str]:
-    """Whether ``import flashinfer`` works here. Windows answers no, which is the design."""
     try:
         import flashinfer
         return True, str(getattr(flashinfer, "__version__", "unknown"))
@@ -491,7 +479,6 @@ def _resolve_backend(device: Any = None) -> tuple[str, str]:
 
 
 def nvfp4_backend_reason(device: Any = None) -> str:
-    """Why ``select_nvfp4_backend`` will answer what it answers, in one line."""
     return _resolve_backend(device)[1]
 
 

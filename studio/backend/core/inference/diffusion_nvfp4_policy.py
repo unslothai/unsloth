@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Per-layer NVFP4 policies for the image DiTs.
+"""Per-layer NVFP4 policies for the image DiTs: a named set of layers at 4 bits over an fp8 model.
 
 A policy puts a named set of layers at 4 bits over fp8: a memory lever, not a speed win, so nvfp4
 sits BELOW fp8 in the image auto order. FAILS CLOSED: exact suffixes and asserted counts per rule.
@@ -68,8 +68,6 @@ class NVFP4Policy:
     expected_counts: Mapping = field(default_factory = dict)
 
 
-# Every count below was verified against the diffusers module tree on the meta device.
-
 ZIMAGE_F8MOD_TOQ34 = NVFP4Policy(
     policy_id = "zimg_f8mod_toq34_v1",
     version = 1,
@@ -114,7 +112,6 @@ NVFP4_POLICIES: tuple = (ZIMAGE_F8MOD_TOQ34, FLUX_MOD_SINGLE, QWEN_P02)
 
 
 def policy_by_id(policy_id: Any) -> Optional[NVFP4Policy]:
-    """The in-tree policy with this id, or None. Used to re-resolve a checkpoint's declaration."""
     wanted = str(policy_id or "").strip()
     for policy in NVFP4_POLICIES:
         if policy.policy_id == wanted:
@@ -166,7 +163,6 @@ def assign_precisions(
         min_features = DEFAULT_MIN_LINEAR_FEATURES
     if require_divisible is None:
         require_divisible = divisible_for_scheme(TQ_NVFP4)
-    # Same call the runtime and the builder make, so "admitted" means one thing in all three.
     base_filter = make_filter_fn(
         min_features,
         ("lora_",),
@@ -273,7 +269,6 @@ def policy_metadata_error(metadata: Any) -> Optional[str]:
             return f"nvfp4 policy {policy_id!r} has a malformed count entry {key!r}: {value!r}"
     fqns = block.get("nvfp4_fqns")
     if not isinstance(fqns, (list, tuple)) or not fqns:
-        # An empty list is refused rather than read as "quantise nothing to 4 bits".
         return f"nvfp4 policy {policy_id!r} records no nvfp4_fqns ({fqns!r})"
     if not all(isinstance(fqn, str) and fqn for fqn in fqns):
         return f"nvfp4 policy {policy_id!r} nvfp4_fqns has non-string entries"
@@ -288,7 +283,7 @@ def policy_metadata_error(metadata: Any) -> Optional[str]:
     return None
 
 
-# By class NAME: torchao re-exports these under several paths that move between releases, and the name keeps this module torch-lazy.
+# By class NAME: torchao moves these between module paths across releases.
 _EXPECTED_WEIGHT_CLASS = {
     PRECISION_NVFP4: "NVFP4Tensor",
     PRECISION_FP8: "Float8Tensor",

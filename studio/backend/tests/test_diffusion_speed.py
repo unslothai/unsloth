@@ -1247,8 +1247,6 @@ def test_cuda_graph_install_failure_leaves_the_load_usable(monkeypatch):
 
 
 class _Block:
-    """A repeated block whose ``forward`` source is what the detector reads."""
-
     def forward(self, hidden_states, encoder_hidden_states, temb):  # pragma: no cover - never run
         return hidden_states, encoder_hidden_states
 
@@ -1279,7 +1277,6 @@ class _DualStreamBlock(_Block):
 
 
 def _dit(*block_classes):
-    """A stub DiT exposing the two things the detector reads: _repeated_blocks + named_modules."""
     blocks = [cls() for cls in block_classes]
     dit = types.SimpleNamespace(
         _repeated_blocks = [cls.__name__ for cls in block_classes],

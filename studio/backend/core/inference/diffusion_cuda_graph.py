@@ -223,7 +223,6 @@ def _protect_keyed(module: Any) -> bool:
 
 
 def protect_graph_key(controller: Any = None) -> tuple:
-    """The branch in flight as a key suffix. Imported lazily; ``()`` when the lever is off."""
     from .diffusion_nvfp4_protect import protect_graph_key as _key
     return _key(controller = controller)
 
@@ -421,8 +420,6 @@ class GraphedForward:
                 self.protect_keyed = _protect_keyed(self.module)
                 if self.protect_keyed:
                     from .diffusion_nvfp4_protect import module_controller
-
-                    # Resolved once: the key is built every call, and the walk is over the whole tree.
                     self.protect_ctl = module_controller(self.module)
                 if self.protect_keyed:
                     self.max_graphs *= 2
@@ -434,7 +431,7 @@ class GraphedForward:
                             self.max_graphs,
                         )
             if self.protect_keyed:
-                # One graph per branch: a W4A4 graph replayed at a W4A16 step would report the lever as measured while it never fired.
+                # One graph per branch: a W4A4 replay at a W4A16 step means the lever never fired.
                 key = key + protect_graph_key(self.protect_ctl)
             entry = self.cache.get(key)
         except Exception:  # noqa: BLE001 - an unhashable tree is simply not capturable
@@ -531,7 +528,7 @@ class GraphedForward:
         static_args, static_kwargs = _rebuild(entry.in_spec, entry.static)
 
         if nvfp4_layers:
-            # Before the warm-up, so before capture: recorded candidate launches would bake in the default tactic.
+            # Before the warm-up: a captured tuning launch would bake in the default tactic.
             from .diffusion_nvfp4_linear import nvfp4_prewarm
             nvfp4_prewarm(self.module, _prewarm_token_counts(live), logger = self.logger)
 

@@ -9244,7 +9244,6 @@ def test_a_seed_the_plan_declined_is_not_re_taken_by_the_load(fake_runtime, monk
         _video_auto_denoiser_planned = video_mod.DENOISER_SEED_DECLINED,
     )
     assert calls == [], "a seed the plan declined may not be fetched inline by the load"
-    # The dense shards the plan kept are what this load quantises.
     assert status["transformer_quant"] == "nvfp4"
     assert "unsloth/" not in status["resolved"]["transformer_quant"]["reason"]
 
@@ -9332,7 +9331,6 @@ def test_the_download_plan_stages_both_experts_artifacts(monkeypatch):
         ),
     }
     monkeypatch.setattr(dq, "denoiser_prequant_sources", lambda fam, scheme, base: sources)
-    # The plan asks the LOAD's own seed question, so pin the device and keep the staging assertions off the test host's card.
     monkeypatch.setattr(video_mod, "_video_auto_denoiser_scheme", lambda fam, **kw: "nvfp4")
     # Its residency question reads live free VRAM, which a shared test card moves under the test.
     monkeypatch.setattr(video_mod, "_video_seed_stays_resident", lambda fam, **kw: True)
@@ -9561,7 +9559,6 @@ def test_a_dense_encoder_fallback_that_forces_offload_also_drops_the_seed(
     monkeypatch.setattr(video_mod, "dense_transformer_supported", lambda target: True)
     monkeypatch.setattr(video_mod, "quantize_transformer", lambda *a, **k: None)
     calls, _modules = _stub_denoiser_seed(monkeypatch)
-    # A pre-cast encoder is budgeted for and then does not land, which is what re-plans at bf16.
     monkeypatch.setattr(te, "te_prequant_budget_scale", lambda fam, **kwargs: 0.5)
     monkeypatch.setattr(te, "te_prequant_pipe_kwargs", lambda fam, base, **kwargs: {})
     real_plan = video_mod.plan_diffusion_memory
@@ -10209,9 +10206,7 @@ def test_the_boundary_marker_waits_out_a_busy_capture_lock(fake_runtime, monkeyp
 
 @pytest.mark.parametrize("resident", [True, False])
 def test_a_failed_replacement_keeps_the_resident_models_nvfp4_state(monkeypatch, resident):
-    """A load that fails before teardown leaves the old model installed, and its CUDA graph still
-    records kernels against the NVFP4 barrier and dispatch tensors; only a load with nothing
-    resident may release them."""
+    """A failed replacement keeps the old model, whose CUDA graph still uses the NVFP4 tensors."""
     import core.inference.video as vid
     from core.inference import diffusion_nvfp4_linear as lin
 
