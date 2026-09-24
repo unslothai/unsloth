@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import type { useNavigate } from "@tanstack/react-router";
+import { getAuthSessionEpoch } from "@/features/auth";
 import { listLoras } from "@/features/chat";
 import {
   clearModelConfigHandoff,
@@ -87,10 +88,15 @@ export async function chatAboutItems(
     return;
   }
   const chosen = fitting.slice(0, MAX_CHAT_FILES);
+  // A sign-out while the files download would hand them to the next account's chat.
+  const epoch = getAuthSessionEpoch();
   try {
     // One at a time, so a folder never holds ten downloads in flight at once.
     const files: File[] = [];
-    for (const item of chosen) files.push(await libraryItemFile(item));
+    for (const item of chosen) {
+      files.push(await libraryItemFile(item));
+      if (getAuthSessionEpoch() !== epoch) return;
+    }
     const leftOut = fitting.length - chosen.length;
     if (tooLarge > 0 || leftOut > 0) {
       toast(`Attached ${chosen.length} ${chosen.length === 1 ? "file" : "files"}`, {
@@ -117,9 +123,11 @@ export async function chatWithModel(
   if (!model) return;
   // Only the picker's scan reads a checkpoint's tokenizer; a speech model belongs on the Audio page,
   // since chat cannot serve it.
+  const epoch = getAuthSessionEpoch();
   const scanned = await listLoras()
     .then(({ loras }) => loras.find((lora) => lora.adapter_path === model.path))
     .catch(() => undefined);
+  if (getAuthSessionEpoch() !== epoch) return;
   if (scanned?.audio_type) {
     toast(`${item.name} is a speech model`, {
       description: "Pick it from the model menu on the Audio page.",

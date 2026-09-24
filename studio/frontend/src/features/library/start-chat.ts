@@ -3,6 +3,7 @@
 
 // Kept apart from actions.ts so pages outside the Library can start a chat without loading it.
 import type { useNavigate } from "@tanstack/react-router";
+import { getAuthSessionEpoch } from "@/features/auth";
 import { clearNewChatDraft, useChatRuntimeStore } from "@/features/chat";
 import { toast } from "@/lib/toast";
 import { MAX_VIDEO_SIZE } from "@/lib/video-utils";
@@ -63,6 +64,8 @@ export async function chatAboutMedia(
     toast.error(`This ${kind} is too large to attach`, {
       description: `Chat attachments are limited to ${Math.round(limit.bytes / (1024 * 1024))} MB.`,
     });
+  // A sign-out while the file downloads would hand it to the next account's chat.
+  const epoch = getAuthSessionEpoch();
   try {
     let blob: Blob;
     if (typeof source === "string") {
@@ -78,6 +81,7 @@ export async function chatAboutMedia(
     } else {
       blob = await source();
     }
+    if (getAuthSessionEpoch() !== epoch) return;
     if (blob.size > limit.bytes) {
       tooLarge();
       return;
