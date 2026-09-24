@@ -231,9 +231,14 @@ if [ "$MODE" = "trace" ]; then
     if [ "$tool" = "install_name_tool" ]; then
       bash "$INSTALL_NAME_TOOL_HELPER" write passthrough "$BIN/$tool" "$real"
     else
+      # git also records where it ran: `submodule update` fetches whatever the CURRENT
+      # checkout's .gitmodules names, so notools has to see that it ran inside uv's checkout.
+      cwd_line=""
+      [ "$tool" = "git" ] && cwd_line="printf '%s\t%s\n' \"\$PWD\" \"\$*\" >> '$TRACE.git-cwd'"
       cat > "$BIN/$tool" <<WRAP
 #!/bin/sh
 printf '%s\t%s\n' "$tool" "\$*" >> "$TRACE"
+$cwd_line
 exec "$real" "\$@"
 WRAP
     fi

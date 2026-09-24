@@ -258,8 +258,15 @@ jobs:
             echo "PATH=$PATH"; command -v git; cat "$UNSLOTH_TOOL_TRACE" || true
             exit 1
           fi
+          # notools reads where git ran from this record; without it every uv submodule
+          # update is a hit, so say so here rather than as a toolchain use.
+          grep -q "$(printf '\t')--version$" "$UNSLOTH_TOOL_TRACE.git-cwd" 2>/dev/null || {
+            echo "::error::the git wrapper did not record its working directory"
+            exit 1
+          }
           echo "trace wrapper records; clearing the self-test entry"
           : > "$UNSLOTH_TOOL_TRACE"
+          : > "$UNSLOTH_TOOL_TRACE.git-cwd"
 
       - name: Install
         id: install

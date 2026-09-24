@@ -65,6 +65,23 @@ _allowed_git_pins() {
   done | sort -u
 }
 
+# Every `submodule update` with these arguments ran inside one of uv's checkouts, read from
+# the working directories the git wrapper records beside the trace. It fetches what that
+# checkout's .gitmodules names, which is the pinned requirement's own content only there.
+# No record, or any run elsewhere, is a no.
+_ran_in_uv_checkout() { # the traced argument string
+  [ -n "${UV_CACHE_DIR:-}" ] && [ -f "$TRACE.git-cwd" ] || return 1
+  _checkouts="${UV_CACHE_DIR%/}/git-v0/checkouts/"
+  _seen=false
+  while IFS=$'\t' read -r _cwd _args; do
+    [ "$_args" = "$1" ] || continue
+    _seen=true
+    case "$_cwd" in "$_checkouts"?*) ;; *) return 1 ;; esac
+    case "$_cwd" in *..*) return 1 ;; esac
+  done < "$TRACE.git-cwd"
+  [ "$_seen" = true ]
+}
+
 # A git line naming no remote is allowed only in the exact shapes uv's git source uses to
 # check out a pinned commit from its own cache: nothing that can reach the network (a bare
 # `fetch origin` reads its URL from config) and nothing outside $UV_CACHE_DIR.
@@ -72,7 +89,8 @@ _is_uv_git_cache_op() { # the traced argument string
   _cache="${UV_CACHE_DIR%/}/git-v0"
   case "$1" in
     # rev-parse only reads; uv resolves the pin with it in several spellings.
-    init|rev-parse|"rev-parse "*|"submodule update --recursive --init") return 0 ;;
+    init|rev-parse|"rev-parse "*) return 0 ;;
+    "submodule update --recursive --init") _ran_in_uv_checkout "$1"; return ;;
     "reset --hard "*)
       _commit=${1#reset --hard }
       [ -n "$_commit" ] && printf '%s\n' "$(_allowed_git_pins)" | grep -qxF -- "$_commit"
@@ -102,6 +120,7 @@ _is_allowed_git_remote() {
 # The repository must be an allowed remote and every refspec a `src:refs/...` mapping, so no
 # other option (--all, --upload-pack, a second -c) and no other subcommand (push) passes.
 _is_allowed_remote_git_line() { # the traced argument string, the allowed remotes
+  _line=$1
   _allowed=$2
   set -f
   set -- $1
@@ -140,7 +159,8 @@ _is_allowed_remote_git_line() { # the traced argument string, the allowed remote
       for _word in "$@"; do
         case "$_word" in --init|--recursive) ;; *) return 1 ;; esac
       done
-      return 0 ;;
+      _ran_in_uv_checkout "$_line"
+      return ;;
   esac
   return 1
 }

@@ -22,7 +22,15 @@ FAIL=0
 
 expect_rc() {
     _label="$1"; _expected="$2"; _allow="$3"; _trace_content="$4"
+    # Where every git line ran, as the wrapper records it: uv's checkout unless the row says
+    # otherwise, or "none" for a trace with no record at all.
+    _cwd="${5:-$CACHE/checkouts/76e25d04238765dd/${SHA:0:9}}"
     printf '%b' "$_trace_content" > "$ROOT/trace.log"
+    rm -f "$ROOT/trace.log.git-cwd"
+    if [ "$_cwd" != none ]; then
+        awk -F '\t' -v cwd="$_cwd" '$1 == "git" { print cwd "\t" $2 }' "$ROOT/trace.log" \
+            > "$ROOT/trace.log.git-cwd"
+    fi
     set +e
     UV_CACHE_DIR="$UV_CACHE" UNSLOTH_ALLOW_GIT_FROM="$_allow" UNSLOTH_TOOL_TRACE="$ROOT/trace.log" \
         INSTALL_LOG="$ROOT/install.log" bash "$ASSERT_SH" notools \
@@ -108,6 +116,11 @@ expect_rc "an option after the repository fails" 1 "$PIN" \
     "${UV_CLONE}git\tfetch $REMOTE --upload-pack=evil\n"
 expect_rc "a second repository in the refspec slot fails" 1 "$PIN" \
     "${UV_CLONE}git\tfetch $REMOTE https://github.com/someone/else.git\n"
+expect_rc "submodule update run outside uv's checkout fails" 1 "$PIN" \
+    "$UV_CLONE" /home/someone/other-repo
+expect_rc "submodule update run in a path that climbs out of uv's checkouts fails" 1 "$PIN" \
+    "$UV_CLONE" "$CACHE/checkouts/../../elsewhere"
+expect_rc "a trace with no record of where git ran fails" 1 "$PIN" "$UV_CLONE" none
 expect_rc "submodule update with any other option fails" 1 "$PIN" \
     "${UV_CLONE}git\t-c remote.origin.url=$REMOTE submodule update --remote\n"
 expect_rc "a compiler next to the allowed clone still fails" 1 "$PIN" \
