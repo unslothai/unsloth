@@ -38,6 +38,7 @@ _HELPERS = (
     "_strip_skip_module_prefix",
     "_get_remote_composite_text_only",
     "_merge_key_mapping",
+    "_adapter_fits_text_model",
 )
 
 
@@ -506,3 +507,63 @@ def test_cached_single_file_checkpoint_is_read_offline(tmp_path, monkeypatch):
     assert plan[1] == {r"^language_model\.": ""}
     # Not cached at all: still declines (None) instead of downloading the weights to inspect them.
     assert ns["_checkpoint_weight_names"]("fake-org/absent", local_files_only = True) is None
+
+
+# ---------------------------------------------------------------- PEFT adapters on a repo-code composite
+
+
+@needs_tf5
+def test_adapter_trained_on_the_wrapper_keeps_the_full_model(tmp_path):
+    # Its tensors are named under language_model., which the standalone decoder does not have: PeftModel
+    # would silently keep fresh LoRA weights (or find no target for a language_model regex).
+    peft = pytest.importorskip("peft")
+    from safetensors.torch import load_file
+
+    ns = _ns()
+    repo, _ = _write_repo(tmp_path, name = "peft_base")
+    parent = _load_parent_config(repo)
+    text_config, mapping = ns["_get_remote_composite_text_only"](
+        parent, str(repo), trust_remote_code = True
+    )
+    lora = dict(r = 4, target_modules = ["q_proj", "v_proj"], init_lora_weights = False)
+
+    wrapper = transformers.AutoModelForCausalLM.from_pretrained(
+        repo, trust_remote_code = True, dtype = torch.float32, local_files_only = True
+    )
+    wrapper_adapter = tmp_path / "wrapper_adapter"
+    peft.get_peft_model(wrapper, peft.LoraConfig(**lora)).save_pretrained(wrapper_adapter)
+
+    def text_model():
+        return transformers.AutoModelForCausalLM.from_pretrained(
+            repo,
+            config = copy.deepcopy(text_config),
+            key_mapping = mapping,
+            trust_remote_code = True,
+            dtype = torch.float32,
+            local_files_only = True,
+        )
+
+    text_adapter = tmp_path / "text_adapter"
+    peft.get_peft_model(text_model(), peft.LoraConfig(**lora)).save_pretrained(text_adapter)
+
+    # The failure the gate prevents: none of the wrapper adapter's tensors reach the standalone decoder.
+    saved = list(load_file(str(wrapper_adapter / "adapter_model.safetensors")).values())
+    loaded = peft.PeftModel.from_pretrained(text_model(), wrapper_adapter)
+    got = [v for k, v in loaded.state_dict().items() if "lora_" in k]
+    assert got and not any(any(torch.equal(v, s) for s in saved) for v in got)
+
+    assert ns["_adapter_fits_text_model"](str(wrapper_adapter), mapping) is False
+    # An adapter trained on the text-only load (no wrapper prefix) keeps the fast path.
+    assert ns["_adapter_fits_text_model"](str(text_adapter), mapping) is True
+    # Unreadable (no safetensors adapter): decline.
+    assert ns["_adapter_fits_text_model"](str(tmp_path / "missing"), mapping) is False
+
+
+def test_loader_checks_the_adapter_before_taking_the_text_only_branch():
+    loader = LOADER_PATH.read_text(encoding = "utf-8")
+    i_plan = loader.index("remote_text_only = _get_remote_composite_text_only(")
+    i_gate = loader.index("and not _adapter_fits_text_model(", i_plan)
+    i_take = loader.index("text_config, _text_key_mapping = remote_text_only", i_plan)
+    assert i_plan < i_gate < i_take
+    gate = loader[loader.rindex("if (", 0, i_gate) : i_take]
+    assert "and is_peft" in gate and "old_model_name" in gate and "remote_text_only = None" in gate

@@ -1414,6 +1414,47 @@ def _merge_key_mapping(kwargs, mapping):
     kwargs["key_mapping"] = {**mapping, **user_mapping} if user_mapping else mapping
 
 
+def _adapter_fits_text_model(
+    adapter_name,
+    key_mapping,
+    token = None,
+    revision = None,
+    local_files_only = False,
+    cache_dir = None,
+):
+    # False when a PEFT adapter was trained on the full composite (its weights sit under the wrapper prefix
+    # key_mapping strips) or its weights cannot be read: PeftModel would drop them on the standalone decoder.
+    import os
+
+    file_name = "adapter_model.safetensors"
+    try:
+        from safetensors import safe_open
+        if os.path.isdir(str(adapter_name)):
+            path = os.path.join(adapter_name, file_name)
+        else:
+            from huggingface_hub import hf_hub_download
+            path = hf_hub_download(
+                adapter_name,
+                file_name,
+                token = token,
+                revision = revision,
+                local_files_only = local_files_only,
+                cache_dir = cache_dir,
+            )
+        with safe_open(path, framework = "pt") as f:
+            names = list(f.keys())
+    except Exception:
+        return False
+    if not names:
+        return False
+    patterns = [re.compile(p) for p in key_mapping]
+    for name in names:
+        name = name.removeprefix("base_model.model.")
+        if any(p.match(name) for p in patterns):
+            return False
+    return True
+
+
 def resolve_attention_implementation(
     model_class,
     config,

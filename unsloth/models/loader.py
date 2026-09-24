@@ -112,6 +112,7 @@ from ._utils import (
     _apply_text_only_key_mapping,
     _get_remote_composite_text_only,
     _merge_key_mapping,
+    _adapter_fits_text_model,
     set_task_config_attr,
     maybe_prefetch_hf_snapshot,
 )
@@ -1921,6 +1922,20 @@ class FastModel(FastBaseModel):
                         revision = base_revision if not is_peft else None,
                         local_files_only = local_files_only,
                     )
+                if (
+                    remote_text_only is not None
+                    and is_peft
+                    and not _adapter_fits_text_model(
+                        old_model_name,
+                        remote_text_only[1],
+                        token = token,
+                        revision = revision,
+                        local_files_only = local_files_only,
+                        cache_dir = kwargs.get("cache_dir"),
+                    )
+                ):
+                    # An adapter trained on the full composite names its weights (and often its target regex) under the wrapper prefix; keep the full model it was trained on.
+                    remote_text_only = None
                 if remote_text_only is not None:
                     text_config, _text_key_mapping = remote_text_only
                     logger.warning_once(
