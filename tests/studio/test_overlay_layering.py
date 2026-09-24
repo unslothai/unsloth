@@ -88,11 +88,8 @@ def test_both_floating_panels_stack_on_the_shared_layer(path: Path):
     Sharing the layer is what lets the one the user touched last come forward,
     which is the only way out of a monitor resized over the whole viewport."""
     container = _container(path, "setConstraintsElement")
-    style_applies_shared_layer = (
-        "style={{ zIndex }}" in container
-        or re.search(
-            r"style=\{floatingMonitorConstraintStyle\(\{\s*zIndex,", container
-        )
+    style_applies_shared_layer = "style={{ zIndex }}" in container or re.search(
+        r"style=\{floatingMonitorConstraintStyle\(\{\s*zIndex,", container
     )
     assert style_applies_shared_layer, (
         f"{path.name}: the panel container no longer applies the floating panel "
