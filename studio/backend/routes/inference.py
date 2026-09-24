@@ -34699,10 +34699,12 @@ async def anthropic_messages(
     )
 
     # Decided on the final routing: a tool request that cannot run tools (image, tool-less
-    # template) still gets its schema.
+    # template, tool_choice none) still gets its schema.
     response_format = _anthropic_response_format(payload)
-    if response_format is not None and (
-        server_tools or (client_tools and openai_tool_choice != "none")
+    if (
+        response_format is not None
+        and (server_tools or client_tools)
+        and openai_tool_choice != "none"
     ):
         logger.warning("Ignoring Anthropic output format: callable tools cannot run under a schema")
         response_format = None

@@ -272,6 +272,25 @@ def test_format_kept_when_requested_server_tools_cannot_run(monkeypatch, overrid
     assert sent["response_format"] == _EXPECTED
 
 
+def test_format_kept_when_server_tools_are_disabled_by_tool_choice(monkeypatch):
+    calls, upstream = _install(monkeypatch)
+
+    status, _body = _run(
+        _payload(
+            enable_tools = True,
+            permission_mode = "off",
+            tool_choice = {"type": "none"},
+            output_config = {"format": {"type": "json_schema", "schema": _SCHEMA}},
+        )
+    )
+
+    assert status == 200
+    assert calls == []
+    [sent] = upstream
+    assert sent["response_format"] == _EXPECTED
+    assert "tools" not in sent
+
+
 @pytest.mark.parametrize("stream", [False, True])
 def test_tool_markup_inside_json_is_returned_verbatim(monkeypatch, stream):
     answer = json.dumps({"a": "<function=f>", "b": 2, "c": "</function>"})
