@@ -6338,9 +6338,7 @@ def _embedding_batch_ubatch(
     _, _, batch_named, ubatch_named = _named_batch_sizes(extra_args, env, n_batch, n_ubatch)
     if batch_named or ubatch_named or n_ctx <= _DEFAULT_LLAMA_N_UBATCH:
         return n_batch, n_ubatch
-    # Capped at the fit floor: sized before the fit, it must not outgrow the context the fit picks.
-    size = min(n_ctx, _FIT_MIN_CTX)
-    return size, size
+    return n_ctx, n_ctx
 
 
 def _build_ngram_mod_flags(
@@ -23198,6 +23196,17 @@ class LlamaCppBackend:
                 logger.info("Load cancelled after download phase")
                 return False
 
+            # llama-server rejects MEAN/CLS inputs over one micro-batch; only LAST splits, and an
+            # undeclared pooling runs as NONE, which /v1/embeddings refuses. Before the projector
+            # raise, so that raise is not read as a user-set micro-batch.
+            if self._pooling_type in (1, 2):
+                n_batch, n_ubatch = _embedding_batch_ubatch(
+                    resolve_requested_ctx(extra_args, n_ctx) or self._context_length or 0,
+                    n_batch,
+                    n_ubatch,
+                    extra_args,
+                )
+
             # Decide after downloading the projector and before pricing the load.
             n_batch, n_ubatch = _batch_ubatch_for_mmproj(
                 _launch_required_ubatch(
@@ -23217,14 +23226,6 @@ class LlamaCppBackend:
                 n_ubatch,
                 extra_args,
             )
-            # llama-server rejects MEAN/CLS inputs over one micro-batch; only LAST (3) splits.
-            if self.is_embedding_gguf and self._pooling_type != 3:
-                n_batch, n_ubatch = _embedding_batch_ubatch(
-                    resolve_requested_ctx(extra_args, n_ctx) or self._context_length or 0,
-                    n_batch,
-                    n_ubatch,
-                    extra_args,
-                )
 
             # Backstop for everything the pre-teardown probes fail open on: refuse from the
             # header rather than watching llama-server die as "failed to start".

@@ -11165,13 +11165,6 @@ def _gguf_runtime_bytes(
             )
         except Exception as _rows_exc:
             logger.debug("llama-server build probe failed: %s", _rows_exc)
-        # Price the same batch sizes used by load_model.
-        n_batch, n_ubatch = _batch_ubatch_for_mmproj(
-            0 if is_diffusion else launch_required_ubatch,
-            n_batch,
-            n_ubatch,
-            llama_extra_args,
-        )
         # Carried out even when the cache cannot be sized: block_count is a separate
         # key and is usually there, and a caller that loses it prices a manual offload
         # split as fully GPU-resident (_gguf_offloaded_layer_fraction has nothing to
@@ -11214,12 +11207,15 @@ def _gguf_runtime_bytes(
             )
         if ctx <= 0:
             return unknown
-        # Same raise as load_model: MEAN/CLS pooling cannot split an input across micro-batches.
-        if (
-            getattr(probe, "is_embedding_gguf", False)
-            and getattr(probe, "_pooling_type", None) != 3
-        ):
+        # Price the same batch sizes used by load_model, in the same order.
+        if getattr(probe, "_pooling_type", None) in (1, 2):
             n_batch, n_ubatch = _embedding_batch_ubatch(ctx, n_batch, n_ubatch, llama_extra_args)
+        n_batch, n_ubatch = _batch_ubatch_for_mmproj(
+            0 if is_diffusion else launch_required_ubatch,
+            n_batch,
+            n_ubatch,
+            llama_extra_args,
+        )
         slots = max(1, n_parallel or 1)
         planned_cache_types = _planned_main_cache_types(cache_type_kv, llama_extra_args)
         # KV bytes take the heavier axis (conservative for storage); the dequant

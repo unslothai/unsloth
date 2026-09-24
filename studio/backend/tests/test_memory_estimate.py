@@ -300,6 +300,11 @@ class TestGgufRuntimeBytes:
         gguf = _write_gguf(tmp_path, "qwen3", {**_GQA_FIELDS, "pooling_type": pooling_type})
         assert ri._gguf_runtime_bytes(gguf, 2048).n_ubatch == priced_ubatch
 
+    def test_undeclared_embedding_pooling_keeps_the_default_micro_batch(self, tmp_path):
+        # llama.cpp runs a header without pooling_type as NONE, which /v1/embeddings refuses.
+        gguf = _write_gguf(tmp_path, "nomic-bert", _GQA_FIELDS)
+        assert ri._gguf_runtime_bytes(gguf, 2048).n_ubatch is None
+
     def test_missing_dims_are_unknown_not_zero(self, dimless_gguf):
         # THE case this NamedTuple exists for. kv_bytes == 0 here means "could not
         # size", and the only thing separating it from a genuine zero is the flag.

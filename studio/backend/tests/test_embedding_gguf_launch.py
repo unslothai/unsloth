@@ -254,15 +254,6 @@ class TestEmbeddingBatchSizedToContext:
             2048,
         )
 
-    def test_long_context_is_capped_at_the_fit_floor(self):
-        # A 128k embedder (jina-embeddings-v4) would otherwise price a 128k micro-batch
-        # before the fit, which never lands below this floor.
-        cap = llama_cpp_module._FIT_MIN_CTX
-        assert llama_cpp_module._embedding_batch_ubatch(128000, None, None, None, env = {}) == (
-            cap,
-            cap,
-        )
-
     @pytest.mark.parametrize(
         "n_batch, n_ubatch, extra_args, env",
         [
@@ -290,9 +281,11 @@ class TestEmbeddingBatchSizedToContext:
         call = src.find("n_batch, n_ubatch = _embedding_batch_ubatch(")
         assert call != -1, "load_model must size the embedding batch pair to the context"
         assert (
-            src.find("if self.is_embedding_gguf and self._pooling_type != 3:", call - 200, call)
-            != -1
-        ), "only non-LAST embedding pooling needs the single micro-batch"
+            src.find("if self._pooling_type in (1, 2):", call - 100, call) != -1
+        ), "only MEAN/CLS pooling needs the single micro-batch; LAST splits and NONE is refused"
+        assert call < src.find(
+            "n_batch, n_ubatch = _batch_ubatch_for_mmproj("
+        ), "a projector-raised micro-batch must not read as a user-set one"
         assert call < src.find(
             "_effective_ubatch = _ubatch_for_slots(n_parallel)"
         ), "the raise must land before the fit prices the compute buffer"
