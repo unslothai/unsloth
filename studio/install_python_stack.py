@@ -332,6 +332,37 @@ def _windows_multiarch_torch_pkg_specs(gfx_arch: str) -> tuple[str, str, str]:
     )
 
 
+def _distribution_version_string(name: str) -> "str | None":
+    """The installed version string of `name` (with its local +tag), or None when absent."""
+    try:
+        from importlib import metadata
+        return metadata.version(name)
+    except Exception:
+        return None
+
+
+def _drop_torchaudio_off_the_multiarch_tag() -> bool:
+    """After a multi-arch torch install, remove a torchaudio built against another torch.
+
+    The multi-arch index publishes no torchaudio, so whatever is installed came from an
+    earlier CPU or per-family pass (torchaudio 2.11+cpu on a box that had the CPU
+    fallback, 2.11+rocm7.13 on one that had another card's family). Its extension DLLs
+    are linked against that torch and fail to load against 2.12 with a Windows "Entry
+    Point Not Found" dialog the first time anything imports torchaudio. Nothing Unsloth
+    needs for training imports it, so removing it is the safe state. True when nothing
+    is left to remove."""
+    version = _distribution_version_string("torchaudio")
+    if not version:
+        return True
+    if _ROCM_MULTIARCH_TAG in version:
+        return True
+    _safe_print(
+        f"   removing torchaudio {version}: built against another torch, and the multi-arch "
+        f"index publishes none for {_ROCM_MULTIARCH_TORCH_VERSION}+{_ROCM_MULTIARCH_TAG}"
+    )
+    return _uninstall_distribution("torchaudio")
+
+
 def _windows_rocm_torch_pkg_specs(gfx_arch: "str | None") -> tuple[str, str, str]:
     """Package specs for the Windows ROCm torch install of `gfx_arch`: the multi-arch pin
     for RDNA 1, the per-arch ABI pin where one exists, bare names otherwise."""
@@ -5807,6 +5838,10 @@ def _ensure_rocm_torch() -> None:
                     "later to retry ROCm."
                 )
                 return
+        # A multi-arch venv must not keep a torchaudio linked against the torch it replaced
+        # (or, on `studio update`, one a CPU pass left behind); see the helper.
+        if _is_windows_multiarch_gfx(gfx_arch) and not _drop_torchaudio_off_the_multiarch_tag():
+            _safe_print("   Warning: could not remove the stale torchaudio; audio imports may fail until it is removed")
         # Flag ROCm torch installed so later phases keep it; a BNB failure must not roll it back.
         _rocm_windows_torch_installed = True
         # Always install AMD Windows bitsandbytes, even when torch was already a

@@ -165,3 +165,39 @@ class TestPowerShellMirrorsThePin:
         assert f'"{stack_mod._ROCM_MULTIARCH_TORCH_VERSION}"' in src
         assert f'"{stack_mod._ROCM_MULTIARCH_TORCHVISION_VERSION}"' in src
         assert "nightly.repo.amd.com/rocm/whl-next" in src
+
+
+class TestStaleTorchaudioIsDropped:
+    """The multi-arch index has no torchaudio, and one from an earlier CPU or per-family
+    pass is linked against a torch that is gone: importing it throws a Windows
+    "Entry Point Not Found" dialog. The multi-arch pass removes it."""
+
+    def test_a_torchaudio_from_another_torch_is_removed(self, monkeypatch):
+        removed = []
+        monkeypatch.setattr(stack_mod, "_distribution_version_string", lambda name: "2.11.0+rocm7.13.0")
+        monkeypatch.setattr(stack_mod, "_uninstall_distribution", lambda name: removed.append(name) or True)
+        assert stack_mod._drop_torchaudio_off_the_multiarch_tag() is True
+        assert removed == ["torchaudio"]
+
+    def test_a_cpu_torchaudio_is_removed_too(self, monkeypatch):
+        removed = []
+        monkeypatch.setattr(stack_mod, "_distribution_version_string", lambda name: "2.11.0+cpu")
+        monkeypatch.setattr(stack_mod, "_uninstall_distribution", lambda name: removed.append(name) or True)
+        assert stack_mod._drop_torchaudio_off_the_multiarch_tag() is True
+        assert removed == ["torchaudio"]
+
+    def test_nothing_installed_is_nothing_to_do(self, monkeypatch):
+        monkeypatch.setattr(stack_mod, "_distribution_version_string", lambda name: None)
+        monkeypatch.setattr(stack_mod, "_uninstall_distribution", lambda name: (_ for _ in ()).throw(AssertionError("must not run")))
+        assert stack_mod._drop_torchaudio_off_the_multiarch_tag() is True
+
+    def test_a_torchaudio_on_the_pinned_tag_stays(self, monkeypatch):
+        """Should AMD start publishing one for the tag, it is the right build and stays."""
+        monkeypatch.setattr(stack_mod, "_distribution_version_string", lambda name: f"2.12.0+{stack_mod._ROCM_MULTIARCH_TAG}")
+        monkeypatch.setattr(stack_mod, "_uninstall_distribution", lambda name: (_ for _ in ()).throw(AssertionError("must not run")))
+        assert stack_mod._drop_torchaudio_off_the_multiarch_tag() is True
+
+    def test_a_failed_removal_is_reported_not_hidden(self, monkeypatch):
+        monkeypatch.setattr(stack_mod, "_distribution_version_string", lambda name: "2.11.0+cpu")
+        monkeypatch.setattr(stack_mod, "_uninstall_distribution", lambda name: False)
+        assert stack_mod._drop_torchaudio_off_the_multiarch_tag() is False
