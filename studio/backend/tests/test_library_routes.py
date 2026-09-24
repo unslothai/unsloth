@@ -952,6 +952,27 @@ def test_a_named_subfolder_linking_into_a_credential_folder_is_refused(client, t
     assert (image_gallery.gallery_dir() / "a.png").read_bytes() == b"png"
 
 
+def test_an_unplugged_folder_is_not_made_again(client, tmp_path):
+    import shutil
+
+    from core.inference import image_gallery
+    from utils.paths.relocations import LocationUnavailable
+
+    drive = tmp_path / "Drive" / "Images"
+    drive.parent.mkdir()
+    assert _move(client, "images", str(drive)).status_code == 200
+    shutil.rmtree(drive.parent)
+    with pytest.raises(LocationUnavailable):
+        image_gallery.gallery_dir()
+    assert not drive.parent.exists()
+    # Settings still shows it, refuses to move files it cannot reach, and can reset it.
+    assert _location(client, "images")["path"] == str(drive.resolve())
+    assert _move(client, "images", str(tmp_path / "elsewhere")).status_code == 400
+    assert _move(client, "images", None).status_code == 200
+    assert _location(client, "images")["custom"] is False
+    assert image_gallery.gallery_dir().is_dir()
+
+
 def test_fine_tunes_and_exports_do_not_move(client, tmp_path):
     for key in ("fineTunes", "exports", "somewhere"):
         assert _move(client, key, str(tmp_path / key)).status_code == 400

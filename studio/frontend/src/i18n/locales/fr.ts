@@ -355,6 +355,7 @@ export const fr = {
       storageUsed: "{size} utilisés par la Bibliothèque",
       storageDisk: "{free} libres sur {total} sur ce disque",
       storageEmpty: "Rien n'est encore stocké dans la Bibliothèque.",
+      storageHidden: "{size} masqués dans les réglages du contenu",
       storageError: "Impossible de lire le stockage de la Bibliothèque.",
       locationsSection: "Fichiers sur le disque",
       locationsDescription: "Où Unsloth conserve chaque type de fichier. Les dossiers de la bibliothèque sont des étiquettes dans Unsloth, pas des dossiers sur le disque. Les affinages et les exports restent en place, car l'entraînement et les chats les retrouvent par leur chemin.",

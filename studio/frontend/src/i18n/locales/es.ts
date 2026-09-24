@@ -354,6 +354,7 @@ export const es = {
       storageUsed: "{size} usados por la Biblioteca",
       storageDisk: "{free} libres de {total} en este disco",
       storageEmpty: "Todavía no hay nada guardado en la Biblioteca.",
+      storageHidden: "{size} ocultos en los ajustes de Contenido",
       storageError: "No se pudo leer el almacenamiento de la Biblioteca.",
       locationsSection: "Archivos en el disco",
       locationsDescription: "Dónde guarda Unsloth cada tipo de archivo. Las carpetas de la biblioteca son etiquetas dentro de Unsloth, no carpetas en el disco. Los ajustes finos y las exportaciones se quedan donde están, porque el entrenamiento y los chats los encuentran por su ruta.",

@@ -176,33 +176,42 @@ function StorageSection() {
           </p>
           <LibraryStorageBar libraryBytes={storage.diskBytes} disk={storage.disk} />
         </div>
-        {storage.categories.length === 0 ? (
+        {storage.categories.length === 0 && storage.hiddenBytes === 0 ? (
           <p className="pb-3 text-sm text-muted-foreground">{t("settings.library.storageEmpty")}</p>
         ) : (
-          <div className="mb-3 flex flex-col overflow-hidden rounded-xl border border-border/60">
-            {storage.categories.map((entry) => (
-              <button
-                key={entry.category}
-                type="button"
-                onClick={() => open(entry.link)}
-                className="flex items-center gap-3 border-border/60 px-4 py-3 text-left transition-colors not-first:border-t hover:bg-muted/60"
-              >
-                <span className="flex min-w-0 flex-1 flex-col gap-0.5">
-                  <span className="text-sm font-medium text-foreground">
-                    {t(CATEGORY_LABELS[entry.category])}
-                  </span>
-                  <span className="text-xs text-muted-foreground">
-                    {formatSize(entry.bytes)}
-                    {" · "}
-                    {entry.count === 1
-                      ? t("settings.library.itemCountOne")
-                      : t("settings.library.itemCount", { count: entry.count.toLocaleString() })}
-                  </span>
-                </span>
-                <HugeiconsIcon icon={ChevronRightStandardIcon} className="size-4 shrink-0 text-muted-foreground" />
-              </button>
-            ))}
-          </div>
+          <>
+            {storage.categories.length > 0 && (
+              <div className="mb-3 flex flex-col overflow-hidden rounded-xl border border-border/60">
+                {storage.categories.map((entry) => (
+                  <button
+                    key={entry.category}
+                    type="button"
+                    onClick={() => open(entry.link)}
+                    className="flex items-center gap-3 border-border/60 px-4 py-3 text-left transition-colors not-first:border-t hover:bg-muted/60"
+                  >
+                    <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+                      <span className="text-sm font-medium text-foreground">
+                        {t(CATEGORY_LABELS[entry.category])}
+                      </span>
+                      <span className="text-xs text-muted-foreground">
+                        {formatSize(entry.bytes)}
+                        {" · "}
+                        {entry.count === 1
+                          ? t("settings.library.itemCountOne")
+                          : t("settings.library.itemCount", { count: entry.count.toLocaleString() })}
+                      </span>
+                    </span>
+                    <HugeiconsIcon icon={ChevronRightStandardIcon} className="size-4 shrink-0 text-muted-foreground" />
+                  </button>
+                ))}
+              </div>
+            )}
+            {storage.hiddenBytes > 0 && (
+              <p className="pb-3 text-xs text-muted-foreground">
+                {t("settings.library.storageHidden", { size: formatSize(storage.hiddenBytes) ?? "0 B" })}
+              </p>
+            )}
+          </>
         )}
       </>
     );

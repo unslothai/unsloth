@@ -19,7 +19,10 @@ export interface StorageUsage {
 
 export interface LibraryStorage {
   status: "loading" | "ready" | "error";
+  /** Everything on disk, hidden sources included. */
   totalBytes: number;
+  /** The part of totalBytes that Content settings hide, so no category counts it. */
+  hiddenBytes: number;
   /** The share of totalBytes on `disk`, which the bar draws. */
   diskBytes: number;
   categories: StorageUsage[];
@@ -55,8 +58,9 @@ export function refreshLibraryStorage(): void {
 }
 
 /**
- * What the Library holds on disk, by category. Sources hidden in Content settings are left out,
- * so each category link lands on exactly what it counted. Empty categories are left out too.
+ * What the Library holds on disk, by category. Sources hidden in Content settings still take space,
+ * so they count toward the total and the bar, but under no category: each category link lands on
+ * exactly what it counted. Empty categories are left out.
  */
 export function useLibraryStorage(): LibraryStorage {
   const settings = useLibrarySettingsStore();
@@ -85,10 +89,14 @@ export function useLibraryStorage(): LibraryStorage {
     const totals = new Map<StorageCategory, { bytes: number; count: number }>();
     const onDisk = snapshot.disk?.sources ? new Set(snapshot.disk.sources) : null;
     let diskBytes = 0;
+    let hiddenBytes = 0;
     for (const item of snapshot.items) {
-      if (!includedBySettings(item.id, settings)) continue;
       if (!onDisk || onDisk.has(diskSource(item.id))) {
         diskBytes += item.sizeBytes ?? 0;
+      }
+      if (!includedBySettings(item.id, settings)) {
+        hiddenBytes += item.sizeBytes ?? 0;
+        continue;
       }
       const category = KIND_CATEGORIES[fileKind(item)] ?? "files";
       const total = totals.get(category) ?? { bytes: 0, count: 0 };
@@ -102,7 +110,8 @@ export function useLibraryStorage(): LibraryStorage {
     }).sort((a, b) => b.bytes - a.bytes);
     return {
       status: snapshot.status,
-      totalBytes: categories.reduce((sum, entry) => sum + entry.bytes, 0),
+      totalBytes: categories.reduce((sum, entry) => sum + entry.bytes, hiddenBytes),
+      hiddenBytes,
       diskBytes,
       categories,
       disk: snapshot.disk,

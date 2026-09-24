@@ -349,6 +349,7 @@ export const zhCN = {
       storageUsed: "资料库已使用 {size}",
       storageDisk: "此磁盘可用 {free}，共 {total}",
       storageEmpty: "资料库中还没有任何内容。",
+      storageHidden: "内容设置中已隐藏 {size}",
       storageError: "无法读取资料库存储空间。",
       locationsSection: "磁盘上的文件",
       locationsDescription: "Unsloth 存放各类文件的位置。资料库文件夹只是 Unsloth 内的标签，不是磁盘上的文件夹。微调模型和导出文件保持原位，因为训练和对话会按路径引用它们。",

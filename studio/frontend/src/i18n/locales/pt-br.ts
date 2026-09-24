@@ -353,6 +353,7 @@ export const ptBR = {
       storageUsed: "{size} usados pela Biblioteca",
       storageDisk: "{free} livres de {total} neste disco",
       storageEmpty: "Ainda não há nada armazenado na Biblioteca.",
+      storageHidden: "{size} ocultos nas configurações de Conteúdo",
       storageError: "Não foi possível ler o armazenamento da Biblioteca.",
       locationsSection: "Arquivos no disco",
       locationsDescription: "Onde o Unsloth guarda cada tipo de arquivo. As pastas da biblioteca são rótulos dentro do Unsloth, não pastas no disco. Ajustes finos e exportações ficam onde estão, pois o treinamento e os chats os encontram pelo caminho.",

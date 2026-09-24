@@ -355,6 +355,7 @@ export const de = {
       storageUsed: "{size} von der Bibliothek belegt",
       storageDisk: "{free} frei von {total} auf diesem Laufwerk",
       storageEmpty: "In der Bibliothek ist noch nichts gespeichert.",
+      storageHidden: "{size} in den Inhaltseinstellungen ausgeblendet",
       storageError: "Der Speicher der Bibliothek konnte nicht gelesen werden.",
       locationsSection: "Dateien auf dem Datenträger",
       locationsDescription: "Wo Unsloth jede Dateiart speichert. Bibliotheksordner sind Beschriftungen in Unsloth, keine Ordner auf dem Datenträger. Feinabstimmungen und Exporte bleiben, wo sie sind, da Training und Chats sie über ihren Pfad finden.",

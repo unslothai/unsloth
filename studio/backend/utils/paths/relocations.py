@@ -67,6 +67,26 @@ def relocated(key: str, default: Path) -> Path:
     return chosen(key) or default
 
 
+class LocationUnavailable(OSError):
+    """A chosen folder that is not there now, its drive unplugged or unmounted."""
+
+
+def location_dir(key: str, default: Path) -> Path:
+    """`key`'s folder, ready to use. Only the default is created: a chosen folder that has gone is
+    not made again, or files would land on the disk beneath its mount point and vanish once the
+    drive is back."""
+    from utils.paths.storage_roots import ensure_dir
+
+    folder = chosen(key)
+    if folder is None:
+        return ensure_dir(default)
+    if not folder.is_dir():
+        raise LocationUnavailable(
+            f"{folder} is not available. Reconnect its drive, or reset the folder in Settings."
+        )
+    return folder
+
+
 def set_chosen(key: str, path: Optional[Path]) -> None:
     """Record `path` for `key`; None goes back to the default. Owner context only."""
     if key not in MOVABLE:

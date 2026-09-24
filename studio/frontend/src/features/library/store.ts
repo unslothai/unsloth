@@ -132,21 +132,25 @@ export const useLibraryStore = create<LibraryState>((set, get) => {
     },
     removeItem: (id) => {
       const model = get().items.find((item) => item.id === id)?.model;
-      useLibraryFavoritesStore.getState().mark(id, false);
+      const settle = useLibraryFavoritesStore.getState().mark(id, false);
       return optimistic(
         (state) => ({ items: state.items.filter((item) => item.id !== id) }),
         // Fine-tunes go through the models route, which refuses while one is training or loaded,
         // and drops the Library's name, folder and star with the files.
         async () => {
-          if (model) {
-            await deleteFineTunedModel({
-              modelPath: model.path,
-              source: model.origin,
-              exportType: model.exportType,
-            });
-            return;
+          try {
+            if (model) {
+              await deleteFineTunedModel({
+                modelPath: model.path,
+                source: model.origin,
+                exportType: model.exportType,
+              });
+              return;
+            }
+            await deleteLibraryItem(id);
+          } finally {
+            settle();
           }
-          await deleteLibraryItem(id);
           // Those pages stay mounted off-screen and would keep showing it.
           const gallery = GALLERIES[id.slice(0, id.indexOf(":"))];
           if (gallery) notifyGalleryChanged(gallery);

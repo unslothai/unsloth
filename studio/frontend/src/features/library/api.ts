@@ -132,7 +132,7 @@ export function updateLibraryItem(
 
 export async function markLibraryItemOpened(id: string): Promise<void> {
   await ensureOk(
-    await authFetch("/api/library/items/opened", jsonInit("POST", { id })),
+    await sendWrite("/api/library/items/opened", jsonInit("POST", { id })),
   );
 }
 
@@ -176,7 +176,7 @@ export async function moveLibraryLocation(
   path: string | null,
 ): Promise<LibraryLocation[]> {
   const response = await ensureOk(
-    await authFetch("/api/library/locations/move", jsonInit("POST", { key, path })),
+    await sendWrite("/api/library/locations/move", jsonInit("POST", { key, path })),
   );
   return (await response.json()).locations;
 }

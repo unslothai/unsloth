@@ -353,6 +353,7 @@ export const ja = {
       storageUsed: "ライブラリの使用量 {size}",
       storageDisk: "このディスクの空き容量 {free} / {total}",
       storageEmpty: "ライブラリにはまだ何も保存されていません。",
+      storageHidden: "コンテンツ設定で非表示: {size}",
       storageError: "ライブラリのストレージを読み込めませんでした。",
       locationsSection: "ディスク上のファイル",
       locationsDescription: "Unsloth が各種ファイルを保存している場所です。ライブラリのフォルダは Unsloth 内のラベルで、ディスク上のフォルダではありません。ファインチューニングとエクスポートは、学習とチャットがパスで参照するため移動できません。",

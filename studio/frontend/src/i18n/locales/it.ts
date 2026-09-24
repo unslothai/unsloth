@@ -319,6 +319,7 @@ export const it = {
       storageUsed: "{size} usati dalla Libreria",
       storageDisk: "{free} liberi su {total} in questo disco",
       storageEmpty: "Nella Libreria non c'è ancora nulla.",
+      storageHidden: "{size} nascosti nelle impostazioni Contenuti",
       storageError: "Impossibile leggere lo spazio della Libreria.",
       locationsSection: "File sul disco",
       locationsDescription: "Dove Unsloth conserva ogni tipo di file. Le cartelle della libreria sono etichette dentro Unsloth, non cartelle sul disco. I fine-tuning e le esportazioni restano dove sono, perché addestramento e chat li trovano tramite il percorso.",

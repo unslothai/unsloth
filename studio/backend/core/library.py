@@ -31,7 +31,6 @@ from urllib.parse import quote
 
 from loggers import get_logger
 from storage import library_db
-from utils.paths import ensure_dir
 from utils.paths.storage_roots import account_path
 
 logger = get_logger(__name__)
@@ -89,10 +88,10 @@ def _item(
 
 
 def uploads_dir() -> Path:
-    from utils.paths.relocations import relocated
+    from utils.paths.relocations import location_dir
 
     # Settings > Library can move the owner's folder elsewhere; other accounts keep theirs.
-    return ensure_dir(relocated("uploads", account_path("library")))
+    return location_dir("uploads", account_path("library"))
 
 
 def _device(path) -> Optional[int]:
@@ -744,6 +743,16 @@ def _location_resolvers() -> dict:
     }
 
 
+def _location_path(key: str, resolve) -> Path:
+    """Where `key` lives, also while its chosen folder is unavailable."""
+    from utils.paths.relocations import LocationUnavailable, chosen
+
+    try:
+        return resolve()
+    except LocationUnavailable:
+        return chosen(key)
+
+
 def locations() -> list[dict]:
     """Where each kind of Library file lives, for Settings > Library. `movable` kinds can be moved
     with ``move_location``; `custom` says the owner already has."""
@@ -751,7 +760,7 @@ def locations() -> list[dict]:
     return [
         {
             "key": key,
-            "path": str(resolve()),
+            "path": str(_location_path(key, resolve)),
             "movable": key in MOVABLE,
             "custom": chosen(key) is not None,
         }
@@ -894,7 +903,8 @@ def _refuse_overlap(target: Path, resolvers) -> None:
 
     # Chat sandboxes too: their listing would show the files as tool output, and clearing the chat
     # with its files would delete them.
-    roots = [Path(resolve()) for resolve in resolvers.values()] + [Path(sandbox_root())]
+    roots = [_location_path(key, resolve) for key, resolve in resolvers.items()]
+    roots.append(Path(sandbox_root()))
     for root in roots:
         root = root.resolve()
         if target == root or root in target.parents:
@@ -917,7 +927,16 @@ def move_location(key: str, path: Optional[str]) -> None:
         )
     resolvers = _location_resolvers()
     with _move_lock:
-        current = resolvers[key]().resolve()
+        current = _location_path(key, resolvers[key]).resolve()
+        if not current.is_dir():
+            # Its drive unplugged: nothing can move, but Reset still lets go of the folder.
+            if path is not None:
+                raise ValueError(
+                    f"{current} is not available, so its files cannot move. Reconnect its drive, "
+                    "or reset the folder."
+                )
+            set_chosen(key, None)
+            return
         target = _move_target(path) if path is not None else _location_default(key).resolve()
         if target == current:
             return

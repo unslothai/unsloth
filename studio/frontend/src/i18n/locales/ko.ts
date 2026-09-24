@@ -351,6 +351,7 @@ export const ko = {
       storageUsed: "라이브러리 사용량 {size}",
       storageDisk: "이 디스크의 여유 공간 {free} / {total}",
       storageEmpty: "라이브러리에 아직 저장된 항목이 없습니다.",
+      storageHidden: "콘텐츠 설정에서 숨김: {size}",
       storageError: "라이브러리 저장 공간을 읽지 못했습니다.",
       locationsSection: "디스크의 파일",
       locationsDescription: "Unsloth가 각 종류의 파일을 저장하는 위치입니다. 라이브러리 폴더는 Unsloth 안의 라벨이며 디스크의 폴더가 아닙니다. 파인튜닝 모델과 내보내기는 학습과 채팅이 경로로 참조하므로 그대로 유지됩니다.",

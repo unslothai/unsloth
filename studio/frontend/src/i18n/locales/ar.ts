@@ -351,6 +351,7 @@ export const ar = {
       storageUsed: "تستخدم المكتبة {size}",
       storageDisk: "{free} متاحة من {total} على هذا القرص",
       storageEmpty: "لا يوجد شيء مخزّن في المكتبة بعد.",
+      storageHidden: "{size} مخفية في إعدادات المحتوى",
       storageError: "تعذّرت قراءة تخزين المكتبة.",
       locationsSection: "الملفات على القرص",
       locationsDescription: "المكان الذي يحفظ فيه Unsloth كل نوع من الملفات. مجلدات المكتبة تسميات داخل Unsloth وليست مجلدات على القرص. تبقى النماذج المضبوطة والتصديرات في مكانها لأن التدريب والمحادثات تشير إليها بمسارها.",

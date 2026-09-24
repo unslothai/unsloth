@@ -356,6 +356,7 @@ export const en = {
       storageUsed: "{size} used by the Library",
       storageDisk: "{free} free of {total} on this disk",
       storageEmpty: "Nothing is stored in the Library yet.",
+      storageHidden: "{size} hidden in Content settings",
       storageError: "Could not read Library storage.",
       locationsSection: "Files on disk",
       locationsDescription: "Where Unsloth keeps each kind of file. Library folders are labels inside Unsloth, not folders on disk. Fine-tunes and exports stay where they are, since training and chats refer to them by path.",
