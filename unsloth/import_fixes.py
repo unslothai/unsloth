@@ -687,6 +687,258 @@ def fix_transformers5_bare_annotation_configs():
         logger.info(f"Unsloth: Failed patching PretrainedConfig ({e})")
 
 
+# Bool flags whose 4.x value was only ever read for truthiness, so ANY int means what bool(int)
+# means. Keyed by field, valued by the model_types it holds for. attn_temperature_tuning: 4.51.0
+# to 4.51.3 defaulted it to 4 and Llama4TextAttention only did `if self.attn_temperature_tuning`;
+# 4.52.0 made it `True`, and every Llama 4 checkpoint saved on 4.51 still carries the 4.
+_LEGACY_TRUTHY_BOOL_FIELDS = {
+    "attn_temperature_tuning": frozenset({"llama4_text"}),
+}
+_LEGACY_CONFIG_INIT_FLAG = "_unsloth_legacy_config_types"
+_LEGACY_CONFIG_NOT_COERCED = object()
+_legacy_config_field_types = {}
+_legacy_config_coercions_logged = set()
+
+
+def _legacy_config_accepted_types(annotation):
+    """The plain types a field annotation accepts, or ``None`` if it is not simple enough.
+
+    Only ``X`` and unions of ``X`` / ``None`` / ``Literal`` / ``list[...]`` / ``tuple[...]``.
+    String and forward-reference annotations are never validated by ``@strict``, so they
+    can never fail and are left alone."""
+    import typing
+    import types as _types
+
+    if annotation is typing.Any or isinstance(annotation, (str, typing.ForwardRef)):
+        return None
+    origin = typing.get_origin(annotation)
+    if origin is typing.Union or (
+        hasattr(_types, "UnionType") and origin is getattr(_types, "UnionType")
+    ):
+        accepted = set()
+        for argument in typing.get_args(annotation):
+            inner = _legacy_config_accepted_types(argument)
+            if inner is None:
+                return None
+            accepted |= inner
+        return frozenset(accepted)
+    if annotation is None or annotation is type(None):
+        return frozenset({type(None)})
+    if origin is typing.Literal:
+        return frozenset({typing.Literal})
+    if origin is not None:
+        return frozenset({origin})
+    if isinstance(annotation, type):
+        return frozenset({annotation})
+    return None
+
+
+def _legacy_config_fields(cls):
+    """``{field: accepted types}`` for the dataclass fields of ``cls``, cached per class."""
+    cached = _legacy_config_field_types.get(cls)
+    if cached is not None:
+        return cached
+    import dataclasses
+
+    table = {}
+    try:
+        for field in dataclasses.fields(cls):
+            accepted = _legacy_config_accepted_types(field.type)
+            if accepted is not None:
+                table[field.name] = (field.type, accepted)
+    except TypeError:
+        pass
+    _legacy_config_field_types[cls] = table
+    return table
+
+
+def _legacy_truthy_bool_field(cls, name):
+    model_types = _LEGACY_TRUTHY_BOOL_FIELDS.get(name)
+    if not model_types:
+        return False
+    return any(
+        klass.__dict__.get("model_type") in model_types for klass in getattr(cls, "__mro__", ())
+    )
+
+
+def _legacy_config_coerced_value(cls, name, value, accepted):
+    """``value`` converted to what ``accepted`` allows, or ``_LEGACY_CONFIG_NOT_COERCED``.
+
+    Only conversions that lose nothing or whose 4.x meaning is established: int or float 0/1
+    to bool, any int to bool for a known truthiness flag, int to float, integral float to int,
+    and list to tuple (JSON has no tuple). Strings, other ints for bool, fractional floats for
+    int and enum values are never touched, so their real validation error still surfaces."""
+    import math
+
+    wants_bool = bool in accepted
+    wants_int = int in accepted
+    wants_float = float in accepted
+    kind = type(value)
+    if kind is int:
+        if wants_bool and not wants_int and not wants_float:
+            if value in (0, 1) or _legacy_truthy_bool_field(cls, name):
+                return bool(value)
+            return _LEGACY_CONFIG_NOT_COERCED
+        if wants_float and not wants_int:
+            converted = float(value)
+            if math.isfinite(converted) and converted == value:
+                return converted
+        return _LEGACY_CONFIG_NOT_COERCED
+    if kind is float:
+        if wants_bool and not wants_int and not wants_float and value in (0.0, 1.0):
+            return bool(value)
+        if wants_int and not wants_float and math.isfinite(value) and value.is_integer():
+            return int(value)
+        return _LEGACY_CONFIG_NOT_COERCED
+    if kind is list and tuple in accepted and list not in accepted:
+        return tuple(value)
+    return _LEGACY_CONFIG_NOT_COERCED
+
+
+def _coerce_legacy_config_kwargs(cls, kwargs):
+    """``kwargs`` with values the class's ``@strict`` validator would reject converted to the
+    annotated type where that is safe. Returns ``kwargs`` itself when nothing changes.
+
+    A value is only touched when the real type validator rejects it AND accepts the converted
+    value, so a config transformers already loads is never altered."""
+    fields = _legacy_config_fields(cls)
+    if not fields:
+        return kwargs
+    try:
+        from huggingface_hub.dataclasses import type_validator
+    except Exception:
+        type_validator = None
+
+    def valid(name, value, annotation):
+        if type_validator is None:
+            return False
+        try:
+            type_validator(name, value, annotation)
+            return True
+        except TypeError:
+            return False
+        except Exception:
+            return True
+
+    updated = None
+    for name, value in kwargs.items():
+        entry = fields.get(name)
+        if entry is None or isinstance(value, (str, dict)) or value is None:
+            continue
+        annotation, accepted = entry
+        converted = _legacy_config_coerced_value(cls, name, value, accepted)
+        if converted is _LEGACY_CONFIG_NOT_COERCED:
+            continue
+        if valid(name, value, annotation):
+            continue
+        if type_validator is not None and not valid(name, converted, annotation):
+            continue
+        if updated is None:
+            updated = dict(kwargs)
+        updated[name] = converted
+        key = (cls.__name__, name, type(value).__name__)
+        if key not in _legacy_config_coercions_logged:
+            _legacy_config_coercions_logged.add(key)
+            logger.warning(
+                f"Unsloth: `{cls.__name__}.{name}` is {value!r} ({type(value).__name__}), written by "
+                f"an older transformers; using {converted!r} since transformers 5 expects "
+                f"`{getattr(annotation, '__name__', None) or annotation}`."
+            )
+    return kwargs if updated is None else updated
+
+
+def _patch_config_init_for_legacy_types(cls):
+    """Wrap ``cls``'s own ``__init__`` so legacy kwargs are converted before ``@strict`` sees them."""
+    init = cls.__dict__.get("__init__")
+    if init is None or getattr(init, _LEGACY_CONFIG_INIT_FLAG, False):
+        return
+
+    @functools.wraps(init)
+    def __init__(self, *args, **kwargs):
+        if kwargs:
+            try:
+                kwargs = _coerce_legacy_config_kwargs(type(self), kwargs)
+            except Exception as e:
+                logger.info(f"Unsloth: legacy config type coercion skipped ({e})")
+        return init(self, *args, **kwargs)
+
+    setattr(__init__, _LEGACY_CONFIG_INIT_FLAG, True)
+    try:
+        cls.__init__ = __init__
+    except Exception:
+        pass
+
+
+def fix_transformers5_legacy_config_types():
+    """Load configs whose values 4.x wrote with a type transformers 5 now rejects.
+
+    From 5.4 every config is a ``huggingface_hub`` ``@strict`` dataclass: each assignment in
+    the generated ``__init__`` runs a type validator, which rejects a value but cannot rewrite
+    it. So ``text_config.attn_temperature_tuning: 4`` in a Llama 4 checkpoint saved by 4.51
+    raises ``StrictDataclassFieldValidationError`` inside ``AutoConfig.from_pretrained``.
+
+    The kwargs are converted before the validator runs, only where the conversion is lossless
+    or its 4.x meaning is established (see ``_legacy_config_coerced_value``), and only when the
+    original value would have been rejected. Every existing config class is patched, and an
+    ``__init_subclass__`` hook covers lazily imported and remote ones. No-op below 5.0 and on
+    5.0 to 5.3, where configs are not strict dataclasses."""
+    try:
+        import transformers
+        if Version(transformers.__version__) < Version("5.0.0"):
+            return
+        from transformers.configuration_utils import PretrainedConfig as _BaseConfig
+    except Exception as e:
+        logger.info(f"Unsloth: Skipping legacy config type fix ({e})")
+        return
+    if not isinstance(getattr(_BaseConfig, "__validators__", None), dict):
+        return
+
+    pending = [_BaseConfig]
+    seen = set()
+    while pending:
+        cls = pending.pop()
+        if id(cls) in seen:
+            continue
+        seen.add(id(cls))
+        _patch_config_init_for_legacy_types(cls)
+        try:
+            pending.extend(cls.__subclasses__())
+        except Exception:
+            pass
+
+    hook = _BaseConfig.__dict__.get("__init_subclass__")
+    previous = getattr(hook, "__func__", hook)
+    # Other fixes wrap this hook too and keep what they wrapped on `__wrapped__`, so ours may
+    # sit anywhere in the chain; installing again would only stack a second copy.
+    link, depth = previous, 0
+    while link is not None and depth < 32:
+        if getattr(link, _LEGACY_CONFIG_INIT_FLAG, False):
+            return
+        link, depth = getattr(link, "__wrapped__", None), depth + 1
+
+    def __init_subclass__(cls, *args, **kwargs):
+        if previous is not None:
+            previous(cls, *args, **kwargs)
+        else:
+            super(_BaseConfig, cls).__init_subclass__(*args, **kwargs)
+        # Runs before a class decorator such as @strict wraps __init__, so the conversion
+        # still happens first: @strict calls whatever __init__ it found.
+        try:
+            _patch_config_init_for_legacy_types(cls)
+        except Exception as e:
+            logger.info(f"Unsloth: legacy config type patch skipped for {cls.__name__} ({e})")
+
+    setattr(__init_subclass__, _LEGACY_CONFIG_INIT_FLAG, True)
+    if previous is not None:
+        __init_subclass__.__wrapped__ = previous
+    try:
+        _BaseConfig.__init_subclass__ = classmethod(__init_subclass__)
+    except Exception as e:
+        logger.info(f"Unsloth: Failed patching PretrainedConfig.__init_subclass__ ({e})")
+        return
+    logger.info("Unsloth: Patched transformers config classes to accept legacy 4.x value types.")
+
+
 # Where the image helpers that `modeling_*.py` files reach for actually live.
 # Ordered so the image modules win: `resize` exists in image_transforms and is
 # the one a preprocessor means, and `transformers.utils` is last because it is

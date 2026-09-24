@@ -250,6 +250,7 @@ from .device_type import (
 
 from .import_fixes import (
     fix_transformers5_bare_annotation_configs,
+    fix_transformers5_legacy_config_types,
     fix_transformers5_image_processing_reexports,
     fix_transformers_composite_prefix_renaming,
     fix_transformers_fully_masked_rows,
@@ -291,6 +292,11 @@ from .import_fixes import (
     patch_accelerate_recursively_apply,
 )
 
+# Before any config is built: 4.x-era config.json values (Llama 4's `attn_temperature_tuning: 4`)
+# that transformers 5's strict config validation rejects are converted where that is safe. Ahead
+# of the bare-annotation fix so its __init_subclass__ hook stays outermost, which is the one its
+# tests unwrap to observe the original failure.
+fix_transformers5_legacy_config_types()
 # Must run first: guards PretrainedConfig before vLLM defines its config classes.
 fix_transformers5_bare_annotation_configs()
 # Probe-gated: no-ops unless this transformers really hands SDPA a query row that attends to
@@ -371,6 +377,7 @@ fix_peft_torchao_missing_tensor_subclass()
 patch_accelerate_recursively_apply()
 
 del fix_transformers5_bare_annotation_configs
+del fix_transformers5_legacy_config_types
 del fix_transformers_rope_scaling_drops_theta
 del fix_transformers_remote_rope_scaling_none
 del fix_transformers_is_torch_fx_available
