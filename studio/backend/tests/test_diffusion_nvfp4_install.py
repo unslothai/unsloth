@@ -496,6 +496,25 @@ def test_a_pip_only_mirror_is_handed_to_uv(env, monkeypatch):
     assert "--index-url" not in inst._installer_prefix(None)
 
 
+def test_a_uv_only_mirror_is_handed_to_the_pip_fallback(env, monkeypatch):
+    # No uv: pip does not read UV_* settings, and the preflight skipped the pypi.org probe for them.
+    monkeypatch.setattr(inst, "_uv_executable", lambda: None)
+    for name in ("PIP_INDEX_URL", "UV_DEFAULT_INDEX"):
+        monkeypatch.delenv(name, raising = False)
+    monkeypatch.setenv("UV_INDEX_URL", "https://uv-mirror.example/simple")
+    main = inst._installer_prefix(None)
+    assert main[main.index("--index-url") + 1] == "https://uv-mirror.example/simple"
+    monkeypatch.setenv("UV_DEFAULT_INDEX", "https://uv-default.example/simple")
+    main = inst._installer_prefix(None)
+    assert main[main.index("--index-url") + 1] == "https://uv-default.example/simple"
+    # The jit-cache step keeps its own index only.
+    jit = inst._installer_prefix(None, "https://flashinfer.ai/whl/cu130")
+    assert jit.count("--index-url") == 1 and jit[-1] == "https://flashinfer.ai/whl/cu130"
+    # pip's own setting wins and is left to pip.
+    monkeypatch.setenv("PIP_INDEX_URL", "https://pip-mirror.example/simple")
+    assert "--index-url" not in inst._installer_prefix(None)
+
+
 def test_a_pip_only_mirror_never_gives_uv_two_index_urls(env, monkeypatch):
     # uv rejects a repeated --index-url; the jit-cache step's own index replaces the mirror.
     monkeypatch.setenv("PIP_INDEX_URL", "https://pip-mirror.example/simple")

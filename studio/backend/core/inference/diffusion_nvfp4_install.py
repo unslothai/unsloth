@@ -370,6 +370,12 @@ def _installer_prefix(uv: Optional[str], index_url: Optional[str] = None) -> lis
             cmd += ["--index-url", pip_index]
     else:
         cmd = [sys.executable, "-m", "pip", "install", "--disable-pip-version-check"]
+        # The converse: pip ignores uv's settings, and the preflight skipped the pypi.org probe for them.
+        uv_index = (
+            os.environ.get("UV_DEFAULT_INDEX") or os.environ.get("UV_INDEX_URL") or ""
+        ).strip()
+        if index_url is None and uv_index and not (os.environ.get("PIP_INDEX_URL") or "").strip():
+            cmd += ["--index-url", uv_index]
     if index_url is not None:
         cmd += ["--index-url", index_url]
     return cmd
