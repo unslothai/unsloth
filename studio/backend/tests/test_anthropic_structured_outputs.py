@@ -291,6 +291,28 @@ def test_format_kept_when_server_tools_are_disabled_by_tool_choice(monkeypatch):
     assert "tools" not in sent
 
 
+@pytest.mark.parametrize("with_format", [False, True])
+def test_count_tokens_matches_schema_routing_under_tool_choice_none(monkeypatch, with_format):
+    counted = []
+
+    def _count(messages, _template, tools, **_kwargs):
+        counted.append((messages, tools))
+        return 2
+
+    _install(monkeypatch, count_chat_tokens = _count)
+    fields = {"enable_tools": True, "permission_mode": "off", "tool_choice": {"type": "none"}}
+    if with_format:
+        fields["output_config"] = {"format": {"type": "json_schema", "schema": _SCHEMA}}
+
+    response = asyncio.run(
+        inf_mod.anthropic_count_tokens(_payload(**fields), request = _Request(), current_subject = "t")
+    )
+
+    assert response.status_code == 200
+    [(_messages, tools)] = counted
+    assert bool(tools) is not with_format
+
+
 @pytest.mark.parametrize("stream", [False, True])
 def test_tool_markup_inside_json_is_returned_verbatim(monkeypatch, stream):
     answer = json.dumps({"a": "<function=f>", "b": 2, "c": "</function>"})

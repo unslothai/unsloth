@@ -34343,7 +34343,12 @@ async def anthropic_count_tokens(
             request,
             include_api_key = _count_server_tools,
         )
-    if _count_server_tools:
+    # /messages answers a schema request with tool_choice none without the tool catalog.
+    _count_schema_only = (
+        anthropic_tool_choice_to_openai(payload.tool_choice) == "none"
+        and _anthropic_response_format(payload) is not None
+    )
+    if _count_server_tools and not _count_schema_only:
         from core.inference.tools import ALL_TOOLS as _ANTHROPIC_COUNT_TOOLS
 
         openai_tools = _tools_for_search_images(
