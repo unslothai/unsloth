@@ -1387,3 +1387,10 @@ export function reasoningFieldsAfterCatalogRefresh(
       caps.supportsReasoning && !caps.supportsReasoningOff ? true : current.reasoningEnabled,
   };
 }
+
+/** Sent as a llama-server template kwarg, so the model's template must still read it. */
+export function providerSupportsPreserveThinking(
+  providerType: string | null | undefined,
+): boolean {
+  return providerType === "llama_cpp";
+}

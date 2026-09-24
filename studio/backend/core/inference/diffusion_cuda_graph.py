@@ -232,8 +232,16 @@ class GraphedForward:
         logger: Any = None,
     ) -> None:
         self.module = module
-        # The CLASS forward: the eager callable, whatever is already in the instance slot.
-        self.orig = type(module).forward.__get__(module)
+        # The CLASS forward: the eager callable, whatever is already in the instance slot. A class
+        # whose stock forward syncs the host gets its capture-safe rewrite (bit-identical) instead.
+        safe = None
+        try:
+            from .diffusion_capture_safe import resolve as _capture_safe  # noqa: PLC0415
+            safe, _ = _capture_safe(type(module))
+        except Exception:  # noqa: BLE001 - the stock forward is still a correct eager callable
+            safe = None
+        self.capture_safe = safe is not None
+        self.orig = (safe if safe is not None else type(module).forward).__get__(module)
         try:
             update_wrapper(self, self.orig)
         except Exception:  # noqa: BLE001
@@ -551,6 +559,17 @@ def graph_eligible(
 
     if not bool(getattr(family, "supports_cuda_graph", family_default)):
         return False, "family opts out"
+
+    # A denoiser whose forward syncs the host would only invalidate its capture and run eager; decline
+    # up front with the reason when its capture-safe rewrite did not apply.
+    try:
+        from .diffusion_capture_safe import resolve as _capture_safe  # noqa: PLC0415
+        for module in _denoiser_dits(pipe):
+            _, why = _capture_safe(type(module))
+            if why:
+                return False, why
+    except Exception as exc:  # noqa: BLE001 - the capture itself still poisons safely
+        _warn(logger, "capture-safe probe", exc)
 
     return True, "eligible"
 
