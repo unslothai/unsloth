@@ -7022,6 +7022,9 @@ class DiffusionBackend:
                 # Publish an active (step 0) state before the slow pre-denoise setup so a reload mount probe does not
                 # read idle.
                 self._gen = _GenState(total_steps = steps)
+            # The pipe a static step-skip schedule was armed on, dropped in the finally so a failed or cancelled
+            # generation does not keep its reused outputs alive.
+            static_skip_pipe = None
             try:
                 self._state_device_target(state)
                 # The local `state` ref keeps the pipe alive even if unload() nulls _state. Resolve the per-image
@@ -7485,6 +7488,7 @@ class DiffusionBackend:
                             keep_stats = static_chunks_run > 0,
                         )
                         static_chunks_run += 1
+                        static_skip_pipe = state.pipe
                     elif state.transformer_cache:
                         # Start every forward from a clean step cache: diffusers only resets FBCache after a SUCCESSFUL
                         # __call__, so a raised call leaves a residual the next forward trips over.
@@ -7527,8 +7531,6 @@ class DiffusionBackend:
                     steps_done[0] += steps
                 if static_skip:
                     logger.debug("diffusion.step_skip: %s", static_skip_stats(state.pipe))
-                    # Drop the reused outputs; the next generation arms its own schedule.
-                    reset_static_step_skip(state.pipe, None)
                 # Keep progress ACTIVE through the post-denoise work: the route persists the image after this returns,
                 # so a mount probe reading idle would refresh the gallery too early. Persist the warm compile bundle;
                 # a STATIC compile makes new artifacts per (w,h,batch), so register this shape. The write itself is
@@ -7595,6 +7597,12 @@ class DiffusionBackend:
                     "localized_edit": localized_edit.mode if localized_edit is not None else None,
                 }
             finally:
+                if static_skip_pipe is not None:
+                    # Drop the reused outputs on every exit; the next generation arms its own schedule.
+                    try:
+                        reset_static_step_skip(static_skip_pipe, None)
+                    except Exception as exc:  # noqa: BLE001
+                        logger.debug("diffusion.step_skip: reset failed: %s", exc)
                 with self._generation_cancel_lock:
                     if self._active_generate_cancel is cancel:
                         self._active_generate_cancel = None

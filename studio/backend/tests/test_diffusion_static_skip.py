@@ -838,3 +838,21 @@ def test_generate_keeps_stats_after_its_first_chunk():
 
     src = inspect.getsource(diffusion.DiffusionBackend.generate)
     assert "keep_stats = static_chunks_run > 0" in src
+
+
+def test_generate_drops_static_state_on_every_exit():
+    import ast
+    import inspect
+    import textwrap
+
+    from core.inference import diffusion
+
+    tree = ast.parse(textwrap.dedent(inspect.getsource(diffusion.DiffusionBackend.generate)))
+    finals = [
+        ast.unparse(stmt)
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Try)
+        for stmt in node.finalbody
+    ]
+    # The reset lives in a finally, so a failed or cancelled render frees its history clones too.
+    assert any("reset_static_step_skip(static_skip_pipe, None)" in f for f in finals)
