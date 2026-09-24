@@ -1429,7 +1429,9 @@ def test_automatic_dynamic_compile_arms_the_prompt_length_allowlist(monkeypatch)
     from core.inference import diffusion_dynamic_text
 
     armed = []
-    monkeypatch.setattr(diffusion_dynamic_text, "install", lambda t, logger = None: armed.append(t) or True)
+    monkeypatch.setattr(
+        diffusion_dynamic_text, "install", lambda t, logger = None: armed.append(t) or True
+    )
     _stub_torch(monkeypatch)
     pipe = _Pipe(with_compile = True, with_fuse = True)
     apply_speed_optims(pipe, _target(), is_gguf = False, family = _family(), speed_mode = SPEED_MAX)
