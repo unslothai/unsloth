@@ -386,6 +386,9 @@ def test_a_graphed_dit_captures_one_tuned_graph_per_branch_and_replays_both(monk
                 },
             }
             assert nl.convert_nvfp4_backend(dit, metadata, "flashinfer") == 2
+            # The converted model reads its own controller, not the process one.
+            ctl = pr.module_controller(dit)
+            assert ctl is not pr.protect_controller() and ctl.armed
 
             class DiT(nn.Module):
                 def __init__(self, inner):

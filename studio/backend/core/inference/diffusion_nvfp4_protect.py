@@ -192,11 +192,12 @@ def protect_generation(
 ):
     """Drive ``controller`` across one generation of ``steps`` steps, then restore everything. A
     no-op when the lever is off, and a pipeline with no scheduler to count protects NOTHING."""
-    ctl = controller if controller is not None else protect_controller()
+    ctls = [controller] if controller is not None else pipeline_controllers(pipe)
+    ctl = ctls[0]
     if not ctl.armed:
         yield ctl
         return
-    if not ctl.capable_layers():
+    if not sum(c.capable_layers() for c in ctls):
         # Only NVFP4FlashInferLinear consults the controller: a torchao load runs W4A4 at every step and must not read as protected.
         if logger is not None:
             logger.warning(
@@ -205,7 +206,8 @@ def protect_generation(
                 "generation",
                 ctl.spec,
             )
-        ctl.reset()
+        for c in ctls:
+            c.reset()
         yield ctl
         return
     scheduler = getattr(pipe, "scheduler", None)
@@ -216,15 +218,18 @@ def protect_generation(
                 "[nvfp4] protect schedule requested but this pipeline exposes no scheduler.step "
                 "to count denoising steps; the lever stays off for this generation"
             )
-        ctl.reset()
+        for c in ctls:
+            c.reset()
         yield ctl
         return
 
-    ctl.begin(steps, logger = logger)
+    for i, c in enumerate(ctls):
+        c.begin(steps, logger = logger if i == 0 else None)
 
     def _step(*args: Any, **kwargs: Any) -> Any:
         out = original(*args, **kwargs)
-        ctl.advance()
+        for c in ctls:
+            c.advance()
         return out
 
     # Restoring by assignment would leave an instance attribute shadowing the class forever, so delete unless one existed before this wrap.
@@ -240,7 +245,8 @@ def protect_generation(
                 del scheduler.step
             except (AttributeError, TypeError):  # noqa: PERF203 - a slotted or proxied scheduler
                 scheduler.step = original
-        ctl.reset()
+        for c in ctls:
+            c.reset()
 
 
 @contextlib.contextmanager
@@ -262,11 +268,16 @@ def suspend_protect(modules: Any):
             ctl.armed = armed
 
 
-def protect_graph_key(protected: Optional[bool] = None) -> tuple:
+def protect_graph_key(
+    protected: Optional[bool] = None,
+    module: Any = None,
+    *,
+    controller: Optional[NVFP4StepController] = None,
+) -> tuple:
     """The CUDA-graph cache-key suffix for the branch in flight, or ``()`` when the lever is off. A
     captured graph records ONE branch, so without this the lever is inert under capture while the
-    numbers look like it ran."""
-    ctl = protect_controller()
+    numbers look like it ran. ``controller`` (or ``module``) selects that model's own controller."""
+    ctl = controller if controller is not None else module_controller(module)
     if not ctl.armed:
         return ()
     live = ctl.protected if protected is None else bool(protected)
@@ -291,6 +302,38 @@ def attach_controller(module: Any, controller: NVFP4StepController) -> int:
     """Point every NVFP4 layer under ``module`` at ``controller``. Returns how many."""
     layers = protect_layers(module)
     for _, layer in layers:
+        old = layer.protect
+        if old is not controller:
+            old._layers.discard(layer)
         layer.protect = controller
         controller.register_layer(layer)
     return len(layers)
+
+
+def attach_own_controller(module: Any) -> Optional[NVFP4StepController]:
+    """Give ``module``'s NVFP4 layers a controller of their own, so an image and a video render in
+    flight at once never advance or reset each other's schedule. Same spec as the process one."""
+    ctl = NVFP4StepController(protect_controller().spec)
+    return ctl if attach_controller(module, ctl) else None
+
+
+def module_controller(module: Any) -> NVFP4StepController:
+    """The controller ``module``'s NVFP4 layers read, or the process one when it holds none."""
+    if module is not None:
+        for _, layer in protect_layers(module):
+            return layer.protect
+    return protect_controller()
+
+
+_DENOISER_ATTRS = ("transformer", "transformer_2", "unet")
+
+
+def pipeline_controllers(pipe: Any) -> list:
+    """Every distinct controller the pipeline's denoisers read, the process one when none."""
+    found: list = []
+    for attr in _DENOISER_ATTRS:
+        module = getattr(pipe, attr, None)
+        for _, layer in protect_layers(module) if module is not None else ():
+            if all(layer.protect is not c for c in found):
+                found.append(layer.protect)
+    return found or [protect_controller()]

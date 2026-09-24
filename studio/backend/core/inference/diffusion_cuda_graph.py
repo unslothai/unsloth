@@ -218,18 +218,18 @@ def _protect_keyed(module: Any) -> bool:
     armed AND the module holds NVFP4 layers, so an fp8 load elsewhere in the process does not
     double its graph count for a branch it cannot take."""
     try:
-        from .diffusion_nvfp4_protect import protect_controller
-        if not protect_controller().armed:
+        from .diffusion_nvfp4_protect import module_controller
+        if not module_controller(module).armed:
             return False
         return bool(_nvfp4_flashinfer_linears(module))
     except Exception:  # noqa: BLE001 - a tree we cannot walk simply keys the way it always did
         return False
 
 
-def protect_graph_key() -> tuple:
+def protect_graph_key(controller: Any = None) -> tuple:
     """The branch in flight as a key suffix. Imported lazily; ``()`` when the lever is off."""
     from .diffusion_nvfp4_protect import protect_graph_key as _key
-    return _key()
+    return _key(controller = controller)
 
 
 def _unbaked_nvfp4_layers(layers: list) -> list:
@@ -309,6 +309,7 @@ class GraphedForward:
         self.cap_hit = False
         # Resolved on the first call, not here: the walk is O(modules) and must not run per call.
         self.protect_keyed: Optional[bool] = None
+        self.protect_ctl: Any = None
         self.stats = {
             "captures": 0,
             "replays": 0,
@@ -430,6 +431,11 @@ class GraphedForward:
             if self.protect_keyed is None:
                 self.protect_keyed = _protect_keyed(self.module)
                 if self.protect_keyed:
+                    from .diffusion_nvfp4_protect import module_controller
+
+                    # Resolved once: the key is built every call, and the walk is over the whole tree.
+                    self.protect_ctl = module_controller(self.module)
+                if self.protect_keyed:
                     # Arming the lever splits every input shape into two calls, so the cap has to double or half of them run eager.
                     self.max_graphs *= 2
                     if self.logger is not None:
@@ -441,7 +447,7 @@ class GraphedForward:
                         )
             if self.protect_keyed:
                 # One graph per branch: a W4A4 graph replayed at a W4A16 step would report the lever as measured while it never fired.
-                key = key + protect_graph_key()
+                key = key + protect_graph_key(self.protect_ctl)
             entry = self.cache.get(key)
         except Exception:  # noqa: BLE001 - an unhashable tree is simply not capturable
             self.stats["refused_object"] += 1
