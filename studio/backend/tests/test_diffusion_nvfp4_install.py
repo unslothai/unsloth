@@ -705,10 +705,10 @@ def test_install_gates_skip_kinds_the_dense_quant_path_cannot_reach():
 
     img = inspect.getsource(diffusion.DiffusionBackend)
     gate = img[: img.index("ensure_flashinfer_for_nvfp4(")].rsplit("if ", 1)[-1]
-    assert gate.startswith("dense_quant_supported_kind(kind)")
+    assert gate.lstrip("( \n").startswith("dense_quant_supported_kind(kind)")
     vid = inspect.getsource(video.VideoBackend)
     gate = vid[: vid.index("ensure_flashinfer_for_nvfp4(")].rsplit("if ", 1)[-1]
-    assert gate.startswith('kind == "pipeline"')
+    assert gate.lstrip("( \n").startswith('kind == "pipeline"')
 
 
 def test_jit_cache_step_drops_extra_index_sources_from_the_environment(env, monkeypatch):

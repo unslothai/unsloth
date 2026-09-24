@@ -2868,6 +2868,53 @@ class VideoBackend:
             )
         return repo is not None
 
+    def _nvfp4_denoiser_checkpoint_will_load(
+        self,
+        fam: Any,
+        base: Optional[str],
+        h3_task: Optional[str],
+        hf_token: Optional[str],
+        *,
+        local_files_only: bool = False,
+        kind: str = "pipeline",
+        planned: Optional[str] = None,
+    ) -> bool:
+        """Whether an NVFP4 video load will open hosted pre-quantised denoisers, the only path FlashInfer
+        serves (``load_prequantized_transformer`` / the seeded denoiser). The on-the-fly build is torchao
+        either way, so no hosted checkpoint, a repo the Hub refuses (private, gated, unpublished) or a
+        conventional load whose plan declined the seed must not buy the multi-GB install. A cached
+        checkpoint counts; offline asks the cache only. Unanswerable answers no."""
+        try:
+            modular = bool(getattr(fam, "modular_workflow", None))
+            if planned == DENOISER_SEED_DECLINED and not modular:
+                return False
+            # The partition the modular load will bring up, so the probe reads the file that load opens.
+            task = (h3_task or getattr(fam, "modular_workflow", None)) if modular else h3_task
+            if not self._denoiser_prequant_covered(fam, "nvfp4", base, task, kind = kind):
+                return False
+            from .diffusion_prequant import restricted_prequant_load_supported
+
+            if not restricted_prequant_load_supported("nvfp4"):
+                return False
+            if self._denoiser_prequant_cached_repo(fam, "nvfp4", base, task) is not None:
+                return True
+            if local_files_only:
+                return False
+            from huggingface_hub import HfApi
+
+            repo, _files = self._denoiser_prequant_hub_files(
+                fam, "nvfp4", base, HfApi(token = hf_token or None), task
+            )
+            return repo is not None
+        except Exception as exc:  # noqa: BLE001 -- a refused or unreachable listing is no checkpoint
+            logger.info(
+                "video.nvfp4_install: no reachable NVFP4 checkpoint for %s, so the load runs on "
+                "torchao and FlashInfer is not installed (%s)",
+                base,
+                type(exc).__name__,
+            )
+            return False
+
     def _h3_planned_auto_denoiser_scheme(
         self,
         fam: Any,
@@ -4336,9 +4383,29 @@ class VideoBackend:
         # An NVFP4 load wants FlashInfer, else its backend falls back to torchao. Outside every lock, like the
         # diffusion loader's pre-install hop; never raises, and select_nvfp4_backend still decides.
         # The video dense quant path is pipeline-only, so a GGUF or single-file load never installs.
-        if kind == "pipeline" and "nvfp4" in (
-            normalize_transformer_quant(transformer_quant),
-            _video_auto_denoiser_planned,
+        # Only when hosted pre-quantised denoisers will load: FlashInfer serves nothing else, and the on-the-fly build
+        # is torchao, so a checkpoint this user cannot fetch must not buy the install. A plan that settled NVFP4
+        # already listed it on the Hub (or found it cached offline); otherwise ask. Covers the MiniMax-H3 modular
+        # dispatch below too, which is handed this outcome.
+        if (
+            kind == "pipeline"
+            and "nvfp4"
+            in (
+                normalize_transformer_quant(transformer_quant),
+                _video_auto_denoiser_planned,
+            )
+            and (
+                _video_auto_denoiser_planned == "nvfp4"
+                or self._nvfp4_denoiser_checkpoint_will_load(
+                    fam,
+                    base,
+                    h3_task,
+                    hf_token,
+                    local_files_only = local_files_only,
+                    kind = kind,
+                    planned = _video_auto_denoiser_planned,
+                )
+            )
         ):
             from .diffusion_nvfp4_install import ensure_flashinfer_for_nvfp4
 

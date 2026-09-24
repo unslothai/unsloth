@@ -11792,3 +11792,181 @@ def test_a_prequant_repo_missing_its_artifact_marks_the_plan_incomplete(monkeypa
         failures
     ), "a configured prequant that is not in its repo left the plan calling itself complete"
     assert "prequant artifact missing" in str(failures[0])
+
+
+# ── FlashInfer install gate: only a pre-quantised NVFP4 checkpoint that will actually load buys the install ──────────
+
+
+class _StopAfterInstallGate(Exception):
+    """Raised at the first step past the FlashInfer pre-install hop, so the gate is all these tests run."""
+
+
+def _hub_refusal(cls):
+    # response is optional in huggingface_hub 0.x but required in 1.x; a stub works on either.
+    return cls(
+        "401 Client Error. Repository Not Found for url: "
+        "https://huggingface.co/api/models/unsloth/Z-Image-Turbo-NVFP4",
+        response = types.SimpleNamespace(headers = {}, request = None),
+    )
+
+
+def _nvfp4_install_probe(
+    monkeypatch,
+    *,
+    listing = None,
+    refusal = None,
+    cached = False,
+):
+    """Record every FlashInfer install and every Hub listing an image load makes before its locks.
+
+    ``listing`` is the sibling list the Hub returns for the NVFP4 repo, ``refusal`` an exception it
+    raises instead (private / gated / unpublished), ``cached`` whether the checkpoint is on disk."""
+    import core.inference.diffusion as diffusion_mod
+    import core.inference.diffusion_prequant as prequant_mod
+    from core.inference import diffusion_nvfp4_install as inst
+
+    installs: list = []
+    listed: list = []
+
+    def _ensure(device, **kwargs):
+        installs.append((device, kwargs.get("local_files_only")))
+        return True, "installed flashinfer for NVFP4"
+
+    class _Api:
+        def model_info(
+            self,
+            repo_id,
+            files_metadata = False,
+            token = None,
+        ):
+            listed.append(repo_id)
+            if refusal is not None:
+                raise refusal
+            return _FakeInfo(list(listing or []))
+
+    monkeypatch.setattr(inst, "ensure_flashinfer_for_nvfp4", _ensure)
+    monkeypatch.setattr("huggingface_hub.HfApi", lambda *a, **k: _Api())
+    # Whether this install can open the checkpoint is covered in test_diffusion_prequant.py.
+    monkeypatch.setattr(
+        prequant_mod, "restricted_prequant_load_supported", lambda scheme = None, filename = None: True
+    )
+    monkeypatch.setattr(diffusion_mod, "prequant_checkpoint_cached", lambda *a, **k: cached)
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_target_for_ordinal",
+        lambda self, fam, ordinal: types.SimpleNamespace(device = "cuda", dtype = None, ordinal = 0),
+    )
+    monkeypatch.setattr(diffusion_mod, "apply_diffusion_device_ordinal", lambda target: None)
+    monkeypatch.setattr(diffusion_mod, "select_attention_backend", lambda *a, **k: None)
+
+    def _stop(self):
+        raise _StopAfterInstallGate()
+
+    monkeypatch.setattr(DiffusionBackend, "_reserve_teardown_locked", _stop)
+    return installs, listed
+
+
+def _load_to_the_install_gate(
+    repo_id = "Tongyi-MAI/Z-Image-Turbo",
+    family = "z-image",
+    **overrides,
+):
+    kwargs = dict(
+        model_kind = "pipeline",
+        family_override = family,
+        transformer_quant = "nvfp4",
+        _fetch_base = repo_id,
+    )
+    kwargs.update(overrides)
+    with pytest.raises(_StopAfterInstallGate):
+        DiffusionBackend().load_pipeline(repo_id, **kwargs)
+
+
+@pytest.mark.parametrize("error", ["RepositoryNotFoundError", "GatedRepoError"])
+def test_an_nvfp4_checkpoint_the_hub_refuses_installs_no_flashinfer(
+    fake_runtime, monkeypatch, error
+):
+    # A private / gated / unpublished NVFP4 repo: the load builds NVFP4 on the fly on torchao, which FlashInfer never
+    # serves, so the 1.2-1.8 GB wheel must not be installed for it.
+    import huggingface_hub.errors as hub_errors
+
+    installs, listed = _nvfp4_install_probe(
+        monkeypatch, refusal = _hub_refusal(getattr(hub_errors, error))
+    )
+    _load_to_the_install_gate()
+    assert installs == []
+    assert listed == ["unsloth/Z-Image-Turbo-NVFP4"]
+
+
+def test_an_nvfp4_repo_missing_the_checkpoint_installs_no_flashinfer(fake_runtime, monkeypatch):
+    installs, listed = _nvfp4_install_probe(monkeypatch, listing = [_FakeSibling("README.md", 10)])
+    _load_to_the_install_gate()
+    assert installs == []
+    assert listed == ["unsloth/Z-Image-Turbo-NVFP4"]
+
+
+def test_a_family_with_no_hosted_nvfp4_checkpoint_installs_no_flashinfer(fake_runtime, monkeypatch):
+    installs, listed = _nvfp4_install_probe(monkeypatch)
+    _load_to_the_install_gate("Qwen/Qwen-Image", family = "qwen-image")
+    assert installs == []
+    assert listed == [], "nothing hosted, so there is nothing to ask the Hub about"
+
+
+def test_a_gguf_nvfp4_load_whose_checkpoint_the_hub_refuses_installs_no_flashinfer(
+    fake_runtime, monkeypatch, tmp_path
+):
+    from huggingface_hub.errors import RepositoryNotFoundError
+
+    installs, listed = _nvfp4_install_probe(
+        monkeypatch, refusal = _hub_refusal(RepositoryNotFoundError)
+    )
+    (tmp_path / "model.gguf").write_bytes(b"weights")
+    with pytest.raises(_StopAfterInstallGate):
+        DiffusionBackend().load_pipeline(
+            str(tmp_path),
+            gguf_filename = "model.gguf",
+            base_repo = "Tongyi-MAI/Z-Image-Turbo",
+            family_override = "z-image",
+            transformer_quant = "nvfp4",
+            _fetch_base = "Tongyi-MAI/Z-Image-Turbo",
+        )
+    assert installs == []
+    assert listed == ["unsloth/Z-Image-Turbo-NVFP4"]
+
+
+def test_a_reachable_nvfp4_checkpoint_still_installs_flashinfer(fake_runtime, monkeypatch):
+    installs, listed = _nvfp4_install_probe(
+        monkeypatch, listing = [_FakeSibling("Z-Image-Turbo-NVFP4.safetensors", 6 * GB)]
+    )
+    _load_to_the_install_gate()
+    assert listed == ["unsloth/Z-Image-Turbo-NVFP4"]
+    assert installs == [("cuda", False)]
+
+
+def test_a_plan_that_settled_nvfp4_installs_without_asking_the_hub_again(fake_runtime, monkeypatch):
+    # The download plan only pins NVFP4 after listing the checkpoint (or finding it cached offline).
+    installs, listed = _nvfp4_install_probe(
+        monkeypatch, refusal = RuntimeError("no request expected")
+    )
+    _load_to_the_install_gate(transformer_quant = None, _pipeline_prequant_planned = "nvfp4")
+    assert listed == []
+    assert installs == [("cuda", False)]
+
+
+def test_an_nvfp4_lora_bake_installs_no_flashinfer(fake_runtime, monkeypatch):
+    # A LoRA bake needs the dense transformer, so the prequant (the only FlashInfer path) is skipped.
+    installs, listed = _nvfp4_install_probe(
+        monkeypatch, listing = [_FakeSibling("Z-Image-Turbo-NVFP4.safetensors", 6 * GB)]
+    )
+    _load_to_the_install_gate(loras = [("some/lora", 1.0)])
+    assert installs == []
+
+
+@pytest.mark.parametrize("cached", [False, True])
+def test_an_offline_nvfp4_load_asks_only_the_cache(fake_runtime, monkeypatch, cached):
+    installs, listed = _nvfp4_install_probe(
+        monkeypatch, refusal = RuntimeError("an offline load made a Hub request"), cached = cached
+    )
+    _load_to_the_install_gate(local_files_only = True)
+    assert listed == []
+    assert installs == ([("cuda", True)] if cached else [])

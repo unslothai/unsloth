@@ -9143,6 +9143,10 @@ def test_a_superseded_nvfp4_load_cannot_overwrite_the_install_reason(fake_runtim
         return outcome
 
     monkeypatch.setattr(inst, "ensure_flashinfer_for_nvfp4", _ensure)
+    # The hosted checkpoint is reachable, so both loads reach the install; no Hub request from a unit test.
+    monkeypatch.setattr(
+        VideoBackend, "_nvfp4_denoiser_checkpoint_will_load", lambda self, *a, **k: True
+    )
     inst.reset_install_state()
     backend = VideoBackend()
     kwargs = dict(model_kind = "pipeline", transformer_quant = "nvfp4")
@@ -10296,3 +10300,250 @@ def test_a_failed_replacement_keeps_the_resident_models_nvfp4_state(monkeypatch,
     backend._run_load(repo_id = "org/model", _load_token = 7)
 
     assert resets == ([] if resident else [True])
+
+
+# ── FlashInfer install gate: only hosted pre-quantised NVFP4 denoisers that will actually load buy the install ──────
+
+
+class _StopAfterInstallGate(Exception):
+    """Raised at the first step past the FlashInfer pre-install hop, so the gate is all these tests run."""
+
+
+class _Sibling:
+    def __init__(
+        self,
+        rfilename,
+        size = 1,
+    ):
+        self.rfilename = rfilename
+        self.size = size
+
+
+def _hub_refusal(cls, repo = "unsloth/Wan2.2-T2V-A14B-NVFP4"):
+    # response is optional in huggingface_hub 0.x but required in 1.x; a stub works on either.
+    return cls(
+        f"401 Client Error. Repository Not Found for url: https://huggingface.co/api/models/{repo}",
+        response = types.SimpleNamespace(headers = {}, request = None),
+    )
+
+
+def _video_install_probe(
+    monkeypatch,
+    *,
+    listing = None,
+    refusal = None,
+    cached = False,
+):
+    """Record every FlashInfer install and Hub listing a video load makes, stopping right after the hop."""
+    import core.inference.video as video_mod
+    from core.inference import diffusion_nvfp4_install as inst
+    from core.inference.diffusion import DiffusionBackend
+
+    installs: list = []
+    listed: list = []
+    dispatched: list = []
+
+    def _ensure(device, **kwargs):
+        installs.append((device, kwargs.get("local_files_only")))
+        return True, "installed flashinfer for NVFP4"
+
+    class _Api:
+        def __init__(self, *a, **k):
+            pass
+
+        def model_info(
+            self,
+            repo_id,
+            files_metadata = False,
+            token = None,
+        ):
+            listed.append(repo_id)
+            if refusal is not None:
+                raise refusal
+            return types.SimpleNamespace(siblings = [_Sibling(n) for n in (listing or [])])
+
+    def _stop(*a, **k):
+        raise _StopAfterInstallGate()
+
+    def _modular(self, **kwargs):
+        dispatched.append(kwargs.get("_nvfp4_install_outcome"))
+        raise _StopAfterInstallGate()
+
+    monkeypatch.setattr(inst, "ensure_flashinfer_for_nvfp4", _ensure)
+    monkeypatch.setattr("huggingface_hub.HfApi", _Api)
+    monkeypatch.setattr(
+        DiffusionBackend, "_hub_file_is_cached", staticmethod(lambda repo, name, *a, **k: cached)
+    )
+    monkeypatch.setattr(
+        VideoBackend,
+        "_device_target",
+        lambda self, ordinal = None: types.SimpleNamespace(device = "cuda", dtype = None, ordinal = 0),
+    )
+    monkeypatch.setattr(video_mod, "settled_snapshot_device_memory", _stop)
+    monkeypatch.setattr(VideoBackend, "_load_h3_modular_pipeline", _modular)
+    return installs, listed, dispatched
+
+
+def _video_load_to_the_install_gate(repo_id = "Wan-AI/Wan2.2-T2V-A14B-Diffusers", **overrides):
+    kwargs = dict(model_kind = "pipeline", transformer_quant = "nvfp4")
+    kwargs.update(overrides)
+    with pytest.raises(_StopAfterInstallGate):
+        VideoBackend().load_pipeline(repo_id, **kwargs)
+
+
+@pytest.mark.parametrize("error", ["RepositoryNotFoundError", "GatedRepoError"])
+@pytest.mark.parametrize(
+    "repo_id, hosted",
+    [
+        ("Wan-AI/Wan2.2-T2V-A14B-Diffusers", "unsloth/Wan2.2-T2V-A14B-NVFP4"),
+        ("Wan-AI/Wan2.2-TI2V-5B-Diffusers", "unsloth/Wan2.2-TI2V-5B-NVFP4"),
+    ],
+)
+def test_an_nvfp4_video_checkpoint_the_hub_refuses_installs_no_flashinfer(
+    fake_runtime, monkeypatch, error, repo_id, hosted
+):
+    # A private / gated / unpublished NVFP4 repo: the load quantises on the fly on torchao, which FlashInfer never
+    # serves. On Wan-5B the install used to fire even when the load was then refused on memory.
+    import huggingface_hub.errors as hub_errors
+
+    installs, listed, _ = _video_install_probe(
+        monkeypatch, refusal = _hub_refusal(getattr(hub_errors, error), hosted)
+    )
+    _video_load_to_the_install_gate(repo_id)
+    assert installs == []
+    assert listed == [hosted]
+
+
+def test_an_nvfp4_video_repo_missing_a_denoiser_installs_no_flashinfer(fake_runtime, monkeypatch):
+    # A14B needs BOTH denoisers; a repo holding only one means the load keeps its dense shards.
+    installs, listed, _ = _video_install_probe(monkeypatch, listing = ["Wan2.2-T2V-A14B-NVFP4.pt"])
+    _video_load_to_the_install_gate()
+    assert installs == []
+    assert listed == ["unsloth/Wan2.2-T2V-A14B-NVFP4"]
+
+
+def test_an_nvfp4_video_family_with_no_hosted_checkpoint_installs_no_flashinfer(
+    fake_runtime, monkeypatch
+):
+    import core.inference.video_denoiser_prequant as dq
+
+    installs, listed, _ = _video_install_probe(monkeypatch)
+    monkeypatch.setattr(dq, "denoiser_prequant_sources", lambda fam, scheme, base: None)
+    _video_load_to_the_install_gate()
+    assert installs == []
+    assert listed == []
+
+
+def test_a_reachable_nvfp4_video_checkpoint_still_installs_flashinfer(fake_runtime, monkeypatch):
+    installs, listed, _ = _video_install_probe(
+        monkeypatch,
+        listing = ["Wan2.2-T2V-A14B-NVFP4.pt", "Wan2.2-T2V-A14B-transformer_2-NVFP4.pt"],
+    )
+    _video_load_to_the_install_gate()
+    assert listed == ["unsloth/Wan2.2-T2V-A14B-NVFP4"]
+    assert installs == [("cuda", False)]
+
+
+def test_a_video_plan_that_settled_nvfp4_installs_without_asking_the_hub_again(
+    fake_runtime, monkeypatch
+):
+    installs, listed, _ = _video_install_probe(
+        monkeypatch, refusal = RuntimeError("no request expected")
+    )
+    _video_load_to_the_install_gate(transformer_quant = None, _video_auto_denoiser_planned = "nvfp4")
+    assert listed == []
+    assert installs == [("cuda", False)]
+
+
+def test_a_video_seed_the_plan_declined_installs_no_flashinfer(fake_runtime, monkeypatch):
+    # A declined seed is never re-taken by the load, so the denoiser is quantised on the fly on torchao.
+    from core.inference.video import DENOISER_SEED_DECLINED
+
+    installs, listed, _ = _video_install_probe(
+        monkeypatch,
+        listing = ["Wan2.2-T2V-A14B-NVFP4.pt", "Wan2.2-T2V-A14B-transformer_2-NVFP4.pt"],
+    )
+    _video_load_to_the_install_gate(_video_auto_denoiser_planned = DENOISER_SEED_DECLINED)
+    assert installs == []
+    assert listed == []
+
+
+@pytest.mark.parametrize("cached", [False, True])
+def test_an_offline_nvfp4_video_load_asks_only_the_cache(fake_runtime, monkeypatch, cached):
+    installs, listed, _ = _video_install_probe(
+        monkeypatch, refusal = RuntimeError("an offline load made a Hub request"), cached = cached
+    )
+    _video_load_to_the_install_gate(local_files_only = True)
+    assert listed == []
+    assert installs == ([("cuda", True)] if cached else [])
+
+
+def _stub_h3_nvfp4_checkpoint(monkeypatch):
+    """Register a hosted NVFP4 denoiser for MiniMax-H3 (none is published), so the modular path reaches the install
+    hop. Records the task each registry lookup is asked for."""
+    import core.inference.diffusion_prequant as prequant_mod
+    import core.inference.video as video_mod
+
+    tasks: list = []
+
+    def _available(
+        fam,
+        scheme,
+        task = None,
+        base_repo = None,
+    ):
+        tasks.append(task)
+        return scheme == "nvfp4"
+
+    def _resolve(
+        fam,
+        scheme,
+        *,
+        path_override = None,
+        base_repo = None,
+        task = None,
+    ):
+        return types.SimpleNamespace(
+            kind = "repo",
+            location = "unsloth/MiniMax-H3-NVFP4",
+            filename = f"MiniMax-H3-{task}-NVFP4.pt",
+            fallback_filenames = (),
+        )
+
+    monkeypatch.setattr(video_mod, "video_family_prequant_available", _available)
+    monkeypatch.setattr(prequant_mod, "resolve_prequant_source", _resolve)
+    diffusers = sys.modules["diffusers"]
+    monkeypatch.setattr(diffusers, "ModularPipeline", _FakeModularPipeline, raising = False)
+    fam = _detect_load_family("MiniMaxAI/MiniMax-H3", None, "minimax-h3")
+    monkeypatch.setattr(diffusers, fam.transformer_class, _FakeTransformer, raising = False)
+    return tasks
+
+
+def test_the_minimax_h3_modular_path_skips_the_install_for_a_refused_checkpoint(
+    fake_runtime, monkeypatch
+):
+    from huggingface_hub.errors import RepositoryNotFoundError
+
+    installs, listed, dispatched = _video_install_probe(
+        monkeypatch, refusal = _hub_refusal(RepositoryNotFoundError, "unsloth/MiniMax-H3-NVFP4")
+    )
+    tasks = _stub_h3_nvfp4_checkpoint(monkeypatch)
+    _video_load_to_the_install_gate("MiniMaxAI/MiniMax-H3", family_override = "minimax-h3")
+    assert installs == []
+    assert listed == ["unsloth/MiniMax-H3-NVFP4"]
+    assert dispatched == [None], "the modular load was handed an install outcome it never earned"
+    # No h3_task asks about the partition the modular load brings up: the family's default workflow.
+    assert "fl2va" in tasks
+
+
+def test_the_minimax_h3_modular_path_installs_for_a_reachable_checkpoint(fake_runtime, monkeypatch):
+    installs, listed, dispatched = _video_install_probe(
+        monkeypatch, listing = ["MiniMax-H3-ref2va-NVFP4.pt"]
+    )
+    _stub_h3_nvfp4_checkpoint(monkeypatch)
+    _video_load_to_the_install_gate(
+        "MiniMaxAI/MiniMax-H3", family_override = "minimax-h3", h3_task = "ref2va"
+    )
+    assert listed == ["unsloth/MiniMax-H3-NVFP4"]
+    assert installs == [("cuda", False)]
+    assert dispatched == [(True, "installed flashinfer for NVFP4")]

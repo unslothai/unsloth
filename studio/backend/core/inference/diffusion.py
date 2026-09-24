@@ -3256,6 +3256,45 @@ class DiffusionBackend:
             )
         return None
 
+    def _nvfp4_checkpoint_will_load(
+        self,
+        fam: Any,
+        base: Optional[str],
+        path_override: Optional[str],
+        hf_token: Optional[str],
+        *,
+        local_files_only: bool = False,
+        loras: Any = None,
+    ) -> bool:
+        """Whether an NVFP4 load will open a pre-quantised checkpoint, the only path FlashInfer serves
+        (``load_prequantized_transformer``). The on-the-fly build is torchao either way, so no hosted
+        checkpoint, a repo the Hub refuses (private, gated, unpublished) or a LoRA bake, which skips
+        the prequant, must not buy the multi-GB install. A local override counts; a cached checkpoint
+        counts; offline asks the cache only. Unanswerable answers no: the load still runs on torchao."""
+        try:
+            if _has_active_lora(loras):
+                return False
+            source = usable_prequant_source(
+                fam, TQ_NVFP4, path_override = path_override, base_repo = base
+            )
+            if source is None:
+                return False
+            if getattr(source, "kind", None) != "repo":
+                return True
+            if prequant_checkpoint_cached(source, cache_dir = hub_cache_dir()):
+                return True
+            if local_files_only:
+                return False
+            return self._prequant_source_hub_entry(source, hf_token, scheme = TQ_NVFP4) is not None
+        except Exception as exc:  # noqa: BLE001 -- a refused or unreachable listing is no checkpoint
+            logger.info(
+                "diffusion.nvfp4_install: no reachable NVFP4 checkpoint for %s, so the load runs on "
+                "torchao and FlashInfer is not installed (%s)",
+                base,
+                type(exc).__name__,
+            )
+            return False
+
     @staticmethod
     def _estimate_download_bytes(
         repo_id: str,
@@ -4338,9 +4377,27 @@ class DiffusionBackend:
         # Same hop for FlashInfer when this load asked for NVFP4: without it the flashinfer backend falls back to
         # torchao. Never raises; the backend is still chosen by select_nvfp4_backend under the locks.
         # Only for kinds the dense quant path can reach: a single-file load keeps its stored precision.
-        if dense_quant_supported_kind(kind) and TQ_NVFP4 in (
-            normalize_transformer_quant(transformer_quant),
-            _pipeline_prequant_planned,
+        # Only when a pre-quantised checkpoint will load: FlashInfer serves nothing else, and the on-the-fly build is
+        # torchao, so a checkpoint this user cannot fetch must not buy the install. A plan that settled NVFP4 already
+        # listed the checkpoint on the Hub (or found it cached offline); otherwise ask.
+        if (
+            dense_quant_supported_kind(kind)
+            and TQ_NVFP4
+            in (
+                normalize_transformer_quant(transformer_quant),
+                _pipeline_prequant_planned,
+            )
+            and (
+                _pipeline_prequant_planned == TQ_NVFP4
+                or self._nvfp4_checkpoint_will_load(
+                    fam,
+                    base,
+                    transformer_prequant_path,
+                    hf_token,
+                    local_files_only = local_files_only,
+                    loras = loras,
+                )
+            )
         ):
             from .diffusion_nvfp4_install import ensure_flashinfer_for_nvfp4
 
