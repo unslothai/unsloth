@@ -292,6 +292,9 @@ class StaticStepSkip:
         # Nothing after the last skipped step is ever reused, so the tail stores nothing.
         self.last_skip = skips[-1] if skips else -1
         self.step_signal = bool(step_signal)
+        # A generation is running even when its schedule is empty (too few steps): its calls count as computed,
+        # so the status route never reports the previous generation's skips for it.
+        self.counting = steps is not None
         self.steps_ended = 0
         self.ordinal = 0
         self.counters: dict = {}
@@ -328,6 +331,9 @@ class StaticStepSkip:
 
     def __call__(self, *args, **kwargs):
         if not self.plan:
+            if self.counting:
+                self.stats["calls"] += 1
+                self.stats["computed"] += 1
             return self._forward(args, kwargs)
         if self.context is not None:
             key = self.context
