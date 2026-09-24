@@ -17,7 +17,7 @@ import {
 import { useT } from "@/i18n";
 import { MediaPageLink } from "@/components/media-page-link";
 import {
-  LibraryIcon,
+  LibrariesIcon,
 } from "@hugeicons/core-free-icons";
 import {
   ChevronLeftIcon,
@@ -221,7 +221,7 @@ export function StudioPage(): ReactElement {
                     libraryTab="models"
                     label={t("shell.navigation.library")}
                     tooltip={t("studio.goToLibrary")}
-                    icon={LibraryIcon}
+                    icon={LibrariesIcon}
                   />
                 </div>
               </div>

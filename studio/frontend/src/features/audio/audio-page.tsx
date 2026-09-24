@@ -12,7 +12,7 @@ import {
   Copy01Icon,
   Delete02Icon,
   Download01Icon,
-  LibraryIcon,
+  LibrariesIcon,
   Mic01Icon,
   MoreVerticalIcon,
   SparklesIcon,
@@ -2664,7 +2664,7 @@ export function AudioPage({
                 to="/library"
                 libraryTab="audio"
                 label="Library"
-                icon={LibraryIcon}
+                icon={LibrariesIcon}
                 labelClassName="hidden @[50rem]:inline"
                 arrowClassName="hidden @[50rem]:block"
               />

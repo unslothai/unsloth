@@ -98,7 +98,7 @@ import {
   Globe02Icon,
   HelpCircleIcon,
   Image03Icon,
-  LibraryIcon,
+  LibrariesIcon,
   Logout05Icon,
   MoreHorizontalIcon,
   MoreVerticalIcon,
@@ -2226,7 +2226,7 @@ export function AppSidebar() {
       ),
     },
     library: {
-      icon: LibraryIcon,
+      icon: LibrariesIcon,
       label: t("shell.navigation.library"),
       active: pathname === "/library",
       onClick: () => {
