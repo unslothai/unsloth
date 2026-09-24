@@ -588,3 +588,38 @@ def test_npu_status_hides_the_owner_runtime_from_managed_accounts(tmp_path, monk
     assert hidden["supported"] is False and hidden["loaded_model"] is None
     # Same shape as the real status, so a client reads it the same way.
     assert hidden.keys() == real.keys()
+
+
+def test_an_unload_naming_another_npu_model_keeps_the_resident(monkeypatch):
+    from models.inference import UnloadRequest
+    from routes import inference as routes
+
+    class _Npu:
+        is_loaded = True
+        loaded_model = nb.NpuModel(
+            id = "gemma3-4b-FLM",
+            checkpoint = "gemma3:4b",
+            size_gb = 4.5,
+            downloaded = True,
+            labels = ("vision", "chat"),
+            max_context_length = 131072,
+        )
+        unloads = 0
+
+        def cancel_load(self, model_id):
+            return False
+
+        def unload(self):
+            self.unloads += 1
+
+    npu = _Npu()
+    monkeypatch.setattr(nb, "peek_npu_backend", lambda: npu)
+
+    def _unload(model_path):
+        return asyncio.run(routes._unload_model_impl(UnloadRequest(model_path = model_path), "owner"))
+
+    # A stale tab ejecting the model this one replaced.
+    _unload("lemonade:qwen3-0.6b-FLM")
+    assert npu.unloads == 0
+    _unload("lemonade:gemma3-4b-FLM")
+    assert npu.unloads == 1

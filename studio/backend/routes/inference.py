@@ -18512,14 +18512,14 @@ async def _unload_model_impl(request: UnloadRequest, current_subject: str):
                 # Only the owner loads NPU models, so no managed account shares or stops one.
                 raise HTTPException(status_code = 404, detail = "Model not found")
             npu = peek_npu_backend()
+            requested_id = request.model_path[len(MODEL_PREFIX) :].strip()
             # "Stop loading": /load holds the lifecycle gate until /v1/load returns.
-            if npu is not None and await asyncio.to_thread(
-                npu.cancel_load, request.model_path[len(MODEL_PREFIX) :]
-            ):
+            if npu is not None and await asyncio.to_thread(npu.cancel_load, requested_id):
                 logger.info(f"Cancelled in-flight NPU load: {request.model_path}")
                 return UnloadResponse(status = "unloaded", model = request.model_path)
             async with inference_lifecycle_gate():
-                if npu is not None and npu.is_loaded:
+                # Only the named model: another tab may have replaced it since.
+                if npu is not None and npu.is_loaded and npu.loaded_model.id == requested_id:
                     # Same order as the llama-server eject below: stop the chats, let them
                     # unwind, then take the model away.
                     _raise_or_cancel_active_generations(
