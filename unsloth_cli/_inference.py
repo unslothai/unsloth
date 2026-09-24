@@ -939,7 +939,8 @@ class HttpChatBackend:
             return None
         loaded = str(loaded)
         if os.path.exists(model):
-            same = model == loaded
+            # Filesystem-aware, as the server's _same_loaded_identifier compares local paths.
+            same = os.path.normcase(model) == os.path.normcase(loaded)
         else:
             # The server loads an ownerless id as unsloth/<id> (ModelConfig.from_identifier).
             requested = model if "/" in model else f"unsloth/{model}"

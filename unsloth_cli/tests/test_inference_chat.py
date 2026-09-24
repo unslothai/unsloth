@@ -1446,6 +1446,35 @@ def test_http_backend_load_keeps_the_resident_quant(monkeypatch, model, status, 
     assert loads[0].get("gguf_variant") == expected
 
 
+def test_http_backend_load_keeps_the_resident_quant_across_windows_path_spellings(monkeypatch):
+    import ntpath
+
+    import unsloth_cli._inference as inference
+
+    backend = HttpChatBackend("http://localhost:8888", "token")
+    resident = {**_RESIDENT_Q8, "active_model": "Foo", "model_identifier": "C:\\Models\\Foo"}
+    loads = []
+
+    def fake_request(
+        method,
+        path,
+        payload = None,
+        timeout = None,
+    ):
+        if path == "/api/inference/status":
+            return _FakeStatusResponse(resident)
+        loads.append(payload)
+        return _FakeLoadResponse()
+
+    monkeypatch.setattr(backend, "_request", fake_request)
+    monkeypatch.setattr(inference.os.path, "exists", lambda p: True)
+    monkeypatch.setattr(inference.os.path, "normcase", ntpath.normcase)
+
+    backend.ensure_loaded("c:/models/foo", hf_token = None, max_seq_length = 4096, load_in_4bit = None)
+
+    assert loads[0].get("gguf_variant") == "Q8_0"
+
+
 # ── A load slower than the proxy timer (see routes/inference.py _tunnel_safe_json) ──
 
 
