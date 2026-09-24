@@ -38,6 +38,21 @@ ARM_SEARCH_HITS = """() => {
 }"""
 
 
+# Every [role=dialog] still in the DOM, for the failure report.
+DIALOG_STATE = """() => [...document.querySelectorAll('[role=dialog]')].map(el => {
+    const style = getComputedStyle(el);
+    return {
+        state: el.getAttribute('data-state'),
+        slot: el.getAttribute('data-slot'),
+        display: style.display,
+        opacity: style.opacity,
+        animationName: style.animationName,
+        animations: el.getAnimations().map(a => ({ name: a.animationName ?? null, playState: a.playState, currentTime: a.currentTime })),
+        text: el.innerText.slice(0, 120),
+    };
+})"""
+
+
 def search_to(page, target):
     """Pick `target` from the settings search, with the hit recorder armed before the click."""
     page.evaluate(ARM_SEARCH_HITS)
@@ -1072,6 +1087,12 @@ def main():
                 result.update(run(page))
             except Exception as error:
                 result["error"] = str(error)
+                # A dialog that outlives close() leaves a blank screenshot behind, so record what
+                # is still mounted: its state and whether an exit animation is holding it.
+                try:
+                    result["dialogs"] = page.evaluate(DIALOG_STATE)
+                except Exception as state_error:
+                    result["dialogs"] = f"unavailable: {state_error}"
                 page.screenshot(path = str(output.with_suffix(".png")))
                 raise
             finally:
