@@ -149,3 +149,24 @@ def test_qwen_image_text_stream_is_armed():
     for name in ("L['encoder_hidden_states']", "L['encoder_hidden_states_mask']", "L['image_rotary_emb'][1]"):
         assert name in seen
     assert "L['hidden_states']" not in seen
+
+
+def test_qwen_image_hook_paths_match_on_regex_torch():
+    # FBCache (on by default for Qwen-Image) calls the blocks through diffusers hooks, so the inputs arrive under
+    # ``L['kwargs']`` or a resumed frame's stack; the image stream and the image RoPE half stay static.
+    builder = pytest.importorskip("torch._dynamo.variables.builder")
+    is_dynamic = getattr(builder, "is_dynamic_source", None)
+    if is_dynamic is None:
+        pytest.skip("regex allowlist needs torch 2.8+")
+    cfg = _cfg()
+    before = cfg.dynamic_sources
+    try:
+        cfg.dynamic_sources = ",".join(dt.sources_for(QwenImageTransformer2DModel()))
+        for name in ("L['kwargs']['encoder_hidden_states']", "___stack0[1]['encoder_hidden_states']",
+                     "L['kwargs']['encoder_hidden_states_mask']", "L['kwargs']['image_rotary_emb'][1]"):
+            assert is_dynamic(name), name
+        for name in ("L['hidden_states']", "L['kwargs']['hidden_states']", "L['kwargs']['image_rotary_emb'][0]",
+                     "L['temb']"):
+            assert not is_dynamic(name), name
+    finally:
+        cfg.dynamic_sources = before

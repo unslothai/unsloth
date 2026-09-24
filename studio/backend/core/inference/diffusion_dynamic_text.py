@@ -38,11 +38,16 @@ _QWEN_IMAGE_21_SOURCES: tuple[str, ...] = (
     r"L\['segments'\]\[[1-9]\d*\]\[0\]$",
 )
 
-# QwenImageTransformerBlock.forward (Qwen-Image, 2512, Edit): the text stream and its RoPE half.
+# QwenImageTransformerBlock.forward (Qwen-Image, 2512, Edit): the text stream and its RoPE half. A step cache
+# (FBCache, on by default for this family) calls the blocks through diffusers hooks, where the same inputs arrive as
+# ``L['kwargs'][...]`` or, after a graph break, ``___stack0[1][...]``; the suffix patterns cover those (torch 2.8+).
 _QWEN_IMAGE_SOURCES: tuple[str, ...] = (
     "L['encoder_hidden_states']",
     "L['encoder_hidden_states_mask']",
     "L['image_rotary_emb'][1]",
+    r".*\['encoder_hidden_states'\]$",
+    r".*\['encoder_hidden_states_mask'\]$",
+    r".*\['image_rotary_emb'\]\[1\]$",
 )
 
 # Transformer class name -> dynamic sources of its repeated block.
