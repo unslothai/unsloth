@@ -82,7 +82,14 @@ def _load_guard(monkeypatch):
         "PeftModel": _FakePeftModel,
         "PeftModelForCausalLM": _FakePeftModelForCausalLM,
     }
-    exec(compile(_function_source("_assert_export_target_is_not_base_with_lora_layers"), str(_SAVE_PY), "exec"), namespace)
+    exec(
+        compile(
+            _function_source("_assert_export_target_is_not_base_with_lora_layers"),
+            str(_SAVE_PY),
+            "exec",
+        ),
+        namespace,
+    )
     return namespace["_assert_export_target_is_not_base_with_lora_layers"]
 
 
