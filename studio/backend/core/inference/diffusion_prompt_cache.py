@@ -252,13 +252,16 @@ def install(
     MiniMax-H3 hook. No-op (False) when disabled or when the pipe has nothing to cache.
 
     ``lora_owner`` is the pipe that records the attached adapters, for a workflow pipe built with
-    ``from_pipe`` around the loaded one (same text encoders, adapters tracked on the original)."""
+    ``from_pipe`` around the loaded one (same text encoders, adapters tracked on the original). Such a
+    pipe shares the owner's store, so one load stays within one budget."""
     if not enabled() or pipe is None:
         return False
     if cache_for(pipe) is not None:
         return True
+    cache = cache_for(lora_owner) if lora_owner is not None else None
     try:
-        cache = PromptCache()
+        if cache is None:
+            cache = PromptCache()
     except Exception as exc:  # noqa: BLE001 - optimisation only
         _warn(logger, "setup", exc)
         return False

@@ -174,6 +174,21 @@ def test_lora_owner_is_read_for_workflow_pipes():
     assert aux.calls == 2
 
 
+def test_workflow_pipes_share_the_owner_budget():
+    # One load, one bound: img2img / inpaint / ControlNet pipes store into the base pipe's cache.
+    owner = _EncodePipe()
+    aux = _EncodePipe()
+    assert prompt_cache.install(owner, identity = {"family": "f"})
+    assert prompt_cache.install(
+        aux, identity = {"family": "f", "workflow": "Img2Img"}, lora_owner = owner
+    )
+    assert prompt_cache.cache_for(aux) is prompt_cache.cache_for(owner)
+    owner.encode_prompt("a cat")
+    aux.encode_prompt("a cat")  # a different workflow is a different key, never the base entry
+    assert owner.calls == 1 and aux.calls == 1
+    assert len(prompt_cache.cache_for(owner)) == 2
+
+
 def test_release_and_disable(monkeypatch):
     pipe = _EncodePipe()
     prompt_cache.install(pipe)
