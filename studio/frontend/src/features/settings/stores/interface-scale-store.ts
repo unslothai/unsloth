@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { isTauri } from "@/lib/api-base";
+import { setLayoutScale } from "@/lib/layout-scale";
 import { create } from "zustand";
 import {
   type StateStorage,
@@ -94,8 +95,30 @@ let appliedInterfaceScale: number | null = null;
 let requestedInterfaceScale: number = INTERFACE_SCALE_RANGE.default;
 let interfaceScaleApplicationQueue = Promise.resolve();
 
+/** Browser-only multiplier on --ui-font-scale; spacing and icons follow. */
+export const INTERFACE_SCALE_VAR = "--ui-interface-scale";
+
+/**
+ * The browser scales through the UI tokens, not CSS `zoom`: root zoom inflates
+ * viewport units (a 100dvh shell overflows at 125%).
+ */
+function applyWebInterfaceScale(scale: number): void {
+  if (typeof document === "undefined") return;
+  const zoom = interfaceScaleToZoom(scale);
+  setLayoutScale(zoom);
+  const style = document.documentElement.style;
+  if (zoom === 1) style.removeProperty(INTERFACE_SCALE_VAR);
+  else style.setProperty(INTERFACE_SCALE_VAR, String(zoom));
+}
+
+/** Token multiplier: the scale in the browser, 1 on desktop (webview zoom). */
+export function webInterfaceScaleFactor(scale: number): number {
+  return isTauri ? 1 : interfaceScaleToZoom(scale);
+}
+
 export function applyInterfaceScale(scale: number): Promise<void> {
   if (!isTauri) {
+    applyWebInterfaceScale(scale);
     return Promise.resolve();
   }
   requestedInterfaceScale = sanitizeInterfaceScale(scale);

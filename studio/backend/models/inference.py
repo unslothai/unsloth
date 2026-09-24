@@ -56,6 +56,9 @@ class LoadRequest(BaseModel):
 
     model_path: str = Field(..., description = "Model identifier or local path")
     _gguf_companion_roots: tuple[str, ...] = PrivateAttr(default = ())
+    # `()` is both the default and auto-switch's deliberate "do not widen", so only this
+    # marker separates unset from explicitly empty.
+    _gguf_companion_roots_set: bool = PrivateAttr(default = False)
     load_request_id: Optional[str] = Field(
         None,
         min_length = 1,
@@ -544,6 +547,17 @@ class ValidateModelRequest(BaseModel):
             "for VRAM. -1 (Auto) keeps the previous behaviour for callers that omit it."
         ),
     )
+    tensor_split: Optional[List[float]] = Field(
+        None,
+        description = (
+            "Per-GPU share (--tensor-split) intended for the follow-up load. Manual "
+            "mode promotes an explicit -ts from llama_extra_args into this field "
+            "before stripping the raw flag, so the preflight strips exactly the "
+            "tokens /load strips and judges the command /load will run (#11330). "
+            "No sizing here reads the ratio itself: _guard_chat_load_against_training "
+            "and _estimate_gguf_required_gb budget per device, not per share."
+        ),
+    )
     n_parallel: Optional[int] = Field(
         None,
         ge = PARALLEL_MIN,
@@ -632,6 +646,10 @@ class ValidateModelRequest(BaseModel):
     _no_booleans = field_validator(
         "n_batch", "n_ubatch", "ctx_checkpoints", "reasoning_budget", mode = "before"
     )(LoadRequest._no_booleans.__func__)
+
+    _reject_degenerate_tensor_split = field_validator("tensor_split")(
+        LoadRequest._reject_degenerate_tensor_split.__func__
+    )
 
 
 class TransformersUpgradeInfo(BaseModel):
@@ -2031,7 +2049,11 @@ def resolve_thinking_onto_enable_thinking(request):
     when both are given. Shared with counting, which must resolve the reasoning preamble exactly as
     the completion does."""
     if request.thinking is not None and request.enable_thinking is None:
-        request.enable_thinking = request.thinking.type == "enabled"
+        # Derived, not an explicit x-unsloth override: out of model_fields_set so route
+        # precedence still ranks it below the nested controls. Also covers an explicit
+        # null, which pydantic records as set.
+        object.__setattr__(request, "enable_thinking", request.thinking.type == "enabled")
+        request.model_fields_set.discard("enable_thinking")
     return request
 
 
@@ -2418,6 +2440,7 @@ class ChatCompletionRequest(BaseModel):
         None,
         description = "[x-unsloth] Saved provider config ID. Its stored key is used when encrypted_api_key is omitted.",
     )
+    provider_api_type: Literal["chat_completions", "responses"] = "chat_completions"
     provider_type: Optional[str] = Field(
         None,
         description = "[x-unsloth] Provider type (e.g. 'openai', 'mistral'). Used if provider_id is not set.",
@@ -2490,7 +2513,7 @@ class ChatCompletionRequest(BaseModel):
             "header. The upstream floor is 50k; `_stream_anthropic` clamps "
             "lower values up.\n"
             "  - OpenAI cloud (api.openai.com) and Azure OpenAI Foundry "
-            "(*.openai.azure.com): attaches "
+            "(*.openai.azure.com, *.services.ai.azure.com): attaches "
             "`context_management:[{type:'compaction', compact_threshold:N}]` "
             "to /v1/responses. Effective floor is around 200k (OpenAI's "
             "canonical example); values below it surface "
@@ -2817,6 +2840,14 @@ class ToolConfirmRequest(BaseModel):
     decision: Literal["allow", "deny"] = "deny"
 
 
+class ToolApprovalStatusRequest(BaseModel):
+    """Ask whether one approval is still waiting. Takes the id rather than listing them, so a
+    caller can only ask about an approval it already holds and cannot enumerate anyone else's."""
+
+    session_id: Optional[str] = None
+    approval_id: Optional[str] = None
+
+
 class OpenAIContainerRequest(BaseModel):
     """Shared body for the OpenAI container endpoints (list / create / delete).
 
@@ -3086,8 +3117,8 @@ class ResponsesCustomToolCallOutputInputItem(BaseModel):
 class ResponsesUnknownInputItem(BaseModel):
     """Catch-all for unmodelled Responses input item types.
 
-    Covers ``reasoning`` items and future types. Dropped during normalisation
-    (GGUFs can't consume them), but kept in the union so unrelated turns don't 422.
+    Covers ``reasoning`` items and future types, so unrelated turns don't 422.
+    Normalisation replays reasoning text and drops every other unknown item.
     """
 
     type: str
@@ -3755,9 +3786,14 @@ class DiffusionLoadRequest(BaseModel):
         "default (also regional torch.compile where eligible), "
         "max (also TF32 + fused QKV).",
     )
-    text_encoder_quant: Optional[Literal["fp8", "fp8_dynamic", "int8", "nvfp4"]] = Field(
+    text_encoder_quant: Optional[
+        Literal["auto", "none", "off", "fp8", "fp8_dynamic", "int8", "nvfp4"]
+    ] = Field(
         None,
-        description = "Quantise the companion text encoder(s): fp8 (layerwise cast, ~2x smaller, "
+        description = "Quantise the companion text encoder(s). Unset or 'auto' lets the family "
+        "choose (Qwen-Image-2.1 takes its hosted pre-cast fp8 encoder, 8.75 GiB against 16.33 "
+        "dense); 'none'/'off' pins the released bf16 encoder. Explicit: fp8 (layerwise cast, "
+        "~2x smaller, "
         "CUDA cc>=8.9), fp8_dynamic (torchao compute fp8 on the tensor cores, ~2x + faster, "
         "cc>=8.9), int8 (torchao compute int8 with per-family keep-bf16 layers; falls back to "
         "fp8 where no schedule exists; cc>=8.0), or nvfp4 (~4x smaller, Blackwell sm_100+). A "
@@ -3946,6 +3982,27 @@ class ControlNetSpec(BaseModel):
         return self
 
 
+class LocalizedEditSpec(BaseModel):
+    """A localized edit for the unified-edit workflow (Qwen-Image-2.1). It guides a generative edit;
+    unlike inpainting it does not keep the pixels outside the region."""
+
+    mode: Literal["annotate", "paint", "mask"] = Field(
+        ...,
+        description = "annotate: `image` is an RGBA layer of marks composited over the source. "
+        "paint: `image` is a mask whose white area is painted white onto the source. mask: `image` "
+        "is a white-on-black mask sent as Image 2, right after the source.",
+    )
+    image: str = Field(
+        ...,
+        max_length = 32 * 1024 * 1024,
+        description = "Base64/data-URL layer at the source image's geometry",
+    )
+
+
+# All images of one request, base64: ten maximal uploads would otherwise buffer ~320 MiB.
+_MAX_CONDITION_PAYLOAD = 128 * 1024 * 1024
+
+
 class DiffusionGenerateRequest(BaseModel):
     """Request to generate one image from the loaded diffusion model."""
 
@@ -3953,9 +4010,18 @@ class DiffusionGenerateRequest(BaseModel):
     negative_prompt: Optional[str] = Field(
         None, description = "What to avoid (if the model supports it)"
     )
-    width: int = Field(1024, ge = 256, le = 2048, description = "Image width in pixels (multiple of 16)")
+    # Transport ceiling = the largest 2K preset side; the loaded family enforces its own bounds and grid.
+    width: int = Field(
+        1024,
+        ge = 256,
+        le = 2752,
+        description = "Image width in pixels (multiple of 16; the loaded model may require more)",
+    )
     height: int = Field(
-        1024, ge = 256, le = 2048, description = "Image height in pixels (multiple of 16)"
+        1024,
+        ge = 256,
+        le = 2752,
+        description = "Image height in pixels (multiple of 16; the loaded model may require more)",
     )
     steps: int = Field(9, ge = 1, le = 100, description = "Number of denoising steps")
     guidance: float = Field(0.0, ge = 0.0, le = 20.0, description = "Classifier-free guidance scale")
@@ -4043,9 +4109,28 @@ class DiffusionGenerateRequest(BaseModel):
     )
     reference_images: Optional[list[str]] = Field(
         None,
-        max_length = 3,
-        description = "Additional reference images (base64/data-URL) for the FLUX.2 reference "
-        "workflow, combined with init_image. Up to 3; ignored by other workflows.",
+        max_length = 9,
+        description = "Additional images (base64/data-URL) for the reference and edit workflows, "
+        "after init_image and in this order. The loaded family bounds the total including "
+        "init_image (FLUX.2: 4, Qwen-Image-2.1: 10); more is refused, never truncated.",
+    )
+    workflow: Optional[Literal["edit", "reference"]] = Field(
+        None,
+        description = "Explicit image-conditioned workflow. edit: follow the prompt as an "
+        "instruction over init_image (and reference_images); reference: generate a new image "
+        "guided by them. Omitted keeps the workflow implied by the other fields.",
+    )
+    reference_resolution: Optional[int] = Field(
+        None,
+        ge = 256,
+        le = 2048,
+        description = "Resolution each condition image is resized to (by area) before encoding, "
+        "for families that expose it (Qwen-Image-2.1: 512, 1024 or 2048; default 1024). "
+        "Separate from the output size.",
+    )
+    localized_edit: Optional[LocalizedEditSpec] = Field(
+        None,
+        description = "Localized edit layer for the edit workflow on a unified-edit model.",
     )
     loras: Optional[list[LoraSpec]] = Field(
         None,
@@ -4084,6 +4169,17 @@ class DiffusionGenerateRequest(BaseModel):
                 if len(item) > 32 * 1024 * 1024:
                     raise ValueError("each reference image must be at most 32 MiB (base64)")
         return value
+
+    @model_validator(mode = "after")
+    def _bounded_condition_payload(self) -> "DiffusionGenerateRequest":
+        total = len(self.init_image or "") + sum(len(r) for r in self.reference_images or [])
+        if self.localized_edit is not None:
+            total += len(self.localized_edit.image)
+        if total > _MAX_CONDITION_PAYLOAD:
+            raise ValueError(
+                "the input images together must be at most 128 MiB (base64); use smaller images"
+            )
+        return self
 
     @field_validator("width", "height")
     @classmethod
@@ -4183,12 +4279,24 @@ class GalleryImage(BaseModel):
         None, description = "ControlNet guidance interval, formatted as 'start:end'"
     )
     reference_image_count: Optional[int] = Field(
-        None, description = "How many reference images the reference workflow used"
+        None,
+        description = "How many ADDITIONAL images (reference_images, beyond the source) the "
+        "reference or edit workflow used",
+    )
+    reference_resolution: Optional[int] = Field(
+        None, description = "Condition-image preprocessing resolution, when the model has one"
+    )
+    localized_edit: Optional[str] = Field(
+        None, description = "Localized edit convention used: annotate, paint or mask"
     )
     created_at: float = Field(..., description = "Creation time (epoch seconds)")
     # Library state, not recipe: stored beside the PNG, so older files simply read as unset.
     pinned: bool = Field(False, description = "Pinned to the front of the gallery")
     archived: bool = Field(False, description = "Moved to the archived shelf, hidden from the strip")
+    order_at: Optional[float] = Field(
+        None,
+        description = "Unpinned sort key (epoch-second scale): the manual key once dragged, else the file mtime",
+    )
 
 
 class GalleryFlagsPatch(BaseModel):
@@ -4196,6 +4304,27 @@ class GalleryFlagsPatch(BaseModel):
 
     pinned: Optional[bool] = Field(None, description = "Pin (True) or unpin (False) the item")
     archived: Optional[bool] = Field(None, description = "Archive (True) or restore (False) the item")
+
+
+class GalleryMoveRequest(BaseModel):
+    """Drag one gallery item to a new place on the active shelf."""
+
+    after_id: Optional[str] = Field(
+        None, description = "Id the item now follows, as displayed; null moves it to the front"
+    )
+
+
+class GalleryProjectRequest(BaseModel):
+    """Copy one gallery item into a chat project's folder."""
+
+    project_id: str = Field(..., description = "Chat project to add the item to")
+
+
+class GalleryProjectResponse(BaseModel):
+    path: str = Field(..., description = "Where the copy now lives, inside the project's folder")
+    already: bool = Field(
+        False, description = "The project already held this item; nothing was copied"
+    )
 
 
 class DiffusionGenerateResponse(BaseModel):
@@ -4370,6 +4499,13 @@ class DiffusionStatusResponse(BaseModel):
         default_factory = list,
         description = "Image workflows the loaded family supports (drives UI tab gating): "
         "txt2img, img2img, inpaint. Empty when nothing is loaded or on the native engine.",
+    )
+    conditioning: Optional[Dict[str, Any]] = Field(
+        None,
+        description = "Image-conditioning limits of the loaded model on the active engine: "
+        "max_condition_images (total, including the source), alpha, dimension_multiple, "
+        "max_output_side, max_output_pixels, reference_resolutions and localized_edit_modes. "
+        "Null when nothing is loaded.",
     )
     engine: Optional[str] = Field(None, description = "Active diffusion engine: diffusers | sd_cpp")
     native_mode: Optional[str] = Field(
@@ -4562,20 +4698,28 @@ class AudioGalleryItem(BaseModel):
     sample_rate: int
     duration_s: float
     created_at: str
+    pinned: bool = Field(False, description = "Pinned to the top of history")
     archived: bool = Field(False, description = "Moved to the archived shelf, hidden from history")
+    order_at: Optional[float] = Field(
+        None,
+        description = "Unpinned sort key (epoch-second scale): the manual key once dragged, else the file mtime",
+    )
 
 
 class AudioGalleryFlagsPatch(BaseModel):
+    pinned: Optional[bool] = Field(None, description = "Pin (True) or unpin (False) the clip")
     archived: Optional[bool] = Field(None, description = "Archive (True) or restore (False) the clip")
 
 
 class AudioGalleryListResponse(BaseModel):
-    """A newest-first window of the audio gallery for infinite scroll."""
+    """A window of the audio gallery for infinite scroll: pinned first, then newest first."""
 
     audio: List[AudioGalleryItem] = Field(default_factory = list)
     has_more: bool = False
+    # Cursor: the last clip's order key (mtime unless dragged), id, and pin rank (None if unpinned).
     next_before_mtime: Optional[float] = None
     next_before_id: Optional[str] = None
+    next_before_pin: Optional[float] = None
 
 
 class VideoJobCreateRequest(BaseModel):
@@ -5016,6 +5160,10 @@ class GalleryVideo(BaseModel):
     # Library state, not recipe: stored beside the clip, so older sidecars simply read as unset.
     pinned: bool = Field(False, description = "Pinned to the front of the gallery")
     archived: bool = Field(False, description = "Moved to the archived shelf, hidden from the strip")
+    order_at: Optional[float] = Field(
+        None,
+        description = "Unpinned sort key (epoch-second scale): the manual key once dragged, else the file mtime",
+    )
 
 
 class VideoGenerateResponse(BaseModel):

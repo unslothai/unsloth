@@ -144,6 +144,7 @@ import {
   codexLocalToolRoundId,
   codexReasoningForToolCalls,
   readCodexReasoning,
+  readOpenAIResponsesReasoning,
   shouldReplayAssistantReasoning,
   startsNewCodexToolRound,
   type CodexReasoningLedger,
@@ -185,6 +186,7 @@ import {
   getGroundedExternalMaxOutputTokens,
   getExternalMinOutputTokens,
   getExternalReasoningCapabilities,
+  providerSupportsPreserveThinking,
   getProviderCapabilities,
   isGeminiCustomOpenAICompatBase,
   providerHostsCodeExecution,
@@ -360,6 +362,7 @@ import {
   followChatGenerationRun,
   supportsChatGenerationRuns,
 } from "./chat-generation-api";
+import { isDurableRunCandidate, turnRequiresLegacyStream } from "./durable-gate";
 
 // Small models (<=9B) answer from memory, so "auto" forces retrieval for them.
 const AUTOINJECT_AUTO_MAX_SIZE_B = 9;
@@ -1190,6 +1193,20 @@ function setAssistantCodexReasoning(
   message.extra_content = { ...extra, openai_codex_reasoning: reasoning };
 }
 
+function setAssistantOpenAIResponsesReasoning(
+  message: SerializedMessage,
+  reasoning: unknown[] | undefined,
+): void {
+  if (!reasoning) return;
+  const extra =
+    message.extra_content &&
+    typeof message.extra_content === "object" &&
+    !Array.isArray(message.extra_content)
+      ? (message.extra_content as Record<string, unknown>)
+      : {};
+  message.extra_content = { ...extra, openai_responses_reasoning: reasoning };
+}
+
 function attachAssistantThoughtSignature(
   messages: SerializedMessage[],
   thoughtSignature: string | undefined,
@@ -1230,6 +1247,9 @@ function serializeAssistantReplayMessages(
   const imageParts = collectImageParts(message);
 
   const codexReasoning = readCodexReasoning(
+    (message as { metadata?: unknown }).metadata,
+  );
+  const openAIResponsesReasoning = readOpenAIResponsesReasoning(
     (message as { metadata?: unknown }).metadata,
   );
   const messages: SerializedMessage[] = [];
@@ -1286,6 +1306,13 @@ function serializeAssistantReplayMessages(
         assistantMessage,
         codexReasoningForToolCalls(
           codexReasoning,
+          pendingToolCalls.map((call) => call.id),
+        ),
+      );
+      setAssistantOpenAIResponsesReasoning(
+        assistantMessage,
+        codexReasoningForToolCalls(
+          openAIResponsesReasoning,
           pendingToolCalls.map((call) => call.id),
         ),
       );
@@ -1476,8 +1503,8 @@ function isAbandonedAssistantTurn(
 ): boolean {
   if (message.role !== "assistant") return false;
   if (assistantTurnCarriesPayload(message)) return false;
-  // A turn that finished on reasoning alone is a reply, even though external requests strip
-  // reasoning and serialise it empty.
+  // A turn that finished on reasoning alone is a reply, even when the selected provider
+  // omits reasoning and serialises it empty.
   if (
     !assistantTurnEndedEarly(message) &&
     (message.content ?? []).some((part) => part.type === "reasoning")
@@ -4840,6 +4867,7 @@ export function createOpenAIStreamAdapter(
             externalProvider.providerType,
             externalSelection.modelId,
             externalProvider.baseUrl,
+            externalProvider.apiType,
           ),
       );
       // Per-model Search/Code allowances live in providerSupportsBuiltin*; this flag only signals image-mode.
@@ -4865,6 +4893,7 @@ export function createOpenAIStreamAdapter(
             externalProvider.providerType,
             externalSelection.modelId,
             externalProvider.baseUrl,
+            externalProvider.apiType,
           ),
       );
       // Fetch is independent of Search (Anthropic bills web_fetch separately); forced off in
@@ -4888,6 +4917,8 @@ export function createOpenAIStreamAdapter(
         hostedCodeExecutionForThisTurn: codeExecEnabledForThisTurn,
         providerHostsCodeExecution: providerHostsCodeExecution(
           externalProvider?.providerType,
+          externalProvider?.baseUrl,
+          externalProvider?.apiType,
         ),
       });
 
@@ -4922,14 +4953,15 @@ export function createOpenAIStreamAdapter(
         readsImages: targetReadsImages,
         localMarkers: mcpImagesLocalMarkers,
       });
-      const survivingMessages = pruneOutboundHistory(
-        messages,
-        !isExternalRequest,
+      const replayReasoning = !isExternalRequest || (
+        providerSupportsPreserveThinking(externalProvider?.providerType) &&
+        runtime.preserveThinking
       );
+      const survivingMessages = pruneOutboundHistory(messages, replayReasoning);
       // toOpenAIMessages emits assistant tool_calls plus role="tool" follow-ups; the backend Gemini
       // translator rebuilds the functionCall/functionResponse parts.
       let outboundMessages = survivingMessages
-        .flatMap((message) => toOpenAIMessages(message, !isExternalRequest))
+        .flatMap((message) => toOpenAIMessages(message, replayReasoning))
         .filter((message): message is NonNullable<typeof message> =>
           Boolean(message),
         );
@@ -5200,21 +5232,33 @@ export function createOpenAIStreamAdapter(
       const generationUserMessage = [...survivingMessages]
         .reverse()
         .find((message) => message.role === "user");
-      const generationCandidate = Boolean(
-        !isExternalRequest &&
-          !activeModel?.isAudio &&
-          !runtime.loadedIsDiffusion &&
-          !imageBase64 &&
-          !audioBase64 &&
-          !videoBase64 &&
-          // Continue yields the seeded partial before the request starts so the autosave lands before
-          // admission, which 409s a substantive placeholder. Continuations keep the legacy stream.
-          !continuation &&
-          resolvedThreadId &&
-          !isThreadIncognito(resolvedThreadId) &&
-          unstable_assistantMessageId &&
-          generationUserMessage,
+
+      // Durability gate keys on THIS turn's attachments only. The scans above walk post-prune history so an old
+      // refused turn cannot mis-attribute media onto the next one - correct for building the request payload, but it
+      // also meant one screenshot anywhere in a thread excluded every later text-only turn from the durable path.
+      // A turn that itself carries media still stays on the subscriber-owned stream; a text follow-up does not.
+      const currentTurnMessages = [generationUserMessage] as unknown as Parameters<
+        typeof findLatestUserImageBase64
+      >[0];
+      const currentTurnCarriesMedia = Boolean(
+        findLatestUserImageBase64(currentTurnMessages) ||
+          findLatestUserAudioBase64(currentTurnMessages, !queuedRunSettings && !continuation) ||
+          findLatestUserVideoBase64(currentTurnMessages),
       );
+      const generationCandidate = isDurableRunCandidate({
+        externalProvider: isExternalRequest,
+        modelIsAudio: activeModel?.isAudio,
+        loadedIsDiffusion: runtime.loadedIsDiffusion,
+        // Turn-scoped, not thread-scoped: see currentTurnCarriesMedia above.
+        turnCarriesMedia: currentTurnCarriesMedia,
+        // Continue yields the seeded partial before the request starts so the autosave lands before
+        // admission, which 409s a substantive placeholder. Continuations keep the legacy stream.
+        continuation,
+        threadId: resolvedThreadId,
+        incognito: resolvedThreadId ? isThreadIncognito(resolvedThreadId) : false,
+        assistantMessageId: unstable_assistantMessageId,
+        hasUserMessage: Boolean(generationUserMessage),
+      });
       let generationDecision: "pending" | "durable" | "legacy" =
         generationCandidate ? "pending" : "legacy";
       let generationRun: ChatGenerationRun | null = null;
@@ -5403,6 +5447,9 @@ export function createOpenAIStreamAdapter(
       // Every streamed yield carries the repaired text: assistant-ui drops whatever is yielded after
       // an abort, so on Stop the last STREAMED yield is what gets saved.
       let codexReasoningLedger: CodexReasoningLedger = { byToolCall: {} };
+      let openAIResponsesReasoningLedger: CodexReasoningLedger = {
+        byToolCall: {},
+      };
       let codexRoundToolCallIds: string[] = [];
       let contextTruncation: OpenAIChatChunk["context_truncated"];
 
@@ -5415,9 +5462,22 @@ export function createOpenAIStreamAdapter(
       const liveCustom = () => ({
         ...reasoningDurationTracker.metadata(),
         openaiCodexReasoning: codexReasoningLedger,
+        openaiResponsesReasoning: openAIResponsesReasoningLedger,
         contextTruncation,
+        // A legacy (browser-tool / attachment / incognito) run that ends because you closed the tab has no
+        // server-side run to resume from, so its last streamed yield is what persists. Mark it an interruption
+        // — partial kept + Resume — instead of a silent blank/ambiguous state. Durable runs keep "cancelled":
+        // their reconnect path marks state via recovery, and an explicit Stop still reads as cancelled below.
+        // A window the provider reported as full outranks either guess (utils/continuation.ts).
         incomplete: {
-          reason: resolveIncompleteReason("cancelled" as const, contextWindowExceeded),
+          reason: resolveIncompleteReason(
+            // Once an explicit Stop has latched its reason, streamed yields that
+            // still go out carry it -- a stopped legacy turn must persist as
+            // cancelled, not read back as a walk-away interruption.
+            incompleteReason ??
+                (generationDecision === "durable" ? "cancelled" : "interrupted"),
+            contextWindowExceeded,
+          ),
         },
         ...generationCustom(),
       });
@@ -5783,6 +5843,7 @@ export function createOpenAIStreamAdapter(
               {
                 isReasoningProvider: externalProvider.isReasoningModel === true,
                 baseUrl: externalProvider.baseUrl ?? null,
+                apiType: externalProvider.apiType,
               },
             )
           : {
@@ -5915,6 +5976,9 @@ export function createOpenAIStreamAdapter(
           return;
         }
         generationStopRequested = true;
+        // An explicit Stop is a cancel, not a walk-away interruption: override the provisional reason so a
+        // deliberate Stop still reads as "cancelled" even though streamed yields carried the legacy default.
+        incompleteReason = "cancelled";
         const stopPlan = chatGenerationStopPlan(
           generationDecision,
           generationRunId,
@@ -6023,8 +6087,9 @@ export function createOpenAIStreamAdapter(
               (!isExternalRequest && supportsTools && toolsEnabled),
             fetch: webFetchEnabledForThisTurn,
             code:
-              codeExecEnabledForThisTurn ||
-              (!isExternalRequest && supportsTools && codeToolsEnabled),
+              hostedCodeToolsForThisTurn.length > 0 ||
+              (supportsStudioToolsForThisTurn &&
+                studioLocalCodeTools.length > 0),
             images: imageGenerationEnabledForThisTurn,
             mcp: supportsStudioToolsForThisTurn && mcpEnabledForChat,
             docs:
@@ -6038,6 +6103,9 @@ export function createOpenAIStreamAdapter(
         });
         const externalCapabilities = getProviderCapabilities(
           externalProvider?.providerType,
+          externalProvider?.apiType,
+          externalSelection?.modelId,
+          externalProvider?.baseUrl,
         );
         const buildRequestPayload = async (
           forceRefreshPublicKey = false,
@@ -6160,7 +6228,11 @@ export function createOpenAIStreamAdapter(
             return {
               model: externalSelection.modelId,
               messages: outboundMessages,
+              ...(providerSupportsPreserveThinking(externalProvider?.providerType)
+                ? { preserve_thinking: runtime.preserveThinking }
+                : {}),
               stream: true,
+              stream_options: { include_usage: true },
               // Never forwarded upstream (the proxy sends an explicit field list); the trailing assistant
               // turn is what asks a provider to continue.
               ...(continuation ? { continue_final_message: true } : {}),
@@ -6323,6 +6395,7 @@ export function createOpenAIStreamAdapter(
                   }
                 : {}),
               provider_base_url: externalProvider.baseUrl || null,
+              provider_api_type: externalProvider.apiType ?? "chat_completions",
               ...(openaiCodeExecContainerId
                 ? {
                     openai_code_exec_container_id: openaiCodeExecContainerId,
@@ -6386,9 +6459,16 @@ export function createOpenAIStreamAdapter(
             ...(params.seed == null || !modelReadsSamplingSeed(activeModel)
               ? {}
               : { seed: params.seed }),
-            image_base64: imageBase64,
-            audio_base64: audioBase64,
-            video_base64: videoBase64,
+            // Turn-scoped, not thread-scoped. These are the CURRENT turn's attachment channel; history media rides
+            // along inside messages[].content. Sending a stale screenshot from an earlier turn made the backend see a
+            // non-empty media field on every later text-only turn and refuse the durable run with 400 "Media chat
+            // runs use the legacy streaming path" - which is what kept these turns on the cancel-on-disconnect stream.
+            image_base64: findLatestUserImageBase64(currentTurnMessages),
+            audio_base64: findLatestUserAudioBase64(
+              currentTurnMessages,
+              !queuedRunSettings && !continuation,
+            ),
+            video_base64: findLatestUserVideoBase64(currentTurnMessages),
             cancel_id: cancelId,
             ...(sandboxSessionId ? { session_id: sandboxSessionId } : {}),
             ...(resolvedThreadId ? { thread_id: resolvedThreadId } : {}),
@@ -6498,14 +6578,14 @@ export function createOpenAIStreamAdapter(
             requestedMaxTokens = requestPayload.max_tokens;
             await ThreadAutosaveHandle.awaitFirstSave(resolvedThreadId);
             if (generationDecision === "pending") {
-              const clientTools = (
-                requestPayload as unknown as { tools?: unknown }
-              ).tools;
-              if (
-                requestPayload.enable_tools === true ||
-                (Array.isArray(clientTools) && clientTools.length > 0)
-              ) {
-                // Confirmation and browser-executed tool chains still use the subscriber-owned stream.
+              // Keyed on `enabled_tools`, never on `requestPayload.tools`: see durable-gate.ts. Keying this on
+              // `tools` read as "no tools" on the local path and as "browser tools" for every passthrough turn that
+              // carried a schema catalog, silently forcing those turns back onto the cancel-on-disconnect path.
+              if (turnRequiresLegacyStream(requestPayload)) {
+                // Only a tool chain the BROWSER must execute still needs the live tab: there is no server-side
+                // executor to run it while you're away. Everything else is durable like plain text - an auto/bypass
+                // loop runs to completion while you're away, and a confirm ("ask") call parks on its approval_id
+                // (see tool_approvals.wait_tool_decision) and is resolved by id on return.
                 generationDecision = "legacy";
               } else {
                 const admission = explicitStopSignal(runSignal);
@@ -7230,6 +7310,19 @@ export function createOpenAIStreamAdapter(
                   codexReasoningLedger = addCodexReasoning(
                     codexReasoningLedger,
                     codexReasoning,
+                    codexRoundToolCallIds,
+                  );
+                  replayStateChanged = true;
+                }
+                const openAIResponsesReasoning =
+                  extraRecord.openai_responses_reasoning;
+                if (
+                  Array.isArray(openAIResponsesReasoning) &&
+                  openAIResponsesReasoning.length > 0
+                ) {
+                  openAIResponsesReasoningLedger = addCodexReasoning(
+                    openAIResponsesReasoningLedger,
+                    openAIResponsesReasoning,
                     codexRoundToolCallIds,
                   );
                   replayStateChanged = true;
@@ -8024,6 +8117,7 @@ export function createOpenAIStreamAdapter(
               // Persisted so Continue survives a reload; cleared on a normal end.
 
               openaiCodexReasoning: codexReasoningLedger,
+              openaiResponsesReasoning: openAIResponsesReasoningLedger,
               contextTruncation,
               incomplete: finalIncompleteReason
                 ? { reason: finalIncompleteReason }
@@ -8171,7 +8265,11 @@ export function createOpenAIStreamAdapter(
             });
           }
         }
-        if (!abortSignal.aborted) {
+        // An explicit Stop is an abort too, but it must persist its reason instead of
+        // leaving the last streamed yield's label standing: the replacement yield
+        // below carries the latched "cancelled" (the durable path reads the latch at
+        // 5098-101 style already; legacy only got it via this gate staying shut).
+        if (!abortSignal.aborted || generationStopRequested) {
           closeReasoningContent();
           const partialText = mergeContinuation(cumulativeText, { final: true });
           const partialContent = buildAssistantContent(partialText);
@@ -8194,12 +8292,15 @@ export function createOpenAIStreamAdapter(
                 // said why the model stopped.
                 incomplete: {
                   reason: resolveIncompleteReason(
-                    err instanceof GenerationLengthError
-                      ? ("length" as const)
-                      : err instanceof ChatGenerationTerminalError &&
-                          err.generationStatus === "cancelled"
-                        ? ("cancelled" as const)
-                        : ("interrupted" as const),
+                    // An explicit Stop latched incompleteReason = "cancelled" at the abort
+                    // handler; that outranks the error-derived guess below.
+                    incompleteReason ??
+                        (err instanceof GenerationLengthError
+                            ? ("length" as const)
+                            : err instanceof ChatGenerationTerminalError &&
+                                  err.generationStatus === "cancelled"
+                              ? ("cancelled" as const)
+                              : ("interrupted" as const)),
                     contextWindowExceeded,
                   ),
                 },

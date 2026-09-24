@@ -1434,7 +1434,7 @@ export function VoiceTab() {
                   >
                     <SelectValue />
                   </SelectTrigger>
-                  <SelectContent className="max-h-72">
+                  <SelectContent className="max-h-[min(--spacing(72),var(--radix-select-content-available-height))]">
                     <SelectItem value="default">
                       {t("settings.voice.dictation.systemDefault")}
                     </SelectItem>

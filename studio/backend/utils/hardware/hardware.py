@@ -4180,8 +4180,44 @@ def _rocm_linux_shared_pool_host_gb_by_index(devices: list[Dict[str, Any]]) -> D
             continue
         _used, sysfs_total = entry
         torch_total = dev.get("total_gb") or 0.0
-        if sysfs_total > 0 and torch_total - sysfs_total > 0.1 * torch_total:
-            shared[index] = round(torch_total - sysfs_total, 2)
+        if sysfs_total <= 0:
+            # sysfs could not be read for this card, so the split is genuinely
+            # UNKNOWN and the index stays absent. WSL reaches here.
+            continue
+        excess = torch_total - sysfs_total
+        # A readable sysfs total that torch does not exceed means the whole torch
+        # budget IS the driver's dedicated heap, i.e. the host-backed part is a
+        # measured ZERO. Omitting the index said "unknown" instead, and the tile
+        # renders unknown as "all of it is host memory": on a gfx1151 whose
+        # mem_info_vram_total is the full 64 GiB carve-out, Settings > System read
+        # `0.00 GiB VRAM + 64.00 GiB shared`. Measured on the AMD CI Strix Halo
+        # against main; unsloth#7449 defect 1.
+        #
+        # The 0.1 band is the threshold for BELIEVING an excess, not for publishing a
+        # figure at all. It is NOT a rounding allowance: both totals carry 0.01 GiB, so
+        # rounding cannot reach a whole GiB, and a 4 GiB gap on a 64 GiB part is a real
+        # disagreement between two sources that count different things.
+        #
+        # Inside the band the split is genuinely undecided, and all three answers are
+        # imperfect. Publishing the excess would call the budget shared (see the caller:
+        # host_gb > 0 sets shared_memory, which collapses several rows into one pool) on
+        # a difference we do not trust. Omitting the index renders as "all of it is host
+        # memory", which IS unsloth#7449 defect 1 and the thing this function exists to
+        # stop. Zero attributes the disagreement to the dedicated heap, which is the
+        # smallest error of the three: at 64 vs 60 GiB it overstates dedicated memory by
+        # 4 GiB, where omitting understates it by all 64.
+        #
+        # Not settled on hardware: neither AMD CI runner has a small BIOS carve-out, so
+        # the in-band case was never measured, only reasoned about.
+        # sysfs far ABOVE torch is not a small disagreement, it is a different scope:
+        # a partitioned device where sysfs reports the whole card and torch reports one
+        # partition. `_rocm_system_wide_vram_by_index` treats a mismatch over the same
+        # 10% as a scope change in EITHER direction, and publishing 0.0 here would call
+        # the whole partition dedicated, overstating independent capacity in the
+        # direction that admits a load. Leave the index absent, which means unknown.
+        if -excess > 0.1 * torch_total:
+            continue
+        shared[index] = round(excess, 2) if excess > 0.1 * torch_total else 0.0
     return shared
 
 
@@ -5812,8 +5848,19 @@ def get_backend_visible_gpu_info() -> Dict[str, Any]:
                 shared_host_gb = _rocm_linux_shared_pool_host_gb_by_index(torch_devices)
                 for td in torch_devices:
                     if td["index"] in shared_host_gb:
-                        td["shared_memory"] = True
-                        td["shared_memory_host_backed_gb"] = shared_host_gb[td["index"]]
+                        host_gb = shared_host_gb[td["index"]]
+                        # A measured ZERO is an answer, not a miss: it says the whole
+                        # budget is the driver's dedicated heap. Publish it either way,
+                        # because the consumer renders an ABSENT figure as "all of it is
+                        # host memory" and that is how a 64 GiB carve-out came out as
+                        # `0.00 GiB VRAM + 64.00 GiB shared` (unsloth#7449 defect 1).
+                        td["shared_memory_host_backed_gb"] = host_gb
+                        # But only call the budget shared when some of it really is.
+                        # `shared_memory` additionally means "several rows are views of
+                        # ONE pool", which collapses them; a two-socket MI300A with no
+                        # host-backed part must stay additive.
+                        if host_gb > 0:
+                            td["shared_memory"] = True
             elif IS_ROCM and platform.system() == "Windows":
                 shared_host_gb = _windows_rocm_shared_pool_host_gb_by_index(torch_devices)
                 for td in torch_devices:
