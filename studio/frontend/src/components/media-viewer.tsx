@@ -48,7 +48,7 @@ export interface MediaViewerActions {
   onDelete?: () => void;
 }
 
-const MEDIA_ZOOMS = [0.25, 0.5, 0.75, 1] as const;
+const MEDIA_ZOOMS = [0.25, 0.5, 0.75, 1, 1.25, 1.5] as const;
 
 function percent(scale: number): string {
   return `${Math.round(scale * 100)}%`;
