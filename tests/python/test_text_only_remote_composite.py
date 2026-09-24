@@ -111,6 +111,11 @@ class TinyOmni(PreTrainedModel):
 
     def forward(self, pixel_values, input_ids = None, **kwargs):
         return self.language_model(input_ids = input_ids, **kwargs)
+
+
+class TinyTextLM(LlamaForCausalLM):
+    # A repo-code text decoder, named by the nested llm_config auto_map (Nemotron-Omni's NemotronHForCausalLM shape).
+    pass
 """
 
 
@@ -137,6 +142,7 @@ def _write_repo(
     llm_extra = None,
     name = "tiny_omni",
     alias = True,
+    text_auto_map = None,
 ):
     # Save a remote-code composite checkpoint whose text weights sit under `prefix` (sentinel-filled).
     from safetensors.torch import save_file
@@ -164,6 +170,8 @@ def _write_repo(
         "llm_config": {"model_type": "llama", "architectures": ["LlamaForCausalLM"], **llm},
         "vision_config": {"hidden_size": 8},
     }
+    if text_auto_map is not None:
+        cfg["llm_config"]["auto_map"] = {"AutoModelForCausalLM": text_auto_map}
     (repo / "config.json").write_text(json.dumps(cfg))
     torch.manual_seed(0)
     text = transformers.LlamaForCausalLM(transformers.LlamaConfig(**llm))
@@ -699,3 +707,55 @@ def test_unsharded_bin_is_never_unpickled_to_probe(tmp_path, monkeypatch):
     (repo / "pytorch_model-00001-of-00001.bin").rename(repo / "pytorch_model.bin")
     monkeypatch.setattr(torch, "load", lambda *a, **k: pytest.fail("torch.load called"))
     assert ns["_checkpoint_weight_names"](str(repo)) is None
+
+
+# ---------------------------------------------------------------- repo-code text decoders
+
+
+@needs_tf5
+def test_nested_repo_code_class_lookup_honours_local_files_only(tmp_path, monkeypatch):
+    # The nested llm_config names repo code; its lookup must not reach the Hub under local_files_only.
+    import threading
+    import http.server
+    import huggingface_hub.constants as hub_constants
+
+    ns = _ns()
+    repo, _ = _write_repo(
+        tmp_path, name = "nested_code", text_auto_map = "modeling_tiny_omni.TinyTextLM"
+    )
+    repo_id, _ = _cache_as_hub_repo(tmp_path, monkeypatch, repo, repo_id = "fake-org/nested-code")
+    parent = transformers.AutoConfig.from_pretrained(
+        repo_id, trust_remote_code = True, local_files_only = True
+    )
+    # Every Hub request lands on a local endpoint that records it.
+    seen = []
+
+    class _Handler(http.server.BaseHTTPRequestHandler):
+        def do_HEAD(self):
+            seen.append(self.path)
+            self.send_response(503)
+            self.end_headers()
+
+        do_GET = do_HEAD
+
+        def log_message(self, *args):
+            pass
+
+    server = http.server.HTTPServer(("127.0.0.1", 0), _Handler)
+    threading.Thread(target = server.serve_forever, daemon = True).start()
+    try:
+        monkeypatch.setattr(hub_constants, "HF_HUB_OFFLINE", False)
+        monkeypatch.setattr(hub_constants, "ENDPOINT", f"http://127.0.0.1:{server.server_port}")
+        monkeypatch.setattr(
+            hub_constants,
+            "HUGGINGFACE_CO_URL_TEMPLATE",
+            f"http://127.0.0.1:{server.server_port}" + "/{repo_id}/resolve/{revision}/{filename}",
+        )
+        plan = ns["_get_remote_composite_text_only"](
+            parent, repo_id, trust_remote_code = True, local_files_only = True
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+    assert plan is not None
+    assert seen == []

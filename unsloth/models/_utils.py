@@ -1314,6 +1314,7 @@ def _resolve_text_causal_lm_class(
     trust_remote_code,
     token = None,
     revision = None,
+    local_files_only = False,
 ):
     # The class AutoModelForCausalLM.from_pretrained(model_name, config = text_config) will build: repo code first when trusted.
     auto_map = getattr(text_config, "auto_map", None) or {}
@@ -1322,7 +1323,13 @@ def _resolve_text_causal_lm_class(
         if not trust_remote_code:
             return None
         from transformers.dynamic_module_utils import get_class_from_dynamic_module
-        return get_class_from_dynamic_module(class_ref, model_name, token = token, revision = revision)
+        return get_class_from_dynamic_module(
+            class_ref,
+            model_name,
+            token = token,
+            revision = revision,
+            local_files_only = local_files_only,
+        )
     from transformers import AutoModelForCausalLM
 
     return resolve_model_class(AutoModelForCausalLM, text_config)
@@ -1390,7 +1397,12 @@ def _get_remote_composite_text_only(
         text_config._commit_hash = getattr(model_config, "_commit_hash", None)
     try:
         text_class = _resolve_text_causal_lm_class(
-            text_config, model_name, trust_remote_code, token = token, revision = revision
+            text_config,
+            model_name,
+            trust_remote_code,
+            token = token,
+            revision = revision,
+            local_files_only = local_files_only,
         )
         if text_class is None:
             return None
