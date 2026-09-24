@@ -1106,6 +1106,42 @@ def _pin_vision_embedding_device(module: Any) -> int:
     return patched
 
 
+def install_group_offload_buffer_restore() -> bool:
+    """diffusers' stream group offload onloads group-module buffers but restores only parameters, so buffers stayed
+    on the GPU; native int8 weights are buffers, so a quantised DiT ended up resident under an offload plan."""
+    try:
+        from diffusers.hooks import group_offloading as go
+    except Exception:  # noqa: BLE001 - no group offload in this diffusers
+        return False
+    group_cls = getattr(go, "ModuleGroup", None)
+    original = getattr(group_cls, "_offload_to_memory", None)
+    if original is None or getattr(original, "_unsloth_buffer_restore", False):
+        return False
+
+    @functools.wraps(original)
+    def _offload_to_memory(self, *args: Any, **kwargs: Any) -> Any:
+        out = original(self, *args, **kwargs)
+        cpu_copies = getattr(self, "cpu_param_dict", None)
+        if getattr(self, "stream", None) is None or not cpu_copies:
+            return out
+        restore_torchao = getattr(go, "_restore_torchao_tensor", None)
+        is_torchao = getattr(go, "_is_torchao_tensor", None)
+        for group_module in getattr(self, "modules", None) or ():
+            for buffer in group_module.buffers():
+                cpu = cpu_copies.get(buffer)
+                if cpu is None:
+                    continue
+                if callable(is_torchao) and callable(restore_torchao) and is_torchao(buffer):
+                    restore_torchao(buffer, cpu)
+                else:
+                    buffer.data = cpu
+        return out
+
+    _offload_to_memory._unsloth_buffer_restore = True
+    group_cls._offload_to_memory = _offload_to_memory
+    return True
+
+
 def _apply_group_offload(
     pipe: Any,
     device: str,
@@ -1128,6 +1164,8 @@ def _apply_group_offload(
 
         import torch
         from diffusers.hooks import apply_group_offloading
+
+        install_group_offload_buffer_restore()
 
         # A dual-DiT pipeline (Ideogram 4) carries a second denoiser as large as the first, so stream every DiT and keep
         # only smaller companions resident.
@@ -1420,6 +1458,8 @@ def _apply_streaming_offload(pipe: Any, device: str, logger: Any) -> None:
 
         import torch
         from diffusers.hooks import apply_group_offloading
+
+        install_group_offload_buffer_restore()
 
         components = getattr(pipe, "components", {})
         if not isinstance(components, dict):

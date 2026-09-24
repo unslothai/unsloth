@@ -964,3 +964,78 @@ def test_video_gate_on_nvidia_resident_keeps_the_torchao_answer(nvidia, monkeypa
     )
     for pinned in ("int8", "fp8"):
         _video_gate(monkeypatch, _video_family("wan2.2-ti2v-5b"), pinned, memory_mode = memory_mode)
+
+
+def _native_block(features = 64):
+    lin = torch.nn.Linear(features, features, dtype = torch.bfloat16)
+    return nq.native_linear_class()(lin, "int8", act_int8 = True, rot_group = 0)
+
+
+def test_stream_group_offload_puts_native_weight_buffers_back_on_the_host():
+    # Stock diffusers' stream offload restores parameters only, so native int8 weights (buffers) stayed on the GPU.
+    go = pytest.importorskip("diffusers.hooks.group_offloading")
+    from core.inference.diffusion_memory import install_group_offload_buffer_restore
+
+    install_group_offload_buffer_restore()
+    layer = _native_block()
+    host = {b: b.data for b in layer.buffers()}
+    host.update({p: p.data for p in layer.parameters()})
+    group = object.__new__(go.ModuleGroup)
+    group.modules, group.parameters, group.buffers = [layer], [], []
+    group.stream, group.record_stream = object(), True
+    group.cpu_param_dict = dict(host)
+    for tensor in list(layer.buffers()) + list(layer.parameters()):
+        tensor.data = tensor.data.clone()  # stands in for the onloaded device copy
+    group._offload_to_memory()
+    assert all(b.data_ptr() == host[b].data_ptr() for b in layer.buffers())
+    assert all(p.data_ptr() == host[p].data_ptr() for p in layer.parameters())
+
+
+def test_buffer_restore_install_is_idempotent():
+    go = pytest.importorskip("diffusers.hooks.group_offloading")
+    from core.inference.diffusion_memory import install_group_offload_buffer_restore
+
+    install_group_offload_buffer_restore()
+    patched = go.ModuleGroup._offload_to_memory
+    assert install_group_offload_buffer_restore() is False
+    assert go.ModuleGroup._offload_to_memory is patched
+    assert getattr(patched, "__wrapped__", None) is not None
+
+
+@pytest.mark.skipif(
+    not torch.cuda.is_available(), reason = "stream group offload needs a CUDA device"
+)
+def test_native_int8_under_real_stream_group_offload_leaves_nothing_resident():
+    pytest.importorskip("diffusers.hooks.group_offloading")
+    from diffusers.hooks import apply_group_offloading
+
+    from core.inference.diffusion_memory import install_group_offload_buffer_restore
+
+    install_group_offload_buffer_restore()
+
+    class Model(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.blocks = torch.nn.ModuleList([_native_block(), _native_block()])
+
+        def forward(self, x):
+            for block in self.blocks:
+                x = block(x)
+            return x
+
+    model = Model()
+    apply_group_offloading(
+        model,
+        onload_device = torch.device("cuda"),
+        offload_device = torch.device("cpu"),
+        offload_type = "block_level",
+        num_blocks_per_group = 1,
+        use_stream = True,
+        non_blocking = True,
+        record_stream = True,
+    )
+    with torch.inference_mode():
+        out = model(torch.randn(32, 64, device = "cuda", dtype = torch.bfloat16))
+    torch.cuda.synchronize()
+    assert out.device.type == "cuda"
+    assert {b.device.type for b in model.buffers()} == {"cpu"}
