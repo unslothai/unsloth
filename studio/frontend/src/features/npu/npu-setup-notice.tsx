@@ -60,7 +60,7 @@ export function NpuSetupNotice({ catalog }: { catalog: NpuCatalog }) {
           <Spinner className="size-3.5 text-muted-foreground" />
         </div>
       ) : null}
-      <p className="text-[11px] text-muted-foreground">
+      <p className="text-ui-11 text-muted-foreground">
         Powered by{" "}
         <a
           href="https://github.com/ROCm/FastFlowLM"
