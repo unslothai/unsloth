@@ -698,6 +698,19 @@ def test_video_loader_binds_the_reason_only_at_the_commit():
         assert src.index("self._state = _VideoLoadState(", cancel) == commit
 
 
+def test_every_loader_commit_binds_a_reason_even_when_the_install_gate_skipped():
+    # A skipped gate (no hosted checkpoint) still replaces the previous model's reason at the commit.
+    import inspect
+
+    from core.inference import diffusion, video
+
+    for cls in (diffusion.DiffusionBackend, video.VideoBackend):
+        src = inspect.getsource(cls)
+        assert "if _nvfp4_install_outcome is not None" not in src
+        binds = re.findall(r"record_install_reason\(self, \*\(_nvfp4_install_outcome or \(True, None\)\)", src)
+        assert len(binds) == (1 if cls is diffusion.DiffusionBackend else 2)
+
+
 def test_install_gates_skip_kinds_the_dense_quant_path_cannot_reach():
     import inspect
 
@@ -850,7 +863,7 @@ def test_a_timed_out_wait_for_an_in_flight_install_does_not_import(env, monkeypa
 
 
 @pytest.mark.parametrize("uv", ["uv", None])
-@pytest.mark.parametrize("name", ["UV_INDEX", "UV_EXTRA_INDEX_URL"])
+@pytest.mark.parametrize("name", ["UV_INDEX", "UV_EXTRA_INDEX_URL", "UV_FIND_LINKS"])
 def test_a_uv_index_skips_the_pypi_probe_only_when_uv_installs(env, monkeypatch, name, uv):
     probed = []
     monkeypatch.setattr(inst, "_reachable", lambda url: probed.append(url) or True)
@@ -962,6 +975,10 @@ def test_pip_config_is_only_read_when_pip_installs(env):
         ("install.target='/opt/elsewhere'", "target directory"),
         (":env:.prefix='/opt/elsewhere'", "prefix"),
         ("install.root='/chroot'", "another root"),
+        (":env:.force-reinstall='1'", "force-reinstall"),
+        ("install.force-reinstall='true'", "force-reinstall"),
+        (":env:.ignore-installed='yes'", "ignore installed"),
+        ("global.ignore-installed='true'", "ignore installed"),
     ],
 )
 def test_pip_settings_it_cannot_honor_refuse_before_installing(env, monkeypatch, line, needle):
@@ -1001,6 +1018,9 @@ def _uv_toml(monkeypatch, tmp_path, text):
         ("[pip]\nno-deps = true\n", "no-deps"),
         ('[pip]\ntarget = "/opt/elsewhere"\n', "target directory"),
         ('[pip]\nprefix = "/opt/elsewhere"\n', "prefix"),
+        ("reinstall = true\n", "reinstall"),
+        ("[pip]\nreinstall = true\n", "reinstall"),
+        ('[pip]\nreinstall-package = ["torch"]\n', "reinstall"),
     ],
 )
 def test_uv_config_settings_it_cannot_honor_refuse_before_installing(

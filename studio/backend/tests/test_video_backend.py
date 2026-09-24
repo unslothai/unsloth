@@ -9177,6 +9177,37 @@ def test_a_superseded_nvfp4_load_cannot_overwrite_the_install_reason(fake_runtim
     inst.reset_install_state()
 
 
+def test_an_on_the_fly_nvfp4_load_clears_the_previous_install_reason(fake_runtime, monkeypatch):
+    # The gate skips the install when no hosted checkpoint will load; the commit must still drop the reason the
+    # previous model recorded, or status() reports that model's install refusal for the new one.
+    import core.inference.video as video_mod
+    from core.inference import diffusion_nvfp4_install as inst
+
+    monkeypatch.setattr(video_mod, "dense_transformer_supported", lambda target: True)
+    monkeypatch.setattr(video_mod, "quantize_transformer", lambda *a, **k: "nvfp4")
+    _stub_denoiser_seed(monkeypatch, seeded = False)
+
+    def _ensure(*a, **k):
+        raise AssertionError("the gate should have skipped the install")
+
+    monkeypatch.setattr(inst, "ensure_flashinfer_for_nvfp4", _ensure)
+    monkeypatch.setattr(
+        VideoBackend, "_nvfp4_denoiser_checkpoint_will_load", lambda self, *a, **k: False
+    )
+    inst.reset_install_state()
+    backend = VideoBackend()
+    inst.record_install_reason(backend, False, "offline: flashinfer is not downloaded", 0)
+    backend.load_pipeline(
+        "Wan-AI/Wan2.2-T2V-A14B-Diffusers", model_kind = "pipeline", transformer_quant = "nvfp4"
+    )
+    assert inst._REASONS[backend][0] is None
+    assert (
+        inst.nvfp4_backend_fields("torchao", owner = backend)["transformer_quant_backend_reason"]
+        != "offline: flashinfer is not downloaded"
+    )
+    inst.reset_install_state()
+
+
 def test_seeding_is_skipped_entirely_under_offload(fake_runtime, monkeypatch):
     import core.inference.video as video_mod
 

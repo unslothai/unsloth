@@ -47,7 +47,7 @@ FLASHINFER_JIT_CACHE_CUDA = ((12, 8), (12, 9), (13, 0))
 _PYPI_PROBE_URL = "https://pypi.org/simple/flashinfer-python/"
 _CUSTOM_INDEX_ENVS = ("UV_INDEX_URL", "UV_DEFAULT_INDEX", "PIP_INDEX_URL")
 # uv ranks these above its default index and stops at the first that has a package; pip never reads them.
-_UV_INDEX_ENVS = ("UV_INDEX", "UV_EXTRA_INDEX_URL")
+_UV_INDEX_ENVS = ("UV_INDEX", "UV_EXTRA_INDEX_URL", "UV_FIND_LINKS")
 _PIP_EXTRA_INDEX_ENVS = ("PIP_EXTRA_INDEX_URL", "PIP_FIND_LINKS")
 
 # The jit-cache wheel is 1.2-1.8 GB; the timeout covers a slow link, not a hung resolver.
@@ -587,6 +587,11 @@ def _installer_config(uv: Optional[str], run: Callable[..., Any]) -> dict[str, A
                 "uv is configured to install into a target directory, not this environment",
             ),
             (_first("prefix"), "uv is configured to install into a prefix, not this environment"),
+            # A same-version replacement is invisible to the version-only drift check, so it cannot be rolled back.
+            (
+                _flag(_first("reinstall")) or _first("reinstall-package"),
+                "uv is configured to reinstall packages, which could replace installed ones unchecked",
+            ),
         )
         config["refusal"] = next((why for hit, why in checks if hit), None)
         return config
@@ -617,6 +622,10 @@ def _installer_config(uv: Optional[str], run: Callable[..., Any]) -> dict[str, A
         (
             settings.get("root"),
             "pip is configured to install under another root, not this environment",
+        ),
+        (
+            _flag(settings.get("force-reinstall")) or _flag(settings.get("ignore-installed")),
+            "pip is configured to force-reinstall or ignore installed packages, which could replace them unchecked",
         ),
         (
             _flag(settings.get("require-virtualenv")) and not in_venv,

@@ -5154,9 +5154,9 @@ class VideoBackend:
                     del pipe
                     clear_gpu_cache()
                     raise RuntimeError("Video load was cancelled or superseded.")
-                if _nvfp4_install_outcome is not None:
-                    from .diffusion_nvfp4_install import record_install_reason
-                    record_install_reason(self, *_nvfp4_install_outcome, device)
+                # Every commit binds, a skipped gate included, so no stale install reason survives the swap.
+                from .diffusion_nvfp4_install import record_install_reason
+                record_install_reason(self, *(_nvfp4_install_outcome or (True, None)), device)
                 self._state = _VideoLoadState(
                     pipe = pipe,
                     family = fam,
@@ -5871,9 +5871,9 @@ class VideoBackend:
                 del pipe
                 clear_gpu_cache()
                 raise RuntimeError("Video load was cancelled or superseded.")
-            if _nvfp4_install_outcome is not None:
-                from .diffusion_nvfp4_install import record_install_reason
-                record_install_reason(self, *_nvfp4_install_outcome, device)
+            # Every commit binds, a skipped gate included, so no stale install reason survives the swap.
+            from .diffusion_nvfp4_install import record_install_reason
+            record_install_reason(self, *(_nvfp4_install_outcome or (True, None)), device)
             self._state = _VideoLoadState(
                 pipe = pipe,
                 family = fam,
