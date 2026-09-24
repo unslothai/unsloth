@@ -171,7 +171,7 @@ def _wrap_cpu_offload_hooks(
         if not isinstance(hook, hook_cls) or getattr(hook, _KEEP_ATTR, False):
             continue
         try:
-            _wrap_cpu_offload_hook(hook, module)
+            _wrap_cpu_offload_hook(hook, module, logger)
             wrapped += 1
         except Exception as exc:  # noqa: BLE001 - that module keeps the stock copy
             if logger is not None:
@@ -183,7 +183,108 @@ def _wrap_cpu_offload_hooks(
     return wrapped
 
 
-def _wrap_cpu_offload_hook(hook: Any, module: Any) -> None:
+OFFLOAD_PIN_ENV = "UNSLOTH_DIFFUSION_OFFLOAD_PIN"
+# Page-locked chunk size. The host allocator rounds every block up to a power of two, so weights are packed into
+# power-of-two chunks rather than pinned one by one (per tensor that wasted about 60% on FLUX).
+_PIN_CHUNK_BYTES = 1 << 30
+_PIN_ALIGN = 256
+# Host RAM left free after pinning, so page-locked weights never squeeze the rest of the machine.
+_PIN_RESERVE_MIN_BYTES = 4 << 30
+_PIN_RESERVE_FRACTION = 0.15
+
+
+def _pin_mode() -> str:
+    raw = (os.environ.get(OFFLOAD_PIN_ENV) or "").strip().lower()
+    if raw in ("0", "off", "false", "no"):
+        return "off"
+    if raw in ("1", "on", "true", "yes", "force"):
+        return "on"
+    return "auto"
+
+
+def _pow2_ceil(n: int) -> int:
+    return 1 << max(0, int(n) - 1).bit_length()
+
+
+def _pin_host_weights(
+    module: Any,
+    host: dict,
+    logger: Any = None,
+) -> int:
+    """Move ``module``'s kept host weights into page-locked chunks; returns the bytes pinned.
+
+    A host-to-device copy from pageable memory runs at a fraction of the pinned rate (6.6 vs 52
+    GiB/s on the B200 box), and the onload is what whole-model offload pays every render once the
+    offload copy is gone. Only where host RAM allows (``auto``): pinned pages cannot be reclaimed.
+    Contiguous plain tensors only, so a channels_last weight keeps its layout."""
+    import torch
+
+    mode = _pin_mode()
+    if mode == "off" or not torch.cuda.is_available():
+        return 0
+    params = [
+        (name, p)
+        for name, p in module.named_parameters()
+        if host.get(name) is not None
+        and p.device.type == "cpu"
+        and _keepable(p)
+        and p.data.is_contiguous()
+        and not p.data.is_pinned()
+    ]
+    sizes = [-(-p.data.nbytes // _PIN_ALIGN) * _PIN_ALIGN for _, p in params]
+    need = sum(sizes)
+    if need == 0:
+        return 0
+    if mode == "auto":
+        try:
+            import psutil
+            vm = psutil.virtual_memory()
+        except Exception:  # noqa: BLE001 - no way to size it, so do not lock memory
+            return 0
+        reserve = max(_PIN_RESERVE_MIN_BYTES, int(vm.total * _PIN_RESERVE_FRACTION))
+        if vm.available - need < reserve:
+            if logger is not None:
+                logger.info(
+                    "diffusion.memory: not pinning %s (%.1f GiB): %.1f GiB of host RAM available",
+                    type(module).__name__,
+                    need / 2**30,
+                    vm.available / 2**30,
+                )
+            return 0
+    chunk = max(_PIN_CHUNK_BYTES, _pow2_ceil(max(sizes)))
+    placed: list = []
+    try:
+        buf, off, left = None, 0, need
+        for (name, p), size in zip(params, sizes):
+            if buf is None or off + size > buf.numel():
+                # The last chunk only as large as what is left (rounded as the allocator will anyway).
+                size_bytes = chunk if left >= chunk else _pow2_ceil(left)
+                buf = torch.empty(size_bytes, dtype = torch.uint8, pin_memory = True)
+                off = 0
+            view = buf[off : off + p.data.nbytes].view(p.dtype).view(p.shape)
+            view.copy_(p.data)
+            placed.append((name, p, view))
+            off += size
+            left -= size
+    except Exception as exc:  # noqa: BLE001 - e.g. a WSL pinned-memory cap: keep the pageable weights
+        if logger is not None:
+            logger.info(
+                "diffusion.memory: pinning %s failed (%s); weights stay pageable",
+                type(module).__name__,
+                exc,
+            )
+        return 0
+    for name, p, view in placed:
+        p.data = view
+        host[name] = view
+    return need
+
+
+def _wrap_cpu_offload_hook(
+    hook: Any,
+    module: Any,
+    logger: Any = None,
+) -> None:
     # Keyed by name: a move can hand a module new Parameter objects (e.g. to a device whose tensors are not
     # shallow-copy compatible with the host's), and a stale key must miss rather than alias another weight.
     state = module.__dict__.get(_KEEP_ATTR)
@@ -219,6 +320,19 @@ def _wrap_cpu_offload_hook(hook: Any, module: Any) -> None:
 
     def _pre_forward(mod: Any, *args: Any, **kwargs: Any) -> Any:
         onload = not version
+        if onload and not state.get("pin_tried"):
+            # Once per module, on its first onload: no load-time cost, and a machine without the RAM never pins.
+            state["pin_tried"] = True
+            try:
+                pinned = _pin_host_weights(mod, host, logger)
+            except Exception:  # noqa: BLE001 - pinning is an optimisation, never a failure
+                pinned = 0
+            if pinned and logger is not None:
+                logger.info(
+                    "diffusion.memory: pinned %.1f GiB of %s host weights",
+                    pinned / 2**30,
+                    type(mod).__name__,
+                )
         out = pre_forward(mod, *args, **kwargs)
         if onload:
             # Recorded once per onload: a later in-place write moves the counter past it.
@@ -264,6 +378,16 @@ def reclaim_offload_host_memory(offload_policy: str, logger: Any = None) -> bool
                     pass
             return False
         reclaim()
+        try:
+            import torch
+
+            # Pinned host blocks freed since the last call (an unloaded model's page-locked weights) are cached by
+            # torch's host allocator until emptied.
+            empty = getattr(torch._C, "_host_emptyCache", None)
+            if callable(empty) and torch.cuda.is_available():
+                empty()
+        except Exception:  # noqa: BLE001 - best effort, like the reclaim itself
+            pass
         return True
     except Exception as exc:  # noqa: BLE001
         if logger is not None and not _host_memory_reclaim_warning_logged:

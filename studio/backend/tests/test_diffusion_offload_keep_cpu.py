@@ -116,14 +116,18 @@ cuda = pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs a CUDA 
 
 
 def _render(pipe, x):
-    out = pipe.transformer(pipe.text_encoder(x)).detach().cpu()
+    out = x
+    for module in pipe.components.values():
+        out = module(out)
+    out = out.detach().cpu()
     pipe.transformer._hf_hook.init_hook(pipe.transformer)
     pipe.enable_model_cpu_offload()
     return out
 
 
 @cuda
-def test_real_offload_keeps_host_storage_and_is_bit_identical():
+def test_real_offload_keeps_host_storage_and_is_bit_identical(monkeypatch):
+    monkeypatch.setenv(dm.OFFLOAD_PIN_ENV, "0")
     x = torch.randn(4, 8)
     stock = _pipe("cuda", "text_encoder", "transformer")
     stock.enable_model_cpu_offload()
@@ -150,3 +154,58 @@ def test_a_weight_written_on_the_device_is_copied_back():
     pipe.transformer._hf_hook.init_hook(pipe.transformer)
     assert pipe.transformer.weight.device.type == "cpu"
     assert torch.equal(pipe.transformer.weight.detach(), before + 1)
+
+
+@cuda
+def test_weights_are_pinned_on_first_onload_into_shared_chunks(monkeypatch):
+    monkeypatch.setenv(dm.OFFLOAD_PIN_ENV, "1")
+    x = torch.randn(4, 8)
+    stock = _pipe("cuda", "text_encoder", "transformer")
+    stock.enable_model_cpu_offload()
+    ref = _render(stock, x)
+    pipe = _pipe("cuda", "text_encoder", "transformer")
+    pipe.enable_model_cpu_offload()
+    dm.keep_cpu_weights_on_offload(pipe)
+    assert not pipe.transformer.weight.is_pinned()  # nothing locked at load
+    for _ in range(2):
+        assert torch.equal(_render(pipe, x), ref)
+    for module in pipe.components.values():
+        assert all(p.is_pinned() for p in module.parameters())
+        # Packed: weight and bias of one module live in the same page-locked block.
+        assert (
+            module.weight.untyped_storage().data_ptr() == module.bias.untyped_storage().data_ptr()
+        )
+
+
+@cuda
+def test_pinning_is_off_by_switch_and_when_ram_is_short(monkeypatch):
+    monkeypatch.setenv(dm.OFFLOAD_PIN_ENV, "0")
+    pipe = _pipe("cuda", "transformer")
+    pipe.enable_model_cpu_offload()
+    dm.keep_cpu_weights_on_offload(pipe)
+    _render(pipe, torch.randn(4, 8))
+    assert not pipe.transformer.weight.is_pinned()
+
+    psutil = pytest.importorskip("psutil")
+    monkeypatch.delenv(dm.OFFLOAD_PIN_ENV)
+    short = types.SimpleNamespace(total = 16 << 30, available = 2 << 30)
+    monkeypatch.setattr(psutil, "virtual_memory", lambda: short)
+    pipe = _pipe("cuda", "transformer")
+    pipe.enable_model_cpu_offload()
+    dm.keep_cpu_weights_on_offload(pipe)
+    _render(pipe, torch.randn(4, 8))
+    assert not pipe.transformer.weight.is_pinned()
+
+
+@cuda
+def test_a_non_contiguous_weight_keeps_its_layout(monkeypatch):
+    monkeypatch.setenv(dm.OFFLOAD_PIN_ENV, "1")
+    pipe = _pipe("cuda", "transformer")
+    lin = pipe.transformer
+    lin.weight = torch.nn.Parameter(lin.weight.detach().t().contiguous().t())  # transposed strides
+    assert not lin.weight.is_contiguous()
+    pipe.enable_model_cpu_offload()
+    dm.keep_cpu_weights_on_offload(pipe)
+    _render(pipe, torch.randn(4, 8))
+    assert not lin.weight.is_pinned() and lin.bias.is_pinned()
+    assert lin.weight.stride() == (1, 8)
