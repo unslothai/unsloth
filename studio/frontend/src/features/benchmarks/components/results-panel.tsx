@@ -79,7 +79,7 @@ function Tile({
       <span className="text-ui-11 font-medium tracking-nav text-muted-foreground">
         {label}
       </span>
-      <span className="truncate font-heading text-ui-30 font-semibold leading-tight tracking-[-0.02em] tabular-nums text-foreground">
+      <span className="truncate font-heading text-ui-22 font-semibold leading-tight tracking-[-0.02em] tabular-nums text-foreground">
         {value}
       </span>
       {detail && (
@@ -116,8 +116,16 @@ function Legend({ families }: { families: Family[] }): ReactElement | null {
   );
 }
 
-function ResultsTable({ rows }: { rows: AggRow[] }): ReactElement {
+function ResultsTable({
+  rows,
+  vram,
+}: {
+  rows: AggRow[];
+  /** VRAM in use after each row's load, when it was read. */
+  vram: Record<string, number>;
+}): ReactElement {
   const colors = useFamilyColors();
+  const showVram = Object.keys(vram).length > 0;
   return (
     <div className="overflow-x-auto rounded-xl">
       <table className="w-full text-ui-12">
@@ -129,6 +137,7 @@ function ResultsTable({ rows }: { rows: AggRow[] }): ReactElement {
             <th className="text-right">vs baseline</th>
             <th className="text-right">First token</th>
             <th className="text-right">Load</th>
+            {showVram && <th className="text-right">VRAM</th>}
             <th className="text-right">Draft accept</th>
           </tr>
         </thead>
@@ -173,6 +182,11 @@ function ResultsTable({ rows }: { rows: AggRow[] }): ReactElement {
               <td className="text-right text-muted-foreground">
                 {fmtMs(r.loadMs) || "—"}
               </td>
+              {showVram && (
+                <td className="text-right text-muted-foreground">
+                  {vram[r.label] !== undefined ? `${vram[r.label]} GB` : "—"}
+                </td>
+              )}
               <td className="text-right text-muted-foreground">
                 {r.acceptRate === null
                   ? "—"
@@ -607,7 +621,16 @@ export function RunResults({
         </div>
 
         {isTable ? (
-          <ResultsTable rows={rows} />
+          <ResultsTable
+            rows={rows}
+            vram={Object.fromEntries(
+              run.outcomes.flatMap((o) =>
+                typeof o.served?.vram_used_gb === "number"
+                  ? [[o.label, o.served.vram_used_gb]]
+                  : [],
+              ),
+            )}
+          />
         ) : (
           <div className="overflow-hidden rounded-xl">
             <BenchChart

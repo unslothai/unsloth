@@ -318,19 +318,19 @@ export const BenchChart = memo(function BenchChart({
               <rect
                 x={LABEL_W}
                 y={y}
-                width={plotW * (p.active ? 0.22 : 0.12)}
+                width={plotW}
                 height={BAR_H}
                 rx={4}
-                fill={color}
-                fillOpacity={p.active ? 0.35 : 0.1}
-                stroke={color}
-                strokeOpacity={p.active ? 0.6 : 0.3}
-                strokeDasharray={p.active ? undefined : "4 4"}
-              ></rect>
+                fill={p.active ? color : grid}
+                fillOpacity={p.active ? 0.16 : 0.35}
+              />
+              {p.active && (
+                <rect x={LABEL_W} y={y} width={4} height={BAR_H} rx={2} fill={color} />
+              )}
               <text
-                x={LABEL_W + plotW * (p.active ? 0.22 : 0.12) + 12}
+                x={LABEL_W + 14}
                 y={cy + 4.5}
-                fontSize={12.5}
+                fontSize={12}
                 fill={p.active ? ink : muted}
               >
                 {p.status}
@@ -635,11 +635,12 @@ export const BenchChart = memo(function BenchChart({
   };
 
   return (
-    <div className="relative">
+    <div className="relative mx-auto max-w-[calc(1000px*var(--ui-space-scale,1))]">
       <svg
         ref={svgRef}
         viewBox={`0 0 ${W} ${height}`}
         width="100%"
+        className="mx-auto block max-w-[calc(1000px*var(--ui-space-scale,1))]"
         role="img"
         aria-label={title}
         style={{ fontFamily: FONT }}

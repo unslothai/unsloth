@@ -12,8 +12,17 @@ export interface VariantLoad {
   max_seq_length?: number;
   n_parallel?: number | null;
   spec_draft_cache_type?: string | null;
+  gpu_memory_mode?: "auto" | "manual";
+  gpu_layers?: number;
+  n_cpu_moe?: number;
   // biome-ignore lint/style/useNamingConvention: API schema
   llama_extra_args?: string[] | null;
+}
+
+/** What the offload sweep scales its rows by: the model's block and MoE layer counts. */
+export interface ModelShape {
+  layers: number | null;
+  moeLayers: number | null;
 }
 
 export interface Variant {
@@ -29,6 +38,7 @@ export type SweepKind =
   | "kv"
   | "context"
   | "parallel"
+  | "offload"
   | "tune";
 /** The sweep picker's presets. Auto-tune is its own card, not a preset. */
 export const SWEEP_KINDS: SweepKind[] = [
@@ -39,6 +49,7 @@ export const SWEEP_KINDS: SweepKind[] = [
   "kv",
   "context",
   "parallel",
+  "offload",
 ];
 
 export const SWEEP_TITLE: Record<SweepKind, string> = {
@@ -49,6 +60,7 @@ export const SWEEP_TITLE: Record<SweepKind, string> = {
   kv: "KV cache type",
   context: "Context length",
   parallel: "Parallel slots",
+  offload: "RAM offload",
   tune: "Auto-tune",
 };
 
@@ -65,6 +77,8 @@ export const SWEEP_BLURB: Record<SweepKind, string> = {
     "The same prompt at growing context windows, with load time for each.",
   parallel:
     "1, 2 and 4 decode slots. More slots serve more users, each a little slower.",
+  offload:
+    "For MoE models bigger than VRAM: Studio's own fit, then expert layers moved to RAM from all of them down to none. Every row runs at 8K context. Dense models get GPU layer steps instead.",
   tune: "Off, MTP at 1 to 4 draft tokens, ngram, and MTP + ngram. Picks the fastest and hands it to chat.",
 };
 
@@ -175,8 +189,11 @@ const OFF: Variant = {
 export function sweepVariants(
   kind: SweepKind,
   maxContext?: number | null,
+  shape?: ModelShape | null,
 ): Variant[] {
   switch (kind) {
+    case "offload":
+      return offloadVariants(shape);
     case "spec":
       return [
         OFF,
@@ -301,6 +318,65 @@ export function sweepVariants(
   }
 }
 
+/** Context every offload row loads at: Studio's own offload cap, so the auto row compares. */
+export const OFFLOAD_CONTEXT = 8192;
+
+/**
+ * Studio's fit, then manual placements from the least VRAM to the most, so the first out of
+ * memory row lets the runner skip the rest. MoE models move expert layers (n_cpu_moe, which the
+ * backend clamps and offsets past dense layers); dense ones step GPU layers.
+ */
+export function offloadVariants(shape?: ModelShape | null): Variant[] {
+  const ctx = OFFLOAD_CONTEXT;
+  const auto: Variant = {
+    label: "Studio auto",
+    load: { gpu_memory_mode: "auto", gpu_layers: -1, n_cpu_moe: 0, max_seq_length: ctx },
+  };
+  const manual = (gpu_layers: number, n_cpu_moe: number) => ({
+    gpu_memory_mode: "manual" as const,
+    gpu_layers,
+    n_cpu_moe,
+    max_seq_length: ctx,
+  });
+  const moe = shape?.moeLayers ?? null;
+  const layers = shape?.layers ?? null;
+  if (moe === 0 && layers) {
+    const steps = [...new Set([0.25, 0.5, 0.75].map((f) => Math.max(1, Math.round(layers * f))))];
+    return [
+      auto,
+      ...steps.map((k) => ({
+        label: `GPU layers · ${k} of ${layers}`,
+        load: manual(k, 0),
+      })),
+      { label: "All on GPU", load: manual(999, 0) },
+    ];
+  }
+  // Unknown shape: the backend clamps, so fixed counts still read sensibly.
+  const counts = moe
+    ? [...new Set([0.75, 0.5, 0.25].map((f) => Math.round(moe * f)))].filter(
+        (n) => n > 0 && n < moe,
+      )
+    : [32, 24, 16, 8];
+  return [
+    auto,
+    {
+      label: moe ? `Experts on CPU · all ${moe} layers` : "Experts on CPU · all",
+      load: manual(999, moe ?? 999),
+    },
+    ...counts.map((n) => ({
+      label: moe ? `Experts on CPU · ${n} of ${moe} layers` : `Experts on CPU · ${n} layers`,
+      load: manual(999, n),
+    })),
+    { label: "All on GPU", load: manual(999, 0) },
+  ];
+}
+
+/** How much VRAM a manual row asks for, higher is more: the runner's skip-after-OOM order. */
+export function offloadDemand(load: VariantLoad): number | null {
+  if (load.gpu_memory_mode !== "manual") return null;
+  return (load.gpu_layers ?? 999) * 1000 - (load.n_cpu_moe ?? 0);
+}
+
 /** How much a setting asks of the machine: the tie-break when two rows run alike. */
 function complexity(v: Variant | undefined): number {
   if (!v) return 99;
@@ -376,6 +452,8 @@ export function fmtTokens(n: number): string {
 
 /** Which row is the natural baseline for a preset, when it has one. */
 export function defaultBaseline(variants: Variant[]): string | null {
+  const auto = variants.find((v) => v.load.gpu_memory_mode === "auto");
+  if (auto) return auto.label;
   const off = variants.find((v) => familyOf(v.load) === "off");
   return off?.label ?? variants[0]?.label ?? null;
 }
@@ -589,8 +667,10 @@ export interface RunMeta {
 
 export interface BenchConfig {
   sweep: SweepKind;
-  /** Auto-tune's model, when it is not the one chat has loaded. */
+  /** The model to benchmark when it is not the one chat has loaded (any kind of run). */
   tuneModel?: string | null;
+  /** Its GGUF quant, from the model picker. */
+  tuneVariant?: string | null;
   variants: Variant[];
   baseline: string | null;
   promptSet: string;
@@ -863,10 +943,28 @@ export function modelShort(path: string | null | undefined): string {
 
 /** The load fields a sweep changes from row to row. */
 export function variedFields(variants: Variant[]): Set<string> {
+  const pinned = pinnedFields(variants);
   const out = new Set<string>();
-  for (const v of variants) for (const k of Object.keys(v.load)) out.add(k);
+  for (const v of variants)
+    for (const k of Object.keys(v.load)) if (!pinned.has(k)) out.add(k);
   // The drafting pair moves together: a mode row resets the depth too.
   if (out.has("speculative_type")) out.add("spec_draft_n_max");
+  return out;
+}
+
+/** Fields every row sets to the same value (the offload sweep's context), by value. */
+export function pinnedFields(variants: Variant[]): Map<string, string> {
+  const out = new Map<string, string>();
+  if (variants.length < 2) return out;
+  const [first, ...rest] = variants;
+  for (const [k, v] of Object.entries(first.load)) {
+    const same = rest.every(
+      (r) =>
+        k in r.load &&
+        JSON.stringify((r.load as Record<string, unknown>)[k]) === JSON.stringify(v),
+    );
+    if (same && v !== null && v !== undefined) out.set(k, String(v));
+  }
   return out;
 }
 
@@ -877,8 +975,13 @@ export function baseLine(
 ): string {
   if (!base?.length) return "";
   const varied = variedFields(variants);
+  const pinned = pinnedFields(variants);
   return base
-    .map((b) => `${b.label} ${varied.has(b.field) ? "varied" : b.value}`)
+    .map((b) => {
+      if (varied.has(b.field)) return `${b.label} varied`;
+      const p = pinned.get(b.field);
+      return p === undefined ? `${b.label} ${b.value}` : `${b.label} ${p} (pinned)`;
+    })
     .join(" · ");
 }
 

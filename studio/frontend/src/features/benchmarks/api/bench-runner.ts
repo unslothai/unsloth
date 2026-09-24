@@ -12,6 +12,9 @@ import {
   loadModel,
   useChatRuntimeStore,
 } from "@/features/chat";
+import { gpuMemoryDisplay } from "@/hooks/gpu-memory-display";
+import { resolveGpuVramUsedGb } from "@/hooks/gpu-vram";
+import type { SystemInfoResponse } from "@/hooks/use-system";
 import {
   type ChatSampling,
   chatBaseLoad,
@@ -24,6 +27,7 @@ import {
   type RunMeta,
   type RunResult,
   type VariantOutcome,
+  offloadDemand,
   promptsFor,
   servedMismatch,
   variantLoad,
@@ -49,6 +53,7 @@ function servedSubset(st: InferenceStatusResponse): Record<string, unknown> {
     "context_length",
     "parallel_slots",
     "gguf_variant",
+    "n_cpu_moe",
   ] as const;
   const out: Record<string, unknown> = {};
   for (const k of keys) {
@@ -119,6 +124,19 @@ const MIN_GEN_LIMIT_MS = 90_000;
 /** Below this, or below a fifth of the fastest row so far, a row is spilling, not running. */
 const FLOOR_TPS = 2;
 const FLOOR_FRACTION = 0.2;
+
+async function readVramUsedGb(signal: AbortSignal): Promise<number | null> {
+  try {
+    const res = await authFetch("/api/system?refresh_memory=true", { signal });
+    if (!res.ok) return null;
+    const sys = (await res.json()) as SystemInfoResponse;
+    const gpu = sys.inference_gpu?.available ? sys.inference_gpu : sys.gpu;
+    const used = resolveGpuVramUsedGb(gpuMemoryDisplay(gpu).usageGpu);
+    return used === null ? null : Math.round(used * 10) / 10;
+  } catch {
+    return null;
+  }
+}
 
 function genLimitMs(maxTokens: number): number {
   // Room for 4 tok/s plus a slow prompt; anything slower is caught by the floor anyway.
@@ -262,16 +280,22 @@ export async function runBenchmark(
   if (prompts.length === 0)
     throw new BenchSetupError("The custom prompt is empty.");
 
-  // Auto-tune can name a model of its own; it loads with chat's settings so the base is the same.
-  if (config.tuneModel && config.tuneModel !== status.active_model) {
+  // A run can name a model of its own; it loads with chat's settings so the base is the same.
+  if (
+    config.tuneModel &&
+    (config.tuneModel !== status.active_model ||
+      (config.tuneVariant ?? null) !== (status.gguf_variant ?? null))
+  ) {
     events.onProgress(`Loading ${config.tuneModel}`);
     await loadModel(
       {
         ...chatBaseLoad({
           ...status,
           active_model: config.tuneModel,
-          gguf_variant: null,
+          gguf_variant: config.tuneVariant ?? null,
         }),
+        // chatBaseLoad falls back to chat's quant, which belongs to another model here.
+        gguf_variant: config.tuneVariant ?? null,
         force_reload: true,
       },
       { signal, runtime: "chat" },
@@ -314,6 +338,10 @@ export async function runBenchmark(
   let fastest = 0;
   // Once a context size runs out of memory, every larger one will too.
   let failedContext: number | null = null;
+  // Same for offload: a placement that ran out means every hungrier one will.
+  let failedDemand: number | null = null;
+  // Offload rows are meant to differ a lot in speed; only the absolute floor applies.
+  const relativeFloor = config.sweep !== "offload";
   try {
     for (const variant of config.variants) {
       if (signal.aborted) throw abortError();
@@ -323,6 +351,15 @@ export async function runBenchmark(
           label: variant.label,
           state: "skipped",
           reason: `a smaller context already ran out of memory`,
+        });
+        continue;
+      }
+      const demand = offloadDemand(variant.load);
+      if (failedDemand !== null && demand !== null && demand >= failedDemand) {
+        setOutcome({
+          label: variant.label,
+          state: "skipped",
+          reason: "a lighter placement already ran out of memory",
         });
         continue;
       }
@@ -339,8 +376,10 @@ export async function runBenchmark(
         if (signal.aborted) throw abortError();
         const message = err instanceof Error ? err.message : String(err);
         const oom = err instanceof RowLimitError || looksOutOfMemory(message);
-        if (oom && ctx !== undefined)
+        if (oom && ctx !== undefined && demand === null)
           failedContext = Math.min(failedContext ?? ctx, ctx);
+        if (oom && demand !== null)
+          failedDemand = Math.min(failedDemand ?? demand, demand);
         setOutcome({
           label: variant.label,
           state: "error",
@@ -360,10 +399,16 @@ export async function runBenchmark(
         });
         continue;
       }
+      // VRAM after the load, so offload rows can show what each placement costs.
+      const vram = await readVramUsedGb(signal);
+      const servedInfo = {
+        ...servedSubset(served),
+        ...(vram !== null ? { vram_used_gb: vram } : {}),
+      };
       setOutcome({
         label: variant.label,
         state: "running",
-        served: servedSubset(served),
+        served: servedInfo,
       });
       const total = config.warmup + config.repetitions;
       let rowFailure: string | null = null;
@@ -420,7 +465,8 @@ export async function runBenchmark(
         const rate = result.tps ?? result.clientTps ?? 0;
         if (
           rate > 0 &&
-          (rate < FLOOR_TPS || (fastest > 0 && rate < fastest * FLOOR_FRACTION))
+          (rate < FLOOR_TPS ||
+            (relativeFloor && fastest > 0 && rate < fastest * FLOOR_FRACTION))
         ) {
           rowFailure = `ran at ${rate.toFixed(1)} tok/s, far below the other rows, which means it spilled out of VRAM. Stopped to keep the machine responsive`;
           break;
@@ -428,20 +474,22 @@ export async function runBenchmark(
         if (!warmup) fastest = Math.max(fastest, rate);
       }
       if (rowFailure) {
-        if (ctx !== undefined)
+        if (ctx !== undefined && demand === null)
           failedContext = Math.min(failedContext ?? ctx, ctx);
+        if (demand !== null)
+          failedDemand = Math.min(failedDemand ?? demand, demand);
         setOutcome({
           label: variant.label,
           state: "error",
           reason: rowFailure,
-          served: servedSubset(served),
+          served: servedInfo,
         });
         continue;
       }
       setOutcome({
         label: variant.label,
         state: "done",
-        served: servedSubset(served),
+        served: servedInfo,
       });
     }
   } catch (err) {

@@ -18,6 +18,8 @@ import {
   footerLines,
   headline,
   ngramArgs,
+  offloadDemand,
+  offloadVariants,
   promptsFor,
   rampingRows,
   servedMismatch,
@@ -260,4 +262,55 @@ test("os strings read as a person would say them", () => {
   assert.equal(osShort("macOS-15.3-arm64-arm-64bit"), "macOS 15.3 arm64");
   assert.equal(osShort("Linux-6.8.0-45-generic-x86_64-with-glibc2.39"), "Linux 6.8.0");
   assert.equal(osShort(null), "");
+});
+
+test("offload rows scale to the MoE layer count and run from the least VRAM to the most", () => {
+  const rows = offloadVariants({ layers: 48, moeLayers: 40 });
+  assert.deepEqual(
+    rows.map((r) => r.label),
+    [
+      "Studio auto",
+      "Experts on CPU · all 40 layers",
+      "Experts on CPU · 30 of 40 layers",
+      "Experts on CPU · 20 of 40 layers",
+      "Experts on CPU · 10 of 40 layers",
+      "All on GPU",
+    ],
+  );
+  assert.equal(rows[0].load.gpu_memory_mode, "auto");
+  // Every row pins the same context, so auto and manual compare.
+  assert.ok(rows.every((r) => r.load.max_seq_length === 8192));
+  const demands = rows.slice(1).map((r) => offloadDemand(r.load) ?? -1);
+  assert.deepEqual([...demands].sort((a, b) => a - b), demands);
+  assert.equal(offloadDemand(rows[0].load), null);
+});
+
+test("a dense model gets GPU layer steps, and an unknown shape still gets sensible rows", () => {
+  const dense = offloadVariants({ layers: 40, moeLayers: 0 });
+  assert.deepEqual(
+    dense.map((r) => r.label),
+    [
+      "Studio auto",
+      "GPU layers · 10 of 40",
+      "GPU layers · 20 of 40",
+      "GPU layers · 30 of 40",
+      "All on GPU",
+    ],
+  );
+  assert.ok(dense.every((r) => (r.load.n_cpu_moe ?? 0) === 0));
+  const unknown = offloadVariants(null);
+  assert.equal(unknown[1].load.n_cpu_moe, 999);
+  assert.equal(new Set(unknown.map((r) => r.label)).size, unknown.length);
+});
+
+test("a value every row shares prints as pinned, not varied", () => {
+  const line = baseLine(
+    [
+      { field: "max_seq_length", label: "Context Length", value: "Auto" },
+      { field: "n_cpu_moe", label: "MoE on CPU", value: "0" },
+    ],
+    offloadVariants({ layers: 48, moeLayers: 40 }),
+  );
+  assert.match(line, /Context Length 8192 \(pinned\)/);
+  assert.match(line, /MoE on CPU varied/);
 });

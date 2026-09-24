@@ -9,11 +9,6 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { InfoHint } from "@/components/ui/info-hint";
 import { Input } from "@/components/ui/input";
 import {
-  Popover,
-  PopoverContent,
-  PopoverTrigger,
-} from "@/components/ui/popover";
-import {
   Select,
   SelectContent,
   SelectItem,
@@ -26,23 +21,27 @@ import {
   type InferenceStatusResponse,
   useChatRuntimeStore,
 } from "@/features/chat";
+import { ModelSelector } from "@/features/model-picker";
 import { cn } from "@/lib/utils";
 import {
   ArrowDown01Icon,
   Cancel01Icon,
   PlusSignIcon,
-  CpuIcon,
-  SidebarLeft01Icon,
   StarIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
-import { type ReactElement, type ReactNode, useMemo, useState } from "react";
-import { useChatSettings } from "../api/chat-base";
 import {
-  type BenchRun,
+  type ReactElement,
+  type ReactNode,
+  useEffect,
+  useMemo,
+  useState,
+} from "react";
+import {
   CUSTOM_PROMPT_ID,
   FAMILY_LABEL,
   type Family,
+  type ModelShape,
   PROMPT_SETS,
   SWEEP_BLURB,
   SWEEP_KINDS,
@@ -50,8 +49,6 @@ import {
   type SweepKind,
   type Variant,
   familyOf,
-  modelShort,
-  variedFields,
 } from "../lib/bench-math";
 import { type BenchKind, useBenchmarksStore } from "../stores/benchmarks-store";
 import { useFamilyColors } from "./family-colors";
@@ -89,15 +86,17 @@ function Field({
   label,
   hint,
   aside,
+  className,
   children,
 }: {
   label: string;
   hint?: string;
   aside?: ReactNode;
+  className?: string;
   children: ReactNode;
 }): ReactElement {
   return (
-    <div className="flex flex-col gap-2">
+    <div className={cn("flex flex-col gap-2", className)}>
       <div className="flex items-center justify-between gap-2">
         <span className="flex items-center gap-1.5 text-ui-11 font-medium uppercase tracking-[0.05em] text-muted-foreground/70">
           {label}
@@ -106,102 +105,6 @@ function Field({
         {aside}
       </div>
       {children}
-    </div>
-  );
-}
-
-/** Model and chat's key Run Settings as Hub pills; the full list is a click away. */
-export function ModelStrip({
-  status,
-  run,
-}: {
-  status: InferenceStatusResponse | null;
-  /** A live run: show what it captured, not the status of whichever row is loading. */
-  run?: BenchRun | null;
-}): ReactElement {
-  const config = useBenchmarksStore((s) => s.config);
-  const disabled = useBenchmarksStore((s) => s.disabled);
-  const chatSettings = useChatSettings();
-  const settings = run?.base ?? chatSettings;
-  const varied = variedFields(
-    config.variants.filter((v) => !disabled.includes(v.label)),
-  );
-  const model = run ? run.model : status?.active_model;
-  const variant = run ? run.ggufVariant : status?.gguf_variant;
-  const ready = Boolean(model) && (run ? true : status?.is_gguf !== false);
-  const pick = [
-    "max_seq_length",
-    "cache_type_kv",
-    "speculative_type",
-    "spec_draft_n_max",
-    "n_parallel",
-  ];
-  const shown = settings.filter((b) => pick.includes(b.field));
-
-  return (
-    <div className="flex flex-wrap items-center gap-1.5">
-      <StatPill
-        icon={CpuIcon}
-        value={
-          ready
-            ? modelShort(model)
-            : run
-              ? "Reading the model"
-              : "No GGUF loaded"
-        }
-        label={
-          ready ? (variant ?? undefined) : run ? undefined : "load one in chat"
-        }
-      />
-      {ready &&
-        shown.map((b) => (
-          <StatPill
-            key={b.field}
-            value={varied.has(b.field) ? "swept" : b.value}
-            label={b.label}
-          />
-        ))}
-      {ready && (
-        <Popover>
-          <PopoverTrigger asChild={true}>
-            <button
-              type="button"
-              className="inline-flex h-8 items-center gap-1 rounded-full px-2.5 text-ui-12 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-            >
-              All {settings.length} settings
-              <HugeiconsIcon
-                icon={ArrowDown01Icon}
-                strokeWidth={1.75}
-                className="size-3.5"
-              />
-            </button>
-          </PopoverTrigger>
-          <PopoverContent
-            align="start"
-            className="max-h-[60vh] w-80 overflow-y-auto"
-          >
-            <p className="mb-2 text-xs font-semibold">
-              From chat's Run Settings
-            </p>
-            <div className="flex flex-col gap-1">
-              {settings.map((b) => (
-                <div
-                  key={b.field}
-                  className="flex justify-between gap-4 text-xs"
-                >
-                  <span className="text-muted-foreground">{b.label}</span>
-                  <span
-                    className="truncate font-medium tabular-nums"
-                    title={b.value}
-                  >
-                    {varied.has(b.field) ? "swept" : b.value}
-                  </span>
-                </div>
-              ))}
-            </div>
-          </PopoverContent>
-        </Popover>
-      )}
     </div>
   );
 }
@@ -366,18 +269,110 @@ function PromptListEditor({
   );
 }
 
-const LOADED = "\u0000loaded";
-
-export function SetupPanel({
+/** Chat's own model picker, on-device GGUFs and their quants. Picking one other than the
+ * loaded model makes the run load it first, with chat's Run Settings. */
+export function BenchModelPicker({
   status,
-  maxContext,
   locked,
-  onCollapse,
 }: {
   status: InferenceStatusResponse | null;
-  maxContext: number | null;
   locked: boolean;
-  onCollapse: () => void;
+}): ReactElement {
+  const config = useBenchmarksStore((s) => s.config);
+  const setConfig = useBenchmarksStore((s) => s.setConfig);
+  const models = useChatRuntimeStore((s) => s.models);
+  // Benchmarks load through llama-server, so only GGUFs are offered.
+  const pickable = useMemo(
+    () =>
+      models
+        .filter((m) => m.isGguf)
+        .map((m) => ({
+          id: m.id,
+          name: m.name,
+          description: m.description,
+          isGguf: m.isGguf,
+        })),
+    [models],
+  );
+  return (
+    <div className={cn("min-w-0", locked && "pointer-events-none opacity-60")}>
+      <ModelSelector
+        models={pickable}
+        value={config.tuneModel ?? status?.active_model ?? undefined}
+        activeGgufVariant={
+          config.tuneModel
+            ? (config.tuneVariant ?? null)
+            : (status?.gguf_variant ?? null)
+        }
+        loaded={!config.tuneModel && Boolean(status?.active_model)}
+        onValueChange={(value, meta) => {
+          const same =
+            value === status?.active_model &&
+            (meta.ggufVariant ?? null) === (status?.gguf_variant ?? null);
+          setConfig(
+            same
+              ? { tuneModel: null, tuneVariant: null }
+              : { tuneModel: value, tuneVariant: meta.ggufVariant ?? null },
+          );
+        }}
+        variant="ghost"
+        className="!h-[calc(34px*var(--ui-space-scale,1))] max-w-full"
+        placeholder="Pick a GGUF to benchmark"
+      />
+    </div>
+  );
+}
+
+const FIT_GAP = 24;
+
+/** Caps an element's height to what's left of its scroll area below its top, so the setup
+ * card ends above the window's edge and Compare scrolls instead. */
+function useFitToViewport(): [
+  (el: HTMLElement | null) => void,
+  number | null,
+] {
+  const [el, setEl] = useState<HTMLElement | null>(null);
+  const [height, setHeight] = useState<number | null>(null);
+  useEffect(() => {
+    if (!el) return;
+    let scroller: HTMLElement | null = el.parentElement;
+    while (scroller) {
+      const oy = getComputedStyle(scroller).overflowY;
+      if (oy === "auto" || oy === "scroll") break;
+      scroller = scroller.parentElement;
+    }
+    let frame = 0;
+    const measure = () => {
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => {
+        const bottom = scroller
+          ? scroller.getBoundingClientRect().bottom
+          : window.innerHeight;
+        const top = Math.max(el.getBoundingClientRect().top, 0);
+        setHeight(Math.max(320, Math.floor(bottom - top - FIT_GAP)));
+      });
+    };
+    measure();
+    const target: HTMLElement | Window = scroller ?? window;
+    target.addEventListener("scroll", measure, { passive: true });
+    window.addEventListener("resize", measure);
+    return () => {
+      cancelAnimationFrame(frame);
+      target.removeEventListener("scroll", measure);
+      window.removeEventListener("resize", measure);
+    };
+  }, [el]);
+  return [setEl, height];
+}
+
+export function SetupPanel({
+  maxContext,
+  shape,
+  locked,
+}: {
+  maxContext: number | null;
+  shape: ModelShape | null;
+  locked: boolean;
 }): ReactElement {
   const config = useBenchmarksStore((s) => s.config);
   const disabled = useBenchmarksStore((s) => s.disabled);
@@ -385,8 +380,6 @@ export function SetupPanel({
   const chooseKind = useBenchmarksStore((s) => s.chooseKind);
   const choosePreset = useBenchmarksStore((s) => s.choosePreset);
   const toggleVariant = useBenchmarksStore((s) => s.toggleVariant);
-  const models = useChatRuntimeStore((s) => s.models);
-  const ggufs = useMemo(() => models.filter((m) => m.isGguf), [models]);
   const colors = useFamilyColors();
   const kind: BenchKind = config.sweep === "tune" ? "tune" : "sweep";
   const on = config.variants.filter((v) => !disabled.includes(v.label)).length;
@@ -404,6 +397,7 @@ export function SetupPanel({
   }, [config.variants]);
   // Collapsed by default: 22 rows of detail is not what you open the page for.
   const [opened, setOpened] = useState<Family[]>([]);
+  const [fitRef, fitHeight] = useFitToViewport();
   const prompts = [
     ...PROMPT_SETS.map((p) => ({ id: p.id, name: p.name, hint: p.hint })),
     {
@@ -414,29 +408,15 @@ export function SetupPanel({
   ];
 
   return (
-    <aside className="corner-squircle flex max-h-[calc(100vh-3rem)] flex-col overflow-hidden rounded-3xl bg-card ring-1 ring-[color-mix(in_oklab,var(--foreground)_calc(10%*var(--contrast-edge-gain,1)),transparent)]">
-      <header className="flex items-center justify-between gap-2 px-5 pb-1 pt-4">
-        <span className="text-ui-11 font-medium tracking-nav text-muted-foreground">
-          Setup
-        </span>
-        <button
-          type="button"
-          onClick={onCollapse}
-          aria-label="Hide setup"
-          title="Hide setup"
-          className="grid size-7 place-items-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-        >
-          <HugeiconsIcon
-            icon={SidebarLeft01Icon}
-            strokeWidth={1.75}
-            className="size-4"
-          />
-        </button>
-      </header>
-      <fieldset
-        disabled={locked}
-        className="flex min-h-0 flex-1 flex-col gap-6 overflow-y-auto px-5 pb-5 pt-3 disabled:opacity-60"
-      >
+    <fieldset
+      ref={fitRef}
+      disabled={locked}
+      style={{ maxHeight: fitHeight ?? undefined }}
+      className="corner-squircle flex min-w-0 flex-col gap-6 rounded-3xl bg-card px-5 pb-5 pt-4 ring-1 [&>*]:shrink-0 ring-[color-mix(in_oklab,var(--foreground)_calc(10%*var(--contrast-edge-gain,1)),transparent)] disabled:opacity-60"
+    >
+      <span className="text-ui-11 font-medium tracking-nav text-muted-foreground">
+        Setup
+      </span>
         <Tabs
           value={kind}
           onValueChange={(v) => chooseKind(v as BenchKind)}
@@ -458,7 +438,9 @@ export function SetupPanel({
           >
             <Select
               value={config.sweep}
-              onValueChange={(v) => choosePreset(v as SweepKind, maxContext)}
+              onValueChange={(v) =>
+                choosePreset(v as SweepKind, maxContext, shape)
+              }
             >
               <SelectTrigger className="w-full">
                 <SelectValue />
@@ -471,39 +453,19 @@ export function SetupPanel({
                 ))}
               </SelectContent>
             </Select>
+            <p className="text-ui-11p5 leading-relaxed text-muted-foreground">
+              {SWEEP_BLURB[config.sweep]}
+            </p>
           </Field>
         ) : (
-          <Field
-            label="Model"
-            hint="Tries every speculative mode with chat's Run Settings and picks the fastest. A simpler setting within 3% of it wins."
-          >
-            <Select
-              value={config.tuneModel ?? LOADED}
-              onValueChange={(v) =>
-                setConfig({ tuneModel: v === LOADED ? null : v })
-              }
-            >
-              <SelectTrigger className="w-full">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value={LOADED}>
-                  {status?.active_model
-                    ? `${modelShort(status.active_model)} (loaded)`
-                    : "Whatever chat has loaded"}
-                </SelectItem>
-                {ggufs.map((m) => (
-                  <SelectItem key={m.id} value={m.id}>
-                    {m.name}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </Field>
+          <p className="-mt-3 text-ui-11p5 leading-relaxed text-muted-foreground">
+            {SWEEP_BLURB.tune} A simpler setting within 3% of the fastest wins.
+          </p>
         )}
 
         <Field
           label="Compare"
+          className="!shrink min-h-[calc(140px*var(--ui-space-scale,1))]"
           hint="Each row is one model load. The star marks the baseline the others are measured against."
           aside={
             <button
@@ -519,7 +481,7 @@ export function SetupPanel({
             </button>
           }
         >
-          <ul className="-mx-2 flex flex-col">
+          <ul className="-mx-2 flex min-h-0 flex-col overflow-y-auto overscroll-contain">
             {groups.map((g) => {
               const rows = g.rows.map((v) => (
                 <VariantRow
@@ -682,7 +644,6 @@ export function SetupPanel({
             Restore chat's settings after
           </label>
         </Field>
-      </fieldset>
-    </aside>
+    </fieldset>
   );
 }

@@ -22,6 +22,7 @@ import {
   type SweepKind,
   type Variant,
   aggregate,
+  type ModelShape,
   defaultBaseline,
   sweepVariants,
   tuneVerdict,
@@ -32,8 +33,9 @@ export type BenchKind = "sweep" | "tune";
 export function presetConfig(
   sweep: SweepKind,
   maxContext?: number | null,
+  shape?: ModelShape | null,
 ): Pick<BenchConfig, "sweep" | "variants" | "baseline"> {
-  const variants = sweepVariants(sweep, maxContext);
+  const variants = sweepVariants(sweep, maxContext, shape);
   return { sweep, variants, baseline: defaultBaseline(variants) };
 }
 
@@ -71,7 +73,11 @@ interface BenchmarksState {
   applying: string | null;
   setConfig: (patch: Partial<BenchConfig>) => void;
   chooseKind: (kind: BenchKind) => void;
-  choosePreset: (sweep: SweepKind, maxContext?: number | null) => void;
+  choosePreset: (
+    sweep: SweepKind,
+    maxContext?: number | null,
+    shape?: ModelShape | null,
+  ) => void;
   applyToChat: (run: BenchRun) => Promise<void>;
   toggleVariant: (label: string) => void;
   refreshRuns: () => Promise<void>;
@@ -123,9 +129,9 @@ export const useBenchmarksStore = create<BenchmarksState>()(
         if (kind === "tune" && config.sweep !== "tune") choosePreset("tune");
         if (kind === "sweep" && config.sweep === "tune") choosePreset("spec");
       },
-      choosePreset: (sweep, maxContext) =>
+      choosePreset: (sweep, maxContext, shape) =>
         set((s) => ({
-          config: { ...s.config, ...presetConfig(sweep, maxContext) },
+          config: { ...s.config, ...presetConfig(sweep, maxContext, shape) },
           disabled: [],
         })),
       applyToChat: async (run) => {
@@ -139,7 +145,7 @@ export const useBenchmarksStore = create<BenchmarksState>()(
         if (!variant) return;
         set({ applying: run.id, error: null });
         try {
-          await applyVariantToChat(variant, run.config.tuneModel ?? run.model);
+          await applyVariantToChat(variant, run.model, run.ggufVariant);
         } catch (err) {
           set({
             error: `Could not apply to chat: ${err instanceof Error ? err.message : String(err)}`,

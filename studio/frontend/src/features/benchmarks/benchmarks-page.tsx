@@ -2,36 +2,37 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 // Benchmarks: sweep load settings on the loaded GGUF and chart what each one does to
-// throughput, draft acceptance and load time on this machine. One page: the setup card,
-// then the run, live or picked from history.
+// throughput, draft acceptance and load time on this machine. Setup, results and a
+// Train-style run preview on one tab; saved runs on History.
 
-import { Button } from "@/components/ui/button";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuLabel,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   type InferenceStatusResponse,
+  fetchGgufStagedMetadata,
   getInferenceStatus,
 } from "@/features/chat";
 import { authFetch } from "@/features/auth";
+import { gpuMemoryDisplay } from "@/hooks/gpu-memory-display";
+import { gpuMemoryTotalsGb, resolveGpuVramUsedGb } from "@/hooks/gpu-vram";
+import { useSystemInfo } from "@/hooks/use-system";
 import { cn } from "@/lib/utils";
 import {
-  Clock01Icon,
+  Chip02Icon,
   CpuIcon,
-  DashboardSpeed01Icon,
-  Delete02Icon,
-  Rocket01Icon,
+  GpuIcon,
+  RamMemoryIcon,
 } from "@hugeicons/core-free-icons";
-import { HugeiconsIcon } from "@hugeicons/react";
-import { type ReactElement, useEffect, useState } from "react";
+import { type ReactElement, type ReactNode, useEffect, useState } from "react";
+import { HistoryGrid } from "./components/history-grid";
 import { RunResults } from "./components/results-panel";
-import { ModelStrip, SetupPanel, StatPill } from "./components/setup-panel";
+import { RunPreviewCard } from "./components/run-preview";
+import {
+  BenchModelPicker,
+  SetupPanel,
+  StatPill,
+} from "./components/setup-panel";
 import { TuneVerdictCard } from "./components/tune-section";
-import { SWEEP_TITLE, modelShort } from "./lib/bench-math";
+import type { ModelShape } from "./lib/bench-math";
 import { useBenchmarksStore } from "./stores/benchmarks-store";
 
 function useLoadedModel(paused: boolean): InferenceStatusResponse | null {
@@ -53,11 +54,9 @@ function useLoadedModel(paused: boolean): InferenceStatusResponse | null {
   return status;
 }
 
-interface Machine {
-  gpu: string | null;
-  vramGb: number | null;
-  backend: string | null;
-  llamaTag: string | null;
+interface Backend {
+  name: string | null;
+  tag: string | null;
 }
 
 const BACKEND_NAME: Record<string, string> = {
@@ -69,120 +68,187 @@ const BACKEND_NAME: Record<string, string> = {
   sycl: "SYCL",
 };
 
-/** The Hub's toolbar facts: what this machine benchmarks on. */
-function useMachine(): Machine {
-  const [m, setM] = useState<Machine>({
-    gpu: null,
-    vramGb: null,
-    backend: null,
-    llamaTag: null,
-  });
+function useLlamaBackend(): Backend {
+  const [b, setB] = useState<Backend>({ name: null, tag: null });
   useEffect(() => {
-    const read = async (path: string) => {
-      try {
-        const res = await authFetch(path);
-        return res.ok ? ((await res.json()) as Record<string, unknown>) : null;
-      } catch {
-        return null;
-      }
-    };
-    void Promise.all([
-      read("/api/system/hardware"),
-      read("/api/llama/backend"),
-    ]).then(([hw, llama]) => {
-      const gpu = (hw?.gpu ?? {}) as Record<string, unknown>;
-      const backend = typeof llama?.backend === "string" ? llama.backend : null;
-      setM({
-        gpu: typeof gpu.gpu_name === "string" ? gpu.gpu_name : null,
-        vramGb:
-          typeof gpu.vram_total_gb === "number" ? gpu.vram_total_gb : null,
-        backend: backend
-          ? (BACKEND_NAME[backend.toLowerCase()] ?? backend)
-          : null,
-        llamaTag:
-          typeof llama?.installed_tag === "string" ? llama.installed_tag : null,
-      });
-    });
+    void authFetch("/api/llama/backend")
+      .then((res) => (res.ok ? res.json() : null))
+      .then((llama: Record<string, unknown> | null) => {
+        const name = typeof llama?.backend === "string" ? llama.backend : null;
+        setB({
+          name: name ? (BACKEND_NAME[name.toLowerCase()] ?? name) : null,
+          tag:
+            typeof llama?.installed_tag === "string" ? llama.installed_tag : null,
+        });
+      })
+      .catch(() => undefined);
   }, []);
-  return m;
+  return b;
 }
 
-function History({ shownId }: { shownId: string | null }): ReactElement | null {
-  const runs = useBenchmarksStore((s) => s.runs);
-  const live = useBenchmarksStore((s) => s.live);
-  const selectRun = useBenchmarksStore((s) => s.selectRun);
-  const deleteRun = useBenchmarksStore((s) => s.deleteRun);
-  if (runs.length === 0) return null;
+const gb = (n: number) => (n >= 10 ? Math.round(n) : Math.round(n * 10) / 10);
+
+/** GPUs, VRAM, RAM, CPU and llama.cpp backend. Polls while idle; a run holds the last
+ * reading so the probe doesn't compete with what's being measured. */
+function MachinePills({ polling }: { polling: boolean }): ReactElement {
+  const sys = useSystemInfo({ pollMs: polling ? 5000 : 0 });
+  const backend = useLlamaBackend();
+  // llama.cpp's device list, which differs from torch's when it runs on Vulkan.
+  const gpu = sys.inference_gpu?.available ? sys.inference_gpu : sys.gpu;
+  const display = gpuMemoryDisplay(gpu);
+  const devices = display.sharedOnly ? display.sharedDevices : display.usageDevices;
+  const names = devices.map((d) => d.name ?? "GPU");
+  const vramTotal = gpuMemoryTotalsGb(devices).total;
+  const vramUsed = display.sharedOnly ? null : resolveGpuVramUsedGb(display.usageGpu);
+  const ramTotal = sys.memory.total_gb;
+  const ramUsed = Math.max(0, ramTotal - sys.memory.available_gb);
+  const threads = sys.cpu.logical_count;
+
+  const gpuLabel =
+    names.length === 0
+      ? null
+      : new Set(names).size === 1
+        ? names.length > 1
+          ? `${names.length}× ${names[0]}`
+          : names[0]
+        : `${names[0]} +${names.length - 1}`;
+  const perDevice = devices
+    .map(
+      (d, i) =>
+        `GPU ${d.index ?? i}: ${d.name ?? "GPU"}${
+          d.memory_total_gb
+            ? ` · ${d.vram_used_gb != null ? `${gb(d.vram_used_gb)} / ` : ""}${gb(d.memory_total_gb)} GB`
+            : ""
+        }`,
+    )
+    .join("\n");
+
   return (
-    <DropdownMenu>
-      <DropdownMenuTrigger asChild={true}>
-        <Button
-          variant="ghost"
-          className="h-10 gap-2 rounded-full px-4"
-          disabled={Boolean(live)}
-        >
-          <HugeiconsIcon
-            icon={Clock01Icon}
-            strokeWidth={1.75}
-            className="size-4"
-          />
+    <div className="flex min-w-0 flex-wrap items-center justify-end gap-1.5 sm:flex-1">
+      {gpuLabel && (
+        <StatPill icon={GpuIcon} value={gpuLabel} title={perDevice} />
+      )}
+      {vramTotal > 0 && (
+        <StatPill
+          icon={Chip02Icon}
+          value={
+            vramUsed != null
+              ? `${gb(vramUsed)} / ${gb(vramTotal)} GB`
+              : `${gb(vramTotal)} GB`
+          }
+          label={display.sharedOnly ? "shared" : "VRAM"}
+          title={perDevice}
+        />
+      )}
+      {ramTotal > 0 && (
+        <StatPill
+          icon={RamMemoryIcon}
+          value={`${gb(ramUsed)} / ${gb(ramTotal)} GB`}
+          label="RAM"
+        />
+      )}
+      {threads > 0 && (
+        <StatPill icon={CpuIcon} value={threads} label="threads" />
+      )}
+      {backend.name && (
+        <StatPill
+          value={backend.name}
+          label={backend.tag ? `llama.cpp ${backend.tag}` : "llama.cpp"}
+        />
+      )}
+    </div>
+  );
+}
+
+
+type BenchTab = "benchmark" | "history";
+
+/** Train's sub-nav: underlined text tabs on the header rule. */
+function BenchSubNav({
+  value,
+  runCount,
+}: {
+  value: BenchTab;
+  runCount: number;
+}): ReactElement {
+  const items: ReadonlyArray<{
+    value: BenchTab;
+    label: ReactNode;
+    disabled: boolean;
+  }> = [
+    { value: "benchmark", label: "Benchmark", disabled: false },
+    {
+      value: "history",
+      label: (
+        <>
           History
-          <span className="text-muted-foreground tabular-nums">
-            {runs.length}
-          </span>
-        </Button>
-      </DropdownMenuTrigger>
-      <DropdownMenuContent
-        align="end"
-        className="max-h-[min(60vh,var(--radix-dropdown-menu-content-available-height))] w-80 overflow-y-auto"
-      >
-        <DropdownMenuLabel className="text-ui-11 text-muted-foreground">
-          Saved runs
-        </DropdownMenuLabel>
-        {runs.map((run) => (
-          <DropdownMenuItem
-            key={run.id}
-            onSelect={() => void selectRun(run.id)}
+          {runCount > 0 && (
+            <span className="ml-1.5 font-normal tabular-nums text-muted-foreground">
+              {runCount}
+            </span>
+          )}
+        </>
+      ),
+      disabled: false,
+    },
+  ];
+  return (
+    <TabsList
+      unstyled={true}
+      className="flex min-w-0 flex-wrap items-center justify-start gap-3 pb-px text-ui-13 tracking-nav sm:gap-6"
+    >
+      {items.map((item) => {
+        const active = value === item.value;
+        return (
+          <TabsTrigger
+            key={item.value}
+            value={item.value}
+            disabled={item.disabled}
+            indicatorClassName="hidden"
             className={cn(
-              "group flex items-start gap-2 py-2",
-              run.id === shownId && "bg-accent",
+              "relative h-9 flex-none select-none rounded-none border-0 px-0 py-0 text-ui-13 transition-colors disabled:cursor-not-allowed disabled:opacity-40",
+              "after:pointer-events-none after:absolute after:inset-x-0 after:bottom-0 after:h-[2px] after:rounded-full after:bg-foreground after:transition-opacity",
+              active
+                ? "font-semibold text-foreground after:opacity-100"
+                : "text-muted-foreground hover:text-foreground after:opacity-0",
             )}
           >
-            <span className="flex min-w-0 flex-1 flex-col">
-              <span className="truncate text-ui-12p5 font-medium">
-                {SWEEP_TITLE[run.config.sweep]}
-              </span>
-              <span className="truncate text-ui-11p5 text-muted-foreground">
-                {modelShort(run.model)} ·{" "}
-                {new Date(run.createdAt).toLocaleString(undefined, {
-                  month: "short",
-                  day: "numeric",
-                  hour: "numeric",
-                  minute: "2-digit",
-                })}
-              </span>
-            </span>
-            <button
-              type="button"
-              onClick={(e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                void deleteRun(run.id);
-              }}
-              className="rounded-md p-1 text-muted-foreground opacity-0 transition-opacity hover:text-foreground group-hover:opacity-100"
-              aria-label="Delete this run"
-            >
-              <HugeiconsIcon
-                icon={Delete02Icon}
-                strokeWidth={1.75}
-                className="size-3.5"
-              />
-            </button>
-          </DropdownMenuItem>
-        ))}
-      </DropdownMenuContent>
-    </DropdownMenu>
+            {item.label}
+          </TabsTrigger>
+        );
+      })}
+    </TabsList>
   );
+}
+
+/** Layer counts for the offload sweep: the loaded model's from status, a picked one's from
+ * its GGUF header. */
+function useModelShape(
+  status: InferenceStatusResponse | null,
+  model: string | null,
+  variant: string | null,
+): ModelShape | null {
+  const [picked, setPicked] = useState<{ key: string; shape: ModelShape } | null>(null);
+  const key = model ? `${model}\u0000${variant ?? ""}` : null;
+  useEffect(() => {
+    if (!model || !key) return;
+    let cancelled = false;
+    void fetchGgufStagedMetadata({ model_path: model, gguf_variant: variant })
+      .then((m) => {
+        if (!cancelled)
+          setPicked({ key, shape: { layers: m.layerCount, moeLayers: m.moeLayerCount } });
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [model, variant, key]);
+  if (key) return picked?.key === key ? picked.shape : null;
+  if (!status?.active_model) return null;
+  return {
+    layers: status.n_layers ?? null,
+    moeLayers: status.n_moe_layers ?? null,
+  };
 }
 
 export function BenchmarksPage(): ReactElement {
@@ -196,17 +262,25 @@ export function BenchmarksPage(): ReactElement {
   const start = useBenchmarksStore((s) => s.start);
   const cancel = useBenchmarksStore((s) => s.cancel);
   const error = useBenchmarksStore((s) => s.error);
-  const config = useBenchmarksStore((s) => s.config);
-  const disabled = useBenchmarksStore((s) => s.disabled);
   const status = useLoadedModel(Boolean(live));
-  const machine = useMachine();
   const maxContext =
     status?.max_context_length ?? status?.native_context_length ?? null;
-  const ready = Boolean(status?.active_model) && status?.is_gguf !== false;
-  const [setupOpen, setSetupOpen] = useState(true);
-  const rowsOn = config.variants.filter(
-    (v) => !disabled.includes(v.label),
-  ).length;
+  const config = useBenchmarksStore((s) => s.config);
+  const choosePreset = useBenchmarksStore((s) => s.choosePreset);
+  const shape = useModelShape(
+    status,
+    config.tuneModel ?? null,
+    config.tuneVariant ?? null,
+  );
+  // The offload rows are scaled to the model, so a new model or a late shape rebuilds them.
+  const shapeKey = shape ? `${shape.layers}/${shape.moeLayers}` : "";
+  const offloadSweep = config.sweep === "offload";
+  useEffect(() => {
+    if (offloadSweep && !live && shapeKey)
+      choosePreset("offload", maxContext, shape);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed on the shape's value
+  }, [offloadSweep, shapeKey]);
+  const [tab, setTab] = useState<BenchTab>("benchmark");
 
   useEffect(() => {
     if (!runsLoaded) void refreshRuns();
@@ -219,126 +293,112 @@ export function BenchmarksPage(): ReactElement {
   }, [shownId, loaded, selectRun]);
   const shown = live ? live.run : shownId ? (loaded[shownId] ?? null) : null;
 
+  const preview = (
+    <RunPreviewCard
+      status={status}
+      onRun={() => void start()}
+      onViewRun={() => setTab("benchmark")}
+    />
+  );
+
   return (
     <div className="flex h-full min-h-0 flex-col bg-background">
-      <div className="mx-auto flex w-full max-w-[calc(1180px*var(--ui-space-scale,1))] flex-col gap-6 px-5 pb-20 pt-8 sm:px-9 sm:pt-10">
-        <header className="font-heading flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
-          <div className="flex flex-col gap-0.5">
-            <h1 className="page-title-halo text-ui-30 font-semibold leading-[1.04] tracking-[-0.028em] text-foreground sm:text-ui-34">
-              Benchmarks
-            </h1>
-            <p className="page-title-halo text-sm text-muted-foreground">
-              Find the fastest settings for the model you have loaded, on this
-              machine
-            </p>
-          </div>
-          <div className="flex min-w-0 flex-wrap items-center justify-end gap-1.5 sm:flex-1">
-            {machine.gpu && (
-              <StatPill icon={DashboardSpeed01Icon} value={machine.gpu} />
-            )}
-            {machine.vramGb && (
-              <StatPill
-                icon={CpuIcon}
-                value={`${Math.round(machine.vramGb)} GiB`}
-                label="VRAM"
-              />
-            )}
-            {machine.backend && (
-              <StatPill
-                value={machine.backend}
-                label={machine.llamaTag ?? undefined}
-              />
-            )}
-          </div>
-        </header>
-
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <ModelStrip status={status} run={live?.run ?? null} />
-          <div className="flex items-center gap-2">
-            <History shownId={shownId} />
-            {!live && (
-              <Button
-                onClick={() => void start()}
-                disabled={!ready || rowsOn === 0}
-                className="h-9 gap-2 rounded-full px-4"
-              >
-                <HugeiconsIcon
-                  icon={Rocket01Icon}
-                  strokeWidth={1.75}
-                  className="size-4"
-                />
-                {config.sweep === "tune" ? "Run auto-tune" : "Run benchmark"}
-              </Button>
-            )}
-          </div>
-        </div>
-
-        {error && (
-          <p
-            role="alert"
-            className="rounded-xl bg-destructive/10 px-4 py-2.5 text-ui-12p5 text-destructive"
-          >
-            {error}
-          </p>
-        )}
-
-        <div
-          className={cn(
-            "grid grid-cols-1 items-start gap-6",
-            setupOpen && "lg:grid-cols-[calc(300px*var(--ui-space-scale,1))_minmax(0,1fr)]",
-          )}
-        >
-          {setupOpen && (
-            <div className="lg:sticky lg:top-6">
-              <SetupPanel
-                status={status}
-                maxContext={maxContext}
-                locked={Boolean(live)}
-                onCollapse={() => setSetupOpen(false)}
-              />
+      <Tabs
+        value={tab}
+        onValueChange={(v) => setTab(v as BenchTab)}
+        className="contents"
+      >
+        <div className="mx-auto flex w-full max-w-[calc(1180px*var(--ui-space-scale,1))] 3xl:max-w-[calc(1440px*var(--ui-space-scale,1))] 4xl:max-w-[calc(1760px*var(--ui-space-scale,1))] flex-col gap-7 px-5 pb-20 pt-8 max-sm:px-4 sm:px-9 sm:pt-10">
+          <header className="font-heading flex flex-col gap-5">
+            <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
+              <div className="flex flex-col gap-0.5">
+                <h1 className="page-title-halo text-ui-30 font-semibold leading-[1.04] tracking-[-0.028em] text-foreground sm:text-ui-34">
+                  Benchmarks
+                </h1>
+                <p className="page-title-halo text-sm text-muted-foreground">
+                  Find the fastest settings for the model you have loaded, on
+                  this machine
+                </p>
+              </div>
+              <MachinePills polling={!live} />
             </div>
+            <div className="flex min-w-0 flex-wrap items-center gap-3 border-b border-border/60">
+              <BenchSubNav value={tab} runCount={runs.length} />
+              <div className="ml-auto min-w-0 max-w-full pb-1.5 sm:max-w-[60%]">
+                <BenchModelPicker status={status} locked={Boolean(live)} />
+              </div>
+            </div>
+          </header>
+
+          {error && (
+            <p
+              role="alert"
+              className="rounded-xl bg-destructive/10 px-4 py-2.5 text-ui-12p5 text-destructive"
+            >
+              {error}
+            </p>
           )}
-          <div className="flex min-w-0 flex-col gap-4">
-            {!setupOpen && (
-              <button
-                type="button"
-                onClick={() => setSetupOpen(true)}
-                className="self-start rounded-full bg-muted/60 px-3.5 py-1.5 text-ui-12 text-muted-foreground transition-colors hover:text-foreground"
-              >
-                Show setup
-              </button>
-            )}
-            {shown ? (
-              <>
-                {shown.config.sweep === "tune" && (
-                  <TuneVerdictCard run={shown} />
-                )}
-                <RunResults
-                  key={shown.id}
-                  run={shown}
-                  live={Boolean(live)}
-                  progress={live?.progress}
-                  onStop={cancel}
-                />
-              </>
-            ) : shownId ? (
-              <div className="corner-squircle flex items-center rounded-3xl ring-1 ring-border/60 justify-center bg-card px-6 py-16 text-ui-13 text-muted-foreground">
-                Loading the run…
+
+          <TabsContent value="benchmark" className="mt-0">
+            {/* Setup, the chart, and the run preview side by side. Below 72rem the preview
+                moves under the setup, in the same column, so nothing jumps between rows. */}
+            <div className="@container/bench">
+              <div className="grid grid-cols-1 items-start gap-6 @3xl/bench:grid-cols-[calc(264px*var(--ui-space-scale,1))_minmax(0,1fr)] @6xl/bench:grid-cols-[calc(264px*var(--ui-space-scale,1))_minmax(0,1fr)_calc(264px*var(--ui-space-scale,1))]">
+                <div className="flex min-w-0 flex-col gap-6 @3xl/bench:col-start-1 @3xl/bench:row-start-1 @6xl/bench:sticky @6xl/bench:top-6">
+                  <SetupPanel
+                    maxContext={maxContext}
+                    shape={shape}
+                    locked={Boolean(live)}
+                  />
+                  <div className="@6xl/bench:hidden">{preview}</div>
+                </div>
+                <div className="hidden @6xl/bench:sticky @6xl/bench:top-6 @6xl/bench:col-start-3 @6xl/bench:row-start-1 @6xl/bench:block">
+                  {preview}
+                </div>
+                <div className="flex min-w-0 flex-col gap-4 @3xl/bench:col-start-2 @3xl/bench:row-start-1">
+                  {shown ? (
+                    <>
+                      {shown.config.sweep === "tune" && (
+                        <TuneVerdictCard run={shown} />
+                      )}
+                      <RunResults
+                        key={shown.id}
+                        run={shown}
+                        live={Boolean(live)}
+                        progress={live?.progress}
+                        onStop={cancel}
+                      />
+                    </>
+                  ) : shownId ? (
+                    <div className="corner-squircle flex items-center justify-center rounded-3xl bg-card px-6 py-16 text-ui-13 text-muted-foreground ring-1 ring-border/60">
+                      Loading the run…
+                    </div>
+                  ) : (
+                    <div className="corner-squircle flex flex-col items-center justify-center gap-1 rounded-3xl bg-card px-6 py-16 text-center ring-1 ring-border/60">
+                      <span className="text-ui-13p5 font-medium text-foreground">
+                        No runs yet
+                      </span>
+                      <span className="text-ui-12 text-muted-foreground">
+                        Pick a sweep and press Run. The chart fills in here as
+                        each setting finishes.
+                      </span>
+                    </div>
+                  )}
+                </div>
               </div>
-            ) : (
-              <div className="corner-squircle flex flex-col items-center rounded-3xl ring-1 ring-border/60 justify-center gap-1 bg-card px-6 py-16 text-center">
-                <span className="text-ui-13p5 font-medium text-foreground">
-                  No runs yet
-                </span>
-                <span className="text-ui-12 text-muted-foreground">
-                  Pick a sweep and press Run. The chart fills in here as each
-                  setting finishes.
-                </span>
-              </div>
-            )}
-          </div>
+            </div>
+          </TabsContent>
+
+          <TabsContent value="history" className="mt-0">
+            <HistoryGrid
+              onOpen={(id) => {
+                void selectRun(id);
+                setTab("benchmark");
+              }}
+            />
+          </TabsContent>
         </div>
-      </div>
+      </Tabs>
     </div>
   );
 }

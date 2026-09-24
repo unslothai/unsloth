@@ -16,15 +16,20 @@ import { chatBaseLoad } from "./chat-base";
 export async function applyVariantToChat(
   variant: Variant,
   modelPath?: string | null,
+  ggufVariant?: string | null,
 ): Promise<void> {
   const status = await getInferenceStatus();
   const target = modelPath ?? status.active_model;
   if (!target) throw new Error("Load a model in chat first.");
-  const base = chatBaseLoad(
-    target === status.active_model
-      ? status
-      : { ...status, active_model: target, gguf_variant: null },
-  );
+  const same =
+    target === status.active_model &&
+    (ggufVariant === undefined || ggufVariant === status.gguf_variant);
+  const base = same
+    ? chatBaseLoad(status)
+    : {
+        ...chatBaseLoad({ ...status, active_model: target }),
+        gguf_variant: ggufVariant ?? null,
+      };
   const payload = variantLoad(base, variant);
   // The sheet's own fields move first, so a poll landing mid-load cannot revert them.
   useChatRuntimeStore.setState({

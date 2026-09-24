@@ -9,6 +9,8 @@ import type { BenchRun } from "../lib/bench-math";
 /** A run as the list returns it: everything but the measurements. */
 export type BenchRunSummary = Omit<BenchRun, "results"> & {
   resultCount: number;
+  /** Mean measured tok/s per row, so the history can show what won without the results. */
+  rowMeans?: Record<string, number>;
 };
 
 async function parse<T>(res: Response, what: string): Promise<T> {

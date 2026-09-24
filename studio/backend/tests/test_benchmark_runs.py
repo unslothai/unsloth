@@ -86,6 +86,19 @@ def test_list_is_newest_first_without_results_and_counts_measured_runs_only():
     assert runs[1]["resultCount"] == 1
 
 
+def test_list_carries_each_rows_measured_mean():
+    db.upsert_run(_run(results = [
+        _result("Speculation off", 0, 5.0, warmup = True),
+        _result("Speculation off", 1, 30.0),
+        _result("Speculation off", 2, 32.0),
+        _result("MTP 3", 1, 42.0),
+    ]))
+    [run] = db.list_runs()
+    assert run["resultCount"] == 3
+    # The warm-up's 5.0 stays out of the mean.
+    assert run["rowMeans"] == {"Speculation off": 31.0, "MTP 3": 42.0}
+
+
 def test_delete_cascades_to_results():
     db.upsert_run(_run())
     assert db.delete_run("run-1") is True

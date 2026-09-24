@@ -148,22 +148,31 @@ def _result_params(run_id: str, result: dict[str, Any]) -> tuple:
 
 
 def list_runs(limit: int = 100) -> list[dict[str, Any]]:
-    """Newest first, results left out: the list is for picking a run, not reading it."""
+    """Newest first, results left out: the list is for picking a run, not reading it. Each
+    run carries its per-row mean throughput so the history can say what won without the
+    measurements."""
     conn = get_connection()
     try:
         ensure_schema(conn)
         rows = conn.execute(
             "SELECT * FROM benchmark_runs ORDER BY created_at DESC LIMIT ?", (int(limit),)
         ).fetchall()
-        counts = dict(
-            conn.execute(
-                "SELECT run_id, COUNT(*) FROM benchmark_results WHERE warmup = 0 GROUP BY run_id"
-            ).fetchall()
-        )
+        counts: dict[str, int] = {}
+        means: dict[str, dict[str, float]] = {}
+        # Server rate when a row has one, the client rate otherwise, as the page aggregates it.
+        for run_id, variant, n, tps, client in conn.execute(
+            "SELECT run_id, variant, COUNT(*), AVG(tps), AVG(client_tps) FROM benchmark_results"
+            " WHERE warmup = 0 GROUP BY run_id, variant"
+        ).fetchall():
+            counts[run_id] = counts.get(run_id, 0) + int(n)
+            rate = tps if tps is not None else client
+            if rate is not None:
+                means.setdefault(run_id, {})[variant] = round(float(rate), 3)
         out = []
         for row in rows:
             summary = _summary_from_row(row)
-            summary["resultCount"] = int(counts.get(row["id"], 0))
+            summary["resultCount"] = counts.get(row["id"], 0)
+            summary["rowMeans"] = means.get(row["id"], {})
             out.append(summary)
         return out
     finally:
