@@ -454,8 +454,13 @@ def open_recent_thread_with_our_prompts(page, sent_prompts, shoot):
 
     The entry is chosen by title, since a chat's title is its first prompt: the most recent row
     is not necessarily ours. Then the check waits for the thread to render rather than reading
-    once: turns only appear once the history loader has finished. A click that fails is retried
-    on the next candidate, but a thread that opens without our turns is a failure, not a retry.
+    once: turns only appear once the history loader has finished.
+
+    A row whose title is one of our prompts is ours, so it must show our turns or the step fails.
+    When no title matches (auto-titling renames a chat), the rows are tried in listed order until
+    one opens with our turns: a row that loads someone else's turns, or none, is not ours, and
+    the next is tried. Only a click error or a row that is not ours moves on; the step fails if
+    none of the candidates is.
     """
     wanted = [" ".join(p.lower().split()) for p in sent_prompts]
     threads = page.locator('[data-testid="recent-thread"]')
@@ -467,12 +472,36 @@ def open_recent_thread_with_our_prompts(page, sent_prompts, shoot):
     titles = [(threads.nth(i).text_content() or "").strip() for i in range(min(n_threads, 20))]
     ours = [i for i, t in enumerate(titles) if " ".join(t.lower().split()) in wanted]
     if not ours:
-        # Titles can be generated rather than copied from the first prompt; the content check
-        # below still decides.
         info(f"WARN no Recents title matches a prompt we sent; titles={titles[:5]!r}")
     order = ours + [i for i in range(len(titles)) if i not in ours]
-    deadline = time.monotonic() + 30
-    clicked = False
+
+    def landed(thread_id):
+        """ "ours" once the thread shows one of our prompts, "other" once it has loaded user
+        turns and none is ours, None if neither within the timeout."""
+        try:
+            handle = page.wait_for_function(
+                """([threadId, wanted]) => {
+                    const params = new URLSearchParams(location.search);
+                    if (threadId && params.get("thread") !== threadId
+                            && params.get("compare") !== threadId) {
+                        return false;
+                    }
+                    const users = Array.from(document.querySelectorAll('[data-role="user"]'))
+                        .map((el) => (el.innerText || "").toLowerCase().split(/\\s+/).join(" "));
+                    if (users.some((text) => wanted.some((prompt) => text.includes(prompt)))) {
+                        return "ours";
+                    }
+                    return users.length ? "other" : false;
+                }""",
+                arg = [thread_id, wanted],
+                timeout = RECENTS_LOAD_TIMEOUT_MS,
+            )
+            return handle.json_value()
+        except Exception:
+            return None
+
+    deadline = time.monotonic() + 60
+    clicked = 0
     thread_id = ""
     for i in order[:5]:
         if time.monotonic() > deadline:
@@ -485,50 +514,34 @@ def open_recent_thread_with_our_prompts(page, sent_prompts, shoot):
         except Exception as _click_err:
             info(f"recent-thread click {i} failed: {_click_err!s}")
             continue
+        clicked += 1
         info(f"OK clicked recent entry: {titles[i][:60]!r}")
-        clicked = True
-        break
+        started = time.monotonic()
+        verdict = landed(thread_id)
+        if verdict == "ours":
+            shoot("15d-recent-clicked")
+            info(
+                "OK landed on a thread that includes our prompts "
+                f"({(time.monotonic() - started) * 1000:.0f} ms after the click)"
+            )
+            return
+        if i in ours:
+            break  # titled with our prompt, so it is ours: it must show our turns
+        info(f"recent entry {i} is not this run's chat ({verdict or 'no turns'}); trying the next")
     if not clicked:
-        soft_fail(f"no Recents entry was clickable within 30s deadline (n_threads={n_threads})")
+        soft_fail(f"no Recents entry was clickable within 60s deadline (n_threads={n_threads})")
         return
-    started = time.monotonic()
-    try:
-        page.wait_for_function(
-            """([threadId, wanted]) => {
-                const params = new URLSearchParams(location.search);
-                if (threadId && params.get("thread") !== threadId
-                        && params.get("compare") !== threadId) {
-                    return false;
-                }
-                return Array.from(document.querySelectorAll('[data-role="user"]')).some(
-                    (el) => {
-                        const text = (el.innerText || "").toLowerCase()
-                            .split(/\\s+/).join(" ");
-                        return wanted.some((prompt) => text.includes(prompt));
-                    }
-                );
-            }""",
-            arg = [thread_id, wanted],
-            timeout = RECENTS_LOAD_TIMEOUT_MS,
-        )
-    except Exception:
-        turns_text = robust_evaluate(
-            page,
-            """() => Array.from(
-                document.querySelectorAll('[data-role="user"], [data-role="assistant"]')
-            ).map((e) => (e.innerText || "").toLowerCase()).join(" ")""",
-        )
-        shoot("15d-recent-clicked")
-        soft_fail(
-            "Recents-clicked thread doesn't contain any of our sent prompts after "
-            f"{RECENTS_LOAD_TIMEOUT_MS} ms; url={page.url!r} thread={thread_id!r} "
-            f"turns_text={turns_text[:120]!r}"
-        )
-        return
+    turns_text = robust_evaluate(
+        page,
+        """() => Array.from(
+            document.querySelectorAll('[data-role="user"], [data-role="assistant"]')
+        ).map((e) => (e.innerText || "").toLowerCase()).join(" ")""",
+    )
     shoot("15d-recent-clicked")
-    info(
-        "OK landed on a thread that includes our prompts "
-        f"({(time.monotonic() - started) * 1000:.0f} ms after the click)"
+    soft_fail(
+        "Recents-clicked thread doesn't contain any of our sent prompts after "
+        f"{RECENTS_LOAD_TIMEOUT_MS} ms; url={page.url!r} thread={thread_id!r} "
+        f"turns_text={turns_text[:120]!r}"
     )
 
 

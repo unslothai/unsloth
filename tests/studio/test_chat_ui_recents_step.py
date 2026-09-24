@@ -218,3 +218,47 @@ def test_the_entry_is_chosen_by_title_not_position(browser) -> None:
     finally:
         ctx.close()
     assert any("Reply with exactly: rapid-first" in m for m in infos), infos
+
+
+def test_auto_titled_chats_are_searched_past_an_unrelated_newer_one(browser) -> None:
+    """No title matches when chats are auto-titled, so the newest row is tried first. One that
+    loads someone else's turns is not ours, and the next row is tried instead of failing."""
+    helper, infos = _load_helper(timeout_ms = 3000)
+    other = {
+        "id": "t-other",
+        "title": "Weather chat",
+        "turns": [["user", "What's the weather?"]],
+        "loadMs": 50,
+    }
+    ctx, page = _open(browser, [other, {**OURS, "title": "Rapid replies", "loadMs": 300}])
+    try:
+        helper(page, SENT, lambda name: None)
+        assert "thread=t-ours" in page.url
+    finally:
+        ctx.close()
+    assert any("not this run's chat" in m for m in infos), infos
+
+
+def test_auto_titled_chats_are_searched_past_an_empty_newer_one(browser) -> None:
+    helper, _ = _load_helper(timeout_ms = 1000)
+    empty = {"id": "t-empty", "title": "New Chat", "turns": [], "loadMs": 0}
+    ctx, page = _open(browser, [empty, {**OURS, "title": "Rapid replies", "loadMs": 200}])
+    try:
+        helper(page, SENT, lambda name: None)
+        assert "thread=t-ours" in page.url
+    finally:
+        ctx.close()
+
+
+def test_a_chat_titled_with_our_prompt_must_show_our_turns(browser) -> None:
+    """The title says it is ours, so turns that are not ours fail rather than move on."""
+    helper, _ = _load_helper(timeout_ms = 1000)
+    wrong = {**OURS, "id": "t-wrong", "loadMs": 50, "turns": [["user", "something else"]]}
+    later = {**OURS, "id": "t-later", "title": "Rapid replies", "loadMs": 50}
+    ctx, page = _open(browser, [wrong, later])
+    try:
+        with pytest.raises(AssertionError, match = "doesn't contain any of our sent prompts"):
+            helper(page, SENT, lambda name: None)
+        assert "thread=t-wrong" in page.url
+    finally:
+        ctx.close()
