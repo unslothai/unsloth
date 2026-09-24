@@ -87,6 +87,15 @@ def _cached_preflight_failure(index: Optional[int] = None) -> Optional[str]:
     for record in records:
         if isinstance(record, dict) and not record.get("ok"):
             return f"flashinfer preflight failed: {record.get('reason', 'unknown')}"
+    # A transient (allocation) failure is not memoised, yet it may be what put the resident model on torchao.
+    transient = (
+        [ops._PREFLIGHT_TRANSIENT.get(index)]
+        if index is not None
+        else list(ops._PREFLIGHT_TRANSIENT.values())
+    )
+    for record in transient:
+        if isinstance(record, dict):
+            return f"flashinfer preflight failed: {record.get('reason', 'unknown')}"
     return None
 
 
@@ -345,16 +354,25 @@ def _child_env() -> dict[str, str]:
         return env
 
 
-def _installer_prefix(uv: Optional[str]) -> list[str]:
+def _installer_prefix(uv: Optional[str], index_url: Optional[str] = None) -> list[str]:
+    """The install command up to its packages. ``index_url`` is the one index this step must use; it
+    replaces the mirror rather than joining it, since uv refuses a repeated ``--index-url``."""
     if uv:
         cmd = [uv, "pip", "install", "--python", sys.executable]
         # uv reads only its own index settings; a pip-only mirror would otherwise be skipped for pypi.org, which the
         # preflight did not probe because a mirror is configured.
         pip_index = (os.environ.get("PIP_INDEX_URL") or "").strip()
-        if pip_index and not (os.environ.get("UV_INDEX_URL") or os.environ.get("UV_DEFAULT_INDEX")):
+        if (
+            index_url is None
+            and pip_index
+            and not (os.environ.get("UV_INDEX_URL") or os.environ.get("UV_DEFAULT_INDEX"))
+        ):
             cmd += ["--index-url", pip_index]
-        return cmd
-    return [sys.executable, "-m", "pip", "install", "--disable-pip-version-check"]
+    else:
+        cmd = [sys.executable, "-m", "pip", "install", "--disable-pip-version-check"]
+    if index_url is not None:
+        cmd += ["--index-url", index_url]
+    return cmd
 
 
 def _uninstall_cmd(uv: Optional[str], names: list[str]) -> list[str]:
@@ -524,13 +542,11 @@ def _install(
         ]
         if tag is not None:
             steps.append(
-                _installer_prefix(uv)
+                _installer_prefix(uv, FLASHINFER_JIT_CACHE_INDEX.format(tag = tag))
                 + [
                     "--only-binary",
                     ":all:",
                     "--no-deps",
-                    "--index-url",
-                    FLASHINFER_JIT_CACHE_INDEX.format(tag = tag),
                     f"{FLASHINFER_JIT_CACHE_PACKAGE}=={FLASHINFER_VERSION}",
                 ]
             )

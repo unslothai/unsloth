@@ -489,11 +489,60 @@ def test_a_pip_only_mirror_is_handed_to_uv(env, monkeypatch):
     monkeypatch.setenv("PIP_INDEX_URL", "https://pip-mirror.example/simple")
     assert _ensure(env)[0]
     installs = [c for c in env.commands if c[:3] == ["uv", "pip", "install"]]
-    assert installs and all("https://pip-mirror.example/simple" in c for c in installs)
+    assert installs and "https://pip-mirror.example/simple" in installs[0]
     # uv's own setting wins and is left to uv.
     monkeypatch.setenv("UV_INDEX_URL", "https://uv-mirror.example/simple")
     assert "--index-url" not in inst._installer_prefix("uv")
     assert "--index-url" not in inst._installer_prefix(None)
+
+
+def test_a_pip_only_mirror_never_gives_uv_two_index_urls(env, monkeypatch):
+    # uv rejects a repeated --index-url; the jit-cache step's own index replaces the mirror.
+    monkeypatch.setenv("PIP_INDEX_URL", "https://pip-mirror.example/simple")
+    assert _ensure(env)[0]
+    main, jit = env.installs()
+    assert main.count("--index-url") == 1
+    assert main[main.index("--index-url") + 1] == "https://pip-mirror.example/simple"
+    assert jit.count("--index-url") == 1
+    assert jit[jit.index("--index-url") + 1] == "https://flashinfer.ai/whl/cu130"
+    pip_jit = inst._installer_prefix(None, "https://flashinfer.ai/whl/cu130")
+    assert pip_jit.count("--index-url") == 1
+
+
+def test_status_reason_reports_a_transient_preflight_failure(monkeypatch):
+    # An OOM preflight is not memoised, but the model it put on torchao still reports why.
+    torch = pytest.importorskip("torch")
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "current_device", lambda: 0)
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda device = None: (10, 0))
+    monkeypatch.setattr(torch.cuda, "get_device_name", lambda device = None: "stub B200")
+    ops.reset_preflight_cache()
+
+    def _oom(dev):
+        raise torch.cuda.OutOfMemoryError("CUDA out of memory. Tried to allocate 64.00 MiB")
+
+    class _Backend:
+        pass
+
+    image = _Backend()
+    inst.record_install_reason(image, True, "already installed", 0)
+    monkeypatch.setattr(ops, "_preflight_probe", _oom)
+    assert ops.nvfp4_preflight(0)["ok"] is False
+    assert 0 not in ops._PREFLIGHT
+    reason = inst.nvfp4_backend_fields("torchao", owner = image)["transformer_quant_backend_reason"]
+    assert reason and "out of memory" in reason.lower()
+    assert (
+        "out of memory"
+        in inst.nvfp4_backend_fields("torchao")["transformer_quant_backend_reason"].lower()
+    )
+    # A later memoised preflight on the same device supersedes it.
+    monkeypatch.setattr(ops, "_preflight_probe", lambda dev: False)
+    ops.nvfp4_preflight(0)
+    assert (
+        inst.nvfp4_backend_fields("torchao", owner = image)["transformer_quant_backend_reason"]
+        == "flashinfer preflight failed: mm_fp4 produced a non-finite result"
+    )
+    ops.reset_preflight_cache()
 
 
 def test_status_reason_falls_back_to_a_cached_preflight_failure(monkeypatch):

@@ -38,6 +38,9 @@ _REGISTER_LOCK = threading.Lock()
 _REGISTERED = False
 _PREFLIGHT_LOCK = threading.Lock()
 _PREFLIGHT: dict[int, dict] = {}
+# The last transient preflight failure per device index: never consulted to decide a backend, only to
+# report why a load that met it fell back. Dropped once a preflight on that index is memoised.
+_PREFLIGHT_TRANSIENT: dict[int, dict] = {}
 _WARNED: set = set()
 
 # The PDL ordering barrier (``_fire_barrier``), one bf16 element per device index.
@@ -373,6 +376,7 @@ def nvfp4_preflight(device: Any = None, *, refresh: bool = False) -> dict:
         }
         with _PREFLIGHT_LOCK:
             _PREFLIGHT[index] = rec
+            _PREFLIGHT_TRANSIENT.pop(index, None)
         return dict(rec)
 
     rec = {"ok": False, "reason": "", "capability": capability, "name": name}
@@ -391,10 +395,13 @@ def nvfp4_preflight(device: Any = None, *, refresh: bool = False) -> dict:
         rec["reason"] = f"{type(exc).__name__}: {str(exc)[:200]}"
         if _transient_preflight_failure(exc):
             # Not memoised: the probe runs during AUTO planning while the model the arbiter is about to evict still owns the card, so an allocation failure says "not now", not "not here".
+            with _PREFLIGHT_LOCK:
+                _PREFLIGHT_TRANSIENT[index] = dict(rec)
             return dict(rec)
 
     with _PREFLIGHT_LOCK:
         _PREFLIGHT[index] = rec
+        _PREFLIGHT_TRANSIENT.pop(index, None)
     return dict(rec)
 
 
@@ -442,6 +449,7 @@ def reset_preflight_cache() -> None:
     """Forget every memoised preflight. For tests and for a device set that changed under us."""
     with _PREFLIGHT_LOCK:
         _PREFLIGHT.clear()
+        _PREFLIGHT_TRANSIENT.clear()
     _WARNED.clear()
 
 
