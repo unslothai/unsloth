@@ -3883,7 +3883,7 @@ class DiffusionLoadRequest(BaseModel):
         "which have no caching headroom. Composes with compile (drops fullgraph "
         "automatically); incompatible models run uncached. static = skip denoiser calls on a "
         "fixed schedule (first 20% and last 10% of the steps always run, every other middle "
-        "step reuses the last output; 12+ steps only), which keeps compile fullgraph and the "
+        "step is extrapolated from the last two outputs; 12+ steps only), which keeps compile fullgraph and the "
         "CUDA graph. Never picked automatically.",
     )
     transformer_cache_threshold: Optional[float] = Field(
