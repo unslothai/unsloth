@@ -1241,6 +1241,20 @@ def _checkpoint_weight_names(
             return set(json.load(f).get("weight_map", {}))
     except Exception:
         pass
+    try:
+        # An unsharded checkpoint already in the cache: read its header, never download it.
+        from safetensors import safe_open
+        single_path = hf_hub_download(
+            model_name,
+            single_name,
+            token = token,
+            revision = revision,
+            local_files_only = True,
+        )
+        with safe_open(single_path, framework = "pt") as f:
+            return set(f.keys())
+    except Exception:
+        pass
     if local_files_only:
         return None
     try:

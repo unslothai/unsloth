@@ -486,3 +486,23 @@ def test_text_config_keeps_the_parent_commit(tmp_path, monkeypatch):
         local_files_only = True,
     )
     assert model.config._commit_hash == sha
+
+
+@needs_tf5
+def test_cached_single_file_checkpoint_is_read_offline(tmp_path, monkeypatch):
+    # local_files_only with an unsharded model.safetensors (no index) in the Hub cache.
+    ns = _ns()
+    repo, weights = _write_repo(tmp_path, name = "single")
+    repo_id, _ = _cache_as_hub_repo(tmp_path, monkeypatch, repo, repo_id = "fake-org/single")
+    names = ns["_checkpoint_weight_names"](repo_id, local_files_only = True)
+    assert names == set(weights)
+    parent = transformers.AutoConfig.from_pretrained(
+        repo_id, trust_remote_code = True, local_files_only = True
+    )
+    plan = ns["_get_remote_composite_text_only"](
+        parent, repo_id, trust_remote_code = True, local_files_only = True
+    )
+    assert plan is not None
+    assert plan[1] == {r"^language_model\.": ""}
+    # Not cached at all: still declines (None) instead of downloading the weights to inspect them.
+    assert ns["_checkpoint_weight_names"]("fake-org/absent", local_files_only = True) is None
