@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { Checkbox } from "@/components/ui/checkbox";
+import { useLocale } from "@/i18n";
 import { cn } from "@/lib/utils";
 import { Folder01Icon } from "@hugeicons/core-free-icons";
 import { StarPointedIcon } from "@/lib/hugeicons-derived";
@@ -119,6 +120,7 @@ function Row({
   /** Suggested shows one relative Last activity column instead of Modified and Size. */
   activity: boolean;
 }) {
+  const locale = useLocale();
   return (
     <div
       className={cn(
@@ -149,7 +151,7 @@ function Row({
           </span>
         ) : (
           <>
-            <span className={cn(MODIFIED_COLUMN, CELL, "ml-auto")}>{formatCardTime(modified)}</span>
+            <span className={cn(MODIFIED_COLUMN, CELL, "ml-auto")}>{formatCardTime(modified, locale)}</span>
             <span className={cn(SIZE_COLUMN, CELL)}>{formatSize(size)}</span>
           </>
         )}

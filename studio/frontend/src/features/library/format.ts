@@ -3,22 +3,33 @@
 
 const DAY_MS = 86_400_000;
 
-/** A clock time today, then "Yesterday", then the weekday for the past week, then a short date. */
-export function formatCardTime(ts: number): string {
+function startOfDay(date: Date): number {
+  return new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
+}
+
+/**
+ * A clock time today, then "Yesterday", then the weekday for the past week, then a short date, in
+ * `locale` (the app's language; the browser's when left out). A time ahead of `now`, from another
+ * machine's clock, shows its date.
+ */
+export function formatCardTime(ts: number, locale?: string, now: number = Date.now()): string {
+  if (!Number.isFinite(ts)) return "";
   const then = new Date(ts);
-  const now = new Date();
-  const days = Math.round(
-    (new Date(now.toDateString()).getTime() - new Date(then.toDateString()).getTime()) / DAY_MS,
-  );
-  if (days <= 0) {
-    return then.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+  const today = new Date(now);
+  // Rounded: a day with a daylight-saving change is 23 or 25 hours long.
+  const days = Math.round((startOfDay(today) - startOfDay(then)) / DAY_MS);
+  if (days === 0) {
+    return then.toLocaleTimeString(locale, { hour: "numeric", minute: "2-digit" });
   }
-  if (days === 1) return "Yesterday";
-  if (days < 7) return then.toLocaleDateString(undefined, { weekday: "long" });
-  return then.toLocaleDateString(undefined, {
+  if (days === 1) {
+    const yesterday = new Intl.RelativeTimeFormat(locale, { numeric: "auto" }).format(-1, "day");
+    return yesterday.charAt(0).toLocaleUpperCase(locale) + yesterday.slice(1);
+  }
+  if (days > 1 && days < 7) return then.toLocaleDateString(locale, { weekday: "long" });
+  return then.toLocaleDateString(locale, {
     month: "short",
     day: "numeric",
-    year: then.getFullYear() === now.getFullYear() ? undefined : "numeric",
+    year: then.getFullYear() === today.getFullYear() ? undefined : "numeric",
   });
 }
 

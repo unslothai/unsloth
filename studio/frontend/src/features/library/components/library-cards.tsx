@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { Checkbox } from "@/components/ui/checkbox";
+import { useLocale } from "@/i18n";
 import { cn } from "@/lib/utils";
 import { Folder01Icon, PlayIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -177,6 +178,7 @@ export function ItemCard({ item }: { item: LibraryItem }) {
   const actions = useLibraryActions();
   const showTime = useLibrarySettingsStore((s) => s.showCardDates);
   const square = useLibrarySettingsStore((s) => s.imageLayout === "square");
+  const locale = useLocale();
   const menu = <LibraryActionsMenu target={{ kind: "item", item }} variant="overlay" />;
 
   if (hasThumbnail(item)) {
@@ -204,7 +206,7 @@ export function ItemCard({ item }: { item: LibraryItem }) {
               "pointer-events-none absolute bottom-2 left-2 rounded-full px-2 py-0.5 text-[12px] opacity-0 transition-opacity group-hover/library-card:opacity-100",
             )}
           >
-            {formatCardTime(item.updatedAt)}
+            {formatCardTime(item.updatedAt, locale)}
           </span>
         )}
       </CardFrame>
@@ -226,7 +228,7 @@ export function ItemCard({ item }: { item: LibraryItem }) {
           <KindIcon item={item} className="size-9" />
         </div>
         <p className="truncate pr-6 text-[12.5px] text-muted-foreground">
-          {showTime && formatCardTime(item.updatedAt)}
+          {showTime && formatCardTime(item.updatedAt, locale)}
         </p>
       </div>
     </CardFrame>
