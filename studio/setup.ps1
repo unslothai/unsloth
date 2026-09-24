@@ -5072,9 +5072,6 @@ Write-StudioLine ""
 step "system" "prerequisites ready"
 Write-StudioLine ""
 
-# Before the first npm, Node or package-index download; may set UNSLOTH_NPM_REGISTRY below.
-Invoke-MirrorFallback
-
 # UNSLOTH_NPM_REGISTRY: opt-in --registry splat past the frontend .npmrc lock (corporate proxies).
 $NpmRegistryArgs = @()
 if ($env:UNSLOTH_NPM_REGISTRY) {
@@ -7714,6 +7711,9 @@ Clear-UnparseableTorchCacheEnv
 
 if (-not $SkipPythonDeps) {
 
+# Probed here rather than at startup, so an update with nothing to install touches no package host.
+Invoke-MirrorFallback
+
 # Recover what a fresh shell lost, BEFORE the manifest is dropped below: recovery reads that file.
 $WinArm64Venv = Test-WinArm64Venv
 # Read BEFORE the re-export overwrites it: the flags install.ps1 left describe THAT index.
@@ -8701,6 +8701,7 @@ function Repair-SidecarTiktoken {
     # Dropping the metadata is what makes uv reinstall instead of calling the pin satisfied.
     Get-ChildItem -LiteralPath $TargetDir -Directory -Filter "tiktoken-*.dist-info" -ErrorAction SilentlyContinue |
         ForEach-Object { Remove-Item -LiteralPath $_.FullName -Recurse -Force -ErrorAction SilentlyContinue }
+    Invoke-MirrorFallback
     # Cleared first: an install that runs no native command would retire the sidecar on a stale
     # nonzero (unresolvable uv is non-terminating under "Continue").
     $global:LASTEXITCODE = 0
@@ -8772,6 +8773,7 @@ function Install-T5Sidecar {
         [Parameter(Mandatory = $true)][string]$Reason
     )
     substep "pre-installing transformers $Version $Reason..."
+    Invoke-MirrorFallback
     Assert-StudioOwnedOrAbsent -Path $TargetDir -Label "transformers $Label sidecar venv"
     if (Test-Path -LiteralPath $TargetDir) { Remove-Item -LiteralPath $TargetDir -Recurse -Force }
     [System.IO.Directory]::CreateDirectory($TargetDir) | Out-Null

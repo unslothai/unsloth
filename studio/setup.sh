@@ -402,8 +402,6 @@ _mirror_fallback() {
 }
 # ── END mirror fallback ──
 
-_mirror_fallback
-
 # ── Corporate-mirror / proxy escape hatch for the frontend npm/bun install (#6491) ──
 # studio/frontend/.npmrc pins registry=https://registry.npmjs.org/ as a supply-chain
 # lock. A project-level pin overrides a corporate user's ~/.npmrc proxy, so the install
@@ -2321,6 +2319,8 @@ else
 fi
 
 install_python_stack() {
+    # Probed here rather than at startup, so an update with nothing to install touches no package host.
+    _mirror_fallback
     python "$SCRIPT_DIR/install_python_stack.py"
 }
 
@@ -3513,6 +3513,7 @@ _sidecar_top_up_tiktoken() {
         [ -d "$_stt_info" ] && { rm -rf "$_stt_info" || true; }
     done
     unset _stt_info
+    _mirror_fallback
     if ! fast_install_sidecar --target "$_stt_dir" --no-deps --upgrade "tiktoken" >/dev/null 2>&1; then
         if _sidecar_drop_tiktoken "$_stt_dir"; then
             substep "could not install tiktoken into the $_stt_label sidecar -- Qwen tokenizers may fail"
@@ -3586,6 +3587,7 @@ _install_sidecar() {
     _is_dir="$1"
     _is_ver="$2"
     _is_label="$3"
+    _mirror_fallback
     _assert_studio_owned_or_absent "$_is_dir" "transformers $_is_label sidecar venv"
     [ -d "$_is_dir" ] && rm -rf "$_is_dir"
     mkdir -p "$_is_dir"
