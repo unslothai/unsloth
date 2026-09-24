@@ -14,14 +14,15 @@ Before a download starts, this module looks for the same relative path in the re
 snapshots. A candidate must be a regular file (a symlink means the blob layout, which
 huggingface_hub already reuses) with the declared size, and its content must match the digest
 the Hub reports for the target commit (LFS sha256, or the git blob id for small files). The
-download worker proves that by hashing the local file (cached, so a file is hashed at most once).
+download worker proves that by hashing the local file right before placing it.
 A matching file is hard linked into the target snapshot, or copied when hard links are
 unavailable. huggingface_hub then finds the pointer path present and skips the file
 (``os.path.exists(pointer_path)``).
 
 Plans cannot hash multi-GB files on the request path, so ``reusable_paths`` also accepts the Hub
-reporting the same digest for the candidate's own commit. That is an estimate only: the worker
-re-proves the bytes before placing anything, and downloads when they differ.
+reporting the same digest for the candidate's own commit, or a digest the worker persisted
+earlier. That is an estimate only: the worker re-proves the bytes before placing anything, and
+downloads when they differ.
 """
 
 from __future__ import annotations
@@ -102,7 +103,8 @@ def _digest_cache_path() -> Optional[Path]:
 
 
 def _digest_cache_key(path: Path, kind: str, st: os.stat_result) -> str:
-    # Keyed by identity AND content markers, so a rewritten file (new mtime or size) misses.
+    # Keyed by identity AND content markers, so a rewritten file usually misses. On POSIX ctime
+    # also moves when mtime is restored; Windows reports creation time there, so it adds nothing.
     return "|".join(
         (
             kind,
@@ -110,6 +112,7 @@ def _digest_cache_key(path: Path, kind: str, st: os.stat_result) -> str:
             str(st.st_size),
             str(st.st_mtime_ns),
             str(getattr(st, "st_ino", 0)),
+            "" if os.name == "nt" else str(st.st_ctime_ns),
         )
     )
 
@@ -152,19 +155,20 @@ def cached_file_digest(
     *,
     compute: bool = True,
 ) -> tuple[Optional[str], int]:
-    """(digest, bytes hashed now). Reads the persisted cache first; hashes only when ``compute``."""
+    """(digest, bytes hashed now). With ``compute`` the file is always hashed: stat metadata cannot
+    prove the bytes are unchanged (mtime can be restored, FAT/exFAT has 2 s granularity, Windows has
+    no change time), so the persisted cache only serves read-only estimates (``compute=False``)."""
     try:
         st = os.stat(path)
     except OSError:
         return None, 0
     key = _digest_cache_key(path, kind, st)
-    cache_path = _digest_cache_path()
-    if cache_path is not None:
-        cached = _read_digest_cache(cache_path).get(key)
-        if isinstance(cached, str) and digest_kind(cached) == kind:
-            return cached, 0
     if not compute:
-        return None, 0
+        cache_path = _digest_cache_path()
+        if cache_path is None:
+            return None, 0
+        cached = _read_digest_cache(cache_path).get(key)
+        return (cached, 0) if isinstance(cached, str) and digest_kind(cached) == kind else (None, 0)
     try:
         digest = file_digest(path, kind)
         after = os.stat(path)

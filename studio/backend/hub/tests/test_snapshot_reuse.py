@@ -210,7 +210,7 @@ def test_size_mismatch_is_rejected_without_reading_the_file(tmp_path, monkeypatc
     assert result.reused == ()
 
 
-def test_digest_is_cached_across_calls(tmp_path, monkeypatch):
+def test_cached_digest_feeds_the_plan_but_the_worker_rehashes(tmp_path, monkeypatch):
     data = _blob(11, 4096)
     repo_dir = _copy_layout(tmp_path, {"model.safetensors": data})
     expected = [ExpectedFile("model.safetensors", len(data), _sha256(data))]
@@ -219,11 +219,29 @@ def test_digest_is_cached_across_calls(tmp_path, monkeypatch):
         repo_dir, NEW, {"model.safetensors": (len(data), _sha256(data))}
     )
     assert first[1] == len(data)
-    monkeypatch.setattr(snapshot_reuse, "file_digest", lambda *a, **k: pytest.fail("re-hashed"))
+    estimate = snapshot_reuse.find_reusable_copies(
+        repo_dir, NEW, {"model.safetensors": (len(data), _sha256(data))}, allow_hashing = False
+    )
+    assert estimate == ({"model.safetensors": first[0]["model.safetensors"]}, 0)
+
     result = _reuse(tmp_path, expected)
 
     assert result.reused == ("model.safetensors",)
-    assert result.hashed_bytes == 0
+    assert result.hashed_bytes == len(data)
+
+
+def test_a_stale_cached_digest_does_not_carry_changed_bytes_forward(tmp_path):
+    """Same size, same mtime (restored, or FAT/exFAT 2 s granularity), different bytes."""
+    good, bad = _blob(12, 4096), _blob(13, 4096)
+    repo_dir = _copy_layout(tmp_path, {"model.safetensors": bad})
+    candidate = repo_dir / "snapshots" / OLD / "model.safetensors"
+    key = snapshot_reuse._digest_cache_key(candidate, "sha256", os.stat(candidate))
+    snapshot_reuse._remember_digest(key, _sha256(good))
+
+    result = _reuse(tmp_path, [ExpectedFile("model.safetensors", len(good), _sha256(good))])
+
+    assert result.reused == ()
+    assert not (repo_dir / "snapshots" / NEW / "model.safetensors").exists()
 
 
 def test_small_non_lfs_file_is_verified_by_git_blob_id(tmp_path):

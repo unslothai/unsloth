@@ -219,7 +219,7 @@ def _reuse_unchanged_files(
         expected_files,
         # No Hub-digest shortcut here: it proves what the older commit served, not what is on disk
         # now, and a same-size corrupted copy would be carried into the new revision. The local
-        # hash is cached, so each file is read once.
+        # file is hashed on every reuse for the same reason.
         protected_blob_hashes = _protected_blob_hashes(),
     )
     if not result.reused:
