@@ -300,7 +300,13 @@ def test_real_diffusers_output_class_is_rebuilt():
 class _ListDiT(_DiT):
     """Z-Image's container: ``(list[Tensor],)``, one noise prediction per image."""
 
-    def forward(self, hidden_states, timestep = None, kv_cache_mode = None, return_dict = True):
+    def forward(
+        self,
+        hidden_states,
+        timestep = None,
+        kv_cache_mode = None,
+        return_dict = True,
+    ):
         out = super().forward(hidden_states, timestep, kv_cache_mode, return_dict = False)[0]
         return (list(out.unbind(0)),)
 
