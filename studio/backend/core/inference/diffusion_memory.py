@@ -213,7 +213,6 @@ class MemoryPlan:
     def engages_offload(self) -> bool:
         return self.offload_policy != OFFLOAD_NONE
 
-
     def as_public_dict(self) -> dict[str, Any]:
         return {
             "requested_mode": self.requested_mode,
@@ -798,7 +797,8 @@ def plan_diffusion_memory(
             runtime_headroom_mib,
             base_overhead_mib,
         )
-        if model_dense_mib is not None and text_encoder_dense_mib is not None
+        if model_dense_mib is not None
+        and text_encoder_dense_mib is not None
         and int(text_encoder_dense_mib) > 0
         else None
     )
@@ -1191,7 +1191,11 @@ def _pin_budget_mib() -> Optional[int]:
     return max(0, int(available) - reserve)
 
 
-def _streamed_pin_plan(transformer_mib: int, encoder_mib: int, logger: Any = None) -> tuple[bool, bool]:
+def _streamed_pin_plan(
+    transformer_mib: int,
+    encoder_mib: int,
+    logger: Any = None,
+) -> tuple[bool, bool]:
     """Whether to pin the streamed transformer(s) and the streamed encoders, in that priority."""
     forced = str(os.environ.get(GROUP_OFFLOAD_PIN_ENV, "")).strip().lower()
     if forced in ("0", "off", "false", "no"):

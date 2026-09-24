@@ -4175,9 +4175,7 @@ class DiffusionBackend:
                                     return {}
                         return {}
 
-                    size = DiffusionBackend._union_over_cached_revs(
-                        str(source.location), _sizes
-                    )
+                    size = DiffusionBackend._union_over_cached_revs(str(source.location), _sizes)
                 if size > 0:
                     total += int(size)
                 else:
@@ -6583,24 +6581,23 @@ class DiffusionBackend:
                 precast_mib, precast_components, precast_exact = precast
                 # Only the encoder folders the checkpoint replaces leave the budget (FLUX.1 keeps its dense CLIP-L).
                 covered = frozenset(precast_components)
-                scanned_te = (
-                    int(
-                        self._union_over_cached_revs(
-                            fetch_base or base,
-                            lambda d: {
-                                rel: size
-                                for rel, size in self._local_dir_text_encoder_sizes(d).items()
-                                if rel.split("/", 1)[0] in covered
-                            },
-                            base_local_dir,
-                        )
+                scanned_te = int(
+                    self._union_over_cached_revs(
+                        fetch_base or base,
+                        lambda d: {
+                            rel: size
+                            for rel, size in self._local_dir_text_encoder_sizes(d).items()
+                            if rel.split("/", 1)[0] in covered
+                        },
+                        base_local_dir,
                     )
-                    // (1024 * 1024)
-                )
+                ) // (1024 * 1024)
                 if not precast_exact:
                     # Not cached yet, so the load may still open the dense shards it scanned: never price below them.
                     precast_mib = max(int(precast_mib), scanned_te)
-                text_encoder_mib = max(0, int(text_encoder_mib or 0) - scanned_te) + int(precast_mib)
+                text_encoder_mib = max(0, int(text_encoder_mib or 0) - scanned_te) + int(
+                    precast_mib
+                )
                 companion_mib = max(0, int(companion_mib or 0) - scanned_te) + int(precast_mib)
                 if model_dense_mib is not None:
                     model_dense_mib = max(0, int(model_dense_mib) - scanned_te) + int(precast_mib)

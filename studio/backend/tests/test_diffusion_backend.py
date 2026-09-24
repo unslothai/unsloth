@@ -11722,7 +11722,13 @@ def test_plan_memory_prices_the_hosted_precast_text_encoder(monkeypatch, tmp_pat
     target = _small_card(monkeypatch)
     seen = {}
 
-    def _precast(fam, base, tgt, text_encoder_quant, staged_dir = None):
+    def _precast(
+        fam,
+        base,
+        tgt,
+        text_encoder_quant,
+        staged_dir = None,
+    ):
         seen["quant"] = text_encoder_quant
         return (2800, ("text_encoder",), True) if text_encoder_quant == "fp8" else None
 
@@ -11753,7 +11759,9 @@ def test_plan_memory_prices_the_hosted_precast_text_encoder(monkeypatch, tmp_pat
     assert after.estimates["model_dense_mib"] == 3150
 
 
-def test_plan_memory_replaces_scanned_dense_encoder_shards_with_the_precast_size(monkeypatch, tmp_path):
+def test_plan_memory_replaces_scanned_dense_encoder_shards_with_the_precast_size(
+    monkeypatch, tmp_path
+):
     # Dense encoder shards left in the base cache are not what a pre-cast load opens: swap, never add.
     snapshot = _base_snapshot_with_sizes(
         tmp_path,
@@ -11868,7 +11876,6 @@ def _q21_precast_cache(tmp_path, monkeypatch, *, mib):
 
 def _bf16_cuda_target():
     import torch
-
     return types.SimpleNamespace(
         device = "cuda", backend = "cuda", dtype = torch.bfloat16, supports_model_cpu_offload = True
     )
@@ -11881,17 +11888,26 @@ def test_precast_text_encoder_mib_reads_the_cached_checkpoint(monkeypatch, tmp_p
     assert fam is not None and fam.name == "qwen-image-2.1"
     _q21_precast_cache(tmp_path, monkeypatch, mib = 8959)
     target = _bf16_cuda_target()
-    assert DiffusionBackend._precast_text_encoder_mib(fam, "Qwen/Qwen-Image-2.1", target, "fp8") == (
+    assert DiffusionBackend._precast_text_encoder_mib(
+        fam, "Qwen/Qwen-Image-2.1", target, "fp8"
+    ) == (
         8959,
         ("text_encoder",),
         True,
     )
     # Not a pre-cast pick: nothing to price.
-    assert DiffusionBackend._precast_text_encoder_mib(fam, "Qwen/Qwen-Image-2.1", target, None) is None
-    assert DiffusionBackend._precast_text_encoder_mib(fam, "Qwen/Qwen-Image-2.1", target, "none") is None
+    assert (
+        DiffusionBackend._precast_text_encoder_mib(fam, "Qwen/Qwen-Image-2.1", target, None) is None
+    )
+    assert (
+        DiffusionBackend._precast_text_encoder_mib(fam, "Qwen/Qwen-Image-2.1", target, "none")
+        is None
+    )
 
 
-def test_precast_text_encoder_mib_prices_an_uncached_checkpoint_from_the_family_table(monkeypatch, tmp_path):
+def test_precast_text_encoder_mib_prices_an_uncached_checkpoint_from_the_family_table(
+    monkeypatch, tmp_path
+):
     from core.inference.diffusion_families import detect_family
     from core.inference.diffusion_te_prequant import TE_PREQUANT_BUDGET_SCALE
 
@@ -11902,5 +11918,9 @@ def test_precast_text_encoder_mib_prices_an_uncached_checkpoint_from_the_family_
     )
     # The family table's 17.5 GB dense encoder at the pre-cast budget scale: an over-estimate of the 8.75 GiB file,
     # flagged inexact so the planner never prices it below dense shards the load could still open.
-    assert got == (int(17.5 * 1000**3 * TE_PREQUANT_BUDGET_SCALE) // (1024 * 1024), ("text_encoder",), False)
+    assert got == (
+        int(17.5 * 1000**3 * TE_PREQUANT_BUDGET_SCALE) // (1024 * 1024),
+        ("text_encoder",),
+        False,
+    )
     assert got[0] > 8959

@@ -2115,7 +2115,13 @@ _24G_FREE_MIB = 23_000
 _24G_TOTAL_MIB = 24_576  # budget 23000 - 2457 = 20543
 
 
-def _q21_plan(free_mib, total_mib, *, text_encoder_dense_mib = _Q21_TE_MIB, mode = None):
+def _q21_plan(
+    free_mib,
+    total_mib,
+    *,
+    text_encoder_dense_mib = _Q21_TE_MIB,
+    mode = None,
+):
     return plan_diffusion_memory(
         target = _target(),
         device_memory = _discrete(free_mib, total_mib),
@@ -2194,7 +2200,9 @@ def test_the_resident_transformer_tier_streams_encoders_at_leaf_level(monkeypatc
     assert seen["text_encoder_2"]["offload_type"] == "leaf_level"
 
 
-def test_a_refusing_encoder_hands_the_resident_transformer_tier_to_whole_module_offload(monkeypatch):
+def test_a_refusing_encoder_hands_the_resident_transformer_tier_to_whole_module_offload(
+    monkeypatch,
+):
     # Keeping the refusing encoder resident beside a resident transformer is the OOM this tier was picked to avoid.
     # Nothing is hooked yet, so the applier reports failure and apply_memory_plan falls back to model offload.
     import core.inference.diffusion_memory as mem
