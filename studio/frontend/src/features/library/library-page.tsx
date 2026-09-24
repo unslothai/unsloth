@@ -36,7 +36,7 @@ import {
 import { ChevronRightStandardIcon } from "@/lib/chevron-icons";
 import { StarPointedIcon, TestTubeOutlineIcon } from "@/lib/hugeicons-derived";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useNavigate, useSearch } from "@tanstack/react-router";
+import { useNavigate, useRouter, useSearch } from "@tanstack/react-router";
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   chatAboutItems,
@@ -271,6 +271,55 @@ function LibraryView({ search }: { search: LibrarySearch }) {
 
   const previewItem = search.item ? (items.find((item) => item.id === search.item) ?? null) : null;
 
+  // Opening a file pushes a history entry; closing one this view opened goes back off it, so Back
+  // afterwards leaves the Library instead of landing on the same page again.
+  const router = useRouter();
+  const pushedPreview = useRef<string | null>(null);
+  // Closed here but still in the URL until Back lands: not a missing file.
+  const [closingPreview, setClosingPreview] = useState<string | null>(null);
+  if (!search.item && closingPreview !== null) setClosingPreview(null);
+  useEffect(() => {
+    if (!search.item) pushedPreview.current = null;
+  }, [search.item]);
+  const openPreview = (id: string) => {
+    pushedPreview.current = id;
+    go({ ...search, item: id });
+  };
+  const closePreview = () => {
+    if (!search.item) return;
+    setClosingPreview(search.item);
+    if (pushedPreview.current === search.item) {
+      pushedPreview.current = null;
+      router.history.back();
+    } else {
+      go({ ...search, item: undefined }, true);
+    }
+  };
+
+  // A link to a file that has since gone (deleted, or another account's) says so. The snapshot
+  // may just predate it (a note that was just made), so look once more first.
+  const missingItem =
+    search.item && status === "ready" && !previewItem && closingPreview !== search.item
+      ? search.item
+      : null;
+  useEffect(() => {
+    if (!missingItem) return;
+    let cancelled = false;
+    void refresh().then(() => {
+      if (cancelled) return;
+      if (useLibraryStore.getState().items.some((item) => item.id === missingItem)) return;
+      toast("That file is no longer in the Library");
+      void navigate({
+        to: "/library",
+        search: (prev) => ({ ...prev, item: undefined }),
+        replace: true,
+      });
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [missingItem, refresh, navigate]);
+
   // ── Actions ────────────────────────────────────────────────────
 
   const fail = (message: string) => (err: unknown) =>
@@ -316,7 +365,7 @@ function LibraryView({ search }: { search: LibrarySearch }) {
 
   const actions: LibraryActions = {
     folders,
-    openItem: (item) => go({ ...search, item: item.id }),
+    openItem: (item) => openPreview(item.id),
     openFolder: (id) => go({ folder: id }),
     chatAbout: (target) =>
       target.kind === "item"
@@ -376,7 +425,7 @@ function LibraryView({ search }: { search: LibrarySearch }) {
     try {
       const note = new File([""], "Untitled note.md", { type: "text/markdown" });
       const [id] = await upload({ files: [note] }, folderId);
-      if (id) go({ ...search, item: id });
+      if (id) openPreview(id);
     } catch (err) {
       fail("Could not create the note")(err);
     }
@@ -430,6 +479,8 @@ function LibraryView({ search }: { search: LibrarySearch }) {
   async function confirmDelete(targets: LibraryTarget[]) {
     setPendingDelete(null);
     setSelection(new Set());
+    // The open file is going: close it first, so it is not reported as missing.
+    if (targets.some((t) => t.kind === "item" && t.item.id === search.item)) closePreview();
     const results = await Promise.allSettled(
       targets.map((target) =>
         target.kind === "item" ? removeItem(target.item.id) : removeFolder(target.folder.id),
@@ -882,7 +933,7 @@ function LibraryView({ search }: { search: LibrarySearch }) {
       />
       <LibraryPreview
         item={previewItem}
-        onOpenChange={(open) => !open && go({ ...search, item: undefined }, true)}
+        onOpenChange={(open) => !open && closePreview()}
         onChat={chatAbout}
         onDownload={(item) => void downloadLibraryItem(item)}
         onOpenThread={(threadId) => void navigate({ to: "/chat", search: { thread: threadId } })}
