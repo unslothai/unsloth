@@ -255,19 +255,22 @@ class TestEmbeddingBatchSizedToContext:
         )
 
     @pytest.mark.parametrize(
-        "n_batch, n_ubatch, extra_args, env",
+        "n_batch, n_ubatch, extra_args, env, expected",
         [
-            (1024, None, None, {}),
-            (None, 256, None, {}),
-            (None, None, ["-ub", "1024"], {}),
-            (None, None, ["--batch-size=4096"], {}),
-            (None, None, None, {"LLAMA_ARG_UBATCH": "768"}),
+            (1024, 256, None, {}, (1024, 256)),
+            (1024, None, None, {}, (1024, 8192)),
+            (None, 256, None, {}, (8192, 256)),
+            (None, None, ["-ub", "1024"], {}, (8192, None)),
+            (None, None, ["--batch-size=4096"], {}, (None, 8192)),
+            (None, None, None, {"LLAMA_ARG_UBATCH": "768"}, (8192, None)),
         ],
     )
-    def test_user_batch_sizes_are_kept(self, n_batch, n_ubatch, extra_args, env):
-        assert llama_cpp_module._embedding_batch_ubatch(
-            8192, n_batch, n_ubatch, extra_args, env = env
-        ) == (n_batch, n_ubatch)
+    def test_user_batch_sizes_are_kept(self, n_batch, n_ubatch, extra_args, env, expected):
+        # A named side is kept; the unset side is still sized, or its default caps the named one.
+        assert (
+            llama_cpp_module._embedding_batch_ubatch(8192, n_batch, n_ubatch, extra_args, env = env)
+            == expected
+        )
 
     @pytest.mark.parametrize("n_ctx", [0, 256, 512])
     def test_context_within_the_default_micro_batch_is_left_alone(self, n_ctx):

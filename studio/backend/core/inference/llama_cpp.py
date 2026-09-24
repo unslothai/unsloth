@@ -6336,9 +6336,10 @@ def _embedding_batch_ubatch(
 ) -> tuple[Optional[int], Optional[int]]:
     """Size an unset batch pair to the context for pooling that needs one micro-batch."""
     _, _, batch_named, ubatch_named = _named_batch_sizes(extra_args, env, n_batch, n_ubatch)
-    if batch_named or ubatch_named or n_ctx <= _DEFAULT_LLAMA_N_UBATCH:
+    if (batch_named and ubatch_named) or n_ctx <= _DEFAULT_LLAMA_N_UBATCH:
         return n_batch, n_ubatch
-    return n_ctx, n_ctx
+    # Only the unset side: llama.cpp caps the micro-batch at the batch, so a named one still limits.
+    return (n_batch if batch_named else n_ctx), (n_ubatch if ubatch_named else n_ctx)
 
 
 def _build_ngram_mod_flags(
