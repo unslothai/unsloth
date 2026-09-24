@@ -106,25 +106,21 @@ def _device(path) -> Optional[int]:
 
 def _gallery_root(name: str) -> list:
     import importlib
-
     return [importlib.import_module(f"core.inference.{name}").gallery_dir()]
 
 
 def _sandbox_root() -> list:
     from core.inference.tools import sandbox_root
-
     return [sandbox_root()]
 
 
 def _attachment_root() -> list:
     from utils.paths.storage_roots import studio_db_path
-
     return [studio_db_path().parent]
 
 
 def _model_roots() -> list:
     from utils.paths.storage_roots import exports_root, outputs_root
-
     return [outputs_root(), exports_root()]
 
 
