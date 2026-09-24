@@ -2141,6 +2141,9 @@ class DiffusionBackend:
                 return True
             if prequant_checkpoint_cached(source, cache_dir = hub_cache_dir()):
                 return True
+            if kwargs.get("local_files_only"):
+                # The loader may not fetch it, so an uncached checkpoint is unreachable whatever the Hub says.
+                return False
             return (
                 self._prequant_source_hub_entry(source, kwargs.get("hf_token"), scheme = scheme)
                 is not None

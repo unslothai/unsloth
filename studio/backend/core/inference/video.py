@@ -1207,7 +1207,10 @@ def _video_auto_denoiser_scheme(
     speed_mode: Optional[str] = None,
 ) -> Optional[str]:
     """The scheme a CONVENTIONAL video load would seed from a hosted checkpoint, or None."""
-    if speed_mode is not None and str(speed_mode).strip().lower() == SPEED_OFF:
+    # load_pipeline rewrites only an AUTO precision to "off" under Speed="off"; an EXPLICIT scheme is still honored
+    # (and upgrades the speed), so it keeps its seed. Same split diffusion.py applies.
+    auto = requested is None or str(requested).strip().lower() in ("", "auto")
+    if auto and speed_mode is not None and str(speed_mode).strip().lower() == SPEED_OFF:
         return None
     try:
         if getattr(fam, "modular_workflow", None):
