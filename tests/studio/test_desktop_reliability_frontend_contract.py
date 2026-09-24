@@ -2460,9 +2460,11 @@ def test_image_train_rail_matches_create_and_header():
     touches = [
         t
         for t in classes.group(1).split()
-        # An arbitrary property (a bracket holding a colon, e.g. [all:unset]) can reset padding
-        # under any name, so every one counts; @[50rem]-style variants hold no colon.
-        if re.search(r"(?:^|[:!(\[])(?:p|px|pr|pe|pl|ps)-", t) or re.search(r"\[[^\]]*:[^\]]*\]", t)
+        # An arbitrary property as the utility (e.g. sm:[all:unset]!) can reset padding under any
+        # name, so every one counts; a bracket inside a variant or value (supports-[display:grid]:)
+        # is not a property.
+        if re.search(r"(?:^|[:!(\[])(?:p|px|pr|pe|pl|ps)-", t)
+        or re.search(r"(?:^|:)!?\[[^\]]*:[^\]]*\]!?$", t)
     ]
     below = [t for t in touches if re.fullmatch(rf"(?:max-sm:)?pr-{step}", t)]
     at_rail = [t for t in touches if re.fullmatch(rf"sm:pr-{step}", t)]
