@@ -365,7 +365,9 @@ def canonical_request(
             "userMessageId": user_message_id,
             "assistantMessageId": assistant_message_id,
             "requestPayload": {
-                key: value for key, value in request_payload.items() if key != TIMEZONE_HEADERS_FIELD
+                key: value
+                for key, value in request_payload.items()
+                if key != TIMEZONE_HEADERS_FIELD
             },
         },
         sort_keys = True,
