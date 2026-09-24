@@ -19,13 +19,14 @@ from hub.services.models import account_access
 from loggers import get_logger
 from storage import library_db
 from storage.studio_db import ChatMessageProtectedError
+from utils.upload_limits import LIBRARY_UPLOAD_MAX_BYTES
 from utils.utils import log_and_http_error, safe_curated_detail
 
 logger = get_logger(__name__)
 
 router = APIRouter()
 
-_MAX_UPLOAD_BYTES = 512 * 1024 * 1024
+_MAX_UPLOAD_BYTES = LIBRARY_UPLOAD_MAX_BYTES
 _CHUNK_BYTES = 1024 * 1024
 # Raster images render inline; anything else (svg and html included) downloads as opaque bytes, as
 # the sandbox route does, so a crafted upload cannot run script on the app origin.

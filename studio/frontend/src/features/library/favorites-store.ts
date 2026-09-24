@@ -18,48 +18,58 @@ const latestAttempt = new Map<string, number>();
 
 /** Library favorites by item id, for pages (Images, Video) that mark them without loading the
  *  whole Library. */
-export const useLibraryFavoritesStore = create<FavoritesState>((set, get) => ({
-  ids: new Set(),
-  load: async () => {
-    const touchedBefore = new Map(latestAttempt);
-    try {
-      const loaded = new Set(await getLibraryFavorites());
-      // A star toggled while this was loading is newer than the snapshot; keep it.
-      const ids = get().ids;
-      for (const [id, attempt] of latestAttempt) {
-        if (touchedBefore.get(id) === attempt) continue;
-        if (ids.has(id)) loaded.add(id);
-        else loaded.delete(id);
-      }
-      set({ ids: loaded });
-    } catch {
-      // Favorites are a convenience here; the page works without them.
-    }
-  },
-  mark: (id, favorite) => {
+export const useLibraryFavoritesStore = create<FavoritesState>((set, get) => {
+  function apply(id: string, favorite: boolean): void {
     const ids = new Set(get().ids);
     if (favorite) ids.add(id);
     else ids.delete(id);
     set({ ids });
-  },
-  setFavorite: async (id, favorite) => {
-    const attempt = (latestAttempt.get(id) ?? 0) + 1;
-    latestAttempt.set(id, attempt);
-    get().mark(id, favorite);
-    try {
-      await updateLibraryItem(id, { favorite });
-      if (latestAttempt.get(id) !== attempt) return;
-      toast.success(favorite ? "Added to Favorites" : "Removed from Favorites");
-    } catch (error) {
-      // A newer toggle owns the star now.
-      if (latestAttempt.get(id) !== attempt) return;
-      get().mark(id, !favorite);
-      toast.error("Could not update favorites", {
-        description: error instanceof Error ? error.message : String(error),
-      });
-    }
-  },
-}));
+  }
+
+  return {
+    ids: new Set(),
+    load: async () => {
+      const touchedBefore = new Map(latestAttempt);
+      try {
+        const loaded = new Set(await getLibraryFavorites());
+        // A star toggled while this was loading is newer than the snapshot; keep it.
+        const ids = get().ids;
+        for (const [id, attempt] of latestAttempt) {
+          if (touchedBefore.get(id) === attempt) continue;
+          if (ids.has(id)) loaded.add(id);
+          else loaded.delete(id);
+        }
+        set({ ids: loaded });
+      } catch {
+        // Favorites are a convenience here; the page works without them.
+      }
+    },
+    mark: (id, favorite) => {
+      // An attempt too, so a load already in flight keeps this mark rather than its older snapshot.
+      latestAttempt.set(id, (latestAttempt.get(id) ?? 0) + 1);
+      apply(id, favorite);
+    },
+    setFavorite: async (id, favorite) => {
+      const attempt = (latestAttempt.get(id) ?? 0) + 1;
+      latestAttempt.set(id, attempt);
+      apply(id, favorite);
+      try {
+        await updateLibraryItem(id, { favorite });
+        if (latestAttempt.get(id) !== attempt) return;
+        toast.success(
+          favorite ? "Added to Favorites" : "Removed from Favorites",
+        );
+      } catch (error) {
+        // A newer toggle owns the star now.
+        if (latestAttempt.get(id) !== attempt) return;
+        apply(id, !favorite);
+        toast.error("Could not update favorites", {
+          description: error instanceof Error ? error.message : String(error),
+        });
+      }
+    },
+  };
+});
 
 /** Loads favorites once the calling page mounts; ids are `<source>:<id>`, e.g. `image:abc`. */
 export function useLibraryFavorites() {
