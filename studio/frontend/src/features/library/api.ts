@@ -76,6 +76,13 @@ export async function getLibraryFavorites(): Promise<string[]> {
 // Edits to one item go out in order, so a quick second toggle never lands before the first.
 const itemQueues = new Map<string, Promise<void>>();
 
+/** Throws once the session that `epoch` came from has ended. */
+function sameSession(epoch: number, message: string): () => void {
+  return () => {
+    if (getAuthSessionEpoch() !== epoch) throw new Error(message);
+  };
+}
+
 export function updateLibraryItem(
   id: string,
   patch: { name?: string; favorite?: boolean; folderId?: string | null },
@@ -85,9 +92,12 @@ export function updateLibraryItem(
     .catch(() => {})
     .then(async () => {
       // Queued behind an edit that outlived a sign-out: it belongs to the account that left.
-      if (getAuthSessionEpoch() !== epoch) throw new Error("Signed out before the change was saved.");
+      const check = sameSession(epoch, "Signed out before the change was saved.");
+      check();
       await ensureOk(
-        await authFetch("/api/library/items", jsonInit("PATCH", { id, ...patch })),
+        await authFetch("/api/library/items", jsonInit("PATCH", { id, ...patch }), {
+          beforeRetry: check,
+        }),
       );
     });
   itemQueues.set(id, request);
@@ -175,14 +185,15 @@ export async function uploadLibraryFiles(
   // Desktop drops are grants, not bytes: they ride with the first request.
   if (requests.length === 0) requests.push(new FormData());
   for (const lease of leases) requests[0]!.append("nativePathLeases", lease);
-  const epoch = getAuthSessionEpoch();
+  // A sign-out mid-batch ends it, before the next request or a retry: the token would be another
+  // account's.
+  const check = sameSession(getAuthSessionEpoch(), "Signed out before the upload finished.");
   const ids: string[] = [];
   for (const form of requests) {
-    // A sign-out between requests ends the batch: the next token would be another account's.
-    if (getAuthSessionEpoch() !== epoch) throw new Error("Signed out before the upload finished.");
+    check();
     if (folderId) form.append("folderId", folderId);
     const response = await ensureOk(
-      await authFetch("/api/library/uploads", { method: "POST", body: form }),
+      await authFetch("/api/library/uploads", { method: "POST", body: form }, { beforeRetry: check }),
     );
     ids.push(...((await response.json()) as { ids: string[] }).ids);
   }
