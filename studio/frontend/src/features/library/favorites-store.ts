@@ -3,6 +3,7 @@
 
 import { useEffect } from "react";
 import { create } from "zustand";
+import { AUTH_SESSION_CLEARED_EVENT } from "@/features/auth";
 import { toast } from "@/lib/toast";
 import { getLibraryFavorites, updateLibraryItem } from "./api";
 
@@ -15,6 +16,8 @@ interface FavoritesState {
 }
 
 const latestAttempt = new Map<string, number>();
+// Bumped on sign-out, so a load started for the last account never lands for the next one.
+let session = 0;
 
 /** Library favorites by item id, for pages (Images, Video) that mark them without loading the
  *  whole Library. */
@@ -30,8 +33,10 @@ export const useLibraryFavoritesStore = create<FavoritesState>((set, get) => {
     ids: new Set(),
     load: async () => {
       const touchedBefore = new Map(latestAttempt);
+      const loadSession = session;
       try {
         const loaded = new Set(await getLibraryFavorites());
+        if (loadSession !== session) return;
         // A star toggled while this was loading is newer than the snapshot; keep it.
         const ids = get().ids;
         for (const [id, attempt] of latestAttempt) {
@@ -70,6 +75,15 @@ export const useLibraryFavoritesStore = create<FavoritesState>((set, get) => {
     },
   };
 });
+
+// Module state, so a sign-out must drop it here: Images and Video load this without the Library.
+if (typeof window !== "undefined") {
+  window.addEventListener(AUTH_SESSION_CLEARED_EVENT, () => {
+    session += 1;
+    latestAttempt.clear();
+    useLibraryFavoritesStore.setState({ ids: new Set() });
+  });
+}
 
 /** Loads favorites once the calling page mounts; ids are `<source>:<id>`, e.g. `image:abc`. */
 export function useLibraryFavorites() {
