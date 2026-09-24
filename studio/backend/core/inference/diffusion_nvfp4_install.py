@@ -45,6 +45,8 @@ FLASHINFER_JIT_CACHE_CUDA = ((12, 8), (12, 9), (13, 0))
 # refuses in seconds instead of leaving pip to retry for minutes inside a model load.
 _PYPI_PROBE_URL = "https://pypi.org/simple/flashinfer-python/"
 _CUSTOM_INDEX_ENVS = ("UV_INDEX_URL", "UV_DEFAULT_INDEX", "PIP_INDEX_URL")
+# uv ranks these above its default index and stops at the first that has a package; pip never reads them.
+_UV_INDEX_ENVS = ("UV_INDEX", "UV_EXTRA_INDEX_URL")
 
 # The jit-cache wheel is 1.2-1.8 GB; the timeout covers a slow link, not a hung resolver.
 _INSTALL_TIMEOUT_S = 1800
@@ -222,23 +224,23 @@ def _env_install_lock(timeout: float = ENV_LOCK_TIMEOUT_S):
         lock.release()
 
 
-def _await_inflight_install() -> None:
+def _await_inflight_install() -> bool:
     """Wait for another Studio process installing flashinfer into this environment, without touching it.
 
     flashinfer resolves its jit-cache directory once, at import, so a process that imports it between the
     flashinfer-python and the jit-cache steps of another process's install JIT-compiles for its whole life.
     Only the pinned flashinfer-python without its jit-cache can be that window, so any other state (already
-    imported, absent, another version, cache present) returns without touching the lock."""
+    imported, absent, another version, cache present) returns without touching the lock. False when the
+    other install outlived the wait, so importing now would still miss the cache."""
     if "flashinfer" in sys.modules:
-        return
+        return True
     installed = _dist_version(FLASHINFER_PACKAGE)
     if installed is None or installed.split("+", 1)[0] != FLASHINFER_VERSION:
-        return
+        return True
     if _dist_version(FLASHINFER_JIT_CACHE_PACKAGE) is not None:
-        return
-    # A timeout falls through to the import, as before this wait existed.
-    with _env_install_lock():
-        pass
+        return True
+    with _env_install_lock() as held:
+        return held
 
 
 def _import_flashinfer() -> tuple[bool, str]:
@@ -559,7 +561,9 @@ def _install(
             )
     # A configured mirror is the installer's to reach (and may carry credentials a HEAD cannot send), so pypi.org is
     # only probed when it is the index the installer will use. The jit-cache index is fixed, so it always is.
-    probes = [] if any(os.environ.get(v) for v in _CUSTOM_INDEX_ENVS) else [_PYPI_PROBE_URL]
+    uv = _uv_executable()
+    mirrors = _CUSTOM_INDEX_ENVS + (_UV_INDEX_ENVS if uv else ())
+    probes = [] if any(os.environ.get(v) for v in mirrors) else [_PYPI_PROBE_URL]
     if tag is not None:
         probes.append(
             FLASHINFER_JIT_CACHE_INDEX.format(tag = tag) + f"/{FLASHINFER_JIT_CACHE_PACKAGE}/"
@@ -569,7 +573,6 @@ def _install(
             return False, f"flashinfer not installed: {url} is not reachable", False
 
     before = installed_distributions()
-    uv = _uv_executable()
     constraints = _write_constraints(before)
     size_hint = " (about 1.5 GB of prebuilt kernels)" if tag else ""
     _emit(
@@ -698,7 +701,14 @@ def _ensure(
 
         if nvfp4_backend_env() == BACKEND_TORCHAO:
             return _finish(False, "UNSLOTH_NVFP4_BACKEND=torchao", None, None)
-        _await_inflight_install()
+        if not _await_inflight_install():
+            # Not memoised: a later load imports once that install has finished.
+            return _finish(
+                False,
+                "flashinfer not ready: another process is still installing it into this environment",
+                logger,
+                status_cb,
+            )
         present, detail = _import_flashinfer()
         if present:
             return _finish(True, f"flashinfer {detail} already installed", None, None)

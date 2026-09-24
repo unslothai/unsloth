@@ -131,7 +131,7 @@ def _clean(monkeypatch, tmp_path):
     monkeypatch.setattr(inst, "_env_lock_path", lambda: str(tmp_path / "install.lock"))
     monkeypatch.delenv(inst.FLASHINFER_INSTALL_ENV, raising = False)
     monkeypatch.delenv(ops.NVFP4_BACKEND_ENV, raising = False)
-    for name in inst._CUSTOM_INDEX_ENVS:
+    for name in (*inst._CUSTOM_INDEX_ENVS, "UV_INDEX", "UV_EXTRA_INDEX_URL"):
         monkeypatch.delenv(name, raising = False)
     inst.reset_install_state()
     yield
@@ -769,3 +769,34 @@ def test_a_settled_flashinfer_never_waits_on_the_lock(env, monkeypatch, dists):
         t.join()
     assert ok and stamps[0] - start < 0.5
     assert env.commands == []
+
+
+def test_a_timed_out_wait_for_an_in_flight_install_does_not_import(env, monkeypatch):
+    # The other process's install outlives the wait: importing now would pin flashinfer's cache directory
+    # without the jit-cache, so this load reports not ready and a later one retries.
+    env.dists["flashinfer-python"] = "0.6.6"
+    env.importable = True
+    real = inst._env_install_lock
+    monkeypatch.setattr(inst, "_env_install_lock", lambda timeout = 0.05: real(timeout))
+    stamps = _track_imports(env, monkeypatch)
+    t = _hold_env_lock(0.5)
+    try:
+        ok, reason = _ensure(env)
+    finally:
+        t.join()
+    assert not ok and "another process" in reason
+    assert stamps == [] and env.commands == []
+    ok, reason = _ensure(env)
+    assert ok and "already installed" in reason
+
+
+@pytest.mark.parametrize("uv", ["uv", None])
+@pytest.mark.parametrize("name", ["UV_INDEX", "UV_EXTRA_INDEX_URL"])
+def test_a_uv_index_skips_the_pypi_probe_only_when_uv_installs(env, monkeypatch, name, uv):
+    probed = []
+    monkeypatch.setattr(inst, "_reachable", lambda url: probed.append(url) or True)
+    monkeypatch.setattr(inst, "_uv_executable", lambda: uv)
+    monkeypatch.setenv(name, "https://uv-mirror.example/simple")
+    assert _ensure(env)[0]
+    # uv ranks these above its default index; pip does not read them, so its fallback still needs pypi.org.
+    assert (inst._PYPI_PROBE_URL in probed) == (uv is None)
