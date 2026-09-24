@@ -361,6 +361,36 @@ def test_z_image_list_outputs_are_skipped_and_rebuilt():
     assert all(type(o) is tuple and type(o[0]) is list for o in outs)
 
 
+class _PositionalDiT(_DiT):
+    """Z-Image's call convention: ``transformer(x, t, cap_feats, return_dict=False)``."""
+
+    def forward(
+        self,
+        x,
+        t,
+        cap_feats,
+        return_dict = True,
+    ):
+        return super().forward(x, timestep = t, return_dict = return_dict)
+
+
+def test_taylor1_reads_a_positional_timestep():
+    assert ss._timestep_slot(ss.inspect.signature(_PositionalDiT().forward)) == ("t", 1)
+    assert ss._timestep_slot(ss.inspect.signature(_DiT().forward)) == ("timestep", 1)
+    pipe = _installed(_PositionalDiT(), mode = "taylor1")
+    dit = pipe.transformer
+    ss.reset_static_step_skip(pipe, 25, step_signal = True)
+    x = torch.zeros(1, 4, 2)
+    outs = []
+    for i in range(25):
+        outs.append(dit.forward(x, torch.tensor([1.0 - i / 25]), None, return_dict = False))
+        ss.mark_step_end(pipe)
+    assert ss.static_skip_stats(pipe)["stats"]["skipped"] == 9
+    # Extrapolated, not reused: a skipped step matches its own timestep, not the previous step's.
+    for i in range(6, 23, 2):
+        assert torch.allclose(outs[i][0], torch.full((1, 4, 2), 1.0 - i / 25), atol = 1e-6)
+
+
 def test_multi_value_outputs_are_never_skipped():
     # FLUX.2 klein KV's (noise, kv_cache): nothing a skip could reproduce.
     pipe = _installed(_DiT(container = "pair"))
