@@ -59,6 +59,7 @@ class _FakeEnv:
         fail_install = False,
         install_moves = None,
         install_delay = 0.0,
+        concurrent_add = None,
     ):
         self.dists = dict(_BASE_DISTS)
         self.cuda = cuda
@@ -67,6 +68,8 @@ class _FakeEnv:
         self.fail_install = fail_install
         self.install_moves = install_moves or {}
         self.install_delay = install_delay
+        # What another installer (the built-in terminal) adds to the venv while this install runs.
+        self.concurrent_add = concurrent_add or {}
         self.commands: list[list[str]] = []
         self.constraints_seen: list[str] = []
         self.lock = threading.Lock()
@@ -94,6 +97,7 @@ class _FakeEnv:
                     self.constraints_seen.append(fh.read())
             if self.install_delay:
                 time.sleep(self.install_delay)
+            self.dists.update(self.concurrent_add)
             if self.fail_install and any(a.startswith("flashinfer-jit-cache==") for a in cmd):
                 return _Result(1, "ERROR: no matching distribution")
             if any(a.startswith("flashinfer-python==") for a in cmd):
@@ -103,9 +107,15 @@ class _FakeEnv:
                     if name == "torch":
                         self.torch_version = version
                 self.importable = not self.install_moves
+                return _Result(
+                    0,
+                    f"Installed {len(_ADDED_BY_INSTALL)} packages in 1.2s\n"
+                    + "\n".join(f" + {n}=={v}" for n, v in _ADDED_BY_INSTALL.items()),
+                )
             elif any(a.startswith("flashinfer-jit-cache==") for a in cmd):
                 spec = next(a for a in cmd if a.startswith("flashinfer-jit-cache=="))
                 self.dists["flashinfer-jit-cache"] = spec.split("==", 1)[1]
+                return _Result(0, f"Installed 1 package in 3.1s\n + {spec}")
             else:
                 # A rollback restore: name==old --no-deps.
                 for spec in cmd:
@@ -275,6 +285,58 @@ def test_failed_jit_cache_step_rolls_back_the_first_step(env):
     ok, reason = _ensure(env)
     assert not ok and "rolled back" in reason and "installer failed" in reason
     assert env.dists == _BASE_DISTS
+
+
+def test_rollback_leaves_packages_another_installer_added_meanwhile(env):
+    # The built-in terminal does not take the env lock; what it installed during this transaction must survive.
+    env.fail_install = True
+    env.concurrent_add = {"requests": "2.32.3", "rich": "14.0.0"}
+    ok, reason = _ensure(env)
+    assert not ok and "rolled back" in reason
+    for name in _ADDED_BY_INSTALL:
+        assert name not in env.dists
+    assert env.dists.get("requests") == "2.32.3" and env.dists.get("rich") == "14.0.0", (reason, env.commands)
+    uninstall = next(c for c in env.commands if "uninstall" in c)
+    assert "requests" not in uninstall and "rich" not in uninstall
+
+
+def test_reported_installs_reads_uv_and_pip_output():
+    uv_out = "Resolved 5 packages\nInstalled 2 packages in 9ms\n + Apache_TVM_FFI==0.1.9\n + flashinfer-python==0.6.6\n ~ numpy==2.3.5"
+    assert inst._reported_installs(uv_out) == {"apache-tvm-ffi", "flashinfer-python"}
+    pip_out = "Collecting x\nSuccessfully installed apache-tvm-ffi-0.1.9 flashinfer-jit-cache-0.6.6+cu130"
+    assert inst._reported_installs(pip_out) == {"apache-tvm-ffi", "flashinfer-jit-cache"}
+    assert inst._reported_installs("ERROR: no matching distribution") == set()
+
+
+def test_rollback_without_installer_output_follows_the_flashinfer_dependency_tree(monkeypatch):
+    # A timed-out install reports nothing: fall back to flashinfer's installed requirement tree, never the whole diff.
+    import importlib.metadata as md
+
+    requires = {
+        "flashinfer-python": ["apache-tvm-ffi>=0.1", "nvidia-cutlass-dsl; python_version >= '3'", "pytest; extra == 'test'"],
+        "apache-tvm-ffi": [],
+        "nvidia-cutlass-dsl": [],
+    }
+
+    def _distribution(name):
+        if name not in requires:
+            raise md.PackageNotFoundError(name)
+        return types.SimpleNamespace(requires = requires[name])
+
+    monkeypatch.setattr(md, "distribution", _distribution)
+    before = dict(_BASE_DISTS)
+    after = {**before, **_ADDED_BY_INSTALL, "pytest": "8.0.0", "requests": "2.32.3"}
+    monkeypatch.setattr(inst, "installed_distributions", lambda: dict(after))
+    commands = []
+
+    def run(cmd, **kwargs):
+        commands.append([str(c) for c in cmd])
+        return _Result(0)
+
+    inst._rollback(run, "uv", before, None, reported = set())
+    assert len(commands) == 1
+    removed = set(commands[0][commands[0].index(sys.executable) + 1 :])
+    assert removed == set(_ADDED_BY_INSTALL)
 
 
 def test_failed_import_after_install_rolls_back(env, monkeypatch):

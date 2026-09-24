@@ -800,16 +800,80 @@ def _drift(before: dict[str, str], after: dict[str, str]) -> dict[str, tuple[str
     return {name: (old, after.get(name)) for name, old in before.items() if after.get(name) != old}
 
 
+def _reported_installs(output: str) -> set[str]:
+    """Canonical names the installer says it installed: uv's `` + name==version`` lines, pip's
+    ``Successfully installed name-version ...``."""
+    names: set[str] = set()
+    for line in output.splitlines():
+        line = line.strip()
+        if line.startswith("+ ") and "==" in line:
+            names.add(_canonical(line[2:].split("==", 1)[0]))
+        elif line.startswith("Successfully installed "):
+            for item in line[len("Successfully installed ") :].split():
+                if "-" in item:
+                    names.add(_canonical(item.rsplit("-", 1)[0]))
+    return names
+
+
+def _requirement_closure(roots: set[str], candidates: set[str]) -> set[str]:
+    """``roots`` plus their installed dependencies, restricted to ``candidates``: for an install that reported nothing,
+    without reaching packages outside flashinfer's dependency tree."""
+    from importlib.metadata import distribution
+
+    try:
+        from packaging.requirements import Requirement
+    except Exception:  # noqa: BLE001
+        Requirement = None
+    found: set[str] = set()
+    pending = [name for name in roots if name in candidates]
+    while pending:
+        name = pending.pop()
+        if name in found:
+            continue
+        found.add(name)
+        try:
+            requires = distribution(name).requires or []
+        except Exception:  # noqa: BLE001 - absent or unreadable metadata adds nothing
+            continue
+        for spec in requires:
+            try:
+                if Requirement is None:
+                    continue
+                req = Requirement(spec)
+                if req.marker is not None and not req.marker.evaluate({"extra": ""}):
+                    continue
+            except Exception:  # noqa: BLE001
+                continue
+            dep = _canonical(req.name)
+            if dep in candidates and dep not in found:
+                pending.append(dep)
+    return found
+
+
 def _rollback(
     run: Callable[..., Any],
     uv: Optional[str],
     before: dict[str, str],
     logger: Any,
     own_index: bool = False,
+    reported: Optional[set[str]] = None,
 ) -> str:
-    """Remove what the install added and put back anything it moved. Returns a one-line summary."""
+    """Remove what this install added and put back anything it moved. Returns a one-line summary.
+
+    Only distributions this transaction installed are removed, as its installer reported them: the built-in terminal
+    or another installer that skips the env lock may have added packages in the meantime, and those stay. Only when
+    the installer reported nothing (timed out, died) does it fall back to the flashinfer dependency tree."""
     after = installed_distributions()
-    added = sorted(set(after) - set(before))
+    new = set(after) - set(before)
+    ours = set(reported or ()) & new
+    if not ours:
+        ours = _requirement_closure({FLASHINFER_PACKAGE, FLASHINFER_JIT_CACHE_PACKAGE}, new)
+    added = sorted(ours)
+    if new - ours and logger is not None:
+        logger.info(
+            "nvfp4.flashinfer: rollback leaves %s (not installed by this transaction)",
+            ", ".join(sorted(new - ours)),
+        )
     moved = _drift(before, after)
     notes = []
     if added:
@@ -904,6 +968,7 @@ def _install(
         f"installing {FLASHINFER_PACKAGE} {FLASHINFER_VERSION}"
         f"{f' with {FLASHINFER_JIT_CACHE_PACKAGE} for {tag}' if tag else ''} for NVFP4{size_hint}",
     )
+    reported: set[str] = set()
     try:
         steps = [
             # Constrained, not --no-deps: flashinfer cannot import without apache-tvm-ffi and friends,
@@ -937,6 +1002,7 @@ def _install(
         failure = None
         for cmd, step_env in steps:
             ok, output = _run(run, cmd, _INSTALL_TIMEOUT_S, step_env)
+            reported |= _reported_installs(output)
             if not ok:
                 failure = "the installer failed: " + " ".join(output.split())[-400:]
                 break
@@ -970,7 +1036,7 @@ def _install(
                 failure = detail
 
     if failure is not None:
-        rolled = _rollback(run, uv, before, logger, config["own_index"])
+        rolled = _rollback(run, uv, before, logger, config["own_index"], reported)
         return False, f"flashinfer install rolled back ({rolled}): {failure}", True
 
     # The dispatch fast path memoises "flashinfer missing"; forget it now that it is not.
