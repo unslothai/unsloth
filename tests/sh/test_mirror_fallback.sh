@@ -137,6 +137,14 @@ for SH in dash bash; do
         assert_not_contains "[$SH] uv.toml $_toml: uv untouched" "$(_run "$SH" MOCK_PYPI=blocked XDG_CONFIG_HOME="$_WORK/cfg")" "UV_DEFAULT_INDEX"
     done
     rm -rf "$_WORK/cfg"
+    mkdir -p "$_WORK/proj/src"
+    printf '[project]\nname = "p"\n\n[[tool.uv.index]]\nurl = "https://corp.example/simple"\ndefault = true\n' > "$_WORK/proj/pyproject.toml"
+    out=$(cd "$_WORK/proj/src" && _run "$SH" MOCK_PYPI=blocked)
+    assert_not_contains "[$SH] a parent pyproject.toml [tool.uv] index: uv untouched" "$out" "UV_DEFAULT_INDEX"
+    assert_contains "[$SH] a parent pyproject.toml [tool.uv] index: pip still falls back" "$out" "PIP_INDEX_URL=$M/pypi/web/simple"
+    printf 'native-tls = true\n' > "$_WORK/proj/src/uv.toml"
+    assert_contains "[$SH] the nearest uv.toml hides a parent pyproject.toml" "$(cd "$_WORK/proj/src" && _run "$SH" MOCK_PYPI=blocked)" "UV_DEFAULT_INDEX=$M/pypi/web/simple"
+    rm -rf "$_WORK/proj"
     mkdir -p "$_WORK/home/.pip"
     printf '[global]\nindex-url = https://corp.example/simple\n' > "$_WORK/home/.pip/pip.conf"
     out=$(_run "$SH" MOCK_PYPI=blocked)

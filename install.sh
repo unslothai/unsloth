@@ -3268,12 +3268,23 @@ _mirror_index_ok() {
     case "$_mio_code" in 2??) return 0 ;; *) return 1 ;; esac
 }
 
+# Echoes the project config uv discovers: uv.toml, or a pyproject.toml with a [tool.uv] table, in the current directory or the nearest parent.
+_mirror_uv_project_config() {
+    _mup_dir=$PWD
+    while [ -n "$_mup_dir" ]; do
+        if [ -f "$_mup_dir/uv.toml" ]; then echo "$_mup_dir/uv.toml"; return 0; fi
+        if grep -Eqs '^[[:space:]]*\[+tool\.uv(\.|\])' "$_mup_dir/pyproject.toml"; then echo "$_mup_dir/pyproject.toml"; return 0; fi
+        [ "$_mup_dir" = / ] && return 0
+        _mup_dir=$(dirname "$_mup_dir")
+    done
+}
+
 # True when the user already chose a source for uv's index ($1 = uv), uv's Python downloads ($1 = python) or pip's index ($1 = pip), by env var or config file.
 _mirror_configured() {
     case "$1" in
         uv)
             [ -n "${UV_DEFAULT_INDEX:-}${UV_INDEX_URL:-}${UV_INDEX:-}${UV_EXTRA_INDEX_URL:-}" ] && return 0
-            _mic_key='\[\[index\]\]|(pip\.)?(index|index-url|default-index|extra-index-url|no-index)[[:space:]]*=' ;;
+            _mic_key='\[\[(tool\.uv\.)?index\]\]|(pip\.)?(index|index-url|default-index|extra-index-url|no-index)[[:space:]]*=' ;;
         python)
             [ -n "${UV_PYTHON_INSTALL_MIRROR:-}" ] && return 0
             _mic_key='python-install-mirror[[:space:]]*=' ;;
@@ -3284,7 +3295,7 @@ _mirror_configured() {
     if [ "$1" = pip ]; then
         set -- "${PIP_CONFIG_FILE:-}" "${XDG_CONFIG_HOME:-$HOME/.config}/pip/pip.conf" "$HOME/.pip/pip.conf" "$HOME/Library/Application Support/pip/pip.conf" /etc/xdg/pip/pip.conf /etc/pip.conf
     else
-        set -- "${UV_CONFIG_FILE:-}" "${XDG_CONFIG_HOME:-$HOME/.config}/uv/uv.toml" /etc/xdg/uv/uv.toml /etc/uv/uv.toml
+        set -- "${UV_CONFIG_FILE:-}" "$(_mirror_uv_project_config)" "${XDG_CONFIG_HOME:-$HOME/.config}/uv/uv.toml" /etc/xdg/uv/uv.toml /etc/uv/uv.toml
     fi
     for _mic_file in "$@"; do
         if [ -f "$_mic_file" ] && grep -Eq "^[[:space:]]*($_mic_key)" "$_mic_file" 2>/dev/null; then

@@ -139,6 +139,14 @@ try {
         Run @{ pypi = 'blocked' }; Check "uv.toml $($toml.Split("`n")[0]): only pip falls back" (-not $env:UV_DEFAULT_INDEX -and $env:PIP_INDEX_URL)
     }
     Remove-Item -LiteralPath (Join-Path $env:APPDATA 'uv/uv.toml')
+    $proj = Join-Path $home_ 'proj'; New-Item -ItemType Directory -Force -Path (Join-Path $proj 'src') | Out-Null
+    Set-Content -Path (Join-Path $proj 'pyproject.toml') -Value "[project]`nname = 'p'`n`n[[tool.uv.index]]`nurl = 'https://corp.example/simple'`ndefault = true"
+    Push-Location (Join-Path $proj 'src')
+    try {
+        Run @{ pypi = 'blocked' }; Check "a parent pyproject.toml [tool.uv] index: only pip falls back" (-not $env:UV_DEFAULT_INDEX -and $env:PIP_INDEX_URL)
+        Set-Content -Path (Join-Path $proj 'src/uv.toml') -Value 'native-tls = true'
+        Run @{ pypi = 'blocked' }; Check "the nearest uv.toml hides a parent pyproject.toml" ($env:UV_DEFAULT_INDEX -eq $pypiMirror)
+    } finally { Pop-Location; Remove-Item -LiteralPath $proj -Recurse -Force }
     Set-Content -Path $pipIni -Value "[global]`nindex-url = https://corp.example/simple"
     Run @{ pypi = 'blocked' }; Check "pip.ini index: only uv falls back" (-not $env:PIP_INDEX_URL -and $env:UV_DEFAULT_INDEX)
     Set-Content -Path $pipIni -Value "[global]`ntimeout = 60"
