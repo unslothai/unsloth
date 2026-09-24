@@ -54,8 +54,8 @@ function resetToNewChat(): void {
   runtime.setIncognito(false);
 }
 
-/** Open a fresh chat with these files attached (and optional starting text) in the composer. */
-export function startLibraryChat(
+/** Open a fresh chat with these files attached in the composer. */
+function startLibraryChat(
   navigate: Navigate,
   handoff: LibraryChatHandoff,
 ): void {

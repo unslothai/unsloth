@@ -141,18 +141,12 @@ function FilterMenu({
 export type NewAction =
   | "note"
   | "image"
-  | "document"
-  | "spreadsheet"
-  | "presentation"
   | "folder"
   | "upload";
 
 const NEW_OPTIONS: { value: NewAction; label: string; icon: IconSvgElement }[] = [
   { value: "note", label: "Note", icon: Note01Icon },
   { value: "image", label: "Image", icon: Image02Icon },
-  { value: "document", label: "Document", icon: File02Icon },
-  { value: "spreadsheet", label: "Spreadsheet", icon: SheetIcon },
-  { value: "presentation", label: "Presentation", icon: Presentation01Icon },
   { value: "folder", label: "Folder", icon: Folder01Icon },
 ];
 

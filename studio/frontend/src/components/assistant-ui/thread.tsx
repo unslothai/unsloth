@@ -2980,15 +2980,14 @@ const Composer: FC<{
   const nativeAttachmentTargetKeyRef = useRef(nativeAttachmentTargetKey);
   nativeAttachmentTargetKeyRef.current = nativeAttachmentTargetKey;
 
-  // Library "Chat about this" / "New document" open a fresh chat and leave their files and
-  // starting text for it; the composer may already be mounted, so listen as well as look.
+  // Library "Chat about this" opens a fresh chat and leaves its files for it; the composer may
+  // already be mounted, so listen as well as look.
   useEffect(() => {
     if (!nativeAttachmentTargetKey) return;
     const targetKey = nativeAttachmentTargetKey;
     const drain = async () => {
       const handoff = useLibraryChatHandoffStore.getState().take(targetKey);
       if (!handoff) return;
-      if (handoff.text) aui.composer().setText(handoff.text);
       for (const file of handoff.files) {
         try {
           await aui.composer().addAttachment(file);
