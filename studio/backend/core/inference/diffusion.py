@@ -6046,7 +6046,7 @@ class DiffusionBackend:
                 check_cancelled()
                 if transformer is not None:
                     if scheme == TQ_NVFP4:
-                        # Autotune off the request path: only M = 1 shapes are knowable here, the rest tune in ``GraphedForward``'s warm-up, before any capture.
+                        # Autotune off the request path: only M = 1 shapes are knowable here, the rest tune on their first eager GEMM (a graph's warm-up), before any capture.
                         from .diffusion_nvfp4_linear import nvfp4_prewarm
                         nvfp4_prewarm(transformer, (1,), logger = logger)
                     pipe = self._assemble_pipe(

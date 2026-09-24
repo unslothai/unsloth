@@ -253,3 +253,55 @@ def test_the_recorded_base_must_be_the_canonical_id_not_just_the_same_tail(capsy
             assert fam.transformer_class in str(exc), exc
             continue
         assert rc != 2 or "is not" not in capsys.readouterr().out, accepted
+
+
+def test_the_build_skips_ragged_linears_and_records_the_alignment_floor(monkeypatch, tmp_path):
+    """The runtime ``quantize_`` skips any Linear whose in/out features miss the scheme's GEMM
+    tiling floor. A build that does not would bake a quantized GEMM for a layer the runtime leaves
+    dense, and without the ``require_divisible`` stamp the loader cannot tell the two apart.
+
+    Driven through ``main`` with the download and the quantizer stubbed, so it checks what the
+    build actually hands ``quantize_`` and what it actually writes."""
+    torch = pytest.importorskip("torch")
+    pytest.importorskip("torchao")
+    import torchao.quantization as tq
+
+    import core.inference.diffusion_transformer_quant as dtq
+
+    fam = detect_family("Tongyi-MAI/Z-Image-Turbo")
+    assert fam is not None
+
+    class _Dense(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.aligned = torch.nn.Linear(1024, 1024, dtype = torch.bfloat16)
+            self.ragged = torch.nn.Linear(1024, 1000, dtype = torch.bfloat16)
+
+        @classmethod
+        def from_pretrained(cls, *args, **kwargs):
+            return cls()
+
+        def to(self, *args, **kwargs):
+            return self
+
+    fake_diffusers = types.ModuleType("diffusers")
+    fake_diffusers.__version__ = "0"
+    setattr(fake_diffusers, fam.transformer_class, _Dense)
+    monkeypatch.setitem(sys.modules, "diffusers", fake_diffusers)
+
+    quantized = []
+
+    def _fake_quantize(model, config, filter_fn):
+        quantized.extend(n for n, m in model.named_modules() if n and filter_fn(m, n))
+
+    monkeypatch.setattr(tq, "quantize_", _fake_quantize)
+    monkeypatch.setattr(dtq, "_make_quant_config", lambda *a, **k: object())
+
+    build = _script()
+    out = tmp_path / "out.pt"
+    argv = ["--base", "b", "--family", fam.name, "--scheme", "nvfp4", "--out", str(out)]
+    assert build.main(argv) == 0
+
+    assert quantized == ["aligned"]
+    meta = torch.load(out, weights_only = False)["metadata"]
+    assert meta["require_divisible"] == dtq.divisible_for_scheme("nvfp4") == 16
