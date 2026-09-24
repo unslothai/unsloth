@@ -31,6 +31,7 @@ import os
 import shutil
 
 import pytest
+from real_accelerator import has_real_cuda  # tests/_shared, on sys.path via tests/conftest.py
 import torch
 from torch import nn
 
@@ -55,7 +56,7 @@ from unsloth.models.compressed_tensors_bnb import _transformers_supports_weight_
 # (5.5+); on 5.4 an MXFP4 checkpoint loads through compressed-tensors' own quantizer.
 HAS_CONVERTERS = _transformers_supports_weight_converters()
 
-DEVICES = ["cpu"] + (["cuda"] if torch.cuda.is_available() else [])
+DEVICES = ["cpu"] + (["cuda"] if has_real_cuda() else [])
 _E2M1 = [0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0]
 
 
@@ -131,7 +132,7 @@ def test_dequant_matches_compressed_tensors_decompress(device):
         assert torch.equal(got.view(torch.int16), want.view(torch.int16)), (o, i)
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs a CUDA device")
+@pytest.mark.skipif(not has_real_cuda(), reason = "needs a CUDA device")
 def test_zoo_kernel_and_torch_path_agree():
     packed, scale = _random_packed(256, 512, low = 1, high = 254)
     packed, scale = packed.cuda(), scale.cuda()
@@ -175,7 +176,7 @@ def test_forward_and_input_gradient_are_exact_and_save_only_packed_bytes(device,
     assert module.weight_packed.grad is None and not module.weight_packed.requires_grad
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs a CUDA device")
+@pytest.mark.skipif(not has_real_cuda(), reason = "needs a CUDA device")
 def test_autocast_runs_the_matmul_in_the_autocast_dtype():
     packed, scale = _random_packed(64, 64)
     module = make_mxfp4_packed_linear(64, 64, device = "cuda")
@@ -424,7 +425,7 @@ def test_dtype_casts_keep_the_packed_bytes_and_set_the_decode_dtype():
     assert torch.equal(module.weight.float(), module.dequantize_weight(torch.bfloat16).float())
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs a CUDA device")
+@pytest.mark.skipif(not has_real_cuda(), reason = "needs a CUDA device")
 def test_device_move_carries_bytes_and_scales():
     module = _filled(32, 64).cuda()
     assert module.weight_packed.is_cuda and module.weight_scale.is_cuda
@@ -659,7 +660,7 @@ def _lora_losses(model, steps = 3):
 
 
 needs_gpu_loader_any = [
-    pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs a CUDA device"),
+    pytest.mark.skipif(not has_real_cuda(), reason = "needs a CUDA device"),
     pytest.mark.skipif(
         not HAS_CT
         or not hasattr(__import__("transformers"), "__version__")
@@ -668,7 +669,7 @@ needs_gpu_loader_any = [
     ),
 ]
 needs_gpu_loader = [
-    pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs a CUDA device"),
+    pytest.mark.skipif(not has_real_cuda(), reason = "needs a CUDA device"),
     pytest.mark.skipif(
         not (HAS_CT and HAS_CONVERTERS),
         reason = "needs compressed-tensors and the transformers 5 loader",
@@ -840,7 +841,7 @@ def test_an_explicit_decompress_request_keeps_the_stock_route(request_kwargs, tm
     packed_dir, bf16_dir = _write_tiny_mxfp4_llama(str(tmp_path))
     assert install_compressed_tensors_keep_packed()
     # On the GPU when there is one: an earlier FastLanguageModel load patches Llama's forward.
-    device = "cuda:0" if torch.cuda.is_available() else "cpu"
+    device = "cuda:0" if has_real_cuda() else "cpu"
     model = AutoModelForCausalLM.from_pretrained(
         packed_dir,
         dtype = torch.bfloat16,
@@ -890,7 +891,7 @@ def test_the_sixteen_bit_route_decodes_in_the_load_dtype(tmp_path):
 
     packed_dir, _ = _write_tiny_mxfp4_llama(str(tmp_path))
     assert install_compressed_tensors_keep_packed()
-    device = "cuda:0" if torch.cuda.is_available() else "cpu"
+    device = "cuda:0" if has_real_cuda() else "cpu"
     model = AutoModelForCausalLM.from_pretrained(
         packed_dir, dtype = torch.float16, device_map = {"": device}
     )

@@ -26,6 +26,7 @@ import sys
 import types
 
 import pytest
+from real_accelerator import has_real_cuda  # tests/_shared, on sys.path via tests/conftest.py
 import torch
 from torch import nn
 
@@ -502,7 +503,7 @@ def _load(path):
     )
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs a CUDA device")
+@pytest.mark.skipif(not has_real_cuda(), reason = "needs a CUDA device")
 @pytest.mark.skipif(
     not (HAS_CT and HAS_CONVERTERS),
     reason = "needs compressed-tensors and the transformers 5.8+ loader",
@@ -550,7 +551,7 @@ def test_remote_code_checkpoint_loads_packed_bytes_verbatim(tmp_path, monkeypatc
     assert model.layers[0].mlp.gate.weight.grad is not None
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs a CUDA device")
+@pytest.mark.skipif(not has_real_cuda(), reason = "needs a CUDA device")
 @pytest.mark.skipif(
     not (HAS_CT and HAS_CONVERTERS),
     reason = "needs compressed-tensors and the transformers 5.8+ loader",
@@ -655,7 +656,7 @@ def test_compressed_tensors_route_stacks_the_adopted_experts_verbatim():
             torch.testing.assert_close(experts[e](x), want[index][e], atol = 1e-2, rtol = 1e-2)
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs a CUDA device")
+@pytest.mark.skipif(not has_real_cuda(), reason = "needs a CUDA device")
 @pytest.mark.skipif(not HAS_CT, reason = "needs compressed-tensors")
 def test_remote_code_checkpoint_16bit_load_keeps_packed_stacks(tmp_path, monkeypatch):
     """A 16-bit load (and any load on transformers without the converter hook) goes through
@@ -927,7 +928,7 @@ def test_a_packed_linear_without_its_scale_is_not_kept_packed():
     assert plan_mxfp4_keep_packed(model, _keys(extra = extra[:1])) is None
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs a CUDA device")
+@pytest.mark.skipif(not has_real_cuda(), reason = "needs a CUDA device")
 def test_compressed_tensors_route_stacking_stages_gate_up_then_down():
     """Stacking a layer's adopted experts allocates the gate_up stack, moves w1 / w3 into it
     (freeing them), and only then the down stack: the transient is the gate_up stack, not the
