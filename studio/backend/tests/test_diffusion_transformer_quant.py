@@ -2805,5 +2805,5 @@ def test_the_loader_decline_asks_explain_unusable_scheme():
     from core.inference import diffusion
 
     src = inspect.getsource(diffusion.DiffusionBackend)
-    assert "is not usable for family \"\n" not in src
+    assert 'is not usable for family "\n' not in src
     assert "transformer_quant_decline = explain_unusable_scheme(" in src
