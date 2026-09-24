@@ -2448,16 +2448,26 @@ def test_image_train_rail_matches_create_and_header():
     classes = re.search(r'className="([^"]*overflow-y-auto overflow-x-hidden[^"]*)"', layout)
     assert classes, "the Train scroller moved; the rail clamp depends on its padding"
     padding: dict[str, list[str]] = {}
-    important: list[str] = []
+    forced: list[str] = []
     for token in classes.group(1).split():
-        variant, _, utility = token.rpartition(":")
+        # The variant ends at the last colon outside brackets; `@[50rem]:` and
+        # `[padding-right:40px]` both carry a colon of their own.
+        depth, cut = 0, -1
+        for i, ch in enumerate(token):
+            depth += {"[": 1, "]": -1}.get(ch, 0)
+            if ch == ":" and depth == 0:
+                cut = i
+        variant, utility = token[: max(cut, 0)], token[cut + 1 :]
         bare = utility.strip("!")
-        if re.fullmatch(r"(?:p|px|pr)-.+", bare):
+        if bare.startswith("[") and "padding" in bare:
+            # An arbitrary padding property says nothing the clamp can read.
+            forced.append(token)
+        elif re.fullmatch(r"(?:p|px|pr|pe)-.+", bare):
             # `!` either side is Tailwind v4's !important, which beats every other value here.
             if bare != utility:
-                important.append(token)
+                forced.append(token)
             padding.setdefault(variant, []).append(bare)
-    assert not important, f"the Train scroller forces right padding with !important: {important}"
+    assert not forced, f"the Train scroller overrides its right padding outside the steps: {forced}"
     unaccounted = sorted(v for v in padding if v not in ("", "max-sm", "sm"))
     assert not unaccounted, (
         f"the Train scroller sets right padding under {unaccounted}, which the rail clamp does not "
