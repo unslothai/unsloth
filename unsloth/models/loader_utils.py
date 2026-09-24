@@ -1591,9 +1591,9 @@ def check_and_disable_bitsandbytes_loading(
     if quant_method is None or quant_method == "bitsandbytes":
         return load_in_4bit, load_in_8bit, quant_method
 
-    if quant_method == "compressed-tensors":
+    if str(quant_method).lower() in ("compressed-tensors", "compressed_tensors", "sparseml"):
         # An MXFP4 checkpoint stays MXFP4 on every compressed-tensors route, not only the
-        # bitsandbytes one below.
+        # bitsandbytes one below, whichever spelling its config uses.
         from .mxfp4_compressed_linear import install_compressed_tensors_keep_packed
         install_compressed_tensors_keep_packed()
 

@@ -1080,3 +1080,19 @@ def test_the_sixteen_bit_route_plans_only_mxfp4_checkpoints(tmp_path, monkeypatc
     assert (
         len(calls) == 1 and sum(isinstance(m, Mxfp4PackedLinear) for m in model.modules()) == 2 * 7
     )
+
+
+@pytest.mark.parametrize("spelling", ["compressed-tensors", "compressed_tensors", "sparseml"])
+def test_every_compressed_tensors_spelling_installs_the_keep_packed_hook(spelling, monkeypatch):
+    """A 16-bit load (requantize_packed=False) never reaches the re-quantization branch, so the
+    keep-packed hook must be installed for every spelling that branch accepts."""
+    from types import SimpleNamespace
+    from unsloth.models import loader_utils, mxfp4_compressed_linear
+
+    calls = []
+    monkeypatch.setattr(mxfp4_compressed_linear, "install_compressed_tensors_keep_packed", lambda: calls.append(1))
+    config = SimpleNamespace(quantization_config = {"quant_method": spelling, "format": "mxfp4-pack-quantized"})
+    loader_utils.check_and_disable_bitsandbytes_loading(
+        config, load_in_4bit = False, verbose = False, requantize_packed = False,
+    )
+    assert calls == [1]
