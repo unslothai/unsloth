@@ -1282,6 +1282,7 @@ class FastBaseModel:
             _tokenizer_revision_arg = None
             kwargs.pop("revision", None)
         _revision_repo = model_name  # The repo the pin names, captured before any remap.
+        _trusted_code_commit = None  # The commit whose repo code a trusted text_only load ran.
 
         # Resolve text-only before the is_vlm / vLLM checks so is_vlm stays consistent; skip the vision tower only for families with their own text decoder (Gemma 3) (#5816).
         if text_only and auto_config is None:
@@ -1294,6 +1295,7 @@ class FastBaseModel:
             )
         if text_only and hasattr(auto_config, "vision_config"):
             parent_config = auto_config
+            _trusted_code_commit = getattr(parent_config, "_commit_hash", None)
             text_config = _get_text_only_config(parent_config, model_name)
             text_class = resolve_model_class(AutoModelForCausalLM, text_config)
             if text_class is not None and _is_family_text_decoder(
@@ -2206,6 +2208,13 @@ class FastBaseModel:
                 unsloth_base_fast_generate.__doc__ = model._old_generate.__doc__
                 model.generate = types.MethodType(unsloth_base_fast_generate, model)
         model._unsloth_trust_remote_code = trust_remote_code
+        # An export that re-reads the repo's config with its code pins it to this commit, never the
+        # branch head, which may have changed since the reviewed revision was loaded.
+        model._unsloth_trust_remote_code_commit = (
+            (_trusted_code_commit or getattr(model.config, "_commit_hash", None))
+            if trust_remote_code
+            else None
+        )
         model = FastBaseModel.post_patch_model(
             model,
             use_gradient_checkpointing = use_gradient_checkpointing,

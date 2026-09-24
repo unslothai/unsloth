@@ -409,3 +409,19 @@ def test_transformers_4_keeps_the_full_model(tmp_path, monkeypatch):
     parent = _load_parent_config(repo)
     ns["transformers_version"] = "4.57.6"
     assert ns["_get_remote_composite_text_only"](parent, str(repo), trust_remote_code = True) is None
+
+
+def test_trusted_load_records_the_commit_its_repo_code_ran_at():
+    # The export pins its trusted config re-read and code copy to this commit (unsloth-zoo). Under
+    # text_only the model's own config is the nested text config, which carries no commit, so the
+    # composite config's commit is taken before the text-only remap.
+    vision = VISION_PATH.read_text(encoding = "utf-8")
+    i_parent = vision.index("parent_config = auto_config\n")
+    i_commit = vision.index('_trusted_code_commit = getattr(parent_config, "_commit_hash", None)')
+    i_remap = vision.index("text_config = _get_text_only_config(parent_config, model_name)")
+    assert i_parent < i_commit < i_remap
+    i_trust = vision.index("model._unsloth_trust_remote_code = trust_remote_code")
+    i_stamp = vision.index("model._unsloth_trust_remote_code_commit = (")
+    assert i_trust < i_stamp
+    stamp = vision[i_stamp:vision.index("\n        )\n", i_stamp)]
+    assert "if trust_remote_code" in stamp and '"_commit_hash"' in stamp
