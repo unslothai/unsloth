@@ -50,12 +50,12 @@ const MEDIA_LIMITS = {
 
 /**
  * Open a fresh chat with a generated image or clip attached, named after its prompt. `source` is
- * a URL to fetch, or a loader for bytes a URL cannot give back (WebKit will not refetch an object
+ * a URL to fetch, or a loader for a response a URL cannot give (WebKit will not refetch an object
  * URL it is displaying).
  */
 export async function chatAboutMedia(
   navigate: Navigate,
-  source: string | (() => Promise<Blob>),
+  source: string | (() => Promise<Response>),
   prompt: string,
   kind: keyof typeof MEDIA_LIMITS,
 ): Promise<void> {
@@ -67,20 +67,15 @@ export async function chatAboutMedia(
   // A sign-out while the file downloads would hand it to the next account's chat.
   const epoch = getAuthSessionEpoch();
   try {
-    let blob: Blob;
-    if (typeof source === "string") {
-      const response = await fetch(source);
-      if (!response.ok) throw new Error(`Could not read the ${kind} (${response.status}).`);
-      // Before reading the body, so an oversized clip is never buffered.
-      if (Number(response.headers.get("content-length")) > limit.bytes) {
-        void response.body?.cancel();
-        tooLarge();
-        return;
-      }
-      blob = await response.blob();
-    } else {
-      blob = await source();
+    const response = typeof source === "string" ? await fetch(source) : await source();
+    if (!response.ok) throw new Error(`Could not read the ${kind} (${response.status}).`);
+    // Before reading the body, so an oversized file is never buffered.
+    if (Number(response.headers.get("content-length")) > limit.bytes) {
+      void response.body?.cancel();
+      tooLarge();
+      return;
     }
+    const blob = await response.blob();
     if (getAuthSessionEpoch() !== epoch) return;
     if (blob.size > limit.bytes) {
       tooLarge();

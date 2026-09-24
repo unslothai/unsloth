@@ -1166,6 +1166,8 @@ function VideoGenerator({
   // Bound to the clip that opened it: a generation finishing moves the selection, not the viewer.
   const [viewer, setViewer] = useState<{ id: string; start: number; muted: boolean } | null>(null);
   const viewerVideoRef = useRef<HTMLVideoElement | null>(null);
+  // Where the viewer's clip got to, handed back to the inline player however the viewer closes.
+  const viewerTime = useRef<{ id: string; time: number } | null>(null);
   const navigateToChat = useNavigate();
   const revealLabel = useRevealLabel();
   const viewerVideo = viewer ? (videos.find((video) => video.id === viewer.id) ?? null) : null;
@@ -1183,12 +1185,20 @@ function VideoGenerator({
     requestAnimationFrame(() => previewRef.current?.pause());
   };
   const closeViewer = () => {
-    const time = viewerVideoRef.current?.currentTime;
-    if (previewRef.current && time !== undefined && viewer?.id === selected?.id) {
-      previewRef.current.currentTime = time;
-    }
+    const video = viewerVideoRef.current;
+    if (viewer && video) viewerTime.current = { id: viewer.id, time: video.currentTime };
     setViewer(null);
   };
+  // Also when leaving the page closed it above, mid-render, with no chance to read the player.
+  const shownId = selected?.id;
+  useEffect(() => {
+    if (viewer) return;
+    const last = viewerTime.current;
+    viewerTime.current = null;
+    if (last && previewRef.current && last.id === shownId) {
+      previewRef.current.currentTime = last.time;
+    }
+  }, [viewer, shownId]);
 
   // The resolution presets + temporal lattice for the loaded family, or the fallbacks before anything is loaded.
   const resolutionPresets = useMemo<Array<[number, number]>>(() => {
@@ -4305,6 +4315,9 @@ function VideoGenerator({
                 muted={viewer.muted}
                 onLoadedMetadata={(event) => {
                   if (viewer.start) event.currentTarget.currentTime = viewer.start;
+                }}
+                onTimeUpdate={(event) => {
+                  viewerTime.current = { id: viewer.id, time: event.currentTarget.currentTime };
                 }}
                 // An expired or restart-invalidated link gets a fresh one, as the inline player does,
                 // and the fresh one picks up where this one stopped.

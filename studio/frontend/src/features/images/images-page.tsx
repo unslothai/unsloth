@@ -204,6 +204,7 @@ import {
   cancelDiffusionGeneration,
   deleteGalleryImage,
   fetchGalleryBlob,
+  fetchGalleryResponse,
   fetchGalleryObjectUrl,
   generateDiffusionImage,
   getDiffusionLoadProgress,
@@ -5295,7 +5296,7 @@ export function ImagesPage({
                     void chatAboutMedia(
                       navigateToChat,
                       // The authenticated original: WebKit shows the object URL but cannot refetch it.
-                      () => fetchGalleryBlob(viewerImage.url),
+                      () => fetchGalleryResponse(viewerImage.url),
                       viewerImage.prompt,
                       "image",
                     ),
