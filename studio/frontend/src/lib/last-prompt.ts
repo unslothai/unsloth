@@ -5,6 +5,7 @@
  * The last prompt a media page generated with, kept across reloads. Storage failures fall back to
  * the page's example, so the box is never left without one.
  */
+// An "unsloth" key, so another account signing in clears it (transitionBrowserAccount).
 const PREFIX = "unsloth_last_prompt:";
 
 export function readLastPrompt(key: string, fallback: string): string {
