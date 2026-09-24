@@ -7718,9 +7718,12 @@ class DiffusionBackend:
         self._cn_models.clear()
         self._state = None
         del state
-        clear_gpu_cache()
-        # After the pipe is gone: its pinned offload chunks sit in torch's host allocator cache until emptied.
-        release_pinned_host_memory()
+        try:
+            clear_gpu_cache()
+        finally:
+            # After the pipe is gone: its pinned offload chunks sit in torch's host allocator cache until emptied, and
+            # a sticky CUDA fault raising out of clear_gpu_cache() must not leave them page-locked.
+            release_pinned_host_memory()
 
     def status(self) -> dict[str, Any]:
         state = self._state

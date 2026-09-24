@@ -6848,9 +6848,12 @@ class VideoBackend:
                 getattr(getattr(state, "pipe", None), "_unsloth_cuda_graphs", ()) or ()
             )
             del state
-            clear_gpu_cache()
-            # After the pipe is gone: its pinned offload chunks sit in torch's host allocator cache until emptied.
-            release_pinned_host_memory()
+            try:
+                clear_gpu_cache()
+            finally:
+                # After the pipe is gone: its pinned offload chunks sit in torch's host allocator cache until emptied, and
+                # a sticky CUDA fault raising out of clear_gpu_cache() must not leave them page-locked.
+                release_pinned_host_memory()
 
     def unload(self, *, expected_account: Optional[str] = None) -> dict[str, Any]:
         with self._lock:
