@@ -46,6 +46,28 @@ _CONTINUATION_FLAG_PROVIDERS = frozenset({"vllm", "llama_cpp"})
 # is absent because it routes to /v1/responses, which reports usage on its own.
 _USAGE_STREAM_OPTION_PROVIDERS = frozenset({"vllm", "openrouter", "kimi"})
 
+# JSON mode spelled as a schema. LM Studio's OpenAI-compatible server rejects {"type": "json_object"} with a 400
+# ("'response_format.type' must be 'json_schema' or 'text'"), which killed every Deep Research run on a "custom"
+# connection to it. A schema of any object is the same constraint in the only spelling such a server takes. It is a
+# retry, not the default, because some OpenAI-compatible APIs accept json_object but not json_schema.
+_JSON_OBJECT_AS_SCHEMA: dict[str, Any] = {
+    "type": "json_schema",
+    "json_schema": {"name": "response", "schema": {"type": "object"}},
+}
+
+
+def _json_object_refused_for_schema(
+    status_code: int, error_text: str, response_format: Optional[dict[str, Any]]
+) -> bool:
+    """True when the server refused JSON mode but names json_schema as the accepted spelling."""
+    if status_code != 400 or not isinstance(response_format, dict):
+        return False
+    if response_format.get("type") != "json_object":
+        return False
+    text = error_text.lower()
+    return "response_format" in text and "json_schema" in text
+
+
 # llama-server reads repeat_penalty, not repetition_penalty (as routes/inference does).
 _REPETITION_PENALTY_BODY_KEY = {"llama_cpp": "repeat_penalty"}
 
@@ -1743,6 +1765,45 @@ class ExternalProviderClient:
                 if response.status_code != 200:
                     error_body = await response.aread()
                     error_text = error_body.decode("utf-8", errors = "replace")
+                    if _json_object_refused_for_schema(
+                        response.status_code, error_text, response_format
+                    ):
+                        # Nothing was streamed yet, so a single re-send cannot duplicate output. The retried
+                        # format is json_schema, so this branch cannot fire twice.
+                        logger.info(
+                            "External provider refused json_object; retrying as json_schema (provider=%s, model=%s)",
+                            self.provider_type,
+                            model,
+                        )
+                        await response.aclose()
+                        async for line in self.stream_chat_completion(
+                            messages,
+                            model,
+                            temperature = temperature,
+                            top_p = top_p,
+                            max_tokens = max_tokens,
+                            presence_penalty = presence_penalty,
+                            top_k = top_k,
+                            min_p = min_p,
+                            repetition_penalty = repetition_penalty,
+                            enable_thinking = enable_thinking,
+                            reasoning_effort = reasoning_effort,
+                            enabled_tools = enabled_tools,
+                            enable_prompt_caching = enable_prompt_caching,
+                            openai_code_exec_container_id = openai_code_exec_container_id,
+                            anthropic_code_exec_container_id = anthropic_code_exec_container_id,
+                            prompt_cache_ttl = prompt_cache_ttl,
+                            compaction_threshold = compaction_threshold,
+                            tools = tools,
+                            tool_choice = tool_choice,
+                            fast_mode = fast_mode,
+                            continue_final_message = continue_final_message,
+                            response_format = _JSON_OBJECT_AS_SCHEMA,
+                            stream = stream,
+                            preserve_thinking = preserve_thinking,
+                        ):
+                            yield line
+                        return
                     error_text = _friendly_provider_error_text(
                         self.provider_type,
                         response.status_code,
