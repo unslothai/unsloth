@@ -305,6 +305,8 @@ def test_a_package_installed_by_hand_clears_the_old_install_error(client, monkey
     monkeypatch.setattr(laya_runtime, "FAILURE_BACKOFF_S", 0.0)
     pip = FakePip(monkeypatch, returncode = 1, stderr = "offline")
     assert _post(client).status_code == 503
+    # With no backoff the failed request starts a retry load; let it fail before the package appears.
+    laya_runtime._loader.join(5)
     pip.installed = True
     assert _post(client).status_code == 200
     body = client.get("/api/settings/systemone").json()
