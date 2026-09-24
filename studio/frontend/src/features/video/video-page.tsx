@@ -1189,15 +1189,14 @@ function VideoGenerator({
     if (viewer && video) viewerTime.current = { id: viewer.id, time: video.currentTime };
     setViewer(null);
   };
-  // Also when leaving the page closed it above, mid-render, with no chance to read the player.
+  // Also when leaving the page closed it above, mid-render, with no chance to read the player. Kept
+  // until that clip is the one shown: a generation finishing while it was open selects another.
   const shownId = selected?.id;
   useEffect(() => {
-    if (viewer) return;
     const last = viewerTime.current;
+    if (viewer || !last || last.id !== shownId || !previewRef.current) return;
     viewerTime.current = null;
-    if (last && previewRef.current && last.id === shownId) {
-      previewRef.current.currentTime = last.time;
-    }
+    previewRef.current.currentTime = last.time;
   }, [viewer, shownId]);
 
   // The resolution presets + temporal lattice for the loaded family, or the fallbacks before anything is loaded.
