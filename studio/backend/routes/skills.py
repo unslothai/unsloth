@@ -67,7 +67,6 @@ class SkillCreateRequest(SkillDraft):
 def _invalidate_catalog() -> None:
     # The next inference scan must not serve the snapshot from before this change.
     from routes.inference import _invalidate_agent_skills_cache
-
     _invalidate_agent_skills_cache()
 
 
@@ -92,8 +91,7 @@ def get_skills(current_subject: str = Depends(get_current_subject)) -> list[dict
 
 @router.post("", response_model = SkillRecord, status_code = 201)
 def create_skill_route(
-    payload: SkillCreateRequest,
-    current_subject: str = Depends(get_current_subject),
+    payload: SkillCreateRequest, current_subject: str = Depends(get_current_subject)
 ) -> dict[str, Any]:
     try:
         record = create_skill(payload.name, payload.description, payload.instructions)

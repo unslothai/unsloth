@@ -971,7 +971,9 @@ def test_update_skill_rewrites_the_manifest_and_keeps_the_rest_of_its_frontmatte
     text = (folder / "SKILL.md").read_text(encoding = "utf-8")
     assert text.startswith("---\nname: notes\ndescription: New description\nlicense: MIT\n")
     assert text.endswith("---\n\n# New body\n\nStep one.\n")
-    assert skills.read_skill_manifest("notes", home = home)["instructions"] == "# New body\n\nStep one."
+    assert (
+        skills.read_skill_manifest("notes", home = home)["instructions"] == "# New body\n\nStep one."
+    )
     # The write went through a temporary file; none is left behind as a stray resource.
     assert [path.name for path in folder.iterdir()] == ["SKILL.md"]
     with pytest.raises(skills.SkillError, match = "1-1024"):
@@ -1028,7 +1030,9 @@ def test_only_agents_skills_can_be_changed_from_the_dialog(isolated_skills, monk
     with pytest.raises(skills.SkillNotFoundError):
         skills.read_skill_manifest("missing")
     assert (home / ".claude" / "skills" / "claude-owned" / "SKILL.md").is_file()
-    assert (Path(skills.__file__).with_name("bundled_skills") / "skill-creator" / "SKILL.md").is_file()
+    assert (
+        Path(skills.__file__).with_name("bundled_skills") / "skill-creator" / "SKILL.md"
+    ).is_file()
 
 
 def test_linked_agents_skill_stays_read_only_in_the_dialog(isolated_skills, tmp_path):
@@ -1111,7 +1115,9 @@ def test_managed_account_edits_and_deletes_only_its_own_skills(managed_accounts)
     from utils.account_context import run_as
 
     home, studio, alice, bob = managed_accounts
-    owner_manifest = _write_skill(home, "agents", "owner-made", description = "owner copy") / "SKILL.md"
+    owner_manifest = (
+        _write_skill(home, "agents", "owner-made", description = "owner copy") / "SKILL.md"
+    )
     run_as(bob, skills.create_skill, "bob-made", "Bob's skill", "Instructions")
 
     record = run_as(bob, skills.update_skill, "bob-made", "Bob's edited skill", "Edited")
