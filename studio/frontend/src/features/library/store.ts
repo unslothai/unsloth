@@ -4,7 +4,7 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import { AUTH_SESSION_CLEARED_EVENT } from "@/features/auth";
-import { announceGalleryRemoval } from "@/lib/gallery-removal";
+import { type GalleryKind, notifyGalleryChanged } from "@/lib/gallery-flags";
 import {
   type LibraryFolder,
   type LibraryItem,
@@ -37,11 +37,8 @@ interface LibraryState {
   removeFolder: (id: string) => Promise<void>;
 }
 
-/** "image:abc" to ["image", "abc"]. */
-function splitItemId(id: string): [string, string] {
-  const at = id.indexOf(":");
-  return [id.slice(0, at), id.slice(at + 1)];
-}
+/** The gallery page behind each generated item's id prefix. */
+const GALLERIES: Record<string, GalleryKind> = { image: "images", video: "videos", audio: "audio" };
 
 // Bumped by every refresh and by sign-out, so only the newest request may commit its snapshot.
 let refreshGeneration = 0;
@@ -102,10 +99,9 @@ export const useLibraryStore = create<LibraryState>((set, get) => {
         (state) => ({ items: state.items.filter((item) => item.id !== id) }),
         async () => {
           await deleteLibraryItem(id);
-          const [kind, ref] = splitItemId(id);
-          if (kind === "image" || kind === "video" || kind === "audio") {
-            announceGalleryRemoval(kind, ref);
-          }
+          // Those pages stay mounted off-screen and would keep showing it.
+          const gallery = GALLERIES[id.slice(0, id.indexOf(":"))];
+          if (gallery) notifyGalleryChanged(gallery);
         },
       ),
     upload: async (batch, folderId) => {
