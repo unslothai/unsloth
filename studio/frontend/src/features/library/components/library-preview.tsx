@@ -2,19 +2,23 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { Button } from "@/components/ui/button";
-import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
+import { MediaViewer } from "@/components/media-viewer";
 import { Spinner } from "@/components/ui/spinner";
 import { ArtifactHtmlFrame } from "@/features/chat";
 import { isTauri } from "@/lib/api-base";
 import { MessageCircleIcon } from "@/lib/hugeicons-derived";
 import { toast } from "@/lib/toast";
-import { Download01Icon } from "@hugeicons/core-free-icons";
-import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useState } from "react";
-import { type LibraryItem, fetchLibraryTextPrefix, writeLibraryText } from "../api";
+import {
+  type LibraryItem,
+  addLibraryItemToProject,
+  fetchLibraryTextPrefix,
+  writeLibraryText,
+} from "../api";
 import {
   fileKind,
   hasImagePreview,
+  isDeletable,
   isFileItem,
   isTextPreviewable,
   modelLabel,
@@ -39,6 +43,11 @@ function bodyFor(item: LibraryItem): Body {
   if (kind === "pdf") return isTauri || navigator.pdfViewerEnabled === false ? "none" : "pdf";
   if (kind === "audio" || kind === "video") return kind;
   return isTextPreviewable(item) ? "text" : "none";
+}
+
+/** Items with a file of their own; chat attachments live inside messages, fine-tunes are folders. */
+function canAddToProject(item: LibraryItem): boolean {
+  return /^(upload|image|video|audio|sandbox):/.test(item.id);
 }
 
 /** Library-owned text files can be edited in place; everything else is read-only. */
@@ -131,13 +140,13 @@ function PreviewBody({
     case "model":
       return <ModelDetails item={item} />;
     case "image":
-      return <img src={url!} alt={item.name} className="m-auto max-h-full max-w-full object-contain" />;
+      return <img src={url!} alt={item.name} className="size-full object-contain" />;
     case "pdf":
       return <iframe title={item.name} src={url!} className="size-full rounded-xl bg-white" />;
     case "audio":
       return <audio src={url!} controls className="m-auto w-full max-w-lg" />;
     case "video":
-      return <video src={url!} controls className="m-auto max-h-full max-w-full rounded-xl" />;
+      return <video src={url!} controls autoPlay className="size-full object-contain" />;
     case "web":
       if (truncated) return <TextPrefix text={`${text!}\n\n…`} />;
       // The chat canvas frame: served by the backend under its own CSP, so it renders the same in
@@ -175,6 +184,8 @@ export function LibraryPreview({
   onChat,
   onDownload,
   onOpenThread,
+  onToggleFavorite,
+  onDelete,
   onSaved,
 }: {
   item: LibraryItem | null;
@@ -182,6 +193,8 @@ export function LibraryPreview({
   onChat: (item: LibraryItem) => void;
   onDownload: (item: LibraryItem) => void;
   onOpenThread: (threadId: string) => void;
+  onToggleFavorite: (item: LibraryItem) => void;
+  onDelete: (item: LibraryItem) => void;
   onSaved: () => void;
 }) {
   // Tagged with its item, so a draft never follows the preview to another file.
@@ -227,61 +240,54 @@ export function LibraryPreview({
         formatCardTime(item.updatedAt),
       ].filter(Boolean)
     : [];
+  const body = item ? bodyFor(item) : "none";
+  const media = body === "image" || body === "video";
 
   return (
-    <Dialog open={item !== null} onOpenChange={(open) => void handleOpenChange(open)}>
-      <DialogContent
-        className="flex h-[min(88vh,960px)] w-[min(92vw,1200px)] max-w-none flex-col gap-0 p-0 sm:max-w-none"
-        onKeyDown={(event) => {
-          if ((event.metaKey || event.ctrlKey) && event.key === "s") {
-            event.preventDefault();
-            void save();
-          }
-        }}
-      >
-        {item && (
-          <>
-            <div className="flex items-center gap-4 border-b border-border/60 py-4 pl-6 pr-14">
-              <div className="min-w-0 flex-1">
-                <DialogTitle className="truncate text-[17px]">{item.name}</DialogTitle>
-                <DialogDescription className="mt-0.5 truncate text-[13px]">
-                  {meta.join(" · ")}
-                  {item.threadId && item.threadTitle && (
-                    <>
-                      {" · "}
-                      <button
-                        type="button"
-                        onClick={() => void saveThen(() => onOpenThread(item.threadId!))}
-                        className="underline-offset-2 hover:text-foreground hover:underline"
-                      >
-                        {item.threadTitle}
-                      </button>
-                    </>
-                  )}
-                </DialogDescription>
-              </div>
-              {draft !== null && (
-                <Button variant="dark" size="sm" disabled={saving} onClick={() => void save()}>
-                  Save
-                </Button>
-              )}
-              <Button variant="ghost" size="sm" disabled={saving} onClick={() => void saveThen(() => onChat(item))}>
-                <HugeiconsIcon icon={MessageCircleIcon} strokeWidth={1.75} className="size-4" />
-                {item.model ? "Chat with this model" : "Chat about this"}
-              </Button>
-              {isFileItem(item) && (
-                <Button variant="ghost" size="sm" onClick={() => onDownload(item)}>
-                  <HugeiconsIcon icon={Download01Icon} strokeWidth={1.75} className="size-4" />
-                  Download
-                </Button>
-              )}
-            </div>
-            <div className="flex min-h-0 flex-1 p-6">
-              <PreviewBody item={item} draft={draft} onDraftChange={setDraft} />
-            </div>
-          </>
-        )}
-      </DialogContent>
-    </Dialog>
+    <MediaViewer
+      open={item !== null}
+      onOpenChange={(open) => void handleOpenChange(open)}
+      title={item?.name ?? ""}
+      meta={meta.join(" · ")}
+      media={media}
+      noun={media ? body : "file"}
+      onKeyDown={(event) => {
+        if ((event.metaKey || event.ctrlKey) && event.key === "s") {
+          event.preventDefault();
+          void save();
+        }
+      }}
+      extra={
+        draft !== null && (
+          <Button variant="dark" size="sm" className="mr-1" disabled={saving} onClick={() => void save()}>
+            Save
+          </Button>
+        )
+      }
+      actions={
+        item
+          ? {
+              primary: {
+                label: item.model ? "Chat with this model" : "Chat about this",
+                icon: MessageCircleIcon,
+                disabled: saving,
+                onClick: () => void saveThen(() => onChat(item)),
+              },
+              onDownload: isFileItem(item) ? () => onDownload(item) : undefined,
+              onViewChat: item.threadId
+                ? () => void saveThen(() => onOpenThread(item.threadId!))
+                : undefined,
+              favorite: item.favorite,
+              onToggleFavorite: () => onToggleFavorite(item),
+              onAddToProject: canAddToProject(item)
+                ? (projectId) => addLibraryItemToProject(item.id, projectId)
+                : undefined,
+              onDelete: isDeletable(item) ? () => onDelete(item) : undefined,
+            }
+          : {}
+      }
+    >
+      {item && <PreviewBody item={item} draft={draft} onDraftChange={setDraft} />}
+    </MediaViewer>
   );
 }
