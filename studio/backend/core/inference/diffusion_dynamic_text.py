@@ -22,9 +22,8 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
-# Source names of QwenImage21TransformerBlock.forward inputs whose size follows the prompt token count. Exact names
-# plus regexes (re.match), which cover the extra segments of an edit prompt. The first segment start is always 0 and stays static: a symbol for it is what trips the torchao CantSplit (the target
-# rows become ``s0 - s_start``).
+# QwenImage21TransformerBlock.forward inputs sized by prompt length; regexes (re.match) cover edit-prompt segments.
+# segments[0][0] (always 0) stays static: a symbol there trips torchao CantSplit (rows become ``s0 - s_start``).
 _QWEN_IMAGE_21_SOURCES: tuple[str, ...] = (
     "L['hidden_states']",
     "L['rotary_emb']",
@@ -39,9 +38,8 @@ _QWEN_IMAGE_21_SOURCES: tuple[str, ...] = (
     r"L\['segments'\]\[[1-9]\d*\]\[0\]$",
 )
 
-# QwenImageTransformerBlock.forward (Qwen-Image, 2512, Edit): the text stream and its RoPE half. A step cache
-# (FBCache, on by default for this family) calls the blocks through diffusers hooks, where the same inputs arrive as
-# ``L['kwargs'][...]`` or, after a graph break, ``___stack0[1][...]``; the suffix patterns cover those.
+# QwenImageTransformerBlock.forward (Qwen-Image, 2512, Edit): text stream and its RoPE half. Suffix regexes cover
+# FBCache hook paths: ``L['kwargs'][...]`` and, after a graph break, ``___stack0[1][...]``.
 _QWEN_IMAGE_SOURCES: tuple[str, ...] = (
     "L['encoder_hidden_states']",
     "L['encoder_hidden_states_mask']",
@@ -51,7 +49,6 @@ _QWEN_IMAGE_SOURCES: tuple[str, ...] = (
     r".*\['image_rotary_emb'\]\[1\]$",
 )
 
-# Transformer class name -> dynamic sources of its repeated block.
 _FAMILY_SOURCES: dict[str, tuple[str, ...]] = {
     "QwenImage21Transformer2DModel": _QWEN_IMAGE_21_SOURCES,
     "QwenImageTransformer2DModel": _QWEN_IMAGE_SOURCES,
@@ -68,8 +65,7 @@ def _compiler_config() -> Any:
         getattr(cfg, "dynamic_sources")
     except Exception:  # noqa: BLE001 - knob absent on this build
         return None
-    # 2.8+ (with is_dynamic_source) re-reads the allowlist when it changes and matches regexes; 2.7 caches its first
-    # read for the life of the process, which the per-forward scoping below cannot work with.
+    # Needs 2.8+ (is_dynamic_source): 2.7 caches its first read per process, breaking per-forward scoping.
     if not callable(getattr(builder, "is_dynamic_source", None)):
         return None
     return cfg

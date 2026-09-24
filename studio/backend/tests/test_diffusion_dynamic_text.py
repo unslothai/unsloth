@@ -104,7 +104,7 @@ def test_fingerprint_only_for_automatic_dynamic():
 
 
 def test_first_segment_start_stays_static():
-    # A symbol for segments[0][0] (always 0) makes the target rows ``s0 - s_start`` and trips torchao's CantSplit.
+    # A symbol for segments[0][0] (always 0) trips torchao's CantSplit.
     builder = pytest.importorskip("torch._dynamo.variables.builder")
     is_dynamic = getattr(builder, "is_dynamic_source", None)
     if is_dynamic is None:
@@ -185,8 +185,7 @@ def test_qwen_image_text_stream_is_armed():
 
 
 def test_qwen_image_hook_paths_match_on_regex_torch():
-    # FBCache (on by default for Qwen-Image) calls the blocks through diffusers hooks, so the inputs arrive under
-    # ``L['kwargs']`` or a resumed frame's stack; the image stream and the image RoPE half stay static.
+    # FBCache hooks pass inputs via ``L['kwargs']`` or a resumed frame's stack; image stream and RoPE stay static.
     builder = pytest.importorskip("torch._dynamo.variables.builder")
     is_dynamic = getattr(builder, "is_dynamic_source", None)
     if is_dynamic is None:
@@ -214,8 +213,7 @@ def test_qwen_image_hook_paths_match_on_regex_torch():
 
 
 def test_torch_that_reads_the_allowlist_once_is_not_armed(monkeypatch):
-    # torch 2.7 caches its first read of dynamic_sources for the process: scoping it to one forward would be ignored
-    # or leak the list into every later compile, so that torch keeps today's behaviour.
+    # torch 2.7 reads dynamic_sources once per process, so scoping would be ignored or leak; keep today's behaviour.
     from torch._dynamo.variables import builder
 
     monkeypatch.delattr(builder, "is_dynamic_source")

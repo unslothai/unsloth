@@ -295,7 +295,7 @@ def model_fingerprint(
         "compile_kwargs": {k: compile_kwargs[k] for k in sorted(compile_kwargs)},
         "shape_bucket": shape_bucket,
     }
-    # Only when set, so every other bundle keeps its key.
+    # Added only when armed, so other bundles keep their key.
     try:
         from .diffusion_dynamic_text import fingerprint as _dynamic_text_fp
         dynamic_text = _dynamic_text_fp(transformer, compile_kwargs.get("dynamic", True))

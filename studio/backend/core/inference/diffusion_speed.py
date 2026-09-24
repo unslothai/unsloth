@@ -486,7 +486,7 @@ def _compile_repeated_blocks(
             _warn(logger, "compile_repeated_blocks", exc)
             continue
         if dit_kwargs["dynamic"] is None:
-            # Compile the prompt-length dims dynamic up front, so the second prompt length does not recompile.
+            # Prompt-length dims dynamic up front, so a new prompt length does not recompile.
             try:
                 from . import diffusion_dynamic_text
                 diffusion_dynamic_text.install(transformer, logger)
