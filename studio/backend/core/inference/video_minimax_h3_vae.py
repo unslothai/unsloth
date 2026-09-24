@@ -132,6 +132,9 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         from triton.language.extra import libdevice
     except Exception:  # noqa: BLE001 - no Triton means the stock path
         return None
+    # this module's annotations are strings (``from __future__ import annotations``) and Triton 3.2 and older resolve
+    # ``tl.constexpr`` and the kernel bodies' names against the module globals, not this function's locals
+    globals().update(triton = triton, tl = tl, libdevice = libdevice)
 
     @triton.jit
     def _gn_partials(

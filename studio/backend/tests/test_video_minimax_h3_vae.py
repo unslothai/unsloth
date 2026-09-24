@@ -834,6 +834,21 @@ def test_the_video_backend_wires_the_layer_into_the_h3_load_only():
     assert compile_settle.lineno < settle.lineno
 
 
+@pytest.mark.skipif(H._kernels() is None, reason = "needs Triton")
+def test_kernel_annotations_resolve_against_the_module_globals():
+    # Triton 3.2 and older evaluate a kernel's string annotations (this module uses postponed annotations) in the
+    # function's globals; a closure-local ``tl`` compiles on newer Triton and fails with NameError on those
+    k = H._kernels()
+    names = [n for n in vars(k) if not n.startswith("_")]
+    assert names
+    for name in names:
+        fn = getattr(getattr(k, name), "fn", None)
+        assert fn is not None, name
+        for arg, ann in fn.__annotations__.items():
+            if isinstance(ann, str):
+                eval(ann, fn.__globals__)  # noqa: S307 - a Triton annotation such as "tl.constexpr"
+
+
 # ── shared fp16-accumulation owner, atomic int8 install ───────────────────────────────────────────────────────────
 
 
