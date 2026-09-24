@@ -9523,6 +9523,51 @@ def patch_package_file(package_name: str, relative_path: str, url: str) -> None:
 # -- Main install sequence ---------------------------------------------
 
 
+# Apple's Command Line Tools shim, which pops a GUI install dialog when run without a toolchain.
+_CLT_GIT_SHIM = "/usr/bin/git"
+
+
+def _apple_silicon_hardware() -> bool:
+    """Whether the MACHINE is Apple Silicon, even when this Python runs under Rosetta.
+
+    install.sh's _MAC_ROSETTA: an x86_64 shell on an arm64 Mac reports x86_64, while
+    hw.optional.arm64 stays 1. Intel Macs keep probing /usr/bin/git by running it, as install.sh
+    does, because a CI Intel image ships a working one there.
+    """
+    if not IS_MACOS:
+        return False
+    if platform.machine() == "arm64":
+        return True
+    try:
+        answer = subprocess.run(
+            ["sysctl", "-in", "hw.optional.arm64"],
+            capture_output = True,
+            text = True,
+            timeout = 10,
+        ).stdout
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return answer.strip() == "1"
+
+
+def _is_unarmed_clt_git_shim(exe: str) -> bool:
+    """`exe` is Apple Silicon's /usr/bin/git shim and `xcode-select -p` names no toolchain."""
+    if exe != _CLT_GIT_SHIM or not _apple_silicon_hardware():
+        return False
+    try:
+        return (
+            subprocess.run(
+                ["xcode-select", "-p"],
+                stdout = subprocess.DEVNULL,
+                stderr = subprocess.DEVNULL,
+                timeout = 30,
+            ).returncode
+            != 0
+        )
+    except (OSError, subprocess.SubprocessError):
+        return True
+
+
 def _has_working_git() -> bool:
     """Match install.sh's _has_working_git: on PATH *and* actually runnable.
 
@@ -9532,6 +9577,12 @@ def _has_working_git() -> bool:
     """
     exe = shutil.which("git")
     if exe is None:
+        return False
+    # Without the Command Line Tools, Apple Silicon's /usr/bin/git is Apple's shim, and running it
+    # raises the "install the command line developer tools" dialog: the probe would fire the very
+    # prompt it exists to avoid. Answer from the path, as install.sh does. Only that exact shim with
+    # no toolchain selected; a Homebrew or Xcode.app git is real and is still run.
+    if _is_unarmed_clt_git_shim(exe):
         return False
     try:
         return (
