@@ -627,6 +627,16 @@ FINGERPRINT_ALGO = "md5-packed-v1"
 _FINGERPRINT_PAYLOAD: dict = {
     "NVFP4Tensor": ("qdata", "scale", "per_tensor_scale"),
     "Float8Tensor": ("qdata", "scale"),
+    # torchao 0.18+ int8 (0.17 and older produce the AffineQuantizedTensor chain below). The
+    # optional slots read None on a dynamic-activation bake and are skipped.
+    "Int8Tensor": (
+        "qdata",
+        "scale",
+        "zero_point",
+        "act_quant_scale",
+        "act_quant_zero_point",
+        "act_pre_scale",
+    ),
     "MXTensor": ("qdata", "scale"),
     "LinearActivationQuantizedTensor": ("original_weight_tensor",),
     "AffineQuantizedTensor": ("tensor_impl",),
