@@ -1238,3 +1238,48 @@ def _drop_the_idle_reload_stash_between_tests():
         yield
     finally:
         _keepwarm._set_last_unloaded(None)
+
+
+# The NVFP4 switch (core/inference/diffusion_nvfp4_flag.py, UNSLOTH_NVFP4_DIFFUSION) is off by
+# default. These modules were written against the ENABLED behaviour and keep testing it: every test
+# in them runs with the switch on. The default-off behaviour has its own module,
+# test_nvfp4_diffusion_flag.py, which is deliberately not listed. Every test_diffusion_nvfp4_*
+# module is NVFP4-only and is covered by the prefix. test_build_prequant_checkpoint is left off on
+# purpose: the offline builder does not consult the switch and must work with it off.
+_NVFP4_ENABLED_TEST_MODULES = frozenset(
+    {
+        "test_dense_quant_rocm_gate_9396",
+        "test_diffusion_auto_policy",
+        "test_diffusion_backend",
+        "test_diffusion_inference_info",
+        "test_diffusion_lora",
+        "test_diffusion_pipeline_prequant",
+        "test_diffusion_precision",
+        "test_diffusion_prequant",
+        "test_diffusion_quant_pad",
+        "test_diffusion_routes",
+        "test_diffusion_te_prequant",
+        "test_diffusion_transformer_quant",
+        "test_train_precision_scheme_contract",
+        "test_video_backend",
+        "test_video_families",
+        "test_video_h3_te_quant",
+        "test_video_prequant",
+        "test_video_routes",
+        "test_xformers_stub_diffusion_parity",
+    }
+)
+_NVFP4_ENABLED_TEST_PREFIX = "test_diffusion_nvfp4_"
+
+
+@pytest.fixture(autouse = True)
+def _nvfp4_diffusion_enabled_for_nvfp4_tests(request, monkeypatch):
+    """Turn the NVFP4 switch on for the modules above, and leave every other module on the
+    default (off), whatever the developer's shell exports."""
+    module = getattr(request, "module", None)
+    name = getattr(module, "__name__", "").rsplit(".", 1)[-1]
+    if name in _NVFP4_ENABLED_TEST_MODULES or name.startswith(_NVFP4_ENABLED_TEST_PREFIX):
+        monkeypatch.setenv("UNSLOTH_NVFP4_DIFFUSION", "1")
+    else:
+        monkeypatch.delenv("UNSLOTH_NVFP4_DIFFUSION", raising = False)
+    yield

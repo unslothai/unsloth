@@ -231,6 +231,10 @@ def estimate_dense_quant(
 ) -> Optional[DenseQuantEstimate]:
     """Estimate the candidate's footprint from the family table, or None when the
     family (or scheme factor) is unknown."""
+    from .diffusion_nvfp4_flag import nvfp4_blocked
+
+    if nvfp4_blocked(scheme):
+        return None
     components = family_bf16_components_gb(fam, base_repo)
     factor = _QUANT_STEADY_FACTOR.get(scheme)
     if components is None or factor is None:

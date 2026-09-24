@@ -31,6 +31,7 @@ from typing import Any, Optional
 
 # stdlib-only module (no torch), so this stays inside the "imported lazily" promise above.
 from core._torchao_stub import is_stubbed, torch_is_rocm
+from .diffusion_nvfp4_flag import nvfp4_blocked, nvfp4_disabled_message, without_nvfp4
 from .diffusion_torchao_patches import install_torchao_int_mm_patch
 
 # Also runs in the spawned smoke-probe child, which imports this module and nothing else of the backend.
@@ -338,6 +339,8 @@ def explain_unusable_scheme(family: Optional[str], scheme: str) -> str:
     has to separate them: a family the scheme is measured to break, a torchao that cannot run at
     all in this install, and a GPU without the kernels. Only the last is a hardware limit, and
     only the last is what the message used to say."""
+    if nvfp4_blocked(scheme):
+        return nvfp4_disabled_message()
     if family_denies_scheme(family, scheme):
         return (
             f"'{scheme}' is ruled out for family '{family}' by the measured accuracy gate (it "
@@ -487,6 +490,9 @@ def normalize_transformer_quant(value: Optional[str]) -> Optional[str]:
         raise ValueError(
             f"Unsupported transformer_quant '{value}'. Use one of: {', '.join(TQ_MODES)}."
         )
+    # The NVFP4 switch (diffusion_nvfp4_flag) refuses the scheme at validation, never swaps it.
+    if nvfp4_blocked(normalized):
+        raise ValueError(nvfp4_disabled_message("transformer_quant"))
     return normalized
 
 
@@ -773,7 +779,7 @@ def dense_quant_host_capable(target: Any) -> bool:
     card = _smoke_cache_device_key(str(getattr(target, "device", "cuda")))
     for floor, schemes in _AUTO_LADDER:
         if cap >= floor:
-            return any(_SMOKE_CACHE.get((scheme, card), True) for scheme in schemes)
+            return any(_SMOKE_CACHE.get((scheme, card), True) for scheme in without_nvfp4(schemes))
     return False
 
 
@@ -812,7 +818,9 @@ def _auto_scheme_order(family: Optional[str], device: Any, cap: tuple[int, int])
         if prefer.consumer_ok or not _is_consumer_gpu(device):
             head = prefer.schemes
     order: list[str] = []
-    for scheme in head + tier:
+    # Filtered here, so the NVFP4 switch reaches every reader of the order: the selector, both
+    # candidate lists and the /api/system ladder.
+    for scheme in without_nvfp4(head + tier):
         if scheme not in order:
             order.append(scheme)
     return tuple(order)
@@ -855,6 +863,9 @@ def _scheme_supported(
     unproven_ok: bool = False,
 ) -> bool:
     """CUDA + (for fp8) the fp8 dtype + a cached quantise+matmul smoke test for ``scheme``."""
+    if nvfp4_blocked(scheme):
+        # Switched off: no probe (child or in-process) is spent on a scheme nothing may use.
+        return False
     try:
         import torch
         if not torch.cuda.is_available():
@@ -952,7 +963,14 @@ def _child_probe_table(device: str) -> Optional[dict[str, Optional[bool]]]:
             # and binds the child to this process's lifetime, so a wedged probe cannot outlive the backend.
             proc = ctx.Process(
                 target = run_without_native_path_secret,
-                args = (__name__, "_child_probe_entry", {}, device, TQ_SCHEMES, queue),
+                args = (
+                    __name__,
+                    "_child_probe_entry",
+                    {},
+                    device,
+                    without_nvfp4(TQ_SCHEMES),
+                    queue,
+                ),
                 daemon = True,
             )
             proc.start()

@@ -27,6 +27,11 @@ def denoiser_prequant_sources(
     if wanted in ("", "auto", "off", "none"):
         return None
     try:
+        from .diffusion_nvfp4_flag import nvfp4_blocked
+
+        if nvfp4_blocked(wanted):
+            # The NVFP4 switch is off: never seed from, or ask the Hub about, a hosted *-NVFP4 denoiser.
+            return None
         from .diffusion_prequant import resolve_prequant_source
         from .video_families import video_family_prequant_task_specific
 
