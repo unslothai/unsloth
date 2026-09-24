@@ -611,6 +611,10 @@ def test_a_local_dir_with_another_scheme_is_not_refused(tmp_path):
     plain.mkdir()
     (plain / "model_index.json").write_text("{}")
     flag.refuse_disabled_nvfp4_checkpoint(str(plain))
+    # A pipeline loads from its component folders, so a stray root artifact is not the model.
+    pipeline = _prequant_dir(tmp_path, "pipeline-with-extra", "nvfp4")
+    (pipeline / "model_index.json").write_text("{}")
+    flag.refuse_disabled_nvfp4_checkpoint(str(pipeline))
 
 
 def test_enabled_an_nvfp4_checkpoint_as_the_model_proceeds(tmp_path, monkeypatch):
