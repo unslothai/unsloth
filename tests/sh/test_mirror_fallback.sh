@@ -75,7 +75,7 @@ _run() {
         "$_shell" -c "$_flags
 C_WARN=; step() { echo \"STEP \$2\"; }; substep() { echo \"SUBSTEP \$1\"; }
 . '$_WORK/block.sh'
-_mirror_fallback
+_mirror_fallback \${_MF_ARGS:-}
 eval \"\${_AFTER:-}\"
 for _v in $_VARS; do eval \"[ -z \\\"\\\${\$_v+x}\\\" ] || echo \\\"\$_v=\\\$\$_v\\\"\"; done"
 }
@@ -159,6 +159,10 @@ for SH in dash bash; do
     assert_not_contains "[$SH] the Studio venv's pip.conf index: pip untouched" "$out" "PIP_INDEX_URL"
     assert_contains "[$SH] the Studio venv's pip.conf index: uv still falls back" "$out" "UV_DEFAULT_INDEX=$M/pypi/web/simple"
     rm -rf "$_WORK/venv"
+    out=$(_run "$SH" MOCK_NODE=blocked _MF_ARGS=spare _AFTER='echo "SPARE $_UNSLOTH_MIRROR_SPARE"')
+    assert_eq "[$SH] spare only: no host is probed" "" "$(cat "$_WORK/curl.log")"
+    assert_contains "[$SH] spare only: every host gets its retry" "$out" "SPARE pypi|UV_DEFAULT_INDEX=$M/pypi/web/simple|PIP_INDEX_URL=$M/pypi/web/simple torch|UNSLOTH_PYTORCH_MIRROR=$M/pytorch/whl node|"
+    assert_contains "[$SH] spare only: the probe still runs later" "$(_run "$SH" MOCK_NODE=blocked _MF_ARGS=spare _AFTER=_mirror_fallback)" "UNSLOTH_NODE_MIRROR=https://registry.npmmirror.com/-/binary/node"
     out=$(_run "$SH" MOCK_PYPI=blocked UV_DEFAULT_INDEX=https://a.example/simple PIP_INDEX_URL=https://a.example/simple)
     assert_eq "[$SH] both tools configured: PyPI never probed" "" "$(grep -E 'files.pythonhosted|pypi.org' "$_WORK/curl.log" || true)"
     out=$(_run "$SH" MOCK_ASTRAL=slow)

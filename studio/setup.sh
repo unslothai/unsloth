@@ -318,13 +318,14 @@ _mirror_failed_host() {
     fi
 }
 
+# Probes the default hosts and switches slow or blocked ones to their mirrors; `_mirror_fallback spare` skips the probe and only arms the one-shot mirror retry for every host.
 _mirror_fallback() {
     case "${UNSLOTH_MIRROR_FALLBACK:-}" in
         0|false|False|FALSE|no|off) return 0 ;;
     esac
     [ -z "${_UNSLOTH_MIRROR_PROBED:-}" ] || return 0
     command -v curl >/dev/null 2>&1 || return 0
-    export _UNSLOTH_MIRROR_PROBED=1
+    [ "${1:-}" = spare ] || export _UNSLOTH_MIRROR_PROBED=1
     _mf_uv=true
     _mf_pip=true
     _mf_switched=""
@@ -341,6 +342,7 @@ _mirror_fallback() {
     _mirror_configured python || _mf_hosts="$_mf_hosts python"
     [ -n "${UNSLOTH_UV_WHEEL_MIRROR:-}${UV_DOWNLOAD_URL:-}${INSTALLER_DOWNLOAD_URL:-}${UV_INSTALLER_GHE_BASE_URL:-}${UV_INSTALLER_GITHUB_BASE_URL:-}" ] || _mf_hosts="$_mf_hosts uvbin"
     [ -n "$_mf_hosts" ] || return 0
+    if [ "${1:-}" = spare ]; then _mirror_spare_export; return 0; fi
     _mf_dir=$(mktemp -d 2>/dev/null) || return 0
     # Index hosts only need to answer, and 1 KiB each barely touches the link while the defaults are timed one at a time.
     _mf_pids=""
@@ -383,6 +385,11 @@ _mirror_fallback() {
         fi
     fi
     rm -rf "$_mf_dir"
+    _mirror_spare_export
+}
+
+# Exports one mirror retry per host in $_mf_hosts that is still on its default, plus the unsynced rerun when PyPI was switched from slow.
+_mirror_spare_export() {
     _mf_spare=""
     for _mf_host in $_mf_hosts; do
         case " $_mf_switched " in *" $_mf_host "*) continue ;; esac
@@ -1395,6 +1402,12 @@ fi
 STAGE_ROOT="${UNSLOTH_STUDIO_STAGE_ROOT:-}"
 RUNTIME_ROOT="${STAGE_ROOT:-$STUDIO_HOME}"
 VENV_DIR="$RUNTIME_ROOT/unsloth_studio"
+# The probe itself waits for the first package download; the retry is armed now, once VENV_DIR names the venv whose pip.conf
+# it respects, and from $SCRIPT_DIR, where the package installs run, so the uv project config it respects is theirs.
+_mirror_spare_pwd=$PWD
+cd "$SCRIPT_DIR"
+_mirror_fallback spare
+cd "$_mirror_spare_pwd" 2>/dev/null || :
 
 # Same uv cache install.sh chose, for the same reasons.
 #
@@ -2319,8 +2332,9 @@ else
 fi
 
 install_python_stack() {
-    # Probed here rather than at startup, so an update with nothing to install touches no package host.
-    _mirror_fallback
+    # Probed here rather than at startup, so an update with nothing to install touches no package host. A --local
+    # update runs this pass every time to re-overlay the checkout, from uv's cache; the retries armed at startup cover it.
+    [ "${STUDIO_LOCAL_INSTALL:-0}" = 1 ] && [ -x "$VENV_DIR/bin/python" ] || _mirror_fallback
     python "$SCRIPT_DIR/install_python_stack.py"
 }
 

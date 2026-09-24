@@ -980,8 +980,10 @@ function Wait-MirrorProbe {
 }
 
 function Invoke-MirrorFallback {
+    # -SpareOnly skips the probe and only arms the one-shot mirror retry for every host.
+    param([switch]$SpareOnly)
     if ("$env:UNSLOTH_MIRROR_FALLBACK".Trim() -match '^(0|false|no|off)$' -or $env:_UNSLOTH_MIRROR_PROBED) { return }
-    $env:_UNSLOTH_MIRROR_PROBED = '1'
+    if (-not $SpareOnly) { $env:_UNSLOTH_MIRROR_PROBED = '1' }
     $cernet = 'https://tuna.mirrors.cernet.edu.cn'
     $npmMirror = 'https://registry.npmmirror.com'
     $pypiMirror = "$cernet/pypi/web/simple"
@@ -1036,6 +1038,7 @@ function Invoke-MirrorFallback {
     }
     # Each host left on its default keeps its mirror as a spare, for one retry of a step whose download from it fails (Pop-MirrorSpare).
     $env:_UNSLOTH_MIRROR_SPARE = @($hosts.Keys | ForEach-Object { (@($_) + @(& $varsOf $_)) -join '|' }) -join ' '
+    if ($SpareOnly) { return }
     $answered = @{}
     $codeOf = { param($index, $result) if ($index -and "$($answered[$index][0])" -notmatch '^2\d\d$') { 0 } else { $result[0] } }
     # PS 5.1 may pin TLS 1.0/1.1 (every probed host refuses it; Tls|Tls12 still fails) and queues past 2 connections per host.
@@ -5072,6 +5075,9 @@ Write-StudioLine ""
 step "system" "prerequisites ready"
 Write-StudioLine ""
 
+# The probe itself waits for the first package download; the retry is armed now for the Node and npm steps before it.
+Invoke-MirrorFallback -SpareOnly
+
 # UNSLOTH_NPM_REGISTRY: opt-in --registry splat past the frontend .npmrc lock (corporate proxies).
 $NpmRegistryArgs = @()
 if ($env:UNSLOTH_NPM_REGISTRY) {
@@ -7711,8 +7717,9 @@ Clear-UnparseableTorchCacheEnv
 
 if (-not $SkipPythonDeps) {
 
-# Probed here rather than at startup, so an update with nothing to install touches no package host.
-Invoke-MirrorFallback
+# Probed here rather than at startup, so an update with nothing to install touches no package host. A --local
+# update runs this pass every time to re-overlay the checkout, from uv's cache; the retries armed at startup cover it.
+if (-not ($env:STUDIO_LOCAL_INSTALL -eq '1' -and (Test-Path -LiteralPath (Join-Path $VenvDir 'Scripts\python.exe') -PathType Leaf))) { Invoke-MirrorFallback }
 
 # Recover what a fresh shell lost, BEFORE the manifest is dropped below: recovery reads that file.
 $WinArm64Venv = Test-WinArm64Venv

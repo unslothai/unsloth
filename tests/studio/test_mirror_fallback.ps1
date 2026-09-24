@@ -93,11 +93,11 @@ function Wait-MirrorProbe($Probe) {
     }
     return $out
 }
-function Run($mock, $envs = @{}) {
+function Run($mock, $envs = @{}, [switch]$SpareOnly) {
     foreach ($n in $names) { Remove-Item "Env:$n" -ErrorAction SilentlyContinue }
     foreach ($k in $envs.Keys) { Set-Item "Env:$k" $envs[$k] }
     $script:mock = $mock; $script:seen = @(); $script:lines = @(); $script:probed = @(); $script:protocols = @(); $script:badRange = $false; $script:timing = $false; $script:overlap = $false
-    Invoke-MirrorFallback
+    Invoke-MirrorFallback -SpareOnly:$SpareOnly
 }
 $pypiMirror = "$M/pypi/web/simple"
 try {
@@ -155,6 +155,9 @@ try {
     Set-Content -Path (Join-Path $VenvDir 'pip.ini') -Value "[global]`nindex-url = https://corp.example/simple"
     Run @{ pypi = 'blocked' }; Check "the Studio venv's pip.ini index: only uv falls back" (-not $env:PIP_INDEX_URL -and $env:UV_DEFAULT_INDEX)
     Remove-Variable VenvDir
+    Run @{ node = 'blocked' } -SpareOnly
+    Check "spare only: no host is probed, and every host gets its retry" ($script:probed.Count -eq 0 -and -not $env:_UNSLOTH_MIRROR_PROBED -and -not $env:UNSLOTH_NODE_MIRROR -and $env:_UNSLOTH_MIRROR_SPARE -like "pypi|UV_DEFAULT_INDEX=$pypiMirror|PIP_INDEX_URL=$pypiMirror torch|*node|UNSLOTH_NODE_MIRROR=https://registry.npmmirror.com/-/binary/node *")
+    Invoke-MirrorFallback; Check "spare only: the probe still runs later" ($env:UNSLOTH_NODE_MIRROR -eq 'https://registry.npmmirror.com/-/binary/node')
     Run @{ torch = 'blocked' } @{ UNSLOTH_TORCH_INDEX_URL = 'https://corp.example/whl/cu128' }; Check "a pinned torch index is not overridden" (-not $env:UNSLOTH_PYTORCH_MIRROR)
     Run @{ npm = 'blocked' } @{ UNSLOTH_NPM_REGISTRY = 'https://corp.example/npm/' }; Check "a user npm registry is kept and not probed" ($env:UNSLOTH_NPM_REGISTRY -eq 'https://corp.example/npm/' -and -not ($script:probed -like '*npm*'))
     Run @{ pypi = 'blocked' } @{ UNSLOTH_MIRROR_FALLBACK = 'Off' }; Check "UNSLOTH_MIRROR_FALLBACK=Off probes nothing" ($script:probed.Count -eq 0)
