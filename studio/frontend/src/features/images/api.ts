@@ -4,6 +4,11 @@
 import { withBackgroundLoadNotice } from "@/lib/model-lifecycle-events";
 import { authFetch } from "@/features/auth";
 import { readFastApiError } from "@/lib/format-fastapi-error";
+import {
+  isMemoryEstimateRefusal,
+  MEMORY_REFUSAL_HEADER,
+  MemoryEstimateRefusalError,
+} from "./lib/memory-refusal";
 
 // One Advanced control's resolved value and provenance, for the Advanced-panel badges. `value` is the engaged
 // value (null when off), `requested` is what the caller asked for (null = left to the backend), `source` is "auto"
@@ -159,6 +164,9 @@ export interface DiffusionGenerateRequest {
   strength?: number;
   // Upscale (hires fix): factor > 1 with an init_image enlarges the source and re-denoises at low strength.
   upscale?: number;
+  // Run even when the backend's memory check estimates this size will not fit (the Images page's
+  // "Allow oversized generations" and the refusal toast's "Generate anyway").
+  allow_oversized?: boolean;
   // Additional images after init_image, in order, for the reference and edit workflows.
   reference_images?: string[];
   workflow?: "edit" | "reference";
@@ -406,6 +414,12 @@ export async function generateDiffusionImage(
       throw new Error(detail);
     }
     throw new GenerateResponseLostError(detail);
+  }
+  if (
+    !response.ok &&
+    isMemoryEstimateRefusal(response.status, response.headers.get(MEMORY_REFUSAL_HEADER))
+  ) {
+    throw new MemoryEstimateRefusalError(await readFastApiError(response));
   }
   return parseJson(response);
 }

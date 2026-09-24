@@ -214,6 +214,14 @@ import {
   shouldContinueGenerating,
   shouldReportGenerateError,
 } from "./lib/generation-stop";
+import {
+  ALLOW_OVERSIZED_HINT,
+  ALLOW_OVERSIZED_LABEL,
+  allowOversizedField,
+  GENERATE_ANYWAY_LABEL,
+  MEMORY_REFUSAL_TITLE,
+  shouldOfferGenerateAnyway,
+} from "./lib/memory-refusal";
 import { useNavigate, useSearch } from "@tanstack/react-router";
 import { useStagedDownload, type StagedDownloadEntry } from "@/features/hub/download-manager";
 import { DiffusionTrainPanel } from "./train/diffusion-train-panel";
@@ -1382,6 +1390,13 @@ export function ImagesPage({
   const [advancedOpen, setAdvancedOpen] = usePersistedToggle(
     "unsloth_images_advanced_open",
   );
+  // Per-generation, not load-time: sent as allow_oversized with every run while on, so it never
+  // needs a Reapply. The refusal toast's "Generate anyway" sets the one-shot ref for a single run.
+  const [allowOversized, setAllowOversized] = usePersistedToggle(
+    "unsloth_images_allow_oversized",
+  );
+  const oversizedOnce = useRef(false);
+  const retryGenerate = useRef<(() => Promise<void>) | null>(null);
   // Advanced (load-time) options; "auto"/"off"/"none" map to the backend defaults. Changing one
   // while loaded shows "Reapply".
   const [modelSelectionAction, setModelSelectionAction] = useState<"load" | "download">("load");
@@ -3822,6 +3837,10 @@ export function ImagesPage({
   );
 
   const handleGenerate = useCallback(async () => {
+    // Read and consume the one-shot override before anything can return, so it never leaks into a
+    // later run.
+    const allowOversizedSent = allowOversizedField(allowOversized, oversizedOnce.current) === true;
+    oversizedOnce.current = false;
     if (!prompt.trim()) {
       toast.error("Prompt is empty");
       return;
@@ -4041,6 +4060,7 @@ export function ImagesPage({
             mask_image: condMask,
             strength: condStrength,
             upscale: condUpscale,
+            allow_oversized: allowOversizedSent ? true : undefined,
             ...condFields,
             // Drop empty and zero-weight rows and trim hand-typed repo ids, so the recipe records only
             // adapters that applied. Gated on loraCapable, since a restore can leave adapters in state.
@@ -4094,13 +4114,27 @@ export function ImagesPage({
       // The user's own Stop comes back as the backend's cancelled sentinel (409), so it is not
       // toasted. Only a Stop the backend confirmed explains an error away: a POST that never
       // landed, or {cancelled: false}, means whatever it raised is a real failure.
-      if (
-        shouldReportGenerateError({
-          message: msg,
-          stopRequested: cancelRequested.current && cancelAcked.current,
-        })
-      )
-        toast.error(msg);
+      const report = shouldReportGenerateError({
+        message: msg,
+        stopRequested: cancelRequested.current && cancelAcked.current,
+      });
+      if (report && shouldOfferGenerateAnyway({ error: err, allowOversizedSent })) {
+        // The memory estimate refused this size. Say so, and offer the in-app override instead of
+        // an environment variable a desktop install has no terminal to set.
+        toast.error(MEMORY_REFUSAL_TITLE, {
+          description: msg,
+          duration: 20_000,
+          action: {
+            label: GENERATE_ANYWAY_LABEL,
+            onClick: () => {
+              oversizedOnce.current = true;
+              void (retryGenerate.current?.() ?? Promise.resolve()).finally(() => {
+                oversizedOnce.current = false;
+              });
+            },
+          },
+        });
+      } else if (report) toast.error(msg);
     } finally {
       if (genPollTimer.current) clearInterval(genPollTimer.current);
       genPollTimer.current = null;
@@ -4118,7 +4152,7 @@ export function ImagesPage({
       setGenDone(null);
       setGenStep(null);
     }
-  }, [prompt, negativePrompt, width, height, steps, guidance, seed, batchSize, count, workflow, initImage, maskImage, strength, extendPct, extendSides, upscaleFactor, upscaleStrength, referenceImages, loras, loraCapable, controlnetCapable, controlnetId, controlImage, controlType, controlStrength, ensureSrc, loadGallery, refreshStatus, unifiedEdit, localizedMode, localizedLayer, maxExtras, referenceResolution, conditioning, editSize, editSizing, sizeLimits]);
+  }, [allowOversized, prompt, negativePrompt, width, height, steps, guidance, seed, batchSize, count, workflow, initImage, maskImage, strength, extendPct, extendSides, upscaleFactor, upscaleStrength, referenceImages, loras, loraCapable, controlnetCapable, controlnetId, controlImage, controlType, controlStrength, ensureSrc, loadGallery, refreshStatus, unifiedEdit, localizedMode, localizedLayer, maxExtras, referenceResolution, conditioning, editSize, editSizing, sizeLimits]);
 
   // Stop the in-flight generation. Latch FIRST, so a multi-run request stops even if the POST
   // races the run that is already finishing.
@@ -4198,6 +4232,9 @@ export function ImagesPage({
     status,
     workflow,
   ]);
+  useEffect(() => {
+    retryGenerate.current = handleGenerateWithRecall;
+  }, [handleGenerateWithRecall]);
 
   useEffect(() => {
     const pending = pendingRecalledGeneration.current;
@@ -4395,6 +4432,17 @@ export function ImagesPage({
           <ResolvedBadge status={status} controlKey="cpu_offload" />
         </span>
         <Switch checked={cpuOffload} onCheckedChange={setCpuOffload} />
+      </div>
+      <div className="flex items-center justify-between">
+        <span className="flex items-center gap-1 text-xs font-medium text-muted-foreground">
+          {ALLOW_OVERSIZED_LABEL}
+          <InfoHint>{ALLOW_OVERSIZED_HINT}</InfoHint>
+        </span>
+        <Switch
+          checked={allowOversized}
+          onCheckedChange={setAllowOversized}
+          aria-label={ALLOW_OVERSIZED_LABEL}
+        />
       </div>
       <LoadedBuildSummary status={status} />
       {/* A resident full pipeline is reloadable by repo id alone, so it keeps Reapply even before a
