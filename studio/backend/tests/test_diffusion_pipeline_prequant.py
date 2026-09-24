@@ -1036,3 +1036,15 @@ def test_an_uncompilable_family_honours_an_explicit_scheme(fake_runtime, monkeyp
     )
 
     assert spy.quantised == ["fp8"]
+
+
+def test_an_uncompilable_family_on_a_host_without_dense_quant_reports_as_before(
+    fake_runtime, monkeypatch
+):
+    backend, spy = _load_backend(monkeypatch)
+    _uncompilable(monkeypatch)
+    monkeypatch.setattr(dmod, "dense_transformer_supported", lambda _t: False)
+    status = _load(backend, _pipeline_prequant_planned = None, _pipeline_prequant_skipped = ())
+
+    assert spy.quantised == []
+    assert "regionally compiled" not in status["resolved"]["transformer_quant"]["reason"]

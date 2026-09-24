@@ -4463,6 +4463,7 @@ class DiffusionBackend:
                     transformer_quant == TQ_AUTO
                     and pipeline_seed_scheme is None
                     and dense_quant_supported_kind(kind)
+                    and dense_transformer_supported(target)
                     and (
                         eager_reason := _auto_quant_eager_reason(
                             fam, offloads = plan.offload_policy != OFFLOAD_NONE
