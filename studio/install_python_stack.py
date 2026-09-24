@@ -286,6 +286,60 @@ _WINDOWS_ROCM_TORCH_PKG_SPECS: dict[str, tuple[str, str, str]] = {
     "gfx1150": _ROCM_TORCH_PKG_SPECS["rocm7.2"],
     "gfx1152": _ROCM_TORCH_PKG_SPECS["rocm7.2"],
 }
+# RDNA 1 (gfx1010 / gfx1011 / gfx1012) has no family on repo.amd.com at all. AMD's
+# multi-arch nightly index carries per-card kernel packs for it instead: on that index
+# `torch[device-gfx1010]` resolves torch plus amd-torch-device-gfx1010, and the same
+# spelling pulls the matching rocm-sdk-device pack. Three things differ from the
+# per-family route and are handled here rather than bolted onto it:
+#   * the index is a nightly, so the build is PINNED to one tag; an unpinned install
+#     would follow the index and change under users between two `studio update`s;
+#   * torchvision must carry the very same tag (0.27.0 pairs with torch 2.12.0);
+#   * no torchaudio is published for the tag, so the trio is a pair.
+# Windows only: measured on an RX 5700 XT (unslothai/unsloth#11614, #8529), with the
+# Triton buffer-op fix (#11615) and the zoo's pure-torch gated-delta route (#1356)
+# doing the rest. Linux hosts keep today's behaviour (no route, CPU torch) until someone
+# runs the same matrix on bare-metal Linux; WSL2 cannot, its GPU driver refuses RDNA 1.
+_ROCM_WINDOWS_MULTIARCH_INDEX_BASE = (
+    os.environ.get("UNSLOTH_ROCM_WINDOWS_MULTIARCH_MIRROR")
+    or "https://nightly.repo.amd.com/rocm/whl-next"
+)
+_ROCM_MULTIARCH_TAG = "rocm10.2.0a20260922"
+_ROCM_MULTIARCH_TORCH_VERSION = "2.12.0"
+_ROCM_MULTIARCH_TORCHVISION_VERSION = "0.27.0"
+# gfx1011 / gfx1012 have device packs on the same index and share the ISA family, but only
+# gfx1010 has been run; the two are included because the Triton and zoo fixes key on the
+# whole gfx101x family, not one device id.
+_WINDOWS_MULTIARCH_GFX: "frozenset[str]" = frozenset({"gfx1010", "gfx1011", "gfx1012"})
+
+
+def _bare_gfx(gfx_arch: "str | None") -> str:
+    """'GFX1010:xnack-' -> 'gfx1010': hipinfo prints feature suffixes and users type any case."""
+    return (gfx_arch or "").strip().lower().split(":")[0]
+
+
+def _is_windows_multiarch_gfx(gfx_arch: "str | None") -> bool:
+    return _bare_gfx(gfx_arch) in _WINDOWS_MULTIARCH_GFX
+
+
+def _windows_multiarch_torch_pkg_specs(gfx_arch: str) -> tuple[str, str, str]:
+    """The pinned torch / torchvision pair for a multi-arch device; the empty third slot is
+    the torchaudio the index does not publish, and the caller drops it."""
+    gfx = _bare_gfx(gfx_arch)
+    return (
+        f"torch[device-{gfx}]=={_ROCM_MULTIARCH_TORCH_VERSION}+{_ROCM_MULTIARCH_TAG}",
+        f"torchvision=={_ROCM_MULTIARCH_TORCHVISION_VERSION}+{_ROCM_MULTIARCH_TAG}",
+        "",
+    )
+
+
+def _windows_rocm_torch_pkg_specs(gfx_arch: "str | None") -> tuple[str, str, str]:
+    """Package specs for the Windows ROCm torch install of `gfx_arch`: the multi-arch pin
+    for RDNA 1, the per-arch ABI pin where one exists, bare names otherwise."""
+    if _is_windows_multiarch_gfx(gfx_arch):
+        return _windows_multiarch_torch_pkg_specs(gfx_arch)
+    return _WINDOWS_ROCM_TORCH_PKG_SPECS.get(_bare_gfx(gfx_arch), ("torch", "torchvision", "torchaudio"))
+
+
 # Bound companion versions for ABI compatibility while retaining older per-arch mirror builds.
 _ROCM_ARCH_INDEX_TORCH_PKG_SPEC: tuple[str, str, str] = (
     "torch>=2.4,<2.12.0",
@@ -1990,6 +2044,14 @@ _WIN_GPU_NAME_ARCH_TABLE: "list[tuple[str, str]]" = [
         r"RX 6550|RX 6500|RX 6450|RX 6400|RX 6300|PRO W6400|PRO W6500|PRO W6300",
         "gfx1034",
     ),  # Navi 24
+    # RDNA 1 (Navi 10 / Navi 14). Routed to the multi-arch nightly index on Windows, see
+    # _WINDOWS_MULTIARCH_GFX. Names from LLVM's AMDGPU tables plus libdrm amdgpu.ids /
+    # pci.ids for the professional parts LLVM omits. The (?!0) guards on the Polaris rows
+    # of _UNSUPPORTED_GPU_NAME_ARCH_TABLE stop "RX 570" swallowing "RX 5700"; these rows
+    # are checked first anyway.
+    (r"Radeon Pro V520|Radeon Pro 5600M", "gfx1011"),
+    (r"RX 5700|RX 5600|Radeon Pro 5600 XT|Radeon Pro 5700|Radeon Pro W5700", "gfx1010"),
+    (r"RX 5500|RX 5300|Radeon Pro W5500|Radeon Pro W5300", "gfx1012"),
 ]
 
 
@@ -2012,12 +2074,8 @@ def _gfx_arch_from_gpu_name(name: str) -> "str | None":
 # for the Navi 10/14 professional parts LLVM omits; nothing is guessed, so Polaris 11/12
 # (RX 460/550/560, a different die) is left out.
 _UNSUPPORTED_GPU_NAME_ARCH_TABLE: "list[tuple[str, str]]" = [
-    (r"Radeon Pro V520|Radeon Pro 5600M", "gfx1011"),  # RDNA 1
-    (
-        r"RX 5700|RX 5600|Radeon Pro 5600 XT|Radeon Pro 5700|Radeon Pro W5700",
-        "gfx1010",
-    ),  # RDNA 1 (Navi 10)
-    (r"RX 5500|RX 5300|Radeon Pro W5500|Radeon Pro W5300", "gfx1012"),  # RDNA 1 (Navi 14)
+    # RDNA 1 used to live here (#8529). It routes now, on Windows, through the multi-arch
+    # nightly index (_WINDOWS_MULTIARCH_GFX); its rows moved to _WIN_GPU_NAME_ARCH_TABLE.
     (
         r"RX 4[78]0(?!0)|RX 5[789]0(?!0)|Radeon Pro WX 7100|Radeon Pro WX 5100",
         "gfx803",
@@ -2301,8 +2359,14 @@ def _rocm_miscomputing_host() -> bool:
 
 
 def _windows_rocm_index_url(gfx_arch: str | None) -> str | None:
-    """Return the AMD pip index URL for the given GPU arch, or None if unsupported."""
-    arch_family = _GFX_TO_AMD_INDEX_ARCH.get(gfx_arch or "")
+    """Return the AMD pip index URL for the given GPU arch, or None if unsupported.
+
+    RDNA 1 resolves to the multi-arch nightly index (one URL for every device on it; the
+    device is selected by the `torch[device-gfxNNNN]` extra, not by the path), everything
+    else to its repo.amd.com family."""
+    if _is_windows_multiarch_gfx(gfx_arch):
+        return _ROCM_WINDOWS_MULTIARCH_INDEX_BASE
+    arch_family = _GFX_TO_AMD_INDEX_ARCH.get(_bare_gfx(gfx_arch))
     if arch_family is None:
         return None
     return _index_url_join(_ROCM_WINDOWS_INDEX_BASE, arch_family)
@@ -5715,12 +5779,17 @@ def _ensure_rocm_torch() -> None:
                 f"   {gfx_arch or 'pinned ROCm index'} (Windows) -- installing torch from "
                 f"{_strip_index_url_credentials(index_url)}"
             )
-            _torch_pkg, _vision_pkg, _audio_pkg = _WINDOWS_ROCM_TORCH_PKG_SPECS.get(
-                gfx_arch, ("torch", "torchvision", "torchaudio")
-            )
-            _rocm_trio = [_torch_pkg, _vision_pkg, _audio_pkg]
+            _torch_pkg, _vision_pkg, _audio_pkg = _windows_rocm_torch_pkg_specs(gfx_arch)
+            # An empty slot is a companion the index does not publish (torchaudio on the
+            # multi-arch nightly); listing it would make the whole trio unresolvable.
+            _rocm_trio = [_p for _p in (_torch_pkg, _vision_pkg, _audio_pkg) if _p]
             if _is_win_arm64_interpreter():
                 _rocm_trio = [_torch_pkg, _vision_pkg]
+            if _is_windows_multiarch_gfx(gfx_arch):
+                _safe_print(
+                    f"   {_bare_gfx(gfx_arch)} is RDNA 1: AMD's multi-arch nightly index, pinned to "
+                    f"{_ROCM_MULTIARCH_TORCH_VERSION}+{_ROCM_MULTIARCH_TAG} (no torchaudio is published for it)"
+                )
             # Nonfatal: a transient AMD-index failure must not abort the install.
             # --force-reinstall resolves before uninstalling, so a failed index keeps the
             # existing build intact; let the user retry.

@@ -8762,15 +8762,13 @@ exit 0
         # GPU name -> gfx arch for AMD generations Unsloth's ROCm wheels do NOT cover:
         # RDNA 1 and Polaris 10/20/30 (unslothai#8529). Kept apart from $nameArchTable on
         # purpose: it only WORDS a message, never selects a wheel index. AMD's TheRock
-        # ships RDNA 1 wheels, but not on the repo.amd.com indexes routed here, and never
+        # ships RDNA 1 wheels: those route through $multiArchGfx now (unslothai#11614), so
+    # only Polaris is left here; there are none for
         # gfx803. The (?!0) guards stop "RX 570" swallowing an "RX 5700". Names from
         # LLVM's AMDGPU tables plus libdrm amdgpu.ids/pci.ids for the Navi 10/14
         # professional parts LLVM omits; nothing is guessed, so Polaris 11/12 (RX
         # 460/550/560, a different die) is left out.
         $unsupportedNameArchTable = @(
-            @{ P = "Radeon Pro V520|Radeon Pro 5600M";        A = "gfx1011" }  # RDNA 1
-            @{ P = "RX 5700|RX 5600|Radeon Pro 5600 XT|Radeon Pro 5700|Radeon Pro W5700";     A = "gfx1010" }  # RDNA 1 (Navi 10)
-            @{ P = "RX 5500|RX 5300|Radeon Pro W5500|Radeon Pro W5300";        A = "gfx1012" }  # RDNA 1 (Navi 14)
             @{ P = "RX 4[78]0(?!0)|RX 5[789]0(?!0)|Radeon Pro WX 7100|Radeon Pro WX 5100"; A = "gfx803"  }  # Polaris 10/20/30
         )
         # ── Arch resolution: env-var override → name inference ──────────────
@@ -8799,6 +8797,9 @@ exit 0
                     @{ P = "RX 6950|RX 6900|RX 6850|RX 6800|RX 6750|RX 6700|PRO W6800|PRO W6900"; A = "gfx1030" }  # RDNA 2 (Navi 21) -- gfx103X family
                     @{ P = "RX 6650|RX 6600|PRO W6600|PRO W6650";                  A = "gfx1032" }  # RDNA 2 (Navi 23) -- gfx103X family
                     @{ P = "RX 6550|RX 6500|RX 6450|RX 6400|RX 6300|PRO W6400|PRO W6500|PRO W6300";  A = "gfx1034" }  # RDNA 2 (Navi 24) -- gfx103X family
+                    @{ P = "Radeon Pro V520|Radeon Pro 5600M"; A = "gfx1011" }  # RDNA 1 (Navi 12) -- multi-arch nightly
+                    @{ P = "RX 5700|RX 5600|Radeon Pro 5600 XT|Radeon Pro 5700|Radeon Pro W5700"; A = "gfx1010" }  # RDNA 1 (Navi 10) -- multi-arch nightly
+                    @{ P = "RX 5500|RX 5300|Radeon Pro W5500|Radeon Pro W5300"; A = "gfx1012" }  # RDNA 1 (Navi 14) -- multi-arch nightly
                 )
                 foreach ($row in $nameArchTable) {
                     if ($ROCmGpuLabel -match $row.P) {
@@ -8937,9 +8938,20 @@ exit 0
         "gfx1030" = "gfx103X-all"
         "gfx90a"  = "gfx90a";      "gfx908"  = "gfx908"        # MI200/MI100
     }
+    # RDNA 1 (gfx1010 / gfx1011 / gfx1012) has no repo.amd.com family. AMD's multi-arch
+    # nightly index carries per-card kernel packs for it instead (unslothai#11614): one URL
+    # for every device, the card picked by the torch[device-gfxNNNN] extra; pinned to one
+    # tag because a nightly moves; torchvision on the same tag; no torchaudio published for
+    # it. In sync with _WINDOWS_MULTIARCH_GFX / _ROCM_MULTIARCH_* in
+    # studio/install_python_stack.py (test_rdna1_multiarch_windows_route_11614.py).
+    $multiArchGfx = @("gfx1010", "gfx1011", "gfx1012")
+    $MultiArchIndexBase = if ($env:UNSLOTH_ROCM_WINDOWS_MULTIARCH_MIRROR) { $env:UNSLOTH_ROCM_WINDOWS_MULTIARCH_MIRROR.TrimEnd('/') } else { "https://nightly.repo.amd.com/rocm/whl-next" }
+    $MultiArchTag = "rocm10.2.0a20260922"
+    $MultiArchTorchVersion = "2.12.0"
+    $MultiArchTorchvisionVersion = "0.27.0"
     # "AMD gets GPU wheels here", NOT "an AMD GPU is present": $HasROCm / $ROCmGfxArch are
     # true on unmapped arches too, and those install CPU torch.
-    $AmdHasGpuWheels = [bool]($ROCmGfxArch -and $archFamilyMap.ContainsKey($ROCmGfxArch))
+    $AmdHasGpuWheels = [bool]($ROCmGfxArch -and ($archFamilyMap.ContainsKey($ROCmGfxArch) -or $multiArchGfx -contains $ROCmGfxArch))
 
     # Bounded Win32_VideoController scan: the query can block forever on a degraded WMI
     # repository, -ErrorAction only suppresses reported errors, and -OperationTimeoutSec is not
@@ -9573,6 +9585,8 @@ exit 0
     $ROCmTorchFloor = $null
     $PinnedRocmVisionSpec = $null
     $PinnedRocmAudioSpec = $null
+    $RocmNoAudio = $false
+    $ROCmMultiArch = $false
     if (-not $TorchIndexPinned -and ($HasROCm -or $ROCmGfxArch) -and $TorchIndexUrl -like "*/cpu" -and -not $SkipTorch) {
         $amdIndexBase = if ($env:UNSLOTH_ROCM_WINDOWS_MIRROR) { $env:UNSLOTH_ROCM_WINDOWS_MIRROR.TrimEnd('/') } else { "https://repo.amd.com/rocm/whl" }
         # $archFamilyMap is defined above the Intel scan (the scan needs it too).
@@ -9603,7 +9617,16 @@ exit 0
             "gfx1152" = "torchaudio>=2.11.0,<2.12.0"
         }
         $archFamily = if ($ROCmGfxArch -and $archFamilyMap.ContainsKey($ROCmGfxArch)) { $archFamilyMap[$ROCmGfxArch] } else { $null }
-        if ($archFamily) {
+        $ROCmMultiArch = [bool]($ROCmGfxArch -and $multiArchGfx -contains $ROCmGfxArch)
+        if ($ROCmMultiArch) {
+            # RDNA 1: the multi-arch nightly, pinned. No family leaf, no torchaudio, no kept release.
+            $ROCmIndexUrl = "$MultiArchIndexBase/"
+            $ROCmTorchFloor = "torch[device-$ROCmGfxArch]==$MultiArchTorchVersion+$MultiArchTag"
+            $PinnedRocmVisionSpec = "torchvision==$MultiArchTorchvisionVersion+$MultiArchTag"
+            $PinnedRocmAudioSpec = $null
+            $RocmNoAudio = $true
+            substep "$ROCmGfxArch is RDNA 1 -- AMD multi-arch nightly index, pinned to $MultiArchTorchVersion+$MultiArchTag (no torchaudio is published for it)" "Cyan"
+        } elseif ($archFamily) {
             $ROCmIndexUrl = "$amdIndexBase/$archFamily/"
             $ROCmTorchFloor = if ($ROCmGfxArch -and $torchFloorMap.ContainsKey($ROCmGfxArch)) { $torchFloorMap[$ROCmGfxArch] } else { $null }
             $archLabel = if ($ROCmGfxArch) { $ROCmGfxArch } else { "AMD GPU" }
@@ -9913,7 +9936,7 @@ exit 0
         $script:PrevTorchPin = $null
         # An interrupted run leaks a stale pin, so clear before deciding.
         Remove-Item Env:UNSLOTH_KEPT_TORCH -ErrorAction SilentlyContinue
-        if (-not $SkipTorch -and $script:PrevTorchVer) {
+        if (-not $SkipTorch -and $script:PrevTorchVer -and -not $ROCmMultiArch) {
             $_routeWindow = $_pinTorchSpec
             # Vet the kept release against the XPU window, or a kept 2.5 becomes an unsatisfiable pin.
             if ((Get-TorchIndexLeafName $TorchIndexUrl) -eq "xpu") { $_routeWindow = (Get-XpuTorchSpecs -Platform (Get-VenvPlatformTag -PythonExe $VenvPython))[0] }
@@ -9932,7 +9955,7 @@ exit 0
             $torchSpec = if ($ROCmTorchFloor) { $ROCmTorchFloor } else { "torch" }
             # Pin companions to $torchSpec: bare names can resolve an ABI-incompatible pair.
             $visionSpec = if ($PinnedRocmVisionSpec) { $PinnedRocmVisionSpec } elseif ($ROCmGfxArch -and $torchvisionFloorMap -and $torchvisionFloorMap.ContainsKey($ROCmGfxArch)) { $torchvisionFloorMap[$ROCmGfxArch] } else { "torchvision" }
-            $audioSpec = if ($PinnedRocmAudioSpec) { $PinnedRocmAudioSpec } elseif ($ROCmGfxArch -and $torchaudioFloorMap -and $torchaudioFloorMap.ContainsKey($ROCmGfxArch)) { $torchaudioFloorMap[$ROCmGfxArch] } else { "torchaudio" }
+            $audioSpec = if ($RocmNoAudio) { $null } elseif ($PinnedRocmAudioSpec) { $PinnedRocmAudioSpec } elseif ($ROCmGfxArch -and $torchaudioFloorMap -and $torchaudioFloorMap.ContainsKey($ROCmGfxArch)) { $torchaudioFloorMap[$ROCmGfxArch] } else { "torchaudio" }
             if ($script:PrevTorchPin) {
                 $_keptTorch = $script:PrevTorchPin.TorchSpec; $_keptVision = $script:PrevTorchPin.VisionSpec; $_keptAudio = $script:PrevTorchPin.AudioSpec
                 $torchInstallExit = Invoke-InstallCommandRetry -Label "install PyTorch (kept release)" { & $script:UvExe pip install --python $VenvPython --force-reinstall $_keptTorch $_keptVision $_keptAudio --default-index $ROCmIndexUrl }
@@ -9943,7 +9966,7 @@ exit 0
                 }
             }
             if (-not $script:PrevTorchPin) {
-                $torchInstallExit = Invoke-InstallCommandRetry -Label "install PyTorch (AMD ROCm)" { & $script:UvExe pip install --python $VenvPython --force-reinstall --default-index $ROCmIndexUrl $torchSpec $visionSpec $audioSpec }
+                $torchInstallExit = Invoke-InstallCommandRetry -Label "install PyTorch (AMD ROCm)" { & $script:UvExe pip install --python $VenvPython --force-reinstall --default-index $ROCmIndexUrl @(@($torchSpec, $visionSpec, $audioSpec) | Where-Object { $_ }) }
             }
             if ($torchInstallExit -ne 0) {
                 # Explicit CPU index: under a ROCm pin $TorchIndexUrl IS the mirror that failed.
@@ -10280,7 +10303,7 @@ sys.exit(2 if conflict else (0 if installed else 1))
                     # A migrated venv can keep a stale CPU torch the fresh ROCm path would replace.
                     $rocmSpec = if ($ROCmTorchFloor) { $ROCmTorchFloor } else { "torch" }
                     $visionSpec = if ($PinnedRocmVisionSpec) { $PinnedRocmVisionSpec } elseif ($ROCmGfxArch -and $torchvisionFloorMap -and $torchvisionFloorMap.ContainsKey($ROCmGfxArch)) { $torchvisionFloorMap[$ROCmGfxArch] } else { "torchvision" }
-                    $audioSpec = if ($PinnedRocmAudioSpec) { $PinnedRocmAudioSpec } elseif ($ROCmGfxArch -and $torchaudioFloorMap -and $torchaudioFloorMap.ContainsKey($ROCmGfxArch)) { $torchaudioFloorMap[$ROCmGfxArch] } else { "torchaudio" }
+                    $audioSpec = if ($RocmNoAudio) { $null } elseif ($PinnedRocmAudioSpec) { $PinnedRocmAudioSpec } elseif ($ROCmGfxArch -and $torchaudioFloorMap -and $torchaudioFloorMap.ContainsKey($ROCmGfxArch)) { $torchaudioFloorMap[$ROCmGfxArch] } else { "torchaudio" }
                     # Kept-release substitution, as install.sh's _install_torch_default_index does.
                     $_rocmKept = $false
                     if ($script:PrevTorchPin) {
@@ -10289,13 +10312,13 @@ sys.exit(2 if conflict else (0 if installed else 1))
                         $_rocmKept = $true
                     }
                     substep "PyTorch flavor mismatch (installed $installedTorchTag, need ROCm) -- reinstalling correct build..." "Yellow"
-                    $torchFixExit = Invoke-InstallCommand -Label "reinstall PyTorch (ROCm)" { & $script:UvExe pip install --python $VenvPython --force-reinstall --default-index $ROCmIndexUrl $rocmSpec $visionSpec $audioSpec }
+                    $torchFixExit = Invoke-InstallCommand -Label "reinstall PyTorch (ROCm)" { & $script:UvExe pip install --python $VenvPython --force-reinstall --default-index $ROCmIndexUrl @(@($rocmSpec, $visionSpec, $audioSpec) | Where-Object { $_ }) }
                     if ($torchFixExit -ne 0 -and $_rocmKept) {
                         substep "[WARN] $rocmSpec is not installable from $(Remove-IndexUrlCredentials $ROCmIndexUrl) -- installing the newest supported release instead" "Yellow"
                         $rocmSpec = $_origRocmSpec; $visionSpec = $_origVisionSpec; $audioSpec = $_origAudioSpec
                         $script:PrevTorchPin = $null
                         Remove-Item Env:UNSLOTH_KEPT_TORCH -ErrorAction SilentlyContinue
-                        $torchFixExit = Invoke-InstallCommand -Label "reinstall PyTorch (ROCm)" { & $script:UvExe pip install --python $VenvPython --force-reinstall --default-index $ROCmIndexUrl $rocmSpec $visionSpec $audioSpec }
+                        $torchFixExit = Invoke-InstallCommand -Label "reinstall PyTorch (ROCm)" { & $script:UvExe pip install --python $VenvPython --force-reinstall --default-index $ROCmIndexUrl @(@($rocmSpec, $visionSpec, $audioSpec) | Where-Object { $_ }) }
                     }
                     if ($torchFixExit -ne 0) {
                         Write-StudioLine "[ERROR] Failed to reinstall PyTorch with the correct ROCm build (exit code $torchFixExit)" -ForegroundColor Red

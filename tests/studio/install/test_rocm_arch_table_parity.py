@@ -506,8 +506,16 @@ class TestGpuNameArchParity:
         """Every arch a name table can produce must be routable to an AMD wheel
         index, else detection succeeds and the install still lands on CPU torch."""
         families = stack_mod._GFX_TO_AMD_INDEX_ARCH
+        # RDNA 1 routes through the multi-arch nightly index on Windows (#11614), which has
+        # no per-family leaf; the Windows resolver knows it by _WINDOWS_MULTIARCH_GFX. The
+        # Linux tables must not produce it: nothing routes it there yet.
+        multiarch = stack_mod._WINDOWS_MULTIARCH_GFX
+        linux_copies = ("install.sh", "studio/setup.sh")
         for where, rows in _name_tables().items():
             for arch in {arch for _, arch in rows}:
+                if arch in multiarch and not where.startswith(linux_copies):
+                    assert stack_mod._windows_rocm_index_url(arch) is not None, f"{where}: {arch} has no Windows route"
+                    continue
                 assert arch in families, f"{where}: {arch} has no entry in _GFX_TO_AMD_INDEX_ARCH"
 
     def test_every_documented_gpu_resolves_somewhere(self):
