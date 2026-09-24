@@ -3,7 +3,7 @@
 
 """Copy a gallery image or clip into a chat project's folder.
 
-Files land in ``<project root>/sandbox/{images,videos}``, where the project's chats run their
+Files land in ``<project root>/sandbox/{images,videos,audio}``, where the project's chats run their
 tools. It is a copy, so the gallery keeps its item.
 """
 
@@ -77,9 +77,10 @@ def _copy_with_dir_fd(source: Path, sandbox: str, folder: str) -> bool:
     finally:
         os.close(sandbox_fd)
     try:
+        # Keyed by gallery id and written atomically, so a file here is this item, maybe since edited.
         try:
             st = os.stat(name, dir_fd = folder_fd, follow_symlinks = False)
-            if stat.S_ISREG(st.st_mode) and st.st_size == source.stat().st_size:
+            if stat.S_ISREG(st.st_mode):
                 return True
         except FileNotFoundError:
             pass
@@ -112,17 +113,16 @@ def _copy_by_path(source: Path, sandbox: str, folder: str) -> bool:
         raise PermissionError(f"{target} resolves outside the project sandbox")
     dest = Path(real) / source.name
     try:
-        if (
-            not dest.is_symlink()
-            and dest.is_file()
-            and dest.stat().st_size == source.stat().st_size
-        ):
+        if not dest.is_symlink() and dest.is_file():
             return True
     except OSError:
         pass
     tmp = Path(real) / _tmp_name(source.name)
     try:
         shutil.copyfile(source, tmp)
+        # Without dir_fd the folder can be swapped after the check; check again before the rename.
+        if os.path.realpath(tmp.parent) != real:
+            raise PermissionError(f"{target} moved outside the project sandbox")
         os.replace(tmp, dest)
     except BaseException:
         with contextlib.suppress(OSError):
