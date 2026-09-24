@@ -121,13 +121,22 @@ def _llama_kwargs(**extra):
     return kw
 
 
-def _write_repo(tmp_path, *, prefix = "language_model.", drop = (), llm_extra = None, name = "tiny_omni"):
+def _write_repo(
+    tmp_path, *, prefix = "language_model.", drop = (), llm_extra = None, name = "tiny_omni", alias = True
+):
     # Save a remote-code composite checkpoint whose text weights sit under `prefix` (sentinel-filled).
     from safetensors.torch import save_file
 
     repo = tmp_path / name
     repo.mkdir()
-    (repo / "configuration_tiny_omni.py").write_text(_CONFIGURATION)
+    configuration = _CONFIGURATION
+    if not alias:
+        # InternVL / Nemotron-Nano-VL shape: llm_config only, no text_config alias for get_text_config() to find.
+        configuration = configuration.replace(
+            "    @property\n    def text_config(self):\n        return self.llm_config\n", ""
+        )
+        assert "def text_config" not in configuration
+    (repo / "configuration_tiny_omni.py").write_text(configuration)
     (repo / "modeling_tiny_omni.py").write_text(_MODELING)
     llm = LlamaConfigDict = _llama_kwargs(**(llm_extra or {}))
     cfg = {
@@ -222,6 +231,22 @@ def test_remote_composite_resolves_text_config_and_mapping(tmp_path):
     assert mapping == {r"^language_model\.": ""}
     # The parent keeps its own llm_config object (the plan copies it).
     assert text_config is not parent.llm_config
+
+
+def test_llm_config_without_text_config_alias(tmp_path):
+    ns = _ns()
+    repo, weights = _write_repo(tmp_path, alias = False, name = "no_alias")
+    parent = _load_parent_config(repo)
+    # get_text_config() does not see llm_config here, so the family path had nothing to offer.
+    assert parent.get_text_config() is parent
+    text_config, mapping = ns["_get_remote_composite_text_only"](parent, str(repo), trust_remote_code = True)
+    assert text_config.model_type == "llama"
+    model, info = transformers.AutoModelForCausalLM.from_pretrained(
+        repo, config = text_config, key_mapping = mapping, trust_remote_code = True,
+        dtype = torch.float32, local_files_only = True, output_loading_info = True,
+    )
+    assert not info["missing_keys"]
+    assert torch.equal(model.lm_head.weight, weights["language_model.lm_head.weight"])
 
 
 def test_remote_composite_needs_trust_remote_code(tmp_path):

@@ -1322,9 +1322,21 @@ def _get_remote_composite_text_only(
     try:
         text_config = _get_text_only_config(model_config, model_name)
     except Exception:
-        return None
+        text_config = None
     if text_config is None or text_config is model_config:
-        return None
+        # InternVL / Nemotron-Nano-VL keep the decoder config as llm_config without the text_config alias get_text_config() looks for.
+        text_config = None
+        for attr in ("llm_config", "language_config"):
+            sub = getattr(model_config, attr, None)
+            if sub is not None and sub is not model_config and hasattr(sub, "to_dict"):
+                text_config = sub
+                break
+        if text_config is None:
+            return None
+        qc = getattr(model_config, "quantization_config", None)
+        if qc is not None and getattr(text_config, "quantization_config", None) is None:
+            text_config = copy.copy(text_config)
+            text_config.quantization_config = _remap_text_only_skip_modules(qc)
     text_config = copy.copy(text_config)
     try:
         text_class = _resolve_text_causal_lm_class(
