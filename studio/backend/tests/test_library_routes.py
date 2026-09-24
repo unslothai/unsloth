@@ -95,6 +95,14 @@ def test_rename_favorite_and_move_are_an_overlay(client):
     assert _items(client)[0][note]["folderId"] is None
 
 
+def test_a_rename_leaves_the_file_name(client):
+    """The type is read from the file's own name, so a binary renamed to .txt never opens as text."""
+    [image] = _upload(client, ("photo.png", b"png", "image/png"))
+    client.patch("/api/library/items", json = {"id": image, "name": "photo.txt"})
+    item = _items(client)[0][image]
+    assert (item["name"], item["fileName"]) == ("photo.txt", "photo.png")
+
+
 def test_moving_into_a_missing_folder_is_refused(client):
     [note] = _upload(client, ("note.md", b"", "text/markdown"))
     response = client.patch("/api/library/items", json = {"id": note, "folderId": "nope"})
@@ -225,6 +233,28 @@ def test_generated_video_is_listed_and_deleted(client, monkeypatch):
     assert video_gallery.video_path(record["id"]) is None
     # Same cleanup as the Video page, so no ghost card comes back.
     assert forgotten == [record["id"], record["id"]]
+
+
+def test_a_video_whose_job_cannot_be_dropped_stays_to_delete_again(client, monkeypatch):
+    from core.inference import video_gallery
+    import routes.video as video_routes
+
+    keys = ("width", "height", "num_frames", "fps", "duration_s", "steps", "guidance", "seed")
+    meta = {key: 1 for key in keys}
+    record = video_gallery.save(
+        b"\0\0\0\x18ftypmp42", {**meta, "prompt": "A calm sea", "created_at": 1_700_000_000}
+    )
+    item_id = f"video:{record['id']}"
+    monkeypatch.setattr(video_routes, "_forget_terminal_video", lambda ref: None)
+    monkeypatch.setattr(video_routes, "_forget_openai_job", lambda ref: False)
+    response = client.post("/api/library/items/delete", json = {"id": item_id})
+    assert response.status_code == 500
+    assert "video job" in response.json()["detail"]
+    assert video_gallery.video_path(record["id"]) is not None
+
+    monkeypatch.setattr(video_routes, "_forget_openai_job", lambda ref: True)
+    assert client.post("/api/library/items/delete", json = {"id": item_id}).status_code == 200
+    assert video_gallery.video_path(record["id"]) is None
 
 
 def test_favorites_lists_only_favorite_ids(client):
@@ -634,9 +664,51 @@ def test_video_upload_thumbnail_is_its_first_frame(client):
     assert Image.open(io.BytesIO(response.content)).size == (64, 48)
 
 
-def test_thumbnail_is_only_for_videos(client):
+def _png(width, height, mode = "RGB") -> bytes:
+    import io
+
+    from PIL import Image
+
+    buf = io.BytesIO()
+    Image.new(mode, (width, height), (200, 40, 40, 128) if mode == "RGBA" else (200, 40, 40)).save(
+        buf, format = "PNG"
+    )
+    return buf.getvalue()
+
+
+def _thumbnail_size(client, item_id):
+    import io
+
+    from PIL import Image
+
+    response = client.get("/api/library/items/thumbnail", params = {"id": item_id})
+    assert response.status_code == 200, response.text
+    assert response.headers["content-type"] == "image/webp"
+    return Image.open(io.BytesIO(response.content)).size
+
+
+def test_image_thumbnail_is_bounded_and_cropped_as_the_card_shows_it(client):
+    [big] = _upload(client, ("big.png", _png(3000, 2000), "image/png"))
+    [tall] = _upload(client, ("tall.png", _png(1000, 5000, "RGBA"), "image/png"))
+    [wide] = _upload(client, ("wide.png", _png(4000, 500), "image/png"))
+    [small] = _upload(client, ("small.png", _png(100, 80), "application/octet-stream"))
+    assert _thumbnail_size(client, big) == (640, 427)
+    assert _thumbnail_size(client, tall) == (640, 960)
+    assert _thumbnail_size(client, wide) == (640, 427)
+    # Never scaled up.
+    assert _thumbnail_size(client, small) == (100, 80)
+
+
+def test_undecodable_image_has_no_thumbnail(client):
+    [image] = _upload(client, ("broken.png", b"not a png", "image/png"))
+    response = client.get("/api/library/items/thumbnail", params = {"id": image})
+    assert response.status_code == 501
+
+
+def test_thumbnail_is_only_for_pictures(client):
     [note] = _upload(client, ("note.md", b"# hi", "text/markdown"))
-    for item_id in (note, "upload:" + "0" * 32, "model:training:/tmp/x", "image:missing"):
+    [svg] = _upload(client, ("icon.svg", b"<svg/>", "image/svg+xml"))
+    for item_id in (note, svg, "upload:" + "0" * 32, "model:training:/tmp/x", "image:missing"):
         response = client.get("/api/library/items/thumbnail", params = {"id": item_id})
         assert response.status_code == 404, item_id
 

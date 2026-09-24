@@ -116,6 +116,8 @@ async def delete_item(body: ItemRef, current_subject: str = Depends(get_current_
         deleted = await run_in_threadpool(library.delete_item, body.id)
     except ValueError as exc:
         raise HTTPException(status_code = 400, detail = str(exc))
+    except library.DeleteIncomplete as exc:
+        raise HTTPException(status_code = 500, detail = str(exc))
     except ChatMessageProtectedError as exc:
         raise log_and_http_error(
             exc,
@@ -180,14 +182,15 @@ async def reveal_item(body: ItemRef, current_subject: str = Depends(get_current_
 def get_item_thumbnail(
     id: str = Query(max_length = 4096), current_subject: str = Depends(get_current_subject)
 ):
-    """A video item's first frame. The client adds the item's version to the URL, so it can cache."""
+    """An image or video item's card picture. The client adds the item's version to the URL, so it
+    can cache."""
     try:
-        data = library.video_thumbnail(id)
+        data = library.thumbnail(id)
     except LookupError:
         raise HTTPException(status_code = 404, detail = "Item not found")
     except RuntimeError as exc:
         logger.info("library.thumbnail_unavailable: %s", exc)
-        raise HTTPException(status_code = 501, detail = "No thumbnail for this video")
+        raise HTTPException(status_code = 501, detail = "No thumbnail for this item")
     return Response(
         content = data,
         media_type = "image/webp",
