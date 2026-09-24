@@ -125,6 +125,9 @@ def main() -> None:
                     },
                 )
             elif self.path.startswith("/v1/models"):
+                if os.environ.get("FAKE_LEMOND_MODELS_FAILS") == "1":
+                    self._send(200, {"status": "error", "message": "catalog unavailable"})
+                    return
                 self._send(
                     200,
                     {

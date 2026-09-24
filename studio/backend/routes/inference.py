@@ -8891,10 +8891,11 @@ async def _no_model_loaded_error(
     from core.inference.npu_backend import peek_npu_backend
 
     _npu = peek_npu_backend()
-    if _npu is not None and _npu.is_loaded:
+    _npu_model = _npu.loaded_model if _npu is not None else None
+    if _npu_model is not None:
         # Not "nothing is loaded": the NPU model is, and it serves chat completions only.
         return 400, (
-            f"The loaded NPU model ({_npu.loaded_model.model_path}) serves "
+            f"The loaded NPU model ({_npu_model.model_path}) serves "
             "/v1/chat/completions only. Load a GGUF model to use this endpoint."
         )
     named = (
@@ -10437,9 +10438,8 @@ def _loaded_slot_ident() -> Optional[str]:
     from core.inference.npu_backend import peek_npu_backend
 
     npu = peek_npu_backend()
-    if npu is not None and npu.is_loaded:
-        return npu.loaded_model.model_path
-    return None
+    npu_model = npu.loaded_model if npu is not None else None
+    return npu_model.model_path if npu_model is not None else None
 
 
 def release_chat_gpu_claim() -> bool:
@@ -15782,8 +15782,8 @@ def _require_resolved_base_access(config) -> None:
         account_access.require_model_access(base.strip())
 
 
-def _npu_load_response(npu, status: str) -> LoadResponse:
-    model = npu.loaded_model
+def _npu_load_response(resident, status: str) -> LoadResponse:
+    model = resident.model
     return LoadResponse(
         status = status,
         model = model.model_path,
@@ -15791,7 +15791,7 @@ def _npu_load_response(npu, status: str) -> LoadResponse:
         is_npu = True,
         is_vision = model.vision,
         inference = load_inference_config(model.id),
-        context_length = npu.loaded_context_length,
+        context_length = resident.context_length,
         max_context_length = model.max_context_length,
         native_context_length = model.max_context_length,
         context_length_enforced = True,
@@ -15840,15 +15840,15 @@ async def _load_npu_model(
     requested_ctx = (
         request.max_seq_length if request.max_seq_length and request.max_seq_length > 0 else None
     )
-    loaded = npu.loaded_model
+    resident = npu.resident()
     if (
-        loaded is not None
-        and loaded.id == model_id
+        resident is not None
+        and resident.model.id == model_id
         and not request.force_reload
-        and (requested_ctx is None or requested_ctx == npu.loaded_context_length)
+        and (requested_ctx is None or requested_ctx == resident.requested_context_length)
     ):
         account_access.join_resident("chat")
-        return _npu_load_response(npu, "already_loaded")
+        return _npu_load_response(resident, "already_loaded")
     # A target load() would refuse must not cost the resident model.
     try:
         await asyncio.to_thread(npu.loadable_model, model_id)
@@ -15882,9 +15882,13 @@ async def _load_npu_model(
     except NpuError as exc:
         raise HTTPException(status_code = 400, detail = str(exc)) from None
     # Records the owner as the loader, so resident_hidden keeps the model from managed accounts.
+    resident = npu.resident()
+    if resident is None:
+        # Unloaded or stopped between the load returning and here.
+        raise HTTPException(status_code = 409, detail = "Model load cancelled")
     account_access.publish_resident("chat", request.model_path)
     api_monitor.record_lifecycle(event = "load", model = request.model_path)
-    return _npu_load_response(npu, "loaded")
+    return _npu_load_response(resident, "loaded")
 
 
 async def _load_model_impl(
@@ -18524,7 +18528,8 @@ async def _unload_model_impl(request: UnloadRequest, current_subject: str):
                 return UnloadResponse(status = "unloaded", model = request.model_path)
             async with inference_lifecycle_gate():
                 # Only the named model: another tab may have replaced it since.
-                if npu is not None and npu.is_loaded and npu.loaded_model.id == requested_id:
+                npu_model = npu.loaded_model if npu is not None else None
+                if npu_model is not None and npu_model.id == requested_id:
                     # Same order as the llama-server eject below: stop the chats, let them
                     # unwind, then take the model away.
                     _raise_or_cancel_active_generations(
@@ -19314,8 +19319,9 @@ async def get_status(current_subject: str):
         from core.inference.npu_backend import peek_npu_backend
 
         _npu = peek_npu_backend()
-        if _npu is not None and _npu.is_loaded:
-            _npu_model = _npu.loaded_model
+        _npu_resident = _npu.resident() if _npu is not None else None
+        if _npu_resident is not None:
+            _npu_model = _npu_resident.model
             return InferenceStatusResponse(
                 # Display id, then the loadable one, as the GGUF branch reports them.
                 active_model = _npu_model.id,
@@ -19325,8 +19331,9 @@ async def get_status(current_subject: str):
                 loading = _loading,
                 loaded = [_npu_model.model_path],
                 inference = load_inference_config(_npu_model.id),
-                context_length = _npu.loaded_context_length,
-                requested_context_length = _npu.loaded_context_length,
+                context_length = _npu_resident.context_length,
+                # What the load asked for (None for Auto), so the UI can tell a pin from Auto.
+                requested_context_length = _npu_resident.requested_context_length,
                 max_context_length = _npu_model.max_context_length,
                 native_context_length = _npu_model.max_context_length,
                 context_length_enforced = True,
@@ -29687,8 +29694,9 @@ def _openai_model_objects() -> list[dict]:
     from core.inference.npu_backend import peek_npu_backend
 
     _npu = peek_npu_backend()
-    if _npu is not None and _npu.is_loaded:
-        _npu_model = _npu.loaded_model
+    _npu_resident = _npu.resident() if _npu is not None else None
+    if _npu_resident is not None:
+        _npu_model = _npu_resident.model
         _npu_entry = {
             "id": _npu_model.model_path,
             "object": "model",
@@ -29696,8 +29704,8 @@ def _openai_model_objects() -> list[dict]:
             "owned_by": _OWNED_BY,
             "device": "npu",
         }
-        if _npu.loaded_context_length:
-            _npu_entry["context_length"] = _npu.loaded_context_length
+        if _npu_resident.context_length:
+            _npu_entry["context_length"] = _npu_resident.context_length
         if _npu_model.max_context_length:
             _npu_entry["max_context_length"] = _npu_model.max_context_length
         models.append(_npu_entry)

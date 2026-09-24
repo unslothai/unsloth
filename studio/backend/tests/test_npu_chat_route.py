@@ -529,6 +529,17 @@ def test_an_owner_npu_model_is_hidden_from_managed_accounts(monkeypatch):
         def loadable_model(self, model_id):
             return model
 
+        def resident(self):
+            if not self.is_loaded:
+                return None
+            return nb.NpuResident(
+                model = model,
+                context_length = 8192,
+                requested_context_length = None,
+                base_url = "http://127.0.0.1:1",
+                api_key = "key",
+            )
+
         def load(self, model_id, ctx):
             self.is_loaded, self.loaded_model, self.loaded_context_length = True, model, 8192
 
@@ -640,6 +651,9 @@ def test_an_npu_load_it_would_refuse_keeps_the_gpu_resident(monkeypatch):
     class _Npu:
         loaded_model = None
         loaded_context_length = None
+
+        def resident(self):
+            return None
 
         def loadable_model(self, model_id):
             raise nb.NpuError(f"{model_id} is not downloaded yet.")

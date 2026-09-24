@@ -191,6 +191,44 @@ def test_load_reports_the_context_lemond_started_with(npu, monkeypatch):
     assert upstream.api_key
 
 
+def test_the_resident_reports_what_its_load_asked_for(npu):
+    npu.enable()
+    list(npu.download("qwen3-0.6b-FLM"))
+    npu.load("qwen3-0.6b-FLM")
+    # Auto: the default window, and no request to echo back as a pin.
+    assert npu.resident().context_length == nb.DEFAULT_CONTEXT_LENGTH
+    assert npu.resident().requested_context_length is None
+    npu.load("qwen3-0.6b-FLM", 16384)
+    assert npu.resident().requested_context_length == 16384
+
+
+def test_a_reader_racing_an_unload_does_not_crash(npu):
+    npu.enable()
+    list(npu.download("qwen3-0.6b-FLM"))
+    npu.load("qwen3-0.6b-FLM")
+    server = npu._server
+    alive = server.is_alive
+
+    def _unloaded_meanwhile():
+        # unload() clears the record between a reader's liveness check and its read.
+        npu._loaded = None
+        return alive()
+
+    server.is_alive = _unloaded_meanwhile
+    try:
+        assert npu.loaded_model.id == "qwen3-0.6b-FLM"
+        assert npu.loaded_model is None
+    finally:
+        del server.is_alive
+
+
+def test_a_catalog_error_body_is_an_error_not_an_empty_catalog(npu, monkeypatch):
+    monkeypatch.setenv("FAKE_LEMOND_MODELS_FAILS", "1")
+    npu.enable()
+    with pytest.raises(nb.NpuError, match = "catalog unavailable"):
+        npu.catalog()
+
+
 def test_unload_then_delete(npu):
     npu.enable()
     list(npu.download("qwen3-0.6b-FLM"))

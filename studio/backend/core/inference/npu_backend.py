@@ -26,6 +26,7 @@ from utils.process_lifetime import (
     adopt_pid,
     child_popen_kwargs,
     forget_pid,
+    is_process_shutting_down,
     spawn_on_lifetime_thread,
     terminate_pid,
 )
@@ -128,6 +129,19 @@ class ManagedUpstream:
 class _Loaded:
     model: NpuModel
     context_length: Optional[int]
+    # What the load asked for; None when it left the length to the default.
+    requested_context_length: Optional[int]
+
+
+@dataclass(frozen = True)
+class NpuResident:
+    """One consistent read of the loaded model, taken without the lock long operations hold."""
+
+    model: NpuModel
+    context_length: Optional[int]
+    requested_context_length: Optional[int]
+    base_url: str
+    api_key: str
 
 
 def is_npu_model_path(model_path: Optional[str]) -> bool:
@@ -242,15 +256,33 @@ class LemonadeNpuBackend:
 
     @property
     def is_loaded(self) -> bool:
-        return self._loaded is not None and self._server is not None and self._server.is_alive()
+        return self.resident() is not None
 
     @property
     def loaded_model(self) -> Optional[NpuModel]:
-        return self._loaded.model if self.is_loaded else None
+        resident = self.resident()
+        return resident.model if resident is not None else None
 
     @property
     def loaded_context_length(self) -> Optional[int]:
-        return self._loaded.context_length if self.is_loaded else None
+        resident = self.resident()
+        return resident.context_length if resident is not None else None
+
+    def resident(self) -> Optional[NpuResident]:
+        """The loaded model, or None. Readers use this one snapshot: unload clears it concurrently."""
+        loaded, server = self._loaded, self._server
+        if loaded is None or server is None:
+            return None
+        port, api_key = server.port, server.api_key
+        if port is None or not server.is_alive():
+            return None
+        return NpuResident(
+            model = loaded.model,
+            context_length = loaded.context_length,
+            requested_context_length = loaded.requested_context_length,
+            base_url = f"http://127.0.0.1:{port}",
+            api_key = api_key or "",
+        )
 
     @property
     def loading_model(self) -> Optional[str]:
@@ -272,7 +304,7 @@ class LemonadeNpuBackend:
             self._state == "idle" and installed and self._validated_install() == str(binary)
         )
         running = self._server is not None and self._server.is_alive()
-        loaded = self.loaded_model
+        resident = self.resident()
         platform_key = "linux" if sys.platform.startswith("linux") else sys.platform
         return {
             "supported": bool(hardware.get("supported")),
@@ -284,8 +316,8 @@ class LemonadeNpuBackend:
             "error": self._error,
             "validation": self._validation,
             "help_url": DRIVER_HELP_URL.get(platform_key),
-            "loaded_model": loaded.model_path if loaded else None,
-            "context_length": self.loaded_context_length,
+            "loaded_model": resident.model.model_path if resident else None,
+            "context_length": resident.context_length if resident else None,
             "loading_model": self._loading,
         }
 
@@ -399,7 +431,8 @@ class LemonadeNpuBackend:
             return {"ready": False, "problems": [f"flm validate could not run: {exc}"]}
         adopt_pid(process.pid)
         self._validate_process = process
-        if self._closing.is_set():
+        # After adopting: a shutdown sweep that already ran would miss it.
+        if self._closing.is_set() or is_process_shutting_down():
             _kill_tree(process)
         try:
             stdout, _stderr = process.communicate(timeout = 120)
@@ -449,7 +482,7 @@ class LemonadeNpuBackend:
     def catalog(self) -> list[NpuModel]:
         server = self._ensure_running()
         response = server.request("GET", "/v1/models?show_all=true", timeout = 60.0)
-        if response.status_code != 200:
+        if _failed(response):
             raise NpuError(f"Listing NPU models failed: {_error_message(response)}")
         models: list[NpuModel] = []
         for row in response.json().get("data") or []:
@@ -531,7 +564,8 @@ class LemonadeNpuBackend:
 
     def delete(self, model_id: str) -> None:
         with self._lock:
-            if self.is_loaded and self._loaded.model.id == model_id:
+            resident = self.resident()
+            if resident is not None and resident.model.id == model_id:
                 raise NpuError("Unload the model before deleting it.")
             server = self._ensure_running()
             response = server.request("POST", "/v1/delete", json_body = {"model_name": model_id})
@@ -578,7 +612,13 @@ class LemonadeNpuBackend:
                     raise NpuError(f"Lemonade did not report {model.id} as loaded on the NPU.")
                 with self._commit_lock:
                     self._raise_if_load_cancelled(model_id)
-                    self._loaded = _Loaded(model = model, context_length = resident_ctx)
+                    self._loaded = _Loaded(
+                        model = model,
+                        context_length = resident_ctx,
+                        requested_context_length = (
+                            context_length if context_length and context_length > 0 else None
+                        ),
+                    )
                     self._loading = None
                     loaded = True
                 self._state = "ready"
@@ -654,22 +694,22 @@ class LemonadeNpuBackend:
             return loaded.model.model_path
 
     def upstream(self) -> ManagedUpstream:
-        with self._lock:
-            if not self.is_loaded:
-                raise NpuError("No NPU model is loaded.")
-            server = self._server
-            model = self._loaded.model
-            return ManagedUpstream(
-                provider_type = PROVIDER_TYPE,
-                base_url = f"{server.base_url}/v1",
-                api_key = server.api_key or "",
-                model = model.id,
-                public_model = model.model_path,
-                supports_vision = model.vision,
-                supports_tools = model.tools,
-                supports_reasoning = model.reasoning,
-                context_length = self._loaded.context_length,
-            )
+        # Lock-free: a chat must not wait behind an enable() or delete() holding the lock.
+        resident = self.resident()
+        if resident is None:
+            raise NpuError("No NPU model is loaded.")
+        model = resident.model
+        return ManagedUpstream(
+            provider_type = PROVIDER_TYPE,
+            base_url = f"{resident.base_url}/v1",
+            api_key = resident.api_key,
+            model = model.id,
+            public_model = model.model_path,
+            supports_vision = model.vision,
+            supports_tools = model.tools,
+            supports_reasoning = model.reasoning,
+            context_length = resident.context_length,
+        )
 
 
 _backend: Optional[LemonadeNpuBackend] = None

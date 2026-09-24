@@ -539,3 +539,24 @@ test("a failed switch rolls back on the backend that served the outgoing model",
     /const previousIsMlx = residentIsServedByMlx\(\s*\n\s*previousIsGguf,\s*\n\s*platform\.deviceType,\s*\n\s*platform\.chatOnlyReason,\s*\n\s*stateBeforeUnload\.loadedIsMlx,\s*\n\s*\);/,
   );
 });
+
+test("an NPU load's pin survives hydration: its status echoes the request, null for Auto", () => {
+  // Structural: the applier cannot be imported under node's test resolver. It must pass an NPU
+  // status through the pin rule the way MLX goes, since both echo what the load asked for.
+  assert.match(APPLIER, /isGguf:[\s\S]{0,120}status\.is_npu \?\? false/);
+  assert.match(APPLIER, /isMlx: \(status\.is_mlx \?\? false\) \|\| \(status\.is_npu \?\? false\)/);
+  const seed = (incoming: number | null) =>
+    resolveCtxPinSeed({
+      incoming,
+      isGguf: true,
+      isMlx: true,
+      seedLoadParams: true,
+      modelChanged: false,
+      remembered: null,
+      gpuMemoryMode: null,
+      gpuLayers: null,
+      loadedPin: null,
+    });
+  assert.equal(seed(16384).customContextLength, 16384);
+  assert.equal(seed(null).customContextLength, null);
+});
