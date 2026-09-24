@@ -129,6 +129,7 @@ from .diffusion_speed import (
     compile_eligible,
     compiled_shapes_are_static,
     dynamo_graph_count,
+    family_compiles_regionally,
     normalize_speed_mode,
     resolve_speed_mode,
     restore_backend_flags,
@@ -1485,6 +1486,20 @@ def _pipeline_quant_uncompilable_reason(
             "compiled runs far slower than the bf16 weights it replaces"
         )
     return None
+
+
+def _auto_quant_eager_reason(fam: Any, *, offloads: bool) -> Optional[str]:
+    """Why an AUTO precision keeps the checkpoint's own weights for a family whose denoiser cannot be
+    regionally compiled, or None. The quantised transformer would run eager, several times slower than
+    bf16 (Lumina-2 on B200: 22.6 vs 3.1 s per 50-step 1024px image), so auto quantises such a family
+    only when the unquantised plan would offload and the quant is what keeps it resident."""
+    if offloads or family_compiles_regionally(fam):
+        return None
+    return (
+        f"'{getattr(fam, 'name', None)}' cannot be regionally compiled (its transformer declares no "
+        "repeated blocks), and an uncompiled quantised transformer runs far slower than the weights "
+        "it replaces; they fit on this GPU as they are"
+    )
 
 
 def _clear_exception_frames(exc: BaseException) -> None:
@@ -2968,6 +2983,36 @@ class DiffusionBackend:
                     is not None
                 ):
                     return None
+                if (
+                    auto
+                    and not family_compiles_regionally(fam)
+                    and (table := family_bf16_components_gb(fam, base)) is not None
+                ):
+                    # The loader keeps the released weights when they fit resident, so they are what the pull needs.
+                    bf16_memory = snapshot_device_memory(target)
+                    mib_per_gb = 1000.0**3 / (1024.0 * 1024.0)
+                    bf16_plan = self._plan_memory(
+                        target,
+                        None,
+                        base or repo_id or "",
+                        fam,
+                        memory_mode,
+                        cpu_offload,
+                        kind = kind,
+                        repo_id = repo_id,
+                        fetch_base = fetch_base,
+                        transformer_resident_override_mib = int(table[0] * mib_per_gb),
+                        companion_override_mib = int(sum(table[1:]) * mib_per_gb),
+                        text_encoder_override_mib = int(table[1] * mib_per_gb),
+                        device_memory_override = replace(bf16_memory, free_mib = bf16_memory.total_mib),
+                    )
+                    if (
+                        _auto_quant_eager_reason(
+                            fam, offloads = bf16_plan.offload_policy != OFFLOAD_NONE
+                        )
+                        is not None
+                    ):
+                        return None
                 scheme = select_transformer_quant_scheme(
                     target, mode, family = getattr(fam, "name", None)
                 )
@@ -4413,6 +4458,23 @@ class DiffusionBackend:
                 # visible, and into the refusal so it is actionable.
                 transformer_quant_decline: Optional[str] = None
                 transformer_quant_decline_status = RESOLVED_FELL_BACK
+                # The seed decision asked the same question before the pull, so a seeded pick never reaches it.
+                if (
+                    transformer_quant == TQ_AUTO
+                    and pipeline_seed_scheme is None
+                    and dense_quant_supported_kind(kind)
+                    and (
+                        eager_reason := _auto_quant_eager_reason(
+                            fam, offloads = plan.offload_policy != OFFLOAD_NONE
+                        )
+                    )
+                    is not None
+                ):
+                    logger.info(
+                        "diffusion.transformer_quant: auto keeps %s (%s)", kind, eager_reason
+                    )
+                    transformer_quant = "off"
+                    transformer_quant_decline = eager_reason
                 if transformer_quant_pinned is not None and not dense_quant_supported_kind(kind):
                     transformer_quant_decline = dense_quant_unsupported_kind_reason(kind)
                     transformer_quant_decline_status = RESOLVED_UNSUPPORTED

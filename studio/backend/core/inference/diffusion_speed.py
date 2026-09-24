@@ -219,6 +219,26 @@ def compile_eligible(target: Any, *, is_gguf: bool, family: Any) -> bool:
     return _is_bfloat16(getattr(target, "dtype", None))
 
 
+def family_compiles_regionally(family: Any) -> bool:
+    """False only when the family's diffusers transformer class carries an EMPTY ``_repeated_blocks``, so
+    ``compile_repeated_blocks`` raises and the denoiser runs eager (Lumina-2, HiDream-I1). A class that is
+    missing, unimportable or predates the attribute reads True, keeping today's behaviour; a diffusers that
+    fills the list in widens this."""
+    if getattr(family, "denoiser_attr", "transformer") != "transformer":
+        return True
+    name = getattr(family, "transformer_class", None)
+    if not isinstance(name, str) or not name:
+        return True
+    try:
+        import diffusers
+        cls = getattr(diffusers, name, None)
+    except Exception:  # noqa: BLE001 - an unanswerable probe keeps today's behaviour
+        return True
+    if cls is None or not hasattr(cls, "_repeated_blocks"):
+        return True
+    return bool(cls._repeated_blocks)
+
+
 def _is_bfloat16(dtype: Any) -> bool:
     try:
         import torch

@@ -946,3 +946,93 @@ def test_the_rebuilt_fp8_artifacts_are_listed_for_both_schemes(family, repo):
     assert fam is not None
     for scheme in ("fp8", "int8"):
         assert family_prequant_repo(fam, scheme) == repo
+
+
+# A family whose denoiser class declares no `_repeated_blocks` (Lumina-2, HiDream-I1) cannot be regionally compiled,
+# so an AUTO quant would run eager torchao. Auto keeps the released weights unless they would offload.
+def _uncompilable(monkeypatch):
+    monkeypatch.setattr(dmod, "family_compiles_regionally", lambda _fam: False)
+    monkeypatch.setattr(dmod, "family_bf16_components_gb", lambda *_a, **_k: (90.0, 10.0, 0.2))
+
+
+def _offload_when_bf16_sized(monkeypatch, bf16_policy):
+    """Price the table-sized bf16 plan at ``bf16_policy``; every other plan fits."""
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_plan_memory",
+        lambda *_a, **k: types.SimpleNamespace(
+            offload_policy = bf16_policy
+            if (k.get("transformer_resident_override_mib") or 0) > 80_000
+            else "none"
+        ),
+    )
+
+
+def test_an_uncompilable_family_keeps_the_released_weights_that_fit(monkeypatch):
+    backend = _settle_backend(monkeypatch)
+    _uncompilable(monkeypatch)
+    _offload_when_bf16_sized(monkeypatch, "none")
+    assert _settle(backend) is None
+
+
+def test_an_uncompilable_family_still_seeds_when_the_released_weights_would_offload(monkeypatch):
+    backend = _settle_backend(monkeypatch)
+    _uncompilable(monkeypatch)
+    _offload_when_bf16_sized(monkeypatch, "sequential")
+    assert _settle(backend) == "fp8"
+
+
+def test_an_uncompilable_family_still_seeds_an_explicit_scheme(monkeypatch):
+    backend = _settle_backend(monkeypatch)
+    _uncompilable(monkeypatch)
+    _offload_when_bf16_sized(monkeypatch, "none")
+    assert _settle(backend, transformer_quant = "fp8") == "fp8"
+
+
+def test_a_compilable_family_seeds_as_before(monkeypatch):
+    backend = _settle_backend(monkeypatch)
+    monkeypatch.setattr(dmod, "family_compiles_regionally", lambda _fam: True)
+    _offload_when_bf16_sized(monkeypatch, "none")
+    assert _settle(backend) == "fp8"
+
+
+def test_an_uncompilable_family_loads_auto_unquantised(fake_runtime, monkeypatch):
+    backend, spy = _load_backend(monkeypatch)
+    _uncompilable(monkeypatch)
+    status = _load(backend, _pipeline_prequant_planned = None, _pipeline_prequant_skipped = ())
+
+    assert spy.quantised == []
+    assert spy.seeds == []
+    resolved = status["resolved"]["transformer_quant"]
+    assert (resolved["value"], resolved["source"], resolved["status"]) == ("off", "auto", "applied")
+    assert "cannot be regionally compiled" in resolved["reason"]
+
+
+def test_an_uncompilable_family_quantises_auto_when_bf16_would_offload(fake_runtime, monkeypatch):
+    backend, spy = _load_backend(monkeypatch)
+    _uncompilable(monkeypatch)
+    real_plan = DiffusionBackend._plan_memory
+
+    def _plan(self, *a, **k):
+        plan = real_plan(self, *a, **k)
+        if k.get("transformer_resident_override_mib") is None:
+            plan.offload_policy = "sequential"
+        return plan
+
+    monkeypatch.setattr(DiffusionBackend, "_plan_memory", _plan)
+    _load(backend, _pipeline_prequant_planned = None, _pipeline_prequant_skipped = ())
+
+    assert spy.quantised == ["auto"]
+
+
+def test_an_uncompilable_family_honours_an_explicit_scheme(fake_runtime, monkeypatch):
+    backend, spy = _load_backend(monkeypatch)
+    _uncompilable(monkeypatch)
+    _load(
+        backend,
+        transformer_quant = "fp8",
+        _pipeline_prequant_planned = None,
+        _pipeline_prequant_skipped = (),
+    )
+
+    assert spy.quantised == ["fp8"]

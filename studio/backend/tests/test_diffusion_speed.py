@@ -1405,3 +1405,26 @@ def test_auto_dynamic_active_follows_the_torchao_marker():
     dit._unsloth_auto_dynamic = True
     assert ds_mod.auto_dynamic_active(pipe) is True
     assert isinstance(ds_mod.dynamo_graph_count(), int)
+
+
+def test_family_compiles_regionally_reads_the_repeated_blocks_declaration(monkeypatch):
+    """Only an importable transformer class with an EMPTY ``_repeated_blocks`` reads False; anything
+    unanswerable keeps today's behaviour."""
+    from core.inference.diffusion_speed import family_compiles_regionally
+
+    diffusers = types.ModuleType("diffusers")
+    diffusers.Blocked = type("Blocked", (), {"_repeated_blocks": ["Block"]})
+    diffusers.Unblocked = type("Unblocked", (), {"_repeated_blocks": []})
+    diffusers.Undeclared = type("Undeclared", (), {})
+    monkeypatch.setitem(sys.modules, "diffusers", diffusers)
+
+    def fam(cls, denoiser_attr = "transformer"):
+        return types.SimpleNamespace(transformer_class = cls, denoiser_attr = denoiser_attr)
+
+    assert family_compiles_regionally(fam("Blocked")) is True
+    assert family_compiles_regionally(fam("Unblocked")) is False
+    assert family_compiles_regionally(fam("Undeclared")) is True
+    assert family_compiles_regionally(fam("NotInThisDiffusers")) is True
+    assert family_compiles_regionally(fam("Unblocked", denoiser_attr = "unet")) is True
+    assert family_compiles_regionally(fam(None)) is True
+    assert family_compiles_regionally(None) is True
