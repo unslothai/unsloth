@@ -3,16 +3,12 @@
 
 """Run every denoise of a backend on ONE persistent thread.
 
-cuDNN keeps its convolution benchmark cache (``cudnn.benchmark``) and its SDPA execution-plan cache per THREAD
-(``thread_local`` in ATen's Conv_v8.cpp and MHA.cpp). The routes run ``generate`` on a pooled ``asyncio.to_thread``
-worker, and the default executor hands consecutive jobs to different idle threads, so a render that lands on a thread
-that never rendered re-benchmarks every VAE convolution and rebuilds every attention plan. Measured on a B200 with
-Qwen-Image-2.1 at 1024px: the VAE decode went from 0.22-0.30 s to 4.8-10.6 s on a fresh thread, the same prompt and
-seed on a thread that had rendered before cost nothing extra.
+cuDNN caches conv benchmarks and SDPA plans per THREAD (``thread_local`` in ATen Conv_v8.cpp / MHA.cpp), and
+``asyncio.to_thread`` rotates workers, so a fresh thread re-benchmarks everything (B200, Qwen-Image-2.1 1024px:
+VAE decode 0.22-0.30 s -> 4.8-10.6 s).
 
-Only the pipeline call hops; locks, cancellation and admission stay on the calling thread. The hop carries the
-caller's context variables, CUDA device and inference mode. CUDA only (ROCm and other devices keep running inline).
-Kill switch: ``UNSLOTH_DIFFUSION_RENDER_THREAD=0``.
+Only the pipeline call hops, carrying context vars, CUDA device and inference mode; locks, cancellation and
+admission stay on the caller. CUDA only (ROCm runs inline). Kill switch: ``UNSLOTH_DIFFUSION_RENDER_THREAD=0``.
 """
 
 from __future__ import annotations
@@ -57,12 +53,12 @@ def _executor(name: str) -> ThreadPoolExecutor:
 
 
 def run(name: str, fn: Callable[[], Any]) -> Any:
-    """``fn()`` on the persistent render thread ``name``, blocking the caller; inline when disabled or already there."""
+    """Run ``fn()`` on render thread ``name``, blocking; inline when disabled or already on it."""
     if threading.get_ident() in _RENDER_THREAD_IDS or not enabled():
         return fn()
     import torch  # noqa: PLC0415
 
-    # The caller has already pinned the pipeline's card; one thread per card keeps two GPUs from queueing on each other.
+    # One thread per card so two GPUs never queue on each other.
     device = torch.cuda.current_device()
     inference = torch.is_inference_mode_enabled()
     grad = torch.is_grad_enabled()
