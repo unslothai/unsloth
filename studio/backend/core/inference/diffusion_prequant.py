@@ -699,6 +699,9 @@ def _artifacts_declare_nvfp4(folder: str) -> bool:
         names = sorted(os.listdir(folder))
     except OSError:
         return False
+    if "model_index.json" in names:
+        # A diffusers pipeline loads from its component folders, never a root artifact.
+        return False
     probed = 0
     for name in names:
         if not name.lower().endswith(_PREQUANT_PROBE_SUFFIXES):

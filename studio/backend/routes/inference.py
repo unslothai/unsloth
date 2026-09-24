@@ -38922,7 +38922,13 @@ async def _refuse_disabled_nvfp4_checkpoint(request: Any) -> None:
 
     The scheme gates above never see such a pick: it names no precision, it IS one. Runs after the
     account checks, since it reads the local path or cached snapshot the request names."""
-    from core.inference.diffusion_nvfp4_flag import refuse_disabled_nvfp4_checkpoint
+    from core.inference.diffusion_nvfp4_flag import (
+        nvfp4_diffusion_enabled,
+        refuse_disabled_nvfp4_checkpoint,
+    )
+
+    if nvfp4_diffusion_enabled():
+        return
     try:
         await asyncio.to_thread(
             refuse_disabled_nvfp4_checkpoint,
