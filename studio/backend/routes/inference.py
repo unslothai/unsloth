@@ -15817,7 +15817,7 @@ async def _managed_engine_request(request):
     from core.inference.managed_engine import validate_load
 
     try:
-        await asyncio.to_thread(validate_load, request.engine, request)
+        gpu_ids = await asyncio.to_thread(validate_load, request.engine, request)
     except ValueError as exc:
         raise HTTPException(status_code = 400, detail = str(exc)) from exc
     precision = request.engine_precision
@@ -15830,7 +15830,7 @@ async def _managed_engine_request(request):
     return request.model_copy(
         update = {
             "load_in_4bit": False,
-            "gpu_ids": request.gpu_ids or [0],
+            "gpu_ids": gpu_ids,
             "engine_precision": precision,
         }
     )

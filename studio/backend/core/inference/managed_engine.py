@@ -18,6 +18,8 @@ from pathlib import Path
 
 import httpx
 
+from utils.hardware.hardware import resolve_requested_gpu_ids
+
 from .engine_install import (
     engine_lease,
     installed,
@@ -36,11 +38,16 @@ from .engine_adapters import (
 )
 
 
-def validate_load(engine: str, request) -> None:
+def validate_load(engine: str, request) -> list[int]:
+    """Returns the physical GPU ids to launch on, all inside the GPUs Studio may use."""
     profile(engine)
-    gpu_ids = request.gpu_ids or [0]
+    gpu_ids = list(request.gpu_ids or [])
     if len(set(gpu_ids)) != len(gpu_ids) or any(gpu_id < 0 for gpu_id in gpu_ids):
         raise ValueError("Select distinct, non-negative GPU indices.")
+    # The engine's CUDA_VISIBLE_DEVICES replaces Studio's, so an omitted selection is the first GPU Studio sees.
+    gpu_ids = resolve_requested_gpu_ids(gpu_ids) if gpu_ids else resolve_requested_gpu_ids(None)[:1]
+    if not gpu_ids:
+        raise ValueError("Studio has no GPU it can assign to this engine.")
     for gpu_id in gpu_ids:
         reason = support_reason(engine, gpu_id)
         if reason:
@@ -66,6 +73,7 @@ def validate_load(engine: str, request) -> None:
         )
     if getattr(request, "chat_template_override", None):
         raise ValueError("Optional engines do not yet support template overrides.")
+    return gpu_ids
 
 
 def _model_chat_template(config, hf_token = None):

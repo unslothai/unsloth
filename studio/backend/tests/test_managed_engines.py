@@ -14,6 +14,15 @@ from core.inference import engine_install as install
 from core.inference.managed_engine import ManagedEngine, launch_arguments
 
 
+@pytest.fixture(autouse = True)
+def visible_gpus(monkeypatch):
+    # CPU CI has no parent-visible GPUs; the mask itself is tested with the real resolver below.
+    from core.inference import managed_engine
+    monkeypatch.setattr(
+        managed_engine, "resolve_requested_gpu_ids", lambda ids: list(ids) if ids else [0]
+    )
+
+
 @pytest.fixture
 def isolated(monkeypatch, tmp_path):
     monkeypatch.setattr(install, "engine_root", lambda: tmp_path)
@@ -1102,6 +1111,32 @@ def test_multi_gpu_preflight_checks_every_device(engine, monkeypatch):
     )
     with pytest.raises(ValueError, match = "GPU 0: Unsupported"):
         managed_engine.validate_load(engine, request)
+
+
+def test_engine_gpus_stay_inside_studios_visible_gpus(monkeypatch):
+    from core.inference import managed_engine
+    from models.inference import LoadRequest
+    from utils.hardware import hardware
+
+    monkeypatch.setattr(
+        managed_engine, "resolve_requested_gpu_ids", hardware.resolve_requested_gpu_ids
+    )
+    monkeypatch.setattr(hardware, "get_device", lambda: hardware.DeviceType.CUDA)
+    monkeypatch.setattr(hardware, "IS_ROCM", False)
+    monkeypatch.setattr(hardware, "get_physical_gpu_count", lambda: 4)
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "2,3")
+    info = {"path": "/env", "profile_digest": install.profile_digest("vllm")}
+    monkeypatch.setattr(managed_engine, "installed", lambda _: info)
+    monkeypatch.setattr(managed_engine, "support_reason", lambda *args: None)
+    request = LoadRequest(model_path = "model", engine = "vllm")
+    assert managed_engine.validate_load("vllm", request) == [2]
+    explicit = request.model_copy(update = {"gpu_ids": [3, 2]})
+    assert managed_engine.validate_load("vllm", explicit) == [3, 2]
+    with pytest.raises(ValueError, match = "outside the parent-visible set"):
+        managed_engine.validate_load("vllm", request.model_copy(update = {"gpu_ids": [0]}))
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "")
+    with pytest.raises(ValueError, match = "no GPU"):
+        managed_engine.validate_load("vllm", request)
 
 
 def test_multi_gpu_memory_budget_uses_most_constrained_device(monkeypatch):
