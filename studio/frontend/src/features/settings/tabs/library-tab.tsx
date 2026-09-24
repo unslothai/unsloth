@@ -13,6 +13,7 @@ import { Switch } from "@/components/ui/switch";
 import { Spinner } from "@/components/ui/spinner";
 import {
   LIBRARY_TABS,
+  type LibraryLocation,
   type LibrarySearch,
   LibraryStorageBar,
   type LibrarySettings,
@@ -21,16 +22,19 @@ import {
   type StorageCategory,
   SUGGESTED_LIMITS,
   formatSize,
+  getLibraryLocations,
+  revealLibraryLocation,
   useLibrarySettingsStore,
   useLibraryStorage,
   useLibraryViewStore,
+  useRevealPlatform,
 } from "@/features/library";
 import { type TranslationKey, useT } from "@/i18n";
 import { ChevronRightStandardIcon } from "@/lib/chevron-icons";
 import { toast } from "@/lib/toast";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate } from "@tanstack/react-router";
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { SettingsRow } from "../components/settings-row";
 import { SettingsSection } from "../components/settings-section";
 import { useSettingsDialogStore } from "../stores/settings-dialog-store";
@@ -207,6 +211,67 @@ function StorageSection() {
   );
 }
 
+const LOCATION_LABELS: Record<LibraryLocation["key"], TranslationKey> = {
+  uploads: "settings.library.locationUploads",
+  images: "settings.library.categoryImages",
+  videos: "settings.library.categoryVideos",
+  audio: "settings.library.categoryAudio",
+  fineTunes: "settings.library.categoryFineTunes",
+  exports: "settings.library.locationExports",
+};
+
+/** Where each kind of file lives, with Reveal where Studio runs on this machine. */
+function LocationsSection() {
+  const t = useT();
+  const reveal = useRevealPlatform();
+  const [locations, setLocations] = useState<LibraryLocation[] | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    getLibraryLocations().then(
+      (next) => !cancelled && setLocations(next),
+      () => !cancelled && setLocations([]),
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  const open = (key: LibraryLocation["key"]) =>
+    revealLibraryLocation(key).catch((error: unknown) =>
+      toast.error(t("settings.library.revealFailed"), {
+        description: error instanceof Error ? error.message : String(error),
+      }),
+    );
+
+  return (
+    <SettingsSection
+      title={t("settings.library.locationsSection")}
+      description={t("settings.library.locationsDescription")}
+    >
+      {locations === null ? (
+        <Spinner className="my-4 size-5 text-muted-foreground" />
+      ) : (
+        locations.map((location) => (
+          <SettingsRow
+            key={location.key}
+            label={t(LOCATION_LABELS[location.key])}
+            description={
+              <span className="block truncate font-mono text-[11px]" title={location.path}>
+                {location.path}
+              </span>
+            }
+          >
+            {reveal && (
+              <Button variant="outline" size="sm" onClick={() => void open(location.key)}>
+                {t(reveal === "finder" ? "settings.library.revealInFinder" : "settings.library.revealInFolder")}
+              </Button>
+            )}
+          </SettingsRow>
+        ))
+      )}
+    </SettingsSection>
+  );
+}
+
 export function LibraryTab() {
   const t = useT();
   const settings = useLibrarySettingsStore();
@@ -239,6 +304,8 @@ export function LibraryTab() {
       </header>
 
       <StorageSection />
+
+      <LocationsSection />
 
       <SettingsSection title={t("settings.library.layoutSection")}>
         {choice("cardSize", "settings.library.cardSize", "settings.library.cardSizeDescription")}

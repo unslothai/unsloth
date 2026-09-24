@@ -32,3 +32,9 @@ export {
 } from "./storage";
 export { formatSize } from "./format";
 export { LibraryStorageBar } from "./components/storage-bar";
+export {
+  type LibraryLocation,
+  getLibraryLocations,
+  revealLibraryLocation,
+} from "./api";
+export { revealInFolder, useRevealLabel, useRevealPlatform } from "./reveal";
