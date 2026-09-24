@@ -76,7 +76,7 @@ def _skip_gguf_value(f, vtype: int) -> None:
         f.seek(_GGUF_SCALAR_WIDTHS[vtype], 1)
 
 
-def _gguf_context_length(path: str) -> int | None:
+def _gguf_arch_uint(path: str, field: str) -> int | None:
     try:
         with open(path, "rb") as f:
             if f.read(4) != b"GGUF":
@@ -84,21 +84,41 @@ def _gguf_context_length(path: str) -> int | None:
             f.read(4)
             _, kv_count = struct.unpack("<QQ", f.read(16))
             arch = None
-            lengths: dict[str, int] = {}
+            values: dict[str, int] = {}
             for _ in range(kv_count):
                 key = f.read(struct.unpack("<Q", f.read(8))[0]).decode("utf-8")
                 vtype = struct.unpack("<I", f.read(4))[0]
                 if key == "general.architecture" and vtype == 8:
                     arch = f.read(struct.unpack("<Q", f.read(8))[0]).decode("utf-8")
-                elif key.endswith(".context_length") and vtype in (4, 10):
-                    lengths[key] = int.from_bytes(f.read(_GGUF_SCALAR_WIDTHS[vtype]), "little")
+                elif key.endswith(f".{field}") and vtype in (4, 10):
+                    values[key] = int.from_bytes(f.read(_GGUF_SCALAR_WIDTHS[vtype]), "little")
                 else:
                     _skip_gguf_value(f, vtype)
-                if arch is not None and f"{arch}.context_length" in lengths:
-                    return lengths[f"{arch}.context_length"] or None
+                if arch is not None and f"{arch}.{field}" in values:
+                    return values[f"{arch}.{field}"]
     except (OSError, struct.error, UnicodeDecodeError, KeyError, ValueError):
         return None
     return None
+
+
+def _gguf_context_length(path: str) -> int | None:
+    return _gguf_arch_uint(path, "context_length") or None
+
+
+_GGUF_POOLING = {1: "mean", 2: "cls", 3: "last"}
+
+
+@lru_cache(maxsize = 32)
+def _gguf_pooling_at(path: str, mtime_ns: int, size: int) -> str:
+    return _GGUF_POOLING.get(_gguf_arch_uint(path, "pooling_type"), "cls")
+
+
+def _gguf_pooling(path: str) -> str:
+    try:
+        st = os.stat(path)
+    except OSError:
+        return "cls"
+    return _gguf_pooling_at(path, st.st_mtime_ns, st.st_size)
 
 
 def _resolve_entrypoint(binary: str) -> str:
@@ -453,6 +473,19 @@ class LlamaServerBackend:
             files = [p for p in files if p != pick]
         return None
 
+    @staticmethod
+    def cached_pooling(model: str) -> str | None:
+        """Pooling of ``model``'s GGUF already on disk, found without the network; None when
+        nothing is on disk yet. Every quant of one conversion declares the same pooling."""
+        try:
+            path = LlamaServerBackend._resolve_local_gguf(model)
+            desired = config.effective_gguf_repo_for_embedding_model(model)
+            for repo in dict.fromkeys([desired, *config.gguf_repo_candidates(model)]):
+                path = path or LlamaServerBackend._resolve_cached_gguf(repo, require_variant = False)
+        except Exception:  # noqa: BLE001 - identity prediction must not block ingestion
+            return None
+        return None if path is None else _gguf_pooling(path)
+
     def _resolve_model_path(self, model_name: str | None = None) -> str:
         """Download (or cache-hit) the variant-matching, non-mmproj GGUF embedder,
         returning its local path. Re-resolves when the effective repo changed (a
@@ -724,7 +757,7 @@ class LlamaServerBackend:
             str(port),
             "--embedding",
             "--pooling",
-            "cls",
+            _gguf_pooling(model_path),
             "--fit",
             "off",
         ]

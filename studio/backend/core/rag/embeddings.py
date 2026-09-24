@@ -1074,12 +1074,22 @@ def active_backend_is_llama(model_name: str | None = None) -> bool:
         return False
 
 
+def _llama_pooling(name: str) -> str | None:
+    try:
+        from .embed_llama_server import LlamaServerBackend
+    except Exception:  # noqa: BLE001 - llama plumbing import must never block
+        return None
+    pooling = LlamaServerBackend.cached_pooling(name)
+    return None if pooling == "cls" else pooling
+
+
 def _identity(is_llama: bool, name: str) -> str:
     if is_llama:
         return config.embedding_identity(
             "llama-server",
             name,
             gguf_repo = config.effective_gguf_repo_for_embedding_model(name),
+            pooling = _llama_pooling(name),
         )
     return config.embedding_identity("sentence-transformers", name)
 

@@ -4,6 +4,7 @@
 """llama-server GGUF embedder tests, every boundary mocked."""
 
 import os
+import struct
 import subprocess
 import sys
 import textwrap
@@ -1656,3 +1657,47 @@ def test_a_partly_present_planned_family_is_not_served(monkeypatch, tmp_path):
 
     assert backend._planned_family_path("org/pending", repo) is None
     assert backend._resolve_model_path().endswith("pending-F16.gguf")
+
+
+def _write_gguf(
+    path,
+    arch,
+    pooling = None,
+):
+    kvs = [
+        struct.pack("<Q", 20)
+        + b"general.architecture"
+        + struct.pack("<IQ", 8, len(arch))
+        + arch.encode()
+    ]
+    if pooling is not None:
+        key = f"{arch}.pooling_type".encode()
+        kvs.append(struct.pack("<Q", len(key)) + key + struct.pack("<II", 4, pooling))
+    Path(path).write_bytes(b"GGUF" + struct.pack("<IQQ", 3, 0, len(kvs)) + b"".join(kvs))
+
+
+@pytest.mark.parametrize(
+    "pooling, expected",
+    [(3, "last"), (1, "mean"), (2, "cls"), (None, "cls"), (0, "cls")],
+)
+def test_build_cmd_serves_the_pooling_the_gguf_declares(tmp_path, pooling, expected):
+    """Forcing CLS on a last-token (Qwen3-Embedding) or mean (nomic) GGUF pooled one
+    token, so unrelated sentences embedded nearly alike. A GGUF declaring none keeps
+    CLS, since llama-server would fall back to NONE and /v1/embeddings refuses that."""
+    path = tmp_path / "embed.gguf"
+    _write_gguf(path, "qwen3", pooling)
+    cmd = LlamaServerBackend()._build_cmd("/bin/llama-server", str(path), 1, use_gpu = False)
+    assert cmd[cmd.index("--pooling") + 1] == expected
+
+
+@pytest.mark.parametrize("pooling, suffix", [(3, ":last"), (1, ":mean"), (2, "")])
+def test_llama_identity_changes_only_for_a_non_cls_gguf(monkeypatch, tmp_path, pooling, suffix):
+    """Vectors indexed under the forced CLS must read as stale once a mean or last
+    GGUF is served natively, while a CLS GGUF such as bge-small keeps its identity."""
+    model, repo = "org/embed", "org/embed-GGUF"
+    monkeypatch.setattr(config, "effective_gguf_repo_for_embedding_model", lambda m: repo)
+    snapshot = _seed_cache(tmp_path / "hub", repo, ["embed-F16.gguf"])
+    _write_gguf((snapshot / "embed-F16.gguf").resolve(), "qwen3", pooling)
+    _use_cache_root(monkeypatch, tmp_path / "hub")
+    legacy = config.embedding_identity("llama-server", model, gguf_repo = repo)
+    assert embeddings._identity(True, model) == legacy + suffix
