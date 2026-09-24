@@ -214,6 +214,14 @@ def test_the_recorded_base_must_be_the_canonical_id_not_just_the_same_tail(capsy
     Driven through ``main`` so the refusal is the one a builder would actually hit, and it has to
     land BEFORE the download: nothing below is stubbed, so reaching the load would fail differently.
     """
+    # main() imports torch, torchao and diffusers before it reads a single argument. torchao the
+    # guard really needs (the scheme tables import it); diffusers it does not, and the backend CI
+    # shards do not install it. An empty stand-in only when it is absent: the refusal lands before
+    # any diffusers attribute is read, and the accepted arm below already expects the
+    # AttributeError an empty diffusers gives, so the guard is still exercised end to end.
+    pytest.importorskip("torchao")
+    if importlib.util.find_spec("diffusers") is None:
+        monkeypatch.setitem(sys.modules, "diffusers", types.ModuleType("diffusers"))
     build = _script()
     fam = detect_family("Qwen/Qwen-Image-2.1")
     assert fam is not None and fam.base_repo == "Qwen/Qwen-Image-2.1"

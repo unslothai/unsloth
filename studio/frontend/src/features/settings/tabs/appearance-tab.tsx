@@ -5,7 +5,6 @@ import { useEffect, useRef } from "react";
 import { Switch } from "@/components/ui/switch";
 import { useSidebarPin } from "@/hooks/use-sidebar-pin";
 import { useT } from "@/i18n";
-import { isTauri } from "@/lib/api-base";
 import {
   ActiveColorControl,
   ChatFontRow,
@@ -73,16 +72,14 @@ export function AppearanceTab() {
         <SettingsRow label={t("settings.appearance.custom.codeFont.label")}>
           <CodeFontRow />
         </SettingsRow>
-        {isTauri && (
-          <SettingsRow
-            label={t("settings.appearance.custom.interfaceScale.label")}
-            description={t(
-              "settings.appearance.custom.interfaceScale.description",
-            )}
-          >
-            <InterfaceScaleRow />
-          </SettingsRow>
-        )}
+        <SettingsRow
+          label={t("settings.appearance.custom.interfaceScale.label")}
+          description={t(
+            "settings.appearance.custom.interfaceScale.description",
+          )}
+        >
+          <InterfaceScaleRow />
+        </SettingsRow>
         <SettingsRow
           label={t("settings.appearance.custom.chatWidth.label")}
           description={t("settings.appearance.custom.chatWidth.description")}

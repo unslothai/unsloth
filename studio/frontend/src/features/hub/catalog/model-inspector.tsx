@@ -83,7 +83,7 @@ function ViewRepositoryButton({
     <HugeiconsIcon
       icon={Share05Icon}
       strokeWidth={1.75}
-      className="size-[13px]"
+      className="size-[calc(13px*var(--ui-space-scale,1))]"
     />
   );
   return (
@@ -143,7 +143,7 @@ function CopyRepoButton({ repoId }: { repoId: string }) {
           <HugeiconsIcon
             icon={copied ? Tick02Icon : Copy01Icon}
             strokeWidth={1.75}
-            className="size-[13px]"
+            className="size-[calc(13px*var(--ui-space-scale,1))]"
           />
         </button>
       </TooltipTrigger>
@@ -189,7 +189,7 @@ function StatGrid({ children }: { children: React.ReactNode }) {
 }
 
 function InspectorDownloadSlot({ children }: { children: React.ReactNode }) {
-  return <div className="max-w-[680px] pt-3">{children}</div>;
+  return <div className="max-w-[calc(680px*var(--ui-space-scale,1))] pt-3">{children}</div>;
 }
 
 function StatusChip({
@@ -602,7 +602,7 @@ export const ModelInspector = memo(function ModelInspector({
               {model.owner.toLowerCase() === "unsloth" && (
                 <span
                   aria-label="Verified Unsloth"
-                  className="hub-verified-badge size-[18px] shrink-0 text-verified"
+                  className="hub-verified-badge size-[calc(18px*var(--ui-space-scale,1))] shrink-0 text-verified"
                 />
               )}
             </div>

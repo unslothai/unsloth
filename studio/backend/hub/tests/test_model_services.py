@@ -6034,6 +6034,176 @@ def test_delete_variant_unlinks_unshared_blob(monkeypatch, tmp_path):
     assert q8.is_symlink() and q8.exists()
 
 
+_SHARED_XET_HASH = "ab" + "cd" * 31
+
+
+def _share_variant_blob(
+    hub_cache,
+    repo_dir,
+    blob_name,
+    xet_hash = _SHARED_XET_HASH,
+):
+    pytest.importorskip("huggingface_hub.utils._shared_blobs")
+    store = hub_cache / "blobs"
+    store.mkdir(exist_ok = True)
+    (store / ".huggingface-shared-blobs").write_text("1\n")
+    payload = store / xet_hash[:2] / xet_hash
+    payload.parent.mkdir(exist_ok = True)
+    blob = repo_dir / "blobs" / blob_name
+    if payload.exists():
+        blob.unlink()
+    else:
+        blob.replace(payload)
+    with payload.with_name(f"{xet_hash}.refs").open("a") as refs:
+        refs.write(f"{repo_dir.name}/blobs/{blob_name}\n")
+    blob.symlink_to(os.path.relpath(payload, blob.parent))
+    return payload
+
+
+def test_delete_variant_sweeps_shared_xet_blob(monkeypatch, tmp_path):
+    repo_dir = tmp_path / "models--Org--Repo-GGUF"
+    repo = _build_variant_cache_repo(
+        repo_dir,
+        blob_specs = {"q4blob": b"x" * 200, "q8blob": b"y" * 300},
+        snapshot_links = [
+            ("rev1", "model-Q4_K_M.gguf", "q4blob"),
+            ("rev1", "model-Q8_0.gguf", "q8blob"),
+        ],
+    )
+    payload = _share_variant_blob(tmp_path, repo_dir, "q4blob")
+    _shared_setup_13(monkeypatch, repo, tmp_path)
+
+    result = deletion._delete_cached_model_blocking("Org/Repo-GGUF", "Q4_K_M", None)
+
+    assert result["status"] == "deleted"
+    assert not (repo_dir / "blobs" / "q4blob").is_symlink()
+    assert not payload.exists()
+    assert not payload.with_name(f"{payload.name}.refs").exists()
+    assert (repo_dir / "blobs" / "q8blob").exists()
+    q8 = repo_dir / "snapshots" / "rev1" / "model-Q8_0.gguf"
+    assert q8.is_symlink() and q8.exists()
+
+
+def test_delete_variant_keeps_shared_xet_blob_referenced_by_other_repo(monkeypatch, tmp_path):
+    repo_dir = tmp_path / "models--Org--Repo-GGUF"
+    repo = _build_variant_cache_repo(
+        repo_dir,
+        blob_specs = {"q4blob": b"x" * 200},
+        snapshot_links = [("rev1", "model-Q4_K_M.gguf", "q4blob")],
+    )
+    payload = _share_variant_blob(tmp_path, repo_dir, "q4blob")
+    other_dir = tmp_path / "models--Org--Other-GGUF"
+    other_repo = _build_variant_cache_repo(
+        other_dir,
+        blob_specs = {"q4blob": b"x" * 200},
+        snapshot_links = [("rev1", "model-Q4_K_M.gguf", "q4blob")],
+    )
+    other_repo.repo_id = "Org/Other-GGUF"
+    _share_variant_blob(tmp_path, other_dir, "q4blob")
+    _shared_setup_13(monkeypatch, repo, tmp_path)
+
+    result = deletion._delete_cached_model_blocking("Org/Repo-GGUF", "Q4_K_M", None)
+
+    assert result["status"] == "deleted"
+    assert not (repo_dir / "blobs" / "q4blob").is_symlink()
+    assert payload.exists()
+    other = other_dir / "snapshots" / "rev1" / "model-Q4_K_M.gguf"
+    assert other.is_symlink() and other.exists()
+    # huggingface_hub 1.32 cannot rewrite the manifest on Windows (it fsyncs a read-only handle), so a stale line for the removed link may stay; it names nothing on disk and is ignored.
+    manifest = payload.with_name(f"{payload.name}.refs")
+    live = [line for line in manifest.read_text().splitlines() if os.path.lexists(tmp_path / line)]
+    assert live == ["models--Org--Other-GGUF/blobs/q4blob"]
+
+    monkeypatch.setattr(
+        deletion.cache_inventory,
+        "all_hf_cache_scans",
+        lambda: [SimpleNamespace(repos = [other_repo])],
+    )
+    deletion._delete_cached_model_blocking("Org/Other-GGUF", "Q4_K_M", None)
+
+    assert not payload.exists()
+    assert not manifest.exists()
+
+
+def test_reclaim_replaced_variant_sweeps_shared_xet_blob(monkeypatch, tmp_path):
+    repo_dir = tmp_path / "models--Org--Repo-GGUF"
+    repo = _build_variant_cache_repo(
+        repo_dir,
+        blob_specs = {"q4blob": b"x" * 200, "q8blob": b"y" * 300},
+        snapshot_links = [
+            ("rev1", "model-Q4_K_M.gguf", "q4blob"),
+            ("rev1", "model-Q8_0.gguf", "q8blob"),
+        ],
+    )
+    payload = _share_variant_blob(tmp_path, repo_dir, "q4blob")
+    _shared_setup_13(monkeypatch, repo, tmp_path)
+
+    result = deletion.reclaim_replaced_gguf_variant(
+        "Org/Repo-GGUF", "Q4_K_M", frozenset({"newq4blob"}), None, hub_cache = tmp_path
+    )
+
+    assert result["status"] == "reclaimed"
+    assert result["deleted_blobs"] == 1
+    assert not (repo_dir / "blobs" / "q4blob").is_symlink()
+    assert not payload.exists()
+    assert (repo_dir / "blobs" / "q8blob").exists()
+
+
+def test_unlink_variant_blob_sweeps_when_cache_root_is_in_another_form(tmp_path):
+    real = tmp_path / "real"
+    repo_dir = real / "models--Org--Repo-GGUF"
+    _build_variant_cache_repo(
+        repo_dir,
+        blob_specs = {"q4blob": b"x" * 200},
+        snapshot_links = [("rev1", "model-Q4_K_M.gguf", "q4blob")],
+    )
+    payload = _share_variant_blob(real, repo_dir, "q4blob")
+    alias = tmp_path / "alias"
+    try:
+        alias.symlink_to(real, target_is_directory = True)
+    except OSError:
+        pytest.skip("directory symlinks unavailable")
+    (repo_dir / "snapshots" / "rev1" / "model-Q4_K_M.gguf").unlink()
+    blob = alias / repo_dir.name / "blobs" / "q4blob"
+
+    # The resolved root differs lexically from the blob's path, as a Windows 8.3 short name does.
+    freed = deletion._unlink_variant_blob(blob, real.resolve())
+
+    assert freed == 200
+    assert not payload.exists()
+    assert not payload.with_name(f"{payload.name}.refs").exists()
+
+
+def _load_fresh_deletion(monkeypatch, shared_blobs_module):
+    import importlib.util
+
+    monkeypatch.setitem(sys.modules, "huggingface_hub.utils._shared_blobs", shared_blobs_module)
+    spec = importlib.util.spec_from_file_location("_deletion_probe", deletion.__file__)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_shared_blob_helpers_disabled_when_private_signature_changes(monkeypatch):
+    stub = SimpleNamespace(
+        shared_blob_target = lambda blob_path: None,
+        sweep_shared_blob = lambda store_path, cache_root: 0,
+    )
+    fresh = _load_fresh_deletion(monkeypatch, stub)
+    assert fresh.shared_blob_target is None
+    assert fresh.sweep_shared_blob is None
+
+
+def test_shared_blob_helpers_kept_when_signature_matches(monkeypatch):
+    stub = SimpleNamespace(
+        shared_blob_target = lambda blob_path, cache_dir: None,
+        sweep_shared_blob = lambda store_path, *, cache_dir: 0,
+    )
+    fresh = _load_fresh_deletion(monkeypatch, stub)
+    assert fresh.shared_blob_target is stub.shared_blob_target
+    assert fresh.sweep_shared_blob is stub.sweep_shared_blob
+
+
 def test_delete_variant_surfaces_locked_file_as_conflict(monkeypatch, tmp_path):
     """A blob unlink that fails (e.g. a Windows file lock on a loaded model)
     must raise a clear 409, not report a misleading success."""
