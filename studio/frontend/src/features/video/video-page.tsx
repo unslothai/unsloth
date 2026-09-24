@@ -1182,8 +1182,8 @@ function VideoGenerator({
       start: previewRef.current?.currentTime ?? 0,
       muted: previewRef.current?.muted ?? true,
     });
-    // After the click's own play toggle, so the clip only plays in the viewer.
-    requestAnimationFrame(() => previewRef.current?.pause());
+    // Only one plays.
+    previewRef.current?.pause();
   };
   const closeViewer = () => {
     const video = viewerVideoRef.current;
@@ -4364,11 +4364,7 @@ function VideoGenerator({
                     }
                   }}
                   onError={() => remintSrc(selected)}
-                  onClick={(event) => {
-                    // The bottom strip is the native controls; leave it to scrub and play.
-                    if (event.nativeEvent.offsetY < event.currentTarget.clientHeight - 56) openViewer();
-                  }}
-                  className="max-h-full max-w-full cursor-zoom-in object-contain shadow-sm"
+                  className="max-h-full max-w-full object-contain shadow-sm"
                 />
                 {selected.has_audio && (
                   <div className="absolute left-4 top-4 flex items-center gap-1 rounded-lg bg-background/80 px-2 py-1 text-ui-11 font-medium shadow-lg ring-1 ring-border backdrop-blur">
@@ -4379,12 +4375,18 @@ function VideoGenerator({
                 {/* Actions grouped in one glass toolbar so they stay legible over any clip. */}
                 {/* No button borders: focus returning from a menu would draw one. Keyboard focus tints instead. */}
                 <div className="absolute bottom-4 right-4 flex items-center gap-0.5 rounded-xl bg-background/80 p-1 shadow-lg ring-1 ring-border backdrop-blur [&_[data-slot=button]]:border-0 [&_[data-slot=button]:focus-visible]:bg-muted">
+                  {/* Not a click on the clip itself: Chrome's ⋮ menu, WebKit's centred play button and the
+                      first click of a double-click to fullscreen all land on the frame, above the controls. */}
                   <Button
                     size="icon-sm"
                     variant="ghost"
                     aria-label="Open video"
                     title="Open video"
-                    onClick={openViewer}
+                    onClick={(event) => {
+                      // Safari does not focus a clicked button, and the viewer returns focus to what had it.
+                      event.currentTarget.focus();
+                      openViewer();
+                    }}
                   >
                     <HugeiconsIcon icon={ArrowExpand01Icon} className="size-4" />
                   </Button>
