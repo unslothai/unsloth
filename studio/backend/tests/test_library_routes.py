@@ -486,6 +486,34 @@ def test_concurrent_deletes_of_one_upload_leave_nothing_behind(client):
     assert upload not in _items(client)[0]
 
 
+def test_a_failed_note_save_keeps_the_old_text(client, monkeypatch):
+    from storage import library_db
+
+    [note] = _upload(client, ("n.md", b"old", "text/markdown"))
+    upload_id = note.split(":", 1)[1]
+
+    def broken(*_args):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(library_db, "touch_upload", broken)
+    with pytest.raises(sqlite3.OperationalError):
+        library.write_upload_text(upload_id, "new")
+    assert library.upload_path(upload_id).read_bytes() == b"old"
+    assert [p.name for p in library.uploads_dir().iterdir()] == [upload_id]
+
+
+def test_a_note_save_racing_its_delete_leaves_nothing_behind(client):
+    from concurrent.futures import ThreadPoolExecutor
+
+    [note] = _upload(client, ("n.md", b"old", "text/markdown"))
+    upload_id = note.split(":", 1)[1]
+    with ThreadPoolExecutor(8) as pool:
+        jobs = [pool.submit(library.write_upload_text, upload_id, f"v{i}") for i in range(6)]
+        jobs.append(pool.submit(library.delete_item, note))
+        [job.result() for job in jobs]
+    assert not any(library.uploads_dir().iterdir())
+
+
 def test_a_failed_upload_record_leaves_no_file(client, monkeypatch):
     from storage import library_db
 

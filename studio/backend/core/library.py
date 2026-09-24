@@ -137,20 +137,40 @@ def open_native_upload(lease: str):
     return name, content_type, open(grant.canonical_path, "rb")
 
 
-def write_upload_text(upload_id: str, text: str) -> bool:
-    path = upload_path(upload_id)
-    if path is None or library_db.get_upload(upload_id) is None:
-        return False
-    data = text.encode("utf-8")
-    # Staged and swapped in, so a failed write leaves the previous note whole.
-    tmp_path = path.with_name(f".{upload_id}.{uuid.uuid4().hex}.tmp")
+# Deleting an upload and rewriting a note each check its row, then change the file and the row.
+# One at a time, or a delete could set the file aside mid-write, or drop a row another delete is
+# still relying on, and leave a file with no row.
+_upload_lock = threading.Lock()
+
+
+def _swap_in(path: Path, data: bytes) -> None:
+    """Replace the file whole: staged beside it and renamed over, so a failed write leaves it be."""
+    tmp_path = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
     try:
         tmp_path.write_bytes(data)
         os.replace(tmp_path, path)
     except BaseException:
         tmp_path.unlink(missing_ok = True)
         raise
-    library_db.touch_upload(upload_id, len(data))
+
+
+def write_upload_text(upload_id: str, text: str) -> bool:
+    path = upload_path(upload_id)
+    if path is None:
+        return False
+    data = text.encode("utf-8")
+    with _upload_lock:
+        if library_db.get_upload(upload_id) is None:
+            return False
+        previous = path.read_bytes() if path.exists() else None
+        _swap_in(path, data)
+        try:
+            library_db.touch_upload(upload_id, len(data))
+        except BaseException:
+            # The row still describes the old note, so the old note goes back.
+            if previous is not None:
+                _swap_in(path, previous)
+            raise
     return True
 
 
@@ -601,13 +621,8 @@ def locations() -> list[dict]:
     ]
 
 
-# One delete at a time: a second one for the same upload would find the file already set aside
-# and drop the row the first is still relying on.
-_upload_delete_lock = threading.Lock()
-
-
 def _delete_upload(upload_id: str, path: Path) -> bool:
-    with _upload_delete_lock:
+    with _upload_lock:
         return _delete_upload_locked(upload_id, path)
 
 
