@@ -783,6 +783,13 @@ def test_image_thumbnail_is_bounded_and_cropped_as_the_card_shows_it(client):
     assert _thumbnail_size(client, small) == (100, 80)
 
 
+def test_an_image_too_large_to_decode_has_no_thumbnail(client, monkeypatch):
+    monkeypatch.setattr(library, "_THUMBNAIL_MAX_PIXELS", 100 * 100)
+    [image] = _upload(client, ("huge.png", _png(101, 100), "image/png"))
+    response = client.get("/api/library/items/thumbnail", params = {"id": image})
+    assert response.status_code == 501
+
+
 def test_undecodable_image_has_no_thumbnail(client):
     [image] = _upload(client, ("broken.png", b"not a png", "image/png"))
     response = client.get("/api/library/items/thumbnail", params = {"id": image})

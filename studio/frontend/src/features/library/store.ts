@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { create } from "zustand";
-import { AUTH_SESSION_CLEARED_EVENT } from "@/features/auth";
+import { AUTH_SESSION_CLEARED_EVENT, getAuthSessionEpoch } from "@/features/auth";
 import { deleteFineTunedModel } from "@/features/chat";
 import { type GalleryKind, notifyGalleryChanged } from "@/lib/gallery-flags";
 import {
@@ -174,7 +174,10 @@ export const useLibraryStore = create<LibraryState>((set, get) => {
       }
     },
     addFolder: async (name, parentId) => {
+      const epoch = getAuthSessionEpoch();
       const folder = await createLibraryFolder(name, parentId);
+      // Signed out meanwhile: it belongs to the account that left, not the one here now.
+      if (getAuthSessionEpoch() !== epoch) throw new Error("Signed out before the folder was made.");
       // A refresh started before it landed would drop it; the count sends that one back for more.
       edits += 1;
       set((state) => ({
