@@ -484,6 +484,18 @@ def test_a_configured_mirror_skips_the_pypi_probe_but_not_the_jit_cache_one(env,
     assert probed == ["https://flashinfer.ai/whl/cu130/flashinfer-jit-cache/"]
 
 
+def test_a_pip_only_mirror_is_handed_to_uv(env, monkeypatch):
+    monkeypatch.setattr(inst, "_reachable", lambda url: True)
+    monkeypatch.setenv("PIP_INDEX_URL", "https://pip-mirror.example/simple")
+    assert _ensure(env)[0]
+    installs = [c for c in env.commands if c[:3] == ["uv", "pip", "install"]]
+    assert installs and all("https://pip-mirror.example/simple" in c for c in installs)
+    # uv's own setting wins and is left to uv.
+    monkeypatch.setenv("UV_INDEX_URL", "https://uv-mirror.example/simple")
+    assert "--index-url" not in inst._installer_prefix("uv")
+    assert "--index-url" not in inst._installer_prefix(None)
+
+
 def test_status_reason_falls_back_to_a_cached_preflight_failure(monkeypatch):
     monkeypatch.setitem(ops._PREFLIGHT, 0, {"ok": False, "reason": "JIT build failed"})
     fields = inst.nvfp4_backend_fields("torchao")

@@ -347,7 +347,13 @@ def _child_env() -> dict[str, str]:
 
 def _installer_prefix(uv: Optional[str]) -> list[str]:
     if uv:
-        return [uv, "pip", "install", "--python", sys.executable]
+        cmd = [uv, "pip", "install", "--python", sys.executable]
+        # uv reads only its own index settings; a pip-only mirror would otherwise be skipped for pypi.org, which the
+        # preflight did not probe because a mirror is configured.
+        pip_index = (os.environ.get("PIP_INDEX_URL") or "").strip()
+        if pip_index and not (os.environ.get("UV_INDEX_URL") or os.environ.get("UV_DEFAULT_INDEX")):
+            cmd += ["--index-url", pip_index]
+        return cmd
     return [sys.executable, "-m", "pip", "install", "--disable-pip-version-check"]
 
 
