@@ -116,9 +116,12 @@ export const useLibraryStore = create<LibraryState>((set, get) => {
         },
       ),
     upload: async (batch, folderId) => {
-      const ids = await uploadLibraryFiles(batch, folderId);
-      await get().refresh();
-      return ids;
+      try {
+        return await uploadLibraryFiles(batch, folderId);
+      } finally {
+        // A large batch goes as several requests, so a failure can follow some that landed.
+        await get().refresh();
+      }
     },
     addFolder: async (name, parentId) => {
       const folder = await createLibraryFolder(name, parentId);
