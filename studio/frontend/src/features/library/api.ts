@@ -169,18 +169,50 @@ export interface LibraryUploadBatch {
   nativePathLeases?: string[];
 }
 
+// The backend's cap per file and per request; a larger batch goes as several requests.
+export const MAX_LIBRARY_UPLOAD_BYTES = 512 * 1024 * 1024;
+
+/** Batches of files that each fit one request, in order. */
+function uploadGroups(files: File[]): File[][] {
+  const groups: File[][] = [];
+  let bytes = Infinity;
+  for (const file of files) {
+    if (bytes + file.size > MAX_LIBRARY_UPLOAD_BYTES) {
+      groups.push([]);
+      bytes = 0;
+    }
+    groups[groups.length - 1]!.push(file);
+    bytes += file.size;
+  }
+  return groups;
+}
+
 export async function uploadLibraryFiles(
   batch: LibraryUploadBatch,
   folderId: string | null,
 ): Promise<string[]> {
-  const form = new FormData();
-  for (const file of batch.files ?? []) form.append("files", file, file.name);
-  for (const lease of batch.nativePathLeases ?? []) form.append("nativePathLeases", lease);
-  if (folderId) form.append("folderId", folderId);
-  const response = await ensureOk(
-    await authFetch("/api/library/uploads", { method: "POST", body: form }),
-  );
-  return ((await response.json()) as { ids: string[] }).ids;
+  const files = batch.files ?? [];
+  // Refused here with its name, before anything is sent, rather than as a bare 413.
+  const tooLarge = files.find((file) => file.size > MAX_LIBRARY_UPLOAD_BYTES);
+  if (tooLarge) throw new Error(`${tooLarge.name} is larger than 512 MB.`);
+  const leases = batch.nativePathLeases ?? [];
+  const requests: FormData[] = uploadGroups(files).map((group) => {
+    const form = new FormData();
+    for (const file of group) form.append("files", file, file.name);
+    return form;
+  });
+  // Desktop drops are grants, not bytes: they ride with the first request.
+  if (requests.length === 0) requests.push(new FormData());
+  for (const lease of leases) requests[0]!.append("nativePathLeases", lease);
+  const ids: string[] = [];
+  for (const form of requests) {
+    if (folderId) form.append("folderId", folderId);
+    const response = await ensureOk(
+      await authFetch("/api/library/uploads", { method: "POST", body: form }),
+    );
+    ids.push(...((await response.json()) as { ids: string[] }).ids);
+  }
+  return ids;
 }
 
 /** Only Library-owned uploads (`upload:<id>`) are writable. */
