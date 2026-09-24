@@ -61,7 +61,8 @@ export function MediaRailResizeHandle({
     observer.observe(block);
     return () => observer.disconnect();
   }, [placement, rail.scale]);
-  const max = cap === null ? rail.max : Math.max(MEDIA_RAIL_WIDTH_MIN, Math.min(rail.max, cap));
+  // The cap can fall below the stored minimum (high interface scale near the breakpoint).
+  const max = cap === null ? rail.max : Math.max(0, Math.min(rail.max, cap));
   const width = Math.min(rail.width, max);
   const handle = (
     <PanelResizeHandle
@@ -69,7 +70,7 @@ export function MediaRailResizeHandle({
       open={true}
       width={width}
       stored={rail.stored}
-      min={MEDIA_RAIL_WIDTH_MIN}
+      min={Math.min(MEDIA_RAIL_WIDTH_MIN, max)}
       max={max}
       scale={rail.scale}
       clamp={(px) => Math.min(rail.clamp(px), max)}
