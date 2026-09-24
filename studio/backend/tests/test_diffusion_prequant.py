@@ -2583,3 +2583,178 @@ def test_a_cached_name_this_install_cannot_open_is_not_a_cache_hit(monkeypatch, 
 
     monkeypatch.setattr(pq, "restricted_prequant_load_supported", _boom)
     assert pq.cached_checkpoint_path(source) == str(tmp_path / "st")
+
+
+# ── a hosted prequant this user cannot fetch ─────────────────────────────────────
+# The hosted NVFP4 repos can be private or gated. The Hub answers 401 / 403 / 404 for the repo
+# itself, which is "no hosted checkpoint for this user", not a partial plan: the dense shards stay
+# in the pull and download-only still runs.
+
+
+def _refused(cls, status):
+    message = f"{status} Client Error: unsloth/Z-Image-Turbo-NVFP4"
+    try:
+        return cls(message, response = None)
+    except (TypeError, AttributeError):  # huggingface_hub >= 1.0 reads an httpx response
+        import httpx
+        request = httpx.Request(
+            "GET", "https://huggingface.co/api/models/unsloth/Z-Image-Turbo-NVFP4"
+        )
+        return cls(message, response = httpx.Response(status, request = request))
+
+
+def _nvfp4_repo_source():
+    return PrequantSource(
+        kind = "repo",
+        location = "unsloth/Z-Image-Turbo-NVFP4",
+        filename = "Z-Image-Turbo-NVFP4.pt",
+    )
+
+
+@pytest.mark.parametrize(
+    "error_name,status",
+    [("RepositoryNotFoundError", 401), ("RepositoryNotFoundError", 404), ("GatedRepoError", 403)],
+)
+def test_a_refused_prequant_repo_is_no_checkpoint_not_a_plan_failure(
+    monkeypatch, error_name, status
+):
+    import huggingface_hub
+    from huggingface_hub import errors as hub_errors
+
+    from core.inference.diffusion import DiffusionBackend
+
+    def _refuse(self, *a, **k):
+        raise _refused(getattr(hub_errors, error_name), status)
+
+    monkeypatch.setattr(huggingface_hub.HfApi, "model_info", _refuse)
+    failures: list = []
+    entry = DiffusionBackend._prequant_source_hub_entry(
+        _nvfp4_repo_source(), None, failures, scheme = "nvfp4"
+    )
+    assert entry is None
+    assert failures == [], "a repo this user cannot see must not mark the download plan failed"
+
+
+def test_a_transient_hub_error_still_fails_the_plan(monkeypatch):
+    """Only the repo-level refusal is "no checkpoint". A network error says nothing about the repo,
+    so it still propagates and the planner records it."""
+    import huggingface_hub
+
+    from core.inference.diffusion import DiffusionBackend
+
+    def _boom(self, *a, **k):
+        raise ConnectionError("no route to host")
+
+    monkeypatch.setattr(huggingface_hub.HfApi, "model_info", _boom)
+    with pytest.raises(ConnectionError):
+        DiffusionBackend._prequant_source_hub_entry(_nvfp4_repo_source(), None, [], scheme = "nvfp4")
+
+
+def _prefetch_backend(monkeypatch, *, cached, model_info):
+    """A backend whose dense-quant candidate is the hosted NVFP4 prequant, with the Hub answering
+    ``model_info``. Explicit nvfp4, so the auto-only cache gates do not decide it first."""
+    import types
+
+    import huggingface_hub
+
+    from core.inference import diffusion as dmod
+    from core.inference import diffusion_memory as dmem
+    from core.inference.diffusion import DiffusionBackend
+
+    tokens: list = []
+
+    class _Api:
+        def __init__(
+            self,
+            token = None,
+            **k,
+        ):
+            tokens.append(token)
+
+        def model_info(self, repo_id, **k):
+            return model_info(repo_id)
+
+    monkeypatch.setattr(huggingface_hub, "HfApi", _Api)
+    monkeypatch.setattr(
+        dmod,
+        "resolve_dense_quant_candidate",
+        lambda **kw: types.SimpleNamespace(prequant = True, scheme = "nvfp4", steady_total_mib = 1),
+    )
+    monkeypatch.setattr(
+        dmod, "usable_prequant_source", lambda fam, scheme, **kw: _nvfp4_repo_source()
+    )
+    monkeypatch.setattr(dmod, "prequant_checkpoint_cached", lambda source, **kw: cached)
+    monkeypatch.setattr(
+        dmem,
+        "snapshot_device_memory",
+        lambda target: types.SimpleNamespace(total_mib = None, memory_kind = "discrete_vram"),
+    )
+    monkeypatch.setattr(
+        pq, "restricted_prequant_load_supported", lambda scheme = None, filename = None: True
+    )
+    backend = DiffusionBackend()
+    monkeypatch.setattr(backend, "_target_for_ordinal", lambda fam, ordinal: object())
+    return backend, tokens
+
+
+_NVFP4_PREFETCH_KWARGS = {"transformer_quant": "nvfp4", "hf_token": "hf_user_token"}
+
+
+def test_an_unreachable_prequant_does_not_suppress_the_dense_shards(monkeypatch):
+    """The candidate is PREQUANT because the family table names a checkpoint, whether or not this user
+    can read it. Private, the load falls back to the dense build, so the plan must stage the dense
+    shards rather than let the load pull ~25 GB inline after the phase switched to finalizing."""
+    from huggingface_hub import errors as hub_errors
+
+    def _refuse(repo_id):
+        raise _refused(hub_errors.RepositoryNotFoundError, 401)
+
+    backend, tokens = _prefetch_backend(monkeypatch, cached = False, model_info = _refuse)
+    fam = _fam()
+    assert backend._dense_quant_prefetch_needed(fam, dict(_NVFP4_PREFETCH_KWARGS)) is True
+    assert tokens == [
+        "hf_user_token"
+    ], "the probe must ask as the user, else a granted token reads as refused"
+
+
+def test_a_readable_prequant_still_drops_the_dense_shards(monkeypatch):
+    """Positive control: a repo that lists the checkpoint keeps the small download."""
+    import types
+
+    def _listing(repo_id):
+        return types.SimpleNamespace(
+            siblings = [types.SimpleNamespace(rfilename = "Z-Image-Turbo-NVFP4.pt", size = 4096)]
+        )
+
+    backend, _tokens = _prefetch_backend(monkeypatch, cached = False, model_info = _listing)
+    assert backend._dense_quant_prefetch_needed(_fam(), dict(_NVFP4_PREFETCH_KWARGS)) is False
+
+
+def test_a_cached_prequant_drops_the_dense_shards_without_asking_the_hub(monkeypatch):
+    def _no_hub(repo_id):
+        raise AssertionError("a cached checkpoint must not cost a Hub round trip")
+
+    backend, tokens = _prefetch_backend(monkeypatch, cached = True, model_info = _no_hub)
+    assert backend._dense_quant_prefetch_needed(_fam(), dict(_NVFP4_PREFETCH_KWARGS)) is False
+    assert tokens == []
+
+
+def test_an_unanswerable_reachability_probe_keeps_the_prequant_verdict(monkeypatch):
+    """Offline or a Hub hiccup says nothing about access, so it must not widen a multi-GB pull."""
+
+    def _offline(repo_id):
+        raise ConnectionError("offline")
+
+    backend, _tokens = _prefetch_backend(monkeypatch, cached = False, model_info = _offline)
+    assert backend._dense_quant_prefetch_needed(_fam(), dict(_NVFP4_PREFETCH_KWARGS)) is False
+
+
+def test_the_download_plan_probes_with_the_user_token():
+    """download_plan builds its own kwargs for the prefetch decision; without the token threaded in,
+    a user granted access to a private prequant reads as refused and stages the dense shards."""
+    import inspect
+
+    from core.inference.diffusion import DiffusionBackend
+
+    src = inspect.getsource(DiffusionBackend.download_plan)
+    assert '{**load_kwargs, "base_repo": base, "hf_token": hf_token}' in src

@@ -100,8 +100,10 @@ def _record(
         "id": image_id,
         "url": f"/api/inference/images/gallery/{image_id}/file",
         **gallery_flags.flags_for(flags, image_id),
-        # Lets the client keep a dragged item in place when it re-sorts.
-        "order_at": gallery_flags.order_at(flags, image_id),
+        # The server's own sort key, so a client re-sort agrees with it (created_at can differ).
+        "order_at": gallery_flags.order_rank(
+            flags, image_id, _mtime(gallery_dir() / f"{image_id}.png")
+        ),
     }
 
 

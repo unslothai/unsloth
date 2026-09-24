@@ -1148,3 +1148,38 @@ def test_a_temp_file_left_by_a_killed_save_is_collected(monkeypatch, tmp_path, m
     assert cc._collect_superseded(ctx.dir, None) == [stranded.name]
     assert not stranded.exists()
     assert ctx.bundle.exists()
+
+
+def test_mark_recompiled_dirties_a_context_whose_shape_is_already_registered(tmp_path):
+    # Automatic dynamic recompiles on the first new text length at an unchanged (width, height, batch); register_shape
+    # sees no new key, so the recompiled graphs only reach disk if the context is re-dirtied explicitly.
+    ctx = cc.CacheContext(
+        key = "abc",
+        dir = tmp_path / "abc",
+        bundle = tmp_path / "abc" / "cache.bin",
+        manifest_path = tmp_path / "abc" / "manifest.json",
+        env_fp = "e",
+        model_fp = "m",
+        mode = "auto",
+    )
+    cc.register_shape(ctx, (1024, 1024, 1), static = True)
+    ctx.saved = True
+    seq = ctx.dirty_seq
+    cc.register_shape(ctx, (1024, 1024, 1), static = True)
+    assert ctx.saved is True and ctx.dirty_seq == seq
+    cc.mark_recompiled(ctx)
+    assert ctx.saved is False and ctx.dirty_seq == seq + 1
+    cc.mark_recompiled(None)  # no context, no error
+
+
+def test_a_failed_or_cancelled_render_still_dirties_the_bundle_after_a_recompile():
+    # The exception path marks the context too: a later render reusing the generalised graph compiles nothing.
+    import inspect
+
+    from core.inference import diffusion
+
+    src = inspect.getsource(diffusion.DiffusionBackend)
+    before = src.index("graphs_before = dynamo_graph_count()")
+    handler = src.index("except BaseException:", before)
+    reraise = src.index("raise\n", handler)
+    assert "compile_cache.mark_recompiled(state.compile_cache_ctx)" in src[handler:reraise]

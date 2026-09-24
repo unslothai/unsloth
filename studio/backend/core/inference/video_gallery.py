@@ -174,8 +174,10 @@ def _record(
         "id": video_id,
         "url": f"/api/inference/video/gallery/{video_id}/file",
         **gallery_flags.flags_for(flags, video_id),
-        # Lets the client keep a dragged item in place when it re-sorts.
-        "order_at": gallery_flags.order_at(flags, video_id),
+        # The server's own sort key, so a client re-sort agrees with it (created_at can differ).
+        "order_at": gallery_flags.order_rank(
+            flags, video_id, _mtime(path) if (path := video_path(video_id)) else 0.0
+        ),
     }
 
 

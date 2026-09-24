@@ -148,7 +148,7 @@ def apply_chat_template_to_dataset(
 ):
     """Apply the chat template to a dataset based on its format, returning a dict with the dataset, success status, warnings and errors.
 
-    ``dataset_info`` is the output of format_dataset() with metadata. ``custom_prompt_template`` is deprecated and non-None values are rejected, because Studio cannot persist a matching inference template. ``add_eos_token`` appends tokenizer.eos_token to each text, ``remove_bos_prefix`` strips a leading '<bos>' (Gemma and friends), ``custom_format_mapping`` maps custom columns to the standard format, and ``batch_size`` / ``num_proc`` control processing.
+    ``dataset_info`` is the output of format_dataset() with metadata. ``custom_prompt_template`` is deprecated and non-None values are rejected, because Studio cannot persist a matching inference template. ``add_eos_token`` appends the tokenizer's eos_token to each ChatML text (Alpaca text always gets one), ``remove_bos_prefix`` strips a leading '<bos>' (Gemma and friends), ``custom_format_mapping`` maps custom columns to the standard format, and ``batch_size`` / ``num_proc`` control processing.
     """
     dataset = dataset_info["dataset"]
     final_format = dataset_info["final_format"]
@@ -168,12 +168,14 @@ def apply_chat_template_to_dataset(
             "errors": errors,
         }
 
-    eos_token = ""
-    if add_eos_token:
-        if hasattr(tokenizer, 'eos_token') and tokenizer.eos_token:
-            eos_token = tokenizer.eos_token
-        else:
-            warnings.append("add_eos_token=True but tokenizer has no eos_token")
+    # A processor (Gemma 3 on the text path) keeps eos_token on its inner tokenizer.
+    eos_token = (
+        getattr(tokenizer, 'eos_token', None)
+        or getattr(getattr(tokenizer, 'tokenizer', None), 'eos_token', None)
+        or ""
+    )
+    if not eos_token and (add_eos_token or final_format == "alpaca"):
+        warnings.append("Tokenizer has no eos_token, so EOS was not appended")
 
     # CUSTOM FORMAT MAPPING (for non-standard datasets)
     if final_format == "unknown":
@@ -292,7 +294,9 @@ def apply_chat_template_to_dataset(
                 text = DEFAULT_ALPACA_TEMPLATE.format(
                     fields["instruction"], fields["input"], fields["output"]
                 )
-                texts.append(text + eos_token)
+                if not text.endswith(eos_token):
+                    text += eos_token
+                texts.append(text)
 
             return {"text": texts}
 
@@ -367,7 +371,8 @@ def apply_chat_template_to_dataset(
 
                     if remove_bos_prefix:
                         text = text.removeprefix('<bos>')
-                    text += eos_token
+                    if add_eos_token:
+                        text += eos_token
 
                     texts.append(text)
                     row_errors.append("")
