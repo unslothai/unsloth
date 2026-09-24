@@ -261,16 +261,18 @@ async def upload_files(
             )
         for lease in nativePathLeases or []:
             records.append(await run_in_threadpool(_save_native, lease))
-    except BaseException:
+        ids = [f"upload:{record['id']}" for record in records]
+        # Placement is part of the batch too: a folder deleted meanwhile undoes the upload.
+        if folderId:
+            for item_id in ids:
+                library_db.update_entry(item_id, folder_id = folderId, move = True)
+    except BaseException as exc:
         # All or nothing, so a retry never duplicates the files that did make it.
         for record in records:
             await run_in_threadpool(library.delete_item, f"upload:{record['id']}")
+        if isinstance(exc, KeyError):
+            raise HTTPException(status_code = 404, detail = "Folder not found") from exc
         raise
-
-    ids = [f"upload:{record['id']}" for record in records]
-    if folderId:
-        for item_id in ids:
-            library_db.update_entry(item_id, folder_id = folderId, move = True)
     return {"ids": ids}
 
 

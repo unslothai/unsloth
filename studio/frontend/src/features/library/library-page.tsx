@@ -42,7 +42,6 @@ import type { LibraryFolder, LibraryItem, LibraryUploadBatch } from "./api";
 import {
   type LibraryTypeFilter,
   fileKind,
-  hasImagePreview,
   isDeletable,
   isFileItem,
   isModelItem,
@@ -107,7 +106,8 @@ const EMPTY_COPY: Record<LibraryTab, [title: string, description: string]> = {
 
 /** What each single-kind tab holds. Only the Source filter means anything on these. */
 const KIND_TABS: Partial<Record<LibraryTab, (item: LibraryItem) => boolean>> = {
-  images: hasImagePreview,
+  // Every image, SVG included; hasImagePreview only picks how its card draws.
+  images: (item) => fileKind(item) === "image",
   videos: (item) => fileKind(item) === "video",
   audio: (item) => fileKind(item) === "audio",
   models: isModelItem,

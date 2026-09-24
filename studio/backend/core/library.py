@@ -147,7 +147,14 @@ def write_upload_text(upload_id: str, text: str) -> bool:
     if path is None or library_db.get_upload(upload_id) is None:
         return False
     data = text.encode("utf-8")
-    path.write_bytes(data)
+    # Staged and swapped in, so a failed write leaves the previous note whole.
+    tmp_path = path.with_name(f".{upload_id}.{uuid.uuid4().hex}.tmp")
+    try:
+        tmp_path.write_bytes(data)
+        os.replace(tmp_path, path)
+    except BaseException:
+        tmp_path.unlink(missing_ok = True)
+        raise
     library_db.touch_upload(upload_id, len(data))
     return True
 
@@ -218,11 +225,16 @@ def _file_size(path: Optional[Path]) -> Optional[int]:
         return None
 
 
+def _both_shelves(list_records) -> list[dict]:
+    """Active and archived records: archiving tidies a gallery page, the file is still Studio's."""
+    return list_records() + list_records(archived = True)
+
+
 def _image_items() -> list[dict]:
     from core.inference import image_gallery
 
     items = []
-    for record in image_gallery.list_images():
+    for record in _both_shelves(image_gallery.list_images):
         items.append(
             _item(
                 f"image:{record['id']}",
@@ -252,7 +264,7 @@ def _video_items() -> list[dict]:
             created_at = _to_ms(record.get("created_at")),
             file_url = record["url"],
         )
-        for record in video_gallery.list_videos()
+        for record in _both_shelves(video_gallery.list_videos)
     ]
 
 
@@ -271,7 +283,7 @@ def _audio_items() -> list[dict]:
             created_at = _to_ms(record.get("created_at")),
             file_url = record["url"],
         )
-        for record in audio_gallery.list_audio()
+        for record in _both_shelves(audio_gallery.list_audio)
     ]
 
 
@@ -369,6 +381,27 @@ def _sandbox_sessions() -> list[tuple[str, Optional[str], Optional[str]]]:
         (f"{_PROJECT_SESSION_PREFIX}{row['id']}", None, row["name"]) for row in projects
     )
     return sessions
+
+
+def _sandbox_file(ref: str) -> Path:
+    """The file a ``sandbox:`` id names, only if the Library lists it: an eligible session, a
+    servable file, no dotfile. Raises LookupError otherwise, so a crafted id reaches nothing else."""
+    from core.inference.tools import resolve_sandbox_workdir
+    from routes.inference import _sandbox_listing
+
+    session_id, _, relative = ref.partition(":")
+    if session_id not in {session for session, _, _ in _sandbox_sessions()}:
+        raise LookupError(ref)
+    if not relative or any(part.startswith(".") for part in relative.split("/")):
+        raise LookupError(ref)
+    directory = os.path.realpath(resolve_sandbox_workdir(session_id))
+    listed = {entry["name"].replace(os.sep, "/") for entry in _sandbox_listing(directory)}
+    path = os.path.realpath(os.path.join(directory, *relative.split("/")))
+    if relative not in listed or not path.startswith(directory + os.sep):
+        raise LookupError(ref)
+    if not os.path.isfile(path) or os.path.islink(path):
+        raise LookupError(ref)
+    return Path(path)
 
 
 def _sandbox_items() -> list[dict]:
@@ -478,18 +511,8 @@ def project_source(item_id: str) -> tuple[Path, str, str]:
         # Same name as the gallery's own Add to project, so either one finds the other's copy.
         return path, folder, path.name
     if kind == "sandbox":
-        from fastapi import HTTPException
-
-        from routes.inference import _contained_sandbox_path
-
-        session_id, _, relative = ref.partition(":")
-        try:
-            _directory, resolved = _contained_sandbox_path(session_id, relative)
-        except HTTPException as exc:
-            raise LookupError(item_id) from exc
-        if not os.path.isfile(resolved) or os.path.islink(resolved):
-            raise LookupError(item_id)
-        return Path(resolved), "files", _project_name(os.path.basename(relative), item_id)
+        path = _sandbox_file(ref)
+        return path, "files", _project_name(path.name, item_id)
     raise ValueError("This item cannot be added to a project.")
 
 
@@ -561,13 +584,11 @@ def delete_item(item_id: str) -> bool:
         from core.inference import audio_gallery
         deleted = audio_gallery.delete(ref)
     elif kind == "sandbox":
-        from routes.inference import _contained_sandbox_path
-
-        session_id, _, relative = ref.partition(":")
-        _directory, path = _contained_sandbox_path(session_id, relative)
-        if os.path.isfile(path) and not os.path.islink(path):
-            os.unlink(path)
+        try:
+            os.unlink(_sandbox_file(ref))
             deleted = True
+        except LookupError:
+            deleted = False
     elif kind == "model":
         # The models route deletes the files, with its own load and training guards. Once they are
         # gone, this drops what the Library kept about the model.

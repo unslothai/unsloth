@@ -432,3 +432,74 @@ def test_locations_are_listed_and_revealed_by_key(client, revealed):
     assert client.post("/api/library/locations/reveal", json = {"key": "images"}).status_code == 200
     assert revealed == [paths["images"]]
     assert client.post("/api/library/locations/reveal", json = {"key": "/etc"}).status_code == 404
+
+
+# ── Review fixes ─────────────────────────────────────────────────
+
+
+def test_archived_gallery_items_stay_in_the_library(client, monkeypatch):
+    from core.inference import video_gallery
+
+    monkeypatch.setattr(library, "_SOURCES", (library._video_items,))
+    meta = {k: 1 for k in ("width", "height", "num_frames", "fps", "duration_s", "steps", "guidance", "seed")}
+    record = video_gallery.save(b"\0\0\0\x18ftypmp42", {**meta, "prompt": "Archived", "created_at": 1})
+    video_gallery.set_flags(record["id"], archived = True)
+    assert f"video:{record['id']}" in _items(client)[0]
+
+
+def test_a_crafted_sandbox_id_reaches_only_listed_files(client, monkeypatch):
+    import os
+
+    from core.inference.tools import resolve_sandbox_workdir
+    from storage import studio_db
+
+    monkeypatch.setattr(library, "_SOURCES", (library._sandbox_items,))
+    studio_db.upsert_chat_thread(
+        {"id": "t-lib", "title": "T", "modelType": "base", "modelId": "m", "createdAt": 1}
+    )
+    directory = resolve_sandbox_workdir("t-lib")
+    os.makedirs(directory, exist_ok = True)
+    for name in ("report.txt", ".secret"):
+        with open(os.path.join(directory, name), "w") as handle:
+            handle.write("x")
+    delete = lambda item_id: client.post("/api/library/items/delete", json = {"id": item_id})  # noqa: E731
+    assert "sandbox:t-lib:report.txt" in _items(client)[0]
+    # Hidden files and unknown sessions are not the Library's to touch.
+    assert delete("sandbox:t-lib:.secret").status_code == 404
+    assert delete("sandbox:not-a-chat:report.txt").status_code == 404
+    assert os.path.exists(os.path.join(directory, ".secret"))
+    assert delete("sandbox:t-lib:report.txt").status_code == 200
+    assert not os.path.exists(os.path.join(directory, "report.txt"))
+
+
+def test_a_failed_note_save_keeps_the_previous_text(client, monkeypatch):
+    [note] = _upload(client, ("plan.md", b"# plan", "text/markdown"))
+    upload_id = note.split(":", 1)[1]
+
+    def fail(*_args):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(library.os, "replace", fail)
+    with pytest.raises(OSError):
+        library.write_upload_text(upload_id, "# new plan")
+    path = library.upload_path(upload_id)
+    assert path.read_bytes() == b"# plan"
+    assert [p.name for p in path.parent.iterdir() if p.name.endswith(".tmp")] == []
+
+
+def test_a_batch_whose_folder_vanishes_keeps_nothing(client, monkeypatch):
+    from storage import library_db
+
+    folder = client.post("/api/library/folders", json = {"name": "Work"}).json()
+
+    def gone(*_args, **_kwargs):
+        raise KeyError(folder["id"])
+
+    monkeypatch.setattr(library_db, "update_entry", gone)
+    response = client.post(
+        "/api/library/uploads",
+        files = [("files", ("plan.md", b"# plan", "text/markdown"))],
+        data = {"folderId": folder["id"]},
+    )
+    assert response.status_code == 404
+    assert _items(client)[0] == {}

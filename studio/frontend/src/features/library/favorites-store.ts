@@ -21,8 +21,17 @@ const latestAttempt = new Map<string, number>();
 export const useLibraryFavoritesStore = create<FavoritesState>((set, get) => ({
   ids: new Set(),
   load: async () => {
+    const touchedBefore = new Map(latestAttempt);
     try {
-      set({ ids: new Set(await getLibraryFavorites()) });
+      const loaded = new Set(await getLibraryFavorites());
+      // A star toggled while this was loading is newer than the snapshot; keep it.
+      const ids = get().ids;
+      for (const [id, attempt] of latestAttempt) {
+        if (touchedBefore.get(id) === attempt) continue;
+        if (ids.has(id)) loaded.add(id);
+        else loaded.delete(id);
+      }
+      set({ ids: loaded });
     } catch {
       // Favorites are a convenience here; the page works without them.
     }
