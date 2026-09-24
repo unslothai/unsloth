@@ -1,0 +1,654 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+"""Tests for the MiniMax-H3 video VAE speed layer (core/inference/video_minimax_h3_vae.py).
+
+The CPU tests are hermetic: the lever plan is pure, and the patched encoder / decoder / tile loop fall back to torch
+ops off CUDA, so their STRUCTURE is checked against Diffusers' own ``AutoencoderKLMiniMaxH3`` built at a tiny config
+(skipped when the installed diffusers predates the class). The CUDA tests check each Triton kernel against its
+unfused reference and skip without a GPU.
+"""
+
+from __future__ import annotations
+
+import copy
+import types
+
+import pytest
+import torch
+
+from core.inference import video_minimax_h3_vae as H
+
+CUDA = torch.cuda.is_available() and not getattr(torch.version, "hip", None)
+needs_cuda = pytest.mark.skipif(
+    not CUDA or H._kernels() is None, reason = "needs an NVIDIA GPU with Triton"
+)
+
+
+# ── the plan ───────────────────────────────────────────────────────────────────────────────────────────────────────
+
+
+@pytest.fixture(autouse = True)
+def _clean_env(monkeypatch):
+    for name in (
+        H.H3_VAE_FAST_ENV,
+        H.H3_VAE_INT8_ENV,
+        H.H3_VAE_TILE_BATCH_ENV,
+        H.FP16_ACCUM_DISABLE_ENV,
+    ):
+        monkeypatch.delenv(name, raising = False)
+
+
+def test_off_tier_engages_nothing():
+    assert H.plan_h3_vae_levers("off", workflow = "fl2va") == ()
+    assert H.plan_h3_vae_levers("OFF", workflow = "fl2va", consumer_gpu = True) == ()
+
+
+@pytest.mark.parametrize("tier", ["default", "max", None, ""])
+def test_default_and_max_get_the_near_lossless_set(tier):
+    plan = H.plan_h3_vae_levers(tier, workflow = "fl2va", consumer_gpu = False)
+    assert plan == (
+        H.LEVER_FUSED_ENCODER,
+        H.LEVER_FP16_ENCODER,
+        H.LEVER_FUSED_DECODER,
+        H.LEVER_TILE_BATCH,
+    )
+
+
+def test_eager_stays_rounding_level():
+    plan = H.plan_h3_vae_levers("eager", workflow = "fl2va", consumer_gpu = True)
+    assert plan == (H.LEVER_FUSED_ENCODER, H.LEVER_FUSED_DECODER, H.LEVER_TILE_BATCH)
+
+
+def test_fp16_accumulation_only_under_max_on_consumer_gpus(monkeypatch):
+    assert H.LEVER_FP16_ACCUM in H.plan_h3_vae_levers("max", workflow = "fl2va", consumer_gpu = True)
+    assert H.LEVER_FP16_ACCUM not in H.plan_h3_vae_levers(
+        "max", workflow = "fl2va", consumer_gpu = False
+    )
+    for tier in ("eager", "default"):
+        assert H.LEVER_FP16_ACCUM not in H.plan_h3_vae_levers(
+            tier, workflow = "fl2va", consumer_gpu = True
+        )
+    monkeypatch.setenv(H.FP16_ACCUM_DISABLE_ENV, "1")
+    assert H.LEVER_FP16_ACCUM not in H.plan_h3_vae_levers(
+        "max", workflow = "fl2va", consumer_gpu = True
+    )
+
+
+def test_int8_decoder_is_opt_in_only(monkeypatch):
+    for tier in ("eager", "default", "max"):
+        assert H.LEVER_INT8_DECODER not in H.plan_h3_vae_levers(
+            tier, workflow = "fl2va", consumer_gpu = True
+        )
+    monkeypatch.setenv(H.H3_VAE_INT8_ENV, "1")
+    assert H.LEVER_INT8_DECODER in H.plan_h3_vae_levers("default", workflow = "fl2va")
+
+
+def test_t2va_skips_the_encoder_levers():
+    plan = H.plan_h3_vae_levers("default", workflow = "t2va")
+    assert H.LEVER_FUSED_ENCODER not in plan and H.LEVER_FP16_ENCODER not in plan
+    assert H.LEVER_FUSED_DECODER in plan
+
+
+def test_env_switches(monkeypatch):
+    monkeypatch.setenv(H.H3_VAE_FAST_ENV, "0")
+    assert H.plan_h3_vae_levers("max", workflow = "fl2va", consumer_gpu = True) == ()
+    monkeypatch.delenv(H.H3_VAE_FAST_ENV)
+    # the int8 opt-in never overrides an explicit off
+    monkeypatch.setenv(H.H3_VAE_INT8_ENV, "1")
+    assert H.plan_h3_vae_levers("off", workflow = "fl2va") == ()
+
+
+def test_apply_is_a_no_op_off_cuda(monkeypatch):
+    monkeypatch.setattr(H, "cuda_fast_path_available", lambda vae = None: False)
+    vae = types.SimpleNamespace(decode = object(), encoder = object())
+    stock_decode = vae.decode
+    assert H.apply_h3_vae_speedups(vae, speed_mode = "max", workflow = "fl2va", consumer_gpu = True) == ()
+    assert vae.decode is stock_decode
+    assert H.apply_h3_vae_speedups(None, speed_mode = "max") == ()
+
+
+def test_decode_scope_pins_and_restores_fp16_accumulation():
+    matmul = torch.backends.cuda.matmul
+    if not hasattr(matmul, "allow_fp16_accumulation"):
+        pytest.skip("torch without allow_fp16_accumulation")
+    seen = []
+
+    class _VAE:
+        def decode(self, z):
+            seen.append(matmul.allow_fp16_accumulation)
+            return z
+
+    prev = matmul.allow_fp16_accumulation
+    try:
+        for flag_before, planned in ((True, False), (False, True), (False, False)):
+            vae = _VAE()
+            matmul.allow_fp16_accumulation = flag_before
+            assert H._install_decode_scope(vae, fp16_accum = planned)
+            assert vae.decode(3) == 3
+            assert (
+                seen[-1] is planned
+            ), "the decode must run under the planned flag, not the process-wide one"
+            assert (
+                matmul.allow_fp16_accumulation is flag_before
+            ), "the process-wide flag must be restored"
+    finally:
+        matmul.allow_fp16_accumulation = prev
+
+
+# ── structure against Diffusers' own VAE at a tiny config (CPU) ───────────────────────────────────────────────────
+
+
+def _tiny_vae():
+    diffusers = pytest.importorskip("diffusers")
+    cls = getattr(diffusers, "AutoencoderKLMiniMaxH3", None)
+    if cls is None:
+        pytest.skip("diffusers without AutoencoderKLMiniMaxH3")
+    torch.manual_seed(0)
+    vae = cls(
+        block_out_channels = (16, 32),
+        layers_per_block = 2,
+        spatial_downsample_factors = (2, 2),
+        temporal_downsample_factors = (2, 1),
+        norm_num_groups = 8,
+        latent_channels = 8,
+        decoder_num_layers = 2,
+        decoder_num_attention_heads = 2,
+        decoder_attention_head_dim = 16,
+        decoder_num_register_tokens = 2,
+        decoder_ffn_mult = 2,
+        decoder_rope_dim_ratio = 0.75,
+        clip_length = 9,
+        token_drop = 1,
+    ).eval()
+    with torch.no_grad():
+        for name, p in vae.named_parameters():
+            if name.endswith("scale1") or name.endswith("scale2"):
+                p.normal_(0, 0.5)
+            elif "norm" in name and name.endswith("weight"):
+                p.normal_(1.0, 0.2)
+            elif name.endswith("bias"):
+                p.normal_(0, 0.1)
+    vae.tile_sample_min_height = vae.tile_sample_min_width = 16
+    vae.tile_sample_min_overlap_height = vae.tile_sample_min_overlap_width = 4
+    return vae
+
+
+DEVICES = ["cpu", pytest.param("cuda", marks = needs_cuda)]
+
+
+@pytest.mark.parametrize("device", DEVICES)
+@pytest.mark.parametrize("frames", [1, 9, 18])
+def test_fused_encoder_matches_the_stock_encoder(frames, device, monkeypatch):
+    monkeypatch.setattr(torch.backends.cudnn, "allow_tf32", False)
+    vae = _tiny_vae().to(device)
+    fast = copy.deepcopy(vae)
+    assert H._install_encoder(fast, fp16 = False)
+    x = torch.randn(1, 3, frames, 24, 40, device = device)
+    with torch.no_grad():
+        ref = vae.encoder(x)
+        got = fast.encoder(x)
+    assert not getattr(
+        fast.encoder, "_unsloth_fast_failed", False
+    ), "the fused path fell back to stock"
+    assert got.shape == ref.shape and got.dtype == ref.dtype
+    torch.testing.assert_close(got, ref, rtol = 1e-4, atol = 1e-4)
+
+
+@pytest.mark.parametrize("device", DEVICES)
+def test_fused_fp16_encoder_returns_the_input_dtype_and_stays_close(device):
+    vae = _tiny_vae().to(device)
+    ref = copy.deepcopy(vae)
+    assert H._install_encoder(vae, fp16 = True)
+    x = torch.randn(1, 3, 9, 24, 40, device = device)
+    with torch.no_grad():
+        got, want = vae.encoder(x), ref.encoder(x)
+    assert not getattr(vae.encoder, "_unsloth_fast_failed", False)
+    assert got.dtype is torch.float32
+    assert ((got - want).norm() / want.norm()) < 1e-2
+
+
+def test_fused_encoder_fp16_casts_weights_and_returns_the_input_dtype():
+    vae = _tiny_vae()
+    assert H._install_encoder(vae, fp16 = True)
+    convs = [m for m in vae.encoder.modules() if isinstance(m, torch.nn.Conv3d)]
+    assert convs and all(m.weight.dtype is torch.float16 for m in convs)
+    assert all(
+        m.weight.is_contiguous(memory_format = torch.channels_last_3d)
+        for m in convs
+        if m is not vae.encoder.conv_in
+    )
+    # quant_conv sits outside the encoder and keeps its dtype
+    assert vae.quant_conv.weight.dtype is torch.float32
+
+
+def test_norm_silu_pad_reference_matches_diffusers_ops():
+    from torch.nn import functional as F
+
+    vae = _tiny_vae()
+    resnet = vae.encoder.down_blocks[0].resnets[0]
+    x = torch.randn(1, 16, 5, 12, 10)
+    ref = F.pad(F.silu(resnet.norm1(x)), (1, 1, 1, 1, 0, 0), mode = "reflect")
+    ref = F.pad(ref, (0, 0, 0, 0, 2, 0))
+    got = H.norm_silu_pad_reference(x, resnet.norm1, (1, 1, 1, 1), 2)
+    assert got.is_contiguous(memory_format = torch.channels_last_3d)
+    torch.testing.assert_close(got, ref, rtol = 1e-5, atol = 1e-5)
+
+
+def test_single_frame_last_tap_equals_convolving_the_zero_frames():
+    from torch.nn import functional as F
+
+    vae = _tiny_vae()
+    conv = vae.encoder.down_blocks[0].resnets[0].conv1
+    x = torch.randn(1, 16, 1, 8, 8)
+    padded = F.pad(F.pad(x, (1, 1, 1, 1, 0, 0), mode = "reflect"), (0, 0, 0, 0, 2, 0))
+    ref = F.conv3d(padded, conv.weight, conv.bias)
+    got, bias = H._causal_conv(conv, x)
+    torch.testing.assert_close(got + bias.view(1, -1, 1, 1, 1), ref, rtol = 1e-5, atol = 1e-5)
+
+
+def test_pending_bias_folds_through_a_1x1_conv():
+    from torch.nn import functional as F
+
+    conv = torch.nn.Conv3d(16, 32, 1)
+    x = torch.randn(1, 16, 3, 5, 7)
+    pending = torch.randn(16)
+    ref = F.conv3d(x + pending.view(1, -1, 1, 1, 1), conv.weight, conv.bias)
+    got, bias = H._causal_conv(conv, x, pending)
+    torch.testing.assert_close(got + bias.view(1, -1, 1, 1, 1), ref, rtol = 1e-5, atol = 1e-5)
+
+
+def test_pending_bias_is_added_before_the_norm_and_the_pad():
+    from torch.nn import functional as F
+
+    norm = torch.nn.GroupNorm(4, 16, eps = 1e-6)
+    x = torch.randn(1, 16, 4, 6, 6)
+    pending = torch.randn(16)
+    y = x + pending.view(1, -1, 1, 1, 1)
+    frames = y.permute(0, 2, 1, 3, 4).reshape(4, 16, 6, 6)
+    ref = (
+        F.silu(F.group_norm(frames, 4, norm.weight, norm.bias, 1e-6))
+        .reshape(1, 4, 16, 6, 6)
+        .permute(0, 2, 1, 3, 4)
+    )
+    ref = F.pad(F.pad(ref, (1, 1, 1, 1, 0, 0), mode = "reflect"), (0, 0, 0, 0, 2, 0))
+    torch.testing.assert_close(
+        H.norm_silu_pad(x, norm, (1, 1, 1, 1), 2, in_bias = pending), ref, rtol = 1e-5, atol = 1e-5
+    )
+    # a zero frame stays zero: the bias belongs to real frames only
+    got = H.norm_silu_pad(x, None, (0, 1, 0, 1), 2, in_bias = pending)
+    assert got[:, :, :2].abs().max() == 0
+
+
+@pytest.mark.parametrize("device", DEVICES)
+def test_fused_decoder_matches_the_stock_decoder(device):
+    vae = _tiny_vae().to(device)
+    fast = copy.deepcopy(vae)
+    assert H._install_decoder(fast)
+    z = torch.randn(1, 8, 3, 4, 5, device = device)
+    with torch.no_grad():
+        ref = vae.decoder(z)
+        got = fast.decoder(z)
+    assert not getattr(
+        fast.decoder, "_unsloth_fast_failed", False
+    ), "the fused path fell back to stock"
+    assert got.shape == ref.shape
+    torch.testing.assert_close(got, ref, rtol = 1e-4, atol = 1e-4)
+
+
+def test_tile_batching_matches_the_stock_tile_loop(monkeypatch):
+    vae = _tiny_vae()
+    fast = copy.deepcopy(vae)
+    assert H._install_tile_batch(fast)
+    z = torch.randn(1, 8, 3, 6, 9)  # 24x36 px: 2x3 tiles of 16 px
+    with torch.no_grad():
+        ref = vae._decode_clip(z)
+        for batch in ("1", "2", "4", "8"):
+            monkeypatch.setenv(H.H3_VAE_TILE_BATCH_ENV, batch)
+            torch.testing.assert_close(fast._decode_clip(z), ref, rtol = 1e-5, atol = 1e-5)
+
+
+def test_int8_decoder_replaces_block_linears_and_stays_close():
+    vae = _tiny_vae()
+    fast = copy.deepcopy(vae)
+    freed = H._install_int8_decoder(fast, keep_blocks = ())
+    assert freed > 0
+    lin = fast.decoder.transformer_blocks[0].attn.to_q
+    assert lin.weight is None and lin._unsloth_wq.dtype is torch.int8
+    # the patch/proj Linears outside the blocks stay float
+    assert fast.decoder.proj_out.weight is not None
+    z = torch.randn(1, 8, 3, 4, 5)
+    with torch.no_grad():
+        ref = vae.decoder(z)
+        got = fast.decoder(z)
+    rel = (got - ref).norm() / ref.norm()
+    assert rel < 0.05
+
+
+def test_apply_skips_when_already_applied(monkeypatch):
+    monkeypatch.setattr(H, "cuda_fast_path_available", lambda vae = None: True)
+    vae = _tiny_vae()
+    engaged = H.apply_h3_vae_speedups(
+        vae, speed_mode = "default", workflow = "fl2va", consumer_gpu = True
+    )
+    assert set(engaged) == {
+        H.LEVER_FUSED_ENCODER,
+        H.LEVER_FP16_ENCODER,
+        H.LEVER_FUSED_DECODER,
+        H.LEVER_TILE_BATCH,
+    }
+    encoder_forward = vae.encoder.forward
+    assert H.apply_h3_vae_speedups(vae, speed_mode = "max", workflow = "fl2va") == engaged
+    assert vae.encoder.forward is encoder_forward
+
+
+# ── Triton kernels against their references (CUDA), and the runtime fallbacks ─────────────────────────────────────
+
+
+@needs_cuda
+@pytest.mark.parametrize("dtype", [torch.float32, torch.float16])
+@pytest.mark.parametrize("channels_last", [False, True])
+@pytest.mark.parametrize(
+    "frames,pad,front,with_norm",
+    [(9, (1, 1, 1, 1), 2, True), (1, (1, 1, 1, 1), 0, True), (7, (0, 1, 0, 1), 2, False)],
+)
+def test_norm_silu_pad_kernel(dtype, channels_last, frames, pad, front, with_norm):
+    torch.manual_seed(0)
+    norm = torch.nn.GroupNorm(8, 64, eps = 1e-6).cuda()
+    with torch.no_grad():
+        norm.weight.normal_()
+        norm.bias.normal_()
+    x = (torch.randn(1, 64, frames, 20, 36, device = "cuda") * 3 + 1).to(dtype)
+    if channels_last:
+        x = x.contiguous(memory_format = torch.channels_last_3d)
+    n = norm if with_norm else None
+    ref = H.norm_silu_pad_reference(x, n, pad, front)
+    got = H.norm_silu_pad(x, n, pad, front)
+    assert got.shape == ref.shape and got.stride() == ref.stride()
+    tol = 1e-5 if dtype is torch.float32 else 1e-2
+    torch.testing.assert_close(got.float(), ref.float(), rtol = tol, atol = tol)
+
+
+@needs_cuda
+def test_add_rmsnorm_kernel():
+    torch.manual_seed(0)
+    norm = torch.nn.RMSNorm(256, eps = 1e-5).cuda()
+    with torch.no_grad():
+        norm.weight.normal_(1, 0.1)
+    h = torch.randn(300, 256, device = "cuda")
+    o = torch.randn(300, 256, device = "cuda").half()
+    s = torch.randn(256, device = "cuda")
+    ref_h = h + o * s
+    ref_n = norm(ref_h).half()
+    got_n = H._add_rmsnorm(h, o, s, norm, torch.float16)
+    # the residual reproduces the reference's separate multiply and add bit for bit
+    assert torch.equal(h, ref_h)
+    torch.testing.assert_close(got_n, ref_n, rtol = 2e-3, atol = 2e-3)
+
+
+@needs_cuda
+def test_qk_norm_rope_kernel_matches_the_reference_processor():
+    torch.manual_seed(0)
+    heads, dim = 4, 64
+    x = torch.randn(2, 100, heads * dim, device = "cuda").half()
+    angles = torch.rand(2, 100, 1, 24, device = "cuda") * 6.28
+    angles = angles.tile(2)
+    cos, sin = angles.cos().half(), angles.sin().half()
+    ref = H.qk_norm_rope_reference(x, cos, sin, heads, 1e-5)
+    got = x.clone()
+    H._qk_norm_rope_(got, cos.reshape(-1, 48), sin.reshape(-1, 48), heads, 1e-5)
+    assert (got == ref).float().mean() > 0.99
+    torch.testing.assert_close(got.float(), ref.float(), rtol = 2e-3, atol = 2e-3)
+
+
+@needs_cuda
+def test_swiglu_kernel():
+    x = torch.randn(64, 2 * 3000, device = "cuda").half()
+    hidden, gate = x.chunk(2, dim = -1)
+    got, ref = H._swiglu(x), hidden * torch.nn.functional.silu(gate)
+    # silu and the product each rounded to float16, as eager computes them
+    assert (got == ref).float().mean() > 0.999
+    torch.testing.assert_close(got, ref, rtol = 2e-3, atol = 2e-3)
+
+
+@needs_cuda
+def test_int8_linear_kernel_path_matches_the_torch_path():
+    torch.manual_seed(0)
+    lin = torch.nn.Linear(256, 512).cuda().half()
+    ref_lin = copy.deepcopy(lin)
+    holder = torch.nn.Module()
+    holder.transformer_blocks = torch.nn.ModuleList([torch.nn.ModuleDict({"l": lin})])
+    vae = types.SimpleNamespace(decoder = holder)
+    assert H._install_int8_decoder(vae, keep_blocks = ()) > 0
+    x = torch.randn(3, 40, 256, device = "cuda").half()
+    got = lin(x)
+    ref = ref_lin(x)
+    assert got.shape == ref.shape and got.dtype == ref.dtype
+    assert ((got.float() - ref.float()).norm() / ref.float().norm()) < 0.02
+
+
+@needs_cuda
+@pytest.mark.parametrize("res_layout", ["channels_last", "contiguous"])
+def test_add_residual_kernel(res_layout):
+    torch.manual_seed(0)
+    out = (
+        torch.randn(1, 64, 3, 10, 12, device = "cuda")
+        .half()
+        .contiguous(memory_format = torch.channels_last_3d)
+    )
+    res = torch.randn(1, 64, 3, 10, 12, device = "cuda").half()
+    if res_layout == "channels_last":
+        res = res.contiguous(memory_format = torch.channels_last_3d)
+    ob, rb = torch.randn(64, device = "cuda").half(), torch.randn(64, device = "cuda")
+    ref = (
+        out.float() + ob.float().view(1, -1, 1, 1, 1) + res.float() + rb.view(1, -1, 1, 1, 1)
+    ).half()
+    got = H.add_residual(out.clone(memory_format = torch.channels_last_3d), ob, res, rb)
+    torch.testing.assert_close(got.float(), ref.float(), rtol = 2e-3, atol = 2e-3)
+
+
+@needs_cuda
+def test_norm_silu_pad_kernel_with_pending_bias():
+    torch.manual_seed(0)
+    norm = torch.nn.GroupNorm(32, 256, eps = 1e-6).cuda()
+    x = (
+        torch.randn(1, 256, 5, 17, 23, device = "cuda")
+        .half()
+        .contiguous(memory_format = torch.channels_last_3d)
+    )
+    pending = torch.randn(256, device = "cuda")
+    ref = H.norm_silu_pad_reference(x, norm, (1, 1, 1, 1), 2, in_bias = pending)
+    got = H.norm_silu_pad(x, norm, (1, 1, 1, 1), 2, in_bias = pending)
+    torch.testing.assert_close(got.float(), ref.float(), rtol = 1e-2, atol = 1e-2)
+
+
+def test_int8_decoder_keeps_the_early_blocks_float_by_default(monkeypatch):
+    monkeypatch.setattr(H, "H3_VAE_INT8_FLOAT_BLOCKS", 1)
+    vae = _tiny_vae()
+    blocks = vae.decoder.transformer_blocks
+    H._install_int8_decoder(vae)
+    assert blocks[0].attn.to_q.weight is not None
+    assert blocks[1].attn.to_q.weight is None
+
+
+def test_a_failing_fused_path_falls_back_to_stock_once_and_logs():
+    calls = []
+
+    def fast(self, x):
+        calls.append("fast")
+        raise RuntimeError("triton: no kernel image")
+
+    def stock(self, x):
+        calls.append("stock")
+        return x + 1
+
+    warnings = []
+    holder = types.SimpleNamespace(
+        _unsloth_logger = types.SimpleNamespace(warning = lambda *a: warnings.append(a))
+    )
+    forward = H._guarded(fast, stock, "decoder")
+    assert forward(holder, 1) == 2
+    assert forward(holder, 2) == 3
+    assert calls == [
+        "fast",
+        "stock",
+        "stock",
+    ], "after one failure the fused path must not be retried"
+    assert len(warnings) == 1
+
+
+def test_an_input_the_stock_path_rejects_too_raises_without_disabling_the_fast_path():
+    def fast(self, x):
+        raise RuntimeError("Padding size should be less than the corresponding input dimension")
+
+    def stock(self, x):
+        raise RuntimeError("Padding size should be less than the corresponding input dimension")
+
+    holder = types.SimpleNamespace()
+    with pytest.raises(RuntimeError, match = "Padding size"):
+        H._guarded(fast, stock, "encoder")(holder, 1)
+    assert not getattr(holder, "_unsloth_fast_failed", False)
+
+
+def test_a_non_reflect_padding_mode_keeps_the_stock_encoder():
+    vae = _tiny_vae()
+    for m in vae.encoder.modules():
+        if hasattr(m, "spatial_padding_mode"):
+            m.spatial_padding_mode = "replicate"
+    forward = vae.encoder.forward
+    assert not H._install_encoder(vae, fp16 = True)
+    assert vae.encoder.forward == forward
+    assert all(p.dtype is torch.float32 for p in vae.encoder.parameters())
+
+
+def test_a_non_power_of_two_head_keeps_the_stock_decoder():
+    vae = _tiny_vae()
+    for block in vae.decoder.transformer_blocks:
+        block.attn.dim_head = 12
+    assert not H._install_decoder(vae)
+
+
+def test_an_oom_in_the_fused_path_is_not_masked():
+    def fast(self, x):
+        raise RuntimeError("CUDA out of memory. Tried to allocate 2.00 GiB")
+
+    forward = H._guarded(fast, lambda self, x: x, "decoder")
+    holder = types.SimpleNamespace()
+    with pytest.raises(RuntimeError, match = "out of memory"):
+        forward(holder, 1)
+    assert not getattr(holder, "_unsloth_fast_failed", False)
+
+
+def test_the_fp16_encoder_falls_back_to_the_stock_encoder(monkeypatch):
+    vae = _tiny_vae()
+    ref_vae = copy.deepcopy(vae)
+    assert H._install_encoder(vae, fp16 = True)
+    x = torch.randn(1, 3, 9, 24, 40)
+    with torch.no_grad():
+        fused = vae.encoder(x)
+
+    def boom(*a, **k):
+        raise RuntimeError("no triton")
+
+    # the installed guard resolves the fused body at call time, so breaking it exercises the real fallback
+    monkeypatch.setattr(H, "_fast_encoder_body", boom)
+    with torch.no_grad():
+        stock = vae.encoder(x)
+        want = ref_vae.encoder(x)
+    assert vae.encoder._unsloth_fast_failed
+    assert stock.dtype is torch.float32
+    # the stock forward over the float16 weights: float16 arithmetic, so close to both, equal to neither
+    assert ((stock - want).norm() / want.norm()) < 1e-2
+    assert ((stock - fused).norm() / fused.norm()) < 1e-2
+
+
+def test_tile_batching_retries_one_tile_at_a_time_after_an_oom(monkeypatch):
+    vae = _tiny_vae()
+    ref = copy.deepcopy(vae)
+    assert H._install_tile_batch(vae)
+    monkeypatch.setenv(H.H3_VAE_TILE_BATCH_ENV, "4")
+    stock_decoder = vae.decoder.forward
+    seen = []
+
+    def decoder(z):
+        seen.append(z.shape[0])
+        if z.shape[0] > 1:
+            raise RuntimeError("CUDA out of memory")
+        return stock_decoder(z)
+
+    monkeypatch.setattr(vae.decoder, "forward", decoder)
+    monkeypatch.setattr(torch.cuda, "empty_cache", lambda: None)
+    z = torch.randn(1, 8, 3, 6, 9)
+    with torch.no_grad():
+        torch.testing.assert_close(vae._decode_clip(z), ref._decode_clip(z), rtol = 1e-5, atol = 1e-5)
+    assert seen[0] == 4 and set(seen[1:]) == {1}
+
+
+def test_settle_drops_a_lever_that_fell_back_from_the_status():
+    import dataclasses
+
+    @dataclasses.dataclass(frozen = True)
+    class _State:
+        speed_optims: tuple
+
+    state = _State(
+        ("cudnn_benchmark", "h3_vae_fused_encoder", "h3_vae_fp16_encoder", "h3_vae_fused_decoder")
+    )
+    pipe = types.SimpleNamespace(
+        vae = types.SimpleNamespace(
+            encoder = types.SimpleNamespace(_unsloth_fast_failed = False),
+            decoder = types.SimpleNamespace(_unsloth_fast_failed = True),
+        )
+    )
+    H.settle_h3_vae_fallback(state, pipe)
+    assert state.speed_optims == ("cudnn_benchmark", "h3_vae_fused_encoder", "h3_vae_fp16_encoder")
+    H.settle_h3_vae_fallback(state, types.SimpleNamespace())  # no vae: a no-op, never raises
+
+
+def test_int8_small_row_path_matches_the_int_mm_path():
+    holder = torch.nn.Module()
+    lin = torch.nn.Linear(64, 32)
+    holder.transformer_blocks = torch.nn.ModuleList([torch.nn.ModuleDict({"l": lin})])
+    assert H._install_int8_decoder(types.SimpleNamespace(decoder = holder), keep_blocks = ()) > 0
+    x = torch.randn(64, 64)
+    whole = lin(x)  # 64 rows: torch._int_mm
+    sliced = torch.cat(
+        [lin(x[i : i + 8]) for i in range(0, 64, 8)]
+    )  # 8 rows: the dequantised float path
+    assert ((whole - sliced).norm() / whole.norm()) < 0.02
+
+
+def test_apply_holds_fp16_accumulation_off_outside_the_plan(monkeypatch):
+    matmul = torch.backends.cuda.matmul
+    if not hasattr(matmul, "allow_fp16_accumulation"):
+        pytest.skip("torch without allow_fp16_accumulation")
+    monkeypatch.setattr(H, "cuda_fast_path_available", lambda vae = None: True)
+    seen = []
+    vae = types.SimpleNamespace(decode = lambda z: seen.append(matmul.allow_fp16_accumulation) or z)
+    prev = matmul.allow_fp16_accumulation
+    try:
+        matmul.allow_fp16_accumulation = True
+        engaged = H.apply_h3_vae_speedups(
+            vae, speed_mode = "default", workflow = "t2va", consumer_gpu = True
+        )
+        assert H.LEVER_FP16_ACCUM not in engaged
+        vae.decode(0)
+        assert seen == [False] and matmul.allow_fp16_accumulation is True
+    finally:
+        matmul.allow_fp16_accumulation = prev
+
+
+def test_the_fast_path_is_for_the_h3_vae_class_only(monkeypatch):
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(H, "_kernels", lambda: object())
+
+    class AutoencoderKLWan:
+        pass
+
+    class AutoencoderKLMiniMaxH3:
+        pass
+
+    if getattr(torch.version, "hip", None):
+        pytest.skip("ROCm build")
+    assert not H.cuda_fast_path_available(AutoencoderKLWan())
+    assert H.cuda_fast_path_available(AutoencoderKLMiniMaxH3())
