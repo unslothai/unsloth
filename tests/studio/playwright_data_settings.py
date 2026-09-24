@@ -61,6 +61,17 @@ FIXTURE = """(() => {
     localStorage.setItem('unsloth_chat_legacy_imported_to_studio_db', 'true');
     const fixture = { rows: [], requests: [], hold: false, fail: false, listFail: false, media: {}, projects: [{ id: "research", name: "Research notes", createdAt: 1, updatedAt: 1 }, { id: "other", name: "Other project", createdAt: 2, updatedAt: 2 }, { id: "archived-project", name: "Old experiments", createdAt: 3, updatedAt: 3, archived: true }] };
     window.__dataFixture = fixture;
+    // The legacy IndexedDB store sits behind a 1 s gate that stays shut for the life of the page
+    // once any read overruns it, and a clear then counts that store as failed. A slow runner
+    // (Firefox on Windows) can trip it at any point, so a check whose outcome turns on that store
+    // sets failLegacyWrites to refuse its writes rather than inherit whatever the gate did earlier.
+    const transaction = IDBDatabase.prototype.transaction;
+    IDBDatabase.prototype.transaction = function (stores, mode, ...rest) {
+        if (fixture.failLegacyWrites && mode === 'readwrite') {
+            throw new DOMException('Legacy chat store writes refused by the fixture', 'UnknownError');
+        }
+        return transaction.call(this, stores, mode, ...rest);
+    };
     window.fetch = async (input, init = {}) => {
         const url = new URL(typeof input === 'string' ? input : input.url, location.origin);
         const method = init.method || input?.method || 'GET';
@@ -139,7 +150,7 @@ def run(page):
         page.evaluate(
             """options => {
             const f = window.__dataFixture;
-            Object.assign(f, { requests: [], hold: false, holdExport: false, fail: false, listFail: false }, options);
+            Object.assign(f, { requests: [], hold: false, holdExport: false, fail: false, listFail: false, failLegacyWrites: false }, options);
             f.rows = Array.from({ length: options.count ?? 3 }, (_, i) => ({
                 id: crypto.randomUUID(), title: `Chat ${i}`, modelType: 'base', modelId: 'test',
                 createdAt: 1700000000000 + i, updatedAt: 1700000000000 + i,
@@ -210,12 +221,28 @@ def run(page):
     assert len(deletes()) == 1
     checks.append("pending-delete-locks-choice-and-dismissal")
 
-    reset(fail = True)
-    dialog = confirm(True)
+    # Neither store clears, so the clear fails outright: the confirmation stays open and is armed
+    # for a retry. Whether it closes when only the backend fails turns on the legacy store gate,
+    # which this page cannot reopen once a slow read has shut it, so that is not asserted here.
+    reset(fail = True, failLegacyWrites = True)
+    confirm(True)
+    # Pinned to the confirmation itself: `.last` would slide onto Settings once it closed, and a
+    # closing dialog still answers role queries until its exit animation ends.
+    dialog = page.get_by_role("dialog").filter(has = page.locator("#clear-chats-delete-files"))
     dialog.get_by_role("button", name = "Clear 3 chats", exact = True).click()
+    # Both backend attempts have answered. The action reads "Clearing..." until the clear settles,
+    # so finding it under its own name again, enabled, is the clear being over.
+    page.wait_for_function(
+        "window.__dataFixture.requests.filter(r => r.method === 'DELETE' && r.done).length === 2"
+    )
+    expect(dialog.get_by_role("button", name = "Clear 3 chats", exact = True)).to_be_enabled()
+    expect(dialog).to_have_attribute("data-state", "open")
+    expect(dialog.get_by_role("switch")).to_be_enabled()
+    assert page.evaluate("window.__dataFixture.rows.length") == 3
+    assert len(deletes()) == 2
+    dialog.get_by_role("button", name = "Cancel", exact = True).click()
     expect(page.locator("#clear-chats-delete-files")).to_have_count(0)
     expect(page.get_by_role("button", name = "Delete all", exact = True)).to_be_enabled()
-    assert page.evaluate("window.__dataFixture.rows.length") == 3
     assert len(deletes()) == 2
     checks.append("failed-delete-preserves-chats-and-reenables-action")
 
