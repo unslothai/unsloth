@@ -722,7 +722,7 @@ function LibraryView({ search }: { search: LibrarySearch }) {
           onSettings={() => openSettings("library")}
         />
         {/* Inset past the title so list checkboxes, which hang left of the rows, have room. */}
-        <div className="pl-5 sm:pl-8">
+        <div className="pl-4 sm:pl-5">
           {!folderId && <Tabs tabs={shownTabs} active={tab} onChange={(next) => go({ show: next })} />}
           {renderBody()}
         </div>
