@@ -352,6 +352,7 @@ def _mirrored_model_entry(model_info: dict, model_name: str) -> dict:
         "max_context_length": model_info.get("max_context_length"),
         "requested_context_length": model_info.get("requested_context_length"),
         "context_length_enforced": model_info.get("context_length_enforced"),
+        "image_limit": model_info.get("image_limit"),
     }
 
 
@@ -3077,18 +3078,14 @@ class InferenceOrchestrator:
     def resize_image(
         self,
         img,
-        max_size: int = 800,
+        max_size: int | None = None,
     ):
-        """Resize image preserving aspect ratio (runs locally, no ML imports)."""
-        if img is None:
-            return None
-        if img.size[0] > max_size or img.size[1] > max_size:
-            from PIL import Image
+        """Resize image preserving aspect ratio (runs locally, no ML imports): the loaded model's own
+        image limit as the worker reported it, else 1024 (UNSLOTH_STUDIO_INFERENCE_IMAGE_MAX_SIDE overrides)."""
+        from utils.inference_image import resize_for_inference
 
-            ratio = min(max_size / img.size[0], max_size / img.size[1])
-            new_size = (int(img.size[0] * ratio), int(img.size[1] * ratio))
-            return img.resize(new_size, Image.Resampling.LANCZOS)
-        return img
+        entry = self.models.get(self.active_model_name) or {} if self.active_model_name else {}
+        return resize_for_inference(img, max_side = max_size, model_limit = entry.get("image_limit"))
 
     @staticmethod
     def _pil_to_base64(img) -> str:

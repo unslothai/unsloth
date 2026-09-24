@@ -3097,18 +3097,15 @@ class InferenceBackend:
     def resize_image(
         self,
         img,
-        max_size: int = 800,
+        max_size: int | None = None,
     ):
-        """Resize image while maintaining aspect ratio if either dimension exceeds max_size"""
-        if img is None:
-            return None
-        if img.size[0] > max_size or img.size[1] > max_size:
-            from PIL import Image
+        """Resize image while maintaining aspect ratio: the active model's image limit (from its
+        processor, see utils.inference_image), else 1024 (UNSLOTH_STUDIO_INFERENCE_IMAGE_MAX_SIDE overrides)."""
+        from utils.inference_image import native_image_limit, resize_for_inference
 
-            ratio = min(max_size / img.size[0], max_size / img.size[1])
-            new_size = (int(img.size[0] * ratio), int(img.size[1] * ratio))
-            return img.resize(new_size, Image.Resampling.LANCZOS)
-        return img
+        entry = self.models.get(self.active_model_name) or {} if self.active_model_name else {}
+        limit = native_image_limit(entry.get("processor"), entry.get("model"))
+        return resize_for_inference(img, max_side = max_size, model_limit = limit)
 
     def _generation_stop_token_ids(self, model, generation_kwargs: dict):
         """Return the stop-token ids active for a ``generate`` call."""
