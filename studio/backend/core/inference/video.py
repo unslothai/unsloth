@@ -2000,6 +2000,8 @@ class VideoBackend:
         hf_token: Optional[str] = None,
         memory_mode: Optional[str] = None,
         gpu_ordinal: Optional[int] = None,
+        # NAMED so a static step-skip ask can be recorded as declined: sd.cpp runs every step itself.
+        transformer_cache: Optional[str] = None,
         # NAMED, not left to the ``**_`` swallow below: an API-initiated load hands this in through _run_load's kwargs,
         # and swallowed it meant the four-file bundle, the sizing metadata and the sd-cli install were all fetched by a
         # load that promised no downloads.
@@ -2422,6 +2424,18 @@ class VideoBackend:
                                     None,
                                     "flash",
                                     "sd.cpp diffusion flash attention",
+                                ),
+                                **(
+                                    {
+                                        "transformer_cache": (
+                                            transformer_cache,
+                                            "off",
+                                            "static step skip is not supported by the native sd.cpp runtime",
+                                            RESOLVED_UNSUPPORTED,
+                                        )
+                                    }
+                                    if _is_static_cache_request(transformer_cache)
+                                    else {}
                                 ),
                             }
                         ),
@@ -3926,6 +3940,7 @@ class VideoBackend:
                 # Carried, not defaulted: load_pipeline is also reached directly (no _run_load), and dropping it here
                 # would let an offline load fetch the four-file bundle.
                 local_files_only = local_files_only,
+                transformer_cache = transformer_cache,
             )
             return self.status()
 

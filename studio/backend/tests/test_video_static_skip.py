@@ -28,6 +28,7 @@ from .test_video_backend import (  # noqa: F401 - fake_runtime is a fixture
     _FakeWanDiT,
     _FakeWanPipeSingle,
     _FakeWanPipelineSingle,
+    _detect_load_family,
     fake_runtime,
 )
 
@@ -462,3 +463,83 @@ def test_static_is_a_graph_keeping_mode():
     assert dcache.normalize_transformer_cache("static") == dcache.TC_STATIC
     assert dcache.cache_breaks_graph(dcache.TC_STATIC) is False
     assert dcache.cache_breaks_graph(dcache.TC_FBCACHE) is True
+
+
+def _native_h3_load(monkeypatch, tmp_path, transformer_cache):
+    from pathlib import Path
+
+    from core.inference import sd_cpp_backend, sd_cpp_engine
+    from core.inference import video as video_mod
+
+    class _Info:
+        siblings: list = []
+
+    class _Api:
+        def __init__(self, **_kwargs):
+            pass
+
+        def model_info(self, *_args, **_kwargs):
+            return _Info()
+
+    class _Engine:
+        def __init__(self, binary):
+            self.binary = binary
+
+        def version(self):
+            return "stub-version"
+
+    def _download(_repo, wanted, *_args, **_kwargs):
+        path = tmp_path / Path(wanted).name
+        path.write_bytes(b"x")
+        return str(path)
+
+    monkeypatch.setattr("huggingface_hub.HfApi", _Api)
+    monkeypatch.setattr(
+        video_mod,
+        "resolve_diffusion_device_target",
+        lambda: types.SimpleNamespace(backend = "cpu", device = "cpu", dtype = None),
+    )
+    monkeypatch.setattr(sd_cpp_backend, "_install_allowed", lambda: False)
+    monkeypatch.setattr(sd_cpp_backend, "ensure_sd_cpp_binary", lambda **_k: "/existing/sd-cli")
+    monkeypatch.setattr(sd_cpp_engine, "SdCppEngine", _Engine)
+    monkeypatch.setattr("utils.hf_xet_fallback.hf_hub_download_with_xet_fallback", _download)
+    import threading
+
+    backend = VideoBackend()
+    backend._run_load_h3_native(
+        fam = _detect_load_family("leejet/MiniMax-H3-GGUF", None, "minimax-h3"),
+        token = None,
+        cancel_event = threading.Event(),
+        repo_id = "leejet/MiniMax-H3-GGUF",
+        gguf_filename = "minimax_h3_fl2va-Q4_K_M.gguf",
+        transformer_cache = transformer_cache,
+    )
+    return backend
+
+
+def test_native_h3_reports_a_static_ask_as_unsupported(monkeypatch, tmp_path):
+    backend = _native_h3_load(monkeypatch, tmp_path, "static")
+    entry = (backend._state.resolved or {})["transformer_cache"]
+    assert entry["requested"] == "static" and entry["value"] == "off"
+    assert entry["status"] == "unsupported" and "sd.cpp" in entry["reason"]
+    assert backend._state.transformer_cache is None
+
+
+def test_native_h3_keeps_no_cache_record_for_other_asks(monkeypatch, tmp_path):
+    backend = _native_h3_load(monkeypatch, tmp_path, None)
+    assert "transformer_cache" not in (backend._state.resolved or {})
+
+
+def test_load_pipeline_hands_the_cache_ask_to_the_native_path(monkeypatch):
+    backend = VideoBackend()
+    calls = []
+    monkeypatch.setattr("core.inference.video._ensure_mp4_encoder_available", lambda: None)
+    monkeypatch.setattr(backend, "_run_load_h3_native", lambda **kwargs: calls.append(kwargs))
+    backend.load_pipeline(
+        "leejet/MiniMax-H3-GGUF",
+        gguf_filename = "minimax_h3_fl2va-Q4_K_M.gguf",
+        family_override = "minimax-h3",
+        model_kind = "gguf",
+        transformer_cache = "static",
+    )
+    assert calls and calls[0]["transformer_cache"] == "static"
