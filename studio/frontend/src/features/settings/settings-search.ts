@@ -69,6 +69,7 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.appearance.custom.pointerCursors.label",
     "settings.appearance.custom.reduceMotion.label",
     "settings.appearance.custom.uiFontSize.label",
+    "settings.appearance.custom.interfaceScale.label",
     "settings.appearance.custom.codeFontSize.label",
     "settings.appearance.custom.fontSmoothing.label",
     "settings.appearance.layout.compactSidebar",
@@ -90,6 +91,7 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.resources.storage.modelsFolder",
     "settings.resources.storage.futureDownloads",
     "settings.resources.storage.systemDisk",
+    "settings.resources.storage.caches.label",
     "settings.resources.environment.title",
     "settings.resources.environment.backend",
     "settings.resources.environment.python",
@@ -245,7 +247,6 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.debugging.logSection",
     "settings.debugging.source",
     "settings.debugging.path",
-    "settings.debugging.refreshSection",
     "settings.debugging.mode",
     "settings.debugging.keywords",
   ],
@@ -287,10 +288,6 @@ export function createSettingsSearchIndex({
       // and searching Settings for "repair" answered "No settings found."
       "settings.general.repairInstall.label",
     ],
-    appearance: [
-      ...SETTINGS_SEARCH_INDEX.appearance,
-      "settings.appearance.custom.interfaceScale.label",
-    ],
     about: SETTINGS_SEARCH_INDEX.about.filter(
       (key) => key !== "settings.about.updates",
     ),
@@ -307,6 +304,10 @@ export const SETTINGS_SEARCH_KEYWORDS: Partial<
 > = {
   "settings.resources.storage.modelsFolder":
     "settings.resources.storage.modelsFolderKeywords",
+  // "purge", "prune" and the tool names are in none of the labels, so the row
+  // the feature is named after was unreachable by search.
+  "settings.resources.storage.caches.label":
+    "settings.resources.storage.caches.keywords",
   // mlock, vram, ulimit and pin are in none of these labels, so search
   // missed the rows the feature is named after.
   "settings.resources.modelMemory.title":

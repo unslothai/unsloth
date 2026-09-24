@@ -329,18 +329,19 @@ def _base_total(**flags) -> int:
 class TestStepTotals:
     def test_windows_totals_include_torchcodec(self):
         # Both carry the Windows-only accelerate repair (8c), which ignores NO_TORCH; the
-        # no-torch case also gets the runtime-deps slot an update announces separately.
-        assert _base_total(IS_WINDOWS = True) == 16
-        assert _base_total(IS_WINDOWS = True, NO_TORCH = True) == 15
+        # no-torch case also gets the runtime-deps slot an update announces separately. Both also
+        # carry the diffusers main slot (11c), which is spent on every path including opting out.
+        assert _base_total(IS_WINDOWS = True) == 17
+        assert _base_total(IS_WINDOWS = True, NO_TORCH = True) == 16
 
     @pytest.mark.parametrize(
         "flags,total",
         [
-            ({}, 17),  # Linux, torch
-            ({"NO_TORCH": True}, 15),  # Linux, GGUF-only (incl. the no-torch runtime step)
+            ({}, 18),  # Linux, torch
+            ({"NO_TORCH": True}, 16),  # Linux, GGUF-only (incl. the no-torch runtime step)
             # Two MLX slots: the install step and the post-core-phase re-resolve.
-            ({"IS_MACOS": True, "IS_MAC_ARM": True}, 15),  # Apple Silicon
-            ({"IS_MACOS": True}, 13),  # Intel Mac
+            ({"IS_MACOS": True, "IS_MAC_ARM": True}, 16),  # Apple Silicon
+            ({"IS_MACOS": True}, 14),  # Intel Mac
         ],
     )
     def test_the_other_platform_totals_include_torchcodec(self, flags, total):

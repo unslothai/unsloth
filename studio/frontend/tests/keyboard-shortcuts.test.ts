@@ -1090,12 +1090,15 @@ test("the fork chord is registered where it mounts, not from an action bar", asy
   );
 
   // Two instances of the action now exist on the last message, the chord's and
-  // the button's, so the in-flight flag cannot be either one's own state: the
-  // chord followed by a click would post two forks with two thread ids.
+  // the button's, and the sidebar row menu is a third, so the in-flight flag cannot be any one
+  // of their own state: the chord followed by a click would post two forks with two thread ids.
+  // It lives in its own module so every caller reads the one flag.
+  const FORK_STORE = await readSrcAsync("features/chat/utils/fork-in-flight.ts");
   assert.match(
-    THREAD,
-    /const useForkInFlight = create<\{\n\s*forking: boolean;/,
+    FORK_STORE,
+    /export const useForkInFlight = create<\{\n\s*forking: boolean;/,
   );
+  assert.ok(!THREAD.includes("const useForkInFlight = create<"));
   assert.match(THREAD, /const pending = useForkInFlight\(\(s\) => s\.forking\);/);
   assert.match(
     THREAD,

@@ -20,6 +20,7 @@ from unsloth_cli._inference import (
     raise_on_streamed_error,
     render_columns,
     resolve_model_config,
+    server_load_opts,
     stream_markdown,
     visible_text,
 )
@@ -77,15 +78,20 @@ def _get_base_load_in_4bit(model_config) -> bool:
         with open(adapter_cfg_path, encoding = "utf-8") as f:
             adapter_cfg = json.load(f)
 
+        trained_in_4bit = adapter_cfg.get("unsloth_load_in_4bit")
+        if isinstance(trained_in_4bit, bool):
+            return trained_in_4bit
         training_method = adapter_cfg.get("unsloth_training_method")
         if training_method == "lora":
             return False
-        elif training_method == "qlora":
+        if training_method == "qlora":
             return True
-        elif not training_method:
-            if model_config.base_model and "-bnb-4bit" not in model_config.base_model.lower():
-                return False
-            return True
+        if (
+            not training_method
+            and model_config.base_model
+            and "-bnb-4bit" not in model_config.base_model.lower()
+        ):
+            return False
         return True
     except Exception:
         return True
@@ -158,6 +164,7 @@ def _pick_model(console) -> str:
 
 
 def chat(
+    ctx: typer.Context,
     model: Optional[str] = typer.Argument(
         None, help = "HF model id or local path. Omit to pick one of your local models."
     ),
@@ -192,7 +199,12 @@ def chat(
         "and MLX, and 2048 on the transformers backend. A value that differs from a "
         "running Unsloth server's reloads the model.",
     ),
-    load_in_4bit: bool = typer.Option(True, "--load-in-4bit/--no-load-in-4bit"),
+    load_in_4bit: bool = typer.Option(
+        True,
+        "--load-in-4bit/--no-load-in-4bit",
+        help = "Load the model in 4-bit. Left unset, a running Unsloth server that already "
+        "has this model loaded keeps its precision.",
+    ),
     tensor_parallel: bool = typer.Option(
         False,
         "--tensor-parallel/--no-tensor-parallel",
@@ -301,7 +313,9 @@ def chat(
 
     # Prefer a running Unsloth server: instant starts, model shared with the UI.
     chat_backend = (
-        None if (no_server or is_mlx_distributed) else connect_studio_server(model, **load_opts)
+        None
+        if (no_server or is_mlx_distributed)
+        else connect_studio_server(model, **server_load_opts(ctx, load_opts))
     )
     server_mode = chat_backend is not None
     if server_mode and should_print:

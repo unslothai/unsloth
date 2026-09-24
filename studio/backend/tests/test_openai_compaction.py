@@ -151,7 +151,7 @@ def test_azure_openai_mixed_case_base_url_matches(monkeypatch):
 def test_cloud_gate_uses_hostname_not_substring(monkeypatch):
     # CodeQL py/incomplete-url-substring-sanitization: an attacker
     # controlling base_url could embed `api.openai.com` or
-    # `.openai.azure.com` in a path or subdomain on an arbitrary host to
+    # an Azure managed suffix in a path or subdomain on an arbitrary host to
     # slip cloud-only body fields to their own server. The
     # hostname-anchored helper must reject both shapes.
     for evil in [
@@ -159,6 +159,9 @@ def test_cloud_gate_uses_hostname_not_substring(monkeypatch):
         "https://api.openai.com.attacker.com/v1",
         "https://attacker.com/.openai.azure.com/v1",
         "https://my-resource.openai.azure.com.attacker.com/openai/v1",
+        "https://attacker.com/.services.ai.azure.com/openai/v1",
+        "https://my-resource.services.ai.azure.com.attacker.com/openai/v1",
+        "https://my-resource.services.ai.azure.com@attacker.com/openai/v1",
     ]:
         captured = _capture_at_threshold(monkeypatch, base_url = evil)
         assert "context_management" not in captured["body"], evil

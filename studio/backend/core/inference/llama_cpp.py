@@ -471,10 +471,13 @@ from core.inference.tool_loop_controller import (
     tool_call_limit_nudge,
 )
 from state.tool_approvals import (
+    DECISION_EXPIRED,
+    TOOL_APPROVAL_EXPIRED_MESSAGE,
     TOOL_REJECTED_MESSAGE,
     abort_tool_decision,
     begin_tool_decision,
     new_approval_id,
+    decision_reason,
     wait_tool_decision,
 )
 from utils.paths.path_utils import _is_wsl, is_appledouble_metadata
@@ -4456,6 +4459,20 @@ def _swa_full_from_args_or_env(
     return value in _LLAMA_ARG_TRUE_VALUES
 
 
+def _reasoning_from_env(env: Mapping[str, str]) -> Optional[bool]:
+    value = env.get("LLAMA_ARG_REASONING")
+    if value in _LLAMA_ARG_TRUE_VALUES:
+        return True
+    if value in _LLAMA_ARG_FALSE_VALUES:
+        return False
+    return None
+
+
+def _reasoning_effort_from_env(env: Mapping[str, str]) -> Optional[str]:
+    value = env.get("LLAMA_ARG_REASONING_EFFORT")
+    return None if value == "default" else value
+
+
 def _env_asks_for_the_native_context(env: Optional[Mapping[str, str]] = None) -> bool:
     """Whether an inherited LLAMA_ARG_CTX_SIZE is 0.
 
@@ -6384,9 +6401,6 @@ def _build_launch_reasoning_args(
     tools/server/server-common.cpp then overrides from the merged kwarg anyway. If
     llama.cpp stops writing that kwarg, or stops letting it override, this becomes a
     behaviour change rather than a substitution.
-
-    An exported LLAMA_ARG_REASONING is still overridden by the command line, exactly as
-    the kwargs channel overrides it on main; honouring it is #8521.
     """
     remaining = dict(reasoning_kwargs)
     args: list[str] = []
@@ -6936,6 +6950,18 @@ def _metal_capable_host() -> bool:
         return bool(is_apple_silicon())
     except Exception:  # noqa: BLE001 -- a diagnostic must not break a load
         return sys.platform == "darwin"
+
+
+# Shared with the settings reader so the search, the settings UI and the process
+# allowlist expand one value the same way, and none of them raises on a named user
+# the password database cannot answer for. Path.expanduser() does raise, which is
+# what took runtime discovery down on a stale ~deleted-user pin.
+def _expanded_user_path(value) -> Path:
+    try:
+        from utils.llama_cpp_path_settings import expanded_user_path
+        return expanded_user_path(value)
+    except Exception:
+        return Path(os.path.expanduser(str(value)))
 
 
 def _write_direct_stream_key(key: str) -> "Path":
@@ -7841,7 +7867,11 @@ class LlamaCppBackend:
     def reasoning_default(self) -> bool:
         return self._reasoning_default
 
-    def _reasoning_kwargs(self, enable_thinking: bool) -> dict:
+    def _reasoning_kwargs(
+        self,
+        enable_thinking: bool,
+        effort: Optional[str] = None,
+    ) -> dict:
         if self._reasoning_style == "enable_thinking_effort":
             # GLM-5.2-style: enable_thinking is the on/off gate; when on, leave
             # the template's default effort (max) in place.
@@ -7849,7 +7879,7 @@ class LlamaCppBackend:
         if self._reasoning_style == "reasoning_effort":
             return _coerce_reasoning_effort(
                 getattr(self, "_architecture", None),
-                {"reasoning_effort": "high" if enable_thinking else "low"},
+                {"reasoning_effort": effort or ("high" if enable_thinking else "low")},
             )
         return {"enable_thinking": enable_thinking}
 
@@ -8612,7 +8642,18 @@ class LlamaCppBackend:
         custom_llama_cpp = os.environ.get("UNSLOTH_LLAMA_CPP_PATH")
         managed_path_marker = os.environ.get("UNSLOTH_STUDIO_MANAGED_LLAMA_CPP_PATH") == "1"
         if custom_llama_cpp and not managed_path_marker:
-            hit, locked = _scan_pinned(_layout_candidates(Path(custom_llama_cpp)))
+            # expanduser, like every other reader of this variable:
+            # default_managed_llama_dir, get_stored_custom_llama_cpp_path and the
+            # desktop's own pinning all expand it, and the literal lookup here was
+            # the only one that did not. A "~/llama.cpp" written into a service
+            # unit, a .env or the Windows environment dialog reaches the process
+            # unexpanded, and the literal form made this search a folder named ~
+            # beside the working directory, walk past it, and load a different
+            # runtime than every other component was reporting on.
+            # Not Path.expanduser: it raises RuntimeError on a name it cannot
+            # resolve, so a stale ~deleted-user pin made discovery itself throw
+            # instead of falling through to the rest of the order below.
+            hit, locked = _scan_pinned(_layout_candidates(_expanded_user_path(custom_llama_cpp)))
             if locked is not None:
                 return _unavailable(locked)
             if hit:
@@ -27070,8 +27111,17 @@ class LlamaCppBackend:
                             # <= 9, not < 9: 9B is the top of the Small tier, so it is off too.
                             if size_b <= 9:
                                 thinking_default = False
-                    self._reasoning_default = thinking_default
-                    reasoning_kw = self._reasoning_kwargs(thinking_default)
+                    # argv beats the env `unsloth start` pins these through, so repeat it.
+                    _env_reasoning = _reasoning_from_env(env)
+                    if _env_reasoning is not None:
+                        thinking_default = _env_reasoning
+                    reasoning_kw = self._reasoning_kwargs(
+                        thinking_default, _reasoning_effort_from_env(env)
+                    )
+                    # An effort ladder thinks at every level but "none" (Inkling: 0), low included.
+                    self._reasoning_default = reasoning_kw.get(
+                        "enable_thinking", reasoning_kw.get("reasoning_effort") not in ("none", 0)
+                    )
                     # preserve_thinking is independent of the thinking gate.
                     # Qwen3.8 defaults it on; Qwen3.6, Gemma 4, and every other
                     # supporting family keep the existing off default. The
@@ -32079,7 +32129,10 @@ class LlamaCppBackend:
             # UNSLOTH_LLAMA_CPP_PATH env var (custom install dir)
             custom_dir = os.environ.get("UNSLOTH_LLAMA_CPP_PATH")
             if custom_dir:
-                install_roots.append(Path(custom_dir))
+                # expanduser to match _find_llama_server_binary: the allowlist has
+                # to name the tree discovery actually spawns from, or a server
+                # started out of an expanded ~ is one this refuses to clean up.
+                install_roots.append(_expanded_user_path(custom_dir))
 
             # LLAMA_SERVER_PATH env var (exact binary path)
             exact_binaries: list[Path] = []
@@ -36953,6 +37006,9 @@ class LlamaCppBackend:
                             if decision_slot is not None
                             else None
                         )
+                        # The slot is where the waiter says WHY: the user's refusal, or an approval
+                        # nobody answered. Read before decision_slot is dropped in the deny branch.
+                        _decision_reason = decision_reason(decision_slot)
                         if _decision is not None and _decision != "deny":
                             # Approved: now it really is running.
                             yield {"type": "status", "text": decision.status_text}
@@ -36960,17 +37016,25 @@ class LlamaCppBackend:
                             decision_slot = None
                             _forced_choice_resolved = True
                             resolved_provisional_tool_call_ids.add(decision.tool_call_id)
+                            # An approval nobody answered is not the user's decision, and this
+                            # string is the only account of the call both the model and the
+                            # reopened card get: the buttons are gone by the time it lands.
+                            _denied_text = (
+                                TOOL_APPROVAL_EXPIRED_MESSAGE
+                                if _decision_reason == DECISION_EXPIRED
+                                else TOOL_REJECTED_MESSAGE
+                            )
                             yield {
                                 "type": "tool_end",
                                 "tool_name": decision.tool_name,
                                 "tool_call_id": decision.tool_call_id,
-                                "result": TOOL_REJECTED_MESSAGE,
+                                "result": _denied_text,
                                 "provenance": decision.provenance,
                             }
                             denied_message = {
                                 "role": "tool",
                                 "name": decision.tool_name,
-                                "content": TOOL_REJECTED_MESSAGE,
+                                "content": _denied_text,
                             }
                             if decision.tool_call_id:
                                 denied_message["tool_call_id"] = decision.tool_call_id

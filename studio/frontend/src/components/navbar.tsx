@@ -66,7 +66,7 @@ export function Navbar() {
           className={cn(
             "pointer-events-auto",
             usesCustomTitlebar
-              ? "!size-[34px]"
+              ? "!size-[calc(34px*var(--ui-space-scale,1))]"
               : "!size-[calc(34px*var(--ui-space-scale,1))]",
           )}
         />
