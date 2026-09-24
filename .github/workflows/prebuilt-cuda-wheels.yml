@@ -194,7 +194,7 @@ jobs:
 
       # Cache hits require matching compiler commands and checkout paths in both jobs.
       - name: Install ccache
-        timeout-minutes: 10
+        timeout-minutes: 13
         env:
           RETRY_ATTEMPTS: '2'
           RETRY_ATTEMPT_TIMEOUT: '300'
@@ -381,7 +381,7 @@ jobs:
           echo "CUDA_HOME=/usr/local/cuda-13.0" >> "$GITHUB_ENV"
 
       - name: Install ccache
-        timeout-minutes: 10
+        timeout-minutes: 13
         env:
           RETRY_ATTEMPTS: '2'
           RETRY_ATTEMPT_TIMEOUT: '300'
