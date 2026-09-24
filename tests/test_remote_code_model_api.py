@@ -130,3 +130,27 @@ def test_native_classes_are_left_alone():
     LlamaForCausalLM(cfg)
     assert LlamaForCausalLM.__dict__.get("tie_weights") is before
     assert LlamaForCausalLM._tied_weights_keys == keys
+
+
+def test_only_the_output_embedding_is_mapped_onto_the_input_embedding():
+    """A 4.x list may also name keys the remote code shares itself (a projection reused across
+    layers); mapping those onto the input embedding would tie them to the wrong tensor."""
+    if not _is_transformers5():
+        return
+    mod = _remote_module("transformers_modules.tiny_remote_d.modeling_tiny")
+
+    class SharedProjection(mod.TinyRemoteForCausalLM):
+        _tied_weights_keys = ["lm_head.weight", "proj.weight"]
+
+        def __init__(self, config):
+            PreTrainedModel.__init__(self, config)
+            self.model = mod.TinyRemoteModel(config)
+            self.lm_head = torch.nn.Linear(config.hidden_size, config.vocab_size, bias = False)
+            self.proj = torch.nn.Linear(config.hidden_size, config.hidden_size, bias = False)
+            self.post_init()
+
+    SharedProjection.__module__ = mod.__name__
+    model = SharedProjection(mod.TinyRemoteConfig())
+    assert model._tied_weights_keys == {"lm_head.weight": "model.embed_tokens.weight"}
+    assert model.proj.weight is not model.model.embed_tokens.weight
+    assert model.lm_head.weight is model.model.embed_tokens.weight

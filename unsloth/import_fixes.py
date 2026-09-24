@@ -1175,15 +1175,19 @@ def _patch_remote_model_class(cls, new_keywords):
 
 
 def _legacy_tied_weights_mapping(model, keys):
-    """4.x ``_tied_weights_keys = ["lm_head.weight"]`` meant "tie these to the input
-    embeddings"; 5 wants ``{target: source}``. Resolved on the instance, where the input
-    embedding's own parameter name is known."""
+    """5 wants ``_tied_weights_keys`` as ``{target: source}``. A 4.x list only named keys that
+    may be tied; the one tie 4.x itself made from it is the output embedding onto the input
+    embedding, so only the output embedding's weight is mapped (resolved on the instance, where
+    both parameter names are known). Any other key, such as a projection shared between layers
+    by the remote code itself, gets no source rather than a wrong one."""
     try:
         embedding = model.get_input_embeddings()
+        output = model.get_output_embeddings()
     except Exception:
         return {}
     weight = getattr(embedding, "weight", None)
-    if weight is None:
+    output_weight = getattr(output, "weight", None)
+    if weight is None or output_weight is None:
         return {}
     names = {}
     for name, param in model.named_parameters(remove_duplicate = False):
@@ -1191,8 +1195,12 @@ def _legacy_tied_weights_mapping(model, keys):
     source = names.get(id(weight))
     if source is None:
         return {}
-    present = set(names.values())
-    return {key: source for key in keys if key in present and key != source}
+    output_names = {
+        name
+        for name, param in model.named_parameters(remove_duplicate = False)
+        if param is output_weight
+    }
+    return {key: source for key in keys if key in output_names and key != source}
 
 
 def fix_transformers5_remote_code_model_api():
