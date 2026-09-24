@@ -1811,6 +1811,67 @@ def test_unload_cancels_gguf_load_still_downloading(monkeypatch, unload_path, ca
     assert seen_at_gate == {"cancel": cancelled, "complete": cancelled}
 
 
+@pytest.mark.parametrize("resident, recorded", [(None, False), ("gguf-X", True)])
+def test_unload_after_cancelling_download_records_only_a_real_eviction(
+    monkeypatch, resident, recorded
+):
+    # A load cancelled mid-download never became resident, so there is nothing to unload.
+
+    from core.inference import llama_keepwarm
+    from models.inference import LoadRequest
+    import asyncio as _asyncio
+    import routes.inference as ri
+
+    attempt = ri._begin_load_attempt(LoadRequest(model_path = "gguf-X"), "s")
+    calls = {"lifecycle": [], "cleared": 0}
+
+    class _Gate:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+    class _Backend(_Unsloth):
+        active_model_name = resident
+        models = {resident: {}} if resident else {}
+
+        def unload_model(self, name):
+            return True
+
+    monkeypatch.setattr(ri, "get_llama_cpp_backend", lambda: _Llama())
+    monkeypatch.setattr(ri, "get_inference_backend", lambda: _Backend())
+    monkeypatch.setattr(ri, "is_registered_native_path_label", lambda a, b: False)
+    monkeypatch.setattr(ri, "release_chat_gpu_claim", lambda: True)
+    monkeypatch.setattr(ri, "_raise_or_cancel_active_generations", lambda **k: None)
+
+    async def _no_drain(**k):
+        return None
+
+    def _clear_resident(modality):
+        calls["cleared"] += 1
+
+    monkeypatch.setattr(ri, "_drain_and_recancel_before_teardown", _no_drain)
+    monkeypatch.setattr(
+        ri.api_monitor, "record_lifecycle", lambda **k: calls["lifecycle"].append(k)
+    )
+    monkeypatch.setattr(ri.account_access, "clear_resident", _clear_resident)
+    monkeypatch.setattr(llama_keepwarm, "inference_lifecycle_gate", lambda: _Gate())
+    monkeypatch.setattr(llama_keepwarm, "note_model_unloaded", lambda: None)
+    with ri._scoped_load_attempts_lock:
+        ri._running_load_attempt = attempt
+    try:
+        resp = _asyncio.run(ri._unload_model_impl(ri.UnloadRequest(model_path = "gguf-X"), "s"))
+    finally:
+        with ri._scoped_load_attempts_lock:
+            ri._running_load_attempt = None
+
+    assert resp.status == "unloaded"
+    assert attempt.cancel_event.is_set()
+    assert [c["event"] for c in calls["lifecycle"]] == (["unload"] if recorded else [])
+    assert calls["cleared"] == (1 if recorded else 0)
+
+
 # ----------------------------------------------------------------------------
 # cancel_load clears its loading marker BEFORE tearing the subprocess down, so a
 # racing off-gate load_model observes the cancel during the shutdown window.

@@ -18464,7 +18464,10 @@ async def _unload_model_impl(request: UnloadRequest, current_subject: str):
         # A downloading GGUF has no llama-server yet: cancel its load so it releases the gate.
         with _scoped_load_attempts_lock:
             running = _running_load_attempt
-        if running is not None and _names_the_loading_model(running.model_path, request.model_path):
+        cancelled_before_server = running is not None and _names_the_loading_model(
+            running.model_path, request.model_path
+        )
+        if cancelled_before_server:
             running.cancel_event.set()
             running.cancel_complete.set()
             logger.info(f"Cancelled in-flight load before its server started: {request.model_path}")
@@ -18542,7 +18545,11 @@ async def _unload_model_impl(request: UnloadRequest, current_subject: str):
             # a slow SSE stream paused between tokens still holds, so a sync call would block
             # the loop that drives the stream's next token and the lock release.
             backend = await asyncio.to_thread(get_inference_backend)
-            if _unload_evicts_standard_backend(backend, request.model_path):
+            evicts = _unload_evicts_standard_backend(backend, request.model_path)
+            if cancelled_before_server and not evicts:
+                # The cancelled load never became resident, so there is no unload to record.
+                return UnloadResponse(status = "unloaded", model = request.model_path)
+            if evicts:
                 # Point of no return for the standard path, same rule as above.
                 _raise_or_cancel_active_generations(
                     force = request.force_cancel_active, action = "Unloading the model"
