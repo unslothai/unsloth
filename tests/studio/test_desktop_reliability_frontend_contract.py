@@ -2430,8 +2430,24 @@ def test_image_train_rail_matches_create_and_header():
     layout = source.split("overflow-x-hidden: an unset overflow-x", 1)[1]
 
     assert "@[50rem]:flex-row @[50rem]:overflow-hidden" in layout
-    # The Create rail's width and clamp, so switching Create and Train keeps the divider still.
-    assert "pl-10 max-sm:pl-5 " + RAIL_WIDTH in layout
+    # The Create rail's width and clamp, so switching Create and Train keeps the divider still. The
+    # Train rail sits inside a scroller with right padding, so its 100% is that padding narrower
+    # than Create's and the clamp adds exactly that padding back (#11765). Read both numbers rather
+    # than pin either: the divider only lines up while they are the same spacing step.
+    rail = re.search(
+        r"pl-10 max-sm:pl-5 @\[50rem\]:w-\[min\(var\(--media-rail-width,408px\),"
+        r"calc\(100%-13rem\+--spacing\((\d+)\)\)\)\]",
+        layout,
+    )
+    assert rail, "the Train rail no longer uses the Create rail's width variable and clamp"
+    scroller = re.search(
+        r'className="[^"]*overflow-y-auto overflow-x-hidden[^"]*\bsm:pr-(\d+)\b', layout
+    )
+    assert scroller, "the Train scroller's right padding moved; the rail clamp depends on it"
+    assert rail.group(1) == scroller.group(1), (
+        f"the Train rail adds back --spacing({rail.group(1)}) but its scroller pads sm:pr-"
+        f"{scroller.group(1)}, so the divider no longer lines up with Create's"
+    )
     assert "@[50rem]:border-r @[50rem]:border-b-0" in layout
     assert "@container hover-scrollbar" in layout
     assert "@[50rem]:pt-[42px]" in layout
