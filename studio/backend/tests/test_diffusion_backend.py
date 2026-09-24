@@ -7202,7 +7202,10 @@ def test_unload_mid_render_releases_the_pipeline(fake_runtime, monkeypatch):
     assert True in cleared_with_pipe_gone
 
 
-def test_replacing_load_mid_render_releases_the_pipeline(fake_runtime, monkeypatch):
+@pytest.mark.parametrize("transition_ends_first", [False, True])
+def test_replacing_load_mid_render_releases_the_pipeline(
+    fake_runtime, monkeypatch, transition_ends_first
+):
     # begin_load bumps the token before its prefetch, so a render started then keeps that token while
     # load_pipeline cancels it and tears down. Forced order: the teardown's cache clear runs while the
     # render's traceback still pins the pipe, so the render must clear again after dropping it.
@@ -7259,8 +7262,10 @@ def test_replacing_load_mid_render_releases_the_pipeline(fake_runtime, monkeypat
     monkeypatch.setattr("core.inference.diffusion.clear_gpu_cache", _clear)
     real_clear_frames = diffusion_mod._clear_exception_frames
 
+    transition_done = threading.Event()
+
     def _late_clear_frames(exc):
-        teardown_cleared.wait(5)
+        (transition_done if transition_ends_first else teardown_cleared).wait(5)
         real_clear_frames(exc)
 
     monkeypatch.setattr(diffusion_mod, "_clear_exception_frames", _late_clear_frames)
@@ -7287,7 +7292,9 @@ def test_replacing_load_mid_render_releases_the_pipeline(fake_runtime, monkeypat
                     backend._unload_locked()
                 finally:
                     backend._release_teardown_locked()
-            render_done.wait(5)
+            if not transition_ends_first:
+                render_done.wait(5)
+        transition_done.set()
 
     t = threading.Thread(target = _run)
     t.start()

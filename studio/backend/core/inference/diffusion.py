@@ -1043,7 +1043,7 @@ def _release_render_on_unload(method):
 
     @functools.wraps(method)
     def wrapped(self, *args, **kwargs):
-        token = self._load_token
+        token, teardowns = self._load_token, self._teardown_epoch
         try:
             return method(self, *args, **kwargs)
         except BaseException as exc:
@@ -1051,8 +1051,9 @@ def _release_render_on_unload(method):
             raise
         finally:
             # A replacing load whose begin_load bumped the token before this render began cancels it
-            # without moving the token again, so a pending or running teardown counts too.
-            if self._load_token != token or self._teardown_waiters or self._transition_owns_slot:
+            # without moving the token again, and may finish its teardown before this runs, so any
+            # teardown reserved since entry counts too.
+            if self._load_token != token or self._teardown_epoch != teardowns:
                 try:
                     clear_gpu_cache()
                 except Exception as exc:
@@ -1563,6 +1564,8 @@ class DiffusionBackend:
         self._transition_owns_slot = False
         # Teardowns waiting to free this pipeline; a count supports concurrent reservations.
         self._teardown_waiters = 0
+        # Only ever grows: every teardown reserved, so a render can tell one ran under it after the fact.
+        self._teardown_epoch = 0
         # Set when no teardown is reserved; an Event keeps waiting independent of _lock.
         self._teardown_drained = threading.Event()
         self._teardown_drained.set()
@@ -1628,6 +1631,7 @@ class DiffusionBackend:
         """Fence queued generations off the pipeline this teardown is about to free. Call only while
         holding ``_lock``, so the count and the gate move together."""
         self._teardown_waiters += 1
+        self._teardown_epoch += 1
         self._teardown_drained.clear()
 
     def _release_teardown_locked(self) -> None:
