@@ -1074,22 +1074,32 @@ def active_backend_is_llama(model_name: str | None = None) -> bool:
         return False
 
 
-def _llama_pooling(name: str) -> str | None:
+def _llama_pooling(name: str, served = None) -> str | None:
     try:
-        from .embed_llama_server import LlamaServerBackend
+        from .embed_llama_server import LlamaServerBackend, _gguf_pooling
     except Exception:  # noqa: BLE001 - llama plumbing import must never block
         return None
-    pooling = LlamaServerBackend.cached_pooling(name)
+    # The file the running server loaded wins over a cache search: moving the HF cache leaves it serving the old path.
+    backend = served if served is not None else _backend
+    path = getattr(backend, "_model_path", None)
+    if (
+        isinstance(backend, LlamaServerBackend)
+        and path
+        and backend._model_repo == config.effective_gguf_repo_for_embedding_model(name)
+    ):
+        pooling = _gguf_pooling(path)
+    else:
+        pooling = LlamaServerBackend.cached_pooling(name)
     return None if pooling == "cls" else pooling
 
 
-def _identity(is_llama: bool, name: str) -> str:
+def _identity(is_llama: bool, name: str, served = None) -> str:
     if is_llama:
         return config.embedding_identity(
             "llama-server",
             name,
             gguf_repo = config.effective_gguf_repo_for_embedding_model(name),
-            pooling = _llama_pooling(name),
+            pooling = _llama_pooling(name, served),
         )
     return config.embedding_identity("sentence-transformers", name)
 
@@ -1159,7 +1169,7 @@ def encode_with_identity(
     name = model_name or config.effective_embedding_model()
     if served is None:
         return vectors, embedding_identity(name)
-    return vectors, _identity(_is_llama_backend(served), name)
+    return vectors, _identity(_is_llama_backend(served), name, served)
 
 
 def warm(model_name: str | None = None) -> None:

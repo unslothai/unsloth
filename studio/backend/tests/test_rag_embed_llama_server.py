@@ -1701,3 +1701,21 @@ def test_llama_identity_changes_only_for_a_non_cls_gguf(monkeypatch, tmp_path, p
     _use_cache_root(monkeypatch, tmp_path / "hub")
     legacy = config.embedding_identity("llama-server", model, gguf_repo = repo)
     assert embeddings._identity(True, model) == legacy + suffix
+
+
+def test_llama_identity_follows_the_served_gguf_after_the_cache_moves(monkeypatch, tmp_path):
+    """Moving the HF cache in Settings leaves the server on the old file, so a fresh
+    cache search dropped the ``:last`` suffix and tagged last-pooled vectors as CLS."""
+    model, repo = "org/embed", "org/embed-GGUF"
+    monkeypatch.setattr(config, "effective_gguf_repo_for_embedding_model", lambda m: repo)
+    snapshot = _seed_cache(tmp_path / "hub-a", repo, ["embed-F16.gguf"])
+    served = (snapshot / "embed-F16.gguf").resolve()
+    _write_gguf(served, "qwen3", 3)
+    backend = LlamaServerBackend()
+    backend._model_path, backend._model_repo = str(served), repo
+    monkeypatch.setattr(embeddings, "_backend", backend)
+    (tmp_path / "hub-b").mkdir()
+    _use_cache_root(monkeypatch, tmp_path / "hub-b")
+    legacy = config.embedding_identity("llama-server", model, gguf_repo = repo)
+    assert embeddings._identity(True, model) == legacy + ":last"
+    assert embeddings._identity(True, model, backend) == legacy + ":last"
