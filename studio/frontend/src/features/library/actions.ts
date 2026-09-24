@@ -16,6 +16,7 @@ import { toast } from "@/lib/toast";
 import { MAX_VIDEO_SIZE } from "@/lib/video-utils";
 import { type LibraryItem, libraryDownloadUrl, libraryItemFile } from "./api";
 import { fileKind } from "./file-kind";
+import { libraryFileName } from "./file-name";
 import {
   type LibraryChatHandoff,
   useLibraryChatHandoffStore,
@@ -59,7 +60,7 @@ export async function downloadLibraryItem(item: LibraryItem): Promise<void> {
     // The desktop app streams to the chosen path: a Blob plus its IPC copy would hold the file
     // in memory twice.
     if (isTauri && !item.textOnly && STREAMABLE.test(item.id)) {
-      await downloadUrlStreaming(await libraryDownloadUrl(item), item.name);
+      await downloadUrlStreaming(await libraryDownloadUrl(item), libraryFileName(item));
       return;
     }
     const file = await libraryItemFile(item);

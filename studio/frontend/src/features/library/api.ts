@@ -4,6 +4,7 @@
 import { authFetch, getAuthSessionEpoch, getAuthToken } from "@/features/auth";
 import { apiUrl } from "@/lib/api-base";
 import { readFastApiError } from "@/lib/format-fastapi-error";
+import { libraryFileName, libraryFileType } from "./file-name";
 
 export type LibrarySource = "uploaded" | "generated";
 
@@ -254,11 +255,11 @@ export async function deleteLibraryFolder(id: string): Promise<void> {
   );
 }
 
-/** The item's bytes, typed as what they are: sources serve most files as opaque downloads. */
-export async function fetchLibraryBlob(item: LibraryItem): Promise<Blob> {
+/** The item's bytes as `type`: sources serve most files as opaque downloads, so the caller says
+ *  what they are (see file-name.ts for the rules). */
+export async function fetchLibraryBlob(item: LibraryItem, type: string): Promise<Blob> {
   const response = await ensureOk(await authFetch(item.fileUrl));
   const blob = await response.blob();
-  const type = item.textOnly ? "text/plain" : item.contentType;
   return blob.type === type ? blob : new Blob([blob], { type });
 }
 
@@ -299,7 +300,6 @@ export async function fetchLibraryTextPrefix(
   }
 }
 
-/** What Download and "Chat about this" hand over. Text-only chat uploads say so in the name. */
 /**
  * An absolute URL for the item's bytes that carries its own token, for the desktop app's native
  * save, which sends no header. The HEAD goes through authFetch first, which refreshes an expired
@@ -312,8 +312,9 @@ export async function libraryDownloadUrl(item: LibraryItem): Promise<string> {
   return apiUrl(token ? `${path}&token=${encodeURIComponent(token)}` : path);
 }
 
+/** What Download and "Chat about this" hand over: a name safe on any OS, typed for the composer. */
 export async function libraryItemFile(item: LibraryItem): Promise<File> {
-  const blob = await fetchLibraryBlob(item);
-  const name = item.textOnly ? `${item.name}.txt` : item.name;
-  return new File([blob], name, { type: blob.type });
+  const name = libraryFileName(item);
+  const type = libraryFileType(name, item.textOnly ? "text/plain" : item.contentType);
+  return new File([await fetchLibraryBlob(item, type)], name, { type });
 }

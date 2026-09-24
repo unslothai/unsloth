@@ -74,7 +74,7 @@ export function useLibraryObjectUrl(
   useEffect(() => {
     if (!enabled) return;
     let cancelled = false;
-    const next = fetchLibraryBlob(item).then((blob) => URL.createObjectURL(blob));
+    const next = fetchLibraryBlob(item, item.textOnly ? "text/plain" : item.contentType).then((blob) => URL.createObjectURL(blob));
     next.then(
       (url) => !cancelled && setState({ key, url }),
       (err: unknown) =>
