@@ -1090,6 +1090,9 @@ def _llama_pooling(name: str, served = None) -> str | None:
         pooling = _gguf_pooling(path)
     else:
         pooling = LlamaServerBackend.cached_pooling(name)
+    if pooling is None:
+        # Nothing on disk to read, so match no stored row: pre-encode dedupe must not take forced-CLS vectors as current.
+        return "unresolved"
     return None if pooling == "cls" else pooling
 
 

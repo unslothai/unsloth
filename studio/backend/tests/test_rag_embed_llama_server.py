@@ -1719,3 +1719,16 @@ def test_llama_identity_follows_the_served_gguf_after_the_cache_moves(monkeypatc
     legacy = config.embedding_identity("llama-server", model, gguf_repo = repo)
     assert embeddings._identity(True, model) == legacy + ":last"
     assert embeddings._identity(True, model, backend) == legacy + ":last"
+
+
+def test_llama_identity_with_no_gguf_on_disk_matches_no_forced_cls_row(monkeypatch, tmp_path):
+    """With the GGUF evicted and no server up, the prediction fell back to the forced-CLS
+    identity, so a re-upload deduplicated onto those stale vectors instead of re-indexing."""
+    model, repo = "org/embed", "org/embed-GGUF"
+    monkeypatch.setattr(config, "effective_gguf_repo_for_embedding_model", lambda m: repo)
+    (tmp_path / "hub").mkdir()
+    _use_cache_root(monkeypatch, tmp_path / "hub")
+    legacy = config.embedding_identity("llama-server", model, gguf_repo = repo)
+    predicted = embeddings._identity(True, model)
+    assert not config.embedding_identity_matches(legacy, predicted)
+    assert config.embedding_identity_model(predicted) == model
