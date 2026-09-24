@@ -82,6 +82,7 @@ export const useLibraryStore = create<LibraryState>((set, get) => {
     refresh: async () => {
       const generation = ++refreshGeneration;
       const editsBefore = edits;
+      const favoritesStart = useLibraryFavoritesStore.getState().begin();
       if (get().status === "idle") set({ status: "loading" });
       try {
         const { items, folders } = await getLibrary();
@@ -91,9 +92,20 @@ export const useLibraryStore = create<LibraryState>((set, get) => {
           return;
         }
         if (edits !== editsBefore) return get().refresh();
-        set({ items, folders, status: "ready", error: null });
-        useLibraryFavoritesStore.setState({
-          ids: new Set(items.filter((item) => item.favorite).map((item) => item.id)),
+        // A star toggled on Images or Video meanwhile is newer than this snapshot.
+        const favorites = useLibraryFavoritesStore.getState().adopt(
+          favoritesStart,
+          new Set(items.filter((item) => item.favorite).map((item) => item.id)),
+        );
+        set({
+          items: items.map((item) =>
+            favorites.has(item.id) === item.favorite
+              ? item
+              : { ...item, favorite: !item.favorite },
+          ),
+          folders,
+          status: "ready",
+          error: null,
         });
       } catch (error) {
         if (generation !== refreshGeneration) return;
@@ -158,7 +170,11 @@ export const useLibraryStore = create<LibraryState>((set, get) => {
     },
     addFolder: async (name, parentId) => {
       const folder = await createLibraryFolder(name, parentId);
-      set((state) => ({ folders: [folder, ...state.folders] }));
+      // A refresh started before it landed would drop it; the count sends that one back for more.
+      edits += 1;
+      set((state) => ({
+        folders: [folder, ...state.folders.filter((f) => f.id !== folder.id)],
+      }));
       return folder;
     },
     patchFolder: (id, patch) =>
