@@ -144,6 +144,12 @@ ICON_FETCH_CEILING = 64 * 1024
 # What the installers print when they decline to do work (setup.sh consumes the prebuilt installers'
 # "already matches" and prints its own line).
 NO_WORK_MARKERS = ("dependencies up to date", "prebuilt up to date", "sidecar current")
+
+# whisper.cpp installs only when its release is paired with the llama.cpp release the install
+# picked. Between the two publishes (llama.cpp out, whisper.cpp not yet) a fresh install has no
+# whisper.cpp at all, and every run says so on this line (setup.sh / setup.ps1). That is the
+# pairing gate working, not a prebuilt being re-validated.
+WHISPER_UNPAIRED = re.compile(r"whisper\.cpp\s+no compatible prebuilt \(")
 # setup.sh's column-padded frontend line: a rebuild on a warm npm cache talks to no forbidden host,
 # so the log line is the only witness.
 FRONTEND_CURRENT_MARKER = re.compile(r"frontend\s+up to date")
@@ -655,6 +661,19 @@ def diff(before: dict, after: dict) -> list[str]:
     return [key for key in sorted(set(before) | set(after)) if before.get(key) != after.get(key)]
 
 
+def expected_prebuilt_answers(log: str, unsloth_home: pathlib.Path) -> int:
+    """How many prebuilts must answer "prebuilt up to date": llama.cpp always, whisper.cpp when
+    the settled install has one. With none on disk the run must say it is unpaired, so a
+    whisper.cpp that silently went missing is still a failure."""
+    if any(p.is_file() for p in unsloth_home.glob("whisper.cpp/**/whisper-server*")):
+        return 2
+    assert WHISPER_UNPAIRED.search(log), (
+        "whisper.cpp is not installed and the update did not report an unpaired release:\n"
+        + log[-8000:]
+    )
+    return 1
+
+
 # ── run 1 and run 2 ──
 
 
@@ -724,9 +743,9 @@ def test_a_second_local_update_reuses_everything_it_can(install, settled):
         "a settled transformers sidecar was rebuilt:\n" + run.log[-8000:]
     )
     # One line each from llama.cpp and whisper.cpp: a single match would let one re-validate.
-    assert run.log.count("prebuilt up to date") >= 2, (
-        "a prebuilt was re-validated instead of answered from its marker:\n" + run.log[-8000:]
-    )
+    assert run.log.count("prebuilt up to date") >= expected_prebuilt_answers(
+        run.log, _unsloth_home()
+    ), "a prebuilt was re-validated instead of answered from its marker:\n" + run.log[-8000:]
     assert "falling back to source build" not in run.log
     for host in PAYLOAD_HOSTS:
         assert run.connections_to(host) == 0, f"{host}: {run.report()}"
@@ -1211,7 +1230,9 @@ def test_the_desktop_update_path_does_no_network_work(install, settled):
     for marker in NO_WORK_MARKERS:
         assert marker in run.log, f"{marker!r} missing from a no-op update:\n{run.log[-8000:]}"
     # Each component, not the generic line once.
-    assert run.log.count("prebuilt up to date") >= 2, run.log[-8000:]
+    assert run.log.count("prebuilt up to date") >= expected_prebuilt_answers(
+        run.log, _unsloth_home()
+    ), run.log[-8000:]
     assert run.log.count("sidecar current") == 3, run.log[-8000:]
     # One version check per run; the bounds stop a full listing or a payload returning.
     assert run.connections_to("pypi.org") <= 2, run.report()
@@ -1221,3 +1242,36 @@ def test_the_desktop_update_path_does_no_network_work(install, settled):
     assert run.connections_to("api.github.com") <= MAX_API_GITHUB_DESKTOP, run.report()
     assert_read_metadata_but_no_payload(run)
     assert diff(before, snapshot(install)) == []
+
+
+# ── the whisper.cpp pairing gate (no install needed) ──
+
+# Verbatim from the Update CI log on 2026-09-24, run between the two publishes.
+UNPAIRED_SH = (
+    "  whisper.cpp    no compatible prebuilt (installed llama.cpp b11139-mix-a6922cc; whisper "
+    "requires b11115-mix-a6922cc); curated whisper.cpp dictation is unavailable"
+)
+
+
+def test_an_unpaired_whisper_release_lowers_the_count_to_llama_alone(tmp_path):
+    assert expected_prebuilt_answers(UNPAIRED_SH, tmp_path) == 1
+
+
+def test_an_installed_whisper_still_has_to_answer_from_its_marker(tmp_path):
+    server = tmp_path / "whisper.cpp" / "build" / "bin" / "whisper-server"
+    server.parent.mkdir(parents = True)
+    server.write_bytes(b"")
+    # Even with the unpaired line present, a whisper.cpp on disk must answer for itself.
+    assert expected_prebuilt_answers(UNPAIRED_SH, tmp_path) == 2
+
+
+def test_a_missing_whisper_without_the_unpaired_line_fails(tmp_path):
+    with pytest.raises(AssertionError, match = "did not report an unpaired release"):
+        expected_prebuilt_answers("  llama.cpp      prebuilt up to date", tmp_path)
+
+
+def test_the_unpaired_pattern_matches_both_installers():
+    root = pathlib.Path(__file__).resolve().parents[3]
+    for script in ("studio/setup.sh", "studio/setup.ps1"):
+        text = (root / script).read_text(encoding = "utf-8")
+        assert re.search(r'step "whisper\.cpp" "no compatible prebuilt \(', text), script
