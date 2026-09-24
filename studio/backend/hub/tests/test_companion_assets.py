@@ -613,6 +613,46 @@ def test_a_component_repo_holding_a_checkpoint_is_still_a_checkpoint(monkeypatch
     assert companion_cleanup.companion_dependents("unsloth/FLUX.2-VAE") == [encoder]
 
 
+def test_a_vae_only_prequant_fetch_is_not_a_dependent(monkeypatch):
+    """The native engine takes Qwen-Image-2.1's VAE from ``unsloth/Qwen-Image-2.1-FP8``, which
+    also hosts the family's prequant checkpoints and so is not a curated component id. The
+    VAE-only row detects as qwen-image-2.1 and was read as an installed checkpoint needing
+    ``Qwen/Qwen-Image-2.1``, from a snapshot the On Device list hides: the base could not be
+    deleted and nothing on screen said what to remove first."""
+    gguf = "unsloth/Qwen-Image-2.1-GGUF"
+    prequant = "unsloth/Qwen-Image-2.1-FP8"
+    base = "Qwen/Qwen-Image-2.1"
+    _install(
+        monkeypatch,
+        _repo(gguf, [("qwen-image-2.1-Q4_K_M.gguf", 4_199_565_024)]),
+        _repo(prequant, [("vae/qwen_image_2.1_vae_bf16.safetensors", 680_000_000)]),
+        _base_repo(base),
+    )
+    assert companion_cleanup.companion_dependents(base) == [gguf]
+    assert companion_cleanup.companion_dependents(base, ignore_repo_ids = [gguf]) == []
+    impact = asyncio.run(companion_cleanup.delete_impact_response(base))
+    assert impact["blocked_by"] == [gguf]
+
+
+def test_a_prequant_repo_holding_its_checkpoint_still_pins_the_base(monkeypatch):
+    """A base pick with ``transformer_quant = "fp8"`` lands the checkpoint at that repo's root,
+    which is an installed model: the exclusion above is denoiser-gated, not id-gated."""
+    prequant = "unsloth/Qwen-Image-2.1-FP8"
+    base = "Qwen/Qwen-Image-2.1"
+    _install(
+        monkeypatch,
+        _repo(
+            prequant,
+            [
+                ("Qwen-Image-2.1-FP8.safetensors", 7_120_000_000),
+                ("vae/qwen_image_2.1_vae_bf16.safetensors", 680_000_000),
+            ],
+        ),
+        _base_repo(base),
+    )
+    assert companion_cleanup.companion_dependents(base) == [prequant]
+
+
 def test_a_borrowed_chat_repo_is_never_advertised_as_freeable(monkeypatch):
     """The delete preview must point only at rows Free up space will really show. A borrowed chat
     GGUF repo is a curated companion id but holds a denoiser, so the orphan listing skips it;

@@ -412,11 +412,12 @@ def required_companion_bases(
     ignored = {_normalise(r) for r in ignore_repo_ids}
     links = read_companion_links()
     pick_names = _cached_checkpoint_pick_names(cache_scans)
-    component_only = _cached_component_only_repo_ids(cache_scans)
+    # A repo with no denoiser cannot be loaded, so it needs nothing. Gating on that rather than on the curated component ids also covers a hosted prequant repo the native engine borrows a VAE from (``unsloth/Qwen-Image-2.1-FP8``): it detects as its family and pinned ``Qwen/Qwen-Image-2.1`` from a row the On Device list cannot show, so the delete was refused with nothing on screen to remove first.
+    checkpoints = _denoiser_holding_repo_ids(cache_scans)
     required: dict[str, set[str]] = {}
     for repo_id in _cached_model_repo_ids(cache_scans):
         key = _normalise(repo_id)
-        if key in ignored or key in component_only:
+        if key in ignored or key not in checkpoints:
             continue
         bases = _family_bases_for_names(repo_id, pick_names.get(key, []))
         recorded = links.get(key)
@@ -430,14 +431,6 @@ def required_companion_bases(
                 continue
             required.setdefault(base_key, set()).add(repo_id)
     return required
-
-
-def _cached_component_only_repo_ids(cache_scans) -> set[str]:
-    """Cached curated component repos holding no denoiser: companions, never checkpoints. Several of those ids carry a family keyword of their own (``unsloth/FLUX.2-dev-ComfyUI`` detects as flux.2-dev) so the loop above read a bare text-encoder fetch as an installed checkpoint and recorded the sibling VAE as still required, and the orphaned pair then held each other on disk: Free up space would not list them and a delete was refused, until the user happened to remove one component first. A repo that does hold a denoiser is a model the user installed and still counts, which is what keeps a borrowed chat GGUF a dependent of nothing and a checkpoint of itself. Through the same identity expansion the rest of this file uses, because an upgraded install holds the component under the legacy repack id the native fetch fell back to (``Comfy-Org/flux2-dev`` for ``unsloth/FLUX.2-dev-ComfyUI``), which matches the flux.2-dev family just as literally, so leaving it out kept the very caches this exclusion is for."""
-    curated = _component_only_repo_ids()
-    if not curated:
-        return set()
-    return curated - _denoiser_holding_repo_ids(cache_scans)
 
 
 def _canonical(repo_id: str) -> str:
