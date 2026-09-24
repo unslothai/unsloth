@@ -38908,7 +38908,6 @@ def _refuse_disabled_nvfp4_request(request: Any) -> None:
     opt-in silent fallback, so the request is refused outright, never swapped for another scheme,
     and nothing is resolved, planned or fetched for it."""
     from core.inference.diffusion_nvfp4_flag import refuse_disabled_nvfp4
-
     try:
         refuse_disabled_nvfp4(
             transformer_quant = getattr(request, "transformer_quant", None),

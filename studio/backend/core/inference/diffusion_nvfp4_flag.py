@@ -86,9 +86,7 @@ def nvfp4_disabled_message(control: str = "transformer_quant") -> str:
 
 
 def refuse_disabled_nvfp4(
-    *,
-    transformer_quant: Optional[str] = None,
-    text_encoder_quant: Optional[str] = None,
+    *, transformer_quant: Optional[str] = None, text_encoder_quant: Optional[str] = None
 ) -> None:
     """Raise ``ValueError`` (the routes' 400) when a request names NVFP4 while the switch is off.
 
