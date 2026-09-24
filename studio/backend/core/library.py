@@ -661,7 +661,6 @@ def video_thumbnail(item_id: str) -> bytes:
 def _location_resolvers() -> dict:
     from core.inference import audio_gallery, image_gallery, video_gallery
     from utils.paths.storage_roots import exports_root, outputs_root
-
     return {
         "uploads": uploads_dir,
         "images": image_gallery.gallery_dir,
@@ -676,7 +675,6 @@ def locations() -> list[dict]:
     """Where each kind of Library file lives, for Settings > Library. `movable` kinds can be moved
     with ``move_location``; `custom` says the owner already has."""
     from utils.paths.relocations import MOVABLE, chosen
-
     return [
         {
             "key": key,
@@ -695,7 +693,6 @@ _move_lock = threading.Lock()
 
 def _location_default(key: str) -> Path:
     from utils.paths.storage_roots import studio_root
-
     return account_path("library") if key == "uploads" else studio_root() / key
 
 
@@ -783,7 +780,9 @@ def move_location(key: str, path: Optional[str]) -> None:
     from utils.paths.relocations import MOVABLE, chosen, set_chosen
 
     if key not in MOVABLE:
-        raise ValueError("These files stay where they are: training and chats remember them by path.")
+        raise ValueError(
+            "These files stay where they are: training and chats remember them by path."
+        )
     resolvers = _location_resolvers()
     with _move_lock:
         current = resolvers[key]().resolve()

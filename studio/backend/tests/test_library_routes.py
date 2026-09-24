@@ -660,7 +660,6 @@ def test_undecodable_video_has_no_thumbnail(client):
 def _temp_folders_are_ordinary(monkeypatch):
     # macOS keeps pytest's temp folders under /private/var, which the real check refuses.
     import hub.storage.scan_folders as scan_folders
-
     monkeypatch.setattr(
         scan_folders, "is_denied_system_path", lambda path: path.startswith(("/etc", "/usr"))
     )
