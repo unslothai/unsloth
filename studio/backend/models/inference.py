@@ -4293,6 +4293,10 @@ class GalleryImage(BaseModel):
     # Library state, not recipe: stored beside the PNG, so older files simply read as unset.
     pinned: bool = Field(False, description = "Pinned to the front of the gallery")
     archived: bool = Field(False, description = "Moved to the archived shelf, hidden from the strip")
+    order_at: Optional[float] = Field(
+        None,
+        description = "Manual sort key (epoch-second scale) once dragged; unset sorts by creation",
+    )
 
 
 class GalleryFlagsPatch(BaseModel):
@@ -4300,6 +4304,27 @@ class GalleryFlagsPatch(BaseModel):
 
     pinned: Optional[bool] = Field(None, description = "Pin (True) or unpin (False) the item")
     archived: Optional[bool] = Field(None, description = "Archive (True) or restore (False) the item")
+
+
+class GalleryMoveRequest(BaseModel):
+    """Drag one gallery item to a new place on the active shelf."""
+
+    after_id: Optional[str] = Field(
+        None, description = "Id the item now follows, as displayed; null moves it to the front"
+    )
+
+
+class GalleryProjectRequest(BaseModel):
+    """Copy one gallery item into a chat project's folder."""
+
+    project_id: str = Field(..., description = "Chat project to add the item to")
+
+
+class GalleryProjectResponse(BaseModel):
+    path: str = Field(..., description = "Where the copy now lives, inside the project's folder")
+    already: bool = Field(
+        False, description = "The project already held this item; nothing was copied"
+    )
 
 
 class DiffusionGenerateResponse(BaseModel):
@@ -5127,6 +5152,10 @@ class GalleryVideo(BaseModel):
     # Library state, not recipe: stored beside the clip, so older sidecars simply read as unset.
     pinned: bool = Field(False, description = "Pinned to the front of the gallery")
     archived: bool = Field(False, description = "Moved to the archived shelf, hidden from the strip")
+    order_at: Optional[float] = Field(
+        None,
+        description = "Manual sort key (epoch-second scale) once dragged; unset sorts by creation",
+    )
 
 
 class VideoGenerateResponse(BaseModel):
