@@ -98,6 +98,12 @@ def patch_item(body: ItemPatch, current_subject: str = Depends(get_current_subje
     return {"ok": True}
 
 
+@router.post("/items/opened")
+def mark_item_opened(body: ItemRef, current_subject: str = Depends(get_current_subject)) -> dict:
+    library_db.mark_opened(body.id)
+    return {"ok": True}
+
+
 @router.post("/items/delete")
 async def delete_item(body: ItemRef, current_subject: str = Depends(get_current_subject)) -> dict:
     try:

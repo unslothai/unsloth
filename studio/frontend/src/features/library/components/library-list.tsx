@@ -101,6 +101,7 @@ function Row({
   tile,
   name,
   modified,
+  opened,
   size,
   activity,
 }: {
@@ -112,6 +113,7 @@ function Row({
   tile: ReactNode;
   name: ReactNode;
   modified: number;
+  opened: number | null;
   size: number | null;
   /** Suggested shows one relative Last activity column instead of Modified and Size. */
   activity: boolean;
@@ -119,7 +121,7 @@ function Row({
   return (
     <div
       className={cn(
-        "group/library-row relative flex items-center gap-4 rounded-xl transition-colors hover:bg-muted/60",
+        "group/library-row relative flex items-center gap-4 rounded-[14px] transition-colors hover:bg-muted/60",
         ROW_INSET,
         selected && "bg-muted/60",
       )}
@@ -140,7 +142,9 @@ function Row({
         <span className="flex min-w-0 items-center gap-2 text-[14px] text-foreground">{name}</span>
         {activity ? (
           <span className={cn(ACTIVITY_COLUMN, CELL, "ml-auto")}>
-            Modified {formatRelativeTime(modified)}
+            {(opened ?? 0) > modified
+              ? `Opened ${formatRelativeTime(opened!)}`
+              : `Modified ${formatRelativeTime(modified)}`}
           </span>
         ) : (
           <>
@@ -192,7 +196,7 @@ export function LibraryList({
     <div>
       <div
         className={cn(
-          "group/library-head relative flex items-center gap-4 border-b border-border/60 pb-2 text-[13px] text-muted-foreground",
+          "group/library-head relative flex items-center gap-4 pb-2 text-[13px] text-muted-foreground",
           ROW_INSET,
         )}
       >
@@ -246,7 +250,7 @@ export function LibraryList({
             onSelectedChange={(selected) => setSelected({ kind: "folder", folder }, selected)}
             onOpen={() => actions.openFolder(folder.id)}
             tile={
-              <div className="flex size-9 shrink-0 items-center justify-center rounded-xl border border-border/60">
+              <div className="flex size-9 shrink-0 items-center justify-center rounded-[10px] border border-border/60">
                 <HugeiconsIcon icon={Folder01Icon} strokeWidth={1.5} className="size-5" />
               </div>
             }
@@ -259,6 +263,7 @@ export function LibraryList({
               </>
             }
             modified={folder.updatedAt}
+            opened={null}
             size={null}
             activity={activity}
           />
@@ -289,6 +294,7 @@ export function LibraryList({
               </>
             }
             modified={item.updatedAt}
+            opened={item.openedAt}
             size={item.sizeBytes}
             activity={activity}
           />

@@ -46,6 +46,10 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         )
         """
     )
+    # Added after the first release of the table.
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(library_entries)")}
+    if "opened_at" not in columns:
+        conn.execute("ALTER TABLE library_entries ADD COLUMN opened_at INTEGER")
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS library_uploads (
@@ -234,6 +238,7 @@ def list_entries() -> dict[str, dict]:
                 "favorite": bool(row["favorite"]),
                 "folderId": row["folder_id"],
                 "updatedAt": row["updated_at"],
+                "openedAt": row["opened_at"],
             }
             for row in rows
         }
@@ -276,6 +281,21 @@ def update_entry(
                 "UPDATE library_entries SET folder_id = ? WHERE item_id = ?", (folder_id, item_id)
             )
         conn.execute("UPDATE library_entries SET updated_at = ? WHERE item_id = ?", (now, item_id))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def mark_opened(item_id: str) -> None:
+    """Record that the item was just opened, for Suggested's Last activity."""
+    conn = get_connection()
+    try:
+        now = _now_ms()
+        conn.execute(
+            "INSERT INTO library_entries (item_id, updated_at, opened_at) VALUES (?, ?, ?) "
+            "ON CONFLICT(item_id) DO UPDATE SET opened_at = excluded.opened_at",
+            (item_id, now, now),
+        )
         conn.commit()
     finally:
         conn.close()

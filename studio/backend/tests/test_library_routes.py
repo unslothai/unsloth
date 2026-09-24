@@ -147,6 +147,15 @@ def test_notes_are_editable_and_deletable(client):
     assert client.post("/api/library/items/delete", json = {"id": note}).status_code == 404
 
 
+def test_opening_an_item_records_when(client):
+    [note] = _upload(client, ("note.md", b"hi", "text/markdown"))
+    assert _items(client)[0][note]["openedAt"] is None
+    assert client.post("/api/library/items/opened", json = {"id": note}).status_code == 200
+    opened = _items(client)[0][note]
+    assert opened["openedAt"] >= opened["createdAt"]
+    assert not opened["favorite"]
+
+
 def test_unknown_item_kinds_are_rejected(client):
     response = client.post("/api/library/items/delete", json = {"id": "elsewhere:x"})
     assert response.status_code == 400

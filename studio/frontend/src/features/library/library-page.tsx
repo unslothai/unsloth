@@ -59,6 +59,7 @@ import {
   sortState,
   useLibraryViewStore,
   includedBySettings,
+  lastActivity,
   type LibrarySortState,
   useLibrarySettingsStore,
 } from "./settings-store";
@@ -211,7 +212,7 @@ export function LibraryPage() {
 
 function LibraryView({ search }: { search: LibrarySearch }) {
   const navigate = useNavigate();
-  const { items: allItems, folders, status, error, refresh, patchItem, removeItem, upload, addFolder, patchFolder, removeFolder } =
+  const { items: allItems, folders, status, error, refresh, patchItem, removeItem, upload, addFolder, patchFolder, removeFolder, markOpened } =
     useLibraryStore();
   const settings = useLibrarySettingsStore();
   // Sources switched off in settings are left out everywhere, folder counts included.
@@ -287,9 +288,11 @@ function LibraryView({ search }: { search: LibrarySearch }) {
     pool = pool.filter(
       (item) => nameMatches(item.name, needle) && matchesFilters(item, filters, !kindFilter),
     );
-    // Suggested is the most recent slice of everything, then sorted like any other view.
-    if (tab === "suggested" && !folderId && !needle && !filtersActive(filters)) {
-      pool = pool.slice(0, settings.suggestedLimit);
+    // Suggested is the most recently active slice, where opening a file counts as activity.
+    if (tab === "suggested" && !folderId) {
+      const byActivity = [...pool].sort((a, b) => lastActivity(b) - lastActivity(a));
+      pool = needle || filtersActive(filters) ? byActivity : byActivity.slice(0, settings.suggestedLimit);
+      if (sort.key === "modified") return sort.desc ? pool : pool.reverse();
     }
     return [...pool].sort(compareBySort(sort));
   }, [items, folderId, tab, needle, filters, kindFilter, settings.suggestedLimit, sort]);
@@ -331,7 +334,10 @@ function LibraryView({ search }: { search: LibrarySearch }) {
 
   const actions: LibraryActions = {
     folders,
-    openItem: (item) => go({ ...search, item: item.id }),
+    openItem: (item) => {
+      markOpened(item.id);
+      go({ ...search, item: item.id });
+    },
     openFolder: (id) => go({ folder: id }),
     chatAbout: (target) =>
       target.kind === "item"

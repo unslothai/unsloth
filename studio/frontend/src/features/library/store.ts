@@ -11,6 +11,7 @@ import {
   deleteLibraryFolder,
   deleteLibraryItem,
   getLibrary,
+  markLibraryItemOpened,
   updateLibraryFolder,
   updateLibraryItem,
   uploadLibraryFiles,
@@ -28,6 +29,7 @@ interface LibraryState {
   refresh: () => Promise<void>;
   patchItem: (id: string, patch: ItemPatch) => Promise<void>;
   removeItem: (id: string) => Promise<void>;
+  markOpened: (id: string) => void;
   upload: (batch: LibraryUploadBatch, folderId: string | null) => Promise<string[]>;
   addFolder: (name: string, parentId: string | null) => Promise<LibraryFolder>;
   patchFolder: (id: string, patch: FolderPatch) => Promise<void>;
@@ -96,6 +98,14 @@ export const useLibraryStore = create<LibraryState>((set, get) => {
               })
             : deleteLibraryItem(id),
       );
+    },
+    // Best effort: a lost open only leaves Last activity a little stale.
+    markOpened: (id) => {
+      const openedAt = Date.now();
+      set((state) => ({
+        items: state.items.map((item) => (item.id === id ? { ...item, openedAt } : item)),
+      }));
+      void markLibraryItemOpened(id).catch(() => undefined);
     },
     upload: async (batch, folderId) => {
       const ids = await uploadLibraryFiles(batch, folderId);

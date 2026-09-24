@@ -230,13 +230,13 @@ export function FolderGrid({
 export function ItemTile({ item }: { item: LibraryItem }) {
   if (hasImagePreview(item)) {
     return (
-      <div className="size-9 shrink-0 overflow-hidden rounded-xl border border-border/60 bg-muted [&_img]:size-9 [&_img]:object-cover [&_img]:object-top">
+      <div className="size-9 shrink-0 overflow-hidden rounded-[10px] border border-border/60 bg-muted [&_img]:size-9 [&_img]:object-cover [&_img]:object-top">
         <ImageThumb item={item} />
       </div>
     );
   }
   return (
-    <div className="flex size-9 shrink-0 items-center justify-center rounded-xl border border-border/60">
+    <div className="flex size-9 shrink-0 items-center justify-center rounded-[10px] border border-border/60">
       <KindIcon item={item} className="size-5" />
     </div>
   );

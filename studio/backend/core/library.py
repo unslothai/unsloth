@@ -425,6 +425,7 @@ def list_items() -> list[dict]:
         entry = overlay.get(item["id"])
         item["favorite"] = bool(entry and entry["favorite"])
         item["folderId"] = entry["folderId"] if entry else None
+        item["openedAt"] = entry["openedAt"] if entry else None
         if entry and entry["name"]:
             item["name"] = entry["name"]
     items.sort(key = lambda item: item["updatedAt"], reverse = True)

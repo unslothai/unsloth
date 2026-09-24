@@ -155,6 +155,11 @@ export function nextSort(current: LibrarySortState, key: LibrarySortKey): Librar
 
 type Sortable = { name: string; updatedAt: number; sizeBytes?: number | null };
 
+/** Suggested's Last activity: the later of modified and opened. */
+export function lastActivity(item: { updatedAt: number; openedAt?: number | null }): number {
+  return Math.max(item.updatedAt, item.openedAt ?? 0);
+}
+
 export function compareBySort({ key, desc }: LibrarySortState): (a: Sortable, b: Sortable) => number {
   const ascending =
     key === "name"

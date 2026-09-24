@@ -23,6 +23,8 @@ export interface LibraryItem {
   textOnly: boolean;
   favorite: boolean;
   folderId: string | null;
+  /** Last time it was opened in the Library, if ever. */
+  openedAt: number | null;
   /** Set for fine-tuned models, which are directories: opened in chat, never downloaded. */
   model: LibraryModel | null;
 }
@@ -76,6 +78,12 @@ export async function updateLibraryItem(
 ): Promise<void> {
   await ensureOk(
     await authFetch("/api/library/items", jsonInit("PATCH", { id, ...patch })),
+  );
+}
+
+export async function markLibraryItemOpened(id: string): Promise<void> {
+  await ensureOk(
+    await authFetch("/api/library/items/opened", jsonInit("POST", { id })),
   );
 }
 

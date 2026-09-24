@@ -8,6 +8,7 @@ import {
   DEFAULT_LIBRARY_SETTINGS,
   compareBySort,
   includedBySettings,
+  lastActivity,
   migrateLibrarySettings,
   nextSort,
   sortState,
@@ -53,4 +54,10 @@ test("the v1 media switch becomes one setting per tab", () => {
     videos: "always",
     audio: "always",
   });
+});
+
+test("last activity is the later of modified and opened", () => {
+  assert.equal(lastActivity({ updatedAt: 5, openedAt: null }), 5);
+  assert.equal(lastActivity({ updatedAt: 5, openedAt: 9 }), 9);
+  assert.equal(lastActivity({ updatedAt: 9, openedAt: 5 }), 9);
 });
