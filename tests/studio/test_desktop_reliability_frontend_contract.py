@@ -2453,10 +2453,11 @@ def test_image_train_rail_matches_create_and_header():
         "the right padding the rail clamp adds back"
     )
     # The scroller's horizontal padding where the rail layout applies. A closed list rather than
-    # a Tailwind parser: every class that can narrow the scroller (p-, px-, pr-, pe-, pl-, ps-, or
-    # any arbitrary property, under any variant, !important or a typed value) must be a plain pr-
-    # step below the rail breakpoint or the one sm: step the clamp adds back. Anything else (left
-    # padding, md:, a container query, an override) moves the divider, so it fails here.
+    # a Tailwind parser: every class that can narrow the scroller (p-, px-, pr-, pe-, pl-, ps-, a
+    # horizontal border or any arbitrary property, under any variant, !important or a typed
+    # value) must be a plain pr- step below the rail breakpoint or the one sm: step the clamp adds
+    # back. Anything else (left padding, a border, md:, a container query, an override) moves the
+    # divider, so it fails here.
     touches = [
         t
         for t in classes.group(1).split()
@@ -2465,6 +2466,8 @@ def test_image_train_rail_matches_create_and_header():
         # is not a property.
         if re.search(r"(?:^|[:!(\[])(?:p|px|pr|pe|pl|ps)-", t)
         or re.search(r"(?:^|:)!?\[[^\]]*:[^\]]*\]!?$", t)
+        # A horizontal border narrows the content box too (border, border-r-8, border-x-[3px]).
+        or re.search(r"(?:^|[:!])border(?:-[xlrse])?(?:-\d+|-\[[^\]]*\]|-\([^)]*\))?!?$", t)
     ]
     below = [t for t in touches if re.fullmatch(rf"(?:max-sm:)?pr-{step}", t)]
     at_rail = [t for t in touches if re.fullmatch(rf"sm:pr-{step}", t)]
