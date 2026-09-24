@@ -3224,6 +3224,7 @@ class TestExpectedTorchFlavorResolution:
 
 PYPI_SPARE = "pypi|UV_DEFAULT_INDEX=https://m/simple|PIP_INDEX_URL=https://m/simple"
 TORCH_SPARE = "torch|UNSLOTH_PYTORCH_MIRROR=https://m/whl"
+UNSYNCED_SPARE = "unsynced|UV_DEFAULT_INDEX=https://pypi.org/simple|UV_INDEX=https://m/simple|UV_INDEX_STRATEGY=unsafe-first-match"
 TORCH_WHL = "https://download.pytorch.org/whl"
 PYPI_DOWN = b"Failed to fetch: `https://pypi.org/simple/foo/`\n  Caused by: operation timed out\n"
 TORCH_DOWN = b"HTTP status server error (503) for url (https://download.pytorch.org/whl/cu128/)\n"
@@ -3291,7 +3292,8 @@ class TestMirrorRetry:
         assert os.environ.get("UNSLOTH_PYTORCH_MIRROR") == mirror
         assert ips._PYTORCH_WHL_BASE == (mirror or TORCH_WHL)
 
-    # Then torch failing under an install with no torch index to move, and a pinned index.
+    # A version not found with nothing spared behind the mirror, then torch failing under an
+    # install with no torch index to move, and a pinned index.
     @pytest.mark.parametrize(
         "failure, pin",
         (
@@ -3307,3 +3309,12 @@ class TestMirrorRetry:
         assert not ips.pip_install_try("x", *pin, "foo", constrain = False)
         assert len(runs) == 1
         assert os.environ["_UNSLOTH_MIRROR_SPARE"] == f"{PYPI_SPARE} {TORCH_SPARE}"
+
+    @pytest.mark.parametrize("pin, kept", (((), True), (PIN, False), (("--no-index",), False)))
+    def test_a_release_the_mirror_lacks_reruns_with_pypi(self, monkeypatch, pin, kept):
+        spare = os.environ["_UNSLOTH_MIRROR_SPARE"] = f"{TORCH_SPARE} {UNSYNCED_SPARE}"
+        os.environ["UV_DEFAULT_INDEX"] = mirror = "https://m/simple"
+        self._runs(monkeypatch, lambda cmd, env: env.get("UV_INDEX") == mirror, NO_VERSION)
+        assert ips.pip_install_try("x", *pin, "foo", constrain = False) is kept
+        assert os.environ["UV_DEFAULT_INDEX"] == ("https://pypi.org/simple" if kept else mirror)
+        assert os.environ["_UNSLOTH_MIRROR_SPARE"] == (TORCH_SPARE if kept else spare)

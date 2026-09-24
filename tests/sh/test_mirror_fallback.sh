@@ -96,15 +96,12 @@ for SH in dash bash; do
     assert_not_contains "[$SH] blocked pypi: no pip extra index" "$out" "PIP_EXTRA_INDEX_URL"
     assert_contains "[$SH] blocked pypi: says so with both speeds" "$out" "STEP PyPI is blocked (0 KB/s, mirror 3906 KB/s); using $M/pypi/web/simple"
     assert_contains "[$SH] a switch names the opt-out" "$out" "SUBSTEP Set UNSLOTH_MIRROR_FALLBACK=0"
-    out=$(_run "$SH" MOCK_PYPI=slow)
-    assert_contains "[$SH] slow pypi: mirror is the preferred uv index" "$out" "UV_INDEX=$M/pypi/web/simple"
-    assert_contains "[$SH] slow pypi: pypi.org stays as uv's default" "$out" "UV_DEFAULT_INDEX=https://pypi.org/simple"
-    assert_contains "[$SH] slow pypi: unsafe-first-match" "$out" "UV_INDEX_STRATEGY=unsafe-first-match"
-    assert_contains "[$SH] slow pypi: pip index is the mirror" "$out" "PIP_INDEX_URL=$M/pypi/web/simple"
-    assert_contains "[$SH] slow pypi: pip keeps pypi.org as extra" "$out" "PIP_EXTRA_INDEX_URL=https://pypi.org/simple"
+    out=$(_run "$SH" MOCK_PYPI=slow _AFTER='echo "SPARE $_UNSLOTH_MIRROR_SPARE"')
+    assert_eq "[$SH] slow pypi: the mirror is the only uv and pip index" "UV_DEFAULT_INDEX=$M/pypi/web/simple PIP_INDEX_URL=$M/pypi/web/simple" "$(echo "$out" | grep -E '^(UV_|PIP_)' | paste -sd' ' -)"
+    assert_contains "[$SH] slow pypi: pypi.org, which still answers, is spared behind the mirror for what it has not synced" "$out" " unsynced|UV_DEFAULT_INDEX=https://pypi.org/simple|UV_INDEX=$M/pypi/web/simple|UV_INDEX_STRATEGY=unsafe-first-match|PIP_EXTRA_INDEX_URL=https://pypi.org/simple|PIP_INDEX_URL=$M/pypi/web/simple"
     assert_eq "[$SH] slow pypi: raced again beside the mirror" "2" "$(grep -c files.pythonhosted "$_WORK/curl.log")"
-    out=$(_run "$SH" MOCK_PYPI=slow UV_INDEX_STRATEGY=first-index)
-    assert_contains "[$SH] a user index strategy is kept" "$out" "UV_INDEX_STRATEGY=first-index"
+    assert_contains "[$SH] a user index strategy is kept" "$(_run "$SH" MOCK_PYPI=slow UV_INDEX_STRATEGY=first-index _AFTER='echo "SPARE $_UNSLOTH_MIRROR_SPARE"')" "unsynced|UV_DEFAULT_INDEX=https://pypi.org/simple|UV_INDEX=$M/pypi/web/simple|UV_INDEX_STRATEGY=first-index|"
+    assert_not_contains "[$SH] blocked pypi: nothing is spared behind the mirror" "$(_run "$SH" MOCK_PYPI=blocked _AFTER='echo "SPARE $_UNSLOTH_MIRROR_SPARE"')" "unsynced"
     assert_eq "[$SH] a mirror slower than the slow default changes nothing" "" "$(_run "$SH" MOCK_PYPI=slow MOCK_CERNET="206 200000")"
     out=$(_run "$SH" MOCK_PYPI=blocked MOCK_CERNET=blocked)
     assert_eq "[$SH] a dead mirror changes and prints nothing" "" "$out"
@@ -191,9 +188,11 @@ _fail_npm='npm error code ECONNRESET: network request to https://registry.npmjs.
 _fail_python='error: Failed to download https://releases.astral.sh/github/python-build-standalone/releases/download/20260910/cpython-3.12.12.tar.gz: error decoding response body'
 _fail_uv_stall='error: Failed to download `torch==2.9.1+cu128`: Failed to download distribution due to network timeout. Try increasing UV_HTTP_TIMEOUT (current value: 30s).'
 _fail_nover='  Caused by: Because there is no version of torch==1.0.99 [...] hint: `torch` was found on https://download.pytorch.org/whl/cu128, but not at the requested version (torch==1.0.99). A compatible version may be available on a subsequent index (e.g., https://pypi.org/simple).'
+_fail_uv_lag='  cause: Because only unsloth<=2026.9.9 is available and you require unsloth>=2026.9.10, we can conclude that your requirements are unsatisfiable.'
+_fail_pip_lag='ERROR: No matching distribution found for unsloth>=2026.9.10'
 _fail_git='error: Git operation failed: failed to fetch https://github.com/unslothai/unsloth-zoo: Connection reset by peer (os error 54)'
 _failed_host() { printf '%s\n' "$1" > "$_WORK/fail.log"; sh -c ". '$_WORK/block.sh'; _mirror_failed_host '$_WORK/fail.log' '${2:-}'" || echo none; }
-assert_eq "failed host: the default each transport failure names; none for a resolution failure or another host" "pypi torch pypi npm python none none" "$(for _o in "$_fail_uv_timeout" "$_fail_uv_503" "$_fail_pip_timeout" "$_fail_npm" "$_fail_python" "$_fail_nover" "$_fail_git"; do _failed_host "$_o"; done | paste -sd' ' -)"
+assert_eq "failed host: the default each transport failure names; unsynced for a version or package not found; none for another host" "pypi torch pypi npm python unsynced unsynced unsynced none" "$(for _o in "$_fail_uv_timeout" "$_fail_uv_503" "$_fail_pip_timeout" "$_fail_npm" "$_fail_python" "$_fail_nover" "$_fail_uv_lag" "$_fail_pip_lag" "$_fail_git"; do _failed_host "$_o"; done | paste -sd' ' -)"
 assert_eq "failed host: a stalled download names no URL, so the host that ran it; none when another URL is named" "torch none none" "$({ _failed_host "$_fail_uv_stall" torch; _failed_host "$_fail_uv_stall"; _failed_host "$_fail_git" pypi; } | paste -sd' ' -)"
 
 # run_install_cmd(_retry) around the real _run_install_cmd_once; the stub uv logs each run and fails as FAIL says, without a mirror index.
@@ -201,11 +200,11 @@ assert_eq "failed host: a stalled download names no URL, so the host that ran it
 mkdir -p "$_WORK/uvbin"
 cat > "$_WORK/uvbin/uv" <<'EOF'
 #!/bin/sh
-echo "RUN $* ${UV_DEFAULT_INDEX:-}" >&3
+echo "RUN $* ${UV_DEFAULT_INDEX:-}${UV_INDEX:+ +$UV_INDEX}" >&3
 case "$*" in
     *download.pytorch.org*) printf '%s\n' "$FAIL"; exit 7 ;;
     *--default-index*) ;;
-    *) [ -n "${UV_DEFAULT_INDEX:-}" ] || { printf '%s\n' "$FAIL"; exit 7; } ;;
+    *) [ -n "${UV_DEFAULT_INDEX:-}" ] && { [ -z "${LAGGING:-}" ] || [ -n "${UV_INDEX:-}" ]; } || { printf '%s\n' "$FAIL"; exit 7; } ;;
 esac
 [ -z "${MIRROR_FAILS:-}" ] || { printf '%s\n' "$FAIL"; exit 8; }
 EOF
@@ -223,13 +222,18 @@ TORCH_INDEX_URL=https://download.pytorch.org/whl/cu128
 _pipe() { "$@" 2>/dev/null | grep -E '^(RUN|STEP|RC)' | paste -sd'|' -; }
 assert_eq "retry: a PyPI transport failure reruns once on the mirror, which later steps keep" "RUN pip install foo |STEP PyPI failed; retrying through $M/pypi/web/simple|RUN pip install foo $M/pypi/web/simple|RC 0 INDEX=$M/pypi/web/simple TORCH=https://download.pytorch.org/whl/cu128 SPARE=torch|UNSLOTH_PYTORCH_MIRROR=$M/pytorch/whl" "$(_pipe _retry 'run_install_cmd deps uv pip install foo' FAIL="$_fail_uv_timeout")"
 assert_eq "retry: ... also when the output was streamed (verbose)" "RUN pip install foo |STEP PyPI failed; retrying through $M/pypi/web/simple|RUN pip install foo $M/pypi/web/simple|RC 0 INDEX=$M/pypi/web/simple TORCH=https://download.pytorch.org/whl/cu128 SPARE=torch|UNSLOTH_PYTORCH_MIRROR=$M/pytorch/whl" "$(_pipe _retry 'run_install_cmd deps uv pip install foo' FAIL="$_fail_uv_timeout" VERBOSE=1)"
-assert_eq "retry: a resolution failure keeps the default and its spare" "RUN pip install foo |RC 7 INDEX= TORCH=https://download.pytorch.org/whl/cu128 SPARE=pypi|UV_DEFAULT_INDEX=$M/pypi/web/simple torch|UNSLOTH_PYTORCH_MIRROR=$M/pytorch/whl" "$(_pipe _retry 'run_install_cmd deps uv pip install foo' FAIL="$_fail_nover")"
+assert_eq "retry: a version not found, with nothing spared behind the mirror, keeps the default and its spares" "RUN pip install foo |RC 7 INDEX= TORCH=https://download.pytorch.org/whl/cu128 SPARE=pypi|UV_DEFAULT_INDEX=$M/pypi/web/simple torch|UNSLOTH_PYTORCH_MIRROR=$M/pytorch/whl" "$(_pipe _retry 'run_install_cmd deps uv pip install foo' FAIL="$_fail_nover")"
 assert_eq "retry: a failed mirror rerun restores the default for later steps" "RUN pip install foo |STEP PyPI failed; retrying through $M/pypi/web/simple|RUN pip install foo $M/pypi/web/simple|RC 8 INDEX= TORCH=https://download.pytorch.org/whl/cu128 SPARE=torch|UNSLOTH_PYTORCH_MIRROR=$M/pytorch/whl" "$(_pipe _retry 'run_install_cmd deps uv pip install foo' FAIL="$_fail_uv_timeout" MIRROR_FAILS=1)"
 assert_eq "retry: a torch transport failure reruns on the mirror's index, and later torch steps follow" "RUN pip install torch --default-index https://download.pytorch.org/whl/cu128 |STEP download.pytorch.org failed; retrying through $M/pytorch/whl|RUN pip install torch --default-index $M/pytorch/whl/cu128 |RC 0 INDEX= TORCH=$M/pytorch/whl/cu128 SPARE=pypi|UV_DEFAULT_INDEX=$M/pypi/web/simple|RUN pip install torchvision --default-index $M/pytorch/whl/cu128 |RC 0" "$(_pipe _retry 'run_install_cmd torch uv pip install torch --default-index https://download.pytorch.org/whl/cu128' FAIL="$_fail_uv_stall" THEN='run_install_cmd tv uv pip install torchvision --default-index https://download.pytorch.org/whl/cu128')"
 assert_eq "retry: the retrying runner gives the default every attempt before the mirror (a stall naming no URL is its PyPI)" "RUN pip install foo |RUN pip install foo |STEP PyPI failed; retrying through $M/pypi/web/simple|RUN pip install foo $M/pypi/web/simple|RC 0" "$(_pipe _retry 'run_install_cmd_retry deps uv pip install foo' FAIL="$_fail_uv_stall" UNSLOTH_INSTALL_RETRIES=2 | sed 's/ INDEX=.*//')"
 assert_eq "retry: a pinned command is not moved to the PyPI mirror" "RUN pip install x --index-url https://download.pytorch.org/whl/cu128 |RC 7" "$(_pipe _retry 'run_install_cmd x uv pip install x --index-url https://download.pytorch.org/whl/cu128' FAIL="$_fail_uv_timeout" | sed 's/ INDEX=.*//')"
 assert_eq "retry: a torch failure without a torch URL to move is not retried" "RUN pip install torch --torch-backend=auto |RC 7" "$(_pipe _retry 'run_install_cmd tb uv pip install torch --torch-backend=auto' FAIL="$_fail_uv_503" | sed 's/ INDEX=.*//')"
 assert_eq "retry: ... nor a stall under a source the command picks itself" "RUN pip install torch --torch-backend=auto |RC 7" "$(_pipe _retry 'run_install_cmd tb uv pip install torch --torch-backend=auto' FAIL="$_fail_uv_stall" | sed 's/ INDEX=.*//')"
+_lag() { _lagcmd=$1; shift; _pipe _retry "run_install_cmd u uv pip install $_lagcmd" FAIL="$_fail_uv_lag" LAGGING=1 UV_DEFAULT_INDEX="$M/pypi/web/simple" _UNSLOTH_MIRROR_SPARE="torch|UNSLOTH_PYTORCH_MIRROR=$M/pytorch/whl unsynced|UV_DEFAULT_INDEX=https://pypi.org/simple|UV_INDEX=$M/pypi/web/simple" "$@" | sed 's/ TORCH=[^ ]*//'; }
+assert_eq "retry: a release the mirror lacks reruns once with pypi.org behind it, which later steps keep" "RUN pip install unsloth $M/pypi/web/simple|STEP The PyPI mirror failed; retrying through https://pypi.org/simple|RUN pip install unsloth https://pypi.org/simple +$M/pypi/web/simple|RC 0 INDEX=https://pypi.org/simple SPARE=torch|UNSLOTH_PYTORCH_MIRROR=$M/pytorch/whl" "$(_lag unsloth)"
+assert_eq "retry: ... also under --torch-backend, whose other packages resolve on the index" "RC 0 INDEX=https://pypi.org/simple" "$(_lag 'unsloth --torch-backend=auto' | grep -o 'RC [0-9] INDEX=[^ ]*')"
+assert_eq "retry: a command pinning its index is not given pypi.org" "RUN pip install unsloth --default-index https://corp.example/simple |RC 8 INDEX=$M/pypi/web/simple SPARE=torch|UNSLOTH_PYTORCH_MIRROR=$M/pytorch/whl unsynced|UV_DEFAULT_INDEX=https://pypi.org/simple|UV_INDEX=$M/pypi/web/simple" "$(_lag 'unsloth --default-index https://corp.example/simple' MIRROR_FAILS=1)"
+assert_eq "retry: ... nor one ending in --no-index" "RC 7" "$(_lag 'unsloth --no-index' | grep -o 'RC [0-9]')"
 
 _npm() {
     printf '%s\n' "$1" > "$_WORK/npm.log"; shift

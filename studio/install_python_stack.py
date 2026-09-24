@@ -9404,6 +9404,13 @@ _MIRROR_HOST_NAMES = (
     ("torch", re.compile(r"download(-r2)?\.pytorch\.org")),
     ("pypi", re.compile(r"pypi\.org|pythonhosted\.org")),
 )
+_MIRROR_NAMES = {"torch": "download.pytorch.org", "pypi": "PyPI", "unsynced": "The PyPI mirror"}
+# A resolve that found no such version or package: on the PyPI mirror, one it has not synced yet.
+_MIRROR_UNSYNCED = re.compile(
+    r"only \S+ (.* )?(is|are) available|no versions? of|not found in the package registry|"
+    r"could not find a version that satisfies|no matching distribution found",
+    re.IGNORECASE,
+)
 _failed_install_output = b""
 
 
@@ -9416,19 +9423,22 @@ def _mirror_retry(args: "tuple[str, ...]", output: bytes, rerun) -> "bool | None
     """
     global _PYTORCH_WHL_BASE
     text = output.decode("utf-8", "replace")
-    if not _MIRROR_TRANSPORT_ERROR.search(text):
-        return None
     torch = any(_PYTORCH_DEFAULT_WHL in arg for arg in args)
-    pinned = _is_pinned_index_cmd(args) or any(
-        arg in ("--find-links", "--no-index") or "://" in arg for arg in args
-    )
-    host = next((name for name, pattern in _MIRROR_HOST_NAMES if pattern.search(text)), None)
-    if host is None and not re.search(r"https?://", text):
-        # A download that stalled or dropped names no URL: the host is the one the command ran on.
-        host = "torch" if torch else "pypi"
-    # A pinned command drops the index vars, so only a torch URL can move to a mirror.
-    if host is None or (host == "torch" and not torch) or (host == "pypi" and pinned):
-        return None
+    if not _MIRROR_TRANSPORT_ERROR.search(text):
+        if _is_pinned_index_cmd(args) or "--no-index" in args or not _MIRROR_UNSYNCED.search(text):
+            return None
+        host = "unsynced"
+    else:
+        pinned = _is_pinned_index_cmd(args) or any(
+            arg in ("--find-links", "--no-index") or "://" in arg for arg in args
+        )
+        host = next((name for name, pattern in _MIRROR_HOST_NAMES if pattern.search(text)), None)
+        if host is None and not re.search(r"https?://", text):
+            # A download that stalled or dropped names no URL: the host is the one the command ran on.
+            host = "torch" if torch else "pypi"
+        # A pinned command drops the index vars, so only a torch URL can move to a mirror.
+        if host is None or (host == "torch" and not torch) or (host == "pypi" and pinned):
+            return None
     spare = os.environ.get("_UNSLOTH_MIRROR_SPARE", "").split()
     entry = next((e for e in spare if e.split("|", 1)[0] == host), None)
     if entry is None:
@@ -9437,7 +9447,7 @@ def _mirror_retry(args: "tuple[str, ...]", output: bytes, rerun) -> "bool | None
     pairs = dict(pair.split("=", 1) for pair in entry.split("|")[1:])
     _step(
         "mirror",
-        f"{'download.pytorch.org' if host == 'torch' else 'PyPI'} failed; retrying through {next(iter(pairs.values()))}",
+        f"{_MIRROR_NAMES[host]} failed; retrying through {next(iter(pairs.values()))}",
         _cyan,
     )
     saved = ({name: os.environ.get(name) for name in pairs}, _PYTORCH_WHL_BASE)

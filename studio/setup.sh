@@ -225,21 +225,16 @@ _mirror_probe_all() {
     done
 }
 
-# Prints the VAR=URL pairs that point host $1 at its mirror, the mirror first, for how its default did ($2: slow or blocked).
+# Prints the VAR=URL pairs that point host $1 at its mirror, the URL a retry names first. unsynced is the PyPI mirror with pypi.org behind it, for what the mirror has not synced yet.
 _mirror_vars() {
     case "$1" in
         pypi)
-            # uv's unsafe-first-match fetches every index and fails outright when one is unreachable, so pypi.org stays as the second index only while it still answers.
-            if [ "$_mf_uv" = true ] && [ "$2" = slow ]; then
-                echo "UV_INDEX=$_MIRROR_PYPI UV_DEFAULT_INDEX=https://pypi.org/simple UV_INDEX_STRATEGY=${UV_INDEX_STRATEGY:-unsafe-first-match}"
-            elif [ "$_mf_uv" = true ]; then
-                echo "UV_DEFAULT_INDEX=$_MIRROR_PYPI"
-            fi
-            if [ "$_mf_pip" = true ] && [ "$2" = slow ]; then
-                echo "PIP_INDEX_URL=$_MIRROR_PYPI PIP_EXTRA_INDEX_URL=https://pypi.org/simple"
-            elif [ "$_mf_pip" = true ]; then
-                echo "PIP_INDEX_URL=$_MIRROR_PYPI"
-            fi ;;
+            [ "$_mf_uv" = false ] || echo "UV_DEFAULT_INDEX=$_MIRROR_PYPI"
+            [ "$_mf_pip" = false ] || echo "PIP_INDEX_URL=$_MIRROR_PYPI" ;;
+        unsynced)
+            # Only for one rerun: uv's unsafe-first-match fetches every package from every index, and fails outright when one is unreachable.
+            [ "$_mf_uv" = false ] || echo "UV_DEFAULT_INDEX=https://pypi.org/simple UV_INDEX=$_MIRROR_PYPI UV_INDEX_STRATEGY=${UV_INDEX_STRATEGY:-unsafe-first-match}"
+            [ "$_mf_pip" = false ] || echo "PIP_EXTRA_INDEX_URL=https://pypi.org/simple PIP_INDEX_URL=$_MIRROR_PYPI" ;;
         torch) echo "UNSLOTH_PYTORCH_MIRROR=$_MIRROR_CERNET/pytorch/whl" ;;
         node) echo "UNSLOTH_NODE_MIRROR=$_MIRROR_NPM/-/binary/node" ;;
         npm) echo "UNSLOTH_NPM_REGISTRY=$_MIRROR_NPM" ;;
@@ -251,6 +246,7 @@ _mirror_vars() {
 _mirror_name() {
     case "$1" in
         pypi) echo "PyPI" ;;
+        unsynced) echo "The PyPI mirror" ;;
         torch) echo "download.pytorch.org" ;;
         node) echo "nodejs.org" ;;
         npm) echo "registry.npmjs.org" ;;
@@ -262,12 +258,14 @@ _mirror_name() {
 # Points host $1 at its mirror; $2 is how its default did (slow or blocked), $3 the default's and $4 the mirror's bytes/s.
 _mirror_use() {
     _mu_to=""
-    for _mu_pair in $(_mirror_vars "$1" "$2"); do
+    for _mu_pair in $(_mirror_vars "$1"); do
         export "$_mu_pair"
         [ -n "$_mu_to" ] || _mu_to=${_mu_pair#*=}
     done
     step "mirror" "$(_mirror_name "$1") is $2 ($(($3 / 1024)) KB/s, mirror $(($4 / 1024)) KB/s); using $_mu_to" "$C_WARN"
     _mf_switched="$_mf_switched $1"
+    # A pypi.org that still answers can serve what the mirror has not synced.
+    [ "$1 $2" != "pypi slow" ] || _mf_unsynced=true
 }
 
 # Takes host $1's mirror from _UNSLOTH_MIRROR_SPARE ("host|VAR=URL|..." entries for the hosts the probe left on their defaults) into _MT_PAIRS, so each host gets one mirror retry. Fails when there is none.
@@ -293,9 +291,13 @@ _mirror_switch() {
     for _ms_pair in $_MT_PAIRS; do export "$_ms_pair"; done
 }
 
-# Prints the host whose transport the install output in file $1 shows failing: a network error, and the host's default named, or, when the output names no URL at all (a download that stalled or dropped), host $2 that ran the command. A resolution or not-found failure prints nothing.
+# Prints the host whose transport the install output in file $1 shows failing: a network error, and the host's default named, or, when the output names no URL at all (a download that stalled or dropped), host $2 that ran the command. A resolution that found no such version or package prints unsynced; any other failure prints nothing.
 _mirror_failed_host() {
-    grep -Eqi 'error sending request|timed out|network timeout|idle timeout|connection (reset|refused|closed|aborted)|network aborted|broken pipe|dns error|failed to lookup address|name resolution|nodename nor servname|network is unreachable|error decoding response body|end of file before message length|unexpected eof|tls handshake|sslerror|certificate verify failed|server error|service unavailable|bad gateway|gateway time-?out|too many requests|max retries exceeded|remotedisconnected|incompleteread|econnreset|etimedout|eidletimeout|eai_again|enotfound|econnrefused|socket hang up' "$1" 2>/dev/null || return 1
+    if ! grep -Eqi 'error sending request|timed out|network timeout|idle timeout|connection (reset|refused|closed|aborted)|network aborted|broken pipe|dns error|failed to lookup address|name resolution|nodename nor servname|network is unreachable|error decoding response body|end of file before message length|unexpected eof|tls handshake|sslerror|certificate verify failed|server error|service unavailable|bad gateway|gateway time-?out|too many requests|max retries exceeded|remotedisconnected|incompleteread|econnreset|etimedout|eidletimeout|eai_again|enotfound|econnrefused|socket hang up' "$1" 2>/dev/null; then
+        grep -Eqi 'only [^ ]+ (.* )?(is|are) available|no versions? of|not found in the package registry|could not find a version that satisfies|no matching distribution found' "$1" 2>/dev/null || return 1
+        echo unsynced
+        return 0
+    fi
     if grep -Eq 'download(-r2)?\.pytorch\.org' "$1"; then echo torch
     elif grep -q 'python-build-standalone' "$1"; then echo python
     elif grep -q 'registry\.npmjs\.org' "$1"; then echo npm
@@ -315,6 +317,7 @@ _mirror_fallback() {
     _mf_uv=true
     _mf_pip=true
     _mf_switched=""
+    _mf_unsynced=false
     _mirror_configured uv && _mf_uv=false
     _mirror_configured pip && _mf_pip=false
     _mf_hosts=""
@@ -373,11 +376,17 @@ _mirror_fallback() {
     for _mf_host in $_mf_hosts; do
         case " $_mf_switched " in *" $_mf_host "*) continue ;; esac
         _mf_entry=""
-        for _mf_pair in $(_mirror_vars "$_mf_host" blocked); do
+        for _mf_pair in $(_mirror_vars "$_mf_host"); do
             _mf_entry="$_mf_entry|$_mf_pair"
         done
         [ -z "$_mf_entry" ] || _mf_spare="$_mf_spare $_mf_host$_mf_entry"
     done
+    if [ "$_mf_unsynced" = true ]; then
+        _mf_spare="$_mf_spare unsynced"
+        for _mf_pair in $(_mirror_vars unsynced); do
+            _mf_spare="$_mf_spare|$_mf_pair"
+        done
+    fi
     export _UNSLOTH_MIRROR_SPARE="${_mf_spare# }"
 }
 # ── END mirror fallback ──
