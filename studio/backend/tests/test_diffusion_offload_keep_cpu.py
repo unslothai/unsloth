@@ -150,3 +150,23 @@ def test_a_weight_written_on_the_device_is_copied_back():
     pipe.transformer._hf_hook.init_hook(pipe.transformer)
     assert pipe.transformer.weight.device.type == "cpu"
     assert torch.equal(pipe.transformer.weight.detach(), before + 1)
+
+
+@cuda
+def test_a_parameter_replaced_on_the_device_is_copied_back():
+    pipe = _pipe("cuda", "transformer")
+    pipe.enable_model_cpu_offload()
+    dm.keep_cpu_weights_on_offload(pipe)
+    pipe.transformer(torch.ones(1, 8))
+    # A new Parameter under the same name can sit at the very version recorded at onload, so only its
+    # identity tells it apart.
+    old = pipe.transformer.weight
+    new = torch.nn.Parameter(torch.full_like(old, 3.0))
+    with torch.no_grad():
+        while new._version < old._version:
+            new.mul_(1)
+    assert new._version == old._version
+    pipe.transformer.weight = new
+    pipe.transformer._hf_hook.init_hook(pipe.transformer)
+    assert pipe.transformer.weight.device.type == "cpu"
+    assert torch.equal(pipe.transformer.weight.detach(), torch.full((8, 8), 3.0))
