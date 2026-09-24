@@ -15,6 +15,8 @@ import torch
 from core.inference import diffusion_cond_cache as cond_cache
 from core.inference import diffusion_prompt_cache as prompt_cache
 
+from .test_diffusion_backend import fake_runtime  # noqa: E402,F401
+
 
 class _EncodePipe:
     def __init__(self, width = 4):
@@ -300,3 +302,20 @@ def test_cuda_hit_lands_on_the_source_device():
     first = pipe.encode_prompt("a cat")
     second = pipe.encode_prompt("a cat")
     assert second[0].is_cuda and torch.equal(first[0], second[0]) and pipe.calls == 1
+
+
+def test_load_installs_the_prompt_cache_and_unload_releases_it(fake_runtime, tmp_path, monkeypatch):
+    from core.inference import diffusion as diff_mod
+
+    from .test_diffusion_backend import _loaded_backend
+
+    calls = {"install": [], "release": []}
+    monkeypatch.setattr(
+        diff_mod.prompt_cache, "install", lambda pipe, **k: calls["install"].append(pipe) or True
+    )
+    monkeypatch.setattr(diff_mod.prompt_cache, "release", lambda pipe: calls["release"].append(pipe))
+    backend = _loaded_backend(tmp_path)
+    pipe = backend._state.pipe
+    assert calls["install"] == [pipe]
+    backend.unload()
+    assert pipe in calls["release"]
