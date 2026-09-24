@@ -6505,6 +6505,7 @@ def validate_server(
             "linux-cuda",
             "linux-arm64-cuda",
             "linux-rocm",
+            "linux-sycl",
             "linux-vulkan",
             "windows-cuda",
             "windows-arm64-cuda",

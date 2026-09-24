@@ -19,6 +19,7 @@ _FAKE_SMI_DIR=$(mktemp -d)
 # no-GPU / CPU assertions host-dependent. Redirect the whole prefix to an empty
 # temp dir so the probes stay hermetic (same idea as the nvidia-smi rewrite).
 _FAKE_ROCM_DIR=$(mktemp -d)
+_FAKE_PCI_DIR=$(mktemp -d)
 {
     sed -n '/^_run_bounded()/,/^}/p' "$INSTALL_SH"
     echo ""
@@ -77,9 +78,14 @@ _FAKE_ROCM_DIR=$(mktemp -d)
     echo ""
     sed -n '/^_detect_rocm_version_tag()/,/^}/p' "$INSTALL_SH"
     echo ""
+    sed -n '/^_has_intel_xpu_gpu()/,/^}/p' "$INSTALL_SH"
+    echo ""
+    sed -n '/^_xpu_python_supported()/,/^}/p' "$INSTALL_SH"
+    echo ""
     sed -n '/^get_torch_index_url()/,/^}/p' "$INSTALL_SH"
 } | sed -e "s|/usr/bin/nvidia-smi|$_FAKE_SMI_DIR/nvidia-smi-absent|g" \
       -e "s|/opt/rocm|$_FAKE_ROCM_DIR|g" \
+      -e "s|/sys/bus/pci/devices|$_FAKE_PCI_DIR|g" \
   > "$_FUNC_FILE"
 
 for _fn in _rocm_tag_from_amd_smi _rocm_tag_from_version_file _rocm_tag_from_hipconfig \
@@ -194,10 +200,10 @@ run_func() {
     _cvd_setup="$_cvd_setup; _ARCH=x86_64"
     if [ "$_mock_dir" = "none" ]; then
         # Minimal PATH with only basic tools, no nvidia-smi anywhere
-        PATH="$_TOOLS_DIR" bash -c "$_cvd_setup; . '$_FUNC_FILE'; get_torch_index_url" 2>/dev/null
+        PATH="$_TOOLS_DIR" bash -c "$_cvd_setup; . '$_FUNC_FILE'; _has_intel_xpu_gpu() { return 1; }; get_torch_index_url" 2>/dev/null
     else
         # Put mock nvidia-smi dir first, then basic tools
-        PATH="$_mock_dir:$_TOOLS_DIR" bash -c "$_cvd_setup; . '$_FUNC_FILE'; get_torch_index_url" 2>/dev/null
+        PATH="$_mock_dir:$_TOOLS_DIR" bash -c "$_cvd_setup; . '$_FUNC_FILE'; _has_intel_xpu_gpu() { return 1; }; get_torch_index_url" 2>/dev/null
     fi
 }
 
@@ -645,9 +651,35 @@ assert_eq "url override path slash trimmed, query kept" "https://mirror.example.
 _result=$(UNSLOTH_TORCH_INDEX_URL="https://mirror.example.com/whl/cu128#anchor/" run_func "none")
 assert_eq "url override preserves fragment slash" "https://mirror.example.com/whl/cu128#anchor/" "$_result"
 
+# 51) Automatic XPU routing is Linux x86_64-only. An Intel probe on another
+# architecture must not select an index whose Unsloth XPU pins have no wheels.
+_result=$(PATH="$_TOOLS_DIR" bash -c ". '$_FUNC_FILE'; _has_intel_xpu_gpu() { return 0; }; uname() { case \"\$1\" in -s) echo Linux ;; -m) echo aarch64 ;; esac; }; get_torch_index_url" 2>/dev/null)
+assert_eq "aarch64 Intel probe -> cpu" "https://download.pytorch.org/whl/cpu" "$_result"
+
+# 52) macOS remains on its CPU/MPS route even if stale oneAPI tools are on PATH.
+_result=$(PATH="$_TOOLS_DIR" bash -c ". '$_FUNC_FILE'; _has_intel_xpu_gpu() { return 0; }; uname() { case \"\$1\" in -s) echo Darwin ;; -m) echo x86_64 ;; esac; }; get_torch_index_url" 2>/dev/null)
+assert_eq "macOS Intel probe -> cpu" "https://download.pytorch.org/whl/cpu" "$_result"
+
+# 53) A SYCL implementation for another vendor is not a PyTorch Intel XPU signal.
+_result=$(PATH="$_TOOLS_DIR" bash -c ". '$_FUNC_FILE'; _has_usable_nvidia_gpu() { return 1; }; _run_bounded() { \"\$@\"; }; sycl-ls() { echo '[hip:gpu][hip:0] AMD Radeon'; }; _has_intel_xpu_gpu && echo yes || echo no" 2>/dev/null)
+assert_eq "AMD sycl-ls is not Intel" "no" "$_result"
+
+# 54) xpu-smi must enumerate an Intel GPU; the executable alone may be stale.
+_result=$(PATH="$_TOOLS_DIR" bash -c ". '$_FUNC_FILE'; _has_usable_nvidia_gpu() { return 1; }; _run_bounded() { \"\$@\"; }; xpu-smi() { return 1; }; _has_intel_xpu_gpu && echo yes || echo no" 2>/dev/null)
+assert_eq "stale xpu-smi is not a GPU" "no" "$_result"
+
+# 55) The curated XPU dependency matrix currently stops at CPython 3.13.
+_result=$(PATH="$_TOOLS_DIR" bash -c ". '$_FUNC_FILE'; _has_intel_xpu_gpu() { return 0; }; _xpu_python_supported() { return 1; }; uname() { case \"\$1\" in -s) echo Linux ;; -m) echo x86_64 ;; esac; }; get_torch_index_url" 2>/dev/null)
+assert_eq "Python 3.14 Intel probe -> cpu" "https://download.pytorch.org/whl/cpu" "$_result"
+
+# 56) A supported interpreter still reaches the XPU index on Linux x86_64.
+_result=$(PATH="$_TOOLS_DIR" bash -c ". '$_FUNC_FILE'; _has_intel_xpu_gpu() { return 0; }; _xpu_python_supported() { return 0; }; uname() { case \"\$1\" in -s) echo Linux ;; -m) echo x86_64 ;; esac; }; get_torch_index_url" 2>/dev/null)
+assert_eq "Python 3.13 Intel probe -> xpu" "https://download.pytorch.org/whl/xpu" "$_result"
+
 rm -f "$_FUNC_FILE"
 rm -rf "$_FAKE_SMI_DIR"
 rm -rf "$_FAKE_ROCM_DIR"
+rm -rf "$_FAKE_PCI_DIR"
 rm -rf "$_TOOLS_DIR"
 
 summary
