@@ -23,11 +23,15 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { StarPointedIcon } from "@/lib/hugeicons-derived";
 import { cn } from "@/lib/utils";
+import { type MediaZoom, MediaZoomStage } from "./media-zoom";
 import { useProjectSubmenu } from "./project-submenu";
 
 export interface MediaViewerActions {
@@ -43,9 +47,15 @@ export interface MediaViewerActions {
   onDelete?: () => void;
 }
 
+const MEDIA_ZOOMS = [0.25, 0.5, 0.75, 1] as const;
+
+function percent(scale: number): string {
+  return `${Math.round(scale * 100)}%`;
+}
+
 /**
- * One file, filling the window. Images and videos sit on black; everything else keeps the theme.
- * Shared by the Library and the Images and Video pages, so a file opens the same way everywhere.
+ * One file, nearly as tall as the window. Images and videos can be scaled and, once larger than the
+ * frame, dragged. Shared by the Library and the Images and Video pages, so a file opens the same way everywhere.
  */
 export function MediaViewer({
   open,
@@ -63,7 +73,7 @@ export function MediaViewer({
   onOpenChange: (open: boolean) => void;
   title: string;
   meta?: ReactNode;
-  /** Images and videos: black stage, white controls. */
+  /** Images and videos: adds the scale menu. */
   media: boolean;
   /** Used in labels and messages, e.g. "image". */
   noun: string;
@@ -74,11 +84,17 @@ export function MediaViewer({
   children: ReactNode;
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
+  const [zoom, setZoom] = useState<MediaZoom>("fit");
+  const [fitScale, setFitScale] = useState<number | null>(null);
+  // Every opening starts at Fit.
+  const [wasOpen, setWasOpen] = useState(open);
+  if (open !== wasOpen) {
+    setWasOpen(open);
+    if (open) setZoom("fit");
+  }
   const project = useProjectSubmenu({ noun, onAddToProject: actions.onAddToProject });
-  const iconButton = cn(
-    "flex size-9 shrink-0 items-center justify-center rounded-full outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring",
-    media ? "text-white hover:bg-neutral-800 aria-expanded:bg-neutral-800" : "hover:bg-muted aria-expanded:bg-muted",
-  );
+  const iconButton =
+    "flex size-9 shrink-0 items-center justify-center rounded-full outline-none transition-colors hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring aria-expanded:bg-muted";
   const hasMenu = Boolean(
     actions.onViewChat ||
       actions.reveal ||
@@ -92,32 +108,49 @@ export function MediaViewer({
       <DialogContent
         showCloseButton={false}
         onKeyDown={onKeyDown}
-        className={cn(
-          "left-0 top-[var(--studio-window-chrome-top,0px)] flex h-[calc(100dvh-var(--studio-window-chrome-top,0px))] w-dvw max-h-none max-w-none translate-x-0 translate-y-0 flex-col gap-0 overflow-hidden rounded-none p-0 ring-0 sm:max-w-none",
-          media && "bg-black text-white",
-        )}
+        className="flex h-[calc(100dvh-var(--studio-window-chrome-top,0px)-2rem)] w-[min(92vw,1200px)] max-w-none flex-col gap-0 overflow-hidden p-0 sm:max-w-none"
       >
         <div className="flex items-center gap-2 py-3 pl-6 pr-4">
           <div className="min-w-0 flex-1">
             <DialogTitle className="truncate text-[15px] font-medium">{title}</DialogTitle>
-            <DialogDescription
-              className={cn("mt-0.5 truncate text-[13px]", media && "text-neutral-400")}
-            >
+            <DialogDescription className="mt-0.5 truncate text-[13px]">
               {meta}
             </DialogDescription>
           </div>
           {extra}
+          {media && fitScale !== null && (
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild={true}>
+                <button
+                  type="button"
+                  aria-label="Scale"
+                  className="mr-1 flex h-9 shrink-0 items-center gap-1 rounded-full bg-muted px-3.5 text-sm tabular-nums outline-none transition-colors hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring"
+                >
+                  {percent(zoom === "fit" ? fitScale : zoom)}
+                  <HugeiconsIcon icon={ChevronDownStandardIcon} strokeWidth={1.75} className="size-4" />
+                </button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-40">
+                <DropdownMenuRadioGroup
+                  value={String(zoom)}
+                  onValueChange={(value) => setZoom(value === "fit" ? "fit" : Number(value))}
+                >
+                  <DropdownMenuRadioItem value="fit">Fit</DropdownMenuRadioItem>
+                  {MEDIA_ZOOMS.map((scale) => (
+                    <DropdownMenuRadioItem key={scale} value={String(scale)}>
+                      {percent(scale)}
+                    </DropdownMenuRadioItem>
+                  ))}
+                </DropdownMenuRadioGroup>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          )}
           {actions.primary && (
             <button
               type="button"
               disabled={actions.primary.disabled}
               onClick={actions.primary.onClick}
-              className={cn(
-                "mr-1 flex h-9 shrink-0 items-center gap-2 rounded-full px-4 text-sm font-medium outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50",
-                media
-                  ? "bg-white text-black hover:bg-neutral-200"
-                  : "bg-foreground text-background hover:opacity-90",
-              )}
+              className="mr-1 flex h-9 shrink-0 items-center gap-2 rounded-full bg-foreground px-4 text-sm font-medium text-background outline-none transition-opacity hover:opacity-90 focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
             >
               <HugeiconsIcon icon={actions.primary.icon} strokeWidth={1.75} className="size-4" />
               {actions.primary.label}
@@ -184,7 +217,15 @@ export function MediaViewer({
             </button>
           </DialogClose>
         </div>
-        <div className={cn("flex min-h-0 flex-1", media ? "px-4 pb-4" : "px-6 pb-6")}>{children}</div>
+        <div className={cn("flex min-h-0 flex-1", media ? "px-4 pb-4" : "px-6 pb-6")}>
+          {media ? (
+            <MediaZoomStage zoom={zoom} onFitScale={setFitScale}>
+              {children}
+            </MediaZoomStage>
+          ) : (
+            children
+          )}
+        </div>
         {project.dialog}
       </DialogContent>
     </Dialog>
