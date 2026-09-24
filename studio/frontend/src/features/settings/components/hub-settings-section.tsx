@@ -92,7 +92,7 @@ export function HubSettingsSection() {
   // Hidden while ModelScope serves; a ModelScope that failed to start falls back to the endpoint.
   const showEndpointRows = settings?.activeSource !== "modelscope";
   const errorNote = error ? (
-    <span className="max-w-[300px] text-right text-xs text-destructive">
+    <span className="max-w-[calc(300px*var(--ui-space-scale,1))] text-right text-xs text-destructive">
       {error}
     </span>
   ) : null;
@@ -145,7 +145,7 @@ export function HubSettingsSection() {
             })}
           </div>
           {settings && settings.source !== settings.activeSource ? (
-            <span className="max-w-[300px] text-right text-xs text-destructive">
+            <span className="max-w-[calc(300px*var(--ui-space-scale,1))] text-right text-xs text-destructive">
               {t("settings.general.hub.sourceFallback")}
             </span>
           ) : null}
