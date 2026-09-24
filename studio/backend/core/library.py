@@ -392,19 +392,33 @@ def _sandbox_sessions() -> list[tuple[str, Optional[str], Optional[str]]]:
         threads = conn.execute(
             "SELECT id, title FROM chat_threads WHERE project_id IS NULL"
         ).fetchall()
-        # A project pointed at a folder of the user's own works in that folder; its files are not Studio's.
-        projects = conn.execute(
-            "SELECT id, name FROM chat_projects WHERE root_path IS NULL OR root_path = ''"
-        ).fetchall()
+        projects = conn.execute("SELECT id, name, root_path FROM chat_projects").fetchall()
     finally:
         conn.close()
     sessions: list[tuple[str, Optional[str], Optional[str]]] = [
         (row["id"], row["id"], row["title"]) for row in threads
     ]
+    workspaces = _project_workspaces()
     sessions.extend(
-        (f"{_PROJECT_SESSION_PREFIX}{row['id']}", None, row["name"]) for row in projects
+        (f"{_PROJECT_SESSION_PREFIX}{row['id']}", None, row["name"])
+        for row in projects
+        if _studio_project_root(row["root_path"], workspaces)
     )
     return sessions
+
+
+def _project_workspaces() -> str:
+    from utils.paths.storage_roots import project_workspaces_root
+    return os.path.realpath(project_workspaces_root())
+
+
+def _studio_project_root(root_path: Optional[str], workspaces: str) -> bool:
+    """Whether a project works in Studio's own workspace. Every project is given a folder under
+    the workspaces root when it is made, so the column is never empty; one pointed at a folder of
+    the user's own works in that folder, and those files are not Studio's."""
+    if not root_path:
+        return True
+    return is_path_within(os.path.realpath(os.path.expanduser(root_path)), workspaces)
 
 
 def _sandbox_file(ref: str) -> Path:

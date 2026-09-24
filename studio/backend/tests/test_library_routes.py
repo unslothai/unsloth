@@ -770,3 +770,33 @@ def test_containment_ignores_the_windows_long_path_prefix(path, root, inside):
     from utils.paths.path_utils import is_path_within
 
     assert is_path_within(path, root, pathmod = ntpath) is inside
+
+
+def test_a_projects_own_files_are_listed(client, monkeypatch, tmp_path):
+    import os
+
+    from core.inference.tools import resolve_sandbox_workdir
+    from storage import studio_db
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_PROJECTS_HOME", str(tmp_path / "Projects home"))
+    monkeypatch.setattr(library, "_SOURCES", (library._sandbox_items,))
+    project = studio_db.upsert_chat_project(
+        {"id": "p-lib", "name": "Research", "createdAt": 1, "updatedAt": 1}
+    )
+    # Studio gives every project a folder of its own, so the column is never empty.
+    assert project["rootPath"]
+    directory = resolve_sandbox_workdir("project-p-lib")
+    os.makedirs(os.path.join(directory, "files"), exist_ok = True)
+    with open(os.path.join(directory, "files", "notes.txt"), "w") as handle:
+        handle.write("x")
+    item = _items(client)[0]["sandbox:project-p-lib:files/notes.txt"]
+    assert item["threadTitle"] == "Research"
+
+    # One pointed at a folder of the user's own keeps its files out of the Library.
+    own = tmp_path / "My code"
+    conn = studio_db.get_connection()
+    conn.execute("UPDATE chat_projects SET root_path = ? WHERE id = 'p-lib'", (str(own),))
+    conn.commit()
+    conn.close()
+    assert not library._studio_project_root(str(own), library._project_workspaces())
+    assert "sandbox:project-p-lib:files/notes.txt" not in _items(client)[0]
