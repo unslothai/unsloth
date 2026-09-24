@@ -38,6 +38,7 @@ import {
   sortGalleryItems,
   subscribeGalleryChanged,
 } from "@/lib/gallery-flags";
+import { readLastPrompt, saveLastPrompt } from "@/lib/last-prompt";
 import { useDiffusionGpuChoices } from "@/hooks/use-gpu-info";
 import { useHardwareInfo } from "@/hooks/use-hardware-info";
 import { usePersistedToggle } from "@/hooks/use-persisted-toggle";
@@ -907,8 +908,12 @@ function VideoGenerator({
   const denseQuantSchemes = useDenseQuantSchemes();
   const videoModels = useVideoModels(hostClass, denseQuantSchemes);
   const [quant, setQuant] = useState<string | null>(galleryCache.quant);
-  const [prompt, setPrompt] = useState(
-    "Ultra-realistic cinematic documentary footage of a quiet Kyoto neighborhood at sunrise. An elderly Japanese man opens his traditional wooden shop while a young woman wearing a simple kimono walks past carrying a small basket. Cherry blossom petals gently fall through the air, bicycles pass by, warm sunlight enters between narrow streets, distant temple bells echo. The camera slowly moves forward like a professional travel documentary, realistic human movements, natural expressions, authentic Japanese architecture, subtle wind movement in clothing and trees, realistic colors, 35mm film photography style.",
+  // Starts from the last prompt generated with, else a short example.
+  const [prompt, setPrompt] = useState(() =>
+    readLastPrompt(
+      "video",
+      "A slow cinematic shot down a quiet Kyoto street at sunrise, cherry blossom petals drifting in the air, a shopkeeper opening a wooden storefront, warm natural light.",
+    ),
   );
   const [negativePrompt, setNegativePrompt] = useState("");
   const [negativeOpen, setNegativeOpen] = useState(false);
@@ -3263,6 +3268,8 @@ function VideoGenerator({
     const matchSource = resolutionIdx === MATCH_SOURCE_RESOLUTION;
     const preset = resolutionPresets[resolutionIdx] ?? resolutionPresets[0];
 
+    // Saved only once the request passes validation, so a rejected attempt is not kept.
+    saveLastPrompt("video", prompt);
     setBusy("generating");
     setGenStep(null);
     // The POST only STARTS the job and returns at once (a clip takes minutes, and the secure-mode
@@ -4352,7 +4359,11 @@ function VideoGenerator({
                 <TooltipTrigger asChild={true}>
                 <button
                   type="button"
-                  onClick={() => setSelectedId(video.id)}
+                  onClick={() => {
+                    setSelectedId(video.id);
+                    // Show the prompt this clip was made with.
+                    setPrompt(video.prompt);
+                  }}
                   className="relative flex size-full flex-col justify-end overflow-hidden rounded-[10px] bg-muted/40 outline-none ring-1 ring-transparent transition-shadow hover:ring-border focus-visible:ring-2 focus-visible:ring-ring"
                 >
                   {thumbnailById[video.id] ? (
