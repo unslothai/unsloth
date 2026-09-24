@@ -110,6 +110,8 @@ from ._utils import (
     resolve_model_class,
     _is_family_text_decoder,
     _apply_text_only_key_mapping,
+    _get_remote_composite_text_only,
+    _merge_key_mapping,
     set_task_config_attr,
     maybe_prefetch_hf_snapshot,
 )
@@ -1904,10 +1906,33 @@ class FastModel(FastBaseModel):
                 text_config = _get_text_only_config(model_config, old_model_name)
                 # Skip the vision tower only for families with their own text decoder (Gemma 3); others would load random weights, so keep the full model.
                 text_class = resolve_model_class(AutoModelForCausalLM, text_config)
-                if text_class is None or not _is_family_text_decoder(
+                # Repo-code composites (Nemotron-Omni) keep a whole causal LM under one checkpoint prefix; load only it when every text weight is found there.
+                family_decoder = text_class is not None and _is_family_text_decoder(
                     getattr(model_config, "model_type", ""),
                     getattr(text_config, "model_type", ""),
-                ):
+                )
+                remote_text_only = None
+                if not family_decoder:
+                    remote_text_only = _get_remote_composite_text_only(
+                        model_config,
+                        model_name,
+                        trust_remote_code = trust_remote_code,
+                        token = token,
+                        revision = base_revision if not is_peft else None,
+                        local_files_only = local_files_only,
+                    )
+                if remote_text_only is not None:
+                    text_config, _text_key_mapping = remote_text_only
+                    logger.warning_once(
+                        f"Loading {old_model_name} as text-only: only its language model "
+                        f"({type(text_config).__name__}) is built, vision/audio weights are skipped. "
+                        "Use FastVisionModel with text_only = False for multimodal inputs."
+                    )
+                    _merge_key_mapping(kwargs, _text_key_mapping)
+                    model_config = text_config
+                    is_vlm = False
+                    text_only_decoder = True
+                elif not family_decoder:
                     load_text_only = False
                 else:
                     logger.warning_once(

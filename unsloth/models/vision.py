@@ -79,6 +79,8 @@ from ._utils import (
     _config_get,
     _is_flash_attention_requested,
     _apply_text_only_key_mapping,
+    _get_remote_composite_text_only,
+    _merge_key_mapping,
     _select_moe_detection_targets,
     set_task_config_attr,
 )
@@ -1302,6 +1304,20 @@ class FastBaseModel:
                 auto_model = AutoModelForCausalLM
                 _apply_text_only_key_mapping(kwargs, parent_config, text_config)
                 text_only_decoder = True
+            else:
+                remote_text_only = _get_remote_composite_text_only(
+                    parent_config,
+                    model_name,
+                    trust_remote_code = trust_remote_code,
+                    token = token,
+                    revision = _revision,
+                    local_files_only = local_files_only,
+                )
+                if remote_text_only is not None:
+                    auto_config, _text_key_mapping = remote_text_only
+                    auto_model = AutoModelForCausalLM
+                    _merge_key_mapping(kwargs, _text_key_mapping)
+                    text_only_decoder = True
         elif text_only and auto_model in [
             AutoModelForVision2Seq,
             AutoModelForImageTextToText,

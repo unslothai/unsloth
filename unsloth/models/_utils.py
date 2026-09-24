@@ -1201,6 +1201,176 @@ def _apply_text_only_key_mapping(kwargs, parent_config, text_config):
     kwargs["key_mapping"] = {**mapping, **user_mapping} if user_mapping else mapping
 
 
+def _is_remote_code_config(config):
+    # A config class defined by repo code (trust_remote_code), not one transformers ships.
+    return type(config).__module__.startswith("transformers_modules")
+
+
+def _checkpoint_weight_names(model_name, token = None, revision = None, local_files_only = False):
+    # Tensor names stored in a safetensors checkpoint, read from the index or the file header only. None when unknown.
+    import json, os
+
+    index_name = "model.safetensors.index.json"
+    single_name = "model.safetensors"
+    if os.path.isdir(str(model_name)):
+        index_path = os.path.join(model_name, index_name)
+        if os.path.isfile(index_path):
+            with open(index_path, "r", encoding = "utf-8") as f:
+                return set(json.load(f).get("weight_map", {}))
+        single_path = os.path.join(model_name, single_name)
+        if os.path.isfile(single_path):
+            from safetensors import safe_open
+
+            with safe_open(single_path, framework = "pt") as f:
+                return set(f.keys())
+        return None
+    try:
+        from huggingface_hub import hf_hub_download
+
+        index_path = hf_hub_download(
+            model_name,
+            index_name,
+            token = token,
+            revision = revision,
+            local_files_only = local_files_only,
+        )
+        with open(index_path, "r", encoding = "utf-8") as f:
+            return set(json.load(f).get("weight_map", {}))
+    except Exception:
+        pass
+    if local_files_only:
+        return None
+    try:
+        from huggingface_hub import get_safetensors_metadata
+
+        meta = get_safetensors_metadata(model_name, token = token, revision = revision)
+        names = set(getattr(meta, "weight_map", {}) or {})
+        return names or None
+    except Exception:
+        return None
+
+
+def _infer_text_submodel_prefix(expected_names, checkpoint_names):
+    # The one checkpoint prefix under which EVERY parameter of the standalone text model is stored (language_model.), or None.
+    expected = set(expected_names)
+    if not expected or not checkpoint_names:
+        return None
+    counts = {}
+    for name in checkpoint_names:
+        start = 0
+        while True:
+            dot = name.find(".", start)
+            if dot == -1:
+                break
+            prefix, suffix = name[: dot + 1], name[dot + 1 :]
+            if suffix in expected:
+                counts[prefix] = counts.get(prefix, 0) + 1
+            start = dot + 1
+    full = [p for p, n in counts.items() if n == len(expected)]
+    if len(full) != 1:
+        # None covers everything (weights would be random), or two prefixes do and the choice is ambiguous.
+        return None
+    return full[0]
+
+
+def _resolve_text_causal_lm_class(text_config, model_name, trust_remote_code, token = None, revision = None):
+    # The class AutoModelForCausalLM.from_pretrained(model_name, config = text_config) will build: repo code first when trusted.
+    auto_map = getattr(text_config, "auto_map", None) or {}
+    class_ref = auto_map.get("AutoModelForCausalLM") if isinstance(auto_map, dict) else None
+    if class_ref is not None:
+        if not trust_remote_code:
+            return None
+        from transformers.dynamic_module_utils import get_class_from_dynamic_module
+
+        return get_class_from_dynamic_module(
+            class_ref, model_name, token = token, revision = revision
+        )
+    from transformers import AutoModelForCausalLM
+
+    return resolve_model_class(AutoModelForCausalLM, text_config)
+
+
+def _meta_parameter_names(model_class, config):
+    # Parameter names of model_class(config), built on the meta device (no memory, no weights). Tied weights count once.
+    import torch
+
+    config = copy.deepcopy(config)
+    try:
+        # The build only needs names; a hardcoded flash_attention_2 would refuse to init without a GPU.
+        config._attn_implementation = "eager"
+    except Exception:
+        pass
+    with torch.device("meta"):
+        model = model_class(config)
+    return [name for name, _ in model.named_parameters()]
+
+
+def _get_remote_composite_text_only(
+    model_config,
+    model_name,
+    trust_remote_code = False,
+    token = None,
+    revision = None,
+    local_files_only = False,
+):
+    # Text-only load plan for a repo-code composite (Nemotron-Omni: llm_config + vision/sound) whose text sub-model is a whole causal LM stored under one prefix.
+    # Returns (text_config, key_mapping) or None; None keeps the previous full-model load.
+    if not trust_remote_code or not _is_remote_code_config(model_config):
+        return None
+    if Version(transformers_version) < Version("4.51.0"):
+        return None  # from_pretrained has no key_mapping
+    try:
+        text_config = _get_text_only_config(model_config, model_name)
+    except Exception:
+        return None
+    if text_config is None or text_config is model_config:
+        return None
+    text_config = copy.copy(text_config)
+    try:
+        text_class = _resolve_text_causal_lm_class(
+            text_config, model_name, trust_remote_code, token = token, revision = revision
+        )
+        if text_class is None:
+            return None
+        parent_class_names = set((getattr(model_config, "auto_map", None) or {}).values())
+        if f"{text_class.__module__.rsplit('.', 1)[-1]}.{text_class.__name__}" in parent_class_names:
+            return None  # the text entry points back at the wrapper itself
+        expected = _meta_parameter_names(text_class, text_config)
+    except Exception:
+        return None
+    names = _checkpoint_weight_names(
+        model_name, token = token, revision = revision, local_files_only = local_files_only
+    )
+    prefix = _infer_text_submodel_prefix(expected, names)
+    if prefix is None:
+        return None
+    qc = getattr(text_config, "quantization_config", None)
+    if qc is not None:
+        text_config.quantization_config = _strip_skip_module_prefix(qc, prefix)
+    return text_config, {"^" + re.escape(prefix): ""}
+
+
+def _strip_skip_module_prefix(qc, prefix):
+    # llm_int8_skip_modules named from the wrapper root -> names relative to the text model.
+    is_dict = isinstance(qc, dict)
+    skip = qc.get("llm_int8_skip_modules") if is_dict else getattr(qc, "llm_int8_skip_modules", None)
+    if not skip:
+        return qc
+    remapped = list(dict.fromkeys(n[len(prefix) :] if n.startswith(prefix) else n for n in skip))
+    qc = dict(qc) if is_dict else copy.copy(qc)
+    if is_dict:
+        qc["llm_int8_skip_modules"] = remapped
+    else:
+        qc.llm_int8_skip_modules = remapped
+    return qc
+
+
+def _merge_key_mapping(kwargs, mapping):
+    # Add mapping to from_pretrained kwargs, under any user mapping.
+    user_mapping = kwargs.get("key_mapping", None)
+    kwargs["key_mapping"] = {**mapping, **user_mapping} if user_mapping else mapping
+
+
 def resolve_attention_implementation(
     model_class,
     config,
