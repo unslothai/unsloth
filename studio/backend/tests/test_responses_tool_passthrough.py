@@ -3067,7 +3067,7 @@ class TestCodexStyleRequestShapes:
                 {
                     "type": "reasoning",
                     "id": "rs_1",
-                    "summary": [],
+                    "summary": [{"type": "summary_text", "text": "summary"}],
                     "content": [{"type": "reasoning_text", "text": "plan"}],
                 },
                 {"role": "assistant", "content": "33"},

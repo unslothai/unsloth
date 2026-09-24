@@ -31295,13 +31295,16 @@ def _normalise_responses_input(payload: ResponsesRequest) -> list[ChatMessage]:
     - ``ResponsesInputMessage`` -- regular chat messages (text or multimodal).
     - ``ResponsesFunctionCallInputItem`` -- a prior assistant tool call
       replayed on a follow-up turn. Becomes a Chat Completions ``tool_calls``
-      entry keyed by ``call_id``; each contiguous run of reasoning, assistant
-      message and call items folds into one assistant message.
+      entry keyed by ``call_id``.
     - ``ResponsesFunctionCallOutputInputItem`` -- a tool result the client is
       returning. Becomes a ``role="tool"`` message with ``tool_call_id`` set to
       the originating ``call_id`` so llama-server can reconcile call with result.
     - ``ResponsesCustomToolCallInputItem`` and its output counterpart -- the
       freeform call is wrapped in the local ``input`` function argument.
+    - ``reasoning`` items -- their text becomes ``reasoning_content``.
+
+    Each contiguous run of reasoning, assistant message and call items folds
+    into one assistant message, as the model produced it.
 
     System / developer content is collected from ``instructions`` *and* any
     ``role="system"`` / ``role="developer"`` entries in ``input``, then merged
@@ -31337,23 +31340,23 @@ def _normalise_responses_input(payload: ResponsesRequest) -> list[ChatMessage]:
         if isinstance(item, ResponsesCustomToolCallInputItem) and item.name in custom_tool_names
     }
 
-    reasoning: list[str] = []
-    text: list[str] = []
-    tool_calls: list[dict] = []
+    turn_reasoning: list[str] = []
+    turn_text: list[str] = []
+    turn_calls: list[dict] = []
 
     def _flush_assistant_turn() -> None:
-        if text or tool_calls:
+        if turn_text or turn_calls:
             messages.append(
                 ChatMessage(
                     role = "assistant",
-                    content = "\n\n".join(text) or None,
-                    reasoning_content = "\n\n".join(reasoning) or None,
-                    tool_calls = list(tool_calls) or None,
+                    content = "\n\n".join(turn_text) or None,
+                    reasoning_content = "\n\n".join(turn_reasoning) or None,
+                    tool_calls = list(turn_calls) or None,
                 )
             )
-        reasoning.clear()
-        text.clear()
-        tool_calls.clear()
+        turn_reasoning.clear()
+        turn_text.clear()
+        turn_calls.clear()
 
     for item in payload.input:
         if not (
@@ -31364,7 +31367,7 @@ def _normalise_responses_input(payload: ResponsesRequest) -> list[ChatMessage]:
             _flush_assistant_turn()
 
         if isinstance(item, ResponsesFunctionCallInputItem):
-            tool_calls.append(
+            turn_calls.append(
                 {
                     "id": item.call_id,
                     "type": "function",
@@ -31392,7 +31395,7 @@ def _normalise_responses_input(payload: ResponsesRequest) -> list[ChatMessage]:
         if isinstance(item, ResponsesCustomToolCallInputItem):
             if item.call_id not in custom_tool_call_ids:
                 continue
-            tool_calls.append(
+            turn_calls.append(
                 {
                     "id": item.call_id,
                     "type": "function",
@@ -31422,7 +31425,7 @@ def _normalise_responses_input(payload: ResponsesRequest) -> list[ChatMessage]:
                     getattr(item, "content", None)
                 ) or _coerce_responses_reasoning_text(getattr(item, "summary", None))
                 if replayed.strip():
-                    reasoning.append(replayed)
+                    turn_reasoning.append(replayed)
             continue
 
         # ResponsesInputMessage. Before the role branches: each returns via `continue`, so a
@@ -31441,9 +31444,9 @@ def _normalise_responses_input(payload: ResponsesRequest) -> list[ChatMessage]:
         # multimodal array, so flatten output_text (and any stray input_text /
         # unknown text) to a single string.
         if item.role == "assistant":
-            replayed = _responses_message_text(item.content)
-            if replayed:
-                text.append(replayed)
+            message_text = _responses_message_text(item.content)
+            if message_text:
+                turn_text.append(message_text)
             continue
 
         if isinstance(item.content, str):
