@@ -13,3 +13,17 @@ export function withNvfp4Option<T extends readonly [string, string]>(
   if (nvfp4Enabled) return [...options];
   return options.filter(([value]) => value.trim().toLowerCase() !== "nvfp4");
 }
+
+/** The select value to keep once the backend has said whether it accepts NVFP4. A held `nvfp4`
+ *  (reseeded from an earlier load, before a restart turned the switch off) would sit in a select
+ *  that no longer lists it, blank, and the next load or Reapply would send it for a 400, so it
+ *  falls back to `auto`. Until system info arrives (`known` false) nothing is reset: the switch
+ *  reads off by default and would otherwise wipe a real NVFP4 pick on every page load. */
+export function nvfp4SelectionFallback<T extends string>(
+  value: T,
+  nvfp4Known: boolean,
+  nvfp4Enabled: boolean,
+): T | "auto" {
+  if (!nvfp4Known || nvfp4Enabled) return value;
+  return value.trim().toLowerCase() === "nvfp4" ? "auto" : value;
+}
