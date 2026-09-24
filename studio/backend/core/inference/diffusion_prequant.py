@@ -867,7 +867,11 @@ def load_prequantized_transformer(
         # dense fallback) for one this build cannot honour exactly. After load_state_dict because the meta retry above
         # rebuilds the module; before apply_small_m_padding because padding reparents the Linears and the recorded
         # fqns name the unwrapped tree.
-        from .diffusion_convrot import apply_activation_rotation, declares_rotation, warm_rotation_cache
+        from .diffusion_convrot import (
+            apply_activation_rotation,
+            declares_rotation,
+            warm_rotation_cache,
+        )
 
         apply_activation_rotation(transformer, metadata, logger = logger)
 
@@ -877,7 +881,9 @@ def load_prequantized_transformer(
                 import torch
 
                 on = next(iter(transformer.parameters()), None)
-                dtype = getattr(torch, str(metadata.get("torch_dtype") or "bfloat16"), torch.bfloat16)
+                dtype = getattr(
+                    torch, str(metadata.get("torch_dtype") or "bfloat16"), torch.bfloat16
+                )
                 warm_rotation_cache(transformer, on.device if on is not None else device, dtype)
             except Exception:  # noqa: BLE001
                 pass
@@ -1051,7 +1057,13 @@ def _resolve_checkpoint_path(
                 if not local_files_only or last:
                     # Unreachable, but a later name already in the cache still loads without a fetch
                     # (a newer artifact declared ahead of the one the user downloaded earlier).
-                    cached = None if last else cached_checkpoint_path(source, cache_dir = cache_dir, names = names[index + 1 :])
+                    cached = (
+                        None
+                        if last
+                        else cached_checkpoint_path(
+                            source, cache_dir = cache_dir, names = names[index + 1 :]
+                        )
+                    )
                     if cached is None:
                         raise
                     return cached

@@ -94,11 +94,15 @@ def upload_destination(
     from core.inference.diffusion_families import family_prequant_filename
     from core.inference.diffusion_transformer_quant import convrot_spec_for_scheme
 
-    if not rotated and safetensors and upload_repo and convrot_spec_for_scheme(scheme, getattr(fam, "name", None))[0]:
+    if (
+        not rotated
+        and safetensors
+        and upload_repo
+        and convrot_spec_for_scheme(scheme, getattr(fam, "name", None))[0]
+    ):
         # the declared name is this family's ROTATED artifact; a plain build goes to the derived name the chain keeps
         # behind it, rather than over the rotated one
         from core.inference.diffusion_prequant import prequant_repo_filename
-
         return prequant_repo_filename(upload_repo, scheme, ".safetensors")
     preferred = family_prequant_filename(fam, scheme)
     why = "a rotated checkpoint" if rotated else "a safetensors checkpoint"

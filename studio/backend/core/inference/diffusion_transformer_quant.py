@@ -204,19 +204,31 @@ def apply_small_m_padding(
 _INT8_FAMILY_CONVROT: dict[str, tuple[int, tuple[str, ...]]] = {
     "qwen-image-2.1": (
         256,
-        ("attn.to_q", "attn.to_k", "attn.to_v", "attn.to_out.0", "img_mlp.gate_layer", "img_mlp.proj", "img_mlp.out"),
+        (
+            "attn.to_q",
+            "attn.to_k",
+            "attn.to_v",
+            "attn.to_out.0",
+            "img_mlp.gate_layer",
+            "img_mlp.proj",
+            "img_mlp.out",
+        ),
     ),
 }
 
 
-def convrot_spec_for_scheme(scheme: str, family: Optional[str] = None) -> tuple[int, tuple[str, ...]]:
+def convrot_spec_for_scheme(
+    scheme: str, family: Optional[str] = None
+) -> tuple[int, tuple[str, ...]]:
     """``(group, fqn_suffixes)`` the int8 quantize path rotates, ``(0, ())`` for none."""
     if scheme != TQ_INT8:
         return 0, ()
     return _INT8_FAMILY_CONVROT.get(str(family or "").strip().lower(), (0, ()))
 
 
-def convrot_fqns(transformer: Any, filter_fn: Any, group: int, suffixes: tuple[str, ...]) -> tuple[str, ...]:
+def convrot_fqns(
+    transformer: Any, filter_fn: Any, group: int, suffixes: tuple[str, ...]
+) -> tuple[str, ...]:
     """The Linears ``filter_fn`` will quantize whose fqn ends in one of ``suffixes`` and whose input width
     ``group`` divides."""
     from .diffusion_convrot import rotatable_fqns
@@ -226,7 +238,13 @@ def convrot_fqns(transformer: Any, filter_fn: Any, group: int, suffixes: tuple[s
 
 
 def apply_runtime_convrot(
-    transformer: Any, scheme: str, family: Optional[str], filter_fn: Any, *, target: Any = None, logger: Any = None
+    transformer: Any,
+    scheme: str,
+    family: Optional[str],
+    filter_fn: Any,
+    *,
+    target: Any = None,
+    logger: Any = None,
 ) -> tuple[str, ...]:
     """Rotate this family's ConvRot Linears BEFORE quantize_. A failure after this leaves an exact dense model
     (rotated weights with the online rotation installed), so the caller's fallback stays correct."""
@@ -235,22 +253,38 @@ def apply_runtime_convrot(
         return ()
     from .diffusion_convrot import CONVROT_ATTR, CONVROT_KIND, rotate_linears_, warm_rotation_cache
 
-    rotated = rotate_linears_(transformer, convrot_fqns(transformer, filter_fn, group, suffixes), group)
+    rotated = rotate_linears_(
+        transformer, convrot_fqns(transformer, filter_fn, group, suffixes), group
+    )
     if rotated:
         # the device the forward will run on, which is not where the weights sit when a load quantizes on CPU first
         weight = transformer.get_submodule(rotated[0]).weight
         device = getattr(target, "torch_device", None) or getattr(target, "device", None)
         dtype = getattr(target, "dtype", None)
         try:
-            warm_rotation_cache(transformer, device or weight.device, dtype if dtype is not None and not isinstance(dtype, str) else weight.dtype)
+            warm_rotation_cache(
+                transformer,
+                device or weight.device,
+                dtype if dtype is not None and not isinstance(dtype, str) else weight.dtype,
+            )
         except Exception:  # noqa: BLE001 - only saves one recompile
             pass
     try:
-        setattr(transformer, CONVROT_ATTR, {"kind": CONVROT_KIND, "group": group, "linears": len(rotated)})
+        setattr(
+            transformer,
+            CONVROT_ATTR,
+            {"kind": CONVROT_KIND, "group": group, "linears": len(rotated)},
+        )
     except Exception:  # noqa: BLE001 - diagnostic marker only
         pass
     if logger is not None:
-        logger.info("diffusion.transformer_quant: ConvRot group %d on %d %s linears (%s)", group, len(rotated), scheme, family)
+        logger.info(
+            "diffusion.transformer_quant: ConvRot group %d on %d %s linears (%s)",
+            group,
+            len(rotated),
+            scheme,
+            family,
+        )
     return rotated
 
 
