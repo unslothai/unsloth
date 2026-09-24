@@ -28,7 +28,11 @@ def client(monkeypatch):
     return TestClient(app)
 
 
-def _upload(client, *files, folder_id = None):
+def _upload(
+    client,
+    *files,
+    folder_id = None,
+):
     response = client.post(
         "/api/library/uploads",
         files = [("files", file) for file in files],
@@ -120,13 +124,19 @@ def test_deleting_a_folder_moves_its_contents_up(client):
     assert client.delete(f"/api/library/folders/{inner['id']}").status_code == 200
     items, folders = _items(client)
     assert items[note]["folderId"] == outer["id"]
-    assert {f["id"]: f["parentId"] for f in folders} == {outer["id"]: None, child["id"]: outer["id"]}
+    assert {f["id"]: f["parentId"] for f in folders} == {
+        outer["id"]: None,
+        child["id"]: outer["id"],
+    }
 
 
 def test_notes_are_editable_and_deletable(client):
     [note] = _upload(client, ("note.md", b"", "text/markdown"))
     upload_id = note.removeprefix("upload:")
-    assert client.put(f"/api/library/uploads/{upload_id}/text", json = {"text": "hello"}).status_code == 200
+    assert (
+        client.put(f"/api/library/uploads/{upload_id}/text", json = {"text": "hello"}).status_code
+        == 200
+    )
     items, _ = _items(client)
     assert items[note]["sizeBytes"] == 5
     assert client.get(items[note]["fileUrl"]).content == b"hello"
@@ -185,9 +195,20 @@ def test_generated_video_is_listed_and_deleted(client, monkeypatch):
     monkeypatch.setattr(library, "_SOURCES", (library._video_items,))
     meta = {
         key: 1
-        for key in ("width", "height", "num_frames", "fps", "duration_s", "steps", "guidance", "seed")
+        for key in (
+            "width",
+            "height",
+            "num_frames",
+            "fps",
+            "duration_s",
+            "steps",
+            "guidance",
+            "seed",
+        )
     }
-    record = video_gallery.save(b"\0\0\0\x18ftypmp42", {**meta, "prompt": "A calm sea", "created_at": 1_700_000_000})
+    record = video_gallery.save(
+        b"\0\0\0\x18ftypmp42", {**meta, "prompt": "A calm sea", "created_at": 1_700_000_000}
+    )
     item_id = f"video:{record['id']}"
     item = _items(client)[0][item_id]
     assert (item["name"], item["contentType"]) == ("A calm sea.mp4", "video/mp4")
@@ -221,7 +242,6 @@ def test_fine_tuned_models_are_listed_but_not_deleted_here(client, monkeypatch):
         assert run.is_dir()
     finally:
         import shutil
-
         shutil.rmtree(run)
 
 
