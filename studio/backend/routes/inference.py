@@ -15849,6 +15849,11 @@ async def _load_npu_model(
     ):
         account_access.join_resident("chat")
         return _npu_load_response(npu, "already_loaded")
+    # A target load() would refuse must not cost the resident model.
+    try:
+        await asyncio.to_thread(npu.loadable_model, model_id)
+    except NpuError as exc:
+        raise HTTPException(status_code = 400, detail = str(exc)) from None
     if load_cancel_event is not None and load_cancel_event.is_set():
         raise HTTPException(status_code = 409, detail = "Model load cancelled")
     # Point of no return: stop (or refuse over) the chats this swap interrupts.

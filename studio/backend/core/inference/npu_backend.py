@@ -451,6 +451,16 @@ class LemonadeNpuBackend:
                 return model
         raise NpuError(f"{model_id} is not in the FastFlowLM catalog.")
 
+    def loadable_model(self, model_id: str) -> NpuModel:
+        """The catalog entry ``load`` would accept, checked before a caller unloads anything."""
+        try:
+            model = self._model(model_id)
+        except LemonadeUnavailable as exc:
+            raise NpuError(str(exc)) from exc
+        if not model.downloaded:
+            raise NpuError(f"{model.id} is not downloaded yet.")
+        return model
+
     def download(self, model_id: str) -> Iterator[dict[str, Any]]:
         """Pull a model, yielding lemond's progress events, then a final ``complete`` one."""
         model = self._model(model_id)

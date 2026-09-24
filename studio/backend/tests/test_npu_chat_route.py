@@ -521,6 +521,9 @@ def test_an_owner_npu_model_is_hidden_from_managed_accounts(monkeypatch):
         loaded_context_length = None
         unloads = 0
 
+        def loadable_model(self, model_id):
+            return model
+
         def load(self, model_id, ctx):
             self.is_loaded, self.loaded_model, self.loaded_context_length = True, model, 8192
 
@@ -623,3 +626,37 @@ def test_an_unload_naming_another_npu_model_keeps_the_resident(monkeypatch):
     assert npu.unloads == 0
     _unload("lemonade:gemma3-4b-FLM")
     assert npu.unloads == 1
+
+
+def test_an_npu_load_it_would_refuse_keeps_the_gpu_resident(monkeypatch):
+    from models.inference import LoadRequest
+    from routes import inference as routes
+
+    class _Npu:
+        loaded_model = None
+        loaded_context_length = None
+
+        def loadable_model(self, model_id):
+            raise nb.NpuError(f"{model_id} is not downloaded yet.")
+
+        def load(self, model_id, ctx):
+            raise AssertionError("load() must not run")
+
+    teardowns: list[str] = []
+
+    async def _unload_gpu(_backend):
+        teardowns.append("llama")
+
+    monkeypatch.setattr(nb, "get_npu_backend", lambda: _Npu())
+    monkeypatch.setattr(routes, "_unload_llama_before_standard_load", _unload_gpu)
+    with pytest.raises(HTTPException) as info:
+        asyncio.run(
+            routes._load_npu_model(
+                LoadRequest(model_path = "lemonade:gemma3-4b-FLM"),
+                current_request_counted = False,
+                on_reload_confirmed = lambda *, cancel: teardowns.append("chats"),
+                load_cancel_event = None,
+            )
+        )
+    assert info.value.status_code == 400 and "not downloaded" in info.value.detail
+    assert teardowns == []

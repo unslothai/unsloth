@@ -417,6 +417,42 @@ def test_a_server_that_never_answers_is_reported(tmp_path):
     assert not server.is_alive()
 
 
+def test_stop_interrupts_a_start_that_never_becomes_ready(tmp_path):
+    import threading
+    import time
+
+    binary = tmp_path / "lemond"
+    binary.write_text("#!/bin/sh\nexec sleep 60\n", encoding = "utf-8")
+    binary.chmod(0o755)
+    server = LemonadeServer(
+        binary,
+        cache_dir = tmp_path / "cache",
+        config_dir = tmp_path / "config",
+        flm_model_dir = tmp_path / "flm",
+    )
+    errors: list[BaseException] = []
+
+    def _start():
+        try:
+            server.start(timeout = 60)
+        except BaseException as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    thread = threading.Thread(target = _start)
+    thread.start()
+    deadline = time.monotonic() + 15
+    while not server.is_alive():
+        assert time.monotonic() < deadline
+        time.sleep(0.05)
+    started = time.monotonic()
+    server.stop()
+    assert time.monotonic() - started < 30
+    thread.join(timeout = 30)
+    assert len(errors) == 1 and isinstance(errors[0], LemonadeUnavailable)
+    assert not server.is_alive()
+    server.close()
+
+
 @pytest.mark.parametrize(
     "path, expected",
     [

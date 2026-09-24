@@ -2784,14 +2784,22 @@ export function useChatModelRuntime() {
 
   /** Load a downloaded NPU model directly; read its capabilities from /status. */
   const loadNpuModel = useCallback(
-    async (modelPath: string) => {
+    async (
+      modelPath: string,
+      reload?: { forceReload?: boolean; config?: PerModelConfig },
+    ) => {
       const store = useChatRuntimeStore.getState();
       if (
+        !reload?.forceReload &&
         store.params.checkpoint === modelPath &&
         store.residentCheckpoint === modelPath
       ) {
         return;
       }
+      // Context length is the one setting FastFlowLM takes; null (Auto) sends 0 for its default.
+      const contextLength = (
+        reload?.config ?? resolveInitialConfig(modelPath).config
+      ).customContextLength;
       if (loadingModelRef.current ?? store.loadingModelPick) {
         toast.info("Another model is already loading", {
           description: "Wait for it to finish or cancel it first.",
@@ -2844,9 +2852,10 @@ export function useChatModelRuntime() {
         await loadModel({
           model_path: modelPath,
           hf_token: null,
-          max_seq_length: 0,
+          max_seq_length: contextLength ?? 0,
           load_in_4bit: false,
           is_lora: false,
+          force_reload: reload?.forceReload === true,
           force_cancel_active: stopDecision.forceCancelActive,
         });
         // Stop loading unloads it; cancelLoading reports that.

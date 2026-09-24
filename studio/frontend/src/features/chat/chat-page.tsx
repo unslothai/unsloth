@@ -3200,7 +3200,10 @@ export function ChatPage({
         return;
       }
       if (isNpuModelId(value)) {
-        void loadNpuModel(value);
+        void loadNpuModel(value, {
+          forceReload: meta?.forceReload,
+          config: meta?.config,
+        });
         return;
       }
       if (meta?.source === "external" || isExternalModelId(value)) {

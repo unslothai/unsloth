@@ -82,6 +82,8 @@ class LemonadeServer:
         self._tail: deque[str] = deque(maxlen = 200)
         self._drain_thread: Optional[threading.Thread] = None
         self._lock = threading.Lock()
+        # stop() sets it without the lock, which start() holds while waiting for readiness.
+        self._stop_requested = threading.Event()
         self._client = httpx.Client(timeout = 30.0, trust_env = False)
 
     @property
@@ -128,6 +130,7 @@ class LemonadeServer:
         with self._lock:
             if self.is_alive():
                 return
+            self._stop_requested.clear()
             if is_process_shutting_down():
                 raise LemonadeUnavailable("Unsloth is shutting down; not starting Lemonade.")
             self.cache_dir.mkdir(parents = True, exist_ok = True)
@@ -202,7 +205,7 @@ class LemonadeServer:
     def _wait_ready(self, timeout: float) -> bool:
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
-            if not self.is_alive():
+            if not self.is_alive() or self._stop_requested.is_set():
                 return False
             try:
                 response = self._client.get(
@@ -260,6 +263,7 @@ class LemonadeServer:
 
     def stop(self) -> None:
         """Unload, then stop lemond and every process under it. Idempotent."""
+        self._stop_requested.set()
         with self._lock:
             if self.is_alive():
                 try:
