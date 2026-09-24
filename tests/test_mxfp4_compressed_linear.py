@@ -1090,9 +1090,16 @@ def test_every_compressed_tensors_spelling_installs_the_keep_packed_hook(spellin
     from unsloth.models import loader_utils, mxfp4_compressed_linear
 
     calls = []
-    monkeypatch.setattr(mxfp4_compressed_linear, "install_compressed_tensors_keep_packed", lambda: calls.append(1))
-    config = SimpleNamespace(quantization_config = {"quant_method": spelling, "format": "mxfp4-pack-quantized"})
+    monkeypatch.setattr(
+        mxfp4_compressed_linear, "install_compressed_tensors_keep_packed", lambda: calls.append(1)
+    )
+    config = SimpleNamespace(
+        quantization_config = {"quant_method": spelling, "format": "mxfp4-pack-quantized"}
+    )
     loader_utils.check_and_disable_bitsandbytes_loading(
-        config, load_in_4bit = False, verbose = False, requantize_packed = False,
+        config,
+        load_in_4bit = False,
+        verbose = False,
+        requantize_packed = False,
     )
     assert calls == [1]
