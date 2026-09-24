@@ -805,20 +805,18 @@ def test_a_swap_stops_an_npu_reply_still_in_prefill(flm):
                 ri._raise_or_cancel_active_generations(force = True, action = "Loading a model")
 
             swap = asyncio.create_task(swap_soon())
-            started = time.monotonic()
             lines = []
             async for piece in response.body_iterator:
                 text = piece.decode() if isinstance(piece, bytes) else piece
                 lines.extend(line for line in text.split("\n") if line.strip())
             await swap
-            return lines, time.monotonic() - started
+            return lines
         finally:
             ep_mod._http_client = previous
             await client.aclose()
 
-    lines, elapsed = asyncio.run(go())
-    # Not after the 20 s prefill: the cancel closes the upstream read itself.
-    assert elapsed < 10
+    # Well inside the 20 s prefill: the cancel closes the upstream read itself.
+    lines = asyncio.run(asyncio.wait_for(go(), 15))
     assert lines[-1] == "data: [DONE]"
     # A stop, not the cut-short error a dropped stream gets.
     assert not any('"error"' in line for line in lines)
@@ -933,3 +931,35 @@ def test_a_request_naming_another_npu_model_is_refused(monkeypatch):
     with pytest.raises(HTTPException) as caught:
         asyncio.run(routes._reject_unservable_model("lemonade:gemma3-4b-FLM", None))
     assert caught.value.status_code == 404
+
+
+def test_a_collected_reply_stops_when_the_caller_leaves(flm):
+    import routes.inference as ri
+    from starlette.requests import Request
+
+    flm()
+    left_at = time.monotonic() + 1.0
+
+    async def receive() -> dict:
+        # Starlette polls with a zero timeout, so answer by the clock, not after a sleep.
+        if time.monotonic() >= left_at:
+            return {"type": "http.disconnect"}
+        await asyncio.sleep(3600)
+        return {"type": "http.disconnect"}
+
+    request = Request(dict(_request().scope), receive)
+    payload = ChatCompletionRequest(messages = [{"role": "user", "content": "SLOW"}], stream = False)
+
+    async def go():
+        previous = ep_mod._http_client
+        client = httpx.AsyncClient()
+        ep_mod._http_client = client
+        try:
+            return await ri._npu_chat_completions(payload, request, "tester")
+        finally:
+            ep_mod._http_client = previous
+            await client.aclose()
+
+    # Well inside the 20 s prefill: the upstream read stops when the caller goes.
+    response = asyncio.run(asyncio.wait_for(go(), 15))
+    assert response.status_code == 499

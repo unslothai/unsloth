@@ -24630,14 +24630,29 @@ async def _npu_chat_completions(payload, request: Request, current_subject: str)
             headers = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
 
-    lines = _lines()
+    # Nothing cancels a handler whose caller left, so watch for it: FastFlowLM is the one runtime.
+    disconnected = threading.Event()
+
+    async def _watch_disconnect() -> None:
+        while not disconnected.is_set():
+            if await request.is_disconnected():
+                disconnected.set()
+                return
+            await asyncio.sleep(0.25)
+
+    watcher = asyncio.create_task(_watch_disconnect())
+    lines = _stop_on_cancel(_lines(), disconnected)
     try:
         async for line in lines:
             relay.feed(line)
             if relay.stopped or relay.error is not None:
                 break
     finally:
+        watcher.cancel()
+        await asyncio.gather(watcher, return_exceptions = True)
         await lines.aclose()
+    if disconnected.is_set():
+        return Response(status_code = 499)
     if relay.error is not None:
         try:
             status = int(relay.error.get("code") or 502)

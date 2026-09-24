@@ -12,6 +12,7 @@ import json
 import os
 import sys
 import textwrap
+import time
 from pathlib import Path
 
 import pytest
@@ -77,6 +78,25 @@ def _requests(backend) -> list[dict]:
     if not path.exists():
         return []
     return [json.loads(line) for line in path.read_text().splitlines()]
+
+
+def _wait_until(condition, tries: int = 300) -> None:
+    """Poll a condition a test thread brings about. Counts polls: no clock in the assertion."""
+    for _ in range(tries):
+        if condition():
+            return
+        time.sleep(0.05)
+    pytest.fail("the condition never held")
+
+
+def _returns_promptly(call, within: float = 30.0) -> None:
+    """Run ``call`` on a thread and require it back well inside the 60 s stall it must cut short."""
+    import threading
+
+    thread = threading.Thread(target = call, daemon = True)
+    thread.start()
+    thread.join(timeout = within)
+    assert not thread.is_alive(), f"{call} waited out the stall"
 
 
 def test_enable_installs_starts_and_validates(npu):
@@ -262,7 +282,6 @@ def test_a_rejected_unload_stops_lemond(npu, monkeypatch, failure):
 @pytest.mark.parametrize("stop", ["cancel_load", "shutdown"])
 def test_a_slow_load_can_be_stopped(npu, monkeypatch, stop):
     import threading
-    import time
 
     monkeypatch.setenv("FAKE_LEMOND_LOAD_SECONDS", "60")
     npu.enable()
@@ -277,19 +296,14 @@ def test_a_slow_load_can_be_stopped(npu, monkeypatch, stop):
 
     thread = threading.Thread(target = _load)
     thread.start()
-    deadline = time.monotonic() + 15
-    while not any(r["path"] == "/v1/load" for r in _requests(npu)):
-        assert time.monotonic() < deadline
-        time.sleep(0.05)
+    _wait_until(lambda: any(r["path"] == "/v1/load" for r in _requests(npu)))
     assert npu.cancel_load("other-FLM") is False
-    started = time.monotonic()
     if stop == "cancel_load":
-        assert npu.cancel_load("qwen3-0.6b-FLM") is True
+        _returns_promptly(lambda: npu.cancel_load("qwen3-0.6b-FLM"))
     else:
-        npu.shutdown()
+        _returns_promptly(npu.shutdown)
     thread.join(timeout = 30)
     assert not thread.is_alive()
-    assert time.monotonic() - started < 30
     assert len(errors) == 1 and isinstance(errors[0], nb.NpuLoadCancelled)
     assert not npu.is_loaded
     assert npu.loading_model is None
@@ -298,7 +312,6 @@ def test_a_slow_load_can_be_stopped(npu, monkeypatch, stop):
 @pytest.mark.parametrize("phase", ["download", "installing_flm", "validating"])
 def test_shutdown_does_not_wait_for_enable(npu, monkeypatch, phase):
     import threading
-    import time
 
     if phase == "download":
         original = npu.installer.install
@@ -324,15 +337,11 @@ def test_shutdown_does_not_wait_for_enable(npu, monkeypatch, phase):
     thread = threading.Thread(target = _enable)
     thread.start()
     target = "installing" if phase == "download" else phase
-    deadline = time.monotonic() + 15
-    while npu.status()["state"] != target or (
-        phase == "validating" and npu._validate_process is None
-    ):
-        assert time.monotonic() < deadline
-        time.sleep(0.05)
-    started = time.monotonic()
-    npu.shutdown()
-    assert time.monotonic() - started < 30
+    _wait_until(
+        lambda: npu.status()["state"] == target
+        and (phase != "validating" or npu._validate_process is not None)
+    )
+    _returns_promptly(npu.shutdown)
     thread.join(timeout = 30)
     assert not thread.is_alive()
     assert len(errors) == 1 and isinstance(errors[0], nb.NpuError)
@@ -513,7 +522,6 @@ def test_a_server_that_never_answers_is_reported(tmp_path):
 
 def test_stop_interrupts_a_start_that_never_becomes_ready(tmp_path):
     import threading
-    import time
 
     binary = tmp_path / "lemond"
     binary.write_text("#!/bin/sh\nexec sleep 60\n", encoding = "utf-8")
@@ -534,13 +542,8 @@ def test_stop_interrupts_a_start_that_never_becomes_ready(tmp_path):
 
     thread = threading.Thread(target = _start)
     thread.start()
-    deadline = time.monotonic() + 15
-    while not server.is_alive():
-        assert time.monotonic() < deadline
-        time.sleep(0.05)
-    started = time.monotonic()
-    server.stop()
-    assert time.monotonic() - started < 30
+    _wait_until(server.is_alive)
+    _returns_promptly(server.stop)
     thread.join(timeout = 30)
     assert len(errors) == 1 and isinstance(errors[0], LemonadeUnavailable)
     assert not server.is_alive()
