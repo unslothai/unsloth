@@ -373,7 +373,9 @@ def _finish_windows_multiarch_venv() -> None:
     if _ROCM_MULTIARCH_TAG not in (_distribution_version_string("torch") or ""):
         return
     if not _drop_torchaudio_off_the_multiarch_tag():
-        _safe_print("   Warning: could not remove the stale torchaudio; audio imports may fail until it is removed")
+        _safe_print(
+            "   Warning: could not remove the stale torchaudio; audio imports may fail until it is removed"
+        )
 
 
 def _windows_rocm_torch_pkg_specs(gfx_arch: "str | None") -> tuple[str, str, str]:

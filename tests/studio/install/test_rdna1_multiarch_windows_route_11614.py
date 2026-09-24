@@ -286,13 +286,27 @@ class TestTheFinalPassHasTheLastWord:
     it), so the Windows final step removes it once more on a multi-arch venv, and only there."""
 
     def test_multiarch_torch_triggers_the_cleanup(self, monkeypatch):
-        monkeypatch.setattr(stack_mod, "_distribution_version_string", lambda name: f"2.12.0+{stack_mod._ROCM_MULTIARCH_TAG}" if name == "torch" else None)
+        monkeypatch.setattr(
+            stack_mod,
+            "_distribution_version_string",
+            lambda name: f"2.12.0+{stack_mod._ROCM_MULTIARCH_TAG}" if name == "torch" else None,
+        )
         calls = []
-        monkeypatch.setattr(stack_mod, "_drop_torchaudio_off_the_multiarch_tag", lambda: calls.append(1) or True)
+        monkeypatch.setattr(
+            stack_mod, "_drop_torchaudio_off_the_multiarch_tag", lambda: calls.append(1) or True
+        )
         stack_mod._finish_windows_multiarch_venv()
         assert calls == [1]
 
     def test_other_torch_builds_are_left_alone(self, monkeypatch):
-        monkeypatch.setattr(stack_mod, "_distribution_version_string", lambda name: "2.11.0+rocm7.13.0" if name == "torch" else None)
-        monkeypatch.setattr(stack_mod, "_drop_torchaudio_off_the_multiarch_tag", lambda: (_ for _ in ()).throw(AssertionError("must not run")))
+        monkeypatch.setattr(
+            stack_mod,
+            "_distribution_version_string",
+            lambda name: "2.11.0+rocm7.13.0" if name == "torch" else None,
+        )
+        monkeypatch.setattr(
+            stack_mod,
+            "_drop_torchaudio_off_the_multiarch_tag",
+            lambda: (_ for _ in ()).throw(AssertionError("must not run")),
+        )
         stack_mod._finish_windows_multiarch_venv()
