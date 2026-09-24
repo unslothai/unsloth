@@ -3,59 +3,7 @@
 
 import { type RefObject, useEffect, useState } from "react";
 import { type LibraryItem, fetchLibraryBlob, fetchLibraryThumbnail } from "./api";
-
-// Thumbnails are auth-fetched blobs, so the browser cache cannot hold them. Keep the most recent
-// ones as object URLs, within a count and a byte budget; a revisit of the page then paints
-// instantly instead of refetching.
-const MAX_CACHED_URLS = 300;
-const MAX_CACHED_BYTES = 128 * 1024 * 1024;
-const objectUrls = new Map<string, { url: Promise<string>; bytes: number }>();
-let cachedBytes = 0;
-
-/** Drop every cached URL, so a sign-out leaves nothing of the last account's files. */
-export function clearCachedObjectUrls(): void {
-  for (const { url } of objectUrls.values()) {
-    void url.then((stale) => URL.revokeObjectURL(stale), () => {});
-  }
-  objectUrls.clear();
-  cachedBytes = 0;
-}
-
-function evict(key: string): void {
-  const entry = objectUrls.get(key);
-  if (!entry) return;
-  objectUrls.delete(key);
-  cachedBytes -= entry.bytes;
-  void entry.url.then((stale) => URL.revokeObjectURL(stale), () => {});
-}
-
-function cachedObjectUrl(key: string, load: () => Promise<Blob>): Promise<string> {
-  const hit = objectUrls.get(key);
-  if (hit) {
-    // Most recently used goes last, so eviction takes what has gone unseen longest.
-    objectUrls.delete(key);
-    objectUrls.set(key, hit);
-    return hit.url;
-  }
-  const entry = { url: Promise.resolve(""), bytes: 0 };
-  entry.url = load().then((blob) => {
-    if (objectUrls.get(key) === entry) {
-      entry.bytes = blob.size;
-      cachedBytes += blob.size;
-      for (const oldest of objectUrls.keys()) {
-        if (cachedBytes <= MAX_CACHED_BYTES || oldest === key) break;
-        evict(oldest);
-      }
-    }
-    return URL.createObjectURL(blob);
-  });
-  entry.url.catch(() => {
-    if (objectUrls.get(key) === entry) evict(key);
-  });
-  objectUrls.set(key, entry);
-  if (objectUrls.size > MAX_CACHED_URLS) evict(objectUrls.keys().next().value!);
-  return entry.url;
-}
+import { acquireObjectUrl } from "./object-url-cache";
 
 /**
  * Object URL for an item's bytes once `enabled`, null until then; `error` once it cannot load. Not
@@ -93,8 +41,8 @@ export function useLibraryObjectUrl(
 }
 
 /** A card's picture once `enabled`: a bounded thumbnail of the image, or a video's first frame,
- *  never the original, whose decoded size has no limit. Cached; `failed` once it cannot load, so
- *  the card can fall back to the type icon. */
+ *  never the original, whose decoded size has no limit. Cached, and held while the card shows it;
+ *  `failed` once it cannot load, so the card can fall back to the type icon. */
 export function useLibraryThumbnail(
   item: LibraryItem,
   enabled: boolean,
@@ -104,13 +52,14 @@ export function useLibraryThumbnail(
   useEffect(() => {
     if (!enabled) return;
     let cancelled = false;
-    const next = cachedObjectUrl(key, () => fetchLibraryThumbnail(item));
+    const { url: next, release } = acquireObjectUrl(key, () => fetchLibraryThumbnail(item));
     next.then(
       (url) => !cancelled && setState({ key, url }),
       () => !cancelled && setState({ key, url: null }),
     );
     return () => {
       cancelled = true;
+      release();
     };
     // `key` carries the item's identity and version; the object itself changes on every refresh.
     // eslint-disable-next-line react-hooks/exhaustive-deps
