@@ -38,7 +38,8 @@ export interface MediaViewerActions {
   /** The white pill, e.g. Chat about this. */
   primary?: { label: string; icon: IconSvgElement; onClick: () => void; disabled?: boolean };
   onDownload?: () => void;
-  onViewChat?: () => void;
+  /** Where the file came from: its chat, or the page that generated it. */
+  viewOriginal?: { label: string; onClick: () => void };
   /** Shown only where it can work; see the Library's useRevealLabel. */
   reveal?: { label: string; onClick: () => void };
   favorite?: boolean;
@@ -133,7 +134,7 @@ export function MediaViewer({
   const iconButton =
     "flex size-9 shrink-0 items-center justify-center rounded-full outline-none transition-colors hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring aria-expanded:bg-muted";
   const hasMenu = Boolean(
-    actions.onViewChat ||
+    actions.viewOriginal ||
       actions.reveal ||
       actions.onToggleFavorite ||
       actions.onAddToProject ||
@@ -199,10 +200,10 @@ export function MediaViewer({
                 align="end"
                 className="unsloth-plus-menu sidebar-row-menu menu-flat-destructive w-56"
               >
-                {actions.onViewChat && (
-                  <DropdownMenuItem onClick={actions.onViewChat}>
+                {actions.viewOriginal && (
+                  <DropdownMenuItem onClick={actions.viewOriginal.onClick}>
                     <HugeiconsIcon icon={ArrowTurnBackwardIcon} strokeWidth={1.75} className="size-icon" />
-                    View original chat
+                    {actions.viewOriginal.label}
                   </DropdownMenuItem>
                 )}
                 {actions.reveal && (
@@ -211,7 +212,7 @@ export function MediaViewer({
                     {actions.reveal.label}
                   </DropdownMenuItem>
                 )}
-                {(actions.onViewChat || actions.reveal) && <DropdownMenuSeparator />}
+                {(actions.viewOriginal || actions.reveal) && <DropdownMenuSeparator />}
                 {actions.onToggleFavorite && (
                   <DropdownMenuItem onClick={actions.onToggleFavorite}>
                     <HugeiconsIcon

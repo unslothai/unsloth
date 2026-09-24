@@ -109,6 +109,7 @@ import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { subscribeGalleryChanged } from "@/lib/gallery-flags";
 import { subscribeModelLifecycle } from "@/lib/model-lifecycle-events";
 import { toast } from "@/lib/toast";
+import { loadGalleryUntil } from "@/lib/gallery-deep-link";
 import { cn } from "@/lib/utils";
 import { useIsMobileShell } from "@/hooks/use-mobile";
 import { useNavigate, useSearch } from "@tanstack/react-router";
@@ -1780,6 +1781,7 @@ export function AudioPage({
     task?: string;
     audioType?: string;
     loadId?: string;
+    item?: string;
   };
   const handledRouteModel = useRef<string | null>(null);
   useEffect(() => {
@@ -1834,6 +1836,31 @@ export function AudioPage({
     navigateSelf,
     transitionMode,
   ]);
+
+  // A Library "View in Audio" link arrives as ?task=text-to-speech&item=: the task switches to Speak
+  // (and clears the query), this selects the clip, paging back until it loads. A counter, not
+  // effect cleanup, retires a lookup: clearing the query must not cancel its own.
+  const routedItem = active ? routeSearch.item : undefined;
+  const routedLookup = useRef(0);
+  useEffect(() => {
+    if (!routedItem) return;
+    const lookup = ++routedLookup.current;
+    if (!routeSearch.task) void navigateSelf({ to: "/audio", search: {}, replace: true });
+    void loadGalleryUntil({
+      has: () => galleryCache.clips.some((clip) => clip.id === routedItem),
+      count: () => galleryCache.clips.length,
+      hasMore: () => galleryCache.hasMore,
+      refresh: () => refreshGallery(undefined, galleryCache.clips.length),
+      loadMore,
+      cancelled: () => lookup !== routedLookup.current,
+    }).then((found) => {
+      if (lookup !== routedLookup.current) return;
+      if (found) selectClip(routedItem);
+      else toast("Could not find this clip", { description: "It may be archived or deleted." });
+    });
+    // The task only decides who clears the query; a change to it is not a new link.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [routedItem, navigateSelf, refreshGallery, loadMore, selectClip]);
 
 
   const ttsLoaded = Boolean(
