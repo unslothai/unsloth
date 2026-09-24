@@ -108,6 +108,7 @@ def test_a_folder_cannot_move_into_its_own_subtree(client):
     ).json()
     response = client.patch(f"/api/library/folders/{outer['id']}", json = {"parentId": inner["id"]})
     assert response.status_code == 400
+    assert response.json()["detail"] == "A folder cannot be moved into itself"
     response = client.patch(f"/api/library/folders/{outer['id']}", json = {"parentId": outer["id"]})
     assert response.status_code == 400
 
@@ -525,6 +526,22 @@ def test_items_download_as_attachments(client, monkeypatch):
     )
 
 
+def test_an_oversized_desktop_drop_is_refused_before_copying(client, monkeypatch, tmp_path):
+    big = tmp_path / "big.bin"
+    big.write_bytes(b"x" * 10)
+    monkeypatch.setattr(library_routes, "_MAX_UPLOAD_BYTES", 4)
+    monkeypatch.setattr(
+        library, "open_native_upload", lambda lease: ("big.bin", "application/octet-stream", open(big, "rb"))
+    )
+
+    def copied(*_args):
+        raise AssertionError("copied an oversized drop")
+
+    monkeypatch.setattr(library, "save_upload", copied)
+    response = client.post("/api/library/uploads", data = {"nativePathLeases": ["lease"]})
+    assert response.status_code == 413
+
+
 def test_a_failed_upload_record_leaves_no_file(client, monkeypatch):
     from storage import library_db
 
@@ -741,6 +758,19 @@ def test_a_folder_with_files_gets_a_named_folder_inside(client, tmp_path):
     assert image_gallery.gallery_dir() == (pictures / "Unsloth Images").resolve()
     assert (pictures / "Unsloth Images" / "a.png").read_bytes() == b"png"
     assert (pictures / "holiday.jpg").read_bytes() == b"jpg"
+
+
+def test_moving_back_to_a_default_that_holds_files_keeps_them_listed(client, tmp_path):
+    from core.inference import image_gallery
+
+    old = image_gallery.gallery_dir()
+    (old / "a.png").write_bytes(b"png")
+    assert _move(client, "images", str(tmp_path / "elsewhere")).status_code == 200
+    (old / "stray.txt").write_text("left behind")
+    assert _move(client, "images", None).status_code == 200
+    assert image_gallery.gallery_dir() == (old / "Unsloth Images").resolve()
+    assert (image_gallery.gallery_dir() / "a.png").read_bytes() == b"png"
+    assert _location(client, "images")["custom"] is True
 
 
 def test_fine_tunes_and_exports_do_not_move(client, tmp_path):

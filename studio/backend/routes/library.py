@@ -4,6 +4,7 @@
 """Library API: one view over uploads, chat attachments, generated images and audio, fine-tuned
 models and sandbox files, plus folders, favorites and renames. See ``core.library`` for the sources."""
 
+import os
 import re
 from typing import Optional
 
@@ -122,8 +123,8 @@ def mark_item_opened(body: ItemRef, current_subject: str = Depends(get_current_s
 async def delete_item(body: ItemRef, current_subject: str = Depends(get_current_subject)) -> dict:
     try:
         deleted = await run_in_threadpool(library.delete_item, body.id)
-    except ValueError:
-        raise HTTPException(status_code = 400, detail = "This item has no file to download")
+    except ValueError as exc:
+        raise HTTPException(status_code = 400, detail = str(exc))
     except ChatMessageProtectedError as exc:
         raise log_and_http_error(
             exc,
@@ -151,8 +152,8 @@ async def add_item_to_project(
         raise HTTPException(status_code = 404, detail = "Project not found")
     except LookupError:
         raise HTTPException(status_code = 404, detail = "Item not found")
-    except ValueError:
-        raise HTTPException(status_code = 400, detail = "This item has no file to download")
+    except ValueError as exc:
+        raise HTTPException(status_code = 400, detail = str(exc))
     except OSError as exc:
         logger.warning("library.add_to_project_failed: %s", exc)
         raise HTTPException(status_code = 500, detail = "Could not copy the file into the project.")
@@ -178,8 +179,8 @@ async def reveal_item(body: ItemRef, current_subject: str = Depends(get_current_
         path = await run_in_threadpool(library.local_path, body.id)
     except LookupError:
         raise HTTPException(status_code = 404, detail = "Item not found")
-    except ValueError:
-        raise HTTPException(status_code = 400, detail = "This item has no file to download")
+    except ValueError as exc:
+        raise HTTPException(status_code = 400, detail = str(exc))
     await run_in_threadpool(_reveal, path)
     return {"ok": True}
 
@@ -306,12 +307,13 @@ async def upload_files(
             name, content_type, handle = library.open_native_upload(lease)
         except ValueError as exc:
             # A bad or expired grant, or a path outside this account's workspace.
-            raise HTTPException(
-                status_code = 400, detail = "This item has no file to download"
-            ) from exc
+            raise HTTPException(status_code = 400, detail = str(exc)) from exc
         except OSError as exc:
             raise HTTPException(status_code = 400, detail = "Dropped file could not be read.") from exc
         with handle:
+            # Refused before a byte is copied; _chunks still caps a file that grows meanwhile.
+            if os.fstat(handle.fileno()).st_size > _MAX_UPLOAD_BYTES:
+                raise HTTPException(status_code = 413, detail = f"{name} is too large")
             return library.save_upload(name, content_type, _chunks(handle, name))
 
     records = []
@@ -397,8 +399,8 @@ def patch_folder(
         )
     except KeyError:
         raise HTTPException(status_code = 404, detail = "Parent folder not found")
-    except ValueError:
-        raise HTTPException(status_code = 400, detail = "This item has no file to download")
+    except ValueError as exc:
+        raise HTTPException(status_code = 400, detail = str(exc))
     if folder is None:
         raise HTTPException(status_code = 404, detail = "Folder not found")
     return folder

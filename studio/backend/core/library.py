@@ -793,7 +793,8 @@ def move_location(key: str, path: Optional[str]) -> None:
         if target == current:
             return
         previous = chosen(key)
-        set_chosen(key, target if path is not None else None)
+        # A default already holding files gets a subfolder, which has to be recorded to be used.
+        set_chosen(key, None if target == _location_default(key).resolve() else target)
         moved: list[tuple[Path, Path]] = []
         try:
             _move_entries(current, target, moved)
