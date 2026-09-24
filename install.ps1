@@ -9625,7 +9625,7 @@ exit 0
             $PinnedRocmVisionSpec = "torchvision==$MultiArchTorchvisionVersion+$MultiArchTag"
             $PinnedRocmAudioSpec = $null
             $RocmNoAudio = $true
-            substep "$ROCmGfxArch is RDNA 1 -- AMD multi-arch nightly index, pinned to $MultiArchTorchVersion+$MultiArchTag (no torchaudio is published for it)" "Cyan"
+            substep "$ROCmGfxArch is RDNA 1 -- AMD multi-arch nightly index, pinned to $MultiArchTorchVersion+$MultiArchTag ; torchaudio comes from PyPI with the dependencies" "Cyan"
         } elseif ($archFamily) {
             $ROCmIndexUrl = "$amdIndexBase/$archFamily/"
             $ROCmTorchFloor = if ($ROCmGfxArch -and $torchFloorMap.ContainsKey($ROCmGfxArch)) { $torchFloorMap[$ROCmGfxArch] } else { $null }
@@ -9967,16 +9967,6 @@ exit 0
             }
             if (-not $script:PrevTorchPin) {
                 $torchInstallExit = Invoke-InstallCommandRetry -Label "install PyTorch (AMD ROCm)" { & $script:UvExe pip install --python $VenvPython --force-reinstall --default-index $ROCmIndexUrl @(@($torchSpec, $visionSpec, $audioSpec) | Where-Object { $_ }) }
-            }
-            if ($torchInstallExit -eq 0 -and $ROCmMultiArch) {
-                # The multi-arch index publishes no torchaudio. One left by an earlier CPU or
-                # per-family pass is linked against the torch just replaced and throws a Windows
-                # "Entry Point Not Found" dialog the first time anything imports it.
-                $_staleAudio = @(& $VenvPython -m pip show torchaudio 2>$null | Select-String '^Version:' | ForEach-Object { ($_.Line -split ':\s*', 2)[1].Trim() })
-                if ($_staleAudio.Count -gt 0 -and $_staleAudio[0] -notlike "*$MultiArchTag*") {
-                    substep "removing torchaudio $($_staleAudio[0]) -- built against another torch; none is published for $MultiArchTorchVersion+$MultiArchTag" "Yellow"
-                    & $script:UvExe pip uninstall --python $VenvPython torchaudio 2>&1 | Out-Null
-                }
             }
             if ($torchInstallExit -ne 0) {
                 # Explicit CPU index: under a ROCm pin $TorchIndexUrl IS the mirror that failed.

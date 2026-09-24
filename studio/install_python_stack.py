@@ -294,7 +294,9 @@ _WINDOWS_ROCM_TORCH_PKG_SPECS: dict[str, tuple[str, str, str]] = {
 #   * the index is a nightly, so the build is PINNED to one tag; an unpinned install
 #     would follow the index and change under users between two `studio update`s;
 #   * torchvision must carry the very same tag (0.27.0 pairs with torch 2.12.0);
-#   * no torchaudio is published for the tag, so the trio is a pair.
+#   * no torchaudio is published for the tag, so the trio is a pair; the dependency pass
+#     installs PyPI's torchaudio 2.11.0 later, which works beside this torch (resample,
+#     mel spectrogram and torch-stoi checked on the RX 5700 XT).
 # Windows only: measured on an RX 5700 XT (unslothai/unsloth#11614, #8529), with the
 # Triton buffer-op fix (#11615) and the zoo's pure-torch gated-delta route (#1356)
 # doing the rest. Linux hosts keep today's behaviour (no route, CPU torch) until someone
@@ -330,52 +332,6 @@ def _windows_multiarch_torch_pkg_specs(gfx_arch: str) -> tuple[str, str, str]:
         f"torchvision=={_ROCM_MULTIARCH_TORCHVISION_VERSION}+{_ROCM_MULTIARCH_TAG}",
         "",
     )
-
-
-def _distribution_version_string(name: str) -> "str | None":
-    """The installed version string of `name` (with its local +tag), or None when absent."""
-    try:
-        from importlib import metadata
-        return metadata.version(name)
-    except Exception:
-        return None
-
-
-def _drop_torchaudio_off_the_multiarch_tag() -> bool:
-    """After a multi-arch torch install, remove a torchaudio built against another torch.
-
-    The multi-arch index publishes no torchaudio, so whatever is installed came from an
-    earlier CPU or per-family pass (torchaudio 2.11+cpu on a box that had the CPU
-    fallback, 2.11+rocm7.13 on one that had another card's family). Its extension DLLs
-    are linked against that torch and fail to load against 2.12 with a Windows "Entry
-    Point Not Found" dialog the first time anything imports torchaudio. Nothing Unsloth
-    needs for training imports it, so removing it is the safe state. True when nothing
-    is left to remove."""
-    version = _distribution_version_string("torchaudio")
-    if not version:
-        return True
-    if _ROCM_MULTIARCH_TAG in version:
-        return True
-    _safe_print(
-        f"   removing torchaudio {version}: built against another torch, and the multi-arch "
-        f"index publishes none for {_ROCM_MULTIARCH_TORCH_VERSION}+{_ROCM_MULTIARCH_TAG}"
-    )
-    return _uninstall_distribution("torchaudio")
-
-
-def _finish_windows_multiarch_venv() -> None:
-    """Last word on a multi-arch (RDNA 1) venv: drop the torchaudio the with-deps steps
-    re-resolved. torch-stoi and descript-audiotools require torchaudio unconditionally,
-    so every dependency pass pulls 2.11.0 back in beside torch 2.12; nothing exists for the
-    pinned tag (AMD's index lists no torchaudio for it, PyPI stops at 2.11.0). Removing it
-    is the safe state: Studio imports it lazily, for audio features only, and a mismatched
-    one throws a Windows "Entry Point Not Found" dialog on that import."""
-    if _ROCM_MULTIARCH_TAG not in (_distribution_version_string("torch") or ""):
-        return
-    if not _drop_torchaudio_off_the_multiarch_tag():
-        _safe_print(
-            "   Warning: could not remove the stale torchaudio; audio imports may fail until it is removed"
-        )
 
 
 def _windows_rocm_torch_pkg_specs(gfx_arch: "str | None") -> tuple[str, str, str]:
@@ -5784,11 +5740,6 @@ def _ensure_rocm_torch() -> None:
             # ROCm torch is already installed, but bnb still needs the ROCm build
             # (pre-release wheel, else PyPI >=0.50.0).
             _install_bnb_windows_rocm()
-            # setup.ps1 installs the multi-arch pair itself; a torchaudio an earlier pass
-            # left is still linked against the torch it replaced. Finish that here too, so
-            # a `studio update` on such a venv is not the first thing to remove it.
-            if _ROCM_MULTIARCH_TAG in (_version or ""):
-                _drop_torchaudio_off_the_multiarch_tag()
             return
         # torch was wiped between runs; fall through to the full install path
     if IS_MACOS:
@@ -5841,7 +5792,7 @@ def _ensure_rocm_torch() -> None:
             if _is_windows_multiarch_gfx(gfx_arch):
                 _safe_print(
                     f"   {_bare_gfx(gfx_arch)} is RDNA 1: AMD's multi-arch nightly index, pinned to "
-                    f"{_ROCM_MULTIARCH_TORCH_VERSION}+{_ROCM_MULTIARCH_TAG} (no torchaudio is published for it)"
+                    f"{_ROCM_MULTIARCH_TORCH_VERSION}+{_ROCM_MULTIARCH_TAG} ; torchaudio comes from PyPI with the dependencies"
                 )
             # Nonfatal: a transient AMD-index failure must not abort the install.
             # --force-reinstall resolves before uninstalling, so a failed index keeps the
@@ -5860,12 +5811,6 @@ def _ensure_rocm_torch() -> None:
                     "later to retry ROCm."
                 )
                 return
-        # A multi-arch venv must not keep a torchaudio linked against the torch it replaced
-        # (or, on `studio update`, one a CPU pass left behind); see the helper.
-        if _is_windows_multiarch_gfx(gfx_arch) and not _drop_torchaudio_off_the_multiarch_tag():
-            _safe_print(
-                "   Warning: could not remove the stale torchaudio; audio imports may fail until it is removed"
-            )
         # Flag ROCm torch installed so later phases keep it; a BNB failure must not roll it back.
         _rocm_windows_torch_installed = True
         # Always install AMD Windows bitsandbytes, even when torch was already a
@@ -11854,8 +11799,6 @@ def install_python_stack() -> int:
         # A direct run has no setup.ps1 postlude to swap triton back. After the invariant,
         # because the swap keys off the installed +xpu label.
         _ensure_xpu_triton()
-        # After every with-deps step: they re-resolve torchaudio on a multi-arch venv.
-        _finish_windows_multiarch_venv()
     elif not NO_TORCH:
         # Resolve it on the other platforms too, for the RECORD only. Without this a Linux GPU box
         # installed with a transient explicit CPU pin looks, on the next launch, like a CPU wheel
