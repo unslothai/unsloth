@@ -359,7 +359,7 @@ def test_conversion_refuses_when_one_layer_has_no_scale():
 
 
 def test_a_layer_that_fails_half_way_leaves_the_whole_tree_on_torchao(monkeypatch):
-    # The refusal is all-or-nothing and the loader ignores the return value: a raise after the first swap left a mixed tree logged as torchao, with the badge reading flashinfer off the converted layers.
+    # The loader ignores the return value, so a raise after the first swap left a mixed tree logged as torchao while the badge read flashinfer off the converted layers.
     torch = pytest.importorskip("torch")
     import torch.nn as nn
 
@@ -497,7 +497,7 @@ def test_a_whole_model_artifact_that_baked_nothing_says_the_flag_is_set():
 
 
 def test_an_fp32_layer_runs_and_answers_in_fp32():
-    """Wan2.2's fp32 time embedder feeds a quantized layer FP32 activations, and flashinfer's ``fp4_quantize`` rejects fp32 input."""
+    """Wan2.2's fp32 time embedder feeds FP32 activations, which ``fp4_quantize`` rejects."""
     torch = _cuda_or_skip()
     import torch.nn as nn
     from torchao.prototype.mx_formats import NVFP4DynamicActivationNVFP4WeightConfig

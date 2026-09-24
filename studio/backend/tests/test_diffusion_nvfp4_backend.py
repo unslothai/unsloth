@@ -147,7 +147,7 @@ def _is_guard(node: ast.AST) -> bool:
     return name.endswith("torch.cuda.device") or name.endswith("_device_guard")
 
 
-# FlashInfer PRIVATE entry points: imported by name, so a "flashinfer." prefix check cannot see them.
+# FlashInfer PRIVATE entry points: imported by name, so a prefix check cannot see them.
 _PRIVATE_LAUNCHES = frozenset(
     {
         "choose_one",
@@ -161,7 +161,7 @@ _PRIVATE_LAUNCHES = frozenset(
 
 
 def _is_launch(node: ast.Call) -> str:
-    # A Triton launch is a Call on a SUBSCRIPT (``kernel[grid](...)``) and takes the CURRENT device.
+    # A Triton launch is a Call on a SUBSCRIPT (``kernel[grid](...)``), on the CURRENT device.
     if isinstance(node.func, ast.Subscript):
         name = _dotted(node.func.value)
         return name if name.endswith("_kernel") else ""
@@ -248,7 +248,7 @@ _STREAM_BANNED = ("set_stream", "set_device", "setDevice")
 
 
 def _banned_stream_calls(source: str) -> list[tuple[int, str]]:
-    """Lines that switch the current device or stream behind the guard's back: ``set_stream`` silently sets the current DEVICE too, and ``set_device`` moves what the guard restores."""
+    """``set_stream`` silently sets the current DEVICE too, and ``set_device`` moves what the guard restores."""
     found: list[tuple[int, str]] = []
     for node in ast.walk(ast.parse(source)):
         if isinstance(node, ast.Attribute) and node.attr in _STREAM_BANNED:
@@ -361,7 +361,7 @@ def _fake_blackwell(monkeypatch):
 
 
 def test_an_allocation_failure_is_answered_but_not_cached(monkeypatch):
-    """AUTO planning probes while the model about to be evicted still owns the card, so an OOM here says 'not now'. Cached, it would drop nvfp4 for the rest of the process."""
+    """An OOM during AUTO planning means 'not now'; cached, it would drop nvfp4 for the process."""
     torch = _fake_blackwell(monkeypatch)
     calls: list = []
 
@@ -381,7 +381,7 @@ def test_an_allocation_failure_is_answered_but_not_cached(monkeypatch):
 
 
 def test_a_host_property_failure_stays_cached(monkeypatch):
-    """A JIT build that cannot run here never will; re-probing every selection pays the build over and over."""
+    """A JIT build that cannot run here never will, so the failure is cached."""
     _fake_blackwell(monkeypatch)
     calls: list = []
 

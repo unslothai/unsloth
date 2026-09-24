@@ -87,7 +87,6 @@ def _stub_torch(monkeypatch):
     )
     # Said explicitly so the CUDA-graph arm refuses deterministically, whatever the host has.
     torch.cuda = types.SimpleNamespace(is_available = lambda: False)
-    # Kwargs are recorded so a test can assert the tier's compile recipe.
     torch.compile_calls = []
 
     def _compile(fn, **kwargs):
@@ -202,11 +201,11 @@ def test_restore_is_independent_per_flag(monkeypatch):
 
 
 class AutoencoderKL(types.SimpleNamespace):
-    """The class NAME is load bearing: ``auto`` keys the allow list off it."""
+    """The class NAME matters: ``auto`` keys the allow list off it."""
 
 
 class AutoencoderKLWan(types.SimpleNamespace):
-    """A video VAE, reached through the same helper by the video backend's per-view calls."""
+    """A video VAE."""
 
 
 class _Pipe:
@@ -481,7 +480,6 @@ def test_dit_vae_decode_compile_deny_set_and_force(monkeypatch):
 
 
 def test_video_vae_stays_eager_under_auto_and_compiles_once_per_pipe(monkeypatch):
-    # apply_speed_optims runs per video DiT view: `auto` must not reach an unmeasured decode, nor compile a shared VAE twice.
     torch = _stub_torch(monkeypatch)
     monkeypatch.delenv(ds_mod.COMPILE_VAE_ENV, raising = False)
     pipe = _Pipe(with_compile = True, vae_cls = AutoencoderKLWan)
@@ -523,8 +521,7 @@ def test_unet_vae_decode_compile_ignores_the_env(monkeypatch):
 
 
 def test_video_wan_vae_decode_is_denied_on_measurement(monkeypatch):
-    # Wan is not merely unmeasured: its decode compiled SLOWER on a B200 (1280x704x121, 35.76 -> 37.41 s p50), so it
-    # is denied as well as unlisted and stays off even if a later pass adds it to the allow set.
+    # Denied, not just unlisted: stays off even if added to the allow set.
     torch = _stub_torch(monkeypatch)
     monkeypatch.delenv(ds_mod.COMPILE_VAE_ENV, raising = False)
     assert "AutoencoderKLWan" in ds_mod._VAE_COMPILE_DENY
@@ -544,7 +541,6 @@ def test_video_wan_vae_decode_is_denied_on_measurement(monkeypatch):
 
 
 def test_video_wan_vae_decode_stays_denied_on_max(monkeypatch):
-    # The deny set beats the tier: `max` must not autotune a decode that is not worth compiling at all.
     torch = _stub_torch(monkeypatch)
     monkeypatch.delenv(ds_mod.COMPILE_VAE_ENV, raising = False)
     applied = apply_speed_optims(
@@ -1366,8 +1362,6 @@ def test_compiled_shapes_are_static_reports_the_stream_merging_downgrade(monkeyp
 
 
 def test_the_loader_keys_the_compile_bundle_on_the_vae_decode_decision():
-    """Both compile_cache.begin() call sites feed the VAE decode decision into the cache key."""
-    # The decode compiles lazily, so a bundle predating it stays a hit and never saves the VAE artifacts: the key has to move with the decision.
     from pathlib import Path
 
     src = (Path(__file__).resolve().parents[1] / "core" / "inference" / "diffusion.py").read_text(

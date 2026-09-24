@@ -9228,13 +9228,12 @@ def test_the_planned_scheme_is_what_the_load_seeds(fake_runtime, monkeypatch):
 
 
 def test_a_seed_the_plan_declined_is_not_re_taken_by_the_load(fake_runtime, monkeypatch):
-    """The load honours the plan's decline as it honours its pick: the dense shards are in the pull because of that decision, and re-deciding here fetches the artifact inline."""
+    """The load honours the plan's decline, or it would fetch the artifact inline."""
     import core.inference.video as video_mod
 
     monkeypatch.setattr(video_mod, "dense_transformer_supported", lambda target: True)
     monkeypatch.setattr(video_mod, "quantize_transformer", lambda *a, **k: "nvfp4")
     calls, _modules = _stub_denoiser_seed(monkeypatch, plan_scheme = None)
-    # The load's probe knows nothing of the plan's offload decision, and this test card is roomy enough to answer yes.
     monkeypatch.setattr(video_mod, "_video_auto_denoiser_scheme", lambda fam, **kw: "nvfp4")
 
     backend = VideoBackend()
@@ -9333,7 +9332,7 @@ def test_the_download_plan_stages_both_experts_artifacts(monkeypatch):
         ),
     }
     monkeypatch.setattr(dq, "denoiser_prequant_sources", lambda fam, scheme, base: sources)
-    # The plan asks the LOAD's own seed question, so pin it here and keep the staging assertions off the host's card.
+    # The plan asks the LOAD's own seed question, so pin the device and keep the staging assertions off the test host's card.
     monkeypatch.setattr(video_mod, "_video_auto_denoiser_scheme", lambda fam, **kw: "nvfp4")
     # Its residency question reads live free VRAM, which a shared test card moves under the test.
     monkeypatch.setattr(video_mod, "_video_seed_stays_resident", lambda fam, **kw: True)
@@ -9359,7 +9358,7 @@ def test_the_download_plan_stages_both_experts_artifacts(monkeypatch):
 
 
 def test_a_speed_off_plan_stages_the_dense_experts_the_load_will_open(monkeypatch):
-    """speed_mode="off" declines the conventional seed for an EXPLICIT scheme too, so the plan stages the dense shards rather than a replacement the load refuses to install."""
+    """speed_mode="off" declines the conventional seed for an EXPLICIT scheme too."""
     import core.inference.video_denoiser_prequant as dq
 
     _plan_api(
@@ -9410,7 +9409,7 @@ def test_a_speed_off_plan_stages_the_dense_experts_the_load_will_open(monkeypatc
 
 
 def test_the_video_status_response_carries_the_nvfp4_backend_label():
-    """The same field the image status exposes: on Wan2.2-T2V-A14B the auto ladder puts nvfp4 first only where flashinfer serves it, so 'NVFP4' alone does not say what ran."""
+    """The same backend field the image status exposes: 'NVFP4' alone does not say what ran."""
     from models.inference import VideoStatusResponse
 
     resp = VideoStatusResponse(
@@ -9492,13 +9491,9 @@ def _a14b_plan(monkeypatch):
 
 
 def test_a_plan_that_still_offloads_at_artifact_size_stages_the_dense_experts(monkeypatch):
-    """A card the ARTIFACT-sized model still has to offload on cannot seed: offload hooks move the DiT
-    and torchao tensors reject the move, so the load builds the dense bf16 denoiser. The plan must
-    reach the same verdict or it drops 56 GB of shards the load tops up inline."""
     import core.inference.video as video_mod
 
     _a14b_plan(monkeypatch)
-    # The scheme itself is settled here so the staging assertions do not depend on the test host's card.
     monkeypatch.setattr(video_mod, "_video_auto_denoiser_scheme", lambda fam, **kw: "nvfp4")
     _cuda_plan_target(monkeypatch, video_mod, free_gib = 24)
 
@@ -9515,7 +9510,6 @@ def test_a_plan_that_still_offloads_at_artifact_size_stages_the_dense_experts(mo
 
 
 def test_a_card_the_artifact_fits_on_still_stages_the_artifacts(monkeypatch):
-    """The other side of the same gate: where the artifact-sized plan stays resident the load seeds, so the dense shards stay out of the pull."""
     import core.inference.video as video_mod
 
     _a14b_plan(monkeypatch)
@@ -9538,7 +9532,6 @@ def test_a_card_the_artifact_fits_on_still_stages_the_artifacts(monkeypatch):
 
 
 def test_an_offloading_memory_mode_stages_the_dense_experts_on_any_card(monkeypatch):
-    """The user's own memory_mode reaches the same verdict on a roomy card: an explicit offload request is an offload policy, and an offloaded load will not seed."""
     import core.inference.video as video_mod
 
     _a14b_plan(monkeypatch)
@@ -9560,9 +9553,7 @@ def test_an_offloading_memory_mode_stages_the_dense_experts_on_any_card(monkeypa
 def test_a_dense_encoder_fallback_that_forces_offload_also_drops_the_seed(
     fake_runtime, monkeypatch
 ):
-    """The pre-cast encoder is best-effort and its fallback re-plans at the dense bf16 size (~11 GB more
-    for ltx-2). That re-plan can select offload, and an offloading load cannot seed, so the seed
-    decision has to be re-taken on the plan the load ends up with."""
+    """A dense-encoder fallback re-plan that selects offload must re-take the seed decision."""
     import core.inference.diffusion_te_prequant as te
     import core.inference.video as video_mod
 

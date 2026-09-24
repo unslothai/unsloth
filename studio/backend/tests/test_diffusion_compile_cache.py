@@ -92,8 +92,6 @@ def test_cache_key_sensitive_to_model_dims(field, value):
 
 
 def test_vae_decode_flag_changes_the_key():
-    """A bundle saved without the compiled VAE decode is not a hit for a load that compiles it."""
-    # The decode compiles lazily, so a hit leaves the context clean and never saves its artifacts: the key has to move.
     efp = cc.environment_fingerprint()
     base = dict(
         family = "flux.1",

@@ -3,11 +3,8 @@
 
 """Per-step precision for the NVFP4 backend: which denoising steps run W4A16 instead of W4A4.
 
-A protected step dequantises the layer's own bytes to a transient bf16 weight, so there is never a
-second resident operand. The counter wraps ``pipe.scheduler.step``, which every diffusers denoise
-loop calls once per step. The protected set must be MEASURED per model: copying one model's set to
-another has made held-out prompts worse than protecting nothing, so the lever is off unless an
-operator names the steps.
+A protected step dequantises to a transient bf16 weight; the counter wraps ``pipe.scheduler.step``.
+The set must be MEASURED per model (a copied set did worse than none), so it is off unless named.
 """
 
 from __future__ import annotations
@@ -36,9 +33,7 @@ def protect_steps_env() -> str:
 
 
 def parse_protect_steps(spec: Any, total_steps: int) -> tuple:
-    """``spec`` resolved against ``total_steps``, as a sorted tuple. An out-of-range index is dropped so
-    one value serves any step count; a non-integer token DOES raise, since a typo that silently
-    protects nothing reads as a measured lever that never ran."""
+    """``spec`` resolved against ``total_steps``, sorted; out-of-range drops, a non-integer token raises."""
     total = int(total_steps)
     if total <= 0:
         return ()
@@ -74,7 +69,7 @@ def parse_protect_steps(spec: Any, total_steps: int) -> tuple:
 
 
 class NVFP4StepController:
-    """Which denoising step is running, and whether it is protected. ``protected`` is a plain ``bool``, never a property: a property would make Dynamo compile one variant per STEP."""
+    """Current step and whether it is protected; ``protected`` is a plain bool (a property recompiles per STEP)."""
 
     def __init__(self, spec: Any = None) -> None:
         self.spec: str = ""
@@ -101,7 +96,7 @@ class NVFP4StepController:
         return len(self._layers)
 
     def configure(self, spec: Any) -> "NVFP4StepController":
-        """Set the schedule. ``armed`` is a compile guard, so configure before the first forward."""
+        """Set the schedule before the first forward: ``armed`` is a compile guard."""
         raw = "" if spec is None else str(spec).strip().lower()
         self.spec = "" if raw in _OFF_TOKENS else raw
         self.armed = bool(self.spec)
@@ -188,7 +183,7 @@ def protect_generation(
     controller: Optional[NVFP4StepController] = None,
     logger: Any = None,
 ):
-    """Drive ``controller`` across one generation of ``steps`` steps, then restore. A no-op when the lever is off, and a pipeline with no scheduler to count protects NOTHING."""
+    """Drive ``controller`` across one generation, then restore; no scheduler protects NOTHING."""
     ctls = [controller] if controller is not None else pipeline_controllers(pipe)
     ctl = ctls[0]
     if not ctl.armed:
@@ -229,7 +224,7 @@ def protect_generation(
             c.advance()
         return out
 
-    # Reassigning a bound class method would leave an instance attribute shadowing the class forever, so unwind by deleting unless one existed before.
+    # Restoring by assignment would leave an instance attribute shadowing the class forever, so delete unless one existed before this wrap.
     had_own = "step" in getattr(scheduler, "__dict__", {})
     scheduler.step = _step
     try:
@@ -248,7 +243,7 @@ def protect_generation(
 
 @contextlib.contextmanager
 def suspend_protect(modules: Any):
-    """Force every controller reachable from ``modules`` to report itself unarmed, then restore. The
+    """Force every controller reachable from ``modules`` to report unarmed, then restore. The
     prewarm MUST suspend the lever, or its forwards take the bf16 branch, tune nothing, mark the
     shape tuned anyway, and the next capture records an untuned tactic."""
     seen: dict = {}
@@ -272,8 +267,7 @@ def protect_graph_key(
     controller: Optional[NVFP4StepController] = None,
 ) -> tuple:
     """The CUDA-graph cache-key suffix for the branch in flight, or ``()`` when the lever is off. A
-    captured graph records ONE branch, so without this the lever is silently inert under capture.
-    ``controller`` (or ``module``) selects that model's own controller."""
+    captured graph records ONE branch, so without this the lever is silently inert under capture."""
     ctl = controller if controller is not None else module_controller(module)
     if not ctl.armed:
         return ()

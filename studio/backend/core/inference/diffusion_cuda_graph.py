@@ -197,7 +197,6 @@ def _drop_pool_if_unused() -> None:
 
 
 def _nvfp4_flashinfer_linears(module: Any) -> list:
-    """``(fqn, layer)`` for every FlashInfer NVFP4 Linear under ``module``. Imported lazily, so a build without the backend does not lose CUDA graphs over it."""
     try:
         from .diffusion_nvfp4_linear import is_nvfp4_flashinfer_linear
     except Exception:  # noqa: BLE001 - no backend module, no NVFP4 layers to find
@@ -213,9 +212,7 @@ def _nvfp4_flashinfer_linears(module: Any) -> list:
 
 
 def _protect_keyed(module: Any) -> bool:
-    """Does this module need the per-step precision branch in its graph key? Only when the lever is armed
-    AND the module holds NVFP4 layers, so an fp8 load in the same process does not double its graph
-    count for a branch it cannot take."""
+    """Whether the graph key needs the precision branch: lever armed AND the module holds NVFP4 layers."""
     try:
         from .diffusion_nvfp4_protect import module_controller
         if not module_controller(module).armed:
@@ -232,16 +229,11 @@ def protect_graph_key(controller: Any = None) -> tuple:
 
 
 def _unbaked_nvfp4_layers(layers: list) -> list:
-    """The fqns among ``layers`` whose activation global scale is not baked. A scale still being learned
-    is recorded rather than executed under capture, so every replay runs whatever the capture saw.
-    Fail closed: no answer counts as unbaked."""
     return [name for name, layer in layers if not getattr(layer, "activation_scales_baked", False)]
 
 
 def _prewarm_token_counts(live: list) -> tuple:
-    """Candidate GEMM row counts (M) for this call, smallest first, read off the warm-up's own shapes
-    since the resolution is unknown at load time. Generous but bounded, so a family with many inputs
-    cannot turn a capture into a profiling session."""
+    """Candidate GEMM row counts (M) from the warm-up's shapes, smallest first; bounded."""
     counts = {1}
     for tensor in live:
         try:
@@ -305,7 +297,6 @@ class GraphedForward:
         self.capture_error: Optional[dict] = None
         self.cache: dict = {}
         self.cap_hit = False
-        # Resolved on the first call: the walk is O(modules) and must not run per call.
         self.protect_keyed: Optional[bool] = None
         self.protect_ctl: Any = None
         self.stats = {
@@ -434,7 +425,6 @@ class GraphedForward:
                     # Resolved once: the key is built every call, and the walk is over the whole tree.
                     self.protect_ctl = module_controller(self.module)
                 if self.protect_keyed:
-                    # Arming splits every input shape into two calls, so the same shapes need twice the graphs.
                     self.max_graphs *= 2
                     if self.logger is not None:
                         self.logger.info(

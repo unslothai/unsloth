@@ -1076,7 +1076,7 @@ def test_gguf_status_reports_selected_quant_instead_of_only_compute_dtype(fake_r
 
     assert status["dtype"] == "float32"  # compute dtype is a separate concern
     assert status["gguf_variant"] == "Q8_0"
-    # The frontend's model recall matches on the exact filename, not the variant token.
+    # The frontend's model recall matches on the exact filename.
     assert status["gguf_filename"] == filename
     assert backend.unload()["gguf_variant"] is None
 
@@ -11240,7 +11240,7 @@ def test_generation_in_flight_never_builds_a_backend(fake_runtime, monkeypatch):
 
 
 def test_the_download_plan_resolves_the_same_nvfp4_rung_the_load_does(monkeypatch):
-    # A gated auto rung is offered only for the base its record covers, so a planning selector that leaves out the base or the hosted-checkpoint probe answers a different scheme.
+    # A gated auto rung is offered only for the base its record covers, so a planning selector that drops the base or the hosted-checkpoint probe answers a different scheme.
     # _uncached_prequant_repo keeps an auto GGUF pick from fetching a second denoiser inline, past the plan's staging.
     from types import SimpleNamespace
 
@@ -11262,7 +11262,6 @@ def test_the_download_plan_resolves_the_same_nvfp4_rung_the_load_does(monkeypatc
         lambda scheme, device, unproven_ok = False: scheme not in ("int8", "fp8"),
     )
     monkeypatch.setattr(dmod, "prequant_checkpoint_cached", lambda source, **kw: False)
-    # The gate record was measured on flashinfer, and the head stands only where that backend serves the device.
     monkeypatch.setattr(ops, "select_nvfp4_backend", lambda device = None: "flashinfer")
 
     target = SimpleNamespace(device = "cuda", dtype = None)
