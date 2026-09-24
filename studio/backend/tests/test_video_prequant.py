@@ -1376,6 +1376,7 @@ def test_an_explicit_scheme_keeps_its_seed_under_speed_off(monkeypatch):
     assert _video_auto(monkeypatch, scheme = "nvfp4", speed_mode = "off", requested = "nvfp4") == "nvfp4"
     # The loader's own rewrite of an auto request ("off") never selects a scheme.
     from core.inference.diffusion_transformer_quant import select_transformer_quant_scheme
+
     assert select_transformer_quant_scheme(object(), "off") is None
 
 
