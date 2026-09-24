@@ -959,8 +959,7 @@ class _LoadState:
     attention_backend: Optional[str] = None
     # Caller original attention request, so deferred engagement re-runs the same selection.
     attention_request: Optional[str] = None
-    # Step cache engaged ("fbcache" | "static") or None. Opt-in, for many-step models. Only fbcache breaks the graph
-    # (cache_breaks_graph); static keeps compile fullgraph and the CUDA graph as uncached.
+    # Step cache engaged ("fbcache" | "static") or None. Opt-in; only fbcache breaks the graph.
     transformer_cache: Optional[str] = None
     # AUTO: generate() toggles FBCache across FBCACHE_MIN_STEPS; an explicit request never toggles
     cache_auto: bool = False
@@ -5515,8 +5514,7 @@ class DiffusionBackend:
                         )
                         cache_request = TC_FBCACHE if default_steps >= FBCACHE_MIN_STEPS else None
                     if cache_request == TC_STATIC:
-                        # Explicit only (auto never resolves here): a schedule fixed per generation, decided outside the
-                        # forward, so the compile and CUDA graph below are set up exactly as uncached.
+                        # Explicit only: auto never resolves to static.
                         cache_engaged = install_static_step_skip(pipe, logger = logger)
                     else:
                         cache_engaged = apply_step_cache(
@@ -5530,7 +5528,6 @@ class DiffusionBackend:
                             length_changes_ok = not cache_auto,
                             logger = logger,
                         )
-                    # What the compile and CUDA-graph decisions below see: static counts as uncached.
                     cache_graph_break = cache_breaks_graph(cache_engaged)
                     self._raise_if_load_cancelled(_load_token)
                     # An auto decision can flip at generation time, but only on a cache-capable transformer
@@ -5857,7 +5854,7 @@ class DiffusionBackend:
                         compile_cache.restore(compile_ctx, logger = logger)
                         gguf_compile.uninstall_all()  # idempotent
                         cuda_graph.uninstall_all(getattr(pipe, "_unsloth_cuda_graphs", ()) or ())
-                        uninstall_static_step_skip(pipe)  # idempotent
+                        uninstall_static_step_skip(pipe)
                         if eager_patched:
                             uninstall_patches()
                             uninstall_arch_patches()
@@ -7037,8 +7034,7 @@ class DiffusionBackend:
                 # Publish an active (step 0) state before the slow pre-denoise setup so a reload mount probe does not
                 # read idle.
                 self._gen = _GenState(total_steps = steps)
-            # The pipe a static step-skip schedule was armed on, dropped in the finally so a failed or cancelled
-            # generation does not keep its reused outputs alive.
+            # Reset in the finally, so a failed or cancelled generation frees its reused outputs.
             static_skip_pipe = None
             try:
                 self._state_device_target(state)
@@ -7406,7 +7402,6 @@ class DiffusionBackend:
 
                 def _on_step(pipe, step_index, timestep, callback_kwargs):
                     if static_skip:
-                        # The step boundary the static schedule counts on (one per denoise step, whatever the CFG).
                         mark_step_end(state.pipe)
                     # Monotonic: a wall-clock adjustment (NTP) mid-denoise would skew the ETA.
                     now = time.monotonic()
@@ -7423,8 +7418,7 @@ class DiffusionBackend:
                 if "callback_on_step_end" in call_params:
                     kwargs["callback_on_step_end"] = _on_step
 
-                # The EFFECTIVE denoise steps: img2img at strength < 1 denoises a fraction of `steps`. The AUTO cache
-                # decision keys on it (FBCache stays off short trajectories), and so does the static schedule.
+                # EFFECTIVE steps (img2img at strength < 1 runs fewer): the AUTO cache and the static schedule key on it.
                 denoise_steps = steps
                 if state.cache_auto or static_skip:
                     strength_applied = effective_request_strength(
@@ -7488,20 +7482,16 @@ class DiffusionBackend:
                                     chunk_kwargs["negative_prompt"]
                                 ] * len(chunk)
                         # A step cache keys residuals on the cond/uncond context, which a graph key
-                        # cannot see. Per chunk because an AUTO decision is re-taken per generation. The static skip decides
-                        # outside the graphed forward, so it keeps the graph.
+                        # cannot see. Per chunk because an AUTO decision is re-taken per generation.
                         if state.cuda_graphs:
                             cuda_graph.set_bypass(
                                 state.cuda_graphs, cache_breaks_graph(state.transformer_cache)
                             )
                         if static_skip:
-                            # A fresh schedule per forward (a chunk, an OOM retry), counted on the pipeline's step callback
-                            # when it has one.
                             reset_static_step_skip(
                                 state.pipe,
                                 denoise_steps,
                                 step_signal = "callback_on_step_end" in chunk_kwargs,
-                                # Counts add up over the chunks (and OOM retries) of this one generation.
                                 keep_stats = static_chunks_run > 0,
                             )
                             static_chunks_run += 1
@@ -7633,7 +7623,6 @@ class DiffusionBackend:
                 }
             finally:
                 if static_skip_pipe is not None:
-                    # Drop the reused outputs on every exit; the next generation arms its own schedule.
                     try:
                         reset_static_step_skip(static_skip_pipe, None)
                     except Exception as exc:  # noqa: BLE001

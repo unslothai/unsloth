@@ -1,23 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Opt-in static step skip for the diffusion transformer (``transformer_cache="static"``).
-
-First-Block-Cache decides per step from the data, so the decision runs inside the denoiser
-forward: the compile loses fullgraph and the CUDA graph runs eager. This layer decides from a
-schedule fixed before the generation starts instead. The first ``head`` and last ``tail``
-fraction of the steps always compute; the middle computes one step in ``every`` and a skipped
-step returns the last computed output of the same CFG branch (``reuse``), or a first-order
-extrapolation in timestep over the last two (``taylor1``). Nothing data-dependent runs inside
-the forward, so the compile and the graph see exactly what an uncached load gives them.
-
-Measured on Qwen-Image-2.1, 1024px, 25 steps, CFG 1: reuse / every 2 skipped 111 of 315 denoiser
-calls at LPIPS 0.017 (mean) against uncached, with the CUDA graph kept.
-
-The layer sits in the transformer INSTANCE ``__dict__["forward"]``, outermost: a GraphedForward
-installed later goes UNDER it (see ``diffusion_cuda_graph._outer_layer``), so the graph only ever
-sees computed steps, with their unchanged arguments and per-shape keys. torch is imported lazily.
-"""
+"""Opt-in static step skip (``transformer_cache="static"``): a schedule fixed per generation, decided outside the
+forward, so compile fullgraph and the CUDA graph are kept. A GraphedForward installed later goes under this layer."""
 
 from __future__ import annotations
 
@@ -40,12 +25,9 @@ DEFAULT_EVERY = 2
 
 # Fewer steps leave no middle worth skipping, and a distilled few-step model has no step to spare.
 STATIC_MIN_STEPS = 12
-# A prefix-KV DiT (Qwen-Image-2.1, FLUX.2 klein KV) returns prompt + target rows on step 0 and
-# target rows after, so the output a skip reuses must come from step 1 or later.
+# Prefix-KV DiTs (Qwen-Image-2.1, FLUX.2 klein KV) return extra prompt rows on step 0, so reuse starts at step 1.
 MIN_HEAD_STEPS = 2
 
-# Benchmarking knobs, read at install. The request's transformer_cache_threshold is ignored for
-# static: the schedule is the whole policy.
 ENV_MODE = "UNSLOTH_STATIC_SKIP_MODE"
 ENV_HEAD = "UNSLOTH_STATIC_SKIP_HEAD"
 ENV_TAIL = "UNSLOTH_STATIC_SKIP_TAIL"
@@ -74,11 +56,7 @@ def static_schedule(
     tail: float = DEFAULT_TAIL,
     every: int = DEFAULT_EVERY,
 ) -> tuple:
-    """Which denoise steps compute (True) and which reuse (False).
-
-    Empty, meaning compute every step, for an unknown count or fewer than ``STATIC_MIN_STEPS``.
-    ``round`` (banker's) matches the measured prototype: 25 steps -> head 5, tail 2, 9 skipped.
-    """
+    """Per step, compute (True) or skip (False); empty (compute all) below ``STATIC_MIN_STEPS``."""
     try:
         n = int(steps)  # type: ignore[arg-type]
         every = int(every)
@@ -92,7 +70,6 @@ def static_schedule(
 
 
 def static_skip_settings(env: Optional[dict] = None, logger: Any = None) -> dict:
-    """The schedule knobs, from the environment. A malformed knob keeps its default."""
     env = os.environ if env is None else env
     out = {
         "mode": DEFAULT_MODE,
@@ -133,14 +110,11 @@ def static_skip_settings(env: Optional[dict] = None, logger: Any = None) -> dict
 
 
 def _call_signature(args: tuple, kwargs: dict) -> tuple:
-    """What a reused output must have been computed under: the latent shape, the prefix-KV mode
-    (an ``extract`` call fills the cache and returns a longer sequence) and the container asked
-    for. A skip only reuses an output whose signature matches the current call."""
+    """Reuse key: latent shape, prefix-KV mode (an ``extract`` call returns a longer sequence), container."""
     hidden = kwargs.get("hidden_states", args[0] if args else None)
     if _is_tensor(hidden):
         shape = tuple(hidden.shape)
     elif isinstance(hidden, (list, tuple)) and hidden and all(_is_tensor(h) for h in hidden):
-        # Z-Image passes one latent per image.
         shape = tuple(tuple(h.shape) for h in hidden)
     else:
         shape = None
@@ -159,12 +133,7 @@ def _same_shape_tensors(items: list) -> bool:
 
 
 def _split_output(out: Any) -> tuple:
-    """(noise prediction, rebuild) for a container a skip can reproduce, else (None, None).
-
-    A bare tensor, a 1-tuple of one, a 1-tuple of a list of same-shape tensors (Z-Image, one per
-    image; stacked here and split back), or a diffusers output dataclass holding one tensor (or such a
-    list) field (``Transformer2DModelOutput(sample=...)``), rebuilt through its own class. Anything else,
-    e.g. FLUX.2 klein KV's ``(noise, kv_cache)`` extract step, is not reusable."""
+    """(noise prediction, rebuild) for a reproducible container, else (None, None) (FLUX.2 klein KV's extract step)."""
     if _is_tensor(out):
         return out, lambda v: v
     if type(out) is tuple:
@@ -197,8 +166,7 @@ _TIMESTEP_NAMES = ("timestep", "timesteps", "t")
 
 
 def _timestep_slot(signature: Any) -> tuple:
-    """(name, positional index or None) of the forward's timestep parameter, ("timestep", None) when
-    unknown. Z-Image calls ``transformer(x, t, cap_feats)`` positionally; FLUX / Qwen pass ``timestep=``."""
+    """(name, positional index or None) of the timestep parameter; Z-Image passes it positionally."""
     try:
         params = list(signature.parameters.values())
     except Exception:  # noqa: BLE001
@@ -235,7 +203,6 @@ def _timestep_of(
 
 
 def _extrapolate(v0: Any, t0: Any, v1: Any, t1: Any, t: Any) -> Any:
-    """First order in timestep: v1 + (v1 - v0) * (t - t1) / (t1 - t0), 0 when t1 == t0."""
     torch = _torch()
     device = v1.device
     t0, t1, t = t0.to(device), t1.to(device), t.to(device)
@@ -255,13 +222,7 @@ class _Stored:
 
 
 class StaticStepSkip:
-    """The outer forward layer: counts denoiser calls per CFG branch and skips the scheduled ones.
-
-    Branch key: the open ``cache_context`` name, else the call's ordinal within the step when
-    the backend signals step ends (``step_end``), else one shared counter. Step index: the number
-    of step-end signals, else the per-branch call count. Unarmed (no plan) it is a pure
-    passthrough, which is also what an uninstall leaves behind when someone wrapped it later.
-    """
+    """Outer forward layer skipping scheduled calls per CFG branch (``cache_context`` name, else call ordinal)."""
 
     _unsloth_outer_forward = True
 
@@ -290,8 +251,6 @@ class StaticStepSkip:
         except Exception:  # noqa: BLE001
             pass
         self.module = module
-        # The next forward down: a GraphedForward, an instance forward that was already there, or None for the class
-        # forward.
         self.inner = inner
         self.mode = mode if mode in SKIP_MODES else DEFAULT_MODE
         self.head, self.tail, self.every = float(head), float(tail), int(every)
@@ -310,19 +269,16 @@ class StaticStepSkip:
         step_signal: bool = False,
         keep_stats: bool = False,
     ) -> "StaticStepSkip":
-        """Start a forward of ``steps`` effective denoise steps (None: compute every step). ``keep_stats``
-        carries the counters over, for the later chunks of one generation."""
+        """Start a forward of ``steps`` denoise steps (None: compute all); ``keep_stats`` sums across chunks."""
         self.plan = (
             static_schedule(steps, head = self.head, tail = self.tail, every = self.every)
             if self.armed
             else ()
         )
         skips = [i for i, compute in enumerate(self.plan) if not compute]
-        # Nothing after the last skipped step is ever reused, so the tail stores nothing.
         self.last_skip = skips[-1] if skips else -1
         self.step_signal = bool(step_signal)
-        # A generation is running even when its schedule is empty (too few steps): its calls count as computed,
-        # so the status route never reports the previous generation's skips for it.
+        # An empty schedule still counts, so status never reports the previous generation's skips.
         self.counting = steps is not None
         self.steps_ended = 0
         self.ordinal = 0
@@ -331,13 +287,11 @@ class StaticStepSkip:
         if keep_stats:
             return self
         if self.stats["calls"]:
-            # The generation that just ended, kept for the status route once the per-call reset clears it.
             self.last_stats = dict(self.stats)
         self.stats = {"calls": 0, "computed": 0, "skipped": 0}
         return self
 
     def step_end(self) -> None:
-        """One denoise step finished (the pipeline's ``callback_on_step_end``)."""
         self.steps_ended += 1
         self.ordinal = 0
 
@@ -401,7 +355,6 @@ class StaticStepSkip:
     def _remember(self, key: Any, sig: tuple, args: tuple, kwargs: dict, out: Any) -> None:
         value, rebuild = _split_output(out)
         if value is None:
-            # Not reproducible, so this branch computes until an output that is comes back.
             self.history.pop(key, None)
             if not self._warned_container and self.logger is not None:
                 self._warned_container = True
@@ -440,7 +393,6 @@ class StaticStepSkip:
 
 
 def _context_wrapper(skip: StaticStepSkip, module: Any, prior: Any) -> Any:
-    """An instance ``cache_context`` that records the branch name, then delegates."""
     target = prior if prior is not None else getattr(type(module), "cache_context")
 
     @contextlib.contextmanager
@@ -477,9 +429,7 @@ def install_static_step_skip(
     settings: Optional[dict] = None,
     logger: Any = None,
 ) -> Optional[str]:
-    """Put the static step skip on ``pipe.transformer``. Returns ``TC_STATIC``, or None when the
-    pipe cannot take it (it then runs uncached). Never sets ``_unsloth_step_cache``: that marker
-    is what runs the CUDA graph eager, and nothing here needs it. Idempotent."""
+    """``TC_STATIC`` or None (uncached). Never sets ``_unsloth_step_cache``, which runs the CUDA graph eager."""
     transformer = getattr(pipe, "transformer", None)
     if transformer is None:
         _warn(logger, "pipeline has no transformer")
@@ -544,8 +494,6 @@ def reset_static_step_skip(
     step_signal: bool = False,
     keep_stats: bool = False,
 ) -> bool:
-    """Arm the schedule for one pipeline call of ``steps`` effective denoise steps. ``keep_stats``
-    adds this call's counts to the running generation's instead of starting new ones."""
     skip = _find(pipe)
     if skip is None:
         return False
@@ -565,11 +513,7 @@ def static_skip_stats(pipe: Any) -> Optional[dict]:
 
 
 def uninstall_static_step_skip(pipe: Any) -> bool:
-    """Take the layer off and put back what it wrapped. Idempotent.
-
-    A GraphedForward installed after the layer is its ``inner``, so it goes back into the slot.
-    When something wrapped the layer after it (an offload hook), its slot is not ours to rewrite:
-    the layer disarms to a passthrough in place instead."""
+    """Restore what the layer wrapped; if something wrapped it later (an offload hook), disarm to a passthrough."""
     skip = _find(pipe)
     if skip is None:
         return False

@@ -202,8 +202,7 @@ def _warn(logger: Any, what: str, exc: Any) -> None:
 
 
 def _outer_layer(module: Any) -> Any:
-    """The outer forward layer in ``module``'s instance slot, or None. Such a layer carries
-    ``_unsloth_outer_forward`` and calls its ``inner`` (None = the class forward)."""
+    """The ``_unsloth_outer_forward`` layer in ``module``'s forward slot (its ``inner`` None = class forward)."""
     try:
         slot = module.__dict__.get("forward")
     except Exception:  # noqa: BLE001 - no instance dict, nothing layered
@@ -275,9 +274,7 @@ class GraphedForward:
 
     def install(self) -> "GraphedForward":
         """Write ``forward`` into the instance ``__dict__``; ``__setattr__`` would inspect it.
-
-        An outer layer already in the slot (the static step skip) stays outermost: the graph goes
-        under it, so the layer decides which steps reach the graph at all."""
+        An outer layer (the static step skip) stays outermost, deciding which steps reach the graph."""
         outer = _outer_layer(self.module)
         if outer is not None:
             outer.inner = self
@@ -288,7 +285,6 @@ class GraphedForward:
     def uninstall(self) -> "GraphedForward":
         outer = _outer_layer(self.module)
         if outer is not None:
-            # Unlink from under the outer layer, which then calls the class forward as before.
             if outer.inner is self:
                 outer.inner = None
             return self

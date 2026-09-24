@@ -25,8 +25,7 @@ from typing import Any, Optional
 TC_OFF = "off"
 TC_AUTO = "auto"
 TC_FBCACHE = "fbcache"
-# Skips denoiser calls on a schedule fixed before the generation (diffusion_step_skip.py). Explicit opt-in only: the
-# auto policy below never picks it.
+# Fixed-schedule step skip (diffusion_step_skip.py); explicit opt-in only, auto never picks it.
 TC_STATIC = "static"
 TC_MODES = (TC_FBCACHE, TC_STATIC)
 
@@ -41,10 +40,7 @@ FBCACHE_MIN_STEPS = 20
 
 
 def cache_breaks_graph(mode: Optional[str]) -> bool:
-    """Whether an ENGAGED cache mode decides inside the denoiser forward, which is what costs the
-    compile its fullgraph and runs the CUDA graph eager. FBCache does (a data-dependent skip
-    between the first block and the rest); static decides outside the forward from a fixed
-    schedule, so it keeps both exactly as uncached."""
+    """Whether an engaged mode decides inside the forward (FBCache), costing fullgraph and the CUDA graph."""
     return bool(mode) and mode != TC_STATIC
 
 
@@ -417,7 +413,6 @@ def apply_step_cache(
         # AUTO is resolved by the loader before this; treat a stray auto as off.
         return None
     if mode == TC_STATIC:
-        # Installed by diffusion_step_skip on the image backend; any other caller runs uncached.
         _warn(logger, mode, RuntimeError("static step skip is not supported on this backend"))
         return None
     transformer = getattr(pipe, "transformer", None)
