@@ -39,7 +39,14 @@ import {
   downloadLibraryItem,
 } from "./actions";
 import type { LibraryFolder, LibraryItem, LibraryUploadBatch } from "./api";
-import { fileKind, hasImagePreview, isDeletable, isFileItem, isModelItem } from "./file-kind";
+import {
+  type LibraryTypeFilter,
+  fileKind,
+  hasImagePreview,
+  isDeletable,
+  isFileItem,
+  isModelItem,
+} from "./file-kind";
 import {
   type LibraryActions,
   LibraryActionsProvider,
@@ -194,6 +201,9 @@ function LoadingGrid() {
   );
 }
 
+// Everything but media and models: the Storage Files row.
+const FILE_TYPES: LibraryTypeFilter[] = ["documents", "spreadsheets", "presentations", "pdfs"];
+
 export function LibraryPage() {
   const search = useSearch({ from: "/library" });
   const refresh = useLibraryStore((s) => s.refresh);
@@ -208,7 +218,12 @@ export function LibraryPage() {
 
   // Search, filters and selection belong to the view they were made in, so each tab and folder
   // gets a fresh one.
-  return <LibraryView key={`${search.show ?? ""}:${search.folder ?? ""}`} search={search} />;
+  return (
+    <LibraryView
+      key={`${search.show ?? ""}:${search.folder ?? ""}:${search.filter ?? ""}`}
+      search={search}
+    />
+  );
 }
 
 function LibraryView({ search }: { search: LibrarySearch }) {
@@ -226,7 +241,9 @@ function LibraryView({ search }: { search: LibrarySearch }) {
   const openSettings = useSettingsDialogStore((s) => s.openDialog);
 
   const [query, setQuery] = useState("");
-  const [filters, setFilters] = useState<LibraryFilters>(EMPTY_FILTERS);
+  const [filters, setFilters] = useState<LibraryFilters>(() =>
+    search.filter === "files" ? { sources: new Set(), types: new Set(FILE_TYPES) } : EMPTY_FILTERS,
+  );
   const [pickedKeys, setSelection] = useState<Set<string>>(new Set());
   const [nameDialog, setNameDialog] = useState<NameDialogState | null>(null);
   const [pendingDelete, setPendingDelete] = useState<LibraryTarget[] | null>(null);

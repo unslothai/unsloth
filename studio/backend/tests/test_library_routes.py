@@ -232,6 +232,12 @@ def test_generated_video_is_listed_and_deleted(client, monkeypatch):
     assert forgotten == [record["id"], record["id"]]
 
 
+def test_the_listing_reports_the_library_disk(client):
+    disk = client.get("/api/library").json()["disk"]
+    assert disk["totalBytes"] > 0
+    assert 0 <= disk["freeBytes"] <= disk["totalBytes"]
+
+
 def test_favorites_lists_only_favorite_ids(client):
     client.patch("/api/library/items", json = {"id": "image:abc", "favorite": True})
     client.patch("/api/library/items", json = {"id": "image:def", "favorite": False})

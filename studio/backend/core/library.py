@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 import uuid
 from pathlib import Path
 from typing import Optional
@@ -83,6 +84,15 @@ def _item(
 
 def uploads_dir() -> Path:
     return ensure_dir(account_path("library"))
+
+
+def disk_usage() -> Optional[dict]:
+    """Capacity of the disk the Library's own files live on, which need not be the system disk."""
+    try:
+        usage = shutil.disk_usage(uploads_dir())
+    except OSError:
+        return None
+    return {"totalBytes": usage.total, "freeBytes": usage.free}
 
 
 def upload_path(upload_id: str) -> Optional[Path]:

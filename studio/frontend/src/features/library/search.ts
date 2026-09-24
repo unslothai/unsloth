@@ -25,6 +25,8 @@ export interface LibrarySearch {
   item?: string;
   /** Start sorted this way, e.g. by size from Settings > Library > Storage. */
   sort?: LibrarySort;
+  /** Start filtered to files that are not media or models, for the Storage Files row. */
+  filter?: "files";
 }
 
 export function validateLibrarySearch(search: Record<string, unknown>): LibrarySearch {
@@ -34,5 +36,6 @@ export function validateLibrarySearch(search: Record<string, unknown>): LibraryS
     ...(typeof search.folder === "string" ? { folder: search.folder } : {}),
     ...(typeof search.item === "string" ? { item: search.item } : {}),
     ...(LIBRARY_SORTS.includes(search.sort as LibrarySort) ? { sort: search.sort as LibrarySort } : {}),
+    ...(search.filter === "files" ? { filter: "files" as const } : {}),
   };
 }

@@ -44,9 +44,16 @@ export interface LibraryFolder {
   updatedAt: number;
 }
 
+export interface LibraryDisk {
+  totalBytes: number;
+  freeBytes: number;
+}
+
 export interface LibrarySnapshot {
   items: LibraryItem[];
   folders: LibraryFolder[];
+  /** The disk holding the Library's own files; null when it could not be read. */
+  disk?: LibraryDisk | null;
 }
 
 async function ensureOk(response: Response): Promise<Response> {

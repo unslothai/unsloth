@@ -1,17 +1,18 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { useEffect, useState } from "react";
-import { getLibrary } from "./api";
+import { useEffect, useMemo, useState } from "react";
+import { type LibraryDisk, type LibraryItem, getLibrary } from "./api";
 import { fileKind } from "./file-kind";
-import type { LibraryTab } from "./search";
+import type { LibrarySearch } from "./search";
+import { includedBySettings, useLibrarySettingsStore } from "./settings-store";
 
 export type StorageCategory = "files" | "images" | "videos" | "audio" | "fineTunes";
 
 export interface StorageUsage {
   category: StorageCategory;
   /** Where Manage storage opens it, sorted by size. */
-  tab: LibraryTab;
+  link: LibrarySearch;
   bytes: number;
   count: number;
 }
@@ -20,14 +21,15 @@ export interface LibraryStorage {
   status: "loading" | "ready" | "error";
   totalBytes: number;
   categories: StorageUsage[];
+  disk: LibraryDisk | null;
 }
 
-const CATEGORY_TABS: [StorageCategory, LibraryTab][] = [
-  ["files", "all"],
-  ["images", "images"],
-  ["videos", "videos"],
-  ["audio", "audio"],
-  ["fineTunes", "models"],
+const CATEGORY_LINKS: [StorageCategory, LibrarySearch][] = [
+  ["files", { show: "all", filter: "files", sort: "size" }],
+  ["images", { show: "images", sort: "size" }],
+  ["videos", { show: "videos", sort: "size" }],
+  ["audio", { show: "audio", sort: "size" }],
+  ["fineTunes", { show: "models", sort: "size" }],
 ];
 
 const KIND_CATEGORIES: Partial<Record<string, StorageCategory>> = {
@@ -37,42 +39,46 @@ const KIND_CATEGORIES: Partial<Record<string, StorageCategory>> = {
   model: "fineTunes",
 };
 
-/** What the Library holds on disk, by category. Empty categories are left out. */
+/**
+ * What the Library holds on disk, by category. Sources hidden in Content settings are left out,
+ * so each category link lands on exactly what it counted. Empty categories are left out too.
+ */
 export function useLibraryStorage(): LibraryStorage {
-  const [storage, setStorage] = useState<LibraryStorage>({
-    status: "loading",
-    totalBytes: 0,
-    categories: [],
-  });
+  const settings = useLibrarySettingsStore();
+  const [snapshot, setSnapshot] = useState<{
+    status: LibraryStorage["status"];
+    items: LibraryItem[];
+    disk: LibraryDisk | null;
+  }>({ status: "loading", items: [], disk: null });
   useEffect(() => {
     let cancelled = false;
     getLibrary().then(
-      ({ items }) => {
-        const totals = new Map<StorageCategory, { bytes: number; count: number }>();
-        for (const item of items) {
-          const category = KIND_CATEGORIES[fileKind(item)] ?? "files";
-          const total = totals.get(category) ?? { bytes: 0, count: 0 };
-          total.bytes += item.sizeBytes ?? 0;
-          total.count += 1;
-          totals.set(category, total);
-        }
-        const categories = CATEGORY_TABS.flatMap(([category, tab]) => {
-          const total = totals.get(category);
-          return total ? [{ category, tab, ...total }] : [];
-        });
-        if (!cancelled) {
-          setStorage({
-            status: "ready",
-            totalBytes: categories.reduce((sum, entry) => sum + entry.bytes, 0),
-            categories,
-          });
-        }
-      },
-      () => !cancelled && setStorage((current) => ({ ...current, status: "error" })),
+      ({ items, disk }) => !cancelled && setSnapshot({ status: "ready", items, disk: disk ?? null }),
+      () => !cancelled && setSnapshot((current) => ({ ...current, status: "error" })),
     );
     return () => {
       cancelled = true;
     };
   }, []);
-  return storage;
+  return useMemo(() => {
+    const totals = new Map<StorageCategory, { bytes: number; count: number }>();
+    for (const item of snapshot.items) {
+      if (!includedBySettings(item.id, settings)) continue;
+      const category = KIND_CATEGORIES[fileKind(item)] ?? "files";
+      const total = totals.get(category) ?? { bytes: 0, count: 0 };
+      total.bytes += item.sizeBytes ?? 0;
+      total.count += 1;
+      totals.set(category, total);
+    }
+    const categories = CATEGORY_LINKS.flatMap(([category, link]) => {
+      const total = totals.get(category);
+      return total ? [{ category, link, ...total }] : [];
+    });
+    return {
+      status: snapshot.status,
+      totalBytes: categories.reduce((sum, entry) => sum + entry.bytes, 0),
+      categories,
+      disk: snapshot.disk,
+    };
+  }, [snapshot, settings]);
 }

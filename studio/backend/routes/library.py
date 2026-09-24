@@ -67,7 +67,11 @@ class TextContent(BaseModel):
 @router.get("")
 async def get_library(current_subject: str = Depends(get_current_subject)) -> dict:
     items = await run_in_threadpool(library.list_items)
-    return {"items": items, "folders": library_db.list_folders()}
+    return {
+        "items": items,
+        "folders": library_db.list_folders(),
+        "disk": await run_in_threadpool(library.disk_usage),
+    }
 
 
 @router.get("/favorites")

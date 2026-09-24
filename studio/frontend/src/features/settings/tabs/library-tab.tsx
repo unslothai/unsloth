@@ -13,6 +13,7 @@ import { Switch } from "@/components/ui/switch";
 import { Spinner } from "@/components/ui/spinner";
 import {
   LIBRARY_TABS,
+  type LibrarySearch,
   LibraryStorageBar,
   type LibrarySettings,
   type LibraryTab as LibraryTabId,
@@ -143,10 +144,10 @@ function StorageSection() {
     return () => window.cancelAnimationFrame(frame);
   }, [consumeScrollTarget, scrollTarget]);
 
-  const open = (tab: (typeof storage.categories)[number]["tab"]) => {
+  const open = (link: LibrarySearch) => {
     closeDialog();
     setView("list");
-    void navigate({ to: "/library", search: { show: tab, sort: "size" } });
+    void navigate({ to: "/library", search: link });
   };
 
   let body;
@@ -161,7 +162,7 @@ function StorageSection() {
           <p className="text-sm font-medium text-foreground">
             {t("settings.library.storageUsed", { size: formatSize(storage.totalBytes) ?? "0 B" })}
           </p>
-          <LibraryStorageBar libraryBytes={storage.totalBytes} />
+          <LibraryStorageBar libraryBytes={storage.totalBytes} disk={storage.disk} />
         </div>
         {storage.categories.length === 0 ? (
           <p className="pb-3 text-sm text-muted-foreground">{t("settings.library.storageEmpty")}</p>
@@ -171,7 +172,7 @@ function StorageSection() {
               <button
                 key={entry.category}
                 type="button"
-                onClick={() => open(entry.tab)}
+                onClick={() => open(entry.link)}
                 className="flex items-center gap-3 border-border/60 px-4 py-3 text-left transition-colors not-first:border-t hover:bg-muted/60"
               >
                 <span className="flex min-w-0 flex-1 flex-col gap-0.5">
