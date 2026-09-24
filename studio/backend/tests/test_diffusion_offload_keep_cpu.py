@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Whole-model CPU offload that points each weight back at its host tensor instead of copying it.
-
-CPU tests onload to the ``meta`` device: a kept weight comes back to its original host storage, and
-a weight the stock path would have to copy raises (meta has no data), which is how a test tells the
-two paths apart. The GPU test runs real accelerate hooks and checks bit-identical output.
-"""
+"""CPU tests onload to ``meta``: a kept weight returns to its host storage, a stock copy raises (no data)."""
 
 from __future__ import annotations
 
@@ -21,8 +16,7 @@ from core.inference import diffusion_memory as dm  # noqa: E402
 
 
 def _pipe(device, *names):
-    """A pipeline shaped like diffusers': components, and an enable_model_cpu_offload that (re)builds
-    one chained CpuOffload hook per component, as diffusers does after every call."""
+    """Diffusers-shaped pipe whose enable_model_cpu_offload rebuilds chained CpuOffload hooks each call."""
     torch.manual_seed(0)
     comps = {name: torch.nn.Linear(8, 8) for name in names}
     pipe = types.SimpleNamespace(components = comps, enabled = 0)
@@ -56,7 +50,6 @@ def test_every_offload_hook_is_wrapped():
     pipe.enable_model_cpu_offload()
     assert dm.keep_cpu_weights_on_offload(pipe) == 2
     assert _wrapped(pipe.text_encoder) and _wrapped(pipe.transformer)
-    # Idempotent: a second call wraps nothing new.
     assert dm.keep_cpu_weights_on_offload(pipe) == 0
 
 
@@ -65,14 +58,11 @@ def test_hooks_rebuilt_by_a_later_enable_are_wrapped_too():
     pipe.enable_model_cpu_offload()
     dm.keep_cpu_weights_on_offload(pipe)
     for _ in range(3):
-        # diffusers' maybe_free_model_hooks re-runs enable_model_cpu_offload after every call.
         pipe.enable_model_cpu_offload()
         assert _wrapped(pipe.transformer)
 
 
 def test_a_device_that_hands_back_new_parameters_takes_the_stock_path():
-    # meta tensors are not shallow-copy compatible with host ones, so the move makes new Parameter objects and
-    # the offload must fall back to the stock copy (which raises on meta: there is no data to copy).
     pipe = _pipe("meta", "transformer")
     pipe.enable_model_cpu_offload()
     dm.keep_cpu_weights_on_offload(pipe)
@@ -138,7 +128,6 @@ def test_real_offload_keeps_host_storage_and_is_bit_identical(monkeypatch):
     host = {n: _ptrs(m) for n, m in pipe.components.items()}
     for _ in range(3):
         assert torch.equal(_render(pipe, x), ref)
-        # Offloaded through the kept host tensors: the very same storage every time.
         assert {n: _ptrs(m) for n, m in pipe.components.items()} == host
 
 
@@ -150,7 +139,7 @@ def test_a_weight_written_on_the_device_is_copied_back():
     before = pipe.transformer.weight.detach().clone()
     pipe.transformer(torch.ones(1, 8))
     with torch.no_grad():
-        pipe.transformer.weight.add_(1)  # e.g. a LoRA fused on the device
+        pipe.transformer.weight.add_(1)
     pipe.transformer._hf_hook.init_hook(pipe.transformer)
     assert pipe.transformer.weight.device.type == "cpu"
     assert torch.equal(pipe.transformer.weight.detach(), before + 1)
@@ -217,8 +206,7 @@ def test_a_parameter_replaced_on_the_device_is_copied_back():
     pipe.enable_model_cpu_offload()
     dm.keep_cpu_weights_on_offload(pipe)
     pipe.transformer(torch.ones(1, 8))
-    # A new Parameter under the same name can sit at the very version recorded at onload, so only its
-    # identity tells it apart.
+    # Same name and version as the onloaded weight: only identity tells it apart.
     old = pipe.transformer.weight
     new = torch.nn.Parameter(torch.full_like(old, 3.0))
     with torch.no_grad():
@@ -282,7 +270,6 @@ def test_a_failed_pin_hands_the_partial_chunks_back(monkeypatch):
 @cuda
 @pytest.mark.parametrize("how", ["parameter", "data"])
 def test_a_parameter_replaced_while_offloaded_is_not_restored_to_the_old_weight(how):
-    # e.g. a LoRA adapter unloaded and reloaded under the same name between two renders
     pipe = _pipe("cuda", "transformer")
     pipe.enable_model_cpu_offload()
     dm.keep_cpu_weights_on_offload(pipe)
@@ -305,7 +292,6 @@ def test_a_parameter_replaced_while_offloaded_is_not_restored_to_the_old_weight(
 
 @cuda
 def test_a_weight_reassigned_through_data_on_the_device_is_copied_back():
-    # `p.data = t` swaps the storage without moving the autograd version counter.
     pipe = _pipe("cuda", "transformer")
     pipe.enable_model_cpu_offload()
     dm.keep_cpu_weights_on_offload(pipe)

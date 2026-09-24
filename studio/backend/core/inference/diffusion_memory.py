@@ -119,19 +119,10 @@ _KEEP_ATTR = "_unsloth_offload_keep_cpu"
 
 
 def keep_cpu_weights_on_offload(pipe: Any, logger: Any = None) -> int:
-    """Offload whole modules without copying their weights back from the device.
+    """Offload by re-pointing each weight at its pre-onload host tensor instead of copying it back.
 
-    accelerate's ``CpuOffload`` hook offloads with ``module.to("cpu")``: every weight is copied
-    device-to-host into freshly allocated pageable memory, although it did not change. That copy is
-    most of a whole-model offload render (Z-Image-Turbo 1024px on a B200: 15.8 of 25 s; device-to-host
-    into new pages ran at 1 GiB/s). Instead each parameter keeps the host tensor it had before it
-    was onloaded, and the offload points it back there. Lossless: the kept tensor holds the same
-    bytes, and a parameter whose version counter moved on the device (an in-place write) is copied
-    the normal way. Only plain tensors are kept; quantised tensor subclasses keep the stock path.
-
-    diffusers re-runs ``enable_model_cpu_offload`` after every call (``maybe_free_model_hooks``)
-    and so builds new hooks each time, so the pipeline's method is wrapped to wrap them too, and
-    the kept tensors live on each module. Returns how many hooks are wrapped now."""
+    Weights written or replaced on the device, and tensor subclasses, take the stock copy. diffusers
+    rebuilds the hooks on every call (maybe_free_model_hooks), so enable_model_cpu_offload is wrapped too."""
     if (os.environ.get(OFFLOAD_KEEP_CPU_ENV) or "").strip().lower() in ("0", "off", "false", "no"):
         return 0
     try:
@@ -315,8 +306,7 @@ def _wrap_cpu_offload_hook(
     module: Any,
     logger: Any = None,
 ) -> None:
-    # Keyed by name: a move can hand a module new Parameter objects (e.g. to a device whose tensors are not
-    # shallow-copy compatible with the host's), and a stale key must miss rather than alias another weight.
+    # Keyed by name: a move can hand the module new Parameter objects, and a stale key must miss, not alias.
     state = module.__dict__.get(_KEEP_ATTR)
     if state is None:
         state = {"host": {}, "owner": {}, "version": {}}
@@ -325,8 +315,7 @@ def _wrap_cpu_offload_hook(
     host, owner, version = state["host"], state["owner"], state["version"]
 
     def _capture(mod: Any) -> None:
-        # Each host tensor is tied to the Parameter it came from: one replaced while offloaded (e.g. a LoRA
-        # adapter reloaded under the same name) must not inherit it.
+        # owner: a Parameter replaced while offloaded (e.g. a reloaded LoRA) must not inherit the old tensor.
         host.clear()
         owner.clear()
         for name, p in mod.named_parameters():
@@ -334,7 +323,7 @@ def _wrap_cpu_offload_hook(
                 host[name] = p.data
                 owner[name] = p
 
-    # The new hook's attach already ran the stock init_hook, so whatever is on the host now is current.
+    # attach already ran the stock init_hook, so the host tensors are current.
     _capture(module)
     version.clear()
     init_hook, pre_forward = hook.init_hook, hook.pre_forward
@@ -343,8 +332,7 @@ def _wrap_cpu_offload_hook(
         for name, p in mod.named_parameters():
             kept = host.get(name)
             seen = version.get(name)
-            # Same Parameter object, same device storage and no write since onload: a replaced parameter under the
-            # same name can also sit at version 0, and `p.data = ...` swaps storage without moving the counter.
+            # Identity and data_ptr too: a replacement can match the version, and `p.data = ...` does not bump it.
             if (
                 kept is None
                 or p.device.type == "cpu"
@@ -358,7 +346,6 @@ def _wrap_cpu_offload_hook(
                 p.data = kept
             except Exception:  # noqa: BLE001 - incompatible tensor types: the stock copy below handles it
                 pass
-        # Buffers, and anything not kept, go through the stock copy.
         out = init_hook(mod)
         _capture(mod)
         version.clear()
@@ -367,8 +354,7 @@ def _wrap_cpu_offload_hook(
     def _pre_forward(mod: Any, *args: Any, **kwargs: Any) -> Any:
         onload = not version
         if onload:
-            # Still on the host: forget any entry whose parameter was replaced, or re-pointed at other data,
-            # since the last offload, so the offload after this render takes the stock copy for it.
+            # Drop entries replaced or re-pointed since the last offload so they take the stock copy.
             for name, p in mod.named_parameters():
                 kept = host.get(name)
                 if kept is not None and (
@@ -393,7 +379,6 @@ def _wrap_cpu_offload_hook(
                 )
         out = pre_forward(mod, *args, **kwargs)
         if onload:
-            # Recorded once per onload: a later in-place write moves the counter past it.
             for name, p in mod.named_parameters():
                 if name in host and owner.get(name) is p and p.device.type != "cpu":
                     version[name] = (p, p._version, p.data_ptr())
