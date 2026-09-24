@@ -16,7 +16,7 @@ import {
 import { formatCardTime, pluralize } from "../format";
 import { useColumnCount, useLibraryThumbnail, useSeen } from "../hooks";
 import { useLibraryActions } from "../actions-context";
-import { RAISED_SURFACE } from "../surface";
+import { OVERLAY_CONTROL, RAISED_SURFACE } from "../surface";
 import { CardSelectionContext } from "./card-selection";
 import { LibraryActionsMenu } from "./library-actions";
 
@@ -40,7 +40,8 @@ export function KindIcon({ item, className }: { item: LibraryItem; className?: s
     <HugeiconsIcon
       icon={KIND_ICONS[kind]}
       strokeWidth={1.5}
-      className={cn(KIND_ICON_CLASS[kind], className)}
+      // The test tube reads heavier than the other glyphs, so it sits a touch smaller.
+      className={cn(KIND_ICON_CLASS[kind], className, kind === "model" && "scale-95")}
     />
   );
 }
@@ -50,7 +51,9 @@ function ImageThumb({ item, className }: { item: LibraryItem; className?: string
   const holder = useRef<HTMLDivElement>(null);
   const { url, failed } = useLibraryThumbnail(item, useSeen(holder));
   const [loaded, setLoaded] = useState(false);
-  if (failed) {
+  // Fetched but undecodable (bytes that are not the image their name says) falls back too.
+  const [brokenUrl, setBrokenUrl] = useState<string | null>(null);
+  if (failed || (url !== null && url === brokenUrl)) {
     return (
       <div className={cn("flex aspect-square items-center justify-center", className)}>
         <KindIcon item={item} className="h-auto w-1/4 max-w-9" />
@@ -66,6 +69,7 @@ function ImageThumb({ item, className }: { item: LibraryItem; className?: string
           alt={item.name}
           draggable={false}
           onLoad={() => setLoaded(true)}
+          onError={() => setBrokenUrl(url)}
           className={cn("block w-full", loaded ? "h-auto" : "absolute inset-0 opacity-0")}
         />
       )}
@@ -120,8 +124,9 @@ function CardFrame({
           onCheckedChange={() => select.toggle(selectKey)}
           aria-label={`Select ${label}`}
           className={cn(
-            // Level with the date line, as ChatGPT's sits.
-            "absolute bottom-4 right-4 size-5 rounded-full border-0 bg-background opacity-0 shadow-sm transition-opacity group-hover/library-card:opacity-100 focus-visible:opacity-100 data-checked:bg-background data-checked:text-foreground dark:bg-neutral-700 dark:data-checked:bg-neutral-200 dark:data-checked:text-neutral-900 [&_svg]:size-3.5",
+            // Level with the date line, as ChatGPT's sits. Same fill as the ⋯ button.
+            OVERLAY_CONTROL,
+            "absolute bottom-4 right-4 size-5 rounded-full border-0 opacity-0 transition-opacity group-hover/library-card:opacity-100 focus-visible:opacity-100 data-checked:bg-white data-checked:text-foreground dark:data-checked:bg-neutral-200 dark:data-checked:text-neutral-900 [&_svg]:size-3.5",
             selected && "opacity-100",
           )}
         />

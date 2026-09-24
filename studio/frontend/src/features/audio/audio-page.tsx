@@ -110,6 +110,7 @@ import { subscribeGalleryChanged } from "@/lib/gallery-flags";
 import { subscribeModelLifecycle } from "@/lib/model-lifecycle-events";
 import { toast } from "@/lib/toast";
 import { loadGalleryUntil } from "@/lib/gallery-deep-link";
+import { onGalleryRemoval } from "@/lib/gallery-removal";
 import { cn } from "@/lib/utils";
 import { useIsMobileShell } from "@/hooks/use-mobile";
 import { useNavigate, useSearch } from "@tanstack/react-router";
@@ -1842,6 +1843,10 @@ export function AudioPage({
   // effect cleanup, retires a lookup: clearing the query must not cancel its own.
   const routedItem = active ? routeSearch.item : undefined;
   const routedLookup = useRef(0);
+  // Leaving the page does retire it: hidden pages stay mounted and would keep paging.
+  useEffect(() => {
+    if (!active) routedLookup.current += 1;
+  }, [active]);
   useEffect(() => {
     if (!routedItem) return;
     const lookup = ++routedLookup.current;
@@ -2383,6 +2388,8 @@ export function AudioPage({
     },
     [dropClip, refreshGallery],
   );
+
+  useEffect(() => onGalleryRemoval("audio", dropClip), [dropClip]);
 
   const handleArchiveClip = useCallback(
     async (id: string) => {

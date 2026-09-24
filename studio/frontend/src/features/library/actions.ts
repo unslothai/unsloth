@@ -9,10 +9,11 @@ import {
   requestModelConfigHandoff,
 } from "@/features/model-picker";
 import { MAX_AUDIO_SIZE } from "@/lib/audio-utils";
-import { downloadFile, isDownloadCancelled } from "@/lib/native-files";
+import { isTauri } from "@/lib/api-base";
+import { downloadFile, downloadUrlStreaming, isDownloadCancelled } from "@/lib/native-files";
 import { toast } from "@/lib/toast";
 import { MAX_VIDEO_SIZE } from "@/lib/video-utils";
-import { type LibraryItem, libraryItemFile } from "./api";
+import { type LibraryItem, libraryDownloadUrl, libraryItemFile } from "./api";
 import { fileKind } from "./file-kind";
 import {
   type LibraryChatHandoff,
@@ -48,8 +49,18 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+// Items with a file of their own, which the Library can serve by id. Chat attachments live inside
+// messages and stay small.
+const STREAMABLE = /^(upload|image|video|audio|sandbox):/;
+
 export async function downloadLibraryItem(item: LibraryItem): Promise<void> {
   try {
+    // The desktop app streams to the chosen path: a Blob plus its IPC copy would hold the file
+    // in memory twice.
+    if (isTauri && !item.textOnly && STREAMABLE.test(item.id)) {
+      await downloadUrlStreaming(await libraryDownloadUrl(item), item.name);
+      return;
+    }
     const file = await libraryItemFile(item);
     await downloadFile(file, file.name, file.type);
   } catch (error) {

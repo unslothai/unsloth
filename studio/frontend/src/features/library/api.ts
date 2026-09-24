@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { authFetch } from "@/features/auth";
+import { authFetch, getAuthToken } from "@/features/auth";
+import { apiUrl } from "@/lib/api-base";
 import { readFastApiError } from "@/lib/format-fastapi-error";
 
 export type LibrarySource = "uploaded" | "generated";
@@ -25,6 +26,8 @@ export interface LibraryItem {
   folderId: string | null;
   /** Set for fine-tuned models, which are directories: opened in chat, never downloaded. */
   model: LibraryModel | null;
+  /** Generated media off its gallery page's active shelf. */
+  archived?: boolean;
 }
 
 export interface LibraryModel {
@@ -238,6 +241,18 @@ export async function fetchLibraryTextPrefix(
 }
 
 /** What Download and "Chat about this" hand over. Text-only chat uploads say so in the name. */
+/**
+ * An absolute URL for the item's bytes that carries its own token, for the desktop app's native
+ * save, which sends no header. The HEAD goes through authFetch first, which refreshes an expired
+ * token; the URL alone cannot.
+ */
+export async function libraryDownloadUrl(item: LibraryItem): Promise<string> {
+  const path = `/api/library/items/download?${new URLSearchParams({ id: item.id })}`;
+  await ensureOk(await authFetch(path, { method: "HEAD" }));
+  const token = getAuthToken();
+  return apiUrl(token ? `${path}&token=${encodeURIComponent(token)}` : path);
+}
+
 export async function libraryItemFile(item: LibraryItem): Promise<File> {
   const blob = await fetchLibraryBlob(item);
   const name = item.textOnly ? `${item.name}.txt` : item.name;

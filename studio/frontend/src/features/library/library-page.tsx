@@ -284,6 +284,20 @@ function LibraryView({ search }: { search: LibrarySearch }) {
       .sort((a, b) => b.updatedAt - a.updatedAt);
   }, [folders, folderId, tab, needle, filters]);
 
+  // A search or filter that hides a selected entry deselects it, so bulk actions only ever act on
+  // what is on screen and clearing the filter never brings a selection back.
+  const visibleKeys = useMemo(
+    () =>
+      new Set([
+        ...visibleFolders.map((folder) => `folder:${folder.id}`),
+        ...visibleItems.map((item) => `item:${item.id}`),
+      ]),
+    [visibleFolders, visibleItems],
+  );
+  if ([...selection].some((key) => !visibleKeys.has(key))) {
+    setSelection(new Set([...selection].filter((key) => visibleKeys.has(key))));
+  }
+
   const previewItem = search.item ? (items.find((item) => item.id === search.item) ?? null) : null;
 
   // ── Actions ────────────────────────────────────────────────────
@@ -291,9 +305,23 @@ function LibraryView({ search }: { search: LibrarySearch }) {
   const fail = (message: string) => (err: unknown) =>
     toast.error(message, { description: err instanceof Error ? err.message : String(err) });
 
-  // Only files can be attached; a model in the folder stays behind.
-  const filesInFolder = (id: string) =>
-    items.filter((item) => item.folderId === id && isFileItem(item));
+  // Every file under the folder, subfolders included. Only files can be attached; a model in the
+  // folder stays behind.
+  const filesInFolder = (id: string) => {
+    const inside = new Set([id]);
+    for (let grew = true; grew; ) {
+      grew = false;
+      for (const folder of folders) {
+        if (folder.parentId && inside.has(folder.parentId) && !inside.has(folder.id)) {
+          inside.add(folder.id);
+          grew = true;
+        }
+      }
+    }
+    return items.filter(
+      (item) => item.folderId !== null && inside.has(item.folderId) && isFileItem(item),
+    );
+  };
 
   const chatAbout = (item: LibraryItem) =>
     void (item.model ? chatWithModel(navigate, item) : chatAboutItems(navigate, [item]));

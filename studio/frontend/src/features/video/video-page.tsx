@@ -148,6 +148,7 @@ import {
 } from "@/lib/native-files";
 import { toast } from "@/lib/toast";
 import { loadGalleryUntil } from "@/lib/gallery-deep-link";
+import { onGalleryRemoval } from "@/lib/gallery-removal";
 import { subscribeModelEjected } from "@/lib/model-lifecycle-events";
 import { BlobUrlCache } from "@/lib/blob-url-cache";
 
@@ -1853,6 +1854,8 @@ function VideoGenerator({
     [dropFromStrip],
   );
 
+  useEffect(() => onGalleryRemoval("video", (id) => dropFromStrip(id, true)), [dropFromStrip]);
+
   /** Refetch the loaded window from offset 0. Unpinning can drop a clip past the end of the
    *  window and promote an unloaded one into it, which the local reorder cannot know about. */
   const resyncWindow = useCallback(
@@ -2936,6 +2939,10 @@ function VideoGenerator({
   // counter, not effect cleanup, retires a lookup: clearing the query must not cancel its own.
   const routedItem = active ? routeSearch?.item : undefined;
   const routedLookup = useRef(0);
+  // Leaving the page does retire it: hidden pages stay mounted and would keep paging.
+  useEffect(() => {
+    if (!active) routedLookup.current += 1;
+  }, [active]);
   useEffect(() => {
     if (!routedItem) return;
     const lookup = ++routedLookup.current;

@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import sqlite3
 import sys
 from pathlib import Path
 
@@ -427,7 +428,56 @@ def test_archived_gallery_items_stay_in_the_library(client, monkeypatch):
         b"\0\0\0\x18ftypmp42", {**meta, "prompt": "Archived", "created_at": 1}
     )
     video_gallery.set_flags(record["id"], archived = True)
-    assert f"video:{record['id']}" in _items(client)[0]
+    assert _items(client)[0][f"video:{record['id']}"]["archived"] is True
+
+
+def test_items_download_as_attachments(client, monkeypatch):
+    [upload] = _upload(client, ("page.html", b"<script>1</script>", "text/html"))
+    # Checks its own credentials, header or query, rather than the overridden dependency.
+    assert client.get("/api/library/items/download", params = {"id": upload}).status_code == 401
+
+    async def signed_in(_request, _token):
+        return "unsloth"
+
+    monkeypatch.setattr(library_routes, "subject_for_header_or_query_token", signed_in)
+    response = client.get("/api/library/items/download", params = {"id": upload})
+    assert response.status_code == 200
+    assert response.content == b"<script>1</script>"
+    assert response.headers["content-type"] == "application/octet-stream"
+    assert response.headers["content-disposition"].startswith("attachment")
+    assert client.head("/api/library/items/download", params = {"id": upload}).status_code == 200
+    assert client.get("/api/library/items/download", params = {"id": "upload:" + "0" * 32}).status_code == 404
+    assert client.get("/api/library/items/download", params = {"id": "attachment:m:a"}).status_code == 400
+
+
+def test_a_failed_upload_record_leaves_no_file(client, monkeypatch):
+    from storage import library_db
+
+    def broken(*_args):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(library_db, "insert_upload", broken)
+    with pytest.raises(sqlite3.OperationalError):
+        library.save_upload("a.txt", "text/plain", [b"hi"])
+    assert not any(library.uploads_dir().iterdir())
+
+
+def test_a_failed_upload_delete_keeps_the_file_and_its_row(client, monkeypatch):
+    from storage import library_db
+
+    [upload] = _upload(client, ("keep.txt", b"hi", "text/plain"))
+    path = library.upload_path(upload.split(":", 1)[1])
+
+    def broken(*_args):
+        raise sqlite3.OperationalError("database is locked")
+
+    original = library_db.delete_upload
+    monkeypatch.setattr(library_db, "delete_upload", broken)
+    with pytest.raises(sqlite3.OperationalError):
+        library.delete_item(upload)
+    assert path.read_bytes() == b"hi"
+    monkeypatch.setattr(library_db, "delete_upload", original)
+    assert upload in _items(client)[0]
 
 
 def test_a_crafted_sandbox_id_reaches_only_listed_files(client, monkeypatch):

@@ -5,8 +5,8 @@ import {
   AudioWave01Icon,
   File02Icon,
   FlimSlateIcon,
-  Globe02Icon,
   Image02Icon,
+  InternetIcon,
   Pdf01Icon,
   Presentation01Icon,
   SourceCodeIcon,
@@ -148,7 +148,7 @@ export const TYPE_FILTER_KINDS: Record<LibraryTypeFilter, LibraryFileKind[]> = {
 
 export const KIND_ICONS: Record<LibraryFileKind, IconSvgElement> = {
   image: Image02Icon,
-  web: Globe02Icon,
+  web: InternetIcon,
   document: File02Icon,
   spreadsheet: SheetIcon,
   presentation: Presentation01Icon,
