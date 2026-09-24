@@ -23,10 +23,10 @@ import {
 } from "./model-catalog";
 import {
   CUSTOM_BACKEND_PROVIDER_TYPE,
+  CUSTOM_PROVIDER_DISPLAY_NAME,
   CUSTOM_PROVIDER_PRESETS,
   type ExternalProviderConfig,
   getExternalProviderApiKey,
-  isCustomProviderType,
   isPromptCacheTtl,
   LEGACY_CUSTOM_PROVIDER_TYPE,
   pruneExternalProviderApiKeys,
@@ -52,45 +52,60 @@ const OPENROUTER_EXCLUDED_MODELS = new Set([
   "recraft/recraft-v4-pro",
 ]);
 
-function normalizeUrl(input: string): string {
-  return input.trim().replace(/\/+$/, "");
+function parseHttpEndpointHost(
+  input: string | null | undefined,
+): string | null {
+  const value = (input ?? "").trim();
+  if (!value) {
+    return null;
+  }
+  try {
+    const parsed = new URL(value);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+      return null;
+    }
+    return parsed.hostname.toLowerCase() || null;
+  } catch {
+    return null;
+  }
+}
+
+function isOpenAIManagedEndpoint(input: string | null | undefined): boolean {
+  const host = parseHttpEndpointHost(input);
+  return (
+    host === "api.openai.com" ||
+    host?.endsWith(".openai.azure.com") === true ||
+    host?.endsWith(".services.ai.azure.com") === true
+  );
 }
 
 export function resolveUiProviderTypeFromConfig(
   configProviderType: string,
   configDisplayName: string | null | undefined,
   configBaseUrl: string | null | undefined,
-  registryRows: ProviderRegistryEntry[],
-  existingProviderType: string | undefined,
+  _registryRows: ProviderRegistryEntry[],
+  _existingProviderType: string | undefined,
 ): string {
-  if (existingProviderType && isCustomProviderType(existingProviderType)) {
-    return existingProviderType;
-  }
   if (configProviderType !== CUSTOM_BACKEND_PROVIDER_TYPE) {
     return configProviderType;
   }
+  // Names are editable labels, not provider identity. Repair stale local custom state before
+  // applying any legacy heuristic when the saved endpoint is OpenAI-managed.
+  if (isOpenAIManagedEndpoint(configBaseUrl)) {
+    return CUSTOM_BACKEND_PROVIDER_TYPE;
+  }
   const displayName = (configDisplayName ?? "").trim().toLowerCase();
+  if (displayName === CUSTOM_PROVIDER_DISPLAY_NAME.toLowerCase()) {
+    return LEGACY_CUSTOM_PROVIDER_TYPE;
+  }
   const matchingCustomPreset = CUSTOM_PROVIDER_PRESETS.find(
     (preset) => preset.displayName.toLowerCase() === displayName,
   );
   if (matchingCustomPreset) {
     return matchingCustomPreset.providerType;
   }
-  const openAiRegistry = registryRows.find(
-    (entry) => entry.provider_type === CUSTOM_BACKEND_PROVIDER_TYPE,
-  );
-  if (!openAiRegistry) {
-    return configProviderType;
-  }
-  const openAiDisplayName = openAiRegistry.display_name.trim().toLowerCase();
-  if (displayName.length > 0 && displayName !== openAiDisplayName) {
-    return LEGACY_CUSTOM_PROVIDER_TYPE;
-  }
-  const configUrl = normalizeUrl(configBaseUrl ?? "");
-  const defaultUrl = normalizeUrl(openAiRegistry.base_url ?? "");
-  if (configUrl.length > 0 && configUrl !== defaultUrl) {
-    return LEGACY_CUSTOM_PROVIDER_TYPE;
-  }
+  // A non-OpenAI hostname can be a corporate proxy for the real OpenAI API. Without a
+  // built-in legacy label there is no safe way to infer that the saved row was custom.
   return configProviderType;
 }
 
@@ -296,6 +311,7 @@ export async function syncExternalProvidersFromBackend(
         backendProviderType: config.provider_type,
         name: config.display_name,
         baseUrl: config.base_url ?? "",
+        apiType: config.api_type ?? "chat_completions",
         models: resolvedModels,
         availableModels: resolvedAvailableModels,
         maxOutputTokens: config.max_output_tokens ?? undefined,
