@@ -1009,7 +1009,9 @@ class TestEnsureRocmTorch:
         # a ROCm build and stopped. setup.ps1 force-reinstalls, so this is `studio update`.
         pip_try = self._windows_repair("gfx103x-all")
         assert pip_try.call_count == 1
-        assert "gfx120X-all" in str(pip_try.call_args)
+        # #11815: the reinstall lands on the multi-arch pin for the dGPU, not its family leaf.
+        assert "torch[device-gfx1200]" in str(pip_try.call_args)
+        assert "whl-multi-arch" in str(pip_try.call_args)
 
     def test_matching_wheel_family_is_left_alone(self):
         # Negative control: the right family must not be re-downloaded on every update.
@@ -4285,32 +4287,32 @@ class TestIsRdnaExpansion:
 
 
 class TestWindowsRocmIndexUrl:
-    """Verify GPU arch → AMD pip index URL mapping."""
+    """Verify GPU arch → AMD pip index URL mapping. Since #11815 every RDNA arch goes to
+    the multi-arch index by default; the per-family leaf is what a family-layout mirror
+    (UNSLOTH_ROCM_WINDOWS_MIRROR, no multi-arch mirror) still selects."""
 
-    def test_gfx1200_maps_to_gfx120x_all(self):
-        url = stack_mod._windows_rocm_index_url("gfx1200")
-        assert url is not None
-        assert "gfx120X-all" in url
+    @pytest.fixture(autouse = True)
+    def _no_mirror(self, monkeypatch):
+        monkeypatch.delenv("UNSLOTH_ROCM_WINDOWS_MIRROR", raising = False)
+        monkeypatch.delenv("UNSLOTH_ROCM_WINDOWS_MULTIARCH_MIRROR", raising = False)
+        monkeypatch.setattr(stack_mod, "_ROCM_WINDOWS_INDEX_BASE", "https://repo.amd.com/rocm/whl")
 
-    def test_gfx1201_maps_to_gfx120x_all(self):
-        url = stack_mod._windows_rocm_index_url("gfx1201")
-        assert url is not None
-        assert "gfx120X-all" in url
+    @pytest.mark.parametrize("gfx", ["gfx1200", "gfx1201", "gfx1151", "gfx1150", "gfx1100"])
+    def test_rdna_maps_to_the_multiarch_index(self, gfx):
+        url = stack_mod._windows_rocm_index_url(gfx)
+        assert url == "https://repo.amd.com/rocm/whl-multi-arch/"
 
-    def test_gfx1151_maps_to_gfx1151(self):
-        url = stack_mod._windows_rocm_index_url("gfx1151")
-        assert url is not None
-        assert "gfx1151" in url
+    @pytest.mark.parametrize(
+        "gfx,leaf",
+        [("gfx1200", "gfx120X-all"), ("gfx1201", "gfx120X-all"), ("gfx1151", "gfx1151"), ("gfx1150", "gfx1150"), ("gfx1100", "gfx110X-all")],
+    )
+    def test_family_mirror_keeps_the_family_leaf(self, gfx, leaf, monkeypatch):
+        monkeypatch.setenv("UNSLOTH_ROCM_WINDOWS_MIRROR", "https://mirror.example/whl")
+        monkeypatch.setattr(stack_mod, "_ROCM_WINDOWS_INDEX_BASE", "https://mirror.example/whl")
+        assert stack_mod._windows_rocm_index_url(gfx) == f"https://mirror.example/whl/{leaf}/"
 
-    def test_gfx1150_maps_to_gfx1150(self):
-        url = stack_mod._windows_rocm_index_url("gfx1150")
-        assert url is not None
-        assert "gfx1150" in url
-
-    def test_gfx1100_maps_to_gfx110x_all(self):
-        url = stack_mod._windows_rocm_index_url("gfx1100")
-        assert url is not None
-        assert "gfx110X-all" in url
+    def test_cdna_keeps_its_family(self):
+        assert stack_mod._windows_rocm_index_url("gfx90a") == "https://repo.amd.com/rocm/whl/gfx90a/"
 
     def test_unknown_arch_returns_none(self):
         assert stack_mod._windows_rocm_index_url("gfx9999") is None

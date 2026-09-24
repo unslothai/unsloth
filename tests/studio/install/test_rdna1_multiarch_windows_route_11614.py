@@ -75,12 +75,26 @@ class TestPackageSpecs:
             stack_mod._ROCM_MULTIARCH_TORCHAUDIO_VERSION == stack_mod._ROCM_MULTIARCH_TORCH_VERSION
         )
 
-    def test_other_arches_keep_their_specs(self):
+    def test_other_arches_keep_their_specs(self, monkeypatch):
+        """Since #11815 every RDNA arch takes the multi-arch pin by default; the per-arch
+        ABI pin is what a family-layout mirror gets, CDNA / unknown stay bare."""
+        monkeypatch.delenv("UNSLOTH_ROCM_WINDOWS_MIRROR", raising = False)
+        monkeypatch.delenv("UNSLOTH_ROCM_WINDOWS_MULTIARCH_MIRROR", raising = False)
+        monkeypatch.setattr(stack_mod, "_ROCM_WINDOWS_INDEX_BASE", "https://repo.amd.com/rocm/whl")
+        assert stack_mod._windows_rocm_torch_pkg_specs("gfx1201") == stack_mod._windows_multiarch_torch_pkg_specs("gfx1201")
+        assert stack_mod._windows_rocm_torch_pkg_specs("gfx1034") == stack_mod._windows_multiarch_torch_pkg_specs("gfx1034")
+        monkeypatch.setenv("UNSLOTH_ROCM_WINDOWS_MIRROR", "https://mirror.example/whl")
         assert (
             stack_mod._windows_rocm_torch_pkg_specs("gfx1201")
             == stack_mod._WINDOWS_ROCM_TORCH_PKG_SPECS["gfx1201"]
         )
         assert stack_mod._windows_rocm_torch_pkg_specs("gfx1034") == (
+            "torch",
+            "torchvision",
+            "torchaudio",
+        )
+        monkeypatch.delenv("UNSLOTH_ROCM_WINDOWS_MIRROR", raising = False)
+        assert stack_mod._windows_rocm_torch_pkg_specs("gfx908") == (
             "torch",
             "torchvision",
             "torchaudio",
@@ -97,7 +111,7 @@ class TestIndexResolution:
     def test_rdna1_resolves_to_the_multiarch_index(self, arch, monkeypatch):
         monkeypatch.delenv("UNSLOTH_ROCM_WINDOWS_MULTIARCH_MIRROR", raising = False)
         assert (
-            stack_mod._windows_rocm_index_url(arch) == stack_mod._ROCM_WINDOWS_MULTIARCH_INDEX_BASE
+            stack_mod._windows_rocm_index_url(arch) == stack_mod._ROCM_WINDOWS_MULTIARCH_INDEX_BASE + "/"
         )
 
     def test_the_default_base_is_amds_stable_multiarch_index(self):
@@ -106,12 +120,26 @@ class TestIndexResolution:
             == "https://repo.amd.com/rocm/whl-multi-arch"
         )
 
-    def test_rdna2_still_resolves_to_its_family(self, monkeypatch):
+    def test_rdna2_resolves_to_its_family_only_under_a_family_mirror(self, monkeypatch):
+        """#11815 moved RDNA 2 onto the multi-arch index; the per-family leaf is what a
+        host mirroring the family layout still gets."""
         monkeypatch.delenv("UNSLOTH_ROCM_WINDOWS_MIRROR", raising = False)
+        monkeypatch.delenv("UNSLOTH_ROCM_WINDOWS_MULTIARCH_MIRROR", raising = False)
         monkeypatch.setattr(stack_mod, "_ROCM_WINDOWS_INDEX_BASE", "https://repo.amd.com/rocm/whl")
         assert (
             stack_mod._windows_rocm_index_url("gfx1034")
-            == "https://repo.amd.com/rocm/whl/gfx103X-all/"
+            == stack_mod._ROCM_WINDOWS_MULTIARCH_INDEX_BASE + "/"
+        )
+        monkeypatch.setenv("UNSLOTH_ROCM_WINDOWS_MIRROR", "https://mirror.example/whl")
+        monkeypatch.setattr(stack_mod, "_ROCM_WINDOWS_INDEX_BASE", "https://mirror.example/whl")
+        assert (
+            stack_mod._windows_rocm_index_url("gfx1034")
+            == "https://mirror.example/whl/gfx103X-all/"
+        )
+        # RDNA 1 has no family to fall back to: a family mirror changes nothing for it.
+        assert (
+            stack_mod._windows_rocm_index_url("gfx1010")
+            == stack_mod._ROCM_WINDOWS_MULTIARCH_INDEX_BASE + "/"
         )
 
     def test_polaris_still_resolves_to_nothing(self):

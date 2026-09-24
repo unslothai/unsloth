@@ -144,7 +144,11 @@ class TestPythonIndexResolversAreAskedDirectly:
         with patch.object(stack_mod, "IS_WINDOWS", is_windows):
             url = stack_mod._amd_arch_index_url(arch)
         assert url is not None, f"{arch} lost its wheel index"
-        assert url.endswith(f"/{family}/"), f"{arch} routed to {url!r}, expected the {family} index"
+        if is_windows and arch in stack_mod._WINDOWS_MULTIARCH_GFX:
+            # #11815: every Windows RDNA arch takes the multi-arch index by default.
+            assert url.endswith("/whl-multi-arch/"), f"{arch} routed to {url!r}, expected the multi-arch index"
+        else:
+            assert url.endswith(f"/{family}/"), f"{arch} routed to {url!r}, expected the {family} index"
 
     @pytest.mark.parametrize("arch", _UNSUPPORTED_ARCHES)
     def test_no_unsupported_arch_is_a_key_of_the_family_map(self, arch):
@@ -194,7 +198,7 @@ class TestRdna1RoutesOnWindowsOnly:
             stack_mod, "_ROCM_WINDOWS_MULTIARCH_INDEX_BASE", "https://mirror.example/whl-multi-arch"
         )
         assert (
-            stack_mod._windows_rocm_index_url("gfx1010") == "https://mirror.example/whl-multi-arch"
+            stack_mod._windows_rocm_index_url("gfx1010") == "https://mirror.example/whl-multi-arch/"
         )
 
 

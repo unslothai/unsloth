@@ -2283,7 +2283,7 @@ class TestTheDelegatedRocmRepairKeepsTheArm64Exception:
 
     def test_the_windows_rocm_install_drops_torchaudio_on_arm64(self):
         source = inspect.getsource(stack_mod._ensure_rocm_torch)
-        block = source[source.index("_windows_rocm_torch_pkg_specs(") :][:1200]
+        block = source[source.index("_windows_rocm_torch_pkg_specs_for(") :][:1200]
         # The interpreter's arch, not the machine's: an emulated x64 venv installs win_amd64.
         assert (
             "_is_win_arm64_interpreter()" in block
@@ -2295,7 +2295,7 @@ class TestTheDelegatedRocmRepairKeepsTheArm64Exception:
 
     def test_x64_windows_still_asks_for_all_three(self):
         source = inspect.getsource(stack_mod._ensure_rocm_torch)
-        block = source[source.index("_windows_rocm_torch_pkg_specs(") :][:1200]
+        block = source[source.index("_windows_rocm_torch_pkg_specs_for(") :][:1200]
         assert "_rocm_trio = [_torch_pkg, _vision_pkg, _audio_pkg]" in block
 
 
