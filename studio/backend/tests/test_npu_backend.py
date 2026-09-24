@@ -143,6 +143,27 @@ def test_download_relays_progress_then_completes(npu):
     assert {m.id: m.downloaded for m in npu.catalog()}["qwen3-0.6b-FLM"] is True
 
 
+@pytest.mark.parametrize(
+    "pull, message", [("truncated", "ended before it completed"), ("error", "disk full")]
+)
+def test_a_download_without_lemonds_complete_event_fails(npu, monkeypatch, pull, message):
+    monkeypatch.setenv("FAKE_LEMOND_PULL", pull)
+    npu.enable()
+    with pytest.raises(nb.NpuError, match = message):
+        list(npu.download("qwen3-0.6b-FLM"))
+    assert {m.id: m.downloaded for m in npu.catalog()}["qwen3-0.6b-FLM"] is False
+
+
+def test_the_validator_is_tracked_while_it_runs(npu, monkeypatch):
+    adopted: list[int] = []
+    forgotten: list[int] = []
+    monkeypatch.setattr(nb, "adopt_pid", adopted.append)
+    monkeypatch.setattr(nb, "forget_pid", forgotten.append)
+    npu.enable()
+    # Recorded for the crash sweep, then dropped once reaped.
+    assert len(adopted) == 1 and forgotten == adopted
+
+
 def test_load_requires_a_download(npu):
     npu.enable()
     with pytest.raises(nb.NpuError, match = "not downloaded"):

@@ -22,7 +22,13 @@ from typing import Any, Iterator, Optional
 from core.inference.lemonade_server import LemonadeServer, LemonadeUnavailable
 from utils.hardware.npu import detect_amd_npu
 from utils.native_path_leases import child_env_without_native_path_secret
-from utils.process_lifetime import terminate_pid
+from utils.process_lifetime import (
+    adopt_pid,
+    child_popen_kwargs,
+    forget_pid,
+    spawn_on_lifetime_thread,
+    terminate_pid,
+)
 from utils.subprocess_compat import windows_hidden_subprocess_kwargs
 
 logger = logging.getLogger(__name__)
@@ -373,20 +379,25 @@ class LemonadeNpuBackend:
         if self._closing.is_set():
             return {"ready": False, "problems": ["Unsloth is shutting down."]}
         try:
-            # Popen, not run: shutdown() kills it instead of waiting out the timeout.
-            process = subprocess.Popen(
-                [str(binary), "validate", "--json"],
-                stdout = subprocess.PIPE,
-                stderr = subprocess.PIPE,
-                stdin = subprocess.DEVNULL,
-                text = True,
-                encoding = "utf-8",
-                errors = "replace",
-                env = env,
-                **windows_hidden_subprocess_kwargs(),
+            # Popen, not run: shutdown() kills it instead of waiting out the timeout. Spawned like
+            # lemond, so it also dies with a crashed Studio and is swept by the next start.
+            process = spawn_on_lifetime_thread(
+                lambda: subprocess.Popen(
+                    [str(binary), "validate", "--json"],
+                    stdout = subprocess.PIPE,
+                    stderr = subprocess.PIPE,
+                    stdin = subprocess.DEVNULL,
+                    text = True,
+                    encoding = "utf-8",
+                    errors = "replace",
+                    env = env,
+                    **windows_hidden_subprocess_kwargs(),
+                    **child_popen_kwargs(),
+                )
             )
         except OSError as exc:
             return {"ready": False, "problems": [f"flm validate could not run: {exc}"]}
+        adopt_pid(process.pid)
         self._validate_process = process
         if self._closing.is_set():
             _kill_tree(process)
@@ -398,6 +409,8 @@ class LemonadeNpuBackend:
             return {"ready": False, "problems": [f"flm validate could not run: {exc}"]}
         finally:
             self._validate_process = None
+            if process.poll() is not None:
+                forget_pid(process.pid)
         try:
             report = json.loads(stdout)
         except ValueError:
@@ -475,10 +488,14 @@ class LemonadeNpuBackend:
         return model
 
     def download(self, model_id: str) -> Iterator[dict[str, Any]]:
-        """Pull a model, yielding lemond's progress events, then a final ``complete`` one."""
+        """Pull a model, yielding lemond's progress events, then a final ``complete`` one.
+
+        Raises unless lemond sent its ``complete`` event: a stream cut short leaves a partial model.
+        """
         model = self._model(model_id)
         server = self._ensure_running()
         event = "progress"
+        completed = False
         with server.stream(
             "POST", "/v1/pull", json_body = {"model_name": model.id, "stream": True}
         ) as response:
@@ -489,10 +506,12 @@ class LemonadeNpuBackend:
                 if line.startswith("event:"):
                     event = line[len("event:") :].strip() or "progress"
                     continue
-                if not line.startswith("data:"):
+                # A plain JSON body instead of a stream: lemond's HTTP 200 error answer.
+                raw = line[len("data:") :] if line.startswith("data:") else line
+                if not line.startswith("data:") and not line.startswith("{"):
                     continue
                 try:
-                    data = json.loads(line[len("data:") :].strip())
+                    data = json.loads(raw.strip())
                 except ValueError:
                     continue
                 if event == "error" or (isinstance(data, dict) and data.get("error")):
@@ -500,9 +519,14 @@ class LemonadeNpuBackend:
                     if isinstance(message, dict):
                         message = message.get("message")
                     raise NpuError(f"Downloading {model.id} failed: {message}")
+                if isinstance(data, dict) and data.get("status") == "error":
+                    raise NpuError(f"Downloading {model.id} failed: {data.get('message') or data}")
+                completed = completed or event == "complete"
                 if isinstance(data, dict):
                     yield {"event": event, **data}
                 event = "progress"
+        if not completed:
+            raise NpuError(f"Downloading {model.id} ended before it completed.")
         yield {"event": "complete", "model": model.id, "percent": 100}
 
     def delete(self, model_id: str) -> None:

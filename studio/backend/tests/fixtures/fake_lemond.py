@@ -152,12 +152,20 @@ def main() -> None:
                 flm.chmod(0o755)
                 self._send(200, {"status": "success", "recipe": "flm", "backend": "npu"})
             elif self.path == "/v1/pull":
-                downloaded.add(name)
-                events = (
-                    'data: {"file":"model.q4nx","file_index":2,"total_files":4,"percent":40,"bytes_downloaded":4,"bytes_total":10}\n\n'
-                    "event: complete\n"
-                    'data: {"file":"","file_index":4,"total_files":4,"percent":100}\n\n'
-                ).encode()
+                pull = os.environ.get("FAKE_LEMOND_PULL")
+                if pull == "error":
+                    self._send(200, {"status": "error", "message": "disk full"})
+                    return
+                progress = 'data: {"file":"model.q4nx","file_index":2,"total_files":4,"percent":40,"bytes_downloaded":4,"bytes_total":10}\n\n'
+                if pull == "truncated":
+                    # The connection drops before lemond's complete event.
+                    events = progress.encode()
+                else:
+                    downloaded.add(name)
+                    events = (
+                        progress + "event: complete\n"
+                        'data: {"file":"","file_index":4,"total_files":4,"percent":100}\n\n'
+                    ).encode()
                 self.send_response(200)
                 self.send_header("Content-Type", "text/event-stream")
                 self.send_header("Content-Length", str(len(events)))
