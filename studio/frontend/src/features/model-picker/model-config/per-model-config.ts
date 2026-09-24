@@ -21,8 +21,7 @@ export interface PerModelConfig {
   customContextLength: number | null;
   maxSeqLength: number | null;
   kvCacheDtype: string | null;
-  /** MLX KV cache quantization width. Optional so older blobs still parse. */
-  mlxKvBits?: number | null;
+  mlxKvQuant?: MlxKvQuant | null;
   speculativeType: string | null;
   specDraftNMax: number | null;
   /** KV cache dtype for the DRAFT context, sized and quantized independently of kvCacheDtype.
@@ -62,7 +61,7 @@ export const DEFAULT_PER_MODEL_CONFIG: PerModelConfig = {
   customContextLength: null,
   maxSeqLength: null,
   kvCacheDtype: null,
-  mlxKvBits: null,
+  mlxKvQuant: null,
   speculativeType: null,
   specDraftNMax: null,
   specDraftCacheDtype: null,
@@ -259,8 +258,37 @@ export const KV_CACHE_DTYPES = [
   "f32",
 ] as const;
 
-// Every width mx.quantize supports. By bit width, not a dtype name, hence separate from KV_CACHE_DTYPES.
-export const MLX_KV_BITS: readonly number[] = [8, 6, 5, 4, 3, 2];
+// Widths, not dtypes; TurboQuant's repeat mx.quantize's numbers, so the scheme rides in the value.
+export const MLX_KV_QUANTS = [
+  "8",
+  "6",
+  "5",
+  "4",
+  "3",
+  "2",
+  "tq-4",
+  "tq-3.5",
+  "tq-3",
+  "tq-2",
+] as const;
+export type MlxKvQuant = (typeof MLX_KV_QUANTS)[number];
+const VALID_MLX_KV_QUANTS = new Set<string>(MLX_KV_QUANTS);
+
+/** A bare width only ever meant mx.quantize; null is how a saved Auto spells itself. */
+export function normalizeMlxKvQuant(
+  value: unknown,
+  supersededBits?: unknown,
+): MlxKvQuant | null {
+  if (typeof value === "string") {
+    // Trimmed and lower-cased to match the backend's reader, or one row means two settings.
+    const named = value.trim().toLowerCase();
+    return VALID_MLX_KV_QUANTS.has(named) ? (named as MlxKvQuant) : null;
+  }
+  if (value !== undefined) return null;
+  if (typeof supersededBits !== "number" || !Number.isFinite(supersededBits)) return null;
+  const name = String(supersededBits);
+  return VALID_MLX_KV_QUANTS.has(name) ? (name as MlxKvQuant) : null;
+}
 const VALID_KV_CACHE_DTYPES = new Set<string>(KV_CACHE_DTYPES);
 
 // llama-server's --load-mode enum in --help order. "auto" is the default: the UI shows it, storage keeps null and
@@ -301,9 +329,10 @@ const LEGACY_STORAGE_KEY = "unsloth_load_settings";
 const LEGACY_MIGRATION_FLAG = "unsloth_model_configs_migrated";
 // would normalize the unknown field straight back out of the record.
 // v2 added nBatch/nUbatch, v3 llamaExtraArgs, v4 disableVision, v5 the llama-server tuning group
-// (loadMode / specDraftCacheDtype / ctxCheckpoints / cacheRam), v6 the reasoning budget pair; a
-// client from before any of them
-const STORAGE_SCHEMA_VERSION = 6;
+// (loadMode / specDraftCacheDtype / ctxCheckpoints / cacheRam), v6 the reasoning budget pair,
+// v7 mlxKvQuant
+const STORAGE_SCHEMA_VERSION = 7;
+const PRE_MLX_KV_QUANT_SCHEMA_VERSION = 6;
 const PRE_REASONING_BUDGET_SCHEMA_VERSION = 5;
 const PRE_SERVER_TUNING_SCHEMA_VERSION = 4;
 const PRE_VISION_SCHEMA_VERSION = 3;
@@ -336,14 +365,14 @@ type StoredPerModelConfig = PerModelConfig & {
   version: number;
 };
 type StoredMap = Record<string, PerModelConfig | StoredPerModelConfig>;
-type RawConfig = Partial<PerModelConfig> & { version?: unknown };
+type RawConfig = Partial<PerModelConfig> & { version?: unknown; mlxKvBits?: unknown };
 
 const STORED_CONFIG_FIELDS = new Set([
   "version",
   "customContextLength",
   "maxSeqLength",
   "kvCacheDtype",
-  "mlxKvBits",
+  "mlxKvQuant",
   "speculativeType",
   "specDraftNMax",
   "specDraftCacheDtype",
@@ -939,11 +968,7 @@ function normalizeV1(partial: RawConfig): PerModelConfig {
         ? Math.max(CONTEXT_LENGTH_MIN, Math.floor(partial.customContextLength))
         : null,
     maxSeqLength: normalizeMaxSeqLength(partial.maxSeqLength),
-    mlxKvBits:
-      typeof partial.mlxKvBits === "number" &&
-      MLX_KV_BITS.includes(partial.mlxKvBits)
-        ? partial.mlxKvBits
-        : null,
+    mlxKvQuant: normalizeMlxKvQuant(partial.mlxKvQuant, partial.mlxKvBits),
     kvCacheDtype:
       typeof partial.kvCacheDtype === "string" &&
       VALID_KV_CACHE_DTYPES.has(partial.kvCacheDtype)
@@ -1026,10 +1051,14 @@ function normalize(raw: unknown): PerModelConfig {
  *  client reconstructs anyway, and stamping every record v4 would put the whole store out of reach.
  *  The tuning group and the reasoning pair follow the same rule. */
 function storedSchemaVersion(normalized: PerModelConfig): number {
+  // A width the superseded mlxKvBits could also spell still stamps v7: that spelling is gone.
+  if (normalized.mlxKvQuant != null) {
+    return STORAGE_SCHEMA_VERSION;
+  }
   const hasReasoningBudget =
     normalized.reasoningBudget !== -1 || normalized.reasoningBudgetMessage !== "";
   if (hasReasoningBudget) {
-    return STORAGE_SCHEMA_VERSION;
+    return PRE_MLX_KV_QUANT_SCHEMA_VERSION;
   }
   const hasServerTuning =
     normalized.loadMode != null ||
@@ -1197,7 +1226,7 @@ export function isDefaultConfig(config: PerModelConfig): boolean {
     config.customContextLength == null &&
     config.maxSeqLength == null &&
     (config.kvCacheDtype ?? null) === DEFAULT_PER_MODEL_CONFIG.kvCacheDtype &&
-    (config.mlxKvBits ?? null) === DEFAULT_PER_MODEL_CONFIG.mlxKvBits &&
+    (config.mlxKvQuant ?? null) === DEFAULT_PER_MODEL_CONFIG.mlxKvQuant &&
     config.speculativeType === DEFAULT_PER_MODEL_CONFIG.speculativeType &&
     config.specDraftNMax == null &&
     config.nParallel == null &&

@@ -408,6 +408,10 @@ class ChatPresetLoadConfig(BaseModel):
     customContextLength: Optional[int] = Field(default = None, gt = 0)
     maxSeqLength: Optional[float] = None
     kvCacheDtype: Optional[str] = None
+    mlxKvQuant: Optional[
+        Literal["auto", "8", "6", "5", "4", "3", "2", "tq-4", "tq-3.5", "tq-3", "tq-2"]
+    ] = None
+    # Declared only because extra="forbid" would 400 the whole save for a client still sending it.
     mlxKvBits: Optional[Literal[8, 6, 5, 4, 3, 2]] = None
     speculativeType: Optional[str] = None
     specDraftNMax: Optional[int] = Field(default = None, ge = 1, le = 16)

@@ -365,8 +365,8 @@ CTX_CHECKPOINTS_MAX = 256
 CACHE_RAM_MIN_MIB = -1
 CACHE_RAM_MAX_MIB = 1024 * 1024
 VALID_GPU_MEMORY_MODES = frozenset({"auto", "manual"})
-# Mirrors MLX_KV_BITS_CHOICES in core/inference/mlx_inference.py; a set, not a range.
-VALID_MLX_KV_BITS = frozenset({8, 6, 5, 4, 3, 2})
+# Mirrors MLX_KV_QUANT_CHOICES in core/inference/mlx_inference.py; a set, not a range.
+VALID_MLX_KV_QUANT = frozenset({"8", "6", "5", "4", "3", "2", "tq-4", "tq-3.5", "tq-3", "tq-2"})
 
 # Mirrors PARALLEL_MIN/MAX in llama_server_args.py.
 PARALLEL_SLOTS_MIN = 1
@@ -384,6 +384,18 @@ MAX_GPU_ID = 1024
 # Which index space a stored gpu_ids belongs to: the same integers are ggml Vulkan ordinals under a Vulkan build and physical device ids elsewhere, so the namespace travels with the ids or a pin addresses another card. Mirrors GpuIndexKind in hooks/gpu-selection.ts, legacy rule included: an absent kind is "physical".
 VALID_GPU_INDEX_KINDS = frozenset({"physical", "vulkan"})
 LEGACY_GPU_INDEX_KIND = "physical"
+
+
+def _mlx_kv_quant_of(entry: dict[str, Any]) -> Optional[str]:
+    """This entry's cache quantization, reading the width it superseded when that is all it
+    holds. Only an entry omitting the field predates the setting."""
+    if "mlx_kv_quant" in entry:
+        return _clean_str(entry["mlx_kv_quant"], VALID_MLX_KV_QUANT)
+    if entry.get("mlx_kv_bits") is None:
+        return None
+    from core.inference.mlx_inference import encode_mlx_kv_quant
+
+    return _clean_str(encode_mlx_kv_quant(entry["mlx_kv_bits"]), VALID_MLX_KV_QUANT)
 
 
 def _clean_str(value: Any, allowed: frozenset[str]) -> Optional[str]:
@@ -428,10 +440,9 @@ def normalize_model_override(
     if kv_cache_dtype:
         entry["kv_cache_dtype"] = kv_cache_dtype
 
-    # MLX quantizes by bit width, not by a llama.cpp dtype name, so it is its own field.
-    mlx_kv_bits = payload.get("mlx_kv_bits")
-    if not isinstance(mlx_kv_bits, bool) and mlx_kv_bits in VALID_MLX_KV_BITS:
-        entry["mlx_kv_bits"] = int(mlx_kv_bits)
+    mlx_kv_quant = _mlx_kv_quant_of(payload)
+    if mlx_kv_quant:
+        entry["mlx_kv_quant"] = mlx_kv_quant
 
     speculative_type = _clean_str(payload.get("speculative_type"), VALID_SPECULATIVE_TYPES)
     if speculative_type:
@@ -581,7 +592,6 @@ def model_override_load_kwargs(override: dict[str, Any], *, is_gguf: bool) -> di
     for source, target in (
         ("llama_extra_args", "llama_extra_args"),
         ("kv_cache_dtype", "cache_type_kv"),
-        ("mlx_kv_bits", "mlx_kv_bits"),
         ("speculative_type", "speculative_type"),
         ("spec_draft_n_max", "spec_draft_n_max"),
         ("reasoning_budget", "reasoning_budget"),
@@ -592,6 +602,10 @@ def model_override_load_kwargs(override: dict[str, Any], *, is_gguf: bool) -> di
     ):
         if override.get(source) is not None:
             kwargs[target] = override[source]
+
+    mlx_kv_quant = _mlx_kv_quant_of(override)
+    if mlx_kv_quant:
+        kwargs["mlx_kv_quant"] = mlx_kv_quant
 
     if is_gguf:
         if override.get("n_parallel") is not None:
@@ -879,8 +893,12 @@ def set_model_override(
         model_id.strip(),
         entry or None,
         fill_absent_fields = fill_absent_fields,
-        # The pin and its index space are one value: filling the qualifier onto ids this browser did not write relabels them.
-        coupled_fields = (("gpu_ids", "gpu_index_kind"),),
+        coupled_fields = (
+            # The pin and its index space are one value: filling the qualifier onto ids this browser did not write relabels them.
+            ("gpu_ids", "gpu_index_kind"),
+            # Two names for one setting: a row holding either is already set.
+            ("mlx_kv_quant", "mlx_kv_bits"),
+        ),
     )
     _invalidate(MODEL_OVERRIDES_SETTING_KEY)
     return entry

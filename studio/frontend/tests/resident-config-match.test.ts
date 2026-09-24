@@ -26,7 +26,7 @@ const DEFAULT_ISH = {
   customContextLength: null,
   maxSeqLength: null,
   kvCacheDtype: null,
-  mlxKvBits: null,
+  mlxKvQuant: null,
   speculativeType: null,
   specDraftNMax: null,
   nParallel: null,
@@ -43,7 +43,7 @@ const BLANK = {
   customContextLength: null,
   maxSeqLength: null,
   kvCacheDtype: null,
-  mlxKvBits: null,
+  mlxKvQuant: null,
   speculativeType: null,
   specDraftNMax: null,
   nParallel: null,
@@ -143,10 +143,11 @@ const FIELDS: {
     differs: { cache_type_kv: "f16" },
   },
   {
-    name: "MLX KV bits",
-    config: { mlxKvBits: 4 },
-    same: { mlx_kv_bits_requested: 4 },
-    differs: { mlx_kv_bits_requested: 8 },
+    name: "MLX KV quantization",
+    config: { mlxKvQuant: "4" },
+    same: { mlx_kv_quant_requested: "4" },
+    differs: { mlx_kv_quant_requested: "tq-4" },
+
   },
   {
     name: "speculative mode",
@@ -244,6 +245,11 @@ for (const field of FIELDS) {
     assert.equal(matches({}, { ...BLANK, ...field.config }), false);
   });
 }
+
+test("Auto adopts a resident model the backend reported as Auto", () => {
+  assert.equal(matches({ mlx_kv_quant_requested: "auto" }, { ...BLANK, mlxKvQuant: null }), true);
+  assert.equal(matches({ mlx_kv_quant_requested: "8" }, { ...BLANK, mlxKvQuant: null }), false);
+});
 
 /** Ordering is the backend's to choose: it narrows and reorders placement at fit time. */
 test("GPU placement compares as an order, not as a set", () => {
@@ -728,7 +734,7 @@ test("a non-GGUF resident is not judged on a GGUF invocation field", () => {
     true,
   );
   assert.equal(
-    matches({ ...DEFAULTS, is_gguf: false, mlx_kv_bits_requested: 4 }, BLANK),
+    matches({ ...DEFAULTS, is_gguf: false, mlx_kv_quant_requested: "4" }, BLANK),
     false,
   );
   assert.equal(
@@ -1421,7 +1427,7 @@ test("unset nullable settings ask for the default, not for the resident value", 
     ...DEFAULTS,
     requested_context_length: 8192,
     cache_type_kv: "q8_0",
-    mlx_kv_bits_requested: 4,
+    mlx_kv_quant_requested: "4",
     requested_parallel_slots: 4,
     requested_n_batch: 2048,
     requested_n_ubatch: 512,
@@ -1432,7 +1438,7 @@ test("unset nullable settings ask for the default, not for the resident value", 
   for (const [key, value] of Object.entries({
     requested_context_length: 8192,
     cache_type_kv: "q8_0",
-    mlx_kv_bits_requested: 4,
+    mlx_kv_quant_requested: "4",
     requested_parallel_slots: 4,
     requested_n_batch: 2048,
     requested_n_ubatch: 512,
