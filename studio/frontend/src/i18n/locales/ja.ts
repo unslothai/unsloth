@@ -303,10 +303,6 @@ export const ja = {
     library: {
       title: "ライブラリ",
       layoutSection: "レイアウト",
-      defaultView: "デフォルト表示",
-      defaultViewDescription: "ライブラリを開いたときのファイルの表示方法。",
-      grid: "グリッド",
-      list: "リスト",
       cardSize: "カードのサイズ",
       cardSizeDescription: "1行に並ぶカードの数。",
       small: "小",

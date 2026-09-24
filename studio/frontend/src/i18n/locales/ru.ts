@@ -303,10 +303,6 @@ export const ru = {
     library: {
       title: "Библиотека",
       layoutSection: "Вид",
-      defaultView: "Вид по умолчанию",
-      defaultViewDescription: "Как показываются файлы при открытии Библиотеки.",
-      grid: "Сетка",
-      list: "Список",
       cardSize: "Размер карточек",
       cardSizeDescription: "Сколько карточек помещается в ряд.",
       small: "Маленький",

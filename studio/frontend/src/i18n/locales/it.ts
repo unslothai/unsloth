@@ -269,10 +269,6 @@ export const it = {
     library: {
       title: "Libreria",
       layoutSection: "Layout",
-      defaultView: "Vista predefinita",
-      defaultViewDescription: "Come vengono mostrati i file quando apri la Libreria.",
-      grid: "Griglia",
-      list: "Elenco",
       cardSize: "Dimensione schede",
       cardSizeDescription: "Quante schede entrano in una riga.",
       small: "Piccola",

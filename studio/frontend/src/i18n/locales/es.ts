@@ -304,10 +304,6 @@ export const es = {
     library: {
       title: "Biblioteca",
       layoutSection: "Diseño",
-      defaultView: "Vista predeterminada",
-      defaultViewDescription: "Cómo se muestran los archivos al abrir la Biblioteca.",
-      grid: "Cuadrícula",
-      list: "Lista",
       cardSize: "Tamaño de tarjeta",
       cardSizeDescription: "Cuántas tarjetas caben en una fila.",
       small: "Pequeño",

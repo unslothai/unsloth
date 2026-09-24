@@ -301,10 +301,6 @@ export const ar = {
     library: {
       title: "المكتبة",
       layoutSection: "التخطيط",
-      defaultView: "العرض الافتراضي",
-      defaultViewDescription: "طريقة عرض الملفات عند فتح المكتبة.",
-      grid: "شبكة",
-      list: "قائمة",
       cardSize: "حجم البطاقة",
       cardSizeDescription: "عدد البطاقات في الصف الواحد.",
       small: "صغير",

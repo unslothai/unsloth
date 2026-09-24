@@ -301,10 +301,6 @@ export const ko = {
     library: {
       title: "라이브러리",
       layoutSection: "레이아웃",
-      defaultView: "기본 보기",
-      defaultViewDescription: "라이브러리를 열 때 파일이 표시되는 방식입니다.",
-      grid: "그리드",
-      list: "목록",
       cardSize: "카드 크기",
       cardSizeDescription: "한 줄에 들어가는 카드 수입니다.",
       small: "작게",

@@ -17,4 +17,4 @@ export {
   type LibraryStartTab,
   useLibrarySettingsStore,
 } from "./settings-store";
-export { LIBRARY_VIEW_STORAGE_KEY, type LibraryView, useLibraryViewStore } from "./store";
+export { LIBRARY_VIEW_STORAGE_KEY } from "./store";

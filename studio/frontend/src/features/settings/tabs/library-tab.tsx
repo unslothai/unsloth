@@ -14,7 +14,6 @@ import {
   type LibrarySettings,
   SUGGESTED_LIMITS,
   useLibrarySettingsStore,
-  useLibraryViewStore,
 } from "@/features/library";
 import { type TranslationKey, useT } from "@/i18n";
 import { toast } from "@/lib/toast";
@@ -87,8 +86,6 @@ function ChoiceSelect({
 export function LibraryTab() {
   const t = useT();
   const settings = useLibrarySettingsStore();
-  const view = useLibraryViewStore((s) => s.view);
-  const setView = useLibraryViewStore((s) => s.setView);
 
   const choice = <K extends ChoiceKey>(key: K, labelKey: TranslationKey, descriptionKey: TranslationKey) => (
     <SettingsRow label={t(labelKey)} description={t(descriptionKey)}>
@@ -118,20 +115,6 @@ export function LibraryTab() {
       </header>
 
       <SettingsSection title={t("settings.library.layoutSection")}>
-        <SettingsRow
-          label={t("settings.library.defaultView")}
-          description={t("settings.library.defaultViewDescription")}
-        >
-          <ChoiceSelect
-            label={t("settings.library.defaultView")}
-            value={view}
-            options={[
-              ["grid", t("settings.library.grid")],
-              ["list", t("settings.library.list")],
-            ]}
-            onChange={(value) => setView(value === "list" ? "list" : "grid")}
-          />
-        </SettingsRow>
         {choice("cardSize", "settings.library.cardSize", "settings.library.cardSizeDescription")}
         {choice("imageLayout", "settings.library.imageLayout", "settings.library.imageLayoutDescription")}
         {toggle("showCardDates", "settings.library.showCardDates", "settings.library.showCardDatesDescription")}
@@ -176,7 +159,6 @@ export function LibraryTab() {
             size="sm"
             onClick={() => {
               settings.reset();
-              setView("grid");
               toast.success(t("settings.library.resetDone"));
             }}
           >

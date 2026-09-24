@@ -304,10 +304,6 @@ export const hi = {
     library: {
       title: "लाइब्रेरी",
       layoutSection: "लेआउट",
-      defaultView: "डिफ़ॉल्ट व्यू",
-      defaultViewDescription: "लाइब्रेरी खोलने पर फ़ाइलें कैसे दिखें।",
-      grid: "ग्रिड",
-      list: "सूची",
       cardSize: "कार्ड का आकार",
       cardSizeDescription: "एक पंक्ति में कितने कार्ड आएं।",
       small: "छोटा",

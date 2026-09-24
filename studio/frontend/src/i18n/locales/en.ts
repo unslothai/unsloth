@@ -306,10 +306,6 @@ export const en = {
     library: {
       title: "Library",
       layoutSection: "Layout",
-      defaultView: "Default view",
-      defaultViewDescription: "How files are shown when you open the Library.",
-      grid: "Grid",
-      list: "List",
       cardSize: "Card size",
       cardSizeDescription: "How many cards fit in a row.",
       small: "Small",

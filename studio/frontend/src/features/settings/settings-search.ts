@@ -128,7 +128,6 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
   ],
   // Chat data management moved to the Data tab; keep these rows findable there.
   library: [
-    "settings.library.defaultView",
     "settings.library.cardSize",
     "settings.library.imageLayout",
     "settings.library.showCardDates",

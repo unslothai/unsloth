@@ -305,10 +305,6 @@ export const de = {
     library: {
       title: "Bibliothek",
       layoutSection: "Layout",
-      defaultView: "Standardansicht",
-      defaultViewDescription: "So werden Dateien beim Öffnen der Bibliothek angezeigt.",
-      grid: "Raster",
-      list: "Liste",
       cardSize: "Kartengröße",
       cardSizeDescription: "Wie viele Karten in eine Reihe passen.",
       small: "Klein",

@@ -303,10 +303,6 @@ export const ptBR = {
     library: {
       title: "Biblioteca",
       layoutSection: "Layout",
-      defaultView: "Visualização padrão",
-      defaultViewDescription: "Como os arquivos aparecem quando você abre a Biblioteca.",
-      grid: "Grade",
-      list: "Lista",
       cardSize: "Tamanho do cartão",
       cardSizeDescription: "Quantos cartões cabem em uma linha.",
       small: "Pequeno",

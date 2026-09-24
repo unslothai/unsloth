@@ -299,10 +299,6 @@ export const zhCN = {
     library: {
       title: "资料库",
       layoutSection: "布局",
-      defaultView: "默认视图",
-      defaultViewDescription: "打开资料库时文件的显示方式。",
-      grid: "网格",
-      list: "列表",
       cardSize: "卡片大小",
       cardSizeDescription: "每行显示的卡片数量。",
       small: "小",
