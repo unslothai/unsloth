@@ -672,6 +672,36 @@ def test_failed_managed_stop_blocks_training(monkeypatch):
     assert backend.active_model_name == "model"
 
 
+def test_failed_managed_stop_keeps_the_chat_gpu_claim_on_unload(monkeypatch):
+    import asyncio
+    from types import SimpleNamespace
+    from fastapi import HTTPException
+    from core.inference.orchestrator import InferenceOrchestrator
+    from models.inference import UnloadRequest
+    import routes.inference as inference_route
+
+    backend = InferenceOrchestrator.__new__(InferenceOrchestrator)
+    backend._subprocess_shutdown_lock = threading.RLock()
+    backend.active_model_name = "model"
+    backend.models = {"model": {"engine": "vllm"}}
+    backend.loading_models = set()
+    backend._managed_engine = SimpleNamespace(stop = lambda: False)
+    released = []
+    monkeypatch.setattr(inference_route, "get_inference_backend", lambda: backend)
+    monkeypatch.setattr(
+        inference_route,
+        "get_llama_cpp_backend",
+        lambda: SimpleNamespace(is_active = False, is_loaded = False, model_identifier = None),
+    )
+    monkeypatch.setattr(inference_route, "release_chat_gpu_claim", lambda: released.append(True))
+
+    with pytest.raises(HTTPException) as raised:
+        asyncio.run(inference_route._unload_model_impl(UnloadRequest(model_path = "model"), "tester"))
+    assert raised.value.status_code == 500
+    assert released == []
+    assert backend.active_model_name == "model"
+
+
 def test_dead_managed_server_is_reaped_without_clearing_live_server(monkeypatch):
     from types import SimpleNamespace
     from core.inference.orchestrator import InferenceOrchestrator
