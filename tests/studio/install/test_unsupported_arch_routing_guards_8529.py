@@ -146,9 +146,13 @@ class TestPythonIndexResolversAreAskedDirectly:
         assert url is not None, f"{arch} lost its wheel index"
         if is_windows and arch in stack_mod._WINDOWS_MULTIARCH_GFX:
             # #11815: every Windows RDNA arch takes the multi-arch index by default.
-            assert url.endswith("/whl-multi-arch/"), f"{arch} routed to {url!r}, expected the multi-arch index"
+            assert url.endswith(
+                "/whl-multi-arch/"
+            ), f"{arch} routed to {url!r}, expected the multi-arch index"
         else:
-            assert url.endswith(f"/{family}/"), f"{arch} routed to {url!r}, expected the {family} index"
+            assert url.endswith(
+                f"/{family}/"
+            ), f"{arch} routed to {url!r}, expected the {family} index"
 
     @pytest.mark.parametrize("arch", _UNSUPPORTED_ARCHES)
     def test_no_unsupported_arch_is_a_key_of_the_family_map(self, arch):

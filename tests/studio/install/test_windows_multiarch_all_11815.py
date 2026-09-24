@@ -24,7 +24,9 @@ _SETUP_PS1 = PACKAGE_ROOT / "studio" / "setup.ps1"
 
 
 def _load_stack_module():
-    spec = importlib.util.spec_from_file_location("studio_install_python_stack_multiarch_all", _STACK_PY)
+    spec = importlib.util.spec_from_file_location(
+        "studio_install_python_stack_multiarch_all", _STACK_PY
+    )
     assert spec is not None and spec.loader is not None
     mod = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = mod
@@ -35,11 +37,25 @@ def _load_stack_module():
 stack_mod = _load_stack_module()
 
 _EXPECTED = {
-    "gfx1010", "gfx1011", "gfx1012",
-    "gfx1030", "gfx1031", "gfx1032", "gfx1034", "gfx1035", "gfx1036",
-    "gfx1100", "gfx1101", "gfx1102", "gfx1103",
-    "gfx1150", "gfx1151", "gfx1152", "gfx1153",
-    "gfx1200", "gfx1201",
+    "gfx1010",
+    "gfx1011",
+    "gfx1012",
+    "gfx1030",
+    "gfx1031",
+    "gfx1032",
+    "gfx1034",
+    "gfx1035",
+    "gfx1036",
+    "gfx1100",
+    "gfx1101",
+    "gfx1102",
+    "gfx1103",
+    "gfx1150",
+    "gfx1151",
+    "gfx1152",
+    "gfx1153",
+    "gfx1200",
+    "gfx1201",
 }
 _MULTIARCH = "https://repo.amd.com/rocm/whl-multi-arch/"
 
@@ -49,7 +65,9 @@ def stock(monkeypatch):
     monkeypatch.delenv("UNSLOTH_ROCM_WINDOWS_MIRROR", raising = False)
     monkeypatch.delenv("UNSLOTH_ROCM_WINDOWS_MULTIARCH_MIRROR", raising = False)
     monkeypatch.setattr(stack_mod, "_ROCM_WINDOWS_INDEX_BASE", "https://repo.amd.com/rocm/whl")
-    monkeypatch.setattr(stack_mod, "_ROCM_WINDOWS_MULTIARCH_INDEX_BASE", "https://repo.amd.com/rocm/whl-multi-arch")
+    monkeypatch.setattr(
+        stack_mod, "_ROCM_WINDOWS_MULTIARCH_INDEX_BASE", "https://repo.amd.com/rocm/whl-multi-arch"
+    )
     return monkeypatch
 
 
@@ -76,9 +94,18 @@ class TestDefaultRoute:
         )
 
     def test_van_gogh_and_cdna_keep_their_family(self, stock):
-        assert stack_mod._windows_rocm_index_url("gfx1033") == "https://repo.amd.com/rocm/whl/gfx103X-all/"
-        assert stack_mod._windows_rocm_index_url("gfx90a") == "https://repo.amd.com/rocm/whl/gfx90a/"
-        assert stack_mod._windows_rocm_torch_pkg_specs("gfx1033") == ("torch", "torchvision", "torchaudio")
+        assert (
+            stack_mod._windows_rocm_index_url("gfx1033")
+            == "https://repo.amd.com/rocm/whl/gfx103X-all/"
+        )
+        assert (
+            stack_mod._windows_rocm_index_url("gfx90a") == "https://repo.amd.com/rocm/whl/gfx90a/"
+        )
+        assert stack_mod._windows_rocm_torch_pkg_specs("gfx1033") == (
+            "torch",
+            "torchvision",
+            "torchaudio",
+        )
 
     def test_unknown_stays_none(self, stock):
         assert stack_mod._windows_rocm_index_url("gfx9999") is None
@@ -89,10 +116,23 @@ class TestMirrors:
     def test_a_family_mirror_keeps_the_family_route_where_one_exists(self, stock):
         stock.setenv("UNSLOTH_ROCM_WINDOWS_MIRROR", "https://mirror.example/whl")
         stock.setattr(stack_mod, "_ROCM_WINDOWS_INDEX_BASE", "https://mirror.example/whl")
-        assert stack_mod._windows_rocm_index_url("gfx1034") == "https://mirror.example/whl/gfx103X-all/"
-        assert stack_mod._windows_rocm_torch_pkg_specs("gfx1034") == ("torch", "torchvision", "torchaudio")
-        assert stack_mod._windows_rocm_index_url("gfx1201") == "https://mirror.example/whl/gfx120X-all/"
-        assert stack_mod._windows_rocm_torch_pkg_specs("gfx1201") == stack_mod._WINDOWS_ROCM_TORCH_PKG_SPECS["gfx1201"]
+        assert (
+            stack_mod._windows_rocm_index_url("gfx1034")
+            == "https://mirror.example/whl/gfx103X-all/"
+        )
+        assert stack_mod._windows_rocm_torch_pkg_specs("gfx1034") == (
+            "torch",
+            "torchvision",
+            "torchaudio",
+        )
+        assert (
+            stack_mod._windows_rocm_index_url("gfx1201")
+            == "https://mirror.example/whl/gfx120X-all/"
+        )
+        assert (
+            stack_mod._windows_rocm_torch_pkg_specs("gfx1201")
+            == stack_mod._WINDOWS_ROCM_TORCH_PKG_SPECS["gfx1201"]
+        )
         # No family to fall back to: RDNA 1 and gfx1153 stay on the multi-arch index.
         assert stack_mod._windows_rocm_index_url("gfx1010") == _MULTIARCH
         assert stack_mod._windows_rocm_index_url("gfx1153") == _MULTIARCH
@@ -100,9 +140,15 @@ class TestMirrors:
     def test_a_multiarch_mirror_wins_over_a_family_mirror(self, stock):
         stock.setenv("UNSLOTH_ROCM_WINDOWS_MIRROR", "https://mirror.example/whl")
         stock.setattr(stack_mod, "_ROCM_WINDOWS_INDEX_BASE", "https://mirror.example/whl")
-        stock.setenv("UNSLOTH_ROCM_WINDOWS_MULTIARCH_MIRROR", "https://mirror.example/whl-multi-arch")
-        stock.setattr(stack_mod, "_ROCM_WINDOWS_MULTIARCH_INDEX_BASE", "https://mirror.example/whl-multi-arch")
-        assert stack_mod._windows_rocm_index_url("gfx1034") == "https://mirror.example/whl-multi-arch/"
+        stock.setenv(
+            "UNSLOTH_ROCM_WINDOWS_MULTIARCH_MIRROR", "https://mirror.example/whl-multi-arch"
+        )
+        stock.setattr(
+            stack_mod, "_ROCM_WINDOWS_MULTIARCH_INDEX_BASE", "https://mirror.example/whl-multi-arch"
+        )
+        assert (
+            stack_mod._windows_rocm_index_url("gfx1034") == "https://mirror.example/whl-multi-arch/"
+        )
 
     def test_a_patched_family_base_counts_as_a_family_mirror(self, stock):
         """Tests and callers that set _ROCM_WINDOWS_INDEX_BASE directly expect the family
@@ -126,7 +172,10 @@ class TestPowerShellAgrees:
     @pytest.mark.parametrize("path", [_INSTALL_PS1, _SETUP_PS1], ids = lambda p: p.name)
     def test_family_mirror_rule_is_mirrored(self, path):
         src = path.read_text(encoding = "utf-8")
-        assert "$_familyMirrorPinned = [bool]($env:UNSLOTH_ROCM_WINDOWS_MIRROR) -and -not [bool]($env:UNSLOTH_ROCM_WINDOWS_MULTIARCH_MIRROR)" in src
+        assert (
+            "$_familyMirrorPinned = [bool]($env:UNSLOTH_ROCM_WINDOWS_MIRROR) -and -not [bool]($env:UNSLOTH_ROCM_WINDOWS_MULTIARCH_MIRROR)"
+            in src
+        )
         assert "-and -not ($archFamily -and $_familyMirrorPinned)" in src
         assert "is RDNA 1 --" not in src
 

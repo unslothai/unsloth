@@ -4304,7 +4304,13 @@ class TestWindowsRocmIndexUrl:
 
     @pytest.mark.parametrize(
         "gfx,leaf",
-        [("gfx1200", "gfx120X-all"), ("gfx1201", "gfx120X-all"), ("gfx1151", "gfx1151"), ("gfx1150", "gfx1150"), ("gfx1100", "gfx110X-all")],
+        [
+            ("gfx1200", "gfx120X-all"),
+            ("gfx1201", "gfx120X-all"),
+            ("gfx1151", "gfx1151"),
+            ("gfx1150", "gfx1150"),
+            ("gfx1100", "gfx110X-all"),
+        ],
     )
     def test_family_mirror_keeps_the_family_leaf(self, gfx, leaf, monkeypatch):
         monkeypatch.setenv("UNSLOTH_ROCM_WINDOWS_MIRROR", "https://mirror.example/whl")
@@ -4312,7 +4318,9 @@ class TestWindowsRocmIndexUrl:
         assert stack_mod._windows_rocm_index_url(gfx) == f"https://mirror.example/whl/{leaf}/"
 
     def test_cdna_keeps_its_family(self):
-        assert stack_mod._windows_rocm_index_url("gfx90a") == "https://repo.amd.com/rocm/whl/gfx90a/"
+        assert (
+            stack_mod._windows_rocm_index_url("gfx90a") == "https://repo.amd.com/rocm/whl/gfx90a/"
+        )
 
     def test_unknown_arch_returns_none(self):
         assert stack_mod._windows_rocm_index_url("gfx9999") is None

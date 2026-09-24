@@ -321,11 +321,25 @@ _ROCM_MULTIARCH_TORCHAUDIO_VERSION = "2.11.0"
 # is here because the pack exists, and only routes when hipInfo reports it.
 _WINDOWS_MULTIARCH_GFX: "frozenset[str]" = frozenset(
     {
-        "gfx1010", "gfx1011", "gfx1012",  # RDNA 1
-        "gfx1030", "gfx1031", "gfx1032", "gfx1034", "gfx1035", "gfx1036",  # RDNA 2
-        "gfx1100", "gfx1101", "gfx1102", "gfx1103",  # RDNA 3
-        "gfx1150", "gfx1151", "gfx1152", "gfx1153",  # RDNA 3.5
-        "gfx1200", "gfx1201",  # RDNA 4
+        "gfx1010",
+        "gfx1011",
+        "gfx1012",  # RDNA 1
+        "gfx1030",
+        "gfx1031",
+        "gfx1032",
+        "gfx1034",
+        "gfx1035",
+        "gfx1036",  # RDNA 2
+        "gfx1100",
+        "gfx1101",
+        "gfx1102",
+        "gfx1103",  # RDNA 3
+        "gfx1150",
+        "gfx1151",
+        "gfx1152",
+        "gfx1153",  # RDNA 3.5
+        "gfx1200",
+        "gfx1201",  # RDNA 4
     }
 )
 _ROCM_WINDOWS_FAMILY_INDEX_DEFAULT = "https://repo.amd.com/rocm/whl"
@@ -378,10 +392,14 @@ def _index_is_multiarch(index_url: "str | None") -> bool:
     if not index_url:
         return False
     _u = index_url.rstrip("/")
-    return _u == _ROCM_WINDOWS_MULTIARCH_INDEX_BASE.rstrip("/") or _u.split("?")[0].endswith("/whl-multi-arch")
+    return _u == _ROCM_WINDOWS_MULTIARCH_INDEX_BASE.rstrip("/") or _u.split("?")[0].endswith(
+        "/whl-multi-arch"
+    )
 
 
-def _windows_rocm_torch_pkg_specs_for(index_url: "str | None", gfx_arch: "str | None") -> tuple[str, str, str]:
+def _windows_rocm_torch_pkg_specs_for(
+    index_url: "str | None", gfx_arch: "str | None"
+) -> tuple[str, str, str]:
     """The trio for the index that was actually chosen: the pinned multi-arch trio on that
     index, the per-arch ABI pin where one exists, bare names otherwise. Derived from the URL
     so the specs can never name a build the index does not serve."""

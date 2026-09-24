@@ -81,8 +81,12 @@ class TestPackageSpecs:
         monkeypatch.delenv("UNSLOTH_ROCM_WINDOWS_MIRROR", raising = False)
         monkeypatch.delenv("UNSLOTH_ROCM_WINDOWS_MULTIARCH_MIRROR", raising = False)
         monkeypatch.setattr(stack_mod, "_ROCM_WINDOWS_INDEX_BASE", "https://repo.amd.com/rocm/whl")
-        assert stack_mod._windows_rocm_torch_pkg_specs("gfx1201") == stack_mod._windows_multiarch_torch_pkg_specs("gfx1201")
-        assert stack_mod._windows_rocm_torch_pkg_specs("gfx1034") == stack_mod._windows_multiarch_torch_pkg_specs("gfx1034")
+        assert stack_mod._windows_rocm_torch_pkg_specs(
+            "gfx1201"
+        ) == stack_mod._windows_multiarch_torch_pkg_specs("gfx1201")
+        assert stack_mod._windows_rocm_torch_pkg_specs(
+            "gfx1034"
+        ) == stack_mod._windows_multiarch_torch_pkg_specs("gfx1034")
         monkeypatch.setenv("UNSLOTH_ROCM_WINDOWS_MIRROR", "https://mirror.example/whl")
         assert (
             stack_mod._windows_rocm_torch_pkg_specs("gfx1201")
@@ -111,7 +115,8 @@ class TestIndexResolution:
     def test_rdna1_resolves_to_the_multiarch_index(self, arch, monkeypatch):
         monkeypatch.delenv("UNSLOTH_ROCM_WINDOWS_MULTIARCH_MIRROR", raising = False)
         assert (
-            stack_mod._windows_rocm_index_url(arch) == stack_mod._ROCM_WINDOWS_MULTIARCH_INDEX_BASE + "/"
+            stack_mod._windows_rocm_index_url(arch)
+            == stack_mod._ROCM_WINDOWS_MULTIARCH_INDEX_BASE + "/"
         )
 
     def test_the_default_base_is_amds_stable_multiarch_index(self):
