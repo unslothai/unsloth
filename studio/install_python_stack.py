@@ -5788,8 +5788,10 @@ def _ensure_rocm_torch() -> None:
             if _is_win_arm64_interpreter():
                 _rocm_trio = [_torch_pkg, _vision_pkg]
             if _is_windows_multiarch_gfx(gfx_arch):
+                # Not _bare_gfx(): this function binds a local of that name further down,
+                # which makes the module helper unreachable here (UnboundLocalError).
                 _safe_print(
-                    f"   {_bare_gfx(gfx_arch)} is RDNA 1: AMD's multi-arch index, pinned to "
+                    f"   {(gfx_arch or '').split(':')[0].lower()} is RDNA 1: AMD's multi-arch index, pinned to "
                     f"{_ROCM_MULTIARCH_TORCH_VERSION}+{_ROCM_MULTIARCH_TAG} (torch, torchvision, torchaudio)"
                 )
             # Nonfatal: a transient AMD-index failure must not abort the install.
