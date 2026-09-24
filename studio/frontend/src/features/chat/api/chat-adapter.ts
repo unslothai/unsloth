@@ -6227,6 +6227,7 @@ export function createOpenAIStreamAdapter(
               model: externalSelection.modelId,
               messages: outboundMessages,
               stream: true,
+              stream_options: { include_usage: true },
               // Never forwarded upstream (the proxy sends an explicit field list); the trailing assistant
               // turn is what asks a provider to continue.
               ...(continuation ? { continue_final_message: true } : {}),
