@@ -42,6 +42,31 @@ fn generic_failure_message(code: i32) -> String {
     )
 }
 
+/// Open rather than check existence: security software can block reads without removing the file.
+fn unavailable_script_message(script: &Path) -> Option<String> {
+    let err = std::fs::File::open(script).err()?;
+    let name = script
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| script.display().to_string());
+    warn!("[install] cannot open {}: {err}", script.display());
+    Some(format!(
+        "Installation failed: {name}, which Unsloth needs to finish setting up, is missing or \
+         cannot be read. Security software may have quarantined or blocked it. Restore it from \
+         quarantine or reinstall Unsloth, then try again."
+    ))
+}
+
+/// Recheck for quarantine during launch, but prefer a more specific AMSI error.
+fn failure_message(context: &InstallFailureContext, code: i32, script: &Path) -> String {
+    if context.security_block.is_none() {
+        if let Some(message) = unavailable_script_message(script) {
+            return message;
+        }
+    }
+    context.message(code)
+}
+
 /// PowerShell hands the whole top-level script block to AMSI while compiling it, so a security
 /// product's verdict arrives as a parse error over the entire file before the installer's first
 /// line runs: no `[TAURI:ERROR]` marker, no phase log, just an unexplained stderr tail. Match the
@@ -878,6 +903,14 @@ fn run_install_with_event_mode(
         "meta",
         &format!("Using script: {}", script.display()),
     );
+    if let Some(msg) = unavailable_script_message(&script) {
+        diagnostics::finish_attempt(&diagnostics, &attempt, None, false, Some(msg.clone()));
+        clear_current_attempt(&state);
+        if event_mode.emit_terminal_events() {
+            emit_failed(&app, &msg);
+        }
+        return Err(msg);
+    }
     emit_mode_progress(
         &app,
         event_mode,
@@ -953,7 +986,7 @@ fn run_install_with_event_mode(
             } else {
                 let msg = failure_context
                     .lock()
-                    .map(|context| context.message(code))
+                    .map(|context| failure_message(&context, code, &script))
                     .unwrap_or_else(|_| generic_failure_message(code));
                 diagnostics::finish_attempt(
                     &diagnostics,
@@ -1533,6 +1566,91 @@ mod tests {
         assert!(message.contains("only diagnostic logs may have been written"), "{message}");
         // We cannot know a verdict is wrong, so the text must not assert it.
         assert!(!message.contains("This is a false positive"), "{message}");
+    }
+
+    // PowerShell 5.1 prints its logo even with -NoLogo when the script is missing.
+    // Model stdout arriving last, hiding the stderr error.
+    fn observe_missing_script_output(context: &mut InstallFailureContext) {
+        context.observe_stderr(concat!(
+            r"The argument 'C:\Users\Owner\AppData\Local\Unsloth Studio (Desktop)\install.ps1' ",
+            "to the -File parameter does not exist. Provide the path to an existing '.ps1' file as ",
+            "an argument to the -File parameter.",
+        ));
+        context.observe_stdout("Windows PowerShell");
+        context.observe_stdout("Copyright (C) Microsoft Corporation. All rights reserved.");
+    }
+
+    #[test]
+    fn a_quarantined_script_is_reported_instead_of_the_powershell_logo() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let script = dir.path().join("install.ps1");
+        let mut context = InstallFailureContext::default();
+        observe_missing_script_output(&mut context);
+        assert!(context.message(1).contains("Copyright (C) Microsoft"));
+
+        let message = failure_message(&context, 1, &script);
+        assert!(message.contains("install.ps1, which Unsloth needs"), "{message}");
+        assert!(message.contains("quarantined"), "{message}");
+        assert!(!message.contains("Copyright"), "{message}");
+        assert_eq!(Some(message), unavailable_script_message(&script));
+    }
+
+    #[test]
+    fn a_script_that_is_still_there_keeps_the_captured_failure() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let script = dir.path().join("install.ps1");
+        std::fs::write(&script, "exit 1\r\n").expect("write script");
+        assert_eq!(unavailable_script_message(&script), None);
+
+        let mut context = InstallFailureContext::default();
+        context.observe_stdout("[TAURI:ERROR] Python could not be installed");
+        assert_eq!(
+            failure_message(&context, 1, &script),
+            "Installation failed: Python could not be installed"
+        );
+    }
+
+    #[test]
+    fn an_amsi_block_keeps_its_guidance_when_the_script_is_then_removed() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let script = dir.path().join("install.ps1");
+        let mut context = InstallFailureContext::default();
+        for line in AMSI_BLOCK_STDERR {
+            context.observe_stderr(line);
+        }
+        let message = failure_message(&context, 1, &script);
+        assert_eq!(message, context.message(1));
+        assert!(message.contains(AMSI_MALWARE_GUIDANCE_PRE_START), "{message}");
+    }
+
+    // Exercise the real interpreter with the app's launch arguments.
+    #[cfg(windows)]
+    #[test]
+    fn powershell_given_a_missing_script_is_reported_as_missing() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let script = std::fs::canonicalize(dir.path())
+            .expect("canonicalize")
+            .join("install.ps1");
+        let output = Command::new(powershell_exe())
+            .args(powershell_launch_args(&script))
+            .output()
+            .expect("spawn powershell");
+        assert!(!output.status.success());
+
+        let mut context = InstallFailureContext::default();
+        for line in String::from_utf8_lossy(&output.stderr).lines() {
+            context.observe_stderr(line);
+        }
+        for line in String::from_utf8_lossy(&output.stdout).lines() {
+            context.observe_stdout(line);
+        }
+        let message = failure_message(&context, output.status.code().unwrap_or(-1), &script);
+        assert!(
+            message.contains("install.ps1, which Unsloth needs"),
+            "{message}\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 
     #[test]
