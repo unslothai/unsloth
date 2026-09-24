@@ -446,10 +446,12 @@ test("a menu's height cap keeps Radix's available height", () => {
 
 test("settings stacks its rail where the scaled dialog is too narrow for it", () => {
   // max-sm ignored the scale: at 200% a 1000px window kept a 480px pane.
+  // The hook is shared with the Skills dialog, which stacks on the same rule.
+  const hook = readSrc("features/settings/hooks/use-stacked-layout.ts");
+  assert.match(hook, /const width = 608 \* useUiSpaceScale\(\);/);
+  assert.match(hook, /`\(width < \$\{width \+ 32\}px\)`/);
+  assert.match(hook, /return width > 960 \|\| narrow;/);
   const dialog = readSrc("features/settings/settings-dialog.tsx");
-  assert.match(dialog, /const width = 608 \* useUiSpaceScale\(\);/);
-  assert.match(dialog, /`\(width < \$\{width \+ 32\}px\)`/);
-  assert.match(dialog, /return width > 960 \|\| narrow;/);
   assert.match(dialog, /data-stacked=\{stacked \|\| undefined\}/);
   // Only the full-screen dialog shell stays on the viewport breakpoint.
   const shell = dialog.match(/max-sm:[^\s"]+/g) ?? [];
