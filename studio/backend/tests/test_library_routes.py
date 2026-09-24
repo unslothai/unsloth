@@ -729,3 +729,44 @@ def test_undecodable_video_has_no_thumbnail(client):
     [clip] = _upload(client, ("broken.mp4", b"not a video", "video/mp4"))
     response = client.get("/api/library/items/thumbnail", params = {"id": clip})
     assert response.status_code == 501
+
+
+# ── Second review ────────────────────────────────────────────────
+
+
+def test_explorer_gets_the_documented_select_command(tmp_path, monkeypatch):
+    import subprocess
+
+    import utils.paths.path_utils as path_utils
+
+    target = tmp_path / "a b" / "c.txt"
+    target.parent.mkdir()
+    target.write_text("x")
+    calls = []
+    monkeypatch.setattr(subprocess, "Popen", lambda command, *args, **kwargs: calls.append(command))
+    monkeypatch.setattr(path_utils.sys, "platform", "win32")
+    monkeypatch.setattr(path_utils.os, "name", "nt")
+    path_utils.reveal_in_file_manager(target)
+    monkeypatch.undo()
+    # One string: a list quotes "/select,<path>" whole, which Explorer misreads when it has a space.
+    assert calls == [f'explorer /select,"{target}"']
+
+
+@pytest.mark.parametrize(
+    "path, root, inside",
+    [
+        (r"\\?\C:\Users\me\Studio\library\x", r"C:\Users\me\Studio", True),
+        (r"C:\Users\me\Studio\library\x", r"\\?\c:\users\ME\studio", True),
+        (r"\\?\UNC\server\share\Studio\x", r"\\server\share\Studio", True),
+        (r"C:\Users\me\Studio2\x", r"C:\Users\me\Studio", False),
+        (r"D:\Studio\x", r"C:\Studio", False),
+        (r"C:\Studio", r"C:\Studio", False),
+        ("C:\\x", "C:\\", True),
+    ],
+)
+def test_containment_ignores_the_windows_long_path_prefix(path, root, inside):
+    import ntpath
+
+    from utils.paths.path_utils import is_path_within
+
+    assert is_path_within(path, root, pathmod = ntpath) is inside

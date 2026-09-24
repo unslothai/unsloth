@@ -31,6 +31,7 @@ from urllib.parse import quote
 from loggers import get_logger
 from storage import library_db
 from utils.paths import ensure_dir
+from utils.paths.path_utils import is_path_within
 from utils.paths.storage_roots import account_path
 
 logger = get_logger(__name__)
@@ -551,8 +552,10 @@ def local_path(item_id: str) -> Path:
     _origin, _, path = ref.partition(":")
     resolved = os.path.realpath(path) if path else ""
     roots = [os.path.realpath(root) for root in (outputs_root(), exports_root())]
-    if not any(resolved.startswith(root + os.sep) for root in roots) or not os.path.exists(
-        resolved
+    if (
+        not resolved
+        or not any(is_path_within(resolved, root) for root in roots)
+        or not os.path.exists(resolved)
     ):
         raise LookupError(item_id)
     return Path(resolved)

@@ -303,6 +303,31 @@ def reset_cache_case_resolution_state() -> None:
         _CACHE_CASE_RESOLUTION_STATS[key] = 0
 
 
+def _comparable_path(path, pathmod) -> str:
+    """*path* spelled the way two paths are compared: on Windows without the extended-length
+    prefix, which realpath keeps on one side only for a long path, and case folded."""
+    text = os.fspath(path)
+    if pathmod.sep == "\\":
+        if text[:8].upper() == "\\\\?\\UNC\\":
+            text = "\\\\" + text[8:]
+        elif text[:4] == "\\\\?\\":
+            text = text[4:]
+    return pathmod.normcase(pathmod.normpath(text))
+
+
+def is_path_within(path, root, *, allow_root: bool = False, pathmod = os.path) -> bool:
+    """Whether resolved *path* sits inside resolved *root*.
+
+    commonpath rather than a prefix test: a drive root already ends in a separator, and ``C:\\a``
+    must not contain ``C:\\ab``. Paths on different drives are simply not inside."""
+    candidate, base = _comparable_path(path, pathmod), _comparable_path(root, pathmod)
+    try:
+        common = pathmod.commonpath([candidate, base])
+    except ValueError:
+        return False
+    return common == base and (allow_root or candidate != base)
+
+
 def _wsl_reveal_in_explorer(path: Path, is_file: bool) -> bool:
     import subprocess
     if not _IS_WSL:
@@ -358,8 +383,13 @@ def reveal_in_file_manager(path: Path, expect_dir: bool = False) -> None:
         cmd = ["open", "-R", target] if is_file else ["open", target]
         subprocess.Popen(cmd)
     elif os.name == "nt":
-        if is_file:
-            subprocess.Popen(["explorer", f"/select,{target}"])
+        if is_file and '"' not in target:
+            # One string, as Explorer documents it: from a list, a path with a space is quoted whole
+            # as "/select,C:\a b\c.txt", which Explorer misreads and opens Documents instead.
+            # A Windows path cannot hold a quote; one that somehow does opens its folder instead.
+            subprocess.Popen(f'explorer /select,"{target}"')
+        elif is_file:
+            os.startfile(str(path.parent))  # noqa: S606 - local user's own file manager
         else:
             os.startfile(target)  # noqa: S606 - local user's own file manager
     elif not _wsl_reveal_in_explorer(path, is_file):
