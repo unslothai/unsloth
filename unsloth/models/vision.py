@@ -150,7 +150,6 @@ from transformers import __version__ as transformers_version
 
 import types
 import functools
-import inspect
 import os
 import gc
 import math
