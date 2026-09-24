@@ -10,6 +10,7 @@ galleries resolve their folder on every file lookup.
 
 from __future__ import annotations
 
+import os
 import sqlite3
 import threading
 from pathlib import Path
@@ -24,7 +25,8 @@ MOVABLE = ("uploads", "images", "videos", "audio")
 _SETTING = "library.locations"
 _lock = threading.Lock()
 # Keyed by the owner's database, so a test or a relaunch on another root never reads a stale map.
-_cache: dict[str, dict[str, str]] = {}
+# Each choice is {"path", "mount"}: `mount` is the drive or share the folder was on when picked.
+_cache: dict[str, dict[str, dict]] = {}
 
 
 def _db_key() -> str:
@@ -32,7 +34,17 @@ def _db_key() -> str:
     return str(studio_db_path())
 
 
-def _load() -> dict[str, str]:
+def _entry(value) -> Optional[dict]:
+    # Before mount points were recorded a choice was its bare path.
+    if isinstance(value, str) and value:
+        return {"path": value, "mount": None}
+    if isinstance(value, dict) and isinstance(value.get("path"), str) and value["path"]:
+        mount = value.get("mount")
+        return {"path": value["path"], "mount": mount if isinstance(mount, str) and mount else None}
+    return None
+
+
+def _load() -> dict[str, dict]:
     key = _db_key()
     with _lock:
         if key in _cache:
@@ -40,26 +52,31 @@ def _load() -> dict[str, str]:
     from storage.studio_db import get_app_setting
 
     raw = get_app_setting(_SETTING, {})
-    chosen = (
-        {k: v for k, v in raw.items() if k in MOVABLE and isinstance(v, str) and v}
-        if isinstance(raw, dict)
-        else {}
-    )
+    chosen = {}
+    if isinstance(raw, dict):
+        for kind, value in raw.items():
+            entry = _entry(value) if kind in MOVABLE else None
+            if entry is not None:
+                chosen[kind] = entry
     with _lock:
         _cache[key] = chosen
     return chosen
 
 
-def chosen(key: str) -> Optional[Path]:
-    """The folder the owner picked for `key`, or None for the default."""
+def _chosen_entry(key: str) -> Optional[dict]:
     if not is_owner_context():
         return None
     try:
-        value = _load().get(key)
+        return _load().get(key)
     except (sqlite3.Error, OSError):
         # No settings table yet (a fresh or test database): nothing was ever moved.
         return None
-    return Path(value) if value else None
+
+
+def chosen(key: str) -> Optional[Path]:
+    """The folder the owner picked for `key`, or None for the default."""
+    entry = _chosen_entry(key)
+    return Path(entry["path"]) if entry else None
 
 
 def relocated(key: str, default: Path) -> Path:
@@ -71,20 +88,52 @@ class LocationUnavailable(OSError):
     """A chosen folder that is not there now, its drive unplugged or unmounted."""
 
 
+def mount_point(path: Path) -> Optional[str]:
+    """The mount point `path` is under when that is not the system disk's root: a drive or share
+    mounted at a fixed folder (/mnt/usb, /media/me/Drive, a Windows mounted folder). None for a
+    folder on the system disk, or on a drive with a letter or volume of its own, which goes away
+    whole when it is unplugged."""
+    for candidate in (path, *path.parents):
+        try:
+            if os.path.ismount(candidate):
+                return None if candidate.parent == candidate else str(candidate)
+        except (OSError, ValueError):
+            return None
+    return None
+
+
+def _unavailable(entry: dict) -> bool:
+    folder = Path(entry["path"])
+    if not folder.is_dir():
+        return True
+    # A fixed mount point stays behind as an empty folder once its drive is gone, and saves would
+    # land on the disk beneath it. The device number is not compared: it changes when a drive is
+    # plugged into another port, and the folder is still there then.
+    mount = entry.get("mount")
+    return bool(mount) and not os.path.ismount(mount)
+
+
 def location_dir(key: str, default: Path) -> Path:
     """`key`'s folder, ready to use. Only the default is created: a chosen folder that has gone is
     not made again, or files would land on the disk beneath its mount point and vanish once the
     drive is back."""
     from utils.paths.storage_roots import ensure_dir
 
-    folder = chosen(key)
-    if folder is None:
+    entry = _chosen_entry(key)
+    if entry is None:
         return ensure_dir(default)
-    if not folder.is_dir():
+    folder = Path(entry["path"])
+    if _unavailable(entry):
         raise LocationUnavailable(
             f"{folder} is not available. Reconnect its drive, or reset the folder in Settings."
         )
     return folder
+
+
+def is_available(key: str) -> bool:
+    """False while `key`'s chosen folder is on a drive that is not there."""
+    entry = _chosen_entry(key)
+    return entry is None or not _unavailable(entry)
 
 
 def set_chosen(key: str, path: Optional[Path]) -> None:
@@ -97,7 +146,7 @@ def set_chosen(key: str, path: Optional[Path]) -> None:
     if path is None:
         updated.pop(key, None)
     else:
-        updated[key] = str(path)
+        updated[key] = {"path": str(path), "mount": mount_point(path)}
     upsert_app_settings({_SETTING: updated}, read_back = False)
     with _lock:
         _cache[_db_key()] = updated
