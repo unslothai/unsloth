@@ -859,7 +859,7 @@ class UnslothTrainer:
         elif "speaker_id" in cols:
             speaker_col = "speaker_id"
 
-        if audio_col is None or text_col is None:
+        if audio_col is None or text_col is None or speaker_col is None:
             from hub.utils.dataset_format import detect_multimodal_dataset
 
             detected = detect_multimodal_dataset(dataset)

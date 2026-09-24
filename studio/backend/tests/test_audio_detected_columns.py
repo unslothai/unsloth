@@ -71,6 +71,7 @@ def audio_trainer(monkeypatch):
         ({"audio": _AUDIO, "label": "hi"}, ("audio", "label", None)),
         ({"wav": _AUDIO, "text": "hi"}, ("wav", "text", None)),
         ({"clip": _AUDIO, "text": "hi", "speaker": "a"}, ("clip", "text", "speaker")),
+        ({"audio": _AUDIO, "text": "hi", "speaker": "a"}, ("audio", "text", "speaker")),
     ],
 )
 def test_resolves_the_columns_the_check_accepted(audio_trainer, row, expected):
