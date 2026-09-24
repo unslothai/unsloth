@@ -232,7 +232,6 @@ def _image_items() -> list[dict]:
 
 def _video_items() -> list[dict]:
     from core.inference import video_gallery
-
     return [
         _item(
             f"video:{record['id']}",
@@ -252,7 +251,6 @@ def _video_items() -> list[dict]:
 
 def _audio_items() -> list[dict]:
     from core.inference import audio_gallery
-
     return [
         _item(
             f"audio:{record['id']}",
@@ -397,7 +395,6 @@ def _sandbox_items() -> list[dict]:
 
 def _guess_type(name: str) -> str:
     import mimetypes
-
     return mimetypes.guess_type(name)[0] or "application/octet-stream"
 
 
@@ -445,20 +442,16 @@ def delete_item(item_id: str) -> bool:
             deleted = True
     elif kind == "attachment":
         from storage.studio_db import delete_chat_attachment
-
         message_id, _, attachment_id = ref.partition(":")
         deleted = delete_chat_attachment(message_id, attachment_id)
     elif kind == "image":
         from core.inference import image_gallery
-
         deleted = image_gallery.delete(ref)
     elif kind == "video":
         from core.inference import video_gallery
-
         deleted = video_gallery.delete(ref)
     elif kind == "audio":
         from core.inference import audio_gallery
-
         deleted = audio_gallery.delete(ref)
     elif kind == "sandbox":
         from routes.inference import _contained_sandbox_path

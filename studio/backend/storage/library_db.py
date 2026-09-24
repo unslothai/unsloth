@@ -138,9 +138,12 @@ def create_folder(name: str, parent_id: Optional[str] = None) -> dict:
     folder_id = uuid.uuid4().hex
     conn = get_connection()
     try:
-        if parent_id and not conn.execute(
-            "SELECT 1 FROM library_folders WHERE id = ?", (parent_id,)
-        ).fetchone():
+        if (
+            parent_id
+            and not conn.execute(
+                "SELECT 1 FROM library_folders WHERE id = ?", (parent_id,)
+            ).fetchone()
+        ):
             raise KeyError(parent_id)
         conn.execute(
             "INSERT INTO library_folders (id, name, parent_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
@@ -248,9 +251,13 @@ def update_entry(
 ) -> None:
     conn = get_connection()
     try:
-        if move and folder_id and not conn.execute(
-            "SELECT 1 FROM library_folders WHERE id = ?", (folder_id,)
-        ).fetchone():
+        if (
+            move
+            and folder_id
+            and not conn.execute(
+                "SELECT 1 FROM library_folders WHERE id = ?", (folder_id,)
+            ).fetchone()
+        ):
             raise KeyError(folder_id)
         now = _now_ms()
         conn.execute(
