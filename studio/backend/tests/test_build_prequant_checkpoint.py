@@ -256,12 +256,7 @@ def test_the_recorded_base_must_be_the_canonical_id_not_just_the_same_tail(capsy
 
 
 def test_the_build_skips_ragged_linears_and_records_the_alignment_floor(monkeypatch, tmp_path):
-    """The runtime ``quantize_`` skips any Linear whose in/out features miss the scheme's GEMM
-    tiling floor. A build that does not would bake a quantized GEMM for a layer the runtime leaves
-    dense, and without the ``require_divisible`` stamp the loader cannot tell the two apart.
-
-    Driven through ``main`` with the download and the quantizer stubbed, so it checks what the
-    build actually hands ``quantize_`` and what it actually writes."""
+    """A build skips Linears off the GEMM tiling floor and stamps ``require_divisible``."""
     torch = pytest.importorskip("torch")
     pytest.importorskip("torchao")
     import torchao.quantization as tq

@@ -1,7 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Tests for the NVFP4 flashinfer ops module (``diffusion_nvfp4_ops.py``)."""
 
 from __future__ import annotations
 
@@ -361,8 +360,6 @@ def _fake_blackwell(monkeypatch):
 
 
 def test_an_allocation_failure_is_answered_but_not_cached(monkeypatch):
-    """AUTO planning probes while the model the arbiter is about to evict still owns the card, so
-    an OOM here says 'not now'. Cached, it would drop nvfp4 for the rest of the process."""
     torch = _fake_blackwell(monkeypatch)
     calls: list = []
 
@@ -382,8 +379,6 @@ def test_an_allocation_failure_is_answered_but_not_cached(monkeypatch):
 
 
 def test_a_host_property_failure_stays_cached(monkeypatch):
-    """A JIT build that cannot run here is not going to start; re-probing it every selection would
-    pay the build over and over."""
     _fake_blackwell(monkeypatch)
     calls: list = []
 
@@ -428,10 +423,6 @@ def test_only_allocation_failures_read_as_transient(exc, transient):
 
 
 def test_an_unprewarmed_gemm_shape_autotunes_on_its_first_eager_call_only(monkeypatch):
-    """The loaders prewarm only M = 1, and a graph's warm-up only the M its top-level inputs imply,
-    so a video's token count or a Z-Image unified sequence reached ``mm_fp4`` outside
-    ``flashinfer.autotune(True)`` and ran the fallback tactic for the life of the load. Each new
-    ``(M, K, N)`` must tune on its first eager call, once, and never inside a capture."""
     import contextlib
     import sys
     import types

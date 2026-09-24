@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The checked-in NVFP4 gate record, and the verdict the runtime reads out of it.
-
-The writer that produces a record is build tooling and is tested with the rest of it. What is
-tested here is the half that ships: the record in the tree, and every way it does or does not
-turn into a gate verdict."""
+"""The checked-in NVFP4 gate record, and the verdict the runtime reads out of it."""
 
 from __future__ import annotations
 
@@ -118,8 +114,6 @@ def test_a_matching_record_reads_true_and_canonicalises_the_base(tmp_path):
 
 
 def test_the_backend_a_verdict_was_measured_on_is_readable(tmp_path):
-    """The ladder keeps the deny unless this is the backend serving the device: the same bytes
-    quantise activations differently on the other one and no gate rendered that."""
     path = _gate_file(tmp_path, _record())
     assert nvfp4_gate_backend("z-image", ZIMAGE_BASE, path = path) == "flashinfer"
     assert nvfp4_gate_backend("Z-Image", ZIMAGE_BASE, path = path) == "flashinfer"
@@ -137,7 +131,6 @@ def test_the_backend_a_verdict_was_measured_on_is_readable(tmp_path):
 
 
 def test_two_artifacts_gated_on_different_backends_both_read_as_covered(tmp_path):
-    # Record identity carries the checkpoint digest, not the backend, so the RTN and GPTQ artifacts can be gated on different ones. Keeping only the first pass would cover whichever comes first in the file.
     path = _gate_file(
         tmp_path,
         _record(),
@@ -170,7 +163,7 @@ def test_a_failed_run_reads_false(tmp_path):
 
 
 def test_a_recorded_failure_does_not_mask_a_later_checkpoint_that_passed(tmp_path):
-    # Several artifacts share one (family, base, policy) and --allow-fail records failures, so a pass can sit behind a failure in file order.
+    # --allow-fail records failures, so a pass can sit behind a failure in file order.
     path = _gate_file(
         tmp_path,
         _record(all_pass = False, checkpoint_sha256 = "b" * 64, backend = "torchao"),
