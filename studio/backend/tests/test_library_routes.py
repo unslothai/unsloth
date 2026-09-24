@@ -450,7 +450,11 @@ def test_add_to_project_refuses_what_it_cannot_copy(client, project):
 def revealed(monkeypatch):
     import utils.paths.path_utils as path_utils
 
+    import utils.paths.file_manager as file_manager
+
     calls = []
+    # CI runs on a headless Linux, where no file manager is reported.
+    monkeypatch.setattr(file_manager, "file_manager_kind", lambda: "files")
     monkeypatch.setattr(path_utils, "reveal_in_file_manager", lambda path: calls.append(str(path)))
     return calls
 
@@ -1172,7 +1176,10 @@ def test_a_file_held_open_on_windows_answers_409(client, monkeypatch):
 
 
 def test_a_missing_file_manager_is_not_a_missing_file(client, monkeypatch):
+    import utils.paths.file_manager as file_manager
     import utils.paths.path_utils as path_utils
+
+    monkeypatch.setattr(file_manager, "file_manager_kind", lambda: "files")
 
     def no_launcher(path):
         raise FileNotFoundError(2, "No such file or directory: 'xdg-open'")
@@ -1182,6 +1189,18 @@ def test_a_missing_file_manager_is_not_a_missing_file(client, monkeypatch):
     response = client.post("/api/library/items/reveal", json = {"id": note})
     assert response.status_code == 503
     assert response.json()["detail"] == "No file manager is available on this machine"
+
+
+def test_a_host_with_no_file_manager_refuses_to_reveal(client, revealed, monkeypatch):
+    import utils.paths.file_manager as file_manager
+
+    monkeypatch.setattr(file_manager, "file_manager_kind", lambda: None)
+    [note] = _upload(client, ("plan.md", b"# plan", "text/markdown"))
+    response = client.post("/api/library/items/reveal", json = {"id": note})
+    assert response.status_code == 503
+    response = client.post("/api/library/locations/reveal", json = {"key": "images"})
+    assert response.status_code == 503
+    assert revealed == []
 
 
 def test_the_slow_sources_are_remembered_briefly_and_forgotten_on_a_write(client, monkeypatch):
