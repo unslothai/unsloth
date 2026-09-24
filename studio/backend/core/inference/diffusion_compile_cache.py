@@ -285,7 +285,7 @@ def model_fingerprint(
     what gets compiled.
     """
     blocks = list(getattr(transformer, "_repeated_blocks", []) or [])
-    return {
+    fp = {
         "family": str(family),
         "transformer_cls": type(transformer).__name__ if transformer is not None else None,
         "repeated_blocks": sorted(str(b) for b in blocks),
@@ -295,6 +295,15 @@ def model_fingerprint(
         "compile_kwargs": {k: compile_kwargs[k] for k in sorted(compile_kwargs)},
         "shape_bucket": shape_bucket,
     }
+    # Only when set, so every other bundle keeps its key.
+    try:
+        from .diffusion_dynamic_text import fingerprint as _dynamic_text_fp
+        dynamic_text = _dynamic_text_fp(transformer, compile_kwargs.get("dynamic", True))
+    except Exception:  # noqa: BLE001
+        dynamic_text = None
+    if dynamic_text:
+        fp["dynamic_text"] = dynamic_text
+    return fp
 
 
 def cache_key(env_fp: dict[str, Any], model_fp: dict[str, Any]) -> str:

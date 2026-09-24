@@ -1422,3 +1422,21 @@ def test_auto_dynamic_active_follows_the_torchao_marker():
     dit._unsloth_auto_dynamic = True
     assert ds_mod.auto_dynamic_active(pipe) is True
     assert isinstance(ds_mod.dynamo_graph_count(), int)
+
+
+def test_automatic_dynamic_compile_arms_the_prompt_length_allowlist(monkeypatch):
+    # Only an automatic-dynamic compile needs the allowlist: dynamic=True is already dynamic everywhere.
+    from core.inference import diffusion_dynamic_text
+
+    armed = []
+    monkeypatch.setattr(diffusion_dynamic_text, "install", lambda t, logger = None: armed.append(t) or True)
+    _stub_torch(monkeypatch)
+    pipe = _Pipe(with_compile = True, with_fuse = True)
+    apply_speed_optims(pipe, _target(), is_gguf = False, family = _family(), speed_mode = SPEED_MAX)
+    assert armed == [pipe.transformer]
+
+    armed.clear()
+    _stub_torch(monkeypatch)
+    pipe = _Pipe(with_compile = True)
+    apply_speed_optims(pipe, _target(), is_gguf = False, family = _family(), speed_mode = SPEED_DEFAULT)
+    assert armed == []
