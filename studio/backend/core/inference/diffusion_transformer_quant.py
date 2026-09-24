@@ -432,6 +432,8 @@ def explain_unusable_scheme(
     family: Optional[str],
     scheme: str,
     base_repo: Optional[str] = None,
+    *,
+    prequant_missing: bool = False,
 ) -> str:
     """Why ``select_transformer_quant_scheme`` answered None for an EXPLICIT ``scheme``. One ``None``
     covers three faults the caller turns into a 409: a family the scheme is measured to break, a
@@ -450,6 +452,12 @@ def explain_unusable_scheme(
         return (
             f"'{scheme}' is ruled out for family '{family}' by the measured accuracy gate (it "
             "renders black frames or fails the quality bar on this DiT), whatever the GPU"
+        )
+    if prequant_missing:
+        # NVFP4 only loads from a pre-quantized checkpoint; a model without one is not a GPU limit.
+        return (
+            f"'{scheme}' needs a pre-quantized checkpoint for family '{family}' and none is "
+            "available for this model (no hosted repo for this base and no transformer_prequant_path)"
         )
     unavailable = torchao_unavailable_reason()
     if unavailable is not None:

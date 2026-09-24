@@ -2788,3 +2788,27 @@ def test_a_later_shard_still_reveals_a_narrow_source(tmp_path):
         str(sub / "diffusion_pytorch_model-00002-of-00002.safetensors"),
     )
     assert tq.stored_denoiser_precision(str(tmp_path)) == "fp8"
+
+
+def test_a_missing_nvfp4_prequant_is_named_instead_of_the_gpu(monkeypatch):
+    # An explicit nvfp4 on a family the gate allows, but with no pre-quantized checkpoint for this
+    # model, used to be refused as "not usable ... on this GPU" on a B200 that runs NVFP4 fine.
+    monkeypatch.setattr(tq, "_TORCHAO_UNAVAILABLE", (None,))
+    monkeypatch.setattr(tq, "family_denies_scheme", lambda *a, **k: False)
+    message = tq.explain_unusable_scheme("z-image", TQ_NVFP4, prequant_missing = True)
+    assert "needs a pre-quantized checkpoint" in message and "on this GPU" not in message
+    # A gate deny still wins: that answer holds even with a checkpoint.
+    monkeypatch.setattr(tq, "family_denies_scheme", lambda *a, **k: True)
+    assert "accuracy-gate record" in tq.explain_unusable_scheme(
+        "qwen-image", TQ_NVFP4, prequant_missing = True
+    )
+
+
+def test_the_loader_decline_asks_explain_unusable_scheme():
+    import inspect
+
+    from core.inference import diffusion
+
+    src = inspect.getsource(diffusion.DiffusionBackend)
+    assert "is not usable for family \"\n" not in src
+    assert "transformer_quant_decline = explain_unusable_scheme(" in src

@@ -4472,10 +4472,20 @@ class DiffusionBackend:
                     )
                     is None
                 ):
-                    # An explicit scheme is never swapped for another
-                    transformer_quant_decline = (
-                        f"'{transformer_quant_pinned}' is not usable for family "
-                        f"'{getattr(fam, 'name', None)}' on this GPU"
+                    # An explicit scheme is never swapped for another. Say which "no" this is: a gate deny, a
+                    # missing pre-quantized checkpoint, a torchao fault or the GPU.
+                    transformer_quant_decline = explain_unusable_scheme(
+                        getattr(fam, "name", None),
+                        transformer_quant_pinned,
+                        base_repo = base,
+                        prequant_missing = normalize_transformer_quant(transformer_quant_pinned) == TQ_NVFP4
+                        and usable_prequant_source(
+                            fam,
+                            TQ_NVFP4,
+                            path_override = transformer_prequant_path,
+                            base_repo = base,
+                        )
+                        is None,
                     )
                     transformer_quant_decline_status = RESOLVED_UNSUPPORTED
                 # The GGUF-size plan can mis-budget the fast path, so preflight the real footprint pre-eviction. Also
