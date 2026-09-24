@@ -341,6 +341,11 @@ def _loads(value: str | None, fallback: Any) -> Any:
         return fallback
 
 
+# Kept with the run for the producer but outside its identity, so a retried create from a browser whose offset moved
+# (DST) still matches the committed run.
+TIMEZONE_HEADERS_FIELD = "timezone_headers"
+
+
 def canonical_request(
     *,
     thread_id: str,
@@ -359,7 +364,9 @@ def canonical_request(
             "threadId": thread_id,
             "userMessageId": user_message_id,
             "assistantMessageId": assistant_message_id,
-            "requestPayload": request_payload,
+            "requestPayload": {
+                key: value for key, value in request_payload.items() if key != TIMEZONE_HEADERS_FIELD
+            },
         },
         sort_keys = True,
         separators = (",", ":"),

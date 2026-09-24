@@ -240,6 +240,29 @@ async def test_producer_dates_the_prompt_in_the_browser_timezone(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_a_create_retried_across_a_dst_change_returns_the_committed_run():
+    studio_db.upsert_chat_thread(
+        {"id": "thread-1", "title": "Chat", "modelType": "base", "modelId": "local", "createdAt": 1}
+    )
+    studio_db.upsert_chat_message(
+        {"id": "user-1", "threadId": "thread-1", "role": "user", "content": [], "createdAt": 2}
+    )
+
+    def browser(offset):
+        request = _route_request(None)
+        request.headers = {
+            "x-unsloth-timezone": "America/Los_Angeles",
+            "x-unsloth-timezone-offset-minutes": offset,
+        }
+        return request
+
+    first = await run_routes.create_chat_generation_run(_create_payload(), browser("420"), "alice")
+    retry = await run_routes.create_chat_generation_run(_create_payload(), browser("480"), "alice")
+    assert (first["created"], retry["created"]) == (True, False)
+    assert retry["requestPayload"]["timezone_headers"]["x-unsloth-timezone-offset-minutes"] == "420"
+
+
+@pytest.mark.asyncio
 async def test_a_prefill_reporting_only_progress_renews_the_lease(durable_run, monkeypatch):
     """A 250K prefill outruns the 1200s lease before its first token, and the
     write is what renews it, so dropping content-less progress chunks would reap a

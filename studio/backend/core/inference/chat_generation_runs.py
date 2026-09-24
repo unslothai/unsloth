@@ -47,7 +47,6 @@ _MAX_ADMISSION_INTERVAL_SECONDS = 24.0 * 60.0 * 60.0
 _LEASE_TIMEOUT_SECONDS = 1200.0
 _LEASE_SWEEP_INTERVAL_SECONDS = 60.0
 _LEASE_ERROR = "Generation stopped making progress"
-TIMEZONE_HEADERS_FIELD = "timezone_headers"
 
 
 class _SSEDecoder:
@@ -750,7 +749,7 @@ class ChatGenerationSupervisor:
                 from routes.inference import produce_openai_chat_completions
 
                 request_payload = dict(run["requestPayload"])
-                timezone_headers = request_payload.pop(TIMEZONE_HEADERS_FIELD, None)
+                timezone_headers = request_payload.pop(db.TIMEZONE_HEADERS_FIELD, None)
                 payload = ChatCompletionRequest.model_validate(request_payload)
                 # Switching, idle reload and auto-download all happen in the call below, and llama.cpp's first-token
                 # budget only starts after it. One touch afterwards cannot cover a preparation longer than the lease

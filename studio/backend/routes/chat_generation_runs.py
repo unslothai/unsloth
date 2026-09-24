@@ -23,7 +23,6 @@ from auth.authentication import get_current_subject
 from auth import policy
 from state import active_generations, run_subscribers
 from utils.account_context import current_account, current_account_id, run_as
-from core.inference.chat_generation_runs import TIMEZONE_HEADERS_FIELD
 from core.inference.llama_keepwarm import inference_lifecycle_gate
 from models.inference import ChatCompletionRequest
 from storage import chat_generation_runs_db as db
@@ -313,7 +312,7 @@ async def create_chat_generation_run(
 ):
     sanitized = _sanitize_request(payload)
     if timezone_headers := _timezone_headers(request):
-        sanitized[TIMEZONE_HEADERS_FIELD] = timezone_headers
+        sanitized[db.TIMEZONE_HEADERS_FIELD] = timezone_headers
     # Serialize the off-loop commit with model lifecycle work, so a run is registered either before the gate opens or
     # after an unload/swap, never mid-swap.
     async with inference_lifecycle_gate():
