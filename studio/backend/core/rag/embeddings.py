@@ -1087,7 +1087,7 @@ def _llama_pooling(name: str, served = None) -> str | None:
         and path
         and backend._model_repo == config.effective_gguf_repo_for_embedding_model(name)
     ):
-        pooling = _gguf_pooling(path)
+        pooling = getattr(backend, "_model_pooling", None) or _gguf_pooling(path)
     else:
         pooling = LlamaServerBackend.cached_pooling(name)
     if pooling is None:

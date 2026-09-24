@@ -187,6 +187,8 @@ class LlamaServerBackend:
         # them lands A's POST on B's server.
         self._serve_lock = threading.RLock()
         self._model_path: str | None = None
+        # Read when the path is adopted: the running server keeps this pooling even if the file later vanishes.
+        self._model_pooling: str | None = None
         # A Settings change makes the cached path/dim stale, forcing a re-resolve and respawn (see _ensure_ready).
         self._model_repo: str | None = None
         self._binary: str | None = None
@@ -476,12 +478,12 @@ class LlamaServerBackend:
     @staticmethod
     def cached_pooling(model: str) -> str | None:
         """Pooling of ``model``'s GGUF already on disk, found without the network; None when
-        nothing is on disk yet. Every quant of one conversion declares the same pooling."""
+        nothing is on disk yet. Only the local path and the desired repo, which the loader serves
+        from cache before going online. Every quant of one conversion declares the same pooling."""
         try:
-            path = LlamaServerBackend._resolve_local_gguf(model)
             desired = config.effective_gguf_repo_for_embedding_model(model)
-            for repo in dict.fromkeys([desired, *config.gguf_repo_candidates(model)]):
-                path = path or LlamaServerBackend._resolve_cached_gguf(repo, require_variant = False)
+            path = LlamaServerBackend._resolve_local_gguf(model)
+            path = path or LlamaServerBackend._resolve_cached_gguf(desired, require_variant = False)
         except Exception:  # noqa: BLE001 - identity prediction must not block ingestion
             return None
         return None if path is None else _gguf_pooling(path)
@@ -625,6 +627,7 @@ class LlamaServerBackend:
         """Serve `path` for `desired`; the width is re-probed against whatever is adopted."""
         self._model_path = path
         self._model_repo = desired
+        self._model_pooling = _gguf_pooling(path) if path else None
         self._dim = None
         self._max_tokens = None
         return self._model_path
