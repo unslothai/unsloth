@@ -55,16 +55,21 @@ export async function fetchHub(
   input: Parameters<typeof fetch>[0],
   init: RequestInit = {},
 ): Promise<Response> {
-  const response = await fetch(input, withHubAuth(input, init));
+  const url = requestUrl(input);
+  let response = await fetch(input, withHubAuth(input, init));
   if (
-    response.status !== 401 ||
-    response.headers.has(UPSTREAM_HEADER) ||
-    !takesSession(requestUrl(input)) ||
-    !(await refreshHubSession())
+    response.status === 401 &&
+    !response.headers.has(UPSTREAM_HEADER) &&
+    takesSession(url) &&
+    (await refreshHubSession())
   ) {
-    return response;
+    response = await fetch(input, withHubAuth(input, init));
   }
-  return fetch(input, withHubAuth(input, init));
+  // The relay's own 502 means it could not reach the endpoint: fail as a direct fetch would.
+  if (response.status === 502 && !response.headers.has(UPSTREAM_HEADER) && isProxiedHubUrl(url)) {
+    throw new TypeError("The Hub endpoint could not be reached.");
+  }
+  return response;
 }
 
 /** `fetch` for Hub SDK calls that take no timeout. */
