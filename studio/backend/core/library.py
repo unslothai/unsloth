@@ -785,7 +785,6 @@ def _location_resolvers() -> dict:
 def _location_path(key: str, resolve) -> Path:
     """Where `key` lives, also while its chosen folder is unavailable."""
     from utils.paths.relocations import LocationUnavailable, chosen
-
     try:
         return resolve()
     except LocationUnavailable:
@@ -846,6 +845,10 @@ def _identity(path) -> Optional[tuple[int, int]]:
     try:
         stat = os.stat(path)
     except (OSError, ValueError):
+        return None
+    # Some filesystems give no file ids (FAT and some network shares report 0 for every entry),
+    # where equal ids would make every folder "the same": those compare by spelling instead.
+    if not stat.st_ino:
         return None
     return stat.st_dev, stat.st_ino
 
@@ -1001,7 +1004,9 @@ def _refuse_overlap(target: Path, key: str, resolvers, final: bool) -> None:
     current = _location_path(key, resolvers[key])
     # Chat sandboxes too: their listing would show the files as tool output, and clearing the chat
     # with its files would delete them.
-    others = [_location_path(other, resolve) for other, resolve in resolvers.items() if other != key]
+    others = [
+        _location_path(other, resolve) for other, resolve in resolvers.items() if other != key
+    ]
     others.append(Path(sandbox_root()))
     if any(_inside(target, root) for root in (*others, current)):
         raise ValueError("That folder is inside another Unsloth folder.")
@@ -1178,7 +1183,12 @@ def _move_entry(entry: Path, dest: Path, log: _MoveLog) -> None:
         pass  # A save still writing in it, left for the next pass.
 
 
-def _move_entries(source: Path, target: Path, log: _MoveLog, only = None) -> None:
+def _move_entries(
+    source: Path,
+    target: Path,
+    log: _MoveLog,
+    only = None,
+) -> None:
     """Move everything in `source` into `target`, across drives too, noting each move in `log` as
     it lands so a failure part way can be undone. Never an entry that holds `target` itself."""
     for entry in list(source.iterdir()):
@@ -1233,7 +1243,12 @@ def _writing_in(folder: Path) -> bool:
     return False
 
 
-def _settle(source: Path, target: Path, wait: bool, only = None) -> None:
+def _settle(
+    source: Path,
+    target: Path,
+    wait: bool,
+    only = None,
+) -> None:
     """Pick up what landed in `source` after the switch: saves that were already writing there.
     Repeats until a pass finds nothing new and, with `wait`, nothing is still being written, for
     at most _SETTLE_SECONDS."""

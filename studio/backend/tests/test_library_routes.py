@@ -825,6 +825,7 @@ def test_undecodable_video_has_no_thumbnail(client):
 def _temp_folders_are_ordinary(monkeypatch):
     # macOS keeps pytest's temp folders under /private/var, which the real check refuses.
     import hub.storage.scan_folders as scan_folders
+
     monkeypatch.setattr(
         scan_folders, "is_denied_system_path", lambda path: path.startswith(("/etc", "/usr"))
     )
@@ -833,7 +834,9 @@ def _temp_folders_are_ordinary(monkeypatch):
     monkeypatch.setattr(
         library,
         "_scratch_and_system_folders",
-        lambda: [folder for folder in real() if folder.startswith(("/usr", "/opt", "/Applications"))],
+        lambda: [
+            folder for folder in real() if folder.startswith(("/usr", "/opt", "/Applications"))
+        ],
     )
 
 
@@ -1084,7 +1087,10 @@ def test_a_file_another_program_holds_open_stays_put_whole(client, tmp_path, mon
     target = tmp_path / "other-disk"
     response = _move(client, "images", str(target))
     assert response.status_code == 500
-    assert "open.png is in use by another program. Close it and try again." in response.json()["detail"]
+    assert (
+        "open.png is in use by another program. Close it and try again."
+        in response.json()["detail"]
+    )
     monkeypatch.setattr(library, "_unlink", real_unlink)
     # Everything back, and no copy of anything left in the target.
     assert (old / "a.png").read_bytes() == b"a"
@@ -1198,7 +1204,6 @@ def test_reset_again_after_a_reset_into_a_full_default_is_a_no_op(client, tmp_pa
 
 def _cross_device(monkeypatch):
     import errno
-
     def cross_device(_src, _dst):
         raise OSError(errno.EXDEV, "Invalid cross-device link")
 
@@ -1219,7 +1224,9 @@ def _save_during_move(monkeypatch, save):
     monkeypatch.setattr(relocations, "set_chosen", set_and_save)
 
 
-def test_a_merge_across_drives_keeps_what_the_new_folder_already_holds(client, tmp_path, monkeypatch):
+def test_a_merge_across_drives_keeps_what_the_new_folder_already_holds(
+    client, tmp_path, monkeypatch
+):
     from core.inference import video_gallery
 
     old = video_gallery.gallery_dir()
@@ -1290,7 +1297,9 @@ def test_an_upload_finishing_during_a_move_lands_in_the_new_folder(client, tmp_p
     assert client.get(f"/api/library/uploads/{record['id']}/file").content == (
         b"first half, second half"
     )
-    assert not [p for p in library._location_default("uploads").iterdir() if p.name.endswith(".tmp")]
+    assert not [
+        p for p in library._location_default("uploads").iterdir() if p.name.endswith(".tmp")
+    ]
 
 
 def test_a_gallery_save_still_writing_is_waited_for(client, tmp_path):
@@ -1385,9 +1394,7 @@ def test_temporary_and_cache_folders_cannot_hold_library_files(monkeypatch):
 
 def _mounted(monkeypatch, mounts):
     real = os.path.ismount
-    monkeypatch.setattr(
-        os.path, "ismount", lambda path: str(path) in mounts or real(path)
-    )
+    monkeypatch.setattr(os.path, "ismount", lambda path: str(path) in mounts or real(path))
 
 
 def test_a_drive_unplugged_from_a_fixed_mount_point_is_unavailable(client, tmp_path, monkeypatch):
@@ -1457,3 +1464,22 @@ def test_an_unplugged_folder_is_reported_once_and_the_bar_falls_back(client, tmp
         assert disk is not None and disk["totalBytes"] > 0
     assert len(logged) == len(set(logged)) == 2
     assert all("location_unavailable" in line for line in logged)
+
+
+def test_folders_on_a_disk_without_file_ids_compare_by_spelling(tmp_path, monkeypatch):
+    # FAT and some network shares report st_ino 0 for everything: equal ids must not make two
+    # different folders "the same", which would refuse every move onto such a drive.
+    a, b = tmp_path / "a", tmp_path / "b"
+    a.mkdir()
+    b.mkdir()
+    real_stat = os.stat
+
+    def no_ids(path, *args, **kwargs):
+        result = real_stat(path, *args, **kwargs)
+        return os.stat_result((result.st_mode, 0, *tuple(result)[2:]))
+
+    monkeypatch.setattr(library.os, "stat", no_ids)
+    assert not library._same_folder(a, b)
+    assert not library._inside(b / "x", a)
+    assert library._same_folder(a, tmp_path / "a")
+    assert library._inside(a / "x", a)
