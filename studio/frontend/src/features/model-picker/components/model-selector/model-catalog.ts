@@ -1024,7 +1024,8 @@ export function catalogToModelOptions(
         name:
           curatedDisplayNameFor(artifact.repoId, catalog, host, denseQuantSchemes) ??
           group.displayName,
-        description: `${group.description} - ${artifact.label}`,
+        description: group.description,
+        descriptionSuffix: artifact.label,
         isGguf: artifact.format === "gguf",
         deviceQuant: artifact.deviceQuant,
       });

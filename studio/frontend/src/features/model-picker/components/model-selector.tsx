@@ -223,9 +223,10 @@ function ModelSelectorTrigger({
         ) : null}
         {/* A box-centred Hellix label sits above the icon's centre; drop it 0.05em to centre the caps. */}
         <span className="relative top-[0.05em] flex min-w-0 flex-1 items-baseline">
+          {/* Name and quant stay whole; only the description truncates. */}
           <span
             className={cn(
-              "min-w-0 flex flex-1 items-baseline truncate font-heading text-ui-16 font-medium leading-tight text-black dark:text-foreground",
+              "flex max-w-full shrink-0 items-baseline truncate whitespace-nowrap font-heading text-ui-16 font-medium leading-tight text-black dark:text-foreground",
               triggerLabelClassName,
             )}
           >
@@ -241,11 +242,22 @@ function ModelSelectorTrigger({
           {currentModel?.description && (
             <span
               className={cn(
-                "shrink-0 text-xs leading-none text-muted-foreground",
+                "min-w-0 truncate text-xs leading-none text-muted-foreground",
                 showCloudIndicator ? "" : "ml-2",
               )}
             >
               {currentModel.description}
+            </span>
+          )}
+          {currentModel?.descriptionSuffix && (
+            <span
+              className={cn(
+                "shrink-0 whitespace-nowrap text-xs leading-none text-muted-foreground",
+                !currentModel.description && !showCloudIndicator && "ml-2",
+              )}
+            >
+              {currentModel.description ? " - " : ""}
+              {currentModel.descriptionSuffix}
             </span>
           )}
         </span>
@@ -767,10 +779,11 @@ export function ModelSelector({
     // not the namespaced public id (#7966), matches the catalog row that later replaces this one.
     const fallbackName = missingExternal?.modelName ?? modelDisplayName(selected);
     if (activeGgufVariant) {
+      // The variant is the quant, so it goes in the suffix.
       const desc = `GGUF · ${activeGgufVariant}`;
       return found
-        ? { ...found, description: desc }
-        : { id: selected, name: fallbackName, description: desc };
+        ? { ...found, description: undefined, descriptionSuffix: desc }
+        : { id: selected, name: fallbackName, descriptionSuffix: desc };
     }
     if (missingExternal) {
       const disabled = missingExternal.state === "disabled";
