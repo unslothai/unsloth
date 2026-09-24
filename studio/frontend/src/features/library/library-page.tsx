@@ -850,9 +850,9 @@ function LibraryView({ search }: { search: LibrarySearch }) {
         )}
 
         {selectedCount > 0 && (
-          // The side menu's color, with the composer's shadow in light mode. In dark mode the shadow is
-          // the page color, so cards scrolling under the bar stop short of it.
-          <div className="fixed bottom-8 left-1/2 z-30 flex -translate-x-1/2 items-center gap-2 rounded-full bg-sidebar py-2 pl-6 pr-2 text-sidebar-foreground shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:shadow-[0_0_12px_6px_var(--background)]">
+          // The side menu's color with the dropdowns' shadow: the composer's in light mode, the page
+          // color in dark.
+          <div className="fixed bottom-8 left-1/2 z-30 flex -translate-x-1/2 items-center gap-2 rounded-full bg-sidebar py-2 pl-6 pr-2 text-sidebar-foreground shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:shadow-[0_8px_28px_-6px_var(--background)]">
             <span className="mr-4 whitespace-nowrap text-sm font-medium">{selectedCount} selected</span>
             <button
               type="button"
