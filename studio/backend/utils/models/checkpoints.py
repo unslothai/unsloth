@@ -11,6 +11,7 @@ import structlog
 from loggers import get_logger
 from pathlib import Path
 from typing import List, Optional, Tuple
+from hub.utils.hf_tokens import HfTokenArg
 from storage.studio_db import get_connection
 from utils.training_runs import (
     build_default_output_dir_name,
@@ -267,6 +268,57 @@ def scan_checkpoints(
 
 def _is_model_dir(path: Path) -> bool:
     return (path / "config.json").exists() or (path / "adapter_config.json").exists()
+
+
+def is_unquantized_full_model_dir(path: str | Path) -> bool:
+    model_dir = Path(path)
+    try:
+        if (model_dir / "adapter_config.json").exists():
+            return False
+        config = json.loads((model_dir / "config.json").read_text(encoding = "utf-8-sig"))
+    except (OSError, ValueError):
+        return False
+    return isinstance(config, dict) and "quantization_config" not in config
+
+
+def _hub_model_config(repo_id: str, hf_token: HfTokenArg) -> Optional[dict]:
+    """config.json of a Hub model repo; None for an adapter repo or on any lookup failure."""
+    try:
+        from huggingface_hub import file_exists, hf_hub_download
+
+        # An adapter repo carries a base config.json too, so a remote LoRA would read as a full model.
+        if file_exists(repo_id, "adapter_config.json", token = hf_token):
+            return None
+        path = hf_hub_download(repo_id, "config.json", token = hf_token)
+        return json.loads(Path(path).read_text(encoding = "utf-8-sig"))
+    except Exception:
+        return None
+
+
+def is_unquantized_full_finetune(checkpoint_path: str, hf_token: HfTokenArg = None) -> bool:
+    """Whether a local or Hub checkpoint is an unquantized full model.
+
+    False when unsure, so the caller keeps the 4-bit load that used to fit."""
+    try:
+        is_local = Path(checkpoint_path).exists()
+    except OSError:
+        return False
+    if is_local:
+        return is_unquantized_full_model_dir(checkpoint_path)
+    config = _hub_model_config(checkpoint_path, hf_token)
+    return isinstance(config, dict) and "quantization_config" not in config
+
+
+def is_full_finetune_output(path: Optional[str]) -> bool:
+    if not path:
+        return False
+    try:
+        # Below 3.13 a symlink loop comes back as RuntimeError, not OSError, whatever
+        # `strict` says, and both callers run this outside any handler.
+        Path(path).resolve().relative_to(outputs_root().resolve())
+    except (OSError, RuntimeError, ValueError):
+        return False
+    return is_unquantized_full_model_dir(path)
 
 
 def has_preview_model(output_dir: Optional[str]) -> bool:

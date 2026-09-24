@@ -162,6 +162,8 @@ export const zhCN = {
       noChatsYet: "暂无对话",
       // Shown under an empty project folder in the sidebar.
       noChats: "无对话",
+      // Shown in the Projects section when every project is pinned, so it has no rows.
+      allProjectsPinned: "所有项目均已置顶",
       showMore: "显示更多",
       showLess: "显示更少",
       settings: "设置",
@@ -217,13 +219,6 @@ export const zhCN = {
       sortPinnedChats: "对置顶对话排序",
       moveUp: "上移",
       moveDown: "下移",
-    },
-    drag: {
-      reorder: "重新排序",
-      pin: "固定",
-      unpin: "取消固定",
-      moveTo: "移动到 {name}",
-      moveToRecents: "移动到最近",
     },
     dialog: {
       deleteChat: {
@@ -567,7 +562,16 @@ export const zhCN = {
       sourceHint: "模型运行器会各自写入日志，因此加载或生成失败的原因通常记录在那里，而不是服务器日志中。",
       path: "位置",
       pathCopy: "复制路径",
-      refreshSection: "刷新",
+      currentSession: "当前",
+      statusLive: "实时",
+      statusPaused: "已暂停",
+      statusStale: "已过期",
+      filterPlaceholder: "筛选行",
+      lineCount: "{count} 行",
+      filteredLineCount: "共 {total} 行，显示 {shown} 行",
+      wrapLines: "自动换行",
+      jumpToLatest: "跳到最新",
+      noMatches: "没有与筛选条件匹配的行。",
       mode: "模式",
       modeLive: "实时",
       modeInterval: "每 3 秒",
@@ -1119,7 +1123,7 @@ export const zhCN = {
       custom: {
         chatWidth: {
           label: "聊天宽度",
-          description: "设置消息和输入框的宽度。全宽会使用侧边栏之间的可用空间。",
+          description: "消息和输入框的宽度。",
           standard: "标准",
           wide: "宽",
           full: "全宽",
@@ -1190,7 +1194,6 @@ export const zhCN = {
         },
         contrast: {
           label: "对比度",
-          description: "边框和次要文本的强度。",
         },
         reduceMotion: {
           label: "减少动态效果",
@@ -1212,7 +1215,7 @@ export const zhCN = {
       sidebarNav: {
         title: "侧边栏导航",
         description:
-          "固定并重新排序侧边栏标签。取消固定的标签会收进“更多”菜单；若只有一个取消固定，则直接隐藏，而不是为它单独建一个菜单。新聊天保持固定。",
+          "固定并重新排序侧边栏标签。未固定的标签会进入“更多”菜单。",
         dragToReorder: "拖动以重新排序",
         pinToSidebar: "将{name}固定到侧边栏",
         moreHolds: "更多（{count}）",
@@ -1220,7 +1223,7 @@ export const zhCN = {
       sidebarMenu: {
         title: "个人菜单",
         description:
-          "选择点击侧边栏底部你的名字时显示哪些快捷项及其顺序。设置、帮助、退出登录和关闭始终显示。",
+          "选择并排序个人资料菜单中的快捷项。",
         darkModeToggle: "深色模式切换",
         dragToReorder: "拖动以重新排序",
       },
@@ -1358,6 +1361,57 @@ export const zhCN = {
         copied: "路径已复制",
         openError: "无法打开文件夹",
         copyError: "无法复制路径",
+        caches: {
+          label: "缓存文件",
+          description: "缓存共占用{size}，其中{reclaimable}可立即清理。",
+          hint: "包下载、已编译内核和传输缓存，Unsloth 在需要时会重新生成。已下载的模型、项目、对话、设置以及你的 Hugging Face 令牌不会在此被清理。",
+          keywords:
+            "缓存 清理 清除 清空 删除 释放 空间 磁盘 临时 已编译 cache caches purge prune clear clean free space disk uv pip npm bun triton inductor cuda numba matplotlib vllm compiled xet temporary",
+          measuring: "正在统计缓存大小...",
+          measureFailed: "无法统计缓存大小",
+          empty: "未找到缓存文件。",
+          detailsAction: "详情",
+          recheckAction: "重新检查",
+          hideDetailsAction: "隐藏详情",
+          clearAction: "清理缓存",
+          clearOneAction: "清理",
+          clearingAction: "正在清理...",
+          confirmTitle: "要清理缓存文件吗？",
+          confirmDescription: "这将释放约{size}。",
+          confirmOneTitle: "要清理{name}吗？",
+          safety:
+            "Unsloth 会在下次需要时重新生成缓存。已下载的模型、项目、对话、设置以及你的 Hugging Face 令牌不会受到影响。",
+          hubCost: "这是模型缓存。清理后，下次使用这些模型时会重新下载。",
+          datasetsCost: "清理后，下次使用这些数据集时会重新下载。",
+          blocked: "未清理：{reason}",
+          cleared: "已清理{size}",
+          partial: "部分缓存文件无法删除",
+          clearFailed: "无法清理缓存",
+          names: {
+            uv: "uv 包缓存",
+            pip: "pip 下载缓存",
+            npm: "npm 包缓存",
+            bun: "Bun 包缓存",
+            torchInductor: "Torch Inductor 编译缓存",
+            torchExtensions: "Torch 扩展构建",
+            triton: "Triton 内核缓存",
+            cuda: "CUDA 内核缓存",
+            numba: "Numba 编译缓存",
+            matplotlib: "Matplotlib 字体缓存",
+            vllm: "vLLM 缓存",
+            unslothCompiled: "Unsloth 编译模块",
+            hfXet: "Hugging Face 传输缓存",
+            hfAssets: "Hugging Face 资源缓存",
+            hfDatasets: "Hugging Face 数据集缓存",
+            hfHub: "Hugging Face 模型缓存",
+          },
+        },
+        lowDisk: {
+          title: "磁盘空间不足",
+          criticalTitle: "磁盘空间严重不足",
+          description: "{total}中剩余{free}。清理缓存可以释放空间。",
+          action: "查看缓存",
+        },
         futureDownloads: "仅对新下载生效",
         environmentManaged: "由环境变量 {variable} 管理。",
         locationFree: "{free} 可用",
@@ -1869,6 +1923,7 @@ export const zhCN = {
       expires: "过期时间：{value}",
       actionsFor: "{name} 的操作",
       copyPrefix: "复制前缀",
+      copyFailed: "无法复制",
       revokeToken: "撤销 token",
       revokeTitle: "撤销访问 token“{name}”？",
       revokeDescription:
