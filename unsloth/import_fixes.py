@@ -734,18 +734,30 @@ def _legacy_config_accepted_types(annotation):
 
 
 def _legacy_config_fields(cls):
-    """``{field: accepted types}`` for the dataclass fields of ``cls``, cached per class."""
+    """``{field: accepted types}`` for the fields ``@strict`` validates on ``cls``, cached per class.
+
+    Read from the class owning ``__validators__`` (the nearest ``@strict`` one): its annotations
+    are what the validators were built from. A subclass that is a dataclass but not ``@strict``
+    validates neither its own fields nor re-annotated inherited ones, so those are left alone."""
     cached = _legacy_config_field_types.get(cls)
     if cached is not None:
         return cached
     import dataclasses
 
     table = {}
+    owner = next(
+        (k for k in getattr(cls, "__mro__", ()) if isinstance(k.__dict__.get("__validators__"), dict)),
+        None,
+    )
     try:
-        for field in dataclasses.fields(cls):
-            accepted = _legacy_config_accepted_types(field.type)
-            if accepted is not None:
-                table[field.name] = (field.type, accepted)
+        if owner is not None:
+            validated = owner.__dict__["__validators__"]
+            for field in dataclasses.fields(owner):
+                if field.name not in validated:
+                    continue
+                accepted = _legacy_config_accepted_types(field.type)
+                if accepted is not None:
+                    table[field.name] = (field.type, accepted)
     except TypeError:
         pass
     _legacy_config_field_types[cls] = table

@@ -276,3 +276,26 @@ def test_the_mlx_branch_installs_the_fix_too():
     )
     mlx_branch = source[source.find("if _IS_MLX:") :]
     assert "fix_transformers5_legacy_config_types" in mlx_branch
+
+
+@needs_strict
+def test_fields_strict_does_not_validate_are_not_touched():
+    """A config that already loads must load byte-identically: fields of a non-@strict subclass
+    are never validated, and a re-annotated inherited field is validated with the parent's type."""
+    from transformers import LlamaConfig
+    from transformers.configuration_utils import PretrainedConfig
+
+    class NotStrictConfig(PretrainedConfig):
+        model_type = "unsloth_not_strict_probe"
+        flag: bool = False
+        scale: float = 1.0
+        sizes: tuple[int, ...] = (1,)
+
+    config = NotStrictConfig(flag = 1, scale = 2, sizes = [2, 3])
+    assert type(config.flag) is int and type(config.scale) is int and type(config.sizes) is list
+
+    class RetypedConfig(LlamaConfig):
+        model_type = "unsloth_retyped_probe"
+        hidden_size: float = 64.0
+
+    assert type(RetypedConfig(hidden_size = 64).hidden_size) is int
